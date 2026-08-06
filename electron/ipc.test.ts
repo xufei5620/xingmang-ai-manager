@@ -1,0 +1,539 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import type { SystemService } from './system-service'
+import type { UpdaterService } from './updater'
+import { ipcInvokeChannels } from './ipc-contract'
+
+const electronMocks = vi.hoisted(() => ({
+  handlers: new Map<string, (...args: unknown[]) => unknown>(),
+  handle: vi.fn(),
+  removeHandler: vi.fn(),
+  showOpenDialog: vi.fn(),
+  showSaveDialog: vi.fn(),
+  showMessageBox: vi.fn(async () => ({ response: 0 })),
+  browserWindowFromWebContents: vi.fn(() => undefined),
+  openExternal: vi.fn(),
+  openPath: vi.fn(),
+  writeText: vi.fn(),
+}))
+
+vi.mock('electron', () => ({
+  ipcMain: {
+    handle: (channel: string, handler: (...args: unknown[]) => unknown) => {
+      electronMocks.handle(channel, handler)
+      electronMocks.handlers.set(channel, handler)
+    },
+    removeHandler: (channel: string) => electronMocks.removeHandler(channel),
+  },
+  dialog: {
+    showOpenDialog: electronMocks.showOpenDialog,
+    showSaveDialog: electronMocks.showSaveDialog,
+    showMessageBox: electronMocks.showMessageBox,
+  },
+  BrowserWindow: {
+    fromWebContents: electronMocks.browserWindowFromWebContents,
+  },
+  shell: { openExternal: electronMocks.openExternal, openPath: electronMocks.openPath },
+  clipboard: { writeText: electronMocks.writeText },
+}))
+
+import { registerIpcHandlers } from './ipc'
+
+function serviceStub(): SystemService {
+  return {
+    readStoredConfig: vi.fn(() => ({
+      version: 2,
+      workspace: 'C:\\workspace',
+      theme: 'dark',
+      checkUpdatesOnStartup: true,
+      runDiagnosticsOnStartup: false,
+    })),
+    writeStoredConfig: vi.fn(async () => undefined),
+    inspectCodexReadiness: vi.fn(() => ({ hasApiKey: true, matchesRelay: true })),
+    getConfig: vi.fn(() => ({ workspace: 'C:\\workspace', providers: {} })) as never,
+    revealApiKey: vi.fn(() => 'sk-known-secret-value'),
+    saveConfig: vi.fn(() => ({ backups: [], files: [] })),
+    scanSystem: vi.fn() as never,
+    inspectCodexSetupStatus: vi.fn() as never,
+    installNodeRuntime: vi.fn() as never,
+    installCli: vi.fn() as never,
+    uninstallCli: vi.fn() as never,
+    inspectCliUpdate: vi.fn() as never,
+    installCodexDesktop: vi.fn() as never,
+    uninstallCodexDesktop: vi.fn() as never,
+    inspectCodexDesktopUpdate: vi.fn() as never,
+    launchProvider: vi.fn() as never,
+    inspectCodexDesktop: vi.fn() as never,
+    launchCodexDesktop: vi.fn() as never,
+    fetchAvailableModels: vi.fn() as never,
+  }
+}
+
+function trustedEvent(url = 'http://localhost:5173/') {
+  return {
+    senderFrame: { url },
+    sender: {
+      getURL: () => url,
+      isDestroyed: () => false,
+      send: vi.fn(),
+    },
+  }
+}
+
+function updaterStub(): UpdaterService {
+  const state = {
+    phase: 'disabled' as const,
+    currentVersion: '1.0.0',
+    availableVersion: null,
+    releaseName: null,
+    releaseNotesText: null,
+    checkedAt: null,
+    progress: null,
+    error: null,
+    development: true,
+  }
+  return {
+    getState: vi.fn(() => state),
+    startup: vi.fn(async () => state),
+    check: vi.fn(async () => state),
+    download: vi.fn(async () => state),
+    install: vi.fn(() => ({ accepted: true as const })),
+    subscribe: vi.fn(() => vi.fn()),
+    dispose: vi.fn(),
+  }
+}
+
+function register(service = serviceStub(), runtimeLogDirectory = 'C:\\app-data\\logs') {
+  const extensionService = {
+    getRepositoryContext: vi.fn(() => ({ repositoryRoot: 'C:\\workspace' })),
+    setRepositoryContext: vi.fn((repositoryRoot: string) => ({ repositoryRoot })),
+    listMcpServers: vi.fn(),
+    addMcpServer: vi.fn(),
+    removeMcpServer: vi.fn(),
+    loginMcpServer: vi.fn(),
+    logoutMcpServer: vi.fn(),
+    listSkills: vi.fn(),
+    importSkill: vi.fn(),
+    setSkillEnabled: vi.fn(),
+    uninstallSkill: vi.fn(),
+    listPlugins: vi.fn(),
+    addPlugin: vi.fn(),
+    removePlugin: vi.fn(),
+    setPluginEnabled: vi.fn(),
+    addMarketplace: vi.fn(),
+    upgradeMarketplace: vi.fn(),
+    removeMarketplace: vi.fn(),
+  }
+  const providerExtensionService = {
+    setRepositoryRoot: vi.fn(),
+    list: vi.fn(),
+    listAll: vi.fn(),
+    mutate: vi.fn(),
+  }
+  const runtimeLog = {
+    directory: runtimeLogDirectory,
+    log: vi.fn(),
+    exception: vi.fn(),
+    snapshot: vi.fn(async () => ({
+      generatedAt: '2026-07-24T00:00:00.000Z',
+      directory: 'C:\\app-data\\logs',
+      filePath: 'C:\\app-data\\logs\\runtime.jsonl',
+      sizeBytes: 0,
+      total: 0,
+      truncated: false,
+      counts: { debug: 0, info: 0, warn: 0, error: 0 },
+      sources: [],
+      entries: [],
+    })),
+    feedbackReport: vi.fn(async () => 'sanitized report\n'),
+    clear: vi.fn(async () => undefined),
+  }
+  const dispose = registerIpcHandlers({
+    systemService: service,
+    sessionsService: {
+      list: vi.fn(),
+      detail: vi.fn(),
+      exportMarkdown: vi.fn(),
+      archive: vi.fn(),
+      restore: vi.fn(),
+    } as never,
+    providerSessionsService: {
+      list: vi.fn(),
+      detail: vi.fn(),
+      exportMarkdown: vi.fn(),
+    } as never,
+    backupStore: {
+      list: vi.fn(),
+      create: vi.fn(),
+      inspect: vi.fn(),
+      restore: vi.fn(),
+    } as never,
+    diagnosticsService: {
+      run: vi.fn(),
+      exportLatest: vi.fn(),
+    },
+    runtimeLog: runtimeLog as never,
+    extensionService: extensionService as never,
+    providerExtensionService: providerExtensionService as never,
+    urlPolicy: {
+      rendererRoot: 'C:\\app\\dist',
+      devServerUrl: 'http://localhost:5173',
+    },
+    previewOnboarding: false,
+    externalUrlAllowlist: [
+      'https://api.solov.cc',
+      'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
+    ],
+    externalShell: {
+      openExternal: electronMocks.openExternal,
+      openPath: async (targetPath) => {
+        const failure = await electronMocks.openPath(targetPath)
+        if (failure) throw new Error(failure)
+      },
+    },
+    updaterService: updaterStub(),
+    broadcastUpdate: vi.fn(),
+    setWindowMode: vi.fn(),
+    setWindowTheme: vi.fn(),
+  })
+  return { dispose, service, extensionService, providerExtensionService, runtimeLog }
+}
+
+beforeEach(() => {
+  electronMocks.handlers.clear()
+  electronMocks.handle.mockClear()
+  electronMocks.removeHandler.mockClear()
+  electronMocks.showOpenDialog.mockReset()
+  electronMocks.showMessageBox.mockReset()
+  electronMocks.showMessageBox.mockResolvedValue({ response: 0 })
+  electronMocks.openExternal.mockReset()
+  electronMocks.openExternal.mockResolvedValue(undefined)
+  electronMocks.openPath.mockReset()
+  electronMocks.openPath.mockResolvedValue('')
+  electronMocks.writeText.mockReset()
+})
+
+describe('registerIpcHandlers', () => {
+  it('registers and disposes the existing IPC contract', () => {
+    const { dispose } = register()
+    const expectedChannels = Object.values(ipcInvokeChannels)
+    expect([...electronMocks.handlers.keys()]).toEqual(expectedChannels)
+
+    dispose()
+
+    expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel)).toEqual(expectedChannels)
+  })
+
+  it('persists a selected workspace and updates the repository context', async () => {
+    electronMocks.showOpenDialog.mockResolvedValueOnce({
+      canceled: false,
+      filePaths: ['D:\\project'],
+    })
+    const { service, extensionService, providerExtensionService } = register()
+
+    await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe('D:\\project')
+    expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ workspace: 'D:\\project' }))
+    expect(extensionService.setRepositoryContext).toHaveBeenCalledWith('D:\\project')
+    expect(providerExtensionService.setRepositoryRoot).toHaveBeenCalledWith('D:\\project')
+    expect(electronMocks.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
+      properties: ['openDirectory', 'createDirectory'],
+    }))
+    expect(electronMocks.handlers.get('repository:get-context')!(trustedEvent())).toEqual({
+      repositoryRoot: 'C:\\workspace',
+    })
+  })
+
+  it('rejects calls from a sender outside the application URL policy', () => {
+    const { service } = register()
+    const handler = electronMocks.handlers.get('system:scan')!
+
+    expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow(
+      '已拒绝来自非应用页面的操作请求',
+    )
+    expect(service.scanSystem).not.toHaveBeenCalled()
+  })
+
+  it('forwards an explicit forced update scan and rejects invalid flags', async () => {
+    const service = serviceStub()
+    vi.mocked(service.scanSystem).mockResolvedValueOnce({
+      checkedAt: '2026-07-24T00:00:00.000Z',
+      runtime: {},
+      clis: {},
+      desktopApps: {
+        codex: {
+          installed: false,
+          version: null,
+          appVersion: null,
+          mirrorVersion: null,
+          mirrorUpdateAvailable: null,
+          mirrorError: null,
+          path: null,
+          running: false,
+        },
+      },
+    } as never)
+    register(service)
+    const handler = electronMocks.handlers.get('system:scan')!
+
+    await expect(handler(trustedEvent(), true)).resolves.toMatchObject({
+      checkedAt: '2026-07-24T00:00:00.000Z',
+    })
+    expect(service.scanSystem).toHaveBeenCalledWith(true)
+    await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('更新检查参数格式错误')
+  })
+
+  it('reads only Codex readiness during startup', async () => {
+    const { service } = register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.getCodexReadiness)!
+
+    expect(handler(trustedEvent())).toEqual({ hasApiKey: true, matchesRelay: true })
+    expect(service.inspectCodexReadiness).toHaveBeenCalledWith(false)
+    expect(service.scanSystem).not.toHaveBeenCalled()
+    expect(service.getConfig).not.toHaveBeenCalled()
+  })
+
+  it('opens an allowed external URL directly in the default browser', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
+
+    await expect(handler(trustedEvent(), 'https://api.solov.cc')).resolves.toBe(true)
+    expect(electronMocks.openExternal).toHaveBeenCalledOnce()
+    expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('opens the exact Codex product in the local Microsoft Store', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
+    const storeUri = 'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS'
+
+    await expect(handler(trustedEvent(), storeUri)).resolves.toBe(true)
+    expect(electronMocks.openExternal).toHaveBeenCalledWith(storeUri)
+    await expect(handler(
+      trustedEvent(),
+      'ms-windows-store://pdp/?ProductId=OTHER',
+    )).rejects.toThrow('不允许打开该链接')
+  })
+
+  it('opens the validated runtime log directory through the external shell proxy', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ipc-shell-'))
+    try {
+      register(serviceStub(), directory)
+      const handler = electronMocks.handlers.get(ipcInvokeChannels.openRuntimeLogDirectory)!
+
+      await expect(handler(trustedEvent())).resolves.toBe(true)
+      expect(electronMocks.openPath).toHaveBeenCalledWith(directory)
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('validates config payloads before passing them to the service', async () => {
+    const { service, runtimeLog } = register()
+    const handler = electronMocks.handlers.get('config:save')!
+
+    expect(handler(trustedEvent(), {
+      provider: 'codex',
+      apiKey: 'sk-test',
+      model: 'gpt-5.6-sol',
+      mode: 'merge',
+    })).toEqual({ backups: [], files: [] })
+    expect(service.saveConfig).toHaveBeenCalledWith({
+      provider: 'codex',
+      apiKey: 'sk-test',
+      model: 'gpt-5.6-sol',
+      mode: 'merge',
+    }, false)
+    expect(runtimeLog.log).toHaveBeenCalledWith(
+      'info',
+      'ipc',
+      'config:save',
+      'Codex CLI 配置已保存',
+      expect.objectContaining({ provider: 'codex', model: 'gpt-5.6-sol', mode: 'merge' }),
+    )
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('sk-test')
+
+    expect(() => handler(trustedEvent(), { provider: 'unknown' })).toThrow('未知的 CLI 类型')
+  })
+
+  it('returns only an API key preview through config:get', () => {
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({
+      workspace: 'C:\\workspace',
+      providers: {
+        codex: {
+          baseUrl: 'https://api.solov.cc',
+          actualBaseUrl: 'https://api.solov.cc',
+          exists: true,
+          hasApiKey: true,
+          matchesRelay: true,
+          apiKeyPreview: 'sk-te••••••••wxyz',
+          model: 'gpt-5.6-sol',
+          dataDirectory: 'C:\\Users\\tester\\.codex',
+          dataDirectoryExists: true,
+          files: [],
+          updatedAt: null,
+        },
+      },
+    } as never)
+    register(service)
+
+    const result = electronMocks.handlers.get('config:get')!(trustedEvent())
+    const serialized = JSON.stringify(result)
+    expect(serialized).toContain('apiKeyPreview')
+    expect(serialized).not.toContain('sk-known-secret-value')
+    expect(serialized).not.toMatch(/"apiKey"\s*:/)
+  })
+
+  it('reveals the API key only through the dedicated trusted channel', () => {
+    const service = serviceStub()
+    register(service)
+
+    const handler = electronMocks.handlers.get('config:reveal-api-key')!
+    expect(handler(trustedEvent(), 'codex')).toBe('sk-known-secret-value')
+    expect(service.revealApiKey).toHaveBeenCalledWith('codex', false)
+    expect(() => handler(trustedEvent(), 'unknown')).toThrow('未知的 CLI 类型')
+  })
+
+  it('suppresses successful Codex Desktop polling but records a concrete failure', async () => {
+    const service = serviceStub()
+    vi.mocked(service.inspectCodexDesktop).mockResolvedValueOnce({
+      installed: true,
+      version: '26.715.8383.0',
+      appVersion: '26.715.8000',
+      mirrorVersion: '26.721.3996.0',
+      mirrorUpdateAvailable: true,
+      mirrorError: null,
+      path: 'OpenAI.Codex_abc!App',
+      running: true,
+    })
+    const { runtimeLog } = register(service)
+    const handler = electronMocks.handlers.get('desktop:codex-status')!
+
+    await expect(handler(trustedEvent())).resolves.toMatchObject({ running: true })
+    expect(runtimeLog.log).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'ipc',
+      'desktop:codex-status',
+      expect.anything(),
+      expect.anything(),
+    )
+
+    vi.mocked(service.inspectCodexDesktop).mockRejectedValueOnce(new Error('无法读取 Codex 进程'))
+    await expect(handler(trustedEvent())).rejects.toThrow('无法读取 Codex 进程')
+    expect(runtimeLog.log).toHaveBeenCalledWith(
+      'error',
+      'ipc',
+      'desktop:codex-status',
+      'Codex 桌面端运行状态检测失败：无法读取 Codex 进程',
+      expect.objectContaining({ error: expect.any(Error) }),
+    )
+  })
+
+  it('passes the requesting renderer to Codex Desktop installation', async () => {
+    const service = serviceStub()
+    vi.mocked(service.installCodexDesktop).mockResolvedValueOnce({
+      action: 'updated',
+      previousVersion: '26.715.8383.0',
+      installedVersion: '26.724.1000.0',
+    } as never)
+    register(service)
+    const event = trustedEvent()
+
+    await expect(electronMocks.handlers.get('desktop:install-codex')!(event)).resolves.toMatchObject({
+      action: 'updated',
+      previousVersion: '26.715.8383.0',
+      installedVersion: '26.724.1000.0',
+    })
+    expect(service.installCodexDesktop).toHaveBeenCalledWith(event.sender)
+  })
+
+  it('surfaces degraded extension reads as warnings', async () => {
+    const { providerExtensionService, runtimeLog } = register()
+    providerExtensionService.list.mockResolvedValueOnce({
+      provider: 'claude',
+      checkedAt: '2026-07-24T00:00:00.000Z',
+      capabilities: {
+        mcp: { list: true, reason: null },
+        skill: { list: true, reason: null },
+        plugin: { list: false, reason: 'Plugins 列表读取失败' },
+      },
+      items: [],
+      warnings: ['Claude Code Plugins 列表读取失败'],
+    })
+
+    await expect(electronMocks.handlers.get('extensions:list')!(trustedEvent(), 'claude')).resolves.toMatchObject({
+      provider: 'claude',
+    })
+    expect(runtimeLog.log).toHaveBeenCalledWith(
+      'warn',
+      'extensions',
+      'list.degraded',
+      expect.stringContaining('Claude Code Plugins 列表读取失败'),
+      expect.objectContaining({ provider: 'claude' }),
+    )
+  })
+
+  it('records failed maintenance calls without logging their arguments', async () => {
+    const service = serviceStub()
+    vi.mocked(service.installCli).mockRejectedValueOnce(new Error('Failed to start command: npm'))
+    const { runtimeLog } = register(service)
+    const handler = electronMocks.handlers.get('cli:install')!
+
+    await expect(handler(trustedEvent(), 'gemini')).rejects.toThrow('Failed to start command: npm')
+    expect(runtimeLog.exception).toHaveBeenCalledWith(
+      'maintenance',
+      'cli.install.failed',
+      expect.any(Error),
+      { provider: 'gemini' },
+    )
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('apiKey')
+  })
+
+  it('checks and uninstalls only the requested CLI', async () => {
+    const service = serviceStub()
+    vi.mocked(service.inspectCliUpdate).mockResolvedValueOnce({
+      installed: true,
+      version: 'grok 0.2.111',
+      path: 'C:\\Users\\tester\\.grok\\bin\\grok.exe',
+      installDirectory: 'C:\\Users\\tester\\.grok\\bin',
+      latestVersion: null,
+      updateAvailable: false,
+      updateCheck: 'failed',
+      updateState: 'unknown',
+      updateError: '连接 xAI 更新服务超时，请检查代理或网络后重试',
+    })
+    vi.mocked(service.uninstallCli).mockResolvedValueOnce({
+      outcome: 'uninstalled',
+      previousVersion: 'grok 0.2.111',
+    })
+    register(service)
+
+    await expect(electronMocks.handlers.get('cli:check-update')!(trustedEvent(), 'grok')).resolves.toMatchObject({
+      installed: true,
+      updateCheck: 'failed',
+    })
+    expect(service.inspectCliUpdate).toHaveBeenCalledWith('grok', true)
+    expect(service.scanSystem).not.toHaveBeenCalled()
+
+    await expect(electronMocks.handlers.get('cli:uninstall')!(trustedEvent(), 'grok')).resolves.toEqual({
+      outcome: 'uninstalled',
+      previousVersion: 'grok 0.2.111',
+    })
+    expect(service.uninstallCli).toHaveBeenCalledWith('grok')
+    await expect(electronMocks.handlers.get('cli:uninstall')!(trustedEvent(), 'unknown')).rejects.toThrow('未知的 CLI 类型')
+  })
+
+  it('exposes sanitized runtime logs and copies the feedback report', async () => {
+    const { runtimeLog } = register()
+
+    await expect(electronMocks.handlers.get('runtime-logs:list')!(trustedEvent(), 500)).resolves.toMatchObject({
+      total: 0,
+      entries: [],
+    })
+    await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent())).resolves.toEqual({ entries: 0 })
+    expect(runtimeLog.feedbackReport).toHaveBeenCalledOnce()
+    expect(electronMocks.writeText).toHaveBeenCalledWith('sanitized report\n')
+  })
+})

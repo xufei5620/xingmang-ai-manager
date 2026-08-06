@@ -1,0 +1,12 @@
+node_modules/
+dist/
+dist-electron/
+release/
+release-*/
+.project-surgeon.bak.*/
+.project-surgeon/
+.workflow/
+.wrangler/
+.project-surgeon/deepwiki-cache/
+artifacts/
+*.log

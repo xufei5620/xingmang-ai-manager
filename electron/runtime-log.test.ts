@@ -1,0 +1,131 @@
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
+import { afterEach, describe, expect, it } from 'vitest'
+import { redactHomeDirectory, RuntimeLogStore } from './runtime-log'
+
+const temporaryDirectories: string[] = []
+
+function createStore(options: { maxFileBytes?: number; archiveCount?: number } = {}) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-'))
+  temporaryDirectories.push(directory)
+  return new RuntimeLogStore({
+    directory,
+    appName: '星芒AI管理工具',
+    appVersion: '1.0.0',
+    packaged: false,
+    ...options,
+  })
+}
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+describe('RuntimeLogStore', () => {
+  it('redacts Windows home paths across casing, separators and JSON escaping', () => {
+    const home = 'C:\\Users\\Peaker'
+    const input = [
+      'c:\\users\\peaker\\.codex\\config.toml',
+      'C:/Users/Peaker/.claude/settings.json',
+      'C:\\\\Users\\\\Peaker\\\\.gemini',
+    ].join('\n')
+    const redacted = redactHomeDirectory(input, home)
+
+    expect(redacted.toLowerCase()).not.toContain('users')
+    expect(redacted.match(/%USERPROFILE%/g)).toHaveLength(3)
+  })
+
+  it('persists UTF-8 JSONL and redacts secrets recursively', async () => {
+    const store = createStore()
+    store.log('error', 'ipc', 'config.save', 'Authorization: Bearer private-token sk-private-key', {
+      provider: 'codex',
+      apiKey: 'plain-private-key',
+      nested: { access_token: 'nested-private-token', result: 'failed' },
+    })
+
+    const snapshot = await store.snapshot()
+    const serialized = JSON.stringify(snapshot)
+    expect(snapshot.entries).toHaveLength(1)
+    expect(snapshot.entries[0]).toMatchObject({ level: 'error', source: 'ipc', event: 'config.save' })
+    expect(serialized).not.toContain('private-token')
+    expect(serialized).not.toContain('private-key')
+    expect(serialized).toContain('[REDACTED]')
+    expect(fs.readFileSync(store.filePath).subarray(0, 3)).not.toEqual(Buffer.from([0xef, 0xbb, 0xbf]))
+  })
+
+  it('rotates bounded files and reads the retained entries newest first', async () => {
+    const store = createStore({ maxFileBytes: 520, archiveCount: 2 })
+    for (let index = 0; index < 12; index += 1) {
+      store.log('info', 'test', 'rotation', `entry-${index}-${'x'.repeat(70)}`)
+    }
+
+    const snapshot = await store.snapshot()
+    expect(snapshot.entries[0].message).toContain('entry-11-')
+    expect(snapshot.total).toBeGreaterThan(1)
+    expect(fs.existsSync(`${store.filePath}.1`)).toBe(true)
+    expect(fs.existsSync(`${store.filePath}.2`)).toBe(true)
+  })
+
+  it('builds a sanitized feedback report and clears all retained logs', async () => {
+    const store = createStore()
+    store.exception('main', 'failure', new Error('token=private-value'))
+
+    const report = await store.feedbackReport()
+    expect(report).toContain('星芒AI管理工具 反馈与诊断')
+    expect(report).not.toContain('private-value')
+    await store.clear()
+    expect((await store.snapshot()).entries).toEqual([])
+  })
+
+  it('keeps structured command metadata needed to diagnose process failures', async () => {
+    const store = createStore()
+    const error = Object.assign(new Error('Failed to start command: npm'), {
+      code: 'SPAWN_FAILED',
+      executable: 'D:\\nodejs\\npm',
+      argv: ['install', '--global', '@google/gemini-cli@latest'],
+      stderr: 'token=private-value',
+      durationMs: 3,
+    })
+    store.exception('maintenance', 'cli.install.failed', error, { provider: 'gemini' })
+
+    const entry = (await store.snapshot()).entries[0]
+    expect(entry.detail).toMatchObject({
+      provider: 'gemini',
+      error: {
+        code: 'SPAWN_FAILED',
+        executable: 'D:\\nodejs\\npm',
+        argv: ['install', '--global', '@google/gemini-cli@latest'],
+        stderr: 'token=[REDACTED]',
+        durationMs: 3,
+      },
+    })
+  })
+
+  it('refuses to append to a hard-linked log file and keeps the log page readable', async () => {
+    const store = createStore()
+    const victim = path.join(store.directory, 'victim.txt')
+    fs.writeFileSync(victim, 'do-not-change', 'utf8')
+    fs.linkSync(victim, store.filePath)
+
+    store.log('error', 'test', 'unsafe-log', 'must not be appended')
+    const snapshot = await store.snapshot()
+    expect(snapshot.entries.some((entry) => entry.level === 'warn' && entry.event === 'read-failed')).toBe(true)
+    expect(JSON.stringify(snapshot)).not.toContain('do-not-change')
+    expect(fs.readFileSync(victim, 'utf8')).toBe('do-not-change')
+  })
+
+  it('truncates an oversized detail instead of instantly rotating the file', async () => {
+    const store = createStore()
+    store.log('info', 'test', 'oversized', 'huge detail', Object.fromEntries(
+      Array.from({ length: 64 }, (_, index) => [`key${index}`, 'y'.repeat(8_000)]),
+    ))
+
+    const snapshot = await store.snapshot()
+    expect(snapshot.entries).toHaveLength(1)
+    expect(snapshot.entries[0].detail).toEqual({ truncated: '[TRUNCATED: detail too large]' })
+    expect(snapshot.sizeBytes).toBeLessThan(256 * 1024)
+  })
+})

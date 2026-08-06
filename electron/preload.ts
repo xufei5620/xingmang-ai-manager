@@ -1,0 +1,195 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import type {
+  IpcContractArgs,
+  IpcContractResult,
+  IpcEventPayload,
+  XingmangApi,
+  XingmangEventContract,
+  XingmangInvokeContract,
+} from './ipc-contract'
+
+// Sandboxed preload scripts cannot require local runtime modules. Keep the
+// channel maps in this entry file while checking them against the shared types.
+const ipcInvokeChannels = {
+  scanSystem: 'system:scan',
+  getCodexReadiness: 'startup:codex-readiness',
+  getConfig: 'config:get',
+  revealApiKey: 'config:reveal-api-key',
+  saveConfig: 'config:save',
+  listModels: 'models:list',
+  chooseWorkspace: 'workspace:choose',
+  getRepositoryContext: 'repository:get-context',
+  installNodeRuntime: 'runtime:install-node',
+  installCli: 'cli:install',
+  uninstallCli: 'cli:uninstall',
+  checkCliUpdate: 'cli:check-update',
+  getCodexSetupStatus: 'setup:codex-status',
+  installCodexDesktop: 'desktop:install-codex',
+  uninstallCodexDesktop: 'desktop:uninstall-codex',
+  checkCodexDesktopUpdate: 'desktop:check-update-codex',
+  launchCli: 'cli:launch',
+  getCodexDesktopStatus: 'desktop:codex-status',
+  launchCodexDesktop: 'desktop:launch-codex',
+  setWindowMode: 'window:set-mode',
+  setWindowTheme: 'window:set-theme',
+  openExternal: 'external:open',
+  getUpdateState: 'update:get-state',
+  runStartupUpdate: 'update:startup',
+  checkForUpdates: 'update:check',
+  downloadUpdate: 'update:download',
+  installUpdate: 'update:install',
+  listSessions: 'sessions:list',
+  getSessionDetail: 'sessions:detail',
+  exportSession: 'sessions:export',
+  archiveSession: 'sessions:archive',
+  restoreSession: 'sessions:restore',
+  listProviderSessions: 'provider-sessions:list',
+  getProviderSessionDetail: 'provider-sessions:detail',
+  exportProviderSession: 'provider-sessions:export',
+  getSettings: 'settings:get',
+  saveSettings: 'settings:save',
+  runDiagnostics: 'diagnostics:run',
+  exportDiagnostics: 'diagnostics:export',
+  getRuntimeLogs: 'runtime-logs:list',
+  copyFeedbackReport: 'runtime-logs:copy-feedback',
+  exportFeedbackReport: 'runtime-logs:export-feedback',
+  openRuntimeLogDirectory: 'runtime-logs:open-directory',
+  clearRuntimeLogs: 'runtime-logs:clear',
+  reportRendererError: 'runtime-logs:renderer-error',
+  listBackups: 'backups:list',
+  createBackup: 'backups:create',
+  inspectBackup: 'backups:inspect',
+  restoreBackup: 'backups:restore',
+  deleteBackup: 'backups:delete',
+  listMcpServers: 'mcp:list',
+  addMcpServer: 'mcp:add',
+  removeMcpServer: 'mcp:remove',
+  loginMcpServer: 'mcp:login',
+  logoutMcpServer: 'mcp:logout',
+  listSkills: 'skills:list',
+  importSkill: 'skills:import',
+  toggleSkill: 'skills:toggle',
+  uninstallSkill: 'skills:uninstall',
+  listPlugins: 'plugins:list',
+  addPlugin: 'plugins:add',
+  removePlugin: 'plugins:remove',
+  togglePlugin: 'plugins:toggle',
+  addMarketplace: 'marketplaces:add',
+  upgradeMarketplace: 'marketplaces:upgrade',
+  removeMarketplace: 'marketplaces:remove',
+  listProviderExtensions: 'extensions:list',
+  listAllProviderExtensions: 'extensions:list-all',
+  mutateProviderExtension: 'extensions:mutate',
+} as const satisfies {
+  [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
+}
+
+const ipcEventChannels = {
+  onNodeRuntimeInstallProgress: 'runtime:node-install-progress',
+  onInstallProgress: 'cli:install-progress',
+  onCodexDesktopStatus: 'desktop:codex-status-changed',
+  onCodexDesktopInstallProgress: 'desktop:codex-install-progress',
+  onUpdateState: 'update:state-changed',
+} as const satisfies {
+  [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
+}
+
+function invoke<Method extends keyof XingmangInvokeContract>(
+  method: Method,
+  ...args: IpcContractArgs<XingmangInvokeContract[Method]>
+): Promise<IpcContractResult<XingmangInvokeContract[Method]>> {
+  return ipcRenderer.invoke(ipcInvokeChannels[method], ...args) as Promise<
+    IpcContractResult<XingmangInvokeContract[Method]>
+  >
+}
+
+function subscribe<Method extends keyof XingmangEventContract>(
+  method: Method,
+  listener: (payload: IpcEventPayload<XingmangEventContract[Method]>) => void,
+): () => void {
+  const channel = ipcEventChannels[method]
+  const handler = (_event: Electron.IpcRendererEvent, payload: unknown) => {
+    listener(payload as IpcEventPayload<XingmangEventContract[Method]>)
+  }
+  ipcRenderer.on(channel, handler)
+  return () => ipcRenderer.removeListener(channel, handler)
+}
+
+const xingmangApi: XingmangApi = {
+  scanSystem: (forceRefresh) => invoke('scanSystem', forceRefresh),
+  getCodexReadiness: () => invoke('getCodexReadiness'),
+  getConfig: () => invoke('getConfig'),
+  revealApiKey: (provider) => invoke('revealApiKey', provider),
+  saveConfig: (payload) => invoke('saveConfig', payload),
+  listModels: (apiKey) => invoke('listModels', apiKey),
+  chooseWorkspace: () => invoke('chooseWorkspace'),
+  getRepositoryContext: () => invoke('getRepositoryContext'),
+  installNodeRuntime: () => invoke('installNodeRuntime'),
+  installCli: (provider) => invoke('installCli', provider),
+  uninstallCli: (provider) => invoke('uninstallCli', provider),
+  checkCliUpdate: (provider) => invoke('checkCliUpdate', provider),
+  getCodexSetupStatus: () => invoke('getCodexSetupStatus'),
+  installCodexDesktop: () => invoke('installCodexDesktop'),
+  uninstallCodexDesktop: () => invoke('uninstallCodexDesktop'),
+  checkCodexDesktopUpdate: () => invoke('checkCodexDesktopUpdate'),
+  launchCli: (provider, workspace) => invoke('launchCli', provider, workspace),
+  getCodexDesktopStatus: () => invoke('getCodexDesktopStatus'),
+  launchCodexDesktop: (mode) => invoke('launchCodexDesktop', mode),
+  setWindowMode: (mode) => invoke('setWindowMode', mode),
+  setWindowTheme: (theme) => invoke('setWindowTheme', theme),
+  openExternal: (url) => invoke('openExternal', url),
+  getUpdateState: () => invoke('getUpdateState'),
+  runStartupUpdate: () => invoke('runStartupUpdate'),
+  checkForUpdates: () => invoke('checkForUpdates'),
+  downloadUpdate: () => invoke('downloadUpdate'),
+  installUpdate: () => invoke('installUpdate'),
+  listSessions: (query) => invoke('listSessions', query),
+  getSessionDetail: (sessionId) => invoke('getSessionDetail', sessionId),
+  exportSession: (sessionId) => invoke('exportSession', sessionId),
+  archiveSession: (sessionId) => invoke('archiveSession', sessionId),
+  restoreSession: (sessionId) => invoke('restoreSession', sessionId),
+  listProviderSessions: (query) => invoke('listProviderSessions', query),
+  getProviderSessionDetail: (sessionId) => invoke('getProviderSessionDetail', sessionId),
+  exportProviderSession: (sessionId) => invoke('exportProviderSession', sessionId),
+  getSettings: () => invoke('getSettings'),
+  saveSettings: (settings) => invoke('saveSettings', settings),
+  runDiagnostics: () => invoke('runDiagnostics'),
+  exportDiagnostics: () => invoke('exportDiagnostics'),
+  getRuntimeLogs: (limit) => invoke('getRuntimeLogs', limit),
+  copyFeedbackReport: () => invoke('copyFeedbackReport'),
+  exportFeedbackReport: () => invoke('exportFeedbackReport'),
+  openRuntimeLogDirectory: () => invoke('openRuntimeLogDirectory'),
+  clearRuntimeLogs: () => invoke('clearRuntimeLogs'),
+  reportRendererError: (payload) => invoke('reportRendererError', payload),
+  listBackups: () => invoke('listBackups'),
+  createBackup: (provider) => invoke('createBackup', provider),
+  inspectBackup: (id) => invoke('inspectBackup', id),
+  restoreBackup: (id) => invoke('restoreBackup', id),
+  deleteBackup: (id) => invoke('deleteBackup', id),
+  listMcpServers: () => invoke('listMcpServers'),
+  addMcpServer: (input) => invoke('addMcpServer', input),
+  removeMcpServer: (name) => invoke('removeMcpServer', name),
+  loginMcpServer: (name) => invoke('loginMcpServer', name),
+  logoutMcpServer: (name) => invoke('logoutMcpServer', name),
+  listSkills: () => invoke('listSkills'),
+  importSkill: (input) => invoke('importSkill', input),
+  toggleSkill: (skillPath, enabled) => invoke('toggleSkill', skillPath, enabled),
+  uninstallSkill: (skillPath) => invoke('uninstallSkill', skillPath),
+  listPlugins: () => invoke('listPlugins'),
+  addPlugin: (selector) => invoke('addPlugin', selector),
+  removePlugin: (selector) => invoke('removePlugin', selector),
+  togglePlugin: (selector, enabled) => invoke('togglePlugin', selector, enabled),
+  addMarketplace: (input) => invoke('addMarketplace', input),
+  upgradeMarketplace: (name) => invoke('upgradeMarketplace', name),
+  removeMarketplace: (name) => invoke('removeMarketplace', name),
+  listProviderExtensions: (provider) => invoke('listProviderExtensions', provider),
+  listAllProviderExtensions: () => invoke('listAllProviderExtensions'),
+  mutateProviderExtension: (input) => invoke('mutateProviderExtension', input),
+  onNodeRuntimeInstallProgress: (listener) => subscribe('onNodeRuntimeInstallProgress', listener),
+  onInstallProgress: (listener) => subscribe('onInstallProgress', listener),
+  onCodexDesktopStatus: (listener) => subscribe('onCodexDesktopStatus', listener),
+  onCodexDesktopInstallProgress: (listener) => subscribe('onCodexDesktopInstallProgress', listener),
+  onUpdateState: (listener) => subscribe('onUpdateState', listener),
+}
+
+contextBridge.exposeInMainWorld('xingmang', xingmangApi)

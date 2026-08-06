@@ -1,0 +1,53 @@
+{
+  "name": "xingmang-ai-manager",
+  "version": "0.1.12",
+  "private": true,
+  "description": "星芒AI管理工具",
+  "author": "神风",
+  "main": "dist-electron/main.js",
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "builder-util-runtime": "^9.7.0",
+    "electron-updater": "^6.8.9",
+    "yaml": "^2.9.0"
+  },
+  "scripts": {
+    "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on tcp:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "test": "vitest run electron src && node --test scripts/audit-development-dependencies.test.cjs scripts/update-release-utils.test.cjs scripts/verify-release-artifacts.test.cjs scripts/verify-packaged-hardening.test.cjs",
+    "compile": "node scripts/clean-electron.mjs && vite build && tsc -p tsconfig.electron.json && node scripts/minify-electron.cjs",
+    "build": "npm run typecheck && npm run test && npm run compile && electron-builder --config electron-builder.config.cjs",
+    "release:preflight": "node scripts/verify-release-environment.cjs",
+    "release:verify": "node scripts/verify-release-artifacts.cjs",
+    "release:build": "node scripts/run-release-build.cjs",
+    "audit:official": "npm audit --registry=https://registry.npmjs.org/",
+    "audit:ci": "node scripts/audit-development-dependencies.cjs",
+    "audit:production": "npm audit --omit=dev --registry=https://registry.npmjs.org/",
+    "update:serve": "node scripts/serve-update-feed.cjs",
+    "update:verify-feed": "node scripts/verify-update-feed.cjs",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@electron/asar": "^3.4.1",
+    "@electron/fuses": "^1.8.0",
+    "@playwright/test": "^1.62.0",
+    "@types/iarna__toml": "^2.0.5",
+    "@types/node": "^22.10.5",
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^6.0.4",
+    "concurrently": "^9.1.2",
+    "cross-env": "^7.0.3",
+    "electron": "^43.2.0",
+    "electron-builder": "^26.15.3",
+    "esbuild": "^0.28.1",
+    "lucide-react": "^0.468.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "~5.7.2",
+    "vite": "^8.1.5",
+    "vitest": "^4.1.10",
+    "wait-on": "^8.0.2",
+    "wrangler": "^4.114.0"
+  }
+}
