@@ -1,0 +1,22 @@
+# 固化本仓库已有的代码风格。见 CLAUDE.md 第 6 节。
+# 这里只做编辑器层面的约束，不引入 Prettier —— 现有 2.9 万行的风格一致性已经很高，
+# 全仓重排会摧毁 git blame，而它要解决的问题在这里并不存在。
+
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+indent_style = space
+indent_size = 2
+insert_final_newline = true
+trim_trailing_whitespace = true
+
+[*.md]
+trim_trailing_whitespace = false
+
+[*.{yml,yaml}]
+indent_size = 2
+
+[*.ps1]
+end_of_line = crlf
