@@ -269,11 +269,17 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 
 > 📋 **全部任务已拆成 GitHub Issue，索引见 [#27](https://github.com/peaker520/xingmang-ai-manager/issues/27)。下表编号即 Issue 编号。**
 
+> ✅ **2026-08 更新**：`main` 已合并 PR #1（macOS 支持 + 跨平台 CI，提交 `ca592df`）。
+> 实测 Linux 上测试失败**从 17 个降到 1 个**，测试总数 488 → **740**，仓库污染问题**已根治**。
+> 因此 Issue #2 #3 #4 的范围大幅缩小，见下表。
+
 ### 5.1 P0 — 解除阻塞（最高优先）
 
 | Issue | 内容 | 环境 |
 |---|---|---|
-| **#2 #3 #4** | 跨平台测试门控 + 仓库污染 + CI job —— **多 agent 协作的前置条件**。Mac agent 现在跑不了测试 = 无法自我验证 = 它的 PR 不可信 | 任意（需 mac 验证） |
+| **#2** | ~~17 个跨平台失败~~ → **已基本解决**，只剩 1 个：`macos-platform.test.ts` 的 darwin 专有用例在 Linux 上未门控 | 任意 |
+| **#3** | ~~仓库污染~~ → **已解决**，`managed-cli.test.ts` 已用 `it.runIf` 门控 | — |
+| **#4** | CI 已有 `windows-latest` + `macos-15` + `ubuntu-latest` 三个 job，但 **ubuntu job 仍只跑 audit，不跑 test** | 任意 |
 | **#5** | 提权终端环境未净化（管理员级 RCE） | Windows |
 | **#28** | **更新链路无灰度、无降级、无铺开度可测** —— 坏版本一次启动铺满全部用户且不可回滚。四个 agent 出货变快会放大此风险 | 服务端 |
 

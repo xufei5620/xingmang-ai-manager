@@ -20,23 +20,37 @@
 
 Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**没有后端服务**，唯一线上资产是静态更新目录。
 
+**Windows 与 macOS 双平台**（macOS 支持已于 `ca592df` 合并）。
+
 | | 源码 | 测试 |
 |---|---|---|
-| `electron/`（主进程，全部特权操作） | 40 个模块 | 37 个 |
-| `src/`（渲染进程，纯 UI） | 28 个文件 | 9 个 |
+| `electron/`（主进程，全部特权操作） | 51 个模块 | 49 个 |
+| `src/`（渲染进程，纯 UI） | 29 个文件 | 13 个 |
 
-约 4.3 万行，488 个测试用例。IPC：**69 个 invoke 通道 + 5 个 event 通道**。
+约 5 万行，**740 个测试用例**（62 个测试文件）。IPC：**70 个 invoke 通道**。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
 ```bash
-npm run typecheck   # ~8s，跑两套 tsconfig（渲染 + 主进程）
-npm test            # ~5s
+npm run typecheck   # 跑两套 tsconfig（渲染 + 主进程）
+npm test            # ~15s
 npm run compile     # 清理 + vite build + tsc + 压缩
 npm run dev         # 开发模式
+npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ```
 
-> ⚠️ **非 Windows 平台上 `npm test` 当前有 17 个用例失败**（10 个文件），且 `&&` 短路会导致 4 个 scripts 测试套件在 Mac 上永不执行。这是已知问题（见 `docs/IMPROVEMENT-PLAN.md` 批次 0），修复前 Mac/Linux 上拿不到绿色基线。
+> ℹ️ **测试基线**：Windows 上应全绿。**Linux 上当前有 1 个失败**（`macos-platform.test.ts` 的 darwin 专有用例未对 linux 门控），macOS 上应全绿。
+> 改动前先在干净的 `main` 上跑一遍记下失败数，改动后对比，**不要引入新失败**。
+
+### macOS 相关模块（新增）
+
+- `electron/macos-platform.ts` — macOS 终端启动器与平台能力
+- `electron/macos-codex.ts` / `macos-codex-app.ts` — Codex CLI 与桌面端的 macOS 实现
+- `electron/macos-grok.ts` — Grok 的 macOS 安装
+- `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
+- `src/platform-presentation.ts` — 渲染层的平台差异表达
+
+**改跨平台代码前先读 `platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
 ---
 
@@ -173,10 +187,18 @@ npm run dev         # 开发模式
 **T4. 动 `trustedCommandEnvironment` → 只能加禁止项，不能加放行项。**
 三张表是白名单式收紧，每条对应一个具体攻击。放行任何变量前，先在测试里写出"该变量为什么安全"。
 
-**T5. 修跨平台问题 → 别把 Windows 分支的假设带到 macOS。**
-⚠️ **在 macOS 上这些安全检查全部退化为 no-op**：`isUserWritablePath` 恒 false、`isTrustedHighIntegrityExecutable` 恒 true、`trustedCommandEnvironment` 走极简分支。
-分叉点：`system-service.ts:3021`（launch）、`:2250`（Grok 直接抛"仅支持 Windows"）、`:1846`（Codex 桌面端非 win32 返回空）、`command-runner.ts:314-319`、`:176`、`:519`。
-**Mac 适配不是"补功能"，是"补一整套等价的安全边界"。**
+**T5. 修跨平台问题 → 功能已补齐，但安全边界还没有。**
+
+macOS 的**功能**支持已经合并（`macos-platform.ts` / `macos-codex.ts` / `macos-grok.ts` / `platform-capabilities.ts`），Grok、Codex 桌面端等在 mac 上都能跑了。
+
+⚠️ **但安全检查在 macOS 上仍然全部退化为 no-op**：
+- `command-runner.ts:192` `isUserWritablePath` —— 非 win32 **恒返回 false**（= 认为没有路径是用户可写的）
+- `isTrustedHighIntegrityExecutable` —— 非 win32 **恒返回 true**（= 认为所有可执行文件都可信）
+- `trustedCommandEnvironment`（`:336`）—— 非 win32 走极简分支，不重建机器级 PATH
+
+**所以 macOS 上「可信路径」这套防护等于不存在。** 这是已知欠账（Issue #16），改跨平台代码时不要在此基础上扩大范围。
+
+**改跨平台代码前先读 `electron/platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
 **T6. 渲染进程加异步数据加载 → 必须用竞态守卫。**
 三个现成工具：`scan-coordinator.ts`（扫描）、`latest-request.ts`（按 key 的页面数据）、`provider-extension-coordinator.ts`（切 provider）。直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。
