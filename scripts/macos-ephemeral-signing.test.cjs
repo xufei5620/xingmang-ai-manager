@@ -119,7 +119,7 @@ test('the private-key probe signs by fingerprint and performs strict structural 
   })
 
   assert.deepEqual(listings.map((spec) => [spec.executable, spec.argv]), [
-    ['/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning', keychainPath]],
+    ['/usr/bin/security', ['find-identity', '-p', 'codesigning', keychainPath]],
   ])
   assert.equal(result.identitySha1, identitySha1)
   assert.equal(fs.readFileSync(probePath, 'utf8'), 'mach-o fixture')
@@ -182,6 +182,6 @@ test('the private-key probe fails before signing when the keychain exposes no ma
     commandRunner: () => assert.fail('codesign must not run without a resolvable identity'),
     listIdentities: () => '     0 valid identities found\n',
     report: () => {},
-  }), new RegExp(`${identitySha1} is not a valid codesigning identity`))
+  }), new RegExp(`${identitySha1} is missing from`))
   assert.equal(fs.existsSync(probePath), false)
 })

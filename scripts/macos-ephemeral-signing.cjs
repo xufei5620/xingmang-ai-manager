@@ -80,18 +80,20 @@ function verifyEphemeralMacSigningIdentity(options = {}) {
 
   // codesign only reports a generic "item could not be found" when the identity
   // lookup fails, so resolve the identity first and report what the isolated
-  // keychain really holds.
+  // keychain really holds. `-v` is deliberately omitted: this identity is
+  // self-signed and carries no trust settings, so a validity filter would hide
+  // the very identity codesign is pinned to.
   const identities = identityLister({
     executable: SECURITY_PATH,
-    argv: ['find-identity', '-v', '-p', 'codesigning', keychainPath],
+    argv: ['find-identity', '-p', 'codesigning', keychainPath],
     env,
     label: 'ephemeral keychain codesigning identity listing',
     shell: false,
   })
-  report(`[macOS CI signing] isolated keychain codesigning identities:\n${identities.trim() || '(none)'}`)
+  report(`[macOS CI signing] codesigning identities in the isolated keychain:\n${identities.trim() || '(none)'}`)
   if (!identities.toUpperCase().includes(identitySha1)) {
     throw new Error(
-      `ephemeral signing identity ${identitySha1} is not a valid codesigning identity in ${keychainPath}`,
+      `ephemeral signing identity ${identitySha1} is missing from ${keychainPath}`,
     )
   }
 
