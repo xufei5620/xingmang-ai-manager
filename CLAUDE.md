@@ -39,7 +39,14 @@ npm run dev         # 开发模式
 npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ```
 
-> ℹ️ **测试基线**：Windows 上应全绿。**Linux 上当前有 1 个失败**（`macos-platform.test.ts` 的 darwin 专有用例未对 linux 门控），macOS 上应全绿。
+> ℹ️ **测试基线**：Windows / macOS 上应全绿。**Linux 上当前有 1 个失败**：`macos-platform.test.ts:249`
+> 「does not delete a replacement at the scheduled launcher path」。
+>
+> ⚠️ **这不是"平台门控写漏"，是一条真实缺陷**（见 Issue #2）。该用例只用注入的 mock runner + `mkdtemp`，与平台特性无关；
+> 它在 macOS 上通过纯属侥幸——`samePathIdentity`（`macos-platform.ts:70`）只比 `dev/ino/uid`，
+> APFS 的 inode 不复用所以碰巧不误判，而 Linux tmpfs 会立刻复用刚释放的 inode，于是清理逻辑真的把别人放在该路径上的文件删了。
+> **不要给它加 `runIf(darwin)` 把缺陷藏起来**，要修 `samePathIdentity`。
+>
 > 改动前先在干净的 `main` 上跑一遍记下失败数，改动后对比，**不要引入新失败**。
 
 ### macOS 相关模块（新增）
