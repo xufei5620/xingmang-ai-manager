@@ -1,0 +1,18 @@
+# 跨平台协作（Windows + macOS + Linux）下统一换行符，避免整文件伪 diff。
+# 仓库内一律存 LF；检出时不做转换，由 .editorconfig 约束编辑器。
+
+* text=auto eol=lf
+
+# Windows 脚本必须是 CRLF，否则 PowerShell / 批处理可能出错
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+
+# 二进制资源不做任何转换
+*.png binary
+*.ico binary
+*.icns binary
+*.exe binary
+*.dll binary
+*.sqlite binary
+*.asar binary

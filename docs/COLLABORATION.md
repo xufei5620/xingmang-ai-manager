@@ -1,0 +1,217 @@
+# 多 Agent 协作规范
+
+本项目由多名开发者 + 多个 AI 编码 agent 并行开发。本文档定义任务分发、分支、提交与验证规范。
+
+**动手前请先读 `CLAUDE.md`**（架构地图、关键不变量、改动陷阱）。
+
+---
+
+## 1. 参与方
+
+| 角色 | 环境 | 职责 |
+|---|---|---|
+| 云端 Claude | 云端会话 | 规划、架构决策、规范维护、创建与分发 Issue。**不直接改业务代码** |
+| Claude Code | 本地 Windows | 需要 Windows 真实环境验证的任务 |
+| Claude Code | 本地 macOS | Mac 适配、跨平台任务 |
+| Codex | 本地 | 与平台无关的任务、新产品线 |
+
+> 参与方会增加。所有标识都用词表，加人加 AI 只需扩词表，不改规范。
+
+**词表**
+- `<ai>`：`claude` / `codex` / `human`（纯人工改动也要能标）
+- `<端>`：`win` / `mac` / `cloud` / `linux`
+
+---
+
+## 2. 任务分发：GitHub Issues 作为任务队列
+
+云端无法推送任务给本地 agent，所以任务写进 Issue，**本地 agent 主动拉取**。
+
+### 标签体系
+
+| 标签 | 含义 |
+|---|---|
+| `agent:win` / `agent:mac` / `agent:codex` / `agent:cloud` | 指派给哪个环境 |
+| `batch:0` … `batch:4` | 对应 `docs/IMPROVEMENT-PLAN.md` 的批次 |
+| `needs-decision` | 阻塞，等人类决策，agent 不要动 |
+| `serial-only` | **必须串行**，同一时间只能有一个人做（见第 4 节） |
+| `blocked` | 依赖其他 Issue 先完成 |
+
+### 本地 agent 的循环
+
+```bash
+# 1. 拉取指派给自己且未被认领的任务
+gh issue list --label agent:mac --state open
+
+# 2. 认领（留言，避免重复认领）
+gh issue comment <n> --body "开始处理 — claude/mac"
+
+# 3. 建分支
+git checkout main && git pull
+git checkout -b <github-用户名>/<ai>-<端>/<简短描述>
+
+# 4. 开发 → 验证（见第 5 节硬门槛）
+
+# 5. 提 PR
+gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "..."
+```
+
+**认领规则**：动手前必须在 Issue 上留言。看到已有他人认领留言的 Issue，跳过。
+
+---
+
+## 3. 分支与提交规范
+
+### 分支名
+
+```
+<github-用户名>/<ai>-<端>/<简短描述>
+
+例：peaker520/claude-mac/fix-cross-platform-tests
+    peaker520/claude-win/mirror-fallback
+    peaker520/claude-cloud/add-claude-md
+    <对方用户名>/codex/provider-registry
+```
+
+### PR 标题
+
+```
+[<用户名>·<ai>·<端>] <类型>: <描述>
+
+例：[peaker520·claude·mac] fix: 给 Windows 专有测试加平台门控
+    [peaker520·claude·cloud] docs: 增加 CLAUDE.md
+```
+
+`<类型>` 用约定式提交：`feat` / `fix` / `docs` / `refactor` / `test` / `chore` / `perf`
+
+### PR 正文
+
+使用 `.github/pull_request_template.md`，必填「提交来源」与「验证方式」。
+
+### 提交粒度
+
+- **一个 PR 只做一件事。** 顺手修的无关问题请单开 Issue
+- 不要在同一个 PR 里混合「重构」和「功能改动」——review 时无法区分行为变化
+
+---
+
+## 4. 冲突规避（重要）
+
+四个 agent 并行的最大风险不是 git 冲突，而是**文本合并成功但语义冲突**。
+
+### 4.1 必须串行的改动（标 `serial-only`）
+
+**① 新增/删除/移动 IPC 通道**
+
+`ipc.test.ts:222` 断言 `ipcMain.handle` 的注册顺序与 `ipcInvokeChannels` 键顺序**逐项相等**（数组 `toEqual` 对顺序敏感）。
+
+> ⚠️ **两个 agent 各自加一个通道，即使 git 文本合并干净，CI 也一定红。**
+
+涉及 `ipc-contract.ts` / `ipc.ts` / `preload.ts` 三件套的任务，同一时间只能有一个人在做。
+
+**② 修改 `src/styles.css`（6027 行）**
+
+单文件、无模块化、全局作用域。两个 agent 同时加样式几乎必冲突。
+
+**③ 大范围重构枢纽文件**
+
+`electron/system-service.ts`（3300 行）、`src/App.tsx`（2855 行）的结构性改动。
+
+### 4.2 热点文件警示
+
+| 文件 | 行数 | 说明 |
+|---|---|---|
+| `src/styles.css` | 6027 | 全局样式，无模块化 |
+| `electron/system-service.ts` | 3300 | 21 条待办里有 8 条落在这一个文件上 |
+| `src/App.tsx` | 2855 | 全部全局状态 + 4 个内嵌大组件 |
+
+**分配任务时，尽量不要让两个 agent 同时改同一个热点文件。**
+
+### 4.3 可安全并行的轨道
+
+四条轨道互不重叠，可同时推进：
+
+1. **`system-service.ts` 独占轨** — 一次只有一个人
+2. **`electron/` 叶子模块轨** — `config-files` / `codex-sessions` / `grok-*` / `node-runtime` 等
+3. **`scripts/` 与 CI 轨** — 发布脚本、workflow
+4. **测试与类型轨** — 平台门控、tsconfig、测试补全
+
+---
+
+## 5. 验证硬门槛
+
+**提 PR 前必须跑，两条都要过：**
+
+```bash
+npm run typecheck   # ~8s
+npm test            # ~5s
+```
+
+### 平台差异（重要）
+
+| | Windows | macOS / Linux |
+|---|---|---|
+| `npm run typecheck` | ✅ | ✅ |
+| `npm test` | ✅ 全绿 | ⚠️ **当前有 17 个已知失败** |
+| `npm run compile` | ✅ | ✅ |
+| `npm run build`（打包） | ✅ | ❌ 只能打 Windows 包 |
+| e2e smoke | ✅ | ⚠️ 未验证 |
+
+> **在 macOS/Linux 上**：修复批次 0 之前拿不到绿色基线。请**对比改动前后的失败数是否一致**，不要引入新失败。
+> 同时注意 `npm test` 的 `&&` 短路会导致 4 个 scripts 测试套件在 Mac 上永不执行。
+
+### 只能在特定平台验证的改动
+
+- **只能 Windows 验证**：提权逻辑、PowerShell 调用、注册表、Codex 桌面端（Appx）、Grok 安装、真实 CLI 安装流程
+- **只能 macOS 验证**：Mac 适配相关的一切
+- **任意平台**：纯函数、类型、脚本、文档、CI 配置
+
+**派任务时按这个表来。** 让 Mac agent 去改提权逻辑，它无法验证自己的改动。
+
+---
+
+## 6. 分工建议
+
+按**产品线**分，不按技术层分——按「主进程/渲染进程」分会导致每个功能都要两人协作、互相等待。
+
+| 谁 | 负责 |
+|---|---|
+| 有 Windows + Mac 环境的开发者 | 现有管理工具：问题修复、Mac 适配、持续维护 |
+| 另一位开发者 | 新产品线（画布）：greenfield，独立推进 |
+| 云端 Claude | 规划、架构决策、规范维护、Issue 分发 |
+
+**两条原则优先于「谁用什么 AI」：**
+
+1. **让熟悉现有代码的人守着有安全风险的老代码。** 这个项目的复杂度集中在 Windows 提权 / 可信路径 / 原子写入这套不变量上，破坏它们不会报错、只会静默变成漏洞。上下文成本很高。
+2. **让擅长前端渲染的人做画布。** 画布涉及 Canvas/WebGL/图像处理，与现有的系统编程是完全不同的技能树。
+
+---
+
+## 7. 云端 agent 的职责边界
+
+云端会话**不直接改业务代码**，原因：
+
+- 无法在真实 Windows/macOS 环境验证
+- 容器是临时的，无法持续跟进
+
+云端负责：
+- 架构决策与技术选型
+- 创建、拆分、分发 Issue
+- 维护 `CLAUDE.md` / `docs/*.md` 等规范文档
+- Review PR 的架构合理性
+
+---
+
+## 8. 常见问题
+
+**Q：看到仓库根目录出现 `\tmp\xingmang-managed-cli-*` 目录？**
+A：已知 bug（`managed-cli.test.ts` 在非 Windows 平台每跑一次泄漏若干个）。**直接删除，不要提交。** 根治见 `docs/IMPROVEMENT-PLAN.md` 批次 0。
+
+**Q：我的改动需要加 IPC 通道，但有人正在改 IPC？**
+A：等待。IPC 三件套是 `serial-only`，见 4.1。
+
+**Q：测试在我的平台上是红的，怎么判断是不是我改坏的？**
+A：先在干净的 `main` 上跑一遍记下失败数，再对比。批次 0 修完后此问题消失。
+
+**Q：能不能顺手把某个不规范的地方改了？**
+A：不要。单开 Issue。混合改动会让 review 无法区分行为变化。
