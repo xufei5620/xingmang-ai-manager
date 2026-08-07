@@ -5,6 +5,7 @@ const { spawnSync } = require('node:child_process')
 
 const OPENSSL_PATH = '/usr/bin/openssl'
 const SECURITY_PATH = '/usr/bin/security'
+const COMMAND_TIMEOUT_MS = 30_000
 
 function fail(message) {
   throw new Error(message)
@@ -27,9 +28,15 @@ function fingerprintFromOpenSsl(output, algorithm, label, byteLength) {
   return normalizeFingerprint(match[1], label, byteLength)
 }
 
-function defaultRunner(executable, env, run = spawnSync) {
+function defaultRunner(executable, env, run = spawnSync, timeoutMs = COMMAND_TIMEOUT_MS) {
   return (args) => {
-    const result = run(executable, args, { encoding: 'utf8', env, shell: false, windowsHide: true })
+    const result = run(executable, args, {
+      encoding: 'utf8',
+      env,
+      shell: false,
+      timeout: timeoutMs,
+      windowsHide: true,
+    })
     if (result.error) fail(`无法运行 ${executable}：${result.error.message}`)
     if (result.status !== 0) fail(`${executable} 命令失败：${result.stderr?.trim() || '未知错误'}`)
     return result.stdout
@@ -89,8 +96,18 @@ function verifyFreeMacSigningIdentity(options = {}) {
     options.expectedFingerprint ?? env.XINGMANG_MAC_SIGNING_SHA256,
     'XINGMANG_MAC_SIGNING_SHA256',
   )
-  const runSecurity = options.runSecurity || defaultRunner(SECURITY_PATH, env, options.spawnSync)
-  const runOpenSsl = options.runOpenSsl || defaultRunner(OPENSSL_PATH, env, options.spawnSync)
+  const runSecurity = options.runSecurity || defaultRunner(
+    SECURITY_PATH,
+    env,
+    options.spawnSync,
+    options.timeoutMs,
+  )
+  const runOpenSsl = options.runOpenSsl || defaultRunner(
+    OPENSSL_PATH,
+    env,
+    options.spawnSync,
+    options.timeoutMs,
+  )
   const now = options.now || new Date()
   const certificatePem = outputOf(runSecurity, ['find-certificate', '-c', identityName, '-p'])
   if (!certificatePem.includes('BEGIN CERTIFICATE')) fail('找不到 CSC_NAME 对应的证书')

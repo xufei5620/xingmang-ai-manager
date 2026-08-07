@@ -12,6 +12,11 @@ const { verifyFreeMacSigningIdentity } = require('./verify-macos-free-signing.cj
 const { verifyMacosFreeArtifacts } = require('./verify-macos-free-artifacts.cjs')
 const { createFreeMacSigningCertificate } = require('./create-macos-free-signing-certificate.cjs')
 
+const SECURITY_PATH = '/usr/bin/security'
+const SUDO_PATH = '/usr/bin/sudo'
+const SYSTEM_KEYCHAIN_PATH = '/Library/Keychains/System.keychain'
+const SECURITY_COMMAND_TIMEOUT_MS = 30_000
+
 const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_RELEASE',
   'XINGMANG_MAC_FREE_RELEASE',
@@ -22,12 +27,13 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_UPDATE_URL',
 ])
 
-function normalizeFingerprint(value) {
+function normalizeFingerprint(value, byteLength = 32) {
   const input = String(value || '').trim()
-  const plain = /^[A-Fa-f0-9]{64}$/
-  const colonSeparated = /^(?:[A-Fa-f0-9]{2}:){31}[A-Fa-f0-9]{2}$/
+  const plain = new RegExp(`^[A-Fa-f0-9]{${byteLength * 2}}$`)
+  const colonSeparated = new RegExp(`^(?:[A-Fa-f0-9]{2}:){${byteLength - 1}}[A-Fa-f0-9]{2}$`)
   if (!plain.test(input) && !colonSeparated.test(input)) {
-    throw new Error('XINGMANG_MAC_SIGNING_SHA256 必须是有效的 SHA-256 指纹')
+    const algorithm = byteLength === 32 ? 'SHA-256' : byteLength === 20 ? 'SHA-1' : `${byteLength * 8} 位`
+    throw new Error(`签名证书必须提供有效的 ${algorithm} 指纹`)
   }
   return input.replaceAll(':', '').toUpperCase()
 }
@@ -49,11 +55,22 @@ function defaultCapturedCommand(executable, args, env, label) {
     encoding: 'utf8',
     env,
     shell: false,
+    timeout: SECURITY_COMMAND_TIMEOUT_MS,
     windowsHide: true,
   })
   if (result.error) throw new Error(`无法启动 ${label}：${result.error.message}`)
   if (result.status !== 0) throw new Error(`${label}失败：${result.stderr?.trim() || '未知错误'}`)
   return result.stdout || ''
+}
+
+function resolveMacosSecurityCommand(args, commandOptions = {}) {
+  const admin = commandOptions.privilege === 'admin'
+  const command = args[0] || 'command'
+  return {
+    executable: admin ? SUDO_PATH : SECURITY_PATH,
+    argv: admin ? ['-n', SECURITY_PATH, ...args] : args,
+    label: admin ? `无交互管理员 security ${command}` : `security ${command}`,
+  }
 }
 
 function parseKeychainSearchList(output) {
@@ -203,9 +220,16 @@ async function runCiFreeMacBuild(options = {}) {
   const keychainPath = path.join(temporaryRoot, 'ci-signing.keychain-db')
   const outputRequest = `release-free-ci-${process.pid}-${entropy.slice(0, 12)}`
   const outputPath = path.join(projectRoot, outputRequest)
-  const runSecurity = options.runSecurity || ((args) => defaultCapturedCommand(
-    '/usr/bin/security', args, environment, 'security',
-  ))
+  const runSecurity = options.runSecurity || ((args, commandOptions = {}) => {
+    const command = resolveMacosSecurityCommand(args, commandOptions)
+    process.stdout.write(`[macOS CI signing] ${command.label}\n`)
+    return defaultCapturedCommand(
+      command.executable,
+      command.argv,
+      environment,
+      command.label,
+    )
+  })
   const createCertificate = options.createCertificate || createFreeMacSigningCertificate
   const certificateFingerprint = options.certificateFingerprint || ((certificatePath) => {
     const output = defaultCapturedCommand('/usr/bin/openssl', [
@@ -213,21 +237,30 @@ async function runCiFreeMacBuild(options = {}) {
     ], environment, 'OpenSSL 证书指纹读取')
     return normalizeFingerprint(output.split('=', 2)[1] || '')
   })
+  const certificateSha1 = options.certificateSha1 || ((certificatePath) => {
+    const output = defaultCapturedCommand('/usr/bin/openssl', [
+      'x509', '-in', certificatePath, '-noout', '-fingerprint', '-sha1',
+    ], environment, 'OpenSSL 证书 SHA-1 指纹读取')
+    return normalizeFingerprint(output.split('=', 2)[1] || '', 20)
+  })
   const runBuild = options.runBuild || runFreeMacBuild
   const removeDirectory = options.removeDirectory || ((directory) => fs.rmSync(directory, {
     recursive: true,
     force: true,
   }))
   let previousKeychains = []
+  let keychainSearchListCaptured = false
   let keychainCreated = false
-  let trustAdded = false
+  let adminTrustAttempted = false
   let certificatePath
+  let certificateSha1Fingerprint
   let result
   let failure
   const cleanupErrors = []
 
   try {
     previousKeychains = parseKeychainSearchList(runSecurity(['list-keychains', '-d', 'user']))
+    keychainSearchListCaptured = true
     const certificate = createCertificate({
       outputDirectory: certificateDirectory,
       commonName: identityName,
@@ -236,6 +269,7 @@ async function runCiFreeMacBuild(options = {}) {
     })
     certificatePath = certificate.certificatePath
     const fingerprint = normalizeFingerprint(certificateFingerprint(certificatePath))
+    certificateSha1Fingerprint = normalizeFingerprint(certificateSha1(certificatePath), 20)
     runSecurity(['create-keychain', '-p', keychainPassword, keychainPath])
     keychainCreated = true
     runSecurity(['set-keychain-settings', '-lut', '21600', keychainPath])
@@ -253,9 +287,16 @@ async function runCiFreeMacBuild(options = {}) {
       '-s', '-k', keychainPassword,
       keychainPath,
     ])
-    runSecurity(['add-trusted-cert', '-r', 'trustRoot', '-p', 'codeSign', '-k', keychainPath, certificatePath])
-    trustAdded = true
-    runSecurity(['list-keychains', '-d', 'user', '-s', keychainPath, ...previousKeychains])
+    adminTrustAttempted = true
+    runSecurity([
+      'add-trusted-cert',
+      '-d',
+      '-r', 'trustRoot',
+      '-p', 'codeSign',
+      '-k', SYSTEM_KEYCHAIN_PATH,
+      certificatePath,
+    ], { privilege: 'admin' })
+    runSecurity(['list-keychains', '-d', 'user', '-s', keychainPath])
 
     result = await runBuild({
       projectRoot,
@@ -278,12 +319,23 @@ async function runCiFreeMacBuild(options = {}) {
         cleanupErrors.push(error)
       }
     }
-    if (trustAdded && certificatePath) {
-      attemptCleanup(() => runSecurity(['remove-trusted-cert', certificatePath]))
+    if (adminTrustAttempted && certificatePath) {
+      attemptCleanup(() => runSecurity([
+        'remove-trusted-cert', '-d', certificatePath,
+      ], { privilege: 'admin' }))
+      if (certificateSha1Fingerprint) {
+        attemptCleanup(() => runSecurity([
+          'delete-certificate',
+          '-Z', certificateSha1Fingerprint,
+          SYSTEM_KEYCHAIN_PATH,
+        ], { privilege: 'admin' }))
+      }
     }
-    attemptCleanup(() => {
-      runSecurity(['list-keychains', '-d', 'user', '-s', ...previousKeychains])
-    })
+    if (keychainSearchListCaptured) {
+      attemptCleanup(() => {
+        runSecurity(['list-keychains', '-d', 'user', '-s', ...previousKeychains])
+      })
+    }
     if (keychainCreated) attemptCleanup(() => runSecurity(['delete-keychain', keychainPath]))
     attemptCleanup(() => removeDirectory(outputPath))
     attemptCleanup(() => removeDirectory(temporaryRoot))
@@ -315,6 +367,7 @@ if (require.main === module) main()
 
 module.exports = {
   parseKeychainSearchList,
+  resolveMacosSecurityCommand,
   resolveFreeMacBuildOptions,
   runCiFreeMacBuild,
   runFreeMacBuild,

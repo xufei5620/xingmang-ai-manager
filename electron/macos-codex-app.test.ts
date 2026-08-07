@@ -46,7 +46,7 @@ afterEach(() => {
   }
 })
 
-describe('inspectMacosCodexApp', () => {
+describe.runIf(process.platform === 'darwin')('inspectMacosCodexApp', () => {
   it('rejects an otherwise official bundle that cannot run on the current architecture', async () => {
     const root = temporaryDirectory()
     const systemApplicationsDirectory = path.join(root, 'Applications')

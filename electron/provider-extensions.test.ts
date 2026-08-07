@@ -422,6 +422,7 @@ describe('ProviderExtensionService list facade', () => {
       homeDirectory: userHome,
       codexHome,
       repositoryRoot: repository,
+      windowsExecutionMode: 'same-user',
       env: baseEnv,
       codexEnv: { ...baseEnv, CODEX_HOME: codexHome },
       resolveCommand: async (provider, env) => {

@@ -216,6 +216,7 @@ test('certificate generation pins /usr/bin/openssl and preserves the injected en
   for (const call of calls) {
     assert.equal(call.executable, '/usr/bin/openssl')
     assert.equal(call.options.shell, false)
+    assert.equal(call.options.timeout, 30_000)
     assert.equal(call.options.env.PATH, env.PATH)
     assert.equal(call.options.env.TEST_ENVIRONMENT_MARKER, env.TEST_ENVIRONMENT_MARKER)
     assert.equal(call.options.env.XINGMANG_MAC_SIGNING_P12_PASSWORD, TEST_P12_PASSWORD)

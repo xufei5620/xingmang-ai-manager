@@ -8,6 +8,10 @@ const NPM_PREFIX_DIRECTORY = 'npm'
 const NPM_CACHE_DIRECTORY = 'npm-cache'
 const NATIVE_DIRECTORY = 'native'
 
+function pathApi(platform: NodeJS.Platform): typeof path.posix | typeof path.win32 {
+  return platform === 'win32' ? path.win32 : path.posix
+}
+
 function requireProgramData(
   _env: NodeJS.ProcessEnv,
   platform: NodeJS.Platform,
@@ -29,12 +33,12 @@ export function managedProductRoot(
 ): string {
   if (platform === 'darwin') {
     const homeDirectory = env.HOME?.trim() || os.homedir()
-    if (!homeDirectory || homeDirectory.includes('\0') || !path.isAbsolute(homeDirectory)) {
+    if (!homeDirectory || homeDirectory.includes('\0') || !path.posix.isAbsolute(homeDirectory)) {
       throw new Error('未找到有效的 macOS 用户目录')
     }
-    return path.join(homeDirectory, 'Library', 'Application Support', PRODUCT_DIRECTORY)
+    return path.posix.join(homeDirectory, 'Library', 'Application Support', PRODUCT_DIRECTORY)
   }
-  if (platform !== 'win32') return path.join('/var', 'lib', 'xingmang-ai')
+  if (platform !== 'win32') return path.posix.join('/var', 'lib', 'xingmang-ai')
   return path.win32.join(requireProgramData(env, platform, machinePaths), PRODUCT_DIRECTORY)
 }
 
@@ -44,9 +48,7 @@ export function managedCliRoot(
   machinePaths?: WindowsMachinePaths,
 ): string {
   const root = managedProductRoot(env, platform, machinePaths)
-  return platform === 'win32'
-    ? path.win32.join(root, CLI_DIRECTORY)
-    : path.join(root, CLI_DIRECTORY)
+  return pathApi(platform).join(root, CLI_DIRECTORY)
 }
 
 export function managedNpmPrefix(
@@ -55,9 +57,7 @@ export function managedNpmPrefix(
   machinePaths?: WindowsMachinePaths,
 ): string {
   const root = managedCliRoot(env, platform, machinePaths)
-  return platform === 'win32'
-    ? path.win32.join(root, NPM_PREFIX_DIRECTORY)
-    : path.join(root, NPM_PREFIX_DIRECTORY)
+  return pathApi(platform).join(root, NPM_PREFIX_DIRECTORY)
 }
 
 export function managedNpmCacheRoot(
@@ -66,9 +66,7 @@ export function managedNpmCacheRoot(
   machinePaths?: WindowsMachinePaths,
 ): string {
   const root = managedCliRoot(env, platform, machinePaths)
-  return platform === 'win32'
-    ? path.win32.join(root, NPM_CACHE_DIRECTORY)
-    : path.join(root, NPM_CACHE_DIRECTORY)
+  return pathApi(platform).join(root, NPM_CACHE_DIRECTORY)
 }
 
 export function managedNpmBinDirectory(
@@ -77,7 +75,7 @@ export function managedNpmBinDirectory(
   machinePaths?: WindowsMachinePaths,
 ): string {
   const prefix = managedNpmPrefix(env, platform, machinePaths)
-  return platform === 'win32' ? prefix : path.join(prefix, 'bin')
+  return platform === 'win32' ? prefix : path.posix.join(prefix, 'bin')
 }
 
 export function managedNativeRoot(
@@ -86,9 +84,7 @@ export function managedNativeRoot(
   machinePaths?: WindowsMachinePaths,
 ): string {
   const root = managedCliRoot(env, platform, machinePaths)
-  return platform === 'win32'
-    ? path.win32.join(root, NATIVE_DIRECTORY)
-    : path.join(root, NATIVE_DIRECTORY)
+  return pathApi(platform).join(root, NATIVE_DIRECTORY)
 }
 
 export function managedNativeProviderRoot(
@@ -99,7 +95,5 @@ export function managedNativeProviderRoot(
 ): string {
   if (!/^[a-z][a-z0-9-]{0,31}$/.test(provider)) throw new Error('托管 CLI Provider 格式错误')
   const root = managedNativeRoot(env, platform, machinePaths)
-  return platform === 'win32'
-    ? path.win32.join(root, provider)
-    : path.join(root, provider)
+  return pathApi(platform).join(root, provider)
 }

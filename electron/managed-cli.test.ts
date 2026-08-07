@@ -52,10 +52,13 @@ describe('managed CLI paths', () => {
     const productRoot = '/Users/isolated-test-user/Library/Application Support/XingMangAI'
 
     expect(managedProductRoot(env, 'darwin')).toBe(productRoot)
-    expect(managedCliRoot(env, 'darwin')).toBe(path.join(productRoot, 'Cli'))
-    expect(managedNpmPrefix(env, 'darwin')).toBe(path.join(productRoot, 'Cli', 'npm'))
-    expect(managedNpmCacheRoot(env, 'darwin')).toBe(path.join(productRoot, 'Cli', 'npm-cache'))
-    expect(managedNpmBinDirectory(env, 'darwin')).toBe(path.join(productRoot, 'Cli', 'npm', 'bin'))
+    expect(managedCliRoot(env, 'darwin')).toBe(path.posix.join(productRoot, 'Cli'))
+    expect(managedNpmPrefix(env, 'darwin')).toBe(path.posix.join(productRoot, 'Cli', 'npm'))
+    expect(managedNpmCacheRoot(env, 'darwin')).toBe(path.posix.join(productRoot, 'Cli', 'npm-cache'))
+    expect(managedNpmBinDirectory(env, 'darwin')).toBe(path.posix.join(productRoot, 'Cli', 'npm', 'bin'))
+    expect(managedNativeProviderRoot('grok', env, 'darwin')).toBe(
+      path.posix.join(productRoot, 'Cli', 'native', 'grok'),
+    )
   })
 
   it.runIf(process.platform === 'darwin')('creates a private Darwin npm layout for atomic maintenance', async () => {

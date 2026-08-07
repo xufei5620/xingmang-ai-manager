@@ -88,7 +88,7 @@ afterEach(() => {
   }
 })
 
-describe('macOS Grok canonical selection', () => {
+describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', () => {
   it('uses the canonical relative link version despite stale metadata and an official alias', () => {
     const fixture = createFixture()
     fs.writeFileSync(path.join(fixture.grokRoot, 'version.json'), '{"version":"0.2.111"}\n')

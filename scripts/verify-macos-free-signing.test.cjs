@@ -60,6 +60,7 @@ test('signing preflight passes its explicit environment to every default securit
     assert.ok(['/usr/bin/security', '/usr/bin/openssl'].includes(call.executable))
     assert.equal(call.options.env, env)
     assert.equal(call.options.shell, false)
+    assert.equal(call.options.timeout, 30_000)
   }
   assert.deepEqual(
     calls.filter((call) => call.executable === '/usr/bin/security').map((call) => call.args[0]),

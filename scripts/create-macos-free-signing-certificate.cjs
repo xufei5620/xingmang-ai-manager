@@ -6,6 +6,7 @@ const { spawnSync } = require('node:child_process')
 const CERTIFICATE_BASENAME = 'xingmang-macos-free-signing'
 const VALIDITY_DAYS = 7300
 const OPENSSL_PATH = '/usr/bin/openssl'
+const COMMAND_TIMEOUT_MS = 30_000
 const MAX_COMMON_NAME_LENGTH = 64
 const MIN_P12_PASSWORD_LENGTH = 20
 const MAX_P12_PASSWORD_LENGTH = 256
@@ -79,6 +80,7 @@ function defaultRunOpenSsl(args, options = {}) {
     encoding: 'utf8',
     env: options.env || process.env,
     shell: false,
+    timeout: options.timeoutMs ?? COMMAND_TIMEOUT_MS,
     windowsHide: true,
   })
   if (result.error) fail(`无法运行 OpenSSL：${result.error.message}`)
@@ -140,6 +142,7 @@ function createFreeMacSigningCertificate(options = {}) {
   const runOpenSsl = options.runOpenSsl || ((args, commandOptions) => defaultRunOpenSsl(args, {
     ...commandOptions,
     spawnSync: options.spawnSync,
+    timeoutMs: options.timeoutMs,
   }))
 
   const existingDirectory = lstatIfPresent(directory)

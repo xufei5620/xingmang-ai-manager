@@ -25,7 +25,7 @@ describe('macOS terminal launcher', () => {
       .toBe("'space '\\'' $HOME $(touch /tmp/nope)\n--value'")
   })
 
-  it('runs the resolved executable with literal argv and removes its launcher', () => {
+  it.runIf(process.platform === 'darwin')('runs the resolved executable with literal argv and removes its launcher', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-script-'))
     temporaryDirectories.push(directory)
     const workspace = path.join(directory, "workspace $() ' space")
@@ -111,7 +111,7 @@ describe('macOS terminal launcher', () => {
     })).toThrow('absolute')
   })
 
-  it('removes its launcher before a missing workspace makes execution fail', () => {
+  it.runIf(process.platform === 'darwin')('removes its launcher before a missing workspace makes execution fail', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-missing-workspace-'))
     temporaryDirectories.push(directory)
     const launcher = path.join(directory, 'launcher.zsh')

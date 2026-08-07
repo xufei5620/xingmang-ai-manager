@@ -845,7 +845,7 @@ describe('CLI installation resolution', () => {
       npmGlobalRoot: path.join(bin, 'missing-node-modules'),
     })).resolves.toMatchObject({
       commandPath: path.resolve(executable),
-      installDirectory: fs.realpathSync(bin),
+      installDirectory: fs.realpathSync.native(bin),
       packageRoot: null,
       source: 'native',
     })
@@ -865,7 +865,7 @@ describe('CLI installation resolution', () => {
       platform: 'win32',
     })).resolves.toMatchObject({
       commandPath: path.resolve(installedExecutable),
-      installDirectory: fs.realpathSync(userBin),
+      installDirectory: fs.realpathSync.native(userBin),
       source: 'native',
     })
   })
