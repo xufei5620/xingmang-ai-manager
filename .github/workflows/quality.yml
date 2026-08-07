@@ -23,6 +23,14 @@ jobs:
       - run: npx --no-install playwright install chromium
       - run: npm run typecheck
       - run: npm run test:windows
+      - name: Fail if the test run left files in the working tree
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::working tree is dirty after the test run"
+            git status --porcelain
+            exit 1
+          fi
       - run: npm run compile
       - name: Run isolated dashboard smoke test
         run: node e2e/electron-ci-smoke.mjs
@@ -59,6 +67,17 @@ jobs:
       - run: npm test
       - run: npm run test:mac:free-signing
       - run: npm run test:mac:dev-origin
+      - name: Fail if the test run left files in the working tree
+        # Windows path math evaluated on a POSIX host yields a backslash
+        # relative name, which lands as a stray directory in the repository
+        # root instead of under the temporary directory it was meant for.
+        shell: bash
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::working tree is dirty after the test run"
+            git status --porcelain
+            exit 1
+          fi
       - name: Build and verify free macOS distribution with ephemeral signing
         run: node scripts/run-macos-free-build.cjs --ci-temporary-signing
 

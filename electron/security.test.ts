@@ -107,6 +107,83 @@ describe('application URL security', () => {
   })
 })
 
+// The macOS renderer root is a POSIX path inside the .app bundle. Nothing
+// covered that shape before, so a regression that only bites the mac build
+// would have reached a release green.
+describe('application URL security on a POSIX renderer root', () => {
+  const macPolicy: ApplicationUrlPolicy = {
+    rendererRoot: '/Applications/星芒AI管理工具.app/Contents/Resources/app/dist',
+    devServerUrl: 'http://localhost:5173',
+    packagedBaseUrl: 'xingmang://app/',
+  }
+  const bundle = '/Applications/%E6%98%9F%E8%8A%92AI%E7%AE%A1%E7%90%86%E5%B7%A5%E5%85%B7.app'
+  const distUrl = `file://${bundle}/Contents/Resources/app/dist`
+
+  it('maps only the packaged application protocol into the renderer root', () => {
+    expect(isTrustedIpcSenderUrl('xingmang://app/index.html?theme=dark', macPolicy)).toBe(true)
+    expect(resolvePackagedApplicationFile('xingmang://app/assets/index.js', macPolicy)).toBe(
+      '/Applications/星芒AI管理工具.app/Contents/Resources/app/dist/assets/index.js',
+    )
+    expect(resolvePackagedApplicationFile('xingmang://app/', macPolicy)).toBe(
+      '/Applications/星芒AI管理工具.app/Contents/Resources/app/dist/index.html',
+    )
+
+    expect(isTrustedIpcSenderUrl('xingmang://other/index.html', macPolicy)).toBe(false)
+    expect(isTrustedIpcSenderUrl('xingmang://user@app/index.html', macPolicy)).toBe(false)
+    expect(isTrustedIpcSenderUrl('xingmang://app/assets%2fsecret.js', macPolicy)).toBe(false)
+    expect(isTrustedIpcSenderUrl('xingmang://app/%5c%5cserver/share', macPolicy)).toBe(false)
+  })
+
+  it('keeps every traversal spelling inside the renderer root', () => {
+    // ../ and %2e%2e are both collapsed by the URL parser before the resolver
+    // sees them, so these stay inside the root instead of being rejected.
+    for (const traversal of [
+      'xingmang://app/../secret.txt',
+      'xingmang://app/%2e%2e/secret.txt',
+      'xingmang://app/assets/%2e%2e/%2e%2e/secret.txt',
+    ]) {
+      expect(resolvePackagedApplicationFile(traversal, macPolicy)).toBe(
+        '/Applications/星芒AI管理工具.app/Contents/Resources/app/dist/secret.txt',
+      )
+    }
+
+    // An encoded separator is never decoded into a real one, so it cannot
+    // rebuild the traversal the parser just collapsed.
+    for (const encoded of [
+      'xingmang://app/..%2fsecret.txt',
+      'xingmang://app/%2e%2e%2fsecret.txt',
+      'xingmang://app/assets%5c..%5c..%5csecret.txt',
+    ]) {
+      expect(resolvePackagedApplicationFile(encoded, macPolicy)).toBe(null)
+      expect(isTrustedIpcSenderUrl(encoded, macPolicy)).toBe(false)
+    }
+  })
+
+  // fileURLToPath demands a drive letter on Windows and throws for a POSIX
+  // file URL, so only the hosts that can parse one run this.
+  it.runIf(process.platform !== 'win32')('accepts packaged files only within the renderer root', () => {
+    expect(isTrustedIpcSenderUrl(`${distUrl}/index.html`, macPolicy)).toBe(true)
+    expect(isAllowedAppNavigationUrl(`${distUrl}/assets/index.js`, macPolicy)).toBe(true)
+
+    expect(isTrustedIpcSenderUrl(`file://${bundle}/Contents/Resources/app/dist-copy/index.html`, macPolicy))
+      .toBe(false)
+    expect(isTrustedIpcSenderUrl(`file://${bundle}/Contents/Resources/app/secret.txt`, macPolicy))
+      .toBe(false)
+    expect(isTrustedIpcSenderUrl(`${distUrl}/%2e%2e/secret.txt`, macPolicy)).toBe(false)
+    expect(isTrustedIpcSenderUrl(`${distUrl}/assets%2fsecret.txt`, macPolicy)).toBe(false)
+    expect(isTrustedIpcSenderUrl('file://server/share/XingMang/index.html', macPolicy)).toBe(false)
+  })
+
+  it.runIf(process.platform !== 'win32')('does not treat a case variant of the root as inside it', () => {
+    // APFS is case-insensitive by default but case-preserving, and the
+    // containment check is pure string math, so the variant must not pass.
+    expect(isTrustedIpcSenderUrl(
+      `file://${bundle}/contents/resources/app/dist/index.html`,
+      macPolicy,
+    )).toBe(false)
+  })
+})
+
 describe('external URL allowlist', () => {
   const allowlist = [
     'https://api.solov.cc',
