@@ -154,8 +154,8 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 **提 PR 前必须跑，两条都要过：**
 
 ```bash
-npm run typecheck   # ~8s
-npm test            # ~5s
+npm run typecheck
+npm test            # Linux ~8s；Windows 上因 Defender 实时扫描可达 60~90s，不是卡死
 ```
 
 ### 平台差异（重要）
