@@ -12,10 +12,9 @@
 项目仓库：https://github.com/peaker520/xingmang-ai-manager
 
 请按以下步骤执行：
-1. 如果当前目录不是这个仓库，把它 clone 下来并 cd 进去；已有则 git fetch origin
-2. 确认能看到 CLAUDE.md 和 docs/ROADMAP.md；看不到就先 git checkout claude/project-review-ma2wvr
-3. 读 docs/AGENT-RUNBOOK.md，严格按它的流程执行
-4. 从任务索引 Issue #27 里挑一个适合这台机器、且未被认领、依赖已满足、
+1. 如果当前目录不是这个仓库，把它 clone 下来并 cd 进去；已有则 git checkout main && git pull
+2. 读 docs/AGENT-RUNBOOK.md，严格按它的流程执行
+3. 从任务索引 Issue #27 里挑一个适合这台机器、且未被认领、依赖已满足、
    非 needs-decision 的任务，认领后开始做
 
 注意：标了 serial-only 的任务，动手前必须确认没有别人正在改同一批文件。
@@ -54,18 +53,15 @@ cd xingmang-ai-manager
 git fetch origin
 ```
 
-### 0.2 确认你在能看到文档的分支上
+### 0.2 确认文档在位
 
-> ⚠️ **重要**：如果 `main` 上还没有 `CLAUDE.md` / `docs/ROADMAP.md`，说明规范文档还在 review 分支上未合并。
-> 这时先切到 `claude/project-review-ma2wvr` 读文档，但**开发分支仍然从 `main` 拉**。
-> 文档合并进 `main` 之后，这一步就不需要了。
+规范文档已在 `main` 上，clone 下来直接就有：
 
 ```bash
-ls CLAUDE.md docs/ROADMAP.md 2>/dev/null || {
-  echo "文档不在当前分支，切到 review 分支："
-  git checkout claude/project-review-ma2wvr
-}
+ls CLAUDE.md docs/ROADMAP.md docs/COLLABORATION.md
 ```
+
+三个文件都在就继续。如果缺失，说明你不在 `main`（或 fork 落后），先 `git checkout main && git pull`。
 
 ### 0.3 装依赖
 
@@ -163,18 +159,14 @@ gh issue comment <编号> --body "🤖 开始处理 —— <用户名>/<ai>-<端
 
 ### 4. 建分支
 
-**开发分支永远从 `main` 拉**（即使你为了读文档切到过 review 分支）：
+**开发分支永远从最新的 `main` 拉**：
 
 ```bash
 git fetch origin
 git checkout main && git pull
 git checkout -b <用户名>/<ai>-<端>/<简短英文描述>
-# 例：peaker520/claude-mac/gate-windows-tests
+# 例：xufei5620/claude-mac/gate-darwin-tests
 ```
-
-> ⚠️ 如果规范文档还没合并进 `main`，你的开发分支上会看不到 `CLAUDE.md` 等文件 —— 这是正常的。
-> 需要查文档时用 `git show claude/project-review-ma2wvr:CLAUDE.md`，或另开一个终端切到那个分支看。
-> **不要把 review 分支合进你的开发分支**，那会让 PR 混入无关改动。
 
 ### 5. 干活
 
