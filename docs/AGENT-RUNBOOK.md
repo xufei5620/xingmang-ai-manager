@@ -1,26 +1,113 @@
 # 本地 AI 执行手册
 
-> 这份文件是**贴给本地 AI（Claude Code / Codex）的操作指令**。开一个新会话时，把这份文件的内容或链接给它，它就知道怎么自主领任务、干活、提 PR。
+> 这份文件是**贴给本地 AI（Claude Code / Codex）的操作指令**。
+
+---
+
+## 📋 给人类：启动一个 agent 就复制这段
+
+在本地任意目录开 Claude Code / Codex，把下面整段粘进去（**自包含，不需要提前 clone**）：
+
+```
+项目仓库：https://github.com/peaker520/xingmang-ai-manager
+
+请按以下步骤执行：
+1. 如果当前目录不是这个仓库，把它 clone 下来并 cd 进去；已有则 git fetch origin
+2. 确认能看到 CLAUDE.md 和 docs/ROADMAP.md；看不到就先 git checkout claude/project-review-ma2wvr
+3. 读 docs/AGENT-RUNBOOK.md，严格按它的流程执行
+4. 从任务索引 Issue #27 里挑一个适合这台机器、且未被认领、依赖已满足、
+   非 needs-decision 的任务，认领后开始做
+
+注意：标了 serial-only 的任务，动手前必须确认没有别人正在改同一批文件。
+不确定的地方不要猜，在 issue 上留言提问，去做别的任务。
+```
+
+**如果已经 clone 好了**，在仓库目录里开会话，说这一句就够：
+
+```
+读 docs/AGENT-RUNBOOK.md，按它的流程领一个任务做。
+```
+
+---
+
+## 项目坐标
+
+```
+仓库：https://github.com/peaker520/xingmang-ai-manager
+任务索引：https://github.com/peaker520/xingmang-ai-manager/issues/27
+```
+
+---
+
+## 第 0 步：环境准备（第一次必做）
+
+**你必须把代码拉到本地。** 没有本地副本，你无法读代码、跑测试、改文件、提 PR —— 这个流程的每一步都需要真实的工作副本。
+
+### 0.1 克隆并进入仓库
+
+```bash
+# 如果还没有本地副本
+git clone https://github.com/peaker520/xingmang-ai-manager.git
+cd xingmang-ai-manager
+
+# 如果已经有了，确保是最新的
+git fetch origin
+```
+
+### 0.2 确认你在能看到文档的分支上
+
+> ⚠️ **重要**：如果 `main` 上还没有 `CLAUDE.md` / `docs/ROADMAP.md`，说明规范文档还在 review 分支上未合并。
+> 这时先切到 `claude/project-review-ma2wvr` 读文档，但**开发分支仍然从 `main` 拉**。
+> 文档合并进 `main` 之后，这一步就不需要了。
+
+```bash
+ls CLAUDE.md docs/ROADMAP.md 2>/dev/null || {
+  echo "文档不在当前分支，切到 review 分支："
+  git checkout claude/project-review-ma2wvr
+}
+```
+
+### 0.3 装依赖
+
+```bash
+npm ci        # 用 ci 而不是 install，保证与 lock 文件一致
+```
+
+### 0.4 确认 GitHub 权限
+
+```bash
+gh auth status     # 必须已登录，且对本仓库有 write 权限（能评论、能推分支）
+```
+
+如果这台机器用的是 GitHub MCP 而不是 `gh` CLI，把本手册里所有 `gh` 命令换成对应的 MCP 调用（创建 issue 评论、创建 PR 等）。
+
+### 0.5 记录测试基线（macOS/Linux 上必做）
+
+```bash
+npm test 2>&1 | tail -5    # 记下失败数
+```
+
+批次 0（Issue #2 #3）合并前，macOS/Linux 上有 **17 个已知失败**。**把这个数字记住** —— 后面验证自己的改动时要对比，确保没引入新失败。
+
+Windows 上应该全绿，如果不是，先在 issue 上报告。
 
 ---
 
 ## 你是谁
 
-你是本项目的一个开发 agent，运行在某台设备上。你的身份由三部分决定：
+你的身份由三部分决定，PR 标题和分支名都要用到：
 
-- **GitHub 用户名**：`<你登录 gh 的用户名>`
+- **GitHub 用户名**：`gh auth status` 里显示的
 - **AI**：`claude` 或 `codex`
-- **端**：`win` / `mac` / `linux`（你现在这台机器）
+- **端**：`win` / `mac` / `linux`
 
-**先确认身份**：
 ```bash
-gh auth status          # 确认已登录，记下用户名
-node -e "console.log(process.platform)"   # win32/darwin/linux
+node -e "console.log(process.platform)"   # win32 → win，darwin → mac
 ```
 
 ---
 
-## 第一次进这个仓库，先读三份文件
+## 第 1 步：读三份文件
 
 按顺序：
 
@@ -68,12 +155,18 @@ gh issue comment <编号> --body "🤖 开始处理 —— <用户名>/<ai>-<端
 
 ### 4. 建分支
 
+**开发分支永远从 `main` 拉**（即使你为了读文档切到过 review 分支）：
+
 ```bash
 git fetch origin
 git checkout main && git pull
 git checkout -b <用户名>/<ai>-<端>/<简短英文描述>
 # 例：peaker520/claude-mac/gate-windows-tests
 ```
+
+> ⚠️ 如果规范文档还没合并进 `main`，你的开发分支上会看不到 `CLAUDE.md` 等文件 —— 这是正常的。
+> 需要查文档时用 `git show claude/project-review-ma2wvr:CLAUDE.md`，或另开一个终端切到那个分支看。
+> **不要把 review 分支合进你的开发分支**，那会让 PR 混入无关改动。
 
 ### 5. 干活
 
