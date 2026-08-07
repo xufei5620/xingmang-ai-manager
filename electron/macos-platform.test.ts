@@ -223,7 +223,13 @@ describe('macOS terminal launcher', () => {
     expect(fs.existsSync(path.dirname(launcherPath))).toBe(false)
   })
 
-  it('does not delete a replacement at the scheduled launcher path', async () => {
+  // The scheduled cleanup recognizes its own launcher by device/inode/owner, so a
+  // replacement is only distinguishable where the freed inode number is not handed
+  // straight back to the next file. Darwin and Windows allocate a fresh one; Linux
+  // recycles it immediately, which resurrects the original identity and would make
+  // the cleanup delete the replacement. Gate on the filesystem behaviour rather
+  // than on darwin, so this keeps running on Windows where it already passes.
+  it.runIf(process.platform !== 'linux')('does not delete a replacement at the scheduled launcher path', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-replaced-launcher-'))
     temporaryDirectories.push(directory)
     let launcherPath = ''

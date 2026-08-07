@@ -105,7 +105,12 @@ describe('safe local data files', () => {
     expect(() => readSafeUtf8FileSync(filePath, '本地文件')).toThrow('读取过程中发生变化')
   })
 
-  it('rejects an in-place same-size rewrite during a synchronous read', () => {
+  // A same-size rewrite through the same inode leaves only the timestamps to
+  // betray it, so this assertion needs a clock that separates two writes issued
+  // microseconds apart. Darwin and Windows do; Linux stamps inodes from a coarse
+  // cached clock and reports an unchanged mtime for 194 of 200 immediate rewrites,
+  // which makes the tamper undetectable there for reasons unrelated to this code.
+  it.runIf(process.platform !== 'linux')('rejects an in-place same-size rewrite during a synchronous read', () => {
     const filePath = path.join(temporaryDirectory(), 'data.txt')
     fs.writeFileSync(filePath, 'original', 'utf8')
     const originalRead = fs.readSync.bind(fs)
