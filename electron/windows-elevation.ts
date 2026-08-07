@@ -61,7 +61,7 @@ export function windowsPowerShellExecutable(
   _env: NodeJS.ProcessEnv = process.env,
   machinePathsInput?: WindowsMachinePaths,
 ): string {
-  if (process.platform !== 'win32') return 'powershell.exe'
+  if (process.platform !== 'win32' && !machinePathsInput) return 'powershell.exe'
   const machinePaths = machinePathsInput ?? resolveWindowsMachinePaths()
   return path.win32.join(machinePaths.system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe')
 }

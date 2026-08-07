@@ -101,7 +101,7 @@ describe('Node.js installer routing and process plans', () => {
   it('builds argument arrays without interpolating an MSI path into PowerShell code', () => {
     const msiPath = path.join('C:\\Temp', "Node package 'quoted'; calc.exe.msi")
     const powershell = 'D:\\Program Files\\PowerShell\\7\\pwsh.exe'
-    const plan = buildNodeRuntimeInstallPlan(msiPath, powershell)
+    const plan = buildNodeRuntimeInstallPlan(msiPath, powershell, true, testMachinePaths)
 
     const winget = buildNodeRuntimeWingetPlan(
       'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
@@ -140,7 +140,7 @@ describe('Node.js installer routing and process plans', () => {
       trustedPaths: [msiPath],
     })
 
-    const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false)
+    const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false, testMachinePaths)
     expect(sameUserPlan.signature.trustedOnly).toBe(false)
     expect(sameUserPlan.msi.trustedOnly).toBe(false)
   })

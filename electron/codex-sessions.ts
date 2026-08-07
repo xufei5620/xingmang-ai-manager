@@ -6,6 +6,7 @@ import path from 'node:path'
 import readline from 'node:readline'
 import { backup, DatabaseSync, type SQLOutputValue } from 'node:sqlite'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { sameLocalPathIdentity } from './path-identity'
 
 const MAX_OPERATION_JOURNAL_BYTES = 64 * 1024 * 1024
 const MAX_RECOVERY_WARNING_DETAILS = 32
@@ -231,6 +232,14 @@ function stripWindowsNamespace(filePath: string): string {
 
 function resolveFilePath(filePath: string): string {
   return path.resolve(stripWindowsNamespace(filePath))
+}
+
+function requireAbsoluteCodexHome(value: string): string {
+  const selected = value.trim()
+  if (!selected || selected.includes('\0') || !path.isAbsolute(stripWindowsNamespace(selected))) {
+    throw new Error('CODEX_HOME 必须是不含 NUL 的绝对路径')
+  }
+  return resolveFilePath(selected)
 }
 
 function normalizeForComparison(filePath: string): string {
@@ -477,7 +486,7 @@ async function validateRollout(
   if (record?.type !== 'session_meta' || asString(payload?.id) !== sessionId) {
     throw new Error('rollout 首条 session_meta.id 与 SQLite 会话 ID 不匹配')
   }
-  return rolloutRealPath
+  return sameLocalPathIdentity(safePath, rolloutRealPath) ? safePath : rolloutRealPath
 }
 
 async function readFirstLineBounded(filePath: string, maximumBytes: number, label: string): Promise<string> {
@@ -781,7 +790,9 @@ export class CodexSessionsService {
   private recoveryWarningsSuppressed = 0
 
   constructor(options: CodexSessionsOptions = {}) {
-    this.codexHome = resolveFilePath(options.codexHome ?? path.join(os.homedir(), '.codex'))
+    this.codexHome = options.codexHome === undefined
+      ? path.join(os.homedir(), '.codex')
+      : requireAbsoluteCodexHome(options.codexHome)
     this.databasePath = resolveFilePath(options.databasePath ?? path.join(this.codexHome, 'state_5.sqlite'))
     this.managerDataDirectory = resolveFilePath(
       options.managerDataDirectory ?? path.join(os.homedir(), MANAGER_DIRECTORY_NAME, 'sessions'),

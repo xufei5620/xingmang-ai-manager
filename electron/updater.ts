@@ -63,14 +63,22 @@ export interface UpdaterService {
   dispose(): void
 }
 
+export interface MacInstallHandoff {
+  nativeUpdateDownloadedListenerCount(): number
+  retryNativeCheck(): void
+}
+
 export interface UpdaterRuntime {
   currentVersion: string
   isPackaged: boolean
+  platform?: NodeJS.Platform
+  localBuild?: boolean
   enableDevelopmentUpdates?: boolean
   startupCheckTimeoutMs?: number
   installLaunchTimeoutMs?: number
   now?: () => Date
   installEnvironmentGuard?: (launch: () => void) => void
+  macInstallHandoff?: MacInstallHandoff
 }
 
 function releaseNotesText(info: UpdateInfo): string | null {
@@ -84,18 +92,49 @@ function releaseNotesText(info: UpdateInfo): string | null {
   return text.slice(0, 20_000) || null
 }
 
-function safeError(error: unknown): { code: string; message: string } {
-  const candidate = error as { code?: unknown; message?: unknown }
+function hasChannelManifestUrl(description: string, channelFile: string): boolean {
+  const failedRequestUrl = description.match(
+    /\b(?:for\s+|method:\s*(?:GET|HEAD)\s+url:\s*)(https?:\/\/[^\s"'<>]+)/i,
+  )?.[1]
+  if (!failedRequestUrl) return false
+  try {
+    const url = new URL(failedRequestUrl)
+    return url.pathname.slice(url.pathname.lastIndexOf('/') + 1) === channelFile
+  } catch {
+    return false
+  }
+}
+
+function safeError(error: unknown, platform: NodeJS.Platform): { code: string; message: string } {
+  const candidate = error as {
+    code?: unknown
+    message?: unknown
+    statusCode?: unknown
+    description?: unknown
+  }
   const code = typeof candidate?.code === 'string' ? candidate.code.slice(0, 80) : 'UPDATE_ERROR'
+  const channelFile = platform === 'darwin' ? 'latest-mac.yml' : 'latest.yml'
   const source = typeof candidate?.message === 'string' ? candidate.message : String(error)
+  const description = typeof candidate?.description === 'string' ? candidate.description : source
+  const isNotFound = candidate?.statusCode === 404 || /\b404\b/.test(source)
   const redacted = source
     .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[REDACTED]@')
     .replace(/([?&](?:token|key|api_key)=)[^&\s]+/gi, '$1[REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, '[REDACTED]')
     .slice(0, 500)
-  const message = /<!doctype\s+html|<html|text\/html|unexpected\s+token\s+["']?</i.test(source)
-    ? '更新服务器返回了网页而不是 latest.yml，请检查静态更新目录配置'
-    : redacted
+  const missingChannelManifest = code === 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND'
+    || (
+      isNotFound
+      && (platform === 'darwin' || platform === 'win32')
+      && hasChannelManifestUrl(description, channelFile)
+    )
+  const message = missingChannelManifest
+    ? platform === 'darwin'
+      ? `更新服务器尚未发布 macOS 更新清单 ${channelFile}，请联系发布者补齐更新文件`
+      : `更新服务器尚未发布更新清单 ${channelFile}，请联系发布者补齐更新文件`
+    : /<!doctype\s+html|<html|text\/html|unexpected\s+token\s+["']?</i.test(source)
+      ? `更新服务器返回了网页而不是 ${channelFile}，请检查静态更新目录配置`
+      : redacted
   return { code, message: message || '更新操作失败' }
 }
 
@@ -111,17 +150,21 @@ export function createUpdaterService(
   client: UpdateClient,
   runtime: UpdaterRuntime,
 ): UpdaterService {
-  const development = !runtime.isPackaged
-  const enabled = runtime.isPackaged || runtime.enableDevelopmentUpdates === true
+  const development = !runtime.isPackaged || runtime.localBuild === true
+  const platform = runtime.platform ?? process.platform
+  const enabled = runtime.localBuild !== true
+    && (runtime.isPackaged || runtime.enableDevelopmentUpdates === true)
   const listeners = new Set<(snapshot: UpdateSnapshot) => void>()
   const now = runtime.now ?? (() => new Date())
   const startupCheckTimeoutMs = runtime.startupCheckTimeoutMs ?? 8_000
   const installLaunchTimeoutMs = runtime.installLaunchTimeoutMs ?? 10_000
   const installEnvironmentGuard = runtime.installEnvironmentGuard ?? ((launch) => launch())
+  const macInstallHandoff = platform === 'darwin' ? runtime.macInstallHandoff : undefined
   let autoInstallTimer: NodeJS.Timeout | null = null
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
   let installRequested = false
+  let macInstallHandoffRegistered = false
   let disposed = false
   let lastProgressAt = 0
   let lastProgressPercent = -1
@@ -182,7 +225,7 @@ export function createUpdaterService(
       // downloaded also makes the recovery action visible in the UI.
       phase: 'downloaded',
       progress: null,
-      error: safeError(error),
+      error: safeError(error, platform),
     })
   }
 
@@ -193,7 +236,23 @@ export function createUpdaterService(
     installRequested = true
     emit({ error: null })
     try {
-      installEnvironmentGuard(() => client.quitAndInstall(true, true))
+      installEnvironmentGuard(() => {
+        if (macInstallHandoffRegistered && macInstallHandoff) {
+          macInstallHandoff.retryNativeCheck()
+          return
+        }
+        if (!macInstallHandoff) {
+          client.quitAndInstall(true, true)
+          return
+        }
+        const listenerCount = macInstallHandoff.nativeUpdateDownloadedListenerCount()
+        try {
+          client.quitAndInstall(true, true)
+        } finally {
+          macInstallHandoffRegistered = macInstallHandoffRegistered
+            || macInstallHandoff.nativeUpdateDownloadedListenerCount() > listenerCount
+        }
+      })
     } catch (error) {
       reportInstallFailure(error)
       return false
@@ -253,13 +312,19 @@ export function createUpdaterService(
     },
     error: (error: unknown) => {
       clearAutoInstallTimer()
-      if (installRequested && snapshot.phase === 'downloaded') {
+      if (
+        snapshot.phase === 'downloaded'
+        && (
+          installRequested
+          || (macInstallHandoffRegistered && snapshot.error !== null)
+        )
+      ) {
         reportInstallFailure(error)
         return
       }
       clearInstallWatchdog()
       installRequested = false
-      emit({ phase: 'error', error: safeError(error), progress: null })
+      emit({ phase: 'error', error: safeError(error, platform), progress: null })
     },
   }
 
@@ -284,7 +349,7 @@ export function createUpdaterService(
     try {
       await client.checkForUpdates()
     } catch (error) {
-      emit({ phase: 'error', error: safeError(error), progress: null })
+      emit({ phase: 'error', error: safeError(error, platform), progress: null })
     }
     return cloneSnapshot(snapshot)
   }
@@ -297,7 +362,7 @@ export function createUpdaterService(
     try {
       await client.downloadUpdate()
     } catch (error) {
-      emit({ phase: 'error', error: safeError(error), progress: null })
+      emit({ phase: 'error', error: safeError(error, platform), progress: null })
     }
     return cloneSnapshot(snapshot)
   }

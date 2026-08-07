@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
+import { platformCapabilitiesFor } from '../../electron/platform-capabilities'
 import {
+  applyManualUninstallResult,
+  codexDesktopMaintenanceControl,
   cliUninstallPresentation,
+  runCodexDesktopMaintenanceAction,
   type MaintenanceCliStatus,
+  type MaintenanceSnapshot,
 } from './MaintenancePage'
 
 function status(uninstall: MaintenanceCliStatus['uninstall']): MaintenanceCliStatus {
@@ -15,15 +20,34 @@ function status(uninstall: MaintenanceCliStatus['uninstall']): MaintenanceCliSta
   }
 }
 
+function desktopStatus(
+  overrides: Partial<MaintenanceSnapshot['codexDesktop']> = {},
+): MaintenanceSnapshot['codexDesktop'] {
+  return {
+    installed: true,
+    version: '26.727.51351',
+    appVersion: '26.727.51351',
+    installDirectory: '/Applications/Codex.app',
+    updateCheck: 'skipped',
+    updateState: 'unknown',
+    running: false,
+    ...overrides,
+  }
+}
+
 describe('maintenance CLI uninstall presentation', () => {
-  it('disables the action and exposes an actionable manual npm command', () => {
+  it('turns an unsupported installed CLI into an actionable manual-help flow', () => {
     expect(cliUninstallPresentation(status({
       available: false,
       reason: '当前为用户级 npm 安装',
       manualCommand: 'npm uninstall -g @openai/codex',
-    }))).toEqual({
+    }), platformCapabilitiesFor('darwin', 'arm64'))).toEqual({
       available: false,
-      guidance: '当前为用户级 npm 安装；普通 PowerShell：npm uninstall -g @openai/codex',
+      mode: 'manual',
+      actionLabel: '卸载帮助',
+      command: 'npm uninstall -g @openai/codex',
+      guidance: '当前为用户级 npm 安装；打开卸载帮助可复制终端命令',
+      shellLabel: '终端',
     })
   })
 
@@ -32,6 +56,127 @@ describe('maintenance CLI uninstall presentation', () => {
       available: true,
       reason: null,
       manualCommand: null,
-    }))).toEqual({ available: true, guidance: null })
+    }))).toEqual({
+      available: true,
+      mode: 'automatic',
+      actionLabel: '卸载',
+      command: null,
+      guidance: null,
+      shellLabel: null,
+    })
+  })
+
+  it('keeps manual help active for an unknown source without inventing a command', () => {
+    expect(cliUninstallPresentation(status({
+      available: false,
+      reason: '当前安装来源未知',
+      manualCommand: null,
+    }), platformCapabilitiesFor('darwin', 'arm64'))).toMatchObject({
+      available: false,
+      mode: 'manual',
+      actionLabel: '卸载帮助',
+      command: null,
+      shellLabel: '终端',
+    })
+  })
+
+  it('keeps the error visible while converting an automatic failure into the existing manual tutorial', () => {
+    const automatic = status({ available: true, reason: null, manualCommand: null })
+    const snapshot: MaintenanceSnapshot = {
+      checkedAt: '2026-08-03T00:00:00.000Z',
+      clis: {
+        claude: automatic,
+        codex: automatic,
+        gemini: automatic,
+        grok: automatic,
+      },
+      codexDesktop: desktopStatus(),
+    }
+    const result = {
+      outcome: 'manual-required' as const,
+      previousVersion: '0.2.118',
+      error: 'Grok CLI 隔离文件在最终删除前发生变化',
+      manualHelp: {
+        reason: '自动卸载安全验证失败：Grok CLI 隔离文件在最终删除前发生变化',
+        manualCommand: null,
+      },
+    }
+
+    const next = applyManualUninstallResult(snapshot, 'grok', result)
+
+    expect(result.error).toContain('最终删除前发生变化')
+    expect(cliUninstallPresentation(
+      next.clis.grok,
+      platformCapabilitiesFor('darwin', 'arm64'),
+    )).toMatchObject({
+      mode: 'manual',
+      actionLabel: '卸载帮助',
+      command: null,
+      guidance: result.manualHelp.reason,
+    })
+  })
+})
+
+describe('Codex Desktop maintenance action', () => {
+  it('presents an installed macOS app as an open action instead of an update check', () => {
+    const control = codexDesktopMaintenanceControl(
+      platformCapabilitiesFor('darwin', 'arm64'),
+      desktopStatus(),
+      false,
+    )
+
+    expect(control).toEqual({
+      action: 'launch',
+      disabled: false,
+      loading: false,
+      icon: 'open',
+      label: '打开 Codex App',
+      statusClass: 'is-pass',
+      statusLabel: '可打开',
+    })
+  })
+
+  it('uses opening progress semantics while a macOS launch is active', () => {
+    expect(codexDesktopMaintenanceControl(
+      platformCapabilitiesFor('darwin', 'arm64'),
+      desktopStatus({ running: true }),
+      true,
+    )).toEqual({
+      action: 'launch',
+      disabled: true,
+      loading: true,
+      icon: 'loading',
+      label: '正在打开',
+      statusClass: 'is-pass',
+      statusLabel: '正在运行',
+    })
+  })
+
+  it('launches before refreshing and never falls through to the generic check', async () => {
+    const effects: string[] = []
+
+    await runCodexDesktopMaintenanceAction('launch', {
+      launch: async () => { effects.push('launch') },
+      refresh: async () => { effects.push('refresh') },
+      check: async () => { effects.push('check') },
+      showInstaller: () => { effects.push('installer') },
+    })
+
+    expect(effects).toEqual(['launch', 'refresh'])
+  })
+
+  it('keeps the Windows generic update-check control unchanged', () => {
+    expect(codexDesktopMaintenanceControl(
+      platformCapabilitiesFor('win32', 'x64'),
+      desktopStatus(),
+      false,
+    )).toMatchObject({
+      action: 'check',
+      disabled: false,
+      loading: false,
+      icon: 'refresh',
+      label: '检查更新',
+      statusLabel: '未完成检测',
+    })
   })
 })

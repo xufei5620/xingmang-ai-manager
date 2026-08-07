@@ -16,6 +16,36 @@ class FakeUpdater extends EventEmitter implements UpdateClient {
   quitAndInstall = vi.fn()
 }
 
+class FakeMacUpdater extends FakeUpdater {
+  readonly nativeUpdater = new EventEmitter()
+  readonly nativeCheckForUpdates = vi.fn()
+  readonly nativeQuitAndInstall = vi.fn()
+  private squirrelDownloadedUpdate = false
+
+  constructor() {
+    super()
+    this.nativeUpdater.on('error', (error) => this.emit('error', error))
+    this.nativeUpdater.on('update-downloaded', () => {
+      this.squirrelDownloadedUpdate = true
+    })
+    this.quitAndInstall.mockImplementation(() => {
+      if (this.squirrelDownloadedUpdate) {
+        this.nativeQuitAndInstall()
+        return
+      }
+      this.nativeUpdater.on('update-downloaded', () => this.nativeQuitAndInstall())
+      this.nativeCheckForUpdates()
+    })
+  }
+}
+
+const macInstallHandoffFor = (client: FakeMacUpdater) => ({
+  nativeUpdateDownloadedListenerCount: () => (
+    client.nativeUpdater.listenerCount('update-downloaded')
+  ),
+  retryNativeCheck: () => client.nativeCheckForUpdates(),
+})
+
 const updateInfo = (version = '1.1.0') => ({
   version,
   files: [],
@@ -43,6 +73,24 @@ describe('updater service', () => {
       logger: null,
     })
     await expect(service.check()).rejects.toThrow('开发环境未启用')
+  })
+
+  it('is disabled for an explicitly marked local packaged build', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      localBuild: true,
+      enableDevelopmentUpdates: true,
+    })
+
+    await expect(service.startup()).resolves.toMatchObject({
+      phase: 'disabled',
+      development: true,
+    })
+    await expect(service.check()).rejects.toThrow('开发环境未启用')
+    expect(client.checkForUpdates).not.toHaveBeenCalled()
+    expect(client.forceDevUpdateConfig).toBe(false)
   })
 
   it('normalizes check, available, progress and downloaded events', async () => {
@@ -234,7 +282,11 @@ describe('updater service', () => {
     client.checkForUpdates.mockRejectedValueOnce(new Error(
       'YAMLException: unexpected token "<" while parsing <!doctype html>',
     ))
-    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'win32',
+    })
 
     await service.check()
 
@@ -244,6 +296,105 @@ describe('updater service', () => {
         code: 'UPDATE_ERROR',
         message: '更新服务器返回了网页而不是 latest.yml，请检查静态更新目录配置',
       },
+    })
+  })
+
+  it('names the macOS channel file when the update route returns HTML', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error(
+      'YAMLException: unexpected token "<" while parsing <!doctype html>',
+    ))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'darwin',
+    })
+
+    await service.check()
+
+    expect(service.getState().error?.message).toBe(
+      '更新服务器返回了网页而不是 latest-mac.yml，请检查静态更新目录配置',
+    )
+  })
+
+  it('turns a missing macOS channel manifest into actionable publisher guidance', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce({
+      code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+      message: 'Cannot find latest-mac.yml in the latest release artifacts',
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'darwin',
+    })
+
+    await service.check()
+
+    expect(service.getState()).toMatchObject({
+      phase: 'error',
+      error: {
+        code: 'ERR_UPDATER_CHANNEL_FILE_NOT_FOUND',
+        message: '更新服务器尚未发布 macOS 更新清单 latest-mac.yml，请联系发布者补齐更新文件',
+      },
+    })
+  })
+
+  it('turns a plain HTTP 404 for the macOS channel manifest into publisher guidance', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error(
+      'HttpError: 404 Not Found for https://updates.example.test/xingmang-manager/latest-mac.yml',
+    ))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'darwin',
+    })
+
+    await service.check()
+
+    expect(service.getState()).toMatchObject({
+      phase: 'error',
+      error: {
+        code: 'UPDATE_ERROR',
+        message: '更新服务器尚未发布 macOS 更新清单 latest-mac.yml，请联系发布者补齐更新文件',
+      },
+    })
+  })
+
+  it('keeps a 404 for another resource generic when prose names the macOS channel manifest', async () => {
+    const client = new FakeUpdater()
+    const error = 'HttpError: 404 method: GET url: https://updates.example.test/xingmang-manager/release-notes.txt; expected latest-mac.yml'
+    client.checkForUpdates.mockRejectedValueOnce(new Error(error))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'darwin',
+    })
+
+    await service.check()
+
+    expect(service.getState()).toMatchObject({
+      phase: 'error',
+      error: { code: 'UPDATE_ERROR', message: error },
+    })
+  })
+
+  it('keeps a 404 generic when a later URL names the macOS channel manifest', async () => {
+    const client = new FakeUpdater()
+    const error = 'HttpError: 404 method: GET url: https://updates.example.test/release-notes.txt; manifest URL: https://updates.example.test/latest-mac.yml'
+    client.checkForUpdates.mockRejectedValueOnce(new Error(error))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      platform: 'darwin',
+    })
+
+    await service.check()
+
+    expect(service.getState()).toMatchObject({
+      phase: 'error',
+      error: { code: 'UPDATE_ERROR', message: error },
     })
   })
 
@@ -295,6 +446,7 @@ describe('updater service', () => {
       const service = createUpdaterService(client, {
         currentVersion: '1.0.0',
         isPackaged: true,
+        platform: 'win32',
       })
 
       client.emit('update-downloaded', updateInfo())
@@ -322,6 +474,7 @@ describe('updater service', () => {
       const service = createUpdaterService(client, {
         currentVersion: '1.0.0',
         isPackaged: true,
+        platform: 'win32',
       })
 
       client.emit('update-downloaded', updateInfo())
@@ -346,6 +499,7 @@ describe('updater service', () => {
       const service = createUpdaterService(client, {
         currentVersion: '1.0.0',
         isPackaged: true,
+        platform: 'win32',
         installLaunchTimeoutMs: 25,
       })
 
@@ -367,12 +521,252 @@ describe('updater service', () => {
       const disposedService = createUpdaterService(disposedClient, {
         currentVersion: '1.0.0',
         isPackaged: true,
+        platform: 'win32',
       })
       disposedClient.emit('update-downloaded', updateInfo())
       disposedClient.emit('update-downloaded', updateInfo())
       disposedService.dispose()
       await vi.advanceTimersByTimeAsync(1_000)
       expect(disposedClient.quitAndInstall).not.toHaveBeenCalled()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports a macOS handoff timeout and reuses its listener when retrying', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeMacUpdater()
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        platform: 'darwin',
+        installLaunchTimeoutMs: 25,
+        macInstallHandoff: macInstallHandoffFor(client),
+      })
+      const updateDownloadedListenerCount = client.listenerCount('update-downloaded')
+      const errorListenerCount = client.listenerCount('error')
+      expect(updateDownloadedListenerCount).toBe(1)
+      expect(errorListenerCount).toBe(1)
+
+      client.emit('update-downloaded', updateInfo())
+      await vi.advanceTimersByTimeAsync(300)
+      expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+      expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(1)
+      expect(service.getState()).toMatchObject({ phase: 'downloaded', error: null })
+
+      await vi.advanceTimersByTimeAsync(25)
+      expect(service.getState()).toMatchObject({
+        phase: 'downloaded',
+        error: { code: 'UPDATE_INSTALL_LAUNCH_TIMEOUT' },
+      })
+      expect(service.install()).toEqual({ accepted: true })
+      expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+      expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(2)
+      expect(service.getState()).toMatchObject({ phase: 'downloaded', error: null })
+      expect(client.listenerCount('update-downloaded')).toBe(updateDownloadedListenerCount)
+      expect(client.listenerCount('error')).toBe(errorListenerCount)
+
+      service.dispose()
+      expect(client.listenerCount('update-downloaded')).toBe(0)
+      expect(client.listenerCount('error')).toBe(0)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reuses one native macOS install handoff when retrying after an updater error', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeMacUpdater()
+      const baselineNativeDownloadedListeners = client.nativeUpdater.listenerCount('update-downloaded')
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        platform: 'darwin',
+        macInstallHandoff: macInstallHandoffFor(client),
+      })
+
+      client.emit('update-downloaded', updateInfo())
+      await vi.advanceTimersByTimeAsync(300)
+      expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+      expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(1)
+      expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
+        baselineNativeDownloadedListeners + 1,
+      )
+
+      client.nativeUpdater.emit('error', {
+        code: 'SQUIRREL_INSTALL_FAILED',
+        message: 'native install failed',
+      })
+      expect(service.getState()).toMatchObject({
+        phase: 'downloaded',
+        error: { code: 'SQUIRREL_INSTALL_FAILED' },
+      })
+
+      expect(service.install()).toEqual({ accepted: true })
+      expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+      expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(2)
+      expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
+        baselineNativeDownloadedListeners + 1,
+      )
+
+      client.nativeUpdater.emit('update-downloaded')
+      expect(client.nativeQuitAndInstall).toHaveBeenCalledTimes(1)
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reuses a macOS handoff whose native check throws after registering its listener', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeMacUpdater()
+      const baselineNativeDownloadedListeners = client.nativeUpdater.listenerCount('update-downloaded')
+      client.nativeCheckForUpdates
+        .mockImplementationOnce(() => {
+          throw new Error('native check failed')
+        })
+        .mockImplementationOnce(() => undefined)
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        platform: 'darwin',
+        macInstallHandoff: macInstallHandoffFor(client),
+      })
+
+      client.emit('update-downloaded', updateInfo())
+      await vi.advanceTimersByTimeAsync(300)
+      expect(service.getState()).toMatchObject({
+        phase: 'downloaded',
+        error: { message: 'native check failed' },
+      })
+      expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
+        baselineNativeDownloadedListeners + 1,
+      )
+
+      expect(service.install()).toEqual({ accepted: true })
+      expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+      expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(2)
+      expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
+        baselineNativeDownloadedListeners + 1,
+      )
+
+      client.nativeUpdater.emit('update-downloaded')
+      expect(client.nativeQuitAndInstall).toHaveBeenCalledTimes(1)
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('retries the upstream macOS handoff when it throws before registering a listener', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeMacUpdater()
+      const baselineNativeDownloadedListeners = client.nativeUpdater.listenerCount('update-downloaded')
+      client.quitAndInstall
+        .mockImplementationOnce(() => {
+          throw new Error('pre-registration failure')
+        })
+        .mockImplementationOnce(() => {
+          client.nativeUpdater.on('update-downloaded', () => client.nativeQuitAndInstall())
+          client.nativeCheckForUpdates()
+        })
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        platform: 'darwin',
+        macInstallHandoff: macInstallHandoffFor(client),
+      })
+
+      client.emit('update-downloaded', updateInfo())
+      await vi.advanceTimersByTimeAsync(300)
+      expect(service.getState()).toMatchObject({
+        phase: 'downloaded',
+        error: { message: 'pre-registration failure' },
+      })
+      expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
+        baselineNativeDownloadedListeners,
+      )
+
+      expect(service.install()).toEqual({ accepted: true })
+      expect(client.quitAndInstall).toHaveBeenCalledTimes(2)
+      expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(1)
+      expect(client.nativeUpdater.listenerCount('update-downloaded')).toBe(
+        baselineNativeDownloadedListeners + 1,
+      )
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps duplicate native macOS errors retryable after the handoff starts', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeMacUpdater()
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        platform: 'darwin',
+        macInstallHandoff: macInstallHandoffFor(client),
+      })
+
+      client.emit('update-downloaded', updateInfo())
+      await vi.advanceTimersByTimeAsync(300)
+      client.nativeUpdater.emit('error', {
+        code: 'SQUIRREL_INSTALL_FAILED',
+        message: 'native install failed',
+      })
+      client.nativeUpdater.emit('error', {
+        code: 'SQUIRREL_INSTALL_FAILED_AGAIN',
+        message: 'duplicate native install failure',
+      })
+
+      expect(service.getState()).toMatchObject({
+        phase: 'downloaded',
+        error: {
+          code: 'SQUIRREL_INSTALL_FAILED_AGAIN',
+          message: 'duplicate native install failure',
+        },
+      })
+      expect(service.install()).toEqual({ accepted: true })
+      expect(client.quitAndInstall).toHaveBeenCalledTimes(1)
+      expect(client.nativeCheckForUpdates).toHaveBeenCalledTimes(2)
+      service.dispose()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('keeps the Windows error transition after an installer launch failure', async () => {
+    vi.useFakeTimers()
+    try {
+      const client = new FakeUpdater()
+      client.quitAndInstall.mockImplementationOnce(() => {
+        throw new Error('installer spawn failed')
+      })
+      const service = createUpdaterService(client, {
+        currentVersion: '1.0.0',
+        isPackaged: true,
+        platform: 'win32',
+      })
+
+      client.emit('update-downloaded', updateInfo())
+      await vi.advanceTimersByTimeAsync(300)
+      expect(service.getState()).toMatchObject({
+        phase: 'downloaded',
+        error: { message: 'installer spawn failed' },
+      })
+
+      client.emit('error', { code: 'UPDATE_ERROR', message: 'updater failed again' })
+      expect(service.getState()).toMatchObject({
+        phase: 'error',
+        error: { code: 'UPDATE_ERROR', message: 'updater failed again' },
+      })
+      service.dispose()
     } finally {
       vi.useRealTimers()
     }

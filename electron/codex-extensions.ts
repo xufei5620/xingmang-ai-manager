@@ -14,7 +14,12 @@ import {
   type CommandSpec,
   type RunCommandOptions,
 } from './command-runner'
-import { resolveCliInstallation } from './tool-installation'
+import {
+  resolveCliCommand as resolveVerifiedCliCommand,
+  resolveCliInstallation,
+  type ResolvedCliCommand,
+} from './tool-installation'
+import { sameLocalPathIdentity } from './path-identity'
 import {
   assertTrustedElevatedCliCommand,
   type WindowsCliExecutionMode,
@@ -140,8 +145,11 @@ export type CodexInvoker = (
 ) => Promise<string>
 
 export interface CodexExtensionServiceOptions {
+  userHome?: string
+  codexHome?: string
+  /** @deprecated Use userHome. */
   homeDirectory?: string
-  repositoryRoot?: string
+  repositoryRoot?: string | null
   trashDirectory?: string
   configPath?: string
   env?: NodeJS.ProcessEnv
@@ -231,7 +239,17 @@ function assertNoSymlinkComponents(targetPath: string, label: string): void {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
       throw new Error(`${label}无法安全检查：${error instanceof Error ? error.message : String(error)}`)
     }
-    if (info.isSymbolicLink()) throw new Error(`${label}不能经过符号链接`)
+    if (info.isSymbolicLink()) {
+      let realPath: string
+      try {
+        realPath = fs.realpathSync(current)
+      } catch {
+        throw new Error(`${label}不能经过符号链接`)
+      }
+      if (!sameLocalPathIdentity(current, realPath)) {
+        throw new Error(`${label}不能经过符号链接`)
+      }
+    }
   }
 }
 
@@ -367,7 +385,18 @@ export async function resolveCodexCommand(
   explicitPackageRoot?: string,
   machinePaths?: WindowsMachinePaths,
   windowsExecutionMode: WindowsCliExecutionMode = 'trusted-only',
-): Promise<CommandSpec> {
+  verifyDarwinStandalone: (
+    executablePath: string,
+    env: NodeJS.ProcessEnv,
+  ) => Promise<ResolvedCliCommand> = async (_executablePath, standaloneEnv) => {
+    return resolveVerifiedCliCommand(
+      'codex',
+      standaloneEnv,
+      windowsExecutionMode,
+      { darwinStagingRetention: 'ephemeral' },
+    )
+  },
+): Promise<ResolvedCliCommand> {
   const target = platformTarget()
   const discovered = await resolveCliInstallation('codex', { env })
   const roots = [
@@ -415,10 +444,22 @@ export async function resolveCodexCommand(
     try {
       const realScriptPath = fs.realpathSync(scriptPath)
       if (!isWithin(packageRoot, realScriptPath) || !fs.statSync(realScriptPath).isFile()) continue
-      const nodeExecutable = await findExecutable('node', { env })
+      const additionalPaths = process.platform !== 'win32'
+        && discovered?.packageRoot
+        && sameLocalPathIdentity(discovered.packageRoot, packageRoot)
+        ? [path.dirname(discovered.commandPath)]
+        : []
+      const nodeExecutable = await findExecutable('node', { env, additionalPaths })
       if (nodeExecutable) return { executable: nodeExecutable, argv: [realScriptPath] }
     } catch {
       // Continue looking for another verified installation.
+    }
+  }
+  if (process.platform === 'darwin' && discovered?.source === 'native') {
+    try {
+      return await verifyDarwinStandalone(discovered.commandPath, env)
+    } catch {
+      // Native PATH entries remain untrusted unless the full standalone check passes.
     }
   }
   throw new Error('未找到受信任的 Codex CLI 安装，请先安装或更新 Codex CLI')
@@ -453,8 +494,12 @@ function defaultInvoker(options: CodexExtensionServiceOptions): CodexInvoker {
       sensitiveValues: invocationOptions.sensitiveValues,
       machinePaths: options.machinePaths,
     }
-    const result = await runCommand(command, runOptions)
-    return result.stdout
+    try {
+      const result = await runCommand(command, runOptions)
+      return result.stdout
+    } finally {
+      await base.release?.()
+    }
   }
 }
 
@@ -882,19 +927,21 @@ function moveToTrash(source: string, trashDirectory: string): string {
 }
 
 export class CodexExtensionService {
-  private readonly homeDirectory: string
+  private readonly userHome: string
+  private readonly codexHome: string
   private repositoryRoot?: string
   private readonly trashDirectory: string
   private readonly configPath: string
   private readonly invoke: CodexInvoker
 
   constructor(options: CodexExtensionServiceOptions = {}) {
-    this.homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
+    this.userHome = path.resolve(options.userHome ?? options.homeDirectory ?? os.homedir())
+    this.codexHome = path.resolve(options.codexHome ?? path.join(this.userHome, '.codex'))
     this.repositoryRoot = this.normalizeRepositoryRoot(options.repositoryRoot)
     this.trashDirectory = path.resolve(
-      options.trashDirectory ?? path.join(this.homeDirectory, '.xingmang-ai-manager', 'trash', 'skills'),
+      options.trashDirectory ?? path.join(this.userHome, '.xingmang-ai-manager', 'trash', 'skills'),
     )
-    this.configPath = path.resolve(options.configPath ?? path.join(this.homeDirectory, '.codex', 'config.toml'))
+    this.configPath = path.resolve(options.configPath ?? path.join(this.codexHome, 'config.toml'))
     this.invoke = options.invoke ?? defaultInvoker(options)
   }
 
@@ -910,13 +957,13 @@ export class CodexExtensionService {
   private normalizeRepositoryRoot(repositoryRoot?: string | null): string | undefined {
     if (!repositoryRoot?.trim()) return undefined
     const resolved = path.resolve(repositoryRoot.trim())
-    return normalizedPathKey(resolved) === normalizedPathKey(this.homeDirectory) ? undefined : resolved
+    return normalizedPathKey(resolved) === normalizedPathKey(this.userHome) ? undefined : resolved
   }
 
   private skillRoots(): SkillRoot[] {
     const roots: SkillRoot[] = [
-      { path: path.join(this.homeDirectory, '.agents', 'skills'), scope: 'user', source: 'agents', managed: true },
-      { path: path.join(this.homeDirectory, '.codex', 'skills'), scope: 'user', source: 'codex', managed: true },
+      { path: path.join(this.userHome, '.agents', 'skills'), scope: 'user', source: 'agents', managed: true },
+      { path: path.join(this.codexHome, 'skills'), scope: 'user', source: 'codex', managed: true },
     ]
     if (this.repositoryRoot) {
       roots.push(
@@ -1164,7 +1211,7 @@ export class CodexExtensionService {
 
     const scope = input.scope ?? 'user'
     const root = scope === 'user'
-      ? path.join(this.homeDirectory, '.agents', 'skills')
+      ? path.join(this.userHome, '.agents', 'skills')
       : this.repositoryRoot && path.join(this.repositoryRoot, '.agents', 'skills')
     if (!root) throw new Error('未设置仓库工作目录，不能导入 repo Skill')
     assertNoSymlinkComponents(root, 'Skill 受管目录')

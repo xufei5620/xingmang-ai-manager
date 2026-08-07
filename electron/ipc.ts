@@ -39,6 +39,7 @@ import {
 import type {
   CodexDesktopLaunchMode,
   ConfigSavePayload,
+  SystemSnapshot,
   SystemService,
 } from './system-service'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
@@ -46,6 +47,7 @@ import type { UpdateSnapshot, UpdaterService } from './updater'
 import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
+import { platformCapabilitiesFor } from './platform-capabilities'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -69,6 +71,7 @@ export interface IpcRegistrationOptions {
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
+  transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
 }
 
 type TrustedIpcHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
@@ -547,11 +550,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
 
   const service = options.systemService
   const unsubscribeUpdates = options.updaterService.subscribe(options.broadcastUpdate)
+  registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown) => {
     if (forceRefresh !== undefined && typeof forceRefresh !== 'boolean') {
       throw new Error('更新检查参数格式错误')
     }
-    const snapshot = await service.scanSystem(forceRefresh === true)
+    const scanned = await service.scanSystem(forceRefresh === true)
+    const snapshot = options.transformSystemSnapshot?.(scanned) ?? scanned
     options.runtimeLog.log('info', 'system', 'scan.completed', '本机环境与 AI 工具检测完成', {
       runtime: Object.fromEntries(Object.entries(snapshot.runtime).map(([id, status]) => [id, {
         installed: status.installed,

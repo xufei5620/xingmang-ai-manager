@@ -25,6 +25,28 @@ function temporaryHome(): string {
   return directory
 }
 
+function providerRoots(userHome: string) {
+  return { userHome, codexHome: path.join(userHome, '.codex') }
+}
+
+function directoryFileSnapshot(directory: string): Record<string, string> {
+  return Object.fromEntries(
+    fs.readdirSync(directory).sort().map((name) => [
+      name,
+      fs.readFileSync(path.join(directory, name)).toString('base64'),
+    ]),
+  )
+}
+
+if (false) {
+  // @ts-expect-error Core config APIs require both the user and Codex roots.
+  providerConfigPaths('codex', '/tmp/string-root')
+  // @ts-expect-error Core config APIs require both the user and Codex roots.
+  inspectProviderConfig('codex', '/tmp/string-root')
+  // @ts-expect-error Core config APIs require both the user and Codex roots.
+  saveProviderConfig('codex', 'sk-key', 'gpt-5.6-sol', 'reset', '/tmp/string-root')
+}
+
 afterEach(() => {
   for (const directory of temporaryHomes.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
@@ -32,13 +54,55 @@ afterEach(() => {
 })
 
 describe('native CLI configuration files', () => {
+  it('reads and writes Codex at codexHome while every other provider stays at userHome', () => {
+    const userHome = temporaryHome()
+    const codexParent = temporaryHome()
+    const codexHome = path.join(codexParent, 'custom-codex')
+    const roots = { userHome, codexHome }
+
+    saveProviderConfig('codex', 'sk-codex', 'gpt-5.6-sol', 'reset', roots)
+    saveProviderConfig('claude', 'sk-claude', 'claude-sonnet-4-6', 'reset', roots)
+    saveProviderConfig('gemini', 'sk-gemini', 'gemini-3.5-pro', 'reset', roots)
+    saveProviderConfig('grok', 'sk-grok', 'grok-5', 'reset', roots)
+
+    expect(providerConfigPaths('codex', roots)).toEqual([
+      path.join(codexHome, 'config.toml'),
+      path.join(codexHome, 'auth.json'),
+    ])
+    expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
+    expect(inspectProviderConfig('codex', roots).apiKey).toBe('sk-codex')
+    expect(providerConfigPaths('claude', roots)[0]).toBe(
+      path.join(userHome, '.claude', 'settings.json'),
+    )
+    expect(providerConfigPaths('gemini', roots)[0]).toBe(
+      path.join(userHome, '.gemini', 'settings.json'),
+    )
+    expect(providerConfigPaths('grok', roots)[0]).toBe(
+      path.join(userHome, '.grok', 'config.toml'),
+    )
+  })
+
+  it('rejects an existing junction component inside a custom Codex root', () => {
+    const userHome = temporaryHome()
+    const codexParent = temporaryHome()
+    const outside = temporaryHome()
+    const junction = path.join(codexParent, 'nested')
+    fs.symlinkSync(outside, junction, 'junction')
+    const roots = { userHome, codexHome: junction }
+
+    expect(() => inspectProviderConfig('codex', roots)).toThrow(/符号链接|目录联接/)
+    expect(() => saveProviderConfig('codex', 'sk-key', 'gpt-5.6-sol', 'reset', roots))
+      .toThrow(/符号链接|目录联接/)
+    expect(fs.readdirSync(outside)).toEqual([])
+  })
+
   it('refuses to merge an oversized existing config without modifying it', () => {
     const home = temporaryHome()
-    const configPath = providerConfigPaths('codex', home)[0]
+    const configPath = providerConfigPaths('codex', providerRoots(home))[0]
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, 'x'.repeat(2 * 1024 * 1024 + 1), 'utf8')
 
-    expect(() => saveProviderConfig('codex', 'sk-new-key', 'gpt-5.6-sol', 'merge', home))
+    expect(() => saveProviderConfig('codex', 'sk-new-key', 'gpt-5.6-sol', 'merge', providerRoots(home)))
       .toThrow('2048 KB 安全上限')
     expect(fs.statSync(configPath).size).toBe(2 * 1024 * 1024 + 1)
   })
@@ -48,18 +112,18 @@ describe('native CLI configuration files', () => {
     (provider) => {
       const home = temporaryHome()
       const model = testModels[provider]
-      const result = saveProviderConfig(provider, 'sk-user-key', model, 'reset', home)
+      const result = saveProviderConfig(provider, 'sk-user-key', model, 'reset', providerRoots(home))
       expect(result.backups).toEqual([])
       expect(result.files.every((filePath) => fs.existsSync(filePath))).toBe(true)
 
-      const inspection = inspectProviderConfig(provider, home)
+      const inspection = inspectProviderConfig(provider, providerRoots(home))
       expect(inspection.exists).toBe(true)
       expect(inspection.apiKey).toBe('sk-user-key')
       expect(inspection.hasApiKey).toBe(true)
       expect(inspection.matchesRelay).toBe(true)
       expect(inspection.model).toBe(model)
 
-      const paths = providerConfigPaths(provider, home)
+      const paths = providerConfigPaths(provider, providerRoots(home))
       if (provider === 'claude') {
         const settings = JSON.parse(fs.readFileSync(paths[0], 'utf8'))
         expect(settings).toEqual({
@@ -105,13 +169,13 @@ describe('native CLI configuration files', () => {
     'reports the %s data directory independently from its config files',
     (provider) => {
       const home = temporaryHome()
-      const expectedDirectory = path.dirname(providerConfigPaths(provider, home)[0])
-      const before = inspectProviderConfig(provider, home)
+      const expectedDirectory = path.dirname(providerConfigPaths(provider, providerRoots(home))[0])
+      const before = inspectProviderConfig(provider, providerRoots(home))
       expect(before.dataDirectory).toBe(expectedDirectory)
       expect(before.dataDirectoryExists).toBe(false)
 
       fs.mkdirSync(expectedDirectory, { recursive: true })
-      const after = inspectProviderConfig(provider, home)
+      const after = inspectProviderConfig(provider, providerRoots(home))
       expect(after.dataDirectory).toBe(expectedDirectory)
       expect(after.dataDirectoryExists).toBe(true)
       expect(after.exists).toBe(false)
@@ -122,12 +186,12 @@ describe('native CLI configuration files', () => {
     'clears detected %s configuration after its files are removed',
     (provider) => {
       const home = temporaryHome()
-      saveProviderConfig(provider, 'sk-user-key', testModels[provider], 'reset', home)
-      for (const filePath of providerConfigPaths(provider, home)) {
+      saveProviderConfig(provider, 'sk-user-key', testModels[provider], 'reset', providerRoots(home))
+      for (const filePath of providerConfigPaths(provider, providerRoots(home))) {
         fs.rmSync(filePath, { force: true })
       }
 
-      const inspection = inspectProviderConfig(provider, home)
+      const inspection = inspectProviderConfig(provider, providerRoots(home))
       expect(inspection.exists).toBe(false)
       expect(inspection.apiKey).toBe('')
       expect(inspection.hasApiKey).toBe(false)
@@ -141,14 +205,14 @@ describe('native CLI configuration files', () => {
 
   it('merges API Key and model without replacing unrelated Claude settings', () => {
     const home = temporaryHome()
-    saveProviderConfig('claude', 'old-key', testModels.claude, 'reset', home)
-    const [settingsPath] = providerConfigPaths('claude', home)
+    saveProviderConfig('claude', 'old-key', testModels.claude, 'reset', providerRoots(home))
+    const [settingsPath] = providerConfigPaths('claude', providerRoots(home))
     const existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     existing.customSetting = { enabled: true }
     existing.env.CUSTOM_TOKEN = 'preserved'
     fs.writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`, 'utf8')
 
-    const result = saveProviderConfig('claude', 'new-key', 'claude-sonnet-4-6', 'merge', home)
+    const result = saveProviderConfig('claude', 'new-key', 'claude-sonnet-4-6', 'merge', providerRoots(home))
     expect(result.backups).toHaveLength(1)
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     expect(merged.env.ANTHROPIC_AUTH_TOKEN).toBe('new-key')
@@ -159,7 +223,7 @@ describe('native CLI configuration files', () => {
 
   it('backs up Codex files and preserves its existing provider identifier', () => {
     const home = temporaryHome()
-    const [configPath, authPath] = providerConfigPaths('codex', home)
+    const [configPath, authPath] = providerConfigPaths('codex', providerRoots(home))
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, [
       'model_provider = "mycodex"',
@@ -171,7 +235,7 @@ describe('native CLI configuration files', () => {
     ].join('\n'), 'utf8')
     fs.writeFileSync(authPath, '{"OPENAI_API_KEY":"old-key"}\n', 'utf8')
 
-    const result = saveProviderConfig('codex', 'new-key', testModels.codex, 'reset', home)
+    const result = saveProviderConfig('codex', 'new-key', testModels.codex, 'reset', providerRoots(home))
     expect(result.backups).toHaveLength(2)
     expect(result.backups.every((filePath) => fs.existsSync(filePath))).toBe(true)
 
@@ -182,10 +246,12 @@ describe('native CLI configuration files', () => {
     expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).OPENAI_API_KEY).toBe('new-key')
   })
 
-  it('merges Codex credentials and models while preserving provider settings', () => {
-    const home = temporaryHome()
-    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', home)
-    const [configPath, authPath] = providerConfigPaths('codex', home)
+  it('merges Codex credentials at a custom external root while preserving provider settings', () => {
+    const userHome = temporaryHome()
+    const codexHome = path.join(temporaryHome(), 'custom-codex')
+    const roots = { userHome, codexHome }
+    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', roots)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
     const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     config.custom_setting = 'preserved'
     config.model_providers.OpenAI.custom_header = 'preserved'
@@ -194,7 +260,7 @@ describe('native CLI configuration files', () => {
     auth.CUSTOM_AUTH = 'preserved'
     fs.writeFileSync(authPath, `${JSON.stringify(auth, null, 2)}\n`, 'utf8')
 
-    const result = saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', home)
+    const result = saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots)
     expect(result.backups).toHaveLength(2)
     const mergedConfig = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     const mergedAuth = JSON.parse(fs.readFileSync(authPath, 'utf8'))
@@ -204,11 +270,14 @@ describe('native CLI configuration files', () => {
     expect(mergedConfig.model_providers.OpenAI.custom_header).toBe('preserved')
     expect(mergedAuth.OPENAI_API_KEY).toBe('new-key')
     expect(mergedAuth.CUSTOM_AUTH).toBe('preserved')
+    expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
   })
 
-  it('rolls back every Codex file when replacing the second file fails', () => {
-    const home = temporaryHome()
-    const [configPath, authPath] = providerConfigPaths('codex', home)
+  it('rolls back every Codex file at a custom external root when its hook fails', () => {
+    const userHome = temporaryHome()
+    const codexHome = path.join(temporaryHome(), 'custom-codex')
+    const roots = { userHome, codexHome }
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     const originalConfig = [
       'model_provider = "existing"',
@@ -228,7 +297,7 @@ describe('native CLI configuration files', () => {
       'new-key',
       'gpt-5.6-sol',
       'reset',
-      home,
+      roots,
       {
         beforeReplace: (_targetPath, index) => {
           if (index === 1) throw new Error('injected second-file failure')
@@ -242,14 +311,45 @@ describe('native CLI configuration files', () => {
     expect(fs.readdirSync(path.dirname(configPath)).filter((name) => name.includes('rollback'))).toEqual([])
   })
 
+  it('fails closed when a hook swaps a custom Codex root for a junction', () => {
+    const userHome = temporaryHome()
+    const codexParent = temporaryHome()
+    const codexHome = path.join(codexParent, 'custom-codex')
+    const displacedCodexHome = path.join(codexParent, 'displaced-codex')
+    const outside = temporaryHome()
+    const roots = { userHome, codexHome }
+    saveProviderConfig('codex', 'old-key', testModels.codex, 'reset', roots)
+
+    let outsideBefore: Record<string, string> = {}
+    let saveError: unknown
+    try {
+      saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {
+        beforeReplace: (_targetPath, index) => {
+          if (index !== 1) return
+          for (const name of fs.readdirSync(codexHome)) {
+            fs.writeFileSync(path.join(outside, name), `outside sentinel: ${name}\n`, 'utf8')
+          }
+          outsideBefore = directoryFileSnapshot(outside)
+          fs.renameSync(codexHome, displacedCodexHome)
+          fs.symlinkSync(outside, codexHome, 'junction')
+        },
+      })
+    } catch (error) {
+      saveError = error
+    }
+
+    expect(saveError).toBeInstanceOf(Error)
+    expect(directoryFileSnapshot(outside)).toEqual(outsideBefore)
+  })
+
   it('merges Gemini env values while preserving other env and settings entries', () => {
     const home = temporaryHome()
-    saveProviderConfig('gemini', 'old-key', testModels.gemini, 'reset', home)
-    const [settingsPath, envPath] = providerConfigPaths('gemini', home)
+    saveProviderConfig('gemini', 'old-key', testModels.gemini, 'reset', providerRoots(home))
+    const [settingsPath, envPath] = providerConfigPaths('gemini', providerRoots(home))
     const settingsBefore = fs.readFileSync(settingsPath, 'utf8')
     fs.appendFileSync(envPath, 'CUSTOM_VALUE=preserved\n', 'utf8')
 
-    const result = saveProviderConfig('gemini', 'new-key', 'gemini-3.5-pro', 'merge', home)
+    const result = saveProviderConfig('gemini', 'new-key', 'gemini-3.5-pro', 'merge', providerRoots(home))
     expect(result.backups).toHaveLength(1)
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(settingsBefore)
     expect(fs.readFileSync(envPath, 'utf8')).toContain('GOOGLE_GEMINI_BASE_URL=https://api.solov.cc')
@@ -260,14 +360,14 @@ describe('native CLI configuration files', () => {
 
   it('merges the active Grok model while preserving the rest of its TOML', () => {
     const home = temporaryHome()
-    saveProviderConfig('grok', 'old-key', testModels.grok, 'reset', home)
-    const [configPath] = providerConfigPaths('grok', home)
+    saveProviderConfig('grok', 'old-key', testModels.grok, 'reset', providerRoots(home))
+    const [configPath] = providerConfigPaths('grok', providerRoots(home))
     const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     config.custom_setting = 'preserved'
     config.model.grok.custom_option = true
     fs.writeFileSync(configPath, TOML.stringify(config), 'utf8')
 
-    const result = saveProviderConfig('grok', 'new-key', 'grok-5', 'merge', home)
+    const result = saveProviderConfig('grok', 'new-key', 'grok-5', 'merge', providerRoots(home))
     expect(result.backups).toHaveLength(1)
     const merged = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     expect(merged.model.grok.api_key).toBe('new-key')
@@ -279,7 +379,7 @@ describe('native CLI configuration files', () => {
 
   it('reads a Grok key from the existing default model even when its name is custom', () => {
     const home = temporaryHome()
-    const [configPath] = providerConfigPaths('grok', home)
+    const [configPath] = providerConfigPaths('grok', providerRoots(home))
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, [
       '[models]',
@@ -289,7 +389,7 @@ describe('native CLI configuration files', () => {
       'api_key = "existing-key"',
       '',
     ].join('\n'), 'utf8')
-    expect(inspectProviderConfig('grok', home).apiKey).toBe('existing-key')
+    expect(inspectProviderConfig('grok', providerRoots(home)).apiKey).toBe('existing-key')
   })
 
   it.each([
@@ -312,7 +412,7 @@ describe('native CLI configuration files', () => {
     },
   ])('does not use an inactive Codex provider when the active provider has $name', ({ activeProvider, expectedBaseUrl }) => {
     const home = temporaryHome()
-    const [configPath, authPath] = providerConfigPaths('codex', home)
+    const [configPath, authPath] = providerConfigPaths('codex', providerRoots(home))
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, [
       'model_provider = "active"',
@@ -327,7 +427,7 @@ describe('native CLI configuration files', () => {
     ].join('\n'), 'utf8')
     fs.writeFileSync(authPath, '{"OPENAI_API_KEY":"existing-key"}\n', 'utf8')
 
-    const inspection = inspectProviderConfig('codex', home)
+    const inspection = inspectProviderConfig('codex', providerRoots(home))
     expect(inspection.hasApiKey).toBe(true)
     expect(inspection.actualBaseUrl).toBe(expectedBaseUrl)
     expect(inspection.matchesRelay).toBe(false)
@@ -355,7 +455,7 @@ describe('native CLI configuration files', () => {
     },
   ])('does not use an inactive Grok model when the default model has $name', ({ activeModel, expectedBaseUrl }) => {
     const home = temporaryHome()
-    const [configPath] = providerConfigPaths('grok', home)
+    const [configPath] = providerConfigPaths('grok', providerRoots(home))
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, [
       '[models]',
@@ -370,7 +470,7 @@ describe('native CLI configuration files', () => {
       '',
     ].join('\n'), 'utf8')
 
-    const inspection = inspectProviderConfig('grok', home)
+    const inspection = inspectProviderConfig('grok', providerRoots(home))
     expect(inspection.apiKey).toBe('active-key')
     expect(inspection.model).toBe('grok-active')
     expect(inspection.actualBaseUrl).toBe(expectedBaseUrl)
@@ -379,7 +479,7 @@ describe('native CLI configuration files', () => {
 
   it('reads no Grok credentials or model when the default target is absent', () => {
     const home = temporaryHome()
-    const [configPath] = providerConfigPaths('grok', home)
+    const [configPath] = providerConfigPaths('grok', providerRoots(home))
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, [
       '[models]',
@@ -392,7 +492,7 @@ describe('native CLI configuration files', () => {
       '',
     ].join('\n'), 'utf8')
 
-    const inspection = inspectProviderConfig('grok', home)
+    const inspection = inspectProviderConfig('grok', providerRoots(home))
     expect(inspection.apiKey).toBe('')
     expect(inspection.hasApiKey).toBe(false)
     expect(inspection.model).toBe('')
@@ -402,7 +502,7 @@ describe('native CLI configuration files', () => {
 
   it('marks a non-Xingmang relay as not ready to open', () => {
     const home = temporaryHome()
-    const [configPath] = providerConfigPaths('claude', home)
+    const [configPath] = providerConfigPaths('claude', providerRoots(home))
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.writeFileSync(configPath, JSON.stringify({
       env: {
@@ -411,7 +511,7 @@ describe('native CLI configuration files', () => {
       },
     }), 'utf8')
 
-    const inspection = inspectProviderConfig('claude', home)
+    const inspection = inspectProviderConfig('claude', providerRoots(home))
     expect(inspection.hasApiKey).toBe(true)
     expect(inspection.matchesRelay).toBe(false)
     expect(inspection.actualBaseUrl).toBe('https://other-relay.example.com')
@@ -419,8 +519,8 @@ describe('native CLI configuration files', () => {
 
   it('does not expose the raw key in the renderer-safe summary', () => {
     const home = temporaryHome()
-    saveProviderConfig('codex', 'sk-12345-secret-value-wxyz', 'gpt-5.5', 'reset', home)
-    const summary = toNativeConfigSummary(inspectProviderConfig('codex', home))
+    saveProviderConfig('codex', 'sk-12345-secret-value-wxyz', 'gpt-5.5', 'reset', providerRoots(home))
+    const summary = toNativeConfigSummary(inspectProviderConfig('codex', providerRoots(home)))
     expect(summary.apiKeyPreview).toBe('sk-12••••••••wxyz')
     expect(JSON.stringify(summary)).not.toContain('sk-12345-secret-value-wxyz')
     expect('apiKey' in summary).toBe(false)
@@ -432,16 +532,16 @@ describe('native CLI configuration files', () => {
     const providerDirectory = path.join(home, '.codex')
     fs.symlinkSync(outside, providerDirectory, 'junction')
 
-    expect(() => saveProviderConfig('codex', 'sk-junction', 'gpt-5.5', 'reset', home))
+    expect(() => saveProviderConfig('codex', 'sk-junction', 'gpt-5.5', 'reset', providerRoots(home)))
       .toThrow(/符号链接|用户目录之外/)
     expect(fs.readdirSync(outside)).toEqual([])
   })
 
   it('rejects a directory or multiply-linked target without making a backup', () => {
     const home = temporaryHome()
-    const [configPath] = providerConfigPaths('claude', home)
+    const [configPath] = providerConfigPaths('claude', providerRoots(home))
     fs.mkdirSync(configPath, { recursive: true })
-    expect(() => saveProviderConfig('claude', 'sk-directory', 'claude-opus-4-6', 'merge', home))
+    expect(() => saveProviderConfig('claude', 'sk-directory', 'claude-opus-4-6', 'merge', providerRoots(home)))
       .toThrow(/普通文件/)
     expect(fs.readdirSync(path.dirname(configPath))).toEqual(['settings.json'])
 
@@ -450,7 +550,7 @@ describe('native CLI configuration files', () => {
     fs.writeFileSync(source, '{}', 'utf8')
     fs.mkdirSync(path.dirname(configPath), { recursive: true })
     fs.linkSync(source, configPath)
-    expect(() => saveProviderConfig('claude', 'sk-hardlink', 'claude-opus-4-6', 'merge', home))
+    expect(() => saveProviderConfig('claude', 'sk-hardlink', 'claude-opus-4-6', 'merge', providerRoots(home)))
       .toThrow(/普通文件/)
     expect(fs.readFileSync(source, 'utf8')).toBe('{}')
     expect(fs.readdirSync(path.dirname(configPath)).some((name) => name.includes('.bak.'))).toBe(false)
@@ -458,11 +558,11 @@ describe('native CLI configuration files', () => {
 
   it('prunes old backups after a successful save while keeping the most recent ones', () => {
     const home = temporaryHome()
-    saveProviderConfig('claude', 'sk-first', testModels.claude, 'reset', home)
+    saveProviderConfig('claude', 'sk-first', testModels.claude, 'reset', providerRoots(home))
     for (let index = 0; index < 7; index += 1) {
-      saveProviderConfig('claude', `sk-${index}`, testModels.claude, 'merge', home)
+      saveProviderConfig('claude', `sk-${index}`, testModels.claude, 'merge', providerRoots(home))
     }
-    const [configPath] = providerConfigPaths('claude', home)
+    const [configPath] = providerConfigPaths('claude', providerRoots(home))
     const backups = fs.readdirSync(path.dirname(configPath))
       .filter((name) => name.startsWith('settings.json.bak.'))
     expect(backups.length).toBeGreaterThan(0)

@@ -39,7 +39,11 @@ function normalizeUpdateBaseUrl(rawUrl, { allowLocalHttp = false } = {}) {
     throw validationError('UPDATE_URL_INVALID', '更新地址不是有效 URL')
   }
 
-  const localHttp = allowLocalHttp && parsed.protocol === 'http:' && isLoopback(parsed.hostname)
+  const loopback = isLoopback(parsed.hostname)
+  const localHttp = allowLocalHttp && parsed.protocol === 'http:' && loopback
+  if (loopback && !localHttp) {
+    throw validationError('UPDATE_URL_LOOPBACK', '正式更新地址不得使用 loopback 主机')
+  }
   if (parsed.protocol !== 'https:' && !localHttp) {
     throw validationError(
       'UPDATE_URL_INSECURE',
@@ -199,18 +203,19 @@ function validSha512(value, fieldName) {
   return value
 }
 
-function parseLatestMetadata(text) {
+function parseLatestMetadata(text, metadataFile = 'latest.yml') {
+  const label = metadataFile === 'latest-mac.yml' ? 'latest-mac.yml' : 'latest.yml'
   if (typeof text !== 'string' || !text.trim()) {
-    throw validationError('METADATA_EMPTY', 'latest.yml 为空')
+    throw validationError('METADATA_EMPTY', `${label} 为空`)
   }
   if (Buffer.byteLength(text, 'utf8') > MAX_METADATA_BYTES) {
-    throw validationError('METADATA_TOO_LARGE', 'latest.yml 超过 1 MiB 限制')
+    throw validationError('METADATA_TOO_LARGE', `${label} 超过 1 MiB 限制`)
   }
   const prefix = text.trimStart().slice(0, 256).toLowerCase()
   if (prefix.startsWith('<!doctype html') || prefix.startsWith('<html') || prefix.includes('<head>')) {
     throw validationError(
       'METADATA_IS_HTML',
-      'latest.yml 返回了 HTML 页面；请把更新目录配置为静态文件源，不能回退到官网 SPA',
+      `${label} 返回了 HTML 页面；请把更新目录配置为静态文件源，不能回退到官网 SPA`,
     )
   }
 
@@ -218,27 +223,27 @@ function parseLatestMetadata(text) {
   try {
     value = YAML.parse(text, { maxAliasCount: 0, uniqueKeys: true })
   } catch {
-    throw validationError('METADATA_YAML_INVALID', 'latest.yml 不是有效且唯一键的 YAML')
+    throw validationError('METADATA_YAML_INVALID', `${label} 不是有效且唯一键的 YAML`)
   }
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw validationError('METADATA_SHAPE_INVALID', 'latest.yml 顶层必须是对象')
+    throw validationError('METADATA_SHAPE_INVALID', `${label} 顶层必须是对象`)
   }
   if (typeof value.version !== 'string'
     || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(value.version)) {
-    throw validationError('METADATA_VERSION_INVALID', 'latest.yml.version 必须是有效版本号')
+    throw validationError('METADATA_VERSION_INVALID', `${label}.version 必须是有效版本号`)
   }
   if (!Array.isArray(value.files) || value.files.length === 0) {
-    throw validationError('METADATA_FILES_INVALID', 'latest.yml.files 必须包含至少一个更新文件')
+    throw validationError('METADATA_FILES_INVALID', `${label}.files 必须包含至少一个更新文件`)
   }
 
   const seen = new Set()
   const files = value.files.map((entry, index) => {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
-      throw validationError('METADATA_FILE_INVALID', `latest.yml.files[${index}] 必须是对象`)
+      throw validationError('METADATA_FILE_INVALID', `${label}.files[${index}] 必须是对象`)
     }
     const relativePath = safeRelativeArtifactPath(entry.url, `files[${index}].url`)
     if (seen.has(relativePath.toLowerCase())) {
-      throw validationError('METADATA_FILE_DUPLICATE', `latest.yml.files 包含重复文件：${relativePath}`)
+      throw validationError('METADATA_FILE_DUPLICATE', `${label}.files 包含重复文件：${relativePath}`)
     }
     seen.add(relativePath.toLowerCase())
     const size = entry.size === undefined ? null : Number(entry.size)
@@ -247,6 +252,7 @@ function parseLatestMetadata(text) {
     }
     return {
       relativePath,
+      rawUrl: entry.url,
       encodedPath: entry.url.trim(),
       sha512: validSha512(entry.sha512, `files[${index}].sha512`),
       size,
@@ -256,17 +262,48 @@ function parseLatestMetadata(text) {
   const primaryPath = safeRelativeArtifactPath(value.path, 'path')
   const primary = files.find((entry) => entry.relativePath.toLowerCase() === primaryPath.toLowerCase())
   if (!primary) {
-    throw validationError('METADATA_PRIMARY_MISSING', 'latest.yml.path 必须对应 files 中的文件')
+    throw validationError('METADATA_PRIMARY_MISSING', `${label}.path 必须对应 files 中的文件`)
   }
   const primarySha512 = validSha512(value.sha512, 'sha512')
   if (primary.sha512 !== primarySha512) {
-    throw validationError('METADATA_PRIMARY_HASH_MISMATCH', 'latest.yml.sha512 与主更新文件摘要不一致')
+    throw validationError('METADATA_PRIMARY_HASH_MISMATCH', `${label}.sha512 与主更新文件摘要不一致`)
   }
 
   return {
     version: value.version,
+    rawPrimaryPath: value.path,
     primaryPath,
     files,
+  }
+}
+
+function assertMacosUpdateArchitectureInventory(metadata) {
+  const expectedPaths = []
+  for (const architecture of ['arm64', 'x64']) {
+    const expectedPath = `XingMang-AI-Manager-${metadata.version}-${architecture}.zip`
+    expectedPaths.push(expectedPath)
+    if (!metadata.files.some((file) => file.relativePath === expectedPath)) {
+      throw validationError(
+        'MACOS_UPDATE_ARCHITECTURE_INCOMPLETE',
+        `latest-mac.yml 缺少 ${architecture} 架构更新文件：${expectedPath}`,
+      )
+    }
+  }
+  const expected = new Set(expectedPaths)
+  if (!expected.has(metadata.primaryPath)) {
+    throw validationError(
+      'MACOS_UPDATE_PRIMARY_INVALID',
+      'latest-mac.yml 主更新文件必须是当前版本的 arm64 或 x64 ZIP',
+    )
+  }
+  const zipPaths = metadata.files
+    .map((file) => file.relativePath)
+    .filter((filePath) => filePath.toLowerCase().endsWith('.zip'))
+  if (zipPaths.length !== expected.size || zipPaths.some((filePath) => !expected.has(filePath))) {
+    throw validationError(
+      'MACOS_UPDATE_ZIP_INVENTORY_INVALID',
+      'latest-mac.yml 必须且只能包含当前版本的 arm64 与 x64 ZIP 更新文件',
+    )
   }
 }
 
@@ -524,41 +561,42 @@ async function fetchWithTimeout(url, options, timeoutMs) {
   }
 }
 
-async function verifyRemoteFeed({
-  baseUrl,
-  allowLocalHttp = false,
+async function verifyRemoteChannel({
+  normalizedBaseUrl,
+  metadataFile,
   allowMissing = false,
   verifyAssets = true,
+  requireBlockmap = false,
   timeoutMs = 30_000,
 }) {
-  const normalizedBaseUrl = normalizeUpdateBaseUrl(baseUrl, { allowLocalHttp })
-  const metadataUrl = new URL('latest.yml', normalizedBaseUrl).href
+  const metadataUrl = new URL(metadataFile, normalizedBaseUrl).href
   const metadataResponse = await fetchWithTimeout(metadataUrl, {
     headers: { Accept: 'application/yaml, text/yaml, text/plain;q=0.9, */*;q=0.1' },
   }, timeoutMs)
   assertSafeResponseUrl(metadataResponse, metadataUrl, normalizedBaseUrl)
   if (metadataResponse.status === 404 && allowMissing) {
     await cancelResponseBody(metadataResponse)
-    return { baseUrl: normalizedBaseUrl, missing: true, metadata: null }
+    return { missing: true, metadata: null }
   }
   if (!metadataResponse.ok) {
     await cancelResponseBody(metadataResponse)
-    throw validationError('REMOTE_METADATA_STATUS', `latest.yml 返回 HTTP ${metadataResponse.status}`)
+    throw validationError('REMOTE_METADATA_STATUS', `${metadataFile} 返回 HTTP ${metadataResponse.status}`)
   }
   const contentType = metadataResponse.headers.get('content-type')?.toLowerCase() || ''
   if (contentType.includes('text/html')) {
     await cancelResponseBody(metadataResponse)
     throw validationError(
       'REMOTE_METADATA_HTML',
-      'latest.yml 返回了 text/html；更新路径仍被官网 SPA 接管',
+      `${metadataFile} 返回了 text/html；更新路径仍被官网 SPA 接管`,
     )
   }
   const metadataText = (await responseBuffer(
     metadataResponse,
     MAX_METADATA_BYTES,
-    'latest.yml',
+    metadataFile,
   )).toString('utf8')
-  const metadata = parseLatestMetadata(metadataText)
+  const metadata = parseLatestMetadata(metadataText, metadataFile)
+  if (metadataFile === 'latest-mac.yml') assertMacosUpdateArchitectureInventory(metadata)
 
   if (verifyAssets) {
     for (const file of metadata.files) {
@@ -588,37 +626,76 @@ async function verifyRemoteFeed({
       }
     }
 
-    const primary = metadata.files.find((file) => (
-      file.relativePath.toLowerCase() === metadata.primaryPath.toLowerCase()
-    ))
-    if (!primary) throw validationError('METADATA_PRIMARY_MISSING', 'latest.yml 主更新文件缺失')
-    const blockmapUrl = new URL(`${primary.encodedPath}.blockmap`, normalizedBaseUrl).href
-    const blockmapResponse = await fetchWithTimeout(blockmapUrl, {}, timeoutMs)
-    assertSafeResponseUrl(blockmapResponse, blockmapUrl, normalizedBaseUrl)
-    if (!blockmapResponse.ok) {
-      await cancelResponseBody(blockmapResponse)
-      throw validationError('REMOTE_BLOCKMAP_STATUS', `主安装程序 blockmap 返回 HTTP ${blockmapResponse.status}`)
+    if (requireBlockmap) {
+      const primary = metadata.files.find((file) => (
+        file.relativePath.toLowerCase() === metadata.primaryPath.toLowerCase()
+      ))
+      if (!primary) throw validationError('METADATA_PRIMARY_MISSING', `${metadataFile} 主更新文件缺失`)
+      const blockmapFiles = requireBlockmap === 'all-zips'
+        ? metadata.files.filter((file) => file.relativePath.toLowerCase().endsWith('.zip'))
+        : [primary]
+      for (const file of blockmapFiles) {
+        const blockmapPath = `${file.relativePath}.blockmap`
+        const blockmapUrl = new URL(`${file.encodedPath}.blockmap`, normalizedBaseUrl).href
+        const blockmapResponse = await fetchWithTimeout(blockmapUrl, {}, timeoutMs)
+        assertSafeResponseUrl(blockmapResponse, blockmapUrl, normalizedBaseUrl)
+        if (!blockmapResponse.ok) {
+          await cancelResponseBody(blockmapResponse)
+          throw validationError('REMOTE_BLOCKMAP_STATUS', `${blockmapPath} 返回 HTTP ${blockmapResponse.status}`)
+        }
+        const blockmapContentType = blockmapResponse.headers.get('content-type')?.toLowerCase() || ''
+        if (blockmapContentType.includes('text/html')) {
+          await cancelResponseBody(blockmapResponse)
+          throw validationError('REMOTE_BLOCKMAP_INVALID', `${blockmapPath} 返回了 HTML 页面`)
+        }
+        const blockmap = await readBoundedResponse(blockmapResponse, {
+          label: blockmapPath,
+          absoluteLimit: MAX_BLOCKMAP_BYTES,
+          collect: true,
+          tooLargeCode: 'REMOTE_BLOCKMAP_TOO_LARGE',
+          emptyCode: 'REMOTE_BLOCKMAP_EMPTY',
+        })
+        assertBlockmap(blockmap.buffer, `ZIP blockmap ${blockmapPath}`, 'REMOTE_BLOCKMAP_INVALID')
+      }
     }
-    const blockmapContentType = blockmapResponse.headers.get('content-type')?.toLowerCase() || ''
-    if (blockmapContentType.includes('text/html')) {
-      await cancelResponseBody(blockmapResponse)
-      throw validationError('REMOTE_BLOCKMAP_INVALID', '主安装程序 blockmap 返回了 HTML 页面')
-    }
-    const blockmap = await readBoundedResponse(blockmapResponse, {
-      label: `${metadata.primaryPath}.blockmap`,
-      absoluteLimit: MAX_BLOCKMAP_BYTES,
-      collect: true,
-      tooLargeCode: 'REMOTE_BLOCKMAP_TOO_LARGE',
-      emptyCode: 'REMOTE_BLOCKMAP_EMPTY',
-    })
-    assertBlockmap(
-      blockmap.buffer,
-      `主安装程序 blockmap ${metadata.primaryPath}.blockmap`,
-      'REMOTE_BLOCKMAP_INVALID',
-    )
   }
 
-  return { baseUrl: normalizedBaseUrl, missing: false, metadata }
+  return { missing: false, metadata }
+}
+
+async function verifyRemoteFeed({
+  baseUrl,
+  allowLocalHttp = false,
+  allowMissing = false,
+  verifyAssets = true,
+  timeoutMs = 30_000,
+  platform = 'all',
+}) {
+  if (!['all', 'windows', 'macos'].includes(platform)) {
+    throw validationError('VERIFY_PLATFORM_INVALID', `不支持的更新通道：${platform}`)
+  }
+  const normalizedBaseUrl = normalizeUpdateBaseUrl(baseUrl, { allowLocalHttp })
+  const windows = platform === 'macos'
+    ? { skipped: true, missing: true, metadata: null }
+    : await verifyRemoteChannel({
+        normalizedBaseUrl,
+        metadataFile: 'latest.yml',
+        allowMissing,
+        verifyAssets,
+        requireBlockmap: true,
+        timeoutMs,
+      })
+  const mac = platform === 'windows'
+    ? { skipped: true, missing: true, metadata: null }
+    : await verifyRemoteChannel({
+        normalizedBaseUrl,
+        metadataFile: 'latest-mac.yml',
+        allowMissing,
+        verifyAssets,
+        requireBlockmap: 'all-zips',
+        timeoutMs,
+      })
+  return { baseUrl: normalizedBaseUrl, ...windows, mac }
 }
 
 function validateReleaseEnvironment(env = process.env) {
@@ -709,6 +786,7 @@ module.exports = {
   MAX_BLOCKMAP_BYTES,
   MAX_METADATA_BYTES,
   ReleaseValidationError,
+  assertBlockmap,
   assertRemoteReleaseIsOlder,
   compareReleaseVersions,
   normalizeUpdateBaseUrl,

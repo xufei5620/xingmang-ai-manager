@@ -1,13 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertCircle,
+  AppWindow,
+  Check,
   CheckCircle2,
+  CircleHelp,
+  ClipboardCopy,
   Download,
   ExternalLink,
   LoaderCircle,
   MonitorDown,
   PackageCheck,
   RefreshCw,
+  SquareTerminal,
   Store,
   Trash2,
   Wrench,
@@ -15,9 +20,11 @@ import {
 } from 'lucide-react'
 import { DialogBackdrop } from '../components/Dialog'
 import { errorMessage } from '../error-message'
+import { platformPresentation } from '../platform-presentation'
 import type {
   CodexDesktopInstallProgress,
   CodexDesktopInstallResult,
+  PlatformCapabilities,
   ToolUninstallResult,
 } from '../types'
 
@@ -75,12 +82,14 @@ export interface MaintenancePageApi {
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   checkCodexDesktop(): Promise<MaintenanceVersionStatus & { running: boolean }>
   openCodexDesktopStore(): Promise<void>
+  launchCodexDesktop(): Promise<void>
   onProgress?(listener: (progress: MaintenanceProgress) => void): () => void
   onDesktopProgress?(listener: (progress: CodexDesktopInstallProgress) => void): () => void
 }
 
 export interface MaintenancePageProps {
   api: MaintenancePageApi
+  platform: PlatformCapabilities
 }
 
 const providerIds: readonly MaintenanceProviderId[] = ['codex', 'claude', 'gemini', 'grok']
@@ -110,23 +119,163 @@ function cliMaintenanceAction(status: MaintenanceVersionStatus): 'install' | 'up
   return status.updateState === 'available' ? 'update' : 'check'
 }
 
-export function cliUninstallPresentation(status: MaintenanceCliStatus): {
-  available: boolean
-  guidance: string | null
-} {
-  if (!status.installed) return { available: false, guidance: null }
+export type CodexDesktopMaintenanceAction = 'launch' | 'install' | 'update' | 'check'
+
+export interface CodexDesktopMaintenanceControlState {
+  action: CodexDesktopMaintenanceAction
+  disabled: boolean
+  loading: boolean
+  icon: 'open' | 'download' | 'refresh' | 'loading'
+  label: string
+  statusClass: string
+  statusLabel: string
+}
+
+export function codexDesktopMaintenanceControl(
+  platform: PlatformCapabilities,
+  status: MaintenanceSnapshot['codexDesktop'],
+  launching: boolean,
+): CodexDesktopMaintenanceControlState {
+  const presentation = platformPresentation(platform)
+  if (presentation.codexDesktopAction === 'launch') {
+    return {
+      action: 'launch',
+      disabled: launching,
+      loading: launching,
+      icon: launching ? 'loading' : 'open',
+      label: launching ? '正在打开' : presentation.codexDesktopActionLabel,
+      statusClass: status.installed ? 'is-pass' : 'is-warn',
+      statusLabel: status.running ? '正在运行' : status.installed ? '可打开' : '未安装',
+    }
+  }
+
+  const action = cliMaintenanceAction(status)
+  return {
+    action,
+    disabled: false,
+    loading: false,
+    icon: action === 'check' ? 'refresh' : 'download',
+    label: action === 'install' ? '一键安装' : action === 'update' ? '安装最新版' : '检查更新',
+    statusClass: updateStateClass(status),
+    statusLabel: updateStateLabel(status),
+  }
+}
+
+export async function runCodexDesktopMaintenanceAction(
+  action: CodexDesktopMaintenanceAction,
+  operations: {
+    launch(): Promise<void>
+    refresh(): Promise<void>
+    check(): Promise<void>
+    showInstaller(): void
+  },
+): Promise<void> {
+  if (action === 'launch') {
+    await operations.launch()
+    await operations.refresh()
+    return
+  }
+  if (action === 'check') {
+    await operations.check()
+    return
+  }
+  operations.showInstaller()
+}
+
+export type CliUninstallPresentation =
+  | {
+      available: true
+      mode: 'automatic'
+      actionLabel: '卸载'
+      command: null
+      guidance: string | null
+      shellLabel: null
+    }
+  | {
+      available: false
+      mode: 'manual'
+      actionLabel: '卸载帮助'
+      command: string | null
+      guidance: string
+      shellLabel: string
+    }
+  | {
+      available: false
+      mode: 'unavailable'
+      actionLabel: '卸载'
+      command: null
+      guidance: null
+      shellLabel: null
+    }
+
+export function cliUninstallPresentation(
+  status: MaintenanceCliStatus,
+  platform?: PlatformCapabilities,
+): CliUninstallPresentation {
+  if (!status.installed) return {
+    available: false,
+    mode: 'unavailable',
+    actionLabel: '卸载',
+    command: null,
+    guidance: null,
+    shellLabel: null,
+  }
   // 委派卸载同样可用，只是会另开一个以当前用户身份运行的窗口，需要先说清楚。
   if (status.uninstall.available && status.uninstall.delegated) {
-    return { available: true, guidance: '将以普通用户权限打开命令窗口执行卸载，完成后请刷新' }
+    return {
+      available: true,
+      mode: 'automatic',
+      actionLabel: '卸载',
+      command: null,
+      guidance: '将以普通用户权限打开命令窗口执行卸载，完成后请刷新',
+      shellLabel: null,
+    }
   }
-  if (status.uninstall.available) return { available: true, guidance: null }
+  if (status.uninstall.available) {
+    return {
+      available: true,
+      mode: 'automatic',
+      actionLabel: '卸载',
+      command: null,
+      guidance: null,
+      shellLabel: null,
+    }
+  }
+  const shellLabel = platform?.platform === 'macos' || platform?.platform === 'linux'
+    ? '终端'
+    : '普通 PowerShell'
   const detail = [
     status.uninstall.reason,
-    status.uninstall.manualCommand ? `普通 PowerShell：${status.uninstall.manualCommand}` : null,
+    status.uninstall.manualCommand ? `打开卸载帮助可复制${shellLabel}命令` : null,
   ].filter((value): value is string => Boolean(value))
   return {
     available: false,
+    mode: 'manual',
+    actionLabel: '卸载帮助',
+    command: status.uninstall.manualCommand,
     guidance: detail.join('；') || '当前安装不能由本工具安全卸载',
+    shellLabel,
+  }
+}
+
+export function applyManualUninstallResult(
+  snapshot: MaintenanceSnapshot,
+  provider: MaintenanceProviderId,
+  result: Extract<ToolUninstallResult, { outcome: 'manual-required' }>,
+): MaintenanceSnapshot {
+  return {
+    ...snapshot,
+    clis: {
+      ...snapshot.clis,
+      [provider]: {
+        ...snapshot.clis[provider],
+        uninstall: {
+          available: false,
+          reason: result.manualHelp.reason,
+          manualCommand: result.manualHelp.manualCommand,
+        },
+      },
+    },
   }
 }
 
@@ -262,7 +411,7 @@ function ToolUninstallDialog({
               <p>{desktop ? '运行中的窗口会先关闭。' : ''}只移除程序本体，不删除配置、会话、Skills、Plugins 和备份。</p>
             </div>
           </div>
-          <button className="icon-button" type="button" title="取消" disabled={busy} onClick={onCancel}>
+          <button className="icon-button" type="button" title="取消" aria-label="关闭卸载确认" disabled={busy} onClick={onCancel}>
             <X size={18} />
           </button>
         </header>
@@ -278,7 +427,105 @@ function ToolUninstallDialog({
   )
 }
 
-export function MaintenancePage({ api }: MaintenancePageProps) {
+function ManualUninstallDialog({
+  label,
+  reason,
+  installDirectory,
+  command,
+  shellLabel,
+  onRefresh,
+  onCancel,
+}: {
+  label: string
+  reason: string
+  installDirectory: string | null
+  command: string | null
+  shellLabel: string
+  onRefresh: () => void
+  onCancel: () => void
+}) {
+  const [copyState, setCopyState] = useState<'idle' | 'copied' | 'failed'>('idle')
+
+  const copyCommand = async () => {
+    if (!command || !navigator.clipboard) {
+      setCopyState('failed')
+      return
+    }
+    try {
+      await navigator.clipboard.writeText(command)
+      setCopyState('copied')
+    } catch {
+      setCopyState('failed')
+    }
+  }
+
+  return (
+    <DialogBackdrop className="save-mode-backdrop" onDismiss={onCancel}>
+      <section className="save-mode-dialog manual-uninstall-dialog" role="dialog" aria-modal="true" aria-labelledby="manual-uninstall-title">
+        <header className="save-mode-head">
+          <div>
+            <div className="save-mode-icon manual-help-icon"><CircleHelp size={20} /></div>
+            <div>
+              <h3 id="manual-uninstall-title">手动卸载 {label}</h3>
+              <p>此安装不适合由应用直接删除，请按检测结果操作。</p>
+            </div>
+          </div>
+          <button className="icon-button" type="button" title="关闭" aria-label="关闭卸载帮助" onClick={onCancel}>
+            <X size={18} />
+          </button>
+        </header>
+
+        <div className="manual-uninstall-content">
+          <dl className="manual-uninstall-details">
+            <div><dt>原因</dt><dd>{reason}</dd></div>
+            <div><dt>检测目录</dt><dd><code>{installDirectory ?? '未获取到安装目录'}</code></dd></div>
+          </dl>
+
+          <ol className="manual-uninstall-steps">
+            <li>先退出正在运行的 {label} 窗口和终端任务。</li>
+            <li>{command ? `打开${shellLabel}，复制并运行下方命令。` : '使用该发行版或包管理器提供的卸载方式移除程序本体。'}</li>
+            <li>完成后回到本页重新检测；配置、会话和备份无需删除。</li>
+          </ol>
+
+          {command ? (
+            <div className="manual-command-block">
+              <div className="manual-command-heading"><SquareTerminal size={15} /><span>{shellLabel}命令</span></div>
+              <div className="manual-command-code">
+                <pre><code>{command}</code></pre>
+                <button
+                  className="icon-button command-copy-button"
+                  type="button"
+                  title="复制卸载命令"
+                  aria-label="复制卸载命令"
+                  onClick={() => void copyCommand()}
+                >
+                  {copyState === 'copied' ? <Check size={16} /> : <ClipboardCopy size={16} />}
+                </button>
+              </div>
+              <span className={`manual-copy-state state-${copyState}`} role="status" aria-live="polite">
+                {copyState === 'copied' ? '命令已复制' : copyState === 'failed' ? '复制失败，请手动选择命令' : '命令只处理已识别的程序文件，不删除配置和会话'}
+              </span>
+            </div>
+          ) : (
+            <div className="manual-command-empty">
+              <AlertCircle size={16} />来源无法安全确认，因此没有生成删除命令。请勿直接递归删除检测目录。
+            </div>
+          )}
+        </div>
+
+        <footer className="save-mode-footer manual-uninstall-footer">
+          <button className="secondary-button" type="button" onClick={onCancel}>关闭</button>
+          <button className="primary-button" type="button" onClick={onRefresh}>
+            <RefreshCw size={15} />执行完成后重新检测
+          </button>
+        </footer>
+      </section>
+    </DialogBackdrop>
+  )
+}
+
+export function MaintenancePage({ api, platform }: MaintenancePageProps) {
+  const presentation = platformPresentation(platform)
   const [snapshot, setSnapshot] = useState<MaintenanceSnapshot | null>(null)
   const [selected, setSelected] = useState<Set<MaintenanceProviderId>>(new Set())
   const [jobs, setJobs] = useState<Record<MaintenanceProviderId, { state: MaintenanceJobState; message: string }>>(() => (
@@ -287,6 +534,7 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
   const [loading, setLoading] = useState(true)
   const [batchRunning, setBatchRunning] = useState(false)
   const [desktopInstalling, setDesktopInstalling] = useState(false)
+  const [desktopLaunching, setDesktopLaunching] = useState(false)
   const [desktopProgress, setDesktopProgress] = useState<CodexDesktopInstallProgress | null>(null)
   const [desktopInstallDialogOpen, setDesktopInstallDialogOpen] = useState(false)
   const [checkingTarget, setCheckingTarget] = useState<MaintenanceProviderId | 'desktop' | null>(null)
@@ -330,7 +578,10 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
     if (progress.phase === 'error') setError(progress.message)
   }), [api])
 
-  const busy = batchRunning || desktopInstalling || checkingTarget !== null || uninstallingTarget !== null
+  const busy = batchRunning || desktopInstalling || desktopLaunching || checkingTarget !== null || uninstallingTarget !== null
+  const desktopControl = snapshot
+    ? codexDesktopMaintenanceControl(platform, snapshot.codexDesktop, desktopLaunching)
+    : null
   const selectedIds = useMemo(() => providerIds.filter((id) => (
     selected.has(id)
     && snapshot
@@ -417,6 +668,19 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
       const result = target === 'desktop'
         ? await api.uninstallCodexDesktop()
         : await api.uninstallCli(target)
+      if (result.outcome === 'manual-required') {
+        setError(result.error)
+        if (target === 'desktop') {
+          setUninstallTarget(null)
+          return
+        }
+        setSnapshot((current) => current
+          ? applyManualUninstallResult(current, target, result)
+          : current)
+        // Keep the target open: the confirmation dialog becomes the existing
+        // manual-help dialog as soon as the snapshot changes.
+        return
+      }
       if (result.outcome === 'delegated') {
         // 卸载在另一个以当前用户身份运行的窗口里进行，此处刷新只会读到旧状态。
         setUninstallTarget(null)
@@ -459,13 +723,30 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
   }
 
   const maintainDesktop = async () => {
-    if (!snapshot) return
-    const action = cliMaintenanceAction(snapshot.codexDesktop)
-    if (action === 'check') {
-      await refresh(true)
+    if (!desktopControl) return
+    if (desktopControl.action === 'launch') {
+      setDesktopLaunching(true)
+      setError(null)
+      try {
+        await runCodexDesktopMaintenanceAction(desktopControl.action, {
+          launch: () => api.launchCodexDesktop(),
+          refresh: () => refresh(true),
+          check: checkDesktop,
+          showInstaller: () => setDesktopInstallDialogOpen(true),
+        })
+      } catch (cause) {
+        setError(errorMessage(cause))
+      } finally {
+        setDesktopLaunching(false)
+      }
       return
     }
-    setDesktopInstallDialogOpen(true)
+    await runCodexDesktopMaintenanceAction(desktopControl.action, {
+      launch: () => api.launchCodexDesktop(),
+      refresh: () => refresh(true),
+      check: checkDesktop,
+      showInstaller: () => setDesktopInstallDialogOpen(true),
+    })
   }
 
   const openDesktopStore = async () => {
@@ -477,6 +758,17 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
       setError(errorMessage(cause))
     }
   }
+
+  const targetedCliStatus = uninstallTarget && uninstallTarget !== 'desktop' && snapshot
+    ? snapshot.clis[uninstallTarget]
+    : null
+  const targetedUninstall = targetedCliStatus
+    ? cliUninstallPresentation(targetedCliStatus, platform)
+    : null
+  const targetedManualUninstall = targetedUninstall
+    && targetedUninstall.mode === 'manual'
+    ? targetedUninstall
+    : null
 
   return (
     <div className="page workspace-page operations-page" data-page-id="maintenance">
@@ -522,7 +814,8 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
               const job = jobs[provider]
               const active = job.state === 'queued' || job.state === 'running'
               const action = cliMaintenanceAction(status)
-              const uninstall = cliUninstallPresentation(status)
+              const uninstall = cliUninstallPresentation(status, platform)
+              const manualUninstall = uninstall.mode === 'manual'
               return (
                 <article className="operation-row maintenance-row" key={provider} role="listitem">
                   <label className="maintenance-select">
@@ -563,20 +856,22 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
                       {active || checkingTarget === provider
                         ? <LoaderCircle className="spin" size={15} />
                         : action === 'check' ? <RefreshCw size={15} /> : <Download size={15} />}
-                      {action === 'install' ? '安装' : action === 'update' ? '安装最新版' : '检查更新'}
+                      {provider === 'grok' && presentation.grokAction === 'external-guidance'
+                        ? presentation.grokActionLabel
+                        : action === 'install' ? '安装' : action === 'update' ? '安装最新版' : '检查更新'}
                     </button>
                     <button
-                      className="danger-button maintenance-uninstall-button"
+                      className={`${manualUninstall ? 'secondary-button maintenance-help-button' : 'danger-button'} maintenance-uninstall-button`}
                       type="button"
                       title={uninstall.available
                         ? `卸载 ${providerLabels[provider]}`
                         : uninstall.guidance ?? `${providerLabels[provider]} 未安装`}
                       aria-describedby={uninstall.guidance ? `uninstall-guidance-${provider}` : undefined}
                       onClick={() => setUninstallTarget(provider)}
-                      disabled={busy || loading || !uninstall.available}
+                      disabled={busy || loading || (!uninstall.available && !manualUninstall)}
                     >
-                      {uninstall.available ? <Trash2 size={15} /> : <AlertCircle size={15} />}
-                      {status.installed && !uninstall.available ? '需手动卸载' : '卸载'}
+                      {uninstall.available ? <Trash2 size={15} /> : <CircleHelp size={15} />}
+                      {manualUninstall ? uninstall.actionLabel : '卸载'}
                     </button>
                   </div>
                 </article>
@@ -592,7 +887,7 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
         <div className="section-heading">
           <div>
             <h2 id="maintenance-desktop-title">Codex 桌面端</h2>
-            <span>Appx 本机版本 · Codex 官方更新清单</span>
+            <span>{presentation.codexDesktopMaintenanceSubtitle}</span>
           </div>
         </div>
         <div className="operation-row maintenance-row">
@@ -602,10 +897,10 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
               <strong>Codex 桌面端</strong>
               {snapshot && (
                 <span
-                  className={`operation-state ${updateStateClass(snapshot.codexDesktop)}`}
+                  className={`operation-state ${desktopControl?.statusClass ?? updateStateClass(snapshot.codexDesktop)}`}
                   title={snapshot.codexDesktop.updateError ?? undefined}
                 >
-                  {updateStateLabel(snapshot.codexDesktop)}
+                  {desktopControl?.statusLabel ?? updateStateLabel(snapshot.codexDesktop)}
                 </span>
               )}
             </div>
@@ -613,9 +908,9 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
               应用版本 {snapshot?.codexDesktop.appVersion ?? '未知'}
               {snapshot?.codexDesktop.running ? ' · 正在运行' : ''}
             </p>
-            <span className="operation-meta">
+            {presentation.showWindowsPackages && <span className="operation-meta">
               MSIX 包：当前 {snapshot?.codexDesktop.version ?? '未知'} · 官方最新 {snapshot?.codexDesktop.latestVersion ?? '未知'}
-            </span>
+            </span>}
             {snapshot?.codexDesktop.updateError && <span className="operation-meta job-error">{snapshot.codexDesktop.updateError}</span>}
             {desktopProgress && (
               <div className={`desktop-install-progress phase-${desktopProgress.phase}`} role="status" aria-live="polite">
@@ -631,21 +926,19 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
             <button
               className="secondary-button"
               type="button"
-              onClick={() => snapshot && cliMaintenanceAction(snapshot.codexDesktop) === 'check' ? void checkDesktop() : void maintainDesktop()}
-              disabled={busy || loading || !snapshot}
+              onClick={() => void maintainDesktop()}
+              disabled={busy || desktopControl?.disabled || loading || !snapshot}
             >
-              {desktopInstalling || checkingTarget === 'desktop'
+              {desktopInstalling || desktopControl?.loading || checkingTarget === 'desktop'
                 ? <LoaderCircle className="spin" size={15} />
-                : snapshot && cliMaintenanceAction(snapshot.codexDesktop) === 'check'
-                  ? <RefreshCw size={15} />
-                  : <Download size={15} />}
-              {!snapshot
-                ? '检查更新'
-                : cliMaintenanceAction(snapshot.codexDesktop) === 'install'
-                  ? '一键安装'
-                  : cliMaintenanceAction(snapshot.codexDesktop) === 'update' ? '安装最新版' : '检查更新'}
+                : desktopControl?.icon === 'open'
+                  ? <AppWindow size={15} />
+                  : desktopControl?.icon === 'refresh'
+                    ? <RefreshCw size={15} />
+                    : <Download size={15} />}
+              {desktopControl?.label ?? '检查更新'}
             </button>
-            <button
+            {presentation.allowDesktopUninstall && <button
               className="danger-button maintenance-uninstall-button"
               type="button"
               title="卸载 Codex 桌面端"
@@ -653,11 +946,11 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
               disabled={busy || loading || !snapshot?.codexDesktop.installed}
             >
               <Trash2 size={15} />卸载
-            </button>
+            </button>}
           </div>
         </div>
       </section>
-      {desktopInstallDialogOpen && (
+      {desktopInstallDialogOpen && presentation.showDesktopMirror && (
         <CodexDesktopInstallSourceDialog
           installedVersion={snapshot?.codexDesktop.version}
           latestVersion={snapshot?.codexDesktop.latestVersion}
@@ -672,7 +965,20 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
           onCancel={() => setDesktopInstallDialogOpen(false)}
         />
       )}
-      {uninstallTarget && (
+      {uninstallTarget && targetedManualUninstall && targetedCliStatus ? (
+        <ManualUninstallDialog
+          label={providerLabels[uninstallTarget as MaintenanceProviderId]}
+          reason={targetedCliStatus.uninstall.reason ?? '当前安装不能由本工具安全卸载'}
+          installDirectory={targetedCliStatus.installDirectory}
+          command={targetedManualUninstall.command}
+          shellLabel={targetedManualUninstall.shellLabel}
+          onRefresh={() => {
+            setUninstallTarget(null)
+            void refresh(true, 'preserve')
+          }}
+          onCancel={() => setUninstallTarget(null)}
+        />
+      ) : uninstallTarget ? (
         <ToolUninstallDialog
           label={uninstallTarget === 'desktop' ? 'Codex 桌面端' : providerLabels[uninstallTarget]}
           desktop={uninstallTarget === 'desktop'}
@@ -680,7 +986,7 @@ export function MaintenancePage({ api }: MaintenancePageProps) {
           onConfirm={() => void uninstall(uninstallTarget)}
           onCancel={() => setUninstallTarget(null)}
         />
-      )}
+      ) : null}
     </div>
   )
 }

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CodexSessionsService,
   type CodexSessionRecoveryWarning,
@@ -124,6 +124,7 @@ function service(data: Fixture, hooks?: ConstructorParameters<typeof CodexSessio
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const database of openDatabases.splice(0)) {
     try { database.close() } catch { /* Already closed by the test. */ }
   }
@@ -133,6 +134,42 @@ afterEach(() => {
 })
 
 describe('CodexSessionsService', () => {
+  it.each([
+    { label: 'empty', value: '' },
+    { label: 'whitespace', value: '   ' },
+    { label: 'relative', value: 'relative-codex' },
+    { label: 'NUL', value: `invalid\0codex` },
+  ])('rejects an explicitly configured $label CODEX_HOME', ({ value }) => {
+    const data = fixture()
+
+    expect(() => new CodexSessionsService({
+      codexHome: value,
+      managerDataDirectory: data.managerData,
+    })).toThrow('CODEX_HOME')
+  })
+
+  it('trims an explicitly configured absolute CODEX_HOME', () => {
+    const data = fixture()
+    const selected = `  ${data.codexHome}  `
+
+    const sessions = new CodexSessionsService({
+      codexHome: selected,
+      managerDataDirectory: data.managerData,
+    })
+
+    expect(sessions.codexHome).toBe(path.resolve(data.codexHome))
+    expect(sessions.databasePath).toBe(path.join(data.codexHome, 'state_5.sqlite'))
+  })
+
+  it('keeps the legacy homedir fallback even when process.env.CODEX_HOME is set', () => {
+    const data = fixture()
+    vi.stubEnv('CODEX_HOME', path.join(data.root, 'wrong-codex'))
+
+    const sessions = new CodexSessionsService({ managerDataDirectory: data.managerData })
+
+    expect(sessions.codexHome).toBe(path.join(os.homedir(), '.codex'))
+  })
+
   it('uses the live WAL threads table as the authoritative paged and searchable index', () => {
     const data = fixture('session-1')
     fs.writeFileSync(

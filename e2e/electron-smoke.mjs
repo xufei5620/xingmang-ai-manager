@@ -117,20 +117,78 @@ function auditRuntimeLogs(snapshot, systemSnapshot) {
 }
 
 const artifactDir = path.resolve('artifacts')
-const expectedCodexDataDirectoryDisplay = process.platform === 'win32'
-  ? '%USERPROFILE%\\.codex'
-  : '~/.codex'
 await fs.mkdir(artifactDir, { recursive: true })
 const testUserDataDir = path.join(artifactDir, '.e2e-dashboard-user-data')
-const testCodexHomeDir = path.join(artifactDir, '.e2e-codex-home')
+const testHomeDir = path.join(artifactDir, '.e2e-dashboard-home')
+const testCodexHomeDir = path.join(testHomeDir, '.codex')
+const testNpmPrefix = path.join(testHomeDir, '.local')
+const testNpmBinDir = path.join(testNpmPrefix, 'bin')
+const testCodexPackageRoot = path.join(testNpmPrefix, 'lib', 'node_modules', '@openai', 'codex')
+const testCodexEntrypoint = path.join(testCodexPackageRoot, 'bin', 'codex.js')
 await fs.rm(testUserDataDir, { recursive: true, force: true })
-await fs.rm(testCodexHomeDir, { recursive: true, force: true })
-await fs.mkdir(testCodexHomeDir, { recursive: true })
+await fs.rm(testHomeDir, { recursive: true, force: true })
+await fs.mkdir(path.join(testCodexHomeDir, 'packages'), { recursive: true })
+await fs.mkdir(path.dirname(testCodexEntrypoint), { recursive: true })
+await fs.mkdir(testNpmBinDir, { recursive: true })
+await fs.writeFile(
+  path.join(testCodexPackageRoot, 'package.json'),
+  `${JSON.stringify({ name: '@openai/codex', version: '0.146.0', bin: { codex: 'bin/codex.js' } }, null, 2)}\n`,
+  'utf8',
+)
+await fs.writeFile(
+  testCodexEntrypoint,
+  [
+    '#!/usr/bin/env node',
+    "const argv = process.argv.slice(2)",
+    "if (argv.includes('--version')) console.log('codex-cli 0.146.0')",
+    "else if (argv[0] === 'mcp' && argv[1] === 'list') console.log('[]')",
+    "else if (argv[0] === 'plugin' && argv[1] === 'list') console.log(JSON.stringify({ installed: [], available: [] }))",
+    "else if (argv[0] === 'plugin' && argv[1] === 'marketplace' && argv[2] === 'list') console.log(JSON.stringify({ marketplaces: [] }))",
+    "else { console.error(`unsupported smoke fixture command: ${argv.join(' ')}`); process.exitCode = 2 }",
+    '',
+  ].join('\n'),
+  'utf8',
+)
+await fs.chmod(testCodexEntrypoint, 0o700)
+if (process.platform === 'win32') {
+  await fs.writeFile(
+    path.join(testNpmBinDir, 'codex.cmd'),
+    `@echo off\r\n"${process.execPath}" "${testCodexEntrypoint}" %*\r\n`,
+    'utf8',
+  )
+} else {
+  await fs.symlink(path.relative(testNpmBinDir, testCodexEntrypoint), path.join(testNpmBinDir, 'codex'))
+}
+await fs.writeFile(
+  path.join(testCodexHomeDir, 'config.toml'),
+  [
+    'model_provider = "solov"',
+    'model = "gpt-5.6-sol"',
+    'review_model = "gpt-5.6-sol"',
+    '',
+    '[model_providers.solov]',
+    'name = "solov"',
+    'base_url = "https://api.solov.cc"',
+    'wire_api = "responses"',
+    'requires_openai_auth = true',
+    '',
+  ].join('\n'),
+  'utf8',
+)
+await fs.writeFile(
+  path.join(testCodexHomeDir, 'auth.json'),
+  `${JSON.stringify({ OPENAI_API_KEY: 'e2e-smoke-placeholder-key' }, null, 2)}\n`,
+  'utf8',
+)
 
 const application = await electron.launch({
   args: ['.', `--user-data-dir=${testUserDataDir}`],
   env: {
     ...process.env,
+    HOME: testHomeDir,
+    USERPROFILE: testHomeDir,
+    PATH: [testNpmBinDir, path.dirname(process.execPath), '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(path.delimiter),
+    npm_config_prefix: testNpmPrefix,
     XINGMANG_CODEX_HOME_OVERRIDE: testCodexHomeDir,
     XINGMANG_DISABLE_SINGLE_INSTANCE: '1',
   },
@@ -161,12 +219,14 @@ try {
       },
     }
   })
+  const platformCapabilities = await page.evaluate(() => window.xingmang.getPlatformCapabilities())
 
   const result = {
     title: await page.title(),
     bodyText: await page.locator('body').innerText(),
     viewport: page.viewportSize(),
     windowMetrics,
+    platformCapabilities,
     horizontalOverflow: await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth),
     pageErrors,
   }
@@ -188,10 +248,10 @@ try {
     npmUpdateFailures: systemSnapshot
       ? npmProviders.filter((provider) => {
           const status = systemSnapshot.clis[provider]
-          return status.updateCheck !== 'checked'
+          return status.installed && (status.updateCheck !== 'checked'
             || status.updateSource !== 'npm'
             || !nonEmptyText(status.latestVersion)
-            || status.updateError !== null
+            || status.updateError !== null)
         })
       : [...npmProviders],
     grokLocalVersionFailure: Boolean(
@@ -301,6 +361,11 @@ try {
     window.localStorage.getItem('xingmang-sidebar-collapsed') === 'true'
   ))
   const collapsedOverview = page.locator('.sidebar-collapsed .nav-item[data-sidebar-tooltip="工具概览"]')
+  await application.evaluate(({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+    window?.show()
+    window?.focus()
+  })
   await page.bringToFront()
   await collapsedOverview.hover({ force: true })
   await page.waitForFunction(() => {
@@ -384,8 +449,9 @@ try {
     },
   ]
   const expectedNavigation = ['工具概览', ...navigationPages.map(({ label }) => label)]
-  result.navigationItemCount = await page.locator('.main-nav .nav-item').count()
-  result.navigationItemsFullyVisible = await page.locator('.main-nav .nav-item').evaluateAll((items) => (
+  const sidebarNavigationItems = page.locator('.main-nav .nav-item, .utility-nav .nav-item')
+  result.navigationItemCount = await sidebarNavigationItems.count()
+  result.navigationItemsFullyVisible = await sidebarNavigationItems.evaluateAll((items) => (
     items.every((item) => {
       const bounds = item.getBoundingClientRect()
       return bounds.top >= 0 && bounds.bottom <= window.innerHeight
@@ -397,7 +463,7 @@ try {
   result.navigationPageChecks = []
   const multiProviderPageIds = new Set(['sessions', 'mcp', 'skills', 'plugins'])
   for (const { id, label, heading, keyControl } of navigationPages) {
-    await page.locator('.main-nav').getByRole('button', { name: label, exact: true }).click()
+    await page.locator('.main-nav, .utility-nav').getByRole('button', { name: label, exact: true }).click()
     const pageRoot = page.locator(`.main-content [data-page-id="${id}"]`)
     await pageRoot.waitFor({ state: 'visible', timeout: 10_000 })
     if (id === 'mcp' || id === 'plugins') {
@@ -415,17 +481,21 @@ try {
         const button = row.querySelector('.maintenance-uninstall-button')
         const guidance = row.querySelector('.uninstall-guidance')?.textContent?.trim() ?? ''
         if (!(button instanceof HTMLButtonElement)) return false
-        if (state === '未安装') return button.disabled
-        if (button.disabled) {
-          return button.textContent?.includes('需手动卸载') === true
-            && guidance.length > 0
-        }
-        return button.textContent?.trim().includes('卸载') === true && guidance.length === 0
+        const manualHelp = button.classList.contains('maintenance-help-button')
+        if (state === '未安装') return button.disabled && !manualHelp
+        if (manualHelp) return !button.disabled
+          && button.textContent?.trim().includes('卸载帮助') === true
+          && guidance.length > 0
+        return !button.disabled && button.textContent?.trim().includes('卸载') === true
       }))
       result.maintenanceCliManualUninstallCount = await pageRoot.locator(
-        '.maintenance-cli-section .maintenance-uninstall-button:disabled',
-      ).filter({ hasText: '需手动卸载' }).count()
-      result.maintenanceDesktopUninstallButtonVisible = await pageRoot.locator('.maintenance-desktop-section .maintenance-uninstall-button').isVisible()
+        '.maintenance-cli-section .maintenance-help-button',
+      ).count()
+      const desktopUninstallButton = pageRoot.locator('.maintenance-desktop-section .maintenance-uninstall-button')
+      const desktopUninstallButtonCount = await desktopUninstallButton.count()
+      result.maintenanceDesktopUninstallContractCorrect = platformCapabilities.codexDesktop.uninstall
+        ? desktopUninstallButtonCount === 1 && await desktopUninstallButton.isVisible()
+        : desktopUninstallButtonCount === 0
       result.maintenanceInstallDirectoriesHidden = await pageRoot.getByText(/^安装目录：/).count() === 0
       result.maintenanceCliActionsCorrect = result.maintenanceCliActions.every(({ state, action }) => (
         state === '可更新' ? action === '安装最新版'
@@ -436,16 +506,20 @@ try {
         state: await pageRoot.locator('.maintenance-desktop-section .operation-state').innerText(),
         action: await pageRoot.locator('.maintenance-desktop-section .secondary-button').innerText(),
       }
-      result.maintenanceDesktopActionCorrect = result.maintenanceDesktopAction.state === '可更新'
-        ? result.maintenanceDesktopAction.action.trim() === '安装最新版'
-        : result.maintenanceDesktopAction.state === '未安装'
-          ? result.maintenanceDesktopAction.action.trim() === '安装'
-          : result.maintenanceDesktopAction.action.trim() === '检查更新'
+      const desktopAction = result.maintenanceDesktopAction.action.trim()
+      result.maintenanceDesktopActionCorrect = platformCapabilities.platform === 'macos'
+        ? ['正在运行', '可打开', '未安装'].includes(result.maintenanceDesktopAction.state.trim())
+          && desktopAction === '打开 Codex App'
+        : result.maintenanceDesktopAction.state === '可更新'
+          ? desktopAction === '安装最新版'
+          : result.maintenanceDesktopAction.state === '未安装'
+            ? desktopAction === '一键安装'
+            : desktopAction === '检查更新'
       const availableUninstallButton = pageRoot.locator(
-        '.maintenance-cli-section .maintenance-uninstall-button:not([disabled])',
+        '.maintenance-cli-section .maintenance-uninstall-button:not(.maintenance-help-button):not([disabled])',
       ).first()
       result.maintenanceAutomaticUninstallButtonCount = await pageRoot.locator(
-        '.maintenance-cli-section .maintenance-uninstall-button:not([disabled])',
+        '.maintenance-cli-section .maintenance-uninstall-button:not(.maintenance-help-button):not([disabled])',
       ).count()
       result.maintenanceUninstallDialogVisible = result.maintenanceAutomaticUninstallButtonCount === 0
       result.maintenanceUninstallPreservesDataHint = result.maintenanceAutomaticUninstallButtonCount === 0
@@ -459,8 +533,10 @@ try {
         await page.screenshot({ path: path.join(artifactDir, 'tool-uninstall-dialog.png') })
         await uninstallDialog.getByRole('button', { name: '取消', exact: true }).last().click()
       }
-      result.maintenanceInstallSourceDialogChecked = result.maintenanceDesktopAction.action.trim() === '检查更新'
-      if (result.maintenanceDesktopAction.action.trim() !== '检查更新') {
+      const shouldCheckInstallSourceDialog = platformCapabilities.platform === 'windows'
+        && desktopAction !== '检查更新'
+      result.maintenanceInstallSourceDialogChecked = !shouldCheckInstallSourceDialog
+      if (shouldCheckInstallSourceDialog) {
         await pageRoot.locator('.maintenance-desktop-section .secondary-button').click()
         const installSourceDialog = page.getByRole('dialog', { name: '选择 Codex 桌面端安装方式' })
         await installSourceDialog.waitFor({ state: 'visible' })
@@ -486,7 +562,7 @@ try {
       rootVisible: await pageRoot.isVisible(),
       headingVisible: await pageRoot.getByRole('heading', { name: heading, exact: true }).isVisible(),
       keyControlVisible: await keyControl(pageRoot).isVisible(),
-      activeStateCorrect: await page.locator('.main-nav .nav-item[aria-current="page"]').innerText() === label,
+      activeStateCorrect: await page.locator('.sidebar .nav-item[aria-current="page"]').innerText() === label,
       providerTabCount: multiProviderPageIds.has(id)
         ? await pageRoot.locator('.provider-tabs [role="tab"]').count()
         : null,
@@ -526,7 +602,8 @@ try {
   result.codexDesktopVisible = await page.getByRole('heading', { name: 'Codex 桌面端' }).isVisible()
   result.codexDesktopWindowState = await page.locator('.desktop-card .version-pill').innerText()
   const codexDesktopCardText = await page.locator('.desktop-card').innerText()
-  result.codexDesktopPackageVersionVisible = /\b\d+(?:\.\d+){3}\b/.test(codexDesktopCardText)
+  result.codexDesktopPackageVersionVisible = platformCapabilities.platform !== 'windows'
+    || /\b\d+(?:\.\d+){3}\b/.test(codexDesktopCardText)
   result.codexDesktopAppVersionHidden = !codexDesktopCardText.includes('26.721.31836')
   result.codexDesktopUpdateAvailable = codexDesktopCardText.includes('可更新至')
   result.codexDesktopUpdateActionCorrect = !result.codexDesktopUpdateAvailable
@@ -571,8 +648,10 @@ try {
       return bounds.top >= 0 && bounds.bottom <= window.innerHeight
     })
   ))
-  result.codexLaunchDialogChecked = result.codexDesktopWindowState !== '窗口已打开'
-  if (result.codexDesktopWindowState === '窗口已打开') {
+  const shouldCheckCodexLaunchDialog = platformCapabilities.platform === 'windows'
+    && result.codexDesktopWindowState === '窗口已打开'
+  result.codexLaunchDialogChecked = !shouldCheckCodexLaunchDialog
+  if (shouldCheckCodexLaunchDialog) {
     await page.locator('.desktop-card').getByRole('button', { name: '打开', exact: true }).click()
     const codexLaunchDialog = page.getByRole('alertdialog', { name: 'Codex 桌面端已运行' })
     await codexLaunchDialog.waitFor({ state: 'visible' })
@@ -628,7 +707,10 @@ try {
   result.nativeConfigVisible = await page.getByText('API Key 写入 CLI 原生配置').isVisible()
   result.installDirectoryVisible = await page.getByText('安装目录', { exact: true }).isVisible()
   result.dataDirectoryVisible = await page.getByText('数据目录', { exact: true }).isVisible()
-  result.dataDirectoryPathVisible = await page.locator('.data-directory-list code').innerText() === expectedCodexDataDirectoryDisplay
+  const displayedCodexDataDirectory = await page.locator('.data-directory-list code').innerText()
+  result.dataDirectoryPathVisible = displayedCodexDataDirectory.startsWith(
+    process.platform === 'win32' ? '%USERPROFILE%' : '~/',
+  ) && displayedCodexDataDirectory.endsWith(process.platform === 'win32' ? '\\.codex' : '/.codex')
     && await page.locator('.data-directory-list').getByText('已识别', { exact: true }).isVisible()
   result.relayUrlHidden = await page.getByLabel('中转 URL（固定）').count() === 0
   result.detectedFiles = await page.locator('.config-file-list').getByText('已存在', { exact: true }).count()
@@ -701,7 +783,7 @@ try {
     || !result.maintenanceCliActionsCorrect
     || result.maintenanceCliUninstallButtonCount !== 4
     || !result.maintenanceCliUninstallContractCorrect
-    || !result.maintenanceDesktopUninstallButtonVisible
+    || !result.maintenanceDesktopUninstallContractCorrect
     || !result.maintenanceInstallDirectoriesHidden
     || !result.maintenanceUninstallDialogVisible
     || !result.maintenanceUninstallPreservesDataHint

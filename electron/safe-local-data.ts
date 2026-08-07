@@ -1,17 +1,12 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
-
-function normalizedPath(value: string): string {
-  const resolved = path.resolve(value).replace(/[\\/]$/, '')
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
-}
+import { sameLocalPathIdentity } from './path-identity'
 
 function existingPathIsReparsePoint(filePath: string): boolean {
-  const stats = fs.lstatSync(filePath)
-  if (stats.isSymbolicLink()) return true
   try {
-    return normalizedPath(fs.realpathSync(filePath)) !== normalizedPath(filePath)
+    const realPath = fs.realpathSync(filePath)
+    return !sameLocalPathIdentity(realPath, filePath)
   } catch {
     return true
   }
@@ -24,7 +19,12 @@ export function assertNoReparseComponents(targetPath: string, label: string): vo
   let current = parsed.root
   for (const segment of relative.split(path.sep).filter(Boolean)) {
     current = path.join(current, segment)
-    if (!fs.existsSync(current)) break
+    try {
+      fs.lstatSync(current)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') break
+      throw new Error(`${label}无法验证路径组件`)
+    }
     if (existingPathIsReparsePoint(current)) {
       throw new Error(`${label}不能经过符号链接或目录联接`)
     }
@@ -46,7 +46,8 @@ export function assertSafeDataFile(filePath: string, label: string): boolean {
     if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
       throw new Error(`${label}必须是单链接普通文件`)
     }
-    if (normalizedPath(fs.realpathSync(filePath)) !== normalizedPath(filePath)) {
+    const realPath = fs.realpathSync(filePath)
+    if (!sameLocalPathIdentity(realPath, filePath)) {
       throw new Error(`${label}不能经过符号链接或目录联接`)
     }
     return true
@@ -92,6 +93,7 @@ function validateOpenedSafeDataFile(
   label: string,
 ): void {
   const current = fs.lstatSync(filePath, { bigint: true })
+  const realPath = fs.realpathSync(filePath)
   if (
     !opened.isFile()
     || !current.isFile()
@@ -99,7 +101,7 @@ function validateOpenedSafeDataFile(
     || opened.nlink !== 1n
     || current.nlink !== 1n
     || !sameFileIdentity(opened, current)
-    || normalizedPath(fs.realpathSync(filePath)) !== normalizedPath(filePath)
+    || !sameLocalPathIdentity(realPath, filePath)
   ) {
     throw new Error(`${label}在打开期间发生变化`)
   }

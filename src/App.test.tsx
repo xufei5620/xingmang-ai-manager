@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { platformCapabilitiesFor } from '../electron/platform-capabilities'
+import { codexDesktopLaunchDecision, commitStartupPlatformCapabilities } from './App'
 import { createScanRequestTracker, runCoordinatedScan } from './scan-coordinator'
 import { shouldBlockStartupForUpdate, shouldCheckUpdatesOnStartup } from './startup-settings'
 
@@ -131,5 +133,66 @@ describe('startup settings', () => {
       error: { code: 'UPDATE_INSTALL_FAILED', message: '安装器启动失败' },
     })).toBe(false)
     expect(shouldBlockStartupForUpdate({ development: false, phase: 'error', error: null })).toBe(false)
+  })
+})
+
+describe('startup platform gate', () => {
+  it('does not continue startup until the platform capabilities are committed', async () => {
+    const pending = deferred<ReturnType<typeof platformCapabilitiesFor>>()
+    const commit = vi.fn()
+    let continued = false
+    const startup = (async () => {
+      await commitStartupPlatformCapabilities(() => pending.promise, commit)
+      continued = true
+    })()
+
+    await Promise.resolve()
+    expect(continued).toBe(false)
+    expect(commit).not.toHaveBeenCalled()
+
+    const windows = platformCapabilitiesFor('win32', 'x64')
+    pending.resolve(windows)
+    await startup
+
+    expect(commit).toHaveBeenCalledOnce()
+    expect(commit).toHaveBeenCalledWith(windows)
+    expect(continued).toBe(true)
+  })
+
+  it('propagates capability failures without committing the fallback as a real platform', async () => {
+    const commit = vi.fn()
+
+    await expect(commitStartupPlatformCapabilities(
+      async () => { throw new Error('platform IPC unavailable') },
+      commit,
+    )).rejects.toThrow('platform IPC unavailable')
+    expect(commit).not.toHaveBeenCalled()
+  })
+})
+
+describe('Codex Desktop launch decision', () => {
+  it('opens an already-running macOS app directly without offering restart', () => {
+    expect(codexDesktopLaunchDecision(
+      platformCapabilitiesFor('darwin', 'arm64'),
+      true,
+    )).toBe('open')
+  })
+
+  it('keeps the existing open-or-restart choice for a running Windows app', () => {
+    expect(codexDesktopLaunchDecision(
+      platformCapabilitiesFor('win32', 'x64'),
+      true,
+    )).toBe('choose')
+  })
+
+  it('opens directly when the app is not running on either platform', () => {
+    expect(codexDesktopLaunchDecision(
+      platformCapabilitiesFor('darwin', 'arm64'),
+      false,
+    )).toBe('open')
+    expect(codexDesktopLaunchDecision(
+      platformCapabilitiesFor('win32', 'x64'),
+      false,
+    )).toBe('open')
   })
 })

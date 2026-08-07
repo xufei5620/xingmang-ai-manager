@@ -106,7 +106,7 @@ export function buildWindowsShellLaunchPlan(
     executable: explorerExecutable,
     argv: [value],
     cwd: machinePaths.systemRoot,
-    env: trustedCommandEnvironment(env, machinePaths),
+    env: trustedCommandEnvironment(env, machinePaths, 'win32'),
     windowsHide: true,
   }
 }

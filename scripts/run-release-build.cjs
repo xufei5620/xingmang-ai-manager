@@ -18,6 +18,7 @@ try {
 }
 const releaseEnvironment = {
   ...process.env,
+  XINGMANG_LOCAL_BUILD: '0',
   XINGMANG_RELEASE: '1',
   XINGMANG_OUTPUT_DIR: releaseOutputDirectory,
   CSC_IDENTITY_AUTO_DISCOVERY: 'false',

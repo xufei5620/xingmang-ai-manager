@@ -30,6 +30,7 @@ function temporaryDirectory(): string {
 function write(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, content, 'utf8')
+  if (process.platform !== 'win32') fs.chmodSync(filePath, 0o700)
 }
 
 afterEach(() => {
@@ -140,8 +141,11 @@ describe('provider source update network policy', () => {
       '  url = git@github.com:acme/server.git',
     ].join('\n'))
     const runCommandImplementation = vi.fn(async () => ({ stdout: `${head}\tHEAD\n`, stderr: '' }))
+    const gitExecutable = process.platform === 'win32'
+      ? 'C:\\Program Files\\Git\\bin\\git.exe'
+      : '/usr/bin/git'
     const inspect = createProviderSourceUpdateInspector({}, 'trusted-only', {
-      findExecutable: vi.fn(async () => 'C:\\Program Files\\Git\\bin\\git.exe'),
+      findExecutable: vi.fn(async () => gitExecutable),
       runCommand: runCommandImplementation as never,
     })
 
@@ -163,11 +167,11 @@ describe('provider source update network policy', () => {
       'ls-remote', 'https://github.com/acme/server.git', 'HEAD',
     ])
     expect(runCommandImplementation.mock.calls[0][1]).toMatchObject({
-      trustedOnly: true,
-      cwd: 'C:\\Program Files\\Git\\bin',
+      trustedOnly: process.platform === 'win32',
+      cwd: path.dirname(gitExecutable),
       env: {
         GIT_CONFIG_NOSYSTEM: '1',
-        GIT_CONFIG_GLOBAL: 'NUL',
+        GIT_CONFIG_GLOBAL: process.platform === 'win32' ? 'NUL' : '/dev/null',
         GIT_CONFIG_COUNT: '0',
         GIT_TERMINAL_PROMPT: '0',
         GIT_ASKPASS: '',
@@ -211,19 +215,23 @@ describe('native plugin list parsing', () => {
   })
 
   it('resolves Gemini extensions through a Hermes-owned package', async () => {
-    const prefix = temporaryDirectory()
+    const directory = temporaryDirectory()
+    const prefix = path.join(directory, 'hermes')
     const packageRoot = path.join(prefix, 'node_modules', '@google', 'gemini-cli')
-    write(path.join(prefix, 'gemini.cmd'), '@echo off\n')
-    write(path.join(prefix, 'node.exe'), '')
+    write(path.join(prefix, process.platform === 'win32' ? 'gemini.cmd' : 'gemini'), '#!/bin/sh\n')
+    write(path.join(prefix, process.platform === 'win32' ? 'node.exe' : 'node'), '')
     write(path.join(packageRoot, 'package.json'), JSON.stringify({
       name: '@google/gemini-cli',
       bin: { gemini: 'dist/index.js' },
     }))
     write(path.join(packageRoot, 'dist', 'index.js'), '#!/usr/bin/env node\n')
 
-    const command = await resolveProviderCommand('gemini', { PATH: prefix })
+    const command = await resolveProviderCommand('gemini', { PATH: prefix, HOME: directory })
 
-    expect(command.executable).toBe(path.resolve(prefix, 'node.exe'))
+    expect(command.executable).toBe(path.resolve(
+      prefix,
+      process.platform === 'win32' ? 'node.exe' : 'node',
+    ))
     expect(command.argv).toEqual([fs.realpathSync(path.join(packageRoot, 'dist', 'index.js'))])
   })
 
@@ -397,6 +405,77 @@ describe('Gemini native Skill list parsing', () => {
 })
 
 describe('ProviderExtensionService list facade', () => {
+  it('uses codexEnv only for Codex and leaves all other provider roots under userHome', async () => {
+    const userHome = temporaryDirectory()
+    const codexHome = temporaryDirectory()
+    const repository = temporaryDirectory()
+    write(path.join(codexHome, 'skills', 'codex-user', 'SKILL.md'), '---\nname: Codex User\n---\n')
+    write(path.join(userHome, '.agents', 'skills', 'agents-user', 'SKILL.md'), '---\nname: Agents User\n---\n')
+    write(path.join(userHome, '.claude', 'skills', 'claude-user', 'SKILL.md'), '---\nname: Claude User\n---\n')
+    write(path.join(userHome, '.grok', 'skills', 'grok-user', 'SKILL.md'), '---\nname: Grok User\n---\n')
+    write(path.join(repository, '.codex', 'skills', 'codex-project', 'SKILL.md'), '---\nname: Codex Project\n---\n')
+    write(path.join(repository, '.agents', 'skills', 'agents-project', 'SKILL.md'), '---\nname: Agents Project\n---\n')
+    const baseEnv = { HOME: userHome, XINGMANG_ENV_SENTINEL: 'preserved' }
+    const resolveCalls: Array<{ provider: ProviderId; env: NodeJS.ProcessEnv }> = []
+    const runCalls: Array<{ provider: ProviderId; env: NodeJS.ProcessEnv }> = []
+    const service = new ProviderExtensionService({
+      homeDirectory: userHome,
+      codexHome,
+      repositoryRoot: repository,
+      windowsExecutionMode: 'same-user',
+      env: baseEnv,
+      codexEnv: { ...baseEnv, CODEX_HOME: codexHome },
+      resolveCommand: async (provider, env) => {
+        resolveCalls.push({ provider, env })
+        return { executable: `/trusted/${provider}`, argv: [] }
+      },
+      runCommand: async (command, options) => {
+        runCalls.push({
+          provider: path.basename(command.executable) as ProviderId,
+          env: options.env ?? {},
+        })
+        return {
+          executable: command.executable,
+          argv: [...command.argv],
+          exitCode: 0,
+          signal: null,
+          stdout: '[]',
+          stderr: '',
+          outputBytes: 2,
+          durationMs: 1,
+        }
+      },
+      inspectSource: async (input) => ({
+        currentVersion: input.currentVersion,
+        latestVersion: input.currentVersion,
+      }),
+    })
+
+    const snapshots = await service.listAll()
+
+    for (const calls of [resolveCalls, runCalls]) {
+      expect(calls.find((call) => call.provider === 'codex')?.env).toMatchObject({
+        CODEX_HOME: codexHome,
+        XINGMANG_ENV_SENTINEL: 'preserved',
+      })
+      expect(calls.filter((call) => call.provider !== 'codex').every((call) => (
+        call.env.CODEX_HOME === undefined && call.env.XINGMANG_ENV_SENTINEL === 'preserved'
+      ))).toBe(true)
+    }
+    const skillNames = (provider: ProviderId) => snapshots
+      .find((snapshot) => snapshot.provider === provider)!.items
+      .filter((item) => item.kind === 'skill')
+      .map((item) => item.name)
+    expect(skillNames('codex')).toEqual(expect.arrayContaining([
+      'Codex User',
+      'Agents User',
+      'Codex Project',
+      'Agents Project',
+    ]))
+    expect(skillNames('claude')).toContain('Claude User')
+    expect(skillNames('grok')).toContain('Grok User')
+  })
+
   it('degrades an oversized local MCP config to a warning without disabling the whole list', async () => {
     const home = temporaryDirectory()
     write(path.join(home, '.claude', 'settings.json'), 'x'.repeat(2 * 1024 * 1024 + 1))
@@ -574,6 +653,10 @@ describe('ProviderExtensionService list facade', () => {
       homeDirectory: home,
       repositoryRoot: repository,
       invoke: async () => '[]',
+      inspectSource: async (input) => ({
+        currentVersion: input.currentVersion,
+        latestVersion: '1.0.0',
+      }),
     })
 
     const snapshot = await service.list('claude')

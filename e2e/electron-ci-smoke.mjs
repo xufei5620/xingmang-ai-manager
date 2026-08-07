@@ -69,7 +69,7 @@ try {
     }
   })
 
-  const navigationLabels = [
+  const primaryNavigationLabels = [
     '工具概览',
     '会话管理',
     'MCP 管理',
@@ -78,11 +78,14 @@ try {
     '配置备份',
     '健康诊断',
     '安装维护',
+  ]
+  const utilityNavigationLabels = [
     '反馈与诊断',
     '检查更新',
     '设置',
   ]
-  const navigationTexts = await page.locator('.main-nav .nav-item').allInnerTexts()
+  const primaryNavigationTexts = await page.locator('.main-nav .nav-item').allInnerTexts()
+  const utilityNavigationTexts = await page.locator('.utility-nav .nav-item').allInnerTexts()
   const codexCliCard = page.locator('.cli-card').nth(1)
   const result = {
     title: await page.title(),
@@ -98,7 +101,8 @@ try {
     secondToolCard: await codexCliCard.getByRole('heading').innerText(),
     codexConfigRecognized: await codexCliCard.getByText('星芒 AI 已配置', { exact: true }).isVisible(),
     codexModelVisible: await codexCliCard.getByText('gpt-5.6-sol', { exact: true }).isVisible(),
-    navigationTexts: navigationTexts.map((text) => text.trim()),
+    primaryNavigationTexts: primaryNavigationTexts.map((text) => text.trim()),
+    utilityNavigationTexts: utilityNavigationTexts.map((text) => text.trim()),
     providerBrandIconsLoaded: await page.locator('.cli-card .provider-icon img').evaluateAll(
       (icons) => icons.length === 5
         && icons.every((icon) => icon instanceof HTMLImageElement && icon.complete && icon.naturalWidth > 0),
@@ -107,7 +111,7 @@ try {
     overviewRestored: false,
   }
 
-  await page.locator('.main-nav').getByRole('button', { name: '设置', exact: true }).click()
+  await page.locator('.utility-nav').getByRole('button', { name: '设置', exact: true }).click()
   const settingsPage = page.locator('.main-content [data-page-id="settings"]')
   await settingsPage.waitFor({ state: 'visible' })
   result.settingsReachable = await settingsPage.getByRole('heading', { name: '设置', exact: true }).isVisible()
@@ -137,7 +141,8 @@ try {
     || result.secondToolCard !== 'Codex CLI'
     || !result.codexConfigRecognized
     || !result.codexModelVisible
-    || JSON.stringify(result.navigationTexts) !== JSON.stringify(navigationLabels)
+    || JSON.stringify(result.primaryNavigationTexts) !== JSON.stringify(primaryNavigationLabels)
+    || JSON.stringify(result.utilityNavigationTexts) !== JSON.stringify(utilityNavigationLabels)
     || !result.providerBrandIconsLoaded
     || !result.settingsReachable
     || !result.overviewRestored

@@ -1,4 +1,9 @@
-import type { AppConfigSummary, CodexSetupStatus, NodeRuntimeInstallResult } from './types'
+import type {
+  AppConfigSummary,
+  CodexSetupStatus,
+  NodeRuntimeInstallResult,
+  PlatformCapabilities,
+} from './types'
 import { codexRuntimeSetupMessage, nodeRuntimeSupported } from './onboarding-runtime'
 
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
@@ -76,6 +81,7 @@ export async function authorizeCodex(
 export async function prepareCodexEnvironment(
   api: CodexSetupApi,
   callbacks: CodexSetupCallbacks,
+  capabilities?: PlatformCapabilities,
 ): Promise<CodexSetupResult> {
   let phase: OnboardingSetupPhase = 'environment'
   let status: CodexSetupStatus | null = null
@@ -101,6 +107,11 @@ export async function prepareCodexEnvironment(
 
     if (!status.cli.installed) {
       throw new Error('Codex CLI 安装完成后仍未检测到命令，请重新检测环境')
+    }
+
+    if (!status.desktop.installed && capabilities?.codexDesktop.install === 'external') {
+      callbacks.onAction('idle')
+      return { outcome: 'ready', status }
     }
 
     if (!status.desktop.installed) {
@@ -131,6 +142,7 @@ export async function prepareCodexEnvironment(
 export async function installNodeAndPrepareCodexEnvironment(
   api: CodexNodeInstallApi,
   callbacks: CodexSetupCallbacks,
+  capabilities?: PlatformCapabilities,
 ): Promise<CodexNodeInstallResult> {
   let status: CodexSetupStatus | null = null
   callbacks.onAction('installing-node')
@@ -146,7 +158,7 @@ export async function installNodeAndPrepareCodexEnvironment(
     callbacks.onAction('idle')
     return {
       outcome: 'setup',
-      setup: await prepareCodexEnvironment(api, callbacks),
+      setup: await prepareCodexEnvironment(api, callbacks, capabilities),
     }
   } catch (error) {
     callbacks.onAction('idle')

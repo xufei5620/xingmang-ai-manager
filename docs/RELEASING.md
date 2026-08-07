@@ -102,7 +102,7 @@ XingMang-AI-Manager-<version>-Setup.exe.blockmap
 5. 运行远端完整校验：
 
 ```powershell
-npm run update:verify-feed
+npm run update:verify-feed -- --platform=windows
 ```
 
 该命令会下载远端 `latest.yml` 和安装程序，重新计算 SHA-512，并确认 `.blockmap` 可访问。任何失败都应立即恢复旧 `latest.yml`。
@@ -152,7 +152,7 @@ npm run dev
 也可单独校验本地 HTTP 更新源：
 
 ```powershell
-npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local
+npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=windows
 ```
 
 ## 7. 回滚

@@ -1,7 +1,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CodexSessionsService } from './codex-sessions'
 import type {
   CodexSessionReader,
   ProviderSessionSummary,
@@ -12,6 +14,8 @@ const temporaryDirectories: string[] = []
 
 interface Fixture {
   root: string
+  codexHome: string
+  wrongCodexHome: string
   claude: string
   gemini: string
   grok: string
@@ -22,6 +26,8 @@ function fixture(): Fixture {
   temporaryDirectories.push(root)
   const data = {
     root,
+    codexHome: path.join(root, 'custom-codex'),
+    wrongCodexHome: path.join(root, 'wrong-codex'),
     claude: path.join(root, '.claude', 'projects'),
     gemini: path.join(root, '.gemini', 'tmp'),
     grok: path.join(root, '.grok', 'sessions'),
@@ -39,6 +45,59 @@ function writeJsonLines(filePath: string, entries: Array<unknown | string>): voi
     `${entries.map((entry) => typeof entry === 'string' ? entry : JSON.stringify(entry)).join('\n')}\n`,
     'utf8',
   )
+}
+
+function seedCodexSession(codexHome: string, id: string, title: string): void {
+  const rolloutPath = path.join(codexHome, 'sessions', `${id}.jsonl`)
+  writeJsonLines(rolloutPath, [
+    { type: 'session_meta', payload: { id, cwd: 'C:/codex' } },
+    {
+      timestamp: '2026-07-24T00:00:00.000Z',
+      type: 'response_item',
+      payload: { type: 'message', role: 'user', content: [{ type: 'input_text', text: title }] },
+    },
+  ])
+  const databasePath = path.join(codexHome, 'state_5.sqlite')
+  const database = new DatabaseSync(databasePath)
+  try {
+    database.exec(`
+      CREATE TABLE threads (
+        id TEXT PRIMARY KEY,
+        rollout_path TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        cwd TEXT NOT NULL,
+        model_provider TEXT NOT NULL,
+        model TEXT,
+        tokens_used INTEGER NOT NULL DEFAULT 0,
+        archived INTEGER NOT NULL DEFAULT 0,
+        archived_at INTEGER,
+        updated_at_ms INTEGER
+      )
+    `)
+    database.prepare(`
+      INSERT INTO threads (
+        id, rollout_path, created_at, updated_at, title, cwd, model_provider,
+        model, tokens_used, archived, archived_at, updated_at_ms
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      rolloutPath,
+      1_721_779_900,
+      1_721_780_000,
+      title,
+      'C:/codex',
+      'xingmang',
+      'gpt-5.6-sol',
+      20,
+      0,
+      null,
+      1_721_780_000_000,
+    )
+  } finally {
+    database.close()
+  }
 }
 
 function codexSummary(id = 'codex-native'): {
@@ -172,6 +231,7 @@ function seedExternalSessions(data: Fixture): void {
 }
 
 afterEach(() => {
+  vi.unstubAllEnvs()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -181,7 +241,13 @@ describe('ProviderSessionsService', () => {
   it('unifies Codex SQLite and Claude/Gemini/Grok local sessions with explicit capabilities', async () => {
     const data = fixture()
     seedExternalSessions(data)
-    const sessions = service(data)
+    seedCodexSession(data.codexHome, 'custom-codex-native', 'Custom Codex 会话')
+    seedCodexSession(data.wrongCodexHome, 'wrong-codex-native', 'Wrong Codex 会话')
+    vi.stubEnv('CODEX_HOME', data.wrongCodexHome)
+    const sessions = service(data, new CodexSessionsService({
+      codexHome: data.codexHome,
+      managerDataDirectory: path.join(data.root, 'manager-data'),
+    }))
 
     const page = await sessions.list({ pageSize: 100 })
     expect(page.total).toBe(4)
@@ -195,7 +261,8 @@ describe('ProviderSessionsService', () => {
     expect(page.capabilities.grok.readonly).toBe(true)
 
     const byProvider = Object.fromEntries(page.items.map((item) => [item.provider, item])) as Record<string, ProviderSessionSummary>
-    expect(byProvider.codex.id).toBe('codex:codex-native')
+    expect(byProvider.codex.id).toBe('codex:custom-codex-native')
+    expect(page.items.some((item) => item.nativeId === 'wrong-codex-native')).toBe(false)
     expect(byProvider.claude).toMatchObject({ nativeId: 'claude-native', title: 'Claude 自定义标题', model: 'claude-sonnet' })
     expect(byProvider.gemini).toMatchObject({ nativeId: 'gemini-native', model: 'gemini-2.5-pro', messageCount: 2 })
     expect(byProvider.grok).toMatchObject({ nativeId: 'grok-native', title: 'Grok 摘要标题', messageCount: 2 })

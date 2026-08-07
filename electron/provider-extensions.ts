@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { parse as parseYaml } from 'yaml'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { sameLocalPathIdentity } from './path-identity'
 import { DirectoryEntryLimitError, readDirectoryEntriesSync } from './bounded-directory'
 import { readBoundedResponseText } from './bounded-response'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
@@ -14,7 +15,7 @@ import {
   type CommandSpec,
   type RunCommandOptions,
 } from './command-runner'
-import { resolveCliCommand } from './tool-installation'
+import { resolveCliCommand, type ResolvedCliCommand } from './tool-installation'
 import { isNewerVersion } from './versions'
 import {
   assertTrustedElevatedCliCommand,
@@ -165,9 +166,13 @@ export interface ProviderSourceUpdateDependencies {
 
 export interface ProviderExtensionServiceOptions {
   homeDirectory?: string
+  codexHome?: string
   repositoryRoot?: string | null
   env?: NodeJS.ProcessEnv
+  codexEnv?: NodeJS.ProcessEnv
   invoke?: ProviderCliInvoker
+  resolveCommand?: typeof resolveProviderCommand
+  runCommand?: typeof runCommand
   inspectSource?: SourceUpdateInspector
   sourceUpdateDependencies?: ProviderSourceUpdateDependencies
   now?: () => Date
@@ -555,12 +560,17 @@ interface SkillRoot {
   scope: ProviderExtensionScope
 }
 
-function skillRoots(provider: ProviderId, home: string, repository: string | null): SkillRoot[] {
+function skillRoots(
+  provider: ProviderId,
+  home: string,
+  codexHome: string,
+  repository: string | null,
+): SkillRoot[] {
   const roots: SkillRoot[] = []
   if (provider === 'codex') {
     roots.push(
       { path: path.join(home, '.agents', 'skills'), scope: 'user' },
-      { path: path.join(home, '.codex', 'skills'), scope: 'user' },
+      { path: path.join(codexHome, 'skills'), scope: 'user' },
     )
   }
   if (provider === 'claude') roots.push({ path: path.join(home, '.claude', 'skills'), scope: 'user' })
@@ -606,9 +616,14 @@ function findGitRoot(start: string, boundary: string): string | null {
   return null
 }
 
-function scanSkills(provider: ProviderId, home: string, repository: string | null): MutableExtensionItem[] {
+function scanSkills(
+  provider: ProviderId,
+  home: string,
+  codexHome: string,
+  repository: string | null,
+): MutableExtensionItem[] {
   const result = new Map<string, MutableExtensionItem>()
-  for (const root of skillRoots(provider, home, repository)) {
+  for (const root of skillRoots(provider, home, codexHome, repository)) {
     let rootInfo: fs.Stats
     let realRoot: string
     try {
@@ -690,7 +705,7 @@ function geminiSkillScope(
 ): ProviderExtensionItemScope | null {
   if (builtin) return 'builtin'
   const skillDirectory = path.dirname(location)
-  for (const root of skillRoots('gemini', home, repository)) {
+  for (const root of skillRoots('gemini', home, path.join(home, '.codex'), repository)) {
     if (pathInside(skillDirectory, root.path)) return root.scope
   }
   const extensionRoot = path.join(home, '.gemini', 'extensions')
@@ -926,35 +941,46 @@ export async function resolveProviderCommand(
   provider: ProviderId,
   env: NodeJS.ProcessEnv,
   windowsExecutionMode: WindowsCliExecutionMode = 'trusted-only',
-): Promise<CommandSpec> {
-  return resolveCliCommand(provider, env, windowsExecutionMode)
+): Promise<ResolvedCliCommand> {
+  return resolveCliCommand(provider, env, windowsExecutionMode, {
+    darwinStagingRetention: 'ephemeral',
+  })
 }
 
 function defaultProviderInvoker(
   envInput: NodeJS.ProcessEnv,
+  codexEnvInput: NodeJS.ProcessEnv,
   windowsExecutionMode: WindowsCliExecutionMode,
+  resolveCommand: typeof resolveProviderCommand = resolveProviderCommand,
+  runCommandImplementation: typeof runCommand = runCommand,
 ): ProviderCliInvoker {
   const env = commandEnvironment(envInput)
+  const codexEnv = commandEnvironment(codexEnvInput)
   return async (provider, argv, options = {}) => {
-    const base = await resolveProviderCommand(provider, env, windowsExecutionMode)
+    const providerEnv = provider === 'codex' ? codexEnv : env
+    const base = await resolveCommand(provider, providerEnv, windowsExecutionMode)
     const command = {
       executable: base.executable,
       argv: [...base.argv, ...argv],
     }
     const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
     if (trustedOnly) {
-      assertTrustedElevatedCliCommand(command, `${cliCatalog[provider].name} 扩展管理`, { env })
+      assertTrustedElevatedCliCommand(command, `${cliCatalog[provider].name} 扩展管理`, { env: providerEnv })
     }
     const runOptions: RunCommandOptions = {
       cwd: options.cwd,
-      env,
+      env: providerEnv,
       trustedOnly,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       maxOutputBytes: options.maxOutputBytes ?? MAX_OUTPUT_BYTES,
       sensitiveValues: options.sensitiveValues,
     }
-    const result = await runCommand(command, runOptions)
-    return selectProviderCommandOutput(result.stdout, result.stderr)
+    try {
+      const result = await runCommandImplementation(command, runOptions)
+      return selectProviderCommandOutput(result.stdout, result.stderr)
+    } finally {
+      await base.release?.()
+    }
   }
 }
 
@@ -1090,18 +1116,13 @@ interface LocalGitMetadata {
   locator: string
 }
 
-function normalizedLocalPath(value: string): string {
-  const resolved = path.resolve(value).replace(/[\\/]+$/, '')
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
-}
-
 function plainGitDirectory(directory: string): string {
   const stats = fs.lstatSync(directory)
   if (!stats.isDirectory() || stats.isSymbolicLink()) {
     throw new Error('Git 元数据目录不是普通目录')
   }
   const canonical = fs.realpathSync(directory)
-  if (normalizedLocalPath(canonical) !== normalizedLocalPath(directory)) {
+  if (!sameLocalPathIdentity(canonical, directory)) {
     throw new Error('Git 元数据目录不能经过符号链接或目录联接')
   }
   return canonical
@@ -1316,6 +1337,7 @@ function publicItem(item: MutableExtensionItem): ProviderExtensionItem {
 
 export class ProviderExtensionService {
   private readonly homeDirectory: string
+  private readonly codexHome: string
   private repositoryRoot: string | null
   private readonly invoke: ProviderCliInvoker
   private readonly inspectSource: SourceUpdateInspector
@@ -1323,10 +1345,18 @@ export class ProviderExtensionService {
 
   constructor(options: ProviderExtensionServiceOptions = {}) {
     this.homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
+    this.codexHome = path.resolve(options.codexHome ?? path.join(this.homeDirectory, '.codex'))
     this.repositoryRoot = options.repositoryRoot ? path.resolve(options.repositoryRoot) : null
     const env = options.env ?? process.env
+    const codexEnv = options.codexEnv ?? env
     const windowsExecutionMode = options.windowsExecutionMode ?? 'trusted-only'
-    this.invoke = options.invoke ?? defaultProviderInvoker(env, windowsExecutionMode)
+    this.invoke = options.invoke ?? defaultProviderInvoker(
+      env,
+      codexEnv,
+      windowsExecutionMode,
+      options.resolveCommand,
+      options.runCommand,
+    )
     this.inspectSource = options.inspectSource ?? createProviderSourceUpdateInspector(
       env,
       windowsExecutionMode,
@@ -1417,7 +1447,7 @@ export class ProviderExtensionService {
         })
         items.push(...parseGeminiSkillList(output, this.homeDirectory, this.repositoryRoot))
       } else {
-        items.push(...scanSkills(provider, this.homeDirectory, this.repositoryRoot))
+        items.push(...scanSkills(provider, this.homeDirectory, this.codexHome, this.repositoryRoot))
       }
     } catch (error) {
       const reason = `${provider === 'gemini' ? 'Gemini CLI Skill 状态' : 'Skill 目录'}读取失败：${errorDetail(error)}`

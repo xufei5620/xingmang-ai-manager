@@ -1,10 +1,5 @@
 import fs from 'node:fs'
-import path from 'node:path'
-
-function normalizedPath(value: string): string {
-  const resolved = path.resolve(value)
-  return process.platform === 'win32' ? resolved.toLowerCase() : resolved
-}
+import { sameLocalPathIdentity } from './path-identity'
 
 function sameFileIdentity(left: fs.BigIntStats, right: fs.BigIntStats): boolean {
   return left.dev === right.dev
@@ -32,7 +27,7 @@ function pathSnapshotSync(filePath: string, label: string): fs.BigIntStats {
   const after = fs.lstatSync(filePath, { bigint: true })
   assertSingleLinkRegularFile(after, label)
   if (!sameFileSnapshot(before, after)) throw new Error(`${label}在路径校验期间发生变化`)
-  if (normalizedPath(canonical) !== normalizedPath(filePath)) {
+  if (!sameLocalPathIdentity(canonical, filePath)) {
     throw new Error(`${label}不能经过符号链接或目录联接`)
   }
   return after
@@ -45,7 +40,7 @@ async function pathSnapshot(filePath: string, label: string): Promise<fs.BigIntS
   const after = await fs.promises.lstat(filePath, { bigint: true })
   assertSingleLinkRegularFile(after, label)
   if (!sameFileSnapshot(before, after)) throw new Error(`${label}在路径校验期间发生变化`)
-  if (normalizedPath(canonical) !== normalizedPath(filePath)) {
+  if (!sameLocalPathIdentity(canonical, filePath)) {
     throw new Error(`${label}不能经过符号链接或目录联接`)
   }
   return after

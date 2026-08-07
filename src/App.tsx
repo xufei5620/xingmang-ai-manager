@@ -66,6 +66,12 @@ import { createScanRequestTracker, runCoordinatedScan } from './scan-coordinator
 import { createLatestRequestTracker } from './latest-request'
 import { localPathForDisplay } from './local-path-display'
 import { shouldBlockStartupForUpdate, shouldCheckUpdatesOnStartup } from './startup-settings'
+import {
+  failClosedPlatformCapabilities,
+  performCliInstallAction,
+  performNodeRuntimeAction,
+  platformPresentation,
+} from './platform-presentation'
 import { SkillsPage, type SkillImportRequest } from './pages/SkillsPage'
 import { UpdatePage } from './pages/UpdatePage'
 import {
@@ -83,6 +89,7 @@ import {
   type DiagnosticsReport,
   type McpServer,
   type PluginCatalog,
+  type PlatformCapabilities,
   type ProviderId,
   type RepositoryContext,
   type SkillItem,
@@ -164,8 +171,10 @@ function configProvider(tab: ConfigTabId): ProviderId {
   return tab === 'codexDesktop' ? 'codex' : tab
 }
 
-function configTabMeta(tab: ConfigTabId): ProviderMeta {
-  return tab === 'codexDesktop' ? codexDesktopMeta : providers[tab]
+function configTabMeta(tab: ConfigTabId, platform: PlatformCapabilities): ProviderMeta {
+  return tab === 'codexDesktop'
+    ? { ...codexDesktopMeta, company: platformPresentation(platform).codexDesktopCompany }
+    : providers[tab]
 }
 
 function shortVersion(value: string | null): string {
@@ -233,6 +242,21 @@ function sameDesktopStatus(left: DesktopAppStatus, right: DesktopAppStatus): boo
     && left.path === right.path
     && left.installDirectory === right.installDirectory
     && left.running === right.running
+}
+
+export function codexDesktopLaunchDecision(
+  platform: PlatformCapabilities,
+  running: boolean,
+): 'open' | 'choose' {
+  return running && platform.platform !== 'macos' ? 'choose' : 'open'
+}
+
+export async function commitStartupPlatformCapabilities(
+  load: () => Promise<PlatformCapabilities>,
+  commit: (capabilities: PlatformCapabilities) => void,
+): Promise<void> {
+  const capabilities = await load()
+  commit(capabilities)
 }
 
 function EmptyStatus(): SystemSnapshot {
@@ -346,6 +370,10 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>(initialTheme)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed)
   const [activePage, setActivePage] = useState<PageId>('overview')
+  const [platformCapabilities, setPlatformCapabilities] = useState<PlatformCapabilities>(() => {
+    document.documentElement.dataset.platform = failClosedPlatformCapabilities.platform
+    return failClosedPlatformCapabilities
+  })
   const [appView, setAppView] = useState<AppView>('loading')
   const [startupStage, setStartupStage] = useState<StartupStage>('updates')
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTabId>('codexDesktop')
@@ -401,6 +429,15 @@ function App() {
     settings.checkUpdatesOnStartup,
     settings.runDiagnosticsOnStartup,
   ])
+  const presentation = useMemo(
+    () => platformPresentation(platformCapabilities),
+    [platformCapabilities],
+  )
+
+  useEffect(() => {
+    const unsubscribe = window.xingmang.onNavigate(setActivePage)
+    return unsubscribe
+  }, [])
 
   useEffect(() => () => {
     scanTracker.invalidate()
@@ -564,7 +601,8 @@ function App() {
       }
     },
     maintainCli: async (provider: ProviderId) => {
-      await window.xingmang.installCli(provider)
+      const result = await performCliInstallAction(provider, platformCapabilities, window.xingmang)
+      if (result.kind === 'external') throw new Error(result.guidance)
     },
     uninstallCli: async (provider: ProviderId) => window.xingmang.uninstallCli(provider),
     checkCli: async (provider: ProviderId) => {
@@ -592,9 +630,12 @@ function App() {
     openCodexDesktopStore: async () => {
       await window.xingmang.openExternal(CODEX_DESKTOP_STORE_URI)
     },
+    launchCodexDesktop: async () => {
+      await window.xingmang.launchCodexDesktop('open')
+    },
     onProgress: window.xingmang.onInstallProgress,
     onDesktopProgress: window.xingmang.onCodexDesktopInstallProgress,
-  }), [scan])
+  }), [platformCapabilities, scan])
 
   const saveSettings = useCallback(async (next: AppSettingsV2) => {
     const saved = await window.xingmang.saveSettings(next)
@@ -616,6 +657,16 @@ function App() {
     let cancelStartupWait: (() => void) | null = null
     const initialize = async () => {
       try {
+        await commitStartupPlatformCapabilities(
+          () => window.xingmang.getPlatformCapabilities(),
+          (capabilities) => {
+            if (!active) return
+            setPlatformCapabilities(capabilities)
+            document.documentElement.dataset.platform = capabilities.platform
+          },
+        )
+        if (!active) return
+
         let startupSettings: AppSettingsV2 | null = null
         try {
           const nextSettings = await window.xingmang.getSettings()
@@ -791,6 +842,15 @@ function App() {
   const installedToolCount = installedCliCount + Number(snapshot.desktopApps.codex.installed)
   const installNodeRuntime = async () => {
     if (nodeRuntimeInstalling) return
+    if (platformCapabilities.nodeRuntimeInstall === 'external') {
+      try {
+        await performNodeRuntimeAction(platformCapabilities, window.xingmang)
+        setToast({ type: 'success', message: '已打开 Node.js 官网，请完成安装后重新检测' })
+      } catch (error) {
+        setToast({ type: 'error', message: errorMessage(error) })
+      }
+      return
+    }
     setNodeRuntimeInstalling(true)
     setNodeRuntimeInstallProgress({
       phase: 'checking',
@@ -825,12 +885,19 @@ function App() {
     refreshAfter = true,
     showToast = true,
   ): Promise<boolean> => {
+    if (platformCapabilities.cliInstall[provider] === 'external') {
+      const result = await performCliInstallAction(provider, platformCapabilities, window.xingmang)
+      if (result.kind === 'external' && showToast) {
+        setToast({ type: 'error', message: result.guidance })
+      }
+      return false
+    }
     const updating = snapshot.clis[provider].installed
     setInstalling((current) => new Set(current).add(provider))
     setInstallLog((current) => [
       ...current,
       provider === 'grok'
-        ? '> 从 x.ai 官方 HTTPS 下载并校验 Grok CLI 安装包'
+        ? '> 正在校验并安装 xAI 官方 Grok CLI'
         : `> 正在检测网络区域并为 ${providers[provider].packageName} 选择 npm 源`,
     ])
     setLogOpen(true)
@@ -984,7 +1051,7 @@ function App() {
         ...current,
         desktopApps: { ...current.desktopApps, codex: status },
       }))
-      if (status.running) {
+      if (codexDesktopLaunchDecision(platformCapabilities, status.running) === 'choose') {
         setCodexLaunchDialogOpen(true)
         return
       }
@@ -1021,7 +1088,7 @@ function App() {
 
   if (appView === 'loading') {
     return (
-      <AppFrame theme={theme}>
+      <AppFrame theme={theme} platform={platformCapabilities}>
         <StartupSplash theme={theme} stage={startupStage} updateState={updateState} />
       </AppFrame>
     )
@@ -1029,7 +1096,7 @@ function App() {
 
   if (appView === 'onboarding') {
     return (
-      <AppFrame theme={theme}>
+      <AppFrame theme={theme} platform={platformCapabilities}>
       <CodexOnboarding
         initialConfig={config}
         theme={theme}
@@ -1042,13 +1109,14 @@ function App() {
         onConfigChange={setConfig}
         onComplete={finishOnboarding}
         desktopInstallProgress={codexDesktopInstallProgress}
+        platform={platformCapabilities}
       />
       </AppFrame>
     )
   }
 
   return (
-    <AppFrame theme={theme}>
+    <AppFrame theme={theme} platform={platformCapabilities}>
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
       <Sidebar
         activePage={activePage}
@@ -1068,6 +1136,7 @@ function App() {
       <main className="main-content">
         {activePage === 'overview' ? (
           <Dashboard
+            platform={platformCapabilities}
             snapshot={snapshot}
             config={config}
             scanning={scanning}
@@ -1123,6 +1192,7 @@ function App() {
             loading={skillsLoading}
             error={skillsError}
             repositoryAvailable={Boolean(repositoryContext.repositoryRoot)}
+            platform={platformCapabilities}
             onRefresh={refreshSkills}
             onImport={async (input: SkillImportRequest) => {
               setSkills(await window.xingmang.importSkill(input))
@@ -1182,7 +1252,7 @@ function App() {
         ) : activePage === 'health' ? (
           <HealthPage api={healthApi} initialReport={healthReport} />
         ) : activePage === 'maintenance' ? (
-          <MaintenancePage api={maintenanceApi} />
+          <MaintenancePage api={maintenanceApi} platform={platformCapabilities} />
         ) : activePage === 'feedback' ? (
           <FeedbackPage api={window.xingmang} notify={setToast} />
         ) : activePage === 'updates' ? (
@@ -1206,6 +1276,7 @@ function App() {
 
       {configOpen && (
         <ConfigDialog
+          platform={platformCapabilities}
           activeTab={activeConfigTab}
           config={config}
           snapshot={snapshot}
@@ -1223,6 +1294,7 @@ function App() {
       )}
 
       {codexInstallDialogOpen && (
+        presentation.showDesktopMirror &&
         <CodexDesktopInstallSourceDialog
           installedVersion={snapshot.desktopApps.codex.version}
           latestVersion={snapshot.desktopApps.codex.latestVersion}
@@ -1245,6 +1317,7 @@ function App() {
       {nodeGuideOpen && (
         <NodeInstallGuide
           runtime={snapshot.runtime}
+          platform={platformCapabilities}
           busy={nodeRuntimeInstalling}
           scanning={scanning}
           installProgress={nodeRuntimeInstallProgress}
@@ -1261,7 +1334,7 @@ function App() {
         <div className="log-drawer" role="status" aria-live="polite">
           <div className="log-header">
             <div><CircleDot size={15} /> 安装日志</div>
-            <button className="icon-button compact" title="关闭日志" onClick={() => setLogOpen(false)}><X size={16} /></button>
+            <button className="icon-button compact" title="关闭日志" aria-label="关闭日志" onClick={() => setLogOpen(false)}><X size={16} /></button>
           </div>
           <pre>{installLog.length ? installLog.join('\n') : '等待安装任务...'}</pre>
         </div>
@@ -1337,6 +1410,7 @@ function CodexOnboarding({
   onConfigChange,
   onComplete,
   desktopInstallProgress,
+  platform,
 }: {
   initialConfig: AppConfigSummary | null
   theme: ThemeMode
@@ -1344,6 +1418,7 @@ function CodexOnboarding({
   onConfigChange: (config: AppConfigSummary) => void
   onComplete: () => Promise<void>
   desktopInstallProgress: CodexDesktopInstallProgress | null
+  platform: PlatformCapabilities
 }) {
   const existingCodex = initialConfig?.providers.codex
   const [stage, setStage] = useState<'authorize' | 'setup' | 'ready'>('authorize')
@@ -1408,7 +1483,7 @@ function CodexOnboarding({
   const runSetup = async () => {
     setError('')
     setDesktopInstallRecovery(false)
-    applySetupResult(await prepareCodexEnvironment(window.xingmang, setupCallbacks))
+    applySetupResult(await prepareCodexEnvironment(window.xingmang, setupCallbacks, platform))
   }
 
   const openDesktopStore = async () => {
@@ -1445,6 +1520,15 @@ function CodexOnboarding({
 
   const installNodeAndContinue = async () => {
     if (action !== 'idle') return
+    if (platform.nodeRuntimeInstall === 'external') {
+      try {
+        await performNodeRuntimeAction(platform, window.xingmang)
+        setError('请从 Node.js 官网完成安装，然后返回重新检测。')
+      } catch (installError) {
+        setError(errorMessage(installError))
+      }
+      return
+    }
     setError('')
     setNodeInstallProgress({
       phase: 'checking',
@@ -1452,7 +1536,7 @@ function CodexOnboarding({
       percent: null,
       message: '正在准备 Node.js LTS 安装',
     })
-    const result = await installNodeAndPrepareCodexEnvironment(window.xingmang, setupCallbacks)
+    const result = await installNodeAndPrepareCodexEnvironment(window.xingmang, setupCallbacks, platform)
     if (result.outcome === 'node-failed') {
       setError(errorMessage(result.error))
       setNodeGuideOpen(true)
@@ -1654,7 +1738,7 @@ function CodexOnboarding({
                 <SetupCheckItem label="Codex CLI" detail={status?.cli.version ?? '@openai/codex'} status={status?.cli ?? null} loading={action === 'installing-cli'} />
                 <SetupCheckItem
                   label="Codex 桌面端"
-                  detail={action === 'installing-desktop' ? codexDesktopInstallLabel(desktopInstallProgress) : status?.desktop.installed ? 'Windows 客户端' : '等待安装最新版'}
+                  detail={action === 'installing-desktop' ? codexDesktopInstallLabel(desktopInstallProgress) : status?.desktop.installed ? platformPresentation(platform).codexDesktopClient : platform.isMac ? '可通过 Codex CLI 打开' : '等待安装最新版'}
                   status={status?.desktop ?? null}
                   loading={action === 'installing-desktop'}
                 />
@@ -1720,7 +1804,7 @@ function CodexOnboarding({
                   <>
                     <button type="button" className="primary-button" disabled={busy} onClick={() => void installNodeAndContinue()}>
                       {action === 'installing-node' ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-                      {action === 'installing-node' ? '正在安装 Node.js' : '一键安装 Node.js'}
+                      {action === 'installing-node' ? '正在安装 Node.js' : platformPresentation(platform).nodeActionLabel}
                     </button>
                     <button type="button" className="secondary-button" disabled={busy} onClick={() => setNodeGuideOpen(true)}>
                       <BookOpen size={16} /> 安装教程
@@ -1744,6 +1828,7 @@ function CodexOnboarding({
       {nodeGuideOpen && (
         <NodeInstallGuide
           runtime={status?.runtime ?? null}
+          platform={platform}
           busy={busy}
           installProgress={nodeInstallProgress}
           onClose={() => setNodeGuideOpen(false)}
@@ -1818,6 +1903,7 @@ function NodeInstallGuide({
   onClose,
   onInstall,
   onRecheck,
+  platform,
 }: {
   runtime: CodexSetupStatus['runtime'] | null
   busy: boolean
@@ -1826,23 +1912,25 @@ function NodeInstallGuide({
   onClose: () => void
   onInstall: () => void
   onRecheck: () => void
+  platform: PlatformCapabilities
 }) {
+  const presentation = platformPresentation(platform)
   const [step, setStep] = useState(0)
   const steps = [
     {
       title: '下载 Node.js LTS',
-      description: '打开 Node.js 官网，下载 Windows Installer (.msi) 安装包。',
+      description: presentation.nodeGuideDescription,
       content: (
         <div className="node-guide-download-actions">
           <button type="button" className="primary-button node-guide-download" disabled={busy} onClick={onInstall}>
             {busy ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-            {busy ? '正在自动安装' : '一键安装 Node.js LTS'}
+            {busy ? '正在自动安装' : presentation.nodeActionLabel}
           </button>
           <button
             type="button"
             className="secondary-button node-guide-download"
             disabled={busy}
-            onClick={() => void window.xingmang.openExternal('https://nodejs.org/en/download')}
+            onClick={() => void window.xingmang.openExternal('https://nodejs.org/')}
           >
             官网手动下载
             <ExternalLink size={14} />
@@ -1852,7 +1940,7 @@ function NodeInstallGuide({
     },
     {
       title: '安装 Node.js 和 npm',
-      description: '运行安装包，进入 Custom Setup 页面后，确认下面两项都会安装。',
+      description: presentation.nodeGuideInstallDescription,
       content: (
         <div className="node-guide-checks">
           <span><CheckCircle2 size={15} />Node.js runtime</span>
@@ -1861,21 +1949,21 @@ function NodeInstallGuide({
       ),
     },
     {
-      title: '必须加入 PATH',
-      description: '确认 Add to PATH 已启用。如果前面是红色 X，点击该项并选择安装到本地硬盘。',
+      title: presentation.nodeGuidePathTitle,
+      description: presentation.nodeGuidePathDescription,
       content: (
         <div className="node-guide-path">
           <CheckCircle2 size={16} />
           <div>
-            <strong>Add to PATH</strong>
-            <span>Will be installed on local hard drive</span>
+            <strong>{presentation.nodeGuidePathLabel}</strong>
+            <span>{presentation.nodeGuidePathDetail}</span>
           </div>
         </div>
       ),
     },
     {
       title: '完成安装并重新检测',
-      description: '安装完成后关闭已打开的终端，再返回这里重新检测。若仍未识别，请重启星芒AI管理工具，让新 PATH 生效。',
+      description: presentation.nodeGuideFinishDescription,
       content: (
         <div className="node-guide-status">
           <span className={runtime && nodeRuntimeSupported(runtime) ? 'ready' : ''}>
@@ -1911,7 +1999,7 @@ function NodeInstallGuide({
               <p>按下面 4 步完成 Codex CLI 前置环境。</p>
             </div>
           </div>
-          <button type="button" className="icon-button" title="关闭教程" disabled={busy} onClick={onClose}>
+          <button type="button" className="icon-button" title="关闭教程" aria-label="关闭教程" disabled={busy} onClick={onClose}>
             <X size={18} />
           </button>
         </header>
@@ -1972,6 +2060,7 @@ function NodeInstallGuide({
 }
 
 function Dashboard({
+  platform,
   snapshot,
   config,
   scanning,
@@ -1996,6 +2085,7 @@ function Dashboard({
   onLaunch,
   onLaunchCodexDesktop,
 }: {
+  platform: PlatformCapabilities
   snapshot: SystemSnapshot
   config: AppConfigSummary | null
   scanning: boolean
@@ -2020,6 +2110,7 @@ function Dashboard({
   onLaunch: (provider: ProviderId) => void
   onLaunchCodexDesktop: () => void
 }) {
+  const presentation = platformPresentation(platform)
   return (
     <div className="page dashboard-page">
       <header className="page-header">
@@ -2041,7 +2132,7 @@ function Dashboard({
             <Globe2 size={14} />
             <span>{networkLocationLabel(snapshot.network)}</span>
           </div>
-          <button className="icon-button" title="重新检测" onClick={onScan} disabled={scanning}>
+          <button className="icon-button" title="重新检测" aria-label="重新检测" onClick={onScan} disabled={scanning}>
             <RefreshCw size={18} className={scanning ? 'spin' : ''} />
           </button>
         </div>
@@ -2066,8 +2157,8 @@ function Dashboard({
           </div>
         </div>
         <div className="runtime-grid">
-          <RuntimeCell label="Node.js" status={snapshot.runtime.node} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={snapshot.runtime.node.installed ? '升级' : '一键安装'} onInstall={onInstallNode} />
-          <RuntimeCell label="npm" status={snapshot.runtime.npm} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel="一键安装" onInstall={onInstallNode} />
+          <RuntimeCell label="Node.js" status={snapshot.runtime.node} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={presentation.nodeAction === 'open-website' ? presentation.nodeActionLabel : snapshot.runtime.node.installed ? '升级' : '一键安装'} onInstall={onInstallNode} />
+          <RuntimeCell label="npm" status={snapshot.runtime.npm} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={presentation.nodeAction === 'open-website' ? presentation.nodeActionLabel : '一键安装'} onInstall={onInstallNode} />
           <RuntimeCell label="Python" status={snapshot.runtime.python} loading={scanning} optional onInstall={() => void window.xingmang.openExternal('https://www.python.org/downloads/')} />
         </div>
         {nodeRuntimeInstallProgress && nodeRuntimeInstalling && (
@@ -2090,6 +2181,7 @@ function Dashboard({
         </div>
         <div className="cli-grid">
           <CodexDesktopCard
+            platform={platform}
             status={snapshot.desktopApps.codex}
             configured={Boolean(config?.providers.codex.hasApiKey && config.providers.codex.matchesRelay)}
             configExists={Boolean(config?.providers.codex.exists)}
@@ -2155,7 +2247,7 @@ function Dashboard({
                   {!status.installed ? (
                     <button className="primary-button full" disabled={!runtimeReady || isInstalling || scanning} onClick={() => onInstall(provider)}>
                       {isInstalling ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-                      {isInstalling ? '正在安装' : '一键安装'}
+                      {isInstalling ? '正在安装' : presentation.grokAction === 'external-guidance' && provider === 'grok' ? presentation.grokActionLabel : '一键安装'}
                     </button>
                   ) : (
                     <>
@@ -2195,6 +2287,7 @@ function Dashboard({
 }
 
 function CodexDesktopCard({
+  platform,
   status,
   configured,
   configExists,
@@ -2207,6 +2300,7 @@ function CodexDesktopCard({
   onInstall,
   onLaunch,
 }: {
+  platform: PlatformCapabilities
   status: DesktopAppStatus
   configured: boolean
   configExists: boolean
@@ -2220,6 +2314,7 @@ function CodexDesktopCard({
   onLaunch: () => void
 }) {
   const busy = scanning || installing || launchPhase !== 'idle'
+  const presentation = platformPresentation(platform)
   return (
     <article className="cli-card desktop-card">
       <div className="cli-card-top">
@@ -2228,7 +2323,7 @@ function CodexDesktopCard({
         </div>
         <div className="cli-identity">
           <h3>Codex 桌面端</h3>
-          <span>OpenAI · Windows</span>
+          <span>{presentation.codexDesktopCompany}</span>
         </div>
         <StatusMark installed={status.installed} loading={scanning || installing} />
       </div>
@@ -2260,7 +2355,7 @@ function CodexDesktopCard({
           ? '与 Codex CLI 共用星芒配置'
           : configExists ? '共用配置需要重新配置' : '共用配置文件未创建'}
       </div>
-      {status.installed && (
+      {status.installed && presentation.showWindowsPackages && (
         <div
           className="config-model"
           title={status.updateError ?? [
@@ -2295,9 +2390,9 @@ function CodexDesktopCard({
       )}
       <div className="cli-actions">
         {!status.installed ? (
-          <button className="primary-button full" onClick={onInstall} disabled={busy}>
-            {installing ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-            {installing ? '正在安装' : '一键安装'}
+          <button className="primary-button full" onClick={presentation.codexDesktopAction === 'launch' ? onLaunch : onInstall} disabled={busy || presentation.codexDesktopAction === 'unsupported'}>
+            {installing ? <LoaderCircle size={16} className="spin" /> : presentation.codexDesktopAction === 'launch' ? <AppWindow size={16} /> : <Download size={16} />}
+            {installing ? '正在安装' : presentation.codexDesktopActionLabel}
           </button>
         ) : (
           <>
@@ -2328,6 +2423,7 @@ function CodexDesktopCard({
 }
 
 function ConfigDialog({
+  platform,
   activeTab,
   config,
   snapshot,
@@ -2335,6 +2431,7 @@ function ConfigDialog({
   onClose,
   notify,
 }: {
+  platform: PlatformCapabilities
   activeTab: ConfigTabId
   config: AppConfigSummary | null
   snapshot: SystemSnapshot
@@ -2403,7 +2500,7 @@ function ConfigDialog({
     : snapshot.clis[activeProvider]
   const installed = toolStatus.installed
   const installDirectory = toolStatus.installDirectory
-  const meta = configTabMeta(activeTab)
+  const meta = configTabMeta(activeTab, platform)
 
   const toggleApiKeyVisibility = async () => {
     if (showKey) {
@@ -2546,7 +2643,7 @@ function ConfigDialog({
               <span />
               {configured ? '星芒 AI 已配置' : summary?.exists ? '需要重新配置' : '尚未创建配置'}
             </div>
-            <button className="icon-button" type="button" title="关闭配置" onClick={requestClose}>
+            <button className="icon-button" type="button" title="关闭配置" aria-label="关闭配置" onClick={requestClose}>
               <X size={18} />
             </button>
           </div>
