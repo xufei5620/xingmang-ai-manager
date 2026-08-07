@@ -14,9 +14,16 @@
 | 模块 | 决策 | 来源 | 许可证 |
 |---|---|---|---|
 | **后端网关** | **采用 new-api，分层部署**（✅ **已部署于 `xm.solov.cc`**） | `QuantumNous/new-api` | AGPL-3.0 |
-| **桌面应用** | **待评估：fork cc-switch vs 继续现有 Electron** | `farion1231/cc-switch` | MIT |
+| **桌面应用** | ✅ **已决定：继续现有 Electron，不 fork** | 自有代码库 | — |
 | **无限画布** | **fork + Web 内嵌 + 宿主适配层** | `basketikun/infinite-canvas` | MIT |
 | **账号/登录/充值** | **直接用 new-api 的 API，不自建** | new-api 内置 | — |
+
+**网关现状（两套并存，迁移中）：**
+
+| 域名 | 系统 | 状态 |
+|---|---|---|
+| `api.solov.cc` | **sub2api** | 现役，承载存量付费用户与 CLI 硬编码 base URL |
+| `xm.solov.cc` | **new-api** | 已部署，目标形态；**存量逐步迁移过来** |
 
 **三条明确的战略判断：**
 1. 暴喵 = cc-switch（MIT 白拿）+ 中国式商业化外壳。它没改进任何 AI 核心能力，护城河在「网络与分发」，不在 AI。
@@ -123,30 +130,36 @@
 2. **admin API 绝不下发客户端**（`topup/complete`、开会员等）→ 只在服务端调；桌面端 PAT 是普通用户角色，`authHelper` 会拦
 3. **401 处理** new-api 有 `AuthVersion`，改密码全局失效 → 桌面端必须处理 401：清 PAT、引导重登，不能卡死
 
-### 3.3 桌面应用 = 待评估（fork cc-switch vs 继续现有 Electron）
+### 3.3 桌面应用 = ✅ 继续现有 Electron（已决定，不 fork）
 
-**这是唯一未拍板的重大决策，需要 2-3 天实测再定。**
+**决策依据：cc-switch 最值钱的能力，对星芒大部分不成立。**
 
-对比事实：
+逐条对照真实需求：
 
-| | 星芒现状（4.3 万行自研 Electron） | cc-switch（MIT，免费） |
+| cc-switch 的能力 | 对星芒的价值 | 原因 |
 |---|---|---|
-| 管理工具 | 4 个 | 8 个 |
-| 供应商预设 | 硬编码自家 | 50+ |
-| 本地网关/协议转换 | **无** | 有（Anthropic↔OpenAI 互转，2401 测试） |
-| 第三方 OAuth 托管 | 无（还是手工授权码） | Copilot/Codex/xAI/Gemini |
-| 云同步 | 无 | S3 + WebDAV |
-| 前端测试 | 9 个纯函数 | 100 个文件（jsdom+msw） |
-| 双平台 | Mac 适配中 | 已有 |
-| 技术栈 | Electron（150MB+） | Tauri（35MB，渲染层无 Node，安全基线更高） |
+| 多 provider 切换 + 50 家预设 | ❌ **反价值** | 星芒只有一个 provider（自己）。展示别家 = 给竞品导流 |
+| **协议转换**（Anthropic↔OpenAI，2401 测试） | ❌ **重复建设** | **new-api 服务端已做**。用户 CLI 直连网关，转换在服务端完成 |
+| 本地网关 `127.0.0.1:15721` | ❌ 不需要 | 星芒网关在远端，不需本地再架一层 |
+| 客户端用量估算 | ❌ **被更好的替代** | new-api 有真实账单，估算反而是降级 |
+| 第三方 OAuth 托管 | ⚠️ 边际 | 用户用星芒的 key，不是官方 OAuth 账号 |
+| 配置云同步 / 8 个工具 | ⚠️ 边际 | 中转商只需支持自己卖的模型对应的那几个 |
+| Mac 已支持 / Tauri 35MB | ✅ 真价值 | 但不足以支撑重写 |
 
-**倾向 fork，但必须先做评估**（见 §6 立即行动）。理由：
-- 你们 4.3 万行做的是「通用劳动」（装 CLI、对接 provider、OAuth），cc-switch 免费且更全
-- 真正差异化（绑定自营、账号、画布）只占一小块
-- 沉没成本（4.3 万行）不该影响决策
-- 代价：迁 Rust+Tauri、放弃现有代码、失去自研安全细节（但 Tauri 架构送更高基线）
+**并且：星芒最缺的两样（账号体系、无限画布），cc-switch 也没有——fork 了一样要从零写。**
 
-**评估未出结果前：冻结现有 Electron 库的大重构**（尤其待办 #10、#12、任何"加第 5 个 CLI"的工作）。止血类（批次 0/1）继续，因为老版本无论如何要维护一段。
+**时机因素**：`sub2api → new-api` 的迁移已在进行（涉及付费用户数据）。同时再做 `Electron → Tauri` 重写 = 两个大迁移并行，2 人团队风险过高，且重写期间对用户零产出。
+
+**继续 Electron 的三个前提条件（必须认的代价）：**
+
+1. **停止在「通用能力」上追赶** —— 不再堆工具数量、供应商预设、云同步。与 cc-switch 在这条线竞争必输（它免费、有赞助、122k star）。资源全压到：账号充值闭环、无限画布、绑定自营的免配置体验。
+2. **把 cc-switch 当参考实现，不当依赖** —— 它是 MIT，可自由读代码学做法。重点借鉴：**Mac 侧安全边界实现**（星芒最缺，现有代码在 macOS 上安全检查全部退化为 no-op）、**测试组织方式**（100 个前端测试 + jsdom + msw）、UI/UX 设计（见文末附录）。**读代码零成本，迁代码成本极高——只做前者。**
+3. **补上测试与 Mac 边界两个欠账** —— cc-switch 有 2401 Rust + 100 前端测试，星芒只有 9 个纯函数测试。不补，四个 agent 并行改代码很危险。优先级：`ipc.ts` 输入校验函数（不可信输入进主进程的唯一防线，现几乎零测试）> Mac 安全边界 > 组件层。
+
+**什么情况下重新评估 fork**（任一成立）：
+- 转型做中立工具（定位②）→ 多 provider 能力立刻变核心价值
+- Mac 适配成本超过 1-2 个月
+- new-api 服务端协议转换覆盖不了要卖的模型，必须在客户端转
 
 ### 3.4 无限画布 = fork infinite-canvas + Web 内嵌
 
@@ -179,6 +192,59 @@
   2. **响应模型校验**：中转站会偷偷降级模型（你要 Opus 给你 Sonnet），用 new-api 的 `pricing_model_source` 校验返回的 model 字段
   3. **故障转移次数当核心告警**：别让自动切换掩盖自营服务的稳定性问题
 
+### 3.7 计费机制（已核实源码）与两个运维风险
+
+**结论：一个 API Key 用多个模型不会有计费问题。倍率不绑 Key，每次请求按实际模型名查。**
+
+`Token` 表里**无任何倍率字段**，只有 `RemainQuota` / `UsedQuota` / `Group` / `ModelLimits`。计费在 `relay/helper/price.go` 每次请求时解析：
+
+```go
+modelRatio, success, matchName = ratio_setting.GetModelRatio(info.OriginModelName)
+completionRatio = ratio_setting.GetCompletionRatio(info.OriginModelName)
+cacheRatio, _   = ratio_setting.GetCacheRatio(info.OriginModelName)
+ratio := modelRatio * groupRatioInfo.GroupRatio
+```
+
+```
+额度 = 输入token × 模型倍率 × 分组倍率
+     + 输出token × 模型倍率 × 输出倍率 × 分组倍率
+     + 缓存读/写 token × 各自倍率
+```
+
+计价粒度比预期更细：输入/输出分开（`completionRatio`）、缓存读与写分开且区分 5min/1h（`cacheCreationRatio1h`）、**图片/音频独立倍率**（`GetImageRatio` / `GetAudioRatio` / `GetAudioCompletionRatio`）——**画布定价要用 `image_ratio`，别和文本混算**。
+
+#### ⚠️ 风险 1：模型未配倍率时，兜底倍率是 **37.5**
+
+```go
+// setting/ratio_setting/model_ratio.go
+ratio, ok := modelRatioMap.Get(name)
+if !ok {
+    return 37.5, operation_setting.SelfUseModeEnabled, name   // ← 兜底 37.5
+}
+```
+
+| 场景 | 结果 |
+|---|---|
+| 默认配置（未开自用模式 + 用户未开 `AcceptUnsetRatioModel`） | ✅ **直接报错拒绝请求**（安全默认） |
+| 开了自用模式，**或**用户开了 `AcceptUnsetRatioModel` | ⚠️ **按 37.5 倍计费** |
+
+**这是上新模型的头号运维陷阱**：渠道里加了新模型忘配倍率 → 要么用户全部报错，要么被暴扣。
+
+**两条硬规定：**
+- 上线检查清单加一条：**新增模型必须同时配 `model_ratio` + `completion_ratio`（画布模型加 `image_ratio`）**
+- **`AcceptUnsetRatioModel` 保持默认关闭** —— 宁可报错，不要乱扣
+
+#### ⚠️ 风险 2：预扣费会影响「余额刚好够」的用户
+
+```go
+preConsumedTokens := common.Max(promptTokens, common.PreConsumedQuota)
+if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens 也计入预扣
+```
+
+请求前按最坏情况预扣，完成后按实际用量多退少补。后果：**从便宜模型切到贵模型时，预扣额度成倍上升**——余额 ¥5 的用户用 Haiku 能发，切 Opus 可能直接提示余额不足，即使那次实际只花 ¥0.3。
+
+不是 bug，是防超支设计。但**客服会遇到「我明明还有钱为什么发不出去」的工单，需提前准备话术**。（免费模型可用 `EnableFreeModelPreConsume` 跳过预扣。）
+
 ---
 
 ## 4. 明确的「不做清单」
@@ -199,25 +265,39 @@
 
 ## 5. 现有 21 条待办的重排
 
-因战略转向（可能 fork cc-switch），现有待办分三类处理：
+✅ **桌面应用已定为继续 Electron，此前的冻结全部解除。** 现有代码库是长期资产，不再是"待处置遗产"。
 
-### 5.1 无论如何都做（老版本要维护 + 止血）
+### 5.1 P0 — 解除阻塞（最高优先）
 
-- **#1 #2 #3（批次 0）**：跨平台测试门控 + 仓库污染 + CI —— Mac 分支的前置条件，最高优先
-- **#4（scanSystem 容错）**、**#7（Codex reset 死锁）**：低风险止血，直接命中用户当前投诉
-- **#15（高危 RCE）**、**#16（会话硬链接死锁）**、**#17（发布门禁 fail-open）**：安全，老版本也要修
-- **#5 #6（镜像优先）**：小改动，止「下载慢」
+- **#1 #2 #3（批次 0）**：跨平台测试门控 + 仓库污染 + CI —— **多 agent 协作的前置条件**。Mac agent 现在跑不了测试 = 无法自我验证 = 它的 PR 不可信
+- **#15（高危 RCE）**：提权终端环境未净化，管理员级任意代码执行
 
-### 5.2 冻结（等桌面应用决策）
+### 5.2 P1 — 止血（直接命中用户投诉）
 
-- **#10（Node 检测增强）**：若走托管 Node 或 fork cc-switch，此工作作废 —— **不要动**
-- **#12（镜像策略三态开关）**、**#13（并发赛跑）**、**#14（Grok 镜像）**：等定了再说
-- **#19（typecheck 覆盖测试）**：若迁 Tauri 则针对现有库的意义下降
+- **#4（scanSystem 容错）**、**#9（区分检测失败/未安装）**：治「已装 Node 检测不到」
+- **#5 #6（镜像优先）**、**#11（npm 假死体验）**：治「下载慢/像卡死」
+- **#7（Codex reset 死锁）**：新用户会卡死在引导页出不去
+- **#16（会话硬链接死锁）**、**#17（发布门禁 fail-open）**
 
-### 5.3 按情况
+### 5.3 P1 — 补欠账（继续 Electron 的代价，见 §3.3 前提③）
 
-- **#8（playwright 幻影依赖）**、**#9（区分检测失败/未安装）**、**#11（npm 假死体验）**：现有库继续维护期间值得做，但优先级低于 5.1
-- **#18（签名 DN 迁移）**、**#20（wrangler 漏洞）**、**#21（低危汇总）**：长期
+- **#19（typecheck 覆盖 electron 测试文件）**：**重新提优先级**。四个 agent 并行改代码，没有类型门禁很危险
+- **🆕 #22 补 `ipc.ts` 输入校验函数的测试** —— 不可信输入进主进程的唯一防线，现几乎零覆盖
+- **🆕 #23 补 Mac 侧安全边界** —— macOS 上 `isUserWritablePath` 恒 false、`isTrustedHighIntegrityExecutable` 恒 true、`trustedCommandEnvironment` 走极简分支，**安全检查全部退化为 no-op**。参考 cc-switch 的跨平台实现
+- **🆕 #24 借鉴竞品 UI 设计**（见文末附录）：检测状态三层区分、取消的三种语义、逐阶段进度文案、错误提示给替代方案
+
+### 5.4 P1 — 新增能力（本次规划新引入）
+
+- **🆕 #25 桌面端对接 new-api**：注册/登录/拿 PAT/签发 CLI token/查余额充值（依赖 A2 对接文档）
+- **🆕 #26 PAT 安全存储**：Windows DPAPI / macOS Keychain。**注意与 API Key 区分**——API Key 必须明文写进 CLI 配置（加密无意义），但 PAT 从不落明文且能操作账户余额
+- **🆕 #27 安装期下载代理**（服务端）：见 §3.5
+- **🆕 #28 无限画布**：fork infinite-canvas + 宿主适配层 + Web 内嵌
+
+### 5.5 P2 — 解冻但降优先级
+
+- **#10（Node 检测增强）**：解冻。但**建议改为「托管便携 Node」方案**——暴喵自带 Node 运行时，从根上消灭"检测不到"，比继续加检测手段更彻底
+- **#12（镜像策略三态开关）**、**#13（并发赛跑）**、**#14（Grok 镜像）**：解冻，正常排期
+- **#8（playwright 幻影依赖）**、**#18（签名 DN 迁移）**、**#20（wrangler 漏洞）**、**#21（低危汇总）**：长期
 
 ---
 
@@ -229,33 +309,47 @@
 |---|---|---|---|---|
 | A1 | **批次 0**：待办 #1 #2 #3 | Mac Claude | macOS | 一切 Mac 侧工作 |
 | A2 | **对接已部署的 new-api（`xm.solov.cc`）**：走通注册→登录→拿 PAT→签发 CLI token→查余额/用量，产出对接文档（含每步实际请求/响应） | 你 或 熟悉后端的人（**需实例凭据，云端 agent 无权访问生产**） | 任意 | 账号体系、画布计费 |
-| A3 | **cc-switch 改造评估**（2-3 天）：clone 跑通→接自家网关→验证协议转换→估改造量 | 更熟代码的开发者 | 任意 | 桌面应用最终技术路线 |
-| A4 | **厘清 `xm.solov.cc` 与 `api.solov.cc` 关系** + 现有 sub2api 用户/余额数据的迁移方案 | 你 | — | 老用户迁移、D2 |
-| A5 | **在 new-api 后台配置多渠道**：自营设 Priority 最高 + 至少一个批发上游，验证故障转移无感 | 你 | — | §3.6 的护栏设计 |
+| A3 | ~~cc-switch 改造评估~~ → **降级为半天「借鉴调研」**：只看它的 **Mac 安全边界实现** 与 **测试组织方式**，不评估迁移 | 任一开发者 | 任意 | #23 Mac 安全边界 |
+| A4 | **sub2api → new-api 迁移方案**：存量用户/余额数据怎么迁、CLI 里硬编码的 `api.solov.cc` 何时切 `xm.solov.cc`、两套并存期职责边界 | 你 | — | 老用户迁移、D2 |
+| A5 | **在 new-api 后台配置多渠道**：自营设 Priority 最高 + 至少一个批发上游，验证故障转移无感；同时确认 `AcceptUnsetRatioModel` 已关闭 | 你 | — | §3.6 护栏、§3.7 风险1 |
 
-### 阶段 B：定架构（A3/A4 出结果后）
+### 阶段 B：定架构（A2/A4 出结果后）
 
-- 根据 A3 结论：正式决定 fork cc-switch 还是继续 Electron
-- 根据 A2 文档：设计账号服务层与桌面端对接
-- 部署 new-api（原样）+ 起 BFF 骨架
-- 画布 fork + 宿主适配层设计
+- 根据 A2 文档：设计账号服务层与桌面端对接（#25 #26）
+- 根据 A4 结论：确定存量迁移路径与切换时点
+- 起 BFF 骨架（可选，第一版可让桌面端直连 new-api）
+- 画布 fork + 宿主适配层设计（#28）
 
 ### 阶段 C：并行推进（三条线）
 
-- **线 1（现有工具维护）**：批次 1-3 止血 + 安全修复
-- **线 2（账号+网关）**：new-api 部署 + 桌面端注册登录充值对接
+- **线 1（现有工具）**：P0/P1 止血 + 安全修复 + 补测试欠账
+- **线 2（账号+网关）**：桌面端注册登录充值对接 + 安装期下载代理
 - **线 3（画布）**：fork infinite-canvas + Web 内嵌 + 免配置登录 + 文生图跑通
 
 ---
 
-## 7. 分工（按产品线，不按技术层）
+## 7. 分工
 
-| 谁 | 负责 | 理由 |
+**两位开发者均覆盖全部产品线**（不做产品线切分）。因此分工的依据从「谁负责哪块」变成 **「谁在哪个环境能验证什么」+ 「任务级冲突规避」**。
+
+| 谁 | 定位 | 说明 |
 |---|---|---|
-| **对方 + Codex**（更熟代码） | 现有工具 / cc-switch 评估与改造 / 安全修复 | 让熟悉的人守有安全风险的老代码 |
-| **你 + Mac/Win Claude** | Mac 适配 / 网关对接 / 桌面端集成 | 需真实平台环境验证 |
-| **画布 Web 端** | fork infinite-canvas（greenfield） | 与现有代码零耦合，新人/新 agent 上手成本最低 |
-| **云端 Claude** | 规划 / 架构决策 / 规范维护 / Issue 分发 / new-api 实测 | 不碰业务代码，零冲突 |
+| **开发者 A（你）+ Win/Mac Claude** | 全产品线 | 有 Windows + macOS 双环境，**平台强相关的验证任务优先派给这边** |
+| **开发者 B + Codex** | 全产品线 | 更熟悉现有代码库，**安全边界相关改动优先由这边把关或 review** |
+| **云端 Claude** | 规划 / 架构 / 规范 / Issue 分发 | 不碰业务代码，零冲突 |
+
+**因为不再有「各管一摊」的天然隔离，`COLLABORATION.md` 的串行约束变得更关键：**
+
+| 必须串行（标 `serial-only`） | 原因 |
+|---|---|
+| IPC 通道增删（`ipc-contract.ts` / `ipc.ts` / `preload.ts`） | 注册顺序与契约键顺序强耦合，两人并行加通道**即使文本合并干净 CI 也必红** |
+| `src/styles.css`（6027 行） | 全局作用域、无模块化 |
+| `system-service.ts`(3300) / `App.tsx`(2855) 的结构性改动 | 枢纽文件，21 条待办里 8 条落在 system-service.ts 一个文件上 |
+
+**任务分派原则：**
+1. **先看环境**：只能 Windows 验证的（提权/PowerShell/注册表/Appx/真实安装）→ A 的 Win 端；只能 macOS 验证的 → A 的 Mac 端；平台无关的（纯函数/类型/脚本/文档/CI/后端对接）→ 任一
+2. **再看冲突**：同一时间同一热点文件只能有一个人
+3. **最后看熟悉度**：安全边界相关（`command-runner` / `windows-elevation` / `trusted-*` / `config-files`）优先 B 主导或 review
 
 任务分发走 GitHub Issue（见 `COLLABORATION.md`），本地 agent 轮询 `gh issue list --label agent:xxx` 认领。
 
@@ -265,13 +359,14 @@
 
 | # | 决策 | 现状 |
 |---|---|---|
-| D1 | fork cc-switch 还是继续 Electron | **等 A3 评估**（2-3 天） |
-| D2 | 老用户（已用授权码/已在 sub2api）的迁移策略 | 并行保留 / 强制迁移 / 自动绑定 —— 等 A4 |
+| ~~D1~~ | ~~fork cc-switch 还是继续 Electron~~ | ✅ **已决定：继续 Electron**（依据见 §3.3） |
+| ~~D6~~ | ~~`xm.solov.cc` 与 `api.solov.cc` 的关系~~ | ✅ **已厘清**：`api.solov.cc` = sub2api（现役）；`xm.solov.cc` = new-api（目标）；两套并存、逐步迁移 |
+| D2 | 存量 sub2api 用户/余额的迁移策略 | 并行保留 / 强制迁移 / 自动绑定 —— **等 A4** |
 | D3 | 支付渠道（易支付/微信/Stripe） | 影响回调设计，可先定 |
-| D4 | 画布 Web 端由谁写 | 见 §7，可能是加人/加 agent 的切入点 |
-| D5 | new-api 的 AGPL 与 Turnstile 处理 | 已给方案（分层 + 关 Turnstile 改手机号），待确认 |
-| D6 | `xm.solov.cc`（new-api）与 `api.solov.cc`（CLI 硬编码 base URL）的关系 | **等 A4**；决定老用户是否需要迁移、CLI 配置里的 URL 要不要改 |
-| D7 | 现有 sub2api 的用户/余额数据是否迁入 new-api | 等 A4；若两套并存，需明确各自职责边界 |
+| D4 | 画布 Web 端由谁写 | §7 已改为双人全覆盖；仍需明确谁主导 |
+| D5 | new-api 的 AGPL 与 Turnstile 处理 | 已给方案（分层部署 + 关 Turnstile 改手机号），待确认 |
+| D8 | CLI 配置里的 base URL 何时从 `api.solov.cc` 切到 `xm.solov.cc` | 涉及已发版客户端，需灰度或双写兼容 |
+| D9 | 是否采用「托管便携 Node」替代 #10 的检测增强 | 更彻底但改动更大，见 §5.5 |
 
 ---
 
