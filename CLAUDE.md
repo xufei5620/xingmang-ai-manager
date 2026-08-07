@@ -288,7 +288,17 @@ npm test
 
 ## 9. 相关文档
 
+**如果你是 AI agent，按这个顺序读：**
+
+1. **`docs/ROADMAP.md`** — 总体规划：产品定位、技术选型、优先级。**先理解背景**
+2. **本文件（CLAUDE.md）** — 代码架构、不变量、改动陷阱。**保命的**
+3. **`docs/AGENT-RUNBOOK.md`** — **怎么领任务、怎么干活、怎么提 PR。要动手就看这个**
+4. `docs/COLLABORATION.md` — 协作规范细则（分支/PR 格式、冲突规避、验证门槛）
+
+**其他：**
+
 - `docs/IMPROVEMENT-PLAN.md` — 已确认问题的完整清单与分批修复计划
-- `docs/COLLABORATION.md` — 多 agent 协作规范、任务分发、PR 格式
 - `docs/RELEASING.md` — 发布流程
 - `README.md` — 产品说明与数据边界
+
+**任务索引在 GitHub Issue [#27](https://github.com/peaker520/xingmang-ai-manager/issues/27)。**
