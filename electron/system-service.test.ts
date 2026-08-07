@@ -2165,7 +2165,7 @@ describe('Codex Desktop update state', () => {
       publisher: 'CN=50BDFD77-8903-4850-9FFE-6E8522F64D5B',
       hasSignature: true,
     })
-  }, 120_000)
+  }, 180_000)
 
   it.skipIf(process.platform !== 'win32')('rejects an oversized compressed AppxManifest before XML parsing', async () => {
     const packagePath = createTestMsix([
@@ -2177,7 +2177,7 @@ describe('Codex Desktop update state', () => {
     ].join('\n'))
 
     await expect(inspectCodexDesktopPackageFile(packagePath)).rejects.toThrow('1 MiB 安全上限')
-  }, 120_000)
+  }, 180_000)
 
   it('reports the official newer Windows build as available', () => {
     expect(buildDesktopUpdateStatus('26.715.8383.0', {

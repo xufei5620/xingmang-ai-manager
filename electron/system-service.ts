@@ -661,7 +661,13 @@ export async function inspectCodexDesktopPackageFile(
   ], {
     env: trustedCommandEnvironment(),
     windowsHide: true,
-    timeout: 30_000,
+    // The first inspection on a machine pays for loading the compression and
+    // XML assemblies into a stripped environment, which measurably exceeds 30s
+    // on a cold, contended host. Later inspections finish in well under a
+    // second. This runs once per package during an install or update the user
+    // is already waiting on, so bound it generously rather than failing a
+    // healthy package as a timeout.
+    timeout: 90_000,
     maxBuffer: 1024 * 1024,
   })
   const metadata = parseCodexDesktopPackageMetadata(stdout)

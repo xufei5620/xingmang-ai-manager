@@ -34,12 +34,14 @@ test('macOS security commands never cross an administrator boundary', () => {
   })
 })
 
-test('CI signing uses only its isolated keychain and never mutates the user search list', async (t) => {
+test('CI signing restores the user search list it temporarily prepends its isolated keychain to', async (t) => {
   const projectRoot = temporaryProject(t)
   const calls = []
   const removed = []
+  const originalSearchList = '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
   const result = await runCiFreeMacBuild({
     projectRoot,
+    platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
     randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
     createCertificate: ({ outputDirectory, commonName, password }) => {
@@ -56,8 +58,8 @@ test('CI signing uses only its isolated keychain and never mutates the user sear
     certificateSha1: () => sha1Fingerprint,
     runSecurity: (args, commandOptions = {}) => {
       calls.push(['security', args, commandOptions])
-      if (args[0] === 'list-keychains') throw new Error('global keychain search list must remain untouched')
       if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'list-keychains' && args.length === 3) return originalSearchList
       return ''
     },
     verifyEphemeralSigning: (options) => {
@@ -89,9 +91,25 @@ test('CI signing uses only its isolated keychain and never mutates the user sear
     'unlock-keychain',
     'import',
     'set-key-partition-list',
+    'list-keychains',
+    'list-keychains',
+    'list-keychains',
     'delete-keychain',
   ])
   const keychainPath = securityArguments[0].at(-1)
+  const searchListCommands = securityArguments.filter((args) => args[0] === 'list-keychains')
+  // Read the current list, prepend the isolated keychain, then restore exactly
+  // what was there before. The user domain is the only domain ever touched.
+  assert.deepEqual(searchListCommands[0], ['list-keychains', '-d', 'user'])
+  assert.deepEqual(searchListCommands[1], [
+    'list-keychains', '-d', 'user', '-s', keychainPath,
+    '/Users/runner/Library/Keychains/login.keychain-db',
+  ])
+  assert.deepEqual(searchListCommands[2], [
+    'list-keychains', '-d', 'user', '-s',
+    '/Users/runner/Library/Keychains/login.keychain-db',
+  ])
+  assert.equal(searchListCommands.every((args) => !args.includes('system') && !args.includes('admin')), true)
   const probe = calls.find(([kind]) => kind === 'probe')[1]
   assert.equal(probe.identitySha1, sha1Fingerprint)
   assert.equal(probe.keychainPath, keychainPath)
@@ -109,6 +127,7 @@ test('CI signing aborts and cleans up when the trust-free private-key probe fail
 
   await assert.rejects(() => runCiFreeMacBuild({
     projectRoot,
+    platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
     randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
     createCertificate: ({ outputDirectory }) => {
@@ -138,6 +157,9 @@ test('CI signing aborts and cleans up when the trust-free private-key probe fail
     'unlock-keychain',
     'import',
     'set-key-partition-list',
+    'list-keychains',
+    'list-keychains',
+    'list-keychains',
     'delete-keychain',
   ])
   assert.equal(cleanupCommands.some((args) => /trusted-cert|delete-certificate/.test(args[0])), false)
@@ -150,6 +172,7 @@ test('CI signing does not probe or mutate trust before identity import succeeds'
 
   await assert.rejects(() => runCiFreeMacBuild({
     projectRoot,
+    platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
     randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
     createCertificate: ({ outputDirectory }) => {
@@ -185,6 +208,7 @@ test('CI signing cleanup runs when the real free build fails', async (t) => {
   const removed = []
   await assert.rejects(() => runCiFreeMacBuild({
     projectRoot,
+    platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
     randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
     createCertificate: ({ outputDirectory }) => {
@@ -214,7 +238,16 @@ test('CI signing cleanup runs when the real free build fails', async (t) => {
   }), /real build failed/)
 
   assert.equal(securityCalls.some(([args]) => args[0] === 'delete-keychain'), true)
-  assert.equal(securityCalls.some(([args]) => args[0] === 'list-keychains'), false)
+  // The search list is restored before the keychain it points at is deleted.
+  const commands = securityCalls.map(([args]) => args)
+  assert.deepEqual(commands.filter((args) => args[0] === 'list-keychains').at(-1).slice(0, 4), [
+    'list-keychains', '-d', 'user', '-s',
+  ])
+  assert.equal(
+    commands.findLastIndex((args) => args[0] === 'list-keychains')
+      < commands.findIndex((args) => args[0] === 'delete-keychain'),
+    true,
+  )
   assert.equal(securityCalls.some(([args]) => /trusted-cert|delete-certificate/.test(args[0])), false)
   assert.equal(removed.length, 2)
 })
@@ -225,6 +258,7 @@ test('CI signing reports keychain deletion failure after attempting directory cl
   const removed = []
   await assert.rejects(() => runCiFreeMacBuild({
     projectRoot,
+    platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
     randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
     createCertificate: ({ outputDirectory }) => {
@@ -254,7 +288,7 @@ test('CI signing reports keychain deletion failure after attempting directory cl
     },
   }), /temporary keychain deletion failed/)
 
-  assert.equal(securityCalls.some(([args]) => args[0] === 'list-keychains'), false)
+  assert.equal(securityCalls.some(([args]) => args[0] === 'list-keychains'), true)
   assert.equal(securityCalls.some(([args]) => args[0] === 'delete-keychain'), true)
   assert.equal(securityCalls.some(([args]) => /trusted-cert|delete-certificate/.test(args[0])), false)
   assert.equal(removed.length, 2)

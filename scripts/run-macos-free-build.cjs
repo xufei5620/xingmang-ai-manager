@@ -64,6 +64,14 @@ function defaultCapturedCommand(executable, args, env, label) {
   return result.stdout || ''
 }
 
+/** Parses `security list-keychains` output into bare absolute paths. */
+function parseKeychainSearchList(output) {
+  return String(output || '')
+    .split('\n')
+    .map((line) => line.trim().replace(/^"(.*)"$/, '$1'))
+    .filter((entry) => entry.length > 0)
+}
+
 function resolveMacosSecurityCommand(args) {
   const command = args[0] || 'command'
   return {
@@ -263,6 +271,7 @@ async function runCiFreeMacBuild(options = {}) {
     force: true,
   }))
   let keychainCreated = false
+  let originalSearchList = null
   let result
   let failure
   const cleanupErrors = []
@@ -294,6 +303,13 @@ async function runCiFreeMacBuild(options = {}) {
       '-s', '-k', keychainPassword,
       keychainPath,
     ])
+    // codesign resolves a signing identity through the user keychain search
+    // list; passing --keychain does not by itself make an isolated keychain
+    // visible to it. The original list is captured first and restored during
+    // cleanup, so the change never outlives this build. Nothing is written to
+    // the admin domain, the system keychain, or Trust Settings.
+    originalSearchList = parseKeychainSearchList(runSecurity(['list-keychains', '-d', 'user']))
+    runSecurity(['list-keychains', '-d', 'user', '-s', keychainPath, ...originalSearchList])
     await verifyEphemeralSigning({
       platform: 'darwin',
       identitySha1,
@@ -324,6 +340,9 @@ async function runCiFreeMacBuild(options = {}) {
       } catch (error) {
         cleanupErrors.push(error)
       }
+    }
+    if (originalSearchList) {
+      attemptCleanup(() => runSecurity(['list-keychains', '-d', 'user', '-s', ...originalSearchList]))
     }
     if (keychainCreated) attemptCleanup(() => runSecurity(['delete-keychain', keychainPath]))
     attemptCleanup(() => removeDirectory(outputPath))
