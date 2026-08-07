@@ -99,7 +99,8 @@ function packagedProtocolUrlToPath(
     const decodedPath = decodeURIComponent(target.pathname)
     if (decodedPath.includes('\0') || decodedPath.includes('\\')) return null
     const relativePath = decodedPath.replace(/^\/+/, '') || 'index.html'
-    const resolved = path.resolve(rendererRoot, relativePath)
+    const pathApi = isWindowsPath(rendererRoot) ? path.win32 : path
+    const resolved = pathApi.resolve(rendererRoot, relativePath)
     return isPathWithinRoot(resolved, rendererRoot) ? resolved : null
   } catch {
     return null

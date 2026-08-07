@@ -3,6 +3,7 @@ import {
   deriveWindowsSystemRoot,
   isTrustedWindowsMachinePath,
   pathWithinWindowsRoot,
+  resolveWindowsKnownFolders,
   resolveWindowsMachinePaths,
   validateWindowsMachineAclSnapshot,
 } from './windows-machine-paths'
@@ -13,6 +14,90 @@ const sharedObjects = [
 ]
 
 describe('Windows machine paths', () => {
+  it('uses complete trusted registry roots without starting PowerShell', () => {
+    const folders = resolveWindowsKnownFolders('D:\\Windows', {
+      readRegistryValue: (_systemRoot, _key, name) => ({
+        ProgramFilesDir: 'D:\\Program Files',
+        'ProgramFilesDir (x86)': 'D:\\Program Files (x86)',
+        'Common AppData': 'D:\\ProgramData',
+      })[name] ?? null,
+      resolveWithPowerShell: () => {
+        throw new Error('PowerShell known-folder lookup must not run')
+      },
+    })
+
+    expect(folders).toEqual({
+      programFiles: 'D:\\Program Files',
+      programFilesX86: 'D:\\Program Files (x86)',
+      programData: 'D:\\ProgramData',
+    })
+  })
+
+  it('falls back when trusted registry folders are not absolute expanded paths', () => {
+    let powerShellCalls = 0
+    const folders = resolveWindowsKnownFolders('D:\\Windows', {
+      readRegistryValue: (_systemRoot, _key, name) => ({
+        ProgramFilesDir: '%SystemDrive%\\Program Files',
+        'ProgramFilesDir (x86)': '%SystemDrive%\\Program Files (x86)',
+        'Common AppData': '%SystemDrive%\\ProgramData',
+      })[name] ?? null,
+      resolveWithPowerShell: () => {
+        powerShellCalls += 1
+        return {
+          programFiles: 'D:\\Program Files',
+          programFilesX86: 'D:\\Program Files (x86)',
+          programData: 'D:\\ProgramData',
+        }
+      },
+    })
+
+    expect(powerShellCalls).toBe(1)
+    expect(folders).toEqual({
+      programFiles: 'D:\\Program Files',
+      programFilesX86: 'D:\\Program Files (x86)',
+      programData: 'D:\\ProgramData',
+    })
+  })
+
+  it('preserves valid registry folders while filling missing values with PowerShell', () => {
+    const folders = resolveWindowsKnownFolders('D:\\Windows', {
+      readRegistryValue: (_systemRoot, _key, name) => ({
+        ProgramFilesDir: 'E:\\Protected Programs',
+        'ProgramFilesDir (x86)': null,
+        'Common AppData': null,
+      })[name] ?? null,
+      resolveWithPowerShell: () => ({
+        programFiles: 'D:\\Program Files',
+        programFilesX86: 'D:\\Program Files (x86)',
+        programData: 'D:\\ProgramData',
+      }),
+    })
+
+    expect(folders).toEqual({
+      programFiles: 'E:\\Protected Programs',
+      programFilesX86: 'D:\\Program Files (x86)',
+      programData: 'D:\\ProgramData',
+    })
+  })
+
+  it('fills a missing x86 Program Files registry value before caching known folders', () => {
+    let powerShellCalls = 0
+    const folders = resolveWindowsKnownFolders('D:\\Windows', {
+      readRegistryValue: (_systemRoot, _key, name) => ({
+        ProgramFilesDir: 'D:\\Program Files',
+        'ProgramFilesDir (x86)': null,
+        'Common AppData': 'D:\\ProgramData',
+      })[name] ?? null,
+      resolveWithPowerShell: () => {
+        powerShellCalls += 1
+        return { programFilesX86: 'D:\\Program Files (x86)' }
+      },
+    })
+
+    expect(powerShellCalls).toBe(1)
+    expect(folders.programFilesX86).toBe('D:\\Program Files (x86)')
+  })
+
   it('derives the real system root from loaded kernel modules', () => {
     expect(deriveWindowsSystemRoot({ platform: 'win32', sharedObjects })).toBe('D:\\Windows')
     expect(resolveWindowsMachinePaths({

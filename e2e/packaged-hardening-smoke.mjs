@@ -57,6 +57,11 @@ async function stopProcess(child) {
   const pid = Number(child.pid)
   if (!Number.isSafeInteger(pid) || pid <= 0) throw new Error(`无效的测试进程 ID：${child.pid}`)
   if (!processIsRunning(pid)) return
+  if (process.platform !== 'win32') {
+    child.kill('SIGKILL')
+    if (await waitForExit(child, 5_000) !== null || !processIsRunning(pid)) return
+    throw new Error(`无法结束测试进程 ${pid}：SIGKILL 后仍在运行`)
+  }
   const systemRoot = process.env.SystemRoot || process.env.WINDIR || 'C:\\Windows'
   const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe')
   const result = spawnSync(taskkill, ['/PID', String(pid), '/T', '/F'], {

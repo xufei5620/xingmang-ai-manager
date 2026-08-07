@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { readBoundedUtf8File } from './bounded-file'
+import { sameLocalPathIdentity } from './path-identity'
 import { fetchGrokStableVersion, parseGrokStableVersion, type GrokVersionFetch } from './grok-update'
 import {
   managedCliRoot,
@@ -154,7 +155,7 @@ function assertPlainSingleLinkFile(filePath: string): void {
   if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
     throw new Error('Grok CLI 目标不是单链接普通文件')
   }
-  if (path.resolve(fs.realpathSync(filePath)) !== path.resolve(filePath)) {
+  if (!sameLocalPathIdentity(fs.realpathSync(filePath), filePath)) {
     throw new Error('Grok CLI 目标经过了符号链接或目录联接')
   }
 }

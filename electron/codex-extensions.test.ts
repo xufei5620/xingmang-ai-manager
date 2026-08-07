@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as TOML from '@iarna/toml'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CodexExtensionService,
   resolveCodexCommand,
@@ -21,6 +21,11 @@ function temporaryDirectory(): string {
 function write(filePath: string, content: string): void {
   fs.mkdirSync(path.dirname(filePath), { recursive: true })
   fs.writeFileSync(filePath, content, 'utf8')
+}
+
+function writeExecutable(filePath: string, content: string): void {
+  write(filePath, content)
+  if (process.platform !== 'win32') fs.chmodSync(filePath, 0o700)
 }
 
 function mcpList(entries: unknown[]): string {
@@ -301,6 +306,38 @@ describe('Codex Plugin and marketplace contracts', () => {
 })
 
 describe('Skill discovery and managed mutations', () => {
+  it('uses custom Codex config and Skills while preserving user and repository roots', async () => {
+    const userHome = temporaryDirectory()
+    const codexHome = temporaryDirectory()
+    const repository = temporaryDirectory()
+    write(path.join(codexHome, 'skills', 'codex-user', 'SKILL.md'), '---\nname: Codex User\n---\n')
+    write(path.join(userHome, '.agents', 'skills', 'agents-user', 'SKILL.md'), '---\nname: Agents User\n---\n')
+    write(path.join(repository, '.codex', 'skills', 'codex-project', 'SKILL.md'), '---\nname: Codex Project\n---\n')
+    write(path.join(repository, '.agents', 'skills', 'agents-project', 'SKILL.md'), '---\nname: Agents Project\n---\n')
+    write(path.join(codexHome, 'config.toml'), '[mcp_servers.custom]\ncommand = "node"\n')
+    const service = new CodexExtensionService({
+      userHome,
+      codexHome,
+      repositoryRoot: repository,
+      env: { HOME: userHome, CODEX_HOME: codexHome },
+      invoke: async (argv) => argv[0] === 'plugin'
+        ? pluginCatalog()
+        : mcpList([stdioMcp('custom')]),
+    })
+
+    expect(await service.listMcpServers()).toEqual([
+      expect.objectContaining({ name: 'custom', origin: 'user', editable: true }),
+    ])
+    expect(service.listSkills().map((item) => item.name)).toEqual(expect.arrayContaining([
+      'Codex User',
+      'Agents User',
+      'Codex Project',
+      'Agents Project',
+    ]))
+    expect(service.getRepositoryContext().repositoryRoot).toBe(repository)
+    expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
+  })
+
   it('skips a Skill root that is a directory junction', () => {
     const home = temporaryDirectory()
     const outside = temporaryDirectory()
@@ -457,6 +494,41 @@ describe('Skill discovery and managed mutations', () => {
 })
 
 describe('trusted Codex command resolution', () => {
+  it.runIf(process.platform === 'darwin')('accepts a verified official standalone command before npm-only resolution', async () => {
+    const home = temporaryDirectory()
+    const visibleCommand = path.join(home, '.local', 'bin', 'codex')
+    const releaseCommand = path.join(
+      home,
+      '.codex',
+      'packages',
+      'standalone',
+      'releases',
+      '0.146.0-aarch64-apple-darwin',
+      'bin',
+      'codex',
+    )
+    writeExecutable(releaseCommand, '#!/bin/sh\n')
+    fs.mkdirSync(path.dirname(visibleCommand), { recursive: true })
+    fs.symlinkSync(releaseCommand, visibleCommand)
+    const privateCommand = path.join(home, 'private-cli', 'codex')
+    writeExecutable(privateCommand, '#!/bin/sh\n')
+    const verifyStandalone = vi.fn(async (executablePath: string) => {
+      expect(executablePath).toBe(visibleCommand)
+      return { executable: fs.realpathSync(privateCommand), argv: [] }
+    })
+
+    const command = await resolveCodexCommand(
+      { HOME: home, PATH: path.dirname(visibleCommand) },
+      undefined,
+      undefined,
+      'trusted-only',
+      verifyStandalone,
+    )
+
+    expect(command).toEqual({ executable: fs.realpathSync(privateCommand), argv: [] })
+    expect(verifyStandalone).toHaveBeenCalledOnce()
+  })
+
   it.runIf(process.platform === 'win32' && process.arch === 'x64')('recognizes the official target-specific Windows package directory', async () => {
     const programFiles = temporaryDirectory()
     const root = path.join(programFiles, 'codex-package')
@@ -499,19 +571,24 @@ describe('trusted Codex command resolution', () => {
   })
 
   it('discovers the verified Codex package beside a Hermes shim', async () => {
-    const prefix = temporaryDirectory()
+    const directory = temporaryDirectory()
+    const prefix = path.join(directory, 'hermes')
     const packageRoot = path.join(prefix, 'node_modules', '@openai', 'codex')
-    write(path.join(prefix, 'codex.cmd'), '@echo off\n')
-    write(path.join(prefix, 'node.exe'), '')
+    const codexExecutable = process.platform === 'win32' ? 'codex.cmd' : 'codex'
+    const nodeExecutable = process.platform === 'win32' ? 'node.exe' : 'node'
+    writeExecutable(path.join(prefix, codexExecutable), process.platform === 'win32'
+      ? '@echo off\n'
+      : '#!/bin/sh\n')
+    writeExecutable(path.join(prefix, nodeExecutable), '')
     write(path.join(packageRoot, 'package.json'), JSON.stringify({
       name: '@openai/codex',
       bin: { codex: 'bin/codex.js' },
     }))
     write(path.join(packageRoot, 'bin', 'codex.js'), '#!/usr/bin/env node\n')
 
-    const command = await resolveCodexCommand({ PATH: prefix })
+    const command = await resolveCodexCommand({ PATH: prefix, HOME: directory })
 
-    expect(command.executable).toBe(path.resolve(prefix, 'node.exe'))
+    expect(command.executable).toBe(path.resolve(prefix, nodeExecutable))
     expect(command.argv).toEqual([fs.realpathSync(path.join(packageRoot, 'bin', 'codex.js'))])
   })
 

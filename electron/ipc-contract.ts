@@ -72,6 +72,7 @@ import type {
   RuntimeLogEntry as MainRuntimeLogEntry,
   RuntimeLogSnapshot as MainRuntimeLogSnapshot,
 } from './runtime-log'
+import type { PlatformCapabilities as MainPlatformCapabilities } from './platform-capabilities'
 
 export { providerIds } from './catalog'
 
@@ -125,6 +126,8 @@ export type RuntimeLogSnapshot = MainRuntimeLogSnapshot
 export type RuntimeLogEntry = MainRuntimeLogEntry
 export type NodeRuntimeInstallProgress = MainNodeRuntimeInstallProgress
 export type NodeRuntimeInstallResult = MainNodeRuntimeInstallResult
+export type PlatformCapabilities = MainPlatformCapabilities
+export type RendererNavigationTarget = 'settings'
 
 export interface RendererErrorPayload {
   message: string
@@ -188,6 +191,11 @@ export type IpcEventPayload<Definition> = Definition extends IpcEventDefinition<
 > ? Payload : never
 
 export interface XingmangInvokeContract {
+  getPlatformCapabilities: IpcInvokeDefinition<
+    'platform:get-capabilities',
+    [],
+    PlatformCapabilities
+  >
   scanSystem: IpcInvokeDefinition<'system:scan', [forceRefresh?: boolean], SystemSnapshot>
   getCodexReadiness: IpcInvokeDefinition<'startup:codex-readiness', [], CodexReadinessStatus>
   getConfig: IpcInvokeDefinition<'config:get', [], AppConfigSummary>
@@ -316,6 +324,7 @@ export interface XingmangInvokeContract {
 }
 
 export interface XingmangEventContract {
+  onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
   onNodeRuntimeInstallProgress: IpcEventDefinition<
     'runtime:node-install-progress',
     NodeRuntimeInstallProgress
@@ -343,6 +352,7 @@ export type XingmangApi = {
 }
 
 export const ipcInvokeChannels = {
+  getPlatformCapabilities: 'platform:get-capabilities',
   scanSystem: 'system:scan',
   getCodexReadiness: 'startup:codex-readiness',
   getConfig: 'config:get',
@@ -417,6 +427,7 @@ export const ipcInvokeChannels = {
 }
 
 export const ipcEventChannels = {
+  onNavigate: 'navigation:open-page',
   onNodeRuntimeInstallProgress: 'runtime:node-install-progress',
   onInstallProgress: 'cli:install-progress',
   onCodexDesktopStatus: 'desktop:codex-status-changed',

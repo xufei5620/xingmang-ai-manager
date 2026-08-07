@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
+import { darwinCommandPathCandidates } from './macos-platform'
 import { managedNativeProviderRoot, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import {
@@ -92,6 +93,21 @@ export interface FindExecutableOptions {
   windowsPackageManagers?: readonly WindowsPackageManager[]
   trustedOnly?: boolean
   machinePaths?: WindowsMachinePaths
+}
+
+export interface WindowsSystemExecutableDependencies {
+  currentPlatform?: NodeJS.Platform
+  resolveMachinePaths?: typeof resolveWindowsMachinePaths
+}
+
+export interface TrustedCommandEnvironmentDependencies {
+  isTrustedMachinePath?: typeof isTrustedWindowsMachinePath
+}
+
+export interface CommandRunnerDependencies {
+  platform?: NodeJS.Platform
+  spawnProcess?: typeof spawn
+  resolveWindowsSystemExecutable?: (fileName: string) => string
 }
 
 export class CommandRunnerError extends Error {
@@ -187,12 +203,16 @@ export function windowsSystemExecutable(
   _env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   machinePaths?: WindowsMachinePaths,
+  dependencies: WindowsSystemExecutableDependencies = {},
 ): string {
   if (platform !== 'win32') return fileName
   if (!fileName || fileName.includes('\0') || path.win32.basename(fileName) !== fileName) {
     throw new Error('Windows 系统可执行文件名无效')
   }
-  const roots = machinePaths ?? resolveWindowsMachinePaths({ platform })
+  const resolveMachinePaths = dependencies.resolveMachinePaths ?? resolveWindowsMachinePaths
+  const roots = machinePaths ?? (platform === (dependencies.currentPlatform ?? process.platform)
+    ? resolveMachinePaths()
+    : resolveMachinePaths({ platform }))
   return path.win32.join(roots.system32, fileName)
 }
 
@@ -200,6 +220,8 @@ export function windowsSystemExecutable(
 export function trustedCommandEnvironment(
   baseEnv: NodeJS.ProcessEnv = process.env,
   machinePaths?: WindowsMachinePaths,
+  platform: NodeJS.Platform = machinePaths ? 'win32' : process.platform,
+  dependencies: TrustedCommandEnvironmentDependencies = {},
 ): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {}
   // These variables can inject code, alter package resolution, or replace the
@@ -311,50 +333,42 @@ export function trustedCommandEnvironment(
       result[key] = value
     }
   }
-  if (process.platform !== 'win32') {
+  if (platform !== 'win32') {
     result.PATH = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
     result.PYTHONNOUSERSITE = '1'
     result.PYTHONSAFEPATH = '1'
     return result
   }
   const roots = machinePaths ?? resolveWindowsMachinePaths()
-  const systemRoot = roots.systemRoot
   const machinePathEntries = [
     roots.system32,
-    path.join(roots.system32, 'WindowsPowerShell', 'v1.0'),
-    path.join(roots.programFiles, 'PowerShell', '7'),
-    path.join(roots.programFiles, 'nodejs'),
-    roots.programFilesX86 && path.join(roots.programFilesX86, 'nodejs'),
-    path.join(roots.programData, 'XingMangAI', 'Cli', 'npm'),
+    path.win32.join(roots.system32, 'WindowsPowerShell', 'v1.0'),
+    path.win32.join(roots.programFiles, 'PowerShell', '7'),
+    path.win32.join(roots.programFiles, 'nodejs'),
+    roots.programFilesX86 && path.win32.join(roots.programFilesX86, 'nodejs'),
+    path.win32.join(roots.programData, 'XingMangAI', 'Cli', 'npm'),
   ].filter((value): value is string => Boolean(value))
   const existingPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
-  const candidates = [...machinePathEntries, ...existingPath.split(path.delimiter)]
+  const candidates = [...machinePathEntries, ...existingPath.split(path.win32.delimiter)]
   const seen = new Set<string>()
   const entries: string[] = []
   for (const candidate of candidates) {
     const unquoted = candidate.trim().replace(/^"(.*)"$/, '$1')
     if (!unquoted || !isPotentialWindowsExecutionPath(unquoted, roots)) continue
-    const key = normalizedPathKey(unquoted)
+    const key = path.win32.normalize(unquoted).toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
     entries.push(unquoted)
   }
-  result.PATH = entries.join(path.delimiter)
-  const moduleCandidates = [
-    path.join(roots.system32, 'WindowsPowerShell', 'v1.0', 'Modules'),
-    path.join(roots.programFiles, 'WindowsPowerShell', 'Modules'),
-    path.join(roots.programFiles, 'PowerShell', '7', 'Modules'),
-  ]
-  const moduleEntries: string[] = []
-  const seenModules = new Set<string>()
-  for (const candidate of moduleCandidates) {
-    if (!isTrustedWindowsMachinePath(candidate, roots)) continue
-    const key = normalizedPathKey(candidate)
-    if (seenModules.has(key)) continue
-    seenModules.add(key)
-    moduleEntries.push(candidate)
-  }
-  result.PSModulePath = moduleEntries.join(path.delimiter)
+  result.PATH = entries.join(path.win32.delimiter)
+  const systemModules = path.win32.join(
+    roots.system32,
+    'WindowsPowerShell',
+    'v1.0',
+    'Modules',
+  )
+  const isTrustedMachinePath = dependencies.isTrustedMachinePath ?? isTrustedWindowsMachinePath
+  result.PSModulePath = isTrustedMachinePath(systemModules, roots) ? systemModules : ''
   result.SystemRoot = roots.systemRoot
   result.WINDIR = roots.systemRoot
   result.SystemDrive = path.win32.parse(roots.systemRoot).root.replace(/[\\/]$/, '')
@@ -436,11 +450,13 @@ export function commandEnvironment(
   }
 
   const existingPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
-  const candidates = [
-    ...additionalPaths,
-    ...defaultCommandPaths(baseEnv),
-    ...existingPath.split(path.delimiter),
-  ]
+  const candidates = process.platform === 'darwin'
+    ? darwinCommandPathCandidates(baseEnv, additionalPaths)
+    : [
+        ...additionalPaths,
+        ...defaultCommandPaths(baseEnv),
+        ...existingPath.split(path.delimiter),
+      ]
   const seen = new Set<string>()
   const entries: string[] = []
   for (const candidate of candidates) {
@@ -753,7 +769,11 @@ function positiveInteger(value: number, name: string, allowZero = false): number
 }
 
 /** Runs a process with shell:false and a bounded, cancellable lifecycle. */
-export async function runCommand(spec: CommandSpec, options: RunCommandOptions = {}): Promise<CommandResult> {
+export async function runCommand(
+  spec: CommandSpec,
+  options: RunCommandOptions = {},
+  dependencies: CommandRunnerDependencies = {},
+): Promise<CommandResult> {
   validateSpec(spec)
   const timeoutMs = positiveInteger(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, 'timeoutMs', true)
   const maxOutputBytes = positiveInteger(options.maxOutputBytes ?? DEFAULT_MAX_OUTPUT_BYTES, 'maxOutputBytes')
@@ -836,11 +856,13 @@ export async function runCommand(spec: CommandSpec, options: RunCommandOptions =
   const acceptedExitCodes = new Set(options.acceptedExitCodes ?? [0])
   const sensitiveValues = options.sensitiveValues ?? []
   const startedAt = Date.now()
+  const processPlatform = dependencies.platform ?? process.platform
+  const spawnProcess = dependencies.spawnProcess ?? spawn
 
   return await new Promise<CommandResult>((resolve, reject) => {
     let child: ReturnType<typeof spawn>
     try {
-      child = spawn(resolvedSpec.executable, [...resolvedSpec.argv], {
+      child = spawnProcess(resolvedSpec.executable, [...resolvedSpec.argv], {
         cwd: options.cwd,
         env,
         shell: false,
@@ -907,16 +929,20 @@ export async function runCommand(spec: CommandSpec, options: RunCommandOptions =
       if (forcedCode || settled) return
       forcedCode = code
       const fallbackKill = () => child.kill(options.killSignal ?? 'SIGTERM')
-      if (process.platform === 'win32' && child.pid) {
+      if (processPlatform === 'win32' && child.pid) {
         // child.kill() only reaches the direct child on Windows; a grandchild
         // holding the inherited stdio pipe handles would keep 'close' from
         // ever firing, so the whole tree must go down together.
         try {
-          const killer = spawn(windowsSystemExecutable('taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], {
+          const taskkill = dependencies.resolveWindowsSystemExecutable ?? windowsSystemExecutable
+          const killer = spawnProcess(taskkill('taskkill.exe'), ['/PID', String(child.pid), '/T', '/F'], {
             windowsHide: true,
             stdio: 'ignore',
           })
           killer.once('error', fallbackKill)
+          killer.once('exit', (exitCode) => {
+            if (exitCode !== 0) fallbackKill()
+          })
           killer.unref()
         } catch {
           fallbackKill()
@@ -972,20 +998,7 @@ export async function runCommand(spec: CommandSpec, options: RunCommandOptions =
       reject(commandError(forcedCode ?? 'SPAWN_FAILED', null, null))
     })
 
-    child.once('exit', () => {
-      // A process that inherited the stdio pipe write handles can outlive the
-      // child and keep 'close' from firing, which would strand every
-      // settlement path. Force the streams shut so 'close' always arrives.
-      exitSettleTimer = setTimeout(() => {
-        if (!settled) {
-          child.stdout?.destroy()
-          child.stderr?.destroy()
-        }
-      }, killGraceMs > 0 ? killGraceMs : 1000)
-      exitSettleTimer.unref()
-    })
-
-    child.once('close', (exitCode, signal) => {
+    const settleFromChild = (exitCode: number | null, signal: NodeJS.Signals | null) => {
       if (settled) return
       settled = true
       cleanup()
@@ -1008,7 +1021,24 @@ export async function runCommand(spec: CommandSpec, options: RunCommandOptions =
         outputBytes,
         durationMs: Date.now() - startedAt,
       })
+    }
+
+    child.once('exit', (exitCode, signal) => {
+      // A process that inherited the stdio pipe write handles can outlive the
+      // child and keep 'close' from firing, which would strand every
+      // settlement path. Once exit proves the child is dead, force the streams
+      // shut and settle directly if close still has not arrived.
+      exitSettleTimer = setTimeout(() => {
+        if (!settled) {
+          child.stdout?.destroy()
+          child.stderr?.destroy()
+          settleFromChild(exitCode, signal)
+        }
+      }, killGraceMs > 0 ? killGraceMs : 1000)
+      exitSettleTimer.unref()
     })
+
+    child.once('close', settleFromChild)
 
     options.signal?.addEventListener('abort', abort, { once: true })
     if (options.signal?.aborted) abort()

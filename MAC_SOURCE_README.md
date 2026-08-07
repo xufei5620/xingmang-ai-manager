@@ -29,14 +29,23 @@ npm run dev
 
 `npm ci` 必须在 macOS 上重新执行，不要从 Windows 复制 `node_modules`。
 
+## macOS 构建方式
+
+源码支持 macOS 13+，并由同一套业务源码分别构建 Apple Silicon (`arm64`) 和 Intel (`x64`) 版本：
+
+- `npm run build:mac:dir`：生成当前开发机使用的 arm64 解包应用，仅带 ad-hoc 完整性签名，只供本机验证。
+- `npm run build:mac`：生成 arm64/x64 的 DMG 与 ZIP 候选，仍为 ad-hoc 签名，不适合向普通用户分发。
+- `npm run dist:mac:free`：使用发布者长期保管的同一张自签证书生成 arm64/x64 免费分发包。用户首次打开需要手动确认；证书和 bundle ID 保持不变时，后续版本可继续使用应用内自动更新。
+
+上述命令都使用 `--publish never`，不会上传文件或创建 GitHub Release。免费自签版的首次打开、证书保管与构建门禁见 [macOS 免费自签版分发手册](docs/MACOS_FREE_DISTRIBUTION.md)；Developer ID 与 notarization 的正式路线见 [macOS 开发手册](docs/MACOS_DEVELOPMENT.md)。
+
 ## 当前平台边界
 
-当前源码仍以 Windows 为主要发布目标。下列功能需要在 macOS 适配层完成后才能正常使用：
+macOS 已支持本地数据、配置和会话管理，常见 Node.js/AI CLI 发现与终端启动，用户级 CLI 维护，Grok CLI 安装/更新，以及已安装 Codex 桌面端的检测与打开。下列能力仍由平台分别处理：
 
-- Windows PowerShell CLI 启动与按操作触发的 UAC 安装流程
-- Node.js、CLI 和 Codex Desktop 的 Windows 安装及卸载
-- Microsoft Store、Appx、注册表、Windows ACL 和 NSIS 更新流程
-- Windows 安装包构建与自动更新
+- macOS 不自动安装 Node.js；缺少运行时时会引导用户使用官方安装方式。
+- Codex 桌面端的安装可用性取决于 OpenAI 提供的 macOS 架构版本；本工具只检测和打开兼容的已安装应用。
+- Microsoft Store、Appx、注册表、Windows ACL、PowerShell/UAC 和 NSIS 仅用于 Windows。
+- Windows 使用 Authenticode/NSIS 更新链；macOS 使用 DMG/ZIP、Squirrel.Mac 和对应签名链。
 
-会话读取、配置解析、React 界面及大部分纯 TypeScript 逻辑可以作为 macOS 适配基础。
-不要在 macOS 上直接运行 Windows 发布脚本或上传更新产物。
+不要在 macOS 上运行 Windows 发布脚本，也不要把任何本地候选产物直接上传为正式版本。

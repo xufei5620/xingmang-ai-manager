@@ -1,6 +1,8 @@
 import fs from 'node:fs'
+import { EventEmitter } from 'node:events'
 import os from 'node:os'
 import path from 'node:path'
+import { PassThrough } from 'node:stream'
 import { describe, expect, it } from 'vitest'
 import {
   CommandRunnerError,
@@ -28,6 +30,31 @@ const nodeCommand = (script: string, ...argv: string[]) => ({
   executable: process.execPath,
   argv: ['-e', script, '--', ...argv],
 })
+
+function createFakeChild(pid: number) {
+  const child = new EventEmitter() as EventEmitter & {
+    pid: number
+    stdout: PassThrough
+    stderr: PassThrough
+    killSignals: Array<NodeJS.Signals | number | undefined>
+    kill: (signal?: NodeJS.Signals | number) => boolean
+    unref: () => unknown
+  }
+  child.pid = pid
+  child.stdout = new PassThrough()
+  child.stderr = new PassThrough()
+  child.killSignals = []
+  child.kill = (signal) => {
+    child.killSignals.push(signal)
+    queueMicrotask(() => {
+      child.emit('exit', null, typeof signal === 'string' ? signal : null)
+      child.emit('close', null, typeof signal === 'string' ? signal : null)
+    })
+    return true
+  }
+  child.unref = () => child
+  return child
+}
 
 describe('secure command runner', () => {
   it('keeps user-scoped tools discoverable but outside the high-integrity execution boundary', () => {
@@ -107,6 +134,62 @@ describe('secure command runner', () => {
     await expect(execution).rejects.toMatchObject({ code: 'ABORTED' })
   })
 
+  it('falls back to direct child termination when taskkill exits nonzero', async () => {
+    const primary = createFakeChild(101)
+    const killer = createFakeChild(202)
+    let spawnCount = 0
+    const spawnProcess = (() => {
+      spawnCount += 1
+      if (spawnCount === 1) return primary
+      queueMicrotask(() => killer.emit('exit', 1, null))
+      return killer
+    }) as unknown as typeof import('node:child_process').spawn
+
+    const execution = runCommand(nodeCommand('setInterval(() => {}, 1_000)'), {
+      timeoutMs: 10,
+      killGraceMs: 100,
+    }, {
+      platform: 'win32',
+      spawnProcess,
+      resolveWindowsSystemExecutable: () => 'D:\\Windows\\System32\\taskkill.exe',
+    })
+
+    await expect(execution).rejects.toMatchObject({ code: 'TIMED_OUT' })
+    expect(primary.killSignals).toEqual(['SIGTERM'])
+  })
+
+  it('settles after confirmed exit when inherited pipes never emit child close', async () => {
+    const primary = createFakeChild(303)
+    const spawnProcess = (() => {
+      queueMicrotask(() => {
+        primary.stdout.write('fake-output')
+        primary.emit('exit', 0, null)
+      })
+      return primary
+    }) as unknown as typeof import('node:child_process').spawn
+    let guard: NodeJS.Timeout | undefined
+
+    try {
+      const result = await Promise.race([
+        runCommand(nodeCommand("process.stdout.write('real-output')"), {
+          timeoutMs: 0,
+          killGraceMs: 10,
+        }, {
+          platform: 'linux',
+          spawnProcess,
+        }),
+        new Promise<never>((_resolve, reject) => {
+          guard = setTimeout(() => reject(new Error('runCommand remained pending after child exit')), 100)
+        }),
+      ])
+
+      expect(result.stdout).toBe('fake-output')
+      expect(result.exitCode).toBe(0)
+    } finally {
+      if (guard) clearTimeout(guard)
+    }
+  })
+
   it('cleans ANSI output and redacts credentials from structured errors', async () => {
     const apiKey = 'sk-ultra-secret-value'
     const execution = runCommand(nodeCommand([
@@ -136,6 +219,47 @@ describe('secure command runner', () => {
 
     expect(executable).not.toBeNull()
     expect(environment.PATH?.split(process.platform === 'win32' ? ';' : ':')[0]).toBeTruthy()
+  })
+
+  it.runIf(process.platform === 'darwin')('orders deterministic macOS command paths before inherited PATH entries', () => {
+    const environment = commandEnvironment({
+      PATH: '/usr/bin:/custom/inherited:/opt/homebrew/bin',
+    }, ['/managed/bin', '/usr/local/bin'])
+
+    expect(environment.PATH?.split(':')).toEqual([
+      '/managed/bin',
+      '/usr/local/bin',
+      `${os.homedir()}/Library/Application Support/XingMangAI/Cli/npm/bin`,
+      `${os.homedir()}/.grok/bin`,
+      `${os.homedir()}/.local/bin`,
+      `${os.homedir()}/.volta/bin`,
+      `${os.homedir()}/.cargo/bin`,
+      `${os.homedir()}/.npm-global/bin`,
+      `${os.homedir()}/Library/pnpm`,
+      '/opt/homebrew/bin',
+      '/usr/bin',
+      '/bin',
+      '/usr/sbin',
+      '/sbin',
+      '/custom/inherited',
+    ])
+  })
+
+  it.runIf(process.platform === 'darwin')('uses the supplied HOME for deterministic macOS user paths', () => {
+    const environment = commandEnvironment({
+      HOME: '/Users/isolated-test-user',
+      PATH: '/usr/bin',
+    })
+
+    expect(environment.PATH?.split(':').slice(0, 6)).toEqual([
+      '/Users/isolated-test-user/Library/Application Support/XingMangAI/Cli/npm/bin',
+      '/Users/isolated-test-user/.grok/bin',
+      '/Users/isolated-test-user/.local/bin',
+      '/Users/isolated-test-user/.volta/bin',
+      '/Users/isolated-test-user/.cargo/bin',
+      '/Users/isolated-test-user/.npm-global/bin',
+    ])
+    expect(environment.PATH).not.toContain(os.homedir())
   })
 
   it.runIf(process.platform === 'win32')('adds common Windows Node manager and package-manager paths', () => {
@@ -253,9 +377,14 @@ describe('secure command runner', () => {
     expect(environment.EDITOR).toBeUndefined()
     expect(environment.PYTHONNOUSERSITE).toBe('1')
     expect(environment.PYTHONSAFEPATH).toBe('1')
-    expect(environment.PSModulePath).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules')
-    expect(environment.PSModulePath).not.toContain('C:\\Users\\tester')
-    expect(environment.PATH).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
+    if (process.platform === 'win32') {
+      expect(environment.PSModulePath).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules')
+      expect(environment.PSModulePath).not.toContain('C:\\Users\\tester')
+      expect(environment.PATH).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
+    } else {
+      expect(environment.PSModulePath).toBeUndefined()
+      expect(environment.PATH).toBe('C:\\Windows\\System32')
+    }
     expect(environment.GIT_EXEC_PATH).toBeUndefined()
     expect(environment.GIT_SSH_COMMAND).toBeUndefined()
     expect(environment.GIT_CONFIG_COUNT).toBeUndefined()
@@ -308,6 +437,20 @@ describe('secure command runner', () => {
     expect(environment.PATH).not.toContain('WindowsApps')
   })
 
+  it('constructs PSModulePath from canonical System32 without probing Program Files', () => {
+    const canonicalModules = 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules'
+    const environment = trustedCommandEnvironment({}, testMachinePaths, 'win32', {
+      isTrustedMachinePath: (candidate) => {
+        if (candidate.toLowerCase().startsWith(testMachinePaths.programFiles.toLowerCase())) {
+          throw new Error('Program Files ACL lookup must not run while constructing PSModulePath')
+        }
+        return candidate.toLowerCase() === canonicalModules.toLowerCase()
+      },
+    })
+
+    expect(environment.PSModulePath).toBe(canonicalModules)
+  })
+
   it.runIf(process.platform === 'win32')('temporarily sanitizes and exactly restores installer spawn environments', () => {
     const environment: NodeJS.ProcessEnv = {
       PATH: 'C:\\Users\\tester\\bin',
@@ -344,6 +487,22 @@ describe('secure command runner', () => {
     }, 'win32', testMachinePaths)).toBe('D:\\Windows\\System32\\cmd.exe')
     expect(() => windowsSystemExecutable('..\\cmd.exe', {}, 'win32')).toThrow('文件名无效')
     expect(windowsSystemExecutable('sh', {}, 'linux')).toBe('sh')
+  })
+
+  it('uses the default cached machine-path resolver for the current Windows platform', () => {
+    const resolveMachinePaths = (options?: { platform?: NodeJS.Platform }) => {
+      if (options !== undefined) throw new Error('current-platform resolution bypassed the default cache')
+      return testMachinePaths
+    }
+
+    expect(windowsSystemExecutable('taskkill.exe', {}, 'win32', undefined, {
+      currentPlatform: 'win32',
+      resolveMachinePaths,
+    })).toBe('D:\\Windows\\System32\\taskkill.exe')
+    expect(windowsSystemExecutable('where.exe', {}, 'win32', undefined, {
+      currentPlatform: 'win32',
+      resolveMachinePaths,
+    })).toBe('D:\\Windows\\System32\\where.exe')
   })
 
   it.runIf(process.platform === 'win32')('blocks arbitrary Windows command shims', async () => {

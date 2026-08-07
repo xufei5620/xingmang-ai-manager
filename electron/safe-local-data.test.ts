@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   appendSafeUtf8File,
+  assertNoReparseComponents,
   readSafeUtf8File,
   readSafeUtf8FileSync,
   writeAtomicSafeUtf8File,
@@ -25,6 +26,31 @@ afterEach(() => {
 })
 
 describe('safe local data files', () => {
+  it.runIf(process.platform === 'darwin')('accepts the Darwin system temporary directory alias', () => {
+    expect(() => assertNoReparseComponents(os.tmpdir(), '临时目录')).not.toThrow()
+  })
+
+  it('rejects an arbitrary directory symbolic link', () => {
+    const directory = temporaryDirectory()
+    const target = path.join(directory, 'target')
+    const symbolicLink = path.join(directory, 'link')
+    fs.mkdirSync(target)
+    fs.symlinkSync(target, symbolicLink)
+
+    expect(() => assertNoReparseComponents(symbolicLink, '临时目录')).toThrow('符号链接')
+  })
+
+  it('rejects a broken symbolic link component', () => {
+    const directory = temporaryDirectory()
+    const symbolicLink = path.join(directory, 'broken-link')
+    fs.symlinkSync(path.join(directory, 'missing-target'), symbolicLink)
+
+    expect(() => assertNoReparseComponents(
+      path.join(symbolicLink, 'config.toml'),
+      '配置路径',
+    )).toThrow('符号链接')
+  })
+
   it('atomically creates and replaces a regular UTF-8 file', async () => {
     const filePath = path.join(temporaryDirectory(), 'report.txt')
     await writeAtomicSafeUtf8File(filePath, 'first', '测试导出')

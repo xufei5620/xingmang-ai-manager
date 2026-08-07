@@ -2,28 +2,7 @@ const { spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 
-const allowedAdvisories = new Set([
-  'https://github.com/advisories/GHSA-mh99-v99m-4gvg',
-])
-
-const expectedAffectedPackages = [
-  '@electron/asar',
-  '@electron/universal',
-  'app-builder-lib',
-  'brace-expansion',
-  'dir-compare',
-  'dmg-builder',
-  'ejs',
-  'electron-builder',
-  'electron-builder-squirrel-windows',
-  'electron-winstaller',
-  'filelist',
-  'glob',
-  'jake',
-  'minimatch',
-  'rimraf',
-  'temp',
-]
+const auditSeverityNames = ['info', 'low', 'moderate', 'high', 'critical', 'total']
 
 function sorted(values) {
   return [...values].sort((left, right) => left.localeCompare(right))
@@ -41,6 +20,20 @@ function advisoryUrls(report) {
   return sorted(urls)
 }
 
+function isSafeWorkspaceLocation(location) {
+  if (
+    typeof location !== 'string'
+    || !location
+    || location.includes('\\')
+    || path.posix.isAbsolute(location)
+    || path.win32.isAbsolute(location)
+    || /^[A-Za-z][A-Za-z0-9+.-]*:/.test(location)
+  ) return false
+  return location.split('/').every((segment) => (
+    segment && segment !== '.' && segment !== '..' && segment !== 'node_modules'
+  ))
+}
+
 function validatePackageLockSources(lockfile) {
   if (
     !lockfile
@@ -51,9 +44,29 @@ function validatePackageLockSources(lockfile) {
   ) {
     throw new Error('package-lock.json 不是受支持的 npm lockfileVersion 3 结构')
   }
+  const linkedWorkspaceLocations = new Set()
+  for (const [location, entry] of Object.entries(lockfile.packages)) {
+    if (location === '' || !entry || typeof entry !== 'object' || entry.link !== true) continue
+    const workspaceLocation = entry.resolved
+    const workspaceEntry = lockfile.packages[workspaceLocation]
+    if (
+      !isSafeWorkspaceLocation(workspaceLocation)
+      || !Object.prototype.hasOwnProperty.call(lockfile.packages, workspaceLocation)
+      || !workspaceEntry
+      || typeof workspaceEntry !== 'object'
+      || Array.isArray(workspaceEntry)
+      || workspaceEntry.link === true
+    ) {
+      throw new Error(`锁文件工作区链接无效：${location}`)
+    }
+    linkedWorkspaceLocations.add(workspaceLocation)
+  }
   let verifiedPackages = 0
   for (const [location, entry] of Object.entries(lockfile.packages)) {
-    if (!entry || typeof entry !== 'object' || typeof entry.resolved !== 'string') continue
+    if (location === '' || entry?.link === true || linkedWorkspaceLocations.has(location)) continue
+    if (!entry || typeof entry !== 'object' || typeof entry.resolved !== 'string') {
+      throw new Error(`锁文件依赖未固定到 npm 官方 HTTPS 源：${location}`)
+    }
     let resolved
     try {
       resolved = new URL(entry.resolved)
@@ -97,31 +110,18 @@ function validateDevelopmentAuditReport(report) {
   }
 
   const counts = report.metadata.vulnerabilities
-  if (counts.critical !== 0) {
-    throw new Error(`构建依赖出现 ${counts.critical} 个 Critical 漏洞`)
-  }
-
   const actualAdvisories = advisoryUrls(report)
-  const unexpectedAdvisories = actualAdvisories.filter((url) => !allowedAdvisories.has(url))
-  const missingAdvisories = [...allowedAdvisories].filter((url) => !actualAdvisories.includes(url))
-  if (unexpectedAdvisories.length || missingAdvisories.length) {
-    throw new Error([
-      unexpectedAdvisories.length ? `新增公告：${unexpectedAdvisories.join(', ')}` : '',
-      missingAdvisories.length ? `基线公告已变化：${missingAdvisories.join(', ')}` : '',
-    ].filter(Boolean).join('；'))
-  }
-
   const affectedPackages = sorted(Object.keys(report.vulnerabilities ?? {}))
-  const expectedPackages = sorted(expectedAffectedPackages)
-  if (JSON.stringify(affectedPackages) !== JSON.stringify(expectedPackages)) {
-    throw new Error(
-      `构建依赖漏洞传播路径发生变化：实际 ${affectedPackages.join(', ') || '无'}；基线 ${expectedPackages.join(', ')}`,
-    )
-  }
-  if (counts.high !== expectedPackages.length || counts.moderate !== 0 || counts.low !== 0) {
-    throw new Error(
-      `构建依赖漏洞计数发生变化：Critical ${counts.critical} / High ${counts.high} / Moderate ${counts.moderate} / Low ${counts.low}`,
-    )
+  const hasNonZeroCount = auditSeverityNames.some((name) => counts[name] !== 0)
+  if (actualAdvisories.length || affectedPackages.length || hasNonZeroCount) {
+    throw new Error([
+      '构建依赖存在漏洞',
+      actualAdvisories.length ? `新增公告：${actualAdvisories.join(', ')}` : '',
+      affectedPackages.length ? `受影响包：${affectedPackages.join(', ')}` : '',
+      hasNonZeroCount
+        ? `计数：${auditSeverityNames.map((name) => `${name} ${String(counts[name])}`).join(' / ')}`
+        : '',
+    ].filter(Boolean).join('；'))
   }
 
   return {
@@ -160,7 +160,7 @@ if (require.main === module) {
   try {
     const result = runNpmAudit()
     console.log(
-      `构建依赖审计通过：${result.verifiedLockPackages} 个锁定包均来自 npm 官方 HTTPS 源并带 SHA-512；仅保留已知 ${result.advisories[0]}，影响 ${result.affectedPackages.length} 个构建链包；未发现新增公告`,
+      `构建依赖审计通过：${result.verifiedLockPackages} 个锁定包均来自 npm 官方 HTTPS 源并带 SHA-512；npm audit 未发现漏洞`,
     )
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error))

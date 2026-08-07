@@ -2,6 +2,7 @@ import path from 'node:path'
 import os from 'node:os'
 import {
   app,
+  autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   dialog,
   Menu,
@@ -14,6 +15,7 @@ import { autoUpdater } from 'electron-updater'
 import { AppSettingsStore, type AppTheme } from './app-settings'
 import { ConfigBackupStore } from './backups'
 import { providerIds } from './catalog'
+import { resolveCodexHomeContext } from './codex-home'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
@@ -21,22 +23,42 @@ import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { RuntimeLogStore } from './runtime-log'
 import { inspectProviderConfig } from './config-files'
+import { rootedMainServiceOptions } from './main-service-options'
 import {
   createDiagnosticsExport,
   runDiagnostics,
   type DiagnosticsReport,
 } from './diagnostics'
 import { registerIpcHandlers, type AppWindowMode } from './ipc'
+import { ipcEventChannels } from './ipc-contract'
+import {
+  shouldUseManualUninstallVisualFixture,
+  withManualUninstallVisualFixture,
+} from './manual-uninstall-visual-fixture'
 import {
   hasDisallowedPackagedDebugSwitch,
   isAllowedAppNavigationUrl,
   resolvePackagedApplicationFile,
   type ApplicationUrlPolicy,
 } from './security'
-import { createSystemService, type SystemService } from './system-service'
+import {
+  createSystemService,
+  type SystemService,
+  type SystemSnapshot,
+} from './system-service'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
 import { resolveWindowsCliExecutionMode } from './windows-elevation'
+import {
+  applyWindowTheme,
+  buildMacApplicationMenuTemplate,
+  platformWindowOptions,
+  startupFailureMessage,
+} from './window-presentation'
+
+const applicationPackage = require('../package.json') as {
+  xingmangLocalBuild?: unknown
+}
 
 const externalUrlAllowlist = [
   'https://nodejs.org/',
@@ -126,12 +148,7 @@ function setWindowMode(contents: WebContents, mode: AppWindowMode): void {
 function setWindowTheme(contents: WebContents, theme: AppTheme): void {
   const target = windowForContents(contents)
   const palette = windowThemePalette(theme)
-  target.setBackgroundColor(palette.background)
-  target.setTitleBarOverlay({
-    color: palette.titleBar,
-    symbolColor: palette.symbol,
-    height: 38,
-  })
+  applyWindowTheme(target, palette, process.platform)
 }
 
 function createWindow(
@@ -151,21 +168,15 @@ function createWindow(
   const minimum = appWindowMinimumSizes[initialMode]
   const workArea = screen.getPrimaryDisplay().workAreaSize
   const palette = windowThemePalette(stored.theme)
+  const windowsIcon = path.join(app.getAppPath(), 'assets', 'windows-icon.png')
   const window = new BrowserWindow({
     width: Math.min(requested.width, workArea.width),
     height: Math.min(requested.height, workArea.height),
     minWidth: minimum.width,
     minHeight: minimum.height,
     show: false,
-    autoHideMenuBar: true,
     backgroundColor: palette.background,
-    titleBarStyle: 'hidden',
-    titleBarOverlay: {
-      color: palette.titleBar,
-      symbolColor: palette.symbol,
-      height: 38,
-    },
-    icon: path.join(app.getAppPath(), 'assets', 'windows-icon.png'),
+    ...platformWindowOptions(process.platform, palette, windowsIcon),
     title: '星芒AI管理工具',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
@@ -253,7 +264,18 @@ if (!hasSingleInstanceLock) {
   }
 
   void app.whenReady().then(async () => {
-    Menu.setApplicationMenu(null)
+    if (process.platform === 'win32') {
+      Menu.setApplicationMenu(null)
+    } else if (process.platform === 'darwin') {
+      const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => {
+        const window = BrowserWindow.getFocusedWindow()
+          ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
+        if (window && !window.isDestroyed()) {
+          window.webContents.send(ipcEventChannels.onNavigate, target)
+        }
+      })
+      Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+    }
     // 白名单式收紧权限：仅放行剪贴板写入，否则复制配置等功能会静默失效
     const allowedPermissions = new Set(['clipboard-sanitized-write'])
     session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
@@ -264,6 +286,16 @@ if (!hasSingleInstanceLock) {
     )
     session.defaultSession.setDevicePermissionHandler(() => false)
     const managerDataDirectory = app.getPath('userData')
+    const codexContext = resolveCodexHomeContext({
+      isPackaged: app.isPackaged,
+      env: process.env,
+      userHome: os.homedir(),
+    })
+    const manualUninstallVisualFixtureEnabled = shouldUseManualUninstallVisualFixture({
+      environmentValue: process.env.XINGMANG_E2E_MANUAL_UNINSTALL_FIXTURE,
+      isPackaged: app.isPackaged,
+    })
+    const rootedOptions = rootedMainServiceOptions(codexContext)
     const runtimeLog = new RuntimeLogStore({
       directory: path.join(managerDataDirectory, 'logs'),
       appName: '星芒AI管理工具',
@@ -276,6 +308,9 @@ if (!hasSingleInstanceLock) {
       platform: process.platform,
       arch: process.arch,
     })
+    if (manualUninstallVisualFixtureEnabled) {
+      runtimeLog.log('warn', 'testing', 'manual-uninstall.fixture', '手动卸载视觉测试状态已启用')
+    }
     const onUncaughtException = (error: Error) => {
       runtimeLog.exception('main', 'uncaught.exception', error)
     }
@@ -294,13 +329,13 @@ if (!hasSingleInstanceLock) {
     runtimeLog.log('info', 'security', 'cli.execution-mode', 'CLI 扩展执行边界已确定', {
       mode: windowsCliExecutionMode,
     })
-    const systemService = createSystemService(settingsStore, { windowsExecutionMode: windowsCliExecutionMode })
+    const systemService = createSystemService(settingsStore, {
+      windowsExecutionMode: windowsCliExecutionMode,
+      ...rootedOptions.system,
+    })
     const storedSettings = systemService.readStoredConfig()
-    const developmentCodexHome = !app.isPackaged
-      ? process.env.XINGMANG_CODEX_HOME_OVERRIDE?.trim() || undefined
-      : undefined
     const sessionsService = new CodexSessionsService({
-      codexHome: developmentCodexHome,
+      ...rootedOptions.sessions,
       managerDataDirectory: path.join(managerDataDirectory, 'sessions'),
       onRecoveryWarning: (warning) => {
         runtimeLog.log('warn', 'sessions', warning.code, warning.message, warning.detail)
@@ -310,15 +345,17 @@ if (!hasSingleInstanceLock) {
       codexService: sessionsService,
     })
     const backupStore = new ConfigBackupStore({
+      ...rootedOptions.backups,
       userDataDirectory: managerDataDirectory,
-      homeDirectory: os.homedir(),
     })
     const extensionService = new CodexExtensionService({
+      ...rootedOptions.codexExtensions,
       repositoryRoot: storedSettings.workspace,
       trashDirectory: path.join(managerDataDirectory, 'trash', 'skills'),
       windowsExecutionMode: windowsCliExecutionMode,
     })
     const providerExtensionService = new ProviderExtensionService({
+      ...rootedOptions.providerExtensions,
       repositoryRoot: storedSettings.workspace,
       windowsExecutionMode: windowsCliExecutionMode,
     })
@@ -326,6 +363,7 @@ if (!hasSingleInstanceLock) {
     const diagnosticsService = {
       run: async () => {
         latestDiagnostics = await runDiagnostics({
+          ...rootedOptions.diagnostics,
           app: {
             name: '星芒AI管理工具',
             version: app.getVersion(),
@@ -338,9 +376,9 @@ if (!hasSingleInstanceLock) {
       exportLatest: () => {
         if (!latestDiagnostics) throw new Error('请先运行一次健康诊断')
         return createDiagnosticsExport(latestDiagnostics, {
-          homeDirectory: os.homedir(),
+          ...rootedOptions.diagnosticExport,
           sensitiveValues: providerIds
-            .map((provider) => inspectProviderConfig(provider).apiKey)
+            .map((provider) => inspectProviderConfig(provider, rootedOptions.system.providerRoots).apiKey)
             .filter(Boolean),
         })
       },
@@ -350,13 +388,27 @@ if (!hasSingleInstanceLock) {
         verifyUpdateCodeSignature: (publisherNames: string[], filePath: string) => Promise<string | null>
       })
     }
+    const localBuild = app.isPackaged && applicationPackage.xingmangLocalBuild === true
     const updaterService = createUpdaterService(autoUpdater, {
       currentVersion: app.getVersion(),
       isPackaged: app.isPackaged,
+      localBuild,
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
+      macInstallHandoff: process.platform === 'darwin'
+        ? {
+            nativeUpdateDownloadedListenerCount: () => (
+              nativeAutoUpdater.listenerCount('update-downloaded')
+            ),
+            retryNativeCheck: () => nativeAutoUpdater.checkForUpdates(),
+          }
+        : undefined,
       installEnvironmentGuard: process.platform === 'win32'
         ? (launch) => runWithTrustedWindowsProcessEnvironment(launch)
         : undefined,
+    })
+    runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
+      enabled: updaterService.getState().phase !== 'disabled',
+      localBuild,
     })
     let periodicUpdateTimer: NodeJS.Timeout | null = null
     const urlPolicy = applicationUrlPolicy()
@@ -390,6 +442,13 @@ if (!hasSingleInstanceLock) {
       },
       setWindowMode,
       setWindowTheme,
+      ...(manualUninstallVisualFixtureEnabled
+        ? {
+            transformSystemSnapshot: (snapshot: SystemSnapshot) => (
+              withManualUninstallVisualFixture(snapshot, codexContext.userHome)
+            ),
+          }
+        : {}),
     })
     app.once('will-quit', () => {
       runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')
@@ -421,9 +480,7 @@ if (!hasSingleInstanceLock) {
       if (BrowserWindow.getAllWindows().length === 0) createWindow(systemService, urlPolicy, runtimeLog)
     })
   }).catch((error) => {
-    const message = error instanceof Error && error.message.trim()
-      ? error.message.trim()
-      : '主程序初始化失败，Windows 未返回错误详情'
+    const message = startupFailureMessage(error, process.platform)
     console.error('Application startup failed:', error)
     dialog.showErrorBox('星芒AI管理工具启动失败', message)
     app.quit()

@@ -11,6 +11,7 @@ async function main() {
     baseUrl: updateUrl,
     allowMissing: true,
     verifyAssets: false,
+    platform: 'windows',
   })
   if (signing.releaseMode && !feed.missing) {
     assertRemoteReleaseIsOlder(feed.metadata.version, packageVersion)

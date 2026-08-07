@@ -11,6 +11,7 @@ import {
   runCommand,
   trustedCommandEnvironment,
 } from './command-runner'
+import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
@@ -54,6 +55,7 @@ export interface ProxyVariableSummary {
 
 export interface DiagnosticsDependencies {
   app: DiagnosticAppInfo
+  providerRoots?: ProviderConfigRoots
   homeDirectory?: string
   platform?: NodeJS.Platform
   arch?: string
@@ -65,13 +67,16 @@ export interface DiagnosticsDependencies {
   inspectPowerShell?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectTool?: (tool: DiagnosticToolId, signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectCodexDesktop?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
-  inspectProvider?: (provider: ProviderId) => NativeConfigInspection
+  inspectProvider?: (provider: ProviderId, roots: ProviderConfigRoots) => NativeConfigInspection
   fetch?: typeof globalThis.fetch
   clashConfigPaths?: readonly string[]
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
 }
 
 export interface DiagnosticRedactionOptions {
+  userHome?: string
+  codexHome?: string
+  /** @deprecated Use userHome. */
   homeDirectory?: string
   sensitiveValues?: readonly string[]
 }
@@ -105,28 +110,36 @@ function normalizedPathKey(value: string): string {
   return process.platform === 'win32' ? resolved.toLowerCase() : resolved
 }
 
-function pathApiFor(value: string, homeDirectory: string): typeof path.win32 | typeof path.posix {
+function pathApiFor(value: string, ...roots: string[]): typeof path.win32 | typeof path.posix {
   return /^[A-Za-z]:[\\/]/.test(value)
     || value.startsWith('\\\\')
-    || /^[A-Za-z]:[\\/]/.test(homeDirectory)
-    || homeDirectory.startsWith('\\\\')
+    || roots.some((root) => /^[A-Za-z]:[\\/]/.test(root) || root.startsWith('\\\\'))
     ? path.win32
     : path.posix
 }
 
-function isAbsolutePathLike(value: string, homeDirectory: string): boolean {
-  return pathApiFor(value, homeDirectory).isAbsolute(value)
+function resolvePathLike(value: string): string {
+  return pathApiFor(value, value).resolve(value)
 }
 
-function pathForDisplay(filePath: string | null, homeDirectory: string): string | null {
+function isAbsolutePathLike(value: string, roots: ProviderConfigRoots): boolean {
+  return pathApiFor(value, roots.userHome, roots.codexHome).isAbsolute(value)
+}
+
+function pathForDisplay(filePath: string | null, roots: ProviderConfigRoots): string | null {
   if (!filePath) return null
-  const pathApi = pathApiFor(filePath, homeDirectory)
-  const home = pathApi.resolve(homeDirectory)
+  const pathApi = pathApiFor(filePath, roots.userHome, roots.codexHome)
   const resolved = pathApi.resolve(filePath)
-  const relative = pathApi.relative(home, resolved)
-  if (relative === '') return '~'
-  if (relative !== '..' && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative)) {
-    return `~/${relative.split(pathApi.sep).join('/')}`
+  const rootLabels = [
+    { root: pathApi.resolve(roots.codexHome), label: '[CODEX_HOME]' },
+    { root: pathApi.resolve(roots.userHome), label: '~' },
+  ].sort((left, right) => right.root.length - left.root.length)
+  for (const { root, label } of rootLabels) {
+    const relative = pathApi.relative(root, resolved)
+    if (relative === '') return label
+    if (relative !== '..' && !relative.startsWith(`..${pathApi.sep}`) && !pathApi.isAbsolute(relative)) {
+      return `${label}/${relative.split(pathApi.sep).join('/')}`
+    }
   }
   const basename = pathApi.basename(resolved)
   return basename && basename !== pathApi.parse(resolved).root
@@ -134,26 +147,78 @@ function pathForDisplay(filePath: string | null, homeDirectory: string): string 
     : '[ABSOLUTE_PATH]'
 }
 
-function pathOrIdentifierForDisplay(value: string | null, homeDirectory: string): string | null {
+function pathOrIdentifierForDisplay(value: string | null, roots: ProviderConfigRoots): string | null {
   if (!value) return null
-  return isAbsolutePathLike(value, homeDirectory) || value.includes('/') || value.includes('\\')
-    ? pathForDisplay(value, homeDirectory)
+  return isAbsolutePathLike(value, roots) || value.includes('/') || value.includes('\\')
+    ? pathForDisplay(value, roots)
     : value
 }
 
-function redactStructuredAbsolutePaths(value: unknown, homeDirectory: string): unknown {
+interface RootReplacement {
+  candidate: string
+  label: string
+  caseInsensitive: boolean
+}
+
+function rootReplacements(roots: { userHome?: string, codexHome?: string }): RootReplacement[] {
+  const replacements = new Map<string, RootReplacement>()
+  for (const [root, label] of [
+    [roots.codexHome?.trim(), '[CODEX_HOME]'],
+    [roots.userHome?.trim(), '~'],
+  ] as const) {
+    if (!root) continue
+    const resolved = resolvePathLike(root)
+    const slashRoot = root.replaceAll('\\', '/')
+    const slashResolved = resolved.replaceAll('\\', '/')
+    const variants = new Set([
+      root,
+      resolved,
+      slashRoot,
+      root.replaceAll('/', '\\'),
+      slashResolved,
+      resolved.replaceAll('/', '\\'),
+      slashRoot.replaceAll('/', '\\/'),
+      slashResolved.replaceAll('/', '\\/'),
+    ])
+    for (const variant of [...variants]) variants.add(JSON.stringify(variant).slice(1, -1))
+    const caseInsensitive = /^[A-Za-z]:[\\/]/.test(root) || root.startsWith('\\\\')
+    for (const candidate of variants) {
+      if (!candidate || replacements.has(candidate)) continue
+      replacements.set(candidate, { candidate, label, caseInsensitive })
+    }
+  }
+  return [...replacements.values()].sort((left, right) => right.candidate.length - left.candidate.length)
+}
+
+function redactRootPaths(value: string, roots: { userHome?: string, codexHome?: string }): string {
+  let result = value
+  for (const replacement of rootReplacements(roots)) {
+    const flags = replacement.caseInsensitive ? 'gi' : 'g'
+    const pattern = new RegExp(
+      `(^|[^A-Za-z0-9\\\\/._-])${escapeRegExp(replacement.candidate)}(?=$|[\\\\/]|[^A-Za-z0-9\\\\/._-])`,
+      flags,
+    )
+    result = result.replace(
+      pattern,
+      (_match, prefix: string) => `${prefix}${replacement.label}`,
+    )
+  }
+  return result
+}
+
+function redactStructuredAbsolutePaths(value: unknown, roots: ProviderConfigRoots): unknown {
   if (typeof value === 'string') {
-    return isAbsolutePathLike(value, homeDirectory)
-      ? pathForDisplay(value, homeDirectory)
-      : value
+    const redacted = redactRootPaths(value, roots)
+    if (redacted !== value) return redacted
+    return isAbsolutePathLike(value, roots) ? pathForDisplay(value, roots) : value
   }
   if (Array.isArray(value)) {
-    return value.map((entry) => redactStructuredAbsolutePaths(entry, homeDirectory))
+    return value.map((entry) => redactStructuredAbsolutePaths(entry, roots))
   }
   if (value && typeof value === 'object') {
     return Object.fromEntries(Object.entries(value).map(([key, entry]) => [
       key,
-      redactStructuredAbsolutePaths(entry, homeDirectory),
+      redactStructuredAbsolutePaths(entry, roots),
     ]))
   }
   return value
@@ -209,36 +274,30 @@ export function redactDiagnosticText(
     .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
   result = redactUrls(result)
 
-  const homeDirectory = options.homeDirectory?.trim()
-  if (homeDirectory) {
-    const candidates = new Set([
-      homeDirectory,
-      path.resolve(homeDirectory),
-      homeDirectory.replaceAll('\\', '/'),
-      homeDirectory.replaceAll('/', '\\'),
-      JSON.stringify(homeDirectory).slice(1, -1),
-    ])
-    const caseInsensitive = /^[A-Za-z]:[\\/]/.test(homeDirectory) || homeDirectory.startsWith('\\\\')
-    for (const candidate of [...candidates].filter(Boolean).sort((a, b) => b.length - a.length)) {
-      result = result.replace(new RegExp(escapeRegExp(candidate), caseInsensitive ? 'gi' : 'g'), '~')
-    }
-  }
-  return result
+  return redactRootPaths(result, {
+    userHome: options.userHome ?? options.homeDirectory,
+    codexHome: options.codexHome,
+  })
 }
 
 export function createDiagnosticsExport(
   report: DiagnosticsReport,
   options: DiagnosticRedactionOptions = {},
 ): string {
-  const homeDirectory = path.resolve(options.homeDirectory ?? os.homedir())
+  const userHome = resolvePathLike(options.userHome ?? options.homeDirectory ?? os.homedir())
+  const codexHome = resolvePathLike(
+    options.codexHome ?? defaultProviderConfigRoots(userHome).codexHome,
+  )
+  const roots = { userHome, codexHome }
   const payload = {
     product: '星芒AI管理工具',
     exportedAt: new Date().toISOString(),
-    diagnostics: redactStructuredAbsolutePaths(report, homeDirectory),
+    diagnostics: redactStructuredAbsolutePaths(report, roots),
   }
   return `${redactDiagnosticText(JSON.stringify(payload, null, 2), {
     ...options,
-    homeDirectory,
+    userHome,
+    codexHome,
   })}\n`
 }
 
@@ -334,24 +393,30 @@ async function defaultInspectTool(
       }
     }
     try {
-      const command = await resolveCliCommand(provider, env)
-      if (!isTrustedHighIntegrityExecutable(command.executable, env)) {
-        return { installed: true, version: null, path: installation.commandPath }
-      }
-      const result = await runCommand({
-        executable: command.executable,
-        argv: [...command.argv, ...cliCatalog[provider].versionArgs],
-      }, {
-        env: process.platform === 'win32' ? trustedCommandEnvironment(env) : commandEnvironment(env),
-        trustedOnly: process.platform === 'win32',
-        timeoutMs: 5_000,
-        maxOutputBytes: 128 * 1024,
-        signal,
+      const command = await resolveCliCommand(provider, env, 'trusted-only', {
+        darwinStagingRetention: 'ephemeral',
       })
-      return {
-        installed: true,
-        version: `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null,
-        path: command.executable,
+      try {
+        if (!isTrustedHighIntegrityExecutable(command.executable, env)) {
+          return { installed: true, version: null, path: installation.commandPath }
+        }
+        const result = await runCommand({
+          executable: command.executable,
+          argv: [...command.argv, ...cliCatalog[provider].versionArgs],
+        }, {
+          env: process.platform === 'win32' ? trustedCommandEnvironment(env) : commandEnvironment(env),
+          trustedOnly: process.platform === 'win32',
+          timeoutMs: 5_000,
+          maxOutputBytes: 128 * 1024,
+          signal,
+        })
+        return {
+          installed: true,
+          version: `${result.stdout}\n${result.stderr}`.split(/\r?\n/).map((line) => line.trim()).find(Boolean) ?? null,
+          path: command.verifiedDarwinStandalone?.executablePath ?? installation.commandPath,
+        }
+      } finally {
+        await command.release?.()
       }
     } catch {
       return { installed: true, version: null, path: null }
@@ -469,7 +534,7 @@ async function defaultProxyVariables(env: NodeJS.ProcessEnv): Promise<ProxyVaria
   return result
 }
 
-function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, homeDirectory: string): CheckOutcome {
+function providerOutcome(provider: ProviderId, inspection: NativeConfigInspection, roots: ProviderConfigRoots): CheckOutcome {
   const details: Record<string, boolean | number | string | null> = {
     exists: inspection.exists,
     hasApiKey: inspection.hasApiKey,
@@ -481,7 +546,7 @@ function providerOutcome(provider: ProviderId, inspection: NativeConfigInspectio
     updatedAt: inspection.updatedAt,
   }
   inspection.files.forEach((file, index) => {
-    details[`file${index + 1}`] = pathForDisplay(file.path, homeDirectory)
+    details[`file${index + 1}`] = pathForDisplay(file.path, roots)
   })
   if (inspection.matchesRelay && inspection.hasApiKey) {
     return { state: 'pass', summary: '已配置星芒 AI', details }
@@ -566,18 +631,24 @@ function readClaudeBypass(homeDirectory: string): CheckOutcome {
 
 export async function runDiagnostics(dependencies: DiagnosticsDependencies): Promise<DiagnosticsReport> {
   const startedAt = Date.now()
-  const homeDirectory = path.resolve(dependencies.homeDirectory ?? os.homedir())
+  const env = dependencies.env ?? process.env
+  const userHome = path.resolve(
+    dependencies.providerRoots?.userHome ?? dependencies.homeDirectory ?? os.homedir(),
+  )
+  const providerRoots = dependencies.providerRoots ?? defaultProviderConfigRoots(userHome, env)
+  const codexHome = providerRoots.codexHome
+  const displayRoots = { userHome, codexHome }
   const platform = dependencies.platform ?? process.platform
   const arch = dependencies.arch ?? process.arch
   const release = dependencies.release ?? os.release()
-  const env = dependencies.env ?? process.env
   const timeoutMs = dependencies.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
-  const inspectProvider = dependencies.inspectProvider ?? ((provider) => inspectProviderConfig(provider, homeDirectory))
+  const inspectProvider = dependencies.inspectProvider
+    ?? ((provider, roots) => inspectProviderConfig(provider, roots))
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
   for (const provider of providerIds) {
     try {
-      const inspection = inspectProvider(provider)
+      const inspection = inspectProvider(provider, providerRoots)
       providerInspections.set(provider, inspection)
       if (inspection.apiKey) knownSecrets.push(inspection.apiKey)
     } catch {
@@ -585,7 +656,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
     }
   }
   const sanitize = (value: string) => redactDiagnosticText(value, {
-    homeDirectory,
+    userHome,
+    codexHome,
     sensitiveValues: knownSecrets,
   })
   const inspectTool = dependencies.inspectTool
@@ -595,8 +667,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const inspectDesktop = dependencies.inspectCodexDesktop ?? defaultInspectCodexDesktop
   const inspectAdmin = dependencies.inspectAdministrator ?? defaultInspectAdministrator
   const fetchImpl = dependencies.fetch ?? globalThis.fetch
-  const paths = dependencies.clashConfigPaths ?? clashCandidates(homeDirectory, env)
+  const paths = dependencies.clashConfigPaths ?? clashCandidates(userHome, env)
   const inspectProxy = dependencies.inspectProxyVariables ?? ((signal) => defaultProxyVariables(env))
+  const supportedPlatform = platform === 'win32' || platform === 'darwin'
 
   const checks: CheckDefinition[] = [
     {
@@ -612,9 +685,9 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'OPERATING_SYSTEM',
       title: '操作系统',
       run: () => ({
-        state: platform === 'win32' ? 'pass' : 'warn',
+        state: supportedPlatform ? 'pass' : 'warn',
         summary: `${platform} ${release} (${arch})`,
-        details: { supported: platform === 'win32' },
+        details: { supported: supportedPlatform },
       }),
     },
     {
@@ -635,7 +708,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       run: async (signal) => {
         if (platform !== 'win32') {
           return {
-            state: 'warn',
+            state: 'pass',
             summary: '当前平台不使用 Windows PowerShell 启动 CLI',
             details: { required: false, installed: null, path: null },
           }
@@ -649,7 +722,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           details: {
             required: true,
             installed: status.installed,
-            path: pathForDisplay(status.path, homeDirectory),
+            path: pathForDisplay(status.path, displayRoots),
           },
         }
       },
@@ -663,7 +736,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         return {
           state: status.installed ? 'pass' : required ? 'fail' : 'warn',
           summary: status.installed ? (status.version || '已安装') : '未安装',
-          details: { installed: status.installed, path: pathForDisplay(status.path, homeDirectory) },
+          details: { installed: status.installed, path: pathForDisplay(status.path, displayRoots) },
         }
       },
     })),
@@ -675,7 +748,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         return {
           state: status.installed ? 'pass' : 'warn',
           summary: status.installed ? (status.version || '已安装') : '未安装',
-          details: { installed: status.installed, path: pathForDisplay(status.path, homeDirectory) },
+          details: { installed: status.installed, path: pathForDisplay(status.path, displayRoots) },
         }
       },
     })),
@@ -690,7 +763,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
           details: {
             installed: status.installed,
             running: status.running ?? false,
-            path: pathOrIdentifierForDisplay(status.path, homeDirectory),
+            path: pathOrIdentifierForDisplay(status.path, displayRoots),
           },
         }
       },
@@ -699,8 +772,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: `PROVIDER_${provider.toUpperCase()}`,
       title: `${cliCatalog[provider].name} 中转配置`,
       run: () => {
-        const inspection = providerInspections.get(provider) ?? inspectProvider(provider)
-        return providerOutcome(provider, inspection, homeDirectory)
+        const inspection = providerInspections.get(provider) ?? inspectProvider(provider, providerRoots)
+        return providerOutcome(provider, inspection, displayRoots)
       },
     })),
     {
@@ -739,14 +812,14 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
             return {
               state: 'warn',
               summary: '检测到 TUN 模式已开启',
-              details: { enabled: true, path: pathForDisplay(candidate, homeDirectory) },
+              details: { enabled: true, path: pathForDisplay(candidate, displayRoots) },
             }
           }
         }
         return {
           state: 'pass',
           summary: detectedPath ? 'TUN 模式未开启' : '未找到 Clash Verge Rev 配置',
-          details: { enabled: false, path: pathForDisplay(detectedPath, homeDirectory) },
+          details: { enabled: false, path: pathForDisplay(detectedPath, displayRoots) },
         }
       },
     },
@@ -768,19 +841,19 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       code: 'CODEX_DOTENV',
       title: 'Codex .env 冲突',
       run: () => {
-        const envPath = path.join(homeDirectory, '.codex', '.env')
+        const envPath = path.join(codexHome, '.env')
         const exists = fs.existsSync(envPath)
         return {
           state: exists ? 'warn' : 'pass',
           summary: exists ? '检测到 .codex/.env，可能覆盖当前中转配置' : '未检测到 .codex/.env 冲突',
-          details: { exists, path: pathForDisplay(envPath, homeDirectory) },
+          details: { exists, path: pathForDisplay(envPath, displayRoots) },
         }
       },
     },
     {
       code: 'CLAUDE_BYPASS_PERMISSIONS',
       title: 'Claude 权限风险',
-      run: () => readClaudeBypass(homeDirectory),
+      run: () => readClaudeBypass(userHome),
     },
   ]
 

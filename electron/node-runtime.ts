@@ -538,6 +538,7 @@ export function buildNodeRuntimeInstallPlan(
   msiPath: string,
   powershellExecutable = windowsPowerShellExecutable(),
   trustedOnly = true,
+  machinePaths?: WindowsMachinePaths,
 ): NodeRuntimeInstallPlan {
   const signatureEnv = {
     ...process.env,
@@ -562,7 +563,7 @@ export function buildNodeRuntimeInstallPlan(
       ...(!trustedOnly ? { trustedOnly: false } : {}),
     },
     msi: {
-      executable: windowsSystemExecutable('msiexec.exe'),
+      executable: windowsSystemExecutable('msiexec.exe', process.env, 'win32', machinePaths),
       argv: ['/i', msiPath, '/qn', '/norestart', 'ADDLOCAL=ALL'],
       timeoutMs: installerTimeoutMs,
       acceptedExitCodes: [0, 3010],

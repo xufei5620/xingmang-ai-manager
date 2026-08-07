@@ -22,6 +22,16 @@ export interface WindowsMachinePathResolutionOptions {
   >>
 }
 
+type WindowsKnownFolders = Partial<Pick<
+  WindowsMachinePaths,
+  'programFiles' | 'programFilesX86' | 'programData'
+>>
+
+export interface WindowsKnownFolderResolutionOptions {
+  readRegistryValue?: (systemRoot: string, key: string, name: string) => string | null
+  resolveWithPowerShell?: (systemRoot: string) => WindowsKnownFolders
+}
+
 let cachedMachinePaths: WindowsMachinePaths | null = null
 const programFilesAclCache = new Map<string, boolean>()
 
@@ -192,29 +202,52 @@ function registryValue(systemRoot: string, key: string, name: string): string | 
   }
 }
 
-function knownFoldersFromTrustedSystem(systemRoot: string): Partial<Pick<
-  WindowsMachinePaths,
-  'programFiles' | 'programFilesX86' | 'programData'
->> {
-  const powershell = knownFoldersFromWindows(systemRoot)
-  if (powershell.programFiles && powershell.programData) return powershell
+function validatedRegistryFolder(value: string | null): string | undefined {
+  const trimmed = value?.trim()
+  if (
+    !trimmed
+    || trimmed.includes('\0')
+    || /%[^%]+%/.test(trimmed)
+    || !path.win32.isAbsolute(trimmed)
+  ) {
+    return undefined
+  }
+  return trimmed
+}
+
+export function resolveWindowsKnownFolders(
+  systemRoot: string,
+  options: WindowsKnownFolderResolutionOptions = {},
+): WindowsKnownFolders {
+  const readRegistryValue = options.readRegistryValue ?? registryValue
   const currentVersion = 'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion'
   const registry = {
-    programFiles: registryValue(systemRoot, currentVersion, 'ProgramFilesDir') ?? undefined,
-    programFilesX86: registryValue(systemRoot, currentVersion, 'ProgramFilesDir (x86)') ?? undefined,
-    programData: registryValue(
+    programFiles: validatedRegistryFolder(
+      readRegistryValue(systemRoot, currentVersion, 'ProgramFilesDir'),
+    ),
+    programFilesX86: validatedRegistryFolder(
+      readRegistryValue(systemRoot, currentVersion, 'ProgramFilesDir (x86)'),
+    ),
+    programData: validatedRegistryFolder(readRegistryValue(
       systemRoot,
       `${currentVersion}\\Explorer\\Shell Folders`,
       'Common AppData',
-    ) ?? undefined,
+    )),
   }
-  return { ...registry, ...powershell }
+  if (registry.programFiles && registry.programFilesX86 && registry.programData) return registry
+  const powershell = (options.resolveWithPowerShell ?? knownFoldersFromWindows)(systemRoot)
+  return {
+    programFiles: registry.programFiles ?? powershell.programFiles,
+    programFilesX86: registry.programFilesX86 ?? powershell.programFilesX86,
+    programData: registry.programData ?? powershell.programData,
+  }
 }
 
 /**
  * Resolves machine-owned Windows locations without trusting `process.env`.
  * SystemRoot comes from the Windows object manager and the remaining roots
- * come from the Known Folder API hosted by that resolved system PowerShell.
+ * come from protected HKLM values, with the Known Folder API hosted by the
+ * resolved system PowerShell only as a fallback for incomplete registry data.
  */
 export function resolveWindowsMachinePaths(
   options: WindowsMachinePathResolutionOptions = {},
@@ -232,7 +265,7 @@ export function resolveWindowsMachinePaths(
     'SystemRoot',
   )
   const systemDrive = path.win32.parse(systemRoot).root
-  const knownFolders = (options.resolveKnownFolders ?? knownFoldersFromTrustedSystem)(systemRoot)
+  const knownFolders = (options.resolveKnownFolders ?? resolveWindowsKnownFolders)(systemRoot)
   const result: WindowsMachinePaths = {
     systemRoot,
     system32: path.win32.join(systemRoot, 'System32'),

@@ -4,7 +4,7 @@ const http = require('node:http')
 const os = require('node:os')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
-const { spawnSync } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
 const { gzipSync } = require('node:zlib')
 const { test } = require('node:test')
 const YAML = require('yaml')
@@ -24,12 +24,20 @@ const {
 } = require('./update-release-utils.cjs')
 
 function fixtureMetadata(fileName, contents, version = '1.2.3') {
-  const sha512 = createHash('sha512').update(contents).digest('base64')
+  return fixtureMetadataFiles([{ fileName, contents }], version)
+}
+
+function fixtureMetadataFiles(files, version = '1.2.3') {
+  const entries = files.map(({ fileName, contents }) => ({
+    url: fileName,
+    sha512: createHash('sha512').update(contents).digest('base64'),
+    size: contents.length,
+  }))
   return YAML.stringify({
     version,
-    files: [{ url: fileName, sha512, size: contents.length }],
-    path: fileName,
-    sha512,
+    files: entries,
+    path: entries[0].url,
+    sha512: entries[0].sha512,
     releaseDate: '2026-07-24T00:00:00.000Z',
   })
 }
@@ -54,7 +62,82 @@ async function createReleaseFixture(t) {
   await fs.promises.writeFile(path.join(directory, fileName), contents)
   await fs.promises.writeFile(path.join(directory, `${fileName}.blockmap`), fixtureBlockmap())
   await fs.promises.writeFile(path.join(directory, 'latest.yml'), fixtureMetadata(fileName, contents))
-  return { directory, fileName, contents }
+  const macFiles = [
+    {
+      fileName: 'XingMang-AI-Manager-1.2.3-arm64.zip',
+      contents: Buffer.from('mac-arm64-update-fixture'),
+    },
+    {
+      fileName: 'XingMang-AI-Manager-1.2.3-x64.zip',
+      contents: Buffer.from('mac-x64-update-fixture'),
+    },
+  ]
+  for (const file of macFiles) {
+    await fs.promises.writeFile(path.join(directory, file.fileName), file.contents)
+    await fs.promises.writeFile(path.join(directory, `${file.fileName}.blockmap`), fixtureBlockmap())
+  }
+  await fs.promises.writeFile(
+    path.join(directory, 'latest-mac.yml'),
+    fixtureMetadataFiles(macFiles),
+  )
+  return { directory, fileName, contents, macFiles }
+}
+
+async function writeVersionedMacFixture(directory, files, version) {
+  const versionedFiles = files.map((file) => ({
+    ...file,
+    fileName: file.fileName.replace('1.2.3', version),
+  }))
+  for (const file of versionedFiles) {
+    await fs.promises.writeFile(path.join(directory, file.fileName), file.contents)
+    await fs.promises.writeFile(path.join(directory, `${file.fileName}.blockmap`), fixtureBlockmap())
+  }
+  await fs.promises.writeFile(
+    path.join(directory, 'latest-mac.yml'),
+    fixtureMetadataFiles(versionedFiles, version),
+  )
+  return versionedFiles
+}
+
+async function serveFixtureDirectory(t, directory, intercept = null) {
+  const server = http.createServer(async (request, response) => {
+    if (intercept?.(request, response) === true) return
+    const relativePath = decodeURIComponent((request.url || '/').replace(/^\/+/, ''))
+    const target = path.join(directory, relativePath)
+    try {
+      const stat = await fs.promises.stat(target)
+      response.writeHead(200, {
+        'Content-Type': target.endsWith('.yml') ? 'application/yaml' : 'application/octet-stream',
+        'Content-Length': stat.size,
+      })
+      if (request.method === 'HEAD') response.end()
+      else fs.createReadStream(target).pipe(response)
+    } catch {
+      response.writeHead(404).end()
+    }
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => server.close(resolve)))
+  const address = server.address()
+  return `http://127.0.0.1:${address.port}/`
+}
+
+function runNodeScript(scriptPath, args) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(process.execPath, [scriptPath, ...args], {
+      cwd: path.resolve('.'),
+      env: process.env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.once('error', reject)
+    child.once('close', (status) => resolve({ status, stdout, stderr }))
+  })
 }
 
 test('normalizes production URLs and only permits loopback HTTP for development', () => {
@@ -95,6 +178,20 @@ test('rejects website HTML and unsafe artifact paths as latest.yml metadata', ()
   assert.throws(() => parseLatestMetadata(fixtureMetadata('app%3Fname.exe', contents)), {
     code: 'METADATA_FILE_UNSAFE',
   })
+})
+
+test('preserves the raw metadata URL and primary path spelling alongside normalized paths', () => {
+  const fileName = 'XingMang-AI-Manager-1.2.3-arm64.zip'
+  const contents = Buffer.from('fixture')
+  const value = YAML.parse(fixtureMetadata(fileName, contents))
+  value.files[0].url = ` ${fileName} `
+  value.path = '%58ingMang-AI-Manager-1.2.3-arm64.zip'
+  const metadata = parseLatestMetadata(YAML.stringify(value), 'latest-mac.yml')
+
+  assert.equal(metadata.files[0].relativePath, fileName)
+  assert.equal(metadata.files[0].rawUrl, ` ${fileName} `)
+  assert.equal(metadata.rawPrimaryPath, '%58ingMang-AI-Manager-1.2.3-arm64.zip')
+  assert.equal(metadata.primaryPath, fileName)
 })
 
 test('validates local installer hashes and requires the blockmap', async (t) => {
@@ -228,6 +325,7 @@ test('electron-builder production config requires signing and stays hardened', (
     env: {
       ...process.env,
       XINGMANG_RELEASE: '1',
+      XINGMANG_MAC_FREE_RELEASE: '',
       XINGMANG_ALLOW_UNSIGNED_RELEASE: '1',
       CSC_IDENTITY_AUTO_DISCOVERY: 'false',
     },
@@ -273,7 +371,12 @@ test('unsigned local builds must not advertise a publisher name', () => {
   const result = spawnSync(process.execPath, ['-e', script], {
     cwd: path.resolve('.'),
     encoding: 'utf8',
-    env: { ...process.env, XINGMANG_RELEASE: '', CSC_IDENTITY_AUTO_DISCOVERY: 'false' },
+    env: {
+      ...process.env,
+      XINGMANG_RELEASE: '',
+      XINGMANG_MAC_FREE_RELEASE: '',
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+    },
   })
   assert.equal(result.status, 0, result.stderr)
   const config = JSON.parse(result.stdout)
@@ -319,7 +422,266 @@ test('remote feed verification rejects SPA fallback and validates served assets'
   htmlMode = false
   const result = await verifyRemoteFeed({ baseUrl, allowLocalHttp: true, verifyAssets: true })
   assert.equal(result.metadata.version, '1.2.3')
+  assert.equal(result.mac.metadata.version, '1.2.3')
   assert.deepEqual([...new Set(acceptedEncodings)], ['identity'])
+})
+
+test('verify-update-feed reports both platform versions and the verified scope', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  await writeVersionedMacFixture(fixture.directory, fixture.macFiles, '2.3.4')
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+  const metadataResult = await runNodeScript(path.join(__dirname, 'verify-update-feed.cjs'), [
+    baseUrl,
+    '--allow-local',
+    '--metadata-only',
+  ])
+
+  assert.equal(metadataResult.status, 0, metadataResult.stderr)
+  assert.match(metadataResult.stdout, /Windows v1\.2\.3；macOS v2\.3\.4（双平台元数据）/)
+
+  const fullResult = await runNodeScript(path.join(__dirname, 'verify-update-feed.cjs'), [
+    baseUrl,
+    '--allow-local',
+  ])
+  assert.equal(fullResult.status, 0, fullResult.stderr)
+  assert.match(
+    fullResult.stdout,
+    /Windows v1\.2\.3；macOS v2\.3\.4（双平台元数据与引用文件、Windows blockmap、macOS 双架构 ZIP blockmap）/,
+  )
+})
+
+test('remote feed verification requires latest-mac.yml even without asset verification', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  await fs.promises.rm(path.join(fixture.directory, 'latest-mac.yml'))
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  await assert.rejects(verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    verifyAssets: false,
+  }), (error) => error.code === 'REMOTE_METADATA_STATUS' && /latest-mac\.yml/.test(error.message))
+})
+
+test('platform-specific verification does not require the other update channel', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  await fs.promises.rm(path.join(fixture.directory, 'latest-mac.yml'))
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  const windows = await verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    verifyAssets: false,
+    platform: 'windows',
+  })
+  assert.equal(windows.metadata.version, '1.2.3')
+  assert.deepEqual(windows.mac, { skipped: true, missing: true, metadata: null })
+
+  await writeVersionedMacFixture(fixture.directory, fixture.macFiles, '2.3.4')
+  await fs.promises.rm(path.join(fixture.directory, 'latest.yml'))
+
+  const macos = await verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    verifyAssets: false,
+    platform: 'macos',
+  })
+  assert.equal(macos.skipped, true)
+  assert.equal(macos.metadata, null)
+  assert.equal(macos.mac.metadata.version, '2.3.4')
+})
+
+test('macOS feed verification requires a version-matched ZIP for both architectures', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  for (const missingArchitecture of ['arm64', 'x64']) {
+    const presentFiles = fixture.macFiles.filter((file) => !file.fileName.endsWith(`-${missingArchitecture}.zip`))
+    await fs.promises.writeFile(
+      path.join(fixture.directory, 'latest-mac.yml'),
+      fixtureMetadataFiles(presentFiles),
+    )
+
+    await assert.rejects(verifyRemoteFeed({
+      baseUrl,
+      allowLocalHttp: true,
+      verifyAssets: false,
+      platform: 'macos',
+    }), (error) => (
+      error.code === 'MACOS_UPDATE_ARCHITECTURE_INCOMPLETE'
+        && error.message.includes(missingArchitecture)
+    ))
+  }
+})
+
+test('macOS feed verification rejects additional or ambiguously named ZIP candidates', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  const extraZip = {
+    fileName: 'XingMang-AI-Manager-1.2.3-arm64-copy.zip',
+    contents: Buffer.from('ambiguous-arm64-update-fixture'),
+  }
+  await fs.promises.writeFile(
+    path.join(fixture.directory, 'latest-mac.yml'),
+    fixtureMetadataFiles([...fixture.macFiles, extraZip]),
+  )
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  await assert.rejects(verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    verifyAssets: false,
+    platform: 'macos',
+  }), { code: 'MACOS_UPDATE_ZIP_INVENTORY_INVALID' })
+})
+
+test('macOS feed verification requires the primary update to be an architecture ZIP', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  const primaryDmg = {
+    fileName: 'XingMang-AI-Manager-1.2.3-arm64.dmg',
+    contents: Buffer.from('mac-arm64-dmg-fixture'),
+  }
+  await fs.promises.writeFile(
+    path.join(fixture.directory, 'latest-mac.yml'),
+    fixtureMetadataFiles([primaryDmg, ...fixture.macFiles]),
+  )
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  await assert.rejects(verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    verifyAssets: false,
+    platform: 'macos',
+  }), { code: 'MACOS_UPDATE_PRIMARY_INVALID' })
+})
+
+test('verify-update-feed exposes an explicit Windows-only mode', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  await fs.promises.rm(path.join(fixture.directory, 'latest-mac.yml'))
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+  const result = await runNodeScript(path.join(__dirname, 'verify-update-feed.cjs'), [
+    baseUrl,
+    '--allow-local',
+    '--metadata-only',
+    '--platform=windows',
+  ])
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /Windows v1\.2\.3（Windows 元数据）/)
+  assert.doesNotMatch(result.stdout, /macOS/)
+})
+
+test('remote feed verification names malformed macOS metadata correctly', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  await fs.promises.writeFile(path.join(fixture.directory, 'latest-mac.yml'), 'version: [\n')
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  await assert.rejects(verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    verifyAssets: false,
+  }), (error) => (
+    error.code === 'METADATA_YAML_INVALID'
+      && /latest-mac\.yml/.test(error.message)
+      && !/(^|[^-])latest\.yml/.test(error.message)
+  ))
+})
+
+test('remote feed verification validates hashes for every macOS artifact', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  const corrupted = fixture.macFiles[1]
+  await fs.promises.writeFile(
+    path.join(fixture.directory, corrupted.fileName),
+    Buffer.alloc(corrupted.contents.length, 0x78),
+  )
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  await assert.rejects(verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    verifyAssets: true,
+  }), (error) => (
+    error.code === 'REMOTE_ARTIFACT_HASH_MISMATCH'
+      && error.message.includes(corrupted.fileName)
+  ))
+})
+
+test('remote macOS feed verification requires blockmaps for both architecture ZIPs', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  for (const file of fixture.macFiles) {
+    const blockmapPath = path.join(fixture.directory, `${file.fileName}.blockmap`)
+    await fs.promises.rm(blockmapPath)
+    await assert.rejects(verifyRemoteFeed({
+      baseUrl,
+      allowLocalHttp: true,
+      verifyAssets: true,
+      platform: 'macos',
+    }), (error) => (
+      error.code === 'REMOTE_BLOCKMAP_STATUS'
+        && error.message.includes(`${file.fileName}.blockmap`)
+    ))
+    await fs.promises.writeFile(blockmapPath, fixtureBlockmap())
+  }
+})
+
+test('remote feed verification rejects macOS artifact redirects before contacting their target', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  let redirectedRequests = 0
+  const redirectTarget = http.createServer((_request, response) => {
+    redirectedRequests += 1
+    response.writeHead(200).end('unexpected redirect target')
+  })
+  await new Promise((resolve) => redirectTarget.listen(0, '127.0.0.1', resolve))
+  t.after(() => new Promise((resolve) => redirectTarget.close(resolve)))
+  const redirectAddress = redirectTarget.address()
+  const redirectedFile = fixture.macFiles[0].fileName
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory, (request, response) => {
+    if (request.url !== `/${redirectedFile}`) return false
+    response.writeHead(302, {
+      Location: `http://127.0.0.1:${redirectAddress.port}/outside`,
+    }).end()
+    return true
+  })
+
+  await assert.rejects(verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    verifyAssets: true,
+  }), { code: 'REMOTE_REDIRECT_FORBIDDEN' })
+  assert.equal(redirectedRequests, 0)
+})
+
+test('remote feed verification reports independently missing platform metadata when allowed', async (t) => {
+  const fixture = await createReleaseFixture(t)
+  await fs.promises.rm(path.join(fixture.directory, 'latest-mac.yml'))
+  const baseUrl = await serveFixtureDirectory(t, fixture.directory)
+
+  const result = await verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    allowMissing: true,
+    verifyAssets: false,
+  })
+  assert.equal(result.missing, false)
+  assert.equal(result.metadata.version, '1.2.3')
+  assert.deepEqual(result.mac, { missing: true, metadata: null })
+
+  await fs.promises.writeFile(
+    path.join(fixture.directory, 'latest-mac.yml'),
+    fixtureMetadataFiles(fixture.macFiles),
+  )
+  await fs.promises.rm(path.join(fixture.directory, 'latest.yml'))
+
+  const windowsMissing = await verifyRemoteFeed({
+    baseUrl,
+    allowLocalHttp: true,
+    allowMissing: true,
+    verifyAssets: false,
+  })
+  assert.equal(windowsMissing.missing, true)
+  assert.equal(windowsMissing.metadata, null)
+  assert.equal(windowsMissing.mac.missing, false)
+  assert.equal(windowsMissing.mac.metadata.version, '1.2.3')
 })
 
 test('remote feed verification never follows cross-origin or out-of-directory redirects', async (t) => {

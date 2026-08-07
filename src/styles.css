@@ -1,5 +1,7 @@
 :root {
-  font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-sans: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", sans-serif;
+  --font-mono: Consolas, "Microsoft YaHei UI", monospace;
+  font-family: var(--font-sans);
   color: #20242d;
   background: #f4f6f9;
   font-synthesis: none;
@@ -186,7 +188,7 @@ body {
 
 .onboarding-brand small {
   color: #89aab1;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .onboarding-steps {
@@ -229,7 +231,7 @@ body {
   color: #92aeb4;
   border: 1px solid #47636a;
   border-radius: 50%;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -247,7 +249,7 @@ body {
 
 .onboarding-step small {
   color: #68878e;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .onboarding-step.active {
@@ -280,7 +282,7 @@ body {
   padding: 11px 7px 0;
   color: #78989f;
   border-top: 1px solid rgba(220, 238, 242, 0.1);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .onboarding-rail-note svg {
@@ -329,7 +331,7 @@ body {
   display: block;
   margin: 1px 0 5px;
   color: #1681a6;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 750;
 }
 
@@ -410,7 +412,7 @@ body {
   background: #fafcfd;
   border: 1px solid #d7dde3;
   border-radius: 7px;
-  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  font-family: var(--font-mono);
   font-size: 12px;
   transition: border-color 150ms ease, box-shadow 150ms ease, background-color 150ms ease;
 }
@@ -466,7 +468,7 @@ body {
 
 .onboarding-defaults span {
   color: #8b949f;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .onboarding-defaults strong,
@@ -548,12 +550,12 @@ body {
   align-items: center;
   justify-content: space-between;
   color: #77818d;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .setup-progress-row strong {
   color: #2e3943;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
 }
 
@@ -627,15 +629,15 @@ body {
 .setup-check-item span {
   overflow: hidden;
   color: #929aa4;
-  font-family: Consolas, "Microsoft YaHei UI", monospace;
-  font-size: 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .setup-check-item > small {
   color: #939ba5;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .setup-check-icon.ready ~ small,
@@ -657,7 +659,7 @@ body {
   padding: 9px 11px;
   color: #a8c4ca;
   border-bottom: 1px solid #344148;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .onboarding-log pre {
@@ -666,8 +668,8 @@ body {
   overflow: auto;
   padding: 10px 11px;
   color: #b9d2ca;
-  font-family: Consolas, monospace;
-  font-size: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   line-height: 1.55;
   white-space: pre-wrap;
 }
@@ -752,7 +754,7 @@ body {
 .onboarding-guide-title p {
   margin: 4px 0 0;
   color: var(--onboarding-muted);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .onboarding-guide-dialog .icon-button {
@@ -798,7 +800,7 @@ body {
   border: 1px solid var(--onboarding-line);
   border-radius: 50%;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -819,7 +821,7 @@ body {
 
 .node-guide-content > span {
   color: var(--onboarding-accent);
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 750;
 }
 
@@ -857,7 +859,7 @@ body {
   gap: 7px;
   min-width: 0;
   color: var(--onboarding-muted, #68747e);
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .node-guide-install-progress {
@@ -913,8 +915,8 @@ body {
   background: var(--onboarding-panel);
   border: 1px solid var(--onboarding-line);
   border-radius: 6px;
-  font-family: Consolas, "Microsoft YaHei UI", monospace;
-  font-size: 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
 }
 
 .node-guide-checks svg,
@@ -940,13 +942,13 @@ body {
 
 .node-guide-path strong {
   color: var(--onboarding-text);
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
 }
 
 .node-guide-path span {
   color: var(--onboarding-muted);
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .onboarding-guide-actions {
@@ -1136,6 +1138,23 @@ input:focus-visible {
   scrollbar-width: none;
 }
 
+.nav-group,
+.utility-nav {
+  display: grid;
+  gap: 2px;
+}
+
+.nav-group + .nav-group {
+  margin-top: 10px;
+}
+
+.nav-group-label {
+  padding: 6px 13px 4px;
+  color: #6f7986;
+  font-size: 11px;
+  font-weight: 650;
+}
+
 .main-nav::-webkit-scrollbar {
   display: none;
 }
@@ -1227,8 +1246,8 @@ input:focus-visible {
 .official-site-copy small {
   overflow: hidden;
   color: #8a98a3;
-  font-family: Consolas, monospace;
-  font-size: 8px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1312,7 +1331,7 @@ input:focus-visible {
 .eyebrow {
   margin-bottom: 5px;
   color: #8b94a3;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -1601,7 +1620,7 @@ input:focus-visible {
 
 .session-stat small {
   color: #8a94a0;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .sessions-toolbar {
@@ -1721,7 +1740,7 @@ input:focus-visible {
   color: #8b95a1;
   background: #f7f9fa;
   border-bottom: 1px solid #e4e8ec;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
@@ -1775,14 +1794,14 @@ input:focus-visible {
   color: #7b8490;
   background: #eef1f3;
   border-radius: 4px;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .session-main code,
 .session-model small {
   overflow: hidden;
   color: #929ba6;
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1797,7 +1816,7 @@ input:focus-visible {
 
 .session-time {
   color: #77828e;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .session-actions {
@@ -1810,7 +1829,7 @@ input:focus-visible {
 .session-archive-button {
   height: 30px;
   padding: 0 9px;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .sessions-pagination {
@@ -1822,7 +1841,7 @@ input:focus-visible {
   color: #7f8995;
   background: #fafbfc;
   border-top: 1px solid #e5e9ed;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .sessions-pagination > div {
@@ -1862,7 +1881,7 @@ input:focus-visible {
 
 .session-detail-header code {
   color: #8c96a1;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .session-detail-meta {
@@ -1872,7 +1891,7 @@ input:focus-visible {
   color: #7d8793;
   background: #f8fafb;
   border-bottom: 1px solid #e6eaee;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .session-message-list {
@@ -1904,7 +1923,7 @@ input:focus-visible {
   display: flex;
   justify-content: space-between;
   color: #66727e;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .session-message pre {
@@ -1917,7 +1936,7 @@ input:focus-visible {
 
 .session-transcript-note {
   color: #7d8793;
-  font-size: 9px;
+  font-size: 10px;
   text-align: center;
 }
 
@@ -2003,7 +2022,7 @@ input:focus-visible {
   background: #f5f8f9;
   border: 1px solid #e1e7ea;
   border-radius: 6px;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .network-location svg {
@@ -2166,7 +2185,7 @@ button:disabled {
   border: 1px solid #dce5e8;
   border-radius: 6px;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .runtime-guide-button:hover {
@@ -2273,7 +2292,7 @@ button:disabled {
   color: #8f6e28;
   background: #fff9e9;
   border-radius: 3px;
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 600;
 }
 
@@ -2283,8 +2302,8 @@ button:disabled {
   margin-top: 4px;
   overflow: hidden;
   color: #8c939f;
-  font-family: Consolas, monospace;
-  font-size: 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2305,7 +2324,7 @@ button:disabled {
   color: #197da7;
   background: transparent;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .status-mark {
@@ -2416,7 +2435,7 @@ button:disabled {
   display: block;
   margin-top: 3px;
   color: #9ba1ac;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .cli-meta-row {
@@ -2431,7 +2450,7 @@ button:disabled {
 .cli-meta-row code {
   overflow: hidden;
   color: #707987;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2444,7 +2463,7 @@ button:disabled {
   color: #3f7a68;
   background: #eef8f4;
   border-radius: 4px;
-  font-size: 8px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2486,7 +2505,7 @@ button:disabled {
   gap: 7px;
   margin-top: 8px;
   color: #858d9a;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .config-model {
@@ -2496,7 +2515,7 @@ button:disabled {
   min-width: 0;
   margin-top: 5px;
   color: #657181;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .config-model .config-dot {
@@ -2507,7 +2526,7 @@ button:disabled {
   min-width: 0;
   overflow: hidden;
   color: #596674;
-  font-family: Consolas, monospace;
+  font-family: var(--font-mono);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -2534,7 +2553,7 @@ button:disabled {
   min-width: 0;
   margin-top: 8px;
   color: #536270;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .desktop-install-progress > div {
@@ -2555,7 +2574,7 @@ button:disabled {
 .desktop-install-progress strong {
   flex: 0 0 auto;
   color: #27785f;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .desktop-install-progress progress {
@@ -2729,7 +2748,7 @@ button:disabled {
 
 .save-mode-option small {
   color: #89929e;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .save-option-icon {
@@ -2856,13 +2875,13 @@ button:disabled {
   background: #e6f5ef;
   border: 1px solid #c9e8dc;
   border-radius: 4px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 700;
 }
 
 .install-source-version {
   color: #687480;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .install-source-action {
@@ -2891,7 +2910,7 @@ button:disabled {
   gap: 5px;
   margin-top: 5px;
   color: #8f96a2;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .command-line code {
@@ -2924,7 +2943,7 @@ button:disabled {
 
 .model-count {
   color: #9299a5;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .field-label-row {
@@ -2942,7 +2961,7 @@ button:disabled {
   color: #157fa8;
   background: transparent;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .key-link-button:hover {
@@ -2951,7 +2970,7 @@ button:disabled {
 
 .field-hint {
   color: #8b929e;
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.4;
 }
 
@@ -2968,7 +2987,7 @@ button:disabled {
   background: #fbfcfd;
   border: 1px solid #dfe3e8;
   border-radius: 6px;
-  font-family: Consolas, "Microsoft YaHei UI", monospace;
+  font-family: var(--font-mono);
   font-size: 11px;
   transition: border-color 150ms ease, background-color 150ms ease, box-shadow 150ms ease;
 }
@@ -3055,7 +3074,7 @@ button:disabled {
 .native-file-label {
   padding-top: 5px;
   color: #7e8693;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
 }
 
@@ -3087,14 +3106,14 @@ button:disabled {
 .native-file code {
   overflow: hidden;
   color: #526373;
-  font-size: 8px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
 .file-state {
   color: #aa7478;
-  font-size: 8px;
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -3120,7 +3139,7 @@ button:disabled {
   gap: 12px;
   margin-top: 15px;
   color: #8a919d;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .config-summary-bar > div {
@@ -3167,7 +3186,7 @@ button:disabled {
   padding: 12px 14px;
   overflow: auto;
   color: #b9c6d2;
-  font: 9px/1.65 Consolas, monospace;
+  font: 10px/1.65 Consolas, monospace;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -3318,6 +3337,7 @@ button:disabled {
 }
 
 .sidebar-collapsed .brand-block > div,
+.sidebar-collapsed .nav-group-label,
 .sidebar-collapsed .nav-label,
 .sidebar-collapsed .official-site-copy,
 .sidebar-collapsed .official-site-external,
@@ -4270,7 +4290,7 @@ button:disabled {
   color: #84909c;
   background: #dfe5e9;
   border-radius: 9px;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .segmented-control button.active {
@@ -4411,7 +4431,7 @@ button:disabled {
   color: #526c7a;
   background: #edf3f5;
   border-radius: 4px;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .extension-badge.success {
@@ -4429,7 +4449,7 @@ button:disabled {
   min-width: 0;
   overflow: hidden;
   color: #77828e;
-  font: 9px/1.45 "Cascadia Mono", Consolas, monospace;
+  font: 10px/1.45 "Cascadia Mono", Consolas, monospace;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4441,7 +4461,7 @@ button:disabled {
   gap: 10px;
   min-width: 0;
   color: #929ba5;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .extension-row-meta span {
@@ -4522,7 +4542,7 @@ button:disabled {
 .plugin-card-head small {
   overflow: hidden;
   color: #929ba5;
-  font-size: 8px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4551,7 +4571,7 @@ button:disabled {
   color: #76818d;
   background: #f2f5f6;
   border-radius: 4px;
-  font: 8px "Cascadia Mono", Consolas, monospace;
+  font: 10px "Cascadia Mono", Consolas, monospace;
 }
 
 .skill-card-footer,
@@ -4572,7 +4592,7 @@ button:disabled {
   align-items: center;
   gap: 6px;
   color: #8a939d;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .extension-state.enabled {
@@ -4709,7 +4729,7 @@ button:disabled {
   display: block;
   margin-top: 3px;
   color: #929ba5;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .extension-dialog-icon,
@@ -4888,7 +4908,7 @@ button:disabled {
   margin: 0;
   overflow: hidden;
   color: #7f8994;
-  font-size: 9px;
+  font-size: 10px;
   line-height: 1.5;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -4900,7 +4920,7 @@ button:disabled {
   color: #71808b;
   background: #eef2f4;
   border-radius: 4px;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .operation-state.is-pass {
@@ -4922,7 +4942,7 @@ button:disabled {
 .operation-meta,
 .operation-duration {
   color: #949da7;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 /* Feedback and runtime diagnostics */
@@ -4942,7 +4962,7 @@ button:disabled {
   max-width: 48%;
   overflow: hidden;
   color: #77828d;
-  font-size: 9px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -4984,7 +5004,7 @@ button:disabled {
   background: #f7f9fa;
   border: 1px solid #e4e8ec;
   border-radius: 6px;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .feedback-select select {
@@ -5055,8 +5075,8 @@ button:disabled {
 .feedback-log-row > time {
   padding-top: 3px;
   color: #8b95a0;
-  font-family: Consolas, "Courier New", monospace;
-  font-size: 9px;
+  font-family: var(--font-mono);
+  font-size: 10px;
   white-space: nowrap;
 }
 
@@ -5070,7 +5090,7 @@ button:disabled {
   color: #6f7a84;
   background: #eef2f4;
   border-radius: 5px;
-  font-size: 9px;
+  font-size: 10px;
   font-weight: 650;
 }
 
@@ -5115,7 +5135,7 @@ button:disabled {
   max-width: 42%;
   overflow: hidden;
   color: #89939d;
-  font-size: 8px;
+  font-size: 10px;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -5132,14 +5152,14 @@ button:disabled {
   background: #fff4f4;
   border-left: 2px solid #cf5b64;
   border-radius: 3px;
-  font: 9px/1.5 Consolas, "Courier New", monospace;
+  font: 10px/1.5 Consolas, "Courier New", monospace;
 }
 
 .feedback-log-copy summary {
   width: max-content;
   color: #287da7;
   cursor: pointer;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .feedback-log-copy pre {
@@ -5151,7 +5171,7 @@ button:disabled {
   background: #f1f4f6;
   border: 1px solid #e1e6e9;
   border-radius: 6px;
-  font: 9px/1.55 Consolas, "Courier New", monospace;
+  font: 10px/1.55 Consolas, "Courier New", monospace;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
@@ -5246,7 +5266,7 @@ button:disabled {
 .operation-duration {
   align-self: start;
   padding-top: 5px;
-  font-family: "Cascadia Mono", Consolas, monospace;
+  font-family: var(--font-mono);
 }
 
 .operation-loading,
@@ -5303,7 +5323,7 @@ button:disabled {
   min-width: 0;
   gap: 4px;
   color: #8b95a0;
-  font-size: 8px;
+  font-size: 10px;
 }
 
 .operation-details dt,
@@ -5341,7 +5361,7 @@ button:disabled {
 .backup-file-row .operation-row-copy > strong,
 .settings-storage .operation-row-copy p {
   overflow: visible;
-  font-family: "Cascadia Mono", Consolas, monospace;
+  font-family: var(--font-mono);
   text-overflow: initial;
   white-space: normal;
   overflow-wrap: anywhere;
@@ -5365,6 +5385,185 @@ button:disabled {
 
 .maintenance-uninstall-button {
   min-width: 70px;
+}
+
+.maintenance-help-button {
+  color: #8b651f;
+  background: #fffaf0;
+  border-color: #dbc693;
+}
+
+.manual-uninstall-dialog {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  width: min(680px, calc(100vw - 56px));
+  max-height: min(720px, calc(100vh - 56px));
+}
+
+.manual-help-icon {
+  color: #87631c;
+  background: #fff6df;
+}
+
+.manual-uninstall-content {
+  min-height: 0;
+  overflow-y: auto;
+  padding: 17px 2px;
+}
+
+.manual-uninstall-details {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+}
+
+.manual-uninstall-details > div {
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  gap: 12px;
+  align-items: start;
+}
+
+.manual-uninstall-details dt {
+  color: #7d8793;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.manual-uninstall-details dd {
+  min-width: 0;
+  margin: 0;
+  color: #414b57;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.manual-uninstall-details code {
+  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+}
+
+.manual-uninstall-steps {
+  display: grid;
+  gap: 8px;
+  margin: 17px 0;
+  padding-left: 25px;
+  color: #4d5865;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.manual-uninstall-steps li::marker {
+  color: #197da7;
+  font-weight: 700;
+}
+
+.manual-command-block {
+  display: grid;
+  gap: 7px;
+}
+
+.manual-command-heading {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #65717f;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.manual-command-code {
+  position: relative;
+  min-height: 80px;
+  overflow: hidden;
+  background: #182129;
+  border: 1px solid #2e3d47;
+  border-radius: 7px;
+}
+
+.manual-command-code pre {
+  max-height: 210px;
+  margin: 0;
+  overflow: auto;
+  padding: 13px 48px 13px 14px;
+  color: #d8e6eb;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.command-copy-button {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  color: #c7dce3;
+  background: #26343d;
+  border-color: #3c4c56;
+}
+
+.manual-copy-state {
+  color: #7f8994;
+  font-size: 9px;
+}
+
+.manual-copy-state.state-copied {
+  color: #188267;
+}
+
+.manual-copy-state.state-failed {
+  color: #b4474b;
+}
+
+.manual-command-empty {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 11px 12px;
+  color: #8a651f;
+  background: #fff9ea;
+  border: 1px solid #ead8a9;
+  border-radius: 7px;
+  font-size: 10px;
+  line-height: 1.5;
+}
+
+.manual-command-empty svg {
+  flex: 0 0 auto;
+  margin-top: 1px;
+}
+
+.manual-uninstall-footer {
+  gap: 8px;
+}
+
+:root[data-theme="dark"] .maintenance-help-button {
+  color: #d9bb78;
+  background: #322d22;
+  border-color: #625536;
+}
+
+:root[data-theme="dark"] .manual-help-icon {
+  color: #d8b96f;
+  background: #3a3322;
+}
+
+:root[data-theme="dark"] .manual-uninstall-details dd,
+:root[data-theme="dark"] .manual-uninstall-steps {
+  color: #c4cbcf;
+}
+
+:root[data-theme="dark"] .manual-uninstall-details dt,
+:root[data-theme="dark"] .manual-command-heading,
+:root[data-theme="dark"] .manual-copy-state {
+  color: #99a4aa;
+}
+
+:root[data-theme="dark"] .manual-command-empty {
+  color: #d6ba78;
+  background: #332e23;
+  border-color: #5c5134;
 }
 
 .save-mode-icon.danger-icon {
@@ -5458,7 +5657,7 @@ button:disabled {
 
 .setting-theme-option small {
   color: #919aa4;
-  font-size: 9px;
+  font-size: 10px;
 }
 
 .setting-theme-option.is-active {
@@ -5814,6 +6013,12 @@ button:disabled {
     display: none;
   }
 
+  .maintenance-row-actions {
+    grid-column: 2;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+
   .operation-row > .secondary-button,
   .maintenance-cli-section .operation-row > .secondary-button {
     grid-column: 2;
@@ -5910,6 +6115,99 @@ button:disabled {
 
   .extension-dialog {
     max-height: calc(100vh - 28px);
+  }
+}
+
+/* Platform and minimum-window adaptations. */
+:root[data-platform="macos"] {
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-family: var(--font-sans);
+}
+
+:root[data-platform="macos"] :where(button, input, select, textarea) {
+  font-family: inherit;
+}
+
+:root[data-platform="macos"] :where(code, pre, kbd, samp) {
+  font-family: var(--font-mono);
+}
+
+:root[data-platform="macos"] .window-titlebar {
+  padding-left: 78px;
+}
+
+:root[data-platform="macos"] .window-titlebar img {
+  display: none;
+}
+
+.main-nav {
+  scrollbar-color: #aab4bd transparent;
+  scrollbar-width: thin;
+}
+
+.main-nav::-webkit-scrollbar {
+  display: block;
+  width: 6px;
+}
+
+.main-nav::-webkit-scrollbar-thumb {
+  background: #aab4bd;
+  border-radius: 3px;
+}
+
+.sidebar-collapsed .main-nav {
+  overflow-y: auto;
+}
+
+.eyebrow,
+.section-heading span,
+.operation-meta,
+.config-state,
+.cli-identity span {
+  color: #66727f;
+}
+
+.operation-meta,
+.config-state,
+.cli-identity span {
+  font-size: 11px;
+}
+
+:root[data-theme="dark"] .eyebrow,
+:root[data-theme="dark"] .section-heading span,
+:root[data-theme="dark"] .operation-meta,
+:root[data-theme="dark"] .config-state,
+:root[data-theme="dark"] .cli-identity span,
+:root[data-theme="dark"] .nav-group-label {
+  color: #aeb8bd;
+}
+
+@media (max-width: 1000px) {
+  .dashboard-page .page-header,
+  .dashboard-page .header-actions {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .dashboard-page .header-actions {
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  .dashboard-page .cli-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+    scroll-behavior: auto !important;
+    transition: none !important;
   }
 }
 
