@@ -11,10 +11,9 @@ const {
 const { verifyFreeMacSigningIdentity } = require('./verify-macos-free-signing.cjs')
 const { verifyMacosFreeArtifacts } = require('./verify-macos-free-artifacts.cjs')
 const { createFreeMacSigningCertificate } = require('./create-macos-free-signing-certificate.cjs')
+const { verifyEphemeralMacSigningIdentity } = require('./macos-ephemeral-signing.cjs')
 
 const SECURITY_PATH = '/usr/bin/security'
-const SUDO_PATH = '/usr/bin/sudo'
-const SYSTEM_KEYCHAIN_PATH = '/Library/Keychains/System.keychain'
 const SECURITY_COMMAND_TIMEOUT_MS = 30_000
 
 const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
@@ -22,6 +21,8 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_MAC_FREE_RELEASE',
   'XINGMANG_LOCAL_BUILD',
   'XINGMANG_OUTPUT_DIR',
+  'XINGMANG_MAC_CI_EPHEMERAL_SIGNING',
+  'XINGMANG_MAC_SIGNING_SHA1',
   'XINGMANG_MAC_SIGNING_P12_PASSWORD',
   'XINGMANG_UPDATE_DEV',
   'XINGMANG_UPDATE_URL',
@@ -63,23 +64,13 @@ function defaultCapturedCommand(executable, args, env, label) {
   return result.stdout || ''
 }
 
-function resolveMacosSecurityCommand(args, commandOptions = {}) {
-  const admin = commandOptions.privilege === 'admin'
+function resolveMacosSecurityCommand(args) {
   const command = args[0] || 'command'
   return {
-    executable: admin ? SUDO_PATH : SECURITY_PATH,
-    argv: admin ? ['-n', SECURITY_PATH, ...args] : args,
-    label: admin ? `无交互管理员 security ${command}` : `security ${command}`,
+    executable: SECURITY_PATH,
+    argv: args,
+    label: `security ${command}`,
   }
-}
-
-function parseKeychainSearchList(output) {
-  return String(output || '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-    if (line.startsWith('"') && line.endsWith('"')) {
-      return line.slice(1, -1).replaceAll('\\"', '"').replaceAll('\\\\', '\\')
-    }
-    return line
-  })
 }
 
 function createSanitizedEnvironment(environment, identityName, signingCertificateSha256) {
@@ -110,6 +101,21 @@ function resolveFreeMacBuildOptions(options = {}) {
   const identityName = String(environment.CSC_NAME || '').trim()
   if (!identityName) throw new Error('缺少 CSC_NAME：必须指定 macOS 免费发布签名身份')
   const signingCertificateSha256 = normalizeFingerprint(environment.XINGMANG_MAC_SIGNING_SHA256)
+  let ephemeralSigning
+  if (options.ephemeralSigning !== undefined) {
+    if (!options.skipChecks) {
+      throw new Error('CI 临时签名只能复用已完成的检查')
+    }
+    const identitySha1 = normalizeFingerprint(options.ephemeralSigning?.identitySha1, 20)
+    const rawKeychainPath = String(options.ephemeralSigning?.keychainPath || '').trim()
+    if (!rawKeychainPath || rawKeychainPath.includes('\0') || !path.isAbsolute(rawKeychainPath)) {
+      throw new Error('CI 临时签名 keychain 必须是绝对路径')
+    }
+    ephemeralSigning = {
+      identitySha1,
+      keychainPath: path.resolve(rawKeychainPath),
+    }
+  }
   const expectedUpdateUrl = normalizeUpdateBaseUrl(
     environment.XINGMANG_UPDATE_URL?.trim() || DEFAULT_UPDATE_URL,
   )
@@ -138,6 +144,12 @@ function resolveFreeMacBuildOptions(options = {}) {
     XINGMANG_OUTPUT_DIR: outputDirectory,
     XINGMANG_UPDATE_URL: expectedUpdateUrl,
     CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+    ...(ephemeralSigning ? {
+      XINGMANG_MAC_CI_EPHEMERAL_SIGNING: '1',
+      XINGMANG_MAC_SIGNING_SHA1: ephemeralSigning.identitySha1,
+      CSC_KEYCHAIN: ephemeralSigning.keychainPath,
+      CSC_FOR_PULL_REQUEST: 'true',
+    } : {}),
   }
 
   return {
@@ -146,6 +158,7 @@ function resolveFreeMacBuildOptions(options = {}) {
     outputDirectory,
     identityName,
     signingCertificateSha256,
+    ephemeralSigning,
     expectedUpdateUrl,
     npmCliPath,
     electronBuilderCliPath,
@@ -243,33 +256,27 @@ async function runCiFreeMacBuild(options = {}) {
     ], environment, 'OpenSSL 证书 SHA-1 指纹读取')
     return normalizeFingerprint(output.split('=', 2)[1] || '', 20)
   })
+  const verifyEphemeralSigning = options.verifyEphemeralSigning || verifyEphemeralMacSigningIdentity
   const runBuild = options.runBuild || runFreeMacBuild
   const removeDirectory = options.removeDirectory || ((directory) => fs.rmSync(directory, {
     recursive: true,
     force: true,
   }))
-  let previousKeychains = []
-  let keychainSearchListCaptured = false
   let keychainCreated = false
-  let adminTrustAttempted = false
-  let certificatePath
-  let certificateSha1Fingerprint
   let result
   let failure
   const cleanupErrors = []
 
   try {
-    previousKeychains = parseKeychainSearchList(runSecurity(['list-keychains', '-d', 'user']))
-    keychainSearchListCaptured = true
     const certificate = createCertificate({
       outputDirectory: certificateDirectory,
       commonName: identityName,
       password: p12Password,
       env: environment,
     })
-    certificatePath = certificate.certificatePath
+    const certificatePath = certificate.certificatePath
     const fingerprint = normalizeFingerprint(certificateFingerprint(certificatePath))
-    certificateSha1Fingerprint = normalizeFingerprint(certificateSha1(certificatePath), 20)
+    const identitySha1 = normalizeFingerprint(certificateSha1(certificatePath), 20)
     runSecurity(['create-keychain', '-p', keychainPassword, keychainPath])
     keychainCreated = true
     runSecurity(['set-keychain-settings', '-lut', '21600', keychainPath])
@@ -287,16 +294,13 @@ async function runCiFreeMacBuild(options = {}) {
       '-s', '-k', keychainPassword,
       keychainPath,
     ])
-    adminTrustAttempted = true
-    runSecurity([
-      'add-trusted-cert',
-      '-d',
-      '-r', 'trustRoot',
-      '-p', 'codeSign',
-      '-k', SYSTEM_KEYCHAIN_PATH,
-      certificatePath,
-    ], { privilege: 'admin' })
-    runSecurity(['list-keychains', '-d', 'user', '-s', keychainPath])
+    await verifyEphemeralSigning({
+      platform: 'darwin',
+      identitySha1,
+      keychainPath,
+      probePath: path.join(temporaryRoot, 'private-key-probe'),
+      env: environment,
+    })
 
     result = await runBuild({
       projectRoot,
@@ -308,6 +312,8 @@ async function runCiFreeMacBuild(options = {}) {
       },
       outputDirectory: outputRequest,
       skipChecks: true,
+      ephemeralSigning: { identitySha1, keychainPath },
+      verifySigning: () => ({ identityName, fingerprint }),
     })
   } catch (error) {
     failure = error
@@ -318,23 +324,6 @@ async function runCiFreeMacBuild(options = {}) {
       } catch (error) {
         cleanupErrors.push(error)
       }
-    }
-    if (adminTrustAttempted && certificatePath) {
-      attemptCleanup(() => runSecurity([
-        'remove-trusted-cert', '-d', certificatePath,
-      ], { privilege: 'admin' }))
-      if (certificateSha1Fingerprint) {
-        attemptCleanup(() => runSecurity([
-          'delete-certificate',
-          '-Z', certificateSha1Fingerprint,
-          SYSTEM_KEYCHAIN_PATH,
-        ], { privilege: 'admin' }))
-      }
-    }
-    if (keychainSearchListCaptured) {
-      attemptCleanup(() => {
-        runSecurity(['list-keychains', '-d', 'user', '-s', ...previousKeychains])
-      })
     }
     if (keychainCreated) attemptCleanup(() => runSecurity(['delete-keychain', keychainPath]))
     attemptCleanup(() => removeDirectory(outputPath))
@@ -366,7 +355,6 @@ async function main() {
 if (require.main === module) main()
 
 module.exports = {
-  parseKeychainSearchList,
   resolveMacosSecurityCommand,
   resolveFreeMacBuildOptions,
   runCiFreeMacBuild,

@@ -22,7 +22,7 @@ jobs:
       - run: npm ci --registry=https://registry.npmjs.org/
       - run: npx --no-install playwright install chromium
       - run: npm run typecheck
-      - run: npm test
+      - run: npm run test:windows
       - run: npm run compile
       - name: Run isolated dashboard smoke test
         run: node e2e/electron-ci-smoke.mjs

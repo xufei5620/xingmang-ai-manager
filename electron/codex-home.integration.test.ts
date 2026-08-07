@@ -198,7 +198,7 @@ it('routes every Codex-owned surface to one custom root and leaves all sentinels
   expect(diagnostics.items.find((item) => item.code === 'CODEX_DOTENV')?.state).toBe('warn')
   diagnostics.items[0].details = { customCodexPath: path.join(codexHome, 'logs', 'probe.txt') }
   const diagnosticsExport = createDiagnosticsExport(diagnostics, options.diagnosticExport)
-  expect(diagnosticsExport).toContain('[CODEX_HOME]/logs/probe.txt')
+  expect(diagnosticsExport).toContain(path.join('[CODEX_HOME]', 'logs', 'probe.txt'))
   expect(diagnosticsExport).not.toContain(codexHome)
   expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
   for (const sentinel of sentinels) {

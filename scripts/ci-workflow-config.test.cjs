@@ -12,6 +12,7 @@ const workflow = YAML.parse(
 
 const darwinOnlyTests = [
   'scripts/create-macos-free-signing-certificate.test.cjs',
+  'scripts/macos-ephemeral-signing.test.cjs',
   'scripts/verify-macos-free-signing.test.cjs',
   'scripts/verify-macos-free-artifacts.test.cjs',
   'scripts/run-macos-free-build.test.cjs',
@@ -34,15 +35,27 @@ test('the common test suite excludes Darwin filesystem and signing fixtures', ()
 })
 
 test('browser-backed tests install Chromium first on every job that runs npm test', () => {
-  for (const jobName of ['test', 'macos-test']) {
+  for (const [jobName, testCommand] of [
+    ['test', 'npm run test:windows'],
+    ['macos-test', 'npm test'],
+  ]) {
     const commands = runSteps(jobName)
     const installIndex = commands.indexOf('npx --no-install playwright install chromium')
-    const testIndex = commands.indexOf('npm test')
+    const testIndex = commands.indexOf(testCommand)
 
-    assert.notEqual(testIndex, -1, `${jobName} must run npm test`)
+    assert.notEqual(testIndex, -1, `${jobName} must run ${testCommand}`)
     assert.notEqual(installIndex, -1, `${jobName} must install Chromium`)
-    assert.ok(installIndex < testIndex, `${jobName} must install Chromium before npm test`)
+    assert.ok(installIndex < testIndex, `${jobName} must install Chromium before ${testCommand}`)
   }
+})
+
+test('the Windows suite serializes filesystem-heavy files with a bounded test timeout', () => {
+  const command = packageJson.scripts['test:windows']
+
+  assert.match(command, /vitest run electron src/)
+  assert.match(command, /--no-file-parallelism/)
+  assert.match(command, /--testTimeout=30000/)
+  assert.match(command, /npm run test:node/)
 })
 
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {

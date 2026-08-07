@@ -19,25 +19,22 @@ function temporaryProject(t) {
 const fingerprint = 'AB'.repeat(32)
 const sha1Fingerprint = 'CD'.repeat(20)
 
-test('admin trust commands use absolute non-interactive sudo while user commands do not', () => {
+test('macOS security commands never cross an administrator boundary', () => {
   assert.deepEqual(resolveMacosSecurityCommand(['list-keychains', '-d', 'user']), {
     executable: '/usr/bin/security',
     argv: ['list-keychains', '-d', 'user'],
     label: 'security list-keychains',
   })
-  assert.deepEqual(resolveMacosSecurityCommand([
-    'add-trusted-cert', '-d', '/tmp/identity.cer',
-  ], { privilege: 'admin' }), {
-    executable: '/usr/bin/sudo',
-    argv: [
-      '-n', '/usr/bin/security',
-      'add-trusted-cert', '-d', '/tmp/identity.cer',
-    ],
-    label: '无交互管理员 security add-trusted-cert',
+  assert.deepEqual(resolveMacosSecurityCommand(['delete-keychain', '/tmp/ci-signing.keychain-db'], {
+    privilege: 'admin',
+  }), {
+    executable: '/usr/bin/security',
+    argv: ['delete-keychain', '/tmp/ci-signing.keychain-db'],
+    label: 'security delete-keychain',
   })
 })
 
-test('CI signing uses an isolated keychain and always restores and removes it', async (t) => {
+test('CI signing uses only its isolated keychain and never mutates the user search list', async (t) => {
   const projectRoot = temporaryProject(t)
   const calls = []
   const removed = []
@@ -59,15 +56,20 @@ test('CI signing uses an isolated keychain and always restores and removes it', 
     certificateSha1: () => sha1Fingerprint,
     runSecurity: (args, commandOptions = {}) => {
       calls.push(['security', args, commandOptions])
-      if (args[0] === 'list-keychains' && !args.includes('-s')) {
-        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
-      }
+      if (args[0] === 'list-keychains') throw new Error('global keychain search list must remain untouched')
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
       return ''
+    },
+    verifyEphemeralSigning: (options) => {
+      calls.push(['probe', options])
+      return { identitySha1: options.identitySha1 }
     },
     runBuild: async (options) => {
       calls.push(['build', options])
       assert.equal(options.env.CSC_NAME, 'XingMang CI Free Update Identity')
       assert.equal(options.env.XINGMANG_MAC_SIGNING_SHA256, fingerprint)
+      assert.equal(options.ephemeralSigning.identitySha1, sha1Fingerprint)
+      assert.match(options.ephemeralSigning.keychainPath, /ci-signing\.keychain-db$/)
       assert.match(options.outputDirectory, /^release-free-ci-/)
       fs.mkdirSync(path.join(projectRoot, options.outputDirectory))
       return { outputDirectory: path.join(projectRoot, options.outputDirectory) }
@@ -80,67 +82,28 @@ test('CI signing uses an isolated keychain and always restores and removes it', 
 
   assert.equal(result.cleaned, true)
   const securityCalls = calls.filter(([kind]) => kind === 'security')
-  const userSecurityCalls = securityCalls
-    .filter(([, , commandOptions]) => commandOptions.privilege !== 'admin')
-    .map(([, args]) => args)
-  const adminSecurityCalls = securityCalls
-    .filter(([, , commandOptions]) => commandOptions.privilege === 'admin')
-    .map(([, args]) => args)
-  assert.deepEqual(userSecurityCalls.map((args) => args[0]), [
-    'list-keychains',
+  const securityArguments = securityCalls.map(([, args]) => args)
+  assert.deepEqual(securityArguments.map((args) => args[0]), [
     'create-keychain',
     'set-keychain-settings',
     'unlock-keychain',
     'import',
     'set-key-partition-list',
-    'list-keychains',
-    'list-keychains',
     'delete-keychain',
   ])
-  assert.deepEqual(userSecurityCalls.at(6), [
-    'list-keychains', '-d', 'user', '-s',
-    userSecurityCalls[1].at(-1),
-  ])
-  assert.deepEqual(userSecurityCalls.at(-2), [
-    'list-keychains', '-d', 'user', '-s', '/Users/runner/Library/Keychains/login.keychain-db',
-  ])
-  assert.deepEqual(adminSecurityCalls.map((args) => args[0]), [
-    'add-trusted-cert',
-    'remove-trusted-cert',
-    'delete-certificate',
-  ])
-  assert.equal(adminSecurityCalls[0].includes('-d'), true)
-  assert.equal(adminSecurityCalls[1].includes('-d'), true)
-  assert.deepEqual(adminSecurityCalls[2], [
-    'delete-certificate', '-Z', sha1Fingerprint, '/Library/Keychains/System.keychain',
-  ])
+  const keychainPath = securityArguments[0].at(-1)
+  const probe = calls.find(([kind]) => kind === 'probe')[1]
+  assert.equal(probe.identitySha1, sha1Fingerprint)
+  assert.equal(probe.keychainPath, keychainPath)
+  assert.match(probe.probePath, /private-key-probe$/)
+  assert.equal(calls.findIndex(([kind]) => kind === 'probe') < calls.findIndex(([kind]) => kind === 'build'), true)
+  assert.equal(securityCalls.every(([, args, options]) => (
+    !/trusted-cert|delete-certificate/.test(args[0]) && options.privilege === undefined
+  )), true)
   assert.equal(removed.length, 2)
 })
 
-test('CI signing never restores an empty keychain list when the initial snapshot fails', async (t) => {
-  const projectRoot = temporaryProject(t)
-  const securityCalls = []
-  const removed = []
-
-  await assert.rejects(() => runCiFreeMacBuild({
-    projectRoot,
-    env: { PATH: '/usr/bin:/bin' },
-    randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
-    runSecurity: (args) => {
-      securityCalls.push(args)
-      throw new Error('keychain snapshot failed')
-    },
-    removeDirectory: (directory) => {
-      removed.push(directory)
-      fs.rmSync(directory, { recursive: true, force: true })
-    },
-  }), /keychain snapshot failed/)
-
-  assert.deepEqual(securityCalls, [['list-keychains', '-d', 'user']])
-  assert.equal(removed.length, 2)
-})
-
-test('CI signing compensates a partially applied administrator trust command', async (t) => {
+test('CI signing aborts and cleans up when the trust-free private-key probe fails', async (t) => {
   const projectRoot = temporaryProject(t)
   const securityCalls = []
 
@@ -160,30 +123,30 @@ test('CI signing compensates a partially applied administrator trust command', a
     certificateSha1: () => sha1Fingerprint,
     runSecurity: (args, commandOptions = {}) => {
       securityCalls.push([args, commandOptions])
-      if (args[0] === 'list-keychains' && !args.includes('-s')) {
-        return '"/Users/runner/Library/Keychains/login.keychain-db"\n'
-      }
-      if (args[0] === 'add-trusted-cert') throw new Error('trust command timed out')
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
       return ''
     },
-  }), /trust command timed out/)
+    verifyEphemeralSigning: () => {
+      throw new Error('private-key signing probe failed')
+    },
+  }), /private-key signing probe failed/)
 
-  const cleanupCommands = securityCalls
-    .filter(([, commandOptions]) => commandOptions.privilege === 'admin')
-    .map(([args]) => args)
+  const cleanupCommands = securityCalls.map(([args]) => args)
   assert.deepEqual(cleanupCommands.map((args) => args[0]), [
-    'add-trusted-cert',
-    'remove-trusted-cert',
-    'delete-certificate',
+    'create-keychain',
+    'set-keychain-settings',
+    'unlock-keychain',
+    'import',
+    'set-key-partition-list',
+    'delete-keychain',
   ])
-  assert.deepEqual(cleanupCommands[2], [
-    'delete-certificate', '-Z', sha1Fingerprint, '/Library/Keychains/System.keychain',
-  ])
+  assert.equal(cleanupCommands.some((args) => /trusted-cert|delete-certificate/.test(args[0])), false)
 })
 
-test('CI signing does not run administrator cleanup before trust mutation starts', async (t) => {
+test('CI signing does not probe or mutate trust before identity import succeeds', async (t) => {
   const projectRoot = temporaryProject(t)
   const securityCalls = []
+  let probeCalled = false
 
   await assert.rejects(() => runCiFreeMacBuild({
     projectRoot,
@@ -201,16 +164,17 @@ test('CI signing does not run administrator cleanup before trust mutation starts
     certificateSha1: () => sha1Fingerprint,
     runSecurity: (args, commandOptions = {}) => {
       securityCalls.push([args, commandOptions])
-      if (args[0] === 'list-keychains' && !args.includes('-s')) {
-        return '"/Users/runner/Library/Keychains/login.keychain-db"\n'
-      }
       if (args[0] === 'import') throw new Error('identity import failed')
       return ''
     },
+    verifyEphemeralSigning: () => {
+      probeCalled = true
+    },
   }), /identity import failed/)
 
+  assert.equal(probeCalled, false)
   assert.deepEqual(
-    securityCalls.filter(([, options]) => options.privilege === 'admin'),
+    securityCalls.filter(([args]) => /trusted-cert/.test(args[0])),
     [],
   )
 })
@@ -235,10 +199,10 @@ test('CI signing cleanup runs when the real free build fails', async (t) => {
     certificateSha1: () => sha1Fingerprint,
     runSecurity: (args, commandOptions = {}) => {
       securityCalls.push([args, commandOptions])
-      return args[0] === 'list-keychains' && !args.includes('-s')
-        ? '"/Users/runner/Library/Keychains/login.keychain-db"\n'
-        : ''
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      return ''
     },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
     runBuild: async ({ outputDirectory }) => {
       fs.mkdirSync(path.join(projectRoot, outputDirectory))
       throw new Error('real build failed')
@@ -250,14 +214,12 @@ test('CI signing cleanup runs when the real free build fails', async (t) => {
   }), /real build failed/)
 
   assert.equal(securityCalls.some(([args]) => args[0] === 'delete-keychain'), true)
-  assert.equal(securityCalls.some(([args]) => args[0] === 'list-keychains' && args.includes('-s')), true)
-  assert.equal(securityCalls.some(([args, options]) => (
-    args[0] === 'remove-trusted-cert' && options.privilege === 'admin'
-  )), true)
+  assert.equal(securityCalls.some(([args]) => args[0] === 'list-keychains'), false)
+  assert.equal(securityCalls.some(([args]) => /trusted-cert|delete-certificate/.test(args[0])), false)
   assert.equal(removed.length, 2)
 })
 
-test('CI signing attempts every cleanup action when one cleanup command fails', async (t) => {
+test('CI signing reports keychain deletion failure after attempting directory cleanup', async (t) => {
   const projectRoot = temporaryProject(t)
   const securityCalls = []
   const removed = []
@@ -277,11 +239,11 @@ test('CI signing attempts every cleanup action when one cleanup command fails', 
     certificateSha1: () => sha1Fingerprint,
     runSecurity: (args, commandOptions = {}) => {
       securityCalls.push([args, commandOptions])
-      if (args[0] === 'remove-trusted-cert' && commandOptions.privilege === 'admin') {
-        throw new Error('cleanup trust failed')
-      }
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'delete-keychain') throw new Error('temporary keychain deletion failed')
       return ''
     },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
     runBuild: async ({ outputDirectory }) => {
       fs.mkdirSync(path.join(projectRoot, outputDirectory))
       return { outputDirectory }
@@ -290,10 +252,11 @@ test('CI signing attempts every cleanup action when one cleanup command fails', 
       removed.push(directory)
       fs.rmSync(directory, { recursive: true, force: true })
     },
-  }), /cleanup trust failed/)
+  }), /temporary keychain deletion failed/)
 
-  assert.equal(securityCalls.filter(([args]) => args[0] === 'list-keychains' && args.includes('-s')).length, 2)
+  assert.equal(securityCalls.some(([args]) => args[0] === 'list-keychains'), false)
   assert.equal(securityCalls.some(([args]) => args[0] === 'delete-keychain'), true)
+  assert.equal(securityCalls.some(([args]) => /trusted-cert|delete-certificate/.test(args[0])), false)
   assert.equal(removed.length, 2)
 })
 
@@ -357,6 +320,10 @@ test('runs signing preflight, checks, non-publishing builder, then pinned artifa
   assert.equal(builder.env.XINGMANG_RELEASE, undefined)
   assert.equal(builder.env.CSC_NAME, 'XingMang Free Update Identity')
   assert.equal(builder.env.XINGMANG_MAC_SIGNING_SHA256, fingerprint)
+  assert.equal(builder.env.XINGMANG_MAC_CI_EPHEMERAL_SIGNING, undefined)
+  assert.equal(builder.env.XINGMANG_MAC_SIGNING_SHA1, undefined)
+  assert.equal(builder.env.CSC_KEYCHAIN, undefined)
+  assert.equal(builder.env.CSC_FOR_PULL_REQUEST, undefined)
   assert.equal(builder.env.CSC_IDENTITY_AUTO_DISCOVERY, 'false')
   assert.equal(builder.env.XINGMANG_OUTPUT_DIR, result.outputDirectory)
   assert.equal(calls[5][0], 'artifacts')
@@ -368,6 +335,44 @@ test('runs signing preflight, checks, non-publishing builder, then pinned artifa
     assert.equal(command[1].env.XINGMANG_MAC_FREE_RELEASE, undefined)
     assert.equal(command[1].env.XINGMANG_OUTPUT_DIR, undefined)
   }
+})
+
+test('CI ephemeral signing data reaches only the non-publishing builder process', async (t) => {
+  const calls = []
+  const options = validOptions(t, {
+    skipChecks: true,
+    ephemeralSigning: {
+      identitySha1: sha1Fingerprint,
+      keychainPath: '/private/tmp/xingmang-ci-signing.keychain-db',
+    },
+    verifySigning: (value) => {
+      calls.push(['signing', value])
+      return { identityName: value.identityName, fingerprint }
+    },
+    commandRunner: async (spec) => {
+      calls.push(['command', spec])
+    },
+    verifyArtifacts: async (value) => {
+      calls.push(['artifacts', value])
+      return { outputDirectory: value.outputDirectory }
+    },
+  })
+
+  await runFreeMacBuild(options)
+
+  const signing = calls.find(([kind]) => kind === 'signing')[1]
+  const builder = calls.find(([kind]) => kind === 'command')[1]
+  const artifacts = calls.find(([kind]) => kind === 'artifacts')[1]
+  assert.equal(signing.env.XINGMANG_MAC_CI_EPHEMERAL_SIGNING, undefined)
+  assert.equal(signing.env.XINGMANG_MAC_SIGNING_SHA1, undefined)
+  assert.equal(signing.env.CSC_KEYCHAIN, undefined)
+  assert.equal(builder.env.XINGMANG_MAC_CI_EPHEMERAL_SIGNING, '1')
+  assert.equal(builder.env.XINGMANG_MAC_SIGNING_SHA1, sha1Fingerprint)
+  assert.equal(builder.env.CSC_KEYCHAIN, options.ephemeralSigning.keychainPath)
+  assert.equal(builder.env.CSC_FOR_PULL_REQUEST, 'true')
+  assert.equal(artifacts.env.XINGMANG_MAC_CI_EPHEMERAL_SIGNING, undefined)
+  assert.equal(artifacts.env.XINGMANG_MAC_SIGNING_SHA1, undefined)
+  assert.equal(artifacts.env.CSC_KEYCHAIN, undefined)
 })
 
 test('fails before work for unsupported platform, conflicts, invalid identity data, or unsafe output', (t) => {
@@ -514,9 +519,12 @@ test('does not forward release secrets or permit a shell/publishing override', a
     CSC_INSTALLER_KEY_PASSWORD: 'do-not-forward',
     CSC_INSTALLER_LINK: 'do-not-forward',
     CSC_KEY_PASSWORD: 'do-not-forward',
+    CSC_FOR_PULL_REQUEST: 'do-not-forward',
     CSC_LINK: '/private/signing.p12',
     WIN_CSC_KEY_PASSWORD: 'do-not-forward',
     WIN_CSC_LINK: 'do-not-forward',
+    XINGMANG_MAC_CI_EPHEMERAL_SIGNING: '1',
+    XINGMANG_MAC_SIGNING_SHA1: 'do-not-forward',
     XINGMANG_MAC_SIGNING_P12_PASSWORD: 'do-not-forward',
   }
   await runFreeMacBuild(validOptions(t, {
