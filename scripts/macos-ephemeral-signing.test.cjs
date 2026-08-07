@@ -100,6 +100,7 @@ test('the private-key probe signs by fingerprint and performs strict structural 
   const probePath = path.join(root, 'private-key-probe')
   fs.writeFileSync(sourceBinary, 'mach-o fixture')
   const calls = []
+  const listings = []
   const env = { PATH: '/usr/bin:/bin' }
 
   const result = verifyEphemeralMacSigningIdentity({
@@ -110,8 +111,16 @@ test('the private-key probe signs by fingerprint and performs strict structural 
     probePath,
     env,
     commandRunner: (spec) => calls.push(spec),
+    listIdentities: (spec) => {
+      listings.push(spec)
+      return `  1) ${identitySha1} "XingMang CI Free Update Identity"\n     1 valid identities found\n`
+    },
+    report: () => {},
   })
 
+  assert.deepEqual(listings.map((spec) => [spec.executable, spec.argv]), [
+    ['/usr/bin/security', ['find-identity', '-v', '-p', 'codesigning', keychainPath]],
+  ])
   assert.equal(result.identitySha1, identitySha1)
   assert.equal(fs.readFileSync(probePath, 'utf8'), 'mach-o fixture')
   assert.notEqual(fs.statSync(probePath).mode & 0o111, 0)
@@ -149,8 +158,30 @@ test('the private-key probe rejects unsupported or unpinned inputs before copyin
       sourceBinary,
       probePath,
       commandRunner: () => {},
+      listIdentities: () => assert.fail('inputs must be validated before the keychain is queried'),
+      report: () => {},
       ...overrides,
     }), /macOS|SHA-1|absolute/i)
   }
+  assert.equal(fs.existsSync(probePath), false)
+})
+
+test('the private-key probe fails before signing when the keychain exposes no matching identity', (t) => {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-signing-probe-test-')))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const sourceBinary = path.join(root, 'source-binary')
+  const probePath = path.join(root, 'private-key-probe')
+  fs.writeFileSync(sourceBinary, 'mach-o fixture')
+
+  assert.throws(() => verifyEphemeralMacSigningIdentity({
+    platform: 'darwin',
+    identitySha1,
+    keychainPath,
+    sourceBinary,
+    probePath,
+    commandRunner: () => assert.fail('codesign must not run without a resolvable identity'),
+    listIdentities: () => '     0 valid identities found\n',
+    report: () => {},
+  }), new RegExp(`${identitySha1} is not a valid codesigning identity`))
   assert.equal(fs.existsSync(probePath), false)
 })

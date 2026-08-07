@@ -14,6 +14,11 @@ import { ProviderExtensionService } from './provider-extensions'
 
 const cleanup: string[] = []
 
+/** Encode a path the way it appears inside a JSON document. */
+function jsonFragment(value: string): string {
+  return JSON.stringify(value).slice(1, -1)
+}
+
 function createCodexSessionDatabase(
   databasePath: string,
   values: { id: string; rolloutPath: string },
@@ -198,8 +203,10 @@ it('routes every Codex-owned surface to one custom root and leaves all sentinels
   expect(diagnostics.items.find((item) => item.code === 'CODEX_DOTENV')?.state).toBe('warn')
   diagnostics.items[0].details = { customCodexPath: path.join(codexHome, 'logs', 'probe.txt') }
   const diagnosticsExport = createDiagnosticsExport(diagnostics, options.diagnosticExport)
-  expect(diagnosticsExport).toContain(path.join('[CODEX_HOME]', 'logs', 'probe.txt'))
-  expect(diagnosticsExport).not.toContain(codexHome)
+  // The export is JSON, so Windows separators appear escaped. Compare against the
+  // encoded fragment; on POSIX this is the plain path.
+  expect(diagnosticsExport).toContain(jsonFragment(path.join('[CODEX_HOME]', 'logs', 'probe.txt')))
+  expect(diagnosticsExport).not.toContain(jsonFragment(codexHome))
   expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
   for (const sentinel of sentinels) {
     expect(fs.readFileSync(sentinel, 'utf8')).toBe('do-not-move')

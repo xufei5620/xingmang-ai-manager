@@ -1804,7 +1804,7 @@ export function createSystemService(
     baseEnv: NodeJS.ProcessEnv = process.env,
   ): Promise<string | null> {
     try {
-      const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
+      const trustedOnly = platform === 'win32' && windowsExecutionMode === 'trusted-only'
       if (trustedOnly && !isTrustedHighIntegrityExecutable(executable)) return null
       const result = await executeCommand({ executable, argv: args, windowsPackageManager }, {
         env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv),

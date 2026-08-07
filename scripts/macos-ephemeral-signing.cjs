@@ -3,6 +3,7 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
 const CODESIGN_PATH = '/usr/bin/codesign'
+const SECURITY_PATH = '/usr/bin/security'
 const DEFAULT_PROBE_BINARY = '/usr/bin/true'
 const COMMAND_TIMEOUT_MS = 30_000
 const DEFAULT_RETRY_OPTIONS = { retries: 3, interval: 5_000, backoff: 5_000 }
@@ -23,7 +24,7 @@ function requireAbsolutePath(value, label) {
   return path.resolve(input)
 }
 
-function defaultCommandRunner(spec) {
+function runCapturing(spec) {
   const result = spawnSync(spec.executable, spec.argv, {
     encoding: 'utf8',
     env: spec.env,
@@ -35,6 +36,17 @@ function defaultCommandRunner(spec) {
   if (result.status !== 0) {
     throw new Error(`${spec.label} failed: ${result.stderr?.trim() || 'unknown error'}`)
   }
+  return result.stdout || ''
+}
+
+function defaultCommandRunner(spec) {
+  runCapturing(spec)
+}
+
+/** Lists the codesigning identities the isolated keychain actually exposes.
+ * Only public certificate labels and fingerprints are printed. */
+function defaultIdentityLister(spec) {
+  return runCapturing(spec)
 }
 
 async function retrySigning(task, options, wait) {
@@ -62,7 +74,26 @@ function verifyEphemeralMacSigningIdentity(options = {}) {
   )
   const probePath = requireAbsolutePath(options.probePath, 'signing probe output')
   const commandRunner = options.commandRunner || defaultCommandRunner
+  const identityLister = options.listIdentities || defaultIdentityLister
+  const report = options.report || ((message) => process.stdout.write(`${message}\n`))
   const env = options.env || process.env
+
+  // codesign only reports a generic "item could not be found" when the identity
+  // lookup fails, so resolve the identity first and report what the isolated
+  // keychain really holds.
+  const identities = identityLister({
+    executable: SECURITY_PATH,
+    argv: ['find-identity', '-v', '-p', 'codesigning', keychainPath],
+    env,
+    label: 'ephemeral keychain codesigning identity listing',
+    shell: false,
+  })
+  report(`[macOS CI signing] isolated keychain codesigning identities:\n${identities.trim() || '(none)'}`)
+  if (!identities.toUpperCase().includes(identitySha1)) {
+    throw new Error(
+      `ephemeral signing identity ${identitySha1} is not a valid codesigning identity in ${keychainPath}`,
+    )
+  }
 
   fs.copyFileSync(sourceBinary, probePath, fs.constants.COPYFILE_EXCL)
   fs.chmodSync(probePath, 0o755)
