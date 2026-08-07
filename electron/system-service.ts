@@ -8,6 +8,10 @@ import { promisify } from 'node:util'
 import { type AppSettings, AppSettingsStore } from './app-settings'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
+  defaultProviderConfigRoots,
+  type ProviderConfigRoots,
+} from './codex-home'
+import {
   cleanCommandOutput,
   commandEnvironment,
   findExecutable,
@@ -78,7 +82,16 @@ import { managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths
 import { fetchGrokStableVersion } from './grok-update'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
+import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
+import {
+  inspectDarwinGrokVerifiedSelection,
+  resolveDarwinGrokCanonicalSelection,
+  runDarwinGrokPostInstallTransaction,
+  verifyDarwinGrokUninstallPlan,
+} from './macos-grok'
+import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
+import { sameLocalPathIdentity } from './path-identity'
 import {
   cleanupDownloadedGrokBinary,
   downloadLatestGrokBinary,
@@ -209,6 +222,19 @@ export function interactiveTerminalEnvironment(
   return env
 }
 
+/** Keeps service-level macOS launching bound to the command already verified by CLI resolution. */
+export function buildDarwinCliLaunchPlan(
+  command: { executable: string; argv: readonly string[] },
+  workspace: string,
+  env: NodeJS.ProcessEnv,
+): MacosTerminalLaunchPlan {
+  if (!path.isAbsolute(command.executable)) {
+    throw new Error('macOS CLI executable must be an absolute resolved path')
+  }
+  if (!path.isAbsolute(workspace)) throw new Error('macOS workspace must be an absolute path')
+  return { executable: command.executable, argv: [...command.argv], workspace, env }
+}
+
 export interface CodexDesktopLaunchPlan {
   executable: string
   args: string[]
@@ -289,11 +315,21 @@ export interface CodexDesktopInstallResult {
   installedVersion: string | null
 }
 
-export interface ToolUninstallResult {
-  /** delegated：已交给以登录用户身份运行的窗口执行，结果需用户完成后刷新确认。 */
-  outcome: 'uninstalled' | 'not-installed' | 'delegated'
-  previousVersion: string | null
-}
+export type ToolUninstallResult =
+  | {
+      /** delegated：已交给以登录用户身份运行的窗口执行，结果需用户完成后刷新确认。 */
+      outcome: 'uninstalled' | 'not-installed' | 'delegated'
+      previousVersion: string | null
+    }
+  | {
+      outcome: 'manual-required'
+      previousVersion: string | null
+      error: string
+      manualHelp: {
+        reason: string
+        manualCommand: null
+      }
+    }
 
 export interface CodexDesktopPackageSource {
   label: string
@@ -667,6 +703,127 @@ export interface RendererMessageTarget {
 
 export type CodexDesktopLaunchMode = 'open' | 'restart'
 
+export interface UninstallVerifiedDarwinGrokInstallationOptions {
+  homeDirectory: string
+  installDirectory: string
+  runCommand: (
+    spec: { executable: string; argv: readonly string[] },
+  ) => Promise<{ stdout: string; stderr: string }>
+}
+
+export interface InspectVerifiedDarwinGrokPostInstallOptions {
+  homeDirectory: string
+  expectedVersion: string
+  runCommand: (
+    spec: { executable: string; argv: readonly string[] },
+  ) => Promise<{ stdout: string; stderr: string }>
+}
+
+/** Verifies and inspects only a private staged copy, then describes the bound canonical install. */
+export async function inspectVerifiedDarwinGrokPostInstall(
+  options: InspectVerifiedDarwinGrokPostInstallOptions,
+): Promise<{ status: ToolStatus; installation: CliInstallation }> {
+  const selection = resolveDarwinGrokCanonicalSelection(options.homeDirectory)
+  return inspectDarwinGrokVerifiedSelection({
+    homeDirectory: options.homeDirectory,
+    selection,
+    expectedVersion: options.expectedVersion,
+    runCommand: options.runCommand,
+    inspect: async (executablePath) => {
+      const stats = await fs.promises.lstat(executablePath)
+      if (
+        !path.isAbsolute(executablePath)
+        || executablePath === selection.executablePath
+        || !stats.isFile()
+        || stats.isSymbolicLink()
+        || (stats.mode & 0o111) === 0
+      ) {
+        throw new Error('Grok postinstall inspection requires a private staged executable')
+      }
+      const installDirectory = fs.realpathSync(path.dirname(selection.canonicalLinkPath))
+      return {
+        status: {
+          installed: true,
+          version: options.expectedVersion,
+          path: selection.executablePath,
+          installDirectory,
+        },
+        installation: {
+          commandPath: selection.canonicalLinkPath,
+          installDirectory,
+          packageRoot: null,
+          npmPrefix: null,
+          packageVersion: null,
+          source: 'native',
+        },
+      }
+    },
+  })
+}
+
+/** Verifies the official link layout, then removes only the exact planned links. */
+export async function uninstallVerifiedDarwinGrokInstallation(
+  options: UninstallVerifiedDarwinGrokInstallationOptions,
+) {
+  const plan = await verifyDarwinGrokUninstallPlan({
+    homeDirectory: options.homeDirectory,
+    runCommand: options.runCommand,
+  })
+  if (!plan.expectedSymbolicLinks.grok || !plan.expectedSymbolicLinks.agent) {
+    throw new Error('Grok automatic uninstall requires both grok and agent verified symbolic links; use the official manual uninstall instructions')
+  }
+  const result = await uninstallVerifiedNativeCliFiles({
+    actualDirectory: options.installDirectory,
+    expectedDirectory: plan.directory,
+    expectedDirectoryIdentity: plan.directoryIdentity,
+    fileNames: ['grok', 'agent'],
+    label: 'Grok CLI',
+    platform: 'darwin',
+    expectedSymbolicLinks: plan.expectedSymbolicLinks,
+    expectedSymbolicLinkIdentities: plan.expectedSymbolicLinkIdentities,
+    expectedSymbolicLinkRootDirectory: plan.rootDirectory,
+    expectedSymbolicLinkRootDirectoryIdentity: plan.rootDirectoryIdentity,
+    expectedResolvedSymbolicLinkTargets: plan.expectedResolvedSymbolicLinkTargets,
+    expectedOwnerUid: plan.expectedOwnerUid,
+    removeDirectoryWhenEmpty: false,
+  })
+  const retainedProgramPaths = [...new Set([
+    ...result.retainedQuarantineFiles,
+    ...Object.values(plan.expectedResolvedSymbolicLinkTargets)
+      .map((target) => target.path)
+      .filter((filePath) => fs.existsSync(filePath)),
+  ])]
+  if (retainedProgramPaths.length > 0) {
+    const displayedPaths = retainedProgramPaths.map((filePath) => (
+      `~/.grok/${path.relative(plan.rootDirectory, filePath)}`
+    ))
+    throw new Error([
+      'Grok CLI 命令入口已移除，但自动卸载未完整完成。',
+      '为避免按路径删除时误删被替换的文件，以下程序路径仍保留，请人工确认后删除：',
+      displayedPaths.join('；'),
+    ].join(''))
+  }
+  return result
+}
+
+export function grokManualUninstallResult(
+  previousVersion: string | null,
+  error: unknown,
+): Extract<ToolUninstallResult, { outcome: 'manual-required' }> {
+  const raw = error instanceof Error ? error.message : String(error)
+  const message = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500)
+    || 'Grok CLI 自动卸载安全验证失败'
+  return {
+    outcome: 'manual-required',
+    previousVersion,
+    error: message,
+    manualHelp: {
+      reason: `自动卸载安全验证失败：${message}`,
+      manualCommand: null,
+    },
+  }
+}
+
 export interface SystemService {
   readStoredConfig(): AppSettings
   writeStoredConfig(config: AppSettings): Promise<void>
@@ -750,6 +907,16 @@ export async function readGrokLocalVersionForExecutable(
   options: GrokLocalVersionOptions = {},
 ): Promise<string | null> {
   const platform = options.platform ?? process.platform
+  if (platform === 'darwin') {
+    try {
+      return resolveDarwinGrokCanonicalSelection(
+        options.homeDirectory ?? os.homedir(),
+        executablePath,
+      ).version
+    } catch {
+      return null
+    }
+  }
   const executableDirectory = path.dirname(executablePath)
   const candidates = new Set<string>([
     // The managed installer writes metadata beside grok.exe. Keep this first so
@@ -1069,6 +1236,51 @@ export function assertNpmReleaseIntegrityMatches(
   }
 }
 
+/** Binds registry metadata to the exact direct package record npm resolved from the official registry. */
+export function assertNpmReleaseMatchesOfficialLock(
+  trustedRelease: NpmPackageReleaseMetadata,
+  officialLock: string,
+): void {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(officialLock) as unknown
+  } catch {
+    throw new Error('npm 官方 package-lock.json 不是有效 JSON')
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('npm 官方 package-lock.json 根结构无效')
+  }
+  const packages = (parsed as Record<string, unknown>).packages
+  if (!packages || typeof packages !== 'object' || Array.isArray(packages)) {
+    throw new Error('npm 官方 package-lock.json 缺少 packages 图')
+  }
+  const packageEntries = packages as Record<string, unknown>
+  const root = packageEntries['']
+  const rootDependencies = root && typeof root === 'object' && !Array.isArray(root)
+    ? (root as Record<string, unknown>).dependencies
+    : null
+  const directVersion = rootDependencies && typeof rootDependencies === 'object' && !Array.isArray(rootDependencies)
+    ? (rootDependencies as Record<string, unknown>)[trustedRelease.name]
+    : null
+  const directLocation = `node_modules/${trustedRelease.name}`
+  const directEntry = packageEntries[directLocation]
+  if (
+    directVersion !== trustedRelease.version
+    || !directEntry
+    || typeof directEntry !== 'object'
+    || Array.isArray(directEntry)
+  ) {
+    throw new Error('npm 官方 package-lock.json 的目标直依赖身份或版本与发布元数据不一致')
+  }
+  const record = directEntry as Record<string, unknown>
+  if (
+    record.version !== trustedRelease.version
+    || record.integrity !== trustedRelease.integrity
+  ) {
+    throw new Error('npm 官方 package-lock.json 的目标直依赖版本或 SHA-512 与发布元数据不一致')
+  }
+}
+
 function canonicalNpmPackageLock(
   input: string,
   packageName: string,
@@ -1227,19 +1439,81 @@ export interface CliMaintenancePlan {
   windowsPackageManager: 'npm'
 }
 
+export type GrokInstallStrategy = 'windows-native' | 'darwin-official-npm' | 'external'
+
+export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallStrategy {
+  if (platform === 'win32') return 'windows-native'
+  if (platform === 'darwin') return 'darwin-official-npm'
+  return 'external'
+}
+
+export interface CliInstallReleaseOptions {
+  fetchGrokStableVersion: () => Promise<{ version: string }>
+  fetchNpmRelease: (
+    registry: string,
+    packageName: string,
+    version: string | 'latest',
+  ) => Promise<NpmPackageReleaseMetadata>
+}
+
+/** Selects the authoritative release before generating an npm dependency lock. */
+export async function resolveCliInstallRelease(
+  provider: ProviderId,
+  grokStrategy: GrokInstallStrategy | null,
+  options: CliInstallReleaseOptions = {
+    fetchGrokStableVersion,
+    fetchNpmRelease: fetchNpmPackageReleaseMetadata,
+  },
+): Promise<NpmPackageReleaseMetadata> {
+  if (provider !== 'grok' || grokStrategy !== 'darwin-official-npm') {
+    return options.fetchNpmRelease(npmOfficialRegistry, cliCatalog[provider].packageName, 'latest')
+  }
+  const stable = await options.fetchGrokStableVersion()
+  const release = await options.fetchNpmRelease(
+    npmOfficialRegistry,
+    cliCatalog.grok.packageName,
+    stable.version,
+  )
+  if (release.version !== stable.version) {
+    throw new Error('Grok npm 发布版本与 xAI 官方稳定版本不一致')
+  }
+  return release
+}
+
 export function buildCliMaintenancePlan(
   provider: ProviderId,
   npmExecutable: string | null,
   npmPrefix: string | null = null,
   version = 'latest',
   verifiedLifecycleScripts = false,
+  platform: NodeJS.Platform = process.platform,
 ): CliMaintenancePlan {
   if (provider === 'grok') {
-    throw new Error('Grok CLI 必须使用 xAI 已签名二进制安装器')
+    const strategy = grokInstallStrategyFor(platform)
+    if (strategy === 'windows-native') {
+      throw new Error('Grok CLI 必须使用 xAI 已签名二进制安装器')
+    }
+    if (strategy === 'external') {
+      throw new Error('当前平台不支持 Grok CLI 一键安装')
+    }
+    if (!verifiedLifecycleScripts) {
+      throw new Error('Grok CLI 生命周期脚本必须先通过完整性校验')
+    }
   }
   if (!npmExecutable) throw new Error('未检测到 npm，请先安装 Node.js')
+  if (platform === 'darwin' && provider !== 'grok' && !npmPrefix) {
+    throw new Error('macOS 用户级 npm 前缀不能为空')
+  }
   if (version !== 'latest' && !semanticVersionPattern.test(version)) {
     throw new Error('npm CLI 版本号格式无效')
+  }
+  if (provider === 'grok') {
+    return {
+      kind: 'npm-install',
+      executable: npmExecutable,
+      argv: ['ci', '--omit=dev'],
+      windowsPackageManager: 'npm',
+    }
   }
   return {
     kind: 'npm-install',
@@ -1422,6 +1696,22 @@ function desktopUpdateFields(
 export interface SystemServiceOptions {
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
+  platform?: NodeJS.Platform
+  providerRoots?: ProviderConfigRoots
+  codexEnv?: NodeJS.ProcessEnv
+  inspectProviderConfig?: typeof inspectProviderConfig
+  resolveCliCommand?: typeof resolveCliCommand
+  resolveCliInstallation?: typeof resolveCliInstallation
+  runCommand?: typeof runCommand
+  macosCodexAppDetector?: typeof inspectMacosCodexApp
+}
+
+export function providerCommandEnvironment(
+  provider: ProviderId,
+  processEnv: NodeJS.ProcessEnv,
+  codexEnv: NodeJS.ProcessEnv,
+): NodeJS.ProcessEnv {
+  return commandEnvironment(provider === 'codex' ? codexEnv : processEnv)
 }
 
 export function createSystemService(
@@ -1429,6 +1719,18 @@ export function createSystemService(
   serviceOptions: SystemServiceOptions = {},
 ): SystemService {
   const windowsExecutionMode = serviceOptions.windowsExecutionMode ?? 'trusted-only'
+  const platform = serviceOptions.platform ?? process.platform
+  const providerRoots = serviceOptions.providerRoots ?? defaultProviderConfigRoots()
+  const codexEnv = serviceOptions.codexEnv
+    ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
+  const inspectNativeProviderConfig = (provider: ProviderId) =>
+    (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(provider, providerRoots)
+  const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
+    providerCommandEnvironment(provider, process.env, codexEnv)
+  const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
+  const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
+  const executeCommand = serviceOptions.runCommand ?? runCommand
+  const detectMacosCodexApp = serviceOptions.macosCodexAppDetector ?? inspectMacosCodexApp
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
   let nodeRuntimeInstalling = false
@@ -1452,6 +1754,13 @@ export function createSystemService(
     label: string,
     options: { baseDirectory?: string } = {},
   ): Promise<string> {
+    if (options.baseDirectory) {
+      return createTrustedTemporaryDirectory(label, {
+        platform,
+        env: commandEnvironment(),
+        baseDirectory: options.baseDirectory,
+      })
+    }
     if (process.platform === 'win32' && windowsExecutionMode === 'trusted-only') {
       return createTrustedTemporaryDirectory(label, options)
     }
@@ -1492,12 +1801,13 @@ export function createSystemService(
     executable: string,
     args: string[],
     windowsPackageManager?: WindowsPackageManager,
+    baseEnv: NodeJS.ProcessEnv = process.env,
   ): Promise<string | null> {
     try {
       const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
       if (trustedOnly && !isTrustedHighIntegrityExecutable(executable)) return null
-      const result = await runCommand({ executable, argv: args, windowsPackageManager }, {
-        env: trustedOnly ? trustedCommandEnvironment() : commandEnvironment(),
+      const result = await executeCommand({ executable, argv: args, windowsPackageManager }, {
+        env: trustedOnly ? trustedCommandEnvironment(baseEnv) : commandEnvironment(baseEnv),
         trustedOnly,
         timeoutMs: 8_000,
         maxOutputBytes: 1024 * 1024,
@@ -1545,11 +1855,13 @@ export function createSystemService(
     npmGlobalRoot?: string | null,
     executablePath?: string | null,
   ): Promise<{ status: ToolStatus; installation: CliInstallation | null }> {
-    const installation = await resolveCliInstallation(provider, {
-      env: commandEnvironment(),
+    const cliEnvironment = providerEnvironment(provider)
+    const installation = await resolveCliInstallationForService(provider, {
+      env: cliEnvironment,
       executablePath,
       npmExecutable,
       npmGlobalRoot,
+      platform,
     })
     if (
       !installation
@@ -1562,21 +1874,27 @@ export function createSystemService(
       }
     }
     const safeNativeCommand = installation.source === 'native' && provider !== 'grok'
-      ? await resolveCliCommand(provider, commandEnvironment(), windowsExecutionMode).catch(() => null)
+      ? await resolveVerifiedCliCommand(provider, cliEnvironment, windowsExecutionMode, {
+          darwinStagingRetention: 'ephemeral',
+        }).catch(() => null)
       : null
-    let version = installation.source === 'npm'
-      ? installation.packageVersion ?? null
-      : safeNativeCommand
-        ? await executeVersion(
-            safeNativeCommand.executable,
-            [...safeNativeCommand.argv, ...cliCatalog[provider].versionArgs],
-          )
-        : null
-    if (provider === 'grok') {
-      version = await readGrokLocalVersionForExecutable(installation.commandPath)
-    }
-    return {
-      status: {
+    try {
+      let version = installation.source === 'npm'
+        ? installation.packageVersion ?? null
+        : platform === 'darwin' && provider === 'codex' && safeNativeCommand?.verifiedDarwinStandalone
+          ? safeNativeCommand.verifiedDarwinStandalone.version
+          : safeNativeCommand
+            ? await executeVersion(
+                safeNativeCommand.executable,
+                [...safeNativeCommand.argv, ...cliCatalog[provider].versionArgs],
+                undefined,
+                cliEnvironment,
+              )
+            : null
+      if (provider === 'grok') {
+        version = await readGrokLocalVersionForExecutable(installation.commandPath)
+      }
+      return { status: {
         installed: true,
         // Reading an npm package manifest avoids unnecessary CLI execution and
         // remains safe even when the app was manually started as administrator.
@@ -1584,7 +1902,9 @@ export function createSystemService(
         path: installation.source === 'native'
           ? provider === 'grok'
             ? installation.commandPath
-            : safeNativeCommand?.executable ?? null
+            : platform === 'darwin' && safeNativeCommand?.verifiedDarwinStandalone
+              ? safeNativeCommand.verifiedDarwinStandalone.executablePath
+              : safeNativeCommand?.executable ?? null
           : installation.commandPath,
         installDirectory: installation.installDirectory,
         uninstall: cliUninstallCapability(provider, installation, {
@@ -1598,12 +1918,14 @@ export function createSystemService(
           managedNativeDirectory: process.platform === 'win32' && provider === 'grok'
             ? managedNativeProviderRoot('grok')
             : null,
-          homeDirectory: os.homedir(),
-          platform: process.platform,
+          homeDirectory: cliEnvironment.HOME?.trim() || os.homedir(),
+          platform,
+          verifiedDarwinStandalone: safeNativeCommand?.verifiedDarwinStandalone ?? null,
           windowsExecutionMode,
         }),
-      },
-      installation,
+      }, installation }
+    } finally {
+      await safeNativeCommand?.release?.()
     }
   }
 
@@ -1843,7 +2165,27 @@ export function createSystemService(
   }
 
   async function inspectCodexDesktop(): Promise<DesktopAppStatus> {
-    if (process.platform !== 'win32') {
+    if (platform === 'darwin') {
+      let app: MacosCodexAppInfo | null = null
+      try {
+        app = await detectMacosCodexApp()
+      } catch {
+        // A local application inspection failure must not block the system scan.
+      }
+      return {
+        installed: app !== null,
+        version: app?.version ?? null,
+        appVersion: app?.version ?? null,
+        mirrorVersion: null,
+        mirrorUpdateAvailable: null,
+        mirrorError: null,
+        path: app?.path ?? null,
+        installDirectory: app?.path ?? null,
+        running: app?.running ?? false,
+        ...desktopUpdateFields('skipped', null, null),
+      }
+    }
+    if (platform !== 'win32') {
       return {
         installed: false,
         version: null,
@@ -1854,7 +2196,11 @@ export function createSystemService(
         path: null,
         installDirectory: null,
         running: false,
-        ...desktopUpdateFields('skipped', 'Codex Desktop 版本检测仅支持 Windows', null),
+        ...desktopUpdateFields(
+          'skipped',
+          'Codex Desktop 版本检测仅支持 Windows',
+          null,
+        ),
       }
     }
     const [match, processes, packageProbe, mirrorProbe] = await Promise.all([
@@ -2238,6 +2584,7 @@ export function createSystemService(
   }
 
   async function installCliOperation(provider: ProviderId, target: RendererMessageTarget): Promise<void> {
+    const grokInstallStrategy = provider === 'grok' ? grokInstallStrategyFor(platform) : null
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装中`)
     installing.add(provider)
     const definition = cliCatalog[provider]
@@ -2247,75 +2594,80 @@ export function createSystemService(
     let preserveManagedNpmTransaction = false
     try {
       if (provider === 'grok') {
-        if (process.platform !== 'win32') throw new Error('Grok CLI 一键安装目前仅支持 Windows')
-        const sameUserInstall = windowsExecutionMode === 'same-user'
-        const installedBefore = await findInstalledExecutable(definition.command)
-        sendInstallProgress(
-          target,
-          provider,
-          'started',
-          `正在从 xAI 官方下载并验证已签名的 Grok CLI ${installedBefore ? '更新' : '安装'}包`,
-        )
-        let lastReportedBucket = -1
-        downloadedGrokBinary = await downloadLatestGrokBinary({
-          createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
-          onProgress: ({ percent, transferred, total }) => {
-            const bucket = Math.floor(percent / 5)
-            if (bucket === lastReportedBucket && percent !== 100) return
-            lastReportedBucket = bucket
-            sendInstallProgress(
-              target,
-              provider,
-              'output',
-              `Grok CLI 下载 ${percent}%（${Math.floor(transferred / 1024 / 1024)} / ${Math.floor(total / 1024 / 1024)} MiB）`,
-            )
-          },
-        })
-        sendInstallProgress(
-          target,
-          provider,
-          'output',
-          `xAI 签名与文件校验通过（${downloadedGrokBinary.version}，SHA-256 ${downloadedGrokBinary.sha256Hex.slice(0, 16)}…）`,
-        )
-        const installed = await installDownloadedGrokBinary(downloadedGrokBinary, sameUserInstall
-          ? {
-              managedRoot: path.join(os.homedir(), '.grok', 'bin'),
-              protectInstallDirectory: false,
-            }
-          : {})
-        invalidateCliUpdateCache(provider)
-        const verification = await inspectCliTool(provider, null, null, installed.executablePath)
-        if (
-          !verification.installation
-          || !verification.status.version
-          || verification.status.version !== installed.version
-          || path.resolve(verification.installation.commandPath) !== path.resolve(installed.executablePath)
-        ) {
-          throw new Error('Grok CLI 安装后验证失败：未识别到托管可执行文件或版本不一致')
+        if (grokInstallStrategy === 'external') {
+          throw new Error('当前平台不支持 Grok CLI 一键安装')
         }
-        sendInstallProgress(
-          target,
-          provider,
-          'success',
-          `${definition.name} ${installedBefore ? '更新' : '安装'}完成（${installed.version}）`,
-        )
-        return
+        if (grokInstallStrategy === 'windows-native') {
+          const sameUserInstall = windowsExecutionMode === 'same-user'
+          const installedBefore = await findInstalledExecutable(definition.command)
+          sendInstallProgress(
+            target,
+            provider,
+            'started',
+            `正在从 xAI 官方下载并验证已签名的 Grok CLI ${installedBefore ? '更新' : '安装'}包`,
+          )
+          let lastReportedBucket = -1
+          downloadedGrokBinary = await downloadLatestGrokBinary({
+            createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
+            onProgress: ({ percent, transferred, total }) => {
+              const bucket = Math.floor(percent / 5)
+              if (bucket === lastReportedBucket && percent !== 100) return
+              lastReportedBucket = bucket
+              sendInstallProgress(
+                target,
+                provider,
+                'output',
+                `Grok CLI 下载 ${percent}%（${Math.floor(transferred / 1024 / 1024)} / ${Math.floor(total / 1024 / 1024)} MiB）`,
+              )
+            },
+          })
+          sendInstallProgress(
+            target,
+            provider,
+            'output',
+            `xAI 签名与文件校验通过（${downloadedGrokBinary.version}，SHA-256 ${downloadedGrokBinary.sha256Hex.slice(0, 16)}…）`,
+          )
+          const installed = await installDownloadedGrokBinary(downloadedGrokBinary, sameUserInstall
+            ? {
+                managedRoot: path.join(os.homedir(), '.grok', 'bin'),
+                protectInstallDirectory: false,
+              }
+            : {})
+          invalidateCliUpdateCache(provider)
+          const verification = await inspectCliTool(provider, null, null, installed.executablePath)
+          if (
+            !verification.installation
+            || !verification.status.version
+            || verification.status.version !== installed.version
+            || path.resolve(verification.installation.commandPath) !== path.resolve(installed.executablePath)
+          ) {
+            throw new Error('Grok CLI 安装后验证失败：未识别到托管可执行文件或版本不一致')
+          }
+          sendInstallProgress(
+            target,
+            provider,
+            'success',
+            `${definition.name} ${installedBefore ? '更新' : '安装'}完成（${installed.version}）`,
+          )
+          return
+        }
       }
 
       const npmExecutable = await findNpmForCliInstall(provider, target)
       let installPrefix: string | null = null
       if (process.platform === 'win32' && windowsExecutionMode === 'trusted-only') {
         managedNpmLayout = await ensureManagedNpmLayout()
+      } else if (platform === 'darwin' && provider !== 'grok') {
+        managedNpmLayout = await ensureManagedNpmLayout({
+          platform: 'darwin',
+          env: commandEnvironment(),
+        })
       }
       managedNpmTransaction = await createInstallTemporaryDirectory('npm-transaction', {
         ...(managedNpmLayout ? { baseDirectory: managedNpmLayout.cacheRoot } : {}),
       })
       sendInstallProgress(target, provider, 'output', '正在从 npm 官方源校验最新版本和 SHA-512 完整性元数据')
-      const trustedRelease = await fetchNpmPackageReleaseMetadata(
-        npmOfficialRegistry,
-        definition.packageName,
-        'latest',
-      )
+      const trustedRelease = await resolveCliInstallRelease(provider, grokInstallStrategy)
       if (!npmExecutable) throw new Error('未检测到 npm，请先安装 Node.js')
       const networkRegion = await inspectNetworkRegion()
       const action = networkRegion === 'mainland-china'
@@ -2335,7 +2687,7 @@ export function createSystemService(
         // 「位于用户可写目录」而拒绝。npm 自己会建缓存目录，但那发生在校验之后。
         await fs.promises.mkdir(cache, { recursive: true })
         const trustedOnly = process.platform === 'win32' && windowsExecutionMode === 'trusted-only'
-        return runCommand({
+        return executeCommand({
           executable: npmExecutable,
           argv: [
             ...argv,
@@ -2391,9 +2743,11 @@ export function createSystemService(
         maximumNpmPackageLockBytes,
         'npm 官方 package-lock.json',
       )
+      assertNpmReleaseMatchesOfficialLock(trustedRelease, officialLock)
       const registries = npmInstallRegistries(networkRegion)
       const installErrors: string[] = []
       let installed = false
+      let verification: Awaited<ReturnType<typeof inspectCliTool>> | null = null
       for (const [index, registry] of registries.entries()) {
         if (index > 0) {
           sendInstallProgress(
@@ -2455,12 +2809,36 @@ export function createSystemService(
             attemptPrefix,
             trustedRelease.version,
             true,
+            platform,
           )
-          await executeNpm([
+          const lifecycle = () => executeNpm([
             ...plan.argv,
             '--offline',
             `--registry=${registry}`,
-          ], resolution, cache)
+          ], resolution, cache).then(() => undefined)
+          if (provider === 'grok' && grokInstallStrategy === 'darwin-official-npm') {
+            verification = await runDarwinGrokPostInstallTransaction({
+              homeDirectory: os.homedir(),
+              lifecycle,
+              verify: async () => {
+                const inspected = await inspectVerifiedDarwinGrokPostInstall({
+                  homeDirectory: os.homedir(),
+                  expectedVersion: trustedRelease.version,
+                  runCommand: (spec) => executeCommand(spec, {
+                    env: commandEnvironment(),
+                    timeoutMs: 8_000,
+                    maxOutputBytes: 1024 * 1024,
+                  }),
+                })
+                if (!inspected.installation || inspected.status.version !== trustedRelease.version) {
+                  throw new Error(`${definition.name} 安装后服务验证失败，已恢复更新前版本`)
+                }
+                return inspected
+              },
+            })
+          } else {
+            await lifecycle()
+          }
           installPrefix = attemptPrefix
           installed = true
           break
@@ -2476,7 +2854,12 @@ export function createSystemService(
       }
       invalidateCliUpdateCache(provider)
       const stagedManifest = installPrefix
-        ? path.join(installPrefix, 'node_modules', ...definition.packageName.split('/'), 'package.json')
+        ? path.join(
+            installPrefix,
+            ...(platform === 'darwin' ? ['lib', 'node_modules'] : ['node_modules']),
+            ...definition.packageName.split('/'),
+            'package.json',
+          )
         : null
       if (stagedManifest) {
         const stagedVersion = await readPackageManifestVersion(
@@ -2488,7 +2871,6 @@ export function createSystemService(
         }
       }
 
-      let verification: Awaited<ReturnType<typeof inspectCliTool>> | null = null
       if (managedNpmLayout && managedNpmTransaction && installPrefix) {
         await replaceManagedNpmPrefixAtomically(
           managedNpmLayout.prefix,
@@ -2499,7 +2881,10 @@ export function createSystemService(
             const promoted = await inspectCliTool(
               provider,
               npmExecutable,
-              path.join(managedNpmLayout!.prefix, 'node_modules'),
+              path.join(
+                managedNpmLayout!.prefix,
+                ...(platform === 'darwin' ? ['lib', 'node_modules'] : ['node_modules']),
+              ),
             )
             if (
               !promoted.installation
@@ -2511,22 +2896,23 @@ export function createSystemService(
             verification = promoted
           },
         )
-      } else {
+      } else if (provider !== 'grok' || grokInstallStrategy !== 'darwin-official-npm') {
         const npmGlobalRoot = await resolveNpmGlobalRoot(npmExecutable, commandEnvironment())
         verification = await inspectCliTool(provider, npmExecutable, npmGlobalRoot)
       }
-      if (
+      const darwinGrokVerified = provider === 'grok' && grokInstallStrategy === 'darwin-official-npm'
+      if (!darwinGrokVerified && (
         !verification?.installation
         || verification.status.version !== trustedRelease.version
         || (managedNpmLayout && !isManagedNpmInstallation(verification.installation))
-      ) {
+      )) {
         throw new Error(`${definition.name} npm 命令已结束，但未在托管目录识别到有效安装和版本`)
       }
       sendInstallProgress(
         target,
         provider,
         'success',
-        `${definition.name} 安装或更新完成（${verification.status.version}）`,
+        `${definition.name} 安装或更新完成（${verification!.status.version}）`,
       )
     } catch (error) {
       if (error instanceof ManagedNpmRollbackError) {
@@ -2575,7 +2961,24 @@ export function createSystemService(
   }
 
   async function uninstallNativeGrok(installation: CliInstallation): Promise<void> {
-    const userDirectory = path.resolve(os.homedir(), '.grok', 'bin')
+    const cliEnvironment = commandEnvironment()
+    const homeDirectory = cliEnvironment.HOME?.trim() || os.homedir()
+    const userDirectory = path.resolve(homeDirectory, '.grok', 'bin')
+    if (platform === 'darwin') {
+      await uninstallVerifiedDarwinGrokInstallation({
+        homeDirectory,
+        installDirectory: installation.installDirectory,
+        runCommand: async (spec) => {
+          const result = await executeCommand(spec, {
+            env: cliEnvironment,
+            timeoutMs: 8_000,
+            maxOutputBytes: 1024 * 1024,
+          })
+          return { stdout: result.stdout, stderr: result.stderr }
+        },
+      })
+      return
+    }
     const managedDirectory = process.platform === 'win32'
       ? path.resolve(managedNativeProviderRoot('grok'))
       : null
@@ -2607,10 +3010,9 @@ export function createSystemService(
   }
 
   function isManagedNpmInstallation(installation: CliInstallation): boolean {
-    if (process.platform !== 'win32' || !installation.npmPrefix) return false
-    const expected = path.resolve(managedNpmPrefix())
-    const actual = path.resolve(installation.npmPrefix)
-    return expected.toLowerCase() === actual.toLowerCase()
+    if ((platform !== 'win32' && platform !== 'darwin') || !installation.npmPrefix) return false
+    const expected = managedNpmPrefix(commandEnvironment(), platform)
+    return sameLocalPathIdentity(expected, installation.npmPrefix)
   }
 
   async function uninstallCliOperation(provider: ProviderId): Promise<ToolUninstallResult> {
@@ -2627,21 +3029,8 @@ export function createSystemService(
       const removedInstallations: string[] = []
       for (let attempt = 0; attempt < 8 && current.installation; attempt += 1) {
         const installation = current.installation
-        const uninstall = cliUninstallCapability(provider, installation, {
-          managedNpmPrefix: (() => {
-            try {
-              return managedNpmPrefix()
-            } catch {
-              return null
-            }
-          })(),
-          managedNativeDirectory: process.platform === 'win32' && provider === 'grok'
-            ? managedNativeProviderRoot('grok')
-            : null,
-          homeDirectory: os.homedir(),
-          platform: process.platform,
-          windowsExecutionMode,
-        })
+        const uninstall = current.status.uninstall
+          ?? cliUninstallCapability(provider, installation, { platform, windowsExecutionMode })
         if (!uninstall.available) {
           throw new Error([
             uninstall.reason,
@@ -2699,7 +3088,14 @@ export function createSystemService(
             throw new Error(`${cliCatalog[provider].name} 的 npm 包目录仍然存在，卸载未完成`)
           }
         } else if (plan.kind === 'grok-native') {
-          await uninstallNativeGrok(installation)
+          try {
+            await uninstallNativeGrok(installation)
+          } catch (error) {
+            if (platform === 'darwin') {
+              return grokManualUninstallResult(initial.status.version, error)
+            }
+            throw error
+          }
         } else {
           await uninstallNativeClaude(installation)
         }
@@ -2796,7 +3192,10 @@ export function createSystemService(
   async function installCodexDesktopOperation(
     target: RendererMessageTarget,
   ): Promise<CodexDesktopInstallResult> {
-    if (process.platform !== 'win32') throw new Error('Codex 桌面端安装目前仅支持 Windows')
+    if (platform === 'darwin') {
+      throw new Error('macOS 上 Codex App 的安装由 Codex App 管理，请使用“打开”操作由已验证的 Codex CLI 完成安装或启动')
+    }
+    if (platform !== 'win32') throw new Error('Codex 桌面端安装目前仅支持 Windows')
     const architecture = process.arch === 'x64' || process.arch === 'arm64'
       ? process.arch
       : null
@@ -2954,7 +3353,10 @@ export function createSystemService(
   }
 
   async function uninstallCodexDesktopOperation(): Promise<ToolUninstallResult> {
-    if (process.platform !== 'win32') throw new Error('Codex 桌面端卸载目前仅支持 Windows')
+    if (platform === 'darwin') {
+      throw new Error('macOS 上 Codex App 的卸载由 Codex App 管理，请在 Finder 的“应用程序”中移除 Codex App')
+    }
+    if (platform !== 'win32') throw new Error('Codex 桌面端卸载目前仅支持 Windows')
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中')
     codexDesktopInstalling = true
     try {
@@ -3004,7 +3406,7 @@ export function createSystemService(
   }
 
   async function launchProviderOperation(provider: ProviderId, workspace: string): Promise<void> {
-    const nativeConfig = inspectProviderConfig(provider)
+    const nativeConfig = inspectNativeProviderConfig(provider)
     if (!nativeConfig.hasApiKey || !nativeConfig.matchesRelay) {
       throw new Error('当前 CLI 不是星芒 AI 配置，请先保存星芒 AI 配置')
     }
@@ -3013,15 +3415,16 @@ export function createSystemService(
     }
 
     const definition = cliCatalog[provider]
+    const providerEnv = providerEnvironment(provider)
     const npmTool = await inspectTool('npm')
     const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
     const { installation } = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
     if (!installation) throw new Error(`未检测到 ${definition.name}，请先安装`)
 
-    if (process.platform === 'win32') {
+    if (platform === 'win32') {
       let command
       try {
-        command = await resolveCliCommand(provider, commandEnvironment(), windowsExecutionMode)
+        command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
         if (windowsExecutionMode === 'trusted-only') {
           assertTrustedElevatedCliCommand(command, definition.name)
         }
@@ -3030,7 +3433,7 @@ export function createSystemService(
           argv: command.argv,
           workspace,
           title: `${definition.name} · 星芒AI`,
-          env: interactiveTerminalEnvironment(),
+          env: interactiveTerminalEnvironment(providerEnv),
         })
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
@@ -3039,17 +3442,29 @@ export function createSystemService(
       return
     }
 
-    const environment = interactiveTerminalEnvironment()
-    const terminals = process.platform === 'darwin'
-      ? [{ command: 'open', args: ['-a', 'Terminal', workspace] }]
-      : [
-          { command: 'x-terminal-emulator', args: ['-e', definition.command] },
-          { command: 'gnome-terminal', args: ['--', definition.command] },
-          { command: 'konsole', args: ['-e', definition.command] },
-        ]
+    if (platform === 'darwin') {
+      try {
+        const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode, {
+          darwinStagingRetention: 'retained',
+        })
+        await launchMacosTerminal(buildDarwinCliLaunchPlan(command, workspace, providerEnv))
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new Error(`未能打开 ${definition.name}：${detail || '请查看反馈与诊断日志'}`)
+      }
+      return
+    }
+
+    const environment = interactiveTerminalEnvironment(providerEnv)
+    const command = await resolveVerifiedCliCommand(provider, providerEnv, windowsExecutionMode)
+    const terminals = [
+      { command: 'x-terminal-emulator', args: ['-e', command.executable, ...command.argv] },
+      { command: 'gnome-terminal', args: ['--', command.executable, ...command.argv] },
+      { command: 'konsole', args: ['-e', command.executable, ...command.argv] },
+    ]
     let terminal = terminals[0]
     for (const candidate of terminals) {
-      if (candidate.command === 'open' || await findExecutable(candidate.command, { env: environment })) {
+      if (await findExecutable(candidate.command, { env: environment })) {
         terminal = candidate
         break
       }
@@ -3112,11 +3527,43 @@ export function createSystemService(
     target: RendererMessageTarget,
   ): Promise<CodexDesktopLaunchResult> {
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中，请稍后再试')
-    const nativeConfig = inspectProviderConfig('codex')
+    if (platform === 'darwin' && mode === 'restart') {
+      throw new Error('macOS 不支持重启 Codex，请使用打开操作唤起现有应用')
+    }
+    const nativeConfig = inspectNativeProviderConfig('codex')
     if (!nativeConfig.hasApiKey || !nativeConfig.matchesRelay) {
       throw new Error('Codex 当前不是星芒 AI 配置，请先保存星芒 AI 配置')
     }
-    if (process.platform !== 'win32') throw new Error('Codex 桌面端启动目前仅支持 Windows')
+    if (platform === 'darwin') {
+      const command = await resolveVerifiedCliCommand(
+        'codex',
+        codexEnv,
+        windowsExecutionMode,
+        { darwinStagingRetention: 'ephemeral' },
+      )
+      try {
+        if (!path.isAbsolute(command.executable)) {
+          throw new Error('Codex CLI 命令未解析为绝对路径，已阻止启动')
+        }
+        const workspace = store.read().workspace
+        try {
+          if (!fs.statSync(workspace).isDirectory()) throw new Error('not a directory')
+        } catch {
+          throw new Error('工作目录不存在，请重新选择')
+        }
+        await executeCommand({
+          executable: command.executable,
+          argv: [...command.argv, 'app', workspace],
+        }, {
+          cwd: workspace,
+          env: commandEnvironment(codexEnv),
+        })
+        return { restarted: false, status: await inspectCodexDesktop() }
+      } finally {
+        await command.release?.()
+      }
+    }
+    if (platform !== 'win32') throw new Error('Codex 桌面端启动目前仅支持 Windows')
 
     const desktopApp = await inspectCodexDesktop()
     if (!desktopApp.installed || !desktopApp.path) {
@@ -3233,7 +3680,7 @@ export function createSystemService(
     const result = {
       workspace: stored.workspace,
       providers: Object.fromEntries(
-        providerIds.map((id) => [id, toNativeConfigSummary(inspectProviderConfig(id))]),
+        providerIds.map((id) => [id, toNativeConfigSummary(inspectNativeProviderConfig(id))]),
       ) as Record<ProviderId, NativeConfigSummary>,
     }
     if (previewOnboarding) {
@@ -3254,26 +3701,26 @@ export function createSystemService(
 
   function inspectCodexReadiness(previewOnboarding: boolean): CodexReadinessStatus {
     if (previewOnboarding) return { hasApiKey: false, matchesRelay: false }
-    const codex = inspectProviderConfig('codex')
+    const codex = inspectNativeProviderConfig('codex')
     return { hasApiKey: codex.hasApiKey, matchesRelay: codex.matchesRelay }
   }
 
   function revealApiKey(provider: ProviderId, previewOnboarding: boolean): string {
     if (previewOnboarding) return ''
-    return inspectProviderConfig(provider).apiKey
+    return inspectNativeProviderConfig(provider).apiKey
   }
 
   async function saveConfig(payload: ConfigSavePayload, previewOnboarding: boolean) {
     const model = payload.model.trim()
     // An empty key is an explicit renderer sentinel: reuse the key already held by the main process.
-    const apiKey = payload.apiKey.trim() || inspectProviderConfig(payload.provider).apiKey
+    const apiKey = payload.apiKey.trim() || inspectNativeProviderConfig(payload.provider).apiKey
     if (!apiKey) throw new Error('请先填写 API Key')
     const availableModels = await fetchAvailableModels(apiKey)
     if (!availableModels.includes(model)) {
       throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
     }
     if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
-    return saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode)
+    return saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots)
   }
 
   return {

@@ -1,3 +1,4 @@
+import os from 'node:os'
 import path from 'node:path'
 import { resolveWindowsMachinePaths, type WindowsMachinePaths } from './windows-machine-paths'
 
@@ -26,6 +27,13 @@ export function managedProductRoot(
   platform: NodeJS.Platform = process.platform,
   machinePaths?: WindowsMachinePaths,
 ): string {
+  if (platform === 'darwin') {
+    const homeDirectory = env.HOME?.trim() || os.homedir()
+    if (!homeDirectory || homeDirectory.includes('\0') || !path.isAbsolute(homeDirectory)) {
+      throw new Error('未找到有效的 macOS 用户目录')
+    }
+    return path.join(homeDirectory, 'Library', 'Application Support', PRODUCT_DIRECTORY)
+  }
   if (platform !== 'win32') return path.join('/var', 'lib', 'xingmang-ai')
   return path.win32.join(requireProgramData(env, platform, machinePaths), PRODUCT_DIRECTORY)
 }

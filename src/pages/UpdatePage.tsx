@@ -17,7 +17,7 @@ function formatBytes(value: number): string {
 }
 
 const phaseLabels: Record<UpdateSnapshot['phase'], string> = {
-  disabled: '开发环境未启用',
+  disabled: '本地开发包不检查更新',
   idle: '等待检查',
   checking: '正在检查更新',
   available: '发现新版本',
@@ -59,7 +59,10 @@ export function UpdatePage({ state, busy, onCheck, onDownload, onInstall }: Upda
           <span className={`status-dot ${phase === 'error' ? 'error' : ''}`} />
           <div>
             <h2>{phaseLabels[phase]}</h2>
-            <p>当前版本 {state?.currentVersion ?? '-'}</p>
+            <p>
+              当前版本 {state?.currentVersion ?? '-'}
+              {phase === 'disabled' && ' · 免费分发包会启用自动更新，需同步发布完整更新文件'}
+            </p>
           </div>
           <ShieldCheck size={20} />
         </div>

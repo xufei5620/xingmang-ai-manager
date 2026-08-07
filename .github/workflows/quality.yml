@@ -10,7 +10,7 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -20,12 +20,17 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
+      - run: npx --no-install playwright install chromium
       - run: npm run typecheck
       - run: npm test
       - run: npm run compile
       - name: Run isolated dashboard smoke test
         run: node e2e/electron-ci-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
+      - run: npm run build:win:ci
+      - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
+      - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"
+      - run: node e2e/asar-tamper-smoke.mjs release/win-unpacked
       - name: Upload smoke-test artifacts
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
@@ -36,6 +41,26 @@ jobs:
             artifacts/*.json
           if-no-files-found: ignore
           retention-days: 7
+
+  macos-test:
+    runs-on: macos-15
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - run: npx --no-install playwright install chromium
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run test:mac:free-signing
+      - run: npm run test:mac:dev-origin
+      - name: Build and verify free macOS distribution with ephemeral signing
+        run: node scripts/run-macos-free-build.cjs --ci-temporary-signing
 
   audit:
     runs-on: ubuntu-latest

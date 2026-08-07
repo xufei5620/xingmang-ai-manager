@@ -5,12 +5,22 @@ import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
+import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
+import { providerConfigPaths } from './config-files'
+import type { MacosCodexAppInfo } from './macos-codex-app'
+import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
+import {
+  resolveCliCommand as resolveVerifiedToolCommand,
+  resolveCliInstallation as resolveCliInstallationForTest,
+} from './tool-installation'
 import { windowsPowerShellExecutable } from './windows-elevation'
 import {
   assertNpmPackageLocksEquivalent,
   assertNpmReleaseIntegrityMatches,
+  assertNpmReleaseMatchesOfficialLock,
   buildCliStatus,
   buildCliMaintenancePlan,
+  buildDarwinCliLaunchPlan,
   buildCliUninstallPlan,
   buildCodexDesktopManifestSources,
   buildCodexDesktopLaunchPlan,
@@ -21,12 +31,15 @@ import {
   downloadCodexDesktopPackage,
   fetchCodexDesktopMirrorRelease,
   inspectCodexDesktopPackageFile,
+  inspectVerifiedDarwinGrokPostInstall,
   interactiveTerminalEnvironment,
   modelAccessCacheKey,
   ManagedNpmRollbackError,
   detectNetworkLocation,
   detectNetworkRegion,
   fetchNpmPackageReleaseMetadata,
+  grokInstallStrategyFor,
+  grokManualUninstallResult,
   npmInstallRegistries,
   npmPackageLatestUrl,
   npmPackageVersionUrl,
@@ -35,8 +48,11 @@ import {
   parseCloudflareNetworkLocation,
   parseGrokLocalVersion,
   parseLatestNpmVersion,
+  providerCommandEnvironment,
   readGrokLocalVersionForExecutable,
+  resolveCliInstallRelease,
   replaceManagedNpmPrefixAtomically,
+  uninstallVerifiedDarwinGrokInstallation,
   validateCodexDesktopResourceUrl,
   type LatestVersionProbe,
 } from './system-service'
@@ -47,6 +63,183 @@ function createService() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-system-service-'))
   temporaryDirectories.push(directory)
   return createSystemService(new AppSettingsStore(path.join(directory, 'settings.json'), directory))
+}
+
+async function createDarwinService(options: {
+  workspace?: string
+  configured?: boolean
+  codexHome?: string
+  macosCodexAppDetector?: () => Promise<MacosCodexAppInfo | null>
+} = {}) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-desktop-'))
+  temporaryDirectories.push(directory)
+  const workspace = options.workspace ?? directory
+  const codexHome = options.codexHome ?? path.join(directory, 'selected-codex-home')
+  const codexEnv = { ...process.env, HOME: directory, CODEX_HOME: codexHome }
+  const store = new AppSettingsStore(path.join(directory, 'settings.json'), directory)
+  await store.write({ ...defaultAppSettings(directory), workspace })
+  const resolvedCommand = {
+    executable: '/opt/homebrew/bin/node',
+    argv: [
+      '/Users/tester/.npm-global/lib/node_modules/@openai/codex/bin/codex.js',
+      '--existing-flag',
+    ],
+    release: vi.fn(async () => undefined),
+  }
+  const resolveCli = vi.fn(async () => resolvedCommand)
+  const execute = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => ({
+    executable: spec.executable,
+    argv: [...spec.argv],
+    exitCode: 0,
+    signal: null,
+    stdout: '',
+    stderr: '',
+    outputBytes: 0,
+    durationMs: 1,
+  }))
+  const inspectConfig = vi.fn(() => ({
+    baseUrl: 'https://api.solov.cc',
+    actualBaseUrl: options.configured === false ? 'https://example.invalid' : 'https://api.solov.cc',
+    exists: true,
+    hasApiKey: true,
+    matchesRelay: options.configured !== false,
+    apiKey: 'sk-test-key',
+    model: 'gpt-5.6-sol',
+    dataDirectory: path.join(directory, '.codex'),
+    dataDirectoryExists: true,
+    files: [],
+    updatedAt: '2026-08-03T00:00:00.000Z',
+  }))
+  const macosCodexAppDetector = options.macosCodexAppDetector ?? vi.fn(async () => null)
+  const service = createSystemService(store, {
+    platform: 'darwin',
+    providerRoots: { userHome: directory, codexHome },
+    codexEnv,
+    inspectProviderConfig: inspectConfig,
+    resolveCliCommand: resolveCli,
+    runCommand: execute,
+    macosCodexAppDetector,
+  })
+  return {
+    service,
+    workspace,
+    codexEnv,
+    resolvedCommand,
+    resolveCli,
+    execute,
+    release: resolvedCommand.release,
+  }
+}
+
+function createDarwinStandaloneMaintenanceFixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-standalone-maintenance-'))
+  temporaryDirectories.push(root)
+  const home = path.join(root, "User's Home")
+  const codexHome = path.join(root, "Configured Codex Home's Directory")
+  const target = process.arch === 'x64' ? 'x86_64-apple-darwin' : 'aarch64-apple-darwin'
+  const version = '0.146.0'
+  const standaloneRoot = path.join(codexHome, 'packages', 'standalone')
+  const releaseRoot = path.join(standaloneRoot, 'releases', `${version}-${target}`)
+  const executablePath = path.join(releaseRoot, 'bin', 'codex')
+  const executionMarker = path.join(root, 'post-verifier-version-execution')
+  const quotedExecutionMarker = `'${executionMarker.replaceAll("'", `'"'"'`)}'`
+  fs.mkdirSync(path.dirname(executablePath), { recursive: true })
+  fs.writeFileSync(executablePath, [
+    '#!/bin/sh',
+    `printf 'executed\\n' >> ${quotedExecutionMarker}`,
+    `printf 'codex-cli ${version}\\n'`,
+    '',
+  ].join('\n'), 'utf8')
+  fs.chmodSync(executablePath, 0o700)
+  fs.writeFileSync(path.join(releaseRoot, 'codex-package.json'), JSON.stringify({
+    layoutVersion: 1,
+    version,
+    target,
+    variant: 'codex',
+    entrypoint: 'bin/codex',
+  }), 'utf8')
+  const currentLink = path.join(standaloneRoot, 'current')
+  fs.mkdirSync(path.dirname(currentLink), { recursive: true })
+  fs.symlinkSync(path.join('releases', `${version}-${target}`), currentLink)
+  const visibleCommand = path.join(home, '.local', 'bin', 'codex')
+  fs.mkdirSync(path.dirname(visibleCommand), { recursive: true })
+  fs.symlinkSync(path.join(currentLink, 'bin', 'codex'), visibleCommand)
+  return { codexHome, executablePath, executionMarker, home, releaseRoot, version, visibleCommand }
+}
+
+function createDarwinGrokUninstallFixture() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-grok-uninstall-'))
+  temporaryDirectories.push(home)
+  const grokRoot = path.join(home, '.grok')
+  const bin = path.join(grokRoot, 'bin')
+  const downloads = path.join(grokRoot, 'downloads')
+  fs.mkdirSync(bin, { recursive: true })
+  fs.mkdirSync(downloads, { recursive: true })
+  const grokBinary = path.join(downloads, 'grok-0.2.118-macos-aarch64')
+  const agentBinary = path.join(downloads, 'grok-0.2.111-macos-aarch64')
+  fs.writeFileSync(grokBinary, 'grok binary', { mode: 0o700 })
+  fs.writeFileSync(agentBinary, 'agent binary', { mode: 0o700 })
+  const grokTarget = path.join('..', 'downloads', path.basename(grokBinary))
+  const agentTarget = path.join('..', 'downloads', path.basename(agentBinary))
+  fs.symlinkSync(grokTarget, path.join(bin, 'grok'))
+  fs.symlinkSync(agentTarget, path.join(bin, 'agent'))
+  fs.writeFileSync(path.join(bin, 'keep.txt'), 'keep')
+  const configFile = path.join(grokRoot, 'config.json')
+  const sessionFile = path.join(grokRoot, 'sessions', 'session.json')
+  const backupFile = path.join(grokRoot, 'backups', 'backup.json')
+  fs.mkdirSync(path.dirname(sessionFile), { recursive: true })
+  fs.mkdirSync(path.dirname(backupFile), { recursive: true })
+  fs.writeFileSync(configFile, 'config')
+  fs.writeFileSync(sessionFile, 'session')
+  fs.writeFileSync(backupFile, 'backup')
+  return {
+    agentBinary,
+    agentTarget,
+    backupFile,
+    bin,
+    configFile,
+    grokBinary,
+    grokTarget,
+    home,
+    sessionFile,
+  }
+}
+
+function officialDarwinGrokUninstallResult(
+  fixture: ReturnType<typeof createDarwinGrokUninstallFixture>,
+  spec: { executable: string; argv: readonly string[] },
+) {
+  if (
+    spec.executable === '/usr/bin/codesign'
+    && spec.argv[0] === '--verify'
+    && spec.argv[1] === '--strict'
+  ) {
+    return { stdout: '', stderr: '' }
+  }
+  if (
+    spec.executable === '/usr/bin/codesign'
+    && spec.argv[0] === '-dv'
+    && spec.argv[1] === '--verbose=4'
+  ) {
+    return {
+      stdout: '',
+      stderr: [
+        'Authority=Developer ID Application: X.AI Corporation (5Y6N3AJ54S)',
+        'TeamIdentifier=5Y6N3AJ54S',
+      ].join('\n'),
+    }
+  }
+  if (
+    spec.argv.length === 1
+    && spec.argv[0] === '--version'
+  ) {
+    const executableName = path.basename(spec.executable)
+    const version = executableName === 'agent' || executableName.includes('0.2.111')
+      ? '0.2.111'
+      : '0.2.118'
+    return { stdout: `grok ${version}\n`, stderr: '' }
+  }
+  throw new Error(`Unexpected Grok verification command: ${spec.executable} ${spec.argv.join(' ')}`)
 }
 
 function createTestMsix(manifest: string): string {
@@ -77,13 +270,52 @@ function createTestMsix(manifest: string): string {
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
+  vi.unstubAllEnvs()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
 })
 
 describe('createSystemService', () => {
+  it('uses provider roots for config surfaces and codexEnv only for Codex CLI work', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rooted-system-service-'))
+    temporaryDirectories.push(root)
+    const userHome = path.join(root, 'home')
+    const codexHome = path.join(root, 'custom-codex')
+    const providerRoots: ProviderConfigRoots = { userHome, codexHome }
+    const codexEnv = { ...process.env, HOME: userHome, CODEX_HOME: codexHome }
+    const inspect = vi.fn((provider: Parameters<typeof providerConfigRoot>[0], roots: ProviderConfigRoots) => ({
+      baseUrl: 'https://api.solov.cc',
+      actualBaseUrl: 'https://api.solov.cc',
+      exists: true,
+      apiKey: provider === 'codex' ? 'sk-codex' : 'sk-other',
+      hasApiKey: true,
+      matchesRelay: true,
+      model: 'gpt-5.6-sol',
+      dataDirectory: providerConfigRoot(provider, roots),
+      dataDirectoryExists: true,
+      files: providerConfigPaths(provider, roots).map((filePath) => ({ path: filePath, exists: true })),
+      updatedAt: '2026-08-03T00:00:00.000Z',
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      { providerRoots, codexEnv, inspectProviderConfig: inspect },
+    )
+
+    service.getConfig(false)
+    service.inspectCodexReadiness(false)
+    expect(service.revealApiKey('codex', false)).toBe('sk-codex')
+    expect(inspect).toHaveBeenCalledWith('codex', providerRoots)
+
+    expect(providerCommandEnvironment('codex', { HOME: userHome }, codexEnv)).toMatchObject({
+      HOME: userHome,
+      CODEX_HOME: codexHome,
+    })
+    expect(providerCommandEnvironment('grok', { HOME: userHome }, codexEnv).CODEX_HOME).toBeUndefined()
+  })
+
   it('delegates settings reads and durable writes to AppSettingsStore', async () => {
     const service = createService()
     const initial = service.readStoredConfig()
@@ -92,6 +324,107 @@ describe('createSystemService', () => {
     await service.writeStoredConfig({ ...initial, theme: 'light' })
 
     expect(service.readStoredConfig()).toMatchObject({ theme: 'light', workspace: initial.workspace })
+  })
+
+  it('saves provider configuration under the injected roots', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-rooted-system-save-'))
+    temporaryDirectories.push(root)
+    const userHome = path.join(root, 'home')
+    const codexHome = path.join(root, 'custom-codex')
+    const fallbackCodexHome = path.join(root, 'default-codex-trap')
+    vi.stubEnv('HOME', userHome)
+    vi.stubEnv('CODEX_HOME', fallbackCodexHome)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      data: [{ id: 'gpt-5.6-sol' }],
+    }), { status: 200 })))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      {
+        providerRoots: { userHome, codexHome },
+        codexEnv: { ...process.env, HOME: userHome, CODEX_HOME: codexHome },
+      },
+    )
+
+    const result = await service.saveConfig({
+      provider: 'codex',
+      apiKey: 'sk-rooted-save',
+      model: 'gpt-5.6-sol',
+      mode: 'reset',
+    }, false)
+
+    expect(result.files).toEqual(providerConfigPaths('codex', {
+      userHome,
+      codexHome,
+    }))
+    expect(fs.existsSync(fallbackCodexHome)).toBe(false)
+  })
+
+  it('uses codexEnv for Codex CLI discovery, resolution, and version inspection', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-inspection-env-'))
+    temporaryDirectories.push(root)
+    const runtimeBin = path.join(root, 'runtime-bin')
+    const providerBin = path.join(root, 'provider-bin')
+    const fakeNpmRoot = path.join(root, 'npm-root')
+    const executionMarker = path.join(root, 'provider-executed')
+    fs.mkdirSync(runtimeBin, { recursive: true })
+    fs.mkdirSync(providerBin, { recursive: true })
+    fs.mkdirSync(fakeNpmRoot, { recursive: true })
+    for (const executable of ['node', 'npm']) {
+      const executablePath = path.join(runtimeBin, executable)
+      fs.writeFileSync(executablePath, executable === 'npm'
+        ? '#!/bin/sh\nprintf "%s\\n" "$XINGMANG_FAKE_NPM_ROOT"\n'
+        : '#!/bin/sh\nexit 0\n')
+      fs.chmodSync(executablePath, 0o700)
+    }
+    const codexExecutable = path.join(providerBin, 'codex')
+    fs.writeFileSync(codexExecutable, `#!/bin/sh\nprintf executed > '${executionMarker}'\nexit 99\n`)
+    fs.chmodSync(codexExecutable, 0o700)
+    vi.stubEnv('PATH', runtimeBin)
+    vi.stubEnv('XINGMANG_FAKE_NPM_ROOT', fakeNpmRoot)
+    vi.stubEnv('CODEX_HOME', '')
+    const userHome = path.join(root, 'home')
+    const codexHome = path.join(root, 'custom-codex')
+    const codexEnv = {
+      ...process.env,
+      HOME: userHome,
+      CODEX_HOME: codexHome,
+      PATH: `${providerBin}${path.delimiter}${runtimeBin}`,
+    }
+    const resolveCli = vi.fn(async () => ({ executable: codexExecutable, argv: [] }))
+    const execute = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => ({
+      executable: spec.executable,
+      argv: [...spec.argv],
+      exitCode: 0,
+      signal: null,
+      stdout: spec.executable === codexExecutable ? 'codex-cli 1.2.3\n' : '1.2.3\n',
+      stderr: '',
+      outputBytes: 16,
+      durationMs: 1,
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      {
+        platform: 'linux',
+        providerRoots: { userHome, codexHome },
+        codexEnv,
+        resolveCliCommand: resolveCli,
+        runCommand: execute,
+        macosCodexAppDetector: async () => null,
+      },
+    )
+
+    const setup = await service.inspectCodexSetupStatus()
+
+    expect(setup.cli).toMatchObject({ installed: true, path: codexExecutable })
+    expect(resolveCli.mock.calls[0]?.[1]).toMatchObject({
+      HOME: userHome,
+      CODEX_HOME: codexHome,
+    })
+    const versionCall = execute.mock.calls.find(([spec]) => spec.executable === codexExecutable)
+    expect(versionCall?.[1]).toMatchObject({
+      env: expect.objectContaining({ HOME: userHome, CODEX_HOME: codexHome }),
+    })
+    expect(fs.existsSync(executionMarker)).toBe(false)
   })
 
   it('validates an API key by returning model ids from the relay response', async () => {
@@ -175,6 +508,274 @@ describe('createSystemService', () => {
   })
 })
 
+describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall integration', () => {
+  it('inspects a postinstall Grok only through a released private staged executable', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    const specs: Array<{ executable: string; argv: readonly string[] }> = []
+
+    const inspected = await inspectVerifiedDarwinGrokPostInstall({
+      homeDirectory: fixture.home,
+      expectedVersion: '0.2.118',
+      runCommand: async (spec) => {
+        specs.push(spec)
+        return officialDarwinGrokUninstallResult(fixture, spec)
+      },
+    })
+
+    const sourceExecutable = fs.realpathSync(fixture.grokBinary)
+    const stagedExecutable = specs[0]?.argv[2]
+    expect(stagedExecutable).toEqual(expect.any(String))
+    expect(stagedExecutable).not.toBe(sourceExecutable)
+    expect(specs).toEqual([
+      { executable: '/usr/bin/codesign', argv: ['--verify', '--strict', stagedExecutable!] },
+      { executable: '/usr/bin/codesign', argv: ['-dv', '--verbose=4', stagedExecutable!] },
+      { executable: stagedExecutable!, argv: ['--version'] },
+    ])
+    expect(inspected).toMatchObject({
+      status: {
+        installed: true,
+        version: '0.2.118',
+        path: sourceExecutable,
+        installDirectory: fs.realpathSync(fixture.bin),
+      },
+      installation: {
+        commandPath: path.join(fixture.bin, 'grok'),
+        installDirectory: fs.realpathSync(fixture.bin),
+        source: 'native',
+      },
+    })
+    expect(fs.existsSync(path.dirname(stagedExecutable!))).toBe(false)
+  })
+
+  it('reports retained verified program paths after removing only the command entries', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    const specs: Array<{ executable: string; argv: readonly string[] }> = []
+    const sourceExecutables = [
+      fs.realpathSync(fixture.grokBinary),
+      fs.realpathSync(fixture.agentBinary),
+    ]
+
+    await expect(uninstallVerifiedDarwinGrokInstallation({
+      homeDirectory: fixture.home,
+      installDirectory: fs.realpathSync(fixture.bin),
+      runCommand: async (spec) => {
+        specs.push(spec)
+        return officialDarwinGrokUninstallResult(fixture, spec)
+      },
+    })).rejects.toThrow(/自动卸载未完整完成.*\.removing.*grok-0\.2\.118/s)
+
+    expect(fs.existsSync(path.join(fixture.bin, 'grok'))).toBe(false)
+    expect(fs.existsSync(path.join(fixture.bin, 'agent'))).toBe(false)
+    expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
+    expect(fs.readFileSync(fixture.agentBinary, 'utf8')).toBe('agent binary')
+    expect(fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))).toHaveLength(2)
+    expect(fs.readFileSync(path.join(fixture.bin, 'keep.txt'), 'utf8')).toBe('keep')
+    expect(fs.readFileSync(fixture.configFile, 'utf8')).toBe('config')
+    expect(fs.readFileSync(fixture.sessionFile, 'utf8')).toBe('session')
+    expect(fs.readFileSync(fixture.backupFile, 'utf8')).toBe('backup')
+    expect(specs.some((spec) => sourceExecutables.includes(spec.executable)
+      || spec.argv.some((argument) => sourceExecutables.includes(argument)))).toBe(false)
+    const stagedExecutables = specs
+      .filter((spec) => spec.argv[0] === '--version')
+      .map((spec) => spec.executable)
+    expect(stagedExecutables.map((executable) => path.basename(executable))).toEqual(['grok', 'agent'])
+    expect(stagedExecutables.every((executable) => !fs.existsSync(path.dirname(executable)))).toBe(true)
+  })
+
+  it.each([
+    ['missing link', 'Grok automatic uninstall requires both grok and agent verified symbolic links'],
+    ['escaped target', 'Grok agent link target must remain under ~/.grok'],
+    ['wrong owner', 'Grok CLI 符号链接 agent 所有者与卸载计划不一致'],
+    ['wrong type', 'Grok canonical link must be a symbolic link'],
+    ['link identity replacement', 'Grok CLI 符号链接 grok 身份与卸载计划不一致'],
+    ['quarantine race', 'Grok CLI 隔离文件 grok 在最终删除前发生变化'],
+  ])('returns manual help after %s validation failure', (_case, message) => {
+    expect(grokManualUninstallResult('0.2.118', new Error(message))).toEqual({
+      outcome: 'manual-required',
+      previousVersion: '0.2.118',
+      error: message,
+      manualHelp: {
+        reason: `自动卸载安全验证失败：${message}`,
+        manualCommand: null,
+      },
+    })
+  })
+
+  it('returns manual-required from the public service after automatic validation fails', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    const store = new AppSettingsStore(
+      path.join(fixture.home, 'settings.json'),
+      fixture.home,
+    )
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        const result = officialDarwinGrokUninstallResult(fixture, spec)
+        return {
+          ...result,
+          executable: spec.executable,
+          argv: [...spec.argv],
+          exitCode: 0,
+          signal: null,
+          outputBytes: Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
+          durationMs: 1,
+        }
+      },
+    })
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({
+      outcome: 'manual-required',
+      manualHelp: { manualCommand: null },
+      error: expect.stringContaining('both grok and agent'),
+    })
+    expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe(fixture.grokTarget)
+  })
+
+  it('returns manual-required and restores links when a target changes after quarantine starts', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    const store = new AppSettingsStore(
+      path.join(fixture.home, 'settings.json'),
+      fixture.home,
+    )
+    let targetReplaced = false
+    const grokLink = path.join(fixture.bin, 'grok')
+    const agentLink = path.join(fixture.bin, 'agent')
+    const canonicalBin = fs.realpathSync(fixture.bin)
+    const rename = fs.promises.rename.bind(fs.promises)
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (oldPath, newPath) => {
+      await rename(oldPath, newPath)
+      if (
+        !targetReplaced
+        && path.dirname(String(oldPath)) === canonicalBin
+        && path.basename(String(oldPath)) === 'grok'
+      ) {
+        targetReplaced = true
+        fs.unlinkSync(fixture.grokBinary)
+        fs.writeFileSync(fixture.grokBinary, 'replacement', { mode: 0o700 })
+      }
+    })
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        const result = officialDarwinGrokUninstallResult(fixture, spec)
+        return {
+          ...result,
+          executable: spec.executable,
+          argv: [...spec.argv],
+          exitCode: 0,
+          signal: null,
+          outputBytes: Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
+          durationMs: 1,
+        }
+      },
+    })
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({
+      outcome: 'manual-required',
+      manualHelp: { manualCommand: null },
+      error: expect.stringContaining('目标'),
+    })
+    expect(targetReplaced).toBe(true)
+    expect(fs.readlinkSync(grokLink)).toBe(fixture.grokTarget)
+    expect(fs.readlinkSync(agentLink)).toBe(fixture.agentTarget)
+  })
+
+  it('returns manual-required instead of uninstalled while verified program paths remain', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    const store = new AppSettingsStore(
+      path.join(fixture.home, 'settings.json'),
+      fixture.home,
+    )
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        const result = officialDarwinGrokUninstallResult(fixture, spec)
+        return {
+          ...result,
+          executable: spec.executable,
+          argv: [...spec.argv],
+          exitCode: 0,
+          signal: null,
+          outputBytes: Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
+          durationMs: 1,
+        }
+      },
+    })
+
+    await expect(service.uninstallCli('grok')).resolves.toMatchObject({
+      outcome: 'manual-required',
+      previousVersion: '0.2.118',
+      error: expect.stringMatching(/自动卸载未完整完成.*\.removing.*grok-0\.2\.118/s),
+      manualHelp: { manualCommand: null },
+    })
+    expect(fs.existsSync(path.join(fixture.bin, 'grok'))).toBe(false)
+    expect(fs.existsSync(path.join(fixture.bin, 'agent'))).toBe(false)
+    const retainedNames = fs.readdirSync(fixture.bin)
+      .filter((name) => /^\.(?:grok|agent)-.+\.removing$/.test(name))
+    expect(retainedNames).toHaveLength(2)
+    expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
+    expect(fs.readFileSync(fixture.agentBinary, 'utf8')).toBe('agent binary')
+    expect(fs.readFileSync(fixture.configFile, 'utf8')).toBe('config')
+    expect(fs.readFileSync(fixture.sessionFile, 'utf8')).toBe('session')
+    expect(fs.readFileSync(fixture.backupFile, 'utf8')).toBe('backup')
+  })
+
+  it('requires both official links and leaves the canonical link untouched when agent is absent', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+
+    await expect(uninstallVerifiedDarwinGrokInstallation({
+      homeDirectory: fixture.home,
+      installDirectory: fs.realpathSync(fixture.bin),
+      runCommand: async (spec) => officialDarwinGrokUninstallResult(fixture, spec),
+    })).rejects.toThrow('both grok and agent')
+
+    expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe(fixture.grokTarget)
+    expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
+  })
+
+  it('leaves the official bin directory in place when it contains only the verified links', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    fs.unlinkSync(path.join(fixture.bin, 'keep.txt'))
+
+    await expect(uninstallVerifiedDarwinGrokInstallation({
+      homeDirectory: fixture.home,
+      installDirectory: fs.realpathSync(fixture.bin),
+      runCommand: async (spec) => officialDarwinGrokUninstallResult(fixture, spec),
+    })).rejects.toThrow('自动卸载未完整完成')
+
+    expect(fs.statSync(fixture.bin).isDirectory()).toBe(true)
+    expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
+    expect(fs.readFileSync(fixture.agentBinary, 'utf8')).toBe('agent binary')
+  })
+
+  it('fails closed without moving links when an official-looking target escapes the Grok root', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    const outside = path.join(fixture.home, 'outside', path.basename(fixture.agentBinary))
+    fs.mkdirSync(path.dirname(outside), { recursive: true })
+    fs.writeFileSync(outside, 'outside', { mode: 0o700 })
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+    fs.symlinkSync(path.join('..', '..', 'outside', path.basename(outside)), path.join(fixture.bin, 'agent'))
+
+    await expect(uninstallVerifiedDarwinGrokInstallation({
+      homeDirectory: fixture.home,
+      installDirectory: fs.realpathSync(fixture.bin),
+      runCommand: async (spec) => officialDarwinGrokUninstallResult(fixture, spec),
+    })).rejects.toThrow(/official uninstall layout|under ~\/\.grok|remain under/)
+
+    expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe(fixture.grokTarget)
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toContain('outside')
+    expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
+  })
+})
+
 describe('Codex Desktop launch trust', () => {
   it.runIf(process.platform === 'win32')('uses the canonical SystemRoot Explorer and drops user runtime injection variables', () => {
     const plan = buildCodexDesktopLaunchPlan(
@@ -206,6 +807,52 @@ describe('npm registry metadata', () => {
     expect(npmPackageVersionUrl('https://registry.npmjs.org/', '@openai/codex', '0.146.0')).toBe(
       'https://registry.npmjs.org/%40openai%2Fcodex/0.146.0',
     )
+  })
+
+  it('uses the xAI stable manifest release as the exact Darwin Grok npm pin', async () => {
+    const requestedVersions: string[] = []
+    const release = await resolveCliInstallRelease('grok', 'darwin-official-npm', {
+      fetchGrokStableVersion: async () => ({
+        version: '0.2.118',
+        sourceUrl: 'https://x.ai/cli/stable',
+      }),
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@xai-official/grok', version: '0.2.118', integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['0.2.118'])
+    expect(release).toMatchObject({ name: '@xai-official/grok', version: '0.2.118' })
+  })
+
+  it('rejects a Darwin Grok npm response that differs from the xAI stable manifest', async () => {
+    await expect(resolveCliInstallRelease('grok', 'darwin-official-npm', {
+      fetchGrokStableVersion: async () => ({
+        version: '0.2.118',
+        sourceUrl: 'https://x.ai/cli/stable',
+      }),
+      fetchNpmRelease: async () => ({
+        name: '@xai-official/grok',
+        version: '0.2.119',
+        integrity,
+      }),
+    })).rejects.toThrow('官方稳定版本')
+  })
+
+  it('keeps other npm providers on their latest npm release selector', async () => {
+    const requestedVersions: string[] = []
+    await resolveCliInstallRelease('codex', null, {
+      fetchGrokStableVersion: async () => {
+        throw new Error('must not query Grok stable metadata')
+      },
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@openai/codex', version: '0.146.0', integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['latest'])
   })
 
   it('requires exact package identity, semantic version and SHA-512 integrity metadata', () => {
@@ -300,6 +947,31 @@ describe('npm registry metadata', () => {
       '0.146.0',
     )).toThrow('完整依赖图、版本或 SHA-512')
   })
+
+  it('rejects an official lock whose direct package integrity differs from release metadata', () => {
+    const lockIntegrity = `sha512-${Buffer.alloc(64, 0x31).toString('base64')}`
+    const releaseIntegrity = `sha512-${Buffer.alloc(64, 0x32).toString('base64')}`
+    const officialLock = JSON.stringify({
+      name: 'xingmang-cli-resolution',
+      version: '1.0.0',
+      lockfileVersion: 3,
+      packages: {
+        '': {
+          dependencies: { '@xai-official/grok': '0.2.118' },
+        },
+        'node_modules/@xai-official/grok': {
+          version: '0.2.118',
+          integrity: lockIntegrity,
+        },
+      },
+    })
+
+    expect(() => assertNpmReleaseMatchesOfficialLock({
+      name: '@xai-official/grok',
+      version: '0.2.118',
+      integrity: releaseIntegrity,
+    }, officialLock)).toThrow('官方 package-lock')
+  })
 })
 
 describe('managed npm transaction', () => {
@@ -368,6 +1040,142 @@ describe('managed npm transaction', () => {
   })
 })
 
+describe.runIf(process.platform === 'darwin')('Darwin managed npm update integration', () => {
+  it('preserves the previous CLI when post-promotion verification fails', async () => {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-npm-update-'))
+    temporaryDirectories.push(temporaryRoot)
+    const root = fs.realpathSync(temporaryRoot)
+    const homeDirectory = path.join(root, 'home')
+    const runtimeBin = path.join(homeDirectory, '.local', 'bin')
+    fs.mkdirSync(runtimeBin, { recursive: true })
+    vi.stubEnv('HOME', homeDirectory)
+    vi.stubEnv('PATH', runtimeBin)
+
+    const env = { ...process.env, HOME: homeDirectory }
+    const activePrefix = managedNpmPrefix(env, 'darwin')
+    const cacheRoot = managedNpmCacheRoot(env, 'darwin')
+    const activePackageRoot = path.join(activePrefix, 'lib', 'node_modules', '@openai', 'codex')
+    const activeCommand = path.join(activePrefix, 'bin', 'codex')
+    fs.mkdirSync(activePackageRoot, { recursive: true })
+    fs.mkdirSync(path.dirname(activeCommand), { recursive: true })
+    fs.writeFileSync(path.join(activePackageRoot, 'package.json'), JSON.stringify({
+      name: '@openai/codex',
+      version: '0.145.0',
+    }))
+    fs.writeFileSync(activeCommand, '#!/bin/sh\nprintf old-cli\\n')
+    fs.chmodSync(activeCommand, 0o700)
+
+    const npmExecutable = path.join(runtimeBin, 'npm')
+    fs.writeFileSync(npmExecutable, '#!/bin/sh\nexit 0\n')
+    fs.chmodSync(npmExecutable, 0o700)
+    const expectedVersion = '0.146.0'
+    const integrity = `sha512-${Buffer.alloc(64, 0x31).toString('base64')}`
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) {
+        return new Response('ip=203.0.113.8\nloc=US\n', { status: 200 })
+      }
+      if (url === npmPackageLatestUrl('https://registry.npmjs.org', '@openai/codex')) {
+        return new Response(JSON.stringify({
+          name: '@openai/codex',
+          version: expectedVersion,
+          dist: { integrity },
+        }), { status: 200 })
+      }
+      throw new Error(`Unexpected fetch: ${url}`)
+    }))
+
+    let lifecyclePrefix: string | null = null
+    const runCommand = vi.fn(async (
+      spec: { executable: string; argv: readonly string[] },
+      options: { cwd?: string } = {},
+    ) => {
+      if (spec.executable !== npmExecutable) {
+        throw new Error(`Unexpected command: ${spec.executable}`)
+      }
+      const cwd = options.cwd
+      if (!cwd) throw new Error('Fake npm requires cwd')
+      if (spec.argv.includes('--package-lock-only')) {
+        const manifest = JSON.parse(fs.readFileSync(path.join(cwd, 'package.json'), 'utf8')) as {
+          name: string
+          version: string
+          dependencies: Record<string, string>
+        }
+        const [[packageName, version]] = Object.entries(manifest.dependencies)
+        fs.writeFileSync(path.join(cwd, 'package-lock.json'), JSON.stringify({
+          name: manifest.name,
+          version: manifest.version,
+          lockfileVersion: 3,
+          packages: {
+            '': { dependencies: manifest.dependencies },
+            [`node_modules/${packageName}`]: { version, integrity },
+          },
+        }))
+      } else if (spec.argv[0] === 'install' && spec.argv.includes('--global')) {
+        const prefixArgument = spec.argv.find((argument) => argument.startsWith('--prefix='))
+        if (!prefixArgument) throw new Error('Managed install omitted --prefix')
+        lifecyclePrefix = prefixArgument.slice('--prefix='.length)
+        const packageRoot = path.join(
+          lifecyclePrefix,
+          'lib',
+          'node_modules',
+          '@openai',
+          'codex',
+        )
+        fs.rmSync(packageRoot, { recursive: true, force: true })
+        fs.mkdirSync(packageRoot, { recursive: true })
+        fs.writeFileSync(path.join(packageRoot, 'package.json'), JSON.stringify({
+          name: '@openai/codex',
+          version: expectedVersion,
+        }))
+        fs.rmSync(path.join(lifecyclePrefix, 'bin', 'codex'), { force: true })
+      }
+      return {
+        executable: spec.executable,
+        argv: [...spec.argv],
+        exitCode: 0,
+        signal: null,
+        stdout: '',
+        stderr: '',
+        outputBytes: 0,
+        durationMs: 1,
+      }
+    })
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const resolveCliInstallation = vi.fn<typeof resolveCliInstallationForTest>(async (
+      provider,
+      options,
+    ) => {
+      expect(provider).toBe('codex')
+      expect(options.npmGlobalRoot).toBe(path.join(activePrefix, 'lib', 'node_modules'))
+      return null
+    })
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      {
+        platform: 'darwin',
+        runCommand,
+        resolveCliInstallation,
+      },
+    )
+
+    await expect(service.installCli('codex', target)).rejects.toThrow()
+
+    expect(JSON.parse(fs.readFileSync(
+      path.join(activePackageRoot, 'package.json'),
+      'utf8',
+    ))).toMatchObject({ version: '0.145.0' })
+    expect(fs.readFileSync(activeCommand, 'utf8')).toContain('old-cli')
+    expect(lifecyclePrefix).not.toBe(activePrefix)
+    expect(path.relative(cacheRoot, lifecyclePrefix!)).not.toMatch(/^\.\.(?:[/\\]|$)/)
+    expect(resolveCliInstallation).toHaveBeenCalledTimes(1)
+    expect(target.send).not.toHaveBeenCalledWith(
+      'cli:install-progress',
+      expect.objectContaining({ state: 'success' }),
+    )
+  })
+})
+
 describe('interactiveTerminalEnvironment', () => {
   it('removes inherited monochrome flags and advertises true color support', () => {
     const env = interactiveTerminalEnvironment({
@@ -388,6 +1196,362 @@ describe('interactiveTerminalEnvironment', () => {
     })
     expect(env.NO_COLOR).toBeUndefined()
     expect(env.NODE_DISABLE_COLORS).toBeUndefined()
+  })
+})
+
+describe('Darwin CLI launch planning', () => {
+  it('keeps the selected absolute CLI command in the Terminal launch plan', () => {
+    const env = {
+      HOME: '/Users/tester',
+      CODEX_HOME: '/Users/tester/custom-codex',
+      PATH: '/opt/homebrew/bin:/usr/bin:/bin',
+    }
+    expect(buildDarwinCliLaunchPlan({
+      executable: '/opt/homebrew/bin/node',
+      argv: ['/Users/tester/.npm-global/lib/node_modules/@openai/codex/bin/codex.js', '--dangerously-skip-permissions'],
+    }, '/Users/tester/project', env)).toEqual({
+      executable: '/opt/homebrew/bin/node',
+      argv: ['/Users/tester/.npm-global/lib/node_modules/@openai/codex/bin/codex.js', '--dangerously-skip-permissions'],
+      workspace: '/Users/tester/project',
+      env,
+    })
+  })
+})
+
+describe('Darwin Codex Desktop integration', () => {
+  it('reports externally managed updates without claiming an AppX or MSIX version', async () => {
+    const { service } = await createDarwinService()
+
+    await expect(service.inspectCodexDesktop()).resolves.toMatchObject({
+      installed: false,
+      version: null,
+      appVersion: null,
+      mirrorVersion: null,
+      mirrorUpdateAvailable: null,
+      mirrorError: null,
+      path: null,
+      installDirectory: null,
+      running: false,
+      latestVersion: null,
+      updateAvailable: null,
+      updateSource: null,
+      updateCheck: 'skipped',
+      updateState: 'unknown',
+      updateError: null,
+    })
+  })
+
+  it('reports a detected Codex App as an installed externally managed desktop app', async () => {
+    const { service } = await createDarwinService({
+      macosCodexAppDetector: async () => ({
+        path: '/Applications/Codex.app',
+        version: '26.727.51351',
+        running: true,
+      }),
+    })
+
+    await expect(service.inspectCodexDesktop()).resolves.toMatchObject({
+      installed: true,
+      version: '26.727.51351',
+      appVersion: '26.727.51351',
+      path: '/Applications/Codex.app',
+      installDirectory: '/Applications/Codex.app',
+      running: true,
+      mirrorVersion: null,
+      mirrorUpdateAvailable: null,
+      mirrorError: null,
+      latestVersion: null,
+      updateAvailable: null,
+      updateSource: null,
+      updateCheck: 'skipped',
+      updateState: 'unknown',
+      updateError: null,
+    })
+  })
+
+  it('degrades a rejected Codex App detector to a not-installed status', async () => {
+    const { service } = await createDarwinService({
+      macosCodexAppDetector: async () => { throw new Error('inspection unavailable') },
+    })
+
+    await expect(service.inspectCodexDesktop()).resolves.toMatchObject({
+      installed: false,
+      version: null,
+      appVersion: null,
+      path: null,
+      installDirectory: null,
+      running: false,
+      updateCheck: 'skipped',
+      updateError: null,
+    })
+  })
+
+  it.runIf(process.platform === 'darwin')('uses the fully verified standalone selection for Maintenance uninstall help', async () => {
+    const fixture = createDarwinStandaloneMaintenanceFixture()
+    vi.stubEnv('HOME', fixture.home)
+    vi.stubEnv('CODEX_HOME', fixture.codexHome)
+    vi.stubEnv('PATH', path.dirname(fixture.visibleCommand))
+    const verificationSpecs: Array<{ executable: string; argv: readonly string[] }> = []
+    let resolutionError: unknown = null
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-maintenance-service-'))
+    temporaryDirectories.push(directory)
+    const store = new AppSettingsStore(path.join(directory, 'settings.json'), directory)
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      macosCodexAppDetector: async () => null,
+      resolveCliCommand: async (provider, env, windowsExecutionMode, resolutionOptions) => {
+        try {
+          return await resolveVerifiedToolCommand(
+            provider,
+            env,
+            windowsExecutionMode,
+            {
+              ...resolutionOptions,
+              arch: process.arch,
+              platform: 'darwin',
+              runCommand: async (spec) => {
+                verificationSpecs.push(spec)
+                if (spec.executable === '/usr/bin/codesign' && spec.argv[0] === '-dv') {
+                  return {
+                    stdout: '',
+                    stderr: [
+                      'Authority=Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)',
+                      'TeamIdentifier=2DC432GLL2',
+                    ].join('\n'),
+                  }
+                }
+                if (spec.argv[0] === '--version') {
+                  return { stdout: `codex-cli ${fixture.version}\n`, stderr: '' }
+                }
+                return { stdout: '', stderr: '' }
+              }
+            },
+          )
+        } catch (error) {
+          resolutionError = error
+          throw error
+        }
+      },
+    })
+
+    const setup = await service.inspectCodexSetupStatus()
+    const stagedExecutable = verificationSpecs[0]?.argv[2]
+
+    expect(resolutionError).toBeNull()
+    expect(fs.existsSync(fixture.executionMarker)).toBe(false)
+    expect(stagedExecutable).toEqual(expect.any(String))
+    expect(stagedExecutable).not.toBe(fs.realpathSync(fixture.executablePath))
+    expect(fs.existsSync(path.dirname(stagedExecutable!))).toBe(false)
+    expect(setup.cli).toMatchObject({
+      installed: true,
+      version: fixture.version,
+      path: fs.realpathSync(fixture.executablePath),
+      uninstall: {
+        available: false,
+        reason: expect.stringContaining('standalone'),
+        manualCommand: expect.any(String),
+      },
+    })
+    expect(verificationSpecs).toEqual([
+      {
+        executable: '/usr/bin/codesign',
+        argv: ['--verify', '--strict', stagedExecutable!],
+      },
+      {
+        executable: '/usr/bin/codesign',
+        argv: ['-dv', '--verbose=4', stagedExecutable!],
+      },
+      {
+        executable: stagedExecutable!,
+        argv: ['--version'],
+      },
+    ])
+  })
+
+  it.runIf(process.platform === 'darwin')('fails closed when standalone command verification rejects during Maintenance inspection', async () => {
+    const fixture = createDarwinStandaloneMaintenanceFixture()
+    vi.stubEnv('HOME', fixture.home)
+    vi.stubEnv('CODEX_HOME', fixture.codexHome)
+    vi.stubEnv('PATH', path.dirname(fixture.visibleCommand))
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-maintenance-reject-'))
+    temporaryDirectories.push(directory)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        macosCodexAppDetector: async () => null,
+        resolveCliCommand: async () => { throw new Error('standalone verification rejected') },
+      },
+    )
+
+    const setup = await service.inspectCodexSetupStatus()
+
+    expect(setup.cli).toMatchObject({
+      installed: true,
+      version: null,
+      path: null,
+      uninstall: { available: false, manualCommand: null },
+    })
+    expect(fs.existsSync(fixture.executionMarker)).toBe(false)
+  })
+
+  it.runIf(process.platform === 'darwin')('withholds uninstall help when a Maintenance resolver returns no verified selection', async () => {
+    const fixture = createDarwinStandaloneMaintenanceFixture()
+    vi.stubEnv('HOME', fixture.home)
+    vi.stubEnv('CODEX_HOME', fixture.codexHome)
+    vi.stubEnv('PATH', path.dirname(fixture.visibleCommand))
+    const executable = fs.realpathSync(fixture.executablePath)
+    const execute = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => ({
+      executable: spec.executable,
+      argv: [...spec.argv],
+      exitCode: 0,
+      signal: null,
+      stdout: spec.executable === executable && spec.argv[0] === '--version'
+        ? `codex-cli ${fixture.version}\n`
+        : '',
+      stderr: '',
+      outputBytes: 0,
+      durationMs: 1,
+    }))
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-maintenance-unmarked-'))
+    temporaryDirectories.push(directory)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'darwin',
+        macosCodexAppDetector: async () => null,
+        resolveCliCommand: async () => ({ executable, argv: [] }),
+        runCommand: execute,
+      },
+    )
+
+    const setup = await service.inspectCodexSetupStatus()
+
+    expect(setup.cli).toMatchObject({
+      installed: true,
+      version: `codex-cli ${fixture.version}`,
+      path: executable,
+      uninstall: { available: false, manualCommand: null },
+    })
+    expect(fs.existsSync(fixture.executionMarker)).toBe(false)
+  })
+
+  it('rejects managed install operations with actionable macOS guidance', async () => {
+    const { service } = await createDarwinService()
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    await expect(service.installCodexDesktop(target)).rejects.toThrow('由 Codex App 管理')
+  })
+
+  it('rejects managed uninstall operations with actionable macOS guidance', async () => {
+    const { service } = await createDarwinService()
+
+    await expect(service.uninstallCodexDesktop()).rejects.toThrow('由 Codex App 管理')
+  })
+
+  it('preserves the XingMang Codex readiness check before resolving or running the CLI', async () => {
+    const { service, resolveCli, execute } = await createDarwinService({ configured: false })
+
+    await expect(service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('Codex 当前不是星芒 AI 配置')
+    expect(resolveCli).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('rejects a stored workspace that is not an existing directory', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-missing-workspace-'))
+    temporaryDirectories.push(directory)
+    const missingWorkspace = path.join(directory, 'missing')
+    const { service, execute, release } = await createDarwinService({ workspace: missingWorkspace })
+
+    await expect(service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('工作目录不存在，请重新选择')
+    expect(execute).not.toHaveBeenCalled()
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('opens Codex on Darwin with the verified CLI and stored workspace as literal argv', async () => {
+    const { service, workspace, resolvedCommand, resolveCli, execute, release } = await createDarwinService()
+
+    const result = await service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })
+
+    expect(resolveCli).toHaveBeenCalledWith('codex', expect.any(Object), 'trusted-only', {
+      darwinStagingRetention: 'ephemeral',
+    })
+    expect(execute).toHaveBeenCalledWith({
+      executable: resolvedCommand.executable,
+      argv: [...resolvedCommand.argv, 'app', workspace],
+    }, expect.objectContaining({ cwd: workspace }))
+    expect(release).toHaveBeenCalledOnce()
+    expect(result).toMatchObject({
+      restarted: false,
+      status: {
+        version: null,
+        appVersion: null,
+        updateCheck: 'skipped',
+      },
+    })
+  })
+
+  it('uses codexEnv for Darwin Codex Desktop command resolution and launch', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-codex-env-'))
+    temporaryDirectories.push(root)
+    const codexHome = path.join(root, 'selected-codex-home')
+    const { service, codexEnv, resolveCli, execute } = await createDarwinService({ codexHome })
+
+    await service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })
+
+    expect(resolveCli.mock.calls[0]?.[1]).toMatchObject({ CODEX_HOME: codexHome })
+    expect(execute.mock.calls[0]?.[1]).toMatchObject({
+      env: expect.objectContaining({
+        HOME: codexEnv.HOME,
+        CODEX_HOME: codexHome,
+      }),
+    })
+  })
+
+  it('releases the verified Darwin CLI when opening Codex fails', async () => {
+    const { service, execute, release } = await createDarwinService()
+    execute.mockRejectedValueOnce(new Error('codex app failed'))
+
+    await expect(service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('codex app failed')
+
+    expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('fails closed for Darwin Codex restart without resolving or running a command', async () => {
+    const { service, resolveCli, execute } = await createDarwinService()
+
+    await expect(service.launchCodexDesktop('restart', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('macOS 不支持重启')
+    expect(resolveCli).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('rejects a bare Codex command instead of resolving it through PATH', async () => {
+    const fixture = await createDarwinService()
+    fixture.resolveCli.mockResolvedValueOnce({ executable: 'codex', argv: [] })
+
+    await expect(fixture.service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('未解析为绝对路径')
+    expect(fixture.execute).not.toHaveBeenCalled()
   })
 })
 
@@ -495,7 +1659,7 @@ describe('CLI latest version state', () => {
   })
 
   it('prefers Grok metadata beside the executable over stale root metadata', async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-version-'))
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-grok-version-')))
     temporaryDirectories.push(home)
     const bin = path.join(home, '.grok', 'bin')
     fs.mkdirSync(bin, { recursive: true })
@@ -593,8 +1757,71 @@ describe('CLI latest version state', () => {
     })
   })
 
-  it('uses npm maintenance only for npm providers and rejects Grok bootstrap plans', () => {
-    expect(() => buildCliMaintenancePlan('grok', null)).toThrow('已签名二进制')
+  it('selects the Grok installer appropriate to each platform', () => {
+    expect(grokInstallStrategyFor('win32')).toBe('windows-native')
+    expect(grokInstallStrategyFor('darwin')).toBe('darwin-official-npm')
+    expect(grokInstallStrategyFor('linux')).toBe('external')
+  })
+
+  it('allows Grok npm maintenance only after Darwin integrity verification', () => {
+    expect(buildCliMaintenancePlan(
+      'grok',
+      '/Users/tester/.local/bin/npm',
+      null,
+      '0.2.118',
+      true,
+      'darwin',
+    )).toEqual({
+      kind: 'npm-install',
+      executable: '/Users/tester/.local/bin/npm',
+      argv: [
+        'ci',
+        '--omit=dev',
+      ],
+      windowsPackageManager: 'npm',
+    })
+    const darwinGrokPlan = buildCliMaintenancePlan(
+      'grok',
+      '/Users/tester/.local/bin/npm',
+      '/tmp/ignored-prefix',
+      '0.2.118',
+      true,
+      'darwin',
+    )
+    expect(darwinGrokPlan.argv).not.toContain('--global')
+    expect(darwinGrokPlan.argv).not.toContain('--ignore-scripts')
+    expect(darwinGrokPlan.argv).not.toContain('--force')
+    expect(darwinGrokPlan.argv.some((argument) => argument.startsWith('--prefix='))).toBe(false)
+
+    expect(() => buildCliMaintenancePlan(
+      'grok',
+      '/Users/tester/.local/bin/npm',
+      null,
+      '0.2.118',
+      false,
+      'darwin',
+    )).toThrow('完整性校验')
+
+    expect(() => buildCliMaintenancePlan(
+      'grok',
+      'C:\\Program Files\\nodejs\\npm.cmd',
+      null,
+      '0.2.118',
+      true,
+      'win32',
+    )).toThrow('已签名二进制')
+
+    expect(() => buildCliMaintenancePlan(
+      'grok',
+      '/usr/bin/npm',
+      null,
+      '0.2.118',
+      true,
+      'linux',
+    )).toThrow('不支持')
+  })
+
+  it('uses npm maintenance for npm providers', () => {
     expect(buildCliMaintenancePlan(
       'codex',
       'C:\\Program Files\\nodejs\\npm.cmd',
@@ -620,6 +1847,15 @@ describe('CLI latest version state', () => {
       '2.1.220',
       true,
     ).argv).not.toContain('--ignore-scripts')
+
+    expect(() => buildCliMaintenancePlan(
+      'codex',
+      '/usr/local/bin/npm',
+      null,
+      '0.146.0',
+      true,
+      'darwin',
+    )).toThrow('macOS 用户级 npm 前缀')
   })
 
   it('builds source-owned uninstall plans without deleting shared prefixes', () => {

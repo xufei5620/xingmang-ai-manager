@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { cliCatalog, type ProviderId } from './catalog'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import { releaseStagedDarwinCli } from './darwin-cli-staging'
 import {
   commandEnvironment,
   findExecutable,
@@ -10,6 +11,17 @@ import {
   runCommand,
   type CommandSpec,
 } from './command-runner'
+import {
+  resolveDarwinCodexStandaloneSelection,
+  stageDarwinCodexStandaloneSelection,
+  type DarwinCodexCommandResult,
+  type DarwinCodexStandaloneSelection,
+} from './macos-codex'
+import {
+  resolveDarwinGrokCanonicalSelection,
+  stageDarwinGrokCanonicalSelection,
+} from './macos-grok'
+import { sameLocalPathIdentity } from './path-identity'
 import { stageVerifiedNativeCli } from './trusted-native-cli'
 import type { WindowsCliExecutionMode } from './windows-elevation'
 
@@ -41,11 +53,26 @@ export interface ResolveCliInstallationOptions {
   queryNpmRoot?: (npmExecutable: string, env: NodeJS.ProcessEnv) => Promise<string | null>
 }
 
+export interface ResolveCliCommandOptions {
+  arch?: NodeJS.Architecture
+  platform?: NodeJS.Platform
+  runCommand?: (
+    spec: { executable: string; argv: readonly string[] },
+  ) => Promise<DarwinCodexCommandResult>
+  darwinStagingRetention?: 'ephemeral' | 'retained'
+}
+
+export interface ResolvedCliCommand extends CommandSpec {
+  verifiedDarwinStandalone?: DarwinCodexStandaloneSelection
+  release?: () => Promise<void>
+}
+
 export interface CliUninstallCapabilityOptions {
   managedNpmPrefix?: string | null
   managedNativeDirectory?: string | null
   homeDirectory?: string
   platform?: NodeJS.Platform
+  verifiedDarwinStandalone?: DarwinCodexStandaloneSelection | null
   windowsExecutionMode?: WindowsCliExecutionMode
 }
 
@@ -56,6 +83,7 @@ interface PackageManifest {
 }
 
 const MAX_PACKAGE_MANIFEST_BYTES = 256 * 1024
+const CODEX_STANDALONE_VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-(?:alpha|beta)(?:\.\d+){0,2})?$/
 
 function normalizedPathKey(value: string, platform: NodeJS.Platform): string {
   const resolved = path.resolve(value)
@@ -69,6 +97,55 @@ function equivalentPath(left: string, right: string, platform: NodeJS.Platform):
     return platform === 'win32' ? normalized.toLowerCase() : normalized
   }
   return normalize(left) === normalize(right)
+}
+
+function shellSingleQuote(value: string): string {
+  if (value.includes('\0')) throw new Error('卸载路径包含无效字符')
+  return `'${value.replaceAll("'", `'"'"'`)}'`
+}
+
+function codexStandaloneManualUninstallCommand(
+  installation: CliInstallation,
+  selection: DarwinCodexStandaloneSelection | null | undefined,
+  homeDirectory: string,
+  platform: NodeJS.Platform,
+): string | null {
+  if (platform !== 'darwin' || !selection) return null
+  const expectedCommand = path.posix.join(homeDirectory, '.local', 'bin', 'codex')
+  if (
+    installation.source !== 'native'
+    || !equivalentPath(installation.commandPath, expectedCommand, platform)
+    || !equivalentPath(selection.requestedExecutablePath, expectedCommand, platform)
+  ) return null
+  const standaloneRoot = path.posix.join(selection.codexHome, 'packages', 'standalone')
+  const releasesRoot = path.posix.join(standaloneRoot, 'releases')
+  if (
+    !path.posix.isAbsolute(selection.codexHome)
+    || selection.codexHome.includes('\0')
+    || !CODEX_STANDALONE_VERSION_PATTERN.test(selection.version)
+    || !/^(?:aarch64|x86_64)-apple-darwin$/.test(selection.target)
+  ) return null
+  const expectedReleaseRoot = path.posix.join(
+    releasesRoot,
+    `${selection.version}-${selection.target}`,
+  )
+  if (
+    !equivalentPath(selection.releaseRoot, expectedReleaseRoot, platform)
+    || !equivalentPath(
+      selection.executablePath,
+      path.posix.join(expectedReleaseRoot, 'bin', 'codex'),
+      platform,
+    )
+  ) return null
+  const trashRoot = path.posix.join(homeDirectory, '.Trash')
+
+  return [
+    `trash_root=${shellSingleQuote(trashRoot)} &&`,
+    '/bin/mkdir -p "$trash_root" &&',
+    'trash_dir=$(/usr/bin/mktemp -d "$trash_root/Codex-CLI.XXXXXXXX") &&',
+    `/bin/mv ${shellSingleQuote(selection.requestedExecutablePath)} "$trash_dir/codex" &&`,
+    `/bin/mv ${shellSingleQuote(standaloneRoot)} "$trash_dir/standalone"`,
+  ].join('\n')
 }
 
 export function cliUninstallCapability(
@@ -119,6 +196,21 @@ export function cliUninstallCapability(
     ))
   ) {
     return { available: true, reason: null, manualCommand: null }
+  }
+  if (provider === 'codex') {
+    const manualCommand = codexStandaloneManualUninstallCommand(
+      installation,
+      options.verifiedDarwinStandalone,
+      homeDirectory,
+      platform,
+    )
+    if (manualCommand) {
+      return {
+        available: false,
+        reason: '已识别 OpenAI 官方 standalone 安装；为保留配置和会话，请按教程将 CLI 程序移动到废纸篓',
+        manualCommand,
+      }
+    }
   }
   return {
     available: false,
@@ -326,11 +418,15 @@ export async function resolveCliInstallation(
     if (!packageRoot) continue
     const commandPath = closestCommandToPackage(commands, packageRoot, platform)
     const manifest = readManifest(packageRoot)
+    const canonicalGlobalRoot = globalRootFromPackageRoot(packageRoot, cliCatalog[provider].packageName)
+    const reportedGlobalRoot = npmGlobalRoot && sameLocalPathIdentity(npmGlobalRoot, canonicalGlobalRoot)
+      ? npmGlobalRoot
+      : canonicalGlobalRoot
     return {
       commandPath,
       installDirectory: packageRoot,
       packageRoot,
-      npmPrefix: npmPrefixFromGlobalRoot(globalRootFromPackageRoot(packageRoot, cliCatalog[provider].packageName)),
+      npmPrefix: npmPrefixFromGlobalRoot(reportedGlobalRoot),
       packageVersion: typeof manifest?.version === 'string' && manifest.version.trim().length <= 128
         ? manifest.version.trim() || null
         : null,
@@ -404,10 +500,64 @@ export async function resolveCliCommand(
   provider: ProviderId,
   envInput: NodeJS.ProcessEnv = process.env,
   windowsExecutionMode: WindowsCliExecutionMode = 'trusted-only',
-): Promise<CommandSpec> {
+  options: ResolveCliCommandOptions = {},
+): Promise<ResolvedCliCommand> {
   const env = commandEnvironment(envInput)
-  const installation = await resolveCliInstallation(provider, { env })
+  const platform = options.platform ?? process.platform
+  const installation = await resolveCliInstallation(provider, { env, platform })
   if (!installation) throw new Error(`未检测到 ${cliCatalog[provider].name}`)
+  const runDarwinVerificationCommand = options.runCommand ?? (async (spec) => {
+    const result = await runCommand(spec, {
+      env,
+      timeoutMs: 8_000,
+      maxOutputBytes: 1024 * 1024,
+    })
+    return { stdout: result.stdout, stderr: result.stderr }
+  })
+  if (platform === 'darwin' && provider === 'codex' && installation.source === 'native') {
+    const selectionOptions = {
+      executablePath: installation.commandPath,
+      env,
+      platform,
+      arch: options.arch,
+    }
+    const selection = resolveDarwinCodexStandaloneSelection(selectionOptions)
+    const executable = await stageDarwinCodexStandaloneSelection({
+      ...selectionOptions,
+      selection,
+      runCommand: runDarwinVerificationCommand,
+      retention: options.darwinStagingRetention,
+    })
+    return {
+      executable,
+      argv: [],
+      verifiedDarwinStandalone: selection,
+      release: options.darwinStagingRetention === 'ephemeral'
+        ? () => releaseStagedDarwinCli(executable)
+        : undefined,
+    }
+  }
+  if (platform === 'darwin' && provider === 'grok' && installation.source === 'native') {
+    const homeDirectory = env.HOME || os.homedir()
+    const selected = resolveDarwinGrokCanonicalSelection(
+      homeDirectory,
+      installation.commandPath,
+    )
+    const executable = await stageDarwinGrokCanonicalSelection({
+      homeDirectory,
+      selection: selected,
+      expectedVersion: selected.version,
+      runCommand: runDarwinVerificationCommand,
+      retention: options.darwinStagingRetention,
+    })
+    return {
+      executable,
+      argv: [],
+      release: options.darwinStagingRetention === 'ephemeral'
+        ? () => releaseStagedDarwinCli(executable)
+        : undefined,
+    }
+  }
   if (installation.packageRoot) {
     if (provider === 'codex') {
       const native = codexNativePackageBinPath(installation.packageRoot)
@@ -420,7 +570,7 @@ export async function resolveCliCommand(
     }
     const bin = packageBinPath(installation.packageRoot, provider)
     if (bin) {
-      if (process.platform === 'win32' && path.extname(bin).toLowerCase() === '.exe') {
+      if (platform === 'win32' && path.extname(bin).toLowerCase() === '.exe') {
         const executable = windowsExecutionMode === 'trusted-only' && isUserWritablePath(bin, env)
           ? await stageVerifiedNativeCli(provider, bin, env)
           : bin
@@ -429,7 +579,7 @@ export async function resolveCliCommand(
       const node = await findExecutable('node', {
         env,
         additionalPaths: [path.dirname(installation.commandPath)],
-        trustedOnly: process.platform === 'win32'
+        trustedOnly: platform === 'win32'
           && windowsExecutionMode === 'trusted-only'
           && !isUserWritablePath(installation.packageRoot, env),
       })
@@ -437,10 +587,10 @@ export async function resolveCliCommand(
     }
   }
   const extension = path.extname(installation.commandPath).toLowerCase()
-  if (process.platform === 'win32' && ['.cmd', '.bat', '.ps1'].includes(extension)) {
+  if (platform === 'win32' && ['.cmd', '.bat', '.ps1'].includes(extension)) {
     throw new Error(`${cliCatalog[provider].name} 的命令入口无法安全执行，请重新安装该 CLI`)
   }
-  const executable = process.platform === 'win32'
+  const executable = platform === 'win32'
     && windowsExecutionMode === 'trusted-only'
     && isUserWritablePath(installation.commandPath, env)
     ? await stageVerifiedNativeCli(provider, installation.commandPath, env)

@@ -47,7 +47,48 @@ describe('managed CLI paths', () => {
     )
   })
 
-  it('creates protected directories and an empty single-link npm config', async () => {
+  it('keeps Darwin npm maintenance below the current user Library directory', () => {
+    const env = { HOME: '/Users/isolated-test-user' }
+    const productRoot = '/Users/isolated-test-user/Library/Application Support/XingMangAI'
+
+    expect(managedProductRoot(env, 'darwin')).toBe(productRoot)
+    expect(managedCliRoot(env, 'darwin')).toBe(path.join(productRoot, 'Cli'))
+    expect(managedNpmPrefix(env, 'darwin')).toBe(path.join(productRoot, 'Cli', 'npm'))
+    expect(managedNpmCacheRoot(env, 'darwin')).toBe(path.join(productRoot, 'Cli', 'npm-cache'))
+    expect(managedNpmBinDirectory(env, 'darwin')).toBe(path.join(productRoot, 'Cli', 'npm', 'bin'))
+  })
+
+  it.runIf(process.platform === 'darwin')('creates a private Darwin npm layout for atomic maintenance', async () => {
+    const temporaryHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-managed-cli-darwin-'))
+    temporaryDirectories.push(temporaryHome)
+    const homeDirectory = fs.realpathSync(temporaryHome)
+    const env = { ...process.env, HOME: homeDirectory }
+
+    const layout = await ensureManagedNpmLayout({ env, platform: 'darwin' })
+
+    expect(layout.prefix).toBe(path.join(
+      homeDirectory,
+      'Library',
+      'Application Support',
+      'XingMangAI',
+      'Cli',
+      'npm',
+    ))
+    expect(layout.cacheRoot).toBe(path.join(
+      homeDirectory,
+      'Library',
+      'Application Support',
+      'XingMangAI',
+      'Cli',
+      'npm-cache',
+    ))
+    expect(fs.readFileSync(layout.userConfig, 'utf8')).toBe('')
+    expect(fs.statSync(layout.prefix).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(layout.cacheRoot).mode & 0o777).toBe(0o700)
+    expect(fs.statSync(layout.userConfig).mode & 0o777).toBe(0o600)
+  })
+
+  it.runIf(process.platform === 'win32')('creates protected directories and an empty single-link npm config', async () => {
     const programData = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-managed-cli-'))
     temporaryDirectories.push(programData)
     const applyWindowsAcl = vi.fn(async () => undefined)
@@ -68,7 +109,7 @@ describe('managed CLI paths', () => {
     expect(applyWindowsAcl).toHaveBeenCalledTimes(1)
   })
 
-  it('rejects a hard-linked npm config before replacing it', async () => {
+  it.runIf(process.platform === 'win32')('rejects a hard-linked npm config before replacing it', async () => {
     const programData = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-managed-cli-'))
     temporaryDirectories.push(programData)
     const options = {
@@ -83,7 +124,7 @@ describe('managed CLI paths', () => {
     await expect(ensureManagedNpmLayout(options)).rejects.toThrow('单链接普通文件')
   })
 
-  it('restores the previous prefix after a crash before promotion', async () => {
+  it.runIf(process.platform === 'win32')('restores the previous prefix after a crash before promotion', async () => {
     const programData = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-managed-cli-'))
     temporaryDirectories.push(programData)
     const options = {
@@ -104,7 +145,7 @@ describe('managed CLI paths', () => {
     expect(fs.existsSync(transaction)).toBe(false)
   })
 
-  it('rolls back a promoted prefix when cleanup was interrupted', async () => {
+  it.runIf(process.platform === 'win32')('rolls back a promoted prefix when cleanup was interrupted', async () => {
     const programData = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-managed-cli-'))
     temporaryDirectories.push(programData)
     const options = {
@@ -127,7 +168,7 @@ describe('managed CLI paths', () => {
     expect(fs.existsSync(transaction)).toBe(false)
   })
 
-  it('fails closed when more than one rollback candidate exists', async () => {
+  it.runIf(process.platform === 'win32')('fails closed when more than one rollback candidate exists', async () => {
     const programData = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-managed-cli-'))
     temporaryDirectories.push(programData)
     const options = {

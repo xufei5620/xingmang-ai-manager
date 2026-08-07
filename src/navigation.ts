@@ -30,20 +30,23 @@ export interface NavigationItem {
   id: PageId
   label: string
   icon: LucideIcon
+  group: NavigationGroup
 }
 
+export type NavigationGroup = 'workbench' | 'extensions' | 'system' | 'utility'
+
 export const navigationItems: readonly NavigationItem[] = [
-  { id: 'overview', label: '工具概览', icon: Gauge },
-  { id: 'sessions', label: '会话管理', icon: MessageSquareText },
-  { id: 'mcp', label: 'MCP 管理', icon: Blocks },
-  { id: 'skills', label: 'Skills 管理', icon: WandSparkles },
-  { id: 'plugins', label: 'Plugins/市场', icon: PackageOpen },
-  { id: 'backups', label: '配置备份', icon: ArchiveRestore },
-  { id: 'health', label: '健康诊断', icon: HeartPulse },
-  { id: 'maintenance', label: '安装维护', icon: Wrench },
-  { id: 'feedback', label: '反馈与诊断', icon: MessageSquareWarning },
-  { id: 'updates', label: '检查更新', icon: RefreshCw },
-  { id: 'settings', label: '设置', icon: Settings },
+  { id: 'overview', label: '工具概览', icon: Gauge, group: 'workbench' },
+  { id: 'sessions', label: '会话管理', icon: MessageSquareText, group: 'workbench' },
+  { id: 'mcp', label: 'MCP 管理', icon: Blocks, group: 'extensions' },
+  { id: 'skills', label: 'Skills 管理', icon: WandSparkles, group: 'extensions' },
+  { id: 'plugins', label: 'Plugins/市场', icon: PackageOpen, group: 'extensions' },
+  { id: 'backups', label: '配置备份', icon: ArchiveRestore, group: 'system' },
+  { id: 'health', label: '健康诊断', icon: HeartPulse, group: 'system' },
+  { id: 'maintenance', label: '安装维护', icon: Wrench, group: 'system' },
+  { id: 'feedback', label: '反馈与诊断', icon: MessageSquareWarning, group: 'utility' },
+  { id: 'updates', label: '检查更新', icon: RefreshCw, group: 'utility' },
+  { id: 'settings', label: '设置', icon: Settings, group: 'utility' },
 ]
 
 export function navigationItem(pageId: PageId): NavigationItem {

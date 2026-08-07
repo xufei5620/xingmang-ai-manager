@@ -94,7 +94,9 @@ export async function ensureManagedNpmLayout(
   options: ManagedNpmLayoutOptions = {},
 ): Promise<ManagedNpmLayout> {
   const platform = options.platform ?? process.platform
-  if (platform !== 'win32') throw new Error('托管 npm 安装目录目前仅支持 Windows')
+  if (platform !== 'win32' && platform !== 'darwin') {
+    throw new Error('托管 npm 安装目录目前仅支持 Windows 和 macOS')
+  }
   const env = options.env ?? process.env
   const directoryOptions = {
     platform,
@@ -113,8 +115,8 @@ export async function ensureManagedNpmLayout(
   await recoverInterruptedManagedNpmTransaction(prefix, cacheRoot, platform)
   await ensureTrustedDirectory(prefix, directoryOptions)
 
-  // npm must not consume a user-controlled .npmrc while running elevated.
-  // Recreate this app-owned empty file after its parent ACL has been secured.
+  // npm must not consume a user-controlled .npmrc during managed maintenance.
+  // Recreate this app-owned empty file after its parent has been secured.
   const userConfig = path.join(cliRoot, 'npmrc')
   if (fs.existsSync(userConfig)) {
     assertPlainSingleLinkFile(userConfig)

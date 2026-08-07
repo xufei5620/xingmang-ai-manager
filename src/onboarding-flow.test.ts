@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
+import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import type { AppConfigSummary, CodexSetupStatus, ToolStatus } from './types'
 import {
   authorizeCodex,
@@ -177,6 +178,23 @@ describe('prepareCodexEnvironment', () => {
       error: desktopError,
     })
     expect(listener.value.onAction).toHaveBeenLastCalledWith('idle')
+  })
+
+  it('does not call the managed desktop installer when macOS owns installation', async () => {
+    const cliReady = setupStatus({ desktop: false })
+    const api: CodexSetupApi = {
+      getCodexSetupStatus: vi.fn().mockResolvedValue(cliReady),
+      installCli: vi.fn(),
+      installCodexDesktop: vi.fn(),
+    }
+    const listener = callbacks()
+
+    await expect(prepareCodexEnvironment(
+      api,
+      listener.value,
+      platformCapabilitiesFor('darwin', 'arm64'),
+    )).resolves.toEqual({ outcome: 'ready', status: cliReady })
+    expect(api.installCodexDesktop).not.toHaveBeenCalled()
   })
 
   it('shows desktop recovery when installation returns without a detectable AppX package', async () => {

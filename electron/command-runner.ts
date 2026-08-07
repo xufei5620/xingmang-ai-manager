@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
+import { darwinCommandPathCandidates } from './macos-platform'
 import { managedNativeProviderRoot, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import {
@@ -200,6 +201,7 @@ export function windowsSystemExecutable(
 export function trustedCommandEnvironment(
   baseEnv: NodeJS.ProcessEnv = process.env,
   machinePaths?: WindowsMachinePaths,
+  platform: NodeJS.Platform = machinePaths ? 'win32' : process.platform,
 ): NodeJS.ProcessEnv {
   const result: NodeJS.ProcessEnv = {}
   // These variables can inject code, alter package resolution, or replace the
@@ -311,50 +313,49 @@ export function trustedCommandEnvironment(
       result[key] = value
     }
   }
-  if (process.platform !== 'win32') {
+  if (platform !== 'win32') {
     result.PATH = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
     result.PYTHONNOUSERSITE = '1'
     result.PYTHONSAFEPATH = '1'
     return result
   }
   const roots = machinePaths ?? resolveWindowsMachinePaths()
-  const systemRoot = roots.systemRoot
   const machinePathEntries = [
     roots.system32,
-    path.join(roots.system32, 'WindowsPowerShell', 'v1.0'),
-    path.join(roots.programFiles, 'PowerShell', '7'),
-    path.join(roots.programFiles, 'nodejs'),
-    roots.programFilesX86 && path.join(roots.programFilesX86, 'nodejs'),
-    path.join(roots.programData, 'XingMangAI', 'Cli', 'npm'),
+    path.win32.join(roots.system32, 'WindowsPowerShell', 'v1.0'),
+    path.win32.join(roots.programFiles, 'PowerShell', '7'),
+    path.win32.join(roots.programFiles, 'nodejs'),
+    roots.programFilesX86 && path.win32.join(roots.programFilesX86, 'nodejs'),
+    path.win32.join(roots.programData, 'XingMangAI', 'Cli', 'npm'),
   ].filter((value): value is string => Boolean(value))
   const existingPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
-  const candidates = [...machinePathEntries, ...existingPath.split(path.delimiter)]
+  const candidates = [...machinePathEntries, ...existingPath.split(path.win32.delimiter)]
   const seen = new Set<string>()
   const entries: string[] = []
   for (const candidate of candidates) {
     const unquoted = candidate.trim().replace(/^"(.*)"$/, '$1')
     if (!unquoted || !isPotentialWindowsExecutionPath(unquoted, roots)) continue
-    const key = normalizedPathKey(unquoted)
+    const key = path.win32.normalize(unquoted).toLowerCase()
     if (seen.has(key)) continue
     seen.add(key)
     entries.push(unquoted)
   }
-  result.PATH = entries.join(path.delimiter)
+  result.PATH = entries.join(path.win32.delimiter)
   const moduleCandidates = [
-    path.join(roots.system32, 'WindowsPowerShell', 'v1.0', 'Modules'),
-    path.join(roots.programFiles, 'WindowsPowerShell', 'Modules'),
-    path.join(roots.programFiles, 'PowerShell', '7', 'Modules'),
+    path.win32.join(roots.system32, 'WindowsPowerShell', 'v1.0', 'Modules'),
+    path.win32.join(roots.programFiles, 'WindowsPowerShell', 'Modules'),
+    path.win32.join(roots.programFiles, 'PowerShell', '7', 'Modules'),
   ]
   const moduleEntries: string[] = []
   const seenModules = new Set<string>()
   for (const candidate of moduleCandidates) {
     if (!isTrustedWindowsMachinePath(candidate, roots)) continue
-    const key = normalizedPathKey(candidate)
+    const key = path.win32.normalize(candidate).toLowerCase()
     if (seenModules.has(key)) continue
     seenModules.add(key)
     moduleEntries.push(candidate)
   }
-  result.PSModulePath = moduleEntries.join(path.delimiter)
+  result.PSModulePath = moduleEntries.join(path.win32.delimiter)
   result.SystemRoot = roots.systemRoot
   result.WINDIR = roots.systemRoot
   result.SystemDrive = path.win32.parse(roots.systemRoot).root.replace(/[\\/]$/, '')
@@ -436,11 +437,13 @@ export function commandEnvironment(
   }
 
   const existingPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
-  const candidates = [
-    ...additionalPaths,
-    ...defaultCommandPaths(baseEnv),
-    ...existingPath.split(path.delimiter),
-  ]
+  const candidates = process.platform === 'darwin'
+    ? darwinCommandPathCandidates(baseEnv, additionalPaths)
+    : [
+        ...additionalPaths,
+        ...defaultCommandPaths(baseEnv),
+        ...existingPath.split(path.delimiter),
+      ]
   const seen = new Set<string>()
   const entries: string[] = []
   for (const candidate of candidates) {

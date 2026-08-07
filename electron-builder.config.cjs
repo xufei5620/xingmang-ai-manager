@@ -10,7 +10,20 @@ function resolveUpdateUrl() {
 }
 
 const outputDirectory = process.env.XINGMANG_OUTPUT_DIR?.trim() || 'release'
-const releaseMode = process.env.XINGMANG_RELEASE === '1'
+const localBuildMode = process.env.XINGMANG_LOCAL_BUILD === '1'
+const releaseMode = !localBuildMode && process.env.XINGMANG_RELEASE === '1'
+const freeMacReleaseMode = !localBuildMode && process.env.XINGMANG_MAC_FREE_RELEASE === '1'
+if (releaseMode && freeMacReleaseMode) {
+  throw new Error('XINGMANG_RELEASE=1 与 XINGMANG_MAC_FREE_RELEASE=1 不能同时启用')
+}
+const publicReleaseMode = releaseMode || freeMacReleaseMode
+if (publicReleaseMode && process.env.XINGMANG_UPDATE_DEV === '1') {
+  throw new Error('公开发布模式不能启用 XINGMANG_UPDATE_DEV=1')
+}
+const freeMacSigningIdentity = process.env.CSC_NAME?.trim()
+if (freeMacReleaseMode && !freeMacSigningIdentity) {
+  throw new Error('XINGMANG_MAC_FREE_RELEASE=1 需要通过 CSC_NAME 指定签名身份')
+}
 const signingPublisher = process.env.XINGMANG_SIGNING_PUBLISHER?.trim() || undefined
 const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责任公司'
 
@@ -32,6 +45,11 @@ module.exports = {
   directories: {
     output: outputDirectory,
   },
+  // The main process uses this integrity-protected package metadata to keep
+  // unpacked/ad-hoc artifacts away from the production update channel.
+  extraMetadata: {
+    xingmangLocalBuild: !publicReleaseMode,
+  },
   files: [
     'dist/**/*',
     'dist-electron/**/*',
@@ -51,7 +69,31 @@ module.exports = {
   releaseInfo: {
     releaseNotesFile: 'release-notes.md',
   },
-  forceCodeSigning: releaseMode,
+  forceCodeSigning: publicReleaseMode,
+  mac: {
+    target: [
+      { target: 'dmg', arch: ['arm64', 'x64'] },
+      { target: 'zip', arch: ['arm64', 'x64'] },
+    ],
+    artifactName: 'XingMang-AI-Manager-${version}-${arch}.${ext}',
+    category: 'public.app-category.developer-tools',
+    minimumSystemVersion: '13.0',
+    hardenedRuntime: true,
+    icon: 'assets/icon.icns',
+    // Local packages need an ad-hoc signature after Electron fuses are changed,
+    // otherwise macOS rejects the invalidated upstream seal. This is not a
+    // distributable Developer ID signature; release mode discovers that identity.
+    identity: freeMacReleaseMode ? freeMacSigningIdentity : releaseMode ? undefined : '-',
+    notarize: releaseMode,
+    ...(freeMacReleaseMode ? { timestamp: 'none' } : {}),
+  },
+  ...(freeMacReleaseMode ? {
+    dmg: {
+      // The free update channel is ZIP-only. DMGs remain manual installers and
+      // must not create blockmaps or enter latest-mac.yml.
+      writeUpdateInfo: false,
+    },
+  } : {}),
   win: {
     requestedExecutionLevel: 'asInvoker',
     // Stated explicitly because the strict verifier in update-signature.ts is

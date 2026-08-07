@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ProviderId } from './catalog'
+import type { ProviderConfigRoots } from './codex-home'
 import type { NativeConfigInspection } from './config-files'
 import {
   createDiagnosticsExport,
@@ -85,6 +86,39 @@ function dependencies(home: string, apiKey = 'sk-super-secret-value'): Diagnosti
 }
 
 describe('diagnostics', () => {
+  it('treats macOS as supported without probing Windows PowerShell', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    const inspectPowerShell = vi.fn(input.inspectPowerShell)
+    input.platform = 'darwin'
+    input.inspectPowerShell = inspectPowerShell
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({
+      state: 'pass',
+      details: { supported: true },
+    })
+    expect(report.items.find((item) => item.code === 'SYSTEM_POWERSHELL')).toMatchObject({
+      state: 'pass',
+      details: { required: false, installed: null, path: null },
+    })
+    expect(inspectPowerShell).not.toHaveBeenCalled()
+  })
+
+  it('continues to mark unrecognized operating systems as unsupported', async () => {
+    const home = temporaryHome()
+    const input = dependencies(home)
+    input.platform = 'linux'
+
+    const report = await runDiagnostics(input)
+
+    expect(report.items.find((item) => item.code === 'OPERATING_SYSTEM')).toMatchObject({
+      state: 'warn',
+      details: { supported: false },
+    })
+  })
+
   it('runs isolated checks without exposing provider keys or config contents', async () => {
     const home = temporaryHome()
     const apiKey = 'sk-super-secret-value'
@@ -98,6 +132,39 @@ describe('diagnostics', () => {
     expect(serialized).not.toContain('must-not-leak')
     expect(serialized).not.toContain('user:password')
     expect(serialized).not.toContain(home)
+  })
+
+  it('inspects providers and Codex dotenv through provider roots', async () => {
+    const userHome = temporaryHome()
+    const codexHome = path.join(path.dirname(userHome), `${path.basename(userHome)}-custom-codex`)
+    temporaryDirectories.push(codexHome)
+    fs.mkdirSync(codexHome, { recursive: true })
+    fs.writeFileSync(path.join(codexHome, '.env'), 'OPENAI_API_KEY=sk-hidden\n')
+    const input = dependencies(userHome)
+    const providerRoots: ProviderConfigRoots = { userHome, codexHome }
+    const inspected: Array<{ provider: ProviderId, roots: ProviderConfigRoots }> = []
+    const inspectProvider = (provider: ProviderId, roots: ProviderConfigRoots) => {
+      inspected.push({ provider, roots })
+      return inspection(provider, provider === 'codex' ? roots.codexHome : roots.userHome, 'sk-hidden')
+    }
+
+    const report = await runDiagnostics({
+      ...input,
+      providerRoots,
+      inspectProvider,
+    })
+
+    expect(inspected).toHaveLength(4)
+    expect(inspected.map(({ provider }) => provider).sort()).toEqual(['claude', 'codex', 'gemini', 'grok'])
+    expect(inspected.every(({ roots }) => roots === providerRoots)).toBe(true)
+    expect(report.items.find((item) => item.code === 'CODEX_DOTENV')).toMatchObject({
+      state: 'warn',
+      details: { exists: true, path: '[CODEX_HOME]/.env' },
+    })
+    expect(report.items.find((item) => item.code === 'PROVIDER_CODEX')?.details?.file1)
+      .toBe('[CODEX_HOME]/.codex/config.toml')
+    expect(report.items.find((item) => item.code === 'PROVIDER_CLAUDE')?.details?.file1)
+      .toBe('~/.claude/config.json')
   })
 
   it('rejects failed relay responses and refuses automatic redirects', async () => {
@@ -215,6 +282,102 @@ describe('diagnostics', () => {
     expect(exported).toContain('[ABSOLUTE_PATH]')
     expect(exported).toContain(process.platform === 'win32' ? 'custom-node.exe' : 'custom-node')
     expect(exported).not.toContain('process.env')
+  })
+
+  it('redacts slash, backslash, and JSON-escaped variants of both roots from exports', async () => {
+    const fixtureHome = temporaryHome()
+    const userHome = '/Users/private/diagnostic-user'
+    const codexHome = '/Volumes/private/codex-root'
+    const userHomeBackslash = userHome.replaceAll('/', '\\')
+    const codexHomeBackslash = codexHome.replaceAll('/', '\\')
+    const report = await runDiagnostics(dependencies(fixtureHome))
+    report.items[0].details = {
+      userSlash: `${userHome}/.claude/settings.json`,
+      userBackslash: `${userHomeBackslash}\\.gemini\\settings.json`,
+      codexSlash: `${codexHome}/config.toml`,
+      codexBackslash: `${codexHomeBackslash}\\auth.json`,
+    }
+
+    const exported = createDiagnosticsExport(report, { userHome, codexHome })
+
+    for (const rootVariant of [
+      userHome,
+      userHomeBackslash,
+      JSON.stringify(userHomeBackslash).slice(1, -1),
+      codexHome,
+      codexHomeBackslash,
+      JSON.stringify(codexHomeBackslash).slice(1, -1),
+    ]) {
+      expect(exported).not.toContain(rootVariant)
+    }
+    expect(exported).toContain('~/.claude/settings.json')
+    expect(exported).toContain('[CODEX_HOME]/config.toml')
+  })
+
+  it('labels the more specific Codex root before an overlapping user home', async () => {
+    const fixtureHome = temporaryHome()
+    const userHome = '/Users/private/diagnostic-user'
+    const codexHome = `${userHome}/Library/Application Support/Codex`
+    const report = await runDiagnostics(dependencies(fixtureHome))
+    report.items[0].details = {
+      paths: `${userHome}/.claude/settings.json ${codexHome}/config.toml`,
+    }
+
+    const exported = createDiagnosticsExport(report, { userHome, codexHome })
+
+    expect(exported).not.toContain(userHome)
+    expect(exported).not.toContain(codexHome)
+    expect(exported).toContain('~/.claude/settings.json')
+    expect(exported).toContain('[CODEX_HOME]/config.toml')
+  })
+
+  it('keeps prefix collisions and embedded root text classified as external absolute paths', async () => {
+    const fixtureHome = temporaryHome()
+    const userHome = '/Users/alex'
+    const codexHome = `${userHome}/.codex`
+    const report = await runDiagnostics(dependencies(fixtureHome))
+    report.items[0].details = {
+      prefixCollision: '/Users/alexander/private-project/tool',
+      embeddedRoot: '/tmp/Users/alex/private-project/tool',
+    }
+
+    const exported = createDiagnosticsExport(report, { userHome, codexHome })
+    const payload = JSON.parse(exported) as { diagnostics: typeof report }
+
+    expect(payload.diagnostics.items[0].details).toMatchObject({
+      prefixCollision: '[ABSOLUTE_PATH]/tool',
+      embeddedRoot: '[ABSOLUTE_PATH]/tool',
+    })
+    expect(exported).not.toContain('alexander')
+    expect(exported).not.toContain('private-project')
+  })
+
+  it('redacts escaped-forward-slash roots before and after JSON serialization', async () => {
+    const fixtureHome = temporaryHome()
+    const userHome = '/Users/alex'
+    const codexHome = '/Volumes/private/codex-root'
+    const escapedUserHome = userHome.replaceAll('/', '\\/')
+    const escapedCodexHome = codexHome.replaceAll('/', '\\/')
+    const serializedUserHome = JSON.stringify(escapedUserHome).slice(1, -1)
+    const serializedCodexHome = JSON.stringify(escapedCodexHome).slice(1, -1)
+    const report = await runDiagnostics(dependencies(fixtureHome))
+    report.items[0].details = {
+      userPath: `${escapedUserHome}\\/.claude\\/settings.json`,
+      codexPath: `${escapedCodexHome}\\/config.toml`,
+    }
+
+    const exported = createDiagnosticsExport(report, { userHome, codexHome })
+
+    for (const rootVariant of [
+      escapedUserHome,
+      serializedUserHome,
+      escapedCodexHome,
+      serializedCodexHome,
+    ]) {
+      expect(exported).not.toContain(rootVariant)
+    }
+    expect(exported).toContain('~')
+    expect(exported).toContain('[CODEX_HOME]')
   })
 
   it('does not expose absolute tool paths outside the home directory', async () => {

@@ -1,6 +1,6 @@
 # 星芒AI管理工具
 
-面向 Windows 的 Electron 桌面管理工具，用于检测 Node.js、npm、Python 与 AI CLI 环境，配置星芒 AI，并集中管理 Codex 会话、MCP、Skills、Plugins、备份、诊断、安装维护和主程序更新。
+面向 Windows 与 macOS 的 Electron 桌面管理工具，用于检测 Node.js、npm、Python 与 AI CLI 环境，配置星芒 AI，并集中管理 Codex 会话、MCP、Skills、Plugins、备份、诊断、安装维护和主程序更新。
 
 正式发布需要 Authenticode 代码签名；普通 `npm run build` 可生成仅供本机调试的未签名安装包，但不能通过正式发布门禁。所有 Windows 包都会写入预期更新发布者，下载后的更新安装程序还会通过固定系统 PowerShell 严格核对 `Valid` 状态、文件路径和证书发布者；校验工具缺失、执行失败或结果异常均拒绝更新。详见 [发布手册](docs/RELEASING.md)。
 
@@ -27,6 +27,20 @@ npm run audit:production
 ```
 
 按当前约定，调试阶段不运行 `npm run build`，避免提前生成 NSIS 安装包。
+
+## macOS 开发与打包
+
+macOS 需要 13.0 或更高版本。开发态可运行 `npm run dev`；Finder 启动的应用不会读取交互式 shell 的 `PATH`，请将 Node.js 和 AI CLI 安装到系统或常见用户可执行目录后再启动。完整的开发、终端 PATH 和打包说明见 [macOS 开发手册](docs/MACOS_DEVELOPMENT.md)。
+
+本机可构建仅带 ad-hoc 完整性签名的 Apple Silicon 解包应用：
+
+```bash
+npm run build:mac:dir
+```
+
+`npm run build:mac` 会生成 arm64 与 x64 的 DMG/ZIP 候选产物，并且始终 `--publish never`。这些仅带 ad-hoc 签名的候选只供开发验证，不能分发；正式 macOS 发布需要 Developer ID、hardened runtime 与 Apple notarization，且上传更新文件不在本仓库命令的范围内。
+
+另有免费自签发布路线：它使用长期复用的证书生成可自动更新的 arm64/x64 包，但用户首次打开仍需在 macOS 中手动确认。用户首次打开、从 ad-hoc 旧包迁移和发布者构建步骤见 [macOS 免费自签版分发手册](docs/MACOS_FREE_DISTRIBUTION.md)。
 
 ## 数据边界
 
@@ -58,7 +72,7 @@ npm run release:build
 服务器必须把 `/xingmang-manager/` 配置为真实静态目录。若 `latest.yml` 返回官网 HTML，`release:preflight` 会按设计失败；在修复静态路由前不得发布。上传时先上传安装程序和 `.blockmap`，确认完成后最后原子替换 `latest.yml`，避免客户端读到尚未就绪的新版本。部署后执行：
 
 ```powershell
-npm run update:verify-feed
+npm run update:verify-feed -- --platform=windows
 ```
 
 该检查会重新下载并核对远端安装程序的大小、SHA-512 和 `.blockmap`。完整的版本、静态服务器和回滚流程见 [发布手册](docs/RELEASING.md)。

@@ -138,6 +138,47 @@ describe('secure command runner', () => {
     expect(environment.PATH?.split(process.platform === 'win32' ? ';' : ':')[0]).toBeTruthy()
   })
 
+  it.runIf(process.platform === 'darwin')('orders deterministic macOS command paths before inherited PATH entries', () => {
+    const environment = commandEnvironment({
+      PATH: '/usr/bin:/custom/inherited:/opt/homebrew/bin',
+    }, ['/managed/bin', '/usr/local/bin'])
+
+    expect(environment.PATH?.split(':')).toEqual([
+      '/managed/bin',
+      '/usr/local/bin',
+      `${os.homedir()}/Library/Application Support/XingMangAI/Cli/npm/bin`,
+      `${os.homedir()}/.grok/bin`,
+      `${os.homedir()}/.local/bin`,
+      `${os.homedir()}/.volta/bin`,
+      `${os.homedir()}/.cargo/bin`,
+      `${os.homedir()}/.npm-global/bin`,
+      `${os.homedir()}/Library/pnpm`,
+      '/opt/homebrew/bin',
+      '/usr/bin',
+      '/bin',
+      '/usr/sbin',
+      '/sbin',
+      '/custom/inherited',
+    ])
+  })
+
+  it.runIf(process.platform === 'darwin')('uses the supplied HOME for deterministic macOS user paths', () => {
+    const environment = commandEnvironment({
+      HOME: '/Users/isolated-test-user',
+      PATH: '/usr/bin',
+    })
+
+    expect(environment.PATH?.split(':').slice(0, 6)).toEqual([
+      '/Users/isolated-test-user/Library/Application Support/XingMangAI/Cli/npm/bin',
+      '/Users/isolated-test-user/.grok/bin',
+      '/Users/isolated-test-user/.local/bin',
+      '/Users/isolated-test-user/.volta/bin',
+      '/Users/isolated-test-user/.cargo/bin',
+      '/Users/isolated-test-user/.npm-global/bin',
+    ])
+    expect(environment.PATH).not.toContain(os.homedir())
+  })
+
   it.runIf(process.platform === 'win32')('adds common Windows Node manager and package-manager paths', () => {
     const environment = commandEnvironment({
       PATH: 'C:\\Windows\\System32',
@@ -253,9 +294,14 @@ describe('secure command runner', () => {
     expect(environment.EDITOR).toBeUndefined()
     expect(environment.PYTHONNOUSERSITE).toBe('1')
     expect(environment.PYTHONSAFEPATH).toBe('1')
-    expect(environment.PSModulePath).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules')
-    expect(environment.PSModulePath).not.toContain('C:\\Users\\tester')
-    expect(environment.PATH).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
+    if (process.platform === 'win32') {
+      expect(environment.PSModulePath).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules')
+      expect(environment.PSModulePath).not.toContain('C:\\Users\\tester')
+      expect(environment.PATH).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
+    } else {
+      expect(environment.PSModulePath).toBeUndefined()
+      expect(environment.PATH).toBe('C:\\Windows\\System32')
+    }
     expect(environment.GIT_EXEC_PATH).toBeUndefined()
     expect(environment.GIT_SSH_COMMAND).toBeUndefined()
     expect(environment.GIT_CONFIG_COUNT).toBeUndefined()

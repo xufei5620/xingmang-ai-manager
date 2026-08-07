@@ -5,6 +5,7 @@ import path from 'node:path'
 import { promisify } from 'node:util'
 import { trustedCommandEnvironment } from './command-runner'
 import { windowsSystemExecutable } from './command-runner'
+import { sameLocalPathIdentity } from './path-identity'
 import {
   inspectCurrentWindowsProcessAdministrator,
   resolveWindowsPowerShellExecutable,
@@ -154,18 +155,13 @@ export function validateWindowsAclSnapshot(snapshot: WindowsAclSnapshot): void {
   }
 }
 
-function normalizedPath(value: string, platform: NodeJS.Platform): string {
-  const resolved = path.resolve(value).replace(/[\\/]$/, '')
-  return platform === 'win32' ? resolved.toLowerCase() : resolved
-}
-
 export function assertPlainDirectory(directory: string, platform: NodeJS.Platform): void {
   const stats = fs.lstatSync(directory)
   if (stats.isSymbolicLink() || !stats.isDirectory()) {
     throw new Error('安装缓存目录不是普通目录，已停止安装')
   }
   const resolved = fs.realpathSync(directory)
-  if (normalizedPath(resolved, platform) !== normalizedPath(directory, platform)) {
+  if (!sameLocalPathIdentity(resolved, directory)) {
     throw new Error('安装缓存目录经过了符号链接或目录联接，已停止安装')
   }
 }
@@ -452,7 +448,7 @@ export function trustedInstallerCacheRoot(
   if (!programData || !path.win32.isAbsolute(programData)) {
     throw new Error('未找到可信的 Windows ProgramData 目录，无法创建安装缓存')
   }
-  return path.join(programData, PRODUCT_DIRECTORY, INSTALLER_CACHE_DIRECTORY)
+  return path.win32.join(programData, PRODUCT_DIRECTORY, INSTALLER_CACHE_DIRECTORY)
 }
 
 export async function createTrustedTemporaryDirectory(

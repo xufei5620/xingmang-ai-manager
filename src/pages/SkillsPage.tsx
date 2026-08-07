@@ -18,7 +18,8 @@ import {
   ProviderTabs,
 } from '../components/ProviderTabs'
 import { createLatestRequestTracker } from '../latest-request'
-import type { ExtensionSnapshot, ProviderId } from '../types'
+import { platformPresentation } from '../platform-presentation'
+import type { ExtensionSnapshot, PlatformCapabilities, ProviderId } from '../types'
 
 type ProviderExtensionItem = ExtensionSnapshot['items'][number]
 type ProviderSkillImportRequest = {
@@ -47,6 +48,7 @@ export interface SkillsPageProps {
   loading: boolean
   error?: string | null
   repositoryAvailable?: boolean
+  platform: PlatformCapabilities
   onRefresh: () => Promise<void>
   onImport: (request: SkillImportRequest) => Promise<void>
   onToggle: (path: string, enabled: boolean) => Promise<void>
@@ -71,12 +73,14 @@ function ImportSkillDialog({
   provider,
   busy,
   repositoryAvailable,
+  pathPlaceholder,
   onSubmit,
   onCancel,
 }: {
   provider: ProviderId
   busy: boolean
   repositoryAvailable: boolean
+  pathPlaceholder: string
   onSubmit: (request: ProviderSkillImportRequest) => Promise<void>
   onCancel: () => void
 }) {
@@ -102,12 +106,12 @@ function ImportSkillDialog({
             <span className="extension-dialog-icon"><FolderInput size={19} /></span>
             <div><h2 id="import-skill-title">导入 Skill</h2><small>{managementProviderLabels[provider]}</small></div>
           </div>
-          <button className="icon-button compact" type="button" title="关闭" onClick={onCancel} disabled={busy}><X size={17} /></button>
+          <button className="icon-button compact" type="button" title="关闭" aria-label="关闭导入 Skill" onClick={onCancel} disabled={busy}><X size={17} /></button>
         </header>
         <div className="extension-dialog-body">
           <label className="field extension-field">
             <span>{provider === 'gemini' ? 'Git 地址或本地 Skill 目录' : '本地 Skill 目录或 SKILL.md'}</span>
-            <input value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder={provider === 'gemini' ? 'https://github.com/owner/skill.git' : 'C:\\path\\to\\skill'} required />
+            <input value={sourcePath} onChange={(event) => setSourcePath(event.target.value)} placeholder={provider === 'gemini' ? 'https://github.com/owner/skill.git' : pathPlaceholder} required />
           </label>
           <div className="segmented-control" role="group" aria-label="导入范围">
             <button type="button" className={scope === 'user' ? 'active' : ''} onClick={() => setScope('user')}>用户</button>
@@ -187,6 +191,7 @@ export function SkillsPage({
   loading,
   error,
   repositoryAvailable = false,
+  platform,
   onRefresh,
   onImport,
   onToggle,
@@ -329,7 +334,7 @@ export function SkillsPage({
             unavailable={unavailable}
             label="选择 Skill Provider"
           />
-          <button className="icon-button" type="button" title="刷新" disabled={selectedLoading || busyKey !== null}
+          <button className="icon-button" type="button" title="刷新" aria-label="刷新 Skills" disabled={selectedLoading || busyKey !== null}
             onClick={() => void perform('refresh', refresh).catch(() => undefined)}>
             <RefreshCw size={18} className={selectedLoading || busyKey === 'refresh' ? 'spin' : ''} />
           </button>
@@ -482,6 +487,7 @@ export function SkillsPage({
           provider={provider}
           busy={busyKey === 'import'}
           repositoryAvailable={repositoryAvailable}
+          pathPlaceholder={platformPresentation(platform).skillPathPlaceholder}
           onCancel={() => setImportOpen(false)}
           onSubmit={async (request) => {
             await perform('import', async () => {

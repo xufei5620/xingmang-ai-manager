@@ -11,6 +11,7 @@ import type {
 // Sandboxed preload scripts cannot require local runtime modules. Keep the
 // channel maps in this entry file while checking them against the shared types.
 const ipcInvokeChannels = {
+  getPlatformCapabilities: 'platform:get-capabilities',
   scanSystem: 'system:scan',
   getCodexReadiness: 'startup:codex-readiness',
   getConfig: 'config:get',
@@ -85,6 +86,7 @@ const ipcInvokeChannels = {
 }
 
 const ipcEventChannels = {
+  onNavigate: 'navigation:open-page',
   onNodeRuntimeInstallProgress: 'runtime:node-install-progress',
   onInstallProgress: 'cli:install-progress',
   onCodexDesktopStatus: 'desktop:codex-status-changed',
@@ -116,6 +118,7 @@ function subscribe<Method extends keyof XingmangEventContract>(
 }
 
 const xingmangApi: XingmangApi = {
+  getPlatformCapabilities: () => invoke('getPlatformCapabilities'),
   scanSystem: (forceRefresh) => invoke('scanSystem', forceRefresh),
   getCodexReadiness: () => invoke('getCodexReadiness'),
   getConfig: () => invoke('getConfig'),
@@ -185,6 +188,7 @@ const xingmangApi: XingmangApi = {
   listProviderExtensions: (provider) => invoke('listProviderExtensions', provider),
   listAllProviderExtensions: () => invoke('listAllProviderExtensions'),
   mutateProviderExtension: (input) => invoke('mutateProviderExtension', input),
+  onNavigate: (listener) => subscribe('onNavigate', listener),
   onNodeRuntimeInstallProgress: (listener) => subscribe('onNodeRuntimeInstallProgress', listener),
   onInstallProgress: (listener) => subscribe('onInstallProgress', listener),
   onCodexDesktopStatus: (listener) => subscribe('onCodexDesktopStatus', listener),

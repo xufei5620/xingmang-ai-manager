@@ -37,7 +37,7 @@ describe('trusted installer cache', () => {
     )
   })
 
-  it('creates a unique directory and applies the Windows ACL before use', async () => {
+  it.runIf(process.platform === 'win32')('creates a unique directory and applies the Windows ACL before use', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-trusted-temp-test-'))
     temporaryDirectories.push(root)
     const applyWindowsAcl = vi.fn(async () => undefined)
@@ -127,7 +127,7 @@ describe('trusted installer cache', () => {
     expect(inspectDirectoryOwnership).toHaveBeenCalledWith(path.resolve(root), testMachinePaths)
   })
 
-  it('adopts a preexisting root that holds no files even when its owner is untrusted', async () => {
+  it.runIf(process.platform === 'win32')('adopts a preexisting root that holds no files even when its owner is untrusted', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-trusted-temp-test-'))
     temporaryDirectories.push(root)
     // 应用自己在未提权模式下建出的托管根就是「属主是普通用户但树内无文件」，
@@ -214,7 +214,7 @@ describe('trusted installer cache', () => {
     expect(inspectOwnership).toHaveBeenCalledTimes(1)
   })
 
-  it('serializes concurrent ensures for the same root', async () => {
+  it.runIf(process.platform === 'win32')('serializes concurrent ensures for the same root', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-trusted-temp-test-'))
     temporaryDirectories.push(root)
     let active = 0
@@ -258,7 +258,7 @@ describe('trusted installer cache', () => {
     expect(inspectOwnership).not.toHaveBeenCalled()
   })
 
-  it('lets an injected ACL applier take over hardening without the real ownership probe', async () => {
+  it.runIf(process.platform === 'win32')('lets an injected ACL applier take over hardening without the real ownership probe', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-trusted-temp-test-'))
     temporaryDirectories.push(root)
     const applyWindowsAcl = vi.fn(async () => undefined)

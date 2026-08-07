@@ -1,10 +1,15 @@
 import fs from 'node:fs'
-import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import * as TOML from '@iarna/toml'
 import { providerBaseUrls, type ProviderId } from './catalog'
 import { readBoundedUtf8FileSync } from './bounded-file'
+import {
+  defaultProviderConfigRoots,
+  providerConfigRoot,
+  type ProviderConfigRoots,
+} from './codex-home'
+import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
 
@@ -60,22 +65,35 @@ interface FilePlan {
   content: string
 }
 
-export function providerConfigPaths(provider: ProviderId, homeDirectory = os.homedir()): string[] {
+function normalizeProviderConfigRoots(
+  roots: ProviderConfigRoots = defaultProviderConfigRoots(),
+): ProviderConfigRoots {
+  return {
+    userHome: path.resolve(roots.userHome),
+    codexHome: path.resolve(roots.codexHome),
+  }
+}
+
+export function providerConfigPaths(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): string[] {
+  const root = providerConfigRoot(provider, normalizeProviderConfigRoots(rootsInput))
   switch (provider) {
     case 'codex':
       return [
-        path.join(homeDirectory, '.codex', 'config.toml'),
-        path.join(homeDirectory, '.codex', 'auth.json'),
+        path.join(root, 'config.toml'),
+        path.join(root, 'auth.json'),
       ]
     case 'claude':
-      return [path.join(homeDirectory, '.claude', 'settings.json')]
+      return [path.join(root, 'settings.json')]
     case 'gemini':
       return [
-        path.join(homeDirectory, '.gemini', 'settings.json'),
-        path.join(homeDirectory, '.gemini', '.env'),
+        path.join(root, 'settings.json'),
+        path.join(root, '.env'),
       ]
     case 'grok':
-      return [path.join(homeDirectory, '.grok', 'config.toml')]
+      return [path.join(root, 'config.toml')]
   }
 }
 
@@ -248,11 +266,13 @@ function normalizeUrl(value: string): string {
 
 export function inspectProviderConfig(
   provider: ProviderId,
-  homeDirectory = os.homedir(),
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
 ): NativeConfigInspection {
-  const paths = providerConfigPaths(provider, homeDirectory)
-  // Validate before parsing any existing file so a junction cannot make us read outside the home.
-  for (const filePath of paths) assertSafeConfigPath(filePath, homeDirectory, 'file')
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  const paths = providerConfigPaths(provider, roots)
+  // Validate before parsing any existing file so a junction cannot redirect the read.
+  for (const filePath of paths) assertSafeConfigPath(filePath, providerRoot, 'file')
   const dataDirectory = path.dirname(paths[0])
   const files = paths.map((filePath) => ({
     path: filePath,
@@ -346,8 +366,13 @@ function updateEnvContent(content: string, updates: Record<string, string>): str
   return `${lines.join('\n')}\n`
 }
 
-function createPlans(provider: ProviderId, apiKey: string, model: string, homeDirectory: string): FilePlan[] {
-  const paths = providerConfigPaths(provider, homeDirectory)
+function createPlans(
+  provider: ProviderId,
+  apiKey: string,
+  model: string,
+  roots: ProviderConfigRoots,
+): FilePlan[] {
+  const paths = providerConfigPaths(provider, roots)
   switch (provider) {
     case 'codex': {
       const providerName = existingCodexProvider(paths[0])
@@ -436,10 +461,15 @@ function createPlans(provider: ProviderId, apiKey: string, model: string, homeDi
   }
 }
 
-function createMergePlans(provider: ProviderId, apiKey: string, model: string, homeDirectory: string): FilePlan[] {
-  const paths = providerConfigPaths(provider, homeDirectory)
+function createMergePlans(
+  provider: ProviderId,
+  apiKey: string,
+  model: string,
+  roots: ProviderConfigRoots,
+): FilePlan[] {
+  const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
-    createPlans(provider, apiKey, model, homeDirectory).map((plan) => [plan.path, plan]),
+    createPlans(provider, apiKey, model, roots).map((plan) => [plan.path, plan]),
   )
   const initial = (filePath: string): FilePlan => {
     const plan = initialPlans.get(filePath)
@@ -535,11 +565,16 @@ function uniqueBackupPath(filePath: string, suffix: string): string {
 const MAX_BACKUPS_PER_FILE = 5
 
 // 备份后缀是时间戳，字典序即时间序；清理失败只静默跳过，绝不影响已成功的保存。
-function pruneBackups(filePath: string, keep = MAX_BACKUPS_PER_FILE): void {
+function pruneBackups(
+  filePath: string,
+  providerRoot: string,
+  keep = MAX_BACKUPS_PER_FILE,
+): void {
   const directory = path.dirname(filePath)
   const prefix = `${path.basename(filePath)}.bak.`
   let entries: string[]
   try {
+    assertSafeConfigPath(filePath, providerRoot, 'parent')
     entries = fs.readdirSync(directory)
   } catch {
     return
@@ -548,16 +583,16 @@ function pruneBackups(filePath: string, keep = MAX_BACKUPS_PER_FILE): void {
   for (const name of backups.slice(0, Math.max(0, backups.length - keep))) {
     const backupPath = path.join(directory, name)
     try {
-      const info = fs.lstatSync(backupPath)
-      if (!info.isFile() || info.isSymbolicLink()) continue
-      fs.rmSync(backupPath)
+      assertSafeConfigPath(backupPath, providerRoot, 'file')
+      removeIfPresent(backupPath)
     } catch {
       continue
     }
   }
 }
 
-function writeDurableUtf8(filePath: string, content: string): void {
+function writeDurableUtf8(filePath: string, content: string, providerRoot: string): void {
+  assertSafeConfigPath(filePath, providerRoot, 'file')
   const descriptor = fs.openSync(filePath, 'wx', 0o600)
   try {
     fs.writeFileSync(descriptor, content, { encoding: 'utf8' })
@@ -575,15 +610,19 @@ function removeIfPresent(filePath: string): void {
   }
 }
 
-function assertSafeConfigPath(filePath: string, homeDirectory: string, target: 'file' | 'parent'): void {
-  const root = path.resolve(homeDirectory)
+function assertSafeConfigPath(filePath: string, rootDirectory: string, target: 'file' | 'parent'): void {
+  const root = path.resolve(rootDirectory)
   const resolved = path.resolve(filePath)
   const relative = path.relative(root, resolved)
-  if (relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
-    throw new Error(`配置路径越过用户目录，已拒绝写入：${filePath}`)
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === '..' || path.isAbsolute(relative)) {
+    throw new Error(`配置路径越过 Provider 根目录，已拒绝写入：${filePath}`)
   }
 
-  let canonicalRoot: string
+  assertNoReparseComponents(root, 'Provider 配置根目录')
+  const stopAt = target === 'parent' ? path.dirname(resolved) : resolved
+  assertNoReparseComponents(stopAt, '配置路径')
+
+  let canonicalRoot: string | null = null
   try {
     const rootInfo = fs.lstatSync(root)
     if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink()) {
@@ -592,10 +631,11 @@ function assertSafeConfigPath(filePath: string, homeDirectory: string, target: '
     canonicalRoot = fs.realpathSync.native(root)
   } catch (error) {
     if (error instanceof Error && error.message.startsWith('配置根目录')) throw error
-    throw new Error(`无法验证配置根目录：${root}`)
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`无法验证配置根目录：${root}`)
+    }
   }
 
-  const stopAt = target === 'parent' ? path.dirname(resolved) : resolved
   const segments = path.relative(root, stopAt).split(path.sep).filter(Boolean)
   let current = root
   for (const segment of segments) {
@@ -613,10 +653,16 @@ function assertSafeConfigPath(filePath: string, homeDirectory: string, target: '
     } else if (!info.isFile() || info.nlink > 1) {
       throw new Error(`配置目标不是单链接普通文件，已拒绝写入：${current}`)
     }
-    const canonical = fs.realpathSync.native(current)
-    const canonicalRelative = path.relative(canonicalRoot, canonical)
-    if (canonicalRelative.startsWith(`..${path.sep}`) || canonicalRelative === '..' || path.isAbsolute(canonicalRelative)) {
-      throw new Error(`配置路径指向用户目录之外，已拒绝写入：${current}`)
+    if (canonicalRoot) {
+      const canonical = fs.realpathSync.native(current)
+      const canonicalRelative = path.relative(canonicalRoot, canonical)
+      if (
+        canonicalRelative.startsWith(`..${path.sep}`)
+        || canonicalRelative === '..'
+        || path.isAbsolute(canonicalRelative)
+      ) {
+        throw new Error(`配置路径指向 Provider 根目录之外，已拒绝写入：${current}`)
+      }
     }
   }
 
@@ -632,14 +678,38 @@ function assertSafeConfigPath(filePath: string, homeDirectory: string, target: '
   }
 }
 
-function prepareFilePlans(plans: FilePlan[], homeDirectory: string): PreparedFilePlan[] {
+function assertSafeExistingFile(filePath: string, providerRoot: string): void {
+  assertSafeConfigPath(filePath, providerRoot, 'file')
+  try {
+    const info = fs.lstatSync(filePath)
+    if (!info.isFile() || info.nlink > 1 || info.isSymbolicLink()) {
+      throw new Error(`配置事务源不是单链接普通文件，已拒绝写入：${filePath}`)
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+      throw new Error(`配置事务源文件不存在，已拒绝写入：${filePath}`)
+    }
+    throw error
+  }
+}
+
+function assertSafeSourceAndTarget(
+  sourcePath: string,
+  targetPath: string,
+  providerRoot: string,
+): void {
+  assertSafeExistingFile(sourcePath, providerRoot)
+  assertSafeConfigPath(targetPath, providerRoot, 'file')
+}
+
+function prepareFilePlans(plans: FilePlan[], providerRoot: string): PreparedFilePlan[] {
   const seenTargets = new Set<string>()
   const suffix = backupSuffix()
   return plans.map((plan) => {
     const targetKey = path.resolve(plan.path).toLowerCase()
     if (seenTargets.has(targetKey)) throw new Error(`配置写入计划包含重复路径：${plan.path}`)
     seenTargets.add(targetKey)
-    assertSafeConfigPath(plan.path, homeDirectory, 'parent')
+    assertSafeConfigPath(plan.path, providerRoot, 'parent')
     let existed = false
     try {
       const info = fs.lstatSync(plan.path)
@@ -659,72 +729,110 @@ function prepareFilePlans(plans: FilePlan[], homeDirectory: string): PreparedFil
   })
 }
 
-function rollbackCommittedPlans(committed: PreparedFilePlan[]): Error[] {
+function rollbackCommittedPlans(
+  committed: PreparedFilePlan[],
+  providerRoot: string,
+): Error[] {
   const rollbackErrors: Error[] = []
   for (const plan of [...committed].reverse()) {
-    try {
-      if (plan.existed && plan.backupPath) {
-        const rollbackPath = `${plan.path}.xingmang-rollback-${randomUUID()}.tmp`
-        try {
-          fs.copyFileSync(plan.backupPath, rollbackPath, fs.constants.COPYFILE_EXCL)
-          fs.renameSync(rollbackPath, plan.path)
-        } finally {
-          if (fs.existsSync(rollbackPath)) removeIfPresent(rollbackPath)
-        }
-      } else {
-        removeIfPresent(plan.path)
+    if (plan.existed && plan.backupPath) {
+      const rollbackPath = `${plan.path}.xingmang-rollback-${randomUUID()}.tmp`
+      let rollbackCopyCreated = false
+      try {
+        assertSafeSourceAndTarget(plan.backupPath, rollbackPath, providerRoot)
+        fs.copyFileSync(plan.backupPath, rollbackPath, fs.constants.COPYFILE_EXCL)
+        rollbackCopyCreated = true
+        assertSafeSourceAndTarget(rollbackPath, plan.path, providerRoot)
+        fs.renameSync(rollbackPath, plan.path)
+        rollbackCopyCreated = false
+      } catch (error) {
+        rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
       }
-    } catch (error) {
-      rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
+      if (rollbackCopyCreated) {
+        try {
+          assertSafeConfigPath(rollbackPath, providerRoot, 'file')
+          removeIfPresent(rollbackPath)
+        } catch (error) {
+          rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
+        }
+      }
+    } else {
+      try {
+        assertSafeConfigPath(plan.path, providerRoot, 'file')
+        removeIfPresent(plan.path)
+      } catch (error) {
+        rollbackErrors.push(error instanceof Error ? error : new Error(String(error)))
+      }
     }
   }
   return rollbackErrors
 }
 
+function cleanupPreparedPlans(
+  prepared: PreparedFilePlan[],
+  providerRoot: string,
+): Error[] {
+  const cleanupErrors: Error[] = []
+  for (const plan of prepared) {
+    try {
+      assertSafeConfigPath(plan.temporaryPath, providerRoot, 'file')
+      removeIfPresent(plan.temporaryPath)
+    } catch (error) {
+      cleanupErrors.push(error instanceof Error ? error : new Error(String(error)))
+    }
+  }
+  return cleanupErrors
+}
+
 function executeFilePlans(
   plans: FilePlan[],
   hooks: NativeConfigWriteHooks,
-  homeDirectory: string,
+  providerRoot: string,
 ): NativeConfigSaveResult {
-  const prepared = prepareFilePlans(plans, homeDirectory)
+  const prepared = prepareFilePlans(plans, providerRoot)
   const committed: PreparedFilePlan[] = []
 
   try {
     // No target is touched until every new file has been written successfully.
     for (const plan of prepared) {
+      assertSafeConfigPath(plan.path, providerRoot, 'parent')
       fs.mkdirSync(path.dirname(plan.path), { recursive: true })
-      assertSafeConfigPath(plan.path, homeDirectory, 'parent')
-      writeDurableUtf8(plan.temporaryPath, plan.content)
+      writeDurableUtf8(plan.temporaryPath, plan.content, providerRoot)
     }
     for (const plan of prepared) {
       if (plan.backupPath) {
-        assertSafeConfigPath(plan.path, homeDirectory, 'file')
+        assertSafeSourceAndTarget(plan.path, plan.backupPath, providerRoot)
         fs.copyFileSync(plan.path, plan.backupPath, fs.constants.COPYFILE_EXCL)
       }
     }
     for (const [index, plan] of prepared.entries()) {
-      assertSafeConfigPath(plan.path, homeDirectory, 'parent')
+      assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
       hooks.beforeReplace?.(plan.path, index)
+      assertSafeSourceAndTarget(plan.temporaryPath, plan.path, providerRoot)
       fs.renameSync(plan.temporaryPath, plan.path)
       committed.push(plan)
     }
   } catch (error) {
-    const rollbackErrors = rollbackCommittedPlans(committed)
-    if (rollbackErrors.length) {
+    const recoveryErrors = [
+      ...rollbackCommittedPlans(committed, providerRoot),
+      ...cleanupPreparedPlans(prepared, providerRoot),
+    ]
+    if (recoveryErrors.length) {
       throw new AggregateError(
-        [error, ...rollbackErrors],
+        [error, ...recoveryErrors],
         '配置写入失败，且部分文件无法自动回滚；请从 .bak 备份恢复',
       )
     }
     throw error
-  } finally {
-    for (const plan of prepared) {
-      if (fs.existsSync(plan.temporaryPath)) removeIfPresent(plan.temporaryPath)
-    }
+  }
+
+  const cleanupErrors = cleanupPreparedPlans(prepared, providerRoot)
+  if (cleanupErrors.length) {
+    throw new AggregateError(cleanupErrors, '配置已写入，但临时文件无法安全清理')
   }
 
   // 必须在全部提交成功后清理：回滚依赖本次 backupPath，提前删除会破坏恢复链路。
-  for (const plan of prepared) pruneBackups(plan.path)
+  for (const plan of prepared) pruneBackups(plan.path, providerRoot)
 
   return {
     backups: prepared.flatMap((plan) => plan.backupPath ? [plan.backupPath] : []),
@@ -737,7 +845,7 @@ export function saveProviderConfig(
   apiKeyInput: string,
   modelInput: string,
   mode: NativeConfigSaveMode,
-  homeDirectory = os.homedir(),
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   hooks: NativeConfigWriteHooks = {},
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
@@ -747,11 +855,16 @@ export function saveProviderConfig(
   if (!model) throw new Error('使用模型不能为空，请先检测并选择模型')
   if (/\r|\n/.test(model)) throw new Error('模型名称不能包含换行符')
 
-  const configuredPaths = providerConfigPaths(provider, homeDirectory)
-  for (const filePath of configuredPaths) assertSafeConfigPath(filePath, homeDirectory, 'file')
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  const configuredPaths = providerConfigPaths(provider, roots)
+  for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, homeDirectory)
-    : createPlans(provider, apiKey, model, homeDirectory)
-  return executeFilePlans(plans, hooks, homeDirectory)
+    ? createMergePlans(provider, apiKey, model, roots)
+    : createPlans(provider, apiKey, model, roots)
+
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return executeFilePlans(plans, hooks, providerRoot)
 }

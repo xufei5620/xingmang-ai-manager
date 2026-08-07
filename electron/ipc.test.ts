@@ -105,7 +105,11 @@ function updaterStub(): UpdaterService {
   }
 }
 
-function register(service = serviceStub(), runtimeLogDirectory = 'C:\\app-data\\logs') {
+function register(
+  service = serviceStub(),
+  runtimeLogDirectory = 'C:\\app-data\\logs',
+  transformSystemSnapshot?: (snapshot: never) => never,
+) {
   const extensionService = {
     getRepositoryContext: vi.fn(() => ({ repositoryRoot: 'C:\\workspace' })),
     setRepositoryContext: vi.fn((repositoryRoot: string) => ({ repositoryRoot })),
@@ -197,6 +201,7 @@ function register(service = serviceStub(), runtimeLogDirectory = 'C:\\app-data\\
     broadcastUpdate: vi.fn(),
     setWindowMode: vi.fn(),
     setWindowTheme: vi.fn(),
+    ...({ transformSystemSnapshot } as object),
   })
   return { dispose, service, extensionService, providerExtensionService, runtimeLog }
 }
@@ -255,6 +260,19 @@ describe('registerIpcHandlers', () => {
     expect(service.scanSystem).not.toHaveBeenCalled()
   })
 
+  it('exposes main-process platform capabilities only to trusted senders', async () => {
+    register()
+    const handler = electronMocks.handlers.get('platform:get-capabilities')!
+
+    expect(handler(trustedEvent())).toMatchObject({
+      architecture: process.arch,
+      isMac: process.platform === 'darwin',
+    })
+    expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow(
+      '已拒绝来自非应用页面的操作请求',
+    )
+  })
+
   it('forwards an explicit forced update scan and rejects invalid flags', async () => {
     const service = serviceStub()
     vi.mocked(service.scanSystem).mockResolvedValueOnce({
@@ -282,6 +300,24 @@ describe('registerIpcHandlers', () => {
     })
     expect(service.scanSystem).toHaveBeenCalledWith(true)
     await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('更新检查参数格式错误')
+  })
+
+  it('projects a system scan result only through the main-process registration option', async () => {
+    const service = serviceStub()
+    const source = {
+      checkedAt: '2026-07-24T00:00:00.000Z',
+      runtime: {},
+      clis: {},
+      desktopApps: { codex: {} },
+    }
+    const projected = { ...source, checkedAt: '2026-08-04T00:00:00.000Z' }
+    vi.mocked(service.scanSystem).mockResolvedValueOnce(source as never)
+    const transform = vi.fn(() => projected as never)
+    register(service, 'C:\\app-data\\logs', transform)
+
+    const handler = electronMocks.handlers.get('system:scan')!
+    await expect(handler(trustedEvent(), false)).resolves.toBe(projected)
+    expect(transform).toHaveBeenCalledWith(source)
   })
 
   it('reads only Codex readiness during startup', async () => {

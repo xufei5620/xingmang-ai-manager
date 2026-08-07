@@ -12,7 +12,7 @@ import {
 } from 'lucide-react'
 import logoUrl from '../../assets/icon.png'
 import logoWhiteUrl from '../../assets/icon-white.png'
-import { navigationItems, type PageId } from '../navigation'
+import { navigationItems, type NavigationGroup, type PageId } from '../navigation'
 import type { UpdateSnapshot } from '../types'
 
 interface SidebarProps {
@@ -64,6 +64,27 @@ export function Sidebar({
     : updatePhase === 'downloading'
       ? '正在下载主程序更新'
       : `发现主程序新版本 ${updateState?.availableVersion ?? ''}`.trim()
+  const groupLabels: Record<Exclude<NavigationGroup, 'utility'>, string> = {
+    workbench: '工作台',
+    extensions: '扩展',
+    system: '系统',
+  }
+  const renderItem = (item: (typeof navigationItems)[number]) => {
+    const Icon = item.icon
+    return (
+      <button
+        key={item.id}
+        type="button"
+        className={`nav-item${activePage === item.id ? ' active' : ''}${item.id === 'overview' ? ' static-nav-item' : ''}`}
+        data-sidebar-tooltip={item.label}
+        aria-current={activePage === item.id ? 'page' : undefined}
+        onClick={() => onNavigate(item.id)}
+      >
+        <Icon size={18} />
+        <span className="nav-label">{item.label}</span>
+      </button>
+    )
+  }
 
   return (
     <aside className="sidebar">
@@ -94,25 +115,18 @@ export function Sidebar({
       </div>
 
       <nav className="main-nav" aria-label="主导航">
-        {navigationItems.map((item) => {
-          const Icon = item.icon
-          return (
-            <button
-              key={item.id}
-              type="button"
-              className={`nav-item${activePage === item.id ? ' active' : ''}${item.id === 'overview' ? ' static-nav-item' : ''}`}
-              data-sidebar-tooltip={item.label}
-              aria-current={activePage === item.id ? 'page' : undefined}
-              onClick={() => onNavigate(item.id)}
-            >
-              <Icon size={18} />
-              <span className="nav-label">{item.label}</span>
-            </button>
-          )
-        })}
+        {(Object.keys(groupLabels) as Array<Exclude<NavigationGroup, 'utility'>>).map((group) => (
+          <div className="nav-group" key={group}>
+            <div className="nav-group-label">{groupLabels[group]}</div>
+            {navigationItems.filter((item) => item.group === group).map(renderItem)}
+          </div>
+        ))}
       </nav>
 
       <div className="sidebar-bottom">
+        <nav className="utility-nav" aria-label="实用工具">
+          {navigationItems.filter((item) => item.group === 'utility').map(renderItem)}
+        </nav>
         <button
           className="official-site-button tutorial-docs-button"
           type="button"
