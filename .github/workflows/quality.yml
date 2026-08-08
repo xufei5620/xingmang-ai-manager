@@ -1,8 +1,18 @@
 name: quality
 
+# A branch push with an open pull request used to fire both events and run the
+# whole matrix twice. pull_request already reruns on every push to the branch,
+# so restricting push to main keeps identical coverage at half the minutes.
 on:
   push:
+    branches: [main]
   pull_request:
+
+# Superseded runs on a branch are wasted minutes, and macOS bills at ten times
+# the rate. Merges into main still run to completion.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
