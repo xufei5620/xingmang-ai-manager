@@ -19,6 +19,7 @@ import {
   assertNpmReleaseMatchesOfficialLock,
   buildCliStatus,
   buildCliMaintenancePlan,
+  buildCliToolStatusFromSettled,
   buildCodexDesktopWindowsProbes,
   buildDarwinCliLaunchPlan,
   buildCliUninstallPlan,
@@ -415,6 +416,33 @@ describe('createSystemService', () => {
       env: expect.objectContaining({ HOME: userHome, CODEX_HOME: codexHome }),
     })
     expect(fs.existsSync(executionMarker)).toBe(false)
+  })
+
+  it('degrades a CLI resolution failure to detectionFailed instead of rejecting the whole setup status', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-setup-status-cli-failure-'))
+    temporaryDirectories.push(directory)
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'linux',
+        resolveCliInstallation: async () => { throw new Error('注册表读取失败') },
+      },
+    )
+
+    const setup = await service.inspectCodexSetupStatus()
+
+    expect(setup.cli).toEqual({
+      installed: false,
+      version: null,
+      path: null,
+      installDirectory: null,
+      detectionFailed: true,
+      detectionError: '注册表读取失败',
+    })
+    // The runtime probes run through their own independent allSettled step
+    // above the CLI probe; a CLI-only failure must not bleed into them.
+    expect(setup.runtime.node.detectionFailed).not.toBe(true)
+    expect(setup.runtime.npm.detectionFailed).not.toBe(true)
   })
 
   it('validates an API key by returning model ids from the relay response', async () => {
@@ -2147,6 +2175,31 @@ describe('scan probe degradation', () => {
       detectionError: 'PowerShell 启动失败',
       updateCheck: 'failed',
       updateError: 'PowerShell 启动失败',
+    })
+  })
+
+  it('passes a fulfilled CLI tool status through unchanged', () => {
+    const value: ToolStatus = {
+      installed: true,
+      version: '0.145.0',
+      path: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd',
+      installDirectory: 'C:\\Users\\tester\\AppData\\Roaming\\npm',
+    }
+    expect(buildCliToolStatusFromSettled({ status: 'fulfilled', value: { status: value } })).toBe(value)
+  })
+
+  it('degrades a rejected CLI probe to detectionFailed instead of not-installed', () => {
+    const result = buildCliToolStatusFromSettled({
+      status: 'rejected',
+      reason: new Error('npm 全局包目录解析失败'),
+    })
+    expect(result).toEqual({
+      installed: false,
+      version: null,
+      path: null,
+      installDirectory: null,
+      detectionFailed: true,
+      detectionError: 'npm 全局包目录解析失败',
     })
   })
 })

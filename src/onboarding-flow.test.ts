@@ -3,6 +3,7 @@ import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import type { AppConfigSummary, CodexSetupStatus, ToolStatus } from './types'
 import {
   authorizeCodex,
+  buildCodexDetectionFailureMessage,
   DEFAULT_CODEX_MODEL,
   installNodeAndPrepareCodexEnvironment,
   prepareCodexEnvironment,
@@ -16,6 +17,18 @@ function tool(installed: boolean, version = installed ? 'test-version' : null): 
     version,
     path: installed ? 'C:\\ProgramData\\XingMangAI\\tool.exe' : null,
     installDirectory: installed ? 'C:\\ProgramData\\XingMangAI' : null,
+  }
+}
+
+// A probe that threw, distinct from one that concluded "not installed".
+function failedTool(): ToolStatus {
+  return {
+    installed: false,
+    version: null,
+    path: null,
+    installDirectory: null,
+    detectionFailed: true,
+    detectionError: '探测异常',
   }
 }
 
@@ -113,7 +126,65 @@ describe('authorizeCodex', () => {
   })
 })
 
+describe('buildCodexDetectionFailureMessage', () => {
+  it('returns null when every probe concluded normally, including a confirmed "not installed"', () => {
+    expect(buildCodexDetectionFailureMessage(setupStatus())).toBeNull()
+    expect(buildCodexDetectionFailureMessage(setupStatus({ cli: false }))).toBeNull()
+  })
+
+  it('names the single field whose detection failed', () => {
+    const status: CodexSetupStatus = { ...setupStatus(), cli: failedTool() }
+    expect(buildCodexDetectionFailureMessage(status)).toBe('Codex CLI暂时无法确认状态，请重试检测')
+  })
+
+  it('joins multiple failed fields in a fixed, readable order', () => {
+    const base = setupStatus()
+    const status: CodexSetupStatus = {
+      ...base,
+      runtime: { ...base.runtime, node: failedTool() },
+      desktop: { ...base.desktop, installed: false, detectionFailed: true, detectionError: '桌面端探测超时' },
+    }
+    expect(buildCodexDetectionFailureMessage(status)).toBe('Node.js、Codex 桌面端暂时无法确认状态，请重试检测')
+  })
+})
+
 describe('prepareCodexEnvironment', () => {
+  it('returns a detection-failed outcome and never triggers an automatic install when a probe could not confirm status', async () => {
+    const status: CodexSetupStatus = { ...setupStatus(), cli: failedTool() }
+    const api: CodexSetupApi = {
+      getCodexSetupStatus: vi.fn().mockResolvedValue(status),
+      installCli: vi.fn(),
+      installCodexDesktop: vi.fn(),
+    }
+    const listener = callbacks()
+
+    const result = await prepareCodexEnvironment(api, listener.value)
+
+    expect(result).toEqual({
+      outcome: 'detection-failed',
+      status,
+      message: 'Codex CLI暂时无法确认状态，请重试检测',
+    })
+    expect(api.installCli).not.toHaveBeenCalled()
+    expect(api.installCodexDesktop).not.toHaveBeenCalled()
+    expect(listener.value.onAction).toHaveBeenLastCalledWith('idle')
+  })
+
+  it('reports a detection failure ahead of the runtime-required outcome it would otherwise produce', async () => {
+    const base = setupStatus({ node: false, npm: false })
+    const status: CodexSetupStatus = { ...base, runtime: { ...base.runtime, node: failedTool() } }
+    const api: CodexSetupApi = {
+      getCodexSetupStatus: vi.fn().mockResolvedValue(status),
+      installCli: vi.fn(),
+      installCodexDesktop: vi.fn(),
+    }
+    const listener = callbacks()
+
+    await expect(prepareCodexEnvironment(api, listener.value)).resolves.toMatchObject({
+      outcome: 'detection-failed',
+    })
+  })
+
   it('stops at the environment step when Node.js or npm is missing', async () => {
     const missingRuntime = setupStatus({ node: false, npm: false })
     const api: CodexSetupApi = {

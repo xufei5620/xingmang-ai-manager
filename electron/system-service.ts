@@ -1418,6 +1418,19 @@ export function buildDesktopAppStatusFromSettled(
   }
 }
 
+/**
+ * `inspectCliTool` cannot join a `Promise.allSettled` alongside the runtime
+ * probes above it: it needs the npm probe's resolved path first. A rejection
+ * here must still degrade exactly like the others — distinguishably failed,
+ * never silently "not installed" — otherwise onboarding could offer to
+ * reinstall a CLI that may already be working.
+ */
+export function buildCliToolStatusFromSettled(
+  result: PromiseSettledResult<{ status: ToolStatus }>,
+): ToolStatus {
+  return result.status === 'fulfilled' ? result.value.status : buildToolStatusFromSettled(result)
+}
+
 export interface CodexDesktopWindowsProbes {
   match: StartAppEntry | null
   processes: WindowsProcessEntry[]
@@ -2167,13 +2180,20 @@ export function createSystemService(
   }
 
   async function inspectCodexSetupStatus(): Promise<CodexSetupStatus> {
-    const [node, npm, desktop] = await Promise.all([
+    const [nodeResult, npmResult, desktopResult] = await Promise.allSettled([
       inspectNode(),
       inspectTool('npm'),
       inspectCodexDesktop(),
     ])
+    // 三路探测彼此独立；任一异常都不应连累其余两个已知结果（同 scanSystem，见 317b34f）
+    const node = buildToolStatusFromSettled(nodeResult)
+    const npm = buildToolStatusFromSettled(npmResult)
+    const desktop = buildDesktopAppStatusFromSettled(desktopResult)
     const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
-    const { status: cli } = await inspectCliTool('codex', npm.path, npmGlobalRoot)
+    // CLI 探测依赖上面 npm 探测的结果，只能顺序执行、无法并入 allSettled；
+    // 同样降级为「检测失败」而非「未安装」，避免向导误判并对已在正常工作的 CLI 触发重装
+    const [cliSettled] = await Promise.allSettled([inspectCliTool('codex', npm.path, npmGlobalRoot)])
+    const cli = buildCliToolStatusFromSettled(cliSettled)
     return { checkedAt: new Date().toISOString(), runtime: { node, npm }, cli, desktop }
   }
 

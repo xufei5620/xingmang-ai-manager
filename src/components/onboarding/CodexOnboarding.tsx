@@ -18,7 +18,7 @@ import {
 import logoUrl from '../../../assets/icon.png'
 import logoWhiteUrl from '../../../assets/icon-white.png'
 import chatGptIconUrl from '../../../assets/brands/chatgpt.svg'
-import { codexDesktopInstallLabel, maskedApiKey, type ThemeMode } from '../../app-shared'
+import { codexDesktopInstallLabel, isDetectionFailed, maskedApiKey, type ThemeMode } from '../../app-shared'
 import { errorMessage } from '../../error-message'
 import { ThemeToggle } from '../Sidebar'
 import {
@@ -113,6 +113,13 @@ export function CodexOnboarding({
       setNodeGuideOpen(true)
       return
     }
+    if (result.outcome === 'detection-failed') {
+      // Detection could not confirm any state either way — surface the
+      // retry message without opening the install guide or the desktop
+      // recovery panel, both of which presume a confirmed absence.
+      setError(result.message)
+      return
+    }
     if (result.outcome === 'desktop-recovery') {
       setDesktopInstallRecovery(true)
       setError(errorMessage(result.error))
@@ -145,6 +152,9 @@ export function CodexOnboarding({
     try {
       const next = await window.xingmang.getCodexSetupStatus()
       setStatus(next)
+      if (isDetectionFailed(next.desktop)) {
+        throw new Error('暂时无法确认 Codex 桌面端安装状态，请重试检测')
+      }
       if (!next.desktop.installed) throw new Error('仍未检测到 Codex 桌面端，请先完成微软商店安装')
       setAction('idle')
       setStage('ready')
@@ -219,6 +229,14 @@ export function CodexOnboarding({
         .filter((item) => item.installed).length
     : 0
   const busy = action !== 'idle'
+  // A detection failure must not be steered toward "install this", since the
+  // tool it names may already be present — only a retry can tell.
+  const anyDetectionFailed = Boolean(status && [
+    status.runtime.node,
+    status.runtime.npm,
+    status.cli,
+    status.desktop,
+  ].some((item) => isDetectionFailed(item)))
 
   return (
     <div className="onboarding-shell">
@@ -442,6 +460,13 @@ export function CodexOnboarding({
                     {finishing ? <LoaderCircle size={18} className="spin" /> : <CheckCircle2 size={18} />}
                     {finishing ? '正在载入工具概览' : '进入工具概览'}
                     {!finishing && <ArrowRight size={17} />}
+                  </button>
+                ) : anyDetectionFailed ? (
+                  // At least one probe could not confirm its result — offering an
+                  // install action here could reinstall over an already-working
+                  // setup, so the only safe move is to let the user retry detection.
+                  <button type="button" className="secondary-button" disabled={busy} onClick={() => void runSetup()}>
+                    <RefreshCw size={16} className={action === 'scanning' ? 'spin' : ''} /> 重新检测
                   </button>
                 ) : !status || !nodeRuntimeSupported(status.runtime) || !status.runtime.npm.installed ? (
                   <>

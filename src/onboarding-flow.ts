@@ -4,6 +4,7 @@ import type {
   NodeRuntimeInstallResult,
   PlatformCapabilities,
 } from './types'
+import { isDetectionFailed } from './app-shared'
 import { codexRuntimeSetupMessage, nodeRuntimeSupported } from './onboarding-runtime'
 
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
@@ -47,12 +48,34 @@ export interface CodexSetupCallbacks {
 export type CodexSetupResult =
   | { outcome: 'ready'; status: CodexSetupStatus }
   | { outcome: 'runtime-required'; status: CodexSetupStatus; message: string }
+  | { outcome: 'detection-failed'; status: CodexSetupStatus; message: string }
   | { outcome: 'desktop-recovery'; status: CodexSetupStatus; error: unknown }
   | { outcome: 'failed'; phase: OnboardingSetupPhase; status: CodexSetupStatus | null; error: unknown }
 
 export type CodexNodeInstallResult =
   | { outcome: 'setup'; setup: CodexSetupResult }
   | { outcome: 'node-failed'; status: CodexSetupStatus | null; error: unknown }
+
+/**
+ * A probe that threw must not be reinterpreted as "confirmed missing" this
+ * far downstream either: left unchecked, `prepareCodexEnvironment` would
+ * read a detection failure as "not installed" and either show a misleading
+ * "please install" prompt or — worse — silently kick off `installCli`/
+ * `installCodexDesktop` on top of a tool that may already be working.
+ * Checked once, right after the status fetch, so it wins over every
+ * installed/not-installed branch below rather than needing to be threaded
+ * through each of them individually.
+ */
+export function buildCodexDetectionFailureMessage(status: CodexSetupStatus): string | null {
+  const failedLabels = [
+    isDetectionFailed(status.runtime.node) ? 'Node.js' : null,
+    isDetectionFailed(status.runtime.npm) ? 'npm' : null,
+    isDetectionFailed(status.cli) ? 'Codex CLI' : null,
+    isDetectionFailed(status.desktop) ? 'Codex 桌面端' : null,
+  ].filter((label): label is string => label !== null)
+  if (failedLabels.length === 0) return null
+  return `${failedLabels.join('、')}暂时无法确认状态，请重试检测`
+}
 
 export async function authorizeCodex(
   rawApiKey: string,
@@ -90,6 +113,11 @@ export async function prepareCodexEnvironment(
   try {
     status = await api.getCodexSetupStatus()
     callbacks.onStatus(status)
+    const detectionFailureMessage = buildCodexDetectionFailureMessage(status)
+    if (detectionFailureMessage) {
+      callbacks.onAction('idle')
+      return { outcome: 'detection-failed', status, message: detectionFailureMessage }
+    }
     const runtimeError = codexRuntimeSetupMessage(status.runtime)
     if (runtimeError) {
       callbacks.onAction('idle')
