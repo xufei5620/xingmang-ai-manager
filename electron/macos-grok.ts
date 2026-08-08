@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { releaseStagedDarwinCli, stageVerifiedDarwinCli } from './darwin-cli-staging'
+import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { sameLocalPathIdentity } from './path-identity'
 import type {
   NativeCliDirectoryIdentity,
@@ -402,26 +403,15 @@ export async function runDarwinGrokPostInstallTransaction<T>(
 async function verifyDarwinGrokExecutable(
   options: VerifyDarwinGrokExecutableOptions,
 ): Promise<void> {
-  await options.runCommand({
-    executable: '/usr/bin/codesign',
-    argv: ['--verify', '--strict', options.executablePath],
-  })
-  options.assertUnchanged?.()
-  const signature = await options.runCommand({
-    executable: '/usr/bin/codesign',
-    argv: ['-dv', '--verbose=4', options.executablePath],
-  })
-  options.assertUnchanged?.()
-  const signatureDetails = `${signature.stdout}\n${signature.stderr}`
-  if (!new RegExp(`^TeamIdentifier=${xaiTeamId}$`, 'm').test(signatureDetails)) {
-    throw new Error('Grok signature Team ID does not match xAI')
+  try {
+    await options.runCommand({
+      executable: '/usr/bin/codesign',
+      argv: darwinDeveloperIdVerificationArgv(xaiTeamId, options.executablePath),
+    })
+  } catch (error) {
+    throw new Error('Grok 可执行文件未通过 xAI Developer ID 签名校验', { cause: error })
   }
-  if (!new RegExp(
-    `^Authority=Developer ID Application: X\\.AI Corporation \\(${xaiTeamId}\\)$`,
-    'm',
-  ).test(signatureDetails)) {
-    throw new Error('Grok signature does not contain the xAI Developer ID authority')
-  }
+  options.assertUnchanged?.()
   const versionResult = await options.runCommand({
     executable: options.executablePath,
     argv: ['--version'],

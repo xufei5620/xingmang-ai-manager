@@ -42,20 +42,14 @@ function commandRunner(options: { teamId?: string; version?: string } = {}) {
       && spec.argv[0] === '--verify'
       && spec.argv[1] === '--strict'
     ) {
-      return { stdout: '', stderr: '' }
-    }
-    if (
-      spec.executable === '/usr/bin/codesign'
-      && spec.argv[0] === '-dv'
-      && spec.argv[1] === '--verbose=4'
-    ) {
-      return {
-        stdout: '',
-        stderr: [
-          `Authority=Developer ID Application: X.AI Corporation (${teamId})`,
-          `TeamIdentifier=${teamId}`,
-        ].join('\n'),
+      // Stands in for codesign evaluating the certificate chain. `teamId` is who
+      // actually signed this binary, so the requirement is satisfied only when it
+      // names that same team; anything else exits non-zero the way codesign does.
+      const requirement = spec.argv.find((argument) => argument.startsWith('-R=')) ?? ''
+      if (!requirement.includes(`certificate leaf[subject.OU] = "${teamId}"`)) {
+        throw new Error('test-requirement: code failed to satisfy specified code requirement(s)')
       }
+      return { stdout: '', stderr: '' }
     }
     if (spec.executable !== '/usr/bin/codesign' && spec.argv.length === 1 && spec.argv[0] === '--version') {
       return { stdout: `grok ${version}\n`, stderr: '' }
@@ -157,11 +151,22 @@ describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', 
         return commandRunner()(spec)
       },
     })).resolves.toMatchObject({ version: '0.2.118' })
-    const stagedExecutable = calls[0]?.argv[2]
+    const stagedExecutable = calls[0]?.argv.at(-1)
     expect(stagedExecutable).toEqual(expect.any(String))
+    // Spelled out rather than imported, so weakening the requirement fails here.
     expect(calls).toEqual([
-      { executable: '/usr/bin/codesign', argv: ['--verify', '--strict', stagedExecutable!] },
-      { executable: '/usr/bin/codesign', argv: ['-dv', '--verbose=4', stagedExecutable!] },
+      {
+        executable: '/usr/bin/codesign',
+        argv: [
+          '--verify',
+          '--strict',
+          '-R=anchor apple generic'
+            + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
+            + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+            + ' and certificate leaf[subject.OU] = "5Y6N3AJ54S"',
+          stagedExecutable!,
+        ],
+      },
       { executable: stagedExecutable!, argv: ['--version'] },
     ])
     expect(calls.at(-1)).toEqual({
@@ -174,12 +179,12 @@ describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', 
       homeDirectory: fixture.home,
       expectedVersion: '0.2.118',
       runCommand: commandRunner({ teamId: 'WRONGTEAM' }),
-    })).rejects.toThrow('Team ID')
+    })).rejects.toThrow('Developer ID')
     await expect(verifyDarwinGrokCanonicalInstallation({
       homeDirectory: fixture.home,
       expectedVersion: '0.2.118',
       runCommand: commandRunner({ teamId: '5Y6N3AJ54S-extra' }),
-    })).rejects.toThrow('Team ID')
+    })).rejects.toThrow('Developer ID')
     await expect(verifyDarwinGrokCanonicalInstallation({
       homeDirectory: fixture.home,
       expectedVersion: '0.2.119',
