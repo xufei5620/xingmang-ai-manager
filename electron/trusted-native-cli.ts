@@ -136,7 +136,10 @@ export async function stageVerifiedNativeCli(
   sourcePath: string,
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<string> {
-  if (process.platform !== 'win32') return sourcePath
+  // Returning the unverified source from a function named "stageVerified" is a
+  // fail-open that reads like verification at every call site. Every caller now
+  // carries an explicit win32 conjunct, so reaching here off Windows is a bug.
+  if (process.platform !== 'win32') throw new Error('托管 CLI 暂存仅支持 Windows')
   const source = requirePlainExecutable(sourcePath)
   const sourceStats = fs.statSync(source)
   const cacheKey = `${provider}:${source.toLowerCase()}`
