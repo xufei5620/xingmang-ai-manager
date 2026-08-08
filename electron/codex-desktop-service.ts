@@ -1,15 +1,26 @@
 import { execFile } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import fs from 'node:fs'
+import path from 'node:path'
 import { promisify } from 'node:util'
 import {
   compareWindowsPackageVersions,
+  parseCodexDesktopAppManifest,
   parseCodexDesktopMirrorManifest,
   parseCodexDesktopPackageMetadata,
+  parseCodexDesktopPackagesJson,
+  parseStartAppsJson,
+  parseWindowsProcessesJson,
+  selectCodexDesktopApp,
+  selectCodexDesktopPackage,
+  stopCodexDesktopProcesses,
   type CodexDesktopMirrorRelease,
+  type CodexDesktopPackageEntry,
   type CodexDesktopPackageMetadata,
+  type StartAppEntry,
+  type WindowsProcessEntry,
 } from './codex-desktop'
-import { trustedCommandEnvironment } from './command-runner'
+import { trustedCommandEnvironment, windowsSystemExecutable } from './command-runner'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
@@ -43,6 +54,7 @@ const maximumCodexDesktopRedirects = 2
 const minimumCodexDesktopPackageBytes = 10 * 1024 * 1024
 const maximumCodexDesktopPackageBytes = 1_500 * 1024 * 1024
 const maximumCodexDesktopManifestBytes = 1024 * 1024
+const maximumCodexDesktopAppManifestBytes = 512 * 1024
 
 export interface CodexDesktopLaunchPlan {
   executable: string
@@ -431,4 +443,204 @@ export function desktopMirrorUpdateAvailable(
   if (!installedVersion) return true
   const comparison = compareWindowsPackageVersions(installedVersion, mirrorVersion)
   return comparison === null ? null : comparison < 0
+}
+
+export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> {
+  const script = [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    "$apps = @(Get-StartApps | Where-Object { $_.AppID -like 'OpenAI.Codex*!App' } | Select-Object Name, AppID)",
+    '$apps | ConvertTo-Json -Compress',
+  ].join('\n')
+
+  try {
+    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1024 * 1024,
+    })
+    return selectCodexDesktopApp(parseStartAppsJson(stdout))
+  } catch {
+    return null
+  }
+}
+
+export async function listCodexDesktopProcesses(): Promise<WindowsProcessEntry[]> {
+  if (process.platform !== 'win32') return []
+
+  const script = [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    "$items = @(Get-CimInstance Win32_Process | Where-Object { ([string]$_.ExecutablePath) -like '*\\WindowsApps\\OpenAI.Codex_*' -or ([string]$_.ExecutablePath) -like '*\\WindowsApps\\OpenAI.CodexBeta_*' } | Select-Object ProcessId, ParentProcessId, Name, ExecutablePath)",
+    '$items | ConvertTo-Json -Compress',
+  ].join('; ')
+
+  try {
+    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1024 * 1024,
+    })
+    return parseWindowsProcessesJson(stdout)
+  } catch {
+    return []
+  }
+}
+
+export async function inspectCodexDesktopPackage(): Promise<{
+  value: CodexDesktopPackageEntry | null
+  error: string | null
+}> {
+  const script = [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    // The packaged app is registered per user. The manager itself runs
+    // elevated, so the current-user query can be empty even though the
+    // Store package is installed for another Windows account. Prefer the
+    // current user, then fall back to the read-only all-users view.
+    "$packages = @(Get-AppxPackage -Name 'OpenAI.Codex*' | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation)",
+    "if ($packages.Count -eq 0) { $packages = @(Get-AppxPackage -AllUsers -Name 'OpenAI.Codex*' | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation) }",
+    '$packages | ConvertTo-Json -Compress',
+  ].join('; ')
+
+  try {
+    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 8_000,
+      maxBuffer: 1024 * 1024,
+    })
+    return {
+      value: selectCodexDesktopPackage(parseCodexDesktopPackagesJson(stdout)),
+      error: null,
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message.trim().slice(0, 240) : ''
+    return { value: null, error: message || '无法读取 Windows Appx 包信息' }
+  }
+}
+
+export async function inspectCodexDesktopAppVersion(
+  installedPackage: CodexDesktopPackageEntry,
+): Promise<string | null> {
+  const manifestPath = path.join(
+    installedPackage.installLocation,
+    'app',
+    'resources',
+    'app.asar',
+    'package.json',
+  )
+  try {
+    // The manifest lives inside app.asar, and Electron's archive layer serves
+    // those paths with synthetic stat data - a fresh inode on every call and
+    // no timestamps. readBoundedUtf8File's link and TOCTOU guards can never
+    // hold there, so they are replaced by the guarantees that do apply: the
+    // archive sits under the system-protected WindowsApps directory, and
+    // archive members cannot be redirected by a symlink.
+    const stats = await fs.promises.stat(manifestPath)
+    if (!stats.isFile() || stats.size > maximumCodexDesktopAppManifestBytes) return null
+    const manifest = await fs.promises.readFile(manifestPath, 'utf8')
+    return parseCodexDesktopAppManifest(manifest)
+  } catch {
+    return null
+  }
+}
+
+export async function addCodexDesktopPackage(packagePath: string): Promise<void> {
+  const script = [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    '$ErrorActionPreference = \'Stop\'',
+    `Add-AppxPackage -Path ${powershellLiteral(packagePath)} -ForceApplicationShutdown -ErrorAction Stop`,
+  ].join('; ')
+  try {
+    await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 15 * 60_000,
+      maxBuffer: 4 * 1024 * 1024,
+    })
+  } catch (error) {
+    const failure = error as { stderr?: unknown; message?: unknown }
+    const stderr = Buffer.isBuffer(failure.stderr)
+      ? failure.stderr.toString('utf8')
+      : (typeof failure.stderr === 'string' ? failure.stderr : '')
+    const message = stderr.trim()
+      || (typeof failure.message === 'string' ? failure.message.trim() : '')
+      || 'Windows 未返回错误详情'
+    throw new Error(`Add-AppxPackage 安装失败：${message.slice(0, 2_000)}`)
+  }
+}
+
+export async function verifyInstalledCodexDesktop(
+  expectedVersion: string,
+): Promise<CodexDesktopPackageEntry> {
+  const installedProbe = await inspectCodexDesktopPackage()
+  if (!installedProbe.value) {
+    throw new Error(installedProbe.error ?? '安装命令完成后仍未检测到 Codex Desktop')
+  }
+  const comparison = compareWindowsPackageVersions(installedProbe.value.version, expectedVersion)
+  if (comparison === null || comparison !== 0) {
+    throw new Error(
+      `安装后检测到的版本 ${installedProbe.value.version} 与目标版本 ${expectedVersion} 不一致`,
+    )
+  }
+  return installedProbe.value
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+export async function waitForCodexDesktopState(
+  running: boolean,
+  timeoutMs: number,
+): Promise<WindowsProcessEntry[]> {
+  const deadline = Date.now() + timeoutMs
+  let processes = await listCodexDesktopProcesses()
+  while ((processes.length > 0) !== running && Date.now() < deadline) {
+    await delay(250)
+    processes = await listCodexDesktopProcesses()
+  }
+  return processes
+}
+
+export async function terminateCodexDesktopProcesses(processes: WindowsProcessEntry[]): Promise<void> {
+  const taskkill = async (processId: number, force: boolean): Promise<void> => {
+    const args = ['/PID', String(processId), '/T']
+    if (force) args.push('/F')
+    await execFileAsync(windowsSystemExecutable('taskkill.exe'), args, {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 8_000,
+    })
+  }
+
+  await stopCodexDesktopProcesses(processes, {
+    requestClose: (processId) => taskkill(processId, false),
+    forceClose: (processId) => taskkill(processId, true),
+    waitUntilStopped: (timeoutMs) => waitForCodexDesktopState(false, timeoutMs),
+  })
 }
