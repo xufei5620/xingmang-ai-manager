@@ -57,6 +57,32 @@ describe('MCP source recognition', () => {
       kind: 'source-unknown', locator: null, reference: null,
     })
   })
+
+  it('does not read a plain service endpoint as a git repository', () => {
+    // mcp-remote takes the endpoint as a positional argument. Reading it as a
+    // git source made enrichUpdates report latestVersion: null, silently
+    // skipping the npm version check for the package that actually runs.
+    expect(detectMcpPackageSource('npx', ['-y', 'mcp-remote', 'https://example.com/mcp'])).toEqual({
+      kind: 'npm', locator: 'mcp-remote', reference: null,
+    })
+    expect(detectMcpPackageSource('npx', ['-y', 'mcp-remote', 'http://127.0.0.1:8080/sse'])).toEqual({
+      kind: 'npm', locator: 'mcp-remote', reference: null,
+    })
+  })
+
+  it('still recognises every explicit git spelling', () => {
+    // These name the transport outright, so they stay git with or without a
+    // .git suffix; a bare http(s) URL only counts when it carries one.
+    for (const entry of [
+      'git+https://github.com/acme/server',
+      'git@github.com:acme/server.git',
+      'ssh://git@github.com/acme/server',
+      'https://github.com/acme/server.git',
+      'https://github.com/acme/server#v1.2.3',
+    ]) {
+      expect(detectMcpPackageSource('npx', [entry]).kind).toBe('git')
+    }
+  })
 })
 
 describe('provider source update network policy', () => {

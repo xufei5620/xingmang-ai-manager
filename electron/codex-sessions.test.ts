@@ -1,4 +1,5 @@
 import fs from 'node:fs'
+import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -121,6 +122,42 @@ function service(data: Fixture, hooks?: ConstructorParameters<typeof CodexSessio
     now: () => 1_721_800_000_123,
     hooks,
   })
+}
+
+function lastJournalEntry(journalPath: string): Record<string, unknown> {
+  const lines = fs.readFileSync(journalPath, 'utf8').split(/\r?\n/).filter((line) => line.trim())
+  return JSON.parse(lines[lines.length - 1]) as Record<string, unknown>
+}
+
+function sameInode(left: string, right: string): boolean {
+  const leftInfo = fs.lstatSync(left, { bigint: true })
+  const rightInfo = fs.lstatSync(right, { bigint: true })
+  return leftInfo.dev === rightInfo.dev && leftInfo.ino === rightInfo.ino
+}
+
+/**
+ * Reproduces the Windows failure this guards against: a scanner holding the
+ * rollout without FILE_SHARE_DELETE makes every unlink fail with EPERM while
+ * the hard link created by moveFileDurably survives. Verified against a real
+ * FileShare.Read handle on Windows; mocked here so it runs on every platform.
+ */
+function refuseUnlink(paths: readonly string[], options: { releaseTargetAfter?: number } = {}): () => void {
+  const blocked = new Set(paths)
+  const realRm = fsPromises.rm
+  let attempts = 0
+  const spy = vi.spyOn(fsPromises, 'rm').mockImplementation(async (target, rmOptions) => {
+    if (blocked.has(String(target))) {
+      attempts += 1
+      if (options.releaseTargetAfter === undefined || attempts <= options.releaseTargetAfter) {
+        throw Object.assign(new Error('EPERM: operation not permitted, unlink'), { code: 'EPERM' })
+      }
+      if (String(target) === paths[0]) {
+        throw Object.assign(new Error('EPERM: operation not permitted, unlink'), { code: 'EPERM' })
+      }
+    }
+    return realRm(target, rmOptions)
+  })
+  return () => spy.mockRestore()
 }
 
 afterEach(() => {
@@ -766,5 +803,67 @@ describe('CodexSessionsService', () => {
       .toMatchObject({ archived: 0, rollout_path: data.rolloutPath })
     live.close()
     expect(fs.readFileSync(sessions.operationJournalPath, 'utf8')).toContain('rolled-back')
+  })
+
+  it('keeps the operation recoverable when a locked rollout leaves both hard links behind', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    const targetPath = path.join(data.codexHome, 'archived_sessions', path.basename(data.rolloutPath))
+    const restore = refuseUnlink([data.rolloutPath, targetPath])
+
+    await expect(sessions.archive('session-1')).rejects.toThrow()
+    restore()
+
+    // Both names now point at one inode. validateRollout rejects nlink > 1, so
+    // recording 'rolled-back' here would strand the session with no way back.
+    expect(fs.existsSync(data.rolloutPath)).toBe(true)
+    expect(fs.existsSync(targetPath)).toBe(true)
+    expect(sameInode(data.rolloutPath, targetPath)).toBe(true)
+    expect(lastJournalEntry(sessions.operationJournalPath).state).toBe('pending')
+  })
+
+  it('repairs the leftover hard link on the next start and makes the session usable again', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const failing = service(data)
+    const targetPath = path.join(data.codexHome, 'archived_sessions', path.basename(data.rolloutPath))
+    const restore = refuseUnlink([data.rolloutPath, targetPath])
+    await expect(failing.archive('session-1')).rejects.toThrow()
+    restore()
+    expect(failing.list().items[0]).toMatchObject({ rolloutAvailable: false })
+
+    // The scanner released the file; starting the app again must self-heal.
+    const recovered = service(data)
+
+    expect(fs.existsSync(data.rolloutPath)).toBe(true)
+    expect(fs.existsSync(targetPath)).toBe(false)
+    expect(lastJournalEntry(recovered.operationJournalPath).state).toBe('rolled-back')
+    expect(recovered.list().items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
+  })
+
+  it('records a real rollback when the extra hard link can still be dropped', async () => {
+    const data = fixture('session-1')
+    const database = createThreadsDatabase(data.databasePath)
+    insertThread(database, { id: 'session-1', rolloutPath: data.rolloutPath })
+    database.close()
+    const sessions = service(data)
+    const targetPath = path.join(data.codexHome, 'archived_sessions', path.basename(data.rolloutPath))
+    // The source stays locked for good, and the target survives both the
+    // unlink and moveFileDurably's own cleanup, so the link pair really forms.
+    // The scanner then lets go, so the rollback can still finish in-process.
+    const restore = refuseUnlink([data.rolloutPath, targetPath], { releaseTargetAfter: 2 })
+
+    await expect(sessions.archive('session-1')).rejects.toThrow()
+    restore()
+
+    expect(fs.existsSync(data.rolloutPath)).toBe(true)
+    expect(fs.existsSync(targetPath)).toBe(false)
+    expect(lastJournalEntry(sessions.operationJournalPath).state).toBe('rolled-back')
+    expect(sessions.list().items[0]).toMatchObject({ archived: false, rolloutAvailable: true })
   })
 })

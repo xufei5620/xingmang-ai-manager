@@ -90,13 +90,23 @@ function verifyAuthenticode(filePath, expectedPublisher = null, options = {}) {
       code: 'INSTALLER_SIGNATURE_INVALID',
     })
   }
-  if (expectedPublisher) {
-    const subject = typeof signature.Subject === 'string' ? signature.Subject : ''
-    if (!publisherMatches(expectedPublisher, subject)) {
-      throw Object.assign(new Error(`安装程序签名发布者不匹配：期望 ${expectedPublisher}，实际 ${subject || 'Unknown'}`), {
-        code: 'INSTALLER_PUBLISHER_MISMATCH',
-      })
-    }
+  // Skipping the subject comparison when no publisher is configured accepted any
+  // installer carrying some valid Authenticode signature — an attacker's own
+  // certificate included. validateReleaseEnvironment already refuses an empty
+  // publisher in release mode, but this function is exported and `npm run
+  // release:verify` reaches it without XINGMANG_RELEASE=1, so the gate has to
+  // hold on its own rather than trust the caller to have checked.
+  if (!expectedPublisher || !String(expectedPublisher).trim()) {
+    throw Object.assign(
+      new Error('缺少固定签名发布者，无法校验安装程序签名主体；请设置 XINGMANG_SIGNING_PUBLISHER'),
+      { code: 'SIGNING_PUBLISHER_MISSING' },
+    )
+  }
+  const subject = typeof signature.Subject === 'string' ? signature.Subject : ''
+  if (!publisherMatches(expectedPublisher, subject)) {
+    throw Object.assign(new Error(`安装程序签名发布者不匹配：期望 ${expectedPublisher}，实际 ${subject || 'Unknown'}`), {
+      code: 'INSTALLER_PUBLISHER_MISMATCH',
+    })
   }
 }
 

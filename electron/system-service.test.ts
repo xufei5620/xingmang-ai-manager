@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
+import { trustedCommandEnvironment } from './command-runner'
+import type { WindowsMachinePaths } from './windows-machine-paths'
 import { providerConfigPaths } from './config-files'
 import type { MacosCodexAppInfo } from './macos-codex-app'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
@@ -40,8 +42,14 @@ import {
   fetchNpmPackageReleaseMetadata,
   grokInstallStrategyFor,
   grokManualUninstallResult,
+  formatElapsedDuration,
   networkLocationCacheTtlMs,
+  npmDownloadTimeoutMs,
   npmInstallRegistries,
+  npmRegistryLabel,
+  npmResolutionHeartbeatMessage,
+  npmResolutionStartMessage,
+  npmResolutionTimeoutMs,
   npmPackageLatestUrl,
   npmPackageVersionUrl,
   parseNpmPackageReleaseMetadata,
@@ -59,6 +67,16 @@ import {
 } from './system-service'
 
 const temporaryDirectories: string[] = []
+
+// Fixed roots keep the trusted-environment assertions deterministic on every
+// platform instead of depending on the registry of the machine running them.
+const testMachinePaths: WindowsMachinePaths = {
+  systemRoot: 'D:\\Windows',
+  system32: 'D:\\Windows\\System32',
+  programFiles: 'D:\\Program Files',
+  programFilesX86: 'D:\\Program Files (x86)',
+  programData: 'D:\\ProgramData',
+}
 
 function createService() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-system-service-'))
@@ -1177,6 +1195,61 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
   })
 })
 
+describe('npm install progress reporting', () => {
+  it('separates the resolution budget from the download budget', () => {
+    // Sharing one budget let a slow official resolution eat the time the
+    // download still needed, and killed a slow-but-working resolution at 5min.
+    expect(npmResolutionTimeoutMs).toBeGreaterThan(npmDownloadTimeoutMs)
+    expect(npmDownloadTimeoutMs).toBe(5 * 60_000)
+  })
+
+  it('keeps the resolution ceiling within a range a user will actually wait out', () => {
+    // Measured on Windows: every managed CLI resolves 7-12 packages in 1-4s.
+    // A long wait means a struggling connection, not a large graph, so the
+    // ceiling exists to avoid killing slow-but-progressing resolutions rather
+    // than to accommodate expected work.
+    expect(npmResolutionTimeoutMs).toBeLessThanOrEqual(10 * 60_000)
+  })
+
+  it('tells the user why the official source cannot be replaced by a mirror', () => {
+    const message = npmResolutionStartMessage('https://registry.npmjs.org')
+
+    expect(message).toContain('官方源')
+    expect(message).toContain('镜像无法代替')
+    // Managing the expectation is the whole point: a wait is possible and does
+    // not slow down what comes after. It must not promise a duration - measured
+    // resolution is 1-4s on a healthy link, so "takes minutes" would be false.
+    expect(message).toContain('不影响后续下载速度')
+    expect(message).not.toMatch(/通常需要|大约|预计/)
+  })
+
+  it('names the mirror when the graph is resolved against it', () => {
+    expect(npmResolutionStartMessage('https://registry.npmmirror.com')).toContain('国内 npm 镜像')
+    expect(npmRegistryLabel('https://registry.npmmirror.com')).toBe('国内 npm 镜像')
+    expect(npmRegistryLabel('https://registry.npmjs.org')).toBe('npm 官方源')
+  })
+
+  it('reports elapsed time without inventing a completion estimate', () => {
+    const early = npmResolutionHeartbeatMessage('https://registry.npmjs.org', 15_000)
+    const later = npmResolutionHeartbeatMessage('https://registry.npmjs.org', 125_000)
+
+    expect(early).toContain('15 秒')
+    expect(later).toContain('2 分 05 秒')
+    // No percentage or ETA: npm gives no signal that could support one, and a
+    // fabricated bar is worse than an honest clock.
+    expect(early).not.toMatch(/%|预计|剩余/)
+    expect(later).not.toMatch(/%|预计|剩余/)
+  })
+
+  it('formats durations either side of a minute', () => {
+    expect(formatElapsedDuration(0)).toBe('0 秒')
+    expect(formatElapsedDuration(59_400)).toBe('59 秒')
+    expect(formatElapsedDuration(60_000)).toBe('1 分 00 秒')
+    expect(formatElapsedDuration(3_723_000)).toBe('62 分 03 秒')
+    expect(formatElapsedDuration(-5_000)).toBe('0 秒')
+  })
+})
+
 describe('interactiveTerminalEnvironment', () => {
   it('removes inherited monochrome flags and advertises true color support', () => {
     const env = interactiveTerminalEnvironment({
@@ -1197,6 +1270,56 @@ describe('interactiveTerminalEnvironment', () => {
     })
     expect(env.NO_COLOR).toBeUndefined()
     expect(env.NODE_DISABLE_COLORS).toBeUndefined()
+  })
+
+  it('keeps the unsanitized base for callers that stay at the current integrity level', () => {
+    const env = interactiveTerminalEnvironment({
+      PATH: 'C:\\Users\\tester\\AppData\\Roaming\\npm',
+      NODE_OPTIONS: '--require=C:\\Users\\tester\\hook.js',
+    })
+
+    // same-user launches never cross an integrity boundary, so narrowing PATH
+    // here would only break globally installed tools in the default scenario.
+    expect(env.NODE_OPTIONS).toBe('--require=C:\\Users\\tester\\hook.js')
+    expect(env.PATH).toContain('C:\\Users\\tester\\AppData\\Roaming\\npm')
+  })
+
+  it('strips injection variables from an elevated base while keeping the color layer', () => {
+    const env = interactiveTerminalEnvironment(
+      {
+        PATH: ['C:\\Users\\tester\\AppData\\Roaming\\npm', 'D:\\Windows\\System32'].join(';'),
+        TERM: 'dumb',
+        NO_COLOR: '1',
+        NODE_OPTIONS: '--require=C:\\Users\\tester\\payload.js',
+        NODE_PATH: 'C:\\Users\\tester\\modules',
+        BROWSER: 'C:\\Users\\tester\\evil.exe',
+        GIT_ASKPASS: 'C:\\Users\\tester\\steal.exe',
+        DOTNET_STARTUP_HOOKS: 'C:\\Users\\tester\\hook.dll',
+        PSModulePath: 'C:\\Users\\tester\\Documents\\WindowsPowerShell\\Modules',
+        CODEX_HOME: 'C:\\Users\\tester\\.codex',
+      },
+      (baseEnv) => trustedCommandEnvironment(baseEnv, testMachinePaths),
+    )
+
+    expect(env.NODE_OPTIONS).toBeUndefined()
+    expect(env.NODE_PATH).toBeUndefined()
+    expect(env.BROWSER).toBeUndefined()
+    expect(env.GIT_ASKPASS).toBeUndefined()
+    expect(env.DOTNET_STARTUP_HOOKS).toBeUndefined()
+    expect(env.PSModulePath).not.toContain('tester')
+    expect(env.PATH).not.toContain('C:\\Users\\tester')
+    expect(env.PATH).toContain(testMachinePaths.system32)
+    // The CLI still needs its own configuration root; sanitizing must not
+    // reach beyond the documented injection variables.
+    expect(env.CODEX_HOME).toBe('C:\\Users\\tester\\.codex')
+    expect(env).toMatchObject({
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      FORCE_COLOR: '3',
+      CLICOLOR: '1',
+      CLICOLOR_FORCE: '1',
+    })
+    expect(env.NO_COLOR).toBeUndefined()
   })
 })
 
@@ -1947,18 +2070,30 @@ describe('Codex Desktop update state', () => {
         url: 'https://codexapp.agentsmirror.com/latest/win-arm64',
       },
     ])
+    // Mirror first, matching the package download below, which is mirror-only.
     expect(buildCodexDesktopManifestSources()).toEqual([
-      {
-        kind: 'official',
-        label: 'OpenAI 官方源',
-        url: 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
-      },
       {
         kind: 'mirror',
         label: '国内镜像',
         url: 'https://codexapp.agentsmirror.com/latest/manifest',
       },
+      {
+        kind: 'official',
+        label: 'OpenAI 官方源',
+        url: 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
+      },
     ])
+  })
+
+  it('keeps both manifest endpoints and introduces no new host', () => {
+    // Reordering must not drop the official fallback, and must not reach for a
+    // host outside the two already covered by validateCodexDesktopResourceUrl.
+    expect([...buildCodexDesktopManifestSources()].map((source) => source.url).sort()).toEqual([
+      'https://codexapp.agentsmirror.com/latest/manifest',
+      'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
+    ])
+    expect(buildCodexDesktopManifestSources().map((source) => source.kind).sort())
+      .toEqual(['mirror', 'official'])
   })
 
   it('reads and validates the selected architecture from the AgentsMirror manifest', async () => {

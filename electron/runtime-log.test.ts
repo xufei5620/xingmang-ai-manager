@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { redactHomeDirectory, RuntimeLogStore } from './runtime-log'
+import { recordStartupFailure } from './startup-log'
 
 const temporaryDirectories: string[] = []
 
@@ -36,6 +37,34 @@ describe('RuntimeLogStore', () => {
 
     expect(redacted.toLowerCase()).not.toContain('users')
     expect(redacted.match(/%USERPROFILE%/g)).toHaveLength(3)
+  })
+
+  it('adopts a pre-startup failure record so it reaches feedback and diagnostics', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-runtime-log-'))
+    temporaryDirectories.push(directory)
+    const startupLog = path.join(directory, 'startup-failure.log')
+    recordStartupFailure(new Error('protocol registration exploded'), {
+      phase: 'whenReady',
+    }, { userDataDirectory: directory })
+    // recordStartupFailure writes into <userData>/logs; the store reads its own
+    // directory, which is that same logs directory in production.
+    fs.renameSync(path.join(directory, 'logs', 'startup-failure.log'), startupLog)
+
+    const store = new RuntimeLogStore({
+      directory,
+      appName: '星芒AI管理工具',
+      appVersion: '1.0.0',
+      packaged: false,
+    })
+    const snapshot = await store.snapshot()
+
+    const adopted = snapshot.entries.find((entry) => entry.event === 'startup.failure.recovered')
+    expect(adopted).toBeDefined()
+    expect(JSON.stringify(adopted?.detail)).toContain('protocol registration exploded')
+    // The feedback export is the other consumer support actually reads.
+    expect(await store.feedbackReport()).toContain('protocol registration exploded')
+    // Draining it prevents the same crash being re-reported on every launch.
+    expect(fs.existsSync(startupLog)).toBe(false)
   })
 
   it('persists UTF-8 JSONL and redacts secrets recursively', async () => {

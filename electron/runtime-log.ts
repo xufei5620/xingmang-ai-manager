@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { redactCommandText } from './command-runner'
+import { drainStartupFailures, redactHomeDirectory, STARTUP_LOG_FILE_NAME } from './startup-log'
 import {
   appendSafeUtf8File,
   assertSafeDataFile,
@@ -50,30 +51,10 @@ const MAX_DETAIL_DEPTH = 5
 const MAX_DETAIL_ITEMS = 128
 const MAX_LINE_BYTES = 256 * 1024
 
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-}
-
-export function redactHomeDirectory(value: string, homeDirectory: string): string {
-  const home = homeDirectory.trim()
-  if (!home) return value
-  const candidates = new Set([
-    home,
-    path.resolve(home),
-    home.replaceAll('\\', '/'),
-    home.replaceAll('/', '\\'),
-    JSON.stringify(home).slice(1, -1),
-  ])
-  const caseInsensitive = /^[A-Za-z]:[\\/]/.test(home) || home.startsWith('\\\\')
-  let result = value
-  for (const candidate of [...candidates].filter(Boolean).sort((left, right) => right.length - left.length)) {
-    result = result.replace(
-      new RegExp(escapeRegExp(candidate), caseInsensitive ? 'gi' : 'g'),
-      '%USERPROFILE%',
-    )
-  }
-  return result
-}
+// Lives in startup-log because that module must redact without importing
+// anything that could itself be the failure it is recording. Re-exported here
+// so existing callers keep their import path.
+export { redactHomeDirectory }
 
 function safeText(value: string): string {
   return redactCommandText(value).slice(0, MAX_TEXT_LENGTH)
@@ -165,6 +146,23 @@ export class RuntimeLogStore {
     this.maxFileBytes = options.maxFileBytes ?? 2 * 1024 * 1024
     this.archiveCount = options.archiveCount ?? 3
     this.now = options.now ?? (() => new Date())
+    this.adoptStartupFailures()
+  }
+
+  /**
+   * Folds any pre-startup crash records into the runtime log. A failure early
+   * enough to miss this store still lands on disk, and once the app does start
+   * it has to reach the feedback page and the diagnostics export — both of
+   * which read the runtime log and nothing else.
+   */
+  private adoptStartupFailures(): void {
+    const filePath = path.join(this.directory, STARTUP_LOG_FILE_NAME)
+    const recorded = drainStartupFailures(filePath)
+    if (!recorded) return
+    this.log('error', 'main', 'startup.failure.recovered', '上次启动失败，已找回早期日志', {
+      source: filePath,
+      records: recorded.split(/\n{2,}/).filter((record) => record.trim()),
+    })
   }
 
   log(

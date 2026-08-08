@@ -15,9 +15,9 @@ describe('platform presentation', () => {
       isMac: false,
       nodeRuntimeInstall: 'external',
       cliInstall: {
-        claude: 'managed',
-        codex: 'managed',
-        gemini: 'managed',
+        claude: 'external',
+        codex: 'external',
+        gemini: 'external',
         grok: 'external',
       },
       codexDesktop: {
@@ -114,6 +114,52 @@ describe('platform presentation', () => {
       { installCli },
     )).resolves.toEqual({ kind: 'managed' })
     expect(installCli).toHaveBeenCalledWith('grok')
+  })
+
+  it('never hands Grok guidance to another provider marked external', async () => {
+    const installCli = vi.fn()
+    // No platform ships this today, which is exactly why it went unnoticed: the
+    // first one to mark claude external would have told those users to go read
+    // xAI's Grok documentation.
+    const capabilities = {
+      ...failClosedPlatformCapabilities,
+      platform: 'macos' as const,
+      isMac: true,
+      cliInstall: {
+        claude: 'external',
+        codex: 'managed',
+        gemini: 'managed',
+        grok: 'external',
+      } as const,
+    }
+
+    const claude = await performCliInstallAction('claude', capabilities, { installCli })
+    expect(claude.kind).toBe('external')
+    const claudeGuidance = claude.kind === 'external' ? claude.guidance : ''
+    expect(claudeGuidance).not.toContain('Grok')
+    expect(claudeGuidance).not.toContain('xAI')
+    expect(claudeGuidance).toBeTruthy()
+
+    // Grok itself must still get its tailored, platform-aware wording.
+    const grok = await performCliInstallAction('grok', capabilities, { installCli })
+    expect(grok.kind === 'external' && grok.guidance).toContain('Grok')
+
+    expect(installCli).not.toHaveBeenCalled()
+  })
+
+  it('declines every managed install while capabilities are unknown', async () => {
+    const installCli = vi.fn()
+    // The fallback only reaches the dashboard when the capability probe failed,
+    // so it must not offer a one-click install nothing has verified.
+    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+      const result = await performCliInstallAction(
+        provider,
+        failClosedPlatformCapabilities,
+        { installCli },
+      )
+      expect(result.kind).toBe('external')
+    }
+    expect(installCli).not.toHaveBeenCalled()
   })
 
   it('preserves managed Node.js and Grok installer calls on Windows', async () => {

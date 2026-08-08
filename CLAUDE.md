@@ -130,7 +130,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 
 **I2. 跨提权边界的执行必须用 `trustedCommandEnvironment()` + `trustedOnly:true`。**
 `NODE_OPTIONS`、`PSModulePath`、`DOTNET_STARTUP_HOOKS`、`BROWSER`、`GIT_ASKPASS`、`LD_PRELOAD` 等 60+ 变量能让子进程在启动瞬间加载攻击者代码（清单见 `command-runner.ts:208-281`）。
-*注*：交互式终端启动当前仍用 `interactiveTerminalEnvironment`，这是**已知待修项**，不要在此基础上扩大范围。
+*注*：交互式终端启动走 `interactiveTerminalEnvironment`，它的净化基底**由调用方传入**——`trusted-only` 传 `trustedCommandEnvironment`，same-user 传 `commandEnvironment`（缺省值，未跨越完整性边界，无需收窄 PATH）。颜色层叠在基底之上，**不要把整个函数换成 `trustedCommandEnvironment`**，那会连 `TERM`/`FORCE_COLOR` 一起剥掉，终端变无色。
 
 **I3. API Key 明文永不随普通查询跨 IPC。**
 `toNativeConfigSummary` 解构剥离 `apiKey`；明文仅走 `config:reveal-api-key`。
