@@ -246,14 +246,83 @@ export function buildMacosTerminalScript(plan: MacosTerminalScriptPlan): string 
 async function writeLauncherAtomically(launcherPath: string, content: string): Promise<void> {
   const temporaryPath = `${launcherPath}.${randomUUID()}.tmp`
   const file = await fs.promises.open(temporaryPath, 'wx', 0o600)
+  let renamed = false
   try {
-    await file.writeFile(content, 'utf8')
-    await file.sync()
+    try {
+      await file.writeFile(content, 'utf8')
+      await file.sync()
+    } finally {
+      await file.close()
+    }
+    await fs.promises.chmod(temporaryPath, 0o700)
+    await fs.promises.rename(temporaryPath, launcherPath)
+    renamed = true
   } finally {
-    await file.close()
+    // A failed write must not leave the partial file behind. The caller only has an
+    // empty-directory removal to fall back on, so a surviving .tmp would keep the
+    // whole mkdtemp tree alive with no owner and no later pass to collect it.
+    if (!renamed) await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined)
   }
-  await fs.promises.chmod(temporaryPath, 0o700)
-  await fs.promises.rename(temporaryPath, launcherPath)
+}
+
+const collectedTerminalRoots = new Set<string>()
+
+function terminalDirectoryPrefix(processId: number = process.pid): string {
+  return `xingmang-terminal-${processId}-`
+}
+
+/** One sweep per temp root per process; launching a terminal is not a rare event. */
+async function cleanupStaleTerminalDirectoriesOnce(baseDirectory: string): Promise<void> {
+  const key = path.resolve(baseDirectory)
+  if (collectedTerminalRoots.has(key)) return
+  collectedTerminalRoots.add(key)
+  await cleanupStaleTerminalDirectories(baseDirectory)
+}
+
+function processIsAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== 'ESRCH'
+  }
+}
+
+/**
+ * Removes launcher directories left by processes that are gone.
+ *
+ * The launcher is normally unlinked by the script itself or by the scheduled
+ * cleanup, but neither runs if the app exits in between, and nothing else ever
+ * looked at these directories again. Keying on the creating pid rather than on an
+ * age threshold means a directory is only collected once its owner cannot possibly
+ * still need it, so a launcher waiting out its five-minute window is never taken.
+ */
+export async function cleanupStaleTerminalDirectories(
+  baseDirectory = os.tmpdir(),
+  isAlive: (processId: number) => boolean = processIsAlive,
+): Promise<void> {
+  let entries: fs.Dirent[]
+  try {
+    entries = await fs.promises.readdir(baseDirectory, { withFileTypes: true })
+  } catch {
+    return
+  }
+  const currentUid = process.getuid?.()
+  await Promise.all(entries.map(async (entry) => {
+    const match = /^xingmang-terminal-(\d+)-/.exec(entry.name)
+    if (!match || !entry.isDirectory()) return
+    const processId = Number(match[1])
+    if (!Number.isSafeInteger(processId) || processId <= 0 || isAlive(processId)) return
+    const directory = path.join(baseDirectory, entry.name)
+    try {
+      const stats = await fs.promises.lstat(directory)
+      if (!stats.isDirectory() || stats.isSymbolicLink()) return
+      if (currentUid !== undefined && stats.uid !== currentUid) return
+      await fs.promises.rm(directory, { recursive: true, force: true })
+    } catch {
+      // A concurrently removed or inaccessible stale directory is harmless.
+    }
+  }))
 }
 
 async function defaultCommandRunner(spec: CommandSpec, options: RunCommandOptions): Promise<unknown> {
@@ -270,7 +339,11 @@ export async function launchMacosTerminal(
   if (!isAbsolutePath(plan.executable)) throw new TypeError('executable must be an absolute path')
   if (!isAbsolutePath(plan.workspace)) throw new TypeError('workspace must be an absolute path')
 
-  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-terminal-'))
+  const baseDirectory = os.tmpdir()
+  await cleanupStaleTerminalDirectoriesOnce(baseDirectory)
+  // The pid is part of the name so the collector above can tell a directory whose
+  // owner is gone from one still waiting out its cleanup delay.
+  const directory = await fs.promises.mkdtemp(path.join(baseDirectory, terminalDirectoryPrefix()))
   const launcherPath = path.join(directory, 'launch.zsh')
   let launcherIdentity: LauncherIdentity | null = null
   try {
@@ -302,7 +375,11 @@ export async function launchMacosTerminal(
     if (launcherIdentity) {
       await removeLauncherIfUnchanged(directory, launcherPath, launcherIdentity)
     } else {
-      await fs.promises.rmdir(directory).catch(() => undefined)
+      // Recursive removal is confined to the directory this call just created with
+      // mkdtemp, and is only reached before the launcher has an identity — so there
+      // is nothing here worth preserving. A plain rmdir would fail on any partial
+      // file left behind and leak the tree.
+      await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined)
     }
     throw error
   }

@@ -5,6 +5,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   buildMacosTerminalScript,
+  cleanupStaleTerminalDirectories,
   launchMacosTerminal,
   quotePosixArgument,
 } from './macos-platform'
@@ -265,13 +266,15 @@ describe('macOS terminal launcher', () => {
       env: { HOME: directory, PATH: '/usr/bin' },
     }, async (spec) => {
       launcherPath = spec.argv[2]
+      // Registered the moment the directory exists: anything after this point can
+      // throw, and afterEach would otherwise never learn about the mkdtemp tree.
+      temporaryDirectories.push(path.dirname(launcherPath), `${path.dirname(launcherPath)}-original`)
     }, (task) => {
       cleanup = task
     })
 
     const launcherDirectory = path.dirname(launcherPath)
     const originalDirectory = `${launcherDirectory}-original`
-    temporaryDirectories.push(launcherDirectory, originalDirectory)
     fs.renameSync(launcherDirectory, originalDirectory)
     fs.mkdirSync(launcherDirectory, { mode: 0o700 })
     fs.linkSync(path.join(originalDirectory, 'launch.zsh'), launcherPath)
@@ -279,5 +282,73 @@ describe('macOS terminal launcher', () => {
     await cleanup!()
 
     expect(fs.existsSync(launcherPath)).toBe(true)
+  })
+  it('collects launcher directories whose creating process is gone', async () => {
+    const base = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-terminal-base-'))
+    temporaryDirectories.push(base)
+    const abandoned = path.join(base, 'xingmang-terminal-424242-abandoned')
+    const owned = path.join(base, 'xingmang-terminal-424243-owned')
+    const unrelated = path.join(base, 'some-other-directory')
+    for (const directory of [abandoned, owned, unrelated]) fs.mkdirSync(directory, { mode: 0o700 })
+    fs.writeFileSync(path.join(abandoned, 'launch.zsh'), 'stale', { mode: 0o700 })
+
+    await cleanupStaleTerminalDirectories(base, (processId) => processId === 424243)
+
+    // Gone: its owner is dead, so the five-minute cleanup will never run.
+    expect(fs.existsSync(abandoned)).toBe(false)
+    // Kept: the owner is still running and may be waiting out that window.
+    expect(fs.existsSync(owned)).toBe(true)
+    // Kept: not ours to touch.
+    expect(fs.existsSync(unrelated)).toBe(true)
+  })
+
+  it('leaves no directory behind when the launcher write fails', async () => {
+    let created = ''
+    const originalMkdtemp = fs.promises.mkdtemp.bind(fs.promises)
+    vi.spyOn(fs.promises, 'mkdtemp').mockImplementation((async (prefix: string) => {
+      created = await originalMkdtemp(prefix)
+      return created
+    }) as typeof fs.promises.mkdtemp)
+    const originalChmod = fs.promises.chmod.bind(fs.promises)
+    vi.spyOn(fs.promises, 'chmod').mockImplementation((async (target: string, mode: number) => {
+      // Fail after the partial file exists but before it is renamed into place.
+      if (String(target).endsWith('.tmp')) throw new Error('chmod failed')
+      return originalChmod(target, mode)
+    }) as typeof fs.promises.chmod)
+
+    await expect(launchMacosTerminal({
+      executable: '/usr/bin/true',
+      argv: [],
+      workspace: os.tmpdir(),
+      env: { HOME: os.tmpdir(), PATH: '/usr/bin' },
+    }, async () => undefined, () => undefined)).rejects.toThrow('chmod failed')
+
+    expect(created).not.toBe('')
+    expect(fs.existsSync(created)).toBe(false)
+  })
+
+  it('leaves no executable launcher behind when identity capture fails', async () => {
+    let created = ''
+    const originalMkdtemp = fs.promises.mkdtemp.bind(fs.promises)
+    vi.spyOn(fs.promises, 'mkdtemp').mockImplementation((async (prefix: string) => {
+      created = await originalMkdtemp(prefix)
+      return created
+    }) as typeof fs.promises.mkdtemp)
+    const originalLstat = fs.promises.lstat.bind(fs.promises)
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (target: string, options?: object) => {
+      // The launcher is already written and 0700 at this point.
+      if (String(target).endsWith('launch.zsh')) throw new Error('lstat failed')
+      return originalLstat(target, options as never)
+    }) as typeof fs.promises.lstat)
+
+    await expect(launchMacosTerminal({
+      executable: '/usr/bin/true',
+      argv: [],
+      workspace: os.tmpdir(),
+      env: { HOME: os.tmpdir(), PATH: '/usr/bin' },
+    }, async () => undefined, () => undefined)).rejects.toThrow('lstat failed')
+
+    expect(created).not.toBe('')
+    expect(fs.existsSync(created)).toBe(false)
   })
 })
