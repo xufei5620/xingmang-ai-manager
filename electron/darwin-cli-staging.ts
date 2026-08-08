@@ -179,16 +179,35 @@ function reserveRetainedRecord(): void {
   pendingRetainedRecords += 1
 }
 
+async function forgetStagedRecord(record: StagedDarwinCliRecord): Promise<void> {
+  stagedRecords.delete(record.executablePath)
+  if (record.cacheKey && retainedSelections.get(record.cacheKey) === record) {
+    retainedSelections.delete(record.cacheKey)
+  }
+  await fs.promises.rm(record.directory, { recursive: true, force: true }).catch(() => undefined)
+}
+
 export async function releaseStagedDarwinCli(executablePath: string): Promise<void> {
   const record = stagedRecords.get(executablePath)
   if (!record) return
   record.leaseCount -= 1
   if (record.leaseCount > 0) return
-  stagedRecords.delete(executablePath)
-  if (record.cacheKey && retainedSelections.get(record.cacheKey) === record) {
-    retainedSelections.delete(record.cacheKey)
-  }
-  await fs.promises.rm(record.directory, { recursive: true, force: true }).catch(() => undefined)
+  await forgetStagedRecord(record)
+}
+
+/**
+ * Drops a record whose staged copy no longer matches what was verified.
+ *
+ * This deliberately ignores the lease count. A retained record's count only ever
+ * grows — the terminal launch path never releases, because Terminal may run the
+ * copy long after `open` returns — so routing an invalidated record through the
+ * normal release would decrement it to a still-positive number and return early,
+ * leaving the record occupying one of the retained slots and its directory on disk
+ * for the rest of the process. The copy has already failed verification at this
+ * point, so nothing may keep using it and there is no count worth honouring.
+ */
+async function discardStagedRecord(record: StagedDarwinCliRecord): Promise<void> {
+  await forgetStagedRecord(record)
 }
 
 async function copyOpenedFile(
@@ -236,10 +255,11 @@ export async function stageVerifiedDarwinCli(
         }
         return cached.executablePath
       }
-      if (retainedSelections.get(retainedKey) === cached) {
-        retainedSelections.delete(retainedKey)
-      }
-      await releaseStagedDarwinCli(cached.executablePath)
+      // The lease taken above is abandoned rather than released: the copy failed
+      // revalidation, so the slot and the directory must go regardless of who else
+      // still holds a count on it.
+      cached.leaseCount -= 1
+      await discardStagedRecord(cached)
     }
   }
 
