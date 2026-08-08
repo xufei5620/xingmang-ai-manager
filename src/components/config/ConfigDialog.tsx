@@ -37,6 +37,7 @@ export function ConfigDialog({
   onConfigChange,
   onClose,
   notify,
+  awaitCliReady,
 }: {
   platform: PlatformCapabilities
   activeTab: ConfigTabId
@@ -45,6 +46,8 @@ export function ConfigDialog({
   onConfigChange: (config: AppConfigSummary) => void
   onClose: () => void
   notify: (toast: { type: 'success' | 'error'; message: string }) => void
+  /** Resolves once the app's first environment scan has settled; see startup-gate.ts. */
+  awaitCliReady: () => Promise<void>
 }) {
   const activeProvider = configProvider(activeTab)
   const summary = config?.providers[activeProvider]
@@ -163,6 +166,10 @@ export function ConfigDialog({
     }
     setModelsLoading(true)
     try {
+      // Codex CLI resolution is real filesystem/subprocess work; wait for the
+      // first environment scan to settle so detecting models moments after
+      // startup doesn't race it and see a spuriously cold "not installed".
+      await awaitCliReady()
       const models = await window.xingmang.listModels(apiKey)
       setAvailableModels(models)
       setValidatedApiKey(apiKey.trim())

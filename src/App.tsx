@@ -44,6 +44,7 @@ import { SessionsPage } from './pages/SessionsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { createScanRequestTracker, runCoordinatedScan } from './scan-coordinator'
 import { createLatestRequestTracker } from './latest-request'
+import { createStartupGate } from './startup-gate'
 import { shouldBlockStartupForUpdate, shouldCheckUpdatesOnStartup } from './startup-settings'
 import {
   failClosedPlatformCapabilities,
@@ -124,6 +125,10 @@ function App() {
   const [pluginsError, setPluginsError] = useState<string | null>(null)
   const scanTracker = useRef(createScanRequestTracker()).current
   const pageDataTracker = useRef(createLatestRequestTracker<'mcp' | 'skills' | 'plugins'>()).current
+  // Codex CLI resolution (mcp/plugins/model list) races ahead of the first
+  // environment scan if fired the instant the dashboard becomes navigable;
+  // see startup-gate.ts. Settled once, in `scan`, below.
+  const cliReadyGate = useRef(createStartupGate()).current
   const snapshotRef = useRef(snapshot)
   snapshotRef.current = snapshot
   // state 更新在同一帧内不可见，双击防重入必须用 ref 同步短路。
@@ -201,6 +206,10 @@ function App() {
     setMcpLoading(true)
     setMcpError(null)
     try {
+      // Codex CLI resolution is real filesystem/subprocess work; wait for the
+      // first environment scan to settle so a fast navigation right after
+      // startup doesn't race it and see a spuriously cold "not installed".
+      await cliReadyGate.ready()
       const next = await window.xingmang.listMcpServers()
       if (pageDataTracker.isCurrent('mcp', requestId)) setMcpServers(next)
     } catch (error) {
@@ -208,7 +217,7 @@ function App() {
     } finally {
       if (pageDataTracker.isCurrent('mcp', requestId)) setMcpLoading(false)
     }
-  }, [pageDataTracker])
+  }, [pageDataTracker, cliReadyGate])
 
   const refreshSkills = useCallback(async () => {
     const requestId = pageDataTracker.begin('skills')
@@ -229,6 +238,9 @@ function App() {
     setPluginsLoading(true)
     setPluginsError(null)
     try {
+      // See refreshMcp: wait for the first environment scan so this doesn't
+      // race a fresh CLI resolution right after startup.
+      await cliReadyGate.ready()
       const next = await window.xingmang.listPlugins()
       if (pageDataTracker.isCurrent('plugins', requestId)) setPluginCatalog(next)
     } catch (error) {
@@ -236,7 +248,7 @@ function App() {
     } finally {
       if (pageDataTracker.isCurrent('plugins', requestId)) setPluginsLoading(false)
     }
-  }, [pageDataTracker])
+  }, [pageDataTracker, cliReadyGate])
 
   useEffect(() => {
     if (activePage === 'mcp') void refreshMcp()
@@ -280,22 +292,30 @@ function App() {
     snapshot: SystemSnapshot | null
     config: AppConfigSummary | null
   }> => {
-    const result = await runCoordinatedScan<SystemSnapshot, AppConfigSummary>({
-      tracker: scanTracker,
-      scanSystem: () => window.xingmang.scanSystem(forceRefresh),
-      readConfig: () => window.xingmang.getConfig(),
-      onLoadingChange: setScanning,
-      onSnapshot: setSnapshot,
-      onConfig: setConfig,
-      onFailures: (failures) => {
-        const errors = failures.map(({ target, reason }) => (
-          `${target === 'system' ? '环境检测' : '配置读取'}失败：${errorMessage(reason)}`
-        ))
-        setToast({ type: 'error', message: errors.join('；') })
-      },
-    })
-    return { snapshot: result.snapshot, config: result.config }
-  }, [scanTracker])
+    try {
+      const result = await runCoordinatedScan<SystemSnapshot, AppConfigSummary>({
+        tracker: scanTracker,
+        scanSystem: () => window.xingmang.scanSystem(forceRefresh),
+        readConfig: () => window.xingmang.getConfig(),
+        onLoadingChange: setScanning,
+        onSnapshot: setSnapshot,
+        onConfig: setConfig,
+        onFailures: (failures) => {
+          const errors = failures.map(({ target, reason }) => (
+            `${target === 'system' ? '环境检测' : '配置读取'}失败：${errorMessage(reason)}`
+          ))
+          setToast({ type: 'error', message: errors.join('；') })
+        },
+      })
+      return { snapshot: result.snapshot, config: result.config }
+    } finally {
+      // A scan attempt -- successful, failed, or superseded -- means the
+      // environment has been probed at least once; release anything waiting
+      // on cliReadyGate even if the coordinator ever starts throwing.
+      // settle() past the first call is a no-op.
+      cliReadyGate.settle()
+    }
+  }, [scanTracker, cliReadyGate])
 
   const maintenanceApi = useMemo(() => ({
     scan: async (forceRefresh = false) => {
@@ -1029,6 +1049,7 @@ function App() {
           onConfigChange={setConfig}
           onClose={() => setConfigOpen(false)}
           notify={setToast}
+          awaitCliReady={cliReadyGate.ready}
         />
       )}
 
