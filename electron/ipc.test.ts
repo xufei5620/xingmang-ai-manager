@@ -7,6 +7,7 @@ import type { UpdaterService } from './updater'
 import type { AppSettings } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
 import { ipcInvokeChannels } from './ipc-contract'
+import { providerSessionProviders } from './provider-sessions'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -138,6 +139,18 @@ function register(
     listAll: vi.fn(),
     mutate: vi.fn(),
   }
+  const sessionsService = {
+    list: vi.fn(),
+    detail: vi.fn(),
+    exportMarkdown: vi.fn(),
+    archive: vi.fn(),
+    restore: vi.fn(),
+  }
+  const providerSessionsService = {
+    list: vi.fn(),
+    detail: vi.fn(),
+    exportMarkdown: vi.fn(),
+  }
   const runtimeLog = {
     directory: runtimeLogDirectory,
     log: vi.fn(),
@@ -158,18 +171,8 @@ function register(
   }
   const dispose = registerIpcHandlers({
     systemService: service,
-    sessionsService: {
-      list: vi.fn(),
-      detail: vi.fn(),
-      exportMarkdown: vi.fn(),
-      archive: vi.fn(),
-      restore: vi.fn(),
-    } as never,
-    providerSessionsService: {
-      list: vi.fn(),
-      detail: vi.fn(),
-      exportMarkdown: vi.fn(),
-    } as never,
+    sessionsService: sessionsService as never,
+    providerSessionsService: providerSessionsService as never,
     backupStore: {
       list: vi.fn(),
       create: vi.fn(),
@@ -205,7 +208,15 @@ function register(
     setWindowTheme: vi.fn(),
     ...({ transformSystemSnapshot } as object),
   })
-  return { dispose, service, extensionService, providerExtensionService, runtimeLog }
+  return {
+    dispose,
+    service,
+    extensionService,
+    providerExtensionService,
+    runtimeLog,
+    sessionsService,
+    providerSessionsService,
+  }
 }
 
 beforeEach(() => {
@@ -575,5 +586,1039 @@ describe('registerIpcHandlers', () => {
     await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent())).resolves.toEqual({ entries: 0 })
     expect(runtimeLog.feedbackReport).toHaveBeenCalledOnce()
     expect(electronMocks.writeText).toHaveBeenCalledWith('sanitized report\n')
+  })
+})
+
+// The 15 hand-written parse/validation helpers in ipc.ts (requiredString,
+// optionalString, stringArray, and 12 parse* functions) are module-private
+// and never exported, so they are exercised the same way real IPC callers
+// reach them: through the registered handlers, asserting on the Chinese
+// error text (I5 - all IPC input is hostile and must be validated) and on
+// what gets forwarded to the mocked service layer.
+describe('hand-written parse validators in ipc.ts (issue #15)', () => {
+  describe('requiredString (e.g. backups:inspect id, mcp:remove name)', () => {
+    it('trims and forwards a valid string', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('mcp:remove')!
+
+      expect(() => handler(trustedEvent(), '  my-server  ')).not.toThrow()
+      expect(extensionService.removeMcpServer).toHaveBeenCalledWith('my-server')
+    })
+
+    it('rejects non-string values', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:remove')!
+
+      for (const bad of [42, true, null, undefined, {}, []]) {
+        expect(() => handler(trustedEvent(), bad)).toThrow('MCP 名称格式错误')
+      }
+    })
+
+    it('rejects an empty or whitespace-only string', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:remove')!
+
+      expect(() => handler(trustedEvent(), '')).toThrow('MCP 名称格式错误')
+      expect(() => handler(trustedEvent(), '   ')).toThrow('MCP 名称格式错误')
+    })
+
+    it('rejects a string containing a null byte', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:remove')!
+
+      expect(() => handler(trustedEvent(), 'server\0name')).toThrow('MCP 名称格式错误')
+    })
+
+    it('enforces the caller-specified maximum length at the exact boundary', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:remove')!
+
+      expect(() => handler(trustedEvent(), 'a'.repeat(128))).not.toThrow()
+      expect(() => handler(trustedEvent(), 'a'.repeat(129))).toThrow('MCP 名称格式错误')
+    })
+
+    it('embeds the field-specific label so different fields report different text', () => {
+      register()
+
+      expect(() => electronMocks.handlers.get('backups:inspect')!(trustedEvent(), '')).toThrow('备份 ID格式错误')
+      expect(() => electronMocks.handlers.get('mcp:remove')!(trustedEvent(), '')).toThrow('MCP 名称格式错误')
+    })
+  })
+
+  describe('optionalString (marketplaces:upgrade name)', () => {
+    it('treats undefined as absent', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('marketplaces:upgrade')!
+
+      expect(() => handler(trustedEvent(), undefined)).not.toThrow()
+      expect(extensionService.upgradeMarketplace).toHaveBeenCalledWith(undefined)
+    })
+
+    it('treats an empty string as absent, but rejects a whitespace-only string', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('marketplaces:upgrade')!
+
+      expect(() => handler(trustedEvent(), '')).not.toThrow()
+      expect(extensionService.upgradeMarketplace).toHaveBeenCalledWith(undefined)
+      expect(() => handler(trustedEvent(), '   ')).toThrow('市场名称格式错误')
+    })
+
+    it('trims and forwards a valid string', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('marketplaces:upgrade')!
+
+      expect(() => handler(trustedEvent(), '  official  ')).not.toThrow()
+      expect(extensionService.upgradeMarketplace).toHaveBeenCalledWith('official')
+    })
+
+    it('rejects a non-string, non-undefined value', () => {
+      register()
+      const handler = electronMocks.handlers.get('marketplaces:upgrade')!
+
+      expect(() => handler(trustedEvent(), 42)).toThrow('市场名称格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('市场名称格式错误')
+    })
+
+    it('rejects a value exceeding the configured maximum length', () => {
+      register()
+      const handler = electronMocks.handlers.get('marketplaces:upgrade')!
+
+      expect(() => handler(trustedEvent(), 'a'.repeat(257))).toThrow('市场名称格式错误')
+    })
+  })
+
+  describe('stringArray (mcp:add args, marketplaces:add sparse)', () => {
+    it('defaults to an empty array when the field is omitted', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), { type: 'stdio', name: 'srv', command: 'node' })).not.toThrow()
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith(expect.objectContaining({ args: [] }))
+    })
+
+    it('rejects a non-array value, including null', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      for (const bad of ['not-an-array', 42, {}, null]) {
+        expect(() => handler(trustedEvent(), {
+          type: 'stdio', name: 'srv', command: 'node', args: bad,
+        })).toThrow('MCP 参数格式错误')
+      }
+    })
+
+    it('rejects an array exceeding the maximum item count at the exact boundary', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+      const atLimit = Array.from({ length: 128 }, (_, i) => `arg${i}`)
+      const overLimit = Array.from({ length: 129 }, (_, i) => `arg${i}`)
+
+      expect(() => handler(trustedEvent(), { type: 'stdio', name: 'srv', command: 'node', args: atLimit })).not.toThrow()
+      expect(() => handler(trustedEvent(), { type: 'stdio', name: 'srv', command: 'node', args: overLimit })).toThrow('MCP 参数格式错误')
+    })
+
+    it('rejects an array containing a non-string entry', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', args: ['ok', 42],
+      })).toThrow('MCP 参数格式错误')
+    })
+
+    it('accepts a valid array of strings unchanged', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', args: ['--flag', 'value'],
+      })).not.toThrow()
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith(expect.objectContaining({ args: ['--flag', 'value'] }))
+    })
+  })
+
+  describe('parseSettings (settings:save)', () => {
+    it('accepts a fully valid settings payload and trims the workspace', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: '  D:\\workspace  ',
+        theme: 'light',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+      })).resolves.toEqual({
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'light',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+      })
+      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ workspace: 'D:\\workspace' }))
+    })
+
+    it('rejects a non-record payload', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), null)).rejects.toThrow('设置格式错误')
+      await expect(handler(trustedEvent(), 'settings')).rejects.toThrow('设置格式错误')
+      await expect(handler(trustedEvent(), [])).rejects.toThrow('设置格式错误')
+    })
+
+    it('rejects a version other than 2', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 1,
+        workspace: 'D:\\workspace',
+        theme: 'light',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+      })).rejects.toThrow('设置格式错误')
+    })
+
+    it('rejects an invalid theme', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'blue',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+      })).rejects.toThrow('主题格式错误')
+    })
+
+    it('rejects non-boolean checkUpdatesOnStartup/runDiagnosticsOnStartup flags', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      const base = { version: 2, workspace: 'D:\\workspace', theme: 'dark' as const }
+
+      await expect(handler(trustedEvent(), {
+        ...base, checkUpdatesOnStartup: 'yes', runDiagnosticsOnStartup: false,
+      })).rejects.toThrow('设置格式错误')
+      await expect(handler(trustedEvent(), {
+        ...base, checkUpdatesOnStartup: true, runDiagnosticsOnStartup: 1,
+      })).rejects.toThrow('设置格式错误')
+    })
+
+    it('rejects an invalid workspace', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      const base = { version: 2, theme: 'dark' as const, checkUpdatesOnStartup: true, runDiagnosticsOnStartup: false }
+
+      await expect(handler(trustedEvent(), { ...base, workspace: '' })).rejects.toThrow('工作目录格式错误')
+      await expect(handler(trustedEvent(), { ...base, workspace: 'x'.repeat(32_768) })).rejects.toThrow('工作目录格式错误')
+      await expect(handler(trustedEvent(), { ...base, workspace: 42 })).rejects.toThrow('工作目录格式错误')
+    })
+
+    it('ignores unknown extra fields without forwarding them', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'dark',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        unexpectedField: 'should be ignored',
+      })).resolves.not.toHaveProperty('unexpectedField')
+    })
+  })
+
+  describe('parseMcpInput (mcp:add)', () => {
+    it('accepts a valid stdio definition, trimming the name and env key', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio',
+        name: '  My Server  ',
+        command: 'node',
+        args: ['server.js', '--flag'],
+        env: { '  FOO  ': 'bar value' },
+      })).not.toThrow()
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith({
+        type: 'stdio',
+        name: 'My Server',
+        command: 'node',
+        args: ['server.js', '--flag'],
+        env: { FOO: 'bar value' },
+      })
+    })
+
+    it('accepts a valid http definition with optional fields omitted', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), { type: 'http', name: 'Remote', url: 'https://example.com/mcp' })).not.toThrow()
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith({
+        type: 'http',
+        name: 'Remote',
+        url: 'https://example.com/mcp',
+        bearerTokenEnvVar: undefined,
+        oauthClientId: undefined,
+        oauthResource: undefined,
+      })
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), 'not-an-object')).toThrow('MCP 配置格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('MCP 配置格式错误')
+    })
+
+    it('rejects a missing or invalid name before the type is even checked', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), { type: 'http', url: 'https://example.com' })).toThrow('MCP 名称格式错误')
+      expect(() => handler(trustedEvent(), { type: 'http', name: '', url: 'https://example.com' })).toThrow('MCP 名称格式错误')
+    })
+
+    it('rejects an unrecognized type', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), { type: 'websocket', name: 'srv' })).toThrow('MCP 类型错误')
+      expect(() => handler(trustedEvent(), { name: 'srv' })).toThrow('MCP 类型错误')
+    })
+
+    it('rejects a stdio env value that is not a record', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', env: 'not-an-object',
+      })).toThrow('MCP 环境变量格式错误')
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', env: null,
+      })).toThrow('MCP 环境变量格式错误')
+    })
+
+    it('rejects a stdio env entry that is not a string or exceeds the length limit', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', env: { FOO: 42 },
+      })).toThrow('MCP 环境变量格式错误')
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', env: { FOO: 'x'.repeat(4_097) },
+      })).toThrow('MCP 环境变量格式错误')
+    })
+
+    it('rejects a stdio env key that is invalid', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', env: { '': 'value' },
+      })).toThrow('环境变量名格式错误')
+    })
+
+    it('rejects a missing or invalid stdio command', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), { type: 'stdio', name: 'srv' })).toThrow('MCP 命令格式错误')
+      expect(() => handler(trustedEvent(), { type: 'stdio', name: 'srv', command: '   ' })).toThrow('MCP 命令格式错误')
+    })
+
+    it('rejects a missing or invalid http url', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), { type: 'http', name: 'srv' })).toThrow('MCP 地址格式错误')
+    })
+
+    it('rejects an oversized bearerTokenEnvVar', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), {
+        type: 'http',
+        name: 'srv',
+        url: 'https://example.com',
+        bearerTokenEnvVar: 'x'.repeat(129),
+      })).toThrow('Bearer Token 环境变量名格式错误')
+    })
+
+    it('treats an empty optional oauthClientId as absent rather than rejecting it', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+
+      expect(() => handler(trustedEvent(), {
+        type: 'http',
+        name: 'srv',
+        url: 'https://example.com',
+        oauthClientId: '',
+      })).not.toThrow()
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith(expect.objectContaining({ oauthClientId: undefined }))
+    })
+  })
+
+  describe('parseMarketplaceInput (marketplaces:add)', () => {
+    it('accepts a valid marketplace payload', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('marketplaces:add')!
+
+      expect(() => handler(trustedEvent(), {
+        source: 'github:acme/repo',
+        ref: 'main',
+        sparse: ['plugins/a', 'plugins/b'],
+      })).not.toThrow()
+      expect(extensionService.addMarketplace).toHaveBeenCalledWith({
+        source: 'github:acme/repo',
+        ref: 'main',
+        sparse: ['plugins/a', 'plugins/b'],
+      })
+    })
+
+    it('defaults ref and sparse when omitted', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('marketplaces:add')!
+
+      expect(() => handler(trustedEvent(), { source: 'github:acme/repo' })).not.toThrow()
+      expect(extensionService.addMarketplace).toHaveBeenCalledWith({
+        source: 'github:acme/repo',
+        ref: undefined,
+        sparse: [],
+      })
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('marketplaces:add')!
+
+      expect(() => handler(trustedEvent(), 'source-only')).toThrow('市场配置格式错误')
+      expect(() => handler(trustedEvent(), ['github:acme/repo'])).toThrow('市场配置格式错误')
+    })
+
+    it('rejects a missing or invalid source', () => {
+      register()
+      const handler = electronMocks.handlers.get('marketplaces:add')!
+
+      expect(() => handler(trustedEvent(), {})).toThrow('市场来源格式错误')
+      expect(() => handler(trustedEvent(), { source: 123 })).toThrow('市场来源格式错误')
+    })
+
+    it('rejects an oversized ref', () => {
+      register()
+      const handler = electronMocks.handlers.get('marketplaces:add')!
+
+      expect(() => handler(trustedEvent(), { source: 'github:acme/repo', ref: 'x'.repeat(257) })).toThrow('Git Ref格式错误')
+    })
+
+    it('rejects a sparse value that is not an array', () => {
+      register()
+      const handler = electronMocks.handlers.get('marketplaces:add')!
+
+      expect(() => handler(trustedEvent(), { source: 'github:acme/repo', sparse: 'plugins/a' })).toThrow('Sparse 路径格式错误')
+    })
+
+    it('rejects a sparse array exceeding the item limit', () => {
+      register()
+      const handler = electronMocks.handlers.get('marketplaces:add')!
+      const overLimit = Array.from({ length: 129 }, (_, i) => `path/${i}`)
+
+      expect(() => handler(trustedEvent(), { source: 'github:acme/repo', sparse: overLimit })).toThrow('Sparse 路径格式错误')
+    })
+
+    it('rejects a sparse array containing a non-string entry', () => {
+      register()
+      const handler = electronMocks.handlers.get('marketplaces:add')!
+
+      expect(() => handler(trustedEvent(), { source: 'github:acme/repo', sparse: ['ok', null] })).toThrow('Sparse 路径格式错误')
+    })
+  })
+
+  describe('parseSkillInput (skills:import)', () => {
+    it('accepts a valid sourcePath without a scope', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('skills:import')!
+
+      expect(() => handler(trustedEvent(), { sourcePath: 'C:\\skills\\my-skill' })).not.toThrow()
+      expect(extensionService.importSkill).toHaveBeenCalledWith({ sourcePath: 'C:\\skills\\my-skill', scope: undefined })
+    })
+
+    it('accepts valid scope values', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('skills:import')!
+
+      expect(() => handler(trustedEvent(), { sourcePath: 'C:\\skills\\a', scope: 'user' })).not.toThrow()
+      expect(() => handler(trustedEvent(), { sourcePath: 'C:\\skills\\b', scope: 'repo' })).not.toThrow()
+      expect(extensionService.importSkill).toHaveBeenNthCalledWith(1, { sourcePath: 'C:\\skills\\a', scope: 'user' })
+      expect(extensionService.importSkill).toHaveBeenNthCalledWith(2, { sourcePath: 'C:\\skills\\b', scope: 'repo' })
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('skills:import')!
+
+      expect(() => handler(trustedEvent(), 'C:\\skills\\a')).toThrow('Skill 导入格式错误')
+    })
+
+    it('rejects an invalid scope value', () => {
+      register()
+      const handler = electronMocks.handlers.get('skills:import')!
+
+      expect(() => handler(trustedEvent(), { sourcePath: 'C:\\skills\\a', scope: 'global' })).toThrow('Skill 范围格式错误')
+    })
+
+    it('rejects a missing or invalid sourcePath', () => {
+      register()
+      const handler = electronMocks.handlers.get('skills:import')!
+
+      expect(() => handler(trustedEvent(), {})).toThrow('Skill 路径格式错误')
+      expect(() => handler(trustedEvent(), { sourcePath: '' })).toThrow('Skill 路径格式错误')
+    })
+
+    it('rejects an oversized sourcePath', () => {
+      register()
+      const handler = electronMocks.handlers.get('skills:import')!
+
+      expect(() => handler(trustedEvent(), { sourcePath: 'C:\\'.padEnd(32_768, 'a') })).toThrow('Skill 路径格式错误')
+    })
+  })
+
+  describe('parseProviderExtensionMutation (extensions:mutate)', () => {
+    it('accepts a minimal valid mutation without an mcp payload', () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), { provider: 'claude', kind: 'skill', action: 'enable' })).not.toThrow()
+      expect(providerExtensionService.mutate).toHaveBeenCalledWith({
+        provider: 'claude',
+        kind: 'skill',
+        action: 'enable',
+        id: undefined,
+        source: undefined,
+        scope: undefined,
+        mcp: undefined,
+      })
+    })
+
+    it('accepts optional id, source and scope', () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'codex',
+        kind: 'plugin',
+        action: 'update',
+        id: 'plugin-id',
+        source: 'marketplace/plugin',
+        scope: 'project',
+      })).not.toThrow()
+      expect(providerExtensionService.mutate).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'plugin-id',
+        source: 'marketplace/plugin',
+        scope: 'project',
+      }))
+    })
+
+    it('rejects a non-record payload or an unknown provider', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), 'claude')).toThrow('扩展操作格式错误')
+      expect(() => handler(trustedEvent(), { provider: 'unknown-cli', kind: 'mcp', action: 'install' })).toThrow('扩展操作格式错误')
+    })
+
+    it('rejects an invalid kind', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), { provider: 'claude', kind: 'theme', action: 'install' })).toThrow('扩展类型错误')
+    })
+
+    it('rejects an invalid action', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), { provider: 'claude', kind: 'mcp', action: 'delete' })).toThrow('扩展操作类型错误')
+    })
+
+    it('rejects an invalid scope', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude', kind: 'mcp', action: 'install', scope: 'global',
+      })).toThrow('扩展范围错误')
+    })
+
+    it('accepts a valid http mcp sub-payload', () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'codex',
+        kind: 'mcp',
+        action: 'install',
+        mcp: { type: 'http', url: 'https://example.com/mcp' },
+      })).not.toThrow()
+      expect(providerExtensionService.mutate).toHaveBeenCalledWith(expect.objectContaining({
+        mcp: { type: 'http', url: 'https://example.com/mcp' },
+      }))
+    })
+
+    it('accepts a valid stdio mcp sub-payload', () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'codex',
+        kind: 'mcp',
+        action: 'install',
+        mcp: { type: 'stdio', command: 'python', args: ['-m', 'server'], env: { KEY: 'value' } },
+      })).not.toThrow()
+      expect(providerExtensionService.mutate).toHaveBeenCalledWith(expect.objectContaining({
+        mcp: { type: 'stdio', command: 'python', args: ['-m', 'server'], env: { KEY: 'value' } },
+      }))
+    })
+
+    it('rejects a non-record mcp sub-payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude', kind: 'mcp', action: 'install', mcp: 'stdio',
+      })).toThrow('MCP 安装配置格式错误')
+    })
+
+    it('rejects an unknown mcp type', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude', kind: 'mcp', action: 'install', mcp: { type: 'websocket' },
+      })).toThrow('MCP 安装配置类型错误')
+    })
+
+    it('rejects an invalid mcp.url for the http sub-type', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude', kind: 'mcp', action: 'install', mcp: { type: 'http' },
+      })).toThrow('MCP 地址格式错误')
+    })
+
+    it('rejects an invalid mcp.command for the stdio sub-type', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude', kind: 'mcp', action: 'install', mcp: { type: 'stdio' },
+      })).toThrow('MCP 命令格式错误')
+    })
+
+    it('rejects an oversized id', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude', kind: 'mcp', action: 'install', id: 'x'.repeat(513),
+      })).toThrow('扩展 ID格式错误')
+    })
+  })
+
+  describe('parseConfigSavePayload (config:save) additional edge cases', () => {
+    it('rejects a null, array, or non-object payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('config:save')!
+
+      expect(() => handler(trustedEvent(), null)).toThrow('配置请求格式错误')
+      expect(() => handler(trustedEvent(), [])).toThrow('配置请求格式错误')
+      expect(() => handler(trustedEvent(), 'codex')).toThrow('配置请求格式错误')
+    })
+
+    it('enforces the apiKey length limit at the exact boundary', async () => {
+      register()
+      const handler = electronMocks.handlers.get('config:save')!
+      const base = { provider: 'codex', model: 'gpt-5.6-sol', mode: 'merge' as const }
+
+      await expect(handler(trustedEvent(), { ...base, apiKey: 'k'.repeat(4_096) })).resolves.toBeDefined()
+      expect(() => handler(trustedEvent(), { ...base, apiKey: 'k'.repeat(4_097) })).toThrow('API Key 格式错误')
+    })
+
+    it('rejects an oversized model', () => {
+      register()
+      const handler = electronMocks.handlers.get('config:save')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'codex', apiKey: 'sk-test', model: 'm'.repeat(257), mode: 'merge',
+      })).toThrow('模型格式错误')
+    })
+
+    it('rejects an invalid save mode', () => {
+      register()
+      const handler = electronMocks.handlers.get('config:save')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'codex', apiKey: 'sk-test', model: 'gpt-5.6-sol', mode: 'overwrite',
+      })).toThrow('配置保存方式错误')
+    })
+
+    it('ignores unknown extra fields without forwarding them', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('config:save')!
+
+      await expect(handler(trustedEvent(), {
+        provider: 'codex',
+        apiKey: 'sk-test',
+        model: 'gpt-5.6-sol',
+        mode: 'merge',
+        extraField: 'ignored',
+      })).resolves.toEqual({ backups: [], files: [] })
+      expect(service.saveConfig).toHaveBeenCalledWith({
+        provider: 'codex',
+        apiKey: 'sk-test',
+        model: 'gpt-5.6-sol',
+        mode: 'merge',
+      }, false)
+    })
+  })
+
+  describe('parseWorkspace (cli:launch second argument)', () => {
+    it('uses the trimmed workspace when a valid string is provided', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', '  D:\\projects\\demo  ')).not.toThrow()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'D:\\projects\\demo')
+    })
+
+    it('falls back to the stored workspace when omitted', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', undefined)).not.toThrow()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace')
+    })
+
+    it('falls back to the stored workspace for a blank or whitespace-only value', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', '   ')).not.toThrow()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace')
+    })
+
+    it('falls back to the stored workspace for a non-string value instead of throwing', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', 12345)).not.toThrow()
+      expect(service.launchProvider).toHaveBeenCalledWith('claude', 'C:\\workspace')
+    })
+
+    it('rejects a workspace string exceeding the maximum length', () => {
+      register()
+      const handler = electronMocks.handlers.get('cli:launch')!
+
+      expect(() => handler(trustedEvent(), 'claude', 'x'.repeat(32_768))).toThrow('工作目录格式错误')
+    })
+  })
+
+  describe('parseDesktopLaunchMode (desktop:launch-codex)', () => {
+    it('accepts "open" and "restart"', () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('desktop:launch-codex')!
+      const event = trustedEvent()
+
+      expect(() => handler(event, 'open')).not.toThrow()
+      expect(() => handler(event, 'restart')).not.toThrow()
+      expect(service.launchCodexDesktop).toHaveBeenNthCalledWith(1, 'open', event.sender)
+      expect(service.launchCodexDesktop).toHaveBeenNthCalledWith(2, 'restart', event.sender)
+    })
+
+    it('rejects any other value', () => {
+      register()
+      const handler = electronMocks.handlers.get('desktop:launch-codex')!
+
+      for (const bad of ['Open', 'close', 1, null, undefined, {}]) {
+        expect(() => handler(trustedEvent(), bad)).toThrow('Codex 桌面端启动方式错误')
+      }
+    })
+  })
+
+  describe('parseSessionId (sessions:detail/export/archive/restore)', () => {
+    const validId = 'a1b2c3d4-e5f6-47a8-89ab-cdef01234567'
+
+    it('accepts a well-formed 36-character UUID', () => {
+      const { sessionsService } = register()
+      const handler = electronMocks.handlers.get('sessions:detail')!
+
+      expect(() => handler(trustedEvent(), validId)).not.toThrow()
+      expect(sessionsService.detail).toHaveBeenCalledWith(validId)
+    })
+
+    it('accepts uppercase hex characters', () => {
+      const { sessionsService } = register()
+      const handler = electronMocks.handlers.get('sessions:archive')!
+      const upper = validId.toUpperCase()
+
+      expect(() => handler(trustedEvent(), upper)).not.toThrow()
+      expect(sessionsService.archive).toHaveBeenCalledWith(upper)
+    })
+
+    it('rejects non-string values', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:detail')!
+
+      for (const bad of [42, null, undefined, {}, []]) {
+        expect(() => handler(trustedEvent(), bad)).toThrow('会话 ID 格式错误')
+      }
+    })
+
+    it('rejects values with the wrong length', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:detail')!
+
+      expect(() => handler(trustedEvent(), validId.slice(0, 35))).toThrow('会话 ID 格式错误')
+      expect(() => handler(trustedEvent(), `${validId}0`)).toThrow('会话 ID 格式错误')
+    })
+
+    it('rejects relative path traversal payloads', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:detail')!
+
+      expect(() => handler(trustedEvent(), '../../../../../../etc/passwd')).toThrow('会话 ID 格式错误')
+      expect(() => handler(trustedEvent(), '..%2f..%2f..%2fetc%2fpasswd')).toThrow('会话 ID 格式错误')
+    })
+
+    it('rejects backslash-based traversal payloads', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:detail')!
+
+      expect(() => handler(trustedEvent(), '..\\..\\..\\windows\\system32')).toThrow('会话 ID 格式错误')
+    })
+
+    it('rejects absolute path payloads', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:detail')!
+
+      expect(() => handler(trustedEvent(), '/etc/passwd')).toThrow('会话 ID 格式错误')
+      expect(() => handler(trustedEvent(), 'C:\\Windows\\System32\\config')).toThrow('会话 ID 格式错误')
+    })
+
+    it('rejects a payload containing a null byte', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:detail')!
+
+      expect(() => handler(trustedEvent(), `${'a'.repeat(35)}\0`)).toThrow('会话 ID 格式错误')
+    })
+
+    it('does not enforce UUID hyphen positions, but still excludes traversal characters', () => {
+      // Documents the actual (looser than RFC 4122) contract: any 36 characters
+      // drawn from [0-9a-f-] pass, because this regex's job is blocking path
+      // traversal characters, not validating UUID shape (see CLAUDE.md I5).
+      const { sessionsService } = register()
+      const handler = electronMocks.handlers.get('sessions:restore')!
+      const allHyphens = '-'.repeat(36)
+
+      expect(() => handler(trustedEvent(), allHyphens)).not.toThrow()
+      expect(sessionsService.restore).toHaveBeenCalledWith(allHyphens)
+    })
+
+    it('applies the same rejection to sessions:export, sessions:archive and sessions:restore', async () => {
+      register()
+      const badId = 'not-a-valid-session-id'
+
+      await expect(electronMocks.handlers.get('sessions:export')!(trustedEvent(), badId)).rejects.toThrow('会话 ID 格式错误')
+      expect(() => electronMocks.handlers.get('sessions:archive')!(trustedEvent(), badId)).toThrow('会话 ID 格式错误')
+      expect(() => electronMocks.handlers.get('sessions:restore')!(trustedEvent(), badId)).toThrow('会话 ID 格式错误')
+    })
+  })
+
+  describe('parseSessionListQuery (sessions:list)', () => {
+    it('defaults to an empty query when the argument is undefined', () => {
+      const { sessionsService } = register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      expect(() => handler(trustedEvent(), undefined)).not.toThrow()
+      expect(sessionsService.list).toHaveBeenCalledWith({})
+    })
+
+    it('rejects a null, array, or non-object query', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      expect(() => handler(trustedEvent(), null)).toThrow('会话查询格式错误')
+      expect(() => handler(trustedEvent(), [])).toThrow('会话查询格式错误')
+      expect(() => handler(trustedEvent(), 'active')).toThrow('会话查询格式错误')
+    })
+
+    it('rejects an invalid archive filter', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      expect(() => handler(trustedEvent(), { archive: 'deleted' })).toThrow('会话归档筛选格式错误')
+    })
+
+    it('accepts every valid archive filter value', () => {
+      const { sessionsService } = register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      for (const archive of ['all', 'active', 'archived'] as const) {
+        expect(() => handler(trustedEvent(), { archive })).not.toThrow()
+        expect(sessionsService.list).toHaveBeenCalledWith(expect.objectContaining({ archive }))
+      }
+    })
+
+    it('rejects a search string exceeding the maximum length', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      expect(() => handler(trustedEvent(), { search: 'x'.repeat(257) })).toThrow('会话搜索内容过长')
+    })
+
+    it('rejects a non-integer or sub-1 page number', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      for (const bad of [0, -1, 1.5, '2', Number.NaN]) {
+        expect(() => handler(trustedEvent(), { page: bad })).toThrow('页码格式错误')
+      }
+    })
+
+    it('rejects a non-integer or sub-1 pageSize', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      expect(() => handler(trustedEvent(), { pageSize: 0 })).toThrow('分页大小格式错误')
+      expect(() => handler(trustedEvent(), { pageSize: '20' })).toThrow('分页大小格式错误')
+    })
+
+    it('accepts valid search, page and pageSize values together', () => {
+      const { sessionsService } = register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      expect(() => handler(trustedEvent(), {
+        search: 'refactor', archive: 'active', page: 2, pageSize: 20,
+      })).not.toThrow()
+      expect(sessionsService.list).toHaveBeenCalledWith({
+        search: 'refactor', archive: 'active', page: 2, pageSize: 20,
+      })
+    })
+  })
+
+  describe('parseProviderSessionListQuery (provider-sessions:list)', () => {
+    it('defaults to an empty query when the argument is undefined', () => {
+      const { providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('provider-sessions:list')!
+
+      expect(() => handler(trustedEvent(), undefined)).not.toThrow()
+      expect(providerSessionsService.list).toHaveBeenCalledWith({})
+    })
+
+    it('rejects a null, array, or non-object query', () => {
+      register()
+      const handler = electronMocks.handlers.get('provider-sessions:list')!
+
+      expect(() => handler(trustedEvent(), null)).toThrow('会话查询格式错误')
+      expect(() => handler(trustedEvent(), [])).toThrow('会话查询格式错误')
+    })
+
+    it('rejects an unknown provider', () => {
+      register()
+      const handler = electronMocks.handlers.get('provider-sessions:list')!
+
+      expect(() => handler(trustedEvent(), { provider: 'chatgpt' })).toThrow('会话工具类型错误')
+    })
+
+    it('accepts "all" and every known provider id', () => {
+      const { providerSessionsService } = register()
+      const handler = electronMocks.handlers.get('provider-sessions:list')!
+
+      for (const provider of ['all', ...providerSessionProviders] as const) {
+        expect(() => handler(trustedEvent(), { provider })).not.toThrow()
+        expect(providerSessionsService.list).toHaveBeenCalledWith(expect.objectContaining({ provider }))
+      }
+    })
+
+    it('rejects a search string exceeding the maximum length', () => {
+      register()
+      const handler = electronMocks.handlers.get('provider-sessions:list')!
+
+      expect(() => handler(trustedEvent(), { search: 'y'.repeat(257) })).toThrow('会话搜索内容过长')
+    })
+
+    it('rejects invalid page/pageSize values', () => {
+      register()
+      const handler = electronMocks.handlers.get('provider-sessions:list')!
+
+      expect(() => handler(trustedEvent(), { page: -1 })).toThrow('页码格式错误')
+      expect(() => handler(trustedEvent(), { pageSize: 0.5 })).toThrow('分页大小格式错误')
+    })
+  })
+
+  describe('parseRendererError (runtime-logs:renderer-error)', () => {
+    it('accepts a message-only payload', () => {
+      const { runtimeLog } = register()
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), { message: 'Boom' })).not.toThrow()
+      expect(runtimeLog.log).toHaveBeenCalledWith('error', 'renderer', 'renderer.error', 'Boom', {
+        context: null,
+        stack: null,
+      })
+    })
+
+    it('accepts an optional stack and context alongside the message', () => {
+      const { runtimeLog } = register()
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), {
+        message: 'Boom',
+        stack: 'at foo()',
+        context: 'renderer-crash',
+      })).not.toThrow()
+      expect(runtimeLog.log).toHaveBeenCalledWith('error', 'renderer', 'renderer.error', 'Boom', {
+        context: 'renderer-crash',
+        stack: 'at foo()',
+      })
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), 'Boom')).toThrow('渲染进程错误格式无效')
+      expect(() => handler(trustedEvent(), null)).toThrow('渲染进程错误格式无效')
+    })
+
+    it('rejects a missing or invalid message', () => {
+      register()
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), {})).toThrow('错误消息格式错误')
+      expect(() => handler(trustedEvent(), { message: '' })).toThrow('错误消息格式错误')
+      expect(() => handler(trustedEvent(), { message: 42 })).toThrow('错误消息格式错误')
+    })
+
+    it('rejects an oversized stack', () => {
+      register()
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), { message: 'Boom', stack: 'x'.repeat(16_385) })).toThrow('错误堆栈格式错误')
+    })
+
+    it('rejects an oversized context', () => {
+      register()
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), { message: 'Boom', context: 'x'.repeat(257) })).toThrow('错误上下文格式错误')
+    })
   })
 })
