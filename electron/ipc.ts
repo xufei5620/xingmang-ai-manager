@@ -96,6 +96,12 @@ function optionalString(value: unknown, label: string, maximum = 4_096): string 
   return requiredString(value, label, maximum)
 }
 
+function optionalBoolean(value: unknown, label: string): boolean | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'boolean') throw new Error(`${label}格式错误`)
+  return value
+}
+
 function stringArray(value: unknown, label: string, maximumItems = 128): string[] {
   if (value === undefined) return []
   if (!Array.isArray(value) || value.length > maximumItems) throw new Error(`${label}格式错误`)
@@ -108,12 +114,14 @@ function parseSettings(value: unknown): AppSettings {
   for (const key of ['checkUpdatesOnStartup', 'runDiagnosticsOnStartup'] as const) {
     if (typeof value[key] !== 'boolean') throw new Error('设置格式错误')
   }
+  const sidebarMoreExpanded = optionalBoolean(value.sidebarMoreExpanded, '侧边栏展开状态')
   return {
     version: 2,
     workspace: requiredString(value.workspace, '工作目录', 32_767),
     theme: value.theme,
     checkUpdatesOnStartup: value.checkUpdatesOnStartup === true,
     runDiagnosticsOnStartup: value.runDiagnosticsOnStartup === true,
+    ...(sidebarMoreExpanded === true ? { sidebarMoreExpanded: true as const } : {}),
   }
 }
 

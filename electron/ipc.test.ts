@@ -829,6 +829,61 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         unexpectedField: 'should be ignored',
       })).resolves.not.toHaveProperty('unexpectedField')
     })
+
+    it('omits sidebarMoreExpanded when absent, preserving pre-#67 behavior', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'dark',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+      })).resolves.not.toHaveProperty('sidebarMoreExpanded')
+    })
+
+    it('accepts and forwards an explicit sidebarMoreExpanded flag', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'dark',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        sidebarMoreExpanded: true,
+      })).resolves.toMatchObject({ sidebarMoreExpanded: true })
+    })
+
+    it('drops an explicit sidebarMoreExpanded: false back to the omitted default', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'dark',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        sidebarMoreExpanded: false,
+      })).resolves.not.toHaveProperty('sidebarMoreExpanded')
+    })
+
+    it('rejects a non-boolean sidebarMoreExpanded', async () => {
+      register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'dark',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        sidebarMoreExpanded: 'yes',
+      })).rejects.toThrow('侧边栏展开状态格式错误')
+    })
   })
 
   describe('parseMcpInput (mcp:add)', () => {

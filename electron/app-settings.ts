@@ -18,6 +18,8 @@ export interface AppSettings {
   theme: AppTheme
   checkUpdatesOnStartup: boolean
   runDiagnosticsOnStartup: boolean
+  /** Whether the sidebar's collapsible "更多" group is expanded. Absent = collapsed (pre-#67 behavior). */
+  sidebarMoreExpanded?: boolean
 }
 
 interface LegacyAppSettings {
@@ -87,6 +89,9 @@ function parseSettingsValue(value: unknown): AppSettings {
       value.runDiagnosticsOnStartup,
       optionalBoolean(value.scanOnStartup, false),
     ),
+    // A malformed value degrades to "collapsed" (the pre-#67 default) rather
+    // than failing the whole read, matching every other optional field here.
+    ...(optionalBoolean(value.sidebarMoreExpanded, false) ? { sidebarMoreExpanded: true as const } : {}),
   }
 }
 

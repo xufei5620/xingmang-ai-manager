@@ -1,14 +1,18 @@
 import {
   BookOpen,
   ArrowUp,
+  ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  CircleHelp,
   ExternalLink,
   Globe2,
   LoaderCircle,
   Moon,
+  MoreHorizontal,
   RotateCw,
   Sun,
+  UserRound,
 } from 'lucide-react'
 import logoUrl from '../../assets/icon.png'
 import logoWhiteUrl from '../../assets/icon-white.png'
@@ -20,9 +24,13 @@ interface SidebarProps {
   collapsed: boolean
   theme: 'light' | 'dark'
   updateState: UpdateSnapshot | null
+  /** Whether the "更多" group is expanded (persisted to app-settings by the caller). */
+  moreExpanded: boolean
   onNavigate: (pageId: PageId) => void
   onToggleCollapsed: () => void
   onToggleTheme: () => void
+  onToggleMoreExpanded: () => void
+  onAccountClick: () => void
 }
 
 export function ThemeToggle({
@@ -51,9 +59,12 @@ export function Sidebar({
   collapsed,
   theme,
   updateState,
+  moreExpanded,
   onNavigate,
   onToggleCollapsed,
   onToggleTheme,
+  onToggleMoreExpanded,
+  onAccountClick,
 }: SidebarProps) {
   const updatePhase = updateState?.phase
   const showUpdate = updatePhase === 'available'
@@ -64,10 +75,9 @@ export function Sidebar({
     : updatePhase === 'downloading'
       ? '正在下载主程序更新'
       : `发现主程序新版本 ${updateState?.availableVersion ?? ''}`.trim()
-  const groupLabels: Record<Exclude<NavigationGroup, 'utility'>, string> = {
-    workbench: '工作台',
+  const groupLabels: Record<Exclude<NavigationGroup, 'more'>, string> = {
+    use: '使用',
     extensions: '扩展',
-    system: '系统',
   }
   const renderItem = (item: (typeof navigationItems)[number]) => {
     const Icon = item.icon
@@ -82,6 +92,12 @@ export function Sidebar({
       >
         <Icon size={18} />
         <span className="nav-label">{item.label}</span>
+        {item.placeholder && <span className="nav-item-soon">soon</span>}
+        {item.hint && (
+          <span className="nav-item-hint" title={item.hint} aria-hidden="true">
+            <CircleHelp size={12} />
+          </span>
+        )}
       </button>
     )
   }
@@ -115,18 +131,46 @@ export function Sidebar({
       </div>
 
       <nav className="main-nav" aria-label="主导航">
-        {(Object.keys(groupLabels) as Array<Exclude<NavigationGroup, 'utility'>>).map((group) => (
+        {(Object.keys(groupLabels) as Array<Exclude<NavigationGroup, 'more'>>).map((group) => (
           <div className="nav-group" key={group}>
             <div className="nav-group-label">{groupLabels[group]}</div>
             {navigationItems.filter((item) => item.group === group).map(renderItem)}
           </div>
         ))}
+        <div className="nav-group nav-group-more">
+          <button
+            type="button"
+            className={`nav-item nav-more-toggle${moreExpanded ? ' expanded' : ''}`}
+            aria-expanded={moreExpanded}
+            aria-controls="sidebar-more-items"
+            data-sidebar-tooltip="更多"
+            onClick={onToggleMoreExpanded}
+          >
+            <MoreHorizontal size={18} />
+            <span className="nav-label">更多</span>
+            <ChevronRight size={14} className="nav-more-chevron" />
+          </button>
+          {moreExpanded && (
+            <div className="nav-more-items" id="sidebar-more-items">
+              {navigationItems.filter((item) => item.group === 'more').map(renderItem)}
+            </div>
+          )}
+        </div>
       </nav>
 
       <div className="sidebar-bottom">
-        <nav className="utility-nav" aria-label="实用工具">
-          {navigationItems.filter((item) => item.group === 'utility').map(renderItem)}
-        </nav>
+        <button
+          type="button"
+          className="account-area"
+          data-sidebar-tooltip="登录 / 注册"
+          onClick={onAccountClick}
+        >
+          <span className="account-avatar" aria-hidden="true"><UserRound size={18} /></span>
+          <span className="account-copy">
+            <strong>登录 / 注册</strong>
+            <small>登录后查看余额与充值</small>
+          </span>
+        </button>
         <button
           className="official-site-button tutorial-docs-button"
           type="button"

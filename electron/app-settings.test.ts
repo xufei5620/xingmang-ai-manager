@@ -61,6 +61,36 @@ describe('application settings persistence', () => {
     })
   })
 
+  it('preserves an explicit sidebarMoreExpanded: true across a read', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      workspace: 'D:\\Workspace',
+      theme: 'dark',
+      checkUpdatesOnStartup: true,
+      runDiagnosticsOnStartup: false,
+      sidebarMoreExpanded: true,
+    }), 'utf8')
+
+    expect(readAppSettings(filePath).sidebarMoreExpanded).toBe(true)
+  })
+
+  it('degrades a non-boolean sidebarMoreExpanded to the collapsed default instead of failing the read', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      workspace: 'D:\\Workspace',
+      theme: 'dark',
+      checkUpdatesOnStartup: true,
+      runDiagnosticsOnStartup: false,
+      sidebarMoreExpanded: 'yes',
+    }), 'utf8')
+
+    const result = readAppSettings(filePath)
+    expect(result.sidebarMoreExpanded).toBeUndefined()
+    expect(result.workspace).toBe('D:\\Workspace')
+  })
+
   it('falls back to the last known-good backup when primary settings are damaged', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, '{not-json', 'utf8')

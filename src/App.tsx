@@ -365,7 +365,12 @@ function App() {
   }), [platformCapabilities, scan])
 
   const saveSettings = useCallback(async (next: AppSettingsV2) => {
-    const saved = await window.xingmang.saveSettings(next)
+    // SettingsPage's own draft type doesn't know about sidebarMoreExpanded
+    // (it has no UI for it), so its submitted object can be stale relative to
+    // the sidebar's own toggle. Re-stamp the live value here rather than
+    // trusting the round trip, so an unrelated "保存设置" click never reverts
+    // a "更多" expand/collapse made while the Settings page was open.
+    const saved = await window.xingmang.saveSettings({ ...next, sidebarMoreExpanded: settings.sidebarMoreExpanded })
     // Commit the persisted settings before refreshing derived data. A failure
     // below must not make a completed save look like a rejected one.
     setSettings(saved)
@@ -376,6 +381,18 @@ function App() {
     } catch (error) {
       setToast({ type: 'error', message: `设置已保存，但工作目录信息刷新失败：${errorMessage(error)}` })
     }
+  }, [settings.sidebarMoreExpanded])
+
+  const toggleSidebarMoreExpanded = useCallback(() => {
+    setSettings((current) => {
+      const next = !current.sidebarMoreExpanded
+      void window.xingmang.saveSettings({ ...current, sidebarMoreExpanded: next })
+        .then(setSettings)
+        .catch(() => {
+          // "更多" 的展开态只是便利性 UI 偏好，持久化失败不影响当次会话内的展开/折叠。
+        })
+      return { ...current, sidebarMoreExpanded: next }
+    })
   }, [])
 
   useEffect(() => {
@@ -864,6 +881,7 @@ function App() {
         collapsed={sidebarCollapsed}
         theme={theme}
         updateState={updateState}
+        moreExpanded={Boolean(settings.sidebarMoreExpanded)}
         onNavigate={setActivePage}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
         onToggleTheme={() => {
@@ -872,6 +890,8 @@ function App() {
           // 设置页的 draft 以 settings 为基准，主题双通道必须同步，否则保存设置会把主题回退。
           setSettings((current) => current.theme === next ? current : { ...current, theme: next })
         }}
+        onToggleMoreExpanded={toggleSidebarMoreExpanded}
+        onAccountClick={() => setToast({ type: 'success', message: '账号功能即将开放' })}
       />
 
       <main className="main-content">
@@ -905,6 +925,8 @@ function App() {
           />
         ) : activePage === 'sessions' ? (
           <SessionsPage api={window.xingmang} notify={setToast} />
+        ) : activePage === 'canvas' ? (
+          <PlaceholderPage pageId="canvas" />
         ) : activePage === 'mcp' ? (
           <McpPage
             servers={mcpServers}

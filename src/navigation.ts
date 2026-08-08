@@ -3,6 +3,7 @@ import {
   Blocks,
   Gauge,
   HeartPulse,
+  Infinity as InfinityIcon,
   MessageSquareWarning,
   MessageSquareText,
   PackageOpen,
@@ -16,6 +17,7 @@ import {
 export type PageId =
   | 'overview'
   | 'sessions'
+  | 'canvas'
   | 'mcp'
   | 'skills'
   | 'plugins'
@@ -31,22 +33,55 @@ export interface NavigationItem {
   label: string
   icon: LucideIcon
   group: NavigationGroup
+  /** One-line hover explanation shown next to the label (expanded sidebar only). */
+  hint?: string
+  /** Marks a destination that exists in the IA but has no shipped feature yet. */
+  placeholder?: boolean
 }
 
-export type NavigationGroup = 'workbench' | 'extensions' | 'system' | 'utility'
+// Task-oriented grouping (nav IA scheme A, #67/#69): 'use' is the daily-driver
+// destinations, 'extensions' is the mid-frequency MCP/Skills/market trio, and
+// 'more' is everything else, collapsed by default behind the sidebar's "更多".
+export type NavigationGroup = 'use' | 'extensions' | 'more'
 
 export const navigationItems: readonly NavigationItem[] = [
-  { id: 'overview', label: '工具概览', icon: Gauge, group: 'workbench' },
-  { id: 'sessions', label: '会话管理', icon: MessageSquareText, group: 'workbench' },
-  { id: 'mcp', label: 'MCP 管理', icon: Blocks, group: 'extensions' },
-  { id: 'skills', label: 'Skills 管理', icon: WandSparkles, group: 'extensions' },
-  { id: 'plugins', label: 'Plugins/市场', icon: PackageOpen, group: 'extensions' },
-  { id: 'backups', label: '配置备份', icon: ArchiveRestore, group: 'system' },
-  { id: 'health', label: '健康诊断', icon: HeartPulse, group: 'system' },
-  { id: 'maintenance', label: '安装维护', icon: Wrench, group: 'system' },
-  { id: 'feedback', label: '反馈与诊断', icon: MessageSquareWarning, group: 'utility' },
-  { id: 'updates', label: '检查更新', icon: RefreshCw, group: 'utility' },
-  { id: 'settings', label: '设置', icon: Settings, group: 'utility' },
+  { id: 'overview', label: '工具概览', icon: Gauge, group: 'use' },
+  { id: 'sessions', label: '会话管理', icon: MessageSquareText, group: 'use' },
+  {
+    id: 'canvas',
+    label: '无限画布',
+    icon: InfinityIcon,
+    group: 'use',
+    placeholder: true,
+    hint: '可视化组织你的 AI 工作流，即将上线',
+  },
+  {
+    id: 'mcp',
+    label: 'MCP 管理',
+    icon: Blocks,
+    group: 'extensions',
+    hint: '让 AI 连接外部工具和数据（数据库、浏览器等），扩展它能干的事',
+  },
+  {
+    id: 'skills',
+    label: 'Skills 管理',
+    icon: WandSparkles,
+    group: 'extensions',
+    hint: '可复用的技能包，把常用流程固化，让 AI 一步到位',
+  },
+  {
+    id: 'plugins',
+    label: '插件市场',
+    icon: PackageOpen,
+    group: 'extensions',
+    hint: '社区做好的扩展，一键安装给 CLI 加功能',
+  },
+  { id: 'backups', label: '配置备份', icon: ArchiveRestore, group: 'more' },
+  { id: 'health', label: '健康诊断', icon: HeartPulse, group: 'more' },
+  { id: 'maintenance', label: '安装维护', icon: Wrench, group: 'more' },
+  { id: 'feedback', label: '反馈与诊断', icon: MessageSquareWarning, group: 'more' },
+  { id: 'updates', label: '检查更新', icon: RefreshCw, group: 'more' },
+  { id: 'settings', label: '设置', icon: Settings, group: 'more' },
 ]
 
 export function navigationItem(pageId: PageId): NavigationItem {
