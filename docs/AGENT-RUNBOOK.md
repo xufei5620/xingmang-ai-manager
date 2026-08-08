@@ -142,10 +142,14 @@ node -e "console.log(process.platform)"   # win32 → win，darwin → mac
 gh issue list --state open --limit 50
 
 # 只看适合你这台机器的（按你的端选标签）
-gh issue list --label "env:mac" --state open      # 你在 Mac
+gh issue list --label "env:macos" --state open    # 你在 Mac
 gh issue list --label "env:windows" --state open  # 你在 Windows
 gh issue list --label "env:any" --state open      # 任意平台都行
 ```
+
+⚠️ **标签名只有这四个：`env:any` / `env:windows` / `env:macos` / `env:server`。**
+写错了 `gh` **不报错**——它返回空列表、退出码 0，你会以为「没有适合我的任务」。
+筛出来是空的时候，先 `gh label list` 核对一遍标签名，再下结论。
 
 ### 2. 判断这个任务能不能领
 
@@ -265,7 +269,8 @@ gh pr create \
 **方式 B：定时轮询**
 如果你的 Claude Code 支持 `/loop` 之类的定时任务，可以设成每隔一段时间跑一次：
 ```
-/loop 30m 检查 gh issue list --label env:<你的端> --state open，
+/loop 30m 检查 gh issue list --label env:macos --state open
+      （Windows 上换成 env:windows；标签名只有 env:any / env:windows / env:macos / env:server），
       挑一个未认领、依赖已满足、非 needs-decision 的任务，按 docs/AGENT-RUNBOOK.md 执行
 ```
 ⚠️ 但定时轮询要**特别小心 serial-only 冲突**——无人盯着的自动执行最容易两个 agent 撞 IPC。建议定时轮询只用于领 `env:any` 且非 `serial-only` 的安全任务。
