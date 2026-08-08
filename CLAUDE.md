@@ -24,43 +24,42 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**没有后端服务
 
 | | 源码 | 测试 |
 |---|---|---|
-| `electron/`（主进程，全部特权操作） | 51 个模块 | 49 个 |
-| `src/`（渲染进程，纯 UI） | 29 个文件 | 13 个 |
+| `electron/`（主进程，全部特权操作） | 55 个模块 | 53 个 |
+| `src/`（渲染进程，纯 UI） | 45 个文件 | 14 个 |
 
-约 5 万行，**740 个测试用例**（62 个测试文件）。IPC：**70 个 invoke 通道**。
+约 5 万行，**816 个 vitest 用例**（67 个文件；Windows 上约 120 个因平台门控跳过），`npm test` 还串带 scripts/e2e 下的 node --test 套件（约 78 例）。IPC：**70 个 invoke 通道**。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
 ```bash
 npm run typecheck   # 跑两套 tsconfig（渲染 + 主进程）
-npm test            # Linux ~8s；Windows 上因 Defender 实时扫描可达 60~90s
+npm test            # vitest（electron+src）+ node --test（scripts/e2e）。Linux ~8s；Windows 实测 ~13s，Defender 实时扫描介入时可拖到 60~90s
+npm run test:windows    # Windows 备用：关文件级并行 + 30s 超时，专治 Defender 引发的超时失败
 npm run compile     # 清理 + vite build + tsc + 压缩
 npm run dev         # 开发模式
 npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ```
 
-### ⚠️ 测试基线：没有任何平台是全绿的
+### ⚠️ 测试基线：Windows 是否全绿取决于机器环境
 
-**动手前先在干净的 `main` 上跑一遍记下失败数**，改完对比。三个平台各有各的已知失败，**都不是你弄坏的**：
+**动手前先在干净基线上跑一遍记下失败数**，改完对比。已知失败全部与环境相关，**不是你弄坏的**：
 
 | 平台 | 已知失败 | 原因 | Issue |
 |---|---|---|---|
-| **Windows** | **9** | 4 个需要 `SeCreateSymbolicLinkPrivilege`（未开发者模式 + 非管理员即 EPERM）；5 个卡 vitest 默认 5s 超时（真实磁盘两阶段提交 + Defender 实时扫描） | **#40** |
+| **Windows** | **0~9（环境相关）** | 4 个需要 `SeCreateSymbolicLinkPrivilege`（未开发者模式且非管理员时 EPERM）；5 个可能卡 vitest 默认 5s 超时（真实磁盘两阶段提交 + Defender 实时扫描）。开发者模式开启且磁盘不忙的机器可以全绿（2026-08-08 本机 `npm test` 实测 0 失败、vitest 12.7s） | **#40** |
 | **macOS** | 0 | — | — |
-| **Linux** | **1** | `macos-platform.test.ts:249` | **#2** |
+| **Linux** | 0 | 原 `samePathIdentity` 误删缺陷已修复：launcher 文件清理现走 `sameFileIdentity`（追加 size/nlink/mtime/ctime 比对，`macos-platform.ts:99-111`） | #2 已关闭 |
 
-**Windows agent 请注意**：「Windows 全绿」是错的，别以为自己弄坏了仓库。基线不符请到 **#40** 报告。
+遇到超时类失败先用 `npm run test:windows` 复核；符号链接类失败开启 Windows 开发者模式即可消除。基线与上表不符请到 **#40** 报告。
 
-**Linux 那 1 个失败不是「平台门控写漏」，是一条真实缺陷**（#2）。该用例只用注入的 mock runner + `mkdtemp`，与平台特性无关；它在 macOS 上通过纯属侥幸——`samePathIdentity`（`macos-platform.ts:70`）只比 `dev/ino/uid`，APFS 的 inode 不复用所以碰巧不误判，而 Linux tmpfs 会立刻复用刚释放的 inode，于是清理逻辑真的把别人放在该路径上的文件删了。
-**不要给它加 `runIf(darwin)` 把缺陷藏起来**，要修 `samePathIdentity`。
-
-> 改动前先在干净的 `main` 上跑一遍记下失败数，改动后对比，**不要引入新失败**。
+> 改动前先跑一遍记下失败数，改动后对比，**不要引入新失败**。
 
 ### macOS 相关模块（新增）
 
 - `electron/macos-platform.ts` — macOS 终端启动器与平台能力
 - `electron/macos-codex.ts` / `macos-codex-app.ts` — Codex CLI 与桌面端的 macOS 实现
 - `electron/macos-grok.ts` — Grok 的 macOS 安装
+- `electron/darwin-path-trust.ts` / `darwin-cli-staging.ts` / `macos-code-signing.ts` — 路径信任判定、CLI 私有暂存、codesign/Team ID 校验
 - `electron/platform-capabilities.ts` — 跨平台能力探测的统一抽象
 - `src/platform-presentation.ts` — 渲染层的平台差异表达
 
@@ -73,48 +72,50 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ### `electron/` 主进程
 
 **进程入口与 IPC 边界**
-- `main.ts` (435) — 生命周期、`BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true`）、`xingmang://` 协议注册、外链白名单、装配服务
-- `ipc-contract.ts` (427) — **唯一的跨进程类型真相源**。`as const satisfies` 强制通道表与接口对齐
-- `preload.ts` (195) — sandbox 桥接层。因 `sandbox:true` 无法 require 本地模块，**手工复制了一份通道表**
-- `ipc.ts` (920) — 69 个处理器注册与参数校验
+- `main.ts` (543) — 生命周期、`BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true`）、`xingmang://` 协议注册、外链白名单、装配服务
+- `ipc-contract.ts` (438) — **唯一的跨进程类型真相源**。`as const satisfies` 强制通道表与接口对齐
+- `preload.ts` (199) — sandbox 桥接层。因 `sandbox:true` 无法 require 本地模块，**手工复制了一份通道表**
+- `ipc.ts` (925) — 69 个处理器注册与参数校验
 
 **命令执行与安全边界**（这里是本项目真正的复杂度所在）
-- `command-runner.ts` (1020) — **全仓最关键模块**。`runCommand` 硬编码 `shell:false`；`trustedCommandEnvironment` 剥离 60+ 可注入环境变量并重建机器级 PATH；`findExecutable` 不调用 `where`/`which`/shell
-- `security.ts` (171) — URL 策略。外链白名单要求 `href` **全等**匹配
+- `command-runner.ts` (1120) — **全仓最关键模块**。`runCommand` 硬编码 `shell:false`；`trustedCommandEnvironment` 剥离 60+ 可注入环境变量并重建机器级 PATH；`findExecutable` 不调用 `where`/`which`/shell
+- `security.ts` (172) — URL 策略。外链白名单要求 `href` **全等**匹配
 - `windows-elevation.ts` (398) — 提权模式判定、可信命令断言、PowerShell 启动计划
-- `windows-machine-paths.ts` (499) — 从注册表推导真实系统根 + ACL 校验
-- `trusted-temp.ts` (498) — 受 ACL 保护的临时目录
+- `windows-machine-paths.ts` (532) — 从注册表推导真实系统根 + ACL 校验
+- `trusted-temp.ts` (494) — 受 ACL 保护的临时目录
 - `managed-path-trust.ts` / `system-shell.ts`
 
 **CLI 安装与运行时**
-- `system-service.ts` (3300) — **最大模块**。前 1426 行是纯函数库（可直接单测），`createSystemService` 从 1427 行起是闭包工厂
-- `tool-installation.ts` (449) / `node-runtime.ts` (1018) / `grok-installer.ts` (661) / `grok-update.ts` (161)
+- `system-service.ts` (3261) — **最大模块**。前 1374 行是纯函数库（可直接单测），`createSystemService` 从 1375 行起是闭包工厂
+- `tool-installation.ts` (606) / `node-runtime.ts` (1026) / `grok-installer.ts` (662) / `grok-update.ts` (161)
 - `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
 
 **配置与数据**
-- `config-files.ts` (757) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**
-- `app-settings.ts` (196) / `backups.ts` (596)
-- `codex-sessions.ts` (1374) — Codex 会话权威源是 `~/.codex/state_5.sqlite` 的 `threads` 表；未知 schema 自动降级只读
+- `config-files.ts` (879) — 四个 CLI 的配置读写，**两阶段提交 + .bak 备份 + 失败回滚**
+- `app-settings.ts` (196) / `backups.ts` (891)
+- `codex-sessions.ts` (1427) — Codex 会话权威源是 `~/.codex/state_5.sqlite` 的 `threads` 表；未知 schema 自动降级只读
 - `provider-sessions.ts` (1199) — 四工具统一会话视图
-- `codex-desktop.ts` (437)
+- `codex-desktop.ts` (437) — 桌面端清单/包解析的纯函数层
+- `codex-desktop-service.ts` (646) — 桌面端探测、镜像下载、包校验与关停的服务层（从 system-service.ts 拆出）
 
 **扩展生态**
-- `provider-extensions.ts` (1543) — 四工具统一的 MCP/Skill/Plugin 抽象
-- `codex-extensions.ts` (1207) — Codex 专用。DTO 只暴露 env **变量名**不暴露值
+- `provider-extensions.ts` (1585) — 四工具统一的 MCP/Skill/Plugin 抽象
+- `codex-extensions.ts` (1254) — Codex 专用。DTO 只暴露 env **变量名**不暴露值
 
 **更新、诊断、工具库**
-- `updater.ts` (386) / `update-signature.ts` (208)
-- `diagnostics.ts` (795) / `runtime-log.ts` (342) / `models.ts`
-- `catalog.ts`（provider 单一定义源）/ `versions.ts` / `installation-queue.ts`
+- `updater.ts` (451) / `update-signature.ts` (208)
+- `diagnostics.ts` (868) / `runtime-log.ts` (340) / `models.ts`
+- `catalog.ts`（provider 单一定义源）/ `versions.ts` / `installation-queue.ts` / `path-identity.ts`（跨平台路径身份比对）
 - `safe-local-data.ts` / `bounded-file.ts` / `bounded-directory.ts` / `bounded-response.ts`
 
 ### `src/` 渲染进程
 
 - `main.tsx` — 挂载 React + 全局错误上报
-- `App.tsx` (2855) — **全部全局状态**。App() 本体 936 行，38 个 `useState`，15 个 `useEffect`，页面切换是一条 11 分支三元链（1069-1204）。内嵌四个大组件：`CodexOnboarding` / `Dashboard` / `ConfigDialog` / `CodexDesktopCard`
-- `styles.css` (6027) — **另一个巨型枢纽文件**
-- `components/` — `AppFrame` / `Sidebar` / `Toast` / `Dialog` / `ProviderTabs`
-- `pages/` — 11 个页面，最大的 `PluginsPage`(696) `MaintenancePage`(686) `McpPage`(593)
+- `App.tsx` (1071) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但 App() 本体（74 行起）仍近千行：40 个 `useState`、16 个 `useEffect`，页面切换是一条 11 分支三元链（853-989）。**#30 未完结**
+- `app-shared.ts` / `provider-meta.ts` / `navigation.ts` — #30 拆出的共享底座：纯工具函数与空快照 / provider 展示元数据（含 `dashboardProviderIds`）/ 侧边栏页面清单
+- `styles.css` (6325) — **另一个巨型枢纽文件**
+- `components/` — 通用件 `AppFrame` / `Sidebar` / `Toast` / `Dialog` / `ProviderTabs` / `RuntimeCell` / `StatusMark` / `StartupSplash`；从 App.tsx 搬出的 `onboarding/`（4 件）、`config/`（`ConfigDialog` 等 4 件）、`dashboard/`（`Dashboard` / `CodexDesktopCard`）
+- `pages/` — 11 个页面，最大的 `MaintenancePage`(992) `PluginsPage`(696) `McpPage`(593)
 - **纯逻辑层（测试都打在这里）** — `scan-coordinator.ts` / `latest-request.ts` / `provider-extension-coordinator.ts` / `onboarding-flow.ts` / `onboarding-runtime.ts` / `startup-settings.ts` / `error-message.ts` / `local-path-display.ts`
 - `types.ts` — `export *` 转发 ipc-contract 的类型
 
@@ -129,7 +130,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 *违反后果*：用户建一个名为 `a&calc.exe` 的目录即可执行任意命令；提权下是管理员级 RCE。
 
 **I2. 跨提权边界的执行必须用 `trustedCommandEnvironment()` + `trustedOnly:true`。**
-`NODE_OPTIONS`、`PSModulePath`、`DOTNET_STARTUP_HOOKS`、`BROWSER`、`GIT_ASKPASS`、`LD_PRELOAD` 等 60+ 变量能让子进程在启动瞬间加载攻击者代码（清单见 `command-runner.ts:208-281`）。
+`NODE_OPTIONS`、`PSModulePath`、`DOTNET_STARTUP_HOOKS`、`BROWSER`、`GIT_ASKPASS`、`LD_PRELOAD` 等 60+ 变量能让子进程在启动瞬间加载攻击者代码（清单见 `command-runner.ts:244-330` 的 `unsafeKeys` / `unsafePrefixes` 两张表）。
 *注*：交互式终端启动走 `interactiveTerminalEnvironment`，它的净化基底**由调用方传入**——`trusted-only` 传 `trustedCommandEnvironment`，same-user 传 `commandEnvironment`（缺省值，未跨越完整性边界，无需收窄 PATH）。颜色层叠在基底之上，**不要把整个函数换成 `trustedCommandEnvironment`**，那会连 `TERM`/`FORCE_COLOR` 一起剥掉，终端变无色。
 
 **I3. API Key 明文永不随普通查询跨 IPC。**
@@ -178,25 +179,25 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ## 5. 改动陷阱清单
 
 **T1. 加/删/挪 IPC 处理器 → 注册顺序必须与 `ipcInvokeChannels` 键顺序完全一致。**
-`ipc.test.ts:222` 的 `toEqual` **对顺序敏感**。⚠️ **两个 agent 并行加通道，即使 git 文本合并成功，CI 也会红。** 加通道属于必须串行的任务。
+`ipc.test.ts:227` 的 `toEqual` **对顺序敏感**。⚠️ **两个 agent 并行加通道，即使 git 文本合并成功，CI 也会红。** 加通道属于必须串行的任务。
 （`preload.ts` 的副本顺序**不需要**一致，它只做键查找。）
 
 **T2. 给 `ProviderId` 加第 5 个 CLI → 共约 17 个文件 35 个改动点，其中 5 处编译器完全沉默。**
 
-*编译器会强制你改的（约 12 处，这部分设计是对的）*：`catalog.ts:1/14/49` 三处 → `config-files.ts` 六个 `switch`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ 各类 `Record<ProviderId, X>` 映射表（`App.tsx:112`、`ProviderTabs.tsx:5`、`PluginsPage.tsx:82`）。
+*编译器会强制你改的（约 12 处，这部分设计是对的）*：`catalog.ts:1/14/49` 三处 → `config-files.ts` 六个 `switch`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts:20`、`ProviderTabs.tsx:6`、`PluginsPage.tsx:82`）。
 
 ⚠️ *编译器抓不到的 5 处*：
-- `src/App.tsx:161` — `dashboardProviderIds` 是独立字面量数组。与同文件 790 行「已安装 N 项」、857 行「一键安装全部」用的 catalog 派生数组不同步时，概览页会出现「已安装 3/5」但只画 4 张卡片
-- `src/pages/MaintenancePage.tsx:26` — **另外定义了 `MaintenanceProviderId` 联合类型**，不从 `ProviderId` 派生
+- `src/provider-meta.ts:69` — `dashboardProviderIds` 是独立字面量数组，概览页 `components/dashboard/Dashboard.tsx` 按它画卡片，且其 142 行「N/5 个已安装」的分母 5 是硬编码。不同步时概览页会少画卡片、分母出错
+- `src/pages/MaintenancePage.tsx:33` — **另外定义了 `MaintenanceProviderId` 联合类型**，不从 `ProviderId` 派生
 - `src/pages/BackupsPage.tsx:17` — 同上，`BackupProviderId`
   > 这两处最危险：`Record<ProviderId,X>` 赋给 `Record<MaintenanceProviderId,X>` 在 TS 里合法（多余键不触发 excess property check）。**结果是安装维护页和配置备份页完全看不到新 CLI，且零编译错误、零测试失败。**
-- `src/pages/McpPage.tsx:377`、`src/pages/SkillsPage.tsx:279` — 直接写字面量数组
-- `src/components/ProviderTabs.tsx:3` — `as const satisfies readonly ProviderId[]` 只校验「成员合法」，**不校验「覆盖完整」**
+- `src/pages/McpPage.tsx:377`、`src/pages/SkillsPage.tsx:284` — 直接写字面量数组
+- `src/components/ProviderTabs.tsx:4` — `managementProviderIds` 的 `as const satisfies readonly ProviderId[]` 只校验「成员合法」，**不校验「覆盖完整」**
 
 *根因*：规范顺序（catalog 是 claude/codex/grok/gemini）与展示顺序（UI 全是 codex/claude/gemini/grok）不一致，所以每个页面各自硬编码了一遍展示顺序。收口方案见 `docs/IMPROVEMENT-PLAN.md`。
 
-**T3. 改 `system-service.ts` → 先确认改的是 3300 行里的哪一半。**
-前 1426 行是纯函数（全部 export、测试直接调用）；`createSystemService` 之后是闭包（内部函数不导出）。**新逻辑优先写成顶层纯函数**再在闭包里调用，否则无法单测。这是最容易撞车的文件。
+**T3. 改 `system-service.ts` → 先确认改的是 3261 行里的哪一半。**
+前 1374 行是纯函数（全部 export、测试直接调用）；`createSystemService`（1375 行起）之后是闭包（内部函数不导出）。**新逻辑优先写成顶层纯函数**再在闭包里调用，否则无法单测。这是最容易撞车的文件。
 
 **T4. 动 `trustedCommandEnvironment` → 只能加禁止项，不能加放行项。**
 三张表是白名单式收紧，每条对应一个具体攻击。放行任何变量前，先在测试里写出"该变量为什么安全"。
@@ -232,7 +233,7 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 三个现成工具：`scan-coordinator.ts`（扫描）、`latest-request.ts`（按 key 的页面数据）、`provider-extension-coordinator.ts`（切 provider）。直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。
 
 **T7. 给 `src/` 加组件测试 → 当前没有 DOM 环境。**
-仓库**没有 `vitest.config.ts`**，环境是默认的 `node`。9 个渲染测试全部只测纯函数，没有一处 render。加 jsdom 是需要先与其他 agent 对齐的基础设施改动，**不要顺手做**。
+仓库**没有 `vitest.config.ts`**，环境是默认的 `node`。src 下 14 个测试文件全部只测纯函数，没有一处 render。加 jsdom 是需要先与其他 agent 对齐的基础设施改动，**不要顺手做**。
 
 **T8. 改 `electron/*.test.ts` 的类型 → 它们不在任何 typecheck 范围内。**
 `tsconfig.electron.json` exclude 了测试文件，根 tsconfig 只 include `src`。所以 electron 测试的类型错误只在运行时炸。（反之 `src/**/*.test.ts` **在**范围内。）
@@ -242,7 +243,7 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 被 `ipc-contract.ts` 通过 `import type` 引用的模块会同时进入渲染 tsconfig 的程序图。改类型定义时两条命令都要跑（`npm run typecheck` 已串好）。
 
 **T10. 改 `providerConfigPaths` 或配置格式 → 同时影响备份、恢复、诊断、启动前校验。**
-消费者：`backups.ts`、`config-files.ts:249`、`diagnostics.ts:14`、`system-service.ts:3007`、`main.ts:342`。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
+消费者：`backups.ts`、`config-files.ts`、`diagnostics.ts`、`system-service.ts`、`main.ts`（启动前校验）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
 
 **T11. 看到根目录出现 `\tmp\xingmang-managed-cli-*` 目录 → 那是已知 bug 的产物，直接删除，不要提交。**
 `managed-cli.test.ts` 在非 Windows 平台每跑一次就泄漏若干个（见待办批次 0）。
@@ -309,7 +310,7 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 npm run typecheck
 npm test
 ```
-> Mac/Linux 上测试当前有已知失败，**请对比改动前后的失败数是否一致**，不要引入新失败。
+> Windows 上可能有环境相关的已知失败（#40），**请对比改动前后的失败数是否一致**，不要引入新失败。
 
 **提交**
 见 `docs/COLLABORATION.md` 的分支命名与 PR 规范。
@@ -319,10 +320,10 @@ npm test
 ## 8. 不要做的事
 
 - ❌ **不要引入 Prettier / 大改格式** — 现有风格一致性已经很高，全仓重排会摧毁 git blame
-- ❌ **不要引入 Redux / Zustand / Jotai / MobX** — `App.tsx` 的 44 个 useState 里真正跨组件共享的只有 5 个（`snapshot/config/settings/theme/toast`），props 深度 1-2 层；其余都是 `configOpen`、`logOpen` 这类局部 UI 开关。**正确解是拆组件，不是换状态方案。** 拆完仍嫌传得烦，最多加一个 Context
+- ❌ **不要引入 Redux / Zustand / Jotai / MobX** — `App.tsx` 的 40 个 useState 里真正跨组件共享的只有 5 个（`snapshot/config/settings/theme/toast`），props 深度 1-2 层；其余都是 `configOpen`、`logOpen` 这类局部 UI 开关。**正确解是拆组件，不是换状态方案。** 拆完仍嫌传得烦，最多加一个 Context
 - ❌ **不要用 zod / valibot / ajv 替换 `ipc.ts` 的 15 个手写 parse 函数** — 它们产出的是能直接上屏的中文错误文案
 - ❌ **不要开 `noUncheckedIndexedAccess` / `exactOptionalPropertyTypes`** — 实测前者会新增 97 条错误，抽查全是已被前置校验保护的下标访问，**零个真 bug**。现在的 `strict: true` 已经足够
-- ❌ **不要顺手加 jsdom / 组件测试设施** — 那是需要跨 agent 对齐的基础设施改动。`e2e/` 的 1186 行 smoke 套件已经是更高性价比的替代
+- ❌ **不要顺手加 jsdom / 组件测试设施** — 那是需要跨 agent 对齐的基础设施改动。`e2e/` 的约 1900 行套件已经是更高性价比的替代
 - ❌ **不要做路由级 code-splitting / React.lazy** — 总共 340KB JS 从本地磁盘加载且开了 `codeCache`，收益为负
 - ❌ **不要引入 react-window / react-virtualized** — 最长的会话列表已在 SQL 层分页到每页 ≤100
 - ❌ **不要给主进程上 bundler** — 会模糊信任链模块的边界，那是本项目的核心可审计资产
@@ -349,6 +350,7 @@ npm test
 
 - `docs/IMPROVEMENT-PLAN.md` — 已确认问题的完整清单与分批修复计划
 - `docs/RELEASING.md` — 发布流程
+- `docs/MACOS_DEVELOPMENT.md` / `docs/MACOS_FREE_DISTRIBUTION.md` — macOS 开发与免费自签分发
 - `README.md` — 产品说明与数据边界
 
-**任务索引在 GitHub Issue [#27](https://github.com/peaker520/xingmang-ai-manager/issues/27)。**
+**任务索引在 GitHub Issue [#27](https://github.com/xufei5620/xingmang-ai-manager/issues/27)。**
