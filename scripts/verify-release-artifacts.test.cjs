@@ -103,6 +103,39 @@ test('matches DN-form expected publishers attribute by attribute like the runtim
   ), { code: 'INSTALLER_PUBLISHER_MISMATCH' })
 })
 
+test('refuses to verify an installer when no expected publisher is configured', () => {
+  const validlySigned = {
+    platform: 'win32',
+    resolvePowerShell: () => ({
+      systemRoot: 'D:\\Windows',
+      system32: 'D:\\Windows\\System32',
+      executable: 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    }),
+    // A signature that is valid but issued to somebody else entirely.
+    spawnSync: () => ({
+      status: 0,
+      stdout: JSON.stringify({ Status: 'Valid', Subject: 'CN=Some Other Company, O=Attacker' }),
+      stderr: '',
+    }),
+  }
+
+  // Without a publisher this used to return normally, reporting the installer
+  // as verified purely because it carried some valid Authenticode signature.
+  for (const missing of [undefined, null, '', '   ']) {
+    assert.throws(
+      () => verifyAuthenticode('D:\\release\\setup.exe', missing, validlySigned),
+      { code: 'SIGNING_PUBLISHER_MISSING' },
+      `expected publisher ${JSON.stringify(missing)} must fail closed`,
+    )
+  }
+
+  // The default argument must fail closed too, not just an explicit empty value.
+  assert.throws(
+    () => verifyAuthenticode('D:\\release\\setup.exe', undefined, validlySigned),
+    { code: 'SIGNING_PUBLISHER_MISSING' },
+  )
+})
+
 test('fails closed when no trusted PowerShell exists', () => {
   assert.throws(() => resolveTrustedWindowsPowerShell({
     platform: 'win32',
