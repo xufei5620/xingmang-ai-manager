@@ -6,6 +6,8 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
+import { trustedCommandEnvironment } from './command-runner'
+import type { WindowsMachinePaths } from './windows-machine-paths'
 import { providerConfigPaths } from './config-files'
 import type { MacosCodexAppInfo } from './macos-codex-app'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
@@ -58,6 +60,16 @@ import {
 } from './system-service'
 
 const temporaryDirectories: string[] = []
+
+// Fixed roots keep the trusted-environment assertions deterministic on every
+// platform instead of depending on the registry of the machine running them.
+const testMachinePaths: WindowsMachinePaths = {
+  systemRoot: 'D:\\Windows',
+  system32: 'D:\\Windows\\System32',
+  programFiles: 'D:\\Program Files',
+  programFilesX86: 'D:\\Program Files (x86)',
+  programData: 'D:\\ProgramData',
+}
 
 function createService() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-system-service-'))
@@ -1196,6 +1208,56 @@ describe('interactiveTerminalEnvironment', () => {
     })
     expect(env.NO_COLOR).toBeUndefined()
     expect(env.NODE_DISABLE_COLORS).toBeUndefined()
+  })
+
+  it('keeps the unsanitized base for callers that stay at the current integrity level', () => {
+    const env = interactiveTerminalEnvironment({
+      PATH: 'C:\\Users\\tester\\AppData\\Roaming\\npm',
+      NODE_OPTIONS: '--require=C:\\Users\\tester\\hook.js',
+    })
+
+    // same-user launches never cross an integrity boundary, so narrowing PATH
+    // here would only break globally installed tools in the default scenario.
+    expect(env.NODE_OPTIONS).toBe('--require=C:\\Users\\tester\\hook.js')
+    expect(env.PATH).toContain('C:\\Users\\tester\\AppData\\Roaming\\npm')
+  })
+
+  it('strips injection variables from an elevated base while keeping the color layer', () => {
+    const env = interactiveTerminalEnvironment(
+      {
+        PATH: ['C:\\Users\\tester\\AppData\\Roaming\\npm', 'D:\\Windows\\System32'].join(';'),
+        TERM: 'dumb',
+        NO_COLOR: '1',
+        NODE_OPTIONS: '--require=C:\\Users\\tester\\payload.js',
+        NODE_PATH: 'C:\\Users\\tester\\modules',
+        BROWSER: 'C:\\Users\\tester\\evil.exe',
+        GIT_ASKPASS: 'C:\\Users\\tester\\steal.exe',
+        DOTNET_STARTUP_HOOKS: 'C:\\Users\\tester\\hook.dll',
+        PSModulePath: 'C:\\Users\\tester\\Documents\\WindowsPowerShell\\Modules',
+        CODEX_HOME: 'C:\\Users\\tester\\.codex',
+      },
+      (baseEnv) => trustedCommandEnvironment(baseEnv, testMachinePaths),
+    )
+
+    expect(env.NODE_OPTIONS).toBeUndefined()
+    expect(env.NODE_PATH).toBeUndefined()
+    expect(env.BROWSER).toBeUndefined()
+    expect(env.GIT_ASKPASS).toBeUndefined()
+    expect(env.DOTNET_STARTUP_HOOKS).toBeUndefined()
+    expect(env.PSModulePath).not.toContain('tester')
+    expect(env.PATH).not.toContain('C:\\Users\\tester')
+    expect(env.PATH).toContain(testMachinePaths.system32)
+    // The CLI still needs its own configuration root; sanitizing must not
+    // reach beyond the documented injection variables.
+    expect(env.CODEX_HOME).toBe('C:\\Users\\tester\\.codex')
+    expect(env).toMatchObject({
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      FORCE_COLOR: '3',
+      CLICOLOR: '1',
+      CLICOLOR_FORCE: '1',
+    })
+    expect(env.NO_COLOR).toBeUndefined()
   })
 })
 

@@ -198,10 +198,19 @@ export interface LatestVersionProbe {
   error: string | null
 }
 
+/**
+ * The color layer must sit on top of a caller-selected base. An elevated
+ * terminal has to start from `trustedCommandEnvironment`, but that base cannot
+ * be applied unconditionally: callers that stay at the current integrity level
+ * would lose every user-writable PATH entry for no security gain. Sanitizing
+ * after the color layer is not an option either, because the sanitizer strips
+ * TERM/COLORTERM/FORCE_COLOR and would leave the terminal monochrome.
+ */
 export function interactiveTerminalEnvironment(
   baseEnv: NodeJS.ProcessEnv = process.env,
+  buildBaseEnvironment: (env: NodeJS.ProcessEnv) => NodeJS.ProcessEnv = commandEnvironment,
 ): NodeJS.ProcessEnv {
-  const env = commandEnvironment(baseEnv)
+  const env = buildBaseEnvironment(baseEnv)
   const colorKeys = new Set([
     'term',
     'colorterm',
@@ -3439,7 +3448,15 @@ export function createSystemService(
           argv: command.argv,
           workspace,
           title: `${definition.name} · 星芒AI`,
-          env: interactiveTerminalEnvironment(providerEnv),
+          // The broker starts this terminal with Start-Process, so it inherits
+          // the elevated token. Without the trusted base, NODE_OPTIONS and the
+          // other injection variables would cross the integrity boundary and
+          // run attacker code as administrator. assertTrustedElevatedCliCommand
+          // only vets the executable path and cannot see the environment.
+          env: interactiveTerminalEnvironment(
+            providerEnv,
+            windowsExecutionMode === 'trusted-only' ? trustedCommandEnvironment : commandEnvironment,
+          ),
         })
       } catch (error) {
         const detail = error instanceof Error ? error.message : String(error)
