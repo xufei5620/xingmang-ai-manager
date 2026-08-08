@@ -223,6 +223,9 @@ describe('macOS terminal launcher', () => {
     expect(fs.existsSync(path.dirname(launcherPath))).toBe(false)
   })
 
+  // Runs on every platform on purpose. The property must not depend on whether the
+  // filesystem recycles a freed inode number: ext4 and tmpfs hand it straight back,
+  // and identity alone would then mistake the replacement for our own launcher.
   it('does not delete a replacement at the scheduled launcher path', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-replaced-launcher-'))
     temporaryDirectories.push(directory)

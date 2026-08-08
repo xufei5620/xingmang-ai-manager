@@ -26,14 +26,33 @@ export type MacosTerminalCleanupScheduler = (
 ) => void
 
 interface PathIdentity {
-  device: number
-  inode: number
-  owner: number
+  device: bigint
+  inode: bigint
+  owner: bigint
+}
+
+/**
+ * A directory has to be recognized by identity alone: removing the launcher bumps
+ * its own mtime and size, so comparing those would make the cleanup abandon the
+ * directory it just emptied.
+ *
+ * A regular file has no such excuse, and identity alone is not enough for one.
+ * `unlink` frees the inode number, and a filesystem is free to hand it straight
+ * back to the next file created in its place — ext4 and tmpfs do so immediately,
+ * APFS happens not to. Comparing size, link count and both timestamps is what
+ * makes "is this still the file I wrote?" independent of that allocation policy,
+ * so a replacement dropped at the same path is never mistaken for our own.
+ */
+interface FileIdentity extends PathIdentity {
+  size: bigint
+  links: bigint
+  modifiedNs: bigint
+  changedNs: bigint
 }
 
 interface LauncherIdentity {
   directory: PathIdentity
-  launcher: PathIdentity
+  launcher: FileIdentity
 }
 
 const terminalLauncherCleanupDelayMs = 5 * 60_000
@@ -63,19 +82,37 @@ function isAbsolutePath(value: string): boolean {
   return Boolean(value) && !value.includes('\0') && path.isAbsolute(value)
 }
 
-function pathIdentity(stats: fs.Stats): PathIdentity {
+function pathIdentity(stats: fs.BigIntStats): PathIdentity {
   return { device: stats.dev, inode: stats.ino, owner: stats.uid }
 }
 
-function samePathIdentity(stats: fs.Stats, expected: PathIdentity): boolean {
+function fileIdentity(stats: fs.BigIntStats): FileIdentity {
+  return {
+    ...pathIdentity(stats),
+    size: stats.size,
+    links: stats.nlink,
+    modifiedNs: stats.mtimeNs,
+    changedNs: stats.ctimeNs,
+  }
+}
+
+function samePathIdentity(stats: fs.BigIntStats, expected: PathIdentity): boolean {
   return stats.dev === expected.device
     && stats.ino === expected.inode
     && stats.uid === expected.owner
 }
 
-async function lstat(filePath: string): Promise<fs.Stats | null> {
+function sameFileIdentity(stats: fs.BigIntStats, expected: FileIdentity): boolean {
+  return samePathIdentity(stats, expected)
+    && stats.size === expected.size
+    && stats.nlink === expected.links
+    && stats.mtimeNs === expected.modifiedNs
+    && stats.ctimeNs === expected.changedNs
+}
+
+async function lstat(filePath: string): Promise<fs.BigIntStats | null> {
   try {
-    return await fs.promises.lstat(filePath)
+    return await fs.promises.lstat(filePath, { bigint: true })
   } catch {
     return null
   }
@@ -94,7 +131,7 @@ async function removeLauncherIfUnchanged(
 
   const launcherStats = await lstat(launcherPath)
   if (launcherStats) {
-    if (!launcherStats.isFile() || !samePathIdentity(launcherStats, identity.launcher)) return
+    if (!launcherStats.isFile() || !sameFileIdentity(launcherStats, identity.launcher)) return
     await fs.promises.unlink(launcherPath).catch(() => undefined)
   }
 
@@ -225,15 +262,15 @@ export async function launchMacosTerminal(
     await fs.promises.chmod(directory, 0o700)
     await writeLauncherAtomically(launcherPath, buildMacosTerminalScript({ ...plan, launcherPath }))
     const [directoryStats, launcherStats] = await Promise.all([
-      fs.promises.lstat(directory),
-      fs.promises.lstat(launcherPath),
+      fs.promises.lstat(directory, { bigint: true }),
+      fs.promises.lstat(launcherPath, { bigint: true }),
     ])
     if (!directoryStats.isDirectory() || !launcherStats.isFile()) {
       throw new Error('macOS Terminal launcher identity is invalid')
     }
     launcherIdentity = {
       directory: pathIdentity(directoryStats),
-      launcher: pathIdentity(launcherStats),
+      launcher: fileIdentity(launcherStats),
     }
     await commandRunner({
       executable: '/usr/bin/open',
