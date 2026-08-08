@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
-import { codexDesktopLaunchDecision, commitStartupPlatformCapabilities } from './App'
+import { codexDesktopLaunchDecision, commitStartupPlatformCapabilities } from './app-shared'
 import { createScanRequestTracker, runCoordinatedScan } from './scan-coordinator'
 import { shouldBlockStartupForUpdate, shouldCheckUpdatesOnStartup } from './startup-settings'
 
