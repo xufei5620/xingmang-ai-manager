@@ -373,4 +373,44 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     // A cached pass must never outlive the bytes it was granted for.
     expect(codesignCalls).toHaveLength(2)
   })
+
+  it('verifies again once the cached pass exceeds its bounded lifetime', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    const scan = () => inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    vi.useFakeTimers()
+    try {
+      await scan()
+      // The bundle and its signed executable are never touched here — only the clock
+      // moves. A fingerprint match alone would keep trusting this pass forever, which
+      // is the exact stale-cache mistake the bounded lifetime exists to avoid (the
+      // Windows programFilesAclCache lesson T5 warns against repeating): a directory's
+      // mtime does not follow edits nested deep inside it, so the fingerprint by itself
+      // cannot be trusted to notice every change forever.
+      await vi.advanceTimersByTimeAsync(5 * 60_000)
+      await scan()
+    } finally {
+      vi.useRealTimers()
+    }
+
+    const codesignCalls = runSystemCommand.mock.calls
+      .filter(([executable]) => executable === '/usr/bin/codesign')
+    expect(codesignCalls).toHaveLength(2)
+  })
 })

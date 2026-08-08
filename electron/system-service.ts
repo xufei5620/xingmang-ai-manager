@@ -275,6 +275,31 @@ export interface RendererMessageTarget {
 
 export type CodexDesktopLaunchMode = 'open' | 'restart'
 
+/**
+ * Every darwin Grok post-install and uninstall codesign verification runs through
+ * this rather than the plain commandEnvironment() baseline used elsewhere to locate an
+ * installation. The result decides whether a just-installed or about-to-be-removed
+ * Grok binary is the genuine xAI build, so it must not run in an environment the
+ * caller can still shape after the fact — the same reasoning macos-codex-app.ts and
+ * resolveCliCommand's darwin staging path already apply for Codex.
+ *
+ * executeCommand is threaded through explicitly, rather than closed over, so this
+ * stays a top-level function callable — and testable — from outside
+ * createSystemService's closure.
+ */
+export function buildDarwinTrustedVerificationRunner(
+  executeCommand: typeof runCommand,
+): (spec: { executable: string; argv: readonly string[] }) => Promise<{ stdout: string; stderr: string }> {
+  return async (spec) => {
+    const result = await executeCommand(spec, {
+      env: trustedCommandEnvironment(),
+      timeoutMs: 8_000,
+      maxOutputBytes: 1024 * 1024,
+    })
+    return { stdout: result.stdout, stderr: result.stderr }
+  }
+}
+
 export interface UninstallVerifiedDarwinGrokInstallationOptions {
   homeDirectory: string
   installDirectory: string
@@ -2164,11 +2189,7 @@ export function createSystemService(
                 const inspected = await inspectVerifiedDarwinGrokPostInstall({
                   homeDirectory: os.homedir(),
                   expectedVersion: trustedRelease.version,
-                  runCommand: (spec) => executeCommand(spec, {
-                    env: commandEnvironment(),
-                    timeoutMs: 8_000,
-                    maxOutputBytes: 1024 * 1024,
-                  }),
+                  runCommand: buildDarwinTrustedVerificationRunner(executeCommand),
                 })
                 if (!inspected.installation || inspected.status.version !== trustedRelease.version) {
                   throw new Error(`${definition.name} 安装后服务验证失败，已恢复更新前版本`)
@@ -2308,14 +2329,7 @@ export function createSystemService(
       await uninstallVerifiedDarwinGrokInstallation({
         homeDirectory,
         installDirectory: installation.installDirectory,
-        runCommand: async (spec) => {
-          const result = await executeCommand(spec, {
-            env: cliEnvironment,
-            timeoutMs: 8_000,
-            maxOutputBytes: 1024 * 1024,
-          })
-          return { stdout: result.stdout, stderr: result.stderr }
-        },
+        runCommand: buildDarwinTrustedVerificationRunner(executeCommand),
       })
       return
     }

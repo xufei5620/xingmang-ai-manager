@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
-import { trustedCommandEnvironment, type runCommand as productionRunCommand } from './command-runner'
+import { runCommand, trustedCommandEnvironment, type runCommand as productionRunCommand } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { providerConfigPaths } from './config-files'
 import type { MacosCodexAppInfo } from './macos-codex-app'
@@ -21,6 +21,7 @@ import {
   buildCliMaintenancePlan,
   buildCliToolStatusFromSettled,
   buildDarwinCliLaunchPlan,
+  buildDarwinTrustedVerificationRunner,
   buildCliUninstallPlan,
   buildDesktopAppStatusFromSettled,
   buildNetworkLocationStatusFromSettled,
@@ -797,6 +798,69 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe(fixture.grokTarget)
     expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toContain('outside')
     expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
+  })
+
+  // Every case above injects its own runCommand stub, so none of them would have
+  // caught buildDarwinTrustedVerificationRunner reverting to commandEnvironment()'s
+  // plain pass-through. This calls the real, production runCommand directly instead,
+  // the same way macos-codex-app.ts's equivalent #37 fix is verified.
+  it('gives the darwin trusted verification runner env stripped of inherited injection variables', async () => {
+    const previousInsert = process.env.DYLD_INSERT_LIBRARIES
+    process.env.DYLD_INSERT_LIBRARIES = '/tmp/xingmang-not-a-real.dylib'
+    process.env.XINGMANG_SYSTEM_SERVICE_SENTINEL = 'ordinary-value'
+    try {
+      const runner = buildDarwinTrustedVerificationRunner(runCommand)
+      const result = await runner({ executable: '/usr/bin/env', argv: [] })
+
+      expect(result.stdout).not.toContain('DYLD_INSERT_LIBRARIES')
+      expect(result.stdout).not.toContain('xingmang-not-a-real.dylib')
+      expect(result.stdout).toContain('XINGMANG_SYSTEM_SERVICE_SENTINEL=ordinary-value')
+    } finally {
+      delete process.env.XINGMANG_SYSTEM_SERVICE_SENTINEL
+      if (previousInsert === undefined) delete process.env.DYLD_INSERT_LIBRARIES
+      else process.env.DYLD_INSERT_LIBRARIES = previousInsert
+    }
+  })
+
+  // Confirms the wiring at the uninstallNativeGrok call site, not just the helper it
+  // calls: a future edit could revert that one call to commandEnvironment() again
+  // without this catching it, since buildDarwinTrustedVerificationRunner would still
+  // pass in isolation.
+  it('does not let inherited injection variables reach the uninstall codesign verification', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    vi.stubEnv('DYLD_INSERT_LIBRARIES', '/tmp/xingmang-not-a-real.dylib')
+    vi.stubEnv('XINGMANG_SYSTEM_SERVICE_SENTINEL', 'ordinary-value')
+    const store = new AppSettingsStore(
+      path.join(fixture.home, 'settings.json'),
+      fixture.home,
+    )
+    const codesignEnvironments: Array<NodeJS.ProcessEnv | undefined> = []
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec, options) => {
+        if (spec.executable === '/usr/bin/codesign') codesignEnvironments.push(options?.env)
+        const result = officialDarwinGrokUninstallResult(fixture, spec)
+        return {
+          ...result,
+          executable: spec.executable,
+          argv: [...spec.argv],
+          exitCode: 0,
+          signal: null,
+          outputBytes: Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr),
+          durationMs: 1,
+        }
+      },
+    })
+
+    await service.uninstallCli('grok')
+
+    expect(codesignEnvironments.length).toBeGreaterThan(0)
+    for (const environment of codesignEnvironments) {
+      expect(environment?.DYLD_INSERT_LIBRARIES).toBeUndefined()
+      expect(environment?.XINGMANG_SYSTEM_SERVICE_SENTINEL).toBe('ordinary-value')
+    }
   })
 })
 

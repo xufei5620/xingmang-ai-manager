@@ -9,6 +9,7 @@ import {
   findExecutable,
   isUserWritablePath,
   runCommand,
+  trustedCommandEnvironment,
   type CommandSpec,
 } from './command-runner'
 import {
@@ -496,6 +497,33 @@ function codexNativePackageBinPath(packageRoot: string): string | null {
   }
 }
 
+/**
+ * Every darwin staging/verification command for a native Codex or Grok install runs
+ * through this instead of the plain commandEnvironment() baseline resolveCliCommand
+ * otherwise uses to locate the installation. Its result — the codesign Developer ID
+ * check and the staged binary's own --version output — is what decides whether that
+ * binary is handed back as the executable to launch or install over, so it must not
+ * run in an environment the caller can still shape after the fact. This is the same
+ * boundary macos-codex-app.ts crosses for the desktop bundle: runCommand supplies the
+ * shared output bound, cancellable lifecycle and credential redaction either way.
+ *
+ * This runs on every darwin CLI launch and every darwin Codex install/update scan —
+ * far more often than the periodic Codex.app scan macos-codex-app.ts covers — so it is
+ * the highest-traffic trust decision of the three found in the #37 sweep.
+ */
+export async function runDarwinNativeVerificationCommand(
+  spec: { executable: string; argv: readonly string[] },
+  envInput: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): Promise<DarwinCodexCommandResult> {
+  const result = await runCommand(spec, {
+    env: trustedCommandEnvironment(envInput, undefined, platform),
+    timeoutMs: 8_000,
+    maxOutputBytes: 1024 * 1024,
+  })
+  return { stdout: result.stdout, stderr: result.stderr }
+}
+
 export async function resolveCliCommand(
   provider: ProviderId,
   envInput: NodeJS.ProcessEnv = process.env,
@@ -506,14 +534,8 @@ export async function resolveCliCommand(
   const platform = options.platform ?? process.platform
   const installation = await resolveCliInstallation(provider, { env, platform })
   if (!installation) throw new Error(`未检测到 ${cliCatalog[provider].name}`)
-  const runDarwinVerificationCommand = options.runCommand ?? (async (spec) => {
-    const result = await runCommand(spec, {
-      env,
-      timeoutMs: 8_000,
-      maxOutputBytes: 1024 * 1024,
-    })
-    return { stdout: result.stdout, stderr: result.stderr }
-  })
+  const runDarwinVerificationCommand = options.runCommand
+    ?? ((spec) => runDarwinNativeVerificationCommand(spec, envInput, platform))
   if (platform === 'darwin' && provider === 'codex' && installation.source === 'native') {
     const selectionOptions = {
       executablePath: installation.commandPath,

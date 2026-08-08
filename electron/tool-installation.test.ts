@@ -10,6 +10,7 @@ import {
   resolveCliCommand,
   resolveCliInstallation,
   resolveNpmGlobalRoot,
+  runDarwinNativeVerificationCommand,
   verifiedPackageRoot,
 } from './tool-installation'
 
@@ -339,6 +340,36 @@ describe('CLI installation resolution', () => {
       // decision rather than leaking a bare command error, with the original kept
       // as the cause.
     })).rejects.toThrow('Developer ID')
+  })
+
+  // resolveCliCommand's darwin cases above all inject a runCommand stub, since no
+  // fixture binary here carries a real Developer ID signature codesign would accept.
+  // That leaves the shipped default untested, exactly as it was before #37 — this
+  // exercises it directly instead, the same way macos-codex-app.ts's equivalent fix
+  // does for the Codex.app bundle scan.
+  it.runIf(process.platform === 'darwin')('does not hand inherited injection variables to the darwin native verification command', async () => {
+    const previousInsert = process.env.DYLD_INSERT_LIBRARIES
+    const previousNodeOptions = process.env.NODE_OPTIONS
+    process.env.DYLD_INSERT_LIBRARIES = '/tmp/xingmang-not-a-real.dylib'
+    process.env.NODE_OPTIONS = '--require /tmp/xingmang-not-a-real.js'
+    process.env.XINGMANG_TOOL_INSTALLATION_SENTINEL = 'ordinary-value'
+    try {
+      const result = await runDarwinNativeVerificationCommand({ executable: '/usr/bin/env', argv: [] })
+
+      // The variables that decide what a child loads before it runs are gone...
+      expect(result.stdout).not.toContain('DYLD_INSERT_LIBRARIES')
+      expect(result.stdout).not.toContain('xingmang-not-a-real.dylib')
+      expect(result.stdout).not.toContain('NODE_OPTIONS')
+      // ...while an ordinary variable still survives, proving the environment was
+      // filtered rather than simply emptied.
+      expect(result.stdout).toContain('XINGMANG_TOOL_INSTALLATION_SENTINEL=ordinary-value')
+    } finally {
+      delete process.env.XINGMANG_TOOL_INSTALLATION_SENTINEL
+      if (previousInsert === undefined) delete process.env.DYLD_INSERT_LIBRARIES
+      else process.env.DYLD_INSERT_LIBRARIES = previousInsert
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = previousNodeOptions
+    }
   })
 
   it.runIf(process.platform === 'darwin')('never executes a poisoned Grok source and fails closed on same-target link ABA', async () => {
