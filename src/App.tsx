@@ -763,8 +763,19 @@ function App() {
         // The main scan surfaces errors; background status polling stays silent.
       }
     }
-    const interval = window.setInterval(() => void refreshCodexDesktopStatus(), 4_000)
-    return () => window.clearInterval(interval)
+    // Every probe spawns three PowerShell processes on Windows, and a cold
+    // start dominates the cost once a virus scanner inspects each one. Probing
+    // when the page opens and whenever the window comes back to the foreground
+    // keeps the card as fresh as the user can perceive, so the timer between
+    // those moments only needs to catch changes made outside the app.
+    void refreshCodexDesktopStatus()
+    const interval = window.setInterval(() => void refreshCodexDesktopStatus(), 30_000)
+    const refreshWhenVisible = () => void refreshCodexDesktopStatus()
+    document.addEventListener('visibilitychange', refreshWhenVisible)
+    return () => {
+      window.clearInterval(interval)
+      document.removeEventListener('visibilitychange', refreshWhenVisible)
+    }
   }, [activePage, appView])
 
   useEffect(() => {
