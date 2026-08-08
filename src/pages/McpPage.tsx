@@ -22,6 +22,7 @@ import {
   ProviderTabs,
 } from '../components/ProviderTabs'
 import { createLatestRequestTracker } from '../latest-request'
+import { managementProviderIds } from '../provider-registry'
 import type { ExtensionSnapshot, ProviderId } from '../types'
 
 type ProviderExtensionItem = ExtensionSnapshot['items'][number]
@@ -374,7 +375,7 @@ export function McpPage({
     ? servers.filter((server) => server.enabled).length
     : providerItems.filter((item) => item.enabled).length
   const unavailable = useMemo(() => new Set<ProviderId>(
-    (['codex', 'claude', 'gemini', 'grok'] as const).filter((id) => (
+    managementProviderIds.filter((id) => (
       Boolean(providerErrors[id]) || providerSnapshots[id]?.capabilities.mcp.list === false
     )),
   ), [providerErrors, providerSnapshots])

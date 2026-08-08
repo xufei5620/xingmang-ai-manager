@@ -66,8 +66,6 @@ export const codexDesktopMeta: ProviderMeta = {
   icon: chatGptIconUrl,
 }
 
-export const dashboardProviderIds: ProviderId[] = ['codex', 'claude', 'grok', 'gemini']
-
 export function configProvider(tab: ConfigTabId): ProviderId {
   return tab === 'codexDesktop' ? 'codex' : tab
 }

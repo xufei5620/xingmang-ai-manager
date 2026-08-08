@@ -19,6 +19,7 @@ import {
 } from '../components/ProviderTabs'
 import { createLatestRequestTracker } from '../latest-request'
 import { platformPresentation } from '../platform-presentation'
+import { managementProviderIds } from '../provider-registry'
 import type { ExtensionSnapshot, PlatformCapabilities, ProviderId } from '../types'
 
 type ProviderExtensionItem = ExtensionSnapshot['items'][number]
@@ -281,7 +282,7 @@ export function SkillsPage({
     : providerItems.filter((item) => item.enabled).length
   const supportsInstall = provider === 'codex' || provider === 'gemini'
   const unavailable = useMemo(() => new Set<ProviderId>(
-    (['codex', 'claude', 'gemini', 'grok'] as const).filter((id) => (
+    managementProviderIds.filter((id) => (
       Boolean(providerErrors[id]) || providerSnapshots[id]?.capabilities.skill.list === false
     )),
   ), [providerErrors, providerSnapshots])

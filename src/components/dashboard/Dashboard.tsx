@@ -9,7 +9,8 @@ import {
 } from 'lucide-react'
 import { isDetectionFailed, networkLocationLabel, shortVersion, updateFailureLabel } from '../../app-shared'
 import { platformPresentation } from '../../platform-presentation'
-import { dashboardProviderIds, providers } from '../../provider-meta'
+import { providers } from '../../provider-meta'
+import { dashboardProviderIds } from '../../provider-registry'
 import type {
   AppConfigSummary,
   CodexDesktopInstallProgress,

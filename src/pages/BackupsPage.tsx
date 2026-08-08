@@ -13,13 +13,14 @@ import {
   X,
 } from 'lucide-react'
 import { errorMessage } from '../error-message'
+import { managementProviderIds } from '../provider-registry'
+import type { ProviderId } from '../types'
 
-export type BackupProviderId = 'claude' | 'codex' | 'grok' | 'gemini'
 export type BackupReason = 'manual' | 'pre-save' | 'pre-restore'
 
 export interface BackupSummary {
   id: string
-  provider: BackupProviderId | null
+  provider: ProviderId | null
   reason: BackupReason | null
   createdAt: string | null
   fileCount: number
@@ -43,7 +44,7 @@ export interface BackupPreview extends BackupSummary {
 
 export interface BackupsPageApi {
   list(): Promise<BackupSummary[]>
-  create(provider: BackupProviderId): Promise<BackupSummary>
+  create(provider: ProviderId): Promise<BackupSummary>
   inspect(id: string): Promise<BackupPreview>
   restore(id: string): Promise<{ preRestoreBackupId: string }>
   // 可选：App 侧未注入时回退到 window.xingmang.deleteBackup。
@@ -54,8 +55,7 @@ export interface BackupsPageProps {
   api: BackupsPageApi
 }
 
-const providerIds: readonly BackupProviderId[] = ['codex', 'claude', 'gemini', 'grok']
-const providerLabels: Record<BackupProviderId, string> = {
+const providerLabels: Record<ProviderId, string> = {
   codex: 'Codex',
   claude: 'Claude Code',
   gemini: 'Gemini CLI',
@@ -75,7 +75,7 @@ function fileSize(bytes: number): string {
 
 export function BackupsPage({ api }: BackupsPageProps) {
   const [backups, setBackups] = useState<BackupSummary[]>([])
-  const [provider, setProvider] = useState<BackupProviderId>('codex')
+  const [provider, setProvider] = useState<ProviderId>('codex')
   const [preview, setPreview] = useState<BackupPreview | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
@@ -194,8 +194,8 @@ export function BackupsPage({ api }: BackupsPageProps) {
             <span>仅备份星芒管理的本机 AI 工具配置文件</span>
           </div>
           <div className="config-actions">
-            <select value={provider} onChange={(event) => setProvider(event.target.value as BackupProviderId)} disabled={busy !== null} aria-label="选择 AI 工具">
-              {providerIds.map((id) => <option value={id} key={id}>{providerLabels[id]}</option>)}
+            <select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)} disabled={busy !== null} aria-label="选择 AI 工具">
+              {managementProviderIds.map((id) => <option value={id} key={id}>{providerLabels[id]}</option>)}
             </select>
             <button className="primary-button" type="button" onClick={create} disabled={busy !== null}>
               {busy === 'create' ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}

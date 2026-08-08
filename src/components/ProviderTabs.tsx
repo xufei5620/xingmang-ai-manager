@@ -1,7 +1,6 @@
 import { useRef } from 'react'
+import { managementProviderIds } from '../provider-registry'
 import type { ProviderId } from '../types'
-
-export const managementProviderIds = ['codex', 'claude', 'gemini', 'grok'] as const satisfies readonly ProviderId[]
 
 export const managementProviderLabels: Record<ProviderId, string> = {
   codex: 'Codex',

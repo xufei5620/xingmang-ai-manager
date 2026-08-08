@@ -19,8 +19,9 @@ import {
 } from 'lucide-react'
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DialogBackdrop } from '../components/Dialog'
-import { ProviderTabs, managementProviderIds, managementProviderLabels } from '../components/ProviderTabs'
+import { ProviderTabs, managementProviderLabels } from '../components/ProviderTabs'
 import { errorMessage } from '../error-message'
+import { managementProviderIds } from '../provider-registry'
 import type {
   MultiProviderSessionDetail,
   MultiProviderSessionExportResult,

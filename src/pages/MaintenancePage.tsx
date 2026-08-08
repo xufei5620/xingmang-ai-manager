@@ -21,16 +21,17 @@ import {
 import { DialogBackdrop } from '../components/Dialog'
 import { errorMessage } from '../error-message'
 import { platformPresentation } from '../platform-presentation'
+import { managementProviderIds } from '../provider-registry'
 import type {
   CodexDesktopInstallProgress,
   CodexDesktopInstallResult,
   PlatformCapabilities,
+  ProviderId,
   ToolUninstallResult,
 } from '../types'
 
 export const CODEX_DESKTOP_STORE_URI = 'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS'
 
-export type MaintenanceProviderId = 'claude' | 'codex' | 'grok' | 'gemini'
 export type MaintenanceJobState = 'idle' | 'queued' | 'running' | 'success' | 'error'
 
 export interface MaintenanceVersionStatus {
@@ -63,21 +64,21 @@ export interface MaintenanceCliStatus extends MaintenanceVersionStatus {
 
 export interface MaintenanceSnapshot {
   checkedAt: string
-  clis: Record<MaintenanceProviderId, MaintenanceCliStatus>
+  clis: Record<ProviderId, MaintenanceCliStatus>
   codexDesktop: MaintenanceVersionStatus & { running: boolean }
 }
 
 export interface MaintenanceProgress {
-  provider: MaintenanceProviderId
+  provider: ProviderId
   state: 'started' | 'output' | 'success' | 'error'
   message: string
 }
 
 export interface MaintenancePageApi {
   scan(forceRefresh?: boolean): Promise<MaintenanceSnapshot>
-  maintainCli(provider: MaintenanceProviderId): Promise<void>
-  uninstallCli(provider: MaintenanceProviderId): Promise<ToolUninstallResult>
-  checkCli(provider: MaintenanceProviderId): Promise<MaintenanceCliStatus>
+  maintainCli(provider: ProviderId): Promise<void>
+  uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
+  checkCli(provider: ProviderId): Promise<MaintenanceCliStatus>
   installCodexDesktop(): Promise<CodexDesktopInstallResult>
   uninstallCodexDesktop(): Promise<ToolUninstallResult>
   checkCodexDesktop(): Promise<MaintenanceVersionStatus & { running: boolean }>
@@ -92,8 +93,7 @@ export interface MaintenancePageProps {
   platform: PlatformCapabilities
 }
 
-const providerIds: readonly MaintenanceProviderId[] = ['codex', 'claude', 'gemini', 'grok']
-const providerLabels: Record<MaintenanceProviderId, string> = {
+const providerLabels: Record<ProviderId, string> = {
   codex: 'Codex CLI',
   claude: 'Claude Code',
   gemini: 'Gemini CLI',
@@ -260,7 +260,7 @@ export function cliUninstallPresentation(
 
 export function applyManualUninstallResult(
   snapshot: MaintenanceSnapshot,
-  provider: MaintenanceProviderId,
+  provider: ProviderId,
   result: Extract<ToolUninstallResult, { outcome: 'manual-required' }>,
 ): MaintenanceSnapshot {
   return {
@@ -527,9 +527,9 @@ function ManualUninstallDialog({
 export function MaintenancePage({ api, platform }: MaintenancePageProps) {
   const presentation = platformPresentation(platform)
   const [snapshot, setSnapshot] = useState<MaintenanceSnapshot | null>(null)
-  const [selected, setSelected] = useState<Set<MaintenanceProviderId>>(new Set())
-  const [jobs, setJobs] = useState<Record<MaintenanceProviderId, { state: MaintenanceJobState; message: string }>>(() => (
-    Object.fromEntries(providerIds.map((id) => [id, { state: 'idle', message: '' }])) as Record<MaintenanceProviderId, { state: MaintenanceJobState; message: string }>
+  const [selected, setSelected] = useState<Set<ProviderId>>(new Set())
+  const [jobs, setJobs] = useState<Record<ProviderId, { state: MaintenanceJobState; message: string }>>(() => (
+    Object.fromEntries(managementProviderIds.map((id) => [id, { state: 'idle', message: '' }])) as Record<ProviderId, { state: MaintenanceJobState; message: string }>
   ))
   const [loading, setLoading] = useState(true)
   const [batchRunning, setBatchRunning] = useState(false)
@@ -537,9 +537,9 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
   const [desktopLaunching, setDesktopLaunching] = useState(false)
   const [desktopProgress, setDesktopProgress] = useState<CodexDesktopInstallProgress | null>(null)
   const [desktopInstallDialogOpen, setDesktopInstallDialogOpen] = useState(false)
-  const [checkingTarget, setCheckingTarget] = useState<MaintenanceProviderId | 'desktop' | null>(null)
-  const [uninstallTarget, setUninstallTarget] = useState<MaintenanceProviderId | 'desktop' | null>(null)
-  const [uninstallingTarget, setUninstallingTarget] = useState<MaintenanceProviderId | 'desktop' | null>(null)
+  const [checkingTarget, setCheckingTarget] = useState<ProviderId | 'desktop' | null>(null)
+  const [uninstallTarget, setUninstallTarget] = useState<ProviderId | 'desktop' | null>(null)
+  const [uninstallingTarget, setUninstallingTarget] = useState<ProviderId | 'desktop' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
 
@@ -550,7 +550,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
       const next = await api.scan(forceRefresh)
       setSnapshot(next)
       if (selectionMode === 'auto') {
-        setSelected(new Set(providerIds.filter((provider) => cliMaintenanceAction(next.clis[provider]) !== 'check')))
+        setSelected(new Set(managementProviderIds.filter((provider) => cliMaintenanceAction(next.clis[provider]) !== 'check')))
       }
     } catch (cause) {
       setError(errorMessage(cause))
@@ -582,13 +582,13 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
   const desktopControl = snapshot
     ? codexDesktopMaintenanceControl(platform, snapshot.codexDesktop, desktopLaunching)
     : null
-  const selectedIds = useMemo(() => providerIds.filter((id) => (
+  const selectedIds = useMemo(() => managementProviderIds.filter((id) => (
     selected.has(id)
     && snapshot
     && cliMaintenanceAction(snapshot.clis[id]) !== 'check'
   )), [selected, snapshot])
 
-  const toggle = (provider: MaintenanceProviderId) => {
+  const toggle = (provider: ProviderId) => {
     setSelected((current) => {
       const next = new Set(current)
       if (next.has(provider)) next.delete(provider)
@@ -597,7 +597,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     })
   }
 
-  const maintain = async (ids: readonly MaintenanceProviderId[]) => {
+  const maintain = async (ids: readonly ProviderId[]) => {
     if (!ids.length) return
     setBatchRunning(true)
     setError(null)
@@ -618,7 +618,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     setBatchRunning(false)
   }
 
-  const checkCli = async (provider: MaintenanceProviderId) => {
+  const checkCli = async (provider: ProviderId) => {
     setCheckingTarget(provider)
     setError(null)
     setJobs((current) => ({ ...current, [provider]: { state: 'running', message: '正在检查此工具的更新' } }))
@@ -660,7 +660,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     }
   }
 
-  const uninstall = async (target: MaintenanceProviderId | 'desktop') => {
+  const uninstall = async (target: ProviderId | 'desktop') => {
     setUninstallingTarget(target)
     setError(null)
     setNotice(null)
@@ -809,7 +809,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
           <div className="operation-loading"><LoaderCircle className="spin" size={18} />正在检测 CLI 版本</div>
         ) : snapshot ? (
           <div className="operations-list" role="list">
-            {providerIds.map((provider) => {
+            {managementProviderIds.map((provider) => {
               const status = snapshot.clis[provider]
               const job = jobs[provider]
               const active = job.state === 'queued' || job.state === 'running'
@@ -967,7 +967,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
       )}
       {uninstallTarget && targetedManualUninstall && targetedCliStatus ? (
         <ManualUninstallDialog
-          label={providerLabels[uninstallTarget as MaintenanceProviderId]}
+          label={providerLabels[uninstallTarget as ProviderId]}
           reason={targetedCliStatus.uninstall.reason ?? '当前安装不能由本工具安全卸载'}
           installDirectory={targetedCliStatus.installDirectory}
           command={targetedManualUninstall.command}
