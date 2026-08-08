@@ -40,6 +40,7 @@ import {
   fetchNpmPackageReleaseMetadata,
   grokInstallStrategyFor,
   grokManualUninstallResult,
+  networkLocationCacheTtlMs,
   npmInstallRegistries,
   npmPackageLatestUrl,
   npmPackageVersionUrl,
@@ -1588,10 +1589,35 @@ describe('npm install network routing', () => {
       'https://registry.npmjs.org',
       'https://registry.npmmirror.com',
     ])
+  })
+
+  it('routes an undetectable region to the mirror first', () => {
+    // The probe fails on exactly the networks that also cannot reach
+    // registry.npmjs.org, so official-first stranded the users it was meant to
+    // serve. A wrong guess overseas costs seconds; a wrong guess in the
+    // mainland costs the whole install.
     expect(npmInstallRegistries('unknown')).toEqual([
-      'https://registry.npmjs.org',
       'https://registry.npmmirror.com',
+      'https://registry.npmjs.org',
     ])
+  })
+
+  it('keeps both registries reachable from every region', () => {
+    // Reordering must never drop a fallback: whichever host is wrong for the
+    // user, the other one is still attempted.
+    for (const region of ['mainland-china', 'outside-mainland-china', 'unknown'] as const) {
+      expect([...npmInstallRegistries(region)].sort()).toEqual([
+        'https://registry.npmjs.org',
+        'https://registry.npmmirror.com',
+      ])
+    }
+  })
+
+  it('stops re-probing a blocked region every minute', () => {
+    // Each failed probe costs a 2.5s timeout, and it used to be repeated every
+    // 60s on the slowest networks. With unknown now routing to the mirror there
+    // is nothing to regain by retrying sooner; a manual rescan still clears it.
+    expect(networkLocationCacheTtlMs).toBeGreaterThanOrEqual(10 * 60_000)
   })
 
   it('detects mainland China and degrades to unknown on an unavailable service', async () => {

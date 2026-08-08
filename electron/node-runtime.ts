@@ -332,12 +332,19 @@ export function normalizeNodeRuntimeArchitecture(
   throw new Error(`Node.js 自动安装暂不支持 ${architecture} 架构，仅支持 Windows x64/arm64`)
 }
 
+/**
+ * Mirrors npmInstallRegistries: an unknown region means the region probe was
+ * blocked, and the networks that block it are the same ones that cannot reach
+ * nodejs.org. Falling back to the official source first stranded exactly the
+ * users the mirror exists for. Both sources remain in the list, so the guess
+ * only decides the order in which they are attempted.
+ */
 export function nodeRuntimeDownloadSources(
   region: NodeRuntimeNetworkRegion,
 ): [NodeRuntimeDownloadSource, NodeRuntimeDownloadSource] {
-  return region === 'mainland-china'
-    ? [sources.npmmirror, sources.official]
-    : [sources.official, sources.npmmirror]
+  return region === 'outside-mainland-china'
+    ? [sources.official, sources.npmmirror]
+    : [sources.npmmirror, sources.official]
 }
 
 export function parseNodeReleaseIndex(
