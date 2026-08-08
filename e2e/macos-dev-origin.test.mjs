@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import test from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { _electron as electron } from 'playwright'
+import { _electron as electron } from '@playwright/test'
 import { createServer, resolveConfig } from 'vite'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')

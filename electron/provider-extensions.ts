@@ -362,7 +362,19 @@ function firstPositional(argv: readonly string[]): string | null {
 export function detectMcpPackageSource(command: string | null, args: readonly string[]): ParsedPackageSource {
   if (!command) return { kind: 'source-unknown', locator: null, reference: null }
   const executable = path.basename(command).replace(/\.(?:exe|cmd|ps1)$/i, '').toLowerCase()
-  const gitValue = args.find((entry) => /^(?:git\+|https?:\/\/|ssh:\/\/|git@).*(?:\.git|#[A-Za-z0-9._/-]+)?$/i.test(entry))
+  // The suffix group used to be optional, which collapsed the whole pattern
+  // into "starts with a URL scheme". A plain endpoint such as
+  // `npx -y mcp-remote https://example.com/mcp` was therefore read as a git
+  // repository, and enrichUpdates then reported latestVersion: null because no
+  // local checkout exists — silently skipping the npm version check.
+  //
+  // git+, git@ and ssh:// name the transport outright, so they stay
+  // unconditional. A bare http(s) URL is indistinguishable from a service
+  // endpoint unless it carries a .git suffix or an explicit #ref.
+  const gitValue = args.find((entry) => (
+    /^(?:git\+|git@|ssh:\/\/)/i.test(entry)
+    || /^https?:\/\/.*(?:\.git|#[A-Za-z0-9._/-]+)$/i.test(entry)
+  ))
   if (gitValue) return gitPackageSource(gitValue)
 
   if (executable === 'npx' || executable === 'npm') {
