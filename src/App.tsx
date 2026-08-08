@@ -21,6 +21,7 @@ import { errorMessage } from './error-message'
 import { CodexLaunchDialog } from './components/config/CodexLaunchDialog'
 import { ConfigDialog } from './components/config/ConfigDialog'
 import { Dashboard } from './components/dashboard/Dashboard'
+import { ErrorBoundary } from './components/ErrorBoundary'
 import { CodexOnboarding } from './components/onboarding/CodexOnboarding'
 import { NodeInstallGuide } from './components/onboarding/NodeInstallGuide'
 import { Sidebar } from './components/Sidebar'
@@ -854,6 +855,7 @@ function App() {
       />
 
       <main className="main-content">
+        <ErrorBoundary resetKey={activePage} onReturnOverview={() => setActivePage('overview')} notify={setToast}>
         {activePage === 'overview' ? (
           <Dashboard
             platform={platformCapabilities}
@@ -892,18 +894,24 @@ function App() {
             onAdd={async (input: McpCreateRequest) => {
               setMcpServers(await window.xingmang.addMcpServer(input))
               setMcpError(null)
+              // 突变已经拿到权威结果，必须让任何仍在途的 refreshMcp() 失效，
+              // 否则它稍后落地会用旧快照覆盖刚写入的数据。
+              pageDataTracker.invalidate('mcp')
             }}
             onRemove={async (name) => {
               setMcpServers(await window.xingmang.removeMcpServer(name))
               setMcpError(null)
+              pageDataTracker.invalidate('mcp')
             }}
             onLogin={async (name) => {
               setMcpServers(await window.xingmang.loginMcpServer(name))
               setMcpError(null)
+              pageDataTracker.invalidate('mcp')
             }}
             onLogout={async (name) => {
               setMcpServers(await window.xingmang.logoutMcpServer(name))
               setMcpError(null)
+              pageDataTracker.invalidate('mcp')
             }}
           />
         ) : activePage === 'skills' ? (
@@ -917,11 +925,15 @@ function App() {
             onImport={async (input: SkillImportRequest) => {
               setSkills(await window.xingmang.importSkill(input))
               setSkillsError(null)
+              // 突变已经拿到权威结果，必须让任何仍在途的 refreshSkills() 失效，
+              // 否则它稍后落地会用旧快照覆盖刚写入的数据。
+              pageDataTracker.invalidate('skills')
             }}
             onToggle={async (skillPath, enabled) => {
               const { skills: next, rewriteNotice } = await window.xingmang.toggleSkill(skillPath, enabled)
               setSkills(next)
               setSkillsError(null)
+              pageDataTracker.invalidate('skills')
               // 写回 config.toml 会重排序列化，用户手写注释可能丢失，必须让用户看到提示。
               if (rewriteNotice) setToast({ type: 'success', message: rewriteNotice })
             }}
@@ -929,6 +941,7 @@ function App() {
               const result = await window.xingmang.uninstallSkill(skillPath)
               setSkills(result.skills)
               setSkillsError(null)
+              pageDataTracker.invalidate('skills')
               setToast({ type: 'success', message: 'Skill 已移动到应用回收站' })
             }}
           />
@@ -942,10 +955,14 @@ function App() {
             onInstall={async (id) => {
               setPluginCatalog(await window.xingmang.addPlugin(id))
               setPluginsError(null)
+              // 突变已经拿到权威结果，必须让任何仍在途的 refreshPlugins() 失效，
+              // 否则它稍后落地会用旧快照覆盖刚写入的数据。
+              pageDataTracker.invalidate('plugins')
             }}
             onRemove={async (id) => {
               setPluginCatalog(await window.xingmang.removePlugin(id))
               setPluginsError(null)
+              pageDataTracker.invalidate('plugins')
             }}
             onToggle={async (id, enabled) => {
               const catalog = await window.xingmang.togglePlugin(id, enabled)
@@ -953,18 +970,22 @@ function App() {
               if (catalog.rewriteNotice) setToast({ type: 'success', message: catalog.rewriteNotice })
               setPluginCatalog(catalog)
               setPluginsError(null)
+              pageDataTracker.invalidate('plugins')
             }}
             onAddMarketplace={async (input: MarketplaceCreateRequest) => {
               setPluginCatalog(await window.xingmang.addMarketplace(input))
               setPluginsError(null)
+              pageDataTracker.invalidate('plugins')
             }}
             onUpgradeMarketplace={async (name) => {
               setPluginCatalog(await window.xingmang.upgradeMarketplace(name))
               setPluginsError(null)
+              pageDataTracker.invalidate('plugins')
             }}
             onRemoveMarketplace={async (name) => {
               setPluginCatalog(await window.xingmang.removeMarketplace(name))
               setPluginsError(null)
+              pageDataTracker.invalidate('plugins')
             }}
           />
         ) : activePage === 'backups' ? (
@@ -987,11 +1008,16 @@ function App() {
           <SettingsPage
             value={persistedSettings}
             onSave={saveSettings}
-            onThemePreview={setTheme}
+            onThemePreview={(next) => {
+              setTheme(next)
+              // 设置页的 draft 以 settings 为基准，主题双通道必须同步，否则保存设置会把主题回退。
+              setSettings((current) => current.theme === next ? current : { ...current, theme: next })
+            }}
           />
         ) : (
           <PlaceholderPage pageId={activePage} />
         )}
+        </ErrorBoundary>
       </main>
 
       {configOpen && (

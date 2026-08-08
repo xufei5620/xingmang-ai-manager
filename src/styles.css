@@ -6332,3 +6332,43 @@ button:disabled {
     height: calc(100vh - 36px);
   }
 }
+
+/* Page-level fallback rendered by ErrorBoundary (#31) when a page's own render throws. */
+.page-crash-panel {
+  padding: 32px 24px;
+  text-align: center;
+}
+
+.page-crash-icon {
+  color: #c54a52;
+  background: #fff0f1;
+  border-color: #f0d2d5;
+}
+
+.page-crash-message {
+  max-width: 480px;
+  margin: 8px 0 4px;
+  color: #7e8792;
+  font-size: 11px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.page-crash-actions {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+:root[data-theme="dark"] .page-crash-icon {
+  color: #ef8b92;
+  background: rgba(195, 67, 78, 0.14);
+  border-color: rgba(195, 67, 78, 0.28);
+}
+
+:root[data-theme="dark"] .page-crash-message {
+  color: #9aa4aa;
+}
