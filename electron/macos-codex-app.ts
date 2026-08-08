@@ -1,11 +1,9 @@
-import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { promisify } from 'node:util'
+import { runCommand, trustedCommandEnvironment } from './command-runner'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 
-const execFileAsync = promisify(execFile)
 const bundleIdentifier = 'com.openai.codex'
 const openAiTeamIdentifier = '2DC432GLL2'
 const maximumInfoPlistBytes = 1024 * 1024
@@ -37,15 +35,30 @@ function isAppCandidate(value: string): boolean {
     && path.extname(value) === '.app'
 }
 
-async function runSystemCommand(executable: string, argv: readonly string[]): Promise<string> {
-  const { stdout, stderr } = await execFileAsync(executable, [...argv], {
-    encoding: 'utf8',
-    shell: false,
-    timeout: commandTimeoutMs,
-    maxBuffer: maximumCommandOutputBytes,
+/**
+ * Every bundle-inspection command runs through runCommand.
+ *
+ * The result of these commands is what decides whether a bundle is the official
+ * Codex.app, so their environment must not be inherited from this process: the
+ * caller controls variables that change what a child loads before it runs, and
+ * handing those to the very processes a trust decision reads inverts the check.
+ * trustedCommandEnvironment strips that set — the same one used everywhere else a
+ * command crosses a trust boundary — which is why this was the only such call site
+ * left passing none.
+ *
+ * Going through runCommand rather than execFile directly also picks up the shared
+ * output bound, the cancellable bounded lifecycle, and the credential redaction
+ * applied to command errors, instead of keeping a second private implementation of
+ * all three.
+ */
+export async function runSystemCommand(executable: string, argv: readonly string[]): Promise<string> {
+  const result = await runCommand({ executable, argv }, {
+    env: trustedCommandEnvironment(),
+    timeoutMs: commandTimeoutMs,
+    maxOutputBytes: maximumCommandOutputBytes,
     windowsHide: true,
   })
-  return executable === '/usr/bin/codesign' ? `${stdout}\n${stderr}` : stdout
+  return executable === '/usr/bin/codesign' ? `${result.stdout}\n${result.stderr}` : result.stdout
 }
 
 function standardCandidate(directory: string | undefined): string | null {

@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { inspectMacosCodexApp } from './macos-codex-app'
+import { inspectMacosCodexApp, runSystemCommand } from './macos-codex-app'
 
 const temporaryDirectories: string[] = []
 
@@ -268,5 +268,31 @@ describe.runIf(process.platform === 'darwin')('inspectMacosCodexApp', () => {
     expect(malformed).toBeNull()
     expect(commandFailure).toBeNull()
     expect(nulDirectory).toBeNull()
+  })
+  // The default runner is what ships; every other case here injects a stub, so
+  // without this the environment fix would be untested.
+  it.runIf(process.platform === 'darwin')('does not hand inherited injection variables to the inspection commands', async () => {
+    const previousInsert = process.env.DYLD_INSERT_LIBRARIES
+    const previousNodeOptions = process.env.NODE_OPTIONS
+    process.env.DYLD_INSERT_LIBRARIES = '/tmp/xingmang-not-a-real.dylib'
+    process.env.NODE_OPTIONS = '--require /tmp/xingmang-not-a-real.js'
+    process.env.XINGMANG_APP_SENTINEL = 'ordinary-value'
+    try {
+      const environment = await runSystemCommand('/usr/bin/env', [])
+
+      // The variables that decide what a child loads before it runs are gone...
+      expect(environment).not.toContain('DYLD_INSERT_LIBRARIES')
+      expect(environment).not.toContain('xingmang-not-a-real.dylib')
+      expect(environment).not.toContain('NODE_OPTIONS')
+      // ...while an ordinary variable still survives, proving the environment was
+      // filtered rather than simply emptied.
+      expect(environment).toContain('XINGMANG_APP_SENTINEL=ordinary-value')
+    } finally {
+      delete process.env.XINGMANG_APP_SENTINEL
+      if (previousInsert === undefined) delete process.env.DYLD_INSERT_LIBRARIES
+      else process.env.DYLD_INSERT_LIBRARIES = previousInsert
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = previousNodeOptions
+    }
   })
 })
