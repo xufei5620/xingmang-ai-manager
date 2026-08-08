@@ -305,8 +305,18 @@ describe('CLI installation resolution', () => {
 
     expect(command.executable).not.toBe(fs.realpathSync(executable))
     expect(specs).toEqual([
-      { executable: '/usr/bin/codesign', argv: ['--verify', '--strict', command.executable] },
-      { executable: '/usr/bin/codesign', argv: ['-dv', '--verbose=4', command.executable] },
+      {
+        executable: '/usr/bin/codesign',
+        argv: [
+          '--verify',
+          '--strict',
+          '-R=anchor apple generic'
+            + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
+            + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+            + ' and certificate leaf[subject.OU] = "5Y6N3AJ54S"',
+          command.executable,
+        ],
+      },
       { executable: command.executable, argv: ['--version'] },
     ])
   })
@@ -325,7 +335,10 @@ describe('CLI installation resolution', () => {
       runCommand: async () => {
         throw new Error('invalid signature')
       },
-    })).rejects.toThrow('invalid signature')
+      // The codesign failure is wrapped so the reported reason names the trust
+      // decision rather than leaking a bare command error, with the original kept
+      // as the cause.
+    })).rejects.toThrow('Developer ID')
   })
 
   it.runIf(process.platform === 'darwin')('never executes a poisoned Grok source and fails closed on same-target link ABA', async () => {
@@ -375,7 +388,7 @@ describe('CLI installation resolution', () => {
       },
     })).rejects.toThrow(/发生变化/)
 
-    const stagedExecutable = specs[0]?.argv[2]
+    const stagedExecutable = specs[0]?.argv.at(-1)
     expect(rebuilt).toBe(true)
     expect(stagedExecutable).toEqual(expect.any(String))
     expect(stagedExecutable).not.toBe(sourceExecutable)
@@ -433,8 +446,18 @@ describe('CLI installation resolution', () => {
     expect(command.executable).not.toBe(fs.realpathSync(fixture.executablePath))
     expect({ status: execution.status, stdout: execution.stdout }).toEqual({ status: 0, stdout: '' })
     expect(specs).toEqual([
-      { executable: '/usr/bin/codesign', argv: ['--verify', '--strict', command.executable] },
-      { executable: '/usr/bin/codesign', argv: ['-dv', '--verbose=4', command.executable] },
+      {
+        executable: '/usr/bin/codesign',
+        argv: [
+          '--verify',
+          '--strict',
+          '-R=anchor apple generic'
+            + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
+            + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+            + ' and certificate leaf[subject.OU] = "2DC432GLL2"',
+          command.executable,
+        ],
+      },
       { executable: command.executable, argv: ['--version'] },
     ])
     const stagedDirectory = path.dirname(command.executable)

@@ -22,20 +22,12 @@ function createApp(bundlePath: string): string {
   return fs.realpathSync(infoPath)
 }
 
-function officialSignatureDetails(): string {
-  return [
-    'Identifier=com.openai.codex',
-    'Authority=Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)',
-    'Authority=Developer ID Certification Authority',
-    'Authority=Apple Root CA',
-    'TeamIdentifier=2DC432GLL2',
-  ].join('\n')
-}
-
+// A resolving codesign stub stands for a bundle whose certificate chain satisfied the
+// designated requirement. Its output is empty because no caller may read it any more.
 function officialBundleCommand(executable: string, argv: readonly string[]): string | null {
   if (executable === '/usr/bin/plutil' && argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
   if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
-  if (executable === '/usr/bin/codesign') return argv.includes('-dv') ? officialSignatureDetails() : ''
+  if (executable === '/usr/bin/codesign') return ''
   return null
 }
 
@@ -63,9 +55,7 @@ describe.runIf(process.platform === 'darwin')('inspectMacosCodexApp', () => {
           return '26.727.51351\n'
         }
         if (executable === '/usr/bin/lipo') return 'arm64\n'
-        if (executable === '/usr/bin/codesign') {
-          return argv.includes('-dv') ? officialSignatureDetails() : ''
-        }
+        if (executable === '/usr/bin/codesign') return ''
         if (executable === '/usr/bin/mdfind') return ''
         throw new Error(`unexpected command: ${executable}`)
       },
@@ -91,9 +81,10 @@ describe.runIf(process.platform === 'darwin')('inspectMacosCodexApp', () => {
         }
         if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
         if (executable === '/usr/bin/codesign') {
-          return argv.includes('-dv')
-            ? officialSignatureDetails().replaceAll('2DC432GLL2', 'AAAAAAAAAA')
-            : ''
+          // The forged bundle carries a different team's certificate, so the pinned
+          // OpenAI requirement is not satisfied and codesign exits non-zero. Nothing
+          // it prints can change that any more.
+          throw new Error('test-requirement: code failed to satisfy specified code requirement(s)')
         }
         if (executable === '/usr/bin/mdfind') return ''
         throw new Error(`unexpected command: ${executable}`)

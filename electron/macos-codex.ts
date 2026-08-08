@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { releaseStagedDarwinCli, stageVerifiedDarwinCli } from './darwin-cli-staging'
+import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 
 const OPENAI_TEAM_ID = '2DC432GLL2'
 const MAX_CODEX_PACKAGE_MANIFEST_BYTES = 512 * 1024
@@ -217,27 +218,15 @@ export function assertDarwinCodexSelectionUnchanged(
 async function verifyDarwinCodexExecutable(
   options: VerifyDarwinCodexExecutableOptions,
 ): Promise<void> {
-  await options.runCommand({
-    executable: '/usr/bin/codesign',
-    argv: ['--verify', '--strict', options.executablePath],
-  })
-  options.assertUnchanged?.()
-
-  const signature = await options.runCommand({
-    executable: '/usr/bin/codesign',
-    argv: ['-dv', '--verbose=4', options.executablePath],
-  })
-  options.assertUnchanged?.()
-  const signatureDetails = `${signature.stdout}\n${signature.stderr}`
-  if (!new RegExp(`^TeamIdentifier=${OPENAI_TEAM_ID}$`, 'm').test(signatureDetails)) {
-    throw new Error('Codex standalone signature Team ID 与 OpenAI 不匹配')
+  try {
+    await options.runCommand({
+      executable: '/usr/bin/codesign',
+      argv: darwinDeveloperIdVerificationArgv(OPENAI_TEAM_ID, options.executablePath),
+    })
+  } catch (error) {
+    throw new Error('Codex standalone 未通过 OpenAI Developer ID 签名校验', { cause: error })
   }
-  if (!new RegExp(
-    `^Authority=Developer ID Application: OpenAI OpCo, LLC \\(${OPENAI_TEAM_ID}\\)$`,
-    'm',
-  ).test(signatureDetails)) {
-    throw new Error('Codex standalone signature 缺少 OpenAI Developer ID authority')
-  }
+  options.assertUnchanged?.()
 
   const versionResult = await options.runCommand({
     executable: options.executablePath,

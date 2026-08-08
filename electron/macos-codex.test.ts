@@ -49,18 +49,10 @@ function standaloneFixture(overrides: Record<string, unknown> = {}) {
   return { codexHome, executablePath, home, releaseRoot, target, version, visibleCommand }
 }
 
+// codesign reports trust through its exit status, which runCommand surfaces by
+// rejecting. A stub that resolves therefore stands for a signature that satisfied the
+// designated requirement, and its output stays empty on purpose: no caller may read it.
 function officialResult(spec: { executable: string; argv: readonly string[] }): DarwinCodexCommandResult {
-  if (spec.executable === '/usr/bin/codesign' && spec.argv[0] === '-dv') {
-    return {
-      stdout: '',
-      stderr: [
-        'Authority=Developer ID Application: OpenAI OpCo, LLC (2DC432GLL2)',
-        'Authority=Developer ID Certification Authority',
-        'Authority=Apple Root CA',
-        'TeamIdentifier=2DC432GLL2',
-      ].join('\n'),
-    }
-  }
   if (spec.argv[0] === '--version') return { stdout: 'codex-cli 0.146.0\n', stderr: '' }
   return { stdout: '', stderr: '' }
 }
@@ -101,12 +93,25 @@ describe.runIf(process.platform === 'darwin')('official Darwin Codex standalone 
     })).resolves.toMatchObject({ version: fixture.version })
 
     const specs = runCommand.mock.calls.map(([spec]) => spec)
-    const stagedExecutable = specs[0]?.argv[2]
+    const stagedExecutable = specs[0]?.argv.at(-1)
     expect(stagedExecutable).toEqual(expect.any(String))
     expect(stagedExecutable).not.toBe(fs.realpathSync(fixture.executablePath))
+    // The requirement is spelled out rather than imported so that weakening it — for
+    // example dropping a Developer ID marker OID, or falling back to `anchor apple` —
+    // fails here instead of silently agreeing with the implementation.
     expect(specs).toEqual([
-      { executable: '/usr/bin/codesign', argv: ['--verify', '--strict', stagedExecutable!] },
-      { executable: '/usr/bin/codesign', argv: ['-dv', '--verbose=4', stagedExecutable!] },
+      {
+        executable: '/usr/bin/codesign',
+        argv: [
+          '--verify',
+          '--strict',
+          '-R=anchor apple generic'
+            + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
+            + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+            + ' and certificate leaf[subject.OU] = "2DC432GLL2"',
+          stagedExecutable!,
+        ],
+      },
       { executable: stagedExecutable!, argv: ['--version'] },
     ])
     expect(fs.existsSync(path.dirname(stagedExecutable!))).toBe(false)
@@ -152,15 +157,20 @@ describe.runIf(process.platform === 'darwin')('official Darwin Codex standalone 
 
   it('rejects a non-OpenAI signature and a mismatched runtime version', async () => {
     const fixture = standaloneFixture()
-    const wrongSigner = async (spec: { executable: string; argv: readonly string[] }) => {
-      const result = officialResult(spec)
-      return { ...result, stderr: result.stderr.replaceAll('2DC432GLL2', 'AAAAAAAAAA') }
+    // codesign exits non-zero when the chain does not satisfy the requirement, and
+    // runCommand turns that into a rejection. An ad-hoc signer can still print any
+    // prose it likes on stdout/stderr; the stub returns some to prove it is ignored.
+    const rejectedSigner = async (spec: { executable: string; argv: readonly string[] }) => {
+      if (spec.executable === '/usr/bin/codesign') {
+        throw new Error('test-requirement: code failed to satisfy specified code requirement(s)')
+      }
+      return officialResult(spec)
     }
     await expect(verifyDarwinCodexStandaloneInstallation({
       executablePath: fixture.visibleCommand,
       env: { HOME: fixture.home },
-      runCommand: wrongSigner,
-    })).rejects.toThrow(/Team ID/)
+      runCommand: rejectedSigner,
+    })).rejects.toThrow(/Developer ID/)
 
     await expect(verifyDarwinCodexStandaloneInstallation({
       executablePath: fixture.visibleCommand,

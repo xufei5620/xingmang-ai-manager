@@ -523,12 +523,22 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     })
 
     const sourceExecutable = fs.realpathSync(fixture.grokBinary)
-    const stagedExecutable = specs[0]?.argv[2]
+    const stagedExecutable = specs[0]?.argv.at(-1)
     expect(stagedExecutable).toEqual(expect.any(String))
     expect(stagedExecutable).not.toBe(sourceExecutable)
     expect(specs).toEqual([
-      { executable: '/usr/bin/codesign', argv: ['--verify', '--strict', stagedExecutable!] },
-      { executable: '/usr/bin/codesign', argv: ['-dv', '--verbose=4', stagedExecutable!] },
+      {
+        executable: '/usr/bin/codesign',
+        argv: [
+          '--verify',
+          '--strict',
+          '-R=anchor apple generic'
+            + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
+            + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+            + ' and certificate leaf[subject.OU] = "5Y6N3AJ54S"',
+          stagedExecutable!,
+        ],
+      },
       { executable: stagedExecutable!, argv: ['--version'] },
     ])
     expect(inspected).toMatchObject({
@@ -1335,7 +1345,7 @@ describe('Darwin Codex Desktop integration', () => {
     })
 
     const setup = await service.inspectCodexSetupStatus()
-    const stagedExecutable = verificationSpecs[0]?.argv[2]
+    const stagedExecutable = verificationSpecs[0]?.argv.at(-1)
 
     expect(resolutionError).toBeNull()
     expect(fs.existsSync(fixture.executionMarker)).toBe(false)
@@ -1355,11 +1365,15 @@ describe('Darwin Codex Desktop integration', () => {
     expect(verificationSpecs).toEqual([
       {
         executable: '/usr/bin/codesign',
-        argv: ['--verify', '--strict', stagedExecutable!],
-      },
-      {
-        executable: '/usr/bin/codesign',
-        argv: ['-dv', '--verbose=4', stagedExecutable!],
+        argv: [
+          '--verify',
+          '--strict',
+          '-R=anchor apple generic'
+            + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
+            + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+            + ' and certificate leaf[subject.OU] = "2DC432GLL2"',
+          stagedExecutable!,
+        ],
       },
       {
         executable: stagedExecutable!,

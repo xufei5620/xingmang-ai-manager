@@ -3,11 +3,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
+import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 
 const execFileAsync = promisify(execFile)
 const bundleIdentifier = 'com.openai.codex'
 const openAiTeamIdentifier = '2DC432GLL2'
-const openAiDeveloperIdAuthority = `Developer ID Application: OpenAI OpCo, LLC (${openAiTeamIdentifier})`
 const maximumInfoPlistBytes = 1024 * 1024
 const maximumCommandOutputBytes = 64 * 1024
 const commandTimeoutMs = 5_000
@@ -129,13 +129,11 @@ async function inspectCandidate(
       .split(/\s+/)
     if (!architectures.includes(expectedArchitecture)) return null
 
-    await command('/usr/bin/codesign', ['--verify', '--deep', '--strict', canonical])
-    const signatureDetails = await command('/usr/bin/codesign', ['-dv', '--verbose=4', canonical])
-    if (
-      !new RegExp(`^Identifier=${bundleIdentifier.replaceAll('.', '\\.')}$`, 'm').test(signatureDetails)
-      || !new RegExp(`^TeamIdentifier=${openAiTeamIdentifier}$`, 'm').test(signatureDetails)
-      || !signatureDetails.split(/\r?\n/).includes(`Authority=${openAiDeveloperIdAuthority}`)
-    ) return null
+    await command('/usr/bin/codesign', darwinDeveloperIdVerificationArgv(
+      openAiTeamIdentifier,
+      canonical,
+      { bundleIdentifier, deep: true },
+    ))
 
     let version: string | null = null
     try {
