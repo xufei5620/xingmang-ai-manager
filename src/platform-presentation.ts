@@ -1,14 +1,26 @@
 import type { PlatformCapabilities, ProviderId } from './types'
 
+/**
+ * Only ever reaches the screen when the capability probe failed outright: the
+ * startup sequence awaits the real capabilities before leaving the loading
+ * view, and a rejection skips the commit entirely (see App.test.tsx, "propagates
+ * capability failures without committing the fallback as a real platform").
+ *
+ * So this is the value the dashboard renders when the main process could not
+ * say what it supports. Claiming three of the four CLIs are managed there
+ * offered the user a one-click install that has no verified platform behind it.
+ * Every entry now declines, which is what fail-closed has to mean; the happy
+ * path never sees these values, so nothing flashes.
+ */
 export const failClosedPlatformCapabilities: PlatformCapabilities = Object.freeze({
   platform: 'linux',
   architecture: 'unknown',
   isMac: false,
   nodeRuntimeInstall: 'external',
   cliInstall: Object.freeze({
-    claude: 'managed',
-    codex: 'managed',
-    gemini: 'managed',
+    claude: 'external',
+    codex: 'external',
+    gemini: 'external',
     grok: 'external',
   }),
   codexDesktop: Object.freeze({
@@ -117,10 +129,17 @@ export async function performCliInstallAction(
   | { kind: 'external'; guidance: string }
 > {
   if (capabilities.cliInstall[provider] === 'external') {
+    // grokGuidance names Grok and points at xAI's instructions, so it may only
+    // be used for Grok. Handing it to any external provider meant the first
+    // platform to mark claude/codex/gemini external would tell those users to
+    // go read the Grok documentation.
+    const grokGuidance = provider === 'grok'
+      ? platformPresentation(capabilities).grokGuidance
+      : null
     return {
       kind: 'external',
-      guidance: platformPresentation(capabilities).grokGuidance
-        ?? `${provider} 的安装由外部管理，请完成安装后重新检测。`,
+      guidance: grokGuidance
+        ?? '该 CLI 的安装由外部管理，请按照其官方说明完成安装后重新检测。',
     }
   }
   await api.installCli(provider)
