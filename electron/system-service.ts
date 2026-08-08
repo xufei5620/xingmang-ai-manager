@@ -3160,7 +3160,13 @@ export function createSystemService(
           return { outcome: 'delegated', previousVersion: initial.status.version }
         }
         const managedInstallation = isManagedNpmInstallation(installation)
-        const npmExecutable = managedInstallation
+        // isManagedNpmInstallation admits darwin, but the trusted resolution below is
+        // Windows-only in effect: findExecutable drops additionalPaths on the trusted
+        // branch, and the darwin trusted PATH is whatever the caller inherited — for a
+        // Finder-launched build that is launchd's, which contains no npm. The managed
+        // uninstall then failed to resolve npm at all. The sibling call twelve lines
+        // below already gates on win32; this one now matches it.
+        const npmExecutable = managedInstallation && platform === 'win32'
           ? await findExecutable('npm', {
               env: trustedCommandEnvironment(),
               windowsPackageManagers: ['npm'],

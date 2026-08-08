@@ -562,7 +562,14 @@ export async function resolveCliCommand(
     if (provider === 'codex') {
       const native = codexNativePackageBinPath(installation.packageRoot)
       if (native) {
-        const executable = windowsExecutionMode === 'trusted-only' && isUserWritablePath(native, env)
+        // Carries the same explicit platform conjunct as its siblings below and in
+        // codex-extensions. Without it this branch was dead on macOS only because
+        // isUserWritablePath answered false for every path there, so giving that
+        // predicate real darwin semantics would silently route macOS into the
+        // Windows-only staging path.
+        const executable = platform === 'win32'
+          && windowsExecutionMode === 'trusted-only'
+          && isUserWritablePath(native, env)
           ? await stageVerifiedNativeCli(provider, native, env)
           : native
         return { executable, argv: [] }

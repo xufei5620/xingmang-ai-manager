@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
+import { isDarwinForeignWritablePath } from './darwin-path-trust'
 import { darwinCommandPathCandidates } from './macos-platform'
 import { managedNativeProviderRoot, managedNpmBinDirectory } from './managed-cli-paths'
 import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
@@ -183,12 +184,25 @@ function isPotentialWindowsExecutionPath(
     || isRegisteredTrustedManagedWindowsPath(filePath)
 }
 
-/** High-integrity execution fails closed outside known machine-protected roots. */
+/**
+ * High-integrity execution fails closed outside known machine-protected roots.
+ *
+ * The underlying question is platform-specific. On Windows it is "can any principal
+ * below Administrator write here?", because the app may hold an elevated token there.
+ * macOS has no such boundary — the app never elevates — so it asks instead whether a
+ * principal other than root or the invoking user can reach the path; see
+ * darwin-path-trust.ts for why that is the faithful analogue rather than a weaker one.
+ * Linux keeps the historical constant, which command-runner.test.ts pins.
+ */
 export function isUserWritablePath(
   filePath: string,
   _env: NodeJS.ProcessEnv = process.env,
   machinePaths?: WindowsMachinePaths,
 ): boolean {
+  // Must precede the guard below. That guard maps a non-absolute path to false, i.e.
+  // "trusted", which is a fail-open Windows defuses by checking absoluteness first in
+  // isTrustedHighIntegrityExecutable. On darwin a relative path has to answer true.
+  if (process.platform === 'darwin') return isDarwinForeignWritablePath(filePath)
   if (process.platform !== 'win32' || !filePath || !path.isAbsolute(filePath)) return false
   try {
     return !isTrustedWindowsExecutionPath(filePath, machinePaths ?? resolveWindowsMachinePaths())
@@ -290,8 +304,16 @@ export function trustedCommandEnvironment(
     'dotnet_shared_store',
     'ld_preload',
     'ld_library_path',
+    // Kept explicit for grep-ability even though the dyld_ prefix below now subsumes
+    // them; these two are the ones every macOS injection write-up names.
     'dyld_insert_libraries',
     'dyld_library_path',
+    // The field separator reaches any shell a CLI spawns for itself, and CDPATH can
+    // redirect a relative chdir into an attacker's tree.
+    'ifs',
+    'cdpath',
+    // Node loads compiled code from this directory at startup.
+    'node_compile_cache',
   ])
   const unsafePrefixes = [
     'complus_',
@@ -300,6 +322,11 @@ export function trustedCommandEnvironment(
     'cor_',
     'dotnet_root',
     'electron_',
+    // The two explicit keys above covered DYLD_INSERT_LIBRARIES and
+    // DYLD_LIBRARY_PATH; dyld honours roughly ten more, including
+    // DYLD_FRAMEWORK_PATH, DYLD_FALLBACK_LIBRARY_PATH, DYLD_VERSIONED_LIBRARY_PATH,
+    // DYLD_ROOT_PATH and DYLD_IMAGE_SUFFIX, each able to substitute a library at load.
+    'dyld_',
   ]
   const safeGitOverrides = new Map<string, Set<string>>([
     ['git_config_nosystem', new Set(['1'])],
@@ -332,6 +359,36 @@ export function trustedCommandEnvironment(
     ) {
       result[key] = value
     }
+  }
+  if (platform === 'darwin') {
+    // Mirrors the win32 rebuild below: fixed machine directories first, then whatever
+    // the caller inherited, with every candidate — machine entries included — put
+    // through the same trust predicate and deduplicated first-wins. Handing back the
+    // caller's raw PATH, as this used to, made "trusted" a claim the value did not
+    // support: any world-writable or foreign-owned entry survived into it.
+    const inheritedPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
+    let managedBin: string | null = null
+    try {
+      managedBin = managedNpmBinDirectory(baseEnv, 'darwin')
+    } catch {
+      // No usable HOME. The fixed system directories below still give a working PATH.
+    }
+    const machineEntries = [managedBin, '/usr/bin', '/bin', '/usr/sbin', '/sbin']
+    const trustedEntries: string[] = []
+    const seenEntries = new Set<string>()
+    for (const candidate of [...machineEntries, ...inheritedPath.split(path.posix.delimiter)]) {
+      const entry = candidate?.trim()
+      if (!entry || !path.posix.isAbsolute(entry)) continue
+      const key = path.posix.normalize(entry)
+      if (seenEntries.has(key)) continue
+      seenEntries.add(key)
+      if (isDarwinForeignWritablePath(entry)) continue
+      trustedEntries.push(entry)
+    }
+    result.PATH = trustedEntries.join(path.posix.delimiter)
+    result.PYTHONNOUSERSITE = '1'
+    result.PYTHONSAFEPATH = '1'
+    return result
   }
   if (platform !== 'win32') {
     result.PATH = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
@@ -524,14 +581,27 @@ export function isUserWritableResolvedPathSync(
   }
 }
 
-/** High-integrity processes may discover user-scoped tools, but must never
- * execute them. This keeps discovery separate from the execution trust gate. */
+/**
+ * High-integrity processes may discover user-scoped tools, but must never execute
+ * them. This keeps discovery separate from the execution trust gate.
+ *
+ * The two platforms gate different things. On Windows the tool being user-scoped is
+ * itself disqualifying, because execution may cross an elevation boundary. On macOS
+ * every managed CLI is user-scoped by construction, so the gate instead rejects tools
+ * a third principal could have tampered with. Linux still answers true unconditionally,
+ * which is asserted in command-runner.test.ts rather than merely inherited.
+ */
 export function isTrustedHighIntegrityExecutable(
   filePath: string,
   env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
   machinePaths?: WindowsMachinePaths,
 ): boolean {
+  if (platform === 'darwin') {
+    // The darwin predicate resolves the path itself, so routing through
+    // isUserWritableResolvedPathSync would only add a redundant second realpath.
+    return path.posix.isAbsolute(filePath) && !isDarwinForeignWritablePath(filePath)
+  }
   if (platform !== 'win32') return true
   return path.win32.isAbsolute(filePath) && !isUserWritableResolvedPathSync(filePath, env, machinePaths)
 }

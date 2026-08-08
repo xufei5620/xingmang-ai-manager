@@ -381,6 +381,13 @@ describe('secure command runner', () => {
       expect(environment.PSModulePath).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\Modules')
       expect(environment.PSModulePath).not.toContain('C:\\Users\\tester')
       expect(environment.PATH).toContain('C:\\Windows\\System32\\WindowsPowerShell\\v1.0')
+    } else if (process.platform === 'darwin') {
+      expect(environment.PSModulePath).toBeUndefined()
+      // The caller's PATH is no longer carried over verbatim. This entry is not an
+      // absolute POSIX path, so it cannot survive the rebuild, while the fixed system
+      // directories always do.
+      expect(environment.PATH).not.toContain('C:\\Windows\\System32')
+      expect(environment.PATH?.split(path.posix.delimiter)).toContain('/usr/bin')
     } else {
       expect(environment.PSModulePath).toBeUndefined()
       expect(environment.PATH).toBe('C:\\Windows\\System32')
