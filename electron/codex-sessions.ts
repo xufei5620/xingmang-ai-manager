@@ -647,6 +647,19 @@ async function endStream(output: fs.WriteStream): Promise<void> {
   })
 }
 
+/**
+ * `moveFileDurably` reserves the target with a hard link before unlinking the
+ * source, so an interrupted move can leave both names on a single inode.
+ * Dropping either name is only safe once that exact shape is confirmed — an
+ * unrelated file that happens to sit at the target must never be removed.
+ */
+function isSameInodeLinkPair(sourceInfo: fs.BigIntStats, targetInfo: fs.BigIntStats): boolean {
+  return sourceInfo.isFile() && !sourceInfo.isSymbolicLink()
+    && targetInfo.isFile() && !targetInfo.isSymbolicLink()
+    && sourceInfo.dev === targetInfo.dev
+    && sourceInfo.ino === targetInfo.ino
+}
+
 async function moveFileDurably(sourcePath: string, targetPath: string): Promise<void> {
   await fsPromises.mkdir(path.dirname(targetPath), { recursive: true })
   // A hard-link gives us an atomic, no-overwrite target reservation on the
@@ -1196,13 +1209,13 @@ export class CodexSessionsService {
           } else if (sourceExists && targetExists) {
             // A crash between link and rm leaves source and target as hard links
             // to the same inode; deleting the target completes the rollback.
+            // changeArchiveState defers to this path too when a locked rollout
+            // kept it from dropping the extra name in-process.
             const sourceInfo = fs.lstatSync(sourcePath, { bigint: true })
             const targetInfo = fs.lstatSync(targetPath, { bigint: true })
-            const sameInode = sourceInfo.isFile() && !sourceInfo.isSymbolicLink()
-              && targetInfo.isFile() && !targetInfo.isSymbolicLink()
-              && sourceInfo.dev === targetInfo.dev
-              && sourceInfo.ino === targetInfo.ino
-            if (!sameInode) throw new Error('中断操作的 JSONL 文件状态不唯一，已保留现状和备份')
+            if (!isSameInodeLinkPair(sourceInfo, targetInfo)) {
+              throw new Error('中断操作的 JSONL 文件状态不唯一，已保留现状和备份')
+            }
             fs.rmSync(targetPath)
           } else if (!sourceExists) {
             throw new Error('中断操作的 JSONL 文件状态不唯一，已保留现状和备份')
@@ -1358,24 +1371,53 @@ export class CodexSessionsService {
         try { database.exec('ROLLBACK') } catch { /* The online backup remains available. */ }
       }
       let rollbackError: unknown = null
+      let unresolvedLinkPair = false
       if (!committed) {
         try {
           const sourceExists = await fsPromises.access(sourcePath).then(() => true, () => false)
           const targetExists = await fsPromises.access(targetPath).then(() => true, () => false)
-          if (moved || (!sourceExists && targetExists)) await moveFileDurably(targetPath, sourcePath)
+          if (moved || (!sourceExists && targetExists)) {
+            await moveFileDurably(targetPath, sourcePath)
+          } else if (sourceExists && targetExists) {
+            // moveFileDurably linked the target, then failed to unlink the
+            // source *and* failed to drop the target again. A Windows scanner
+            // holding both names without FILE_SHARE_DELETE produces exactly
+            // this. The rollout is now nlink=2, which validateRollout refuses,
+            // so leaving it here would make the session permanently unusable —
+            // including the "archive again to heal it" path.
+            const sourceInfo = await fsPromises.lstat(sourcePath, { bigint: true })
+            const targetInfo = await fsPromises.lstat(targetPath, { bigint: true })
+            if (isSameInodeLinkPair(sourceInfo, targetInfo)) {
+              // Dropping the extra name completes the rollback. While it stays
+              // locked the operation must remain recoverable: recording
+              // 'rolled-back' would hide it from startup recovery, which is
+              // the only code that can still repair the link pair.
+              unresolvedLinkPair = await fsPromises.rm(targetPath).then(() => false, () => true)
+            }
+          }
         } catch (moveError) {
           rollbackError = moveError
         }
       }
+      const failureMessage = error instanceof Error ? error.message : String(error)
       await this.appendJournal({
         ...journalBase,
-        state: rollbackError ? 'ready' : 'rolled-back',
+        state: rollbackError
+          ? 'ready'
+          : unresolvedLinkPair
+            ? 'pending'
+            : 'rolled-back',
         error: rollbackError
-          ? `${error instanceof Error ? error.message : String(error)}；JSONL 自动回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
-          : error instanceof Error ? error.message : String(error),
+          ? `${failureMessage}；JSONL 自动回滚失败：${rollbackError instanceof Error ? rollbackError.message : String(rollbackError)}`
+          : unresolvedLinkPair
+            ? `${failureMessage}；JSONL 目标副本仍被占用，将在下次启动时自动清理`
+            : failureMessage,
       }).catch(() => undefined)
       if (rollbackError) {
         throw new Error(`会话操作失败，JSONL 自动回滚未完成；已保留 SQLite 备份和恢复日志：${backupPath}`)
+      }
+      if (unresolvedLinkPair) {
+        throw new Error(`会话操作失败，会话文件正被其他程序占用；请关闭占用它的程序（如杀毒或备份软件）后重启本工具，将自动修复：${backupPath}`)
       }
       throw error
     } finally {
