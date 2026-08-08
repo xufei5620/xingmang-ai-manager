@@ -329,9 +329,18 @@ function existingCodexProvider(configPath: string): string {
   let parsed: Record<string, unknown>
   try {
     parsed = TOML.parse(content)
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`现有 Codex config.toml 无法解析，未执行覆盖：${detail}`)
+  } catch {
+    // Reset is the documented escape hatch for a config the app can no longer
+    // read, and first-run onboarding always resets. Refusing to overwrite an
+    // unparseable file therefore left exactly the users who needed the escape
+    // hatch with no way out of the onboarding screen at all.
+    //
+    // Only the provider name is being recovered here, so the fallback costs
+    // nothing else. Merge is unaffected: it re-reads the same file through
+    // requireToml below and still fails loudly, so a broken config is never
+    // silently rewritten unless the user explicitly asked for a reset. The
+    // overwrite itself is preceded by a timestamped .bak in executeFilePlans.
+    return 'OpenAI'
   }
 
   if (typeof parsed.model_provider === 'string' && parsed.model_provider.trim()) {

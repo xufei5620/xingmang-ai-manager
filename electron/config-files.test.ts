@@ -54,6 +54,57 @@ afterEach(() => {
 })
 
 describe('native CLI configuration files', () => {
+  it('resets a Codex config.toml that can no longer be parsed', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const configPath = providerConfigPaths('codex', roots)[0]
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    // A half-written table is what a crash during a previous save leaves behind.
+    fs.writeFileSync(configPath, 'model_provider = "solov"\n[model_providers.\n', 'utf8')
+
+    const saved = saveProviderConfig('codex', 'sk-recovered', 'gpt-5.6-sol', 'reset', roots)
+
+    const summary = inspectProviderConfig('codex', roots)
+    expect(summary.apiKey).toBe('sk-recovered')
+    const rewritten = TOML.parse(fs.readFileSync(configPath, 'utf8'))
+    // The unreadable file cannot say which provider it used, so reset falls
+    // back to the same default it uses when no config exists at all.
+    expect(rewritten.model_provider).toBe('OpenAI')
+    expect(rewritten.model).toBe('gpt-5.6-sol')
+
+    // The broken original must still be recoverable by hand.
+    const configBackup = saved.backups.find((entry) => entry.startsWith(`${configPath}.bak.`))
+    expect(configBackup).toBeDefined()
+    expect(fs.readFileSync(String(configBackup), 'utf8')).toContain('[model_providers.')
+  })
+
+  it('still refuses to merge into a Codex config.toml that cannot be parsed', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const configPath = providerConfigPaths('codex', roots)[0]
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'model_provider = "solov"\n[model_providers.\n', 'utf8')
+    const before = fs.readFileSync(configPath, 'utf8')
+
+    // Merge promises to preserve existing settings. It cannot honour that on a
+    // file it cannot read, so it must fail rather than quietly reset the user.
+    expect(() => saveProviderConfig('codex', 'sk-merge', 'gpt-5.6-sol', 'merge', roots))
+      .toThrow(/无法解析/)
+    expect(fs.readFileSync(configPath, 'utf8')).toBe(before)
+  })
+
+  it('keeps an existing provider name when the config is still readable', () => {
+    const userHome = temporaryHome()
+    const roots = providerRoots(userHome)
+    const configPath = providerConfigPaths('codex', roots)[0]
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'model_provider = "solov"\n', 'utf8')
+
+    saveProviderConfig('codex', 'sk-key', 'gpt-5.6-sol', 'reset', roots)
+
+    expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).model_provider).toBe('solov')
+  })
+
   it('reads and writes Codex at codexHome while every other provider stays at userHome', () => {
     const userHome = temporaryHome()
     const codexParent = temporaryHome()
