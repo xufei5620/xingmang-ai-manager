@@ -469,11 +469,19 @@ export function buildCodexDesktopPackageSources(
   return [{ label: '国内镜像', url: codexDesktopMirrorPackageUrls[architecture] }]
 }
 
+/**
+ * Mirror first, matching the package download, which is mirror-only. Reading
+ * the version from the official manifest while the bytes can only come from the
+ * mirror let the two disagree: the card could advertise a release the install
+ * path had no way to fetch. Both endpoints stay in the list and both still go
+ * through fetchTrustedCodexDesktopResource, so this only changes which is tried
+ * first, never how either is validated.
+ */
 export function buildCodexDesktopManifestSources(
 ): CodexDesktopManifestSource[] {
   return [
-    { kind: 'official', label: 'OpenAI 官方源', url: codexDesktopUpdateManifestUrl },
     { kind: 'mirror', label: '国内镜像', url: codexDesktopMirrorManifestUrl },
+    { kind: 'official', label: 'OpenAI 官方源', url: codexDesktopUpdateManifestUrl },
   ]
 }
 
