@@ -96,12 +96,49 @@ test('a branch push with an open pull request triggers exactly one run', () => {
   assert.deepEqual(Object.keys(triggers).sort(), ['pull_request', 'push'])
 })
 
-test('superseded branch runs are cancelled while main runs to completion', () => {
+test('superseded runs are cancelled instead of billing a full matrix each', () => {
   assert.equal(workflow.concurrency.group, '${{ github.workflow }}-${{ github.ref }}')
-  assert.equal(
-    workflow.concurrency['cancel-in-progress'],
-    "${{ github.ref != 'refs/heads/main' }}",
-  )
+  // Includes main while the project is pre-release: a burst of merges would
+  // otherwise run the whole matrix once per merge with no way to supersede an
+  // obsolete one. Revisit once releases start.
+  assert.equal(workflow.concurrency['cancel-in-progress'], true)
+})
+
+test('documentation-only changes do not build and package the app', () => {
+  const triggers = workflow.on ?? workflow[true]
+
+  for (const event of ['push', 'pull_request']) {
+    const ignored = triggers[event]['paths-ignore']
+    assert.ok(Array.isArray(ignored), `${event} must declare paths-ignore`)
+    assert.ok(ignored.includes('**/*.md'), `${event} must ignore markdown`)
+    assert.ok(ignored.includes('docs/**'), `${event} must ignore docs`)
+    // The workflow itself must never be ignored, or a change to CI would ship
+    // with nothing having verified it.
+    assert.equal(
+      ignored.some((pattern) => String(pattern).includes('.github')),
+      false,
+      `${event} must not ignore its own workflow directory`,
+    )
+  }
+})
+
+test('the macOS release build runs on main rather than on every pull request', () => {
+  const macBuild = workflow.jobs['macos-test'].steps
+    .find((step) => String(step.run || '').includes('run-macos-free-build.cjs'))
+
+  assert.ok(macBuild, 'the macOS free-distribution build must still exist')
+  // Half the billed minutes of an average run. It answers a release question,
+  // while the cross-platform regressions a pull request must catch are covered
+  // by the typecheck, test and dev-origin steps that stay unconditional.
+  assert.equal(macBuild.if, "github.event_name == 'push'")
+
+  const commands = runSteps('macos-test')
+  for (const guarded of ['npm run typecheck', 'npm test', 'npm run test:mac:dev-origin']) {
+    const step = workflow.jobs['macos-test'].steps.find((entry) => entry.run === guarded)
+    assert.ok(step, `${guarded} must still run`)
+    assert.equal(step.if, undefined, `${guarded} must stay unconditional`)
+  }
+  assert.ok(commands.includes('npm run test:mac:free-signing'))
 })
 
 test('quality checks cannot publish a release', () => {

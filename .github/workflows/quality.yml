@@ -6,13 +6,19 @@ name: quality
 on:
   push:
     branches: [main]
+    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.gitattributes', '.editorconfig']
   pull_request:
+    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.gitattributes', '.editorconfig']
 
-# Superseded runs on a branch are wasted minutes, and macOS bills at ten times
-# the rate. Merges into main still run to completion.
+# Superseded runs are wasted minutes, and one run bills ~49 of them. main is
+# included: while the project is pre-release, a burst of merges would otherwise
+# run the full matrix once per merge with no way to supersede an obsolete one,
+# and only the final state actually needs validating. Revisit when releases
+# start — then every main commit wants its own verified run so a bad one can be
+# bisected out.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -69,7 +75,13 @@ jobs:
       - run: npm test
       - run: npm run test:mac:free-signing
       - run: npm run test:mac:dev-origin
+      # 147s of this job's 227s, and macOS bills at 10x, so this single step is
+      # roughly half the cost of every run in the repository. It answers "can we
+      # still produce a signed macOS app", which is a release question — the
+      # cross-platform regressions a pull request needs to catch are already
+      # covered by the typecheck, test and dev-origin steps above.
       - name: Build and verify free macOS distribution with ephemeral signing
+        if: github.event_name == 'push'
         run: node scripts/run-macos-free-build.cjs --ci-temporary-signing
 
   audit:
