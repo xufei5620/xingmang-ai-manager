@@ -13,7 +13,7 @@
   },
   "scripts": {
     "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on tcp:127.0.0.1:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
-    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.electron.test.json --noEmit",
     "test": "vitest run electron src && npm run test:node",
     "test:node": "node --test scripts/audit-development-dependencies.test.cjs scripts/update-release-utils.test.cjs scripts/verify-release-artifacts.test.cjs scripts/verify-packaged-hardening.test.cjs scripts/macos-build-config.test.cjs scripts/ci-workflow-config.test.cjs && node --test e2e/maintenance-layout.test.mjs",
     "test:windows": "vitest run electron src --no-file-parallelism --testTimeout=30000 && npm run test:node",

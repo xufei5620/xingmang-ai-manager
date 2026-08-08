@@ -4,6 +4,8 @@ import os from 'node:os'
 import path from 'node:path'
 import type { SystemService } from './system-service'
 import type { UpdaterService } from './updater'
+import type { AppSettings } from './app-settings'
+import type { NativeConfigSaveResult } from './config-files'
 import { ipcInvokeChannels } from './ipc-contract'
 
 const electronMocks = vi.hoisted(() => ({
@@ -43,7 +45,7 @@ import { registerIpcHandlers } from './ipc'
 
 function serviceStub(): SystemService {
   return {
-    readStoredConfig: vi.fn(() => ({
+    readStoredConfig: vi.fn((): AppSettings => ({
       version: 2,
       workspace: 'C:\\workspace',
       theme: 'dark',
@@ -54,7 +56,7 @@ function serviceStub(): SystemService {
     inspectCodexReadiness: vi.fn(() => ({ hasApiKey: true, matchesRelay: true })),
     getConfig: vi.fn(() => ({ workspace: 'C:\\workspace', providers: {} })) as never,
     revealApiKey: vi.fn(() => 'sk-known-secret-value'),
-    saveConfig: vi.fn(() => ({ backups: [], files: [] })),
+    saveConfig: vi.fn(async (): Promise<NativeConfigSaveResult> => ({ backups: [], files: [] })),
     scanSystem: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,
@@ -369,12 +371,12 @@ describe('registerIpcHandlers', () => {
     const { service, runtimeLog } = register()
     const handler = electronMocks.handlers.get('config:save')!
 
-    expect(handler(trustedEvent(), {
+    await expect(handler(trustedEvent(), {
       provider: 'codex',
       apiKey: 'sk-test',
       model: 'gpt-5.6-sol',
       mode: 'merge',
-    })).toEqual({ backups: [], files: [] })
+    })).resolves.toEqual({ backups: [], files: [] })
     expect(service.saveConfig).toHaveBeenCalledWith({
       provider: 'codex',
       apiKey: 'sk-test',
@@ -442,6 +444,7 @@ describe('registerIpcHandlers', () => {
       mirrorUpdateAvailable: true,
       mirrorError: null,
       path: 'OpenAI.Codex_abc!App',
+      installDirectory: null,
       running: true,
     })
     const { runtimeLog } = register(service)
@@ -539,6 +542,7 @@ describe('registerIpcHandlers', () => {
       updateCheck: 'failed',
       updateState: 'unknown',
       updateError: '连接 xAI 更新服务超时，请检查代理或网络后重试',
+      uninstall: { available: true, reason: null, manualCommand: null },
     })
     vi.mocked(service.uninstallCli).mockResolvedValueOnce({
       outcome: 'uninstalled',

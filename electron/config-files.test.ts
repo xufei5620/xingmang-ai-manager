@@ -38,6 +38,16 @@ function directoryFileSnapshot(directory: string): Record<string, string> {
   )
 }
 
+// TOML.parse returns AnyJson (string | number | boolean | Date | JsonMap | JsonArray),
+// which cannot support chained property access. Tests that read back a written
+// config.toml know the fixture shape, so narrow one level at a time the same way
+// codex-sessions.ts / provider-sessions.ts already do for their own JSON payloads.
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
 if (false) {
   // @ts-expect-error Core config APIs require both the user and Codex roots.
   providerConfigPaths('codex', '/tmp/string-root')
@@ -203,7 +213,7 @@ describe('native CLI configuration files', () => {
       if (provider === 'grok') {
         const settings = TOML.parse(fs.readFileSync(paths[0], 'utf8'))
         expect(settings.models).toEqual({ default: 'grok', web_search: 'grok' })
-        expect(settings.model.grok).toMatchObject({
+        expect(asRecord(settings.model)?.grok).toMatchObject({
           model,
           base_url: 'https://api.solov.cc/v1',
           name: model,
@@ -292,8 +302,9 @@ describe('native CLI configuration files', () => {
 
     const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     expect(parsed.model_provider).toBe('mycodex')
-    expect(parsed.model_providers.mycodex.name).toBe('mycodex')
-    expect(parsed.model_providers.mycodex.base_url).toBe('https://api.solov.cc')
+    const mycodexProvider = asRecord(asRecord(parsed.model_providers)?.mycodex)
+    expect(mycodexProvider?.name).toBe('mycodex')
+    expect(mycodexProvider?.base_url).toBe('https://api.solov.cc')
     expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).OPENAI_API_KEY).toBe('new-key')
   })
 
@@ -305,7 +316,8 @@ describe('native CLI configuration files', () => {
     const [configPath, authPath] = providerConfigPaths('codex', roots)
     const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     config.custom_setting = 'preserved'
-    config.model_providers.OpenAI.custom_header = 'preserved'
+    const modelProviders = config.model_providers as Record<string, unknown>
+    ;(modelProviders.OpenAI as Record<string, unknown>).custom_header = 'preserved'
     fs.writeFileSync(configPath, TOML.stringify(config), 'utf8')
     const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'))
     auth.CUSTOM_AUTH = 'preserved'
@@ -318,7 +330,7 @@ describe('native CLI configuration files', () => {
     expect(mergedConfig.model).toBe('gpt-5.6-sol')
     expect(mergedConfig.review_model).toBe('gpt-5.6-sol')
     expect(mergedConfig.custom_setting).toBe('preserved')
-    expect(mergedConfig.model_providers.OpenAI.custom_header).toBe('preserved')
+    expect(asRecord(asRecord(mergedConfig.model_providers)?.OpenAI)?.custom_header).toBe('preserved')
     expect(mergedAuth.OPENAI_API_KEY).toBe('new-key')
     expect(mergedAuth.CUSTOM_AUTH).toBe('preserved')
     expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
@@ -415,16 +427,18 @@ describe('native CLI configuration files', () => {
     const [configPath] = providerConfigPaths('grok', providerRoots(home))
     const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     config.custom_setting = 'preserved'
-    config.model.grok.custom_option = true
+    const configGrokModel = (config.model as Record<string, unknown>).grok as Record<string, unknown>
+    configGrokModel.custom_option = true
     fs.writeFileSync(configPath, TOML.stringify(config), 'utf8')
 
     const result = saveProviderConfig('grok', 'new-key', 'grok-5', 'merge', providerRoots(home))
     expect(result.backups).toHaveLength(1)
     const merged = TOML.parse(fs.readFileSync(configPath, 'utf8'))
-    expect(merged.model.grok.api_key).toBe('new-key')
-    expect(merged.model.grok.model).toBe('grok-5')
-    expect(merged.model.grok.base_url).toBe('https://api.solov.cc/v1')
-    expect(merged.model.grok.custom_option).toBe(true)
+    const mergedGrokModel = asRecord(asRecord(merged.model)?.grok)
+    expect(mergedGrokModel?.api_key).toBe('new-key')
+    expect(mergedGrokModel?.model).toBe('grok-5')
+    expect(mergedGrokModel?.base_url).toBe('https://api.solov.cc/v1')
+    expect(mergedGrokModel?.custom_option).toBe(true)
     expect(merged.custom_setting).toBe('preserved')
   })
 

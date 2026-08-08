@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CodexSessionsService,
   type CodexSessionRecoveryWarning,
+  type CodexSessionsOptions,
 } from './codex-sessions'
 
 const temporaryDirectories: string[] = []
@@ -114,7 +115,7 @@ function insertThread(
   )
 }
 
-function service(data: Fixture, hooks?: ConstructorParameters<typeof CodexSessionsService>[0]['hooks']): CodexSessionsService {
+function service(data: Fixture, hooks?: CodexSessionsOptions['hooks']): CodexSessionsService {
   return new CodexSessionsService({
     codexHome: data.codexHome,
     databasePath: data.databasePath,

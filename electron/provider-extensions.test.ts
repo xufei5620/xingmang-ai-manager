@@ -2,6 +2,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { type runCommand as productionRunCommand } from './command-runner'
+import type { ProviderId } from './catalog'
 import {
   createProviderSourceUpdateInspector,
   detectMcpPackageSource,
@@ -100,8 +102,8 @@ describe('provider source update network policy', () => {
       expect(init).toMatchObject({ redirect: 'error' })
       expect(init?.signal).toBeInstanceOf(AbortSignal)
       return response
-    }) as typeof globalThis.fetch
-    const inspect = createProviderSourceUpdateInspector({}, 'standard', { fetch: fetchImplementation })
+    })
+    const inspect = createProviderSourceUpdateInspector({}, 'same-user', { fetch: fetchImplementation })
 
     await expect(inspect({
       kind: 'npm', locator: '@scope/server', currentVersion: '1.0.0',
@@ -122,7 +124,7 @@ describe('provider source update network policy', () => {
       Object.defineProperty(response, 'url', { value: 'https://evil.example/package/latest' })
       return response
     }) as typeof globalThis.fetch
-    const redirected = createProviderSourceUpdateInspector({}, 'standard', { fetch: redirectedFetch })
+    const redirected = createProviderSourceUpdateInspector({}, 'same-user', { fetch: redirectedFetch })
     await expect(redirected({
       kind: 'npm', locator: 'sample', currentVersion: '1.0.0',
     })).rejects.toThrow('不受信任的重定向')
@@ -136,7 +138,7 @@ describe('provider source update network policy', () => {
       Object.defineProperty(response, 'url', { value: String(url) })
       return response
     }) as typeof globalThis.fetch
-    const oversized = createProviderSourceUpdateInspector({}, 'standard', { fetch: oversizedFetch })
+    const oversized = createProviderSourceUpdateInspector({}, 'same-user', { fetch: oversizedFetch })
     await expect(oversized({
       kind: 'pypi', locator: 'sample', currentVersion: '1.0.0',
     })).rejects.toThrow(/安全上限|大小/)
@@ -166,13 +168,22 @@ describe('provider source update network policy', () => {
       '[remote "origin"]',
       '  url = git@github.com:acme/server.git',
     ].join('\n'))
-    const runCommandImplementation = vi.fn(async () => ({ stdout: `${head}\tHEAD\n`, stderr: '' }))
+    const runCommandImplementation = vi.fn<typeof productionRunCommand>(async (spec) => ({
+      executable: spec.executable,
+      argv: [...spec.argv],
+      exitCode: 0,
+      signal: null,
+      stdout: `${head}\tHEAD\n`,
+      stderr: '',
+      outputBytes: 0,
+      durationMs: 1,
+    }))
     const gitExecutable = process.platform === 'win32'
       ? 'C:\\Program Files\\Git\\bin\\git.exe'
       : '/usr/bin/git'
     const inspect = createProviderSourceUpdateInspector({}, 'trusted-only', {
       findExecutable: vi.fn(async () => gitExecutable),
-      runCommand: runCommandImplementation as never,
+      runCommand: runCommandImplementation,
     })
 
     await expect(inspect({
@@ -458,7 +469,7 @@ describe('ProviderExtensionService list facade', () => {
       runCommand: async (command, options) => {
         runCalls.push({
           provider: path.basename(command.executable) as ProviderId,
-          env: options.env ?? {},
+          env: options?.env ?? {},
         })
         return {
           executable: command.executable,

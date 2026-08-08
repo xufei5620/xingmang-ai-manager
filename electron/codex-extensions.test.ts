@@ -32,6 +32,16 @@ function mcpList(entries: unknown[]): string {
   return JSON.stringify(entries)
 }
 
+// TOML.parse returns AnyJson (string | number | boolean | Date | JsonMap | JsonArray),
+// which cannot support chained property access. Tests that read back a written
+// config.toml know the fixture shape, so narrow one level at a time the same way
+// codex-sessions.ts / provider-sessions.ts already do for their own JSON payloads.
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null
+}
+
 function stdioMcp(name: string, env: Record<string, string> = {}): Record<string, unknown> {
   return {
     name,
@@ -272,7 +282,8 @@ describe('Codex Plugin and marketplace contracts', () => {
     const invoke: CodexInvoker = async (argv) => {
       if (argv[1] === 'list') {
         const parsed = TOML.parse(fs.readFileSync(configPath, 'utf8'))
-        const enabled = Boolean(parsed.plugins?.['sample@curated']?.enabled)
+        const pluginEntry = asRecord(asRecord(parsed.plugins)?.['sample@curated'])
+        const enabled = Boolean(pluginEntry?.enabled)
         return pluginCatalog([plugin('sample@curated', true, enabled)])
       }
       return marketplaces()
@@ -284,8 +295,8 @@ describe('Codex Plugin and marketplace contracts', () => {
 
     expect(catalog.plugins[0].enabled).toBe(true)
     expect(parsed.model).toBe('gpt-test')
-    expect(parsed.features.goals).toBe(true)
-    expect(parsed.plugins['sample@curated'].enabled).toBe(true)
+    expect(asRecord(parsed.features)?.goals).toBe(true)
+    expect(asRecord(asRecord(parsed.plugins)?.['sample@curated'])?.enabled).toBe(true)
     expect(catalog.rewriteNotice).toContain('手写注释可能丢失')
     expect(fs.readdirSync(path.dirname(configPath)).some((name) => name.startsWith('config.toml.bak.'))).toBe(true)
   })
@@ -415,8 +426,8 @@ describe('Skill discovery and managed mutations', () => {
 
     expect(skills[0].enabled).toBe(false)
     expect(parsed.model).toBe('gpt-test')
-    expect(parsed.features.goals).toBe(true)
-    expect(parsed.skills.config).toEqual([{ path: skillPath, enabled: false }])
+    expect(asRecord(parsed.features)?.goals).toBe(true)
+    expect(asRecord(parsed.skills)?.config).toEqual([{ path: skillPath, enabled: false }])
     expect(fs.readdirSync(path.dirname(configPath)).some((name) => name.startsWith('config.toml.bak.'))).toBe(true)
     expect(rewriteNotice).toContain('手写注释可能丢失')
   })

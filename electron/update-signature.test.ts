@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { decodeWindowsPowerShellCommand } from './windows-elevation'
+import type { CommandResult, CommandSpec, RunCommandOptions } from './command-runner'
 import {
   createStrictUpdateCodeSignatureVerifier,
   installStrictUpdateCodeSignatureVerifier,
@@ -19,7 +20,9 @@ function signatureOutput(overrides: Partial<Record<'Status' | 'Path' | 'Subject'
 }
 
 function verifierWithResult(stdout: string, stderr = '') {
-  const command = vi.fn(async () => ({ stdout, stderr }))
+  const command = vi.fn<
+    (spec: CommandSpec, options: RunCommandOptions) => Promise<Pick<CommandResult, 'stdout' | 'stderr'>>
+  >(async () => ({ stdout, stderr }))
   const verifier = createStrictUpdateCodeSignatureVerifier({
     platform: 'win32',
     env: process.env,

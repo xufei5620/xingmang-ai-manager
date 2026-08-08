@@ -4,7 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
-import { trustedCommandEnvironment } from './command-runner'
+import { trustedCommandEnvironment, type runCommand as productionRunCommand } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { providerConfigPaths } from './config-files'
 import type { MacosCodexAppInfo } from './macos-codex-app'
@@ -103,8 +103,8 @@ async function createDarwinService(options: {
     ],
     release: vi.fn(async () => undefined),
   }
-  const resolveCli = vi.fn(async () => resolvedCommand)
-  const execute = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => ({
+  const resolveCli = vi.fn<typeof resolveVerifiedToolCommand>(async () => resolvedCommand)
+  const execute = vi.fn<typeof productionRunCommand>(async (spec: { executable: string; argv: readonly string[] }) => ({
     executable: spec.executable,
     argv: [...spec.argv],
     exitCode: 0,
@@ -276,7 +276,7 @@ describe('createSystemService', () => {
     const codexHome = path.join(root, 'custom-codex')
     const providerRoots: ProviderConfigRoots = { userHome, codexHome }
     const codexEnv = { ...process.env, HOME: userHome, CODEX_HOME: codexHome }
-    const inspect = vi.fn((provider: Parameters<typeof providerConfigRoot>[0], roots: ProviderConfigRoots) => ({
+    const inspect = vi.fn((provider: Parameters<typeof providerConfigRoot>[0], roots: ProviderConfigRoots = providerRoots) => ({
       baseUrl: 'https://api.solov.cc',
       actualBaseUrl: 'https://api.solov.cc',
       exists: true,
@@ -380,8 +380,8 @@ describe('createSystemService', () => {
       CODEX_HOME: codexHome,
       PATH: `${providerBin}${path.delimiter}${runtimeBin}`,
     }
-    const resolveCli = vi.fn(async () => ({ executable: codexExecutable, argv: [] }))
-    const execute = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => ({
+    const resolveCli = vi.fn<typeof resolveVerifiedToolCommand>(async () => ({ executable: codexExecutable, argv: [] }))
+    const execute = vi.fn<typeof productionRunCommand>(async (spec: { executable: string; argv: readonly string[] }) => ({
       executable: spec.executable,
       argv: [...spec.argv],
       exitCode: 0,
@@ -1126,7 +1126,7 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
       options,
     ) => {
       expect(provider).toBe('codex')
-      expect(options.npmGlobalRoot).toBe(path.join(activePrefix, 'lib', 'node_modules'))
+      expect(options?.npmGlobalRoot).toBe(path.join(activePrefix, 'lib', 'node_modules'))
       return null
     })
     const service = createSystemService(
@@ -1793,6 +1793,7 @@ describe('CLI latest version state', () => {
       installed: true,
       version: 'codex-cli 0.145.0',
       path: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\codex.cmd',
+      installDirectory: 'C:\\Users\\tester\\AppData\\Roaming\\npm',
     }, latest('0.146.0'))).toMatchObject({
       latestVersion: '0.146.0',
       updateAvailable: true,
@@ -1805,6 +1806,7 @@ describe('CLI latest version state', () => {
       installed: true,
       version: '2.1.218 (Claude Code)',
       path: 'claude.cmd',
+      installDirectory: null,
     }, latest('2.1.218'))).toMatchObject({
       updateAvailable: false,
       updateCheck: 'checked',
@@ -1817,6 +1819,7 @@ describe('CLI latest version state', () => {
       installed: true,
       version: 'grok 0.2.106 (bde89716f6)',
       path: 'C:\\Users\\tester\\.grok\\bin\\grok.exe',
+      installDirectory: 'C:\\Users\\tester\\.grok\\bin',
     }, {
       ...latest('0.2.111'),
       source: 'official-manifest',
@@ -1835,6 +1838,7 @@ describe('CLI latest version state', () => {
       installed: true,
       version: '0.52.0',
       path: 'gemini.cmd',
+      installDirectory: null,
     }, {
       status: 'failed',
       version: null,

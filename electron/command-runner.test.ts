@@ -492,16 +492,16 @@ describe('secure command runner', () => {
       DOTNET_STARTUP_HOOKS: 'C:\\Users\\tester\\payload.dll',
       XINGMANG_TEST_VALUE: 'kept',
     }
-    let captured: NodeJS.ProcessEnv | null = null
+    const captured: { env: NodeJS.ProcessEnv | null } = { env: null }
 
     runWithTrustedWindowsProcessEnvironment(() => {
-      captured = { ...environment }
+      captured.env = { ...environment }
     }, environment, testMachinePaths)
 
-    expect(captured?.NODE_OPTIONS).toBeUndefined()
-    expect(captured?.DOTNET_STARTUP_HOOKS).toBeUndefined()
-    expect(captured?.PATH).not.toContain('C:\\Users\\tester')
-    expect(captured?.XINGMANG_TEST_VALUE).toBe('kept')
+    expect(captured.env?.NODE_OPTIONS).toBeUndefined()
+    expect(captured.env?.DOTNET_STARTUP_HOOKS).toBeUndefined()
+    expect(captured.env?.PATH).not.toContain('C:\\Users\\tester')
+    expect(captured.env?.XINGMANG_TEST_VALUE).toBe('kept')
     expect(environment).toEqual({
       PATH: 'C:\\Users\\tester\\bin',
       NODE_OPTIONS: '--require=C:\\Users\\tester\\payload.js',

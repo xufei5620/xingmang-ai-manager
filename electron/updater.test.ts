@@ -11,8 +11,11 @@ class FakeUpdater extends EventEmitter implements UpdateClient {
   disableWebInstaller = false
   forceDevUpdateConfig = false
   logger: unknown = console
-  checkForUpdates = vi.fn(async () => undefined)
-  downloadUpdate = vi.fn(async () => undefined)
+  // Typed to match UpdateClient's `Promise<unknown>` return so mockImplementationOnce
+  // can be swapped for any Promise-returning implementation used in the tests below,
+  // not just ones resolving with `undefined`.
+  checkForUpdates = vi.fn<() => Promise<unknown>>(async () => undefined)
+  downloadUpdate = vi.fn<() => Promise<unknown>>(async () => undefined)
   quitAndInstall = vi.fn()
 }
 
@@ -164,9 +167,9 @@ describe('updater service', () => {
 
   it('continues a timed-out check and downloads a release discovered late', async () => {
     const client = new FakeUpdater()
-    let resolveCheck: (() => void) | null = null
+    const check: { resolve: (() => void) | null } = { resolve: null }
     client.checkForUpdates.mockImplementationOnce(() => new Promise<void>((resolve) => {
-      resolveCheck = resolve
+      check.resolve = resolve
     }))
     client.downloadUpdate.mockImplementationOnce(async () => {
       client.emit('update-downloaded', updateInfo('1.2.0'))
@@ -182,7 +185,7 @@ describe('updater service', () => {
       error: { code: 'STARTUP_UPDATE_TIMEOUT' },
     })
     client.emit('update-available', updateInfo('1.2.0'))
-    resolveCheck?.()
+    check.resolve?.()
     await new Promise((resolve) => setTimeout(resolve, 0))
     expect(client.downloadUpdate).toHaveBeenCalledTimes(1)
     expect(service.getState().phase).toBe('downloaded')
@@ -192,9 +195,9 @@ describe('updater service', () => {
     vi.useFakeTimers()
     try {
       const client = new FakeUpdater()
-      let resolveCheck: (() => void) | null = null
+      const check: { resolve: (() => void) | null } = { resolve: null }
       client.checkForUpdates.mockImplementationOnce(() => new Promise<void>((resolve) => {
-        resolveCheck = resolve
+        check.resolve = resolve
       }))
       client.downloadUpdate.mockImplementationOnce(async () => {
         client.emit('update-downloaded', updateInfo('1.3.0'))
@@ -215,7 +218,7 @@ describe('updater service', () => {
         error: null,
       })
       expect(client.downloadUpdate).toHaveBeenCalledTimes(1)
-      resolveCheck?.()
+      check.resolve?.()
       await vi.advanceTimersByTimeAsync(0)
       expect(client.downloadUpdate).toHaveBeenCalledTimes(1)
       service.dispose()
@@ -412,12 +415,12 @@ describe('updater service', () => {
 
   it('does not hold the development startup screen while a test update downloads', async () => {
     const client = new FakeUpdater()
-    let finishDownload: (() => void) | null = null
+    const download: { finish: (() => void) | null } = { finish: null }
     client.checkForUpdates.mockImplementationOnce(async () => {
       client.emit('update-available', updateInfo())
     })
     client.downloadUpdate.mockImplementationOnce(() => new Promise<void>((resolve) => {
-      finishDownload = resolve
+      download.finish = resolve
     }))
     const service = createUpdaterService(client, {
       currentVersion: '1.0.0',
@@ -431,7 +434,7 @@ describe('updater service', () => {
     })
     expect(client.downloadUpdate).toHaveBeenCalledTimes(1)
     expect(service.getState().phase).toBe('downloading')
-    finishDownload?.()
+    download.finish?.()
   })
 
   it('keeps a verified package retryable when launching the installer fails', async () => {
