@@ -2,7 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { inspectMacosCodexApp } from './macos-codex-app'
+import {
+  inspectMacosCodexApp,
+  resetMacosCodexAppVerificationCache,
+  runSystemCommand,
+} from './macos-codex-app'
 
 const temporaryDirectories: string[] = []
 
@@ -32,6 +36,7 @@ function officialBundleCommand(executable: string, argv: readonly string[]): str
 }
 
 afterEach(() => {
+  resetMacosCodexAppVerificationCache()
   vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
@@ -279,5 +284,93 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     expect(malformed).toBeNull()
     expect(commandFailure).toBeNull()
     expect(nulDirectory).toBeNull()
+  })
+  // The default runner is what ships; every other case here injects a stub, so
+  // without this the environment fix would be untested.
+  it.runIf(process.platform === 'darwin')('does not hand inherited injection variables to the inspection commands', async () => {
+    const previousInsert = process.env.DYLD_INSERT_LIBRARIES
+    const previousNodeOptions = process.env.NODE_OPTIONS
+    process.env.DYLD_INSERT_LIBRARIES = '/tmp/xingmang-not-a-real.dylib'
+    process.env.NODE_OPTIONS = '--require /tmp/xingmang-not-a-real.js'
+    process.env.XINGMANG_APP_SENTINEL = 'ordinary-value'
+    try {
+      const environment = await runSystemCommand('/usr/bin/env', [])
+
+      // The variables that decide what a child loads before it runs are gone...
+      expect(environment).not.toContain('DYLD_INSERT_LIBRARIES')
+      expect(environment).not.toContain('xingmang-not-a-real.dylib')
+      expect(environment).not.toContain('NODE_OPTIONS')
+      // ...while an ordinary variable still survives, proving the environment was
+      // filtered rather than simply emptied.
+      expect(environment).toContain('XINGMANG_APP_SENTINEL=ordinary-value')
+    } finally {
+      delete process.env.XINGMANG_APP_SENTINEL
+      if (previousInsert === undefined) delete process.env.DYLD_INSERT_LIBRARIES
+      else process.env.DYLD_INSERT_LIBRARIES = previousInsert
+      if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS
+      else process.env.NODE_OPTIONS = previousNodeOptions
+    }
+  })
+  it('verifies an unchanged bundle once across repeated scans', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    const scan = () => inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    for (let round = 0; round < 5; round += 1) {
+      await expect(scan()).resolves.toMatchObject({ version: '26.727.51351' })
+    }
+
+    const codesignCalls = runSystemCommand.mock.calls
+      .filter(([executable]) => executable === '/usr/bin/codesign')
+    // Five scans, one deep verification. The cheap probes still run every time.
+    expect(codesignCalls).toHaveLength(1)
+  })
+
+  it('verifies again once the bundle changes', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    const scan = () => inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    await scan()
+    // Stand in for an upgrade: the signed executable is replaced.
+    const executablePath = path.join(app, 'Contents', 'MacOS', 'ChatGPT')
+    fs.writeFileSync(executablePath, 'replaced executable', { mode: 0o755 })
+    fs.utimesSync(executablePath, new Date(Date.now() + 5_000), new Date(Date.now() + 5_000))
+    await scan()
+
+    const codesignCalls = runSystemCommand.mock.calls
+      .filter(([executable]) => executable === '/usr/bin/codesign')
+    // A cached pass must never outlive the bytes it was granted for.
+    expect(codesignCalls).toHaveLength(2)
   })
 })
