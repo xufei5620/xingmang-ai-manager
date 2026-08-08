@@ -35,12 +35,15 @@ test('the common test suite excludes Darwin filesystem and signing fixtures', ()
 })
 
 test('browser-backed tests install Chromium first on every job that runs npm test', () => {
-  for (const [jobName, testCommand] of [
-    ['test', 'npm run test:windows'],
-    ['macos-test', 'npm test'],
+  for (const [jobName, testCommand, installCommand] of [
+    ['test', 'npm run test:windows', 'npx --no-install playwright install chromium'],
+    ['macos-test', 'npm test', 'npx --no-install playwright install chromium'],
+    // Linux-only: --with-deps also apt-installs the shared libraries Chromium
+    // links against, which (unlike Windows/macOS) a bare runner image lacks.
+    ['linux-test', 'npm test', 'npx --no-install playwright install --with-deps chromium'],
   ]) {
     const commands = runSteps(jobName)
-    const installIndex = commands.indexOf('npx --no-install playwright install chromium')
+    const installIndex = commands.indexOf(installCommand)
     const testIndex = commands.indexOf(testCommand)
 
     assert.notEqual(testIndex, -1, `${jobName} must run ${testCommand}`)
@@ -56,6 +59,19 @@ test('the Windows suite serializes filesystem-heavy files with a bounded test ti
   assert.match(command, /--no-file-parallelism/)
   assert.match(command, /--testTimeout=30000/)
   assert.match(command, /npm run test:node/)
+})
+
+test('the Linux suite type-checks and runs the common test command', () => {
+  const job = workflow.jobs['linux-test']
+  const commands = runSteps('linux-test')
+
+  assert.equal(job['runs-on'], 'ubuntu-latest')
+  assert.ok(commands.includes('npm run typecheck'), 'linux-test must run npm run typecheck')
+  assert.ok(commands.includes('npm test'), 'linux-test must run npm test')
+  // Regression coverage for #4: cross-platform breakage (e.g. #2's tmpfs inode
+  // reuse) only surfaces on a real Linux filesystem, so this job must run the
+  // unmodified common suite rather than a Windows- or macOS-flavored variant.
+  assert.equal(commands.includes('npm run test:windows'), false)
 })
 
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {
