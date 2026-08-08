@@ -4,8 +4,11 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandErrorCode } from './command-runner'
 import {
+  commandTimeoutMs,
+  deepVerificationTimeoutMs,
   inspectMacosCodexApp,
   resetMacosCodexAppVerificationCache,
+  resolveSystemCommandTimeoutMs,
   runSystemCommand,
 } from './macos-codex-app'
 
@@ -66,12 +69,44 @@ afterEach(() => {
   }
 })
 
+// Pure string/array logic with no filesystem or process involvement, so unlike
+// the rest of this file it needs no platform gate — this is the only coverage
+// of the timeout split that runs on every platform, Windows included.
+describe('resolveSystemCommandTimeoutMs', () => {
+  it('gives a codesign --deep call the wide, deep-verification budget', () => {
+    expect(resolveSystemCommandTimeoutMs('/usr/bin/codesign', [
+      '--verify', '--strict', '--deep', '-R=anchor apple generic', '/Applications/Codex.app',
+    ])).toBe(deepVerificationTimeoutMs)
+  })
+
+  it('keeps the other bundle-inspection probes on the narrow budget', () => {
+    expect(resolveSystemCommandTimeoutMs('/usr/bin/plutil', [
+      '-extract', 'CFBundleIdentifier', 'raw', '-o', '-', '/Applications/Codex.app/Contents/Info.plist',
+    ])).toBe(commandTimeoutMs)
+    expect(resolveSystemCommandTimeoutMs('/usr/bin/lipo', [
+      '-archs', '/Applications/Codex.app/Contents/MacOS/ChatGPT',
+    ])).toBe(commandTimeoutMs)
+    expect(resolveSystemCommandTimeoutMs('/usr/bin/mdfind', [
+      'kMDItemCFBundleIdentifier == "com.openai.codex"',
+    ])).toBe(commandTimeoutMs)
+  })
+
+  // Routing must key off the --deep flag itself, not just the executable name:
+  // a codesign call that omits --deep is exactly as cheap as plutil or lipo,
+  // so it must not inherit the budget meant only for the deep bundle walk.
+  it('keeps a non-deep codesign call on the narrow budget, not the deep-verification one', () => {
+    expect(resolveSystemCommandTimeoutMs('/usr/bin/codesign', [
+      '--verify', '--strict', '-R=anchor apple generic', '/Applications/Codex.app',
+    ])).toBe(commandTimeoutMs)
+  })
+})
+
 // Every case drives the bundle inspection through the injected
 // runSystemCommand, so no real macOS toolchain is involved and the darwin gate
 // cost Linux all coverage of Codex.app identification for nothing.
 //
 // Windows stays out, and not because of the file name: inspectMacosCodexApp
-// requires an executable bit (`mode & 0o111`, macos-codex-app.ts:117), and NTFS
+// requires an executable bit (`mode & 0o111`, macos-codex-app.ts:235), and NTFS
 // reports 0o666 for every file no matter what mode writeFileSync or chmod is
 // given. The function therefore returns null for every input there, so the
 // cases expecting a rejection would pass even with the identification logic

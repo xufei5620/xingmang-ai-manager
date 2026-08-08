@@ -9,17 +9,52 @@ const bundleIdentifier = 'com.openai.codex'
 const openAiTeamIdentifier = '2DC432GLL2'
 const maximumInfoPlistBytes = 1024 * 1024
 const maximumCommandOutputBytes = 64 * 1024
-const commandTimeoutMs = 5_000
+/** The budget for every probe below except the deep signature verification. */
+export const commandTimeoutMs = 5_000
 /**
- * Deep signature verification is the only expensive step here — measured at 1.79s
- * against the 1.4 GB Codex.app on an Apple Silicon machine with a warm cache, versus
- * milliseconds for everything else — and inspectCodexDesktop reruns on every scan.
+ * `codesign --verify --deep` is the one probe in this module whose cost scales
+ * with bundle size instead of completing in milliseconds: measured at 1.79s
+ * against the 1.4 GB Codex.app on an Apple Silicon machine with a warm page
+ * cache, and 2.35s cold. Neither leaves much headroom under the shared 5s
+ * commandTimeoutMs on a slower x64 machine or one under load — and since the
+ * three-state fix, hitting that timeout no longer reports a false "not
+ * installed", it downgrades the desktop card to an amber, retryable state.
+ * That is a real cost, just a smaller one than a false negative, and this
+ * wider budget exists to make it rare rather than to eliminate it structurally.
  *
- * The result is cached against a fingerprint of the bundle rather than skipped: an
- * upgrade replaces the bundle and its executable, which changes the fingerprint and
- * forces a fresh verification. The bounded lifetime exists because a directory's
- * mtime does not follow edits to files nested deep inside it, so a fingerprint alone
- * could keep a stale pass alive indefinitely; this caps that window instead.
+ * Widening only this one call is affordable because it is rarely paid:
+ * verifiedBundles below caches a pass for up to verificationCacheTtlMs, so in
+ * steady state a bundle's deep verification — and this budget — is exercised
+ * at most once every 5 minutes, not on every scan. Every other probe here
+ * (plutil, lipo, mdfind, osascript, and any future non-deep codesign call)
+ * stays on the narrow commandTimeoutMs: none of them are ever slow, and
+ * widening a budget that is actually spent on every scan would just make a
+ * genuine hang take longer to surface.
+ */
+export const deepVerificationTimeoutMs = 15_000
+
+/**
+ * Routes by the --deep flag rather than by executable alone, so a future
+ * non-deep codesign call added to this module — a plain signature check, as
+ * cheap as everything else here — is not silently handed the wide budget
+ * meant only for the walk through every nested code object inside Codex.app.
+ */
+export function resolveSystemCommandTimeoutMs(executable: string, argv: readonly string[]): number {
+  return executable === '/usr/bin/codesign' && argv.includes('--deep')
+    ? deepVerificationTimeoutMs
+    : commandTimeoutMs
+}
+
+/**
+ * Deep signature verification is the only expensive step here, and
+ * inspectCodexDesktop reruns it on every scan.
+ *
+ * The result is cached against a fingerprint of the bundle rather than paid
+ * every time: an upgrade replaces the bundle and its executable, which
+ * changes the fingerprint and forces a fresh verification. The bounded
+ * lifetime exists because a directory's mtime does not follow edits to files
+ * nested deep inside it, so a fingerprint alone could keep a stale pass alive
+ * indefinitely; this caps that window instead.
  */
 const verificationCacheTtlMs = 5 * 60_000
 const verifiedBundles = new Map<string, { fingerprint: string; verifiedAt: number }>()
@@ -101,7 +136,7 @@ function isAppCandidate(value: string): boolean {
 export async function runSystemCommand(executable: string, argv: readonly string[]): Promise<string> {
   const result = await runCommand({ executable, argv }, {
     env: trustedCommandEnvironment(),
-    timeoutMs: commandTimeoutMs,
+    timeoutMs: resolveSystemCommandTimeoutMs(executable, argv),
     maxOutputBytes: maximumCommandOutputBytes,
     windowsHide: true,
   })
