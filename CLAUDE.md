@@ -25,14 +25,14 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**没有后端服务
 | | 源码 | 测试 |
 |---|---|---|
 | `electron/`（主进程，全部特权操作） | 55 个模块 | 53 个 |
-| `src/`（渲染进程，纯 UI） | 45 个文件 | 14 个 |
+| `src/`（渲染进程，纯 UI） | 46 个文件 | 16 个 |
 
-约 5 万行，**816 个 vitest 用例**（67 个文件；Windows 上约 120 个因平台门控跳过），`npm test` 还串带 scripts/e2e 下的 node --test 套件（约 78 例）。IPC：**70 个 invoke 通道**。
+约 5 万行，**838 个 vitest 用例**（69 个文件；Windows 上 120 个因平台门控跳过），`npm test` 还串带 scripts/e2e 下的 node --test 套件（约 78 例）。IPC：**70 个 invoke 通道**。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
 ```bash
-npm run typecheck   # 跑两套 tsconfig（渲染 + 主进程）
+npm run typecheck   # 三连检：渲染 tsconfig + 主进程 tsconfig + electron 测试 tsconfig
 npm test            # vitest（electron+src）+ node --test（scripts/e2e）。Linux ~8s；Windows 实测 ~13s，Defender 实时扫描介入时可拖到 60~90s
 npm run test:windows    # Windows 备用：关文件级并行 + 30s 超时，专治 Defender 引发的超时失败
 npm run compile     # 清理 + vite build + tsc + 压缩
@@ -112,7 +112,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 
 - `main.tsx` — 挂载 React + 全局错误上报
 - `App.tsx` (1071) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但 App() 本体（74 行起）仍近千行：40 个 `useState`、16 个 `useEffect`，页面切换是一条 11 分支三元链（853-989）。**#30 未完结**
-- `app-shared.ts` / `provider-meta.ts` / `navigation.ts` — #30 拆出的共享底座：纯工具函数与空快照 / provider 展示元数据（含 `dashboardProviderIds`）/ 侧边栏页面清单
+- `app-shared.ts` / `provider-meta.ts` / `navigation.ts` / `provider-registry.ts` — 共享底座：纯工具函数与空快照 / provider 视觉元数据 / 侧边栏页面清单 / **provider 身份与两种展示顺序的单一来源**（rank 表派生，见 T2）
 - `styles.css` (6325) — **另一个巨型枢纽文件**
 - `components/` — 通用件 `AppFrame` / `Sidebar` / `Toast` / `Dialog` / `ProviderTabs` / `RuntimeCell` / `StatusMark` / `StartupSplash`；从 App.tsx 搬出的 `onboarding/`（4 件）、`config/`（`ConfigDialog` 等 4 件）、`dashboard/`（`Dashboard` / `CodexDesktopCard`）
 - `pages/` — 11 个页面，最大的 `MaintenancePage`(992) `PluginsPage`(696) `McpPage`(593)
@@ -182,19 +182,11 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 `ipc.test.ts:227` 的 `toEqual` **对顺序敏感**。⚠️ **两个 agent 并行加通道，即使 git 文本合并成功，CI 也会红。** 加通道属于必须串行的任务。
 （`preload.ts` 的副本顺序**不需要**一致，它只做键查找。）
 
-**T2. 给 `ProviderId` 加第 5 个 CLI → 共约 17 个文件 35 个改动点，其中 5 处编译器完全沉默。**
+**T2. 给 `ProviderId` 加第 5 个 CLI → 改动点已收口，编译器/测试会带你走完。**
 
-*编译器会强制你改的（约 12 处，这部分设计是对的）*：`catalog.ts:1/14/49` 三处 → `config-files.ts` 六个 `switch`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts:20`、`ProviderTabs.tsx:6`、`PluginsPage.tsx:82`）。
+顺序：`catalog.ts:1/14/49` 三处 → `config-files.ts` 六个 `switch`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ **`src/provider-registry.ts` 的两张 rank 表**（概览序 codex/claude/grok/gemini 与管理序 codex/claude/gemini/grok，两种顺序是有意为之、各自只定义一次；`Record<ProviderId, number>` 内联字面量，漏键/错键是编译错 TS2741/TS2353，`provider-registry.test.ts` 的覆盖断言在纯测试路径下也会红）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts:20`、`ProviderTabs.tsx` 的 labels、`PluginsPage.tsx:82` 等，全是编译错）。
 
-⚠️ *编译器抓不到的 5 处*：
-- `src/provider-meta.ts:69` — `dashboardProviderIds` 是独立字面量数组，概览页 `components/dashboard/Dashboard.tsx` 按它画卡片，且其 142 行「N/5 个已安装」的分母 5 是硬编码。不同步时概览页会少画卡片、分母出错
-- `src/pages/MaintenancePage.tsx:33` — **另外定义了 `MaintenanceProviderId` 联合类型**，不从 `ProviderId` 派生
-- `src/pages/BackupsPage.tsx:17` — 同上，`BackupProviderId`
-  > 这两处最危险：`Record<ProviderId,X>` 赋给 `Record<MaintenanceProviderId,X>` 在 TS 里合法（多余键不触发 excess property check）。**结果是安装维护页和配置备份页完全看不到新 CLI，且零编译错误、零测试失败。**
-- `src/pages/McpPage.tsx:377`、`src/pages/SkillsPage.tsx:284` — 直接写字面量数组
-- `src/components/ProviderTabs.tsx:4` — `managementProviderIds` 的 `as const satisfies readonly ProviderId[]` 只校验「成员合法」，**不校验「覆盖完整」**
-
-*根因*：规范顺序（catalog 是 claude/codex/grok/gemini）与展示顺序（UI 全是 codex/claude/gemini/grok）不一致，所以每个页面各自硬编码了一遍展示顺序。收口方案见 `docs/IMPROVEMENT-PLAN.md`。
+历史包袱：这里曾有 5 处编译器沉默点（各页面自写 provider 联合类型/字面量数组），已随 #32 全部收口进 registry。**新的展示顺序数组只能定义在 registry 里，不要在页面里写字面量**。遗留手工点：概览页 `Dashboard.tsx` 的「N/5 个已安装」分母仍是硬编码。
 
 **T3. 改 `system-service.ts` → 先确认改的是 3261 行里的哪一半。**
 前 1374 行是纯函数（全部 export、测试直接调用）；`createSystemService`（1375 行起）之后是闭包（内部函数不导出）。**新逻辑优先写成顶层纯函数**再在闭包里调用，否则无法单测。这是最容易撞车的文件。
@@ -233,14 +225,13 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 三个现成工具：`scan-coordinator.ts`（扫描）、`latest-request.ts`（按 key 的页面数据）、`provider-extension-coordinator.ts`（切 provider）。直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。
 
 **T7. 给 `src/` 加组件测试 → 当前没有 DOM 环境。**
-仓库**没有 `vitest.config.ts`**，环境是默认的 `node`。src 下 14 个测试文件全部只测纯函数，没有一处 render。加 jsdom 是需要先与其他 agent 对齐的基础设施改动，**不要顺手做**。
+仓库**没有 `vitest.config.ts`**，环境是默认的 `node`。src 下 16 个测试文件全部只测纯函数，没有一处 render。加 jsdom 是需要先与其他 agent 对齐的基础设施改动，**不要顺手做**。
 
-**T8. 改 `electron/*.test.ts` 的类型 → 它们不在任何 typecheck 范围内。**
-`tsconfig.electron.json` exclude 了测试文件，根 tsconfig 只 include `src`。所以 electron 测试的类型错误只在运行时炸。（反之 `src/**/*.test.ts` **在**范围内。）
-`electron/onboarding-runtime.test.ts` 是孤儿测试——它测的是 `src/onboarding-runtime.ts`。
+**T8. electron 测试已纳入 typecheck（第三条 tsc），但 `tsconfig.electron.json` 的测试 exclude 千万别删。**
+`npm run typecheck` 跑三段：根 tsconfig（src）、`tsconfig.electron.json`（主进程**产物**配置，仍 exclude 测试）、`tsconfig.electron.test.json`（纳入全部 electron 测试，自带 `noEmit: true`）。**基础配置的 exclude 是 dist-electron 不含测试产物的承重墙**——`npm run compile` 用的就是它，删掉 exclude = 测试代码进发布包。测试配置的 `rootDir: "."` 专为孤儿测试 `electron/onboarding-runtime.test.ts`（测的是 `src/onboarding-runtime.ts`）的跨目录 import 而设。
 
-**T9. 给 `electron/` 加新模块 → 可能被 typecheck 两遍，也可能一遍都不被检查。**
-被 `ipc-contract.ts` 通过 `import type` 引用的模块会同时进入渲染 tsconfig 的程序图。改类型定义时两条命令都要跑（`npm run typecheck` 已串好）。
+**T9. 给 `electron/` 加新模块 → 会被 typecheck 最多三遍。**
+`tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。三段都串在 `npm run typecheck` 里，跑这一条即可。
 
 **T10. 改 `providerConfigPaths` 或配置格式 → 同时影响备份、恢复、诊断、启动前校验。**
 消费者：`backups.ts`、`config-files.ts`、`diagnostics.ts`、`system-service.ts`、`main.ts`（启动前校验）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
