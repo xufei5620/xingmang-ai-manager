@@ -1154,6 +1154,41 @@ export function npmInstallRegistries(region: NetworkRegion): [string, string] {
     : [npmOfficialRegistry, npmMirrorRegistry]
 }
 
+export function npmRegistryLabel(registry: string): string {
+  return registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'
+}
+
+/**
+ * The dependency graph must be resolved against the official registry, and a
+ * mirror cannot stand in for it. Measured on Windows, all four managed CLIs
+ * resolve only 7-12 packages in 1-4s on a healthy connection, so a wait long
+ * enough to notice means the connection to registry.npmjs.org is struggling,
+ * not that there is a lot of work to do. Ten minutes is a ceiling for that
+ * case rather than an expected duration; five was killing connections that
+ * were slow but still making progress. npm prints nothing throughout, which
+ * is why this step used to look like a hang.
+ */
+export const npmResolutionTimeoutMs = 10 * 60_000
+export const npmDownloadTimeoutMs = 5 * 60_000
+export const npmResolutionHeartbeatMs = 15_000
+
+export function formatElapsedDuration(elapsedMs: number): string {
+  const seconds = Math.max(0, Math.round(elapsedMs / 1000))
+  if (seconds < 60) return `${seconds} 秒`
+  return `${Math.floor(seconds / 60)} 分 ${String(seconds % 60).padStart(2, '0')} 秒`
+}
+
+export function npmResolutionStartMessage(registry: string): string {
+  return registry === npmOfficialRegistry
+    ? '正在从 npm 官方源解析完整依赖图并校验 SHA-512 完整性。这一步必须直连官方源，'
+      + '镜像无法代替；网络受限时可能较慢，但不影响后续下载速度，请耐心等待'
+    : `正在从${npmRegistryLabel(registry)}解析完整依赖图，准备与官方 SHA-512 对账`
+}
+
+export function npmResolutionHeartbeatMessage(registry: string, elapsedMs: number): string {
+  return `仍在解析${npmRegistryLabel(registry)}的依赖图…（已用时 ${formatElapsedDuration(elapsedMs)}）`
+}
+
 export function npmPackageLatestUrl(registry: string, packageName: string): string {
   return `${registry.replace(/\/+$/, '')}/${encodeURIComponent(packageName)}/latest`
 }
@@ -2697,7 +2732,18 @@ export function createSystemService(
         const handle = await fs.promises.open(npmUserConfig, 'wx', 0o600)
         await handle.close()
       }
-      const executeNpm = async (argv: string[], cwd: string, cache: string) => {
+      /**
+       * The dependency-graph resolution and the package download are timed
+       * separately. Sharing one budget meant a slow official resolution ate the
+       * time the download still needed, and a legitimately slow resolution was
+       * being killed at five minutes as if it had hung.
+       */
+      const executeNpm = async (
+        argv: string[],
+        cwd: string,
+        cache: string,
+        timeoutMs = npmDownloadTimeoutMs,
+      ) => {
         // 提权执行会对 argv 里的每个绝对路径做 realpath，路径不存在即判定为
         // 「位于用户可写目录」而拒绝。npm 自己会建缓存目录，但那发生在校验之后。
         await fs.promises.mkdir(cache, { recursive: true })
@@ -2719,7 +2765,7 @@ export function createSystemService(
             ? [npmUserConfig, transaction]
             : undefined,
           cwd,
-          timeoutMs: 5 * 60_000,
+          timeoutMs,
           maxOutputBytes: 8 * 1024 * 1024,
           onOutput: ({ text }) => {
             const message = text.trim()
@@ -2743,16 +2789,44 @@ export function createSystemService(
           await handle.close()
         }
       }
+      /**
+       * npm emits nothing during `--package-lock-only`, so without a heartbeat
+       * the window sits on one static line for minutes and users conclude the
+       * app has hung. The ticker only reports elapsed time; it never guesses at
+       * a completion percentage it cannot know.
+       */
+      const resolveDependencyGraph = async (
+        registry: string,
+        resolution: string,
+        cache: string,
+      ) => {
+        sendInstallProgress(target, provider, 'output', npmResolutionStartMessage(registry))
+        const startedAt = Date.now()
+        const ticker = setInterval(() => {
+          sendInstallProgress(
+            target,
+            provider,
+            'output',
+            npmResolutionHeartbeatMessage(registry, Date.now() - startedAt),
+          )
+        }, npmResolutionHeartbeatMs)
+        try {
+          await executeNpm([
+            'install',
+            '--package-lock-only',
+            '--ignore-scripts',
+            '--omit=dev',
+            `--registry=${registry}`,
+          ], resolution, cache, npmResolutionTimeoutMs)
+        } finally {
+          clearInterval(ticker)
+        }
+      }
+
       const officialResolution = path.join(transaction, 'official-resolution')
       const officialCache = path.join(transaction, 'official-cache')
       await createResolutionManifest(officialResolution)
-      await executeNpm([
-        'install',
-        '--package-lock-only',
-        '--ignore-scripts',
-        '--omit=dev',
-        `--registry=${npmOfficialRegistry}`,
-      ], officialResolution, officialCache)
+      await resolveDependencyGraph(npmOfficialRegistry, officialResolution, officialCache)
       const officialLock = await readBoundedUtf8File(
         path.join(officialResolution, 'package-lock.json'),
         maximumNpmPackageLockBytes,
@@ -2780,13 +2854,7 @@ export function createSystemService(
             ? path.join(attemptRoot, 'staged-prefix')
             : null
           await createResolutionManifest(resolution)
-          await executeNpm([
-            'install',
-            '--package-lock-only',
-            '--ignore-scripts',
-            '--omit=dev',
-            `--registry=${registry}`,
-          ], resolution, cache)
+          await resolveDependencyGraph(registry, resolution, cache)
           const candidateLock = await readBoundedUtf8File(
             path.join(resolution, 'package-lock.json'),
             maximumNpmPackageLockBytes,

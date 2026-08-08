@@ -42,7 +42,13 @@ import {
   fetchNpmPackageReleaseMetadata,
   grokInstallStrategyFor,
   grokManualUninstallResult,
+  formatElapsedDuration,
+  npmDownloadTimeoutMs,
   npmInstallRegistries,
+  npmRegistryLabel,
+  npmResolutionHeartbeatMessage,
+  npmResolutionStartMessage,
+  npmResolutionTimeoutMs,
   npmPackageLatestUrl,
   npmPackageVersionUrl,
   parseNpmPackageReleaseMetadata,
@@ -1185,6 +1191,61 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
       'cli:install-progress',
       expect.objectContaining({ state: 'success' }),
     )
+  })
+})
+
+describe('npm install progress reporting', () => {
+  it('separates the resolution budget from the download budget', () => {
+    // Sharing one budget let a slow official resolution eat the time the
+    // download still needed, and killed a slow-but-working resolution at 5min.
+    expect(npmResolutionTimeoutMs).toBeGreaterThan(npmDownloadTimeoutMs)
+    expect(npmDownloadTimeoutMs).toBe(5 * 60_000)
+  })
+
+  it('keeps the resolution ceiling within a range a user will actually wait out', () => {
+    // Measured on Windows: every managed CLI resolves 7-12 packages in 1-4s.
+    // A long wait means a struggling connection, not a large graph, so the
+    // ceiling exists to avoid killing slow-but-progressing resolutions rather
+    // than to accommodate expected work.
+    expect(npmResolutionTimeoutMs).toBeLessThanOrEqual(10 * 60_000)
+  })
+
+  it('tells the user why the official source cannot be replaced by a mirror', () => {
+    const message = npmResolutionStartMessage('https://registry.npmjs.org')
+
+    expect(message).toContain('官方源')
+    expect(message).toContain('镜像无法代替')
+    // Managing the expectation is the whole point: a wait is possible and does
+    // not slow down what comes after. It must not promise a duration - measured
+    // resolution is 1-4s on a healthy link, so "takes minutes" would be false.
+    expect(message).toContain('不影响后续下载速度')
+    expect(message).not.toMatch(/通常需要|大约|预计/)
+  })
+
+  it('names the mirror when the graph is resolved against it', () => {
+    expect(npmResolutionStartMessage('https://registry.npmmirror.com')).toContain('国内 npm 镜像')
+    expect(npmRegistryLabel('https://registry.npmmirror.com')).toBe('国内 npm 镜像')
+    expect(npmRegistryLabel('https://registry.npmjs.org')).toBe('npm 官方源')
+  })
+
+  it('reports elapsed time without inventing a completion estimate', () => {
+    const early = npmResolutionHeartbeatMessage('https://registry.npmjs.org', 15_000)
+    const later = npmResolutionHeartbeatMessage('https://registry.npmjs.org', 125_000)
+
+    expect(early).toContain('15 秒')
+    expect(later).toContain('2 分 05 秒')
+    // No percentage or ETA: npm gives no signal that could support one, and a
+    // fabricated bar is worse than an honest clock.
+    expect(early).not.toMatch(/%|预计|剩余/)
+    expect(later).not.toMatch(/%|预计|剩余/)
+  })
+
+  it('formats durations either side of a minute', () => {
+    expect(formatElapsedDuration(0)).toBe('0 秒')
+    expect(formatElapsedDuration(59_400)).toBe('59 秒')
+    expect(formatElapsedDuration(60_000)).toBe('1 分 00 秒')
+    expect(formatElapsedDuration(3_723_000)).toBe('62 分 03 秒')
+    expect(formatElapsedDuration(-5_000)).toBe('0 秒')
   })
 })
 
