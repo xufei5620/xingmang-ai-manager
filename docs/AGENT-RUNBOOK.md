@@ -12,10 +12,9 @@
 项目仓库：https://github.com/peaker520/xingmang-ai-manager
 
 请按以下步骤执行：
-1. 如果当前目录不是这个仓库，把它 clone 下来并 cd 进去；已有则 git fetch origin
-2. 确认能看到 CLAUDE.md 和 docs/ROADMAP.md；看不到就先 git checkout claude/project-review-ma2wvr
-3. 读 docs/AGENT-RUNBOOK.md，严格按它的流程执行
-4. 从任务索引 Issue #27 里挑一个适合这台机器、且未被认领、依赖已满足、
+1. 如果当前目录不是这个仓库，把它 clone 下来并 cd 进去；已有则 git checkout main && git pull
+2. 读 docs/AGENT-RUNBOOK.md，严格按它的流程执行
+3. 从任务索引 Issue #27 里挑一个适合这台机器、且未被认领、依赖已满足、
    非 needs-decision 的任务，认领后开始做
 
 注意：标了 serial-only 的任务，动手前必须确认没有别人正在改同一批文件。
@@ -54,18 +53,15 @@ cd xingmang-ai-manager
 git fetch origin
 ```
 
-### 0.2 确认你在能看到文档的分支上
+### 0.2 确认文档在位
 
-> ⚠️ **重要**：如果 `main` 上还没有 `CLAUDE.md` / `docs/ROADMAP.md`，说明规范文档还在 review 分支上未合并。
-> 这时先切到 `claude/project-review-ma2wvr` 读文档，但**开发分支仍然从 `main` 拉**。
-> 文档合并进 `main` 之后，这一步就不需要了。
+规范文档已在 `main` 上，clone 下来直接就有：
 
 ```bash
-ls CLAUDE.md docs/ROADMAP.md 2>/dev/null || {
-  echo "文档不在当前分支，切到 review 分支："
-  git checkout claude/project-review-ma2wvr
-}
+ls CLAUDE.md docs/ROADMAP.md docs/COLLABORATION.md
 ```
+
+三个文件都在就继续。如果缺失，说明你不在 `main`（或 fork 落后），先 `git checkout main && git pull`。
 
 ### 0.3 装依赖
 
@@ -89,15 +85,23 @@ npm test 2>&1 | tail -5    # 记下失败数
 
 **当前基线**（`main` 已合并 macOS 支持后实测）：
 
-| 平台 | 预期 |
-|---|---|
-| Windows | 全绿 |
-| macOS | 全绿 |
-| Linux | **1 个失败**（`macos-platform.test.ts` 的 darwin 专有用例未门控，见 Issue #2） |
+**⚠️ 没有任何平台是全绿的。下面这些失败不是你弄坏的：**
+
+| 平台 | 已知失败 | 原因 | 报到哪 |
+|---|---|---|---|
+| **Windows** | **9** | 4 个需符号链接权限（未开发者模式 + 非管理员 → EPERM）；5 个卡 5s 超时 | **#40** |
+| **macOS** | 0 | — | — |
+| **Linux** | **1** | `macos-platform.test.ts:249` | **#2** |
+
+耗时也差很多：Linux 约 8 秒，**Windows 上因 Defender 实时扫描可能要 60~90 秒**，不是卡死。
+
+⚠️ **Linux 那 1 个不是「门控写漏」，是真实缺陷。** 它断言"不要删掉别人放在启动器路径上的文件"，
+而这条属性确实不成立（`samePathIdentity` 只比 `dev/ino/uid`，Linux tmpfs 复用 inode 后误判）。
+**绝对不要用 `it.runIf(darwin)` 把它跳过**——那是把缺陷藏起来。修法见 Issue #2。
 
 **把你这台机器的实际失败数记住** —— 后面验证改动时要对比，确保没引入新失败。
 
-如果实际数字与上表不符，先在 Issue #2 上报告，不要直接开始改。
+如果实际数字与上表不符：Windows 上报到 **#40**，Linux 上报到 **#2**，macOS 上**新开一个 issue**。不要直接开始改。
 
 ---
 
@@ -163,18 +167,14 @@ gh issue comment <编号> --body "🤖 开始处理 —— <用户名>/<ai>-<端
 
 ### 4. 建分支
 
-**开发分支永远从 `main` 拉**（即使你为了读文档切到过 review 分支）：
+**开发分支永远从最新的 `main` 拉**：
 
 ```bash
 git fetch origin
 git checkout main && git pull
 git checkout -b <用户名>/<ai>-<端>/<简短英文描述>
-# 例：peaker520/claude-mac/gate-windows-tests
+# 例：xufei5620/claude-mac/gate-darwin-tests
 ```
-
-> ⚠️ 如果规范文档还没合并进 `main`，你的开发分支上会看不到 `CLAUDE.md` 等文件 —— 这是正常的。
-> 需要查文档时用 `git show claude/project-review-ma2wvr:CLAUDE.md`，或另开一个终端切到那个分支看。
-> **不要把 review 分支合进你的开发分支**，那会让 PR 混入无关改动。
 
 ### 5. 干活
 
@@ -190,7 +190,7 @@ npm run typecheck
 npm test
 ```
 
-⚠️ **在 macOS/Linux 上**：批次 0（#2 #3）合并前，`npm test` 有 17 个已知失败。**你要对比改动前后失败数是否一致**，不能引入新失败。方法：先在干净的 `main` 上 `npm test` 记下失败数，再在你的分支上对比。
+⚠️ **对比失败数，不要只看"红没红"**：先在干净的 `main` 上 `npm test` 记下失败数（基线见第 0.5 步），再在你的分支上对比。Linux 上那 1 个已知失败在 #2 修好前会一直红。
 
 平台相关的改动，还要按 issue 要求做手工验证。
 
@@ -276,10 +276,11 @@ gh pr create \
 
 如果你是**第一个**开始的 agent，按这个优先级挑：
 
-1. **#2 #3 #4**（Mac 上做）—— 解除所有 agent 的验证能力，最高优先
-2. **#5**（Windows 上做）—— 高危 RCE，改动小
-3. **#30**（任意，但 serial-only）—— 拆 App.tsx，越早做完后面越顺
-4. **#28 的回滚 runbook** —— 发版止损能力
+1. **#5**（Windows 上做）—— 高危 RCE，改动小，决策已拍板
+2. **#2**（任意平台，Linux/Mac 可直接复现）—— 修 `samePathIdentity`，顺带拿回绿色基线
+3. **#37 #38**（Mac 上做）—— macOS 新代码的两处信任链缺口
+4. **#30**（任意，但 serial-only）—— 拆 App.tsx，越早做完后面越顺
+5. **#28 的回滚 runbook** —— 发版止损能力
 
 **#30 没合并前，不要领 #10 #17 #18 #21**（它们都要改 App.tsx，会和 #30 冲突）。
 

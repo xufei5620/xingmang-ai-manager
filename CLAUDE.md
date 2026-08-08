@@ -33,13 +33,27 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**没有后端服务
 
 ```bash
 npm run typecheck   # 跑两套 tsconfig（渲染 + 主进程）
-npm test            # ~15s
+npm test            # Linux ~8s；Windows 上因 Defender 实时扫描可达 60~90s
 npm run compile     # 清理 + vite build + tsc + 压缩
 npm run dev         # 开发模式
 npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ```
 
-> ℹ️ **测试基线**：Windows 上应全绿。**Linux 上当前有 1 个失败**（`macos-platform.test.ts` 的 darwin 专有用例未对 linux 门控），macOS 上应全绿。
+### ⚠️ 测试基线：没有任何平台是全绿的
+
+**动手前先在干净的 `main` 上跑一遍记下失败数**，改完对比。三个平台各有各的已知失败，**都不是你弄坏的**：
+
+| 平台 | 已知失败 | 原因 | Issue |
+|---|---|---|---|
+| **Windows** | **9** | 4 个需要 `SeCreateSymbolicLinkPrivilege`（未开发者模式 + 非管理员即 EPERM）；5 个卡 vitest 默认 5s 超时（真实磁盘两阶段提交 + Defender 实时扫描） | **#40** |
+| **macOS** | 0 | — | — |
+| **Linux** | **1** | `macos-platform.test.ts:249` | **#2** |
+
+**Windows agent 请注意**：「Windows 全绿」是错的，别以为自己弄坏了仓库。基线不符请到 **#40** 报告。
+
+**Linux 那 1 个失败不是「平台门控写漏」，是一条真实缺陷**（#2）。该用例只用注入的 mock runner + `mkdtemp`，与平台特性无关；它在 macOS 上通过纯属侥幸——`samePathIdentity`（`macos-platform.ts:70`）只比 `dev/ino/uid`，APFS 的 inode 不复用所以碰巧不误判，而 Linux tmpfs 会立刻复用刚释放的 inode，于是清理逻辑真的把别人放在该路径上的文件删了。
+**不要给它加 `runIf(darwin)` 把缺陷藏起来**，要修 `samePathIdentity`。
+
 > 改动前先在干净的 `main` 上跑一遍记下失败数，改动后对比，**不要引入新失败**。
 
 ### macOS 相关模块（新增）

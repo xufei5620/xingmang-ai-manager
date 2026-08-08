@@ -132,9 +132,9 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 | 文件 | 行数 | 说明 |
 |---|---|---|
-| `src/styles.css` | 6027 | 全局样式，无模块化 |
-| `electron/system-service.ts` | 3300 | 21 条待办里有 8 条落在这一个文件上 |
-| `src/App.tsx` | 2855 | 全部全局状态 + 4 个内嵌大组件 |
+| `src/styles.css` | 6325 | 全局样式，无模块化 |
+| `electron/system-service.ts` | 3753 | 多条待办落在这一个文件上；#34 会搬走约 1100 行 |
+| `src/App.tsx` | 2952 | 全部全局状态 + 14 个内嵌组件（`App()` 本体 985 行 / 39 个 useState）|
 
 **分配任务时，尽量不要让两个 agent 同时改同一个热点文件。**
 
@@ -154,22 +154,23 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 **提 PR 前必须跑，两条都要过：**
 
 ```bash
-npm run typecheck   # ~8s
-npm test            # ~5s
+npm run typecheck
+npm test            # Linux ~8s；Windows 上因 Defender 实时扫描可达 60~90s，不是卡死
 ```
 
 ### 平台差异（重要）
 
-| | Windows | macOS / Linux |
-|---|---|---|
-| `npm run typecheck` | ✅ | ✅ |
-| `npm test` | ✅ 全绿 | ⚠️ **当前有 17 个已知失败** |
-| `npm run compile` | ✅ | ✅ |
-| `npm run build`（打包） | ✅ | ❌ 只能打 Windows 包 |
-| e2e smoke | ✅ | ⚠️ 未验证 |
+| | Windows | macOS | Linux |
+|---|---|---|---|
+| `npm run typecheck` | ✅ | ✅ | ✅ |
+| `npm test` | ✅ 全绿 | ✅ 全绿 | ⚠️ **1 个已知失败**（见 #2） |
+| `npm run compile` | ✅ | ✅ | ✅ |
+| `npm run build`（打包） | ✅ Windows 包 | ✅ mac 包（`build:mac:dir`） | ❌ |
+| e2e smoke | ✅ | ⚠️ 未验证 | ⚠️ 未验证 |
 
-> **在 macOS/Linux 上**：修复批次 0 之前拿不到绿色基线。请**对比改动前后的失败数是否一致**，不要引入新失败。
-> 同时注意 `npm test` 的 `&&` 短路会导致 4 个 scripts 测试套件在 Mac 上永不执行。
+> **Linux 上那 1 个失败是真实缺陷，不是门控写漏**（`macos-platform.test.ts:249`，`samePathIdentity` 只比 `dev/ino/uid`）。
+> **不要用 `it.runIf(darwin)` 跳过它**。详见 Issue #2。
+> 无论在哪个平台，**都要对比改动前后的失败数是否一致**，不要引入新失败。
 
 ### 只能在特定平台验证的改动
 
