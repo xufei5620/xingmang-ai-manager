@@ -68,7 +68,9 @@ import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
 import {
+  ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
+  listDarwinGrokOrphanedDownloads,
   resolveDarwinGrokCanonicalSelection,
   runDarwinGrokPostInstallTransaction,
   verifyDarwinGrokUninstallPlan,
@@ -237,7 +239,14 @@ export type ToolUninstallResult =
       error: string
       manualHelp: {
         reason: string
-        manualCommand: null
+        /**
+         * null when a plain, unverified guess would be unsafe to hand back
+         * (e.g. a security check itself failed, so the file identities behind
+         * a command can no longer be trusted). Non-null only where the
+         * producer already fully re-verified every path it names — see
+         * DarwinGrokRetainedPathsError below for the one current source.
+         */
+        manualCommand: string | null
       }
     }
 
@@ -321,6 +330,13 @@ export async function inspectVerifiedDarwinGrokPostInstall(
   options: InspectVerifiedDarwinGrokPostInstallOptions,
 ): Promise<{ status: ToolStatus; installation: CliInstallation }> {
   const selection = resolveDarwinGrokCanonicalSelection(options.homeDirectory)
+  // internal #16: the npm lifecycle script driving this install only ever
+  // recreates the `grok` link on real hardware. Ensuring `agent` here — inside
+  // the same post-install transaction — means a failure rolls back the whole
+  // install exactly like a codesign or version mismatch would, instead of
+  // quietly shipping an install this app's own automatic uninstall can't
+  // later complete (see uninstallVerifiedDarwinGrokInstallation below).
+  await ensureDarwinGrokAgentLink(options.homeDirectory, selection)
   return inspectDarwinGrokVerifiedSelection({
     homeDirectory: options.homeDirectory,
     selection,
@@ -358,6 +374,45 @@ export async function inspectVerifiedDarwinGrokPostInstall(
   })
 }
 
+/** Single-quotes a path so a copied command pastes safely even if $HOME contains spaces or quotes. */
+function shellSingleQuote(value: string): string {
+  return `'${value.replaceAll("'", `'"'"'`)}'`
+}
+
+function formatMebibytes(bytes: number): string {
+  return `${Math.max(1, Math.round(bytes / (1024 * 1024)))} MiB`
+}
+
+/** One rm -f target per line so the copy-command dialog's <pre> block stays readable for more than a couple of paths. */
+function buildDarwinGrokCleanupCommand(paths: readonly string[]): string {
+  const quoted = paths.map(shellSingleQuote)
+  if (quoted.length <= 1) return `rm -f ${quoted[0] ?? ''}`
+  return [
+    'rm -f \\',
+    ...quoted.map((value, index) => `  ${value}${index < quoted.length - 1 ? ' \\' : ''}`),
+  ].join('\n')
+}
+
+/**
+ * internal #18: on darwin, uninstallVerifiedNativeCliFiles never deletes a
+ * quarantined symlink's renamed file (Node has no inode-bound unlink on
+ * macOS — see its comment at the retainedQuarantineFiles push), so every
+ * darwin Grok uninstall ends up here; this is the routine last step, not a
+ * rare edge case. grokManualUninstallResult recognizes this type to hand back
+ * a fully re-verified, ready-to-run manualCommand instead of the generic null
+ * it falls back to for an actual security-verification failure, where no
+ * command can safely be guessed.
+ */
+export class DarwinGrokRetainedPathsError extends Error {
+  readonly manualCommand: string
+
+  constructor(message: string, manualCommand: string) {
+    super(message)
+    this.name = 'DarwinGrokRetainedPathsError'
+    this.manualCommand = manualCommand
+  }
+}
+
 /** Verifies the official link layout, then removes only the exact planned links. */
 export async function uninstallVerifiedDarwinGrokInstallation(
   options: UninstallVerifiedDarwinGrokInstallationOptions,
@@ -366,14 +421,22 @@ export async function uninstallVerifiedDarwinGrokInstallation(
     homeDirectory: options.homeDirectory,
     runCommand: options.runCommand,
   })
-  if (!plan.expectedSymbolicLinks.grok || !plan.expectedSymbolicLinks.agent) {
-    throw new Error('Grok automatic uninstall requires both grok and agent verified symbolic links; use the official manual uninstall instructions')
+  if (!plan.expectedSymbolicLinks.grok) {
+    throw new Error('Grok automatic uninstall requires a verified grok symbolic link; use the official manual uninstall instructions')
   }
+  // internal #16: agent is best-effort here, not required. Installs made
+  // before ensureDarwinGrokAgentLink existed (or a user who removed the link
+  // by hand) can legitimately lack it, and uninstalling grok alone still
+  // leaves a consistent, fully-uninstalled state — so a missing agent only
+  // narrows what gets removed instead of blocking the whole operation.
+  // verifyDarwinGrokUninstallPlan above already fully re-verified whichever
+  // links are actually present; this just decides which ones to act on.
+  const hasAgentLink = Boolean(plan.expectedSymbolicLinks.agent)
   const result = await uninstallVerifiedNativeCliFiles({
     actualDirectory: options.installDirectory,
     expectedDirectory: plan.directory,
     expectedDirectoryIdentity: plan.directoryIdentity,
-    fileNames: ['grok', 'agent'],
+    fileNames: hasAgentLink ? ['grok', 'agent'] : ['grok'],
     label: 'Grok CLI',
     platform: 'darwin',
     expectedSymbolicLinks: plan.expectedSymbolicLinks,
@@ -384,21 +447,40 @@ export async function uninstallVerifiedDarwinGrokInstallation(
     expectedOwnerUid: plan.expectedOwnerUid,
     removeDirectoryWhenEmpty: false,
   })
-  const retainedProgramPaths = [...new Set([
-    ...result.retainedQuarantineFiles,
-    ...Object.values(plan.expectedResolvedSymbolicLinkTargets)
-      .map((target) => target.path)
-      .filter((filePath) => fs.existsSync(filePath)),
-  ])]
-  if (retainedProgramPaths.length > 0) {
-    const displayedPaths = retainedProgramPaths.map((filePath) => (
-      `~/.grok/${path.relative(plan.rootDirectory, filePath)}`
-    ))
-    throw new Error([
+  const retainedProgramPaths = Object.values(plan.expectedResolvedSymbolicLinkTargets)
+    .map((target) => target.path)
+    .filter((filePath) => fs.existsSync(filePath))
+  const retainedPaths = [...new Set([...result.retainedQuarantineFiles, ...retainedProgramPaths])]
+  if (retainedPaths.length > 0) {
+    const displayPath = (filePath: string) => `~/.grok/${path.relative(plan.rootDirectory, filePath)}`
+    const retainedBytes = retainedProgramPaths.reduce((total, filePath) => {
+      try {
+        return total + fs.statSync(filePath).size
+      } catch {
+        return total
+      }
+    }, 0)
+    const messageParts = [
       'Grok CLI 命令入口已移除，但自动卸载未完整完成。',
-      '为避免按路径删除时误删被替换的文件，以下程序路径仍保留，请人工确认后删除：',
-      displayedPaths.join('；'),
-    ].join(''))
+      `为避免 macOS 按路径删除时误删被并发替换的文件，以下 ${retainedPaths.length} 个文件未自动删除：`,
+      retainedPaths.map(displayPath).join('；'),
+      retainedBytes > 0 ? `（其中程序文件共约 ${formatMebibytes(retainedBytes)}）。` : '。',
+      '它们是卸载时符号链接改名后的残留、以及已失去命令入口的旧程序文件；Grok 命令已不可用，确认没有进程占用后即可删除，下方是可直接复制执行的清理命令。',
+    ]
+    // internal #18: these accumulate silently across every version this
+    // machine has ever installed — mention them so a user cleaning up notices
+    // them, without ever deleting them ourselves (out of scope for #18).
+    const orphans = listDarwinGrokOrphanedDownloads(options.homeDirectory, retainedProgramPaths)
+    if (orphans.length > 0) {
+      const orphanBytes = orphans.reduce((total, orphan) => total + orphan.size, 0)
+      const orphanNames = orphans.slice(0, 5).map((orphan) => path.basename(orphan.path))
+      const orphanNamesText = orphans.length > 5 ? `${orphanNames.join('；')} 等` : orphanNames.join('；')
+      messageParts.push(
+        `另在 ~/.grok/downloads/ 检测到 ${orphans.length} 个未被当前 grok/agent 引用的历史版本安装包`
+          + `（共约 ${formatMebibytes(orphanBytes)}：${orphanNamesText}），如确认不再需要可一并手动清理，本工具不会自动删除它们。`,
+      )
+    }
+    throw new DarwinGrokRetainedPathsError(messageParts.join(''), buildDarwinGrokCleanupCommand(retainedPaths))
   }
   return result
 }
@@ -407,6 +489,24 @@ export function grokManualUninstallResult(
   previousVersion: string | null,
   error: unknown,
 ): Extract<ToolUninstallResult, { outcome: 'manual-required' }> {
+  if (error instanceof DarwinGrokRetainedPathsError) {
+    // Built entirely in-house from a small, already-bounded set of verified
+    // paths (the orphan list above is itself capped for display), unlike an
+    // arbitrary caught Error, so this skips the generic control-character
+    // stripping below and keeps more of its own text. The command itself
+    // always comes straight from the error's own property, never from this
+    // truncated string, so a long reason can never truncate mid-path.
+    const reason = error.message.trim().slice(0, 2000) || 'Grok CLI 自动卸载安全验证失败'
+    return {
+      outcome: 'manual-required',
+      previousVersion,
+      error: reason,
+      manualHelp: {
+        reason,
+        manualCommand: error.manualCommand,
+      },
+    }
+  }
   const raw = error instanceof Error ? error.message : String(error)
   const message = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 500)
     || 'Grok CLI 自动卸载安全验证失败'

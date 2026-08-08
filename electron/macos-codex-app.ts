@@ -1,8 +1,9 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { runCommand, trustedCommandEnvironment } from './command-runner'
+import { CommandRunnerError, runCommand, trustedCommandEnvironment } from './command-runner'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { describeProbeFailure } from './probe-failure'
 
 const bundleIdentifier = 'com.openai.codex'
 const openAiTeamIdentifier = '2DC432GLL2'
@@ -44,6 +45,22 @@ export interface MacosCodexAppInfo {
   path: string
   version: string | null
   running: boolean
+}
+
+/**
+ * inspectMacosCodexApp never throws — see the `inspect*` naming convention —
+ * so a caller that could not reach a conclusion still needs a way to say so
+ * without being confused for a confirmed absence. `app` is null both when no
+ * bundle was found and when detection could not finish; `detectionFailed` is
+ * what tells those two states apart. A definitive match always carries
+ * `detectionFailed: false`: once one candidate is confirmed installed and
+ * signed, an execution failure hit while checking some other, unrelated
+ * candidate earlier in the scan is moot.
+ */
+export interface MacosCodexAppInspection {
+  app: MacosCodexAppInfo | null
+  detectionFailed: boolean
+  detectionError: string | null
 }
 
 export interface MacosCodexAppInspectionOptions {
@@ -119,14 +136,37 @@ function versionValue(output: string): string | null {
   return value && /^\d+(?:\.\d+){1,3}$/.test(value) ? value : null
 }
 
+interface CandidateInspection {
+  app: { path: string, version: string | null } | null
+  detectionFailed: boolean
+  detectionError: string | null
+}
+
+/** Shared by every early "this candidate is not a match" exit below. */
+const notAMatch: CandidateInspection = { app: null, detectionFailed: false, detectionError: null }
+
+/**
+ * codesign — and, incidentally, plutil and lipo, which run inside the same
+ * try/catch below — communicate a genuine rejection exclusively through a
+ * non-zero exit; see macos-code-signing.ts for why codesign's stdout/stderr
+ * must never be read to reach that conclusion instead. Anything else thrown
+ * here — a timeout, a spawn failure, an aborted run, output exceeding the
+ * bound, or any other unexpected error, including from an injected test
+ * double — means the check itself never produced an answer, which is not the
+ * same thing as the answer being "no".
+ */
+function isConclusiveRejection(error: unknown): boolean {
+  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO'
+}
+
 async function inspectCandidate(
   candidate: string,
   inspectedPaths: Set<string>,
   command: SystemCommandRunner,
   architecture: NodeJS.Architecture,
-): Promise<{ path: string, version: string | null } | null> {
+): Promise<CandidateInspection> {
   const canonical = await canonicalAppCandidate(candidate)
-  if (!canonical || inspectedPaths.has(canonical)) return null
+  if (!canonical || inspectedPaths.has(canonical)) return notAMatch
   inspectedPaths.add(canonical)
 
   const infoPath = path.join(canonical, 'Contents', 'Info.plist')
@@ -139,7 +179,7 @@ async function inspectCandidate(
       '-',
       infoPath,
     ]))
-    if (identifier !== bundleIdentifier) return null
+    if (identifier !== bundleIdentifier) return notAMatch
 
     const executableName = propertyValue(await command('/usr/bin/plutil', [
       '-extract',
@@ -154,11 +194,11 @@ async function inspectCandidate(
       || executableName === '.'
       || executableName === '..'
       || path.basename(executableName) !== executableName
-    ) return null
+    ) return notAMatch
     const executablePath = path.join(canonical, 'Contents', 'MacOS', executableName)
     const executableStats = await fs.promises.lstat(executablePath)
     if (!executableStats.isFile() || executableStats.isSymbolicLink() || (executableStats.mode & 0o111) === 0) {
-      return null
+      return notAMatch
     }
 
     const expectedArchitecture = architecture === 'arm64'
@@ -166,11 +206,11 @@ async function inspectCandidate(
       : architecture === 'x64'
         ? 'x86_64'
         : null
-    if (!expectedArchitecture) return null
+    if (!expectedArchitecture) return notAMatch
     const architectures = (await command('/usr/bin/lipo', ['-archs', executablePath]))
       .trim()
       .split(/\s+/)
-    if (!architectures.includes(expectedArchitecture)) return null
+    if (!architectures.includes(expectedArchitecture)) return notAMatch
 
     const [bundleStats, infoStats] = await Promise.all([
       fs.promises.lstat(canonical),
@@ -205,9 +245,10 @@ async function inspectCandidate(
     } catch {
       // A valid bundle remains installed when its optional display version is unavailable.
     }
-    return { path: canonical, version }
-  } catch {
-    return null
+    return { app: { path: canonical, version }, detectionFailed: false, detectionError: null }
+  } catch (error) {
+    if (isConclusiveRejection(error)) return notAMatch
+    return { app: null, detectionFailed: true, detectionError: describeProbeFailure(error) }
   }
 }
 
@@ -224,7 +265,7 @@ async function isCodexRunning(command: SystemCommandRunner): Promise<boolean> {
 
 export async function inspectMacosCodexApp(
   options: MacosCodexAppInspectionOptions = {},
-): Promise<MacosCodexAppInfo | null> {
+): Promise<MacosCodexAppInspection> {
   const command = options.runSystemCommand ?? runSystemCommand
   const architecture = options.architecture ?? process.arch
   const homeDirectory = options.homeDirectory ?? os.homedir()
@@ -234,11 +275,22 @@ export async function inspectMacosCodexApp(
     standardCandidate(systemApplicationsDirectory),
     standardCandidate(homeDirectory && path.join(homeDirectory, 'Applications')),
   ]
+  // Collects every execution failure seen along the way so a definitive match
+  // found later still wins outright, while an inconclusive scan reports every
+  // check that never produced an answer instead of only the last one.
+  const failures = new Set<string>()
 
   for (const candidate of standardCandidates) {
     if (!candidate) continue
-    const app = await inspectCandidate(candidate, inspectedPaths, command, architecture)
-    if (app) return { ...app, running: await isCodexRunning(command) }
+    const inspected = await inspectCandidate(candidate, inspectedPaths, command, architecture)
+    if (inspected.app) {
+      return {
+        app: { ...inspected.app, running: await isCodexRunning(command) },
+        detectionFailed: false,
+        detectionError: null,
+      }
+    }
+    if (inspected.detectionError) failures.add(inspected.detectionError)
   }
 
   let spotlightOutput: string
@@ -246,13 +298,29 @@ export async function inspectMacosCodexApp(
     spotlightOutput = await command('/usr/bin/mdfind', [
       'kMDItemCFBundleIdentifier == "com.openai.codex"',
     ])
-  } catch {
-    return null
+  } catch (error) {
+    // Spotlight is the only way this function discovers a bundle outside the
+    // two standard directories; if it cannot even be queried, the scan has
+    // not actually ruled anything out.
+    failures.add(describeProbeFailure(error))
+    return { app: null, detectionFailed: true, detectionError: [...failures].join('；') }
   }
 
   for (const candidate of spotlightOutput.split('\n').map((line) => line.replace(/\r$/, ''))) {
-    const app = await inspectCandidate(candidate, inspectedPaths, command, architecture)
-    if (app) return { ...app, running: await isCodexRunning(command) }
+    const inspected = await inspectCandidate(candidate, inspectedPaths, command, architecture)
+    if (inspected.app) {
+      return {
+        app: { ...inspected.app, running: await isCodexRunning(command) },
+        detectionFailed: false,
+        detectionError: null,
+      }
+    }
+    if (inspected.detectionError) failures.add(inspected.detectionError)
   }
-  return null
+
+  return {
+    app: null,
+    detectionFailed: failures.size > 0,
+    detectionError: failures.size > 0 ? [...failures].join('；') : null,
+  }
 }

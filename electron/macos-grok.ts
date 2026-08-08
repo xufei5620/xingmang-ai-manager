@@ -124,6 +124,50 @@ function canonicalLinkPath(homeDirectory: string): string {
   return path.join(homeDirectory, '.grok', 'bin', 'grok')
 }
 
+function agentLinkPath(homeDirectory: string): string {
+  return path.join(homeDirectory, '.grok', 'bin', 'agent')
+}
+
+/**
+ * xAI's official ~/.grok/bin layout carries two sibling links, `grok` and
+ * `agent` (verifyDarwinGrokUninstallPlan below already treats both as
+ * first-class official links). Windows mirrors this by staging agent.exe as a
+ * copy of the exact binary staged for grok.exe (see grok-installer.ts). Real
+ * hardware testing (internal #16) found the npm lifecycle script this app
+ * drives for the darwin-official-npm install strategy only (re)creates
+ * `grok` — a several-months-old `agent` link left over from an earlier,
+ * separately-run official installer was masking the gap until a from-scratch
+ * reinstall had no such leftover to fall back on. This closes that gap the
+ * same way Windows does: point `agent` at the exact binary `grok` was just
+ * codesign- and version-verified against.
+ *
+ * Idempotent and non-destructive by design — ensure* only fills an absence.
+ * Whatever already occupies ~/.grok/bin/agent (a fuller official install, a
+ * user's own file, a previous run of this same repair) is left completely
+ * untouched; this never inspects or overwrites existing content there.
+ */
+export async function ensureDarwinGrokAgentLink(
+  homeDirectory: string,
+  canonical: DarwinGrokCanonicalSelection,
+): Promise<void> {
+  const linkPath = agentLinkPath(homeDirectory)
+  try {
+    await fs.promises.lstat(linkPath)
+    return
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  try {
+    await fs.promises.symlink(canonical.linkTarget, linkPath)
+  } catch (error) {
+    // A concurrent creator (this same repair racing itself, or a fuller
+    // official install landing at the same moment) already won; either way
+    // something now exists at the path this function promises to ensure.
+    if ((error as NodeJS.ErrnoException).code === 'EEXIST') return
+    throw error
+  }
+}
+
 function isPathInside(root: string, candidate: string): boolean {
   const relative = path.relative(root, candidate)
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))
@@ -596,4 +640,53 @@ export async function verifyDarwinGrokUninstallPlan(
     },
     expectedOwnerUid,
   }
+}
+
+export interface DarwinGrokOrphanedDownload {
+  path: string
+  size: number
+}
+
+const grokVersionedBinaryFileNamePattern = /^grok-.+-macos-(?:aarch64|x86_64)$/
+
+/**
+ * ~/.grok/downloads accumulates one file per version this machine has ever
+ * had installed (via this app or the official installer); only the versions
+ * `grok` and `agent` currently resolve to stay reachable. Real hardware
+ * testing (internal #18) found a 131 MB previous-version binary sitting there
+ * completely unmentioned by anything in the app. Advisory only: every caller
+ * only ever reports this list for display, never deletes from it — automatic
+ * cleanup of these is explicitly out of scope for #18.
+ */
+export function listDarwinGrokOrphanedDownloads(
+  homeDirectory: string,
+  linkedExecutablePaths: readonly string[],
+): DarwinGrokOrphanedDownload[] {
+  const downloadsDirectory = path.join(homeDirectory, '.grok', 'downloads')
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(downloadsDirectory, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const linked = new Set(linkedExecutablePaths)
+  const orphans: DarwinGrokOrphanedDownload[] = []
+  for (const entry of entries) {
+    if (!entry.isFile() || !grokVersionedBinaryFileNamePattern.test(entry.name)) continue
+    const filePath = path.join(downloadsDirectory, entry.name)
+    try {
+      // realpath before comparing: callers (resolveDarwinGrokCanonicalSelection
+      // and friends) always hand back realpath'd targets, and on real macOS
+      // $TMPDIR and $HOME both sit under /var, itself a symlink to
+      // /private/var — comparing raw joined paths against those would wrongly
+      // report the binary the currently-installed link resolves to as an
+      // "orphan" of itself.
+      const resolvedPath = fs.realpathSync(filePath)
+      if (linked.has(resolvedPath)) continue
+      orphans.push({ path: resolvedPath, size: fs.statSync(filePath).size })
+    } catch {
+      // The file vanished between readdir and stat, or failed to resolve; nothing to report on it.
+    }
+  }
+  return orphans
 }

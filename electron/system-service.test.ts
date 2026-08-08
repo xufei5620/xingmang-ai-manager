@@ -7,7 +7,7 @@ import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import { runCommand, trustedCommandEnvironment, type runCommand as productionRunCommand } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { providerConfigPaths } from './config-files'
-import type { MacosCodexAppInfo } from './macos-codex-app'
+import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
@@ -27,6 +27,7 @@ import {
   buildNetworkLocationStatusFromSettled,
   buildToolStatusFromSettled,
   createSystemService,
+  DarwinGrokRetainedPathsError,
   inspectVerifiedDarwinGrokPostInstall,
   interactiveTerminalEnvironment,
   modelAccessCacheKey,
@@ -84,7 +85,7 @@ async function createDarwinService(options: {
   workspace?: string
   configured?: boolean
   codexHome?: string
-  macosCodexAppDetector?: () => Promise<MacosCodexAppInfo | null>
+  macosCodexAppDetector?: () => Promise<MacosCodexAppInspection>
 } = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-desktop-'))
   temporaryDirectories.push(directory)
@@ -125,7 +126,8 @@ async function createDarwinService(options: {
     files: [],
     updatedAt: '2026-08-03T00:00:00.000Z',
   }))
-  const macosCodexAppDetector = options.macosCodexAppDetector ?? vi.fn(async () => null)
+  const macosCodexAppDetector = options.macosCodexAppDetector
+    ?? vi.fn(async () => ({ app: null, detectionFailed: false, detectionError: null }))
   const service = createSystemService(store, {
     platform: 'darwin',
     providerRoots: { userHome: directory, codexHome },
@@ -397,7 +399,7 @@ describe('createSystemService', () => {
         codexEnv,
         resolveCliCommand: resolveCli,
         runCommand: execute,
-        macosCodexAppDetector: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
       },
     )
 
@@ -572,6 +574,29 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     expect(fs.existsSync(path.dirname(stagedExecutable!))).toBe(false)
   })
 
+  it('ensures the agent link exists before verifying a postinstall grok selection (internal #16)', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+    const specs: Array<{ executable: string; argv: readonly string[] }> = []
+
+    const inspected = await inspectVerifiedDarwinGrokPostInstall({
+      homeDirectory: fixture.home,
+      expectedVersion: '0.2.118',
+      runCommand: async (spec) => {
+        specs.push(spec)
+        return officialDarwinGrokUninstallResult(fixture, spec)
+      },
+    })
+
+    const agentLink = path.join(fixture.bin, 'agent')
+    expect(fs.readlinkSync(agentLink)).toBe(fixture.grokTarget)
+    expect(fs.realpathSync(agentLink)).toBe(fs.realpathSync(fixture.grokBinary))
+    // Ensuring the link is pure filesystem work — it must not itself trigger a
+    // codesign/version verification pass against the freshly created agent.
+    expect(specs.every((spec) => path.basename(spec.executable) !== 'agent')).toBe(true)
+    expect(inspected.status.version).toBe('0.2.118')
+  })
+
   it('reports retained verified program paths after removing only the command entries', async () => {
     const fixture = createDarwinGrokUninstallFixture()
     const specs: Array<{ executable: string; argv: readonly string[] }> = []
@@ -607,8 +632,63 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     expect(stagedExecutables.every((executable) => !fs.existsSync(path.dirname(executable)))).toBe(true)
   })
 
+  it('provides a ready-to-run cleanup command alongside the retained-paths error (internal #18)', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+
+    let caught: unknown
+    try {
+      await uninstallVerifiedDarwinGrokInstallation({
+        homeDirectory: fixture.home,
+        installDirectory: fs.realpathSync(fixture.bin),
+        runCommand: async (spec) => officialDarwinGrokUninstallResult(fixture, spec),
+      })
+      throw new Error('expected uninstallVerifiedDarwinGrokInstallation to reject')
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(DarwinGrokRetainedPathsError)
+    const retained = caught as DarwinGrokRetainedPathsError
+    expect(retained.manualCommand).toContain('rm -f')
+    expect(retained.manualCommand).toContain('grok-0.2.118-macos-aarch64')
+    expect(retained.manualCommand).toContain('grok-0.2.111-macos-aarch64')
+    const quarantineNames = fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))
+    expect(quarantineNames).toHaveLength(2)
+    for (const name of quarantineNames) {
+      expect(retained.manualCommand).toContain(name)
+    }
+  })
+
+  it('mentions unreferenced legacy binaries under downloads/ without deleting them (internal #18)', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    const downloadsDirectory = path.dirname(fixture.grokBinary)
+    const orphanBinary = path.join(downloadsDirectory, 'grok-0.2.100-macos-aarch64')
+    fs.writeFileSync(orphanBinary, 'y'.repeat(4096), { mode: 0o700 })
+
+    let caught: unknown
+    try {
+      await uninstallVerifiedDarwinGrokInstallation({
+        homeDirectory: fixture.home,
+        installDirectory: fs.realpathSync(fixture.bin),
+        runCommand: async (spec) => officialDarwinGrokUninstallResult(fixture, spec),
+      })
+      throw new Error('expected uninstallVerifiedDarwinGrokInstallation to reject')
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(DarwinGrokRetainedPathsError)
+    const retained = caught as DarwinGrokRetainedPathsError
+    expect(retained.message).toContain('grok-0.2.100-macos-aarch64')
+    expect(retained.message).toContain('~/.grok/downloads/')
+    // Advisory only — internal #18 explicitly keeps automatic deletion of
+    // legacy orphans out of scope, so the executable command must not touch them.
+    expect(retained.manualCommand).not.toContain('grok-0.2.100-macos-aarch64')
+    expect(fs.existsSync(orphanBinary)).toBe(true)
+  })
+
   it.each([
-    ['missing link', 'Grok automatic uninstall requires both grok and agent verified symbolic links'],
+    ['missing link', 'Grok automatic uninstall requires a verified grok symbolic link'],
     ['escaped target', 'Grok agent link target must remain under ~/.grok'],
     ['wrong owner', 'Grok CLI 符号链接 agent 所有者与卸载计划不一致'],
     ['wrong type', 'Grok canonical link must be a symbolic link'],
@@ -626,7 +706,7 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     })
   })
 
-  it('returns manual-required from the public service after automatic validation fails', async () => {
+  it('tolerates a missing agent link and uninstalls grok alone through the public service (internal #16)', async () => {
     const fixture = createDarwinGrokUninstallFixture()
     fs.unlinkSync(path.join(fixture.bin, 'agent'))
     vi.stubEnv('HOME', fs.realpathSync(fixture.home))
@@ -651,12 +731,22 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
       },
     })
 
+    // A missing agent link no longer aborts the uninstall outright — darwin's
+    // always-retain-the-program-file quarantine step (internal #18) still
+    // means this ends in manual-required, but now because of that retained
+    // path, not because agent was absent.
     await expect(service.uninstallCli('grok')).resolves.toMatchObject({
       outcome: 'manual-required',
-      manualHelp: { manualCommand: null },
-      error: expect.stringContaining('both grok and agent'),
+      previousVersion: '0.2.118',
+      manualHelp: { manualCommand: expect.stringContaining('rm -f') },
+      error: expect.not.stringContaining('both grok and agent'),
     })
-    expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe(fixture.grokTarget)
+    expect(fs.existsSync(path.join(fixture.bin, 'grok'))).toBe(false)
+    expect(fs.existsSync(path.join(fixture.bin, 'agent'))).toBe(false)
+    const quarantineNames = fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))
+    expect(quarantineNames).toHaveLength(1)
+    expect(quarantineNames[0]).toMatch(/^\.grok-/)
+    expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
   })
 
   it('returns manual-required and restores links when a target changes after quarantine starts', async () => {
@@ -738,7 +828,10 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
       outcome: 'manual-required',
       previousVersion: '0.2.118',
       error: expect.stringMatching(/自动卸载未完整完成.*\.removing.*grok-0\.2\.118/s),
-      manualHelp: { manualCommand: null },
+      manualHelp: {
+        reason: expect.stringMatching(/自动卸载未完整完成.*\.removing.*grok-0\.2\.118/s),
+        manualCommand: expect.stringContaining('rm -f'),
+      },
     })
     expect(fs.existsSync(path.join(fixture.bin, 'grok'))).toBe(false)
     expect(fs.existsSync(path.join(fixture.bin, 'agent'))).toBe(false)
@@ -752,7 +845,7 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     expect(fs.readFileSync(fixture.backupFile, 'utf8')).toBe('backup')
   })
 
-  it('requires both official links and leaves the canonical link untouched when agent is absent', async () => {
+  it('uninstalls grok alone when the agent link is absent instead of blocking on it (internal #16)', async () => {
     const fixture = createDarwinGrokUninstallFixture()
     fs.unlinkSync(path.join(fixture.bin, 'agent'))
 
@@ -760,9 +853,15 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
       homeDirectory: fixture.home,
       installDirectory: fs.realpathSync(fixture.bin),
       runCommand: async (spec) => officialDarwinGrokUninstallResult(fixture, spec),
-    })).rejects.toThrow('both grok and agent')
+    })).rejects.toThrow(DarwinGrokRetainedPathsError)
 
-    expect(fs.readlinkSync(path.join(fixture.bin, 'grok'))).toBe(fixture.grokTarget)
+    // grok's command entry is gone; darwin's always-retain-the-program-file
+    // step (internal #18) is the only reason this still isn't a clean
+    // 'uninstalled' outcome — not the missing agent link.
+    expect(fs.existsSync(path.join(fixture.bin, 'grok'))).toBe(false)
+    const quarantineNames = fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))
+    expect(quarantineNames).toHaveLength(1)
+    expect(quarantineNames[0]).toMatch(/^\.grok-/)
     expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
   })
 
@@ -1410,15 +1509,22 @@ describe('Darwin Codex Desktop integration', () => {
       updateCheck: 'skipped',
       updateState: 'unknown',
       updateError: null,
+      // A confirmed absence, not merely the absence of a positive result.
+      detectionFailed: false,
+      detectionError: null,
     })
   })
 
   it('reports a detected Codex App as an installed externally managed desktop app', async () => {
     const { service } = await createDarwinService({
       macosCodexAppDetector: async () => ({
-        path: '/Applications/Codex.app',
-        version: '26.727.51351',
-        running: true,
+        app: {
+          path: '/Applications/Codex.app',
+          version: '26.727.51351',
+          running: true,
+        },
+        detectionFailed: false,
+        detectionError: null,
       }),
     })
 
@@ -1438,15 +1544,19 @@ describe('Darwin Codex Desktop integration', () => {
       updateCheck: 'skipped',
       updateState: 'unknown',
       updateError: null,
+      detectionFailed: false,
     })
   })
 
-  it('degrades a rejected Codex App detector to a not-installed status', async () => {
+  it('degrades a rejected Codex App detector to detectionFailed, not to a confirmed not-installed status', async () => {
     const { service } = await createDarwinService({
       macosCodexAppDetector: async () => { throw new Error('inspection unavailable') },
     })
 
     await expect(service.inspectCodexDesktop()).resolves.toMatchObject({
+      // `installed: false` alone would tell the renderer to offer an install
+      // button for something that may already be on the user's machine —
+      // detectionFailed is what keeps this reading as "retry", not "install".
       installed: false,
       version: null,
       appVersion: null,
@@ -1455,6 +1565,8 @@ describe('Darwin Codex Desktop integration', () => {
       running: false,
       updateCheck: 'skipped',
       updateError: null,
+      detectionFailed: true,
+      detectionError: 'inspection unavailable',
     })
   })
 
@@ -1470,7 +1582,7 @@ describe('Darwin Codex Desktop integration', () => {
     const store = new AppSettingsStore(path.join(directory, 'settings.json'), directory)
     const service = createSystemService(store, {
       platform: 'darwin',
-      macosCodexAppDetector: async () => null,
+      macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
       resolveCliCommand: async (provider, env, windowsExecutionMode, resolutionOptions) => {
         try {
           return await resolveVerifiedToolCommand(
@@ -1555,7 +1667,7 @@ describe('Darwin Codex Desktop integration', () => {
       new AppSettingsStore(path.join(directory, 'settings.json'), directory),
       {
         platform: 'darwin',
-        macosCodexAppDetector: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
         resolveCliCommand: async () => { throw new Error('standalone verification rejected') },
       },
     )
@@ -1595,7 +1707,7 @@ describe('Darwin Codex Desktop integration', () => {
       new AppSettingsStore(path.join(directory, 'settings.json'), directory),
       {
         platform: 'darwin',
-        macosCodexAppDetector: async () => null,
+        macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
         resolveCliCommand: async () => ({ executable, argv: [] }),
         runCommand: execute,
       },

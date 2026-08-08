@@ -4,7 +4,9 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   captureDarwinGrokCanonicalLink,
+  ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
+  listDarwinGrokOrphanedDownloads,
   resolveDarwinGrokCanonicalSelection,
   restoreDarwinGrokCanonicalLink,
   runDarwinGrokPostInstallTransaction,
@@ -468,5 +470,110 @@ describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', 
 
     expect(fs.existsSync(fixture.canonicalLink)).toBe(false)
     expect(fs.existsSync(fixture.binary)).toBe(true)
+  })
+})
+
+// internal #16: real hardware testing found the npm lifecycle script this app
+// drives for darwin installs only ever (re)creates the `grok` link, never
+// `agent`. These cover the install-side repair — a July install's leftover
+// `agent` link masked the gap until a from-scratch reinstall had no such
+// leftover to fall back on.
+describe.runIf(process.platform === 'darwin')('ensureDarwinGrokAgentLink', () => {
+  it('creates a sibling agent link pointing at the exact target the canonical grok link resolved to', async () => {
+    const fixture = createFixture()
+    const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+    const agentLink = path.join(fixture.bin, 'agent')
+    expect(fs.existsSync(agentLink)).toBe(false)
+
+    await ensureDarwinGrokAgentLink(fixture.home, canonical)
+
+    expect(fs.lstatSync(agentLink).isSymbolicLink()).toBe(true)
+    expect(fs.readlinkSync(agentLink)).toBe(canonical.linkTarget)
+    expect(fs.realpathSync(agentLink)).toBe(canonical.executablePath)
+  })
+
+  it('leaves a pre-existing agent link untouched even when it points elsewhere', async () => {
+    const fixture = createFixture()
+    const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+    const staleBinary = path.join(fixture.downloads, 'grok-0.2.100-macos-aarch64')
+    fs.writeFileSync(staleBinary, 'stale agent binary', { mode: 0o700 })
+    const staleTarget = path.join('..', 'downloads', path.basename(staleBinary))
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(staleTarget, agentLink)
+
+    await ensureDarwinGrokAgentLink(fixture.home, canonical)
+
+    expect(fs.readlinkSync(agentLink)).toBe(staleTarget)
+  })
+
+  it('leaves a non-symlink occupying the agent path untouched instead of overwriting it', async () => {
+    const fixture = createFixture()
+    const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.writeFileSync(agentLink, 'not a symlink')
+
+    await ensureDarwinGrokAgentLink(fixture.home, canonical)
+
+    expect(fs.lstatSync(agentLink).isSymbolicLink()).toBe(false)
+    expect(fs.readFileSync(agentLink, 'utf8')).toBe('not a symlink')
+  })
+
+  it('tolerates a concurrent creator winning the race instead of failing the install', async () => {
+    const fixture = createFixture()
+    const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+    vi.spyOn(fs.promises, 'symlink').mockImplementation(async () => {
+      const error = new Error('EEXIST: file already exists, symlink') as NodeJS.ErrnoException
+      error.code = 'EEXIST'
+      throw error
+    })
+
+    await expect(ensureDarwinGrokAgentLink(fixture.home, canonical)).resolves.toBeUndefined()
+  })
+
+  it('propagates an unexpected symlink failure instead of silently continuing', async () => {
+    const fixture = createFixture()
+    const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+    vi.spyOn(fs.promises, 'symlink').mockImplementation(async () => {
+      const error = new Error('EACCES: permission denied, symlink') as NodeJS.ErrnoException
+      error.code = 'EACCES'
+      throw error
+    })
+
+    await expect(ensureDarwinGrokAgentLink(fixture.home, canonical)).rejects.toThrow('EACCES')
+  })
+})
+
+// internal #18: ~/.grok/downloads accumulates one file per version this
+// machine has ever had installed; real hardware testing found a 131 MB
+// previous-version binary sitting there completely unmentioned anywhere in
+// the app.
+describe.runIf(process.platform === 'darwin')('listDarwinGrokOrphanedDownloads', () => {
+  it('lists versioned binaries under downloads/ that no linked executable path references', () => {
+    const fixture = createFixture()
+    const orphanBinary = path.join(fixture.downloads, 'grok-0.2.100-macos-aarch64')
+    fs.writeFileSync(orphanBinary, 'x'.repeat(2048), { mode: 0o700 })
+    fs.writeFileSync(path.join(fixture.downloads, 'notes.txt'), 'not a versioned binary')
+
+    const orphans = listDarwinGrokOrphanedDownloads(fixture.home, [fs.realpathSync(fixture.binary)])
+
+    // The function reports realpath'd paths (matching resolveDarwinGrokCanonicalSelection's
+    // convention) so comparisons stay correct even when $TMPDIR sits under a
+    // symlinked ancestor, as /var does on real macOS.
+    expect(orphans).toEqual([{ path: fs.realpathSync(orphanBinary), size: 2048 }])
+  })
+
+  it('excludes a versioned binary that is still referenced by a linked executable path', () => {
+    const fixture = createFixture()
+
+    const orphans = listDarwinGrokOrphanedDownloads(fixture.home, [fs.realpathSync(fixture.binary)])
+
+    expect(orphans).toEqual([])
+  })
+
+  it('returns an empty list when the downloads directory does not exist', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-grok-no-downloads-'))
+    temporaryDirectories.push(home)
+
+    expect(listDarwinGrokOrphanedDownloads(home, [])).toEqual([])
   })
 })

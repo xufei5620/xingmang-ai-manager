@@ -4,8 +4,10 @@ import os from 'node:os'
 import path from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { MacosCodexAppInspection } from './macos-codex-app'
 import { windowsPowerShellExecutable } from './windows-elevation'
 import {
+  buildCodexDesktopDarwinStatus,
   buildCodexDesktopLaunchPlan,
   buildCodexDesktopManifestSources,
   buildCodexDesktopPackageSources,
@@ -477,5 +479,97 @@ describe('buildCodexDesktopWindowsProbes', () => {
     expect(result.detectionFailed).toBe(true)
     expect(result.detectionError).toBe('Get-StartApps 超时；Get-AppxPackage 拒绝访问')
     expect(result.packageProbe).toEqual({ value: null, error: 'Get-AppxPackage 拒绝访问' })
+  })
+})
+
+describe('buildCodexDesktopDarwinStatus', () => {
+  const installedApp: MacosCodexAppInspection = {
+    app: { path: '/Applications/Codex.app', version: '26.727.51351', running: true },
+    detectionFailed: false,
+    detectionError: null,
+  }
+  const confirmedAbsent: MacosCodexAppInspection = {
+    app: null,
+    detectionFailed: false,
+    detectionError: null,
+  }
+
+  it('reports a confirmed, signature-verified app as installed', () => {
+    const result = buildCodexDesktopDarwinStatus({ status: 'fulfilled', value: installedApp })
+    expect(result).toMatchObject({
+      installed: true,
+      version: '26.727.51351',
+      appVersion: '26.727.51351',
+      path: '/Applications/Codex.app',
+      installDirectory: '/Applications/Codex.app',
+      running: true,
+      mirrorVersion: null,
+      mirrorUpdateAvailable: null,
+      mirrorError: null,
+      updateCheck: 'skipped',
+      updateError: null,
+      detectionFailed: false,
+      detectionError: null,
+    })
+  })
+
+  it('reports a confirmed absence as installed: false with detectionFailed: false', () => {
+    // The three states this maps: this is the "confirmed not installed" one —
+    // distinct from both a confirmed install and an inconclusive scan below.
+    const result = buildCodexDesktopDarwinStatus({ status: 'fulfilled', value: confirmedAbsent })
+    expect(result).toMatchObject({
+      installed: false,
+      version: null,
+      path: null,
+      running: false,
+      detectionFailed: false,
+      detectionError: null,
+    })
+  })
+
+  it('reports an inconclusive scan as detectionFailed, never as a confirmed absence', () => {
+    // The third state: inspectMacosCodexApp itself could not finish (e.g. a
+    // codesign timeout deep inside the scan) — `installed: false` alone would
+    // read identically to a real "not installed", which is exactly the bug
+    // this type exists to prevent.
+    const result = buildCodexDesktopDarwinStatus({
+      status: 'fulfilled',
+      value: { app: null, detectionFailed: true, detectionError: 'codesign 超时' },
+    })
+    expect(result).toMatchObject({
+      installed: false,
+      path: null,
+      detectionFailed: true,
+      detectionError: 'codesign 超时',
+    })
+  })
+
+  it('does not let detectionFailed survive alongside a confirmed install', () => {
+    // inspectMacosCodexApp's own contract guarantees this never actually
+    // happens (a definitive match always carries detectionFailed: false), but
+    // the mapping itself must not introduce a way to violate it either.
+    const result = buildCodexDesktopDarwinStatus({
+      status: 'fulfilled',
+      value: { ...installedApp, detectionFailed: true, detectionError: 'stale probe' },
+    })
+    expect(result.installed).toBe(true)
+    expect(result.detectionFailed).toBe(true)
+    expect(result.detectionError).toBe('stale probe')
+  })
+
+  it('degrades a rejected detector promise to detectionFailed instead of a confirmed absence', () => {
+    // The detector is caller-injectable (CodexDesktopServiceOptions.detectMacosCodexApp);
+    // a substitute that throws outright — as system-service.test.ts's darwin
+    // fixtures do — must not be misread as "not installed" either.
+    const result = buildCodexDesktopDarwinStatus({
+      status: 'rejected',
+      reason: new Error('detector crashed'),
+    })
+    expect(result).toMatchObject({
+      installed: false,
+      path: null,
+      detectionFailed: true,
+      detectionError: 'detector crashed',
+    })
   })
 })

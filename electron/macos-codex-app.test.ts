@@ -2,6 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { CommandRunnerError, type CommandErrorCode } from './command-runner'
 import {
   inspectMacosCodexApp,
   resetMacosCodexAppVerificationCache,
@@ -33,6 +34,28 @@ function officialBundleCommand(executable: string, argv: readonly string[]): str
   if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
   if (executable === '/usr/bin/codesign') return ''
   return null
+}
+
+/**
+ * Builds the same shape `runCommand` throws for a given failure mode, so tests can
+ * drive `inspectMacosCodexApp` through its two distinct error branches: a conclusive
+ * EXIT_NON_ZERO rejection (codesign ran and said "no") versus every other code, which
+ * means the command never produced an answer at all. See command-runner.ts for the
+ * full set of codes this can carry.
+ */
+function commandRunnerError(code: CommandErrorCode, message: string): CommandRunnerError {
+  return new CommandRunnerError(message, {
+    code,
+    executable: '/usr/bin/codesign',
+    argv: [],
+    exitCode: code === 'EXIT_NON_ZERO' ? 1 : null,
+    signal: null,
+    stdout: '',
+    stderr: '',
+    outputBytes: 0,
+    maxOutputBytes: 65_536,
+    durationMs: 0,
+  })
 }
 
 afterEach(() => {
@@ -77,7 +100,13 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
       },
     }
 
-    await expect(inspectMacosCodexApp(options)).resolves.toBeNull()
+    // An architecture mismatch is a conclusive "not this bundle" answer, not a
+    // failure to obtain one: the scan completed and confidently found nothing.
+    await expect(inspectMacosCodexApp(options)).resolves.toEqual({
+      app: null,
+      detectionFailed: false,
+      detectionError: null,
+    })
   })
 
   it('rejects a forged app that only copies the Codex bundle identifier', async () => {
@@ -98,16 +127,24 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
         if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
         if (executable === '/usr/bin/codesign') {
           // The forged bundle carries a different team's certificate, so the pinned
-          // OpenAI requirement is not satisfied and codesign exits non-zero. Nothing
-          // it prints can change that any more.
-          throw new Error('test-requirement: code failed to satisfy specified code requirement(s)')
+          // OpenAI requirement is not satisfied and codesign exits non-zero — the
+          // one shape a caller may treat as a conclusive rejection rather than an
+          // execution failure. See macos-code-signing.ts for why nothing it prints
+          // may be read instead.
+          throw commandRunnerError('EXIT_NON_ZERO', 'Command exited with code 1: codesign')
         }
         if (executable === '/usr/bin/mdfind') return ''
         throw new Error(`unexpected command: ${executable}`)
       },
     }
 
-    await expect(inspectMacosCodexApp(options)).resolves.toBeNull()
+    // A real signature rejection stays conservative, exactly as before: not
+    // detectionFailed, just confidently not a match.
+    await expect(inspectMacosCodexApp(options)).resolves.toEqual({
+      app: null,
+      detectionFailed: false,
+      detectionError: null,
+    })
   })
 
   it('returns the canonical standard application without invoking Spotlight', async () => {
@@ -133,9 +170,13 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
       systemApplicationsDirectory,
       runSystemCommand,
     })).resolves.toEqual({
-      path: fs.realpathSync(canonicalApp),
-      version: '26.727.51351',
-      running: true,
+      app: {
+        path: fs.realpathSync(canonicalApp),
+        version: '26.727.51351',
+        running: true,
+      },
+      detectionFailed: false,
+      detectionError: null,
     })
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/mdfind')).toBe(false)
   })
@@ -166,9 +207,13 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
       systemApplicationsDirectory,
       runSystemCommand,
     })).resolves.toEqual({
-      path: fs.realpathSync(spotlightApp),
-      version: '26.727.51351',
-      running: false,
+      app: {
+        path: fs.realpathSync(spotlightApp),
+        version: '26.727.51351',
+        running: false,
+      },
+      detectionFailed: false,
+      detectionError: null,
     })
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/mdfind')).toBe(true)
   })
@@ -197,7 +242,7 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
       homeDirectory: path.join(root, 'home'),
       systemApplicationsDirectory: path.join(root, 'Applications'),
       runSystemCommand,
-    })).resolves.toMatchObject({ path: fs.realpathSync(validApp) })
+    })).resolves.toMatchObject({ app: { path: fs.realpathSync(validApp) } })
     expect(runSystemCommand.mock.calls.filter(([executable, argv]) => (
       executable === '/usr/bin/plutil'
       && (argv as readonly string[]).at(-1) === invalidInfo
@@ -225,9 +270,13 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
       systemApplicationsDirectory,
       runSystemCommand,
     })).resolves.toEqual({
-      path: fs.realpathSync(app),
-      version: null,
-      running: false,
+      app: {
+        path: fs.realpathSync(app),
+        version: null,
+        running: false,
+      },
+      detectionFailed: false,
+      detectionError: null,
     })
   })
 
@@ -247,15 +296,16 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
       homeDirectory: path.join(root, 'home'),
       systemApplicationsDirectory: path.join(root, 'Applications'),
       runSystemCommand,
-    })).resolves.toBeNull()
+    })).resolves.toEqual({ app: null, detectionFailed: false, detectionError: null })
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/plutil')).toBe(false)
   })
 
-  it('returns no false positive for malformed candidates or command failures', async () => {
+  it('rejects malformed candidates without executing any command', async () => {
     const root = temporaryDirectory()
     const malformedCandidate = path.join(root, 'not-an-app')
     fs.mkdirSync(malformedCandidate)
-    const malformed = await inspectMacosCodexApp({
+
+    const result = await inspectMacosCodexApp({
       homeDirectory: path.join(root, 'home'),
       systemApplicationsDirectory: path.join(root, 'Applications'),
       runSystemCommand: async (executable) => {
@@ -265,14 +315,16 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
         throw new Error('no metadata command should run for malformed candidates')
       },
     })
-    const commandFailure = await inspectMacosCodexApp({
-      homeDirectory: path.join(root, 'home'),
-      systemApplicationsDirectory: path.join(root, 'Applications'),
-      runSystemCommand: async () => {
-        throw new Error('mdfind unavailable')
-      },
-    })
-    const nulDirectory = await inspectMacosCodexApp({
+
+    expect(result).toEqual({ app: null, detectionFailed: false, detectionError: null })
+  })
+
+  it('confirms not installed, without executing any command, when Spotlight succeeds but finds nothing', async () => {
+    const root = temporaryDirectory()
+
+    const result = await inspectMacosCodexApp({
+      // The NUL byte makes the home-directory candidate invalid input, rejected
+      // before any command runs — distinct from a command that ran and failed.
       homeDirectory: `${root}\0home`,
       systemApplicationsDirectory: path.join(root, 'Applications'),
       runSystemCommand: async (executable) => {
@@ -281,10 +333,113 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
       },
     })
 
-    expect(malformed).toBeNull()
-    expect(commandFailure).toBeNull()
-    expect(nulDirectory).toBeNull()
+    expect(result).toEqual({ app: null, detectionFailed: false, detectionError: null })
   })
+
+  it('surfaces detectionFailed, not a confirmed absence, when Spotlight itself cannot be queried', async () => {
+    const root = temporaryDirectory()
+
+    // Neither standard directory exists on disk, so both are conclusively
+    // rejected before any command runs; Spotlight is the only remaining way to
+    // find a non-standard install, and here it cannot even be queried.
+    const result = await inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory: path.join(root, 'Applications'),
+      runSystemCommand: async () => {
+        throw new Error('mdfind unavailable')
+      },
+    })
+
+    expect(result).toEqual({
+      app: null,
+      detectionFailed: true,
+      detectionError: 'mdfind unavailable',
+    })
+  })
+
+  it('treats a codesign execution failure as detectionFailed, never as a rejected signature', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    const runSystemCommand = async (executable: string, argv: readonly string[]): Promise<string> => {
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        if (argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+        if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
+        return '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
+      if (executable === '/usr/bin/codesign') {
+        // A timeout is not codesign telling us the signature is bad — the
+        // check simply never finished.
+        throw commandRunnerError('TIMED_OUT', 'Command timed out: codesign')
+      }
+      if (executable === '/usr/bin/mdfind') return ''
+      throw new Error(`unexpected command: ${executable}`)
+    }
+
+    const result = await inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    expect(result).toEqual({
+      app: null,
+      detectionFailed: true,
+      detectionError: 'Command timed out: codesign',
+    })
+  })
+
+  it('does not let an execution failure on one candidate block a definitive match on a later one', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const brokenApp = path.join(systemApplicationsDirectory, 'Codex.app')
+    const brokenInfo = createApp(brokenApp)
+    // codesign is invoked with the realpath-canonicalized bundle directory
+    // (macos-codex-app.ts resolves every candidate before acting on it), which
+    // on macOS can differ textually from the literal path below /tmp — match
+    // on the same canonical form the production code actually sees.
+    const brokenCanonical = fs.realpathSync(brokenApp)
+    const homeDirectory = path.join(root, 'home')
+    const validApp = path.join(homeDirectory, 'Applications', 'Codex.app')
+    const validInfo = createApp(validApp)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/codesign' && argv.at(-1) === brokenCanonical) {
+        throw commandRunnerError('SPAWN_FAILED', 'Failed to start command: codesign')
+      }
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === brokenInfo) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '1.0.0\n'
+      }
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === validInfo) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable} ${argv.join(' ')}`)
+    })
+
+    const result = await inspectMacosCodexApp({
+      homeDirectory,
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    // The confirmed match from ~/Applications wins outright; the earlier
+    // execution failure on /Applications/Codex.app leaves no trace.
+    expect(result).toEqual({
+      app: {
+        path: fs.realpathSync(validApp),
+        version: '26.727.51351',
+        running: false,
+      },
+      detectionFailed: false,
+      detectionError: null,
+    })
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/mdfind')).toBe(false)
+  })
+
   // The default runner is what ships; every other case here injects a stub, so
   // without this the environment fix would be untested.
   it.runIf(process.platform === 'darwin')('does not hand inherited injection variables to the inspection commands', async () => {
@@ -332,7 +487,7 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     })
 
     for (let round = 0; round < 5; round += 1) {
-      await expect(scan()).resolves.toMatchObject({ version: '26.727.51351' })
+      await expect(scan()).resolves.toMatchObject({ app: { version: '26.727.51351' } })
     }
 
     const codesignCalls = runSystemCommand.mock.calls
@@ -412,5 +567,45 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     const codesignCalls = runSystemCommand.mock.calls
       .filter(([executable]) => executable === '/usr/bin/codesign')
     expect(codesignCalls).toHaveLength(2)
+  })
+
+  it('does not cache a codesign execution failure, and retries it on the next scan', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    let codesignCalls = 0
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        if (argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+        if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
+        return '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
+      if (executable === '/usr/bin/codesign') {
+        codesignCalls += 1
+        // Transient the first time (58818d0's contract: only a pass may be
+        // cached), a clean pass the second — simulating the same bundle
+        // recovering from a one-off timeout.
+        if (codesignCalls === 1) throw commandRunnerError('TIMED_OUT', 'Command timed out: codesign')
+        return ''
+      }
+      if (executable === '/usr/bin/mdfind') return ''
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    const scan = () => inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    await expect(scan()).resolves.toEqual({
+      app: null,
+      detectionFailed: true,
+      detectionError: 'Command timed out: codesign',
+    })
+    await expect(scan()).resolves.toMatchObject({ app: { version: '26.727.51351' } })
+
+    expect(codesignCalls).toBe(2)
   })
 })

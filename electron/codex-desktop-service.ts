@@ -28,7 +28,7 @@ import {
 import { commandEnvironment, trustedCommandEnvironment, windowsSystemExecutable, type runCommand } from './command-runner'
 import type { NativeConfigInspection } from './config-files'
 import type { InstallationQueue } from './installation-queue'
-import type { inspectMacosCodexApp, MacosCodexAppInfo } from './macos-codex-app'
+import type { inspectMacosCodexApp, MacosCodexAppInspection } from './macos-codex-app'
 import { describeProbeFailure } from './probe-failure'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import type {
@@ -796,6 +796,39 @@ export function desktopUpdateFields(
   }
 }
 
+/**
+ * Maps the injected macOS detector's settled result onto DesktopAppStatus.
+ * inspectMacosCodexApp is itself designed to never throw and to already
+ * distinguish "confirmed absent" from "could not confirm" via `detectionFailed`
+ * (see macos-codex-app.ts), but the detector is caller-injectable
+ * (`CodexDesktopServiceOptions.detectMacosCodexApp`), so a substitute that
+ * does throw — as system-service.test.ts's darwin fixtures do to simulate
+ * this exact failure — must still degrade to `detectionFailed: true` rather
+ * than being misread as a confirmed "not installed".
+ */
+export function buildCodexDesktopDarwinStatus(
+  result: PromiseSettledResult<MacosCodexAppInspection>,
+): DesktopAppStatus {
+  const inspection: MacosCodexAppInspection = result.status === 'fulfilled'
+    ? result.value
+    : { app: null, detectionFailed: true, detectionError: describeProbeFailure(result.reason) }
+  const { app, detectionFailed, detectionError } = inspection
+  return {
+    installed: app !== null,
+    version: app?.version ?? null,
+    appVersion: app?.version ?? null,
+    mirrorVersion: null,
+    mirrorUpdateAvailable: null,
+    mirrorError: null,
+    path: app?.path ?? null,
+    installDirectory: app?.path ?? null,
+    running: app?.running ?? false,
+    detectionFailed,
+    detectionError,
+    ...desktopUpdateFields('skipped', null, null),
+  }
+}
+
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform
   windowsExecutionMode: WindowsCliExecutionMode
@@ -964,24 +997,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
   async function inspectCodexDesktop(): Promise<DesktopAppStatus> {
     if (platform === 'darwin') {
-      let app: MacosCodexAppInfo | null = null
-      try {
-        app = await detectMacosCodexApp()
-      } catch {
-        // A local application inspection failure must not block the system scan.
-      }
-      return {
-        installed: app !== null,
-        version: app?.version ?? null,
-        appVersion: app?.version ?? null,
-        mirrorVersion: null,
-        mirrorUpdateAvailable: null,
-        mirrorError: null,
-        path: app?.path ?? null,
-        installDirectory: app?.path ?? null,
-        running: app?.running ?? false,
-        ...desktopUpdateFields('skipped', null, null),
-      }
+      // A local application inspection failure must not block the system
+      // scan, but it also must not silently read as "not installed" — see
+      // buildCodexDesktopDarwinStatus.
+      const [result] = await Promise.allSettled([detectMacosCodexApp()])
+      return buildCodexDesktopDarwinStatus(result)
     }
     if (platform !== 'win32') {
       return {
