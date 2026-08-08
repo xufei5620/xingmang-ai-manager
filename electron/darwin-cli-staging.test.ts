@@ -266,4 +266,59 @@ describe.runIf(process.platform === 'darwin')('private Darwin CLI staging lifecy
     expect(fs.existsSync(stale)).toBe(false)
     expect(fs.statSync(live).isDirectory()).toBe(true)
   })
+  it('reclaims the slot and the directory when a retained copy fails revalidation', async () => {
+    const fixture = sourceFixture()
+    const stage = () => stageVerifiedDarwinCli({
+      executableName: 'codex',
+      sourcePath: fixture.sourcePath,
+      sourceIdentity: fixture.sourceIdentity,
+      retention: 'retained',
+      baseDirectory: fixture.root,
+      verify: async () => undefined,
+    })
+
+    const first = await stage()
+    const firstDirectory = path.dirname(first)
+    expect(fs.existsSync(firstDirectory)).toBe(true)
+
+    // Remove the private copy so the cached record fails revalidation. The staged
+    // file is 0500, so it is unlinked rather than rewritten; the source is untouched,
+    // so the next call hits the same cache key and takes the invalidation path.
+    fs.unlinkSync(first)
+
+    const second = await stage()
+
+    expect(second).not.toBe(first)
+    expect(fs.existsSync(path.dirname(second))).toBe(true)
+    // The invalidated record must not keep its directory alive. Releasing it
+    // through the normal lease path would leave this true, because a retained
+    // record's count never reaches zero.
+    expect(fs.existsSync(firstDirectory)).toBe(false)
+  })
+
+  it('does not exhaust the retained slots when copies keep failing revalidation', async () => {
+    const fixture = sourceFixture()
+    const stage = () => stageVerifiedDarwinCli({
+      executableName: 'codex',
+      sourcePath: fixture.sourcePath,
+      sourceIdentity: fixture.sourceIdentity,
+      retention: 'retained',
+      baseDirectory: fixture.root,
+      verify: async () => undefined,
+    })
+
+    let staged = await stage()
+    const directories = [path.dirname(staged)]
+    // The cap is 8. Ten rounds would hit it if an invalidated record kept its slot.
+    for (let round = 0; round < 10; round += 1) {
+      fs.unlinkSync(staged)
+      staged = await stage()
+      directories.push(path.dirname(staged))
+    }
+
+    expect(fs.existsSync(staged)).toBe(true)
+    // Only the newest directory survives; every superseded one was reclaimed.
+    const surviving = directories.filter((directory) => fs.existsSync(directory))
+    expect(surviving).toEqual([path.dirname(staged)])
+  })
 })
