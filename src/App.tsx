@@ -8,6 +8,7 @@ import {
   EmptyStatus,
   initialSidebarCollapsed,
   initialTheme,
+  isDetectionFailed,
   sameDesktopStatus,
   SIDEBAR_STORAGE_KEY,
   THEME_STORAGE_KEY,
@@ -637,7 +638,10 @@ function App() {
   }
 
   const installAll = async () => {
-    const missing = providerIds.filter((id) => !snapshot.clis[id].installed)
+    // A detection failure is not evidence of absence: batch-installing over
+    // it could reinstall on top of an already-working setup that the probe
+    // merely failed to see this scan.
+    const missing = providerIds.filter((id) => !snapshot.clis[id].installed && !isDetectionFailed(snapshot.clis[id]))
     if (!missing.length) return
     const succeeded: ProviderId[] = []
     const failures: Array<{ provider: ProviderId; message: string }> = []

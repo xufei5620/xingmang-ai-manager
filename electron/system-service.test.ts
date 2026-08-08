@@ -19,10 +19,15 @@ import {
   assertNpmReleaseMatchesOfficialLock,
   buildCliStatus,
   buildCliMaintenancePlan,
+  buildCodexDesktopWindowsProbes,
   buildDarwinCliLaunchPlan,
   buildCliUninstallPlan,
+  buildDesktopAppStatusFromSettled,
   buildDesktopUpdateStatus,
+  buildNetworkLocationStatusFromSettled,
+  buildToolStatusFromSettled,
   createSystemService,
+  describeProbeFailure,
   inspectVerifiedDarwinGrokPostInstall,
   interactiveTerminalEnvironment,
   modelAccessCacheKey,
@@ -52,7 +57,11 @@ import {
   resolveCliInstallRelease,
   replaceManagedNpmPrefixAtomically,
   uninstallVerifiedDarwinGrokInstallation,
+  type CodexDesktopWindowsProbes,
+  type DesktopAppStatus,
   type LatestVersionProbe,
+  type NetworkLocationStatus,
+  type ToolStatus,
 } from './system-service'
 
 const temporaryDirectories: string[] = []
@@ -2035,5 +2044,177 @@ describe('Codex Desktop update state', () => {
       updateState: 'unknown',
       updateError: '官方更新清单 schema 校验失败',
     })
+  })
+})
+
+describe('describeProbeFailure', () => {
+  it('extracts the message from an Error', () => {
+    expect(describeProbeFailure(new Error('注册表读取失败'))).toBe('注册表读取失败')
+  })
+
+  it('stringifies a non-Error rejection reason', () => {
+    expect(describeProbeFailure('boom')).toBe('boom')
+    expect(describeProbeFailure(42)).toBe('42')
+  })
+})
+
+describe('scan probe degradation', () => {
+  it('passes a fulfilled tool status through unchanged', () => {
+    const value: ToolStatus = {
+      installed: true,
+      version: '20.11.0',
+      path: 'C:\\Program Files\\nodejs\\node.exe',
+      installDirectory: 'C:\\Program Files\\nodejs',
+    }
+    expect(buildToolStatusFromSettled({ status: 'fulfilled', value })).toBe(value)
+  })
+
+  it('degrades a rejected tool probe to detectionFailed instead of not-installed', () => {
+    const result = buildToolStatusFromSettled({
+      status: 'rejected',
+      reason: new Error('机器级 PATH 校验失败'),
+    })
+    expect(result).toEqual({
+      installed: false,
+      version: null,
+      path: null,
+      installDirectory: null,
+      detectionFailed: true,
+      detectionError: '机器级 PATH 校验失败',
+    })
+  })
+
+  it('passes a fulfilled network location through unchanged', () => {
+    const value: NetworkLocationStatus = {
+      publicIp: '1.2.3.4',
+      countryCode: 'CN',
+      region: 'mainland-china',
+      checkedAt: '2026-08-08T00:00:00.000Z',
+      error: null,
+    }
+    expect(buildNetworkLocationStatusFromSettled({ status: 'fulfilled', value })).toBe(value)
+  })
+
+  it('degrades a rejected network probe to an unknown region carrying the failure reason', () => {
+    const result = buildNetworkLocationStatusFromSettled(
+      { status: 'rejected', reason: new Error('网络位置检测超时') },
+      '2026-08-08T00:00:00.000Z',
+    )
+    expect(result).toEqual({
+      publicIp: null,
+      countryCode: null,
+      region: 'unknown',
+      checkedAt: '2026-08-08T00:00:00.000Z',
+      error: '网络位置检测超时',
+    })
+  })
+
+  it('passes a fulfilled desktop app status through unchanged', () => {
+    const value: DesktopAppStatus = {
+      installed: true,
+      version: '1.0.0',
+      path: 'OpenAI.Codex!App',
+      installDirectory: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex',
+      appVersion: '1.0.0',
+      mirrorVersion: '1.0.0',
+      mirrorUpdateAvailable: false,
+      mirrorError: null,
+      running: false,
+    }
+    expect(buildDesktopAppStatusFromSettled({ status: 'fulfilled', value })).toBe(value)
+  })
+
+  it('degrades a rejected Codex Desktop probe to detectionFailed with a failed update check', () => {
+    const result = buildDesktopAppStatusFromSettled({
+      status: 'rejected',
+      reason: new Error('PowerShell 启动失败'),
+    })
+    expect(result).toMatchObject({
+      installed: false,
+      version: null,
+      path: null,
+      installDirectory: null,
+      appVersion: null,
+      mirrorVersion: null,
+      mirrorUpdateAvailable: null,
+      mirrorError: null,
+      running: false,
+      detectionFailed: true,
+      detectionError: 'PowerShell 启动失败',
+      updateCheck: 'failed',
+      updateError: 'PowerShell 启动失败',
+    })
+  })
+})
+
+describe('buildCodexDesktopWindowsProbes', () => {
+  const match = { name: 'Codex', appId: 'OpenAI.Codex!App' }
+  const processes = [{
+    processId: 1,
+    parentProcessId: 0,
+    name: 'Codex.exe',
+    executablePath: 'C:\\WindowsApps\\OpenAI.Codex_1.0.0.0_x64__abc\\Codex.exe',
+  }]
+  const packageProbe = { value: null, error: null }
+  const mirrorProbe = { version: '1.0.0', checkedAt: '2026-08-08T00:00:00.000Z', error: null }
+
+  it('keeps every probe result when all four branches resolve', () => {
+    const result: CodexDesktopWindowsProbes = buildCodexDesktopWindowsProbes(
+      { status: 'fulfilled', value: match },
+      { status: 'fulfilled', value: processes },
+      { status: 'fulfilled', value: packageProbe },
+      { status: 'fulfilled', value: mirrorProbe },
+    )
+    expect(result).toEqual({
+      match,
+      processes,
+      packageProbe,
+      mirrorProbe,
+      detectionFailed: false,
+      detectionError: null,
+    })
+  })
+
+  it('flags detectionFailed when an install-determining probe rejects', () => {
+    const result = buildCodexDesktopWindowsProbes(
+      { status: 'rejected', reason: new Error('Get-StartApps 超时') },
+      { status: 'fulfilled', value: [] },
+      { status: 'fulfilled', value: packageProbe },
+      { status: 'fulfilled', value: mirrorProbe },
+    )
+    expect(result.match).toBeNull()
+    expect(result.detectionFailed).toBe(true)
+    expect(result.detectionError).toBe('Get-StartApps 超时')
+  })
+
+  it('does not flag detectionFailed when only the mirror probe rejects', () => {
+    // The mirror probe already surfaces its own failure through mirrorError;
+    // it must not also blank out an otherwise confidently known install state.
+    const result = buildCodexDesktopWindowsProbes(
+      { status: 'fulfilled', value: null },
+      { status: 'fulfilled', value: [] },
+      { status: 'fulfilled', value: packageProbe },
+      { status: 'rejected', reason: new Error('镜像清单下载超时') },
+      '2026-08-08T00:00:00.000Z',
+    )
+    expect(result.detectionFailed).toBe(false)
+    expect(result.detectionError).toBeNull()
+    expect(result.mirrorProbe).toEqual({
+      version: null,
+      checkedAt: '2026-08-08T00:00:00.000Z',
+      error: '镜像清单下载超时',
+    })
+  })
+
+  it('joins multiple install-detection failures into one message', () => {
+    const result = buildCodexDesktopWindowsProbes(
+      { status: 'rejected', reason: new Error('Get-StartApps 超时') },
+      { status: 'fulfilled', value: [] },
+      { status: 'rejected', reason: new Error('Get-AppxPackage 拒绝访问') },
+      { status: 'fulfilled', value: mirrorProbe },
+    )
+    expect(result.detectionFailed).toBe(true)
+    expect(result.detectionError).toBe('Get-StartApps 超时；Get-AppxPackage 拒绝访问')
+    expect(result.packageProbe).toEqual({ value: null, error: 'Get-AppxPackage 拒绝访问' })
   })
 })

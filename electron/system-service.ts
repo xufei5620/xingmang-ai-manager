@@ -30,6 +30,8 @@ import {
   parseCodexDesktopUpdateManifest,
   isCodexDesktopExecutable,
   type CodexDesktopPackageEntry,
+  type StartAppEntry,
+  type WindowsProcessEntry,
 } from './codex-desktop'
 import {
   addCodexDesktopPackage,
@@ -147,6 +149,13 @@ export interface ToolStatus {
   tooOld?: boolean
   versionStatus?: NodeVersionStatus
   uninstall?: CliUninstallCapability
+  /**
+   * Set when the probe itself threw instead of concluding "not installed".
+   * Must stay distinguishable from `installed: false` so the renderer never
+   * tells a user to install something that may already be on their machine.
+   */
+  detectionFailed?: boolean
+  detectionError?: string | null
 }
 
 export interface CliStatus extends ToolStatus {
@@ -1351,6 +1360,105 @@ function desktopUpdateFields(
   }
 }
 
+/**
+ * A single probe (registry read, PowerShell spawn, network fetch) throwing
+ * must not blank out every other card in the dashboard. `describeProbeFailure`
+ * and the `build*FromSettled` helpers below turn a rejected branch of
+ * `Promise.allSettled` into a status explicitly marked as failed detection,
+ * never silently reinterpreted as "not installed".
+ */
+export function describeProbeFailure(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+export function buildToolStatusFromSettled(result: PromiseSettledResult<ToolStatus>): ToolStatus {
+  if (result.status === 'fulfilled') return result.value
+  return {
+    installed: false,
+    version: null,
+    path: null,
+    installDirectory: null,
+    detectionFailed: true,
+    detectionError: describeProbeFailure(result.reason),
+  }
+}
+
+export function buildNetworkLocationStatusFromSettled(
+  result: PromiseSettledResult<NetworkLocationStatus>,
+  checkedAt: string = new Date().toISOString(),
+): NetworkLocationStatus {
+  if (result.status === 'fulfilled') return result.value
+  return {
+    publicIp: null,
+    countryCode: null,
+    region: 'unknown',
+    checkedAt,
+    error: describeProbeFailure(result.reason),
+  }
+}
+
+export function buildDesktopAppStatusFromSettled(
+  result: PromiseSettledResult<DesktopAppStatus>,
+): DesktopAppStatus {
+  if (result.status === 'fulfilled') return result.value
+  const error = describeProbeFailure(result.reason)
+  return {
+    installed: false,
+    version: null,
+    path: null,
+    installDirectory: null,
+    appVersion: null,
+    mirrorVersion: null,
+    mirrorUpdateAvailable: null,
+    mirrorError: null,
+    running: false,
+    detectionFailed: true,
+    detectionError: error,
+    ...desktopUpdateFields('failed', error, null),
+  }
+}
+
+export interface CodexDesktopWindowsProbes {
+  match: StartAppEntry | null
+  processes: WindowsProcessEntry[]
+  packageProbe: { value: CodexDesktopPackageEntry | null; error: string | null }
+  mirrorProbe: DesktopMirrorVersionProbe
+  detectionFailed: boolean
+  detectionError: string | null
+}
+
+/**
+ * The mirror-version probe already surfaces its own failures through
+ * `mirrorError`, independent of whether Codex Desktop is installed. Only the
+ * three probes that determine `installed` (start-menu match, running
+ * processes, registered Appx package) flip `detectionFailed` — otherwise a
+ * mirror-manifest hiccup would hide an otherwise confidently known install
+ * state behind a generic "detection failed" card.
+ */
+export function buildCodexDesktopWindowsProbes(
+  matchResult: PromiseSettledResult<StartAppEntry | null>,
+  processesResult: PromiseSettledResult<WindowsProcessEntry[]>,
+  packageResult: PromiseSettledResult<{ value: CodexDesktopPackageEntry | null; error: string | null }>,
+  mirrorResult: PromiseSettledResult<DesktopMirrorVersionProbe>,
+  checkedAt: string = new Date().toISOString(),
+): CodexDesktopWindowsProbes {
+  const installDetectionFailures = [matchResult, processesResult, packageResult]
+    .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+    .map((result) => describeProbeFailure(result.reason))
+  return {
+    match: matchResult.status === 'fulfilled' ? matchResult.value : null,
+    processes: processesResult.status === 'fulfilled' ? processesResult.value : [],
+    packageProbe: packageResult.status === 'fulfilled'
+      ? packageResult.value
+      : { value: null, error: describeProbeFailure(packageResult.reason) },
+    mirrorProbe: mirrorResult.status === 'fulfilled'
+      ? mirrorResult.value
+      : { version: null, checkedAt, error: describeProbeFailure(mirrorResult.reason) },
+    detectionFailed: installDetectionFailures.length > 0,
+    detectionError: installDetectionFailures.length > 0 ? installDetectionFailures.join('；') : null,
+  }
+}
+
 export interface SystemServiceOptions {
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
@@ -1745,12 +1853,21 @@ export function createSystemService(
         ),
       }
     }
-    const [match, processes, packageProbe, mirrorProbe] = await Promise.all([
+    const [matchResult, processesResult, packageResult, mirrorResult] = await Promise.allSettled([
       findCodexDesktopStartApp(),
       listCodexDesktopProcesses(),
       inspectCodexDesktopPackage(),
       inspectCodexDesktopMirrorVersion(),
     ])
+    // 四个子探测彼此独立；任一异常都不应连累其余三个已知结果
+    const {
+      match,
+      processes,
+      packageProbe,
+      mirrorProbe,
+      detectionFailed,
+      detectionError,
+    } = buildCodexDesktopWindowsProbes(matchResult, processesResult, packageResult, mirrorResult)
     const processPackage = processes
       .map((entry) => parseCodexDesktopPackagePath(entry.executablePath))
       .find((entry): entry is CodexDesktopPackageEntry => entry !== null) ?? null
@@ -1769,6 +1886,8 @@ export function createSystemService(
         path: null,
         installDirectory: null,
         running: processes.length > 0,
+        detectionFailed,
+        detectionError,
         ...desktopUpdateFields(
           packageProbe.error && !processPackage ? 'failed' : 'skipped',
           packageProbe.error && !processPackage ? packageProbe.error : null,
@@ -1806,6 +1925,8 @@ export function createSystemService(
       path: appId,
       installDirectory: installedPackage?.installLocation || null,
       running: processes.length > 0,
+      detectionFailed,
+      detectionError,
       ...update,
     }
   }
@@ -1990,13 +2111,19 @@ export function createSystemService(
       codexDesktopMirrorCache = null
       networkLocationCache = null
     }
-    const [node, npm, python, codexDesktop, network] = await Promise.all([
+    const [nodeResult, npmResult, pythonResult, codexDesktopResult, networkResult] = await Promise.allSettled([
       inspectNode(),
       inspectTool('npm'),
       inspectPython(),
       inspectCodexDesktop(),
       inspectNetworkLocation(),
     ])
+    // 单个探测异常不再丢弃整份快照；失败项降级为可区分的「检测失败」状态
+    const node = buildToolStatusFromSettled(nodeResult)
+    const npm = buildToolStatusFromSettled(npmResult)
+    const python = buildToolStatusFromSettled(pythonResult)
+    const codexDesktop = buildDesktopAppStatusFromSettled(codexDesktopResult)
+    const network = buildNetworkLocationStatusFromSettled(networkResult)
     const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
     // 单个 CLI 探测异常时降级为未安装，避免拖垮整份系统快照
     const cliProbes = await Promise.allSettled(

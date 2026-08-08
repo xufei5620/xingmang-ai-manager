@@ -2347,6 +2347,14 @@ button:disabled {
   background: #fae9ea;
 }
 
+/* Detection failure is not a confirmed absence, so it gets the same amber
+   "unresolved check" tone as .version-pill.update rather than the red used
+   for .status-mark.missing. */
+.status-mark.failed {
+  color: #9a651b;
+  background: #fff6df;
+}
+
 .cli-section > .section-heading {
   min-height: 30px;
   padding: 0 2px;
@@ -3688,7 +3696,8 @@ button:disabled {
 
 :root[data-theme="dark"] .optional-label,
 :root[data-theme="dark"] .version-pill.update,
-:root[data-theme="dark"] .update-button {
+:root[data-theme="dark"] .update-button,
+:root[data-theme="dark"] .status-mark.failed {
   color: #e6bd72;
   background: #3a3325;
   border-color: #5c4e33;

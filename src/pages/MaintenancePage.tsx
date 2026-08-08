@@ -802,7 +802,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
         <div className="section-heading">
           <div>
             <h2 id="maintenance-cli-title">AI CLI</h2>
-            <span>{snapshot ? `最后检测 ${new Date(snapshot.checkedAt).toLocaleString()}` : '等待本机检测'}</span>
+            <span>{snapshot?.checkedAt ? `最后检测 ${new Date(snapshot.checkedAt).toLocaleString()}` : '等待本机检测'}</span>
           </div>
         </div>
         {loading ? (

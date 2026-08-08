@@ -7,7 +7,7 @@ import {
   RefreshCw,
   Settings2,
 } from 'lucide-react'
-import { networkLocationLabel, shortVersion, updateFailureLabel } from '../../app-shared'
+import { isDetectionFailed, networkLocationLabel, shortVersion, updateFailureLabel } from '../../app-shared'
 import { platformPresentation } from '../../platform-presentation'
 import { dashboardProviderIds, providers } from '../../provider-meta'
 import type {
@@ -120,9 +120,9 @@ export function Dashboard({
           </div>
         </div>
         <div className="runtime-grid">
-          <RuntimeCell label="Node.js" status={snapshot.runtime.node} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={presentation.nodeAction === 'open-website' ? presentation.nodeActionLabel : snapshot.runtime.node.installed ? '升级' : '一键安装'} onInstall={onInstallNode} />
-          <RuntimeCell label="npm" status={snapshot.runtime.npm} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={presentation.nodeAction === 'open-website' ? presentation.nodeActionLabel : '一键安装'} onInstall={onInstallNode} />
-          <RuntimeCell label="Python" status={snapshot.runtime.python} loading={scanning} optional onInstall={() => void window.xingmang.openExternal('https://www.python.org/downloads/')} />
+          <RuntimeCell label="Node.js" status={snapshot.runtime.node} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={presentation.nodeAction === 'open-website' ? presentation.nodeActionLabel : snapshot.runtime.node.installed ? '升级' : '一键安装'} onInstall={onInstallNode} onRetry={onScan} />
+          <RuntimeCell label="npm" status={snapshot.runtime.npm} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={presentation.nodeAction === 'open-website' ? presentation.nodeActionLabel : '一键安装'} onInstall={onInstallNode} onRetry={onScan} />
+          <RuntimeCell label="Python" status={snapshot.runtime.python} loading={scanning} optional onInstall={() => void window.xingmang.openExternal('https://www.python.org/downloads/')} onRetry={onScan} />
         </div>
         {nodeRuntimeInstallProgress && nodeRuntimeInstalling && (
           <div className={`node-runtime-progress dashboard-node-progress phase-${nodeRuntimeInstallProgress.phase}`} role="status" aria-live="polite">
@@ -156,10 +156,12 @@ export function Dashboard({
             onConfigure={onConfigureCodexDesktop}
             onInstall={onInstallCodexDesktop}
             onLaunch={onLaunchCodexDesktop}
+            onRetry={onScan}
           />
           {dashboardProviderIds.map((provider) => {
             const meta = providers[provider]
             const status = snapshot.clis[provider]
+            const failed = isDetectionFailed(status)
             const isInstalling = installing.has(provider)
             const providerConfig = config?.providers[provider]
             const isConfigured = Boolean(providerConfig?.hasApiKey && providerConfig.matchesRelay)
@@ -173,25 +175,30 @@ export function Dashboard({
                     <h3>{meta.name}</h3>
                     <span>{meta.company}</span>
                   </div>
-                  <StatusMark installed={status.installed} loading={scanning || isInstalling} />
+                  <StatusMark installed={status.installed} loading={scanning || isInstalling} failed={failed} />
                 </div>
                 <div className="cli-meta-row">
                   <code>{meta.command}</code>
                   <span
-                    className={status.updateCheck === 'failed'
+                    className={failed
                       ? 'version-pill error'
-                      : status.updateState === 'available'
-                        ? 'version-pill update'
-                        : status.installed ? 'version-pill' : 'version-pill missing'}
-                    title={status.updateError ?? (status.latestVersion ? `最新版 ${status.latestVersion}` : undefined)}
+                      : status.updateCheck === 'failed'
+                        ? 'version-pill error'
+                        : status.updateState === 'available'
+                          ? 'version-pill update'
+                          : status.installed ? 'version-pill' : 'version-pill missing'}
+                    title={failed
+                      ? status.detectionError ?? undefined
+                      : status.updateError ?? (status.latestVersion ? `最新版 ${status.latestVersion}` : undefined)}
                   >
                     {isInstalling
                       ? status.installed ? '更新中' : '安装中'
                       : scanning ? '检测中'
-                        : status.updateState === 'available' ? `可更新 ${status.latestVersion}`
-                          : status.updateState === 'latest' ? '已是最新'
-                            : status.updateCheck === 'failed' ? updateFailureLabel(status.updateError)
-                              : status.installed ? shortVersion(status.version) : '未安装'}
+                        : failed ? '检测失败'
+                          : status.updateState === 'available' ? `可更新 ${status.latestVersion}`
+                            : status.updateState === 'latest' ? '已是最新'
+                              : status.updateCheck === 'failed' ? updateFailureLabel(status.updateError)
+                                : status.installed ? shortVersion(status.version) : '未安装'}
                   </span>
                 </div>
                 <div className="config-state">
@@ -207,7 +214,12 @@ export function Dashboard({
                   </div>
                 )}
                 <div className="cli-actions">
-                  {!status.installed ? (
+                  {failed ? (
+                    <button className="secondary-button full" disabled={scanning} onClick={onScan}>
+                      <RefreshCw size={16} className={scanning ? 'spin' : ''} />
+                      {scanning ? '正在重新检测' : '检测失败，点击重试'}
+                    </button>
+                  ) : !status.installed ? (
                     <button className="primary-button full" disabled={!runtimeReady || isInstalling || scanning} onClick={() => onInstall(provider)}>
                       {isInstalling ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
                       {isInstalling ? '正在安装' : presentation.grokAction === 'external-guidance' && provider === 'grok' ? presentation.grokActionLabel : '一键安装'}

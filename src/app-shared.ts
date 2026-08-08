@@ -77,6 +77,17 @@ export function sameDesktopStatus(left: DesktopAppStatus, right: DesktopAppStatu
     && left.path === right.path
     && left.installDirectory === right.installDirectory
     && left.running === right.running
+    && left.detectionFailed === right.detectionFailed
+    && left.detectionError === right.detectionError
+}
+
+/**
+ * A probe throwing must read as "detection failed", never as "not installed" —
+ * the two states drive very different UI (retry a rescan vs. offer to install
+ * something that may already be on the user's machine).
+ */
+export function isDetectionFailed(status: { detectionFailed?: boolean }): boolean {
+  return status.detectionFailed === true
 }
 
 export function codexDesktopLaunchDecision(
@@ -95,6 +106,9 @@ export async function commitStartupPlatformCapabilities(
 }
 
 export function EmptyStatus(): SystemSnapshot {
+  // Pre-scan placeholder, not a failed probe: `detectionFailed` stays absent
+  // so cards render as "not yet checked" (via the `scanning` flag) rather
+  // than surfacing a retry prompt before the first scan ever ran.
   const missing = { installed: false, version: null, path: null, installDirectory: null }
   const missingCli = {
     ...missing,

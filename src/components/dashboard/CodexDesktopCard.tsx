@@ -1,5 +1,5 @@
-import { AppWindow, Download, LoaderCircle, Settings2 } from 'lucide-react'
-import { codexDesktopInstallLabel } from '../../app-shared'
+import { AppWindow, Download, LoaderCircle, RefreshCw, Settings2 } from 'lucide-react'
+import { codexDesktopInstallLabel, isDetectionFailed } from '../../app-shared'
 import { platformPresentation } from '../../platform-presentation'
 import { providers } from '../../provider-meta'
 import type {
@@ -22,6 +22,7 @@ export function CodexDesktopCard({
   onConfigure,
   onInstall,
   onLaunch,
+  onRetry,
 }: {
   platform: PlatformCapabilities
   status: DesktopAppStatus
@@ -35,8 +36,15 @@ export function CodexDesktopCard({
   onConfigure: () => void
   onInstall: () => void
   onLaunch: () => void
+  onRetry: () => void
 }) {
   const busy = scanning || installing || launchPhase !== 'idle'
+  // A start-menu match or a running process can confirm `installed: true`
+  // even when the Appx package probe that fills in version details rejected.
+  // Only override the card when detection could not confirm installed at
+  // all; a confirmed install with an incomplete version read still gets the
+  // normal launch/configure actions, with the gap surfaced via updateError.
+  const failed = isDetectionFailed(status) && !status.installed
   const presentation = platformPresentation(platform)
   return (
     <article className="cli-card desktop-card">
@@ -48,17 +56,22 @@ export function CodexDesktopCard({
           <h3>Codex 桌面端</h3>
           <span>{presentation.codexDesktopCompany}</span>
         </div>
-        <StatusMark installed={status.installed} loading={scanning || installing} />
+        <StatusMark installed={status.installed} loading={scanning || installing} failed={failed} />
       </div>
       <div className="cli-meta-row">
         <code>Codex App</code>
-        <span className={
-          !status.installed
-            ? 'version-pill missing'
-            : launchPhase !== 'idle'
-              ? 'version-pill update'
-              : status.running ? 'version-pill running' : 'version-pill idle'
-        }>
+        <span
+          className={
+            failed
+              ? 'version-pill error'
+              : !status.installed
+                ? 'version-pill missing'
+                : launchPhase !== 'idle'
+                  ? 'version-pill update'
+                  : status.running ? 'version-pill running' : 'version-pill idle'
+          }
+          title={failed ? status.detectionError ?? undefined : undefined}
+        >
           {installing
             ? codexDesktopInstallLabel(installProgress)
             : launchPhase === 'closing'
@@ -67,9 +80,11 @@ export function CodexDesktopCard({
               ? '正在启动'
               : scanning
             ? '检测中'
-            : !status.installed
-              ? '未安装'
-              : status.running ? '窗口已打开' : '窗口未打开'}
+            : failed
+              ? '检测失败'
+              : !status.installed
+                ? '未安装'
+                : status.running ? '窗口已打开' : '窗口未打开'}
         </span>
       </div>
       <div className="config-state">
@@ -112,7 +127,12 @@ export function CodexDesktopCard({
         </div>
       )}
       <div className="cli-actions">
-        {!status.installed ? (
+        {failed ? (
+          <button className="secondary-button full" onClick={onRetry} disabled={scanning}>
+            <RefreshCw size={16} className={scanning ? 'spin' : ''} />
+            {scanning ? '正在重新检测' : '检测失败，点击重试'}
+          </button>
+        ) : !status.installed ? (
           <button className="primary-button full" onClick={presentation.codexDesktopAction === 'launch' ? onLaunch : onInstall} disabled={busy || presentation.codexDesktopAction === 'unsupported'}>
             {installing ? <LoaderCircle size={16} className="spin" /> : presentation.codexDesktopAction === 'launch' ? <AppWindow size={16} /> : <Download size={16} />}
             {installing ? '正在安装' : presentation.codexDesktopActionLabel}
