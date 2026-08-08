@@ -690,3 +690,55 @@ export function listDarwinGrokOrphanedDownloads(
   }
   return orphans
 }
+
+// Same character class and length as ipc.ts's parseSessionId — 36 characters
+// of hex digits and dashes, not a stricter 8-4-4-4-12 check. Matching that
+// existing strictness level (rather than inventing a tighter one) is
+// intentional: randomUUID() output always satisfies both, so there is
+// nothing a stricter pattern would additionally protect against here.
+const darwinGrokHistoricalQuarantineFileNamePattern = /^\.(?:grok|agent)-[0-9a-f-]{36}\.removing$/i
+
+/**
+ * darwin has no inode-bound unlink (see the retainedQuarantineFiles push in
+ * native-cli-uninstall.ts), so every Grok uninstall leaves its own renamed
+ * symlink behind under ~/.grok/bin forever; until internal #20, only the
+ * current uninstall's own quarantine files were ever surfaced, so repeated
+ * install/uninstall cycles silently piled up invisible `.removing` clutter.
+ *
+ * Unlike listDarwinGrokOrphanedDownloads above — whose targets are the
+ * *official* xAI installer's output and so cannot be safely attributed by
+ * name — a `.grok-<uuid>.removing` / `.agent-<uuid>.removing` name can only
+ * ever have been produced by this app's own prepareVerifiedFile (see its
+ * quarantinePath construction), so matching the name is exactly as
+ * trustworthy as an identity check would be. That is why these are safe to
+ * fold into the same delete command instead of staying advisory-only.
+ *
+ * Matches file *names* only, deliberately not restricted to symlinks: a
+ * locked regular-file quarantine target (see uninstallVerifiedNativeCliFiles'
+ * rm-then-retain fallback) would carry the same provable name and belongs in
+ * the same cleanup list.
+ */
+export function listDarwinGrokHistoricalQuarantineFiles(homeDirectory: string): string[] {
+  let binDirectory: string
+  try {
+    // realpath the *directory* only, never a matched entry itself — these
+    // are quarantined symlinks, so resolving one would silently swap it for
+    // whatever it still points at (the same trap listDarwinGrokOrphanedDownloads'
+    // comment above describes, mirrored here for the directory instead of a file).
+    binDirectory = fs.realpathSync(path.join(homeDirectory, '.grok', 'bin'))
+  } catch {
+    return []
+  }
+  let entries: fs.Dirent[]
+  try {
+    entries = fs.readdirSync(binDirectory, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  const matches: string[] = []
+  for (const entry of entries) {
+    if (entry.isDirectory() || !darwinGrokHistoricalQuarantineFileNamePattern.test(entry.name)) continue
+    matches.push(path.join(binDirectory, entry.name))
+  }
+  return matches
+}

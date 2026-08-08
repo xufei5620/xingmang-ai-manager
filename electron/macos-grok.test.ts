@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -6,6 +7,7 @@ import {
   captureDarwinGrokCanonicalLink,
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
+  listDarwinGrokHistoricalQuarantineFiles,
   listDarwinGrokOrphanedDownloads,
   resolveDarwinGrokCanonicalSelection,
   restoreDarwinGrokCanonicalLink,
@@ -575,5 +577,62 @@ describe.runIf(process.platform === 'darwin')('listDarwinGrokOrphanedDownloads',
     temporaryDirectories.push(home)
 
     expect(listDarwinGrokOrphanedDownloads(home, [])).toEqual([])
+  })
+})
+
+// internal #20: darwin has no inode-bound unlink, so every Grok uninstall
+// leaves its own renamed grok/agent symlink behind under ~/.grok/bin
+// forever (see the retainedQuarantineFiles push in native-cli-uninstall.ts).
+// Until this fix only the *current* uninstall's own quarantine files were
+// ever surfaced anywhere in the app, so repeated install/uninstall cycles
+// silently piled up invisible `.removing` clutter — this is what makes that
+// backlog visible and safely deletable.
+describe.runIf(process.platform === 'darwin')('listDarwinGrokHistoricalQuarantineFiles', () => {
+  it('matches both a renamed-symlink and a locked-regular-file quarantine artifact by name alone', () => {
+    const fixture = createFixture()
+    const realBin = fs.realpathSync(fixture.bin)
+    const grokQuarantineName = `.grok-${randomUUID()}.removing`
+    const agentQuarantineName = `.agent-${randomUUID()}.removing`
+    // The common shape: a renamed symlink, still resolving to its old target.
+    fs.symlinkSync(path.join('..', 'downloads', path.basename(fixture.binary)), path.join(fixture.bin, grokQuarantineName))
+    // uninstallVerifiedNativeCliFiles' rm-then-retain fallback: a locked
+    // regular file that failed its final rm. Matched by name only — the
+    // function is deliberately not restricted to symlinks (see its docstring).
+    fs.writeFileSync(path.join(fixture.bin, agentQuarantineName), 'locked leftover')
+
+    const matches = listDarwinGrokHistoricalQuarantineFiles(fixture.home)
+
+    expect([...matches].sort()).toEqual([
+      path.join(realBin, agentQuarantineName),
+      path.join(realBin, grokQuarantineName),
+    ].sort())
+  })
+
+  it('never includes a file or directory whose name does not exactly match the quarantine pattern', () => {
+    const fixture = createFixture()
+    const uuid = randomUUID()
+    const decoyFileNames = [
+      'grok', // the live command entry itself — no dot prefix, no suffix
+      `.grok-${uuid}.removing.bak`, // extra trailing suffix
+      `.grok-${uuid}.removed`, // wrong terminal word
+      `.grok-not-a-uuid-not-a-uuid-not-a-uuid.removing`, // not 36 hex/dash characters
+      `.claude-${uuid}.removing`, // this app's own pattern, but the wrong CLI's prefix
+      `grok-${uuid}.removing`, // missing the leading dot
+    ]
+    for (const name of decoyFileNames) {
+      fs.writeFileSync(path.join(fixture.bin, name), 'not a quarantine file')
+    }
+    // Same rule for directories: rm -f must never be pointed at one, so a
+    // directory that happens to satisfy the name pattern must be excluded too.
+    fs.mkdirSync(path.join(fixture.bin, `.agent-${randomUUID()}.removing`))
+
+    expect(listDarwinGrokHistoricalQuarantineFiles(fixture.home)).toEqual([])
+  })
+
+  it('returns an empty list when ~/.grok/bin does not exist', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-grok-no-bin-'))
+    temporaryDirectories.push(home)
+
+    expect(listDarwinGrokHistoricalQuarantineFiles(home)).toEqual([])
   })
 })

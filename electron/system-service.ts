@@ -70,6 +70,7 @@ import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platf
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
+  listDarwinGrokHistoricalQuarantineFiles,
   listDarwinGrokOrphanedDownloads,
   resolveDarwinGrokCanonicalSelection,
   runDarwinGrokPostInstallTransaction,
@@ -374,12 +375,43 @@ export async function inspectVerifiedDarwinGrokPostInstall(
   })
 }
 
+/**
+ * internal #20 (second-round darwin verification): every entry point that
+ * decides whether to run a fresh install — the dashboard's per-card button,
+ * "安装全部缺失项", and the maintenance page's batch action — gates purely on
+ * `status.installed`, which has only ever come from the canonical `grok`
+ * link (resolveDarwinGrokCanonicalSelection); `agent` has never been part of
+ * that determination (see inspectCliTool below). So once grok reads as
+ * installed, nothing user-reachable ever re-invokes ensureDarwinGrokAgentLink
+ * for it again — the only thing that does is a fresh
+ * runDarwinGrokPostInstallTransaction, which only runs when npm actually has
+ * something to (re)install. Folding the same idempotent, non-destructive
+ * ensure into every "is grok in place" probe means the very next scan or
+ * update check repairs the gap on its own, regardless of how grok ended up
+ * without its companion link — independent of, and in addition to, the
+ * transaction every install/reinstall already runs.
+ *
+ * Best-effort by design: a failure here (permissions, a mid-scan uninstall,
+ * a non-canonical install) must never turn a healthy "installed" status into
+ * a false "not installed" — inspectCliTool's contract is to probe state, not
+ * throw, so this swallows everything.
+ */
+async function ensureDarwinGrokAgentLinkQuietly(homeDirectory: string): Promise<void> {
+  try {
+    const selection = resolveDarwinGrokCanonicalSelection(homeDirectory)
+    await ensureDarwinGrokAgentLink(homeDirectory, selection)
+  } catch {
+    // Best effort — see docstring above. The next successful probe, or an
+    // explicit reinstall, gets another chance.
+  }
+}
+
 /** Single-quotes a path so a copied command pastes safely even if $HOME contains spaces or quotes. */
 function shellSingleQuote(value: string): string {
   return `'${value.replaceAll("'", `'"'"'`)}'`
 }
 
-function formatMebibytes(bytes: number): string {
+export function formatMebibytes(bytes: number): string {
   return `${Math.max(1, Math.round(bytes / (1024 * 1024)))} MiB`
 }
 
@@ -447,12 +479,37 @@ export async function uninstallVerifiedDarwinGrokInstallation(
     expectedOwnerUid: plan.expectedOwnerUid,
     removeDirectoryWhenEmpty: false,
   })
-  const retainedProgramPaths = Object.values(plan.expectedResolvedSymbolicLinkTargets)
-    .map((target) => target.path)
-    .filter((filePath) => fs.existsSync(filePath))
-  const retainedPaths = [...new Set([...result.retainedQuarantineFiles, ...retainedProgramPaths])]
+  // internal #16 (real-hardware regression): grok and agent can resolve to
+  // the exact same underlying binary once both links target the same
+  // release, so summing every entry in expectedResolvedSymbolicLinkTargets
+  // without deduping double-counted that one shared file's size (measured
+  // 251 MiB reported for a 125.7 MiB binary). These are already realpath'd
+  // absolute paths, so plain string-identity dedup is exact.
+  const retainedProgramPaths = [...new Set(
+    Object.values(plan.expectedResolvedSymbolicLinkTargets)
+      .map((target) => target.path)
+      .filter((filePath) => fs.existsSync(filePath)),
+  )]
+  // internal #20: fold in every earlier round's own leftover .removing files
+  // too — see listDarwinGrokHistoricalQuarantineFiles for why a name match
+  // alone is trustworthy here. Excluding this round's own paths keeps the
+  // variable's name honest; the Set below would dedupe them either way.
+  const currentQuarantineFiles = new Set(result.retainedQuarantineFiles)
+  const historicalQuarantineFiles = listDarwinGrokHistoricalQuarantineFiles(options.homeDirectory)
+    .filter((filePath) => !currentQuarantineFiles.has(filePath))
+  const retainedPaths = [...new Set([
+    ...result.retainedQuarantineFiles,
+    ...retainedProgramPaths,
+    ...historicalQuarantineFiles,
+  ])]
   if (retainedPaths.length > 0) {
     const displayPath = (filePath: string) => `~/.grok/${path.relative(plan.rootDirectory, filePath)}`
+    // Quarantine paths (this round's and historical) are deliberately left
+    // out of this sum: they are this app's own tiny renamed symlinks, not
+    // the "程序文件" this figure describes, and a quarantine symlink's target
+    // text still resolves after the rename — summing it too would reopen
+    // this same function's #16 double-count across rounds that happened to
+    // reinstall the same release.
     const retainedBytes = retainedProgramPaths.reduce((total, filePath) => {
       try {
         return total + fs.statSync(filePath).size
@@ -465,7 +522,9 @@ export async function uninstallVerifiedDarwinGrokInstallation(
       `为避免 macOS 按路径删除时误删被并发替换的文件，以下 ${retainedPaths.length} 个文件未自动删除：`,
       retainedPaths.map(displayPath).join('；'),
       retainedBytes > 0 ? `（其中程序文件共约 ${formatMebibytes(retainedBytes)}）。` : '。',
-      '它们是卸载时符号链接改名后的残留、以及已失去命令入口的旧程序文件；Grok 命令已不可用，确认没有进程占用后即可删除，下方是可直接复制执行的清理命令。',
+      historicalQuarantineFiles.length > 0
+        ? `它们包含本次卸载的符号链接改名残留、已失去命令入口的旧程序文件，以及 ${historicalQuarantineFiles.length} 个以前几次卸载遗留的隔离文件；Grok 命令已不可用，确认没有进程占用后即可删除，下方是可直接复制执行的清理命令。`
+        : '它们是卸载时符号链接改名后的残留、以及已失去命令入口的旧程序文件；Grok 命令已不可用，确认没有进程占用后即可删除，下方是可直接复制执行的清理命令。',
     ]
     // internal #18: these accumulate silently across every version this
     // machine has ever installed — mention them so a user cleaning up notices
@@ -1631,6 +1690,9 @@ export function createSystemService(
             : null
       if (provider === 'grok') {
         version = await readGrokLocalVersionForExecutable(installation.commandPath)
+        if (platform === 'darwin') {
+          await ensureDarwinGrokAgentLinkQuietly(cliEnvironment.HOME?.trim() || os.homedir())
+        }
       }
       return { status: {
         installed: true,

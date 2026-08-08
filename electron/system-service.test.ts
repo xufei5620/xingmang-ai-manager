@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -35,6 +36,7 @@ import {
   detectNetworkLocation,
   detectNetworkRegion,
   fetchNpmPackageReleaseMetadata,
+  formatMebibytes,
   grokInstallStrategyFor,
   grokManualUninstallResult,
   formatElapsedDuration,
@@ -687,6 +689,131 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     expect(fs.existsSync(orphanBinary)).toBe(true)
   })
 
+  it('sums a shared target once when grok and agent resolve to the same binary (internal #16 byte fix)', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    // Real hardware (internal #16) hit this after a same-version reinstall:
+    // both links pointing at the exact same release. A tiny fixture binary
+    // would round to "1 MiB" either way, so this uses a large enough shared
+    // file that a double count is observable at MiB granularity (2 vs 4).
+    const sharedBinary = Buffer.alloc(2 * 1024 * 1024, 0x41)
+    fs.writeFileSync(fixture.grokBinary, sharedBinary, { mode: 0o700 })
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+    fs.symlinkSync(fixture.grokTarget, path.join(fixture.bin, 'agent'))
+
+    let caught: unknown
+    try {
+      await uninstallVerifiedDarwinGrokInstallation({
+        homeDirectory: fixture.home,
+        installDirectory: fs.realpathSync(fixture.bin),
+        // Both links now resolve to the same 0.2.118 file, so both staged
+        // copies (named "grok" and "agent") must report that same version —
+        // officialDarwinGrokUninstallResult's canned "agent" reply is tuned
+        // for the fixture's default *distinct* agent target and does not fit here.
+        runCommand: async (spec) => {
+          if (spec.executable === '/usr/bin/codesign') return { stdout: '', stderr: '' }
+          if (spec.argv.length === 1 && spec.argv[0] === '--version') {
+            return { stdout: 'grok 0.2.118\n', stderr: '' }
+          }
+          throw new Error(`Unexpected Grok verification command: ${spec.executable} ${spec.argv.join(' ')}`)
+        },
+      })
+      throw new Error('expected uninstallVerifiedDarwinGrokInstallation to reject')
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(DarwinGrokRetainedPathsError)
+    const retained = caught as DarwinGrokRetainedPathsError
+    expect(retained.message).toContain(`共约 ${formatMebibytes(sharedBinary.byteLength)}`)
+    expect(retained.message).toContain('共约 2 MiB')
+    // Before the fix this counted the one shared file twice.
+    expect(retained.message).not.toContain('共约 4 MiB')
+  })
+
+  it('folds earlier uninstall rounds\' leftover quarantine files into the list and cleanup command (internal #20)', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    const historicalGrokQuarantine = path.join(fixture.bin, `.grok-${randomUUID()}.removing`)
+    const historicalAgentQuarantine = path.join(fixture.bin, `.agent-${randomUUID()}.removing`)
+    // One as a renamed symlink (the common shape) and one as a plain file
+    // (uninstallVerifiedNativeCliFiles' locked-file rm-then-retain fallback) —
+    // both are equally provable by name alone, neither by file type.
+    fs.symlinkSync(fixture.grokTarget, historicalGrokQuarantine)
+    fs.writeFileSync(historicalAgentQuarantine, 'locked leftover from an earlier uninstall')
+    // A decoy that must never be swept in: right shape, wrong provenance.
+    const unrelatedDotfile = path.join(fixture.bin, '.DS_Store')
+    fs.writeFileSync(unrelatedDotfile, 'not ours')
+
+    let caught: unknown
+    try {
+      await uninstallVerifiedDarwinGrokInstallation({
+        homeDirectory: fixture.home,
+        installDirectory: fs.realpathSync(fixture.bin),
+        runCommand: async (spec) => officialDarwinGrokUninstallResult(fixture, spec),
+      })
+      throw new Error('expected uninstallVerifiedDarwinGrokInstallation to reject')
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(DarwinGrokRetainedPathsError)
+    const retained = caught as DarwinGrokRetainedPathsError
+    expect(retained.message).toContain(path.basename(historicalGrokQuarantine))
+    expect(retained.message).toContain(path.basename(historicalAgentQuarantine))
+    expect(retained.message).toContain('以前几次卸载遗留的隔离文件')
+    expect(retained.manualCommand).toContain(path.basename(historicalGrokQuarantine))
+    expect(retained.manualCommand).toContain(path.basename(historicalAgentQuarantine))
+    expect(retained.manualCommand).not.toContain('.DS_Store')
+    expect(retained.message).not.toContain('.DS_Store')
+    // Neither historical file is ever touched by this call — the command is
+    // handed to the user to run, never executed by the app itself.
+    expect(fs.existsSync(historicalGrokQuarantine)).toBe(true)
+    expect(fs.existsSync(historicalAgentQuarantine)).toBe(true)
+  })
+
+  it('single-quote-escapes every path in the cleanup command, including historical quarantine files (internal #20)', async () => {
+    const baseDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-grok-quote-'))
+    temporaryDirectories.push(baseDirectory)
+    const home = path.join(baseDirectory, "o'brien")
+    const bin = path.join(home, '.grok', 'bin')
+    const downloads = path.join(home, '.grok', 'downloads')
+    fs.mkdirSync(bin, { recursive: true })
+    fs.mkdirSync(downloads, { recursive: true })
+    const grokBinary = path.join(downloads, 'grok-0.2.118-macos-aarch64')
+    fs.writeFileSync(grokBinary, 'grok binary', { mode: 0o700 })
+    const grokTarget = path.join('..', 'downloads', path.basename(grokBinary))
+    fs.symlinkSync(grokTarget, path.join(bin, 'grok'))
+    // A historical leftover under the same quote-containing home, so the
+    // escaping must hold for both this round's and earlier rounds' paths.
+    fs.symlinkSync(grokTarget, path.join(bin, `.grok-${randomUUID()}.removing`))
+
+    let caught: unknown
+    try {
+      await uninstallVerifiedDarwinGrokInstallation({
+        homeDirectory: home,
+        installDirectory: fs.realpathSync(bin),
+        runCommand: async (spec) => {
+          if (spec.executable === '/usr/bin/codesign') return { stdout: '', stderr: '' }
+          if (spec.argv.length === 1 && spec.argv[0] === '--version') {
+            return { stdout: 'grok 0.2.118\n', stderr: '' }
+          }
+          throw new Error(`Unexpected Grok verification command: ${spec.executable} ${spec.argv.join(' ')}`)
+        },
+      })
+      throw new Error('expected uninstallVerifiedDarwinGrokInstallation to reject')
+    } catch (error) {
+      caught = error
+    }
+
+    expect(caught).toBeInstanceOf(DarwinGrokRetainedPathsError)
+    const retained = caught as DarwinGrokRetainedPathsError
+    // shellSingleQuote's scheme: close the quote, emit a literal escaped
+    // quote, reopen — 'o'"'"'brien' — once per path under the home directory.
+    const escapedQuote = `o'"'"'brien`
+    expect(retained.manualCommand).toContain(escapedQuote)
+    const occurrences = retained.manualCommand.split(escapedQuote).length - 1
+    expect(occurrences).toBeGreaterThanOrEqual(2)
+  })
+
   it.each([
     ['missing link', 'Grok automatic uninstall requires a verified grok symbolic link'],
     ['escaped target', 'Grok agent link target must remain under ~/.grok'],
@@ -960,6 +1087,112 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
       expect(environment?.DYLD_INSERT_LIBRARIES).toBeUndefined()
       expect(environment?.XINGMANG_SYSTEM_SERVICE_SENTINEL).toBe('ordinary-value')
     }
+  })
+})
+
+describe.runIf(process.platform === 'darwin')('Darwin Grok readiness self-heal (internal #20)', () => {
+  // Real-hardware testing (internal #20) found a session where grok read as
+  // installed and up to date but agent was missing, and no in-app action —
+  // "安装全部缺失项", the per-card install button, or the maintenance page's
+  // batch action — offered any way to repair it, because every one of them
+  // only offers to (re)install when `status.installed` is false. That status
+  // has only ever come from the canonical grok link; nothing ever asked
+  // whether agent existed too. These tests exercise the fix from the public
+  // service surface — scanSystem and checkCliUpdate both resolve through
+  // inspectCliTool — rather than by calling ensureDarwinGrokAgentLink
+  // directly, because the bug was never in that function (it already had its
+  // own coverage); it was that nothing outside a fresh install ever called it.
+  it('repairs a missing agent link the next time anything probes whether grok is installed', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const store = new AppSettingsStore(path.join(fixture.home, 'settings.json'), fixture.home)
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        throw new Error(`Unexpected command during a readiness probe: ${spec.executable} ${spec.argv.join(' ')}`)
+      },
+    })
+    expect(fs.existsSync(path.join(fixture.bin, 'agent'))).toBe(false)
+
+    const status = await service.inspectCliUpdate('grok', false)
+
+    expect(status.installed).toBe(true)
+    expect(status.version).toBe('0.2.118')
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.grokTarget)
+  })
+
+  it('repairs the same gap through a full system scan, not just the single-CLI update check', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const store = new AppSettingsStore(path.join(fixture.home, 'settings.json'), fixture.home)
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        throw new Error(`Unexpected command during a readiness probe: ${spec.executable} ${spec.argv.join(' ')}`)
+      },
+      // scanSystem also probes the Codex Desktop app; keep that hermetic
+      // (matching createDarwinService's default elsewhere in this file)
+      // instead of letting the real detector touch this machine.
+      macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+    })
+
+    const snapshot = await service.scanSystem(false)
+
+    expect(snapshot.clis.grok.installed).toBe(true)
+    expect(fs.readlinkSync(path.join(fixture.bin, 'agent'))).toBe(fixture.grokTarget)
+  })
+
+  it('never turns a healthy grok status into a false negative when the repair itself fails', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    vi.spyOn(fs.promises, 'symlink').mockRejectedValueOnce(new Error('EACCES: permission denied, symlink'))
+    const store = new AppSettingsStore(path.join(fixture.home, 'settings.json'), fixture.home)
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        throw new Error(`Unexpected command during a readiness probe: ${spec.executable} ${spec.argv.join(' ')}`)
+      },
+    })
+
+    const status = await service.inspectCliUpdate('grok', false)
+
+    // inspectCliTool's contract is to probe state, not throw — a failed
+    // best-effort repair must read as "still installed", not as a detection
+    // failure or a false "not installed" that would misdirect the user to a
+    // reinstall they do not need.
+    expect(status.installed).toBe(true)
+    expect(status.version).toBe('0.2.118')
+    expect(fs.existsSync(path.join(fixture.bin, 'agent'))).toBe(false)
+  })
+
+  it('leaves a pre-existing, non-canonical occupant of the agent path untouched', async () => {
+    const fixture = createDarwinGrokUninstallFixture()
+    fs.unlinkSync(path.join(fixture.bin, 'agent'))
+    fs.writeFileSync(path.join(fixture.bin, 'agent'), 'a fuller official install put this here')
+    vi.stubEnv('HOME', fs.realpathSync(fixture.home))
+    vi.stubEnv('PATH', fixture.bin)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('no network in tests') }))
+    const store = new AppSettingsStore(path.join(fixture.home, 'settings.json'), fixture.home)
+    const service = createSystemService(store, {
+      platform: 'darwin',
+      runCommand: async (spec) => {
+        throw new Error(`Unexpected command during a readiness probe: ${spec.executable} ${spec.argv.join(' ')}`)
+      },
+    })
+
+    const status = await service.inspectCliUpdate('grok', false)
+
+    expect(status.installed).toBe(true)
+    expect(fs.readFileSync(path.join(fixture.bin, 'agent'), 'utf8')).toBe('a fuller official install put this here')
   })
 })
 
