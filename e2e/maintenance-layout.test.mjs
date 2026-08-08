@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import path from 'node:path'
 import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
-import { chromium } from 'playwright'
+import { chromium } from '@playwright/test'
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url))
 const stylesheetPath = path.resolve(testDirectory, '../src/styles.css')

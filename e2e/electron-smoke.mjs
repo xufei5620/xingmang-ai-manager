@@ -1,4 +1,4 @@
-import { _electron as electron } from 'playwright'
+import { _electron as electron } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
