@@ -22,6 +22,7 @@ import { CodexSessionsService } from './codex-sessions'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { RuntimeLogStore } from './runtime-log'
+import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
 import {
@@ -249,6 +250,49 @@ if (app.isPackaged && hasDisallowedPackagedDebugSwitch(process.argv)) {
   process.exit(1)
 }
 
+/** Resolved once, up front, so recording a failure never depends on a step that
+ *  might itself be the thing that failed. */
+function startupLogLocation(): { userDataDirectory: string | null } {
+  try {
+    return { userDataDirectory: app.getPath('userData') }
+  } catch {
+    // Fall back to the pure per-platform default inside startup-log.
+    return { userDataDirectory: null }
+  }
+}
+
+function recordFatalStartupFailure(phase: string, error: unknown): string | null {
+  let version: string | null = null
+  let packaged: boolean | null = null
+  try {
+    version = app.getVersion()
+    packaged = app.isPackaged
+  } catch {
+    // Version metadata is a nicety; the stack is the part that matters.
+  }
+  return recordStartupFailure(error, { phase, appVersion: version, packaged }, startupLogLocation())
+}
+
+// Flipped once RuntimeLogStore exists; from then on it owns the record and the
+// startup log must stay quiet, or ordinary runtime errors would accumulate in a
+// file whose whole purpose is "the app could not start".
+let runtimeLoggingActive = false
+
+export function markRuntimeLoggingActive(): void {
+  runtimeLoggingActive = true
+}
+
+// `uncaughtExceptionMonitor` observes without swallowing: registering a plain
+// `uncaughtException` listener would suppress the default termination and let
+// the app limp on in a broken state. Unhandled rejections are deliberately not
+// hooked here for the same reason — adding a listener before whenReady would
+// change what Node does with a rejection that currently ends the process. The
+// whenReady `.catch` below already covers the entire async startup chain.
+process.on('uncaughtExceptionMonitor', (error) => {
+  if (runtimeLoggingActive) return
+  recordFatalStartupFailure('uncaughtException', error)
+})
+
 const singleInstanceDisabledForDevelopment = !app.isPackaged
   && process.env.XINGMANG_DISABLE_SINGLE_INSTANCE === '1'
 const hasSingleInstanceLock = singleInstanceDisabledForDevelopment
@@ -302,6 +346,7 @@ if (!hasSingleInstanceLock) {
       appVersion: app.getVersion(),
       packaged: app.isPackaged,
     })
+    markRuntimeLoggingActive()
     runtimeLog.log('info', 'main', 'app.started', '应用主进程已启动', {
       version: app.getVersion(),
       packaged: app.isPackaged,
@@ -482,7 +527,13 @@ if (!hasSingleInstanceLock) {
   }).catch((error) => {
     const message = startupFailureMessage(error, process.platform)
     console.error('Application startup failed:', error)
-    dialog.showErrorBox('星芒AI管理工具启动失败', message)
+    // console output is unreachable in a packaged build and devtools are
+    // disabled there, so this file is the only evidence a support case gets.
+    const logPath = recordFatalStartupFailure('whenReady', error)
+    dialog.showErrorBox(
+      '星芒AI管理工具启动失败',
+      logPath ? `${message}\n\n诊断日志已保存到：\n${logPath}` : message,
+    )
     app.quit()
   })
 
