@@ -9,6 +9,36 @@ const openAiTeamIdentifier = '2DC432GLL2'
 const maximumInfoPlistBytes = 1024 * 1024
 const maximumCommandOutputBytes = 64 * 1024
 const commandTimeoutMs = 5_000
+/**
+ * Deep signature verification is the only expensive step here — measured at 1.79s
+ * against the 1.4 GB Codex.app on an Apple Silicon machine with a warm cache, versus
+ * milliseconds for everything else — and inspectCodexDesktop reruns on every scan.
+ *
+ * The result is cached against a fingerprint of the bundle rather than skipped: an
+ * upgrade replaces the bundle and its executable, which changes the fingerprint and
+ * forces a fresh verification. The bounded lifetime exists because a directory's
+ * mtime does not follow edits to files nested deep inside it, so a fingerprint alone
+ * could keep a stale pass alive indefinitely; this caps that window instead.
+ */
+const verificationCacheTtlMs = 5 * 60_000
+const verifiedBundles = new Map<string, { fingerprint: string; verifiedAt: number }>()
+
+function bundleFingerprint(
+  bundleStats: fs.Stats,
+  infoStats: fs.Stats,
+  executableStats: fs.Stats,
+): string {
+  return [
+    bundleStats.dev, bundleStats.ino, bundleStats.mtimeMs,
+    infoStats.mtimeMs, infoStats.size,
+    executableStats.dev, executableStats.ino, executableStats.mtimeMs, executableStats.size,
+  ].join(':')
+}
+
+/** Drops every cached verification. Exists so tests do not leak state into each other. */
+export function resetMacosCodexAppVerificationCache(): void {
+  verifiedBundles.clear()
+}
 
 export interface MacosCodexAppInfo {
   path: string
@@ -142,11 +172,25 @@ async function inspectCandidate(
       .split(/\s+/)
     if (!architectures.includes(expectedArchitecture)) return null
 
-    await command('/usr/bin/codesign', darwinDeveloperIdVerificationArgv(
-      openAiTeamIdentifier,
-      canonical,
-      { bundleIdentifier, deep: true },
-    ))
+    const [bundleStats, infoStats] = await Promise.all([
+      fs.promises.lstat(canonical),
+      fs.promises.lstat(infoPath),
+    ])
+    const fingerprint = bundleFingerprint(bundleStats, infoStats, executableStats)
+    const cached = verifiedBundles.get(canonical)
+    const stillVerified = cached !== undefined
+      && cached.fingerprint === fingerprint
+      && Date.now() - cached.verifiedAt < verificationCacheTtlMs
+    if (!stillVerified) {
+      await command('/usr/bin/codesign', darwinDeveloperIdVerificationArgv(
+        openAiTeamIdentifier,
+        canonical,
+        { bundleIdentifier, deep: true },
+      ))
+      // Only a pass is remembered. A failure must be retried on the next scan, or a
+      // single transient error would be cached as if the bundle were rejected.
+      verifiedBundles.set(canonical, { fingerprint, verifiedAt: Date.now() })
+    }
 
     let version: string | null = null
     try {

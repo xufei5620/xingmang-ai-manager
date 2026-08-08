@@ -2,7 +2,11 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { inspectMacosCodexApp, runSystemCommand } from './macos-codex-app'
+import {
+  inspectMacosCodexApp,
+  resetMacosCodexAppVerificationCache,
+  runSystemCommand,
+} from './macos-codex-app'
 
 const temporaryDirectories: string[] = []
 
@@ -32,6 +36,7 @@ function officialBundleCommand(executable: string, argv: readonly string[]): str
 }
 
 afterEach(() => {
+  resetMacosCodexAppVerificationCache()
   vi.restoreAllMocks()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
@@ -294,5 +299,67 @@ describe.runIf(process.platform === 'darwin')('inspectMacosCodexApp', () => {
       if (previousNodeOptions === undefined) delete process.env.NODE_OPTIONS
       else process.env.NODE_OPTIONS = previousNodeOptions
     }
+  })
+  it('verifies an unchanged bundle once across repeated scans', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    const scan = () => inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    for (let round = 0; round < 5; round += 1) {
+      await expect(scan()).resolves.toMatchObject({ version: '26.727.51351' })
+    }
+
+    const codesignCalls = runSystemCommand.mock.calls
+      .filter(([executable]) => executable === '/usr/bin/codesign')
+    // Five scans, one deep verification. The cheap probes still run every time.
+    expect(codesignCalls).toHaveLength(1)
+  })
+
+  it('verifies again once the bundle changes', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    const scan = () => inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })
+
+    await scan()
+    // Stand in for an upgrade: the signed executable is replaced.
+    const executablePath = path.join(app, 'Contents', 'MacOS', 'ChatGPT')
+    fs.writeFileSync(executablePath, 'replaced executable', { mode: 0o755 })
+    fs.utimesSync(executablePath, new Date(Date.now() + 5_000), new Date(Date.now() + 5_000))
+    await scan()
+
+    const codesignCalls = runSystemCommand.mock.calls
+      .filter(([executable]) => executable === '/usr/bin/codesign')
+    // A cached pass must never outlive the bytes it was granted for.
+    expect(codesignCalls).toHaveLength(2)
   })
 })
