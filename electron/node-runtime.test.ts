@@ -86,10 +86,22 @@ describe('Node.js installer routing and process plans', () => {
       'official',
       'npmmirror',
     ])
+  })
+
+  it('routes an undetectable region to the mirror first', () => {
+    // Same reasoning as npmInstallRegistries: the networks that block the
+    // region probe are the ones that cannot reach nodejs.org either.
     expect(nodeRuntimeDownloadSources('unknown').map((source) => source.id)).toEqual([
-      'official',
       'npmmirror',
+      'official',
     ])
+  })
+
+  it('keeps both download sources reachable from every region', () => {
+    for (const region of ['mainland-china', 'outside-mainland-china', 'unknown'] as const) {
+      expect(nodeRuntimeDownloadSources(region).map((source) => source.id).sort())
+        .toEqual(['npmmirror', 'official'])
+    }
   })
 
   it('supports Windows x64/arm64 and rejects all other architectures', () => {

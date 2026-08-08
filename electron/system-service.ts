@@ -108,6 +108,7 @@ const npmLatestFailureCacheTtlMs = 2 * 60_000
 const npmLatestQueryTimeoutMs = 10_000
 const maximumNpmRegistryResponseBytes = 256 * 1024
 const maximumNpmPackageLockBytes = 16 * 1024 * 1024
+export const networkLocationCacheTtlMs = 10 * 60_000
 const codexDesktopLatestCacheTtlMs = 10 * 60_000
 const codexDesktopLatestFailureCacheTtlMs = 30_000
 const codexDesktopUpdateManifestUrl = 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json'
@@ -1156,10 +1157,21 @@ export async function detectNetworkRegion(
   return (await detectNetworkLocation(fetchImplementation, timeoutMs)).region
 }
 
+/**
+ * An unknown region means the Cloudflare probe could not complete, and the
+ * users whose network blocks that probe are overwhelmingly the ones who also
+ * cannot reach registry.npmjs.org. Sending them to the official registry first
+ * was exactly backwards.
+ *
+ * The costs are not symmetric. An overseas user wrongly routed to npmmirror
+ * loses a few seconds to a CDN that still serves them; a mainland user wrongly
+ * routed to the official registry cannot install at all. Both entries stay in
+ * the list either way, so a wrong guess only changes which one is tried first.
+ */
 export function npmInstallRegistries(region: NetworkRegion): [string, string] {
-  return region === 'mainland-china'
-    ? [npmMirrorRegistry, npmOfficialRegistry]
-    : [npmOfficialRegistry, npmMirrorRegistry]
+  return region === 'outside-mainland-china'
+    ? [npmOfficialRegistry, npmMirrorRegistry]
+    : [npmMirrorRegistry, npmOfficialRegistry]
 }
 
 export function npmRegistryLabel(registry: string): string {
@@ -1831,10 +1843,12 @@ export function createSystemService(
       return networkLocationCache.value
     }
     const value = await detectNetworkLocation()
-    networkLocationCache = {
-      expiresAt: Date.now() + (value.region === 'unknown' ? 60_000 : 10 * 60_000),
-      value,
-    }
+    // A failed probe used to be retried every minute, costing another 2.5s
+    // timeout each time on precisely the networks that are already slow. Now
+    // that an unknown region routes to the mirror first — the safe default for
+    // this product — there is nothing to regain by re-probing sooner. A manual
+    // rescan still clears this cache outright via forceRefresh.
+    networkLocationCache = { expiresAt: Date.now() + networkLocationCacheTtlMs, value }
     return value
   }
 
@@ -2728,11 +2742,18 @@ export function createSystemService(
       const trustedRelease = await resolveCliInstallRelease(provider, grokInstallStrategy)
       if (!npmExecutable) throw new Error('未检测到 npm，请先安装 Node.js')
       const networkRegion = await inspectNetworkRegion()
-      const action = networkRegion === 'mainland-china'
-        ? `检测到中国大陆网络，正在通过国内 npm 镜像安装已校验版本 ${definition.packageName}@${trustedRelease.version}`
+      // Derived from the routing rather than restated, so the line can never
+      // claim one registry while npmInstallRegistries picks the other. That had
+      // already happened once: the unknown branch still advertised the official
+      // registry after the ordering moved to mirror-first.
+      const [primaryRegistry] = npmInstallRegistries(networkRegion)
+      const primaryLabel = primaryRegistry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'
+      const regionLabel = networkRegion === 'mainland-china'
+        ? '检测到中国大陆网络'
         : networkRegion === 'outside-mainland-china'
-          ? `检测到非中国大陆网络，正在通过 npm 官方源安装已校验版本 ${definition.packageName}@${trustedRelease.version}`
-          : `未能识别网络区域，正在通过 npm 官方源安装已校验版本 ${definition.packageName}@${trustedRelease.version}`
+          ? '检测到非中国大陆网络'
+          : '未能识别网络区域，按国内网络处理'
+      const action = `${regionLabel}，正在通过${primaryLabel}安装已校验版本 ${definition.packageName}@${trustedRelease.version}`
       sendInstallProgress(target, provider, 'started', action)
       const transaction = managedNpmTransaction
       const npmUserConfig = managedNpmLayout?.userConfig ?? path.join(transaction, 'npmrc')
