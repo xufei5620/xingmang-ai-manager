@@ -117,7 +117,22 @@ function scheduleLauncherCleanup(
   timer.unref()
 }
 
-/** Returns fixed macOS discovery locations without consulting shell startup files. */
+/**
+ * Returns fixed macOS discovery locations without consulting shell startup files.
+ *
+ * The system directories come before any writable one. Every command this app
+ * resolves that macOS actually ships — git and python3 — is then taken from the
+ * SIP-protected copy rather than from whatever a user-scoped directory happens to
+ * offer under that name. Nothing else regresses: node, npm, npx and the four CLIs
+ * do not exist under /usr/bin at all, so they still fall through to the locations
+ * they are installed in.
+ *
+ * `additionalPaths` stays first because callers pass an exact directory they already
+ * resolved, which is a stronger statement than any of the guesses below it.
+ *
+ * This is ordering only. Whether a resolved file may then be executed is a separate
+ * decision, made in darwin-path-trust.ts.
+ */
 export function darwinCommandPathCandidates(
   baseEnv: NodeJS.ProcessEnv = process.env,
   additionalPaths: readonly string[] = [],
@@ -126,6 +141,10 @@ export function darwinCommandPathCandidates(
   const inheritedPath = baseEnv.PATH ?? baseEnv.Path ?? baseEnv.path ?? ''
   return [
     ...additionalPaths,
+    '/usr/bin',
+    '/bin',
+    '/usr/sbin',
+    '/sbin',
     managedNpmBinDirectory({ ...baseEnv, HOME: homeDirectory }, 'darwin'),
     path.join(homeDirectory, '.grok', 'bin'),
     path.join(homeDirectory, '.local', 'bin'),
@@ -135,10 +154,6 @@ export function darwinCommandPathCandidates(
     path.join(homeDirectory, 'Library', 'pnpm'),
     '/opt/homebrew/bin',
     '/usr/local/bin',
-    '/usr/bin',
-    '/bin',
-    '/usr/sbin',
-    '/sbin',
     ...inheritedPath.split(path.delimiter),
   ]
 }

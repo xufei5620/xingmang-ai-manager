@@ -226,9 +226,16 @@ describe('secure command runner', () => {
       PATH: '/usr/bin:/custom/inherited:/opt/homebrew/bin',
     }, ['/managed/bin', '/usr/local/bin'])
 
+    // System directories precede every writable one, so a user-scoped file named
+    // git or python3 cannot displace the copy macOS ships. Caller-supplied paths
+    // stay ahead of both: those are already-resolved directories, not guesses.
     expect(environment.PATH?.split(':')).toEqual([
       '/managed/bin',
       '/usr/local/bin',
+      '/usr/bin',
+      '/bin',
+      '/usr/sbin',
+      '/sbin',
       `${os.homedir()}/Library/Application Support/XingMangAI/Cli/npm/bin`,
       `${os.homedir()}/.grok/bin`,
       `${os.homedir()}/.local/bin`,
@@ -237,10 +244,6 @@ describe('secure command runner', () => {
       `${os.homedir()}/.npm-global/bin`,
       `${os.homedir()}/Library/pnpm`,
       '/opt/homebrew/bin',
-      '/usr/bin',
-      '/bin',
-      '/usr/sbin',
-      '/sbin',
       '/custom/inherited',
     ])
   })
@@ -251,7 +254,9 @@ describe('secure command runner', () => {
       PATH: '/usr/bin',
     })
 
-    expect(environment.PATH?.split(':').slice(0, 6)).toEqual([
+    const entries = environment.PATH?.split(':') ?? []
+    expect(entries.slice(0, 4)).toEqual(['/usr/bin', '/bin', '/usr/sbin', '/sbin'])
+    expect(entries.slice(4, 10)).toEqual([
       '/Users/isolated-test-user/Library/Application Support/XingMangAI/Cli/npm/bin',
       '/Users/isolated-test-user/.grok/bin',
       '/Users/isolated-test-user/.local/bin',
@@ -260,6 +265,28 @@ describe('secure command runner', () => {
       '/Users/isolated-test-user/.npm-global/bin',
     ])
     expect(environment.PATH).not.toContain(os.homedir())
+  })
+
+  it.runIf(process.platform === 'darwin')('resolves a system-provided command from /usr/bin instead of a user-scoped file of the same name', async () => {
+    // The threat this ordering closes: anything able to write the user's own bin
+    // directory — a postinstall script, an unpacked archive — could otherwise put a
+    // file named git there and have it resolved ahead of the copy macOS ships.
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-shadowed-home-'))
+    try {
+      const shadowDirectory = path.join(home, '.local', 'bin')
+      fs.mkdirSync(shadowDirectory, { recursive: true })
+      const shadow = path.join(shadowDirectory, 'git')
+      fs.writeFileSync(shadow, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+
+      const resolved = await findExecutable('git', {
+        env: commandEnvironment({ HOME: home, PATH: '' }),
+      })
+
+      expect(resolved).toBe('/usr/bin/git')
+      expect(resolved).not.toBe(shadow)
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true })
+    }
   })
 
   it.runIf(process.platform === 'win32')('adds common Windows Node manager and package-manager paths', () => {
