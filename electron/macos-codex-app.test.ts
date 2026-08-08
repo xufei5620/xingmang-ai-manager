@@ -46,7 +46,18 @@ afterEach(() => {
   }
 })
 
-describe.runIf(process.platform === 'darwin')('inspectMacosCodexApp', () => {
+// Every case drives the bundle inspection through the injected
+// runSystemCommand, so no real macOS toolchain is involved and the darwin gate
+// cost Linux all coverage of Codex.app identification for nothing.
+//
+// Windows stays out, and not because of the file name: inspectMacosCodexApp
+// requires an executable bit (`mode & 0o111`, macos-codex-app.ts:117), and NTFS
+// reports 0o666 for every file no matter what mode writeFileSync or chmod is
+// given. The function therefore returns null for every input there, so the
+// cases expecting a rejection would pass even with the identification logic
+// deleted. Fake coverage is worse than none, so gate on whether POSIX
+// permission bits exist, which is the thing the logic actually depends on.
+describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
   it('rejects an otherwise official bundle that cannot run on the current architecture', async () => {
     const root = temporaryDirectory()
     const systemApplicationsDirectory = path.join(root, 'Applications')
