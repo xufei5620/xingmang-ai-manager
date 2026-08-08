@@ -123,8 +123,10 @@ function parseMcpInput(value: unknown): AddMcpInput {
   if (value.type === 'stdio') {
     const envValue = value.env
     if (envValue !== undefined && !isRecord(envValue)) throw new Error('MCP 环境变量格式错误')
+    const envEntries = Object.entries(envValue ?? {})
+    if (envEntries.length > 128) throw new Error('MCP 环境变量数量过多')
     const env: Record<string, string> = {}
-    for (const [key, entry] of Object.entries(envValue ?? {})) {
+    for (const [key, entry] of envEntries) {
       if (typeof entry !== 'string' || entry.length > 4_096) throw new Error('MCP 环境变量格式错误')
       env[requiredString(key, '环境变量名', 128)] = entry
     }
@@ -171,16 +173,16 @@ function parseProviderExtensionMutation(value: unknown): ProviderExtensionMutati
   if (!isRecord(value) || !isProviderId(value.provider)) {
     throw new Error('扩展操作格式错误')
   }
-  if (!['mcp', 'skill', 'plugin'].includes(String(value.kind))) {
+  const kind = String(value.kind)
+  if (!['mcp', 'skill', 'plugin'].includes(kind)) {
     throw new Error('扩展类型错误')
   }
-  if (!['install', 'uninstall', 'enable', 'disable', 'update'].includes(String(value.action))) {
+  const action = String(value.action)
+  if (!['install', 'uninstall', 'enable', 'disable', 'update'].includes(action)) {
     throw new Error('扩展操作类型错误')
   }
-  if (
-    value.scope !== undefined
-    && !['user', 'project', 'local', 'workspace'].includes(String(value.scope))
-  ) {
+  const scope = value.scope === undefined ? undefined : String(value.scope)
+  if (scope !== undefined && !['user', 'project', 'local', 'workspace'].includes(scope)) {
     throw new Error('扩展范围错误')
   }
 
@@ -195,8 +197,10 @@ function parseProviderExtensionMutation(value: unknown): ProviderExtensionMutati
     } else if (value.mcp.type === 'stdio') {
       const envValue = value.mcp.env
       if (envValue !== undefined && !isRecord(envValue)) throw new Error('MCP 环境变量格式错误')
+      const envEntries = Object.entries(envValue ?? {})
+      if (envEntries.length > 128) throw new Error('MCP 环境变量数量过多')
       const env: Record<string, string> = {}
-      for (const [key, entry] of Object.entries(envValue ?? {})) {
+      for (const [key, entry] of envEntries) {
         if (typeof entry !== 'string' || entry.length > 4_096) throw new Error('MCP 环境变量格式错误')
         env[requiredString(key, '环境变量名', 128)] = entry
       }
@@ -213,11 +217,11 @@ function parseProviderExtensionMutation(value: unknown): ProviderExtensionMutati
 
   return {
     provider: value.provider,
-    kind: value.kind as ProviderExtensionMutation['kind'],
-    action: value.action as ProviderExtensionMutation['action'],
+    kind: kind as ProviderExtensionMutation['kind'],
+    action: action as ProviderExtensionMutation['action'],
     id: optionalString(value.id, '扩展 ID', 512),
     source: optionalString(value.source, '扩展来源'),
-    scope: value.scope as ProviderExtensionMutation['scope'],
+    scope: scope as ProviderExtensionMutation['scope'],
     mcp,
   }
 }
@@ -279,8 +283,9 @@ function parseSessionListQuery(value: unknown): CodexSessionListQuery {
   if (archive !== undefined && archive !== 'all' && archive !== 'active' && archive !== 'archived') {
     throw new Error('会话归档筛选格式错误')
   }
-  if (input.search !== undefined && (typeof input.search !== 'string' || input.search.length > 256)) {
-    throw new Error('会话搜索内容过长')
+  if (input.search !== undefined) {
+    if (typeof input.search !== 'string') throw new Error('会话搜索内容格式错误')
+    if (input.search.length > 256) throw new Error('会话搜索内容过长')
   }
   const integer = (entry: unknown, label: string) => {
     if (entry === undefined) return undefined
@@ -308,8 +313,9 @@ function parseProviderSessionListQuery(value: unknown): ProviderSessionListQuery
   ) {
     throw new Error('会话工具类型错误')
   }
-  if (value.search !== undefined && (typeof value.search !== 'string' || value.search.length > 256)) {
-    throw new Error('会话搜索内容过长')
+  if (value.search !== undefined) {
+    if (typeof value.search !== 'string') throw new Error('会话搜索内容格式错误')
+    if (value.search.length > 256) throw new Error('会话搜索内容过长')
   }
   const integer = (entry: unknown, label: string) => {
     if (entry === undefined) return undefined

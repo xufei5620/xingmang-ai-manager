@@ -915,6 +915,29 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       })).toThrow('MCP 环境变量格式错误')
     })
 
+    it('accepts a stdio env with exactly 128 entries at the boundary', () => {
+      const { extensionService } = register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+      const env = Object.fromEntries(Array.from({ length: 128 }, (_, i) => [`VAR_${i}`, 'value']))
+
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', env,
+      })).not.toThrow()
+      expect(extensionService.addMcpServer).toHaveBeenCalledWith(expect.objectContaining({
+        env: expect.objectContaining({ VAR_0: 'value', VAR_127: 'value' }),
+      }))
+    })
+
+    it('rejects a stdio env with more than 128 entries', () => {
+      register()
+      const handler = electronMocks.handlers.get('mcp:add')!
+      const env = Object.fromEntries(Array.from({ length: 129 }, (_, i) => [`VAR_${i}`, 'value']))
+
+      expect(() => handler(trustedEvent(), {
+        type: 'stdio', name: 'srv', command: 'node', env,
+      })).toThrow('MCP 环境变量数量过多')
+    })
+
     it('rejects a stdio env key that is invalid', () => {
       register()
       const handler = electronMocks.handlers.get('mcp:add')!
@@ -1230,6 +1253,48 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         provider: 'claude', kind: 'mcp', action: 'install', id: 'x'.repeat(513),
       })).toThrow('扩展 ID格式错误')
     })
+
+    it('forwards normalized primitive strings even when kind/action/scope arrive boxed', () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude',
+        kind: new String('mcp'),
+        action: new String('install'),
+        scope: new String('user'),
+      })).not.toThrow()
+
+      const forwarded = providerExtensionService.mutate.mock.calls[0][0]
+      expect(forwarded.kind).toBe('mcp')
+      expect(forwarded.action).toBe('install')
+      expect(forwarded.scope).toBe('user')
+    })
+
+    it('accepts an mcp env sub-payload with exactly 128 entries at the boundary', () => {
+      const { providerExtensionService } = register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+      const env = Object.fromEntries(Array.from({ length: 128 }, (_, i) => [`VAR_${i}`, 'value']))
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude', kind: 'mcp', action: 'install', mcp: { type: 'stdio', command: 'python', env },
+      })).not.toThrow()
+      expect(providerExtensionService.mutate).toHaveBeenCalledWith(expect.objectContaining({
+        mcp: expect.objectContaining({
+          env: expect.objectContaining({ VAR_0: 'value', VAR_127: 'value' }),
+        }),
+      }))
+    })
+
+    it('rejects an mcp env sub-payload with more than 128 entries', () => {
+      register()
+      const handler = electronMocks.handlers.get('extensions:mutate')!
+      const env = Object.fromEntries(Array.from({ length: 129 }, (_, i) => [`VAR_${i}`, 'value']))
+
+      expect(() => handler(trustedEvent(), {
+        provider: 'claude', kind: 'mcp', action: 'install', mcp: { type: 'stdio', command: 'python', env },
+      })).toThrow('MCP 环境变量数量过多')
+    })
   })
 
   describe('parseConfigSavePayload (config:save) additional edge cases', () => {
@@ -1483,6 +1548,15 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { search: 'x'.repeat(257) })).toThrow('会话搜索内容过长')
     })
 
+    it('rejects a non-string search value with a distinct type error', () => {
+      register()
+      const handler = electronMocks.handlers.get('sessions:list')!
+
+      for (const bad of [42, true, null, {}, []]) {
+        expect(() => handler(trustedEvent(), { search: bad })).toThrow('会话搜索内容格式错误')
+      }
+    })
+
     it('rejects a non-integer or sub-1 page number', () => {
       register()
       const handler = electronMocks.handlers.get('sessions:list')!
@@ -1552,6 +1626,15 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('provider-sessions:list')!
 
       expect(() => handler(trustedEvent(), { search: 'y'.repeat(257) })).toThrow('会话搜索内容过长')
+    })
+
+    it('rejects a non-string search value with a distinct type error', () => {
+      register()
+      const handler = electronMocks.handlers.get('provider-sessions:list')!
+
+      for (const bad of [42, true, null, {}, []]) {
+        expect(() => handler(trustedEvent(), { search: bad })).toThrow('会话搜索内容格式错误')
+      }
     })
 
     it('rejects invalid page/pageSize values', () => {
