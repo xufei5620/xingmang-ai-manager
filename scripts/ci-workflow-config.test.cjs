@@ -85,6 +85,25 @@ test('the Windows job packages and exercises a hardened non-publishing build', (
   assert.match(buildCommand, /--publish never/)
 })
 
+test('a branch push with an open pull request triggers exactly one run', () => {
+  // `on:` parses to the `true` key because YAML reads a bare `on` as a boolean.
+  const triggers = workflow.on ?? workflow[true]
+
+  assert.deepEqual(triggers.push.branches, ['main'])
+  assert.ok('pull_request' in triggers, 'pull_request must stay enabled')
+  // pull_request already covers every push to a branch under review, so an
+  // unfiltered push trigger would double every run's billed minutes.
+  assert.deepEqual(Object.keys(triggers).sort(), ['pull_request', 'push'])
+})
+
+test('superseded branch runs are cancelled while main runs to completion', () => {
+  assert.equal(workflow.concurrency.group, '${{ github.workflow }}-${{ github.ref }}')
+  assert.equal(
+    workflow.concurrency['cancel-in-progress'],
+    "${{ github.ref != 'refs/heads/main' }}",
+  )
+})
+
 test('quality checks cannot publish a release', () => {
   assert.equal(workflow.permissions.contents, 'read')
 
