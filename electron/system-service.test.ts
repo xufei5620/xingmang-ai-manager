@@ -1921,18 +1921,30 @@ describe('Codex Desktop update state', () => {
         url: 'https://codexapp.agentsmirror.com/latest/win-arm64',
       },
     ])
+    // Mirror first, matching the package download below, which is mirror-only.
     expect(buildCodexDesktopManifestSources()).toEqual([
-      {
-        kind: 'official',
-        label: 'OpenAI 官方源',
-        url: 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
-      },
       {
         kind: 'mirror',
         label: '国内镜像',
         url: 'https://codexapp.agentsmirror.com/latest/manifest',
       },
+      {
+        kind: 'official',
+        label: 'OpenAI 官方源',
+        url: 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
+      },
     ])
+  })
+
+  it('keeps both manifest endpoints and introduces no new host', () => {
+    // Reordering must not drop the official fallback, and must not reach for a
+    // host outside the two already covered by validateCodexDesktopResourceUrl.
+    expect([...buildCodexDesktopManifestSources()].map((source) => source.url).sort()).toEqual([
+      'https://codexapp.agentsmirror.com/latest/manifest',
+      'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
+    ])
+    expect(buildCodexDesktopManifestSources().map((source) => source.kind).sort())
+      .toEqual(['mirror', 'official'])
   })
 
   it('reads and validates the selected architecture from the AgentsMirror manifest', async () => {
