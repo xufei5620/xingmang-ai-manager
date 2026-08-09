@@ -101,6 +101,9 @@ export function Sidebar({
         className={`nav-item${activePage === item.id ? ' active' : ''}${item.id === 'overview' ? ' static-nav-item' : ''}`}
         data-sidebar-tooltip={item.label}
         aria-current={activePage === item.id ? 'page' : undefined}
+        // item.hint 本身挂在 aria-hidden 的图标上，屏幕阅读器读不到；这里在
+        // 按钮上补一份可达的 aria-label，让 label 仍是主信息、hint 是补充说明。
+        aria-label={item.hint ? `${item.label}：${item.hint}` : undefined}
         onClick={() => onNavigate(item.id)}
       >
         <Icon size={18} />

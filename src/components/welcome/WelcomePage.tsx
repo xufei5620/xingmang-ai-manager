@@ -15,6 +15,10 @@ interface ConstellationNode {
 // Node order/labels mirror the finalized mockup (docs/mockups/welcome-draft.html)
 // verbatim; only the dot color is sourced live from provider-meta.ts instead of
 // being copied as a literal hex, so it can never drift from the real brand color.
+//
+// 星图是固定的四方位（上/右/下/左）视觉布局，故意不从 provider-registry 派生
+// provider 集合：新增第 5 个 provider 时这四个方位本就要重新设计，派生反而会
+// 在布局撑不下时静默错位，硬编码在这里是有意为之。
 const constellationNodes: ConstellationNode[] = [
   { id: 'claude', label: 'Claude Code', position: 'top' },
   { id: 'codex', label: 'Codex', position: 'right' },

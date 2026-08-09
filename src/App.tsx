@@ -469,11 +469,11 @@ function App() {
   const toggleSidebarMoreExpanded = useCallback(() => {
     setSettings((current) => {
       const next = !current.sidebarMoreExpanded
-      void window.xingmang.saveSettings({ ...current, sidebarMoreExpanded: next })
-        .then(setSettings)
-        .catch(() => {
-          // "更多" 的展开态只是便利性 UI 偏好，持久化失败不影响当次会话内的展开/折叠。
-        })
+      // 不用响应结果回填 setSettings：极快连点时慢响应可能晚于快响应落地，
+      // 用旧值覆盖刚设好的乐观状态，会让侧边栏"更多"展开态出现瞬时闪跳。
+      // 这里的乐观值已经是本次交互的真实意图，持久化失败也不影响当次会话
+      // 内的展开/折叠，下次切换会带着最新状态重新保存、自愈。
+      void window.xingmang.saveSettings({ ...current, sidebarMoreExpanded: next }).catch(() => {})
       return { ...current, sidebarMoreExpanded: next }
     })
   }, [])
