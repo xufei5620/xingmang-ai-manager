@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Check, Compass, LoaderCircle, Moon, Save, Settings, Sun } from 'lucide-react'
+import { AlertCircle, Check, Compass, Globe2, LoaderCircle, Moon, Save, Settings, Sun } from 'lucide-react'
 import { errorMessage } from '../error-message'
+import { relaySites, resolveRelaySite } from '../types'
 
 export type SettingsTheme = 'light' | 'dark'
 
@@ -10,6 +11,15 @@ export interface SettingsV2 {
   theme: SettingsTheme
   checkUpdatesOnStartup: boolean
   runDiagnosticsOnStartup: boolean
+  /**
+   * Which relay-sites.ts RelaySite the CLIs should be configured against
+   * (W3b). Absent = the default site, same "缺省 = 旧行为" contract as
+   * AppSettings.relaySiteId itself (electron/app-settings.ts) -- this page
+   * always resolves it through resolveRelaySite() for display, never reads
+   * it raw, so a stale/unknown id degrades to the default option instead of
+   * rendering a blank <select>.
+   */
+  relaySiteId?: string
 }
 
 export interface SettingsPageProps {
@@ -31,6 +41,7 @@ export function settingsEqual(left: SettingsV2, right: SettingsV2): boolean {
     && left.theme === right.theme
     && left.checkUpdatesOnStartup === right.checkUpdatesOnStartup
     && left.runDiagnosticsOnStartup === right.runDiagnosticsOnStartup
+    && left.relaySiteId === right.relaySiteId
 }
 
 export function reconcileSettingsDraft(
@@ -41,12 +52,12 @@ export function reconcileSettingsDraft(
   // theme 与 version 始终跟随 persisted（侧边栏是主题的权威通道），
   // 其余字段的未保存草稿不能因外部变更被静默丢弃。
   const draft = { ...persisted }
-  const carryUnsavedField = <Key extends 'workspace' | 'checkUpdatesOnStartup' | 'runDiagnosticsOnStartup'>(
+  const carryUnsavedField = <Key extends 'workspace' | 'checkUpdatesOnStartup' | 'runDiagnosticsOnStartup' | 'relaySiteId'>(
     key: Key,
   ) => {
     if (current.draft[key] !== current.saved[key]) draft[key] = current.draft[key]
   }
-  for (const key of ['workspace', 'checkUpdatesOnStartup', 'runDiagnosticsOnStartup'] as const) {
+  for (const key of ['workspace', 'checkUpdatesOnStartup', 'runDiagnosticsOnStartup', 'relaySiteId'] as const) {
     carryUnsavedField(key)
   }
   return { saved: persisted, draft }
@@ -193,6 +204,33 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
             <strong>CLI 默认工作目录</strong>
             <p>{draft.workspace}</p>
           </div>
+        </div>
+      </section>
+
+      <section className="environment-section settings-section" aria-labelledby="relay-site-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="relay-site-title">服务站点</h2>
+            <span>CLI 配置写入哪个中转站点</span>
+          </div>
+        </div>
+        <div className="operation-row settings-relay-site-row">
+          <div className="operation-status-icon"><Globe2 size={17} /></div>
+          <div className="operation-row-copy">
+            <strong>中转站点</strong>
+            <p>切换后，新保存的 CLI 配置将指向该站点；已配置的 CLI 需重新保存一次配置生效</p>
+          </div>
+          <select
+            className="settings-relay-site-select"
+            value={resolveRelaySite(draft.relaySiteId).id}
+            disabled={saving}
+            onChange={(event) => update('relaySiteId', event.target.value)}
+            aria-label="服务站点"
+          >
+            {relaySites.map((site) => (
+              <option key={site.id} value={site.id}>{site.label}</option>
+            ))}
+          </select>
         </div>
       </section>
 

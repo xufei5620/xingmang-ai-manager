@@ -4,7 +4,9 @@ import {
   filterProvisioningTargets,
   provisionCliKeyForInstalledClis,
   resolveCliProvisioningGate,
+  writeCliKeyForInstalledClis,
   type CliKeyProvisioningApi,
+  type CliKeyWriteApi,
 } from './account-provisioning'
 import { EmptyStatus } from './app-shared'
 import { providerIds, type ProviderId, type SystemSnapshot } from './types'
@@ -142,6 +144,61 @@ describe('provisionCliKeyForInstalledClis', () => {
     await expect(provisionCliKeyForInstalledClis(['claude'], {}, api)).rejects.toThrow('请先登录星芒账号')
     expect(api.listModels).not.toHaveBeenCalled()
     expect(api.saveConfig).not.toHaveBeenCalled()
+  })
+})
+
+// writeCliKeyForInstalledClis is the shared write step provisionCliKeyForIn-
+// stalledClis above delegates to after minting a key -- the suite above
+// already exercises its write behavior indirectly through every one of those
+// cases. These few tests just cover the one thing that suite cannot: calling
+// it directly with a key nobody minted (the 粘贴 Key / manual-key-site path,
+// PasteKeyDialog.tsx W3b), where there is no provisionCliKey() call to fail.
+describe('writeCliKeyForInstalledClis', () => {
+  function fakeWriteApi(overrides: Partial<CliKeyWriteApi> = {}): CliKeyWriteApi {
+    return {
+      listModels: vi.fn(async () => ['gpt-5.6-sol', 'claude-op-9']),
+      saveConfig: vi.fn(async () => ({ backups: [], files: [] })),
+      ...overrides,
+    }
+  }
+
+  it('does nothing when no CLI is installed, without validating the key at all', async () => {
+    const api = fakeWriteApi()
+
+    const outcome = await writeCliKeyForInstalledClis('sk-pasted-plaintext-key', [], {}, api)
+
+    expect(outcome).toEqual({ configured: [], failed: [] })
+    expect(api.listModels).not.toHaveBeenCalled()
+    expect(api.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('writes the supplied key into every selected CLI, never minting one', async () => {
+    const api = fakeWriteApi()
+
+    const outcome = await writeCliKeyForInstalledClis('sk-pasted-plaintext-key', ['claude', 'grok'], {}, api)
+
+    expect(outcome).toEqual({ configured: ['claude', 'grok'], failed: [] })
+    expect(api.listModels).toHaveBeenCalledWith('sk-pasted-plaintext-key')
+    for (const call of vi.mocked(api.saveConfig).mock.calls) {
+      expect(call[0].apiKey).toBe('sk-pasted-plaintext-key')
+    }
+  })
+
+  it('marks every target failed, without calling saveConfig, when the pasted key fails validation', async () => {
+    const api = fakeWriteApi({ listModels: vi.fn(async () => { throw new Error('Key 无效或已过期') }) })
+
+    const outcome = await writeCliKeyForInstalledClis('sk-bad-key', ['claude'], {}, api)
+
+    expect(outcome).toEqual({ configured: [], failed: [{ provider: 'claude', message: 'Key 无效或已过期' }] })
+    expect(api.saveConfig).not.toHaveBeenCalled()
+  })
+
+  it('never includes the supplied key anywhere in the returned outcome (I3)', async () => {
+    const api = fakeWriteApi()
+
+    const outcome = await writeCliKeyForInstalledClis('sk-pasted-plaintext-key', ['claude'], {}, api)
+
+    expect(JSON.stringify(outcome)).not.toContain('sk-pasted-plaintext-key')
   })
 })
 

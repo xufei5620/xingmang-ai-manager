@@ -1,5 +1,6 @@
 import { AlertTriangle, KeyRound, LogOut, UserRound, Wallet } from 'lucide-react'
-import { formatBalanceUsd, type AccountAreaStatus, type AccountSnapshot } from './account-stub'
+import { formatBalanceUsd, shouldShowManualKeyEntry, type AccountAreaStatus, type AccountSnapshot } from './account-stub'
+import type { RelaySite } from '../../types'
 
 /**
  * True when a click/keydown on the identity row actually originated inside
@@ -45,25 +46,64 @@ function isNestedButtonEvent(event: { target: EventTarget | null }): boolean {
  * handling (avatar + tooltip only) is generic CSS already covering
  * `.account-area`/`.account-recharge-button`/`.account-logout-button`/
  * `.account-configure-button`/`[data-sidebar-tooltip]` — see styles.css.
+ *
+ * W3b adds a fourth, site-driven branch ahead of all three above:
+ * shouldShowManualKeyEntry(relaySite.accountBackend) short-circuits to a
+ * "粘贴 Key" entry point for a manual-key site (sub2api today), regardless
+ * of `status`/`snapshot`. This deliberately does not log the user out of
+ * whatever new-api session they may still be holding from the solov site --
+ * App.tsx never calls account:logout on a site switch (least surprise: the
+ * identity/balance UI reappears unchanged the moment the user switches back).
  */
 export function AccountArea({
   status,
   snapshot,
+  relaySite,
   onLogin,
   onLogout,
   onRecharge,
   onConfigureCliKey,
   onOpenAccountCenter,
+  onPasteKey,
+  onOpenKeysPage,
 }: {
   status: AccountAreaStatus
   snapshot: AccountSnapshot
+  relaySite: RelaySite
   onLogin: () => void
   onLogout: () => void
   onRecharge: () => void
   onConfigureCliKey: () => void
   /** Identity row entry point into the 个人中心 overlay (W4a, App.tsx's 'account-center' appView). */
   onOpenAccountCenter: () => void
+  /** Opens the 粘贴 Key dialog (W3b) -- only reachable on a manual-key site. */
+  onPasteKey: () => void
+  /** openExternal(relaySite.keysPageUrl) -- already I12 allowlisted (relaySiteExternalUrls). */
+  onOpenKeysPage: () => void
 }) {
+  if (shouldShowManualKeyEntry(relaySite.accountBackend)) {
+    return (
+      <>
+        <button
+          type="button"
+          className="account-area"
+          data-sidebar-tooltip="粘贴 Key"
+          onClick={onPasteKey}
+        >
+          <span className="account-avatar" aria-hidden="true"><KeyRound size={18} /></span>
+          <span className="account-copy">
+            <strong>粘贴 Key</strong>
+            <small>{relaySite.label} 不提供账号登录，点击粘贴 Key</small>
+          </span>
+        </button>
+        <p className="account-manual-key-hint">
+          还没有 Key？
+          <button type="button" className="inline-link" onClick={onOpenKeysPage}>去获取 Key</button>
+        </p>
+      </>
+    )
+  }
+
   if (status === 'guest') {
     return (
       <button

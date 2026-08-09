@@ -11,8 +11,15 @@
 import { errorMessage } from './error-message'
 import { providerIds, type ProviderId, type SystemSnapshot } from './types'
 
-export interface CliKeyProvisioningApi {
-  provisionCliKey(): Promise<{ key: string }>
+/**
+ * The subset of the write chain that both provisioning paths share: mint (or
+ * already hold) a key, validate it by listing its models, then write it into
+ * each installed CLI's config. Split out from CliKeyProvisioningApi below so
+ * writeCliKeyForInstalledClis (the 粘贴 Key path, W3b) can take exactly the
+ * capability it needs without also requiring provisionCliKey -- a pasted key
+ * never goes through the account service's own minting call.
+ */
+export interface CliKeyWriteApi {
   listModels(apiKey: string): Promise<string[]>
   saveConfig(payload: {
     provider: ProviderId
@@ -20,6 +27,10 @@ export interface CliKeyProvisioningApi {
     model: string
     mode: 'merge'
   }): Promise<unknown>
+}
+
+export interface CliKeyProvisioningApi extends CliKeyWriteApi {
+  provisionCliKey(): Promise<{ key: string }>
 }
 
 export interface CliKeyProvisioningFailure {
@@ -33,26 +44,27 @@ export interface CliKeyProvisioningOutcome {
 }
 
 /**
- * Provisions a single new CLI key from the account service and writes it
- * into every already-installed CLI's config via the existing config-files.ts
- * write path (config:save / saveProviderConfig) -- no new on-disk write logic.
- * All installed CLIs share the one key: xm.solov.cc exposes a single relay
- * account, so there is no reason to mint one token per local tool.
+ * Writes an already-known key into every already-installed CLI's config via
+ * the existing config-files.ts write path (config:save / saveProviderConfig
+ * -- no new on-disk write logic). Shared by both provisioning paths:
+ * provisionCliKeyForInstalledClis below hands it a freshly minted key, and
+ * the 粘贴 Key flow (PasteKeyDialog.tsx, W3b) hands it whatever the user
+ * typed in -- from this function's point of view the two are identical, it
+ * never asks where `key` came from.
  *
  * `preferredModels` lets the caller reuse each provider's currently
- * configured model (from AppConfigSummary) when it is still valid for the
- * freshly issued key; otherwise the first model the relay reports is used.
- * This mirrors onboarding-flow.ts's authorizeCodex(), which always re-lists
- * models for a key rather than trusting a remembered one.
+ * configured model (from AppConfigSummary) when it is still valid for this
+ * key; otherwise the first model the relay reports is used. This mirrors
+ * onboarding-flow.ts's authorizeCodex(), which always re-lists models for a
+ * key rather than trusting a remembered one.
  */
-export async function provisionCliKeyForInstalledClis(
+export async function writeCliKeyForInstalledClis(
+  key: string,
   installedProviders: readonly ProviderId[],
   preferredModels: Partial<Record<ProviderId, string>>,
-  api: CliKeyProvisioningApi,
+  api: CliKeyWriteApi,
 ): Promise<CliKeyProvisioningOutcome> {
   if (installedProviders.length === 0) return { configured: [], failed: [] }
-
-  const { key } = await api.provisionCliKey()
 
   let models: string[]
   try {
@@ -81,6 +93,23 @@ export async function provisionCliKeyForInstalledClis(
     }
   }
   return { configured, failed }
+}
+
+/**
+ * Provisions a single new CLI key from the account service, then delegates
+ * to writeCliKeyForInstalledClis for the actual write. All installed CLIs
+ * share the one key: xm.solov.cc exposes a single relay account, so there is
+ * no reason to mint one token per local tool.
+ */
+export async function provisionCliKeyForInstalledClis(
+  installedProviders: readonly ProviderId[],
+  preferredModels: Partial<Record<ProviderId, string>>,
+  api: CliKeyProvisioningApi,
+): Promise<CliKeyProvisioningOutcome> {
+  if (installedProviders.length === 0) return { configured: [], failed: [] }
+
+  const { key } = await api.provisionCliKey()
+  return writeCliKeyForInstalledClis(key, installedProviders, preferredModels, api)
 }
 
 /**

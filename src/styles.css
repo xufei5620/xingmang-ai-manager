@@ -1607,6 +1607,20 @@ input:focus-visible {
   font-weight: var(--font-weight-semibold-plus);
 }
 
+/* W3b manual-key entry (relay-sites.ts accountBackend: 'manual-key') --
+   sits where .account-recharge-button normally would, but as plain
+   explanatory text rather than a button: the actionable link lives inside
+   it via .inline-link (already used by RuntimeCell.tsx for the same
+   "text sentence with one clickable word" shape). */
+.account-manual-key-hint {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 0 var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
 .account-recharge-button {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
@@ -4214,7 +4228,8 @@ button:disabled {
    centered avatar once account-copy itself is hidden below). */
 .sidebar-collapsed .account-recharge-button,
 .sidebar-collapsed .account-logout-button,
-.sidebar-collapsed .account-configure-button {
+.sidebar-collapsed .account-configure-button,
+.sidebar-collapsed .account-manual-key-hint {
   display: none;
 }
 
@@ -6535,6 +6550,28 @@ button:disabled {
 
 .settings-section .operations-list {
   border-top: 1px solid var(--border-subtle);
+}
+
+/* 服务站点行（W3b）：说明文字比一般 operation-row 的 p 更长，需要换行而不是
+   .operation-row-copy p 默认的单行省略号；select 的颜色/边框 token 组合与
+   .backup-create .config-actions select 一致，保持全仓 select 视觉统一。 */
+.settings-relay-site-row .operation-row-copy p {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: initial;
+  overflow-wrap: anywhere;
+}
+
+.settings-relay-site-select {
+  height: 36px;
+  min-width: 160px;
+  padding: 0 30px 0 10px;
+  color: #4e5965;
+  background: var(--surface-panel);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-6);
+  outline: 0;
+  font-size: var(--text-xs);
 }
 
 .setting-theme-control {

@@ -30,11 +30,28 @@ import { resolveCanvasAuthToken, type CanvasAuthTokenDependencies } from './canv
 import { isAllowedExternalUrl } from './security'
 import { readBoundedUtf8File } from './bounded-file'
 import { writeAtomicSafeUtf8File } from './safe-local-data'
-import { buildCliKeyName, defaultBaseUrl as newApiDefaultBaseUrl } from './new-api-client'
+import { buildCliKeyName } from './new-api-client'
+import { relaySites } from './relay-sites'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
+
+// Derived from the site registry's solov entry (T2 precedent, W3) rather
+// than importing new-api-client.ts's own defaultBaseUrl re-export: this
+// window's only declared dependency on the account backend is the
+// backend-agnostic RelayBackendClient interface (see
+// CanvasWindowControllerOptions.accountService below, "this window never
+// needs to know which relay backend minted its canvas key") -- reaching into
+// new-api-client.ts just for this one literal would quietly reintroduce a
+// concrete-backend import into a module that otherwise never needs one.
+// solov is guaranteed to declare accountBaseUrl -- it is the one
+// relay-sites.ts entry with accountBackend: 'new-api' -- but the field is
+// typed optional on RelaySite (a manual-key site like sub2api has none), so
+// the `?? ` fallback below exists purely to stay type-safe; it is
+// unreachable in practice.
+const newApiDefaultBaseUrl = relaySites.find((site) => site.id === 'solov')?.accountBaseUrl
+  ?? 'https://xm.solov.cc'
 
 // Narrow, hand-maintained channel names for the canvas window's own host
 // bridge -- deliberately NOT part of ipc-contract.ts's XingmangInvokeContract

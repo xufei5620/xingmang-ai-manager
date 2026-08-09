@@ -39,6 +39,10 @@ interface SidebarProps {
   onRecharge: () => void
   onConfigureCliKey: () => void
   onOpenAccountCenter: () => void
+  /** Opens the 粘贴 Key dialog (W3b) -- passed straight through to AccountArea. */
+  onPasteKey: () => void
+  /** openExternal(relaySite.keysPageUrl) -- passed straight through to AccountArea. */
+  onOpenKeysPage: () => void
 }
 
 export function ThemeToggle({
@@ -80,6 +84,8 @@ export function Sidebar({
   onRecharge,
   onConfigureCliKey,
   onOpenAccountCenter,
+  onPasteKey,
+  onOpenKeysPage,
 }: SidebarProps) {
   const updatePhase = updateState?.phase
   const showUpdate = updatePhase === 'available'
@@ -180,11 +186,14 @@ export function Sidebar({
         <AccountArea
           status={accountStatus}
           snapshot={accountSnapshot}
+          relaySite={relaySite}
           onLogin={onAccountLogin}
           onLogout={onAccountLogout}
           onRecharge={onRecharge}
           onConfigureCliKey={onConfigureCliKey}
           onOpenAccountCenter={onOpenAccountCenter}
+          onPasteKey={onPasteKey}
+          onOpenKeysPage={onOpenKeysPage}
         />
         <button
           className="official-site-button tutorial-docs-button"

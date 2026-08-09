@@ -5,6 +5,7 @@ import { LoginDialog } from './components/account/LoginDialog'
 import { RegisterDialog } from './components/account/RegisterDialog'
 import { ForgotPasswordDialog } from './components/account/ForgotPasswordDialog'
 import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
+import { PasteKeyDialog } from './components/account/PasteKeyDialog'
 import { AccountCenterPage } from './components/account/AccountCenterPage'
 import { resolveAccountErrorMessage } from './components/account/account-errors'
 import { WALLET_URL } from './components/account/account-center'
@@ -14,6 +15,7 @@ import {
   buildProvisioningTargets,
   provisionCliKeyForInstalledClis,
   resolveCliProvisioningGate,
+  writeCliKeyForInstalledClis,
 } from './account-provisioning'
 import {
   codexDesktopInstallActive,
@@ -160,6 +162,11 @@ function App() {
   // 把候选列表放进这里而不是直接写入；null = 弹窗不显示。见 offerCliProvisioning。
   const [provisioningTargets, setProvisioningTargets] = useState<ProviderId[] | null>(null)
   const [provisioningBusy, setProvisioningBusy] = useState(false)
+  // 粘贴 Key 弹窗（W3b，manual-key 站点的写 Key 入口）：与 provisioningTargets
+  // 同构，但候选列表来自侧边栏账号区的手动触发，而不是登录/注册成功后的
+  // 静默 offer——见 handleOpenPasteKeyDialog。null = 弹窗不显示。
+  const [pasteKeyTargets, setPasteKeyTargets] = useState<ProviderId[] | null>(null)
+  const [pasteKeyBusy, setPasteKeyBusy] = useState(false)
   const [toast, setToast] = useState<ToastMessage | null>(null)
   const [updateState, setUpdateState] = useState<UpdateSnapshot | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
@@ -195,19 +202,29 @@ function App() {
   const codexLaunchRequestRef = useRef(false)
   const accountBusyRef = useRef(false)
   const provisioningBusyRef = useRef(false)
+  const pasteKeyBusyRef = useRef(false)
   const persistedSettings = useMemo(() => settings, [
     settings.version,
     settings.workspace,
     settings.theme,
     settings.checkUpdatesOnStartup,
     settings.runDiagnosticsOnStartup,
+    // relaySiteId is the one AppSettings field SettingsPage's own SettingsV2
+    // now mirrors (W3b's site dropdown) -- it needs to be in this deps list
+    // like every other field SettingsPage reads/writes, or a save that only
+    // changes the site (every other field byte-identical) would leave this
+    // memo returning the pre-save object reference and SettingsPage's
+    // reconcileSettingsDraft effect would never see the new value prop.
+    // sidebarMoreExpanded stays deliberately excluded: SettingsPage's own
+    // SettingsV2 type still has no field for it (see saveSettings' comment
+    // below on why it is re-stamped rather than round-tripped here).
+    settings.relaySiteId,
   ])
-  // No site-switcher UI yet (W2 only lays the pipeline) -- settings.relaySiteId
-  // is always undefined in production today, so this always resolves to the
-  // default site. Resolving through settings here (rather than hardcoding
-  // the default site in each consumer) is what makes a future switcher a
-  // pure addition instead of another round of touching Sidebar/ConfigDialog/
-  // CodexOnboarding.
+  // W3b adds the first site-switcher UI (SettingsPage's 服务站点 dropdown),
+  // writing into settings.relaySiteId through the page's own normal save
+  // path. Resolving through settings here (rather than hardcoding the
+  // default site in each consumer) is what let that land as a pure addition
+  // instead of another round of touching Sidebar/ConfigDialog/CodexOnboarding.
   const activeRelaySite = useMemo(
     () => resolveRelaySite(settings.relaySiteId),
     [settings.relaySiteId],
@@ -733,19 +750,28 @@ function App() {
 
   // 阶段 A 核心价值链「拿 Key → 写进 CLI 配置」：签发一个新 Key，写进调用方给定
   // 的 CLI 子集（复用 config-files.ts 既有两阶段提交写入路径，不新写落盘逻辑）。
-  // I3：明文 Key 只活在 provisionCliKeyForInstalledClis 的局部作用域里，绝不
-  // 经过这里的任何 useState。`selected` 由 ProvisioningConfirmDialog 勾选后给出
-  // ——已经是用户确认过的子集，这里不再重新读 snapshot。
-  const runCliProvisioning = async (selected: readonly ProviderId[]) => {
+  // I3：明文 Key 只活在 provisionCliKeyForInstalledClis/writeCliKeyForInstalledClis
+  // 的局部作用域里，绝不经过这里的任何 useState。`selected` 由
+  // ProvisioningConfirmDialog/PasteKeyDialog 勾选后给出——已经是用户确认过的
+  // 子集，这里不再重新读 snapshot。
+  //
+  // `suppliedKey` 是 W3b 加的第二条路径：manual-key 站点没有账号服务可签发
+  // Key，PasteKeyDialog 把用户粘贴的值直接交过来，写入逻辑与账号签发的 Key
+  // 完全复用同一条 writeCliKeyForInstalledClis（config:save 两阶段提交），
+  // 只是跳过 provisionCliKey() 这一步。
+  const runCliProvisioning = async (selected: readonly ProviderId[], suppliedKey?: string) => {
     if (selected.length === 0) return
     const preferredModels = Object.fromEntries(
       providerIds.map((id) => [id, config?.providers[id]?.model || undefined]),
     ) as Partial<Record<ProviderId, string>>
+    const keyLabel = suppliedKey ? '粘贴的 Key' : '星芒 Key'
     try {
-      const outcome = await provisionCliKeyForInstalledClis(selected, preferredModels, window.xingmang)
+      const outcome = suppliedKey
+        ? await writeCliKeyForInstalledClis(suppliedKey, selected, preferredModels, window.xingmang)
+        : await provisionCliKeyForInstalledClis(selected, preferredModels, window.xingmang)
       if (outcome.configured.length > 0) setConfig(await window.xingmang.getConfig())
       if (outcome.configured.length > 0 && outcome.failed.length === 0) {
-        setToast({ type: 'success', message: `已把星芒 Key 配置到 ${outcome.configured.length} 个 CLI` })
+        setToast({ type: 'success', message: `已把${keyLabel}配置到 ${outcome.configured.length} 个 CLI` })
       } else if (outcome.configured.length > 0) {
         const failedNames = outcome.failed.map((entry) => providers[entry.provider].name).join('、')
         setToast({
@@ -753,10 +779,10 @@ function App() {
           message: `已配置 ${outcome.configured.length} 个 CLI；${failedNames} 配置失败，可到“CLI 配置”页手动重试`,
         })
       } else if (outcome.failed.length > 0) {
-        setToast({ type: 'error', message: `星芒 Key 未能配置到所选 CLI：${outcome.failed[0].message}` })
+        setToast({ type: 'error', message: `${keyLabel}未能配置到所选 CLI：${outcome.failed[0].message}` })
       }
     } catch (error) {
-      setToast({ type: 'error', message: `星芒 Key 签发失败：${errorMessage(error)}` })
+      setToast({ type: 'error', message: `${keyLabel}${suppliedKey ? '写入' : '签发'}失败：${errorMessage(error)}` })
     }
   }
 
@@ -808,6 +834,37 @@ function App() {
       return
     }
     offerCliProvisioning()
+  }
+
+  // 粘贴 Key 弹窗的打开入口（W3b，AccountArea 的 manual-key 分支按钮）。不需要
+  // resolveCliProvisioningGate 的登录检查——manual-key 站点本来就没有账号
+  // 登录态；唯一的前置条件是至少装了一个 CLI，否则弹窗打开了也没有勾选对象。
+  const handleOpenPasteKeyDialog = () => {
+    const targets = buildProvisioningTargets(snapshotRef.current)
+    if (targets.length === 0) {
+      setToast({ type: 'error', message: '请先安装一个 AI 工具，再粘贴 Key' })
+      return
+    }
+    setPasteKeyTargets(targets)
+  }
+
+  // T6：与 confirmCliProvisioning 同一模式的双击/重复 submit 防重入。
+  const confirmPasteKeyProvisioning = async (key: string, selected: ProviderId[]) => {
+    if (pasteKeyBusyRef.current) return
+    pasteKeyBusyRef.current = true
+    setPasteKeyBusy(true)
+    try {
+      await runCliProvisioning(selected, key)
+    } finally {
+      pasteKeyBusyRef.current = false
+      setPasteKeyBusy(false)
+      setPasteKeyTargets(null)
+    }
+  }
+
+  const cancelPasteKeyProvisioning = () => {
+    if (pasteKeyBusyRef.current) return
+    setPasteKeyTargets(null)
   }
 
   const handleRequestVerificationCode = async (email: string) => {
@@ -1391,6 +1448,15 @@ function App() {
         }}
         onConfigureCliKey={handleConfigureCliKey}
         onOpenAccountCenter={() => setAppView('account-center')}
+        onPasteKey={handleOpenPasteKeyDialog}
+        onOpenKeysPage={() => {
+          // Same "opens in the system browser" reasoning as onRecharge above
+          // -- href already I12 allowlisted via relaySiteExternalUrls
+          // (electron/main.ts).
+          void window.xingmang.openExternal(activeRelaySite.keysPageUrl).catch((error: unknown) => {
+            setToast({ type: 'error', message: errorMessage(error) })
+          })
+        }}
       />
 
       <main className="main-content">
@@ -1662,6 +1728,21 @@ function App() {
           busy={provisioningBusy}
           onConfirm={(selected) => void confirmCliProvisioning(selected)}
           onSkip={skipCliProvisioning}
+        />
+      )}
+
+      {pasteKeyTargets && (
+        <PasteKeyDialog
+          targets={pasteKeyTargets}
+          keysPageUrl={activeRelaySite.keysPageUrl}
+          busy={pasteKeyBusy}
+          onConfirm={(key, selected) => void confirmPasteKeyProvisioning(key, selected)}
+          onOpenKeysPage={(url) => {
+            void window.xingmang.openExternal(url).catch((error: unknown) => {
+              setToast({ type: 'error', message: errorMessage(error) })
+            })
+          }}
+          onCancel={cancelPasteKeyProvisioning}
         />
       )}
 

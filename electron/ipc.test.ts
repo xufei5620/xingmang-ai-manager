@@ -940,6 +940,25 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'solov' }))
     })
 
+    it('round-trips the sub2api relaySiteId through settings:save too, not just the default solov site', async () => {
+      // W3b: relay-sites.ts grew a second entry (731db23); this pins that
+      // parseSettings/writeStoredConfig accept it end to end through the
+      // same real IPC handler as the 'solov' regression test above, not just
+      // the one entry that happened to also be the registry's default id.
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'light',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        relaySiteId: 'sub2api',
+      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'sub2api' }))
+      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'sub2api' }))
+    })
+
     it('drops an unknown relaySiteId instead of failing the whole save', async () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
