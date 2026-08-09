@@ -30,6 +30,16 @@ export type DarwinGrokCanonicalLinkSnapshot =
   | { canonicalLinkPath: string; existed: false }
   | { canonicalLinkPath: string; existed: true; linkTarget: string }
 
+/**
+ * Unlike the canonical grok link, ensureDarwinGrokAgentLink never modifies an
+ * agent link that already exists (see its docstring below) — so whether it
+ * existed before the transaction started is the entire snapshot a rollback
+ * needs; there is no prior target to remember and restore.
+ */
+export type DarwinGrokAgentLinkSnapshot =
+  | { agentLinkPath: string; existed: false }
+  | { agentLinkPath: string; existed: true }
+
 export interface DarwinGrokCommandResult {
   stdout: string
   stderr: string
@@ -424,17 +434,64 @@ export async function restoreDarwinGrokCanonicalLink(
   }
 }
 
+/** Captures only whether the agent link already existed, mirroring ensureDarwinGrokAgentLink's absence-only contract. */
+export function captureDarwinGrokAgentLinkPresence(homeDirectory: string): DarwinGrokAgentLinkSnapshot {
+  const linkPath = agentLinkPath(homeDirectory)
+  try {
+    fs.lstatSync(linkPath)
+    return { agentLinkPath: linkPath, existed: true }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    return { agentLinkPath: linkPath, existed: false }
+  }
+}
+
+/**
+ * internal #23: ensureDarwinGrokAgentLink runs inside the same postinstall
+ * verify() step this transaction wraps (see inspectVerifiedDarwinGrokPostInstall
+ * in system-service.ts), so a verification failure that happens *after* it —
+ * a codesign mismatch, a reported version that does not match the pinned
+ * release — used to leave the agent symlink it had just created behind:
+ * restoreDarwinGrokCanonicalLink above only ever knew about the canonical
+ * `grok` path. This closes that gap the same way Windows' installer already
+ * avoids it — installDownloadedGrokBinary in grok-installer.ts stages
+ * agent.exe as an ordinary member of the same commitManagedReplacements
+ * transaction as grok.exe, so one rollback undoes both there.
+ *
+ * Idempotent by construction, matching ensureDarwinGrokAgentLink's own
+ * contract in reverse: a link that already existed before the transaction
+ * started is never touched (nothing to roll back — same as calling this
+ * after a rollback that already ran, or after a lifecycle that never reached
+ * the ensure step at all). Anything other than a symlink now occupying the
+ * path was not something ensureDarwinGrokAgentLink could have created (it
+ * only ever calls fs.symlink), so it is left alone rather than treated as a
+ * rollback failure.
+ */
+export async function restoreDarwinGrokAgentLink(snapshot: DarwinGrokAgentLinkSnapshot): Promise<void> {
+  if (snapshot.existed) return
+  let current: fs.Stats | null = null
+  try {
+    current = await fs.promises.lstat(snapshot.agentLinkPath)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+  }
+  if (!current || !current.isSymbolicLink()) return
+  await fs.promises.unlink(snapshot.agentLinkPath)
+}
+
 /** Keeps rollback active until lifecycle work and every caller-supplied service verification succeed. */
 export async function runDarwinGrokPostInstallTransaction<T>(
   options: DarwinGrokPostInstallTransactionOptions<T>,
 ): Promise<T> {
   const snapshot = captureDarwinGrokCanonicalLink(options.homeDirectory)
+  const agentSnapshot = captureDarwinGrokAgentLinkPresence(options.homeDirectory)
   try {
     await options.lifecycle()
     return await options.verify()
   } catch (error) {
     try {
       await restoreDarwinGrokCanonicalLink(snapshot)
+      await restoreDarwinGrokAgentLink(agentSnapshot)
     } catch (rollbackError) {
       const detail = rollbackError instanceof Error ? rollbackError.message : String(rollbackError)
       throw new Error(`Grok CLI 安装后验证失败，且旧版本回滚失败：${detail}`, { cause: error })

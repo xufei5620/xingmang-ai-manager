@@ -4,12 +4,14 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  captureDarwinGrokAgentLinkPresence,
   captureDarwinGrokCanonicalLink,
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
   listDarwinGrokHistoricalQuarantineFiles,
   listDarwinGrokOrphanedDownloads,
   resolveDarwinGrokCanonicalSelection,
+  restoreDarwinGrokAgentLink,
   restoreDarwinGrokCanonicalLink,
   runDarwinGrokPostInstallTransaction,
   verifyDarwinGrokUninstallPlan,
@@ -473,6 +475,48 @@ describe.runIf(process.platform === 'darwin')('macOS Grok canonical selection', 
     expect(fs.existsSync(fixture.canonicalLink)).toBe(false)
     expect(fs.existsSync(fixture.binary)).toBe(true)
   })
+
+  // internal #23: residual gap left by internal #16/#20's agent-link fixes.
+  // inspectVerifiedDarwinGrokPostInstall (system-service.ts) calls
+  // ensureDarwinGrokAgentLink as the first step of the verify() this
+  // transaction wraps, then goes on to codesign- and version-verify the
+  // canonical selection. A failure in that *later* work used to roll back
+  // only the canonical grok link, leaving the agent link ensureDarwinGrokAgentLink
+  // had just created dangling with no working grok counterpart.
+  it('removes an agent link created during a failed postinstall verification', async () => {
+    const fixture = createFixture()
+    const agentLink = path.join(fixture.bin, 'agent')
+    expect(fs.existsSync(agentLink)).toBe(false)
+
+    await expect(runDarwinGrokPostInstallTransaction({
+      homeDirectory: fixture.home,
+      lifecycle: async () => undefined,
+      verify: async () => {
+        const canonical = resolveDarwinGrokCanonicalSelection(fixture.home)
+        await ensureDarwinGrokAgentLink(fixture.home, canonical)
+        throw new Error('service inspection rejected canonical selection')
+      },
+    })).rejects.toThrow('service inspection')
+
+    expect(fs.existsSync(agentLink)).toBe(false)
+  })
+
+  it('leaves a pre-existing agent link untouched after a failed postinstall verification', async () => {
+    const fixture = createFixture()
+    const staleBinary = path.join(fixture.downloads, 'grok-0.2.100-macos-aarch64')
+    fs.writeFileSync(staleBinary, 'stale agent binary', { mode: 0o700 })
+    const staleTarget = path.join('..', 'downloads', path.basename(staleBinary))
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(staleTarget, agentLink)
+
+    await expect(runDarwinGrokPostInstallTransaction({
+      homeDirectory: fixture.home,
+      lifecycle: async () => undefined,
+      verify: async () => { throw new Error('service inspection rejected canonical selection') },
+    })).rejects.toThrow('service inspection')
+
+    expect(fs.readlinkSync(agentLink)).toBe(staleTarget)
+  })
 })
 
 // internal #16: real hardware testing found the npm lifecycle script this app
@@ -542,6 +586,79 @@ describe.runIf(process.platform === 'darwin')('ensureDarwinGrokAgentLink', () =>
     })
 
     await expect(ensureDarwinGrokAgentLink(fixture.home, canonical)).rejects.toThrow('EACCES')
+  })
+})
+
+// internal #23: a residual gap left by internal #16/#20's agent-link fixes —
+// ensureDarwinGrokAgentLink runs inside the same postinstall verify() that
+// runDarwinGrokPostInstallTransaction wraps, so a rollback triggered by a
+// *later* verification failure used to leave the freshly created agent link
+// behind; only the canonical grok link was ever snapshotted and restored.
+// These cover the rollback primitives directly; the end-to-end scenario is
+// covered by the "removes/leaves ... agent link" tests above, next to
+// runDarwinGrokPostInstallTransaction's other rollback coverage.
+describe.runIf(process.platform === 'darwin')('Darwin Grok agent link rollback', () => {
+  it('captures existed: false when nothing occupies the agent link path', () => {
+    const fixture = createFixture()
+
+    expect(captureDarwinGrokAgentLinkPresence(fixture.home)).toEqual({
+      agentLinkPath: path.join(fixture.bin, 'agent'),
+      existed: false,
+    })
+  })
+
+  it('captures existed: true when a link already occupies the agent link path', () => {
+    const fixture = createFixture()
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(fixture.canonicalLink, agentLink)
+
+    expect(captureDarwinGrokAgentLinkPresence(fixture.home)).toEqual({
+      agentLinkPath: agentLink,
+      existed: true,
+    })
+  })
+
+  it('removes an agent link created after the snapshot recorded absence', async () => {
+    const fixture = createFixture()
+    const snapshot = captureDarwinGrokAgentLinkPresence(fixture.home)
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(fixture.canonicalLink, agentLink)
+
+    await restoreDarwinGrokAgentLink(snapshot)
+
+    expect(fs.existsSync(agentLink)).toBe(false)
+  })
+
+  it('is a no-op when the snapshot recorded absence and nothing was ever created', async () => {
+    const fixture = createFixture()
+    const snapshot = captureDarwinGrokAgentLinkPresence(fixture.home)
+
+    await expect(restoreDarwinGrokAgentLink(snapshot)).resolves.toBeUndefined()
+
+    expect(fs.existsSync(path.join(fixture.bin, 'agent'))).toBe(false)
+  })
+
+  it('leaves an agent link that already existed before the transaction untouched', async () => {
+    const fixture = createFixture()
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.symlinkSync(fixture.canonicalLink, agentLink)
+    const snapshot = captureDarwinGrokAgentLinkPresence(fixture.home)
+
+    await restoreDarwinGrokAgentLink(snapshot)
+
+    expect(fs.readlinkSync(agentLink)).toBe(fixture.canonicalLink)
+  })
+
+  it('leaves a non-symlink occupying the agent path untouched instead of removing it', async () => {
+    const fixture = createFixture()
+    const snapshot = captureDarwinGrokAgentLinkPresence(fixture.home)
+    const agentLink = path.join(fixture.bin, 'agent')
+    fs.writeFileSync(agentLink, 'not a symlink')
+
+    await restoreDarwinGrokAgentLink(snapshot)
+
+    expect(fs.lstatSync(agentLink).isSymbolicLink()).toBe(false)
+    expect(fs.readFileSync(agentLink, 'utf8')).toBe('not a symlink')
   })
 })
 
