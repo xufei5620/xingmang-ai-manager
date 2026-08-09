@@ -6,7 +6,13 @@ import type {
   SystemSnapshot,
 } from './types'
 
-export type AppView = 'loading' | 'welcome' | 'onboarding' | 'dashboard'
+// 'account-center' is a top-level overlay, not a Sidebar/PageId destination
+// (see AccountCenterPage.tsx) -- entered from AccountArea's identity row,
+// exited via its own "返回工作台" button back to 'dashboard'. Modeled as a
+// sibling of 'welcome'/'onboarding' rather than nested inside 'dashboard'
+// because, like those two, it replaces the whole window content instead of
+// swapping activePage inside app-shell's <main>.
+export type AppView = 'loading' | 'welcome' | 'onboarding' | 'dashboard' | 'account-center'
 export type ThemeMode = 'light' | 'dark'
 export type StartupStage = 'updates' | 'codex'
 

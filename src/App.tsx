@@ -5,6 +5,7 @@ import { LoginDialog } from './components/account/LoginDialog'
 import { RegisterDialog } from './components/account/RegisterDialog'
 import { ForgotPasswordDialog } from './components/account/ForgotPasswordDialog'
 import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
+import { AccountCenterPage } from './components/account/AccountCenterPage'
 import { resolveAccountErrorMessage } from './components/account/account-errors'
 import { resolveAccountAreaStatus } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
@@ -586,10 +587,11 @@ function App() {
   useEffect(() => {
     if (appView === 'loading') return
     // AppWindowMode (main-process IPC contract) only knows 'onboarding' |
-    // 'dashboard' — welcome has no window size of its own because it's
-    // designed to fill the same 1340x845 canvas as the dashboard, so it
-    // rides the 'dashboard' mode rather than growing a third IPC-level mode.
-    const windowMode = appView === 'welcome' ? 'dashboard' : appView
+    // 'dashboard' — welcome and account-center have no window size of their
+    // own because both are designed to fill the same 1340x845 canvas as the
+    // dashboard, so they ride the 'dashboard' mode rather than growing a
+    // third/fourth IPC-level mode.
+    const windowMode = appView === 'welcome' || appView === 'account-center' ? 'dashboard' : appView
     void window.xingmang.setWindowMode(windowMode).catch(() => {
       // Window sizing should not block configuration or tool access.
     })
@@ -943,6 +945,10 @@ function App() {
       setAccountSession({ authenticated: false, account: null })
       setAccountBalance(null)
       setToast({ type: 'success', message: '已登出星芒账号' })
+      // 个人中心的四个 Tab 都要求已登录会话；登出后继续停在那儿只会在下次加载
+      // 时看到一圈重试报错，不如直接送回工作台（仅在真的登出成功时才跳转，
+      // 失败态必须原地不动，用户仍是登录状态）。
+      setAppView((current) => current === 'account-center' ? 'dashboard' : current)
     } catch (error) {
       setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
     } finally {
@@ -1319,6 +1325,25 @@ function App() {
     )
   }
 
+  if (appView === 'account-center') {
+    return (
+      <AppFrame theme={theme} platform={platformCapabilities}>
+        <AccountCenterPage
+          onClose={() => setAppView('dashboard')}
+          onLogout={() => void handleAccountLogout()}
+          notify={setToast}
+        />
+        {toast && (
+          <Toast
+            toast={toast}
+            onDismiss={() => setToast(null)}
+            onCopy={toast.type === 'error' ? copyToastMessage : undefined}
+          />
+        )}
+      </AppFrame>
+    )
+  }
+
   return (
     <AppFrame theme={theme} platform={platformCapabilities}>
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
@@ -1343,6 +1368,7 @@ function App() {
         onAccountLogout={() => void handleAccountLogout()}
         onRecharge={() => setToast({ type: 'success', message: '充值功能即将开放' })}
         onConfigureCliKey={handleConfigureCliKey}
+        onOpenAccountCenter={() => setAppView('account-center')}
       />
 
       <main className="main-content">

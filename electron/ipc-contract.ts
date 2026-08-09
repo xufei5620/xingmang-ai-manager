@@ -75,7 +75,11 @@ import type {
 import type { PlatformCapabilities as MainPlatformCapabilities } from './platform-capabilities'
 import type {
   NewApiAccountProfile,
+  NewApiAccountProfileDetail,
   NewApiAccountStatus,
+  NewApiAccountUsagePage,
+  NewApiAccountUsageQuery,
+  NewApiAccountUsageRecord,
   NewApiBalance,
   NewApiCliKeyResult,
   NewApiLoginInput,
@@ -149,6 +153,10 @@ export type AccountBalance = NewApiBalance
 export type AccountCliKeyResult = NewApiCliKeyResult
 export type AccountResetPasswordInput = NewApiResetPasswordInput
 export type AccountResetPasswordResult = NewApiResetPasswordResult
+export type AccountProfileDetail = NewApiAccountProfileDetail
+export type AccountUsageQuery = NewApiAccountUsageQuery
+export type AccountUsageRecord = NewApiAccountUsageRecord
+export type AccountUsagePage = NewApiAccountUsagePage
 export type RendererNavigationTarget = 'settings'
 
 export interface RendererErrorPayload {
@@ -357,6 +365,12 @@ export interface XingmangInvokeContract {
     [input: AccountResetPasswordInput],
     AccountResetPasswordResult
   >
+  getAccountProfile: IpcInvokeDefinition<'account:get-profile', [], AccountProfileDetail>
+  getAccountUsage: IpcInvokeDefinition<
+    'account:get-usage',
+    [input: AccountUsageQuery],
+    AccountUsagePage
+  >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
 }
 
@@ -469,6 +483,8 @@ export const ipcInvokeChannels = {
   sendVerificationCode: 'account:send-verification-code',
   sendPasswordResetCode: 'account:send-reset-code',
   resetPassword: 'account:reset-password',
+  getAccountProfile: 'account:get-profile',
+  getAccountUsage: 'account:get-usage',
   openCanvasWindow: 'canvas:open',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']

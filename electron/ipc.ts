@@ -46,6 +46,7 @@ import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-d
 import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
   createNewApiClient,
+  type NewApiAccountUsageQuery,
   type NewApiClientService,
   type NewApiLoginInput,
   type NewApiRegisterInput,
@@ -444,6 +445,30 @@ function parseAccountPasswordResetInput(value: unknown): NewApiResetPasswordInpu
   }
 }
 
+// account:get-usage's input. Both fields optional (omitted -> new-api's own
+// server-side defaults, common/page_info.go's GetPageQuery: page 1, page size
+// 10). pageSize is capped at 100 to match that same function's own clamp --
+// rejecting an oversized value here up front rather than letting the server
+// silently truncate it avoids a caller thinking it asked for more rows than
+// it actually got back. page's upper bound is a generous sanity ceiling, not
+// a real limit tied to anything server-side.
+function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('用量查询参数格式错误')
+  const page = value.page
+  if (page !== undefined && (typeof page !== 'number' || !Number.isInteger(page) || page < 1 || page > 1_000_000)) {
+    throw new Error('页码格式错误')
+  }
+  const pageSize = value.pageSize
+  if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
+    throw new Error('分页大小格式错误')
+  }
+  return {
+    page: page as number | undefined,
+    pageSize: pageSize as number | undefined,
+  }
+}
+
 const ipcOperationLabels: Readonly<Record<string, string>> = {
   'system:scan': '本机环境与 AI 工具检测',
   'startup:codex-readiness': 'Codex 启动状态检测',
@@ -524,6 +549,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:send-verification-code': '星芒账号邮箱验证码发送',
   'account:send-reset-code': '星芒账号密码重置邮件发送',
   'account:reset-password': '星芒账号密码重置',
+  'account:get-profile': '星芒账号资料读取',
+  'account:get-usage': '星芒账号用量明细读取',
   'canvas:open': '无限画布窗口打开',
 }
 
@@ -554,6 +581,14 @@ const quietIpcSuccessChannels = new Set([
   // password (NewApiResetPasswordResult) -- exactly as sensitive as the CLI
   // key above, same I3/I13 reasoning.
   'account:reset-password',
+  // get-profile's result carries email/aff_code -- PII, not a secret exactly,
+  // but still not something that belongs in the plaintext runtime log
+  // (I13). get-usage's result has its own `total` field, which
+  // collectionSize() would otherwise surface into the log via itemCount; not
+  // sensitive on its own, but grouped here for the same "account:* reads stay
+  // quiet" consistency as get-status/get-session/get-balance above.
+  'account:get-profile',
+  'account:get-usage',
 ])
 
 function providerDisplayName(value: unknown): string | null {
@@ -1076,6 +1111,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ))
   registerTrustedHandler('account:reset-password', (_event, input: unknown) => (
     accountService.resetPassword(parseAccountPasswordResetInput(input))
+  ))
+  registerTrustedHandler('account:get-profile', () => accountService.getProfile())
+  registerTrustedHandler('account:get-usage', (_event, input: unknown) => (
+    accountService.getUsage(parseAccountUsageQuery(input))
   ))
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
 

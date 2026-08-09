@@ -22,6 +22,7 @@ const registerPath = '/api/user/register'
 const loginPath = '/api/user/login'
 const refreshPath = '/api/user/auth/refresh'
 const selfPath = '/api/user/self'
+const logSelfPath = '/api/log/self'
 const tokenCollectionPath = '/api/token/'
 const resetPasswordEmailPath = '/api/reset_password'
 const resetPasswordPath = '/api/user/reset'
@@ -145,6 +146,69 @@ export interface NewApiBalance {
   displayAmount: number
 }
 
+// GET /api/user/self's full DTO for the 个人中心 (account center) profile tab
+// (W4a). Deliberately a *separate* type from NewApiAccountProfile above
+// rather than an extension of it: that type's shape is load-bearing for
+// login/session/balance call sites and their existing tests, and this one
+// exists purely to carry the richer read-only fields those flows never
+// needed. Confirmed field-for-field against QuantumNous/new-api's
+// buildSelfUserData (controller/user.go) -- read at both the `main` branch
+// and the exact v1.0.0-rc.22 / v1.0.0-rc.24 tags (byte-identical across all
+// three), the latter two bracketing xm.solov.cc's own pinned version.
+// Excludes every field buildSelfUserData returns that this app has no use
+// for yet (github_id/discord_id/oidc_id/wechat_id/telegram_id/linux_do_id,
+// setting, stripe_customer, sidebar_modules, permissions) and the
+// commission-history fields (aff_quota/aff_history_quota) the 邀请 tab
+// deliberately defers to a later wave -- I3-style minimal surface, not an
+// oversight.
+export interface NewApiAccountProfileDetail {
+  userId: number
+  username: string
+  displayName: string | null
+  email: string | null
+  group: string | null
+  quota: number
+  usedQuota: number
+  requestCount: number
+  affCode: string | null
+  /** Number of users this account has referred -- shown on the 邀请 tab. */
+  affCount: number
+}
+
+export interface NewApiAccountUsageQuery {
+  /** 1-based; matches new-api's `p` query parameter. */
+  page?: number
+  /** Server clamps to 100 regardless of what is sent (common/page_info.go). */
+  pageSize?: number
+}
+
+// One row of GET /api/log/self's `items` array (model.Log, model/log.go).
+// Deliberately narrower than the full Log struct: channel/channel_name/
+// token_name/token_id/group/ip/request_id/upstream_request_id/content/other
+// are relay-internal debugging fields with no value to a customer looking at
+// their own usage, so they are dropped here rather than threaded across IPC
+// for no reason.
+export interface NewApiAccountUsageRecord {
+  id: number
+  /** ISO 8601, converted from the wire's Unix-seconds Log.CreatedAt. */
+  createdAt: string
+  /** Log.Type: 0 unknown, 1 topup, 2 consume, 3 manage, 4 system, 5 error, 6 refund, 7 login. */
+  type: number
+  modelName: string
+  promptTokens: number
+  completionTokens: number
+  /** Integer quota units, same convention as NewApiBalance.quota. */
+  quota: number
+  isStream: boolean
+}
+
+export interface NewApiAccountUsagePage {
+  page: number
+  pageSize: number
+  total: number
+  records: NewApiAccountUsageRecord[]
+}
+
 export interface NewApiProvisionCliKeyInput {
   name?: string
   remainQuota?: number
@@ -186,6 +250,17 @@ export interface NewApiClientService {
   isAuthenticated(): boolean
   getSessionState(): NewApiSessionState
   getBalance(): Promise<NewApiBalance>
+  // GET /api/user/self, parsed into the richer NewApiAccountProfileDetail DTO
+  // for the 个人中心 profile/邀请 tabs (W4a). Deliberately does *not* also call
+  // GET /api/status the way getBalance() above does: that would duplicate a
+  // network round trip just to recompute a USD conversion this method's
+  // callers can already get for free from the existing getBalance() result
+  // (both ultimately read the same /api/user/self quota/used_quota fields).
+  getProfile(): Promise<NewApiAccountProfileDetail>
+  // GET /api/log/self, paginated. `input` omitted or with omitted fields
+  // falls back to new-api's own server-side defaults (page 1, page size 10 --
+  // common/page_info.go's GetPageQuery).
+  getUsage(input?: NewApiAccountUsageQuery): Promise<NewApiAccountUsagePage>
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
   /**
    * Looks up the most recently created existing token whose name starts with
@@ -443,6 +518,77 @@ export function parseAccountProfile(payload: unknown): NewApiAccountProfile {
     role: typeof data.role === 'number' && Number.isFinite(data.role) ? data.role : null,
     quota: asOptionalFiniteNumber(data.quota),
     usedQuota: asOptionalFiniteNumber(data.used_quota),
+  }
+}
+
+// Same envelope shape as parseAccountProfile above (buildSelfUserData's
+// output), just picking out the wider field set NewApiAccountProfileDetail
+// needs. Kept as an independent function rather than layered on top of
+// parseAccountProfile so neither one's guard/field set has to compromise for
+// the other's callers.
+export function parseAccountProfileDetail(payload: unknown): NewApiAccountProfileDetail {
+  const data = isRecord(payload) ? payload : null
+  const userId = data ? asFiniteNumber(data.id, Number.NaN) : Number.NaN
+  const username = data ? asString(data.username, '') : ''
+  if (!data || !Number.isInteger(userId) || userId <= 0 || !username) {
+    throw new Error('账号资料响应格式异常')
+  }
+  return {
+    userId,
+    username,
+    displayName: typeof data.display_name === 'string' && data.display_name ? data.display_name : null,
+    email: typeof data.email === 'string' && data.email ? data.email : null,
+    group: typeof data.group === 'string' && data.group ? data.group : null,
+    quota: asOptionalFiniteNumber(data.quota) ?? 0,
+    usedQuota: asOptionalFiniteNumber(data.used_quota) ?? 0,
+    requestCount: asOptionalFiniteNumber(data.request_count) ?? 0,
+    affCode: typeof data.aff_code === 'string' && data.aff_code ? data.aff_code : null,
+    affCount: asOptionalFiniteNumber(data.aff_count) ?? 0,
+  }
+}
+
+// One entry of GET /api/log/self's `items` array. Unlike most parse*
+// functions in this file, a malformed individual row is dropped rather than
+// thrown on -- one bad row (e.g. a future server-side field type change)
+// should degrade the usage list by one row, not blank the whole page.
+export function parseAccountUsageRecord(payload: unknown): NewApiAccountUsageRecord | null {
+  if (!isRecord(payload)) return null
+  const id = asFiniteNumber(payload.id, Number.NaN)
+  if (!Number.isInteger(id) || id <= 0) return null
+  const createdAtSeconds = payload.created_at
+  const createdAt = typeof createdAtSeconds === 'number' && Number.isFinite(createdAtSeconds)
+    ? new Date(createdAtSeconds * 1000).toISOString()
+    : ''
+  return {
+    id,
+    createdAt,
+    type: asFiniteNumber(payload.type, 0),
+    modelName: asString(payload.model_name, ''),
+    promptTokens: asFiniteNumber(payload.prompt_tokens, 0),
+    completionTokens: asFiniteNumber(payload.completion_tokens, 0),
+    quota: asFiniteNumber(payload.quota, 0),
+    isStream: asBoolean(payload.is_stream, false),
+  }
+}
+
+// GET /api/log/self's envelope data -- common.PageInfo (common/page_info.go)
+// with its Items field populated from model.GetUserLogs. page/page_size/total
+// default to new-api's own GetPageQuery defaults (page 1, page size 10) if
+// somehow absent, so a malformed pagination header degrades to "page 1 of
+// whatever came back" instead of throwing away a page of real usage data.
+export function parseAccountUsagePage(payload: unknown): NewApiAccountUsagePage {
+  const data = isRecord(payload) ? payload : null
+  const items = data && Array.isArray(data.items) ? data.items : []
+  const records: NewApiAccountUsageRecord[] = []
+  for (const entry of items) {
+    const record = parseAccountUsageRecord(entry)
+    if (record) records.push(record)
+  }
+  return {
+    page: data ? asFiniteNumber(data.page, 1) : 1,
+    pageSize: data ? asFiniteNumber(data.page_size, 10) : 10,
+    total: data ? asFiniteNumber(data.total, 0) : 0,
+    records,
   }
 }
 
@@ -837,6 +983,36 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     }
   })
 
+  const getProfile = (): Promise<NewApiAccountProfileDetail> => withSession(async (current) => {
+    const raw = await performRequest(
+      ctx,
+      selfPath,
+      { method: 'GET', headers: authHeaders(current) },
+      '账号资料查询',
+    )
+    return parseAccountProfileDetail(unwrapEnvelope(raw, '账号资料查询', [current.accessToken]))
+  })
+
+  const getUsage = (input: NewApiAccountUsageQuery = {}): Promise<NewApiAccountUsagePage> => (
+    withSession(async (current) => {
+      const params = new URLSearchParams()
+      if (Number.isInteger(input.page) && (input.page as number) >= 1) {
+        params.set('p', String(input.page))
+      }
+      if (Number.isInteger(input.pageSize) && (input.pageSize as number) >= 1) {
+        params.set('page_size', String(input.pageSize))
+      }
+      const query = params.toString()
+      const raw = await performRequest(
+        ctx,
+        query ? `${logSelfPath}?${query}` : logSelfPath,
+        { method: 'GET', headers: authHeaders(current) },
+        '用量明细查询',
+      )
+      return parseAccountUsagePage(unwrapEnvelope(raw, '用量明细查询', [current.accessToken]))
+    })
+  )
+
   const provisionCliKey = (input: NewApiProvisionCliKeyInput = {}): Promise<NewApiCliKeyResult> => (
     withSession(async (current) => {
       const name = (input.name?.trim() || buildCliKeyName()).slice(0, 128)
@@ -993,6 +1169,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     isAuthenticated,
     getSessionState,
     getBalance,
+    getProfile,
+    getUsage,
     provisionCliKey,
     findExistingCliKey,
     refreshAccessToken,

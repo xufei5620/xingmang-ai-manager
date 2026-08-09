@@ -92,6 +92,8 @@ function accountServiceStub(): NewApiClientService {
     isAuthenticated: vi.fn(() => false),
     getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
     getBalance: vi.fn() as never,
+    getProfile: vi.fn() as never,
+    getUsage: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
     findExistingCliKey: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
@@ -2124,6 +2126,84 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { email: 'not-an-email', token: 'abc' })).toThrow()
       expect(accountService.resetPassword).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('account:get-profile', () => {
+    it('takes no arguments and returns the account service result as-is', async () => {
+      const { accountService } = register()
+      const profile = {
+        userId: 42,
+        username: 'tester',
+        displayName: null,
+        email: 'tester@example.com',
+        group: 'default',
+        quota: 1_000_000,
+        usedQuota: 250_000,
+        requestCount: 12,
+        affCode: 'ABC123',
+        affCount: 3,
+      }
+      vi.mocked(accountService.getProfile).mockResolvedValue(profile)
+      const handler = electronMocks.handlers.get('account:get-profile')!
+
+      await expect(handler(trustedEvent())).resolves.toEqual(profile)
+      expect(accountService.getProfile).toHaveBeenCalledWith()
+    })
+  })
+
+  describe('parseAccountUsageQuery (account:get-usage)', () => {
+    it('parses a valid page/pageSize query and forwards it to the account service', async () => {
+      const { accountService } = register()
+      const page = { page: 2, pageSize: 20, total: 45, records: [] }
+      vi.mocked(accountService.getUsage).mockResolvedValue(page)
+      const handler = electronMocks.handlers.get('account:get-usage')!
+
+      await expect(handler(trustedEvent(), { page: 2, pageSize: 20 })).resolves.toEqual(page)
+      expect(accountService.getUsage).toHaveBeenCalledWith({ page: 2, pageSize: 20 })
+    })
+
+    it('defaults to an empty query object when no input is given', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.getUsage).mockResolvedValue({ page: 1, pageSize: 10, total: 0, records: [] })
+      const handler = electronMocks.handlers.get('account:get-usage')!
+
+      await handler(trustedEvent(), undefined)
+
+      expect(accountService.getUsage).toHaveBeenCalledWith({})
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:get-usage')!
+
+      expect(() => handler(trustedEvent(), 'nope')).toThrow('用量查询参数格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('用量查询参数格式错误')
+    })
+
+    it('rejects a non-integer or out-of-range page', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:get-usage')!
+
+      expect(() => handler(trustedEvent(), { page: 0 })).toThrow('页码格式错误')
+      expect(() => handler(trustedEvent(), { page: 1.5 })).toThrow('页码格式错误')
+      expect(() => handler(trustedEvent(), { page: 'x' })).toThrow('页码格式错误')
+    })
+
+    it('rejects a page size outside 1..100 -- new-api clamps to 100 server-side (common/page_info.go)', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:get-usage')!
+
+      expect(() => handler(trustedEvent(), { pageSize: 101 })).toThrow('分页大小格式错误')
+      expect(() => handler(trustedEvent(), { pageSize: 0 })).toThrow('分页大小格式错误')
+    })
+
+    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-usage')!
+
+      expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
+      expect(accountService.getUsage).not.toHaveBeenCalled()
     })
   })
 })

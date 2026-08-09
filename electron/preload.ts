@@ -91,6 +91,8 @@ const ipcInvokeChannels = {
   sendVerificationCode: 'account:send-verification-code',
   sendPasswordResetCode: 'account:send-reset-code',
   resetPassword: 'account:reset-password',
+  getAccountProfile: 'account:get-profile',
+  getAccountUsage: 'account:get-usage',
   openCanvasWindow: 'canvas:open',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
@@ -209,6 +211,8 @@ const xingmangApi: XingmangApi = {
   sendVerificationCode: (email) => invoke('sendVerificationCode', email),
   sendPasswordResetCode: (email) => invoke('sendPasswordResetCode', email),
   resetPassword: (input) => invoke('resetPassword', input),
+  getAccountProfile: () => invoke('getAccountProfile'),
+  getAccountUsage: (input) => invoke('getAccountUsage', input),
   openCanvasWindow: () => invoke('openCanvasWindow'),
   onNavigate: (listener) => subscribe('onNavigate', listener),
   onNodeRuntimeInstallProgress: (listener) => subscribe('onNodeRuntimeInstallProgress', listener),

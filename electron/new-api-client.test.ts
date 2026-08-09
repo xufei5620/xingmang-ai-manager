@@ -8,7 +8,10 @@ import {
   findNewestCliKeyIdByNamePrefix,
   NewApiAuthenticationError,
   parseAccountProfile,
+  parseAccountProfileDetail,
   parseAccountStatus,
+  parseAccountUsagePage,
+  parseAccountUsageRecord,
   parseCliKeySecret,
   parseLoginResponseData,
   parseRefreshResponseData,
@@ -62,6 +65,31 @@ function userData(overrides: Record<string, unknown> = {}) {
     role: 1,
     quota: 1_000_000,
     used_quota: 250_000,
+    ...overrides,
+  }
+}
+
+// buildSelfUserData's (controller/user.go) full field set -- what GET
+// /api/user/self actually returns, confirmed identical at the v1.0.0-rc.22
+// and v1.0.0-rc.24 tags. userData() above only models the narrower subset
+// parseAccountProfile (used by login/session/balance) reads.
+function userDetailData(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 42,
+    username: 'tester',
+    display_name: 'Tester Display',
+    role: 1,
+    status: 1,
+    email: 'tester@example.com',
+    group: 'default',
+    quota: 1_000_000,
+    used_quota: 250_000,
+    request_count: 12,
+    aff_code: 'ABC123',
+    aff_count: 3,
+    aff_quota: 0,
+    aff_history_quota: 0,
+    inviter_id: 0,
     ...overrides,
   }
 }
@@ -153,6 +181,53 @@ describe('parseAccountProfile', () => {
   })
 })
 
+describe('parseAccountProfileDetail', () => {
+  it('extracts the wider field set the 个人中心 profile/邀请 tabs need', () => {
+    expect(parseAccountProfileDetail(userDetailData())).toEqual({
+      userId: 42,
+      username: 'tester',
+      displayName: 'Tester Display',
+      email: 'tester@example.com',
+      group: 'default',
+      quota: 1_000_000,
+      usedQuota: 250_000,
+      requestCount: 12,
+      affCode: 'ABC123',
+      affCount: 3,
+    })
+  })
+
+  it('never leaks a plaintext apiKey/access_token field even if present on the payload (I3)', () => {
+    const withSecrets = { ...userDetailData(), access_token: 'sk-should-never-appear', apiKey: 'sk-also-never' }
+    const parsed = parseAccountProfileDetail(withSecrets) as unknown as Record<string, unknown>
+    expect(parsed.access_token).toBeUndefined()
+    expect(parsed.apiKey).toBeUndefined()
+    expect(Object.values(parsed)).not.toContain('sk-should-never-appear')
+    expect(Object.values(parsed)).not.toContain('sk-also-never')
+  })
+
+  it('defaults optional fields to null/0 without failing the whole parse', () => {
+    expect(parseAccountProfileDetail({ id: 7, username: 'bare' })).toEqual({
+      userId: 7,
+      username: 'bare',
+      displayName: null,
+      email: null,
+      group: null,
+      quota: 0,
+      usedQuota: 0,
+      requestCount: 0,
+      affCode: null,
+      affCount: 0,
+    })
+  })
+
+  it('requires a positive integer id and non-empty username', () => {
+    expect(() => parseAccountProfileDetail({ id: 0, username: 'x' })).toThrow('账号资料响应格式异常')
+    expect(() => parseAccountProfileDetail({ id: 1, username: '' })).toThrow('账号资料响应格式异常')
+    expect(() => parseAccountProfileDetail(null)).toThrow('账号资料响应格式异常')
+  })
+})
+
 describe('parseLoginResponseData / parseRefreshResponseData', () => {
   it('parses a full login payload', () => {
     const data = parseLoginResponseData({
@@ -233,6 +308,99 @@ describe('computeBalanceDisplay', () => {
     expect(() => computeBalanceDisplay(100, 0)).toThrow('无法获取余额换算比例')
     expect(() => computeBalanceDisplay(100, Number.NaN)).toThrow('无法获取余额换算比例')
     expect(() => computeBalanceDisplay(100, -1)).toThrow('无法获取余额换算比例')
+  })
+})
+
+describe('parseAccountUsageRecord', () => {
+  const rawLog = {
+    id: 501,
+    user_id: 42,
+    created_at: 1_754_784_000, // 2025-08-10T00:00:00Z, arbitrary fixed epoch-seconds fixture
+    type: 2,
+    content: 'internal detail, not surfaced',
+    username: 'tester',
+    token_name: 'xingmang-desktop-abc',
+    model_name: 'claude-3-5-sonnet',
+    quota: 12_345,
+    prompt_tokens: 1_000,
+    completion_tokens: 200,
+    use_time: 3,
+    is_stream: true,
+    channel: 7,
+    channel_name: 'internal-channel',
+    token_id: 99,
+    group: 'default',
+    ip: '203.0.113.1',
+    other: '{}',
+  }
+
+  it('converts the wire\'s Unix-seconds created_at into an ISO string and picks the customer-facing fields', () => {
+    expect(parseAccountUsageRecord(rawLog)).toEqual({
+      id: 501,
+      createdAt: new Date(1_754_784_000 * 1000).toISOString(),
+      type: 2,
+      modelName: 'claude-3-5-sonnet',
+      promptTokens: 1_000,
+      completionTokens: 200,
+      quota: 12_345,
+      isStream: true,
+    })
+  })
+
+  it('drops relay-internal fields (channel/token/ip/content/other) rather than forwarding them', () => {
+    const parsed = parseAccountUsageRecord(rawLog) as unknown as Record<string, unknown>
+    for (const internalKey of ['channel', 'channel_name', 'token_id', 'token_name', 'ip', 'content', 'other', 'group']) {
+      expect(parsed[internalKey]).toBeUndefined()
+    }
+  })
+
+  it('returns null for a malformed entry instead of throwing, so one bad row degrades gracefully', () => {
+    expect(parseAccountUsageRecord({ id: 0 })).toBeNull()
+    expect(parseAccountUsageRecord({})).toBeNull()
+    expect(parseAccountUsageRecord('not a record')).toBeNull()
+    expect(parseAccountUsageRecord(null)).toBeNull()
+  })
+
+  it('falls back to an empty createdAt when created_at is missing or not a number', () => {
+    expect(parseAccountUsageRecord({ id: 1 })?.createdAt).toBe('')
+    expect(parseAccountUsageRecord({ id: 1, created_at: 'not-a-number' })?.createdAt).toBe('')
+  })
+})
+
+describe('parseAccountUsagePage', () => {
+  it('reads page/page_size/total from the PageInfo envelope and parses each item', () => {
+    const page = parseAccountUsagePage({
+      page: 2,
+      page_size: 8,
+      total: 17,
+      items: [
+        { id: 1, created_at: 1_754_784_000, type: 2, model_name: 'a', prompt_tokens: 1, completion_tokens: 2, quota: 3, is_stream: false },
+        { id: 2, created_at: 1_754_784_100, type: 6, model_name: 'b', prompt_tokens: 4, completion_tokens: 5, quota: 6, is_stream: true },
+      ],
+    })
+    expect(page.page).toBe(2)
+    expect(page.pageSize).toBe(8)
+    expect(page.total).toBe(17)
+    expect(page.records).toHaveLength(2)
+    expect(page.records[0].id).toBe(1)
+    expect(page.records[1].id).toBe(2)
+  })
+
+  it('silently skips malformed rows instead of failing the whole page', () => {
+    const page = parseAccountUsagePage({
+      page: 1,
+      page_size: 10,
+      total: 2,
+      items: [{ id: 1, model_name: 'ok' }, { id: 0 }, 'not-a-record', null],
+    })
+    expect(page.records).toHaveLength(1)
+    expect(page.records[0].id).toBe(1)
+  })
+
+  it('defaults to page 1 / page size 10 / total 0 / empty records for a malformed envelope', () => {
+    expect(parseAccountUsagePage(null)).toEqual({ page: 1, pageSize: 10, total: 0, records: [] })
+    expect(parseAccountUsagePage({})).toEqual({ page: 1, pageSize: 10, total: 0, records: [] })
+    expect(parseAccountUsagePage({ items: 'not-an-array' })).toEqual({ page: 1, pageSize: 10, total: 0, records: [] })
   })
 })
 
@@ -843,6 +1011,133 @@ describe('getBalance', () => {
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { id: 42, username: 'tester' } }))
 
     await expect(client.getBalance()).rejects.toThrow('服务未返回余额')
+  })
+})
+
+describe('getProfile', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.getProfile()).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('makes exactly one authenticated GET /api/user/self call -- unlike getBalance, no /api/status round trip', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userDetailData() }))
+
+    const profile = await client.getProfile()
+
+    expect(profile).toEqual({
+      userId: 42,
+      username: 'tester',
+      displayName: 'Tester Display',
+      email: 'tester@example.com',
+      group: 'default',
+      quota: 1_000_000,
+      usedQuota: 250_000,
+      requestCount: 12,
+      affCode: 'ABC123',
+      affCount: 3,
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/self`)
+    expect(init?.method).toBe('GET')
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer test-access-token-abc')
+    expect(headers['New-Api-User']).toBe('42')
+  })
+
+  it('clears the session and throws a typed error on a 401 response', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+
+    await expect(client.getProfile()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('getUsage', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.getUsage()).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('calls GET /api/log/self with no query string when no input is given', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { page: 1, page_size: 10, total: 0, items: [] },
+    }))
+
+    const page = await client.getUsage()
+
+    expect(page).toEqual({ page: 1, pageSize: 10, total: 0, records: [] })
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/log/self`)
+    expect(init?.method).toBe('GET')
+  })
+
+  it('forwards page/pageSize as the p/page_size query parameters', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { page: 3, page_size: 8, total: 25, items: [] },
+    }))
+
+    await client.getUsage({ page: 3, pageSize: 8 })
+
+    const [url] = fetchImpl.mock.calls[0]
+    const parsed = new URL(String(url))
+    expect(parsed.pathname).toBe('/api/log/self')
+    expect(parsed.searchParams.get('p')).toBe('3')
+    expect(parsed.searchParams.get('page_size')).toBe('8')
+  })
+
+  it('parses the returned items into usage records', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: {
+        page: 1,
+        page_size: 10,
+        total: 1,
+        items: [{ id: 1, created_at: 1_754_784_000, type: 2, model_name: 'claude-3-5-sonnet', prompt_tokens: 10, completion_tokens: 20, quota: 30, is_stream: false }],
+      },
+    }))
+
+    const page = await client.getUsage()
+
+    expect(page.records).toEqual([{
+      id: 1,
+      createdAt: new Date(1_754_784_000 * 1000).toISOString(),
+      type: 2,
+      modelName: 'claude-3-5-sonnet',
+      promptTokens: 10,
+      completionTokens: 20,
+      quota: 30,
+      isStream: false,
+    }])
+  })
+
+  it('clears the session and throws a typed error on a 401 response', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+
+    await expect(client.getUsage()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(false)
   })
 })
 

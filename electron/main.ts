@@ -71,6 +71,17 @@ const externalUrlAllowlist = [
   'https://www.python.org/downloads/',
   'https://api.solov.cc',
   'https://api.solov.cc/keys',
+  // Account-center (W4a) "去充值" button. Confirmed by reading
+  // QuantumNous/new-api's own web frontend route file directly --
+  // web/src/routes/_authenticated/wallet/index.tsx's
+  // `createFileRoute('/_authenticated/wallet/')` -- at both the `main`
+  // branch and the exact v1.0.0-rc.22/v1.0.0-rc.24 tags (byte-identical
+  // across all three, the latter two bracketing xm.solov.cc's own pinned
+  // version). `_authenticated` is a pathless TanStack Router layout segment,
+  // so the real URL is bare `/wallet`, not `/console/wallet` as an older
+  // new-api frontend generation used. href must equal this exactly (I12) --
+  // no trailing slash, no query string.
+  'https://xm.solov.cc/wallet',
   'https://s4621e8xzb.feishu.cn/wiki/XLDLwdXDli3fj9kyMvsc5Qldnie?from=from_copylink',
   'https://chatgpt.com/download/',
   'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
