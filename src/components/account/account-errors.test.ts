@@ -38,6 +38,15 @@ describe('resolveAccountErrorMessage', () => {
     )
   })
 
+  it('maps an invalid or expired password-reset link/token', () => {
+    expect(resolveAccountErrorMessage('Password reset link is invalid or has expired')).toBe(
+      '重置码错误或已过期，请重新获取重置邮件',
+    )
+    expect(resolveAccountErrorMessage('重置链接非法或已过期')).toBe(
+      '重置码错误或已过期，请重新获取重置邮件',
+    )
+  })
+
   it('maps a missing email/code when email verification is required', () => {
     expect(resolveAccountErrorMessage(
       'Email verification is enabled, please enter email address and verification code',

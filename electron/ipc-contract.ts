@@ -81,6 +81,8 @@ import type {
   NewApiLoginInput,
   NewApiLoginResult,
   NewApiRegisterInput,
+  NewApiResetPasswordInput,
+  NewApiResetPasswordResult,
   NewApiSessionState,
 } from './new-api-client'
 
@@ -145,6 +147,8 @@ export type AccountRegisterInput = NewApiRegisterInput
 export type AccountSessionState = NewApiSessionState
 export type AccountBalance = NewApiBalance
 export type AccountCliKeyResult = NewApiCliKeyResult
+export type AccountResetPasswordInput = NewApiResetPasswordInput
+export type AccountResetPasswordResult = NewApiResetPasswordResult
 export type RendererNavigationTarget = 'settings'
 
 export interface RendererErrorPayload {
@@ -347,6 +351,12 @@ export interface XingmangInvokeContract {
   provisionCliKey: IpcInvokeDefinition<'account:provision-cli-key', [], AccountCliKeyResult>
   registerAccount: IpcInvokeDefinition<'account:register', [input: AccountRegisterInput], void>
   sendVerificationCode: IpcInvokeDefinition<'account:send-verification-code', [email: string], void>
+  sendPasswordResetCode: IpcInvokeDefinition<'account:send-reset-code', [email: string], void>
+  resetPassword: IpcInvokeDefinition<
+    'account:reset-password',
+    [input: AccountResetPasswordInput],
+    AccountResetPasswordResult
+  >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
 }
 
@@ -457,6 +467,8 @@ export const ipcInvokeChannels = {
   provisionCliKey: 'account:provision-cli-key',
   registerAccount: 'account:register',
   sendVerificationCode: 'account:send-verification-code',
+  sendPasswordResetCode: 'account:send-reset-code',
+  resetPassword: 'account:reset-password',
   openCanvasWindow: 'canvas:open',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']

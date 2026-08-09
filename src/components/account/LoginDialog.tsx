@@ -19,18 +19,22 @@ import { validateLoginForm, type AccountFieldErrors } from './validation'
  *
  * initialIdentifier pre-fills the field -- used by App.tsx right after a
  * successful registration, so the user only has to type their password
- * again instead of retyping the username they just chose.
+ * again instead of retyping the username they just chose. It is reused the
+ * same way after a successful password reset (see ForgotPasswordDialog and
+ * App.tsx's handleForgotPasswordDone).
  */
 export function LoginDialog({
   onClose,
   onSwitchToRegister,
   onSubmit,
+  onForgotPassword,
   initialIdentifier = '',
   isSubmitting = false,
 }: {
   onClose: () => void
   onSwitchToRegister: () => void
   onSubmit: (values: { identifier: string; password: string }) => void
+  onForgotPassword: () => void
   initialIdentifier?: string
   isSubmitting?: boolean
 }) {
@@ -104,6 +108,11 @@ export function LoginDialog({
             </div>
             {errors.password && <small className="field-error" role="alert">{errors.password}</small>}
           </label>
+
+          <p className="account-dialog-switch">
+            忘记密码？
+            <button type="button" onClick={onForgotPassword}>找回密码</button>
+          </p>
 
           <p className="account-dialog-switch">
             还没有账号？

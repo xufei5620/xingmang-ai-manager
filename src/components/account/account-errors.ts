@@ -48,6 +48,17 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     friendly: '验证码错误或已过期，请重新获取验证码',
   },
   {
+    // i18n key user.password_reset_link_invalid -- wrong/already-used/expired
+    // reset token submitted to account:reset-password. English default:
+    // "Password reset link is invalid or has expired" (confirmed against
+    // QuantumNous/new-api's controller/misc.go ResetPassword handler and its
+    // own i18n/locales/en.yaml text); Chinese translation from the same
+    // locale file's zh-CN.yaml is matched too, same reasoning as the other
+    // patterns in this file.
+    test: /password reset link is invalid or has expired|重置链接(非法|无效)(或已过期)?/i,
+    friendly: '重置码错误或已过期，请重新获取重置邮件',
+  },
+  {
     // i18n key user.email_verification_required -- submitted without an
     // email/code while the server has email verification turned on. Actual
     // en.yaml text is "Email verification is enabled, please enter email

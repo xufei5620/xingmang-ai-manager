@@ -23,6 +23,8 @@ const loginPath = '/api/user/login'
 const refreshPath = '/api/user/auth/refresh'
 const selfPath = '/api/user/self'
 const tokenCollectionPath = '/api/token/'
+const resetPasswordEmailPath = '/api/reset_password'
+const resetPasswordPath = '/api/user/reset'
 
 function tokenKeyPath(id: number): string {
   return `/api/token/${id}/key`
@@ -104,6 +106,25 @@ export interface NewApiRegisterInput {
   affCode?: string
 }
 
+// POST /api/user/reset's wire shape (PasswordResetRequest in
+// controller/misc.go): email plus the opaque token embedded in the emailed
+// reset link's `token=` query parameter. Deliberately has no password field
+// -- see resetPassword()'s own comment below for why: new-api generates the
+// new password itself and hands it back in the response.
+//
+// Read directly from QuantumNous/new-api's upstream `main` branch (commit
+// pushed 2026-08-09), the same methodology already used for
+// NewApiRegisterInput above, not yet exercised against the live xm.solov.cc
+// instance. The same version-drift caveat RECON already flags applies here
+// too (docs/RECON-new-api.md section C.5 -- the production instance is
+// pinned to a customized rc.22 branch that can differ from upstream): if
+// that branch turns out to accept a client-chosen password, this type and
+// resetPassword() both need revisiting.
+export interface NewApiResetPasswordInput {
+  email: string
+  token: string
+}
+
 // Safe to cross the IPC boundary: no access_token, no refresh cookie.
 export interface NewApiLoginResult {
   account: NewApiAccountProfile
@@ -146,6 +167,19 @@ export interface NewApiClientService {
   // success and rejects with the server's own (already sanitized) message
   // otherwise, the same as register().
   sendEmailVerification(email: string): Promise<void>
+  // Public, unauthenticated endpoint (GET /api/reset_password) that always
+  // resolves the same way whether or not the address has an account --
+  // confirmed directly from QuantumNous/new-api's SendPasswordResetEmail
+  // handler (see this method's own implementation comment for the exact
+  // mechanism). Anti-enumeration: a caller can never learn from this call
+  // alone whether an email is registered.
+  sendPasswordResetEmail(email: string): Promise<void>
+  // Public, unauthenticated endpoint (POST /api/user/reset) that completes a
+  // reset started by sendPasswordResetEmail above. NOT a "choose your own
+  // password" call -- see NewApiResetPasswordInput's and this method's own
+  // implementation comment for why: the server verifies the emailed token
+  // and, on success, generates and returns a brand-new password itself.
+  resetPassword(input: NewApiResetPasswordInput): Promise<NewApiResetPasswordResult>
   register(input: NewApiRegisterInput): Promise<void>
   login(input: NewApiLoginInput): Promise<NewApiLoginResult>
   logout(): void
@@ -451,6 +485,22 @@ export function parseRefreshResponseData(payload: unknown): NewApiRawRefreshData
   return { accessToken, accessExpiresAt: normalizeExpiresAt(data?.access_expires_at) }
 }
 
+export interface NewApiResetPasswordResult {
+  newPassword: string
+}
+
+// Unlike every other envelope this file unwraps, ResetPassword's success
+// `data` field is the freshly generated password itself -- a bare string,
+// not an object (controller/misc.go: `"data": password`). Guards against a
+// missing/blank value rather than assuming the shape, the same defensive
+// posture as every other parse* function here.
+export function parseResetPasswordResponseData(payload: unknown): NewApiResetPasswordResult {
+  if (typeof payload !== 'string' || !payload.trim()) {
+    throw new Error('重置密码响应格式异常，未返回新密码')
+  }
+  return { newPassword: payload }
+}
+
 // Captures every Set-Cookie the server sent, stripped down to bare
 // "name=value" pairs (attributes like Path/HttpOnly/SameSite dropped). The
 // main process has no browser cookie jar (RECON 坑3), so this is the only
@@ -657,6 +707,59 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       '发送邮箱验证码',
     )
     unwrapEnvelope(raw, '发送邮箱验证码', [])
+  }
+
+  // Confirmed against QuantumNous/new-api's own source (controller/misc.go's
+  // SendPasswordResetEmail handler -- see NewApiResetPasswordInput's own
+  // comment for the version-drift caveat that applies here too): GET
+  // /api/reset_password, target address as a plain `email` query parameter,
+  // same shape as sendEmailVerification above. Unlike sendEmailVerification
+  // though (which can legitimately fail with "email already registered" --
+  // useful feedback during registration), this handler unconditionally
+  // returns {success:true} whether or not the address has an account:
+  // model.GetUniqueUserByEmail only gates whether an email actually gets
+  // sent, never the response. So unwrapEnvelope's ordinary failure path
+  // below only ever fires for a genuine transport/validation/rate-limit
+  // problem -- never to confirm or deny that an email exists. Anti-
+  // enumeration by construction, not by any check this client performs.
+  const sendPasswordResetEmail = async (email: string): Promise<void> => {
+    const trimmed = email.trim().toLowerCase()
+    if (!trimmed) throw new Error('请输入邮箱地址')
+    const raw = await performRequest(
+      ctx,
+      `${resetPasswordEmailPath}?email=${encodeURIComponent(trimmed)}`,
+      { method: 'GET' },
+      '发送密码重置邮件',
+    )
+    unwrapEnvelope(raw, '发送密码重置邮件', [])
+  }
+
+  // POST /api/user/reset. NOT a "submit your own new password" call despite
+  // the feature being named "reset password" -- confirmed directly from
+  // controller/misc.go's ResetPassword handler and its PasswordResetRequest
+  // wire type ({Email, Token}, no password field at all): the server
+  // generates a fresh random password the instant the token verifies and
+  // hands it back in the response body (parseResetPasswordResponseData
+  // above). `token` is the opaque value sendPasswordResetEmail embedded in
+  // the emailed link's `token=` query parameter (a full UUID with dashes
+  // stripped, not a short human-typed code like sendEmailVerification's),
+  // checked server-side with a plain string-equality lookup against
+  // whatever was last generated for this email, 10-minute validity. Redacts
+  // the token from any failure message the same way register() redacts its
+  // password/verificationCode (I13) -- it is exactly as sensitive as a
+  // password, since possessing it is sufficient to complete the reset.
+  const resetPassword = async (input: NewApiResetPasswordInput): Promise<NewApiResetPasswordResult> => {
+    const email = input.email.trim().toLowerCase()
+    const token = input.token.trim()
+    if (!email) throw new Error('请输入邮箱地址')
+    if (!token) throw new Error('请输入重置码')
+    const raw = await performRequest(
+      ctx,
+      resetPasswordPath,
+      { method: 'POST', body: { email, token } },
+      '重置密码',
+    )
+    return parseResetPasswordResponseData(unwrapEnvelope(raw, '重置密码', [token]))
   }
 
   // RECON never exercised /api/user/register against the live instance
@@ -882,6 +985,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   return {
     getStatus,
     sendEmailVerification,
+    sendPasswordResetEmail,
+    resetPassword,
     register,
     login,
     logout,

@@ -4,10 +4,12 @@ import {
   validateAgreement,
   validateConfirmPassword,
   validateEmail,
+  validateForgotPasswordForm,
   validateIdentifier,
   validateLoginForm,
   validatePassword,
   validateRegisterForm,
+  validateResetToken,
   validateUsername,
   validateVerificationCode,
 } from './validation'
@@ -128,6 +130,21 @@ describe('validateVerificationCode', () => {
   })
 })
 
+describe('validateResetToken', () => {
+  it('rejects an empty value', () => {
+    expect(validateResetToken('')).toBe('请输入重置码')
+  })
+
+  it('rejects a whitespace-only value', () => {
+    expect(validateResetToken('   ')).toBe('请输入重置码')
+  })
+
+  it('accepts any non-empty value regardless of length or shape', () => {
+    expect(validateResetToken('abc123')).toBeNull()
+    expect(validateResetToken('a'.repeat(32))).toBeNull()
+  })
+})
+
 describe('validateAgreement', () => {
   it('rejects when not agreed', () => {
     expect(validateAgreement(false)).toBe('请先阅读并同意用户协议和隐私政策')
@@ -207,6 +224,24 @@ describe('validateRegisterForm', () => {
   it('reports an over-length username independently of every other field', () => {
     const errors = validateRegisterForm({ ...validValues, username: 'a'.repeat(21) })
     expect(errors).toEqual({ username: '用户名不能超过 20 位' })
+  })
+})
+
+describe('validateForgotPasswordForm', () => {
+  it('reports both fields when both are empty', () => {
+    const errors = validateForgotPasswordForm({ email: '', token: '' })
+    expect(errors.email).toBe('请输入邮箱地址')
+    expect(errors.token).toBe('请输入重置码')
+  })
+
+  it('reports no errors for a fully valid submission', () => {
+    expect(validateForgotPasswordForm({ email: 'user@example.com', token: 'abc123' })).toEqual({})
+  })
+
+  it('reports only the invalid field', () => {
+    const errors = validateForgotPasswordForm({ email: 'not-an-email', token: 'abc123' })
+    expect(errors.email).toBe('请输入正确的邮箱地址')
+    expect(errors.token).toBeUndefined()
   })
 })
 

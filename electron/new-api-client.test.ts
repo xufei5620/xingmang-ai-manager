@@ -12,6 +12,7 @@ import {
   parseCliKeySecret,
   parseLoginResponseData,
   parseRefreshResponseData,
+  parseResetPasswordResponseData,
   type NewApiFetch,
 } from './new-api-client'
 
@@ -184,6 +185,23 @@ describe('parseLoginResponseData / parseRefreshResponseData', () => {
 
   it('requires access_token on refresh too', () => {
     expect(() => parseRefreshResponseData({})).toThrow('缺少访问令牌')
+  })
+})
+
+describe('parseResetPasswordResponseData', () => {
+  it('wraps the bare password string the success envelope carries as `data`', () => {
+    expect(parseResetPasswordResponseData('freshly-generated-1')).toEqual({ newPassword: 'freshly-generated-1' })
+  })
+
+  it('rejects a non-string payload', () => {
+    expect(() => parseResetPasswordResponseData(null)).toThrow('未返回新密码')
+    expect(() => parseResetPasswordResponseData({ key: 'not-this-shape' })).toThrow('未返回新密码')
+    expect(() => parseResetPasswordResponseData(undefined)).toThrow('未返回新密码')
+  })
+
+  it('rejects an empty or whitespace-only string', () => {
+    expect(() => parseResetPasswordResponseData('')).toThrow('未返回新密码')
+    expect(() => parseResetPasswordResponseData('   ')).toThrow('未返回新密码')
   })
 })
 
@@ -485,6 +503,71 @@ describe('sendEmailVerification', () => {
   })
 })
 
+describe('sendPasswordResetEmail', () => {
+  it('sends GET /api/reset_password with the email as a query parameter, no body or auth headers', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.sendPasswordResetEmail('New-User@Example.com')
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/reset_password?email=new-user%40example.com`)
+    expect(init?.method).toBe('GET')
+    expect(init?.body).toBeUndefined()
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBeUndefined()
+    expect(headers['New-Api-User']).toBeUndefined()
+  })
+
+  it('trims and lowercases the email before building the query string', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.sendPasswordResetEmail('  Mixed-Case@Example.com  ')
+
+    expect(String(fetchImpl.mock.calls[0][0])).toContain('email=mixed-case%40example.com')
+  })
+
+  it('rejects an empty email before making a network call', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendPasswordResetEmail('   ')).rejects.toThrow('请输入邮箱地址')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('resolves without a value on success', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendPasswordResetEmail('a@example.com')).resolves.toBeUndefined()
+  })
+
+  // Anti-enumeration is enforced server-side (controller/misc.go's
+  // SendPasswordResetEmail unconditionally replies {success:true}, whether
+  // or not model.GetUniqueUserByEmail finds an account for the address) --
+  // there is nothing for the client to branch on, so a resolved call for an
+  // address that has no account looks identical to one that does. This test
+  // documents that indistinguishability rather than re-testing server logic
+  // this file has no access to.
+  it('resolves the same way regardless of whether the address has an account, by construction', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendPasswordResetEmail('unregistered@example.com')).resolves.toBeUndefined()
+  })
+
+  it('judges success from the response body, not the HTTP status -- 200 + success:false is still a failure', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('参数错误'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendPasswordResetEmail('a@example.com')).rejects.toThrow('参数错误')
+  })
+
+  it('surfaces the server message on a rate-limit response', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('操作频繁，请稍后再试', 429))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendPasswordResetEmail('a@example.com')).rejects.toThrow('操作频繁')
+  })
+})
+
 describe('register', () => {
   it('posts username, email, password and verification_code from the input', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
@@ -620,6 +703,64 @@ describe('register', () => {
     expect(message).toContain('[REDACTED]')
     expect(message).not.toContain(password)
     expect(message).not.toContain('654321')
+  })
+})
+
+describe('resetPassword', () => {
+  it('posts the trimmed email and token from the input', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(
+      jsonResponse({ success: true, message: '', data: 'freshly-generated-1' }),
+    )
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    const result = await client.resetPassword({ email: '  New-User@Example.com  ', token: '  abc123token  ' })
+
+    expect(result).toEqual({ newPassword: 'freshly-generated-1' })
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/reset`)
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({ email: 'new-user@example.com', token: 'abc123token' })
+  })
+
+  it('rejects an empty email or token before making a network call', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.resetPassword({ email: '   ', token: 'abc123' })).rejects.toThrow('请输入邮箱地址')
+    await expect(client.resetPassword({ email: 'a@example.com', token: '   ' })).rejects.toThrow('请输入重置码')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('surfaces the server-reported failure message for an invalid or expired reset link', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('重置链接非法或已过期'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.resetPassword({ email: 'a@example.com', token: 'stale-token' })).rejects.toThrow('重置链接非法或已过期')
+  })
+
+  it('rejects a success envelope whose data is not a usable password string', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.resetPassword({ email: 'a@example.com', token: 'abc123' })).rejects.toThrow('未返回新密码')
+  })
+
+  it('redacts an echoed token from a failure message (I13) -- it is as sensitive as a password', async () => {
+    const token = 'super-secret-reset-token-value'
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(
+      failureResponse(`rejected: token ${token} invalid`),
+    )
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    let message = ''
+    try {
+      await client.resetPassword({ email: 'a@example.com', token })
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toContain('[REDACTED]')
+    expect(message).not.toContain(token)
   })
 })
 

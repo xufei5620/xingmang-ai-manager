@@ -49,6 +49,7 @@ import {
   type NewApiClientService,
   type NewApiLoginInput,
   type NewApiRegisterInput,
+  type NewApiResetPasswordInput,
 } from './new-api-client'
 import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
@@ -428,6 +429,21 @@ function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
   }
 }
 
+// account:reset-password's input. token is the opaque value copied out of
+// the emailed reset link's `token=` query parameter (see
+// NewApiResetPasswordInput's own comment in new-api-client.ts) -- bounded
+// generously (256 chars) rather than pinned to the 32-hex-char shape
+// new-api currently generates it as, so a future change to that length on
+// the server side degrades to "wrong code" instead of "rejected before it
+// even reaches the server".
+function parseAccountPasswordResetInput(value: unknown): NewApiResetPasswordInput {
+  if (!isRecord(value)) throw new Error('重置密码信息格式错误')
+  return {
+    email: parseAccountEmailInput(value.email),
+    token: requiredString(value.token, '重置码', 256),
+  }
+}
+
 const ipcOperationLabels: Readonly<Record<string, string>> = {
   'system:scan': '本机环境与 AI 工具检测',
   'startup:codex-readiness': 'Codex 启动状态检测',
@@ -506,6 +522,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:provision-cli-key': 'CLI Key 签发',
   'account:register': '星芒账号注册',
   'account:send-verification-code': '星芒账号邮箱验证码发送',
+  'account:send-reset-code': '星芒账号密码重置邮件发送',
+  'account:reset-password': '星芒账号密码重置',
   'canvas:open': '无限画布窗口打开',
 }
 
@@ -532,6 +550,10 @@ const quietIpcSuccessChannels = new Set([
   'account:get-session',
   'account:get-balance',
   'account:provision-cli-key',
+  // account:reset-password's result carries a server-generated plaintext
+  // password (NewApiResetPasswordResult) -- exactly as sensitive as the CLI
+  // key above, same I3/I13 reasoning.
+  'account:reset-password',
 ])
 
 function providerDisplayName(value: unknown): string | null {
@@ -1048,6 +1070,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ))
   registerTrustedHandler('account:send-verification-code', (_event, email: unknown) => (
     accountService.sendEmailVerification(parseAccountEmailInput(email))
+  ))
+  registerTrustedHandler('account:send-reset-code', (_event, email: unknown) => (
+    accountService.sendPasswordResetEmail(parseAccountEmailInput(email))
+  ))
+  registerTrustedHandler('account:reset-password', (_event, input: unknown) => (
+    accountService.resetPassword(parseAccountPasswordResetInput(input))
   ))
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
 

@@ -3,6 +3,7 @@ import { CircleDot, X } from 'lucide-react'
 import { AppFrame } from './components/AppFrame'
 import { LoginDialog } from './components/account/LoginDialog'
 import { RegisterDialog } from './components/account/RegisterDialog'
+import { ForgotPasswordDialog } from './components/account/ForgotPasswordDialog'
 import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
 import { resolveAccountErrorMessage } from './components/account/account-errors'
 import { resolveAccountAreaStatus } from './components/account/account-stub'
@@ -134,8 +135,16 @@ function App() {
   // (account-session.ts), right next to accountStatus.
   const [accountSession, setAccountSession] = useState<AccountSessionState | null>(null)
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
-  const [accountDialog, setAccountDialog] = useState<'login' | 'register' | null>(null)
+  const [accountDialog, setAccountDialog] = useState<'login' | 'register' | 'forgot-password' | null>(null)
   const [accountBusy, setAccountBusy] = useState(false)
+  // Set only by a real successful account:reset-password call (handleForgot-
+  // PasswordSubmit below), never from mere form input -- same non-negotiable
+  // as accountLoginPrefill just below. Holds the server-generated password
+  // (new-api's ResetPassword hands one back; see NewApiResetPasswordResult's
+  // comment in electron/new-api-client.ts) so ForgotPasswordDialog can reveal
+  // it, and the email so handleForgotPasswordDone can seed LoginDialog's
+  // prefill the same way handleAccountRegisterSubmit already does.
+  const [accountResetOutcome, setAccountResetOutcome] = useState<{ email: string; newPassword: string } | null>(null)
   // Pre-fills LoginDialog's identifier field right after a successful
   // registration (new-api's POST /api/user/register returns no token/session
   // to auto-login with -- see handleAccountRegisterSubmit below), so the
@@ -796,6 +805,28 @@ function App() {
     }
   }
 
+  // Unlike handleRequestVerificationCode above, this one rethrows after
+  // showing the toast: ForgotPasswordDialog's onRequestResetCode contract
+  // needs to distinguish "the email really went out" from "the request
+  // failed" to decide whether to reveal its 重置码 field (see that
+  // component's own doc comment), which a never-rejects callback can't do.
+  //
+  // The success wording deliberately never confirms or denies that the
+  // address has an account: new-api's GET /api/reset_password always
+  // replies success either way (anti-enumeration by construction -- see
+  // electron/new-api-client.ts's sendPasswordResetEmail comment), so a
+  // wording implying certainty either way would be a lie this client has no
+  // way to back up.
+  const handleSendPasswordResetCode = async (email: string) => {
+    try {
+      await window.xingmang.sendPasswordResetCode(email)
+      setToast({ type: 'success', message: '若该邮箱已注册，重置邮件已发送，请查收' })
+    } catch (error) {
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+      throw error
+    }
+  }
+
   // identifier may be either a username or an email address -- new-api's
   // Login handler matches either (see LoginDialog.tsx's own comment), and
   // its request field is always literally named `username` regardless of
@@ -859,6 +890,42 @@ function App() {
       accountBusyRef.current = false
       setAccountBusy(false)
     }
+  }
+
+  // Completes the flow handleSendPasswordResetCode started. Shares
+  // accountBusyRef with login/register/logout (same reentrancy guard, same
+  // reasoning as those). Unlike handleAccountRegisterSubmit's success path,
+  // this does NOT immediately hand off to LoginDialog: new-api's
+  // POST /api/user/reset generates the new password itself and returns it
+  // here (see ForgotPasswordDialog's own doc comment for why), so the user
+  // has to actually see and copy it before leaving -- accountResetOutcome
+  // makes ForgotPasswordDialog render that reveal panel instead of closing.
+  // handleForgotPasswordDone below performs the actual hand-off once the
+  // user has done so.
+  const handleForgotPasswordSubmit = async (values: { email: string; token: string }) => {
+    if (accountBusyRef.current) return
+    accountBusyRef.current = true
+    setAccountBusy(true)
+    try {
+      const result = await window.xingmang.resetPassword({ email: values.email, token: values.token })
+      setAccountResetOutcome({ email: values.email, newPassword: result.newPassword })
+      setToast({ type: 'success', message: '密码重置成功，请复制新密码后登录' })
+    } catch (error) {
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    } finally {
+      accountBusyRef.current = false
+      setAccountBusy(false)
+    }
+  }
+
+  // "去登录" on ForgotPasswordDialog's success panel: mirrors
+  // handleAccountRegisterSubmit's hand-off (prefill the identifier, let the
+  // user retype only the credential), and clears accountResetOutcome so the
+  // generated password does not linger in memory once no longer needed.
+  const handleForgotPasswordDone = () => {
+    setAccountDialog('login')
+    setAccountLoginPrefill(accountResetOutcome?.email ?? '')
+    setAccountResetOutcome(null)
   }
 
   // W2 (docs/ACCOUNT-PLAN.md): the account:logout IPC call clears both the
@@ -1186,6 +1253,7 @@ function App() {
             onClose={() => setAccountDialog(null)}
             onSwitchToRegister={() => setAccountDialog('register')}
             onSubmit={(values) => void handleAccountLoginSubmit(values)}
+            onForgotPassword={() => setAccountDialog('forgot-password')}
             initialIdentifier={accountLoginPrefill}
             isSubmitting={accountBusy}
           />
@@ -1197,6 +1265,17 @@ function App() {
             onSubmit={(values) => void handleAccountRegisterSubmit(values)}
             onRequestVerificationCode={handleRequestVerificationCode}
             isSubmitting={accountBusy}
+          />
+        )}
+        {accountDialog === 'forgot-password' && (
+          <ForgotPasswordDialog
+            onClose={() => { setAccountDialog(null); setAccountResetOutcome(null) }}
+            onSwitchToLogin={() => setAccountDialog('login')}
+            onSubmit={(values) => void handleForgotPasswordSubmit(values)}
+            onRequestResetCode={handleSendPasswordResetCode}
+            onDone={handleForgotPasswordDone}
+            isSubmitting={accountBusy}
+            resetResult={accountResetOutcome}
           />
         )}
         {provisioningTargets && (
@@ -1500,6 +1579,7 @@ function App() {
           onClose={() => setAccountDialog(null)}
           onSwitchToRegister={() => setAccountDialog('register')}
           onSubmit={(values) => void handleAccountLoginSubmit(values)}
+          onForgotPassword={() => setAccountDialog('forgot-password')}
           initialIdentifier={accountLoginPrefill}
           isSubmitting={accountBusy}
         />
@@ -1512,6 +1592,18 @@ function App() {
           onSubmit={(values) => void handleAccountRegisterSubmit(values)}
           onRequestVerificationCode={handleRequestVerificationCode}
           isSubmitting={accountBusy}
+        />
+      )}
+
+      {accountDialog === 'forgot-password' && (
+        <ForgotPasswordDialog
+          onClose={() => { setAccountDialog(null); setAccountResetOutcome(null) }}
+          onSwitchToLogin={() => setAccountDialog('login')}
+          onSubmit={(values) => void handleForgotPasswordSubmit(values)}
+          onRequestResetCode={handleSendPasswordResetCode}
+          onDone={handleForgotPasswordDone}
+          isSubmitting={accountBusy}
+          resetResult={accountResetOutcome}
         />
       )}
 

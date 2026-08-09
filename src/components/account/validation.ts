@@ -27,6 +27,7 @@ export interface AccountFieldErrors {
   confirmPassword?: string
   verificationCode?: string
   agreement?: string
+  token?: string
 }
 
 // LoginDialog's single identifier field: new-api's Login handler matches it
@@ -70,6 +71,17 @@ export function validateVerificationCode(value: string): string | null {
   return null
 }
 
+// ForgotPasswordDialog's second field: the opaque token copied out of the
+// emailed reset link's `token=` query parameter (new-api's ResetPassword
+// handler checks it with a plain string-equality lookup, no fixed length or
+// character-class server-side -- see electron/new-api-client.ts's
+// NewApiResetPasswordInput comment), so this is a presence check only,
+// exactly like validateVerificationCode above.
+export function validateResetToken(value: string): string | null {
+  if (!value.trim()) return '请输入重置码'
+  return null
+}
+
 export function validateAgreement(agreed: boolean): string | null {
   if (!agreed) return '请先阅读并同意用户协议和隐私政策'
   return null
@@ -105,6 +117,15 @@ export function validateRegisterForm(values: {
   if (codeError) errors.verificationCode = codeError
   const agreementError = validateAgreement(values.agreedToTerms)
   if (agreementError) errors.agreement = agreementError
+  return errors
+}
+
+export function validateForgotPasswordForm(values: { email: string, token: string }): AccountFieldErrors {
+  const errors: AccountFieldErrors = {}
+  const emailError = validateEmail(values.email)
+  if (emailError) errors.email = emailError
+  const tokenError = validateResetToken(values.token)
+  if (tokenError) errors.token = tokenError
   return errors
 }
 

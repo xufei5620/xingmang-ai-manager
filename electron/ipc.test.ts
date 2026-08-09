@@ -84,6 +84,8 @@ function accountServiceStub(): NewApiClientService {
   return {
     getStatus: vi.fn() as never,
     sendEmailVerification: vi.fn(async () => undefined),
+    sendPasswordResetEmail: vi.fn(async () => undefined),
+    resetPassword: vi.fn(async () => ({ newPassword: 'stub-generated-password' })),
     register: vi.fn(async () => undefined),
     login: vi.fn() as never,
     logout: vi.fn(),
@@ -2030,6 +2032,98 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), 'not-an-email')).toThrow()
       expect(accountService.sendEmailVerification).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountEmailInput (account:send-reset-code)', () => {
+    it('trims a valid email and forwards it to the account service', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:send-reset-code')!
+
+      await expect(handler(trustedEvent(), '  new-user@example.com  ')).resolves.toBeUndefined()
+
+      expect(accountService.sendPasswordResetEmail).toHaveBeenCalledWith('new-user@example.com')
+    })
+
+    it('rejects a missing, blank, or non-string email', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:send-reset-code')!
+
+      expect(() => handler(trustedEvent(), undefined)).toThrow('邮箱地址格式错误')
+      expect(() => handler(trustedEvent(), '   ')).toThrow('邮箱地址格式错误')
+      expect(() => handler(trustedEvent(), 42)).toThrow('邮箱地址格式错误')
+    })
+
+    it('rejects a non-empty value that is not a well-formed email address', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:send-reset-code')!
+
+      expect(() => handler(trustedEvent(), 'not-an-email')).toThrow('请输入正确的邮箱地址')
+    })
+
+    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:send-reset-code')!
+
+      expect(() => handler(trustedEvent(), 'not-an-email')).toThrow()
+      expect(accountService.sendPasswordResetEmail).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountPasswordResetInput (account:reset-password)', () => {
+    it('parses a valid reset payload and forwards it to the account service', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.resetPassword).mockResolvedValue({ newPassword: 'freshly-generated-1' })
+      const handler = electronMocks.handlers.get('account:reset-password')!
+
+      await expect(handler(trustedEvent(), {
+        email: '  new-user@example.com  ',
+        token: '  abc123token  ',
+      })).resolves.toEqual({ newPassword: 'freshly-generated-1' })
+
+      expect(accountService.resetPassword).toHaveBeenCalledWith({
+        email: 'new-user@example.com',
+        token: 'abc123token',
+      })
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:reset-password')!
+
+      expect(() => handler(trustedEvent(), 'nope')).toThrow('重置密码信息格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('重置密码信息格式错误')
+    })
+
+    it('rejects a missing or malformed email using the same rule as account:send-reset-code', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:reset-password')!
+
+      expect(() => handler(trustedEvent(), { token: 'abc123' })).toThrow('邮箱地址格式错误')
+      expect(() => handler(trustedEvent(), { email: 'not-an-email', token: 'abc123' })).toThrow('请输入正确的邮箱地址')
+    })
+
+    it('rejects a missing or blank token', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:reset-password')!
+
+      expect(() => handler(trustedEvent(), { email: 'a@b.com' })).toThrow('重置码格式错误')
+      expect(() => handler(trustedEvent(), { email: 'a@b.com', token: '   ' })).toThrow('重置码格式错误')
+    })
+
+    it('rejects an oversized token', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:reset-password')!
+
+      expect(() => handler(trustedEvent(), { email: 'a@b.com', token: 'x'.repeat(257) })).toThrow('重置码格式错误')
+    })
+
+    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:reset-password')!
+
+      expect(() => handler(trustedEvent(), { email: 'not-an-email', token: 'abc' })).toThrow()
+      expect(accountService.resetPassword).not.toHaveBeenCalled()
     })
   })
 })
