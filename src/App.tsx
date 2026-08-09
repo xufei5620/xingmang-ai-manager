@@ -4,6 +4,7 @@ import { AppFrame } from './components/AppFrame'
 import { LoginDialog } from './components/account/LoginDialog'
 import { RegisterDialog } from './components/account/RegisterDialog'
 import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
+import { resolveAccountErrorMessage } from './components/account/account-errors'
 import { resolveAccountAreaStatus } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
 import { buildProvisioningTargets, provisionCliKeyForInstalledClis } from './account-provisioning'
@@ -131,6 +132,14 @@ function App() {
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
   const [accountDialog, setAccountDialog] = useState<'login' | 'register' | null>(null)
   const [accountBusy, setAccountBusy] = useState(false)
+  // Pre-fills LoginDialog's identifier field right after a successful
+  // registration (new-api's POST /api/user/register returns no token/session
+  // to auto-login with -- see handleAccountRegisterSubmit below), so the
+  // user only has to retype their password. Only ever set from a real
+  // successful register() call, never from mere form input, so a dialog the
+  // user closes without submitting can never leak a fake prefill into a
+  // later, unrelated login.
+  const [accountLoginPrefill, setAccountLoginPrefill] = useState('')
   // "写入星芒 Key" 确认弹窗（阶段 A 加固）：登录/注册成功后，若已装 CLI 非空，
   // 把候选列表放进这里而不是直接写入；null = 弹窗不显示。见 offerCliProvisioning。
   const [provisioningTargets, setProvisioningTargets] = useState<ProviderId[] | null>(null)
@@ -747,22 +756,27 @@ function App() {
       await window.xingmang.sendVerificationCode(email)
       setToast({ type: 'success', message: '验证码已发送至邮箱' })
     } catch (error) {
-      setToast({ type: 'error', message: errorMessage(error) })
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
     }
   }
 
-  const handleAccountLoginSubmit = async (values: { email: string; password: string }) => {
+  // identifier may be either a username or an email address -- new-api's
+  // Login handler matches either (see LoginDialog.tsx's own comment), and
+  // its request field is always literally named `username` regardless of
+  // which kind of value it holds.
+  const handleAccountLoginSubmit = async (values: { identifier: string; password: string }) => {
     if (accountBusyRef.current) return
     accountBusyRef.current = true
     setAccountBusy(true)
     try {
-      await window.xingmang.loginAccount({ username: values.email, password: values.password })
+      await window.xingmang.loginAccount({ username: values.identifier, password: values.password })
       const account = await refreshAccountSession()
       setAccountDialog(null)
+      setAccountLoginPrefill('')
       setToast({ type: 'success', message: account ? `欢迎回来，${account.username}` : '登录成功' })
       offerCliProvisioning()
     } catch (error) {
-      setToast({ type: 'error', message: errorMessage(error) })
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
     } finally {
       accountBusyRef.current = false
       setAccountBusy(false)
@@ -770,6 +784,7 @@ function App() {
   }
 
   const handleAccountRegisterSubmit = async (values: {
+    username: string
     email: string
     password: string
     verificationCode: string
@@ -779,26 +794,26 @@ function App() {
     setAccountBusy(true)
     try {
       await window.xingmang.registerAccount({
+        username: values.username,
         email: values.email,
         password: values.password,
         verificationCode: values.verificationCode,
       })
-      try {
-        // RECON never confirmed what /api/user/register returns beyond the
-        // shared {success, message} envelope (see register() in
-        // electron/new-api-client.ts), so this logs in with the credentials
-        // just submitted instead of trusting an assumed response shape.
-        await window.xingmang.loginAccount({ username: values.email, password: values.password })
-        const account = await refreshAccountSession()
-        setAccountDialog(null)
-        setToast({ type: 'success', message: account ? `注册成功，欢迎 ${account.username}` : '注册成功' })
-        offerCliProvisioning()
-      } catch (error) {
-        setAccountDialog('login')
-        setToast({ type: 'error', message: `注册成功，但自动登录失败（${errorMessage(error)}），请手动登录` })
-      }
+      // new-api's POST /api/user/register replies with only {success,
+      // message} -- no token, no session (confirmed by reading
+      // QuantumNous/new-api's controller/user.go Register handler; see
+      // NewApiRegisterInput's comment in electron/new-api-client.ts). The
+      // official web frontend itself shows a success toast and redirects to
+      // sign-in rather than auto-logging in, so this mirrors that instead of
+      // chaining a second network call the server was never going to hand a
+      // session for: show clear success feedback, then hand off to
+      // LoginDialog with the just-registered username pre-filled so the
+      // user only has to type their password once more.
+      setAccountDialog('login')
+      setAccountLoginPrefill(values.username)
+      setToast({ type: 'success', message: '注册成功，请登录' })
     } catch (error) {
-      setToast({ type: 'error', message: errorMessage(error) })
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
     } finally {
       accountBusyRef.current = false
       setAccountBusy(false)
@@ -1107,6 +1122,7 @@ function App() {
             onClose={() => setAccountDialog(null)}
             onSwitchToRegister={() => setAccountDialog('register')}
             onSubmit={(values) => void handleAccountLoginSubmit(values)}
+            initialIdentifier={accountLoginPrefill}
             isSubmitting={accountBusy}
           />
         )}
@@ -1417,6 +1433,7 @@ function App() {
           onClose={() => setAccountDialog(null)}
           onSwitchToRegister={() => setAccountDialog('register')}
           onSubmit={(values) => void handleAccountLoginSubmit(values)}
+          initialIdentifier={accountLoginPrefill}
           isSubmitting={accountBusy}
         />
       )}

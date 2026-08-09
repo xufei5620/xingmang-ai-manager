@@ -399,6 +399,11 @@ function parseAccountEmailInput(value: unknown): string {
 function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
   if (!isRecord(value)) throw new Error('注册信息格式错误')
   const email = requiredString(value.email, '邮箱地址', 254)
+  // Required, not defaulted from email: new-api enforces uniqueness on
+  // username independently of email (see NewApiRegisterInput's own comment
+  // in new-api-client.ts), and RegisterDialog.tsx now collects a real
+  // username field for the caller to send here.
+  const username = requiredString(value.username, '用户名', 128)
   // Not requiredString: see parseAccountLoginInput above for why passwords
   // are forwarded exactly as typed rather than trimmed.
   if (typeof value.password !== 'string' || !value.password || value.password.length > 256) {
@@ -409,7 +414,7 @@ function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
     email,
     password: value.password,
     verificationCode,
-    username: optionalString(value.username, '用户名', 128),
+    username,
     affCode: optionalString(value.affCode, '邀请码', 64),
   }
 }

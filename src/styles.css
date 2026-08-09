@@ -5315,6 +5315,38 @@ button:disabled {
   text-decoration: underline;
 }
 
+/* RegisterDialog's terms-agreement row. Reads fine unmodified in dark mode:
+   --text-muted is a Layer-2 alias that flips with [data-theme="dark"] on its
+   own (same reasoning as .account-dialog-switch above); --color-success-
+   accent is a fixed literal already used unmodified in both themes as a
+   native-control accent-color with no dark override (see
+   .desktop-install-progress progress above), so neither needs one here. */
+.account-agreement {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-6);
+  margin-top: var(--space-4);
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  user-select: none;
+}
+
+.account-agreement input {
+  margin-top: 2px;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  accent-color: var(--color-success-accent);
+}
+
+/* ProvisioningConfirmDialog's per-CLI checkbox rows: plain .operation-row
+   (36px icon / 1fr copy / auto control grid, same as MaintenancePage's CLI
+   list) wrapped in a <label> so clicking anywhere on the row toggles it. */
+.provisioning-target-row {
+  cursor: pointer;
+}
+
 .field textarea {
   width: 100%;
   min-height: 78px;

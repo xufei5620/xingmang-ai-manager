@@ -9,19 +9,31 @@ import { validateEmail, validateRegisterForm, type AccountFieldErrors } from './
 const VERIFICATION_CODE_COOLDOWN_SECONDS = 60
 
 /**
- * Register form. Email + password only (docs/RECON-new-api.md: it is the
- * only enabled registration method on xm.solov.cc today — WeChat/GitHub/
- * phone toggles are all off). Submitting calls the parent's onSubmit with the
- * validated {email, password, verificationCode}; the parent (App.tsx) makes
- * the real window.xingmang.registerAccount call.
+ * Register form. Field order mirrors xm.solov.cc's own registration page:
+ * username, password, confirm password, email, verification code, terms
+ * agreement, then the submit button -- collecting a real username instead
+ * of defaulting it to the email address, which is what caused the
+ * "Username already exists" failures this dialog was refactored to fix
+ * (new-api enforces uniqueness on username independently of email; see
+ * electron/new-api-client.ts's NewApiRegisterInput comment). Submitting
+ * calls the parent's onSubmit with the validated {username, email, password,
+ * verificationCode}; the parent (App.tsx) makes the real
+ * window.xingmang.registerAccount call.
  *
- * "获取验证码" now calls the parent's onRequestVerificationCode(email), which
+ * "获取验证码" calls the parent's onRequestVerificationCode(email), which
  * wraps the real window.xingmang.sendVerificationCode IPC call and owns the
  * success/failure toast (same division of labor as onSubmit/handleAccount-
- * RegisterSubmit above). This component only owns the button's own local
- * cooldown countdown and the synchronous double-click guard (sendingRef) —
- * the parent's call never throws, so the ref is released unconditionally in
- * .finally().
+ * RegisterSubmit in App.tsx). This component only owns the button's own
+ * local cooldown countdown and the synchronous double-click guard
+ * (sendingRef) -- the parent's call never throws, so the ref is released
+ * unconditionally in .finally().
+ *
+ * "用户协议"/"隐私政策" are presented as plain text, matching how
+ * WelcomePage.tsx's own footer currently shows them (inert labels, not yet
+ * wired to a real destination anywhere in this app) -- there is no existing
+ * external link to point the checkbox at, and wiring one up would mean
+ * adding a new externalUrlAllowlist entry in main.ts (I12), which is out of
+ * this task's scope.
  */
 export function RegisterDialog({
   onClose,
@@ -32,13 +44,16 @@ export function RegisterDialog({
 }: {
   onClose: () => void
   onSwitchToLogin: () => void
-  onSubmit: (values: { email: string; password: string; verificationCode: string }) => void
+  onSubmit: (values: { username: string; email: string; password: string; verificationCode: string }) => void
   onRequestVerificationCode: (email: string) => Promise<void>
   isSubmitting?: boolean
 }) {
+  const [username, setUsername] = useState('')
+  const [password, setPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [email, setEmail] = useState('')
   const [verificationCode, setVerificationCode] = useState('')
-  const [password, setPassword] = useState('')
+  const [agreedToTerms, setAgreedToTerms] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<AccountFieldErrors>({})
   const [codeCooldown, setCodeCooldown] = useState(0)
@@ -81,10 +96,10 @@ export function RegisterDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (isSubmitting) return
-    const nextErrors = validateRegisterForm({ email, password, verificationCode })
+    const nextErrors = validateRegisterForm({ username, email, password, confirmPassword, verificationCode, agreedToTerms })
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
-    onSubmit({ email: email.trim(), password, verificationCode: verificationCode.trim() })
+    onSubmit({ username: username.trim(), email: email.trim(), password, verificationCode: verificationCode.trim() })
   }
 
   return (
@@ -99,7 +114,7 @@ export function RegisterDialog({
             <span className="extension-dialog-icon"><UserPlus size={19} /></span>
             <div>
               <h2 id="register-dialog-title">注册星芒账号</h2>
-              <small>邮箱注册 · 约 1 分钟</small>
+              <small>邮箱验证 · 约 1 分钟</small>
             </div>
           </div>
           <button className="icon-button compact" type="button" title="关闭" onClick={onClose}>
@@ -109,7 +124,60 @@ export function RegisterDialog({
 
         <div className="extension-dialog-body">
           <label className="field extension-field">
-            <span>邮箱</span>
+            <span>用户名</span>
+            <input
+              value={username}
+              onChange={(event) => { setUsername(event.target.value); clearError('username') }}
+              placeholder="登录时使用的用户名"
+              autoComplete="username"
+            />
+            {errors.username && <small className="field-error" role="alert">{errors.username}</small>}
+          </label>
+
+          <label className="field extension-field">
+            <span>密码</span>
+            <div className="input-with-action">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(event) => { setPassword(event.target.value); clearError('password') }}
+                placeholder="8-20 位"
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                title={showPassword ? '隐藏密码' : '显示密码'}
+                onClick={() => setShowPassword((current) => !current)}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            {errors.password && <small className="field-error" role="alert">{errors.password}</small>}
+          </label>
+
+          <label className="field extension-field">
+            <span>确认密码</span>
+            <div className="input-with-action">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={confirmPassword}
+                onChange={(event) => { setConfirmPassword(event.target.value); clearError('confirmPassword') }}
+                placeholder="再次输入密码"
+                autoComplete="new-password"
+              />
+              <button
+                type="button"
+                title={showPassword ? '隐藏密码' : '显示密码'}
+                onClick={() => setShowPassword((current) => !current)}
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            {errors.confirmPassword && <small className="field-error" role="alert">{errors.confirmPassword}</small>}
+          </label>
+
+          <label className="field extension-field">
+            <span>电子邮件</span>
             <input
               type="email"
               value={email}
@@ -142,26 +210,15 @@ export function RegisterDialog({
             {errors.verificationCode && <small className="field-error" role="alert">{errors.verificationCode}</small>}
           </label>
 
-          <label className="field extension-field">
-            <span>密码</span>
-            <div className="input-with-action">
-              <input
-                type={showPassword ? 'text' : 'password'}
-                value={password}
-                onChange={(event) => { setPassword(event.target.value); clearError('password') }}
-                placeholder="至少 8 位"
-                autoComplete="new-password"
-              />
-              <button
-                type="button"
-                title={showPassword ? '隐藏密码' : '显示密码'}
-                onClick={() => setShowPassword((current) => !current)}
-              >
-                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-              </button>
-            </div>
-            {errors.password && <small className="field-error" role="alert">{errors.password}</small>}
+          <label className="account-agreement">
+            <input
+              type="checkbox"
+              checked={agreedToTerms}
+              onChange={(event) => { setAgreedToTerms(event.target.checked); clearError('agreement') }}
+            />
+            <span>我已阅读并同意<b>用户协议</b>和<b>隐私政策</b></span>
           </label>
+          {errors.agreement && <small className="field-error" role="alert">{errors.agreement}</small>}
 
           <p className="account-dialog-switch">
             已有账号？
@@ -172,7 +229,7 @@ export function RegisterDialog({
         <footer className="extension-dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>取消</button>
           <button className="primary-button" type="submit" disabled={isSubmitting}>
-            {isSubmitting ? '注册中…' : '注册'}
+            {isSubmitting ? '创建中…' : '创建账户'}
           </button>
         </footer>
       </form>

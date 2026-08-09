@@ -4,23 +4,37 @@ import { dialogAriaProps, DialogBackdrop } from '../Dialog'
 import { validateLoginForm, type AccountFieldErrors } from './validation'
 
 /**
- * Login form. Submitting calls the parent's onSubmit with the validated
- * {email, password} once client-side validation passes; the parent (App.tsx)
- * performs the real window.xingmang.loginAccount call and owns the
- * in-flight/error state, passed back down as isSubmitting.
+ * Login form. The identifier field accepts either a username or an email
+ * address: new-api's Login handler matches it against both
+ * (model.User.ValidateAndFill does `DB.Where("username = ? OR email = ?",
+ * username, username)`), and the official web frontend labels the same
+ * field "Username or Email" (web/src/features/auth/sign-in/components/
+ * user-auth-form.tsx) -- confirmed by reading QuantumNous/new-api's own
+ * source rather than assumed. Submitting calls the parent's onSubmit with
+ * the validated {identifier, password} once client-side validation passes;
+ * the parent (App.tsx) performs the real window.xingmang.loginAccount call
+ * (sending `identifier` as new-api's `username` request field, whichever
+ * kind of value it holds) and owns the in-flight/error state, passed back
+ * down as isSubmitting.
+ *
+ * initialIdentifier pre-fills the field -- used by App.tsx right after a
+ * successful registration, so the user only has to type their password
+ * again instead of retyping the username they just chose.
  */
 export function LoginDialog({
   onClose,
   onSwitchToRegister,
   onSubmit,
+  initialIdentifier = '',
   isSubmitting = false,
 }: {
   onClose: () => void
   onSwitchToRegister: () => void
-  onSubmit: (values: { email: string; password: string }) => void
+  onSubmit: (values: { identifier: string; password: string }) => void
+  initialIdentifier?: string
   isSubmitting?: boolean
 }) {
-  const [email, setEmail] = useState('')
+  const [identifier, setIdentifier] = useState(initialIdentifier)
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<AccountFieldErrors>({})
@@ -32,10 +46,10 @@ export function LoginDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (isSubmitting) return
-    const nextErrors = validateLoginForm({ email, password })
+    const nextErrors = validateLoginForm({ identifier, password })
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
-    onSubmit({ email: email.trim(), password })
+    onSubmit({ identifier: identifier.trim(), password })
   }
 
   return (
@@ -60,15 +74,14 @@ export function LoginDialog({
 
         <div className="extension-dialog-body">
           <label className="field extension-field">
-            <span>邮箱</span>
+            <span>用户名或邮箱</span>
             <input
-              type="email"
-              value={email}
-              onChange={(event) => { setEmail(event.target.value); clearError('email') }}
-              placeholder="you@example.com"
-              autoComplete="email"
+              value={identifier}
+              onChange={(event) => { setIdentifier(event.target.value); clearError('identifier') }}
+              placeholder="用户名或 you@example.com"
+              autoComplete="username"
             />
-            {errors.email && <small className="field-error" role="alert">{errors.email}</small>}
+            {errors.identifier && <small className="field-error" role="alert">{errors.identifier}</small>}
           </label>
 
           <label className="field extension-field">

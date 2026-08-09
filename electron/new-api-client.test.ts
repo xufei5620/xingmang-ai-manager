@@ -486,11 +486,12 @@ describe('sendEmailVerification', () => {
 })
 
 describe('register', () => {
-  it('posts email, password and verification_code, defaulting username to the email', async () => {
+  it('posts username, email, password and verification_code from the input', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
 
     await client.register({
+      username: 'new-user',
       email: 'new-user@example.com',
       password: 'correct horse battery staple',
       verificationCode: '123456',
@@ -501,49 +502,44 @@ describe('register', () => {
     expect(String(url)).toBe(`${testBaseUrl}/api/user/register`)
     expect(init?.method).toBe('POST')
     expect(JSON.parse(String(init?.body))).toEqual({
-      username: 'new-user@example.com',
+      username: 'new-user',
       password: 'correct horse battery staple',
       email: 'new-user@example.com',
       verification_code: '123456',
     })
   })
 
-  it('honors an explicit username instead of defaulting to the email', async () => {
+  it('trims the username the same way it trims the email', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
 
     await client.register({
-      email: 'a@example.com',
+      username: '  padded-name  ',
+      email: '  a@example.com  ',
       password: 'correct horse battery staple',
       verificationCode: '000000',
-      username: 'custom-handle',
     })
 
     const body = JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body))
-    expect(body.username).toBe('custom-handle')
-  })
-
-  it('never truncates a long email used as the default username, so a follow-up login sends a matching value', async () => {
-    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
-    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
-    const longEmail = `${'a'.repeat(150)}@example.com`
-
-    await client.register({ email: longEmail, password: 'correct horse battery staple', verificationCode: '123456' })
-
-    const body = JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body))
-    expect(body.username).toBe(longEmail)
-    expect(body.email).toBe(longEmail)
+    expect(body.username).toBe('padded-name')
+    expect(body.email).toBe('a@example.com')
   })
 
   it('includes aff_code only when the caller supplies one', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
 
-    await client.register({ email: 'a@example.com', password: 'correct horse battery staple', verificationCode: '000000' })
+    await client.register({
+      username: 'user',
+      email: 'a@example.com',
+      password: 'correct horse battery staple',
+      verificationCode: '000000',
+    })
     expect(JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body))).not.toHaveProperty('aff_code')
 
     fetchImpl.mockClear().mockResolvedValue(registerAckResponse())
     await client.register({
+      username: 'user',
       email: 'a@example.com',
       password: 'correct horse battery staple',
       verificationCode: '000000',
@@ -553,21 +549,30 @@ describe('register', () => {
     expect(body.aff_code).toBe('promo-1')
   })
 
-  it('rejects empty email, password, or verification code before making a network call', async () => {
+  it('rejects empty username, email, password, or verification code before making a network call', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
 
     await expect(client.register({
+      username: '  ',
+      email: 'a@example.com',
+      password: 'correct horse battery staple',
+      verificationCode: '123456',
+    })).rejects.toThrow('请输入用户名')
+    await expect(client.register({
+      username: 'user',
       email: '  ',
       password: 'correct horse battery staple',
       verificationCode: '123456',
     })).rejects.toThrow('请输入邮箱地址')
     await expect(client.register({
+      username: 'user',
       email: 'a@example.com',
       password: '',
       verificationCode: '123456',
     })).rejects.toThrow('请输入密码')
     await expect(client.register({
+      username: 'user',
       email: 'a@example.com',
       password: 'correct horse battery staple',
       verificationCode: '  ',
@@ -580,6 +585,7 @@ describe('register', () => {
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
 
     await expect(client.register({
+      username: 'user',
       email: 'a@example.com',
       password: 'correct horse battery staple',
       verificationCode: '123456',
@@ -591,6 +597,7 @@ describe('register', () => {
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
 
     await expect(client.register({
+      username: 'user',
       email: 'a@example.com',
       password: 'correct horse battery staple',
       verificationCode: '123456',
@@ -606,7 +613,7 @@ describe('register', () => {
 
     let message = ''
     try {
-      await client.register({ email: 'a@example.com', password, verificationCode: '654321' })
+      await client.register({ username: 'user', email: 'a@example.com', password, verificationCode: '654321' })
     } catch (error) {
       message = error instanceof Error ? error.message : String(error)
     }

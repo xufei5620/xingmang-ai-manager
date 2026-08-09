@@ -1824,6 +1824,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('account:register')!
 
       await expect(handler(trustedEvent(), {
+        username: '  new-user  ',
         email: '  new-user@example.com  ',
         password: 'correct horse battery staple',
         verificationCode: '123456',
@@ -1833,20 +1834,20 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         email: 'new-user@example.com',
         password: 'correct horse battery staple',
         verificationCode: '123456',
-        username: undefined,
+        username: 'new-user',
         affCode: undefined,
       })
     })
 
-    it('forwards an explicit username and affiliate code instead of defaulting them', async () => {
+    it('forwards an explicit affiliate code instead of defaulting it', async () => {
       const { accountService } = register()
       const handler = electronMocks.handlers.get('account:register')!
 
       await handler(trustedEvent(), {
+        username: 'custom-handle',
         email: 'new-user@example.com',
         password: 'correct horse battery staple',
         verificationCode: '123456',
-        username: 'custom-handle',
         affCode: 'promo-1',
       })
 
@@ -1871,25 +1872,33 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       register()
       const handler = electronMocks.handlers.get('account:register')!
 
-      expect(() => handler(trustedEvent(), { password: 'x'.repeat(10), verificationCode: '1' })).toThrow('邮箱地址格式错误')
-      expect(() => handler(trustedEvent(), { email: '  ', password: 'x'.repeat(10), verificationCode: '1' })).toThrow('邮箱地址格式错误')
+      expect(() => handler(trustedEvent(), { username: 'user', password: 'x'.repeat(10), verificationCode: '1' })).toThrow('邮箱地址格式错误')
+      expect(() => handler(trustedEvent(), { username: 'user', email: '  ', password: 'x'.repeat(10), verificationCode: '1' })).toThrow('邮箱地址格式错误')
+    })
+
+    it('rejects a missing or blank username -- no longer silently defaulted to the email', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: 'x'.repeat(10), verificationCode: '1' })).toThrow('用户名格式错误')
+      expect(() => handler(trustedEvent(), { username: '  ', email: 'a@b.com', password: 'x'.repeat(10), verificationCode: '1' })).toThrow('用户名格式错误')
     })
 
     it('rejects a missing, empty, or oversized password without trimming it', () => {
       register()
       const handler = electronMocks.handlers.get('account:register')!
 
-      expect(() => handler(trustedEvent(), { email: 'a@b.com', verificationCode: '1' })).toThrow('密码格式错误')
-      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: '', verificationCode: '1' })).toThrow('密码格式错误')
-      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: 'x'.repeat(257), verificationCode: '1' })).toThrow('密码格式错误')
+      expect(() => handler(trustedEvent(), { username: 'user', email: 'a@b.com', verificationCode: '1' })).toThrow('密码格式错误')
+      expect(() => handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: '', verificationCode: '1' })).toThrow('密码格式错误')
+      expect(() => handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: 'x'.repeat(257), verificationCode: '1' })).toThrow('密码格式错误')
     })
 
     it('rejects a missing or blank verification code', () => {
       register()
       const handler = electronMocks.handlers.get('account:register')!
 
-      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: 'x'.repeat(10) })).toThrow('邮箱验证码格式错误')
-      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: 'x'.repeat(10), verificationCode: '  ' })).toThrow('邮箱验证码格式错误')
+      expect(() => handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: 'x'.repeat(10) })).toThrow('邮箱验证码格式错误')
+      expect(() => handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: 'x'.repeat(10), verificationCode: '  ' })).toThrow('邮箱验证码格式错误')
     })
 
     it('never reaches the account service -- and never the real production client -- when validation fails', () => {

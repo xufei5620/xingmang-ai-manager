@@ -59,6 +59,13 @@ export interface NewApiAccountProfile {
   usedQuota: number | null
 }
 
+// Despite the field's name, new-api's Login handler matches it against
+// *either* a real username or an email address: model.User.ValidateAndFill
+// does `DB.Where("username = ? OR email = ?", username, username)` (read
+// directly from QuantumNous/new-api's model/user.go), and the official web
+// frontend labels the same field "Username or Email"
+// (web/src/features/auth/sign-in/components/user-auth-form.tsx). So callers
+// (LoginDialog.tsx) may put either kind of value in this field.
 export interface NewApiLoginInput {
   username: string
   password: string
@@ -66,16 +73,22 @@ export interface NewApiLoginInput {
 }
 
 // RECON (docs/RECON-new-api.md section A) confirms /api/user/register wants
-// username *and* email as separate fields, but the only enabled sign-up path
-// on this instance is email+password with a verification code (section
-// "注册方式可用性对照") -- the account UI never collects a distinct username
-// (see RegisterDialog.tsx). username defaults to the email address itself
-// when the caller omits it, so callers never have to invent one.
+// username *and* email as separate fields. An earlier revision defaulted
+// username to the email address, which broke real registration attempts:
+// new-api enforces uniqueness on username independently of email (confirmed
+// against QuantumNous/new-api's model.User struct tag --
+// Username string `gorm:"unique;index" validate:"max=20"` -- and
+// controller/user.go's Register handler, which rejects a collision with
+// i18n key user.exists, "Username already exists..."), so two different
+// people whose emails both happen to get used as a username, or the same
+// person retrying after an interrupted attempt, collide on a field the user
+// never chose or saw. RegisterDialog.tsx now collects a real, distinct
+// username, so this is required rather than derived.
 export interface NewApiRegisterInput {
   email: string
   password: string
   verificationCode: string
-  username?: string
+  username: string
   affCode?: string
 }
 
@@ -537,26 +550,27 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     unwrapEnvelope(raw, '发送邮箱验证码', [])
   }
 
-  // RECON never exercised /api/user/register (read-only recon, no writes),
-  // so the response shape it returns beyond {success, message} is unconfirmed
-  // -- unlike login's `data.access_token`/`data.user`, which the probe of
-  // section D's suggested flow was written against. Rather than guess a
-  // shape and silently misparse it, this resolves to void on success; the
-  // caller is expected to follow up with login() using the same credentials,
-  // whose response shape *is* confirmed.
+  // RECON never exercised /api/user/register against the live instance
+  // (read-only recon, no writes), but this task's follow-up research read
+  // QuantumNous/new-api's own controller/user.go Register handler directly:
+  // on success it replies `c.JSON(http.StatusOK, gin.H{"success": true,
+  // "message": ""})` -- no token, no session, no user object -- matching the
+  // official web frontend (web/src/features/auth/sign-up/components/
+  // sign-up-form.tsx), which shows a success toast and redirects to sign-in
+  // rather than auto-logging in. Still resolves to void rather than parsing
+  // an assumed `data` shape: the customized xm.solov.cc branch could in
+  // principle add fields, and nothing here needs them. The caller (App.tsx)
+  // is expected to route the user to LoginDialog instead of chaining an
+  // automatic login the server was never going to hand a session for.
   const register = async (input: NewApiRegisterInput): Promise<void> => {
     const email = input.email.trim()
     const password = input.password
     const verificationCode = input.verificationCode.trim()
+    const username = input.username.trim()
     if (!email) throw new Error('请输入邮箱地址')
     if (!password) throw new Error('请输入密码')
     if (!verificationCode) throw new Error('请输入邮箱验证码')
-    // Only clamp an *explicit* custom username -- the App.tsx caller always
-    // follows a successful register() with login({ username: email, ... })
-    // using the untruncated email, so silently truncating the email-derived
-    // default here would make that follow-up login send a different
-    // username than the one just registered.
-    const username = input.username?.trim() || email
+    if (!username) throw new Error('请输入用户名')
     const body: Record<string, unknown> = {
       username,
       password,
