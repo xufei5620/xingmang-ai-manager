@@ -7,11 +7,14 @@ import {
   findCliKeyIdByName,
   findNewestCliKeyIdByNamePrefix,
   NewApiAuthenticationError,
+  parseAccountKey,
+  parseAccountKeysPage,
   parseAccountProfile,
   parseAccountProfileDetail,
   parseAccountStatus,
   parseAccountUsagePage,
   parseAccountUsageRecord,
+  parseChangePasswordResponseData,
   parseCliKeySecret,
   parseLoginResponseData,
   parseRefreshResponseData,
@@ -1137,6 +1140,368 @@ describe('getUsage', () => {
     fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
 
     await expect(client.getUsage()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('parseAccountKey', () => {
+  it('reads the metadata fields and converts unix-second timestamps to ISO', () => {
+    const key = parseAccountKey({
+      id: 7,
+      user_id: 42,
+      key: 'sk-masked-abcd****1234',
+      status: 1,
+      name: 'xingmang-desktop-abc',
+      created_time: 1_754_784_000,
+      accessed_time: 1_754_800_000,
+      expired_time: 1_754_900_000,
+      remain_quota: 500_000,
+      unlimited_quota: false,
+      used_quota: 12_345,
+      group: 'default',
+    })
+    expect(key).toEqual({
+      id: 7,
+      name: 'xingmang-desktop-abc',
+      status: 1,
+      remainQuota: 500_000,
+      unlimitedQuota: false,
+      usedQuota: 12_345,
+      createdAt: new Date(1_754_784_000 * 1000).toISOString(),
+      expiredAt: new Date(1_754_900_000 * 1000).toISOString(),
+      accessedAt: new Date(1_754_800_000 * 1000).toISOString(),
+    })
+  })
+
+  it('never copies the key field into the DTO even though the server includes a masked key (I3)', () => {
+    const payload = {
+      id: 1,
+      name: 'test',
+      status: 1,
+      key: 'sk-attacker-should-never-see-this-fragment',
+      remain_quota: 0,
+      unlimited_quota: true,
+      used_quota: 0,
+      created_time: 1_754_784_000,
+    }
+    const key = parseAccountKey(payload)
+    expect(key).not.toBeNull()
+    expect(Object.keys(key as object).sort()).toEqual(
+      ['accessedAt', 'createdAt', 'expiredAt', 'id', 'name', 'remainQuota', 'status', 'unlimitedQuota', 'usedQuota'].sort(),
+    )
+    expect(JSON.stringify(key)).not.toContain('sk-attacker')
+  })
+
+  it('treats a non-positive expired_time (including the -1 never-expires sentinel) as no expiry', () => {
+    expect(parseAccountKey({ id: 1, name: 'a', expired_time: -1, created_time: 1 })?.expiredAt).toBeNull()
+    expect(parseAccountKey({ id: 1, name: 'a', expired_time: 0, created_time: 1 })?.expiredAt).toBeNull()
+  })
+
+  it('treats a zero accessed_time (never used yet) as null', () => {
+    expect(parseAccountKey({ id: 1, name: 'a', accessed_time: 0, created_time: 1 })?.accessedAt).toBeNull()
+  })
+
+  it('returns null for a non-record payload or a missing/invalid id', () => {
+    expect(parseAccountKey(null)).toBeNull()
+    expect(parseAccountKey('not-a-record')).toBeNull()
+    expect(parseAccountKey({ name: 'a' })).toBeNull()
+    expect(parseAccountKey({ id: 0, name: 'a' })).toBeNull()
+    expect(parseAccountKey({ id: -1, name: 'a' })).toBeNull()
+  })
+})
+
+describe('parseAccountKeysPage', () => {
+  it('reads page/page_size/total from the PageInfo envelope and parses each item', () => {
+    const page = parseAccountKeysPage({
+      page: 2,
+      page_size: 8,
+      total: 3,
+      items: [
+        { id: 1, name: 'a', status: 1, created_time: 1_754_784_000 },
+        { id: 2, name: 'b', status: 2, created_time: 1_754_784_100 },
+      ],
+    })
+    expect(page.page).toBe(2)
+    expect(page.pageSize).toBe(8)
+    expect(page.total).toBe(3)
+    expect(page.keys).toHaveLength(2)
+    expect(page.keys[0].id).toBe(1)
+    expect(page.keys[1].id).toBe(2)
+  })
+
+  it('silently skips malformed rows instead of failing the whole page', () => {
+    const page = parseAccountKeysPage({
+      page: 1,
+      page_size: 10,
+      total: 1,
+      items: [{ id: 1, name: 'ok' }, { id: 0 }, 'not-a-record', null],
+    })
+    expect(page.keys).toHaveLength(1)
+    expect(page.keys[0].id).toBe(1)
+  })
+
+  it('defaults to page 1 / page size 10 / total 0 / empty keys for a malformed envelope', () => {
+    expect(parseAccountKeysPage(null)).toEqual({ page: 1, pageSize: 10, total: 0, keys: [] })
+    expect(parseAccountKeysPage({})).toEqual({ page: 1, pageSize: 10, total: 0, keys: [] })
+    expect(parseAccountKeysPage({ items: 'not-an-array' })).toEqual({ page: 1, pageSize: 10, total: 0, keys: [] })
+  })
+})
+
+describe('parseChangePasswordResponseData', () => {
+  it('reads the fresh access token and expiry from a successful password-change bundle', () => {
+    const data = parseChangePasswordResponseData({
+      access_token: 'new-access-token-after-change',
+      token_type: 'Bearer',
+      access_expires_at: '2026-08-10T01:00:00.000Z',
+      session: { sid: 'abc', current: true },
+    })
+    expect(data).toEqual({
+      accessToken: 'new-access-token-after-change',
+      accessExpiresAt: '2026-08-10T01:00:00.000Z',
+    })
+  })
+
+  it('returns null instead of throwing when access_token is missing (e.g. a non-password-changing update)', () => {
+    expect(parseChangePasswordResponseData({})).toBeNull()
+    expect(parseChangePasswordResponseData(null)).toBeNull()
+    expect(parseChangePasswordResponseData({ access_token: '' })).toBeNull()
+  })
+})
+
+describe('listKeys', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.listKeys()).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('calls GET /api/token/ with no query string when no input is given', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { page: 1, page_size: 10, total: 0, items: [] },
+    }))
+
+    const page = await client.listKeys()
+
+    expect(page).toEqual({ page: 1, pageSize: 10, total: 0, keys: [] })
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/token/`)
+    expect(init?.method).toBe('GET')
+  })
+
+  it('forwards page/pageSize as the p/page_size query parameters', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { page: 2, page_size: 5, total: 12, items: [] },
+    }))
+
+    await client.listKeys({ page: 2, pageSize: 5 })
+
+    const [url] = fetchImpl.mock.calls[0]
+    const parsed = new URL(String(url))
+    expect(parsed.pathname).toBe('/api/token/')
+    expect(parsed.searchParams.get('p')).toBe('2')
+    expect(parsed.searchParams.get('page_size')).toBe('5')
+  })
+
+  it('never surfaces the wire key field through the full fetch -> parse round trip (I3)', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: {
+        page: 1,
+        page_size: 10,
+        total: 1,
+        items: [{ id: 1, name: 'a', status: 1, key: 'sk-should-never-leak', created_time: 1_754_784_000 }],
+      },
+    }))
+
+    const page = await client.listKeys()
+
+    expect(JSON.stringify(page)).not.toContain('sk-should-never-leak')
+  })
+
+  it('clears the session and throws a typed error on a 401 response', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+
+    await expect(client.listKeys()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('revokeKey', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.revokeKey(1)).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('sends DELETE /api/token/:id with the authenticated headers', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+
+    await client.revokeKey(99)
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/token/99`)
+    expect(init?.method).toBe('DELETE')
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer test-access-token-abc')
+    expect(headers['New-Api-User']).toBe('42')
+  })
+
+  it('rejects a non-integer or non-positive id before making a network call', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+
+    await expect(client.revokeKey(1.5)).rejects.toThrow('Key ID 格式错误')
+    await expect(client.revokeKey(0)).rejects.toThrow('Key ID 格式错误')
+    await expect(client.revokeKey(-1)).rejects.toThrow('Key ID 格式错误')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('surfaces the server-reported failure message when the token cannot be deleted', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('记录不存在'))
+
+    await expect(client.revokeKey(404)).rejects.toThrow('记录不存在')
+  })
+
+  it('clears the session and throws a typed error on a 401 response', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+
+    await expect(client.revokeKey(1)).rejects.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('changePassword', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.changePassword({ originalPassword: 'old12345', newPassword: 'new12345' }))
+      .rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('rejects an empty original or new password before making a network call', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+
+    await expect(client.changePassword({ originalPassword: '', newPassword: 'new12345' }))
+      .rejects.toThrow('请输入原密码')
+    await expect(client.changePassword({ originalPassword: 'old12345', newPassword: '' }))
+      .rejects.toThrow('请输入新密码')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('sends PUT /api/user/self with password and original_password', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: {
+        access_token: 'rotated-access-token',
+        token_type: 'Bearer',
+        access_expires_at: '2026-08-10T02:00:00.000Z',
+        session: {},
+      },
+    }))
+
+    const result = await client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' })
+
+    expect(result).toEqual({ changed: true })
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/self`)
+    expect(init?.method).toBe('PUT')
+    expect(JSON.parse(String(init?.body))).toEqual({ password: 'new-password-2', original_password: 'old-password-1' })
+  })
+
+  it('adopts the fresh access token in place so the very next call uses it without a re-login', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { access_token: 'rotated-access-token', token_type: 'Bearer', access_expires_at: null, session: {} },
+    }))
+    await client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' })
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userDetailData() }))
+    await client.getProfile()
+
+    const [, init] = fetchImpl.mock.calls[1]
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer rotated-access-token')
+  })
+
+  it('still resolves successfully when the response carries no usable bundle, without touching the existing access token', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
+
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .resolves.toEqual({ changed: true })
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userDetailData() }))
+    await client.getProfile()
+    const [, init] = fetchImpl.mock.calls[1]
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer test-access-token-abc')
+  })
+
+  it('surfaces the server-reported failure message for a wrong original password', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('原密码错误'))
+
+    await expect(client.changePassword({ originalPassword: 'wrong-password', newPassword: 'new-password-2' }))
+      .rejects.toThrow('原密码错误')
+  })
+
+  it('redacts both plaintext passwords from an echoed failure message (I13)', async () => {
+    const originalPassword = 'super-secret-original-pw'
+    const newPassword = 'super-secret-new-pw'
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse(`rejected: ${originalPassword} / ${newPassword} invalid`))
+
+    let message = ''
+    try {
+      await client.changePassword({ originalPassword, newPassword })
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toContain('[REDACTED]')
+    expect(message).not.toContain(originalPassword)
+    expect(message).not.toContain(newPassword)
+  })
+
+  it('clears the session and throws a typed error on a 401 response', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+
+    await expect(client.changePassword({ originalPassword: 'old-password-1', newPassword: 'new-password-2' }))
+      .rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
   })
 })

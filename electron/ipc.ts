@@ -46,7 +46,9 @@ import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-d
 import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
   createNewApiClient,
+  type NewApiAccountKeysQuery,
   type NewApiAccountUsageQuery,
+  type NewApiChangePasswordInput,
   type NewApiClientService,
   type NewApiLoginInput,
   type NewApiRegisterInput,
@@ -469,6 +471,74 @@ function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery {
   }
 }
 
+// account:list-keys' input. Same GetPageQuery-backed pagination family and
+// the same bounds as parseAccountUsageQuery above (common/page_info.go's
+// clamp to 100 regardless of what is sent).
+function parseAccountKeysQuery(value: unknown): NewApiAccountKeysQuery {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('Key 查询参数格式错误')
+  const page = value.page
+  if (page !== undefined && (typeof page !== 'number' || !Number.isInteger(page) || page < 1 || page > 1_000_000)) {
+    throw new Error('页码格式错误')
+  }
+  const pageSize = value.pageSize
+  if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
+    throw new Error('分页大小格式错误')
+  }
+  return {
+    page: page as number | undefined,
+    pageSize: pageSize as number | undefined,
+  }
+}
+
+// account:revoke-key's sole argument. A destructive, id-addressed operation
+// that lands directly in a URL path segment (new-api-client.ts's
+// tokenIdPath) -- must be a genuine positive integer before it gets
+// anywhere near that, same "reject anything that isn't obviously a real id"
+// posture as parseSessionId's UUID regex above (I5, path-traversal-shaped
+// defense even though the value here is numeric, not a path string).
+function parseAccountRevokeKeyId(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0 || value > Number.MAX_SAFE_INTEGER) {
+    throw new Error('Key ID 格式错误')
+  }
+  return value
+}
+
+// account:change-password's input. MIN/MAX mirror
+// src/components/account/validation.ts's own MIN_PASSWORD_LENGTH /
+// MAX_PASSWORD_LENGTH (confirmed against QuantumNous/new-api's model.User
+// struct tag validate:"min=8,max=20") -- kept as separate literals rather
+// than a shared import, same reasoning as accountEmailPattern above:
+// electron/ never imports from src/ (CLAUDE.md I6/I7). originalPassword is
+// only checked for presence (not length-bounded): the server is the actual
+// authority on whether it matches the account's current password, and
+// rejecting it here on a length technicality before the server even gets to
+// say "wrong password" would be a worse failure mode. Neither field is
+// trimmed -- both must be forwarded exactly as typed, same as
+// parseAccountLoginInput's password field.
+const MIN_ACCOUNT_PASSWORD_LENGTH = 8
+const MAX_ACCOUNT_PASSWORD_LENGTH = 20
+
+function parseAccountChangePasswordInput(value: unknown): NewApiChangePasswordInput {
+  if (!isRecord(value)) throw new Error('修改密码信息格式错误')
+  if (
+    typeof value.originalPassword !== 'string'
+    || !value.originalPassword
+    || value.originalPassword.length > 256
+  ) {
+    throw new Error('原密码格式错误')
+  }
+  const newPassword = value.newPassword
+  if (
+    typeof newPassword !== 'string'
+    || newPassword.length < MIN_ACCOUNT_PASSWORD_LENGTH
+    || newPassword.length > MAX_ACCOUNT_PASSWORD_LENGTH
+  ) {
+    throw new Error(`新密码长度需为 ${MIN_ACCOUNT_PASSWORD_LENGTH} 到 ${MAX_ACCOUNT_PASSWORD_LENGTH} 位`)
+  }
+  return { originalPassword: value.originalPassword, newPassword }
+}
+
 const ipcOperationLabels: Readonly<Record<string, string>> = {
   'system:scan': '本机环境与 AI 工具检测',
   'startup:codex-readiness': 'Codex 启动状态检测',
@@ -551,6 +621,9 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:reset-password': '星芒账号密码重置',
   'account:get-profile': '星芒账号资料读取',
   'account:get-usage': '星芒账号用量明细读取',
+  'account:list-keys': '星芒账号 Key 列表读取',
+  'account:revoke-key': '星芒账号 Key 撤销',
+  'account:change-password': '星芒账号密码修改',
   'canvas:open': '无限画布窗口打开',
 }
 
@@ -589,6 +662,19 @@ const quietIpcSuccessChannels = new Set([
   // quiet" consistency as get-status/get-session/get-balance above.
   'account:get-profile',
   'account:get-usage',
+  // list-keys' DTO is metadata-only (I3 -- see NewApiAccountKey's own
+  // comment for the whitelist), so nothing here is secret either; grouped in
+  // for the same "account:* reads stay quiet" consistency as get-usage
+  // immediately above rather than being the one account:* read that logs
+  // differently from its siblings.
+  'account:list-keys',
+  // change-password's *input* carries two plaintext passwords (args[0], not
+  // the result -- the result is just {changed:true}, I3-safe on its own).
+  // ipcLogDetail/ipcSuccessMessage happen to never spread args[0] generically
+  // today, but that is true by omission, not by contract -- quieting this
+  // channel outright removes the need to keep re-verifying that invariant
+  // every time either function gains a new per-channel branch (I13).
+  'account:change-password',
 ])
 
 function providerDisplayName(value: unknown): string | null {
@@ -1115,6 +1201,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:get-profile', () => accountService.getProfile())
   registerTrustedHandler('account:get-usage', (_event, input: unknown) => (
     accountService.getUsage(parseAccountUsageQuery(input))
+  ))
+  registerTrustedHandler('account:list-keys', (_event, input: unknown) => (
+    accountService.listKeys(parseAccountKeysQuery(input))
+  ))
+  registerTrustedHandler('account:revoke-key', (_event, id: unknown) => (
+    accountService.revokeKey(parseAccountRevokeKeyId(id))
+  ))
+  registerTrustedHandler('account:change-password', (_event, input: unknown) => (
+    accountService.changePassword(parseAccountChangePasswordInput(input))
   ))
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
 

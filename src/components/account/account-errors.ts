@@ -97,6 +97,26 @@ const accountErrorPatterns: readonly AccountErrorPattern[] = [
     test: /database error|数据库出错/i,
     friendly: '服务暂时不可用，请稍后重试',
   },
+  {
+    // i18n key user.original_password_error -- 个人中心「安全」Tab 的修改密码
+    // (W4b), 原密码与账号当前密码不匹配. English text confirmed directly from
+    // QuantumNous/new-api's i18n/locales/en.yaml at the exact v1.0.0-rc.24 tag
+    // xm.solov.cc is pinned to: "Original password is incorrect"; Chinese
+    // translation from that same locale file's zh-CN.yaml: "原密码错误".
+    test: /original password is incorrect|原密码错误/i,
+    friendly: '原密码错误，请重新输入',
+  },
+  {
+    // i18n key user.password_unset -- change-password attempted on an
+    // OAuth-only account that has never had a password to verify against
+    // (checkUpdatePassword, controller/user.go). Confirmed the same way as
+    // the pattern immediately above, at the same tag: en.yaml "This account
+    // has no password set. Please use password reset or contact an
+    // administrator to reset it."; zh-CN.yaml "当前账号未设置密码，请使用密码
+    // 重置或联系管理员重置密码".
+    test: /this account has no password set|当前账号未设置密码/i,
+    friendly: '当前账号未设置密码，请先通过"忘记密码"设置密码',
+  },
 ]
 
 export function resolveAccountErrorMessage(message: string): string {

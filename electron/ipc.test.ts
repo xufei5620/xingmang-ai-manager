@@ -94,6 +94,9 @@ function accountServiceStub(): NewApiClientService {
     getBalance: vi.fn() as never,
     getProfile: vi.fn() as never,
     getUsage: vi.fn() as never,
+    listKeys: vi.fn() as never,
+    revokeKey: vi.fn() as never,
+    changePassword: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
     findExistingCliKey: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
@@ -2204,6 +2207,157 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
       expect(accountService.getUsage).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountKeysQuery (account:list-keys)', () => {
+    it('parses a valid page/pageSize query and forwards it to the account service', async () => {
+      const { accountService } = register()
+      const page = { page: 2, pageSize: 20, total: 45, keys: [] }
+      vi.mocked(accountService.listKeys).mockResolvedValue(page)
+      const handler = electronMocks.handlers.get('account:list-keys')!
+
+      await expect(handler(trustedEvent(), { page: 2, pageSize: 20 })).resolves.toEqual(page)
+      expect(accountService.listKeys).toHaveBeenCalledWith({ page: 2, pageSize: 20 })
+    })
+
+    it('defaults to an empty query object when no input is given', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.listKeys).mockResolvedValue({ page: 1, pageSize: 10, total: 0, keys: [] })
+      const handler = electronMocks.handlers.get('account:list-keys')!
+
+      await handler(trustedEvent(), undefined)
+
+      expect(accountService.listKeys).toHaveBeenCalledWith({})
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:list-keys')!
+
+      expect(() => handler(trustedEvent(), 'nope')).toThrow('Key 查询参数格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('Key 查询参数格式错误')
+    })
+
+    it('rejects a non-integer or out-of-range page', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:list-keys')!
+
+      expect(() => handler(trustedEvent(), { page: 0 })).toThrow('页码格式错误')
+      expect(() => handler(trustedEvent(), { page: 1.5 })).toThrow('页码格式错误')
+    })
+
+    it('rejects a page size outside 1..100 -- new-api clamps to 100 server-side (common/page_info.go)', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:list-keys')!
+
+      expect(() => handler(trustedEvent(), { pageSize: 101 })).toThrow('分页大小格式错误')
+      expect(() => handler(trustedEvent(), { pageSize: 0 })).toThrow('分页大小格式错误')
+    })
+
+    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:list-keys')!
+
+      expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
+      expect(accountService.listKeys).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountRevokeKeyId (account:revoke-key)', () => {
+    it('parses a valid id and forwards it to the account service', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.revokeKey).mockResolvedValue(undefined)
+      const handler = electronMocks.handlers.get('account:revoke-key')!
+
+      await expect(handler(trustedEvent(), 42)).resolves.toBeUndefined()
+      expect(accountService.revokeKey).toHaveBeenCalledWith(42)
+    })
+
+    it('rejects a non-number, non-integer, zero, or negative id -- id lands directly in a URL path segment (I5)', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:revoke-key')!
+
+      expect(() => handler(trustedEvent(), 'nope')).toThrow('Key ID 格式错误')
+      expect(() => handler(trustedEvent(), 1.5)).toThrow('Key ID 格式错误')
+      expect(() => handler(trustedEvent(), 0)).toThrow('Key ID 格式错误')
+      expect(() => handler(trustedEvent(), -1)).toThrow('Key ID 格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('Key ID 格式错误')
+      expect(() => handler(trustedEvent(), undefined)).toThrow('Key ID 格式错误')
+    })
+
+    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:revoke-key')!
+
+      expect(() => handler(trustedEvent(), -5)).toThrow()
+      expect(accountService.revokeKey).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountChangePasswordInput (account:change-password)', () => {
+    it('parses a valid change-password payload and forwards it to the account service', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.changePassword).mockResolvedValue({ changed: true })
+      const handler = electronMocks.handlers.get('account:change-password')!
+
+      await expect(handler(trustedEvent(), {
+        originalPassword: 'current-password-1',
+        newPassword: 'new-password-2',
+      })).resolves.toEqual({ changed: true })
+
+      expect(accountService.changePassword).toHaveBeenCalledWith({
+        originalPassword: 'current-password-1',
+        newPassword: 'new-password-2',
+      })
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:change-password')!
+
+      expect(() => handler(trustedEvent(), 'nope')).toThrow('修改密码信息格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('修改密码信息格式错误')
+    })
+
+    it('rejects a missing or empty original password', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:change-password')!
+
+      expect(() => handler(trustedEvent(), { newPassword: 'new-password-2' })).toThrow('原密码格式错误')
+      expect(() => handler(trustedEvent(), { originalPassword: '', newPassword: 'new-password-2' }))
+        .toThrow('原密码格式错误')
+    })
+
+    it('rejects a new password shorter than 8 or longer than 20 characters', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:change-password')!
+
+      expect(() => handler(trustedEvent(), { originalPassword: 'old-password-1', newPassword: 'short1' }))
+        .toThrow('新密码长度需为 8 到 20 位')
+      expect(() => handler(trustedEvent(), { originalPassword: 'old-password-1', newPassword: 'a'.repeat(21) }))
+        .toThrow('新密码长度需为 8 到 20 位')
+    })
+
+    it('does not trim either password field -- both must be forwarded exactly as typed', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.changePassword).mockResolvedValue({ changed: true })
+      const handler = electronMocks.handlers.get('account:change-password')!
+
+      await handler(trustedEvent(), { originalPassword: ' old-password-1 ', newPassword: ' new-password-2 ' })
+
+      expect(accountService.changePassword).toHaveBeenCalledWith({
+        originalPassword: ' old-password-1 ',
+        newPassword: ' new-password-2 ',
+      })
+    })
+
+    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:change-password')!
+
+      expect(() => handler(trustedEvent(), { originalPassword: 'old-password-1', newPassword: 'short' })).toThrow()
+      expect(accountService.changePassword).not.toHaveBeenCalled()
     })
   })
 })

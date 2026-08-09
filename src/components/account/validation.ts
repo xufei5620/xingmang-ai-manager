@@ -28,6 +28,7 @@ export interface AccountFieldErrors {
   verificationCode?: string
   agreement?: string
   token?: string
+  originalPassword?: string
 }
 
 // LoginDialog's single identifier field: new-api's Login handler matches it
@@ -57,6 +58,16 @@ export function validatePassword(value: string): string | null {
   if (!value) return '请输入密码'
   if (value.length < MIN_PASSWORD_LENGTH) return `密码至少需要 ${MIN_PASSWORD_LENGTH} 位`
   if (value.length > MAX_PASSWORD_LENGTH) return `密码不能超过 ${MAX_PASSWORD_LENGTH} 位`
+  return null
+}
+
+// 个人中心「安全」Tab 的原密码字段(W4b). Presence-only, same reasoning as
+// validateIdentifier above: the server (checkUpdatePassword,
+// controller/user.go) is the actual authority on whether it matches the
+// account's current password, so this only catches the "forgot to type
+// anything" case before a round trip.
+export function validateOriginalPassword(value: string): string | null {
+  if (!value) return '请输入原密码'
   return null
 }
 
@@ -126,6 +137,25 @@ export function validateForgotPasswordForm(values: { email: string, token: strin
   if (emailError) errors.email = emailError
   const tokenError = validateResetToken(values.token)
   if (tokenError) errors.token = tokenError
+  return errors
+}
+
+// 个人中心「安全」Tab 的修改密码表单(W4b). Reuses validatePassword/
+// validateConfirmPassword verbatim -- the same 8-20 length rule new-api
+// enforces server-side for *any* password it stores, register's included --
+// so there is no separate "change password" constant to keep in sync.
+export function validateChangePasswordForm(values: {
+  originalPassword: string
+  newPassword: string
+  confirmNewPassword: string
+}): AccountFieldErrors {
+  const errors: AccountFieldErrors = {}
+  const originalPasswordError = validateOriginalPassword(values.originalPassword)
+  if (originalPasswordError) errors.originalPassword = originalPasswordError
+  const newPasswordError = validatePassword(values.newPassword)
+  if (newPasswordError) errors.password = newPasswordError
+  const confirmError = validateConfirmPassword(values.newPassword, values.confirmNewPassword)
+  if (confirmError) errors.confirmPassword = confirmError
   return errors
 }
 

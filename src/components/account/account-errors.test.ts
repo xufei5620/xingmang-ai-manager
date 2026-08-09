@@ -90,6 +90,20 @@ describe('resolveAccountErrorMessage', () => {
     )
   })
 
+  it('maps a wrong original password on the change-password form (W4b)', () => {
+    expect(resolveAccountErrorMessage('Original password is incorrect')).toBe('原密码错误，请重新输入')
+    expect(resolveAccountErrorMessage('原密码错误')).toBe('原密码错误，请重新输入')
+  })
+
+  it('maps a change-password attempt on an account with no password set (W4b)', () => {
+    expect(resolveAccountErrorMessage(
+      'This account has no password set. Please use password reset or contact an administrator to reset it.',
+    )).toBe('当前账号未设置密码，请先通过"忘记密码"设置密码')
+    expect(resolveAccountErrorMessage('当前账号未设置密码，请使用密码重置或联系管理员重置密码')).toBe(
+      '当前账号未设置密码，请先通过"忘记密码"设置密码',
+    )
+  })
+
   it('is case-insensitive', () => {
     expect(resolveAccountErrorMessage('USERNAME ALREADY EXISTS')).toBe(
       '该用户名已被注册，请更换用户名，或点击"去登录"',

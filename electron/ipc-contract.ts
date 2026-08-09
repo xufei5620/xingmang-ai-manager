@@ -74,6 +74,9 @@ import type {
 } from './runtime-log'
 import type { PlatformCapabilities as MainPlatformCapabilities } from './platform-capabilities'
 import type {
+  NewApiAccountKey,
+  NewApiAccountKeysPage,
+  NewApiAccountKeysQuery,
   NewApiAccountProfile,
   NewApiAccountProfileDetail,
   NewApiAccountStatus,
@@ -81,6 +84,8 @@ import type {
   NewApiAccountUsageQuery,
   NewApiAccountUsageRecord,
   NewApiBalance,
+  NewApiChangePasswordInput,
+  NewApiChangePasswordResult,
   NewApiCliKeyResult,
   NewApiLoginInput,
   NewApiLoginResult,
@@ -157,6 +162,11 @@ export type AccountProfileDetail = NewApiAccountProfileDetail
 export type AccountUsageQuery = NewApiAccountUsageQuery
 export type AccountUsageRecord = NewApiAccountUsageRecord
 export type AccountUsagePage = NewApiAccountUsagePage
+export type AccountKey = NewApiAccountKey
+export type AccountKeysQuery = NewApiAccountKeysQuery
+export type AccountKeysPage = NewApiAccountKeysPage
+export type AccountChangePasswordInput = NewApiChangePasswordInput
+export type AccountChangePasswordResult = NewApiChangePasswordResult
 export type RendererNavigationTarget = 'settings'
 
 export interface RendererErrorPayload {
@@ -371,6 +381,13 @@ export interface XingmangInvokeContract {
     [input: AccountUsageQuery],
     AccountUsagePage
   >
+  getAccountKeys: IpcInvokeDefinition<'account:list-keys', [input: AccountKeysQuery], AccountKeysPage>
+  revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
+  changeAccountPassword: IpcInvokeDefinition<
+    'account:change-password',
+    [input: AccountChangePasswordInput],
+    AccountChangePasswordResult
+  >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
 }
 
@@ -485,6 +502,9 @@ export const ipcInvokeChannels = {
   resetPassword: 'account:reset-password',
   getAccountProfile: 'account:get-profile',
   getAccountUsage: 'account:get-usage',
+  getAccountKeys: 'account:list-keys',
+  revokeAccountKey: 'account:revoke-key',
+  changeAccountPassword: 'account:change-password',
   openCanvasWindow: 'canvas:open',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']

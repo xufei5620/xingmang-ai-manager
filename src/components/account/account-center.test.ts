@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  accountKeyStatusLabel,
   accountUsageTypeLabel,
   buildAccountInviteLink,
   formatAccountUsageDate,
+  formatKeyQuotaUsd,
   formatUsageCostUsd,
+  WALLET_URL,
 } from './account-center'
 
 describe('buildAccountInviteLink', () => {
@@ -72,5 +75,39 @@ describe('formatUsageCostUsd', () => {
     expect(formatUsageCostUsd(1_000, Number.NaN)).toBe('—')
     expect(formatUsageCostUsd(1_000, -500_000)).toBe('—')
     expect(formatUsageCostUsd(1_000, undefined)).toBe('—')
+  })
+})
+
+describe('WALLET_URL', () => {
+  it('points at the xm.solov.cc wallet page shared by the 充值 tab and the sidebar recharge button', () => {
+    expect(WALLET_URL).toBe('https://xm.solov.cc/wallet')
+  })
+})
+
+describe('accountKeyStatusLabel', () => {
+  it('maps every known model.Token Status constant to its Chinese label', () => {
+    expect(accountKeyStatusLabel(1)).toBe('启用中')
+    expect(accountKeyStatusLabel(2)).toBe('已禁用')
+    expect(accountKeyStatusLabel(3)).toBe('已过期')
+    expect(accountKeyStatusLabel(4)).toBe('额度已用尽')
+  })
+
+  it('falls back to a labeled-unknown string for a status outside the known range', () => {
+    expect(accountKeyStatusLabel(0)).toBe('未知状态(0)')
+    expect(accountKeyStatusLabel(99)).toBe('未知状态(99)')
+  })
+})
+
+describe('formatKeyQuotaUsd', () => {
+  it('formats using the same 2-decimal convention as formatBalanceUsd', () => {
+    expect(formatKeyQuotaUsd(2_500_000, 500_000)).toBe('$5.00')
+    expect(formatKeyQuotaUsd(0, 500_000)).toBe('$0.00')
+  })
+
+  it('falls back to the placeholder instead of a misleading $0.00 when quotaPerUnit is unusable', () => {
+    expect(formatKeyQuotaUsd(1_000, 0)).toBe('—')
+    expect(formatKeyQuotaUsd(1_000, Number.NaN)).toBe('—')
+    expect(formatKeyQuotaUsd(1_000, -500_000)).toBe('—')
+    expect(formatKeyQuotaUsd(1_000, undefined)).toBe('—')
   })
 })

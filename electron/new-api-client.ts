@@ -31,6 +31,10 @@ function tokenKeyPath(id: number): string {
   return `/api/token/${id}/key`
 }
 
+function tokenIdPath(id: number): string {
+  return `/api/token/${id}`
+}
+
 export type NewApiFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
 
 export interface NewApiClientOptions {
@@ -209,6 +213,68 @@ export interface NewApiAccountUsagePage {
   records: NewApiAccountUsageRecord[]
 }
 
+export interface NewApiAccountKeysQuery {
+  /** 1-based; matches new-api's `p` query parameter, same convention as NewApiAccountUsageQuery. */
+  page?: number
+  /** Server clamps to 100 regardless of what is sent (common/page_info.go). */
+  pageSize?: number
+}
+
+// One row of GET /api/token/'s `items` array (model.Token, model/token.go),
+// confirmed field-for-field against QuantumNous/new-api's controller/token.go
+// (GetAllTokens/DeleteToken handlers) and model/token.go at both the `main`
+// branch and the exact v1.0.0-rc.24 tag xm.solov.cc is pinned to
+// (byte-identical between the two for every field read here).
+//
+// Deliberately a strict metadata whitelist -- I3. The wire response also
+// carries a `key` field (GetAllTokens masks it via buildMaskedTokenResponses
+// -> Token.GetMaskedKey(), so it is never the full plaintext secret, but it
+// is still a partial fragment of one), plus user_id/model_limits_enabled/
+// model_limits/allow_ips/cross_group_retry, none of which this app has any
+// display use for. parseAccountKey below never reads `.key` (or any of those
+// other fields) under any circumstance -- see its own comment. Revealing a
+// key's live plaintext value is out of scope for this wave entirely (see
+// NewApiClientService.revokeKey's doc comment); this DTO exists only so a
+// user can recognize *which* key is which well enough to revoke an orphaned
+// one.
+export interface NewApiAccountKey {
+  id: number
+  name: string
+  /** common.TokenStatus* (model/token.go): 1 enabled, 2 disabled, 3 expired, 4 exhausted. */
+  status: number
+  remainQuota: number
+  unlimitedQuota: boolean
+  usedQuota: number
+  /** ISO 8601, converted from the wire's Unix-seconds Token.CreatedTime. */
+  createdAt: string
+  /** ISO 8601, or null when the wire's Token.ExpiredTime is the "never expires" sentinel (-1) or otherwise non-positive. */
+  expiredAt: string | null
+  /** ISO 8601, or null when the wire's Token.AccessedTime is its zero value (never used yet). */
+  accessedAt: string | null
+}
+
+export interface NewApiAccountKeysPage {
+  page: number
+  pageSize: number
+  total: number
+  keys: NewApiAccountKey[]
+}
+
+export interface NewApiChangePasswordInput {
+  originalPassword: string
+  newPassword: string
+}
+
+// Deliberately minimal -- I3. The server's actual response to a successful
+// password change carries a fresh access_token (see
+// parseChangePasswordResponseData's comment for what that is for); it must
+// never cross the IPC boundary into the renderer, so this is the only field
+// worth exposing here.
+export interface NewApiChangePasswordResult {
+  /** Always true when this promise resolves -- a failed change rejects instead of resolving false. */
+  changed: true
+}
+
 export interface NewApiProvisionCliKeyInput {
   name?: string
   remainQuota?: number
@@ -261,6 +327,29 @@ export interface NewApiClientService {
   // falls back to new-api's own server-side defaults (page 1, page size 10 --
   // common/page_info.go's GetPageQuery).
   getUsage(input?: NewApiAccountUsageQuery): Promise<NewApiAccountUsagePage>
+  // GET /api/token/, paginated exactly like getUsage above (same
+  // common/page_info.go PageInfo envelope). Feeds the 个人中心 Key 管理 tab
+  // (W4b) -- see NewApiAccountKey's own doc comment for the I3 field
+  // whitelist this applies on the way out.
+  listKeys(input?: NewApiAccountKeysQuery): Promise<NewApiAccountKeysPage>
+  // DELETE /api/token/:id. Destructive and immediate: any CLI config or
+  // canvas session currently holding this key's plaintext stops working the
+  // instant this resolves -- there is no undo. Scoped server-side to the
+  // caller's own tokens (DeleteTokenById takes the authenticated userId,
+  // controller/token.go), so an id belonging to another account fails rather
+  // than silently no-op-ing. This app never reveals a key's plaintext value
+  // (see NewApiAccountKey's comment), so the confirm-before-revoke UX this
+  // backs is deliberately the *only* key-management action this wave ships.
+  revokeKey(id: number): Promise<void>
+  // PUT /api/user/self with {password, original_password} -- confirmed
+  // identical between the `main` branch and the exact v1.0.0-rc.24 tag
+  // xm.solov.cc is pinned to (controller/user.go's UpdateSelf handler,
+  // service/auth_session.go's AdvanceCurrentSessionToUserVersion). See
+  // parseChangePasswordResponseData's own comment for exactly what happens
+  // to *this* session afterward (short version: it keeps working, no
+  // re-login needed) versus every *other* session (signed out immediately,
+  // new-api's own security response to a password change).
+  changePassword(input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult>
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
   /**
    * Looks up the most recently created existing token whose name starts with
@@ -337,7 +426,7 @@ interface RequestContext {
 }
 
 interface PerformRequestInit {
-  method: 'GET' | 'POST'
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE'
   headers?: Record<string, string>
   body?: unknown
 }
@@ -592,6 +681,69 @@ export function parseAccountUsagePage(payload: unknown): NewApiAccountUsagePage 
   }
 }
 
+// One entry of GET /api/token/'s `items` array. Mirrors
+// parseAccountUsageRecord's own "drop a malformed row instead of failing the
+// whole page" posture -- one bad token row should shrink the Key 管理 list by
+// one row, not blank it entirely.
+//
+// I3: this function's field list is a hand-picked whitelist, not a spread or
+// a generic mapper -- it must stay that way even if model.Token grows new
+// fields upstream. In particular it never reads payload.key (or
+// payload.token): see NewApiAccountKey's own doc comment for why that
+// field's mere presence on the wire (masked or not) is irrelevant to this
+// function's contract.
+export function parseAccountKey(payload: unknown): NewApiAccountKey | null {
+  if (!isRecord(payload)) return null
+  const id = asFiniteNumber(payload.id, Number.NaN)
+  if (!Number.isInteger(id) || id <= 0) return null
+  const createdSeconds = payload.created_time
+  const createdAt = typeof createdSeconds === 'number' && Number.isFinite(createdSeconds)
+    ? new Date(createdSeconds * 1000).toISOString()
+    : ''
+  const expiredSeconds = payload.expired_time
+  const expiredAt = typeof expiredSeconds === 'number' && Number.isFinite(expiredSeconds) && expiredSeconds > 0
+    ? new Date(expiredSeconds * 1000).toISOString()
+    : null
+  const accessedSeconds = payload.accessed_time
+  const accessedAt = typeof accessedSeconds === 'number' && Number.isFinite(accessedSeconds) && accessedSeconds > 0
+    ? new Date(accessedSeconds * 1000).toISOString()
+    : null
+  return {
+    id,
+    name: asString(payload.name, ''),
+    status: asFiniteNumber(payload.status, 0),
+    remainQuota: asFiniteNumber(payload.remain_quota, 0),
+    unlimitedQuota: asBoolean(payload.unlimited_quota, false),
+    usedQuota: asFiniteNumber(payload.used_quota, 0),
+    createdAt,
+    expiredAt,
+    accessedAt,
+  }
+}
+
+// GET /api/token/'s envelope data -- the same common.PageInfo
+// (common/page_info.go) shape as GET /api/log/self, confirmed directly from
+// GetAllTokens (controller/token.go): pageInfo.SetTotal(...) /
+// pageInfo.SetItems(...) then common.ApiSuccess(c, pageInfo). Defaults mirror
+// parseAccountUsagePage's for the same reason -- a malformed pagination
+// header degrades to "page 1 of whatever came back" instead of discarding a
+// page of real key data.
+export function parseAccountKeysPage(payload: unknown): NewApiAccountKeysPage {
+  const data = isRecord(payload) ? payload : null
+  const items = data && Array.isArray(data.items) ? data.items : []
+  const keys: NewApiAccountKey[] = []
+  for (const entry of items) {
+    const key = parseAccountKey(entry)
+    if (key) keys.push(key)
+  }
+  return {
+    page: data ? asFiniteNumber(data.page, 1) : 1,
+    pageSize: data ? asFiniteNumber(data.page_size, 10) : 10,
+    total: data ? asFiniteNumber(data.total, 0) : 0,
+    keys,
+  }
+}
+
 function normalizeExpiresAt(value: unknown): string | null {
   if (typeof value === 'string' && value) return value
   if (typeof value === 'number' && Number.isFinite(value)) {
@@ -645,6 +797,43 @@ export function parseResetPasswordResponseData(payload: unknown): NewApiResetPas
     throw new Error('重置密码响应格式异常，未返回新密码')
   }
   return { newPassword: payload }
+}
+
+export interface NewApiRawChangePasswordData {
+  accessToken: string
+  accessExpiresAt: string | null
+}
+
+// PUT /api/user/self's success envelope when a password change actually
+// happened (controller/user.go's UpdateSelf, the `if updatePassword {...}`
+// branch) is *not* the plain {success,message} every other write in this
+// file returns -- it hands back a fresh AuthBundle {access_token, token_type,
+// access_expires_at, session}, because the access token this same request
+// was authenticated with is about to become stale the instant this call
+// commits (service/auth_session.go's AdvanceCurrentSessionToUserVersion bumps
+// this *session's* stored auth-version counter to match the just-changed
+// password, but deliberately does not rotate the refresh-token secret --
+// only *other* sessions get revoked (RevokeOtherUserSessions), current-caller
+// excluded). Practically: the desktop app's already-captured refresh cookie
+// keeps working unchanged; only the access_token needs to be swapped in for
+// this session to keep making authenticated calls without a spurious 401.
+// Confirmed identical between the `main` branch and the exact v1.0.0-rc.24
+// tag xm.solov.cc is pinned to (byte-for-byte, both the handler and the
+// service function it calls).
+//
+// Returns null instead of throwing on a missing/malformed bundle: by the
+// time this is called, envelope.success was already true, so the password
+// itself genuinely changed -- a parse hiccup here must not fail the whole
+// operation. changePassword()'s caller just skips the optimistic in-place
+// session update in that case; the next authenticated call in this session
+// would 401 against the superseded access token and self-heal via the
+// ordinary silent-refresh path (withSession/retryAfterSilentRefresh), since
+// -- per the paragraph above -- the refresh cookie was never invalidated.
+export function parseChangePasswordResponseData(payload: unknown): NewApiRawChangePasswordData | null {
+  if (!isRecord(payload)) return null
+  const accessToken = asString(payload.access_token, '')
+  if (!accessToken) return null
+  return { accessToken, accessExpiresAt: normalizeExpiresAt(payload.access_expires_at) }
 }
 
 // Captures every Set-Cookie the server sent, stripped down to bare
@@ -1013,6 +1202,73 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
+  const listKeys = (input: NewApiAccountKeysQuery = {}): Promise<NewApiAccountKeysPage> => (
+    withSession(async (current) => {
+      const params = new URLSearchParams()
+      if (Number.isInteger(input.page) && (input.page as number) >= 1) {
+        params.set('p', String(input.page))
+      }
+      if (Number.isInteger(input.pageSize) && (input.pageSize as number) >= 1) {
+        params.set('page_size', String(input.pageSize))
+      }
+      const query = params.toString()
+      const raw = await performRequest(
+        ctx,
+        query ? `${tokenCollectionPath}?${query}` : tokenCollectionPath,
+        { method: 'GET', headers: authHeaders(current) },
+        'Key 列表查询',
+      )
+      return parseAccountKeysPage(unwrapEnvelope(raw, 'Key 列表查询', [current.accessToken]))
+    })
+  )
+
+  const revokeKey = (id: number): Promise<void> => (
+    withSession(async (current) => {
+      // Defense in depth: ipc.ts's parseAccountRevokeKeyId already rejects
+      // anything unsafe before it reaches here, but this client is also
+      // callable directly by other main-process code and its own tests, so
+      // the guard belongs here too rather than solely at the IPC boundary
+      // (I5) -- id goes straight into a URL path segment below.
+      if (!Number.isInteger(id) || id <= 0) throw new Error('Key ID 格式错误')
+      const raw = await performRequest(
+        ctx,
+        tokenIdPath(id),
+        { method: 'DELETE', headers: authHeaders(current) },
+        'Key 撤销',
+      )
+      unwrapEnvelope(raw, 'Key 撤销', [current.accessToken])
+    })
+  )
+
+  const changePassword = (input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult> => (
+    withSession(async (current) => {
+      const originalPassword = input.originalPassword
+      const newPassword = input.newPassword
+      // Not trimmed: both must be forwarded exactly as typed, same reasoning
+      // as parseAccountLoginInput's password field in ipc.ts.
+      if (!originalPassword) throw new Error('请输入原密码')
+      if (!newPassword) throw new Error('请输入新密码')
+      const raw = await performRequest(
+        ctx,
+        selfPath,
+        {
+          method: 'PUT',
+          body: { password: newPassword, original_password: originalPassword },
+          headers: authHeaders(current),
+        },
+        '修改密码',
+      )
+      const data = unwrapEnvelope(raw, '修改密码', [originalPassword, newPassword, current.accessToken])
+      const bundle = parseChangePasswordResponseData(data)
+      // Optimistic in-place swap so the very next authenticated call in this
+      // same session does not spuriously 401 against the now-superseded old
+      // access token -- see parseChangePasswordResponseData's own comment
+      // for why skipping this on a malformed/missing bundle is still safe.
+      if (bundle) setSession({ ...current, accessToken: bundle.accessToken })
+      return { changed: true }
+    })
+  )
+
   const provisionCliKey = (input: NewApiProvisionCliKeyInput = {}): Promise<NewApiCliKeyResult> => (
     withSession(async (current) => {
       const name = (input.name?.trim() || buildCliKeyName()).slice(0, 128)
@@ -1171,6 +1427,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     getBalance,
     getProfile,
     getUsage,
+    listKeys,
+    revokeKey,
+    changePassword,
     provisionCliKey,
     findExistingCliKey,
     refreshAccessToken,

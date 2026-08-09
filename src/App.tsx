@@ -7,6 +7,7 @@ import { ForgotPasswordDialog } from './components/account/ForgotPasswordDialog'
 import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
 import { AccountCenterPage } from './components/account/AccountCenterPage'
 import { resolveAccountErrorMessage } from './components/account/account-errors'
+import { WALLET_URL } from './components/account/account-center'
 import { resolveAccountAreaStatus } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
 import {
@@ -1366,7 +1367,15 @@ function App() {
         accountSnapshot={accountSnapshot}
         onAccountLogin={() => setAccountDialog('login')}
         onAccountLogout={() => void handleAccountLogout()}
-        onRecharge={() => setToast({ type: 'success', message: '充值功能即将开放' })}
+        onRecharge={() => {
+          // Same destination and same "opens in the system browser, desktop
+          // session never travels there" reasoning as the 个人中心充值 Tab's
+          // own openWallet (AccountCenterPage.tsx) -- href already
+          // allowlisted in electron/main.ts (I12).
+          void window.xingmang.openExternal(WALLET_URL).catch((error: unknown) => {
+            setToast({ type: 'error', message: errorMessage(error) })
+          })
+        }}
         onConfigureCliKey={handleConfigureCliKey}
         onOpenAccountCenter={() => setAppView('account-center')}
       />

@@ -2,11 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   hasAccountFieldErrors,
   validateAgreement,
+  validateChangePasswordForm,
   validateConfirmPassword,
   validateEmail,
   validateForgotPasswordForm,
   validateIdentifier,
   validateLoginForm,
+  validateOriginalPassword,
   validatePassword,
   validateRegisterForm,
   validateResetToken,
@@ -224,6 +226,53 @@ describe('validateRegisterForm', () => {
   it('reports an over-length username independently of every other field', () => {
     const errors = validateRegisterForm({ ...validValues, username: 'a'.repeat(21) })
     expect(errors).toEqual({ username: '用户名不能超过 20 位' })
+  })
+})
+
+describe('validateOriginalPassword', () => {
+  it('rejects an empty value', () => {
+    expect(validateOriginalPassword('')).toBe('请输入原密码')
+  })
+
+  it('accepts any non-empty value regardless of length or shape', () => {
+    expect(validateOriginalPassword('short')).toBeNull()
+    expect(validateOriginalPassword('a'.repeat(64))).toBeNull()
+  })
+})
+
+describe('validateChangePasswordForm', () => {
+  it('reports every field when all are empty', () => {
+    const errors = validateChangePasswordForm({ originalPassword: '', newPassword: '', confirmNewPassword: '' })
+    expect(errors.originalPassword).toBe('请输入原密码')
+    expect(errors.password).toBe('请输入密码')
+    expect(errors.confirmPassword).toBe('请再次输入密码')
+  })
+
+  it('reports no errors for a fully valid submission', () => {
+    expect(validateChangePasswordForm({
+      originalPassword: 'current-password-1',
+      newPassword: 'new-password-123',
+      confirmNewPassword: 'new-password-123',
+    })).toEqual({})
+  })
+
+  it('reports a mismatched confirmation without flagging the new password itself', () => {
+    const errors = validateChangePasswordForm({
+      originalPassword: 'current-password-1',
+      newPassword: 'new-password-123',
+      confirmNewPassword: 'different-password',
+    })
+    expect(errors.password).toBeUndefined()
+    expect(errors.confirmPassword).toBe('两次输入的密码不一致')
+  })
+
+  it('reports an under-length new password independently of the original password field', () => {
+    const errors = validateChangePasswordForm({
+      originalPassword: 'current-password-1',
+      newPassword: 'short1',
+      confirmNewPassword: 'short1',
+    })
+    expect(errors).toEqual({ password: '密码至少需要 8 位' })
   })
 })
 

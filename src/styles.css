@@ -1878,6 +1878,88 @@ input:focus-visible {
   line-height: 1.6;
 }
 
+/* Key 管理 tab (W4b) -- same structural pattern as .account-center-usage*
+   above (bounded-height card, internal head/body/pagination, one screen, no
+   scroll), just with its own grid-template-columns for a 7-column dataset
+   (名称/状态/额度/已用/创建时间/过期时间/操作) instead of usage's 6. */
+.account-center-keys {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  background: var(--surface-adaptive);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-8);
+  overflow: hidden;
+}
+
+.account-center-keys-head,
+.account-center-keys-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.6fr) 88px 96px 96px 148px 148px 56px;
+  align-items: center;
+  column-gap: var(--space-12);
+}
+
+.account-center-keys-head {
+  min-height: 34px;
+  padding: 0 14px;
+  color: var(--text-muted);
+  background: var(--surface-adaptive-hover);
+  border-bottom: 1px solid var(--border-default);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-bold);
+}
+
+.account-center-keys-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.account-center-keys-row {
+  min-height: 40px;
+  padding: 7px 14px;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  border-bottom: 1px solid var(--border-default);
+}
+
+.account-center-keys-row:last-of-type {
+  border-bottom: 0;
+}
+
+.account-center-keys-row span,
+.account-center-keys-row strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.account-center-keys-row button {
+  justify-self: center;
+}
+
+/* 安全 tab (W4b, 修改密码) -- same boxed-card look as .account-center-topup
+   above, reused as its own rule (not the topup class itself) so the name
+   stays honest about what each block is for. */
+.account-center-security {
+  max-width: 420px;
+  padding: 24px;
+  background: var(--surface-adaptive);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-8);
+}
+
+.account-center-security form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-16);
+}
+
+.account-center-security .field-hint {
+  margin: 0;
+}
+
 .sidebar-controls {
   display: grid;
   gap: var(--space-3);

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   Activity,
   ArrowLeft,
@@ -6,39 +6,104 @@ import {
   ChevronLeft,
   ChevronRight,
   ClipboardCopy,
+  Eye,
+  EyeOff,
   ExternalLink,
   FileWarning,
   Inbox,
+  KeyRound,
   LoaderCircle,
+  Lock,
   LogOut,
+  Trash2,
   UserRound,
   Users,
   Wallet,
   type LucideIcon,
 } from 'lucide-react'
+import { DialogBackdrop } from '../Dialog'
 import { errorMessage } from '../../error-message'
 import { createLatestRequestTracker } from '../../latest-request'
-import type { AccountBalance, AccountProfileDetail, AccountUsagePage } from '../../types'
+import type {
+  AccountBalance,
+  AccountKey,
+  AccountKeysPage,
+  AccountProfileDetail,
+  AccountUsagePage,
+} from '../../types'
 import { formatBalanceUsd } from './account-stub'
-import { accountUsageTypeLabel, buildAccountInviteLink, formatAccountUsageDate, formatUsageCostUsd } from './account-center'
+import { resolveAccountErrorMessage } from './account-errors'
+import {
+  accountKeyStatusLabel,
+  accountUsageTypeLabel,
+  buildAccountInviteLink,
+  formatAccountUsageDate,
+  formatKeyQuotaUsd,
+  formatUsageCostUsd,
+  WALLET_URL,
+} from './account-center'
+import { hasAccountFieldErrors, validateChangePasswordForm, type AccountFieldErrors } from './validation'
 import type { ToastMessage } from '../Toast'
 
-// Opens in the system browser (I12, href-exact-match allowlisted in
-// electron/main.ts) -- the desktop session's cookies/access token never
-// travel there, so the user authenticates again on the web the same way
-// anyone would for an online payment; this app never handles card/payment
-// details itself.
-const WALLET_URL = 'https://xm.solov.cc/wallet'
 const USAGE_PAGE_SIZE = 8
+// Same page size as usage above -- both share the "one screen, no scroll"
+// constraint this page's tabs are all designed around, so both cap their row
+// count identically.
+const KEYS_PAGE_SIZE = 8
 
-type AccountCenterTab = 'profile' | 'usage' | 'invite' | 'topup'
+type AccountCenterTab = 'profile' | 'usage' | 'invite' | 'topup' | 'keys' | 'security'
 
 const TABS: ReadonlyArray<{ id: AccountCenterTab; label: string; icon: LucideIcon }> = [
   { id: 'profile', label: '资料', icon: UserRound },
   { id: 'usage', label: '用量', icon: Activity },
   { id: 'invite', label: '邀请', icon: Users },
   { id: 'topup', label: '充值', icon: Wallet },
+  { id: 'keys', label: 'Key 管理', icon: KeyRound },
+  { id: 'security', label: '安全', icon: Lock },
 ]
+
+/**
+ * Confirm-before-revoke dialog for the Key 管理 tab (W4b) -- mirrors
+ * PluginsPage.tsx's RemoveExtensionDialog exactly: the dialog owns only its
+ * own local confirmError state, `onConfirm` is expected to throw on failure
+ * (caught here and shown inline, dialog stays open for a retry) and resolve
+ * silently on success (the parent closes the dialog itself, since only it
+ * knows the mutation actually succeeded).
+ */
+function RevokeKeyDialog({ target, busy, onConfirm, onCancel }: {
+  target: AccountKey
+  busy: boolean
+  onConfirm: () => Promise<void>
+  onCancel: () => void
+}) {
+  const [confirmError, setConfirmError] = useState<string | null>(null)
+
+  const confirm = async () => {
+    setConfirmError(null)
+    try {
+      await onConfirm()
+    } catch (error) {
+      setConfirmError(resolveAccountErrorMessage(errorMessage(error)))
+    }
+  }
+
+  return (
+    <DialogBackdrop className="config-modal-backdrop extension-backdrop" onDismiss={busy ? () => undefined : onCancel}>
+      <section className="extension-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="revoke-key-title">
+        <span className="extension-confirm-icon danger"><Trash2 size={20} /></span>
+        <h2 id="revoke-key-title">撤销 Key「{target.name}」</h2>
+        <p>撤销后使用该 Key 的 CLI 或画布将立即失效，确认撤销？</p>
+        {confirmError && <div className="extension-error extension-confirm-error" role="alert">{confirmError}</div>}
+        <div className="extension-dialog-actions">
+          <button className="secondary-button" type="button" onClick={onCancel} disabled={busy}>取消</button>
+          <button className="danger-button" type="button" onClick={() => void confirm()} disabled={busy}>
+            {busy ? <LoaderCircle className="spin" size={16} /> : <Trash2 size={16} />} 确认撤销
+          </button>
+        </div>
+      </section>
+    </DialogBackdrop>
+  )
+}
 
 export interface AccountCenterPageProps {
   /** "返回工作台" — the page's only exit besides logging out. */
@@ -63,10 +128,22 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
   const [usageLoading, setUsageLoading] = useState(false)
   const [usageError, setUsageError] = useState<string | null>(null)
   const [copiedField, setCopiedField] = useState<'code' | 'link' | null>(null)
-  // T6: profile/usage are both async page data that can outlive a tab switch
-  // or a fast double-open; keyed by a fixed string per data kind, same
+  const [keysPageNumber, setKeysPageNumber] = useState(1)
+  const [keys, setKeys] = useState<AccountKeysPage | null>(null)
+  const [keysLoading, setKeysLoading] = useState(false)
+  const [keysError, setKeysError] = useState<string | null>(null)
+  const [revokeTarget, setRevokeTarget] = useState<AccountKey | null>(null)
+  const [revokeBusy, setRevokeBusy] = useState(false)
+  const [originalPassword, setOriginalPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmNewPassword, setConfirmNewPassword] = useState('')
+  const [showPasswordFields, setShowPasswordFields] = useState(false)
+  const [passwordErrors, setPasswordErrors] = useState<AccountFieldErrors>({})
+  const [passwordSubmitting, setPasswordSubmitting] = useState(false)
+  // T6: profile/usage/keys are all async page data that can outlive a tab
+  // switch or a fast double-open; keyed by a fixed string per data kind, same
   // pattern App.tsx already uses for mcp/skills/plugins via pageDataTracker.
-  const requestTracker = useRef(createLatestRequestTracker<'profile' | 'usage'>()).current
+  const requestTracker = useRef(createLatestRequestTracker<'profile' | 'usage' | 'keys'>()).current
   const copyResetTimer = useRef<number | null>(null)
 
   const loadProfile = useCallback(async () => {
@@ -117,10 +194,77 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
     if (tab === 'usage') void loadUsage(usagePageNumber)
   }, [tab, usagePageNumber, loadUsage])
 
+  const loadKeys = useCallback(async (page: number) => {
+    const requestId = requestTracker.begin('keys')
+    setKeysLoading(true)
+    setKeysError(null)
+    try {
+      const next = await window.xingmang.getAccountKeys({ page, pageSize: KEYS_PAGE_SIZE })
+      if (!requestTracker.isCurrent('keys', requestId)) return
+      setKeys(next)
+    } catch (error) {
+      if (requestTracker.isCurrent('keys', requestId)) setKeysError(errorMessage(error))
+    } finally {
+      if (requestTracker.isCurrent('keys', requestId)) setKeysLoading(false)
+    }
+  }, [requestTracker])
+
+  // Lazy, same reasoning as loadUsage above.
+  useEffect(() => {
+    if (tab === 'keys') void loadKeys(keysPageNumber)
+  }, [tab, keysPageNumber, loadKeys])
+
   useEffect(() => () => {
     requestTracker.invalidateAll()
     if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current)
   }, [requestTracker])
+
+  // Mirrors PluginsPage.tsx's RemoveExtensionDialog usage: throws on failure
+  // (RevokeKeyDialog's own confirm() wrapper catches it and shows it inline,
+  // keeping the dialog open for a retry) and only reaches the
+  // success-handling tail below when the revoke genuinely succeeded.
+  const confirmRevokeKey = async () => {
+    if (!revokeTarget) return
+    const target = revokeTarget
+    setRevokeBusy(true)
+    try {
+      await window.xingmang.revokeAccountKey(target.id)
+    } finally {
+      setRevokeBusy(false)
+    }
+    setRevokeTarget(null)
+    notify?.({ type: 'success', message: `已撤销 Key「${target.name}」` })
+    void loadKeys(keysPageNumber)
+  }
+
+  const clearPasswordError = (field: keyof AccountFieldErrors) => {
+    setPasswordErrors((current) => (current[field] ? { ...current, [field]: undefined } : current))
+  }
+
+  const submitChangePassword = async (event: FormEvent) => {
+    event.preventDefault()
+    if (passwordSubmitting) return
+    const nextErrors = validateChangePasswordForm({ originalPassword, newPassword, confirmNewPassword })
+    setPasswordErrors(nextErrors)
+    if (hasAccountFieldErrors(nextErrors)) return
+    setPasswordSubmitting(true)
+    try {
+      // The main process adopts the fresh session token this call returns
+      // internally (electron/new-api-client.ts's changePassword) -- this
+      // device's own session keeps working with no further action here;
+      // only *other* signed-in devices/browsers get signed out server-side.
+      await window.xingmang.changeAccountPassword({ originalPassword, newPassword })
+      setOriginalPassword('')
+      setNewPassword('')
+      setConfirmNewPassword('')
+      setPasswordErrors({})
+      notify?.({ type: 'success', message: '密码修改成功' })
+    } catch (error) {
+      notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    } finally {
+      setPasswordSubmitting(false)
+    }
+  }
 
   const copyText = async (field: 'code' | 'link', value: string) => {
     if (!navigator.clipboard) {
@@ -351,6 +495,165 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
     </div>
   )
 
+  const renderKeysTab = () => {
+    if (keysLoading && !keys) {
+      return (
+        <section className="workspace-empty" aria-live="polite">
+          <div className="workspace-empty-icon"><LoaderCircle size={24} className="spin" /></div>
+          <h2>正在读取 Key 列表</h2>
+        </section>
+      )
+    }
+    if (keysError && !keys) {
+      return (
+        <div className="session-error" role="alert">
+          <FileWarning size={18} />
+          <div><strong>Key 列表读取失败</strong><span>{keysError}</span></div>
+          <button className="secondary-button" type="button" onClick={() => void loadKeys(keysPageNumber)}>重试</button>
+        </div>
+      )
+    }
+    if (!keys) return null
+    const totalPages = Math.max(1, Math.ceil(keys.total / KEYS_PAGE_SIZE))
+    if (keys.keys.length === 0) {
+      return (
+        <section className="workspace-empty">
+          <div className="workspace-empty-icon"><KeyRound size={24} /></div>
+          <h2>暂无 Key</h2>
+          <p>「一键配置」写入 CLI 配置的星芒 Key 会显示在这里</p>
+        </section>
+      )
+    }
+    return (
+      <div className="account-center-keys">
+        <div className="account-center-keys-head" aria-hidden="true">
+          <span>名称</span><span>状态</span><span>额度</span><span>已用</span><span>创建时间</span><span>过期时间</span><span>操作</span>
+        </div>
+        <div className="account-center-keys-body" aria-busy={keysLoading}>
+          {keys.keys.map((key) => (
+            <div className="account-center-keys-row" key={key.id}>
+              <strong title={key.name}>{key.name}</strong>
+              <span>{accountKeyStatusLabel(key.status)}</span>
+              <span>{key.unlimitedQuota ? '无限' : formatKeyQuotaUsd(key.remainQuota, balance?.quotaPerUnit)}</span>
+              <span>{formatKeyQuotaUsd(key.usedQuota, balance?.quotaPerUnit)}</span>
+              <span>{formatAccountUsageDate(key.createdAt)}</span>
+              <span>{key.expiredAt ? formatAccountUsageDate(key.expiredAt) : '永不过期'}</span>
+              <button
+                className="icon-button compact"
+                type="button"
+                title="撤销"
+                aria-label={`撤销 Key「${key.name}」`}
+                onClick={() => setRevokeTarget(key)}
+              >
+                <Trash2 size={15} />
+              </button>
+            </div>
+          ))}
+        </div>
+        <footer className="account-center-pagination">
+          <span>共 {keys.total} 个</span>
+          <div>
+            <button
+              className="icon-button compact"
+              type="button"
+              title="上一页"
+              aria-label="上一页"
+              disabled={keysPageNumber <= 1 || keysLoading}
+              onClick={() => setKeysPageNumber((value) => Math.max(1, value - 1))}
+            >
+              <ChevronLeft size={17} />
+            </button>
+            <span>{keysPageNumber} / {totalPages}</span>
+            <button
+              className="icon-button compact"
+              type="button"
+              title="下一页"
+              aria-label="下一页"
+              disabled={keysPageNumber >= totalPages || keysLoading}
+              onClick={() => setKeysPageNumber((value) => value + 1)}
+            >
+              <ChevronRight size={17} />
+            </button>
+          </div>
+        </footer>
+      </div>
+    )
+  }
+
+  const renderSecurityTab = () => (
+    <div className="account-center-security">
+      <form onSubmit={(event) => void submitChangePassword(event)}>
+        <label className="field extension-field">
+          <span>原密码</span>
+          <div className="input-with-action">
+            <input
+              type={showPasswordFields ? 'text' : 'password'}
+              value={originalPassword}
+              onChange={(event) => { setOriginalPassword(event.target.value); clearPasswordError('originalPassword') }}
+              autoComplete="current-password"
+            />
+            <button
+              type="button"
+              title={showPasswordFields ? '隐藏密码' : '显示密码'}
+              onClick={() => setShowPasswordFields((current) => !current)}
+            >
+              {showPasswordFields ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {passwordErrors.originalPassword && <small className="field-error" role="alert">{passwordErrors.originalPassword}</small>}
+        </label>
+
+        <label className="field extension-field">
+          <span>新密码</span>
+          <div className="input-with-action">
+            <input
+              type={showPasswordFields ? 'text' : 'password'}
+              value={newPassword}
+              onChange={(event) => { setNewPassword(event.target.value); clearPasswordError('password') }}
+              placeholder="8-20 位"
+              autoComplete="new-password"
+            />
+            <button
+              type="button"
+              title={showPasswordFields ? '隐藏密码' : '显示密码'}
+              onClick={() => setShowPasswordFields((current) => !current)}
+            >
+              {showPasswordFields ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {passwordErrors.password && <small className="field-error" role="alert">{passwordErrors.password}</small>}
+        </label>
+
+        <label className="field extension-field">
+          <span>确认新密码</span>
+          <div className="input-with-action">
+            <input
+              type={showPasswordFields ? 'text' : 'password'}
+              value={confirmNewPassword}
+              onChange={(event) => { setConfirmNewPassword(event.target.value); clearPasswordError('confirmPassword') }}
+              placeholder="再次输入新密码"
+              autoComplete="new-password"
+            />
+            <button
+              type="button"
+              title={showPasswordFields ? '隐藏密码' : '显示密码'}
+              onClick={() => setShowPasswordFields((current) => !current)}
+            >
+              {showPasswordFields ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {passwordErrors.confirmPassword && <small className="field-error" role="alert">{passwordErrors.confirmPassword}</small>}
+        </label>
+
+        <p className="field-hint">修改成功后本设备无需重新登录；其他已登录设备与浏览器会话将被登出。</p>
+
+        <button type="submit" className="primary-button" disabled={passwordSubmitting}>
+          {passwordSubmitting ? '提交中…' : '确认修改'}
+        </button>
+      </form>
+    </div>
+  )
+
   return (
     <div className="account-center">
       <div className="account-center-inner">
@@ -391,8 +694,19 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
           {tab === 'usage' && renderUsageTab()}
           {tab === 'invite' && renderInviteTab()}
           {tab === 'topup' && renderTopupTab()}
+          {tab === 'keys' && renderKeysTab()}
+          {tab === 'security' && renderSecurityTab()}
         </div>
       </div>
+
+      {revokeTarget && (
+        <RevokeKeyDialog
+          target={revokeTarget}
+          busy={revokeBusy}
+          onConfirm={confirmRevokeKey}
+          onCancel={() => setRevokeTarget(null)}
+        />
+      )}
     </div>
   )
 }

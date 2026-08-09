@@ -13,9 +13,18 @@
 // toFixed(2) would round almost every row down to a misleading "$0.00"
 // that reads as broken rather than merely small.
 
-import { computeBalanceUsd } from './account-stub'
+import { computeBalanceUsd, formatBalanceUsd } from './account-stub'
 
 const inviteBaseUrl = 'https://xm.solov.cc/register'
+
+// Opens in the system browser (I12, href-exact-match allowlisted in
+// electron/main.ts) -- the desktop session's cookies/access token never
+// travel there, so the user authenticates again on the web the same way
+// anyone would for an online payment; this app never handles card/payment
+// details itself. Shared by the 充值 tab (AccountCenterPage.tsx) and the
+// sidebar's own recharge button (App.tsx) so the two "去充值" entry points
+// can never drift onto different URLs.
+export const WALLET_URL = 'https://xm.solov.cc/wallet'
 
 /**
  * Builds a shareable invite link from the current user's own affCode.
@@ -86,4 +95,39 @@ export function formatUsageCostUsd(quota: number, quotaPerUnit: number | undefin
   if (usd === 0) return '$0.00'
   if (Math.abs(usd) >= 0.01) return `$${usd.toFixed(2)}`
   return `$${usd.toFixed(6).replace(/0+$/, '').replace(/\.$/, '')}`
+}
+
+// common.TokenStatus* (model/token.go), confirmed identical at the
+// v1.0.0-rc.24 tag: 1 enabled, 2 disabled, 3 expired, 4 exhausted (out of
+// remain_quota). 0 is a documented-invalid sentinel ("don't use 0, 0 is the
+// default value!") that should never arrive from a real token row, but a
+// labeled-unknown fallback (matching accountUsageTypeLabel's own precedent
+// above) keeps a future/unexpected value from rendering as a blank cell.
+const keyStatusLabels: Readonly<Record<number, string>> = {
+  1: '启用中',
+  2: '已禁用',
+  3: '已过期',
+  4: '额度已用尽',
+}
+
+/** Maps new-api's numeric Token.Status to a Chinese label for the Key 管理 tab (W4b). */
+export function accountKeyStatusLabel(status: number): string {
+  return keyStatusLabels[status] ?? `未知状态(${status})`
+}
+
+/**
+ * quota -> USD for the Key 管理 tab's 额度/已用 columns (W4b). Unlike
+ * formatUsageCostUsd above, a Key's remain_quota/used_quota are typically
+ * whole-dollar-scale (the same integer-quota convention as account balance,
+ * not a single request's sub-cent cost), so this reuses formatBalanceUsd's
+ * plain 2-decimal formatting rather than formatUsageCostUsd's
+ * trailing-zero-trimmed higher precision. quotaPerUnit is guarded the same
+ * way formatUsageCostUsd guards it: unusable (0/NaN/negative/undefined --
+ * the last covers the Key 列表 tab having loaded before the profile tab's
+ * balance request resolves) returns the '—' placeholder rather than a
+ * misleading "$0.00".
+ */
+export function formatKeyQuotaUsd(quota: number, quotaPerUnit: number | undefined): string {
+  if (typeof quotaPerUnit !== 'number' || !Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0) return '—'
+  return formatBalanceUsd(quota, quotaPerUnit)
 }
