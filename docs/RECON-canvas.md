@@ -212,6 +212,9 @@ docker compose up -d     # 注意：这条默认拉 ghcr.io 预构建镜像，�
 
 **决策1（AGPL 冲突）→ 已消解，无需联系作者**：`.codex-plugin/` 是把画布上架到 OpenAI Codex 应用市场的打包清单，与本产品（自建 Electron 桌面白标）无关。集成画布时**直接删除 `plugins/infinite-canvas/.codex-plugin/` 目录**即可，AGPL-3.0 标注随之失效，无需按 AGPL 处理。
 
-**决策2（插件安全模型）→ 选 B：保留 + 中文告知**：保留画布从任意 URL 加载插件的能力，但必须把 `SECURITY.md` 的风险披露（装插件=交出页面内 API Key）翻译成显眼的中文 UI 告知，白标后不能丢这层警告。
-- 实施时机：画布真正集成时（当前仅审计+导航占位，未集成）。
-- 协调者补充建议（待用户集成时确认）：在 B 之上加一层 CSP（`script-src`/`connect-src`）兜底——不砍插件功能，但限制损害范围（现仓库零 CSP，见第 3 节第 5 点）。届时连同中文警告文案一并给用户过目。
+**决策2（插件安全模型）→ 改为：移除联网插件系统（用户改判，2026-08-09）**。不保留"从任意 URL 加载插件"的能力，从源头砍掉 API Key 泄露路径，不做"保留+中文告知"。
+实施口径（画布集成时执行，当前仅审计+占位未集成）：
+- **移除**（安全风险本体）：任意 URL 下载执行机制——`web/src/lib/canvas/plugin-loader.ts` 的 `installPluginFromUrl`/`fetchPluginSource`、用户自填 URL 安装框、`web/src/lib/canvas/plugin-registry.ts` 的 `fetchOfficialPlugins`、远程注册表 `PLUGIN_REGISTRY_URL`/`VITE_PLUGIN_REGISTRY_URL`/`VITE_DEV_PLUGINS`、插件管理弹窗 `canvas-plugin-manager-modal.tsx`。
+- **保留但改为构建期静态打包**（否则画布残废）：6 个内置节点类型（html/markdown/panorama/sticky-note/svg/template，`plugins/canvas/sdk` + 示例）当前是用插件 SDK 实现的，必须静态 bundle 进产物、不走运行时拉取。
+- 连带：`.codex-plugin/` 目录一并删除（决策1）。
+- 净效果：无任何"从外部拉码在 API Key 同源环境执行"的路径；画布基本节点功能不受影响。集成时先由代理核实内置节点与 loader 的耦合度，再给用户确认拆除方案。
