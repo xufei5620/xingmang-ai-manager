@@ -3,10 +3,22 @@ import { providerBaseUrls, providerIds } from './catalog'
 import { defaultRelaySiteId, relaySiteExternalUrls, relaySites, resolveRelaySite } from './relay-sites'
 
 describe('relay site registry', () => {
-  it('ships exactly the one solov site this wave, reusing catalog providerBaseUrls by reference', () => {
-    expect(relaySites).toHaveLength(1)
-    expect(relaySites[0].id).toBe('solov')
-    expect(relaySites[0].providerBaseUrls).toBe(providerBaseUrls)
+  it('ships the solov and sub2api sites, both reusing catalog providerBaseUrls by reference', () => {
+    expect(relaySites).toHaveLength(2)
+    expect(relaySites.map((site) => site.id)).toEqual(['solov', 'sub2api'])
+    for (const site of relaySites) {
+      expect(site.providerBaseUrls).toBe(providerBaseUrls)
+    }
+  })
+
+  it('resolves the sub2api site', () => {
+    expect(resolveRelaySite('sub2api').id).toBe('sub2api')
+  })
+
+  it('gives sub2api a manual-key account backend with no accountBaseUrl', () => {
+    const site = resolveRelaySite('sub2api')
+    expect(site.accountBackend).toBe('manual-key')
+    expect(site.accountBaseUrl).toBeUndefined()
   })
 
   it('defaults to the solov site id', () => {
@@ -42,7 +54,7 @@ describe('relay site registry', () => {
     })
 
     it('falls back to the default site for an unknown id', () => {
-      expect(resolveRelaySite('sub2api-not-shipped-yet').id).toBe(defaultRelaySiteId)
+      expect(resolveRelaySite('not-a-real-site-id').id).toBe(defaultRelaySiteId)
     })
 
     it('falls back to the default site for null', () => {
@@ -60,10 +72,14 @@ describe('relay site registry', () => {
   })
 
   describe('relaySiteExternalUrls', () => {
-    it('matches today\'s hand-maintained main.ts allowlist entries exactly (site portion)', () => {
+    it('matches today\'s hand-maintained main.ts allowlist entries exactly, with no growth from sub2api (I12: same-domain site adds zero new URLs)', () => {
       // Pins the exact set electron/main.ts's externalUrlAllowlist used to
       // hand-type before W2 -- this is the "generation result matches
       // today's site set exactly" acceptance check for the allowlist wiring.
+      // Updated for W3: sub2api ships on the same domain as solov (same
+      // websiteUrl/keysPageUrl strings, no accountBaseUrl of its own), so
+      // this set is unchanged even though relaySites now has two entries --
+      // the dedup in relaySiteExternalUrls is what keeps it that way.
       expect(relaySiteExternalUrls(relaySites)).toEqual([
         'https://api.solov.cc',
         'https://api.solov.cc/keys',

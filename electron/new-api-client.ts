@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
+import { relaySites } from './relay-sites'
 
 // xm.solov.cc runs QuantumNous/new-api (rc.22, custom branch). Every endpoint
 // wraps its payload as { success, message, data } -- confirmed for the CLI
@@ -12,7 +13,14 @@ import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backe
 // Exported so other main-process modules that need this exact host (the
 // canvas window's host bridge injects it as the canvas app's own relay
 // baseUrl -- see canvas-window.ts) never have to duplicate the literal.
-export const defaultBaseUrl = 'https://xm.solov.cc'
+// Derived from the site registry's solov entry (T2 precedent, W3) rather
+// than a duplicated literal: solov is guaranteed to declare accountBaseUrl
+// -- it is the one relay-sites.ts entry with accountBackend: 'new-api' --
+// but the field is typed optional on RelaySite (a manual-key site like
+// sub2api has none), so the `?? ` fallback below exists purely to stay
+// type-safe; it is unreachable in practice.
+export const defaultBaseUrl = relaySites.find((site) => site.id === 'solov')?.accountBaseUrl
+  ?? 'https://xm.solov.cc'
 const defaultTimeoutMs = 10_000
 const defaultMaxResponseBytes = 512 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])

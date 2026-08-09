@@ -1528,8 +1528,16 @@ export function createSystemService(
   const providerRoots = serviceOptions.providerRoots ?? defaultProviderConfigRoots()
   const codexEnv = serviceOptions.codexEnv
     ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
+  // Read fresh at call time (not captured once at service construction) so a
+  // settings change takes effect on the very next inspection without
+  // requiring a service restart -- same reasoning as saveConfig's activeSite
+  // read below.
   const inspectNativeProviderConfig = (provider: ProviderId) =>
-    (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(provider, providerRoots)
+    (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(
+      provider,
+      providerRoots,
+      resolveRelaySite(store.read().relaySiteId).providerBaseUrls,
+    )
   const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
     providerCommandEnvironment(provider, process.env, codexEnv)
   const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand

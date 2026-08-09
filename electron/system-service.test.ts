@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
+import { providerBaseUrls } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import { runCommand, trustedCommandEnvironment, type runCommand as productionRunCommand } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
@@ -299,7 +300,7 @@ describe('createSystemService', () => {
     service.getConfig(false)
     service.inspectCodexReadiness(false)
     expect(service.revealApiKey('codex', false)).toBe('sk-codex')
-    expect(inspect).toHaveBeenCalledWith('codex', providerRoots)
+    expect(inspect).toHaveBeenCalledWith('codex', providerRoots, providerBaseUrls)
 
     expect(providerCommandEnvironment('codex', { HOME: userHome }, codexEnv)).toMatchObject({
       HOME: userHome,

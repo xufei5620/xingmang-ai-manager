@@ -13,9 +13,21 @@
 // toFixed(2) would round almost every row down to a misleading "$0.00"
 // that reads as broken rather than merely small.
 
+import { relaySites } from '../../types'
 import { computeBalanceUsd, formatBalanceUsd } from './account-stub'
 
-const inviteBaseUrl = 'https://xm.solov.cc/register'
+// Derived from the site registry's solov entry rather than duplicated as a
+// literal (T2 precedent, W3): relaySites is a zero-Node-dependency value
+// re-exported all the way from electron/relay-sites.ts through
+// ipc-contract.ts/types.ts (I6), so the renderer can read it directly
+// without a new IPC round trip. solov is guaranteed to declare
+// accountBaseUrl -- it is the one relay-sites.ts entry with
+// accountBackend: 'new-api' -- but the field is typed optional on RelaySite
+// (a manual-key site has none), so the `?? ` fallback below exists purely
+// to stay type-safe; it is unreachable in practice.
+const solovAccountBaseUrl = relaySites.find((site) => site.id === 'solov')?.accountBaseUrl
+  ?? 'https://xm.solov.cc'
+const inviteBaseUrl = `${solovAccountBaseUrl}/register`
 
 // Opens in the system browser (I12, href-exact-match allowlisted in
 // electron/main.ts) -- the desktop session's cookies/access token never
@@ -24,7 +36,7 @@ const inviteBaseUrl = 'https://xm.solov.cc/register'
 // details itself. Shared by the 充值 tab (AccountCenterPage.tsx) and the
 // sidebar's own recharge button (App.tsx) so the two "去充值" entry points
 // can never drift onto different URLs.
-export const WALLET_URL = 'https://xm.solov.cc/wallet'
+export const WALLET_URL = `${solovAccountBaseUrl}/wallet`
 
 /**
  * Builds a shareable invite link from the current user's own affCode.

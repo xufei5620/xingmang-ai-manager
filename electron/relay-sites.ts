@@ -32,10 +32,6 @@ export interface RelaySite {
   accountBaseUrl?: string
 }
 
-// Today's only site. providerBaseUrls is the same object as catalog.ts's
-// export (not a copy) so the two can never drift -- catalog.ts remains the
-// single source of truth for the fixed per-CLI relay URLs (T2's rank-table
-// precedent: derive, never duplicate literals).
 // Non-empty tuple type: resolveRelaySite's "never throws" contract and
 // defaultRelaySiteId's module-load-time [0] access both lean on this array
 // having at least one element, and this module is bundled into BOTH the main
@@ -44,15 +40,30 @@ export interface RelaySite {
 // guarantee. readonly also keeps the renderer-bundle copy from being
 // mutated by accident (display-only there; every security decision reads the
 // main-process copy).
+//
+// solov and sub2api deliberately share the same relay domain (api.solov.cc)
+// and the same providerBaseUrls object (by reference, not a copy) -- per the
+// boss's reconciliation, they are the same relay with two different account
+// models bolted on, not two different relays. catalog.ts remains the single
+// source of truth for the fixed per-CLI relay URLs either way (T2's
+// rank-table precedent: derive, never duplicate literals).
 export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   {
     id: 'solov',
-    label: '星芒官方',
+    label: '星芒·账号站', // 措辞待老板确认
     providerBaseUrls,
     websiteUrl: 'https://api.solov.cc',
     keysPageUrl: 'https://api.solov.cc/keys',
     accountBackend: 'new-api',
     accountBaseUrl: 'https://xm.solov.cc',
+  },
+  {
+    id: 'sub2api',
+    label: '星芒·Key 直连', // 措辞待老板确认
+    providerBaseUrls,
+    websiteUrl: 'https://api.solov.cc',
+    keysPageUrl: 'https://api.solov.cc/keys',
+    accountBackend: 'manual-key',
   },
 ]
 
@@ -80,11 +91,19 @@ export function resolveRelaySite(id: string | null | undefined): RelaySite {
  * equality); kept here as a pure function, rather than inlined in main.ts,
  * so the derivation is unit-testable without importing Electron (main.ts
  * has no test file for exactly that reason -- see CLAUDE.md T-notes).
+ *
+ * Deduplicated via Set: solov and sub2api share the same relay domain, so
+ * their websiteUrl/keysPageUrl are literally identical strings today. The
+ * allowlist is a membership set (I12 checks href full equality against it),
+ * so a duplicate entry would be harmless there -- dedup here is about
+ * keeping this function's own output (and its test's pinned list) minimal
+ * and honest about the *distinct* URL set, not a security requirement.
  */
 export function relaySiteExternalUrls(sites: readonly RelaySite[]): string[] {
-  return sites.flatMap((site) => [
+  const urls = sites.flatMap((site) => [
     site.websiteUrl,
     site.keysPageUrl,
     ...(site.accountBackend === 'new-api' && site.accountBaseUrl ? [`${site.accountBaseUrl}/wallet`] : []),
   ])
+  return [...new Set(urls)]
 }

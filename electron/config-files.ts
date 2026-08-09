@@ -267,6 +267,13 @@ function normalizeUrl(value: string): string {
 export function inspectProviderConfig(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  // The relay base URL this provider is expected to point at, for the
+  // matchesRelay reconciliation below. Defaults to catalog.ts's fixed map
+  // (today's only site) so every existing caller keeps reading exactly what
+  // it read before relay-sites.ts existed; a caller that knows the user's
+  // active site passes its RelaySite.providerBaseUrls (see system-service.ts's
+  // inspectNativeProviderConfig).
+  siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
 ): NativeConfigInspection {
   const roots = normalizeProviderConfigRoots(rootsInput)
   const providerRoot = providerConfigRoot(provider, roots)
@@ -292,7 +299,7 @@ export function inspectProviderConfig(
   const apiKey = readProviderApiKey(provider, paths)
   const model = readProviderModel(provider, paths)
   const actualBaseUrl = readProviderBaseUrl(provider, paths)
-  const baseUrl = providerBaseUrls[provider]
+  const baseUrl = siteBaseUrlsInput[provider]
   return {
     baseUrl,
     actualBaseUrl,
@@ -859,10 +866,15 @@ export function saveProviderConfig(
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   hooks: NativeConfigWriteHooks = {},
   // The relay base URL(s) written into the freshly-created/merged config.
-  // Defaults to catalog.ts's fixed map (today's only site) so every existing
-  // caller keeps writing exactly what it wrote before relay-sites.ts existed;
-  // a caller that knows the user's active site passes its RelaySite.providerBaseUrls.
-  siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
+  // No default (unlike inspectProviderConfig's read-side counterpart above):
+  // this is what actually lands in the user's CLI config file, so a caller
+  // that forgets to pass the active site's RelaySite.providerBaseUrls must
+  // fail to compile rather than silently writing the default site's URLs.
+  // Every real call site knows its active site (system-service.ts resolves
+  // it from AppSettings.relaySiteId); pass catalog.ts's providerBaseUrls
+  // explicitly only where "today's only site" is genuinely the right answer
+  // (tests fixed to a single site).
+  siteBaseUrlsInput: Record<ProviderId, string>,
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
