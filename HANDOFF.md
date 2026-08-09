@@ -18,9 +18,8 @@
 
 ## ② 从这里继续(断点)
 
-- **当前进行中**:W2(站点注册表 + base URL 解耦)已派 Sonnet 子代理后台执行。
-  接手判定:`git status` 有未提交的 `electron/relay-sites.ts` 等改动 = W2 产物,审查(重点 I10 站点 URL https 校验、I12 白名单 href 全等)后过门槛提交;工作树干净且无该文件 = W2 未落地,按 `a5cb90e`(W1)的同款纪律重派。
-- **W2 之后顺序**:Opus 对抗审查 W2 → 提交推送 → **W3**(relay-sites 加 sub2api 条目 + 粘贴 Key 流 + 设置页站点下拉 + 账号区按 capability 降级)→ **D 批次3 两安全项**(#16 Codex 归档硬链接死锁、#17 发布门禁 fail-open→fail-closed)→ **② 仓库整理**(文档校准/杂物归位/.gitignore 查漏/死分支清单)→ **③ 持续发现-修复**(代码缺陷 + 功能/设计问题都在范围;每个候选先对抗验证再动手;连续两轮无可行动项 → 拉长巡检间隔)。
+- **当前进行中**:W2 已提交(见③栏),Opus 对抗审查已派出/待派——审点:I10(站点 URL https)、I12(白名单派生与旧手写集合全等)、I6(relaySites 值导出链)。有发现即追加修复提交。
+- **之后顺序**:**W3**(relay-sites 加 sub2api 条目 + 粘贴 Key 流 + 设置页站点下拉 + 账号区按 capability 降级;⚠️ W3 必做:`inspectProviderConfig` 读侧对账切到活动站点,并同步更新 `system-service.test.ts:302` 那条 2 参断言——W2 因"不动既有断言"红线刻意缓切,单站点下值相同无行为差)→ **D 批次3 两安全项**(#16 Codex 归档硬链接死锁、#17 发布门禁 fail-open→fail-closed)→ **② 仓库整理**(文档校准/杂物归位/.gitignore 查漏/死分支清单)→ **③ 持续发现-修复**(代码缺陷 + 功能/设计问题都在范围;每个候选先对抗验证再动手;连续两轮无可行动项 → 拉长巡检间隔)。
 - **W3 关键事实(已侦察定案)**:sub2api = Wei-Shaw/sub2api(Go+Vue3);用户侧 Key 页路由 **`/keys`**(frontend/src/router,requiresAuth 非管理员)→ 精确 href `https://api.solov.cc/keys` **已在白名单**(main.ts:73),零白名单改动。sub2api 站点:providerBaseUrls 复用 catalog 形状(含 grok `/v1`)、accountBackend='manual-key'、无账号登录,粘贴 Key 优先复用既有配置写入链(I9),**尽量零新增 IPC 通道**(T1)。
 - **轮询协议**:长心跳(约 30 分钟);429/额度类错误不退出循环,退避并加长间隔;接近会话硬上限 → 立即把已完成的推上去、更新本报告顶部再收尾。模型分工:Fable 只规划/拍板/综合审,实现派 Sonnet,安全审查派 Opus。
 - **红线(老板原话不可越)**:不推/不合 main、不强推、不删分支、不开 PR、不发 release、不动生产站点、不违反 CLAUDE.md 第 8 节、测试绝不触生产 xm/api.solov.cc;素材/定价/命名/删除类/真机验证类一律进上面第①栏。
@@ -29,7 +28,8 @@
 
 | 提交 | 内容 | 门槛 |
 |---|---|---|
-| (本次) | HANDOFF 重写为滚动报告;修正 CANVAS-INTEGRATION-PLAN 过期条目;sub2api /keys 路由侦察定案 | 文档波,typecheck 0 错复核 |
+| (本次) | **双后端 W2**:relay-sites.ts 站点注册表(零依赖,solov 单条目)+ AppSettings.relaySiteId(坏值降级默认)+ 8 处硬编码消费点切站点解析(配置写入/模型列表/诊断探测/白名单派生/渲染层三链接)+ 契约值 re-export(providerIds 先例)。e2e 零改动=默认行为不变的验收 | tc 0 错;vitest 1299/0 失败(基线+16);compile 过(I6 无 node 依赖入渲染包) |
+| `9a2a261` | HANDOFF 重写为滚动报告;修正 CANVAS-INTEGRATION-PLAN 过期条目;sub2api /keys 路由侦察定案 | 文档波,typecheck 0 错复核 |
 | `a5cb90e` | **双后端 W1**:RelayBackendClient 接口(17 方法各注消费点)+ 能力声明;new-api 挪到接口后,零行为变化;契约/preload 零 diff | tc 0 错;vitest 1283/0 失败(基线+5) |
 | `7793d9a` | CLAUDE.md 全面校准到集成后实态(86 通道/新模块地图/I15/T12/T13),行号逐个复核 | tc 0 错;vitest 1278/0 失败 |
 | `15f898f` | `npm run dev` 竞态修复:predev 先全量编译主进程(scripts/prebuild-electron-dev.mjs);类型错不阻断 dev 实测过 | tc 0 错;vitest 1278/0;scripts 77/77 |

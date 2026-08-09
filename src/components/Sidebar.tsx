@@ -16,7 +16,7 @@ import {
 import logoUrl from '../../assets/icon.png'
 import logoWhiteUrl from '../../assets/icon-white.png'
 import { navigationItems, type NavigationGroup, type PageId } from '../navigation'
-import type { UpdateSnapshot } from '../types'
+import type { RelaySite, UpdateSnapshot } from '../types'
 import { AccountArea } from './account/AccountArea'
 import type { AccountAreaStatus, AccountSnapshot } from './account/account-stub'
 
@@ -25,6 +25,7 @@ interface SidebarProps {
   collapsed: boolean
   theme: 'light' | 'dark'
   updateState: UpdateSnapshot | null
+  relaySite: RelaySite
   /** Whether the "更多" group is expanded (persisted to app-settings by the caller). */
   moreExpanded: boolean
   accountStatus: AccountAreaStatus
@@ -66,6 +67,7 @@ export function Sidebar({
   collapsed,
   theme,
   updateState,
+  relaySite,
   moreExpanded,
   accountStatus,
   accountSnapshot,
@@ -201,12 +203,12 @@ export function Sidebar({
           className="official-site-button"
           type="button"
           data-sidebar-tooltip="官方网站"
-          onClick={() => void window.xingmang.openExternal('https://api.solov.cc')}
+          onClick={() => void window.xingmang.openExternal(relaySite.websiteUrl)}
         >
           <span className="official-site-icon"><Globe2 size={17} /></span>
           <span className="official-site-copy">
             <strong>官方网站</strong>
-            <small>api.solov.cc</small>
+            <small>{relaySite.websiteUrl.replace(/^https:\/\//, '')}</small>
           </span>
           <ExternalLink size={13} className="official-site-external" />
         </button>

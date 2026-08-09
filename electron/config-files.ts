@@ -380,6 +380,7 @@ function createPlans(
   apiKey: string,
   model: string,
   roots: ProviderConfigRoots,
+  siteBaseUrls: Record<ProviderId, string>,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
@@ -400,7 +401,7 @@ function createPlans(
             '',
             `[model_providers.${providerKey}]`,
             `name = ${tomlString(providerName)}`,
-            `base_url = ${tomlString(providerBaseUrls.codex)}`,
+            `base_url = ${tomlString(siteBaseUrls.codex)}`,
             'wire_api = "responses"',
             'requires_openai_auth = true',
             '',
@@ -421,7 +422,7 @@ function createPlans(
         content: jsonContent({
           env: {
             ANTHROPIC_AUTH_TOKEN: apiKey,
-            ANTHROPIC_BASE_URL: providerBaseUrls.claude,
+            ANTHROPIC_BASE_URL: siteBaseUrls.claude,
           },
           permissions: { defaultMode: 'bypassPermissions' },
           model,
@@ -441,7 +442,7 @@ function createPlans(
         {
           path: paths[1],
           content: [
-            `GOOGLE_GEMINI_BASE_URL=${providerBaseUrls.gemini}`,
+            `GOOGLE_GEMINI_BASE_URL=${siteBaseUrls.gemini}`,
             `GEMINI_API_KEY=${apiKey}`,
             `GEMINI_MODEL=${model}`,
             '',
@@ -458,7 +459,7 @@ function createPlans(
           '',
           '[model."grok"]',
           `model = ${tomlString(model)}`,
-          `base_url = ${tomlString(providerBaseUrls.grok)}`,
+          `base_url = ${tomlString(siteBaseUrls.grok)}`,
           `name = ${tomlString(model)}`,
           `api_key = ${tomlString(apiKey)}`,
           'api_backend = "responses"',
@@ -475,10 +476,11 @@ function createMergePlans(
   apiKey: string,
   model: string,
   roots: ProviderConfigRoots,
+  siteBaseUrls: Record<ProviderId, string>,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   const initialPlans = new Map(
-    createPlans(provider, apiKey, model, roots).map((plan) => [plan.path, plan]),
+    createPlans(provider, apiKey, model, roots, siteBaseUrls).map((plan) => [plan.path, plan]),
   )
   const initial = (filePath: string): FilePlan => {
     const plan = initialPlans.get(filePath)
@@ -856,6 +858,11 @@ export function saveProviderConfig(
   mode: NativeConfigSaveMode,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   hooks: NativeConfigWriteHooks = {},
+  // The relay base URL(s) written into the freshly-created/merged config.
+  // Defaults to catalog.ts's fixed map (today's only site) so every existing
+  // caller keeps writing exactly what it wrote before relay-sites.ts existed;
+  // a caller that knows the user's active site passes its RelaySite.providerBaseUrls.
+  siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
 ): NativeConfigSaveResult {
   const apiKey = apiKeyInput.trim()
   const model = modelInput.trim()
@@ -870,8 +877,8 @@ export function saveProviderConfig(
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
   const plans = mode === 'merge'
-    ? createMergePlans(provider, apiKey, model, roots)
-    : createPlans(provider, apiKey, model, roots)
+    ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput)
+    : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput)
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')

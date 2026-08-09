@@ -3,6 +3,7 @@ import { promises as fsPromises } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { relaySites } from './relay-sites'
 import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
@@ -20,6 +21,15 @@ export interface AppSettings {
   runDiagnosticsOnStartup: boolean
   /** Whether the sidebar's collapsible "更多" group is expanded. Absent = collapsed (pre-#67 behavior). */
   sidebarMoreExpanded?: boolean
+  /**
+   * Which relay-sites.ts RelaySite the CLIs should be configured against.
+   * Absent = the default site (today's only site, so this is the entire
+   * install base's behavior pre-W2). Consumers must resolve this through
+   * resolveRelaySite(), never index relaySites directly, so an id from a
+   * newer version that removed a site degrades to the default instead of
+   * crashing.
+   */
+  relaySiteId?: string
 }
 
 interface LegacyAppSettings {
@@ -58,6 +68,17 @@ function parseTheme(value: unknown): AppTheme {
   return value === 'light' || value === 'dark' ? value : 'dark'
 }
 
+// A stale/unknown id (a downgrade after a site was removed upstream, or a
+// hand-edited settings.json) degrades to "absent" here rather than being
+// stored as-is -- resolveRelaySite() would fall back to the default site
+// either way, but filtering here keeps the persisted file itself honest
+// about which site it actually names.
+function parseRelaySiteId(value: unknown): string | undefined {
+  return typeof value === 'string' && relaySites.some((site) => site.id === value)
+    ? value
+    : undefined
+}
+
 function requireWorkspace(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('settings.workspace 必须是非空字符串')
@@ -92,6 +113,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // A malformed value degrades to "collapsed" (the pre-#67 default) rather
     // than failing the whole read, matching every other optional field here.
     ...(optionalBoolean(value.sidebarMoreExpanded, false) ? { sidebarMoreExpanded: true as const } : {}),
+    ...(parseRelaySiteId(value.relaySiteId) ? { relaySiteId: parseRelaySiteId(value.relaySiteId) } : {}),
   }
 }
 

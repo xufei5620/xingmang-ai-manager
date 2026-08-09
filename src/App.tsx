@@ -73,6 +73,7 @@ import { SkillsPage, type SkillImportRequest } from './pages/SkillsPage'
 import { UpdatePage } from './pages/UpdatePage'
 import {
   providerIds,
+  resolveRelaySite,
   type AccountBalance,
   type AccountProfile,
   type AccountSessionState,
@@ -201,6 +202,16 @@ function App() {
     settings.checkUpdatesOnStartup,
     settings.runDiagnosticsOnStartup,
   ])
+  // No site-switcher UI yet (W2 only lays the pipeline) -- settings.relaySiteId
+  // is always undefined in production today, so this always resolves to the
+  // default site. Resolving through settings here (rather than hardcoding
+  // the default site in each consumer) is what makes a future switcher a
+  // pure addition instead of another round of touching Sidebar/ConfigDialog/
+  // CodexOnboarding.
+  const activeRelaySite = useMemo(
+    () => resolveRelaySite(settings.relaySiteId),
+    [settings.relaySiteId],
+  )
   const presentation = useMemo(
     () => platformPresentation(platformCapabilities),
     [platformCapabilities],
@@ -1309,6 +1320,7 @@ function App() {
       <AppFrame theme={theme} platform={platformCapabilities}>
       <CodexOnboarding
         initialConfig={config}
+        relaySite={activeRelaySite}
         theme={theme}
         onToggleTheme={() => {
           const next = theme === 'light' ? 'dark' : 'light'
@@ -1353,6 +1365,7 @@ function App() {
         collapsed={sidebarCollapsed}
         theme={theme}
         updateState={updateState}
+        relaySite={activeRelaySite}
         moreExpanded={Boolean(settings.sidebarMoreExpanded)}
         onNavigate={handleNavigate}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
@@ -1558,6 +1571,7 @@ function App() {
           activeTab={activeConfigTab}
           config={config}
           snapshot={snapshot}
+          relaySite={activeRelaySite}
           onConfigChange={setConfig}
           onClose={() => setConfigOpen(false)}
           notify={setToast}

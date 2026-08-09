@@ -13,6 +13,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
+import { resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
@@ -68,6 +69,8 @@ export interface DiagnosticsDependencies {
   inspectTool?: (tool: DiagnosticToolId, signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectCodexDesktop?: (signal: AbortSignal) => Promise<DiagnosticToolStatus>
   inspectProvider?: (provider: ProviderId, roots: ProviderConfigRoots) => NativeConfigInspection
+  /** Which relay site's connectivity to probe (XINGMANG_NETWORK). Defaults to the default site. */
+  relaySite?: RelaySite
   fetch?: typeof globalThis.fetch
   clashConfigPaths?: readonly string[]
   inspectProxyVariables?: (signal: AbortSignal) => Promise<ProxyVariableSummary[]>
@@ -644,6 +647,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
   const timeoutMs = dependencies.timeoutMs ?? DEFAULT_CHECK_TIMEOUT_MS
   const inspectProvider = dependencies.inspectProvider
     ?? ((provider, roots) => inspectProviderConfig(provider, roots))
+  const relaySite = dependencies.relaySite ?? resolveRelaySite(undefined)
   const providerInspections = new Map<ProviderId, NativeConfigInspection>()
   const knownSecrets: string[] = []
   for (const provider of providerIds) {
@@ -781,7 +785,8 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '星芒 AI 网络',
       run: async (signal) => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
-        const response = await fetchImpl('https://api.solov.cc/', {
+        const endpoint = `${relaySite.websiteUrl}/`
+        const response = await fetchImpl(endpoint, {
           method: 'HEAD',
           redirect: 'error',
           signal,
@@ -791,7 +796,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
         return {
           state: 'pass',
           summary: `已连通（HTTP ${response.status}）`,
-          details: { endpoint: 'https://api.solov.cc/', status: response.status },
+          details: { endpoint, status: response.status },
         }
       },
     },

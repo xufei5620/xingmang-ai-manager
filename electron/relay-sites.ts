@@ -1,0 +1,82 @@
+// Zero Node dependency, same as catalog.ts -- this file is imported into the
+// renderer bundle via ipc-contract.ts's value re-export (I6). Pulling in any
+// node:* module here would make Vite try to bundle it for the browser and
+// fail the build (or worse, leak main-process code into the renderer).
+//
+// A "relay site" is a CLI-facing AI-API-proxy endpoint: it owns the base
+// URLs the four CLIs are pointed at, plus the marketing/keys pages a user is
+// sent to from the app. This is a distinct axis from RelayBackendClient
+// (relay-backend.ts), which is the *account* backend (login/balance/key
+// management) a site delegates to -- accountBackend/accountBaseUrl below
+// name which one, but the actual account API calls still go through
+// new-api-client.ts today. A site can in principle have CLI base URLs
+// without any account backend at all (accountBackend: 'manual-key' is the
+// W3 placeholder for a sub2api-style site where users paste in their own
+// key rather than logging in through this app).
+import { providerBaseUrls, type ProviderId } from './catalog'
+
+export interface RelaySite {
+  /** Stable identifier persisted in AppSettings.relaySiteId. Never reused for a different site. */
+  id: string
+  /** Chinese display name shown in any future site picker. */
+  label: string
+  /** Per-CLI relay base URL, written into each provider's native config file. */
+  providerBaseUrls: Record<ProviderId, string>
+  /** Marketing/home page opened from "官方网站"-style buttons. */
+  websiteUrl: string
+  /** Page a user is sent to in order to obtain/manage an API key. */
+  keysPageUrl: string
+  /** Which account backend (if any) this site's login/balance/key-management UI talks to. */
+  accountBackend: 'new-api' | 'manual-key'
+  /** Only present when accountBackend is 'new-api' -- the new-api-client.ts origin for this site. */
+  accountBaseUrl?: string
+}
+
+// Today's only site. providerBaseUrls is the same object as catalog.ts's
+// export (not a copy) so the two can never drift -- catalog.ts remains the
+// single source of truth for the fixed per-CLI relay URLs (T2's rank-table
+// precedent: derive, never duplicate literals).
+export const relaySites: RelaySite[] = [
+  {
+    id: 'solov',
+    label: '星芒官方',
+    providerBaseUrls,
+    websiteUrl: 'https://api.solov.cc',
+    keysPageUrl: 'https://api.solov.cc/keys',
+    accountBackend: 'new-api',
+    accountBaseUrl: 'https://xm.solov.cc',
+  },
+]
+
+export const defaultRelaySiteId: string = relaySites[0].id
+
+/**
+ * Resolves a persisted site id to its RelaySite, always falling back to the
+ * default site for anything unrecognized -- including null/undefined (no
+ * site chosen yet) and a stale id from a settings file written by a future
+ * version that removed a site. A settings file must never be able to make
+ * the app fail to start, so this never throws.
+ */
+export function resolveRelaySite(id: string | null | undefined): RelaySite {
+  if (typeof id === 'string') {
+    const found = relaySites.find((site) => site.id === id)
+    if (found) return found
+  }
+  return relaySites[0]
+}
+
+/**
+ * External URLs a relay site's own UI buttons open: the marketing site, the
+ * keys page, and -- for a new-api backed site -- the wallet/recharge page.
+ * main.ts folds this into its `externalUrlAllowlist` (I12, href full
+ * equality); kept here as a pure function, rather than inlined in main.ts,
+ * so the derivation is unit-testable without importing Electron (main.ts
+ * has no test file for exactly that reason -- see CLAUDE.md T-notes).
+ */
+export function relaySiteExternalUrls(sites: readonly RelaySite[]): string[] {
+  return sites.flatMap((site) => [
+    site.websiteUrl,
+    site.keysPageUrl,
+    ...(site.accountBackend === 'new-api' && site.accountBaseUrl ? [`${site.accountBaseUrl}/wallet`] : []),
+  ])
+}

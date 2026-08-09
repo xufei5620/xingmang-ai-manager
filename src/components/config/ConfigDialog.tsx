@@ -23,6 +23,7 @@ import type {
   AppConfigSummary,
   ConfigSaveMode,
   PlatformCapabilities,
+  RelaySite,
   SystemSnapshot,
 } from '../../types'
 import { DialogBackdrop } from '../Dialog'
@@ -34,6 +35,7 @@ export function ConfigDialog({
   activeTab,
   config,
   snapshot,
+  relaySite,
   onConfigChange,
   onClose,
   notify,
@@ -43,6 +45,7 @@ export function ConfigDialog({
   activeTab: ConfigTabId
   config: AppConfigSummary | null
   snapshot: SystemSnapshot
+  relaySite: RelaySite
   onConfigChange: (config: AppConfigSummary) => void
   onClose: () => void
   notify: (toast: { type: 'success' | 'error'; message: string }) => void
@@ -270,7 +273,7 @@ export function ConfigDialog({
               <button
                 type="button"
                 className="key-link-button"
-                onClick={() => void window.xingmang.openExternal('https://api.solov.cc/keys')}
+                onClick={() => void window.xingmang.openExternal(relaySite.keysPageUrl)}
               >
                 没有 Key？前往生成
                 <ExternalLink size={13} />

@@ -67,6 +67,7 @@ import { fetchGrokStableVersion } from './grok-update'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
+import { resolveRelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -2783,7 +2784,8 @@ export function createSystemService(
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
     try {
-      const response = await fetch('https://api.solov.cc/v1/models', {
+      const activeSite = resolveRelaySite(store.read().relaySiteId)
+      const response = await fetch(`${activeSite.websiteUrl}/v1/models`, {
         headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
         redirect: 'error',
         signal: controller.signal,
@@ -2874,7 +2876,19 @@ export function createSystemService(
       throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
     }
     if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
-    return saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots)
+    // Read fresh at write time (not captured at service-construction time) so
+    // a settings change takes effect on the very next save without requiring
+    // a service restart.
+    const activeSite = resolveRelaySite(store.read().relaySiteId)
+    return saveProviderConfig(
+      payload.provider,
+      apiKey,
+      payload.model,
+      payload.mode,
+      providerRoots,
+      {},
+      activeSite.providerBaseUrls,
+    )
   }
 
   return {

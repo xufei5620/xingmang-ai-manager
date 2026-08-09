@@ -40,6 +40,7 @@ import type {
   InstallProgress,
   NodeRuntimeInstallProgress,
   PlatformCapabilities,
+  RelaySite,
 } from '../../types'
 import { NodeInstallGuide } from './NodeInstallGuide'
 import { OnboardingStep } from './OnboardingStep'
@@ -49,6 +50,7 @@ type SetupAction = OnboardingSetupAction
 
 export function CodexOnboarding({
   initialConfig,
+  relaySite,
   theme,
   onToggleTheme,
   onConfigChange,
@@ -58,6 +60,7 @@ export function CodexOnboarding({
   platform,
 }: {
   initialConfig: AppConfigSummary | null
+  relaySite: RelaySite
   theme: ThemeMode
   onToggleTheme: () => void
   onConfigChange: (config: AppConfigSummary) => void
@@ -332,7 +335,7 @@ export function CodexOnboarding({
                   <button
                     type="button"
                     className="key-link-button"
-                    onClick={() => void window.xingmang.openExternal('https://api.solov.cc/keys')}
+                    onClick={() => void window.xingmang.openExternal(relaySite.keysPageUrl)}
                   >
                     没有授权码？前往获取
                     <ExternalLink size={13} />

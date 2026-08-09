@@ -96,8 +96,12 @@ import type {
 } from './new-api-client'
 
 export { providerIds } from './catalog'
+// Zero-Node-dependency value export, same precedent as providerIds above
+// (I6) -- relay-sites.ts only imports from catalog.ts, itself zero-dep.
+export { defaultRelaySiteId, relaySites, resolveRelaySite } from './relay-sites'
 
 export type ProviderId = CatalogProviderId
+export type { RelaySite } from './relay-sites'
 export type ConfigSaveMode = NativeConfigSaveMode
 export type CodexDesktopLaunchMode = MainCodexDesktopLaunchMode
 export type AppWindowMode = 'onboarding' | 'dashboard'

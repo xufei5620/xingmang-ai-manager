@@ -31,6 +31,7 @@ import { RuntimeLogStore } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
+import { relaySiteExternalUrls, relaySites, resolveRelaySite } from './relay-sites'
 import {
   createDiagnosticsExport,
   runDiagnostics,
@@ -67,25 +68,31 @@ const applicationPackage = require('../package.json') as {
   xingmangLocalBuild?: unknown
 }
 
-const externalUrlAllowlist = [
+const nonSiteExternalUrlAllowlist = [
   'https://nodejs.org/',
   'https://www.python.org/downloads/',
-  'https://api.solov.cc',
-  'https://api.solov.cc/keys',
-  // Account-center (W4a) "去充值" button. Confirmed by reading
-  // QuantumNous/new-api's own web frontend route file directly --
-  // web/src/routes/_authenticated/wallet/index.tsx's
-  // `createFileRoute('/_authenticated/wallet/')` -- at both the `main`
-  // branch and the exact v1.0.0-rc.22/v1.0.0-rc.24 tags (byte-identical
-  // across all three, the latter two bracketing xm.solov.cc's own pinned
-  // version). `_authenticated` is a pathless TanStack Router layout segment,
-  // so the real URL is bare `/wallet`, not `/console/wallet` as an older
-  // new-api frontend generation used. href must equal this exactly (I12) --
-  // no trailing slash, no query string.
-  'https://xm.solov.cc/wallet',
   'https://s4621e8xzb.feishu.cn/wiki/XLDLwdXDli3fj9kyMvsc5Qldnie?from=from_copylink',
   'https://chatgpt.com/download/',
   'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
+] as const
+
+// Every relay site's own destinations (CLI-key marketing/keys pages, and --
+// for a new-api backed site -- the account-center (W4a) "去充值" button),
+// derived via relay-sites.ts's relaySiteExternalUrls rather than hand-typed
+// here so this can never drift from the site registry. href must equal
+// these exactly (I12).
+//
+// The wallet URL's shape (bare `/wallet`, not `/console/wallet`) was
+// confirmed by reading QuantumNous/new-api's own web frontend route file
+// directly -- web/src/routes/_authenticated/wallet/index.tsx's
+// `createFileRoute('/_authenticated/wallet/')` -- at both the `main` branch
+// and the exact v1.0.0-rc.22/v1.0.0-rc.24 tags (byte-identical across all
+// three, the latter two bracketing xm.solov.cc's own pinned version).
+// `_authenticated` is a pathless TanStack Router layout segment, so the real
+// URL is bare `/wallet`. No trailing slash, no query string.
+const externalUrlAllowlist = [
+  ...nonSiteExternalUrlAllowlist,
+  ...relaySiteExternalUrls(relaySites),
 ] as const
 
 // The infinite-canvas build's own two runtime-visible external destinations
@@ -470,6 +477,9 @@ if (!hasSingleInstanceLock) {
             packaged: app.isPackaged,
           },
           inspectCodexDesktop: async () => systemService.inspectCodexDesktop(),
+          // Read fresh on every run rather than captured once at startup, so
+          // a settings change is reflected on the very next diagnostics run.
+          relaySite: resolveRelaySite(systemService.readStoredConfig().relaySiteId),
         })
         return latestDiagnostics
       },

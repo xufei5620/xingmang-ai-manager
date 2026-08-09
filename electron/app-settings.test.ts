@@ -91,6 +91,48 @@ describe('application settings persistence', () => {
     expect(result.workspace).toBe('D:\\Workspace')
   })
 
+  it('round-trips an explicit relaySiteId through a write and a read', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ relaySiteId: 'solov' }))
+
+    expect(readAppSettings(filePath).relaySiteId).toBe('solov')
+  })
+
+  it('leaves relaySiteId absent when never set, matching pre-W2 behavior', () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath, 'D:\\Workspace').relaySiteId).toBeUndefined()
+  })
+
+  it('degrades an unknown relaySiteId to absent instead of failing the read', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      workspace: 'D:\\Workspace',
+      theme: 'dark',
+      checkUpdatesOnStartup: true,
+      runDiagnosticsOnStartup: false,
+      relaySiteId: 'sub2api-not-shipped-yet',
+    }), 'utf8')
+
+    const result = readAppSettings(filePath)
+    expect(result.relaySiteId).toBeUndefined()
+    expect(result.workspace).toBe('D:\\Workspace')
+  })
+
+  it('degrades a non-string relaySiteId to absent instead of failing the read', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      workspace: 'D:\\Workspace',
+      theme: 'dark',
+      checkUpdatesOnStartup: true,
+      runDiagnosticsOnStartup: false,
+      relaySiteId: 42,
+    }), 'utf8')
+
+    expect(readAppSettings(filePath).relaySiteId).toBeUndefined()
+  })
+
   it('falls back to the last known-good backup when primary settings are damaged', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, '{not-json', 'utf8')
