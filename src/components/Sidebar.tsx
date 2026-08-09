@@ -12,12 +12,13 @@ import {
   MoreHorizontal,
   RotateCw,
   Sun,
-  UserRound,
 } from 'lucide-react'
 import logoUrl from '../../assets/icon.png'
 import logoWhiteUrl from '../../assets/icon-white.png'
 import { navigationItems, type NavigationGroup, type PageId } from '../navigation'
 import type { UpdateSnapshot } from '../types'
+import { AccountArea } from './account/AccountArea'
+import type { AccountAreaStatus, AccountSnapshot } from './account/account-stub'
 
 interface SidebarProps {
   activePage: PageId
@@ -26,11 +27,14 @@ interface SidebarProps {
   updateState: UpdateSnapshot | null
   /** Whether the "更多" group is expanded (persisted to app-settings by the caller). */
   moreExpanded: boolean
+  accountStatus: AccountAreaStatus
+  accountSnapshot: AccountSnapshot
   onNavigate: (pageId: PageId) => void
   onToggleCollapsed: () => void
   onToggleTheme: () => void
   onToggleMoreExpanded: () => void
-  onAccountClick: () => void
+  onAccountLogin: () => void
+  onRecharge: () => void
 }
 
 export function ThemeToggle({
@@ -60,11 +64,14 @@ export function Sidebar({
   theme,
   updateState,
   moreExpanded,
+  accountStatus,
+  accountSnapshot,
   onNavigate,
   onToggleCollapsed,
   onToggleTheme,
   onToggleMoreExpanded,
-  onAccountClick,
+  onAccountLogin,
+  onRecharge,
 }: SidebarProps) {
   const updatePhase = updateState?.phase
   const showUpdate = updatePhase === 'available'
@@ -159,18 +166,12 @@ export function Sidebar({
       </nav>
 
       <div className="sidebar-bottom">
-        <button
-          type="button"
-          className="account-area"
-          data-sidebar-tooltip="登录 / 注册"
-          onClick={onAccountClick}
-        >
-          <span className="account-avatar" aria-hidden="true"><UserRound size={18} /></span>
-          <span className="account-copy">
-            <strong>登录 / 注册</strong>
-            <small>登录后查看余额与充值</small>
-          </span>
-        </button>
+        <AccountArea
+          status={accountStatus}
+          snapshot={accountSnapshot}
+          onLogin={onAccountLogin}
+          onRecharge={onRecharge}
+        />
         <button
           className="official-site-button tutorial-docs-button"
           type="button"

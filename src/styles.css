@@ -1557,6 +1557,70 @@ input:focus-visible {
   white-space: nowrap;
 }
 
+.account-balance {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-4);
+}
+
+.account-balance-warning {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-semibold-plus);
+}
+
+.account-recharge-button {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-9);
+  width: 100%;
+  min-height: 44px;
+  padding: 6px 9px;
+  color: var(--text-primary);
+  background: var(--surface-adaptive);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-7);
+  cursor: pointer;
+  text-align: left;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold-plus);
+  transition: background-color var(--duration-150) var(--ease-standard), border-color var(--duration-150) var(--ease-standard), box-shadow var(--duration-150) var(--ease-standard);
+}
+
+.account-recharge-button:hover {
+  background: var(--surface-adaptive-hover);
+  border-color: var(--border-strong);
+}
+
+.account-recharge-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  color: var(--color-accent-text);
+  background: var(--surface-info-soft);
+  border-radius: var(--radius-6);
+}
+
+/* Balance-warning treatment ("充值高亮") — background/border need an explicit
+   dark redefinition below because --surface-danger-soft is a Layer-1
+   primitive (light-only); --color-danger is a Layer-2 alias and already
+   flips on its own, so the text/icon colors need no dark override. */
+.account-recharge-button.low-balance {
+  color: var(--color-danger);
+  background: var(--surface-danger-soft);
+  border-color: color-mix(in srgb, var(--color-danger) 32%, transparent);
+}
+
+.account-recharge-button.low-balance:hover {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-danger) 18%, transparent);
+}
+
+.account-recharge-button.low-balance .account-recharge-icon {
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 18%, transparent);
+}
+
 .sidebar-controls {
   display: grid;
   gap: var(--space-3);
@@ -3287,6 +3351,16 @@ button:disabled {
   color: #b25d45;
 }
 
+/* --color-danger is a Layer-2 alias (flips with [data-theme="dark"] on its
+   own), so this needs no separate dark-mode rule. */
+.field-error {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--color-danger);
+  font-size: var(--text-xs);
+  line-height: 1.4;
+}
+
 .field input,
 .field select {
   width: 100%;
@@ -3326,6 +3400,17 @@ button:disabled {
 
 .detect-models-button {
   height: 41px;
+}
+
+.account-code-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-9);
+}
+
+.account-code-button {
+  height: 41px;
+  white-space: nowrap;
 }
 
 .field input::placeholder {
@@ -3674,6 +3759,13 @@ button:disabled {
   padding: var(--space-4);
 }
 
+/* Collapsed sidebar shows the account area as avatar + tooltip only — the
+   recharge row has nowhere to put a label, so it hides entirely rather than
+   collapsing to an ambiguous icon-only button. */
+.sidebar-collapsed .account-recharge-button {
+  display: none;
+}
+
 .sidebar-collapsed .sidebar-bottom {
   gap: var(--space-5);
 }
@@ -3951,6 +4043,11 @@ button:disabled {
   color: var(--dark-color-danger-text);
   background: var(--dark-surface-danger-soft);
   border-color: #604044;
+}
+
+:root[data-theme="dark"] .account-recharge-button.low-balance {
+  background: var(--dark-surface-danger-soft);
+  border-color: var(--dark-border-danger);
 }
 
 :root[data-theme="dark"] .primary-button.launch-button {
@@ -5083,6 +5180,30 @@ button:disabled {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: var(--space-12);
+}
+
+/* --color-accent-text/-hover read fine unmodified on the dark panel
+   background (same treatment as .welcome-nav-login:hover), so no dark
+   override is needed here. */
+.account-dialog-switch {
+  margin: var(--space-4) 0 0;
+  color: var(--text-muted);
+  font-size: var(--text-sm);
+}
+
+.account-dialog-switch button {
+  margin-left: var(--space-4);
+  color: var(--color-accent-text);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.account-dialog-switch button:hover {
+  color: var(--color-accent-hover);
+  text-decoration: underline;
 }
 
 .field textarea {

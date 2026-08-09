@@ -1,6 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { CircleDot, X } from 'lucide-react'
 import { AppFrame } from './components/AppFrame'
+import { LoginDialog } from './components/account/LoginDialog'
+import { RegisterDialog } from './components/account/RegisterDialog'
+import {
+  resolveAccountAreaStatus,
+  resolveAccountSnapshotFromSearch,
+  type AccountSnapshot,
+} from './components/account/account-stub'
 import {
   codexDesktopInstallActive,
   codexDesktopLaunchDecision,
@@ -103,6 +110,11 @@ function App() {
   const [nodeRuntimeInstalling, setNodeRuntimeInstalling] = useState(false)
   const [nodeRuntimeInstallProgress, setNodeRuntimeInstallProgress] = useState<NodeRuntimeInstallProgress | null>(null)
   const [nodeGuideOpen, setNodeGuideOpen] = useState(false)
+  // Stub account snapshot (docs/OVERNIGHT-PLAN.md W4) — not wired to the real
+  // account:get-status/get-balance IPC channels yet. Fixed at mount; dev/QA
+  // can preview the other two states via ?accountState=active|low-balance.
+  const [accountSnapshot] = useState<AccountSnapshot>(() => resolveAccountSnapshotFromSearch(window.location.search))
+  const [accountDialog, setAccountDialog] = useState<'login' | 'register' | null>(null)
   const [toast, setToast] = useState<ToastMessage | null>(null)
   const [updateState, setUpdateState] = useState<UpdateSnapshot | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
@@ -606,6 +618,7 @@ function App() {
   const runtimeReady = nodeRuntimeSupported(snapshot.runtime) && snapshot.runtime.npm.installed
   const installedCliCount = providerIds.filter((id) => snapshot.clis[id].installed).length
   const installedToolCount = installedCliCount + Number(snapshot.desktopApps.codex.installed)
+  const accountStatus = resolveAccountAreaStatus(accountSnapshot)
   const installNodeRuntime = async () => {
     if (nodeRuntimeInstalling) return
     if (platformCapabilities.nodeRuntimeInstall === 'external') {
@@ -868,10 +881,38 @@ function App() {
       <AppFrame theme={theme} platform={platformCapabilities}>
         <WelcomePage
           theme={theme}
-          onRegister={() => setToast({ type: 'success', message: '注册功能即将开放' })}
-          onLogin={() => setToast({ type: 'success', message: '登录功能即将开放' })}
+          onRegister={() => setAccountDialog('register')}
+          onLogin={() => setAccountDialog('login')}
           onHaveCode={() => setAppView('onboarding')}
         />
+        {accountDialog === 'login' && (
+          <LoginDialog
+            onClose={() => setAccountDialog(null)}
+            onSwitchToRegister={() => setAccountDialog('register')}
+            onSubmit={() => {
+              setAccountDialog(null)
+              setToast({ type: 'success', message: '登录功能即将开放' })
+            }}
+          />
+        )}
+        {accountDialog === 'register' && (
+          <RegisterDialog
+            onClose={() => setAccountDialog(null)}
+            onSwitchToLogin={() => setAccountDialog('login')}
+            onSubmit={() => {
+              setAccountDialog(null)
+              setToast({ type: 'success', message: '注册功能即将开放' })
+            }}
+            onRequestVerificationCode={() => setToast({ type: 'success', message: '验证码功能即将开放' })}
+          />
+        )}
+        {toast && (
+          <Toast
+            toast={toast}
+            onDismiss={() => setToast(null)}
+            onCopy={toast.type === 'error' ? copyToastMessage : undefined}
+          />
+        )}
       </AppFrame>
     )
   }
@@ -915,7 +956,10 @@ function App() {
           setSettings((current) => current.theme === next ? current : { ...current, theme: next })
         }}
         onToggleMoreExpanded={toggleSidebarMoreExpanded}
-        onAccountClick={() => setToast({ type: 'success', message: '账号功能即将开放' })}
+        accountStatus={accountStatus}
+        accountSnapshot={accountSnapshot}
+        onAccountLogin={() => setAccountDialog('login')}
+        onRecharge={() => setToast({ type: 'success', message: '充值功能即将开放' })}
       />
 
       <main className="main-content">
@@ -1140,6 +1184,29 @@ function App() {
             setNodeGuideOpen(false)
             void scan(true)
           }}
+        />
+      )}
+
+      {accountDialog === 'login' && (
+        <LoginDialog
+          onClose={() => setAccountDialog(null)}
+          onSwitchToRegister={() => setAccountDialog('register')}
+          onSubmit={() => {
+            setAccountDialog(null)
+            setToast({ type: 'success', message: '登录功能即将开放' })
+          }}
+        />
+      )}
+
+      {accountDialog === 'register' && (
+        <RegisterDialog
+          onClose={() => setAccountDialog(null)}
+          onSwitchToLogin={() => setAccountDialog('login')}
+          onSubmit={() => {
+            setAccountDialog(null)
+            setToast({ type: 'success', message: '注册功能即将开放' })
+          }}
+          onRequestVerificationCode={() => setToast({ type: 'success', message: '验证码功能即将开放' })}
         />
       )}
 
