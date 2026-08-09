@@ -15,10 +15,13 @@ import { autoUpdater } from 'electron-updater'
 import { AppSettingsStore, type AppTheme } from './app-settings'
 import { ConfigBackupStore } from './backups'
 import { providerIds } from './catalog'
+import { canvasProtocolScheme } from './canvas-protocol'
+import { createCanvasWindowController } from './canvas-window'
 import { resolveCodexHomeContext } from './codex-home'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
+import { createNewApiClient } from './new-api-client'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { RuntimeLogStore } from './runtime-log'
@@ -71,6 +74,18 @@ const externalUrlAllowlist = [
   'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
 ] as const
 
+// The infinite-canvas build's own two runtime-visible external destinations
+// (docs button, About-modal "查看开源项目" GitHub credit -- see the task
+// report for how these were confirmed against the actual built bundle).
+// Kept separate from externalUrlAllowlist above: the canvas window's
+// setWindowOpenHandler/will-navigate checks only ever consult this list, so
+// the canvas page can never reach a main-app destination (or vice versa)
+// just because the two lists happened to be merged.
+const canvasExternalUrlAllowlist = [
+  'https://docs.canvas.best',
+  'https://github.com/basketikun/infinite-canvas',
+] as const
+
 const appWindowSizes: Record<AppWindowMode, { width: number; height: number }> = {
   onboarding: { width: 720, height: 520 },
   dashboard: { width: 1340, height: 845 },
@@ -86,6 +101,19 @@ const packagedApplicationBaseUrl = 'xingmang://app/'
 
 protocol.registerSchemesAsPrivileged([{
   scheme: 'xingmang',
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    codeCache: true,
+    stream: true,
+  },
+}, {
+  // Same privileges as xingmang:// above, granted to a second, independent
+  // scheme so the isolated canvas window's resources never share a
+  // rendererRoot (or a traversal bug) with the main app's. See
+  // canvas-protocol.ts / canvas-window.ts for the request handler.
+  scheme: canvasProtocolScheme,
   privileges: {
     standard: true,
     secure: true,
@@ -113,6 +141,17 @@ function applicationUrlPolicy(): ApplicationUrlPolicy {
     devServerUrl: app.isPackaged ? undefined : process.env.VITE_DEV_SERVER_URL,
     packagedBaseUrl: packagedApplicationBaseUrl,
   }
+}
+
+// dist-canvas/ is a build artifact (scripts/copy-canvas-assets.mjs copies it
+// from the sibling xingmang-canvas repo's own dist/ output at compile time;
+// see the task report for why it is not vendored into git) that sits next to
+// dist/ and dist-electron/ at the project root, and is packaged the same way
+// dist/ already is (electron-builder.config.cjs's `files` list). No dev
+// server concept applies here -- the canvas window always loads the
+// packaged build, never a live Vite server, in both dev and packaged runs.
+function canvasDistRoot(): string {
+  return path.join(__dirname, '..', 'dist-canvas')
 }
 
 function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
@@ -462,9 +501,26 @@ if (!hasSingleInstanceLock) {
     registerApplicationProtocol(urlPolicy)
     const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
 
+    // Constructed explicitly (rather than left to registerIpcHandlers' own
+    // internal default) so the canvas window controller below can share this
+    // exact instance -- it is the one place that knows whether the user is
+    // actually logged in, and a second, independent createNewApiClient()
+    // would always report "logged out" regardless of what the user did
+    // through the main app's own account:* handlers.
+    const accountService = createNewApiClient()
+    const canvasController = createCanvasWindowController({
+      canvasDistRoot: canvasDistRoot(),
+      externalUrlAllowlist: canvasExternalUrlAllowlist,
+      systemService,
+      accountService,
+      previewOnboarding,
+      runtimeLog,
+    })
+
     await systemService.writeStoredConfig(systemService.readStoredConfig())
     const unregisterIpcHandlers = registerIpcHandlers({
       systemService,
+      accountService,
       sessionsService,
       providerSessionsService,
       backupStore,
@@ -489,6 +545,7 @@ if (!hasSingleInstanceLock) {
       },
       setWindowMode,
       setWindowTheme,
+      openCanvasWindow: () => canvasController.open(),
       ...(manualUninstallVisualFixtureEnabled
         ? {
             transformSystemSnapshot: (snapshot: SystemSnapshot) => (
@@ -503,9 +560,15 @@ if (!hasSingleInstanceLock) {
       process.off('unhandledRejection', onUnhandledRejection)
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       unregisterIpcHandlers()
+      canvasController.dispose()
       updaterService.dispose()
     })
     const mainWindow = createWindow(systemService, urlPolicy, runtimeLog)
+    // The canvas window is a secondary, opt-in surface -- it must not
+    // outlive the main window (which would otherwise leave the app running
+    // in the background with no way back to the dashboard on Windows/Linux,
+    // since window-all-closed only quits when every window is gone).
+    mainWindow.on('closed', () => canvasController.closeIfOpen())
     if (focusWhenWindowIsReady) {
       mainWindow.once('ready-to-show', () => {
         focusWhenWindowIsReady = false

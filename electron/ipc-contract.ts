@@ -346,6 +346,7 @@ export interface XingmangInvokeContract {
   getAccountBalance: IpcInvokeDefinition<'account:get-balance', [], AccountBalance>
   provisionCliKey: IpcInvokeDefinition<'account:provision-cli-key', [], AccountCliKeyResult>
   registerAccount: IpcInvokeDefinition<'account:register', [input: AccountRegisterInput], void>
+  openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
 }
 
 export interface XingmangEventContract {
@@ -454,6 +455,7 @@ export const ipcInvokeChannels = {
   getAccountBalance: 'account:get-balance',
   provisionCliKey: 'account:provision-cli-key',
   registerAccount: 'account:register',
+  openCanvasWindow: 'canvas:open',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }

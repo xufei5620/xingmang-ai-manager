@@ -228,6 +228,7 @@ function register(
     broadcastUpdate: vi.fn(),
     setWindowMode: vi.fn(),
     setWindowTheme: vi.fn(),
+    openCanvasWindow: vi.fn(async () => undefined),
     ...({ transformSystemSnapshot } as object),
   })
   return {
@@ -609,6 +610,38 @@ describe('registerIpcHandlers', () => {
     await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(trustedEvent())).resolves.toEqual({ entries: 0 })
     expect(runtimeLog.feedbackReport).toHaveBeenCalledOnce()
     expect(electronMocks.writeText).toHaveBeenCalledWith('sanitized report\n')
+  })
+
+  it('delegates canvas:open to the injected openCanvasWindow callback, and rejects untrusted senders the same as every other channel', async () => {
+    const openCanvasWindow = vi.fn(async () => undefined)
+    const dispose = registerIpcHandlers({
+      systemService: serviceStub(),
+      accountService: accountServiceStub(),
+      sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
+      providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
+      backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
+      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
+      extensionService: {} as never,
+      providerExtensionService: {} as never,
+      urlPolicy: { rendererRoot: 'C:\\app\\dist', devServerUrl: 'http://localhost:5173' },
+      previewOnboarding: false,
+      externalUrlAllowlist: [],
+      updaterService: updaterStub(),
+      broadcastUpdate: vi.fn(),
+      setWindowMode: vi.fn(),
+      setWindowTheme: vi.fn(),
+      openCanvasWindow,
+    })
+    try {
+      const handler = electronMocks.handlers.get('canvas:open')!
+
+      await expect(handler(trustedEvent())).resolves.toBeUndefined()
+      expect(openCanvasWindow).toHaveBeenCalledTimes(1)
+      expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+    } finally {
+      dispose()
+    }
   })
 })
 

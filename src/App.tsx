@@ -954,6 +954,19 @@ function App() {
     setActivePage('mcp')
   }
 
+  // "无限画布" opens a separate, isolated BrowserWindow (阶段 C) rather than
+  // an in-app page, so it is intercepted here before activePage ever changes
+  // -- every other nav item still goes straight to setActivePage.
+  const handleNavigate = (pageId: PageId) => {
+    if (pageId === 'canvas') {
+      void window.xingmang.openCanvasWindow().catch((error) => {
+        setToast({ type: 'error', message: errorMessage(error) })
+      })
+      return
+    }
+    setActivePage(pageId)
+  }
+
   const performCodexDesktopLaunch = async (mode: CodexDesktopLaunchMode) => {
     setCodexLaunchDialogOpen(false)
     setCodexLaunchPhase(mode === 'restart' ? 'closing' : 'opening')
@@ -1105,7 +1118,7 @@ function App() {
         theme={theme}
         updateState={updateState}
         moreExpanded={Boolean(settings.sidebarMoreExpanded)}
-        onNavigate={setActivePage}
+        onNavigate={handleNavigate}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
         onToggleTheme={() => {
           const next = theme === 'light' ? 'dark' : 'light'
@@ -1155,8 +1168,6 @@ function App() {
           />
         ) : activePage === 'sessions' ? (
           <SessionsPage api={window.xingmang} notify={setToast} />
-        ) : activePage === 'canvas' ? (
-          <PlaceholderPage pageId="canvas" />
         ) : activePage === 'mcp' ? (
           <McpPage
             servers={mcpServers}

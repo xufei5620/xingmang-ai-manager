@@ -81,6 +81,11 @@ export interface IpcRegistrationOptions {
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
+  // Opens (or focuses, if already open) the isolated canvas window. Kept as
+  // a plain callback -- not a CanvasWindowController -- so this module never
+  // has to depend on canvas-window.ts's full surface just to delegate one
+  // button click.
+  openCanvasWindow(): Promise<void>
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
 }
 
@@ -469,6 +474,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:get-balance': '星芒账号余额查询',
   'account:provision-cli-key': 'CLI Key 签发',
   'account:register': '星芒账号注册',
+  'canvas:open': '无限画布窗口打开',
 }
 
 const quietIpcSuccessChannels = new Set([
@@ -1001,6 +1007,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:register', (_event, input: unknown) => (
     accountService.register(parseAccountRegisterInput(input))
   ))
+  registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
 
   return () => {
     unsubscribeUpdates()

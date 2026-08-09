@@ -19,9 +19,9 @@ describe('navigation grouping', () => {
     ])
   })
 
-  it('marks canvas as a placeholder destination with a hint', () => {
+  it('gives canvas a hint but no longer marks it as a placeholder (阶段 C: opens a real isolated window)', () => {
     const canvas = navigationItems.find((item) => item.id === 'canvas')
-    expect(canvas?.placeholder).toBe(true)
+    expect(canvas?.placeholder).toBeUndefined()
     expect(canvas?.hint).toBeTruthy()
   })
 
@@ -38,8 +38,8 @@ describe('navigation grouping', () => {
     expect(navigationItems.find((item) => item.id === 'plugins')?.label).toBe('插件市场')
   })
 
-  it('does not mark any non-canvas item as a placeholder', () => {
+  it('does not mark any item as a placeholder', () => {
     const placeholders = navigationItems.filter((item) => item.placeholder)
-    expect(placeholders.map((item) => item.id)).toEqual(['canvas'])
+    expect(placeholders).toEqual([])
   })
 })

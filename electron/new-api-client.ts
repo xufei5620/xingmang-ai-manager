@@ -8,7 +8,10 @@ import { redactCommandText } from './command-runner'
 // 不返回 id/key") and assumed uniformly for the rest per that project's own
 // convention. Treat unexpected shapes as a hard error rather than guessing.
 
-const defaultBaseUrl = 'https://xm.solov.cc'
+// Exported so other main-process modules that need this exact host (the
+// canvas window's host bridge injects it as the canvas app's own relay
+// baseUrl -- see canvas-window.ts) never have to duplicate the literal.
+export const defaultBaseUrl = 'https://xm.solov.cc'
 const defaultTimeoutMs = 10_000
 const defaultMaxResponseBytes = 512 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])

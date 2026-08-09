@@ -52,8 +52,10 @@ export const navigationItems: readonly NavigationItem[] = [
     label: '无限画布',
     icon: InfinityIcon,
     group: 'use',
-    placeholder: true,
-    hint: '可视化组织你的 AI 工作流，即将上线',
+    // Not a page switch: clicking this opens a separate, isolated window
+    // (see App.tsx's onNavigate override) rather than rendering inline, so
+    // it is intentionally excluded from the activePage ternary chain.
+    hint: '可视化组织你的 AI 创作流程，独立窗口打开',
   },
   {
     id: 'mcp',

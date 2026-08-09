@@ -1,0 +1,51 @@
+import type { CanvasAuthToken } from './canvas-ai-config'
+
+// Deliberately a pure-ish function taking injected dependencies rather than
+// importing SystemService/NewApiClientService directly, so it can be unit
+// tested with fakes the same way src/account-provisioning.ts is -- see
+// CLAUDE.md section 6 ("新逻辑优先写成纯函数再测").
+export interface CanvasAuthTokenDependencies {
+  /** Synchronous, in-memory only -- never touches the network. */
+  isAccountAuthenticated(): boolean
+  /**
+   * Synchronous, local-disk only (reads already-written CLI config files via
+   * SystemService.revealApiKey) -- never touches the network. Returns '' if
+   * no installed CLI has a relay key configured yet.
+   */
+  revealConfiguredRelayKey(): string
+  /**
+   * Mints a fresh relay key via the account service's provisionCliKey() --
+   * the one call in this module that reaches xm.solov.cc. Only invoked when
+   * the account is authenticated but no already-configured key was found
+   * locally, so this never runs for a logged-out user and never runs twice
+   * for a user who already has at least one CLI configured.
+   */
+  provisionRelayKey(): Promise<string>
+  /** Optional: observe a provisioning failure without surfacing it to canvas. */
+  onProvisionError?(error: unknown): void
+}
+
+/**
+ * Resolves the { baseUrl, apiKey } to hand the canvas window, or null when
+ * there is nothing to give it (not logged in, or provisioning failed) -- in
+ * every "null" case canvas is left to fall back to its own config UI, never
+ * an error. See buildCanvasAiConfigInjection (canvas-ai-config.ts) for what
+ * happens to this value next.
+ */
+export async function resolveCanvasAuthToken(
+  baseUrl: string,
+  deps: CanvasAuthTokenDependencies,
+): Promise<CanvasAuthToken | null> {
+  if (!deps.isAccountAuthenticated()) return null
+
+  const existingKey = deps.revealConfiguredRelayKey().trim()
+  if (existingKey) return { baseUrl, apiKey: existingKey }
+
+  try {
+    const provisionedKey = (await deps.provisionRelayKey()).trim()
+    return provisionedKey ? { baseUrl, apiKey: provisionedKey } : null
+  } catch (error) {
+    deps.onProvisionError?.(error)
+    return null
+  }
+}

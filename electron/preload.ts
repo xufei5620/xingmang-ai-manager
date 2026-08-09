@@ -88,6 +88,7 @@ const ipcInvokeChannels = {
   getAccountBalance: 'account:get-balance',
   provisionCliKey: 'account:provision-cli-key',
   registerAccount: 'account:register',
+  openCanvasWindow: 'canvas:open',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -202,6 +203,7 @@ const xingmangApi: XingmangApi = {
   getAccountBalance: () => invoke('getAccountBalance'),
   provisionCliKey: () => invoke('provisionCliKey'),
   registerAccount: (input) => invoke('registerAccount', input),
+  openCanvasWindow: () => invoke('openCanvasWindow'),
   onNavigate: (listener) => subscribe('onNavigate', listener),
   onNodeRuntimeInstallProgress: (listener) => subscribe('onNodeRuntimeInstallProgress', listener),
   onInstallProgress: (listener) => subscribe('onInstallProgress', listener),

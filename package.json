@@ -12,6 +12,7 @@
     "yaml": "^2.9.0"
   },
   "scripts": {
+    "predev": "node scripts/copy-canvas-assets.mjs",
     "dev": "concurrently -k \"vite\" \"tsc -p tsconfig.electron.json --watch --preserveWatchOutput\" \"wait-on tcp:127.0.0.1:5173 dist-electron/main.js && cross-env VITE_DEV_SERVER_URL=http://127.0.0.1:5173 electron .\"",
     "typecheck": "tsc --noEmit && tsc -p tsconfig.electron.json --noEmit && tsc -p tsconfig.electron.test.json --noEmit",
     "test": "vitest run electron src && npm run test:node",
@@ -22,6 +23,7 @@
     "mac:free:create-certificate": "node scripts/create-macos-free-signing-certificate.cjs",
     "dist:mac:free": "node scripts/run-macos-free-build.cjs",
     "test:mac:visual": "node e2e/macos-visual-qa.mjs",
+    "precompile": "node scripts/copy-canvas-assets.mjs",
     "compile": "node scripts/clean-electron.mjs && vite build && tsc -p tsconfig.electron.json && node scripts/minify-electron.cjs",
     "build": "npm run typecheck && npm run test && npm run compile && cross-env XINGMANG_LOCAL_BUILD=1 electron-builder --config electron-builder.config.cjs",
     "build:win:ci": "npm run compile && cross-env XINGMANG_LOCAL_BUILD=1 CSC_IDENTITY_AUTO_DISCOVERY=false electron-builder --config electron-builder.config.cjs --win --x64 --dir --publish never",
