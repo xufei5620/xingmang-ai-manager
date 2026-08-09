@@ -90,6 +90,7 @@ function accountServiceStub(): NewApiClientService {
     getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
     getBalance: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
+    findExistingCliKey: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
   }
 }

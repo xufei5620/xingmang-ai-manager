@@ -45,7 +45,10 @@ vi.mock('electron', () => ({
   shell: { openExternal: vi.fn(), openPath: vi.fn() },
 }))
 
+import { resolveCanvasAuthToken } from './canvas-auth'
 import {
+  buildCanvasTokenDependencies,
+  canvasCliKeyNamePrefix,
   canvasHostAuthTokenChannel,
   canvasHostNotifyChannel,
   canvasHostOpenExternalChannel,
@@ -254,5 +257,158 @@ describe('createCanvasWindowController', () => {
       expect(electronMocks.removeHandler).toHaveBeenCalledWith(channel)
     }
     expect(electronMocks.removeAllListeners).toHaveBeenCalledWith(canvasHostAuthTokenChannel)
+  })
+})
+
+describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
+  // canvas-window.ts previously called accountService.provisionCliKey()
+  // straight from resolveTokenForNewWindow's inline revealConfiguredRelayKey
+  // fallback, unconditionally, whenever no installed CLI had a key
+  // configured. Since canvas's own localStorage already holds the key from
+  // the *first* open by the time a second one happens,
+  // buildCanvasAiConfigInjection's own no-op guard (canvas-ai-config.ts)
+  // correctly refuses to overwrite it -- but the freshly minted token was
+  // already created server-side before that guard ever runs, so it is
+  // provisioned once and never used again: an orphan xingmang-canvas-*
+  // token, one more each time the window is opened and closed. These tests
+  // exercise buildCanvasTokenDependencies() directly (no BrowserWindow
+  // needed) composed with the already-tested resolveCanvasAuthToken
+  // (canvas-auth.test.ts), the same way resolveTokenForNewWindow composes
+  // them for a real run.
+  const canvasBaseUrl = 'https://xm.solov.cc'
+
+  function loggedInAccountService(
+    overrides: Partial<Pick<NewApiClientService, 'findExistingCliKey' | 'provisionCliKey'>> = {},
+  ): NewApiClientService {
+    return {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: null })),
+      findExistingCliKey: vi.fn(async () => null),
+      provisionCliKey: vi.fn(async () => ({ id: 1, name: 'xingmang-canvas-default', key: 'sk-default' })),
+      ...overrides,
+    } as unknown as NewApiClientService
+  }
+
+  function noCliConfiguredSystemService(): SystemService {
+    return { revealApiKey: vi.fn(() => '') } as unknown as SystemService
+  }
+
+  it('reveals an already-configured CLI key before ever asking the account service anything', () => {
+    const accountService = loggedInAccountService()
+    const systemService = {
+      revealApiKey: vi.fn((provider: string) => (provider === 'codex' ? 'sk-cli-configured' : '')),
+    } as unknown as SystemService
+
+    const deps = buildCanvasTokenDependencies({ systemService, accountService, previewOnboarding: false })
+
+    expect(deps.revealConfiguredRelayKey()).toBe('sk-cli-configured')
+  })
+
+  it('reuses an existing xingmang-canvas-* token instead of provisioning a new one -- the orphan-token regression', async () => {
+    const findExistingCliKey = vi.fn(async (namePrefix: string) => {
+      expect(namePrefix).toBe(`${canvasCliKeyNamePrefix}-`)
+      return { id: 5, name: 'xingmang-canvas-previous', key: 'sk-reused' }
+    })
+    const provisionCliKey = vi.fn(async () => ({ id: 99, name: 'xingmang-canvas-should-not-be-created', key: 'sk-should-not-be-used' }))
+    const accountService = loggedInAccountService({ findExistingCliKey, provisionCliKey })
+
+    const deps = buildCanvasTokenDependencies({
+      systemService: noCliConfiguredSystemService(),
+      accountService,
+      previewOnboarding: false,
+    })
+    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
+
+    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-reused' })
+    expect(findExistingCliKey).toHaveBeenCalledTimes(1)
+    expect(provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('falls back to provisioning a fresh key -- named with the canvas prefix -- when nothing existing is found', async () => {
+    const provisionCliKey = vi.fn(async (input?: { name?: string }) => {
+      expect(input?.name).toMatch(/^xingmang-canvas-/)
+      return { id: 1, name: input!.name!, key: 'sk-newly-minted' }
+    })
+    const accountService = loggedInAccountService({ provisionCliKey })
+
+    const deps = buildCanvasTokenDependencies({
+      systemService: noCliConfiguredSystemService(),
+      accountService,
+      previewOnboarding: false,
+    })
+    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
+
+    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-newly-minted' })
+    expect(provisionCliKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('falls back to provisioning when the reuse lookup itself fails, reporting via onReuseLookupError, without breaking the flow', async () => {
+    const lookupFailure = new Error('列表查询超时')
+    const onReuseLookupError = vi.fn()
+    const provisionCliKey = vi.fn(async () => ({ id: 1, name: 'xingmang-canvas-fallback', key: 'sk-fallback' }))
+    const accountService = loggedInAccountService({
+      findExistingCliKey: vi.fn(async () => { throw lookupFailure }),
+      provisionCliKey,
+    })
+
+    const deps = buildCanvasTokenDependencies({
+      systemService: noCliConfiguredSystemService(),
+      accountService,
+      previewOnboarding: false,
+      onReuseLookupError,
+    })
+    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
+
+    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-fallback' })
+    expect(onReuseLookupError).toHaveBeenCalledWith(lookupFailure)
+    expect(provisionCliKey).toHaveBeenCalledTimes(1)
+  })
+
+  it('end-to-end: a second resolution reuses the first one\'s provisioned key, never provisioning twice -- the exact open/close/reopen scenario that used to orphan a token every time', async () => {
+    // Mirrors xm.solov.cc's own token list gaining the freshly created entry
+    // after provisionCliKey succeeds, so findExistingCliKey's second call
+    // finds what the first call created -- exactly like a real second
+    // GET /api/token/ would after the first canvas window's provision call.
+    let serverSideTokens: { id: number; name: string; key: string }[] = []
+    const provisionCliKey = vi.fn(async (input?: { name?: string }) => {
+      const created = { id: serverSideTokens.length + 1, name: input!.name!, key: `sk-${input!.name}` }
+      serverSideTokens = [...serverSideTokens, created]
+      return created
+    })
+    const findExistingCliKey = vi.fn(async (namePrefix: string) => (
+      serverSideTokens.find((entry) => entry.name.startsWith(namePrefix)) ?? null
+    ))
+    const accountService = loggedInAccountService({ findExistingCliKey, provisionCliKey })
+    const deps = buildCanvasTokenDependencies({
+      systemService: noCliConfiguredSystemService(),
+      accountService,
+      previewOnboarding: false,
+    })
+
+    const firstOpen = await resolveCanvasAuthToken(canvasBaseUrl, deps)
+    const secondOpen = await resolveCanvasAuthToken(canvasBaseUrl, deps)
+
+    expect(firstOpen).toEqual(secondOpen)
+    expect(provisionCliKey).toHaveBeenCalledTimes(1)
+    expect(findExistingCliKey).toHaveBeenCalledTimes(2)
+  })
+
+  it('skips the canvas relay entirely when not logged in, touching neither reuse lookup nor provisioning', async () => {
+    const findExistingCliKey = vi.fn()
+    const provisionCliKey = vi.fn()
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
+      findExistingCliKey,
+      provisionCliKey,
+    } as unknown as NewApiClientService
+
+    const deps = buildCanvasTokenDependencies({
+      systemService: noCliConfiguredSystemService(),
+      accountService,
+      previewOnboarding: false,
+    })
+    await expect(resolveCanvasAuthToken(canvasBaseUrl, deps)).resolves.toBeNull()
+
+    expect(findExistingCliKey).not.toHaveBeenCalled()
+    expect(provisionCliKey).not.toHaveBeenCalled()
   })
 })

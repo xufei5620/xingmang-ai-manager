@@ -5,6 +5,7 @@ import {
   createNewApiClient,
   extractSessionCookies,
   findCliKeyIdByName,
+  findNewestCliKeyIdByNamePrefix,
   NewApiAuthenticationError,
   parseAccountProfile,
   parseAccountStatus,
@@ -254,6 +255,45 @@ describe('findCliKeyIdByName / parseCliKeySecret', () => {
     expect(parseCliKeySecret({})).toBeNull()
     expect(parseCliKeySecret({ key: '' })).toBeNull()
     expect(parseCliKeySecret(null)).toBeNull()
+  })
+})
+
+describe('findNewestCliKeyIdByNamePrefix', () => {
+  it('returns null when nothing matches the prefix', () => {
+    expect(findNewestCliKeyIdByNamePrefix([{ id: 1, name: 'xingmang-desktop-abc' }], 'xingmang-canvas-')).toBeNull()
+    expect(findNewestCliKeyIdByNamePrefix('not a collection', 'xingmang-canvas-')).toBeNull()
+  })
+
+  it('matches a single prefixed entry', () => {
+    expect(findNewestCliKeyIdByNamePrefix(
+      [{ id: 7, name: 'xingmang-canvas-abc123' }],
+      'xingmang-canvas-',
+    )).toEqual({ id: 7, name: 'xingmang-canvas-abc123' })
+  })
+
+  it('picks the highest id (most recently created) when several match', () => {
+    expect(findNewestCliKeyIdByNamePrefix(
+      [
+        { id: 3, name: 'xingmang-canvas-old' },
+        { id: 9, name: 'xingmang-canvas-newest' },
+        { id: 5, name: 'xingmang-canvas-middle' },
+      ],
+      'xingmang-canvas-',
+    )).toEqual({ id: 9, name: 'xingmang-canvas-newest' })
+  })
+
+  it('does not match a name that merely contains the prefix elsewhere, or an unrelated prefix', () => {
+    expect(findNewestCliKeyIdByNamePrefix(
+      [{ id: 1, name: 'my-xingmang-canvas-abc' }, { id: 2, name: 'xingmang-desktop-abc' }],
+      'xingmang-canvas-',
+    )).toBeNull()
+  })
+
+  it('ignores entries with a non-positive-integer id', () => {
+    expect(findNewestCliKeyIdByNamePrefix(
+      [{ id: 0, name: 'xingmang-canvas-a' }, { id: -1, name: 'xingmang-canvas-b' }, { id: 1.5, name: 'xingmang-canvas-c' }],
+      'xingmang-canvas-',
+    )).toBeNull()
   })
 })
 
@@ -673,6 +713,66 @@ describe('provisionCliKey (create -> list -> reveal three-call flow)', () => {
       .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: {} }))
 
     await expect(client.provisionCliKey()).rejects.toThrow('明文读取失败')
+  })
+})
+
+describe('findExistingCliKey (list -> reveal, used to avoid re-provisioning)', () => {
+  it('makes only the list call and returns null when nothing matches the prefix', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: [{ id: 1, name: 'xingmang-desktop-abc' }],
+    }))
+
+    await expect(client.findExistingCliKey('xingmang-canvas-')).resolves.toBeNull()
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(fetchImpl.mock.calls[0][1]?.method).toBe('GET')
+  })
+
+  it('reveals and returns the newest matching token without creating a new one', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: [
+          { id: 3, name: 'xingmang-canvas-old' },
+          { id: 9, name: 'xingmang-canvas-newest' },
+        ],
+      }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { key: 'sk-reused-value' } }))
+
+    const result = await client.findExistingCliKey('xingmang-canvas-')
+
+    expect(result).toEqual({ id: 9, name: 'xingmang-canvas-newest', key: 'sk-reused-value' })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    const [listUrl, listInit] = fetchImpl.mock.calls[0]
+    expect(String(listUrl)).toBe(`${testBaseUrl}/api/token/`)
+    expect(listInit?.method).toBe('GET')
+    const [keyUrl, keyInit] = fetchImpl.mock.calls[1]
+    expect(String(keyUrl)).toBe(`${testBaseUrl}/api/token/9/key`)
+    expect(keyInit?.method).toBe('POST')
+  })
+
+  it('returns null (not an error) when the matched token cannot be revealed', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: [{ id: 4, name: 'xingmang-canvas-x' }] }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: {} }))
+
+    await expect(client.findExistingCliKey('xingmang-canvas-')).resolves.toBeNull()
+  })
+
+  it('propagates a genuine request failure from the list call', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('服务暂不可用'))
+
+    await expect(client.findExistingCliKey('xingmang-canvas-')).rejects.toThrow('服务暂不可用')
   })
 })
 

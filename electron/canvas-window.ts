@@ -26,7 +26,7 @@ import {
   buildCanvasAiConfigInjection,
   type CanvasAuthToken,
 } from './canvas-ai-config'
-import { resolveCanvasAuthToken } from './canvas-auth'
+import { resolveCanvasAuthToken, type CanvasAuthTokenDependencies } from './canvas-auth'
 import { isAllowedExternalUrl } from './security'
 import { readBoundedUtf8File } from './bounded-file'
 import { writeAtomicSafeUtf8File } from './safe-local-data'
@@ -82,6 +82,68 @@ function requiredCanvasString(value: unknown, label: string, maximum: number): s
     throw new Error(`${label}格式错误`)
   }
   return value
+}
+
+// Every token this app mints for the canvas window (as opposed to one an
+// installed CLI already has configured) uses this name prefix -- shared
+// between the create call and the reuse lookup below so the two can never
+// drift apart.
+export const canvasCliKeyNamePrefix = 'xingmang-canvas'
+
+export interface CanvasTokenResolutionDependencies {
+  systemService: SystemService
+  accountService: NewApiClientService
+  previewOnboarding: boolean
+  onProvisionError?: (error: unknown) => void
+  onReuseLookupError?: (error: unknown) => void
+}
+
+/**
+ * Builds the CanvasAuthTokenDependencies resolveCanvasAuthToken
+ * (canvas-auth.ts) needs for a real run. A top-level, independently
+ * testable function (CLAUDE.md 6节 "新逻辑优先写成纯函数再测") rather than
+ * inlined into resolveTokenForNewWindow's closure, so the fix below can be
+ * exercised with fakes -- no BrowserWindow required.
+ *
+ * Orphan-token fix: a logged-in user with no CLI configured yet used to hit
+ * provisionRelayKey on *every* canvas window open, even though canvas's own
+ * localStorage already held the key from the previous open --
+ * buildCanvasAiConfigInjection's no-op guard correctly refuses to clobber an
+ * already-configured value, but the freshly minted token had already been
+ * created server-side before that guard ever runs, so it was provisioned
+ * and then never used again: an orphan xingmang-canvas-* token accumulating
+ * on the account forever. provisionRelayKey now asks
+ * accountService.findExistingCliKey() to reuse a previously-minted token
+ * before ever creating a new one. Reusing by server-side name prefix
+ * (rather than caching the key locally in this app's own data directory)
+ * also keeps xm.solov.cc's own token list as the single source of truth --
+ * this app still never persists a second on-disk plaintext copy of its own
+ * (docs/RECON-new-api.md section D: "星芒自身不二次落盘明文").
+ */
+export function buildCanvasTokenDependencies(
+  deps: CanvasTokenResolutionDependencies,
+): CanvasAuthTokenDependencies {
+  return {
+    isAccountAuthenticated: () => deps.accountService.getSessionState().authenticated,
+    revealConfiguredRelayKey: () => {
+      for (const provider of providerIds) {
+        const key = deps.systemService.revealApiKey(provider, deps.previewOnboarding)
+        if (key) return key
+      }
+      return ''
+    },
+    provisionRelayKey: async () => {
+      try {
+        const existing = await deps.accountService.findExistingCliKey(`${canvasCliKeyNamePrefix}-`)
+        if (existing) return existing.key
+      } catch (error) {
+        deps.onReuseLookupError?.(error)
+      }
+      const created = await deps.accountService.provisionCliKey({ name: buildCliKeyName(canvasCliKeyNamePrefix) })
+      return created.key
+    },
+    onProvisionError: deps.onProvisionError,
+  }
 }
 
 /**
@@ -200,23 +262,17 @@ export function createCanvasWindowController(
     // baseUrl mirrors XM_SOLOV_BASE_URL, already baked into the canvas
     // build's own defaultConfig (阶段 B) -- this only ever needs to supply
     // the apiKey half in practice, but is explicit for defensiveness.
-    return resolveCanvasAuthToken(newApiDefaultBaseUrl, {
-      isAccountAuthenticated: () => options.accountService.getSessionState().authenticated,
-      revealConfiguredRelayKey: () => {
-        for (const provider of providerIds) {
-          const key = options.systemService.revealApiKey(provider, options.previewOnboarding)
-          if (key) return key
-        }
-        return ''
-      },
-      provisionRelayKey: async () => {
-        const result = await options.accountService.provisionCliKey({ name: buildCliKeyName('xingmang-canvas') })
-        return result.key
-      },
+    return resolveCanvasAuthToken(newApiDefaultBaseUrl, buildCanvasTokenDependencies({
+      systemService: options.systemService,
+      accountService: options.accountService,
+      previewOnboarding: options.previewOnboarding,
       onProvisionError: (error) => {
         options.runtimeLog.exception('canvas', 'auth-token.provision.failed', error)
       },
-    })
+      onReuseLookupError: (error) => {
+        options.runtimeLog.exception('canvas', 'auth-token.reuse-lookup.failed', error)
+      },
+    }))
   }
 
   function assertCanvasDistPresent(): void {
@@ -285,7 +341,11 @@ export function createCanvasWindowController(
       })
     })
 
-    await window.loadURL(new URL('index.html', canvasPackagedBaseUrl).href)
+    // Load the bare protocol root (pathname '/'), not '/index.html'. The canvas
+    // SPA uses createBrowserRouter and only registers '/', so a '/index.html'
+    // path 404s in its router; the protocol handler's catch-all still serves
+    // index.html for '/', letting the app boot on its home route.
+    await window.loadURL(canvasPackagedBaseUrl)
   }
 
   return {

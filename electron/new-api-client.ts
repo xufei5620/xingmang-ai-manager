@@ -131,6 +131,17 @@ export interface NewApiClientService {
   getSessionState(): NewApiSessionState
   getBalance(): Promise<NewApiBalance>
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
+  /**
+   * Looks up the most recently created existing token whose name starts with
+   * namePrefix and re-reveals its plaintext, or null when none exists yet.
+   * Lets a caller that wants "the usual key for this purpose" (e.g.
+   * canvas-window.ts's xingmang-canvas-* key) reuse one it already minted
+   * instead of creating a fresh token on every call -- see
+   * canvas-window.ts's buildCanvasTokenDependencies for the orphan-token
+   * accumulation bug this exists to close. One request (list only) when
+   * nothing matches; two (list, then reveal) when something does.
+   */
+  findExistingCliKey(namePrefix: string): Promise<NewApiCliKeyResult | null>
   // Exchanges the captured refresh cookie for a new access_token. Exposed for
   // a future silent-retry-on-401 caller; nothing in this skeleton invokes it
   // automatically yet (see docs/RECON-new-api.md section D).
@@ -430,6 +441,34 @@ export function findCliKeyIdByName(payload: unknown, name: string): number | nul
   return null
 }
 
+export interface NewApiExistingCliKeyMatch {
+  id: number
+  name: string
+}
+
+// Backs findExistingCliKey (below): a prefix match over potentially many
+// tokens, used to reuse an already-provisioned key (e.g. canvas-window.ts's
+// xingmang-canvas-* tokens) instead of unconditionally minting a new one.
+// Multiple matches can legitimately exist (a prior run of the bug this
+// closes, or the same account used from more than one machine before this
+// shipped); the highest id is the most recently created, and anything else
+// would be an arbitrary tie-break.
+export function findNewestCliKeyIdByNamePrefix(
+  payload: unknown,
+  namePrefix: string,
+): NewApiExistingCliKeyMatch | null {
+  let best: NewApiExistingCliKeyMatch | null = null
+  for (const entry of collectionEntries(payload)) {
+    if (!isRecord(entry)) continue
+    const name = asString(entry.name, '')
+    if (!name.startsWith(namePrefix)) continue
+    const id = entry.id
+    if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) continue
+    if (!best || id > best.id) best = { id, name }
+  }
+  return best
+}
+
 export function parseCliKeySecret(payload: unknown): string | null {
   const data = isRecord(payload) ? payload : null
   const candidate = data && typeof data.key === 'string'
@@ -595,6 +634,36 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
+  const findExistingCliKey = (namePrefix: string): Promise<NewApiCliKeyResult | null> => (
+    withSession(async (current) => {
+      const listRaw = await performRequest(
+        ctx,
+        tokenCollectionPath,
+        { method: 'GET', headers: authHeaders(current) },
+        'CLI Key 查询',
+      )
+      const listData = unwrapEnvelope(listRaw, 'CLI Key 查询', [current.accessToken])
+      const match = findNewestCliKeyIdByNamePrefix(listData, namePrefix)
+      if (!match) return null
+
+      const keyRaw = await performRequest(
+        ctx,
+        tokenKeyPath(match.id),
+        { method: 'POST', headers: authHeaders(current) },
+        'CLI Key 明文读取',
+      )
+      const keyData = unwrapEnvelope(keyRaw, 'CLI Key 明文读取', [current.accessToken])
+      const key = parseCliKeySecret(keyData)
+      // Unlike provisionCliKey, a reveal failure here is not itself an
+      // error worth surfacing -- the caller's contract for this function is
+      // "an existing usable key, or null", and falling back to provisioning
+      // a fresh one is always a safe, silent recovery (see
+      // canvas-window.ts). Throwing here would turn a stale/revoked-in-the-
+      // interim token into a hard failure instead.
+      return key ? { id: match.id, name: match.name, key } : null
+    })
+  )
+
   const refreshAccessToken = (): Promise<void> => withSession(async (current) => {
     if (current.cookies.length === 0) throw new Error('没有可用的登录凭据用于续期，请重新登录')
     const raw = await performRequest(
@@ -621,6 +690,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     getSessionState,
     getBalance,
     provisionCliKey,
+    findExistingCliKey,
     refreshAccessToken,
   }
 }
