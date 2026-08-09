@@ -13,6 +13,7 @@ import {
   codexDesktopLaunchDecision,
   commitStartupPlatformCapabilities,
   EmptyStatus,
+  initialOnboardingPreview,
   initialSidebarCollapsed,
   initialTheme,
   isDetectionFailed,
@@ -93,6 +94,10 @@ function App() {
   })
   const [appView, setAppView] = useState<AppView>('loading')
   const [startupStage, setStartupStage] = useState<StartupStage>('updates')
+  // Dev-only onboarding preview (XINGMANG_ONBOARDING_PREVIEW). Fixed at mount,
+  // false in every packaged build — see initialOnboardingPreview in
+  // app-shared.ts. Read by the startup gate below to bypass the welcome page.
+  const [previewOnboarding] = useState<boolean>(() => initialOnboardingPreview(window.location.search))
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTabId>('codexDesktop')
   const [configOpen, setConfigOpen] = useState(false)
   const [snapshot, setSnapshot] = useState<SystemSnapshot>(EmptyStatus)
@@ -487,8 +492,11 @@ function App() {
           // A brand-new install (no provider ever configured) sees the
           // welcome page first; a returning user who simply hasn't finished
           // this particular CLI's setup goes straight to onboarding, same
-          // as before this page existed.
-          setAppView(shouldShowWelcome(latestConfig) ? 'welcome' : 'onboarding')
+          // as before this page existed. Preview mode bypasses the welcome
+          // gate entirely — it also clears the in-memory config, which would
+          // otherwise make shouldShowWelcome() true and defeat the whole
+          // point of forcing onboarding into view.
+          setAppView(previewOnboarding ? 'onboarding' : (shouldShowWelcome(latestConfig) ? 'welcome' : 'onboarding'))
           return
         }
         setAppView('dashboard')

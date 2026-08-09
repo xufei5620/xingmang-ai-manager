@@ -407,7 +407,7 @@ try {
     },
     {
       id: 'plugins',
-      label: 'Plugins/市场',
+      label: '插件市场',
       heading: 'Plugins / 市场',
       keyControl: (root) => root.getByRole('tablist', { name: 'Plugin 视图' }),
     },
@@ -448,8 +448,15 @@ try {
       keyControl: (root) => root.getByRole('group', { name: '主题' }),
     },
   ]
-  const expectedNavigation = ['工具概览', ...navigationPages.map(({ label }) => label)]
-  const sidebarNavigationItems = page.locator('.main-nav .nav-item, .utility-nav .nav-item')
+  // Sidebar IA (navigation.ts / Sidebar.tsx, nav scheme A #67 W1): 'use'
+  // (工具概览/会话管理/无限画布) and 'extensions' (MCP/Skills/插件市场) render
+  // inline; the other six pages live behind "更多", collapsed by default (a
+  // fresh profile has no persisted app-settings sidebarMoreExpanded). The
+  // toggle itself is a .nav-item, so 7 top-level items are visible before
+  // anyone expands anything (docs/PROPOSAL-nav-onboarding.md: "✓≤8").
+  const topLevelNavLabels = ['工具概览', '会话管理', '无限画布', 'MCP 管理', 'Skills 管理', '插件市场', '更多']
+  const moreGroupPageIds = new Set(['backups', 'health', 'maintenance', 'feedback', 'updates', 'settings'])
+  const sidebarNavigationItems = page.locator('.main-nav .nav-item')
   result.navigationItemCount = await sidebarNavigationItems.count()
   result.navigationItemsFullyVisible = await sidebarNavigationItems.evaluateAll((items) => (
     items.every((item) => {
@@ -457,13 +464,23 @@ try {
       return bounds.top >= 0 && bounds.bottom <= window.innerHeight
     })
   ))
+  const moreToggle = page.locator('.main-nav .nav-more-toggle')
+  result.moreGroupCollapsedByDefault = await moreToggle.getAttribute('aria-expanded') === 'false'
+    && await page.locator('#sidebar-more-items').count() === 0
+  await moreToggle.click()
+  await page.locator('#sidebar-more-items').waitFor({ state: 'visible' })
+  result.moreGroupExpandsOnDemand = await moreToggle.getAttribute('aria-expanded') === 'true'
+    && await page.locator('#sidebar-more-items .nav-item').count() === moreGroupPageIds.size
   result.navigationPagesReachable = true
   result.navigationPagesNoHorizontalOverflow = true
   result.navigationActiveStateCorrect = true
   result.navigationPageChecks = []
   const multiProviderPageIds = new Set(['sessions', 'mcp', 'skills', 'plugins'])
   for (const { id, label, heading, keyControl } of navigationPages) {
-    await page.locator('.main-nav, .utility-nav').getByRole('button', { name: label, exact: true }).click()
+    // "更多" was already expanded above (it stays expanded across navigation
+    // — Sidebar's onNavigate never touches moreExpanded), so every page's
+    // button, grouped or not, is reachable through the same container.
+    await page.locator('.main-nav').getByRole('button', { name: label, exact: true }).click()
     const pageRoot = page.locator(`.main-content [data-page-id="${id}"]`)
     await pageRoot.waitFor({ state: 'visible', timeout: 10_000 })
     if (id === 'mcp' || id === 'plugins') {
@@ -775,8 +792,10 @@ try {
     || !result.sidebarCollapsedPersisted
     || !result.sidebarTooltipVisible
     || !result.sidebarExpandedAgain
-    || result.navigationItemCount !== expectedNavigation.length
+    || result.navigationItemCount !== topLevelNavLabels.length
     || !result.navigationItemsFullyVisible
+    || !result.moreGroupCollapsedByDefault
+    || !result.moreGroupExpandsOnDemand
     || !result.navigationPagesReachable
     || !result.navigationPagesNoHorizontalOverflow
     || !result.navigationActiveStateCorrect

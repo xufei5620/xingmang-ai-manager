@@ -112,6 +112,20 @@ export function shouldShowWelcome(config: AppConfigSummary | null): boolean {
   return Object.values(config.providers).every((provider) => !provider.hasApiKey || !provider.matchesRelay)
 }
 
+/**
+ * Dev-only override for XINGMANG_ONBOARDING_PREVIEW, mirroring the `?theme=`
+ * override `initialTheme()` reads below. main.ts only ever appends
+ * `?onboardingPreview=1` to the renderer URL when its own preview flag is
+ * set — which itself requires `!app.isPackaged` — so this reads back false
+ * in any packaged build. Preview mode also clears the in-memory config
+ * (see system-service.ts buildConfigSummary), which would otherwise make
+ * shouldShowWelcome() true and strand the preview behind the welcome page;
+ * the startup gate reads this flag to route straight to onboarding instead.
+ */
+export function initialOnboardingPreview(search: string): boolean {
+  return new URLSearchParams(search).get('onboardingPreview') === '1'
+}
+
 export async function commitStartupPlatformCapabilities(
   load: () => Promise<PlatformCapabilities>,
   commit: (capabilities: PlatformCapabilities) => void,

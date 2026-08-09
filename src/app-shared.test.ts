@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isDetectionFailed, sameDesktopStatus, shouldShowWelcome } from './app-shared'
+import { initialOnboardingPreview, isDetectionFailed, sameDesktopStatus, shouldShowWelcome } from './app-shared'
 import type { AppConfigSummary, DesktopAppStatus, ProviderConfigSummary, ProviderId } from './types'
 
 const baseDesktopStatus: DesktopAppStatus = {
@@ -102,5 +102,24 @@ describe('shouldShowWelcome', () => {
   it('still shows the welcome page when a key exists but points at a non-xingmang relay', () => {
     const config = configWith({ codex: unconfiguredProvider({ hasApiKey: true, matchesRelay: false }) })
     expect(shouldShowWelcome(config)).toBe(true)
+  })
+})
+
+describe('initialOnboardingPreview', () => {
+  it('is false with no query string, matching every packaged build', () => {
+    expect(initialOnboardingPreview('')).toBe(false)
+  })
+
+  it('is false when the onboardingPreview param is absent among other params', () => {
+    expect(initialOnboardingPreview('?theme=dark')).toBe(false)
+  })
+
+  it('rejects truthy-looking values other than the exact "1" main.ts appends', () => {
+    expect(initialOnboardingPreview('?onboardingPreview=true')).toBe(false)
+    expect(initialOnboardingPreview('?onboardingPreview=0')).toBe(false)
+  })
+
+  it('is true for the exact ?onboardingPreview=1 main.ts appends in dev preview mode', () => {
+    expect(initialOnboardingPreview('?onboardingPreview=1')).toBe(true)
   })
 })

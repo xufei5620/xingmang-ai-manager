@@ -224,12 +224,14 @@ function createWindow(
   if (devServerUrl) {
     const url = new URL(devServerUrl)
     url.searchParams.set('theme', stored.theme)
+    if (previewOnboarding) url.searchParams.set('onboardingPreview', '1')
     void window.loadURL(url.toString()).catch((error) => {
       runtimeLog.exception('renderer', 'page.load.failed', error)
     })
   } else {
     const applicationUrl = new URL('index.html', packagedApplicationBaseUrl)
     applicationUrl.searchParams.set('theme', stored.theme)
+    if (previewOnboarding) applicationUrl.searchParams.set('onboardingPreview', '1')
     void window.loadURL(applicationUrl.href).catch((error) => {
       runtimeLog.exception('renderer', 'page.load.failed', error)
     })
