@@ -35,6 +35,18 @@ export interface NewApiClientOptions {
   fetchImpl?: NewApiFetch
   timeoutMs?: number
   maxResponseBytes?: number
+  // Fired synchronously every time the in-memory session is established,
+  // rotated, or cleared -- login, logout, a silent 401 refresh-and-retry, and
+  // restoreSession() all funnel through the same setSession() choke point, so
+  // this is the *only* hook a host app needs to keep an on-disk encrypted
+  // copy (see electron/account-session-store.ts) in sync, regardless of which
+  // caller (the main window's account:* handlers, or the canvas window's own
+  // token provisioning -- both can share one client instance) triggered the
+  // change. Receives null on logout or a failed silent-refresh-and-retry.
+  // Fire-and-forget by design: a disk hiccup persisting the session must
+  // never fail the account operation that triggered it (I13/I8 territory
+  // belongs to the host app, not this network client).
+  onSessionChange?: (persistable: NewApiPersistableSession | null) => void
 }
 
 export interface NewApiAccountStatus {
@@ -152,10 +164,31 @@ export interface NewApiClientService {
    * nothing matches; two (list, then reveal) when something does.
    */
   findExistingCliKey(namePrefix: string): Promise<NewApiCliKeyResult | null>
-  // Exchanges the captured refresh cookie for a new access_token. Exposed for
-  // a future silent-retry-on-401 caller; nothing in this skeleton invokes it
-  // automatically yet (see docs/RECON-new-api.md section D).
+  // Exchanges the captured refresh cookie for a new access_token. Every
+  // authenticated call already retries through this same path once on a 401
+  // (see withSession below); exposed directly too for a caller that wants to
+  // proactively refresh ahead of a call it knows is coming.
   refreshAccessToken(): Promise<void>
+  // Main-process-only (never serialize across IPC -- see
+  // NewApiPersistableSession's own doc comment). Lets a host app (main.ts)
+  // read out what to persist right after login, independent of the
+  // onSessionChange push hook -- e.g. to do an initial write without having
+  // to thread the callback through every call site.
+  getPersistableSession(): NewApiPersistableSession | null
+  // Re-establishes a session from a persisted {userId, cookies} pair captured
+  // by a previous run (electron/account-session-store.ts), by spending the
+  // refresh cookie for a fresh access_token and then re-fetching the profile
+  // (a persisted session never carries a profile snapshot -- see
+  // NewApiPersistableSession). Resolves false -- session stays unauthenticated,
+  // caller should discard the persisted file -- when the credential is
+  // definitively dead (server says 401, or the input fails basic shape
+  // checks). Rethrows for anything else (network/timeout/unexpected server
+  // response), so a caller can tell "this credential is gone" apart from
+  // "couldn't reach the server this time" and keep the file for a later retry
+  // in the latter case (task requirement: 恢复失败/过期一律干净降级为未登录，
+  // 不报错卡启动 -- "failed" and "expired" are handled differently on purpose).
+  // No-ops (returns true) if a session already exists.
+  restoreSession(persisted: NewApiPersistableSession): Promise<boolean>
 }
 
 // Thrown when the server responds 401 on an authenticated call. Kept
@@ -173,6 +206,18 @@ interface InternalSession {
   userId: number
   cookies: string[]
   profile: NewApiAccountProfile
+}
+
+// UNLIKE every other exported type in this file, this one must never cross
+// the IPC boundary into the renderer (it carries the refresh cookie, which is
+// as sensitive as a password -- I3/I13). It exists purely for a same-process
+// caller (main.ts, via onSessionChange/getPersistableSession/restoreSession)
+// to persist and restore the long-lived credential; the access token is
+// deliberately excluded because it is short-lived and cheaply re-derived from
+// this via a refresh call (docs/RECON-new-api.md section D).
+export interface NewApiPersistableSession {
+  userId: number
+  cookies: string[]
 }
 
 interface RequestContext {
@@ -506,9 +551,73 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   let session: InternalSession | null = null
 
+  // Every reassignment of `session` funnels through here so onSessionChange
+  // (the one hook a host app needs for on-disk persistence) can never be
+  // forgotten at a new call site -- see its doc comment in
+  // NewApiClientOptions for why that matters.
+  const setSession = (next: InternalSession | null): void => {
+    session = next
+    options.onSessionChange?.(
+      next ? { userId: next.userId, cookies: [...next.cookies] } : null,
+    )
+  }
+
   const requireSession = (): InternalSession => {
     if (!session) throw new Error('请先登录星芒账号')
     return session
+  }
+
+  // Shared by refreshAccessToken, restoreSession, and withSession's own
+  // silent-retry below. Deliberately does *not* go through withSession
+  // itself: withSession's retry path calls this to recover from a 401, and
+  // if the refresh endpoint could itself somehow answer 401, routing through
+  // withSession here would recurse into another retry attempt instead of
+  // failing cleanly.
+  const performRefresh = async (current: InternalSession): Promise<InternalSession> => {
+    if (current.cookies.length === 0) throw new Error('没有可用的登录凭据用于续期，请重新登录')
+    const raw = await performRequest(
+      ctx,
+      refreshPath,
+      { method: 'POST', headers: { Cookie: current.cookies.join('; ') } },
+      '登录状态续期',
+    )
+    const data = parseRefreshResponseData(unwrapEnvelope(raw, '登录状态续期', [current.accessToken]))
+    const newCookies = extractSessionCookies(raw.headers)
+    return {
+      ...current,
+      accessToken: data.accessToken,
+      cookies: newCookies.length > 0 ? newCookies : current.cookies,
+    }
+  }
+
+  // Runs at most one silent refresh-and-retry after a 401 (docs/RECON-new-api.md
+  // section D: "401 时凭 refresh cookie 静默续期"). Bounded to exactly one
+  // attempt by construction -- this function does not call itself, and the
+  // retried run() is only ever invoked once -- so a session that is well and
+  // truly dead fails fast instead of looping. If refresh itself fails for any
+  // reason, or the retried call 401s again even with a fresh access_token,
+  // the session is cleared and the *original* 401 is what the caller sees: a
+  // failed recovery attempt shouldn't bury the real failure behind unrelated
+  // refresh-plumbing noise (e.g. a network blip mid-refresh).
+  const retryAfterSilentRefresh = async <T>(
+    failedSession: InternalSession,
+    run: (current: InternalSession) => Promise<T>,
+    originalError: NewApiAuthenticationError,
+  ): Promise<T> => {
+    let refreshed: InternalSession
+    try {
+      refreshed = await performRefresh(failedSession)
+    } catch {
+      setSession(null)
+      throw originalError
+    }
+    setSession(refreshed)
+    try {
+      return await run(refreshed)
+    } catch (retryError) {
+      if (retryError instanceof NewApiAuthenticationError) setSession(null)
+      throw retryError
+    }
   }
 
   const withSession = async <T>(run: (current: InternalSession) => Promise<T>): Promise<T> => {
@@ -516,8 +625,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     try {
       return await run(current)
     } catch (error) {
-      if (error instanceof NewApiAuthenticationError) session = null
-      throw error
+      if (!(error instanceof NewApiAuthenticationError)) throw error
+      return await retryAfterSilentRefresh(current, run, error)
     }
   }
 
@@ -591,13 +700,13 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const raw = await performRequest(ctx, loginPath, { method: 'POST', body }, '账号登录')
     const data = parseLoginResponseData(unwrapEnvelope(raw, '账号登录', [password]))
     const cookies = extractSessionCookies(raw.headers)
-    session = { accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account }
+    setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
     // Strip accessToken before it ever leaves the main process (I3/I13).
     return { account: data.account, accessExpiresAt: data.accessExpiresAt }
   }
 
   const logout = (): void => {
-    session = null
+    setSession(null)
   }
 
   const isAuthenticated = (): boolean => session !== null
@@ -699,22 +808,76 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
-  const refreshAccessToken = (): Promise<void> => withSession(async (current) => {
-    if (current.cookies.length === 0) throw new Error('没有可用的登录凭据用于续期，请重新登录')
-    const raw = await performRequest(
-      ctx,
-      refreshPath,
-      { method: 'POST', headers: { Cookie: current.cookies.join('; ') } },
-      '登录状态续期',
-    )
-    const data = parseRefreshResponseData(unwrapEnvelope(raw, '登录状态续期', [current.accessToken]))
-    const newCookies = extractSessionCookies(raw.headers)
-    session = {
-      ...current,
-      accessToken: data.accessToken,
-      cookies: newCookies.length > 0 ? newCookies : current.cookies,
+  // Deliberately does *not* go through withSession: this function IS
+  // withSession's retry primitive (via performRefresh), so routing it back
+  // through withSession would let a 401 from the refresh endpoint itself
+  // trigger another silent-refresh attempt -- see performRefresh's own
+  // comment. Mirrors withSession's original clear-only-on-401 semantics: a
+  // transient network/timeout error here must not spuriously log the user
+  // out, only a definitive "this credential is dead" from the server should.
+  const refreshAccessToken = async (): Promise<void> => {
+    const current = requireSession()
+    try {
+      setSession(await performRefresh(current))
+    } catch (error) {
+      if (error instanceof NewApiAuthenticationError) setSession(null)
+      throw error
     }
-  })
+  }
+
+  const getPersistableSession = (): NewApiPersistableSession | null => (
+    session ? { userId: session.userId, cookies: [...session.cookies] } : null
+  )
+
+  // A restored session never carries a real profile (a persisted file only
+  // ever holds {userId, cookies} -- see NewApiPersistableSession); this
+  // placeholder is discarded a few lines down in restoreSession, once the
+  // post-refresh /api/user/self call resolves the real one. Only exists so
+  // the intermediate value performRefresh operates on satisfies InternalSession.
+  const placeholderProfile = (userId: number): NewApiAccountProfile => (
+    { userId, username: '', group: null, role: null, quota: null, usedQuota: null }
+  )
+
+  const restoreSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
+    if (session) return true
+    if (!Number.isInteger(persisted.userId) || persisted.userId <= 0 || persisted.cookies.length === 0) {
+      return false
+    }
+    const seed: InternalSession = {
+      accessToken: '',
+      userId: persisted.userId,
+      cookies: [...persisted.cookies],
+      profile: placeholderProfile(persisted.userId),
+    }
+    let refreshed: InternalSession
+    try {
+      refreshed = await performRefresh(seed)
+    } catch (error) {
+      if (error instanceof NewApiAuthenticationError) return false
+      throw error
+    }
+    let profile: NewApiAccountProfile
+    try {
+      const selfRaw = await performRequest(
+        ctx,
+        selfPath,
+        { method: 'GET', headers: authHeaders(refreshed) },
+        '登录状态恢复',
+      )
+      profile = parseAccountProfile(unwrapEnvelope(selfRaw, '登录状态恢复', [refreshed.accessToken]))
+    } catch (error) {
+      if (error instanceof NewApiAuthenticationError) return false
+      throw error
+    }
+    // Defensive consistency check: New-Api-User must equal the account the
+    // Bearer token was actually minted for (RECON 坑2), so a self response for
+    // a different user would mean the persisted userId no longer matches
+    // reality -- treat that the same as an invalid credential rather than
+    // silently logging the caller in as the wrong account.
+    if (profile.userId !== persisted.userId) return false
+    setSession({ ...refreshed, profile })
+    return true
+  }
 
   return {
     getStatus,
@@ -728,5 +891,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     provisionCliKey,
     findExistingCliKey,
     refreshAccessToken,
+    getPersistableSession,
+    restoreSession,
   }
 }

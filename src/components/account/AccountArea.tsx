@@ -1,24 +1,31 @@
-import { AlertTriangle, UserRound, Wallet } from 'lucide-react'
+import { AlertTriangle, LogOut, UserRound, Wallet } from 'lucide-react'
 import { formatBalanceUsd, type AccountAreaStatus, type AccountSnapshot } from './account-stub'
 
 /**
  * Sidebar-bottom account block. Three states driven by `status`/`snapshot`
  * (see account-stub.ts) — guest is the pre-existing W1 button, unchanged;
- * active/low-balance render an identity row plus a separate recharge row so
- * the recharge control is a real `<button>` and never nested inside another
- * button. Collapsed-sidebar handling (avatar + tooltip only) is generic CSS
- * already covering `.account-area`/`.account-recharge-button`/`[data-sidebar-tooltip]` —
- * see styles.css.
+ * active/low-balance render an identity row (now with a small logout icon
+ * button in its corner -- W2, docs/ACCOUNT-PLAN.md) plus a separate recharge
+ * row so the recharge control is a real `<button>` and never nested inside
+ * another button. The logout button nests fine: unlike the guest state, the
+ * identity wrapper here is a plain `<div>`, not a `<button>`. A full account
+ * menu (profile/billing/etc.) is W4's job; this is deliberately just enough
+ * to get back to signed-out. Collapsed-sidebar handling (avatar + tooltip
+ * only) is generic CSS already covering
+ * `.account-area`/`.account-recharge-button`/`.account-logout-button`/
+ * `[data-sidebar-tooltip]` — see styles.css.
  */
 export function AccountArea({
   status,
   snapshot,
   onLogin,
+  onLogout,
   onRecharge,
 }: {
   status: AccountAreaStatus
   snapshot: AccountSnapshot
   onLogin: () => void
+  onLogout: () => void
   onRecharge: () => void
 }) {
   if (status === 'guest') {
@@ -56,6 +63,15 @@ export function AccountArea({
             余额 {balanceText}
           </small>
         </span>
+        <button
+          type="button"
+          className="account-logout-button"
+          aria-label="登出星芒账号"
+          title="登出"
+          onClick={onLogout}
+        >
+          <LogOut size={14} aria-hidden="true" />
+        </button>
       </div>
       <button
         type="button"

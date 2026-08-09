@@ -1501,6 +1501,7 @@ input:focus-visible {
 }
 
 .account-area {
+  position: relative;
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr);
   align-items: center;
@@ -1515,6 +1516,31 @@ input:focus-visible {
   cursor: pointer;
   text-align: left;
   transition: background-color var(--duration-150) var(--ease-standard), border-color var(--duration-150) var(--ease-standard);
+}
+
+/* Minimal W2 logout entry point (docs/ACCOUNT-PLAN.md) -- a full account
+   menu is W4's job. Absolutely positioned in the identity row's own corner
+   rather than a third grid column, so it doesn't disturb account-copy's
+   existing two-column layout or its text-overflow ellipsis. */
+.account-logout-button {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  color: var(--text-muted);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  transition: background-color var(--duration-150) var(--ease-standard), color var(--duration-150) var(--ease-standard);
+}
+
+.account-logout-button:hover {
+  color: var(--text-primary);
+  background: var(--surface-adaptive-hover);
 }
 
 .account-area:hover {
@@ -1536,6 +1562,10 @@ input:focus-visible {
   display: flex;
   flex-direction: column;
   min-width: 0;
+  /* Right padding reserves room for .account-logout-button's absolute
+     top-right position, so a long nickname's ellipsis truncates before the
+     button rather than rendering underneath it. */
+  padding-right: 24px;
   gap: 2px;
 }
 
@@ -3870,8 +3900,11 @@ button:disabled {
 
 /* Collapsed sidebar shows the account area as avatar + tooltip only — the
    recharge row has nowhere to put a label, so it hides entirely rather than
-   collapsing to an ambiguous icon-only button. */
-.sidebar-collapsed .account-recharge-button {
+   collapsing to an ambiguous icon-only button. The logout button hides for
+   the same reason (and to avoid a stray icon overlapping the centered
+   avatar once account-copy itself is hidden below). */
+.sidebar-collapsed .account-recharge-button,
+.sidebar-collapsed .account-logout-button {
   display: none;
 }
 

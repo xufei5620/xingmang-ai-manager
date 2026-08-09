@@ -93,6 +93,8 @@ function accountServiceStub(): NewApiClientService {
     provisionCliKey: vi.fn() as never,
     findExistingCliKey: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
+    getPersistableSession: vi.fn(() => null),
+    restoreSession: vi.fn(async () => false),
   }
 }
 
@@ -641,6 +643,90 @@ describe('registerIpcHandlers', () => {
       await expect(handler(trustedEvent())).resolves.toBeUndefined()
       expect(openCanvasWindow).toHaveBeenCalledTimes(1)
       expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+    } finally {
+      dispose()
+    }
+  })
+
+  it('awaits accountSessionReady before reading session state, so a slow startup restore is never missed by the first query', async () => {
+    let resolveReady: () => void = () => {}
+    const accountSessionReady = new Promise<void>((resolve) => { resolveReady = resolve })
+    const accountService = accountServiceStub()
+    const restoredAccount = {
+      userId: 7,
+      username: 'restored-user',
+      group: null,
+      role: null,
+      quota: null,
+      usedQuota: null,
+    }
+    // Starts out reporting signed-out, as the shared client does before
+    // main.ts's startup restoreAccountSessionOnStartup() has mutated its
+    // in-memory session. Only flips to signed-in once resolveReady() below
+    // fires, standing in for that restore having finished -- if the handler
+    // ever regressed to reading getSessionState() *before* awaiting
+    // accountSessionReady, it would observe the stale signed-out value
+    // captured at call time instead and this assertion would fail.
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
+    const dispose = registerIpcHandlers({
+      systemService: serviceStub(),
+      accountService,
+      accountSessionReady,
+      sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
+      providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
+      backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
+      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
+      extensionService: {} as never,
+      providerExtensionService: {} as never,
+      urlPolicy: { rendererRoot: 'C:\\app\\dist', devServerUrl: 'http://localhost:5173' },
+      previewOnboarding: false,
+      externalUrlAllowlist: [],
+      updaterService: updaterStub(),
+      broadcastUpdate: vi.fn(),
+      setWindowMode: vi.fn(),
+      setWindowTheme: vi.fn(),
+      openCanvasWindow: vi.fn(async () => undefined),
+    })
+    try {
+      const handler = electronMocks.handlers.get('account:get-session')!
+      const pending = handler(trustedEvent())
+
+      vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: true, account: restoredAccount })
+      resolveReady()
+
+      await expect(pending).resolves.toEqual({ authenticated: true, account: restoredAccount })
+    } finally {
+      dispose()
+    }
+  })
+
+  it('never blocks on a stray accountSessionReady rejection', async () => {
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
+    const dispose = registerIpcHandlers({
+      systemService: serviceStub(),
+      accountService,
+      accountSessionReady: Promise.reject(new Error('restore blew up')),
+      sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
+      providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
+      backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
+      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
+      extensionService: {} as never,
+      providerExtensionService: {} as never,
+      urlPolicy: { rendererRoot: 'C:\\app\\dist', devServerUrl: 'http://localhost:5173' },
+      previewOnboarding: false,
+      externalUrlAllowlist: [],
+      updaterService: updaterStub(),
+      broadcastUpdate: vi.fn(),
+      setWindowMode: vi.fn(),
+      setWindowTheme: vi.fn(),
+      openCanvasWindow: vi.fn(async () => undefined),
+    })
+    try {
+      const handler = electronMocks.handlers.get('account:get-session')!
+      await expect(handler(trustedEvent())).resolves.toEqual({ authenticated: false, account: null })
     } finally {
       dispose()
     }

@@ -70,9 +70,18 @@ export interface IpcRegistrationOptions {
   extensionService: CodexExtensionService
   providerExtensionService: ProviderExtensionService
   // Defaults to a real client talking to the production New-Api instance
-  // when the host app does not supply one (main.ts is out of scope for this
-  // change); tests inject a stub the same way they do for other services.
+  // when the host app does not supply one; tests inject a stub the same way
+  // they do for other services.
   accountService?: NewApiClientService
+  // Resolves once main.ts's startup session-restore attempt (see
+  // account-session-store.ts's restoreAccountSessionOnStartup) has settled,
+  // success or failure -- awaited by account:get-session so the renderer's
+  // very first query on mount never races the async refresh-then-self round
+  // trip restoreSession() performs (docs/RECON-new-api.md section D). Never
+  // rejects by contract; defaults to an already-resolved promise so tests and
+  // any host that never attempts a restore see the pre-existing synchronous
+  // behavior unchanged.
+  accountSessionReady?: Promise<void>
   urlPolicy: ApplicationUrlPolicy
   previewOnboarding: boolean
   externalUrlAllowlist: readonly string[]
@@ -1024,7 +1033,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.login(parseAccountLoginInput(input))
   ))
   registerTrustedHandler('account:logout', () => accountService.logout())
-  registerTrustedHandler('account:get-session', () => accountService.getSessionState())
+  const accountSessionReady = options.accountSessionReady ?? Promise.resolve()
+  registerTrustedHandler('account:get-session', async () => {
+    // Guaranteed not to reject (see the option's own doc comment), but a
+    // stray .catch() here costs nothing and means a future regression there
+    // degrades to "restore didn't happen" instead of an unhandled rejection.
+    await accountSessionReady.catch(() => undefined)
+    return accountService.getSessionState()
+  })
   registerTrustedHandler('account:get-balance', () => accountService.getBalance())
   registerTrustedHandler('account:provision-cli-key', () => accountService.provisionCliKey())
   registerTrustedHandler('account:register', (_event, input: unknown) => (

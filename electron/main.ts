@@ -7,11 +7,13 @@ import {
   dialog,
   Menu,
   protocol,
+  safeStorage,
   screen,
   session,
   type WebContents,
 } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { AccountSessionStore, restoreAccountSessionOnStartup } from './account-session-store'
 import { AppSettingsStore, type AppTheme } from './app-settings'
 import { ConfigBackupStore } from './backups'
 import { providerIds } from './catalog'
@@ -501,13 +503,60 @@ if (!hasSingleInstanceLock) {
     registerApplicationProtocol(urlPolicy)
     const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
 
+    // W2 login persistence (docs/ACCOUNT-PLAN.md): safeStorage wraps the OS
+    // credential store (DPAPI on Windows, Keychain on macOS). When it is
+    // unavailable, this deliberately does *not* fall back to writing the
+    // refresh cookie in plaintext -- persistence is simply skipped for this
+    // run, same as "safeStorage 不可用...不明文落盘兜底" requires. Logged once
+    // here rather than on every save so a headless/CI-like environment
+    // doesn't spam the log on each login.
+    if (!safeStorage.isEncryptionAvailable()) {
+      runtimeLog.log(
+        'warn',
+        'account',
+        'session.persist.unavailable',
+        '系统未提供安全加密存储，登录状态本次不会持久化，下次启动需重新登录',
+      )
+    }
+    const accountSessionStore = new AccountSessionStore(
+      path.join(managerDataDirectory, 'account-session.dat'),
+      safeStorage,
+    )
     // Constructed explicitly (rather than left to registerIpcHandlers' own
     // internal default) so the canvas window controller below can share this
     // exact instance -- it is the one place that knows whether the user is
     // actually logged in, and a second, independent createNewApiClient()
     // would always report "logged out" regardless of what the user did
-    // through the main app's own account:* handlers.
-    const accountService = createNewApiClient()
+    // through the main app's own account:* handlers. onSessionChange is the
+    // single choke point (see new-api-client.ts) that keeps the encrypted
+    // file in sync with login/logout/silent-refresh from *either* consumer of
+    // this shared instance -- a disk failure here only ever gets logged, it
+    // must never surface as a failure of whatever account action triggered it.
+    const accountService = createNewApiClient({
+      onSessionChange: (persistable) => {
+        if (persistable) {
+          void accountSessionStore.save(persistable).catch((error) => {
+            runtimeLog.log('warn', 'account', 'session.persist.failed', '登录状态持久化失败', {
+              reason: error instanceof Error ? error.message : String(error),
+            })
+          })
+        } else {
+          void accountSessionStore.clear().catch((error) => {
+            runtimeLog.log('warn', 'account', 'session.clear.failed', '登录状态清除失败', {
+              reason: error instanceof Error ? error.message : String(error),
+            })
+          })
+        }
+      },
+    })
+    // Fire-and-forget: never blocks window creation (see this promise's own
+    // consumer, ipc.ts's account:get-session handler, for why that race is
+    // still handled correctly without blocking startup on a slow network).
+    const accountSessionReady = restoreAccountSessionOnStartup({
+      accountService,
+      store: accountSessionStore,
+      runtimeLog,
+    })
     const canvasController = createCanvasWindowController({
       canvasDistRoot: canvasDistRoot(),
       externalUrlAllowlist: canvasExternalUrlAllowlist,
@@ -521,6 +570,7 @@ if (!hasSingleInstanceLock) {
     const unregisterIpcHandlers = registerIpcHandlers({
       systemService,
       accountService,
+      accountSessionReady,
       sessionsService,
       providerSessionsService,
       backupStore,

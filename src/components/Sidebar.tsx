@@ -34,6 +34,7 @@ interface SidebarProps {
   onToggleTheme: () => void
   onToggleMoreExpanded: () => void
   onAccountLogin: () => void
+  onAccountLogout: () => void
   onRecharge: () => void
 }
 
@@ -71,6 +72,7 @@ export function Sidebar({
   onToggleTheme,
   onToggleMoreExpanded,
   onAccountLogin,
+  onAccountLogout,
   onRecharge,
 }: SidebarProps) {
   const updatePhase = updateState?.phase
@@ -170,6 +172,7 @@ export function Sidebar({
           status={accountStatus}
           snapshot={accountSnapshot}
           onLogin={onAccountLogin}
+          onLogout={onAccountLogout}
           onRecharge={onRecharge}
         />
         <button

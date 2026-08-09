@@ -825,6 +825,29 @@ function App() {
     }
   }
 
+  // W2 (docs/ACCOUNT-PLAN.md): the account:logout IPC call clears both the
+  // main process's in-memory session and its safeStorage-encrypted disk copy
+  // (electron/new-api-client.ts's onSessionChange -> account-session-store.ts);
+  // this only has to reset local UI state to match. Shares accountBusyRef with
+  // login/register so a logout click can't race an in-flight login/register
+  // submit (same reentrancy guard, same reasoning as those two handlers).
+  const handleAccountLogout = async () => {
+    if (accountBusyRef.current) return
+    accountBusyRef.current = true
+    setAccountBusy(true)
+    try {
+      await window.xingmang.logoutAccount()
+      setAccountSession({ authenticated: false, account: null })
+      setAccountBalance(null)
+      setToast({ type: 'success', message: '已登出星芒账号' })
+    } catch (error) {
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    } finally {
+      accountBusyRef.current = false
+      setAccountBusy(false)
+    }
+  }
+
   const installNodeRuntime = async () => {
     if (nodeRuntimeInstalling) return
     if (platformCapabilities.nodeRuntimeInstall === 'external') {
@@ -1202,6 +1225,7 @@ function App() {
         accountStatus={accountStatus}
         accountSnapshot={accountSnapshot}
         onAccountLogin={() => setAccountDialog('login')}
+        onAccountLogout={() => void handleAccountLogout()}
         onRecharge={() => setToast({ type: 'success', message: '充值功能即将开放' })}
       />
 

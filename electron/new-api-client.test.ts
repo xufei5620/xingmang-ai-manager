@@ -888,6 +888,231 @@ describe('refreshAccessToken', () => {
   })
 })
 
+describe('silent 401 refresh-and-retry (withSession)', () => {
+  it('refreshes once and transparently retries the whole call on a single 401', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'rotated-token', access_expires_at: null },
+      }))
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
+
+    const balance = await client.getBalance()
+
+    expect(balance.quota).toBe(1_000_000)
+    expect(client.isAuthenticated()).toBe(true)
+    expect(fetchImpl).toHaveBeenCalledTimes(5)
+    // call order: status, self (401), refresh, status (retry), self (retry)
+    const [refreshUrl] = fetchImpl.mock.calls[2]
+    expect(String(refreshUrl)).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+    const retriedSelfHeaders = fetchImpl.mock.calls[4][1]?.headers as Record<string, string>
+    expect(retriedSelfHeaders.Authorization).toBe('Bearer rotated-token')
+  })
+
+  it('attempts exactly one refresh, then surfaces the original 401 when the refresh call itself fails', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockRejectedValueOnce(new TypeError('network down'))
+
+    await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(false)
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+    expect(String(fetchImpl.mock.calls[2][0])).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+  })
+
+  it('gives up after exactly one refresh attempt when the retried call 401s again (bounded retry, no loop)', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 已变化', 401))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'rotated-token', access_expires_at: null },
+      }))
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('AuthVersion 仍然异常', 401))
+
+    await expect(client.getBalance()).rejects.toBeInstanceOf(NewApiAuthenticationError)
+    expect(client.isAuthenticated()).toBe(false)
+    // Exactly 5 calls -- a second refresh attempt would make this 6 or more.
+    expect(fetchImpl).toHaveBeenCalledTimes(5)
+  })
+
+  it('does not attempt a refresh at all for a non-401 failure', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(failureResponse('已达到 Key 数量上限'))
+
+    await expect(client.provisionCliKey()).rejects.toThrow('已达到 Key 数量上限')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(client.isAuthenticated()).toBe(true)
+  })
+})
+
+describe('onSessionChange', () => {
+  it('fires with {userId, cookies} on login and with null on logout', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const onSessionChange = vi.fn()
+    fetchImpl.mockResolvedValueOnce(loginResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, onSessionChange })
+
+    await client.login({ username: 'tester', password: 'correct horse battery staple' })
+    expect(onSessionChange).toHaveBeenCalledTimes(1)
+    expect(onSessionChange).toHaveBeenLastCalledWith({ userId: 42, cookies: ['refresh_token=cookie-value-1'] })
+
+    client.logout()
+    expect(onSessionChange).toHaveBeenCalledTimes(2)
+    expect(onSessionChange).toHaveBeenLastCalledWith(null)
+  })
+
+  it('fires again with rotated cookies after a silent refresh-and-retry', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const onSessionChange = vi.fn()
+    fetchImpl.mockResolvedValueOnce(loginResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, onSessionChange })
+    await client.login({ username: 'tester', password: 'x' })
+    onSessionChange.mockClear()
+
+    fetchImpl
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(failureResponse('expired', 401))
+      .mockResolvedValueOnce(jsonResponse(
+        { success: true, message: '', data: { access_token: 'rotated-token', access_expires_at: null } },
+        {},
+        ['refresh_token=cookie-value-2'],
+      ))
+      .mockResolvedValueOnce(statusResponse())
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
+
+    await client.getBalance()
+
+    expect(onSessionChange).toHaveBeenCalledWith({ userId: 42, cookies: ['refresh_token=cookie-value-2'] })
+  })
+})
+
+describe('getPersistableSession', () => {
+  it('returns null when signed out', () => {
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl: vi.fn<NewApiFetch>() })
+    expect(client.getPersistableSession()).toBeNull()
+  })
+
+  it('returns the current userId and cookies when signed in', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    expect(client.getPersistableSession()).toEqual({ userId: 42, cookies: ['refresh_token=cookie-value-1'] })
+  })
+})
+
+describe('restoreSession', () => {
+  it('refreshes, re-fetches the profile, and authenticates on a valid persisted credential', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const onSessionChange = vi.fn()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, onSessionChange })
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'restored-token', access_expires_at: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData() }))
+
+    const restored = await client.restoreSession({ userId: 42, cookies: ['refresh_token=persisted-cookie'] })
+
+    expect(restored).toBe(true)
+    expect(client.isAuthenticated()).toBe(true)
+    expect(client.getSessionState()).toEqual({
+      authenticated: true,
+      account: { userId: 42, username: 'tester', group: 'default', role: 1, quota: 1_000_000, usedQuota: 250_000 },
+    })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    const [refreshUrl, refreshInit] = fetchImpl.mock.calls[0]
+    expect(String(refreshUrl)).toBe(`${testBaseUrl}/api/user/auth/refresh`)
+    expect((refreshInit?.headers as Record<string, string>).Cookie).toBe('refresh_token=persisted-cookie')
+    const [selfUrl, selfInit] = fetchImpl.mock.calls[1]
+    expect(String(selfUrl)).toBe(`${testBaseUrl}/api/user/self`)
+    expect((selfInit?.headers as Record<string, string>).Authorization).toBe('Bearer restored-token')
+    expect((selfInit?.headers as Record<string, string>)['New-Api-User']).toBe('42')
+    expect(onSessionChange).toHaveBeenCalledWith({ userId: 42, cookies: ['refresh_token=persisted-cookie'] })
+  })
+
+  it('is a no-op returning true when a session already exists', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+
+    await expect(client.restoreSession({ userId: 1, cookies: ['whatever=x'] })).resolves.toBe(true)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('resolves false without any network call on a malformed persisted credential', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.restoreSession({ userId: 0, cookies: ['x=y'] })).resolves.toBe(false)
+    await expect(client.restoreSession({ userId: 1, cookies: [] })).resolves.toBe(false)
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('resolves false (does not throw) when the refresh cookie is already dead', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    fetchImpl.mockResolvedValueOnce(failureResponse('refresh token invalid', 401))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.restoreSession({ userId: 42, cookies: ['refresh_token=stale'] })).resolves.toBe(false)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('resolves false when the post-refresh self call 401s', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'x', access_expires_at: null },
+      }))
+      .mockResolvedValueOnce(failureResponse('nope', 401))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.restoreSession({ userId: 42, cookies: ['refresh_token=stale'] })).resolves.toBe(false)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it('rethrows (does not silently return false) on a network failure, so a caller can tell "gone" apart from "unreachable"', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValueOnce(new TypeError('network down'))
+    const onSessionChange = vi.fn()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl, onSessionChange })
+
+    await expect(client.restoreSession({ userId: 42, cookies: ['refresh_token=x'] })).rejects.toThrow()
+    expect(client.isAuthenticated()).toBe(false)
+    expect(onSessionChange).not.toHaveBeenCalled()
+  })
+
+  it('resolves false if the refreshed profile belongs to a different user than the persisted userId', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { access_token: 'x', access_expires_at: null },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: userData({ id: 999 }) }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.restoreSession({ userId: 42, cookies: ['refresh_token=x'] })).resolves.toBe(false)
+    expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
 describe('network hardening (I10)', () => {
   it('enforces the request timeout with a bounded AbortSignal', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockImplementation((_url, init) => (
