@@ -2,6 +2,8 @@
 
 > 侦察日期 2026-08-09；方式：QuantumNous/new-api（原 Calcium-Ion，组织已迁移）源码与官方文档只读检索 + 对生产实例单次 `GET /api/status`。无注册/登录/写操作。
 > 实例版本 `v1.0.0-rc.22-solov1`（定制分支，上游同期已到 rc.24，近 3 周连发 4 版，迭代快）。
+>
+> **更新 2026-08-10（W4a 实测）**：生产实例已升级到 `v1.0.0-rc.24`（不再明显落后上游）。`usd_exchange_rate` 由 7.3 变为 1，但 `quota_per_unit` 仍为 500000（美元换算只依赖 `quota_per_unit`，此变化不影响）。以下端点已对 rc.24 源码逐行核实：`GET /api/user/self`（`buildSelfUserData`，故意不返 access_token/密码/PAT）、`GET /api/log/self`（分页 `p`/`page_size`，服务端 clamp≤100，响应 `{page,page_size,total,items}`）、充值页 SPA 路由 `/wallet`、邀请链接参数 `?aff=<code>`。下文 rc.22 时点的字段快照与陷阱叙述仍保留作侦察历史。
 
 ## A. 端点清单
 
