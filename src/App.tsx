@@ -7,7 +7,11 @@ import { ProvisioningConfirmDialog } from './components/account/ProvisioningConf
 import { resolveAccountErrorMessage } from './components/account/account-errors'
 import { resolveAccountAreaStatus } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
-import { buildProvisioningTargets, provisionCliKeyForInstalledClis } from './account-provisioning'
+import {
+  buildProvisioningTargets,
+  provisionCliKeyForInstalledClis,
+  resolveCliProvisioningGate,
+} from './account-provisioning'
 import {
   codexDesktopInstallActive,
   codexDesktopLaunchDecision,
@@ -17,8 +21,8 @@ import {
   initialSidebarCollapsed,
   initialTheme,
   isDetectionFailed,
+  resolveInitialAppView,
   sameDesktopStatus,
-  shouldShowWelcome,
   SIDEBAR_STORAGE_KEY,
   THEME_STORAGE_KEY,
   type AppView,
@@ -529,17 +533,28 @@ function App() {
         if (!active) return
         const codexReady = codexReadiness.hasApiKey && codexReadiness.matchesRelay
         if (!codexReady) {
-          const latestConfig = await loadConfig()
+          // account:get-session is awaited alongside the config read here --
+          // not left to the separate mount-only effect further down (which
+          // still owns hydrating accountSession/accountBalance for the
+          // sidebar) -- because the welcome/onboarding gate right below must
+          // never decide before it knows whether this is an authenticated
+          // returning user. main.ts's accountSessionReady guarantee (see
+          // ipc.ts's account:get-session handler doc comment) means this
+          // call only resolves once any startup session restore has already
+          // settled, so there is no earlier "unknown" window to race here.
+          // A rejection falls back to "not authenticated" rather than
+          // aborting startup -- resolveInitialAppView then applies the
+          // pre-existing config-only rule, same as before accounts existed.
+          // Scoped to this branch alone (not hoisted above the codexReady
+          // check) so the already-fully-configured fast path straight to
+          // 'dashboard' below never waits on it.
+          const [latestConfig, startupAccountSession] = await Promise.all([
+            loadConfig(),
+            window.xingmang.getAccountSession().catch(() => null),
+          ])
           if (!active) return
           setScanning(false)
-          // A brand-new install (no provider ever configured) sees the
-          // welcome page first; a returning user who simply hasn't finished
-          // this particular CLI's setup goes straight to onboarding, same
-          // as before this page existed. Preview mode bypasses the welcome
-          // gate entirely — it also clears the in-memory config, which would
-          // otherwise make shouldShowWelcome() true and defeat the whole
-          // point of forcing onboarding into view.
-          setAppView(previewOnboarding ? 'onboarding' : (shouldShowWelcome(latestConfig) ? 'welcome' : 'onboarding'))
+          setAppView(resolveInitialAppView(latestConfig, startupAccountSession?.authenticated ?? false, previewOnboarding))
           return
         }
         setAppView('dashboard')
@@ -749,6 +764,27 @@ function App() {
   const skipCliProvisioning = () => {
     if (provisioningBusyRef.current) return
     setProvisioningTargets(null)
+  }
+
+  // 下一步任务卡的"一键配置"与账号区的手动入口共用这一个触发口（W2.5,
+  // docs/ACCOUNT-PLAN.md）——两处都不能直接调用 offerCliProvisioning：未登录
+  // 时它会对着一个不存在的会话签发 Key，必然失败；已登录但零已装 CLI 时它
+  // 又会静默什么都不做，用户点了按钮却什么反应都没有。resolveCliProvisioning-
+  // Gate（纯函数，account-provisioning.ts）把这两种情况从"可以正常写"里分出
+  // 来，好分别给出可执行的引导，而不是复用 handleAccountLoginSubmit 那条
+  // 登录成功后的静默 offer 路径。
+  const handleConfigureCliKey = () => {
+    const gate = resolveCliProvisioningGate(Boolean(accountSession?.authenticated), snapshotRef.current)
+    if (gate === 'requires-login') {
+      setAccountDialog('login')
+      setToast({ type: 'error', message: '请先登录星芒账号，再一键配置 Key' })
+      return
+    }
+    if (gate === 'requires-install') {
+      setToast({ type: 'error', message: '请先安装一个 AI 工具，再配置星芒 Key' })
+      return
+    }
+    offerCliProvisioning()
   }
 
   const handleRequestVerificationCode = async (email: string) => {
@@ -1227,6 +1263,7 @@ function App() {
         onAccountLogin={() => setAccountDialog('login')}
         onAccountLogout={() => void handleAccountLogout()}
         onRecharge={() => setToast({ type: 'success', message: '充值功能即将开放' })}
+        onConfigureCliKey={handleConfigureCliKey}
       />
 
       <main className="main-content">
@@ -1258,6 +1295,7 @@ function App() {
             onInstallCodexDesktop={() => setCodexInstallDialogOpen(true)}
             onLaunch={(provider) => void launch(provider)}
             onLaunchCodexDesktop={() => void requestCodexDesktopLaunch()}
+            onNextStepsConfigureFirstCli={handleConfigureCliKey}
             onNextStepsTryLaunch={handleNextStepsTryLaunch}
             onNextStepsGoMaintenance={() => setActivePage('maintenance')}
             onNextStepsExploreMcp={handleNextStepsExploreMcp}

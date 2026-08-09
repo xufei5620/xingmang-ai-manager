@@ -96,6 +96,33 @@ export function buildProvisioningTargets(snapshot: SystemSnapshot): ProviderId[]
   return providerIds.filter((id) => snapshot.clis[id].installed)
 }
 
+export type CliProvisioningGate = 'requires-login' | 'requires-install' | 'ready'
+
+/**
+ * Gates a user-initiated "配置星芒 Key" click (the 下一步 task card's action and
+ * the account-area manual re-trigger both call this before touching any
+ * state -- see App.tsx's handleConfigureCliKey) so the caller can react
+ * distinctly instead of the offer silently doing nothing:
+ *
+ * - Not signed in: offerCliProvisioning would be meaningless (there is no
+ *   session for provisionCliKey() to mint a key against) -- the caller must
+ *   redirect to login/register instead of opening a dialog that can only
+ *   fail.
+ * - Signed in but nothing installed yet: buildProvisioningTargets would
+ *   return an empty list and offerCliProvisioning silently no-ops. That
+ *   silence is correct right after a login/register submit (the user did not
+ *   just ask for this), but a dead click is bad UX when the user explicitly
+ *   pressed a "配置" button -- the caller should say so instead.
+ * - Otherwise: safe to call offerCliProvisioning for real.
+ */
+export function resolveCliProvisioningGate(
+  authenticated: boolean,
+  snapshot: SystemSnapshot,
+): CliProvisioningGate {
+  if (!authenticated) return 'requires-login'
+  return buildProvisioningTargets(snapshot).length === 0 ? 'requires-install' : 'ready'
+}
+
 /**
  * Narrows the full candidate list down to whatever the user left checked in
  * ProvisioningConfirmDialog, preserving canonical order. A provider id that

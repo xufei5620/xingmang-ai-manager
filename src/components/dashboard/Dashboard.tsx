@@ -50,6 +50,7 @@ export function Dashboard({
   onInstallCodexDesktop,
   onLaunch,
   onLaunchCodexDesktop,
+  onNextStepsConfigureFirstCli,
   onNextStepsTryLaunch,
   onNextStepsGoMaintenance,
   onNextStepsExploreMcp,
@@ -79,6 +80,7 @@ export function Dashboard({
   onInstallCodexDesktop: () => void
   onLaunch: (provider: ProviderId) => void
   onLaunchCodexDesktop: () => void
+  onNextStepsConfigureFirstCli: () => void
   onNextStepsTryLaunch: (provider: ProviderId | null) => void
   onNextStepsGoMaintenance: () => void
   onNextStepsExploreMcp: () => void
@@ -115,6 +117,7 @@ export function Dashboard({
         snapshot={snapshot}
         config={config}
         nudgeState={nextStepsNudge}
+        onConfigureFirstCli={onNextStepsConfigureFirstCli}
         onTryLaunch={onNextStepsTryLaunch}
         onGoMaintenance={onNextStepsGoMaintenance}
         onExploreMcp={onNextStepsExploreMcp}

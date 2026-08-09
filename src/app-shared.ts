@@ -113,6 +113,28 @@ export function shouldShowWelcome(config: AppConfigSummary | null): boolean {
 }
 
 /**
+ * Decides between the two non-dashboard startup destinations (App.tsx's
+ * initialize() effect only reaches this once getCodexReadiness() itself came
+ * back negative -- codexReady already routes straight to 'dashboard' before
+ * this is ever called). An authenticated 星芒 account is itself returning-user
+ * evidence, same in spirit as shouldShowWelcome()'s "any provider configured"
+ * check: W2 (docs/ACCOUNT-PLAN.md) persists login across restarts specifically
+ * so a signed-in user is never made to sit through the marketing welcome page
+ * again, even on a machine where no CLI has been configured yet (e.g. right
+ * after signing in on a fresh install, before onboarding has run). Preview
+ * mode still wins outright, unchanged from before this function existed.
+ */
+export function resolveInitialAppView(
+  config: AppConfigSummary | null,
+  accountAuthenticated: boolean,
+  previewOnboarding: boolean,
+): 'welcome' | 'onboarding' {
+  if (previewOnboarding) return 'onboarding'
+  if (accountAuthenticated) return 'onboarding'
+  return shouldShowWelcome(config) ? 'welcome' : 'onboarding'
+}
+
+/**
  * Dev-only override for XINGMANG_ONBOARDING_PREVIEW, mirroring the `?theme=`
  * override `initialTheme()` reads below. main.ts only ever appends
  * `?onboardingPreview=1` to the renderer URL when its own preview flag is

@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { initialOnboardingPreview, isDetectionFailed, sameDesktopStatus, shouldShowWelcome } from './app-shared'
+import {
+  initialOnboardingPreview,
+  isDetectionFailed,
+  resolveInitialAppView,
+  sameDesktopStatus,
+  shouldShowWelcome,
+} from './app-shared'
 import type { AppConfigSummary, DesktopAppStatus, ProviderConfigSummary, ProviderId } from './types'
 
 const baseDesktopStatus: DesktopAppStatus = {
@@ -102,6 +108,34 @@ describe('shouldShowWelcome', () => {
   it('still shows the welcome page when a key exists but points at a non-xingmang relay', () => {
     const config = configWith({ codex: unconfiguredProvider({ hasApiKey: true, matchesRelay: false }) })
     expect(shouldShowWelcome(config)).toBe(true)
+  })
+})
+
+describe('resolveInitialAppView', () => {
+  it('shows the welcome page for a brand-new, signed-out install once config has loaded', () => {
+    expect(resolveInitialAppView(configWith({}), false, false)).toBe('welcome')
+  })
+
+  it('does not show the welcome page while config is still unknown, preserving the pre-existing startup flow', () => {
+    expect(resolveInitialAppView(null, false, false)).toBe('onboarding')
+  })
+
+  it('skips the welcome page for a signed-out but already-configured returning user', () => {
+    const config = configWith({ claude: unconfiguredProvider({ hasApiKey: true, matchesRelay: true }) })
+    expect(resolveInitialAppView(config, false, false)).toBe('onboarding')
+  })
+
+  it('skips the welcome page for an authenticated user even with zero providers configured', () => {
+    expect(resolveInitialAppView(configWith({}), true, false)).toBe('onboarding')
+  })
+
+  it('skips the welcome page for an authenticated user even before config has loaded', () => {
+    expect(resolveInitialAppView(null, true, false)).toBe('onboarding')
+  })
+
+  it('lets dev preview mode win outright regardless of authentication state', () => {
+    expect(resolveInitialAppView(configWith({}), false, true)).toBe('onboarding')
+    expect(resolveInitialAppView(configWith({}), true, true)).toBe('onboarding')
   })
 })
 

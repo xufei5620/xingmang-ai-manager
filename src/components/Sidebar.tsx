@@ -36,6 +36,7 @@ interface SidebarProps {
   onAccountLogin: () => void
   onAccountLogout: () => void
   onRecharge: () => void
+  onConfigureCliKey: () => void
 }
 
 export function ThemeToggle({
@@ -74,6 +75,7 @@ export function Sidebar({
   onAccountLogin,
   onAccountLogout,
   onRecharge,
+  onConfigureCliKey,
 }: SidebarProps) {
   const updatePhase = updateState?.phase
   const showUpdate = updatePhase === 'available'
@@ -174,6 +176,7 @@ export function Sidebar({
           onLogin={onAccountLogin}
           onLogout={onAccountLogout}
           onRecharge={onRecharge}
+          onConfigureCliKey={onConfigureCliKey}
         />
         <button
           className="official-site-button tutorial-docs-button"

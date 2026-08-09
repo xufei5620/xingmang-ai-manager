@@ -1,19 +1,23 @@
-import { AlertTriangle, LogOut, UserRound, Wallet } from 'lucide-react'
+import { AlertTriangle, KeyRound, LogOut, UserRound, Wallet } from 'lucide-react'
 import { formatBalanceUsd, type AccountAreaStatus, type AccountSnapshot } from './account-stub'
 
 /**
  * Sidebar-bottom account block. Three states driven by `status`/`snapshot`
  * (see account-stub.ts) — guest is the pre-existing W1 button, unchanged;
- * active/low-balance render an identity row (now with a small logout icon
- * button in its corner -- W2, docs/ACCOUNT-PLAN.md) plus a separate recharge
- * row so the recharge control is a real `<button>` and never nested inside
- * another button. The logout button nests fine: unlike the guest state, the
- * identity wrapper here is a plain `<div>`, not a `<button>`. A full account
- * menu (profile/billing/etc.) is W4's job; this is deliberately just enough
- * to get back to signed-out. Collapsed-sidebar handling (avatar + tooltip
- * only) is generic CSS already covering
+ * active/low-balance render an identity row (now with a small "配置星芒 Key"
+ * button alongside the logout icon in its corner -- W2/W2.5,
+ * docs/ACCOUNT-PLAN.md) plus a separate recharge row so the recharge control
+ * is a real `<button>` and never nested inside another button. Both corner
+ * buttons nest fine: unlike the guest state, the identity wrapper here is a
+ * plain `<div>`, not a `<button>`. The configure button just re-triggers the
+ * same offerCliProvisioning gate the 下一步 task card's "一键配置" action uses
+ * (App.tsx's handleConfigureCliKey) -- this is the "关了还能再来" entry point
+ * for a user who dismissed the write-Key confirm dialog. A full account menu
+ * (profile/billing/etc.) is W4's job; this is deliberately just enough.
+ * Collapsed-sidebar handling (avatar + tooltip only) is generic CSS already
+ * covering
  * `.account-area`/`.account-recharge-button`/`.account-logout-button`/
- * `[data-sidebar-tooltip]` — see styles.css.
+ * `.account-configure-button`/`[data-sidebar-tooltip]` — see styles.css.
  */
 export function AccountArea({
   status,
@@ -21,12 +25,14 @@ export function AccountArea({
   onLogin,
   onLogout,
   onRecharge,
+  onConfigureCliKey,
 }: {
   status: AccountAreaStatus
   snapshot: AccountSnapshot
   onLogin: () => void
   onLogout: () => void
   onRecharge: () => void
+  onConfigureCliKey: () => void
 }) {
   if (status === 'guest') {
     return (
@@ -63,6 +69,15 @@ export function AccountArea({
             余额 {balanceText}
           </small>
         </span>
+        <button
+          type="button"
+          className="account-configure-button"
+          aria-label="配置星芒 Key 到已装 CLI"
+          title="配置星芒 Key"
+          onClick={onConfigureCliKey}
+        >
+          <KeyRound size={14} aria-hidden="true" />
+        </button>
         <button
           type="button"
           className="account-logout-button"

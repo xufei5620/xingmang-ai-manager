@@ -3,6 +3,7 @@ import {
   buildProvisioningTargets,
   filterProvisioningTargets,
   provisionCliKeyForInstalledClis,
+  resolveCliProvisioningGate,
   type CliKeyProvisioningApi,
 } from './account-provisioning'
 import { EmptyStatus } from './app-shared'
@@ -157,6 +158,26 @@ describe('buildProvisioningTargets', () => {
   it('includes every installed provider when all four are installed', () => {
     const snapshot = snapshotWithInstalled(providerIds)
     expect(buildProvisioningTargets(snapshot)).toEqual(providerIds)
+  })
+})
+
+describe('resolveCliProvisioningGate', () => {
+  it('requires login before anything else, even when CLIs are installed', () => {
+    const snapshot = snapshotWithInstalled(['codex'])
+    expect(resolveCliProvisioningGate(false, snapshot)).toBe('requires-login')
+  })
+
+  it('requires an install when signed in but nothing is installed yet', () => {
+    expect(resolveCliProvisioningGate(true, snapshotWithInstalled([]))).toBe('requires-install')
+  })
+
+  it('is ready once signed in with at least one installed CLI', () => {
+    const snapshot = snapshotWithInstalled(['claude'])
+    expect(resolveCliProvisioningGate(true, snapshot)).toBe('ready')
+  })
+
+  it('prioritizes the login requirement over the install requirement', () => {
+    expect(resolveCliProvisioningGate(false, snapshotWithInstalled([]))).toBe('requires-login')
   })
 })
 

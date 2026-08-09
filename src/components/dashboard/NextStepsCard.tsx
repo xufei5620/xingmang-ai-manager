@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react'
-import { Blocks, CheckCircle2, Circle, FolderOpen, Sparkles, Wrench } from 'lucide-react'
+import { Blocks, CheckCircle2, Circle, FolderOpen, KeyRound, Sparkles, Wrench } from 'lucide-react'
 import { dashboardProviderIds } from '../../provider-registry'
 import { providerIds, type AppConfigSummary, type ProviderId, type SystemSnapshot } from '../../types'
 
@@ -100,6 +100,7 @@ export function NextStepsCard({
   snapshot,
   config,
   nudgeState,
+  onConfigureFirstCli,
   onTryLaunch,
   onGoMaintenance,
   onExploreMcp,
@@ -107,6 +108,7 @@ export function NextStepsCard({
   snapshot: SystemSnapshot
   config: AppConfigSummary | null
   nudgeState: NextStepsNudgeState
+  onConfigureFirstCli: () => void
   onTryLaunch: (provider: ProviderId | null) => void
   onGoMaintenance: () => void
   onExploreMcp: () => void
@@ -124,7 +126,8 @@ export function NextStepsCard({
     },
     'configure-first-cli': {
       title: '给它配上星芒 AI',
-      hint: '安装完成后点击「配置」，填入授权码',
+      hint: '登录星芒账号，一键把 Key 配到已装工具',
+      action: { label: '一键配置', icon: KeyRound, onClick: onConfigureFirstCli },
     },
     'try-launch': {
       title: '打开终端试一下',
