@@ -2509,6 +2509,115 @@ button:disabled {
   padding-left: 9px;
 }
 
+/* "下一步" 任务卡（NextStepsCard）——只用 Layer 2 语义令牌（--surface-adaptive/
+   --border-default/--text-primary/--text-muted/--color-success/--color-info），
+   明暗两态随主题自动切换，不需要额外的 :root[data-theme="dark"] 覆写块。 */
+.next-steps-card {
+  margin-bottom: var(--space-16);
+  padding: var(--space-12) var(--space-16) var(--space-4);
+  background: var(--surface-adaptive);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-8);
+}
+
+.next-steps-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--space-11);
+  margin-bottom: var(--space-4);
+}
+
+.next-steps-heading-icon {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  color: var(--color-info);
+  background: var(--surface-adaptive-hover);
+  border-radius: var(--radius-7);
+}
+
+.next-steps-heading h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-semibold-plus);
+}
+
+.next-steps-heading span {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+
+.next-steps-list {
+  display: grid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.next-steps-item {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--space-11);
+  min-height: 46px;
+  padding: var(--space-8) 0;
+  border-top: 1px solid var(--border-default);
+}
+
+.next-steps-item:first-child {
+  border-top: 0;
+}
+
+.next-steps-status {
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+}
+
+.next-steps-item.is-done .next-steps-status {
+  color: var(--color-success);
+}
+
+.next-steps-copy {
+  display: grid;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.next-steps-copy strong {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.next-steps-item.is-done .next-steps-copy strong {
+  color: var(--text-muted);
+  font-weight: var(--font-weight-medium);
+}
+
+.next-steps-copy small {
+  display: block;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.next-steps-action {
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--text-xs);
+}
+
 .environment-section {
   background: var(--surface-panel);
   border: 1px solid #e5e8ed;

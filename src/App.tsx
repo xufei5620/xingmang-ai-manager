@@ -110,6 +110,12 @@ function App() {
   const [nodeRuntimeInstalling, setNodeRuntimeInstalling] = useState(false)
   const [nodeRuntimeInstallProgress, setNodeRuntimeInstallProgress] = useState<NodeRuntimeInstallProgress | null>(null)
   const [nodeGuideOpen, setNodeGuideOpen] = useState(false)
+  // "下一步" 任务卡的两个不可推导里程碑（方案 B 第 3 节）：纯会话内存态，
+  // 不持久化、重启即清；挂在 App() 而非 Dashboard() 上是为了在页面间导航时
+  // 保留住——页面切换只是 11 分支三元链换分支，Dashboard 会随之卸载重挂，
+  // 若状态挂在它上面，切一次页再切回来就白记了。
+  const [nextStepsTriedLaunch, setNextStepsTriedLaunch] = useState(false)
+  const [nextStepsExploredMcp, setNextStepsExploredMcp] = useState(false)
   // Stub account snapshot (docs/OVERNIGHT-PLAN.md W4) — not wired to the real
   // account:get-status/get-balance IPC channels yet. Fixed at mount; dev/QA
   // can preview the other two states via ?accountState=active|low-balance.
@@ -793,6 +799,24 @@ function App() {
     }
   }
 
+  // "下一步" 任务卡的两个 nudge 动作：标记内存态 + 复用既有导航/启动路径。
+  // 标记动作故意不等待 launch() 的异步结果——这是一个软提示，不是「启动成
+  // 功」的证明。但没有可启动的 provider 时（全新态）只弹提示、不标记完成，
+  // 否则「已完成」的勾选和报错 toast 同时出现会自相矛盾。
+  const handleNextStepsTryLaunch = (provider: ProviderId | null) => {
+    if (provider) {
+      setNextStepsTriedLaunch(true)
+      void launch(provider)
+    } else {
+      setToast({ type: 'error', message: '请先安装并配置一个 AI 工具，再试试一键启动' })
+    }
+  }
+
+  const handleNextStepsExploreMcp = () => {
+    setNextStepsExploredMcp(true)
+    setActivePage('mcp')
+  }
+
   const performCodexDesktopLaunch = async (mode: CodexDesktopLaunchMode) => {
     setCodexLaunchDialogOpen(false)
     setCodexLaunchPhase(mode === 'restart' ? 'closing' : 'opening')
@@ -931,6 +955,7 @@ function App() {
         }}
         onConfigChange={setConfig}
         onComplete={finishOnboarding}
+        onCancel={() => setAppView('dashboard')}
         desktopInstallProgress={codexDesktopInstallProgress}
         platform={platformCapabilities}
       />
@@ -980,6 +1005,7 @@ function App() {
             runtimeReady={runtimeReady}
             installedCliCount={installedCliCount}
             installedToolCount={installedToolCount}
+            nextStepsNudge={{ triedLaunch: nextStepsTriedLaunch, exploredMcp: nextStepsExploredMcp }}
             onScan={() => void scan(true)}
             onInstallNode={() => void installNodeRuntime()}
             onOpenNodeGuide={() => setNodeGuideOpen(true)}
@@ -990,6 +1016,9 @@ function App() {
             onInstallCodexDesktop={() => setCodexInstallDialogOpen(true)}
             onLaunch={(provider) => void launch(provider)}
             onLaunchCodexDesktop={() => void requestCodexDesktopLaunch()}
+            onNextStepsTryLaunch={handleNextStepsTryLaunch}
+            onNextStepsGoMaintenance={() => setActivePage('maintenance')}
+            onNextStepsExploreMcp={handleNextStepsExploreMcp}
           />
         ) : activePage === 'sessions' ? (
           <SessionsPage api={window.xingmang} notify={setToast} />
@@ -1123,6 +1152,7 @@ function App() {
               // 设置页的 draft 以 settings 为基准，主题双通道必须同步，否则保存设置会把主题回退。
               setSettings((current) => current.theme === next ? current : { ...current, theme: next })
             }}
+            onReplayOnboarding={() => setAppView('onboarding')}
           />
         ) : (
           <PlaceholderPage pageId={activePage} />

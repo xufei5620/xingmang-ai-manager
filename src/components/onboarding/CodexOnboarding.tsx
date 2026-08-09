@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   AlertCircle,
+  ArrowLeft,
   ArrowRight,
   BookOpen,
   CheckCircle2,
@@ -52,6 +53,7 @@ export function CodexOnboarding({
   onToggleTheme,
   onConfigChange,
   onComplete,
+  onCancel,
   desktopInstallProgress,
   platform,
 }: {
@@ -60,6 +62,15 @@ export function CodexOnboarding({
   onToggleTheme: () => void
   onConfigChange: (config: AppConfigSummary) => void
   onComplete: () => Promise<void>
+  /**
+   * Escape hatch for a user who is replaying onboarding from Settings with
+   * an already-working config (see `existingCodex?.exists` below) — a brand
+   * new install has no config to fall back to, so it never gets this button.
+   * Must stay a pure navigation callback: nothing in this component may call
+   * it alongside `authorizeCodex`/`onConfigChange`/any config write, or
+   * "cancel" would silently mutate the very config it's meant to protect.
+   */
+  onCancel?: () => void
   desktopInstallProgress: CodexDesktopInstallProgress | null
   platform: PlatformCapabilities
 }) {
@@ -274,6 +285,17 @@ export function CodexOnboarding({
         </div>
 
         <div className="onboarding-rail-bottom">
+          {existingCodex?.exists && onCancel && (
+            <button
+              type="button"
+              className="sidebar-control-button"
+              title="返回工作台，不会修改现有配置"
+              onClick={onCancel}
+            >
+              <ArrowLeft size={15} />
+              <span>返回工作台</span>
+            </button>
+          )}
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           <div className="onboarding-rail-note">
             <ShieldCheck size={16} />

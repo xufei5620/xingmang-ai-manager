@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { AlertCircle, Check, LoaderCircle, Moon, Save, Settings, Sun } from 'lucide-react'
+import { AlertCircle, Check, Compass, LoaderCircle, Moon, Save, Settings, Sun } from 'lucide-react'
 import { errorMessage } from '../error-message'
 
 export type SettingsTheme = 'light' | 'dark'
@@ -16,6 +16,8 @@ export interface SettingsPageProps {
   value: SettingsV2
   onSave(settings: SettingsV2): Promise<void>
   onThemePreview?(theme: SettingsTheme): void
+  /** Switches the app back to the onboarding flow (`appView = 'onboarding'`). In-memory only — see App.tsx. */
+  onReplayOnboarding(): void
 }
 
 export interface SettingsDraftState {
@@ -77,7 +79,7 @@ function SettingSwitch({
   )
 }
 
-export function SettingsPage({ value, onSave, onThemePreview }: SettingsPageProps) {
+export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding }: SettingsPageProps) {
   const [settingsState, setSettingsState] = useState<SettingsDraftState>(() => ({
     saved: value,
     draft: value,
@@ -191,6 +193,26 @@ export function SettingsPage({ value, onSave, onThemePreview }: SettingsPageProp
             <strong>CLI 默认工作目录</strong>
             <p>{draft.workspace}</p>
           </div>
+        </div>
+      </section>
+
+      <section className="environment-section settings-section" aria-labelledby="onboarding-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="onboarding-title">新手引导</h2>
+            <span>随时重新走一遍工具选择与授权配置</span>
+          </div>
+        </div>
+        <div className="operation-row">
+          <div className="operation-status-icon"><Compass size={17} /></div>
+          <div className="operation-row-copy">
+            <strong>重新查看新手引导</strong>
+            <p>重新走一遍工具选择、授权码填写与环境安装的引导流程</p>
+          </div>
+          <button className="secondary-button" type="button" onClick={onReplayOnboarding}>
+            <Compass size={15} />
+            重新查看
+          </button>
         </div>
       </section>
     </div>

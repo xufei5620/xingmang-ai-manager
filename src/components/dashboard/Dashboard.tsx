@@ -22,6 +22,7 @@ import type {
 import { RuntimeCell } from '../RuntimeCell'
 import { StatusMark } from '../StatusMark'
 import { CodexDesktopCard } from './CodexDesktopCard'
+import { NextStepsCard, type NextStepsNudgeState } from './NextStepsCard'
 
 export function Dashboard({
   platform,
@@ -38,6 +39,7 @@ export function Dashboard({
   runtimeReady,
   installedCliCount,
   installedToolCount,
+  nextStepsNudge,
   onScan,
   onInstallNode,
   onOpenNodeGuide,
@@ -48,6 +50,9 @@ export function Dashboard({
   onInstallCodexDesktop,
   onLaunch,
   onLaunchCodexDesktop,
+  onNextStepsTryLaunch,
+  onNextStepsGoMaintenance,
+  onNextStepsExploreMcp,
 }: {
   platform: PlatformCapabilities
   snapshot: SystemSnapshot
@@ -63,6 +68,7 @@ export function Dashboard({
   runtimeReady: boolean
   installedCliCount: number
   installedToolCount: number
+  nextStepsNudge: NextStepsNudgeState
   onScan: () => void
   onInstallNode: () => void
   onOpenNodeGuide: () => void
@@ -73,6 +79,9 @@ export function Dashboard({
   onInstallCodexDesktop: () => void
   onLaunch: (provider: ProviderId) => void
   onLaunchCodexDesktop: () => void
+  onNextStepsTryLaunch: (provider: ProviderId | null) => void
+  onNextStepsGoMaintenance: () => void
+  onNextStepsExploreMcp: () => void
 }) {
   const presentation = platformPresentation(platform)
   return (
@@ -101,6 +110,15 @@ export function Dashboard({
           </button>
         </div>
       </header>
+
+      <NextStepsCard
+        snapshot={snapshot}
+        config={config}
+        nudgeState={nextStepsNudge}
+        onTryLaunch={onNextStepsTryLaunch}
+        onGoMaintenance={onNextStepsGoMaintenance}
+        onExploreMcp={onNextStepsExploreMcp}
+      />
 
       <section className="environment-section">
         <div className="section-heading">
