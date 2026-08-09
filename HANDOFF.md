@@ -18,8 +18,8 @@
 
 ## ② 从这里继续(断点)
 
-- **⚠️ 额度事件(2026-08-09 ~22:05 UTC)**:W3 执行代理撞会话额度上限(重置 23:10 UTC),死在 UI 部分开工前。已完成部分门槛全绿,按协议落为检查点 `731db23`。**W3 必做四件已完成 3.7/4**(读侧站点化+授权断言✓、siteBaseUrls 必填✓、origin 收口 3 处中 2 处✓、label 占位✓)。
-- **剩余 = W3b(接手者从这开始,一个 Sonnet 波即可)**:①`canvas-window.ts` 的 `newApiDefaultBaseUrl` 收口到注册表(F4 第三处);②`SettingsPage.tsx` 加「服务站点」下拉(读写 settings.relaySiteId,旁注中文说明"切换后新保存的配置指向该站点,已配置的 CLI 需重新保存生效",**不自动改写既有配置**);③`AccountArea.tsx` 按活动站点 `accountBackend==='manual-key'` 降级:隐藏登录/注册/个人中心,显示「粘贴 Key」按钮(说明文案链 keysPageUrl);④粘贴 Key 弹窗:masked 输入 + 校验纯函数(非空/无空白控制字符/长 8~512/中文报错)+ **复用**既有写 Key 确认与 config 保存链(W2 后主进程按活动站点取 base URL,渲染层不供 URL),目标零新增 IPC 通道,I13 粘贴 key 不入日志;⑤测试:settings 往返带 'sub2api'(打真实 settings:save 处理器)、粘贴校验全分支;⑥切站时若处于 new-api 登录态:建议隐藏登录态 UI 但不主动登出(最小惊讶),落地者可再斟酌。完成后视触面(I9/I13)派一轮 Opus 对抗审查→ **D 批次3 两安全项**(#16 Codex 归档硬链接死锁、#17 发布门禁 fail-open→fail-closed)→ **② 仓库整理**(文档校准/杂物归位/.gitignore 查漏/死分支清单)→ **③ 持续发现-修复**(代码缺陷 + 功能/设计问题都在范围;每个候选先对抗验证再动手;连续两轮无可行动项 → 拉长巡检间隔)。
+- **当前进行中**:**双后端 W1→W3 全链闭合**(`7cf281b`)。Opus 对抗审查(七面向:粘贴 Key 全链流向 I13/I3、渲染层校验被绕过时主进程兜底 I5、写入链 I9、切站一致性、manual-key 降级入口完整性、契约零变化、solov 回归面)已派出,结果未回。有发现即追加修复提交;无发现进下一项。
+- **之后顺序**:**D 批次3 两安全项**(#16 Codex 归档硬链接死锁——`codex-sessions.ts`,#17 发布门禁与依赖审计两处 fail-open 改 fail-closed——`scripts/`;两项都在 docs/IMPROVEMENT-PLAN.md 3.2/3.3 有完整分析,互不相扰可同波)→ **② 仓库整理**(状态性文档校准/杂物归位/.gitignore 查漏/死分支只列不删)→ **③ 持续发现-修复**(代码缺陷 + 功能/设计问题;每个候选先对抗验证;连续两轮无可行动项 → 心跳拉长到 3600s)→ **D 批次3 两安全项**(#16 Codex 归档硬链接死锁、#17 发布门禁 fail-open→fail-closed)→ **② 仓库整理**(文档校准/杂物归位/.gitignore 查漏/死分支清单)→ **③ 持续发现-修复**(代码缺陷 + 功能/设计问题都在范围;每个候选先对抗验证再动手;连续两轮无可行动项 → 拉长巡检间隔)。
 - **W3 关键事实(已侦察定案)**:sub2api = Wei-Shaw/sub2api(Go+Vue3);用户侧 Key 页路由 **`/keys`**(frontend/src/router,requiresAuth 非管理员)→ 精确 href `https://api.solov.cc/keys` **已在白名单**(main.ts:73),零白名单改动。sub2api 站点:providerBaseUrls 复用 catalog 形状(含 grok `/v1`)、accountBackend='manual-key'、无账号登录,粘贴 Key 优先复用既有配置写入链(I9),**尽量零新增 IPC 通道**(T1)。
 - **轮询协议**:长心跳(约 30 分钟);429/额度类错误不退出循环,退避并加长间隔;接近会话硬上限 → 立即把已完成的推上去、更新本报告顶部再收尾。模型分工:Fable 只规划/拍板/综合审,实现派 Sonnet,安全审查派 Opus。
 - **红线(老板原话不可越)**:不推/不合 main、不强推、不删分支、不开 PR、不发 release、不动生产站点、不违反 CLAUDE.md 第 8 节、测试绝不触生产 xm/api.solov.cc;素材/定价/命名/删除类/真机验证类一律进上面第①栏。
@@ -28,6 +28,7 @@
 
 | 提交 | 内容 | 门槛 |
 |---|---|---|
+| `7cf281b` | **W3b 收官**:设置页站点下拉、账号区 manual-key 降级(不主动登出)、PasteKeyDialog + 纯校验、写入链拆 writeCliKeyForInstalledClis 复用两路径、canvas-window origin 收口(F4 3/3)、**零新增 IPC 通道**。+24 测试 | tc 0 错;vitest 1327/0 失败(基线+24);compile 过 |
 | `731db23` | **W3a 半波检查点**(额度中断收尾):sub2api 站点条目(同域双站/label 占位待确认/白名单去重零新增)+ siteBaseUrls 转必填 + 读侧站点化(含唯一授权断言更新)+ origin 收口 2/3 处 | tc 0 错;vitest 1303/0 失败(基线+2) |
 | `3872f36` | **W2 审查修复**:F1 `settings:save` 的 parseSettings 补 relaySiteId 直通(降级不抛错,I5 白名单校验)+ 2 条打在真实 IPC 处理器上的回归测试;F2 模型缓存键加站点前缀、站点解析提到缓存查找前;F5 relaySites 收紧为非空只读元组;F6 消真值吞空串与重复求值。F3/F4 记入 W3 必做 | tc 0 错;vitest 1301/0 失败(基线+2) |
 | `55696f3` | **双后端 W2**:relay-sites.ts 站点注册表(零依赖,solov 单条目)+ AppSettings.relaySiteId(坏值降级默认)+ 8 处硬编码消费点切站点解析(配置写入/模型列表/诊断探测/白名单派生/渲染层三链接)+ 契约值 re-export(providerIds 先例)。e2e 零改动=默认行为不变的验收 | tc 0 错;vitest 1299/0 失败(基线+16);compile 过(I6 无 node 依赖入渲染包) |
