@@ -81,6 +81,12 @@ const ipcInvokeChannels = {
   listProviderExtensions: 'extensions:list',
   listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
+  getAccountStatus: 'account:get-status',
+  loginAccount: 'account:login',
+  logoutAccount: 'account:logout',
+  getAccountSession: 'account:get-session',
+  getAccountBalance: 'account:get-balance',
+  provisionCliKey: 'account:provision-cli-key',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -188,6 +194,12 @@ const xingmangApi: XingmangApi = {
   listProviderExtensions: (provider) => invoke('listProviderExtensions', provider),
   listAllProviderExtensions: () => invoke('listAllProviderExtensions'),
   mutateProviderExtension: (input) => invoke('mutateProviderExtension', input),
+  getAccountStatus: () => invoke('getAccountStatus'),
+  loginAccount: (input) => invoke('loginAccount', input),
+  logoutAccount: () => invoke('logoutAccount'),
+  getAccountSession: () => invoke('getAccountSession'),
+  getAccountBalance: () => invoke('getAccountBalance'),
+  provisionCliKey: () => invoke('provisionCliKey'),
   onNavigate: (listener) => subscribe('onNavigate', listener),
   onNodeRuntimeInstallProgress: (listener) => subscribe('onNodeRuntimeInstallProgress', listener),
   onInstallProgress: (listener) => subscribe('onInstallProgress', listener),

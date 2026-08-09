@@ -44,6 +44,11 @@ import type {
 } from './system-service'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { UpdateSnapshot, UpdaterService } from './updater'
+import {
+  createNewApiClient,
+  type NewApiClientService,
+  type NewApiLoginInput,
+} from './new-api-client'
 import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
@@ -63,6 +68,10 @@ export interface IpcRegistrationOptions {
   runtimeLog: RuntimeLogStore
   extensionService: CodexExtensionService
   providerExtensionService: ProviderExtensionService
+  // Defaults to a real client talking to the production New-Api instance
+  // when the host app does not supply one (main.ts is out of scope for this
+  // change); tests inject a stub the same way they do for other services.
+  accountService?: NewApiClientService
   urlPolicy: ApplicationUrlPolicy
   previewOnboarding: boolean
   externalUrlAllowlist: readonly string[]
@@ -349,6 +358,21 @@ function parseRendererError(value: unknown): { message: string; stack?: string; 
   }
 }
 
+function parseAccountLoginInput(value: unknown): NewApiLoginInput {
+  if (!isRecord(value)) throw new Error('登录信息格式错误')
+  const username = requiredString(value.username, '用户名或邮箱', 128)
+  // Not requiredString: a password must be forwarded exactly as typed, and
+  // requiredString() both trims it and rejects an all-whitespace value.
+  if (typeof value.password !== 'string' || !value.password || value.password.length > 256) {
+    throw new Error('密码格式错误')
+  }
+  return {
+    username,
+    password: value.password,
+    turnstileToken: optionalString(value.turnstileToken, '人机验证 Token', 4_096),
+  }
+}
+
 const ipcOperationLabels: Readonly<Record<string, string>> = {
   'system:scan': '本机环境与 AI 工具检测',
   'startup:codex-readiness': 'Codex 启动状态检测',
@@ -419,6 +443,12 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'extensions:list': 'AI 工具扩展列表读取',
   'extensions:list-all': '全部 AI 工具扩展读取',
   'extensions:mutate': 'AI 工具扩展操作',
+  'account:get-status': '星芒账号服务状态读取',
+  'account:login': '星芒账号登录',
+  'account:logout': '星芒账号退出登录',
+  'account:get-session': '星芒账号会话状态读取',
+  'account:get-balance': '星芒账号余额查询',
+  'account:provision-cli-key': 'CLI Key 签发',
 }
 
 const quietIpcSuccessChannels = new Set([
@@ -436,6 +466,14 @@ const quietIpcSuccessChannels = new Set([
   'settings:get',
   'runtime-logs:list',
   'runtime-logs:renderer-error',
+  // Frequent read-style checks, or -- get-status/get-balance can be polled by
+  // a status widget -- and provision-cli-key returns a plaintext secret to
+  // the renderer exactly like config:reveal-api-key above (I3/I13): logging
+  // its success detail would put the CLI key straight into the log file.
+  'account:get-status',
+  'account:get-session',
+  'account:get-balance',
+  'account:provision-cli-key',
 ])
 
 function providerDisplayName(value: unknown): string | null {
@@ -563,6 +601,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   }
 
   const service = options.systemService
+  const accountService = options.accountService ?? createNewApiClient()
   const unsubscribeUpdates = options.updaterService.subscribe(options.broadcastUpdate)
   registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown) => {
@@ -931,6 +970,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('extensions:mutate', (_event, input: unknown) => (
     options.providerExtensionService.mutate(parseProviderExtensionMutation(input))
   ))
+  registerTrustedHandler('account:get-status', () => accountService.getStatus())
+  registerTrustedHandler('account:login', (_event, input: unknown) => (
+    accountService.login(parseAccountLoginInput(input))
+  ))
+  registerTrustedHandler('account:logout', () => accountService.logout())
+  registerTrustedHandler('account:get-session', () => accountService.getSessionState())
+  registerTrustedHandler('account:get-balance', () => accountService.getBalance())
+  registerTrustedHandler('account:provision-cli-key', () => accountService.provisionCliKey())
 
   return () => {
     unsubscribeUpdates()

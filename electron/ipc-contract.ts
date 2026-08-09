@@ -73,6 +73,15 @@ import type {
   RuntimeLogSnapshot as MainRuntimeLogSnapshot,
 } from './runtime-log'
 import type { PlatformCapabilities as MainPlatformCapabilities } from './platform-capabilities'
+import type {
+  NewApiAccountProfile,
+  NewApiAccountStatus,
+  NewApiBalance,
+  NewApiCliKeyResult,
+  NewApiLoginInput,
+  NewApiLoginResult,
+  NewApiSessionState,
+} from './new-api-client'
 
 export { providerIds } from './catalog'
 
@@ -127,6 +136,13 @@ export type RuntimeLogEntry = MainRuntimeLogEntry
 export type NodeRuntimeInstallProgress = MainNodeRuntimeInstallProgress
 export type NodeRuntimeInstallResult = MainNodeRuntimeInstallResult
 export type PlatformCapabilities = MainPlatformCapabilities
+export type AccountStatus = NewApiAccountStatus
+export type AccountProfile = NewApiAccountProfile
+export type AccountLoginInput = NewApiLoginInput
+export type AccountLoginResult = NewApiLoginResult
+export type AccountSessionState = NewApiSessionState
+export type AccountBalance = NewApiBalance
+export type AccountCliKeyResult = NewApiCliKeyResult
 export type RendererNavigationTarget = 'settings'
 
 export interface RendererErrorPayload {
@@ -321,6 +337,12 @@ export interface XingmangInvokeContract {
     [input: ProviderExtensionMutation],
     ProviderExtensionsSnapshot
   >
+  getAccountStatus: IpcInvokeDefinition<'account:get-status', [], AccountStatus>
+  loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
+  logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
+  getAccountSession: IpcInvokeDefinition<'account:get-session', [], AccountSessionState>
+  getAccountBalance: IpcInvokeDefinition<'account:get-balance', [], AccountBalance>
+  provisionCliKey: IpcInvokeDefinition<'account:provision-cli-key', [], AccountCliKeyResult>
 }
 
 export interface XingmangEventContract {
@@ -422,6 +444,12 @@ export const ipcInvokeChannels = {
   listProviderExtensions: 'extensions:list',
   listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
+  getAccountStatus: 'account:get-status',
+  loginAccount: 'account:login',
+  logoutAccount: 'account:logout',
+  getAccountSession: 'account:get-session',
+  getAccountBalance: 'account:get-balance',
+  provisionCliKey: 'account:provision-cli-key',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
