@@ -1,11 +1,12 @@
 import type {
+  AppConfigSummary,
   CodexDesktopInstallProgress,
   DesktopAppStatus,
   PlatformCapabilities,
   SystemSnapshot,
 } from './types'
 
-export type AppView = 'loading' | 'onboarding' | 'dashboard'
+export type AppView = 'loading' | 'welcome' | 'onboarding' | 'dashboard'
 export type ThemeMode = 'light' | 'dark'
 export type StartupStage = 'updates' | 'codex'
 
@@ -95,6 +96,20 @@ export function codexDesktopLaunchDecision(
   running: boolean,
 ): 'open' | 'choose' {
   return running && platform.platform !== 'macos' ? 'choose' : 'open'
+}
+
+/**
+ * Drives the post-loading welcome-page gate: a brand-new install (no
+ * provider ever configured with a valid 星芒 relay key) sees the welcome
+ * page first; anyone who has configured at least one CLI before — even a
+ * different one than whichever the caller is about to route to onboarding
+ * for — is a returning user and must skip straight past it. Checking across
+ * every provider (not just the one the caller is currently gating) is what
+ * keeps existing users from being re-shown the welcome page.
+ */
+export function shouldShowWelcome(config: AppConfigSummary | null): boolean {
+  if (!config) return false
+  return Object.values(config.providers).every((provider) => !provider.hasApiKey || !provider.matchesRelay)
 }
 
 export async function commitStartupPlatformCapabilities(

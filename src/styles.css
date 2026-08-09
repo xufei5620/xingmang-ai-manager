@@ -6678,3 +6678,665 @@ button:disabled {
 :root[data-theme="dark"] .page-crash-message {
   color: var(--dark-text-secondary);
 }
+
+/* ==========================================================================
+   Welcome page (W2) — first-run marketing/onboarding gate, shown only when
+   no provider has ever been configured with a valid 星芒 relay key (see
+   shouldShowWelcome in app-shared.ts). Built entirely from W1 tokens; the
+   handful of soft accent washes that have no adaptive alias yet are derived
+   with color-mix() from --color-accent/--color-warning instead of new hex,
+   and the couple of surfaces/text tones W1's 10 aliases don't cover fall
+   back to the pre-W1 "flat primitive + explicit dark selector" pattern
+   already used throughout this file (see the two grouped dark blocks below).
+   Reference: docs/mockups/welcome-draft.html (structure/copy, not colors —
+   that sketch is explicitly non-final visual).
+   ========================================================================== */
+
+.welcome-page {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--surface-page);
+}
+
+/* --surface-page is a flat light-only primitive (its every other consumer —
+   .desktop-frame, .app-shell, .startup-splash — is always fully covered
+   edge-to-edge by opaque children, so the raw value never actually shows
+   through there). This page has real gaps between nav/hero/cards/footer
+   where the page background itself is visible, so it needs an explicit
+   dark value the way .onboarding-shell's own --onboarding-bg already does. */
+:root[data-theme="dark"] .welcome-page {
+  background: var(--dark-surface-deep);
+}
+
+/* Faint two-tone atmosphere glow, purely decorative — kept subtle enough
+   that clipping it at the page edge (no scroll, ever) never looks cut off. */
+.welcome-page::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(60% 55% at 82% 6%, color-mix(in srgb, var(--color-warning) 14%, transparent), transparent 70%),
+    radial-gradient(70% 60% at 12% 96%, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 72%);
+}
+
+.welcome-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+}
+
+.welcome-nav {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--space-20) var(--space-34) 0;
+}
+
+.welcome-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-11);
+  font-size: var(--text-2xl);
+  font-weight: var(--font-weight-bold);
+}
+
+.welcome-brand-logo {
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
+
+.welcome-brand-name {
+  color: var(--color-brand-purple);
+}
+
+.welcome-brand-name span {
+  color: var(--color-brand-blue);
+}
+
+.welcome-nav-login {
+  font-family: inherit;
+  font-size: var(--text-lg);
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: color var(--duration-150) var(--ease-standard);
+}
+
+.welcome-nav-login:hover {
+  color: var(--color-accent);
+}
+
+.welcome-hero {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  grid-template-columns: 1.05fr 0.95fr;
+  align-items: center;
+  gap: var(--space-34);
+  padding: var(--space-20) var(--space-34) var(--space-8);
+}
+
+.welcome-hero-copy {
+  max-width: 560px;
+}
+
+.welcome-eyebrow {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-8);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-accent);
+  padding: var(--space-6) var(--space-13) var(--space-6) var(--space-11);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+}
+
+.welcome-eyebrow::before {
+  content: '✦';
+  color: var(--color-warning);
+  font-size: var(--text-base);
+}
+
+.welcome-title {
+  /* No existing --text-* step is large enough for a hero headline (the
+     scale tops out at --text-6xl/26px for dense toolbox chrome); this is
+     the one deliberately new, page-scoped literal in the whole section. */
+  margin: var(--space-14) 0 0;
+  font-size: 32px;
+  font-weight: var(--font-weight-bold-plus);
+  line-height: 1.16;
+  letter-spacing: -0.01em;
+  color: var(--text-primary);
+}
+
+.welcome-sub {
+  margin: var(--space-14) 0 0;
+  max-width: 46ch;
+  font-size: var(--text-xl);
+  line-height: 1.66;
+  color: var(--text-secondary);
+}
+
+.welcome-cta-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-20);
+  flex-wrap: wrap;
+  margin-top: var(--space-22);
+}
+
+.welcome-cta-primary {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-10);
+  font-family: inherit;
+  font-size: var(--text-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-white);
+  padding: var(--space-14) var(--space-24);
+  border: 0;
+  border-radius: var(--radius-10);
+  background: linear-gradient(160deg, var(--color-accent), var(--color-accent-hover));
+  box-shadow: var(--shadow-md), 0 0 0 6px color-mix(in srgb, var(--color-warning) 16%, transparent);
+  cursor: pointer;
+  transition: transform var(--duration-150) var(--ease-emphasized);
+}
+
+.welcome-cta-primary:hover {
+  transform: translateY(-2px);
+}
+
+.welcome-cta-arrow {
+  display: inline-flex;
+  transition: transform var(--duration-150) var(--ease-emphasized);
+}
+
+.welcome-cta-primary:hover .welcome-cta-arrow {
+  transform: translateX(4px);
+}
+
+.welcome-cta-alt {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.welcome-cta-ghost {
+  align-self: flex-start;
+  font-family: inherit;
+  font-size: var(--text-lg);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-bottom: 1px dashed var(--text-muted);
+  padding: 0 0 var(--space-2);
+  cursor: pointer;
+  transition: color var(--duration-150) var(--ease-standard), border-color var(--duration-150) var(--ease-standard);
+}
+
+.welcome-cta-ghost:hover {
+  color: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.welcome-cta-note {
+  font-size: var(--text-base);
+  color: var(--text-muted);
+}
+
+.welcome-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-10);
+  margin-top: var(--space-16);
+}
+
+.welcome-chip {
+  font-size: var(--text-base);
+  letter-spacing: 0.01em;
+  color: var(--text-muted);
+  padding: var(--space-6) var(--space-12);
+  border-radius: var(--radius-8);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-default);
+}
+
+.welcome-assure {
+  position: relative;
+  align-self: flex-start;
+  margin-top: var(--space-18);
+}
+
+.welcome-assure-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-10);
+  font-family: inherit;
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-accent);
+  padding: var(--space-9) var(--space-15);
+  border-radius: var(--radius-10);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  cursor: pointer;
+  transition: border-color var(--duration-150) var(--ease-standard);
+}
+
+.welcome-assure-toggle:hover {
+  border-color: var(--color-accent);
+}
+
+.welcome-assure-toggle-label::before {
+  content: '✦';
+  margin-right: var(--space-7);
+  color: var(--color-warning);
+}
+
+.welcome-assure-chev {
+  color: var(--text-muted);
+  transition: transform var(--duration-150) var(--ease-standard);
+}
+
+.welcome-assure:hover .welcome-assure-chev,
+.welcome-assure.open .welcome-assure-chev {
+  transform: rotate(180deg);
+}
+
+/* Absolute + opacity/visibility, never display:none — an overlay that
+   never participates in layout is what keeps the expanded state from
+   pushing content down and producing the scrollbar the single-screen
+   constraint forbids. */
+.welcome-assure-panel {
+  position: absolute;
+  top: calc(100% + var(--space-11));
+  left: 0;
+  z-index: 8;
+  width: 560px;
+  max-width: 64vw;
+  padding: var(--space-17) var(--space-18) var(--space-15);
+  background: var(--surface-panel);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  border-radius: var(--radius-10);
+  box-shadow: var(--shadow-lg);
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(6px);
+  transition: opacity var(--duration-150) var(--ease-standard), transform var(--duration-150) var(--ease-standard), visibility var(--duration-150);
+}
+
+.welcome-assure:hover .welcome-assure-panel,
+.welcome-assure:focus-within .welcome-assure-panel,
+.welcome-assure.open .welcome-assure-panel {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+}
+
+.welcome-assure-title {
+  margin: 0 0 var(--space-12);
+  font-size: var(--text-md);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+}
+
+.welcome-assure-title::before {
+  content: '✦ ';
+  color: var(--color-warning);
+}
+
+.welcome-assure-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-12);
+}
+
+.welcome-assure-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-12) var(--space-13);
+  border-radius: var(--radius-10);
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-default);
+}
+
+.welcome-assure-tag {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  letter-spacing: 0.03em;
+  color: var(--color-accent);
+}
+
+.welcome-assure-card strong {
+  font-size: var(--text-lg);
+  color: var(--text-primary);
+}
+
+.welcome-assure-desc {
+  font-size: var(--text-base);
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.welcome-assure-note {
+  margin: var(--space-12) 0 0;
+  font-size: var(--text-sm);
+  line-height: 1.55;
+  color: var(--text-muted);
+}
+
+.welcome-assure-note strong {
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-semibold);
+}
+
+.welcome-hero-visual {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-14);
+}
+
+.welcome-constellation {
+  position: relative;
+  width: min(280px, 26vw);
+  aspect-ratio: 1 / 1;
+}
+
+.welcome-constellation svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: visible;
+}
+
+.welcome-ring {
+  fill: none;
+  stroke: var(--border-default);
+}
+
+.welcome-spoke {
+  stroke: color-mix(in srgb, var(--color-accent) 45%, transparent);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 5;
+}
+
+.welcome-ray {
+  stroke: color-mix(in srgb, var(--color-warning) 55%, transparent);
+  stroke-width: 1.2;
+}
+
+.welcome-star-core {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  gap: 1px;
+  width: 92px;
+  height: 92px;
+  text-align: center;
+  color: var(--color-warning);
+  background: var(--surface-panel);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  border-radius: 50%;
+  box-shadow: var(--shadow-md), 0 0 0 9px color-mix(in srgb, var(--color-warning) 14%, transparent);
+  transform: translate(-50%, -50%);
+}
+
+.welcome-star-core-lbl {
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.welcome-star-core-sub {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.welcome-node {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  gap: var(--space-7);
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  padding: var(--space-7) var(--space-12);
+  border-radius: var(--radius-10);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-default);
+  box-shadow: var(--shadow-sm);
+  white-space: nowrap;
+  transform: translate(-50%, -50%);
+}
+
+.welcome-node i {
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+}
+
+.welcome-node-top { left: 50%; top: 10%; }
+.welcome-node-right { left: 87%; top: 50%; }
+.welcome-node-bottom { left: 50%; top: 90%; }
+.welcome-node-left { left: 13%; top: 50%; }
+
+.welcome-constell-cap {
+  margin: 0;
+  font-size: var(--text-md);
+  color: var(--text-muted);
+}
+
+.welcome-cards3 {
+  display: grid;
+  flex: none;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--space-16);
+  padding: var(--space-4) var(--space-34) var(--space-16);
+}
+
+.welcome-card {
+  padding: var(--space-18) var(--space-19);
+  background: var(--surface-panel);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-10);
+  box-shadow: var(--shadow-sm);
+}
+
+.welcome-card-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  margin-bottom: var(--space-11);
+  color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  border-radius: var(--radius-10);
+}
+
+.welcome-card h3 {
+  margin: 0 0 var(--space-6);
+  font-size: var(--text-3xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+}
+
+.welcome-card p {
+  margin: 0;
+  font-size: var(--text-lg);
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.welcome-foot {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-20);
+  padding: var(--space-12) var(--space-34) var(--space-14);
+  border-top: 1px solid var(--border-default);
+  font-size: var(--text-base);
+  color: var(--text-muted);
+}
+
+.welcome-foot-left {
+  display: flex;
+  align-items: center;
+  gap: var(--space-6);
+  flex-wrap: wrap;
+}
+
+.welcome-foot-left code {
+  font-family: var(--font-mono);
+  font-size: var(--text-base);
+  color: var(--text-secondary);
+}
+
+.welcome-foot-dot {
+  opacity: 0.5;
+}
+
+.welcome-cs {
+  display: flex;
+  align-items: center;
+  gap: var(--space-12);
+}
+
+.welcome-cs-qr {
+  position: relative;
+  display: grid;
+  place-items: center;
+  gap: var(--space-2);
+  width: 48px;
+  height: 48px;
+  flex: none;
+  color: var(--text-faint);
+  /* A real QR code needs a white quiet zone to stay scannable, so this box
+     intentionally stays white in both themes — same reasoning as the
+     mockup's own always-white .qr treatment. */
+  background: var(--color-white);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-sm);
+}
+
+.welcome-cs-qr-todo {
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  font-size: 9px;
+  font-weight: var(--font-weight-bold);
+  letter-spacing: 0.03em;
+  /* --color-warning already flips light/dark on its own; only its paired
+     soft background (no adaptive alias exists for it) needs an explicit
+     dark override below. */
+  color: var(--color-warning);
+  background: var(--surface-caution-soft);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
+  border-radius: var(--radius-5);
+  padding: 1px var(--space-5);
+}
+
+:root[data-theme="dark"] .welcome-cs-qr-todo {
+  background: var(--dark-surface-caution-soft);
+}
+
+.welcome-cs-copy {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  line-height: 1.35;
+}
+
+.welcome-cs-copy strong {
+  font-size: var(--text-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+}
+
+.welcome-cs-copy span {
+  font-size: var(--text-sm);
+  color: var(--text-muted);
+}
+
+.welcome-cs-note {
+  color: var(--text-muted);
+}
+
+/* Layer 2 only aliases the strong/muted text tiers; the mid "ink-2" tier
+   (body copy that must outrank chip/meta text but isn't a heading) has no
+   adaptive alias yet, so it takes the same flat-primitive-plus-explicit-
+   dark-selector treatment the rest of this file already uses. */
+:root[data-theme="dark"] .welcome-sub,
+:root[data-theme="dark"] .welcome-cta-ghost,
+:root[data-theme="dark"] .welcome-assure-desc,
+:root[data-theme="dark"] .welcome-assure-note strong,
+:root[data-theme="dark"] .welcome-card p,
+:root[data-theme="dark"] .welcome-cs-copy strong,
+:root[data-theme="dark"] .welcome-foot-left code {
+  color: var(--dark-text-secondary);
+}
+
+/* --surface-panel is a flat (non-flipping) primitive equal to pure white,
+   so every plain "card" surface built from it needs an explicit dark
+   background. Their borders don't: each already uses either --border-default
+   (a Layer 2 alias that flips on its own) or a color-mix() accent tint that
+   reads fine unmodified in both themes, so border-color is deliberately not
+   repeated here. */
+:root[data-theme="dark"] .welcome-assure-panel,
+:root[data-theme="dark"] .welcome-star-core,
+:root[data-theme="dark"] .welcome-node,
+:root[data-theme="dark"] .welcome-card {
+  background: var(--dark-surface-panel);
+}
+
+/* Pill/badge-shaped surfaces pair with --dark-surface-3 instead — the
+   primitive this file already labels "dark pill/badge background". */
+:root[data-theme="dark"] .welcome-chip,
+:root[data-theme="dark"] .welcome-assure-card {
+  background: var(--dark-surface-3);
+}
+
+:root[data-theme="dark"] .welcome-cs-qr {
+  color: var(--dark-text-muted);
+}
+
+@media (max-width: 1080px), (max-height: 760px) {
+  .welcome-page {
+    overflow: auto;
+  }
+
+  .welcome-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .welcome-hero-visual {
+    display: none;
+  }
+
+  .welcome-cards3 {
+    grid-template-columns: 1fr;
+  }
+}

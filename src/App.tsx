@@ -10,6 +10,7 @@ import {
   initialTheme,
   isDetectionFailed,
   sameDesktopStatus,
+  shouldShowWelcome,
   SIDEBAR_STORAGE_KEY,
   THEME_STORAGE_KEY,
   type AppView,
@@ -25,6 +26,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { CodexOnboarding } from './components/onboarding/CodexOnboarding'
 import { NodeInstallGuide } from './components/onboarding/NodeInstallGuide'
 import { Sidebar } from './components/Sidebar'
+import { WelcomePage } from './components/welcome/WelcomePage'
 import { StartupSplash } from './components/StartupSplash'
 import { Toast, type ToastMessage } from './components/Toast'
 import type { PageId } from './navigation'
@@ -461,10 +463,14 @@ function App() {
         if (!active) return
         const codexReady = codexReadiness.hasApiKey && codexReadiness.matchesRelay
         if (!codexReady) {
-          await loadConfig()
+          const latestConfig = await loadConfig()
           if (!active) return
           setScanning(false)
-          setAppView('onboarding')
+          // A brand-new install (no provider ever configured) sees the
+          // welcome page first; a returning user who simply hasn't finished
+          // this particular CLI's setup goes straight to onboarding, same
+          // as before this page existed.
+          setAppView(shouldShowWelcome(latestConfig) ? 'welcome' : 'onboarding')
           return
         }
         setAppView('dashboard')
@@ -486,7 +492,12 @@ function App() {
 
   useEffect(() => {
     if (appView === 'loading') return
-    void window.xingmang.setWindowMode(appView).catch(() => {
+    // AppWindowMode (main-process IPC contract) only knows 'onboarding' |
+    // 'dashboard' — welcome has no window size of its own because it's
+    // designed to fill the same 1340x845 canvas as the dashboard, so it
+    // rides the 'dashboard' mode rather than growing a third IPC-level mode.
+    const windowMode = appView === 'welcome' ? 'dashboard' : appView
+    void window.xingmang.setWindowMode(windowMode).catch(() => {
       // Window sizing should not block configuration or tool access.
     })
   }, [appView])
@@ -848,6 +859,19 @@ function App() {
     return (
       <AppFrame theme={theme} platform={platformCapabilities}>
         <StartupSplash theme={theme} stage={startupStage} updateState={updateState} />
+      </AppFrame>
+    )
+  }
+
+  if (appView === 'welcome') {
+    return (
+      <AppFrame theme={theme} platform={platformCapabilities}>
+        <WelcomePage
+          theme={theme}
+          onRegister={() => setToast({ type: 'success', message: '注册功能即将开放' })}
+          onLogin={() => setToast({ type: 'success', message: '登录功能即将开放' })}
+          onHaveCode={() => setAppView('onboarding')}
+        />
       </AppFrame>
     )
   }
