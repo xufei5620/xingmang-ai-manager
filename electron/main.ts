@@ -24,6 +24,7 @@ import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
+import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { RuntimeLogStore } from './runtime-log'
@@ -543,7 +544,10 @@ if (!hasSingleInstanceLock) {
     // file in sync with login/logout/silent-refresh from *either* consumer of
     // this shared instance -- a disk failure here only ever gets logged, it
     // must never surface as a failure of whatever account action triggered it.
-    const accountService = createNewApiClient({
+    // Typed as the backend-agnostic RelayBackendClient (relay-backend.ts) --
+    // both consumers wired below (registerIpcHandlers, createCanvasWindowController)
+    // depend on that interface, not on new-api-client.ts's concrete type.
+    const accountService: RelayBackendClient = createNewApiClient({
       onSessionChange: (persistable) => {
         if (persistable) {
           void accountSessionStore.save(persistable).catch((error) => {

@@ -82,6 +82,18 @@ function serviceStub(): SystemService {
 // network. See CLAUDE.md's automated-tests-never-touch-production rule.
 function accountServiceStub(): NewApiClientService {
   return {
+    // new-api (the only backend today) reports every RelayBackendCapabilities
+    // flag as true -- see relay-backend.ts / new-api-client.ts's
+    // newApiCapabilities -- so the stub matches that shape rather than
+    // inventing its own.
+    capabilities: {
+      supportsRegistration: true,
+      supportsPasswordReset: true,
+      supportsKeyManagement: true,
+      supportsUsage: true,
+      supportsAutoKeyProvision: true,
+      supportsAccountSession: true,
+    },
     getStatus: vi.fn() as never,
     sendEmailVerification: vi.fn(async () => undefined),
     sendPasswordResetEmail: vi.fn(async () => undefined),

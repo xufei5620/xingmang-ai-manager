@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
+import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 
 // xm.solov.cc runs QuantumNous/new-api (rc.22, custom branch). Every endpoint
 // wraps its payload as { success, message, data } -- confirmed for the CLI
@@ -290,7 +291,14 @@ export interface NewApiCliKeyResult {
   key: string
 }
 
-export interface NewApiClientService {
+// Extends RelayBackendClient (relay-backend.ts) -- this is the first (and
+// today, only) relay backend implementation, so createNewApiClient() below
+// hands back an object satisfying both. The three methods declared only here
+// (isAuthenticated/refreshAccessToken/getPersistableSession) have no caller
+// outside this file and its own tests, so they stay off the shared contract
+// per relay-backend.ts's own "add a method only once a real consumer needs
+// it" rule.
+export interface NewApiClientService extends RelayBackendClient {
   getStatus(): Promise<NewApiAccountStatus>
   // Public, unauthenticated endpoint that /api/user/register's
   // verification_code field depends on -- see register() below. Resolves on
@@ -939,6 +947,19 @@ export function parseCliKeySecret(payload: unknown): string | null {
   return candidate && candidate.trim() ? candidate.trim() : null
 }
 
+// new-api (this module) is the first relay backend and, per CLAUDE.md's
+// multi-backend plan, currently the only one -- so every flag is true. See
+// relay-backend.ts's RelayBackendCapabilities for what a future backend
+// flipping one of these to false would mean for the renderer.
+const newApiCapabilities: RelayBackendCapabilities = {
+  supportsRegistration: true,
+  supportsPasswordReset: true,
+  supportsKeyManagement: true,
+  supportsUsage: true,
+  supportsAutoKeyProvision: true,
+  supportsAccountSession: true,
+}
+
 export function createNewApiClient(options: NewApiClientOptions = {}): NewApiClientService {
   const origin = validateBaseUrl(options.baseUrl ?? defaultBaseUrl).origin
   const timeoutMs = options.timeoutMs ?? defaultTimeoutMs
@@ -1441,6 +1462,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   }
 
   return {
+    capabilities: newApiCapabilities,
     getStatus,
     sendEmailVerification,
     sendPasswordResetEmail,

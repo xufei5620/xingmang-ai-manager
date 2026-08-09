@@ -30,7 +30,8 @@ import { resolveCanvasAuthToken, type CanvasAuthTokenDependencies } from './canv
 import { isAllowedExternalUrl } from './security'
 import { readBoundedUtf8File } from './bounded-file'
 import { writeAtomicSafeUtf8File } from './safe-local-data'
-import { buildCliKeyName, defaultBaseUrl as newApiDefaultBaseUrl, type NewApiClientService } from './new-api-client'
+import { buildCliKeyName, defaultBaseUrl as newApiDefaultBaseUrl } from './new-api-client'
+import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
@@ -58,7 +59,10 @@ export interface CanvasWindowControllerOptions {
   canvasDistRoot: string
   externalUrlAllowlist: readonly string[]
   systemService: SystemService
-  accountService: NewApiClientService
+  // Typed as the backend-agnostic RelayBackendClient (relay-backend.ts), not
+  // new-api-client.ts's concrete type -- this window never needs to know
+  // which relay backend minted its canvas key.
+  accountService: RelayBackendClient
   previewOnboarding: boolean
   runtimeLog: RuntimeLogStore
   externalShell?: ExternalShellLauncher
@@ -92,7 +96,7 @@ export const canvasCliKeyNamePrefix = 'xingmang-canvas'
 
 export interface CanvasTokenResolutionDependencies {
   systemService: SystemService
-  accountService: NewApiClientService
+  accountService: RelayBackendClient
   previewOnboarding: boolean
   onProvisionError?: (error: unknown) => void
   onReuseLookupError?: (error: unknown) => void

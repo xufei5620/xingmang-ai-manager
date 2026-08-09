@@ -49,11 +49,11 @@ import {
   type NewApiAccountKeysQuery,
   type NewApiAccountUsageQuery,
   type NewApiChangePasswordInput,
-  type NewApiClientService,
   type NewApiLoginInput,
   type NewApiRegisterInput,
   type NewApiResetPasswordInput,
 } from './new-api-client'
+import type { RelayBackendClient } from './relay-backend'
 import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
@@ -75,8 +75,10 @@ export interface IpcRegistrationOptions {
   providerExtensionService: ProviderExtensionService
   // Defaults to a real client talking to the production New-Api instance
   // when the host app does not supply one; tests inject a stub the same way
-  // they do for other services.
-  accountService?: NewApiClientService
+  // they do for other services. Typed as the backend-agnostic
+  // RelayBackendClient (relay-backend.ts), not new-api-client.ts's concrete
+  // type -- this module never needs to know which relay backend is active.
+  accountService?: RelayBackendClient
   // Resolves once main.ts's startup session-restore attempt (see
   // account-session-store.ts's restoreAccountSessionOnStartup) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
