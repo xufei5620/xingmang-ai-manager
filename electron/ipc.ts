@@ -48,6 +48,7 @@ import {
   createNewApiClient,
   type NewApiClientService,
   type NewApiLoginInput,
+  type NewApiRegisterInput,
 } from './new-api-client'
 import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
@@ -373,6 +374,24 @@ function parseAccountLoginInput(value: unknown): NewApiLoginInput {
   }
 }
 
+function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
+  if (!isRecord(value)) throw new Error('注册信息格式错误')
+  const email = requiredString(value.email, '邮箱地址', 254)
+  // Not requiredString: see parseAccountLoginInput above for why passwords
+  // are forwarded exactly as typed rather than trimmed.
+  if (typeof value.password !== 'string' || !value.password || value.password.length > 256) {
+    throw new Error('密码格式错误')
+  }
+  const verificationCode = requiredString(value.verificationCode, '邮箱验证码', 32)
+  return {
+    email,
+    password: value.password,
+    verificationCode,
+    username: optionalString(value.username, '用户名', 128),
+    affCode: optionalString(value.affCode, '邀请码', 64),
+  }
+}
+
 const ipcOperationLabels: Readonly<Record<string, string>> = {
   'system:scan': '本机环境与 AI 工具检测',
   'startup:codex-readiness': 'Codex 启动状态检测',
@@ -449,6 +468,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:get-session': '星芒账号会话状态读取',
   'account:get-balance': '星芒账号余额查询',
   'account:provision-cli-key': 'CLI Key 签发',
+  'account:register': '星芒账号注册',
 }
 
 const quietIpcSuccessChannels = new Set([
@@ -978,6 +998,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:get-session', () => accountService.getSessionState())
   registerTrustedHandler('account:get-balance', () => accountService.getBalance())
   registerTrustedHandler('account:provision-cli-key', () => accountService.provisionCliKey())
+  registerTrustedHandler('account:register', (_event, input: unknown) => (
+    accountService.register(parseAccountRegisterInput(input))
+  ))
 
   return () => {
     unsubscribeUpdates()

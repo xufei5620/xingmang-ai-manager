@@ -4,23 +4,27 @@ import { dialogAriaProps, DialogBackdrop } from '../Dialog'
 import { validateEmail, validateRegisterForm, type AccountFieldErrors } from './validation'
 
 /**
- * Register form skeleton. Email + password only (docs/RECON-new-api.md: it is
- * the only enabled registration method on xm.solov.cc today — WeChat/GitHub/
- * phone toggles are all off). "获取验证码" and the submit button are both
- * stubs: neither calls window.xingmang.registerAccount or any other real
- * channel this wave (docs/OVERNIGHT-PLAN.md W4) — the parent shows a
- * "即将开放" toast instead.
+ * Register form. Email + password only (docs/RECON-new-api.md: it is the
+ * only enabled registration method on xm.solov.cc today — WeChat/GitHub/
+ * phone toggles are all off). Submitting calls the parent's onSubmit with the
+ * validated {email, password, verificationCode}; the parent (App.tsx) makes
+ * the real window.xingmang.registerAccount call. "获取验证码" stays a stub —
+ * docs/RECON-new-api.md never confirmed a send-verification-code endpoint
+ * (only /api/user/register's *requirement* of one), so there is nothing real
+ * to wire it to yet without guessing an unconfirmed path.
  */
 export function RegisterDialog({
   onClose,
   onSwitchToLogin,
   onSubmit,
   onRequestVerificationCode,
+  isSubmitting = false,
 }: {
   onClose: () => void
   onSwitchToLogin: () => void
-  onSubmit: () => void
+  onSubmit: (values: { email: string; password: string; verificationCode: string }) => void
   onRequestVerificationCode: () => void
+  isSubmitting?: boolean
 }) {
   const [email, setEmail] = useState('')
   const [verificationCode, setVerificationCode] = useState('')
@@ -43,10 +47,11 @@ export function RegisterDialog({
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
+    if (isSubmitting) return
     const nextErrors = validateRegisterForm({ email, password, verificationCode })
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
-    onSubmit()
+    onSubmit({ email: email.trim(), password, verificationCode: verificationCode.trim() })
   }
 
   return (
@@ -128,7 +133,9 @@ export function RegisterDialog({
 
         <footer className="extension-dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>取消</button>
-          <button className="primary-button" type="submit">注册</button>
+          <button className="primary-button" type="submit" disabled={isSubmitting}>
+            {isSubmitting ? '注册中…' : '注册'}
+          </button>
         </footer>
       </form>
     </DialogBackdrop>

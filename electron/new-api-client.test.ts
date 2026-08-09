@@ -14,6 +14,13 @@ import {
   type NewApiFetch,
 } from './new-api-client'
 
+function registerAckResponse(): Response {
+  // RECON never confirmed a response shape for /api/user/register beyond the
+  // shared {success, message, data} envelope, so the fixture keeps `data`
+  // minimal on purpose -- see the comment on register() in new-api-client.ts.
+  return jsonResponse({ success: true, message: '', data: null })
+}
+
 const testBaseUrl = 'https://xm.test.internal'
 
 function jsonResponse(body: unknown, init: ResponseInit = {}, setCookies: string[] = []): Response {
@@ -367,6 +374,137 @@ describe('login', () => {
     await client.login({ username: 'tester', password: 'x', turnstileToken: 'ts-token' })
     const [, init] = fetchImpl.mock.calls[0]
     expect(JSON.parse(String(init?.body))).toMatchObject({ turnstile: 'ts-token' })
+  })
+})
+
+describe('register', () => {
+  it('posts email, password and verification_code, defaulting username to the email', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.register({
+      email: 'new-user@example.com',
+      password: 'correct horse battery staple',
+      verificationCode: '123456',
+    })
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/register`)
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({
+      username: 'new-user@example.com',
+      password: 'correct horse battery staple',
+      email: 'new-user@example.com',
+      verification_code: '123456',
+    })
+  })
+
+  it('honors an explicit username instead of defaulting to the email', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.register({
+      email: 'a@example.com',
+      password: 'correct horse battery staple',
+      verificationCode: '000000',
+      username: 'custom-handle',
+    })
+
+    const body = JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body))
+    expect(body.username).toBe('custom-handle')
+  })
+
+  it('never truncates a long email used as the default username, so a follow-up login sends a matching value', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const longEmail = `${'a'.repeat(150)}@example.com`
+
+    await client.register({ email: longEmail, password: 'correct horse battery staple', verificationCode: '123456' })
+
+    const body = JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body))
+    expect(body.username).toBe(longEmail)
+    expect(body.email).toBe(longEmail)
+  })
+
+  it('includes aff_code only when the caller supplies one', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.register({ email: 'a@example.com', password: 'correct horse battery staple', verificationCode: '000000' })
+    expect(JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body))).not.toHaveProperty('aff_code')
+
+    fetchImpl.mockClear().mockResolvedValue(registerAckResponse())
+    await client.register({
+      email: 'a@example.com',
+      password: 'correct horse battery staple',
+      verificationCode: '000000',
+      affCode: 'promo-1',
+    })
+    const body = JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body))
+    expect(body.aff_code).toBe('promo-1')
+  })
+
+  it('rejects empty email, password, or verification code before making a network call', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.register({
+      email: '  ',
+      password: 'correct horse battery staple',
+      verificationCode: '123456',
+    })).rejects.toThrow('请输入邮箱地址')
+    await expect(client.register({
+      email: 'a@example.com',
+      password: '',
+      verificationCode: '123456',
+    })).rejects.toThrow('请输入密码')
+    await expect(client.register({
+      email: 'a@example.com',
+      password: 'correct horse battery staple',
+      verificationCode: '  ',
+    })).rejects.toThrow('请输入邮箱验证码')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('resolves to undefined on success without assuming an undocumented response shape', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.register({
+      email: 'a@example.com',
+      password: 'correct horse battery staple',
+      verificationCode: '123456',
+    })).resolves.toBeUndefined()
+  })
+
+  it('surfaces the server-reported failure message on a rejected registration', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('该邮箱已注册'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await expect(client.register({
+      email: 'a@example.com',
+      password: 'correct horse battery staple',
+      verificationCode: '123456',
+    })).rejects.toThrow('该邮箱已注册')
+  })
+
+  it('redacts an echoed password and verification code from a failure message (I13)', async () => {
+    const password = 'hunter2-secret-password'
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(
+      failureResponse(`rejected: password ${password} code 654321 invalid`),
+    )
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    let message = ''
+    try {
+      await client.register({ email: 'a@example.com', password, verificationCode: '654321' })
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toContain('[REDACTED]')
+    expect(message).not.toContain(password)
+    expect(message).not.toContain('654321')
   })
 })
 

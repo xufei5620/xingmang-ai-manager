@@ -14,6 +14,7 @@ const defaultMaxResponseBytes = 512 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 
 const statusPath = '/api/status'
+const registerPath = '/api/user/register'
 const loginPath = '/api/user/login'
 const refreshPath = '/api/user/auth/refresh'
 const selfPath = '/api/user/self'
@@ -22,6 +23,15 @@ const tokenCollectionPath = '/api/token/'
 function tokenKeyPath(id: number): string {
   return `/api/token/${id}/key`
 }
+
+// TODO(RECON): docs/RECON-new-api.md section A does not list an email
+// verification-code endpoint, even though /api/user/register requires a
+// verification_code field (see NewApiRegisterInput below). Do not guess the
+// path here (this rc.22 custom branch has already drifted from upstream --
+// section C.5). Add a sendRegistrationVerificationCode() function and wire
+// an `account:send-verification-code` IPC channel the same way register()
+// was wired only once a real probe (or an upstream source read) confirms it.
+// Until then RegisterDialog.tsx's "获取验证码" button stays a toast stub.
 
 export type NewApiFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
 
@@ -58,6 +68,20 @@ export interface NewApiLoginInput {
   username: string
   password: string
   turnstileToken?: string
+}
+
+// RECON (docs/RECON-new-api.md section A) confirms /api/user/register wants
+// username *and* email as separate fields, but the only enabled sign-up path
+// on this instance is email+password with a verification code (section
+// "注册方式可用性对照") -- the account UI never collects a distinct username
+// (see RegisterDialog.tsx). username defaults to the email address itself
+// when the caller omits it, so callers never have to invent one.
+export interface NewApiRegisterInput {
+  email: string
+  password: string
+  verificationCode: string
+  username?: string
+  affCode?: string
 }
 
 // Safe to cross the IPC boundary: no access_token, no refresh cookie.
@@ -97,6 +121,7 @@ export interface NewApiCliKeyResult {
 
 export interface NewApiClientService {
   getStatus(): Promise<NewApiAccountStatus>
+  register(input: NewApiRegisterInput): Promise<void>
   login(input: NewApiLoginInput): Promise<NewApiLoginResult>
   logout(): void
   isAuthenticated(): boolean
@@ -449,6 +474,37 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return parseAccountStatus(unwrapEnvelope(raw, '账号服务状态查询', []))
   }
 
+  // RECON never exercised /api/user/register (read-only recon, no writes),
+  // so the response shape it returns beyond {success, message} is unconfirmed
+  // -- unlike login's `data.access_token`/`data.user`, which the probe of
+  // section D's suggested flow was written against. Rather than guess a
+  // shape and silently misparse it, this resolves to void on success; the
+  // caller is expected to follow up with login() using the same credentials,
+  // whose response shape *is* confirmed.
+  const register = async (input: NewApiRegisterInput): Promise<void> => {
+    const email = input.email.trim()
+    const password = input.password
+    const verificationCode = input.verificationCode.trim()
+    if (!email) throw new Error('请输入邮箱地址')
+    if (!password) throw new Error('请输入密码')
+    if (!verificationCode) throw new Error('请输入邮箱验证码')
+    // Only clamp an *explicit* custom username -- the App.tsx caller always
+    // follows a successful register() with login({ username: email, ... })
+    // using the untruncated email, so silently truncating the email-derived
+    // default here would make that follow-up login send a different
+    // username than the one just registered.
+    const username = input.username?.trim() || email
+    const body: Record<string, unknown> = {
+      username,
+      password,
+      email,
+      verification_code: verificationCode,
+    }
+    if (input.affCode) body.aff_code = input.affCode
+    const raw = await performRequest(ctx, registerPath, { method: 'POST', body }, '账号注册')
+    unwrapEnvelope(raw, '账号注册', [password, verificationCode])
+  }
+
   const login = async (input: NewApiLoginInput): Promise<NewApiLoginResult> => {
     const username = input.username.trim()
     const password = input.password
@@ -555,6 +611,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   return {
     getStatus,
+    register,
     login,
     logout,
     isAuthenticated,

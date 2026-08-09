@@ -3,11 +3,9 @@ import { CircleDot, X } from 'lucide-react'
 import { AppFrame } from './components/AppFrame'
 import { LoginDialog } from './components/account/LoginDialog'
 import { RegisterDialog } from './components/account/RegisterDialog'
-import {
-  resolveAccountAreaStatus,
-  resolveAccountSnapshotFromSearch,
-  type AccountSnapshot,
-} from './components/account/account-stub'
+import { resolveAccountAreaStatus } from './components/account/account-stub'
+import { resolveAccountSnapshot } from './components/account/account-session'
+import { provisionCliKeyForInstalledClis } from './account-provisioning'
 import {
   codexDesktopInstallActive,
   codexDesktopLaunchDecision,
@@ -66,6 +64,9 @@ import { SkillsPage, type SkillImportRequest } from './pages/SkillsPage'
 import { UpdatePage } from './pages/UpdatePage'
 import {
   providerIds,
+  type AccountBalance,
+  type AccountProfile,
+  type AccountSessionState,
   type AppConfigSummary,
   type AppSettingsV2,
   type CodexDesktopLaunchMode,
@@ -121,11 +122,14 @@ function App() {
   // 若状态挂在它上面，切一次页再切回来就白记了。
   const [nextStepsTriedLaunch, setNextStepsTriedLaunch] = useState(false)
   const [nextStepsExploredMcp, setNextStepsExploredMcp] = useState(false)
-  // Stub account snapshot (docs/OVERNIGHT-PLAN.md W4) — not wired to the real
-  // account:get-status/get-balance IPC channels yet. Fixed at mount; dev/QA
-  // can preview the other two states via ?accountState=active|low-balance.
-  const [accountSnapshot] = useState<AccountSnapshot>(() => resolveAccountSnapshotFromSearch(window.location.search))
+  // Real account session + balance (阶段 A). Synced from account:get-session /
+  // account:get-balance on mount and after every successful login/register;
+  // accountSnapshot itself is derived further down via resolveAccountSnapshot
+  // (account-session.ts), right next to accountStatus.
+  const [accountSession, setAccountSession] = useState<AccountSessionState | null>(null)
+  const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
   const [accountDialog, setAccountDialog] = useState<'login' | 'register' | null>(null)
+  const [accountBusy, setAccountBusy] = useState(false)
   const [toast, setToast] = useState<ToastMessage | null>(null)
   const [updateState, setUpdateState] = useState<UpdateSnapshot | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
@@ -159,6 +163,7 @@ function App() {
   // state 更新在同一帧内不可见，双击防重入必须用 ref 同步短路。
   const cliLaunchingRef = useRef(false)
   const codexLaunchRequestRef = useRef(false)
+  const accountBusyRef = useRef(false)
   const persistedSettings = useMemo(() => settings, [
     settings.version,
     settings.workspace,
@@ -198,6 +203,29 @@ function App() {
     void window.xingmang.getRepositoryContext()
       .then(setRepositoryContext)
       .catch((error) => setToast({ type: 'error', message: errorMessage(error) }))
+  }, [])
+
+  // The account service lives in the main process for the app's lifetime
+  // with no disk persistence across restarts (docs/RECON-new-api.md 坑7), so
+  // a renderer-only reload can still observe an already-authenticated
+  // session here even though nothing was just logged in from this mount.
+  useEffect(() => {
+    let active = true
+    void window.xingmang.getAccountSession()
+      .then(async (session) => {
+        if (!active) return
+        setAccountSession(session)
+        if (!session.authenticated) return
+        try {
+          const balance = await window.xingmang.getAccountBalance()
+          if (active) setAccountBalance(balance)
+        } catch {
+          // Session may have just expired between the two calls; the account
+          // area simply falls back to the guest/preview snapshot.
+        }
+      })
+      .catch(() => undefined)
+    return () => { active = false }
   }, [])
 
   useEffect(() => {
@@ -632,7 +660,108 @@ function App() {
   const runtimeReady = nodeRuntimeSupported(snapshot.runtime) && snapshot.runtime.npm.installed
   const installedCliCount = providerIds.filter((id) => snapshot.clis[id].installed).length
   const installedToolCount = installedCliCount + Number(snapshot.desktopApps.codex.installed)
+  const accountSnapshot = resolveAccountSnapshot(accountSession, accountBalance, window.location.search)
   const accountStatus = resolveAccountAreaStatus(accountSnapshot)
+
+  // Shared by both submit handlers below: re-reads the main process's account
+  // session right after a successful login/register call so the sidebar's
+  // three-state account area starts reflecting real data immediately.
+  const refreshAccountSession = async (): Promise<AccountProfile | null> => {
+    const session = await window.xingmang.getAccountSession()
+    setAccountSession(session)
+    if (!session.authenticated) {
+      setAccountBalance(null)
+      return null
+    }
+    const balance = await window.xingmang.getAccountBalance()
+    setAccountBalance(balance)
+    return session.account
+  }
+
+  // 阶段 A 核心价值链「拿 Key → 写进 CLI 配置」：签发一个新 Key，写进所有已装
+  // CLI（复用 config-files.ts 既有两阶段提交写入路径，不新写落盘逻辑）。
+  // I3：明文 Key 只活在 provisionCliKeyForInstalledClis 的局部作用域里，绝不
+  // 经过这里的任何 useState。已装 CLI 列表从 ref 读取，避免把 snapshot 整体
+  // 挂进这个函数的依赖来源。
+  const runCliProvisioning = async () => {
+    const installedProviderIds = providerIds.filter((id) => snapshotRef.current.clis[id].installed)
+    if (installedProviderIds.length === 0) return
+    const preferredModels = Object.fromEntries(
+      providerIds.map((id) => [id, config?.providers[id]?.model || undefined]),
+    ) as Partial<Record<ProviderId, string>>
+    try {
+      const outcome = await provisionCliKeyForInstalledClis(installedProviderIds, preferredModels, window.xingmang)
+      if (outcome.configured.length > 0) setConfig(await window.xingmang.getConfig())
+      if (outcome.configured.length > 0 && outcome.failed.length === 0) {
+        setToast({ type: 'success', message: `已自动把星芒 Key 配置到 ${outcome.configured.length} 个已安装 CLI` })
+      } else if (outcome.configured.length > 0) {
+        const failedNames = outcome.failed.map((entry) => providers[entry.provider].name).join('、')
+        setToast({
+          type: 'error',
+          message: `已配置 ${outcome.configured.length} 个 CLI；${failedNames} 配置失败，可到“CLI 配置”页手动重试`,
+        })
+      } else if (outcome.failed.length > 0) {
+        setToast({ type: 'error', message: `星芒 Key 未能配置到已装 CLI：${outcome.failed[0].message}` })
+      }
+    } catch (error) {
+      setToast({ type: 'error', message: `星芒 Key 签发失败：${errorMessage(error)}` })
+    }
+  }
+
+  const handleAccountLoginSubmit = async (values: { email: string; password: string }) => {
+    if (accountBusyRef.current) return
+    accountBusyRef.current = true
+    setAccountBusy(true)
+    try {
+      await window.xingmang.loginAccount({ username: values.email, password: values.password })
+      const account = await refreshAccountSession()
+      setAccountDialog(null)
+      setToast({ type: 'success', message: account ? `欢迎回来，${account.username}` : '登录成功' })
+      void runCliProvisioning()
+    } catch (error) {
+      setToast({ type: 'error', message: errorMessage(error) })
+    } finally {
+      accountBusyRef.current = false
+      setAccountBusy(false)
+    }
+  }
+
+  const handleAccountRegisterSubmit = async (values: {
+    email: string
+    password: string
+    verificationCode: string
+  }) => {
+    if (accountBusyRef.current) return
+    accountBusyRef.current = true
+    setAccountBusy(true)
+    try {
+      await window.xingmang.registerAccount({
+        email: values.email,
+        password: values.password,
+        verificationCode: values.verificationCode,
+      })
+      try {
+        // RECON never confirmed what /api/user/register returns beyond the
+        // shared {success, message} envelope (see register() in
+        // electron/new-api-client.ts), so this logs in with the credentials
+        // just submitted instead of trusting an assumed response shape.
+        await window.xingmang.loginAccount({ username: values.email, password: values.password })
+        const account = await refreshAccountSession()
+        setAccountDialog(null)
+        setToast({ type: 'success', message: account ? `注册成功，欢迎 ${account.username}` : '注册成功' })
+        void runCliProvisioning()
+      } catch (error) {
+        setAccountDialog('login')
+        setToast({ type: 'error', message: `注册成功，但自动登录失败（${errorMessage(error)}），请手动登录` })
+      }
+    } catch (error) {
+      setToast({ type: 'error', message: errorMessage(error) })
+    } finally {
+      accountBusyRef.current = false
+      setAccountBusy(false)
+    }
+  }
+
   const installNodeRuntime = async () => {
     if (nodeRuntimeInstalling) return
     if (platformCapabilities.nodeRuntimeInstall === 'external') {
@@ -921,21 +1050,17 @@ function App() {
           <LoginDialog
             onClose={() => setAccountDialog(null)}
             onSwitchToRegister={() => setAccountDialog('register')}
-            onSubmit={() => {
-              setAccountDialog(null)
-              setToast({ type: 'success', message: '登录功能即将开放' })
-            }}
+            onSubmit={(values) => void handleAccountLoginSubmit(values)}
+            isSubmitting={accountBusy}
           />
         )}
         {accountDialog === 'register' && (
           <RegisterDialog
             onClose={() => setAccountDialog(null)}
             onSwitchToLogin={() => setAccountDialog('login')}
-            onSubmit={() => {
-              setAccountDialog(null)
-              setToast({ type: 'success', message: '注册功能即将开放' })
-            }}
+            onSubmit={(values) => void handleAccountRegisterSubmit(values)}
             onRequestVerificationCode={() => setToast({ type: 'success', message: '验证码功能即将开放' })}
+            isSubmitting={accountBusy}
           />
         )}
         {toast && (
@@ -1229,10 +1354,8 @@ function App() {
         <LoginDialog
           onClose={() => setAccountDialog(null)}
           onSwitchToRegister={() => setAccountDialog('register')}
-          onSubmit={() => {
-            setAccountDialog(null)
-            setToast({ type: 'success', message: '登录功能即将开放' })
-          }}
+          onSubmit={(values) => void handleAccountLoginSubmit(values)}
+          isSubmitting={accountBusy}
         />
       )}
 
@@ -1240,11 +1363,9 @@ function App() {
         <RegisterDialog
           onClose={() => setAccountDialog(null)}
           onSwitchToLogin={() => setAccountDialog('login')}
-          onSubmit={() => {
-            setAccountDialog(null)
-            setToast({ type: 'success', message: '注册功能即将开放' })
-          }}
+          onSubmit={(values) => void handleAccountRegisterSubmit(values)}
           onRequestVerificationCode={() => setToast({ type: 'success', message: '验证码功能即将开放' })}
+          isSubmitting={accountBusy}
         />
       )}
 

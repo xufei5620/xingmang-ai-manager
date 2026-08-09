@@ -6,6 +6,7 @@ import type { SystemService } from './system-service'
 import type { UpdaterService } from './updater'
 import type { AppSettings } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
+import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
 
@@ -74,6 +75,25 @@ function serviceStub(): SystemService {
   }
 }
 
+// Always injected by register() below (default parameter), so no test ever
+// falls through to registerIpcHandlers' own default of a real
+// createNewApiClient() talking to production xm.solov.cc -- the account:*
+// handlers would otherwise be the one corner of this suite able to reach the
+// network. See CLAUDE.md's automated-tests-never-touch-production rule.
+function accountServiceStub(): NewApiClientService {
+  return {
+    getStatus: vi.fn() as never,
+    register: vi.fn(async () => undefined),
+    login: vi.fn() as never,
+    logout: vi.fn(),
+    isAuthenticated: vi.fn(() => false),
+    getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
+    getBalance: vi.fn() as never,
+    provisionCliKey: vi.fn() as never,
+    refreshAccessToken: vi.fn() as never,
+  }
+}
+
 function trustedEvent(url = 'http://localhost:5173/') {
   return {
     senderFrame: { url },
@@ -112,6 +132,7 @@ function register(
   service = serviceStub(),
   runtimeLogDirectory = 'C:\\app-data\\logs',
   transformSystemSnapshot?: (snapshot: never) => never,
+  accountService = accountServiceStub(),
 ) {
   const extensionService = {
     getRepositoryContext: vi.fn(() => ({ repositoryRoot: 'C:\\workspace' })),
@@ -171,6 +192,7 @@ function register(
   }
   const dispose = registerIpcHandlers({
     systemService: service,
+    accountService,
     sessionsService: sessionsService as never,
     providerSessionsService: providerSessionsService as never,
     backupStore: {
@@ -211,6 +233,7 @@ function register(
   return {
     dispose,
     service,
+    accountService,
     extensionService,
     providerExtensionService,
     runtimeLog,
@@ -1757,6 +1780,89 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
 
       expect(() => handler(trustedEvent(), { message: 'Boom', context: 'x'.repeat(257) })).toThrow('错误上下文格式错误')
+    })
+  })
+
+  describe('parseAccountRegisterInput (account:register)', () => {
+    it('parses a valid registration payload and forwards it to the account service', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      await expect(handler(trustedEvent(), {
+        email: '  new-user@example.com  ',
+        password: 'correct horse battery staple',
+        verificationCode: '123456',
+      })).resolves.toBeUndefined()
+
+      expect(accountService.register).toHaveBeenCalledWith({
+        email: 'new-user@example.com',
+        password: 'correct horse battery staple',
+        verificationCode: '123456',
+        username: undefined,
+        affCode: undefined,
+      })
+    })
+
+    it('forwards an explicit username and affiliate code instead of defaulting them', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      await handler(trustedEvent(), {
+        email: 'new-user@example.com',
+        password: 'correct horse battery staple',
+        verificationCode: '123456',
+        username: 'custom-handle',
+        affCode: 'promo-1',
+      })
+
+      expect(accountService.register).toHaveBeenCalledWith({
+        email: 'new-user@example.com',
+        password: 'correct horse battery staple',
+        verificationCode: '123456',
+        username: 'custom-handle',
+        affCode: 'promo-1',
+      })
+    })
+
+    it('rejects a non-record payload', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      expect(() => handler(trustedEvent(), 'nope')).toThrow('注册信息格式错误')
+      expect(() => handler(trustedEvent(), null)).toThrow('注册信息格式错误')
+    })
+
+    it('rejects a missing or blank email', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      expect(() => handler(trustedEvent(), { password: 'x'.repeat(10), verificationCode: '1' })).toThrow('邮箱地址格式错误')
+      expect(() => handler(trustedEvent(), { email: '  ', password: 'x'.repeat(10), verificationCode: '1' })).toThrow('邮箱地址格式错误')
+    })
+
+    it('rejects a missing, empty, or oversized password without trimming it', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      expect(() => handler(trustedEvent(), { email: 'a@b.com', verificationCode: '1' })).toThrow('密码格式错误')
+      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: '', verificationCode: '1' })).toThrow('密码格式错误')
+      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: 'x'.repeat(257), verificationCode: '1' })).toThrow('密码格式错误')
+    })
+
+    it('rejects a missing or blank verification code', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: 'x'.repeat(10) })).toThrow('邮箱验证码格式错误')
+      expect(() => handler(trustedEvent(), { email: 'a@b.com', password: 'x'.repeat(10), verificationCode: '  ' })).toThrow('邮箱验证码格式错误')
+    })
+
+    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:register')!
+
+      expect(() => handler(trustedEvent(), { email: 'a@b.com' })).toThrow()
+      expect(accountService.register).not.toHaveBeenCalled()
     })
   })
 })

@@ -4,19 +4,21 @@ import { dialogAriaProps, DialogBackdrop } from '../Dialog'
 import { validateLoginForm, type AccountFieldErrors } from './validation'
 
 /**
- * Login form skeleton. Submitting never calls window.xingmang.loginAccount —
- * this wave is UI-only (docs/OVERNIGHT-PLAN.md W4); the parent's onSubmit is
- * only invoked after client-side validation passes, and the parent shows a
- * "即将开放" toast rather than performing a real login.
+ * Login form. Submitting calls the parent's onSubmit with the validated
+ * {email, password} once client-side validation passes; the parent (App.tsx)
+ * performs the real window.xingmang.loginAccount call and owns the
+ * in-flight/error state, passed back down as isSubmitting.
  */
 export function LoginDialog({
   onClose,
   onSwitchToRegister,
   onSubmit,
+  isSubmitting = false,
 }: {
   onClose: () => void
   onSwitchToRegister: () => void
-  onSubmit: () => void
+  onSubmit: (values: { email: string; password: string }) => void
+  isSubmitting?: boolean
 }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -29,10 +31,11 @@ export function LoginDialog({
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
+    if (isSubmitting) return
     const nextErrors = validateLoginForm({ email, password })
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
-    onSubmit()
+    onSubmit({ email: email.trim(), password })
   }
 
   return (
@@ -97,7 +100,9 @@ export function LoginDialog({
 
         <footer className="extension-dialog-actions">
           <button className="secondary-button" type="button" onClick={onClose}>取消</button>
-          <button className="primary-button" type="submit">登录</button>
+          <button className="primary-button" type="submit" disabled={isSubmitting}>
+            {isSubmitting ? '登录中…' : '登录'}
+          </button>
         </footer>
       </form>
     </DialogBackdrop>

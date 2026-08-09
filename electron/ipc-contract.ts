@@ -80,6 +80,7 @@ import type {
   NewApiCliKeyResult,
   NewApiLoginInput,
   NewApiLoginResult,
+  NewApiRegisterInput,
   NewApiSessionState,
 } from './new-api-client'
 
@@ -140,6 +141,7 @@ export type AccountStatus = NewApiAccountStatus
 export type AccountProfile = NewApiAccountProfile
 export type AccountLoginInput = NewApiLoginInput
 export type AccountLoginResult = NewApiLoginResult
+export type AccountRegisterInput = NewApiRegisterInput
 export type AccountSessionState = NewApiSessionState
 export type AccountBalance = NewApiBalance
 export type AccountCliKeyResult = NewApiCliKeyResult
@@ -343,6 +345,7 @@ export interface XingmangInvokeContract {
   getAccountSession: IpcInvokeDefinition<'account:get-session', [], AccountSessionState>
   getAccountBalance: IpcInvokeDefinition<'account:get-balance', [], AccountBalance>
   provisionCliKey: IpcInvokeDefinition<'account:provision-cli-key', [], AccountCliKeyResult>
+  registerAccount: IpcInvokeDefinition<'account:register', [input: AccountRegisterInput], void>
 }
 
 export interface XingmangEventContract {
@@ -450,6 +453,7 @@ export const ipcInvokeChannels = {
   getAccountSession: 'account:get-session',
   getAccountBalance: 'account:get-balance',
   provisionCliKey: 'account:provision-cli-key',
+  registerAccount: 'account:register',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
