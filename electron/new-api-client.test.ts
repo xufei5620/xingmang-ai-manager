@@ -1980,6 +1980,31 @@ describe('redaction (I13)', () => {
     expect(message).not.toContain('test-access-token-abc')
   })
 
+  it('never lets an echoed refresh cookie value surface in a refresh failure message', async () => {
+    // Cookie name deliberately avoids every word redactCommandText's own
+    // generic patterns already recognize (token/key/auth/secret/password) --
+    // this test must fail if unwrapEnvelope's explicit secrets list is the
+    // only thing standing between the echoed value and the caller, not
+    // because the value happened to also look like a bearer/API-key pattern.
+    const fetchImpl = vi.fn<NewApiFetch>()
+    fetchImpl.mockResolvedValueOnce(loginResponse({}, ['sid=cookie-value-1']))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await client.login({ username: 'tester', password: 'x' })
+    fetchImpl.mockClear()
+    fetchImpl.mockResolvedValueOnce(
+      failureResponse('rejected cookie: sid=cookie-value-1 not recognized'),
+    )
+
+    let message = ''
+    try {
+      await client.refreshAccessToken()
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(message).toContain('[REDACTED]')
+    expect(message).not.toContain('cookie-value-1')
+  })
+
   it('strips control characters and caps the length of upstream error text', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(
       failureResponse(`broken\nmessage\twith control chars ${'x'.repeat(500)}`),

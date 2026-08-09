@@ -847,6 +847,28 @@ export function extractSessionCookies(headers: Headers): string[] {
     .filter((entry) => entry.length > 0 && entry.includes('='))
 }
 
+// The bare cookie *value* -- the part after "=" -- is exactly as sensitive as
+// the refresh cookie itself (I13). If a misbehaving backend, proxy, or WAF
+// ever echoed the Cookie header (or a fragment of it) back into a response's
+// JSON `message` field, unwrapEnvelope's redaction previously had no idea the
+// value was secret and would let it straight through into the thrown Error's
+// .message -- which two call sites then log verbatim: registerTrustedHandler
+// folds every failed account:* IPC call's error.message into the runtime log
+// (ipc.ts), and restoreAccountSessionOnStartup logs a failed restoreSession()
+// the same way under a `reason` key (account-session-store.ts) that
+// runtime-log.ts's key-name-based sanitizeValue never inspects (the key is
+// "reason", not "cookie"/"token"/etc). Both land in the persisted runtime.jsonl
+// and, from there, in a user's feedback export. Keeping just the value rather
+// than the whole "name=value" pair still redacts the pair when both appear
+// together (the value substring is found and blanked out either way), while
+// also catching the value alone if a response echoes it without the cookie's
+// name.
+function cookieValueSecrets(cookies: readonly string[]): string[] {
+  return cookies
+    .map((entry) => entry.slice(entry.indexOf('=') + 1))
+    .filter((value) => value.length > 0)
+}
+
 export function computeBalanceDisplay(quota: number, quotaPerUnit: number): number {
   if (!Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0) {
     throw new Error('无法获取余额换算比例，请稍后重试')
@@ -966,7 +988,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       { method: 'POST', headers: { Cookie: current.cookies.join('; ') } },
       '登录状态续期',
     )
-    const data = parseRefreshResponseData(unwrapEnvelope(raw, '登录状态续期', [current.accessToken]))
+    const data = parseRefreshResponseData(unwrapEnvelope(
+      raw,
+      '登录状态续期',
+      [current.accessToken, ...cookieValueSecrets(current.cookies)],
+    ))
     const newCookies = extractSessionCookies(raw.headers)
     return {
       ...current,
