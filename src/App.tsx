@@ -725,8 +725,8 @@ function App() {
   // 登录/注册成功后调用：把已装 CLI 列表交给确认弹窗，由用户勾选后再真正写入
   // （阶段 A 加固，见 ProvisioningConfirmDialog.tsx）。没有已装 CLI 时不打扰
   // 用户，直接跳过——原静默写入在“没有可写对象”这一分支上的行为保持不变。
-  const offerCliProvisioning = () => {
-    const targets = buildProvisioningTargets(snapshotRef.current)
+  const offerCliProvisioning = (snapshot: SystemSnapshot = snapshotRef.current) => {
+    const targets = buildProvisioningTargets(snapshot)
     if (targets.length === 0) return
     setProvisioningTargets(targets)
   }
@@ -774,7 +774,12 @@ function App() {
       setAccountDialog(null)
       setAccountLoginPrefill('')
       setToast({ type: 'success', message: account ? `欢迎回来，${account.username}` : '登录成功' })
-      offerCliProvisioning()
+      // 登录成功即离开欢迎页进入工作台，并跑一次环境扫描——欢迎页那条启动
+      // 路径不扫描，snapshot 为空会让写 Key 弹窗拿不到已装 CLI。用扫到的
+      // 快照直接触发，避免 snapshotRef 尚未随渲染更新。
+      setAppView('dashboard')
+      const scanResult = await scan()
+      offerCliProvisioning(scanResult.snapshot ?? snapshotRef.current)
     } catch (error) {
       setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
     } finally {

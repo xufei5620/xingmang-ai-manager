@@ -38,7 +38,8 @@
     "audit:production": "npm audit --omit=dev --registry=https://registry.npmjs.org/",
     "update:serve": "node scripts/serve-update-feed.cjs",
     "update:verify-feed": "node scripts/verify-update-feed.cjs",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node scripts/copy-canvas-assets.mjs && electron ."
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",
