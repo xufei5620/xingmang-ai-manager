@@ -10,6 +10,7 @@ import {
 import type { AppSettings, AppTheme } from './app-settings'
 import type { ConfigBackupStore } from './backups'
 import { cliCatalog, isProviderId } from './catalog'
+import { relaySites } from './relay-sites'
 import type {
   AddMarketplaceInput,
   AddMcpInput,
@@ -145,6 +146,17 @@ function parseSettings(value: unknown): AppSettings {
     if (typeof value[key] !== 'boolean') throw new Error('设置格式错误')
   }
   const sidebarMoreExpanded = optionalBoolean(value.sidebarMoreExpanded, '侧边栏展开状态')
+  // Same degrade-don't-throw semantics as app-settings.ts's parseRelaySiteId:
+  // an unknown/stale site id must never brick saving the rest of the
+  // settings, so it is dropped here (and would be dropped again by
+  // app-settings.ts's own validation at persist time -- this hop is the
+  // defense-in-depth I5 copy, not the only line). Without this passthrough
+  // the renderer's settings:save round trip silently reset the site choice
+  // to the default on every save.
+  const relaySiteId = typeof value.relaySiteId === 'string'
+    && relaySites.some((site) => site.id === value.relaySiteId)
+    ? value.relaySiteId
+    : undefined
   return {
     version: 2,
     workspace: requiredString(value.workspace, '工作目录', 32_767),
@@ -152,6 +164,7 @@ function parseSettings(value: unknown): AppSettings {
     checkUpdatesOnStartup: value.checkUpdatesOnStartup === true,
     runDiagnosticsOnStartup: value.runDiagnosticsOnStartup === true,
     ...(sidebarMoreExpanded === true ? { sidebarMoreExpanded: true as const } : {}),
+    ...(relaySiteId !== undefined ? { relaySiteId } : {}),
   }
 }
 

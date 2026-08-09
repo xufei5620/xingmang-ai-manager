@@ -101,6 +101,10 @@ function parseSettingsValue(value: unknown): AppSettings {
   if (value.version === 1) return migrateV1(value as unknown as LegacyAppSettings)
   if (value.version !== 2) throw new Error('settings 版本不受支持')
 
+  // Evaluated once and compared against undefined explicitly: a truthiness
+  // check would silently swallow a (pathological but type-legal) empty-string
+  // site id, and calling the parser twice invites the two results drifting.
+  const relaySiteId = parseRelaySiteId(value.relaySiteId)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
@@ -113,7 +117,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // A malformed value degrades to "collapsed" (the pre-#67 default) rather
     // than failing the whole read, matching every other optional field here.
     ...(optionalBoolean(value.sidebarMoreExpanded, false) ? { sidebarMoreExpanded: true as const } : {}),
-    ...(parseRelaySiteId(value.relaySiteId) ? { relaySiteId: parseRelaySiteId(value.relaySiteId) } : {}),
+    ...(relaySiteId !== undefined ? { relaySiteId } : {}),
   }
 }
 

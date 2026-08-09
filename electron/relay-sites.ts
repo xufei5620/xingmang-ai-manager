@@ -36,7 +36,15 @@ export interface RelaySite {
 // export (not a copy) so the two can never drift -- catalog.ts remains the
 // single source of truth for the fixed per-CLI relay URLs (T2's rank-table
 // precedent: derive, never duplicate literals).
-export const relaySites: RelaySite[] = [
+// Non-empty tuple type: resolveRelaySite's "never throws" contract and
+// defaultRelaySiteId's module-load-time [0] access both lean on this array
+// having at least one element, and this module is bundled into BOTH the main
+// process and the renderer -- an empty array here would be a white screen at
+// import time. The tuple makes that a compile error instead of a test-only
+// guarantee. readonly also keeps the renderer-bundle copy from being
+// mutated by accident (display-only there; every security decision reads the
+// main-process copy).
+export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   {
     id: 'solov',
     label: '星芒官方',

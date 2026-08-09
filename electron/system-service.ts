@@ -2773,7 +2773,12 @@ export function createSystemService(
     for (const [key, entry] of modelAccessCache) {
       if (entry.expiresAt <= now) modelAccessCache.delete(key)
     }
-    const cacheKey = modelAccessCacheKey(apiKey)
+    // Site id joins the cache key: the same API key can be pointed at a
+    // different relay site within the 2-minute TTL (site switcher), and a
+    // model list fetched from the previous site must not validate a model
+    // that then gets written into a config aimed at the new site.
+    const activeSite = resolveRelaySite(store.read().relaySiteId)
+    const cacheKey = `${activeSite.id}:${modelAccessCacheKey(apiKey)}`
     const cached = modelAccessCache.get(cacheKey)
     if (cached) {
       modelAccessCache.delete(cacheKey)
@@ -2784,7 +2789,6 @@ export function createSystemService(
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
     try {
-      const activeSite = resolveRelaySite(store.read().relaySiteId)
       const response = await fetch(`${activeSite.websiteUrl}/v1/models`, {
         headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
         redirect: 'error',

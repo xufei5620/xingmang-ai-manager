@@ -921,6 +921,41 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ workspace: 'D:\\workspace' }))
     })
 
+    it('round-trips a known relaySiteId through settings:save (persisted and echoed back)', async () => {
+      // Regression: parseSettings used to rebuild the object without
+      // relaySiteId, so the renderer's own save silently reset the site
+      // choice to the default -- the app-settings round-trip tests never
+      // caught it because they bypass this IPC hop entirely.
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'light',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        relaySiteId: 'solov',
+      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'solov' }))
+      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'solov' }))
+    })
+
+    it('drops an unknown relaySiteId instead of failing the whole save', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      const saved = await handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'light',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        relaySiteId: 'not-a-real-site',
+      }) as Record<string, unknown>
+      expect(saved.relaySiteId).toBeUndefined()
+      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.not.objectContaining({ relaySiteId: expect.anything() }))
+    })
+
     it('rejects a non-record payload', async () => {
       register()
       const handler = electronMocks.handlers.get('settings:save')!
