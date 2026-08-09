@@ -379,6 +379,23 @@ function parseAccountLoginInput(value: unknown): NewApiLoginInput {
   }
 }
 
+// Deliberately permissive (not full RFC 5322): catches the typos users
+// actually make without rejecting a valid-but-unusual address. Mirrors
+// src/components/account/validation.ts's EMAIL_PATTERN, kept as a separate
+// literal rather than a shared import -- electron/ never imports from src/
+// (renderer code may depend on Node-free bundling; see CLAUDE.md I6/I7) --
+// and this is the one account:* input parser that actually needs a format
+// check rather than requiredString()'s bare non-empty test, since a
+// malformed address here would silently fail server-side with no useful
+// per-field feedback back to RegisterDialog.
+const accountEmailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+
+function parseAccountEmailInput(value: unknown): string {
+  const email = requiredString(value, '邮箱地址', 254)
+  if (!accountEmailPattern.test(email)) throw new Error('请输入正确的邮箱地址')
+  return email
+}
+
 function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
   if (!isRecord(value)) throw new Error('注册信息格式错误')
   const email = requiredString(value.email, '邮箱地址', 254)
@@ -474,6 +491,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:get-balance': '星芒账号余额查询',
   'account:provision-cli-key': 'CLI Key 签发',
   'account:register': '星芒账号注册',
+  'account:send-verification-code': '星芒账号邮箱验证码发送',
   'canvas:open': '无限画布窗口打开',
 }
 
@@ -1006,6 +1024,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:provision-cli-key', () => accountService.provisionCliKey())
   registerTrustedHandler('account:register', (_event, input: unknown) => (
     accountService.register(parseAccountRegisterInput(input))
+  ))
+  registerTrustedHandler('account:send-verification-code', (_event, email: unknown) => (
+    accountService.sendEmailVerification(parseAccountEmailInput(email))
   ))
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
 

@@ -417,6 +417,74 @@ describe('login', () => {
   })
 })
 
+describe('sendEmailVerification', () => {
+  it('sends GET /api/verification with the email as a query parameter, no body or auth headers', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.sendEmailVerification('New-User@Example.com')
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/verification?email=new-user%40example.com`)
+    expect(init?.method).toBe('GET')
+    expect(init?.body).toBeUndefined()
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBeUndefined()
+    expect(headers['New-Api-User']).toBeUndefined()
+    expect(headers.turnstile).toBeUndefined()
+  })
+
+  it('trims and lowercases the email before building the query string', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.sendEmailVerification('  Mixed-Case@Example.com  ')
+
+    expect(String(fetchImpl.mock.calls[0][0])).toContain('email=mixed-case%40example.com')
+  })
+
+  it('percent-encodes characters that are not valid bare in a query string', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.sendEmailVerification('a+tag@example.com')
+
+    expect(String(fetchImpl.mock.calls[0][0])).toContain('email=a%2Btag%40example.com')
+  })
+
+  it('rejects an empty email before making a network call', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendEmailVerification('   ')).rejects.toThrow('请输入邮箱地址')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('resolves without a value on success', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true, message: '', data: null }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendEmailVerification('a@example.com')).resolves.toBeUndefined()
+  })
+
+  it('judges success from the response body, not the HTTP status -- 200 + success:false is still a failure', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('SMTP 服务器未配置'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendEmailVerification('a@example.com')).rejects.toThrow('SMTP 服务器未配置')
+  })
+
+  it('surfaces the server message on a 429 per-IP rate-limit response', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('发送过于频繁，请稍后再试', 429))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendEmailVerification('a@example.com')).rejects.toThrow('发送过于频繁')
+  })
+
+  it('surfaces an "already registered" rejection the same way as any other failure', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse('该邮箱已注册'))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.sendEmailVerification('a@example.com')).rejects.toThrow('该邮箱已注册')
+  })
+})
+
 describe('register', () => {
   it('posts email, password and verification_code, defaulting username to the email', async () => {
     const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())

@@ -3,9 +3,10 @@ import { CircleDot, X } from 'lucide-react'
 import { AppFrame } from './components/AppFrame'
 import { LoginDialog } from './components/account/LoginDialog'
 import { RegisterDialog } from './components/account/RegisterDialog'
+import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
 import { resolveAccountAreaStatus } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
-import { provisionCliKeyForInstalledClis } from './account-provisioning'
+import { buildProvisioningTargets, provisionCliKeyForInstalledClis } from './account-provisioning'
 import {
   codexDesktopInstallActive,
   codexDesktopLaunchDecision,
@@ -130,6 +131,10 @@ function App() {
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
   const [accountDialog, setAccountDialog] = useState<'login' | 'register' | null>(null)
   const [accountBusy, setAccountBusy] = useState(false)
+  // "写入星芒 Key" 确认弹窗（阶段 A 加固）：登录/注册成功后，若已装 CLI 非空，
+  // 把候选列表放进这里而不是直接写入；null = 弹窗不显示。见 offerCliProvisioning。
+  const [provisioningTargets, setProvisioningTargets] = useState<ProviderId[] | null>(null)
+  const [provisioningBusy, setProvisioningBusy] = useState(false)
   const [toast, setToast] = useState<ToastMessage | null>(null)
   const [updateState, setUpdateState] = useState<UpdateSnapshot | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
@@ -164,6 +169,7 @@ function App() {
   const cliLaunchingRef = useRef(false)
   const codexLaunchRequestRef = useRef(false)
   const accountBusyRef = useRef(false)
+  const provisioningBusyRef = useRef(false)
   const persistedSettings = useMemo(() => settings, [
     settings.version,
     settings.workspace,
@@ -678,22 +684,21 @@ function App() {
     return session.account
   }
 
-  // 阶段 A 核心价值链「拿 Key → 写进 CLI 配置」：签发一个新 Key，写进所有已装
-  // CLI（复用 config-files.ts 既有两阶段提交写入路径，不新写落盘逻辑）。
+  // 阶段 A 核心价值链「拿 Key → 写进 CLI 配置」：签发一个新 Key，写进调用方给定
+  // 的 CLI 子集（复用 config-files.ts 既有两阶段提交写入路径，不新写落盘逻辑）。
   // I3：明文 Key 只活在 provisionCliKeyForInstalledClis 的局部作用域里，绝不
-  // 经过这里的任何 useState。已装 CLI 列表从 ref 读取，避免把 snapshot 整体
-  // 挂进这个函数的依赖来源。
-  const runCliProvisioning = async () => {
-    const installedProviderIds = providerIds.filter((id) => snapshotRef.current.clis[id].installed)
-    if (installedProviderIds.length === 0) return
+  // 经过这里的任何 useState。`selected` 由 ProvisioningConfirmDialog 勾选后给出
+  // ——已经是用户确认过的子集，这里不再重新读 snapshot。
+  const runCliProvisioning = async (selected: readonly ProviderId[]) => {
+    if (selected.length === 0) return
     const preferredModels = Object.fromEntries(
       providerIds.map((id) => [id, config?.providers[id]?.model || undefined]),
     ) as Partial<Record<ProviderId, string>>
     try {
-      const outcome = await provisionCliKeyForInstalledClis(installedProviderIds, preferredModels, window.xingmang)
+      const outcome = await provisionCliKeyForInstalledClis(selected, preferredModels, window.xingmang)
       if (outcome.configured.length > 0) setConfig(await window.xingmang.getConfig())
       if (outcome.configured.length > 0 && outcome.failed.length === 0) {
-        setToast({ type: 'success', message: `已自动把星芒 Key 配置到 ${outcome.configured.length} 个已安装 CLI` })
+        setToast({ type: 'success', message: `已把星芒 Key 配置到 ${outcome.configured.length} 个 CLI` })
       } else if (outcome.configured.length > 0) {
         const failedNames = outcome.failed.map((entry) => providers[entry.provider].name).join('、')
         setToast({
@@ -701,10 +706,48 @@ function App() {
           message: `已配置 ${outcome.configured.length} 个 CLI；${failedNames} 配置失败，可到“CLI 配置”页手动重试`,
         })
       } else if (outcome.failed.length > 0) {
-        setToast({ type: 'error', message: `星芒 Key 未能配置到已装 CLI：${outcome.failed[0].message}` })
+        setToast({ type: 'error', message: `星芒 Key 未能配置到所选 CLI：${outcome.failed[0].message}` })
       }
     } catch (error) {
       setToast({ type: 'error', message: `星芒 Key 签发失败：${errorMessage(error)}` })
+    }
+  }
+
+  // 登录/注册成功后调用：把已装 CLI 列表交给确认弹窗，由用户勾选后再真正写入
+  // （阶段 A 加固，见 ProvisioningConfirmDialog.tsx）。没有已装 CLI 时不打扰
+  // 用户，直接跳过——原静默写入在“没有可写对象”这一分支上的行为保持不变。
+  const offerCliProvisioning = () => {
+    const targets = buildProvisioningTargets(snapshotRef.current)
+    if (targets.length === 0) return
+    setProvisioningTargets(targets)
+  }
+
+  // T6：state 更新在同一帧内不可见，双击/重复 submit 防重入必须用 ref 同步短路
+  // （与 accountBusyRef 同一模式）。
+  const confirmCliProvisioning = async (selected: ProviderId[]) => {
+    if (provisioningBusyRef.current) return
+    provisioningBusyRef.current = true
+    setProvisioningBusy(true)
+    try {
+      await runCliProvisioning(selected)
+    } finally {
+      provisioningBusyRef.current = false
+      setProvisioningBusy(false)
+      setProvisioningTargets(null)
+    }
+  }
+
+  const skipCliProvisioning = () => {
+    if (provisioningBusyRef.current) return
+    setProvisioningTargets(null)
+  }
+
+  const handleRequestVerificationCode = async (email: string) => {
+    try {
+      await window.xingmang.sendVerificationCode(email)
+      setToast({ type: 'success', message: '验证码已发送至邮箱' })
+    } catch (error) {
+      setToast({ type: 'error', message: errorMessage(error) })
     }
   }
 
@@ -717,7 +760,7 @@ function App() {
       const account = await refreshAccountSession()
       setAccountDialog(null)
       setToast({ type: 'success', message: account ? `欢迎回来，${account.username}` : '登录成功' })
-      void runCliProvisioning()
+      offerCliProvisioning()
     } catch (error) {
       setToast({ type: 'error', message: errorMessage(error) })
     } finally {
@@ -749,7 +792,7 @@ function App() {
         const account = await refreshAccountSession()
         setAccountDialog(null)
         setToast({ type: 'success', message: account ? `注册成功，欢迎 ${account.username}` : '注册成功' })
-        void runCliProvisioning()
+        offerCliProvisioning()
       } catch (error) {
         setAccountDialog('login')
         setToast({ type: 'error', message: `注册成功，但自动登录失败（${errorMessage(error)}），请手动登录` })
@@ -1072,8 +1115,16 @@ function App() {
             onClose={() => setAccountDialog(null)}
             onSwitchToLogin={() => setAccountDialog('login')}
             onSubmit={(values) => void handleAccountRegisterSubmit(values)}
-            onRequestVerificationCode={() => setToast({ type: 'success', message: '验证码功能即将开放' })}
+            onRequestVerificationCode={handleRequestVerificationCode}
             isSubmitting={accountBusy}
+          />
+        )}
+        {provisioningTargets && (
+          <ProvisioningConfirmDialog
+            targets={provisioningTargets}
+            busy={provisioningBusy}
+            onConfirm={(selected) => void confirmCliProvisioning(selected)}
+            onSkip={skipCliProvisioning}
           />
         )}
         {toast && (
@@ -1375,8 +1426,17 @@ function App() {
           onClose={() => setAccountDialog(null)}
           onSwitchToLogin={() => setAccountDialog('login')}
           onSubmit={(values) => void handleAccountRegisterSubmit(values)}
-          onRequestVerificationCode={() => setToast({ type: 'success', message: '验证码功能即将开放' })}
+          onRequestVerificationCode={handleRequestVerificationCode}
           isSubmitting={accountBusy}
+        />
+      )}
+
+      {provisioningTargets && (
+        <ProvisioningConfirmDialog
+          targets={provisioningTargets}
+          busy={provisioningBusy}
+          onConfirm={(selected) => void confirmCliProvisioning(selected)}
+          onSkip={skipCliProvisioning}
         />
       )}
 

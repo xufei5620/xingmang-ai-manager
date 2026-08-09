@@ -9,7 +9,7 @@
 // it in React state -- the one in-memory copy the renderer process ever has
 // goes out of scope the moment this promise settles.
 import { errorMessage } from './error-message'
-import type { ProviderId } from './types'
+import { providerIds, type ProviderId, type SystemSnapshot } from './types'
 
 export interface CliKeyProvisioningApi {
   provisionCliKey(): Promise<{ key: string }>
@@ -81,4 +81,31 @@ export async function provisionCliKeyForInstalledClis(
     }
   }
   return { configured, failed }
+}
+
+/**
+ * Derives the "写入星芒 Key" confirmation dialog's candidate list from a
+ * system snapshot: every provider currently reported as installed, in
+ * canonical provider order (providerIds). Pure and side-effect-free so
+ * App.tsx can call it straight off a snapshot ref, and so the dialog's
+ * default-all-checked behavior is unit-testable without a real IPC round
+ * trip -- see ProvisioningConfirmDialog.tsx, which seeds its selection state
+ * from this function's result.
+ */
+export function buildProvisioningTargets(snapshot: SystemSnapshot): ProviderId[] {
+  return providerIds.filter((id) => snapshot.clis[id].installed)
+}
+
+/**
+ * Narrows the full candidate list down to whatever the user left checked in
+ * ProvisioningConfirmDialog, preserving canonical order. A provider id that
+ * is in `selected` but no longer in `targets` -- e.g. a stale selection
+ * surviving a snapshot refresh -- is silently dropped rather than written,
+ * since `targets` (not `selected`) drives the iteration.
+ */
+export function filterProvisioningTargets(
+  targets: readonly ProviderId[],
+  selected: ReadonlySet<ProviderId>,
+): ProviderId[] {
+  return targets.filter((provider) => selected.has(provider))
 }

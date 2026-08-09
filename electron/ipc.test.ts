@@ -83,6 +83,7 @@ function serviceStub(): SystemService {
 function accountServiceStub(): NewApiClientService {
   return {
     getStatus: vi.fn() as never,
+    sendEmailVerification: vi.fn(async () => undefined),
     register: vi.fn(async () => undefined),
     login: vi.fn() as never,
     logout: vi.fn(),
@@ -1897,6 +1898,43 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { email: 'a@b.com' })).toThrow()
       expect(accountService.register).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountEmailInput (account:send-verification-code)', () => {
+    it('trims a valid email and forwards it to the account service', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:send-verification-code')!
+
+      await expect(handler(trustedEvent(), '  new-user@example.com  ')).resolves.toBeUndefined()
+
+      expect(accountService.sendEmailVerification).toHaveBeenCalledWith('new-user@example.com')
+    })
+
+    it('rejects a missing, blank, or non-string email', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:send-verification-code')!
+
+      expect(() => handler(trustedEvent(), undefined)).toThrow('邮箱地址格式错误')
+      expect(() => handler(trustedEvent(), '   ')).toThrow('邮箱地址格式错误')
+      expect(() => handler(trustedEvent(), 42)).toThrow('邮箱地址格式错误')
+    })
+
+    it('rejects a non-empty value that is not a well-formed email address', () => {
+      register()
+      const handler = electronMocks.handlers.get('account:send-verification-code')!
+
+      expect(() => handler(trustedEvent(), 'not-an-email')).toThrow('请输入正确的邮箱地址')
+      expect(() => handler(trustedEvent(), 'missing-domain@')).toThrow('请输入正确的邮箱地址')
+      expect(() => handler(trustedEvent(), '@missing-local.com')).toThrow('请输入正确的邮箱地址')
+    })
+
+    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:send-verification-code')!
+
+      expect(() => handler(trustedEvent(), 'not-an-email')).toThrow()
+      expect(accountService.sendEmailVerification).not.toHaveBeenCalled()
     })
   })
 })

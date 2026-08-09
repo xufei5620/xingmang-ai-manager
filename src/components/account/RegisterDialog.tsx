@@ -1,17 +1,27 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent } from 'react'
 import { Eye, EyeOff, UserPlus, X } from 'lucide-react'
 import { dialogAriaProps, DialogBackdrop } from '../Dialog'
 import { validateEmail, validateRegisterForm, type AccountFieldErrors } from './validation'
+
+// Server-side throttle is 2 sends per 30s per IP (see
+// electron/new-api-client.ts's sendEmailVerification); a 60s client-side
+// cooldown gives a comfortable margin instead of racing that window exactly.
+const VERIFICATION_CODE_COOLDOWN_SECONDS = 60
 
 /**
  * Register form. Email + password only (docs/RECON-new-api.md: it is the
  * only enabled registration method on xm.solov.cc today — WeChat/GitHub/
  * phone toggles are all off). Submitting calls the parent's onSubmit with the
  * validated {email, password, verificationCode}; the parent (App.tsx) makes
- * the real window.xingmang.registerAccount call. "获取验证码" stays a stub —
- * docs/RECON-new-api.md never confirmed a send-verification-code endpoint
- * (only /api/user/register's *requirement* of one), so there is nothing real
- * to wire it to yet without guessing an unconfirmed path.
+ * the real window.xingmang.registerAccount call.
+ *
+ * "获取验证码" now calls the parent's onRequestVerificationCode(email), which
+ * wraps the real window.xingmang.sendVerificationCode IPC call and owns the
+ * success/failure toast (same division of labor as onSubmit/handleAccount-
+ * RegisterSubmit above). This component only owns the button's own local
+ * cooldown countdown and the synchronous double-click guard (sendingRef) —
+ * the parent's call never throws, so the ref is released unconditionally in
+ * .finally().
  */
 export function RegisterDialog({
   onClose,
@@ -23,7 +33,7 @@ export function RegisterDialog({
   onClose: () => void
   onSwitchToLogin: () => void
   onSubmit: (values: { email: string; password: string; verificationCode: string }) => void
-  onRequestVerificationCode: () => void
+  onRequestVerificationCode: (email: string) => Promise<void>
   isSubmitting?: boolean
 }) {
   const [email, setEmail] = useState('')
@@ -31,6 +41,24 @@ export function RegisterDialog({
   const [password, setPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<AccountFieldErrors>({})
+  const [codeCooldown, setCodeCooldown] = useState(0)
+  // Synchronous dedupe for a double click landing before React re-renders the
+  // disabled button (T6) -- mirrors App.tsx's accountBusyRef for the same
+  // reason: `codeCooldown` is only read fresh after a re-render, a plain ref
+  // is not.
+  const sendingCodeRef = useRef(false)
+
+  useEffect(() => {
+    if (codeCooldown <= 0) return undefined
+    const timer = window.setInterval(() => {
+      setCodeCooldown((current) => Math.max(0, current - 1))
+    }, 1_000)
+    return () => window.clearInterval(timer)
+    // Deliberately keyed on the crossing (>0) rather than the exact number:
+    // the interval's own functional setState decrements every second on its
+    // own, so re-arming it on every intermediate value would just tear down
+    // and recreate the same timer 60 times for no behavioral difference.
+  }, [codeCooldown > 0])
 
   const clearError = (field: keyof AccountFieldErrors) => {
     setErrors((current) => (current[field] ? { ...current, [field]: undefined } : current))
@@ -42,7 +70,12 @@ export function RegisterDialog({
       setErrors((current) => ({ ...current, email: emailError }))
       return
     }
-    onRequestVerificationCode()
+    if (sendingCodeRef.current || codeCooldown > 0) return
+    sendingCodeRef.current = true
+    setCodeCooldown(VERIFICATION_CODE_COOLDOWN_SECONDS)
+    void onRequestVerificationCode(email.trim()).finally(() => {
+      sendingCodeRef.current = false
+    })
   }
 
   const submit = (event: FormEvent) => {
@@ -97,8 +130,13 @@ export function RegisterDialog({
                 autoComplete="one-time-code"
                 inputMode="numeric"
               />
-              <button type="button" className="secondary-button account-code-button" onClick={requestCode}>
-                获取验证码
+              <button
+                type="button"
+                className="secondary-button account-code-button"
+                onClick={requestCode}
+                disabled={codeCooldown > 0}
+              >
+                {codeCooldown > 0 ? `${codeCooldown} 秒后重试` : '获取验证码'}
               </button>
             </div>
             {errors.verificationCode && <small className="field-error" role="alert">{errors.verificationCode}</small>}

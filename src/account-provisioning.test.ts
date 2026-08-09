@@ -1,5 +1,20 @@
 import { describe, expect, it, vi } from 'vitest'
-import { provisionCliKeyForInstalledClis, type CliKeyProvisioningApi } from './account-provisioning'
+import {
+  buildProvisioningTargets,
+  filterProvisioningTargets,
+  provisionCliKeyForInstalledClis,
+  type CliKeyProvisioningApi,
+} from './account-provisioning'
+import { EmptyStatus } from './app-shared'
+import { providerIds, type ProviderId, type SystemSnapshot } from './types'
+
+function snapshotWithInstalled(installed: readonly ProviderId[]): SystemSnapshot {
+  const snapshot = EmptyStatus()
+  for (const id of providerIds) {
+    snapshot.clis[id] = { ...snapshot.clis[id], installed: installed.includes(id) }
+  }
+  return snapshot
+}
 
 function fakeApi(overrides: Partial<CliKeyProvisioningApi> = {}): CliKeyProvisioningApi {
   return {
@@ -126,5 +141,50 @@ describe('provisionCliKeyForInstalledClis', () => {
     await expect(provisionCliKeyForInstalledClis(['claude'], {}, api)).rejects.toThrow('请先登录星芒账号')
     expect(api.listModels).not.toHaveBeenCalled()
     expect(api.saveConfig).not.toHaveBeenCalled()
+  })
+})
+
+describe('buildProvisioningTargets', () => {
+  it('returns installed providers in canonical provider order, not insertion order', () => {
+    const snapshot = snapshotWithInstalled(['codex', 'claude'])
+    expect(buildProvisioningTargets(snapshot)).toEqual(['claude', 'codex'])
+  })
+
+  it('returns an empty array when nothing is installed', () => {
+    expect(buildProvisioningTargets(snapshotWithInstalled([]))).toEqual([])
+  })
+
+  it('includes every installed provider when all four are installed', () => {
+    const snapshot = snapshotWithInstalled(providerIds)
+    expect(buildProvisioningTargets(snapshot)).toEqual(providerIds)
+  })
+})
+
+describe('filterProvisioningTargets', () => {
+  it('keeps only the selected providers, preserving target order', () => {
+    const targets: ProviderId[] = ['claude', 'codex', 'grok', 'gemini']
+    const selected = new Set<ProviderId>(['gemini', 'claude'])
+    expect(filterProvisioningTargets(targets, selected)).toEqual(['claude', 'gemini'])
+  })
+
+  it('returns every target when everything stays checked (default-all-checked path)', () => {
+    const targets: ProviderId[] = ['claude', 'codex', 'grok']
+    expect(filterProvisioningTargets(targets, new Set(targets))).toEqual(targets)
+  })
+
+  it('excludes a single unchecked provider -- e.g. the user unticking Grok', () => {
+    const targets: ProviderId[] = ['claude', 'codex', 'grok', 'gemini']
+    const selected = new Set<ProviderId>(['claude', 'codex', 'gemini'])
+    expect(filterProvisioningTargets(targets, selected)).toEqual(['claude', 'codex', 'gemini'])
+  })
+
+  it('drops a selected id that is no longer in targets instead of writing it', () => {
+    const targets: ProviderId[] = ['claude', 'codex']
+    const selected = new Set<ProviderId>(['claude', 'grok'])
+    expect(filterProvisioningTargets(targets, selected)).toEqual(['claude'])
+  })
+
+  it('returns an empty array when nothing is selected', () => {
+    expect(filterProvisioningTargets(['claude', 'codex'], new Set())).toEqual([])
   })
 })
