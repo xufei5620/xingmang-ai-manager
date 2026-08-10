@@ -58,7 +58,6 @@ export interface VerifyDarwinCodexExecutableOptions {
   executablePath: string
   expectedVersion: string
   runCommand: VerifyDarwinCodexStandaloneOptions['runCommand']
-  assertUnchanged?: () => void
 }
 
 export interface StageDarwinCodexStandaloneOptions extends ResolveDarwinCodexStandaloneOptions {
@@ -226,13 +225,11 @@ async function verifyDarwinCodexExecutable(
   } catch (error) {
     throw new Error('Codex standalone 未通过 OpenAI Developer ID 签名校验', { cause: error })
   }
-  options.assertUnchanged?.()
 
   const versionResult = await options.runCommand({
     executable: options.executablePath,
     argv: ['--version'],
   })
-  options.assertUnchanged?.()
   if (versionResult.stdout.trim() !== `codex-cli ${options.expectedVersion}`) {
     throw new Error('Codex standalone runtime version 与 manifest version 不一致')
   }

@@ -26,8 +26,6 @@ describe('platform presentation', () => {
         uninstall: false,
         windowsStore: false,
       },
-      nativeMenu: true,
-      trafficLightInset: 0,
     })
   })
 

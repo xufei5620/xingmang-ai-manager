@@ -15,8 +15,6 @@ export interface PlatformCapabilities {
     uninstall: boolean
     windowsStore: boolean
   }>
-  readonly nativeMenu: boolean
-  readonly trafficLightInset: number
 }
 
 function platformFamily(platform: string): PlatformFamily {
@@ -49,7 +47,5 @@ export function platformCapabilitiesFor(
       uninstall: windows,
       windowsStore: windows,
     }),
-    nativeMenu: !windows,
-    trafficLightInset: macos ? 78 : 0,
   })
 }

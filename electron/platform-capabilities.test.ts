@@ -20,8 +20,6 @@ describe('platformCapabilitiesFor', () => {
         uninstall: true,
         windowsStore: true,
       },
-      nativeMenu: false,
-      trafficLightInset: 0,
     })
   })
 
@@ -45,8 +43,6 @@ describe('platformCapabilitiesFor', () => {
         uninstall: false,
         windowsStore: false,
       },
-      nativeMenu: true,
-      trafficLightInset: 78,
     })
     expect(Object.isFrozen(capabilities)).toBe(true)
     expect(Object.isFrozen(capabilities.cliInstall)).toBe(true)
@@ -71,8 +67,6 @@ describe('platformCapabilitiesFor', () => {
         uninstall: false,
         windowsStore: false,
       },
-      nativeMenu: true,
-      trafficLightInset: 0,
     })
   })
 
@@ -94,8 +88,6 @@ describe('platformCapabilitiesFor', () => {
         uninstall: false,
         windowsStore: false,
       },
-      nativeMenu: true,
-      trafficLightInset: 0,
     })
   })
 })

@@ -55,7 +55,6 @@ export interface VerifyDarwinGrokExecutableOptions {
   executablePath: string
   expectedVersion: string
   runCommand: VerifyDarwinGrokCanonicalInstallationOptions['runCommand']
-  assertUnchanged?: () => void
 }
 
 export interface StageDarwinGrokCanonicalSelectionOptions {
@@ -512,12 +511,10 @@ async function verifyDarwinGrokExecutable(
   } catch (error) {
     throw new Error('Grok 可执行文件未通过 xAI Developer ID 签名校验', { cause: error })
   }
-  options.assertUnchanged?.()
   const versionResult = await options.runCommand({
     executable: options.executablePath,
     argv: ['--version'],
   })
-  options.assertUnchanged?.()
   const reportedVersion = grokVersionOutputPattern.exec(versionResult.stdout.trim())?.[1] ?? null
   if (reportedVersion !== options.expectedVersion) {
     throw new Error('Grok canonical executable reported a version different from the pinned release')

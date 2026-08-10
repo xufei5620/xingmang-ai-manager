@@ -29,8 +29,6 @@ export const failClosedPlatformCapabilities: PlatformCapabilities = Object.freez
     uninstall: false,
     windowsStore: false,
   }),
-  nativeMenu: true,
-  trafficLightInset: 0,
 })
 
 export type PlatformPresentation = ReturnType<typeof platformPresentation>
