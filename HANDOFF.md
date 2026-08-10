@@ -20,18 +20,19 @@
    - `claude/mac-platform-so8dlw`(321f74b):**不是死分支**——携带未合入实改(macOS 渲染根 URL 策略测试 77 行 + `security.ts` 非 Windows 根 pin `path.posix` + CI 脏树守卫 19 行),建议收编(已列入巡检波候选),勿删;
    - 活跃分支:`main`(默认)、`local/integration`(集成线)、`claude/xingmang-site-naming-batches-xwms7a`(本会话工作分支)。
 8. **任务标签体系二选一**:AGENT-RUNBOOK 写 `env:any/windows/macos/server`,COLLABORATION 写 `agent:win/mac/codex/cloud`,两套并存且不一致;GitHub 实际标签本会话无法核对,请指定以哪套为准(或都废弃)。
-9. **Node 检测增强的剩余两措施是否还要做**:应用内已有托管安装 Node(winget/官方下载+签名校验)+ 本波新增"重启本软件"提示,IMPROVEMENT-PLAN 2.2 的措施2(手动指定 Node 路径入口,涉及路径信任面)与措施3(读注册表 InstallPath)边际收益已小,且 ROADMAP #23 本就标"待决策"——做不做请拍板。
-10. **Grok 国内镜像(2.6/#20)**:仍卡在"对 agentsmirror 基础设施是否有控制权"这一确认项,代码侧无阻塞,确认后即可按 Codex 桌面端同款模式接入。
-11. **设置整条覆写的窄窗口竞态(巡检发现,未修)**:`settings:save` 是整条记录覆写,「保存设置」在途的几十毫秒内点侧边栏「更多」,后者携带的旧 relaySiteId 会把刚保存的站点冲回去(静默丢失)。修法涉及 IPC 合并语义决策(窄字段通道或按字段合并),窗口极窄故未擅动——要修请指个方向。
+9. ~~Node 检测增强的剩余两措施~~ **已拍板不做(2026-08-10,老板授权按推荐处理)**:托管安装 + 重启提示已覆盖主要工单面,措施2(手动指定 Node 路径)要扩路径信任面、措施3(读注册表)边际收益小。IMPROVEMENT-PLAN 2.2 横幅已收口。
+10. **Grok 国内镜像(2.6/#20)——按推荐维持暂缓(2026-08-10)**:唯一前置仍是只有你能答的确认项——**对 agentsmirror 基础设施是否有控制权、能否放 Grok 二进制**;确认后即可按 Codex 桌面端同款模式接入,代码侧无阻塞。
+11. ~~设置整条覆写的窄窗口竞态~~ **已修(2026-08-10,老板授权按推荐方向 = 按字段合并)**→ `9fa42e2`:settings:save 改字段级部分更新,合并在 app-settings 串行写队列内读基底;workspace:choose / window:set-theme / 启动回写三处读-改-写一并切窄更新;IPC 通道表零变化(T1)。
 
 ## ② 从这里继续(断点)
 
-- **⚠️ 当前工作分支**:本会话(2026-08-10 起)因云端会话的分支约束,工作在 `claude/xingmang-site-naming-batches-xwms7a`(基于 `local/integration` 的 `5a8479d`,main 为其祖先)。`local/integration` 本身未动;老板确认后可快进合并该分支回 `local/integration`。
+- **当前工作分支**:`claude/xingmang-site-naming-batches-xwms7a`。老板已于 2026-08-10 确认快进合并:`local/integration` 已快进到 `0257ce2`,后续每波推完工作分支后继续快进 `local/integration` 跟上(纯 ff,非强推)。
+- **老板 2026-08-10 第二轮批复已全部处理**:①栏1 命名落地确认无误;①栏9 不做(措施2/3);①栏10 维持暂缓(等基础设施确认);①栏11 已修(`9fa42e2`,方向 = 按字段合并)。
 - **双后端 W1→W3 已全链闭合并通过 Opus 对抗审查**。审查七面向里主路径全部攻击失败(粘贴 Key 全链 I13/I3、写入链 I9、契约 T1 零变化、solov 回归面均给了证据),揪出的发现已全部处置:F1(manual-key 降级不完整,3 个 new-api 入口仍可达)→ `5e1f953`;F2-F5(键控制字符校验/解析错误脱敏/诊断读侧站点化/切站刷新快照)→ `ce38200`;F6(字面量 nit)按不镀金跳过。
 - ~~W3 审查遗留的画布 manual-key 缺口~~ → **已修**(`750b8dc`):manual-key 站点画布直接用已写入 CLI 的 relay key,baseUrl 按站点配对(new-api 站配账号域、manual-key 站配 relay 域 origin);巡检又揪出并修掉 new-api 分支的凭据错配(`5fd0fab`,盲用 CLI 配置 Key 配 xm 域会发错 origin 且被画布 never-clobber 钉成粘性故障——现一律走账号后端签发/复用)。
 - **⚠️ 本会话输出可靠性告警**:后期出现 inline 命令 echo 被污染(git rev-parse 返回过互相矛盾的 SHA、臆造的提交消息)。**真实状态一律以 `git log`/文件回读为准,不信任 inline echo**。验证方法:命令结果重定向到 scratchpad 文件、用 Read 工具回读。若新会话接手,`git log --oneline` 与 `git rev-parse origin/local/integration` 是可信锚点。
 - **老板 2026-08-10 排的全序列已全部走完**:~~批次3~~(核实早已落地:3.1=`8c6a476`、3.2/#16=`fd2633c`、3.3/#17=`2c53e6d`+`17fef1a`,零施工)→ ~~仓库整理~~(校准 9 份文档;死分支清单进①栏7;标签体系进①栏8)→ ~~巡检~~(两轮对抗巡检:收编孤儿提交 `321f74b`→`6cce80b`,3.4 告警日志=`2aa1774`,e2e 浏览器变量=`cd824b6`,确认缺陷 7 项修复=`5fd0fab`;ipc 顺序断言复核仍在 `ipc.test.ts:286`;唯一未修项进①栏11)→ ~~画布 manual-key~~(`750b8dc`+`5fd0fab`)→ ~~批次1/2~~(批次1 核实全落地零施工;批次2:2.4 与 2.2 措施1=`d8f4209`,2.5 按计划自身论证暂缓,2.2 剩余与 2.6 进①栏9/10)。
-- **接下去若无新指示**:待办面只剩①栏决策项与真机验证项;代码侧可做的是继续巡检轮次或按①栏答复施工。
+- **接下去若无新指示**:待办面只剩①栏决策项(2/3/4/5/7/8/10)与真机验证项(①栏6);代码侧可做的是继续巡检轮次或按①栏答复施工。连续两轮无可行动项 → 心跳拉长到 3600s。
 - **W3 关键事实(已侦察定案)**:sub2api = Wei-Shaw/sub2api(Go+Vue3);用户侧 Key 页路由 **`/keys`**(frontend/src/router,requiresAuth 非管理员)→ 精确 href `https://api.solov.cc/keys` **已在白名单**(main.ts:73),零白名单改动。sub2api 站点:providerBaseUrls 复用 catalog 形状(含 grok `/v1`)、accountBackend='manual-key'、无账号登录,粘贴 Key 优先复用既有配置写入链(I9),**尽量零新增 IPC 通道**(T1)。
 - **轮询协议**:长心跳(约 30 分钟);429/额度类错误不退出循环,退避并加长间隔;接近会话硬上限 → 立即把已完成的推上去、更新本报告顶部再收尾。模型分工:Fable 只规划/拍板/综合审,实现派 Sonnet,安全审查派 Opus。
 - **红线(老板原话不可越)**:不推/不合 main、不强推、不删分支、不开 PR、不发 release、不动生产站点、不违反 CLAUDE.md 第 8 节、测试绝不触生产 xm/api.solov.cc;素材/定价/命名/删除类/真机验证类一律进上面第①栏。
@@ -40,6 +41,7 @@
 
 | 提交 | 内容 | 门槛 |
 |---|---|---|
+| `9fa42e2` | **①栏11 修复(按推荐方向 = 按字段合并)**:settings:save 改字段级部分更新,合并在 app-settings 串行写队列内读基底(读-合并-写原子化);workspace:choose / window:set-theme / 启动回写三处整条覆写一并切窄更新;mirrorPolicy 用 'auto' 作显式清除标记;对抗审查 3 发现全处置(响应采纳 theme/侧边栏内存态×2、mock 契约失真测试重写);顺修 persistedSettings memo 缺 mirrorPolicy dep(2.4 遗留)。契约通道表零变化(T1),I5 校验同强度 | tc 0 错;vitest 1355/0(+10);scripts 78/0;e2e 2/2(指定 chromium);compile 过 |
 | `d8f4209` | **批次2 收尾**:镜像策略三态开关(2.4 全链,刻意不覆盖 Codex 桌面端清单)+ Node 重启提示(2.2 措施1) | tc 0 错;vitest 1345/0(+6);compile 过 |
 | `5fd0fab` | **巡检修复 7 项**:画布 new-api 分支凭据错配、备份恢复被在途扫描回滚、invalidate 后 loading 卡死锁工具栏(App+两页面)、桌面端轮询覆盖、粘贴 Key 首扫谎报/反报、登录后签发复查站点、备份页初扫窗口 | tc 0 错;vitest 1339/0 |
 | `750b8dc` | **画布 manual-key 适配**:hasAccountBackend 依赖 + canvasBaseUrlForSite 按站点配对凭据来源,切站下次开窗生效,零新增 IPC | tc 0 错;vitest 1339/0(+5);compile 过 |
