@@ -1,0 +1,113 @@
+* { box-sizing: border-box; }
+
+html, body, #root {
+  margin: 0;
+  height: 100%;
+  font-family: 'Segoe UI', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+.canvas-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 14px;
+  background: #1c2230;
+  color: #e8ecf4;
+  font-size: 14px;
+}
+
+.canvas-toolbar-group {
+  display: flex;
+  gap: 6px;
+}
+
+.canvas-toolbar button {
+  padding: 4px 12px;
+  color: #e8ecf4;
+  background: #2a3347;
+  border: 1px solid #3c4660;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.canvas-toolbar button:hover { background: #354061; }
+.canvas-toolbar button:disabled { opacity: 0.5; cursor: default; }
+.canvas-toolbar .canvas-run { background: #2563eb; border-color: #2563eb; }
+
+.canvas-banner { font-size: 13px; color: #9fb0cc; }
+
+.canvas-flow { flex: 1; }
+
+.wf-node {
+  width: 240px;
+  padding: 0 0 8px;
+  background: #ffffff;
+  border: 1px solid #d4dae4;
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(20, 30, 50, 0.08);
+  font-size: 12px;
+}
+
+.wf-node header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 7px 10px;
+  border-bottom: 1px solid #e6eaf1;
+}
+
+.wf-node-text header { background: #f2f6ff; }
+.wf-node-image header { background: #f0fbf4; }
+.wf-node-video header { background: #fdf3f0; }
+
+.wf-node textarea,
+.wf-node .wf-model {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 8px 10px 0;
+  padding: 6px 8px;
+  border: 1px solid #dfe4ec;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.wf-status { font-size: 11px; color: #7a8699; }
+.wf-status-running { color: #2563eb; }
+.wf-status-succeeded { color: #178a54; }
+.wf-status-failed { color: #c2413f; }
+
+.wf-node.wf-status-running { border-color: #2563eb; }
+.wf-node.wf-status-failed { border-color: #e0a9a8; }
+
+.wf-error {
+  margin: 6px 10px 0;
+  color: #c2413f;
+}
+
+.wf-result-note,
+.wf-cost {
+  margin: 6px 10px 0;
+  color: #7a8699;
+  word-break: break-all;
+}
+
+.wf-preview {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 8px 10px 0;
+  border-radius: 6px;
+}
+
+.wf-port { width: 10px; height: 10px; }
+.wf-port-text { background: #4f7cf0; }
+.wf-port-image { background: #2fa46c; }
+.wf-port-video { background: #e0704f; }

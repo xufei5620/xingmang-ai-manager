@@ -1,0 +1,113 @@
+import { memo } from 'react'
+import { Handle, Position, type NodeProps, type Node } from '@xyflow/react'
+import { nodeInputKinds, nodeOutputKind, type NodeKind, type WorkflowNodeData } from '../model'
+import { inputHandleId, outputHandleId } from '../ports'
+
+// 三种节点共用一个外壳:标题条(状态灯)/ 提示词输入 / 模型名 / 结果预览。
+// 全部定义在组件树外并 memo —— React Flow 官方性能指南的第一条硬要求。
+
+export type CanvasNode = Node<WorkflowNodeData & Record<string, unknown>, NodeKind>
+
+const nodeTitle: Record<NodeKind, string> = {
+  text: '文本',
+  image: '图像生成',
+  video: '视频生成',
+}
+
+const statusLabel: Record<WorkflowNodeData['status'], string> = {
+  idle: '待运行',
+  queued: '排队中',
+  running: '生成中…',
+  succeeded: '完成',
+  failed: '失败',
+}
+
+interface NodeChangeHandlers {
+  onPromptChange(nodeId: string, prompt: string): void
+  onModelChange(nodeId: string, model: string): void
+}
+
+// React Flow 的自定义节点组件只收 NodeProps,可变回调经模块级注册表注入
+// (App.tsx 挂载时注册)。比把回调塞进每个节点 data 更省重渲染。
+let handlers: NodeChangeHandlers = {
+  onPromptChange: () => undefined,
+  onModelChange: () => undefined,
+}
+
+export function registerNodeChangeHandlers(next: NodeChangeHandlers): void {
+  handlers = next
+}
+
+function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData; kind: NodeKind }) {
+  const inputs = nodeInputKinds[kind]
+  const output = nodeOutputKind[kind]
+  return (
+    <div className={`wf-node wf-node-${kind} wf-status-${data.status}`}>
+      {inputs.map((portKind, index) => (
+        <Handle
+          key={portKind}
+          type="target"
+          id={inputHandleId(portKind)}
+          position={Position.Left}
+          style={{ top: 36 + index * 22 }}
+          className={`wf-port wf-port-${portKind}`}
+        />
+      ))}
+      <header>
+        <strong>{nodeTitle[kind]}</strong>
+        <span className={`wf-status wf-status-${data.status}`}>{statusLabel[data.status]}</span>
+      </header>
+      <textarea
+        className="nodrag"
+        value={data.prompt}
+        placeholder={kind === 'text' ? '输入文本内容…' : '输入提示词…'}
+        onChange={(event) => handlers.onPromptChange(id, event.target.value)}
+        rows={3}
+      />
+      {kind !== 'text' && (
+        <input
+          className="nodrag wf-model"
+          value={data.model}
+          placeholder="模型名(渠道配置后填写)"
+          onChange={(event) => handlers.onModelChange(id, event.target.value)}
+        />
+      )}
+      {data.status === 'failed' && data.errorMessage && (
+        <p className="wf-error" role="alert">{data.errorMessage}</p>
+      )}
+      {data.result?.remoteUrl && data.result.kind === 'image' && !data.result.remoteUrl.startsWith('mock://') && (
+        <img className="wf-preview" src={data.result.remoteUrl} alt="生成结果" loading="lazy" />
+      )}
+      {data.result?.remoteUrl && (data.result.remoteUrl.startsWith('mock://') || data.result.kind === 'video') && (
+        <p className="wf-result-note">产物:{data.result.remoteUrl}</p>
+      )}
+      {typeof data.costQuota === 'number' && data.costQuota > 0 && (
+        <p className="wf-cost">本次消耗 {data.costQuota} quota</p>
+      )}
+      <Handle
+        type="source"
+        id={outputHandleId(output)}
+        position={Position.Right}
+        className={`wf-port wf-port-${output}`}
+      />
+    </div>
+  )
+}
+
+function TextNodeComponent({ id, data }: NodeProps<CanvasNode>) {
+  return <NodeShell id={id} data={data} kind="text" />
+}
+
+function ImageNodeComponent({ id, data }: NodeProps<CanvasNode>) {
+  return <NodeShell id={id} data={data} kind="image" />
+}
+
+function VideoNodeComponent({ id, data }: NodeProps<CanvasNode>) {
+  return <NodeShell id={id} data={data} kind="video" />
+}
+
+export const nodeTypes = {
+  text: memo(TextNodeComponent),
+  image: memo(ImageNodeComponent),
+  video: memo(VideoNodeComponent),
+}
