@@ -28,6 +28,8 @@ npm run audit:production
 
 按当前约定，调试阶段不运行 `npm run build`，避免提前生成 NSIS 安装包。
 
+需要真机测试安装包时不必本机打包：GitHub Actions 的 `test-build` 工作流（仓库 Actions 页手动触发）会在云端生成未签名的 Windows NSIS 测试安装包，以 artifact 形式保留 7 天，安装时需在 SmartScreen 中选择“仍要运行”。该工作流始终 `--publish never`，与正式发布链路完全隔离，永不接触线上更新目录；云端产物不含无限画布（构建环境没有兄弟仓产物），画布验证请使用本机 `npm run dev`。
+
 ## macOS 开发与打包
 
 macOS 需要 13.0 或更高版本。开发态可运行 `npm run dev`；Finder 启动的应用不会读取交互式 shell 的 `PATH`，请将 Node.js 和 AI CLI 安装到系统或常见用户可执行目录后再启动。完整的开发、终端 PATH 和打包说明见 [macOS 开发手册](docs/MACOS_DEVELOPMENT.md)。
