@@ -20,14 +20,16 @@
 
 ## 2. 底座选型:@xyflow/react(React Flow),自建整车
 
-**没有可以安全二开的整车**,这是选型的第一事实:
+**没有可以安全二开的整车**,这是选型的第一事实(2026-08-10 多智能体核查,含许可证原文与对抗验证,全部裁决维持):
 
 | 候选 | 排除原因(许可证/范式,均已核实) |
 |---|---|
-| Jaaz | 社区许可禁止修改源码/二次开发/嵌入商业产品——**一行代码不能碰**,仅作交互对标 |
-| ComfyUI | GPL-3.0,嵌入即传染;本地模型 DNA 与低门槛客户群相反。仅在遥远的将来作为「API 隔离的本地引擎」考虑 |
-| Flora | 闭源 SaaS,形态最对口的交互参照 |
-| tldraw / Excalidraw / Drawnix | 白板范式,无端口与数据流,改造 = 重写 |
+| Jaaz | 社区许可**原文**禁止修改/衍生/再分发/用作竞争产品基础;且对抗审查实读其源码(`react/src/stores/canvas.ts`)发现**画布底座是 @excalidraw/excalidraw 自由白板**——即便花钱买商业授权,买到的也是错误范式(无节点-端口-边数据流),此路彻底关闭 |
+| ComfyUI | 主仓与新前端(ComfyUI_frontend)均 GPL-3.0;前端是 Vue3+litegraph(Canvas2D)并深度绑定 Python 后端图执行协议,与「无后端瘦客户端 + relay 执行」形态正面冲突——**范式错配单独致命,GPL 只是叠加项** |
+| Flora | 闭源 SaaS,形态最对口的交互参照(注意:「Flora 基于 React Flow」无任何公开证据,不得引用) |
+| tldraw | **SDK 4.0(2025-09)起生产使用必须持许可密钥**,商业授权约 $6,000/年/团队——比旧「保留水印」模式更严,淘汰理由加固 |
+| Excalidraw / Drawnix | MIT 干净,但白板范式无端口与数据流,改造 = 重写 |
+| AI-Flow | MIT 但半休眠(最近提交 2025-06),仅可作参考代码 |
 
 **专用节点编辑器库横评**(2026-08-10 多智能体逐项核实,防漏检):
 
@@ -35,9 +37,11 @@
 - **LiteGraph 系**(ComfyUI 自用图库):上游 2024-08 停更;Comfy-Org fork 2025-08 归档并入 GPL-3.0 的 ComfyUI_frontend(Vue 3),npm 包已标 deprecated——**不可作为持续维护的独立依赖**;且 Canvas2D 渲染做 DOM 级媒体预览需覆盖层 hack,适配成本候选中最高
 - Baklava.js 仅 Vue 3;Drawflow 休眠 22 个月停在 0.0.x;jsPlumb 社区版停更且只是连线库
 
-**结论:@xyflow/react**(MIT,12.x,持续活跃,Dify/Langflow/n8n 等生产级工作流产品在用)。节点是普通 React 组件(提示词输入/模型下拉/参数区/结果预览/单节点重跑/状态动画),端口用类型系统 + `isValidConnection` 校验(image 输出只能连 image 输入)。
+**结论:@xyflow/react**(MIT,12.11.x,发版节奏 3-6 周/次,周下载数百万级;生产案例已逐一核实:Langflow 用 v12、Dify/Flowise 用 v11——**n8n 用的是 Vue Flow,不算 React Flow 案例**;新项目直接从 v12 起步,避开 v11→v12 迁移摩擦)。节点是普通 React 组件(提示词输入/模型下拉/参数区/结果预览/单节点重跑/状态动画),端口语义类型系统(text/image/video)**库不提供、应用层自建**,落在 handle id + `isValidConnection` 上。
 
-⚠️ **许可红线两条**:①React Flow core 是 MIT,但 **Pro 示例(如 Helper Lines)是付费订阅内容**——需要的对齐参考线等功能自己实现或确认许可后再抄;②Jaaz 的 UI 不做像素级复刻,读源码学架构可以,落手必须自己写。
+⚠️ **许可红线与自建清单**:
+1. React Flow core MIT 商用免费;**Pro 付费墙只圈示例源码**:Helper Lines(对齐线)、Undo/Redo、Copy/Paste、动态 Grouping 四件。这四件的 API 全在 MIT 核心内,选项 A 自建(注意:**异步生成态下的撤销回滚是真难点**,排期别低估),选项 B 官方允许订一个月 Pro(€129)拿全部示例源码——动工前把 Pro 条款原文人工复核一遍再定
+2. Jaaz 零代码引用、UI 不像素级复刻;ComfyUI 零代码嵌入
 
 ## 3. 架构:三层,其中两层我们已经拥有
 
@@ -81,15 +85,15 @@ AssetRef { kind: 'image'|'video', localPath?, remoteUrl?, taskId? }
 2. 每节点一个异步任务:提交 → 轮询(视频任务动辄 1-2 分钟)→ 产物下载落盘 → 状态机 `idle/queued/running/succeeded/failed`
 3. 失败重试(带上限)+ **单节点重跑**(下游标脏);应用重启后从持久化的 taskId 恢复轮询(断线恢复)
 4. 费用透明:每节点显示本次消耗(new-api 响应/用量接口),画布顶部显示本次运行合计——这类产品用户烧额度快,透明是留存前提
-5. 全部请求打 relay 域,复用画布现有 token 注入链(canvas-auth);**测试一律 mock,绝不打生产**(T12 铁律同样适用)
+5. 全部请求打 relay 域,复用画布现有 token 注入链(canvas-auth;v2 自定义注入契约,不必沿用 v1 的 zustand-persist localStorage 线格式);**测试一律 mock,绝不打生产**(T12 铁律同样适用)
+6. **重媒体节点性能是首要工程风险**(对抗验证确认为最可能实际发生的一条):大量 `<video>/<img>` 节点的解码/合成压力先于图引擎成为瓶颈;`onlyRenderVisibleElements` 对视频是双刃剑(挂载/卸载引发解码风暴)。M1 起就按「海报帧降级 + 离视口暂停/卸载 + 缩略图代理」三板斧设计,不做事后补救
 
 ## 6. 桌面宿主改动(本仓,预计很小)
 
-- 隔离窗口、`xingmang-canvas://` 协议、白名单、5 能力桥**全部保留**(I15 姿态不变);v2 是第一方代码,供应链风险较 vendored 反而下降
-- 可能新增的桥能力(每项过「画布被投毒后这能力能干什么」审查):
-  - `saveGeneratedAsset`(带进度的媒体落盘;现有 saveFile 是否够用待 M1 验证,能复用则不加)
-  - 其余暂无——费用/额度查询走画布已有的 relay 直连,不加新 IPC
-- `copy-canvas-assets.mjs` 复制链路不变(兄弟仓构建产物 → dist-canvas)
+- 隔离窗口、`xingmang-canvas://` 协议、白名单、5 能力桥**全部保留**(I15 姿态不变);v2 是第一方代码,供应链风险较 vendored 反而下降(注意 @xyflow 依赖树本身成为隔离窗口的新供应链面,引入前照例查 install script/依赖树)
+- **现有桥的硬边界(已核实,`canvas-window.ts:75-76`)**:文件桥 20MB、UTF-8 文本 only——工作流 JSON 持久化足够;**二进制媒体不走本地桥**,主通路是 relay 网络往返(生成在服务端、产物按 URL 拉取/浏览器下载)。将来若需「本地参考图上传」,再按 I15 审查新增一个 bounded 二进制读能力,是增量改动不动架构
+- 可选加固(v2 顺手做):给画布页面加 CSP 把「只打 relay 域」从设计约束变成强制约束(v1 未做)
+- `copy-canvas-assets.mjs` 复制链路不变(兄弟仓构建产物 → dist-canvas);替换 vendored 画布时桌面端约 6 处宿主改点,其中 token 注入的 localStorage 键在 `canvas-ai-config.ts:16` / `canvas-preload.ts:25` **手工重复两处**,改契约时须一起动
 
 ## 7. 里程碑
 
