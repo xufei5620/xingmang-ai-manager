@@ -1,0 +1,42 @@
+# 手动触发的 Windows 测试安装包构建(2026-08-10 应老板真机验证需求添加)。
+#
+# 与正式发布链路(scripts/run-release-build.cjs + RELEASING.md)完全无关:
+# XINGMANG_LOCAL_BUILD=1 + --publish never 意味着不签名、不写 publisherName、
+# 不上传更新目录——产物只挂在 Actions artifact 供人工下载安装测试。
+# ⚠️ 云端 runner 没有兄弟仓 xingmang-canvas 的构建产物,打出的包不含画布
+# (compile 按 T13 优雅跳过);要验证画布观感请在本地带产物构建。
+name: test-build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      - run: npm run compile
+      - name: Build unsigned NSIS test installer (never publishes)
+        run: npx --no-install electron-builder --config electron-builder.config.cjs --win --x64 --publish never
+        env:
+          XINGMANG_LOCAL_BUILD: '1'
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-test-installer
+          path: release/*Setup.exe
+          retention-days: 7
+          if-no-files-found: error
