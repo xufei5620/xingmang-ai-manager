@@ -51,7 +51,7 @@
 | `7793d9a` | CLAUDE.md 全面校准到集成后实态(86 通道/新模块地图/I15/T12/T13),行号逐个复核 | tc 0 错;vitest 1278/0 失败 |
 | `15f898f` | `npm run dev` 竞态修复:predev 先全量编译主进程(scripts/prebuild-electron-dev.mjs);类型错不阻断 dev 实测过 | tc 0 错;vitest 1278/0;scripts 77/77 |
 
-**基线备忘**(Linux 云端):typecheck 三段 0 错;vitest 0 失败(skipped 为平台门控);scripts node --test 0 失败;e2e 2 个 Playwright 用例需真浏览器,容器版本不符时属环境问题(指 executablePath 复跑即绿,已验证)。
+**基线备忘**(Linux 云端):typecheck 三段 0 错;vitest 0 失败(skipped 为平台门控);scripts node --test 0 失败;e2e 2 个 Playwright 用例需真浏览器——容器 Playwright 版本不符时设 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium` 即绿(2026-08-10 起 maintenance-layout 支持该变量,CI 不设变量走托管下载不受影响)。
 
 ---
 

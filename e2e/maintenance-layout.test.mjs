@@ -27,7 +27,15 @@ const fixture = `
 `
 
 async function inspectLayout({ viewportWidth, fixtureWidth }) {
-  const browser = await chromium.launch({ headless: true })
+  // Hosted CI installs the exact browser revision Playwright expects, but
+  // ad-hoc containers (cloud agent sessions) often ship a different one and
+  // fail the launch with "Executable doesn't exist". Honouring an explicit
+  // executable keeps `npm test` runnable there; CI leaves the variable unset
+  // and keeps using the managed download.
+  const browser = await chromium.launch({
+    headless: true,
+    executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined,
+  })
   try {
     const page = await browser.newPage({ viewport: { width: viewportWidth, height: 500 } })
     await page.setContent(fixture)

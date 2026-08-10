@@ -166,7 +166,7 @@ npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不�
 | `npm test` | ✅ 全绿 | ✅ 全绿 | ✅ 全绿 |
 | `npm run compile` | ✅ | ✅ | ✅ |
 | `npm run build`（打包） | ✅ Windows 包 | ✅ mac 包（`build:mac:dir`） | ❌ |
-| e2e smoke | ✅ | ✅（CI `macos-test` job 跑 dev-origin 与免费分发构建） | ⚠️ 需本机 chromium（容器版本不符时指 `executablePath` 复跑） |
+| e2e smoke | ✅ | ✅（CI `macos-test` job 跑 dev-origin 与免费分发构建） | ⚠️ 需本机 chromium（容器版本不符时设 `XINGMANG_E2E_CHROMIUM=<chromium 路径>` 复跑） |
 
 > （2026-08-10 校准：历史上 Linux 的 1 个已知失败已随 `sameLocalPathIdentity` 重写修复，三平台 vitest 应全绿。）
 > 无论在哪个平台，**都要对比改动前后的失败数是否一致**——现在基线是 0，红了就是新失败。
