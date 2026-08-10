@@ -1392,6 +1392,121 @@ describe('revokeKey', () => {
   })
 })
 
+describe('createKey', () => {
+  it('requires login before it can be called', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.createKey({ name: 'k', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }))
+      .rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('POSTs the wire-shaped body to /api/token/', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+
+    await client.createKey({ name: ' my-key ', remainQuota: 5_000_000, unlimitedQuota: false, expiredTime: 1900000000 })
+
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/token/`)
+    expect(init?.method).toBe('POST')
+    expect(JSON.parse(String(init?.body))).toEqual({
+      name: 'my-key',
+      remain_quota: 5_000_000,
+      unlimited_quota: false,
+      expired_time: 1900000000,
+    })
+  })
+
+  it('rejects a name over the 50-char server cap without touching the network', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    await expect(client.createKey({ name: 'x'.repeat(51), remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }))
+      .rejects.toThrow('Key 名称不能超过 50 个字符')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('updateKey', () => {
+  it('reads the current record first and sends back every overwrite-list field it does not edit', async () => {
+    // rc.24's UpdateToken overwrites model_limits/allow_ips/group/... wholesale
+    // from the request -- the read-modify-write below is what keeps a simple
+    // rename from wiping them (see updateKey's own doc comment).
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: {
+        id: 42,
+        name: 'old-name',
+        key: 'sk-MASKED',
+        status: 1,
+        remain_quota: 123,
+        unlimited_quota: false,
+        model_limits_enabled: true,
+        model_limits: 'claude-3,gpt-4',
+        allow_ips: '1.2.3.4',
+        group: 'vip',
+        cross_group_retry: true,
+      },
+    }))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+
+    await client.updateKey({ id: 42, name: 'new-name', remainQuota: 999, unlimitedQuota: false, expiredTime: -1 })
+
+    const [getUrl, getInit] = fetchImpl.mock.calls[0]
+    expect(String(getUrl)).toBe(`${testBaseUrl}/api/token/42`)
+    expect(getInit?.method).toBe('GET')
+    const [putUrl, putInit] = fetchImpl.mock.calls[1]
+    expect(String(putUrl)).toBe(`${testBaseUrl}/api/token/`)
+    expect(putInit?.method).toBe('PUT')
+    const body = JSON.parse(String(putInit?.body)) as Record<string, unknown>
+    expect(body).toEqual({
+      id: 42,
+      name: 'new-name',
+      expired_time: -1,
+      remain_quota: 999,
+      unlimited_quota: false,
+      model_limits_enabled: true,
+      model_limits: 'claude-3,gpt-4',
+      allow_ips: '1.2.3.4',
+      group: 'vip',
+      cross_group_retry: true,
+    })
+    // I3: the masked key fragment from the GET must never ride the PUT body.
+    expect(Object.keys(body)).not.toContain('key')
+  })
+
+  it('keeps the existing remain_quota when switching to unlimited', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { id: 7, name: 'k', remain_quota: 555, unlimited_quota: false },
+    }))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+
+    await client.updateKey({ id: 7, name: 'k', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 })
+
+    const body = JSON.parse(String(fetchImpl.mock.calls[1][1]?.body)) as Record<string, unknown>
+    expect(body.unlimited_quota).toBe(true)
+    expect(body.remain_quota).toBe(555)
+  })
+
+  it('rejects a non-positive id without touching the network', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockClear()
+    await expect(client.updateKey({ id: 0, name: 'k', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }))
+      .rejects.toThrow('Key ID 格式错误')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
 describe('changePassword', () => {
   it('requires login before it can be called', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()

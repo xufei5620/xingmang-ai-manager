@@ -113,6 +113,8 @@ function accountServiceStub(): NewApiClientService {
     getUsage: vi.fn() as never,
     listKeys: vi.fn() as never,
     revokeKey: vi.fn() as never,
+    createKey: vi.fn(async () => undefined),
+    updateKey: vi.fn(async () => undefined),
     changePassword: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
     findExistingCliKey: vi.fn() as never,

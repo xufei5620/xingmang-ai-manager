@@ -55,7 +55,7 @@ import {
   type NewApiResetPasswordInput,
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
-import type { RememberedAccountLogin } from './ipc-contract'
+import type { AccountKeyCreateInput, AccountKeyUpdateInput, RememberedAccountLogin } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
@@ -559,6 +559,43 @@ function parseAccountRevokeKeyId(value: unknown): number {
   return value
 }
 
+// account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
+// 名称上限(rc.24 controller/token.go);expiredTime -1 = 永不过期哨兵。
+function parseAccountKeyCreateInput(value: unknown): AccountKeyCreateInput {
+  if (!isRecord(value)) throw new Error('Key 信息格式错误')
+  const name = requiredString(value.name, 'Key 名称', 50)
+  if (typeof value.unlimitedQuota !== 'boolean') throw new Error('额度类型格式错误')
+  if (
+    typeof value.remainQuota !== 'number'
+    || !Number.isInteger(value.remainQuota)
+    || value.remainQuota < 0
+    || value.remainQuota > Number.MAX_SAFE_INTEGER
+  ) {
+    throw new Error('额度格式错误')
+  }
+  if (
+    typeof value.expiredTime !== 'number'
+    || !Number.isInteger(value.expiredTime)
+    || (value.expiredTime !== -1 && value.expiredTime <= 0)
+  ) {
+    throw new Error('过期时间格式错误')
+  }
+  return {
+    name,
+    remainQuota: value.remainQuota,
+    unlimitedQuota: value.unlimitedQuota,
+    expiredTime: value.expiredTime,
+  }
+}
+
+function parseAccountKeyUpdateInput(value: unknown): AccountKeyUpdateInput {
+  if (!isRecord(value)) throw new Error('Key 信息格式错误')
+  return {
+    ...parseAccountKeyCreateInput(value),
+    id: parseAccountRevokeKeyId(value.id),
+  }
+}
+
 // account:change-password's input. MIN/MAX mirror
 // src/components/account/validation.ts's own MIN_PASSWORD_LENGTH /
 // MAX_PASSWORD_LENGTH (confirmed against QuantumNous/new-api's model.User
@@ -682,6 +719,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'canvas:open': '无限画布窗口打开',
   'account:get-remembered-login': '记住的登录凭据读取',
   'account:set-remembered-login': '记住的登录凭据更新',
+  'account:create-key': '星芒账号 Key 创建',
+  'account:update-key': '星芒账号 Key 更新',
 }
 
 const quietIpcSuccessChannels = new Set([
@@ -1290,6 +1329,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       await options.accountCredentials.clear()
     }
   })
+  registerTrustedHandler('account:create-key', (_event, input: unknown) => (
+    accountService.createKey(parseAccountKeyCreateInput(input))
+  ))
+  registerTrustedHandler('account:update-key', (_event, input: unknown) => (
+    accountService.updateKey(parseAccountKeyUpdateInput(input))
+  ))
 
   return () => {
     unsubscribeUpdates()

@@ -31,8 +31,10 @@
 // safe.
 
 import type {
+  NewApiAccountKeyCreateInput,
   NewApiAccountKeysPage,
   NewApiAccountKeysQuery,
+  NewApiAccountKeyUpdateInput,
   NewApiAccountProfileDetail,
   NewApiAccountStatus,
   NewApiAccountUsagePage,
@@ -112,6 +114,10 @@ export interface RelayBackendClient {
   listKeys(input?: NewApiAccountKeysQuery): Promise<NewApiAccountKeysPage>
   /** ipc.ts: account:revoke-key */
   revokeKey(id: number): Promise<void>
+  /** ipc.ts: account:create-key */
+  createKey(input: NewApiAccountKeyCreateInput): Promise<void>
+  /** ipc.ts: account:update-key */
+  updateKey(input: NewApiAccountKeyUpdateInput): Promise<void>
   /** ipc.ts: account:change-password */
   changePassword(input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult>
   /** ipc.ts: account:provision-cli-key; canvas-window.ts's buildCanvasTokenDependencies */

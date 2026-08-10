@@ -15,6 +15,8 @@ import {
   LoaderCircle,
   Lock,
   LogOut,
+  Pencil,
+  Plus,
   Trash2,
   UserRound,
   Users,
@@ -27,10 +29,12 @@ import { createLatestRequestTracker } from '../../latest-request'
 import type {
   AccountBalance,
   AccountKey,
+  AccountKeyCreateInput,
   AccountKeysPage,
   AccountProfileDetail,
   AccountUsagePage,
 } from '../../types'
+import { KeyEditorDialog } from './KeyEditorDialog'
 import { formatBalanceUsd } from './account-stub'
 import { resolveAccountErrorMessage } from './account-errors'
 import {
@@ -133,6 +137,9 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
   const [keysLoading, setKeysLoading] = useState(false)
   const [keysError, setKeysError] = useState<string | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<AccountKey | null>(null)
+  // 添加/编辑 Key 弹窗(老板需求 2026-08-10)。null = 关闭。
+  const [keyEditor, setKeyEditor] = useState<{ mode: 'create' } | { mode: 'edit'; key: AccountKey } | null>(null)
+  const [keyEditorBusy, setKeyEditorBusy] = useState(false)
   const [revokeBusy, setRevokeBusy] = useState(false)
   const [originalPassword, setOriginalPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
@@ -235,6 +242,26 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
     setRevokeTarget(null)
     notify?.({ type: 'success', message: `已撤销 Key「${target.name}」` })
     void loadKeys(keysPageNumber)
+  }
+
+  const submitKeyEditor = async (values: AccountKeyCreateInput) => {
+    if (!keyEditor || keyEditorBusy) return
+    setKeyEditorBusy(true)
+    try {
+      if (keyEditor.mode === 'create') {
+        await window.xingmang.createAccountKey(values)
+        notify?.({ type: 'success', message: `Key「${values.name}」已创建` })
+      } else {
+        await window.xingmang.updateAccountKey({ ...values, id: keyEditor.key.id })
+        notify?.({ type: 'success', message: `Key「${values.name}」已更新` })
+      }
+      setKeyEditor(null)
+      void loadKeys(keysPageNumber)
+    } catch (error) {
+      notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    } finally {
+      setKeyEditorBusy(false)
+    }
   }
 
   const clearPasswordError = (field: keyof AccountFieldErrors) => {
@@ -521,11 +548,19 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
           <div className="workspace-empty-icon"><KeyRound size={24} /></div>
           <h2>暂无 Key</h2>
           <p>「一键配置」写入 CLI 配置的星芒 Key 会显示在这里</p>
+          <button className="primary-button" type="button" onClick={() => setKeyEditor({ mode: 'create' })}>
+            <Plus size={15} aria-hidden="true" /> 添加 Key
+          </button>
         </section>
       )
     }
     return (
       <div className="account-center-keys">
+        <div className="account-center-keys-toolbar">
+          <button className="secondary-button" type="button" onClick={() => setKeyEditor({ mode: 'create' })}>
+            <Plus size={15} aria-hidden="true" /> 添加 Key
+          </button>
+        </div>
         <div className="account-center-keys-head" aria-hidden="true">
           <span>名称</span><span>状态</span><span>额度</span><span>已用</span><span>创建时间</span><span>过期时间</span><span>操作</span>
         </div>
@@ -538,15 +573,26 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
               <span>{formatKeyQuotaUsd(key.usedQuota, balance?.quotaPerUnit)}</span>
               <span>{formatAccountUsageDate(key.createdAt)}</span>
               <span>{key.expiredAt ? formatAccountUsageDate(key.expiredAt) : '永不过期'}</span>
-              <button
-                className="icon-button compact"
-                type="button"
-                title="撤销"
-                aria-label={`撤销 Key「${key.name}」`}
-                onClick={() => setRevokeTarget(key)}
-              >
-                <Trash2 size={15} />
-              </button>
+              <span className="account-center-keys-actions">
+                <button
+                  className="icon-button compact"
+                  type="button"
+                  title="编辑"
+                  aria-label={`编辑 Key「${key.name}」`}
+                  onClick={() => setKeyEditor({ mode: 'edit', key })}
+                >
+                  <Pencil size={15} />
+                </button>
+                <button
+                  className="icon-button compact"
+                  type="button"
+                  title="撤销"
+                  aria-label={`撤销 Key「${key.name}」`}
+                  onClick={() => setRevokeTarget(key)}
+                >
+                  <Trash2 size={15} />
+                </button>
+              </span>
             </div>
           ))}
         </div>
@@ -705,6 +751,17 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
           busy={revokeBusy}
           onConfirm={confirmRevokeKey}
           onCancel={() => setRevokeTarget(null)}
+        />
+      )}
+
+      {keyEditor && (
+        <KeyEditorDialog
+          mode={keyEditor.mode}
+          initial={keyEditor.mode === 'edit' ? keyEditor.key : undefined}
+          quotaPerUnit={balance?.quotaPerUnit}
+          onClose={() => setKeyEditor(null)}
+          onSubmit={(values) => void submitKeyEditor(values)}
+          isSubmitting={keyEditorBusy}
         />
       )}
     </div>

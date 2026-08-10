@@ -38,6 +38,8 @@ interface SidebarProps {
   onAccountLogout: () => void
   onRecharge: () => void
   onConfigureCliKey: () => void
+  /** 刷新余额 -- passed straight through to AccountArea. */
+  onRefreshBalance: () => void
   onOpenAccountCenter: () => void
   /** Opens the 粘贴 Key dialog (W3b) -- passed straight through to AccountArea. */
   onPasteKey: () => void
@@ -83,6 +85,7 @@ export function Sidebar({
   onAccountLogout,
   onRecharge,
   onConfigureCliKey,
+  onRefreshBalance,
   onOpenAccountCenter,
   onPasteKey,
   onOpenKeysPage,
@@ -191,6 +194,7 @@ export function Sidebar({
           onLogout={onAccountLogout}
           onRecharge={onRecharge}
           onConfigureCliKey={onConfigureCliKey}
+          onRefreshBalance={onRefreshBalance}
           onOpenAccountCenter={onOpenAccountCenter}
           onPasteKey={onPasteKey}
           onOpenKeysPage={onOpenKeysPage}

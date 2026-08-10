@@ -816,6 +816,17 @@ function App() {
   // Shared by both submit handlers below: re-reads the main process's account
   // session right after a successful login/register call so the sidebar's
   // three-state account area starts reflecting real data immediately.
+  // 侧边栏「刷新余额」按钮(老板需求 2026-08-10):即点即拉实时余额。复用
+  // refreshAccountSession 的同一条链,成功/失败都有明确反馈,不做静默。
+  const handleRefreshBalance = async () => {
+    try {
+      await refreshAccountSession()
+      setToast({ type: 'success', message: '余额已刷新' })
+    } catch (error) {
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    }
+  }
+
   const refreshAccountSession = async (): Promise<AccountProfile | null> => {
     const session = await window.xingmang.getAccountSession()
     setAccountSession(session)
@@ -1573,6 +1584,7 @@ function App() {
           })
         }}
         onConfigureCliKey={handleConfigureCliKey}
+        onRefreshBalance={() => void handleRefreshBalance()}
         onOpenAccountCenter={() => setAppView('account-center')}
         onPasteKey={handleOpenPasteKeyDialog}
         onOpenKeysPage={() => {

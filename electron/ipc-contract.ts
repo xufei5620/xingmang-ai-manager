@@ -75,8 +75,10 @@ import type {
 import type { PlatformCapabilities as MainPlatformCapabilities } from './platform-capabilities'
 import type {
   NewApiAccountKey,
+  NewApiAccountKeyCreateInput,
   NewApiAccountKeysPage,
   NewApiAccountKeysQuery,
+  NewApiAccountKeyUpdateInput,
   NewApiAccountProfile,
   NewApiAccountProfileDetail,
   NewApiAccountStatus,
@@ -188,6 +190,8 @@ export type AccountUsagePage = NewApiAccountUsagePage
 export type AccountKey = NewApiAccountKey
 export type AccountKeysQuery = NewApiAccountKeysQuery
 export type AccountKeysPage = NewApiAccountKeysPage
+export type AccountKeyCreateInput = NewApiAccountKeyCreateInput
+export type AccountKeyUpdateInput = NewApiAccountKeyUpdateInput
 export type AccountChangePasswordInput = NewApiChangePasswordInput
 export type AccountChangePasswordResult = NewApiChangePasswordResult
 export type RendererNavigationTarget = 'settings'
@@ -414,6 +418,8 @@ export interface XingmangInvokeContract {
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [], RememberedAccountLogin | null>
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null], void>
+  createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
+  updateAccountKey: IpcInvokeDefinition<'account:update-key', [input: AccountKeyUpdateInput], void>
 }
 
 export interface XingmangEventContract {
@@ -533,6 +539,8 @@ export const ipcInvokeChannels = {
   openCanvasWindow: 'canvas:open',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
+  createAccountKey: 'account:create-key',
+  updateAccountKey: 'account:update-key',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }

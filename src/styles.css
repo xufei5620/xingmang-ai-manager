@@ -1921,9 +1921,23 @@ input:focus-visible {
 .account-center-keys-head,
 .account-center-keys-row {
   display: grid;
-  grid-template-columns: minmax(140px, 1.6fr) 88px 96px 96px 148px 148px 56px;
+  /* 末列 92px:操作列现在放 编辑+撤销 两个图标钮(老板需求 2026-08-10)。 */
+  grid-template-columns: minmax(140px, 1.6fr) 88px 96px 96px 148px 148px 92px;
   align-items: center;
   column-gap: var(--space-12);
+}
+
+.account-center-keys-toolbar {
+  display: flex;
+  justify-content: flex-end;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.account-center-keys-actions {
+  display: flex;
+  gap: 4px;
+  justify-content: flex-end;
 }
 
 .account-center-keys-head {
@@ -4062,7 +4076,11 @@ button:disabled {
 .toast {
   position: fixed;
   top: 50px;
-  left: calc(var(--sidebar-width) + (100vw - var(--sidebar-width)) / 2);
+  /* --sidebar-width 只定义在 .app-shell(工作台布局)上;欢迎页/引导页/
+     个人中心的 Toast 挂在 .app-shell 之外,无回退值时整条 left 计算失效、
+     退化成 left:auto + translateX(-50%) 把提示甩出左上角(老板真机复现
+     2026-08-10)。回退 0px = 无侧栏视图在整个视口居中,语义正好。 */
+  left: calc(var(--sidebar-width, 0px) + (100vw - var(--sidebar-width, 0px)) / 2);
   /* 必须压过所有弹窗遮罩（最高为 onboarding-guide-backdrop 的 90），否则错误提示会被挡住 */
   z-index: 100;
   display: flex;

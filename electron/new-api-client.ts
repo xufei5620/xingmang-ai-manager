@@ -269,6 +269,21 @@ export interface NewApiAccountKeysPage {
   keys: NewApiAccountKey[]
 }
 
+// 个人中心 Key 管理的「添加」入参(老板需求 2026-08-10)。字段对齐
+// POST /api/token/ (controller/token.go AddToken, rc.24):名称服务端上限
+// 50 字符;remainQuota 是 quota 单位(美元换算由渲染层用 quotaPerUnit 完成,
+// 与余额显示同一来源);expiredTime 为 Unix 秒,-1 = 永不过期(服务端哨兵)。
+export interface NewApiAccountKeyCreateInput {
+  name: string
+  remainQuota: number
+  unlimitedQuota: boolean
+  expiredTime: number
+}
+
+export interface NewApiAccountKeyUpdateInput extends NewApiAccountKeyCreateInput {
+  id: number
+}
+
 export interface NewApiChangePasswordInput {
   originalPassword: string
   newPassword: string
@@ -357,6 +372,19 @@ export interface NewApiClientService extends RelayBackendClient {
   // (see NewApiAccountKey's comment), so the confirm-before-revoke UX this
   // backs is deliberately the *only* key-management action this wave ships.
   revokeKey(id: number): Promise<void>
+  // POST /api/token/ (AddToken). Response carries only {success,message} --
+  // no id, no key (RECON 坑1) -- so the caller refreshes the list to see the
+  // new row; nothing here needs the id.
+  createKey(input: NewApiAccountKeyCreateInput): Promise<void>
+  // GET /api/token/:id then PUT /api/token/ -- read-modify-write, NOT a
+  // partial patch: rc.24's UpdateToken (controller/token.go) overwrites
+  // name/expired_time/remain_quota/unlimited_quota/model_limits_enabled/
+  // model_limits/allow_ips/group/cross_group_retry wholesale from the
+  // request body, so every field this app does not edit must be read first
+  // and sent back verbatim -- otherwise a simple rename would silently wipe
+  // the key's model limits and group. Verified against the exact
+  // v1.0.0-rc.24 tag xm.solov.cc is pinned to.
+  updateKey(input: NewApiAccountKeyUpdateInput): Promise<void>
   // PUT /api/user/self with {password, original_password} -- confirmed
   // identical between the `main` branch and the exact v1.0.0-rc.24 tag
   // xm.solov.cc is pinned to (controller/user.go's UpdateSelf handler,
@@ -1295,6 +1323,80 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
+  // Shared guards for createKey/updateKey -- same defense-in-depth posture
+  // as revokeKey above (I5: this client is callable outside the IPC layer).
+  // 50 is AddToken/UpdateToken's own server-side name cap (rc.24).
+  function validateKeyEditorInput(input: NewApiAccountKeyCreateInput): string {
+    const name = input.name.trim()
+    if (!name) throw new Error('请输入 Key 名称')
+    if (name.length > 50) throw new Error('Key 名称不能超过 50 个字符')
+    if (!input.unlimitedQuota && (!Number.isInteger(input.remainQuota) || input.remainQuota < 0)) {
+      throw new Error('额度格式错误')
+    }
+    if (!Number.isInteger(input.expiredTime) || (input.expiredTime !== -1 && input.expiredTime <= 0)) {
+      throw new Error('过期时间格式错误')
+    }
+    return name
+  }
+
+  const createKey = (input: NewApiAccountKeyCreateInput): Promise<void> => (
+    withSession(async (current) => {
+      const name = validateKeyEditorInput(input)
+      const body = {
+        name,
+        remain_quota: input.unlimitedQuota ? 0 : input.remainQuota,
+        unlimited_quota: input.unlimitedQuota,
+        expired_time: input.expiredTime,
+      }
+      const raw = await performRequest(
+        ctx,
+        tokenCollectionPath,
+        { method: 'POST', body, headers: authHeaders(current) },
+        'Key 创建',
+      )
+      unwrapEnvelope(raw, 'Key 创建', [current.accessToken])
+    })
+  )
+
+  const updateKey = (input: NewApiAccountKeyUpdateInput): Promise<void> => (
+    withSession(async (current) => {
+      if (!Number.isInteger(input.id) || input.id <= 0) throw new Error('Key ID 格式错误')
+      const name = validateKeyEditorInput(input)
+      // UpdateToken 是整体覆盖(见 NewApiClientService.updateKey 的注释):
+      // 先 GET 当前记录,把本次不编辑的字段原样回填。record.key(掩码)
+      // 按 I3 纪律绝不读取,也不进 PUT body(服务端本就不从请求读 Key)。
+      const currentRaw = await performRequest(
+        ctx,
+        tokenIdPath(input.id),
+        { method: 'GET', headers: authHeaders(current) },
+        'Key 读取',
+      )
+      const existing = unwrapEnvelope(currentRaw, 'Key 读取', [current.accessToken])
+      const record = isRecord(existing) ? existing : {}
+      const body = {
+        id: input.id,
+        name,
+        expired_time: input.expiredTime,
+        remain_quota: input.unlimitedQuota
+          ? (typeof record.remain_quota === 'number' ? record.remain_quota : 0)
+          : input.remainQuota,
+        unlimited_quota: input.unlimitedQuota,
+        model_limits_enabled: record.model_limits_enabled === true,
+        model_limits: typeof record.model_limits === 'string' ? record.model_limits : '',
+        allow_ips: typeof record.allow_ips === 'string' ? record.allow_ips : '',
+        group: typeof record.group === 'string' ? record.group : '',
+        cross_group_retry: record.cross_group_retry === true,
+      }
+      const raw = await performRequest(
+        ctx,
+        tokenCollectionPath,
+        { method: 'PUT', body, headers: authHeaders(current) },
+        'Key 更新',
+      )
+      unwrapEnvelope(raw, 'Key 更新', [current.accessToken])
+    })
+  )
+
   const changePassword = (input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult> => (
     withSession(async (current) => {
       const originalPassword = input.originalPassword
@@ -1485,6 +1587,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     getUsage,
     listKeys,
     revokeKey,
+    createKey,
+    updateKey,
     changePassword,
     provisionCliKey,
     findExistingCliKey,

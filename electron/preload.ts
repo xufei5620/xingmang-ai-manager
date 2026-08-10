@@ -99,6 +99,8 @@ const ipcInvokeChannels = {
   openCanvasWindow: 'canvas:open',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',
+  createAccountKey: 'account:create-key',
+  updateAccountKey: 'account:update-key',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -224,6 +226,8 @@ const xingmangApi: XingmangApi = {
   openCanvasWindow: () => invoke('openCanvasWindow'),
   getRememberedAccountLogin: () => invoke('getRememberedAccountLogin'),
   setRememberedAccountLogin: (input) => invoke('setRememberedAccountLogin', input),
+  createAccountKey: (input) => invoke('createAccountKey', input),
+  updateAccountKey: (input) => invoke('updateAccountKey', input),
   onNavigate: (listener) => subscribe('onNavigate', listener),
   onNodeRuntimeInstallProgress: (listener) => subscribe('onNodeRuntimeInstallProgress', listener),
   onInstallProgress: (listener) => subscribe('onInstallProgress', listener),

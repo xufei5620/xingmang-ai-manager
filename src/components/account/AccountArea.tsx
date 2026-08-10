@@ -1,4 +1,4 @@
-import { AlertTriangle, KeyRound, LogOut, UserRound, Wallet } from 'lucide-react'
+import { AlertTriangle, KeyRound, LogOut, RefreshCw, UserRound, Wallet } from 'lucide-react'
 import { formatBalanceUsd, shouldShowManualKeyEntry, type AccountAreaStatus, type AccountSnapshot } from './account-stub'
 import type { RelaySite } from '../../types'
 
@@ -63,6 +63,7 @@ export function AccountArea({
   onLogout,
   onRecharge,
   onConfigureCliKey,
+  onRefreshBalance,
   onOpenAccountCenter,
   onPasteKey,
   onOpenKeysPage,
@@ -74,6 +75,8 @@ export function AccountArea({
   onLogout: () => void
   onRecharge: () => void
   onConfigureCliKey: () => void
+  /** 重新拉取余额(老板需求 2026-08-10:侧边栏一键看实时余额)。 */
+  onRefreshBalance: () => void
   /** Identity row entry point into the 个人中心 overlay (W4a, App.tsx's 'account-center' appView). */
   onOpenAccountCenter: () => void
   /** Opens the 粘贴 Key dialog (W3b) -- only reachable on a manual-key site. */
@@ -155,6 +158,15 @@ export function AccountArea({
             余额 {balanceText}
           </small>
         </span>
+        <button
+          type="button"
+          className="account-configure-button"
+          aria-label="刷新余额"
+          title="刷新余额"
+          onClick={(event) => { event.stopPropagation(); onRefreshBalance() }}
+        >
+          <RefreshCw size={14} aria-hidden="true" />
+        </button>
         <button
           type="button"
           className="account-configure-button"
