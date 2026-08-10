@@ -20,15 +20,18 @@
    - `claude/mac-platform-so8dlw`(321f74b):**不是死分支**——携带未合入实改(macOS 渲染根 URL 策略测试 77 行 + `security.ts` 非 Windows 根 pin `path.posix` + CI 脏树守卫 19 行),建议收编(已列入巡检波候选),勿删;
    - 活跃分支:`main`(默认)、`local/integration`(集成线)、`claude/xingmang-site-naming-batches-xwms7a`(本会话工作分支)。
 8. **任务标签体系二选一**:AGENT-RUNBOOK 写 `env:any/windows/macos/server`,COLLABORATION 写 `agent:win/mac/codex/cloud`,两套并存且不一致;GitHub 实际标签本会话无法核对,请指定以哪套为准(或都废弃)。
+9. **Node 检测增强的剩余两措施是否还要做**:应用内已有托管安装 Node(winget/官方下载+签名校验)+ 本波新增"重启本软件"提示,IMPROVEMENT-PLAN 2.2 的措施2(手动指定 Node 路径入口,涉及路径信任面)与措施3(读注册表 InstallPath)边际收益已小,且 ROADMAP #23 本就标"待决策"——做不做请拍板。
+10. **Grok 国内镜像(2.6/#20)**:仍卡在"对 agentsmirror 基础设施是否有控制权"这一确认项,代码侧无阻塞,确认后即可按 Codex 桌面端同款模式接入。
+11. **设置整条覆写的窄窗口竞态(巡检发现,未修)**:`settings:save` 是整条记录覆写,「保存设置」在途的几十毫秒内点侧边栏「更多」,后者携带的旧 relaySiteId 会把刚保存的站点冲回去(静默丢失)。修法涉及 IPC 合并语义决策(窄字段通道或按字段合并),窗口极窄故未擅动——要修请指个方向。
 
 ## ② 从这里继续(断点)
 
 - **⚠️ 当前工作分支**:本会话(2026-08-10 起)因云端会话的分支约束,工作在 `claude/xingmang-site-naming-batches-xwms7a`(基于 `local/integration` 的 `5a8479d`,main 为其祖先)。`local/integration` 本身未动;老板确认后可快进合并该分支回 `local/integration`。
 - **双后端 W1→W3 已全链闭合并通过 Opus 对抗审查**。审查七面向里主路径全部攻击失败(粘贴 Key 全链 I13/I3、写入链 I9、契约 T1 零变化、solov 回归面均给了证据),揪出的发现已全部处置:F1(manual-key 降级不完整,3 个 new-api 入口仍可达)→ `5e1f953`;F2-F5(键控制字符校验/解析错误脱敏/诊断读侧站点化/切站刷新快照)→ `ce38200`;F6(字面量 nit)按不镀金跳过。
-- **W3 审查遗留的一个功能缺口(非安全,待后续波次)**:manual-key 用户即便已把 Key 写进 CLI,**画布仍拿不到 token**——`canvas-auth.ts` 的 `isAccountAuthenticated()` 为假时 `revealConfiguredRelayKey()` 不执行。画布对 manual-key 站点的适配需要单独一波(让画布也能用已写入的 relay key),不阻塞批次3。
+- ~~W3 审查遗留的画布 manual-key 缺口~~ → **已修**(`750b8dc`):manual-key 站点画布直接用已写入 CLI 的 relay key,baseUrl 按站点配对(new-api 站配账号域、manual-key 站配 relay 域 origin);巡检又揪出并修掉 new-api 分支的凭据错配(`5fd0fab`,盲用 CLI 配置 Key 配 xm 域会发错 origin 且被画布 never-clobber 钉成粘性故障——现一律走账号后端签发/复用)。
 - **⚠️ 本会话输出可靠性告警**:后期出现 inline 命令 echo 被污染(git rev-parse 返回过互相矛盾的 SHA、臆造的提交消息)。**真实状态一律以 `git log`/文件回读为准,不信任 inline echo**。验证方法:命令结果重定向到 scratchpad 文件、用 Read 工具回读。若新会话接手,`git log --oneline` 与 `git rev-parse origin/local/integration` 是可信锚点。
-- **之后顺序(老板 2026-08-10 定,全部做完)**:~~批次3~~(**已核实全部落地,无需再改**:3.1=`8c6a476`、3.2/#16=`fd2633c`、3.3/#17=`2c53e6d` + 审计脚本至迟随 `17fef1a` 已 fail-closed;IMPROVEMENT-PLAN 3.1-3.3 已加状态标注——②栏此前"批次3 待做"与背景速查"批次3 未动"均为过期信息)→ ~~仓库整理~~(**已完成**:全量文档过期声明扫描并校准 9 份文档;杂物/版本号/.gitignore 查过无问题;死分支清单进①栏7;标签体系不一致进①栏8)→ **巡检(持续发现-修复)**(每个候选先对抗验证;连续两轮无可行动项即收束)→ **画布 manual-key 适配**(见上一条缺口描述)→ **批次1/2**(批次1 已核实全部落地零施工;批次2 只剩 2.2/2.4/2.5/2.6,其中 2.6 依赖①栏基础设施决策)。
-- **巡检波候选(仓库整理波移交)**:①收编孤儿提交 `321f74b`(macOS 渲染根安全策略测试+CI 脏树守卫;已预验 security.ts/test 干净套用,仅 quality.yml 小冲突需手解);②IMPROVEMENT-PLAN 3.4 的零风险子项——CN-only 匹配时输出告警日志;③复核 ipc.test.ts 的通道顺序断言是否仍在(文档扫描存疑项);④页面组件测试缺口 11 中 3(非阻塞,可不做)。
+- **老板 2026-08-10 排的全序列已全部走完**:~~批次3~~(核实早已落地:3.1=`8c6a476`、3.2/#16=`fd2633c`、3.3/#17=`2c53e6d`+`17fef1a`,零施工)→ ~~仓库整理~~(校准 9 份文档;死分支清单进①栏7;标签体系进①栏8)→ ~~巡检~~(两轮对抗巡检:收编孤儿提交 `321f74b`→`6cce80b`,3.4 告警日志=`2aa1774`,e2e 浏览器变量=`cd824b6`,确认缺陷 7 项修复=`5fd0fab`;ipc 顺序断言复核仍在 `ipc.test.ts:286`;唯一未修项进①栏11)→ ~~画布 manual-key~~(`750b8dc`+`5fd0fab`)→ ~~批次1/2~~(批次1 核实全落地零施工;批次2:2.4 与 2.2 措施1=`d8f4209`,2.5 按计划自身论证暂缓,2.2 剩余与 2.6 进①栏9/10)。
+- **接下去若无新指示**:待办面只剩①栏决策项与真机验证项;代码侧可做的是继续巡检轮次或按①栏答复施工。
 - **W3 关键事实(已侦察定案)**:sub2api = Wei-Shaw/sub2api(Go+Vue3);用户侧 Key 页路由 **`/keys`**(frontend/src/router,requiresAuth 非管理员)→ 精确 href `https://api.solov.cc/keys` **已在白名单**(main.ts:73),零白名单改动。sub2api 站点:providerBaseUrls 复用 catalog 形状(含 grok `/v1`)、accountBackend='manual-key'、无账号登录,粘贴 Key 优先复用既有配置写入链(I9),**尽量零新增 IPC 通道**(T1)。
 - **轮询协议**:长心跳(约 30 分钟);429/额度类错误不退出循环,退避并加长间隔;接近会话硬上限 → 立即把已完成的推上去、更新本报告顶部再收尾。模型分工:Fable 只规划/拍板/综合审,实现派 Sonnet,安全审查派 Opus。
 - **红线(老板原话不可越)**:不推/不合 main、不强推、不删分支、不开 PR、不发 release、不动生产站点、不违反 CLAUDE.md 第 8 节、测试绝不触生产 xm/api.solov.cc;素材/定价/命名/删除类/真机验证类一律进上面第①栏。
@@ -37,6 +40,13 @@
 
 | 提交 | 内容 | 门槛 |
 |---|---|---|
+| `d8f4209` | **批次2 收尾**:镜像策略三态开关(2.4 全链,刻意不覆盖 Codex 桌面端清单)+ Node 重启提示(2.2 措施1) | tc 0 错;vitest 1345/0(+6);compile 过 |
+| `5fd0fab` | **巡检修复 7 项**:画布 new-api 分支凭据错配、备份恢复被在途扫描回滚、invalidate 后 loading 卡死锁工具栏(App+两页面)、桌面端轮询覆盖、粘贴 Key 首扫谎报/反报、登录后签发复查站点、备份页初扫窗口 | tc 0 错;vitest 1339/0 |
+| `750b8dc` | **画布 manual-key 适配**:hasAccountBackend 依赖 + canvasBaseUrlForSite 按站点配对凭据来源,切站下次开窗生效,零新增 IPC | tc 0 错;vitest 1339/0(+5);compile 过 |
+| `cd824b6` | e2e maintenance-layout 支持 `XINGMANG_E2E_CHROMIUM`(云容器复跑即绿,CI 无感) | 带变量 2/2 绿;无变量行为不变 |
+| `2aa1774` | **3.4 零风险子项**:CN-only 退化匹配告警日志(运行时+发布门禁镜像,判定不变) | tc 0 错;vitest 1334/0(+2);scripts 7/0 |
+| `6cce80b` | **收编孤儿提交 321f74b**:macOS 渲染根 URL 策略测试 + security.ts pin path.posix + CI 脏树守卫(补进 linux job) | tc 0 错;vitest 1332/0(+4) |
+| `19397b6` | **仓库整理·文档校准**:9 份文档过期声明清理(基线全绿化/批次状态横幅/W2-W4b 落地标注等) | tc 0 错;vitest 1328/0 |
 | `51987d1` | **仓库整理·死分支盘点**入①栏7(只列不删;发现 `claude/mac-platform-so8dlw` 携带未合入实改) | 文档波 |
 | `53efd7f` | **批次3 核实闭合**:3.1=`8c6a476`/3.2=`fd2633c`/3.3=`2c53e6d`+`17fef1a` 均已在历史落地,IMPROVEMENT-PLAN 加状态标注,零代码改动 | 复核波;基线 vitest 1328/0 |
 | `a55058b` | **站点命名定稿(①栏第1项拍板落地)**:统一「星芒AI」,下拉两项「星芒AI（账号登录）」/「星芒AI（Key 直连）」 | tc 0 错;vitest 1328/0 失败 |
