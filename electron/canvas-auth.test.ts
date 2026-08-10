@@ -5,6 +5,7 @@ const baseUrl = 'https://xm.solov.cc'
 
 function fakeDeps(overrides: Partial<CanvasAuthTokenDependencies> = {}): CanvasAuthTokenDependencies {
   return {
+    hasAccountBackend: vi.fn(() => true),
     isAccountAuthenticated: vi.fn(() => true),
     revealConfiguredRelayKey: vi.fn(() => ''),
     provisionRelayKey: vi.fn(async () => 'sk-provisioned'),
@@ -76,5 +77,51 @@ describe('resolveCanvasAuthToken', () => {
     delete (deps as { onProvisionError?: unknown }).onProvisionError
 
     await expect(resolveCanvasAuthToken(baseUrl, deps)).resolves.toBeNull()
+  })
+})
+
+describe('resolveCanvasAuthToken on a manual-key site (no account backend)', () => {
+  const relayBaseUrl = 'https://api.solov.cc'
+
+  function manualKeyDeps(overrides: Partial<CanvasAuthTokenDependencies> = {}): CanvasAuthTokenDependencies {
+    return fakeDeps({
+      hasAccountBackend: vi.fn(() => false),
+      // A manual-key site has nobody to be logged in as and nothing to mint
+      // from -- these fakes throw so any call is a test failure, pinning the
+      // "account machinery is never touched" contract.
+      isAccountAuthenticated: vi.fn(() => { throw new Error('must not consult the account session') }),
+      provisionRelayKey: vi.fn(async () => { throw new Error('must not mint keys without an account backend') }),
+      ...overrides,
+    })
+  }
+
+  it('hands canvas the pasted relay key without ever consulting the account machinery', async () => {
+    const deps = manualKeyDeps({ revealConfiguredRelayKey: vi.fn(() => 'sk-pasted') })
+
+    const result = await resolveCanvasAuthToken(relayBaseUrl, deps)
+
+    expect(result).toEqual({ baseUrl: relayBaseUrl, apiKey: 'sk-pasted' })
+    expect(deps.isAccountAuthenticated).not.toHaveBeenCalled()
+    expect(deps.provisionRelayKey).not.toHaveBeenCalled()
+  })
+
+  it('returns null when no key has been pasted yet, leaving canvas to its own config UI', async () => {
+    const deps = manualKeyDeps()
+
+    await expect(resolveCanvasAuthToken(relayBaseUrl, deps)).resolves.toBeNull()
+    expect(deps.isAccountAuthenticated).not.toHaveBeenCalled()
+    expect(deps.provisionRelayKey).not.toHaveBeenCalled()
+  })
+
+  it('trims the pasted key and treats whitespace-only as absent', async () => {
+    const padded = await resolveCanvasAuthToken(relayBaseUrl, manualKeyDeps({
+      revealConfiguredRelayKey: vi.fn(() => '  sk-pasted  '),
+    }))
+    expect(padded).toEqual({ baseUrl: relayBaseUrl, apiKey: 'sk-pasted' })
+
+    const blank = await resolveCanvasAuthToken(relayBaseUrl, manualKeyDeps({
+      revealConfiguredRelayKey: vi.fn(() => '   '),
+    }))
+    expect(blank).toBeNull()
   })
 })

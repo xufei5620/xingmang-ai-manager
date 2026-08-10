@@ -5,6 +5,13 @@ import type { CanvasAuthToken } from './canvas-ai-config'
 // tested with fakes the same way src/account-provisioning.ts is -- see
 // CLAUDE.md section 6 ("新逻辑优先写成纯函数再测").
 export interface CanvasAuthTokenDependencies {
+  /**
+   * Whether the active relay site has an account backend to gate on and mint
+   * keys from (accountBackend === 'new-api'). A manual-key site has neither:
+   * the only credential that can exist is the relay key the user already
+   * pasted into the CLI configs.
+   */
+  hasAccountBackend(): boolean
   /** Synchronous, in-memory only -- never touches the network. */
   isAccountAuthenticated(): boolean
   /**
@@ -36,6 +43,17 @@ export async function resolveCanvasAuthToken(
   baseUrl: string,
   deps: CanvasAuthTokenDependencies,
 ): Promise<CanvasAuthToken | null> {
+  if (!deps.hasAccountBackend()) {
+    // Manual-key site: no account exists to gate on, and there is nothing to
+    // mint from -- the pasted relay key already written into the CLI configs
+    // is the whole credential story. This mirrors what the CLIs themselves
+    // run with on such a site, so canvas gets exactly the same key pairing,
+    // never a broader one. No key configured yet -> canvas falls back to its
+    // own config UI, same as the logged-out case below.
+    const pastedKey = deps.revealConfiguredRelayKey().trim()
+    return pastedKey ? { baseUrl, apiKey: pastedKey } : null
+  }
+
   if (!deps.isAccountAuthenticated()) return null
 
   const existingKey = deps.revealConfiguredRelayKey().trim()

@@ -31,27 +31,33 @@ import { isAllowedExternalUrl } from './security'
 import { readBoundedUtf8File } from './bounded-file'
 import { writeAtomicSafeUtf8File } from './safe-local-data'
 import { buildCliKeyName } from './new-api-client'
-import { relaySites } from './relay-sites'
+import { resolveRelaySite, type RelaySite } from './relay-sites'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 
-// Derived from the site registry's solov entry (T2 precedent, W3) rather
-// than importing new-api-client.ts's own defaultBaseUrl re-export: this
-// window's only declared dependency on the account backend is the
-// backend-agnostic RelayBackendClient interface (see
-// CanvasWindowControllerOptions.accountService below, "this window never
-// needs to know which relay backend minted its canvas key") -- reaching into
-// new-api-client.ts just for this one literal would quietly reintroduce a
-// concrete-backend import into a module that otherwise never needs one.
-// solov is guaranteed to declare accountBaseUrl -- it is the one
-// relay-sites.ts entry with accountBackend: 'new-api' -- but the field is
-// typed optional on RelaySite (a manual-key site like sub2api has none), so
-// the `?? ` fallback below exists purely to stay type-safe; it is
-// unreachable in practice.
-const newApiDefaultBaseUrl = relaySites.find((site) => site.id === 'solov')?.accountBaseUrl
-  ?? 'https://xm.solov.cc'
+/**
+ * Which origin the canvas AI channel should call for the active relay site.
+ * The canvas channel is OpenAI-compatible (CANVAS-INTEGRATION-PLAN 阶段 B),
+ * and the key must be handed out with the origin it was issued for:
+ *
+ * - new-api site: keys are minted on the account origin (xm.solov.cc), which
+ *   serves the OpenAI-compatible API on the same origin -- unchanged from the
+ *   pre-multi-site behaviour.
+ * - manual-key site: there is no account origin; the pasted key belongs to
+ *   the relay itself, so canvas gets the relay origin the CLIs already use.
+ *   URL#origin strips any per-CLI path suffix a future entry might carry.
+ *
+ * Derived from the site registry (T2 precedent, W3) rather than importing
+ * new-api-client.ts's own defaultBaseUrl re-export: this window's only
+ * declared dependency on the account backend is the backend-agnostic
+ * RelayBackendClient interface.
+ */
+export function canvasBaseUrlForSite(site: RelaySite): string {
+  if (site.accountBackend === 'new-api' && site.accountBaseUrl) return site.accountBaseUrl
+  return new URL(site.providerBaseUrls.codex).origin
+}
 
 // Narrow, hand-maintained channel names for the canvas window's own host
 // bridge -- deliberately NOT part of ipc-contract.ts's XingmangInvokeContract
@@ -114,6 +120,8 @@ export const canvasCliKeyNamePrefix = 'xingmang-canvas'
 export interface CanvasTokenResolutionDependencies {
   systemService: SystemService
   accountService: RelayBackendClient
+  /** The active relay site; decides whether an account backend exists to gate on and mint from. */
+  relaySite: RelaySite
   previewOnboarding: boolean
   onProvisionError?: (error: unknown) => void
   onReuseLookupError?: (error: unknown) => void
@@ -145,6 +153,7 @@ export function buildCanvasTokenDependencies(
   deps: CanvasTokenResolutionDependencies,
 ): CanvasAuthTokenDependencies {
   return {
+    hasAccountBackend: () => deps.relaySite.accountBackend === 'new-api',
     isAccountAuthenticated: () => deps.accountService.getSessionState().authenticated,
     revealConfiguredRelayKey: () => {
       for (const provider of providerIds) {
@@ -280,12 +289,17 @@ export function createCanvasWindowController(
   })
 
   async function resolveTokenForNewWindow(): Promise<CanvasAuthToken | null> {
-    // baseUrl mirrors XM_SOLOV_BASE_URL, already baked into the canvas
-    // build's own defaultConfig (阶段 B) -- this only ever needs to supply
-    // the apiKey half in practice, but is explicit for defensiveness.
-    return resolveCanvasAuthToken(newApiDefaultBaseUrl, buildCanvasTokenDependencies({
+    // Resolved per window open (same pattern as system-service.ts's own
+    // consumers) so a site switch in settings takes effect on the next
+    // canvas open without restarting. For the new-api site the baseUrl
+    // mirrors XM_SOLOV_BASE_URL already baked into the canvas build's own
+    // defaultConfig (阶段 B); for a manual-key site it is the relay origin
+    // the pasted key belongs to.
+    const activeSite = resolveRelaySite(options.systemService.readStoredConfig().relaySiteId)
+    return resolveCanvasAuthToken(canvasBaseUrlForSite(activeSite), buildCanvasTokenDependencies({
       systemService: options.systemService,
       accountService: options.accountService,
+      relaySite: activeSite,
       previewOnboarding: options.previewOnboarding,
       onProvisionError: (error) => {
         options.runtimeLog.exception('canvas', 'auth-token.provision.failed', error)

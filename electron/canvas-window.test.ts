@@ -46,8 +46,10 @@ vi.mock('electron', () => ({
 }))
 
 import { resolveCanvasAuthToken } from './canvas-auth'
+import { resolveRelaySite } from './relay-sites'
 import {
   buildCanvasTokenDependencies,
+  canvasBaseUrlForSite,
   canvasCliKeyNamePrefix,
   canvasHostAuthTokenChannel,
   canvasHostNotifyChannel,
@@ -298,7 +300,7 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
       revealApiKey: vi.fn((provider: string) => (provider === 'codex' ? 'sk-cli-configured' : '')),
     } as unknown as SystemService
 
-    const deps = buildCanvasTokenDependencies({ systemService, accountService, previewOnboarding: false })
+    const deps = buildCanvasTokenDependencies({ systemService, accountService, relaySite: resolveRelaySite('solov'), previewOnboarding: false })
 
     expect(deps.revealConfiguredRelayKey()).toBe('sk-cli-configured')
   })
@@ -314,6 +316,7 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     const deps = buildCanvasTokenDependencies({
       systemService: noCliConfiguredSystemService(),
       accountService,
+      relaySite: resolveRelaySite('solov'),
       previewOnboarding: false,
     })
     const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
@@ -333,6 +336,7 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     const deps = buildCanvasTokenDependencies({
       systemService: noCliConfiguredSystemService(),
       accountService,
+      relaySite: resolveRelaySite('solov'),
       previewOnboarding: false,
     })
     const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
@@ -353,6 +357,7 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     const deps = buildCanvasTokenDependencies({
       systemService: noCliConfiguredSystemService(),
       accountService,
+      relaySite: resolveRelaySite('solov'),
       previewOnboarding: false,
       onReuseLookupError,
     })
@@ -381,6 +386,7 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     const deps = buildCanvasTokenDependencies({
       systemService: noCliConfiguredSystemService(),
       accountService,
+      relaySite: resolveRelaySite('solov'),
       previewOnboarding: false,
     })
 
@@ -404,11 +410,52 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     const deps = buildCanvasTokenDependencies({
       systemService: noCliConfiguredSystemService(),
       accountService,
+      relaySite: resolveRelaySite('solov'),
       previewOnboarding: false,
     })
     await expect(resolveCanvasAuthToken(canvasBaseUrl, deps)).resolves.toBeNull()
-
     expect(findExistingCliKey).not.toHaveBeenCalled()
     expect(provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('on a manual-key site, hands canvas the pasted CLI key without any account call, and null when nothing is pasted', async () => {
+    const sub2apiSite = resolveRelaySite('sub2api')
+    const relayBaseUrl = canvasBaseUrlForSite(sub2apiSite)
+    // Every account-service method throws: a manual-key site must never
+    // consult the session or mint keys (the pasted key is relay-scoped and
+    // pairs with the same relay origin the CLIs already call).
+    const accountService = {
+      getSessionState: vi.fn(() => { throw new Error('must not consult the session') }),
+      findExistingCliKey: vi.fn(async () => { throw new Error('must not look up tokens') }),
+      provisionCliKey: vi.fn(async () => { throw new Error('must not mint tokens') }),
+    } as unknown as NewApiClientService
+
+    const pastedDeps = buildCanvasTokenDependencies({
+      systemService: {
+        revealApiKey: vi.fn((provider: string) => (provider === 'claude' ? 'sk-pasted-relay' : '')),
+      } as unknown as SystemService,
+      accountService,
+      relaySite: sub2apiSite,
+      previewOnboarding: false,
+    })
+    await expect(resolveCanvasAuthToken(relayBaseUrl, pastedDeps)).resolves.toEqual({
+      baseUrl: relayBaseUrl,
+      apiKey: 'sk-pasted-relay',
+    })
+
+    const emptyDeps = buildCanvasTokenDependencies({
+      systemService: noCliConfiguredSystemService(),
+      accountService,
+      relaySite: sub2apiSite,
+      previewOnboarding: false,
+    })
+    await expect(resolveCanvasAuthToken(relayBaseUrl, emptyDeps)).resolves.toBeNull()
+  })
+
+  it('pairs each site with the origin its keys are issued for', () => {
+    // new-api site: keys are minted on the account origin. manual-key site:
+    // the pasted key belongs to the relay itself.
+    expect(canvasBaseUrlForSite(resolveRelaySite('solov'))).toBe('https://xm.solov.cc')
+    expect(canvasBaseUrlForSite(resolveRelaySite('sub2api'))).toBe('https://api.solov.cc')
   })
 })
