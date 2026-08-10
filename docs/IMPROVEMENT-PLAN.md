@@ -189,6 +189,8 @@ Grok CLI 二进制**完全没有国内镜像**。`grok-installer.ts:20-21` 的 `
 
 ### 3.1 【高危】提权模式下交互式终端继承未净化环境变量
 
+> **✅ 已落地**（`8c6a476`）：按下述方案参数化了净化基底，trusted-only 传 `trustedCommandEnvironment`（现 `system-service.ts` 的 `launchProviderOperation` Windows 分支），CLAUDE.md I2 已收录该约定。以下为原始分析，留档。
+
 `electron/system-service.ts:3033`，`launchProviderOperation` 的 Windows 分支无条件传 `interactiveTerminalEnvironment()`，trusted-only 与 same-user 共用同一行。
 
 - `interactiveTerminalEnvironment`（188-210）= `commandEnvironment(process.env)` + 删除颜色键 + 重设 5 个颜色变量，**不剥离任何危险变量**。
@@ -217,6 +219,8 @@ same-user 模式无需处理（未跨越完整性边界）。
 
 ### 3.2 Codex 会话归档失败时的硬链接死锁（会话永久失效）
 
+> **✅ 已落地**（`fd2633c`）：进程内失败路径补齐"同 inode 链接对"分支——可清理时当场清理完成回滚；仍被占用时记 `pending`（而非 `rolled-back`）交给启动恢复，用户可见文案提示关闭占用程序后重启自愈。测试覆盖进程内链接对的三条路径（`codex-sessions.test.ts` 的 refuseUnlink 系列用例）。以下为原始分析，留档。
+
 `electron/codex-sessions.ts:1349-1365`，`changeArchiveState` 的 `moveFileDurably` 是"先 link 目标再 rm 源"两步移动。
 
 失败路径：link 成功后 rm 源失败（Windows 上被杀毒/备份/索引软件以不含 `FILE_SHARE_DELETE` 方式打开，是常态而非罕见），且内部清理 rm 目标也失败（同因相关，`force:true` 只忽略 ENOENT）→ 源与目标同为一个 inode 的两个硬链接，且 `moved=false`。
@@ -232,6 +236,8 @@ same-user 模式无需处理（未跨越完整性边界）。
 **测试缺口**：唯一的进程内回滚测试（715-732 行）通过 `afterMoveBeforeCommit` 注入失败，此时 `moved` 已为 true，未覆盖本分支。
 
 ### 3.3 发布门禁与依赖审计的两处 fail-open
+
+> **✅ 已落地**：发布门禁——`2c53e6d` 缺少期望发布者时抛 `SIGNING_PUBLISHER_MISSING` 拒绝校验（测试 `verify-release-artifacts.test.cjs` "refuses to verify an installer when no expected publisher is configured"）；依赖审计——缺 `resolved` 的普通条目已抛错拒绝（至迟随 `17fef1a` 落地，测试 "rejects ordinary locked packages missing resolved or integrity" 钉住），工作区链接豁免面单独校验。以下为原始分析，留档。
 
 **`scripts/verify-release-artifacts.cjs:93-100`**：`verifyAuthenticode` 仅在 `expectedPublisher` 非空时才比对签名主体。而它来自 `validateReleaseEnvironment()`，当 `XINGMANG_RELEASE` 不为 `'1'` 时为 null。所以直接执行 `npm run release:verify` 而未导出发布环境变量时，**任何持有任意有效签名的安装包都会通过**，并输出"发布产物校验通过"，无降级提示。完整链路 `run-release-build.cjs` 会注入该变量，不受影响。
 
