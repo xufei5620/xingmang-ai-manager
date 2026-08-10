@@ -20,6 +20,12 @@ export interface SettingsV2 {
    * rendering a blank <select>.
    */
   relaySiteId?: string
+  /**
+   * Pinned download-source order（IMPROVEMENT-PLAN 2.4）。Absent = 自动
+   * （探测网络区域），与 AppSettings.mirrorPolicy 同一份"缺省 = 旧行为"
+   * 契约；本页用 'auto' 字面量表达缺省态，保存时归一回 absent。
+   */
+  mirrorPolicy?: 'mirror-first' | 'official-first'
 }
 
 export interface SettingsPageProps {
@@ -42,6 +48,7 @@ export function settingsEqual(left: SettingsV2, right: SettingsV2): boolean {
     && left.checkUpdatesOnStartup === right.checkUpdatesOnStartup
     && left.runDiagnosticsOnStartup === right.runDiagnosticsOnStartup
     && left.relaySiteId === right.relaySiteId
+    && left.mirrorPolicy === right.mirrorPolicy
 }
 
 export function reconcileSettingsDraft(
@@ -52,12 +59,12 @@ export function reconcileSettingsDraft(
   // theme 与 version 始终跟随 persisted（侧边栏是主题的权威通道），
   // 其余字段的未保存草稿不能因外部变更被静默丢弃。
   const draft = { ...persisted }
-  const carryUnsavedField = <Key extends 'workspace' | 'checkUpdatesOnStartup' | 'runDiagnosticsOnStartup' | 'relaySiteId'>(
+  const carryUnsavedField = <Key extends 'workspace' | 'checkUpdatesOnStartup' | 'runDiagnosticsOnStartup' | 'relaySiteId' | 'mirrorPolicy'>(
     key: Key,
   ) => {
     if (current.draft[key] !== current.saved[key]) draft[key] = current.draft[key]
   }
-  for (const key of ['workspace', 'checkUpdatesOnStartup', 'runDiagnosticsOnStartup', 'relaySiteId'] as const) {
+  for (const key of ['workspace', 'checkUpdatesOnStartup', 'runDiagnosticsOnStartup', 'relaySiteId', 'mirrorPolicy'] as const) {
     carryUnsavedField(key)
   }
   return { saved: persisted, draft }
@@ -230,6 +237,36 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
             {relaySites.map((site) => (
               <option key={site.id} value={site.id}>{site.label}</option>
             ))}
+          </select>
+        </div>
+      </section>
+
+      <section className="environment-section settings-section" aria-labelledby="mirror-policy-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="mirror-policy-title">下载源策略</h2>
+            <span>安装 CLI 与 Node.js 时优先使用哪个下载源</span>
+          </div>
+        </div>
+        <div className="operation-row settings-relay-site-row">
+          <div className="operation-status-icon"><Globe2 size={17} /></div>
+          <div className="operation-row-copy">
+            <strong>镜像策略</strong>
+            <p>自动会探测网络区域后选择；下载失败或很慢时，可强制固定顺序（两个源始终都会尝试，只影响先后）</p>
+          </div>
+          <select
+            className="settings-relay-site-select"
+            value={draft.mirrorPolicy ?? 'auto'}
+            disabled={saving}
+            onChange={(event) => update(
+              'mirrorPolicy',
+              event.target.value === 'auto' ? undefined : event.target.value as 'mirror-first' | 'official-first',
+            )}
+            aria-label="镜像策略"
+          >
+            <option value="auto">自动（推荐）</option>
+            <option value="mirror-first">强制国内镜像优先</option>
+            <option value="official-first">强制官方源优先</option>
           </select>
         </div>
       </section>

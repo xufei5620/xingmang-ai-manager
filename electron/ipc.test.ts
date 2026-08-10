@@ -975,6 +975,32 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.not.objectContaining({ relaySiteId: expect.anything() }))
     })
 
+    it('round-trips a pinned mirrorPolicy and drops unknown values without failing the save (2.4)', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'light',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        mirrorPolicy: 'official-first',
+      })).resolves.toEqual(expect.objectContaining({ mirrorPolicy: 'official-first' }))
+      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ mirrorPolicy: 'official-first' }))
+
+      const saved = await handler(trustedEvent(), {
+        version: 2,
+        workspace: 'D:\\workspace',
+        theme: 'light',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        mirrorPolicy: 'fastest-first',
+      }) as Record<string, unknown>
+      expect(saved.mirrorPolicy).toBeUndefined()
+      expect(service.writeStoredConfig).toHaveBeenLastCalledWith(expect.not.objectContaining({ mirrorPolicy: expect.anything() }))
+    })
+
     it('rejects a non-record payload', async () => {
       register()
       const handler = electronMocks.handlers.get('settings:save')!

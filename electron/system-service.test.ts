@@ -43,6 +43,7 @@ import {
   formatElapsedDuration,
   networkLocationCacheTtlMs,
   npmDownloadTimeoutMs,
+  effectiveNetworkRegion,
   npmInstallRegistries,
   npmRegistryLabel,
   npmResolutionHeartbeatMessage,
@@ -2110,6 +2111,13 @@ describe('npm install network routing', () => {
       'https://registry.npmjs.org',
       'https://registry.npmmirror.com',
     ])
+  })
+
+  it('reduces a pinned mirror policy to the region yielding that order, passing auto through (2.4)', () => {
+    expect(effectiveNetworkRegion('mirror-first', 'outside-mainland-china')).toBe('mainland-china')
+    expect(effectiveNetworkRegion('official-first', 'mainland-china')).toBe('outside-mainland-china')
+    expect(effectiveNetworkRegion('auto', 'outside-mainland-china')).toBe('outside-mainland-china')
+    expect(effectiveNetworkRegion(undefined, 'unknown')).toBe('unknown')
   })
 
   it('routes an undetectable region to the mirror first', () => {

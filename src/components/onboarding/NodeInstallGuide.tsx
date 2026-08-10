@@ -99,6 +99,12 @@ export function NodeInstallGuide({
             {runtime?.npm.installed ? <Check size={14} /> : <CircleDot size={14} />}
             npm {runtime?.npm.installed ? '已识别' : '等待检测'}
           </span>
+          {runtime !== null && !runtime.node.installed && (
+            <p className="node-guide-restart-hint">
+              如果你刚在本软件之外安装完 Node.js，仍检测不到属正常现象——已运行的程序
+              读不到新的系统 PATH。请关闭并重新打开本软件后再检测。
+            </p>
+          )}
         </div>
       ),
     },

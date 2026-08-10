@@ -157,6 +157,12 @@ function parseSettings(value: unknown): AppSettings {
     && relaySites.some((site) => site.id === value.relaySiteId)
     ? value.relaySiteId
     : undefined
+  // Same degrade-don't-throw passthrough as relaySiteId above: dropping an
+  // unknown policy string must never brick saving the rest of the settings,
+  // and app-settings.ts re-validates at persist time (defense-in-depth I5).
+  const mirrorPolicy = value.mirrorPolicy === 'mirror-first' || value.mirrorPolicy === 'official-first'
+    ? value.mirrorPolicy
+    : undefined
   return {
     version: 2,
     workspace: requiredString(value.workspace, '工作目录', 32_767),
@@ -165,6 +171,7 @@ function parseSettings(value: unknown): AppSettings {
     runDiagnosticsOnStartup: value.runDiagnosticsOnStartup === true,
     ...(sidebarMoreExpanded === true ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
   }
 }
 

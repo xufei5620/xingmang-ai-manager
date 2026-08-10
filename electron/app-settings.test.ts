@@ -119,6 +119,31 @@ describe('application settings persistence', () => {
     expect(result.workspace).toBe('D:\\Workspace')
   })
 
+  it('round-trips a pinned mirrorPolicy through a write and a read', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ mirrorPolicy: 'official-first' }))
+
+    expect(readAppSettings(filePath).mirrorPolicy).toBe('official-first')
+  })
+
+  it('degrades an unknown mirrorPolicy -- including a literal auto -- to absent', () => {
+    // 'auto' is the UI's spelling for "no pin"; persisting it would freeze
+    // today's default into the file. Only the two pinned values are stored.
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      workspace: 'D:\\Workspace',
+      theme: 'dark',
+      checkUpdatesOnStartup: true,
+      runDiagnosticsOnStartup: false,
+      mirrorPolicy: 'auto',
+    }), 'utf8')
+
+    const result = readAppSettings(filePath)
+    expect(result.mirrorPolicy).toBeUndefined()
+    expect(result.workspace).toBe('D:\\Workspace')
+  })
+
   it('degrades a non-string relaySiteId to absent instead of failing the read', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({

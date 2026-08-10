@@ -30,6 +30,23 @@ describe('settings draft coordination', () => {
     expect(settingsEqual({ ...base, relaySiteId: 'sub2api' }, { ...base, relaySiteId: 'sub2api' })).toBe(true)
   })
 
+  it('detects a mirrorPolicy change too (2.4)', () => {
+    expect(settingsEqual(base, { ...base, mirrorPolicy: 'mirror-first' })).toBe(false)
+    expect(settingsEqual({ ...base, mirrorPolicy: 'mirror-first' }, { ...base, mirrorPolicy: 'official-first' })).toBe(false)
+    expect(settingsEqual({ ...base, mirrorPolicy: 'official-first' }, { ...base, mirrorPolicy: 'official-first' })).toBe(true)
+  })
+
+  it('carries an unsaved mirrorPolicy draft across a persisted refresh', () => {
+    const state: SettingsDraftState = {
+      saved: base,
+      draft: { ...base, mirrorPolicy: 'official-first' },
+    }
+
+    const reconciled = reconcileSettingsDraft(state, { ...base, theme: 'light' })
+    expect(reconciled.draft.mirrorPolicy).toBe('official-first')
+    expect(reconciled.draft.theme).toBe('light')
+  })
+
   it('preserves an unsaved draft across equivalent parent values', () => {
     const state: SettingsDraftState = {
       saved: base,

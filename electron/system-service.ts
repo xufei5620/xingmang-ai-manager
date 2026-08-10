@@ -5,7 +5,7 @@ import { isIP } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { type AppSettings, AppSettingsStore } from './app-settings'
+import { type AppSettings, AppSettingsStore, type MirrorPolicy } from './app-settings'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   defaultProviderConfigRoots,
@@ -907,6 +907,29 @@ export function npmInstallRegistries(region: NetworkRegion): [string, string] {
     : [npmMirrorRegistry, npmOfficialRegistry]
 }
 
+/**
+ * IMPROVEMENT-PLAN 2.4: a user-pinned mirror policy overrides the probed
+ * region by reducing to the region that yields the desired order. Both
+ * npmInstallRegistries and nodeRuntimeDownloadSources branch only on
+ * 'outside-mainland-china' vs everything else, so this single reduction
+ * covers every source-order decision without touching their signatures --
+ * and a pinned policy lets install paths skip the region probe entirely,
+ * which in a blocked network is itself the unreliable step.
+ *
+ * Deliberately NOT applied to the Codex desktop manifest: its bytes are
+ * mirror-only, so the manifest must stay mirror-first regardless of policy
+ * or the card can advertise a release the install path cannot fetch (see
+ * buildCodexDesktopManifestSources).
+ */
+export function effectiveNetworkRegion(
+  policy: MirrorPolicy | undefined,
+  detected: NetworkRegion,
+): NetworkRegion {
+  if (policy === 'mirror-first') return 'mainland-china'
+  if (policy === 'official-first') return 'outside-mainland-china'
+  return detected
+}
+
 export function npmRegistryLabel(registry: string): string {
   return registry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'
 }
@@ -1587,6 +1610,11 @@ export function createSystemService(
   }
 
   async function inspectNetworkRegion(): Promise<NetworkRegion> {
+    // 2.4：镜像策略被用户钉死时不再探测——直接归约到产生所需源顺序的
+    // region。scanSystem 的网络状态卡片仍走真实探测（inspectNetworkLocation），
+    // 展示保持诚实，这里只决定安装/版本检查的源顺序。
+    const policy = store.read().mirrorPolicy
+    if (policy) return effectiveNetworkRegion(policy, 'unknown')
     return (await inspectNetworkLocation()).region
   }
 
@@ -2172,11 +2200,14 @@ export function createSystemService(
       // registry after the ordering moved to mirror-first.
       const [primaryRegistry] = npmInstallRegistries(networkRegion)
       const primaryLabel = primaryRegistry === npmMirrorRegistry ? '国内 npm 镜像' : 'npm 官方源'
-      const regionLabel = networkRegion === 'mainland-china'
-        ? '检测到中国大陆网络'
-        : networkRegion === 'outside-mainland-china'
-          ? '检测到非中国大陆网络'
-          : '未能识别网络区域，按国内网络处理'
+      // 策略钉死时 networkRegion 是归约值而非探测结果，"检测到"的措辞会撒谎。
+      const regionLabel = store.read().mirrorPolicy
+        ? '已按设置固定安装源顺序'
+        : networkRegion === 'mainland-china'
+          ? '检测到中国大陆网络'
+          : networkRegion === 'outside-mainland-china'
+            ? '检测到非中国大陆网络'
+            : '未能识别网络区域，按国内网络处理'
       const action = `${regionLabel}，正在通过${primaryLabel}安装已校验版本 ${definition.packageName}@${trustedRelease.version}`
       sendInstallProgress(target, provider, 'started', action)
       const transaction = managedNpmTransaction

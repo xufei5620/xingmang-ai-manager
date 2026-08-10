@@ -1127,6 +1127,18 @@ body {
   color: var(--onboarding-accent);
 }
 
+.node-guide-restart-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 9px 10px;
+  color: var(--onboarding-secondary);
+  background: var(--onboarding-panel);
+  border: 1px dashed var(--onboarding-line);
+  border-radius: var(--radius-6);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
 .node-guide-path {
   gap: var(--space-10);
   padding: 10px 11px;

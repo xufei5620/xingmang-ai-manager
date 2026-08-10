@@ -13,6 +13,16 @@ import {
 
 export type AppTheme = 'light' | 'dark'
 
+/**
+ * Which download-source order the installers use (IMPROVEMENT-PLAN 2.4).
+ * 'auto' probes the network region and picks automatically; the two pinned
+ * values force the order and let install paths skip the region probe. Only
+ * the pinned values are ever persisted -- 'auto' is represented by the field
+ * being absent, keeping "缺省 = 旧行为".
+ */
+export type MirrorPolicy = 'auto' | 'mirror-first' | 'official-first'
+export type PinnedMirrorPolicy = Exclude<MirrorPolicy, 'auto'>
+
 export interface AppSettings {
   version: 2
   workspace: string
@@ -30,6 +40,12 @@ export interface AppSettings {
    * crashing.
    */
   relaySiteId?: string
+  /**
+   * Pinned download-source order. Absent = 'auto' (probe the region, the
+   * entire install base's behavior pre-2.4). Unknown values degrade to
+   * absent so a newer version's policy string can never fail the read.
+   */
+  mirrorPolicy?: PinnedMirrorPolicy
 }
 
 interface LegacyAppSettings {
@@ -79,6 +95,10 @@ function parseRelaySiteId(value: unknown): string | undefined {
     : undefined
 }
 
+function parseMirrorPolicy(value: unknown): PinnedMirrorPolicy | undefined {
+  return value === 'mirror-first' || value === 'official-first' ? value : undefined
+}
+
 function requireWorkspace(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('settings.workspace 必须是非空字符串')
@@ -105,6 +125,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   // check would silently swallow a (pathological but type-legal) empty-string
   // site id, and calling the parser twice invites the two results drifting.
   const relaySiteId = parseRelaySiteId(value.relaySiteId)
+  const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
@@ -118,6 +139,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // than failing the whole read, matching every other optional field here.
     ...(optionalBoolean(value.sidebarMoreExpanded, false) ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
   }
 }
 
