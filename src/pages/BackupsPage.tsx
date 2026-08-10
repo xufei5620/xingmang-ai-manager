@@ -197,7 +197,7 @@ export function BackupsPage({ api }: BackupsPageProps) {
             <select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)} disabled={busy !== null} aria-label="选择 AI 工具">
               {managementProviderIds.map((id) => <option value={id} key={id}>{providerLabels[id]}</option>)}
             </select>
-            <button className="primary-button" type="button" onClick={create} disabled={busy !== null}>
+            <button className="primary-button" type="button" onClick={create} disabled={busy !== null || loading}>
               {busy === 'create' ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}
               创建备份
             </button>

@@ -294,7 +294,7 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     return { revealApiKey: vi.fn(() => '') } as unknown as SystemService
   }
 
-  it('reveals an already-configured CLI key before ever asking the account service anything', () => {
+  it('revealConfiguredRelayKey surfaces the first configured CLI key -- consumed only on manual-key sites', () => {
     const accountService = loggedInAccountService()
     const systemService = {
       revealApiKey: vi.fn((provider: string) => (provider === 'codex' ? 'sk-cli-configured' : '')),

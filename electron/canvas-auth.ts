@@ -17,15 +17,21 @@ export interface CanvasAuthTokenDependencies {
   /**
    * Synchronous, local-disk only (reads already-written CLI config files via
    * SystemService.revealApiKey) -- never touches the network. Returns '' if
-   * no installed CLI has a relay key configured yet.
+   * no installed CLI has a relay key configured yet. Consulted ONLY for
+   * manual-key sites: a CLI-config key's issuer is unknowable (pasted keys
+   * and the app's own "去获取 Key" button both come from the relay origin,
+   * not the account origin), so pairing it with an account-backed site's
+   * base URL would send a foreign bearer token to the wrong origin -- and
+   * canvas-ai-config's never-clobber guard would then make the broken pair
+   * sticky in canvas localStorage.
    */
   revealConfiguredRelayKey(): string
   /**
-   * Mints a fresh relay key via the account service's provisionCliKey() --
-   * the one call in this module that reaches xm.solov.cc. Only invoked when
-   * the account is authenticated but no already-configured key was found
-   * locally, so this never runs for a logged-out user and never runs twice
-   * for a user who already has at least one CLI configured.
+   * Mints or reuses a relay key via the account service (findExistingCliKey
+   * first, then provisionCliKey) -- the one call in this module that reaches
+   * xm.solov.cc. Only ever runs for an authenticated account on an
+   * account-backed site, so the key handed to canvas is always one the
+   * paired account origin actually issued.
    */
   provisionRelayKey(): Promise<string>
   /** Optional: observe a provisioning failure without surfacing it to canvas. */
@@ -55,9 +61,6 @@ export async function resolveCanvasAuthToken(
   }
 
   if (!deps.isAccountAuthenticated()) return null
-
-  const existingKey = deps.revealConfiguredRelayKey().trim()
-  if (existingKey) return { baseUrl, apiKey: existingKey }
 
   try {
     const provisionedKey = (await deps.provisionRelayKey()).trim()

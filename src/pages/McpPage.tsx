@@ -396,16 +396,26 @@ export function McpPage({
   const mutate = async (item: ProviderExtensionItem, action: 'uninstall' | 'enable' | 'disable' | 'update') => {
     const target = provider
     const requestId = providerRequests.begin(target)
-    const next = await window.xingmang.mutateProviderExtension({
-      provider: target,
-      kind: 'mcp',
-      action,
-      id: item.id,
-      scope: 'user',
-    })
-    if (providerRequests.isCurrent(target, requestId)) {
-      setProviderSnapshots((current) => ({ ...current, [target]: next }))
-      setProviderErrors((current) => ({ ...current, [target]: undefined }))
+    try {
+      const next = await window.xingmang.mutateProviderExtension({
+        provider: target,
+        kind: 'mcp',
+        action,
+        id: item.id,
+        scope: 'user',
+      })
+      if (providerRequests.isCurrent(target, requestId)) {
+        setProviderSnapshots((current) => ({ ...current, [target]: next }))
+        setProviderErrors((current) => ({ ...current, [target]: undefined }))
+      }
+    } finally {
+      // begin() 顶掉的在途 loadProvider 不会再执行自己 finally 里的 loading
+      // 复位（isCurrent 已假）——不在这里收掉的话该 provider 的加载态卡死，
+      // 工具栏被 selectedLoading 永久锁住。isCurrent 守卫保证不会误清更新
+      // 的请求自己管理的 loading。
+      if (providerRequests.isCurrent(target, requestId)) {
+        setLoadingProviders((current) => (current[target] ? { ...current, [target]: false } : current))
+      }
     }
   }
 

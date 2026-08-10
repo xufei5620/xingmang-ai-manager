@@ -191,6 +191,11 @@ function App() {
   const [pluginsError, setPluginsError] = useState<string | null>(null)
   const scanTracker = useRef(createScanRequestTracker()).current
   const pageDataTracker = useRef(createLatestRequestTracker<'mcp' | 'skills' | 'plugins'>()).current
+  // 概览页 30 秒轮询的桌面端探测是秒级慢操作（Windows 上三个 PowerShell 冷
+  // 启动）。"打开桌面端"在探测在途时完成的话，旧探测落地会把 running:true
+  // 盖回 running:false——按钮退回"打开"，用户以为没启动成功而重复点。任何
+  // 更权威的写入（启动结果/状态事件/全量扫描）提交前都先作废在途探测。
+  const desktopStatusTracker = useRef(createLatestRequestTracker<'codex-desktop'>()).current
   // Codex CLI resolution (mcp/plugins/model list) races ahead of the first
   // environment scan if fired the instant the dashboard becomes navigable;
   // see startup-gate.ts. Settled once, in `scan`, below.
@@ -242,7 +247,8 @@ function App() {
   useEffect(() => () => {
     scanTracker.invalidate()
     pageDataTracker.invalidateAll()
-  }, [pageDataTracker, scanTracker])
+    desktopStatusTracker.invalidateAll()
+  }, [pageDataTracker, scanTracker, desktopStatusTracker])
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
@@ -361,6 +367,26 @@ function App() {
     }
   }, [pageDataTracker, cliReadyGate])
 
+  // pageDataTracker.invalidate() 只作废在途请求、不产生后继请求；被顶掉的
+  // refresh 连自己 finally 里的 setLoading(false) 都会跳过（isCurrent 已假）。
+  // 突变分支必须自己收掉 loading，否则"首次加载在途时完成一次突变"会让加载
+  // 态永久卡 true——页面工具栏（provider 下拉/刷新/新增）整体锁死，只能靠
+  // 切页触发新 refresh 自救。三个助手把两步绑在一起，防止新增调用点漏掉。
+  const invalidateMcpData = useCallback(() => {
+    pageDataTracker.invalidate('mcp')
+    setMcpLoading(false)
+  }, [pageDataTracker])
+
+  const invalidateSkillsData = useCallback(() => {
+    pageDataTracker.invalidate('skills')
+    setSkillsLoading(false)
+  }, [pageDataTracker])
+
+  const invalidatePluginsData = useCallback(() => {
+    pageDataTracker.invalidate('plugins')
+    setPluginsLoading(false)
+  }, [pageDataTracker])
+
   useEffect(() => {
     if (activePage === 'mcp') void refreshMcp()
     else if (activePage === 'skills') void refreshSkills()
@@ -386,6 +412,10 @@ function App() {
     delete: window.xingmang.deleteBackup,
     restore: async (id: string) => {
       const result = await window.xingmang.restoreBackup(id)
+      // 磁盘配置刚被恢复改写，任何仍在途的扫描（比如"一键安装全部"收尾的
+      // 强制扫描）落地时都是恢复前的旧事实——不作废它，下面提交的新状态会
+      // 被慢响应静默回滚，用户要手点"重新检测"才自愈。
+      scanTracker.invalidate()
       const [configResult, snapshotResult] = await Promise.allSettled([
         window.xingmang.getConfig(),
         window.xingmang.scanSystem(),
@@ -409,7 +439,10 @@ function App() {
         scanSystem: () => window.xingmang.scanSystem(forceRefresh),
         readConfig: () => window.xingmang.getConfig(),
         onLoadingChange: setScanning,
-        onSnapshot: setSnapshot,
+        onSnapshot: (value) => {
+          desktopStatusTracker.invalidate('codex-desktop')
+          setSnapshot(value)
+        },
         onConfig: setConfig,
         onFailures: (failures) => {
           const errors = failures.map(({ target, reason }) => (
@@ -426,7 +459,7 @@ function App() {
       // settle() past the first call is a no-op.
       cliReadyGate.settle()
     }
-  }, [scanTracker, cliReadyGate])
+  }, [scanTracker, cliReadyGate, desktopStatusTracker])
 
   const maintenanceApi = useMemo(() => ({
     scan: async (forceRefresh = false) => {
@@ -644,7 +677,9 @@ function App() {
     const refreshCodexDesktopStatus = async () => {
       if (document.hidden) return
       try {
+        const requestId = desktopStatusTracker.begin('codex-desktop')
         const status = await window.xingmang.getCodexDesktopStatus()
+        if (!desktopStatusTracker.isCurrent('codex-desktop', requestId)) return
         setSnapshot((current) => sameDesktopStatus(current.desktopApps.codex, status)
           ? current
           : {
@@ -668,7 +703,7 @@ function App() {
       window.clearInterval(interval)
       document.removeEventListener('visibilitychange', refreshWhenVisible)
     }
-  }, [activePage, appView])
+  }, [activePage, appView, desktopStatusTracker])
 
   useEffect(() => {
     return window.xingmang.onCodexDesktopInstallProgress((progress) => {
@@ -704,13 +739,14 @@ function App() {
 
   useEffect(() => {
     return window.xingmang.onCodexDesktopStatus((event: CodexDesktopStatusEvent) => {
+      desktopStatusTracker.invalidate('codex-desktop')
       setSnapshot((current) => ({
         ...current,
         desktopApps: { ...current.desktopApps, codex: event.status },
       }))
       setCodexLaunchPhase(event.phase === 'stopped' ? 'opening' : 'idle')
     })
-  }, [])
+  }, [desktopStatusTracker])
 
   useEffect(() => {
     let active = true
@@ -778,13 +814,32 @@ function App() {
       providerIds.map((id) => [id, config?.providers[id]?.model || undefined]),
     ) as Partial<Record<ProviderId, string>>
     const keyLabel = suppliedKey ? '粘贴的 Key' : '星芒 Key'
+    // handleConfigureCliKey 只在点击入口挡了一次 manual-key 站点，但登录成功
+    // 后的自动 offer 路径要先 await scan()（秒~十秒级且无模态遮挡），用户在
+    // 这个窗口里切到 manual-key 站点再确认弹窗，就会向账号站签发 Key 写进
+    // 当前站点配置——跨站点凭据混线。真正签发前在这里再复查一次。
+    if (!suppliedKey && shouldShowManualKeyEntry(activeRelaySite.accountBackend)) {
+      setToast({ type: 'error', message: '当前站点不支持账号签发 Key，请使用「粘贴 Key」配置' })
+      return
+    }
     try {
       const outcome = suppliedKey
         ? await writeCliKeyForInstalledClis(suppliedKey, selected, preferredModels, window.xingmang)
         : await provisionCliKeyForInstalledClis(selected, preferredModels, window.xingmang)
-      if (outcome.configured.length > 0) setConfig(await window.xingmang.getConfig())
+      // 写入已经落盘成功，这里只是刷新配置摘要。刷新失败不能落进外层 catch
+      // 把结论反转成"写入失败"——那与磁盘上的事实完全相反。
+      let refreshFailed = false
+      if (outcome.configured.length > 0) {
+        try {
+          setConfig(await window.xingmang.getConfig())
+        } catch {
+          refreshFailed = true
+        }
+      }
       if (outcome.configured.length > 0 && outcome.failed.length === 0) {
-        setToast({ type: 'success', message: `已把${keyLabel}配置到 ${outcome.configured.length} 个 CLI` })
+        setToast(refreshFailed
+          ? { type: 'error', message: `已把${keyLabel}配置到 ${outcome.configured.length} 个 CLI，但状态刷新失败；请到概览页重新检测` }
+          : { type: 'success', message: `已把${keyLabel}配置到 ${outcome.configured.length} 个 CLI` })
       } else if (outcome.configured.length > 0) {
         const failedNames = outcome.failed.map((entry) => providers[entry.provider].name).join('、')
         setToast({
@@ -860,8 +915,16 @@ function App() {
   // 粘贴 Key 弹窗的打开入口（W3b，AccountArea 的 manual-key 分支按钮）。不需要
   // resolveCliProvisioningGate 的登录检查——manual-key 站点本来就没有账号
   // 登录态；唯一的前置条件是至少装了一个 CLI，否则弹窗打开了也没有勾选对象。
-  const handleOpenPasteKeyDialog = () => {
-    const targets = buildProvisioningTargets(snapshotRef.current)
+  const handleOpenPasteKeyDialog = async () => {
+    let targets = buildProvisioningTargets(snapshotRef.current)
+    if (targets.length === 0 && scanning) {
+      // 启动路径先进工作台再扫描，首扫落地前 snapshot 还是全未安装的占位。
+      // 这是 manual-key 站点唯一的配 Key 入口，直接报"未安装"是谎报——等
+      // 扫描结果（scan 经 T6 协调器合并并发调用），与账号路径把
+      // scanResult.snapshot 显式传给 offerCliProvisioning 是同一种处理。
+      const scanResult = await scan()
+      targets = buildProvisioningTargets(scanResult.snapshot ?? snapshotRef.current)
+    }
     if (targets.length === 0) {
       setToast({ type: 'error', message: '请先安装一个 AI 工具，再粘贴 Key' })
       return
@@ -1257,6 +1320,7 @@ function App() {
     setCodexLaunchPhase(mode === 'restart' ? 'closing' : 'opening')
     try {
       const result = await window.xingmang.launchCodexDesktop(mode)
+      desktopStatusTracker.invalidate('codex-desktop')
       setSnapshot((current) => ({
         ...current,
         desktopApps: { ...current.desktopApps, codex: result.status },
@@ -1528,22 +1592,22 @@ function App() {
               setMcpError(null)
               // 突变已经拿到权威结果，必须让任何仍在途的 refreshMcp() 失效，
               // 否则它稍后落地会用旧快照覆盖刚写入的数据。
-              pageDataTracker.invalidate('mcp')
+              invalidateMcpData()
             }}
             onRemove={async (name) => {
               setMcpServers(await window.xingmang.removeMcpServer(name))
               setMcpError(null)
-              pageDataTracker.invalidate('mcp')
+              invalidateMcpData()
             }}
             onLogin={async (name) => {
               setMcpServers(await window.xingmang.loginMcpServer(name))
               setMcpError(null)
-              pageDataTracker.invalidate('mcp')
+              invalidateMcpData()
             }}
             onLogout={async (name) => {
               setMcpServers(await window.xingmang.logoutMcpServer(name))
               setMcpError(null)
-              pageDataTracker.invalidate('mcp')
+              invalidateMcpData()
             }}
           />
         ) : activePage === 'skills' ? (
@@ -1559,13 +1623,13 @@ function App() {
               setSkillsError(null)
               // 突变已经拿到权威结果，必须让任何仍在途的 refreshSkills() 失效，
               // 否则它稍后落地会用旧快照覆盖刚写入的数据。
-              pageDataTracker.invalidate('skills')
+              invalidateSkillsData()
             }}
             onToggle={async (skillPath, enabled) => {
               const { skills: next, rewriteNotice } = await window.xingmang.toggleSkill(skillPath, enabled)
               setSkills(next)
               setSkillsError(null)
-              pageDataTracker.invalidate('skills')
+              invalidateSkillsData()
               // 写回 config.toml 会重排序列化，用户手写注释可能丢失，必须让用户看到提示。
               if (rewriteNotice) setToast({ type: 'success', message: rewriteNotice })
             }}
@@ -1573,7 +1637,7 @@ function App() {
               const result = await window.xingmang.uninstallSkill(skillPath)
               setSkills(result.skills)
               setSkillsError(null)
-              pageDataTracker.invalidate('skills')
+              invalidateSkillsData()
               setToast({ type: 'success', message: 'Skill 已移动到应用回收站' })
             }}
           />
@@ -1589,12 +1653,12 @@ function App() {
               setPluginsError(null)
               // 突变已经拿到权威结果，必须让任何仍在途的 refreshPlugins() 失效，
               // 否则它稍后落地会用旧快照覆盖刚写入的数据。
-              pageDataTracker.invalidate('plugins')
+              invalidatePluginsData()
             }}
             onRemove={async (id) => {
               setPluginCatalog(await window.xingmang.removePlugin(id))
               setPluginsError(null)
-              pageDataTracker.invalidate('plugins')
+              invalidatePluginsData()
             }}
             onToggle={async (id, enabled) => {
               const catalog = await window.xingmang.togglePlugin(id, enabled)
@@ -1602,22 +1666,22 @@ function App() {
               if (catalog.rewriteNotice) setToast({ type: 'success', message: catalog.rewriteNotice })
               setPluginCatalog(catalog)
               setPluginsError(null)
-              pageDataTracker.invalidate('plugins')
+              invalidatePluginsData()
             }}
             onAddMarketplace={async (input: MarketplaceCreateRequest) => {
               setPluginCatalog(await window.xingmang.addMarketplace(input))
               setPluginsError(null)
-              pageDataTracker.invalidate('plugins')
+              invalidatePluginsData()
             }}
             onUpgradeMarketplace={async (name) => {
               setPluginCatalog(await window.xingmang.upgradeMarketplace(name))
               setPluginsError(null)
-              pageDataTracker.invalidate('plugins')
+              invalidatePluginsData()
             }}
             onRemoveMarketplace={async (name) => {
               setPluginCatalog(await window.xingmang.removeMarketplace(name))
               setPluginsError(null)
-              pageDataTracker.invalidate('plugins')
+              invalidatePluginsData()
             }}
           />
         ) : activePage === 'backups' ? (

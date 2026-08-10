@@ -24,16 +24,21 @@ describe('resolveCanvasAuthToken', () => {
     expect(deps.provisionRelayKey).not.toHaveBeenCalled()
   })
 
-  it('reuses an already-configured CLI key without provisioning a new one', async () => {
-    const deps = fakeDeps({ revealConfiguredRelayKey: vi.fn(() => 'sk-already-on-disk') })
+  it('never pairs a CLI-config key with the account origin -- always goes through the account service', async () => {
+    // A CLI-config key's issuer is unknowable (pasted keys and the "去获取
+    // Key" page both issue relay-origin keys). Handing one out with the
+    // account origin would send a foreign bearer token to the wrong host,
+    // and canvas's never-clobber guard would make the broken pair sticky.
+    const deps = fakeDeps({ revealConfiguredRelayKey: vi.fn(() => 'sk-relay-issued-on-disk') })
 
     const result = await resolveCanvasAuthToken(baseUrl, deps)
 
-    expect(result).toEqual({ baseUrl, apiKey: 'sk-already-on-disk' })
-    expect(deps.provisionRelayKey).not.toHaveBeenCalled()
+    expect(result).toEqual({ baseUrl, apiKey: 'sk-provisioned' })
+    expect(deps.revealConfiguredRelayKey).not.toHaveBeenCalled()
+    expect(deps.provisionRelayKey).toHaveBeenCalledTimes(1)
   })
 
-  it('falls back to provisioning a fresh key when authenticated but nothing is configured locally', async () => {
+  it('provisions via the account service when authenticated', async () => {
     const deps = fakeDeps()
 
     const result = await resolveCanvasAuthToken(baseUrl, deps)
@@ -42,12 +47,7 @@ describe('resolveCanvasAuthToken', () => {
     expect(deps.provisionRelayKey).toHaveBeenCalledTimes(1)
   })
 
-  it('trims whitespace from both the reveal and provision paths', async () => {
-    const revealed = await resolveCanvasAuthToken(baseUrl, fakeDeps({
-      revealConfiguredRelayKey: vi.fn(() => '  sk-padded  '),
-    }))
-    expect(revealed).toEqual({ baseUrl, apiKey: 'sk-padded' })
-
+  it('trims whitespace from the provisioned key', async () => {
     const provisioned = await resolveCanvasAuthToken(baseUrl, fakeDeps({
       provisionRelayKey: vi.fn(async () => '  sk-padded-provisioned  '),
     }))

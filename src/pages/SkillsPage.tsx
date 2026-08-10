@@ -306,16 +306,24 @@ export function SkillsPage({
   ) => {
     const target = provider
     const requestId = providerRequests.begin(target)
-    const next = await window.xingmang.mutateProviderExtension({
-      provider: target,
-      kind: 'skill',
-      action,
-      id: item.name,
-      scope: item.scope === 'workspace' ? 'workspace' : 'user',
-    })
-    if (providerRequests.isCurrent(target, requestId)) {
-      setProviderSnapshots((current) => ({ ...current, [target]: next }))
-      setProviderErrors((current) => ({ ...current, [target]: undefined }))
+    try {
+      const next = await window.xingmang.mutateProviderExtension({
+        provider: target,
+        kind: 'skill',
+        action,
+        id: item.name,
+        scope: item.scope === 'workspace' ? 'workspace' : 'user',
+      })
+      if (providerRequests.isCurrent(target, requestId)) {
+        setProviderSnapshots((current) => ({ ...current, [target]: next }))
+        setProviderErrors((current) => ({ ...current, [target]: undefined }))
+      }
+    } finally {
+      // 同 McpPage.mutate：begin() 顶掉的在途 loadProvider 不会再复位自己的
+      // loading，必须在这里收掉，否则该 provider 的加载态永久卡 true。
+      if (providerRequests.isCurrent(target, requestId)) {
+        setLoadingProviders((current) => (current[target] ? { ...current, [target]: false } : current))
+      }
     }
   }
 
