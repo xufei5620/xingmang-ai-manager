@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react'
 import { Eye, EyeOff, UserPlus, X } from 'lucide-react'
 import { dialogAriaProps, DialogBackdrop } from '../Dialog'
+import { privacyPolicyUrl, userAgreementUrl } from '../../types'
 import { validateEmail, validateRegisterForm, type AccountFieldErrors } from './validation'
 
 // Server-side throttle is 2 sends per 30s per IP (see
@@ -28,12 +29,11 @@ const VERIFICATION_CODE_COOLDOWN_SECONDS = 60
  * (sendingRef) -- the parent's call never throws, so the ref is released
  * unconditionally in .finally().
  *
- * "用户协议"/"隐私政策" are presented as plain text, matching how
- * WelcomePage.tsx's own footer currently shows them (inert labels, not yet
- * wired to a real destination anywhere in this app) -- there is no existing
- * external link to point the checkbox at, and wiring one up would mean
- * adding a new externalUrlAllowlist entry in main.ts (I12), which is out of
- * this task's scope.
+ * "用户协议"/"隐私政策" open the legal pages on the account domain via
+ * openExternal (userAgreementUrl/privacyPolicyUrl in relay-sites.ts, both
+ * I12-allowlisted in main.ts) -- 老板要求(2026-08-10)从原先的纯文本改为
+ * 可点击。The links live inside the checkbox <label>, so their click
+ * handler preventDefaults to keep the label from also toggling the box.
  */
 export function RegisterDialog({
   onClose,
@@ -74,6 +74,14 @@ export function RegisterDialog({
     // own, so re-arming it on every intermediate value would just tear down
     // and recreate the same timer 60 times for no behavioral difference.
   }, [codeCooldown > 0])
+
+  // Same preventDefault reasoning as LoginDialog's openLegalPage: the links
+  // sit inside the agreement <label> and must not toggle its checkbox.
+  const openLegalPage = (event: MouseEvent, url: string) => {
+    event.preventDefault()
+    event.stopPropagation()
+    void window.xingmang.openExternal(url)
+  }
 
   const clearError = (field: keyof AccountFieldErrors) => {
     setErrors((current) => (current[field] ? { ...current, [field]: undefined } : current))
@@ -182,7 +190,7 @@ export function RegisterDialog({
               type="email"
               value={email}
               onChange={(event) => { setEmail(event.target.value); clearError('email') }}
-              placeholder="you@example.com"
+              placeholder="you@qq.com"
               autoComplete="email"
             />
             {errors.email && <small className="field-error" role="alert">{errors.email}</small>}
@@ -216,7 +224,12 @@ export function RegisterDialog({
               checked={agreedToTerms}
               onChange={(event) => { setAgreedToTerms(event.target.checked); clearError('agreement') }}
             />
-            <span>我已阅读并同意<b>用户协议</b>和<b>隐私政策</b></span>
+            <span>
+              我已阅读并同意
+              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, userAgreementUrl)}>用户协议</button>
+              和
+              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, privacyPolicyUrl)}>隐私政策</button>
+            </span>
           </label>
           {errors.agreement && <small className="field-error" role="alert">{errors.agreement}</small>}
 

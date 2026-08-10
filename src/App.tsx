@@ -91,6 +91,7 @@ import {
   type PluginCatalog,
   type PlatformCapabilities,
   type ProviderId,
+  type RememberedAccountLogin,
   type RepositoryContext,
   type SkillItem,
   type SystemSnapshot,
@@ -158,6 +159,38 @@ function App() {
   // user closes without submitting can never leak a fake prefill into a
   // later, unrelated login.
   const [accountLoginPrefill, setAccountLoginPrefill] = useState('')
+  // 「记住密码」凭据(account:get-remembered-login,主进程 safeStorage 加密
+  // 落盘)。只在登录弹窗打开期间驻留内存:弹窗一关立即清空,不让明文密码
+  // 常驻渲染进程(I3 的精神)。ready 门控弹窗渲染,保证 LoginDialog 挂载时
+  // 初始值已就位——useState 的 initial 只读一次,晚到的预填不会显示。
+  const [rememberedLogin, setRememberedLogin] = useState<RememberedAccountLogin | null>(null)
+  const [rememberedLoginReady, setRememberedLoginReady] = useState(false)
+  useEffect(() => {
+    if (accountDialog !== 'login') {
+      setRememberedLogin(null)
+      setRememberedLoginReady(false)
+      return undefined
+    }
+    let active = true
+    window.xingmang.getRememberedAccountLogin()
+      .catch(() => null)
+      .then((value) => {
+        if (!active) return
+        setRememberedLogin(value)
+        setRememberedLoginReady(true)
+      })
+    return () => { active = false }
+  }, [accountDialog])
+  // 注册/找回密码流程会预填 identifier;只有它与记住的账号一致(或为空)
+  // 时才带出记住的密码,避免"账号是 A、密码是 B 的"错配预填。
+  const loginDialogSeed = () => {
+    const matchesRemembered = accountLoginPrefill === '' || accountLoginPrefill === rememberedLogin?.identifier
+    return {
+      identifier: accountLoginPrefill || rememberedLogin?.identifier || '',
+      password: matchesRemembered && rememberedLogin ? rememberedLogin.password : '',
+      remember: Boolean(matchesRemembered && rememberedLogin),
+    }
+  }
   // "写入星芒 Key" 确认弹窗（阶段 A 加固）：登录/注册成功后，若已装 CLI 非空，
   // 把候选列表放进这里而不是直接写入；null = 弹窗不显示。见 offerCliProvisioning。
   const [provisioningTargets, setProvisioningTargets] = useState<ProviderId[] | null>(null)
@@ -613,46 +646,35 @@ function App() {
         const codexReadiness = await window.xingmang.getCodexReadiness()
         if (!active) return
         const codexReady = codexReadiness.hasApiKey && codexReadiness.matchesRelay
-        if (!codexReady) {
-          // account:get-session is awaited alongside the config read here --
-          // not left to the separate mount-only effect further down (which
-          // still owns hydrating accountSession/accountBalance for the
-          // sidebar) -- because the welcome/onboarding gate right below must
-          // never decide before it knows whether this is an authenticated
-          // returning user. main.ts's accountSessionReady guarantee (see
-          // ipc.ts's account:get-session handler doc comment) means this
-          // call only resolves once any startup session restore has already
-          // settled, so there is no earlier "unknown" window to race here.
-          // A rejection falls back to "not authenticated" rather than
-          // aborting startup -- resolveInitialAppView then applies the
-          // pre-existing config-only rule, same as before accounts existed.
-          // Scoped to this branch alone (not hoisted above the codexReady
-          // check) so the already-fully-configured fast path straight to
-          // 'dashboard' below never waits on it.
-          // Settings is read here too (not from the mount-only effect that
-          // hydrates it into state) for the same reason as the session above:
-          // the welcome/onboarding gate must see the persisted relaySiteId
-          // now, and this effect's closure still holds the initial default
-          // (relaySiteId undefined) until that other effect lands. A manual-key
-          // site has no account backend to welcome the user into, so it routes
-          // straight to onboarding.
-          const [latestConfig, startupAccountSession, startupSettings] = await Promise.all([
-            loadConfig(),
-            window.xingmang.getAccountSession().catch(() => null),
-            window.xingmang.getSettings().catch(() => null),
-          ])
-          if (!active) return
-          setScanning(false)
-          setAppView(resolveInitialAppView(
-            latestConfig,
-            startupAccountSession?.authenticated ?? false,
-            previewOnboarding,
-            shouldShowManualKeyEntry(resolveRelaySite(startupSettings?.relaySiteId).accountBackend),
-          ))
+        // account:get-session is awaited ahead of BOTH startup destinations
+        // now -- 登录先行(老板拍板 2026-08-10):账号站点上未登录时,即使
+        // 四个 CLI 早已配置齐全也不再直进工作台,先到欢迎页登录/注册,
+        // 登录成功后 handleAccountLoginSubmit 才转工作台并触发自动写 Key。
+        // 快速通道因此必须先知道登录态,旧的"只在 !codexReady 分支里读
+        // session"的作用域优化不再成立。main.ts 的 accountSessionReady
+        // 保证(见 ipc.ts account:get-session 的 doc comment)使这次读取
+        // 不会撞上启动恢复的中间态;读取失败一律按未登录处理——宁可多要求
+        // 登录一次,不能把未登录用户放进工作台。relaySiteId 直接复用上面
+        // 已读进闭包的 startupSettings,不再重复读一次设置。
+        const startupAccountSession = await window.xingmang.getAccountSession().catch(() => null)
+        if (!active) return
+        const authenticated = startupAccountSession?.authenticated ?? false
+        const manualKeySite = shouldShowManualKeyEntry(
+          resolveRelaySite(startupSettings?.relaySiteId).accountBackend,
+        )
+        if (codexReady && (authenticated || manualKeySite)) {
+          setAppView('dashboard')
+          void scan()
           return
         }
-        setAppView('dashboard')
-        void scan()
+        // The welcome/onboarding paths never run the initial scan, so config
+        // must be hydrated here for the onboarding flow (same side effect
+        // and failure semantics as before: a loadConfig rejection falls to
+        // the catch below).
+        await loadConfig()
+        if (!active) return
+        setScanning(false)
+        setAppView(resolveInitialAppView(authenticated, previewOnboarding, manualKeySite))
       } catch (error) {
         if (!active) return
         setToast({ type: 'error', message: errorMessage(error) })
@@ -995,12 +1017,17 @@ function App() {
   // Login handler matches either (see LoginDialog.tsx's own comment), and
   // its request field is always literally named `username` regardless of
   // which kind of value it holds.
-  const handleAccountLoginSubmit = async (values: { identifier: string; password: string }) => {
+  const handleAccountLoginSubmit = async (values: { identifier: string; password: string; remember: boolean }) => {
     if (accountBusyRef.current) return
     accountBusyRef.current = true
     setAccountBusy(true)
     try {
       await window.xingmang.loginAccount({ username: values.identifier, password: values.password })
+      // 只在登录确实成功后才落盘「记住密码」;勾选取消则清除已存凭据。
+      // 失败静默:记不住密码不该打断刚成功的登录。
+      void window.xingmang.setRememberedAccountLogin(
+        values.remember ? { identifier: values.identifier, password: values.password } : null,
+      ).catch(() => undefined)
       const account = await refreshAccountSession()
       setAccountDialog(null)
       setAccountLoginPrefill('')
@@ -1420,13 +1447,15 @@ function App() {
           onLogin={() => setAccountDialog('login')}
           onHaveCode={() => setAppView('onboarding')}
         />
-        {accountDialog === 'login' && (
+        {accountDialog === 'login' && rememberedLoginReady && (
           <LoginDialog
             onClose={() => setAccountDialog(null)}
             onSwitchToRegister={() => setAccountDialog('register')}
             onSubmit={(values) => void handleAccountLoginSubmit(values)}
             onForgotPassword={() => setAccountDialog('forgot-password')}
-            initialIdentifier={accountLoginPrefill}
+            initialIdentifier={loginDialogSeed().identifier}
+            initialPassword={loginDialogSeed().password}
+            initialRemember={loginDialogSeed().remember}
             isSubmitting={accountBusy}
           />
         )}
@@ -1787,13 +1816,15 @@ function App() {
         />
       )}
 
-      {accountDialog === 'login' && (
+      {accountDialog === 'login' && rememberedLoginReady && (
         <LoginDialog
           onClose={() => setAccountDialog(null)}
           onSwitchToRegister={() => setAccountDialog('register')}
           onSubmit={(values) => void handleAccountLoginSubmit(values)}
           onForgotPassword={() => setAccountDialog('forgot-password')}
-          initialIdentifier={accountLoginPrefill}
+          initialIdentifier={loginDialogSeed().identifier}
+          initialPassword={loginDialogSeed().password}
+          initialRemember={loginDialogSeed().remember}
           isSubmitting={accountBusy}
         />
       )}

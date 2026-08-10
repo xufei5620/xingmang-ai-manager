@@ -1,5 +1,4 @@
 import type {
-  AppConfigSummary,
   CodexDesktopInstallProgress,
   DesktopAppStatus,
   PlatformCapabilities,
@@ -105,47 +104,35 @@ export function codexDesktopLaunchDecision(
 }
 
 /**
- * Drives the post-loading welcome-page gate: a brand-new install (no
- * provider ever configured with a valid 星芒 relay key) sees the welcome
- * page first; anyone who has configured at least one CLI before — even a
- * different one than whichever the caller is about to route to onboarding
- * for — is a returning user and must skip straight past it. Checking across
- * every provider (not just the one the caller is currently gating) is what
- * keeps existing users from being re-shown the welcome page.
- */
-export function shouldShowWelcome(config: AppConfigSummary | null): boolean {
-  if (!config) return false
-  return Object.values(config.providers).every((provider) => !provider.hasApiKey || !provider.matchesRelay)
-}
-
-/**
- * Decides between the two non-dashboard startup destinations (App.tsx's
- * initialize() effect only reaches this once getCodexReadiness() itself came
- * back negative -- codexReady already routes straight to 'dashboard' before
- * this is ever called). An authenticated 星芒 account is itself returning-user
- * evidence, same in spirit as shouldShowWelcome()'s "any provider configured"
- * check: W2 (docs/ACCOUNT-PLAN.md) persists login across restarts specifically
- * so a signed-in user is never made to sit through the marketing welcome page
- * again, even on a machine where no CLI has been configured yet (e.g. right
- * after signing in on a fresh install, before onboarding has run). Preview
- * mode still wins outright, unchanged from before this function existed.
+ * Decides the non-dashboard startup destination. 登录先行(老板拍板
+ * 2026-08-10):在有账号后端的站点上,未登录用户一律先到欢迎页走
+ * 登录/注册——即使这台机器的 CLI 早已配置齐全,也不再凭"配过任一
+ * CLI"直进(旧 shouldShowWelcome 规则已废),这样登录成功后账号侧才能
+ * 为用户自动签发 API Key。An authenticated 星芒 account routes to
+ * onboarding/dashboard as before -- W2 (docs/ACCOUNT-PLAN.md) persists
+ * login across restarts specifically so a signed-in user is never made to
+ * sit through the welcome page again. A manual-key site has no account
+ * backend to log into, so it keeps the pre-account behavior. Preview mode
+ * still wins outright.
+ *
+ * App.tsx's initialize() also consults this gate's inputs before its
+ * codexReady fast path: dashboard is only entered directly when the login
+ * requirement is already satisfied (authenticated or manual-key site).
  */
 export function resolveInitialAppView(
-  config: AppConfigSummary | null,
   accountAuthenticated: boolean,
   previewOnboarding: boolean,
   // True when the active relay site has no account backend of its own
   // (relay-sites.ts's accountBackend: 'manual-key'). The welcome page's whole
   // value proposition is "注册/登录星芒账号", which such a site does not
   // offer -- routing straight to onboarding avoids stranding the user on a
-  // sign-up screen they cannot act on. Optional with a false default so every
-  // existing caller (and the account-station path) keeps its old behavior.
+  // sign-up screen they cannot act on.
   manualKeySite = false,
 ): 'welcome' | 'onboarding' {
   if (previewOnboarding) return 'onboarding'
   if (accountAuthenticated) return 'onboarding'
   if (manualKeySite) return 'onboarding'
-  return shouldShowWelcome(config) ? 'welcome' : 'onboarding'
+  return 'welcome'
 }
 
 /**
@@ -153,10 +140,8 @@ export function resolveInitialAppView(
  * override `initialTheme()` reads below. main.ts only ever appends
  * `?onboardingPreview=1` to the renderer URL when its own preview flag is
  * set — which itself requires `!app.isPackaged` — so this reads back false
- * in any packaged build. Preview mode also clears the in-memory config
- * (see system-service.ts buildConfigSummary), which would otherwise make
- * shouldShowWelcome() true and strand the preview behind the welcome page;
- * the startup gate reads this flag to route straight to onboarding instead.
+ * in any packaged build. resolveInitialAppView() lets this flag win over
+ * every other rule so the preview can never strand behind the welcome page.
  */
 export function initialOnboardingPreview(search: string): boolean {
   return new URLSearchParams(search).get('onboardingPreview') === '1'

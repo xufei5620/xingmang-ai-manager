@@ -31,7 +31,7 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没
 | `electron/`（主进程，全部特权操作） | 63 个模块 | 60 个 |
 | `src/`（渲染进程，纯 UI） | 62 个文件 | 25 个 |
 
-约 6.3 万行（含测试），**1455 个 vitest 用例**（85 个文件；Linux 上实测 1278 过 / 177 因平台门控跳过，Windows 跳过的是另一批），`npm test` 还串带 scripts/e2e 下的 node --test 套件（79 例）。IPC：**86 个 invoke 通道**（另有 5 个画布宿主通道在 86 之外，见 I4 例外）。
+约 6.3 万行（含测试），**1455 个 vitest 用例**（85 个文件；Linux 上实测 1278 过 / 177 因平台门控跳过，Windows 跳过的是另一批），`npm test` 还串带 scripts/e2e 下的 node --test 套件（79 例）。IPC：**88 个 invoke 通道**（另有 5 个画布宿主通道在 88 之外，见 I4 例外）。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
@@ -82,7 +82,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `main.ts` (669) — 生命周期、`BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true`）、`xingmang://` 与 `xingmang-canvas://` 协议注册、外链白名单、装配服务
 - `ipc-contract.ts` (522) — **唯一的跨进程类型真相源**。`as const satisfies` 强制通道表与接口对齐
 - `preload.ts` (231) — sandbox 桥接层。因 `sandbox:true` 无法 require 本地模块，**手工复制了一份通道表**
-- `ipc.ts` (1220) — 86 个处理器注册与参数校验
+- `ipc.ts` (1220) — 88 个处理器注册与参数校验
 
 **命令执行与安全边界**（这里是本项目真正的复杂度所在）
 - `command-runner.ts` (1120) — **全仓最关键模块**。`runCommand` 硬编码 `shell:false`；`trustedCommandEnvironment` 剥离 60+ 可注入环境变量并重建机器级 PATH；`findExecutable` 不调用 `where`/`which`/shell

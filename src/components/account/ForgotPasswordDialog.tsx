@@ -209,7 +209,7 @@ export function ForgotPasswordDialog({
             <input
               value={email}
               onChange={(event) => updateEmail(event.target.value)}
-              placeholder="you@example.com"
+              placeholder="you@qq.com"
               autoComplete="email"
             />
             {errors.email && <small className="field-error" role="alert">{errors.email}</small>}

@@ -1,7 +1,8 @@
-import { useState, type FormEvent } from 'react'
+import { useState, type FormEvent, type MouseEvent } from 'react'
 import { Eye, EyeOff, LogIn, X } from 'lucide-react'
 import { dialogAriaProps, DialogBackdrop } from '../Dialog'
-import { validateLoginForm, type AccountFieldErrors } from './validation'
+import { privacyPolicyUrl, userAgreementUrl } from '../../types'
+import { validateAgreement, validateLoginForm, type AccountFieldErrors } from './validation'
 
 /**
  * Login form. The identifier field accepts either a username or an email
@@ -11,17 +12,23 @@ import { validateLoginForm, type AccountFieldErrors } from './validation'
  * field "Username or Email" (web/src/features/auth/sign-in/components/
  * user-auth-form.tsx) -- confirmed by reading QuantumNous/new-api's own
  * source rather than assumed. Submitting calls the parent's onSubmit with
- * the validated {identifier, password} once client-side validation passes;
- * the parent (App.tsx) performs the real window.xingmang.loginAccount call
- * (sending `identifier` as new-api's `username` request field, whichever
- * kind of value it holds) and owns the in-flight/error state, passed back
- * down as isSubmitting.
+ * the validated {identifier, password, remember} once client-side
+ * validation (including the terms-agreement checkbox, 老板要求 2026-08-10)
+ * passes; the parent (App.tsx) performs the real
+ * window.xingmang.loginAccount call (sending `identifier` as new-api's
+ * `username` request field, whichever kind of value it holds), owns the
+ * in-flight/error state passed back down as isSubmitting, and persists or
+ * clears the "记住密码" credential based on `remember` -- only after the
+ * login actually succeeded.
  *
  * initialIdentifier pre-fills the field -- used by App.tsx right after a
  * successful registration, so the user only has to type their password
  * again instead of retyping the username they just chose. It is reused the
  * same way after a successful password reset (see ForgotPasswordDialog and
- * App.tsx's handleForgotPasswordDone).
+ * App.tsx's handleForgotPasswordDone). initialPassword/initialRemember seed
+ * from the safeStorage-backed "记住密码" store; App.tsx only mounts this
+ * dialog once that read has settled, because these are useState initials
+ * and a later arrival would never show.
  */
 export function LoginDialog({
   onClose,
@@ -29,17 +36,23 @@ export function LoginDialog({
   onSubmit,
   onForgotPassword,
   initialIdentifier = '',
+  initialPassword = '',
+  initialRemember = false,
   isSubmitting = false,
 }: {
   onClose: () => void
   onSwitchToRegister: () => void
-  onSubmit: (values: { identifier: string; password: string }) => void
+  onSubmit: (values: { identifier: string; password: string; remember: boolean }) => void
   onForgotPassword: () => void
   initialIdentifier?: string
+  initialPassword?: string
+  initialRemember?: boolean
   isSubmitting?: boolean
 }) {
   const [identifier, setIdentifier] = useState(initialIdentifier)
-  const [password, setPassword] = useState('')
+  const [password, setPassword] = useState(initialPassword)
+  const [remember, setRemember] = useState(initialRemember)
+  const [agreedToTerms, setAgreedToTerms] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<AccountFieldErrors>({})
 
@@ -47,13 +60,23 @@ export function LoginDialog({
     setErrors((current) => (current[field] ? { ...current, [field]: undefined } : current))
   }
 
+  // The legal links sit inside the agreement <label>: preventDefault stops
+  // the label's default activation from also toggling the checkbox.
+  const openLegalPage = (event: MouseEvent, url: string) => {
+    event.preventDefault()
+    event.stopPropagation()
+    void window.xingmang.openExternal(url)
+  }
+
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (isSubmitting) return
     const nextErrors = validateLoginForm({ identifier, password })
+    const agreementError = validateAgreement(agreedToTerms)
+    if (agreementError) nextErrors.agreement = agreementError
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
-    onSubmit({ identifier: identifier.trim(), password })
+    onSubmit({ identifier: identifier.trim(), password, remember })
   }
 
   return (
@@ -82,7 +105,7 @@ export function LoginDialog({
             <input
               value={identifier}
               onChange={(event) => { setIdentifier(event.target.value); clearError('identifier') }}
-              placeholder="用户名或 you@example.com"
+              placeholder="用户名或 you@qq.com"
               autoComplete="username"
             />
             {errors.identifier && <small className="field-error" role="alert">{errors.identifier}</small>}
@@ -108,6 +131,30 @@ export function LoginDialog({
             </div>
             {errors.password && <small className="field-error" role="alert">{errors.password}</small>}
           </label>
+
+          <label className="account-agreement">
+            <input
+              type="checkbox"
+              checked={remember}
+              onChange={(event) => setRemember(event.target.checked)}
+            />
+            <span>记住密码</span>
+          </label>
+
+          <label className="account-agreement">
+            <input
+              type="checkbox"
+              checked={agreedToTerms}
+              onChange={(event) => { setAgreedToTerms(event.target.checked); clearError('agreement') }}
+            />
+            <span>
+              我已阅读并同意
+              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, userAgreementUrl)}>用户协议</button>
+              和
+              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, privacyPolicyUrl)}>隐私政策</button>
+            </span>
+          </label>
+          {errors.agreement && <small className="field-error" role="alert">{errors.agreement}</small>}
 
           <p className="account-dialog-switch">
             忘记密码？

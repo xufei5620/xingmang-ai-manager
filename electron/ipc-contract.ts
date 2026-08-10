@@ -98,7 +98,13 @@ import type {
 export { providerIds } from './catalog'
 // Zero-Node-dependency value export, same precedent as providerIds above
 // (I6) -- relay-sites.ts only imports from catalog.ts, itself zero-dep.
-export { defaultRelaySiteId, relaySites, resolveRelaySite } from './relay-sites'
+export {
+  defaultRelaySiteId,
+  privacyPolicyUrl,
+  relaySites,
+  resolveRelaySite,
+  userAgreementUrl,
+} from './relay-sites'
 
 export type ProviderId = CatalogProviderId
 export type { RelaySite } from './relay-sites'
@@ -156,6 +162,18 @@ export type PlatformCapabilities = MainPlatformCapabilities
 export type AccountStatus = NewApiAccountStatus
 export type AccountProfile = NewApiAccountProfile
 export type AccountLoginInput = NewApiLoginInput
+
+/**
+ * The "记住密码" credential the login dialog can ask the main process to
+ * keep (safeStorage-encrypted at rest, see account-credential-store.ts).
+ * Plaintext deliberately crosses IPC only on its two dedicated channels --
+ * the config:reveal-api-key precedent (I3): an explicit, single-purpose
+ * channel rather than a field piggybacking on ordinary queries.
+ */
+export interface RememberedAccountLogin {
+  identifier: string
+  password: string
+}
 export type AccountLoginResult = NewApiLoginResult
 export type AccountRegisterInput = NewApiRegisterInput
 export type AccountSessionState = NewApiSessionState
@@ -394,6 +412,8 @@ export interface XingmangInvokeContract {
     AccountChangePasswordResult
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
+  getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [], RememberedAccountLogin | null>
+  setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null], void>
 }
 
 export interface XingmangEventContract {
@@ -511,6 +531,8 @@ export const ipcInvokeChannels = {
   revokeAccountKey: 'account:revoke-key',
   changeAccountPassword: 'account:change-password',
   openCanvasWindow: 'canvas:open',
+  getRememberedAccountLogin: 'account:get-remembered-login',
+  setRememberedAccountLogin: 'account:set-remembered-login',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }

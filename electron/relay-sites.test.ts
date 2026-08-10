@@ -1,6 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { providerBaseUrls, providerIds } from './catalog'
-import { defaultRelaySiteId, relaySiteExternalUrls, relaySites, resolveRelaySite } from './relay-sites'
+import {
+  defaultRelaySiteId,
+  privacyPolicyUrl,
+  relayApiProbeBaseUrl,
+  relaySiteExternalUrls,
+  relaySites,
+  resolveRelaySite,
+  userAgreementUrl,
+} from './relay-sites'
 
 describe('relay site registry', () => {
   it('ships the solov and sub2api sites, both reusing catalog providerBaseUrls by reference', () => {
@@ -80,9 +88,11 @@ describe('relay site registry', () => {
       // websiteUrl/keysPageUrl strings, no accountBaseUrl of its own), so
       // this set is unchanged even though relaySites now has two entries --
       // the dedup in relaySiteExternalUrls is what keeps it that way.
+      // Updated 2026-08-10: 官网/取 Key 页移到账号域 xm.solov.cc(老板拍板),
+      // api.solov.cc 从此只作 CLI 中转、不再出现在外链白名单里。
       expect(relaySiteExternalUrls(relaySites)).toEqual([
-        'https://api.solov.cc',
-        'https://api.solov.cc/keys',
+        'https://xm.solov.cc',
+        'https://xm.solov.cc/keys',
         'https://xm.solov.cc/wallet',
       ])
     })
@@ -104,6 +114,27 @@ describe('relay site registry', () => {
 
     it('returns an empty list for an empty site list', () => {
       expect(relaySiteExternalUrls([])).toEqual([])
+    })
+  })
+
+  describe('relayApiProbeBaseUrl', () => {
+    it('derives the probe origin from the relay CLI base, not the user-facing website', () => {
+      // The 官网 moved to the account domain (xm.solov.cc) on 2026-08-10;
+      // connectivity probes must keep hitting the relay the CLIs call.
+      for (const site of relaySites) {
+        expect(relayApiProbeBaseUrl(site)).toBe('https://api.solov.cc')
+        expect(relayApiProbeBaseUrl(site)).not.toBe(site.websiteUrl)
+      }
+    })
+  })
+
+  describe('legal page URLs', () => {
+    it('serves the agreement and privacy pages from the account domain over https', () => {
+      for (const url of [userAgreementUrl, privacyPolicyUrl]) {
+        const parsed = new URL(url)
+        expect(parsed.protocol).toBe('https:')
+        expect(parsed.origin).toBe('https://xm.solov.cc')
+      }
     })
   })
 })

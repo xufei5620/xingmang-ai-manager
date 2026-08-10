@@ -4,9 +4,8 @@ import {
   isDetectionFailed,
   resolveInitialAppView,
   sameDesktopStatus,
-  shouldShowWelcome,
 } from './app-shared'
-import type { AppConfigSummary, DesktopAppStatus, ProviderConfigSummary, ProviderId } from './types'
+import type { DesktopAppStatus } from './types'
 
 const baseDesktopStatus: DesktopAppStatus = {
   installed: true,
@@ -18,36 +17,6 @@ const baseDesktopStatus: DesktopAppStatus = {
   mirrorUpdateAvailable: false,
   mirrorError: null,
   running: false,
-}
-
-function unconfiguredProvider(overrides: Partial<ProviderConfigSummary> = {}): ProviderConfigSummary {
-  return {
-    baseUrl: 'https://api.solov.cc',
-    actualBaseUrl: 'https://api.solov.cc',
-    exists: false,
-    hasApiKey: false,
-    matchesRelay: false,
-    apiKeyPreview: null,
-    model: '',
-    dataDirectory: '',
-    dataDirectoryExists: false,
-    files: [],
-    updatedAt: null,
-    ...overrides,
-  }
-}
-
-function configWith(overrides: Partial<Record<ProviderId, ProviderConfigSummary>>): AppConfigSummary {
-  return {
-    workspace: '',
-    providers: {
-      claude: unconfiguredProvider(),
-      codex: unconfiguredProvider(),
-      grok: unconfiguredProvider(),
-      gemini: unconfiguredProvider(),
-      ...overrides,
-    },
-  }
 }
 
 describe('isDetectionFailed', () => {
@@ -86,63 +55,27 @@ describe('sameDesktopStatus', () => {
   })
 })
 
-describe('shouldShowWelcome', () => {
-  it('does not show the welcome page while config is still unknown, preserving the pre-existing startup flow', () => {
-    expect(shouldShowWelcome(null)).toBe(false)
-  })
-
-  it('shows the welcome page for a brand-new install with no provider configured', () => {
-    expect(shouldShowWelcome(configWith({}))).toBe(true)
-  })
-
-  it('skips the welcome page for a returning user who configured a different provider than the one being onboarded', () => {
-    const config = configWith({ claude: unconfiguredProvider({ hasApiKey: true, matchesRelay: true }) })
-    expect(shouldShowWelcome(config)).toBe(false)
-  })
-
-  it('skips the welcome page once the gated provider itself is configured', () => {
-    const config = configWith({ codex: unconfiguredProvider({ hasApiKey: true, matchesRelay: true }) })
-    expect(shouldShowWelcome(config)).toBe(false)
-  })
-
-  it('still shows the welcome page when a key exists but points at a non-xingmang relay', () => {
-    const config = configWith({ codex: unconfiguredProvider({ hasApiKey: true, matchesRelay: false }) })
-    expect(shouldShowWelcome(config)).toBe(true)
-  })
-})
-
 describe('resolveInitialAppView', () => {
-  it('shows the welcome page for a brand-new, signed-out install once config has loaded', () => {
-    expect(resolveInitialAppView(configWith({}), false, false)).toBe('welcome')
+  // 登录先行(老板拍板 2026-08-10):账号站点上未登录一律先到欢迎页,
+  // 不再凭"配过任一 CLI"跳过——所以这里不需要 config 形参。
+
+  it('sends every signed-out user on an account-backed site to the welcome page (login-first)', () => {
+    expect(resolveInitialAppView(false, false)).toBe('welcome')
   })
 
-  it('does not show the welcome page while config is still unknown, preserving the pre-existing startup flow', () => {
-    expect(resolveInitialAppView(null, false, false)).toBe('onboarding')
-  })
-
-  it('skips the welcome page for a signed-out but already-configured returning user', () => {
-    const config = configWith({ claude: unconfiguredProvider({ hasApiKey: true, matchesRelay: true }) })
-    expect(resolveInitialAppView(config, false, false)).toBe('onboarding')
-  })
-
-  it('skips the welcome page for an authenticated user even with zero providers configured', () => {
-    expect(resolveInitialAppView(configWith({}), true, false)).toBe('onboarding')
-  })
-
-  it('skips the welcome page for an authenticated user even before config has loaded', () => {
-    expect(resolveInitialAppView(null, true, false)).toBe('onboarding')
+  it('routes an authenticated user to onboarding, never re-showing the welcome page', () => {
+    expect(resolveInitialAppView(true, false)).toBe('onboarding')
   })
 
   it('lets dev preview mode win outright regardless of authentication state', () => {
-    expect(resolveInitialAppView(configWith({}), false, true)).toBe('onboarding')
-    expect(resolveInitialAppView(configWith({}), true, true)).toBe('onboarding')
+    expect(resolveInitialAppView(false, true)).toBe('onboarding')
+    expect(resolveInitialAppView(true, true)).toBe('onboarding')
   })
 
   it('skips the welcome page on a manual-key site, which has no account to welcome the user into', () => {
-    // The signed-out brand-new-install case (first test above) would show
-    // welcome; the manual-key flag overrides it because a manual-key site
-    // offers no register/login for that page to lead to.
-    expect(resolveInitialAppView(configWith({}), false, false, true)).toBe('onboarding')
+    // A manual-key site offers no register/login for the welcome page to
+    // lead to, so the login-first rule cannot apply there.
+    expect(resolveInitialAppView(false, false, true)).toBe('onboarding')
   })
 })
 

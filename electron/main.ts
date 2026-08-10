@@ -13,6 +13,7 @@ import {
   type WebContents,
 } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { AccountCredentialStore } from './account-credential-store'
 import { AccountSessionStore, restoreAccountSessionOnStartup } from './account-session-store'
 import { AppSettingsStore, type AppTheme } from './app-settings'
 import { ConfigBackupStore } from './backups'
@@ -31,7 +32,7 @@ import { RuntimeLogStore } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
-import { relaySiteExternalUrls, relaySites, resolveRelaySite } from './relay-sites'
+import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, userAgreementUrl } from './relay-sites'
 import {
   createDiagnosticsExport,
   runDiagnostics,
@@ -93,6 +94,9 @@ const nonSiteExternalUrlAllowlist = [
 const externalUrlAllowlist = [
   ...nonSiteExternalUrlAllowlist,
   ...relaySiteExternalUrls(relaySites),
+  // 注册/登录弹窗与欢迎页脚的用户协议/隐私政策链接(I12 全等匹配)。
+  userAgreementUrl,
+  privacyPolicyUrl,
 ] as const
 
 // The infinite-canvas build's own two runtime-visible external destinations
@@ -546,6 +550,10 @@ if (!hasSingleInstanceLock) {
       path.join(managerDataDirectory, 'account-session.dat'),
       safeStorage,
     )
+    const accountCredentialStore = new AccountCredentialStore(
+      path.join(managerDataDirectory, 'account-credentials.dat'),
+      safeStorage,
+    )
     // Constructed explicitly (rather than left to registerIpcHandlers' own
     // internal default) so the canvas window controller below can share this
     // exact instance -- it is the one place that knows whether the user is
@@ -601,6 +609,7 @@ if (!hasSingleInstanceLock) {
       systemService,
       accountService,
       accountSessionReady,
+      accountCredentials: accountCredentialStore,
       sessionsService,
       providerSessionsService,
       backupStore,

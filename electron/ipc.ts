@@ -55,6 +55,7 @@ import {
   type NewApiResetPasswordInput,
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
+import type { RememberedAccountLogin } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
@@ -102,6 +103,15 @@ export interface IpcRegistrationOptions {
   // has to depend on canvas-window.ts's full surface just to delegate one
   // button click.
   openCanvasWindow(): Promise<void>
+  // Backing store for the "记住密码" credential (account-credential-store.ts,
+  // safeStorage-encrypted). Optional the same way accountService is: main.ts
+  // always passes the real store; when absent (tests that predate it), the
+  // read reports "nothing remembered" and writes are dropped.
+  accountCredentials?: {
+    read(): Promise<RememberedAccountLogin | null>
+    save(identifier: string, password: string): Promise<void>
+    clear(): Promise<void>
+  }
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
 }
 
@@ -425,6 +435,18 @@ function parseAccountLoginInput(value: unknown): NewApiLoginInput {
   }
 }
 
+// null = 用户取消勾选「记住密码」,清除已存凭据。字段上限与登录入参一致。
+function parseRememberedAccountLogin(value: unknown): RememberedAccountLogin | null {
+  if (value === null) return null
+  if (!isRecord(value)) throw new Error('记住密码信息格式错误')
+  const identifier = requiredString(value.identifier, '用户名或邮箱', 128)
+  // Same as parseAccountLoginInput: forward the password exactly as typed.
+  if (typeof value.password !== 'string' || !value.password || value.password.length > 256) {
+    throw new Error('密码格式错误')
+  }
+  return { identifier, password: value.password }
+}
+
 // Deliberately permissive (not full RFC 5322): catches the typos users
 // actually make without rejecting a valid-but-unusual address. Mirrors
 // src/components/account/validation.ts's EMAIL_PATTERN, kept as a separate
@@ -658,6 +680,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:revoke-key': '星芒账号 Key 撤销',
   'account:change-password': '星芒账号密码修改',
   'canvas:open': '无限画布窗口打开',
+  'account:get-remembered-login': '记住的登录凭据读取',
+  'account:set-remembered-login': '记住的登录凭据更新',
 }
 
 const quietIpcSuccessChannels = new Set([
@@ -708,6 +732,12 @@ const quietIpcSuccessChannels = new Set([
   // channel outright removes the need to keep re-verifying that invariant
   // every time either function gains a new per-channel branch (I13).
   'account:change-password',
+  // get-remembered-login's result and set-remembered-login's input both carry
+  // a plaintext password (the "记住密码" credential) -- the same dedicated
+  // reveal-channel pattern as config:reveal-api-key, and the same I3/I13
+  // reason to keep both fully out of the runtime log.
+  'account:get-remembered-login',
+  'account:set-remembered-login',
 ])
 
 function providerDisplayName(value: unknown): string | null {
@@ -1245,6 +1275,21 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.changePassword(parseAccountChangePasswordInput(input))
   ))
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
+  registerTrustedHandler('account:get-remembered-login', async () => {
+    const remembered = await options.accountCredentials?.read() ?? null
+    // Re-shape to exactly the contract DTO -- the persisted record carries a
+    // version field that has no business crossing IPC.
+    return remembered ? { identifier: remembered.identifier, password: remembered.password } : null
+  })
+  registerTrustedHandler('account:set-remembered-login', async (_event, input: unknown) => {
+    const parsed = parseRememberedAccountLogin(input)
+    if (!options.accountCredentials) return
+    if (parsed) {
+      await options.accountCredentials.save(parsed.identifier, parsed.password)
+    } else {
+      await options.accountCredentials.clear()
+    }
+  })
 
   return () => {
     unsubscribeUpdates()

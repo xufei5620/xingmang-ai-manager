@@ -4,7 +4,7 @@ import logoUrl from '../../../assets/icon.png'
 import logoWhiteUrl from '../../../assets/icon-white.png'
 import type { ThemeMode } from '../../app-shared'
 import { providers } from '../../provider-meta'
-import type { ProviderId } from '../../types'
+import { privacyPolicyUrl, userAgreementUrl, type ProviderId } from '../../types'
 
 interface ConstellationNode {
   id: ProviderId
@@ -191,9 +191,17 @@ export function WelcomePage({
           <div className="welcome-foot-left">
             <span>{`© ${new Date().getFullYear()} 星芒 AI`}</span>
             <span className="welcome-foot-dot">·</span>
-            <span>用户协议</span>
+            <button
+              type="button"
+              className="account-inline-link"
+              onClick={() => void window.xingmang.openExternal(userAgreementUrl)}
+            >用户协议</button>
             <span className="welcome-foot-dot">·</span>
-            <span>隐私政策</span>
+            <button
+              type="button"
+              className="account-inline-link"
+              onClick={() => void window.xingmang.openExternal(privacyPolicyUrl)}
+            >隐私政策</button>
             <span className="welcome-foot-dot">·</span>
             <span>帮助文档</span>
             <span className="welcome-foot-dot">·</span>

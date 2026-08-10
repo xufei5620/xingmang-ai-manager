@@ -5710,6 +5710,23 @@ button:disabled {
   accent-color: var(--color-success-accent);
 }
 
+/* 用户协议/隐私政策的行内链接钮(登录/注册弹窗与欢迎页脚共用)。按钮可能
+   位于 label 内,组件侧 preventDefault 防止点击误触同一 label 的勾选框。 */
+.account-inline-link {
+  padding: 0;
+  color: var(--color-accent-text);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font-size: inherit;
+  font-weight: var(--font-weight-semibold);
+}
+
+.account-inline-link:hover {
+  color: var(--color-accent-hover);
+  text-decoration: underline;
+}
+
 /* ProvisioningConfirmDialog's per-CLI checkbox rows: plain .operation-row
    (36px icon / 1fr copy / auto control grid, same as MaintenancePage's CLI
    list) wrapped in a <label> so clicking anywhere on the row toggles it. */

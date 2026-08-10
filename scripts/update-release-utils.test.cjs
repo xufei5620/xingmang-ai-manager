@@ -349,7 +349,7 @@ test('electron-builder production config requires signing and stays hardened', (
   assert.equal(config.nsis.shortcutName, '星芒AI管理工具')
   assert.equal(config.nsis.uninstallDisplayName, '星芒AI管理工具')
   assert.equal(config.nsis.perMachine, true)
-  assert.equal(config.nsis.allowToChangeInstallationDirectory, false)
+  assert.equal(config.nsis.allowToChangeInstallationDirectory, true)
   assert.equal(config.asar, true)
   assert.deepEqual(config.electronFuses, {
     runAsNode: false,

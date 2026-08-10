@@ -145,7 +145,10 @@ module.exports = {
   nsis: {
     oneClick: false,
     perMachine: true,
-    allowToChangeInstallationDirectory: false,
+    // 老板拍板(2026-08-10):安装时允许用户自选目录。默认仍是 Program
+    // Files(管理员才可写);用户改到普通用户可写的目录时,会失去"装好的
+    // 程序文件不可被本机低权限进程篡改"这层保护——该取舍已明确告知并接受。
+    allowToChangeInstallationDirectory: true,
     createDesktopShortcut: true,
     createStartMenuShortcut: true,
     shortcutName: '星芒AI管理工具',

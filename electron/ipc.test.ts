@@ -161,6 +161,11 @@ function register(
   runtimeLogDirectory = 'C:\\app-data\\logs',
   transformSystemSnapshot?: (snapshot: never) => never,
   accountService = accountServiceStub(),
+  accountCredentials?: {
+    read: () => Promise<{ version: 1; identifier: string; password: string } | null>
+    save: (identifier: string, password: string) => Promise<void>
+    clear: () => Promise<void>
+  },
 ) {
   const extensionService = {
     getRepositoryContext: vi.fn(() => ({ repositoryRoot: 'C:\\workspace' })),
@@ -221,6 +226,7 @@ function register(
   const dispose = registerIpcHandlers({
     systemService: service,
     accountService,
+    accountCredentials,
     sessionsService: sessionsService as never,
     providerSessionsService: providerSessionsService as never,
     backupStore: {
@@ -667,6 +673,44 @@ describe('registerIpcHandlers', () => {
       await expect(handler(trustedEvent())).resolves.toBeUndefined()
       expect(openCanvasWindow).toHaveBeenCalledTimes(1)
       expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+    } finally {
+      dispose()
+    }
+  })
+
+  it('round-trips the remembered login through the injected credential store, strips the version field, and validates the set payload', async () => {
+    const stored = { version: 1 as const, identifier: 'boss@qq.com', password: 'hunter2!' }
+    const accountCredentials = {
+      read: vi.fn(async () => stored),
+      save: vi.fn(async () => undefined),
+      clear: vi.fn(async () => undefined),
+    }
+    const { dispose } = register(undefined, undefined, undefined, undefined, accountCredentials)
+    try {
+      const get = electronMocks.handlers.get('account:get-remembered-login')!
+      // The persisted record's version field must not cross IPC (I3-style
+      // exact-DTO discipline on a channel that already carries a secret).
+      await expect(get(trustedEvent())).resolves.toEqual({ identifier: 'boss@qq.com', password: 'hunter2!' })
+
+      const set = electronMocks.handlers.get('account:set-remembered-login')!
+      await expect(set(trustedEvent(), { identifier: ' boss@qq.com ', password: 'hunter2!' })).resolves.toBeUndefined()
+      expect(accountCredentials.save).toHaveBeenCalledWith('boss@qq.com', 'hunter2!')
+      await expect(set(trustedEvent(), null)).resolves.toBeUndefined()
+      expect(accountCredentials.clear).toHaveBeenCalledTimes(1)
+      await expect(set(trustedEvent(), { identifier: '', password: 'x' })).rejects.toThrow()
+      await expect(set(trustedEvent(), { identifier: 'a', password: '' })).rejects.toThrow('密码格式错误')
+    } finally {
+      dispose()
+    }
+  })
+
+  it('degrades the remembered login to null and drops writes when no credential store is injected', async () => {
+    const { dispose } = register()
+    try {
+      await expect(electronMocks.handlers.get('account:get-remembered-login')!(trustedEvent())).resolves.toBeNull()
+      await expect(
+        electronMocks.handlers.get('account:set-remembered-login')!(trustedEvent(), { identifier: 'a', password: 'b' }),
+      ).resolves.toBeUndefined()
     } finally {
       dispose()
     }

@@ -13,7 +13,7 @@ import {
 } from './command-runner'
 import { defaultProviderConfigRoots, type ProviderConfigRoots } from './codex-home'
 import { inspectProviderConfig, type NativeConfigInspection } from './config-files'
-import { resolveRelaySite, type RelaySite } from './relay-sites'
+import { relayApiProbeBaseUrl, resolveRelaySite, type RelaySite } from './relay-sites'
 import { resolveCliCommand, resolveCliInstallation } from './tool-installation'
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
@@ -785,7 +785,7 @@ export async function runDiagnostics(dependencies: DiagnosticsDependencies): Pro
       title: '星芒 AI 网络',
       run: async (signal) => {
         if (!fetchImpl) throw new Error('当前运行时不支持 fetch')
-        const endpoint = `${relaySite.websiteUrl}/`
+        const endpoint = `${relayApiProbeBaseUrl(relaySite)}/`
         const response = await fetchImpl(endpoint, {
           method: 'HEAD',
           redirect: 'error',

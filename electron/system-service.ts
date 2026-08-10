@@ -67,7 +67,7 @@ import { fetchGrokStableVersion } from './grok-update'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
-import { resolveRelaySite } from './relay-sites'
+import { relayApiProbeBaseUrl, resolveRelaySite } from './relay-sites'
 import {
   ensureDarwinGrokAgentLink,
   inspectDarwinGrokVerifiedSelection,
@@ -2836,7 +2836,7 @@ export function createSystemService(
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
     try {
-      const response = await fetch(`${activeSite.websiteUrl}/v1/models`, {
+      const response = await fetch(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
         headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
         redirect: 'error',
         signal: controller.signal,

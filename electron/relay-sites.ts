@@ -53,8 +53,11 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
     // 命名已由老板拍板(2026-08-10):品牌统一「星芒AI」,括号内仅保留账号模式的最小区分
     label: '星芒AI（账号登录）',
     providerBaseUrls,
-    websiteUrl: 'https://api.solov.cc',
-    keysPageUrl: 'https://api.solov.cc/keys',
+    // 官网/取 Key 页统一指向账号域 xm.solov.cc(老板拍板 2026-08-10:
+    // api.solov.cc 只作 CLI 中转,所有面向用户的网页入口走 xm)。中转连通
+    // 性探测不再借用 websiteUrl,改走 relayApiProbeBaseUrl(见下)。
+    websiteUrl: 'https://xm.solov.cc',
+    keysPageUrl: 'https://xm.solov.cc/keys',
     accountBackend: 'new-api',
     accountBaseUrl: 'https://xm.solov.cc',
   },
@@ -62,11 +65,30 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
     id: 'sub2api',
     label: '星芒AI（Key 直连）',
     providerBaseUrls,
-    websiteUrl: 'https://api.solov.cc',
-    keysPageUrl: 'https://api.solov.cc/keys',
+    websiteUrl: 'https://xm.solov.cc',
+    keysPageUrl: 'https://xm.solov.cc/keys',
     accountBackend: 'manual-key',
   },
 ]
+
+// 用户协议/隐私政策页,挂在账号域下。注册/登录弹窗与欢迎页脚的协议文案
+// 点击后经 openExternal 打开;main.ts 把这两个地址并入外链白名单(I12,
+// href 全等)。改地址时两处会一起变,不会出现"可点但被白名单拦下"。
+export const userAgreementUrl = 'https://xm.solov.cc/terms'
+export const privacyPolicyUrl = 'https://xm.solov.cc/privacy'
+
+/**
+ * The relay's own API origin, for connectivity probes (the models-list fetch
+ * in system-service.ts and diagnostics' HEAD check). websiteUrl doubled as
+ * this until the marketing pages moved to the account domain (2026-08-10) --
+ * probes must keep hitting the relay domain the CLIs actually call, so they
+ * derive from providerBaseUrls instead of the user-facing URL. claude's base
+ * is the bare relay origin (no /v1 suffix, unlike grok's), which is exactly
+ * the shape both probe call sites append their paths to.
+ */
+export function relayApiProbeBaseUrl(site: RelaySite): string {
+  return site.providerBaseUrls.claude
+}
 
 export const defaultRelaySiteId: string = relaySites[0].id
 
