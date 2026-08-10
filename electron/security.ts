@@ -54,8 +54,16 @@ function localFileUrlToPath(url: URL, rendererRoot: string): string | null {
   }
 }
 
+// The renderer root alone decides the path semantics, never the host. Leaving
+// the non-Windows branch on the default `path` made a POSIX root resolve with
+// backslashes when the process happened to run on Windows, so the same policy
+// object produced different answers per host and could only be tested on one.
+function pathApiForRoot(rendererRoot: string): path.PlatformPath {
+  return isWindowsPath(rendererRoot) ? path.win32 : path.posix
+}
+
 function isPathWithinRoot(candidate: string, rendererRoot: string): boolean {
-  const pathApi = isWindowsPath(rendererRoot) ? path.win32 : path
+  const pathApi = pathApiForRoot(rendererRoot)
   const root = pathApi.resolve(rendererRoot)
   const relative = pathApi.relative(root, pathApi.resolve(candidate))
   return relative === ''
@@ -99,8 +107,7 @@ function packagedProtocolUrlToPath(
     const decodedPath = decodeURIComponent(target.pathname)
     if (decodedPath.includes('\0') || decodedPath.includes('\\')) return null
     const relativePath = decodedPath.replace(/^\/+/, '') || 'index.html'
-    const pathApi = isWindowsPath(rendererRoot) ? path.win32 : path
-    const resolved = pathApi.resolve(rendererRoot, relativePath)
+    const resolved = pathApiForRoot(rendererRoot).resolve(rendererRoot, relativePath)
     return isPathWithinRoot(resolved, rendererRoot) ? resolved : null
   } catch {
     return null
