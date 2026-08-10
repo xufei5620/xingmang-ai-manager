@@ -18,6 +18,7 @@
 
 ## ② 从这里继续(断点)
 
+- **⚠️ 当前工作分支**:本会话(2026-08-10 起)因云端会话的分支约束,工作在 `claude/xingmang-site-naming-batches-xwms7a`(基于 `local/integration` 的 `5a8479d`,main 为其祖先)。`local/integration` 本身未动;老板确认后可快进合并该分支回 `local/integration`。
 - **双后端 W1→W3 已全链闭合并通过 Opus 对抗审查**。审查七面向里主路径全部攻击失败(粘贴 Key 全链 I13/I3、写入链 I9、契约 T1 零变化、solov 回归面均给了证据),揪出的发现已全部处置:F1(manual-key 降级不完整,3 个 new-api 入口仍可达)→ `5e1f953`;F2-F5(键控制字符校验/解析错误脱敏/诊断读侧站点化/切站刷新快照)→ `ce38200`;F6(字面量 nit)按不镀金跳过。
 - **W3 审查遗留的一个功能缺口(非安全,待后续波次)**:manual-key 用户即便已把 Key 写进 CLI,**画布仍拿不到 token**——`canvas-auth.ts` 的 `isAccountAuthenticated()` 为假时 `revealConfiguredRelayKey()` 不执行。画布对 manual-key 站点的适配需要单独一波(让画布也能用已写入的 relay key),不阻塞批次3。
 - **⚠️ 本会话输出可靠性告警**:后期出现 inline 命令 echo 被污染(git rev-parse 返回过互相矛盾的 SHA、臆造的提交消息)。**真实状态一律以 `git log`/文件回读为准,不信任 inline echo**。验证方法:命令结果重定向到 scratchpad 文件、用 Read 工具回读。若新会话接手,`git log --oneline` 与 `git rev-parse origin/local/integration` 是可信锚点。
@@ -30,6 +31,7 @@
 
 | 提交 | 内容 | 门槛 |
 |---|---|---|
+| `a55058b` | **站点命名定稿(①栏第1项拍板落地)**:统一「星芒AI」,下拉两项「星芒AI（账号登录）」/「星芒AI（Key 直连）」 | tc 0 错;vitest 1328/0 失败 |
 | `ce38200` | **W3 审查硬化 F2-F5**:键控制字符校验(拒 NUL 防明文入日志)、配置解析错误脱敏(I13)、诊断读侧站点化(W3a 漏接点)、切站后刷新 config 快照。F6 nit 跳过 | tc 0 错;vitest 1328/0 失败 |
 | `5e1f953` | **W3 审查 F1**:补全 manual-key 站点账号入口降级(handleConfigureCliKey/欢迎页/NextStepsCard 三入口),堵住跨站点凭据混线 | tc 0 错;vitest 1328/0 失败 |
 | `7cf281b` | **W3b 收官**:设置页站点下拉、账号区 manual-key 降级(不主动登出)、PasteKeyDialog + 纯校验、写入链拆 writeCliKeyForInstalledClis 复用两路径、canvas-window origin 收口(F4 3/3)、**零新增 IPC 通道**。+24 测试 | tc 0 错;vitest 1327/0 失败(基线+24);compile 过 |
