@@ -4,7 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import type { SystemService } from './system-service'
 import type { UpdaterService } from './updater'
-import type { AppSettings } from './app-settings'
+import { mergeAppSettings, type AppSettings, type AppSettingsUpdate } from './app-settings'
 import type { NativeConfigSaveResult } from './config-files'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels } from './ipc-contract'
@@ -45,16 +45,21 @@ vi.mock('electron', () => ({
 
 import { registerIpcHandlers } from './ipc'
 
+const stubStoredConfig: AppSettings = {
+  version: 2,
+  workspace: 'C:\\workspace',
+  theme: 'dark',
+  checkUpdatesOnStartup: true,
+  runDiagnosticsOnStartup: false,
+}
+
 function serviceStub(): SystemService {
   return {
-    readStoredConfig: vi.fn((): AppSettings => ({
-      version: 2,
-      workspace: 'C:\\workspace',
-      theme: 'dark',
-      checkUpdatesOnStartup: true,
-      runDiagnosticsOnStartup: false,
-    })),
-    writeStoredConfig: vi.fn(async () => undefined),
+    readStoredConfig: vi.fn((): AppSettings => ({ ...stubStoredConfig })),
+    // Mirrors the real store's merge so the settings:save tests below assert
+    // the actual round-trip contract (absent field = keep the stored value),
+    // not a hand-rolled approximation of it.
+    updateStoredConfig: vi.fn(async (update: AppSettingsUpdate) => mergeAppSettings(stubStoredConfig, update)),
     inspectCodexReadiness: vi.fn(() => ({ hasApiKey: true, matchesRelay: true })),
     getConfig: vi.fn(() => ({ workspace: 'C:\\workspace', providers: {} })) as never,
     revealApiKey: vi.fn(() => 'sk-known-secret-value'),
@@ -299,7 +304,7 @@ describe('registerIpcHandlers', () => {
     const { service, extensionService, providerExtensionService } = register()
 
     await expect(electronMocks.handlers.get('workspace:choose')!(trustedEvent())).resolves.toBe('D:\\project')
-    expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ workspace: 'D:\\project' }))
+    expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, workspace: 'D:\\project' })
     expect(extensionService.setRepositoryContext).toHaveBeenCalledWith('D:\\project')
     expect(providerExtensionService.setRepositoryRoot).toHaveBeenCalledWith('D:\\project')
     expect(electronMocks.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
@@ -900,7 +905,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     })
   })
 
-  describe('parseSettings (settings:save)', () => {
+  describe('parseSettingsUpdate (settings:save)', () => {
     it('accepts a fully valid settings payload and trims the workspace', async () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
@@ -918,7 +923,56 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
       })
-      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ workspace: 'D:\\workspace' }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ workspace: 'D:\\workspace' }))
+    })
+
+    it('accepts a narrow single-field update and merges it over the stored record (①栏11)', async () => {
+      // Regression for the stale-whole-record race: the sidebar "更多" toggle
+      // now sends ONLY its own field, so an in-flight full save can no longer
+      // be reverted by it (and vice versa) regardless of landing order.
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        sidebarMoreExpanded: true,
+      })).resolves.toEqual({
+        version: 2,
+        workspace: 'C:\\workspace',
+        theme: 'dark',
+        checkUpdatesOnStartup: true,
+        runDiagnosticsOnStartup: false,
+        sidebarMoreExpanded: true,
+      })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, sidebarMoreExpanded: true })
+    })
+
+    it('keeps the stored relaySiteId when an update does not mention it', async () => {
+      const service = serviceStub()
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) =>
+        mergeAppSettings({ ...stubStoredConfig, relaySiteId: 'sub2api' }, update))
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        theme: 'light',
+      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'sub2api', theme: 'light' }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, theme: 'light' })
+    })
+
+    it('forwards mirrorPolicy auto as the explicit clear marker (absent must mean keep)', async () => {
+      const service = serviceStub()
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) =>
+        mergeAppSettings({ ...stubStoredConfig, mirrorPolicy: 'official-first' }, update))
+      register(service)
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), {
+        version: 2,
+        mirrorPolicy: 'auto',
+      })).resolves.not.toHaveProperty('mirrorPolicy')
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, mirrorPolicy: 'auto' })
     })
 
     it('round-trips a known relaySiteId through settings:save (persisted and echoed back)', async () => {
@@ -937,12 +991,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         runDiagnosticsOnStartup: false,
         relaySiteId: 'solov',
       })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'solov' }))
-      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'solov' }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'solov' }))
     })
 
     it('round-trips the sub2api relaySiteId through settings:save too, not just the default solov site', async () => {
       // W3b: relay-sites.ts grew a second entry (731db23); this pins that
-      // parseSettings/writeStoredConfig accept it end to end through the
+      // parseSettingsUpdate/updateStoredConfig accept it end to end through the
       // same real IPC handler as the 'solov' regression test above, not just
       // the one entry that happened to also be the registry's default id.
       const { service } = register()
@@ -956,7 +1010,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         runDiagnosticsOnStartup: false,
         relaySiteId: 'sub2api',
       })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'sub2api' }))
-      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'sub2api' }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'sub2api' }))
     })
 
     it('drops an unknown relaySiteId instead of failing the whole save', async () => {
@@ -972,11 +1026,19 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         relaySiteId: 'not-a-real-site',
       }) as Record<string, unknown>
       expect(saved.relaySiteId).toBeUndefined()
-      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.not.objectContaining({ relaySiteId: expect.anything() }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.not.objectContaining({ relaySiteId: expect.anything() }))
     })
 
-    it('round-trips a pinned mirrorPolicy and drops unknown values without failing the save (2.4)', async () => {
-      const { service } = register()
+    it('round-trips a pinned mirrorPolicy and degrades unknown values to keep-the-stored-policy (2.4)', async () => {
+      // The stub merges against a base that already pins 'official-first' so
+      // this test documents the real keep-persisted degrade contract: an
+      // unknown policy string is dropped from the update (never forwarded)
+      // and the stored pin therefore survives in the echoed record -- it is
+      // NOT reset to auto the way the old whole-record parser did.
+      const service = serviceStub()
+      vi.mocked(service.updateStoredConfig).mockImplementation(async (update) =>
+        mergeAppSettings({ ...stubStoredConfig, mirrorPolicy: 'official-first' }, update))
+      register(service)
       const handler = electronMocks.handlers.get('settings:save')!
 
       await expect(handler(trustedEvent(), {
@@ -987,18 +1049,17 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         runDiagnosticsOnStartup: false,
         mirrorPolicy: 'official-first',
       })).resolves.toEqual(expect.objectContaining({ mirrorPolicy: 'official-first' }))
-      expect(service.writeStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ mirrorPolicy: 'official-first' }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ mirrorPolicy: 'official-first' }))
 
-      const saved = await handler(trustedEvent(), {
+      await expect(handler(trustedEvent(), {
         version: 2,
         workspace: 'D:\\workspace',
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
         mirrorPolicy: 'fastest-first',
-      }) as Record<string, unknown>
-      expect(saved.mirrorPolicy).toBeUndefined()
-      expect(service.writeStoredConfig).toHaveBeenLastCalledWith(expect.not.objectContaining({ mirrorPolicy: expect.anything() }))
+      })).resolves.toEqual(expect.objectContaining({ mirrorPolicy: 'official-first' }))
+      expect(service.updateStoredConfig).toHaveBeenLastCalledWith(expect.not.objectContaining({ mirrorPolicy: expect.anything() }))
     })
 
     it('rejects a non-record payload', async () => {

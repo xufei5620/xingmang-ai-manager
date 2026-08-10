@@ -1,4 +1,4 @@
-import type { AppSettings, AppTheme as StoredAppTheme } from './app-settings'
+import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
   ConfigBackupReason,
@@ -128,6 +128,7 @@ export type SystemSnapshot = MainSystemSnapshot
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
 export type AppSettingsV2 = AppSettings
+export type AppSettingsV2Update = AppSettingsUpdate
 export type RepositoryContext = CodexRepositoryContext
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
@@ -304,7 +305,7 @@ export interface XingmangInvokeContract {
     MultiProviderSessionExportResult | null
   >
   getSettings: IpcInvokeDefinition<'settings:get', [], AppSettingsV2>
-  saveSettings: IpcInvokeDefinition<'settings:save', [settings: AppSettingsV2], AppSettingsV2>
+  saveSettings: IpcInvokeDefinition<'settings:save', [settings: AppSettingsV2Update], AppSettingsV2>
   runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [], DiagnosticsReport>
   exportDiagnostics: IpcInvokeDefinition<'diagnostics:export', [], { outputPath: string } | null>
   getRuntimeLogs: IpcInvokeDefinition<'runtime-logs:list', [limit?: number], RuntimeLogSnapshot>

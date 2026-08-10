@@ -4,7 +4,9 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
   defaultAppSettings,
+  mergeAppSettings,
   readAppSettings,
+  updateAppSettings,
   writeAppSettings,
   type AppSettings,
 } from './app-settings'
@@ -250,5 +252,85 @@ describe('application settings persistence', () => {
       settings({ workspace: 'D:\\Replacement' }),
     )).rejects.toThrow('单链接普通文件')
     expect(fs.readFileSync(victim, 'utf8')).toBe(original)
+  })
+})
+
+describe('field-wise settings updates (①栏11)', () => {
+  it('merges an update over the persisted record, leaving unmentioned fields alone', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({
+      relaySiteId: 'sub2api',
+      mirrorPolicy: 'official-first',
+      sidebarMoreExpanded: true,
+    }))
+
+    const merged = await updateAppSettings(filePath, { version: 2, theme: 'light' })
+
+    expect(merged).toEqual(settings({
+      theme: 'light',
+      relaySiteId: 'sub2api',
+      mirrorPolicy: 'official-first',
+      sidebarMoreExpanded: true,
+    }))
+    expect(readAppSettings(filePath)).toEqual(merged)
+  })
+
+  it('merges into the defaults when no settings file exists yet', async () => {
+    const filePath = temporarySettingsPath()
+
+    const merged = await updateAppSettings(filePath, { version: 2, theme: 'light' }, {}, 'D:\\Home')
+
+    expect(merged).toEqual({ ...defaultAppSettings('D:\\Home'), theme: 'light' })
+    expect(readAppSettings(filePath, 'D:\\Home')).toEqual(merged)
+  })
+
+  it('clears the pinned mirrorPolicy via the explicit auto marker, and only via it', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ mirrorPolicy: 'mirror-first' }))
+
+    // An unrelated update must keep the pinned policy...
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).mirrorPolicy).toBe('mirror-first')
+
+    // ...and 'auto' must clear it back to the absent/probe default.
+    const merged = await updateAppSettings(filePath, { version: 2, mirrorPolicy: 'auto' })
+    expect(merged.mirrorPolicy).toBeUndefined()
+    expect(readAppSettings(filePath)).not.toHaveProperty('mirrorPolicy')
+  })
+
+  it('clears sidebarMoreExpanded with an explicit false, back to the omitted default', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ sidebarMoreExpanded: true }))
+
+    const merged = await updateAppSettings(filePath, { version: 2, sidebarMoreExpanded: false })
+
+    expect(merged).not.toHaveProperty('sidebarMoreExpanded')
+    expect(readAppSettings(filePath)).not.toHaveProperty('sidebarMoreExpanded')
+  })
+
+  it('lets two concurrent single-intent updates both survive, regardless of order', async () => {
+    // The regression this whole feature exists for: update B is enqueued
+    // while update A is still in flight, and B's merge base must be the
+    // record A actually produced -- not the one both saw at call time.
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+
+    const first = updateAppSettings(filePath, { version: 2, relaySiteId: 'sub2api' })
+    const second = updateAppSettings(filePath, { version: 2, sidebarMoreExpanded: true })
+    await Promise.all([first, second])
+
+    expect(readAppSettings(filePath)).toEqual(settings({
+      relaySiteId: 'sub2api',
+      sidebarMoreExpanded: true,
+    }))
+  })
+
+  it('exposes the same merge as a pure function for the IPC layer to reuse', () => {
+    const base = settings({ relaySiteId: 'solov', mirrorPolicy: 'mirror-first' })
+
+    expect(mergeAppSettings(base, { version: 2 })).toEqual(base)
+    expect(mergeAppSettings(base, { version: 2, relaySiteId: 'sub2api' }).relaySiteId).toBe('sub2api')
+    expect(mergeAppSettings(base, { version: 2, mirrorPolicy: 'auto' })).not.toHaveProperty('mirrorPolicy')
+    expect(mergeAppSettings(base, { version: 2, workspace: 'D:\\Elsewhere' }).workspace).toBe('D:\\Elsewhere')
   })
 })

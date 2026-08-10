@@ -5,7 +5,7 @@ import { isIP } from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
-import { type AppSettings, AppSettingsStore, type MirrorPolicy } from './app-settings'
+import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type MirrorPolicy } from './app-settings'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
   defaultProviderConfigRoots,
@@ -583,7 +583,7 @@ export function grokManualUninstallResult(
 
 export interface SystemService {
   readStoredConfig(): AppSettings
-  writeStoredConfig(config: AppSettings): Promise<void>
+  updateStoredConfig(update: AppSettingsUpdate): Promise<AppSettings>
   inspectCodexReadiness(previewOnboarding: boolean): CodexReadinessStatus
   getConfig(previewOnboarding: boolean): AppConfigSummary
   revealApiKey(provider: ProviderId, previewOnboarding: boolean): string
@@ -2944,7 +2944,7 @@ export function createSystemService(
 
   return {
     readStoredConfig: () => store.read(),
-    writeStoredConfig: (config) => store.write(config),
+    updateStoredConfig: (update) => store.update(update),
     inspectCodexReadiness,
     getConfig: buildConfigSummary,
     revealApiKey,

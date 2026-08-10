@@ -48,6 +48,35 @@ export interface AppSettings {
   mirrorPolicy?: PinnedMirrorPolicy
 }
 
+/**
+ * Field-wise update applied on top of the persisted record (①栏11). Absent
+ * field = keep the persisted value. Two writers used to send whole records
+ * built from renderer state; whichever landed second silently reverted the
+ * other's fields (the settings page's relaySiteId vs the sidebar's "更多"
+ * toggle). With an update object each writer states only its own intent, so
+ * ordering no longer matters.
+ *
+ * Clearing semantics for the optional fields:
+ * - mirrorPolicy: the wire value 'auto' explicitly clears the pinned policy
+ *   back to "absent = probe the region" -- absence here means keep, so the
+ *   old "absent = auto" trick can no longer express a reset.
+ * - sidebarMoreExpanded: false clears (persisted as absent, the collapsed
+ *   default), true sets.
+ * - relaySiteId: no clear operation -- the site picker always names a
+ *   concrete site, and resolveRelaySite treats the default id and absence
+ *   identically.
+ */
+export interface AppSettingsUpdate {
+  version: 2
+  workspace?: string
+  theme?: AppTheme
+  checkUpdatesOnStartup?: boolean
+  runDiagnosticsOnStartup?: boolean
+  sidebarMoreExpanded?: boolean
+  relaySiteId?: string
+  mirrorPolicy?: MirrorPolicy
+}
+
 interface LegacyAppSettings {
   version: 1
   workspace: string
@@ -217,20 +246,60 @@ async function performAtomicSettingsWrite(
   }
 }
 
+function enqueueSettingsOperation<T>(filePath: string, operation: () => Promise<T>): Promise<T> {
+  const queueKey = path.resolve(filePath).toLowerCase()
+  const previous = writeQueues.get(queueKey) ?? Promise.resolve()
+  const result = previous.then(operation)
+  const tail = result.then(() => undefined, () => undefined)
+  writeQueues.set(queueKey, tail)
+  void tail.then(() => {
+    if (writeQueues.get(queueKey) === tail) writeQueues.delete(queueKey)
+  })
+  return result
+}
+
 export function writeAppSettings(
   filePath: string,
   settings: AppSettings,
   hooks: AppSettingsWriteHooks = {},
 ): Promise<void> {
-  const queueKey = path.resolve(filePath).toLowerCase()
-  const previous = writeQueues.get(queueKey) ?? Promise.resolve()
-  const operation = previous.then(() => performAtomicSettingsWrite(filePath, settings, hooks))
-  const tail = operation.then(() => undefined, () => undefined)
-  writeQueues.set(queueKey, tail)
-  void tail.then(() => {
-    if (writeQueues.get(queueKey) === tail) writeQueues.delete(queueKey)
+  return enqueueSettingsOperation(filePath, () => performAtomicSettingsWrite(filePath, settings, hooks))
+}
+
+export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): AppSettings {
+  const sidebarMoreExpanded = update.sidebarMoreExpanded ?? base.sidebarMoreExpanded ?? false
+  const relaySiteId = update.relaySiteId ?? base.relaySiteId
+  const mirrorPolicy = update.mirrorPolicy === 'auto'
+    ? undefined
+    : update.mirrorPolicy ?? base.mirrorPolicy
+  return {
+    version: 2,
+    workspace: update.workspace ?? base.workspace,
+    theme: update.theme ?? base.theme,
+    checkUpdatesOnStartup: update.checkUpdatesOnStartup ?? base.checkUpdatesOnStartup,
+    runDiagnosticsOnStartup: update.runDiagnosticsOnStartup ?? base.runDiagnosticsOnStartup,
+    ...(sidebarMoreExpanded ? { sidebarMoreExpanded: true as const } : {}),
+    ...(relaySiteId !== undefined ? { relaySiteId } : {}),
+    ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
+  }
+}
+
+export function updateAppSettings(
+  filePath: string,
+  update: AppSettingsUpdate,
+  hooks: AppSettingsWriteHooks = {},
+  homeDirectory = os.homedir(),
+): Promise<AppSettings> {
+  // The merge base is read INSIDE the queued slot, not at call time: two
+  // concurrent updates each merge against the record the previous write
+  // actually produced. Reading the base before enqueueing would reintroduce
+  // the stale-base race this function exists to close, just with a narrower
+  // window.
+  return enqueueSettingsOperation(filePath, async () => {
+    const merged = mergeAppSettings(readAppSettings(filePath, homeDirectory), update)
+    await performAtomicSettingsWrite(filePath, merged, hooks)
+    return merged
   })
-  return operation
 }
 
 export class AppSettingsStore {
@@ -245,5 +314,9 @@ export class AppSettingsStore {
 
   write(settings: AppSettings, hooks: AppSettingsWriteHooks = {}): Promise<void> {
     return writeAppSettings(this.filePath, settings, hooks)
+  }
+
+  update(update: AppSettingsUpdate, hooks: AppSettingsWriteHooks = {}): Promise<AppSettings> {
+    return updateAppSettings(this.filePath, update, hooks, this.homeDirectory)
   }
 }

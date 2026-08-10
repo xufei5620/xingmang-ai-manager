@@ -214,16 +214,18 @@ function App() {
     settings.theme,
     settings.checkUpdatesOnStartup,
     settings.runDiagnosticsOnStartup,
-    // relaySiteId is the one AppSettings field SettingsPage's own SettingsV2
-    // now mirrors (W3b's site dropdown) -- it needs to be in this deps list
-    // like every other field SettingsPage reads/writes, or a save that only
-    // changes the site (every other field byte-identical) would leave this
-    // memo returning the pre-save object reference and SettingsPage's
-    // reconcileSettingsDraft effect would never see the new value prop.
+    // relaySiteId/mirrorPolicy are AppSettings fields SettingsPage's own
+    // SettingsV2 mirrors (W3b's site dropdown, 2.4's mirror-policy dropdown)
+    // -- every field SettingsPage reads/writes needs to be in this deps list,
+    // or a save that only changes that field (every other field
+    // byte-identical) would leave this memo returning the pre-save object
+    // reference and SettingsPage's reconcileSettingsDraft effect would never
+    // see the new value prop.
     // sidebarMoreExpanded stays deliberately excluded: SettingsPage's own
-    // SettingsV2 type still has no field for it (see saveSettings' comment
-    // below on why it is re-stamped rather than round-tripped here).
+    // SettingsV2 type has no field for it, and settings:save's field-wise
+    // merge (①栏11) leaves it untouched by the page's saves.
     settings.relaySiteId,
+    settings.mirrorPolicy,
   ])
   // W3b adds the first site-switcher UI (SettingsPage's 服务站点 dropdown),
   // writing into settings.relaySiteId through the page's own normal save
@@ -509,32 +511,39 @@ function App() {
   }), [platformCapabilities, scan])
 
   const saveSettings = useCallback(async (next: AppSettingsV2) => {
-    // SettingsPage's own draft type doesn't know about sidebarMoreExpanded
-    // (it has no UI for it), so its submitted object can be stale relative to
-    // the sidebar's own toggle. Re-stamp the live value here rather than
-    // trusting the round trip, so an unrelated "保存设置" click never reverts
-    // a "更多" expand/collapse made while the Settings page was open.
-    const saved = await window.xingmang.saveSettings({ ...next, sidebarMoreExpanded: settings.sidebarMoreExpanded })
+    // settings:save 已是字段级合并（①栏11）：载荷缺省的字段主进程一律不动，
+    // 所以这里不再需要把 sidebarMoreExpanded 重新盖回去——设置页草稿本来
+    // 就不携带它。唯一要显式表达的是 mirrorPolicy 的「自动」：合并语义下
+    // 缺省 = 保持原值，设置页用缺省表达自动，需映射为显式 'auto' 清除标记。
+    const saved = await window.xingmang.saveSettings({ ...next, mirrorPolicy: next.mirrorPolicy ?? 'auto' })
     // Commit the persisted settings before refreshing derived data. A failure
     // below must not make a completed save look like a rejected one.
-    setSettings(saved)
-    setTheme(saved.theme)
+    // sidebarMoreExpanded / theme 保留内存态：前者本次保存不携带意图；后者
+    // 由预览即时 setTheme 且经 [theme] effect 即时持久化，采纳响应里的旧值
+    // 会把保存在途期间的一次主题切换闪跳回去并重新落盘（launch 流同款处理）。
+    setSettings((current) => ({
+      ...saved,
+      theme: current.theme,
+      sidebarMoreExpanded: current.sidebarMoreExpanded,
+    }))
     try {
       setRepositoryContext(await window.xingmang.getRepositoryContext())
       setToast({ type: 'success', message: '设置已保存' })
     } catch (error) {
       setToast({ type: 'error', message: `设置已保存，但工作目录信息刷新失败：${errorMessage(error)}` })
     }
-  }, [settings.sidebarMoreExpanded])
+  }, [])
 
   const toggleSidebarMoreExpanded = useCallback(() => {
     setSettings((current) => {
       const next = !current.sidebarMoreExpanded
+      // 只发窄更新（①栏11）：载荷仅携带本次交互的真实意图，哪怕设置页的
+      // 全量保存正在途中，两笔写入无论先后落盘都互不覆盖对方的字段。
       // 不用响应结果回填 setSettings：极快连点时慢响应可能晚于快响应落地，
       // 用旧值覆盖刚设好的乐观状态，会让侧边栏"更多"展开态出现瞬时闪跳。
       // 这里的乐观值已经是本次交互的真实意图，持久化失败也不影响当次会话
       // 内的展开/折叠，下次切换会带着最新状态重新保存、自愈。
-      void window.xingmang.saveSettings({ ...current, sidebarMoreExpanded: next }).catch(() => {})
+      void window.xingmang.saveSettings({ version: 2, sidebarMoreExpanded: next }).catch(() => {})
       return { ...current, sidebarMoreExpanded: next }
     })
   }, [])
@@ -1270,9 +1279,12 @@ function App() {
         window.xingmang.getRepositoryContext(),
       ])
       // 磁盘值不能覆盖内存主题，否则随后保存设置时可见主题会闪回旧值。
+      // sidebarMoreExpanded 同理：「更多」切换是 fire-and-forget 窄更新，
+      // 这里读到的磁盘快照可能早于其落盘，采纳会把乐观展开态闪跳回去。
       setSettings((current) => savedSettings.theme === current.theme
+        && savedSettings.sidebarMoreExpanded === current.sidebarMoreExpanded
         ? savedSettings
-        : { ...savedSettings, theme: current.theme })
+        : { ...savedSettings, theme: current.theme, sidebarMoreExpanded: current.sidebarMoreExpanded })
       setRepositoryContext(context)
       await window.xingmang.launchCli(provider, workspace)
       setToast({ type: 'success', message: `${providers[provider].name} 已在新窗口启动` })

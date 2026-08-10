@@ -7,7 +7,7 @@ import {
   type OpenDialogOptions,
   type WebContents,
 } from 'electron'
-import type { AppSettings, AppTheme } from './app-settings'
+import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import type { ConfigBackupStore } from './backups'
 import { cliCatalog, isProviderId } from './catalog'
 import { relaySites } from './relay-sites'
@@ -139,37 +139,48 @@ function stringArray(value: unknown, label: string, maximumItems = 128): string[
   return value.map((entry) => requiredString(entry, label))
 }
 
-function parseSettings(value: unknown): AppSettings {
+// settings:save carries a field-wise update since ①栏11: absent field = keep
+// the persisted value (the merge itself runs inside app-settings.ts's
+// serialized write queue). A field that IS present is validated exactly as
+// strictly as the old whole-record parser -- partial semantics loosen which
+// fields must appear, never what a present field may contain (I5).
+function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
   if (!isRecord(value) || value.version !== 2) throw new Error('设置格式错误')
-  if (value.theme !== 'light' && value.theme !== 'dark') throw new Error('主题格式错误')
-  for (const key of ['checkUpdatesOnStartup', 'runDiagnosticsOnStartup'] as const) {
-    if (typeof value[key] !== 'boolean') throw new Error('设置格式错误')
+  if (value.theme !== undefined && value.theme !== 'light' && value.theme !== 'dark') {
+    throw new Error('主题格式错误')
   }
+  const workspace = value.workspace === undefined
+    ? undefined
+    : requiredString(value.workspace, '工作目录', 32_767)
+  const checkUpdatesOnStartup = optionalBoolean(value.checkUpdatesOnStartup, '设置')
+  const runDiagnosticsOnStartup = optionalBoolean(value.runDiagnosticsOnStartup, '设置')
   const sidebarMoreExpanded = optionalBoolean(value.sidebarMoreExpanded, '侧边栏展开状态')
   // Same degrade-don't-throw semantics as app-settings.ts's parseRelaySiteId:
   // an unknown/stale site id must never brick saving the rest of the
   // settings, so it is dropped here (and would be dropped again by
   // app-settings.ts's own validation at persist time -- this hop is the
-  // defense-in-depth I5 copy, not the only line). Without this passthrough
-  // the renderer's settings:save round trip silently reset the site choice
-  // to the default on every save.
+  // defense-in-depth I5 copy, not the only line). Under merge semantics
+  // "dropped" now means "keep the persisted site" rather than "reset to the
+  // default", which is the safer degrade for a stale id.
   const relaySiteId = typeof value.relaySiteId === 'string'
     && relaySites.some((site) => site.id === value.relaySiteId)
     ? value.relaySiteId
     : undefined
-  // Same degrade-don't-throw passthrough as relaySiteId above: dropping an
-  // unknown policy string must never brick saving the rest of the settings,
-  // and app-settings.ts re-validates at persist time (defense-in-depth I5).
-  const mirrorPolicy = value.mirrorPolicy === 'mirror-first' || value.mirrorPolicy === 'official-first'
+  // Same degrade-don't-throw passthrough as relaySiteId above. 'auto' is the
+  // explicit clear marker (absence means keep, so it can no longer express a
+  // reset); unknown strings degrade to "keep the persisted policy".
+  const mirrorPolicy = value.mirrorPolicy === 'auto'
+    || value.mirrorPolicy === 'mirror-first'
+    || value.mirrorPolicy === 'official-first'
     ? value.mirrorPolicy
     : undefined
   return {
     version: 2,
-    workspace: requiredString(value.workspace, '工作目录', 32_767),
-    theme: value.theme,
-    checkUpdatesOnStartup: value.checkUpdatesOnStartup === true,
-    runDiagnosticsOnStartup: value.runDiagnosticsOnStartup === true,
-    ...(sidebarMoreExpanded === true ? { sidebarMoreExpanded: true as const } : {}),
+    ...(workspace !== undefined ? { workspace } : {}),
+    ...(value.theme !== undefined ? { theme: value.theme } : {}),
+    ...(checkUpdatesOnStartup !== undefined ? { checkUpdatesOnStartup } : {}),
+    ...(runDiagnosticsOnStartup !== undefined ? { runDiagnosticsOnStartup } : {}),
+    ...(sidebarMoreExpanded !== undefined ? { sidebarMoreExpanded } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
   }
@@ -903,7 +914,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       : await dialog.showOpenDialog(dialogOptions)
     if (result.canceled || !result.filePaths[0]) return null
     const workspace = result.filePaths[0]
-    await service.writeStoredConfig({ ...service.readStoredConfig(), workspace })
+    await service.updateStoredConfig({ version: 2, workspace })
     options.extensionService.setRepositoryContext(workspace)
     options.providerExtensionService.setRepositoryRoot(workspace)
     return workspace
@@ -985,8 +996,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('window:set-theme', async (event, theme: unknown) => {
     if (theme !== 'light' && theme !== 'dark') throw new Error('未知的主题')
     options.setWindowTheme(event.sender, theme)
-    const stored = service.readStoredConfig()
-    await service.writeStoredConfig({ ...stored, theme })
+    await service.updateStoredConfig({ version: 2, theme })
   })
   registerTrustedHandler('external:open', async (_event, url: unknown) => {
     if (
@@ -1044,8 +1054,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('settings:get', () => service.readStoredConfig())
   registerTrustedHandler('settings:save', async (event, settings: unknown) => {
-    const next = parseSettings(settings)
-    await service.writeStoredConfig(next)
+    const next = await service.updateStoredConfig(parseSettingsUpdate(settings))
+    // Side effects read the MERGED record, not the raw update: a narrow
+    // update (e.g. the sidebar toggle) carries no workspace/theme of its own.
     options.extensionService.setRepositoryContext(next.workspace)
     options.providerExtensionService.setRepositoryRoot(next.workspace)
     options.setWindowTheme(event.sender, next.theme)

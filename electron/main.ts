@@ -593,7 +593,10 @@ if (!hasSingleInstanceLock) {
       runtimeLog,
     })
 
-    await systemService.writeStoredConfig(systemService.readStoredConfig())
+    // Empty update = read the effective record (file, .bak, or defaults) and
+    // persist it durably -- same normalize-on-startup write as before the
+    // field-wise-merge change, routed through the same serialized queue.
+    await systemService.updateStoredConfig({ version: 2 })
     const unregisterIpcHandlers = registerIpcHandlers({
       systemService,
       accountService,

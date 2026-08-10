@@ -310,14 +310,33 @@ describe('createSystemService', () => {
     expect(providerCommandEnvironment('grok', { HOME: userHome }, codexEnv).CODEX_HOME).toBeUndefined()
   })
 
-  it('delegates settings reads and durable writes to AppSettingsStore', async () => {
+  it('delegates settings reads and merged durable updates to AppSettingsStore', async () => {
     const service = createService()
     const initial = service.readStoredConfig()
     expect(initial).toEqual(defaultAppSettings(initial.workspace))
 
-    await service.writeStoredConfig({ ...initial, theme: 'light' })
+    const merged = await service.updateStoredConfig({ version: 2, theme: 'light' })
 
+    expect(merged).toMatchObject({ theme: 'light', workspace: initial.workspace })
     expect(service.readStoredConfig()).toMatchObject({ theme: 'light', workspace: initial.workspace })
+  })
+
+  it('does not let a settings update revert fields it does not mention (①栏11 regression)', async () => {
+    // Two concurrent single-intent updates, fired without awaiting the first:
+    // the second one's merge base must be the record the first one actually
+    // produced, so BOTH survive regardless of queue order. Before the
+    // field-wise merge, whichever whole-record write landed second silently
+    // reverted the other's fields.
+    const service = createService()
+
+    const first = service.updateStoredConfig({ version: 2, relaySiteId: 'sub2api' })
+    const second = service.updateStoredConfig({ version: 2, sidebarMoreExpanded: true })
+    await Promise.all([first, second])
+
+    expect(service.readStoredConfig()).toMatchObject({
+      relaySiteId: 'sub2api',
+      sidebarMoreExpanded: true,
+    })
   })
 
   it('saves provider configuration under the injected roots', async () => {
