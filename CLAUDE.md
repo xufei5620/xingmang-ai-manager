@@ -6,11 +6,11 @@
 
 ## 1. 这是什么项目
 
-**星芒AI管理工具** — 面向 Windows 的 Electron 桌面客户端（Mac 适配进行中），是 AI API 中转服务商（`api.solov.cc`）发给付费客户的配套软件。
+**星芒AI管理工具** — 面向 Windows 的 Electron 桌面客户端（Mac 适配进行中），是 AI API 中转服务商（`xm.solov.cc`）发给付费客户的配套软件。
 
 **它解决的问题**：普通用户想用 Claude Code、Codex CLI 这类 AI 编程工具，得先装 Node.js、再用 npm 装 CLI、再手工编辑配置文件填 API Key 和 base URL——门槛太高。本工具把整条链路包成图形界面。
 
-**商业定位**：不是通用工具。四个 CLI 的 base URL 全部硬编码指向 `api.solov.cc`，onboarding 填的是"安装授权码"。**它的价值 = 降低客户接入门槛、减少客服成本。这条链路断了，用户就退款。**
+**商业定位**：不是通用工具。四个 CLI 的 base URL 全部硬编码指向 `xm.solov.cc`（2026-08-10 起中转与账号后端统一到同一 new-api 实例，原 `api.solov.cc` 退役），onboarding 填的是"安装授权码"。**它的价值 = 降低客户接入门槛、减少客服成本。这条链路断了，用户就退款。**
 
 **管理对象**：Claude Code（`@anthropic-ai/claude-code`）、Codex CLI（`@openai/codex`）、Gemini CLI（`@google/gemini-cli`）、Grok CLI（`@xai-official/grok`），外加 Codex 桌面端。
 
@@ -187,7 +187,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 这些操作会原子替换机器级目录，并发会互相看到半完成状态。同 key 复用同一 Promise，双击天然幂等。
 
 **I12. 渲染进程导航与外链必须过白名单，外链要 `href` 全等匹配。**
-刻意做全等而非前缀匹配，因为前缀匹配会被 `https://api.solov.cc.evil.com` 绕过。画布窗口同样受此约束（`canvas-window.ts` 的 `will-navigate` / `setWindowOpenHandler` 都过白名单）；充值页 `/wallet` 已在白名单内。
+刻意做全等而非前缀匹配，因为前缀匹配会被 `https://xm.solov.cc.evil.com` 绕过。画布窗口同样受此约束（`canvas-window.ts` 的 `will-navigate` / `setWindowOpenHandler` 都过白名单）；充值页 `/wallet` 已在白名单内。
 
 **I13. 日志、诊断、导出必须脱敏。**
 三层：`redactCommandText`（Bearer/sk-/api_key=）、`redactHomeDirectory`（路径→`%USERPROFILE%`）、`sanitizeValue`（按 key 名）。账号侧的 refresh cookie **值**也已并入 secrets 名单。

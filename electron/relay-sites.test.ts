@@ -88,8 +88,8 @@ describe('relay site registry', () => {
       // websiteUrl/keysPageUrl strings, no accountBaseUrl of its own), so
       // this set is unchanged even though relaySites now has two entries --
       // the dedup in relaySiteExternalUrls is what keeps it that way.
-      // Updated 2026-08-10: 官网/取 Key 页移到账号域 xm.solov.cc(老板拍板),
-      // api.solov.cc 从此只作 CLI 中转、不再出现在外链白名单里。
+      // Updated 2026-08-10: 官网/取 Key 页移到账号域 xm.solov.cc(老板拍板;
+      // 同日中转也统一切到 xm,见 catalog.ts),api.solov.cc 全面退出。
       expect(relaySiteExternalUrls(relaySites)).toEqual([
         'https://xm.solov.cc',
         'https://xm.solov.cc/keys',
@@ -118,12 +118,14 @@ describe('relay site registry', () => {
   })
 
   describe('relayApiProbeBaseUrl', () => {
-    it('derives the probe origin from the relay CLI base, not the user-facing website', () => {
-      // The 官网 moved to the account domain (xm.solov.cc) on 2026-08-10;
-      // connectivity probes must keep hitting the relay the CLIs call.
+    it('derives the probe origin from the relay CLI base the CLIs actually call', () => {
+      // 2026-08-10 the relay itself moved to xm.solov.cc too, so probe base
+      // and websiteUrl happen to coincide today -- the assertion that
+      // matters is the derivation source (providerBaseUrls, not the
+      // marketing URL), which keeps probes correct if they ever split again.
       for (const site of relaySites) {
-        expect(relayApiProbeBaseUrl(site)).toBe('https://api.solov.cc')
-        expect(relayApiProbeBaseUrl(site)).not.toBe(site.websiteUrl)
+        expect(relayApiProbeBaseUrl(site)).toBe(site.providerBaseUrls.claude)
+        expect(relayApiProbeBaseUrl(site)).toBe('https://xm.solov.cc')
       }
     })
   })

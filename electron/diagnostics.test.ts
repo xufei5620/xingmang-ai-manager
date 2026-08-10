@@ -32,10 +32,10 @@ function temporaryHome(): string {
 function inspection(provider: ProviderId, home: string, apiKey: string): NativeConfigInspection {
   const extension = provider === 'codex' || provider === 'grok' ? 'toml' : 'json'
   return {
-    baseUrl: provider === 'grok' ? 'https://api.solov.cc/v1' : 'https://api.solov.cc',
+    baseUrl: provider === 'grok' ? 'https://xm.solov.cc/v1' : 'https://xm.solov.cc',
     actualBaseUrl: provider === 'grok'
-      ? 'https://api.solov.cc/v1?token=must-not-leak'
-      : 'https://user:password@api.solov.cc/?token=must-not-leak',
+      ? 'https://xm.solov.cc/v1?token=must-not-leak'
+      : 'https://user:password@xm.solov.cc/?token=must-not-leak',
     exists: true,
     hasApiKey: true,
     matchesRelay: true,
@@ -175,7 +175,7 @@ describe('diagnostics', () => {
 
     const report = await runDiagnostics(input)
 
-    expect(fetchImpl).toHaveBeenCalledWith('https://api.solov.cc/', expect.objectContaining({
+    expect(fetchImpl).toHaveBeenCalledWith('https://xm.solov.cc/', expect.objectContaining({
       method: 'HEAD',
       redirect: 'error',
     }))

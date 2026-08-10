@@ -18,8 +18,8 @@ function buildSnapshot(installed: ProviderId[] = [], codexDesktopInstalled = fal
 
 function buildProviderConfig(overrides: Partial<ProviderConfigSummary> = {}): ProviderConfigSummary {
   return {
-    baseUrl: 'https://api.solov.cc',
-    actualBaseUrl: 'https://api.solov.cc',
+    baseUrl: 'https://xm.solov.cc',
+    actualBaseUrl: 'https://xm.solov.cc',
     exists: false,
     hasApiKey: false,
     matchesRelay: false,

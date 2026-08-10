@@ -118,8 +118,8 @@ async function createDarwinService(options: {
     durationMs: 1,
   }))
   const inspectConfig = vi.fn(() => ({
-    baseUrl: 'https://api.solov.cc',
-    actualBaseUrl: options.configured === false ? 'https://example.invalid' : 'https://api.solov.cc',
+    baseUrl: 'https://xm.solov.cc',
+    actualBaseUrl: options.configured === false ? 'https://example.invalid' : 'https://xm.solov.cc',
     exists: true,
     hasApiKey: true,
     matchesRelay: options.configured !== false,
@@ -281,8 +281,8 @@ describe('createSystemService', () => {
     const providerRoots: ProviderConfigRoots = { userHome, codexHome }
     const codexEnv = { ...process.env, HOME: userHome, CODEX_HOME: codexHome }
     const inspect = vi.fn((provider: Parameters<typeof providerConfigRoot>[0], roots: ProviderConfigRoots = providerRoots) => ({
-      baseUrl: 'https://api.solov.cc',
-      actualBaseUrl: 'https://api.solov.cc',
+      baseUrl: 'https://xm.solov.cc',
+      actualBaseUrl: 'https://xm.solov.cc',
       exists: true,
       apiKey: provider === 'codex' ? 'sk-codex' : 'sk-other',
       hasApiKey: true,
@@ -479,7 +479,7 @@ describe('createSystemService', () => {
       'gpt-5.6-terra',
     ])
     expect(fetchMock).toHaveBeenCalledWith(
-      'https://api.solov.cc/v1/models',
+      'https://xm.solov.cc/v1/models',
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer sk-test-value' }),
         redirect: 'error',

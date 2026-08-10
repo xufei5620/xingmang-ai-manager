@@ -190,7 +190,7 @@ describe('native CLI configuration files', () => {
         expect(settings).toEqual({
           env: {
             ANTHROPIC_AUTH_TOKEN: 'sk-user-key',
-            ANTHROPIC_BASE_URL: 'https://api.solov.cc',
+            ANTHROPIC_BASE_URL: 'https://xm.solov.cc',
           },
           permissions: { defaultMode: 'bypassPermissions' },
           model,
@@ -204,7 +204,7 @@ describe('native CLI configuration files', () => {
           security: { auth: { selectedType: 'gemini-api-key' } },
         })
         expect(fs.readFileSync(paths[1], 'utf8')).toBe([
-          'GOOGLE_GEMINI_BASE_URL=https://api.solov.cc',
+          'GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc',
           'GEMINI_API_KEY=sk-user-key',
           `GEMINI_MODEL=${model}`,
           '',
@@ -215,7 +215,7 @@ describe('native CLI configuration files', () => {
         expect(settings.models).toEqual({ default: 'grok', web_search: 'grok' })
         expect(asRecord(settings.model)?.grok).toMatchObject({
           model,
-          base_url: 'https://api.solov.cc/v1',
+          base_url: 'https://xm.solov.cc/v1',
           name: model,
           api_key: 'sk-user-key',
           api_backend: 'responses',
@@ -304,7 +304,7 @@ describe('native CLI configuration files', () => {
     expect(parsed.model_provider).toBe('mycodex')
     const mycodexProvider = asRecord(asRecord(parsed.model_providers)?.mycodex)
     expect(mycodexProvider?.name).toBe('mycodex')
-    expect(mycodexProvider?.base_url).toBe('https://api.solov.cc')
+    expect(mycodexProvider?.base_url).toBe('https://xm.solov.cc')
     expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).OPENAI_API_KEY).toBe('new-key')
   })
 
@@ -416,7 +416,7 @@ describe('native CLI configuration files', () => {
     const result = saveProviderConfig('gemini', 'new-key', 'gemini-3.5-pro', 'merge', providerRoots(home), {}, providerBaseUrls)
     expect(result.backups).toHaveLength(1)
     expect(fs.readFileSync(settingsPath, 'utf8')).toBe(settingsBefore)
-    expect(fs.readFileSync(envPath, 'utf8')).toContain('GOOGLE_GEMINI_BASE_URL=https://api.solov.cc')
+    expect(fs.readFileSync(envPath, 'utf8')).toContain('GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc')
     expect(fs.readFileSync(envPath, 'utf8')).toContain('GEMINI_API_KEY=new-key')
     expect(fs.readFileSync(envPath, 'utf8')).toContain('GEMINI_MODEL=gemini-3.5-pro')
     expect(fs.readFileSync(envPath, 'utf8')).toContain('CUSTOM_VALUE=preserved')
@@ -438,7 +438,7 @@ describe('native CLI configuration files', () => {
     const mergedGrokModel = asRecord(asRecord(merged.model)?.grok)
     expect(mergedGrokModel?.api_key).toBe('new-key')
     expect(mergedGrokModel?.model).toBe('grok-5')
-    expect(mergedGrokModel?.base_url).toBe('https://api.solov.cc/v1')
+    expect(mergedGrokModel?.base_url).toBe('https://xm.solov.cc/v1')
     expect(mergedGrokModel?.custom_option).toBe(true)
     expect(merged.custom_setting).toBe('preserved')
   })
@@ -488,7 +488,7 @@ describe('native CLI configuration files', () => {
       '',
       '[model_providers.inactive]',
       'name = "inactive"',
-      'base_url = "https://api.solov.cc"',
+      'base_url = "https://xm.solov.cc"',
       '',
     ].join('\n'), 'utf8')
     fs.writeFileSync(authPath, '{"OPENAI_API_KEY":"existing-key"}\n', 'utf8')
@@ -532,7 +532,7 @@ describe('native CLI configuration files', () => {
       '[model.inactive]',
       'model = "grok-inactive"',
       'api_key = "inactive-key"',
-      'base_url = "https://api.solov.cc/v1"',
+      'base_url = "https://xm.solov.cc/v1"',
       '',
     ].join('\n'), 'utf8')
 
@@ -554,7 +554,7 @@ describe('native CLI configuration files', () => {
       '[model.inactive]',
       'model = "grok-inactive"',
       'api_key = "inactive-key"',
-      'base_url = "https://api.solov.cc/v1"',
+      'base_url = "https://xm.solov.cc/v1"',
       '',
     ].join('\n'), 'utf8')
 

@@ -41,21 +41,24 @@ export interface RelaySite {
 // mutated by accident (display-only there; every security decision reads the
 // main-process copy).
 //
-// solov and sub2api deliberately share the same relay domain (api.solov.cc)
-// and the same providerBaseUrls object (by reference, not a copy) -- per the
-// boss's reconciliation, they are the same relay with two different account
-// models bolted on, not two different relays. catalog.ts remains the single
-// source of truth for the fixed per-CLI relay URLs either way (T2's
-// rank-table precedent: derive, never duplicate literals).
+// solov and sub2api deliberately share the same relay domain and the same
+// providerBaseUrls object (by reference, not a copy) -- per the boss's
+// reconciliation, they are the same relay with two different account models
+// bolted on, not two different relays. Since 2026-08-10 that shared relay
+// domain is xm.solov.cc (the new-api instance itself), unifying CLI traffic
+// with the account backend. catalog.ts remains the single source of truth
+// for the fixed per-CLI relay URLs either way (T2's rank-table precedent:
+// derive, never duplicate literals).
 export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   {
     id: 'solov',
     // 命名已由老板拍板(2026-08-10):品牌统一「星芒AI」,括号内仅保留账号模式的最小区分
     label: '星芒AI（账号登录）',
     providerBaseUrls,
-    // 官网/取 Key 页统一指向账号域 xm.solov.cc(老板拍板 2026-08-10:
-    // api.solov.cc 只作 CLI 中转,所有面向用户的网页入口走 xm)。中转连通
-    // 性探测不再借用 websiteUrl,改走 relayApiProbeBaseUrl(见下)。
+    // 官网/取 Key 页指向账号域 xm.solov.cc(老板拍板 2026-08-10;同日
+    // 中转也统一切到 xm,见 catalog.ts)。中转连通性探测不借用
+    // websiteUrl,走 relayApiProbeBaseUrl(见下)——今天两者恰好同域,
+    // 但探测必须永远跟着 CLI 实际调用的域走,不跟营销页走。
     websiteUrl: 'https://xm.solov.cc',
     keysPageUrl: 'https://xm.solov.cc/keys',
     accountBackend: 'new-api',

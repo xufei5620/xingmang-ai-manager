@@ -81,7 +81,7 @@ describe('resolveCanvasAuthToken', () => {
 })
 
 describe('resolveCanvasAuthToken on a manual-key site (no account backend)', () => {
-  const relayBaseUrl = 'https://api.solov.cc'
+  const relayBaseUrl = 'https://xm.solov.cc'
 
   function manualKeyDeps(overrides: Partial<CanvasAuthTokenDependencies> = {}): CanvasAuthTokenDependencies {
     return fakeDeps({

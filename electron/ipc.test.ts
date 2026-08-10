@@ -250,7 +250,7 @@ function register(
     },
     previewOnboarding: false,
     externalUrlAllowlist: [
-      'https://api.solov.cc',
+      'https://xm.solov.cc',
       'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
     ],
     externalShell: {
@@ -407,7 +407,7 @@ describe('registerIpcHandlers', () => {
     register()
     const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
 
-    await expect(handler(trustedEvent(), 'https://api.solov.cc')).resolves.toBe(true)
+    await expect(handler(trustedEvent(), 'https://xm.solov.cc')).resolves.toBe(true)
     expect(electronMocks.openExternal).toHaveBeenCalledOnce()
     expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
   })
@@ -472,8 +472,8 @@ describe('registerIpcHandlers', () => {
       workspace: 'C:\\workspace',
       providers: {
         codex: {
-          baseUrl: 'https://api.solov.cc',
-          actualBaseUrl: 'https://api.solov.cc',
+          baseUrl: 'https://xm.solov.cc',
+          actualBaseUrl: 'https://xm.solov.cc',
           exists: true,
           hasApiKey: true,
           matchesRelay: true,

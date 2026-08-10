@@ -79,7 +79,7 @@ describe('application URL security', () => {
     expect(isAllowedAppNavigationUrl('not a URL', windowsPolicy)).toBe(false)
     expect(isAllowedAppNavigationUrl('javascript:alert(1)', windowsPolicy)).toBe(false)
     expect(isAllowedAppNavigationUrl('data:text/html,hello', windowsPolicy)).toBe(false)
-    expect(isAllowedAppNavigationUrl('https://api.solov.cc/', windowsPolicy)).toBe(false)
+    expect(isAllowedAppNavigationUrl('https://xm.solov.cc/', windowsPolicy)).toBe(false)
   })
 
   it('does not enable development origins from invalid policy URLs', () => {
@@ -186,16 +186,16 @@ describe('application URL security on a POSIX renderer root', () => {
 
 describe('external URL allowlist', () => {
   const allowlist = [
-    'https://api.solov.cc',
-    'https://api.solov.cc/keys',
+    'https://xm.solov.cc',
+    'https://xm.solov.cc/keys',
     'https://s4621e8xzb.feishu.cn/wiki/XLDLwdXDli3fj9kyMvsc5Qldnie?from=from_copylink',
     'https://nodejs.org/',
     'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
   ]
 
   it('matches normalized HTTPS URLs and the exact local Microsoft Store URI', () => {
-    expect(isAllowedExternalUrl('https://api.solov.cc/', allowlist)).toBe(true)
-    expect(isAllowedExternalUrl('https://api.solov.cc/keys', allowlist)).toBe(true)
+    expect(isAllowedExternalUrl('https://xm.solov.cc/', allowlist)).toBe(true)
+    expect(isAllowedExternalUrl('https://xm.solov.cc/keys', allowlist)).toBe(true)
     expect(isAllowedExternalUrl('https://nodejs.org/', allowlist)).toBe(true)
     expect(isAllowedExternalUrl(
       'https://s4621e8xzb.feishu.cn/wiki/XLDLwdXDli3fj9kyMvsc5Qldnie?from=from_copylink',
@@ -205,11 +205,11 @@ describe('external URL allowlist', () => {
   })
 
   it('rejects lookalike hosts, extra URL data, credentials, and other schemes', () => {
-    expect(isAllowedExternalUrl('https://api.solov.cc.evil.example/keys', allowlist)).toBe(false)
-    expect(isAllowedExternalUrl('https://api.solov.cc/keys?redirect=1', allowlist)).toBe(false)
-    expect(isAllowedExternalUrl('https://api.solov.cc/keys#token', allowlist)).toBe(false)
-    expect(isAllowedExternalUrl('https://user@api.solov.cc/keys', allowlist)).toBe(false)
-    expect(isAllowedExternalUrl('http://api.solov.cc/keys', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl('https://xm.solov.cc.evil.example/keys', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl('https://xm.solov.cc/keys?redirect=1', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl('https://xm.solov.cc/keys#token', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl('https://user@xm.solov.cc/keys', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl('http://xm.solov.cc/keys', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('ms-windows-store://pdp/?ProductId=OTHER', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('ms-windows-store://search/?query=Codex', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('javascript:alert(1)', allowlist)).toBe(false)

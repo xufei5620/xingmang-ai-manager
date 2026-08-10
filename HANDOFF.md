@@ -42,6 +42,7 @@
 
 | 提交 | 内容 | 门槛 |
 |---|---|---|
+| (本提交) | **中转域统一切到 xm.solov.cc(老板拍板 2026-08-10)**:catalog.ts 四个 CLI base URL 从 api.solov.cc 换 xm(路径形状不变,grok 保 /v1);中转+账号后端从此同一 new-api 实例。老用户旧域配置会被 matchesRelay 判不匹配→登录→重新写 Key 即迁移。11 个测试文件钉值、3 个 e2e 夹具、README/CLAUDE.md 产品事实同步;relayApiProbeBaseUrl 抽象保留(今天与官网同域是巧合,探测永远跟中转走) | tc 三段 0 错;vitest 1364/0;scripts 78/0;e2e 2/2 |
 | (本提交) | **老板真机反馈三批全落地(2026-08-10 下午)**:①登录先行(账号站点未登录必到欢迎页,`resolveInitialAppView` 去 config 参、App 启动门重排)+记住密码(safeStorage `account-credential-store.ts` + 2 通道,静默日志)+登录页协议勾选+协议/隐私可点外链(xm/terms、/privacy 入白名单,**页面待老板挂**)+占位符 you@qq.com;②个人中心 Key 添加/编辑(`KeyEditorDialog`,client `createKey`/`updateKey`,**updateKey 是读-改-写**——rc.24 UpdateToken 整体覆盖,已按源码逐字核实并测试钉死;+2 通道,共 90);③toast 出界修复(`--sidebar-width` 无回退值在无侧栏视图失效→左上角,加 `var(...,0px)`)+侧边栏刷新余额按钮;④官网切换 xm.solov.cc(websiteUrl/keysPageUrl;探测拆 `relayApiProbeBaseUrl` 保打中转域)+安装器开放选目录(老板拍板,取舍已告知) | tc 三段 0 错;vitest 1364/0;scripts 78/0;e2e 2/2(指定 chromium) |
 | (本提交) | **巡检波·#43 收口**:四条逐一对当前代码重验——③(external 文案错配)与④(fail-closed 名不副实)已被集成线修掉且有测试钉住,零施工;①死字段 nativeMenu/trafficLightInset(生产零读取,linux 值还错)与②死参数 assertUnchanged(唯二调用点全 no-op)按 issue 自荐的删除路线收口(真实防护在 staging 身份绑定 + assertDarwin\*SelectionUnchanged,未动)。styles.css 未触碰 | tc 0 错;vitest 1355/0;scripts 78/0;e2e 2/2(指定 chromium) |
 | `11f5085` | **ci: test-build 工作流**(打测试安装包,永不发布;main 为 dispatch 需要快进至此) | YAML 由 GitHub 解析验证;run 31399562122 排队成功 |

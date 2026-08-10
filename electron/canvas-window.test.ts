@@ -456,6 +456,6 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     // new-api site: keys are minted on the account origin. manual-key site:
     // the pasted key belongs to the relay itself.
     expect(canvasBaseUrlForSite(resolveRelaySite('solov'))).toBe('https://xm.solov.cc')
-    expect(canvasBaseUrlForSite(resolveRelaySite('sub2api'))).toBe('https://api.solov.cc')
+    expect(canvasBaseUrlForSite(resolveRelaySite('sub2api'))).toBe('https://xm.solov.cc')
   })
 })

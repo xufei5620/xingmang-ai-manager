@@ -33,7 +33,7 @@ describe('system shell launcher', () => {
   })
 
   it('builds a shell-free plan with a trusted environment and exact target', () => {
-    const url = 'https://api.solov.cc/keys?from=manager'
+    const url = 'https://xm.solov.cc/keys?from=manager'
     const plan = buildWindowsShellLaunchPlan(
       'url',
       url,
@@ -88,9 +88,9 @@ describe('system shell launcher', () => {
     }
     const launcher = createExternalShellLauncher({ platform: 'linux', fallbackShell })
 
-    await expect(launcher.openExternal('https://api.solov.cc')).resolves.toBeUndefined()
+    await expect(launcher.openExternal('https://xm.solov.cc')).resolves.toBeUndefined()
     await expect(launcher.openPath('/tmp/logs')).rejects.toThrow('cannot open')
-    expect(fallbackShell.openExternal).toHaveBeenCalledWith('https://api.solov.cc')
+    expect(fallbackShell.openExternal).toHaveBeenCalledWith('https://xm.solov.cc')
     expect(fallbackShell.openPath).toHaveBeenCalledWith('/tmp/logs')
   })
 
