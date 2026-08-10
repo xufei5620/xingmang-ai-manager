@@ -103,6 +103,42 @@ test('matches DN-form expected publishers attribute by attribute like the runtim
   ), { code: 'INSTALLER_PUBLISHER_MISMATCH' })
 })
 
+test('warns on bare-CN fallback matches without changing the verdict', () => {
+  const withSubject = (subject, warn) => ({
+    platform: 'win32',
+    warn,
+    resolvePowerShell: () => ({
+      systemRoot: 'D:\\Windows',
+      system32: 'D:\\Windows\\System32',
+      executable: 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    }),
+    spawnSync: () => ({
+      status: 0,
+      stdout: JSON.stringify({ Status: 'Valid', Subject: subject }),
+      stderr: '',
+    }),
+  })
+
+  const warnings = []
+  const capture = (message) => warnings.push(message)
+  assert.doesNotThrow(() => verifyAuthenticode(
+    'D:\\release\\setup.exe',
+    'Example Publisher',
+    withSubject('CN=Example Publisher, O=Example', capture),
+  ))
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /裸公司名\(CN\)/)
+  assert.match(warnings[0], /IMPROVEMENT-PLAN\.md 3\.4/)
+
+  warnings.length = 0
+  assert.doesNotThrow(() => verifyAuthenticode(
+    'D:\\release\\setup.exe',
+    'CN=Example Publisher, O=Example',
+    withSubject('CN=Example Publisher, O=Example, C=CN', capture),
+  ))
+  assert.equal(warnings.length, 0)
+})
+
 test('refuses to verify an installer when no expected publisher is configured', () => {
   const validlySigned = {
     platform: 'win32',

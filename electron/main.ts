@@ -496,6 +496,8 @@ if (!hasSingleInstanceLock) {
     if (process.platform === 'win32') {
       installStrictUpdateCodeSignatureVerifier(autoUpdater as typeof autoUpdater & {
         verifyUpdateCodeSignature: (publisherNames: string[], filePath: string) => Promise<string | null>
+      }, {
+        warn: (message) => runtimeLog.log('warn', 'updater', 'signature.publisher.cn-only', message),
       })
     }
     const localBuild = app.isPackaged && applicationPackage.xingmangLocalBuild === true

@@ -108,6 +108,14 @@ function verifyAuthenticode(filePath, expectedPublisher = null, options = {}) {
       code: 'INSTALLER_PUBLISHER_MISMATCH',
     })
   }
+  if (normalizedDn(String(expectedPublisher).trim()).size === 0) {
+    // Mirrors electron/update-signature.ts (IMPROVEMENT-PLAN 3.4): a bare
+    // company name pins only the certificate CN, which is not globally
+    // unique. The verdict stays unchanged; the release log just makes the
+    // weaker comparison visible until the full-DN migration lands.
+    const warn = options.warn || console.warn
+    warn(`警告：签名发布者按裸公司名(CN)退化匹配通过（证书主体：${subject}）；建议按 docs/IMPROVEMENT-PLAN.md 3.4 迁移到完整 DN 后收紧`)
+  }
 }
 
 async function main() {

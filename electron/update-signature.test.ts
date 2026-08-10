@@ -4,6 +4,7 @@ import type { CommandResult, CommandSpec, RunCommandOptions } from './command-ru
 import {
   createStrictUpdateCodeSignatureVerifier,
   installStrictUpdateCodeSignatureVerifier,
+  type StrictUpdateSignatureVerifierOptions,
 } from './update-signature'
 
 const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
@@ -19,7 +20,7 @@ function signatureOutput(overrides: Partial<Record<'Status' | 'Path' | 'Subject'
   })
 }
 
-function verifierWithResult(stdout: string, stderr = '') {
+function verifierWithResult(stdout: string, stderr = '', extra: Partial<StrictUpdateSignatureVerifierOptions> = {}) {
   const command = vi.fn<
     (spec: CommandSpec, options: RunCommandOptions) => Promise<Pick<CommandResult, 'stdout' | 'stderr'>>
   >(async () => ({ stdout, stderr }))
@@ -33,6 +34,7 @@ function verifierWithResult(stdout: string, stderr = '') {
       WINDIR: 'C:\\Windows',
       PATH: 'C:\\Windows\\System32',
     }),
+    ...extra,
   })
   return { command, verifier }
 }
@@ -78,6 +80,34 @@ describe('strict Windows update signature verifier', () => {
     const result = await verifier(['绍兴星芒文化传媒有限责任公司'], installer)
     expect(result).toContain('Authenticode 签名校验失败')
     expect(result).toContain(expected)
+  })
+
+  it('warns when the match relies on the bare-CN fallback and stays silent for DN matches', async () => {
+    const warn = vi.fn()
+    const { verifier } = verifierWithResult(signatureOutput(), '', { warn })
+
+    await expect(verifier(['绍兴星芒文化传媒有限责任公司'], installer)).resolves.toBeNull()
+    expect(warn).toHaveBeenCalledTimes(1)
+    expect(warn.mock.calls[0][0]).toContain('裸公司名(CN)')
+    expect(warn.mock.calls[0][0]).toContain('IMPROVEMENT-PLAN.md 3.4')
+
+    warn.mockClear()
+    await expect(verifier([
+      'C=cn, O=绍兴星芒文化传媒有限责任公司, CN=绍兴星芒文化传媒有限责任公司',
+    ], installer)).resolves.toBeNull()
+    expect(warn).not.toHaveBeenCalled()
+
+    warn.mockClear()
+    await expect(verifier(['另一家公司'], installer)).resolves.toContain('签名发布者与当前程序配置不一致')
+    expect(warn).not.toHaveBeenCalled()
+  })
+
+  it('keeps the passing verdict when the warning callback throws', async () => {
+    const warn = vi.fn(() => { throw new Error('log sink unavailable') })
+    const { verifier } = verifierWithResult(signatureOutput(), '', { warn })
+
+    await expect(verifier(['绍兴星芒文化传媒有限责任公司'], installer)).resolves.toBeNull()
+    expect(warn).toHaveBeenCalledTimes(1)
   })
 
   it('rejects publisher mismatch and empty publisher configuration', async () => {
