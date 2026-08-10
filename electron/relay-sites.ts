@@ -50,7 +50,8 @@ export interface RelaySite {
 export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   {
     id: 'solov',
-    label: '星芒·账号站', // 措辞待老板确认
+    // 命名已由老板拍板(2026-08-10):品牌统一「星芒AI」,括号内仅保留账号模式的最小区分
+    label: '星芒AI（账号登录）',
     providerBaseUrls,
     websiteUrl: 'https://api.solov.cc',
     keysPageUrl: 'https://api.solov.cc/keys',
@@ -59,7 +60,7 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   },
   {
     id: 'sub2api',
-    label: '星芒·Key 直连', // 措辞待老板确认
+    label: '星芒AI（Key 直连）',
     providerBaseUrls,
     websiteUrl: 'https://api.solov.cc',
     keysPageUrl: 'https://api.solov.cc/keys',

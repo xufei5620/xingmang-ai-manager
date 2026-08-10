@@ -8,7 +8,7 @@
 
 ## ① 等老板拍板(全部跳过不猜,按下列编号答复即可)
 
-1. **站点下拉命名**:占位「星芒·账号站」(new-api / xm.solov.cc)与「星芒·Key 直连」(sub2api / api.solov.cc)——措辞待确认。
+1. ~~站点下拉命名~~ **已拍板并落地(2026-08-10)**:统一「星芒AI」,下拉两项为「星芒AI（账号登录）」(new-api / xm.solov.cc)与「星芒AI（Key 直连）」(sub2api / api.solov.cc)。
 2. **勘合遗留**:xm.solov.cc 签发的 key 在 api.solov.cc relay 上是否真能推理成功——生产验证类,agent 不碰生产,等你真机验。
 3. **客服素材**:欢迎页企业微信二维码仍是占位图(`WelcomePage.tsx` 有 TODO),等正式素材(一次静态替换 + 白名单一行)。
 4. **试用额度**数字 + new-api 后台配置;余额告警阈值 $5 是否认可。
