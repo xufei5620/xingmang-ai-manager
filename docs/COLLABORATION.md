@@ -31,9 +31,13 @@
 
 ### 标签体系
 
+> 2026-08-10 拍板：环境标签**以 `env:*` 为唯一标准**（与 `docs/AGENT-RUNBOOK.md` 一致）。
+> 早期文档写过 `agent:win/mac/codex/cloud` 一套，已废弃——环境要求是任务的内在属性，
+> 与哪个 agent 来做无关。GitHub 上若还残留 `agent:*` 标签，见到即改为对应 `env:*`。
+
 | 标签 | 含义 |
 |---|---|
-| `agent:win` / `agent:mac` / `agent:codex` / `agent:cloud` | 指派给哪个环境 |
+| `env:any` / `env:windows` / `env:macos` / `env:server` | 任务要求的执行环境 |
 | `batch:0` … `batch:4` | 对应 `docs/IMPROVEMENT-PLAN.md` 的批次 |
 | `needs-decision` | 阻塞，等人类决策，agent 不要动 |
 | `serial-only` | **必须串行**，同一时间只能有一个人做（见第 4 节） |
@@ -42,8 +46,8 @@
 ### 本地 agent 的循环
 
 ```bash
-# 1. 拉取指派给自己且未被认领的任务
-gh issue list --label agent:mac --state open
+# 1. 拉取适合本机环境且未被认领的任务
+gh issue list --label env:macos --state open
 
 # 2. 认领（留言，避免重复认领）
 gh issue comment <n> --body "开始处理 — claude/mac"
