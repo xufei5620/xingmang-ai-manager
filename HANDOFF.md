@@ -14,7 +14,7 @@
 4. **试用额度**数字 + new-api 后台配置;余额告警阈值 $5 是否认可。
 5. **注册方式扩展**:微信需开放平台应用、GitHub 需配 OAuth——要你去申请,代码侧不阻塞。
 6. **A 真机验证清单**(只能你走):账号后半程(重启保持登录/token 续期/收重置邮件/个人中心真实数据);Key 管理表 7 列一屏不溢出;正常环境点开画布看观感;改密码「原密码错误」文案实测。
-7. ~~死分支处置~~ **已执行(2026-08-10,老板「按照你的推荐来」授权)**:删除前逐一用 `merge-base --is-ancestor` 核实零丢失——`feat/macos-support`(87cb20c,已在 main 历史)、`xufei5620/claude-cloud/runbook-cleanup`(8102f0b,已在 main 历史,另有 refs/pull/36/head 兜底)、`claude/project-review-ma2wvr`(15f898f,已在集成线历史)三条已删;**`claude/mac-platform-so8dlw`(321f74b)保留**(提交本体未被吸收,实改已由 `6cce80b` 收编)。现存分支:`main` / `local/integration` / `claude/xingmang-site-naming-batches-xwms7a` / `claude/mac-platform-so8dlw`。
+7. **死分支处置——已授权待执行(2026-08-10 老板「按照你的推荐来」;云端删除被 403 拦,需你或本地 agent 动手)**:删除前已逐一用 `merge-base --is-ancestor` 核实零丢失,直接删即可——`feat/macos-support`(87cb20c,已在 main 历史)、`xufei5620/claude-cloud/runbook-cleanup`(8102f0b,已在 main 历史,另有 refs/pull/36/head 兜底)、`claude/project-review-ma2wvr`(15f898f,已在 main 历史)。命令:`git push origin --delete feat/macos-support xufei5620/claude-cloud/runbook-cleanup claude/project-review-ma2wvr`,或 GitHub 分支页逐个点删。**`claude/mac-platform-so8dlw`(321f74b)保留勿删**(提交本体未被吸收,实改已由 `6cce80b` 收编)。
 8. ~~任务标签体系~~ **已拍板(2026-08-10,按推荐)**:以 `env:any/windows/macos/server` 为唯一标准,`agent:*` 废弃;COLLABORATION.md 已改齐。GitHub 上若残留 `agent:*` 标签,见到即改(本会话未能枚举线上标签,留给下个能跑 `gh label list` 的会话顺手核对)。
 9. ~~Node 检测增强的剩余两措施~~ **已拍板不做(2026-08-10,老板授权按推荐处理)**:托管安装 + 重启提示已覆盖主要工单面,措施2(手动指定 Node 路径)要扩路径信任面、措施3(读注册表)边际收益小。IMPROVEMENT-PLAN 2.2 横幅已收口。
 10. **Grok 国内镜像(2.6/#20)——按推荐维持暂缓(2026-08-10)**:唯一前置仍是只有你能答的确认项——**对 agentsmirror 基础设施是否有控制权、能否放 Grok 二进制**;确认后即可按 Codex 桌面端同款模式接入,代码侧无阻塞。
