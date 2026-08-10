@@ -14,7 +14,11 @@
 4. **试用额度**数字 + new-api 后台配置;余额告警阈值 $5 是否认可。
 5. **注册方式扩展**:微信需开放平台应用、GitHub 需配 OAuth——要你去申请,代码侧不阻塞。
 6. **A 真机验证清单**(只能你走):账号后半程(重启保持登录/token 续期/收重置邮件/个人中心真实数据);Key 管理表 7 列一屏不溢出;正常环境点开画布看观感;改密码「原密码错误」文案实测。
-7. (占位)死分支处置建议——②仓库整理时补全清单,只列不删。
+7. **死分支处置建议(仓库整理波已盘点,只列不删——删不删由你定)**,基于 xufei5620 fork 可见分支(peaker520 上游侧本会话无权限枚举):
+   - `feat/macos-support`(87cb20c)与 `xufei5620/claude-cloud/runbook-cleanup`(8102f0b):**已全部合入 main** → 纯死分支,可删;
+   - `claude/project-review-ma2wvr`(15f898f):已被 `local/integration` 吸收(尚未进 main)→ 集成线合并回 main 后即死,可删;
+   - `claude/mac-platform-so8dlw`(321f74b):**不是死分支**——携带未合入实改(macOS 渲染根 URL 策略测试 77 行 + `security.ts` 非 Windows 根 pin `path.posix` + CI 脏树守卫 19 行),建议收编(已列入巡检波候选),勿删;
+   - 活跃分支:`main`(默认)、`local/integration`(集成线)、`claude/xingmang-site-naming-batches-xwms7a`(本会话工作分支)。
 
 ## ② 从这里继续(断点)
 
