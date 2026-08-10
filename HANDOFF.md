@@ -19,6 +19,7 @@
    - `claude/project-review-ma2wvr`(15f898f):已被 `local/integration` 吸收(尚未进 main)→ 集成线合并回 main 后即死,可删;
    - `claude/mac-platform-so8dlw`(321f74b):**不是死分支**——携带未合入实改(macOS 渲染根 URL 策略测试 77 行 + `security.ts` 非 Windows 根 pin `path.posix` + CI 脏树守卫 19 行),建议收编(已列入巡检波候选),勿删;
    - 活跃分支:`main`(默认)、`local/integration`(集成线)、`claude/xingmang-site-naming-batches-xwms7a`(本会话工作分支)。
+8. **任务标签体系二选一**:AGENT-RUNBOOK 写 `env:any/windows/macos/server`,COLLABORATION 写 `agent:win/mac/codex/cloud`,两套并存且不一致;GitHub 实际标签本会话无法核对,请指定以哪套为准(或都废弃)。
 
 ## ② 从这里继续(断点)
 
@@ -26,7 +27,8 @@
 - **双后端 W1→W3 已全链闭合并通过 Opus 对抗审查**。审查七面向里主路径全部攻击失败(粘贴 Key 全链 I13/I3、写入链 I9、契约 T1 零变化、solov 回归面均给了证据),揪出的发现已全部处置:F1(manual-key 降级不完整,3 个 new-api 入口仍可达)→ `5e1f953`;F2-F5(键控制字符校验/解析错误脱敏/诊断读侧站点化/切站刷新快照)→ `ce38200`;F6(字面量 nit)按不镀金跳过。
 - **W3 审查遗留的一个功能缺口(非安全,待后续波次)**:manual-key 用户即便已把 Key 写进 CLI,**画布仍拿不到 token**——`canvas-auth.ts` 的 `isAccountAuthenticated()` 为假时 `revealConfiguredRelayKey()` 不执行。画布对 manual-key 站点的适配需要单独一波(让画布也能用已写入的 relay key),不阻塞批次3。
 - **⚠️ 本会话输出可靠性告警**:后期出现 inline 命令 echo 被污染(git rev-parse 返回过互相矛盾的 SHA、臆造的提交消息)。**真实状态一律以 `git log`/文件回读为准,不信任 inline echo**。验证方法:命令结果重定向到 scratchpad 文件、用 Read 工具回读。若新会话接手,`git log --oneline` 与 `git rev-parse origin/local/integration` 是可信锚点。
-- **之后顺序(老板 2026-08-10 定,全部做完)**:~~批次3~~(**已核实全部落地,无需再改**:3.1=`8c6a476`、3.2/#16=`fd2633c`、3.3/#17=`2c53e6d` + 审计脚本至迟随 `17fef1a` 已 fail-closed;IMPROVEMENT-PLAN 3.1-3.3 已加状态标注——②栏此前"批次3 待做"与背景速查"批次3 未动"均为过期信息)→ **仓库整理**(状态性文档校准/杂物归位/.gitignore 查漏/死分支只列不删)→ **巡检(持续发现-修复)**(每个候选先对抗验证;连续两轮无可行动项即收束)→ **画布 manual-key 适配**(见上一条缺口描述)→ **批次1/2**(逐项先核实是否已被集成线覆盖,再动手)。
+- **之后顺序(老板 2026-08-10 定,全部做完)**:~~批次3~~(**已核实全部落地,无需再改**:3.1=`8c6a476`、3.2/#16=`fd2633c`、3.3/#17=`2c53e6d` + 审计脚本至迟随 `17fef1a` 已 fail-closed;IMPROVEMENT-PLAN 3.1-3.3 已加状态标注——②栏此前"批次3 待做"与背景速查"批次3 未动"均为过期信息)→ ~~仓库整理~~(**已完成**:全量文档过期声明扫描并校准 9 份文档;杂物/版本号/.gitignore 查过无问题;死分支清单进①栏7;标签体系不一致进①栏8)→ **巡检(持续发现-修复)**(每个候选先对抗验证;连续两轮无可行动项即收束)→ **画布 manual-key 适配**(见上一条缺口描述)→ **批次1/2**(批次1 已核实全部落地零施工;批次2 只剩 2.2/2.4/2.5/2.6,其中 2.6 依赖①栏基础设施决策)。
+- **巡检波候选(仓库整理波移交)**:①收编孤儿提交 `321f74b`(macOS 渲染根安全策略测试+CI 脏树守卫;已预验 security.ts/test 干净套用,仅 quality.yml 小冲突需手解);②IMPROVEMENT-PLAN 3.4 的零风险子项——CN-only 匹配时输出告警日志;③复核 ipc.test.ts 的通道顺序断言是否仍在(文档扫描存疑项);④页面组件测试缺口 11 中 3(非阻塞,可不做)。
 - **W3 关键事实(已侦察定案)**:sub2api = Wei-Shaw/sub2api(Go+Vue3);用户侧 Key 页路由 **`/keys`**(frontend/src/router,requiresAuth 非管理员)→ 精确 href `https://api.solov.cc/keys` **已在白名单**(main.ts:73),零白名单改动。sub2api 站点:providerBaseUrls 复用 catalog 形状(含 grok `/v1`)、accountBackend='manual-key'、无账号登录,粘贴 Key 优先复用既有配置写入链(I9),**尽量零新增 IPC 通道**(T1)。
 - **轮询协议**:长心跳(约 30 分钟);429/额度类错误不退出循环,退避并加长间隔;接近会话硬上限 → 立即把已完成的推上去、更新本报告顶部再收尾。模型分工:Fable 只规划/拍板/综合审,实现派 Sonnet,安全审查派 Opus。
 - **红线(老板原话不可越)**:不推/不合 main、不强推、不删分支、不开 PR、不发 release、不动生产站点、不违反 CLAUDE.md 第 8 节、测试绝不触生产 xm/api.solov.cc;素材/定价/命名/删除类/真机验证类一律进上面第①栏。
@@ -35,6 +37,8 @@
 
 | 提交 | 内容 | 门槛 |
 |---|---|---|
+| `51987d1` | **仓库整理·死分支盘点**入①栏7(只列不删;发现 `claude/mac-platform-so8dlw` 携带未合入实改) | 文档波 |
+| `53efd7f` | **批次3 核实闭合**:3.1=`8c6a476`/3.2=`fd2633c`/3.3=`2c53e6d`+`17fef1a` 均已在历史落地,IMPROVEMENT-PLAN 加状态标注,零代码改动 | 复核波;基线 vitest 1328/0 |
 | `a55058b` | **站点命名定稿(①栏第1项拍板落地)**:统一「星芒AI」,下拉两项「星芒AI（账号登录）」/「星芒AI（Key 直连）」 | tc 0 错;vitest 1328/0 失败 |
 | `ce38200` | **W3 审查硬化 F2-F5**:键控制字符校验(拒 NUL 防明文入日志)、配置解析错误脱敏(I13)、诊断读侧站点化(W3a 漏接点)、切站后刷新 config 快照。F6 nit 跳过 | tc 0 错;vitest 1328/0 失败 |
 | `5e1f953` | **W3 审查 F1**:补全 manual-key 站点账号入口降级(handleConfigureCliKey/欢迎页/NextStepsCard 三入口),堵住跨站点凭据混线 | tc 0 错;vitest 1328/0 失败 |
@@ -55,5 +59,5 @@
 
 - **双后端方向(老板已定死)**:new-api + sub2api 一等公民;RelayBackendClient 统一接口;站点数据模型 `{id,label,providerBaseUrls,accountBackend,accountBaseUrl?}`;两站点可共享同一 relay 域(api.solov.cc),只差账号模式;UI 显式站点下拉,不做按 key 自动识别;sub2api 先做"粘贴 Key"最简实现,完整 parity 以后加实现不重构。
 - **必读顺序**:CLAUDE.md(不变量 I1-I15/陷阱 T1-T13,保命)→ docs/RECON-new-api.md(改账号前)→ docs/CANVAS-INTEGRATION-PLAN.md(改画布前)。
-- **老积压全景**:见 CLAUDE.md 第 5 节引用的 docs/IMPROVEMENT-PLAN.md;批次1/2/3 在集成线上全部未动(状态同 main),wrangler 漏洞已随依赖树消失。
+- **老积压全景**:见 docs/IMPROVEMENT-PLAN.md(2026-08-10 已逐批次核实并加状态横幅):批次0/1 全部落地,批次2 落地 2.1/2.3(剩 2.2/2.4/2.5/2.6,其中 2.6 依赖基础设施决策),批次3 全部落地(3.4 按设计待决策),批次4 基本落地。wrangler 漏洞已随依赖树消失。**此前"批次1/2/3 全部未动"为过期信息。**
 - 上一阶段账号体系(W2~W4b)与画布四阶段的完整记录在 git log `6482277..f4b3ef3` 与 docs/ACCOUNT-PLAN.md / CANVAS-INTEGRATION-PLAN.md。

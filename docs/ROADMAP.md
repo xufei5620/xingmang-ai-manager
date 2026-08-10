@@ -43,7 +43,7 @@
 | ③ 聚合平台——抽差价 | 规模、议价权 | ❌ |
 
 **推论：**
-- 对外只有一个星芒 endpoint（`api.solov.cc`），用户只认星芒品牌
+- 对外只有一个星芒 relay 域（`api.solov.cc`），用户只认星芒品牌（2026-08 起 `electron/relay-sites.ts` 有双站点注册表——「账号登录」与「Key 直连」共用该 relay 域，仅账号模式不同，设置页有站点下拉；不改变"单一 relay 域"的判断）
 - 后端可以接多家上游做故障转移，但**用户不可见**
 - 前端**不做聚合市场**、**不展示其他中转站**、**不做返佣转卖**
 - 收费边界：**涉及 AI 使用的收费**（画布生图、音乐生成），娱乐性功能（换肤等）免费
@@ -153,8 +153,8 @@
 **继续 Electron 的三个前提条件（必须认的代价）：**
 
 1. **停止在「通用能力」上追赶** —— 不再堆工具数量、供应商预设、云同步。与 cc-switch 在这条线竞争必输（它免费、有赞助、122k star）。资源全压到：账号充值闭环、无限画布、绑定自营的免配置体验。
-2. **把 cc-switch 当参考实现，不当依赖** —— 它是 MIT，可自由读代码学做法。重点借鉴：**Mac 侧安全边界实现**（星芒最缺，现有代码在 macOS 上安全检查全部退化为 no-op）、**测试组织方式**（100 个前端测试 + jsdom + msw）、UI/UX 设计（见文末附录）。**读代码零成本，迁代码成本极高——只做前者。**
-3. **补上测试与 Mac 边界两个欠账** —— cc-switch 有 2401 Rust + 100 前端测试，星芒只有 9 个纯函数测试。不补，四个 agent 并行改代码很危险。优先级：`ipc.ts` 输入校验函数（不可信输入进主进程的唯一防线，现几乎零测试）> Mac 安全边界 > 组件层。
+2. **把 cc-switch 当参考实现，不当依赖** —— 它是 MIT，可自由读代码学做法。重点借鉴：UI/UX 设计（见文末附录）。（2026-08-10 更新：当年两大欠账已还清——Mac 安全边界已由 `darwin-path-trust.ts` 完整实现；`ipc.ts` 校验函数已补 104 例测试。）**读代码零成本，迁代码成本极高——只做前者。**
+3. ~~补上测试与 Mac 边界两个欠账~~ → **✅ 已还清**（vitest 约 1450 例、三平台 CI 全绿；Mac 边界见 CLAUDE.md T5）。剩余缺口只在组件层测试（11 个页面中 3 个有测试），非阻塞。
 
 **什么情况下重新评估 fork**（任一成立）：
 - 转型做中立工具（定位②）→ 多 provider 能力立刻变核心价值
@@ -269,57 +269,57 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 
 > 📋 **全部任务已拆成 GitHub Issue，索引见 [#27](https://github.com/peaker520/xingmang-ai-manager/issues/27)。下表编号即 Issue 编号。**
 
-> ✅ **2026-08 更新**：`main` 已合并 PR #1（macOS 支持 + 跨平台 CI，提交 `ca592df`）。
-> 实测 Linux 上测试失败**从 17 个降到 1 个**，测试总数 488 → **740**，仓库污染问题**已根治**。
-> 因此 Issue #2 #3 #4 的范围大幅缩小，见下表。
+> ✅ **2026-08 更新**：`main` 已合并 macOS 支持 + 跨平台 CI。
+> ✅ **2026-08-10 再更新**：测试约 1450 例 / 88 文件，**三平台 CI 全绿**（0 失败，平台门控 skipped）；仓库污染已根治。
+> 下表大部分条目已完成，逐条见状态标注；**当前实际待办以 `docs/IMPROVEMENT-PLAN.md` 各批次状态横幅为准**。
 
 ### 5.1 P0 — 解除阻塞（最高优先）
 
 | Issue | 内容 | 环境 |
 |---|---|---|
-| **#2** | ~~17 个跨平台失败~~ → **已基本解决**，只剩 1 个：`macos-platform.test.ts` 的 darwin 专有用例在 Linux 上未门控 | 任意 |
-| **#3** | ~~仓库污染~~ → **已解决**，`managed-cli.test.ts` 已用 `it.runIf` 门控 | — |
-| **#4** | CI 已有 `windows-latest` + `macos-15` + `ubuntu-latest` 三个 job，但 **ubuntu job 仍只跑 audit，不跑 test** | 任意 |
-| **#5** | 提权终端环境未净化（管理员级 RCE） | Windows |
+| **#2** | ~~17 个跨平台失败~~ → **✅ 已解决**（`sameLocalPathIdentity` 重写，Linux 最后 1 个失败清零） | — |
+| **#3** | ~~仓库污染~~ → **✅ 已解决**，`managed-cli.test.ts` 已用 `it.runIf` 门控 | — |
+| **#4** | ~~ubuntu job 只跑 audit~~ → **✅ 已解决**，`linux-test` job 常驻跑 typecheck + test（`23a1e87`） | — |
+| **#5** | ~~提权终端环境未净化~~ → **✅ 已解决**（`8c6a476`，IMPROVEMENT-PLAN 3.1） | — |
 | **#28** | **更新链路无灰度、无降级、无铺开度可测** —— 坏版本一次启动铺满全部用户且不可回滚。四个 agent 出货变快会放大此风险 | 服务端 |
 
 ### 5.2 P1 — 止血（直接命中用户投诉）
 
 | Issue | 内容 |
 |---|---|
-| **#6** → **#10** | scanSystem 容错 → 区分「检测失败/未安装」：治「已装 Node 检测不到」 |
-| **#7 #8 #11** | 镜像优先 + npm 假死体验：治「下载慢/像卡死」 |
-| **#9** | Codex reset 死锁：新用户会卡死在引导页出不去 |
-| **#12 #13** | 会话硬链接死锁、发布门禁 fail-open |
-| **#29** | 概览页每 4 秒拉起 3 个 PowerShell 进程（待机时每小时约 2700 次冷启动） |
+| **#6** → **#10** | ~~scanSystem 容错 → 区分「检测失败/未安装」~~ → **✅ 已解决**（allSettled + `detectionFailed` 字段 + UI 重试文案） |
+| **#7 #8 #11** | ~~镜像优先 + npm 假死体验~~ → **✅ 已解决**（IMPROVEMENT-PLAN 1.2/1.3/2.3） |
+| **#9** | ~~Codex reset 死锁~~ → **✅ 已解决**（TOML 解析失败回退 `'OpenAI'`，IMPROVEMENT-PLAN 1.4） |
+| **#12 #13** | ~~会话硬链接死锁、发布门禁 fail-open~~ → **✅ 已解决**（`fd2633c` / `2c53e6d`，IMPROVEMENT-PLAN 3.2/3.3） |
+| **#29** | ~~概览页每 4 秒拉起 3 个 PowerShell 进程~~ → **✅ 已解决**（轮询改 30 秒，`8b17bca`） |
 
 ### 5.3 P1 — 补欠账（继续 Electron 的代价，见 §3.3 前提③）
 
 | Issue | 内容 |
 |---|---|
-| **#14** | typecheck 覆盖 electron 测试文件（53 条存量错误）—— 四个 agent 并行改代码，没有类型门禁很危险 |
-| **#15** | 补 `ipc.ts` 输入校验函数测试 —— 不可信输入进主进程的唯一防线，现几乎零覆盖 |
-| **#16** | **补 macOS 安全边界** —— 现在 `isUserWritablePath` 恒 false、`isTrustedHighIntegrityExecutable` 恒 true，安全检查全部退化为 no-op |
+| **#14** | ~~typecheck 覆盖 electron 测试文件~~ → **✅ 已解决**（三段式 typecheck，53 条存量已清零，`854c1b4`） |
+| **#15** | ~~补 `ipc.ts` 输入校验函数测试~~ → **✅ 已解决**（15 个 parse 函数共 104 例，`6f57921`） |
+| **#16** | ~~补 macOS 安全边界~~ → **✅ 已解决**（`darwin-path-trust.ts` 完整实现 macOS 路径信任模型，CLAUDE.md T5 有语义说明） |
 | **#17** | 借鉴竞品 UI 设计（见文末附录） |
 
 ### 5.4 P1 — 降低并行开发摩擦的重构（见 §5.6）
 
 | Issue | 内容 |
 |---|---|
-| **#30** | 拆 `App.tsx`（纯搬运，不改逻辑）—— 它是 #10 #17 #18 #21 的共同冲突点 |
-| **#31** | 加渲染进程 ErrorBoundary —— 现在任一页面抛错整窗白屏，加画布前必须有 |
-| **#32** | provider 清单收口到 `src/provider-registry.ts` —— 顺带解决 `src/types.ts` 的值导出问题 |
+| **#30** | ~~拆 `App.tsx`~~ → **✅ 已解决**（拆分系列提交，App.tsx 从 2855 降到 1793 行，组件外移 `src/components/`） |
+| **#31** | ~~加渲染进程 ErrorBoundary~~ → **✅ 已解决**（`src/components/ErrorBoundary.tsx`，`9761d81`） |
+| **#32** | ~~provider 清单收口~~ → **✅ 已解决**（`src/provider-registry.ts` + 测试，`3b54d82`） |
 
 ### 5.5 P1 — 新增能力
 
 | Issue | 内容 |
 |---|---|
-| **#22** | 仓库目录结构调整（为画布腾位置，**应在 #21 前完成**） |
-| **#18** | 桌面端对接 new-api：注册/登录/PAT/签发 CLI token/充值 ⚠️`serial-only` |
-| **#19** | PAT 安全存储（**与 #18 必须一起做**）。注意与 API Key 区分——API Key 必须明文写进 CLI 配置（加密无意义），但 PAT 从不落明文且能操作账户余额 |
-| **#20** | 安装期下载代理（服务端），顺带解决 Grok 无国内镜像 |
-| **#21** | 无限画布：fork infinite-canvas + 宿主适配层 + Web 内嵌 |
-| **#33** | 主进程启动失败写持久日志 ——「装完打不开」这类工单现在零证据 |
+| **#22** | 仓库目录结构调整（为画布腾位置）→ 画布已以独立产物目录方式落地，本条按实态视为完成 |
+| **#18** | ~~桌面端对接 new-api~~ → **✅ 已解决**（`8f40585`/`902f4fb`/`6ef103c` 系列 + 账号体系 W2-W4b，见 `docs/ACCOUNT-PLAN.md`） |
+| **#19** | ~~PAT 安全存储~~ → **✅ 已解决**（改存短期 session token + safeStorage/DPAPI，`39c9671`，`account-session-store.ts`） |
+| **#20** | 安装期下载代理（服务端），顺带解决 Grok 无国内镜像 —— **仍待做**（对应 IMPROVEMENT-PLAN 2.6 的基础设施决策） |
+| **#21** | ~~无限画布~~ → **✅ 已解决**（`canvas-window.ts`/`canvas-protocol.ts`/`canvas-preload.ts`，`41eb927`/`a5b606c`；manual-key 站点适配仍挂 HANDOFF ②栏） |
+| **#33** | ~~主进程启动失败写持久日志~~ → **✅ 已解决**（`0c823ff`，`window-presentation.ts` 的 `startupFailureMessage`） |
 
 ### 5.6 P2 — 长期
 
@@ -327,9 +327,9 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 |---|---|
 | **#23** | Node 检测增强 ⚠️**待决策**：加检测手段 vs 改「托管便携 Node」 |
 | **#24** | 镜像策略三态开关 + 并发赛跑（依赖 #7） |
-| **#25** | 杂项：playwright 幻影依赖 / wrangler 漏洞 / 低危汇总 |
-| **#26** | 更新签名发布者收紧为完整 DN ⚠️**勿贸然改**，需两个发布周期迁移 |
-| **#34** | 拆 `system-service.ts` 的 Codex 桌面端部分（约 1100 行整块搬走） |
+| **#25** | 杂项：~~playwright 幻影依赖~~ ✅（改从 `@playwright/test` 导入）/ ~~wrangler 漏洞~~ ✅（依赖树已移除）/ 低危汇总剩余部分见 IMPROVEMENT-PLAN 4.3 |
+| **#26** | 更新签名发布者收紧为完整 DN ⚠️**勿贸然改**，需两个发布周期迁移（CN-only 告警日志子项可先做，见 IMPROVEMENT-PLAN 3.4） |
+| **#34** | ~~拆 `system-service.ts` 的 Codex 桌面端~~ → **✅ 已解决**（`codex-desktop-service.ts`，system-service 降至约 2900 行） |
 
 ### 5.7 关于「现有代码要不要重构」
 
@@ -339,7 +339,7 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 
 | 重构 | 为什么现在做 | 工作量 |
 |---|---|---|
-| **拆 `App.tsx`**（#30） | 2855 行、内嵌 12 个组件、App() 本体 937 行 / 44 个 useState。**#10 #17 #18 #21 四条任务都要改它** —— 不先拆，四个 agent 必然在这里撞车 | 1-2 人天（**纯搬运，不改一行逻辑**） |
+| **拆 `App.tsx`**（#30） | ✅ **已完成**：从 2855 行降到 1793 行，内嵌组件外移 `src/components/` | 已交付 |
 | **加 ErrorBoundary**（#31） | 现在任一页面渲染抛错 = 整窗白屏且不可恢复。画布是复杂页面，加它之前必须有这道防线 | 0.5 人天 |
 | **provider 清单收口**（#32） | 清单被复制到 8 处、**5 处编译器抓不到**（`MaintenanceProviderId` / `BackupProviderId` 是独立联合类型，`Record<ProviderId,X>` 赋值给它们在 TS 里合法）。顺带解决 `src/types.ts` 整包再导出的值导出问题 | 1.5-2 人天 |
 
@@ -347,8 +347,8 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 
 | 重构 | 为什么不急 | 工作量 |
 |---|---|---|
-| 拆 `system-service.ts` 的 Codex 桌面端（#34） | 收益真实（21 条待办里 8 条落在这一个文件），但成本高，且拆分缝隙已存在（`codex-desktop.ts` 已放着全部纯解析函数，只是编排层没搬） | 3-4 人天 |
-| IPC handler 泛型化 | 69 个通道靠人工对齐契约，泛型化能让编译器兜底。好，但不紧急 | 1-1.5 人天 |
+| 拆 `system-service.ts` 的 Codex 桌面端（#34） | ✅ **已完成**：编排层已搬入 `codex-desktop-service.ts` | 已交付 |
+| IPC handler 泛型化 | 86 个通道（另 5 个画布宿主通道）靠人工对齐契约，泛型化能让编译器兜底。好，但不紧急 | 1-1.5 人天 |
 | 路径归一化函数去重（9 份拷贝且实现已漂移） | 真实的重复，但目前没造成事故 | 1 人天 |
 
 **❌ 明确不做**
@@ -356,10 +356,10 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 | 重构 | 原因 |
 |---|---|
 | **合并扩展管理的两套子系统**（`codex-extensions` vs `provider-extensions`） | 5-8 人天的大手术，收益是内部整洁，**用户完全无感**。而且尽调结论明确写了「**不要做后端合并**」，正确做法是在 renderer 侧加一层薄适配 |
-| **拆 `styles.css`**（6027 行） | 虽然是冲突热点，但 CSS 拆分有级联顺序风险，收益远不如拆 `App.tsx` |
+| **拆 `styles.css`**（约 8000 行） | 虽然是冲突热点，但 CSS 拆分有级联顺序风险，收益远不如拆 `App.tsx` |
 | Prettier / 状态管理库 / jsdom 组件测试 / code-splitting / 主进程 bundler | 见 §4「不做清单」与 `CLAUDE.md` 第 8 节 |
 
-**判断原则**：这个代码库的问题不是「写得烂」（3.4 万行里只有 3 个 `any`、0 个 `@ts-ignore`、0 个 TODO，命名约定 70 个模块无破例），而是**「一个人写得很好，但只有这个人能改」**。所以重构的目标是**降低协作摩擦**，不是提升代码美观度。
+**判断原则**：这个代码库的问题不是「写得烂」（近 7 万行里 `any` / `@ts-ignore` / `TODO` 均为个位数，命名约定全仓无破例），而是**「一个人写得很好，但只有这个人能改」**。所以重构的目标是**降低协作摩擦**，不是提升代码美观度。
 
 ---
 
@@ -369,10 +369,10 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 
 | # | 事项 | 谁 | 环境 | 阻塞了什么 |
 |---|---|---|---|---|
-| A1 | **Issue #2 #3 #4**：跨平台测试门控 + 仓库污染 + CI job | Mac Claude | macOS | 一切 Mac 侧工作、所有 agent 的可信验证 |
-| A6 | **Issue #30**：拆 `App.tsx`（纯搬运）⚠️`serial-only` | 任一 | 任意 | #10 #17 #18 #21 的并行能力 |
+| A1 | ~~Issue #2 #3 #4~~ → **✅ 已完成**（三平台 CI 全绿） | — | — | — |
+| A6 | ~~Issue #30 拆 `App.tsx`~~ → **✅ 已完成** | — | — | — |
 | A7 | **Issue #28** 的「回滚 runbook」（0.5 人天） | 你 | — | 高频发版前的止损能力 |
-| A2 | **对接已部署的 new-api（`xm.solov.cc`）**：走通注册→登录→拿 PAT→签发 CLI token→查余额/用量，产出对接文档（含每步实际请求/响应） | 你 或 熟悉后端的人（**需实例凭据，云端 agent 无权访问生产**） | 任意 | 账号体系、画布计费 |
+| A2 | ~~对接 new-api~~ → **✅ 已完成**（对接文档 `docs/RECON-new-api.md` + 账号体系 W2-W4b 落地） | — | — | — |
 | A3 | ~~cc-switch 改造评估~~ → **降级为半天「借鉴调研」**：只看它的 **Mac 安全边界实现** 与 **测试组织方式**，不评估迁移 | 任一开发者 | 任意 | #23 Mac 安全边界 |
 | A4 | **sub2api → new-api 迁移方案**：存量用户/余额数据怎么迁、CLI 里硬编码的 `api.solov.cc` 何时切 `xm.solov.cc`、两套并存期职责边界 | 你 | — | 老用户迁移、D2 |
 | A5 | **在 new-api 后台配置多渠道**：自营设 Priority 最高 + 至少一个批发上游，验证故障转移无感；同时确认 `AcceptUnsetRatioModel` 已关闭 | 你 | — | §3.6 护栏、§3.7 风险1 |
@@ -407,8 +407,8 @@ if meta.MaxTokens != 0 { preConsumedTokens += meta.MaxTokens }   // max_tokens �
 | 必须串行（标 `serial-only`） | 原因 |
 |---|---|
 | IPC 通道增删（`ipc-contract.ts` / `ipc.ts` / `preload.ts`） | 注册顺序与契约键顺序强耦合，两人并行加通道**即使文本合并干净 CI 也必红** |
-| `src/styles.css`（6027 行） | 全局作用域、无模块化 |
-| `system-service.ts`(3300) / `App.tsx`(2855) 的结构性改动 | 枢纽文件，21 条待办里 8 条落在 system-service.ts 一个文件上 |
+| `src/styles.css`（约 8000 行） | 全局作用域、无模块化 |
+| `system-service.ts`(约 2900) / `App.tsx`(约 1800) 的结构性改动 | 枢纽文件 |
 
 **任务分派原则：**
 1. **先看环境**：只能 Windows 验证的（提权/PowerShell/注册表/Appx/真实安装）→ A 的 Win 端；只能 macOS 验证的 → A 的 Mac 端；平台无关的（纯函数/类型/脚本/文档/CI/后端对接）→ 任一

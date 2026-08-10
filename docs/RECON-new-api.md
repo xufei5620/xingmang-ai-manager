@@ -28,7 +28,7 @@
 
 统一规则：管理类 `/api/*` 需 `Authorization: Bearer {access_token 或 PAT}` **并附** `New-Api-User: {user_id}`，缺一即 401。
 
-## B. xm.solov.cc 实测开关（2026-08-09 单次探测）
+## B. xm.solov.cc 实测开关（2026-08-09 单次探测；rc.22 时点快照，版本号与汇率已被文首更新块覆盖）
 
 - `system_name=星芒AI`，`setup=true`，`version=v1.0.0-rc.22-solov1`
 - 注册：`register_enabled=password_register_enabled=email_verification=true`（邮箱验证码必需）
@@ -44,9 +44,9 @@
 2. 漏带 `New-Api-User` 头一律 401，易误判为凭证失效。
 3. **登录已非纯 cookie 模型**（rc.22 引入 stateless tokens）：access_token 在响应体、短期有效；refresh 走 HttpOnly cookie。Electron 主进程裸 HTTP 无浏览器 cookie jar，需自行接管 Set-Cookie；旧版 one-api「全程 session cookie」的资料会误导。
 4. 余额是整数 quota，必须用当次 `/api/status` 的 `quota_per_unit` 换算，不能硬编码。
-5. 实例锁定 rc.22 定制分支、落后上游：新字段/开关以实测为准，不能假设与最新文档一致。
+5. 实例版本会漂移（已从 rc.22 升到 rc.24，见文首更新块）：新字段/开关以当次实测为准，不能假设与任何文档或历史快照一致。
 6. 兑换码错误/已用/过期统一同一失败文案，且受「支付合规确认」开关整体拦截。
-7. PAT 权限与登录态等同、无独立 scope——不建议长期常驻存储；后台轮询优先短期 access_token + refresh 静默续期（与最初「PAT 存系统凭据」设想有出入，实施前需产品拍板）。
+7. PAT 权限与登录态等同、无独立 scope——不建议长期常驻存储；后台轮询优先短期 access_token + refresh 静默续期（**已拍板并按此方案落地**：`39c9671`，`electron/account-session-store.ts` 存 session token 而非 PAT）。
 
 ## D. 建议鉴权流
 

@@ -44,7 +44,7 @@
 - C 桌面隔离嵌入 `41eb927`：自定义协议 + 独立 sandbox 窗口 + 极窄宿主桥（画布触不到主 IPC/Node，双重密封）。
 - D 收官 `a5b606c`：修画布窗口 404 阻断（真机 Playwright 揪出）、孤儿 token 复用、dist-canvas 补 LICENSE。
 
-门槛：typecheck 三连 0 错、vitest 1069 通过/150 跳过/0 失败 + node 79、compile 产出 dist-canvas。真机 smoke 证画布窗口正常打开渲染（canvasRouterShowsNotFound=false、290 元素、零错误、节点工具栏可见）。
+门槛（当时快照，2026-08-09；最新基线见 HANDOFF ③栏）：typecheck 三连 0 错、vitest 1069 通过/150 跳过/0 失败 + node 79、compile 产出 dist-canvas。真机 smoke 证画布窗口正常打开渲染（canvasRouterShowsNotFound=false、290 元素、零错误、节点工具栏可见）。
 
 ### 待用户（一起看时对接）
 1. **测试账号**：账号流全链路（注册→Key→写 CLI）仅单测覆盖，未真机走过。给邮箱+密码测试账号或当场注册。

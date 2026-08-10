@@ -1,6 +1,6 @@
 # 星芒AI管理工具
 
-面向 Windows 与 macOS 的 Electron 桌面管理工具，用于检测 Node.js、npm、Python 与 AI CLI 环境，配置星芒 AI，并集中管理 Codex 会话、MCP、Skills、Plugins、备份、诊断、安装维护和主程序更新。
+面向 Windows 与 macOS 的 Electron 桌面管理工具，用于检测 Node.js、npm、Python 与 AI CLI 环境，配置星芒 AI，并集中管理 Codex 会话、MCP、Skills、Plugins、备份、诊断、安装维护和主程序更新；内置星芒账号体系（注册/登录/个人中心/充值外链）与无限画布窗口。
 
 正式发布需要 Authenticode 代码签名；普通 `npm run build` 可生成仅供本机调试的未签名安装包，但不能通过正式发布门禁。所有 Windows 包都会写入预期更新发布者，下载后的更新安装程序还会通过固定系统 PowerShell 严格核对 `Valid` 状态、文件路径和证书发布者；校验工具缺失、执行失败或结果异常均拒绝更新。详见 [发布手册](docs/RELEASING.md)。
 
@@ -99,5 +99,7 @@ npm run dev
 
 - Claude Code、Codex CLI、Codex 桌面端、Gemini CLI：`https://api.solov.cc`
 - Grok CLI：`https://api.solov.cc/v1`
+
+设置页提供站点下拉（`electron/relay-sites.ts` 注册表）：「星芒AI（账号登录）」与「星芒AI（Key 直连）」共用同一 relay 域，仅账号模式不同；默认站点行为与历史版本一致。
 
 Codex CLI 与 Codex 桌面端共用 `%USERPROFILE%\.codex` 配置。已有配置保存前会创建时间戳备份，用户可选择只更新 API Key/模型或重置为星芒初始配置。

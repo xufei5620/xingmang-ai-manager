@@ -10,6 +10,8 @@
 
 ## 批次 0：Mac 适配优先（阻塞 Mac 分支的验证）
 
+> **✅ 全部落地（2026-08-10 核实）**：0.1 平台门控——`electron/` 现有约 99 处 `runIf`，覆盖点名的全部 10 个文件；0.2 泄漏根治——`managed-cli.test.ts` 真实 FS 用例全部平台门控，Linux 跑完 `npm test` 工作树干净；0.3 CI——`quality.yml` 现有 windows/macos/linux 三个 test job + audit job（`23a1e87`）。以下为原始分析，留档。
+
 Mac 适配分支会立刻撞上这批问题，不先修则无法区分"新改动坏的"和"本来就坏的"。
 
 ### 0.1 给 Windows 专有测试加平台门控
@@ -43,6 +45,8 @@ Mac 适配分支会立刻撞上这批问题，不先修则无法区分"新改动
 ---
 
 ## 批次 1：止血（改动都在几行内，风险接近零）
+
+> **✅ 全部落地（2026-08-10 核实）**：1.1 `system-service.ts` 两处扫描已改 `Promise.allSettled`（失败项落 `detectionFailed:true` 占位）；1.2 unknown 区域已镜像优先（`npmInstallRegistries` / `nodeRuntimeDownloadSources`）且区域缓存延至 10 分钟；1.3 Codex 桌面端清单源已镜像优先——**注意函数已迁至 `electron/codex-desktop-service.ts`**，测试钉住顺序；1.4 TOML 解析失败回退 `'OpenAI'`（`config-files.ts` 的 `existingCodexProvider`）；1.5 以等价解法消除——未加 `playwright` 依赖，7 个 e2e 脚本全部改从 `@playwright/test` 导入。以下为原始分析，留档。
 
 共同特点：**要么只改失败路径（原本就是坏的，不可能更坏），要么只加备选源（原有源仍在）。**
 
@@ -97,6 +101,8 @@ inspectCodexDesktop 抛错
 ---
 
 ## 批次 2：用户体验（需新增字段，但保证向后兼容）
+
+> **部分落地（2026-08-10 核实）**：2.1 ✅（`detectionFailed?`/`detectionError?` 可选字段 + 渲染层"检测失败，点击重试"三处文案，`317b34f`/`171fd74`）；2.3 ✅ 三条做法全做（解析/下载超时分离 10min/5min、心跳 `setInterval`、开始文案，对账逻辑未被绕过）；**2.2 / 2.4 / 2.5 / 2.6 未做**（2.6 依赖"agentsmirror 基础设施控制权"决策，仍未答复）。另更正 2.2 原文一处前提：`FNM_MULTISHELL_PATH` 自初始导入起就在 `defaultCommandPaths` 候选表——但它是 shell 会话级变量，GUI 启动的进程继承不到，所以列了也探不到 fnm 装的 Node，结论仍成立。
 
 ### 2.1 区分"检测失败"与"确实未安装"
 
@@ -266,10 +272,13 @@ same-user 模式无需处理（未跨越完整性边界）。
 **当前风险可控性**：利用需要攻击者同时具备"更新源控制权"和"同名主体的受信证书"，而 HTTPS、禁重定向、SHA-512、blockmap、Valid 状态、路径核对等主防线都完好。所以不急，但要规划。
 
 **短期零风险改进**：在 CN-only 匹配时输出告警日志（对齐上游 electron-updater 行为），不改变校验结果。
+（2026-08-10 核实：主体迁移按设计仍未动；**该告警日志子项也未做**，已列入巡检波候选。）
 
 ---
 
 ## 批次 4：工程健康
+
+> **基本落地（2026-08-10 核实）**：4.1 ✅ `tsconfig.electron.test.json` 已进 `npm run typecheck` 三段式，存量 53 条错误已清零（`854c1b4`）；4.2 ✅ wrangler 已从依赖树整体移除，6 个漏洞随之消失；4.3 前三条 ✅（MCP/Skills 突变已 invalidate `9761d81`、主题双通道已同步、git 正则退化已修 `7099a83`）；4.3 测试缺口：`ipc.ts` 15 个 parse 函数已补 104 例（`6f57921`）、`error-message.ts` 已有测试，页面组件测试现为 11 个页面中 3 个（仍不全，非阻塞）。以下为原始分析，留档。
 
 ### 4.1 让 typecheck 覆盖 electron 下的测试文件
 
@@ -349,7 +358,7 @@ same-user 模式无需处理（未跨越完整性边界）。
 | Node.js 运行时 | `nodejs.org/dist` | `npmmirror.com/mirrors/node`、`cdn.npmmirror.com/binaries/node` | 已接，顺序依赖区域探测 |
 | 四个 CLI 的 npm 包 | `registry.npmjs.org` | `registry.npmmirror.com` | 已接，但依赖图解析强制走官方 |
 | Codex 桌面端安装包 | `persistent.oaistatic.com` | `codexapp.agentsmirror.com` | **已接且是唯一源** |
-| Codex 桌面端清单 | `persistent.oaistatic.com` | `codexapp.agentsmirror.com` | 已接，但官方优先（见 1.3） |
+| Codex 桌面端清单 | `persistent.oaistatic.com` | `codexapp.agentsmirror.com` | 已接且已改镜像优先（1.3 已落地，`codex-desktop-service.ts`） |
 | **Grok CLI 二进制** | `x.ai/cli` → `storage.googleapis.com` | **无** | 两个源都在境外（见 2.6） |
 | **区域探测** | `www.cloudflare.com/cdn-cgi/trace` | **无** | 见 1.2、2.5 |
 | MCP 扩展版本查询 | `registry.npmjs.org` / `pypi.org` | 部分 | 非关键路径 |

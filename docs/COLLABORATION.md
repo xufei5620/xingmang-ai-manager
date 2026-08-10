@@ -120,21 +120,21 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 涉及 `ipc-contract.ts` / `ipc.ts` / `preload.ts` 三件套的任务，同一时间只能有一个人在做。
 
-**② 修改 `src/styles.css`（6027 行）**
+**② 修改 `src/styles.css`（约 8000 行）**
 
 单文件、无模块化、全局作用域。两个 agent 同时加样式几乎必冲突。
 
 **③ 大范围重构枢纽文件**
 
-`electron/system-service.ts`（3300 行）、`src/App.tsx`（2855 行）的结构性改动。
+`electron/system-service.ts`（约 2900 行）、`src/App.tsx`（约 1800 行）的结构性改动。
 
 ### 4.2 热点文件警示
 
-| 文件 | 行数 | 说明 |
+| 文件 | 行数（2026-08-10 实测） | 说明 |
 |---|---|---|
-| `src/styles.css` | 6325 | 全局样式，无模块化 |
-| `electron/system-service.ts` | 3753 | 多条待办落在这一个文件上；#34 会搬走约 1100 行 |
-| `src/App.tsx` | 2952 | 全部全局状态 + 14 个内嵌组件（`App()` 本体 985 行 / 39 个 useState）|
+| `src/styles.css` | 7984 | 全局样式，无模块化 |
+| `electron/system-service.ts` | 2935 | Codex 桌面端部分已按 #34 搬入 `codex-desktop-service.ts` |
+| `src/App.tsx` | 1793 | 全局状态枢纽；内嵌组件已拆到 `src/components/` 各子目录 |
 
 **分配任务时，尽量不要让两个 agent 同时改同一个热点文件。**
 
@@ -155,7 +155,7 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 ```bash
 npm run typecheck
-npm test            # Linux ~8s；Windows 上因 Defender 实时扫描可达 60~90s，不是卡死
+npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不是卡死（Windows 请用 npm run test:windows）
 ```
 
 ### 平台差异（重要）
@@ -163,14 +163,13 @@ npm test            # Linux ~8s；Windows 上因 Defender 实时扫描可达 60~
 | | Windows | macOS | Linux |
 |---|---|---|---|
 | `npm run typecheck` | ✅ | ✅ | ✅ |
-| `npm test` | ✅ 全绿 | ✅ 全绿 | ⚠️ **1 个已知失败**（见 #2） |
+| `npm test` | ✅ 全绿 | ✅ 全绿 | ✅ 全绿 |
 | `npm run compile` | ✅ | ✅ | ✅ |
 | `npm run build`（打包） | ✅ Windows 包 | ✅ mac 包（`build:mac:dir`） | ❌ |
-| e2e smoke | ✅ | ⚠️ 未验证 | ⚠️ 未验证 |
+| e2e smoke | ✅ | ✅（CI `macos-test` job 跑 dev-origin 与免费分发构建） | ⚠️ 需本机 chromium（容器版本不符时指 `executablePath` 复跑） |
 
-> **Linux 上那 1 个失败是真实缺陷，不是门控写漏**（`macos-platform.test.ts:249`，`samePathIdentity` 只比 `dev/ino/uid`）。
-> **不要用 `it.runIf(darwin)` 跳过它**。详见 Issue #2。
-> 无论在哪个平台，**都要对比改动前后的失败数是否一致**，不要引入新失败。
+> （2026-08-10 校准：历史上 Linux 的 1 个已知失败已随 `sameLocalPathIdentity` 重写修复，三平台 vitest 应全绿。）
+> 无论在哪个平台，**都要对比改动前后的失败数是否一致**——现在基线是 0，红了就是新失败。
 
 ### 只能在特定平台验证的改动
 
@@ -233,14 +232,11 @@ npm test            # Linux ~8s；Windows 上因 Defender 实时扫描可达 60~
 
 ## 8. 常见问题
 
-**Q：看到仓库根目录出现 `\tmp\xingmang-managed-cli-*` 目录？**
-A：已知 bug（`managed-cli.test.ts` 在非 Windows 平台每跑一次泄漏若干个）。**直接删除，不要提交。** 根治见 `docs/IMPROVEMENT-PLAN.md` 批次 0。
-
 **Q：我的改动需要加 IPC 通道，但有人正在改 IPC？**
 A：等待。IPC 三件套是 `serial-only`，见 4.1。
 
 **Q：测试在我的平台上是红的，怎么判断是不是我改坏的？**
-A：先在干净的 `main` 上跑一遍记下失败数，再对比。批次 0 修完后此问题消失。
+A：三平台基线均为全绿（2026-08-10 起）。先在干净的 `main` 上复跑确认，仍红即为环境或新回归，不要带着红提交。
 
 **Q：能不能顺手把某个不规范的地方改了？**
 A：不要。单开 Issue。混合改动会让 review 无法区分行为变化。
