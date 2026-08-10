@@ -2775,7 +2775,15 @@ export function createSystemService(
   async function fetchAvailableModels(apiKeyInput: string): Promise<string[]> {
     const apiKey = apiKeyInput.trim()
     if (!apiKey) throw new Error('请先填写 API Key')
-    if (/\r|\n/.test(apiKey)) throw new Error('API Key 格式错误')
+    // Reject any C0/C1 control character, not just CR/LF. A relay API key is a
+    // single opaque bearer token with no legitimate embedded control byte; an
+    // embedded NUL otherwise reaches undici's fetch below, which throws with
+    // the raw "Bearer <key…>" sequence in its message -- and redactCommandText's
+    // Bearer rule stops at the first non-token char, leaving the tail past the
+    // NUL in the clear in both the runtime log and the renderer-facing failure
+    // reason. This one chokepoint covers both models:list and config:save (the
+    // latter funnels through fetchAvailableModels before writing).
+    if (/[\x00-\x1F\x7F]/.test(apiKey)) throw new Error('API Key 格式错误')
 
     const now = Date.now()
     for (const [key, entry] of modelAccessCache) {

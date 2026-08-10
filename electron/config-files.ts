@@ -152,9 +152,14 @@ function requireJson(filePath: string, label: string): Record<string, unknown> {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>
     }
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error)
-    throw new Error(`${label} 无法解析，未执行修改：${detail}`)
+  } catch {
+    // Deliberately drop the parser's own message: V8's JSON.parse error
+    // embeds a slice of the source around the failure, which for these config
+    // files can carry the existing API key in the clear -- and this message
+    // flows into the on-screen failure reason, the runtime log, and the
+    // feedback export (I13). The label already names the file; the byte
+    // offset does not help a non-technical user.
+    throw new Error(`${label} 无法解析为 JSON，未执行修改`)
   }
   throw new Error(`${label} 不是有效的 JSON 对象，未执行修改`)
 }
