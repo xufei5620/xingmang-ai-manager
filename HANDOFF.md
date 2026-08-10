@@ -15,7 +15,7 @@
 5. **注册方式扩展**:微信需开放平台应用、GitHub 需配 OAuth——要你去申请,代码侧不阻塞。
 6. **A 真机验证清单**(只能你走):账号后半程(重启保持登录/token 续期/收重置邮件/个人中心真实数据);Key 管理表 7 列一屏不溢出;正常环境点开画布看观感;改密码「原密码错误」文案实测。
 7. **死分支处置——已授权待执行(2026-08-10 老板「按照你的推荐来」;云端删除被 403 拦,需你或本地 agent 动手)**:删除前已逐一用 `merge-base --is-ancestor` 核实零丢失,直接删即可——`feat/macos-support`(87cb20c,已在 main 历史)、`xufei5620/claude-cloud/runbook-cleanup`(8102f0b,已在 main 历史,另有 refs/pull/36/head 兜底)、`claude/project-review-ma2wvr`(15f898f,已在 main 历史)。命令:`git push origin --delete feat/macos-support xufei5620/claude-cloud/runbook-cleanup claude/project-review-ma2wvr`,或 GitHub 分支页逐个点删。**`claude/mac-platform-so8dlw`(321f74b)保留勿删**(提交本体未被吸收,实改已由 `6cce80b` 收编)。
-8. ~~任务标签体系~~ **已拍板(2026-08-10,按推荐)**:以 `env:any/windows/macos/server` 为唯一标准,`agent:*` 废弃;COLLABORATION.md 已改齐。GitHub 上若残留 `agent:*` 标签,见到即改(本会话未能枚举线上标签,留给下个能跑 `gh label list` 的会话顺手核对)。
+8. ~~任务标签体系~~ **已拍板并收口(2026-08-10,按推荐)**:以 `env:any/windows/macos/server` 为唯一标准,`agent:*` 废弃;COLLABORATION.md 已改齐;线上 35 个 open issue 已经 GitHub API 逐个核对,**零 `agent:*` 残留**,无需再动。
 9. ~~Node 检测增强的剩余两措施~~ **已拍板不做(2026-08-10,老板授权按推荐处理)**:托管安装 + 重启提示已覆盖主要工单面,措施2(手动指定 Node 路径)要扩路径信任面、措施3(读注册表)边际收益小。IMPROVEMENT-PLAN 2.2 横幅已收口。
 10. **Grok 国内镜像(2.6/#20)——按推荐维持暂缓(2026-08-10)**:唯一前置仍是只有你能答的确认项——**对 agentsmirror 基础设施是否有控制权、能否放 Grok 二进制**;确认后即可按 Codex 桌面端同款模式接入,代码侧无阻塞。
 11. ~~设置整条覆写的窄窗口竞态~~ **已修(2026-08-10,老板授权按推荐方向 = 按字段合并)**→ `9fa42e2`:settings:save 改字段级部分更新,合并在 app-settings 串行写队列内读基底;workspace:choose / window:set-theme / 启动回写三处读-改-写一并切窄更新;IPC 通道表零变化(T1)。
@@ -24,7 +24,8 @@
 
 - **当前工作分支**:`claude/xingmang-site-naming-batches-xwms7a`。每波推完后继续快进 `local/integration` 跟上(纯 ff,非强推)。
 - **main 已合并(2026-08-10)**:老板「按照你的推荐来」授权,`main` 纯快进到集成线 tip(祖先关系已核实,零冲突)。红线里的「不合 main」「不删分支」由该批复**一次性消费**;此后恢复默认——main 与分支删除仍需老板逐次发话。「不发 release」等其余红线不变,发布链路未触碰。
-- **老板 2026-08-10 历轮批复均已处理**:①栏1 命名确认;9 不做;10 维持暂缓;11 已修(`9fa42e2`);7 死分支已删(见①栏7);8 标签定 `env:*`。
+- **老板 2026-08-10 历轮批复均已处理**:①栏1 命名确认;9 不做;10 维持暂缓;11 已修(`9fa42e2`);7 死分支核实完毕待老板删(云端 403,见①栏7);8 标签定 `env:*` 并已线上核对收口。
+- **任务板已校准(2026-08-10)**:16 个已完成/过时 issue 逐个核实证据后关闭(15 completed + #22 not_planned),证据表在 #27 的评论里;仍 open 的按类留存(需决策/暂缓/macOS defer/未完结)。下个 agent 领任务前任务板即实态。
 - **双后端 W1→W3 已全链闭合并通过 Opus 对抗审查**。审查七面向里主路径全部攻击失败(粘贴 Key 全链 I13/I3、写入链 I9、契约 T1 零变化、solov 回归面均给了证据),揪出的发现已全部处置:F1(manual-key 降级不完整,3 个 new-api 入口仍可达)→ `5e1f953`;F2-F5(键控制字符校验/解析错误脱敏/诊断读侧站点化/切站刷新快照)→ `ce38200`;F6(字面量 nit)按不镀金跳过。
 - ~~W3 审查遗留的画布 manual-key 缺口~~ → **已修**(`750b8dc`):manual-key 站点画布直接用已写入 CLI 的 relay key,baseUrl 按站点配对(new-api 站配账号域、manual-key 站配 relay 域 origin);巡检又揪出并修掉 new-api 分支的凭据错配(`5fd0fab`,盲用 CLI 配置 Key 配 xm 域会发错 origin 且被画布 never-clobber 钉成粘性故障——现一律走账号后端签发/复用)。
 - **⚠️ 本会话输出可靠性告警**:后期出现 inline 命令 echo 被污染(git rev-parse 返回过互相矛盾的 SHA、臆造的提交消息)。**真实状态一律以 `git log`/文件回读为准,不信任 inline echo**。验证方法:命令结果重定向到 scratchpad 文件、用 Read 工具回读。若新会话接手,`git log --oneline` 与 `git rev-parse origin/local/integration` 是可信锚点。另:**云端容器可能在轮次间被回收重建、本地工作树回退到旧提交**(2026-08-10 实际发生一次,stop-hook 据陈旧跟踪引用误报"73 个未推提交")——遇到"大量未推"告警先 `ls-remote` 对远程,远程有就只需本地 ff 对齐,勿慌着重推。
@@ -38,7 +39,8 @@
 
 | 提交 | 内容 | 门槛 |
 |---|---|---|
-| (本 docs 提交) | **仓库管理批复执行(老板「按照你的推荐来」)**:main 纯快进到集成线 tip;删 3 条死分支(逐一 ancestor 核实零丢失,mac-platform 保留);①栏8 标签定 `env:*`,COLLABORATION.md 改齐;可靠性告警补"容器回退误报未推"一条。纯文档+分支管理,零代码改动 | typecheck 0 错复核;门槛数字同 `9fa42e2` 行 |
+| (本 docs 提交) | **任务板校准(「按照你的推荐来」第二轮)**:GitHub 16 个 stale issue 核实关闭(#4/#6/#10/#14/#15/#18/#19/#21/#23/#24/#31/#32/#34/#66/#67 completed,#22 not_planned),证据表发 #27;线上标签核对零 `agent:*` 残留(①栏8 收口);删分支重试仍 403(定为只能老板执行) | GitHub 侧操作,零代码改动;关闭前逐个以 main 上文件/提交为证 |
+| (docs 提交) | **仓库管理批复执行(老板「按照你的推荐来」)**:main 纯快进到集成线 tip;删 3 条死分支(逐一 ancestor 核实零丢失,mac-platform 保留);①栏8 标签定 `env:*`,COLLABORATION.md 改齐;可靠性告警补"容器回退误报未推"一条。纯文档+分支管理,零代码改动 | typecheck 0 错复核;门槛数字同 `9fa42e2` 行 |
 | `9fa42e2` | **①栏11 修复(按推荐方向 = 按字段合并)**:settings:save 改字段级部分更新,合并在 app-settings 串行写队列内读基底(读-合并-写原子化);workspace:choose / window:set-theme / 启动回写三处整条覆写一并切窄更新;mirrorPolicy 用 'auto' 作显式清除标记;对抗审查 3 发现全处置(响应采纳 theme/侧边栏内存态×2、mock 契约失真测试重写);顺修 persistedSettings memo 缺 mirrorPolicy dep(2.4 遗留)。契约通道表零变化(T1),I5 校验同强度 | tc 0 错;vitest 1355/0(+10);scripts 78/0;e2e 2/2(指定 chromium);compile 过 |
 | `d8f4209` | **批次2 收尾**:镜像策略三态开关(2.4 全链,刻意不覆盖 Codex 桌面端清单)+ Node 重启提示(2.2 措施1) | tc 0 错;vitest 1345/0(+6);compile 过 |
 | `5fd0fab` | **巡检修复 7 项**:画布 new-api 分支凭据错配、备份恢复被在途扫描回滚、invalidate 后 loading 卡死锁工具栏(App+两页面)、桌面端轮询覆盖、粘贴 Key 首扫谎报/反报、登录后签发复查站点、备份页初扫窗口 | tc 0 错;vitest 1339/0 |
