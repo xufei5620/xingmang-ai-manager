@@ -9,7 +9,7 @@ import { PasteKeyDialog } from './components/account/PasteKeyDialog'
 import { AccountCenterPage } from './components/account/AccountCenterPage'
 import { resolveAccountErrorMessage } from './components/account/account-errors'
 import { WALLET_URL } from './components/account/account-center'
-import { resolveAccountAreaStatus } from './components/account/account-stub'
+import { resolveAccountAreaStatus, shouldShowManualKeyEntry } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
 import {
   buildProvisioningTargets,
@@ -587,13 +587,26 @@ function App() {
           // Scoped to this branch alone (not hoisted above the codexReady
           // check) so the already-fully-configured fast path straight to
           // 'dashboard' below never waits on it.
-          const [latestConfig, startupAccountSession] = await Promise.all([
+          // Settings is read here too (not from the mount-only effect that
+          // hydrates it into state) for the same reason as the session above:
+          // the welcome/onboarding gate must see the persisted relaySiteId
+          // now, and this effect's closure still holds the initial default
+          // (relaySiteId undefined) until that other effect lands. A manual-key
+          // site has no account backend to welcome the user into, so it routes
+          // straight to onboarding.
+          const [latestConfig, startupAccountSession, startupSettings] = await Promise.all([
             loadConfig(),
             window.xingmang.getAccountSession().catch(() => null),
+            window.xingmang.getSettings().catch(() => null),
           ])
           if (!active) return
           setScanning(false)
-          setAppView(resolveInitialAppView(latestConfig, startupAccountSession?.authenticated ?? false, previewOnboarding))
+          setAppView(resolveInitialAppView(
+            latestConfig,
+            startupAccountSession?.authenticated ?? false,
+            previewOnboarding,
+            shouldShowManualKeyEntry(resolveRelaySite(startupSettings?.relaySiteId).accountBackend),
+          ))
           return
         }
         setAppView('dashboard')
@@ -823,6 +836,14 @@ function App() {
   // 来，好分别给出可执行的引导，而不是复用 handleAccountLoginSubmit 那条
   // 登录成功后的静默 offer 路径。
   const handleConfigureCliKey = () => {
+    // manual-key 站点没有账号登录/签发能力，「一键配置」必须导向粘贴 Key，
+    // 否则会走到 offerCliProvisioning 的账号签发路径：未登录时弹出该站点根本
+    // 用不到的星芒登录框，已登录（切站前在账号站登录过、未登出）时更糟——向
+    // 账号站签发 Key 再写进当前 manual-key 站点的 CLI 配置，构成跨站点凭据混线。
+    if (shouldShowManualKeyEntry(activeRelaySite.accountBackend)) {
+      handleOpenPasteKeyDialog()
+      return
+    }
     const gate = resolveCliProvisioningGate(Boolean(accountSession?.authenticated), snapshotRef.current)
     if (gate === 'requires-login') {
       setAccountDialog('login')
@@ -1489,6 +1510,7 @@ function App() {
             onLaunch={(provider) => void launch(provider)}
             onLaunchCodexDesktop={() => void requestCodexDesktopLaunch()}
             onNextStepsConfigureFirstCli={handleConfigureCliKey}
+            manualKeySite={shouldShowManualKeyEntry(activeRelaySite.accountBackend)}
             onNextStepsTryLaunch={handleNextStepsTryLaunch}
             onNextStepsGoMaintenance={() => setActivePage('maintenance')}
             onNextStepsExploreMcp={handleNextStepsExploreMcp}

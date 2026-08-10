@@ -51,6 +51,7 @@ export function Dashboard({
   onLaunch,
   onLaunchCodexDesktop,
   onNextStepsConfigureFirstCli,
+  manualKeySite,
   onNextStepsTryLaunch,
   onNextStepsGoMaintenance,
   onNextStepsExploreMcp,
@@ -81,6 +82,8 @@ export function Dashboard({
   onLaunch: (provider: ProviderId) => void
   onLaunchCodexDesktop: () => void
   onNextStepsConfigureFirstCli: () => void
+  /** True on a manual-key site -- forwarded to NextStepsCard so its 配置 step copy matches the 粘贴 Key action. */
+  manualKeySite: boolean
   onNextStepsTryLaunch: (provider: ProviderId | null) => void
   onNextStepsGoMaintenance: () => void
   onNextStepsExploreMcp: () => void
@@ -121,6 +124,7 @@ export function Dashboard({
         onTryLaunch={onNextStepsTryLaunch}
         onGoMaintenance={onNextStepsGoMaintenance}
         onExploreMcp={onNextStepsExploreMcp}
+        manualKeySite={manualKeySite}
       />
 
       <section className="environment-section">

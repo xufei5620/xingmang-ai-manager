@@ -104,6 +104,10 @@ export function NextStepsCard({
   onTryLaunch,
   onGoMaintenance,
   onExploreMcp,
+  // True on a manual-key site (relay-sites.ts) -- the "配上星芒 AI" step then
+  // routes to the 粘贴 Key dialog instead of account login, so its copy must
+  // not say "登录星芒账号" or the label would contradict what the button does.
+  manualKeySite = false,
 }: {
   snapshot: SystemSnapshot
   config: AppConfigSummary | null
@@ -112,6 +116,7 @@ export function NextStepsCard({
   onTryLaunch: (provider: ProviderId | null) => void
   onGoMaintenance: () => void
   onExploreMcp: () => void
+  manualKeySite?: boolean
 }) {
   const summary = computeNextSteps(snapshot, config, nudgeState)
   if (!summary.visible) return null
@@ -126,8 +131,8 @@ export function NextStepsCard({
     },
     'configure-first-cli': {
       title: '给它配上星芒 AI',
-      hint: '登录星芒账号，一键把 Key 配到已装工具',
-      action: { label: '一键配置', icon: KeyRound, onClick: onConfigureFirstCli },
+      hint: manualKeySite ? '粘贴该站点的 Key，一键配到已装工具' : '登录星芒账号，一键把 Key 配到已装工具',
+      action: { label: manualKeySite ? '粘贴 Key' : '一键配置', icon: KeyRound, onClick: onConfigureFirstCli },
     },
     'try-launch': {
       title: '打开终端试一下',

@@ -137,6 +137,13 @@ describe('resolveInitialAppView', () => {
     expect(resolveInitialAppView(configWith({}), false, true)).toBe('onboarding')
     expect(resolveInitialAppView(configWith({}), true, true)).toBe('onboarding')
   })
+
+  it('skips the welcome page on a manual-key site, which has no account to welcome the user into', () => {
+    // The signed-out brand-new-install case (first test above) would show
+    // welcome; the manual-key flag overrides it because a manual-key site
+    // offers no register/login for that page to lead to.
+    expect(resolveInitialAppView(configWith({}), false, false, true)).toBe('onboarding')
+  })
 })
 
 describe('initialOnboardingPreview', () => {

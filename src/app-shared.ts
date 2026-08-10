@@ -134,9 +134,17 @@ export function resolveInitialAppView(
   config: AppConfigSummary | null,
   accountAuthenticated: boolean,
   previewOnboarding: boolean,
+  // True when the active relay site has no account backend of its own
+  // (relay-sites.ts's accountBackend: 'manual-key'). The welcome page's whole
+  // value proposition is "注册/登录星芒账号", which such a site does not
+  // offer -- routing straight to onboarding avoids stranding the user on a
+  // sign-up screen they cannot act on. Optional with a false default so every
+  // existing caller (and the account-station path) keeps its old behavior.
+  manualKeySite = false,
 ): 'welcome' | 'onboarding' {
   if (previewOnboarding) return 'onboarding'
   if (accountAuthenticated) return 'onboarding'
+  if (manualKeySite) return 'onboarding'
   return shouldShowWelcome(config) ? 'welcome' : 'onboarding'
 }
 
