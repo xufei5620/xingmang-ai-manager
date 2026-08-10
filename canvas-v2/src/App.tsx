@@ -20,7 +20,9 @@ import {
   type WorkflowFile,
   type WorkflowNode,
 } from './model'
-import { createMockExecutors, runWorkflow } from './engine/engine'
+import { createMockExecutors, runWorkflow, type NodeInputs } from './engine/engine'
+import { createRelayExecutors } from './engine/executors'
+import type { RelayConfig } from './engine/relay'
 import { hostBridge } from './host'
 import { isValidWorkflowConnection } from './ports'
 import { nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
@@ -71,7 +73,17 @@ export function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [running, setRunning] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
+  // null = 宿主未给账号 token(浏览器开发态/未登录)→ 运行走 mock 执行器。
+  const [relayConfig, setRelayConfig] = useState<RelayConfig | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+
+  useEffect(() => {
+    let active = true
+    void hostBridge().getAuthToken()
+      .then((token) => { if (active && token) setRelayConfig(token) })
+      .catch(() => undefined)
+    return () => { active = false }
+  }, [])
 
   const patchNodeData = useCallback((nodeId: string, patch: Partial<CanvasNode['data']>) => {
     setNodes((current) => current.map((node) => (
@@ -79,12 +91,61 @@ export function App() {
     )))
   }, [setNodes])
 
+  const buildExecutors = useCallback(() => (
+    relayConfig
+      ? createRelayExecutors(relayConfig, {
+          // 提交即落 taskId:运行中途保存工作流也能带走任务 ID,断线可恢复。
+          onVideoTaskSubmitted: (nodeId, taskId) => patchNodeData(nodeId, {
+            result: { kind: 'video', taskId },
+          }),
+        })
+      : createMockExecutors()
+  ), [relayConfig, patchNodeData])
+
+  // 单节点重跑:输入不重新执行上游,直接取画布状态里上游节点的既有产物
+  // (文本节点的输出=它的提示词;图像节点的输出=它上次成功的 result)。
+  const rerunNode = useCallback(async (nodeId: string) => {
+    if (running) return
+    const target = nodes.find((entry) => entry.id === nodeId)
+    if (!target) return
+    const inputs: NodeInputs = {}
+    for (const edge of edges) {
+      if (edge.target !== nodeId) continue
+      const source = nodes.find((entry) => entry.id === edge.source)
+      if (!source) continue
+      if (source.type === 'text') {
+        inputs.text = inputs.text === undefined ? source.data.prompt : `${inputs.text}\n${source.data.prompt}`
+      }
+      if (source.type === 'image' && source.data.result?.kind === 'image') {
+        inputs.image = source.data.result
+      }
+    }
+    setRunning(true)
+    const controller = new AbortController()
+    abortRef.current = controller
+    patchNodeData(nodeId, { status: 'running', errorMessage: undefined })
+    try {
+      const executors = buildExecutors()
+      const result = await executors[target.type as NodeKind](toWorkflowNode(target), inputs, controller.signal)
+      patchNodeData(nodeId, { status: 'succeeded', result: result.output.asset, costQuota: result.costQuota })
+    } catch (error) {
+      patchNodeData(nodeId, {
+        status: 'failed',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      abortRef.current = null
+      setRunning(false)
+    }
+  }, [running, nodes, edges, patchNodeData, buildExecutors])
+
   useEffect(() => {
     registerNodeChangeHandlers({
       onPromptChange: (nodeId, prompt) => patchNodeData(nodeId, { prompt }),
       onModelChange: (nodeId, model) => patchNodeData(nodeId, { model }),
+      onRerun: (nodeId) => void rerunNode(nodeId),
     })
-  }, [patchNodeData])
+  }, [patchNodeData, rerunNode])
 
   const addNode = (kind: NodeKind) => {
     const node: WorkflowNode = {
@@ -120,7 +181,7 @@ export function App() {
       const outcome = await runWorkflow(
         nodes.map(toWorkflowNode),
         edges.map(toWorkflowEdge),
-        createMockExecutors(),
+        buildExecutors(),
         { onNodeUpdate: patchNodeData },
         controller.signal,
       )
@@ -141,11 +202,8 @@ export function App() {
       nodes: nodes.map(toWorkflowNode),
       edges: edges.map(toWorkflowEdge),
     }
-    const result = await hostBridge().saveFile({
-      defaultFileName: 'xingmang-workflow.json',
-      content: serializeWorkflow(workflow),
-    })
-    if (result.saved) setBanner('工作流已保存')
+    const result = await hostBridge().saveFile('xingmang-workflow.json', serializeWorkflow(workflow))
+    if (result) setBanner('工作流已保存')
   }
 
   const load = async () => {
@@ -183,6 +241,7 @@ export function App() {
             ? <button type="button" className="canvas-run" onClick={cancel}>取消</button>
             : <button type="button" className="canvas-run" onClick={() => void run()} disabled={nodes.length === 0}>运行</button>}
         </div>
+        <span className="canvas-mode">{relayConfig ? '已连接星芒账号' : '演示模式(未连接账号,运行为模拟)'}</span>
         {banner && <span className="canvas-banner">{banner}</span>}
       </header>
       <div className="canvas-flow">

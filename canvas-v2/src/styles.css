@@ -80,6 +80,22 @@ html, body, #root {
   resize: vertical;
 }
 
+.wf-head-right { display: flex; align-items: center; gap: 6px; }
+
+.wf-rerun {
+  padding: 1px 7px;
+  color: #2563eb;
+  background: transparent;
+  border: 1px solid #b9ccf5;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.wf-rerun:hover { background: #eef3ff; }
+
+.canvas-mode { font-size: 12px; color: #7f92b8; }
+
 .wf-status { font-size: 11px; color: #7a8699; }
 .wf-status-running { color: #2563eb; }
 .wf-status-succeeded { color: #178a54; }

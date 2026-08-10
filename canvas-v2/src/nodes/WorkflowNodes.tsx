@@ -25,6 +25,8 @@ const statusLabel: Record<WorkflowNodeData['status'], string> = {
 interface NodeChangeHandlers {
   onPromptChange(nodeId: string, prompt: string): void
   onModelChange(nodeId: string, model: string): void
+  /** 单节点重跑:只执行本节点,输入取当前画布状态里上游节点的既有产物。 */
+  onRerun(nodeId: string): void
 }
 
 // React Flow 的自定义节点组件只收 NodeProps,可变回调经模块级注册表注入
@@ -32,6 +34,7 @@ interface NodeChangeHandlers {
 let handlers: NodeChangeHandlers = {
   onPromptChange: () => undefined,
   onModelChange: () => undefined,
+  onRerun: () => undefined,
 }
 
 export function registerNodeChangeHandlers(next: NodeChangeHandlers): void {
@@ -55,7 +58,17 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData; kin
       ))}
       <header>
         <strong>{nodeTitle[kind]}</strong>
-        <span className={`wf-status wf-status-${data.status}`}>{statusLabel[data.status]}</span>
+        <span className="wf-head-right">
+          {kind !== 'text' && data.status !== 'running' && data.status !== 'queued' && (
+            <button
+              type="button"
+              className="nodrag wf-rerun"
+              title="只重跑此节点(输入取上游现有产物)"
+              onClick={() => handlers.onRerun(id)}
+            >重跑</button>
+          )}
+          <span className={`wf-status wf-status-${data.status}`}>{statusLabel[data.status]}</span>
+        </span>
       </header>
       <textarea
         className="nodrag"

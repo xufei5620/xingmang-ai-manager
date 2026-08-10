@@ -1,12 +1,14 @@
-// 宿主桥 —— 隔离窗口里由 canvas-preload 暴露的 window.xingmangCanvasHost。
-// v2 沿用 v1 的 5 能力面(I15:能力只减不增);开发态(vite dev,无宿主)
-// 降级到浏览器行为,保证画布可以脱离桌面端独立开发调试。
+// 宿主桥 —— 隔离窗口里由主仓 electron/canvas-preload.ts 暴露的
+// window.xingmangCanvasHost,方法签名与返回形状照抄该文件(位置参数,
+// 不是对象参数;saveFile 取消返回 null)。v2 沿用 v1 的 5 能力面
+// (I15:能力只减不增)。开发态(vite dev,无宿主)降级到浏览器行为,
+// 保证画布可以脱离桌面端独立开发调试。
 
 export interface CanvasHostBridge {
   getAuthToken(): Promise<{ baseUrl: string; apiKey: string } | null>
-  saveFile(input: { defaultFileName: string; content: string }): Promise<{ saved: boolean }>
+  saveFile(suggestedName: string, content: string): Promise<{ savedPath: string } | null>
   pickFile(): Promise<{ name: string; content: string } | null>
-  notify(message: string): Promise<void>
+  notify(title: string, body?: string): Promise<boolean>
   openExternal(url: string): Promise<void>
 }
 
@@ -23,14 +25,14 @@ export function hostBridge(): CanvasHostBridge {
     async getAuthToken() {
       return null
     },
-    async saveFile({ defaultFileName, content }) {
+    async saveFile(suggestedName, content) {
       const blob = new Blob([content], { type: 'application/json' })
       const link = document.createElement('a')
       link.href = URL.createObjectURL(blob)
-      link.download = defaultFileName
+      link.download = suggestedName
       link.click()
       URL.revokeObjectURL(link.href)
-      return { saved: true }
+      return { savedPath: suggestedName }
     },
     async pickFile() {
       return new Promise((resolve) => {
@@ -48,8 +50,9 @@ export function hostBridge(): CanvasHostBridge {
         input.click()
       })
     },
-    async notify(message) {
-      console.info(`[画布通知] ${message}`)
+    async notify(title, body) {
+      console.info(`[画布通知] ${title}${body ? `:${body}` : ''}`)
+      return false
     },
     async openExternal(url) {
       window.open(url, '_blank', 'noopener')
