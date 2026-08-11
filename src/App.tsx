@@ -13,7 +13,7 @@ import { resolveAccountAreaStatus, shouldShowManualKeyEntry } from './components
 import { resolveAccountSnapshot } from './components/account/account-session'
 import {
   buildProvisioningTargets,
-  provisionCliKeyForInstalledClis,
+  configureManagedCliKeysForInstalledClis,
   resolveCliProvisioningGate,
   writeCliKeyForInstalledClis,
 } from './account-provisioning'
@@ -316,6 +316,20 @@ function App() {
         setAccountSession(session)
         if (!session.authenticated) return
         try {
+          void window.xingmang.syncManagedCliKeys()
+            .then((synchronized) => {
+              if (!active) return
+              if (synchronized.storageWarning) {
+                setToast({ type: 'error', message: `API Key 本地加密保存失败：${synchronized.storageWarning}` })
+              } else if (synchronized.failed.length > 0) {
+                setToast({ type: 'error', message: `${synchronized.failed.length} 个专属 Key 未完成初始化` })
+              }
+            })
+            .catch((error) => {
+              if (active) {
+                setToast({ type: 'error', message: `API Key 本地配置读取失败：${resolveAccountErrorMessage(errorMessage(error))}` })
+              }
+            })
           const balance = await window.xingmang.getAccountBalance()
           if (active) setAccountBalance(balance)
         } catch {
@@ -841,17 +855,12 @@ function App() {
     return session.account
   }
 
-  // 阶段 A 核心价值链「拿 Key → 写进 CLI 配置」：签发一个新 Key，写进调用方给定
-  // 的 CLI 子集（复用 config-files.ts 既有两阶段提交写入路径，不新写落盘逻辑）。
-  // I3：明文 Key 只活在 provisionCliKeyForInstalledClis/writeCliKeyForInstalledClis
-  // 的局部作用域里，绝不经过这里的任何 useState。`selected` 由
-  // ProvisioningConfirmDialog/PasteKeyDialog 勾选后给出——已经是用户确认过的
-  // 子集，这里不再重新读 snapshot。
+  // 账号路径在主进程为每个 provider 使用其专属分组 Key，并直接写入对应 CLI；
+  // renderer 只收到 provider 级摘要，明文不跨 IPC。`selected` 由确认弹窗给出。
   //
   // `suppliedKey` 是 W3b 加的第二条路径：manual-key 站点没有账号服务可签发
   // Key，PasteKeyDialog 把用户粘贴的值直接交过来，写入逻辑与账号签发的 Key
-  // 完全复用同一条 writeCliKeyForInstalledClis（config:save 两阶段提交），
-  // 只是跳过 provisionCliKey() 这一步。
+  // 完全复用 writeCliKeyForInstalledClis（config:save 两阶段提交）。
   const runCliProvisioning = async (selected: readonly ProviderId[], suppliedKey?: string) => {
     if (selected.length === 0) return
     const preferredModels = Object.fromEntries(
@@ -869,7 +878,7 @@ function App() {
     try {
       const outcome = suppliedKey
         ? await writeCliKeyForInstalledClis(suppliedKey, selected, preferredModels, window.xingmang)
-        : await provisionCliKeyForInstalledClis(selected, preferredModels, window.xingmang)
+        : await configureManagedCliKeysForInstalledClis(selected, preferredModels, window.xingmang)
       // 写入已经落盘成功，这里只是刷新配置摘要。刷新失败不能落进外层 catch
       // 把结论反转成"写入失败"——那与磁盘上的事实完全相反。
       let refreshFailed = false
@@ -1026,6 +1035,30 @@ function App() {
     }
   }
 
+  const finishAuthenticatedEntry = async (successMessage: string) => {
+    const warnings: string[] = []
+    try {
+      const synchronized = await window.xingmang.syncManagedCliKeys()
+      if (synchronized.failed.length > 0) {
+        warnings.push(`${synchronized.failed.length} 个专属 Key 未完成初始化`)
+      }
+      if (synchronized.storageWarning) warnings.push('API Key 本地加密保存失败')
+    } catch (error) {
+      warnings.push(resolveAccountErrorMessage(errorMessage(error)))
+    }
+
+    setAppView('dashboard')
+    try {
+      const scanResult = await scan()
+      offerCliProvisioning(scanResult.snapshot ?? snapshotRef.current)
+    } catch (error) {
+      warnings.push(`本机环境检测失败：${errorMessage(error)}`)
+    }
+    setToast(warnings.length > 0
+      ? { type: 'error', message: `${successMessage}，但${warnings.join('；')}` }
+      : { type: 'success', message: successMessage })
+  }
+
   // identifier may be either a username or an email address -- new-api's
   // Login handler matches either (see LoginDialog.tsx's own comment), and
   // its request field is always literally named `username` regardless of
@@ -1036,6 +1069,13 @@ function App() {
     setAccountBusy(true)
     try {
       await window.xingmang.loginAccount({ username: values.identifier, password: values.password })
+    } catch (error) {
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+      accountBusyRef.current = false
+      setAccountBusy(false)
+      return
+    }
+    try {
       // 只在登录确实成功后才落盘「记住密码」。未勾选时只清除"同一账号"的
       // 旧凭据——错配预填场景(如注册完 B 账号后登录,勾选框初值为 false)
       // 不能静默删掉 A 账号已存的记住密码(复查发现)。失败静默:记不住
@@ -1050,15 +1090,11 @@ function App() {
       const account = await refreshAccountSession()
       setAccountDialog(null)
       setAccountLoginPrefill('')
-      setToast({ type: 'success', message: account ? `欢迎回来，${account.username}` : '登录成功' })
-      // 登录成功即离开欢迎页进入工作台，并跑一次环境扫描——欢迎页那条启动
-      // 路径不扫描，snapshot 为空会让写 Key 弹窗拿不到已装 CLI。用扫到的
-      // 快照直接触发，避免 snapshotRef 尚未随渲染更新。
-      setAppView('dashboard')
-      const scanResult = await scan()
-      offerCliProvisioning(scanResult.snapshot ?? snapshotRef.current)
+      await finishAuthenticatedEntry(account ? `欢迎回来，${account.username}` : '登录成功')
     } catch (error) {
-      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+      setAccountDialog(null)
+      setAppView('dashboard')
+      setToast({ type: 'error', message: `登录成功，但账号初始化失败：${resolveAccountErrorMessage(errorMessage(error))}` })
     } finally {
       accountBusyRef.current = false
       setAccountBusy(false)
@@ -1081,21 +1117,33 @@ function App() {
         password: values.password,
         verificationCode: values.verificationCode,
       })
-      // new-api's POST /api/user/register replies with only {success,
-      // message} -- no token, no session (confirmed by reading
-      // QuantumNous/new-api's controller/user.go Register handler; see
-      // NewApiRegisterInput's comment in electron/new-api-client.ts). The
-      // official web frontend itself shows a success toast and redirects to
-      // sign-in rather than auto-logging in, so this mirrors that instead of
-      // chaining a second network call the server was never going to hand a
-      // session for: show clear success feedback, then hand off to
-      // LoginDialog with the just-registered username pre-filled so the
-      // user only has to type their password once more.
+    } catch (error) {
+      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+      accountBusyRef.current = false
+      setAccountBusy(false)
+      return
+    }
+
+    try {
+      await window.xingmang.loginAccount({ username: values.username, password: values.password })
+    } catch {
       setAccountDialog('login')
       setAccountLoginPrefill(values.username)
       setToast({ type: 'success', message: '注册成功，请登录' })
+      accountBusyRef.current = false
+      setAccountBusy(false)
+      return
+    }
+
+    try {
+      const account = await refreshAccountSession()
+      setAccountDialog(null)
+      setAccountLoginPrefill('')
+      await finishAuthenticatedEntry(account ? `欢迎，${account.username}，账号已创建` : '注册并登录成功')
     } catch (error) {
-      setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+      setAccountDialog(null)
+      setAppView('dashboard')
+      setToast({ type: 'error', message: `注册并登录成功，但账号初始化失败：${resolveAccountErrorMessage(errorMessage(error))}` })
     } finally {
       accountBusyRef.current = false
       setAccountBusy(false)
@@ -1526,6 +1574,10 @@ function App() {
       <CodexOnboarding
         initialConfig={config}
         relaySite={activeRelaySite}
+        authorizationMode={accountSession?.authenticated
+          && !shouldShowManualKeyEntry(activeRelaySite.accountBackend)
+          ? 'managed'
+          : 'manual'}
         theme={theme}
         onToggleTheme={() => {
           const next = theme === 'light' ? 'dark' : 'light'
@@ -1618,6 +1670,11 @@ function App() {
         onConfigureCliKey={handleConfigureCliKey}
         onRefreshBalance={() => void handleRefreshBalance()}
         onOpenAccountCenter={() => setAppView('account-center')}
+        onOpenTutorialDocs={() => {
+          void window.xingmang.openTutorialDocsWindow().catch((error: unknown) => {
+            setToast({ type: 'error', message: errorMessage(error) })
+          })
+        }}
         onPasteKey={handleOpenPasteKeyDialog}
         onOpenKeysPage={() => {
           // Same "opens in the system browser" reasoning as onRecharge above
@@ -1809,6 +1866,7 @@ function App() {
           config={config}
           snapshot={snapshot}
           relaySite={activeRelaySite}
+          accountAuthenticated={Boolean(accountSession?.authenticated)}
           onConfigChange={setConfig}
           onClose={() => setConfigOpen(false)}
           notify={setToast}

@@ -1,7 +1,8 @@
 import { useState, type FormEvent, type MouseEvent } from 'react'
 import { Eye, EyeOff, LogIn, X } from 'lucide-react'
 import { dialogAriaProps, DialogBackdrop } from '../Dialog'
-import { privacyPolicyUrl, userAgreementUrl } from '../../types'
+import type { LegalDocumentKind } from '../../types'
+import { LegalDocumentDialog } from './LegalDocumentDialog'
 import { validateAgreement, validateLoginForm, type AccountFieldErrors } from './validation'
 
 /**
@@ -55,6 +56,7 @@ export function LoginDialog({
   const [agreedToTerms, setAgreedToTerms] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<AccountFieldErrors>({})
+  const [legalKind, setLegalKind] = useState<LegalDocumentKind | null>(null)
 
   const clearError = (field: keyof AccountFieldErrors) => {
     setErrors((current) => (current[field] ? { ...current, [field]: undefined } : current))
@@ -62,10 +64,10 @@ export function LoginDialog({
 
   // The legal links sit inside the agreement <label>: preventDefault stops
   // the label's default activation from also toggling the checkbox.
-  const openLegalPage = (event: MouseEvent, url: string) => {
+  const openLegalPage = (event: MouseEvent, kind: LegalDocumentKind) => {
     event.preventDefault()
     event.stopPropagation()
-    void window.xingmang.openExternal(url)
+    setLegalKind(kind)
   }
 
   const submit = (event: FormEvent) => {
@@ -77,6 +79,10 @@ export function LoginDialog({
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
     onSubmit({ identifier: identifier.trim(), password, remember })
+  }
+
+  if (legalKind) {
+    return <LegalDocumentDialog kind={legalKind} onClose={() => setLegalKind(null)} />
   }
 
   return (
@@ -149,9 +155,9 @@ export function LoginDialog({
             />
             <span>
               我已阅读并同意
-              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, userAgreementUrl)}>用户协议</button>
+              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, 'user-agreement')}>用户协议</button>
               和
-              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, privacyPolicyUrl)}>隐私政策</button>
+              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, 'privacy-policy')}>隐私政策</button>
             </span>
           </label>
           {errors.agreement && <small className="field-error" role="alert">{errors.agreement}</small>}

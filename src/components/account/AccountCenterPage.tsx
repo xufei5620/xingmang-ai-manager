@@ -32,6 +32,7 @@ import type {
   AccountKeyCreateInput,
   AccountKeysPage,
   AccountProfileDetail,
+  AccountUsableGroup,
   AccountUsagePage,
 } from '../../types'
 import { KeyEditorDialog } from './KeyEditorDialog'
@@ -54,6 +55,7 @@ const USAGE_PAGE_SIZE = 8
 // constraint this page's tabs are all designed around, so both cap their row
 // count identically.
 const KEYS_PAGE_SIZE = 8
+const KEY_REVEAL_DURATION_MS = 30_000
 
 type AccountCenterTab = 'profile' | 'usage' | 'invite' | 'topup' | 'keys' | 'security'
 
@@ -121,6 +123,66 @@ function compactCount(value: number): string {
   return value.toLocaleString('zh-CN')
 }
 
+export function AccountKeySecretCell({
+  keyName,
+  maskedKey,
+  revealedSecret,
+  copying,
+  copied,
+  revealing,
+  copyDisabled,
+  revealDisabled,
+  onCopy,
+  onToggleReveal,
+}: {
+  keyName: string
+  maskedKey: string
+  revealedSecret: string | null
+  copying: boolean
+  copied: boolean
+  revealing: boolean
+  copyDisabled: boolean
+  revealDisabled: boolean
+  onCopy: () => void
+  onToggleReveal: () => void
+}) {
+  const revealed = revealedSecret !== null
+  return (
+    <div className={`account-key-secret${revealed ? ' revealed' : ''}`}>
+      <button
+        className="account-key-copy"
+        type="button"
+        title="点击复制完整 API Key"
+        aria-label={`复制 API Key「${keyName}」`}
+        disabled={copyDisabled}
+        onClick={onCopy}
+      >
+        <code>{revealedSecret ?? (maskedKey || '点击复制')}</code>
+        {copying
+          ? <LoaderCircle className="spin" size={14} />
+          : copied
+            ? <Check size={14} />
+            : <ClipboardCopy size={14} />}
+      </button>
+      <button
+        className="icon-button compact account-key-reveal"
+        type="button"
+        title={revealed ? '隐藏完整 API Key' : '显示完整 API Key'}
+        aria-label={`${revealed ? '隐藏' : '显示'} API Key「${keyName}」`}
+        aria-pressed={revealed}
+        disabled={revealDisabled}
+        onClick={onToggleReveal}
+      >
+        {revealing
+          ? <LoaderCircle className="spin" size={14} />
+          : revealed
+            ? <EyeOff size={14} />
+            : <Eye size={14} />}
+      </button>
+    </div>
+  )
+}
+
 export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPageProps) {
   const [tab, setTab] = useState<AccountCenterTab>('profile')
   const [profile, setProfile] = useState<AccountProfileDetail | null>(null)
@@ -136,6 +198,13 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
   const [keys, setKeys] = useState<AccountKeysPage | null>(null)
   const [keysLoading, setKeysLoading] = useState(false)
   const [keysError, setKeysError] = useState<string | null>(null)
+  const [keyGroups, setKeyGroups] = useState<AccountUsableGroup[]>([])
+  const [keyGroupsLoading, setKeyGroupsLoading] = useState(false)
+  const [keyGroupsError, setKeyGroupsError] = useState<string | null>(null)
+  const [copiedKeyId, setCopiedKeyId] = useState<number | null>(null)
+  const [copyingKeyId, setCopyingKeyId] = useState<number | null>(null)
+  const [revealedKeyId, setRevealedKeyId] = useState<number | null>(null)
+  const [revealingKeyId, setRevealingKeyId] = useState<number | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<AccountKey | null>(null)
   // 添加/编辑 Key 弹窗(老板需求 2026-08-10)。null = 关闭。
   const [keyEditor, setKeyEditor] = useState<{ mode: 'create' } | { mode: 'edit'; key: AccountKey } | null>(null)
@@ -150,8 +219,14 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
   // T6: profile/usage/keys are all async page data that can outlive a tab
   // switch or a fast double-open; keyed by a fixed string per data kind, same
   // pattern App.tsx already uses for mcp/skills/plugins via pageDataTracker.
-  const requestTracker = useRef(createLatestRequestTracker<'profile' | 'usage' | 'keys'>()).current
+  const requestTracker = useRef(createLatestRequestTracker<'profile' | 'usage' | 'keys' | 'groups'>()).current
   const copyResetTimer = useRef<number | null>(null)
+  const revealedKeySecret = useRef<string | null>(null)
+  const revealHideTimer = useRef<number | null>(null)
+  const revealRequestId = useRef(0)
+  const componentMounted = useRef(true)
+  const currentTab = useRef(tab)
+  currentTab.current = tab
 
   const loadProfile = useCallback(async () => {
     const requestId = requestTracker.begin('profile')
@@ -216,14 +291,55 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
     }
   }, [requestTracker])
 
+  const loadKeyGroups = useCallback(async () => {
+    const requestId = requestTracker.begin('groups')
+    setKeyGroupsLoading(true)
+    setKeyGroupsError(null)
+    try {
+      const next = await window.xingmang.getAccountUsableGroups()
+      if (!requestTracker.isCurrent('groups', requestId)) return
+      setKeyGroups(next)
+    } catch (error) {
+      if (requestTracker.isCurrent('groups', requestId)) {
+        setKeyGroupsError(resolveAccountErrorMessage(errorMessage(error)))
+      }
+    } finally {
+      if (requestTracker.isCurrent('groups', requestId)) setKeyGroupsLoading(false)
+    }
+  }, [requestTracker])
+
   // Lazy, same reasoning as loadUsage above.
   useEffect(() => {
     if (tab === 'keys') void loadKeys(keysPageNumber)
   }, [tab, keysPageNumber, loadKeys])
 
-  useEffect(() => () => {
-    requestTracker.invalidateAll()
-    if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current)
+  useEffect(() => {
+    if (tab !== 'keys') return
+    if (keyGroups.length === 0 && !keyGroupsLoading && !keyGroupsError) void loadKeyGroups()
+  }, [tab, loadKeyGroups, keyGroups.length, keyGroupsLoading, keyGroupsError])
+
+  useEffect(() => {
+    if (tab === 'keys') return
+    revealRequestId.current += 1
+    revealedKeySecret.current = null
+    setRevealedKeyId(null)
+    setRevealingKeyId(null)
+    if (revealHideTimer.current) {
+      window.clearTimeout(revealHideTimer.current)
+      revealHideTimer.current = null
+    }
+  }, [tab])
+
+  useEffect(() => {
+    componentMounted.current = true
+    return () => {
+      componentMounted.current = false
+      requestTracker.invalidateAll()
+      revealRequestId.current += 1
+      revealedKeySecret.current = null
+      if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current)
+      if (revealHideTimer.current) window.clearTimeout(revealHideTimer.current)
+    }
   }, [requestTracker])
 
   // Mirrors PluginsPage.tsx's RemoveExtensionDialog usage: throws on failure
@@ -309,6 +425,65 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
       copyResetTimer.current = window.setTimeout(() => setCopiedField(null), 1_600)
     } catch {
       notify?.({ type: 'error', message: '复制失败，请手动选中复制' })
+    }
+  }
+
+  const copyAccountKey = async (key: AccountKey) => {
+    if (copyingKeyId !== null) return
+    setCopyingKeyId(key.id)
+    try {
+      await window.xingmang.copyAccountKey(key.id)
+      setCopiedKeyId(key.id)
+      notify?.({ type: 'success', message: `API Key「${key.name}」已复制` })
+      if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current)
+      copyResetTimer.current = window.setTimeout(() => setCopiedKeyId(null), 1_600)
+    } catch (error) {
+      notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    } finally {
+      setCopyingKeyId(null)
+    }
+  }
+
+  const hideRevealedAccountKey = () => {
+    revealRequestId.current += 1
+    if (revealHideTimer.current) {
+      window.clearTimeout(revealHideTimer.current)
+      revealHideTimer.current = null
+    }
+    revealedKeySecret.current = null
+    setRevealedKeyId(null)
+  }
+
+  const toggleAccountKeyReveal = async (key: AccountKey) => {
+    if (revealedKeyId === key.id) {
+      hideRevealedAccountKey()
+      return
+    }
+    if (revealingKeyId !== null) return
+
+    hideRevealedAccountKey()
+    const requestId = ++revealRequestId.current
+    setRevealingKeyId(key.id)
+    try {
+      const secret = await window.xingmang.revealAccountKey(key.id)
+      if (
+        !componentMounted.current
+        || currentTab.current !== 'keys'
+        || revealRequestId.current !== requestId
+      ) return
+      revealedKeySecret.current = secret
+      setRevealedKeyId(key.id)
+      revealHideTimer.current = window.setTimeout(() => {
+        revealHideTimer.current = null
+        revealedKeySecret.current = null
+        if (componentMounted.current) setRevealedKeyId(null)
+      }, KEY_REVEAL_DURATION_MS)
+    } catch (error) {
+      if (componentMounted.current && revealRequestId.current === requestId) {
+        notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+      }
+    } finally {
+      if (componentMounted.current && revealRequestId.current === requestId) setRevealingKeyId(null)
     }
   }
 
@@ -565,40 +740,60 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
             <Plus size={15} aria-hidden="true" /> 添加 Key
           </button>
         </div>
-        <div className="account-center-keys-head" aria-hidden="true">
-          <span>名称</span><span>状态</span><span>额度</span><span>已用</span><span>创建时间</span><span>过期时间</span><span>操作</span>
-        </div>
-        <div className="account-center-keys-body" aria-busy={keysLoading}>
-          {keys.keys.map((key) => (
-            <div className="account-center-keys-row" key={key.id}>
-              <strong title={key.name}>{key.name}</strong>
-              <span>{accountKeyStatusLabel(key.status)}</span>
-              <span>{key.unlimitedQuota ? '无限' : formatKeyQuotaUsd(key.remainQuota, balance?.quotaPerUnit)}</span>
-              <span>{formatKeyQuotaUsd(key.usedQuota, balance?.quotaPerUnit)}</span>
-              <span>{formatAccountUsageDate(key.createdAt)}</span>
-              <span>{key.expiredAt ? formatAccountUsageDate(key.expiredAt) : '永不过期'}</span>
-              <span className="account-center-keys-actions">
-                <button
-                  className="icon-button compact"
-                  type="button"
-                  title="编辑"
-                  aria-label={`编辑 Key「${key.name}」`}
-                  onClick={() => setKeyEditor({ mode: 'edit', key })}
-                >
-                  <Pencil size={15} />
-                </button>
-                <button
-                  className="icon-button compact"
-                  type="button"
-                  title="撤销"
-                  aria-label={`撤销 Key「${key.name}」`}
-                  onClick={() => setRevokeTarget(key)}
-                >
-                  <Trash2 size={15} />
-                </button>
-              </span>
-            </div>
-          ))}
+        <div className="account-center-keys-table">
+          <div className="account-center-keys-head" aria-hidden="true">
+            <span>名称</span><span>API 密钥</span><span>分组</span><span>倍率</span><span>状态</span><span>额度</span><span>已用</span><span>创建时间</span><span>过期时间</span><span className="account-center-keys-actions">操作</span>
+          </div>
+          <div className="account-center-keys-body" aria-busy={keysLoading}>
+            {keys.keys.map((key) => {
+              const group = keyGroups.find((entry) => entry.name === key.group)
+              const keyIsRevealed = revealedKeyId === key.id && revealedKeySecret.current !== null
+              return (
+                <div className="account-center-keys-row" key={key.id}>
+                  <strong title={key.name}>{key.name}</strong>
+                  <AccountKeySecretCell
+                    keyName={key.name}
+                    maskedKey={key.maskedKey}
+                    revealedSecret={keyIsRevealed ? revealedKeySecret.current : null}
+                    copying={copyingKeyId === key.id}
+                    copied={copiedKeyId === key.id}
+                    revealing={revealingKeyId === key.id}
+                    copyDisabled={copyingKeyId !== null}
+                    revealDisabled={revealingKeyId !== null}
+                    onCopy={() => void copyAccountKey(key)}
+                    onToggleReveal={() => void toggleAccountKeyReveal(key)}
+                  />
+                  <span title={group?.description || key.group || '默认分组'}>{key.group || '默认分组'}</span>
+                  <span>{group ? `${String(group.ratio)}x` : '—'}</span>
+                  <span>{accountKeyStatusLabel(key.status)}</span>
+                  <span>{key.unlimitedQuota ? '无限' : formatKeyQuotaUsd(key.remainQuota, balance?.quotaPerUnit)}</span>
+                  <span>{formatKeyQuotaUsd(key.usedQuota, balance?.quotaPerUnit)}</span>
+                  <span>{formatAccountUsageDate(key.createdAt)}</span>
+                  <span>{key.expiredAt ? formatAccountUsageDate(key.expiredAt) : '永不过期'}</span>
+                  <span className="account-center-keys-actions">
+                    <button
+                      className="icon-button compact"
+                      type="button"
+                      title="编辑"
+                      aria-label={`编辑 Key「${key.name}」`}
+                      onClick={() => setKeyEditor({ mode: 'edit', key })}
+                    >
+                      <Pencil size={15} />
+                    </button>
+                    <button
+                      className="icon-button compact"
+                      type="button"
+                      title="撤销"
+                      aria-label={`撤销 Key「${key.name}」`}
+                      onClick={() => setRevokeTarget(key)}
+                    >
+                      <Trash2 size={15} />
+                    </button>
+                  </span>
+                </div>
+              )
+            })}
+          </div>
         </div>
         <footer className="account-center-pagination">
           <span>共 {keys.total} 个</span>
@@ -762,6 +957,10 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
         <KeyEditorDialog
           mode={keyEditor.mode}
           initial={keyEditor.mode === 'edit' ? keyEditor.key : undefined}
+          groups={keyGroups}
+          groupsLoading={keyGroupsLoading}
+          groupsError={keyGroupsError}
+          onRetryGroups={() => void loadKeyGroups()}
           quotaPerUnit={balance?.quotaPerUnit}
           onClose={() => setKeyEditor(null)}
           onSubmit={(values) => void submitKeyEditor(values)}

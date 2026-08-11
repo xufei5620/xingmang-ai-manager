@@ -17,7 +17,7 @@ import type { ProviderId } from '../../types'
  * This never *permanently* excludes a CLI: nothing here is persisted, so the
  * next login/register re-offers every installed CLI checked again, keeping
  * the product's "一个账号四家通用" intent intact. The actual write
- * (provisionCliKeyForInstalledClis, I3/I9) is unchanged -- this dialog only
+ * (configureManagedCliKeysForInstalledClis, I3/I9) is unchanged -- this dialog only
  * narrows the provider list handed to it.
  */
 export function ProvisioningConfirmDialog({

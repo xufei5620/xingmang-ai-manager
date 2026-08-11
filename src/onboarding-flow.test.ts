@@ -3,6 +3,7 @@ import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import type { AppConfigSummary, CodexSetupStatus, ToolStatus } from './types'
 import {
   authorizeCodex,
+  authorizeManagedCodex,
   buildCodexDetectionFailureMessage,
   DEFAULT_CODEX_MODEL,
   installNodeAndPrepareCodexEnvironment,
@@ -123,6 +124,46 @@ describe('authorizeCodex', () => {
       model: DEFAULT_CODEX_MODEL,
       mode: 'reset',
     })
+  })
+})
+
+describe('authorizeManagedCodex', () => {
+  const config = { workspace: 'C:\\work', providers: {} } as AppConfigSummary
+
+  it('configures Codex through the main-process managed-key path without requesting key plaintext', async () => {
+    const api = {
+      configureManagedCliKeys: vi.fn().mockResolvedValue({ configured: ['codex'], failed: [] }),
+      getConfig: vi.fn().mockResolvedValue(config),
+    }
+
+    await expect(authorizeManagedCodex(api)).resolves.toBe(config)
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({
+      providers: ['codex'],
+      preferredModels: { codex: DEFAULT_CODEX_MODEL },
+    })
+    expect(api.getConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('surfaces the provider failure and leaves config unread when automatic authorization fails', async () => {
+    const api = {
+      configureManagedCliKeys: vi.fn().mockResolvedValue({
+        configured: [],
+        failed: [{ provider: 'codex', message: '本地托管 API Key 配置已损坏或无法解密' }],
+      }),
+      getConfig: vi.fn(),
+    }
+
+    await expect(authorizeManagedCodex(api)).rejects.toThrow('本地托管 API Key 配置已损坏或无法解密')
+    expect(api.getConfig).not.toHaveBeenCalled()
+  })
+
+  it('uses a clear fallback when the main process returns no Codex result', async () => {
+    const api = {
+      configureManagedCliKeys: vi.fn().mockResolvedValue({ configured: [], failed: [] }),
+      getConfig: vi.fn(),
+    }
+
+    await expect(authorizeManagedCodex(api)).rejects.toThrow('Codex 专属 Key 尚未就绪')
   })
 })
 

@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react'
-import { KeyRound, Pencil, X } from 'lucide-react'
+import { KeyRound, LoaderCircle, Pencil, RefreshCw, X } from 'lucide-react'
 import { dialogAriaProps, DialogBackdrop } from '../Dialog'
-import type { AccountKey, AccountKeyCreateInput } from '../../types'
+import type { AccountKey, AccountKeyCreateInput, AccountUsableGroup } from '../../types'
 
 /**
  * Shared create/edit form for the 个人中心 Key 管理 tab (老板需求
@@ -20,6 +20,10 @@ import type { AccountKey, AccountKeyCreateInput } from '../../types'
 export function KeyEditorDialog({
   mode,
   initial,
+  groups,
+  groupsLoading,
+  groupsError,
+  onRetryGroups,
   quotaPerUnit,
   onClose,
   onSubmit,
@@ -28,6 +32,10 @@ export function KeyEditorDialog({
   mode: 'create' | 'edit'
   /** Present only in edit mode: the row being edited, straight from the list DTO. */
   initial?: AccountKey
+  groups: AccountUsableGroup[]
+  groupsLoading: boolean
+  groupsError: string | null
+  onRetryGroups: () => void
   quotaPerUnit: number | undefined
   onClose: () => void
   onSubmit: (values: AccountKeyCreateInput) => void
@@ -37,6 +45,7 @@ export function KeyEditorDialog({
     ? quotaPerUnit
     : null
   const [name, setName] = useState(initial?.name ?? '')
+  const [group, setGroup] = useState(initial?.group ?? '')
   const [unlimitedQuota, setUnlimitedQuota] = useState(initial?.unlimitedQuota ?? true)
   const [quotaUsd, setQuotaUsd] = useState(() => (
     initial && !initial.unlimitedQuota && usableQuotaPerUnit
@@ -47,15 +56,21 @@ export function KeyEditorDialog({
   const [expiryDate, setExpiryDate] = useState(() => (
     initial?.expiredAt ? initial.expiredAt.slice(0, 10) : ''
   ))
-  const [errors, setErrors] = useState<{ name?: string; quota?: string; expiry?: string }>({})
+  const [errors, setErrors] = useState<{ name?: string; group?: string; quota?: string; expiry?: string }>({})
+  const selectedGroup = groups.find((entry) => entry.name === group) ?? null
 
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (isSubmitting) return
-    const nextErrors: { name?: string; quota?: string; expiry?: string } = {}
+    const nextErrors: { name?: string; group?: string; quota?: string; expiry?: string } = {}
     const trimmedName = name.trim()
     if (!trimmedName) nextErrors.name = '请输入 Key 名称'
     else if (trimmedName.length > 50) nextErrors.name = 'Key 名称不能超过 50 个字符'
+    if (!group || !groups.some((entry) => entry.name === group)) {
+      nextErrors.group = initial?.group && group === initial.group
+        ? '当前分组已不可用，请重新选择'
+        : '请选择分组'
+    }
 
     let remainQuota = 0
     if (!unlimitedQuota) {
@@ -83,10 +98,10 @@ export function KeyEditorDialog({
 
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
-    onSubmit({ name: trimmedName, remainQuota, unlimitedQuota, expiredTime })
+    onSubmit({ name: trimmedName, group, remainQuota, unlimitedQuota, expiredTime })
   }
 
-  const title = mode === 'create' ? '添加 Key' : `编辑 Key「${initial?.name ?? ''}」`
+  const title = mode === 'create' ? '创建 API 密钥' : '更新 API 密钥'
   return (
     <DialogBackdrop className="config-modal-backdrop extension-backdrop" onDismiss={onClose}>
       <form
@@ -101,7 +116,7 @@ export function KeyEditorDialog({
             </span>
             <div>
               <h2 id="key-editor-dialog-title">{title}</h2>
-              <small>{mode === 'create' ? '在星芒账号下创建一个新的 API Key' : '修改名称、额度或过期时间'}</small>
+              <small>{mode === 'create' ? '设置密钥名称、分组和使用额度' : `正在编辑「${initial?.name ?? ''}」`}</small>
             </div>
           </div>
           <button className="icon-button compact" type="button" title="关闭" onClick={onClose}>
@@ -119,6 +134,42 @@ export function KeyEditorDialog({
               maxLength={50}
             />
             {errors.name && <small className="field-error" role="alert">{errors.name}</small>}
+          </label>
+
+          <label className="field extension-field">
+            <span>分组</span>
+            <select
+              value={group}
+              disabled={groupsLoading || Boolean(groupsError)}
+              onChange={(event) => {
+                setGroup(event.target.value)
+                setErrors((current) => ({ ...current, group: undefined }))
+              }}
+            >
+              <option value="">选择一个分组</option>
+              {initial?.group && !groups.some((entry) => entry.name === initial.group) && (
+                <option value={initial.group} disabled>{initial.group}（已不可用）</option>
+              )}
+              {groups.map((entry) => (
+                <option key={entry.name} value={entry.name}>
+                  {entry.name} · {String(entry.ratio)}x
+                </option>
+              ))}
+            </select>
+            {groupsLoading && <small className="field-hint"><LoaderCircle className="spin" size={13} /> 正在读取可用分组</small>}
+            {groupsError && (
+              <small className="field-error account-group-load-error" role="alert">
+                {groupsError}
+                <button type="button" onClick={onRetryGroups}><RefreshCw size={13} /> 重试</button>
+              </small>
+            )}
+            {selectedGroup && (
+              <small className="field-hint account-group-summary">
+                <span>{selectedGroup.description || selectedGroup.name}</span>
+                <strong>倍率 {String(selectedGroup.ratio)}x</strong>
+              </small>
+            )}
+            {errors.group && <small className="field-error" role="alert">{errors.group}</small>}
           </label>
 
           <label className="account-agreement">

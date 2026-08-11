@@ -5,7 +5,6 @@ import {
   ChevronsLeft,
   ChevronsRight,
   CircleHelp,
-  ExternalLink,
   Globe2,
   LoaderCircle,
   Moon,
@@ -41,6 +40,7 @@ interface SidebarProps {
   /** 刷新余额 -- passed straight through to AccountArea. */
   onRefreshBalance: () => void
   onOpenAccountCenter: () => void
+  onOpenTutorialDocs: () => void
   /** Opens the 粘贴 Key dialog (W3b) -- passed straight through to AccountArea. */
   onPasteKey: () => void
   /** openExternal(relaySite.keysPageUrl) -- passed straight through to AccountArea. */
@@ -87,6 +87,7 @@ export function Sidebar({
   onConfigureCliKey,
   onRefreshBalance,
   onOpenAccountCenter,
+  onOpenTutorialDocs,
   onPasteKey,
   onOpenKeysPage,
 }: SidebarProps) {
@@ -199,32 +200,28 @@ export function Sidebar({
           onPasteKey={onPasteKey}
           onOpenKeysPage={onOpenKeysPage}
         />
-        <button
-          className="official-site-button tutorial-docs-button"
-          type="button"
-          data-sidebar-tooltip="教程文档"
-          onClick={() => void window.xingmang.openExternal('https://s4621e8xzb.feishu.cn/wiki/XLDLwdXDli3fj9kyMvsc5Qldnie?from=from_copylink')}
-        >
-          <span className="official-site-icon"><BookOpen size={17} /></span>
-          <span className="official-site-copy">
-            <strong>教程文档</strong>
-            <small>售后群</small>
-          </span>
-          <ExternalLink size={13} className="official-site-external" />
-        </button>
-        <button
-          className="official-site-button"
-          type="button"
-          data-sidebar-tooltip="官方网站"
-          onClick={() => void window.xingmang.openExternal(relaySite.websiteUrl)}
-        >
-          <span className="official-site-icon"><Globe2 size={17} /></span>
-          <span className="official-site-copy">
-            <strong>官方网站</strong>
-            <small>{relaySite.websiteUrl.replace(/^https:\/\//, '')}</small>
-          </span>
-          <ExternalLink size={13} className="official-site-external" />
-        </button>
+        <div className="sidebar-service-links" aria-label="帮助与服务">
+          <button
+            className="sidebar-service-button tutorial-docs-button"
+            type="button"
+            title="教程文档"
+            data-sidebar-tooltip="教程文档"
+            onClick={onOpenTutorialDocs}
+          >
+            <BookOpen size={16} />
+            <span>教程文档</span>
+          </button>
+          <button
+            className="sidebar-service-button"
+            type="button"
+            title={`官方网站 · ${relaySite.websiteUrl.replace(/^https:\/\//, '')}`}
+            data-sidebar-tooltip="官方网站"
+            onClick={() => void window.xingmang.openExternal(relaySite.websiteUrl)}
+          >
+            <Globe2 size={16} />
+            <span>官方网站</span>
+          </button>
+        </div>
         <div className="sidebar-controls">
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           <button

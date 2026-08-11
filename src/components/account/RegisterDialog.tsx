@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, type FormEvent, type MouseEvent } from 'react'
 import { Eye, EyeOff, UserPlus, X } from 'lucide-react'
 import { dialogAriaProps, DialogBackdrop } from '../Dialog'
-import { privacyPolicyUrl, userAgreementUrl } from '../../types'
+import type { LegalDocumentKind } from '../../types'
+import { LegalDocumentDialog } from './LegalDocumentDialog'
 import { validateEmail, validateRegisterForm, type AccountFieldErrors } from './validation'
 
 // Server-side throttle is 2 sends per 30s per IP (see
@@ -29,11 +30,10 @@ const VERIFICATION_CODE_COOLDOWN_SECONDS = 60
  * (sendingRef) -- the parent's call never throws, so the ref is released
  * unconditionally in .finally().
  *
- * "用户协议"/"隐私政策" open the legal pages on the account domain via
- * openExternal (userAgreementUrl/privacyPolicyUrl in relay-sites.ts, both
- * I12-allowlisted in main.ts) -- 老板要求(2026-08-10)从原先的纯文本改为
- * 可点击。The links live inside the checkbox <label>, so their click
- * handler preventDefaults to keep the label from also toggling the box.
+ * "用户协议"/"隐私政策" fetch the canonical Markdown through main-process
+ * IPC and render it in LegalDocumentDialog, without navigating the renderer
+ * to a remote page. The links live inside the checkbox <label>, so their
+ * click handler preventDefaults to keep the label from toggling the box.
  */
 export function RegisterDialog({
   onClose,
@@ -56,6 +56,7 @@ export function RegisterDialog({
   const [agreedToTerms, setAgreedToTerms] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<AccountFieldErrors>({})
+  const [legalKind, setLegalKind] = useState<LegalDocumentKind | null>(null)
   const [codeCooldown, setCodeCooldown] = useState(0)
   // Synchronous dedupe for a double click landing before React re-renders the
   // disabled button (T6) -- mirrors App.tsx's accountBusyRef for the same
@@ -77,10 +78,10 @@ export function RegisterDialog({
 
   // Same preventDefault reasoning as LoginDialog's openLegalPage: the links
   // sit inside the agreement <label> and must not toggle its checkbox.
-  const openLegalPage = (event: MouseEvent, url: string) => {
+  const openLegalPage = (event: MouseEvent, kind: LegalDocumentKind) => {
     event.preventDefault()
     event.stopPropagation()
-    void window.xingmang.openExternal(url)
+    setLegalKind(kind)
   }
 
   const clearError = (field: keyof AccountFieldErrors) => {
@@ -108,6 +109,10 @@ export function RegisterDialog({
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
     onSubmit({ username: username.trim(), email: email.trim(), password, verificationCode: verificationCode.trim() })
+  }
+
+  if (legalKind) {
+    return <LegalDocumentDialog kind={legalKind} onClose={() => setLegalKind(null)} />
   }
 
   return (
@@ -226,9 +231,9 @@ export function RegisterDialog({
             />
             <span>
               我已阅读并同意
-              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, userAgreementUrl)}>用户协议</button>
+              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, 'user-agreement')}>用户协议</button>
               和
-              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, privacyPolicyUrl)}>隐私政策</button>
+              <button type="button" className="account-inline-link" onClick={(event) => openLegalPage(event, 'privacy-policy')}>隐私政策</button>
             </span>
           </label>
           {errors.agreement && <small className="field-error" role="alert">{errors.agreement}</small>}

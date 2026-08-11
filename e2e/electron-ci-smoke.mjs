@@ -59,8 +59,8 @@ try {
     return {
       bounds,
       expected: {
-        width: Math.min(1340, workArea.width),
-        height: Math.min(845, workArea.height),
+        width: Math.min(1590, workArea.width),
+        height: Math.min(875, workArea.height),
       },
     }
   })

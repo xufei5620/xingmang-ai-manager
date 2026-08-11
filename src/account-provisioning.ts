@@ -1,13 +1,7 @@
-// Core "拿 Key -> 写进 CLI 配置" value chain (阶段 A task 4). Deliberately a
-// pure function so it can be unit-tested with injected fakes instead of a
-// real IPC bridge -- see CLAUDE.md section 6 ("新逻辑优先写成纯函数再测").
-//
-// I3 (plaintext never persisted): the key returned by provisionCliKey() lives
-// only in this function's local `key` variable. It is handed straight to
-// saveConfig() for each installed CLI and is never included in the returned
-// CliKeyProvisioningOutcome, so a caller (App.tsx) can never end up holding
-// it in React state -- the one in-memory copy the renderer process ever has
-// goes out of scope the moment this promise settles.
+// Core CLI configuration value chain. Account-managed keys are provisioned
+// and written entirely in Electron's main process, so their plaintext never
+// enters renderer memory. The manual paste path remains renderer-driven
+// because the user explicitly supplies that key in a renderer form.
 import { errorMessage } from './error-message'
 import { providerIds, type ProviderId, type SystemSnapshot } from './types'
 
@@ -29,8 +23,11 @@ export interface CliKeyWriteApi {
   }): Promise<unknown>
 }
 
-export interface CliKeyProvisioningApi extends CliKeyWriteApi {
-  provisionCliKey(): Promise<{ key: string }>
+export interface ManagedCliProvisioningApi {
+  configureManagedCliKeys(input: {
+    providers: ProviderId[]
+    preferredModels: Partial<Record<ProviderId, string>>
+  }): Promise<CliKeyProvisioningOutcome>
 }
 
 export interface CliKeyProvisioningFailure {
@@ -47,10 +44,8 @@ export interface CliKeyProvisioningOutcome {
  * Writes an already-known key into every already-installed CLI's config via
  * the existing config-files.ts write path (config:save / saveProviderConfig
  * -- no new on-disk write logic). Shared by both provisioning paths:
- * provisionCliKeyForInstalledClis below hands it a freshly minted key, and
- * the 粘贴 Key flow (PasteKeyDialog.tsx, W3b) hands it whatever the user
- * typed in -- from this function's point of view the two are identical, it
- * never asks where `key` came from.
+ * The 粘贴 Key flow (PasteKeyDialog.tsx, W3b) hands it whatever the user
+ * typed. Account-managed keys no longer use this renderer path.
  *
  * `preferredModels` lets the caller reuse each provider's currently
  * configured model (from AppConfigSummary) when it is still valid for this
@@ -96,20 +91,17 @@ export async function writeCliKeyForInstalledClis(
 }
 
 /**
- * Provisions a single new CLI key from the account service, then delegates
- * to writeCliKeyForInstalledClis for the actual write. All installed CLIs
- * share the one key: xm.solov.cc exposes a single relay account, so there is
- * no reason to mint one token per local tool.
+ * Asks the main process to ensure each selected provider's dedicated group
+ * key and write it to that provider's config. The result contains provider
+ * ids and failures only; no plaintext key crosses IPC.
  */
-export async function provisionCliKeyForInstalledClis(
+export async function configureManagedCliKeysForInstalledClis(
   installedProviders: readonly ProviderId[],
   preferredModels: Partial<Record<ProviderId, string>>,
-  api: CliKeyProvisioningApi,
+  api: ManagedCliProvisioningApi,
 ): Promise<CliKeyProvisioningOutcome> {
   if (installedProviders.length === 0) return { configured: [], failed: [] }
-
-  const { key } = await api.provisionCliKey()
-  return writeCliKeyForInstalledClis(key, installedProviders, preferredModels, api)
+  return api.configureManagedCliKeys({ providers: [...installedProviders], preferredModels })
 }
 
 /**

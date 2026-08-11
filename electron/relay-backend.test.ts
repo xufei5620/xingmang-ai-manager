@@ -31,6 +31,7 @@ const allCapabilitiesTrue: RelayBackendCapabilities = {
 // the runtime shape assertion.
 const relayBackendMethodNames = [
   'getStatus',
+  'getLegalDocument',
   'sendEmailVerification',
   'sendPasswordResetEmail',
   'resetPassword',
@@ -42,6 +43,8 @@ const relayBackendMethodNames = [
   'getProfile',
   'getUsage',
   'listKeys',
+  'listUsableGroups',
+  'revealKey',
   'revokeKey',
   'createKey',
   'updateKey',
@@ -103,6 +106,7 @@ describe('RelayBackendClient', () => {
         emailVerificationEnabled: false,
         turnstileCheckEnabled: false,
       }),
+      getLegalDocument: async (kind) => ({ kind, markdown: '# Fake', fetchedAt: '2026-08-11T00:00:00.000Z' }),
       sendEmailVerification: async () => undefined,
       sendPasswordResetEmail: async () => undefined,
       resetPassword: async () => ({ newPassword: 'unused' }),
@@ -125,6 +129,8 @@ describe('RelayBackendClient', () => {
       }),
       getUsage: async () => ({ page: 1, pageSize: 10, total: 0, records: [] }),
       listKeys: async () => ({ page: 1, pageSize: 10, total: 0, keys: [] }),
+      listUsableGroups: async () => [],
+      revealKey: async () => 'sk-fake',
       revokeKey: async () => undefined,
       createKey: async () => undefined,
       updateKey: async () => undefined,

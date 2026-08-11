@@ -271,12 +271,14 @@ describe('native CLI configuration files', () => {
     const existing = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     existing.customSetting = { enabled: true }
     existing.env.CUSTOM_TOKEN = 'preserved'
+    existing.env.ANTHROPIC_BASE_URL = 'https://legacy.example.com'
     fs.writeFileSync(settingsPath, `${JSON.stringify(existing, null, 2)}\n`, 'utf8')
 
     const result = saveProviderConfig('claude', 'new-key', 'claude-sonnet-4-6', 'merge', providerRoots(home), {}, providerBaseUrls)
     expect(result.backups).toHaveLength(1)
     const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8'))
     expect(merged.env.ANTHROPIC_AUTH_TOKEN).toBe('new-key')
+    expect(merged.env.ANTHROPIC_BASE_URL).toBe('https://xm.solov.cc')
     expect(merged.model).toBe('claude-sonnet-4-6')
     expect(merged.env.CUSTOM_TOKEN).toBe('preserved')
     expect(merged.customSetting).toEqual({ enabled: true })
@@ -318,6 +320,7 @@ describe('native CLI configuration files', () => {
     config.custom_setting = 'preserved'
     const modelProviders = config.model_providers as Record<string, unknown>
     ;(modelProviders.OpenAI as Record<string, unknown>).custom_header = 'preserved'
+    ;(modelProviders.OpenAI as Record<string, unknown>).base_url = 'https://legacy.example.com'
     fs.writeFileSync(configPath, TOML.stringify(config), 'utf8')
     const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'))
     auth.CUSTOM_AUTH = 'preserved'
@@ -331,6 +334,7 @@ describe('native CLI configuration files', () => {
     expect(mergedConfig.review_model).toBe('gpt-5.6-sol')
     expect(mergedConfig.custom_setting).toBe('preserved')
     expect(asRecord(asRecord(mergedConfig.model_providers)?.OpenAI)?.custom_header).toBe('preserved')
+    expect(asRecord(asRecord(mergedConfig.model_providers)?.OpenAI)?.base_url).toBe('https://xm.solov.cc')
     expect(mergedAuth.OPENAI_API_KEY).toBe('new-key')
     expect(mergedAuth.CUSTOM_AUTH).toBe('preserved')
     expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
@@ -411,6 +415,9 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('gemini', 'old-key', testModels.gemini, 'reset', providerRoots(home), {}, providerBaseUrls)
     const [settingsPath, envPath] = providerConfigPaths('gemini', providerRoots(home))
     const settingsBefore = fs.readFileSync(settingsPath, 'utf8')
+    const oldEnv = fs.readFileSync(envPath, 'utf8')
+      .replace('GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc', 'GOOGLE_GEMINI_BASE_URL=https://legacy.example.com')
+    fs.writeFileSync(envPath, oldEnv, 'utf8')
     fs.appendFileSync(envPath, 'CUSTOM_VALUE=preserved\n', 'utf8')
 
     const result = saveProviderConfig('gemini', 'new-key', 'gemini-3.5-pro', 'merge', providerRoots(home), {}, providerBaseUrls)
@@ -430,6 +437,7 @@ describe('native CLI configuration files', () => {
     config.custom_setting = 'preserved'
     const configGrokModel = (config.model as Record<string, unknown>).grok as Record<string, unknown>
     configGrokModel.custom_option = true
+    configGrokModel.base_url = 'https://legacy.example.com/v1'
     fs.writeFileSync(configPath, TOML.stringify(config), 'utf8')
 
     const result = saveProviderConfig('grok', 'new-key', 'grok-5', 'merge', providerRoots(home), {}, providerBaseUrls)

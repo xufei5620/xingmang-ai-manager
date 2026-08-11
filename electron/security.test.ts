@@ -188,7 +188,6 @@ describe('external URL allowlist', () => {
   const allowlist = [
     'https://xm.solov.cc',
     'https://xm.solov.cc/keys',
-    'https://s4621e8xzb.feishu.cn/wiki/XLDLwdXDli3fj9kyMvsc5Qldnie?from=from_copylink',
     'https://nodejs.org/',
     'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
   ]
@@ -197,10 +196,6 @@ describe('external URL allowlist', () => {
     expect(isAllowedExternalUrl('https://xm.solov.cc/', allowlist)).toBe(true)
     expect(isAllowedExternalUrl('https://xm.solov.cc/keys', allowlist)).toBe(true)
     expect(isAllowedExternalUrl('https://nodejs.org/', allowlist)).toBe(true)
-    expect(isAllowedExternalUrl(
-      'https://s4621e8xzb.feishu.cn/wiki/XLDLwdXDli3fj9kyMvsc5Qldnie?from=from_copylink',
-      allowlist,
-    )).toBe(true)
     expect(isAllowedExternalUrl('ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS', allowlist)).toBe(true)
   })
 

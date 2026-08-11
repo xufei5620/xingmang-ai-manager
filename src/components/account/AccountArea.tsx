@@ -27,7 +27,7 @@ function isNestedButtonEvent(event: { target: EventTarget | null }): boolean {
  * is a real `<button>` and never nested inside another button. Both corner
  * buttons nest fine: unlike the guest state, the identity wrapper here is a
  * plain `<div>`, not a `<button>` -- kept that way even now that it is
- * clickable (W4a) specifically so it can still contain two real `<button>`
+ * clickable (W4a) specifically so it can still contain real `<button>`
  * children; a `<button>` cannot nest `<button>`s (the DOM would silently
  * hoist them out, breaking layout), so this div gets manual role="button" +
  * tabIndex + keydown handling instead. Both nested buttons still
@@ -39,13 +39,15 @@ function isNestedButtonEvent(event: { target: EventTarget | null }): boolean {
  * fire onOpenAccountCenter instead of the button's own action. The row-wide
  * "cursor:pointer already applied to .account-area for both states" hover
  * affordance existed before W4a; W2.5's onConfigureCliKey button just got
- * there first. The configure button re-triggers the same
+ * there first. The refresh button reloads the balance, while the configure
+ * button re-triggers the same
  * offerCliProvisioning gate the 下一步 task card's "一键配置" action uses
  * (App.tsx's handleConfigureCliKey) -- this is the "关了还能再来" entry point
  * for a user who dismissed the write-Key confirm dialog. Collapsed-sidebar
  * handling (avatar + tooltip only) is generic CSS already covering
  * `.account-area`/`.account-recharge-button`/`.account-logout-button`/
- * `.account-configure-button`/`[data-sidebar-tooltip]` — see styles.css.
+ * `.account-refresh-button`/`.account-configure-button`/
+ * `[data-sidebar-tooltip]` — see styles.css.
  *
  * W3b adds a fourth, site-driven branch ahead of all three above:
  * shouldShowManualKeyEntry(relaySite.accountBackend) short-circuits to a
@@ -160,7 +162,7 @@ export function AccountArea({
         </span>
         <button
           type="button"
-          className="account-configure-button"
+          className="account-refresh-button"
           aria-label="刷新余额"
           title="刷新余额"
           onClick={(event) => { event.stopPropagation(); onRefreshBalance() }}

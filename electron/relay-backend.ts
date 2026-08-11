@@ -45,12 +45,15 @@ import type {
   NewApiCliKeyResult,
   NewApiLoginInput,
   NewApiLoginResult,
+  NewApiLegalDocument,
+  NewApiLegalDocumentKind,
   NewApiPersistableSession,
   NewApiProvisionCliKeyInput,
   NewApiRegisterInput,
   NewApiResetPasswordInput,
   NewApiResetPasswordResult,
   NewApiSessionState,
+  NewApiUsableGroup,
 } from './new-api-client'
 
 // Coarse, UI-facing flags -- granularity matches "which block of the account
@@ -90,6 +93,8 @@ export interface RelayBackendClient {
 
   /** ipc.ts: account:get-status */
   getStatus(): Promise<NewApiAccountStatus>
+  /** ipc.ts: account:get-legal-document */
+  getLegalDocument(kind: NewApiLegalDocumentKind): Promise<NewApiLegalDocument>
   /** ipc.ts: account:send-email-verification */
   sendEmailVerification(email: string): Promise<void>
   /** ipc.ts: account:send-password-reset-email */
@@ -112,6 +117,10 @@ export interface RelayBackendClient {
   getUsage(input?: NewApiAccountUsageQuery): Promise<NewApiAccountUsagePage>
   /** ipc.ts: account:list-keys */
   listKeys(input?: NewApiAccountKeysQuery): Promise<NewApiAccountKeysPage>
+  /** ipc.ts: account:list-groups */
+  listUsableGroups(): Promise<NewApiUsableGroup[]>
+  /** ipc.ts: account:copy-key and account:reveal-key; renderer reveal is explicit and short-lived. */
+  revealKey(id: number): Promise<string>
   /** ipc.ts: account:revoke-key */
   revokeKey(id: number): Promise<void>
   /** ipc.ts: account:create-key */

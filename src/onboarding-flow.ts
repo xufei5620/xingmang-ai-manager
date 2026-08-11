@@ -3,6 +3,7 @@ import type {
   CodexSetupStatus,
   NodeRuntimeInstallResult,
   PlatformCapabilities,
+  ProviderId,
 } from './types'
 import { isDetectionFailed } from './app-shared'
 import { codexRuntimeSetupMessage, nodeRuntimeSupported } from './onboarding-runtime'
@@ -26,6 +27,17 @@ export interface CodexAuthorizationApi {
     model: string
     mode: 'reset'
   }): Promise<unknown>
+  getConfig(): Promise<AppConfigSummary>
+}
+
+export interface ManagedCodexAuthorizationApi {
+  configureManagedCliKeys(input: {
+    providers: ProviderId[]
+    preferredModels: Partial<Record<ProviderId, string>>
+  }): Promise<{
+    configured: ProviderId[]
+    failed: Array<{ provider: ProviderId; message: string }>
+  }>
   getConfig(): Promise<AppConfigSummary>
 }
 
@@ -98,6 +110,26 @@ export async function authorizeCodex(
     model: DEFAULT_CODEX_MODEL,
     mode: 'reset',
   })
+  return api.getConfig()
+}
+
+/**
+ * Configures Codex from the signed-in account's locally cached managed key.
+ * The main process owns key lookup, model validation and the config write, so
+ * relay key plaintext never enters renderer state or crosses the normal IPC
+ * response boundary.
+ */
+export async function authorizeManagedCodex(
+  api: ManagedCodexAuthorizationApi,
+): Promise<AppConfigSummary> {
+  const outcome = await api.configureManagedCliKeys({
+    providers: ['codex'],
+    preferredModels: { codex: DEFAULT_CODEX_MODEL },
+  })
+  if (!outcome.configured.includes('codex')) {
+    const failure = outcome.failed.find((entry) => entry.provider === 'codex')
+    throw new Error(failure?.message ?? 'Codex 专属 Key 尚未就绪')
+  }
   return api.getConfig()
 }
 
