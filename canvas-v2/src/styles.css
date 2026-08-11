@@ -123,6 +123,73 @@ html, body, #root {
   border-radius: 6px;
 }
 
+.wf-actions {
+  display: flex;
+  gap: 6px;
+  margin: 6px 10px 0;
+}
+
+.simple-mode {
+  flex: 1;
+  overflow: auto;
+  display: flex;
+  justify-content: center;
+  padding: 40px 16px;
+  background: #f4f6fa;
+}
+
+.simple-card {
+  width: 520px;
+  max-width: 100%;
+  height: fit-content;
+  padding: 26px 28px;
+  background: #ffffff;
+  border: 1px solid #e2e7f0;
+  border-radius: 14px;
+  box-shadow: 0 6px 24px rgba(20, 30, 50, 0.07);
+}
+
+.simple-card h1 { margin: 0 0 4px; font-size: 20px; }
+
+.simple-hint { margin: 0 0 18px; color: #7a8699; font-size: 13px; }
+
+.simple-card label { display: block; margin-bottom: 14px; font-size: 13px; color: #37415b; }
+.simple-card label > span { display: block; margin-bottom: 6px; font-weight: 600; }
+.simple-card textarea,
+.simple-card input[type='text'],
+.simple-card input:not([type]) {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #dfe4ec;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+
+.simple-check { display: flex; align-items: center; gap: 8px; }
+.simple-check input { width: 15px; height: 15px; }
+.simple-check span { margin: 0; }
+
+.simple-actions { display: flex; gap: 10px; margin-top: 6px; }
+.simple-actions button {
+  padding: 8px 18px;
+  border: 1px solid #d4dae4;
+  border-radius: 8px;
+  background: #ffffff;
+  cursor: pointer;
+  font-size: 13px;
+}
+.simple-actions .simple-primary { color: #ffffff; background: #2563eb; border-color: #2563eb; }
+.simple-actions button:disabled { opacity: 0.5; cursor: default; }
+
+.simple-stage { margin-top: 12px; color: #2563eb; font-size: 13px; }
+.simple-error { margin-top: 12px; color: #c2413f; font-size: 13px; }
+
+.simple-result { margin-top: 16px; }
+.simple-result img { max-width: 100%; border-radius: 10px; }
+.simple-result button { margin-top: 8px; padding: 6px 14px; border: 1px solid #d4dae4; border-radius: 7px; background: #fff; cursor: pointer; }
+
 .wf-port { width: 10px; height: 10px; }
 .wf-port-text { background: #4f7cf0; }
 .wf-port-image { background: #2fa46c; }

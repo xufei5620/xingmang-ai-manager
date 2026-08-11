@@ -10,6 +10,12 @@ export interface CanvasHostBridge {
   pickFile(): Promise<{ name: string; content: string } | null>
   notify(title: string, body?: string): Promise<boolean>
   openExternal(url: string): Promise<void>
+  /**
+   * 媒体产物落盘(第 6 能力,主进程流式拉 URL 写入用户对话框选择的路径,
+   * 512MB 上限)。旧版宿主可能没有此方法,调用方经 hostBridge() 拿到的
+   * 实现已做特性探测与降级,不必自查。
+   */
+  downloadAsset(url: string, suggestedName: string): Promise<{ savedPath: string; bytes: number } | null>
 }
 
 declare global {
@@ -20,7 +26,17 @@ declare global {
 
 export function hostBridge(): CanvasHostBridge {
   const native = window.xingmangCanvasHost
-  if (native) return native
+  if (native) {
+    if (typeof native.downloadAsset === 'function') return native
+    // 旧版宿主(第 6 能力之前打包的桌面端):降级为浏览器窗口打开产物 URL。
+    return {
+      ...native,
+      async downloadAsset(url) {
+        window.open(url, '_blank', 'noopener')
+        return null
+      },
+    }
+  }
   return {
     async getAuthToken() {
       return null
@@ -56,6 +72,10 @@ export function hostBridge(): CanvasHostBridge {
     },
     async openExternal(url) {
       window.open(url, '_blank', 'noopener')
+    },
+    async downloadAsset(url) {
+      window.open(url, '_blank', 'noopener')
+      return null
     },
   }
 }

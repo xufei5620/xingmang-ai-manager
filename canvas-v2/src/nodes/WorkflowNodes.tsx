@@ -27,6 +27,10 @@ interface NodeChangeHandlers {
   onModelChange(nodeId: string, model: string): void
   /** 单节点重跑:只执行本节点,输入取当前画布状态里上游节点的既有产物。 */
   onRerun(nodeId: string): void
+  /** 媒体产物落盘(经宿主第 6 能力,主进程拉 URL 写盘)。 */
+  onDownloadAsset(nodeId: string): void
+  /** 断线恢复:凭已存 taskId 继续轮询视频任务。 */
+  onResumeTask(nodeId: string): void
 }
 
 // React Flow 的自定义节点组件只收 NodeProps,可变回调经模块级注册表注入
@@ -35,6 +39,8 @@ let handlers: NodeChangeHandlers = {
   onPromptChange: () => undefined,
   onModelChange: () => undefined,
   onRerun: () => undefined,
+  onDownloadAsset: () => undefined,
+  onResumeTask: () => undefined,
 }
 
 export function registerNodeChangeHandlers(next: NodeChangeHandlers): void {
@@ -97,6 +103,25 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData; kin
       {typeof data.costQuota === 'number' && data.costQuota > 0 && (
         <p className="wf-cost">本次消耗 {data.costQuota} quota</p>
       )}
+      <div className="wf-actions">
+        {data.result?.remoteUrl && !data.result.remoteUrl.startsWith('mock://') && (
+          <button
+            type="button"
+            className="nodrag wf-rerun"
+            title="把生成产物保存到本机"
+            onClick={() => handlers.onDownloadAsset(id)}
+          >下载</button>
+        )}
+        {kind === 'video' && data.result?.taskId && !data.result.remoteUrl
+          && data.status !== 'running' && data.status !== 'queued' && (
+          <button
+            type="button"
+            className="nodrag wf-rerun"
+            title="凭已保存的任务 ID 继续查询生成结果(断线恢复)"
+            onClick={() => handlers.onResumeTask(id)}
+          >续查任务</button>
+        )}
+      </div>
       <Handle
         type="source"
         id={outputHandleId(output)}

@@ -31,7 +31,7 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没
 | `electron/`（主进程，全部特权操作） | 63 个模块 | 60 个 |
 | `src/`（渲染进程，纯 UI） | 62 个文件 | 25 个 |
 
-约 6.3 万行（含测试），**1455 个 vitest 用例**（85 个文件；Linux 上实测 1278 过 / 177 因平台门控跳过，Windows 跳过的是另一批），`npm test` 还串带 scripts/e2e 下的 node --test 套件（79 例）。IPC：**90 个 invoke 通道**（另有 5 个画布宿主通道在 90 之外，见 I4 例外）。
+约 6.3 万行（含测试），**1455 个 vitest 用例**（85 个文件；Linux 上实测 1278 过 / 177 因平台门控跳过，Windows 跳过的是另一批），`npm test` 还串带 scripts/e2e 下的 node --test 套件（79 例）。IPC：**90 个 invoke 通道**（另有 6 个画布宿主通道在 90 之外，见 I4 例外）。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
@@ -111,9 +111,9 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `probe-failure.ts` (14) — 探测失败的可区分状态
 
 **无限画布（新增，全项目唯一运行第三方前端代码的地方）**
-- `canvas-window.ts` (376) — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 5 个 `canvas-host:*` 宿主通道（I4 的例外，见下）
+- `canvas-window.ts` (376) — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 6 个 `canvas-host:*` 宿主通道（I4 的例外，见下）
 - `canvas-protocol.ts` (62) — `xingmang-canvas://` 解析。穿越/根包含检查**全部委托**主窗口同款 `resolvePackagedApplicationFile`，SPA 回退用字面量 `'index.html'` 重走同一函数，**绝不手工拼路径**；与主窗口不共享 rendererRoot
-- `canvas-preload.ts` (65) — 宿主桥只暴露 5 个能力（getAuthToken/saveFile/pickFile/notify/openExternal），拿不到 `window.xingmang`
+- `canvas-preload.ts` (65) — 宿主桥只暴露 6 个能力（getAuthToken/saveFile/pickFile/notify/openExternal/downloadAsset,末者为画布 v2 媒体落盘新增,过了 I15 投毒问答:流式限 512MB + https-only + 原生对话框选路径），拿不到 `window.xingmang`
 - `canvas-auth.ts` (51) / `canvas-ai-config.ts` (122) — 取 token 与配置注入（`JSON.stringify` 构造，不拼字符串）
 - `dist-canvas/` 是构建产物**不入 git**：`scripts/copy-canvas-assets.mjs` 从兄弟仓 `xingmang-canvas/web/dist` 复制（可用 `XINGMANG_CANVAS_DIST` 覆盖），缺源时打警告跳过、`compile` 照常通过，画布窗口运行时报中文错误
 
@@ -196,7 +196,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 *违反后果*：当前目录放一个 `powershell.exe` 就被提权执行。
 
 **I15. 画布是运行第三方前端代码的隔离区，能力只减不增。**
-画布窗口与主窗口**不共享 rendererRoot**、preload 只暴露 5 个能力、协议解析必须委托 `resolvePackagedApplicationFile`。给画布加任何新能力前先回答：**画布被供应链投毒后，这个能力能干什么？** 文件读写必须走原生对话框（用户选路径）+ `bounded-*`/原子写，外链必须过白名单。
+画布窗口与主窗口**不共享 rendererRoot**、preload 只暴露 6 个能力、协议解析必须委托 `resolvePackagedApplicationFile`。给画布加任何新能力前先回答：**画布被供应链投毒后，这个能力能干什么？** 文件读写必须走原生对话框（用户选路径）+ `bounded-*`/原子写，外链必须过白名单。
 *违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它连主进程 IPC 都摸不到。
 
 ---

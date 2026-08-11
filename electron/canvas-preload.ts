@@ -3,25 +3,26 @@ import { contextBridge, ipcRenderer } from 'electron'
 // This is the ONLY preload the canvas BrowserWindow ever loads (see
 // canvas-window.ts). It never sees window.xingmang or any channel the main
 // app owns -- window.xingmangCanvasHost below is a deliberately tiny,
-// separate surface with exactly five capabilities, backed by the
+// separate surface with exactly six capabilities, backed by the
 // canvas-host:* channels canvas-window.ts registers. A compromised canvas
-// page that walks this object can save/pick files (through a native dialog,
-// never an attacker-chosen path), pop an OS notification, and open a URL
-// from a fixed allowlist -- nothing that reaches window.xingmang, ipcMain
-// channels the main app owns, or Node itself (sandbox:true, same as the
-// main window).
+// page that walks this object can save/pick files and download a generated
+// asset (all through a native dialog, never an attacker-chosen path), pop
+// an OS notification, and open a URL from a fixed allowlist -- nothing that
+// reaches window.xingmang, ipcMain channels the main app owns, or Node
+// itself (sandbox:true, same as the main window).
 //
 // Sandboxed preload scripts cannot require local runtime modules (same
 // constraint documented in preload.ts), so the channel names and storage key
 // below are duplicated literals rather than imports from canvas-window.ts /
 // canvas-ai-config.ts. Keep these in sync by hand if either changes:
-//   canvas-window.ts:   canvasHost{AuthToken,SaveFile,PickFile,Notify,OpenExternal}Channel
+//   canvas-window.ts:   canvasHost{AuthToken,SaveFile,PickFile,Notify,OpenExternal,DownloadAsset}Channel
 //   canvas-ai-config.ts: canvasAiConfigStorageKey
 const authTokenChannel = 'canvas-host:auth-token'
 const saveFileChannel = 'canvas-host:save-file'
 const pickFileChannel = 'canvas-host:pick-file'
 const notifyChannel = 'canvas-host:notify'
 const openExternalChannel = 'canvas-host:open-external'
+const downloadAssetChannel = 'canvas-host:download-asset'
 const aiConfigStorageKey = 'infinite-canvas:ai_config_store'
 
 interface CanvasAuthTokenResponse {
@@ -62,4 +63,7 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   pickFile: () => ipcRenderer.invoke(pickFileChannel),
   notify: (title: string, body?: string) => ipcRenderer.invoke(notifyChannel, title, body),
   openExternal: (url: string) => ipcRenderer.invoke(openExternalChannel, url),
+  downloadAsset: (url: string, suggestedName: string) => (
+    ipcRenderer.invoke(downloadAssetChannel, url, suggestedName)
+  ),
 })

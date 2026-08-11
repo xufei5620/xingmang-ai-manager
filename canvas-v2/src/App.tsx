@@ -22,8 +22,9 @@ import {
 } from './model'
 import { createMockExecutors, runWorkflow, type NodeInputs } from './engine/engine'
 import { createRelayExecutors } from './engine/executors'
-import type { RelayConfig } from './engine/relay'
+import { pollVideoTask, type RelayConfig } from './engine/relay'
 import { hostBridge } from './host'
+import { SimpleMode } from './SimpleMode'
 import { isValidWorkflowConnection } from './ports'
 import { nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
 
@@ -73,6 +74,9 @@ export function App() {
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
   const [running, setRunning] = useState(false)
   const [banner, setBanner] = useState<string | null>(null)
+  // 双模式(M2):简单模式=固定表单的单节点工作流,默认给小白;画布模式
+  // 给要自己编排管线的用户。两种模式共享同一套 executors。
+  const [viewMode, setViewMode] = useState<'simple' | 'canvas'>('simple')
   // null = 宿主未给账号 token(浏览器开发态/未登录)→ 运行走 mock 执行器。
   const [relayConfig, setRelayConfig] = useState<RelayConfig | null>(null)
   const abortRef = useRef<AbortController | null>(null)
@@ -139,13 +143,64 @@ export function App() {
     }
   }, [running, nodes, edges, patchNodeData, buildExecutors])
 
+  const downloadNodeAsset = useCallback(async (nodeId: string) => {
+    const node = nodes.find((entry) => entry.id === nodeId)
+    const asset = node?.data.result
+    if (!asset?.remoteUrl || asset.remoteUrl.startsWith('mock://')) return
+    const suggestedName = asset.kind === 'image'
+      ? `xingmang-image-${nodeId}.png`
+      : `xingmang-video-${nodeId}.mp4`
+    const saved = await hostBridge().downloadAsset(asset.remoteUrl, suggestedName)
+    if (saved) setBanner(`产物已保存到 ${saved.savedPath}`)
+  }, [nodes])
+
+  // 断线恢复:视频节点凭已落盘的 taskId 继续轮询(应用重启/中途关窗后
+  // 打开工作流文件即可续查,不重新扣费提交任务)。
+  const resumeTask = useCallback(async (nodeId: string) => {
+    if (running) return
+    const node = nodes.find((entry) => entry.id === nodeId)
+    const taskId = node?.data.result?.taskId
+    if (!taskId) return
+    if (!relayConfig) {
+      setBanner('未连接星芒账号,无法查询任务状态')
+      return
+    }
+    setRunning(true)
+    const controller = new AbortController()
+    abortRef.current = controller
+    patchNodeData(nodeId, { status: 'running', errorMessage: undefined })
+    try {
+      for (;;) {
+        if (controller.signal.aborted) throw new Error('已取消')
+        const state = await pollVideoTask(relayConfig, taskId)
+        if (state.status === 'succeeded') {
+          patchNodeData(nodeId, { status: 'succeeded', result: state.asset })
+          setBanner('视频任务已完成')
+          break
+        }
+        if (state.status === 'failed') throw new Error(state.reason)
+        await new Promise((resolve) => setTimeout(resolve, 4_000))
+      }
+    } catch (error) {
+      patchNodeData(nodeId, {
+        status: 'failed',
+        errorMessage: error instanceof Error ? error.message : String(error),
+      })
+    } finally {
+      abortRef.current = null
+      setRunning(false)
+    }
+  }, [running, nodes, relayConfig, patchNodeData])
+
   useEffect(() => {
     registerNodeChangeHandlers({
       onPromptChange: (nodeId, prompt) => patchNodeData(nodeId, { prompt }),
       onModelChange: (nodeId, model) => patchNodeData(nodeId, { model }),
       onRerun: (nodeId) => void rerunNode(nodeId),
+      onDownloadAsset: (nodeId) => void downloadNodeAsset(nodeId),
+      onResumeTask: (nodeId) => void resumeTask(nodeId),
     })
-  }, [patchNodeData, rerunNode])
+  }, [patchNodeData, rerunNode, downloadNodeAsset, resumeTask])
 
   const addNode = (kind: NodeKind) => {
     const node: WorkflowNode = {
@@ -225,10 +280,47 @@ export function App() {
     setBanner(`已打开「${workflow.name}」`)
   }
 
+  // 「展开到画布」:把简单模式的一次输入物化成节点链,替换当前画布内容
+  // (简单模式是入口形态,此时画布通常为空;后续可加"合并而非替换"选项)。
+  const expandToCanvas = (workflow: WorkflowFile) => {
+    setNodes(workflow.nodes.map(toCanvasNode))
+    setEdges(workflow.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      sourceHandle: edge.sourceHandle,
+      target: edge.target,
+      targetHandle: edge.targetHandle,
+    })))
+    setViewMode('canvas')
+    setBanner('已从简单模式展开为工作流,可继续编排')
+  }
+
+  if (viewMode === 'simple') {
+    return (
+      <div className="canvas-app">
+        <header className="canvas-toolbar">
+          <strong>星芒 AI 生成</strong>
+          <div className="canvas-toolbar-group">
+            <button type="button" onClick={() => setViewMode('canvas')}>画布模式</button>
+          </div>
+          <span className="canvas-mode">{relayConfig ? '已连接星芒账号' : '演示模式(未连接账号,运行为模拟)'}</span>
+        </header>
+        <SimpleMode
+          executors={buildExecutors()}
+          connected={relayConfig !== null}
+          onExpandToCanvas={expandToCanvas}
+        />
+      </div>
+    )
+  }
+
   return (
     <div className="canvas-app">
       <header className="canvas-toolbar">
         <strong>星芒无限画布</strong>
+        <div className="canvas-toolbar-group">
+          <button type="button" onClick={() => setViewMode('simple')}>简单模式</button>
+        </div>
         <div className="canvas-toolbar-group">
           <button type="button" onClick={() => addNode('text')}>+ 文本</button>
           <button type="button" onClick={() => addNode('image')}>+ 图像</button>

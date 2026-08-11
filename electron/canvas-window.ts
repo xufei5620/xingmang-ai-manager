@@ -71,9 +71,15 @@ export const canvasHostSaveFileChannel = 'canvas-host:save-file'
 export const canvasHostPickFileChannel = 'canvas-host:pick-file'
 export const canvasHostNotifyChannel = 'canvas-host:notify'
 export const canvasHostOpenExternalChannel = 'canvas-host:open-external'
+export const canvasHostDownloadAssetChannel = 'canvas-host:download-asset'
 
 const maximumSavedFileBytes = 20 * 1024 * 1024
 const maximumPickedFileBytes = 20 * 1024 * 1024
+// 画布 v2 的媒体产物落盘(canvas-host:download-asset):视频动辄几十 MB,
+// 走不了 20MB 纯文本桥,由主进程拉 URL 流式写盘。上限对齐"单条生成视频"
+// 的现实量级并留余量。
+const maximumDownloadedAssetBytes = 512 * 1024 * 1024
+const downloadAssetTimeoutMs = 10 * 60 * 1000
 const maximumTitleLength = 200
 const maximumBodyLength = 2_000
 
@@ -255,6 +261,71 @@ export function createCanvasWindowController(
     const filePath = result.filePaths[0]
     const content = await readBoundedUtf8File(filePath, maximumPickedFileBytes, '画布导入文件')
     return { name: path.basename(filePath), content }
+  })
+
+  // I15 投毒问答(新增能力必答):被投毒的画布能让宿主拉任意 https URL 并
+  // 写入用户亲自在原生保存对话框里选择的路径——与用户在浏览器里点击任意
+  // 下载链接同权:无路径控制、无静默写入、内容不被执行。I10 四件:超时 +
+  // 字节上限(流式计数,Content-Length 撒谎也拦得住)+ https-only 且拒
+  // 内嵌凭据 + 跟随重定向仍走 fetch 自身的 https 栈。失败清理半成品文件。
+  registerCanvasHandler(canvasHostDownloadAssetChannel, async (event, urlInput, suggestedNameInput) => {
+    const url = requiredCanvasString(urlInput, '产物地址', 4_096)
+    const suggestedName = requiredCanvasString(suggestedNameInput, '保存文件名', 256)
+    let parsed: URL
+    try {
+      parsed = new URL(url)
+    } catch {
+      throw new Error('产物地址不是有效的 URL')
+    }
+    if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') {
+      throw new Error('产物地址必须是不含凭据的 https 链接')
+    }
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: SaveDialogOptions = {
+      title: '画布：保存生成产物',
+      defaultPath: suggestedName,
+      filters: [{ name: '所有文件', extensions: ['*'] }],
+    }
+    const result = parentWindow
+      ? await dialog.showSaveDialog(parentWindow, dialogOptions)
+      : await dialog.showSaveDialog(dialogOptions)
+    if (result.canceled || !result.filePath) return null
+    const targetPath = result.filePath
+
+    const controller = new AbortController()
+    const timer = setTimeout(() => controller.abort(), downloadAssetTimeoutMs)
+    try {
+      const response = await fetch(parsed.href, { signal: controller.signal })
+      if (!response.ok || !response.body) {
+        throw new Error(`产物下载失败，服务返回 ${response.status}`)
+      }
+      const reader = response.body.getReader()
+      let written = 0
+      const stream = fs.createWriteStream(targetPath)
+      try {
+        for (;;) {
+          const { done, value } = await reader.read()
+          if (done) break
+          written += value.byteLength
+          if (written > maximumDownloadedAssetBytes) {
+            throw new Error('产物超出大小上限，已中止下载')
+          }
+          await new Promise<void>((resolve, reject) => {
+            stream.write(Buffer.from(value), (error) => (error ? reject(error) : resolve()))
+          })
+        }
+        await new Promise<void>((resolve, reject) => {
+          stream.end((error: NodeJS.ErrnoException | null | undefined) => (error ? reject(error) : resolve()))
+        })
+      } catch (error) {
+        stream.destroy()
+        await fs.promises.unlink(targetPath).catch(() => undefined)
+        throw error
+      }
+      return { savedPath: targetPath, bytes: written }
+    } finally {
+      clearTimeout(timer)
+    }
   })
 
   registerCanvasHandler(canvasHostNotifyChannel, (_event, titleInput, bodyInput) => {

@@ -52,6 +52,7 @@ import {
   canvasBaseUrlForSite,
   canvasCliKeyNamePrefix,
   canvasHostAuthTokenChannel,
+  canvasHostDownloadAssetChannel,
   canvasHostNotifyChannel,
   canvasHostOpenExternalChannel,
   canvasHostPickFileChannel,
@@ -112,10 +113,14 @@ beforeEach(() => {
 })
 
 describe('createCanvasWindowController', () => {
-  it('registers exactly the five documented canvas-host channels -- the entire bridge surface', () => {
+  it('registers exactly the six documented canvas-host channels -- the entire bridge surface', () => {
     createCanvasWindowController(controllerOptions())
 
+    // download-asset is the deliberate sixth capability (画布 v2 媒体落盘,
+    // I15 poisoning answer in canvas-window.ts) -- growing this list must
+    // stay a conscious act, which is the whole point of this assertion.
     expect([...electronMocks.handlers.keys()].sort()).toEqual([
+      canvasHostDownloadAssetChannel,
       canvasHostNotifyChannel,
       canvasHostOpenExternalChannel,
       canvasHostPickFileChannel,
