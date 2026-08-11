@@ -74,11 +74,12 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   },
 ]
 
-// 用户协议/隐私政策页,挂在账号域下。注册/登录弹窗与欢迎页脚的协议文案
-// 点击后经 openExternal 打开;main.ts 把这两个地址并入外链白名单(I12,
-// href 全等)。改地址时两处会一起变,不会出现"可点但被白名单拦下"。
-export const userAgreementUrl = 'https://xm.solov.cc/terms'
-export const privacyPolicyUrl = 'https://xm.solov.cc/privacy'
+// Canonical browser fallbacks for the two legal documents. The primary UI
+// renders their public /api/* Markdown payloads inside the app; these URLs
+// remain allowlisted for the explicit "在浏览器打开" fallback only.
+export const userAgreementUrl = 'https://xm.solov.cc/user-agreement'
+export const privacyPolicyUrl = 'https://xm.solov.cc/privacy-policy'
+export const tutorialDocumentUrl = 'https://s4621e8xzb.feishu.cn/wiki/WpBUwh4PhiAs2skvWfmcnM5vnDb?from=from_copylink'
 
 /**
  * The relay's own API origin, for connectivity probes (the models-list fetch

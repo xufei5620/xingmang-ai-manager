@@ -10,6 +10,11 @@ import {
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import type { ConfigBackupStore } from './backups'
 import { cliCatalog, isProviderId } from './catalog'
+import {
+  configureManagedClis,
+  syncManagedCliKeySummary,
+  type ManagedCliKeyStoreLike,
+} from './account-cli-provisioner'
 import { relaySites } from './relay-sites'
 import type {
   AddMarketplaceInput,
@@ -55,7 +60,14 @@ import {
   type NewApiResetPasswordInput,
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
-import type { AccountKeyCreateInput, AccountKeyUpdateInput, RememberedAccountLogin } from './ipc-contract'
+import type {
+  AccountKeyCliConfigurationInput,
+  AccountKeyCreateInput,
+  AccountKeyUpdateInput,
+  AccountManagedCliConfigurationInput,
+  LegalDocumentKind,
+  RememberedAccountLogin,
+} from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
@@ -98,6 +110,7 @@ export interface IpcRegistrationOptions {
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
+  openTutorialDocsWindow(target: WebContents): Promise<void>
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
   // has to depend on canvas-window.ts's full surface just to delegate one
@@ -112,6 +125,7 @@ export interface IpcRegistrationOptions {
     save(identifier: string, password: string): Promise<void>
     clear(): Promise<void>
   }
+  managedCliKeys?: ManagedCliKeyStoreLike
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
 }
 
@@ -559,6 +573,33 @@ function parseAccountRevokeKeyId(value: unknown): number {
   return value
 }
 
+function parseLegalDocumentKind(value: unknown): LegalDocumentKind {
+  if (value !== 'user-agreement' && value !== 'privacy-policy') {
+    throw new Error('法律文档类型格式错误')
+  }
+  return value
+}
+
+function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliConfigurationInput {
+  if (!isRecord(value) || !Array.isArray(value.providers) || value.providers.length > 4) {
+    throw new Error('CLI 配置目标格式错误')
+  }
+  const providers = value.providers.map((provider) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    return provider
+  })
+  if (new Set(providers).size !== providers.length) throw new Error('CLI 配置目标不能重复')
+  if (value.preferredModels !== undefined && !isRecord(value.preferredModels)) {
+    throw new Error('CLI 首选模型格式错误')
+  }
+  const preferredModels: AccountManagedCliConfigurationInput['preferredModels'] = {}
+  for (const [provider, model] of Object.entries(value.preferredModels ?? {})) {
+    if (!isProviderId(provider)) throw new Error('CLI 首选模型包含未知类型')
+    preferredModels[provider] = requiredString(model, 'CLI 首选模型', 512)
+  }
+  return { providers, preferredModels }
+}
+
 // account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
 // 名称上限(rc.24 controller/token.go);expiredTime -1 = 永不过期哨兵。
 function parseAccountKeyCreateInput(value: unknown): AccountKeyCreateInput {
@@ -582,6 +623,7 @@ function parseAccountKeyCreateInput(value: unknown): AccountKeyCreateInput {
   }
   return {
     name,
+    group: requiredString(value.group, 'Key 分组', 128),
     remainQuota: value.remainQuota,
     unlimitedQuota: value.unlimitedQuota,
     expiredTime: value.expiredTime,
@@ -593,6 +635,19 @@ function parseAccountKeyUpdateInput(value: unknown): AccountKeyUpdateInput {
   return {
     ...parseAccountKeyCreateInput(value),
     id: parseAccountRevokeKeyId(value.id),
+  }
+}
+
+function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConfigurationInput {
+  if (!isRecord(value)) throw new Error('账号 Key 配置信息格式错误')
+  if (!isProviderId(value.provider)) throw new Error('未知的 CLI 类型')
+  const mode = value.mode
+  if (mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
+  return {
+    provider: value.provider,
+    keyId: parseAccountRevokeKeyId(value.keyId),
+    model: requiredString(value.model, '模型名称', 512),
+    mode,
   }
 }
 
@@ -651,8 +706,10 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
   'desktop:launch-codex': 'Codex 桌面端启动',
   'models:list': '可用模型读取',
+  'models:list-configured': '已配置 CLI 可用模型读取',
   'window:set-mode': '窗口模式切换',
   'window:set-theme': '界面主题切换',
+  'tutorial:open': '教程文档窗口打开',
   'external:open': '外部链接打开',
   'update:get-state': '主程序更新状态读取',
   'update:startup': '主程序启动更新',
@@ -702,11 +759,13 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'extensions:list-all': '全部 AI 工具扩展读取',
   'extensions:mutate': 'AI 工具扩展操作',
   'account:get-status': '星芒账号服务状态读取',
+  'account:get-legal-document': '星芒账号法律文档读取',
   'account:login': '星芒账号登录',
   'account:logout': '星芒账号退出登录',
   'account:get-session': '星芒账号会话状态读取',
   'account:get-balance': '星芒账号余额查询',
-  'account:provision-cli-key': 'CLI Key 签发',
+  'account:sync-managed-cli-keys': '四组 CLI Key 初始化',
+  'account:configure-managed-clis': '四组 CLI 配置写入',
   'account:register': '星芒账号注册',
   'account:send-verification-code': '星芒账号邮箱验证码发送',
   'account:send-reset-code': '星芒账号密码重置邮件发送',
@@ -714,7 +773,12 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:get-profile': '星芒账号资料读取',
   'account:get-usage': '星芒账号用量明细读取',
   'account:list-keys': '星芒账号 Key 列表读取',
+  'account:list-groups': '星芒账号可用分组读取',
   'account:revoke-key': '星芒账号 Key 撤销',
+  'account:copy-key': '星芒账号 Key 复制',
+  'account:reveal-key': '星芒账号 Key 明文读取',
+  'account:list-key-models': '星芒账号 Key 可用模型读取',
+  'account:configure-cli-with-key': '星芒账号 Key 写入 CLI 配置',
   'account:change-password': '星芒账号密码修改',
   'canvas:open': '无限画布窗口打开',
   'account:get-remembered-login': '记住的登录凭据读取',
@@ -738,14 +802,16 @@ const quietIpcSuccessChannels = new Set([
   'settings:get',
   'runtime-logs:list',
   'runtime-logs:renderer-error',
-  // Frequent read-style checks, or -- get-status/get-balance can be polled by
-  // a status widget -- and provision-cli-key returns a plaintext secret to
-  // the renderer exactly like config:reveal-api-key above (I3/I13): logging
-  // its success detail would put the CLI key straight into the log file.
+  // Frequent read-style checks stay quiet, while managed CLI configuration
+  // handles secrets internally and account:reveal-key deliberately returns a
+  // short-lived plaintext secret to the renderer. Logging any of those
+  // success details risks putting account data or a CLI key on disk (I3/I13).
   'account:get-status',
+  'account:get-legal-document',
   'account:get-session',
   'account:get-balance',
-  'account:provision-cli-key',
+  'account:sync-managed-cli-keys',
+  'account:configure-managed-clis',
   // account:reset-password's result carries a server-generated plaintext
   // password (NewApiResetPasswordResult) -- exactly as sensitive as the CLI
   // key above, same I3/I13 reasoning.
@@ -764,6 +830,11 @@ const quietIpcSuccessChannels = new Set([
   // immediately above rather than being the one account:* read that logs
   // differently from its siblings.
   'account:list-keys',
+  'account:list-groups',
+  'account:copy-key',
+  'account:reveal-key',
+  'account:list-key-models',
+  'account:configure-cli-with-key',
   // change-password's *input* carries two plaintext passwords (args[0], not
   // the result -- the result is just {changed:true}, I3-safe on its own).
   // ipcLogDetail/ipcSuccessMessage happen to never spread args[0] generically
@@ -811,7 +882,9 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'cli:check-update' && provider) return `${provider} 更新检查已完成`
   if (channel === 'desktop:uninstall-codex') return 'Codex 桌面端卸载已完成'
   if (channel === 'cli:launch' && provider) return `${provider} 终端已打开`
-  if (channel === 'models:list' && count !== null) return `可用模型读取完成，共 ${count} 个`
+  if ((channel === 'models:list' || channel === 'models:list-configured') && count !== null) {
+    return `可用模型读取完成，共 ${count} 个`
+  }
   if (channel === 'desktop:launch-codex') {
     return args[0] === 'restart' ? 'Codex 桌面端已重启' : 'Codex 桌面端已打开'
   }
@@ -1058,6 +1131,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     return service.fetchAvailableModels(apiKey)
   })
+  registerTrustedHandler('models:list-configured', (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    const apiKey = service.revealApiKey(provider, options.previewOnboarding)
+    if (!apiKey) throw new Error('未读取到已保存的 API Key')
+    return service.fetchAvailableModels(apiKey)
+  })
   registerTrustedHandler('window:set-mode', (event, mode: unknown) => {
     if (mode !== 'onboarding' && mode !== 'dashboard') throw new Error('未知的窗口模式')
     options.setWindowMode(event.sender, mode)
@@ -1067,6 +1146,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.setWindowTheme(event.sender, theme)
     await service.updateStoredConfig({ version: 2, theme })
   })
+  registerTrustedHandler('tutorial:open', (event) => options.openTutorialDocsWindow(event.sender))
   registerTrustedHandler('external:open', async (_event, url: unknown) => {
     if (
       typeof url !== 'string'
@@ -1274,6 +1354,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.providerExtensionService.mutate(parseProviderExtensionMutation(input))
   ))
   registerTrustedHandler('account:get-status', () => accountService.getStatus())
+  registerTrustedHandler('account:get-legal-document', (_event, kind: unknown) => (
+    accountService.getLegalDocument(parseLegalDocumentKind(kind))
+  ))
   registerTrustedHandler('account:login', (_event, input: unknown) => (
     accountService.login(parseAccountLoginInput(input))
   ))
@@ -1287,7 +1370,20 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return accountService.getSessionState()
   })
   registerTrustedHandler('account:get-balance', () => accountService.getBalance())
-  registerTrustedHandler('account:provision-cli-key', () => accountService.provisionCliKey())
+  registerTrustedHandler('account:sync-managed-cli-keys', () => (
+    syncManagedCliKeySummary(accountService, options.managedCliKeys)
+  ))
+  registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
+    const parsed = parseManagedCliConfigurationInput(input)
+    return configureManagedClis(
+      accountService,
+      service,
+      parsed.providers,
+      parsed.preferredModels,
+      options.previewOnboarding,
+      options.managedCliKeys,
+    )
+  })
   registerTrustedHandler('account:register', (_event, input: unknown) => (
     accountService.register(parseAccountRegisterInput(input))
   ))
@@ -1307,9 +1403,74 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:list-keys', (_event, input: unknown) => (
     accountService.listKeys(parseAccountKeysQuery(input))
   ))
-  registerTrustedHandler('account:revoke-key', (_event, id: unknown) => (
-    accountService.revokeKey(parseAccountRevokeKeyId(id))
-  ))
+  registerTrustedHandler('account:list-groups', () => accountService.listUsableGroups())
+  registerTrustedHandler('account:revoke-key', async (_event, id: unknown) => {
+    const keyId = parseAccountRevokeKeyId(id)
+    const userId = accountService.getSessionState().account?.userId
+    await accountService.revokeKey(keyId)
+    if (userId && options.managedCliKeys) await options.managedCliKeys.remove(userId, keyId)
+  })
+  const assertAccountSessionUser = (expectedUserId: number): void => {
+    const session = accountService.getSessionState()
+    if (!session.authenticated || session.account?.userId !== expectedUserId) {
+      throw new Error('账号会话已变更，请重试')
+    }
+  }
+  const revealAccountKeySecret = async (id: unknown, expectedUserId?: number): Promise<string> => {
+    const keyId = parseAccountRevokeKeyId(id)
+    const startingSession = accountService.getSessionState()
+    const userId = expectedUserId
+      ?? (startingSession.authenticated ? startingSession.account?.userId : undefined)
+    const assertStartingSessionIsCurrent = () => {
+      if (!userId) return
+      assertAccountSessionUser(userId)
+    }
+    assertStartingSessionIsCurrent()
+    if (userId && options.managedCliKeys) {
+      // Intentionally do not catch: a corrupt or unavailable encrypted cache
+      // must not be mistaken for a cache miss and silently bypassed via HTTP.
+      const cachedKeys = await options.managedCliKeys.read(userId)
+      assertStartingSessionIsCurrent()
+      const cached = cachedKeys.find((entry) => entry.id === keyId)
+      if (cached) return cached.key
+    }
+    assertStartingSessionIsCurrent()
+    const secret = await accountService.revealKey(keyId)
+    assertStartingSessionIsCurrent()
+    return secret
+  }
+  registerTrustedHandler('account:copy-key', async (_event, id: unknown) => {
+    const key = await revealAccountKeySecret(id)
+    clipboard.writeText(key)
+  })
+  registerTrustedHandler('account:reveal-key', (_event, id: unknown) => revealAccountKeySecret(id))
+  registerTrustedHandler('account:list-key-models', async (_event, id: unknown) => {
+    const userId = accountService.getSessionState().account?.userId
+    if (!userId) throw new Error('请先登录星芒账号')
+    const apiKey = await revealAccountKeySecret(id, userId)
+    assertAccountSessionUser(userId)
+    const models = await service.fetchAvailableModels(apiKey)
+    assertAccountSessionUser(userId)
+    return models
+  })
+  registerTrustedHandler('account:configure-cli-with-key', async (_event, input: unknown) => {
+    const parsed = parseAccountKeyCliConfigurationInput(input)
+    const userId = accountService.getSessionState().account?.userId
+    if (!userId) throw new Error('请先登录星芒账号')
+    const apiKey = await revealAccountKeySecret(parsed.keyId, userId)
+    assertAccountSessionUser(userId)
+    const models = await service.fetchAvailableModels(apiKey)
+    assertAccountSessionUser(userId)
+    if (!models.includes(parsed.model)) throw new Error('所选 Key 当前不支持该模型，请重新检测')
+    const result = await service.saveConfig({
+      provider: parsed.provider,
+      apiKey,
+      model: parsed.model,
+      mode: parsed.mode,
+    }, options.previewOnboarding)
+    assertAccountSessionUser(userId)
+    return result
+  })
   registerTrustedHandler('account:change-password', (_event, input: unknown) => (
     accountService.changePassword(parseAccountChangePasswordInput(input))
   ))
@@ -1332,9 +1493,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:create-key', (_event, input: unknown) => (
     accountService.createKey(parseAccountKeyCreateInput(input))
   ))
-  registerTrustedHandler('account:update-key', (_event, input: unknown) => (
-    accountService.updateKey(parseAccountKeyUpdateInput(input))
-  ))
+  registerTrustedHandler('account:update-key', async (_event, input: unknown) => {
+    const parsed = parseAccountKeyUpdateInput(input)
+    const userId = accountService.getSessionState().account?.userId
+    await accountService.updateKey(parsed)
+    if (userId && options.managedCliKeys) await options.managedCliKeys.remove(userId, parsed.id)
+  })
 
   return () => {
     unsubscribeUpdates()

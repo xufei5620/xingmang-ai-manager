@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArrowLeft,
@@ -24,6 +24,7 @@ import { errorMessage } from '../../error-message'
 import { ThemeToggle } from '../Sidebar'
 import {
   authorizeCodex,
+  authorizeManagedCodex,
   DEFAULT_CODEX_MODEL,
   installNodeAndPrepareCodexEnvironment,
   prepareCodexEnvironment,
@@ -56,6 +57,7 @@ export function CodexOnboarding({
   onConfigChange,
   onComplete,
   onCancel,
+  authorizationMode,
   desktopInstallProgress,
   platform,
 }: {
@@ -74,6 +76,7 @@ export function CodexOnboarding({
    * "cancel" would silently mutate the very config it's meant to protect.
    */
   onCancel?: () => void
+  authorizationMode: 'managed' | 'manual'
   desktopInstallProgress: CodexDesktopInstallProgress | null
   platform: PlatformCapabilities
 }) {
@@ -89,6 +92,8 @@ export function CodexOnboarding({
   const [nodeGuideOpen, setNodeGuideOpen] = useState(false)
   const [nodeInstallProgress, setNodeInstallProgress] = useState<NodeRuntimeInstallProgress | null>(null)
   const [desktopInstallRecovery, setDesktopInstallRecovery] = useState(false)
+  const initializationBusyRef = useRef(false)
+  const autoInitializationStartedRef = useRef(false)
 
   useEffect(() => {
     return window.xingmang.onInstallProgress((event: InstallProgress) => {
@@ -213,19 +218,31 @@ export function CodexOnboarding({
     applySetupResult(result.setup)
   }
 
-  const startInitialization = async () => {
+  const startInitialization = async (mode: 'managed' | 'manual') => {
+    if (initializationBusyRef.current) return
+    initializationBusyRef.current = true
     setError('')
     setAction('scanning')
     try {
-      const nextConfig = await authorizeCodex(apiKey, window.xingmang)
+      const nextConfig = mode === 'managed'
+        ? await authorizeManagedCodex(window.xingmang)
+        : await authorizeCodex(apiKey, window.xingmang)
       onConfigChange(nextConfig)
       setStage('setup')
       await runSetup()
     } catch (initializeError) {
       setAction('idle')
       setError(errorMessage(initializeError))
+    } finally {
+      initializationBusyRef.current = false
     }
   }
+
+  useEffect(() => {
+    if (authorizationMode !== 'managed' || autoInitializationStartedRef.current) return
+    autoInitializationStartedRef.current = true
+    void startInitialization('managed')
+  }, [authorizationMode])
 
   const enterDashboard = async () => {
     setFinishing(true)
@@ -267,7 +284,7 @@ export function CodexOnboarding({
           <OnboardingStep
             index={1}
             label="授权配置"
-            detail="验证 API 授权码"
+            detail={authorizationMode === 'managed' ? '读取账号专属 Key' : '验证 API 授权码'}
             active={stage === 'authorize'}
             complete={stage !== 'authorize'}
           />
@@ -318,7 +335,9 @@ export function CodexOnboarding({
                 <div>
                   <span>CODEX QUICK SETUP</span>
                   <h1>初始化 Codex 配置</h1>
-                  <p>验证授权码后，自动完成配置与运行环境准备。</p>
+                  <p>{authorizationMode === 'managed'
+                    ? '已登录星芒账号，正在自动完成配置与运行环境准备。'
+                    : '验证授权码后，自动完成配置与运行环境准备。'}</p>
                 </div>
               </div>
 
@@ -330,45 +349,59 @@ export function CodexOnboarding({
               )}
 
               <div className="onboarding-form">
-                <div className="field-label-row">
-                  <label htmlFor="onboarding-api-key">安装授权码</label>
-                  <button
-                    type="button"
-                    className="key-link-button"
-                    onClick={() => void window.xingmang.openExternal(relaySite.keysPageUrl)}
-                  >
-                    没有授权码？前往获取
-                    <ExternalLink size={13} />
-                  </button>
-                </div>
-                <div className="input-with-action onboarding-key-input">
-                  <input
-                    id="onboarding-api-key"
-                    type="text"
-                    value={showKey ? apiKey : maskedApiKey(apiKey || existingCodex?.apiKeyPreview || '')}
-                    onChange={(event) => setApiKey(event.target.value)}
-                    onFocus={() => {
-                      if (!showKey) setShowKey(true)
-                    }}
-                    onBlur={() => {
-                      // 未输入新 Key 时失焦恢复掩码，保留已保存 Key 的预览。
-                      if (!apiKey) setShowKey(false)
-                    }}
-                    placeholder="请输入 API Key"
-                    spellCheck={false}
-                    autoComplete="off"
-                    readOnly={!showKey}
-                  />
-                  <button
-                    type="button"
-                    title={!apiKey && existingCodex?.apiKeyPreview
-                      ? '已保存的 Key 不可查看，输入新 Key 可替换'
-                      : showKey ? '隐藏授权码' : '显示授权码'}
-                    onClick={() => setShowKey((value) => !value)}
-                  >
-                    {showKey ? <EyeOff size={17} /> : <Eye size={17} />}
-                  </button>
-                </div>
+                {authorizationMode === 'managed' ? (
+                  <div className="onboarding-managed-authorization" role="status" aria-live="polite">
+                    <div className="onboarding-managed-authorization-icon">
+                      {busy ? <LoaderCircle size={19} className="spin" /> : <ShieldCheck size={19} />}
+                    </div>
+                    <div>
+                      <strong>{busy ? '正在自动配置账号授权' : error ? '自动配置未完成' : '账号授权已就绪'}</strong>
+                      <span>使用本地保存的 codex-pro 专属 Key，无需手动填写。</span>
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div className="field-label-row">
+                      <label htmlFor="onboarding-api-key">安装授权码</label>
+                      <button
+                        type="button"
+                        className="key-link-button"
+                        onClick={() => void window.xingmang.openExternal(relaySite.keysPageUrl)}
+                      >
+                        没有授权码？前往获取
+                        <ExternalLink size={13} />
+                      </button>
+                    </div>
+                    <div className="input-with-action onboarding-key-input">
+                      <input
+                        id="onboarding-api-key"
+                        type="text"
+                        value={showKey ? apiKey : maskedApiKey(apiKey || existingCodex?.apiKeyPreview || '')}
+                        onChange={(event) => setApiKey(event.target.value)}
+                        onFocus={() => {
+                          if (!showKey) setShowKey(true)
+                        }}
+                        onBlur={() => {
+                          // 未输入新 Key 时失焦恢复掩码，保留已保存 Key 的预览。
+                          if (!apiKey) setShowKey(false)
+                        }}
+                        placeholder="请输入 API Key"
+                        spellCheck={false}
+                        autoComplete="off"
+                        readOnly={!showKey}
+                      />
+                      <button
+                        type="button"
+                        title={!apiKey && existingCodex?.apiKeyPreview
+                          ? '已保存的 Key 不可查看，输入新 Key 可替换'
+                          : showKey ? '隐藏授权码' : '显示授权码'}
+                        onClick={() => setShowKey((value) => !value)}
+                      >
+                        {showKey ? <EyeOff size={17} /> : <Eye size={17} />}
+                      </button>
+                    </div>
+                  </>
+                )}
 
                 <div className="onboarding-defaults">
                   <div>
@@ -386,11 +419,15 @@ export function CodexOnboarding({
                 <button
                   type="button"
                   className="primary-button onboarding-primary"
-                  disabled={busy || !apiKey.trim()}
-                  onClick={() => void startInitialization()}
+                  disabled={busy || (authorizationMode === 'manual' && !apiKey.trim())}
+                  onClick={() => void startInitialization(authorizationMode)}
                 >
-                  {busy ? <LoaderCircle size={18} className="spin" /> : <MonitorDown size={18} />}
-                  {busy ? '正在验证并写入配置' : '开始初始化'}
+                  {busy
+                    ? <LoaderCircle size={18} className="spin" />
+                    : authorizationMode === 'managed' ? <RefreshCw size={18} /> : <MonitorDown size={18} />}
+                  {busy
+                    ? authorizationMode === 'managed' ? '正在读取本地 Key 并写入配置' : '正在验证并写入配置'
+                    : authorizationMode === 'managed' && error ? '重新初始化' : '开始初始化'}
                   {!busy && <ArrowRight size={17} />}
                 </button>
               </div>

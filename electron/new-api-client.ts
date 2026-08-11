@@ -33,6 +33,11 @@ const refreshPath = '/api/user/auth/refresh'
 const selfPath = '/api/user/self'
 const logSelfPath = '/api/log/self'
 const tokenCollectionPath = '/api/token/'
+const userGroupsPath = '/api/user/self/groups'
+const legalDocumentPaths = {
+  'user-agreement': '/api/user-agreement',
+  'privacy-policy': '/api/privacy-policy',
+} as const
 const resetPasswordEmailPath = '/api/reset_password'
 const resetPasswordPath = '/api/user/reset'
 
@@ -76,6 +81,20 @@ export interface NewApiAccountStatus {
   passwordRegisterEnabled: boolean
   emailVerificationEnabled: boolean
   turnstileCheckEnabled: boolean
+}
+
+export type NewApiLegalDocumentKind = keyof typeof legalDocumentPaths
+
+export interface NewApiLegalDocument {
+  kind: NewApiLegalDocumentKind
+  markdown: string
+  fetchedAt: string
+}
+
+export interface NewApiUsableGroup {
+  name: string
+  description: string
+  ratio: number | string
 }
 
 export interface NewApiAccountProfile {
@@ -236,19 +255,16 @@ export interface NewApiAccountKeysQuery {
 // (byte-identical between the two for every field read here).
 //
 // Deliberately a strict metadata whitelist -- I3. The wire response also
-// carries a `key` field (GetAllTokens masks it via buildMaskedTokenResponses
-// -> Token.GetMaskedKey(), so it is never the full plaintext secret, but it
-// is still a partial fragment of one), plus user_id/model_limits_enabled/
-// model_limits/allow_ips/cross_group_retry, none of which this app has any
-// display use for. parseAccountKey below never reads `.key` (or any of those
-// other fields) under any circumstance -- see its own comment. Revealing a
-// key's live plaintext value is out of scope for this wave entirely (see
-// NewApiClientService.revokeKey's doc comment); this DTO exists only so a
-// user can recognize *which* key is which well enough to revoke an orphaned
-// one.
+// carries user_id/model_limits_enabled/model_limits/allow_ips/
+// cross_group_retry, none of which the list view needs. The `key` field is
+// accepted only when it matches new-api's exact long-key mask shape; an
+// accidental plaintext response is discarded before this DTO crosses IPC.
 export interface NewApiAccountKey {
   id: number
   name: string
+  /** Server-masked display value; never the full plaintext secret. */
+  maskedKey: string
+  group: string
   /** common.TokenStatus* (model/token.go): 1 enabled, 2 disabled, 3 expired, 4 exhausted. */
   status: number
   remainQuota: number
@@ -275,6 +291,7 @@ export interface NewApiAccountKeysPage {
 // 与余额显示同一来源);expiredTime 为 Unix 秒,-1 = 永不过期(服务端哨兵)。
 export interface NewApiAccountKeyCreateInput {
   name: string
+  group: string
   remainQuota: number
   unlimitedQuota: boolean
   expiredTime: number
@@ -301,6 +318,7 @@ export interface NewApiChangePasswordResult {
 
 export interface NewApiProvisionCliKeyInput {
   name?: string
+  group?: string
   remainQuota?: number
   unlimitedQuota?: boolean
   expiredTime?: number
@@ -323,6 +341,7 @@ export interface NewApiCliKeyResult {
 // it" rule.
 export interface NewApiClientService extends RelayBackendClient {
   getStatus(): Promise<NewApiAccountStatus>
+  getLegalDocument(kind: NewApiLegalDocumentKind): Promise<NewApiLegalDocument>
   // Public, unauthenticated endpoint that /api/user/register's
   // verification_code field depends on -- see register() below. Resolves on
   // success and rejects with the server's own (already sanitized) message
@@ -363,14 +382,15 @@ export interface NewApiClientService extends RelayBackendClient {
   // (W4b) -- see NewApiAccountKey's own doc comment for the I3 field
   // whitelist this applies on the way out.
   listKeys(input?: NewApiAccountKeysQuery): Promise<NewApiAccountKeysPage>
+  listUsableGroups(): Promise<NewApiUsableGroup[]>
+  revealKey(id: number): Promise<string>
   // DELETE /api/token/:id. Destructive and immediate: any CLI config or
   // canvas session currently holding this key's plaintext stops working the
   // instant this resolves -- there is no undo. Scoped server-side to the
   // caller's own tokens (DeleteTokenById takes the authenticated userId,
   // controller/token.go), so an id belonging to another account fails rather
-  // than silently no-op-ing. This app never reveals a key's plaintext value
-  // (see NewApiAccountKey's comment), so the confirm-before-revoke UX this
-  // backs is deliberately the *only* key-management action this wave ships.
+  // than silently no-op-ing. Plaintext reveal is a separate, explicit IPC
+  // action; this destructive path remains guarded by confirm-before-revoke.
   revokeKey(id: number): Promise<void>
   // POST /api/token/ (AddToken). Response carries only {success,message} --
   // no id, no key (RECON 坑1) -- so the caller refreshes the list to see the
@@ -732,10 +752,17 @@ export function parseAccountUsagePage(payload: unknown): NewApiAccountUsagePage 
 //
 // I3: this function's field list is a hand-picked whitelist, not a spread or
 // a generic mapper -- it must stay that way even if model.Token grows new
-// fields upstream. In particular it never reads payload.key (or
-// payload.token): see NewApiAccountKey's own doc comment for why that
-// field's mere presence on the wire (masked or not) is irrelevant to this
-// function's contract.
+// fields upstream. The key parser is fail-closed: only MaskTokenKey's
+// 4 + 10 asterisks + 4 shape is allowed through, never a full secret.
+function parseMaskedTokenKey(value: unknown): string {
+  if (typeof value !== 'string') return ''
+  const trimmed = value.trim()
+  const withoutPrefix = trimmed.startsWith('sk-') ? trimmed.slice(3) : trimmed
+  return /^[A-Za-z0-9]{4}\*{10}[A-Za-z0-9]{4}$/.test(withoutPrefix)
+    ? `sk-${withoutPrefix}`
+    : ''
+}
+
 export function parseAccountKey(payload: unknown): NewApiAccountKey | null {
   if (!isRecord(payload)) return null
   const id = asFiniteNumber(payload.id, Number.NaN)
@@ -755,6 +782,8 @@ export function parseAccountKey(payload: unknown): NewApiAccountKey | null {
   return {
     id,
     name: asString(payload.name, ''),
+    maskedKey: parseMaskedTokenKey(payload.key),
+    group: asString(payload.group, ''),
     status: asFiniteNumber(payload.status, 0),
     remainQuota: asFiniteNumber(payload.remain_quota, 0),
     unlimitedQuota: asBoolean(payload.unlimited_quota, false),
@@ -763,6 +792,24 @@ export function parseAccountKey(payload: unknown): NewApiAccountKey | null {
     expiredAt,
     accessedAt,
   }
+}
+
+export function parseUsableGroups(payload: unknown): NewApiUsableGroup[] {
+  if (!isRecord(payload)) throw new Error('可用分组响应格式异常')
+  return Object.entries(payload).flatMap(([name, raw]) => {
+    if (!name.trim() || !isRecord(raw)) return []
+    const ratio = raw.ratio
+    if (typeof ratio !== 'number' && typeof ratio !== 'string') return []
+    return [{
+      name,
+      description: asString(raw.desc, name),
+      ratio,
+    }]
+  }).sort((left, right) => {
+    if (left.name === 'default') return -1
+    if (right.name === 'default') return 1
+    return left.name.localeCompare(right.name, 'zh-CN')
+  })
 }
 
 // GET /api/token/'s envelope data -- the same common.PageInfo
@@ -975,12 +1022,36 @@ export function findNewestCliKeyIdByNamePrefix(
   return best
 }
 
+export function findNewestUsableCliKeyByGroup(
+  payload: unknown,
+  group: string,
+  nowSeconds = Math.floor(Date.now() / 1_000),
+): NewApiExistingCliKeyMatch | null {
+  let best: NewApiExistingCliKeyMatch | null = null
+  for (const entry of collectionEntries(payload)) {
+    if (!isRecord(entry) || asString(entry.group, '') !== group) continue
+    if (asFiniteNumber(entry.status, 0) !== 1) continue
+    const expiredTime = asFiniteNumber(entry.expired_time, -1)
+    if (expiredTime !== -1 && expiredTime <= nowSeconds) continue
+    const unlimitedQuota = entry.unlimited_quota === true
+    const remainQuota = asFiniteNumber(entry.remain_quota, 0)
+    if (!unlimitedQuota && remainQuota <= 0) continue
+    const id = entry.id
+    if (typeof id !== 'number' || !Number.isInteger(id) || id <= 0) continue
+    const name = asString(entry.name, '')
+    if (!best || id > best.id) best = { id, name }
+  }
+  return best
+}
+
 export function parseCliKeySecret(payload: unknown): string | null {
   const data = isRecord(payload) ? payload : null
   const candidate = data && typeof data.key === 'string'
     ? data.key
     : typeof payload === 'string' ? payload : null
-  return candidate && candidate.trim() ? candidate.trim() : null
+  if (!candidate?.trim()) return null
+  const trimmed = candidate.trim()
+  return trimmed.startsWith('sk-') ? trimmed : `sk-${trimmed}`
 }
 
 // new-api (this module) is the first relay backend and, per CLAUDE.md's
@@ -1012,6 +1083,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     maxResponseBytes,
     origin,
   }
+
+  const legalDocumentCache = new Map<NewApiLegalDocumentKind, { expiresAt: number; value: NewApiLegalDocument }>()
 
   let session: InternalSession | null = null
 
@@ -1101,6 +1174,19 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   const getStatus = async (): Promise<NewApiAccountStatus> => {
     const raw = await performRequest(ctx, statusPath, { method: 'GET' }, '账号服务状态查询')
     return parseAccountStatus(unwrapEnvelope(raw, '账号服务状态查询', []))
+  }
+
+  const getLegalDocument = async (kind: NewApiLegalDocumentKind): Promise<NewApiLegalDocument> => {
+    const pathName = legalDocumentPaths[kind]
+    if (!pathName) throw new Error('未知的法律文档类型')
+    const cached = legalDocumentCache.get(kind)
+    if (cached && cached.expiresAt > Date.now()) return cached.value
+    const raw = await performRequest(ctx, pathName, { method: 'GET' }, '法律文档读取')
+    const data = unwrapEnvelope(raw, '法律文档读取', [])
+    if (typeof data !== 'string' || !data.trim()) throw new Error('法律文档暂未配置')
+    const value = { kind, markdown: data.trim(), fetchedAt: new Date().toISOString() }
+    legalDocumentCache.set(kind, { expiresAt: Date.now() + 10 * 60 * 1_000, value })
+    return value
   }
 
   // Confirmed against this instance's own new-api source (rc.22 custom
@@ -1305,6 +1391,31 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
+  const loadUsableGroups = async (current: InternalSession): Promise<NewApiUsableGroup[]> => {
+    const raw = await performRequest(
+      ctx,
+      userGroupsPath,
+      { method: 'GET', headers: authHeaders(current) },
+      '可用分组查询',
+    )
+    return parseUsableGroups(unwrapEnvelope(raw, '可用分组查询', [current.accessToken]))
+  }
+
+  const listUsableGroups = (): Promise<NewApiUsableGroup[]> => withSession(loadUsableGroups)
+
+  const revealKey = (id: number): Promise<string> => withSession(async (current) => {
+    if (!Number.isInteger(id) || id <= 0) throw new Error('Key ID 格式错误')
+    const raw = await performRequest(
+      ctx,
+      tokenKeyPath(id),
+      { method: 'POST', headers: authHeaders(current) },
+      'Key 明文读取',
+    )
+    const key = parseCliKeySecret(unwrapEnvelope(raw, 'Key 明文读取', [current.accessToken]))
+    if (!key) throw new Error('Key 明文读取失败，请重试')
+    return key
+  })
+
   const revokeKey = (id: number): Promise<void> => (
     withSession(async (current) => {
       // Defense in depth: ipc.ts's parseAccountRevokeKeyId already rejects
@@ -1326,24 +1437,33 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   // Shared guards for createKey/updateKey -- same defense-in-depth posture
   // as revokeKey above (I5: this client is callable outside the IPC layer).
   // 50 is AddToken/UpdateToken's own server-side name cap (rc.24).
-  function validateKeyEditorInput(input: NewApiAccountKeyCreateInput): string {
+  function validateKeyEditorInput(input: NewApiAccountKeyCreateInput): { name: string; group: string } {
     const name = input.name.trim()
     if (!name) throw new Error('请输入 Key 名称')
     if (name.length > 50) throw new Error('Key 名称不能超过 50 个字符')
+    const group = input.group.trim()
+    if (!group || group.length > 128) throw new Error('请选择有效分组')
     if (!input.unlimitedQuota && (!Number.isInteger(input.remainQuota) || input.remainQuota < 0)) {
       throw new Error('额度格式错误')
     }
     if (!Number.isInteger(input.expiredTime) || (input.expiredTime !== -1 && input.expiredTime <= 0)) {
       throw new Error('过期时间格式错误')
     }
-    return name
+    return { name, group }
+  }
+
+  const assertUsableGroup = async (current: InternalSession, group: string): Promise<void> => {
+    const groups = await loadUsableGroups(current)
+    if (!groups.some((entry) => entry.name === group)) throw new Error(`当前账号不可使用分组「${group}」`)
   }
 
   const createKey = (input: NewApiAccountKeyCreateInput): Promise<void> => (
     withSession(async (current) => {
-      const name = validateKeyEditorInput(input)
+      const { name, group } = validateKeyEditorInput(input)
+      await assertUsableGroup(current, group)
       const body = {
         name,
+        group,
         remain_quota: input.unlimitedQuota ? 0 : input.remainQuota,
         unlimited_quota: input.unlimitedQuota,
         expired_time: input.expiredTime,
@@ -1361,7 +1481,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   const updateKey = (input: NewApiAccountKeyUpdateInput): Promise<void> => (
     withSession(async (current) => {
       if (!Number.isInteger(input.id) || input.id <= 0) throw new Error('Key ID 格式错误')
-      const name = validateKeyEditorInput(input)
+      const { name, group } = validateKeyEditorInput(input)
+      await assertUsableGroup(current, group)
       // UpdateToken 是整体覆盖(见 NewApiClientService.updateKey 的注释):
       // 先 GET 当前记录,把本次不编辑的字段原样回填。record.key(掩码)
       // 按 I3 纪律绝不读取,也不进 PUT body(服务端本就不从请求读 Key)。
@@ -1372,20 +1493,29 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         'Key 读取',
       )
       const existing = unwrapEnvelope(currentRaw, 'Key 读取', [current.accessToken])
-      const record = isRecord(existing) ? existing : {}
+      if (!isRecord(existing)) throw new Error('Key 详情数据不完整，已取消更新')
+      const preservationFieldsValid = (
+        typeof existing.remain_quota === 'number'
+        && Number.isFinite(existing.remain_quota)
+        && typeof existing.model_limits_enabled === 'boolean'
+        && typeof existing.model_limits === 'string'
+        && (typeof existing.allow_ips === 'string' || existing.allow_ips === null)
+        && typeof existing.cross_group_retry === 'boolean'
+      )
+      if (!preservationFieldsValid) throw new Error('Key 详情数据不完整，已取消更新')
       const body = {
         id: input.id,
         name,
         expired_time: input.expiredTime,
         remain_quota: input.unlimitedQuota
-          ? (typeof record.remain_quota === 'number' ? record.remain_quota : 0)
+          ? existing.remain_quota
           : input.remainQuota,
         unlimited_quota: input.unlimitedQuota,
-        model_limits_enabled: record.model_limits_enabled === true,
-        model_limits: typeof record.model_limits === 'string' ? record.model_limits : '',
-        allow_ips: typeof record.allow_ips === 'string' ? record.allow_ips : '',
-        group: typeof record.group === 'string' ? record.group : '',
-        cross_group_retry: record.cross_group_retry === true,
+        model_limits_enabled: existing.model_limits_enabled,
+        model_limits: existing.model_limits,
+        allow_ips: existing.allow_ips,
+        group,
+        cross_group_retry: group === 'auto' && existing.cross_group_retry,
       }
       const raw = await performRequest(
         ctx,
@@ -1426,11 +1556,53 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
+  const listAllTokenRecords = async (current: InternalSession): Promise<unknown[]> => {
+    const entries: unknown[] = []
+    for (let page = 1; page <= 1_000; page += 1) {
+      const raw = await performRequest(
+        ctx,
+        `${tokenCollectionPath}?p=${page}&page_size=100`,
+        { method: 'GET', headers: authHeaders(current) },
+        'CLI Key 查询',
+      )
+      const data = unwrapEnvelope(raw, 'CLI Key 查询', [current.accessToken])
+      const pageEntries = collectionEntries(data)
+      entries.push(...pageEntries)
+      const total = isRecord(data) ? asFiniteNumber(data.total, entries.length) : entries.length
+      if (pageEntries.length === 0 || entries.length >= total) return entries
+    }
+    throw new Error('CLI Key 数量超过安全分页上限')
+  }
+
+  const revealCliKeyForSession = async (
+    current: InternalSession,
+    match: NewApiExistingCliKeyMatch,
+  ): Promise<NewApiCliKeyResult> => {
+    const keyRaw = await performRequest(
+      ctx,
+      tokenKeyPath(match.id),
+      { method: 'POST', headers: authHeaders(current) },
+      'CLI Key 明文读取',
+    )
+    const keyData = unwrapEnvelope(keyRaw, 'CLI Key 明文读取', [current.accessToken])
+    const key = parseCliKeySecret(keyData)
+    if (!key) throw new Error('CLI Key 明文读取失败，请重试')
+    return { id: match.id, name: match.name, key }
+  }
+
   const provisionCliKey = (input: NewApiProvisionCliKeyInput = {}): Promise<NewApiCliKeyResult> => (
     withSession(async (current) => {
-      const name = (input.name?.trim() || buildCliKeyName()).slice(0, 128)
+      const name = (input.name?.trim() || buildCliKeyName()).slice(0, 50)
+      const group = input.group?.trim()
+      if (group) {
+        if (group.length > 128) throw new Error('CLI Key 分组格式错误')
+        await assertUsableGroup(current, group)
+        const existing = findNewestUsableCliKeyByGroup(await listAllTokenRecords(current), group)
+        if (existing) return revealCliKeyForSession(current, existing)
+      }
       const createBody = {
         name,
+        ...(group ? { group } : {}),
         remain_quota: Number.isFinite(input.remainQuota) ? input.remainQuota : 0,
         // Defaults to unlimited: the token is meant to let a CLI spend from
         // the account's own balance, which already bounds real spend. A
@@ -1446,27 +1618,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       )
       unwrapEnvelope(createRaw, 'CLI Key 创建', [current.accessToken])
 
-      const listRaw = await performRequest(
-        ctx,
-        tokenCollectionPath,
-        { method: 'GET', headers: authHeaders(current) },
-        'CLI Key 查询',
-      )
-      const listData = unwrapEnvelope(listRaw, 'CLI Key 查询', [current.accessToken])
-      const id = findCliKeyIdByName(listData, name)
+      const id = findCliKeyIdByName(await listAllTokenRecords(current), name)
       if (id === null) throw new Error('CLI Key 创建成功但未能定位新记录，请重试')
 
-      const keyRaw = await performRequest(
-        ctx,
-        tokenKeyPath(id),
-        { method: 'POST', headers: authHeaders(current) },
-        'CLI Key 明文读取',
-      )
-      const keyData = unwrapEnvelope(keyRaw, 'CLI Key 明文读取', [current.accessToken])
-      const key = parseCliKeySecret(keyData)
-      if (!key) throw new Error('CLI Key 明文读取失败，请重试')
-
-      return { id, name, key }
+      return revealCliKeyForSession(current, { id, name })
     })
   )
 
@@ -1574,6 +1729,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   return {
     capabilities: newApiCapabilities,
     getStatus,
+    getLegalDocument,
     sendEmailVerification,
     sendPasswordResetEmail,
     resetPassword,
@@ -1586,6 +1742,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     getProfile,
     getUsage,
     listKeys,
+    listUsableGroups,
+    revealKey,
     revokeKey,
     createKey,
     updateKey,

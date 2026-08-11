@@ -116,6 +116,18 @@ function failureResponse(message: string, status = 200): Response {
   return jsonResponse({ success: false, message, data: null }, { status })
 }
 
+function usableGroupsResponse(): Response {
+  return jsonResponse({
+    success: true,
+    message: '',
+    data: {
+      default: { desc: '默认分组', ratio: 1 },
+      'codex-pro': { desc: 'Codex Pro', ratio: 1.2 },
+      vip: { desc: 'VIP', ratio: 2 },
+    },
+  })
+}
+
 // Logs a fresh client in against a throwaway mock and hands back both, so
 // balance/CLI-key tests can start from an authenticated session without
 // repeating the login boilerplate.
@@ -1149,7 +1161,7 @@ describe('parseAccountKey', () => {
     const key = parseAccountKey({
       id: 7,
       user_id: 42,
-      key: 'sk-masked-abcd****1234',
+      key: 'sk-abcd**********1234',
       status: 1,
       name: 'xingmang-desktop-abc',
       created_time: 1_754_784_000,
@@ -1163,6 +1175,8 @@ describe('parseAccountKey', () => {
     expect(key).toEqual({
       id: 7,
       name: 'xingmang-desktop-abc',
+      maskedKey: 'sk-abcd**********1234',
+      group: 'default',
       status: 1,
       remainQuota: 500_000,
       unlimitedQuota: false,
@@ -1173,7 +1187,7 @@ describe('parseAccountKey', () => {
     })
   })
 
-  it('never copies the key field into the DTO even though the server includes a masked key (I3)', () => {
+  it('drops a plaintext key instead of treating it as a display-safe masked value', () => {
     const payload = {
       id: 1,
       name: 'test',
@@ -1187,8 +1201,21 @@ describe('parseAccountKey', () => {
     const key = parseAccountKey(payload)
     expect(key).not.toBeNull()
     expect(Object.keys(key as object).sort()).toEqual(
-      ['accessedAt', 'createdAt', 'expiredAt', 'id', 'name', 'remainQuota', 'status', 'unlimitedQuota', 'usedQuota'].sort(),
+      [
+        'accessedAt',
+        'createdAt',
+        'expiredAt',
+        'group',
+        'id',
+        'maskedKey',
+        'name',
+        'remainQuota',
+        'status',
+        'unlimitedQuota',
+        'usedQuota',
+      ].sort(),
     )
+    expect(key?.maskedKey).toBe('')
     expect(JSON.stringify(key)).not.toContain('sk-attacker')
   })
 
@@ -1396,7 +1423,7 @@ describe('createKey', () => {
   it('requires login before it can be called', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
-    await expect(client.createKey({ name: 'k', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }))
+    await expect(client.createKey({ name: 'k', group: 'default', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }))
       .rejects.toThrow('请先登录星芒账号')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
@@ -1404,15 +1431,26 @@ describe('createKey', () => {
   it('POSTs the wire-shaped body to /api/token/', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(usableGroupsResponse())
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
 
-    await client.createKey({ name: ' my-key ', remainQuota: 5_000_000, unlimitedQuota: false, expiredTime: 1900000000 })
+    await client.createKey({
+      name: ' my-key ',
+      group: 'codex-pro',
+      remainQuota: 5_000_000,
+      unlimitedQuota: false,
+      expiredTime: 1900000000,
+    })
 
-    const [url, init] = fetchImpl.mock.calls[0]
+    const [groupsUrl, groupsInit] = fetchImpl.mock.calls[0]
+    expect(String(groupsUrl)).toBe(`${testBaseUrl}/api/user/self/groups`)
+    expect(groupsInit?.method).toBe('GET')
+    const [url, init] = fetchImpl.mock.calls[1]
     expect(String(url)).toBe(`${testBaseUrl}/api/token/`)
     expect(init?.method).toBe('POST')
     expect(JSON.parse(String(init?.body))).toEqual({
       name: 'my-key',
+      group: 'codex-pro',
       remain_quota: 5_000_000,
       unlimited_quota: false,
       expired_time: 1900000000,
@@ -1423,9 +1461,32 @@ describe('createKey', () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockClear()
-    await expect(client.createKey({ name: 'x'.repeat(51), remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }))
+    await expect(client.createKey({
+      name: 'x'.repeat(51),
+      group: 'default',
+      remainQuota: 0,
+      unlimitedQuota: true,
+      expiredTime: -1,
+    }))
       .rejects.toThrow('Key 名称不能超过 50 个字符')
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('rejects an unavailable group after the preflight without sending POST /api/token/', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(usableGroupsResponse())
+
+    await expect(client.createKey({
+      name: 'blocked-key',
+      group: 'not-open',
+      remainQuota: 0,
+      unlimitedQuota: true,
+      expiredTime: -1,
+    })).rejects.toThrow('当前账号不可使用分组「not-open」')
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(`${testBaseUrl}/api/user/self/groups`)
   })
 })
 
@@ -1436,6 +1497,7 @@ describe('updateKey', () => {
     // rename from wiping them (see updateKey's own doc comment).
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(usableGroupsResponse())
     fetchImpl.mockResolvedValueOnce(jsonResponse({
       success: true,
       message: '',
@@ -1455,12 +1517,22 @@ describe('updateKey', () => {
     }))
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
 
-    await client.updateKey({ id: 42, name: 'new-name', remainQuota: 999, unlimitedQuota: false, expiredTime: -1 })
+    await client.updateKey({
+      id: 42,
+      name: 'new-name',
+      group: 'codex-pro',
+      remainQuota: 999,
+      unlimitedQuota: false,
+      expiredTime: -1,
+    })
 
-    const [getUrl, getInit] = fetchImpl.mock.calls[0]
+    const [groupsUrl, groupsInit] = fetchImpl.mock.calls[0]
+    expect(String(groupsUrl)).toBe(`${testBaseUrl}/api/user/self/groups`)
+    expect(groupsInit?.method).toBe('GET')
+    const [getUrl, getInit] = fetchImpl.mock.calls[1]
     expect(String(getUrl)).toBe(`${testBaseUrl}/api/token/42`)
     expect(getInit?.method).toBe('GET')
-    const [putUrl, putInit] = fetchImpl.mock.calls[1]
+    const [putUrl, putInit] = fetchImpl.mock.calls[2]
     expect(String(putUrl)).toBe(`${testBaseUrl}/api/token/`)
     expect(putInit?.method).toBe('PUT')
     const body = JSON.parse(String(putInit?.body)) as Record<string, unknown>
@@ -1473,8 +1545,8 @@ describe('updateKey', () => {
       model_limits_enabled: true,
       model_limits: 'claude-3,gpt-4',
       allow_ips: '1.2.3.4',
-      group: 'vip',
-      cross_group_retry: true,
+      group: 'codex-pro',
+      cross_group_retry: false,
     })
     // I3: the masked key fragment from the GET must never ride the PUT body.
     expect(Object.keys(body)).not.toContain('key')
@@ -1483,25 +1555,82 @@ describe('updateKey', () => {
   it('keeps the existing remain_quota when switching to unlimited', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(usableGroupsResponse())
     fetchImpl.mockResolvedValueOnce(jsonResponse({
       success: true,
       message: '',
-      data: { id: 7, name: 'k', remain_quota: 555, unlimited_quota: false },
+      data: {
+        id: 7,
+        name: 'k',
+        key: 'sk-abcd**********1234',
+        status: 1,
+        remain_quota: 555,
+        unlimited_quota: false,
+        model_limits_enabled: false,
+        model_limits: '',
+        allow_ips: null,
+        group: 'default',
+        cross_group_retry: false,
+      },
     }))
     fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
 
-    await client.updateKey({ id: 7, name: 'k', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 })
+    await client.updateKey({
+      id: 7,
+      name: 'k',
+      group: 'default',
+      remainQuota: 0,
+      unlimitedQuota: true,
+      expiredTime: -1,
+    })
 
-    const body = JSON.parse(String(fetchImpl.mock.calls[1][1]?.body)) as Record<string, unknown>
+    const body = JSON.parse(String(fetchImpl.mock.calls[2][1]?.body)) as Record<string, unknown>
     expect(body.unlimited_quota).toBe(true)
     expect(body.remain_quota).toBe(555)
+  })
+
+  it('does not send PUT when the current detail is missing an overwrite-list field', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(usableGroupsResponse())
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: {
+        id: 42,
+        remain_quota: 100,
+        model_limits_enabled: false,
+        model_limits: '',
+        allow_ips: '',
+        // cross_group_retry is intentionally absent.
+      },
+    }))
+
+    await expect(client.updateKey({
+      id: 42,
+      name: 'new-name',
+      group: 'default',
+      remainQuota: 100,
+      unlimitedQuota: false,
+      expiredTime: -1,
+    })).rejects.toThrow('Key 详情数据不完整，已取消更新')
+
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
   })
 
   it('rejects a non-positive id without touching the network', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
     fetchImpl.mockClear()
-    await expect(client.updateKey({ id: 0, name: 'k', remainQuota: 0, unlimitedQuota: true, expiredTime: -1 }))
+    await expect(client.updateKey({
+      id: 0,
+      name: 'k',
+      group: 'default',
+      remainQuota: 0,
+      unlimitedQuota: true,
+      expiredTime: -1,
+    }))
       .rejects.toThrow('Key ID 格式错误')
     expect(fetchImpl).not.toHaveBeenCalled()
   })
@@ -1645,7 +1774,7 @@ describe('provisionCliKey (create -> list -> reveal three-call flow)', () => {
     expect(String(createUrl)).toBe(`${testBaseUrl}/api/token/`)
     expect(createInit?.method).toBe('POST')
     const [listUrl, listInit] = fetchImpl.mock.calls[1]
-    expect(String(listUrl)).toBe(`${testBaseUrl}/api/token/`)
+    expect(String(listUrl)).toBe(`${testBaseUrl}/api/token/?p=1&page_size=100`)
     expect(listInit?.method).toBe('GET')
     const [keyUrl, keyInit] = fetchImpl.mock.calls[2]
     expect(String(keyUrl)).toBe(`${testBaseUrl}/api/token/99/key`)

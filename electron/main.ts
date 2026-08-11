@@ -14,6 +14,7 @@ import {
 } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
+import { ManagedCliKeyStore } from './managed-cli-key-store'
 import { AccountSessionStore, restoreAccountSessionOnStartup } from './account-session-store'
 import { AppSettingsStore, type AppTheme } from './app-settings'
 import { ConfigBackupStore } from './backups'
@@ -33,6 +34,7 @@ import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, userAgreementUrl } from './relay-sites'
+import { createTutorialWindowController } from './tutorial-window'
 import {
   createDiagnosticsExport,
   runDiagnostics,
@@ -72,7 +74,6 @@ const applicationPackage = require('../package.json') as {
 const nonSiteExternalUrlAllowlist = [
   'https://nodejs.org/',
   'https://www.python.org/downloads/',
-  'https://s4621e8xzb.feishu.cn/wiki/XLDLwdXDli3fj9kyMvsc5Qldnie?from=from_copylink',
   'https://chatgpt.com/download/',
   'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
 ] as const
@@ -113,7 +114,7 @@ const canvasExternalUrlAllowlist = [
 
 const appWindowSizes: Record<AppWindowMode, { width: number; height: number }> = {
   onboarding: { width: 720, height: 520 },
-  dashboard: { width: 1340, height: 845 },
+  dashboard: { width: 1590, height: 875 },
 }
 
 const appWindowMinimumSizes: Record<AppWindowMode, { width: number; height: number }> = {
@@ -554,6 +555,10 @@ if (!hasSingleInstanceLock) {
       path.join(managerDataDirectory, 'account-credentials.dat'),
       safeStorage,
     )
+    const managedCliKeyStore = new ManagedCliKeyStore(
+      path.join(managerDataDirectory, 'managed-cli-keys.dat'),
+      safeStorage,
+    )
     // Constructed explicitly (rather than left to registerIpcHandlers' own
     // internal default) so the canvas window controller below can share this
     // exact instance -- it is the one place that knows whether the user is
@@ -600,6 +605,7 @@ if (!hasSingleInstanceLock) {
       previewOnboarding,
       runtimeLog,
     })
+    const tutorialController = createTutorialWindowController({ runtimeLog })
 
     // Empty update = read the effective record (file, .bak, or defaults) and
     // persist it durably -- same normalize-on-startup write as before the
@@ -610,6 +616,7 @@ if (!hasSingleInstanceLock) {
       accountService,
       accountSessionReady,
       accountCredentials: accountCredentialStore,
+      managedCliKeys: managedCliKeyStore,
       sessionsService,
       providerSessionsService,
       backupStore,
@@ -634,6 +641,9 @@ if (!hasSingleInstanceLock) {
       },
       setWindowMode,
       setWindowTheme,
+      openTutorialDocsWindow: (sender) => (
+        tutorialController.open(BrowserWindow.fromWebContents(sender) ?? undefined)
+      ),
       openCanvasWindow: () => canvasController.open(),
       ...(manualUninstallVisualFixtureEnabled
         ? {
@@ -649,6 +659,7 @@ if (!hasSingleInstanceLock) {
       process.off('unhandledRejection', onUnhandledRejection)
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       unregisterIpcHandlers()
+      tutorialController.dispose()
       canvasController.dispose()
       updaterService.dispose()
     })
@@ -657,7 +668,10 @@ if (!hasSingleInstanceLock) {
     // outlive the main window (which would otherwise leave the app running
     // in the background with no way back to the dashboard on Windows/Linux,
     // since window-all-closed only quits when every window is gone).
-    mainWindow.on('closed', () => canvasController.closeIfOpen())
+    mainWindow.on('closed', () => {
+      tutorialController.closeIfOpen()
+      canvasController.closeIfOpen()
+    })
     if (focusWhenWindowIsReady) {
       mainWindow.once('ready-to-show', () => {
         focusWhenWindowIsReady = false

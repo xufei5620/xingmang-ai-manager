@@ -100,6 +100,7 @@ function accountServiceStub(): NewApiClientService {
       supportsAccountSession: true,
     },
     getStatus: vi.fn() as never,
+    getLegalDocument: vi.fn() as never,
     sendEmailVerification: vi.fn(async () => undefined),
     sendPasswordResetEmail: vi.fn(async () => undefined),
     resetPassword: vi.fn(async () => ({ newPassword: 'stub-generated-password' })),
@@ -112,7 +113,9 @@ function accountServiceStub(): NewApiClientService {
     getProfile: vi.fn() as never,
     getUsage: vi.fn() as never,
     listKeys: vi.fn() as never,
+    listUsableGroups: vi.fn() as never,
     revokeKey: vi.fn() as never,
+    revealKey: vi.fn() as never,
     createKey: vi.fn(async () => undefined),
     updateKey: vi.fn(async () => undefined),
     changePassword: vi.fn() as never,
@@ -168,6 +171,7 @@ function register(
     save: (identifier: string, password: string) => Promise<void>
     clear: () => Promise<void>
   },
+  managedCliKeys?: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']>,
 ) {
   const extensionService = {
     getRepositoryContext: vi.fn(() => ({ repositoryRoot: 'C:\\workspace' })),
@@ -229,6 +233,7 @@ function register(
     systemService: service,
     accountService,
     accountCredentials,
+    managedCliKeys,
     sessionsService: sessionsService as never,
     providerSessionsService: providerSessionsService as never,
     backupStore: {
@@ -264,6 +269,7 @@ function register(
     broadcastUpdate: vi.fn(),
     setWindowMode: vi.fn(),
     setWindowTheme: vi.fn(),
+    openTutorialDocsWindow: vi.fn(async () => undefined),
     openCanvasWindow: vi.fn(async () => undefined),
     ...({ transformSystemSnapshot } as object),
   })
@@ -505,6 +511,29 @@ describe('registerIpcHandlers', () => {
     expect(() => handler(trustedEvent(), 'unknown')).toThrow('未知的 CLI 类型')
   })
 
+  it('lists models for an existing CLI config without returning its API key to the renderer', async () => {
+    const service = serviceStub()
+    vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol', 'gpt-5.6-terra'])
+    const { runtimeLog } = register(service)
+    const handler = electronMocks.handlers.get('models:list-configured')!
+
+    await expect(handler(trustedEvent(), 'codex')).resolves.toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
+    expect(service.revealApiKey).toHaveBeenCalledWith('codex', false)
+    expect(service.fetchAvailableModels).toHaveBeenCalledWith('sk-known-secret-value')
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('sk-known-secret-value')
+    expect(() => handler(trustedEvent(), 'unknown')).toThrow('未知的 CLI 类型')
+  })
+
+  it('does not query models when an existing CLI config has no saved API key', () => {
+    const service = serviceStub()
+    vi.mocked(service.revealApiKey).mockReturnValue('')
+    register(service)
+    const handler = electronMocks.handlers.get('models:list-configured')!
+
+    expect(() => handler(trustedEvent(), 'gemini')).toThrow('未读取到已保存的 API Key')
+    expect(service.fetchAvailableModels).not.toHaveBeenCalled()
+  })
+
   it('suppresses successful Codex Desktop polling but records a concrete failure', async () => {
     const service = serviceStub()
     vi.mocked(service.inspectCodexDesktop).mockResolvedValueOnce({
@@ -667,6 +696,7 @@ describe('registerIpcHandlers', () => {
       broadcastUpdate: vi.fn(),
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
+      openTutorialDocsWindow: vi.fn(async () => undefined),
       openCanvasWindow,
     })
     try {
@@ -674,6 +704,40 @@ describe('registerIpcHandlers', () => {
 
       await expect(handler(trustedEvent())).resolves.toBeUndefined()
       expect(openCanvasWindow).toHaveBeenCalledTimes(1)
+      expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
+    } finally {
+      dispose()
+    }
+  })
+
+  it('delegates tutorial:open to the injected window controller and rejects untrusted senders', async () => {
+    const openTutorialDocsWindow = vi.fn(async () => undefined)
+    const dispose = registerIpcHandlers({
+      systemService: serviceStub(),
+      accountService: accountServiceStub(),
+      sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
+      providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
+      backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
+      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
+      extensionService: {} as never,
+      providerExtensionService: {} as never,
+      urlPolicy: { rendererRoot: 'C:\\app\\dist', devServerUrl: 'http://localhost:5173' },
+      previewOnboarding: false,
+      externalUrlAllowlist: [],
+      updaterService: updaterStub(),
+      broadcastUpdate: vi.fn(),
+      setWindowMode: vi.fn(),
+      setWindowTheme: vi.fn(),
+      openTutorialDocsWindow,
+      openCanvasWindow: vi.fn(async () => undefined),
+    })
+    try {
+      const handler = electronMocks.handlers.get('tutorial:open')!
+      const event = trustedEvent()
+
+      await expect(handler(event)).resolves.toBeUndefined()
+      expect(openTutorialDocsWindow).toHaveBeenCalledWith(event.sender)
       expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
     } finally {
       dispose()
@@ -756,6 +820,7 @@ describe('registerIpcHandlers', () => {
       broadcastUpdate: vi.fn(),
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
+      openTutorialDocsWindow: vi.fn(async () => undefined),
       openCanvasWindow: vi.fn(async () => undefined),
     })
     try {
@@ -792,6 +857,7 @@ describe('registerIpcHandlers', () => {
       broadcastUpdate: vi.fn(),
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
+      openTutorialDocsWindow: vi.fn(async () => undefined),
       openCanvasWindow: vi.fn(async () => undefined),
     })
     try {
@@ -2473,24 +2539,114 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.revokeKey).toHaveBeenCalledWith(42)
     })
 
-    it('rejects a non-number, non-integer, zero, or negative id -- id lands directly in a URL path segment (I5)', () => {
+    it('invalidates only the initiating account cache when the session switches during revoke', async () => {
+      const accountService = accountServiceStub()
+      const accountA = {
+        userId: 101,
+        username: 'account-a',
+        group: 'default',
+        role: 1,
+        quota: 1_000,
+        usedQuota: 0,
+      }
+      const accountB = { ...accountA, userId: 202, username: 'account-b' }
+      let currentAccount = accountA
+      vi.mocked(accountService.getSessionState).mockImplementation(() => ({
+        authenticated: true,
+        account: currentAccount,
+      }))
+      let finishRevoke: () => void = () => {}
+      vi.mocked(accountService.revokeKey).mockReturnValue(new Promise<void>((resolve) => {
+        finishRevoke = resolve
+      }))
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
+      const handler = electronMocks.handlers.get('account:revoke-key')!
+
+      const pending = handler(trustedEvent(), 42)
+      expect(accountService.revokeKey).toHaveBeenCalledWith(42)
+      currentAccount = accountB
+      finishRevoke()
+      await expect(pending).resolves.toBeUndefined()
+
+      expect(managedCliKeys.remove).toHaveBeenCalledOnce()
+      expect(managedCliKeys.remove).toHaveBeenCalledWith(101, 42)
+      expect(managedCliKeys.remove).not.toHaveBeenCalledWith(202, 42)
+      expect(accountService.getSessionState).toHaveBeenCalledOnce()
+    })
+
+    it('rejects a non-number, non-integer, zero, or negative id -- id lands directly in a URL path segment (I5)', async () => {
       register()
       const handler = electronMocks.handlers.get('account:revoke-key')!
 
-      expect(() => handler(trustedEvent(), 'nope')).toThrow('Key ID 格式错误')
-      expect(() => handler(trustedEvent(), 1.5)).toThrow('Key ID 格式错误')
-      expect(() => handler(trustedEvent(), 0)).toThrow('Key ID 格式错误')
-      expect(() => handler(trustedEvent(), -1)).toThrow('Key ID 格式错误')
-      expect(() => handler(trustedEvent(), null)).toThrow('Key ID 格式错误')
-      expect(() => handler(trustedEvent(), undefined)).toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), 'nope')).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), 1.5)).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), 0)).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), -1)).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), null)).rejects.toThrow('Key ID 格式错误')
+      await expect(handler(trustedEvent(), undefined)).rejects.toThrow('Key ID 格式错误')
     })
 
-    it('never reaches the account service -- and never the real production client -- when validation fails', () => {
+    it('never reaches the account service -- and never the real production client -- when validation fails', async () => {
       const { accountService } = register()
       const handler = electronMocks.handlers.get('account:revoke-key')!
 
-      expect(() => handler(trustedEvent(), -5)).toThrow()
+      await expect(handler(trustedEvent(), -5)).rejects.toThrow()
       expect(accountService.revokeKey).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountKeyUpdateInput (account:update-key)', () => {
+    it('invalidates only the initiating account cache when the session switches during update', async () => {
+      const accountService = accountServiceStub()
+      const accountA = {
+        userId: 101,
+        username: 'account-a',
+        group: 'default',
+        role: 1,
+        quota: 1_000,
+        usedQuota: 0,
+      }
+      const accountB = { ...accountA, userId: 202, username: 'account-b' }
+      let currentAccount = accountA
+      vi.mocked(accountService.getSessionState).mockImplementation(() => ({
+        authenticated: true,
+        account: currentAccount,
+      }))
+      let finishUpdate: () => void = () => {}
+      vi.mocked(accountService.updateKey).mockReturnValue(new Promise<void>((resolve) => {
+        finishUpdate = resolve
+      }))
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
+      const handler = electronMocks.handlers.get('account:update-key')!
+      const input = {
+        id: 42,
+        name: 'managed-codex-key',
+        group: 'codex-pro',
+        remainQuota: 1_000,
+        unlimitedQuota: false,
+        expiredTime: -1,
+      }
+
+      const pending = handler(trustedEvent(), input)
+      expect(accountService.updateKey).toHaveBeenCalledWith(input)
+      currentAccount = accountB
+      finishUpdate()
+      await expect(pending).resolves.toBeUndefined()
+
+      expect(managedCliKeys.remove).toHaveBeenCalledOnce()
+      expect(managedCliKeys.remove).toHaveBeenCalledWith(101, 42)
+      expect(managedCliKeys.remove).not.toHaveBeenCalledWith(202, 42)
+      expect(accountService.getSessionState).toHaveBeenCalledOnce()
     })
   })
 
@@ -2557,6 +2713,416 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       expect(() => handler(trustedEvent(), { originalPassword: 'old-password-1', newPassword: 'short' })).toThrow()
       expect(accountService.changePassword).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseLegalDocumentKind (account:get-legal-document)', () => {
+    it('forwards both supported document kinds and returns the service DTO', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.getLegalDocument).mockImplementation(async (kind) => ({
+        kind,
+        markdown: `# ${kind}`,
+        fetchedAt: '2026-08-11T00:00:00.000Z',
+      }))
+      const handler = electronMocks.handlers.get('account:get-legal-document')!
+
+      await expect(handler(trustedEvent(), 'user-agreement')).resolves.toMatchObject({
+        kind: 'user-agreement',
+      })
+      await expect(handler(trustedEvent(), 'privacy-policy')).resolves.toMatchObject({
+        kind: 'privacy-policy',
+      })
+      expect(vi.mocked(accountService.getLegalDocument).mock.calls).toEqual([
+        ['user-agreement'],
+        ['privacy-policy'],
+      ])
+    })
+
+    it('rejects every unsupported value before reaching the account service', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-legal-document')!
+
+      for (const value of [undefined, null, '', 'terms', 42, {}]) {
+        expect(() => handler(trustedEvent(), value)).toThrow('法律文档类型格式错误')
+      }
+      expect(accountService.getLegalDocument).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('account:list-groups', () => {
+    it('returns the usable group metadata without reshaping it in IPC', async () => {
+      const { accountService } = register()
+      const groups = [
+        { name: 'default', description: '默认分组', ratio: 1 },
+        { name: 'codex-pro', description: 'Codex Pro', ratio: '1.5' },
+      ]
+      vi.mocked(accountService.listUsableGroups).mockResolvedValue(groups)
+      const handler = electronMocks.handlers.get('account:list-groups')!
+
+      await expect(handler(trustedEvent())).resolves.toEqual(groups)
+      expect(accountService.listUsableGroups).toHaveBeenCalledWith()
+    })
+  })
+
+  describe('account:copy-key', () => {
+    it('uses the encrypted managed-key cache for both copy and reveal without contacting the server', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      const plaintextKey = 'sk-managed-cache-secret'
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => [{
+          id: 77,
+          provider: 'codex' as const,
+          group: 'codex-pro',
+          name: 'xingmang-desktop-codex',
+          key: plaintextKey,
+        }]),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      const { runtimeLog } = register(
+        serviceStub(),
+        'C:\\app-data\\logs',
+        undefined,
+        accountService,
+        undefined,
+        managedCliKeys,
+      )
+
+      await expect(electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 77)).resolves.toBeUndefined()
+      await expect(electronMocks.handlers.get('account:reveal-key')!(trustedEvent(), 77)).resolves.toBe(plaintextKey)
+
+      expect(managedCliKeys.read).toHaveBeenCalledTimes(2)
+      expect(managedCliKeys.read).toHaveBeenNthCalledWith(1, 42)
+      expect(managedCliKeys.read).toHaveBeenNthCalledWith(2, 42)
+      expect(accountService.revealKey).not.toHaveBeenCalled()
+      expect(electronMocks.writeText).toHaveBeenCalledWith(plaintextKey)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
+    })
+
+    it('writes the revealed secret directly to the system clipboard and returns nothing to the renderer', async () => {
+      const { accountService, runtimeLog } = register()
+      const plaintextKey = 'sk-ipc-copy-secret'
+      vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+      const handler = electronMocks.handlers.get('account:copy-key')!
+
+      const result = await handler(trustedEvent(), 42)
+
+      expect(result).toBeUndefined()
+      expect(accountService.revealKey).toHaveBeenCalledWith(42)
+      expect(electronMocks.writeText).toHaveBeenCalledWith(plaintextKey)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
+    })
+
+    it('falls back to the server for an ordinary key that is absent from the managed cache', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      const plaintextKey = 'sk-server-fallback-secret'
+      vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
+
+      await expect(electronMocks.handlers.get('account:reveal-key')!(trustedEvent(), 88)).resolves.toBe(plaintextKey)
+
+      expect(managedCliKeys.read).toHaveBeenCalledWith(42)
+      expect(accountService.revealKey).toHaveBeenCalledWith(88)
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+    })
+
+    it('discards a server fallback secret when the account switches before reveal completes', async () => {
+      const accountService = accountServiceStub()
+      const accountA = {
+        userId: 101,
+        username: 'account-a',
+        group: 'default',
+        role: 1,
+        quota: 1_000,
+        usedQuota: 0,
+      }
+      const accountB = { ...accountA, userId: 202, username: 'account-b' }
+      let currentAccount = accountA
+      vi.mocked(accountService.getSessionState).mockImplementation(() => ({
+        authenticated: true,
+        account: currentAccount,
+      }))
+      const plaintextKey = 'sk-must-be-discarded'
+      let finishReveal: () => void = () => {}
+      vi.mocked(accountService.revealKey).mockReturnValue(new Promise<string>((resolve) => {
+        finishReveal = () => resolve(plaintextKey)
+      }))
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      const { runtimeLog } = register(
+        serviceStub(),
+        'C:\\app-data\\logs',
+        undefined,
+        accountService,
+        undefined,
+        managedCliKeys,
+      )
+      const handler = electronMocks.handlers.get('account:reveal-key')!
+
+      const pending = handler(trustedEvent(), 88)
+      await vi.waitFor(() => expect(accountService.revealKey).toHaveBeenCalledWith(88))
+      currentAccount = accountB
+      finishReveal()
+
+      await expect(pending).rejects.toThrow('账号会话已变更')
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+      expect(JSON.stringify([
+        runtimeLog.log.mock.calls,
+        runtimeLog.exception.mock.calls,
+      ])).not.toContain(plaintextKey)
+    })
+
+    it('propagates encrypted-cache failures and never silently falls back to the server', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => { throw new Error('本地托管 API Key 配置已损坏或无法解密') }),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
+
+      await expect(electronMocks.handlers.get('account:reveal-key')!(trustedEvent(), 77))
+        .rejects.toThrow('本地托管 API Key 配置已损坏或无法解密')
+      await expect(electronMocks.handlers.get('account:copy-key')!(trustedEvent(), 77))
+        .rejects.toThrow('本地托管 API Key 配置已损坏或无法解密')
+
+      expect(accountService.revealKey).not.toHaveBeenCalled()
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+    })
+
+    it('rejects an invalid id before revealing or copying a secret', async () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:copy-key')!
+
+      for (const value of ['42', 0, -1, 1.5, null, undefined]) {
+        await expect(handler(trustedEvent(), value)).rejects.toThrow('Key ID 格式错误')
+      }
+      expect(accountService.revealKey).not.toHaveBeenCalled()
+      expect(electronMocks.writeText).not.toHaveBeenCalled()
+    })
+
+    it('rejects an invalid reveal id before reading cache or contacting the server', async () => {
+      const accountService = accountServiceStub()
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
+      const handler = electronMocks.handlers.get('account:reveal-key')!
+
+      await expect(handler(trustedEvent(), '77')).rejects.toThrow('Key ID 格式错误')
+      expect(managedCliKeys.read).not.toHaveBeenCalled()
+      expect(accountService.revealKey).not.toHaveBeenCalled()
+    })
+
+    it('lists models for a selected account key without returning its secret', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      const plaintextKey = 'sk-selected-account-key'
+      vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol', 'gpt-5.6-terra'])
+      const { runtimeLog } = register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:list-key-models')!
+
+      await expect(handler(trustedEvent(), 88)).resolves.toEqual(['gpt-5.6-sol', 'gpt-5.6-terra'])
+      expect(accountService.revealKey).toHaveBeenCalledWith(88)
+      expect(service.fetchAvailableModels).toHaveBeenCalledWith(plaintextKey)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
+    })
+
+    it('validates and saves a selected account key entirely in the main process', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      const plaintextKey = 'sk-selected-account-key'
+      vi.mocked(accountService.revealKey).mockResolvedValue(plaintextKey)
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      const { runtimeLog } = register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:configure-cli-with-key')!
+
+      await expect(handler(trustedEvent(), {
+        provider: 'codex',
+        keyId: 88,
+        model: 'gpt-5.6-sol',
+        mode: 'merge',
+      })).resolves.toEqual({ backups: [], files: [] })
+      expect(service.saveConfig).toHaveBeenCalledWith({
+        provider: 'codex',
+        apiKey: plaintextKey,
+        model: 'gpt-5.6-sol',
+        mode: 'merge',
+      }, false)
+      expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
+    })
+
+    it('rejects stale or malformed account-key CLI configuration before writing', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      vi.mocked(accountService.revealKey).mockResolvedValue('sk-selected-account-key')
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-terra'])
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:configure-cli-with-key')!
+
+      await expect(handler(trustedEvent(), {
+        provider: 'codex', keyId: 88, model: 'gpt-5.6-sol', mode: 'merge',
+      })).rejects.toThrow('所选 Key 当前不支持该模型')
+      for (const input of [
+        { provider: 'unknown', keyId: 88, model: 'm', mode: 'merge' },
+        { provider: 'codex', keyId: '88', model: 'm', mode: 'merge' },
+        { provider: 'codex', keyId: 88, model: '', mode: 'merge' },
+        { provider: 'codex', keyId: 88, model: 'm', mode: 'replace' },
+      ]) {
+        await expect(handler(trustedEvent(), input)).rejects.toThrow()
+      }
+      expect(service.saveConfig).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseManagedCliConfigurationInput (account:configure-managed-clis)', () => {
+    it('accepts a unique provider list and trims a valid preferred model', async () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+        id: 1,
+        name: input?.name ?? 'managed-key',
+        key: `sk-internal-${input?.group ?? 'default'}`,
+      }))
+      vi.mocked(service.fetchAvailableModels).mockResolvedValue(['gpt-5.6-sol'])
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+
+      const result = await handler(trustedEvent(), {
+        providers: ['codex'],
+        preferredModels: { codex: '  gpt-5.6-sol  ' },
+      })
+
+      expect(result).toEqual({ configured: ['codex'], failed: [] })
+      expect(service.saveConfig).toHaveBeenCalledWith({
+        provider: 'codex',
+        apiKey: 'sk-internal-codex-pro',
+        model: 'gpt-5.6-sol',
+        mode: 'merge',
+      }, false)
+      expect(JSON.stringify(result)).not.toContain('sk-internal-')
+    })
+
+    it('rejects duplicate providers before provisioning or writing config', () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+
+      expect(() => handler(trustedEvent(), {
+        providers: ['codex', 'codex'],
+        preferredModels: {},
+      })).toThrow('CLI 配置目标不能重复')
+      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+      expect(service.fetchAvailableModels).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
+    })
+
+    it('rejects malformed, unknown, blank, non-string, or oversized preferred models', () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+
+      expect(() => handler(trustedEvent(), { providers: ['codex'], preferredModels: [] }))
+        .toThrow('CLI 首选模型格式错误')
+      expect(() => handler(trustedEvent(), { providers: ['codex'], preferredModels: { unknown: 'model' } }))
+        .toThrow('CLI 首选模型包含未知类型')
+      for (const model of ['', '   ', 42, 'x'.repeat(513)]) {
+        expect(() => handler(trustedEvent(), { providers: ['codex'], preferredModels: { codex: model } }))
+          .toThrow('CLI 首选模型格式错误')
+      }
+      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+      expect(service.fetchAvailableModels).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
     })
   })
 })

@@ -46,6 +46,21 @@ export const cliCatalog: Record<ProviderId, CliDefinition> = {
   },
 }
 
+export interface ManagedCliKeyProfile {
+  group: string
+  keyName: string
+}
+
+// The account-side token group each local CLI must use. Kept beside
+// providerIds so the main-process provisioning code and renderer UI cannot
+// drift onto different group names or provider coverage.
+export const managedCliKeyProfiles: Record<ProviderId, ManagedCliKeyProfile> = {
+  claude: { group: 'Claude-MAX(不限制客户端)-5m', keyName: 'xingmang-desktop-claude' },
+  codex: { group: 'codex-pro', keyName: 'xingmang-desktop-codex' },
+  grok: { group: 'grok', keyName: 'xingmang-desktop-grok' },
+  gemini: { group: 'Gemini', keyName: 'xingmang-desktop-gemini' },
+}
+
 // 老板拍板(2026-08-10):中转与账号后端统一到 new-api 生产实例
 // xm.solov.cc——CLI 的 AI 请求和注册/登录/Key 签发从此同域。原
 // api.solov.cc 不再出现在任何写入 CLI 的配置里;老用户配置里的旧域会被

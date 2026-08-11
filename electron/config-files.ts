@@ -505,8 +505,11 @@ function createMergePlans(
       const configPlan = fs.existsSync(paths[0])
         ? (() => {
             const parsed = requireToml(paths[0], '现有 Codex config.toml')
+            const providerName = existingCodexProvider(paths[0])
             parsed.model = model
             parsed.review_model = model
+            parsed.model_provider = providerName
+            ensureRecord(ensureRecord(parsed, 'model_providers'), providerName).base_url = siteBaseUrls.codex
             return { path: paths[0], content: tomlContent(parsed) }
           })()
         : initial(paths[0])
@@ -522,7 +525,9 @@ function createMergePlans(
     case 'claude': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
-      ensureRecord(parsed, 'env').ANTHROPIC_AUTH_TOKEN = apiKey
+      const env = ensureRecord(parsed, 'env')
+      env.ANTHROPIC_AUTH_TOKEN = apiKey
+      env.ANTHROPIC_BASE_URL = siteBaseUrls.claude
       parsed.model = model
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
@@ -537,6 +542,7 @@ function createMergePlans(
         plans.push({
           path: paths[1],
           content: updateEnvContent(content, {
+            GOOGLE_GEMINI_BASE_URL: siteBaseUrls.gemini,
             GEMINI_API_KEY: apiKey,
             GEMINI_MODEL: model,
           }),
@@ -559,6 +565,7 @@ function createMergePlans(
       const targetModel = target as Record<string, unknown>
       targetModel.api_key = apiKey
       targetModel.model = model
+      targetModel.base_url = siteBaseUrls.grok
       return [{ path: paths[0], content: tomlContent(parsed) }]
     }
   }

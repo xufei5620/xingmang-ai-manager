@@ -7,6 +7,7 @@ import {
   relaySiteExternalUrls,
   relaySites,
   resolveRelaySite,
+  tutorialDocumentUrl,
   userAgreementUrl,
 } from './relay-sites'
 
@@ -132,6 +133,11 @@ describe('relay site registry', () => {
 
   describe('legal page URLs', () => {
     it('serves the agreement and privacy pages from the account domain over https', () => {
+      expect(userAgreementUrl).toBe('https://xm.solov.cc/user-agreement')
+      expect(privacyPolicyUrl).toBe('https://xm.solov.cc/privacy-policy')
+      expect(tutorialDocumentUrl).toBe(
+        'https://s4621e8xzb.feishu.cn/wiki/WpBUwh4PhiAs2skvWfmcnM5vnDb?from=from_copylink',
+      )
       for (const url of [userAgreementUrl, privacyPolicyUrl]) {
         const parsed = new URL(url)
         expect(parsed.protocol).toBe('https:')

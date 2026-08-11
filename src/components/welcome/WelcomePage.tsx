@@ -4,7 +4,8 @@ import logoUrl from '../../../assets/icon.png'
 import logoWhiteUrl from '../../../assets/icon-white.png'
 import type { ThemeMode } from '../../app-shared'
 import { providers } from '../../provider-meta'
-import { privacyPolicyUrl, userAgreementUrl, type ProviderId } from '../../types'
+import type { LegalDocumentKind, ProviderId } from '../../types'
+import { LegalDocumentDialog } from '../account/LegalDocumentDialog'
 
 interface ConstellationNode {
   id: ProviderId
@@ -57,8 +58,8 @@ const heroCards = [
   },
   {
     Icon: Sparkles,
-    title: '一个账号，四家通用',
-    body: '注册即自动开好 API Key，四家 CLI 共用一套额度，不必再各处申请、逐个填配置。',
+    title: '一个账号，四家专属',
+    body: '注册后自动准备四把分组专属 API Key，共用账户额度，不必再各处申请、逐个填配置。',
   },
 ]
 
@@ -74,6 +75,11 @@ export function WelcomePage({
   onLogin: () => void
 }) {
   const [assureOpen, setAssureOpen] = useState(false)
+  const [legalKind, setLegalKind] = useState<LegalDocumentKind | null>(null)
+
+  if (legalKind) {
+    return <LegalDocumentDialog kind={legalKind} onClose={() => setLegalKind(null)} />
+  }
 
   return (
     <div className="welcome-page">
@@ -164,7 +170,7 @@ export function WelcomePage({
               <div className="welcome-star-core">
                 <Sparkles size={22} aria-hidden="true" />
                 <span className="welcome-star-core-lbl">星芒账号</span>
-                <span className="welcome-star-core-sub">一套 Key</span>
+                <span className="welcome-star-core-sub">四把专属 Key</span>
               </div>
               {constellationNodes.map((node) => (
                 <div className={`welcome-node welcome-node-${node.position}`} key={node.id}>
@@ -194,13 +200,13 @@ export function WelcomePage({
             <button
               type="button"
               className="account-inline-link"
-              onClick={() => void window.xingmang.openExternal(userAgreementUrl)}
+              onClick={() => setLegalKind('user-agreement')}
             >用户协议</button>
             <span className="welcome-foot-dot">·</span>
             <button
               type="button"
               className="account-inline-link"
-              onClick={() => void window.xingmang.openExternal(privacyPolicyUrl)}
+              onClick={() => setLegalKind('privacy-policy')}
             >隐私政策</button>
             <span className="welcome-foot-dot">·</span>
             <span>帮助文档</span>

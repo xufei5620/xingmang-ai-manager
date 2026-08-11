@@ -7,6 +7,10 @@ import type {
 } from './backups'
 import type { ProviderId as CatalogProviderId } from './catalog'
 import type {
+  ManagedCliConfigurationOutcome,
+  ManagedCliKeySyncSummary,
+} from './account-cli-provisioner'
+import type {
   AddMarketplaceInput,
   AddMcpInput,
   ImportSkillInput,
@@ -88,16 +92,18 @@ import type {
   NewApiBalance,
   NewApiChangePasswordInput,
   NewApiChangePasswordResult,
-  NewApiCliKeyResult,
+  NewApiLegalDocument,
+  NewApiLegalDocumentKind,
   NewApiLoginInput,
   NewApiLoginResult,
   NewApiRegisterInput,
   NewApiResetPasswordInput,
   NewApiResetPasswordResult,
   NewApiSessionState,
+  NewApiUsableGroup,
 } from './new-api-client'
 
-export { providerIds } from './catalog'
+export { managedCliKeyProfiles, providerIds } from './catalog'
 // Zero-Node-dependency value export, same precedent as providerIds above
 // (I6) -- relay-sites.ts only imports from catalog.ts, itself zero-dep.
 export {
@@ -105,6 +111,7 @@ export {
   privacyPolicyUrl,
   relaySites,
   resolveRelaySite,
+  tutorialDocumentUrl,
   userAgreementUrl,
 } from './relay-sites'
 
@@ -180,7 +187,11 @@ export type AccountLoginResult = NewApiLoginResult
 export type AccountRegisterInput = NewApiRegisterInput
 export type AccountSessionState = NewApiSessionState
 export type AccountBalance = NewApiBalance
-export type AccountCliKeyResult = NewApiCliKeyResult
+export type AccountManagedCliKeysResult = ManagedCliKeySyncSummary
+export type AccountManagedCliConfigurationResult = ManagedCliConfigurationOutcome
+export type LegalDocumentKind = NewApiLegalDocumentKind
+export type LegalDocument = NewApiLegalDocument
+export type AccountUsableGroup = NewApiUsableGroup
 export type AccountResetPasswordInput = NewApiResetPasswordInput
 export type AccountResetPasswordResult = NewApiResetPasswordResult
 export type AccountProfileDetail = NewApiAccountProfileDetail
@@ -192,9 +203,21 @@ export type AccountKeysQuery = NewApiAccountKeysQuery
 export type AccountKeysPage = NewApiAccountKeysPage
 export type AccountKeyCreateInput = NewApiAccountKeyCreateInput
 export type AccountKeyUpdateInput = NewApiAccountKeyUpdateInput
+
+export interface AccountKeyCliConfigurationInput {
+  provider: ProviderId
+  keyId: number
+  model: string
+  mode: ConfigSaveMode
+}
 export type AccountChangePasswordInput = NewApiChangePasswordInput
 export type AccountChangePasswordResult = NewApiChangePasswordResult
 export type RendererNavigationTarget = 'settings'
+
+export interface AccountManagedCliConfigurationInput {
+  providers: ProviderId[]
+  preferredModels: Partial<Record<ProviderId, string>>
+}
 
 export interface RendererErrorPayload {
   message: string
@@ -269,6 +292,7 @@ export interface XingmangInvokeContract {
   revealApiKey: IpcInvokeDefinition<'config:reveal-api-key', [provider: ProviderId], string>
   saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload], ConfigSaveResult>
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
+  listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
@@ -288,6 +312,7 @@ export interface XingmangInvokeContract {
   >
   setWindowMode: IpcInvokeDefinition<'window:set-mode', [mode: AppWindowMode], void>
   setWindowTheme: IpcInvokeDefinition<'window:set-theme', [theme: AppTheme], void>
+  openTutorialDocsWindow: IpcInvokeDefinition<'tutorial:open', [], void>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
   getUpdateState: IpcInvokeDefinition<'update:get-state', [], UpdateSnapshot>
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
@@ -389,11 +414,17 @@ export interface XingmangInvokeContract {
     ProviderExtensionsSnapshot
   >
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [], AccountStatus>
+  getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
   getAccountSession: IpcInvokeDefinition<'account:get-session', [], AccountSessionState>
   getAccountBalance: IpcInvokeDefinition<'account:get-balance', [], AccountBalance>
-  provisionCliKey: IpcInvokeDefinition<'account:provision-cli-key', [], AccountCliKeyResult>
+  syncManagedCliKeys: IpcInvokeDefinition<'account:sync-managed-cli-keys', [], AccountManagedCliKeysResult>
+  configureManagedCliKeys: IpcInvokeDefinition<
+    'account:configure-managed-clis',
+    [input: AccountManagedCliConfigurationInput],
+    AccountManagedCliConfigurationResult
+  >
   registerAccount: IpcInvokeDefinition<'account:register', [input: AccountRegisterInput], void>
   sendVerificationCode: IpcInvokeDefinition<'account:send-verification-code', [email: string], void>
   sendPasswordResetCode: IpcInvokeDefinition<'account:send-reset-code', [email: string], void>
@@ -409,7 +440,16 @@ export interface XingmangInvokeContract {
     AccountUsagePage
   >
   getAccountKeys: IpcInvokeDefinition<'account:list-keys', [input: AccountKeysQuery], AccountKeysPage>
+  getAccountUsableGroups: IpcInvokeDefinition<'account:list-groups', [], AccountUsableGroup[]>
   revokeAccountKey: IpcInvokeDefinition<'account:revoke-key', [id: number], void>
+  copyAccountKey: IpcInvokeDefinition<'account:copy-key', [id: number], void>
+  revealAccountKey: IpcInvokeDefinition<'account:reveal-key', [id: number], string>
+  listAccountKeyModels: IpcInvokeDefinition<'account:list-key-models', [id: number], string[]>
+  saveConfigWithAccountKey: IpcInvokeDefinition<
+    'account:configure-cli-with-key',
+    [input: AccountKeyCliConfigurationInput],
+    ConfigSaveResult
+  >
   changeAccountPassword: IpcInvokeDefinition<
     'account:change-password',
     [input: AccountChangePasswordInput],
@@ -471,8 +511,10 @@ export const ipcInvokeChannels = {
   getCodexDesktopStatus: 'desktop:codex-status',
   launchCodexDesktop: 'desktop:launch-codex',
   listModels: 'models:list',
+  listConfiguredModels: 'models:list-configured',
   setWindowMode: 'window:set-mode',
   setWindowTheme: 'window:set-theme',
+  openTutorialDocsWindow: 'tutorial:open',
   openExternal: 'external:open',
   getUpdateState: 'update:get-state',
   runStartupUpdate: 'update:startup',
@@ -522,11 +564,13 @@ export const ipcInvokeChannels = {
   listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
   getAccountStatus: 'account:get-status',
+  getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   logoutAccount: 'account:logout',
   getAccountSession: 'account:get-session',
   getAccountBalance: 'account:get-balance',
-  provisionCliKey: 'account:provision-cli-key',
+  syncManagedCliKeys: 'account:sync-managed-cli-keys',
+  configureManagedCliKeys: 'account:configure-managed-clis',
   registerAccount: 'account:register',
   sendVerificationCode: 'account:send-verification-code',
   sendPasswordResetCode: 'account:send-reset-code',
@@ -534,7 +578,12 @@ export const ipcInvokeChannels = {
   getAccountProfile: 'account:get-profile',
   getAccountUsage: 'account:get-usage',
   getAccountKeys: 'account:list-keys',
+  getAccountUsableGroups: 'account:list-groups',
   revokeAccountKey: 'account:revoke-key',
+  copyAccountKey: 'account:copy-key',
+  revealAccountKey: 'account:reveal-key',
+  listAccountKeyModels: 'account:list-key-models',
+  saveConfigWithAccountKey: 'account:configure-cli-with-key',
   changeAccountPassword: 'account:change-password',
   openCanvasWindow: 'canvas:open',
   getRememberedAccountLogin: 'account:get-remembered-login',
