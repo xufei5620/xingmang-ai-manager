@@ -710,7 +710,7 @@ function App() {
     if (appView === 'loading') return
     // AppWindowMode (main-process IPC contract) only knows 'onboarding' |
     // 'dashboard' — welcome and account-center have no window size of their
-    // own because both are designed to fill the same 1340x845 canvas as the
+    // own because both are designed to fill the same 1590x875 canvas as the
     // dashboard, so they ride the 'dashboard' mode rather than growing a
     // third/fourth IPC-level mode.
     const windowMode = appView === 'welcome' || appView === 'account-center' ? 'dashboard' : appView

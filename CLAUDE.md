@@ -31,7 +31,7 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没
 | `electron/`（主进程，全部特权操作） | 63 个模块 | 60 个 |
 | `src/`（渲染进程，纯 UI） | 62 个文件 | 25 个 |
 
-约 6.3 万行（含测试），**1455 个 vitest 用例**（85 个文件；Linux 上实测 1278 过 / 177 因平台门控跳过，Windows 跳过的是另一批），`npm test` 还串带 scripts/e2e 下的 node --test 套件（79 例）。IPC：**90 个 invoke 通道**（另有 6 个画布宿主通道在 90 之外，见 I4 例外）。
+约 7 万行（含测试），**1604 个 vitest 用例**（96 个文件；Linux 上实测 1427 过 / 177 因平台门控跳过，Windows 跳过的是另一批），`npm test` 还串带 scripts/e2e 下的 node --test 套件（78 例）。IPC：**99 个 invoke 通道**（另有 6 个画布宿主通道在 99 之外，见 I4 例外）。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
@@ -82,7 +82,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `main.ts` (669) — 生命周期、`BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true`）、`xingmang://` 与 `xingmang-canvas://` 协议注册、外链白名单、装配服务
 - `ipc-contract.ts` (522) — **唯一的跨进程类型真相源**。`as const satisfies` 强制通道表与接口对齐
 - `preload.ts` (231) — sandbox 桥接层。因 `sandbox:true` 无法 require 本地模块，**手工复制了一份通道表**
-- `ipc.ts` (1220) — 90 个处理器注册与参数校验
+- `ipc.ts` (1220) — 99 个处理器注册与参数校验
 
 **命令执行与安全边界**（这里是本项目真正的复杂度所在）
 - `command-runner.ts` (1120) — **全仓最关键模块**。`runCommand` 硬编码 `shell:false`；`trustedCommandEnvironment` 剥离 60+ 可注入环境变量并重建机器级 PATH；`findExecutable` 不调用 `where`/`which`/shell
@@ -355,7 +355,7 @@ npm test
 - ❌ **不要动 Codex 桌面端的镜像实现** — 那是全项目网络处理做得最对的一块
 - ❌ **不要"消除" `preload.ts` 里重复的通道表** — 那是 sandbox 约束下的有意重复，且被 `satisfies` 类型钉死，拼错会当场编译报错
 - ❌ **不要把 `config-files.ts` 的六个 switch 重构成策略类层级** — 无 `default` 分支正是新增 provider 时的穷尽性保障
-- ❌ **不要给 API Key 加 DPAPI / keytar 加密存储** — 本程序的全部职责就是把 Key 写进 CLI 的明文配置文件，再加密一份攻击面一点没变。⚠️ 这条针对的是 **relay API Key**；登录 session token 用 `safeStorage` 加密（`account-session-store.ts`）是**正确做法、已实装**，两者别混
+- ❌ **不要给 API Key 加 DPAPI / keytar 加密存储** — 本程序的全部职责就是把 Key 写进 CLI 的明文配置文件，再加密一份攻击面一点没变。⚠️ 这条针对的是 **relay API Key 的"以加密求保护"**；两个已实装的例外别拆：登录 session token 用 `safeStorage` 加密（`account-session-store.ts`）是正确做法；`managed-cli-key-store.ts` 对托管 CLI Key 的 safeStorage 缓存（PR #81，2026-08-11）**目的不是保护而是复用**——new-api 列表只回掩码 Key，无本地缓存则每次登录/切账号都要重新签发或走服务端 reveal，缓存消除的是服务端 token 堆积与限流面，加密只是与 session store 的一致性顺带
 - ❌ **不要提交 `\tmp\xingmang-managed-cli-*` 目录**
 
 ---

@@ -11,7 +11,7 @@ npm install
 npm run dev
 ```
 
-开发窗口默认使用 `1340 x 845`，主题首次为暗色，后续读取用户设置。开发版继承启动终端的权限；Windows 正式包按当前登录用户权限运行，不再在日常启动时弹出 UAC。
+开发窗口默认使用 `1590 x 875`，主题首次为暗色，后续读取用户设置。开发版继承启动终端的权限；Windows 正式包按当前登录用户权限运行，不再在日常启动时弹出 UAC。
 
 Windows 主程序使用 `requestedExecutionLevel: asInvoker`。四个 CLI 的控制台和 Codex 桌面端都按当前桌面用户启动；普通模式下 npm CLI 安装到用户 npm 全局目录，Grok 安装到 `%USERPROFILE%\.grok\bin`。若用户手工选择“以管理员身份运行”，程序会自动收紧外部命令边界。NSIS 安装器、主程序更新或 Node.js 系统安装仍可在实际需要时由 Windows 单独请求授权。正式发布仍必须使用 Authenticode 签名。
 

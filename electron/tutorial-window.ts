@@ -136,6 +136,11 @@ export function createTutorialWindowController(
     window.webContents.on('will-navigate', (event, targetUrl) => {
       if (!isAllowedTutorialNavigationUrl(targetUrl)) event.preventDefault()
     })
+    // 服务端 302 也要过同一道门:只拦 will-navigate 时,一次重定向就能把
+    // 这个挂着"教程文档"标题的窗口带去任意 https 站(合并审查项)。
+    window.webContents.on('will-redirect', (event, targetUrl) => {
+      if (!isAllowedTutorialNavigationUrl(targetUrl)) event.preventDefault()
+    })
     window.webContents.on('render-process-gone', (_event, details) => {
       options.runtimeLog.log('error', 'tutorial', 'process.gone', '教程文档渲染进程异常退出', {
         reason: details.reason,

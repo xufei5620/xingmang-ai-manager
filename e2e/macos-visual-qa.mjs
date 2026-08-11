@@ -15,8 +15,8 @@ const userDataDirectory = path.join(stateRoot, 'user-data')
 const startedAt = new Date().toISOString()
 
 const scenarios = [
-  { width: 1340, height: 845, theme: 'dark', manual: 'codex-command' },
-  { width: 1340, height: 845, theme: 'light', manual: 'grok-unknown-source' },
+  { width: 1590, height: 875, theme: 'dark', manual: 'codex-command' },
+  { width: 1590, height: 875, theme: 'light', manual: 'grok-unknown-source' },
   { width: 980, height: 680, theme: 'dark', manual: 'grok-unknown-source' },
   { width: 980, height: 680, theme: 'light', manual: 'codex-command' },
 ]
