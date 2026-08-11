@@ -654,8 +654,10 @@ function App() {
         // session"的作用域优化不再成立。main.ts 的 accountSessionReady
         // 保证(见 ipc.ts account:get-session 的 doc comment)使这次读取
         // 不会撞上启动恢复的中间态;读取失败一律按未登录处理——宁可多要求
-        // 登录一次,不能把未登录用户放进工作台。relaySiteId 直接复用上面
-        // 已读进闭包的 startupSettings,不再重复读一次设置。
+        // 登录一次,不能把未登录用户放进工作台。(此规则约束正常启动路径;
+        // 下方外层 catch 的 dashboard 兜底是「IPC 整体故障时可用性优先」的
+        // 既有降级,账号功能彼时同样不可用,不构成登录门的绕过面。)
+        // relaySiteId 直接复用上面已读进闭包的 startupSettings,不再重复读。
         const startupAccountSession = await window.xingmang.getAccountSession().catch(() => null)
         if (!active) return
         const authenticated = startupAccountSession?.authenticated ?? false
@@ -1034,11 +1036,17 @@ function App() {
     setAccountBusy(true)
     try {
       await window.xingmang.loginAccount({ username: values.identifier, password: values.password })
-      // 只在登录确实成功后才落盘「记住密码」;勾选取消则清除已存凭据。
-      // 失败静默:记不住密码不该打断刚成功的登录。
-      void window.xingmang.setRememberedAccountLogin(
-        values.remember ? { identifier: values.identifier, password: values.password } : null,
-      ).catch(() => undefined)
+      // 只在登录确实成功后才落盘「记住密码」。未勾选时只清除"同一账号"的
+      // 旧凭据——错配预填场景(如注册完 B 账号后登录,勾选框初值为 false)
+      // 不能静默删掉 A 账号已存的记住密码(复查发现)。失败静默:记不住
+      // 密码不该打断刚成功的登录。
+      if (values.remember) {
+        void window.xingmang.setRememberedAccountLogin(
+          { identifier: values.identifier, password: values.password },
+        ).catch(() => undefined)
+      } else if (rememberedLogin && rememberedLogin.identifier === values.identifier) {
+        void window.xingmang.setRememberedAccountLogin(null).catch(() => undefined)
+      }
       const account = await refreshAccountSession()
       setAccountDialog(null)
       setAccountLoginPrefill('')
@@ -1110,6 +1118,9 @@ function App() {
     setAccountBusy(true)
     try {
       const result = await window.xingmang.resetPassword({ email: values.email, token: values.token })
+      // 服务端已轮换密码,存着的「记住密码」凭据从此必然失效——立刻清除,
+      // 否则「去登录」会把刚作废的旧密码预填给用户(复查发现)。
+      void window.xingmang.setRememberedAccountLogin(null).catch(() => undefined)
       setAccountResetOutcome({ email: values.email, newPassword: result.newPassword })
       setToast({ type: 'success', message: '密码重置成功，请复制新密码后登录' })
     } catch (error) {
@@ -1524,10 +1535,31 @@ function App() {
         }}
         onConfigChange={setConfig}
         onComplete={finishOnboarding}
-        onCancel={() => setAppView('dashboard')}
+        onCancel={() => {
+          // 登录先行(老板拍板 2026-08-10):账号站点未登录时,「返回工作
+          // 台」回欢迎页——否则「已有授权码→返回工作台」两次点击就零凭据
+          // 绕过了登录门(复查发现)。
+          const loginRequired = !shouldShowManualKeyEntry(activeRelaySite.accountBackend)
+            && !(accountSession?.authenticated ?? false)
+          if (loginRequired) {
+            setAppView('welcome')
+            return
+          }
+          setAppView('dashboard')
+          // 不经 scan 进工作台会让 cliReadyGate 永不 settle,MCP/插件页
+          // 与模型检测将永久挂起(settle 唯一调用点在 scan 的 finally)。
+          void scan()
+        }}
         desktopInstallProgress={codexDesktopInstallProgress}
         platform={platformCapabilities}
       />
+      {toast && (
+        <Toast
+          toast={toast}
+          onDismiss={() => setToast(null)}
+          onCopy={toast.type === 'error' ? copyToastMessage : undefined}
+        />
+      )}
       </AppFrame>
     )
   }

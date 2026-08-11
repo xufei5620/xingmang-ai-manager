@@ -281,6 +281,10 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
       // device's own session keeps working with no further action here;
       // only *other* signed-in devices/browsers get signed out server-side.
       await window.xingmang.changeAccountPassword({ originalPassword, newPassword })
+      // 密码已变,「记住密码」里存的旧密码从此失效——清除而非更新:store 里
+      // 的 identifier 未必属于当前登录账号(可能是另一账号的记住项),就地
+      // 改写有串号风险,清掉最安全(复查发现)。
+      void window.xingmang.setRememberedAccountLogin(null).catch(() => undefined)
       setOriginalPassword('')
       setNewPassword('')
       setConfirmNewPassword('')
