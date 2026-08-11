@@ -179,4 +179,23 @@ describe('Codex Desktop maintenance action', () => {
       statusLabel: '未完成检测',
     })
   })
+
+  it('shows mirror synchronization instead of claiming the domestic package is ready', () => {
+    expect(codexDesktopMaintenanceControl(
+      platformCapabilitiesFor('win32', 'x64'),
+      desktopStatus({
+        latestVersion: '26.803.10989.0',
+        mirrorVersion: '26.803.5235.0',
+        mirrorUpdateAvailable: false,
+        updateCheck: 'checked',
+        updateState: 'available',
+      }),
+      false,
+    )).toMatchObject({
+      action: 'update',
+      label: '查看更新',
+      statusClass: 'is-warn',
+      statusLabel: '镜像同步中',
+    })
+  })
 })

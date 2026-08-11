@@ -96,19 +96,31 @@ describe('Codex Desktop update state', () => {
         label: '国内镜像',
         url: 'https://codexapp.agentsmirror.com/latest/win-x64',
       },
+      {
+        label: '镜像备用源',
+        url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64',
+      },
     ])
     expect(buildCodexDesktopPackageSources('arm64')).toEqual([
       {
         label: '国内镜像',
         url: 'https://codexapp.agentsmirror.com/latest/win-arm64',
       },
+      {
+        label: '镜像备用源',
+        url: 'https://codexapp-r2.agentsmirror.com/latest/win-arm64',
+      },
     ])
-    // Mirror first, matching the package download below, which is mirror-only.
     expect(buildCodexDesktopManifestSources()).toEqual([
       {
         kind: 'mirror',
         label: '国内镜像',
         url: 'https://codexapp.agentsmirror.com/latest/manifest',
+      },
+      {
+        kind: 'mirror',
+        label: '镜像备用源',
+        url: 'https://codexapp-r2.agentsmirror.com/latest/manifest',
       },
       {
         kind: 'official',
@@ -118,24 +130,23 @@ describe('Codex Desktop update state', () => {
     ])
   })
 
-  it('keeps both manifest endpoints and introduces no new host', () => {
-    // Reordering must not drop the official fallback, and must not reach for a
-    // host outside the two already covered by validateCodexDesktopResourceUrl.
+  it('keeps both mirror routes and the official manifest endpoint', () => {
     expect([...buildCodexDesktopManifestSources()].map((source) => source.url).sort()).toEqual([
+      'https://codexapp-r2.agentsmirror.com/latest/manifest',
       'https://codexapp.agentsmirror.com/latest/manifest',
       'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json',
     ])
     expect(buildCodexDesktopManifestSources().map((source) => source.kind).sort())
-      .toEqual(['mirror', 'official'])
+      .toEqual(['mirror', 'mirror', 'official'])
   })
 
-  it('reads and validates the selected architecture from the AgentsMirror manifest', async () => {
-    const manifest = {
+  it('selects the newer R2 release when the domestic route returns a stale valid manifest', async () => {
+    const mirrorManifest = (version: string) => ({
       schemaVersion: 5,
       sources: {
         windows: {
           updateManifest: {
-            buildVersion: '26.721.4979.0',
+            buildVersion: version,
             storeProductId: '9PLM9XGG6VKS',
             packageIdentity: 'OpenAI.Codex',
           },
@@ -144,10 +155,10 @@ describe('Codex Desktop update state', () => {
               architecture: 'x64',
               status: 'downloadable',
               downloadable: true,
-              version: '26.721.3996.0',
+              version,
               contentLength: 744072561,
               catalog: {
-                packageFullName: 'OpenAI.Codex_26.721.3996.0_x64__2p2nqsd0c76g0',
+                packageFullName: `OpenAI.Codex_${version}_x64__2p2nqsd0c76g0`,
                 hashAlgorithm: 'SHA256',
                 hash: '0a/lZGhbNAxLAd6xFNfKeRJZzzJzNErA1E5IYWnqHjM=',
                 contentLength: 744072561,
@@ -156,7 +167,7 @@ describe('Codex Desktop update state', () => {
           },
         },
       },
-    }
+    })
     const storageUrl = [
       'https://fgws3-ocloud.ihep.ac.cn/20830-codex/latest/manifest',
       'X-Amz-Algorithm=AWS4-HMAC-SHA256',
@@ -175,18 +186,27 @@ describe('Codex Desktop update state', () => {
     Object.defineProperty(redirect, 'url', {
       value: 'https://codexapp.agentsmirror.com/latest/manifest',
     })
-    const response = new Response(JSON.stringify(manifest), {
+    const staleResponse = new Response(JSON.stringify(mirrorManifest('26.721.3996.0')), {
       headers: { 'Content-Type': 'application/json' },
     })
-    Object.defineProperty(response, 'url', {
+    Object.defineProperty(staleResponse, 'url', {
       value: storageUrl,
     })
-    const fetchMock = vi.fn()
-      .mockResolvedValueOnce(redirect)
-      .mockResolvedValueOnce(response)
+    const fallbackUrl = 'https://codexapp-r2.agentsmirror.com/latest/manifest'
+    const currentResponse = new Response(JSON.stringify(mirrorManifest('26.721.4979.0')), {
+      headers: { 'Content-Type': 'application/json' },
+    })
+    Object.defineProperty(currentResponse, 'url', { value: fallbackUrl })
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const url = String(value)
+      if (url === 'https://codexapp.agentsmirror.com/latest/manifest') return redirect
+      if (url === storageUrl) return staleResponse
+      if (url === fallbackUrl) return currentResponse
+      throw new Error(`unexpected URL ${url}`)
+    })
 
     await expect(fetchCodexDesktopMirrorRelease('x64', fetchMock)).resolves.toEqual({
-      version: '26.721.3996.0',
+      version: '26.721.4979.0',
       architecture: 'x64',
       contentLength: 744072561,
       sha256Base64: '0a/lZGhbNAxLAd6xFNfKeRJZzzJzNErA1E5IYWnqHjM=',
@@ -195,7 +215,14 @@ describe('Codex Desktop update state', () => {
       'https://codexapp.agentsmirror.com/latest/manifest',
       expect.objectContaining({ redirect: 'manual' }),
     )
-    expect(fetchMock.mock.calls[1][0]).toBe(storageUrl)
+    expect(fetchMock).toHaveBeenCalledWith(
+      fallbackUrl,
+      expect.objectContaining({ redirect: 'manual' }),
+    )
+    expect(fetchMock).toHaveBeenCalledWith(
+      storageUrl,
+      expect.objectContaining({ redirect: 'manual' }),
+    )
   })
 
   it('accepts only the complete signed IHEP package redirect shape', () => {

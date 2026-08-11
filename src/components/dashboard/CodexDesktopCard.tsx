@@ -45,6 +45,8 @@ export function CodexDesktopCard({
   // all; a confirmed install with an incomplete version read still gets the
   // normal launch/configure actions, with the gap surfaced via updateError.
   const failed = isDetectionFailed(status) && !status.installed
+  const mirrorSyncing = status.updateState === 'available'
+    && status.mirrorUpdateAvailable === false
   const presentation = platformPresentation(platform)
   return (
     <article className="cli-card desktop-card">
@@ -106,7 +108,7 @@ export function CodexDesktopCard({
           <code>{status.version ?? '版本未知'}</code>
           <span>
             {status.updateState === 'available'
-              ? `可更新至 ${status.latestVersion}`
+              ? `可更新至 ${status.latestVersion}${mirrorSyncing ? ' · 国内镜像同步中' : ''}`
               : status.updateState === 'latest' ? '已检查，当前最新' : status.updateError ?? '更新状态未知'}
           </span>
         </div>
@@ -142,7 +144,7 @@ export function CodexDesktopCard({
             {status.updateState === 'available' && (
               <button className="secondary-button grow update-button" onClick={onInstall} disabled={busy} title={`安装 Codex Desktop ${status.latestVersion}`}>
                 {installing ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-                {installing ? '更新中' : '安装最新版'}
+                {installing ? '更新中' : mirrorSyncing ? '查看更新' : '安装最新版'}
               </button>
             )}
             <button className="secondary-button grow" onClick={onConfigure} disabled={busy}>

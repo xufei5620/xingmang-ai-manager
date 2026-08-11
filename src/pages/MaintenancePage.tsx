@@ -102,6 +102,7 @@ const providerLabels: Record<ProviderId, string> = {
 
 function updateStateLabel(status: MaintenanceVersionStatus): string {
   if (!status.installed) return '未安装'
+  if (status.updateState === 'available' && status.mirrorUpdateAvailable === false) return '镜像同步中'
   if (status.updateState === 'available') return '可更新'
   if (status.updateState === 'latest') return '已是最新'
   if (status.updateCheck === 'failed') return '检测失败'
@@ -155,7 +156,11 @@ export function codexDesktopMaintenanceControl(
     disabled: false,
     loading: false,
     icon: action === 'check' ? 'refresh' : 'download',
-    label: action === 'install' ? '一键安装' : action === 'update' ? '安装最新版' : '检查更新',
+    label: action === 'install'
+      ? '一键安装'
+      : action === 'update'
+        ? status.mirrorUpdateAvailable === false ? '查看更新' : '安装最新版'
+        : '检查更新',
     statusClass: updateStateClass(status),
     statusLabel: updateStateLabel(status),
   }
