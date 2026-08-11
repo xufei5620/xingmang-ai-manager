@@ -49,11 +49,7 @@ page.on('pageerror', (error) => pageErrors.push(error.message))
 
 try {
   await page.waitForLoadState('domcontentloaded')
-  await page.locator('.app-shell').waitFor({ state: 'visible', timeout: 60_000 })
-  await page.locator('.cli-card').nth(1).getByText('星芒 AI 已配置', { exact: true }).waitFor({
-    state: 'visible',
-    timeout: 30_000,
-  })
+  await page.locator('.welcome-page').waitFor({ state: 'visible', timeout: 60_000 })
 
   const windowMetrics = await application.evaluate(({ BrowserWindow, screen }) => {
     const browserWindow = BrowserWindow.getAllWindows()[0]
@@ -63,30 +59,13 @@ try {
     return {
       bounds,
       expected: {
-        width: Math.min(1340, workArea.width),
-        height: Math.min(845, workArea.height),
+        width: Math.min(1590, workArea.width),
+        height: Math.min(875, workArea.height),
       },
     }
   })
 
-  const primaryNavigationLabels = [
-    '工具概览',
-    '会话管理',
-    'MCP 管理',
-    'Skills 管理',
-    'Plugins/市场',
-    '配置备份',
-    '健康诊断',
-    '安装维护',
-  ]
-  const utilityNavigationLabels = [
-    '反馈与诊断',
-    '检查更新',
-    '设置',
-  ]
-  const primaryNavigationTexts = await page.locator('.main-nav .nav-item').allInnerTexts()
-  const utilityNavigationTexts = await page.locator('.utility-nav .nav-item').allInnerTexts()
-  const codexCliCard = page.locator('.cli-card').nth(1)
+  const expectedConstellationLabels = ['Claude Code', 'Codex', 'Gemini', 'Grok']
   const result = {
     title: await page.title(),
     pageErrors,
@@ -94,36 +73,27 @@ try {
     horizontalOverflow: await page.evaluate(
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
     ),
+    welcomeVisible: await page.locator('.welcome-page').isVisible(),
+    dashboardBlocked: await page.locator('.app-shell').count() === 0,
     onboardingHidden: await page.locator('.onboarding-shell').count() === 0,
-    overviewVisible: await page.getByRole('heading', { name: '工具概览', exact: true }).isVisible(),
-    toolCardCount: await page.locator('.cli-card').count(),
-    firstToolCard: await page.locator('.cli-card').first().getByRole('heading').innerText(),
-    secondToolCard: await codexCliCard.getByRole('heading').innerText(),
-    codexConfigRecognized: await codexCliCard.getByText('星芒 AI 已配置', { exact: true }).isVisible(),
-    codexModelVisible: await codexCliCard.getByText('gpt-5.6-sol', { exact: true }).isVisible(),
-    primaryNavigationTexts: primaryNavigationTexts.map((text) => text.trim()),
-    utilityNavigationTexts: utilityNavigationTexts.map((text) => text.trim()),
-    providerBrandIconsLoaded: await page.locator('.cli-card .provider-icon img').evaluateAll(
-      (icons) => icons.length === 5
-        && icons.every((icon) => icon instanceof HTMLImageElement && icon.complete && icon.naturalWidth > 0),
-    ),
-    settingsReachable: false,
-    overviewRestored: false,
+    welcomeHeading: await page.getByRole('heading', { name: /装好即用的\s*AI 编程工具箱/ }).innerText(),
+    constellationLabels: (await page.locator('.welcome-node').allInnerTexts()).map((text) => text.trim()),
+    registerVisible: await page.getByRole('button', { name: '免费注册，领试用额度', exact: true }).isVisible(),
+    loginVisible: await page.getByRole('button', { name: '已有账号？登录', exact: true }).isVisible(),
+    manualCodeVisible: await page.getByRole('button', { name: '我有授权码', exact: true }).isVisible(),
+    loginDialogReachable: false,
   }
 
-  await page.locator('.utility-nav').getByRole('button', { name: '设置', exact: true }).click()
-  const settingsPage = page.locator('.main-content [data-page-id="settings"]')
-  await settingsPage.waitFor({ state: 'visible' })
-  result.settingsReachable = await settingsPage.getByRole('heading', { name: '设置', exact: true }).isVisible()
-    && await settingsPage.getByRole('group', { name: '主题' }).isVisible()
+  await page.getByRole('button', { name: '已有账号？登录', exact: true }).click()
+  const loginDialog = page.getByRole('dialog', { name: '登录星芒账号' })
+  await loginDialog.waitFor({ state: 'visible' })
+  result.loginDialogReachable = await loginDialog.getByLabel('用户名或邮箱').isVisible()
+    && await loginDialog.getByRole('textbox', { name: '密码', exact: true }).isVisible()
+  await loginDialog.getByTitle('关闭').click()
 
-  await page.locator('.main-nav').getByRole('button', { name: '工具概览', exact: true }).click()
-  result.overviewRestored = await page.getByRole('heading', { name: '工具概览', exact: true }).isVisible()
-    && await page.locator('.main-nav .nav-item[aria-current="page"]').innerText() === '工具概览'
-
-  await page.screenshot({ path: path.join(artifactDir, 'dashboard-ci.png') })
+  await page.screenshot({ path: path.join(artifactDir, 'welcome-ci.png') })
   await fs.writeFile(
-    path.join(artifactDir, 'dashboard-ci-smoke-result.json'),
+    path.join(artifactDir, 'welcome-ci-smoke-result.json'),
     `${JSON.stringify(result, null, 2)}\n`,
     'utf8',
   )
@@ -134,18 +104,15 @@ try {
     || result.horizontalOverflow
     || Math.abs((result.windowMetrics?.bounds.width ?? 0) - (result.windowMetrics?.expected.width ?? 0)) > 4
     || Math.abs((result.windowMetrics?.bounds.height ?? 0) - (result.windowMetrics?.expected.height ?? 0)) > 4
+    || !result.welcomeVisible
+    || !result.dashboardBlocked
     || !result.onboardingHidden
-    || !result.overviewVisible
-    || result.toolCardCount !== 5
-    || result.firstToolCard !== 'Codex 桌面端'
-    || result.secondToolCard !== 'Codex CLI'
-    || !result.codexConfigRecognized
-    || !result.codexModelVisible
-    || JSON.stringify(result.primaryNavigationTexts) !== JSON.stringify(primaryNavigationLabels)
-    || JSON.stringify(result.utilityNavigationTexts) !== JSON.stringify(utilityNavigationLabels)
-    || !result.providerBrandIconsLoaded
-    || !result.settingsReachable
-    || !result.overviewRestored
+    || result.welcomeHeading.replace(/\s+/g, '') !== '装好即用的AI编程工具箱'
+    || JSON.stringify(result.constellationLabels) !== JSON.stringify(expectedConstellationLabels)
+    || !result.registerVisible
+    || !result.loginVisible
+    || !result.manualCodeVisible
+    || !result.loginDialogReachable
   ) {
     throw new Error(JSON.stringify(result))
   }
