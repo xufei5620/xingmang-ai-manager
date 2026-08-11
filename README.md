@@ -99,8 +99,8 @@ npm run dev
 
 星芒 AI 固定地址（2026-08-10 起中转与账号后端统一为 new-api 实例 `xm.solov.cc`）：
 
-- Claude Code、Codex CLI、Codex 桌面端、Gemini CLI：`https://xm.solov.cc`
-- Grok CLI：`https://xm.solov.cc/v1`
+- Codex CLI、Codex 桌面端、Grok CLI：`https://xm.solov.cc/v1`
+- Claude Code、Gemini CLI：`https://xm.solov.cc`
 
 设置页提供站点下拉（`electron/relay-sites.ts` 注册表）：「星芒AI（账号登录）」与「星芒AI（Key 直连）」共用同一 relay 域，仅账号模式不同；默认站点行为与历史版本一致。
 

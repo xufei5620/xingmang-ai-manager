@@ -478,8 +478,8 @@ describe('registerIpcHandlers', () => {
       workspace: 'C:\\workspace',
       providers: {
         codex: {
-          baseUrl: 'https://xm.solov.cc',
-          actualBaseUrl: 'https://xm.solov.cc',
+          baseUrl: 'https://xm.solov.cc/v1',
+          actualBaseUrl: 'https://xm.solov.cc/v1',
           exists: true,
           hasApiKey: true,
           matchesRelay: true,

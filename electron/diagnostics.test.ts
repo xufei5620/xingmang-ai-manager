@@ -32,8 +32,10 @@ function temporaryHome(): string {
 function inspection(provider: ProviderId, home: string, apiKey: string): NativeConfigInspection {
   const extension = provider === 'codex' || provider === 'grok' ? 'toml' : 'json'
   return {
-    baseUrl: provider === 'grok' ? 'https://xm.solov.cc/v1' : 'https://xm.solov.cc',
-    actualBaseUrl: provider === 'grok'
+    baseUrl: provider === 'codex' || provider === 'grok'
+      ? 'https://xm.solov.cc/v1'
+      : 'https://xm.solov.cc',
+    actualBaseUrl: provider === 'codex' || provider === 'grok'
       ? 'https://xm.solov.cc/v1?token=must-not-leak'
       : 'https://user:password@xm.solov.cc/?token=must-not-leak',
     exists: true,
