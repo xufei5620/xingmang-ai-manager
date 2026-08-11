@@ -49,9 +49,14 @@ const execFileAsync = promisify(execFile)
 
 const codexDesktopUpdateManifestUrl = 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json'
 const codexDesktopMirrorManifestUrl = 'https://codexapp.agentsmirror.com/latest/manifest'
+const codexDesktopMirrorFallbackManifestUrl = 'https://codexapp-r2.agentsmirror.com/latest/manifest'
 const codexDesktopMirrorPackageUrls = {
   x64: 'https://codexapp.agentsmirror.com/latest/win-x64',
   arm64: 'https://codexapp.agentsmirror.com/latest/win-arm64',
+} as const
+const codexDesktopMirrorFallbackPackageUrls = {
+  x64: 'https://codexapp-r2.agentsmirror.com/latest/win-x64',
+  arm64: 'https://codexapp-r2.agentsmirror.com/latest/win-arm64',
 } as const
 const codexDesktopMirrorHosts = new Set([
   'codexapp.agentsmirror.com',
@@ -124,6 +129,18 @@ export interface CodexDesktopDownloadResult {
 
 export interface CodexDesktopManifestSource extends CodexDesktopPackageSource {
   kind: 'official' | 'mirror'
+}
+
+export interface CodexDesktopManifestCandidate {
+  source: CodexDesktopManifestSource
+  version: string
+  release: CodexDesktopMirrorRelease | null
+  packageSource: CodexDesktopPackageSource | null
+}
+
+interface CodexDesktopManifestProbeResult {
+  candidates: CodexDesktopManifestCandidate[]
+  errors: string[]
 }
 
 function validateCodexDesktopMirrorObjectStorageUrl(parsed: URL, original: URL): boolean {
@@ -229,34 +246,62 @@ export async function fetchTrustedCodexDesktopResource(
 export function buildCodexDesktopPackageSources(
   architecture: 'x64' | 'arm64',
 ): CodexDesktopPackageSource[] {
-  return [{ label: '国内镜像', url: codexDesktopMirrorPackageUrls[architecture] }]
+  return [
+    { label: '国内镜像', url: codexDesktopMirrorPackageUrls[architecture] },
+    { label: '镜像备用源', url: codexDesktopMirrorFallbackPackageUrls[architecture] },
+  ]
 }
 
-/**
- * Mirror first, matching the package download, which is mirror-only. Reading
- * the version from the official manifest while the bytes can only come from the
- * mirror let the two disagree: the card could advertise a release the install
- * path had no way to fetch. Both endpoints stay in the list and both still go
- * through fetchTrustedCodexDesktopResource, so this only changes which is tried
- * first, never how either is validated.
- */
 export function buildCodexDesktopManifestSources(
 ): CodexDesktopManifestSource[] {
   return [
     { kind: 'mirror', label: '国内镜像', url: codexDesktopMirrorManifestUrl },
+    { kind: 'mirror', label: '镜像备用源', url: codexDesktopMirrorFallbackManifestUrl },
     { kind: 'official', label: 'OpenAI 官方源', url: codexDesktopUpdateManifestUrl },
   ]
 }
 
-export async function fetchCodexDesktopMirrorRelease(
+function packageSourceForManifest(
+  source: CodexDesktopManifestSource,
   architecture: 'x64' | 'arm64',
-  fetchImplementation: typeof fetch = fetch,
-): Promise<CodexDesktopMirrorRelease> {
+): CodexDesktopPackageSource | null {
+  if (source.url === codexDesktopMirrorManifestUrl) {
+    return { label: source.label, url: codexDesktopMirrorPackageUrls[architecture] }
+  }
+  if (source.url === codexDesktopMirrorFallbackManifestUrl) {
+    return { label: source.label, url: codexDesktopMirrorFallbackPackageUrls[architecture] }
+  }
+  return null
+}
+
+export function selectLatestCodexDesktopManifestCandidate(
+  candidates: CodexDesktopManifestCandidate[],
+): CodexDesktopManifestCandidate | null {
+  let selected: CodexDesktopManifestCandidate | null = null
+  for (const candidate of candidates) {
+    if (!selected) {
+      selected = candidate
+      continue
+    }
+    const comparison = compareWindowsPackageVersions(selected.version, candidate.version)
+    if (comparison === -1) selected = candidate
+  }
+  return selected
+}
+
+async function fetchCodexDesktopManifestCandidate(
+  source: CodexDesktopManifestSource,
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch,
+): Promise<CodexDesktopManifestCandidate> {
   const controller = new AbortController()
-  const timeout = setTimeout(() => controller.abort(), 10_000)
+  const timeout = setTimeout(() => controller.abort(), 8_000)
   try {
-    const response = await fetchTrustedCodexDesktopResource(codexDesktopMirrorManifestUrl, {
-      headers: { Accept: 'application/json' },
+    const response = await fetchTrustedCodexDesktopResource(source.url, {
+      headers: {
+        Accept: 'application/json',
+        'Cache-Control': 'no-cache',
+      },
       signal: controller.signal,
     }, fetchImplementation)
     if (!response.ok) throw new Error(`返回 HTTP ${response.status}`)
@@ -264,9 +309,9 @@ export async function fetchCodexDesktopMirrorRelease(
     if (!contentType.includes('application/json')) throw new Error('返回的不是 JSON 响应')
     const declaredLength = Number(response.headers.get('content-length'))
     if (Number.isFinite(declaredLength) && declaredLength > 256 * 1024) {
-      throw new Error('响应超过 256 KB 安全上限')
+      throw new Error('更新清单响应过大')
     }
-    if (!response.body) throw new Error('没有响应正文')
+    if (!response.body) throw new Error('更新清单没有响应正文')
 
     const reader = response.body.getReader()
     const chunks: Uint8Array[] = []
@@ -276,23 +321,69 @@ export async function fetchCodexDesktopMirrorRelease(
       if (chunk.done) break
       if (!chunk.value?.byteLength) continue
       received += chunk.value.byteLength
-      if (received > 256 * 1024) throw new Error('响应超过 256 KB 安全上限')
+      if (received > 256 * 1024) throw new Error('更新清单响应过大')
       chunks.push(chunk.value)
     }
-    const text = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8')
-    const release = parseCodexDesktopMirrorManifest(text, architecture)
-    if (!release) {
-      throw new Error('schema、产品 ID、包身份、版本、架构、文件大小或 SHA-256 校验失败')
+    const manifestText = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8')
+    if (source.kind === 'official') {
+      const manifest = parseCodexDesktopUpdateManifest(manifestText)
+      if (!manifest) throw new Error('schema、产品 ID 或包身份校验失败')
+      return {
+        source,
+        version: manifest.buildVersion,
+        release: null,
+        packageSource: null,
+      }
     }
-    return release
+
+    const release = parseCodexDesktopMirrorManifest(manifestText, architecture)
+    if (!release) throw new Error('schema、产品 ID、包身份、版本、架构、文件大小或 SHA-256 校验失败')
+    return {
+      source,
+      version: release.version,
+      release,
+      packageSource: packageSourceForManifest(source, architecture),
+    }
   } catch (error) {
-    const detail = error instanceof Error && error.name === 'AbortError'
-      ? '连接或读取超时'
-      : (error instanceof Error ? error.message : String(error))
-    throw new Error(`国内镜像清单读取失败：${detail}`)
+    if (error instanceof Error && error.name === 'AbortError') throw new Error('查询超时')
+    throw error
   } finally {
     clearTimeout(timeout)
   }
+}
+
+async function probeCodexDesktopManifests(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch = fetch,
+  sources: CodexDesktopManifestSource[] = buildCodexDesktopManifestSources(),
+): Promise<CodexDesktopManifestProbeResult> {
+  const results = await Promise.allSettled(
+    sources.map((source) => fetchCodexDesktopManifestCandidate(source, architecture, fetchImplementation)),
+  )
+  const candidates: CodexDesktopManifestCandidate[] = []
+  const errors: string[] = []
+  results.forEach((result, index) => {
+    if (result.status === 'fulfilled') {
+      candidates.push(result.value)
+      return
+    }
+    const detail = result.reason instanceof Error ? result.reason.message : String(result.reason)
+    errors.push(`${sources[index].label}：${detail || '查询失败'}`)
+  })
+  return { candidates, errors }
+}
+
+export async function fetchCodexDesktopMirrorRelease(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch = fetch,
+): Promise<CodexDesktopMirrorRelease> {
+  const sources = buildCodexDesktopManifestSources().filter((source) => source.kind === 'mirror')
+  const result = await probeCodexDesktopManifests(architecture, fetchImplementation, sources)
+  const selected = selectLatestCodexDesktopManifestCandidate(result.candidates)
+  if (!selected?.release) {
+    throw new Error(`国内镜像清单读取失败：${result.errors.join('；') || '没有可用镜像'}`)
+  }
+  return selected.release
 }
 
 export async function downloadCodexDesktopPackage(
@@ -682,6 +773,12 @@ interface DesktopMirrorVersionProbe {
   error: string | null
 }
 
+interface DesktopManifestProbeBundle {
+  latest: DesktopLatestVersionProbe
+  mirror: DesktopMirrorVersionProbe
+  mirrorCandidate: CodexDesktopManifestCandidate | null
+}
+
 export type CodexDesktopInstallPhase =
   | 'downloading'
   | 'validating'
@@ -884,115 +981,85 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     spawnDetached,
   } = options
   let codexDesktopInstalling = false
-  let codexDesktopLatestCache: {
+  let codexDesktopManifestCache: {
     expiresAt: number
-    value: DesktopLatestVersionProbe
-  } | null = null
-  let codexDesktopMirrorCache: {
-    expiresAt: number
-    value: DesktopMirrorVersionProbe
+    value: DesktopManifestProbeBundle
   } | null = null
 
-  async function inspectCodexDesktopLatestVersion(): Promise<DesktopLatestVersionProbe> {
-    if (codexDesktopLatestCache && codexDesktopLatestCache.expiresAt > Date.now()) {
-      return codexDesktopLatestCache.value
+  function invalidateCodexDesktopManifestCache(): void {
+    codexDesktopManifestCache = null
+  }
+
+  async function inspectCodexDesktopManifestBundle(): Promise<DesktopManifestProbeBundle> {
+    if (codexDesktopManifestCache && codexDesktopManifestCache.expiresAt > Date.now()) {
+      return codexDesktopManifestCache.value
     }
 
     const checkedAt = new Date().toISOString()
-    const errors: string[] = []
-    let value: DesktopLatestVersionProbe | null = null
-    for (const source of buildCodexDesktopManifestSources()) {
-      const controller = new AbortController()
-      const timeout = setTimeout(() => controller.abort(), 8_000)
-      try {
-        const response = await fetchTrustedCodexDesktopResource(source.url, {
-          headers: { Accept: 'application/json' },
-          signal: controller.signal,
-        }, fetch)
-        if (!response.ok) throw new Error(`返回 HTTP ${response.status}`)
-        const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
-        if (!contentType.includes('application/json')) throw new Error('返回的不是 JSON 响应')
-        const declaredLength = Number(response.headers.get('content-length'))
-        if (Number.isFinite(declaredLength) && declaredLength > 256 * 1024) {
-          throw new Error('更新清单响应过大')
-        }
-        if (!response.body) throw new Error('更新清单没有响应正文')
-        const reader = response.body.getReader()
-        const chunks: Uint8Array[] = []
-        let received = 0
-        while (true) {
-          const chunk = await reader.read()
-          if (chunk.done) break
-          if (!chunk.value?.byteLength) continue
-          received += chunk.value.byteLength
-          if (received > 256 * 1024) throw new Error('更新清单响应过大')
-          chunks.push(chunk.value)
-        }
-        const manifestText = Buffer.concat(chunks.map((chunk) => Buffer.from(chunk))).toString('utf8')
-        const version = source.kind === 'official'
-          ? parseCodexDesktopUpdateManifest(manifestText)?.buildVersion ?? null
-          : process.arch === 'x64' || process.arch === 'arm64'
-            ? parseCodexDesktopMirrorManifest(manifestText, process.arch)?.version ?? null
-            : null
-        if (!version) throw new Error('schema、产品 ID、包身份或架构校验失败')
-        value = {
-          status: 'checked',
-          version,
+    if (process.arch !== 'x64' && process.arch !== 'arm64') {
+      const error = `Codex Desktop 更新源不支持当前处理器架构 ${process.arch}`
+      const value: DesktopManifestProbeBundle = {
+        latest: {
+          status: 'failed',
+          version: null,
           source: 'official-manifest',
           checkedAt,
-          error: null,
-        }
-        break
-      } catch (error) {
-        const message = error instanceof Error && error.name === 'AbortError'
-          ? '查询超时'
-          : (error instanceof Error ? error.message.trim().slice(0, 240) : '')
-        errors.push(`${source.label}：${message || '查询失败'}`)
-      } finally {
-        clearTimeout(timeout)
+          error,
+        },
+        mirror: { version: null, checkedAt, error },
+        mirrorCandidate: null,
       }
+      codexDesktopManifestCache = {
+        expiresAt: Date.now() + codexDesktopLatestFailureCacheTtlMs,
+        value,
+      }
+      return value
     }
-    value ??= {
-      status: 'failed',
-      version: null,
-      source: 'official-manifest',
-      checkedAt,
-      error: errors.join('；') || 'Codex Desktop 版本查询失败',
+
+    const result = await probeCodexDesktopManifests(process.arch)
+    const latestCandidate = selectLatestCodexDesktopManifestCandidate(result.candidates)
+    const mirrorCandidate = selectLatestCodexDesktopManifestCandidate(
+      result.candidates.filter((candidate) => candidate.release !== null),
+    )
+    const mirrorErrors = result.errors.filter((error) => !error.startsWith('OpenAI 官方源：'))
+    const value: DesktopManifestProbeBundle = {
+      latest: latestCandidate
+        ? {
+            status: 'checked',
+            version: latestCandidate.version,
+            source: 'official-manifest',
+            checkedAt,
+            error: null,
+          }
+        : {
+            status: 'failed',
+            version: null,
+            source: 'official-manifest',
+            checkedAt,
+            error: result.errors.join('；') || 'Codex Desktop 版本查询失败',
+          },
+      mirror: mirrorCandidate
+        ? { version: mirrorCandidate.version, checkedAt, error: null }
+        : {
+            version: null,
+            checkedAt,
+            error: mirrorErrors.join('；') || '国内镜像版本查询失败',
+          },
+      mirrorCandidate,
     }
-    const ttl = value.status === 'checked'
+    const ttl = result.errors.length === 0
       ? codexDesktopLatestCacheTtlMs
       : codexDesktopLatestFailureCacheTtlMs
-    codexDesktopLatestCache = { expiresAt: Date.now() + ttl, value }
+    codexDesktopManifestCache = { expiresAt: Date.now() + ttl, value }
     return value
   }
 
+  async function inspectCodexDesktopLatestVersion(): Promise<DesktopLatestVersionProbe> {
+    return (await inspectCodexDesktopManifestBundle()).latest
+  }
+
   async function inspectCodexDesktopMirrorVersion(): Promise<DesktopMirrorVersionProbe> {
-    if (codexDesktopMirrorCache && codexDesktopMirrorCache.expiresAt > Date.now()) {
-      return codexDesktopMirrorCache.value
-    }
-    const checkedAt = new Date().toISOString()
-    let value: DesktopMirrorVersionProbe
-    if (process.arch !== 'x64' && process.arch !== 'arm64') {
-      value = { version: null, checkedAt, error: `国内镜像不支持当前处理器架构 ${process.arch}` }
-    } else {
-      try {
-        const release = await fetchCodexDesktopMirrorRelease(process.arch)
-        value = { version: release.version, checkedAt, error: null }
-      } catch (error) {
-        value = {
-          version: null,
-          checkedAt,
-          error: error instanceof Error ? error.message : String(error),
-        }
-      }
-    }
-    codexDesktopMirrorCache = {
-      expiresAt: Date.now() + (value.version
-        ? codexDesktopLatestCacheTtlMs
-        : codexDesktopLatestFailureCacheTtlMs),
-      value,
-    }
-    return value
+    return (await inspectCodexDesktopManifestBundle()).mirror
   }
 
   async function inspectCodexDesktop(): Promise<DesktopAppStatus> {
@@ -1122,16 +1189,21 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (currentProbe.error) throw new Error(currentProbe.error)
     const currentPackage = currentProbe.value
     const previousVersion = currentPackage?.version ?? null
-    codexDesktopLatestCache = null
-    codexDesktopMirrorCache = null
-    const release = await fetchCodexDesktopMirrorRelease(architecture)
+    invalidateCodexDesktopManifestCache()
+    const manifestBundle = await inspectCodexDesktopManifestBundle()
+    const mirrorCandidate = manifestBundle.mirrorCandidate
+    const release = mirrorCandidate?.release ?? null
+    const packageSource = mirrorCandidate?.packageSource ?? null
+    if (!release || !packageSource) {
+      throw new Error(manifestBundle.mirror.error ?? '国内镜像暂时没有可安装的 Codex Desktop 版本')
+    }
     if (previousVersion) {
       const comparison = compareWindowsPackageVersions(previousVersion, release.version)
       if (comparison === null) {
         throw new Error(`无法比较已安装版本 ${previousVersion} 与镜像版本 ${release.version}`)
       }
       if (comparison >= 0) {
-        const latest = await inspectCodexDesktopLatestVersion()
+        const latest = manifestBundle.latest
         const latestComparison = latest.version
           ? compareWindowsPackageVersions(release.version, latest.version)
           : null
@@ -1157,7 +1229,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     const temporaryDirectory = await createInstallTemporaryDirectory('codex-desktop')
     const packagePath = path.join(temporaryDirectory, `ChatGPT-${architecture}.msix`)
     const source = {
-      ...buildCodexDesktopPackageSources(architecture)[0],
+      ...packageSource,
       expectedContentLength: release.contentLength,
       expectedSha256Base64: release.sha256Base64,
     }
@@ -1220,8 +1292,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       })
       await addCodexDesktopPackage(packagePath)
       const installedPackage = await verifyInstalledCodexDesktop(release.version)
-      codexDesktopLatestCache = null
-      codexDesktopMirrorCache = null
+      invalidateCodexDesktopManifestCache()
       const action = previousVersion ? 'updated' : 'installed'
       sendCodexDesktopInstallProgress(target, {
         phase: 'completed',
@@ -1263,8 +1334,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
   async function inspectCodexDesktopUpdate(forceRefresh = false): Promise<DesktopAppStatus> {
     if (forceRefresh) {
-      codexDesktopLatestCache = null
-      codexDesktopMirrorCache = null
+      invalidateCodexDesktopManifestCache()
     }
     return inspectCodexDesktop()
   }
@@ -1307,8 +1377,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       if (remaining.value?.packageFullName === installedPackage.packageFullName) {
         throw new Error('Windows 仍报告 Codex 桌面端 Appx 包存在，卸载未完成')
       }
-      codexDesktopLatestCache = null
-      codexDesktopMirrorCache = null
+      invalidateCodexDesktopManifestCache()
       return { outcome: 'uninstalled', previousVersion: installedPackage.version }
     } finally {
       codexDesktopInstalling = false

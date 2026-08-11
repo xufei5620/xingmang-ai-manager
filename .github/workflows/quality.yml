@@ -48,7 +48,7 @@ jobs:
             exit 1
           fi
       - run: npm run compile
-      - name: Run isolated dashboard smoke test
+      - name: Run isolated signed-out startup smoke test
         run: node e2e/electron-ci-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
       - run: npm run build:win:ci
