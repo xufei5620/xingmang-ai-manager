@@ -854,7 +854,7 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     })
   })
 
-  it('tolerates a missing agent link and uninstalls grok alone through the public service (internal #16)', async () => {
+  it('repairs a missing agent link before uninstalling through the public service', async () => {
     const fixture = createDarwinGrokUninstallFixture()
     fs.unlinkSync(path.join(fixture.bin, 'agent'))
     vi.stubEnv('HOME', fs.realpathSync(fixture.home))
@@ -866,7 +866,9 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
     const service = createSystemService(store, {
       platform: 'darwin',
       runCommand: async (spec) => {
-        const result = officialDarwinGrokUninstallResult(fixture, spec)
+        const result = spec.argv.length === 1 && spec.argv[0] === '--version'
+          ? { stdout: 'grok 0.2.118\n', stderr: '' }
+          : officialDarwinGrokUninstallResult(fixture, spec)
         return {
           ...result,
           executable: spec.executable,
@@ -879,21 +881,23 @@ describe.runIf(process.platform === 'darwin')('Darwin Grok automatic uninstall i
       },
     })
 
-    // A missing agent link no longer aborts the uninstall outright — darwin's
-    // always-retain-the-program-file quarantine step (internal #18) still
-    // means this ends in manual-required, but now because of that retained
-    // path, not because agent was absent.
+    // inspectCliTool repairs the missing agent link before uninstall planning.
+    // Both names now select the same 0.2.118 executable, so both staged copies
+    // must report that version and both links reach the quarantine phase.
     await expect(service.uninstallCli('grok')).resolves.toMatchObject({
       outcome: 'manual-required',
       previousVersion: '0.2.118',
       manualHelp: { manualCommand: expect.stringContaining('rm -f') },
-      error: expect.not.stringContaining('both grok and agent'),
+      error: expect.not.stringContaining('version different from the pinned release'),
     })
     expect(fs.existsSync(path.join(fixture.bin, 'grok'))).toBe(false)
     expect(fs.existsSync(path.join(fixture.bin, 'agent'))).toBe(false)
     const quarantineNames = fs.readdirSync(fixture.bin).filter((name) => name.endsWith('.removing'))
-    expect(quarantineNames).toHaveLength(1)
-    expect(quarantineNames[0]).toMatch(/^\.grok-/)
+    expect(quarantineNames).toHaveLength(2)
+    expect(quarantineNames).toEqual(expect.arrayContaining([
+      expect.stringMatching(/^\.grok-/),
+      expect.stringMatching(/^\.agent-/),
+    ]))
     expect(fs.readFileSync(fixture.grokBinary, 'utf8')).toBe('grok binary')
   })
 
@@ -2589,4 +2593,3 @@ describe('scan probe degradation', () => {
     })
   })
 })
-
