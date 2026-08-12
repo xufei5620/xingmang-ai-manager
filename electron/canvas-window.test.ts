@@ -268,7 +268,7 @@ describe('createCanvasWindowController', () => {
   })
 })
 
-describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
+describe('buildCanvasTokenDependencies (image-group key)', () => {
   // canvas-window.ts previously called accountService.provisionCliKey()
   // straight from resolveTokenForNewWindow's inline revealConfiguredRelayKey
   // fallback, unconditionally, whenever no installed CLI had a key
@@ -314,12 +314,13 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     expect(deps.revealConfiguredRelayKey()).toBe('sk-cli-configured')
   })
 
-  it('reuses an existing xingmang-canvas-* token instead of provisioning a new one -- the orphan-token regression', async () => {
-    const findExistingCliKey = vi.fn(async (namePrefix: string) => {
-      expect(namePrefix).toBe(`${canvasCliKeyNamePrefix}-`)
-      return { id: 5, name: 'xingmang-canvas-previous', key: 'sk-reused' }
+  it('resolves the image group through the backend group-aware provisioner', async () => {
+    const findExistingCliKey = vi.fn()
+    const provisionCliKey = vi.fn(async (input?: { name?: string; group?: string }) => {
+      expect(input?.name).toMatch(/^xingmang-canvas-/)
+      expect(input?.group).toBe('生图分组')
+      return { id: 5, name: 'existing-image-key', key: 'sk-reused' }
     })
-    const provisionCliKey = vi.fn(async () => ({ id: 99, name: 'xingmang-canvas-should-not-be-created', key: 'sk-should-not-be-used' }))
     const accountService = loggedInAccountService({ findExistingCliKey, provisionCliKey })
 
     const deps = buildCanvasTokenDependencies({
@@ -331,13 +332,14 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
 
     expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-reused' })
-    expect(findExistingCliKey).toHaveBeenCalledTimes(1)
-    expect(provisionCliKey).not.toHaveBeenCalled()
+    expect(findExistingCliKey).not.toHaveBeenCalled()
+    expect(provisionCliKey).toHaveBeenCalledTimes(1)
   })
 
-  it('falls back to provisioning a fresh key -- named with the canvas prefix -- when nothing existing is found', async () => {
-    const provisionCliKey = vi.fn(async (input?: { name?: string }) => {
+  it('creates a fresh image-group key when the backend cannot reuse one', async () => {
+    const provisionCliKey = vi.fn(async (input?: { name?: string; group?: string }) => {
       expect(input?.name).toMatch(/^xingmang-canvas-/)
+      expect(input?.group).toBe('生图分组')
       return { id: 1, name: input!.name!, key: 'sk-newly-minted' }
     })
     const accountService = loggedInAccountService({ provisionCliKey })
@@ -354,43 +356,25 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     expect(provisionCliKey).toHaveBeenCalledTimes(1)
   })
 
-  it('falls back to provisioning when the reuse lookup itself fails, reporting via onReuseLookupError, without breaking the flow', async () => {
-    const lookupFailure = new Error('列表查询超时')
-    const onReuseLookupError = vi.fn()
-    const provisionCliKey = vi.fn(async () => ({ id: 1, name: 'xingmang-canvas-fallback', key: 'sk-fallback' }))
-    const accountService = loggedInAccountService({
-      findExistingCliKey: vi.fn(async () => { throw lookupFailure }),
-      provisionCliKey,
-    })
+  it('reports a group provision failure and keeps the original error', async () => {
+    const provisionFailure = new Error('生图分组不可用')
+    const onProvisionError = vi.fn()
+    const accountService = loggedInAccountService({ provisionCliKey: vi.fn(async () => { throw provisionFailure }) })
 
     const deps = buildCanvasTokenDependencies({
       systemService: noCliConfiguredSystemService(),
       accountService,
       relaySite: resolveRelaySite('solov'),
       previewOnboarding: false,
-      onReuseLookupError,
+      onProvisionError,
     })
-    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
-
-    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-fallback' })
-    expect(onReuseLookupError).toHaveBeenCalledWith(lookupFailure)
-    expect(provisionCliKey).toHaveBeenCalledTimes(1)
+    await expect(resolveCanvasAuthToken(canvasBaseUrl, deps)).resolves.toBeNull()
+    expect(onProvisionError).toHaveBeenCalledWith(provisionFailure)
   })
 
-  it('end-to-end: a second resolution reuses the first one\'s provisioned key, never provisioning twice -- the exact open/close/reopen scenario that used to orphan a token every time', async () => {
-    // Mirrors xm.solov.cc's own token list gaining the freshly created entry
-    // after provisionCliKey succeeds, so findExistingCliKey's second call
-    // finds what the first call created -- exactly like a real second
-    // GET /api/token/ would after the first canvas window's provision call.
-    let serverSideTokens: { id: number; name: string; key: string }[] = []
-    const provisionCliKey = vi.fn(async (input?: { name?: string }) => {
-      const created = { id: serverSideTokens.length + 1, name: input!.name!, key: `sk-${input!.name}` }
-      serverSideTokens = [...serverSideTokens, created]
-      return created
-    })
-    const findExistingCliKey = vi.fn(async (namePrefix: string) => (
-      serverSideTokens.find((entry) => entry.name.startsWith(namePrefix)) ?? null
-    ))
+  it('delegates repeat resolutions to the idempotent group-aware provisioner', async () => {
+    const provisionCliKey = vi.fn(async () => ({ id: 1, name: 'existing-image-key', key: 'sk-image' }))
+    const findExistingCliKey = vi.fn()
     const accountService = loggedInAccountService({ findExistingCliKey, provisionCliKey })
     const deps = buildCanvasTokenDependencies({
       systemService: noCliConfiguredSystemService(),
@@ -403,8 +387,10 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     const secondOpen = await resolveCanvasAuthToken(canvasBaseUrl, deps)
 
     expect(firstOpen).toEqual(secondOpen)
-    expect(provisionCliKey).toHaveBeenCalledTimes(1)
-    expect(findExistingCliKey).toHaveBeenCalledTimes(2)
+    expect(provisionCliKey).toHaveBeenCalledTimes(2)
+    expect(provisionCliKey).toHaveBeenNthCalledWith(1, expect.objectContaining({ group: '生图分组' }))
+    expect(provisionCliKey).toHaveBeenNthCalledWith(2, expect.objectContaining({ group: '生图分组' }))
+    expect(findExistingCliKey).not.toHaveBeenCalled()
   })
 
   it('skips the canvas relay entirely when not logged in, touching neither reuse lookup nor provisioning', async () => {
