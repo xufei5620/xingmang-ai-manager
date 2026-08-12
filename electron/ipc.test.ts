@@ -64,6 +64,7 @@ function serviceStub(): SystemService {
     getConfig: vi.fn(() => ({ workspace: 'C:\\workspace', providers: {} })) as never,
     revealApiKey: vi.fn(() => 'sk-known-secret-value'),
     saveConfig: vi.fn(async (): Promise<NativeConfigSaveResult> => ({ backups: [], files: [] })),
+    switchToOfficialAccount: vi.fn((): NativeConfigSaveResult => ({ backups: [], files: [] })),
     scanSystem: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,

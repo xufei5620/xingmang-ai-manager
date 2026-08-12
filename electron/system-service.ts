@@ -31,6 +31,7 @@ import {
 import {
   inspectProviderConfig,
   saveProviderConfig,
+  switchProviderToOfficialAccount,
   toNativeConfigSummary,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
@@ -591,6 +592,7 @@ export interface SystemService {
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
   ): Promise<ReturnType<typeof saveProviderConfig>>
+  switchToOfficialAccount(provider: ProviderId): ReturnType<typeof switchProviderToOfficialAccount>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
@@ -2942,6 +2944,13 @@ export function createSystemService(
     )
   }
 
+  function switchToOfficialAccount(provider: ProviderId) {
+    // 与 saveConfig 同样在写入时现读站点:切换判定要拿当前站点的中转地址去
+    // 比对,站点刚改过也不用重启服务。
+    const activeSite = resolveRelaySite(store.read().relaySiteId)
+    return switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls)
+  }
+
   return {
     readStoredConfig: () => store.read(),
     updateStoredConfig: (update) => store.update(update),
@@ -2949,6 +2958,7 @@ export function createSystemService(
     getConfig: buildConfigSummary,
     revealApiKey,
     saveConfig,
+    switchToOfficialAccount,
     scanSystem,
     inspectCodexSetupStatus,
     installNodeRuntime,

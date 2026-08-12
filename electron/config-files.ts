@@ -387,6 +387,17 @@ function updateEnvContent(content: string, updates: Record<string, string>): str
   return `${lines.join('\n')}\n`
 }
 
+/**
+ * 删除若干环境变量行,其余行(含用户自己写的变量与注释)原样保留 ——
+ * 切回官方订阅时只收回我们写进去的那几个,绝不重排或清空别人的 .env。
+ */
+function removeEnvEntries(content: string, names: readonly string[]): string {
+  const lines = content.split(/\r?\n/)
+  if (lines.at(-1) === '') lines.pop()
+  const kept = lines.filter((line) => !names.some((name) => line.trimStart().startsWith(`${name}=`)))
+  return kept.length === 0 ? '' : `${kept.join('\n')}\n`
+}
+
 function createPlans(
   provider: ProviderId,
   apiKey: string,
@@ -903,6 +914,162 @@ export function saveProviderConfig(
   const plans = mode === 'merge'
     ? createMergePlans(provider, apiKey, model, roots, siteBaseUrlsInput)
     : createPlans(provider, apiKey, model, roots, siteBaseUrlsInput)
+
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  return executeFilePlans(plans, hooks, providerRoot)
+}
+
+// ---------------------------------------------------------------------------
+// 账号来源切换:星芒中转 ⇄ 用户自己的官方订阅
+//
+// 产品背景(2026-08-12 老板决策):不做本机双路由常驻服务,改为"一键切回
+// 自己的订阅账号"。因此这里的语义被刻意收窄成**只收回星芒写进去的那几个
+// 键**,官方登录凭据一个字节都不碰:
+//   - Codex 的 ChatGPT 登录在同一个 auth.json 的 `tokens` 字段里,只删
+//     `OPENAI_API_KEY`,其余原样保留 —— 切回来不用重新登录,这是本功能
+//     成立的前提。
+//   - Claude 的订阅登录在 ~/.claude/.credentials.json(或 macOS 钥匙串),
+//     本模块从不触碰;只从 settings.json 的 env 里摘掉两个中转变量。
+//   - Gemini 的 Google 登录在 CLI 自己的 oauth 缓存里;只改
+//     security.auth.selectedType 并摘掉 .env 里的三个变量。
+// 双向都走同一套两阶段提交 + .bak(I9),切回星芒 = 现有 saveProviderConfig。
+// ---------------------------------------------------------------------------
+
+export type ProviderAccountMode = 'relay' | 'official' | 'unknown'
+
+/**
+ * 当前这个 CLI 在用谁的账号。`unknown` = 配了 Key 但 base URL 不是星芒
+ * (用户自己接了别家中转),此时切换会拒绝执行,免得把别人的配置抹掉。
+ */
+export function providerAccountMode(inspection: NativeConfigInspection): ProviderAccountMode {
+  if (inspection.matchesRelay) return 'relay'
+  if (!inspection.hasApiKey) return 'official'
+  return 'unknown'
+}
+
+/** Grok(xAI CLI)只有 API Key 一种认证方式,没有可切回的官方订阅。 */
+export function providerSupportsOfficialAccount(provider: ProviderId): boolean {
+  return provider !== 'grok'
+}
+
+function officialAccountUnsupported(provider: ProviderId): never {
+  throw new Error(
+    provider === 'grok'
+      ? 'Grok CLI 只支持 API Key 登录，没有可切换的官方订阅账号'
+      : `暂不支持切换 ${provider} 的账号来源`,
+  )
+}
+
+/**
+ * 构造"切回官方订阅"的文件计划。只对**已存在**的文件出计划:文件不存在
+ * 意味着本来就没有中转配置可收回,凭空创建反而会写出一份用户没要过的配置。
+ */
+function createOfficialAccountPlans(
+  provider: ProviderId,
+  roots: ProviderConfigRoots,
+  siteBaseUrls: Record<ProviderId, string>,
+): FilePlan[] {
+  const paths = providerConfigPaths(provider, roots)
+  switch (provider) {
+    case 'codex': {
+      const plans: FilePlan[] = []
+      if (fs.existsSync(paths[0])) {
+        const parsed = requireToml(paths[0], '现有 Codex config.toml')
+        const providerName = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+        const providers = parsed.model_providers
+        if (providerName && providers && typeof providers === 'object' && !Array.isArray(providers)) {
+          const table = providers as Record<string, unknown>
+          const entry = table[providerName]
+          const entryBaseUrl = entry && typeof entry === 'object' && !Array.isArray(entry)
+            ? (entry as Record<string, unknown>).base_url
+            : undefined
+          // 只摘掉确实指向星芒的那一条:用户自建的 provider 表原样留下。
+          if (typeof entryBaseUrl === 'string' && normalizeUrl(entryBaseUrl) === normalizeUrl(siteBaseUrls.codex)) {
+            delete table[providerName]
+          }
+          if (Object.keys(table).length === 0) delete parsed.model_providers
+        }
+        // 删掉 model_provider,Codex 回落到内置的 openai(即 ChatGPT 登录)。
+        delete parsed.model_provider
+        // 中转的模型名未必存在于官方目录,留着会让 Codex 启动即报错;
+        // 删掉即回落官方默认模型,切回星芒时 saveProviderConfig 会重新写。
+        delete parsed.model
+        delete parsed.review_model
+        plans.push({ path: paths[0], content: tomlContent(parsed) })
+      }
+      if (fs.existsSync(paths[1])) {
+        const parsed = requireJson(paths[1], '现有 Codex auth.json')
+        // 关键:只删这一个键。`tokens` / `last_refresh` 是 ChatGPT 订阅登录
+        // 的凭据,删了用户就要重新走浏览器登录 —— 本功能的意义就没了。
+        delete parsed.OPENAI_API_KEY
+        plans.push({ path: paths[1], content: jsonContent(parsed) })
+      }
+      return plans
+    }
+    case 'claude': {
+      if (!fs.existsSync(paths[0])) return []
+      const parsed = requireJson(paths[0], '现有 Claude settings.json')
+      const env = parsed.env
+      if (env && typeof env === 'object' && !Array.isArray(env)) {
+        const envRecord = env as Record<string, unknown>
+        delete envRecord.ANTHROPIC_AUTH_TOKEN
+        delete envRecord.ANTHROPIC_BASE_URL
+        if (Object.keys(envRecord).length === 0) delete parsed.env
+      }
+      delete parsed.model
+      return [{ path: paths[0], content: jsonContent(parsed) }]
+    }
+    case 'gemini': {
+      const plans: FilePlan[] = []
+      if (fs.existsSync(paths[0])) {
+        const parsed = requireJson(paths[0], '现有 Gemini settings.json')
+        const auth = ensureRecord(ensureRecord(parsed, 'security'), 'auth')
+        auth.selectedType = 'oauth-personal'
+        plans.push({ path: paths[0], content: jsonContent(parsed) })
+      }
+      const envContent = requireConfigText(paths[1], '现有 Gemini .env')
+      if (envContent !== null) {
+        plans.push({
+          path: paths[1],
+          content: removeEnvEntries(envContent, ['GOOGLE_GEMINI_BASE_URL', 'GEMINI_API_KEY', 'GEMINI_MODEL']),
+        })
+      }
+      return plans
+    }
+    case 'grok':
+      return officialAccountUnsupported(provider)
+  }
+}
+
+/**
+ * 把某个 CLI 切回用户自己的官方订阅账号。返回值与 saveProviderConfig 同形,
+ * 调用方拿到的是同一套备份/写入清单。
+ *
+ * 前置校验故意严格:当前不是星芒中转就直接拒绝,而不是"尽力而为地删几个
+ * 键"——后者在用户自接第三方中转时会把别人的配置改坏。
+ */
+export function switchProviderToOfficialAccount(
+  provider: ProviderId,
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  hooks: NativeConfigWriteHooks = {},
+  siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
+): NativeConfigSaveResult {
+  if (!providerSupportsOfficialAccount(provider)) officialAccountUnsupported(provider)
+
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot(provider, roots)
+  const configuredPaths = providerConfigPaths(provider, roots)
+  for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
+
+  const mode = providerAccountMode(inspectProviderConfig(provider, roots, siteBaseUrlsInput))
+  if (mode === 'official') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
+  if (mode === 'unknown') {
+    throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
+  }
+
+  const plans = createOfficialAccountPlans(provider, roots, siteBaseUrlsInput)
+  if (plans.length === 0) throw new Error('没有找到可切换的配置文件')
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')

@@ -291,6 +291,16 @@ export interface XingmangInvokeContract {
   getConfig: IpcInvokeDefinition<'config:get', [], AppConfigSummary>
   revealApiKey: IpcInvokeDefinition<'config:reveal-api-key', [provider: ProviderId], string>
   saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload], ConfigSaveResult>
+  /**
+   * 把某个 CLI 切回用户自己的官方订阅账号(只收回星芒写进去的键,官方登录
+   * 凭据一个字节不碰,见 config-files.ts 的 switchProviderToOfficialAccount)。
+   * 切回星芒走既有的 config:save,不另开通道。
+   */
+  switchToOfficialAccount: IpcInvokeDefinition<
+    'config:switch-to-official-account',
+    [provider: ProviderId],
+    ConfigSaveResult
+  >
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
   listConfiguredModels: IpcInvokeDefinition<'models:list-configured', [provider: ProviderId], string[]>
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [], string | null>
@@ -497,6 +507,7 @@ export const ipcInvokeChannels = {
   getConfig: 'config:get',
   revealApiKey: 'config:reveal-api-key',
   saveConfig: 'config:save',
+  switchToOfficialAccount: 'config:switch-to-official-account',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',

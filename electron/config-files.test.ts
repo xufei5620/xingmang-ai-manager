@@ -5,8 +5,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 import * as TOML from '@iarna/toml'
 import {
   inspectProviderConfig,
+  providerAccountMode,
   providerConfigPaths,
+  providerSupportsOfficialAccount,
   saveProviderConfig,
+  switchProviderToOfficialAccount,
   toNativeConfigSummary,
 } from './config-files'
 import { providerBaseUrls, type ProviderId } from './catalog'
@@ -641,5 +644,165 @@ describe('native CLI configuration files', () => {
       .filter((name) => name.startsWith('settings.json.bak.'))
     expect(backups.length).toBeGreaterThan(0)
     expect(backups.length).toBeLessThanOrEqual(5)
+  })
+})
+
+// 账号来源切换(星芒中转 ⇄ 用户自己的官方订阅)。本组的核心断言只有一条:
+// 切换绝不能碰官方登录凭据 —— Codex 的 ChatGPT token 就住在同一个
+// auth.json 里,删错一个键用户就要重新走浏览器登录,整个功能也就没意义了。
+describe('switching a provider back to the official subscription account', () => {
+  function chatGptTokens() {
+    return {
+      id_token: 'header.payload.signature',
+      access_token: 'access-token-value',
+      refresh_token: 'refresh-token-value',
+      account_id: 'account-uuid',
+    }
+  }
+
+  function seedCodexRelayConfigWithChatGptLogin(home: string) {
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [, authPath] = providerConfigPaths('codex', providerRoots(home))
+    // Codex 的订阅登录与 API Key 共存于同一份 auth.json。
+    fs.writeFileSync(authPath, JSON.stringify({
+      OPENAI_API_KEY: 'sk-relay',
+      tokens: chatGptTokens(),
+      last_refresh: '2026-08-12T00:00:00Z',
+    }, null, 2))
+  }
+
+  it('keeps the ChatGPT login in auth.json and only drops the relay key', () => {
+    const home = temporaryHome()
+    seedCodexRelayConfigWithChatGptLogin(home)
+
+    switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
+
+    const [, authPath] = providerConfigPaths('codex', providerRoots(home))
+    const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as Record<string, unknown>
+    expect(auth.OPENAI_API_KEY).toBeUndefined()
+    expect(auth.tokens).toEqual(chatGptTokens())
+    expect(auth.last_refresh).toBe('2026-08-12T00:00:00Z')
+  })
+
+  it('removes the relay provider table and model overrides so Codex falls back to its built-in openai provider', () => {
+    const home = temporaryHome()
+    seedCodexRelayConfigWithChatGptLogin(home)
+
+    switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
+
+    const [configPath] = providerConfigPaths('codex', providerRoots(home))
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+    expect(parsed?.model_provider).toBeUndefined()
+    expect(parsed?.model_providers).toBeUndefined()
+    // 中转的模型名未必存在于官方目录,留着会让 Codex 启动即报错。
+    expect(parsed?.model).toBeUndefined()
+    expect(parsed?.review_model).toBeUndefined()
+    // 与中转无关的设置原样保留。
+    expect(parsed?.disable_response_storage).toBe(true)
+  })
+
+  it('leaves a user-authored provider table alone while removing only the relay one', () => {
+    const home = temporaryHome()
+    seedCodexRelayConfigWithChatGptLogin(home)
+    const [configPath] = providerConfigPaths('codex', providerRoots(home))
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))!
+    const providers = asRecord(parsed.model_providers)!
+    providers.mine = { name: 'mine', base_url: 'https://example.invalid/v1' }
+    fs.writeFileSync(configPath, TOML.stringify(parsed as never))
+
+    switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
+
+    const after = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+    const remaining = asRecord(after?.model_providers)
+    expect(Object.keys(remaining ?? {})).toEqual(['mine'])
+  })
+
+  it('drops only the two relay env entries from Claude settings.json, never the credential store', () => {
+    const home = temporaryHome()
+    saveProviderConfig('claude', 'sk-relay', testModels.claude, 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [configPath] = providerConfigPaths('claude', providerRoots(home))
+    const seeded = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    const env = seeded.env as Record<string, unknown>
+    env.MY_OWN_VARIABLE = 'keep-me'
+    fs.writeFileSync(configPath, JSON.stringify(seeded, null, 2))
+
+    switchProviderToOfficialAccount('claude', providerRoots(home), {}, providerBaseUrls)
+
+    const after = JSON.parse(fs.readFileSync(configPath, 'utf8')) as Record<string, unknown>
+    const afterEnv = after.env as Record<string, unknown>
+    expect(afterEnv.ANTHROPIC_AUTH_TOKEN).toBeUndefined()
+    expect(afterEnv.ANTHROPIC_BASE_URL).toBeUndefined()
+    expect(afterEnv.MY_OWN_VARIABLE).toBe('keep-me')
+    // Claude 的订阅凭据在 .credentials.json / 钥匙串里,本模块从不触碰。
+    expect(after.permissions).toBeDefined()
+  })
+
+  it('switches Gemini back to Google OAuth and strips its three relay env entries, keeping the rest of .env', () => {
+    const home = temporaryHome()
+    saveProviderConfig('gemini', 'sk-relay', testModels.gemini, 'reset', providerRoots(home), {}, providerBaseUrls)
+    const [settingsPath, envPath] = providerConfigPaths('gemini', providerRoots(home))
+    fs.appendFileSync(envPath, 'MY_OWN_VARIABLE=keep-me\n')
+
+    switchProviderToOfficialAccount('gemini', providerRoots(home), {}, providerBaseUrls)
+
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    const security = asRecord(settings.security)
+    expect(asRecord(security?.auth)?.selectedType).toBe('oauth-personal')
+    const env = fs.readFileSync(envPath, 'utf8')
+    expect(env).not.toContain('GEMINI_API_KEY')
+    expect(env).not.toContain('GOOGLE_GEMINI_BASE_URL')
+    expect(env).not.toContain('GEMINI_MODEL')
+    expect(env).toContain('MY_OWN_VARIABLE=keep-me')
+  })
+
+  it('refuses to touch a configuration that points at somebody else\'s relay', () => {
+    const home = temporaryHome()
+    saveProviderConfig('claude', 'sk-third-party', testModels.claude, 'reset', providerRoots(home), {}, {
+      ...providerBaseUrls,
+      claude: 'https://not-xingmang.invalid',
+    })
+
+    expect(() => switchProviderToOfficialAccount('claude', providerRoots(home), {}, providerBaseUrls))
+      .toThrow(/不是星芒中转/)
+  })
+
+  it('refuses a second switch instead of rewriting an already-official configuration', () => {
+    const home = temporaryHome()
+    seedCodexRelayConfigWithChatGptLogin(home)
+    switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
+
+    expect(() => switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls))
+      .toThrow(/已经在使用/)
+  })
+
+  it('backs every touched file up before rewriting it, so the switch is reversible by hand too', () => {
+    const home = temporaryHome()
+    seedCodexRelayConfigWithChatGptLogin(home)
+
+    const result = switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
+
+    expect(result.files).toHaveLength(2)
+    expect(result.backups).toHaveLength(2)
+    for (const backup of result.backups) expect(fs.existsSync(backup)).toBe(true)
+  })
+
+  it('reports Grok as unswitchable -- xAI CLI has no subscription login to fall back to', () => {
+    expect(providerSupportsOfficialAccount('grok')).toBe(false)
+    expect(providerSupportsOfficialAccount('codex')).toBe(true)
+    const home = temporaryHome()
+    saveProviderConfig('grok', 'sk-relay', testModels.grok, 'reset', providerRoots(home), {}, providerBaseUrls)
+    expect(() => switchProviderToOfficialAccount('grok', providerRoots(home), {}, providerBaseUrls))
+      .toThrow(/只支持 API Key 登录/)
+  })
+
+  it('classifies the account mode from an inspection', () => {
+    const home = temporaryHome()
+    expect(providerAccountMode(inspectProviderConfig('codex', providerRoots(home), providerBaseUrls))).toBe('official')
+
+    seedCodexRelayConfigWithChatGptLogin(home)
+    expect(providerAccountMode(inspectProviderConfig('codex', providerRoots(home), providerBaseUrls))).toBe('relay')
+
+    switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
+    expect(providerAccountMode(inspectProviderConfig('codex', providerRoots(home), providerBaseUrls))).toBe('official')
   })
 })

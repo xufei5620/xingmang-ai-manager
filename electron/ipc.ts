@@ -1045,6 +1045,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('config:save', (_event, payload: unknown) => (
     service.saveConfig(parseConfigSavePayload(payload), options.previewOnboarding)
   ))
+  registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    return service.switchToOfficialAccount(provider)
+  })
   registerTrustedHandler('workspace:choose', async (event) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
