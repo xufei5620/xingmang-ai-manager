@@ -181,7 +181,7 @@ const IMAGE_PRESET_DEFINITIONS = {
     kind: 'image',
     provider: 'gpt-image',
     available: true,
-    hidden: false,
+    hidden: true,
     sizePolicy: GPT_IMAGE_2_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
@@ -283,6 +283,28 @@ export function getKnownImageModelPresets(options: { includeHidden?: boolean } =
 
 export function isImageModel(model: string): boolean {
   return resolveAiModelCapability(model).kind === 'image'
+}
+
+const IMAGE_GROUP_NAME = '生图分组'
+const IMAGE_GROUP_MODEL_ORDER = [
+  'gpt-image-2',
+  'gpt-image-1',
+  'jimeng_high_aes_general_v21_L',
+] as const
+
+export function selectAiChatModelsForGroup(group: string, models: readonly string[]): string[] {
+  const unique = [...new Set(models.map((model) => model.trim()).filter(Boolean))]
+  const visible = unique.filter((model) => {
+    try {
+      return !resolveAiModelCapability(model).hidden
+    } catch {
+      return false
+    }
+  })
+  if (group.trim() !== IMAGE_GROUP_NAME) return visible
+
+  const available = new Set(visible)
+  return IMAGE_GROUP_MODEL_ORDER.filter((model) => available.has(model))
 }
 
 function validateMessages(messages: readonly AiChatMessage[]): AiChatMessage[] {

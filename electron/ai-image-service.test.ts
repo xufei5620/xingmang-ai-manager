@@ -82,6 +82,20 @@ describe('AI image service', () => {
     })).rejects.not.toThrow(/sk-super|private\.example/)
   })
 
+  it.each([
+    [400, { error: { message: "Invalid size '1025x1024'" } }, '不支持这个图片尺寸'],
+    [403, { error: { message: 'Project does not have access to model' } }, '暂无该生图模型权限'],
+    [403, { error: { message: '用户额度不足' } }, '余额或 API Key 额度不足'],
+    [429, { error: { message: 'rate limited' } }, '上游限流'],
+    [503, { error: { message: 'upstream unavailable' } }, '暂时不可用'],
+  ])('maps HTTP %s image failures to an actionable message', async (status, payload, expected) => {
+    const fetchImpl = vi.fn(async () => response(payload, status)) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.generate(4, {
+      requestId: `failure-${status}`, group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })).rejects.toThrow(expected)
+  })
+
   it('cancels only an owned request and warns that it may still complete', async () => {
     const fetchImpl = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
@@ -96,5 +110,35 @@ describe('AI image service', () => {
     await expect(pending).rejects.toThrow('服务端可能仍在生成')
     expect(fetchImpl).toHaveBeenCalledTimes(1)
   })
-})
 
+  it('cancels pending image requests by sender, account, or application lifecycle', async () => {
+    const fetchImpl = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')), { once: true })
+    })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+
+    const bySender = service.generate(4, {
+      requestId: 'sender-request', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1))
+    expect(service.cancelSender(5)).toBe(0)
+    expect(service.cancelSender(4)).toBe(1)
+    await expect(bySender).rejects.toThrow('服务端可能仍在生成')
+
+    const byUser = service.generate(6, {
+      requestId: 'user-request', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(2))
+    expect(service.cancelUser(8)).toBe(0)
+    expect(service.cancelUser(7)).toBe(1)
+    await expect(byUser).rejects.toThrow('服务端可能仍在生成')
+
+    const byApplication = service.generate(7, {
+      requestId: 'app-request', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })
+    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(3))
+    expect(service.cancelAll()).toBe(1)
+    await expect(byApplication).rejects.toThrow('服务端可能仍在生成')
+    expect(service.cancelAll()).toBe(0)
+  })
+})

@@ -225,6 +225,74 @@ export interface RendererErrorPayload {
   context?: string
 }
 
+export interface AiChatGroupSummary {
+  name: string
+  description: string
+  ratio: number | string
+}
+
+export interface AiChatPreparedGroup {
+  group: string
+  models: string[]
+  keyCreated: boolean
+  storageWarning?: string
+}
+
+export type AiChatRole = 'system' | 'user' | 'assistant'
+
+export interface AiChatMessageInput {
+  role: AiChatRole
+  content: string
+}
+
+export interface AiChatParametersInput {
+  temperature?: number
+  topP?: number
+  maxTokens?: number
+  frequencyPenalty?: number
+  presencePenalty?: number
+  seed?: number
+}
+
+export interface AiChatStartInput {
+  requestId: string
+  group: string
+  model: string
+  messages: AiChatMessageInput[]
+  parameters?: AiChatParametersInput
+}
+
+export interface AiImageGenerateInput {
+  requestId: string
+  group: string
+  model: string
+  prompt: string
+  size?: string
+  quality?: 'low' | 'medium' | 'high' | 'auto'
+}
+
+export interface AiChatAsset {
+  assetId: string
+  localUrl: string
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  width?: number
+  height?: number
+  fileName: string
+  revisedPrompt?: string
+}
+
+export type AiChatStreamEvent =
+  | { requestId: string; type: 'content'; content: string }
+  | { requestId: string; type: 'reasoning'; content: string }
+  | { requestId: string; type: 'complete' }
+  | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
+  | { requestId: string; type: 'error'; message: string }
+
+export interface AiChatCancelResult {
+  canceled: boolean
+  mayStillComplete: boolean
+}
+
 export interface InstallProgress {
   provider: ProviderId
   state: 'started' | 'output' | 'success' | 'error'
@@ -460,6 +528,14 @@ export interface XingmangInvokeContract {
   setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
   updateAccountKey: IpcInvokeDefinition<'account:update-key', [input: AccountKeyUpdateInput], void>
+  listAiChatGroups: IpcInvokeDefinition<'chat:list-groups', [], AiChatGroupSummary[]>
+  prepareAiChatGroup: IpcInvokeDefinition<'chat:prepare-group', [group: string], AiChatPreparedGroup>
+  startAiChat: IpcInvokeDefinition<'chat:start', [input: AiChatStartInput], { requestId: string; accepted: true }>
+  generateAiImage: IpcInvokeDefinition<'chat:generate-image', [input: AiImageGenerateInput], AiChatAsset[]>
+  cancelAiChat: IpcInvokeDefinition<'chat:cancel', [requestId: string], AiChatCancelResult>
+  copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
+  saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
+  showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
 }
 
 export interface XingmangEventContract {
@@ -478,6 +554,7 @@ export interface XingmangEventContract {
     CodexDesktopInstallProgress
   >
   onUpdateState: IpcEventDefinition<'update:state-changed', UpdateSnapshot>
+  onAiChatStream: IpcEventDefinition<'chat:stream-event', AiChatStreamEvent>
 }
 
 export type XingmangApi = {
@@ -590,6 +667,14 @@ export const ipcInvokeChannels = {
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',
   updateAccountKey: 'account:update-key',
+  listAiChatGroups: 'chat:list-groups',
+  prepareAiChatGroup: 'chat:prepare-group',
+  startAiChat: 'chat:start',
+  generateAiImage: 'chat:generate-image',
+  cancelAiChat: 'chat:cancel',
+  copyAiChatAsset: 'chat:copy-asset',
+  saveAiChatAsset: 'chat:save-asset',
+  showAiChatAssetMenu: 'chat:asset-menu',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -601,6 +686,7 @@ export const ipcEventChannels = {
   onCodexDesktopStatus: 'desktop:codex-status-changed',
   onCodexDesktopInstallProgress: 'desktop:codex-install-progress',
   onUpdateState: 'update:state-changed',
+  onAiChatStream: 'chat:stream-event',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }

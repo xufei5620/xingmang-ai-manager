@@ -77,6 +77,23 @@ describe('chat credential coordinator', () => {
     expect(store.upsert).toHaveBeenCalledTimes(1)
   })
 
+  it('filters and orders the production image group models before exposing them', async () => {
+    const context = setup()
+    vi.mocked(context.modelService.fetchAvailableModels).mockResolvedValue([
+      'gpt-image-1.5',
+      'gpt-image-1',
+      'gpt-image-2-2026-04-21',
+      'jimeng_high_aes_general_v21_L',
+      'gpt-image-2',
+    ])
+    const prepared = await context.coordinator.prepareGroup('生图分组')
+    expect(prepared.models).toEqual([
+      'gpt-image-2',
+      'gpt-image-1',
+      'jimeng_high_aes_general_v21_L',
+    ])
+  })
+
   it('rejects groups not returned by the server', async () => {
     const { coordinator, accountService } = setup()
     await expect(coordinator.prepareGroup('not-allowed')).rejects.toThrow('不可使用分组')
@@ -112,4 +129,3 @@ describe('chat credential coordinator', () => {
     await expect(coordinator.listGroups()).resolves.toHaveLength(2)
   })
 })
-

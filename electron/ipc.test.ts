@@ -127,16 +127,21 @@ function accountServiceStub(): NewApiClientService {
   }
 }
 
-function trustedEvent(url = 'http://localhost:5173/') {
+function trustedEvent(url = 'http://localhost:5173/', senderId = 101) {
   return {
     senderFrame: { url },
     sender: {
+      id: senderId,
       getURL: () => url,
       isDestroyed: () => false,
       send: vi.fn(),
+      once: vi.fn(),
     },
   }
 }
+
+type ChatIpcOverrides = Partial<Pick<Parameters<typeof registerIpcHandlers>[0],
+  'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets'>>
 
 function updaterStub(): UpdaterService {
   const state = {
@@ -172,6 +177,7 @@ function register(
     clear: () => Promise<void>
   },
   managedCliKeys?: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']>,
+  chatOverrides: ChatIpcOverrides = {},
 ) {
   const extensionService = {
     getRepositoryContext: vi.fn(() => ({ repositoryRoot: 'C:\\workspace' })),
@@ -234,6 +240,7 @@ function register(
     accountService,
     accountCredentials,
     managedCliKeys,
+    ...chatOverrides,
     sessionsService: sessionsService as never,
     providerSessionsService: providerSessionsService as never,
     backupStore: {
@@ -308,6 +315,95 @@ describe('registerIpcHandlers', () => {
     dispose()
 
     expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel)).toEqual(expectedChannels)
+  })
+
+  it('binds chat requests and cancellation to the trusted sender without exposing credentials', async () => {
+    const chatCredentials = {
+      listGroups: vi.fn(async () => [{ name: 'codex-pro', description: 'Codex', ratio: 1 }]),
+      prepareGroup: vi.fn(async () => ({
+        group: 'codex-pro', models: ['gpt-5.6-sol'], keyCreated: false,
+      })),
+      resolveCredential: vi.fn(),
+    }
+    const chatService = {
+      start: vi.fn(() => ({ requestId: 'request-1', accepted: true as const })),
+      cancel: vi.fn(() => false),
+      cancelSender: vi.fn(() => 0),
+      cancelUser: vi.fn(() => 0),
+      cancelAll: vi.fn(() => 0),
+      activeCount: vi.fn(() => 0),
+      whenIdle: vi.fn(async () => undefined),
+      dispose: vi.fn(),
+    }
+    const imageService = {
+      generate: vi.fn(async () => []),
+      cancel: vi.fn(() => ({ canceled: true, mayStillComplete: true })),
+      cancelSender: vi.fn(() => 0),
+      cancelUser: vi.fn(() => 0),
+      cancelAll: vi.fn(() => 0),
+    }
+    const { dispose } = register(
+      serviceStub(),
+      'C:\\app-data\\logs',
+      undefined,
+      accountServiceStub(),
+      undefined,
+      undefined,
+      { chatCredentials, chatService, imageService } as never,
+    )
+    const start = electronMocks.handlers.get('chat:start')!
+    const input = {
+      requestId: 'request-1',
+      group: 'codex-pro',
+      model: 'gpt-5.6-sol',
+      messages: [{ role: 'user', content: 'hello' }],
+    }
+
+    expect(() => start(trustedEvent('https://attacker.example/', 9), input))
+      .toThrow('已拒绝来自非应用页面的操作请求')
+    expect(chatService.start).not.toHaveBeenCalled()
+
+    const ownerEvent = trustedEvent(undefined, 17)
+    expect(start(ownerEvent, input)).toEqual({ requestId: 'request-1', accepted: true })
+    expect(chatService.start).toHaveBeenCalledWith(expect.objectContaining({ senderId: 17, ...input }))
+    expect(JSON.stringify(await start(trustedEvent(undefined, 18), input))).not.toMatch(/apiKey|Authorization|Bearer|sk-secret/i)
+
+    const cancel = electronMocks.handlers.get('chat:cancel')!
+    expect(cancel(trustedEvent(undefined, 22), 'request-1')).toEqual({
+      canceled: true,
+      mayStillComplete: true,
+    })
+    expect(chatService.cancel).toHaveBeenCalledWith(22, 'request-1')
+    expect(imageService.cancel).toHaveBeenCalledWith(22, 'request-1')
+
+    const destroyed = vi.mocked(ownerEvent.sender.once).mock.calls.find(([event]) => event === 'destroyed')?.[1]
+    expect(destroyed).toBeTypeOf('function')
+    ;(destroyed as () => void)()
+    expect(chatService.cancelSender).toHaveBeenCalledWith(17)
+    expect(imageService.cancelSender).toHaveBeenCalledWith(17)
+
+    dispose()
+  })
+
+  it('cancels both text and image requests before logging out', async () => {
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.logout).mockResolvedValue(undefined)
+    const chatService = { cancelAll: vi.fn(() => 2), dispose: vi.fn() }
+    const imageService = { cancelAll: vi.fn(() => 1) }
+    register(
+      serviceStub(),
+      'C:\\app-data\\logs',
+      undefined,
+      accountService,
+      undefined,
+      undefined,
+      { chatService, imageService } as never,
+    )
+
+    await expect(electronMocks.handlers.get('account:logout')!(trustedEvent())).resolves.toBeUndefined()
+    expect(chatService.cancelAll).toHaveBeenCalledOnce()
+    expect(imageService.cancelAll).toHaveBeenCalledOnce()
+    expect(accountService.logout).toHaveBeenCalledOnce()
   })
 
   it('persists a selected workspace and updates the repository context', async () => {

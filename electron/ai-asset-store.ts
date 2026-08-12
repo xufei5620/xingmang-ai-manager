@@ -2,7 +2,9 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
 import { lookup as nodeLookup } from 'node:dns/promises'
-import { BlockList, isIP } from 'node:net'
+import https from 'node:https'
+import { BlockList, isIP, type LookupFunction } from 'node:net'
+import { Readable } from 'node:stream'
 import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
 
 const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
@@ -77,7 +79,11 @@ export interface AiAssetNativeOperations {
 }
 
 export type AiAssetDnsLookup = (hostname: string) => Promise<readonly string[]>
-export type AiAssetFetch = (input: string, init: RequestInit) => Promise<Response>
+export type AiAssetFetch = (
+  input: string,
+  init: RequestInit,
+  resolvedAddresses: readonly string[],
+) => Promise<Response>
 
 export interface ResolveAiOutputRootOptions {
   isPackaged: boolean
@@ -321,11 +327,63 @@ async function defaultDnsLookup(hostname: string): Promise<readonly string[]> {
   return (await nodeLookup(hostname, { all: true, verbatim: true })).map((entry) => entry.address)
 }
 
-async function assertPublicRemoteHost(url: URL, dnsLookup: AiAssetDnsLookup): Promise<void> {
+async function assertPublicRemoteHost(url: URL, dnsLookup: AiAssetDnsLookup): Promise<readonly string[]> {
   const addresses = await dnsLookup(url.hostname)
   if (!addresses.length || addresses.some((address) => !isPublicAiAssetAddress(address))) {
     throw new Error('图片远程地址解析到私网、回环或保留地址')
   }
+  return addresses
+}
+
+async function defaultPinnedAiAssetFetch(
+  input: string,
+  init: RequestInit,
+  resolvedAddresses: readonly string[],
+): Promise<Response> {
+  const candidates = resolvedAddresses
+    .map(normalizeIpAddress)
+    .filter((entry): entry is NonNullable<ReturnType<typeof normalizeIpAddress>> => Boolean(entry))
+  if (!candidates.length) throw new Error('图片远程地址没有可用的公网解析结果')
+  const lookup: LookupFunction = (_hostname, lookupOptions, callback) => {
+    const requestedFamily = Number(lookupOptions.family || 0)
+    const eligible = requestedFamily === 4 || requestedFamily === 6
+      ? candidates.filter((entry) => entry.family === `ipv${requestedFamily}`)
+      : candidates
+    const selected = eligible[0]
+    if (!selected) {
+      callback(Object.assign(new Error('图片远程地址没有匹配的公网解析结果'), { code: 'ENOTFOUND' }), '', 0)
+      return
+    }
+    const family = selected.family === 'ipv4' ? 4 : 6
+    if (lookupOptions.all) callback(null, eligible.map((entry) => ({
+      address: entry.address,
+      family: entry.family === 'ipv4' ? 4 : 6,
+    })))
+    else callback(null, selected.address, family)
+  }
+
+  return new Promise<Response>((resolve, reject) => {
+    const request = https.request(input, {
+      method: init.method ?? 'GET',
+      headers: Object.fromEntries(new Headers(init.headers).entries()),
+      signal: init.signal ?? undefined,
+      agent: false,
+      lookup,
+    }, (response) => {
+      const headers = new Headers()
+      for (const [name, value] of Object.entries(response.headers)) {
+        if (Array.isArray(value)) value.forEach((entry) => headers.append(name, entry))
+        else if (value !== undefined) headers.set(name, String(value))
+      }
+      resolve(new Response(Readable.toWeb(response) as ReadableStream<Uint8Array>, {
+        status: response.statusCode ?? 500,
+        statusText: response.statusMessage,
+        headers,
+      }))
+    })
+    request.once('error', reject)
+    request.end()
+  })
 }
 
 async function readBoundedResponse(
@@ -373,13 +431,13 @@ async function fetchRemoteImage(
     for (let redirectCount = 0; redirectCount <= MAXIMUM_REDIRECTS; redirectCount += 1) {
       if (visited.has(current.href)) throw new Error('图片下载发生循环重定向')
       visited.add(current.href)
-      await assertPublicRemoteHost(current, dnsLookup)
+      const resolvedAddresses = await assertPublicRemoteHost(current, dnsLookup)
       const response = await fetchImpl(current.href, {
         method: 'GET',
         headers: { Accept: 'image/png,image/jpeg,image/webp' },
         redirect: 'manual',
         signal: controller.signal,
-      })
+      }, resolvedAddresses)
       if (response.url && response.url !== current.href) {
         await response.body?.cancel().catch(() => undefined)
         throw new Error('图片下载绕过了受限重定向策略')
@@ -448,7 +506,7 @@ export class AiAssetStore {
 
   constructor(options: AiAssetStoreOptions) {
     this.outputRoot = path.resolve(options.outputRoot)
-    this.fetchImpl = options.fetchImpl ?? ((input, init) => fetch(input, init))
+    this.fetchImpl = options.fetchImpl ?? defaultPinnedAiAssetFetch
     this.dnsLookup = options.dnsLookup ?? defaultDnsLookup
     this.nativeOperations = options.nativeOperations ?? {}
     this.now = options.now ?? (() => new Date())
@@ -524,17 +582,29 @@ export class AiAssetStore {
     await this.nativeOperations.revealInFolder(record.filePath)
   }
 
-  async contextMenu(userId: number, assetId: string): Promise<void> {
+  async contextMenu(
+    userId: number,
+    assetId: string,
+    authorize?: () => void | Promise<void>,
+  ): Promise<void> {
     if (!this.nativeOperations.showContextMenu) throw new Error('当前环境不支持图片右键菜单')
     await this.resolveOwned(userId, assetId)
+    const authorized = async (operation: () => void | Promise<void>): Promise<void> => {
+      await authorize?.()
+      await operation()
+    }
     await this.nativeOperations.showContextMenu([
-      { id: 'copy', label: '复制图片', run: () => this.copy(userId, assetId) },
+      { id: 'copy', label: '复制图片', run: () => authorized(() => this.copy(userId, assetId)) },
       {
         id: 'save-as',
         label: '图片另存为',
-        run: async () => { await this.saveAs(userId, assetId) },
+        run: () => authorized(async () => { await this.saveAs(userId, assetId) }),
       },
-      { id: 'reveal-in-folder', label: '在文件夹中显示', run: () => this.revealInFolder(userId, assetId) },
+      {
+        id: 'reveal-in-folder',
+        label: '在文件夹中显示',
+        run: () => authorized(() => this.revealInFolder(userId, assetId)),
+      },
     ])
   }
 

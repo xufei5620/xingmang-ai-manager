@@ -7,6 +7,7 @@ import {
   getKnownImageModelPresets,
   isImageModel,
   resolveAiModelCapability,
+  selectAiChatModelsForGroup,
   validateAiChatGroup,
 } from './ai-chat-protocol'
 
@@ -42,6 +43,30 @@ describe('AI model capabilities', () => {
     })
     expect(getKnownImageModelPresets().map(({ model }) => model)).not.toContain('gpt-image-1.5')
     expect(getKnownImageModelPresets({ includeHidden: true }).map(({ model }) => model)).toContain('gpt-image-1.5')
+  })
+
+  it('keeps only production-verified models in the image group and puts GPT Image 2 first', () => {
+    expect(selectAiChatModelsForGroup('生图分组', [
+      'gpt-image-1',
+      'gpt-image-1.5',
+      'gpt-image-2-2026-04-21',
+      'jimeng_high_aes_general_v21_L',
+      'gpt-image-2',
+      'gpt-4o',
+    ])).toEqual([
+      'gpt-image-2',
+      'gpt-image-1',
+      'jimeng_high_aes_general_v21_L',
+    ])
+  })
+
+  it('hides unavailable image entries without changing ordinary model order', () => {
+    expect(selectAiChatModelsForGroup('openai', [
+      'gpt-4o',
+      'gpt-image-1.5',
+      'gpt-image-2-2026-04-21',
+      'gpt-image-1',
+    ])).toEqual(['gpt-4o', 'gpt-image-1'])
   })
 
   it('uses restricted prefixes as image fallbacks without matching embedded names', () => {

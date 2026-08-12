@@ -1,4 +1,5 @@
 import { buildCliKeyName } from './new-api-client'
+import { selectAiChatModelsForGroup } from './ai-chat-protocol'
 import type { RelayBackendClient } from './relay-backend'
 import type { StoredChatKey } from './chat-key-store'
 
@@ -87,7 +88,7 @@ export function createChatCredentialCoordinator(options: {
     const cached = (await keyStore.read(userId)).find((entry) => entry.group === group)
     assertSameUser(accountService, userId)
     if (cached) {
-      const models = await modelService.fetchAvailableModels(cached.key)
+      const models = selectAiChatModelsForGroup(group, await modelService.fetchAvailableModels(cached.key))
       assertSameUser(accountService, userId)
       return {
         userId,
@@ -105,7 +106,7 @@ export function createChatCredentialCoordinator(options: {
       group,
     })
     assertSameUser(accountService, userId)
-    const models = await modelService.fetchAvailableModels(provisioned.key)
+    const models = selectAiChatModelsForGroup(group, await modelService.fetchAvailableModels(provisioned.key))
     assertSameUser(accountService, userId)
 
     let storageWarning: string | undefined
@@ -167,4 +168,3 @@ export function createChatCredentialCoordinator(options: {
 
   return { listGroups, prepareGroup, resolveCredential }
 }
-

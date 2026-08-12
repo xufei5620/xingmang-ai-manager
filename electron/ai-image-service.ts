@@ -64,6 +64,26 @@ function safeUpstreamMessage(value: unknown): string {
   return redacted.slice(0, MAXIMUM_ERROR_MESSAGE)
 }
 
+function imageRequestFailure(status: number, detail: string): Error {
+  const normalized = detail.toLowerCase()
+  if (status === 400 && normalized.includes('size')) {
+    return new Error('当前模型不支持这个图片尺寸，请更换尺寸后重试')
+  }
+  if (status === 400 && normalized.includes('quality')) {
+    return new Error('当前模型不支持这个画质档位，请更换画质后重试')
+  }
+  if (status === 401) return new Error('生图 API Key 已失效，请重新创建或更换密钥')
+  if (status === 403 && /insufficient|quota|额度不足/.test(normalized)) {
+    return new Error('账号余额或 API Key 额度不足，请充值后重试')
+  }
+  if (status === 403 && /access to model|permission|forbidden|无权限/.test(normalized)) {
+    return new Error('当前账号暂无该生图模型权限，请切换其他模型')
+  }
+  if (status === 429) return new Error('生图服务繁忙或上游限流，请稍后重试')
+  if (status >= 500) return new Error('生图服务暂时不可用，请稍后重试')
+  return new Error(detail || `生图失败，服务返回 ${status}`)
+}
+
 async function readBoundedResponseBytes(response: Response, maximumBytes: number): Promise<Buffer> {
   const declared = Number(response.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > maximumBytes) throw new Error('生图响应超过安全上限')
@@ -165,7 +185,7 @@ export function createAiImageService(options: {
           ? (payload as { error?: { message?: unknown }; message?: unknown })
           : {}
         const detail = safeUpstreamMessage(error.error?.message ?? error.message)
-        throw new Error(detail || `生图失败，服务返回 ${response.status}`)
+        throw imageRequestFailure(response.status, detail)
       }
       const entries = responseEntries(payload)
       const results: GeneratedAiAsset[] = []
@@ -198,14 +218,36 @@ export function createAiImageService(options: {
     return { canceled: true, mayStillComplete: true }
   }
 
-  function cancelSender(senderId: number): void {
+  function cancelSender(senderId: number): number {
+    let canceled = 0
     for (const operation of active.values()) {
-      if (operation.senderId === senderId) operation.controller.abort(new Error('窗口已关闭'))
+      if (operation.senderId !== senderId) continue
+      operation.controller.abort(new Error('窗口已关闭'))
+      canceled += 1
     }
+    return canceled
   }
 
-  return { generate, cancel, cancelSender }
+  function cancelUser(userId: number): number {
+    let canceled = 0
+    for (const operation of active.values()) {
+      if (operation.userId !== userId) continue
+      operation.controller.abort(new Error('账号已切换'))
+      canceled += 1
+    }
+    return canceled
+  }
+
+  function cancelAll(): number {
+    let canceled = 0
+    for (const operation of active.values()) {
+      operation.controller.abort(new Error('应用正在退出'))
+      canceled += 1
+    }
+    return canceled
+  }
+
+  return { generate, cancel, cancelSender, cancelUser, cancelAll }
 }
 
 export type AiImageService = ReturnType<typeof createAiImageService>
-

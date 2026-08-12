@@ -4,16 +4,24 @@ import {
   app,
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
+  clipboard,
   dialog,
   Menu,
+  nativeImage,
   protocol,
   safeStorage,
   screen,
   session,
+  shell,
   type WebContents,
 } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
+import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
+import { createAiChatService } from './ai-chat-service'
+import { createAiImageService } from './ai-image-service'
+import { createChatCredentialCoordinator } from './chat-credential-coordinator'
+import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
 import { AccountSessionStore, restoreAccountSessionOnStartup } from './account-session-store'
 import { AppSettingsStore, type AppTheme } from './app-settings'
@@ -147,6 +155,14 @@ protocol.registerSchemesAsPrivileged([{
     codeCache: true,
     stream: true,
   },
+}, {
+  scheme: 'xingmang-asset',
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true,
+  },
 }])
 
 function windowThemePalette(theme: AppTheme): {
@@ -188,6 +204,36 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
       return
     }
     callback({ path: target })
+  })
+}
+
+function registerAiAssetProtocol(
+  assetStore: AiAssetStore,
+  accountService: Pick<RelayBackendClient, 'getSessionState'>,
+): void {
+  protocol.handle('xingmang-asset', async (request) => {
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'image' || url.username || url.password || url.search || url.hash) {
+        return new Response(null, { status: 404 })
+      }
+      const assetId = decodeURIComponent(url.pathname.replace(/^\//, ''))
+      const sessionState = accountService.getSessionState()
+      const userId = sessionState.authenticated ? sessionState.account?.userId : undefined
+      if (!userId) return new Response(null, { status: 401 })
+      const owned = await assetStore.readOwned(userId, assetId)
+      return new Response(owned.bytes, {
+        status: 200,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Content-Type': owned.asset.mimeType,
+          'Content-Length': String(owned.bytes.byteLength),
+          'X-Content-Type-Options': 'nosniff',
+        },
+      })
+    } catch {
+      return new Response(null, { status: 404 })
+    }
   })
 }
 
@@ -559,6 +605,10 @@ if (!hasSingleInstanceLock) {
       path.join(managerDataDirectory, 'managed-cli-keys.dat'),
       safeStorage,
     )
+    const chatKeyStore = new ChatKeyStore(
+      path.join(managerDataDirectory, 'chat-group-keys.dat'),
+      safeStorage,
+    )
     // Constructed explicitly (rather than left to registerIpcHandlers' own
     // internal default) so the canvas window controller below can share this
     // exact instance -- it is the one place that knows whether the user is
@@ -597,6 +647,93 @@ if (!hasSingleInstanceLock) {
       store: accountSessionStore,
       runtimeLog,
     })
+    const chatCredentials = createChatCredentialCoordinator({
+      accountService,
+      modelService: systemService,
+      keyStore: chatKeyStore,
+    })
+    const assetStore = new AiAssetStore({
+      outputRoot: resolveAiOutputRoot({
+        isPackaged: app.isPackaged,
+        projectRoot: path.join(__dirname, '..'),
+        execPath: process.execPath,
+      }),
+      nativeOperations: {
+        copyImage: (bytes) => {
+          const image = nativeImage.createFromBuffer(bytes)
+          if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
+          clipboard.writeImage(image)
+        },
+        selectSavePath: async (suggestedFileName) => {
+          const result = await dialog.showSaveDialog({
+            title: '图片另存为',
+            defaultPath: suggestedFileName,
+            filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
+          })
+          return result.canceled ? null : result.filePath ?? null
+        },
+        revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+        showContextMenu: (items) => {
+          const menu = Menu.buildFromTemplate(items.map((item) => ({
+            id: item.id,
+            label: item.label,
+            click: () => {
+              void item.run().catch((error) => {
+                dialog.showErrorBox(
+                  '图片操作失败',
+                  error instanceof Error ? error.message : '无法完成图片操作',
+                )
+              })
+            },
+          })))
+          menu.popup()
+        },
+      },
+    })
+    registerAiAssetProtocol(assetStore, accountService)
+    const chatService = createAiChatService({
+      credentialCoordinator: chatCredentials,
+      emit: (senderId, event) => {
+        const sender = BrowserWindow.getAllWindows()
+          .map((window) => window.webContents)
+          .find((contents) => contents.id === senderId && !contents.isDestroyed())
+        if (!sender) throw new Error('AI聊天窗口已关闭')
+        if (event.type === 'delta') {
+          if (event.content) sender.send(ipcEventChannels.onAiChatStream, {
+            requestId: event.requestId,
+            type: 'content',
+            content: event.content,
+          })
+          if (event.reasoning) sender.send(ipcEventChannels.onAiChatStream, {
+            requestId: event.requestId,
+            type: 'reasoning',
+            content: event.reasoning,
+          })
+          return
+        }
+        if (event.type === 'error') sender.send(ipcEventChannels.onAiChatStream, {
+          requestId: event.requestId,
+          type: 'error',
+          message: event.message,
+        })
+        else sender.send(ipcEventChannels.onAiChatStream, {
+          requestId: event.requestId,
+          type: event.type,
+        })
+      },
+      log: (entry) => runtimeLog.log(
+        entry.status === 'error' ? 'warn' : 'debug',
+        'chat',
+        `stream.${entry.status}`,
+        `AI聊天流已${entry.status === 'complete' ? '完成' : '结束'}`,
+        entry,
+      ),
+    })
+    const imageService = createAiImageService({
+      baseUrl: 'https://xm.solov.cc',
+      credentials: chatCredentials,
+      assets: assetStore,
+    })
     const canvasController = createCanvasWindowController({
       canvasDistRoot: canvasDistRoot(),
       externalUrlAllowlist: canvasExternalUrlAllowlist,
@@ -617,6 +754,10 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
+      chatCredentials,
+      chatService,
+      imageService,
+      aiAssets: assetStore,
       sessionsService,
       providerSessionsService,
       backupStore,
@@ -659,6 +800,9 @@ if (!hasSingleInstanceLock) {
       process.off('unhandledRejection', onUnhandledRejection)
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       unregisterIpcHandlers()
+      chatService.dispose()
+      imageService.cancelAll()
+      protocol.unhandle('xingmang-asset')
       tutorialController.dispose()
       canvasController.dispose()
       updaterService.dispose()

@@ -200,10 +200,11 @@ describe('AiAssetStore remote URL safety', () => {
     const asset = await store.storeRemoteUrl(42, 'https://cdn.example/image.png')
 
     expect(asset).toMatchObject({ mimeType: 'image/png', width: 20, height: 30 })
-    expect(fetchImpl).toHaveBeenCalledWith('https://cdn.example/image.png', expect.objectContaining({
-      method: 'GET',
-      redirect: 'manual',
-    }))
+    expect(fetchImpl).toHaveBeenCalledWith(
+      'https://cdn.example/image.png',
+      expect.objectContaining({ method: 'GET', redirect: 'manual' }),
+      ['93.184.216.34'],
+    )
   })
 
   it('rejects remote MIME spoofing and stream overflow', async () => {
@@ -247,6 +248,25 @@ describe('AiAssetStore native operations', () => {
     await menuItems[0].run()
     expect(nativeOperations.copyImage).toHaveBeenCalledTimes(2)
     await expect(store.contextMenu(99, asset.assetId)).rejects.toThrow('无权访问')
+  })
+
+  it('re-checks account authorization when a delayed native menu action runs', async () => {
+    let menuItems: readonly AiAssetContextMenuItem[] = []
+    let currentUserId = 42
+    const store = new AiAssetStore({
+      ...storeOptions(),
+      nativeOperations: {
+        copyImage: vi.fn(),
+        showContextMenu: vi.fn(async (items) => { menuItems = items }),
+      },
+    })
+    const asset = await store.storeBase64(42, png().toString('base64'))
+    await store.contextMenu(42, asset.assetId, () => {
+      if (currentUserId !== 42) throw new Error('账号已切换')
+    })
+
+    currentUserId = 99
+    await expect(menuItems[0].run()).rejects.toThrow('账号已切换')
   })
 
   it('treats a canceled save dialog as a normal no-op', async () => {
