@@ -7,6 +7,12 @@
 #   - 产出 Setup.exe + .blockmap + latest.yml 三件套,客户端的"检查更新"要靠
 #     它们才能工作(测试包里更新器是关掉的)。
 #
+# 为什么没有"不签名但能更新"的模式:electron-builder.config.cjs 把
+# extraMetadata.xingmangLocalBuild 定义为 !publicReleaseMode —— 未签名的包
+# 在设计上就拒绝更新。这是承重墙,不是可以绕的流程。要在拿到 CA 证书之前
+# 先验证点击更新,用 test_signing 走自签名证书(见 RELEASING.md 的 CI 一节),
+# 整条链路真实运行,只是那张证书只有自己的机器认。
+#
 # **本工作流永远不上传到更新服务器**:--publish never 由发布脚本固定写死,
 # 这里也不配置任何 R2/对象存储凭据。产物只挂在 Actions artifact,由老板下载
 # 后人工上传——RELEASING.md 要求每次发布都要产品所有者针对当前版本明确授权,
@@ -22,6 +28,15 @@ on:
       confirm_version:
         description: '要发布的版本号,必须与 package.json 完全一致(防止误发)'
         required: true
+        type: string
+      test_signing:
+        description: '用自签名证书构建(仅供自己的测试机验证更新链路,产物绝不可发给客户)'
+        required: false
+        default: false
+        type: boolean
+      update_url:
+        description: '更新源地址;留空使用正式地址。test_signing 时必填,且必须是与正式源不同的测试路径'
+        required: false
         type: string
 
 permissions:
@@ -52,6 +67,19 @@ jobs:
           }
           Write-Host "版本确认:$declared"
 
+      - name: Refuse a test-signed build that targets the production update feed
+        if: ${{ inputs.test_signing }}
+        shell: pwsh
+        run: |
+          # 自签名产物一旦进了正式更新源:老客户的机器不认这张证书会拒绝更新
+          # (失败方向是安全的),新装用户则会看到未知发布者警告。所以强制
+          # 要求它指向一个独立的测试路径,而不是靠人记得别传错地方。
+          if (-not '${{ inputs.update_url }}'.Trim()) {
+            Write-Error "自签名构建必须显式指定 update_url(例如 https://updates.shenfengwl.fun/xingmang-manager/beta/),不能使用正式更新源"
+            exit 1
+          }
+          Write-Host "::warning::本次为自签名测试构建,产物只可用于自己的测试机,绝不可发给客户"
+
       - name: Fail early when the signing secrets are not configured
         shell: pwsh
         env:
@@ -68,6 +96,26 @@ jobs:
           if ($missing.Count -gt 0) {
             Write-Error "缺少仓库 Secrets:$($missing -join '、')。配置方法见 docs/RELEASING.md 的「CI 发布」一节"
             exit 1
+          }
+
+      - name: Trust the self-signed certificate on this runner only
+        if: ${{ inputs.test_signing }}
+        shell: pwsh
+        env:
+          CERTIFICATE: ${{ secrets.WIN_CSC_LINK_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+        run: |
+          # 发布门禁要求 Get-AuthenticodeSignature 返回 Valid,而自签名证书只有
+          # 在签名者被本机信任时才是 Valid。runner 是一次性虚拟机,用完即销毁,
+          # 因此在它的信任存储里放这张证书不会影响任何其他环境。
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'test-signing.pfx'
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CERTIFICATE))
+            $password = ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force
+            Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\LocalMachine\Root -Password $password | Out-Null
+            Write-Host '自签名证书已导入本 runner 的受信任根存储'
+          } finally {
+            if (Test-Path $pfxPath) { Remove-Item $pfxPath -Force }
           }
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -92,6 +140,7 @@ jobs:
           WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK_BASE64 }}
           WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
           XINGMANG_SIGNING_PUBLISHER: ${{ secrets.XINGMANG_SIGNING_PUBLISHER }}
+          XINGMANG_UPDATE_URL: ${{ inputs.update_url }}
           XINGMANG_CANVAS_DIST: canvas-v2/dist
 
       - name: Print artifact checksums
@@ -107,7 +156,9 @@ jobs:
       - name: Upload the release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: windows-release-${{ inputs.confirm_version }}
+          # 自签名产物在名字上就必须自曝身份:它会和正式产物一起躺在 Actions
+          # 的下载列表里,几周后光看版本号分不清哪个能发给客户。
+          name: ${{ inputs.test_signing && format('TEST-SIGNED-DO-NOT-PUBLISH-{0}', inputs.confirm_version) || format('windows-release-{0}', inputs.confirm_version) }}
           # 三件套缺一不可:少了 blockmap 用户就得下整包,少了 latest.yml
           # 客户端根本发现不了新版本。
           path: |
