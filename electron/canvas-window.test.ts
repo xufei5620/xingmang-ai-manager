@@ -58,6 +58,7 @@ import {
   canvasHostPickFileChannel,
   canvasHostSaveFileChannel,
   createCanvasWindowController,
+  pickCanvasKeyGroup,
   type CanvasWindowControllerOptions,
 } from './canvas-window'
 
@@ -285,12 +286,15 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
   const canvasBaseUrl = 'https://xm.solov.cc'
 
   function loggedInAccountService(
-    overrides: Partial<Pick<NewApiClientService, 'findExistingCliKey' | 'provisionCliKey'>> = {},
+    overrides: Partial<Pick<NewApiClientService, 'findExistingCliKey' | 'provisionCliKey' | 'listUsableGroups'>> = {},
   ): NewApiClientService {
     return {
       getSessionState: vi.fn(() => ({ authenticated: true, account: null })),
       findExistingCliKey: vi.fn(async () => null),
       provisionCliKey: vi.fn(async () => ({ id: 1, name: 'xingmang-canvas-default', key: 'sk-default' })),
+      // Default: no preferred group available, so tests below exercise the
+      // legacy (group-less) path unless they override this.
+      listUsableGroups: vi.fn(async () => []),
       ...overrides,
     } as unknown as NewApiClientService
   }
@@ -423,6 +427,62 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     expect(provisionCliKey).not.toHaveBeenCalled()
   })
 
+  it('mints the canvas key inside the preferred image-capable group when the account can use one -- the 2026-08-12 on-device 503 fix', async () => {
+    const provisionCliKey = vi.fn(async (input?: { name?: string; group?: string }) => {
+      expect(input?.name).toMatch(/^xingmang-canvas-/)
+      expect(input?.group).toBe('生图分组')
+      return { id: 7, name: input!.name!, key: 'sk-grouped' }
+    })
+    const findExistingCliKey = vi.fn()
+    const accountService = loggedInAccountService({
+      provisionCliKey,
+      findExistingCliKey,
+      listUsableGroups: vi.fn(async () => [
+        { name: 'default', description: '', ratio: 1 },
+        { name: '生图分组', description: '', ratio: 1 },
+      ]),
+    })
+
+    const deps = buildCanvasTokenDependencies({
+      systemService: noCliConfiguredSystemService(),
+      accountService,
+      relaySite: resolveRelaySite('solov'),
+      previewOnboarding: false,
+    })
+    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
+
+    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-grouped' })
+    // The name-prefix reuse must NOT run on the grouped path: it is exactly
+    // what would resurrect the historical group-less token behind the 503
+    // (provisionCliKey's own group-scoped reuse handles dedup instead).
+    expect(findExistingCliKey).not.toHaveBeenCalled()
+  })
+
+  it('degrades to the group-less legacy path when the group lookup itself fails, reporting via onReuseLookupError', async () => {
+    const onReuseLookupError = vi.fn()
+    const groupFailure = new Error('分组查询超时')
+    const provisionCliKey = vi.fn(async (input?: { name?: string; group?: string }) => {
+      expect(input?.group).toBeUndefined()
+      return { id: 1, name: input!.name!, key: 'sk-ungrouped' }
+    })
+    const accountService = loggedInAccountService({
+      provisionCliKey,
+      listUsableGroups: vi.fn(async () => { throw groupFailure }),
+    })
+
+    const deps = buildCanvasTokenDependencies({
+      systemService: noCliConfiguredSystemService(),
+      accountService,
+      relaySite: resolveRelaySite('solov'),
+      previewOnboarding: false,
+      onReuseLookupError,
+    })
+    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
+
+    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-ungrouped' })
+    expect(onReuseLookupError).toHaveBeenCalledWith(groupFailure)
+  })
+
   it('on a manual-key site, hands canvas the pasted CLI key without any account call, and null when nothing is pasted', async () => {
     const sub2apiSite = resolveRelaySite('sub2api')
     const relayBaseUrl = canvasBaseUrlForSite(sub2apiSite)
@@ -462,5 +522,20 @@ describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
     // the pasted key belongs to the relay itself.
     expect(canvasBaseUrlForSite(resolveRelaySite('solov'))).toBe('https://xm.solov.cc')
     expect(canvasBaseUrlForSite(resolveRelaySite('sub2api'))).toBe('https://xm.solov.cc')
+  })
+})
+
+describe('pickCanvasKeyGroup', () => {
+  it('prefers the verified image group over openai and auto regardless of listing order', () => {
+    expect(pickCanvasKeyGroup(['auto', 'openai', '生图分组', 'default'])).toBe('生图分组')
+  })
+
+  it('falls back through openai to auto, and to null when nothing preferred is usable', () => {
+    expect(pickCanvasKeyGroup(['default', 'openai'])).toBe('openai')
+    expect(pickCanvasKeyGroup(['default', 'auto'])).toBe('auto')
+    // CLI-only groups (the #81 provisioner's four) never satisfy the canvas:
+    // none of them contains an image channel.
+    expect(pickCanvasKeyGroup(['default', 'Claude-MAX(不限制客户端)-5m', 'codex-pro'])).toBeNull()
+    expect(pickCanvasKeyGroup([])).toBeNull()
   })
 })

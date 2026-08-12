@@ -48,11 +48,30 @@ async function relayRequest(
       throw new Error(`${label}响应超出大小上限`)
     }
     if (!response.ok) {
-      throw new Error(`${label}失败,服务返回 ${response.status}`)
+      const detail = extractRelayErrorDetail(text)
+      throw new Error(`${label}失败,服务返回 ${response.status}${detail ? `:${detail}` : ''}`)
     }
     return JSON.parse(text)
   } finally {
     clearTimeout(timer)
+  }
+}
+
+// 把 new-api 错误响应体里的人话带上屏(2026-08-12 真机 503 复盘):503 的
+// 典型信息是「分组下无可用渠道」—— 只报状态码会把分组/渠道配置问题伪装成
+// 服务器故障,用户与运维都无从下手。上游文案剥控制字符并截断,防止超长/
+// 畸形响应污染界面。
+function extractRelayErrorDetail(text: string): string {
+  try {
+    const parsed: unknown = JSON.parse(text)
+    if (!isRecord(parsed)) return ''
+    const error = parsed.error
+    const candidate = isRecord(error) && typeof error.message === 'string'
+      ? error.message
+      : typeof parsed.message === 'string' ? parsed.message : ''
+    return candidate.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200)
+  } catch {
+    return ''
   }
 }
 

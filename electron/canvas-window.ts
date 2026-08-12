@@ -123,6 +123,22 @@ function requiredCanvasString(value: unknown, label: string, maximum: number): s
 // drift apart.
 export const canvasCliKeyNamePrefix = 'xingmang-canvas'
 
+// 画布 Key 的分组偏好(2026-08-12 真机 503 复盘):new-api 的 503 语义是
+// 「该令牌分组下无可用渠道」。xm 上图像模型只挂在专门分组里
+// (docs/RECON-image-generation.md 第 1 节:`生图分组` 含 gpt-image + 即梦,
+// `openai` 含 gpt-image + 文本),而无分组签发的令牌落在账号默认分组,
+// 摸不到任何图像渠道 —— 画布 Key 因此必须签发进能覆盖图像模型的分组。
+// 顺序即偏好:先取真机核实过的两个分组,`auto`(new-api 自动选组)兜底;
+// 全都不可用时保持旧行为(无分组签发),让上屏的服务端错误文案说话。
+export const canvasKeyGroupPreference: readonly string[] = ['生图分组', 'openai', 'auto']
+
+export function pickCanvasKeyGroup(usableGroupNames: readonly string[]): string | null {
+  for (const candidate of canvasKeyGroupPreference) {
+    if (usableGroupNames.includes(candidate)) return candidate
+  }
+  return null
+}
+
 export interface CanvasTokenResolutionDependencies {
   systemService: SystemService
   accountService: RelayBackendClient
@@ -169,6 +185,24 @@ export function buildCanvasTokenDependencies(
       return ''
     },
     provisionRelayKey: async () => {
+      // 分组解析失败(网络抖动等)不阻断:退回旧的"无分组"路径并由
+      // onReuseLookupError 观察 —— 画布拿到一个降级 Key 仍好过拿不到。
+      let group: string | null = null
+      try {
+        const usable = await deps.accountService.listUsableGroups()
+        group = pickCanvasKeyGroup(usable.map((entry) => entry.name))
+      } catch (error) {
+        deps.onReuseLookupError?.(error)
+      }
+      if (group) {
+        // provisionCliKey 自带按分组的复用(findNewestUsableCliKeyByGroup):
+        // 同分组已有可用令牌则直接揭示,不会重复铸造 —— 上文的孤儿令牌
+        // 修复在分组路径上由它承接。刻意不走名字前缀复用:历史上无分组
+        // 铸出的 xingmang-canvas-* 令牌正是 503 的根因,按名字复用会让
+        // 它在修复后仍然还魂。
+        const created = await deps.accountService.provisionCliKey({ name: buildCliKeyName(canvasCliKeyNamePrefix), group })
+        return created.key
+      }
       try {
         const existing = await deps.accountService.findExistingCliKey(`${canvasCliKeyNamePrefix}-`)
         if (existing) return existing.key
