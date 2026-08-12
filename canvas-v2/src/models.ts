@@ -12,6 +12,8 @@ export interface ImageModelPreset {
   label: string
   sizes: readonly string[]
   supportsQuality: boolean
+  /** 支持 /v1/images/edits(图生图)。仅 gpt-image 系,即梦不支持。 */
+  supportsEdits: boolean
   /** 生成产物为带签名的临时 URL(24h 过期),需提示用户尽快下载。 */
   ephemeralUrl?: boolean
 }
@@ -22,18 +24,21 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     label: 'GPT Image 2(推荐)',
     sizes: ['1024x1024', '1536x1152', '1280x720', '720x1280', '3840x2160'],
     supportsQuality: true,
+    supportsEdits: true,
   },
   {
     id: 'gpt-image-1',
     label: 'GPT Image 1',
     sizes: ['1024x1024', '1024x1536', '1536x1024'],
     supportsQuality: true,
+    supportsEdits: true,
   },
   {
     id: 'jimeng_high_aes_general_v21_L',
     label: '即梦(快·中文强)',
     sizes: ['1024x1024'],
     supportsQuality: false,
+    supportsEdits: false,
     ephemeralUrl: true,
   },
 ]
@@ -49,6 +54,7 @@ export function imageModelPreset(id: string): ImageModelPreset {
     label: id,
     sizes: imageModelPresets[0].sizes,
     supportsQuality: true,
+    supportsEdits: true,
   }
 }
 

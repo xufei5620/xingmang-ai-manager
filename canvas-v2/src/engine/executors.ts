@@ -1,7 +1,7 @@
 import type { NodeKind } from '../model'
 import { defaultImageQuality, defaultImageSize, imageModelPreset } from '../models'
 import type { NodeExecutor } from './engine'
-import { generateImage, pollVideoTask, submitVideoTask, type RelayConfig } from './relay'
+import { editImage, generateImage, pollVideoTask, submitVideoTask, type RelayConfig } from './relay'
 
 // relay 真执行器(M1)。与 mock 执行器同一 NodeExecutor 接口,App.tsx 按
 // "宿主给了账号 token 就走真,没给就走 mock"选择,编排逻辑零改动。
@@ -46,12 +46,21 @@ export function createRelayExecutors(
       const model = node.data.model.trim()
       if (!model) throw new Error('请选择图像模型')
       const preset = imageModelPreset(model)
-      const asset = await generateImage(config, {
+      const shared = {
         model,
         prompt,
         size: node.data.size || defaultImageSize,
         quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
-      })
+      }
+      // 接了上游图像 = 图生图(改图),否则文生图。同一个节点两种形态,
+      // 由连线决定,用户不需要先选"模式"。
+      const referenceUrl = inputs.image?.remoteUrl
+      if (referenceUrl) {
+        if (!preset.supportsEdits) throw new Error(`模型「${preset.label}」不支持图生图,请换用 GPT Image 系列`)
+        const asset = await editImage(config, { ...shared, imageUrl: referenceUrl })
+        return { output: { asset } }
+      }
+      const asset = await generateImage(config, shared)
       return { output: { asset } }
     },
 

@@ -68,6 +68,14 @@ export function registerNodeChangeHandlers(next: NodeChangeHandlers): void {
   handlers = next
 }
 
+// 端口悬浮说明 —— 图像节点的第二个输入口是"接上就变改图"的唯一线索,
+// 不解释用户不会发现(节点自身看不到连线,做不成常驻提示)。
+const inputPortHint: Record<NodeKind, Partial<Record<string, string>>> = {
+  text: {},
+  image: { text: '文本输入:作为提示词', image: '图像输入:接上即转为图生图(改图),仅 GPT Image 系支持' },
+  video: { text: '文本输入:作为提示词', image: '图像输入:作为首帧参考图' },
+}
+
 function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData; kind: NodeKind }) {
   const inputs = nodeInputKinds[kind]
   const output = nodeOutputKind[kind]
@@ -81,6 +89,7 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData; kin
           position={Position.Left}
           style={{ top: 36 + index * 22 }}
           className={`wf-port wf-port-${portKind}`}
+          title={inputPortHint[kind][portKind]}
         />
       ))}
       <header>
