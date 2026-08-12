@@ -235,7 +235,18 @@ function ImageResult({
         <div className="ai-chat-inline-actions">
           <button type="button" title="复制图片" aria-label="复制图片" onClick={() => void copy()}><Clipboard size={15} /></button>
           <button type="button" title="另存图片" aria-label="另存图片" onClick={() => void save()}><Download size={15} /></button>
-          <button type="button" title="更多操作（也可右键图片）" aria-label="更多图片操作" onClick={() => void api.showAiChatAssetMenu(image.assetId)}><MoreHorizontal size={15} /></button>
+          <button
+            type="button"
+            title="更多操作（也可右键图片）"
+            aria-label="更多图片操作"
+            onClick={() => {
+              void api.showAiChatAssetMenu(image.assetId).catch((error) => {
+                notify({ type: 'error', message: errorMessage(error) })
+              })
+            }}
+          >
+            <MoreHorizontal size={15} />
+          </button>
         </div>
       </figcaption>
     </figure>
