@@ -137,6 +137,12 @@ function boundedText(value: string, maximum: number): string {
   return `${value.slice(0, maximum - TRUNCATED_SUFFIX.length)}${TRUNCATED_SUFFIX}`
 }
 
+function containsForbiddenPersistentValue(value: string): boolean {
+  return /(?:data|blob|https?):/i.test(value)
+    || /\bBearer\s+/i.test(value)
+    || /\bsk-[a-z0-9._-]{8,}\b/i.test(value)
+}
+
 /** Removes values that must never be written to renderer persistence. */
 export function redactAiChatPersistentText(value: string): string {
   return value
@@ -145,6 +151,7 @@ export function redactAiChatPersistentText(value: string): string {
     .replace(/https?:\/\/[^\s)\]}>"']+/gi, '[远程链接未保存]')
     .replace(/\bBearer\s+[a-z0-9._~+\/-]+=*/gi, 'Bearer [密钥未保存]')
     .replace(/\bsk-[a-z0-9._-]{8,}\b/gi, '[密钥未保存]')
+    .replace(/\b[a-z0-9+/]{512,}={0,2}\b/gi, '[大段编码数据未保存]')
 }
 
 function finiteTimestamp(value: unknown, fallback: number): number {
@@ -164,8 +171,7 @@ function safeAssetId(value: unknown): string | null {
     !normalized
     || normalized.length > MAX_ID_LENGTH
     || /[\0\r\n]/.test(normalized)
-    || /^(?:data|blob|https?):/i.test(normalized)
-    || /\bsk-/i.test(normalized)
+    || containsForbiddenPersistentValue(normalized)
   ) return null
   return normalized
 }
@@ -571,7 +577,12 @@ export function addAiChatSystemMessage(
 }
 
 function safeBoundedString(value: unknown, maximum: number): string {
-  return typeof value === 'string' && value.length <= maximum && !value.includes('\0') ? value : ''
+  return typeof value === 'string'
+    && value.length <= maximum
+    && !value.includes('\0')
+    && !containsForbiddenPersistentValue(value)
+    ? value
+    : ''
 }
 
 function readPersistedImage(value: unknown): PersistedAiChatImage | null {
@@ -579,7 +590,9 @@ function readPersistedImage(value: unknown): PersistedAiChatImage | null {
   const record = value as Record<string, unknown>
   const assetId = safeAssetId(record.assetId)
   if (!assetId) return null
-  const mimeType = safeBoundedString(record.mimeType, MAX_MIME_TYPE_LENGTH)
+  const mimeType = typeof record.mimeType === 'string' && /^image\/(?:png|jpeg|webp|gif)$/i.test(record.mimeType)
+    ? record.mimeType.toLowerCase()
+    : ''
   const revisedPrompt = typeof record.revisedPrompt === 'string' ? record.revisedPrompt : ''
   return {
     assetId,
@@ -604,7 +617,7 @@ function sanitizeMessageForPersistence(
 ): PersistedAiChatMessage | null {
   if (!value || typeof value !== 'object') return null
   const record = value as Record<string, unknown>
-  const id = typeof record.id === 'string' ? requiredId(record.id, '消息标识') : null
+  const id = typeof record.id === 'string' ? safeAssetId(record.id) : null
   if (!id || !['system', 'user', 'assistant'].includes(String(record.role))) return null
   const role = record.role as AiChatRole
   const statusValue = String(record.status)

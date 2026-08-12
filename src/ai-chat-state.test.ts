@@ -227,7 +227,7 @@ describe('AI聊天本地历史', () => {
       group: '生图分组',
       model: 'gpt-image-2',
       messages: [{
-        ...message(1, '查看 https://evil.example/a.png，密钥 sk-1234567890'),
+        ...message(1, `查看 https://evil.example/a.png，密钥 sk-1234567890，编码 ${'A'.repeat(600)}`),
         reasoning: 'data:image/png;base64,AAAA',
         error: 'Authorization: Bearer secret-token-value',
         requestId: 'must-not-persist',
@@ -246,7 +246,7 @@ describe('AI聊天本地历史', () => {
     }
     saveAiChatHistory(storage, state)
     const raw = storage.getItem(aiChatStorageKey(7))!
-    expect(raw).not.toMatch(/evil\.example|remote\.example|must-not-exist|base64|AAAA|BBBB|CCCC|sk-123|secret-token|requestId|generation|previewUrl|remoteUrl|b64Json/)
+    expect(raw).not.toMatch(/evil\.example|remote\.example|must-not-exist|base64|A{512}|BBBB|CCCC|sk-123|secret-token|requestId|generation|previewUrl|remoteUrl|b64Json/)
 
     const restored = loadAiChatHistory(storage, 7)
     expect(restored).toMatchObject({ group: '生图分组', model: 'gpt-image-2' })
@@ -254,6 +254,23 @@ describe('AI聊天本地历史', () => {
       assetId: 'asset-safe', mimeType: 'image/png', width: 1024, height: 1024,
       revisedPrompt: '来自 [远程链接未保存]',
     }])
+  })
+
+  it('rejects sensitive values smuggled into metadata fields', () => {
+    const storage = new MemoryStorage()
+    saveAiChatHistory(storage, {
+      ...createAiChatState(7),
+      group: 'https://evil.example/group',
+      model: 'sk-1234567890',
+      messages: [{
+        ...message(1, '安全正文'),
+        id: 'https://evil.example/message',
+        images: [{ assetId: 'asset-safe', mimeType: 'image/png;https://evil.example' }],
+      }],
+    })
+    const raw = storage.getItem(aiChatStorageKey(7))!
+    expect(raw).not.toMatch(/evil\.example|sk-1234567890/)
+    expect(loadAiChatHistory(storage, 7)).toEqual({ group: '', model: '', messages: [] })
   })
 
   it('enforces 100 messages, 40000 per message, 120000 total and about 1MiB serialized', () => {
