@@ -130,7 +130,7 @@ describe('ChatKeyStore', () => {
     expect(keys).toHaveLength(32)
     expect(keys[0].group).toBe('dynamic-group-33')
     expect(keys.some((entry) => entry.group === 'dynamic-group-1')).toBe(false)
-  })
+  }, 15_000) // 33 durable atomic writes can exceed Vitest's 5 s default under the full Windows suite.
 
   it('bounds the cache to the 16 most recently used accounts', async () => {
     const store = new ChatKeyStore(temporaryFilePath(), fakeSafeStorage())
