@@ -155,6 +155,33 @@ describe('ChatKeyStore', () => {
     await expect(store.read(99)).resolves.toEqual([second])
   })
 
+  it('removes a group or a revoked server key without touching other cached keys', async () => {
+    const store = new ChatKeyStore(temporaryFilePath(), fakeSafeStorage())
+    const first = chatKey(42, 'codex-pro', 1)
+    const second = chatKey(42, 'Gemini', 2)
+    await expect(store.upsert(first)).resolves.toBe(true)
+    await expect(store.upsert(second)).resolves.toBe(true)
+
+    await store.remove(42, 'codex-pro')
+    await expect(store.read(42)).resolves.toEqual([second])
+
+    await store.removeByKeyId(42, 2)
+    await expect(store.read(42)).resolves.toEqual([])
+  })
+
+  it('rejects an in-flight stale upsert after a key invalidation revision changes', async () => {
+    const store = new ChatKeyStore(temporaryFilePath(), fakeSafeStorage())
+    const revision = store.captureRevision()
+
+    await store.removeByKeyId(42, 7)
+    await expect(store.upsert(chatKey(42, 'codex-pro', 7), revision)).resolves.toBe(false)
+    await expect(store.read(42)).resolves.toEqual([])
+
+    const currentRevision = store.captureRevision()
+    await expect(store.upsert(chatKey(42, 'codex-pro', 8), currentRevision)).resolves.toBe(true)
+    await expect(store.read(42)).resolves.toEqual([chatKey(42, 'codex-pro', 8)])
+  })
+
   it('fails closed on corruption and never overwrites the damaged file', async () => {
     const filePath = temporaryFilePath()
     fs.mkdirSync(path.dirname(filePath), { recursive: true })

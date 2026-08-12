@@ -141,7 +141,7 @@ function trustedEvent(url = 'http://localhost:5173/', senderId = 101) {
 }
 
 type ChatIpcOverrides = Partial<Pick<Parameters<typeof registerIpcHandlers>[0],
-  'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets'>>
+  'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets'>>
 
 function updaterStub(): UpdaterService {
   const state = {
@@ -2660,7 +2660,16 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         save: vi.fn(async () => undefined),
         remove: vi.fn(async () => undefined),
       }
-      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
+      const chatKeyStore = { removeByKeyId: vi.fn(async () => undefined) }
+      register(
+        serviceStub(),
+        'C:\\app-data\\logs',
+        undefined,
+        accountService,
+        undefined,
+        managedCliKeys,
+        { chatKeyStore },
+      )
       const handler = electronMocks.handlers.get('account:revoke-key')!
 
       const pending = handler(trustedEvent(), 42)
@@ -2672,7 +2681,51 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(managedCliKeys.remove).toHaveBeenCalledOnce()
       expect(managedCliKeys.remove).toHaveBeenCalledWith(101, 42)
       expect(managedCliKeys.remove).not.toHaveBeenCalledWith(202, 42)
+      expect(chatKeyStore.removeByKeyId).toHaveBeenCalledOnce()
+      expect(chatKeyStore.removeByKeyId).toHaveBeenCalledWith(101, 42)
+      expect(chatKeyStore.removeByKeyId).not.toHaveBeenCalledWith(202, 42)
       expect(accountService.getSessionState).toHaveBeenCalledOnce()
+    })
+
+    it('keeps a successful remote revoke successful when one local cache cannot be cleared', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      vi.mocked(accountService.revokeKey).mockResolvedValue(undefined)
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => { throw new Error('托管缓存损坏') }),
+      }
+      const chatKeyStore = { removeByKeyId: vi.fn(async () => undefined) }
+      const { runtimeLog } = register(
+        serviceStub(),
+        'C:\\app-data\\logs',
+        undefined,
+        accountService,
+        undefined,
+        managedCliKeys,
+        { chatKeyStore },
+      )
+
+      await expect(electronMocks.handlers.get('account:revoke-key')!(trustedEvent(), 42))
+        .resolves.toBeUndefined()
+      expect(chatKeyStore.removeByKeyId).toHaveBeenCalledWith(42, 42)
+      expect(runtimeLog.exception).toHaveBeenCalledWith(
+        'account',
+        'key-cache-invalidation-failed',
+        expect.any(Error),
+        { userId: 42, keyId: 42, cache: 'managed-cli' },
+      )
     })
 
     it('rejects a non-number, non-integer, zero, or negative id -- id lands directly in a URL path segment (I5)', async () => {
@@ -2722,7 +2775,16 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         save: vi.fn(async () => undefined),
         remove: vi.fn(async () => undefined),
       }
-      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, managedCliKeys)
+      const chatKeyStore = { removeByKeyId: vi.fn(async () => undefined) }
+      register(
+        serviceStub(),
+        'C:\\app-data\\logs',
+        undefined,
+        accountService,
+        undefined,
+        managedCliKeys,
+        { chatKeyStore },
+      )
       const handler = electronMocks.handlers.get('account:update-key')!
       const input = {
         id: 42,
@@ -2742,7 +2804,61 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(managedCliKeys.remove).toHaveBeenCalledOnce()
       expect(managedCliKeys.remove).toHaveBeenCalledWith(101, 42)
       expect(managedCliKeys.remove).not.toHaveBeenCalledWith(202, 42)
+      expect(chatKeyStore.removeByKeyId).toHaveBeenCalledOnce()
+      expect(chatKeyStore.removeByKeyId).toHaveBeenCalledWith(101, 42)
+      expect(chatKeyStore.removeByKeyId).not.toHaveBeenCalledWith(202, 42)
       expect(accountService.getSessionState).toHaveBeenCalledOnce()
+    })
+
+    it('keeps a successful remote update successful when one local cache cannot be cleared', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue({
+        authenticated: true,
+        account: {
+          userId: 42,
+          username: 'tester',
+          group: 'default',
+          role: 1,
+          quota: 1_000,
+          usedQuota: 0,
+        },
+      })
+      vi.mocked(accountService.updateKey).mockResolvedValue(undefined)
+      const managedCliKeys: NonNullable<Parameters<typeof registerIpcHandlers>[0]['managedCliKeys']> = {
+        read: vi.fn(async () => []),
+        save: vi.fn(async () => undefined),
+        remove: vi.fn(async () => undefined),
+      }
+      const chatKeyStore = {
+        removeByKeyId: vi.fn(async () => { throw new Error('AI聊天缓存损坏') }),
+      }
+      const { runtimeLog } = register(
+        serviceStub(),
+        'C:\\app-data\\logs',
+        undefined,
+        accountService,
+        undefined,
+        managedCliKeys,
+        { chatKeyStore },
+      )
+      const input = {
+        id: 42,
+        name: 'managed-codex-key',
+        group: 'codex-pro',
+        remainQuota: 1_000,
+        unlimitedQuota: false,
+        expiredTime: -1,
+      }
+
+      await expect(electronMocks.handlers.get('account:update-key')!(trustedEvent(), input))
+        .resolves.toBeUndefined()
+      expect(managedCliKeys.remove).toHaveBeenCalledWith(42, 42)
+      expect(runtimeLog.exception).toHaveBeenCalledWith(
+        'account',
+        'key-cache-invalidation-failed',
+        expect.any(Error),
+        { userId: 42, keyId: 42, cache: 'ai-chat' },
+      )
     })
   })
 

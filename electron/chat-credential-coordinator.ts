@@ -5,11 +5,13 @@ import type { StoredChatKey } from './chat-key-store'
 
 export interface ChatKeyStoreLike {
   read(userId: number): Promise<StoredChatKey[]>
-  upsert(entry: StoredChatKey): Promise<void>
+  captureRevision(): number
+  upsert(entry: StoredChatKey, expectedRevision?: number): Promise<boolean>
+  remove(userId: number, group: string): Promise<void>
 }
 
 export interface ChatModelServiceLike {
-  fetchAvailableModels(apiKey: string): Promise<string[]>
+  fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
 }
 
 export interface PreparedChatGroup {
@@ -61,6 +63,14 @@ function assertSameUser(
   if (authenticatedUserId(accountService) !== expectedUserId) throw new ChatAccountChangedError()
 }
 
+function isCredentialFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/(?:服务返回|返回)\s*401\b/i.test(message)) return true
+  const credential = '(?:API\\s*Key|key|token|密钥|令牌)'
+  const invalid = '(?:无效|失效|过期|不存在|已撤销|invalid|expired|revoked)'
+  return new RegExp(`${credential}.{0,24}${invalid}|${invalid}.{0,24}${credential}`, 'i').test(message)
+}
+
 const inFlightByService = new WeakMap<object, Map<string, Promise<ResolvedChatCredential>>>()
 
 export function createChatCredentialCoordinator(options: {
@@ -88,52 +98,72 @@ export function createChatCredentialCoordinator(options: {
     const cached = (await keyStore.read(userId)).find((entry) => entry.group === group)
     assertSameUser(accountService, userId)
     if (cached) {
-      const models = selectAiChatModelsForGroup(group, await modelService.fetchAvailableModels(cached.key))
+      try {
+        const models = selectAiChatModelsForGroup(
+          group,
+          await modelService.fetchAvailableModels(cached.key, { bypassCache: true }),
+        )
+        assertSameUser(accountService, userId)
+        return {
+          userId,
+          group,
+          models,
+          keyCreated: false,
+          apiKey: cached.key,
+          keyId: cached.keyId,
+          keyName: cached.keyName,
+        }
+      } catch (error) {
+        if (!isCredentialFailure(error)) throw error
+        // A revoked/expired server key must not poison the local cache. The
+        // normal provision flow below reuses another usable key or creates a
+        // replacement, and the new secret is encrypted back into the store.
+        await keyStore.remove(userId, group)
+        assertSameUser(accountService, userId)
+      }
+    }
+
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const expectedRevision = keyStore.captureRevision()
+      const provisioned = await accountService.provisionCliKey({
+        name: buildCliKeyName('xingmang-chat'),
+        group,
+      })
       assertSameUser(accountService, userId)
+      const models = selectAiChatModelsForGroup(
+        group,
+        await modelService.fetchAvailableModels(provisioned.key, { bypassCache: true }),
+      )
+      assertSameUser(accountService, userId)
+
+      let storageWarning: string | undefined
+      try {
+        const saved = await keyStore.upsert({
+          userId,
+          group,
+          keyId: provisioned.id,
+          keyName: provisioned.name,
+          key: provisioned.key,
+        }, expectedRevision)
+        assertSameUser(accountService, userId)
+        if (!saved) continue
+      } catch (error) {
+        if (error instanceof ChatAccountChangedError) throw error
+        storageWarning = error instanceof Error ? error.message : '本地分组 API Key 保存失败'
+      }
+
       return {
         userId,
         group,
         models,
-        keyCreated: false,
-        apiKey: cached.key,
-        keyId: cached.keyId,
-        keyName: cached.keyName,
-      }
-    }
-
-    const provisioned = await accountService.provisionCliKey({
-      name: buildCliKeyName('xingmang-chat'),
-      group,
-    })
-    assertSameUser(accountService, userId)
-    const models = selectAiChatModelsForGroup(group, await modelService.fetchAvailableModels(provisioned.key))
-    assertSameUser(accountService, userId)
-
-    let storageWarning: string | undefined
-    try {
-      await keyStore.upsert({
-        userId,
-        group,
+        keyCreated: true,
+        apiKey: provisioned.key,
         keyId: provisioned.id,
         keyName: provisioned.name,
-        key: provisioned.key,
-      })
-      assertSameUser(accountService, userId)
-    } catch (error) {
-      if (error instanceof ChatAccountChangedError) throw error
-      storageWarning = error instanceof Error ? error.message : '本地分组 API Key 保存失败'
+        ...(storageWarning ? { storageWarning } : {}),
+      }
     }
-
-    return {
-      userId,
-      group,
-      models,
-      keyCreated: true,
-      apiKey: provisioned.key,
-      keyId: provisioned.id,
-      keyName: provisioned.name,
-      ...(storageWarning ? { storageWarning } : {}),
-    }
+    throw new Error('AI聊天分组 API Key 在初始化期间发生变更，请重试')
   }
 
   function resolveCredential(groupInput: string): Promise<ResolvedChatCredential> {

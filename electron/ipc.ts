@@ -132,6 +132,9 @@ export interface IpcRegistrationOptions {
     clear(): Promise<void>
   }
   managedCliKeys?: ManagedCliKeyStoreLike
+  chatKeyStore?: {
+    removeByKeyId(userId: number, keyId: number): Promise<void>
+  }
   chatCredentials?: ChatCredentialCoordinator
   chatService?: AiChatService
   imageService?: AiImageService
@@ -1052,6 +1055,28 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
 
   const service = options.systemService
   const accountService = options.accountService ?? createNewApiClient()
+  const invalidateAccountKeyCaches = async (userId: number, keyId: number): Promise<void> => {
+    const invalidations = [
+      ...(options.managedCliKeys ? [{
+        cache: 'managed-cli',
+        run: () => options.managedCliKeys!.remove(userId, keyId),
+      }] : []),
+      ...(options.chatKeyStore ? [{
+        cache: 'ai-chat',
+        run: () => options.chatKeyStore!.removeByKeyId(userId, keyId),
+      }] : []),
+    ]
+    const results = await Promise.allSettled(invalidations.map(async (entry) => entry.run()))
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') return
+      options.runtimeLog.exception(
+        'account',
+        'key-cache-invalidation-failed',
+        result.reason,
+        { userId, keyId, cache: invalidations[index].cache },
+      )
+    })
+  }
   const unsubscribeUpdates = options.updaterService.subscribe(options.broadcastUpdate)
   registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown) => {
@@ -1486,7 +1511,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const keyId = parseAccountRevokeKeyId(id)
     const userId = accountService.getSessionState().account?.userId
     await accountService.revokeKey(keyId)
-    if (userId && options.managedCliKeys) await options.managedCliKeys.remove(userId, keyId)
+    if (userId) await invalidateAccountKeyCaches(userId, keyId)
   })
   const assertAccountSessionUser = (expectedUserId: number): void => {
     const session = accountService.getSessionState()
@@ -1575,7 +1600,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parsed = parseAccountKeyUpdateInput(input)
     const userId = accountService.getSessionState().account?.userId
     await accountService.updateKey(parsed)
-    if (userId && options.managedCliKeys) await options.managedCliKeys.remove(userId, parsed.id)
+    if (userId) await invalidateAccountKeyCaches(userId, parsed.id)
   })
   registerTrustedHandler('chat:list-groups', () => {
     if (!options.chatCredentials) throw new Error('AI聊天服务未就绪')
