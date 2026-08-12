@@ -156,11 +156,20 @@ export interface CanvasTokenResolutionDependencies {
  * inlined into resolveTokenForNewWindow's closure, so the fix below can be
  * exercised with fakes -- no BrowserWindow required.
  *
- * The canvas must use an API Key from the image-generation group. The
- * backend's provisionCliKey({ group }) operation already reuses the newest
- * usable key in that group before creating one, so a separate name-prefix
- * lookup is both redundant and unsafe: a legacy xingmang-canvas-* key may
- * belong to a text-only group.
+ * Orphan-token fix: a logged-in user with no CLI configured yet used to hit
+ * provisionRelayKey on *every* canvas window open, even though canvas's own
+ * localStorage already held the key from the previous open --
+ * buildCanvasAiConfigInjection's no-op guard correctly refuses to clobber an
+ * already-configured value, but the freshly minted token had already been
+ * created server-side before that guard ever runs, so it was provisioned
+ * and then never used again: an orphan xingmang-canvas-* token accumulating
+ * on the account forever. provisionRelayKey now asks
+ * accountService.findExistingCliKey() to reuse a previously-minted token
+ * before ever creating a new one. Reusing by server-side name prefix
+ * (rather than caching the key locally in this app's own data directory)
+ * also keeps xm.solov.cc's own token list as the single source of truth --
+ * this app still never persists a second on-disk plaintext copy of its own
+ * (docs/RECON-new-api.md section D: "星芒自身不二次落盘明文").
  */
 export function buildCanvasTokenDependencies(
   deps: CanvasTokenResolutionDependencies,
@@ -195,15 +204,13 @@ export function buildCanvasTokenDependencies(
         return created.key
       }
       try {
-        const resolved = await deps.accountService.provisionCliKey({
-          name: buildCliKeyName(canvasCliKeyNamePrefix),
-          group: '生图分组',
-        })
-        return resolved.key
+        const existing = await deps.accountService.findExistingCliKey(`${canvasCliKeyNamePrefix}-`)
+        if (existing) return existing.key
       } catch (error) {
-        deps.onProvisionError?.(error)
-        throw error
+        deps.onReuseLookupError?.(error)
       }
+      const created = await deps.accountService.provisionCliKey({ name: buildCliKeyName(canvasCliKeyNamePrefix) })
+      return created.key
     },
     onProvisionError: deps.onProvisionError,
   }
