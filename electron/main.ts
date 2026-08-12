@@ -690,6 +690,15 @@ if (!hasSingleInstanceLock) {
         },
       },
     })
+    // Keep the image output location visible from the moment the app starts.
+    // The write path is checked again by AiAssetStore for every asset.
+    try {
+      assetStore.ensureOutputDirectory()
+    } catch (error) {
+      runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 图片 output 目录初始化失败', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
     registerAiAssetProtocol(assetStore, accountService)
     const chatService = createAiChatService({
       credentialCoordinator: chatCredentials,

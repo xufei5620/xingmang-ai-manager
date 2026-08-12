@@ -521,6 +521,19 @@ export class AiAssetStore {
     }
   }
 
+  /**
+   * Create the user-visible image directory during application startup.
+   * Persistence still performs the same checks immediately before writing so
+   * a directory replaced after startup cannot weaken the path safety boundary.
+   */
+  ensureOutputDirectory(): void {
+    try {
+      ensureSafeDataDirectory(this.outputRoot, FILE_LABEL)
+    } catch {
+      throw new Error('无法创建 output 目录，请检查安装目录写入权限')
+    }
+  }
+
   async storeBase64(userId: number, value: string, meta?: AiAssetMetadata): Promise<AiStoredAsset> {
     assertUserId(userId)
     if (typeof value !== 'string') throw new Error('图片 base64 数据格式错误')

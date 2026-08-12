@@ -95,6 +95,16 @@ describe('output root and image inspection', () => {
 })
 
 describe('AiAssetStore base64 and ownership', () => {
+  it('creates the output directory when the asset store initializes', () => {
+    const options = storeOptions()
+    expect(fs.existsSync(options.outputRoot)).toBe(false)
+
+    const store = new AiAssetStore(options)
+    store.ensureOutputDirectory()
+
+    expect(fs.statSync(options.outputRoot).isDirectory()).toBe(true)
+  })
+
   it('stores under output/user/date and returns no absolute path', async () => {
     const options = storeOptions()
     const store = new AiAssetStore(options)
