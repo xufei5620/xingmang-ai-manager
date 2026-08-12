@@ -39,8 +39,8 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没
 npm run typecheck   # 三连检：渲染 tsconfig + 主进程 tsconfig + electron 测试 tsconfig
 npm test            # vitest（electron+src）+ node --test（scripts/e2e）。Linux 实测 ~12s；Windows 实测 ~13s，Defender 实时扫描介入时可拖到 60~90s
 npm run test:windows    # Windows 备用：关文件级并行 + 30s 超时，专治 Defender 引发的超时失败
-npm run compile     # 清理 + vite build + tsc + 压缩。缺画布产物时优雅跳过（见 T13），照常通过
-npm run dev         # 开发模式。predev 会先复制画布产物 + 全量编译一次主进程（消 electron 抢跑竞态）
+npm run compile     # 构建仓库内 canvas-v2，再清理 + vite build + tsc + 压缩
+npm run dev         # 开发模式。predev 会先构建/复制 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
 npm start           # 直接跑已编译产物（需先 compile），免 dev server
 npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ```
@@ -115,7 +115,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `canvas-protocol.ts` (62) — `xingmang-canvas://` 解析。穿越/根包含检查**全部委托**主窗口同款 `resolvePackagedApplicationFile`，SPA 回退用字面量 `'index.html'` 重走同一函数，**绝不手工拼路径**；与主窗口不共享 rendererRoot
 - `canvas-preload.ts` (65) — 宿主桥只暴露 6 个能力（getAuthToken/saveFile/pickFile/notify/openExternal/downloadAsset,末者为画布 v2 媒体落盘新增,过了 I15 投毒问答:流式限 512MB + https-only + 原生对话框选路径），拿不到 `window.xingmang`
 - `canvas-auth.ts` (51) / `canvas-ai-config.ts` (122) — 取 token 与配置注入（`JSON.stringify` 构造，不拼字符串）
-- `dist-canvas/` 是构建产物**不入 git**：`scripts/copy-canvas-assets.mjs` 从兄弟仓 `xingmang-canvas/web/dist` 复制（可用 `XINGMANG_CANVAS_DIST` 覆盖），缺源时打警告跳过、`compile` 照常通过，画布窗口运行时报中文错误
+- `canvas-v2/` 是当前画布源码；`dist-canvas/` 是构建产物**不入 git**。`npm run canvas:prepare` 构建源码并由 `scripts/copy-canvas-assets.mjs` 复制（可用 `XINGMANG_CANVAS_DIST` 覆盖）
 
 **扩展生态**
 - `provider-extensions.ts` (1585) — 四工具统一的 MCP/Skill/Plugin 抽象
@@ -267,8 +267,8 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 **T12. 改账号对接 → 端点事实以 `docs/RECON-new-api.md` 为准，别按 new-api 文档想当然。**
 关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层与主进程各有一份密码长度等字面量是**有意重复**（electron 不 import src，同 I6/I7 的理由）。**自动化测试绝不对生产 `xm.solov.cc` 发真实请求**；真机验证由用户走。
 
-**T13. 画布相关改动 → 分清三个仓/目录的职责，别把产物当源码。**
-画布**源码**在兄弟仓 `xingmang-canvas`（不在本仓）；`dist-canvas/` 是 copy 脚本搬来的**构建产物**，不入 git、缺了不算坏（compile 照过、画布窗口报中文错误）。改画布行为 = 去兄弟仓改完重新构建，**不要**改 `dist-canvas/` 里的产物文件。云端/CI 环境没有兄弟仓属正常状态。
+**T13. 画布相关改动 → 分清源码与产物，别直接改构建结果。**
+画布**源码**在本仓 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成并复制的**构建产物**，不入 git。改画布行为只改 `canvas-v2/`，**不要**改 `dist-canvas/` 里的产物文件。
 
 ---
 

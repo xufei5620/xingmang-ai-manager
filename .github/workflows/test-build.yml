@@ -3,10 +3,8 @@
 # 与正式发布链路(scripts/run-release-build.cjs + RELEASING.md)完全无关:
 # XINGMANG_LOCAL_BUILD=1 + --publish never 意味着不签名、不写 publisherName、
 # 不上传更新目录——产物只挂在 Actions artifact 供人工下载安装测试。
-# 画布:云端 runner 没有兄弟仓 v1 产物,测试包自 2026-08-11 起改为现场
-# 构建主仓内的 canvas-v2 并经 XINGMANG_CANVAS_DIST 打入——测试包里点
-# 「无限画布」打开的是 v2(此前云端包不含任何画布,纯升级);正式/本地
-# 构建仍走兄弟仓 v1,入口切换按 CANVAS-V2-PLAN 的联调节奏另行决定。
+# 画布由根项目的 precompile 统一构建主仓 canvas-v2 并打入，测试包、
+# 正式构建和本地开发使用同一条链路。
 name: test-build
 
 on:
@@ -28,14 +26,7 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
-      - name: Build canvas-v2 as the packaged canvas
-        run: |
-          cd canvas-v2
-          npm ci --registry=https://registry.npmjs.org/
-          npm run build
       - run: npm run compile
-        env:
-          XINGMANG_CANVAS_DIST: canvas-v2/dist
       - name: Build unsigned NSIS test installer (never publishes)
         run: npx --no-install electron-builder --config electron-builder.config.cjs --win --x64 --publish never
         env:

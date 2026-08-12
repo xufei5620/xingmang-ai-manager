@@ -2,8 +2,8 @@
 
 总规划见 [`../docs/CANVAS-V2-PLAN.md`](../docs/CANVAS-V2-PLAN.md),进度跟踪见 issue #80。
 
-> **落点说明**:v2 暂居主仓 `canvas-v2/` 目录(独立 package,与主应用零构建耦合)。
-> 老板确定最终仓库后整体平移,主仓侧只需把 `XINGMANG_CANVAS_DIST` 指向新产物路径。
+> **落点说明**:v2 位于主仓 `canvas-v2/` 目录；根项目的 `npm run canvas:prepare`
+> 会用根构建依赖生成并复制 `dist-canvas/`。本目录仍可独立安装依赖和开发。
 
 ## 开发
 

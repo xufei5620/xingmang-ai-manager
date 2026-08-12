@@ -84,11 +84,7 @@ module.exports = {
   files: [
     'dist/**/*',
     'dist-electron/**/*',
-    // Vendored infinite-canvas build (scripts/copy-canvas-assets.mjs);
-    // absent on a checkout that never ran that script, in which case
-    // electron-builder simply packages nothing for it and the canvas window
-    // degrades gracefully at runtime (canvas-window.ts's
-    // assertCanvasDistPresent).
+    // Generated canvas-v2 build (scripts/copy-canvas-assets.mjs).
     'dist-canvas/**/*',
     'assets/**/*',
     'package.json',
