@@ -93,7 +93,6 @@ export type ImageGenerationRequestBody = {
   n: 1
   size?: string
   quality?: ImageQuality
-  response_format: 'url' | 'b64_json'
   extra_fields?: {
     width: number
     height: number
@@ -455,7 +454,6 @@ export function buildImageGenerationRequest(input: {
       model: capability.model,
       prompt: input.prompt,
       n: 1,
-      response_format: 'url',
       extra_fields: dimensions,
     }
   }
@@ -470,6 +468,5 @@ export function buildImageGenerationRequest(input: {
     n: 1,
     size,
     quality,
-    response_format: 'b64_json',
   }
 }

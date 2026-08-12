@@ -44,10 +44,24 @@ describe('AI image service', () => {
     })
     const [url, init] = vi.mocked(fetchImpl).mock.calls[0]
     expect(String(url)).toBe('https://xm.solov.cc/v1/images/generations')
-    expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'gpt-image-2', quality: 'low', n: 1 })
+    const body = JSON.parse(String(init?.body))
+    expect(body).toMatchObject({ model: 'gpt-image-2', quality: 'low', n: 1 })
+    expect(body).not.toHaveProperty('response_format')
     expect(String(url)).not.toContain('chat/completions')
     expect(assets.storeBase64).toHaveBeenCalledWith(7, 'aGVsbG8=', { revisedPrompt: 'revised' })
     expect(JSON.stringify(result)).not.toContain('sk-secret')
+  })
+
+  it('uses the same upstream-compatible request shape for GPT Image 1', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await service.generate(4, {
+      requestId: 'gpt-image-1', group: '生图分组', model: 'gpt-image-1', prompt: '一张图', size: '1024x1024',
+    })
+
+    const body = JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0][1]?.body))
+    expect(body).toMatchObject({ model: 'gpt-image-1', quality: 'low', n: 1, size: '1024x1024' })
+    expect(body).not.toHaveProperty('response_format')
   })
 
   it('omits quality and maps dimensions for Jimeng', async () => {
@@ -59,6 +73,7 @@ describe('AI image service', () => {
     const body = JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0][1]?.body))
     expect(body).not.toHaveProperty('quality')
     expect(body).not.toHaveProperty('size')
+    expect(body).not.toHaveProperty('response_format')
     expect(body.extra_fields).toEqual({ width: 1024, height: 1024 })
     expect(assets.storeRemoteUrl).toHaveBeenCalledWith(7, 'https://images.example/result.jpg', undefined)
   })

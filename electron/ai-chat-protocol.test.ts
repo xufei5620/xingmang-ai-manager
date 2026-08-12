@@ -154,8 +154,8 @@ describe('image generation protocol', () => {
       n: 1,
       size: '1536x1152',
       quality: 'low',
-      response_format: 'b64_json',
     })
+    expect(body).not.toHaveProperty('response_format')
     expect(body).not.toHaveProperty('messages')
   })
 
@@ -207,9 +207,9 @@ describe('image generation protocol', () => {
       model: 'jimeng_high_aes_general_v21_L',
       prompt: '水墨山水',
       n: 1,
-      response_format: 'url',
       extra_fields: { width: 768, height: 512 },
     })
+    expect(body).not.toHaveProperty('response_format')
     expect(body).not.toHaveProperty('quality')
     expect(body).not.toHaveProperty('size')
     expect(body).not.toHaveProperty('messages')

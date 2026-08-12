@@ -37,6 +37,7 @@ import { createNewApiClient } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
+import { guardProcessOutputStreams } from './process-stream-errors'
 import { RuntimeLogStore } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
@@ -74,6 +75,8 @@ import {
   platformWindowOptions,
   startupFailureMessage,
 } from './window-presentation'
+
+guardProcessOutputStreams()
 
 const applicationPackage = require('../package.json') as {
   xingmangLocalBuild?: unknown
@@ -763,6 +766,7 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
+      chatKeyStore,
       chatCredentials,
       chatService,
       imageService,
