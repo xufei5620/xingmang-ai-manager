@@ -1,7 +1,22 @@
 import { memo } from 'react'
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react'
 import { nodeInputKinds, nodeOutputKind, type NodeKind, type WorkflowNodeData } from '../model'
+import { presetImageModels, presetVideoModels } from '../models'
 import { inputHandleId, outputHandleId } from '../ports'
+
+/** 全画布共享的模型建议清单(datalist 只需渲染一次,App 根部挂载)。 */
+export function ModelSuggestions() {
+  return (
+    <>
+      <datalist id="wf-image-models">
+        {presetImageModels.map((model) => <option key={model} value={model} />)}
+      </datalist>
+      <datalist id="wf-video-models">
+        {presetVideoModels.map((model) => <option key={model} value={model} />)}
+      </datalist>
+    </>
+  )
+}
 
 // 三种节点共用一个外壳:标题条(状态灯)/ 提示词输入 / 模型名 / 结果预览。
 // 全部定义在组件树外并 memo —— React Flow 官方性能指南的第一条硬要求。
@@ -87,7 +102,8 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData; kin
         <input
           className="nodrag wf-model"
           value={data.model}
-          placeholder="模型名(渠道配置后填写)"
+          list={kind === 'image' ? 'wf-image-models' : 'wf-video-models'}
+          placeholder={kind === 'image' ? '选择或输入图像模型' : '视频模型(渠道接入后可用)'}
           onChange={(event) => handlers.onModelChange(id, event.target.value)}
         />
       )}

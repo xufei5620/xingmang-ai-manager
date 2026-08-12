@@ -269,14 +269,44 @@ export function createCanvasWindowController(
   // 字节上限(流式计数,Content-Length 撒谎也拦得住)+ https-only 且拒
   // 内嵌凭据 + 跟随重定向仍走 fetch 自身的 https 栈。失败清理半成品文件。
   registerCanvasHandler(canvasHostDownloadAssetChannel, async (event, urlInput, suggestedNameInput) => {
-    const url = requiredCanvasString(urlInput, '产物地址', 4_096)
+    // data: URL 是兆级字符串(gpt-image 系列只回 base64,不回 URL),
+    // 字符上限按 512MB 解码上限的 base64 膨胀率放到 ~700MB 字符;
+    // https 链接仍单独收紧到 4096。
+    const url = requiredCanvasString(urlInput, '产物地址', 700 * 1024 * 1024)
     const suggestedName = requiredCanvasString(suggestedNameInput, '保存文件名', 256)
+
+    // gpt-image 的 base64 产物走 data: URL 落盘:主进程解码后经同一个原生
+    // 保存对话框写盘。没有出网、没有攻击者可控路径,I15 结论与 https 分支
+    // 相同(等价于用户保存一个浏览器里的图片)。
+    if (url.startsWith('data:')) {
+      const commaIndex = url.indexOf(',')
+      if (commaIndex < 0 || !url.slice(0, commaIndex).endsWith(';base64')) {
+        throw new Error('产物数据格式不支持(仅支持 base64 data URL)')
+      }
+      const bytes = Buffer.from(url.slice(commaIndex + 1), 'base64')
+      if (bytes.byteLength === 0) throw new Error('产物数据为空')
+      if (bytes.byteLength > maximumDownloadedAssetBytes) throw new Error('产物超出大小上限')
+      const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+      const dialogOptions: SaveDialogOptions = {
+        title: '画布：保存生成产物',
+        defaultPath: suggestedName,
+        filters: [{ name: '所有文件', extensions: ['*'] }],
+      }
+      const result = parentWindow
+        ? await dialog.showSaveDialog(parentWindow, dialogOptions)
+        : await dialog.showSaveDialog(dialogOptions)
+      if (result.canceled || !result.filePath) return null
+      await fs.promises.writeFile(result.filePath, bytes)
+      return { savedPath: result.filePath, bytes: bytes.byteLength }
+    }
+
     let parsed: URL
     try {
       parsed = new URL(url)
     } catch {
       throw new Error('产物地址不是有效的 URL')
     }
+    if (url.length > 4_096) throw new Error('产物地址过长')
     if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') {
       throw new Error('产物地址必须是不含凭据的 https 链接')
     }

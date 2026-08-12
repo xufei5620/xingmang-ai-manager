@@ -28,14 +28,9 @@ export function hostBridge(): CanvasHostBridge {
   const native = window.xingmangCanvasHost
   if (native) {
     if (typeof native.downloadAsset === 'function') return native
-    // 旧版宿主(第 6 能力之前打包的桌面端):降级为浏览器窗口打开产物 URL。
-    return {
-      ...native,
-      async downloadAsset(url) {
-        window.open(url, '_blank', 'noopener')
-        return null
-      },
-    }
+    // 旧版宿主(第 6 能力之前打包的桌面端):降级为锚点下载(data: URL
+    // 无法 window.open,浏览器会拦截 top-frame 的 data: 导航)。
+    return { ...native, downloadAsset: anchorDownload }
   }
   return {
     async getAuthToken() {
@@ -73,9 +68,15 @@ export function hostBridge(): CanvasHostBridge {
     async openExternal(url) {
       window.open(url, '_blank', 'noopener')
     },
-    async downloadAsset(url) {
-      window.open(url, '_blank', 'noopener')
-      return null
-    },
+    downloadAsset: anchorDownload,
   }
+}
+
+async function anchorDownload(url: string, suggestedName: string): Promise<{ savedPath: string; bytes: number } | null> {
+  const link = document.createElement('a')
+  link.href = url
+  link.download = suggestedName
+  link.rel = 'noopener'
+  link.click()
+  return null
 }

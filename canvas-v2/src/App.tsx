@@ -26,7 +26,8 @@ import { pollVideoTask, type RelayConfig } from './engine/relay'
 import { hostBridge } from './host'
 import { SimpleMode } from './SimpleMode'
 import { isValidWorkflowConnection } from './ports'
-import { nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
+import { defaultImageModel } from './models'
+import { ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
 
 // 画布装配层:@xyflow/react 的 Node/Edge 与领域模型互相映射,引擎与
 // 持久化只见领域模型。M0 执行走 mock 执行器(不出网);M1 把 executors
@@ -207,7 +208,8 @@ export function App() {
       id: nextNodeId(),
       kind,
       position: { x: 120 + Math.random() * 240, y: 120 + Math.random() * 160 },
-      data: { prompt: '', model: '', status: 'idle' },
+      // 图像节点预填当前默认模型(xm 已配渠道),省一次手输。
+      data: { prompt: '', model: kind === 'image' ? defaultImageModel : '', status: 'idle' },
     }
     setNodes((current) => [...current, toCanvasNode(node)])
   }
@@ -310,6 +312,7 @@ export function App() {
           connected={relayConfig !== null}
           onExpandToCanvas={expandToCanvas}
         />
+        <ModelSuggestions />
       </div>
     )
   }
@@ -353,6 +356,7 @@ export function App() {
           <Controls />
         </ReactFlow>
       </div>
+      <ModelSuggestions />
     </div>
   )
 }

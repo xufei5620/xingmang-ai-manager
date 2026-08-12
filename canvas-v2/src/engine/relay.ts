@@ -60,7 +60,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-/** 文生图。返回首张产物的 URL(b64 形态的支持等真机联调时按实际响应补)。 */
+/**
+ * 文生图。gpt-image 系列(xm 已配的四个模型,2026-08-11)返回
+ * `data[0].b64_json`(base64 图像字节,不回 URL);dall-e 老形态回
+ * `data[0].url`。两种都接:b64 转成 data: URL,<img> 预览与宿主落盘
+ * (downloadAsset 已支持 data:)全链通用。刻意不发 response_format——
+ * gpt-image 系列不接受该参数。
+ */
 export async function generateImage(
   config: RelayConfig,
   input: { model: string; prompt: string },
@@ -70,11 +76,17 @@ export async function generateImage(
     '/v1/images/generations',
     { method: 'POST', body: { model: input.model, prompt: input.prompt, n: 1 } },
     '图像生成',
+    // b64 响应体是兆级字符串,给足余量(默认 8MB 会截断大图)。
+    { maxResponseBytes: 64 * 1024 * 1024 },
   )
   const data = isRecord(raw) && Array.isArray(raw.data) ? raw.data[0] : null
-  const url = isRecord(data) && typeof data.url === 'string' ? data.url : null
-  if (!url) throw new Error('图像生成响应中没有产物 URL')
-  return { kind: 'image', remoteUrl: url }
+  if (isRecord(data) && typeof data.url === 'string' && data.url) {
+    return { kind: 'image', remoteUrl: data.url }
+  }
+  if (isRecord(data) && typeof data.b64_json === 'string' && data.b64_json) {
+    return { kind: 'image', remoteUrl: `data:image/png;base64,${data.b64_json}` }
+  }
+  throw new Error('图像生成响应中没有产物(既无 URL 也无 base64 数据)')
 }
 
 export interface VideoTaskSubmission {

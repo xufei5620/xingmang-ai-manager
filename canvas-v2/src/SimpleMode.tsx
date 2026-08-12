@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import type { NodeExecutor } from './engine/engine'
 import type { AssetRef, NodeKind, WorkflowFile } from './model'
+import { defaultImageModel } from './models'
 import { hostBridge } from './host'
 
 // 简单模式 = 单节点工作流的固定表单形态(M2 双模式,规划第 1 节):
@@ -23,7 +24,7 @@ function simpleNodeId(): string {
 
 export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleModeProps) {
   const [prompt, setPrompt] = useState('')
-  const [imageModel, setImageModel] = useState('')
+  const [imageModel, setImageModel] = useState(defaultImageModel)
   const [wantVideo, setWantVideo] = useState(false)
   const [videoModel, setVideoModel] = useState('')
   const [videoPrompt, setVideoPrompt] = useState('')
@@ -135,7 +136,7 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
         </label>
         <label>
           <span>图像模型</span>
-          <input value={imageModel} onChange={(event) => setImageModel(event.target.value)} placeholder="模型名(渠道配置后填写)" />
+          <input value={imageModel} list="wf-image-models" onChange={(event) => setImageModel(event.target.value)} placeholder="选择或输入图像模型" />
         </label>
         <label className="simple-check">
           <input type="checkbox" checked={wantVideo} onChange={(event) => setWantVideo(event.target.checked)} />
@@ -149,7 +150,7 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
             </label>
             <label>
               <span>视频模型</span>
-              <input value={videoModel} onChange={(event) => setVideoModel(event.target.value)} placeholder="模型名(渠道配置后填写)" />
+              <input value={videoModel} list="wf-video-models" onChange={(event) => setVideoModel(event.target.value)} placeholder="视频模型(渠道接入后可用)" />
             </label>
           </>
         )}
