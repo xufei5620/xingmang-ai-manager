@@ -29,6 +29,11 @@ import { ConfigBackupStore } from './backups'
 import { providerIds } from './catalog'
 import { canvasProtocolScheme } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
+import { createCanvasAccountLifecycle } from './canvas-account-lifecycle'
+import { CanvasRunStore } from './canvas-run-store'
+import { createCanvasNodeExecutors } from './canvas-node-executors'
+import { createCanvasRunService } from './canvas-run-service'
+import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { resolveCodexHomeContext } from './codex-home'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
@@ -625,8 +630,14 @@ if (!hasSingleInstanceLock) {
     // Typed as the backend-agnostic RelayBackendClient (relay-backend.ts) --
     // both consumers wired below (registerIpcHandlers, createCanvasWindowController)
     // depend on that interface, not on new-api-client.ts's concrete type.
+    const canvasAccountLifecycle = createCanvasAccountLifecycle({
+      onInitializationError: (_userId, error) => {
+        runtimeLog.exception('canvas', 'runtime.initialize.failed', error)
+      },
+    })
     const accountService: RelayBackendClient = createNewApiClient({
       onSessionChange: (persistable) => {
+        canvasAccountLifecycle.update(persistable?.userId ?? null)
         if (persistable) {
           void accountSessionStore.save(persistable).catch((error) => {
             runtimeLog.log('warn', 'account', 'session.persist.failed', '登录状态持久化失败', {
@@ -746,6 +757,18 @@ if (!hasSingleInstanceLock) {
       credentials: chatCredentials,
       assets: assetStore,
     })
+    const canvasRunStore = new CanvasRunStore({
+      rootDirectory: path.join(managerDataDirectory, 'canvas-runtime'),
+      assets: assetStore,
+    })
+    const canvasPromptPresets = new CanvasPromptPresetStore({
+      rootDirectory: path.join(managerDataDirectory, 'canvas-content'),
+    })
+    const canvasRuns = createCanvasRunService({
+      store: canvasRunStore,
+      executors: createCanvasNodeExecutors({ imageService, assets: assetStore }),
+    })
+    canvasAccountLifecycle.bind({ imageService, canvasRuns })
     const canvasController = createCanvasWindowController({
       canvasDistRoot: canvasDistRoot(),
       externalUrlAllowlist: canvasExternalUrlAllowlist,
@@ -753,6 +776,11 @@ if (!hasSingleInstanceLock) {
       accountService,
       previewOnboarding,
       runtimeLog,
+      chatCredentials,
+      imageService,
+      aiAssets: assetStore,
+      promptPresets: canvasPromptPresets,
+      canvasRuns,
     })
     const tutorialController = createTutorialWindowController({ runtimeLog })
 
@@ -815,6 +843,7 @@ if (!hasSingleInstanceLock) {
       unregisterIpcHandlers()
       chatService.dispose()
       imageService.cancelAll()
+      canvasRuns.shutdown()
       protocol.unhandle('xingmang-asset')
       tutorialController.dispose()
       canvasController.dispose()

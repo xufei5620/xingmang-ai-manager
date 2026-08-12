@@ -6,4 +6,7 @@ import { defineConfig } from 'vite'
 export default defineConfig({
   plugins: [react()],
   base: './',
+  resolve: {
+    dedupe: ['react', 'react-dom', '@xyflow/react'],
+  },
 })

@@ -7,13 +7,10 @@ import {
   ipcMain,
   Notification,
   protocol,
-  type IpcMainEvent,
   type IpcMainInvokeEvent,
   type OpenDialogOptions,
   type SaveDialogOptions,
-  type WebContents,
 } from 'electron'
-import { providerIds } from './catalog'
 import {
   canvasPackagedBaseUrl,
   canvasProtocolScheme,
@@ -22,42 +19,39 @@ import {
   resolveCanvasProtocolFile,
   type ApplicationUrlPolicy,
 } from './canvas-protocol'
-import {
-  buildCanvasAiConfigInjection,
-  type CanvasAuthToken,
-} from './canvas-ai-config'
-import { resolveCanvasAuthToken, type CanvasAuthTokenDependencies } from './canvas-auth'
 import { isAllowedExternalUrl } from './security'
 import { readBoundedUtf8File } from './bounded-file'
 import { writeAtomicSafeUtf8File } from './safe-local-data'
-import { buildCliKeyName } from './new-api-client'
-import { resolveRelaySite, type RelaySite } from './relay-sites'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
-
-/**
- * Which origin the canvas AI channel should call for the active relay site.
- * The canvas channel is OpenAI-compatible (CANVAS-INTEGRATION-PLAN 阶段 B),
- * and the key must be handed out with the origin it was issued for:
- *
- * - new-api site: keys are minted on the account origin (xm.solov.cc), which
- *   serves the OpenAI-compatible API on the same origin -- unchanged from the
- *   pre-multi-site behaviour.
- * - manual-key site: there is no account origin; the pasted key belongs to
- *   the relay itself, so canvas gets the relay origin the CLIs already use.
- *   URL#origin strips any per-CLI path suffix a future entry might carry.
- *
- * Derived from the site registry (T2 precedent, W3) rather than importing
- * new-api-client.ts's own defaultBaseUrl re-export: this window's only
- * declared dependency on the account backend is the backend-agnostic
- * RelayBackendClient interface.
- */
-export function canvasBaseUrlForSite(site: RelaySite): string {
-  if (site.accountBackend === 'new-api' && site.accountBaseUrl) return site.accountBaseUrl
-  return new URL(site.providerBaseUrls.codex).origin
-}
+import { canvasHostChannels } from './canvas-contract'
+import {
+  parseCanvasAssetQuery,
+  parseCanvasImageEditInput,
+  parseCanvasImageGenerateInput,
+  parseCanvasPromptPresetId,
+  parseCanvasPromptPresetInput,
+  parseCanvasPromptPresetUpdate,
+  parseCanvasStartRunInput,
+  requiredCanvasString,
+} from './canvas-request-parser'
+import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
+import type { AiImageService } from './ai-image-service'
+import type { AiAssetStore } from './ai-asset-store'
+import type { CanvasRunService } from './canvas-run-service'
+import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
+import { computeCanvasGraphRevision } from './canvas-fingerprint'
+import {
+  buildCanvasProjectPackage,
+  createCanvasProjectPreviewId,
+  maximumCanvasProjectBytes,
+  parseCanvasProjectPackage,
+  parseCanvasProjectWorkflow,
+  remapCanvasProjectWorkflow,
+  type ParsedCanvasProjectPackage,
+} from './canvas-project-package'
 
 // Narrow, hand-maintained channel names for the canvas window's own host
 // bridge -- deliberately NOT part of ipc-contract.ts's XingmangInvokeContract
@@ -66,20 +60,35 @@ export function canvasBaseUrlForSite(site: RelaySite): string {
 // sandboxed preload scripts cannot require local runtime modules) so it
 // duplicates the literals; keep both copies in sync by hand if these ever
 // change.
-export const canvasHostAuthTokenChannel = 'canvas-host:auth-token'
-export const canvasHostSaveFileChannel = 'canvas-host:save-file'
-export const canvasHostPickFileChannel = 'canvas-host:pick-file'
-export const canvasHostNotifyChannel = 'canvas-host:notify'
-export const canvasHostOpenExternalChannel = 'canvas-host:open-external'
-export const canvasHostDownloadAssetChannel = 'canvas-host:download-asset'
+export const canvasHostSaveFileChannel = canvasHostChannels.saveFile
+export const canvasHostPickFileChannel = canvasHostChannels.pickFile
+export const canvasHostNotifyChannel = canvasHostChannels.notify
+export const canvasHostOpenExternalChannel = canvasHostChannels.openExternal
+export const canvasHostListGroupsChannel = canvasHostChannels.listGroups
+export const canvasHostPrepareGroupChannel = canvasHostChannels.prepareGroup
+export const canvasHostGenerateImageChannel = canvasHostChannels.generateImage
+export const canvasHostEditImageChannel = canvasHostChannels.editImage
+export const canvasHostCancelRequestChannel = canvasHostChannels.cancelRequest
+export const canvasHostCopyAssetChannel = canvasHostChannels.copyAsset
+export const canvasHostSaveAssetChannel = canvasHostChannels.saveAsset
+export const canvasHostShowAssetMenuChannel = canvasHostChannels.showAssetMenu
+export const canvasHostListAssetsChannel = canvasHostChannels.listAssets
+export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
+export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
+export const canvasHostListPromptPresetsChannel = canvasHostChannels.listPromptPresets
+export const canvasHostCreatePromptPresetChannel = canvasHostChannels.createPromptPreset
+export const canvasHostUpdatePromptPresetChannel = canvasHostChannels.updatePromptPreset
+export const canvasHostDeletePromptPresetChannel = canvasHostChannels.deletePromptPreset
+export const canvasHostStartRunChannel = canvasHostChannels.startRun
+export const canvasHostCancelRunChannel = canvasHostChannels.cancelRun
+export const canvasHostListRunsChannel = canvasHostChannels.listRuns
+export const canvasHostExportProjectChannel = canvasHostChannels.exportProject
+export const canvasHostPreviewProjectChannel = canvasHostChannels.previewProject
+export const canvasHostImportProjectChannel = canvasHostChannels.importProject
+export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 
 const maximumSavedFileBytes = 20 * 1024 * 1024
 const maximumPickedFileBytes = 20 * 1024 * 1024
-// 画布 v2 的媒体产物落盘(canvas-host:download-asset):视频动辄几十 MB,
-// 走不了 20MB 纯文本桥,由主进程拉 URL 流式写盘。上限对齐"单条生成视频"
-// 的现实量级并留余量。
-const maximumDownloadedAssetBytes = 512 * 1024 * 1024
-const downloadAssetTimeoutMs = 10 * 60 * 1000
 const maximumTitleLength = 200
 const maximumBodyLength = 2_000
 
@@ -94,6 +103,11 @@ export interface CanvasWindowControllerOptions {
   accountService: RelayBackendClient
   previewOnboarding: boolean
   runtimeLog: RuntimeLogStore
+  chatCredentials: ChatCredentialCoordinator
+  imageService: AiImageService
+  aiAssets: AiAssetStore
+  promptPresets: CanvasPromptPresetStore
+  canvasRuns: CanvasRunService
   externalShell?: ExternalShellLauncher
 }
 
@@ -106,115 +120,11 @@ export interface CanvasWindowController {
   dispose(): void
 }
 
-function senderUrlOf(event: IpcMainEvent | IpcMainInvokeEvent): string {
+function senderUrlOf(event: IpcMainInvokeEvent): string {
   return event.senderFrame?.url ?? event.sender.getURL()
 }
 
-function requiredCanvasString(value: unknown, label: string, maximum: number): string {
-  if (typeof value !== 'string' || !value.trim() || value.length > maximum || value.includes('\0')) {
-    throw new Error(`${label}格式错误`)
-  }
-  return value
-}
-
-// Every token this app mints for the canvas window (as opposed to one an
-// installed CLI already has configured) uses this name prefix -- shared
-// between the create call and the reuse lookup below so the two can never
-// drift apart.
-export const canvasCliKeyNamePrefix = 'xingmang-canvas'
-
-// 画布 Key 的分组偏好(2026-08-12 真机 503 复盘):new-api 的 503 语义是
-// 「该令牌分组下无可用渠道」。xm 上图像模型只挂在专门分组里
-// (docs/RECON-image-generation.md 第 1 节:`生图分组` 含 gpt-image + 即梦,
-// `openai` 含 gpt-image + 文本),而无分组签发的令牌落在账号默认分组,
-// 摸不到任何图像渠道 —— 画布 Key 因此必须签发进能覆盖图像模型的分组。
-// 顺序即偏好:先取真机核实过的两个分组,`auto`(new-api 自动选组)兜底;
-// 全都不可用时保持旧行为(无分组签发),让上屏的服务端错误文案说话。
-export const canvasKeyGroupPreference: readonly string[] = ['生图分组', 'openai', 'auto']
-
-export function pickCanvasKeyGroup(usableGroupNames: readonly string[]): string | null {
-  for (const candidate of canvasKeyGroupPreference) {
-    if (usableGroupNames.includes(candidate)) return candidate
-  }
-  return null
-}
-
-export interface CanvasTokenResolutionDependencies {
-  systemService: SystemService
-  accountService: RelayBackendClient
-  /** The active relay site; decides whether an account backend exists to gate on and mint from. */
-  relaySite: RelaySite
-  previewOnboarding: boolean
-  onProvisionError?: (error: unknown) => void
-  onReuseLookupError?: (error: unknown) => void
-}
-
-/**
- * Builds the CanvasAuthTokenDependencies resolveCanvasAuthToken
- * (canvas-auth.ts) needs for a real run. A top-level, independently
- * testable function (CLAUDE.md 6节 "新逻辑优先写成纯函数再测") rather than
- * inlined into resolveTokenForNewWindow's closure, so the fix below can be
- * exercised with fakes -- no BrowserWindow required.
- *
- * Orphan-token fix: a logged-in user with no CLI configured yet used to hit
- * provisionRelayKey on *every* canvas window open, even though canvas's own
- * localStorage already held the key from the previous open --
- * buildCanvasAiConfigInjection's no-op guard correctly refuses to clobber an
- * already-configured value, but the freshly minted token had already been
- * created server-side before that guard ever runs, so it was provisioned
- * and then never used again: an orphan xingmang-canvas-* token accumulating
- * on the account forever. provisionRelayKey now asks
- * accountService.findExistingCliKey() to reuse a previously-minted token
- * before ever creating a new one. Reusing by server-side name prefix
- * (rather than caching the key locally in this app's own data directory)
- * also keeps xm.solov.cc's own token list as the single source of truth --
- * this app still never persists a second on-disk plaintext copy of its own
- * (docs/RECON-new-api.md section D: "星芒自身不二次落盘明文").
- */
-export function buildCanvasTokenDependencies(
-  deps: CanvasTokenResolutionDependencies,
-): CanvasAuthTokenDependencies {
-  return {
-    hasAccountBackend: () => deps.relaySite.accountBackend === 'new-api',
-    isAccountAuthenticated: () => deps.accountService.getSessionState().authenticated,
-    revealConfiguredRelayKey: () => {
-      for (const provider of providerIds) {
-        const key = deps.systemService.revealApiKey(provider, deps.previewOnboarding)
-        if (key) return key
-      }
-      return ''
-    },
-    provisionRelayKey: async () => {
-      // 分组解析失败(网络抖动等)不阻断:退回旧的"无分组"路径并由
-      // onReuseLookupError 观察 —— 画布拿到一个降级 Key 仍好过拿不到。
-      let group: string | null = null
-      try {
-        const usable = await deps.accountService.listUsableGroups()
-        group = pickCanvasKeyGroup(usable.map((entry) => entry.name))
-      } catch (error) {
-        deps.onReuseLookupError?.(error)
-      }
-      if (group) {
-        // provisionCliKey 自带按分组的复用(findNewestUsableCliKeyByGroup):
-        // 同分组已有可用令牌则直接揭示,不会重复铸造 —— 上文的孤儿令牌
-        // 修复在分组路径上由它承接。刻意不走名字前缀复用:历史上无分组
-        // 铸出的 xingmang-canvas-* 令牌正是 503 的根因,按名字复用会让
-        // 它在修复后仍然还魂。
-        const created = await deps.accountService.provisionCliKey({ name: buildCliKeyName(canvasCliKeyNamePrefix), group })
-        return created.key
-      }
-      try {
-        const existing = await deps.accountService.findExistingCliKey(`${canvasCliKeyNamePrefix}-`)
-        if (existing) return existing.key
-      } catch (error) {
-        deps.onReuseLookupError?.(error)
-      }
-      const created = await deps.accountService.provisionCliKey({ name: buildCliKeyName(canvasCliKeyNamePrefix) })
-      return created.key
-    },
-    onProvisionError: deps.onProvisionError,
-  }
-}
+export const canvasWindowBackgroundColor = '#111315'
 
 /**
  * Builds and wires an isolated BrowserWindow for the bundled infinite-canvas
@@ -233,10 +143,10 @@ export function createCanvasWindowController(
     packagedBaseUrl: canvasPackagedBaseUrl,
   }
   const externalShell = options.externalShell ?? createExternalShellLauncher()
-  const tokenByWebContents = new WeakMap<WebContents, CanvasAuthToken | null>()
   const handleChannels: string[] = []
   let canvasWindow: BrowserWindow | null = null
   let pendingOpen: Promise<void> | null = null
+  const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
 
   protocol.registerFileProtocol(canvasProtocolScheme, (request, callback) => {
     const target = resolveCanvasProtocolFile(request.url, policy)
@@ -247,9 +157,32 @@ export function createCanvasWindowController(
     callback({ path: target })
   })
 
-  function assertTrustedCanvasSender(event: IpcMainEvent | IpcMainInvokeEvent): void {
-    if (!isTrustedIpcSenderUrl(senderUrlOf(event), policy)) {
+  function assertTrustedCanvasSender(event: IpcMainInvokeEvent): void {
+    const currentContents = canvasWindow && !canvasWindow.isDestroyed()
+      ? canvasWindow.webContents
+      : null
+    const mainFrame = event.sender.mainFrame
+    const isMainFrame = Boolean(mainFrame) && event.senderFrame === mainFrame
+    if (
+      !isTrustedIpcSenderUrl(senderUrlOf(event), policy)
+      || !isMainFrame
+      || currentContents === null
+      || event.sender !== currentContents
+    ) {
       throw new Error('已拒绝来自非画布页面的操作请求')
+    }
+  }
+
+  function authenticatedCanvasUserId(): number {
+    const session = options.accountService.getSessionState()
+    const userId = session.authenticated ? session.account?.userId : undefined
+    if (!Number.isSafeInteger(userId) || !userId || userId <= 0) throw new Error('请先登录星芒账号')
+    return userId
+  }
+
+  function assertCanvasUserUnchanged(expectedUserId: number): void {
+    if (authenticatedCanvasUserId() !== expectedUserId) {
+      throw new Error('星芒账号已切换，请重新执行画布操作')
     }
   }
 
@@ -297,101 +230,6 @@ export function createCanvasWindowController(
     return { name: path.basename(filePath), content }
   })
 
-  // I15 投毒问答(新增能力必答):被投毒的画布能让宿主拉任意 https URL 并
-  // 写入用户亲自在原生保存对话框里选择的路径——与用户在浏览器里点击任意
-  // 下载链接同权:无路径控制、无静默写入、内容不被执行。I10 四件:超时 +
-  // 字节上限(流式计数,Content-Length 撒谎也拦得住)+ https-only 且拒
-  // 内嵌凭据 + 跟随重定向仍走 fetch 自身的 https 栈。失败清理半成品文件。
-  registerCanvasHandler(canvasHostDownloadAssetChannel, async (event, urlInput, suggestedNameInput) => {
-    // data: URL 是兆级字符串(gpt-image 系列只回 base64,不回 URL),
-    // 字符上限按 512MB 解码上限的 base64 膨胀率放到 ~700MB 字符;
-    // https 链接仍单独收紧到 4096。
-    const url = requiredCanvasString(urlInput, '产物地址', 700 * 1024 * 1024)
-    const suggestedName = requiredCanvasString(suggestedNameInput, '保存文件名', 256)
-
-    // gpt-image 的 base64 产物走 data: URL 落盘:主进程解码后经同一个原生
-    // 保存对话框写盘。没有出网、没有攻击者可控路径,I15 结论与 https 分支
-    // 相同(等价于用户保存一个浏览器里的图片)。
-    if (url.startsWith('data:')) {
-      const commaIndex = url.indexOf(',')
-      if (commaIndex < 0 || !url.slice(0, commaIndex).endsWith(';base64')) {
-        throw new Error('产物数据格式不支持(仅支持 base64 data URL)')
-      }
-      const bytes = Buffer.from(url.slice(commaIndex + 1), 'base64')
-      if (bytes.byteLength === 0) throw new Error('产物数据为空')
-      if (bytes.byteLength > maximumDownloadedAssetBytes) throw new Error('产物超出大小上限')
-      const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
-      const dialogOptions: SaveDialogOptions = {
-        title: '画布：保存生成产物',
-        defaultPath: suggestedName,
-        filters: [{ name: '所有文件', extensions: ['*'] }],
-      }
-      const result = parentWindow
-        ? await dialog.showSaveDialog(parentWindow, dialogOptions)
-        : await dialog.showSaveDialog(dialogOptions)
-      if (result.canceled || !result.filePath) return null
-      await fs.promises.writeFile(result.filePath, bytes)
-      return { savedPath: result.filePath, bytes: bytes.byteLength }
-    }
-
-    let parsed: URL
-    try {
-      parsed = new URL(url)
-    } catch {
-      throw new Error('产物地址不是有效的 URL')
-    }
-    if (url.length > 4_096) throw new Error('产物地址过长')
-    if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') {
-      throw new Error('产物地址必须是不含凭据的 https 链接')
-    }
-    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
-    const dialogOptions: SaveDialogOptions = {
-      title: '画布：保存生成产物',
-      defaultPath: suggestedName,
-      filters: [{ name: '所有文件', extensions: ['*'] }],
-    }
-    const result = parentWindow
-      ? await dialog.showSaveDialog(parentWindow, dialogOptions)
-      : await dialog.showSaveDialog(dialogOptions)
-    if (result.canceled || !result.filePath) return null
-    const targetPath = result.filePath
-
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), downloadAssetTimeoutMs)
-    try {
-      const response = await fetch(parsed.href, { signal: controller.signal })
-      if (!response.ok || !response.body) {
-        throw new Error(`产物下载失败，服务返回 ${response.status}`)
-      }
-      const reader = response.body.getReader()
-      let written = 0
-      const stream = fs.createWriteStream(targetPath)
-      try {
-        for (;;) {
-          const { done, value } = await reader.read()
-          if (done) break
-          written += value.byteLength
-          if (written > maximumDownloadedAssetBytes) {
-            throw new Error('产物超出大小上限，已中止下载')
-          }
-          await new Promise<void>((resolve, reject) => {
-            stream.write(Buffer.from(value), (error) => (error ? reject(error) : resolve()))
-          })
-        }
-        await new Promise<void>((resolve, reject) => {
-          stream.end((error: NodeJS.ErrnoException | null | undefined) => (error ? reject(error) : resolve()))
-        })
-      } catch (error) {
-        stream.destroy()
-        await fs.promises.unlink(targetPath).catch(() => undefined)
-        throw error
-      }
-      return { savedPath: targetPath, bytes: written }
-    } finally {
-      clearTimeout(timer)
-    }
-  })
-
   registerCanvasHandler(canvasHostNotifyChannel, (_event, titleInput, bodyInput) => {
     const title = requiredCanvasString(titleInput, '通知标题', maximumTitleLength)
     const body = bodyInput === undefined ? '' : requiredCanvasString(bodyInput, '通知内容', maximumBodyLength)
@@ -408,42 +246,234 @@ export function createCanvasWindowController(
     return true
   })
 
-  // Synchronous by necessity: the canvas preload must finish seeding
-  // localStorage before infinite-canvas's own module script runs (see the
-  // task report), and that ordering can only be guaranteed with a blocking
-  // call resolved from data already computed before this window started
-  // loading -- an async invoke() here would race the page's own boot.
-  ipcMain.on(canvasHostAuthTokenChannel, (event, existingRawInput: unknown) => {
-    if (!isTrustedIpcSenderUrl(senderUrlOf(event), policy)) {
-      event.returnValue = { token: null, storageValue: null }
-      return
-    }
-    const token = tokenByWebContents.get(event.sender) ?? null
-    const existingRaw = typeof existingRawInput === 'string' ? existingRawInput : null
-    event.returnValue = { token, storageValue: buildCanvasAiConfigInjection(existingRaw, token) }
+  registerCanvasHandler(canvasHostListGroupsChannel, async () => {
+    const groups = await options.chatCredentials.listGroups()
+    return groups.map(({ name, description, ratio }) => ({ name, description, ratio }))
   })
 
-  async function resolveTokenForNewWindow(): Promise<CanvasAuthToken | null> {
-    // Resolved per window open (same pattern as system-service.ts's own
-    // consumers) so a site switch in settings takes effect on the next
-    // canvas open without restarting. For the new-api site the baseUrl
-    // mirrors XM_SOLOV_BASE_URL already baked into the canvas build's own
-    // defaultConfig (阶段 B); for a manual-key site it is the relay origin
-    // the pasted key belongs to.
-    const activeSite = resolveRelaySite(options.systemService.readStoredConfig().relaySiteId)
-    return resolveCanvasAuthToken(canvasBaseUrlForSite(activeSite), buildCanvasTokenDependencies({
-      systemService: options.systemService,
-      accountService: options.accountService,
-      relaySite: activeSite,
-      previewOnboarding: options.previewOnboarding,
-      onProvisionError: (error) => {
-        options.runtimeLog.exception('canvas', 'auth-token.provision.failed', error)
-      },
-      onReuseLookupError: (error) => {
-        options.runtimeLog.exception('canvas', 'auth-token.reuse-lookup.failed', error)
-      },
-    }))
+  registerCanvasHandler(canvasHostPrepareGroupChannel, (_event, groupInput) => (
+    options.chatCredentials.prepareGroup(requiredCanvasString(groupInput, '画布生图分组', 128))
+  ))
+
+  registerCanvasHandler(canvasHostGenerateImageChannel, (event, input) => (
+    options.imageService.generate(event.sender.id, parseCanvasImageGenerateInput(input))
+  ))
+
+  registerCanvasHandler(canvasHostEditImageChannel, (event, input) => {
+    const userId = authenticatedCanvasUserId()
+    return options.imageService.edit(event.sender.id, {
+      ...parseCanvasImageEditInput(input),
+      expectedUserId: userId,
+    })
+  })
+
+  registerCanvasHandler(canvasHostCancelRequestChannel, (event, requestIdInput) => (
+    options.imageService.cancel(
+      event.sender.id,
+      requiredCanvasString(requestIdInput, '画布生图请求标识', 160),
+    )
+  ))
+
+  registerCanvasHandler(canvasHostListPromptPresetsChannel, () => (
+    options.promptPresets.list(authenticatedCanvasUserId())
+  ))
+
+  registerCanvasHandler(canvasHostCreatePromptPresetChannel, async (_event, input) => {
+    const userId = authenticatedCanvasUserId()
+    const result = await options.promptPresets.create(userId, parseCanvasPromptPresetInput(input))
+    assertCanvasUserUnchanged(userId)
+    return result
+  })
+
+  registerCanvasHandler(canvasHostUpdatePromptPresetChannel, async (_event, input) => {
+    const userId = authenticatedCanvasUserId()
+    const result = await options.promptPresets.update(userId, parseCanvasPromptPresetUpdate(input))
+    assertCanvasUserUnchanged(userId)
+    return result
+  })
+
+  registerCanvasHandler(canvasHostDeletePromptPresetChannel, async (_event, idInput) => {
+    const userId = authenticatedCanvasUserId()
+    const result = await options.promptPresets.delete(userId, parseCanvasPromptPresetId(idInput))
+    assertCanvasUserUnchanged(userId)
+    return result
+  })
+
+  registerCanvasHandler(canvasHostCopyAssetChannel, async (_event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    await options.aiAssets.copy(
+      userId,
+      requiredCanvasString(assetIdInput, '画布图片资产标识', 64),
+      () => assertCanvasUserUnchanged(userId),
+    )
+  })
+
+  registerCanvasHandler(canvasHostSaveAssetChannel, async (_event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const saved = await options.aiAssets.saveAs(
+      userId,
+      requiredCanvasString(assetIdInput, '画布图片资产标识', 64),
+      () => assertCanvasUserUnchanged(userId),
+    )
+    return { saved }
+  })
+
+  registerCanvasHandler(canvasHostShowAssetMenuChannel, async (_event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const assetId = requiredCanvasString(assetIdInput, '画布图片资产标识', 64)
+    await options.aiAssets.contextMenu(userId, assetId, () => {
+      if (authenticatedCanvasUserId() !== userId) throw new Error('星芒账号已切换，已停止图片操作')
+    })
+  })
+
+  registerCanvasHandler(canvasHostListAssetsChannel, async (_event, queryInput) => {
+    const userId = authenticatedCanvasUserId()
+    const assets = await options.aiAssets.listOwnedPage(userId, parseCanvasAssetQuery(queryInput))
+    assertCanvasUserUnchanged(userId)
+    return assets
+  })
+
+  async function importCanvasAsset(userId: number, filePath: string) {
+    const asset = await options.aiAssets.storeLocalFile(userId, filePath)
+    try {
+      assertCanvasUserUnchanged(userId)
+      return asset
+    } catch (error) {
+      await options.aiAssets.removeOwned(userId, asset.assetId).catch(() => undefined)
+      throw error
+    }
   }
+
+  registerCanvasHandler(canvasHostPickAssetChannel, async (event) => {
+    const userId = authenticatedCanvasUserId()
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '画布：选择图片素材',
+      properties: ['openFile'],
+      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    if (result.canceled || !result.filePaths[0]) return null
+    return importCanvasAsset(userId, result.filePaths[0])
+  })
+
+  registerCanvasHandler(canvasHostImportAssetFileChannel, async (_event, filePathInput) => {
+    const userId = authenticatedCanvasUserId()
+    const filePath = requiredCanvasString(filePathInput, '本地图片路径', 32_768)
+    if (!path.isAbsolute(filePath)) throw new Error('本地图片路径无效')
+    return importCanvasAsset(userId, filePath)
+  })
+
+  registerCanvasHandler(canvasHostStartRunChannel, (event, input) => {
+    const { graph, scope } = parseCanvasStartRunInput(input)
+    const userId = authenticatedCanvasUserId()
+    const handle = options.canvasRuns.start({
+      userId,
+      ownerId: event.sender.id,
+      graphRevision: computeCanvasGraphRevision(graph),
+      graph,
+      scope,
+    })
+    void handle.promise.catch((error) => options.runtimeLog.exception('canvas', 'run.failed', error))
+    return { runId: handle.runId, graphRevision: handle.graphRevision }
+  })
+
+  registerCanvasHandler(canvasHostCancelRunChannel, (event, runIdInput) => (
+    options.canvasRuns.cancel(requiredCanvasString(runIdInput, '画布运行标识', 256), event.sender.id)
+  ))
+
+  registerCanvasHandler(canvasHostListRunsChannel, async () => {
+    const userId = authenticatedCanvasUserId()
+    const runs = await options.canvasRuns.listRuns(userId)
+    assertCanvasUserUnchanged(userId)
+    return runs
+  })
+
+  registerCanvasHandler(canvasHostExportProjectChannel, async (event, suggestedNameInput, contentInput) => {
+    const userId = authenticatedCanvasUserId()
+    const suggestedName = requiredCanvasString(suggestedNameInput, '画布项目文件名', 256)
+    const workflowContent = requiredCanvasString(contentInput, '画布项目工作流', maximumSavedFileBytes)
+    const parsed = parseCanvasProjectWorkflow(workflowContent)
+    const sources = await Promise.all(parsed.assetIds.map((assetId) => options.aiAssets.readOwned(userId, assetId)))
+    assertCanvasUserUnchanged(userId)
+    const projectContent = buildCanvasProjectPackage(workflowContent, sources)
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const defaultPath = suggestedName.toLowerCase().endsWith('.xingcanvas') ? suggestedName : `${suggestedName}.xingcanvas`
+    const dialogOptions: SaveDialogOptions = {
+      title: '画布：导出项目', defaultPath,
+      filters: [{ name: '星芒画布项目', extensions: ['xingcanvas'] }],
+    }
+    const result = parentWindow ? await dialog.showSaveDialog(parentWindow, dialogOptions) : await dialog.showSaveDialog(dialogOptions)
+    if (result.canceled || !result.filePath) return null
+    assertCanvasUserUnchanged(userId)
+    await writeAtomicSafeUtf8File(result.filePath, projectContent, '画布项目导出文件')
+    return { savedPath: result.filePath }
+  })
+
+  registerCanvasHandler(canvasHostPreviewProjectChannel, async (event) => {
+    const userId = authenticatedCanvasUserId()
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '画布：导入项目', properties: ['openFile'],
+      filters: [{ name: '星芒画布项目', extensions: ['xingcanvas'] }],
+    }
+    const result = parentWindow ? await dialog.showOpenDialog(parentWindow, dialogOptions) : await dialog.showOpenDialog(dialogOptions)
+    if (result.canceled || !result.filePaths[0]) return null
+    assertCanvasUserUnchanged(userId)
+    const filePath = result.filePaths[0]
+    const parsed = parseCanvasProjectPackage(await readBoundedUtf8File(filePath, maximumCanvasProjectBytes, '画布项目导入文件'))
+    assertCanvasUserUnchanged(userId)
+    const previewId = createCanvasProjectPreviewId()
+    pendingProjects.set(event.sender.id, { previewId, userId, parsed })
+    return {
+      previewId, name: path.basename(filePath), workflowName: String(parsed.workflow.name),
+      nodeCount: (parsed.workflow.nodes as unknown[]).length,
+      edgeCount: (parsed.workflow.edges as unknown[]).length,
+      assetCount: parsed.assets.length,
+      warnings: parsed.warnings,
+    }
+  })
+
+  registerCanvasHandler(canvasHostImportProjectChannel, async (event, previewIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const previewId = requiredCanvasString(previewIdInput, '画布项目预览标识', 128)
+    const pending = pendingProjects.get(event.sender.id)
+    if (!pending || pending.previewId !== previewId) throw new Error('画布项目预览已失效，请重新选择文件')
+    pendingProjects.delete(event.sender.id)
+    if (pending.userId !== userId) throw new Error('星芒账号已切换，请重新选择画布项目')
+    const imported: string[] = []
+    const mappings = new Map<string, string>()
+    try {
+      for (const entry of pending.parsed.assets) {
+        assertCanvasUserUnchanged(userId)
+        const asset = await options.aiAssets.storeBase64(userId, `data:${entry.mimeType};base64,${entry.bytes.toString('base64')}`)
+        imported.push(asset.assetId)
+        mappings.set(entry.assetId, asset.assetId)
+      }
+      assertCanvasUserUnchanged(userId)
+    } catch (error) {
+      await Promise.all(imported.map((assetId) => options.aiAssets.removeOwned(userId, assetId).catch(() => undefined)))
+      throw error
+    }
+    return {
+      content: remapCanvasProjectWorkflow(pending.parsed.workflow, mappings),
+      warnings: pending.parsed.warnings,
+      importedAssetCount: imported.length,
+    }
+  })
+
+  const unsubscribeRunEvents = options.canvasRuns.subscribe(({ event, userId, ownerId }) => {
+    if (!canvasWindow || canvasWindow.isDestroyed()) return
+    if (canvasWindow.webContents.id !== ownerId) return
+    try {
+      if (authenticatedCanvasUserId() !== userId) return
+    } catch {
+      return
+    }
+    canvasWindow.webContents.send(canvasHostRunEventChannel, event)
+  })
 
   function assertCanvasDistPresent(): void {
     const indexPath = path.join(options.canvasDistRoot, 'index.html')
@@ -454,13 +484,13 @@ export function createCanvasWindowController(
 
   async function createWindow(): Promise<void> {
     assertCanvasDistPresent()
-    const token = await resolveTokenForNewWindow()
 
     const window = new BrowserWindow({
       width: 1360,
       height: 860,
       minWidth: 960,
       minHeight: 620,
+      backgroundColor: canvasWindowBackgroundColor,
       show: false,
       title: '无限画布 - 星芒AI管理工具',
       webPreferences: {
@@ -475,14 +505,17 @@ export function createCanvasWindowController(
         navigateOnDragDrop: false,
       },
     })
-    tokenByWebContents.set(window.webContents, token)
     canvasWindow = window
+    const senderId = window.webContents.id
 
     window.once('ready-to-show', () => {
       window.center()
       window.show()
     })
     window.on('closed', () => {
+      options.imageService.cancelSender(senderId)
+      options.canvasRuns.cancelOwner(senderId)
+      pendingProjects.delete(senderId)
       if (canvasWindow === window) canvasWindow = null
     })
     // Deny every popup by default; the only ones ever legitimate are the
@@ -540,7 +573,7 @@ export function createCanvasWindowController(
       if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.close()
       canvasWindow = null
       for (const channel of handleChannels) ipcMain.removeHandler(channel)
-      ipcMain.removeAllListeners(canvasHostAuthTokenChannel)
+      unsubscribeRunEvents()
     },
   }
 }

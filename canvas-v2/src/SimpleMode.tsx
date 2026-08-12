@@ -8,6 +8,7 @@ import {
   imageModelPresets,
   imageQualityOptions,
 } from './models'
+import { SafeImage } from './components/MediaPreview'
 import { hostBridge } from './host'
 
 // 简单模式 = 单节点工作流的固定表单形态(M2 双模式,规划第 1 节):
@@ -135,9 +136,8 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
   }
 
   const download = (asset: AssetRef) => {
-    if (!asset.remoteUrl) return
-    const suggestedName = asset.kind === 'image' ? 'xingmang-image.png' : 'xingmang-video.mp4'
-    void hostBridge().downloadAsset(asset.remoteUrl, suggestedName)
+    if (!asset.assetId) return
+    void hostBridge().saveAsset(asset.assetId)
   }
 
   return (
@@ -207,15 +207,16 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
         </div>
         {stage && <p className="simple-stage">{stage}</p>}
         {error && <p className="simple-error" role="alert">{error}</p>}
-        {image?.remoteUrl && !image.remoteUrl.startsWith('mock://') && (
+        {image?.localUrl && (
           <div className="simple-result">
-            <img src={image.remoteUrl} alt="生成的图像" />
-            {image.remoteUrl.startsWith('https://') && modelPreset.ephemeralUrl && (
-              <p className="simple-hint">⚠️ 该模型的图片链接 24 小时后过期,请尽快下载保存</p>
-            )}
+            <SafeImage src={image.localUrl} alt="生成的图像" fallbackLabel="生成图片不可用" onContextMenu={(event) => {
+              event.preventDefault()
+              if (image.assetId) void hostBridge().showAssetMenu(image.assetId)
+            }} />
             <button type="button" onClick={() => download(image)}>下载图像</button>
           </div>
         )}
+        {image?.remoteUrl?.startsWith('mock://') && <p className="simple-stage">演示图片已生成</p>}
         {video?.remoteUrl && (
           <div className="simple-result">
             <p>视频已生成:{video.remoteUrl.startsWith('mock://') ? '(模拟产物)' : video.remoteUrl}</p>

@@ -1,5 +1,6 @@
 import type { Connection } from '@xyflow/react'
-import { nodeInputKinds, nodeOutputKind, type NodeKind, type PortKind } from './model'
+import { builtinNodeRegistry } from './domain/builtin-node-definitions'
+import type { PortKind } from './model'
 
 // 端口语义类型系统 —— React Flow 的 Handle 只有 source/target 方向,
 // image/text/video 的类型匹配是应用层职责(库不提供,横评已核实)。
@@ -20,9 +21,10 @@ export function handleKind(handleId: string | null | undefined): PortKind | null
 }
 
 export interface ConnectionGraphView {
-  nodeKindOf(nodeId: string): NodeKind | null
+  /** Compatibility name: the value is a registry node type, including legacy aliases. */
+  nodeKindOf(nodeId: string): string | null
   /** 现有边表,用于成环检测(source→target 邻接)。 */
-  edges: readonly { source: string; target: string }[]
+  edges: readonly { source: string; target: string; targetHandle?: string | null }[]
 }
 
 function reaches(edges: readonly { source: string; target: string }[], from: string, to: string): boolean {
@@ -46,14 +48,16 @@ function reaches(edges: readonly { source: string; target: string }[], from: str
  */
 export function isValidWorkflowConnection(connection: Connection, graph: ConnectionGraphView): boolean {
   if (!connection.source || !connection.target || connection.source === connection.target) return false
-  const sourceKind = handleKind(connection.sourceHandle)
-  const targetKind = handleKind(connection.targetHandle)
-  if (!sourceKind || !targetKind || sourceKind !== targetKind) return false
-  const sourceNodeKind = graph.nodeKindOf(connection.source)
-  const targetNodeKind = graph.nodeKindOf(connection.target)
-  if (!sourceNodeKind || !targetNodeKind) return false
-  if (nodeOutputKind[sourceNodeKind] !== sourceKind) return false
-  if (!nodeInputKinds[targetNodeKind].includes(targetKind)) return false
+  const sourceNodeType = graph.nodeKindOf(connection.source)
+  const targetNodeType = graph.nodeKindOf(connection.target)
+  if (!sourceNodeType || !targetNodeType || !connection.sourceHandle || !connection.targetHandle) return false
+  const sourcePort = builtinNodeRegistry.port(sourceNodeType, connection.sourceHandle, 'output')
+  const targetPort = builtinNodeRegistry.port(targetNodeType, connection.targetHandle, 'input')
+  if (!sourcePort || !targetPort || sourcePort.kind !== targetPort.kind) return false
+  if (targetPort.cardinality === 'one' && graph.edges.some((edge) => (
+    edge.target === connection.target
+    && edge.targetHandle === connection.targetHandle
+  ))) return false
   // target 已能到达 source 时,再连 source→target 会成环。
   if (reaches(graph.edges, connection.target, connection.source)) return false
   return true

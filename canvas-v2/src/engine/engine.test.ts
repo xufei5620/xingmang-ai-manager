@@ -48,6 +48,27 @@ describe('runWorkflow', () => {
     expect(updates.filter((u) => u.id === 'i').map((u) => u.status)).toEqual(['queued', 'running', 'succeeded'])
   })
 
+  it('preserves all upstream image inputs in connection order', async () => {
+    const seen: Array<string | undefined> = []
+    const executors = createMockExecutors(1)
+    executors['image-input'] = async (current) => ({ output: { asset: { kind: 'image', assetId: current.id } } })
+    executors['image-edit'] = async (_current, inputs) => {
+      seen.push(...(inputs.images ?? []).map((asset) => asset.assetId))
+      return { output: { asset: inputs.image } }
+    }
+    await runWorkflow(
+      [node('source-a', 'image-input'), node('source-b', 'image-input'), node('edit', 'image-edit')],
+      [
+        { id: 'a-edit', source: 'source-a', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:image' },
+        { id: 'b-edit', source: 'source-b', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:image' },
+      ],
+      executors,
+      { onNodeUpdate: () => undefined },
+      new AbortController().signal,
+    )
+    expect(seen).toEqual(['source-a', 'source-b'])
+  })
+
   it('skips the downstream chain when an upstream node fails, without touching independent branches', async () => {
     const outcome = await runWorkflow(
       [

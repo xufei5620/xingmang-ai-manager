@@ -1,9 +1,18 @@
 import { AI_CHAT_ENDPOINTS, buildImageGenerationRequest, type ImageQuality } from './ai-chat-protocol'
+import {
+  BoundedOperationQueue,
+  type BoundedOperationHandle,
+} from './bounded-operation-queue'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 
 const DEFAULT_TIMEOUT_MS = 320_000
+const DEFAULT_MAX_ACTIVE = 2
+const DEFAULT_MAX_QUEUED = 64
 const MAXIMUM_RESPONSE_BYTES = 96 * 1024 * 1024
 const MAXIMUM_ERROR_MESSAGE = 300
+const MAXIMUM_EDIT_SOURCE_BYTES = 64 * 1024 * 1024
+const MAXIMUM_EDIT_SOURCE_IMAGES = 4
+const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 export interface GeneratedAiAsset {
   assetId: string
@@ -18,6 +27,7 @@ export interface GeneratedAiAsset {
 export interface AiImageAssetWriter {
   storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string }): Promise<GeneratedAiAsset>
   storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string }): Promise<GeneratedAiAsset>
+  readOwned(userId: number, assetId: string): Promise<{ asset: GeneratedAiAsset; bytes: Buffer }>
 }
 
 export interface AiImageGenerationInput {
@@ -29,6 +39,11 @@ export interface AiImageGenerationInput {
   quality?: ImageQuality
 }
 
+export interface AiImageEditInput extends AiImageGenerationInput {
+  sourceAssetIds: string[]
+  expectedUserId?: number
+}
+
 export interface AiImageCancelResult {
   canceled: boolean
   mayStillComplete: boolean
@@ -37,8 +52,10 @@ export interface AiImageCancelResult {
 interface ActiveImageRequest {
   senderId: number
   requestId: string
-  controller: AbortController
-  userId: number
+  handle: BoundedOperationHandle<GeneratedAiAsset[]>
+  userId?: number
+  dispatched: boolean
+  cancelReason?: 'user' | 'sender' | 'account' | 'application' | 'timeout' | 'shutdown'
 }
 
 function requestKey(senderId: number, requestId: string): string {
@@ -51,6 +68,17 @@ function requiredRequestId(value: string): string {
     throw new Error('生图请求标识格式错误')
   }
   return normalized
+}
+
+function requiredSourceAssetIds(value: readonly string[]): string[] {
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAXIMUM_EDIT_SOURCE_IMAGES) {
+    throw new Error(`图片编辑需要 1-${MAXIMUM_EDIT_SOURCE_IMAGES} 张参考图片`)
+  }
+  if (value.some((assetId) => typeof assetId !== 'string' || !ASSET_ID_PATTERN.test(assetId))) {
+    throw new Error('图片编辑参考资产标识格式错误')
+  }
+  if (new Set(value).size !== value.length) throw new Error('图片编辑参考资产不能重复')
+  return [...value]
 }
 
 function safeUpstreamMessage(value: unknown): string {
@@ -140,6 +168,8 @@ export function createAiImageService(options: {
   assets: AiImageAssetWriter
   fetchImpl?: typeof fetch
   timeoutMs?: number
+  maxActive?: number
+  maxQueued?: number
 }) {
   const baseUrl = new URL(options.baseUrl)
   if (baseUrl.protocol !== 'https:' || baseUrl.username || baseUrl.password) {
@@ -148,21 +178,89 @@ export function createAiImageService(options: {
   const fetchImpl = options.fetchImpl ?? fetch
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
   const active = new Map<string, ActiveImageRequest>()
+  const queue = new BoundedOperationQueue({
+    maxActive: options.maxActive ?? DEFAULT_MAX_ACTIVE,
+    maxQueued: options.maxQueued ?? DEFAULT_MAX_QUEUED,
+  })
 
-  async function generate(senderId: number, input: AiImageGenerationInput): Promise<GeneratedAiAsset[]> {
+  async function runImageOperation(
+    senderId: number,
+    input: AiImageGenerationInput,
+    request: (
+      credential: Awaited<ReturnType<ChatCredentialCoordinator['resolveCredential']>>,
+      signal: AbortSignal,
+      markDispatched: () => void,
+    ) => Promise<Response>,
+  ): Promise<GeneratedAiAsset[]> {
     if (!Number.isSafeInteger(senderId) || senderId <= 0) throw new Error('生图窗口标识格式错误')
     const requestId = requiredRequestId(input.requestId)
     const key = requestKey(senderId, requestId)
     if (active.has(key)) throw new Error('该生图请求正在处理中')
-    const credential = await options.credentials.resolveCredential(input.group)
-    const body = buildImageGenerationRequest(input)
-    const controller = new AbortController()
-    const operation: ActiveImageRequest = { senderId, requestId, controller, userId: credential.userId }
+    const operation = { senderId, requestId, dispatched: false } as ActiveImageRequest
+    const handle = queue.enqueue(async (signal) => {
+      const timeout = setTimeout(() => {
+        operation.cancelReason = 'timeout'
+        operation.handle.cancel(new Error('生图请求超时'))
+      }, timeoutMs)
+      try {
+        const credential = await options.credentials.resolveCredential(input.group)
+        operation.userId = credential.userId
+        if (signal.aborted) throw signal.reason
+        const response = await request(credential, signal, () => { operation.dispatched = true })
+        const bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES)
+        let payload: unknown
+        try {
+          payload = JSON.parse(bytes.toString('utf8')) as unknown
+        } catch {
+          throw new Error('生图接口返回的不是有效 JSON')
+        }
+        if (!response.ok) {
+          const error = payload && typeof payload === 'object'
+            ? (payload as { error?: { message?: unknown }; message?: unknown })
+            : {}
+          const detail = safeUpstreamMessage(error.error?.message ?? error.message)
+          throw imageRequestFailure(response.status, detail)
+        }
+        const entries = responseEntries(payload)
+        const results: GeneratedAiAsset[] = []
+        for (const entry of entries) {
+          if (signal.aborted) throw signal.reason
+          const metadata = entry.revisedPrompt ? { revisedPrompt: entry.revisedPrompt } : undefined
+          results.push(entry.b64Json
+            ? await options.assets.storeBase64(credential.userId, entry.b64Json, metadata)
+            : await options.assets.storeRemoteUrl(credential.userId, entry.url!, metadata))
+        }
+        return results
+      } finally {
+        clearTimeout(timeout)
+      }
+    })
+    operation.handle = handle
     active.set(key, operation)
-    const timeout = setTimeout(() => controller.abort(new Error('生图请求超时')), timeoutMs)
     try {
-      const endpoint = new URL(AI_CHAT_ENDPOINTS.imageGenerations, baseUrl)
-      const response = await fetchImpl(endpoint, {
+      return await handle.promise
+    } catch (error) {
+      if (operation.cancelReason) {
+        if (operation.cancelReason === 'timeout') throw new Error('生图请求超时')
+        if (operation.dispatched) {
+          throw new Error('已停止等待；服务端可能仍在生成图片，请勿立即重复提交')
+        }
+        throw new Error('已取消生图请求')
+      }
+      if (error instanceof Error && error.message === '操作队列已关闭') {
+        throw new Error('已停止等待；服务端可能仍在生成图片，请勿立即重复提交')
+      }
+      throw error
+    } finally {
+      if (active.get(key) === operation) active.delete(key)
+    }
+  }
+
+  async function generate(senderId: number, input: AiImageGenerationInput): Promise<GeneratedAiAsset[]> {
+    const body = buildImageGenerationRequest(input)
+    return runImageOperation(senderId, input, (credential, signal, markDispatched) => {
+      markDispatched()
+      return fetchImpl(new URL(AI_CHAT_ENDPOINTS.imageGenerations, baseUrl), {
         method: 'POST',
         headers: {
           Accept: 'application/json',
@@ -171,59 +269,74 @@ export function createAiImageService(options: {
         },
         body: JSON.stringify(body),
         redirect: 'error',
-        signal: controller.signal,
+        signal,
       })
-      const bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES)
-      let payload: unknown
-      try {
-        payload = JSON.parse(bytes.toString('utf8')) as unknown
-      } catch {
-        throw new Error('生图接口返回的不是有效 JSON')
+    })
+  }
+
+  async function edit(senderId: number, input: AiImageEditInput): Promise<GeneratedAiAsset[]> {
+    const fields = buildImageGenerationRequest(input)
+    const sourceAssetIds = requiredSourceAssetIds(input.sourceAssetIds)
+    return runImageOperation(senderId, input, async (credential, signal, markDispatched) => {
+      if (input.expectedUserId !== undefined && credential.userId !== input.expectedUserId) {
+        throw new Error('登录账号已变化，请重新运行图片编辑')
       }
-      if (!response.ok) {
-        const error = payload && typeof payload === 'object'
-          ? (payload as { error?: { message?: unknown }; message?: unknown })
-          : {}
-        const detail = safeUpstreamMessage(error.error?.message ?? error.message)
-        throw imageRequestFailure(response.status, detail)
+      const form = new FormData()
+      let sourceBytes = 0
+      for (const assetId of sourceAssetIds) {
+        const source = await options.assets.readOwned(credential.userId, assetId)
+        sourceBytes += source.bytes.byteLength
+        if (sourceBytes > MAXIMUM_EDIT_SOURCE_BYTES) throw new Error('图片编辑参考图总大小超过 64 MB 安全上限')
+        if (signal.aborted) throw signal.reason
+        form.append('image', new File(
+          [Uint8Array.from(source.bytes)],
+          source.asset.fileName,
+          { type: source.asset.mimeType },
+        ))
       }
-      const entries = responseEntries(payload)
-      const results: GeneratedAiAsset[] = []
-      for (const entry of entries) {
-        if (controller.signal.aborted) throw controller.signal.reason
-        const metadata = entry.revisedPrompt ? { revisedPrompt: entry.revisedPrompt } : undefined
-        results.push(entry.b64Json
-          ? await options.assets.storeBase64(credential.userId, entry.b64Json, metadata)
-          : await options.assets.storeRemoteUrl(credential.userId, entry.url!, metadata))
-      }
-      return results
-    } catch (error) {
-      if (controller.signal.aborted) {
-        const reason = controller.signal.reason
-        if (reason instanceof Error && reason.message === '生图请求超时') throw reason
-        throw new Error('已停止等待；服务端可能仍在生成图片，请勿立即重复提交')
-      }
-      throw error
-    } finally {
-      clearTimeout(timeout)
-      if (active.get(key) === operation) active.delete(key)
-    }
+      form.set('model', fields.model)
+      form.set('prompt', fields.prompt)
+      form.set('n', String(fields.n))
+      if (fields.size) form.set('size', fields.size)
+      if (fields.quality) form.set('quality', fields.quality)
+      markDispatched()
+      return fetchImpl(new URL(AI_CHAT_ENDPOINTS.imageEdits, baseUrl), {
+        method: 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `Bearer ${credential.apiKey}`,
+        },
+        body: form,
+        redirect: 'error',
+        signal,
+      })
+    })
+  }
+
+  function cancelOperation(
+    operation: ActiveImageRequest,
+    reason: NonNullable<ActiveImageRequest['cancelReason']>,
+    message: string,
+  ): AiImageCancelResult {
+    if (operation.handle.state() === 'settled') return { canceled: false, mayStillComplete: false }
+    operation.cancelReason = reason
+    const result = operation.handle.cancel(new Error(message))
+    if (!result.canceled) operation.cancelReason = undefined
+    return { canceled: result.canceled, mayStillComplete: result.canceled && operation.dispatched }
   }
 
   function cancel(senderId: number, requestIdInput: string): AiImageCancelResult {
     const requestId = requiredRequestId(requestIdInput)
     const operation = active.get(requestKey(senderId, requestId))
     if (!operation) return { canceled: false, mayStillComplete: false }
-    operation.controller.abort(new Error('用户停止生图'))
-    return { canceled: true, mayStillComplete: true }
+    return cancelOperation(operation, 'user', '用户停止生图')
   }
 
   function cancelSender(senderId: number): number {
     let canceled = 0
     for (const operation of active.values()) {
       if (operation.senderId !== senderId) continue
-      operation.controller.abort(new Error('窗口已关闭'))
-      canceled += 1
+      if (cancelOperation(operation, 'sender', '窗口已关闭').canceled) canceled += 1
     }
     return canceled
   }
@@ -232,8 +345,7 @@ export function createAiImageService(options: {
     let canceled = 0
     for (const operation of active.values()) {
       if (operation.userId !== userId) continue
-      operation.controller.abort(new Error('账号已切换'))
-      canceled += 1
+      if (cancelOperation(operation, 'account', '账号已切换').canceled) canceled += 1
     }
     return canceled
   }
@@ -241,13 +353,17 @@ export function createAiImageService(options: {
   function cancelAll(): number {
     let canceled = 0
     for (const operation of active.values()) {
-      operation.controller.abort(new Error('应用正在退出'))
-      canceled += 1
+      if (cancelOperation(operation, 'application', '应用正在退出').canceled) canceled += 1
     }
     return canceled
   }
 
-  return { generate, cancel, cancelSender, cancelUser, cancelAll }
+  function shutdown(): number {
+    for (const operation of active.values()) operation.cancelReason = 'shutdown'
+    return queue.shutdown(new Error('操作队列已关闭'))
+  }
+
+  return { generate, edit, cancel, cancelSender, cancelUser, cancelAll, shutdown }
 }
 
 export type AiImageService = ReturnType<typeof createAiImageService>

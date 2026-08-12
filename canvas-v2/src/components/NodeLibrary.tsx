@@ -1,0 +1,178 @@
+import { useMemo, useState } from 'react'
+import { Box, FileStack, Image, Library, MessageSquareText, Plus } from 'lucide-react'
+import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
+import type { NodeCategory } from '../domain/node-definition'
+import type { CanvasAssetPage, CanvasPromptPreset } from '../host'
+import { searchPromptPresets } from '../library/prompt-presets'
+import { builtinCanvasTemplates } from '../templates/builtin-templates'
+import { SafeImage } from './MediaPreview'
+
+interface NodeLibraryProps {
+  onAdd(type: string): void
+  onAddPrompt(prompt: string): void
+  onAddAsset(assetId: string): void
+  onDeletePromptPreset(id: string): void
+  onLoadTemplate(templateId: string): void
+  onOpenAssets(): void
+  onAssetMenu(assetId: string): void
+  assets: CanvasAssetPage
+  userPromptPresets: readonly CanvasPromptPreset[]
+}
+
+type LibraryView = 'nodes' | 'prompts' | 'templates' | 'assets'
+
+const libraryViews: ReadonlyArray<{ id: LibraryView; label: string; icon: typeof Box }> = [
+  { id: 'nodes', label: '节点', icon: Box },
+  { id: 'prompts', label: '提示词', icon: MessageSquareText },
+  { id: 'templates', label: '模板', icon: FileStack },
+  { id: 'assets', label: '素材', icon: Image },
+]
+
+const categoryOrder: readonly NodeCategory[] = ['input', 'generation', 'transform', 'flow', 'output', 'structural']
+const categoryLabel: Record<NodeCategory, string> = {
+  input: '输入',
+  generation: '生成',
+  transform: '处理',
+  flow: '流程',
+  output: '输出',
+  structural: '组织',
+}
+
+export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPreset, onLoadTemplate, onOpenAssets, onAssetMenu, assets, userPromptPresets }: NodeLibraryProps) {
+  const [view, setView] = useState<LibraryView>('nodes')
+  const [query, setQuery] = useState('')
+  const normalized = query.trim().toLowerCase()
+  const definitions = useMemo(() => builtinNodeRegistry.list().filter((definition) => (
+    !['text', 'image', 'video', 'unknown'].includes(definition.type)
+    && (!normalized || `${definition.title} ${definition.description} ${definition.type}`.toLowerCase().includes(normalized))
+  )), [normalized])
+  const promptPresets = useMemo(() => searchPromptPresets(query), [query])
+  const userPresets = useMemo(() => userPromptPresets.filter((preset) => (
+    !normalized || `${preset.name} ${preset.prompt} ${preset.tags.join(' ')}`.toLowerCase().includes(normalized)
+  )), [normalized, userPromptPresets])
+  const templates = useMemo(() => builtinCanvasTemplates.filter((template) => (
+    !normalized || `${template.name} ${template.description} ${template.tags.join(' ')}`.toLowerCase().includes(normalized)
+  )), [normalized])
+  const recentAssets = assets.items.slice(0, 8)
+
+  const counts: Record<LibraryView, number> = {
+    nodes: definitions.length,
+    prompts: promptPresets.length + userPresets.length,
+    templates: templates.length,
+    assets: assets.total,
+  }
+
+  return (
+    <aside className="node-library" aria-label="创作内容库">
+      <header>
+        <span className="library-title"><Library size={15} /><strong>创作库</strong></span>
+        <span>{counts[view]}</span>
+      </header>
+      <div className="library-tabs" role="tablist" aria-label="创作库类型">
+        {libraryViews.map((entry) => {
+          const Icon = entry.icon
+          return (
+            <button
+              key={entry.id}
+              type="button"
+              role="tab"
+              aria-selected={view === entry.id}
+              title={entry.label}
+              onClick={() => { setView(entry.id); setQuery('') }}
+            >
+              <Icon size={14} /><span>{entry.label}</span>
+            </button>
+          )
+        })}
+      </div>
+      {view !== 'assets' && (
+        <div className="node-library-search">
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`搜索${libraryViews.find((entry) => entry.id === view)?.label ?? ''}`} aria-label={`搜索${libraryViews.find((entry) => entry.id === view)?.label ?? ''}`} />
+        </div>
+      )}
+      <div className="node-library-scroll">
+        {view === 'templates' && <section className="template-section">
+          <div className="node-library-section-title">工作流模板</div>
+          {templates.map((template) => (
+            <button key={template.id} type="button" className="template-row" onClick={() => onLoadTemplate(template.id)}>
+              <span className="template-swatch" style={{ backgroundColor: template.thumbnail.value }} />
+              <span><strong>{template.name}</strong><small>{template.description}</small></span>
+            </button>
+          ))}
+          {templates.length === 0 && <p className="library-empty">没有匹配的工作流模板</p>}
+        </section>}
+        {view === 'prompts' && <section className="prompt-preset-section">
+          {userPresets.length > 0 && <>
+            <div className="node-library-section-title">我的预设</div>
+            {userPresets.map((preset) => (
+              <div key={preset.id} className="prompt-preset-row user-prompt-preset-row">
+                <button type="button" onClick={() => onAddPrompt(preset.prompt)}><span><strong>{preset.name}</strong><small>{preset.tags.join(' · ') || preset.prompt}</small></span></button>
+                <button type="button" className="prompt-preset-delete" title="删除预设" aria-label={`删除预设 ${preset.name}`} onClick={() => onDeletePromptPreset(preset.id)}>×</button>
+              </div>
+            ))}
+          </>}
+          <div className="node-library-section-title">星芒提示词预设</div>
+          {promptPresets.map((preset) => (
+            <button key={preset.id} type="button" className="prompt-preset-row" onClick={() => onAddPrompt(preset.prompt)}>
+              <span><strong>{preset.title}</strong><small>{preset.description}</small></span>
+              <Plus size={14} aria-hidden="true" />
+            </button>
+          ))}
+          {promptPresets.length === 0 && userPresets.length === 0 && <p className="library-empty">没有匹配的提示词</p>}
+        </section>}
+        {view === 'assets' && <section className="library-assets-section">
+          <div className="library-assets-heading"><span>最近素材</span><button type="button" onClick={onOpenAssets}>查看全部</button></div>
+          <div className="library-asset-grid">
+            {recentAssets.map((asset) => (
+              <button
+                key={asset.assetId}
+                type="button"
+                title={`${asset.fileName}\n点击添加到画布，右键打开素材操作`}
+                onClick={() => onAddAsset(asset.assetId)}
+                onContextMenu={(event) => { event.preventDefault(); onAssetMenu(asset.assetId) }}
+                draggable
+                onDragStart={(event) => {
+                  event.dataTransfer.setData('application/x-xingmang-asset-id', asset.assetId)
+                  event.dataTransfer.effectAllowed = 'copy'
+                }}
+              >
+                <SafeImage src={asset.thumbnailUrl} alt={asset.fileName} loading="lazy" />
+                <span>{asset.fileName}</span>
+              </button>
+            ))}
+          </div>
+          {recentAssets.length === 0 && <p className="library-empty">还没有本地素材</p>}
+          <button type="button" className="library-assets-open" onClick={onOpenAssets}>打开素材管理</button>
+        </section>}
+        {view === 'nodes' && categoryOrder.map((category) => {
+          const entries = definitions.filter((definition) => definition.category === category)
+          if (entries.length === 0) return null
+          return (
+            <section key={category}>
+              <div className="node-library-section-title">{categoryLabel[category]}</div>
+              <div className="node-library-grid">
+                {entries.map((definition) => (
+                  <button
+                    key={definition.type}
+                    type="button"
+                    className={`node-library-item node-library-${definition.category}`}
+                    title={definition.description}
+                    onClick={() => onAdd(definition.type)}
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.setData('application/x-xingmang-node', definition.type)
+                      event.dataTransfer.effectAllowed = 'copy'
+                    }}
+                  >
+                    <span className="node-library-icon" aria-hidden="true">{definition.title.slice(0, 1)}</span>
+                    <span><strong>{definition.title}</strong><small>{definition.description}</small></span>
+                  </button>
+                ))}
+              </div>
+            </section>
+          )
+        })}
+      </div>
+    </aside>
+  )
+}

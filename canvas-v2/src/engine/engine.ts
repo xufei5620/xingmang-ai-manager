@@ -10,6 +10,8 @@ export interface NodeInputs {
   /** 按输入端口类型汇集的上游产物:text 端口收上游文本,image 端口收 AssetRef。 */
   text?: string
   image?: AssetRef
+  /** 按连线顺序保留的全部图像输入；image 是向后兼容的首张图。 */
+  images?: AssetRef[]
 }
 
 export interface NodeExecutionResult {
@@ -97,7 +99,10 @@ function collectInputs(
       // 多条 text 入边时拼接(如多个提示词节点汇入一个图像节点)。
       inputs.text = inputs.text === undefined ? upstream.output.text : `${inputs.text}\n${upstream.output.text}`
     }
-    if (upstream.output.asset?.kind === 'image') inputs.image = upstream.output.asset
+    if (upstream.output.asset?.kind === 'image') {
+      inputs.image ??= upstream.output.asset
+      inputs.images = [...(inputs.images ?? []), upstream.output.asset]
+    }
   }
   return inputs
 }
@@ -171,22 +176,29 @@ export function createMockExecutors(delayMs = 600): Record<NodeKind, NodeExecuto
       reject(new Error('已取消'))
     }, { once: true })
   })
-  return {
-    text: async (node, _inputs, signal) => {
+  const text: NodeExecutor = async (node, _inputs, signal) => {
       await wait(signal)
       return { output: { text: node.data.prompt } }
-    },
-    image: async (node, inputs, signal) => {
+    }
+  const image: NodeExecutor = async (node, inputs, signal) => {
       await wait(signal)
       const prompt = [inputs.text, node.data.prompt].filter(Boolean).join('\n')
       if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
       return { output: { asset: { kind: 'image', remoteUrl: `mock://image?prompt=${encodeURIComponent(prompt.slice(0, 64))}` } }, costQuota: 0 }
-    },
-    video: async (node, inputs, signal) => {
+    }
+  const video: NodeExecutor = async (node, inputs, signal) => {
       await wait(signal)
       const prompt = [inputs.text, node.data.prompt].filter(Boolean).join('\n')
       if (!prompt && !inputs.image) throw new Error('请输入视频提示词或连接上游图像节点')
       return { output: { asset: { kind: 'video', remoteUrl: 'mock://video', taskId: `mock-${node.id}` } }, costQuota: 0 }
-    },
+    }
+  const unsupported: NodeExecutor = async () => { throw new Error('该节点尚未接入可执行能力') }
+  return {
+    text, image, video, prompt: text,
+    'image-input': unsupported, 'video-input': unsupported,
+    'image-generate': image, 'image-edit': image, 'video-generate': video,
+    'frame-extract': unsupported, router: unsupported, gallery: unsupported, output: unsupported,
+    group: unsupported, note: unsupported,
+    unknown: unsupported,
   }
 }

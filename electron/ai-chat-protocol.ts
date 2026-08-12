@@ -1,6 +1,7 @@
 export const AI_CHAT_ENDPOINTS = {
   chatCompletions: '/v1/chat/completions',
   imageGenerations: '/v1/images/generations',
+  imageEdits: '/v1/images/edits',
 } as const
 
 export const AI_CHAT_LIMITS = {

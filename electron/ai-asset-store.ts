@@ -5,7 +5,12 @@ import { lookup as nodeLookup } from 'node:dns/promises'
 import https from 'node:https'
 import { BlockList, isIP, type LookupFunction } from 'node:net'
 import { Readable } from 'node:stream'
-import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
+import {
+  assertNoReparseComponents,
+  ensureSafeDataDirectory,
+  removeSafeDataFile,
+} from './safe-local-data'
+import { sameLocalPathIdentity } from './path-identity'
 
 const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000
@@ -63,6 +68,21 @@ export interface AiAssetMetadata {
 export interface AiOwnedAssetRead {
   asset: AiStoredAsset
   bytes: Buffer
+}
+
+export interface AiAssetListQuery {
+  offset?: number
+  limit?: number
+  mediaType?: 'all' | 'image'
+  search?: string
+}
+
+export interface AiAssetListPage {
+  items: Array<AiStoredAsset & { createdAt: string; mediaType: 'image'; thumbnailUrl: string }>
+  offset: number
+  limit: number
+  total: number
+  hasMore: boolean
 }
 
 export interface AiAssetContextMenuItem {
@@ -470,8 +490,8 @@ async function fetchRemoteImage(
   }
 }
 
-async function readBoundedOwnedFile(filePath: string, maximumBytes: number): Promise<Buffer> {
-  assertNoReparseComponents(filePath, FILE_LABEL)
+async function readBoundedOwnedFile(filePath: string, maximumBytes: number, directoryAlreadyChecked = false): Promise<Buffer> {
+  if (!directoryAlreadyChecked) assertNoReparseComponents(filePath, FILE_LABEL)
   const handle = await fs.promises.open(filePath, 'r')
   try {
     const before = await handle.stat({ bigint: true })
@@ -479,7 +499,9 @@ async function readBoundedOwnedFile(filePath: string, maximumBytes: number): Pro
       throw new Error('AI 图片资产文件无效或超过安全上限')
     }
     const current = await fs.promises.lstat(filePath, { bigint: true })
-    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n || current.dev !== before.dev || current.ino !== before.ino) {
+    const canonical = await fs.promises.realpath(filePath)
+    if (!current.isFile() || current.isSymbolicLink() || current.nlink !== 1n || current.dev !== before.dev || current.ino !== before.ino
+      || !sameLocalPathIdentity(canonical, filePath)) {
       throw new Error('AI 图片资产文件在读取前发生变化')
     }
     const bytes = await handle.readFile()
@@ -553,6 +575,15 @@ export class AiAssetStore {
     return this.persist(userId, source.bytes, source.declaredMime, meta)
   }
 
+  async storeLocalFile(userId: number, filePath: string): Promise<AiStoredAsset> {
+    assertUserId(userId)
+    if (typeof filePath !== 'string' || !path.isAbsolute(filePath) || filePath.includes('\0')) {
+      throw new Error('本地图片路径无效')
+    }
+    const bytes = await readBoundedOwnedFile(filePath, this.maximumImageBytes)
+    return this.persist(userId, bytes, null)
+  }
+
   async readOwned(userId: number, assetId: string): Promise<AiOwnedAssetRead> {
     const record = await this.resolveOwned(userId, assetId)
     const bytes = await readBoundedOwnedFile(record.filePath, this.maximumImageBytes)
@@ -568,17 +599,108 @@ export class AiAssetStore {
     }
   }
 
-  async copy(userId: number, assetId: string): Promise<void> {
+  async listOwned(userId: number, maximum = 200): Promise<Array<AiStoredAsset & { createdAt: string }>> {
+    assertUserId(userId)
+    if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 500) throw new Error('AI 图片列表数量无效')
+    const accountRoot = path.join(this.outputRoot, `user-${userId}`)
+    let dateEntries: fs.Dirent[]
+    try {
+      assertNoReparseComponents(accountRoot, FILE_LABEL)
+      dateEntries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw new Error('无法读取 AI 图片资产目录')
+    }
+    if (dateEntries.length > 4_096) throw new Error('AI 图片资产目录条目过多')
+    const result: Array<AiStoredAsset & { createdAt: string }> = []
+    for (const dateEntry of dateEntries.sort((left, right) => right.name.localeCompare(left.name))) {
+      if (result.length >= maximum) break
+      if (!DATE_DIRECTORY_PATTERN.test(dateEntry.name)) continue
+      if (dateEntry.isSymbolicLink()) throw new Error('AI 图片资产目录不能经过符号链接或目录联接')
+      if (!dateEntry.isDirectory()) continue
+      const directory = path.join(accountRoot, dateEntry.name)
+      assertNoReparseComponents(directory, FILE_LABEL)
+      const files = await fs.promises.readdir(directory, { withFileTypes: true })
+      if (files.length > 4_096) throw new Error('AI 图片资产目录条目过多')
+      const candidates = files.sort((left, right) => right.name.localeCompare(left.name)).flatMap((entry) => {
+        const match = entry.name.match(/^xingmang-([A-Za-z0-9_-]{43})\.(png|jpg|webp)$/)
+        return match && entry.isFile() && !entry.isSymbolicLink()
+          ? [{ entry, assetId: match[1], extension: match[2] }]
+          : []
+      })
+      // Four concurrent reads keep the worst-case memory bounded at 256 MB
+      // while avoiding 500 fully-serial filesystem round trips after restart.
+      for (let offset = 0; offset < candidates.length && result.length < maximum; offset += 4) {
+        const batch = await Promise.all(candidates.slice(offset, offset + 4).map(async (candidate) => {
+          try {
+            const filePath = path.join(directory, candidate.entry.name)
+            const bytes = await readBoundedOwnedFile(filePath, this.maximumImageBytes, true)
+            const inspection = inspectAiImage(bytes)
+            if (inspection.extension !== candidate.extension) throw new Error('AI 图片扩展名与内容不一致')
+            const asset = publicAsset(candidate.assetId, inspection)
+            const record: OwnedAssetRecord = { userId, filePath, asset }
+            this.records.set(candidate.assetId, record)
+            const stat = await fs.promises.lstat(filePath)
+            return { ...asset, createdAt: stat.birthtime.toISOString() }
+          } catch {
+            // A missing or malformed file is omitted instead of producing a broken preview.
+            return null
+          }
+        }))
+        result.push(...batch.filter((entry): entry is NonNullable<typeof entry> => entry !== null).slice(0, maximum - result.length))
+      }
+    }
+    return result
+  }
+
+  async listOwnedPage(userId: number, query: AiAssetListQuery = {}): Promise<AiAssetListPage> {
+    assertUserId(userId)
+    const offset = query.offset ?? 0
+    const limit = query.limit ?? 24
+    const mediaType = query.mediaType ?? 'all'
+    const search = query.search?.trim() ?? ''
+    if (!Number.isSafeInteger(offset) || offset < 0 || offset > 500) throw new Error('AI 图片分页位置无效')
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('AI 图片分页数量无效')
+    if (mediaType !== 'all' && mediaType !== 'image') throw new Error('AI 图片媒体类型无效')
+    if (search.length > 128 || /[\x00-\x1F\x7F]/.test(search)) throw new Error('AI 图片搜索内容无效')
+
+    const normalizedSearch = search.toLocaleLowerCase('zh-CN')
+    const candidates = (await this.listOwned(userId, 500))
+      .map((asset) => ({ ...asset, mediaType: 'image' as const, thumbnailUrl: asset.localUrl }))
+      .filter((asset) => mediaType === 'all' || asset.mediaType === mediaType)
+      .filter((asset) => !normalizedSearch || [asset.fileName, asset.assetId, asset.revisedPrompt ?? '']
+        .some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedSearch)))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.assetId.localeCompare(left.assetId))
+    const items = candidates.slice(offset, offset + limit)
+    return {
+      items,
+      offset,
+      limit,
+      total: candidates.length,
+      hasMore: offset + items.length < candidates.length,
+    }
+  }
+
+  async removeOwned(userId: number, assetId: string): Promise<void> {
+    const record = await this.resolveOwned(userId, assetId)
+    await readBoundedOwnedFile(record.filePath, this.maximumImageBytes)
+    await removeSafeDataFile(record.filePath, FILE_LABEL)
+    if (this.records.get(assetId) === record) this.records.delete(assetId)
+  }
+
+  async copy(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<void> {
     if (!this.nativeOperations.copyImage) throw new Error('当前环境不支持复制图片')
     const owned = await this.readOwned(userId, assetId)
+    await authorize?.()
     await this.nativeOperations.copyImage(owned.bytes, owned.asset.mimeType)
   }
 
-  async saveAs(userId: number, assetId: string): Promise<boolean> {
+  async saveAs(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<boolean> {
     if (!this.nativeOperations.selectSavePath) throw new Error('当前环境不支持图片另存为')
     const owned = await this.readOwned(userId, assetId)
     const target = await this.nativeOperations.selectSavePath(owned.asset.fileName)
     if (!target) return false
+    await authorize?.()
     if (!path.isAbsolute(target) || target.includes('\0')) throw new Error('图片另存地址无效')
     try {
       await fs.promises.writeFile(target, owned.bytes)
@@ -588,10 +710,11 @@ export class AiAssetStore {
     return true
   }
 
-  async revealInFolder(userId: number, assetId: string): Promise<void> {
+  async revealInFolder(userId: number, assetId: string, authorize?: () => void | Promise<void>): Promise<void> {
     if (!this.nativeOperations.revealInFolder) throw new Error('当前环境不支持在文件夹中定位')
     const record = await this.resolveOwned(userId, assetId)
     await readBoundedOwnedFile(record.filePath, this.maximumImageBytes)
+    await authorize?.()
     await this.nativeOperations.revealInFolder(record.filePath)
   }
 
@@ -602,21 +725,17 @@ export class AiAssetStore {
   ): Promise<void> {
     if (!this.nativeOperations.showContextMenu) throw new Error('当前环境不支持图片右键菜单')
     await this.resolveOwned(userId, assetId)
-    const authorized = async (operation: () => void | Promise<void>): Promise<void> => {
-      await authorize?.()
-      await operation()
-    }
     await this.nativeOperations.showContextMenu([
-      { id: 'copy', label: '复制图片', run: () => authorized(() => this.copy(userId, assetId)) },
+      { id: 'copy', label: '复制图片', run: () => this.copy(userId, assetId, authorize) },
       {
         id: 'save-as',
         label: '图片另存为',
-        run: () => authorized(async () => { await this.saveAs(userId, assetId) }),
+        run: async () => { await this.saveAs(userId, assetId, authorize) },
       },
       {
         id: 'reveal-in-folder',
         label: '在文件夹中显示',
-        run: () => authorized(() => this.revealInFolder(userId, assetId)),
+        run: () => this.revealInFolder(userId, assetId, authorize),
       },
     ])
   }
