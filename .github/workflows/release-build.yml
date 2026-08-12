@@ -125,6 +125,13 @@ jobs:
 
       - run: npm ci --registry=https://registry.npmjs.org/
 
+      - name: Install the Chromium the layout tests need
+        # 发布门禁跑 npm test,其中 e2e/maintenance-layout.test.mjs 用
+        # @playwright/test 的 chromium 做真实布局断言。npm ci 只装 npm 包,
+        # 浏览器二进制要另外下载(CLAUDE.md 的云端/CI 提示),否则这两个
+        # 用例必挂在 "Executable doesn't exist"。
+        run: npx --no-install playwright install chromium
+
       - name: Build canvas-v2 as the packaged canvas
         # 云端 runner 没有兄弟仓 xingmang-canvas 的 v1 产物,不现场构建 v2 的话
         # 正式包里将完全没有画布,点「无限画布」只会看到中文报错。
