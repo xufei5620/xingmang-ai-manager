@@ -1,20 +1,22 @@
 import { memo } from 'react'
 import { Handle, Position, type NodeProps, type Node } from '@xyflow/react'
 import { nodeInputKinds, nodeOutputKind, type NodeKind, type WorkflowNodeData } from '../model'
-import { presetImageModels, presetVideoModels } from '../models'
+import {
+  defaultImageQuality,
+  defaultImageSize,
+  imageModelPreset,
+  imageModelPresets,
+  imageQualityOptions,
+  presetVideoModels,
+} from '../models'
 import { inputHandleId, outputHandleId } from '../ports'
 
 /** 全画布共享的模型建议清单(datalist 只需渲染一次,App 根部挂载)。 */
 export function ModelSuggestions() {
   return (
-    <>
-      <datalist id="wf-image-models">
-        {presetImageModels.map((model) => <option key={model} value={model} />)}
-      </datalist>
-      <datalist id="wf-video-models">
-        {presetVideoModels.map((model) => <option key={model} value={model} />)}
-      </datalist>
-    </>
+    <datalist id="wf-video-models">
+      {presetVideoModels.map((model) => <option key={model} value={model} />)}
+    </datalist>
   )
 }
 
@@ -40,6 +42,8 @@ const statusLabel: Record<WorkflowNodeData['status'], string> = {
 interface NodeChangeHandlers {
   onPromptChange(nodeId: string, prompt: string): void
   onModelChange(nodeId: string, model: string): void
+  onQualityChange(nodeId: string, quality: string): void
+  onSizeChange(nodeId: string, size: string): void
   /** 单节点重跑:只执行本节点,输入取当前画布状态里上游节点的既有产物。 */
   onRerun(nodeId: string): void
   /** 媒体产物落盘(经宿主第 6 能力,主进程拉 URL 写盘)。 */
@@ -53,6 +57,8 @@ interface NodeChangeHandlers {
 let handlers: NodeChangeHandlers = {
   onPromptChange: () => undefined,
   onModelChange: () => undefined,
+  onQualityChange: () => undefined,
+  onSizeChange: () => undefined,
   onRerun: () => undefined,
   onDownloadAsset: () => undefined,
   onResumeTask: () => undefined,
@@ -98,12 +104,53 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData; kin
         onChange={(event) => handlers.onPromptChange(id, event.target.value)}
         rows={3}
       />
-      {kind !== 'text' && (
+      {kind === 'image' && (() => {
+        const preset = imageModelPreset(data.model || imageModelPresets[0].id)
+        return (
+          <>
+            <select
+              className="nodrag wf-model"
+              value={data.model || imageModelPresets[0].id}
+              onChange={(event) => handlers.onModelChange(id, event.target.value)}
+            >
+              {imageModelPresets.map((entry) => (
+                <option key={entry.id} value={entry.id}>{entry.label}</option>
+              ))}
+              {!imageModelPresets.some((entry) => entry.id === data.model) && data.model && (
+                <option value={data.model}>{data.model}</option>
+              )}
+            </select>
+            <div className="wf-params nodrag">
+              {preset.supportsQuality && (
+                <select
+                  className="wf-model"
+                  value={data.quality || defaultImageQuality}
+                  title="画质档位(费用与耗时差异大)"
+                  onChange={(event) => handlers.onQualityChange(id, event.target.value)}
+                >
+                  {imageQualityOptions.map((entry) => (
+                    <option key={entry.value} value={entry.value}>{entry.label}</option>
+                  ))}
+                </select>
+              )}
+              <select
+                className="wf-model"
+                value={preset.sizes.includes(data.size || '') ? (data.size as string) : (preset.sizes[0] ?? defaultImageSize)}
+                title="输出尺寸"
+                onChange={(event) => handlers.onSizeChange(id, event.target.value)}
+              >
+                {preset.sizes.map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+            </div>
+          </>
+        )
+      })()}
+      {kind === 'video' && (
         <input
           className="nodrag wf-model"
           value={data.model}
-          list={kind === 'image' ? 'wf-image-models' : 'wf-video-models'}
-          placeholder={kind === 'image' ? '选择或输入图像模型' : '视频模型(渠道接入后可用)'}
+          list="wf-video-models"
+          placeholder="视频模型(渠道接入后可用)"
           onChange={(event) => handlers.onModelChange(id, event.target.value)}
         />
       )}
@@ -114,7 +161,10 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData; kin
         <img className="wf-preview" src={data.result.remoteUrl} alt="生成结果" loading="lazy" />
       )}
       {data.result?.remoteUrl && (data.result.remoteUrl.startsWith('mock://') || data.result.kind === 'video') && (
-        <p className="wf-result-note">产物:{data.result.remoteUrl}</p>
+        <p className="wf-result-note">产物:{data.result.remoteUrl.slice(0, 120)}</p>
+      )}
+      {kind === 'image' && data.result?.remoteUrl?.startsWith('https://') && imageModelPreset(data.model).ephemeralUrl && (
+        <p className="wf-result-note">⚠️ 该模型的图片链接 24 小时后过期,请尽快下载保存</p>
       )}
       {typeof data.costQuota === 'number' && data.costQuota > 0 && (
         <p className="wf-cost">本次消耗 {data.costQuota} quota</p>

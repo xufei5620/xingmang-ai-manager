@@ -20,6 +20,10 @@ export interface WorkflowNodeData {
   prompt: string
   /** relay 侧模型名。渠道配置好之前允许为空,mock 执行器不校验。 */
   model: string
+  /** 图像画质档(gpt-image 系必须显式传,默认 low——auto 有 35 倍费用陷阱,见 RECON-image-generation)。 */
+  quality?: string
+  /** 图像尺寸(按模型区分合法值,见 models.ts 预设)。 */
+  size?: string
   status: NodeStatus
   result?: AssetRef
   /** 面向用户的失败原因(中文),仅 status === 'failed' 时有意义。 */
@@ -106,6 +110,8 @@ export function parseWorkflowFile(content: string): WorkflowFile | null {
       data: {
         prompt: data.prompt,
         model: data.model,
+        quality: typeof data.quality === 'string' ? data.quality : undefined,
+        size: typeof data.size === 'string' ? data.size : undefined,
         status: data.status === 'succeeded' ? 'succeeded' : 'idle',
         result: isRecord(data.result) && (data.result.kind === 'image' || data.result.kind === 'video')
           ? {

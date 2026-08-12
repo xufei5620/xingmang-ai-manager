@@ -1,4 +1,5 @@
 import type { NodeKind } from '../model'
+import { defaultImageQuality, defaultImageSize, imageModelPreset } from '../models'
 import type { NodeExecutor } from './engine'
 import { generateImage, pollVideoTask, submitVideoTask, type RelayConfig } from './relay'
 
@@ -42,8 +43,15 @@ export function createRelayExecutors(
     image: async (node, inputs) => {
       const prompt = combinedPrompt(inputs.text, node.data.prompt)
       if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
-      if (!node.data.model.trim()) throw new Error('请填写图像模型名(渠道配置后可用)')
-      const asset = await generateImage(config, { model: node.data.model.trim(), prompt })
+      const model = node.data.model.trim()
+      if (!model) throw new Error('请选择图像模型')
+      const preset = imageModelPreset(model)
+      const asset = await generateImage(config, {
+        model,
+        prompt,
+        size: node.data.size || defaultImageSize,
+        quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
+      })
       return { output: { asset } }
     },
 

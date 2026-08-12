@@ -69,15 +69,27 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  */
 export async function generateImage(
   config: RelayConfig,
-  input: { model: string; prompt: string },
+  input: { model: string; prompt: string; size?: string; quality?: string },
 ): Promise<AssetRef> {
   const raw = await relayRequest(
     config,
     '/v1/images/generations',
-    { method: 'POST', body: { model: input.model, prompt: input.prompt, n: 1 } },
+    {
+      method: 'POST',
+      body: {
+        model: input.model,
+        prompt: input.prompt,
+        n: 1,
+        ...(input.size ? { size: input.size } : {}),
+        // quality 由调用方按模型能力决定是否传(即梦不传);gpt-image 系
+        // 必须显式传,否则 auto 档按提示词复杂度跳档,费用差可达 35 倍。
+        ...(input.quality ? { quality: input.quality } : {}),
+      },
+    },
     '图像生成',
+    // 实测 high 档最长 183s(RECON-image-generation),超时放到 320s;
     // b64 响应体是兆级字符串,给足余量(默认 8MB 会截断大图)。
-    { maxResponseBytes: 64 * 1024 * 1024 },
+    { timeoutMs: 320_000, maxResponseBytes: 64 * 1024 * 1024 },
   )
   const data = isRecord(raw) && Array.isArray(raw.data) ? raw.data[0] : null
   if (isRecord(data) && typeof data.url === 'string' && data.url) {

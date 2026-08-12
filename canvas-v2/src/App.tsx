@@ -26,7 +26,7 @@ import { pollVideoTask, type RelayConfig } from './engine/relay'
 import { hostBridge } from './host'
 import { SimpleMode } from './SimpleMode'
 import { isValidWorkflowConnection } from './ports'
-import { defaultImageModel } from './models'
+import { defaultImageModel, defaultImageQuality, defaultImageSize } from './models'
 import { ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
 
 // 画布装配层:@xyflow/react 的 Node/Edge 与领域模型互相映射,引擎与
@@ -52,6 +52,8 @@ function toWorkflowNode(node: CanvasNode): WorkflowNode {
     data: {
       prompt: node.data.prompt,
       model: node.data.model,
+      quality: node.data.quality,
+      size: node.data.size,
       status: node.data.status,
       result: node.data.result,
       errorMessage: node.data.errorMessage,
@@ -197,6 +199,8 @@ export function App() {
     registerNodeChangeHandlers({
       onPromptChange: (nodeId, prompt) => patchNodeData(nodeId, { prompt }),
       onModelChange: (nodeId, model) => patchNodeData(nodeId, { model }),
+      onQualityChange: (nodeId, quality) => patchNodeData(nodeId, { quality }),
+      onSizeChange: (nodeId, size) => patchNodeData(nodeId, { size }),
       onRerun: (nodeId) => void rerunNode(nodeId),
       onDownloadAsset: (nodeId) => void downloadNodeAsset(nodeId),
       onResumeTask: (nodeId) => void resumeTask(nodeId),
@@ -208,8 +212,10 @@ export function App() {
       id: nextNodeId(),
       kind,
       position: { x: 120 + Math.random() * 240, y: 120 + Math.random() * 160 },
-      // 图像节点预填当前默认模型(xm 已配渠道),省一次手输。
-      data: { prompt: '', model: kind === 'image' ? defaultImageModel : '', status: 'idle' },
+      // 图像节点预填默认模型/画质/尺寸(quality 必须显式传,见 RECON)。
+      data: kind === 'image'
+        ? { prompt: '', model: defaultImageModel, quality: defaultImageQuality, size: defaultImageSize, status: 'idle' }
+        : { prompt: '', model: '', status: 'idle' },
     }
     setNodes((current) => [...current, toCanvasNode(node)])
   }

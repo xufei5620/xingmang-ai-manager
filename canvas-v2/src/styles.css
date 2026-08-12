@@ -129,6 +129,36 @@ html, body, #root {
   margin: 6px 10px 0;
 }
 
+.wf-params {
+  display: flex;
+  gap: 6px;
+  margin: 0 10px;
+}
+
+.wf-params .wf-model {
+  flex: 1;
+  min-width: 0;
+  margin: 8px 0 0;
+  width: auto;
+}
+
+.wf-node select.wf-model {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 8px 10px 0;
+  padding: 6px 8px;
+  border: 1px solid #dfe4ec;
+  border-radius: 6px;
+  font-size: 12px;
+  font-family: inherit;
+  background: #ffffff;
+}
+
+.wf-params select.wf-model {
+  width: auto;
+  margin: 8px 0 0;
+}
+
 .simple-mode {
   flex: 1;
   overflow: auto;
@@ -166,6 +196,19 @@ html, body, #root {
   font-family: inherit;
   resize: vertical;
 }
+
+.simple-card select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #dfe4ec;
+  border-radius: 8px;
+  font-size: 13px;
+  font-family: inherit;
+  background: #ffffff;
+}
+
+.simple-params { display: flex; gap: 12px; }
+.simple-params label { flex: 1; }
 
 .simple-check { display: flex; align-items: center; gap: 8px; }
 .simple-check input { width: 15px; height: 15px; }

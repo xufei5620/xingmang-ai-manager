@@ -1,7 +1,13 @@
 import { useRef, useState } from 'react'
 import type { NodeExecutor } from './engine/engine'
 import type { AssetRef, NodeKind, WorkflowFile } from './model'
-import { defaultImageModel } from './models'
+import {
+  defaultImageModel,
+  defaultImageQuality,
+  imageModelPreset,
+  imageModelPresets,
+  imageQualityOptions,
+} from './models'
 import { hostBridge } from './host'
 
 // 简单模式 = 单节点工作流的固定表单形态(M2 双模式,规划第 1 节):
@@ -25,6 +31,9 @@ function simpleNodeId(): string {
 export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleModeProps) {
   const [prompt, setPrompt] = useState('')
   const [imageModel, setImageModel] = useState(defaultImageModel)
+  const [imageQuality, setImageQuality] = useState(defaultImageQuality)
+  const [imageSize, setImageSize] = useState(imageModelPreset(defaultImageModel).sizes[0])
+  const modelPreset = imageModelPreset(imageModel)
   const [wantVideo, setWantVideo] = useState(false)
   const [videoModel, setVideoModel] = useState('')
   const [videoPrompt, setVideoPrompt] = useState('')
@@ -50,7 +59,13 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
           id: simpleNodeId(),
           kind: 'image',
           position: { x: 0, y: 0 },
-          data: { prompt, model: imageModel, status: 'idle' },
+          data: {
+            prompt,
+            model: imageModel,
+            quality: imageQuality,
+            size: modelPreset.sizes.includes(imageSize) ? imageSize : modelPreset.sizes[0],
+            status: 'idle',
+          },
         },
         {},
         controller.signal,
@@ -136,8 +151,38 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
         </label>
         <label>
           <span>图像模型</span>
-          <input value={imageModel} list="wf-image-models" onChange={(event) => setImageModel(event.target.value)} placeholder="选择或输入图像模型" />
+          <select
+            value={imageModel}
+            onChange={(event) => {
+              const nextModel = event.target.value
+              setImageModel(nextModel)
+              const sizes = imageModelPreset(nextModel).sizes
+              if (!sizes.includes(imageSize)) setImageSize(sizes[0])
+            }}
+          >
+            {imageModelPresets.map((entry) => (
+              <option key={entry.id} value={entry.id}>{entry.label}</option>
+            ))}
+          </select>
         </label>
+        <div className="simple-params">
+          {modelPreset.supportsQuality && (
+            <label>
+              <span>画质</span>
+              <select value={imageQuality} onChange={(event) => setImageQuality(event.target.value)}>
+                {imageQualityOptions.map((entry) => (
+                  <option key={entry.value} value={entry.value}>{entry.label}</option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label>
+            <span>尺寸</span>
+            <select value={modelPreset.sizes.includes(imageSize) ? imageSize : modelPreset.sizes[0]} onChange={(event) => setImageSize(event.target.value)}>
+              {modelPreset.sizes.map((size) => <option key={size} value={size}>{size}</option>)}
+            </select>
+          </label>
+        </div>
         <label className="simple-check">
           <input type="checkbox" checked={wantVideo} onChange={(event) => setWantVideo(event.target.checked)} />
           <span>继续用这张图生成视频</span>
@@ -165,6 +210,9 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
         {image?.remoteUrl && !image.remoteUrl.startsWith('mock://') && (
           <div className="simple-result">
             <img src={image.remoteUrl} alt="生成的图像" />
+            {image.remoteUrl.startsWith('https://') && modelPreset.ephemeralUrl && (
+              <p className="simple-hint">⚠️ 该模型的图片链接 24 小时后过期,请尽快下载保存</p>
+            )}
             <button type="button" onClick={() => download(image)}>下载图像</button>
           </div>
         )}
