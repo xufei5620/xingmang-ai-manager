@@ -1,0 +1,118 @@
+# 手动触发的 Windows **正式签名**安装包构建(2026-08-12 老板决定发布链路搬到 CI)。
+#
+# 与 test-build.yml 的区别就是"正式"两个字的全部含义:
+#   - XINGMANG_RELEASE=1 + 真实证书 => 走 scripts/run-release-build.cjs 的完整
+#     发布门禁(前置检查/类型检查/全部测试/编译/两个 Electron 冒烟/加固校验/
+#     ASAR 篡改必须被拒/Authenticode 与产物校验),任何一关不过就没有产物。
+#   - 产出 Setup.exe + .blockmap + latest.yml 三件套,客户端的"检查更新"要靠
+#     它们才能工作(测试包里更新器是关掉的)。
+#
+# **本工作流永远不上传到更新服务器**:--publish never 由发布脚本固定写死,
+# 这里也不配置任何 R2/对象存储凭据。产物只挂在 Actions artifact,由老板下载
+# 后人工上传——RELEASING.md 要求每次发布都要产品所有者针对当前版本明确授权,
+# 把上传自动化就等于把那道授权取消了。
+#
+# 上传顺序在 RELEASING.md 里,记牢一条:**先传 Setup.exe 与 .blockmap,最后
+# 才覆盖 latest.yml**。反了的话用户会在文件还没传完时就被告知有新版本。
+name: release-build
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_version:
+        description: '要发布的版本号,必须与 package.json 完全一致(防止误发)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # 同一时间只允许一个正式构建:两个并发构建会产出两套同版本却不同哈希的
+  # 产物,而 latest.yml 里只能有一份 SHA-512。
+  group: release-build
+  cancel-in-progress: false
+
+jobs:
+  windows-installer:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - name: Confirm the requested version matches package.json
+        shell: pwsh
+        run: |
+          $declared = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($declared -ne '${{ inputs.confirm_version }}') {
+            Write-Error "版本不一致:package.json 是 $declared,本次触发填的是 ${{ inputs.confirm_version }}"
+            exit 1
+          }
+          Write-Host "版本确认:$declared"
+
+      - name: Fail early when the signing secrets are not configured
+        shell: pwsh
+        env:
+          CERTIFICATE: ${{ secrets.WIN_CSC_LINK_BASE64 }}
+          CERTIFICATE_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          SIGNING_PUBLISHER: ${{ secrets.XINGMANG_SIGNING_PUBLISHER }}
+        run: |
+          # 发布脚本自己也会拦,但那是在跑完类型检查和全部测试之后 —— 少等
+          # 十几分钟才被告知"没配证书"没有意义。
+          $missing = @()
+          if (-not $env:CERTIFICATE) { $missing += 'WIN_CSC_LINK_BASE64' }
+          if (-not $env:CERTIFICATE_PASSWORD) { $missing += 'WIN_CSC_KEY_PASSWORD' }
+          if (-not $env:SIGNING_PUBLISHER) { $missing += 'XINGMANG_SIGNING_PUBLISHER' }
+          if ($missing.Count -gt 0) {
+            Write-Error "缺少仓库 Secrets:$($missing -join '、')。配置方法见 docs/RELEASING.md 的「CI 发布」一节"
+            exit 1
+          }
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Build canvas-v2 as the packaged canvas
+        # 云端 runner 没有兄弟仓 xingmang-canvas 的 v1 产物,不现场构建 v2 的话
+        # 正式包里将完全没有画布,点「无限画布」只会看到中文报错。
+        run: |
+          cd canvas-v2
+          npm ci --registry=https://registry.npmjs.org/
+          npm run build
+
+      - name: Build the signed installer through the full release gate
+        run: npm run release:build
+        env:
+          # electron-builder 接受 base64 形式的 .p12,证书因此不必落盘。
+          WIN_CSC_LINK: ${{ secrets.WIN_CSC_LINK_BASE64 }}
+          WIN_CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+          XINGMANG_SIGNING_PUBLISHER: ${{ secrets.XINGMANG_SIGNING_PUBLISHER }}
+          XINGMANG_CANVAS_DIST: canvas-v2/dist
+
+      - name: Print artifact checksums
+        shell: pwsh
+        # 老板上传到对象存储后可以逐个比对,确认传上去的与门禁通过的是同一份。
+        run: |
+          Get-ChildItem "release-${{ inputs.confirm_version }}" -File |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+              Write-Host "$($_.Name)  $($_.Length) bytes  SHA256=$hash"
+            }
+
+      - name: Upload the release artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-release-${{ inputs.confirm_version }}
+          # 三件套缺一不可:少了 blockmap 用户就得下整包,少了 latest.yml
+          # 客户端根本发现不了新版本。
+          path: |
+            release-${{ inputs.confirm_version }}/*Setup.exe
+            release-${{ inputs.confirm_version }}/*.blockmap
+            release-${{ inputs.confirm_version }}/latest.yml
+          retention-days: 30
+          if-no-files-found: error

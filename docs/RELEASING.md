@@ -65,6 +65,33 @@ npm run release:build
 
 全部门禁通过也只表示候选产物具备发布条件，不会自动上传，且不构成发布授权。
 
+## 2.1 CI 发布（GitHub Actions，2026-08-12 起）
+
+老板决定把出包这一步搬到 CI。`.github/workflows/release-build.yml` 在 `windows-latest` 上跑的就是上面第 2 节那条完全相同的链路（它直接调用 `npm run release:build`），只是证书来自仓库 Secrets 而不是发布机磁盘。
+
+**一次性配置**：在仓库 Settings → Secrets and variables → Actions 配置三个 secret。
+
+| Secret 名 | 内容 |
+|---|---|
+| `WIN_CSC_LINK_BASE64` | 代码签名证书 `.p12` 的 **base64 文本**（electron-builder 直接接受 base64，证书不落盘） |
+| `WIN_CSC_KEY_PASSWORD` | 该证书的密码 |
+| `XINGMANG_SIGNING_PUBLISHER` | 固定发布者名，例如 `绍兴星芒文化传媒有限责任公司` |
+
+把 `.p12` 转成 base64（在你自己的机器上做，不要在任何共享环境里做）：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\secrets\xingmang-signing.p12')) | Set-Clipboard
+```
+
+**每次发布**：Actions → `release-build` → Run workflow，在 `confirm_version` 里填 `package.json` 里的版本号（填错会在第一步就失败，这是防误发的闸）。跑完在 run 页面下载 artifact，里面是 `Setup.exe` + `.blockmap` + `latest.yml` 三件套，日志里有每个文件的 SHA-256，上传到对象存储后可逐个比对。
+
+**这条 workflow 永远不会上传到更新服务器**，也没有配置任何对象存储凭据。上传仍按第 4 节由人执行——本手册要求每次发布都要产品所有者针对当前版本明确授权，把上传自动化等于取消那道授权。
+
+两点与本机发布的差异要知道：
+
+- **画布**：云端没有兄弟仓 `xingmang-canvas` 的 v1 产物，所以 CI 会现场构建仓内的 `canvas-v2` 打进包里。也就是说 **CI 出的正式包带的是 v2 画布**，与测试包一致。若某次发布要改回 v1，只能在本机构建。
+- **版本必须高于线上**：发布前置检查会拉取线上 `latest.yml` 比对，版本没提升会直接失败——这是好事，能拦住忘记改版本号的发布。
+
 ## 3. 静态更新目录
 
 当前静态源使用 Cloudflare R2：
