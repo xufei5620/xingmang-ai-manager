@@ -1,6 +1,7 @@
 import {
   ArchiveRestore,
   Blocks,
+  Bot,
   Gauge,
   HeartPulse,
   Infinity as InfinityIcon,
@@ -16,6 +17,7 @@ import {
 
 export type PageId =
   | 'overview'
+  | 'chat'
   | 'sessions'
   | 'canvas'
   | 'mcp'
@@ -46,6 +48,7 @@ export type NavigationGroup = 'use' | 'extensions' | 'more'
 
 export const navigationItems: readonly NavigationItem[] = [
   { id: 'overview', label: '工具概览', icon: Gauge, group: 'use' },
+  { id: 'chat', label: 'AI聊天', icon: Bot, group: 'use' },
   { id: 'sessions', label: '会话管理', icon: MessageSquareText, group: 'use' },
   {
     id: 'canvas',

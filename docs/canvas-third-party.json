@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": "2026-08-13",
+  "runtimeDependencies": [
+    {
+      "package": "@xyflow/react",
+      "version": "12.11.3",
+      "repository": "https://github.com/xyflow/xyflow",
+      "license": "MIT",
+      "usage": "画布视口、节点、连线与交互控件",
+      "adoption": "public-api"
+    },
+    {
+      "package": "lucide-react",
+      "version": "0.468.0",
+      "repository": "https://github.com/lucide-icons/lucide",
+      "license": "ISC",
+      "usage": "画布工具栏、历史与候选操作图标",
+      "adoption": "public-api"
+    },
+    {
+      "package": "react",
+      "version": "18.3.1",
+      "repository": "https://github.com/facebook/react",
+      "license": "MIT",
+      "usage": "画布渲染器",
+      "adoption": "public-api"
+    },
+    {
+      "package": "react-dom",
+      "version": "18.3.1",
+      "repository": "https://github.com/facebook/react",
+      "license": "MIT",
+      "usage": "React DOM 挂载",
+      "adoption": "public-api"
+    }
+  ],
+  "adaptedFiles": [],
+  "assets": [],
+  "templates": [
+    {
+      "id": "xingmang-quick-image",
+      "provenance": "xingmang-original"
+    },
+    {
+      "id": "xingmang-reference-edit",
+      "provenance": "xingmang-original"
+    },
+    {
+      "id": "xingmang-product-video",
+      "provenance": "xingmang-original"
+    }
+  ],
+  "ideaOnly": [
+    {
+      "projects": ["ComfyUI", "Nebula Nodes", "flyreq-image-studio", "open-ai-canvas"],
+      "licenseClass": "copyleft",
+      "allowed": "公开行为需求与独立验收测试",
+      "forbidden": "源码、UI 文案、截图、素材和独特表达"
+    },
+    {
+      "projects": ["tldraw", "Jaaz", "SHUO-Canvas", "VisionFlow"],
+      "licenseClass": "source-available-or-restricted",
+      "allowed": "公开交互概念与产品能力对照",
+      "forbidden": "源码、视觉资产、模板和独特表达"
+    },
+    {
+      "projects": ["Flowboard", "Loomic", "infinite-kanvas", "DirectorsConsole"],
+      "licenseClass": "unlicensed",
+      "allowed": "公开功能名称与独立行为规格",
+      "forbidden": "任何源码、截图、文案、素材和模板"
+    },
+    {
+      "projects": ["ganbo-gab/open-storyboard-canvas", "wassermanproductions/wassermans-filmmaker-suite"],
+      "licenseClass": "unlicensed",
+      "allowed": "公开仓库描述所体现的工作流类别与独立验收规格",
+      "forbidden": "任何源码、截图、文案、素材、模板和独特交互表达"
+    },
+    {
+      "projects": ["hero8152/Infinite-Canvas@1c141a5715c04bbf29b4c2cf76fb78739da8cfe8"],
+      "licenseClass": "source-available-noncommercial",
+      "allowed": "README 公开描述所体现的多协议模型调用、异步任务、本地 ComfyUI、素材采集、媒体变换和循环编排等类别级需求",
+      "forbidden": "任何源码、UI、截图、文案、提示词、工作流、素材、插件和独特交互表达"
+    }
+  ]
+}

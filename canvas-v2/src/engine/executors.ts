@@ -1,88 +1,115 @@
-import type { NodeKind } from '../model'
+import type { AssetRef, NodeKind } from '../model'
 import { defaultImageQuality, defaultImageSize, imageModelPreset } from '../models'
+import type { CanvasHostBridge } from '../host'
 import type { NodeExecutor } from './engine'
-import { editImage, generateImage, pollVideoTask, submitVideoTask, type RelayConfig } from './relay'
 
-// relay 真执行器(M1)。与 mock 执行器同一 NodeExecutor 接口,App.tsx 按
-// "宿主给了账号 token 就走真,没给就走 mock"选择,编排逻辑零改动。
-// 渠道未配置时真执行器也能被调到 —— relay 会返回模型不存在类错误,
-// 中文透传上屏,这正是"开发先行、渠道后配"的预期形态。
+export interface HostExecutorOptions {
+  group: string
+  host: Pick<CanvasHostBridge, 'generateImage' | 'editImage' | 'cancelRequest'>
+}
 
-const DEFAULT_POLL_INTERVAL_MS = 4_000
-// 视频任务上限兜底:轮询不能无限等(网络/上游卡死时用户没有任何退出路径)。
-const DEFAULT_MAX_POLL_MS = 10 * 60 * 1000
+let requestSequence = 0
 
-export interface RelayExecutorHooks {
-  /** 视频任务提交成功即回调 —— App 把 taskId 立刻写进节点数据,存盘后可断线恢复。 */
-  onVideoTaskSubmitted?(nodeId: string, taskId: string): void
+function nextRequestId(nodeId: string): string {
+  requestSequence += 1
+  return `${nodeId}-${Date.now().toString(36)}-${requestSequence.toString(36)}`
 }
 
 function combinedPrompt(upstreamText: string | undefined, ownPrompt: string): string {
   return [upstreamText, ownPrompt].filter((part) => part && part.trim()).join('\n')
 }
 
-function waitFor(ms: number, signal: AbortSignal): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(resolve, ms)
-    signal.addEventListener('abort', () => {
-      clearTimeout(timer)
-      reject(new Error('已取消'))
-    }, { once: true })
-  })
+function toAssetRef(asset: Awaited<ReturnType<CanvasHostBridge['generateImage']>>[number]): AssetRef {
+  return {
+    kind: 'image',
+    assetId: asset.assetId,
+    localUrl: asset.localUrl,
+    mimeType: asset.mimeType,
+    ...(asset.width ? { width: asset.width } : {}),
+    ...(asset.height ? { height: asset.height } : {}),
+  }
 }
 
-export function createRelayExecutors(
-  config: RelayConfig,
-  hooks: RelayExecutorHooks = {},
-  pollIntervalMs = DEFAULT_POLL_INTERVAL_MS,
-  maxPollMs = DEFAULT_MAX_POLL_MS,
-): Record<NodeKind, NodeExecutor> {
-  return {
-    text: async (node) => ({ output: { text: node.data.prompt } }),
+export function createHostExecutors(options: HostExecutorOptions): Record<NodeKind, NodeExecutor> {
+  const text: NodeExecutor = async (node) => ({ output: { text: node.data.prompt } })
 
-    image: async (node, inputs) => {
+  const image: NodeExecutor = async (node, inputs, signal) => {
       const prompt = combinedPrompt(inputs.text, node.data.prompt)
       if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
       const model = node.data.model.trim()
       if (!model) throw new Error('请选择图像模型')
       const preset = imageModelPreset(model)
-      const shared = {
+      const requestId = nextRequestId(node.id)
+      const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
+      signal.addEventListener('abort', cancel, { once: true })
+      try {
+        if (signal.aborted) throw new Error('已取消')
+        const assets = await options.host.generateImage({
+          requestId,
+          group: options.group,
+          model,
+          prompt,
+          size: node.data.size || defaultImageSize,
+          quality: preset.supportsQuality
+            ? (node.data.quality || defaultImageQuality) as 'low' | 'medium' | 'high' | 'auto'
+            : undefined,
+        })
+        if (signal.aborted) throw new Error('已取消')
+        if (!assets[0]) throw new Error('生图接口没有返回图片')
+        return { output: { asset: toAssetRef(assets[0]) } }
+      } finally {
+        signal.removeEventListener('abort', cancel)
+      }
+    }
+
+  const imageEdit: NodeExecutor = async (node, inputs, signal) => {
+    const prompt = combinedPrompt(inputs.text, node.data.prompt)
+    if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
+    const sourceAssetIds = [...new Set(
+      (inputs.images ?? (inputs.image ? [inputs.image] : []))
+        .map((asset) => asset.assetId)
+        .filter((assetId): assetId is string => Boolean(assetId)),
+    )]
+    if (sourceAssetIds.length === 0) throw new Error('请连接至少一张已保存到本地资产库的参考图片')
+    if (sourceAssetIds.length > 4) throw new Error('图片编辑最多支持 4 张参考图片')
+    const model = node.data.model.trim()
+    if (!model) throw new Error('请选择图像模型')
+    const preset = imageModelPreset(model)
+    if (!preset.supportsEdits) throw new Error(`模型「${preset.label}」不支持图片编辑，请换用 GPT Image 系列`)
+    const requestId = nextRequestId(node.id)
+    const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
+    signal.addEventListener('abort', cancel, { once: true })
+    try {
+      if (signal.aborted) throw new Error('已取消')
+      const assets = await options.host.editImage({
+        requestId,
+        group: options.group,
         model,
         prompt,
+        sourceAssetIds,
         size: node.data.size || defaultImageSize,
-        quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
-      }
-      // 接了上游图像 = 图生图(改图),否则文生图。同一个节点两种形态,
-      // 由连线决定,用户不需要先选"模式"。
-      const referenceUrl = inputs.image?.remoteUrl
-      if (referenceUrl) {
-        if (!preset.supportsEdits) throw new Error(`模型「${preset.label}」不支持图生图,请换用 GPT Image 系列`)
-        const asset = await editImage(config, { ...shared, imageUrl: referenceUrl })
-        return { output: { asset } }
-      }
-      const asset = await generateImage(config, shared)
-      return { output: { asset } }
-    },
-
-    video: async (node, inputs, signal) => {
-      const prompt = combinedPrompt(inputs.text, node.data.prompt)
-      if (!prompt && !inputs.image) throw new Error('请输入视频提示词或连接上游图像节点')
-      if (!node.data.model.trim()) throw new Error('请填写视频模型名(渠道配置后可用)')
-      const { taskId } = await submitVideoTask(config, {
-        model: node.data.model.trim(),
-        prompt,
-        imageUrl: inputs.image?.remoteUrl,
+        quality: preset.supportsQuality
+          ? (node.data.quality || defaultImageQuality) as 'low' | 'medium' | 'high' | 'auto'
+          : undefined,
       })
-      hooks.onVideoTaskSubmitted?.(node.id, taskId)
-      const deadline = Date.now() + maxPollMs
-      for (;;) {
-        if (signal.aborted) throw new Error('已取消')
-        if (Date.now() > deadline) throw new Error('视频任务等待超时,可稍后用任务 ID 恢复查询')
-        const state = await pollVideoTask(config, taskId)
-        if (state.status === 'succeeded') return { output: { asset: state.asset } }
-        if (state.status === 'failed') throw new Error(state.reason)
-        await waitFor(pollIntervalMs, signal)
-      }
-    },
+      if (signal.aborted) throw new Error('已取消')
+      if (!assets[0]) throw new Error('图片编辑接口没有返回图片')
+      return { output: { asset: toAssetRef(assets[0]) } }
+    } finally {
+      signal.removeEventListener('abort', cancel)
+    }
+  }
+
+  const video: NodeExecutor = async () => {
+    throw new Error('当前版本的视频生成正在迁移到安全宿主通道，请先使用图像工作流')
+  }
+  const unsupported: NodeExecutor = async () => { throw new Error('当前节点能力尚未接入，请勿提交付费请求') }
+  return {
+    text, image, video, prompt: text,
+    'image-input': unsupported, 'video-input': unsupported,
+    'image-generate': image, 'image-edit': imageEdit, 'video-generate': video,
+    'frame-extract': unsupported, router: unsupported, gallery: unsupported, output: unsupported,
+    group: unsupported, note: unsupported,
+    unknown: unsupported,
   }
 }

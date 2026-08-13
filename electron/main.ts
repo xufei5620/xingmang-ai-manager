@@ -4,16 +4,24 @@ import {
   app,
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
+  clipboard,
   dialog,
   Menu,
+  nativeImage,
   protocol,
   safeStorage,
   screen,
   session,
+  shell,
   type WebContents,
 } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
+import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
+import { createAiChatService } from './ai-chat-service'
+import { createAiImageService } from './ai-image-service'
+import { createChatCredentialCoordinator } from './chat-credential-coordinator'
+import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
 import { AccountSessionStore, restoreAccountSessionOnStartup } from './account-session-store'
 import { AppSettingsStore, type AppTheme } from './app-settings'
@@ -21,6 +29,11 @@ import { ConfigBackupStore } from './backups'
 import { providerIds } from './catalog'
 import { canvasProtocolScheme } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
+import { createCanvasAccountLifecycle } from './canvas-account-lifecycle'
+import { CanvasRunStore } from './canvas-run-store'
+import { createCanvasNodeExecutors } from './canvas-node-executors'
+import { createCanvasRunService } from './canvas-run-service'
+import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { resolveCodexHomeContext } from './codex-home'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
@@ -29,6 +42,7 @@ import { createNewApiClient } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
+import { guardProcessOutputStreams } from './process-stream-errors'
 import { RuntimeLogStore } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
@@ -66,6 +80,8 @@ import {
   platformWindowOptions,
   startupFailureMessage,
 } from './window-presentation'
+
+guardProcessOutputStreams()
 
 const applicationPackage = require('../package.json') as {
   xingmangLocalBuild?: unknown
@@ -147,6 +163,14 @@ protocol.registerSchemesAsPrivileged([{
     codeCache: true,
     stream: true,
   },
+}, {
+  scheme: 'xingmang-asset',
+  privileges: {
+    standard: true,
+    secure: true,
+    supportFetchAPI: true,
+    stream: true,
+  },
 }])
 
 function windowThemePalette(theme: AppTheme): {
@@ -188,6 +212,36 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
       return
     }
     callback({ path: target })
+  })
+}
+
+function registerAiAssetProtocol(
+  assetStore: AiAssetStore,
+  accountService: Pick<RelayBackendClient, 'getSessionState'>,
+): void {
+  protocol.handle('xingmang-asset', async (request) => {
+    try {
+      const url = new URL(request.url)
+      if (url.hostname !== 'image' || url.username || url.password || url.search || url.hash) {
+        return new Response(null, { status: 404 })
+      }
+      const assetId = decodeURIComponent(url.pathname.replace(/^\//, ''))
+      const sessionState = accountService.getSessionState()
+      const userId = sessionState.authenticated ? sessionState.account?.userId : undefined
+      if (!userId) return new Response(null, { status: 401 })
+      const owned = await assetStore.readOwned(userId, assetId)
+      return new Response(owned.bytes, {
+        status: 200,
+        headers: {
+          'Cache-Control': 'no-store',
+          'Content-Type': owned.asset.mimeType,
+          'Content-Length': String(owned.bytes.byteLength),
+          'X-Content-Type-Options': 'nosniff',
+        },
+      })
+    } catch {
+      return new Response(null, { status: 404 })
+    }
   })
 }
 
@@ -559,6 +613,10 @@ if (!hasSingleInstanceLock) {
       path.join(managerDataDirectory, 'managed-cli-keys.dat'),
       safeStorage,
     )
+    const chatKeyStore = new ChatKeyStore(
+      path.join(managerDataDirectory, 'chat-group-keys.dat'),
+      safeStorage,
+    )
     // Constructed explicitly (rather than left to registerIpcHandlers' own
     // internal default) so the canvas window controller below can share this
     // exact instance -- it is the one place that knows whether the user is
@@ -572,8 +630,14 @@ if (!hasSingleInstanceLock) {
     // Typed as the backend-agnostic RelayBackendClient (relay-backend.ts) --
     // both consumers wired below (registerIpcHandlers, createCanvasWindowController)
     // depend on that interface, not on new-api-client.ts's concrete type.
+    const canvasAccountLifecycle = createCanvasAccountLifecycle({
+      onInitializationError: (_userId, error) => {
+        runtimeLog.exception('canvas', 'runtime.initialize.failed', error)
+      },
+    })
     const accountService: RelayBackendClient = createNewApiClient({
       onSessionChange: (persistable) => {
+        canvasAccountLifecycle.update(persistable?.userId ?? null)
         if (persistable) {
           void accountSessionStore.save(persistable).catch((error) => {
             runtimeLog.log('warn', 'account', 'session.persist.failed', '登录状态持久化失败', {
@@ -597,6 +661,114 @@ if (!hasSingleInstanceLock) {
       store: accountSessionStore,
       runtimeLog,
     })
+    const chatCredentials = createChatCredentialCoordinator({
+      accountService,
+      modelService: systemService,
+      keyStore: chatKeyStore,
+    })
+    const assetStore = new AiAssetStore({
+      outputRoot: resolveAiOutputRoot({
+        isPackaged: app.isPackaged,
+        projectRoot: path.join(__dirname, '..'),
+        execPath: process.execPath,
+      }),
+      nativeOperations: {
+        copyImage: (bytes) => {
+          const image = nativeImage.createFromBuffer(bytes)
+          if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
+          clipboard.writeImage(image)
+        },
+        selectSavePath: async (suggestedFileName) => {
+          const result = await dialog.showSaveDialog({
+            title: '图片另存为',
+            defaultPath: suggestedFileName,
+            filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
+          })
+          return result.canceled ? null : result.filePath ?? null
+        },
+        revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+        showContextMenu: (items) => {
+          const menu = Menu.buildFromTemplate(items.map((item) => ({
+            id: item.id,
+            label: item.label,
+            click: () => {
+              void item.run().catch((error) => {
+                dialog.showErrorBox(
+                  '图片操作失败',
+                  error instanceof Error ? error.message : '无法完成图片操作',
+                )
+              })
+            },
+          })))
+          menu.popup()
+        },
+      },
+    })
+    // Keep the image output location visible from the moment the app starts.
+    // The write path is checked again by AiAssetStore for every asset.
+    try {
+      assetStore.ensureOutputDirectory()
+    } catch (error) {
+      runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 图片 output 目录初始化失败', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
+    registerAiAssetProtocol(assetStore, accountService)
+    const chatService = createAiChatService({
+      credentialCoordinator: chatCredentials,
+      emit: (senderId, event) => {
+        const sender = BrowserWindow.getAllWindows()
+          .map((window) => window.webContents)
+          .find((contents) => contents.id === senderId && !contents.isDestroyed())
+        if (!sender) throw new Error('AI聊天窗口已关闭')
+        if (event.type === 'delta') {
+          if (event.content) sender.send(ipcEventChannels.onAiChatStream, {
+            requestId: event.requestId,
+            type: 'content',
+            content: event.content,
+          })
+          if (event.reasoning) sender.send(ipcEventChannels.onAiChatStream, {
+            requestId: event.requestId,
+            type: 'reasoning',
+            content: event.reasoning,
+          })
+          return
+        }
+        if (event.type === 'error') sender.send(ipcEventChannels.onAiChatStream, {
+          requestId: event.requestId,
+          type: 'error',
+          message: event.message,
+        })
+        else sender.send(ipcEventChannels.onAiChatStream, {
+          requestId: event.requestId,
+          type: event.type,
+        })
+      },
+      log: (entry) => runtimeLog.log(
+        entry.status === 'error' ? 'warn' : 'debug',
+        'chat',
+        `stream.${entry.status}`,
+        `AI聊天流已${entry.status === 'complete' ? '完成' : '结束'}`,
+        entry,
+      ),
+    })
+    const imageService = createAiImageService({
+      baseUrl: 'https://xm.solov.cc',
+      credentials: chatCredentials,
+      assets: assetStore,
+    })
+    const canvasRunStore = new CanvasRunStore({
+      rootDirectory: path.join(managerDataDirectory, 'canvas-runtime'),
+      assets: assetStore,
+    })
+    const canvasPromptPresets = new CanvasPromptPresetStore({
+      rootDirectory: path.join(managerDataDirectory, 'canvas-content'),
+    })
+    const canvasRuns = createCanvasRunService({
+      store: canvasRunStore,
+      executors: createCanvasNodeExecutors({ imageService, assets: assetStore }),
+    })
+    canvasAccountLifecycle.bind({ imageService, canvasRuns })
     const canvasController = createCanvasWindowController({
       canvasDistRoot: canvasDistRoot(),
       externalUrlAllowlist: canvasExternalUrlAllowlist,
@@ -604,6 +776,11 @@ if (!hasSingleInstanceLock) {
       accountService,
       previewOnboarding,
       runtimeLog,
+      chatCredentials,
+      imageService,
+      aiAssets: assetStore,
+      promptPresets: canvasPromptPresets,
+      canvasRuns,
     })
     const tutorialController = createTutorialWindowController({ runtimeLog })
 
@@ -617,6 +794,11 @@ if (!hasSingleInstanceLock) {
       accountSessionReady,
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
+      chatKeyStore,
+      chatCredentials,
+      chatService,
+      imageService,
+      aiAssets: assetStore,
       sessionsService,
       providerSessionsService,
       backupStore,
@@ -659,6 +841,10 @@ if (!hasSingleInstanceLock) {
       process.off('unhandledRejection', onUnhandledRejection)
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
       unregisterIpcHandlers()
+      chatService.dispose()
+      imageService.cancelAll()
+      canvasRuns.shutdown()
+      protocol.unhandle('xingmang-asset')
       tutorialController.dispose()
       canvasController.dispose()
       updaterService.dispose()

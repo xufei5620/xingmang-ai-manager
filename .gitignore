@@ -10,6 +10,7 @@ release-*/
 .wrangler/
 .project-surgeon/deepwiki-cache/
 artifacts/
+output/
 .superpowers/
 coverage/
 .cache/

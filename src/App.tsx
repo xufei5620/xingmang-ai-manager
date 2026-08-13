@@ -50,6 +50,7 @@ import type { PageId } from './navigation'
 import { nodeRuntimeSupported } from './onboarding-runtime'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { BackupsPage } from './pages/BackupsPage'
+import { AiChatPage } from './pages/AiChatPage'
 import { HealthPage } from './pages/HealthPage'
 import { FeedbackPage } from './pages/FeedbackPage'
 import {
@@ -1720,6 +1721,12 @@ function App() {
             onNextStepsTryLaunch={handleNextStepsTryLaunch}
             onNextStepsGoMaintenance={() => setActivePage('maintenance')}
             onNextStepsExploreMcp={handleNextStepsExploreMcp}
+          />
+        ) : activePage === 'chat' ? (
+          <AiChatPage
+            api={window.xingmang}
+            userId={accountSession?.account?.userId ?? 'signed-out'}
+            notify={setToast}
           />
         ) : activePage === 'sessions' ? (
           <SessionsPage api={window.xingmang} notify={setToast} />

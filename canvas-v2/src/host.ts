@@ -1,21 +1,197 @@
-// 宿主桥 —— 隔离窗口里由主仓 electron/canvas-preload.ts 暴露的
-// window.xingmangCanvasHost,方法签名与返回形状照抄该文件(位置参数,
-// 不是对象参数;saveFile 取消返回 null)。v2 沿用 v1 的 5 能力面
-// (I15:能力只减不增)。开发态(vite dev,无宿主)降级到浏览器行为,
-// 保证画布可以脱离桌面端独立开发调试。
+export interface CanvasGroupSummary {
+  name: string
+  description: string
+  ratio: number | string
+}
+
+export interface CanvasPreparedGroup {
+  group: string
+  models: string[]
+  keyCreated: boolean
+  storageWarning?: string
+}
+
+export interface CanvasGeneratedAsset {
+  assetId: string
+  localUrl: string
+  mimeType: 'image/png' | 'image/jpeg' | 'image/webp'
+  width?: number
+  height?: number
+  fileName: string
+  revisedPrompt?: string
+}
+
+export interface CanvasAssetSummary extends CanvasGeneratedAsset {
+  createdAt: string
+  mediaType: 'image'
+  thumbnailUrl: string
+}
+
+export interface CanvasAssetQuery {
+  offset?: number
+  limit?: number
+  mediaType?: 'all' | 'image'
+  search?: string
+}
+
+export interface CanvasAssetPage {
+  items: CanvasAssetSummary[]
+  offset: number
+  limit: number
+  total: number
+  hasMore: boolean
+}
+
+export interface CanvasPromptPreset {
+  id: string
+  name: string
+  prompt: string
+  tags: string[]
+  createdAt: string
+  updatedAt: string
+  provenance: 'user-created'
+}
+
+export interface CanvasRunGraph {
+  nodes: Array<{
+    id: string
+    kind: string
+    definitionVersion: number
+    disabled?: boolean
+    data: { prompt: string; model: string; group?: string; quality?: string; size?: string; adoptedAssetId?: string }
+  }>
+  edges: Array<{ id: string; source: string; sourceHandle: string; target: string; targetHandle: string }>
+}
+
+export interface CanvasRunEvent {
+  type: 'node-state' | 'run-terminal'
+  runId: string
+  graphRevision: string
+  sequence: number
+  nodeId?: string
+  state?: string
+  candidateIds?: string[]
+  errorMessage?: string
+  costQuota?: number
+  status?: string
+}
+
+export type CanvasRunNodeState =
+  | 'queued' | 'running' | 'cancelling' | 'succeeded' | 'failed'
+  | 'skipped' | 'cancelled' | 'cached' | 'interrupted'
+export type CanvasRunStatus = 'running' | 'succeeded' | 'partial' | 'failed' | 'cancelled' | 'interrupted'
+
+export type CanvasRunScope =
+  | { kind: 'all' }
+  | { kind: 'to-node'; nodeId: string }
+  | { kind: 'selection'; nodeIds: string[] }
+  | { kind: 'dirty'; nodeIds: string[] }
+
+export interface CanvasRunCandidate {
+  candidateId: string
+  attemptId: string
+  createdAt: string
+  asset: { kind: 'image' | 'video'; assetId: string; localUrl: string; mimeType?: string; width?: number; height?: number }
+  group?: string
+  model?: string
+  costQuota?: number
+}
+
+export interface CanvasRunRecord {
+  version: 1
+  userId: number
+  ownerId: number
+  runId: string
+  graphRevision: string
+  scope: CanvasRunScope
+  status: CanvasRunStatus
+  createdAt: string
+  startedAt: string
+  completedAt?: string
+  durationMs?: number
+  outcome?: {
+    succeeded: string[]
+    failed: string[]
+    skipped: string[]
+    cancelled: string[]
+    cached: string[]
+  }
+  nodes: Array<{
+    nodeId: string
+    kind: string
+    state: CanvasRunNodeState
+    errorMessage?: string
+    attempts: Array<{
+      attemptId: string
+      fingerprint: string
+      state: CanvasRunNodeState
+      startedAt: string
+      completedAt: string
+      durationMs: number
+      cached: boolean
+      candidates: CanvasRunCandidate[]
+      outputText?: string
+      errorMessage?: string
+      costQuota?: number
+      group?: string
+      model?: string
+    }>
+  }>
+  events: CanvasRunEvent[]
+}
+
+export interface CanvasProjectPreview {
+  previewId: string
+  name: string
+  workflowName: string
+  nodeCount: number
+  edgeCount: number
+  assetCount: number
+  warnings: string[]
+}
 
 export interface CanvasHostBridge {
-  getAuthToken(): Promise<{ baseUrl: string; apiKey: string } | null>
   saveFile(suggestedName: string, content: string): Promise<{ savedPath: string } | null>
   pickFile(): Promise<{ name: string; content: string } | null>
   notify(title: string, body?: string): Promise<boolean>
   openExternal(url: string): Promise<void>
-  /**
-   * 媒体产物落盘(第 6 能力,主进程流式拉 URL 写入用户对话框选择的路径,
-   * 512MB 上限)。旧版宿主可能没有此方法,调用方经 hostBridge() 拿到的
-   * 实现已做特性探测与降级,不必自查。
-   */
-  downloadAsset(url: string, suggestedName: string): Promise<{ savedPath: string; bytes: number } | null>
+  listGroups(): Promise<CanvasGroupSummary[]>
+  prepareGroup(group: string): Promise<CanvasPreparedGroup>
+  generateImage(input: {
+    requestId: string
+    group: string
+    model: string
+    prompt: string
+    size?: string
+    quality?: 'low' | 'medium' | 'high' | 'auto'
+  }): Promise<CanvasGeneratedAsset[]>
+  editImage(input: {
+    requestId: string
+    group: string
+    model: string
+    prompt: string
+    sourceAssetIds: string[]
+    size?: string
+    quality?: 'low' | 'medium' | 'high' | 'auto'
+  }): Promise<CanvasGeneratedAsset[]>
+  cancelRequest(requestId: string): Promise<{ canceled: boolean; mayStillComplete: boolean }>
+  copyAsset(assetId: string): Promise<void>
+  saveAsset(assetId: string): Promise<{ saved: boolean }>
+  showAssetMenu(assetId: string): Promise<void>
+  listAssets(query?: CanvasAssetQuery): Promise<CanvasAssetPage>
+  pickAsset(): Promise<CanvasGeneratedAsset | null>
+  importAssetFile(file: File): Promise<CanvasGeneratedAsset>
+  listPromptPresets(): Promise<CanvasPromptPreset[]>
+  createPromptPreset(input: { name: string; prompt: string; tags?: string[] }): Promise<CanvasPromptPreset>
+  updatePromptPreset(input: { id: string; name?: string; prompt?: string; tags?: string[] }): Promise<CanvasPromptPreset>
+  deletePromptPreset(id: string): Promise<boolean>
+  startRun(input: { graph: CanvasRunGraph; scope: CanvasRunScope }): Promise<{ runId: string; graphRevision: string }>
+  cancelRun(runId: string): Promise<boolean>
+  listRuns(): Promise<CanvasRunRecord[]>
+  exportProject(suggestedName: string, content: string): Promise<{ savedPath: string } | null>
+  previewProject(): Promise<CanvasProjectPreview | null>
+  importProject(previewId: string): Promise<{ content: string; warnings: string[]; importedAssetCount: number }>
+  onRunEvent(listener: (event: CanvasRunEvent) => void): () => void
 }
 
 declare global {
@@ -24,18 +200,13 @@ declare global {
   }
 }
 
+function unavailable(): never {
+  throw new Error('浏览器演示模式不连接生产服务，请在桌面应用中登录后使用')
+}
+
 export function hostBridge(): CanvasHostBridge {
-  const native = window.xingmangCanvasHost
-  if (native) {
-    if (typeof native.downloadAsset === 'function') return native
-    // 旧版宿主(第 6 能力之前打包的桌面端):降级为锚点下载(data: URL
-    // 无法 window.open,浏览器会拦截 top-frame 的 data: 导航)。
-    return { ...native, downloadAsset: anchorDownload }
-  }
+  if (window.xingmangCanvasHost) return window.xingmangCanvasHost
   return {
-    async getAuthToken() {
-      return null
-    },
     async saveFile(suggestedName, content) {
       const blob = new Blob([content], { type: 'application/json' })
       const link = document.createElement('a')
@@ -52,11 +223,7 @@ export function hostBridge(): CanvasHostBridge {
         input.accept = 'application/json'
         input.onchange = async () => {
           const file = input.files?.[0]
-          if (!file) {
-            resolve(null)
-            return
-          }
-          resolve({ name: file.name, content: await file.text() })
+          resolve(file ? { name: file.name, content: await file.text() } : null)
         }
         input.click()
       })
@@ -68,15 +235,29 @@ export function hostBridge(): CanvasHostBridge {
     async openExternal(url) {
       window.open(url, '_blank', 'noopener')
     },
-    downloadAsset: anchorDownload,
+    async listGroups() { return [] },
+    async prepareGroup() { return unavailable() },
+    async generateImage() { return unavailable() },
+    async editImage() { return unavailable() },
+    async cancelRequest() { return { canceled: false, mayStillComplete: false } },
+    async copyAsset() { return unavailable() },
+    async saveAsset() { return unavailable() },
+    async showAssetMenu() { return unavailable() },
+    async listAssets(query = {}) {
+      return { items: [], offset: query.offset ?? 0, limit: query.limit ?? 24, total: 0, hasMore: false }
+    },
+    async pickAsset() { return unavailable() },
+    async importAssetFile() { return unavailable() },
+    async listPromptPresets() { return [] },
+    async createPromptPreset() { return unavailable() },
+    async updatePromptPreset() { return unavailable() },
+    async deletePromptPreset() { return unavailable() },
+    async startRun() { return unavailable() },
+    async cancelRun() { return false },
+    async listRuns() { return [] },
+    async exportProject(suggestedName, content) { return this.saveFile(suggestedName, content) },
+    async previewProject() { return null },
+    async importProject() { return unavailable() },
+    onRunEvent() { return () => undefined },
   }
-}
-
-async function anchorDownload(url: string, suggestedName: string): Promise<{ savedPath: string; bytes: number } | null> {
-  const link = document.createElement('a')
-  link.href = url
-  link.download = suggestedName
-  link.rel = 'noopener'
-  link.click()
-  return null
 }

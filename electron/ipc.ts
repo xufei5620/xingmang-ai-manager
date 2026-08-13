@@ -60,10 +60,16 @@ import {
   type NewApiResetPasswordInput,
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
+import type { AiAssetStore } from './ai-asset-store'
+import type { AiChatService } from './ai-chat-service'
+import type { AiImageService } from './ai-image-service'
+import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type {
   AccountKeyCliConfigurationInput,
   AccountKeyCreateInput,
   AccountKeyUpdateInput,
+  AiChatStartInput,
+  AiImageGenerateInput,
   AccountManagedCliConfigurationInput,
   LegalDocumentKind,
   RememberedAccountLogin,
@@ -126,6 +132,13 @@ export interface IpcRegistrationOptions {
     clear(): Promise<void>
   }
   managedCliKeys?: ManagedCliKeyStoreLike
+  chatKeyStore?: {
+    removeByKeyId(userId: number, keyId: number): Promise<void>
+  }
+  chatCredentials?: ChatCredentialCoordinator
+  chatService?: AiChatService
+  imageService?: AiImageService
+  aiAssets?: AiAssetStore
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
 }
 
@@ -686,6 +699,55 @@ function parseAccountChangePasswordInput(value: unknown): NewApiChangePasswordIn
   return { originalPassword: value.originalPassword, newPassword }
 }
 
+function parseAiChatStartInput(value: unknown): AiChatStartInput {
+  if (!isRecord(value)) throw new Error('AI聊天请求格式错误')
+  if (!Array.isArray(value.messages) || value.messages.length === 0 || value.messages.length > 100) {
+    throw new Error('AI聊天消息格式错误')
+  }
+  const messages = value.messages.map((message) => {
+    if (!isRecord(message) || !['system', 'user', 'assistant'].includes(String(message.role))) {
+      throw new Error('AI聊天消息格式错误')
+    }
+    return {
+      role: message.role as 'system' | 'user' | 'assistant',
+      content: requiredString(message.content, 'AI聊天消息', 40_000),
+    }
+  })
+  if (value.parameters !== undefined && !isRecord(value.parameters)) throw new Error('AI聊天参数格式错误')
+  const parameters = value.parameters as Record<string, unknown> | undefined
+  const parsedParameters: AiChatStartInput['parameters'] = {}
+  const parameterNames = ['temperature', 'topP', 'maxTokens', 'frequencyPenalty', 'presencePenalty', 'seed'] as const
+  for (const name of parameterNames) {
+    const entry = parameters?.[name]
+    if (entry === undefined) continue
+    if (typeof entry !== 'number' || !Number.isFinite(entry)) throw new Error('AI聊天参数格式错误')
+    parsedParameters[name] = entry
+  }
+  return {
+    requestId: requiredString(value.requestId, 'AI聊天请求标识', 160),
+    group: requiredString(value.group, 'AI聊天分组', 128),
+    model: requiredString(value.model, 'AI聊天模型', 128),
+    messages,
+    ...(Object.keys(parsedParameters).length ? { parameters: parsedParameters } : {}),
+  }
+}
+
+function parseAiImageGenerateInput(value: unknown): AiImageGenerateInput {
+  if (!isRecord(value)) throw new Error('生图请求格式错误')
+  const quality = value.quality
+  if (quality !== undefined && !['low', 'medium', 'high', 'auto'].includes(String(quality))) {
+    throw new Error('生图画质格式错误')
+  }
+  return {
+    requestId: requiredString(value.requestId, '生图请求标识', 160),
+    group: requiredString(value.group, '生图分组', 128),
+    model: requiredString(value.model, '生图模型', 128),
+    prompt: requiredString(value.prompt, '生图提示词', 40_000),
+    ...(value.size === undefined ? {} : { size: requiredString(value.size, '生图尺寸', 32) }),
+    ...(quality === undefined ? {} : { quality: quality as AiImageGenerateInput['quality'] }),
+  }
+}
+
 const ipcOperationLabels: Readonly<Record<string, string>> = {
   'system:scan': '本机环境与 AI 工具检测',
   'startup:codex-readiness': 'Codex 启动状态检测',
@@ -848,6 +910,20 @@ const quietIpcSuccessChannels = new Set([
   // reason to keep both fully out of the runtime log.
   'account:get-remembered-login',
   'account:set-remembered-login',
+  'chat:list-groups',
+  'chat:prepare-group',
+  'chat:start',
+  'chat:generate-image',
+  'chat:cancel',
+  'chat:copy-asset',
+  'chat:save-asset',
+  'chat:asset-menu',
+])
+
+const quietIpcFailureChannels = new Set([
+  'chat:prepare-group',
+  'chat:start',
+  'chat:generate-image',
 ])
 
 function providerDisplayName(value: unknown): string | null {
@@ -944,6 +1020,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         )
       }
       const recordFailure = (error: unknown) => {
+        if (quietIpcFailureChannels.has(channel)) return
         const reason = error instanceof Error ? error.message : String(error)
         const label = ipcOperationLabels[channel] ?? channel
         options.runtimeLog.log('error', 'ipc', channel, `${label}失败：${reason || '未知错误'}`, {
@@ -978,6 +1055,28 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
 
   const service = options.systemService
   const accountService = options.accountService ?? createNewApiClient()
+  const invalidateAccountKeyCaches = async (userId: number, keyId: number): Promise<void> => {
+    const invalidations = [
+      ...(options.managedCliKeys ? [{
+        cache: 'managed-cli',
+        run: () => options.managedCliKeys!.remove(userId, keyId),
+      }] : []),
+      ...(options.chatKeyStore ? [{
+        cache: 'ai-chat',
+        run: () => options.chatKeyStore!.removeByKeyId(userId, keyId),
+      }] : []),
+    ]
+    const results = await Promise.allSettled(invalidations.map(async (entry) => entry.run()))
+    results.forEach((result, index) => {
+      if (result.status === 'fulfilled') return
+      options.runtimeLog.exception(
+        'account',
+        'key-cache-invalidation-failed',
+        result.reason,
+        { userId, keyId, cache: invalidations[index].cache },
+      )
+    })
+  }
   const unsubscribeUpdates = options.updaterService.subscribe(options.broadcastUpdate)
   registerTrustedHandler('platform:get-capabilities', () => platformCapabilitiesFor())
   registerTrustedHandler('system:scan', async (_event, forceRefresh: unknown) => {
@@ -1364,7 +1463,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:login', (_event, input: unknown) => (
     accountService.login(parseAccountLoginInput(input))
   ))
-  registerTrustedHandler('account:logout', () => accountService.logout())
+  registerTrustedHandler('account:logout', () => {
+    options.chatService?.cancelAll()
+    options.imageService?.cancelAll()
+    return accountService.logout()
+  })
   const accountSessionReady = options.accountSessionReady ?? Promise.resolve()
   registerTrustedHandler('account:get-session', async () => {
     // Guaranteed not to reject (see the option's own doc comment), but a
@@ -1412,7 +1515,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const keyId = parseAccountRevokeKeyId(id)
     const userId = accountService.getSessionState().account?.userId
     await accountService.revokeKey(keyId)
-    if (userId && options.managedCliKeys) await options.managedCliKeys.remove(userId, keyId)
+    if (userId) await invalidateAccountKeyCaches(userId, keyId)
   })
   const assertAccountSessionUser = (expectedUserId: number): void => {
     const session = accountService.getSessionState()
@@ -1501,11 +1604,81 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parsed = parseAccountKeyUpdateInput(input)
     const userId = accountService.getSessionState().account?.userId
     await accountService.updateKey(parsed)
-    if (userId && options.managedCliKeys) await options.managedCliKeys.remove(userId, parsed.id)
+    if (userId) await invalidateAccountKeyCaches(userId, parsed.id)
+  })
+  registerTrustedHandler('chat:list-groups', () => {
+    if (!options.chatCredentials) throw new Error('AI聊天服务未就绪')
+    return options.chatCredentials.listGroups()
+  })
+  registerTrustedHandler('chat:prepare-group', (_event, group: unknown) => {
+    if (!options.chatCredentials) throw new Error('AI聊天服务未就绪')
+    return options.chatCredentials.prepareGroup(requiredString(group, 'AI聊天分组', 128))
+  })
+  const observedChatSenders = new WeakSet<WebContents>()
+  const observeChatSender = (sender: WebContents): void => {
+    if (observedChatSenders.has(sender)) return
+    observedChatSenders.add(sender)
+    sender.once('destroyed', () => {
+      options.chatService?.cancelSender(sender.id)
+      options.imageService?.cancelSender(sender.id)
+    })
+  }
+  registerTrustedHandler('chat:start', (event, input: unknown) => {
+    if (!options.chatService) throw new Error('AI聊天服务未就绪')
+    observeChatSender(event.sender)
+    const parsed = parseAiChatStartInput(input)
+    return options.chatService.start({ senderId: event.sender.id, ...parsed })
+  })
+  registerTrustedHandler('chat:generate-image', (event, input: unknown) => {
+    if (!options.imageService) throw new Error('生图服务未就绪')
+    observeChatSender(event.sender)
+    return options.imageService.generate(event.sender.id, parseAiImageGenerateInput(input))
+  })
+  registerTrustedHandler('chat:cancel', (event, requestId: unknown) => {
+    const id = requiredString(requestId, 'AI聊天请求标识', 160)
+    const chatCanceled = options.chatService?.cancel(event.sender.id, id) ?? false
+    const imageCanceled = options.imageService?.cancel(event.sender.id, id)
+      ?? { canceled: false, mayStillComplete: false }
+    return {
+      canceled: chatCanceled || imageCanceled.canceled,
+      mayStillComplete: imageCanceled.mayStillComplete,
+    }
+  })
+  const currentChatUserId = (): number => {
+    const session = accountService.getSessionState()
+    const userId = session.authenticated ? session.account?.userId : undefined
+    if (!userId) throw new Error('请先登录星芒账号')
+    return userId
+  }
+  registerTrustedHandler('chat:copy-asset', (_event, assetId: unknown) => {
+    if (!options.aiAssets) throw new Error('AI 图片服务未就绪')
+    return options.aiAssets.copy(currentChatUserId(), requiredString(assetId, 'AI 图片资产标识', 160))
+  })
+  registerTrustedHandler('chat:save-asset', async (_event, assetId: unknown) => {
+    if (!options.aiAssets) throw new Error('AI 图片服务未就绪')
+    return {
+      saved: await options.aiAssets.saveAs(
+        currentChatUserId(),
+        requiredString(assetId, 'AI 图片资产标识', 160),
+      ),
+    }
+  })
+  registerTrustedHandler('chat:asset-menu', (_event, assetId: unknown) => {
+    if (!options.aiAssets) throw new Error('AI 图片服务未就绪')
+    const userId = currentChatUserId()
+    return options.aiAssets.contextMenu(
+      userId,
+      requiredString(assetId, 'AI 图片资产标识', 160),
+      () => {
+        if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
+      },
+    )
   })
 
   return () => {
     unsubscribeUpdates()
+    options.chatService?.dispose()
+    options.imageService?.cancelAll()
     for (const channel of registeredChannels) ipcMain.removeHandler(channel)
   }
 }

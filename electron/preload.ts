@@ -111,6 +111,14 @@ const ipcInvokeChannels = {
   setRememberedAccountLogin: 'account:set-remembered-login',
   createAccountKey: 'account:create-key',
   updateAccountKey: 'account:update-key',
+  listAiChatGroups: 'chat:list-groups',
+  prepareAiChatGroup: 'chat:prepare-group',
+  startAiChat: 'chat:start',
+  generateAiImage: 'chat:generate-image',
+  cancelAiChat: 'chat:cancel',
+  copyAiChatAsset: 'chat:copy-asset',
+  saveAiChatAsset: 'chat:save-asset',
+  showAiChatAssetMenu: 'chat:asset-menu',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
@@ -122,6 +130,7 @@ const ipcEventChannels = {
   onCodexDesktopStatus: 'desktop:codex-status-changed',
   onCodexDesktopInstallProgress: 'desktop:codex-install-progress',
   onUpdateState: 'update:state-changed',
+  onAiChatStream: 'chat:stream-event',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
 }
@@ -248,12 +257,21 @@ const xingmangApi: XingmangApi = {
   setRememberedAccountLogin: (input) => invoke('setRememberedAccountLogin', input),
   createAccountKey: (input) => invoke('createAccountKey', input),
   updateAccountKey: (input) => invoke('updateAccountKey', input),
+  listAiChatGroups: () => invoke('listAiChatGroups'),
+  prepareAiChatGroup: (group) => invoke('prepareAiChatGroup', group),
+  startAiChat: (input) => invoke('startAiChat', input),
+  generateAiImage: (input) => invoke('generateAiImage', input),
+  cancelAiChat: (requestId) => invoke('cancelAiChat', requestId),
+  copyAiChatAsset: (assetId) => invoke('copyAiChatAsset', assetId),
+  saveAiChatAsset: (assetId) => invoke('saveAiChatAsset', assetId),
+  showAiChatAssetMenu: (assetId) => invoke('showAiChatAssetMenu', assetId),
   onNavigate: (listener) => subscribe('onNavigate', listener),
   onNodeRuntimeInstallProgress: (listener) => subscribe('onNodeRuntimeInstallProgress', listener),
   onInstallProgress: (listener) => subscribe('onInstallProgress', listener),
   onCodexDesktopStatus: (listener) => subscribe('onCodexDesktopStatus', listener),
   onCodexDesktopInstallProgress: (listener) => subscribe('onCodexDesktopInstallProgress', listener),
   onUpdateState: (listener) => subscribe('onUpdateState', listener),
+  onAiChatStream: (listener) => subscribe('onAiChatStream', listener),
 }
 
 contextBridge.exposeInMainWorld('xingmang', xingmangApi)

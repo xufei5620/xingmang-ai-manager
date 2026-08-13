@@ -5,6 +5,7 @@ describe('navigation grouping', () => {
   it('assigns use, extensions and more destinations (nav IA scheme A)', () => {
     expect(navigationItems.map(({ id, group }) => [id, group])).toEqual([
       ['overview', 'use'],
+      ['chat', 'use'],
       ['sessions', 'use'],
       ['canvas', 'use'],
       ['mcp', 'extensions'],

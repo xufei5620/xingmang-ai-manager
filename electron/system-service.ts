@@ -608,7 +608,7 @@ export interface SystemService {
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
   ): Promise<CodexDesktopLaunchResult>
-  fetchAvailableModels(apiKey: string): Promise<string[]>
+  fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
 }
 
 function firstOutputLine(stdout: string, stderr: string): string | null {
@@ -2805,7 +2805,10 @@ export function createSystemService(
     )
   }
 
-  async function fetchAvailableModels(apiKeyInput: string): Promise<string[]> {
+  async function fetchAvailableModels(
+    apiKeyInput: string,
+    options: { bypassCache?: boolean } = {},
+  ): Promise<string[]> {
     const apiKey = apiKeyInput.trim()
     if (!apiKey) throw new Error('请先填写 API Key')
     // Reject any C0/C1 control character, not just CR/LF. A relay API key is a
@@ -2828,7 +2831,7 @@ export function createSystemService(
     // that then gets written into a config aimed at the new site.
     const activeSite = resolveRelaySite(store.read().relaySiteId)
     const cacheKey = `${activeSite.id}:${modelAccessCacheKey(apiKey)}`
-    const cached = modelAccessCache.get(cacheKey)
+    const cached = options.bypassCache ? undefined : modelAccessCache.get(cacheKey)
     if (cached) {
       modelAccessCache.delete(cacheKey)
       modelAccessCache.set(cacheKey, cached)
@@ -2853,7 +2856,8 @@ export function createSystemService(
         } catch {
           detail = ''
         }
-        throw new Error(detail || `模型查询失败，服务返回 ${response.status}`)
+        const statusMessage = `模型查询失败，服务返回 ${response.status}`
+        throw new Error((detail ? `${statusMessage}：${detail}` : statusMessage).slice(0, 500))
       }
 
       let payload: unknown

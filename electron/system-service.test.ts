@@ -487,6 +487,20 @@ describe('createSystemService', () => {
     )
   })
 
+  it('bypasses the model cache when credentials are being revalidated', async () => {
+    const service = createService()
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'cached-model' }] }), { status: 200 }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ data: [{ id: 'fresh-model' }] }), { status: 200 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(service.fetchAvailableModels('sk-bypass-cache-key')).resolves.toEqual(['cached-model'])
+    await expect(service.fetchAvailableModels('sk-bypass-cache-key')).resolves.toEqual(['cached-model'])
+    await expect(service.fetchAvailableModels('sk-bypass-cache-key', { bypassCache: true }))
+      .resolves.toEqual(['fresh-model'])
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
   it('bounds model responses and stores only a key fingerprint in cache identifiers', async () => {
     const service = createService()
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response('x'.repeat(1024 * 1024 + 1))))
@@ -518,6 +532,7 @@ describe('createSystemService', () => {
     } catch (error) {
       message = error instanceof Error ? error.message : String(error)
     }
+    expect(message).toContain('模型查询失败，服务返回 401')
     expect(message).toContain('[REDACTED]')
     expect(message).not.toContain(apiKey)
     expect(message).not.toContain('\n')

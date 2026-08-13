@@ -1,69 +1,71 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 
-// This is the ONLY preload the canvas BrowserWindow ever loads (see
-// canvas-window.ts). It never sees window.xingmang or any channel the main
-// app owns -- window.xingmangCanvasHost below is a deliberately tiny,
-// separate surface with exactly six capabilities, backed by the
-// canvas-host:* channels canvas-window.ts registers. A compromised canvas
-// page that walks this object can save/pick files and download a generated
-// asset (all through a native dialog, never an attacker-chosen path), pop
-// an OS notification, and open a URL from a fixed allowlist -- nothing that
-// reaches window.xingmang, ipcMain channels the main app owns, or Node
-// itself (sandbox:true, same as the main window).
-//
-// Sandboxed preload scripts cannot require local runtime modules (same
-// constraint documented in preload.ts), so the channel names and storage key
-// below are duplicated literals rather than imports from canvas-window.ts /
-// canvas-ai-config.ts. Keep these in sync by hand if either changes:
-//   canvas-window.ts:   canvasHost{AuthToken,SaveFile,PickFile,Notify,OpenExternal,DownloadAsset}Channel
-//   canvas-ai-config.ts: canvasAiConfigStorageKey
-const authTokenChannel = 'canvas-host:auth-token'
-const saveFileChannel = 'canvas-host:save-file'
-const pickFileChannel = 'canvas-host:pick-file'
-const notifyChannel = 'canvas-host:notify'
-const openExternalChannel = 'canvas-host:open-external'
-const downloadAssetChannel = 'canvas-host:download-asset'
-const aiConfigStorageKey = 'infinite-canvas:ai_config_store'
-
-interface CanvasAuthTokenResponse {
-  token: { baseUrl: string; apiKey: string } | null
-  storageValue: string | null
-}
-
-// Resolved synchronously, before this script returns control and the page's
-// own (deferred `type="module"`) script gets to run. ipcRenderer.sendSync
-// blocks this renderer until canvas-window.ts's main-process handler
-// replies with a value it already finished computing before this window
-// started loading -- there is no await here, and therefore no race between
-// "seed localStorage" and "infinite-canvas reads its persisted config store"
-// the way there would be with an async invoke() at this same point.
-let authTokenResponse: CanvasAuthTokenResponse = { token: null, storageValue: null }
-try {
-  let existingRaw: string | null = null
-  try {
-    existingRaw = window.localStorage.getItem(aiConfigStorageKey)
-  } catch {
-    // Storage can legitimately be unavailable (e.g. disabled by policy);
-    // treat exactly like "nothing stored yet".
-  }
-  authTokenResponse = ipcRenderer.sendSync(authTokenChannel, existingRaw) as CanvasAuthTokenResponse
-  if (authTokenResponse.storageValue) {
-    window.localStorage.setItem(aiConfigStorageKey, authTokenResponse.storageValue)
-  }
-} catch {
-  // Never let a bridge failure block the canvas app from loading -- it has
-  // its own config UI as a fallback for exactly this situation.
-}
+// Sandboxed preload scripts cannot import local runtime modules (I7). These
+// literals deliberately mirror canvas-contract.ts and are locked by tests.
+const channels = {
+  saveFile: 'canvas-host:save-file',
+  pickFile: 'canvas-host:pick-file',
+  notify: 'canvas-host:notify',
+  openExternal: 'canvas-host:open-external',
+  listGroups: 'canvas-host:list-groups',
+  prepareGroup: 'canvas-host:prepare-group',
+  generateImage: 'canvas-host:generate-image',
+  editImage: 'canvas-host:edit-image',
+  cancelRequest: 'canvas-host:cancel-request',
+  copyAsset: 'canvas-host:copy-asset',
+  saveAsset: 'canvas-host:save-asset',
+  showAssetMenu: 'canvas-host:asset-menu',
+  listAssets: 'canvas-host:list-assets',
+  pickAsset: 'canvas-host:pick-asset',
+  importAssetFile: 'canvas-host:import-asset-file',
+  listPromptPresets: 'canvas-host:list-prompt-presets',
+  createPromptPreset: 'canvas-host:create-prompt-preset',
+  updatePromptPreset: 'canvas-host:update-prompt-preset',
+  deletePromptPreset: 'canvas-host:delete-prompt-preset',
+  startRun: 'canvas-host:start-run',
+  cancelRun: 'canvas-host:cancel-run',
+  listRuns: 'canvas-host:list-runs',
+  exportProject: 'canvas-host:export-project',
+  previewProject: 'canvas-host:preview-project',
+  importProject: 'canvas-host:import-project',
+  runEvent: 'canvas-host:run-event',
+} as const
 
 contextBridge.exposeInMainWorld('xingmangCanvasHost', {
-  getAuthToken: () => Promise.resolve(authTokenResponse.token),
   saveFile: (suggestedName: string, content: string) => (
-    ipcRenderer.invoke(saveFileChannel, suggestedName, content)
+    ipcRenderer.invoke(channels.saveFile, suggestedName, content)
   ),
-  pickFile: () => ipcRenderer.invoke(pickFileChannel),
-  notify: (title: string, body?: string) => ipcRenderer.invoke(notifyChannel, title, body),
-  openExternal: (url: string) => ipcRenderer.invoke(openExternalChannel, url),
-  downloadAsset: (url: string, suggestedName: string) => (
-    ipcRenderer.invoke(downloadAssetChannel, url, suggestedName)
-  ),
+  pickFile: () => ipcRenderer.invoke(channels.pickFile),
+  notify: (title: string, body?: string) => ipcRenderer.invoke(channels.notify, title, body),
+  openExternal: (url: string) => ipcRenderer.invoke(channels.openExternal, url),
+  listGroups: () => ipcRenderer.invoke(channels.listGroups),
+  prepareGroup: (group: string) => ipcRenderer.invoke(channels.prepareGroup, group),
+  generateImage: (input: unknown) => ipcRenderer.invoke(channels.generateImage, input),
+  editImage: (input: unknown) => ipcRenderer.invoke(channels.editImage, input),
+  cancelRequest: (requestId: string) => ipcRenderer.invoke(channels.cancelRequest, requestId),
+  copyAsset: (assetId: string) => ipcRenderer.invoke(channels.copyAsset, assetId),
+  saveAsset: (assetId: string) => ipcRenderer.invoke(channels.saveAsset, assetId),
+  showAssetMenu: (assetId: string) => ipcRenderer.invoke(channels.showAssetMenu, assetId),
+  listAssets: (query?: unknown) => ipcRenderer.invoke(channels.listAssets, query),
+  pickAsset: () => ipcRenderer.invoke(channels.pickAsset),
+  importAssetFile: (file: File) => {
+    const filePath = webUtils.getPathForFile(file)
+    if (!filePath) return Promise.reject(new Error('无法读取拖入的本地文件'))
+    return ipcRenderer.invoke(channels.importAssetFile, filePath)
+  },
+  listPromptPresets: () => ipcRenderer.invoke(channels.listPromptPresets),
+  createPromptPreset: (input: unknown) => ipcRenderer.invoke(channels.createPromptPreset, input),
+  updatePromptPreset: (input: unknown) => ipcRenderer.invoke(channels.updatePromptPreset, input),
+  deletePromptPreset: (id: string) => ipcRenderer.invoke(channels.deletePromptPreset, id),
+  startRun: (input: unknown) => ipcRenderer.invoke(channels.startRun, input),
+  cancelRun: (runId: string) => ipcRenderer.invoke(channels.cancelRun, runId),
+  listRuns: () => ipcRenderer.invoke(channels.listRuns),
+  exportProject: (suggestedName: string, content: string) => ipcRenderer.invoke(channels.exportProject, suggestedName, content),
+  previewProject: () => ipcRenderer.invoke(channels.previewProject),
+  importProject: (previewId: string) => ipcRenderer.invoke(channels.importProject, previewId),
+  onRunEvent: (listener: (event: unknown) => void) => {
+    const wrapped = (_event: unknown, payload: unknown) => listener(payload)
+    ipcRenderer.on(channels.runEvent, wrapped)
+    return () => ipcRenderer.removeListener(channels.runEvent, wrapped)
+  },
 })

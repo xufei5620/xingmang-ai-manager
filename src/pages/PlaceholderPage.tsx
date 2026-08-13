@@ -2,6 +2,7 @@ import { Inbox, RefreshCw, Sparkles } from 'lucide-react'
 import { navigationItem, type PageId } from '../navigation'
 
 const pageEyebrows: Record<Exclude<PageId, 'overview'>, string> = {
+  chat: 'AI CHAT',
   sessions: 'SESSIONS',
   canvas: 'CANVAS',
   mcp: 'MODEL CONTEXT PROTOCOL',

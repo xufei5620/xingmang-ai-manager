@@ -1,31 +1,47 @@
-# 星芒无限画布 v2(节点式 AI 媒体工作流)
+# 星芒无限画布 v2（节点式 AI 媒体工作流）
 
-总规划见 [`../docs/CANVAS-V2-PLAN.md`](../docs/CANVAS-V2-PLAN.md),进度跟踪见 issue #80。
+架构、安全边界和验收门禁见 [`../docs/CANVAS-V2-PLAN.md`](../docs/CANVAS-V2-PLAN.md)，第三方来源见 [`../docs/CANVAS-THIRD-PARTY.md`](../docs/CANVAS-THIRD-PARTY.md)。
 
-> **落点说明**:v2 暂居主仓 `canvas-v2/` 目录(独立 package,与主应用零构建耦合)。
-> 老板确定最终仓库后整体平移,主仓侧只需把 `XINGMANG_CANVAS_DIST` 指向新产物路径。
+> **落点说明**：v2 位于主仓 `canvas-v2/` 目录；根项目的 `npm run canvas:prepare`
+> 会用根构建依赖生成并复制 `dist-canvas/`。本目录仍可独立安装依赖和开发。
 
 ## 开发
 
 ```bash
 cd canvas-v2
 npm install
-npm run dev        # 浏览器独立开发(无宿主桥时自动降级:文件走下载/选择,token 为空走 mock)
-npm run build      # tsc + vite,产物在 dist/
+npm run dev        # 浏览器演示模式：文件走下载/选择，不连接生产服务
+npm run build      # tsc + vite，产物在 dist/
 ```
 
-## 当前状态(M0 骨架,已完成)
+浏览器演示模式不读取登录会话、不签发分组 Key，也不执行真实 AI 请求；桌面宿主中的分组协调、主进程运行服务和账号资产隔离才是生产路径。
 
-- 三种节点(文本/图像/视频),节点即 React 组件:提示词、模型名、状态灯、结果预览、失败原因、消耗展示
-- 类型化端口(text/image/video)+ 连线校验:类型不匹配拒绝、方向拒绝、成环拒绝(`ports.ts`)
-- 客户端 DAG 执行引擎(`engine/engine.ts`,纯函数、主仓 vitest 直接测):拓扑排序、就绪即触发、
-  上游失败下游跳过、整图取消;M0 用 mock 执行器演示全链路
-- relay 客户端骨架(`engine/relay.ts`):端点已按 rc.24 源码钉死(文生图直调 + 视频任务提交/轮询),
-  **渠道配置好后把 App.tsx 的 executors 从 mock 换成真实现即进入 M1**
-- 工作流 JSON 持久化(保存/打开,经宿主桥或浏览器降级;敌意输入校验)
+从仓库根目录运行四视口 Electron 视觉门禁：
 
-## 纪律(与主仓同源)
+```bash
+npm run test:canvas:visual
+```
 
-- 测试绝不对生产 `xm.solov.cc` 发真实请求(T12);引擎/模型层保持零框架依赖便于纯函数测试
-- 宿主能力面只减不增(I15);产物必须相对路径(`base: './'`,自定义协议加载约束)
-- Jaaz 零代码引用;React Flow Pro 付费示例不抄
+## 当前状态（生态增强 v1）
+
+- 10 类核心媒体节点、类型化端口、节点注册表和未知节点降级占位。
+- Undo/Redo、复制/粘贴/重复、分组/解组、自动布局、资产拖入和三套原创模板。
+- 主进程 DAG 运行服务：有界并发、取消、缓存、运行历史、候选预览/采纳、下游增量失效。
+- 支持全部、仅变更、选中链路、运行到节点四种运行范围；采纳候选只标记下游为待更新，不自动触发付费任务。
+- 当前账号专属的本地资产库，存放在安装根目录 `output/`，支持重启恢复和右键操作。
+- Schema v2、v1 迁移、敌意输入修复，以及可携带本地图片的有界 `.xingcanvas` 项目包。
+- 默认暗色画布，首帧、节点、媒体区、Controls 和 MiniMap 使用同一主题。
+
+## 桌面宿主边界
+
+- 画布 renderer 运行在独立 sandbox 窗口中，CSP 禁止网络连接。
+- API Key、access token、refresh token 和供应商请求只存在于 Electron 主进程。
+- 桌面资产按当前登录用户隔离，账号切换会取消旧账号的在途任务。
+- `.xingcanvas` 导入由主进程预览、校验、暂存和提交；浏览器模式只提供轻量 JSON 兼容格式。
+
+## 开发纪律
+
+- 测试绝不对生产 `xm.solov.cc` 发真实请求（T12）；引擎和模型层保持零框架依赖，便于纯函数测试。
+- renderer 不接触 API Key、session token 或生产 API；所有 AI/资产操作经独立、有界、校验 sender 的宿主 IPC。
+- 产物必须使用相对路径（`base: './'`，受自定义协议加载约束）。
+- GPL/AGPL、限制许可和无许可证来源只作 idea-only 调研；React Flow Pro 付费示例不复制。

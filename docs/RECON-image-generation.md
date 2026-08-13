@@ -54,6 +54,7 @@
 
 - `n`：每次 1 张（多张自行并发多请求）
 - `prompt`：中文完全可用；文字密集的排版图（海报/信息图）**必须 high 档**，low 档中文小字会畸变错字
+- 不要发送 `response_format`：当前 gpt-image 上游会返回 `Unknown parameter: 'response_format'`；客户端直接兼容响应中的 `b64_json` 与 `url` 即可
 
 ---
 

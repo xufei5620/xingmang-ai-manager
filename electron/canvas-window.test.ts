@@ -1,4 +1,7 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import type { NewApiClientService } from './new-api-client'
 import type { SystemService } from './system-service'
 
@@ -8,16 +11,42 @@ const electronMocks = vi.hoisted(() => ({
   removeHandler: vi.fn(),
   removeAllListeners: vi.fn(),
   showSaveDialog: vi.fn(async () => ({ canceled: true, filePath: undefined })),
-  showOpenDialog: vi.fn(async () => ({ canceled: true, filePaths: [] })),
+  showOpenDialog: vi.fn<() => Promise<{ canceled: boolean; filePaths: string[] }>>(async () => ({ canceled: true, filePaths: [] })),
   browserWindowFromWebContents: vi.fn(() => undefined),
   registerFileProtocol: vi.fn(),
   notificationShow: vi.fn(),
   notificationSupported: vi.fn(() => true),
+  browserWindowOptions: [] as unknown[],
+  latestWebContents: null as null | Record<string, unknown>,
 }))
 
 vi.mock('electron', () => ({
   app: { isPackaged: false },
-  BrowserWindow: Object.assign(vi.fn(), { fromWebContents: electronMocks.browserWindowFromWebContents }),
+  BrowserWindow: Object.assign(vi.fn(function BrowserWindowMock(options: unknown) {
+    electronMocks.browserWindowOptions.push(options)
+    const mainFrame = { url: 'xingmang-canvas://app/index.html' }
+    const webContents = {
+      id: 41,
+      mainFrame,
+      getURL: () => mainFrame.url,
+      isDestroyed: () => false,
+      send: vi.fn(),
+      setWindowOpenHandler: vi.fn(),
+      on: vi.fn(),
+    }
+    electronMocks.latestWebContents = webContents
+    return {
+      webContents,
+      once: vi.fn(),
+      on: vi.fn(),
+      loadURL: vi.fn(async () => undefined),
+      center: vi.fn(),
+      show: vi.fn(),
+      focus: vi.fn(),
+      isDestroyed: vi.fn(() => false),
+      isMinimized: vi.fn(() => false),
+    }
+  }), { fromWebContents: electronMocks.browserWindowFromWebContents }),
   dialog: {
     showSaveDialog: electronMocks.showSaveDialog,
     showOpenDialog: electronMocks.showOpenDialog,
@@ -45,38 +74,90 @@ vi.mock('electron', () => ({
   shell: { openExternal: vi.fn(), openPath: vi.fn() },
 }))
 
-import { resolveCanvasAuthToken } from './canvas-auth'
-import { resolveRelaySite } from './relay-sites'
+import { buildCanvasProjectPackage } from './canvas-project-package'
 import {
-  buildCanvasTokenDependencies,
-  canvasBaseUrlForSite,
-  canvasCliKeyNamePrefix,
-  canvasHostAuthTokenChannel,
-  canvasHostDownloadAssetChannel,
+  canvasHostCancelRequestChannel,
+  canvasHostCopyAssetChannel,
+  canvasHostCreatePromptPresetChannel,
+  canvasHostDeletePromptPresetChannel,
+  canvasHostEditImageChannel,
+  canvasHostGenerateImageChannel,
+  canvasHostListGroupsChannel,
+  canvasHostListAssetsChannel,
+  canvasHostListPromptPresetsChannel,
+  canvasHostPickAssetChannel,
+  canvasHostImportAssetFileChannel,
+  canvasHostStartRunChannel,
+  canvasHostCancelRunChannel,
+  canvasHostExportProjectChannel,
+  canvasHostImportProjectChannel,
+  canvasHostListRunsChannel,
   canvasHostNotifyChannel,
   canvasHostOpenExternalChannel,
   canvasHostPickFileChannel,
+  canvasHostPrepareGroupChannel,
+  canvasHostPreviewProjectChannel,
+  canvasHostRunEventChannel,
   canvasHostSaveFileChannel,
+  canvasHostSaveAssetChannel,
+  canvasHostShowAssetMenuChannel,
+  canvasHostUpdatePromptPresetChannel,
+  canvasWindowBackgroundColor,
   createCanvasWindowController,
-  pickCanvasKeyGroup,
   type CanvasWindowControllerOptions,
 } from './canvas-window'
 
 const trustedCanvasUrl = 'xingmang-canvas://app/index.html'
 const allowlist = ['https://docs.canvas.best', 'https://github.com/basketikun/infinite-canvas']
+const temporaryDirectories: string[] = []
+const projectPng = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=', 'base64')
+
+function temporaryDirectory(): string {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-canvas-window-'))
+  temporaryDirectories.push(directory)
+  return directory
+}
+
+function temporaryCanvasDistDirectory(): string {
+  const directory = temporaryDirectory()
+  fs.writeFileSync(path.join(directory, 'index.html'), '<!doctype html><title>canvas fixture</title>', 'utf8')
+  return directory
+}
+
+function projectWorkflow(assetIds: readonly string[]): string {
+  return JSON.stringify({
+    schemaVersion: 2,
+    name: '可移植项目',
+    nodes: assetIds.map((assetId, index) => ({
+      id: `image-${index}`,
+      kind: 'image-input',
+      definitionVersion: 1,
+      position: { x: index * 300, y: 0 },
+      data: {
+        prompt: '', model: '',
+        result: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' },
+      },
+    })),
+    edges: [],
+  })
+}
 
 function trustedEvent(url = trustedCanvasUrl) {
+  const sender = electronMocks.latestWebContents!
+  const senderFrame = url === trustedCanvasUrl
+    ? sender.mainFrame
+    : { url }
   return {
-    senderFrame: { url },
-    sender: { getURL: () => url, isDestroyed: () => false, send: vi.fn() },
+    senderFrame,
+    sender,
   }
 }
 
-function syncEvent(url = trustedCanvasUrl) {
+function foreignEvent(url = trustedCanvasUrl) {
+  const mainFrame = { url }
   return {
-    senderFrame: { url },
-    sender: { getURL: () => url, isDestroyed: () => false, send: vi.fn() },
-    returnValue: undefined as unknown,
+    senderFrame: mainFrame,
+    sender: { id: 99, mainFrame, getURL: () => url, isDestroyed: () => false, send: vi.fn() },
   }
 }
 
@@ -84,15 +165,49 @@ function controllerOptions(
   overrides: Partial<CanvasWindowControllerOptions> = {},
 ): CanvasWindowControllerOptions {
   return {
-    canvasDistRoot: 'C:\\app\\dist-canvas',
+    canvasDistRoot: temporaryCanvasDistDirectory(),
     externalUrlAllowlist: allowlist,
     systemService: { revealApiKey: vi.fn(() => '') } as unknown as SystemService,
     accountService: {
-      getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 7 } })),
       provisionCliKey: vi.fn(),
     } as unknown as NewApiClientService,
     previewOnboarding: false,
     runtimeLog: { log: vi.fn(), exception: vi.fn() } as never,
+    chatCredentials: {
+      listGroups: vi.fn(async () => []),
+      prepareGroup: vi.fn(async (group: string) => ({ group, models: [], keyCreated: false })),
+      resolveCredential: vi.fn(),
+    },
+    imageService: {
+      generate: vi.fn(async () => []),
+      edit: vi.fn(async () => []),
+      cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
+      cancelSender: vi.fn(() => 0),
+    } as never,
+    aiAssets: {
+      copy: vi.fn(async () => undefined),
+      saveAs: vi.fn(async () => false),
+      contextMenu: vi.fn(async () => undefined),
+      listOwned: vi.fn(async () => []),
+      listOwnedPage: vi.fn(async () => ({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })),
+      readOwned: vi.fn(),
+      storeBase64: vi.fn(),
+      removeOwned: vi.fn(async () => undefined),
+    } as never,
+    promptPresets: {
+      list: vi.fn(async () => []),
+      create: vi.fn(),
+      update: vi.fn(),
+      delete: vi.fn(),
+    } as never,
+    canvasRuns: {
+      start: vi.fn(() => ({ runId: 'run-1', graphRevision: 'revision', promise: Promise.resolve({}), cancel: vi.fn() })),
+      cancel: vi.fn(() => false),
+      cancelOwner: vi.fn(() => 0),
+      listRuns: vi.fn(async () => []),
+      subscribe: vi.fn((_listener: unknown) => () => undefined),
+    } as never,
     externalShell: { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) },
     ...overrides,
   }
@@ -111,23 +226,46 @@ beforeEach(() => {
   electronMocks.notificationShow.mockClear()
   electronMocks.notificationSupported.mockReset()
   electronMocks.notificationSupported.mockReturnValue(true)
+  electronMocks.browserWindowOptions.length = 0
+  electronMocks.latestWebContents = null
+})
+
+afterEach(() => {
+  for (const directory of temporaryDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true })
 })
 
 describe('createCanvasWindowController', () => {
-  it('registers exactly the six documented canvas-host channels -- the entire bridge surface', () => {
+  it('registers exactly the documented canvas-host invoke channels with no token channel', () => {
     createCanvasWindowController(controllerOptions())
 
-    // download-asset is the deliberate sixth capability (画布 v2 媒体落盘,
-    // I15 poisoning answer in canvas-window.ts) -- growing this list must
-    // stay a conscious act, which is the whole point of this assertion.
     expect([...electronMocks.handlers.keys()].sort()).toEqual([
-      canvasHostDownloadAssetChannel,
+      canvasHostCancelRequestChannel,
+      canvasHostCopyAssetChannel,
+      canvasHostCreatePromptPresetChannel,
+      canvasHostDeletePromptPresetChannel,
+      canvasHostEditImageChannel,
+      canvasHostGenerateImageChannel,
+      canvasHostListAssetsChannel,
+      canvasHostListPromptPresetsChannel,
+      canvasHostPickAssetChannel,
+      canvasHostImportAssetFileChannel,
+      canvasHostStartRunChannel,
+      canvasHostCancelRunChannel,
+      canvasHostExportProjectChannel,
+      canvasHostImportProjectChannel,
+      canvasHostListRunsChannel,
+      canvasHostListGroupsChannel,
       canvasHostNotifyChannel,
       canvasHostOpenExternalChannel,
       canvasHostPickFileChannel,
+      canvasHostPrepareGroupChannel,
+      canvasHostPreviewProjectChannel,
+      canvasHostSaveAssetChannel,
       canvasHostSaveFileChannel,
+      canvasHostShowAssetMenuChannel,
+      canvasHostUpdatePromptPresetChannel,
     ].sort())
-    expect([...electronMocks.onHandlers.keys()]).toEqual([canvasHostAuthTokenChannel])
+    expect([...electronMocks.onHandlers.keys()]).toEqual([])
   })
 
   it('registers the xingmang-canvas:// protocol handler exactly once', () => {
@@ -137,8 +275,13 @@ describe('createCanvasWindowController', () => {
     expect(electronMocks.registerFileProtocol).toHaveBeenCalledWith('xingmang-canvas', expect.any(Function))
   })
 
-  it('rejects an invoke handler call from any sender outside the canvas window origin', async () => {
-    createCanvasWindowController(controllerOptions())
+  it('defines the dark canvas color used before the renderer becomes visible', () => {
+    expect(canvasWindowBackgroundColor).toBe('#111315')
+  })
+
+  it('rejects calls outside the current canvas main frame', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
     const handler = electronMocks.handlers.get(canvasHostOpenExternalChannel)!
 
     expect(() => handler(trustedEvent('https://attacker.example/'), 'https://docs.canvas.best')).toThrow(
@@ -147,11 +290,15 @@ describe('createCanvasWindowController', () => {
     expect(() => handler(trustedEvent('xingmang://app/index.html'), 'https://docs.canvas.best')).toThrow(
       '已拒绝来自非画布页面的操作请求',
     )
+    expect(() => handler(foreignEvent(), 'https://docs.canvas.best')).toThrow(
+      '已拒绝来自非画布页面的操作请求',
+    )
   })
 
   it('opens an allowlisted external URL via the injected shell launcher, never electron shell directly', async () => {
     const externalShell = { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) }
-    createCanvasWindowController(controllerOptions({ externalShell }))
+    const controller = createCanvasWindowController(controllerOptions({ externalShell }))
+    await controller.open()
     const handler = electronMocks.handlers.get(canvasHostOpenExternalChannel)!
 
     await expect(handler(trustedEvent(), 'https://docs.canvas.best')).resolves.toBe(true)
@@ -159,7 +306,8 @@ describe('createCanvasWindowController', () => {
   })
 
   it('rejects a URL that is not an exact allowlist match (I12) -- subdomain and path confusion both fail', async () => {
-    createCanvasWindowController(controllerOptions())
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
     const handler = electronMocks.handlers.get(canvasHostOpenExternalChannel)!
 
     await expect(handler(trustedEvent(), 'https://docs.canvas.best.evil.example')).rejects.toThrow(
@@ -172,8 +320,9 @@ describe('createCanvasWindowController', () => {
     await expect(handler(trustedEvent(), 42)).rejects.toThrow('不允许打开该链接')
   })
 
-  it('validates notify input before ever constructing a Notification', () => {
-    createCanvasWindowController(controllerOptions())
+  it('validates notify input before ever constructing a Notification', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
     const handler = electronMocks.handlers.get(canvasHostNotifyChannel)!
 
     // The handler itself is synchronous (mirrors ipc.ts's own sync
@@ -186,17 +335,19 @@ describe('createCanvasWindowController', () => {
     expect(electronMocks.notificationShow).not.toHaveBeenCalled()
   })
 
-  it('shows a native notification with title/body, defaulting an omitted body to empty', () => {
-    createCanvasWindowController(controllerOptions())
+  it('shows a native notification with title/body, defaulting an omitted body to empty', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
     const handler = electronMocks.handlers.get(canvasHostNotifyChannel)!
 
     expect(handler(trustedEvent(), '生成完成', undefined)).toBe(true)
     expect(electronMocks.notificationShow).toHaveBeenCalledWith({ title: '生成完成', body: '' })
   })
 
-  it('returns false without throwing when Notification is unsupported on this platform', () => {
+  it('returns false without throwing when Notification is unsupported on this platform', async () => {
     electronMocks.notificationSupported.mockReturnValue(false)
-    createCanvasWindowController(controllerOptions())
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
     const handler = electronMocks.handlers.get(canvasHostNotifyChannel)!
 
     expect(handler(trustedEvent(), '生成完成', 'body')).toBe(false)
@@ -204,7 +355,8 @@ describe('createCanvasWindowController', () => {
   })
 
   it('returns null (not an error) when the save/pick dialog is canceled', async () => {
-    createCanvasWindowController(controllerOptions())
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
     const saveHandler = electronMocks.handlers.get(canvasHostSaveFileChannel)!
     const pickHandler = electronMocks.handlers.get(canvasHostPickFileChannel)!
 
@@ -212,330 +364,248 @@ describe('createCanvasWindowController', () => {
     await expect(pickHandler(trustedEvent())).resolves.toBeNull()
   })
 
+  it('imports a validated local image through the native picker without exposing its path', async () => {
+    const directory = temporaryDirectory()
+    const imagePath = path.join(directory, 'reference.png')
+    fs.writeFileSync(imagePath, projectPng)
+    electronMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [imagePath] })
+    const imported = { assetId: 'I'.repeat(43), localUrl: `xingmang-asset://image/${'I'.repeat(43)}`, mimeType: 'image/png', fileName: 'reference.png' }
+    const aiAssets = {
+      copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwnedPage: vi.fn(),
+      storeLocalFile: vi.fn(async () => imported), removeOwned: vi.fn(async () => undefined),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ aiAssets: aiAssets as never }))
+    await controller.open()
+
+    await expect(electronMocks.handlers.get(canvasHostPickAssetChannel)!(trustedEvent())).resolves.toEqual(imported)
+    expect(aiAssets.storeLocalFile).toHaveBeenCalledWith(7, imagePath)
+  })
+
   it('rejects oversized or non-string saveFile input before ever opening a dialog', async () => {
-    createCanvasWindowController(controllerOptions())
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
     const handler = electronMocks.handlers.get(canvasHostSaveFileChannel)!
 
     await expect(handler(trustedEvent(), 'export.json', 12345)).rejects.toThrow('保存内容格式错误')
     expect(electronMocks.showSaveDialog).not.toHaveBeenCalled()
   })
 
-  describe('canvas-host:auth-token (synchronous)', () => {
-    it('returns a null token and does not write storage for an untrusted sender', () => {
-      createCanvasWindowController(controllerOptions())
-      const handler = electronMocks.onHandlers.get(canvasHostAuthTokenChannel)!
+  it('previews then imports a portable project with one-time asset remapping', async () => {
+    const oldAssetId = 'A'.repeat(43)
+    const newAssetId = 'B'.repeat(43)
+    const directory = temporaryDirectory()
+    const projectPath = path.join(directory, '测试项目.xingcanvas')
+    fs.writeFileSync(projectPath, buildCanvasProjectPackage(projectWorkflow([oldAssetId]), [{
+      asset: { assetId: oldAssetId, localUrl: `xingmang-asset://image/${oldAssetId}`, mimeType: 'image/png', fileName: `xingmang-${oldAssetId}.png` },
+      bytes: projectPng,
+    }]), 'utf8')
+    electronMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [projectPath] })
+    const aiAssets = {
+      copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwned: vi.fn(async () => []), readOwned: vi.fn(),
+      storeBase64: vi.fn(async () => ({ assetId: newAssetId, localUrl: `xingmang-asset://image/${newAssetId}`, mimeType: 'image/png', fileName: `xingmang-${newAssetId}.png` })),
+      removeOwned: vi.fn(async () => undefined),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ aiAssets: aiAssets as never }))
+    await controller.open()
 
-      const event = syncEvent('https://attacker.example/')
-      handler(event, null)
+    const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string; assetCount: number }
+    const imported = await electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId) as { content: string; importedAssetCount: number }
 
-      expect(event.returnValue).toEqual({ token: null, storageValue: null })
-    })
-
-    it('returns a null token for a trusted sender when the account is logged out (zero network calls)', () => {
-      const accountService = {
-        getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
-        provisionCliKey: vi.fn(),
-      } as unknown as NewApiClientService
-      createCanvasWindowController(controllerOptions({ accountService }))
-      const handler = electronMocks.onHandlers.get(canvasHostAuthTokenChannel)!
-
-      // No canvas window has been opened (open() was never called), so no
-      // entry exists in the controller's token map for this event.sender --
-      // this also exercises the "no entry found" branch, which must degrade
-      // to null rather than throw.
-      const event = syncEvent()
-      handler(event, null)
-
-      expect(event.returnValue).toEqual({ token: null, storageValue: null })
-      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
-    })
+    expect(preview.assetCount).toBe(1)
+    expect(imported.importedAssetCount).toBe(1)
+    expect(imported.content).not.toContain(oldAssetId)
+    expect(imported.content).toContain(newAssetId)
+    expect(aiAssets.storeBase64).toHaveBeenCalledWith(7, expect.stringMatching(/^data:image\/png;base64,/))
+    await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId))
+      .rejects.toThrow('预览已失效')
   })
 
-  it('dispose() removes every handle channel and the sync listener', () => {
+  it('rolls back assets imported before a project transaction fails', async () => {
+    const oldAssetIds = ['A'.repeat(43), 'C'.repeat(43)]
+    const importedAssetId = 'B'.repeat(43)
+    const directory = temporaryDirectory()
+    const projectPath = path.join(directory, 'rollback.xingcanvas')
+    fs.writeFileSync(projectPath, buildCanvasProjectPackage(projectWorkflow(oldAssetIds), oldAssetIds.map((assetId) => ({
+      asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png', fileName: `xingmang-${assetId}.png` },
+      bytes: projectPng,
+    }))), 'utf8')
+    electronMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [projectPath] })
+    const removeOwned = vi.fn(async () => undefined)
+    const storeBase64 = vi.fn()
+      .mockResolvedValueOnce({ assetId: importedAssetId, localUrl: `xingmang-asset://image/${importedAssetId}`, mimeType: 'image/png', fileName: 'first.png' })
+      .mockRejectedValueOnce(new Error('磁盘写入失败'))
+    const controller = createCanvasWindowController(controllerOptions({
+      aiAssets: { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwned: vi.fn(), readOwned: vi.fn(), storeBase64, removeOwned } as never,
+    }))
+    await controller.open()
+    const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string }
+
+    await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId)).rejects.toThrow('磁盘写入失败')
+    expect(removeOwned).toHaveBeenCalledWith(7, importedAssetId)
+  })
+
+  it('invalidates a project preview and rolls back imported assets after an account switch', async () => {
+    const oldAssetIds = ['A'.repeat(43), 'C'.repeat(43)]
+    const importedAssetId = 'B'.repeat(43)
+    const directory = temporaryDirectory()
+    const projectPath = path.join(directory, 'account-switch.xingcanvas')
+    fs.writeFileSync(projectPath, buildCanvasProjectPackage(projectWorkflow(oldAssetIds), oldAssetIds.map((assetId) => ({
+      asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png', fileName: `xingmang-${assetId}.png` },
+      bytes: projectPng,
+    }))), 'utf8')
+    electronMocks.showOpenDialog.mockResolvedValue({ canceled: false, filePaths: [projectPath] })
+    let userId = 7
+    const getSessionState = vi.fn(() => ({ authenticated: true, account: { userId } }))
+    const removeOwned = vi.fn(async () => undefined)
+    const storeBase64 = vi.fn(async () => {
+      userId = 9
+      return { assetId: importedAssetId, localUrl: `xingmang-asset://image/${importedAssetId}`, mimeType: 'image/png', fileName: 'first.png' }
+    })
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState } as never,
+      aiAssets: { copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwned: vi.fn(), readOwned: vi.fn(), storeBase64, removeOwned } as never,
+    }))
+    await controller.open()
+    const preview = await electronMocks.handlers.get(canvasHostPreviewProjectChannel)!(trustedEvent()) as { previewId: string }
+
+    await expect(electronMocks.handlers.get(canvasHostImportProjectChannel)!(trustedEvent(), preview.previewId))
+      .rejects.toThrow('账号已切换')
+    expect(storeBase64).toHaveBeenCalledTimes(1)
+    expect(removeOwned).toHaveBeenCalledWith(7, importedAssetId)
+  })
+
+  it('publishes run events only to their originating window while its account is still active', async () => {
+    let activeUserId = 7
+    let listener: ((publication: { event: unknown; userId: number; ownerId: number }) => void) | undefined
+    const canvasRuns = {
+      start: vi.fn(), cancel: vi.fn(), cancelOwner: vi.fn(), listRuns: vi.fn(async () => []),
+      subscribe: vi.fn((next: typeof listener) => { listener = next; return () => undefined }),
+    }
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: activeUserId } })) } as never,
+      canvasRuns: canvasRuns as never,
+    }))
+    await controller.open()
+    const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
+    const event = { type: 'node-state', runId: 'run-1' }
+
+    listener?.({ event, userId: 7, ownerId: 99 })
+    activeUserId = 9
+    listener?.({ event, userId: 7, ownerId: 41 })
+    listener?.({ event, userId: 9, ownerId: 41 })
+
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(send).toHaveBeenCalledWith(canvasHostRunEventChannel, event)
+  })
+
+  it('delegates group, image and asset operations without returning API keys', async () => {
+    const chatCredentials = {
+      listGroups: vi.fn(async () => [{ name: '生图分组', description: '图片', ratio: 1 }]),
+      prepareGroup: vi.fn(async (group: string) => ({ group, models: ['gpt-image-1'], keyCreated: true })),
+      resolveCredential: vi.fn(),
+    }
+    const imageService = {
+      generate: vi.fn(async () => [{ assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}` }]),
+      edit: vi.fn(async () => [{ assetId: 'b'.repeat(43), localUrl: `xingmang-asset://image/${'b'.repeat(43)}` }]),
+      cancel: vi.fn(() => ({ canceled: true, mayStillComplete: false })),
+      cancelSender: vi.fn(() => 0),
+    }
+    const aiAssets = {
+      copy: vi.fn(async () => undefined),
+      saveAs: vi.fn(async () => true),
+      contextMenu: vi.fn(async () => undefined),
+      listOwned: vi.fn(async () => []),
+      listOwnedPage: vi.fn(async () => ({ items: [], offset: 24, limit: 24, total: 25, hasMore: false })),
+    }
+    const controller = createCanvasWindowController(controllerOptions({
+      chatCredentials,
+      imageService: imageService as never,
+      aiAssets: aiAssets as never,
+    }))
+    await controller.open()
+
+    const groups = await electronMocks.handlers.get(canvasHostListGroupsChannel)!(trustedEvent())
+    const prepared = await electronMocks.handlers.get(canvasHostPrepareGroupChannel)!(trustedEvent(), '生图分组')
+    const generated = await electronMocks.handlers.get(canvasHostGenerateImageChannel)!(trustedEvent(), {
+      requestId: 'request-1', group: '生图分组', model: 'gpt-image-1', prompt: '星空',
+    })
+    const edited = await electronMocks.handlers.get(canvasHostEditImageChannel)!(trustedEvent(), {
+      requestId: 'edit-1', group: '生图分组', model: 'gpt-image-1', prompt: '改成夜景',
+      sourceAssetIds: ['a'.repeat(43)],
+    })
+    await electronMocks.handlers.get(canvasHostCopyAssetChannel)!(trustedEvent(), 'a'.repeat(43))
+    await expect(electronMocks.handlers.get(canvasHostSaveAssetChannel)!(trustedEvent(), 'a'.repeat(43)))
+      .resolves.toEqual({ saved: true })
+    await expect(electronMocks.handlers.get(canvasHostListAssetsChannel)!(trustedEvent(), {
+      offset: 24, limit: 24, mediaType: 'image', search: '产品',
+    })).resolves.toMatchObject({ offset: 24, total: 25 })
+
+    expect(JSON.stringify({ groups, prepared, generated, edited })).not.toContain('apiKey')
+    expect(imageService.generate).toHaveBeenCalledWith(41, expect.objectContaining({ requestId: 'request-1' }))
+    expect(imageService.edit).toHaveBeenCalledWith(41, {
+      requestId: 'edit-1', group: '生图分组', model: 'gpt-image-1', prompt: '改成夜景',
+      sourceAssetIds: ['a'.repeat(43)], expectedUserId: 7,
+    })
+    expect(aiAssets.copy).toHaveBeenCalledWith(7, 'a'.repeat(43), expect.any(Function))
+    expect(aiAssets.listOwnedPage).toHaveBeenCalledWith(7, { offset: 24, limit: 24, mediaType: 'image', search: '产品' })
+  })
+
+  it('scopes prompt preset CRUD to the current account and returns no credentials', async () => {
+    const promptPresets = {
+      list: vi.fn(async () => [{ id: 'preset-id-0000000000000001', name: '商品', prompt: '棚拍', tags: [], createdAt: '2026-08-13T00:00:00.000Z', updatedAt: '2026-08-13T00:00:00.000Z', provenance: 'user-created' }]),
+      create: vi.fn(async (_userId: number, input: unknown) => ({ id: 'preset-id-0000000000000002', ...(input as object), tags: [], createdAt: '2026-08-13T00:00:00.000Z', updatedAt: '2026-08-13T00:00:00.000Z', provenance: 'user-created' })),
+      update: vi.fn(async (_userId: number, input: unknown) => ({ ...(input as object), prompt: '更新', tags: [], createdAt: '2026-08-13T00:00:00.000Z', updatedAt: '2026-08-13T00:01:00.000Z', provenance: 'user-created' })),
+      delete: vi.fn(async () => true),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ promptPresets: promptPresets as never }))
+    await controller.open()
+
+    const listed = await electronMocks.handlers.get(canvasHostListPromptPresetsChannel)!(trustedEvent())
+    const created = await electronMocks.handlers.get(canvasHostCreatePromptPresetChannel)!(trustedEvent(), { name: '商品', prompt: '棚拍' })
+    const updated = await electronMocks.handlers.get(canvasHostUpdatePromptPresetChannel)!(trustedEvent(), { id: 'preset-id-0000000000000002', prompt: '更新' })
+    const deleted = await electronMocks.handlers.get(canvasHostDeletePromptPresetChannel)!(trustedEvent(), 'preset-id-0000000000000002')
+
+    expect(promptPresets.list).toHaveBeenCalledWith(7)
+    expect(promptPresets.create).toHaveBeenCalledWith(7, { name: '商品', prompt: '棚拍' })
+    expect(promptPresets.update).toHaveBeenCalledWith(7, { id: 'preset-id-0000000000000002', prompt: '更新' })
+    expect(promptPresets.delete).toHaveBeenCalledWith(7, 'preset-id-0000000000000002')
+    expect(deleted).toBe(true)
+    expect(JSON.stringify({ listed, created, updated })).not.toMatch(/apiKey|accessToken|refreshToken/)
+  })
+
+  it('rejects a prompt preset mutation if the account changes before it completes', async () => {
+    let activeUserId = 7
+    let release!: (value: unknown) => void
+    const create = vi.fn(() => new Promise((resolve) => { release = resolve }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: activeUserId } })) } as never,
+      promptPresets: { list: vi.fn(), create, update: vi.fn(), delete: vi.fn() } as never,
+    }))
+    await controller.open()
+    const pending = electronMocks.handlers.get(canvasHostCreatePromptPresetChannel)!(trustedEvent(), { name: '预设', prompt: '内容' })
+    await vi.waitFor(() => expect(create).toHaveBeenCalled())
+    activeUserId = 8
+    release({ id: 'preset-id-0000000000000001' })
+    await expect(pending).rejects.toThrow('账号已切换')
+  })
+
+  it('dispose() removes every handle channel', () => {
     const controller = createCanvasWindowController(controllerOptions())
 
     controller.dispose()
 
-    for (const channel of [
-      canvasHostSaveFileChannel,
-      canvasHostPickFileChannel,
-      canvasHostNotifyChannel,
-      canvasHostOpenExternalChannel,
-    ]) {
+    for (const channel of Object.values({
+      canvasHostSaveFileChannel, canvasHostPickFileChannel, canvasHostNotifyChannel,
+      canvasHostOpenExternalChannel, canvasHostListGroupsChannel, canvasHostPrepareGroupChannel,
+      canvasHostGenerateImageChannel, canvasHostCancelRequestChannel, canvasHostCopyAssetChannel,
+      canvasHostEditImageChannel,
+      canvasHostCreatePromptPresetChannel, canvasHostDeletePromptPresetChannel,
+      canvasHostSaveAssetChannel, canvasHostShowAssetMenuChannel, canvasHostListAssetsChannel,
+      canvasHostStartRunChannel, canvasHostCancelRunChannel, canvasHostListRunsChannel,
+      canvasHostExportProjectChannel, canvasHostPreviewProjectChannel, canvasHostImportProjectChannel,
+      canvasHostListPromptPresetsChannel, canvasHostUpdatePromptPresetChannel,
+    })) {
       expect(electronMocks.removeHandler).toHaveBeenCalledWith(channel)
     }
-    expect(electronMocks.removeAllListeners).toHaveBeenCalledWith(canvasHostAuthTokenChannel)
-  })
-})
-
-describe('buildCanvasTokenDependencies (orphan-token fix)', () => {
-  // canvas-window.ts previously called accountService.provisionCliKey()
-  // straight from resolveTokenForNewWindow's inline revealConfiguredRelayKey
-  // fallback, unconditionally, whenever no installed CLI had a key
-  // configured. Since canvas's own localStorage already holds the key from
-  // the *first* open by the time a second one happens,
-  // buildCanvasAiConfigInjection's own no-op guard (canvas-ai-config.ts)
-  // correctly refuses to overwrite it -- but the freshly minted token was
-  // already created server-side before that guard ever runs, so it is
-  // provisioned once and never used again: an orphan xingmang-canvas-*
-  // token, one more each time the window is opened and closed. These tests
-  // exercise buildCanvasTokenDependencies() directly (no BrowserWindow
-  // needed) composed with the already-tested resolveCanvasAuthToken
-  // (canvas-auth.test.ts), the same way resolveTokenForNewWindow composes
-  // them for a real run.
-  const canvasBaseUrl = 'https://xm.solov.cc'
-
-  function loggedInAccountService(
-    overrides: Partial<Pick<NewApiClientService, 'findExistingCliKey' | 'provisionCliKey' | 'listUsableGroups'>> = {},
-  ): NewApiClientService {
-    return {
-      getSessionState: vi.fn(() => ({ authenticated: true, account: null })),
-      findExistingCliKey: vi.fn(async () => null),
-      provisionCliKey: vi.fn(async () => ({ id: 1, name: 'xingmang-canvas-default', key: 'sk-default' })),
-      // Default: no preferred group available, so tests below exercise the
-      // legacy (group-less) path unless they override this.
-      listUsableGroups: vi.fn(async () => []),
-      ...overrides,
-    } as unknown as NewApiClientService
-  }
-
-  function noCliConfiguredSystemService(): SystemService {
-    return { revealApiKey: vi.fn(() => '') } as unknown as SystemService
-  }
-
-  it('revealConfiguredRelayKey surfaces the first configured CLI key -- consumed only on manual-key sites', () => {
-    const accountService = loggedInAccountService()
-    const systemService = {
-      revealApiKey: vi.fn((provider: string) => (provider === 'codex' ? 'sk-cli-configured' : '')),
-    } as unknown as SystemService
-
-    const deps = buildCanvasTokenDependencies({ systemService, accountService, relaySite: resolveRelaySite('solov'), previewOnboarding: false })
-
-    expect(deps.revealConfiguredRelayKey()).toBe('sk-cli-configured')
-  })
-
-  it('reuses an existing xingmang-canvas-* token instead of provisioning a new one -- the orphan-token regression', async () => {
-    const findExistingCliKey = vi.fn(async (namePrefix: string) => {
-      expect(namePrefix).toBe(`${canvasCliKeyNamePrefix}-`)
-      return { id: 5, name: 'xingmang-canvas-previous', key: 'sk-reused' }
-    })
-    const provisionCliKey = vi.fn(async () => ({ id: 99, name: 'xingmang-canvas-should-not-be-created', key: 'sk-should-not-be-used' }))
-    const accountService = loggedInAccountService({ findExistingCliKey, provisionCliKey })
-
-    const deps = buildCanvasTokenDependencies({
-      systemService: noCliConfiguredSystemService(),
-      accountService,
-      relaySite: resolveRelaySite('solov'),
-      previewOnboarding: false,
-    })
-    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
-
-    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-reused' })
-    expect(findExistingCliKey).toHaveBeenCalledTimes(1)
-    expect(provisionCliKey).not.toHaveBeenCalled()
-  })
-
-  it('falls back to provisioning a fresh key -- named with the canvas prefix -- when nothing existing is found', async () => {
-    const provisionCliKey = vi.fn(async (input?: { name?: string }) => {
-      expect(input?.name).toMatch(/^xingmang-canvas-/)
-      return { id: 1, name: input!.name!, key: 'sk-newly-minted' }
-    })
-    const accountService = loggedInAccountService({ provisionCliKey })
-
-    const deps = buildCanvasTokenDependencies({
-      systemService: noCliConfiguredSystemService(),
-      accountService,
-      relaySite: resolveRelaySite('solov'),
-      previewOnboarding: false,
-    })
-    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
-
-    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-newly-minted' })
-    expect(provisionCliKey).toHaveBeenCalledTimes(1)
-  })
-
-  it('falls back to provisioning when the reuse lookup itself fails, reporting via onReuseLookupError, without breaking the flow', async () => {
-    const lookupFailure = new Error('列表查询超时')
-    const onReuseLookupError = vi.fn()
-    const provisionCliKey = vi.fn(async () => ({ id: 1, name: 'xingmang-canvas-fallback', key: 'sk-fallback' }))
-    const accountService = loggedInAccountService({
-      findExistingCliKey: vi.fn(async () => { throw lookupFailure }),
-      provisionCliKey,
-    })
-
-    const deps = buildCanvasTokenDependencies({
-      systemService: noCliConfiguredSystemService(),
-      accountService,
-      relaySite: resolveRelaySite('solov'),
-      previewOnboarding: false,
-      onReuseLookupError,
-    })
-    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
-
-    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-fallback' })
-    expect(onReuseLookupError).toHaveBeenCalledWith(lookupFailure)
-    expect(provisionCliKey).toHaveBeenCalledTimes(1)
-  })
-
-  it('end-to-end: a second resolution reuses the first one\'s provisioned key, never provisioning twice -- the exact open/close/reopen scenario that used to orphan a token every time', async () => {
-    // Mirrors xm.solov.cc's own token list gaining the freshly created entry
-    // after provisionCliKey succeeds, so findExistingCliKey's second call
-    // finds what the first call created -- exactly like a real second
-    // GET /api/token/ would after the first canvas window's provision call.
-    let serverSideTokens: { id: number; name: string; key: string }[] = []
-    const provisionCliKey = vi.fn(async (input?: { name?: string }) => {
-      const created = { id: serverSideTokens.length + 1, name: input!.name!, key: `sk-${input!.name}` }
-      serverSideTokens = [...serverSideTokens, created]
-      return created
-    })
-    const findExistingCliKey = vi.fn(async (namePrefix: string) => (
-      serverSideTokens.find((entry) => entry.name.startsWith(namePrefix)) ?? null
-    ))
-    const accountService = loggedInAccountService({ findExistingCliKey, provisionCliKey })
-    const deps = buildCanvasTokenDependencies({
-      systemService: noCliConfiguredSystemService(),
-      accountService,
-      relaySite: resolveRelaySite('solov'),
-      previewOnboarding: false,
-    })
-
-    const firstOpen = await resolveCanvasAuthToken(canvasBaseUrl, deps)
-    const secondOpen = await resolveCanvasAuthToken(canvasBaseUrl, deps)
-
-    expect(firstOpen).toEqual(secondOpen)
-    expect(provisionCliKey).toHaveBeenCalledTimes(1)
-    expect(findExistingCliKey).toHaveBeenCalledTimes(2)
-  })
-
-  it('skips the canvas relay entirely when not logged in, touching neither reuse lookup nor provisioning', async () => {
-    const findExistingCliKey = vi.fn()
-    const provisionCliKey = vi.fn()
-    const accountService = {
-      getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
-      findExistingCliKey,
-      provisionCliKey,
-    } as unknown as NewApiClientService
-
-    const deps = buildCanvasTokenDependencies({
-      systemService: noCliConfiguredSystemService(),
-      accountService,
-      relaySite: resolveRelaySite('solov'),
-      previewOnboarding: false,
-    })
-    await expect(resolveCanvasAuthToken(canvasBaseUrl, deps)).resolves.toBeNull()
-    expect(findExistingCliKey).not.toHaveBeenCalled()
-    expect(provisionCliKey).not.toHaveBeenCalled()
-  })
-
-  it('mints the canvas key inside the preferred image-capable group when the account can use one -- the 2026-08-12 on-device 503 fix', async () => {
-    const provisionCliKey = vi.fn(async (input?: { name?: string; group?: string }) => {
-      expect(input?.name).toMatch(/^xingmang-canvas-/)
-      expect(input?.group).toBe('生图分组')
-      return { id: 7, name: input!.name!, key: 'sk-grouped' }
-    })
-    const findExistingCliKey = vi.fn()
-    const accountService = loggedInAccountService({
-      provisionCliKey,
-      findExistingCliKey,
-      listUsableGroups: vi.fn(async () => [
-        { name: 'default', description: '', ratio: 1 },
-        { name: '生图分组', description: '', ratio: 1 },
-      ]),
-    })
-
-    const deps = buildCanvasTokenDependencies({
-      systemService: noCliConfiguredSystemService(),
-      accountService,
-      relaySite: resolveRelaySite('solov'),
-      previewOnboarding: false,
-    })
-    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
-
-    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-grouped' })
-    // The name-prefix reuse must NOT run on the grouped path: it is exactly
-    // what would resurrect the historical group-less token behind the 503
-    // (provisionCliKey's own group-scoped reuse handles dedup instead).
-    expect(findExistingCliKey).not.toHaveBeenCalled()
-  })
-
-  it('degrades to the group-less legacy path when the group lookup itself fails, reporting via onReuseLookupError', async () => {
-    const onReuseLookupError = vi.fn()
-    const groupFailure = new Error('分组查询超时')
-    const provisionCliKey = vi.fn(async (input?: { name?: string; group?: string }) => {
-      expect(input?.group).toBeUndefined()
-      return { id: 1, name: input!.name!, key: 'sk-ungrouped' }
-    })
-    const accountService = loggedInAccountService({
-      provisionCliKey,
-      listUsableGroups: vi.fn(async () => { throw groupFailure }),
-    })
-
-    const deps = buildCanvasTokenDependencies({
-      systemService: noCliConfiguredSystemService(),
-      accountService,
-      relaySite: resolveRelaySite('solov'),
-      previewOnboarding: false,
-      onReuseLookupError,
-    })
-    const token = await resolveCanvasAuthToken(canvasBaseUrl, deps)
-
-    expect(token).toEqual({ baseUrl: canvasBaseUrl, apiKey: 'sk-ungrouped' })
-    expect(onReuseLookupError).toHaveBeenCalledWith(groupFailure)
-  })
-
-  it('on a manual-key site, hands canvas the pasted CLI key without any account call, and null when nothing is pasted', async () => {
-    const sub2apiSite = resolveRelaySite('sub2api')
-    const relayBaseUrl = canvasBaseUrlForSite(sub2apiSite)
-    // Every account-service method throws: a manual-key site must never
-    // consult the session or mint keys (the pasted key is relay-scoped and
-    // pairs with the same relay origin the CLIs already call).
-    const accountService = {
-      getSessionState: vi.fn(() => { throw new Error('must not consult the session') }),
-      findExistingCliKey: vi.fn(async () => { throw new Error('must not look up tokens') }),
-      provisionCliKey: vi.fn(async () => { throw new Error('must not mint tokens') }),
-    } as unknown as NewApiClientService
-
-    const pastedDeps = buildCanvasTokenDependencies({
-      systemService: {
-        revealApiKey: vi.fn((provider: string) => (provider === 'claude' ? 'sk-pasted-relay' : '')),
-      } as unknown as SystemService,
-      accountService,
-      relaySite: sub2apiSite,
-      previewOnboarding: false,
-    })
-    await expect(resolveCanvasAuthToken(relayBaseUrl, pastedDeps)).resolves.toEqual({
-      baseUrl: relayBaseUrl,
-      apiKey: 'sk-pasted-relay',
-    })
-
-    const emptyDeps = buildCanvasTokenDependencies({
-      systemService: noCliConfiguredSystemService(),
-      accountService,
-      relaySite: sub2apiSite,
-      previewOnboarding: false,
-    })
-    await expect(resolveCanvasAuthToken(relayBaseUrl, emptyDeps)).resolves.toBeNull()
-  })
-
-  it('pairs each site with the origin its keys are issued for', () => {
-    // new-api site: keys are minted on the account origin. manual-key site:
-    // the pasted key belongs to the relay itself.
-    expect(canvasBaseUrlForSite(resolveRelaySite('solov'))).toBe('https://xm.solov.cc')
-    expect(canvasBaseUrlForSite(resolveRelaySite('sub2api'))).toBe('https://xm.solov.cc')
-  })
-})
-
-describe('pickCanvasKeyGroup', () => {
-  it('prefers the verified image group over openai and auto regardless of listing order', () => {
-    expect(pickCanvasKeyGroup(['auto', 'openai', '生图分组', 'default'])).toBe('生图分组')
-  })
-
-  it('falls back through openai to auto, and to null when nothing preferred is usable', () => {
-    expect(pickCanvasKeyGroup(['default', 'openai'])).toBe('openai')
-    expect(pickCanvasKeyGroup(['default', 'auto'])).toBe('auto')
-    // CLI-only groups (the #81 provisioner's four) never satisfy the canvas:
-    // none of them contains an image channel.
-    expect(pickCanvasKeyGroup(['default', 'Claude-MAX(不限制客户端)-5m', 'codex-pro'])).toBeNull()
-    expect(pickCanvasKeyGroup([])).toBeNull()
   })
 })
