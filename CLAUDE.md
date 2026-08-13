@@ -16,7 +16,7 @@
 
 **内置的两块新能力**（2026-08 集成）：
 - **星芒账号**：对接 `xm.solov.cc`（第三方开源 QuantumNous/new-api 的生产实例）——注册/登录/找回密码/余额/用量/Key 管理/充值外链，登录后自动签发 CLI Key 并写进 CLI 配置。
-- **无限画布**：vendored 的 infinite-canvas（MIT）静态构建，在独立隔离窗口运行，AI 画图/视频与 CLI 共用同一账号额度。
+- **无限画布 + AI 工作区**：本仓自研的节点式工作流编辑器（`canvas-v2/`，@xyflow/react 底座），在独立隔离窗口运行；AI 聊天与图像生成走主进程,与 CLI 共用同一账号额度。
 
 ---
 
@@ -28,10 +28,10 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没
 
 | | 源码 | 测试 |
 |---|---|---|
-| `electron/`（主进程，全部特权操作） | 63 个模块 | 60 个 |
-| `src/`（渲染进程，纯 UI） | 62 个文件 | 25 个 |
+| `electron/`（主进程，全部特权操作） | 86 个模块 | 81 个 |
+| `src/`（渲染进程，纯 UI） | 71 个文件 | 33 个 |
 
-约 7 万行（含测试），**1604 个 vitest 用例**（96 个文件；Linux 上实测 1427 过 / 177 因平台门控跳过，Windows 跳过的是另一批），`npm test` 还串带 scripts/e2e 下的 node --test 套件（78 例）。IPC：**99 个 invoke 通道**（另有 6 个画布宿主通道在 99 之外，见 I4 例外）。
+**1669 个 vitest 用例**（125 个文件；Linux 上实测 1669 过 / 178 因平台门控跳过，Windows 跳过的是另一批），`npm test` 还串带 scripts/e2e 下的 node --test 套件（84 例）。IPC：**108 个 invoke 通道**（另有 26 个画布宿主通道在 108 之外，见 I4 例外）。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
@@ -82,7 +82,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `main.ts` (669) — 生命周期、`BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true`）、`xingmang://` 与 `xingmang-canvas://` 协议注册、外链白名单、装配服务
 - `ipc-contract.ts` (522) — **唯一的跨进程类型真相源**。`as const satisfies` 强制通道表与接口对齐
 - `preload.ts` (231) — sandbox 桥接层。因 `sandbox:true` 无法 require 本地模块，**手工复制了一份通道表**
-- `ipc.ts` (1220) — 99 个处理器注册与参数校验
+- `ipc.ts` — 108 个处理器注册与参数校验
 
 **命令执行与安全边界**（这里是本项目真正的复杂度所在）
 - `command-runner.ts` (1120) — **全仓最关键模块**。`runCommand` 硬编码 `shell:false`；`trustedCommandEnvironment` 剥离 60+ 可注入环境变量并重建机器级 PATH；`findExecutable` 不调用 `where`/`which`/shell
@@ -110,12 +110,20 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `account-session-store.ts` (201) — 登录 session 用 `safeStorage`（Windows 底层 DPAPI）加密落盘；损坏/解密失败静默降级为未登录，永不抛错
 - `probe-failure.ts` (14) — 探测失败的可区分状态
 
-**无限画布（新增，全项目唯一运行第三方前端代码的地方）**
-- `canvas-window.ts` (376) — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 6 个 `canvas-host:*` 宿主通道（I4 的例外，见下）
+**无限画布 + AI 工作区（全项目唯一运行第三方前端代码的地方）**
+
+> 架构在 PR #85（2026-08-12）统一：**画布再也拿不到 API Key**。此前的做法是把 relay Key 注入画布 localStorage、由画布自己出网（`canvas-auth.ts` / `canvas-ai-config.ts` / `canvas-v2` 内的 relay 客户端），这三者已删除。现在全部 AI 调用都在主进程完成，画布只能经 `canvas-host:*` 通道请求。**改画布相关代码前先理解这条边界**：它是 I15 的兑现方式——被投毒的画布连 Key 都摸不到，因为它从来没有过。
+
+- `canvas-window.ts` (579) — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 **26 个** `canvas-host:*` 宿主通道（I4 的例外，见下）
 - `canvas-protocol.ts` (62) — `xingmang-canvas://` 解析。穿越/根包含检查**全部委托**主窗口同款 `resolvePackagedApplicationFile`，SPA 回退用字面量 `'index.html'` 重走同一函数，**绝不手工拼路径**；与主窗口不共享 rendererRoot
-- `canvas-preload.ts` (65) — 宿主桥只暴露 6 个能力（getAuthToken/saveFile/pickFile/notify/openExternal/downloadAsset,末者为画布 v2 媒体落盘新增,过了 I15 投毒问答:流式限 512MB + https-only + 原生对话框选路径），拿不到 `window.xingmang`
-- `canvas-auth.ts` (51) / `canvas-ai-config.ts` (122) — 取 token 与配置注入（`JSON.stringify` 构造，不拼字符串）
-- `canvas-v2/` 是当前画布源码；`dist-canvas/` 是构建产物**不入 git**。`npm run canvas:prepare` 构建源码并由 `scripts/copy-canvas-assets.mjs` 复制（可用 `XINGMANG_CANVAS_DIST` 覆盖）
+- `canvas-preload.ts` (71) — 宿主桥暴露 26 个能力，拿不到 `window.xingmang`。通道名与 `canvas-contract.ts` 是有意重复的字面量（I7），由测试钉死
+- `canvas-contract.ts` — 宿主通道名的单一真相源（主进程侧）
+- `canvas-request-parser.ts` / `canvas-run-contract.ts` / `canvas-run-engine.ts` / `canvas-node-executors.ts` — 入参白名单校验、运行契约、DAG 运行引擎与节点执行器（**都在主进程**）
+- `canvas-account-lifecycle.ts` / `canvas-fingerprint.ts` — 账号切换隔离与画布指纹
+- `canvas-project-package.ts` / `canvas-prompt-preset-store.ts` — 项目导入导出（导出会清理凭据/本机路径/远端 URL）与提示词预设
+- `ai-chat-service.ts` (770) / `ai-image-service.ts` (378) / `ai-chat-protocol.ts` / `ai-asset-store.ts` — 主进程侧的聊天流式、图像生成（`/v1/images/generations` 与 multipart 的 `/v1/images/edits`）、协议校验与产物落盘
+- `chat-credential-coordinator.ts` (200) — **按分组按需签发并缓存 Key**（`xingmang-chat-*`）：命中缓存先验、失效自愈（被吊销就重签）、账号切换即失效。这是 2026-08-12 画布 503（令牌分组下无可用渠道）的根治方案
+- `canvas-v2/` 是当前画布源码；`dist-canvas/` 是构建产物**不入 git**。`npm run canvas:prepare` 构建源码并由 `scripts/copy-canvas-assets.mjs` 复制（可用 `XINGMANG_CANVAS_DIST` 覆盖）。云端测试包与 CI 正式包都现场构建 `canvas-v2` 打入
 
 **扩展生态**
 - `provider-extensions.ts` (1585) — 四工具统一的 MCP/Skill/Plugin 抽象
@@ -130,13 +138,13 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ### `src/` 渲染进程
 
 - `main.tsx` — 挂载 React + 全局错误上报
-- `App.tsx` (1676) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但账号体系又把它喂大了：App() 本体（97 行起）50 个 `useState`、17 个 `useEffect`，页面切换是一条 14 分支三元链（1385 起）。**#30 未完结**
+- `App.tsx` (2009) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但账号体系与 AI 聊天又把它喂大了：App() 本体 56 处 `useState`，页面切换仍是一条长三元链。**#30 未完结，且在持续恶化**
 - `app-shared.ts` / `provider-meta.ts` / `navigation.ts` / `provider-registry.ts` — 共享底座：纯工具函数与空快照 / provider 视觉元数据 / 侧边栏页面清单 / **provider 身份与两种展示顺序的单一来源**（rank 表派生，见 T2）
-- `styles.css` (7947) — **另一个巨型枢纽文件**
+- `styles.css` (8413) — **另一个巨型枢纽文件**
 - `components/` — 通用件 `AppFrame` / `Sidebar` / `Toast` / `Dialog` / `ProviderTabs` / `RuntimeCell` / `StatusMark` / `StartupSplash` / `ErrorBoundary`；从 App.tsx 搬出的 `onboarding/`（含 `NodeInstallGuide`）、`config/`（`ConfigDialog` 等 4 件）、`dashboard/`（`Dashboard` / `CodexDesktopCard` / `NextStepsCard`）
 - `components/account/`（16 件）— 账号体系全部 UI：`AccountCenterPage`(712，个人中心) / 登录 / 注册 / 找回密码 / 写 Key 确认弹窗 / `AccountArea`(侧边栏账号区)，纯逻辑拆在 `account-center.ts` / `account-errors.ts`(错误中文化) / `validation.ts`
 - `components/welcome/WelcomePage.tsx` — 欢迎页（`startup-gate.ts` 决定老用户直进工作台）
-- `pages/` — 12 个页面，最大的 `MaintenancePage`(992) `PluginsPage`(696) `McpPage`(594)
+- `pages/` — 14 个页面（新增 `AiChatPage`），最大的 `MaintenancePage` `PluginsPage` `McpPage`
 - **纯逻辑层（测试都打在这里）** — `scan-coordinator.ts` / `latest-request.ts` / `provider-extension-coordinator.ts` / `onboarding-flow.ts` / `onboarding-runtime.ts` / `startup-settings.ts` / `startup-gate.ts` / `account-provisioning.ts`(账号→写 Key 链) / `renderer-error-report.ts` / `error-message.ts` / `local-path-display.ts`
 - `types.ts` — `export *` 转发 ipc-contract 的类型
 
@@ -159,7 +167,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 *违反后果*：用户一次"导出反馈"就把付费 Key 发到客服群。
 
 **I4. 所有 `ipcMain.handle` 必须经 `registerTrustedHandler`。**
-它统一做 sender URL 校验、结构化日志、dispose 注册。**唯一例外**：5 个 `canvas-host:*` 通道由 `canvas-window.ts` 的 `registerCanvasHandler` 注册——它做的是**更窄**的校验（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender），主窗口调这些通道会被拒。新通道不许效仿，除非同样只服务一个隔离窗口。
+它统一做 sender URL 校验、结构化日志、dispose 注册。**唯一例外**：26 个 `canvas-host:*` 通道由 `canvas-window.ts` 的 `registerCanvasHandler` 注册——它做的是**更窄**的校验（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender），主窗口调这些通道会被拒。新通道不许效仿，除非同样只服务一个隔离窗口。
 
 **I5. IPC 入参一律视为敌意输入，必须显式校验。**
 渲染进程虽是自家代码，但 XSS/依赖投毒后就是攻击面。`parseSessionId` 的 UUID 正则同时防路径穿越。
@@ -195,9 +203,10 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 **I14. Windows 系统可执行文件必须由固定解析器给出绝对路径，不查 PATH、不读 COMSPEC。**
 *违反后果*：当前目录放一个 `powershell.exe` 就被提权执行。
 
-**I15. 画布是运行第三方前端代码的隔离区，能力只减不增。**
-画布窗口与主窗口**不共享 rendererRoot**、preload 只暴露 6 个能力、协议解析必须委托 `resolvePackagedApplicationFile`。给画布加任何新能力前先回答：**画布被供应链投毒后，这个能力能干什么？** 文件读写必须走原生对话框（用户选路径）+ `bounded-*`/原子写，外链必须过白名单。
-*违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它连主进程 IPC 都摸不到。
+**I15. 画布是运行第三方前端代码的隔离区，凭据永不下放，能力只减不增。**
+画布窗口与主窗口**不共享 rendererRoot**、协议解析必须委托 `resolvePackagedApplicationFile`。**API Key 只在主进程按账号与分组解析，绝不进入渲染进程**（`chat-credential-coordinator.ts`）——这是 2026-08-12 架构统一的核心：画布发的是"请求"，不是"带着 Key 的请求"。给画布加任何新能力前先回答：**画布被供应链投毒后，这个能力能干什么？** 文件读写必须走原生对话框（用户选路径）+ `bounded-*`/原子写，外链必须过白名单，入参必须过 `canvas-request-parser.ts` 的字段白名单。
+*违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它既摸不到主进程 IPC，也拿不到 Key。
+*欠账*：宿主桥已从 6 个能力涨到 26 个，其中 `importAssetFile` 经 `webUtils.getPathForFile` 拿到拖入文件的真实路径。**这 26 个尚未逐条完成上述投毒问答**，是当前最大的一笔安全欠账。
 
 ---
 
@@ -267,8 +276,12 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 **T12. 改账号对接 → 端点事实以 `docs/RECON-new-api.md` 为准，别按 new-api 文档想当然。**
 关键事实已从 rc.24 tag 逐行核实（`GET /api/token/` 返回**掩码** key、改密码需 `original_password` 且改后本设备原地续 token、认证要 `Authorization` + `New-Api-User` 双头缺一不可）。渲染层与主进程各有一份密码长度等字面量是**有意重复**（electron 不 import src，同 I6/I7 的理由）。**自动化测试绝不对生产 `xm.solov.cc` 发真实请求**；真机验证由用户走。
 
-**T13. 画布相关改动 → 分清源码与产物，别直接改构建结果。**
+**T13. 画布相关改动 → 分清源码与产物，且认清"执行发生在主进程"。**
 画布**源码**在本仓 `canvas-v2/`；`dist-canvas/` 是 `npm run canvas:prepare` 生成并复制的**构建产物**，不入 git。改画布行为只改 `canvas-v2/`，**不要**改 `dist-canvas/` 里的产物文件。
+
+另一半同样容易踩错:**`canvas-v2/` 里没有任何出网代码**。渲染层的执行器（`canvas-v2/src/engine/executors.ts`）只是把请求交给宿主桥，真正的 HTTP、凭据解析、产物落盘全在主进程（`ai-image-service.ts` / `ai-chat-service.ts` / `chat-credential-coordinator.ts`）。想加一种新的生成能力，**主进程那侧才是要动的地方**；在渲染层直接 `fetch` relay 会绕开 I15 的全部边界，PR #85 已经把那条老路径删掉了，不要重新长出来。
+
+这条边界有自动门禁兜底：`scripts/verify-canvas-renderer-boundary.test.cjs` 扫描画布渲染层源码，出现 `Authorization:` / `Bearer ${` / `.apiKey` / `getAuthToken` 等模式即失败；`verify-canvas-provenance.test.cjs` 守第三方来源清单。两者都在 `npm test` 里，**别为了让它过而改断言**。
 
 ---
 
@@ -373,7 +386,8 @@ npm test
 
 - `docs/IMPROVEMENT-PLAN.md` — 已确认问题的完整清单与分批修复计划
 - `docs/RECON-new-api.md` / `docs/ACCOUNT-PLAN.md` — new-api 端点实测事实（rc.24）与账号体系决策记录。**改账号代码前必读**
-- `docs/RECON-canvas.md` / `docs/CANVAS-INTEGRATION-PLAN.md` — 画布侦察与四阶段集成记录（已完成）。**改画布相关前必读**
+- `docs/RECON-canvas.md` / `docs/CANVAS-INTEGRATION-PLAN.md` / `docs/CANVAS-V2-PLAN.md` — 画布侦察、四阶段集成记录（已完成）与 v2 规划。**改画布相关前必读**；注意 2026-08-12 起执行搬进主进程，早于该日期的描述以代码为准
+- `docs/AI-CHAT.md` / `docs/CANVAS-THIRD-PARTY.md` — AI 聊天工作区说明与画布第三方来源清单
 - `docs/RELEASING.md` — 发布流程
 - `docs/MACOS_DEVELOPMENT.md` / `docs/MACOS_FREE_DISTRIBUTION.md` — macOS 开发与免费自签分发
 - `HANDOFF.md` — 会话间交接快照，**时效性文档**：与本文件或代码冲突时以代码为准
