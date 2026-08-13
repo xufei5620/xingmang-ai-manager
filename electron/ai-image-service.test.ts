@@ -164,6 +164,17 @@ describe('AI image service', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('rejects providers without image-edit support before asset reads or network dispatch', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    await expect(service.edit(4, {
+      requestId: 'edit-unsupported', group: '生图分组', model: 'jimeng_high_aes_general_v21_L', prompt: '改成夜景',
+      sourceAssetIds: ['a'.repeat(43)],
+    })).rejects.toThrow('不支持图片编辑')
+    expect(assets.readOwned).not.toHaveBeenCalled()
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('enforces the aggregate edit-source size before dispatch', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl)

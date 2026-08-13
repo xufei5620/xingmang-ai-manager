@@ -96,7 +96,7 @@ it('routes every Codex-owned surface to one custom root and leaves all sentinels
     'model = "gpt-5.6-sol"',
     '[model_providers.OpenAI]',
     'name = "OpenAI"',
-    'base_url = "https://xm.solov.cc"',
+    'base_url = "https://xm.solov.cc/v1"',
     '[mcp_servers.custom]',
     'command = "node"',
     '[plugins."sample@curated"]',

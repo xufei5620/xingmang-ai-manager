@@ -87,8 +87,8 @@ export const tutorialDocumentUrl = 'https://s4621e8xzb.feishu.cn/wiki/WpBUwh4Phi
  * this until the marketing pages moved to the account domain (2026-08-10) --
  * probes must keep hitting the relay domain the CLIs actually call, so they
  * derive from providerBaseUrls instead of the user-facing URL. claude's base
- * is the bare relay origin (no /v1 suffix, unlike grok's), which is exactly
- * the shape both probe call sites append their paths to.
+ * is the bare relay origin (no /v1 suffix, unlike Codex and Grok), which is
+ * exactly the shape both probe call sites append their paths to.
  */
 export function relayApiProbeBaseUrl(site: RelaySite): string {
   return site.providerBaseUrls.claude

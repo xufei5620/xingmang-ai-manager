@@ -64,11 +64,11 @@ export const managedCliKeyProfiles: Record<ProviderId, ManagedCliKeyProfile> = {
 // 老板拍板(2026-08-10):中转与账号后端统一到 new-api 生产实例
 // xm.solov.cc——CLI 的 AI 请求和注册/登录/Key 签发从此同域。原
 // api.solov.cc 不再出现在任何写入 CLI 的配置里;老用户配置里的旧域会被
-// matchesRelay 判为不匹配,走登录→重新写 Key 的迁移路径。路径形状不变
-// (grok 仍带 /v1 后缀,其余裸域)。
+// matchesRelay 判为不匹配,走登录→重新写 Key 的迁移路径。老板拍板
+// (2026-08-12):Codex 与 Grok 使用 /v1,Claude 与 Gemini 使用裸域。
 export const providerBaseUrls: Record<ProviderId, string> = {
   claude: 'https://xm.solov.cc',
-  codex: 'https://xm.solov.cc',
+  codex: 'https://xm.solov.cc/v1',
   grok: 'https://xm.solov.cc/v1',
   gemini: 'https://xm.solov.cc',
 }

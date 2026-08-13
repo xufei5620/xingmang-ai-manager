@@ -75,6 +75,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
     const model = node.data.model.trim()
     if (!model) throw new Error('请选择图像模型')
     const preset = imageModelPreset(model)
+    if (!preset.supportsEdits) throw new Error(`模型「${preset.label}」不支持图片编辑，请换用 GPT Image 系列`)
     const requestId = nextRequestId(node.id)
     const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
     signal.addEventListener('abort', cancel, { once: true })

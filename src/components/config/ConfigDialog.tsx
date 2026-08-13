@@ -37,7 +37,13 @@ import { KeyEditorDialog } from '../account/KeyEditorDialog'
 import { resolveAccountErrorMessage } from '../account/account-errors'
 import { accountKeyStatusLabel } from '../account/account-center'
 import { DiscardConfigChangesDialog } from './DiscardConfigChangesDialog'
+import { OfficialAccountDialog } from './OfficialAccountDialog'
 import { SaveModeDialog } from './SaveModeDialog'
+import {
+  officialAccountLabel,
+  providerAccountSource,
+  providerAccountSourceLabel,
+} from '../../account-source'
 
 export function ConfigDialog({
   platform,
@@ -88,6 +94,8 @@ export function ConfigDialog({
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
   const [keyEditorOpen, setKeyEditorOpen] = useState(false)
   const [keyEditorBusy, setKeyEditorBusy] = useState(false)
+  const [officialAccountOpen, setOfficialAccountOpen] = useState(false)
+  const [switchingAccount, setSwitchingAccount] = useState(false)
   const accountKeyRequestId = useRef(0)
   const accountGroupRequestId = useRef(0)
 
@@ -394,6 +402,24 @@ export function ConfigDialog({
     }
   }
 
+  // 账号来源:星芒中转 ⇄ 用户自己的官方订阅。切回星芒不另做入口 ——
+  // 就是上面那条既有的保存链路(填 Key + 检测模型 + 保存配置)。
+  const accountSourceLabel = officialAccountLabel(activeProvider)
+  const accountSource = providerAccountSource(summary)
+  const switchToOfficialAccount = async () => {
+    setSwitchingAccount(true)
+    try {
+      await window.xingmang.switchToOfficialAccount(activeProvider)
+      onConfigChange(await window.xingmang.getConfig())
+      setOfficialAccountOpen(false)
+      notify({ type: 'success', message: `已切换为你自己的${accountSourceLabel ?? '官方账号'}` })
+    } catch (error) {
+      notify({ type: 'error', message: errorMessage(error) })
+    } finally {
+      setSwitchingAccount(false)
+    }
+  }
+
   return (
     <DialogBackdrop className="config-modal-backdrop" onDismiss={requestClose}>
       <section className="config-dialog" role="dialog" aria-modal="true" aria-labelledby="config-dialog-title">
@@ -606,6 +632,30 @@ export function ConfigDialog({
           </div>
         </div>
 
+        {accountSourceLabel && (
+          <div className="account-source">
+            <div className="account-source-text">
+              <strong>
+                账号来源：<span className="account-source-current">{providerAccountSourceLabel(accountSource, activeProvider)}</span>
+              </strong>
+              <p>
+                {accountSource === 'relay'
+                  ? `也可以切回你自己的${accountSourceLabel}，用你自己的订阅额度；你的登录状态不受影响，随时能切回星芒。`
+                  : accountSource === 'unknown'
+                    ? '当前指向的不是星芒中转地址，为避免改坏你自己的配置，这里不提供一键切换。'
+                    : `当前用的是你自己的${accountSourceLabel}。想用星芒额度，在上方填好 Key 并保存配置即可切回。`}
+              </p>
+            </div>
+            {accountSource === 'relay' && (
+              <button
+                className="secondary-button"
+                type="button"
+                onClick={() => setOfficialAccountOpen(true)}
+              >切换为我的{accountSourceLabel}</button>
+            )}
+          </div>
+        )}
+
         <div className="config-actions">
           <button className="primary-button" onClick={() => void save()} disabled={saving || !isDirty || !modelVerified}>
             {saving ? <LoaderCircle size={16} className="spin" /> : <Save size={16} />}
@@ -629,6 +679,15 @@ export function ConfigDialog({
         <DiscardConfigChangesDialog
           onDiscard={onClose}
           onCancel={() => setDiscardChangesOpen(false)}
+        />
+      )}
+      {officialAccountOpen && accountSourceLabel && (
+        <OfficialAccountDialog
+          provider={activeProvider}
+          label={accountSourceLabel}
+          busy={switchingAccount}
+          onConfirm={() => void switchToOfficialAccount()}
+          onCancel={() => setOfficialAccountOpen(false)}
         />
       )}
       {keyEditorOpen && (

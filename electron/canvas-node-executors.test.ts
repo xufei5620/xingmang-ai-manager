@@ -107,6 +107,26 @@ describe('createCanvasNodeExecutors', () => {
     expect(edit).not.toHaveBeenCalled()
   })
 
+  it('rejects a model without image-edit support before paid dispatch', async () => {
+    const edit = vi.fn()
+    const executors = createCanvasNodeExecutors({
+      imageService: {
+        generate: vi.fn(), edit,
+        cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
+      },
+    })
+    await expect(executors['image-edit']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'edit-attempt', ownerId: 9, userId: 42,
+      node: { id: 'edit', kind: 'image-edit', definitionVersion: 1, data: { prompt: '夜景', model: 'jimeng_high_aes_general_v21_L' } },
+      inputs: { image: {
+        kind: 'image', assetId: 'a'.repeat(43),
+        localUrl: `xingmang-asset://image/${'a'.repeat(43)}`,
+      } },
+      signal: new AbortController().signal,
+    })).rejects.toThrow('不支持图片编辑')
+    expect(edit).not.toHaveBeenCalled()
+  })
+
   it('cancels the exact image-edit request when the run aborts', async () => {
     const controller = new AbortController()
     const cancel = vi.fn(() => ({ canceled: true, mayStillComplete: true }))

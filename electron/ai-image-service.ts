@@ -1,4 +1,9 @@
-import { AI_CHAT_ENDPOINTS, buildImageGenerationRequest, type ImageQuality } from './ai-chat-protocol'
+import {
+  AI_CHAT_ENDPOINTS,
+  buildImageGenerationRequest,
+  resolveAiModelCapability,
+  type ImageQuality,
+} from './ai-chat-protocol'
 import {
   BoundedOperationQueue,
   type BoundedOperationHandle,
@@ -276,6 +281,10 @@ export function createAiImageService(options: {
 
   async function edit(senderId: number, input: AiImageEditInput): Promise<GeneratedAiAsset[]> {
     const fields = buildImageGenerationRequest(input)
+    const capability = resolveAiModelCapability(fields.model)
+    if (capability.kind !== 'image' || capability.provider !== 'gpt-image') {
+      throw new Error('当前模型不支持图片编辑，请换用 GPT Image 系列')
+    }
     const sourceAssetIds = requiredSourceAssetIds(input.sourceAssetIds)
     return runImageOperation(senderId, input, async (credential, signal, markDispatched) => {
       if (input.expectedUserId !== undefined && credential.userId !== input.expectedUserId) {

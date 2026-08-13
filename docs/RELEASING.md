@@ -65,6 +65,66 @@ npm run release:build
 
 全部门禁通过也只表示候选产物具备发布条件，不会自动上传，且不构成发布授权。
 
+## 2.1 CI 发布（GitHub Actions，2026-08-12 起）
+
+老板决定把出包这一步搬到 CI。`.github/workflows/release-build.yml` 在 `windows-latest` 上跑的就是上面第 2 节那条完全相同的链路（它直接调用 `npm run release:build`），只是证书来自仓库 Secrets 而不是发布机磁盘。
+
+**一次性配置**：在仓库 Settings → Secrets and variables → Actions 配置三个 secret。
+
+| Secret 名 | 内容 |
+|---|---|
+| `WIN_CSC_LINK_BASE64` | 代码签名证书 `.p12` 的 **base64 文本**（electron-builder 直接接受 base64，证书不落盘） |
+| `WIN_CSC_KEY_PASSWORD` | 该证书的密码 |
+| `XINGMANG_SIGNING_PUBLISHER` | 固定发布者名，例如 `绍兴星芒文化传媒有限责任公司` |
+
+把 `.p12` 转成 base64（在你自己的机器上做，不要在任何共享环境里做）：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\secrets\xingmang-signing.p12')) | Set-Clipboard
+```
+
+**每次发布**：Actions → `release-build` → Run workflow，在 `confirm_version` 里填 `package.json` 里的版本号（填错会在第一步就失败，这是防误发的闸）。跑完在 run 页面下载 artifact，里面是 `Setup.exe` + `.blockmap` + `latest.yml` 三件套，日志里有每个文件的 SHA-256，上传到对象存储后可逐个比对。
+
+**这条 workflow 永远不会上传到更新服务器**，也没有配置任何对象存储凭据。上传仍按第 4 节由人执行——本手册要求每次发布都要产品所有者针对当前版本明确授权，把上传自动化等于取消那道授权。
+
+两点与本机发布的差异要知道：
+
+- **画布**：云端没有兄弟仓 `xingmang-canvas` 的 v1 产物，所以 CI 会现场构建仓内的 `canvas-v2` 打进包里。也就是说 **CI 出的正式包带的是 v2 画布**，与测试包一致。若某次发布要改回 v1，只能在本机构建。
+- **版本必须高于线上**：发布前置检查会拉取线上 `latest.yml` 比对，版本没提升会直接失败——这是好事，能拦住忘记改版本号的发布。
+
+### 还没拿到 CA 证书时：用自签名证书先验证更新链路
+
+本项目把"能更新"和"已签名"绑死了（`electron-builder.config.cjs` 的 `extraMetadata.xingmangLocalBuild = !publicReleaseMode`）：未签名的包在设计上就拒绝更新，所以没有"不签名但能点更新"的模式，这是承重墙不是流程。
+
+在真证书到手之前，可以用**自己生成的自签名证书**把整条链路真跑一遍——签名、写 `publisherName`、更新器启用、客户端下载后校验签名，全部真实执行，只是这张证书只有你自己的机器认。真证书到手后换掉 Secret 即可，代码一个字不用改。
+
+**1. 在你自己的 Windows 机器上生成证书**（私钥不要离开这台机器以外的地方）：
+
+```powershell
+$cert = New-SelfSignedCertificate `
+  -Type CodeSigningCert `
+  -Subject 'CN=绍兴星芒文化传媒有限责任公司' `
+  -CertStoreLocation Cert:\CurrentUser\My `
+  -NotAfter (Get-Date).AddYears(2) `
+  -KeyExportPolicy Exportable
+
+$password = ConvertTo-SecureString '自己设一个密码' -AsPlainText -Force
+Export-PfxCertificate -Cert $cert -FilePath "$HOME\xingmang-test-signing.pfx" -Password $password | Out-Null
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\xingmang-test-signing.pfx")) | Set-Clipboard
+```
+
+`Subject` 里的 CN **必须**与 `XINGMANG_SIGNING_PUBLISHER` 完全一致，否则产物校验会因发布者不匹配而失败。
+
+**2. 配置 Secrets**：把剪贴板里的 base64 填进 `WIN_CSC_LINK_BASE64`，密码填 `WIN_CSC_KEY_PASSWORD`，发布者填 `XINGMANG_SIGNING_PUBLISHER`。
+
+**3. 触发构建**：Actions → `release-build` → Run workflow，勾上 `test_signing`，并在 `update_url` 填一个**与正式源不同的测试路径**，例如 `https://updates.shenfengwl.fun/xingmang-manager/beta/`。这一项是强制的：自签名产物一旦进了正式更新源，老客户的机器不认这张证书会拒绝更新（失败方向是安全的），新装用户则会看到未知发布者警告。
+
+**4. 在测试机上验证更新链路**：把三件套传到那个 beta 路径 → 在虚拟机装上这一版 → 提升 `package.json` 版本号再跑一次构建 → 传新的三件套（顺序仍是先传包与 blockmap、最后覆盖 `latest.yml`）→ 在已装的旧版本里点「检查更新」，应能发现、下载、重启安装成功。
+
+**5. 安装时的提示**：自签名证书未被 Windows 信任，安装时仍会有 SmartScreen 警告。若想在测试机上消除，把 `.pfx` 里的证书导入该机器的「受信任的根证书颁发机构」；**不要**在任何客户机器上这么做。
+
+自签名产物的 artifact 名字会带 `TEST-SIGNED-DO-NOT-PUBLISH` 前缀，别把它传到正式更新源。
+
 ## 3. 静态更新目录
 
 当前静态源使用 Cloudflare R2：

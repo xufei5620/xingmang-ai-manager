@@ -51,7 +51,16 @@ if (!npmCli || !fs.existsSync(npmCli)) {
 console.log(`[release] 已确认空发布目录：${releaseOutputDirectory}`)
 run('发布前置检查', process.execPath, [path.join(__dirname, 'verify-release-environment.cjs')])
 run('TypeScript 类型检查', process.execPath, [npmCli, 'run', 'typecheck'])
-run('全部测试', process.execPath, [npmCli, 'test'])
+// Windows 上走 test:windows(关文件级并行 + 30s 超时)。用例集完全相同,
+// 差别只在调度:发布门禁跑在真实磁盘上,两阶段提交叠加 Defender 实时扫描
+// 会让若干用例卡过 vitest 默认的 5s 超时(CLAUDE.md 的 Windows 基线一节 /
+// Issue #40)。CI runner 上这几乎必现——2026-08-12 首次 CI 正式构建就死在
+// system-service.test.ts 的 5s 超时上,而同一提交在 Linux 全绿。
+// 放宽的是超时不是断言:真回归照样红。
+run('全部测试', process.execPath, [
+  npmCli,
+  ...(process.platform === 'win32' ? ['run', 'test:windows'] : ['test']),
+])
 run('编译应用', process.execPath, [npmCli, 'run', 'compile'])
 run('Electron 主界面冒烟测试', process.execPath, [
   path.join(root, 'e2e', 'electron-smoke.mjs'),

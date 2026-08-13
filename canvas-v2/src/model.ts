@@ -123,13 +123,15 @@ export const nodeOutputKind: Record<NodeKind, PortKind> = {
 }
 
 /**
- * 每种节点接受的输入端口类型。text 是源节点无输入;image 吃 text(文生图,
- * 后续可扩展 image 输入做图生图);video 吃 text 与 image(图生视频的提示
- * 词 + 参考图,对应 relay 视频任务的 prompt + image 入参)。
+ * 每种节点接受的输入端口类型。text 是源节点无输入;image 吃 text 与 image
+ * ——只接 text 走文生图 /v1/images/generations,接上 image 就自动转成图生图
+ * /v1/images/edits(同一个节点两种形态,不另开第四种节点类型:引擎与持久化
+ * 不必改,image→image→video 这种链路也就天然可组);video 吃 text 与 image
+ * (图生视频的提示词 + 参考图,对应 relay 视频任务的 prompt + image 入参)。
  */
 export const nodeInputKinds: Record<NodeKind, readonly PortKind[]> = {
   text: [],
-  image: ['text'],
+  image: ['text', 'image'],
   video: ['text', 'image'],
   prompt: [],
   'image-input': [],

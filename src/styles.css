@@ -3773,6 +3773,53 @@ button:disabled {
   border-top: 1px solid var(--border-subtle);
 }
 
+.save-mode-body {
+  padding: 16px 0;
+}
+
+.official-account-points {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: var(--text-md);
+  line-height: 1.9;
+}
+
+/* 账号来源(星芒中转 / 自己的官方订阅)——配置弹窗里的切换区。 */
+.account-source {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-18);
+  margin-top: var(--space-14);
+  padding: 14px 16px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-8);
+}
+
+.account-source-text {
+  min-width: 0;
+}
+
+.account-source-text strong {
+  display: block;
+  color: var(--text-primary);
+  font-size: var(--text-md);
+}
+
+.account-source-text p {
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-base);
+  line-height: 1.7;
+}
+
+.account-source-current {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
 .install-source-dialog {
   width: min(720px, calc(100vw - 56px));
 }

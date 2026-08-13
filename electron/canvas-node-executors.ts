@@ -1,4 +1,5 @@
 import type { AiImageEditInput, AiImageGenerationInput, AiImageService } from './ai-image-service'
+import { resolveAiModelCapability } from './ai-chat-protocol'
 import type {
   CanvasNodeExecutionResult,
   CanvasNodeExecutors,
@@ -78,6 +79,10 @@ export function createCanvasNodeExecutors(options: {
     if (!options.imageService.edit) throw new Error('图片编辑能力尚未接入，当前不会提交付费请求')
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
+    const capability = resolveAiModelCapability(node.data.model)
+    if (capability.kind !== 'image' || capability.provider !== 'gpt-image') {
+      throw new Error('当前模型不支持图片编辑，请换用 GPT Image 系列')
+    }
     const sourceAssetIds = [...new Set(
       (inputs.images ?? (inputs.image ? [inputs.image] : []))
         .flatMap((asset) => asset.assetId ? [asset.assetId] : []),

@@ -118,8 +118,8 @@ async function createDarwinService(options: {
     durationMs: 1,
   }))
   const inspectConfig = vi.fn(() => ({
-    baseUrl: 'https://xm.solov.cc',
-    actualBaseUrl: options.configured === false ? 'https://example.invalid' : 'https://xm.solov.cc',
+    baseUrl: 'https://xm.solov.cc/v1',
+    actualBaseUrl: options.configured === false ? 'https://example.invalid' : 'https://xm.solov.cc/v1',
     exists: true,
     hasApiKey: true,
     matchesRelay: options.configured !== false,
@@ -281,8 +281,8 @@ describe('createSystemService', () => {
     const providerRoots: ProviderConfigRoots = { userHome, codexHome }
     const codexEnv = { ...process.env, HOME: userHome, CODEX_HOME: codexHome }
     const inspect = vi.fn((provider: Parameters<typeof providerConfigRoot>[0], roots: ProviderConfigRoots = providerRoots) => ({
-      baseUrl: 'https://xm.solov.cc',
-      actualBaseUrl: 'https://xm.solov.cc',
+      baseUrl: providerBaseUrls[provider],
+      actualBaseUrl: providerBaseUrls[provider],
       exists: true,
       apiKey: provider === 'codex' ? 'sk-codex' : 'sk-other',
       hasApiKey: true,

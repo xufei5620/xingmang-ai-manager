@@ -16,7 +16,7 @@ describe('CLI catalog', () => {
   it('uses the fixed relay URL assigned to each CLI', () => {
     expect(providerBaseUrls).toEqual({
       claude: 'https://xm.solov.cc',
-      codex: 'https://xm.solov.cc',
+      codex: 'https://xm.solov.cc/v1',
       grok: 'https://xm.solov.cc/v1',
       gemini: 'https://xm.solov.cc',
     })
