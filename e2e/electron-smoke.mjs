@@ -127,6 +127,20 @@ const testCodexPackageRoot = path.join(testNpmPrefix, 'lib', 'node_modules', '@o
 const testCodexEntrypoint = path.join(testCodexPackageRoot, 'bin', 'codex.js')
 await fs.rm(testUserDataDir, { recursive: true, force: true })
 await fs.rm(testHomeDir, { recursive: true, force: true })
+// 登录先行(2026-08-11)之后,账号站点在未登录时进的是欢迎页而不是工作台,
+// 于是这个只验主界面的冒烟测试永远等不到 .app-shell。本测试要断言的是工作台
+// 本身,不是账号流程,所以预置成「Key 直连」站点(manual-key,无账号后端)——
+// 这是产品里真实存在的一种配置,不需要伪造任何登录态或凭据。
+// 账号站点的登录门本身另有 src/App.test.tsx 的用例覆盖。
+// workspace 不能省:parseSettingsValue 的 requireWorkspace 缺字段就抛错,
+// 整份设置会被判无效而回落默认值,relaySiteId 一并丢失(本测试初次修复时
+// 就踩了这个坑——表现为界面仍停在欢迎页,像是站点没生效)。
+await fs.mkdir(testUserDataDir, { recursive: true })
+await fs.writeFile(
+  path.join(testUserDataDir, 'settings.json'),
+  `${JSON.stringify({ version: 2, workspace: testHomeDir, relaySiteId: 'sub2api' }, null, 2)}\n`,
+  'utf8',
+)
 await fs.mkdir(path.join(testCodexHomeDir, 'packages'), { recursive: true })
 await fs.mkdir(path.dirname(testCodexEntrypoint), { recursive: true })
 await fs.mkdir(testNpmBinDir, { recursive: true })
