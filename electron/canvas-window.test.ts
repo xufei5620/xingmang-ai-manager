@@ -118,6 +118,12 @@ function temporaryDirectory(): string {
   return directory
 }
 
+function temporaryCanvasDistDirectory(): string {
+  const directory = temporaryDirectory()
+  fs.writeFileSync(path.join(directory, 'index.html'), '<!doctype html><title>canvas fixture</title>', 'utf8')
+  return directory
+}
+
 function projectWorkflow(assetIds: readonly string[]): string {
   return JSON.stringify({
     schemaVersion: 2,
@@ -159,7 +165,7 @@ function controllerOptions(
   overrides: Partial<CanvasWindowControllerOptions> = {},
 ): CanvasWindowControllerOptions {
   return {
-    canvasDistRoot: path.resolve('dist-canvas'),
+    canvasDistRoot: temporaryCanvasDistDirectory(),
     externalUrlAllowlist: allowlist,
     systemService: { revealApiKey: vi.fn(() => '') } as unknown as SystemService,
     accountService: {
