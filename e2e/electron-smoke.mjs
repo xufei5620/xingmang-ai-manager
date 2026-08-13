@@ -168,7 +168,7 @@ await fs.writeFile(
     '',
     '[model_providers.solov]',
     'name = "solov"',
-    'base_url = "https://api.solov.cc"',
+    'base_url = "https://xm.solov.cc/v1"',
     'wire_api = "responses"',
     'requires_openai_auth = true',
     '',

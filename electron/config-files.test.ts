@@ -309,7 +309,7 @@ describe('native CLI configuration files', () => {
     expect(parsed.model_provider).toBe('mycodex')
     const mycodexProvider = asRecord(asRecord(parsed.model_providers)?.mycodex)
     expect(mycodexProvider?.name).toBe('mycodex')
-    expect(mycodexProvider?.base_url).toBe('https://xm.solov.cc')
+    expect(mycodexProvider?.base_url).toBe('https://xm.solov.cc/v1')
     expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).OPENAI_API_KEY).toBe('new-key')
   })
 
@@ -337,7 +337,7 @@ describe('native CLI configuration files', () => {
     expect(mergedConfig.review_model).toBe('gpt-5.6-sol')
     expect(mergedConfig.custom_setting).toBe('preserved')
     expect(asRecord(asRecord(mergedConfig.model_providers)?.OpenAI)?.custom_header).toBe('preserved')
-    expect(asRecord(asRecord(mergedConfig.model_providers)?.OpenAI)?.base_url).toBe('https://xm.solov.cc')
+    expect(asRecord(asRecord(mergedConfig.model_providers)?.OpenAI)?.base_url).toBe('https://xm.solov.cc/v1')
     expect(mergedAuth.OPENAI_API_KEY).toBe('new-key')
     expect(mergedAuth.CUSTOM_AUTH).toBe('preserved')
     expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
@@ -487,6 +487,15 @@ describe('native CLI configuration files', () => {
       ],
       expectedBaseUrl: 'https://other-relay.example.com',
     },
+    {
+      name: 'the former bare relay URL',
+      activeProvider: [
+        '[model_providers.active]',
+        'name = "active"',
+        'base_url = "https://xm.solov.cc"',
+      ],
+      expectedBaseUrl: 'https://xm.solov.cc',
+    },
   ])('does not use an inactive Codex provider when the active provider has $name', ({ activeProvider, expectedBaseUrl }) => {
     const home = temporaryHome()
     const [configPath, authPath] = providerConfigPaths('codex', providerRoots(home))
@@ -499,7 +508,7 @@ describe('native CLI configuration files', () => {
       '',
       '[model_providers.inactive]',
       'name = "inactive"',
-      'base_url = "https://xm.solov.cc"',
+      'base_url = "https://xm.solov.cc/v1"',
       '',
     ].join('\n'), 'utf8')
     fs.writeFileSync(authPath, '{"OPENAI_API_KEY":"existing-key"}\n', 'utf8')
