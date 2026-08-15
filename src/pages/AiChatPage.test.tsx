@@ -41,6 +41,7 @@ describe('AI聊天页面纯逻辑', () => {
     expect(resolveAiChatDisplayMode('gpt-5.6-sol')).toBe('chat')
     expect(resolveAiChatDisplayMode('gpt-image-2')).toBe('image')
     expect(resolveAiChatDisplayMode('jimeng_high_aes_general_v21_L')).toBe('image')
+    expect(resolveAiChatDisplayMode('grok-imagine-video')).toBe('chat')
   })
 
   it('omits pending and failed assistant placeholders from outbound history', () => {

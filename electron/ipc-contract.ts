@@ -89,6 +89,13 @@ import type {
   NewApiAccountUsagePage,
   NewApiAccountUsageQuery,
   NewApiAccountUsageRecord,
+  NewApiAccountDashboardData,
+  NewApiAccountDashboardQuery,
+  NewApiAccountDashboardRecord,
+  NewApiAccountTaskPage,
+  NewApiAccountTaskQuery,
+  NewApiAccountTaskRecord,
+  NewApiAffiliateTransferInput,
   NewApiBalance,
   NewApiChangePasswordInput,
   NewApiChangePasswordResult,
@@ -96,10 +103,27 @@ import type {
   NewApiLegalDocumentKind,
   NewApiLoginInput,
   NewApiLoginResult,
+  NewApiLoginSession,
+  NewApiDisplayNameUpdateInput,
+  NewApiProfileUpdateResult,
+  NewApiRedemptionResult,
   NewApiRegisterInput,
   NewApiResetPasswordInput,
   NewApiResetPasswordResult,
+  NewApiRevokeLoginSessionResult,
+  NewApiRevokeOtherLoginSessionsResult,
   NewApiSessionState,
+  NewApiSubscriptionPlan,
+  NewApiBillingPreference,
+  NewApiSubscriptionPaymentInput,
+  NewApiSubscriptionPurchaseResult,
+  NewApiSubscriptionSelf,
+  NewApiTopupAmountInput,
+  NewApiTopupAmountQuote,
+  NewApiTopupInfo,
+  NewApiTopupOrdersPage,
+  NewApiTopupOrdersQuery,
+  NewApiTopupPaymentInput,
   NewApiUsableGroup,
 } from './new-api-client'
 
@@ -111,7 +135,7 @@ export {
   privacyPolicyUrl,
   relaySites,
   resolveRelaySite,
-  tutorialDocumentUrl,
+  supportServiceUrl,
   userAgreementUrl,
 } from './relay-sites'
 
@@ -187,6 +211,33 @@ export type AccountLoginResult = NewApiLoginResult
 export type AccountRegisterInput = NewApiRegisterInput
 export type AccountSessionState = NewApiSessionState
 export type AccountBalance = NewApiBalance
+export type AccountTopupInfo = NewApiTopupInfo
+export type AccountTopupAmountInput = NewApiTopupAmountInput
+export type AccountTopupAmountQuote = NewApiTopupAmountQuote
+export type AccountTopupPaymentInput = NewApiTopupPaymentInput
+export interface AccountTopupPaymentResult {
+  opened: true
+  tradeNo: string | null
+}
+export type AccountTopupOrdersQuery = NewApiTopupOrdersQuery
+export type AccountTopupOrdersPage = NewApiTopupOrdersPage
+export type AccountRedemptionResult = NewApiRedemptionResult
+export type AccountAffiliateTransferInput = NewApiAffiliateTransferInput
+export type AccountSubscriptionPlan = NewApiSubscriptionPlan
+export type AccountSubscriptionSelf = NewApiSubscriptionSelf
+export type AccountSubscriptionPurchaseResult = NewApiSubscriptionPurchaseResult
+export type AccountSubscriptionBillingPreference = NewApiBillingPreference
+export type AccountSubscriptionPaymentInput = NewApiSubscriptionPaymentInput
+export interface AccountSubscriptionPaymentResult {
+  opened: true
+  tradeNo: string | null
+  expiresAt: string | null
+}
+export type AccountDisplayNameUpdateInput = NewApiDisplayNameUpdateInput
+export type AccountProfileUpdateResult = NewApiProfileUpdateResult
+export type AccountLoginSession = NewApiLoginSession
+export type AccountRevokeLoginSessionResult = NewApiRevokeLoginSessionResult
+export type AccountRevokeOtherLoginSessionsResult = NewApiRevokeOtherLoginSessionsResult
 export type AccountManagedCliKeysResult = ManagedCliKeySyncSummary
 export type AccountManagedCliConfigurationResult = ManagedCliConfigurationOutcome
 export type LegalDocumentKind = NewApiLegalDocumentKind
@@ -198,6 +249,12 @@ export type AccountProfileDetail = NewApiAccountProfileDetail
 export type AccountUsageQuery = NewApiAccountUsageQuery
 export type AccountUsageRecord = NewApiAccountUsageRecord
 export type AccountUsagePage = NewApiAccountUsagePage
+export type AccountDashboardQuery = NewApiAccountDashboardQuery
+export type AccountDashboardRecord = NewApiAccountDashboardRecord
+export type AccountDashboardData = NewApiAccountDashboardData
+export type AccountTaskQuery = NewApiAccountTaskQuery
+export type AccountTaskRecord = NewApiAccountTaskRecord
+export type AccountTaskPage = NewApiAccountTaskPage
 export type AccountKey = NewApiAccountKey
 export type AccountKeysQuery = NewApiAccountKeysQuery
 export type AccountKeysPage = NewApiAccountKeysPage
@@ -390,7 +447,6 @@ export interface XingmangInvokeContract {
   >
   setWindowMode: IpcInvokeDefinition<'window:set-mode', [mode: AppWindowMode], void>
   setWindowTheme: IpcInvokeDefinition<'window:set-theme', [theme: AppTheme], void>
-  openTutorialDocsWindow: IpcInvokeDefinition<'tutorial:open', [], void>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
   getUpdateState: IpcInvokeDefinition<'update:get-state', [], UpdateSnapshot>
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
@@ -497,6 +553,57 @@ export interface XingmangInvokeContract {
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
   getAccountSession: IpcInvokeDefinition<'account:get-session', [], AccountSessionState>
   getAccountBalance: IpcInvokeDefinition<'account:get-balance', [], AccountBalance>
+  getAccountTopupInfo: IpcInvokeDefinition<'account:get-topup-info', [], AccountTopupInfo>
+  quoteAccountTopupAmount: IpcInvokeDefinition<
+    'account:quote-topup',
+    [input: AccountTopupAmountInput],
+    AccountTopupAmountQuote
+  >
+  createAccountTopupPayment: IpcInvokeDefinition<
+    'account:create-topup-payment',
+    [input: AccountTopupPaymentInput],
+    AccountTopupPaymentResult
+  >
+  getAccountTopupOrders: IpcInvokeDefinition<
+    'account:list-topup-orders',
+    [input: AccountTopupOrdersQuery],
+    AccountTopupOrdersPage
+  >
+  redeemAccountTopupCode: IpcInvokeDefinition<
+    'account:redeem-topup-code',
+    [code: string],
+    AccountRedemptionResult
+  >
+  transferAccountAffiliateQuota: IpcInvokeDefinition<
+    'account:transfer-affiliate-quota',
+    [input: AccountAffiliateTransferInput],
+    void
+  >
+  getAccountSubscriptionPlans: IpcInvokeDefinition<
+    'account:list-subscription-plans',
+    [],
+    AccountSubscriptionPlan[]
+  >
+  getAccountSubscriptionSelf: IpcInvokeDefinition<
+    'account:get-subscription-self',
+    [],
+    AccountSubscriptionSelf
+  >
+  updateAccountSubscriptionPreference: IpcInvokeDefinition<
+    'account:update-subscription-preference',
+    [preference: AccountSubscriptionBillingPreference],
+    AccountSubscriptionBillingPreference
+  >
+  createAccountSubscriptionPayment: IpcInvokeDefinition<
+    'account:create-subscription-payment',
+    [input: AccountSubscriptionPaymentInput],
+    AccountSubscriptionPaymentResult
+  >
+  purchaseAccountSubscriptionWithBalance: IpcInvokeDefinition<
+    'account:purchase-subscription-balance',
+    [planId: number],
+    AccountSubscriptionPurchaseResult
+  >
   syncManagedCliKeys: IpcInvokeDefinition<'account:sync-managed-cli-keys', [], AccountManagedCliKeysResult>
   configureManagedCliKeys: IpcInvokeDefinition<
     'account:configure-managed-clis',
@@ -512,10 +619,25 @@ export interface XingmangInvokeContract {
     AccountResetPasswordResult
   >
   getAccountProfile: IpcInvokeDefinition<'account:get-profile', [], AccountProfileDetail>
+  updateAccountDisplayName: IpcInvokeDefinition<
+    'account:update-display-name',
+    [input: AccountDisplayNameUpdateInput],
+    AccountProfileUpdateResult
+  >
   getAccountUsage: IpcInvokeDefinition<
     'account:get-usage',
     [input: AccountUsageQuery],
     AccountUsagePage
+  >
+  getAccountDashboard: IpcInvokeDefinition<
+    'account:get-dashboard',
+    [input: AccountDashboardQuery],
+    AccountDashboardData
+  >
+  getAccountTasks: IpcInvokeDefinition<
+    'account:get-tasks',
+    [input: AccountTaskQuery],
+    AccountTaskPage
   >
   getAccountKeys: IpcInvokeDefinition<'account:list-keys', [input: AccountKeysQuery], AccountKeysPage>
   getAccountUsableGroups: IpcInvokeDefinition<'account:list-groups', [], AccountUsableGroup[]>
@@ -532,6 +654,21 @@ export interface XingmangInvokeContract {
     'account:change-password',
     [input: AccountChangePasswordInput],
     AccountChangePasswordResult
+  >
+  getAccountLoginSessions: IpcInvokeDefinition<
+    'account:list-login-sessions',
+    [],
+    AccountLoginSession[]
+  >
+  revokeAccountLoginSession: IpcInvokeDefinition<
+    'account:revoke-login-session',
+    [sid: string],
+    AccountRevokeLoginSessionResult
+  >
+  revokeOtherAccountLoginSessions: IpcInvokeDefinition<
+    'account:revoke-other-login-sessions',
+    [],
+    AccountRevokeOtherLoginSessionsResult
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
   getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [], RememberedAccountLogin | null>
@@ -602,7 +739,6 @@ export const ipcInvokeChannels = {
   listConfiguredModels: 'models:list-configured',
   setWindowMode: 'window:set-mode',
   setWindowTheme: 'window:set-theme',
-  openTutorialDocsWindow: 'tutorial:open',
   openExternal: 'external:open',
   getUpdateState: 'update:get-state',
   runStartupUpdate: 'update:startup',
@@ -657,6 +793,17 @@ export const ipcInvokeChannels = {
   logoutAccount: 'account:logout',
   getAccountSession: 'account:get-session',
   getAccountBalance: 'account:get-balance',
+  getAccountTopupInfo: 'account:get-topup-info',
+  quoteAccountTopupAmount: 'account:quote-topup',
+  createAccountTopupPayment: 'account:create-topup-payment',
+  getAccountTopupOrders: 'account:list-topup-orders',
+  redeemAccountTopupCode: 'account:redeem-topup-code',
+  transferAccountAffiliateQuota: 'account:transfer-affiliate-quota',
+  getAccountSubscriptionPlans: 'account:list-subscription-plans',
+  getAccountSubscriptionSelf: 'account:get-subscription-self',
+  updateAccountSubscriptionPreference: 'account:update-subscription-preference',
+  createAccountSubscriptionPayment: 'account:create-subscription-payment',
+  purchaseAccountSubscriptionWithBalance: 'account:purchase-subscription-balance',
   syncManagedCliKeys: 'account:sync-managed-cli-keys',
   configureManagedCliKeys: 'account:configure-managed-clis',
   registerAccount: 'account:register',
@@ -664,7 +811,10 @@ export const ipcInvokeChannels = {
   sendPasswordResetCode: 'account:send-reset-code',
   resetPassword: 'account:reset-password',
   getAccountProfile: 'account:get-profile',
+  updateAccountDisplayName: 'account:update-display-name',
   getAccountUsage: 'account:get-usage',
+  getAccountDashboard: 'account:get-dashboard',
+  getAccountTasks: 'account:get-tasks',
   getAccountKeys: 'account:list-keys',
   getAccountUsableGroups: 'account:list-groups',
   revokeAccountKey: 'account:revoke-key',
@@ -673,6 +823,9 @@ export const ipcInvokeChannels = {
   listAccountKeyModels: 'account:list-key-models',
   saveConfigWithAccountKey: 'account:configure-cli-with-key',
   changeAccountPassword: 'account:change-password',
+  getAccountLoginSessions: 'account:list-login-sessions',
+  revokeAccountLoginSession: 'account:revoke-login-session',
+  revokeOtherAccountLoginSessions: 'account:revoke-other-login-sessions',
   openCanvasWindow: 'canvas:open',
   getRememberedAccountLogin: 'account:get-remembered-login',
   setRememberedAccountLogin: 'account:set-remembered-login',

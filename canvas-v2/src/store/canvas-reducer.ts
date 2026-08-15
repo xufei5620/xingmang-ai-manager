@@ -75,6 +75,11 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
     }
     case 'set-viewport':
       return { ...document, viewport: { ...command.viewport }, revision: nextRevision(document) }
+    case 'set-media-groups': {
+      const current = document.mediaGroups ?? {}
+      if (current.image === command.mediaGroups.image && current.video === command.mediaGroups.video) return document
+      return { ...document, mediaGroups: { ...command.mediaGroups }, revision: nextRevision(document) }
+    }
     case 'replace-document':
       return { ...structuredClone(command.document), revision: nextRevision(document) }
     case 'rename-document':

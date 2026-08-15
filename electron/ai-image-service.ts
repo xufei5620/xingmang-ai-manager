@@ -18,6 +18,7 @@ const MAXIMUM_ERROR_MESSAGE = 300
 const MAXIMUM_EDIT_SOURCE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_EDIT_SOURCE_IMAGES = 4
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
+const AI_ASSET_DOWNLOAD_ERROR_CODE = 'AI_IMAGE_DOWNLOAD_FAILED'
 
 export interface GeneratedAiAsset {
   assetId: string
@@ -30,9 +31,10 @@ export interface GeneratedAiAsset {
 }
 
 export interface AiImageAssetWriter {
-  storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string }): Promise<GeneratedAiAsset>
-  storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string }): Promise<GeneratedAiAsset>
-  readOwned(userId: number, assetId: string): Promise<{ asset: GeneratedAiAsset; bytes: Buffer }>
+  prepareProject?(userId: number, projectId?: string): Promise<void>
+  storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string; projectId?: string }): Promise<GeneratedAiAsset>
+  storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string; projectId?: string }): Promise<GeneratedAiAsset>
+  readOwned(userId: number, assetId: string, projectId?: string): Promise<{ asset: GeneratedAiAsset; bytes: Buffer }>
 }
 
 export interface AiImageGenerationInput {
@@ -42,6 +44,8 @@ export interface AiImageGenerationInput {
   prompt: string
   size?: string
   quality?: ImageQuality
+  expectedUserId?: number
+  projectId?: string
 }
 
 export interface AiImageEditInput extends AiImageGenerationInput {
@@ -117,6 +121,15 @@ function imageRequestFailure(status: number, detail: string): Error {
   return new Error(detail || `生图失败，服务返回 ${status}`)
 }
 
+function ambiguousImageSubmission(): Error {
+  return new Error('生图提交结果不明确，服务端可能仍在生成图片，请勿立即重复提交')
+}
+
+function isAssetDownloadError(error: unknown): boolean {
+  return Boolean(error && typeof error === 'object'
+    && (error as { code?: unknown }).code === AI_ASSET_DOWNLOAD_ERROR_CODE)
+}
+
 async function readBoundedResponseBytes(response: Response, maximumBytes: number): Promise<Buffer> {
   const declared = Number(response.headers.get('content-length'))
   if (Number.isFinite(declared) && declared > maximumBytes) throw new Error('生图响应超过安全上限')
@@ -153,10 +166,12 @@ function responseEntries(payload: unknown): Array<{
   const results = (payload as { data: unknown[] }).data.slice(0, 8).flatMap((value) => {
     if (!value || typeof value !== 'object') return []
     const entry = value as Record<string, unknown>
-    const url = typeof entry.url === 'string' && entry.url.length <= 8_192 ? entry.url : undefined
+    const rawUrl = typeof entry.url === 'string' && entry.url.length <= 128 * 1024 * 1024 ? entry.url : undefined
+    const dataUrl = rawUrl?.startsWith('data:image/') ? rawUrl : undefined
+    const url = rawUrl && !dataUrl && rawUrl.length <= 8_192 ? rawUrl : undefined
     const b64Json = typeof entry.b64_json === 'string' && entry.b64_json.length <= 128 * 1024 * 1024
       ? entry.b64_json
-      : undefined
+      : dataUrl
     if (!url && !b64Json) return []
     const revisedPrompt = typeof entry.revised_prompt === 'string'
       ? entry.revised_prompt.slice(0, 40_000)
@@ -210,30 +225,71 @@ export function createAiImageService(options: {
       try {
         const credential = await options.credentials.resolveCredential(input.group)
         operation.userId = credential.userId
+        if (input.expectedUserId !== undefined && credential.userId !== input.expectedUserId) {
+          throw new Error('登录账号已变化，请重新运行图片生成')
+        }
+        if (!credential.models.includes(input.model)) {
+          throw new Error(`当前分组「${input.group}」不提供模型「${input.model}」，请重新选择可用模型`)
+        }
+        await options.assets.prepareProject?.(credential.userId, input.projectId)
         if (signal.aborted) throw signal.reason
-        const response = await request(credential, signal, () => { operation.dispatched = true })
-        const bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES)
+        let response: Response
+        try {
+          response = await request(credential, signal, () => { operation.dispatched = true })
+        } catch (error) {
+          if (!signal.aborted && operation.dispatched) {
+            throw ambiguousImageSubmission()
+          }
+          throw error
+        }
+        let bytes: Buffer
+        try {
+          bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES)
+        } catch {
+          if (signal.aborted) throw signal.reason
+          if (!response.ok && response.status < 500) throw imageRequestFailure(response.status, '')
+          throw ambiguousImageSubmission()
+        }
         let payload: unknown
         try {
           payload = JSON.parse(bytes.toString('utf8')) as unknown
         } catch {
-          throw new Error('生图接口返回的不是有效 JSON')
+          if (!response.ok && response.status < 500) throw imageRequestFailure(response.status, '')
+          throw ambiguousImageSubmission()
         }
         if (!response.ok) {
           const error = payload && typeof payload === 'object'
             ? (payload as { error?: { message?: unknown }; message?: unknown })
             : {}
           const detail = safeUpstreamMessage(error.error?.message ?? error.message)
+          if (response.status >= 500) throw ambiguousImageSubmission()
           throw imageRequestFailure(response.status, detail)
         }
-        const entries = responseEntries(payload)
+        let entries: ReturnType<typeof responseEntries>
+        try {
+          entries = responseEntries(payload)
+        } catch {
+          throw ambiguousImageSubmission()
+        }
         const results: GeneratedAiAsset[] = []
         for (const entry of entries) {
           if (signal.aborted) throw signal.reason
-          const metadata = entry.revisedPrompt ? { revisedPrompt: entry.revisedPrompt } : undefined
-          results.push(entry.b64Json
-            ? await options.assets.storeBase64(credential.userId, entry.b64Json, metadata)
-            : await options.assets.storeRemoteUrl(credential.userId, entry.url!, metadata))
+          const metadata = {
+            ...(entry.revisedPrompt ? { revisedPrompt: entry.revisedPrompt } : {}),
+            ...(input.projectId ? { projectId: input.projectId } : {}),
+          }
+          const storedMetadata = Object.keys(metadata).length > 0 ? metadata : undefined
+          try {
+            results.push(entry.b64Json
+              ? await options.assets.storeBase64(credential.userId, entry.b64Json, storedMetadata)
+              : await options.assets.storeRemoteUrl(credential.userId, entry.url!, storedMetadata))
+          } catch (error) {
+            if (signal.aborted) throw signal.reason
+            if (!entry.b64Json && isAssetDownloadError(error)) {
+              throw new Error('图片已生成但下载失败，请勿立即重复提交；请检查网络或代理设置后重试下载')
+            }
+            throw new Error('图片已生成但本地保存失败，请勿立即重复提交；请检查 output 目录和磁盘空间')
+          }
         }
         return results
       } finally {
@@ -246,7 +302,10 @@ export function createAiImageService(options: {
       return await handle.promise
     } catch (error) {
       if (operation.cancelReason) {
-        if (operation.cancelReason === 'timeout') throw new Error('生图请求超时')
+        if (operation.cancelReason === 'timeout') {
+          if (operation.dispatched) throw new Error('生图请求超时；服务端可能仍在生成图片，请勿立即重复提交')
+          throw new Error('生图请求超时')
+        }
         if (operation.dispatched) {
           throw new Error('已停止等待；服务端可能仍在生成图片，请勿立即重复提交')
         }
@@ -282,18 +341,17 @@ export function createAiImageService(options: {
   async function edit(senderId: number, input: AiImageEditInput): Promise<GeneratedAiAsset[]> {
     const fields = buildImageGenerationRequest(input)
     const capability = resolveAiModelCapability(fields.model)
-    if (capability.kind !== 'image' || capability.provider !== 'gpt-image') {
-      throw new Error('当前模型不支持图片编辑，请换用 GPT Image 系列')
+    if (capability.kind !== 'image' || !capability.supportsEdits) {
+      throw new Error('当前模型不支持图片编辑，请换用支持编辑的图像模型')
     }
     const sourceAssetIds = requiredSourceAssetIds(input.sourceAssetIds)
     return runImageOperation(senderId, input, async (credential, signal, markDispatched) => {
-      if (input.expectedUserId !== undefined && credential.userId !== input.expectedUserId) {
-        throw new Error('登录账号已变化，请重新运行图片编辑')
-      }
       const form = new FormData()
       let sourceBytes = 0
       for (const assetId of sourceAssetIds) {
-        const source = await options.assets.readOwned(credential.userId, assetId)
+        const source = input.projectId
+          ? await options.assets.readOwned(credential.userId, assetId, input.projectId)
+          : await options.assets.readOwned(credential.userId, assetId)
         sourceBytes += source.bytes.byteLength
         if (sourceBytes > MAXIMUM_EDIT_SOURCE_BYTES) throw new Error('图片编辑参考图总大小超过 64 MB 安全上限')
         if (signal.aborted) throw signal.reason
@@ -306,6 +364,7 @@ export function createAiImageService(options: {
       form.set('model', fields.model)
       form.set('prompt', fields.prompt)
       form.set('n', String(fields.n))
+      if (fields.response_format) form.set('response_format', fields.response_format)
       if (fields.size) form.set('size', fields.size)
       if (fields.quality) form.set('quality', fields.quality)
       markDispatched()

@@ -10,6 +10,7 @@ import {
   finiteCoordinate,
   isRecord,
   localAssetUrl,
+  maximumGroupNameLength,
   maximumModelLength,
   maximumNodeIdLength,
   maximumNodeKindLength,
@@ -61,10 +62,10 @@ function knownNodeKind(value: string): NodeKind | null {
 
 function readAsset(value: unknown): AssetRef | undefined | null {
   if (value === undefined) return undefined
-  if (!isRecord(value) || (value.kind !== 'image' && value.kind !== 'video')) return null
+  if (!isRecord(value) || (value.kind !== 'image' && value.kind !== 'video' && value.kind !== 'audio')) return null
   let assetId = stableAssetId(value.assetId)
   if (!assetId && typeof value.localUrl === 'string') {
-    const match = value.localUrl.match(/^xingmang-asset:\/\/(image|video)\/([A-Za-z0-9_-]{43})$/)
+    const match = value.localUrl.match(/^xingmang-asset:\/\/(image|video|audio)\/([A-Za-z0-9_-]{43})$/)
     if (match && match[1] === value.kind) assetId = match[2]
   }
   const taskId = optionalSafeString(value.taskId, maximumTaskIdLength)
@@ -98,6 +99,11 @@ function readNode(value: unknown): WorkflowNode | null {
   const model = optionalSafeString(value.data.model, maximumModelLength)
   const quality = optionalSafeString(value.data.quality, maximumOptionLength)
   const size = optionalSafeString(value.data.size, maximumOptionLength)
+  const seconds = value.data.seconds === undefined
+    ? undefined
+    : typeof value.data.seconds === 'string' && /^(?:[1-9]|1[0-5])$/.test(value.data.seconds)
+      ? value.data.seconds
+      : null
   const result = readAsset(value.data.result)
   const settings = safeSettings(value.data.settings)
   const candidateAssetIds = value.data.candidateAssetIds === undefined
@@ -110,7 +116,7 @@ function readNode(value: unknown): WorkflowNode | null {
   const parentId = value.parentId === undefined ? undefined : safeString(value.parentId, maximumNodeIdLength)
   const width = value.width === undefined ? undefined : finiteCoordinate(value.width) && value.width >= 80 ? value.width : null
   const height = value.height === undefined ? undefined : finiteCoordinate(value.height) && value.height >= 40 ? value.height : null
-  if (prompt === null || model === null || quality === null || size === null || result === null
+  if (prompt === null || model === null || quality === null || size === null || seconds === null || result === null
     || settings === null || candidateAssetIds === null || parentId === null || width === null || height === null) return null
   const kind = knownNodeKind(wireKind)
   if (!kind) {
@@ -132,6 +138,7 @@ function readNode(value: unknown): WorkflowNode | null {
         errorMessage: `节点类型「${wireKind}」未安装，已禁用`,
         ...(quality ? { quality } : {}),
         ...(size ? { size } : {}),
+        ...(seconds ? { seconds } : {}),
         ...(result ? { result } : {}),
         ...(settings ? { settings } : {}),
         ...(candidateAssetIds ? { candidateAssetIds } : {}),
@@ -154,6 +161,7 @@ function readNode(value: unknown): WorkflowNode | null {
       status: result?.assetId ? 'succeeded' : 'idle',
       ...(quality ? { quality } : {}),
       ...(size ? { size } : {}),
+      ...(seconds ? { seconds } : {}),
       ...(result ? { result } : {}),
       ...(settings ? { settings } : {}),
       ...(candidateAssetIds ? { candidateAssetIds } : {}),
@@ -235,8 +243,12 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
       warnings.push(`已移除不可执行的连线：${edge.id}`)
       continue
     }
-    const sourcePort = builtinNodeRegistry.port(source.kind, edge.sourceHandle, 'output')
-    const targetPort = builtinNodeRegistry.port(target.kind, edge.targetHandle, 'input')
+    const normalizedEdge = edge.targetHandle === 'in:image'
+      && (target.kind === 'image-edit' || target.kind === 'video-generate' || target.kind === 'video')
+      ? { ...edge, targetHandle: 'in:images' }
+      : edge
+    const sourcePort = builtinNodeRegistry.port(source.kind, normalizedEdge.sourceHandle, 'output')
+    const targetPort = builtinNodeRegistry.port(target.kind, normalizedEdge.targetHandle, 'input')
     if (
       !sourcePort
       || !targetPort
@@ -245,21 +257,21 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
       warnings.push(`已移除端口类型不匹配的连线：${edge.id}`)
       continue
     }
-    // Image inputs are scalar; text inputs intentionally support fan-in concatenation.
-    const inputKey = `${target.id}:${edge.targetHandle}`
+    // Only ports declared as scalar are capacity-limited; media fan-in ports retain every edge.
+    const inputKey = `${target.id}:${normalizedEdge.targetHandle}`
     if (targetPort.cardinality === 'one' && occupiedSingleInputs.has(inputKey)) {
       warnings.push(`已移除超出单值端口容量的连线：${edge.id}`)
       continue
     }
-    if (wouldCreateCycle(adjacency, edge.source, edge.target)) {
+    if (wouldCreateCycle(adjacency, normalizedEdge.source, normalizedEdge.target)) {
       warnings.push(`已移除会形成循环的连线：${edge.id}`)
       continue
     }
     if (targetPort.cardinality === 'one') occupiedSingleInputs.add(inputKey)
-    const targets = adjacency.get(edge.source) ?? new Set<string>()
-    targets.add(edge.target)
-    adjacency.set(edge.source, targets)
-    edges.push(edge)
+    const targets = adjacency.get(normalizedEdge.source) ?? new Set<string>()
+    targets.add(normalizedEdge.target)
+    adjacency.set(normalizedEdge.source, targets)
+    edges.push(normalizedEdge)
   }
 
   let viewport: WorkflowParseResult['workflow']['viewport']
@@ -276,11 +288,30 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
     else warnings.push('已忽略无效的画布视口')
   }
 
+  let mediaGroups: WorkflowParseResult['workflow']['mediaGroups']
+  if (raw.mediaGroups !== undefined) {
+    if (isRecord(raw.mediaGroups)) {
+      const image = optionalSafeString(raw.mediaGroups.image, maximumGroupNameLength)
+      const video = optionalSafeString(raw.mediaGroups.video, maximumGroupNameLength)
+      if (image !== null && video !== null && (image || video)) {
+        mediaGroups = {
+          ...(image ? { image } : {}),
+          ...(video ? { video } : {}),
+        }
+      } else {
+        warnings.push('已忽略无效的生成分组配置')
+      }
+    } else {
+      warnings.push('已忽略无效的生成分组配置')
+    }
+  }
+
   return {
     workflow: {
       schemaVersion: 2,
       name,
       ...(viewport ? { viewport } : {}),
+      ...(mediaGroups ? { mediaGroups } : {}),
       nodes,
       edges,
     },

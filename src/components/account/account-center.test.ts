@@ -6,7 +6,6 @@ import {
   formatAccountUsageDate,
   formatKeyQuotaUsd,
   formatUsageCostUsd,
-  WALLET_URL,
 } from './account-center'
 
 describe('buildAccountInviteLink', () => {
@@ -75,12 +74,6 @@ describe('formatUsageCostUsd', () => {
     expect(formatUsageCostUsd(1_000, Number.NaN)).toBe('—')
     expect(formatUsageCostUsd(1_000, -500_000)).toBe('—')
     expect(formatUsageCostUsd(1_000, undefined)).toBe('—')
-  })
-})
-
-describe('WALLET_URL', () => {
-  it('points at the xm.solov.cc wallet page shared by the 充值 tab and the sidebar recharge button', () => {
-    expect(WALLET_URL).toBe('https://xm.solov.cc/wallet')
   })
 })
 

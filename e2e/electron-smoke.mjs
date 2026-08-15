@@ -330,6 +330,26 @@ try {
   result.darkConfigDialogApplied = await darkConfigDialog.evaluate((dialog) => (
     getComputedStyle(dialog).backgroundColor !== 'rgb(255, 255, 255)'
   ))
+  result.darkAccountSourceContrastApplied = await darkConfigDialog.locator('.account-source').evaluate((source) => {
+    const parseRgb = (value) => value.match(/\d+(?:\.\d+)?/g)?.slice(0, 3).map(Number) ?? []
+    const luminance = (rgb) => {
+      const channels = rgb.map((channel) => {
+        const normalized = channel / 255
+        return normalized <= 0.04045
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4
+      })
+      return channels.length === 3
+        ? 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2]
+        : null
+    }
+    const background = luminance(parseRgb(getComputedStyle(source).backgroundColor))
+    const description = source.querySelector('p')
+    const foreground = description ? luminance(parseRgb(getComputedStyle(description).color)) : null
+    if (background === null || foreground === null) return false
+    const contrast = (Math.max(background, foreground) + 0.05) / (Math.min(background, foreground) + 0.05)
+    return contrast >= 4.5
+  })
   await page.screenshot({ path: path.join(artifactDir, 'api-config-dark.png') })
   await darkConfigDialog.getByTitle('关闭配置').click()
   await application.evaluate(({ BrowserWindow }) => {
@@ -463,12 +483,12 @@ try {
     },
   ]
   // Sidebar IA (navigation.ts / Sidebar.tsx, nav scheme A #67 W1): 'use'
-  // (工具概览/会话管理/无限画布) and 'extensions' (MCP/Skills/插件市场) render
+  // (工具概览/AI聊天/会话管理/无限画布) and 'extensions' (MCP/Skills/插件市场) render
   // inline; the other six pages live behind "更多", collapsed by default (a
   // fresh profile has no persisted app-settings sidebarMoreExpanded). The
-  // toggle itself is a .nav-item, so 7 top-level items are visible before
+  // toggle itself is a .nav-item, so 8 top-level items are visible before
   // anyone expands anything (docs/PROPOSAL-nav-onboarding.md: "✓≤8").
-  const topLevelNavLabels = ['工具概览', '会话管理', '无限画布', 'MCP 管理', 'Skills 管理', '插件市场', '更多']
+  const topLevelNavLabels = ['工具概览', 'AI聊天', '会话管理', '无限画布', 'MCP 管理', 'Skills 管理', '插件市场', '更多']
   const moreGroupPageIds = new Set(['backups', 'health', 'maintenance', 'feedback', 'updates', 'settings'])
   const sidebarNavigationItems = page.locator('.main-nav .nav-item')
   result.navigationItemCount = await sidebarNavigationItems.count()
@@ -494,7 +514,7 @@ try {
     // "更多" was already expanded above (it stays expanded across navigation
     // — Sidebar's onNavigate never touches moreExpanded), so every page's
     // button, grouped or not, is reachable through the same container.
-    await page.locator('.main-nav').getByRole('button', { name: label, exact: true }).click()
+    await page.locator(`.main-nav .nav-item[data-navigation-id="${id}"]`).click()
     const pageRoot = page.locator(`.main-content [data-page-id="${id}"]`)
     await pageRoot.waitFor({ state: 'visible', timeout: 10_000 })
     if (id === 'mcp' || id === 'plugins') {
@@ -545,6 +565,8 @@ try {
           ? desktopAction === '安装最新版'
           : result.maintenanceDesktopAction.state === '未安装'
             ? desktopAction === '一键安装'
+            : result.maintenanceDesktopAction.state === '镜像同步中'
+              ? desktopAction === '查看更新'
             : desktopAction === '检查更新'
       const availableUninstallButton = pageRoot.locator(
         '.maintenance-cli-section .maintenance-uninstall-button:not(.maintenance-help-button):not([disabled])',
@@ -625,7 +647,7 @@ try {
   ))
   await page.waitForTimeout(220)
   result.lightTitleBarApplied = await page.locator('.window-titlebar').evaluate((titlebar) => (
-    getComputedStyle(titlebar).backgroundColor === 'rgb(255, 255, 255)'
+    getComputedStyle(titlebar).backgroundColor !== 'rgb(24, 27, 29)'
   ))
   result.windowTitleVisible = await page.getByText('星芒AI管理工具', { exact: true }).isVisible()
   await page.screenshot({ path: path.join(artifactDir, 'dashboard.png') })
@@ -638,7 +660,10 @@ try {
   result.codexDesktopAppVersionHidden = !codexDesktopCardText.includes('26.721.31836')
   result.codexDesktopUpdateAvailable = codexDesktopCardText.includes('可更新至')
   result.codexDesktopUpdateActionCorrect = !result.codexDesktopUpdateAvailable
-    || await page.locator('.desktop-card').getByRole('button', { name: '安装最新版', exact: true }).isVisible()
+    || await page.locator('.desktop-card').getByRole('button', {
+      name: codexDesktopCardText.includes('国内镜像同步中') ? '查看更新' : '安装最新版',
+      exact: true,
+    }).isVisible()
   result.codexDesktopLegacyUpdateHidden = await page.locator('.desktop-card').getByRole('button', { name: '打开更新', exact: true }).count() === 0
   result.firstToolCard = await page.locator('.cli-card').first().getByRole('heading').innerText()
   result.secondToolCard = await page.locator('.cli-card').nth(1).getByRole('heading').innerText()
@@ -646,15 +671,17 @@ try {
   result.officialWebsiteVisible = await page.getByRole('button', { name: /官方网站/ }).isVisible()
   result.officialWebsiteAtBottom = await page.evaluate(() => {
     const sidebar = document.querySelector('.sidebar')
-    const website = document.querySelector('.sidebar-bottom .official-site-button')
+    const website = document.querySelector('.sidebar-bottom .sidebar-service-button[title^="官方网站"]')
     if (!sidebar || !website) return false
     return website.getBoundingClientRect().top > sidebar.getBoundingClientRect().height / 2
   })
   result.sidebarStatusHidden = await page.locator('.sidebar-status').count() === 0
   result.nativeConfigFooterHidden = await page.getByText('本机原生配置', { exact: true }).count() === 0
-  result.officialWebsiteDomainVisible = await page.getByText('api.solov.cc', { exact: true }).isVisible()
+  result.officialWebsiteDomainVisible = await page.getByRole('button', { name: /官方网站/ }).evaluate((button) => (
+    button.getAttribute('title')?.includes('solov.cc') === true
+  ))
   result.tutorialDocsVisible = await page.getByRole('button', { name: /教程文档/ }).isVisible()
-  result.tutorialDocsLabelVisible = await page.getByText('售后群', { exact: true }).isVisible()
+  result.tutorialDocsLabelVisible = await page.getByText('教程文档', { exact: true }).isVisible()
   result.cardModelCount = await page.locator('.configured-model').count()
   result.configuredToolCardCount = await page.locator('.cli-card').evaluateAll((cards) => cards.filter((card) => {
     const state = card.querySelector('.config-state')?.textContent?.trim()
@@ -739,9 +766,7 @@ try {
   result.installDirectoryVisible = await page.getByText('安装目录', { exact: true }).isVisible()
   result.dataDirectoryVisible = await page.getByText('数据目录', { exact: true }).isVisible()
   const displayedCodexDataDirectory = await page.locator('.data-directory-list code').innerText()
-  result.dataDirectoryPathVisible = displayedCodexDataDirectory.startsWith(
-    process.platform === 'win32' ? '%USERPROFILE%' : '~/',
-  ) && displayedCodexDataDirectory.endsWith(process.platform === 'win32' ? '\\.codex' : '/.codex')
+  result.dataDirectoryPathVisible = path.normalize(displayedCodexDataDirectory) === path.normalize(testCodexHomeDir)
     && await page.locator('.data-directory-list').getByText('已识别', { exact: true }).isVisible()
   result.relayUrlHidden = await page.getByLabel('中转 URL（固定）').count() === 0
   result.detectedFiles = await page.locator('.config-file-list').getByText('已存在', { exact: true }).count()
@@ -795,6 +820,7 @@ try {
     || !result.networkLocationFormatValid
     || !result.toastClearsWindowControls
     || !result.darkConfigDialogApplied
+    || !result.darkAccountSourceContrastApplied
     || !result.globalUpdateIndicatorVisible
     || !result.globalUpdateRingVisible
     || !result.globalUpdateRingAnimated

@@ -52,12 +52,22 @@ import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-d
 import type { UpdateSnapshot, UpdaterService } from './updater'
 import {
   createNewApiClient,
+  validateLoginSessionId,
+  type NewApiAffiliateTransferInput,
   type NewApiAccountKeysQuery,
   type NewApiAccountUsageQuery,
+  type NewApiAccountDashboardQuery,
+  type NewApiAccountTaskQuery,
   type NewApiChangePasswordInput,
+  type NewApiDisplayNameUpdateInput,
   type NewApiLoginInput,
   type NewApiRegisterInput,
   type NewApiResetPasswordInput,
+  type NewApiTopupAmountInput,
+  type NewApiTopupOrdersQuery,
+  type NewApiTopupPaymentInput,
+  type NewApiBillingPreference,
+  type NewApiSubscriptionPaymentInput,
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
 import type { AiAssetStore } from './ai-asset-store'
@@ -78,6 +88,7 @@ import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { platformCapabilitiesFor } from './platform-capabilities'
+import { validatePaymentForm, type PaymentWindowController } from './payment-window'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -99,6 +110,10 @@ export interface IpcRegistrationOptions {
   // RelayBackendClient (relay-backend.ts), not new-api-client.ts's concrete
   // type -- this module never needs to know which relay backend is active.
   accountService?: RelayBackendClient
+  // The server-owned payment form stays in the main process. IPC receives
+  // only the user's amount/method choice and delegates the returned form to
+  // this isolated window controller without serializing its signed fields.
+  paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'destroy'>
   // Resolves once main.ts's startup session-restore attempt (see
   // account-session-store.ts's restoreAccountSessionOnStartup) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
@@ -116,7 +131,6 @@ export interface IpcRegistrationOptions {
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
-  openTutorialDocsWindow(target: WebContents): Promise<void>
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
   // has to depend on canvas-window.ts's full surface just to delegate one
@@ -529,16 +543,108 @@ function parseAccountPasswordResetInput(value: unknown): NewApiResetPasswordInpu
   }
 }
 
-// account:get-usage's input. Both fields optional (omitted -> new-api's own
-// server-side defaults, common/page_info.go's GetPageQuery: page 1, page size
-// 10). pageSize is capped at 100 to match that same function's own clamp --
-// rejecting an oversized value here up front rather than letting the server
-// silently truncate it avoids a caller thinking it asked for more rows than
-// it actually got back. page's upper bound is a generous sanity ceiling, not
-// a real limit tied to anything server-side.
+function parsePositiveSafeInteger(value: unknown, label: string): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`${label}格式错误`)
+  }
+  return value
+}
+
+function parseAccountTopupAmountInput(value: unknown): NewApiTopupAmountInput {
+  if (!isRecord(value)) throw new Error('充值金额信息格式错误')
+  return { amount: parsePositiveSafeInteger(value.amount, '充值数量') }
+}
+
+function parseAccountTopupPaymentInput(value: unknown): NewApiTopupPaymentInput {
+  if (!isRecord(value)) throw new Error('充值支付信息格式错误')
+  if (Object.keys(value).some((key) => key !== 'amount' && key !== 'paymentMethod')) {
+    throw new Error('充值支付信息包含未知字段')
+  }
+  return {
+    ...parseAccountTopupAmountInput(value),
+    paymentMethod: requiredString(value.paymentMethod, '支付方式', 64),
+  }
+}
+
+function parseAccountTopupOrdersQuery(value: unknown): NewApiTopupOrdersQuery {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('订单查询参数格式错误')
+  const page = value.page
+  if (page !== undefined && (typeof page !== 'number' || !Number.isSafeInteger(page) || page < 1 || page > 1_000_000)) {
+    throw new Error('订单页码格式错误')
+  }
+  const pageSize = value.pageSize
+  if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isSafeInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
+    throw new Error('订单分页大小格式错误')
+  }
+  return {
+    page: page as number | undefined,
+    pageSize: pageSize as number | undefined,
+    keyword: optionalString(value.keyword, '订单搜索词', 128),
+  }
+}
+
+function parseAccountAffiliateTransferInput(value: unknown): NewApiAffiliateTransferInput {
+  if (!isRecord(value)) throw new Error('邀请额度转余额信息格式错误')
+  return { quota: parsePositiveSafeInteger(value.quota, '邀请额度') }
+}
+
+const accountBillingPreferences = new Set<NewApiBillingPreference>([
+  'subscription_first',
+  'wallet_first',
+  'subscription_only',
+  'wallet_only',
+])
+
+function parseAccountBillingPreference(value: unknown): NewApiBillingPreference {
+  if (typeof value !== 'string' || !accountBillingPreferences.has(value as NewApiBillingPreference)) {
+    throw new Error('订阅扣费顺序格式错误')
+  }
+  return value as NewApiBillingPreference
+}
+
+function parseAccountSubscriptionPaymentInput(value: unknown): NewApiSubscriptionPaymentInput {
+  if (!isRecord(value)) throw new Error('订阅支付信息格式错误')
+  if (Object.keys(value).some((key) => !['planId', 'provider', 'paymentMethod'].includes(key))) {
+    throw new Error('订阅支付信息包含未知字段')
+  }
+  const provider = value.provider
+  if (provider !== 'epay' && provider !== 'stripe' && provider !== 'creem' && provider !== 'waffo-pancake') {
+    throw new Error('订阅支付渠道格式错误')
+  }
+  const paymentMethod = optionalString(value.paymentMethod, '订阅支付方式', 64)
+  if (provider === 'epay' && !paymentMethod) throw new Error('订阅支付方式不能为空')
+  if (provider !== 'epay' && paymentMethod !== undefined) throw new Error('当前订阅支付渠道不接受支付方式参数')
+  return { planId: parsePositiveSafeInteger(value.planId, '订阅方案 ID'), provider, paymentMethod }
+}
+
+function parseAccountDisplayNameUpdateInput(value: unknown): NewApiDisplayNameUpdateInput {
+  if (!isRecord(value) || typeof value.displayName !== 'string' || value.displayName.length > 20) {
+    throw new Error('显示名称格式错误')
+  }
+  return { displayName: value.displayName.trim() }
+}
+
+const accountUsageQueryFields = new Set([
+  'page', 'pageSize', 'type', 'startTimestamp', 'endTimestamp',
+  'modelName', 'tokenName', 'group', 'requestId', 'upstreamRequestId',
+])
+const accountUsageLogTypes = new Set([0, 1, 2, 3, 4, 5, 6, 7])
+
+function parseOptionalAccountUsageText(value: unknown, label: string, maxLength: number): string | undefined {
+  if (value === undefined) return undefined
+  if (typeof value !== 'string') throw new Error(`${label}格式错误`)
+  const trimmed = value.trim()
+  if (trimmed.length > maxLength) throw new Error(`${label}不能超过 ${maxLength} 个字符`)
+  return trimmed || undefined
+}
+
 function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery {
   if (value === undefined) return {}
   if (!isRecord(value)) throw new Error('用量查询参数格式错误')
+  if (Object.keys(value).some((key) => !accountUsageQueryFields.has(key))) {
+    throw new Error('用量查询参数包含未知字段')
+  }
   const page = value.page
   if (page !== undefined && (typeof page !== 'number' || !Number.isInteger(page) || page < 1 || page > 1_000_000)) {
     throw new Error('页码格式错误')
@@ -547,9 +653,95 @@ function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery {
   if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
     throw new Error('分页大小格式错误')
   }
+  const type = value.type
+  if (type !== undefined && (typeof type !== 'number' || !Number.isInteger(type) || !accountUsageLogTypes.has(type))) {
+    throw new Error('日志类型格式错误')
+  }
+  const startTimestamp = value.startTimestamp
+  const endTimestamp = value.endTimestamp
+  for (const [timestamp, label] of [[startTimestamp, '开始时间'], [endTimestamp, '结束时间']] as const) {
+    if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp < 0 || timestamp > 32_503_680_000)) {
+      throw new Error(`${label}格式错误`)
+    }
+  }
+  if (typeof startTimestamp === 'number' && typeof endTimestamp === 'number' && startTimestamp > endTimestamp) {
+    throw new Error('开始时间不能晚于结束时间')
+  }
   return {
     page: page as number | undefined,
     pageSize: pageSize as number | undefined,
+    type: type as number | undefined,
+    startTimestamp: startTimestamp as number | undefined,
+    endTimestamp: endTimestamp as number | undefined,
+    modelName: parseOptionalAccountUsageText(value.modelName, '模型名称', 128),
+    tokenName: parseOptionalAccountUsageText(value.tokenName, '令牌名称', 128),
+    group: parseOptionalAccountUsageText(value.group, '分组名称', 128),
+    requestId: parseOptionalAccountUsageText(value.requestId, '请求 ID', 128),
+    upstreamRequestId: parseOptionalAccountUsageText(value.upstreamRequestId, '上游请求 ID', 256),
+  }
+}
+
+function parseAccountDashboardQuery(value: unknown): NewApiAccountDashboardQuery {
+  if (!isRecord(value)) throw new Error('数据看板查询参数格式错误')
+  if (Object.keys(value).some((key) => key !== 'startTimestamp' && key !== 'endTimestamp')) {
+    throw new Error('数据看板查询参数包含未知字段')
+  }
+  const startTimestamp = value.startTimestamp
+  const endTimestamp = value.endTimestamp
+  for (const [timestamp, label] of [[startTimestamp, '开始时间'], [endTimestamp, '结束时间']] as const) {
+    if (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp <= 0 || timestamp > 32_503_680_000) {
+      throw new Error(`${label}格式错误`)
+    }
+  }
+  if ((startTimestamp as number) > (endTimestamp as number)) throw new Error('开始时间不能晚于结束时间')
+  if ((endTimestamp as number) - (startTimestamp as number) > 2_592_000) {
+    throw new Error('数据看板时间跨度不能超过 30 天')
+  }
+  return { startTimestamp: startTimestamp as number, endTimestamp: endTimestamp as number }
+}
+
+const accountTaskQueryFields = new Set([
+  'page', 'pageSize', 'platform', 'taskId', 'status', 'action', 'startTimestamp', 'endTimestamp',
+])
+const accountTaskStatuses = new Set([
+  'NOT_START', 'SUBMITTED', 'QUEUED', 'IN_PROGRESS', 'FAILURE', 'SUCCESS', 'UNKNOWN',
+])
+
+function parseAccountTaskQuery(value: unknown): NewApiAccountTaskQuery {
+  if (value === undefined) return {}
+  if (!isRecord(value)) throw new Error('任务查询参数格式错误')
+  if (Object.keys(value).some((key) => !accountTaskQueryFields.has(key))) {
+    throw new Error('任务查询参数包含未知字段')
+  }
+  const page = value.page
+  if (page !== undefined && (typeof page !== 'number' || !Number.isInteger(page) || page < 1 || page > 1_000_000)) {
+    throw new Error('页码格式错误')
+  }
+  const pageSize = value.pageSize
+  if (pageSize !== undefined && (typeof pageSize !== 'number' || !Number.isInteger(pageSize) || pageSize < 1 || pageSize > 100)) {
+    throw new Error('分页大小格式错误')
+  }
+  const startTimestamp = value.startTimestamp
+  const endTimestamp = value.endTimestamp
+  for (const [timestamp, label] of [[startTimestamp, '开始时间'], [endTimestamp, '结束时间']] as const) {
+    if (timestamp !== undefined && (typeof timestamp !== 'number' || !Number.isSafeInteger(timestamp) || timestamp < 0 || timestamp > 32_503_680_000)) {
+      throw new Error(`${label}格式错误`)
+    }
+  }
+  if (typeof startTimestamp === 'number' && typeof endTimestamp === 'number' && startTimestamp > endTimestamp) {
+    throw new Error('开始时间不能晚于结束时间')
+  }
+  const status = parseOptionalAccountUsageText(value.status, '任务状态', 32)
+  if (status && !accountTaskStatuses.has(status)) throw new Error('任务状态格式错误')
+  return {
+    page: page as number | undefined,
+    pageSize: pageSize as number | undefined,
+    platform: parseOptionalAccountUsageText(value.platform, '任务平台', 64),
+    taskId: parseOptionalAccountUsageText(value.taskId, '任务 ID', 256),
+    status,
+    action: parseOptionalAccountUsageText(value.action, '任务动作', 64),
+    startTimestamp: startTimestamp as number | undefined,
+    endTimestamp: endTimestamp as number | undefined,
   }
 }
 
@@ -771,7 +963,6 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'models:list-configured': '已配置 CLI 可用模型读取',
   'window:set-mode': '窗口模式切换',
   'window:set-theme': '界面主题切换',
-  'tutorial:open': '教程文档窗口打开',
   'external:open': '外部链接打开',
   'update:get-state': '主程序更新状态读取',
   'update:startup': '主程序启动更新',
@@ -834,6 +1025,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'account:reset-password': '星芒账号密码重置',
   'account:get-profile': '星芒账号资料读取',
   'account:get-usage': '星芒账号用量明细读取',
+  'account:get-dashboard': '星芒账号数据看板读取',
+  'account:get-tasks': '星芒账号任务日志读取',
   'account:list-keys': '星芒账号 Key 列表读取',
   'account:list-groups': '星芒账号可用分组读取',
   'account:revoke-key': '星芒账号 Key 撤销',
@@ -886,6 +1079,8 @@ const quietIpcSuccessChannels = new Set([
   // quiet" consistency as get-status/get-session/get-balance above.
   'account:get-profile',
   'account:get-usage',
+  'account:get-dashboard',
+  'account:get-tasks',
   // list-keys' DTO is metadata-only (I3 -- see NewApiAccountKey's own
   // comment for the whitelist), so nothing here is secret either; grouped in
   // for the same "account:* reads stay quiet" consistency as get-usage
@@ -1249,7 +1444,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.setWindowTheme(event.sender, theme)
     await service.updateStoredConfig({ version: 2, theme })
   })
-  registerTrustedHandler('tutorial:open', (event) => options.openTutorialDocsWindow(event.sender))
   registerTrustedHandler('external:open', async (_event, url: unknown) => {
     if (
       typeof url !== 'string'
@@ -1466,6 +1660,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:logout', () => {
     options.chatService?.cancelAll()
     options.imageService?.cancelAll()
+    options.paymentWindow.destroy()
     return accountService.logout()
   })
   const accountSessionReady = options.accountSessionReady ?? Promise.resolve()
@@ -1477,6 +1672,52 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return accountService.getSessionState()
   })
   registerTrustedHandler('account:get-balance', () => accountService.getBalance())
+  registerTrustedHandler('account:get-topup-info', () => accountService.getTopupInfo())
+  registerTrustedHandler('account:quote-topup', (_event, input: unknown) => (
+    accountService.quoteTopupAmount(parseAccountTopupAmountInput(input))
+  ))
+  registerTrustedHandler('account:create-topup-payment', (event, input: unknown) => {
+    const parsed = parseAccountTopupPaymentInput(input)
+    const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    return accountService.createTopupPayment(parsed).then(async (form) => {
+      // Validate the service result before handing it to the window and before
+      // exposing the order number. This keeps the IPC result a strict,
+      // renderer-safe DTO even if a backend adapter returns malformed data.
+      const validated = validatePaymentForm(form)
+      await options.paymentWindow.open(form, parent)
+      return { opened: true as const, tradeNo: validated.tradeNo }
+    })
+  })
+  registerTrustedHandler('account:list-topup-orders', (_event, input: unknown) => (
+    accountService.listTopupOrders(parseAccountTopupOrdersQuery(input))
+  ))
+  registerTrustedHandler('account:redeem-topup-code', (_event, code: unknown) => (
+    accountService.redeemTopupCode(requiredString(code, '兑换码', 256))
+  ))
+  registerTrustedHandler('account:transfer-affiliate-quota', (_event, input: unknown) => (
+    accountService.transferAffiliateQuota(parseAccountAffiliateTransferInput(input))
+  ))
+  registerTrustedHandler('account:list-subscription-plans', () => accountService.listSubscriptionPlans())
+  registerTrustedHandler('account:get-subscription-self', () => accountService.getSubscriptionSelf())
+  registerTrustedHandler('account:update-subscription-preference', (_event, preference: unknown) => (
+    accountService.updateSubscriptionPreference(parseAccountBillingPreference(preference))
+  ))
+  registerTrustedHandler('account:create-subscription-payment', (event, input: unknown) => {
+    const parsed = parseAccountSubscriptionPaymentInput(input)
+    const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    return accountService.createSubscriptionPayment(parsed).then(async (checkout) => {
+      if (checkout.kind === 'form') await options.paymentWindow.open(checkout.form, parent)
+      else await options.paymentWindow.openUrl(checkout.url, parent)
+      return {
+        opened: true as const,
+        tradeNo: checkout.tradeNo,
+        expiresAt: checkout.expiresAt,
+      }
+    })
+  })
+  registerTrustedHandler('account:purchase-subscription-balance', (_event, planId: unknown) => (
+    accountService.purchaseSubscriptionWithBalance(parsePositiveSafeInteger(planId, '订阅方案 ID'))
+  ))
   registerTrustedHandler('account:sync-managed-cli-keys', () => (
     syncManagedCliKeySummary(accountService, options.managedCliKeys)
   ))
@@ -1504,8 +1745,17 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.resetPassword(parseAccountPasswordResetInput(input))
   ))
   registerTrustedHandler('account:get-profile', () => accountService.getProfile())
+  registerTrustedHandler('account:update-display-name', (_event, input: unknown) => (
+    accountService.updateDisplayName(parseAccountDisplayNameUpdateInput(input))
+  ))
   registerTrustedHandler('account:get-usage', (_event, input: unknown) => (
     accountService.getUsage(parseAccountUsageQuery(input))
+  ))
+  registerTrustedHandler('account:get-dashboard', (_event, input: unknown) => (
+    accountService.getDashboard(parseAccountDashboardQuery(input))
+  ))
+  registerTrustedHandler('account:get-tasks', (_event, input: unknown) => (
+    accountService.getTasks(parseAccountTaskQuery(input))
   ))
   registerTrustedHandler('account:list-keys', (_event, input: unknown) => (
     accountService.listKeys(parseAccountKeysQuery(input))
@@ -1581,6 +1831,21 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:change-password', (_event, input: unknown) => (
     accountService.changePassword(parseAccountChangePasswordInput(input))
   ))
+  registerTrustedHandler('account:list-login-sessions', () => accountService.listLoginSessions())
+  registerTrustedHandler('account:revoke-login-session', async (_event, sid: unknown) => {
+    const result = await accountService.revokeLoginSession(
+      validateLoginSessionId(requiredString(sid, '登录会话 ID', 64)),
+    )
+    if (result.current) {
+      options.chatService?.cancelAll()
+      options.imageService?.cancelAll()
+      options.paymentWindow.destroy()
+    }
+    return result
+  })
+  registerTrustedHandler('account:revoke-other-login-sessions', () => (
+    accountService.revokeOtherLoginSessions()
+  ))
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
   registerTrustedHandler('account:get-remembered-login', async () => {
     const remembered = await options.accountCredentials?.read() ?? null
@@ -1623,6 +1888,12 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.imageService?.cancelSender(sender.id)
     })
   }
+  const currentChatUserId = (): number => {
+    const session = accountService.getSessionState()
+    const userId = session.authenticated ? session.account?.userId : undefined
+    if (!userId) throw new Error('请先登录星芒账号')
+    return userId
+  }
   registerTrustedHandler('chat:start', (event, input: unknown) => {
     if (!options.chatService) throw new Error('AI聊天服务未就绪')
     observeChatSender(event.sender)
@@ -1632,7 +1903,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('chat:generate-image', (event, input: unknown) => {
     if (!options.imageService) throw new Error('生图服务未就绪')
     observeChatSender(event.sender)
-    return options.imageService.generate(event.sender.id, parseAiImageGenerateInput(input))
+    return options.imageService.generate(event.sender.id, {
+      ...parseAiImageGenerateInput(input),
+      expectedUserId: currentChatUserId(),
+    })
   })
   registerTrustedHandler('chat:cancel', (event, requestId: unknown) => {
     const id = requiredString(requestId, 'AI聊天请求标识', 160)
@@ -1644,12 +1918,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       mayStillComplete: imageCanceled.mayStillComplete,
     }
   })
-  const currentChatUserId = (): number => {
-    const session = accountService.getSessionState()
-    const userId = session.authenticated ? session.account?.userId : undefined
-    if (!userId) throw new Error('请先登录星芒账号')
-    return userId
-  }
   registerTrustedHandler('chat:copy-asset', (_event, assetId: unknown) => {
     if (!options.aiAssets) throw new Error('AI 图片服务未就绪')
     return options.aiAssets.copy(currentChatUserId(), requiredString(assetId, 'AI 图片资产标识', 160))

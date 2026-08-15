@@ -25,6 +25,10 @@ export interface CanvasNodeInputs {
   text?: string
   image?: CanvasRunAsset
   images?: CanvasRunAsset[]
+  video?: CanvasRunAsset
+  videos?: CanvasRunAsset[]
+  audio?: CanvasRunAsset
+  audios?: CanvasRunAsset[]
 }
 
 export interface CanvasNodeExecutionResult {
@@ -41,6 +45,7 @@ export interface CanvasNodeExecutionContext {
   attemptId: string
   ownerId: number
   userId: number
+  projectId?: string
   node: CanvasRunGraphNode
   inputs: CanvasNodeInputs
   signal: AbortSignal
@@ -62,6 +67,7 @@ function fallbackExecutorKind(kind: CanvasRunNodeKind): 'text' | 'image' | 'vide
 export interface CanvasRunEngineOptions {
   userId: number
   ownerId: number
+  projectId?: string
   runId: string
   graphRevision: string
   graph: CanvasRunGraph
@@ -262,14 +268,24 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
 } {
   const inputs: CanvasNodeInputs = {}
   const images: CanvasRunAsset[] = []
+  const videos: CanvasRunAsset[] = []
+  const audios: CanvasRunAsset[] = []
   const fingerprintInputs = []
   for (const edge of index.incoming.get(nodeId) ?? []) {
     const output = outputs.get(edge.source)
     if (!output) continue
     if (output.text !== undefined) inputs.text = inputs.text === undefined ? output.text : `${inputs.text}\n${output.text}`
     if (output.asset?.kind === 'image') {
-      inputs.image = output.asset
+      inputs.image ??= output.asset
       images.push(output.asset)
+    }
+    if (output.asset?.kind === 'video') {
+      inputs.video ??= output.asset
+      videos.push(output.asset)
+    }
+    if (output.asset?.kind === 'audio') {
+      inputs.audio ??= output.asset
+      audios.push(output.asset)
     }
     fingerprintInputs.push({
       sourceNodeId: edge.source,
@@ -281,6 +297,8 @@ function collectInputs(nodeId: string, index: GraphIndex, outputs: Map<string, N
     })
   }
   if (images.length > 0) inputs.images = images
+  if (videos.length > 0) inputs.videos = videos
+  if (audios.length > 0) inputs.audios = audios
   return { inputs, fingerprintInputs }
 }
 
@@ -296,6 +314,7 @@ async function raceWithAbort<T>(promise: Promise<T>, signal: AbortSignal): Promi
 export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise<CanvasRunRecord> {
   validateUserId(options.userId, '画布账号标识')
   validateUserId(options.ownerId, '画布窗口标识')
+  if (options.projectId) requireIdentifier(options.projectId, '画布项目标识')
   requireIdentifier(options.runId, '运行标识')
   requireIdentifier(options.graphRevision, '工作流版本')
   const index = validateGraph(options.graph)
@@ -312,6 +331,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     version: canvasRunContractVersion,
     userId: options.userId,
     ownerId: options.ownerId,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
     runId: options.runId,
     graphRevision: options.graphRevision,
     scope: structuredClone(options.scope),
@@ -407,7 +427,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
 
       const collected = collectInputs(nodeId, index, outputs)
-      const fingerprint = computeCanvasNodeFingerprint({ node, upstream: collected.fingerprintInputs })
+      const fingerprint = computeCanvasNodeFingerprint({ projectId: options.projectId, node, upstream: collected.fingerprintInputs })
       let cached: CanvasRunCacheEntry | null | undefined
       try {
         cached = options.resolveCache
@@ -470,6 +490,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           attemptId,
           ownerId: options.ownerId,
           userId: options.userId,
+          projectId: options.projectId,
           node,
           inputs: collected.inputs,
           signal: options.signal,

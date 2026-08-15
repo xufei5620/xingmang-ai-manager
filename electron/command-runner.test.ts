@@ -9,6 +9,7 @@ import {
   cleanCommandOutput,
   commandEnvironment,
   findExecutable,
+  parseWindowsNodeInstallPath,
   isTrustedHighIntegrityExecutable,
   isUserWritablePath,
   runCommand,
@@ -29,6 +30,38 @@ const testMachinePaths: WindowsMachinePaths = {
 const nodeCommand = (script: string, ...argv: string[]) => ({
   executable: process.execPath,
   argv: ['-e', script, '--', ...argv],
+})
+
+describe('Windows Node.js registry fallback', () => {
+  it('parses only absolute non-expanded HKLM install paths', () => {
+    expect(parseWindowsNodeInstallPath(`
+HKEY_LOCAL_MACHINE\\SOFTWARE\\Node.js
+    InstallPath    REG_SZ    D:\\nodejs\\
+`)).toBe('D:\\nodejs\\')
+    expect(parseWindowsNodeInstallPath('InstallPath REG_EXPAND_SZ %LOCALAPPDATA%\\nodejs')).toBeNull()
+    expect(parseWindowsNodeInstallPath('InstallPath REG_SZ relative\\nodejs')).toBeNull()
+  })
+
+  it.runIf(process.platform === 'win32')('finds node and npm when the inherited PATH is stale', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-node-registry-'))
+    const nodeExecutable = path.join(directory, 'node.exe')
+    const npmExecutable = path.join(directory, 'npm.cmd')
+    fs.writeFileSync(nodeExecutable, '')
+    fs.writeFileSync(npmExecutable, '')
+    try {
+      await expect(findExecutable('node', {
+        env: { PATH: '' },
+        windowsNodeInstallPaths: [directory],
+      })).resolves.toBe(nodeExecutable)
+      await expect(findExecutable('npm', {
+        env: { PATH: '' },
+        windowsPackageManagers: ['npm'],
+        windowsNodeInstallPaths: [directory],
+      })).resolves.toBe(npmExecutable)
+    } finally {
+      fs.rmSync(directory, { recursive: true, force: true })
+    }
+  })
 })
 
 function createFakeChild(pid: number) {
@@ -551,6 +584,17 @@ describe('secure command runner', () => {
       executable: 'C:\\Users\\tester\\AppData\\Local\\Temp\\xingmang-shim.exe',
       argv: [],
     }, { trustedOnly: true })).rejects.toMatchObject({ code: 'UNSAFE_COMMAND' })
+  })
+
+  it.runIf(process.platform === 'win32')('does not misclassify slash-prefixed Windows switches as file paths', async () => {
+    await expect(runCommand({
+      executable: windowsSystemExecutable('whoami.exe'),
+      argv: ['/all'],
+    }, {
+      trustedOnly: true,
+      timeoutMs: 8_000,
+      maxOutputBytes: 1024 * 1024,
+    })).resolves.toMatchObject({ exitCode: 0 })
   })
 
   it.runIf(process.platform === 'win32')('blocks user-writable installer inputs for trusted commands', async () => {

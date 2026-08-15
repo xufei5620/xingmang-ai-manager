@@ -6,6 +6,7 @@ import type {
 } from './canvas-run-contract'
 
 interface CanvasFingerprintInput {
+  projectId?: string
   node: CanvasRunGraphNode
   upstream: Array<{
     sourceNodeId: string
@@ -50,6 +51,7 @@ function sha256(value: unknown): string {
 export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): string {
   return sha256({
     version: 1,
+    projectId: input.projectId,
     node: {
       id: input.node.id,
       kind: input.node.kind,
@@ -59,6 +61,7 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       group: input.node.data.group,
       quality: input.node.data.quality,
       size: input.node.data.size,
+      seconds: input.node.data.seconds,
       adoptedAssetId: input.node.data.adoptedAssetId,
     },
     upstream: input.upstream
@@ -88,6 +91,7 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         group: node.data.group,
         quality: node.data.quality,
         size: node.data.size,
+        seconds: node.data.seconds,
         adoptedAssetId: node.data.adoptedAssetId,
       }))
       .sort((left, right) => left.id.localeCompare(right.id)),

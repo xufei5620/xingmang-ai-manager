@@ -11,8 +11,10 @@ import {
   removeSafeDataFile,
 } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
+import { scopedLocalAssetId } from './content-addressed-asset'
 
 const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
+const MAXIMUM_VIDEO_INPUT_IMAGE_BYTES = 8 * 1024 * 1024
 const DEFAULT_DOWNLOAD_TIMEOUT_MS = 120_000
 const MAXIMUM_REMOTE_URL_LENGTH = 4_096
 const MAXIMUM_REDIRECTS = 3
@@ -21,6 +23,8 @@ const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const DATE_DIRECTORY_PATTERN = /^\d{4}-\d{2}-\d{2}$/
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const FILE_LABEL = 'AI 图片资产'
+const PROXY_AWARE_IMAGE_HOSTS = new Set(['imgen.x.ai'])
+const AI_ASSET_DOWNLOAD_ERROR_CODE = 'AI_IMAGE_DOWNLOAD_FAILED'
 
 const blockedIpv4Addresses = new BlockList()
 for (const [address, prefix] of [
@@ -104,6 +108,7 @@ export type AiAssetFetch = (
   init: RequestInit,
   resolvedAddresses: readonly string[],
 ) => Promise<Response>
+export type AiAssetProxyFetch = (input: string, init: RequestInit) => Promise<Response>
 
 export interface ResolveAiOutputRootOptions {
   isPackaged: boolean
@@ -114,6 +119,7 @@ export interface ResolveAiOutputRootOptions {
 export interface AiAssetStoreOptions {
   outputRoot: string
   fetchImpl?: AiAssetFetch
+  trustedProxyFetchImpl?: AiAssetProxyFetch
   dnsLookup?: AiAssetDnsLookup
   nativeOperations?: Partial<AiAssetNativeOperations>
   now?: () => Date
@@ -438,6 +444,7 @@ async function readBoundedResponse(
 async function fetchRemoteImage(
   sourceUrl: string,
   fetchImpl: AiAssetFetch,
+  trustedProxyFetchImpl: AiAssetProxyFetch,
   dnsLookup: AiAssetDnsLookup,
   maximumBytes: number,
   timeoutMs: number,
@@ -451,13 +458,23 @@ async function fetchRemoteImage(
     for (let redirectCount = 0; redirectCount <= MAXIMUM_REDIRECTS; redirectCount += 1) {
       if (visited.has(current.href)) throw new Error('图片下载发生循环重定向')
       visited.add(current.href)
-      const resolvedAddresses = await assertPublicRemoteHost(current, dnsLookup)
-      const response = await fetchImpl(current.href, {
+      const requestInit: RequestInit = {
         method: 'GET',
         headers: { Accept: 'image/png,image/jpeg,image/webp' },
         redirect: 'manual',
         signal: controller.signal,
-      }, resolvedAddresses)
+      }
+      // imgen.x.ai is the xAI API's observed result host. Let Electron's
+      // proxy-aware network stack resolve this exact HTTPS host so Fake-IP
+      // proxies work regardless of their virtual address range. Every other
+      // host remains DNS-pinned and private-address-blocked below.
+      const response = PROXY_AWARE_IMAGE_HOSTS.has(current.hostname.toLowerCase())
+        ? await trustedProxyFetchImpl(current.href, requestInit)
+        : await fetchImpl(
+          current.href,
+          requestInit,
+          await assertPublicRemoteHost(current, dnsLookup),
+        )
       if (response.url && response.url !== current.href) {
         await response.body?.cancel().catch(() => undefined)
         throw new Error('图片下载绕过了受限重定向策略')
@@ -518,6 +535,7 @@ async function readBoundedOwnedFile(filePath: string, maximumBytes: number, dire
 export class AiAssetStore {
   private readonly outputRoot: string
   private readonly fetchImpl: AiAssetFetch
+  private readonly trustedProxyFetchImpl: AiAssetProxyFetch
   private readonly dnsLookup: AiAssetDnsLookup
   private readonly nativeOperations: Partial<AiAssetNativeOperations>
   private readonly now: () => Date
@@ -529,6 +547,7 @@ export class AiAssetStore {
   constructor(options: AiAssetStoreOptions) {
     this.outputRoot = path.resolve(options.outputRoot)
     this.fetchImpl = options.fetchImpl ?? defaultPinnedAiAssetFetch
+    this.trustedProxyFetchImpl = options.trustedProxyFetchImpl ?? ((input, init) => fetch(input, init))
     this.dnsLookup = options.dnsLookup ?? defaultDnsLookup
     this.nativeOperations = options.nativeOperations ?? {}
     this.now = options.now ?? (() => new Date())
@@ -565,13 +584,21 @@ export class AiAssetStore {
 
   async storeRemoteUrl(userId: number, url: string, meta?: AiAssetMetadata): Promise<AiStoredAsset> {
     assertUserId(userId)
-    const source = await fetchRemoteImage(
-      url,
-      this.fetchImpl,
-      this.dnsLookup,
-      this.maximumImageBytes,
-      this.downloadTimeoutMs,
-    )
+    let source: Awaited<ReturnType<typeof fetchRemoteImage>>
+    try {
+      source = await fetchRemoteImage(
+        url,
+        this.fetchImpl,
+        this.trustedProxyFetchImpl,
+        this.dnsLookup,
+        this.maximumImageBytes,
+        this.downloadTimeoutMs,
+      )
+    } catch (error) {
+      const downloadError = new Error(error instanceof Error ? error.message : '图片下载失败')
+      Object.assign(downloadError, { code: AI_ASSET_DOWNLOAD_ERROR_CODE })
+      throw downloadError
+    }
     return this.persist(userId, source.bytes, source.declaredMime, meta)
   }
 
@@ -581,7 +608,7 @@ export class AiAssetStore {
       throw new Error('本地图片路径无效')
     }
     const bytes = await readBoundedOwnedFile(filePath, this.maximumImageBytes)
-    return this.persist(userId, bytes, null)
+    return this.persist(userId, bytes, null, undefined, scopedLocalAssetId(this.outputRoot, userId, bytes))
   }
 
   async readOwned(userId: number, assetId: string): Promise<AiOwnedAssetRead> {
@@ -599,6 +626,14 @@ export class AiAssetStore {
     }
   }
 
+  async readImageDataUri(userId: number, assetId: string): Promise<string> {
+    const owned = await this.readOwned(userId, assetId)
+    if (owned.bytes.byteLength > MAXIMUM_VIDEO_INPUT_IMAGE_BYTES) {
+      throw new Error('视频参考图片超过 8 MB 安全上限，请压缩后重试')
+    }
+    return `data:${owned.asset.mimeType};base64,${owned.bytes.toString('base64')}`
+  }
+
   async listOwned(userId: number, maximum = 200): Promise<Array<AiStoredAsset & { createdAt: string }>> {
     assertUserId(userId)
     if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 500) throw new Error('AI 图片列表数量无效')
@@ -613,6 +648,7 @@ export class AiAssetStore {
     }
     if (dateEntries.length > 4_096) throw new Error('AI 图片资产目录条目过多')
     const result: Array<AiStoredAsset & { createdAt: string }> = []
+    const seenContent = new Map<string, number>()
     for (const dateEntry of dateEntries.sort((left, right) => right.name.localeCompare(left.name))) {
       if (result.length >= maximum) break
       if (!DATE_DIRECTORY_PATTERN.test(dateEntry.name)) continue
@@ -641,13 +677,26 @@ export class AiAssetStore {
             const record: OwnedAssetRecord = { userId, filePath, asset }
             this.records.set(candidate.assetId, record)
             const stat = await fs.promises.lstat(filePath)
-            return { ...asset, createdAt: stat.birthtime.toISOString() }
+            return {
+              asset: { ...asset, createdAt: stat.birthtime.toISOString() },
+              canonicalAssetId: scopedLocalAssetId(this.outputRoot, userId, bytes),
+            }
           } catch {
             // A missing or malformed file is omitted instead of producing a broken preview.
             return null
           }
         }))
-        result.push(...batch.filter((entry): entry is NonNullable<typeof entry> => entry !== null).slice(0, maximum - result.length))
+        for (const entry of batch) {
+          if (!entry) continue
+          const existingIndex = seenContent.get(entry.canonicalAssetId)
+          if (existingIndex !== undefined) {
+            if (entry.asset.assetId === entry.canonicalAssetId) result[existingIndex] = entry.asset
+            continue
+          }
+          seenContent.set(entry.canonicalAssetId, result.length)
+          result.push(entry.asset)
+          if (result.length >= maximum) break
+        }
       }
     }
     return result
@@ -745,13 +794,18 @@ export class AiAssetStore {
     bytes: Buffer,
     declaredMime: string | null,
     meta?: AiAssetMetadata,
+    preferredAssetId?: string,
   ): Promise<AiStoredAsset> {
     if (bytes.length > this.maximumImageBytes) throw new Error('单张图片超过 64 MB 安全上限')
     const inspection = inspectAiImage(bytes, declaredMime)
     const revisedPrompt = normalizeRevisedPrompt(meta)
-    const assetId = this.randomBytes(32).toString('base64url')
+    const assetId = preferredAssetId ?? this.randomBytes(32).toString('base64url')
     assertAssetId(assetId)
     const asset = publicAsset(assetId, inspection, revisedPrompt)
+    if (preferredAssetId) {
+      const existing = await this.readMatchingContent(userId, assetId, bytes)
+      if (existing) return existing
+    }
     const accountRoot = path.join(this.outputRoot, `user-${userId}`)
     const directory = path.join(accountRoot, dateDirectoryName(this.now()))
     const filePath = path.join(directory, asset.fileName)
@@ -780,6 +834,11 @@ export class AiAssetStore {
     } catch (error) {
       await fs.promises.rm(temporaryPath, { force: true }).catch(() => undefined)
       if (finalLinked) await fs.promises.rm(filePath, { force: true }).catch(() => undefined)
+      if ((error as NodeJS.ErrnoException).code === 'EEXIST' && preferredAssetId) {
+        const existing = await this.readMatchingContent(userId, assetId, bytes)
+        if (existing) return existing
+        throw new Error('AI 图片内容摘要冲突')
+      }
       if ((error as NodeJS.ErrnoException).code === 'EEXIST' && fs.existsSync(filePath)) {
         throw new Error('AI 图片资产标识冲突，请重试')
       }
@@ -788,6 +847,17 @@ export class AiAssetStore {
     const record: OwnedAssetRecord = { userId, filePath, asset }
     this.records.set(assetId, record)
     return { ...asset }
+  }
+
+  private async readMatchingContent(userId: number, assetId: string, bytes: Buffer): Promise<AiStoredAsset | null> {
+    try {
+      const existing = await this.readOwned(userId, assetId)
+      if (!existing.bytes.equals(bytes)) throw new Error('AI 图片内容摘要冲突')
+      return existing.asset
+    } catch (error) {
+      if (error instanceof Error && error.message === 'AI 图片资产不存在或无权访问') return null
+      throw error
+    }
   }
 
   private async resolveOwned(userId: number, assetId: string): Promise<OwnedAssetRecord> {

@@ -39,12 +39,18 @@ import type {
   NewApiAccountStatus,
   NewApiAccountUsagePage,
   NewApiAccountUsageQuery,
+  NewApiAccountDashboardData,
+  NewApiAccountDashboardQuery,
+  NewApiAccountTaskPage,
+  NewApiAccountTaskQuery,
   NewApiBalance,
+  NewApiAffiliateTransferInput,
   NewApiChangePasswordInput,
   NewApiChangePasswordResult,
   NewApiCliKeyResult,
   NewApiLoginInput,
   NewApiLoginResult,
+  NewApiLoginSession,
   NewApiLegalDocument,
   NewApiLegalDocumentKind,
   NewApiPersistableSession,
@@ -53,6 +59,24 @@ import type {
   NewApiResetPasswordInput,
   NewApiResetPasswordResult,
   NewApiSessionState,
+  NewApiDisplayNameUpdateInput,
+  NewApiPaymentForm,
+  NewApiProfileUpdateResult,
+  NewApiRedemptionResult,
+  NewApiRevokeLoginSessionResult,
+  NewApiRevokeOtherLoginSessionsResult,
+  NewApiSubscriptionPlan,
+  NewApiBillingPreference,
+  NewApiSubscriptionCheckout,
+  NewApiSubscriptionPaymentInput,
+  NewApiSubscriptionPurchaseResult,
+  NewApiSubscriptionSelf,
+  NewApiTopupAmountInput,
+  NewApiTopupAmountQuote,
+  NewApiTopupInfo,
+  NewApiTopupOrdersPage,
+  NewApiTopupOrdersQuery,
+  NewApiTopupPaymentInput,
   NewApiUsableGroup,
 } from './new-api-client'
 
@@ -72,6 +96,14 @@ export interface RelayBackendCapabilities {
   supportsKeyManagement: boolean
   /** getUsage() -- the 个人中心 用量 tab. */
   supportsUsage: boolean
+  /** Top-up configuration, quoting, checkout, orders, redemption, and referral transfer. */
+  supportsBilling: boolean
+  /** Subscription plans, current subscriptions, and balance purchase. */
+  supportsSubscriptions: boolean
+  /** display_name editing. */
+  supportsProfileUpdate: boolean
+  /** Login-session list and revocation. */
+  supportsSessionManagement: boolean
   /** provisionCliKey() / findExistingCliKey() -- CLI/canvas auto key issuance. */
   supportsAutoKeyProvision: boolean
   /** restoreSession() -- persisted-login restore across app restarts. */
@@ -111,10 +143,38 @@ export interface RelayBackendClient {
   getSessionState(): NewApiSessionState
   /** ipc.ts: account:get-balance */
   getBalance(): Promise<NewApiBalance>
+  /** ipc.ts: account:get-topup-info */
+  getTopupInfo(): Promise<NewApiTopupInfo>
+  /** ipc.ts: account:quote-topup */
+  quoteTopupAmount(input: NewApiTopupAmountInput): Promise<NewApiTopupAmountQuote>
+  /** ipc.ts: account:create-topup-payment */
+  createTopupPayment(input: NewApiTopupPaymentInput): Promise<NewApiPaymentForm>
+  /** ipc.ts: account:list-topup-orders */
+  listTopupOrders(input?: NewApiTopupOrdersQuery): Promise<NewApiTopupOrdersPage>
+  /** ipc.ts: account:redeem-topup-code */
+  redeemTopupCode(code: string): Promise<NewApiRedemptionResult>
+  /** ipc.ts: account:transfer-affiliate-quota */
+  transferAffiliateQuota(input: NewApiAffiliateTransferInput): Promise<void>
+  /** ipc.ts: account:list-subscription-plans */
+  listSubscriptionPlans(): Promise<NewApiSubscriptionPlan[]>
+  /** ipc.ts: account:get-subscription-self */
+  getSubscriptionSelf(): Promise<NewApiSubscriptionSelf>
+  /** ipc.ts: account:update-subscription-preference */
+  updateSubscriptionPreference(preference: NewApiBillingPreference): Promise<NewApiBillingPreference>
+  /** ipc.ts: account:create-subscription-payment */
+  createSubscriptionPayment(input: NewApiSubscriptionPaymentInput): Promise<NewApiSubscriptionCheckout>
+  /** ipc.ts: account:purchase-subscription-balance */
+  purchaseSubscriptionWithBalance(planId: number): Promise<NewApiSubscriptionPurchaseResult>
   /** ipc.ts: account:get-profile */
   getProfile(): Promise<NewApiAccountProfileDetail>
+  /** ipc.ts: account:update-display-name */
+  updateDisplayName(input: NewApiDisplayNameUpdateInput): Promise<NewApiProfileUpdateResult>
   /** ipc.ts: account:get-usage */
   getUsage(input?: NewApiAccountUsageQuery): Promise<NewApiAccountUsagePage>
+  /** ipc.ts: account:get-dashboard */
+  getDashboard(input: NewApiAccountDashboardQuery): Promise<NewApiAccountDashboardData>
+  /** ipc.ts: account:get-tasks */
+  getTasks(input?: NewApiAccountTaskQuery): Promise<NewApiAccountTaskPage>
   /** ipc.ts: account:list-keys */
   listKeys(input?: NewApiAccountKeysQuery): Promise<NewApiAccountKeysPage>
   /** ipc.ts: account:list-groups */
@@ -129,6 +189,12 @@ export interface RelayBackendClient {
   updateKey(input: NewApiAccountKeyUpdateInput): Promise<void>
   /** ipc.ts: account:change-password */
   changePassword(input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult>
+  /** ipc.ts: account:list-login-sessions */
+  listLoginSessions(): Promise<NewApiLoginSession[]>
+  /** ipc.ts: account:revoke-login-session */
+  revokeLoginSession(sid: string): Promise<NewApiRevokeLoginSessionResult>
+  /** ipc.ts: account:revoke-other-login-sessions */
+  revokeOtherLoginSessions(): Promise<NewApiRevokeOtherLoginSessionsResult>
   /** ipc.ts: account:provision-cli-key; canvas-window.ts's buildCanvasTokenDependencies */
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
   /** canvas-window.ts's buildCanvasTokenDependencies (orphan-token reuse before minting a fresh one) */

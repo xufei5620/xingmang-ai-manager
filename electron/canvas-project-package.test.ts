@@ -66,4 +66,21 @@ describe('canvas project package', () => {
     content.provenance = Array.from({ length: 65 }, () => ({ name: '来源', license: 'MIT' }))
     expect(() => parseCanvasProjectPackage(JSON.stringify(content))).toThrow('来源清单')
   })
+
+  it('keeps audio and video references without treating them as embedded images', () => {
+    const audioId = 'C'.repeat(43)
+    const videoId = 'D'.repeat(43)
+    const content = JSON.stringify({
+      schemaVersion: 2, name: '媒体项目', mediaGroups: { image: '生图分组', video: 'grok' },
+      nodes: [
+        { id: 'audio', kind: 'audio-input', definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', result: { kind: 'audio', assetId: audioId, localUrl: `xingmang-asset://audio/${audioId}`, mimeType: 'audio/wav' } } },
+        { id: 'video', kind: 'video-input', definitionVersion: 1, position: { x: 300, y: 0 }, data: { prompt: '', model: '', seconds: '5', result: { kind: 'video', assetId: videoId, localUrl: `xingmang-asset://video/${videoId}`, mimeType: 'video/mp4' } } },
+      ],
+      edges: [],
+    })
+    const parsed = parseCanvasProjectWorkflow(content)
+    expect(parsed.assetIds).toEqual([])
+    expect(parsed.workflow).toMatchObject({ mediaGroups: { image: '生图分组', video: 'grok' } })
+    expect(buildCanvasProjectPackage(content, [])).toContain(`xingmang-asset://audio/${audioId}`)
+  })
 })

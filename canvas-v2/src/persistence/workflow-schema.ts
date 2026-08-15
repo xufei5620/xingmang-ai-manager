@@ -9,12 +9,13 @@ export const maximumNodeIdLength = 256
 export const maximumNodeKindLength = 128
 export const maximumPromptLength = 100_000
 export const maximumModelLength = 512
+export const maximumGroupNameLength = 128
 export const maximumOptionLength = 128
 export const maximumTaskIdLength = 512
 export const maximumCoordinateMagnitude = 10_000_000
 
 export interface PersistedAssetRefV2 {
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'audio'
   assetId?: string
   localUrl?: string
   mimeType?: string
@@ -38,6 +39,7 @@ export interface PersistedWorkflowNodeV2 {
     model: string
     quality?: string
     size?: string
+    seconds?: string
     result?: PersistedAssetRefV2
     settings?: Record<string, unknown>
     candidateAssetIds?: string[]
@@ -48,6 +50,10 @@ export interface PersistedWorkflowV2 {
   schemaVersion: typeof workflowSchemaVersion
   name: string
   viewport?: { x: number; y: number; zoom: number }
+  mediaGroups?: {
+    image?: string
+    video?: string
+  }
   nodes: PersistedWorkflowNodeV2[]
   edges: WorkflowEdge[]
 }
@@ -105,18 +111,32 @@ export function toPersistedWorkflowV2(workflow: WorkflowFile): PersistedWorkflow
         model: node.data.model,
         ...(node.data.quality ? { quality: node.data.quality } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
+        ...(node.data.seconds ? { seconds: node.data.seconds } : {}),
         ...(result ? { result } : {}),
         ...(settings ? { settings } : {}),
         ...(candidateAssetIds?.length ? { candidateAssetIds } : {}),
       },
     }
   })
+  const mediaGroups = persistedMediaGroups(workflow.mediaGroups)
   return {
     schemaVersion: workflowSchemaVersion,
     name: workflow.name,
     ...(workflow.viewport ? { viewport: { ...workflow.viewport } } : {}),
+    ...(mediaGroups ? { mediaGroups } : {}),
     nodes,
     edges: workflow.edges.map((edge) => ({ ...edge })),
+  }
+}
+
+function persistedMediaGroups(mediaGroups: WorkflowFile['mediaGroups']): WorkflowFile['mediaGroups'] | undefined {
+  if (!mediaGroups) return undefined
+  const image = optionalSafeString(mediaGroups.image, maximumGroupNameLength)
+  const video = optionalSafeString(mediaGroups.video, maximumGroupNameLength)
+  if (image === null || video === null || (!image && !video)) return undefined
+  return {
+    ...(image ? { image } : {}),
+    ...(video ? { video } : {}),
   }
 }
 

@@ -43,11 +43,13 @@ export interface TrustedElevatedCliCommandOptions {
 }
 
 export type WindowsCliExecutionMode = 'trusted-only' | 'same-user'
+export type WindowsTokenElevationType = 'default' | 'full' | 'limited'
 
 export interface ResolveWindowsCliExecutionModeOptions {
   isPackaged: boolean
   platform?: NodeJS.Platform
   probeAdministrator?: () => Promise<boolean>
+  probeElevationType?: () => Promise<WindowsTokenElevationType>
 }
 
 export interface WindowsAdministratorProbeOptions {
@@ -146,6 +148,61 @@ export async function inspectCurrentWindowsProcessAdministrator(
   throw new Error('无法确认当前 Windows 进程是否具有管理员权限')
 }
 
+export function parseWindowsTokenElevationType(value: string): WindowsTokenElevationType | null {
+  const normalized = value.trim().toLowerCase()
+  if (normalized === 'default' || normalized === 'full' || normalized === 'limited') return normalized
+  return null
+}
+
+/**
+ * Distinguishes an explicitly elevated UAC token from a default token. The
+ * built-in Administrator account can hold a high-integrity default token when
+ * Admin Approval Mode is disabled; that is the account's ordinary execution
+ * context, not an elevation boundary introduced by launching this app.
+ */
+export async function inspectCurrentWindowsTokenElevationType(
+  options: WindowsAdministratorProbeOptions = {},
+): Promise<WindowsTokenElevationType> {
+  if (process.platform !== 'win32') return 'default'
+  const env = options.env ?? process.env
+  const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
+  const script = [
+    "$ErrorActionPreference = 'Stop'",
+    "Add-Type -TypeDefinition @'",
+    'using System;',
+    'using System.Runtime.InteropServices;',
+    'public static class XingMangTokenElevationProbe {',
+    '  [DllImport("advapi32.dll", SetLastError = true)]',
+    '  public static extern bool GetTokenInformation(IntPtr token, int informationClass, out int information, int informationLength, out int returnLength);',
+    '}',
+    "'@",
+    '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()',
+    '$elevationType = 0',
+    '$returnLength = 0',
+    '$ok = [XingMangTokenElevationProbe]::GetTokenInformation($identity.Token, 18, [ref]$elevationType, 4, [ref]$returnLength)',
+    'if (-not $ok) { throw "GetTokenInformation(TokenElevationType) failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" }',
+    'switch ($elevationType) {',
+    '  1 { "default" }',
+    '  2 { "full" }',
+    '  3 { "limited" }',
+    '  default { throw "Unexpected TokenElevationType: $elevationType" }',
+    '}',
+  ].join('\n')
+  const { stdout } = await execFileAsync(
+    resolveWindowsPowerShellExecutable({ env, machinePaths }),
+    ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+    {
+      env: trustedCommandEnvironment(env, machinePaths),
+      windowsHide: true,
+      timeout: 15_000,
+      maxBuffer: 64 * 1024,
+    },
+  )
+  const elevationType = parseWindowsTokenElevationType(stdout)
+  if (!elevationType) throw new Error('无法确认当前 Windows 进程的令牌提升类型')
+  return elevationType
+}
+
 /** Packaged and development builds normally run as the current user. If a user
  * explicitly starts the app as administrator, retain the restrictive boundary
  * so user-writable commands are never inherited by the elevated process. */
@@ -155,9 +212,13 @@ export async function resolveWindowsCliExecutionMode(
   const platform = options.platform ?? process.platform
   if (platform !== 'win32') return 'same-user'
   try {
-    const administrator = await (options.probeAdministrator
-      ?? (() => inspectCurrentWindowsProcessAdministrator()))()
-    return administrator ? 'trusted-only' : 'same-user'
+    if (options.probeElevationType) {
+      return await options.probeElevationType() === 'full' ? 'trusted-only' : 'same-user'
+    }
+    if (options.probeAdministrator) {
+      return await options.probeAdministrator() ? 'trusted-only' : 'same-user'
+    }
+    return await inspectCurrentWindowsTokenElevationType() === 'full' ? 'trusted-only' : 'same-user'
   } catch {
     return 'trusted-only'
   }

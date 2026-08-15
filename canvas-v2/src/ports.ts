@@ -17,7 +17,7 @@ export function outputHandleId(kind: PortKind): string {
 export function handleKind(handleId: string | null | undefined): PortKind | null {
   if (!handleId) return null
   const [, kind] = handleId.split(':')
-  return kind === 'text' || kind === 'image' || kind === 'video' ? kind : null
+  return kind === 'text' || kind === 'image' || kind === 'video' || kind === 'audio' ? kind : null
 }
 
 export interface ConnectionGraphView {
@@ -25,6 +25,62 @@ export interface ConnectionGraphView {
   nodeKindOf(nodeId: string): string | null
   /** 现有边表,用于成环检测(source→target 邻接)。 */
   edges: readonly { source: string; target: string; targetHandle?: string | null }[]
+}
+
+export interface PendingCanvasConnection {
+  nodeId: string
+  handleId: string
+  handleType: 'source' | 'target'
+}
+
+const insertionCandidateId = '__xingmang_pending_node__'
+
+/**
+ * Resolve the compatible handle on a node inserted at the loose end of a
+ * connection. The regular graph validator remains the single source of truth.
+ */
+export function compatibleInsertionHandle(
+  candidateNodeType: string,
+  pending: PendingCanvasConnection,
+  graph: ConnectionGraphView,
+): string | null {
+  const pendingNodeType = graph.nodeKindOf(pending.nodeId)
+  if (!pendingNodeType) return null
+  const pendingDirection = pending.handleType === 'source' ? 'output' : 'input'
+  const pendingPort = builtinNodeRegistry.port(pendingNodeType, pending.handleId, pendingDirection)
+  const candidate = builtinNodeRegistry.resolve(candidateNodeType)
+  if (!pendingPort || !candidate || candidate.type === 'unknown') return null
+  const candidateDirection = pending.handleType === 'source' ? 'input' : 'output'
+  const prospectiveGraph: ConnectionGraphView = {
+    edges: graph.edges,
+    nodeKindOf: (nodeId) => nodeId === insertionCandidateId ? candidateNodeType : graph.nodeKindOf(nodeId),
+  }
+  for (const port of candidate.ports) {
+    if (port.direction !== candidateDirection || port.kind !== pendingPort.kind) continue
+    const connection = connectionForInsertedNode(pending, insertionCandidateId, port.id)
+    if (isValidWorkflowConnection(connection, prospectiveGraph)) return port.id
+  }
+  return null
+}
+
+export function connectionForInsertedNode(
+  pending: PendingCanvasConnection,
+  insertedNodeId: string,
+  insertedHandleId: string,
+): Connection {
+  return pending.handleType === 'source'
+    ? {
+        source: pending.nodeId,
+        sourceHandle: pending.handleId,
+        target: insertedNodeId,
+        targetHandle: insertedHandleId,
+      }
+    : {
+        source: insertedNodeId,
+        sourceHandle: insertedHandleId,
+        target: pending.nodeId,
+        targetHandle: pending.handleId,
+      }
 }
 
 function reaches(edges: readonly { source: string; target: string }[], from: string, to: string): boolean {

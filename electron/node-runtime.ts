@@ -48,12 +48,13 @@ export interface NodeRuntimeInstallProgress {
 
 export interface NodeRuntimeInstallResult {
   installed: true
-  method: 'winget' | 'msi'
-  source: NodeRuntimeSource
+  action: 'installed' | 'unchanged'
+  method: 'winget' | 'msi' | null
+  source: NodeRuntimeSource | null
   version: string | null
   architecture: NodeRuntimeArchitecture
   /** The current app must restart to inherit the PATH written by the installer. */
-  pathRefreshRequired: true
+  pathRefreshRequired: boolean
   /** Exit code 3010 means Windows requested a reboot to finish the MSI transaction. */
   systemRestartRequired: boolean
 }
@@ -901,6 +902,7 @@ async function installFromSource(
   const installResult = await dependencies.runProcess(plan.msi, options.signal)
   return {
     installed: true,
+    action: 'installed',
     method: 'msi',
     source: source.id,
     version: release.version,
@@ -960,6 +962,7 @@ export async function installNodeRuntime(
         const installedRuntime = await dependencies.inspectInstalledNodeRuntime(options.signal)
         const result: NodeRuntimeInstallResult = {
           installed: true,
+          action: 'installed',
           method: 'winget',
           source: 'winget',
           version: installedRuntime.version,

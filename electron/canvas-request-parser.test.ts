@@ -6,11 +6,23 @@ import {
   parseCanvasPromptPresetId,
   parseCanvasPromptPresetInput,
   parseCanvasPromptPresetUpdate,
+  parseCanvasRenameAssetInput,
   parseCanvasStartRunInput,
+  parseCanvasVideoGenerateInput,
+  parseCanvasVideoTaskId,
   requiredCanvasString,
+  requiredCanvasText,
 } from './canvas-request-parser'
 
 describe('canvas request parser', () => {
+  it('accepts bounded multiline document text while rejecting unsafe controls and oversized UTF-8', () => {
+    const document = '{\r\n\t"name": "测试"\r\n}'
+    expect(requiredCanvasText(document, '画布项目内容', 128)).toBe(document)
+    expect(() => requiredCanvasText('line\u0000break', '画布项目内容', 128)).toThrow('画布项目内容格式错误')
+    expect(() => requiredCanvasText('line\u000bbreak', '画布项目内容', 128)).toThrow('画布项目内容格式错误')
+    expect(() => requiredCanvasText('测试', '画布项目内容', 5)).toThrow('画布项目内容格式错误')
+  })
+
   it('accepts bounded asset paging, filtering and search', () => {
     expect(parseCanvasAssetQuery({ offset: 24, limit: 24, mediaType: 'image', search: ' 产品图 ' })).toEqual({
       offset: 24, limit: 24, mediaType: 'image', search: '产品图',
@@ -21,9 +33,23 @@ describe('canvas request parser', () => {
   it('rejects hostile or unbounded asset queries', () => {
     expect(() => parseCanvasAssetQuery({ offset: -1 })).toThrow('分页位置')
     expect(() => parseCanvasAssetQuery({ limit: 101 })).toThrow('分页数量')
-    expect(() => parseCanvasAssetQuery({ mediaType: 'video' })).toThrow('媒体类型')
+    expect(parseCanvasAssetQuery({ mediaType: 'video' })).toMatchObject({ mediaType: 'video' })
     expect(() => parseCanvasAssetQuery({ search: 'bad\0query' })).toThrow('搜索内容')
     expect(() => parseCanvasAssetQuery({ apiKey: 'secret' })).toThrow('未知字段')
+  })
+
+  it('accepts safe logical asset names and rejects path-like rename payloads', () => {
+    const assetId = 'a'.repeat(43)
+    expect(parseCanvasRenameAssetInput({ assetId, displayName: ' 产品主视觉 ' })).toEqual({
+      assetId,
+      displayName: '产品主视觉',
+    })
+    expect(parseCanvasRenameAssetInput({ assetId, displayName: 'x'.repeat(120) }).displayName).toHaveLength(120)
+    for (const displayName of ['', 'x'.repeat(121), 'bad\0name', 'folder/name', 'folder\\name']) {
+      expect(() => parseCanvasRenameAssetInput({ assetId, displayName })).toThrow('显示名称格式错误')
+    }
+    expect(() => parseCanvasRenameAssetInput({ assetId: '../secret', displayName: '名称' })).toThrow('资产标识格式错误')
+    expect(() => parseCanvasRenameAssetInput({ assetId, displayName: '名称', apiKey: 'secret' })).toThrow('未知字段')
   })
 
   it('accepts a bounded image request', () => {
@@ -55,6 +81,32 @@ describe('canvas request parser', () => {
     expect(() => parseCanvasImageGenerateInput({
       requestId: 'run-1', group: 'g', model: 'm', prompt: 'p', quality: 'ultra',
     })).toThrow('画质格式错误')
+  })
+
+  it('accepts exact bounded video requests and rejects credentials or duration ambiguity', () => {
+    expect(parseCanvasVideoGenerateInput({
+      requestId: 'video-1', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '15',
+      imageAssetId: 'a'.repeat(43), width: 720, height: 1280,
+    })).toEqual({
+      requestId: 'video-1', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '15',
+      imageAssetId: 'a'.repeat(43), width: 720, height: 1280,
+    })
+    expect(() => parseCanvasVideoGenerateInput({
+      requestId: 'video-1', group: 'g', model: 'm', prompt: 'p', seconds: '16',
+    })).toThrow('1-15 秒')
+    expect(() => parseCanvasVideoGenerateInput({
+      requestId: 'video-1', group: 'g', model: 'm', prompt: 'p', seconds: '5', apiKey: 'secret',
+    })).toThrow('未知字段')
+    expect(() => parseCanvasVideoGenerateInput({
+      requestId: 'video-1', group: 'g', model: 'm', prompt: 'p', seconds: '5', width: 1280,
+    })).toThrow('比例不受支持')
+  })
+
+  it('accepts only a bounded opaque video task id', () => {
+    expect(parseCanvasVideoTaskId('video_task.123:queued')).toBe('video_task.123:queued')
+    for (const input of ['', '../video-task', 'video task', 'x'.repeat(257), { taskId: 'video-task' }]) {
+      expect(() => parseCanvasVideoTaskId(input)).toThrow('视频任务标识格式错误')
+    }
   })
 
   it('accepts one to four distinct local asset ids for image editing', () => {
@@ -105,6 +157,31 @@ describe('canvas request parser', () => {
       ...input,
       graph: { nodes: [{ ...input.graph.nodes[0], kind: 'future-executor' }], edges: [] },
     })).toThrow('类型不受支持')
+  })
+
+  it('accepts audio input nodes in a workflow run', () => {
+    const input = {
+      graph: {
+        nodes: [{ id: 'audio', kind: 'audio-input', definitionVersion: 1, data: { prompt: '', model: '' } }],
+        edges: [],
+      },
+      scope: { kind: 'all' },
+    }
+    expect(parseCanvasStartRunInput(input)).toEqual(input)
+  })
+
+  it('accepts video seconds only as a bounded integer string', () => {
+    const input = {
+      graph: { nodes: [{ id: 'video', kind: 'video-generate', definitionVersion: 1, data: {
+        prompt: '海浪', model: 'grok-imagine-video', seconds: '15',
+      } }], edges: [] }, scope: { kind: 'all' },
+    }
+    expect(parseCanvasStartRunInput(input)).toEqual(input)
+    for (const seconds of ['0', '16', '5.5', '05']) {
+      expect(() => parseCanvasStartRunInput({
+        ...input, graph: { ...input.graph, nodes: [{ ...input.graph.nodes[0], data: { ...input.graph.nodes[0].data, seconds } }] },
+      })).toThrow('1-15 秒')
+    }
   })
 
   it('rejects empty and oversized run scopes', () => {

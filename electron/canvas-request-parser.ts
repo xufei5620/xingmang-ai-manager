@@ -1,8 +1,10 @@
-import type { CanvasAssetQuery, CanvasImageEditInput, CanvasImageGenerateInput, CanvasStartRunInput } from './canvas-contract'
+import type { CanvasAssetQuery, CanvasImageEditInput, CanvasImageGenerateInput, CanvasRenameAssetInput, CanvasStartRunInput } from './canvas-contract'
+import type { AiVideoGenerationInput } from './ai-video-service'
 import type { CanvasPromptPresetInput, CanvasPromptPresetUpdate } from './canvas-prompt-preset-store'
 import type { CanvasRunGraph, CanvasRunNodeKind, CanvasRunScope } from './canvas-run-contract'
 
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
+const videoTaskIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -10,6 +12,18 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function requiredCanvasString(value: unknown, label: string, maximum: number): string {
   if (typeof value !== 'string' || !value.trim() || value.length > maximum || /[\x00-\x1F\x7F]/.test(value)) {
+    throw new Error(`${label}格式错误`)
+  }
+  return value
+}
+
+export function requiredCanvasText(value: unknown, label: string, maximumBytes: number): string {
+  if (
+    typeof value !== 'string'
+    || !value.trim()
+    || Buffer.byteLength(value, 'utf8') > maximumBytes
+    || /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(value)
+  ) {
     throw new Error(`${label}格式错误`)
   }
   return value
@@ -45,8 +59,42 @@ export function parseCanvasImageEditInput(value: unknown): CanvasImageEditInput 
   return { ...generateInput, sourceAssetIds }
 }
 
+export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGenerationInput {
+  if (!isRecord(value)) throw new Error('画布视频请求格式错误')
+  assertOnlyFields(value, ['requestId', 'group', 'model', 'prompt', 'seconds', 'imageAssetId', 'width', 'height'], '画布视频请求')
+  const imageAssetId = value.imageAssetId === undefined
+    ? undefined
+    : requiredCanvasString(value.imageAssetId, '画布视频参考图片资产标识', 64)
+  if (imageAssetId && !assetIdPattern.test(imageAssetId)) throw new Error('画布视频参考图片资产标识格式错误')
+  const seconds = requiredCanvasString(value.seconds, '画布视频时长', 2)
+  if (!/^(?:[1-9]|1[0-5])$/.test(seconds)) throw new Error('画布视频时长必须是 1-15 秒的整数')
+  const hasWidth = value.width !== undefined
+  const hasHeight = value.height !== undefined
+  const allowedDimensions = new Set(['1280x720', '720x1280', '1024x1024', '1024x768', '768x1024'])
+  if (hasWidth !== hasHeight || (hasWidth && (
+    !Number.isSafeInteger(value.width)
+    || !Number.isSafeInteger(value.height)
+    || !allowedDimensions.has(`${value.width}x${value.height}`)
+  ))) throw new Error('画布视频比例不受支持')
+  return {
+    requestId: requiredCanvasString(value.requestId, '画布视频请求标识', 160),
+    group: requiredCanvasString(value.group, '画布视频分组', 128),
+    model: requiredCanvasString(value.model, '画布视频模型', 128),
+    prompt: requiredCanvasString(value.prompt, '画布视频提示词', 40_000),
+    seconds,
+    ...(imageAssetId ? { imageAssetId } : {}),
+    ...(hasWidth ? { width: value.width as number, height: value.height as number } : {}),
+  }
+}
+
+export function parseCanvasVideoTaskId(value: unknown): string {
+  const taskId = requiredCanvasString(value, '画布视频任务标识', 256)
+  if (!videoTaskIdPattern.test(taskId)) throw new Error('画布视频任务标识格式错误')
+  return taskId
+}
+
 const canvasNodeKinds = new Set<CanvasRunNodeKind>([
-  'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'image-generate', 'image-edit',
+  'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
 ])
 
@@ -76,7 +124,7 @@ export function parseCanvasAssetQuery(value: unknown): CanvasAssetQuery {
   const search = value.search ?? ''
   if (!Number.isSafeInteger(offset) || (offset as number) < 0 || (offset as number) > 500) throw new Error('画布资产分页位置无效')
   if (!Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > 100) throw new Error('画布资产分页数量无效')
-  if (mediaType !== 'all' && mediaType !== 'image') throw new Error('画布资产媒体类型无效')
+  if (mediaType !== 'all' && mediaType !== 'image' && mediaType !== 'video' && mediaType !== 'audio') throw new Error('画布资产媒体类型无效')
   if (typeof search !== 'string' || search.length > 128 || /[\x00-\x1F\x7F]/.test(search)) throw new Error('画布资产搜索内容无效')
   return {
     offset: offset as number,
@@ -84,6 +132,19 @@ export function parseCanvasAssetQuery(value: unknown): CanvasAssetQuery {
     mediaType,
     ...(search.trim() ? { search: search.trim() } : {}),
   }
+}
+
+export function parseCanvasRenameAssetInput(value: unknown): CanvasRenameAssetInput {
+  if (!isRecord(value)) throw new Error('画布资产重命名请求格式错误')
+  assertOnlyFields(value, ['assetId', 'displayName'], '画布资产重命名请求')
+  const assetId = requiredCanvasString(value.assetId, '画布资产标识', 64)
+  if (!assetIdPattern.test(assetId)) throw new Error('画布资产标识格式错误')
+  if (typeof value.displayName !== 'string') throw new Error('画布资产显示名称格式错误')
+  const displayName = value.displayName.trim()
+  if (!displayName || displayName.length > 120 || /[\x00-\x1F\x7F<>:"/\\|?*]/.test(displayName)) {
+    throw new Error('画布资产显示名称格式错误')
+  }
+  return { assetId, displayName }
 }
 
 function promptPresetText(value: unknown, label: string, maximum: number): string {
@@ -160,7 +221,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
   const nodes: CanvasRunGraph['nodes'] = value.graph.nodes.map((entry) => {
     if (!isRecord(entry) || !isRecord(entry.data)) throw new Error('画布运行节点格式错误')
     assertOnlyFields(entry, ['id', 'kind', 'definitionVersion', 'disabled', 'data'], '画布运行节点')
-    assertOnlyFields(entry.data, ['prompt', 'model', 'group', 'quality', 'size', 'adoptedAssetId'], '画布运行节点数据')
+    assertOnlyFields(entry.data, ['prompt', 'model', 'group', 'quality', 'size', 'seconds', 'adoptedAssetId'], '画布运行节点数据')
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
@@ -170,6 +231,10 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     const group = optionalCanvasString(entry.data.group, '画布分组', 128)
     const quality = optionalCanvasString(entry.data.quality, '画布画质', 64)
     const size = optionalCanvasString(entry.data.size, '画布尺寸', 64)
+    const seconds = entry.data.seconds === undefined || entry.data.seconds === ''
+      ? undefined
+      : canvasString(entry.data.seconds, '画布视频时长', 8)
+    if (seconds && !/^(?:[1-9]|1[0-5])$/.test(seconds)) throw new Error('画布视频时长必须是 1-15 秒的整数')
     const adoptedAssetId = optionalCanvasString(entry.data.adoptedAssetId, '画布资产标识', 64)
     if (adoptedAssetId && !assetIdPattern.test(adoptedAssetId)) throw new Error('画布资产标识格式错误')
     return {
@@ -183,6 +248,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
         ...(group ? { group } : {}),
         ...(quality ? { quality } : {}),
         ...(size ? { size } : {}),
+        ...(seconds ? { seconds } : {}),
         ...(adoptedAssetId ? { adoptedAssetId } : {}),
       },
     }

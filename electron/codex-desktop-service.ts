@@ -264,12 +264,33 @@ export function buildCodexDesktopManifestSources(
 function packageSourceForManifest(
   source: CodexDesktopManifestSource,
   architecture: 'x64' | 'arm64',
+  resolvedManifestUrl: string,
 ): CodexDesktopPackageSource | null {
-  if (source.url === codexDesktopMirrorManifestUrl) {
-    return { label: source.label, url: codexDesktopMirrorPackageUrls[architecture] }
+  const resolved = new URL(resolvedManifestUrl)
+  if (
+    resolved.hostname === new URL(codexDesktopMirrorFallbackManifestUrl).hostname
+    && resolved.pathname === '/latest/manifest'
+  ) {
+    return { label: '镜像备用源', url: codexDesktopMirrorFallbackPackageUrls[architecture] }
   }
-  if (source.url === codexDesktopMirrorFallbackManifestUrl) {
-    return { label: source.label, url: codexDesktopMirrorFallbackPackageUrls[architecture] }
+  if (
+    resolved.hostname === new URL(codexDesktopMirrorManifestUrl).hostname
+    && resolved.pathname === '/latest/manifest'
+  ) {
+    return { label: '国内镜像', url: codexDesktopMirrorPackageUrls[architecture] }
+  }
+
+  // The primary route can redirect to a signed object-store URL. That object
+  // is an implementation detail of the route, so retain the originating
+  // route's package endpoint. Cross-mirror redirects above are different: the
+  // final mirror hostname determines which package endpoint owns the manifest.
+  if (resolved.hostname === codexDesktopMirrorObjectStorageHost) {
+    if (source.url === codexDesktopMirrorManifestUrl) {
+      return { label: source.label, url: codexDesktopMirrorPackageUrls[architecture] }
+    }
+    if (source.url === codexDesktopMirrorFallbackManifestUrl) {
+      return { label: source.label, url: codexDesktopMirrorFallbackPackageUrls[architecture] }
+    }
   }
   return null
 }
@@ -289,7 +310,25 @@ export function selectLatestCodexDesktopManifestCandidate(
   return selected
 }
 
-async function fetchCodexDesktopManifestCandidate(
+export function rankCodexDesktopMirrorCandidates(
+  candidates: CodexDesktopManifestCandidate[],
+): CodexDesktopManifestCandidate[] {
+  const ranked = candidates
+    .filter((candidate) => candidate.release !== null && candidate.packageSource !== null)
+    .sort((left, right) => {
+      const comparison = compareWindowsPackageVersions(left.version, right.version)
+      return comparison === 1 ? -1 : comparison === -1 ? 1 : 0
+    })
+  const packageUrls = new Set<string>()
+  return ranked.filter((candidate) => {
+    const packageUrl = candidate.packageSource?.url
+    if (!packageUrl || packageUrls.has(packageUrl)) return false
+    packageUrls.add(packageUrl)
+    return true
+  })
+}
+
+export async function fetchCodexDesktopManifestCandidate(
   source: CodexDesktopManifestSource,
   architecture: 'x64' | 'arm64',
   fetchImplementation: typeof fetch,
@@ -342,7 +381,7 @@ async function fetchCodexDesktopManifestCandidate(
       source,
       version: release.version,
       release,
-      packageSource: packageSourceForManifest(source, architecture),
+      packageSource: packageSourceForManifest(source, architecture, response.url || source.url),
     }
   } catch (error) {
     if (error instanceof Error && error.name === 'AbortError') throw new Error('查询超时')
@@ -480,6 +519,76 @@ export async function downloadCodexDesktopPackage(
     clearTimeout(responseTimeout)
     await file?.close().catch(() => undefined)
   }
+}
+
+export interface CodexDesktopCandidateDownloadResult {
+  candidate: CodexDesktopManifestCandidate
+  download: CodexDesktopDownloadResult
+}
+
+export interface CodexDesktopCandidateDownloadOptions {
+  fetchImplementation?: typeof fetch
+  onAttempt?: (
+    candidate: CodexDesktopManifestCandidate,
+    attemptIndex: number,
+    previousFailure: string | null,
+  ) => void
+  onProgress?: (
+    candidate: CodexDesktopManifestCandidate,
+    progress: CodexDesktopDownloadProgress,
+  ) => void
+  validatePackage?: (
+    candidate: CodexDesktopManifestCandidate,
+    packagePath: string,
+  ) => Promise<void>
+}
+
+export async function downloadCodexDesktopPackageFromCandidates(
+  candidates: CodexDesktopManifestCandidate[],
+  destination: string,
+  options: CodexDesktopCandidateDownloadOptions = {},
+): Promise<CodexDesktopCandidateDownloadResult> {
+  const ranked = rankCodexDesktopMirrorCandidates(candidates)
+  if (!ranked.length) throw new Error('国内镜像暂时没有可安装的 Codex Desktop 版本')
+
+  const failures: string[] = []
+  for (const [attemptIndex, candidate] of ranked.entries()) {
+    const release = candidate.release
+    const packageSource = candidate.packageSource
+    if (!release || !packageSource) continue
+
+    await fs.promises.rm(destination, { force: true }).catch(() => undefined)
+    options.onAttempt?.(candidate, attemptIndex, failures.at(-1) ?? null)
+    const source: CodexDesktopPackageSource = {
+      ...packageSource,
+      expectedContentLength: release.contentLength,
+      expectedSha256Base64: release.sha256Base64,
+    }
+    try {
+      const download = await downloadCodexDesktopPackage(
+        source,
+        destination,
+        (progress) => options.onProgress?.(candidate, progress),
+        options.fetchImplementation,
+      )
+      if (download.total !== release.contentLength || download.transferred !== release.contentLength) {
+        throw new Error(
+          `${source.label}安装包字节数与镜像清单不一致：应为 ${release.contentLength} 字节，实际 ${download.transferred} 字节`,
+        )
+      }
+      if (download.sha256Base64 !== release.sha256Base64) {
+        throw new Error(`${source.label}安装包 SHA-256 与镜像清单不一致，文件可能已损坏`)
+      }
+      await options.validatePackage?.(candidate, destination)
+      return { candidate, download }
+    } catch (error) {
+      await fs.promises.rm(destination, { force: true }).catch(() => undefined)
+      const detail = error instanceof Error ? error.message : String(error)
+      failures.push(`${source.label}（${release.version}）：${detail || '校验失败'}`)
+    }
+  }
+
+  throw new Error(`所有国内镜像均未通过完整校验：${failures.join('；') || '没有可用镜像'}`)
 }
 
 export function powershellLiteral(value: string): string {
@@ -777,6 +886,7 @@ interface DesktopManifestProbeBundle {
   latest: DesktopLatestVersionProbe
   mirror: DesktopMirrorVersionProbe
   mirrorCandidate: CodexDesktopManifestCandidate | null
+  mirrorCandidates: CodexDesktopManifestCandidate[]
 }
 
 export type CodexDesktopInstallPhase =
@@ -1008,6 +1118,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         },
         mirror: { version: null, checkedAt, error },
         mirrorCandidate: null,
+        mirrorCandidates: [],
       }
       codexDesktopManifestCache = {
         expiresAt: Date.now() + codexDesktopLatestFailureCacheTtlMs,
@@ -1018,9 +1129,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
     const result = await probeCodexDesktopManifests(process.arch)
     const latestCandidate = selectLatestCodexDesktopManifestCandidate(result.candidates)
-    const mirrorCandidate = selectLatestCodexDesktopManifestCandidate(
-      result.candidates.filter((candidate) => candidate.release !== null),
-    )
+    const mirrorCandidates = rankCodexDesktopMirrorCandidates(result.candidates)
+    const mirrorCandidate = mirrorCandidates[0] ?? null
     const mirrorErrors = result.errors.filter((error) => !error.startsWith('OpenAI 官方源：'))
     const value: DesktopManifestProbeBundle = {
       latest: latestCandidate
@@ -1044,8 +1154,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
             version: null,
             checkedAt,
             error: mirrorErrors.join('；') || '国内镜像版本查询失败',
-          },
+      },
       mirrorCandidate,
+      mirrorCandidates,
     }
     const ttl = result.errors.length === 0
       ? codexDesktopLatestCacheTtlMs
@@ -1191,24 +1302,24 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     const previousVersion = currentPackage?.version ?? null
     invalidateCodexDesktopManifestCache()
     const manifestBundle = await inspectCodexDesktopManifestBundle()
-    const mirrorCandidate = manifestBundle.mirrorCandidate
-    const release = mirrorCandidate?.release ?? null
-    const packageSource = mirrorCandidate?.packageSource ?? null
-    if (!release || !packageSource) {
+    const mirrorCandidates = manifestBundle.mirrorCandidates
+    const mirrorCandidate = mirrorCandidates[0] ?? null
+    const newestRelease = mirrorCandidate?.release ?? null
+    if (!newestRelease) {
       throw new Error(manifestBundle.mirror.error ?? '国内镜像暂时没有可安装的 Codex Desktop 版本')
     }
     if (previousVersion) {
-      const comparison = compareWindowsPackageVersions(previousVersion, release.version)
+      const comparison = compareWindowsPackageVersions(previousVersion, newestRelease.version)
       if (comparison === null) {
-        throw new Error(`无法比较已安装版本 ${previousVersion} 与镜像版本 ${release.version}`)
+        throw new Error(`无法比较已安装版本 ${previousVersion} 与镜像版本 ${newestRelease.version}`)
       }
       if (comparison >= 0) {
         const latest = manifestBundle.latest
         const latestComparison = latest.version
-          ? compareWindowsPackageVersions(release.version, latest.version)
+          ? compareWindowsPackageVersions(newestRelease.version, latest.version)
           : null
         const mirrorLagNotice = latestComparison === -1
-          ? `；国内镜像当前仅提供 ${release.version}，微软商店官方最新为 ${latest.version}，可前往微软商店更新`
+          ? `；国内镜像当前仅提供 ${newestRelease.version}，微软商店官方最新为 ${latest.version}，可前往微软商店更新`
           : ''
         const result: CodexDesktopInstallResult = {
           action: 'unchanged',
@@ -1220,61 +1331,70 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           percent: 100,
           message: comparison === 0
             ? `Codex Desktop ${previousVersion} 已是国内镜像最新版${mirrorLagNotice}`
-            : `当前 Codex Desktop ${previousVersion} 高于国内镜像版本 ${release.version}，无需更新${mirrorLagNotice}`,
+            : `当前 Codex Desktop ${previousVersion} 高于国内镜像版本 ${newestRelease.version}，无需更新${mirrorLagNotice}`,
         })
         return result
       }
     }
 
+    const installCandidates = previousVersion
+      ? mirrorCandidates.filter((candidate) => {
+          const comparison = compareWindowsPackageVersions(previousVersion, candidate.version)
+          return comparison !== null && comparison < 0
+        })
+      : mirrorCandidates
     const temporaryDirectory = await createInstallTemporaryDirectory('codex-desktop')
     const packagePath = path.join(temporaryDirectory, `ChatGPT-${architecture}.msix`)
-    const source = {
-      ...packageSource,
-      expectedContentLength: release.contentLength,
-      expectedSha256Base64: release.sha256Base64,
-    }
     try {
-      sendCodexDesktopInstallProgress(target, {
-        phase: 'downloading',
-        percent: 0,
-        message: `正在从${source.label}下载 Codex Desktop ${release.version}（0%）`,
+      const selected = await downloadCodexDesktopPackageFromCandidates(installCandidates, packagePath, {
+        onAttempt: (candidate, attemptIndex, previousFailure) => {
+          const release = candidate.release
+          const source = candidate.packageSource
+          if (!release || !source) return
+          const fallbackNotice = attemptIndex > 0 && previousFailure
+            ? `前一路镜像未通过校验，正在切换${source.label}`
+            : `正在从${source.label}下载`
+          sendCodexDesktopInstallProgress(target, {
+            phase: 'downloading',
+            percent: 0,
+            message: `${fallbackNotice} Codex Desktop ${release.version}（0%）`,
+          })
+        },
+        onProgress: (candidate, { percent }) => {
+          const release = candidate.release
+          const source = candidate.packageSource
+          if (!release || !source) return
+          sendCodexDesktopInstallProgress(target, {
+            phase: 'downloading',
+            percent,
+            message: `正在从${source.label}下载 Codex Desktop ${release.version}（${percent}%）`,
+          })
+        },
+        validatePackage: async (candidate) => {
+          const release = candidate.release
+          const source = candidate.packageSource
+          if (!release || !source) throw new Error('镜像候选缺少安装元数据')
+          sendCodexDesktopInstallProgress(target, {
+            phase: 'validating',
+            percent: null,
+            message: `正在校验${source.label}安装包的身份、版本、架构和签名`,
+          })
+          const metadata = await inspectCodexDesktopPackageFile(packagePath)
+          const validationError = codexDesktopPackageValidationError(
+            metadata,
+            release.version,
+            architecture,
+          )
+          if (validationError) throw new Error(validationError)
+          if (metadata.version !== release.version) {
+            throw new Error(
+              `安装包版本 ${metadata.version} 与${source.label}清单版本 ${release.version} 不一致`,
+            )
+          }
+        },
       })
-      const download = await downloadCodexDesktopPackage(source, packagePath, ({ percent }) => {
-        sendCodexDesktopInstallProgress(target, {
-          phase: 'downloading',
-          percent,
-          message: `正在从${source.label}下载 Codex Desktop ${release.version}（${percent}%）`,
-        })
-      })
-      if (
-        download.total !== release.contentLength
-        || download.transferred !== release.contentLength
-      ) {
-        throw new Error(
-          `国内镜像安装包字节数与清单不一致：应为 ${release.contentLength} 字节，实际 ${download.transferred} 字节`,
-        )
-      }
-      if (download.sha256Base64 !== release.sha256Base64) {
-        throw new Error('国内镜像安装包 SHA-256 与清单不一致，文件可能已损坏')
-      }
-
-      sendCodexDesktopInstallProgress(target, {
-        phase: 'validating',
-        percent: null,
-        message: `正在校验${source.label}安装包的身份、版本、架构和签名`,
-      })
-      const metadata = await inspectCodexDesktopPackageFile(packagePath)
-      const validationError = codexDesktopPackageValidationError(
-        metadata,
-        release.version,
-        architecture,
-      )
-      if (validationError) throw new Error(validationError)
-      if (metadata.version !== release.version) {
-        throw new Error(
-          `安装包版本 ${metadata.version} 与国内镜像清单版本 ${release.version} 不一致`,
-        )
-      }
+      const release = selected.candidate.release
+      if (!release) throw new Error('镜像候选缺少安装元数据')
 
       const processes = await listCodexDesktopProcesses()
       if (processes.length) {

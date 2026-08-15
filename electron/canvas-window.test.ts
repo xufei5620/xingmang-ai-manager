@@ -75,15 +75,20 @@ vi.mock('electron', () => ({
 }))
 
 import { buildCanvasProjectPackage } from './canvas-project-package'
+import { canvasHostChannels } from './canvas-contract'
 import {
   canvasHostCancelRequestChannel,
   canvasHostCopyAssetChannel,
+  canvasHostCreateProjectChannel,
   canvasHostCreatePromptPresetChannel,
   canvasHostDeletePromptPresetChannel,
   canvasHostEditImageChannel,
   canvasHostGenerateImageChannel,
+  canvasHostGenerateVideoChannel,
+  canvasHostResumeVideoTaskChannel,
   canvasHostListGroupsChannel,
   canvasHostListAssetsChannel,
+  canvasHostListProjectsChannel,
   canvasHostListPromptPresetsChannel,
   canvasHostPickAssetChannel,
   canvasHostImportAssetFileChannel,
@@ -94,12 +99,15 @@ import {
   canvasHostListRunsChannel,
   canvasHostNotifyChannel,
   canvasHostOpenExternalChannel,
+  canvasHostOpenProjectChannel,
   canvasHostPickFileChannel,
   canvasHostPrepareGroupChannel,
   canvasHostPreviewProjectChannel,
+  canvasHostRenameAssetChannel,
   canvasHostRunEventChannel,
   canvasHostSaveFileChannel,
   canvasHostSaveAssetChannel,
+  canvasHostSaveProjectChannel,
   canvasHostShowAssetMenuChannel,
   canvasHostUpdatePromptPresetChannel,
   canvasWindowBackgroundColor,
@@ -185,6 +193,11 @@ function controllerOptions(
       cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
       cancelSender: vi.fn(() => 0),
     } as never,
+    videoService: {
+      generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
+      cancelSender: vi.fn(() => 0), cancelUser: vi.fn(() => 0), resumeUser: vi.fn(async () => []),
+      resumeVideoTask: vi.fn(),
+    } as never,
     aiAssets: {
       copy: vi.fn(async () => undefined),
       saveAs: vi.fn(async () => false),
@@ -194,6 +207,11 @@ function controllerOptions(
       readOwned: vi.fn(),
       storeBase64: vi.fn(),
       removeOwned: vi.fn(async () => undefined),
+    } as never,
+    mediaAssets: {
+      listOwnedPage: vi.fn(async () => ({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })),
+      copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => false), contextMenu: vi.fn(async () => undefined),
+      rename: vi.fn(),
     } as never,
     promptPresets: {
       list: vi.fn(async () => []),
@@ -235,17 +253,28 @@ afterEach(() => {
 })
 
 describe('createCanvasWindowController', () => {
+  it('keeps every sandbox preload channel literal aligned with the main-process contract', () => {
+    const preloadSource = fs.readFileSync(path.join(process.cwd(), 'electron', 'canvas-preload.ts'), 'utf8')
+    const preloadChannels = [...preloadSource.matchAll(/['"](canvas-host:[^'"]+)['"]/g)]
+      .map((match) => match[1])
+    expect([...new Set(preloadChannels)].sort()).toEqual([...Object.values(canvasHostChannels)].sort())
+  })
+
   it('registers exactly the documented canvas-host invoke channels with no token channel', () => {
     createCanvasWindowController(controllerOptions())
 
     expect([...electronMocks.handlers.keys()].sort()).toEqual([
       canvasHostCancelRequestChannel,
       canvasHostCopyAssetChannel,
+      canvasHostCreateProjectChannel,
       canvasHostCreatePromptPresetChannel,
       canvasHostDeletePromptPresetChannel,
       canvasHostEditImageChannel,
       canvasHostGenerateImageChannel,
+      canvasHostGenerateVideoChannel,
+      canvasHostResumeVideoTaskChannel,
       canvasHostListAssetsChannel,
+      canvasHostListProjectsChannel,
       canvasHostListPromptPresetsChannel,
       canvasHostPickAssetChannel,
       canvasHostImportAssetFileChannel,
@@ -257,10 +286,13 @@ describe('createCanvasWindowController', () => {
       canvasHostListGroupsChannel,
       canvasHostNotifyChannel,
       canvasHostOpenExternalChannel,
+      canvasHostOpenProjectChannel,
       canvasHostPickFileChannel,
       canvasHostPrepareGroupChannel,
       canvasHostPreviewProjectChannel,
+      canvasHostRenameAssetChannel,
       canvasHostSaveAssetChannel,
+      canvasHostSaveProjectChannel,
       canvasHostSaveFileChannel,
       canvasHostShowAssetMenuChannel,
       canvasHostUpdatePromptPresetChannel,
@@ -364,6 +396,74 @@ describe('createCanvasWindowController', () => {
     await expect(pickHandler(trustedEvent())).resolves.toBeNull()
   })
 
+  it('requires a work-folder selection before creating a project and keeps its absolute path out of renderer data', async () => {
+    const workspace = temporaryDirectory()
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const projects = {
+      list: vi.fn(async () => []),
+      create: vi.fn(async (_userId: number, name: string, selected: string) => ({
+        project: {
+          id: projectId, name, createdAt: '2026-08-14T00:00:00.000Z', updatedAt: '2026-08-14T00:00:00.000Z',
+          nodeCount: 0, workspaceName: path.basename(selected), workspaceConfigured: true,
+        },
+        content: JSON.stringify({ schemaVersion: 2, name, nodes: [], edges: [] }),
+      })),
+      open: vi.fn(), save: vi.fn(),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostCreateProjectChannel)!
+
+    await expect(handler(trustedEvent(), '视频项目')).resolves.toBeNull()
+    expect(projects.create).not.toHaveBeenCalled()
+
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [workspace] })
+    const created = await handler(trustedEvent(), '视频项目')
+    expect(projects.create).toHaveBeenCalledWith(7, '视频项目', workspace)
+    expect(electronMocks.showOpenDialog).toHaveBeenLastCalledWith(expect.objectContaining({
+      title: '选择画布项目工作文件夹',
+      properties: expect.arrayContaining(['openDirectory', 'createDirectory', 'promptToCreate']),
+    }))
+    expect(JSON.stringify(created)).not.toContain(workspace)
+    expect(created).toMatchObject({ project: { workspaceName: path.basename(workspace), workspaceConfigured: true } })
+  })
+
+  it('accepts pretty-printed project JSON and forwards saved node layout and viewport', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const summary = {
+      id: projectId, name: '布局项目', createdAt: '2026-08-14T00:00:00.000Z', updatedAt: '2026-08-14T00:00:00.000Z',
+      nodeCount: 1, workspaceName: 'layout-project', workspaceConfigured: true,
+    }
+    const content = JSON.stringify({
+      schemaVersion: 2,
+      name: '布局项目',
+      viewport: { x: 420, y: -160, zoom: 0.8 },
+      nodes: [{
+        id: 'image-1', kind: 'image-input', definitionVersion: 1,
+        position: { x: 742.5, y: -318.25 }, width: 280, height: 340, locked: true,
+        data: { prompt: '', model: '' },
+      }],
+      edges: [],
+    }, null, 2)
+    const save = vi.fn(async (_userId: number, _projectId: string, _content: string) => summary)
+    const projects = {
+      list: vi.fn(async () => [summary]), create: vi.fn(),
+      open: vi.fn(async () => ({ project: summary, content })),
+      save,
+    }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never }))
+    await controller.open()
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    await expect(electronMocks.handlers.get(canvasHostSaveProjectChannel)!(trustedEvent(), projectId, content)).resolves.toEqual(summary)
+
+    expect(save).toHaveBeenCalledWith(7, projectId, content)
+    expect(JSON.parse(save.mock.calls[0][2])).toMatchObject({
+      viewport: { x: 420, y: -160, zoom: 0.8 },
+      nodes: [{ position: { x: 742.5, y: -318.25 }, width: 280, height: 340, locked: true }],
+    })
+  })
+
   it('imports a validated local image through the native picker without exposing its path', async () => {
     const directory = temporaryDirectory()
     const imagePath = path.join(directory, 'reference.png')
@@ -379,6 +479,34 @@ describe('createCanvasWindowController', () => {
 
     await expect(electronMocks.handlers.get(canvasHostPickAssetChannel)!(trustedEvent())).resolves.toEqual(imported)
     expect(aiAssets.storeLocalFile).toHaveBeenCalledWith(7, imagePath)
+  })
+
+  it('routes a dragged local MP4 to the video asset store', async () => {
+    const directory = temporaryDirectory()
+    const videoPath = path.join(directory, 'reference.mp4')
+    fs.writeFileSync(videoPath, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(16)]))
+    const imported = { assetId: 'V'.repeat(43), localUrl: `xingmang-asset://video/${'V'.repeat(43)}`, mimeType: 'video/mp4', fileName: 'reference.mp4' }
+    const videoAssets = { storeLocalFile: vi.fn(async () => imported) }
+    const aiAssets = { storeLocalFile: vi.fn(), removeOwned: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ videoAssets: videoAssets as never, aiAssets: aiAssets as never }))
+    await controller.open()
+
+    await expect(electronMocks.handlers.get(canvasHostImportAssetFileChannel)!(trustedEvent(), videoPath))
+      .resolves.toEqual({ ...imported, mediaType: 'video' })
+    expect(videoAssets.storeLocalFile).toHaveBeenCalledWith(7, videoPath)
+    expect(aiAssets.storeLocalFile).not.toHaveBeenCalled()
+  })
+
+  it('offers MP4 in the native media picker', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+
+    await electronMocks.handlers.get(canvasHostPickAssetChannel)!(trustedEvent())
+
+    expect(electronMocks.showOpenDialog).toHaveBeenCalledWith(expect.objectContaining({
+      title: '画布：选择媒体素材',
+      filters: expect.arrayContaining([expect.objectContaining({ name: '视频', extensions: ['mp4'] })]),
+    }))
   })
 
   it('rejects oversized or non-string saveFile input before ever opening a dialog', async () => {
@@ -517,10 +645,16 @@ describe('createCanvasWindowController', () => {
       listOwned: vi.fn(async () => []),
       listOwnedPage: vi.fn(async () => ({ items: [], offset: 24, limit: 24, total: 25, hasMore: false })),
     }
+    const mediaAssets = {
+      listOwnedPage: vi.fn(async () => ({ items: [], offset: 24, limit: 24, total: 25, hasMore: false })),
+      copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => true), contextMenu: vi.fn(async () => undefined),
+      rename: vi.fn(async (_userId: number, assetId: string, displayName: string) => ({ assetId, displayName })),
+    }
     const controller = createCanvasWindowController(controllerOptions({
       chatCredentials,
       imageService: imageService as never,
       aiAssets: aiAssets as never,
+      mediaAssets: mediaAssets as never,
     }))
     await controller.open()
 
@@ -539,15 +673,109 @@ describe('createCanvasWindowController', () => {
     await expect(electronMocks.handlers.get(canvasHostListAssetsChannel)!(trustedEvent(), {
       offset: 24, limit: 24, mediaType: 'image', search: '产品',
     })).resolves.toMatchObject({ offset: 24, total: 25 })
+    await expect(electronMocks.handlers.get(canvasHostRenameAssetChannel)!(trustedEvent(), {
+      assetId: 'a'.repeat(43), displayName: ' 产品主视觉 ',
+    })).resolves.toEqual({ assetId: 'a'.repeat(43), displayName: '产品主视觉' })
 
     expect(JSON.stringify({ groups, prepared, generated, edited })).not.toContain('apiKey')
-    expect(imageService.generate).toHaveBeenCalledWith(41, expect.objectContaining({ requestId: 'request-1' }))
+    expect(imageService.generate).toHaveBeenCalledWith(41, expect.objectContaining({ requestId: 'request-1', expectedUserId: 7 }))
     expect(imageService.edit).toHaveBeenCalledWith(41, {
       requestId: 'edit-1', group: '生图分组', model: 'gpt-image-1', prompt: '改成夜景',
       sourceAssetIds: ['a'.repeat(43)], expectedUserId: 7,
     })
-    expect(aiAssets.copy).toHaveBeenCalledWith(7, 'a'.repeat(43), expect.any(Function))
-    expect(aiAssets.listOwnedPage).toHaveBeenCalledWith(7, { offset: 24, limit: 24, mediaType: 'image', search: '产品' })
+    expect(mediaAssets.copy).toHaveBeenCalledWith(7, 'a'.repeat(43), expect.any(Function))
+    expect(mediaAssets.listOwnedPage).toHaveBeenCalledWith(7, { offset: 24, limit: 24, mediaType: 'image', search: '产品' })
+    expect(mediaAssets.rename).toHaveBeenCalledWith(7, 'a'.repeat(43), '产品主视觉')
+  })
+
+  it('rejects a completed asset rename when the account changes in flight', async () => {
+    let activeUserId = 7
+    let release!: (value: { assetId: string; displayName: string }) => void
+    const rename = vi.fn((_userId: number, assetId: string, displayName: string) => new Promise((resolve) => {
+      release = resolve
+    }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: activeUserId } })) } as never,
+      mediaAssets: {
+        listOwnedPage: vi.fn(), copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), rename,
+      } as never,
+    }))
+    await controller.open()
+    const pending = electronMocks.handlers.get(canvasHostRenameAssetChannel)!(trustedEvent(), {
+      assetId: 'a'.repeat(43), displayName: '新名称',
+    })
+    await vi.waitFor(() => expect(rename).toHaveBeenCalled())
+    activeUserId = 8
+    release({ assetId: 'a'.repeat(43), displayName: '新名称' })
+    await expect(pending).rejects.toThrow('账号已切换')
+  })
+
+  it('delegates video generation without exposing credentials and cancels through the shared request channel', async () => {
+    const videoService = {
+      generate: vi.fn(async () => ({
+        assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
+        mimeType: 'video/mp4', fileName: 'video.mp4', taskId: 'video_123',
+      })),
+      cancel: vi.fn(() => ({ canceled: true, mayStillComplete: true })),
+      cancelSender: vi.fn(() => 0), cancelUser: vi.fn(() => 0), resumeUser: vi.fn(async () => []),
+      resumeVideoTask: vi.fn(),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ videoService: videoService as never }))
+    await controller.open()
+    const result = await electronMocks.handlers.get(canvasHostGenerateVideoChannel)!(trustedEvent(), {
+      requestId: 'video-1', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })
+    const canceled = await electronMocks.handlers.get(canvasHostCancelRequestChannel)!(trustedEvent(), 'video-1')
+    expect(result).toMatchObject({ taskId: 'video_123', mimeType: 'video/mp4' })
+    expect(JSON.stringify(result)).not.toMatch(/apiKey|accessToken|refreshToken/)
+    expect(videoService.generate).toHaveBeenCalledWith(41, expect.objectContaining({ expectedUserId: 7 }))
+    expect(canceled).toEqual({ canceled: true, mayStillComplete: true })
+  })
+
+  it('resumes only one validated task id for the current account', async () => {
+    const asset = {
+      assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
+      mimeType: 'video/mp4', fileName: 'video.mp4', taskId: 'video_resume_1',
+    }
+    const videoService = {
+      generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
+      cancelSender: vi.fn(() => 0), cancelUser: vi.fn(() => 0), resumeUser: vi.fn(async () => []),
+      resumeVideoTask: vi.fn(async () => asset),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ videoService: videoService as never }))
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostResumeVideoTaskChannel)!
+
+    await expect(handler(trustedEvent(), 'video_resume_1')).resolves.toEqual(asset)
+    await expect(handler(trustedEvent(), { taskId: 'video_resume_1' })).rejects.toThrow('任务标识格式错误')
+    expect(videoService.resumeVideoTask).toHaveBeenCalledTimes(1)
+    expect(videoService.resumeVideoTask).toHaveBeenCalledWith(41, 7, 'video_resume_1')
+    expect(videoService.generate).not.toHaveBeenCalled()
+  })
+
+  it('does not return a resumed video asset after the active account changes', async () => {
+    let activeUserId = 7
+    let release!: (value: unknown) => void
+    const resumeVideoTask = vi.fn(() => new Promise((resolve) => { release = resolve }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: {
+        getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: activeUserId } })),
+      } as never,
+      videoService: {
+        generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
+        cancelSender: vi.fn(() => 0), cancelUser: vi.fn(() => 0), resumeUser: vi.fn(async () => []),
+        resumeVideoTask,
+      } as never,
+    }))
+    await controller.open()
+    const pending = electronMocks.handlers.get(canvasHostResumeVideoTaskChannel)!(trustedEvent(), 'video_resume_1')
+    await vi.waitFor(() => expect(resumeVideoTask).toHaveBeenCalledWith(41, 7, 'video_resume_1'))
+    activeUserId = 8
+    release({
+      assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
+      mimeType: 'video/mp4', fileName: 'video.mp4', taskId: 'video_resume_1',
+    })
+    await expect(pending).rejects.toThrow('账号已切换')
   })
 
   it('scopes prompt preset CRUD to the current account and returns no credentials', async () => {
@@ -598,9 +826,12 @@ describe('createCanvasWindowController', () => {
       canvasHostSaveFileChannel, canvasHostPickFileChannel, canvasHostNotifyChannel,
       canvasHostOpenExternalChannel, canvasHostListGroupsChannel, canvasHostPrepareGroupChannel,
       canvasHostGenerateImageChannel, canvasHostCancelRequestChannel, canvasHostCopyAssetChannel,
+      canvasHostGenerateVideoChannel,
+      canvasHostResumeVideoTaskChannel,
       canvasHostEditImageChannel,
       canvasHostCreatePromptPresetChannel, canvasHostDeletePromptPresetChannel,
       canvasHostSaveAssetChannel, canvasHostShowAssetMenuChannel, canvasHostListAssetsChannel,
+      canvasHostRenameAssetChannel,
       canvasHostStartRunChannel, canvasHostCancelRunChannel, canvasHostListRunsChannel,
       canvasHostExportProjectChannel, canvasHostPreviewProjectChannel, canvasHostImportProjectChannel,
       canvasHostListPromptPresetsChannel, canvasHostUpdatePromptPresetChannel,

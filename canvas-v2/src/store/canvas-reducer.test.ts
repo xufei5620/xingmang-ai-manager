@@ -2,12 +2,18 @@ import { describe, expect, it } from 'vitest'
 import type { EditorNodeRecord } from '../domain/node-definition'
 import { applyCanvasCommand, createCanvasHistory, redoCanvasHistory, undoCanvasHistory } from './history'
 import { collectDownstreamNodeIds, createCanvasDocument } from './canvas-state'
+import { canvasNodeRuntimePatch, resolveDragTransaction, updateCanvasHistoryViewport } from './use-canvas-document'
+import type { CanvasNode } from '../nodes/WorkflowNodes'
 
 function node(id: string, x = 0): EditorNodeRecord {
   return { id, type: 'prompt', definitionVersion: 1, position: { x, y: 0 }, data: { prompt: id } }
 }
 
 describe('canvas command history', () => {
+  it('creates a document with explicit empty media groups', () => {
+    expect(createCanvasDocument().mediaGroups).toEqual({})
+  })
+
   it('undoes and redoes structural commands', () => {
     let history = createCanvasHistory(createCanvasDocument())
     history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [node('a')] })
@@ -24,6 +30,34 @@ describe('canvas command history', () => {
     history = applyCanvasCommand(history, { type: 'move-nodes', positions: { a: { x: 20, y: 0 } }, mergeKey: 'drag:a' })
     expect(history.past).toHaveLength(1)
     expect(undoCanvasHistory(history).present.nodes[0].position.x).toBe(0)
+  })
+
+  it('keeps the final drag frame in its gesture and starts a new undo step for the next drag', () => {
+    const dragging = (x: number, state: boolean) => [{
+      type: 'position' as const,
+      id: 'a',
+      position: { x, y: 0 },
+      dragging: state,
+    }]
+    let transaction = resolveDragTransaction(dragging(10, true), null, 0)
+    const firstKey = transaction.mergeKey
+    expect(firstKey).toBeTruthy()
+    transaction = resolveDragTransaction(dragging(20, false), transaction.active, transaction.sequence)
+    expect(transaction.mergeKey).toBe(firstKey)
+    expect(transaction.active).toBeNull()
+
+    const second = resolveDragTransaction(dragging(30, true), transaction.active, transaction.sequence)
+    expect(second.mergeKey).not.toBe(firstKey)
+
+    let history = createCanvasHistory({ ...createCanvasDocument(), nodes: [node('a')] })
+    history = applyCanvasCommand(history, { type: 'move-nodes', positions: { a: { x: 10, y: 0 } }, mergeKey: firstKey })
+    history = applyCanvasCommand(history, { type: 'move-nodes', positions: { a: { x: 20, y: 0 } }, mergeKey: transaction.mergeKey })
+    history = applyCanvasCommand(history, { type: 'move-nodes', positions: { a: { x: 30, y: 0 } }, mergeKey: second.mergeKey })
+    expect(history.past).toHaveLength(2)
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes[0].position.x).toBe(20)
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes[0].position.x).toBe(0)
   })
 
   it('invalidates redo after a new branch', () => {
@@ -48,6 +82,60 @@ describe('canvas command history', () => {
     expect(history.present.viewport).toEqual({ x: 120, y: -40, zoom: 1.5 })
   })
 
+  it('updates a large document viewport without rebuilding its graph', () => {
+    const nodes = Array.from({ length: 256 }, (_, index) => node(`node-${index}`, index * 20))
+    const history = createCanvasHistory({ ...createCanvasDocument(), nodes })
+
+    expect(updateCanvasHistoryViewport(history, { x: 0, y: 0, zoom: 1 })).toBe(history)
+
+    const updated = updateCanvasHistoryViewport(history, { x: 240, y: -120, zoom: 0.75 })
+    expect(updated).not.toBe(history)
+    expect(updated.present.viewport).toEqual({ x: 240, y: -120, zoom: 0.75 })
+    expect(updated.present.nodes).toBe(history.present.nodes)
+    expect(updated.present.edges).toBe(history.present.edges)
+    expect(updated.past).toHaveLength(0)
+  })
+
+  it('preserves runtime state when a structural command keeps the same result', () => {
+    const result = { kind: 'video' as const, assetId: 'asset-1', taskId: 'task-1', localUrl: 'xingmang-asset://video/asset-1' }
+    const canvasNode = {
+      id: 'video-1',
+      type: 'video-generate',
+      definitionVersion: 1,
+      position: { x: 0, y: 0 },
+      data: {
+        title: '视频生成',
+        kind: 'video-generate' as const,
+        prompt: '',
+        model: 'grok-imagine-video',
+        status: 'running' as const,
+        errorMessage: '上一次查询失败',
+        costQuota: 12,
+        result,
+      },
+    } as CanvasNode
+    const documentNode: EditorNodeRecord = {
+      ...node('video-1'),
+      type: 'video-generate',
+      data: { title: '视频生成', kind: 'video-generate', result: { ...result } },
+    }
+
+    expect(canvasNodeRuntimePatch(canvasNode, documentNode)).toMatchObject({
+      status: 'running',
+      errorMessage: '上一次查询失败',
+      costQuota: 12,
+    })
+
+    const changedResult = {
+      ...documentNode,
+      data: { ...documentNode.data, result: { ...result, assetId: 'asset-2' } },
+    }
+    const changedPatch = canvasNodeRuntimePatch(canvasNode, changedResult)
+    expect(changedPatch).not.toHaveProperty('status')
+    expect(changedPatch).not.toHaveProperty('errorMessage')
+    expect(changedPatch).not.toHaveProperty('costQuota')
+  })
+
   it('increments replacement revision from the active document', () => {
     const current = { ...createCanvasDocument(), revision: 7 }
     const imported = { ...createCanvasDocument('导入文档'), revision: 99, nodes: [node('imported')] }
@@ -57,6 +145,50 @@ describe('canvas command history', () => {
     })
     expect(history.present.revision).toBe(8)
     expect(history.present.name).toBe('导入文档')
+  })
+
+  it('replaces and restores media groups atomically through undo and redo', () => {
+    const original = {
+      ...createCanvasDocument('原工作流'),
+      mediaGroups: { image: '原生图分组', video: '原视频分组' },
+      nodes: [node('original')],
+    }
+    const imported = {
+      ...createCanvasDocument('导入工作流'),
+      mediaGroups: { image: '新生图分组', video: '新视频分组' },
+      nodes: [node('imported')],
+    }
+    let history = applyCanvasCommand(createCanvasHistory(original), {
+      type: 'replace-document',
+      document: imported,
+    })
+
+    imported.mediaGroups.image = '外部突变'
+    expect(history.present.mediaGroups).toEqual({ image: '新生图分组', video: '新视频分组' })
+    expect(history.present.nodes.map((entry) => entry.id)).toEqual(['imported'])
+
+    history = undoCanvasHistory(history)
+    expect(history.present.mediaGroups).toEqual({ image: '原生图分组', video: '原视频分组' })
+    expect(history.present.nodes.map((entry) => entry.id)).toEqual(['original'])
+
+    history = redoCanvasHistory(history)
+    expect(history.present.mediaGroups).toEqual({ image: '新生图分组', video: '新视频分组' })
+    expect(history.present.nodes.map((entry) => entry.id)).toEqual(['imported'])
+  })
+
+  it('records a media group change as one undoable document command', () => {
+    const original = {
+      ...createCanvasDocument(),
+      mediaGroups: { image: '生图分组', video: 'grok' },
+    }
+    let history = applyCanvasCommand(createCanvasHistory(original), {
+      type: 'set-media-groups',
+      mediaGroups: { image: 'openai', video: 'grok' },
+    })
+
+    expect(history.present.mediaGroups).toEqual({ image: 'openai', video: 'grok' })
+    history = undoCanvasHistory(history)
+    expect(history.present.mediaGroups).toEqual({ image: '生图分组', video: 'grok' })
   })
 
   it('bounds history to fifty entries', () => {

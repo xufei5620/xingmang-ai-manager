@@ -29,15 +29,6 @@ const solovAccountBaseUrl = relaySites.find((site) => site.id === 'solov')?.acco
   ?? 'https://xm.solov.cc'
 const inviteBaseUrl = `${solovAccountBaseUrl}/register`
 
-// Opens in the system browser (I12, href-exact-match allowlisted in
-// electron/main.ts) -- the desktop session's cookies/access token never
-// travel there, so the user authenticates again on the web the same way
-// anyone would for an online payment; this app never handles card/payment
-// details itself. Shared by the 充值 tab (AccountCenterPage.tsx) and the
-// sidebar's own recharge button (App.tsx) so the two "去充值" entry points
-// can never drift onto different URLs.
-export const WALLET_URL = `${solovAccountBaseUrl}/wallet`
-
 /**
  * Builds a shareable invite link from the current user's own affCode.
  * Mirrors QuantumNous/new-api's own web frontend exactly: sign-up-form.tsx

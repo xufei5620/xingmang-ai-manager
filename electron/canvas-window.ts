@@ -34,14 +34,24 @@ import {
   parseCanvasPromptPresetId,
   parseCanvasPromptPresetInput,
   parseCanvasPromptPresetUpdate,
+  parseCanvasRenameAssetInput,
   parseCanvasStartRunInput,
+  parseCanvasVideoGenerateInput,
+  parseCanvasVideoTaskId,
   requiredCanvasString,
+  requiredCanvasText,
 } from './canvas-request-parser'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiImageService } from './ai-image-service'
 import type { AiAssetStore } from './ai-asset-store'
+import type { AiAudioAssetStore } from './ai-audio-asset-store'
+import type { AiVideoAssetStore } from './ai-video-asset-store'
+import type { AiVideoService } from './ai-video-service'
+import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
+import type { CanvasProjectStore } from './canvas-project-store'
+import type { CanvasProjectAssetManager } from './canvas-project-asset-manager'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import {
   buildCanvasProjectPackage,
@@ -68,11 +78,14 @@ export const canvasHostListGroupsChannel = canvasHostChannels.listGroups
 export const canvasHostPrepareGroupChannel = canvasHostChannels.prepareGroup
 export const canvasHostGenerateImageChannel = canvasHostChannels.generateImage
 export const canvasHostEditImageChannel = canvasHostChannels.editImage
+export const canvasHostGenerateVideoChannel = canvasHostChannels.generateVideo
+export const canvasHostResumeVideoTaskChannel = canvasHostChannels.resumeVideoTask
 export const canvasHostCancelRequestChannel = canvasHostChannels.cancelRequest
 export const canvasHostCopyAssetChannel = canvasHostChannels.copyAsset
 export const canvasHostSaveAssetChannel = canvasHostChannels.saveAsset
 export const canvasHostShowAssetMenuChannel = canvasHostChannels.showAssetMenu
 export const canvasHostListAssetsChannel = canvasHostChannels.listAssets
+export const canvasHostRenameAssetChannel = canvasHostChannels.renameAsset
 export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
 export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
 export const canvasHostListPromptPresetsChannel = canvasHostChannels.listPromptPresets
@@ -85,6 +98,10 @@ export const canvasHostListRunsChannel = canvasHostChannels.listRuns
 export const canvasHostExportProjectChannel = canvasHostChannels.exportProject
 export const canvasHostPreviewProjectChannel = canvasHostChannels.previewProject
 export const canvasHostImportProjectChannel = canvasHostChannels.importProject
+export const canvasHostListProjectsChannel = canvasHostChannels.listProjects
+export const canvasHostCreateProjectChannel = canvasHostChannels.createProject
+export const canvasHostOpenProjectChannel = canvasHostChannels.openProject
+export const canvasHostSaveProjectChannel = canvasHostChannels.saveProject
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 
 const maximumSavedFileBytes = 20 * 1024 * 1024
@@ -105,9 +122,15 @@ export interface CanvasWindowControllerOptions {
   runtimeLog: RuntimeLogStore
   chatCredentials: ChatCredentialCoordinator
   imageService: AiImageService
+  videoService: AiVideoService
   aiAssets: AiAssetStore
+  videoAssets?: AiVideoAssetStore
+  audioAssets?: AiAudioAssetStore
+  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename'>
   promptPresets: CanvasPromptPresetStore
   canvasRuns: CanvasRunService
+  projects?: CanvasProjectStore
+  projectAssets?: CanvasProjectAssetManager
   externalShell?: ExternalShellLauncher
 }
 
@@ -147,6 +170,19 @@ export function createCanvasWindowController(
   let canvasWindow: BrowserWindow | null = null
   let pendingOpen: Promise<void> | null = null
   const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
+  const activeProjects = new Map<number, { userId: number; projectId: string }>()
+
+  function activeProjectId(ownerId: number, userId: number): string | undefined {
+    if (!options.projects) return undefined
+    const active = activeProjects.get(ownerId)
+    if (!active || active.userId !== userId) throw new Error('请先选择或新建一个画布项目')
+    return active.projectId
+  }
+
+  async function activeAssetContext(ownerId: number, userId: number) {
+    const projectId = activeProjectId(ownerId, userId)
+    return projectId ? options.projectAssets?.forProject(userId, projectId) : undefined
+  }
 
   protocol.registerFileProtocol(canvasProtocolScheme, (request, callback) => {
     const target = resolveCanvasProtocolFile(request.url, policy)
@@ -199,7 +235,7 @@ export function createCanvasWindowController(
 
   registerCanvasHandler(canvasHostSaveFileChannel, async (event, suggestedNameInput, contentInput) => {
     const suggestedName = requiredCanvasString(suggestedNameInput, '保存文件名', 256)
-    const content = requiredCanvasString(contentInput, '保存内容', maximumSavedFileBytes)
+    const content = requiredCanvasText(contentInput, '保存内容', maximumSavedFileBytes)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: SaveDialogOptions = {
       title: '画布：保存文件',
@@ -251,28 +287,106 @@ export function createCanvasWindowController(
     return groups.map(({ name, description, ratio }) => ({ name, description, ratio }))
   })
 
+  registerCanvasHandler(canvasHostListProjectsChannel, () => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    return options.projects.list(authenticatedCanvasUserId())
+  })
+
+  registerCanvasHandler(canvasHostCreateProjectChannel, async (event, nameInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '选择画布项目工作文件夹',
+      buttonLabel: '使用此文件夹',
+      properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    if (result.canceled || !result.filePaths[0]) return null
+    assertCanvasUserUnchanged(userId)
+    const created = await options.projects.create(
+      userId,
+      requiredCanvasString(nameInput, '画布项目名称', 128),
+      result.filePaths[0],
+    )
+    assertCanvasUserUnchanged(userId)
+    activeProjects.set(event.sender.id, { userId, projectId: created.project.id })
+    return created
+  })
+
+  registerCanvasHandler(canvasHostOpenProjectChannel, async (event, projectIdInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const opened = await options.projects.open(userId, requiredCanvasString(projectIdInput, '画布项目标识', 64))
+    assertCanvasUserUnchanged(userId)
+    activeProjects.set(event.sender.id, { userId, projectId: opened.project.id })
+    return opened
+  })
+
+  registerCanvasHandler(canvasHostSaveProjectChannel, async (_event, projectIdInput, contentInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    if (activeProjectId(_event.sender.id, userId) !== projectId) throw new Error('只能保存当前打开的画布项目')
+    const content = requiredCanvasText(contentInput, '画布项目内容', maximumSavedFileBytes)
+    const saved = await options.projects.save(userId, projectId, content)
+    assertCanvasUserUnchanged(userId)
+    return saved
+  })
+
   registerCanvasHandler(canvasHostPrepareGroupChannel, (_event, groupInput) => (
     options.chatCredentials.prepareGroup(requiredCanvasString(groupInput, '画布生图分组', 128))
   ))
 
-  registerCanvasHandler(canvasHostGenerateImageChannel, (event, input) => (
-    options.imageService.generate(event.sender.id, parseCanvasImageGenerateInput(input))
-  ))
-
-  registerCanvasHandler(canvasHostEditImageChannel, (event, input) => {
+  registerCanvasHandler(canvasHostGenerateImageChannel, (event, input) => {
     const userId = authenticatedCanvasUserId()
-    return options.imageService.edit(event.sender.id, {
-      ...parseCanvasImageEditInput(input),
+    const projectId = activeProjectId(event.sender.id, userId)
+    return options.imageService.generate(event.sender.id, {
+      ...parseCanvasImageGenerateInput(input),
       expectedUserId: userId,
+      ...(projectId ? { projectId } : {}),
     })
   })
 
-  registerCanvasHandler(canvasHostCancelRequestChannel, (event, requestIdInput) => (
-    options.imageService.cancel(
-      event.sender.id,
-      requiredCanvasString(requestIdInput, '画布生图请求标识', 160),
-    )
-  ))
+  registerCanvasHandler(canvasHostEditImageChannel, (event, input) => {
+    const userId = authenticatedCanvasUserId()
+    const projectId = activeProjectId(event.sender.id, userId)
+    return options.imageService.edit(event.sender.id, {
+      ...parseCanvasImageEditInput(input),
+      expectedUserId: userId,
+      ...(projectId ? { projectId } : {}),
+    })
+  })
+
+  registerCanvasHandler(canvasHostGenerateVideoChannel, (event, input) => {
+    const userId = authenticatedCanvasUserId()
+    const projectId = activeProjectId(event.sender.id, userId)
+    return options.videoService.generate(event.sender.id, {
+      ...parseCanvasVideoGenerateInput(input),
+      expectedUserId: userId,
+      ...(projectId ? { projectId } : {}),
+    })
+  })
+
+  registerCanvasHandler(canvasHostResumeVideoTaskChannel, async (event, taskIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const projectId = activeProjectId(event.sender.id, userId)
+    const taskId = parseCanvasVideoTaskId(taskIdInput)
+    const asset = projectId
+      ? await options.videoService.resumeVideoTask(event.sender.id, userId, taskId, projectId)
+      : await options.videoService.resumeVideoTask(event.sender.id, userId, taskId)
+    assertCanvasUserUnchanged(userId)
+    return asset
+  })
+
+  registerCanvasHandler(canvasHostCancelRequestChannel, (event, requestIdInput) => {
+    const requestId = requiredCanvasString(requestIdInput, '画布生成请求标识', 160)
+    const image = options.imageService.cancel(event.sender.id, requestId)
+    const video = options.videoService.cancel(event.sender.id, requestId)
+    return image.canceled ? image : video
+  })
 
   registerCanvasHandler(canvasHostListPromptPresetsChannel, () => (
     options.promptPresets.list(authenticatedCanvasUserId())
@@ -299,18 +413,20 @@ export function createCanvasWindowController(
     return result
   })
 
-  registerCanvasHandler(canvasHostCopyAssetChannel, async (_event, assetIdInput) => {
+  registerCanvasHandler(canvasHostCopyAssetChannel, async (event, assetIdInput) => {
     const userId = authenticatedCanvasUserId()
-    await options.aiAssets.copy(
+    const context = await activeAssetContext(event.sender.id, userId)
+    await (context?.media ?? options.mediaAssets).copy(
       userId,
       requiredCanvasString(assetIdInput, '画布图片资产标识', 64),
       () => assertCanvasUserUnchanged(userId),
     )
   })
 
-  registerCanvasHandler(canvasHostSaveAssetChannel, async (_event, assetIdInput) => {
+  registerCanvasHandler(canvasHostSaveAssetChannel, async (event, assetIdInput) => {
     const userId = authenticatedCanvasUserId()
-    const saved = await options.aiAssets.saveAs(
+    const context = await activeAssetContext(event.sender.id, userId)
+    const saved = await (context?.media ?? options.mediaAssets).saveAs(
       userId,
       requiredCanvasString(assetIdInput, '画布图片资产标识', 64),
       () => assertCanvasUserUnchanged(userId),
@@ -318,28 +434,58 @@ export function createCanvasWindowController(
     return { saved }
   })
 
-  registerCanvasHandler(canvasHostShowAssetMenuChannel, async (_event, assetIdInput) => {
+  registerCanvasHandler(canvasHostShowAssetMenuChannel, async (event, assetIdInput) => {
     const userId = authenticatedCanvasUserId()
     const assetId = requiredCanvasString(assetIdInput, '画布图片资产标识', 64)
-    await options.aiAssets.contextMenu(userId, assetId, () => {
+    const context = await activeAssetContext(event.sender.id, userId)
+    await (context?.media ?? options.mediaAssets).contextMenu(userId, assetId, () => {
       if (authenticatedCanvasUserId() !== userId) throw new Error('星芒账号已切换，已停止图片操作')
     })
   })
 
-  registerCanvasHandler(canvasHostListAssetsChannel, async (_event, queryInput) => {
+  registerCanvasHandler(canvasHostListAssetsChannel, async (event, queryInput) => {
     const userId = authenticatedCanvasUserId()
-    const assets = await options.aiAssets.listOwnedPage(userId, parseCanvasAssetQuery(queryInput))
+    const context = await activeAssetContext(event.sender.id, userId)
+    const assets = await (context?.media ?? options.mediaAssets).listOwnedPage(userId, parseCanvasAssetQuery(queryInput))
     assertCanvasUserUnchanged(userId)
     return assets
   })
 
-  async function importCanvasAsset(userId: number, filePath: string) {
-    const asset = await options.aiAssets.storeLocalFile(userId, filePath)
+  registerCanvasHandler(canvasHostRenameAssetChannel, async (event, input) => {
+    const userId = authenticatedCanvasUserId()
+    const { assetId, displayName } = parseCanvasRenameAssetInput(input)
+    const context = await activeAssetContext(event.sender.id, userId)
+    const renamed = await (context?.media ?? options.mediaAssets).rename(userId, assetId, displayName)
+    assertCanvasUserUnchanged(userId)
+    return renamed
+  })
+
+  async function importCanvasAsset(ownerId: number, userId: number, filePath: string) {
+    const extension = path.extname(filePath).toLowerCase()
+    const kind = ['.png', '.jpg', '.jpeg', '.webp'].includes(extension)
+      ? 'image'
+      : ['.mp3', '.wav', '.ogg', '.m4a'].includes(extension)
+        ? 'audio'
+        : extension === '.mp4'
+          ? 'video'
+          : null
+    if (!kind) throw new Error('本地媒体格式不支持，仅支持 PNG、JPEG、WebP、MP4、MP3、WAV、OGG 或 M4A')
+    const context = await activeAssetContext(ownerId, userId)
+    const audioStore = context?.audios ?? options.audioAssets
+    const videoStore = context?.videos ?? options.videoAssets
+    const imageStore = context?.images ?? options.aiAssets
+    if (kind === 'audio' && !audioStore) throw new Error('当前版本不支持音频素材')
+    if (kind === 'video' && !videoStore) throw new Error('当前版本不支持视频素材')
+    const asset = kind === 'audio'
+      ? await audioStore!.storeLocalFile(userId, filePath)
+      : kind === 'video'
+        ? await videoStore!.storeLocalFile(userId, filePath)
+        : await imageStore.storeLocalFile(userId, filePath)
     try {
       assertCanvasUserUnchanged(userId)
-      return asset
+      return kind === 'image' ? asset : { ...asset, mediaType: kind }
     } catch (error) {
-      await options.aiAssets.removeOwned(userId, asset.assetId).catch(() => undefined)
+      if (kind === 'image') await imageStore.removeOwned(userId, asset.assetId).catch(() => undefined)
       throw error
     }
   }
@@ -348,30 +494,37 @@ export function createCanvasWindowController(
     const userId = authenticatedCanvasUserId()
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: OpenDialogOptions = {
-      title: '画布：选择图片素材',
+      title: '画布：选择媒体素材',
       properties: ['openFile'],
-      filters: [{ name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
+      filters: [
+        { name: '媒体素材', extensions: ['png', 'jpg', 'jpeg', 'webp', 'mp4', 'mp3', 'wav', 'ogg', 'm4a'] },
+        { name: '图片', extensions: ['png', 'jpg', 'jpeg', 'webp'] },
+        { name: '视频', extensions: ['mp4'] },
+        { name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] },
+      ],
     }
     const result = parentWindow
       ? await dialog.showOpenDialog(parentWindow, dialogOptions)
       : await dialog.showOpenDialog(dialogOptions)
     if (result.canceled || !result.filePaths[0]) return null
-    return importCanvasAsset(userId, result.filePaths[0])
+    return importCanvasAsset(event.sender.id, userId, result.filePaths[0])
   })
 
-  registerCanvasHandler(canvasHostImportAssetFileChannel, async (_event, filePathInput) => {
+  registerCanvasHandler(canvasHostImportAssetFileChannel, async (event, filePathInput) => {
     const userId = authenticatedCanvasUserId()
-    const filePath = requiredCanvasString(filePathInput, '本地图片路径', 32_768)
-    if (!path.isAbsolute(filePath)) throw new Error('本地图片路径无效')
-    return importCanvasAsset(userId, filePath)
+    const filePath = requiredCanvasString(filePathInput, '本地媒体路径', 32_768)
+    if (!path.isAbsolute(filePath)) throw new Error('本地媒体路径无效')
+    return importCanvasAsset(event.sender.id, userId, filePath)
   })
 
   registerCanvasHandler(canvasHostStartRunChannel, (event, input) => {
     const { graph, scope } = parseCanvasStartRunInput(input)
     const userId = authenticatedCanvasUserId()
+    const projectId = activeProjectId(event.sender.id, userId)
     const handle = options.canvasRuns.start({
       userId,
       ownerId: event.sender.id,
+      ...(projectId ? { projectId } : {}),
       graphRevision: computeCanvasGraphRevision(graph),
       graph,
       scope,
@@ -384,9 +537,10 @@ export function createCanvasWindowController(
     options.canvasRuns.cancel(requiredCanvasString(runIdInput, '画布运行标识', 256), event.sender.id)
   ))
 
-  registerCanvasHandler(canvasHostListRunsChannel, async () => {
+  registerCanvasHandler(canvasHostListRunsChannel, async (event) => {
     const userId = authenticatedCanvasUserId()
-    const runs = await options.canvasRuns.listRuns(userId)
+    const projectId = activeProjectId(event.sender.id, userId)
+    const runs = await options.canvasRuns.listRuns(userId, projectId)
     assertCanvasUserUnchanged(userId)
     return runs
   })
@@ -394,9 +548,11 @@ export function createCanvasWindowController(
   registerCanvasHandler(canvasHostExportProjectChannel, async (event, suggestedNameInput, contentInput) => {
     const userId = authenticatedCanvasUserId()
     const suggestedName = requiredCanvasString(suggestedNameInput, '画布项目文件名', 256)
-    const workflowContent = requiredCanvasString(contentInput, '画布项目工作流', maximumSavedFileBytes)
+    const workflowContent = requiredCanvasText(contentInput, '画布项目工作流', maximumSavedFileBytes)
     const parsed = parseCanvasProjectWorkflow(workflowContent)
-    const sources = await Promise.all(parsed.assetIds.map((assetId) => options.aiAssets.readOwned(userId, assetId)))
+    const context = await activeAssetContext(event.sender.id, userId)
+    const imageStore = context?.images ?? options.aiAssets
+    const sources = await Promise.all(parsed.assetIds.map((assetId) => imageStore.readOwned(userId, assetId)))
     assertCanvasUserUnchanged(userId)
     const projectContent = buildCanvasProjectPackage(workflowContent, sources)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
@@ -445,16 +601,18 @@ export function createCanvasWindowController(
     if (pending.userId !== userId) throw new Error('星芒账号已切换，请重新选择画布项目')
     const imported: string[] = []
     const mappings = new Map<string, string>()
+    const context = await activeAssetContext(event.sender.id, userId)
+    const imageStore = context?.images ?? options.aiAssets
     try {
       for (const entry of pending.parsed.assets) {
         assertCanvasUserUnchanged(userId)
-        const asset = await options.aiAssets.storeBase64(userId, `data:${entry.mimeType};base64,${entry.bytes.toString('base64')}`)
+        const asset = await imageStore.storeBase64(userId, `data:${entry.mimeType};base64,${entry.bytes.toString('base64')}`)
         imported.push(asset.assetId)
         mappings.set(entry.assetId, asset.assetId)
       }
       assertCanvasUserUnchanged(userId)
     } catch (error) {
-      await Promise.all(imported.map((assetId) => options.aiAssets.removeOwned(userId, assetId).catch(() => undefined)))
+      await Promise.all(imported.map((assetId) => imageStore.removeOwned(userId, assetId).catch(() => undefined)))
       throw error
     }
     return {
@@ -514,8 +672,10 @@ export function createCanvasWindowController(
     })
     window.on('closed', () => {
       options.imageService.cancelSender(senderId)
+      options.videoService.cancelSender(senderId)
       options.canvasRuns.cancelOwner(senderId)
       pendingProjects.delete(senderId)
+      activeProjects.delete(senderId)
       if (canvasWindow === window) canvasWindow = null
     })
     // Deny every popup by default; the only ones ever legitimate are the

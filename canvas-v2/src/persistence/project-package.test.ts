@@ -5,6 +5,8 @@ import { parseXingCanvasProject, serializeXingCanvasProject } from './project-pa
 const workflow: WorkflowFile = {
   schemaVersion: 2,
   name: '跨设备项目',
+  viewport: { x: 180, y: -90, zoom: 0.9 },
+  mediaGroups: { image: '生图分组', video: 'grok' },
   nodes: [{
     id: 'image', kind: 'image-generate', definitionVersion: 1, position: { x: 10, y: 20 },
     data: {
@@ -22,7 +24,10 @@ describe('.xingcanvas project package', () => {
     expect(content).not.toContain('strip-me')
     expect(content).not.toContain('private.invalid')
     expect(content).not.toContain('C:\\\\private')
-    expect(parseXingCanvasProject(content)?.workflow.nodes[0]).toMatchObject({ kind: 'image-generate', data: { result: { assetId: 'A'.repeat(43) } } })
+    const parsed = parseXingCanvasProject(content)?.workflow
+    expect(parsed?.viewport).toEqual({ x: 180, y: -90, zoom: 0.9 })
+    expect(parsed?.mediaGroups).toEqual({ image: '生图分组', video: 'grok' })
+    expect(parsed?.nodes[0]).toMatchObject({ kind: 'image-generate', data: { result: { assetId: 'A'.repeat(43) } } })
   })
 
   it('rejects damaged packages without returning a partial workflow', () => {

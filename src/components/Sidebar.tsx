@@ -6,12 +6,15 @@ import {
   ChevronsRight,
   CircleHelp,
   Globe2,
+  LifeBuoy,
   LoaderCircle,
   Moon,
-  MoreHorizontal,
   RotateCw,
+  Settings2,
   Sun,
 } from 'lucide-react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import logoUrl from '../../assets/icon.png'
 import logoWhiteUrl from '../../assets/icon-white.png'
 import { navigationItems, type NavigationGroup, type PageId } from '../navigation'
@@ -25,7 +28,7 @@ interface SidebarProps {
   theme: 'light' | 'dark'
   updateState: UpdateSnapshot | null
   relaySite: RelaySite
-  /** Whether the "更多" group is expanded (persisted to app-settings by the caller). */
+  /** Whether the low-frequency system-management group is expanded for this session. */
   moreExpanded: boolean
   accountStatus: AccountAreaStatus
   accountSnapshot: AccountSnapshot
@@ -41,6 +44,7 @@ interface SidebarProps {
   onRefreshBalance: () => void
   onOpenAccountCenter: () => void
   onOpenTutorialDocs: () => void
+  onOpenSupport: () => void
   /** Opens the 粘贴 Key dialog (W3b) -- passed straight through to AccountArea. */
   onPasteKey: () => void
   /** openExternal(relaySite.keysPageUrl) -- passed straight through to AccountArea. */
@@ -88,9 +92,87 @@ export function Sidebar({
   onRefreshBalance,
   onOpenAccountCenter,
   onOpenTutorialDocs,
+  onOpenSupport,
   onPasteKey,
   onOpenKeysPage,
 }: SidebarProps) {
+  const navigationRef = useRef<HTMLElement>(null)
+  const moreToggleRef = useRef<HTMLButtonElement>(null)
+  const morePopoverRef = useRef<HTMLDivElement>(null)
+  const [morePopoverPosition, setMorePopoverPosition] = useState({ top: 0, left: 80 })
+
+  useLayoutEffect(() => {
+    const navigation = navigationRef.current
+    if (!collapsed || !navigation) return
+
+    const pinHorizontalOrigin = () => {
+      if (navigation.scrollLeft !== 0) navigation.scrollLeft = 0
+    }
+    navigation.scrollTop = 0
+    pinHorizontalOrigin()
+
+    // The shell width animates while collapsing. Chromium may restore the
+    // expanded rail's horizontal offset on a later animation frame, after a
+    // one-shot layout effect has already run. Keep the icon rail pinned for
+    // the whole transition and for any later resize/scroll restoration.
+    let remainingFrames = 18
+    let animationFrame = 0
+    const pinDuringTransition = () => {
+      pinHorizontalOrigin()
+      remainingFrames -= 1
+      if (remainingFrames > 0) animationFrame = window.requestAnimationFrame(pinDuringTransition)
+    }
+    animationFrame = window.requestAnimationFrame(pinDuringTransition)
+    const resizeObserver = new ResizeObserver(pinHorizontalOrigin)
+    resizeObserver.observe(navigation)
+    navigation.addEventListener('scroll', pinHorizontalOrigin, { passive: true })
+
+    return () => {
+      window.cancelAnimationFrame(animationFrame)
+      resizeObserver.disconnect()
+      navigation.removeEventListener('scroll', pinHorizontalOrigin)
+    }
+  }, [collapsed])
+
+  useLayoutEffect(() => {
+    if (!collapsed || !moreExpanded) return
+    const updatePosition = () => {
+      const anchor = moreToggleRef.current?.getBoundingClientRect()
+      if (!anchor) return
+      setMorePopoverPosition({
+        top: Math.max(12, Math.min(anchor.top - 8, window.innerHeight - 228)),
+        left: anchor.right + 8,
+      })
+    }
+    updatePosition()
+    window.addEventListener('resize', updatePosition)
+    window.addEventListener('scroll', updatePosition, true)
+    return () => {
+      window.removeEventListener('resize', updatePosition)
+      window.removeEventListener('scroll', updatePosition, true)
+    }
+  }, [collapsed, moreExpanded])
+
+  useEffect(() => {
+    if (!collapsed || !moreExpanded) return
+    const dismiss = (event: PointerEvent) => {
+      const target = event.target as Node
+      if (moreToggleRef.current?.contains(target) || morePopoverRef.current?.contains(target)) return
+      onToggleMoreExpanded()
+    }
+    const dismissOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      onToggleMoreExpanded()
+      moreToggleRef.current?.focus({ preventScroll: true })
+    }
+    document.addEventListener('pointerdown', dismiss)
+    document.addEventListener('keydown', dismissOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', dismiss)
+      document.removeEventListener('keydown', dismissOnEscape)
+    }
+  }, [collapsed, moreExpanded, onToggleMoreExpanded])
+
   const updatePhase = updateState?.phase
   const showUpdate = updatePhase === 'available'
     || updatePhase === 'downloading'
@@ -101,22 +183,24 @@ export function Sidebar({
       ? '正在下载主程序更新'
       : `发现主程序新版本 ${updateState?.availableVersion ?? ''}`.trim()
   const groupLabels: Record<Exclude<NavigationGroup, 'more'>, string> = {
-    use: '使用',
-    extensions: '扩展',
+    use: '工作台',
+    extensions: '扩展能力',
   }
-  const renderItem = (item: (typeof navigationItems)[number]) => {
+  const renderItem = (item: (typeof navigationItems)[number], onSelected?: () => void) => {
     const Icon = item.icon
     return (
       <button
         key={item.id}
         type="button"
         className={`nav-item${activePage === item.id ? ' active' : ''}${item.id === 'overview' ? ' static-nav-item' : ''}`}
+        data-navigation-id={item.id}
         data-sidebar-tooltip={item.label}
+        title={item.hint ?? (collapsed ? item.label : undefined)}
         aria-current={activePage === item.id ? 'page' : undefined}
         // item.hint 本身挂在 aria-hidden 的图标上，屏幕阅读器读不到；这里在
         // 按钮上补一份可达的 aria-label，让 label 仍是主信息、hint 是补充说明。
         aria-label={item.hint ? `${item.label}：${item.hint}` : undefined}
-        onClick={() => onNavigate(item.id)}
+        onClick={() => { onNavigate(item.id); onSelected?.() }}
       >
         <Icon size={18} />
         <span className="nav-label">{item.label}</span>
@@ -129,14 +213,30 @@ export function Sidebar({
       </button>
     )
   }
+  const systemItems = navigationItems.filter((item) => item.group === 'more')
+  const collapsedSystemMenu = collapsed && moreExpanded ? createPortal(
+    <div
+      ref={morePopoverRef}
+      className="nav-more-popover"
+      id="sidebar-more-items"
+      role="menu"
+      aria-label="系统管理"
+      style={morePopoverPosition}
+    >
+      <header><Settings2 size={16} /><strong>系统管理</strong></header>
+      <div>{systemItems.map((item) => renderItem(item, onToggleMoreExpanded))}</div>
+    </div>,
+    document.body,
+  ) : null
 
   return (
+    <>
     <aside className="sidebar">
       <div className="brand-block">
         <img src={theme === 'dark' ? logoWhiteUrl : logoUrl} className="brand-logo" alt="星芒AI" />
         <div>
           <div className="brand-name"><span>星芒</span>AI</div>
-          <div className="brand-subtitle">AI管理工具</div>
+          <div className="brand-subtitle">AI 管理工具箱</div>
         </div>
         {showUpdate && (
           <button
@@ -158,29 +258,33 @@ export function Sidebar({
         )}
       </div>
 
-      <nav className="main-nav" aria-label="主导航">
+      <nav ref={navigationRef} className="main-nav" aria-label="主导航">
         {(Object.keys(groupLabels) as Array<Exclude<NavigationGroup, 'more'>>).map((group) => (
           <div className="nav-group" key={group}>
             <div className="nav-group-label">{groupLabels[group]}</div>
-            {navigationItems.filter((item) => item.group === group).map(renderItem)}
+            {navigationItems.filter((item) => item.group === group).map((item) => renderItem(item))}
           </div>
         ))}
         <div className="nav-group nav-group-more">
+          <div className="nav-group-label">系统</div>
           <button
+            ref={moreToggleRef}
             type="button"
             className={`nav-item nav-more-toggle${moreExpanded ? ' expanded' : ''}`}
             aria-expanded={moreExpanded}
             aria-controls="sidebar-more-items"
-            data-sidebar-tooltip="更多"
+            aria-label="系统管理"
+            title={collapsed ? '系统管理' : undefined}
+            data-sidebar-tooltip="系统管理"
             onClick={onToggleMoreExpanded}
           >
-            <MoreHorizontal size={18} />
-            <span className="nav-label">更多</span>
+            <Settings2 size={18} />
+            <span className="nav-label">系统管理</span>
             <ChevronRight size={14} className="nav-more-chevron" />
           </button>
-          {moreExpanded && (
+          {moreExpanded && !collapsed && (
             <div className="nav-more-items" id="sidebar-more-items">
-              {navigationItems.filter((item) => item.group === 'more').map(renderItem)}
+              {systemItems.map((item) => renderItem(item))}
             </div>
           )}
         </div>
@@ -202,24 +306,34 @@ export function Sidebar({
         />
         <div className="sidebar-service-links" aria-label="帮助与服务">
           <button
-            className="sidebar-service-button tutorial-docs-button"
+            className={`sidebar-service-button tutorial-docs-button${activePage === 'tutorial' ? ' active' : ''}`}
             type="button"
             title="教程文档"
             data-sidebar-tooltip="教程文档"
             onClick={onOpenTutorialDocs}
           >
             <BookOpen size={16} />
-            <span>教程文档</span>
+            <span>教程</span>
           </button>
           <button
             className="sidebar-service-button"
+            type="button"
+            title="联系售后"
+            data-sidebar-tooltip="联系售后"
+            onClick={onOpenSupport}
+          >
+            <LifeBuoy size={16} />
+            <span>售后</span>
+          </button>
+          <button
+            className="sidebar-service-button sidebar-official-button"
             type="button"
             title={`官方网站 · ${relaySite.websiteUrl.replace(/^https:\/\//, '')}`}
             data-sidebar-tooltip="官方网站"
             onClick={() => void window.xingmang.openExternal(relaySite.websiteUrl)}
           >
             <Globe2 size={16} />
-            <span>官方网站</span>
+            <span>官网</span>
           </button>
         </div>
         <div className="sidebar-controls">
@@ -239,5 +353,7 @@ export function Sidebar({
         </div>
       </div>
     </aside>
+    {collapsedSystemMenu}
+    </>
   )
 }

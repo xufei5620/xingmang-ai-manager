@@ -75,5 +75,9 @@ describe('canvas fingerprints', () => {
       ...graph,
       nodes: [text, imageNode({ quality: 'high' })],
     }))
+    expect(computeCanvasGraphRevision(graph)).not.toBe(computeCanvasGraphRevision({
+      ...graph,
+      nodes: [text, imageNode({ seconds: '10' })],
+    }))
   })
 })

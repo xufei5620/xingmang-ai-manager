@@ -76,6 +76,46 @@ describe('executeCanvasRun', () => {
     expect(record.events.map((event) => event.sequence)).toEqual(record.events.map((_event, index) => index + 1))
   })
 
+  it('preserves multiple image, video, and audio inputs for generic node executors', async () => {
+    const imageA = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}` }
+    const imageB = { kind: 'image' as const, assetId: 'b'.repeat(43), localUrl: `xingmang-asset://image/${'b'.repeat(43)}` }
+    const videoA = { kind: 'video' as const, assetId: 'c'.repeat(43), localUrl: `xingmang-asset://video/${'c'.repeat(43)}` }
+    const videoB = { kind: 'video' as const, assetId: 'd'.repeat(43), localUrl: `xingmang-asset://video/${'d'.repeat(43)}` }
+    const audioA = { kind: 'audio' as const, assetId: 'e'.repeat(43), localUrl: `xingmang-asset://audio/${'e'.repeat(43)}` }
+    const audioB = { kind: 'audio' as const, assetId: 'f'.repeat(43), localUrl: `xingmang-asset://audio/${'f'.repeat(43)}` }
+    const target = vi.fn(async ({ inputs }) => {
+      expect(inputs.image).toEqual(imageA)
+      expect(inputs.images).toEqual([imageA, imageB])
+      expect(inputs.video).toEqual(videoA)
+      expect(inputs.videos).toEqual([videoA, videoB])
+      expect(inputs.audio).toEqual(audioA)
+      expect(inputs.audios).toEqual([audioA, audioB])
+      return { assets: [videoA] }
+    })
+    const workflow = graph([
+      node('image-a', 'image-input'), node('image-b', 'image-input'),
+      node('video-a', 'video-input'), node('video-b', 'video-input'),
+      node('audio-a', 'audio-input'), node('audio-b', 'audio-input'),
+      node('target', 'router'),
+    ], [
+      { id: 'i1', source: 'image-a', sourceHandle: 'out:image', target: 'target', targetHandle: 'in:images' },
+      { id: 'i2', source: 'image-b', sourceHandle: 'out:image', target: 'target', targetHandle: 'in:images' },
+      { id: 'v1', source: 'video-a', sourceHandle: 'out:video', target: 'target', targetHandle: 'in:videos' },
+      { id: 'v2', source: 'video-b', sourceHandle: 'out:video', target: 'target', targetHandle: 'in:videos' },
+      { id: 'a1', source: 'audio-a', sourceHandle: 'out:audio', target: 'target', targetHandle: 'in:audios' },
+      { id: 'a2', source: 'audio-b', sourceHandle: 'out:audio', target: 'target', targetHandle: 'in:audios' },
+    ])
+    await executeCanvasRun(runOptions(workflow, {
+      executors: executors({
+        'image-input': async ({ node }) => ({ assets: [node.id === 'image-a' ? imageA : imageB] }),
+        'video-input': async ({ node }) => ({ assets: [node.id === 'video-a' ? videoA : videoB] }),
+        'audio-input': async ({ node }) => ({ assets: [node.id === 'audio-a' ? audioA : audioB] }),
+        router: target,
+      }),
+    }))
+    expect(target).toHaveBeenCalledOnce()
+  })
+
   it('keeps an independent branch successful after another branch fails', async () => {
     const workflow = graph(
       [node('bad', 'image'), node('downstream', 'image'), node('independent', 'text')],

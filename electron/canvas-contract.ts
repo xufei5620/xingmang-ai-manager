@@ -1,4 +1,5 @@
 import type { GeneratedAiAsset } from './ai-image-service'
+import type { GeneratedAiVideoAsset } from './ai-video-service'
 import type { CanvasPromptPreset } from './canvas-prompt-preset-store'
 import type { CanvasRunEvent, CanvasRunGraph, CanvasRunRecord, CanvasRunScope } from './canvas-run-contract'
 
@@ -11,11 +12,14 @@ export const canvasHostChannels = {
   prepareGroup: 'canvas-host:prepare-group',
   generateImage: 'canvas-host:generate-image',
   editImage: 'canvas-host:edit-image',
+  generateVideo: 'canvas-host:generate-video',
+  resumeVideoTask: 'canvas-host:resume-video-task',
   cancelRequest: 'canvas-host:cancel-request',
   copyAsset: 'canvas-host:copy-asset',
   saveAsset: 'canvas-host:save-asset',
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
+  renameAsset: 'canvas-host:rename-asset',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
   listPromptPresets: 'canvas-host:list-prompt-presets',
@@ -28,6 +32,10 @@ export const canvasHostChannels = {
   exportProject: 'canvas-host:export-project',
   previewProject: 'canvas-host:preview-project',
   importProject: 'canvas-host:import-project',
+  listProjects: 'canvas-host:list-projects',
+  createProject: 'canvas-host:create-project',
+  openProject: 'canvas-host:open-project',
+  saveProject: 'canvas-host:save-project',
   runEvent: 'canvas-host:run-event',
 } as const
 
@@ -58,6 +66,7 @@ export interface CanvasImageEditInput extends CanvasImageGenerateInput {
 }
 
 export type CanvasGeneratedAsset = GeneratedAiAsset
+export type CanvasGeneratedVideoAsset = GeneratedAiVideoAsset
 
 export interface CanvasCancelResult {
   canceled: boolean
@@ -68,17 +77,50 @@ export interface CanvasAssetSummary extends CanvasGeneratedAsset {
   createdAt: string
   mediaType: 'image'
   thumbnailUrl: string
+  displayName: string
+}
+
+export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
+  createdAt: string
+  mediaType: 'video'
+  thumbnailUrl: string
+  displayName: string
+  width?: number
+  height?: number
+  durationSeconds?: number
+}
+
+export interface CanvasAudioAssetSummary {
+  assetId: string
+  localUrl: string
+  mimeType: 'audio/mpeg' | 'audio/wav' | 'audio/ogg' | 'audio/mp4'
+  fileName: string
+  createdAt: string
+  mediaType: 'audio'
+  thumbnailUrl: string
+  displayName: string
+  durationSeconds?: number
+}
+
+export interface CanvasRenameAssetInput {
+  assetId: string
+  displayName: string
+}
+
+export interface CanvasRenameAssetResult {
+  assetId: string
+  displayName: string
 }
 
 export interface CanvasAssetQuery {
   offset?: number
   limit?: number
-  mediaType?: 'all' | 'image'
+  mediaType?: 'all' | 'image' | 'video' | 'audio'
   search?: string
 }
 
 export interface CanvasAssetPage {
-  items: CanvasAssetSummary[]
+  items: Array<CanvasAssetSummary | CanvasVideoAssetSummary | CanvasAudioAssetSummary>
   offset: number
   limit: number
   total: number
@@ -109,4 +151,14 @@ export interface CanvasProjectImportResult {
   content: string
   warnings: string[]
   importedAssetCount: number
+}
+
+export interface CanvasStoredProjectSummary {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  nodeCount: number
+  workspaceName?: string
+  workspaceConfigured: boolean
 }

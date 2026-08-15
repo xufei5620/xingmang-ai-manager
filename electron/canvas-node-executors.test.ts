@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
+import { executeCanvasRun } from './canvas-run-engine'
+import type { CanvasRunGraph } from './canvas-run-contract'
 
 describe('createCanvasNodeExecutors', () => {
   it('delegates image generation through the injected main-process service', async () => {
@@ -31,6 +33,7 @@ describe('createCanvasNodeExecutors', () => {
       group: '生图',
       model: 'gpt-image-2',
       prompt: 'upstream\nlocal',
+      expectedUserId: 7,
       size: '1024x1024',
       quality: 'low',
     })
@@ -209,6 +212,142 @@ describe('createCanvasNodeExecutors', () => {
     })).rejects.toThrow('不会提交付费请求')
   })
 
+  it('delegates video generation with bounded seconds and an optional image asset', async () => {
+    const generate = vi.fn(async () => ({
+      assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
+      mimeType: 'video/mp4' as const, fileName: 'video.mp4', taskId: 'video_123',
+    }))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoService: { generate, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoGroup: 'grok',
+    })
+    const image = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}` }
+    const result = await executors.video({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 41, userId: 7,
+      node: { id: 'video', kind: 'video-generate', definitionVersion: 1, data: {
+        prompt: '镜头推进', model: 'grok-imagine-video', seconds: '15', size: '720x1280',
+      } },
+      inputs: { text: '海岸', image }, signal: new AbortController().signal,
+    })
+    expect(generate).toHaveBeenCalledWith(41, {
+      requestId: 'canvas-run:attempt', group: 'grok', model: 'grok-imagine-video',
+      prompt: '海岸\n镜头推进', seconds: '15', width: 720, height: 1280,
+      expectedUserId: 7, imageAssetId: 'a'.repeat(43),
+    })
+    expect(result.assets).toEqual([expect.objectContaining({
+      kind: 'video', assetId: 'v'.repeat(43), taskId: 'video_123',
+    })])
+  })
+
+  it.each(['image-generate', 'image-edit'] as const)(
+    'passes the saved %s result into downstream image-to-video generation',
+    async (producerKind) => {
+      const sourceAssetId = 's'.repeat(43)
+      const producedAssetId = producerKind === 'image-edit' ? 'e'.repeat(43) : 'g'.repeat(43)
+      const generatedImage = {
+        assetId: producedAssetId,
+        localUrl: `xingmang-asset://image/${producedAssetId}`,
+        mimeType: 'image/png' as const,
+        fileName: 'produced.png',
+      }
+      const imageGenerate = vi.fn(async () => [generatedImage])
+      const imageEdit = vi.fn(async () => [generatedImage])
+      const videoGenerate = vi.fn(async () => ({
+        assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
+        mimeType: 'video/mp4' as const, fileName: 'video.mp4', taskId: 'video_chain',
+      }))
+      const executors = createCanvasNodeExecutors({
+        imageService: {
+          generate: imageGenerate,
+          edit: imageEdit,
+          cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
+        },
+        videoService: {
+          generate: videoGenerate,
+          cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
+        },
+        assets: { readOwned: vi.fn(async () => ({ asset: {
+          assetId: sourceAssetId,
+          localUrl: `xingmang-asset://image/${sourceAssetId}`,
+          mimeType: 'image/png',
+        } })) },
+        imageGroup: '生图',
+        videoGroup: 'grok',
+      })
+      const nodes: CanvasRunGraph['nodes'] = [
+        ...(producerKind === 'image-edit' ? [{
+          id: 'source', kind: 'image-input' as const, definitionVersion: 1,
+          data: { prompt: '', model: '', adoptedAssetId: sourceAssetId },
+        }] : []),
+        {
+          id: 'producer', kind: producerKind, definitionVersion: 1,
+          data: { prompt: producerKind === 'image-edit' ? '调整光影' : '生成产品图', model: 'gpt-image-2' },
+        },
+        {
+          id: 'video', kind: 'video-generate', definitionVersion: 1,
+          data: { prompt: '镜头推进', model: 'grok-imagine-video', seconds: '5', size: '1280x720' },
+        },
+      ]
+      const edges: CanvasRunGraph['edges'] = [
+        ...(producerKind === 'image-edit' ? [{
+          id: 'source-to-producer', source: 'source', sourceHandle: 'out:image',
+          target: 'producer', targetHandle: 'in:image',
+        }] : []),
+        {
+          id: 'producer-to-video', source: 'producer', sourceHandle: 'out:image',
+          target: 'video', targetHandle: 'in:image',
+        },
+      ]
+      let sequence = 0
+
+      const record = await executeCanvasRun({
+        userId: 7,
+        ownerId: 41,
+        projectId: 'project-1',
+        runId: `run-${producerKind}`,
+        graphRevision: `revision-${producerKind}`,
+        graph: { nodes, edges },
+        scope: { kind: 'all' },
+        executors,
+        signal: new AbortController().signal,
+        randomUUID: () => `chain-id-${++sequence}`,
+        now: () => new Date('2026-08-14T10:00:00.000Z'),
+      })
+
+      expect(record.status).toBe('succeeded')
+      expect(videoGenerate).toHaveBeenCalledWith(41, expect.objectContaining({
+        imageAssetId: producedAssetId,
+        width: 1280,
+        height: 720,
+        projectId: 'project-1',
+      }))
+      if (producerKind === 'image-edit') {
+        expect(imageEdit).toHaveBeenCalledWith(41, expect.objectContaining({ sourceAssetIds: [sourceAssetId] }))
+      } else {
+        expect(imageGenerate).toHaveBeenCalledOnce()
+      }
+    },
+  )
+
+  it('rejects video generation without a video group before paid dispatch', async () => {
+    const generate = vi.fn()
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoService: { generate, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      imageGroup: '生图分组',
+    })
+
+    await expect(executors.video({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 41, userId: 7,
+      node: { id: 'video', kind: 'video-generate', definitionVersion: 1, data: {
+        prompt: '镜头推进', model: 'grok-imagine-video', seconds: '5',
+      } },
+      inputs: {}, signal: new AbortController().signal,
+    })).rejects.toThrow('视频节点缺少生成分组')
+    expect(generate).not.toHaveBeenCalled()
+  })
+
   it('resolves an image-input asset through the authenticated user boundary', async () => {
     const readOwned = vi.fn(async () => ({ asset: {
       assetId: 'a'.repeat(43),
@@ -226,5 +365,42 @@ describe('createCanvasNodeExecutors', () => {
     })
     expect(readOwned).toHaveBeenCalledWith(7, 'a'.repeat(43))
     expect(result?.assets?.[0]).toMatchObject({ kind: 'image', assetId: 'a'.repeat(43) })
+  })
+
+  it('resolves a video-input asset through the authenticated user video boundary', async () => {
+    const readOwned = vi.fn(async () => ({ asset: {
+      assetId: 'v'.repeat(43),
+      localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
+      mimeType: 'video/mp4',
+    } }))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      assets: { readOwned },
+    })
+    const result = await executors['video-input']?.({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'input', kind: 'video-input', definitionVersion: 1, data: { prompt: '', model: '', adoptedAssetId: 'v'.repeat(43) } },
+      inputs: {}, signal: new AbortController().signal,
+    })
+    expect(readOwned).toHaveBeenCalledWith(7, 'v'.repeat(43), 'video')
+    expect(result?.assets?.[0]).toMatchObject({ kind: 'video', assetId: 'v'.repeat(43), mimeType: 'video/mp4' })
+  })
+
+  it.each(['router', 'gallery', 'output'] as const)('passes video assets through %s nodes', async (kind) => {
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+    })
+    const video = {
+      kind: 'video' as const,
+      assetId: 'v'.repeat(43),
+      localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
+      mimeType: 'video/mp4',
+    }
+    const result = await executors[kind]?.({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: kind, kind, definitionVersion: 1, data: { prompt: '', model: '' } },
+      inputs: { video }, signal: new AbortController().signal,
+    })
+    expect(result?.assets).toEqual([video])
   })
 })

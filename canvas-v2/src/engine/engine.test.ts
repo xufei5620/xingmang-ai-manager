@@ -69,6 +69,43 @@ describe('runWorkflow', () => {
     expect(seen).toEqual(['source-a', 'source-b'])
   })
 
+  it('preserves all text, image, and audio inputs for video generation in connection order', async () => {
+    const seen: { text?: string; images: Array<string | undefined>; audios: Array<string | undefined> } = { images: [], audios: [] }
+    const executors = createMockExecutors(1)
+    executors['image-input'] = async (current) => ({ output: { asset: { kind: 'image', assetId: current.id } } })
+    executors['audio-input'] = async (current) => ({ output: { asset: { kind: 'audio', assetId: current.id } } })
+    executors['video-generate'] = async (_current, inputs) => {
+      seen.text = inputs.text
+      seen.images.push(...(inputs.images ?? []).map((asset) => asset.assetId))
+      seen.audios.push(...(inputs.audios ?? []).map((asset) => asset.assetId))
+      return { output: { asset: inputs.image } }
+    }
+    await runWorkflow(
+      [
+        node('text-a', 'prompt', '第一段'), node('text-b', 'prompt', '第二段'),
+        node('image-a', 'image-input'), node('image-b', 'image-input'),
+        node('audio-a', 'audio-input'), node('audio-b', 'audio-input'),
+        node('target', 'video-generate'),
+      ],
+      [
+        { id: 't1', source: 'text-a', sourceHandle: 'out:text', target: 'target', targetHandle: 'in:text' },
+        { id: 't2', source: 'text-b', sourceHandle: 'out:text', target: 'target', targetHandle: 'in:text' },
+        { id: 'i1', source: 'image-a', sourceHandle: 'out:image', target: 'target', targetHandle: 'in:images' },
+        { id: 'i2', source: 'image-b', sourceHandle: 'out:image', target: 'target', targetHandle: 'in:images' },
+        { id: 'a1', source: 'audio-a', sourceHandle: 'out:audio', target: 'target', targetHandle: 'in:audios' },
+        { id: 'a2', source: 'audio-b', sourceHandle: 'out:audio', target: 'target', targetHandle: 'in:audios' },
+      ],
+      executors,
+      { onNodeUpdate: () => undefined },
+      new AbortController().signal,
+    )
+    expect(seen).toEqual({
+      text: '第一段\n第二段',
+      images: ['image-a', 'image-b'],
+      audios: ['audio-a', 'audio-b'],
+    })
+  })
+
   it('skips the downstream chain when an upstream node fails, without touching independent branches', async () => {
     const outcome = await runWorkflow(
       [

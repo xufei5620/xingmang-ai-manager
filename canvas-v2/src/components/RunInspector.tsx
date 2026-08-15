@@ -1,6 +1,7 @@
 import type { CanvasRunCandidate, CanvasRunRecord, CanvasRunScope } from '../host'
-import { Check, History, MoreHorizontal, RefreshCw, X } from 'lucide-react'
-import { SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
+import { Check, History, MoreHorizontal, Music2, RefreshCw, X } from 'lucide-react'
+import { AudioPreview, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
+import { mediaAssetAspectRatio } from '../library/media-assets'
 
 interface RunInspectorProps {
   open: boolean
@@ -16,6 +17,7 @@ interface RunInspectorProps {
   onSelectRun(runId: string): void
   onSelectCandidate(nodeId: string, candidate: CanvasRunCandidate): void
   onAdopt(nodeId: string, candidate: CanvasRunCandidate): void
+  onPreviewAsset(asset: CanvasRunCandidate['asset']): void
   onAssetMenu(assetId: string): void
   onClose(): void
 }
@@ -87,10 +89,12 @@ export function RunInspector(props: RunInspectorProps) {
                   {candidates.map((candidate) => (
                     <article key={candidate.candidateId} className={props.selectedCandidateIds[node.nodeId] === candidate.candidateId ? 'is-selected' : ''}>
                       {candidate.asset.kind === 'image'
-                        ? <button type="button" className="candidate-preview" title="预览此候选" onClick={() => props.onSelectCandidate(node.nodeId, candidate)}><SafeImage src={candidate.asset.localUrl} alt="生成候选" fallbackLabel="候选不可用" onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }} /></button>
-                        : isLocalCanvasAssetUrl(candidate.asset.localUrl)
-                          ? <ViewportVideo className="candidate-video" src={candidate.asset.localUrl} controls />
-                          : <div className="candidate-video media-unavailable">视频候选不可用</div>}
+                        ? <button type="button" className="candidate-preview" title="单击选择，双击放大" onClick={() => props.onSelectCandidate(node.nodeId, candidate)} onDoubleClick={() => props.onPreviewAsset(candidate.asset)}><SafeImage src={candidate.asset.localUrl} alt="生成候选" fallbackLabel="候选不可用" onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }} /></button>
+                        : candidate.asset.kind === 'video' && isLocalCanvasAssetUrl(candidate.asset.localUrl)
+                          ? <ViewportVideo className="candidate-video" src={candidate.asset.localUrl} controls title="双击放大预览" style={{ aspectRatio: mediaAssetAspectRatio(candidate.asset) }} onDoubleClick={(event) => { event.stopPropagation(); props.onPreviewAsset(candidate.asset) }} onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }} />
+                          : candidate.asset.kind === 'audio' && isLocalCanvasAssetUrl(candidate.asset.localUrl)
+                            ? <div className="candidate-audio" title="双击放大预览" onDoubleClick={() => props.onPreviewAsset(candidate.asset)} onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }}><Music2 size={18} aria-hidden="true" /><AudioPreview src={candidate.asset.localUrl} /></div>
+                            : <div className="candidate-video media-unavailable">{candidate.asset.kind === 'audio' ? '音频候选不可用' : '视频候选不可用'}</div>}
                       <div>
                         <button type="button" onClick={() => props.onAdopt(node.nodeId, candidate)}><Check size={12} />采纳</button>
                         <button type="button" title="更多资产操作" aria-label="候选资产操作" onClick={() => props.onAssetMenu(candidate.asset.assetId)}><MoreHorizontal size={14} /></button>

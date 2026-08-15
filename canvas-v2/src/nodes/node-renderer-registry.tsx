@@ -10,12 +10,12 @@ export type RegistryNodeRenderer = ComponentType<NodeProps<RegistryCanvasNode>>
  * Definitions may exist before their UI ships; those entries deliberately use
  * the disabled placeholder instead of making the whole document unreadable.
  */
-export function createNodeRendererRegistry(
+export function createNodeRendererRegistry<TNode extends Node = RegistryCanvasNode>(
   registry: NodeRegistry,
-  renderers: Readonly<Record<string, RegistryNodeRenderer>>,
-  unknownRenderer: RegistryNodeRenderer,
-): Record<string, RegistryNodeRenderer> {
-  const resolved: Record<string, RegistryNodeRenderer> = {}
+  renderers: Readonly<Record<string, ComponentType<NodeProps<TNode>>>>,
+  unknownRenderer: ComponentType<NodeProps<TNode>>,
+): Record<string, ComponentType<NodeProps<TNode>>> {
+  const resolved: Record<string, ComponentType<NodeProps<TNode>>> = {}
   for (const definition of registry.list()) {
     resolved[definition.type] = renderers[definition.type] ?? unknownRenderer
   }

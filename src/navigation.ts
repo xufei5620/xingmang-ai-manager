@@ -29,6 +29,7 @@ export type PageId =
   | 'feedback'
   | 'updates'
   | 'settings'
+  | 'tutorial'
 
 export interface NavigationItem {
   id: PageId
@@ -43,7 +44,7 @@ export interface NavigationItem {
 
 // Task-oriented grouping (nav IA scheme A, #67/#69): 'use' is the daily-driver
 // destinations, 'extensions' is the mid-frequency MCP/Skills/market trio, and
-// 'more' is everything else, collapsed by default behind the sidebar's "更多".
+// 'more' is the lower-frequency system-management group, collapsed by default.
 export type NavigationGroup = 'use' | 'extensions' | 'more'
 
 export const navigationItems: readonly NavigationItem[] = [

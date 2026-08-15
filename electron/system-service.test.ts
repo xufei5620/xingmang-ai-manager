@@ -6,7 +6,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { providerBaseUrls } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
-import { runCommand, trustedCommandEnvironment, type runCommand as productionRunCommand } from './command-runner'
+import {
+  findExecutable as productionFindExecutable,
+  runCommand,
+  trustedCommandEnvironment,
+  type runCommand as productionRunCommand,
+} from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
 import { providerConfigPaths } from './config-files'
 import type { MacosCodexAppInspection } from './macos-codex-app'
@@ -396,6 +401,9 @@ describe('createSystemService', () => {
     vi.stubEnv('XINGMANG_FAKE_NPM_ROOT', fakeNpmRoot)
     vi.stubEnv('CODEX_HOME', '')
     const userHome = path.join(root, 'home')
+    vi.stubEnv('USERPROFILE', userHome)
+    vi.stubEnv('APPDATA', path.join(userHome, 'AppData', 'Roaming'))
+    vi.stubEnv('LOCALAPPDATA', path.join(userHome, 'AppData', 'Local'))
     const codexHome = path.join(root, 'custom-codex')
     const codexEnv = {
       ...process.env,
@@ -465,6 +473,31 @@ describe('createSystemService', () => {
     // above the CLI probe; a CLI-only failure must not bleed into them.
     expect(setup.runtime.node.detectionFailed).not.toBe(true)
     expect(setup.runtime.npm.detectionFailed).not.toBe(true)
+  })
+
+  it('preserves CLI probe failures in a full maintenance scan instead of reporting not installed', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-full-scan-cli-failure-'))
+    temporaryDirectories.push(directory)
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline') }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'linux',
+        findExecutable: async () => null,
+        resolveCliInstallation: async () => { throw new Error('CLI 注册信息读取失败') },
+      },
+    )
+
+    const snapshot = await service.scanSystem(false)
+
+    for (const provider of ['claude', 'codex', 'gemini', 'grok'] as const) {
+      expect(snapshot.clis[provider]).toMatchObject({
+        installed: false,
+        detectionFailed: true,
+        detectionError: 'CLI 注册信息读取失败',
+        updateState: 'unknown',
+      })
+    }
   })
 
   it('validates an API key by returning model ids from the relay response', async () => {
@@ -1616,6 +1649,83 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
 })
 
 describe('npm install progress reporting', () => {
+  it.runIf(process.platform === 'win32')('does not reinstall a supported PATH-visible Node.js and npm runtime', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-existing-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const nodeExecutable = 'D:\\nodejs\\node.exe'
+    const npmExecutable = 'D:\\nodejs\\npm.cmd'
+    const findExecutable = vi.fn<typeof productionFindExecutable>(async (command) => {
+      if (command === 'node') return nodeExecutable
+      if (command === 'npm') return npmExecutable
+      return null
+    })
+    const runCommand = vi.fn(async (spec: { executable: string; argv: readonly string[] }) => ({
+      executable: spec.executable,
+      argv: [...spec.argv],
+      exitCode: 0,
+      signal: null,
+      stdout: spec.executable === nodeExecutable ? 'v24.19.0\n' : '11.17.0\n',
+      stderr: '',
+      outputBytes: 10,
+      durationMs: 1,
+    }))
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable,
+        runCommand,
+      },
+    )
+
+    await expect(service.installNodeRuntime(target)).resolves.toMatchObject({
+      action: 'unchanged',
+      method: null,
+      source: null,
+      version: 'v24.19.0',
+      pathRefreshRequired: false,
+    })
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(target.send).toHaveBeenCalledWith(
+      'runtime:node-install-progress',
+      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('无需重复安装') }),
+    )
+  })
+
+  it.runIf(process.platform === 'win32')('does not reinstall Node.js when elevated mode sees only a user-scoped npm', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-elevated-npm-'))
+    temporaryDirectories.push(directory)
+    const userNpm = 'C:\\Users\\tester\\AppData\\Roaming\\npm\\npm.cmd'
+    const findExecutable = vi.fn<typeof productionFindExecutable>(async (command, options = {}) => {
+      if (command !== 'npm') return null
+      return options.trustedOnly ? null : userNpm
+    })
+    const fetchMock = vi.fn()
+    vi.stubGlobal('fetch', fetchMock)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'trusted-only',
+        findExecutable,
+      },
+    )
+
+    await expect(service.installCli('codex', target)).rejects.toThrow(
+      '当前会话经过了显式提权或权限状态无法确认',
+    )
+    expect(fetchMock).not.toHaveBeenCalled()
+    expect(target.send).not.toHaveBeenCalledWith(
+      'cli:install-progress',
+      expect.objectContaining({ message: expect.stringContaining('自动安装 Node.js') }),
+    )
+  })
+
   it('separates the resolution budget from the download budget', () => {
     // Sharing one budget let a slow official resolution eat the time the
     // download still needed, and killed a slow-but-working resolution at 5min.

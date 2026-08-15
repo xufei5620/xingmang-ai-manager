@@ -8,6 +8,7 @@ import {
   dialog,
   Menu,
   nativeImage,
+  net,
   protocol,
   safeStorage,
   screen,
@@ -20,6 +21,12 @@ import { AccountCredentialStore } from './account-credential-store'
 import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
 import { createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
+import { AiVideoAssetStore } from './ai-video-asset-store'
+import { AiAudioAssetStore } from './ai-audio-asset-store'
+import { AiAssetMetadataStore } from './ai-asset-metadata-store'
+import { AiVideoTaskStore } from './ai-video-task-store'
+import { createAiVideoService } from './ai-video-service'
+import { createAiMediaAssetService } from './ai-media-asset-service'
 import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
@@ -34,6 +41,9 @@ import { CanvasRunStore } from './canvas-run-store'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
 import { createCanvasRunService } from './canvas-run-service'
 import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
+import { CanvasProjectStore } from './canvas-project-store'
+import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
+import { parseSingleByteRange } from './byte-range'
 import { resolveCodexHomeContext } from './codex-home'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
@@ -47,8 +57,8 @@ import { RuntimeLogStore } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
-import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, userAgreementUrl } from './relay-sites'
-import { createTutorialWindowController } from './tutorial-window'
+import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, supportServiceUrl, userAgreementUrl } from './relay-sites'
+import { createPaymentWindowController } from './payment-window'
 import {
   createDiagnosticsExport,
   runDiagnostics,
@@ -94,26 +104,15 @@ const nonSiteExternalUrlAllowlist = [
   'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
 ] as const
 
-// Every relay site's own destinations (CLI-key marketing/keys pages, and --
-// for a new-api backed site -- the account-center (W4a) "去充值" button),
-// derived via relay-sites.ts's relaySiteExternalUrls rather than hand-typed
-// here so this can never drift from the site registry. href must equal
-// these exactly (I12).
-//
-// The wallet URL's shape (bare `/wallet`, not `/console/wallet`) was
-// confirmed by reading QuantumNous/new-api's own web frontend route file
-// directly -- web/src/routes/_authenticated/wallet/index.tsx's
-// `createFileRoute('/_authenticated/wallet/')` -- at both the `main` branch
-// and the exact v1.0.0-rc.22/v1.0.0-rc.24 tags (byte-identical across all
-// three, the latter two bracketing xm.solov.cc's own pinned version).
-// `_authenticated` is a pathless TanStack Router layout segment, so the real
-// URL is bare `/wallet`. No trailing slash, no query string.
+// Every relay site's own destinations (marketing and keys pages) is derived
+// from relay-sites.ts. Recharge stays in the desktop account center.
 const externalUrlAllowlist = [
   ...nonSiteExternalUrlAllowlist,
   ...relaySiteExternalUrls(relaySites),
   // 注册/登录弹窗与欢迎页脚的用户协议/隐私政策链接(I12 全等匹配)。
   userAgreementUrl,
   privacyPolicyUrl,
+  supportServiceUrl,
 ] as const
 
 // The infinite-canvas build's own two runtime-visible external destinations
@@ -169,6 +168,7 @@ protocol.registerSchemesAsPrivileged([{
     standard: true,
     secure: true,
     supportFetchAPI: true,
+    corsEnabled: true,
     stream: true,
   },
 }])
@@ -216,27 +216,45 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
 }
 
 function registerAiAssetProtocol(
-  assetStore: AiAssetStore,
+  assets: Pick<CanvasProjectAssetManager, 'readOwned'>,
   accountService: Pick<RelayBackendClient, 'getSessionState'>,
 ): void {
   protocol.handle('xingmang-asset', async (request) => {
     try {
       const url = new URL(request.url)
-      if (url.hostname !== 'image' || url.username || url.password || url.search || url.hash) {
+      if (!['image', 'video', 'audio'].includes(url.hostname) || url.username || url.password || url.search || url.hash) {
         return new Response(null, { status: 404 })
       }
       const assetId = decodeURIComponent(url.pathname.replace(/^\//, ''))
       const sessionState = accountService.getSessionState()
       const userId = sessionState.authenticated ? sessionState.account?.userId : undefined
       if (!userId) return new Response(null, { status: 401 })
-      const owned = await assetStore.readOwned(userId, assetId)
-      return new Response(owned.bytes, {
-        status: 200,
+      const owned = await assets.readOwned(userId, assetId, url.hostname as 'image' | 'video' | 'audio')
+      const range = request.headers.get('range')
+      let body = owned.bytes
+      let status = 200
+      const headers: Record<string, string> = {
+        'Access-Control-Allow-Origin': '*',
+        'Accept-Ranges': 'bytes',
+        'Cache-Control': 'no-store',
+        'Content-Type': owned.asset.mimeType,
+        'X-Content-Type-Options': 'nosniff',
+      }
+      if (range) {
+        const parsedRange = parseSingleByteRange(range, body.byteLength)
+        if (!parsedRange) {
+          return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${body.byteLength}` } })
+        }
+        const { start, end } = parsedRange
+        status = 206
+        body = body.subarray(start, end + 1)
+        headers['Content-Range'] = `bytes ${start}-${end}/${owned.bytes.byteLength}`
+      }
+      headers['Content-Length'] = String(body.byteLength)
+      return new Response(body, {
+        status,
         headers: {
-          'Cache-Control': 'no-store',
-          'Content-Type': owned.asset.mimeType,
-          'Content-Length': String(owned.bytes.byteLength),
-          'X-Content-Type-Options': 'nosniff',
+          ...headers,
         },
       })
     } catch {
@@ -666,12 +684,14 @@ if (!hasSingleInstanceLock) {
       modelService: systemService,
       keyStore: chatKeyStore,
     })
+    const aiOutputRoot = resolveAiOutputRoot({
+      isPackaged: app.isPackaged,
+      projectRoot: path.join(__dirname, '..'),
+      execPath: process.execPath,
+    })
     const assetStore = new AiAssetStore({
-      outputRoot: resolveAiOutputRoot({
-        isPackaged: app.isPackaged,
-        projectRoot: path.join(__dirname, '..'),
-        execPath: process.execPath,
-      }),
+      outputRoot: aiOutputRoot,
+      trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
       nativeOperations: {
         copyImage: (bytes) => {
           const image = nativeImage.createFromBuffer(bytes)
@@ -713,7 +733,101 @@ if (!hasSingleInstanceLock) {
         reason: error instanceof Error ? error.message : String(error),
       })
     }
-    registerAiAssetProtocol(assetStore, accountService)
+    const videoAssets = new AiVideoAssetStore({
+      outputRoot: aiOutputRoot,
+      nativeOperations: {
+        selectSavePath: async (suggestedFileName) => {
+          const result = await dialog.showSaveDialog({
+            title: '视频另存为', defaultPath: suggestedFileName,
+            filters: [{ name: '视频', extensions: ['mp4'] }],
+          })
+          return result.canceled ? null : result.filePath ?? null
+        },
+        revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+        showContextMenu: (items) => {
+          Menu.buildFromTemplate(items.map((item) => ({
+            id: item.id, label: item.label,
+            click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) },
+          }))).popup()
+        },
+      },
+    })
+    const audioAssets = new AiAudioAssetStore({
+      outputRoot: aiOutputRoot,
+      nativeOperations: {
+        selectSavePath: async (suggestedFileName) => {
+          const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
+          return result.canceled ? null : result.filePath ?? null
+        },
+        revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+        showContextMenu: (items) => {
+          Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('音频操作失败', error instanceof Error ? error.message : '无法完成音频操作')) } }))).popup()
+        },
+      },
+    })
+    const assetMetadata = new AiAssetMetadataStore({ outputRoot: aiOutputRoot })
+    const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata })
+    const canvasProjects = new CanvasProjectStore(path.join(managerDataDirectory, 'canvas-projects'))
+    const createProjectAssetContext = (outputRoot: string) => {
+      const images = new AiAssetStore({
+        outputRoot,
+        trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
+        nativeOperations: {
+          copyImage: (bytes) => {
+            const image = nativeImage.createFromBuffer(bytes)
+            if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
+            clipboard.writeImage(image)
+          },
+          selectSavePath: async (suggestedFileName) => {
+            const result = await dialog.showSaveDialog({
+              title: '图片另存为', defaultPath: suggestedFileName,
+              filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
+            })
+            return result.canceled ? null : result.filePath ?? null
+          },
+          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+          showContextMenu: (items) => {
+            Menu.buildFromTemplate(items.map((item) => ({
+              id: item.id, label: item.label,
+              click: () => { void item.run().catch((error) => dialog.showErrorBox('图片操作失败', error instanceof Error ? error.message : '无法完成图片操作')) },
+            }))).popup()
+          },
+        },
+      })
+      const videos = new AiVideoAssetStore({
+        outputRoot,
+        nativeOperations: {
+          selectSavePath: async (suggestedFileName) => {
+            const result = await dialog.showSaveDialog({ title: '视频另存为', defaultPath: suggestedFileName, filters: [{ name: '视频', extensions: ['mp4'] }] })
+            return result.canceled ? null : result.filePath ?? null
+          },
+          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+          showContextMenu: (items) => {
+            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) } }))).popup()
+          },
+        },
+      })
+      const audios = new AiAudioAssetStore({
+        outputRoot,
+        nativeOperations: {
+          selectSavePath: async (suggestedFileName) => {
+            const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
+            return result.canceled ? null : result.filePath ?? null
+          },
+          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+          showContextMenu: (items) => {
+            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('音频操作失败', error instanceof Error ? error.message : '无法完成音频操作')) } }))).popup()
+          },
+        },
+      })
+      return createCanvasProjectAssetContext(images, videos, audios, new AiAssetMetadataStore({ outputRoot }))
+    }
+    const canvasProjectAssets = new CanvasProjectAssetManager({
+      projects: canvasProjects,
+      global: createCanvasProjectAssetContext(assetStore, videoAssets, audioAssets, assetMetadata),
+      create: createProjectAssetContext,
+    })
+    registerAiAssetProtocol(canvasProjectAssets, accountService)
     const chatService = createAiChatService({
       credentialCoordinator: chatCredentials,
       emit: (senderId, event) => {
@@ -757,18 +871,41 @@ if (!hasSingleInstanceLock) {
       credentials: chatCredentials,
       assets: assetStore,
     })
+    const canvasImageService = createAiImageService({
+      baseUrl: 'https://xm.solov.cc',
+      credentials: chatCredentials,
+      assets: {
+        prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+        storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
+        storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
+        readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
+      },
+    })
+    const videoTasks = new AiVideoTaskStore({
+      rootDirectory: path.join(managerDataDirectory, 'canvas-video-tasks'),
+    })
+    const videoService = createAiVideoService({
+      baseUrl: 'https://xm.solov.cc',
+      credentials: chatCredentials,
+      tasks: videoTasks,
+      assets: {
+        prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+        storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
+        readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
+      },
+    })
     const canvasRunStore = new CanvasRunStore({
       rootDirectory: path.join(managerDataDirectory, 'canvas-runtime'),
-      assets: assetStore,
+      assets: canvasProjectAssets,
     })
     const canvasPromptPresets = new CanvasPromptPresetStore({
       rootDirectory: path.join(managerDataDirectory, 'canvas-content'),
     })
     const canvasRuns = createCanvasRunService({
       store: canvasRunStore,
-      executors: createCanvasNodeExecutors({ imageService, assets: assetStore }),
+      executors: createCanvasNodeExecutors({ imageService: canvasImageService, videoService, assets: canvasProjectAssets }),
     })
-    canvasAccountLifecycle.bind({ imageService, canvasRuns })
+    canvasAccountLifecycle.bind({ imageService: canvasImageService, videoService, canvasRuns })
     const canvasController = createCanvasWindowController({
       canvasDistRoot: canvasDistRoot(),
       externalUrlAllowlist: canvasExternalUrlAllowlist,
@@ -777,12 +914,28 @@ if (!hasSingleInstanceLock) {
       previewOnboarding,
       runtimeLog,
       chatCredentials,
-      imageService,
+      imageService: canvasImageService,
+      videoService,
       aiAssets: assetStore,
+      videoAssets,
+      audioAssets,
+      mediaAssets,
       promptPresets: canvasPromptPresets,
       canvasRuns,
+      projects: canvasProjects,
+      projectAssets: canvasProjectAssets,
     })
-    const tutorialController = createTutorialWindowController({ runtimeLog })
+    const paymentWindow = createPaymentWindowController({
+      onBlockedNavigation: (targetUrl) => {
+        let origin = 'invalid-url'
+        try {
+          origin = new URL(targetUrl).origin
+        } catch {
+          // Keep malformed URLs out of logs; the policy has already blocked it.
+        }
+        runtimeLog.log('warn', 'payment', 'navigation.blocked', '已阻止支付窗口跳转到未授权地址', { origin })
+      },
+    })
 
     // Empty update = read the effective record (file, .bak, or defaults) and
     // persist it durably -- same normalize-on-startup write as before the
@@ -791,6 +944,7 @@ if (!hasSingleInstanceLock) {
     const unregisterIpcHandlers = registerIpcHandlers({
       systemService,
       accountService,
+      paymentWindow,
       accountSessionReady,
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
@@ -823,9 +977,6 @@ if (!hasSingleInstanceLock) {
       },
       setWindowMode,
       setWindowTheme,
-      openTutorialDocsWindow: (sender) => (
-        tutorialController.open(BrowserWindow.fromWebContents(sender) ?? undefined)
-      ),
       openCanvasWindow: () => canvasController.open(),
       ...(manualUninstallVisualFixtureEnabled
         ? {
@@ -843,9 +994,11 @@ if (!hasSingleInstanceLock) {
       unregisterIpcHandlers()
       chatService.dispose()
       imageService.cancelAll()
+      canvasImageService.cancelAll()
+      videoService.cancelAll()
       canvasRuns.shutdown()
       protocol.unhandle('xingmang-asset')
-      tutorialController.dispose()
+      paymentWindow.destroy()
       canvasController.dispose()
       updaterService.dispose()
     })
@@ -855,7 +1008,7 @@ if (!hasSingleInstanceLock) {
     // in the background with no way back to the dashboard on Windows/Linux,
     // since window-all-closed only quits when every window is gone).
     mainWindow.on('closed', () => {
-      tutorialController.closeIfOpen()
+      paymentWindow.destroy()
       canvasController.closeIfOpen()
     })
     if (focusWhenWindowIsReady) {

@@ -14,6 +14,7 @@ const pageEyebrows: Record<Exclude<PageId, 'overview'>, string> = {
   feedback: 'FEEDBACK & DIAGNOSTICS',
   updates: 'UPDATES',
   settings: 'PREFERENCES',
+  tutorial: 'GUIDE & SUPPORT',
 }
 
 export function PlaceholderPage({ pageId }: { pageId: Exclude<PageId, 'overview'> }) {

@@ -2,7 +2,7 @@ export const canvasRunContractVersion = 1 as const
 
 export type CanvasRunNodeKind =
   | 'text' | 'image' | 'video' | 'prompt'
-  | 'image-input' | 'video-input' | 'image-generate' | 'image-edit' | 'video-generate'
+  | 'image-input' | 'video-input' | 'audio-input' | 'image-generate' | 'image-edit' | 'video-generate'
   | 'frame-extract' | 'router' | 'gallery' | 'output' | 'group' | 'note'
 export type CanvasRunScope =
   | { kind: 'all' }
@@ -11,12 +11,13 @@ export type CanvasRunScope =
   | { kind: 'dirty'; nodeIds: string[] }
 
 export interface CanvasRunAsset {
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'audio'
   assetId: string
   localUrl: string
   mimeType?: string
   width?: number
   height?: number
+  taskId?: string
 }
 
 export interface CanvasRunGraphNode {
@@ -30,6 +31,7 @@ export interface CanvasRunGraphNode {
     group?: string
     quality?: string
     size?: string
+    seconds?: string
     adoptedAssetId?: string
   }
 }
@@ -139,6 +141,7 @@ export interface CanvasRunRecord {
   version: typeof canvasRunContractVersion
   userId: number
   ownerId: number
+  projectId?: string
   runId: string
   graphRevision: string
   scope: CanvasRunScope
