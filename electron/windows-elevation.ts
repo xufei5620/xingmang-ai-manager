@@ -55,6 +55,7 @@ export interface ResolveWindowsCliExecutionModeOptions {
 export interface WindowsAdministratorProbeOptions {
   env?: NodeJS.ProcessEnv
   machinePaths?: WindowsMachinePaths
+  timeoutMs?: number
 }
 
 /** Resolve Windows PowerShell from the protected system directory. Never let
@@ -196,7 +197,7 @@ export async function inspectCurrentWindowsTokenElevationType(
       windowsHide: true,
       // Keep startup bounded: main-window creation waits for this probe.
       // The caller falls back to the restrictive mode when the probe times out.
-      timeout: 15_000,
+      timeout: options.timeoutMs ?? 15_000,
       maxBuffer: 64 * 1024,
     },
   )

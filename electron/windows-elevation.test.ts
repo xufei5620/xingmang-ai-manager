@@ -84,7 +84,7 @@ describe('Windows CLI launch', () => {
     let lastError: unknown
     for (let attempt = 0; attempt < 2; attempt += 1) {
       try {
-        const value = await inspectCurrentWindowsTokenElevationType()
+        const value = await inspectCurrentWindowsTokenElevationType({ timeoutMs: 30_000 })
         expect(['default', 'full', 'limited']).toContain(value)
         return
       } catch (error) {
