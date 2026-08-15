@@ -242,7 +242,7 @@ test('usage logs support filters, advanced search, pagination, reset and keyboar
     await dialog.waitFor()
     assert.match(await dialog.innerText(), /缓存读取 Token/)
     assert.match(await dialog.innerText(), /req-fixture-1/)
-    await page.keyboard.press('Escape')
+    await dialog.getByRole('button', { name: '关闭日志详情' }).press('Escape')
     await dialog.waitFor({ state: 'detached' })
 
     await page.getByRole('button', { name: '重置' }).click()
