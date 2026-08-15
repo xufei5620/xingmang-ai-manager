@@ -5,7 +5,13 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiAudioAssetStore, inspectAudio, inspectAudioMetadata } from './ai-audio-asset-store'
 
 const roots: string[] = []
-const fixtureRoot = path.join(process.cwd(), 'output', 'user-36', '2026-08-14')
+
+function mp3(): Buffer {
+  return Buffer.concat([
+    Buffer.from('ID3\x04\x00\x00\x00\x00\x00\x00', 'binary'),
+    Buffer.from('test audio fixture', 'ascii'),
+  ])
+}
 
 function pcmWav(durationSeconds = 1): Buffer {
   const sampleRate = 8_000
@@ -52,12 +58,21 @@ function m4a(): Buffer {
   ])
 }
 
+function audioFixtureRoot(): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-fixtures-'))
+  roots.push(root)
+  fs.writeFileSync(path.join(root, '音频素材.mp3'), mp3())
+  fs.writeFileSync(path.join(root, '8月14日.wav'), pcmWav())
+  return root
+}
+
 afterEach(() => {
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true })
 })
 
 describe('AiAudioAssetStore', () => {
-  it('recognizes the real MP3 and WAV fixtures by content', () => {
+  it('recognizes MP3 and WAV fixtures by content', () => {
+    const fixtureRoot = audioFixtureRoot()
     expect(inspectAudio(fs.readFileSync(path.join(fixtureRoot, '音频素材.mp3')))).toEqual({ mimeType: 'audio/mpeg', extension: 'mp3' })
     expect(inspectAudio(fs.readFileSync(path.join(fixtureRoot, '8月14日.wav')))).toEqual({ mimeType: 'audio/wav', extension: 'wav' })
     expect(() => inspectAudio(Buffer.from('<html>not audio</html>'))).toThrow('音频内容无效')
@@ -89,6 +104,7 @@ describe('AiAudioAssetStore', () => {
   ])('imports %s as an owned copy and leaves the source unchanged', async (fileName, mimeType, extension) => {
     const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-assets-'))
     roots.push(outputRoot)
+    const fixtureRoot = audioFixtureRoot()
     const sourcePath = path.join(fixtureRoot, fileName)
     const before = fs.readFileSync(sourcePath)
     const store = new AiAudioAssetStore({ outputRoot, now: () => new Date('2026-08-14T00:00:00.000Z') })
@@ -105,6 +121,7 @@ describe('AiAudioAssetStore', () => {
   it('reuses one asset and one list item for repeated local audio imports', async () => {
     const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-dedupe-'))
     roots.push(outputRoot)
+    const fixtureRoot = audioFixtureRoot()
     const sourcePath = path.join(fixtureRoot, '8月14日.wav')
     const store = new AiAudioAssetStore({ outputRoot, now: () => new Date('2026-08-14T00:00:00.000Z') })
 
@@ -123,6 +140,7 @@ describe('AiAudioAssetStore', () => {
   it('offers save and reveal commands for audio assets', async () => {
     const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-audio-actions-'))
     roots.push(outputRoot)
+    const fixtureRoot = audioFixtureRoot()
     const target = path.join(outputRoot, 'saved.wav')
     let menuItems: ReadonlyArray<{ id: string; label: string; run(): Promise<void> }> = []
     const revealInFolder = vi.fn()
