@@ -36,6 +36,7 @@ interface HarnessState {
 declare global {
   interface Window {
     accountCommerceHarness: HarnessState
+    releaseFirstOrderRequest: () => void
   }
 }
 
@@ -89,6 +90,15 @@ window.accountCommerceHarness = {
   taskQueries: [],
 }
 
+let releaseFirstOrderRequest: (() => void) | null = null
+const firstOrderRequestGate = new Promise<void>((resolve) => {
+  releaseFirstOrderRequest = resolve
+})
+window.releaseFirstOrderRequest = () => {
+  releaseFirstOrderRequest?.()
+  releaseFirstOrderRequest = null
+}
+
 const profileSnapshot = (): AccountProfileDetail => ({
   userId: 36,
   username: 'interaction-fixture',
@@ -132,10 +142,11 @@ const api = {
   },
   async getAccountTopupOrders() {
     window.accountCommerceHarness.orderCalls += 1
-    await wait(80)
     if (scenario === 'orders-retry' && window.accountCommerceHarness.orderCalls === 1) {
+      await firstOrderRequestGate
       throw new Error('订单服务暂时不可用')
     }
+    await wait(80)
     return {
       page: 1,
       pageSize: 10,

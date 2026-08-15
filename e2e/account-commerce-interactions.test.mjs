@@ -57,6 +57,7 @@ test('orders expose loading, retry a failed request, and render the returned ord
   await withFixture(async (page, baseUrl) => {
     await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=orders-retry`)
     await assert.doesNotReject(() => page.getByRole('heading', { name: '正在读取订单' }).waitFor())
+    await page.evaluate(() => window.releaseFirstOrderRequest())
     const retry = page.getByRole('button', { name: '重试' })
     await retry.waitFor()
     assert.match(await page.getByRole('alert').innerText(), /订单服务暂时不可用/)
