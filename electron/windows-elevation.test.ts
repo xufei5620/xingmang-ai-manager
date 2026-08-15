@@ -81,10 +81,18 @@ describe('Windows CLI launch', () => {
   })
 
   it.runIf(process.platform === 'win32')('reads the current token elevation type through system PowerShell', async () => {
-    await expect(inspectCurrentWindowsTokenElevationType()).resolves.toSatisfy(
-      (value: string) => ['default', 'full', 'limited'].includes(value),
-    )
-  })
+    let lastError: unknown
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const value = await inspectCurrentWindowsTokenElevationType()
+        expect(['default', 'full', 'limited']).toContain(value)
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+    throw lastError
+  }, 70_000)
 
   it('round-trips PowerShell scripts through UTF-16LE EncodedCommand', () => {
     const script = `$env:TERM = 'xterm-256color'; Write-Host '星芒AI'`

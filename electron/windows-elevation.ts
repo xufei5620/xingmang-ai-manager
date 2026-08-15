@@ -194,7 +194,9 @@ export async function inspectCurrentWindowsTokenElevationType(
     {
       env: trustedCommandEnvironment(env, machinePaths),
       windowsHide: true,
-      timeout: 15_000,
+      // Add-Type can spend more than 15 seconds in antivirus scanning during a
+      // cold start on otherwise healthy Windows machines.
+      timeout: 30_000,
       maxBuffer: 64 * 1024,
     },
   )
