@@ -11,11 +11,14 @@ const channels = {
   prepareGroup: 'canvas-host:prepare-group',
   generateImage: 'canvas-host:generate-image',
   editImage: 'canvas-host:edit-image',
+  generateVideo: 'canvas-host:generate-video',
+  resumeVideoTask: 'canvas-host:resume-video-task',
   cancelRequest: 'canvas-host:cancel-request',
   copyAsset: 'canvas-host:copy-asset',
   saveAsset: 'canvas-host:save-asset',
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
+  renameAsset: 'canvas-host:rename-asset',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
   listPromptPresets: 'canvas-host:list-prompt-presets',
@@ -28,6 +31,10 @@ const channels = {
   exportProject: 'canvas-host:export-project',
   previewProject: 'canvas-host:preview-project',
   importProject: 'canvas-host:import-project',
+  listProjects: 'canvas-host:list-projects',
+  createProject: 'canvas-host:create-project',
+  openProject: 'canvas-host:open-project',
+  saveProject: 'canvas-host:save-project',
   runEvent: 'canvas-host:run-event',
 } as const
 
@@ -42,11 +49,14 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   prepareGroup: (group: string) => ipcRenderer.invoke(channels.prepareGroup, group),
   generateImage: (input: unknown) => ipcRenderer.invoke(channels.generateImage, input),
   editImage: (input: unknown) => ipcRenderer.invoke(channels.editImage, input),
+  generateVideo: (input: unknown) => ipcRenderer.invoke(channels.generateVideo, input),
+  resumeVideoTask: (taskId: string) => ipcRenderer.invoke(channels.resumeVideoTask, taskId),
   cancelRequest: (requestId: string) => ipcRenderer.invoke(channels.cancelRequest, requestId),
   copyAsset: (assetId: string) => ipcRenderer.invoke(channels.copyAsset, assetId),
   saveAsset: (assetId: string) => ipcRenderer.invoke(channels.saveAsset, assetId),
   showAssetMenu: (assetId: string) => ipcRenderer.invoke(channels.showAssetMenu, assetId),
   listAssets: (query?: unknown) => ipcRenderer.invoke(channels.listAssets, query),
+  renameAsset: (input: unknown) => ipcRenderer.invoke(channels.renameAsset, input),
   pickAsset: () => ipcRenderer.invoke(channels.pickAsset),
   importAssetFile: (file: File) => {
     const filePath = webUtils.getPathForFile(file)
@@ -63,6 +73,10 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   exportProject: (suggestedName: string, content: string) => ipcRenderer.invoke(channels.exportProject, suggestedName, content),
   previewProject: () => ipcRenderer.invoke(channels.previewProject),
   importProject: (previewId: string) => ipcRenderer.invoke(channels.importProject, previewId),
+  listProjects: () => ipcRenderer.invoke(channels.listProjects),
+  createProject: (name: string) => ipcRenderer.invoke(channels.createProject, name),
+  openProject: (projectId: string) => ipcRenderer.invoke(channels.openProject, projectId),
+  saveProject: (projectId: string, content: string) => ipcRenderer.invoke(channels.saveProject, projectId, content),
   onRunEvent: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload)
     ipcRenderer.on(channels.runEvent, wrapped)

@@ -1,11 +1,12 @@
 import { useMemo, useState } from 'react'
-import { Box, FileStack, Image, Library, MessageSquareText, Plus } from 'lucide-react'
+import { Box, ChevronLeft, ChevronRight, FileStack, Film, Image, Library, MessageSquareText, MoreHorizontal, Music2, Plus } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeCategory } from '../domain/node-definition'
 import type { CanvasAssetPage, CanvasPromptPreset } from '../host'
 import { searchPromptPresets } from '../library/prompt-presets'
 import { builtinCanvasTemplates } from '../templates/builtin-templates'
-import { SafeImage } from './MediaPreview'
+import { SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
+import { mediaAssetAspectRatio } from '../library/media-assets'
 
 interface NodeLibraryProps {
   onAdd(type: string): void
@@ -41,6 +42,7 @@ const categoryLabel: Record<NodeCategory, string> = {
 export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPreset, onLoadTemplate, onOpenAssets, onAssetMenu, assets, userPromptPresets }: NodeLibraryProps) {
   const [view, setView] = useState<LibraryView>('nodes')
   const [query, setQuery] = useState('')
+  const [expanded, setExpanded] = useState(true)
   const normalized = query.trim().toLowerCase()
   const definitions = useMemo(() => builtinNodeRegistry.list().filter((definition) => (
     !['text', 'image', 'video', 'unknown'].includes(definition.type)
@@ -63,34 +65,43 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
   }
 
   return (
-    <aside className="node-library" aria-label="创作内容库">
-      <header>
-        <span className="library-title"><Library size={15} /><strong>创作库</strong></span>
-        <span>{counts[view]}</span>
-      </header>
-      <div className="library-tabs" role="tablist" aria-label="创作库类型">
+    <aside className={`node-library${expanded ? ' is-expanded' : ' is-collapsed'}`} aria-label="创作内容库">
+      <nav className="library-rail" aria-label="创作库类型">
         {libraryViews.map((entry) => {
           const Icon = entry.icon
           return (
             <button
               key={entry.id}
               type="button"
-              role="tab"
-              aria-selected={view === entry.id}
+              className={view === entry.id && expanded ? 'is-active' : ''}
+              aria-pressed={view === entry.id && expanded}
+              aria-controls="node-library-drawer"
+              aria-expanded={view === entry.id ? expanded : false}
               title={entry.label}
-              onClick={() => { setView(entry.id); setQuery('') }}
+              onClick={() => {
+                if (view === entry.id && expanded) setExpanded(false)
+                else { setView(entry.id); setQuery(''); setExpanded(true) }
+              }}
             >
-              <Icon size={14} /><span>{entry.label}</span>
+              <Icon size={17} /><span>{entry.label}</span>
             </button>
           )
         })}
-      </div>
-      {view !== 'assets' && (
-        <div className="node-library-search">
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`搜索${libraryViews.find((entry) => entry.id === view)?.label ?? ''}`} aria-label={`搜索${libraryViews.find((entry) => entry.id === view)?.label ?? ''}`} />
-        </div>
-      )}
-      <div className="node-library-scroll">
+        <button type="button" className="library-rail-toggle" title={expanded ? '收起创作库' : '展开创作库'} aria-label={expanded ? '收起创作库' : '展开创作库'} onClick={() => setExpanded((value) => !value)}>
+          {expanded ? <ChevronLeft size={17} /> : <ChevronRight size={17} />}
+        </button>
+      </nav>
+      {expanded && <div id="node-library-drawer" className="library-drawer">
+        <header>
+          <span className="library-title"><Library size={15} /><strong>{libraryViews.find((entry) => entry.id === view)?.label ?? '创作库'}</strong></span>
+          <span>{counts[view]}</span>
+        </header>
+        {view !== 'assets' && (
+          <div className="node-library-search">
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={`搜索${libraryViews.find((entry) => entry.id === view)?.label ?? ''}`} aria-label={`搜索${libraryViews.find((entry) => entry.id === view)?.label ?? ''}`} />
+          </div>
+        )}
+        <div className="node-library-scroll">
         {view === 'templates' && <section className="template-section">
           <div className="node-library-section-title">工作流模板</div>
           {templates.map((template) => (
@@ -124,11 +135,10 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
           <div className="library-assets-heading"><span>最近素材</span><button type="button" onClick={onOpenAssets}>查看全部</button></div>
           <div className="library-asset-grid">
             {recentAssets.map((asset) => (
-              <button
+              <article
                 key={asset.assetId}
-                type="button"
+                className="library-asset-item"
                 title={`${asset.fileName}\n点击添加到画布，右键打开素材操作`}
-                onClick={() => onAddAsset(asset.assetId)}
                 onContextMenu={(event) => { event.preventDefault(); onAssetMenu(asset.assetId) }}
                 draggable
                 onDragStart={(event) => {
@@ -136,9 +146,20 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
                   event.dataTransfer.effectAllowed = 'copy'
                 }}
               >
-                <SafeImage src={asset.thumbnailUrl} alt={asset.fileName} loading="lazy" />
-                <span>{asset.fileName}</span>
-              </button>
+                <button type="button" className="library-asset-preview" aria-label={`添加素材到画布：${asset.fileName}`} onClick={() => onAddAsset(asset.assetId)}>
+                  {asset.mediaType === 'image'
+                    ? <SafeImage src={asset.thumbnailUrl} alt={asset.fileName} loading="lazy" />
+                    : asset.mediaType === 'audio'
+                      ? <span className="asset-video-placeholder"><Music2 size={22} /><small>音频</small></span>
+                    : isLocalCanvasAssetUrl(asset.localUrl)
+                      ? <ViewportVideo src={asset.localUrl} aria-label={asset.fileName} muted preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
+                      : <span className="asset-video-placeholder"><Film size={18} /><small>视频</small></span>}
+                </button>
+                <footer>
+                  <span>{asset.fileName}</span>
+                  <button type="button" title="素材操作" aria-label={`打开素材操作：${asset.fileName}`} onClick={() => onAssetMenu(asset.assetId)}><MoreHorizontal size={12} /></button>
+                </footer>
+              </article>
             ))}
           </div>
           {recentAssets.length === 0 && <p className="library-empty">还没有本地素材</p>}
@@ -172,7 +193,8 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
             </section>
           )
         })}
-      </div>
+        </div>
+      </div>}
     </aside>
   )
 }

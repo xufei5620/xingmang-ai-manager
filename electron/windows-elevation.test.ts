@@ -5,6 +5,8 @@ import {
   decodeWindowsPowerShellCommand,
   describeWindowsCliLaunchError,
   encodeWindowsPowerShellCommand,
+  inspectCurrentWindowsTokenElevationType,
+  parseWindowsTokenElevationType,
   parseStartedWindowsProcessId,
   powerShellLiteral,
   resolveWindowsCliExecutionMode,
@@ -55,6 +57,42 @@ describe('Windows CLI launch', () => {
       probeAdministrator: async () => { throw new Error('probe failed') },
     })).resolves.toBe('trusted-only')
   })
+
+  it('distinguishes explicit UAC elevation from built-in Administrator default tokens', async () => {
+    await expect(resolveWindowsCliExecutionMode({
+      isPackaged: true,
+      platform: 'win32',
+      probeElevationType: async () => 'full',
+    })).resolves.toBe('trusted-only')
+    await expect(resolveWindowsCliExecutionMode({
+      isPackaged: true,
+      platform: 'win32',
+      probeElevationType: async () => 'limited',
+    })).resolves.toBe('same-user')
+    await expect(resolveWindowsCliExecutionMode({
+      isPackaged: true,
+      platform: 'win32',
+      probeElevationType: async () => 'default',
+    })).resolves.toBe('same-user')
+
+    expect(parseWindowsTokenElevationType(' default\r\n')).toBe('default')
+    expect(parseWindowsTokenElevationType('FULL')).toBe('full')
+    expect(parseWindowsTokenElevationType('unknown')).toBeNull()
+  })
+
+  it.runIf(process.platform === 'win32')('reads the current token elevation type through system PowerShell', async () => {
+    let lastError: unknown
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const value = await inspectCurrentWindowsTokenElevationType({ timeoutMs: 30_000 })
+        expect(['default', 'full', 'limited']).toContain(value)
+        return
+      } catch (error) {
+        lastError = error
+      }
+    }
+    throw lastError
+  }, 70_000)
 
   it('round-trips PowerShell scripts through UTF-16LE EncodedCommand', () => {
     const script = `$env:TERM = 'xterm-256color'; Write-Host '星芒AI'`

@@ -16,7 +16,12 @@ function setup(
     resolveCredential: vi.fn(async (group: string) => ({
       userId: 7,
       group,
-      models: ['gpt-image-2'],
+      models: [
+        'gpt-image-1',
+        'gpt-image-2',
+        'jimeng_high_aes_general_v21_L',
+        'grok-imagine-image-2.0',
+      ],
       keyCreated: false,
       apiKey: 'sk-secret-never-return',
       keyId: 1,
@@ -91,13 +96,99 @@ describe('AI image service', () => {
     expect(assets.storeRemoteUrl).toHaveBeenCalledWith(7, 'https://images.example/result.jpg', undefined)
   })
 
-  it('rejects malformed, empty, and oversized-style responses without retrying', async () => {
+  it('requests inline Grok output and accepts a data URL returned through the url field', async () => {
+    const dataUrl = 'data:image/png;base64,aGVsbG8='
+    const fetchImpl = vi.fn(async () => response({ data: [{ url: dataUrl }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+
+    await service.generate(4, {
+      requestId: 'grok-inline', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
+    })
+
+    const body = JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0][1]?.body))
+    expect(body).toMatchObject({ response_format: 'b64_json' })
+    expect(assets.storeBase64).toHaveBeenCalledWith(7, dataUrl, undefined)
+    expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes a generated remote image download failure from an output write failure', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ url: 'https://imgen.x.ai/result.jpg' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    vi.mocked(assets.storeRemoteUrl).mockRejectedValue(
+      Object.assign(new Error('图片下载失败，服务返回 403'), { code: 'AI_IMAGE_DOWNLOAD_FAILED' }),
+    )
+
+    await expect(service.generate(4, {
+      requestId: 'remote-download-failed', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
+    })).rejects.toThrow(/已生成但下载失败.*代理/)
+
+    vi.mocked(assets.storeRemoteUrl).mockRejectedValue(new Error('无法写入 output 目录'))
+    await expect(service.generate(4, {
+      requestId: 'remote-write-failed', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
+    })).rejects.toThrow(/本地保存失败.*output/)
+  })
+
+  it('treats a successful response without images as ambiguous and never retries it', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [] })) as unknown as typeof fetch
     const { service } = setup(fetchImpl)
     await expect(service.generate(4, {
       requestId: 'r3', group: '生图分组', model: 'gpt-image-2', prompt: '图',
-    })).rejects.toThrow('没有返回图片')
+    })).rejects.toThrow('结果不明确')
     expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('warns not to resubmit when a generated image cannot be stored locally', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    vi.mocked(assets.storeBase64).mockRejectedValue(new Error('disk full'))
+
+    await expect(service.generate(4, {
+      requestId: 'store-failed', group: '生图分组', model: 'gpt-image-2', prompt: '图',
+    })).rejects.toThrow(/已生成.*请勿立即重复提交/)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('treats a rejected paid POST as ambiguous and never replays it', async () => {
+    const fetchImpl = vi.fn(async () => { throw new TypeError('socket reset') }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.generate(4, {
+      requestId: 'ambiguous-post', group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7,
+    })).rejects.toThrow(/结果不明确.*请勿立即重复提交/)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('warns against resubmission when a dispatched image request times out', async () => {
+    const fetchImpl = vi.fn((_url: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
+    })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl, { timeoutMs: 5 })
+    await expect(service.generate(4, {
+      requestId: 'timeout-post', group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 7,
+    })).rejects.toThrow(/超时.*请勿立即重复提交/)
+    expect(fetchImpl).toHaveBeenCalledOnce()
+  })
+
+  it('rejects image generation for a changed account before paid dispatch', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await expect(service.generate(4, {
+      requestId: 'account-switch', group: '生图分组', model: 'gpt-image-2', prompt: '图', expectedUserId: 8,
+    })).rejects.toThrow('登录账号已变化')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('rejects a model missing from the selected group before paid dispatch', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service, credentials } = setup(fetchImpl)
+    credentials.resolveCredential.mockResolvedValue({
+      userId: 7, group: '生图分组', models: ['gpt-image-2'], keyCreated: false,
+      apiKey: 'sk-secret-never-return', keyId: 1, keyName: 'image',
+    })
+
+    await expect(service.generate(4, {
+      requestId: 'unavailable-model', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '图',
+    })).rejects.toThrow('当前分组「生图分组」不提供模型')
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('redacts upstream secrets and remote URLs', async () => {
@@ -175,6 +266,21 @@ describe('AI image service', () => {
     expect(fetchImpl).not.toHaveBeenCalled()
   })
 
+  it('allows Grok image editing and omits unsupported size and quality fields', async () => {
+    const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+    await service.edit(3, {
+      requestId: 'edit-grok', group: '生图分组', model: 'grok-imagine-image-2.0', prompt: '改成夜景',
+      sourceAssetIds: ['a'.repeat(43)], expectedUserId: 7, size: '1024x1024', quality: 'high',
+    })
+
+    const form = vi.mocked(fetchImpl).mock.calls[0][1]?.body as FormData
+    expect(form.get('model')).toBe('grok-imagine-image-2.0')
+    expect(form.get('response_format')).toBe('b64_json')
+    expect(form.get('size')).toBeNull()
+    expect(form.get('quality')).toBeNull()
+  })
+
   it('enforces the aggregate edit-source size before dispatch', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=' }] })) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl)
@@ -217,7 +323,7 @@ describe('AI image service', () => {
     [403, { error: { message: 'Project does not have access to model' } }, '暂无该生图模型权限'],
     [403, { error: { message: '用户额度不足' } }, '余额或 API Key 额度不足'],
     [429, { error: { message: 'rate limited' } }, '上游限流'],
-    [503, { error: { message: 'upstream unavailable' } }, '暂时不可用'],
+    [503, { error: { message: 'upstream unavailable' } }, '结果不明确'],
   ])('maps HTTP %s image failures to an actionable message', async (status, payload, expected) => {
     const fetchImpl = vi.fn(async () => response(payload, status)) as unknown as typeof fetch
     const { service } = setup(fetchImpl)

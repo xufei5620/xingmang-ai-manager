@@ -6,8 +6,14 @@ export interface CanvasViewport {
   zoom: number
 }
 
+export interface CanvasMediaGroups {
+  image?: string
+  video?: string
+}
+
 export interface CanvasDocumentState {
   name: string
+  mediaGroups: CanvasMediaGroups
   nodes: EditorNodeRecord[]
   edges: EditorEdgeRecord[]
   viewport: CanvasViewport
@@ -21,7 +27,7 @@ export interface CanvasGraphIndex {
 }
 
 export function createCanvasDocument(name = '未命名工作流'): CanvasDocumentState {
-  return { name, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, revision: 0 }
+  return { name, mediaGroups: {}, nodes: [], edges: [], viewport: { x: 0, y: 0, zoom: 1 }, revision: 0 }
 }
 
 export function buildCanvasGraphIndex(document: CanvasDocumentState): CanvasGraphIndex {

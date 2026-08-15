@@ -2,24 +2,27 @@ import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
 import {
   Activity,
   ArrowLeft,
+  BarChart3,
+  BadgeDollarSign,
   Check,
   ChevronLeft,
   ChevronRight,
   ClipboardCopy,
   Eye,
   EyeOff,
-  ExternalLink,
   FileWarning,
-  Inbox,
   KeyRound,
+  ListChecks,
   LoaderCircle,
-  Lock,
   LogOut,
+  MonitorSmartphone,
   Pencil,
   Plus,
+  RefreshCw,
+  Save,
+  ShieldCheck,
   Trash2,
   UserRound,
-  Users,
   Wallet,
   type LucideIcon,
 } from 'lucide-react'
@@ -31,42 +34,82 @@ import type {
   AccountKey,
   AccountKeyCreateInput,
   AccountKeysPage,
+  AccountLoginSession,
   AccountProfileDetail,
   AccountUsableGroup,
-  AccountUsagePage,
 } from '../../types'
 import { KeyEditorDialog } from './KeyEditorDialog'
+import { AccountCommercePanels, type AccountCommerceTab } from './AccountCommercePanels'
+import { AccountDashboardPanel } from './AccountDashboardPanel'
+import { AccountTaskPanel } from './AccountTaskPanel'
+import { AccountUsagePanel } from './AccountUsagePanel'
 import { formatBalanceUsd } from './account-stub'
 import { resolveAccountErrorMessage } from './account-errors'
 import {
   accountKeyStatusLabel,
-  accountUsageTypeLabel,
-  buildAccountInviteLink,
   formatAccountUsageDate,
   formatKeyQuotaUsd,
-  formatUsageCostUsd,
-  WALLET_URL,
 } from './account-center'
 import { hasAccountFieldErrors, validateChangePasswordForm, type AccountFieldErrors } from './validation'
 import type { ToastMessage } from '../Toast'
 
-const USAGE_PAGE_SIZE = 8
-// Same page size as usage above -- both share the "one screen, no scroll"
-// constraint this page's tabs are all designed around, so both cap their row
-// count identically.
 const KEYS_PAGE_SIZE = 8
 const KEY_REVEAL_DURATION_MS = 30_000
 
-type AccountCenterTab = 'profile' | 'usage' | 'invite' | 'topup' | 'keys' | 'security'
+export type AccountCenterPrimaryTab =
+  | 'overview'
+  | 'dashboard'
+  | 'keys'
+  | 'usage'
+  | 'tasks'
+  | 'wallet'
+  | 'profile'
 
-const TABS: ReadonlyArray<{ id: AccountCenterTab; label: string; icon: LucideIcon }> = [
-  { id: 'profile', label: '资料', icon: UserRound },
-  { id: 'usage', label: '用量', icon: Activity },
-  { id: 'invite', label: '邀请', icon: Users },
-  { id: 'topup', label: '充值', icon: Wallet },
-  { id: 'keys', label: 'Key 管理', icon: KeyRound },
-  { id: 'security', label: '安全', icon: Lock },
+export type AccountCenterTab =
+  | AccountCenterPrimaryTab
+  | 'subscriptions'
+  | 'topup'
+  | 'orders'
+  | 'redeem'
+  | 'invite'
+  | 'security'
+
+type AccountCenterTabGroup = 'general' | 'personal'
+
+interface AccountCenterTabDefinition {
+  id: AccountCenterPrimaryTab
+  label: string
+  description: string
+  icon: LucideIcon
+  group: AccountCenterTabGroup
+}
+
+const TAB_GROUPS: ReadonlyArray<{ id: AccountCenterTabGroup; label: string }> = [
+  { id: 'general', label: '常规' },
+  { id: 'personal', label: '个人' },
 ]
+
+const TABS: readonly AccountCenterTabDefinition[] = [
+  { id: 'overview', label: '概览', description: '余额、累计用量与账户信息', icon: BadgeDollarSign, group: 'general' },
+  { id: 'dashboard', label: '数据看板', description: '账户用量、吞吐与最近任务汇总', icon: BarChart3, group: 'general' },
+  { id: 'keys', label: 'API 密钥', description: '密钥、分组、倍率与额度管理', icon: KeyRound, group: 'general' },
+  { id: 'usage', label: '使用日志', description: '筛选模型调用、Token、缓存与费用明细', icon: Activity, group: 'general' },
+  { id: 'tasks', label: '任务日志', description: '查看异步图片、视频和音频任务状态', icon: ListChecks, group: 'general' },
+  { id: 'wallet', label: '钱包', description: '订阅、充值、订单、兑换与邀请返利', icon: Wallet, group: 'personal' },
+  { id: 'profile', label: '个人资料', description: '账户资料、密码与登录设备', icon: UserRound, group: 'personal' },
+]
+
+const commerceTabs: readonly AccountCommerceTab[] = ['subscriptions', 'topup', 'orders', 'redeem', 'invite']
+
+function primaryTabFor(section: AccountCenterTab): AccountCenterPrimaryTab {
+  if (commerceTabs.includes(section as AccountCommerceTab)) return 'wallet'
+  if (section === 'security') return 'profile'
+  return section as AccountCenterPrimaryTab
+}
+
+function commerceTabFor(section: AccountCenterTab): AccountCommerceTab {
+  return commerceTabs.includes(section as AccountCommerceTab) ? section as AccountCommerceTab : 'subscriptions'
+}
 
 /**
  * Confirm-before-revoke dialog for the Key 管理 tab (W4b) -- mirrors
@@ -117,10 +160,39 @@ export interface AccountCenterPageProps {
   /** Reuses App.tsx's existing handleAccountLogout; this component owns no session state of its own. */
   onLogout: () => void
   notify?: (toast: ToastMessage) => void
+  initialSection?: AccountCenterTab
 }
 
 function compactCount(value: number): string {
   return value.toLocaleString('zh-CN')
+}
+
+export function sessionDeviceLabel(userAgent: string, current = false): string {
+  if (current) return '星芒 AI 管理工具'
+  const normalized = userAgent.toLocaleLowerCase('en-US')
+  const system = normalized.includes('windows')
+    ? 'Windows'
+    : normalized.includes('mac os') || normalized.includes('macintosh')
+      ? 'macOS'
+      : normalized.includes('android')
+        ? 'Android'
+        : normalized.includes('iphone') || normalized.includes('ipad')
+          ? 'iOS'
+          : normalized.includes('linux')
+            ? 'Linux'
+            : '未知系统'
+  const client = normalized.includes('electron')
+    ? '星芒客户端'
+    : normalized.includes('edg/')
+      ? 'Edge'
+      : normalized.includes('chrome/')
+        ? 'Chrome'
+        : normalized.includes('firefox/')
+          ? 'Firefox'
+          : normalized.includes('safari/')
+            ? 'Safari'
+            : '浏览器或客户端'
+  return `${system} · ${client}`
 }
 
 export function AccountKeySecretCell({
@@ -183,17 +255,14 @@ export function AccountKeySecretCell({
   )
 }
 
-export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPageProps) {
-  const [tab, setTab] = useState<AccountCenterTab>('profile')
+export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 'overview' }: AccountCenterPageProps) {
+  const [primaryTab, setPrimaryTab] = useState<AccountCenterPrimaryTab>(() => primaryTabFor(initialSection))
+  const [walletTab, setWalletTab] = useState<AccountCommerceTab>(() => commerceTabFor(initialSection))
+  const [profileTab, setProfileTab] = useState<'profile' | 'security'>(() => initialSection === 'security' ? 'security' : 'profile')
   const [profile, setProfile] = useState<AccountProfileDetail | null>(null)
   const [balance, setBalance] = useState<AccountBalance | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
   const [profileError, setProfileError] = useState<string | null>(null)
-  const [usagePageNumber, setUsagePageNumber] = useState(1)
-  const [usage, setUsage] = useState<AccountUsagePage | null>(null)
-  const [usageLoading, setUsageLoading] = useState(false)
-  const [usageError, setUsageError] = useState<string | null>(null)
-  const [copiedField, setCopiedField] = useState<'code' | 'link' | null>(null)
   const [keysPageNumber, setKeysPageNumber] = useState(1)
   const [keys, setKeys] = useState<AccountKeysPage | null>(null)
   const [keysLoading, setKeysLoading] = useState(false)
@@ -216,17 +285,32 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
   const [showPasswordFields, setShowPasswordFields] = useState(false)
   const [passwordErrors, setPasswordErrors] = useState<AccountFieldErrors>({})
   const [passwordSubmitting, setPasswordSubmitting] = useState(false)
-  // T6: profile/usage/keys are all async page data that can outlive a tab
+  const [displayName, setDisplayName] = useState('')
+  const [profileSubmitting, setProfileSubmitting] = useState(false)
+  const [loginSessions, setLoginSessions] = useState<AccountLoginSession[] | null>(null)
+  const [loginSessionsLoading, setLoginSessionsLoading] = useState(false)
+  const [loginSessionsError, setLoginSessionsError] = useState<string | null>(null)
+  const [revokingSessionId, setRevokingSessionId] = useState<string | null>(null)
+  const [revokingOtherSessions, setRevokingOtherSessions] = useState(false)
+  const [sessionRevokeTarget, setSessionRevokeTarget] = useState<AccountLoginSession | 'others' | null>(null)
+  // T6: profile/keys are async page data that can outlive a tab
   // switch or a fast double-open; keyed by a fixed string per data kind, same
   // pattern App.tsx already uses for mcp/skills/plugins via pageDataTracker.
-  const requestTracker = useRef(createLatestRequestTracker<'profile' | 'usage' | 'keys' | 'groups'>()).current
+  const requestTracker = useRef(createLatestRequestTracker<'profile' | 'keys' | 'groups'>()).current
   const copyResetTimer = useRef<number | null>(null)
   const revealedKeySecret = useRef<string | null>(null)
   const revealHideTimer = useRef<number | null>(null)
   const revealRequestId = useRef(0)
   const componentMounted = useRef(true)
-  const currentTab = useRef(tab)
-  currentTab.current = tab
+  const currentTab = useRef(primaryTab)
+  const activeTabDefinition = TABS.find((item) => item.id === primaryTab) ?? TABS[0]
+  currentTab.current = primaryTab
+
+  useEffect(() => {
+    setPrimaryTab(primaryTabFor(initialSection))
+    if (commerceTabs.includes(initialSection as AccountCommerceTab)) setWalletTab(initialSection as AccountCommerceTab)
+    if (initialSection === 'profile' || initialSection === 'security') setProfileTab(initialSection)
+  }, [initialSection])
 
   const loadProfile = useCallback(async () => {
     const requestId = requestTracker.begin('profile')
@@ -246,6 +330,7 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
       if (!requestTracker.isCurrent('profile', requestId)) return
       setProfile(nextProfile)
       setBalance(nextBalance)
+      setDisplayName(nextProfile.displayName ?? '')
     } catch (error) {
       if (requestTracker.isCurrent('profile', requestId)) setProfileError(errorMessage(error))
     } finally {
@@ -253,28 +338,21 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
     }
   }, [requestTracker])
 
-  useEffect(() => { void loadProfile() }, [loadProfile])
-
-  const loadUsage = useCallback(async (page: number) => {
-    const requestId = requestTracker.begin('usage')
-    setUsageLoading(true)
-    setUsageError(null)
+  const loadLoginSessions = useCallback(async () => {
+    setLoginSessionsLoading(true)
+    setLoginSessionsError(null)
     try {
-      const next = await window.xingmang.getAccountUsage({ page, pageSize: USAGE_PAGE_SIZE })
-      if (!requestTracker.isCurrent('usage', requestId)) return
-      setUsage(next)
+      const next = await window.xingmang.getAccountLoginSessions()
+      if (!componentMounted.current) return
+      setLoginSessions(next)
     } catch (error) {
-      if (requestTracker.isCurrent('usage', requestId)) setUsageError(errorMessage(error))
+      if (componentMounted.current) setLoginSessionsError(resolveAccountErrorMessage(errorMessage(error)))
     } finally {
-      if (requestTracker.isCurrent('usage', requestId)) setUsageLoading(false)
+      if (componentMounted.current) setLoginSessionsLoading(false)
     }
-  }, [requestTracker])
+  }, [])
 
-  // Lazy, like App.tsx's mcp/skills/plugins pages: only fetched once the
-  // user actually opens the 用量 tab, and again whenever the page changes.
-  useEffect(() => {
-    if (tab === 'usage') void loadUsage(usagePageNumber)
-  }, [tab, usagePageNumber, loadUsage])
+  useEffect(() => { void loadProfile() }, [loadProfile])
 
   const loadKeys = useCallback(async (page: number) => {
     const requestId = requestTracker.begin('keys')
@@ -310,16 +388,20 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
 
   // Lazy, same reasoning as loadUsage above.
   useEffect(() => {
-    if (tab === 'keys') void loadKeys(keysPageNumber)
-  }, [tab, keysPageNumber, loadKeys])
+    if (primaryTab === 'keys') void loadKeys(keysPageNumber)
+  }, [primaryTab, keysPageNumber, loadKeys])
 
   useEffect(() => {
-    if (tab !== 'keys') return
+    if (primaryTab !== 'keys') return
     if (keyGroups.length === 0 && !keyGroupsLoading && !keyGroupsError) void loadKeyGroups()
-  }, [tab, loadKeyGroups, keyGroups.length, keyGroupsLoading, keyGroupsError])
+  }, [primaryTab, loadKeyGroups, keyGroups.length, keyGroupsLoading, keyGroupsError])
 
   useEffect(() => {
-    if (tab === 'keys') return
+    if (primaryTab === 'profile' && profileTab === 'security' && loginSessions === null && !loginSessionsLoading) void loadLoginSessions()
+  }, [primaryTab, profileTab, loginSessions, loginSessionsLoading, loadLoginSessions])
+
+  useEffect(() => {
+    if (primaryTab === 'keys') return
     revealRequestId.current += 1
     revealedKeySecret.current = null
     setRevealedKeyId(null)
@@ -328,7 +410,7 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
       window.clearTimeout(revealHideTimer.current)
       revealHideTimer.current = null
     }
-  }, [tab])
+  }, [primaryTab])
 
   useEffect(() => {
     componentMounted.current = true
@@ -413,18 +495,58 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
     }
   }
 
-  const copyText = async (field: 'code' | 'link', value: string) => {
-    if (!navigator.clipboard) {
-      notify?.({ type: 'error', message: '当前环境不支持自动复制，请手动选中复制' })
+  const submitProfile = async (event: FormEvent) => {
+    event.preventDefault()
+    if (profileSubmitting || !profile) return
+    const nextDisplayName = displayName.trim()
+    if (nextDisplayName.length > 20) {
+      notify?.({ type: 'error', message: '显示名称不能超过 20 个字符' })
       return
     }
+    setProfileSubmitting(true)
     try {
-      await navigator.clipboard.writeText(value)
-      setCopiedField(field)
-      if (copyResetTimer.current) window.clearTimeout(copyResetTimer.current)
-      copyResetTimer.current = window.setTimeout(() => setCopiedField(null), 1_600)
-    } catch {
-      notify?.({ type: 'error', message: '复制失败，请手动选中复制' })
+      await window.xingmang.updateAccountDisplayName({ displayName: nextDisplayName })
+      await loadProfile()
+      notify?.({ type: 'success', message: '个人资料已更新' })
+    } catch (error) {
+      notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    } finally {
+      if (componentMounted.current) setProfileSubmitting(false)
+    }
+  }
+
+  const revokeLoginSession = async (session: AccountLoginSession) => {
+    if (revokingSessionId || revokingOtherSessions) return
+    setRevokingSessionId(session.sid)
+    try {
+      const result = await window.xingmang.revokeAccountLoginSession(session.sid)
+      if (result.current) {
+        notify?.({ type: 'success', message: '当前设备已退出登录' })
+        onLogout()
+        return
+      }
+      notify?.({ type: 'success', message: '登录设备已撤销' })
+      setSessionRevokeTarget(null)
+      await loadLoginSessions()
+    } catch (error) {
+      notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    } finally {
+      if (componentMounted.current) setRevokingSessionId(null)
+    }
+  }
+
+  const revokeOtherLoginSessions = async () => {
+    if (revokingSessionId || revokingOtherSessions) return
+    setRevokingOtherSessions(true)
+    try {
+      const result = await window.xingmang.revokeOtherAccountLoginSessions()
+      notify?.({ type: 'success', message: result.revokedCount > 0 ? `已退出其他 ${result.revokedCount} 个设备` : '没有其他登录设备' })
+      setSessionRevokeTarget(null)
+      await loadLoginSessions()
+    } catch (error) {
+      notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
+    } finally {
+      if (componentMounted.current) setRevokingOtherSessions(false)
     }
   }
 
@@ -485,12 +607,6 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
     } finally {
       if (componentMounted.current && revealRequestId.current === requestId) setRevealingKeyId(null)
     }
-  }
-
-  const openWallet = () => {
-    void window.xingmang.openExternal(WALLET_URL).catch((error: unknown) => {
-      notify?.({ type: 'error', message: errorMessage(error) })
-    })
   }
 
   const renderProfileTab = () => {
@@ -554,152 +670,6 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
       </div>
     )
   }
-
-  const renderUsageTab = () => {
-    if (usageLoading && !usage) {
-      return (
-        <section className="workspace-empty" aria-live="polite">
-          <div className="workspace-empty-icon"><LoaderCircle size={24} className="spin" /></div>
-          <h2>正在读取用量明细</h2>
-        </section>
-      )
-    }
-    if (usageError && !usage) {
-      return (
-        <div className="session-error" role="alert">
-          <FileWarning size={18} />
-          <div><strong>用量明细读取失败</strong><span>{usageError}</span></div>
-          <button className="secondary-button" type="button" onClick={() => void loadUsage(usagePageNumber)}>重试</button>
-        </div>
-      )
-    }
-    if (!usage) return null
-    const totalPages = Math.max(1, Math.ceil(usage.total / USAGE_PAGE_SIZE))
-    if (usage.records.length === 0) {
-      return (
-        <section className="workspace-empty">
-          <div className="workspace-empty-icon"><Inbox size={24} /></div>
-          <h2>暂无用量记录</h2>
-          <p>开始使用后，这里会显示每一次调用的明细</p>
-        </section>
-      )
-    }
-    return (
-      <div className="account-center-usage">
-        <div className="account-center-usage-head" aria-hidden="true">
-          <span>时间</span><span>模型</span><span>输入 tokens</span><span>输出 tokens</span><span>类型</span><span>费用</span>
-        </div>
-        <div className="account-center-usage-body" aria-busy={usageLoading}>
-          {usage.records.map((record) => (
-            <div className="account-center-usage-row" key={record.id}>
-              <span>{formatAccountUsageDate(record.createdAt)}</span>
-              <strong title={record.modelName || '未知模型'}>{record.modelName || '未知模型'}</strong>
-              <span>{compactCount(record.promptTokens)}</span>
-              <span>{compactCount(record.completionTokens)}</span>
-              <span>{accountUsageTypeLabel(record.type)}</span>
-              <span>{formatUsageCostUsd(record.quota, balance?.quotaPerUnit)}</span>
-            </div>
-          ))}
-        </div>
-        <footer className="account-center-pagination">
-          <span>共 {usage.total} 条记录</span>
-          <div>
-            <button
-              className="icon-button compact"
-              type="button"
-              title="上一页"
-              aria-label="上一页"
-              disabled={usagePageNumber <= 1 || usageLoading}
-              onClick={() => setUsagePageNumber((value) => Math.max(1, value - 1))}
-            >
-              <ChevronLeft size={17} />
-            </button>
-            <span>{usagePageNumber} / {totalPages}</span>
-            <button
-              className="icon-button compact"
-              type="button"
-              title="下一页"
-              aria-label="下一页"
-              disabled={usagePageNumber >= totalPages || usageLoading}
-              onClick={() => setUsagePageNumber((value) => value + 1)}
-            >
-              <ChevronRight size={17} />
-            </button>
-          </div>
-        </footer>
-      </div>
-    )
-  }
-
-  const renderInviteTab = () => {
-    if (profileLoading && !profile) {
-      return (
-        <section className="workspace-empty" aria-live="polite">
-          <div className="workspace-empty-icon"><LoaderCircle size={24} className="spin" /></div>
-          <h2>正在读取邀请信息</h2>
-        </section>
-      )
-    }
-    if (!profile?.affCode) {
-      return (
-        <section className="workspace-empty">
-          <div className="workspace-empty-icon"><Users size={24} /></div>
-          <h2>暂无邀请码</h2>
-          <p>{profileError ?? '请稍后重试，或联系客服'}</p>
-        </section>
-      )
-    }
-    const inviteLink = buildAccountInviteLink(profile.affCode)
-    return (
-      <div className="account-center-invite">
-        <p className="account-center-invite-stat">
-          已通过邀请码邀请 <strong>{compactCount(profile.affCount)}</strong> 人注册
-        </p>
-        <div className="field">
-          <span>邀请码</span>
-          <div className="input-with-action">
-            <input readOnly value={profile.affCode} onFocus={(event) => event.currentTarget.select()} />
-            <button
-              type="button"
-              title={copiedField === 'code' ? '已复制' : '复制邀请码'}
-              onClick={() => void copyText('code', profile.affCode as string)}
-            >
-              {copiedField === 'code' ? <Check size={16} /> : <ClipboardCopy size={16} />}
-            </button>
-          </div>
-        </div>
-        <div className="field">
-          <span>邀请链接</span>
-          <div className="input-with-action">
-            <input readOnly value={inviteLink} onFocus={(event) => event.currentTarget.select()} />
-            <button
-              type="button"
-              title={copiedField === 'link' ? '已复制' : '复制邀请链接'}
-              onClick={() => void copyText('link', inviteLink)}
-            >
-              {copiedField === 'link' ? <Check size={16} /> : <ClipboardCopy size={16} />}
-            </button>
-          </div>
-          <small className="field-hint">好友通过此链接注册后自动关联邀请关系</small>
-        </div>
-        {/* TODO(后续任务): 返佣记录列表 -- 本波（W4a）不做，见任务范围说明 */}
-      </div>
-    )
-  }
-
-  const renderTopupTab = () => (
-    <div className="account-center-topup">
-      <p>
-        充值在浏览器完成：点击下方按钮会打开系统默认浏览器访问星芒账号后台的充值页面。
-        桌面客户端的登录状态不会带过去，请在网页端登录后完成充值——这与其他在线支付一致。
-      </p>
-      <p>充值到账后，回到本页「资料」标签刷新即可看到最新余额。</p>
-      <button type="button" className="primary-button" onClick={openWallet}>
-        <ExternalLink size={16} />
-        去充值
-      </button>
-    </div>
-  )
 
   const renderKeysTab = () => {
     if (keysLoading && !keys) {
@@ -825,9 +795,36 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
     )
   }
 
+  const renderPersonalProfileTab = () => {
+    if (profileLoading && !profile) return <section className="workspace-empty"><div className="workspace-empty-icon"><LoaderCircle size={24} className="spin" /></div><h2>正在读取个人资料</h2></section>
+    if (!profile) return <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>个人资料读取失败</strong><span>{profileError ?? '请稍后重试'}</span></div><button type="button" className="secondary-button" onClick={() => void loadProfile()}>重试</button></div>
+    return (
+      <div className="account-profile-settings">
+        <section className="account-profile-identity">
+          <span className="account-profile-avatar">{(profile.displayName || profile.username).slice(0, 1).toLocaleUpperCase('zh-CN')}</span>
+          <div><strong>{profile.displayName || profile.username}</strong><span>用户 ID：{profile.userId}</span></div>
+        </section>
+        <form onSubmit={(event) => void submitProfile(event)}>
+          <label className="field extension-field"><span>显示名称</span><input value={displayName} maxLength={20} placeholder="在软件内显示的名称" onChange={(event) => setDisplayName(event.target.value)} /><small className="field-hint">最多 20 个字符，不会修改登录用户名。</small></label>
+          <div className="account-profile-readonly">
+            <div><span>用户名</span><strong>{profile.username}</strong></div>
+            <div><span>邮箱</span><strong>{profile.email || '未绑定邮箱'}</strong></div>
+            <div><span>账户分组</span><strong>{profile.group || '默认分组'}</strong></div>
+          </div>
+          <button type="submit" className="primary-button" disabled={profileSubmitting || displayName.trim() === (profile.displayName ?? '')}>
+            {profileSubmitting ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}
+            {profileSubmitting ? '正在保存…' : '保存资料'}
+          </button>
+        </form>
+      </div>
+    )
+  }
+
   const renderSecurityTab = () => (
-    <div className="account-center-security">
-      <form onSubmit={(event) => void submitChangePassword(event)}>
+    <div className="account-security-layout">
+      <section className="account-center-security">
+        <header className="account-security-section-title"><ShieldCheck size={18} /><div><h3>修改密码</h3><p>更新密码后，其他浏览器和设备会话将失效。</p></div></header>
+        <form onSubmit={(event) => void submitChangePassword(event)}>
         <label className="field extension-field">
           <span>原密码</span>
           <div className="input-with-action">
@@ -895,22 +892,66 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
         <button type="submit" className="primary-button" disabled={passwordSubmitting}>
           {passwordSubmitting ? '提交中…' : '确认修改'}
         </button>
-      </form>
+        </form>
+      </section>
+      <section className="account-login-sessions">
+        <header className="account-security-section-title">
+          <MonitorSmartphone size={18} />
+          <div><h3>登录设备</h3><p>查看当前账号的活跃会话，并撤销不再使用的设备。</p></div>
+          <button type="button" className="icon-button compact" title="刷新设备列表" aria-label="刷新设备列表" disabled={loginSessionsLoading} onClick={() => void loadLoginSessions()}>
+            <RefreshCw size={15} className={loginSessionsLoading ? 'spin' : undefined} />
+          </button>
+        </header>
+        {loginSessionsError && !loginSessions ? (
+          <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>设备列表读取失败</strong><span>{loginSessionsError}</span></div><button type="button" className="secondary-button" onClick={() => void loadLoginSessions()}>重试</button></div>
+        ) : loginSessionsLoading && !loginSessions ? (
+          <div className="account-sessions-loading"><LoaderCircle size={18} className="spin" />正在读取登录设备…</div>
+        ) : (
+          <>
+            <div className="account-session-list">
+              {(loginSessions ?? []).map((session) => (
+                <article className={session.current ? 'is-current' : ''} key={session.sid}>
+                  <span className="account-session-icon"><MonitorSmartphone size={17} /></span>
+                  <div className="account-session-main">
+                    <strong>{sessionDeviceLabel(session.userAgent, session.current)} {session.current && <em>当前设备</em>}</strong>
+                    <span>{session.ip || 'IP 未知'} · {session.loginMethod || '账号登录'}</span>
+                    <small>最近活动 {formatAccountUsageDate(session.lastActiveAt)} · 到期 {formatAccountUsageDate(session.expiresAt)}</small>
+                  </div>
+                  <button type="button" className={session.current ? 'secondary-button' : 'danger-button'} disabled={revokingSessionId !== null || revokingOtherSessions} onClick={() => setSessionRevokeTarget(session)}>
+                    {revokingSessionId === session.sid ? <LoaderCircle className="spin" size={15} /> : <LogOut size={15} />}
+                    {session.current ? '退出当前设备' : '撤销'}
+                  </button>
+                </article>
+              ))}
+              {!loginSessionsLoading && loginSessions?.length === 0 && <div className="account-sessions-loading">服务器未返回登录设备。</div>}
+            </div>
+            <footer className="account-session-footer">
+              <span>撤销其他设备不会影响当前客户端。</span>
+              <button type="button" className="secondary-button" disabled={revokingOtherSessions || revokingSessionId !== null || (loginSessions?.filter((session) => !session.current).length ?? 0) === 0} onClick={() => setSessionRevokeTarget('others')}>
+                {revokingOtherSessions ? <LoaderCircle className="spin" size={15} /> : <LogOut size={15} />}退出其他设备
+              </button>
+            </footer>
+          </>
+        )}
+      </section>
     </div>
   )
 
   return (
     <div className="account-center">
       <div className="account-center-inner">
-        <header className="page-header account-center-header">
-          <div>
-            <div className="eyebrow">ACCOUNT CENTER</div>
-            <h1>个人中心</h1>
+        <header className="account-center-topbar">
+          <div className="account-center-title">
+            <span className="account-center-title-icon"><BadgeDollarSign size={20} /></span>
+            <div>
+              <div className="eyebrow">XINGMANG ACCOUNT</div>
+              <h1>星芒 AI 账户</h1>
+            </div>
           </div>
           <div className="header-actions page-toolbar">
             <button type="button" className="secondary-button" onClick={onClose}>
               <ArrowLeft size={15} />
-              <span>返回工作台</span>
+              <span>工作台</span>
             </button>
             <button type="button" className="icon-button" title="登出星芒账号" aria-label="登出星芒账号" onClick={onLogout}>
               <LogOut size={17} />
@@ -918,29 +959,98 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
           </div>
         </header>
 
-        <div className="segmented-control account-center-tabs" role="tablist" aria-label="个人中心分区">
-          {TABS.map(({ id, label, icon: Icon }) => (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={tab === id}
-              className={tab === id ? 'active' : ''}
-              onClick={() => setTab(id)}
-            >
-              <Icon size={14} aria-hidden="true" />
-              {label}
-            </button>
-          ))}
-        </div>
+        <div className="account-center-layout">
+          <aside className="account-center-navigation">
+            <div className="account-center-identity">
+              <span className="account-center-avatar" aria-hidden="true">
+                {(profile?.displayName || profile?.username || '星').trim().slice(0, 1).toLocaleUpperCase('zh-CN')}
+              </span>
+              <div>
+                <strong>{profile?.displayName || profile?.username || '星芒用户'}</strong>
+                <span>{profile?.email || (profileLoading ? '正在读取账户…' : '未绑定邮箱')}</span>
+              </div>
+            </div>
+            <nav aria-label="个人中心分区">
+              {TAB_GROUPS.map((group) => (
+                <div className="account-center-nav-group" key={group.id}>
+                  <div className="account-center-nav-label">{group.label}</div>
+                  {TABS.filter((item) => item.group === group.id).map(({ id, label, icon: Icon }) => (
+                    <button
+                      key={id}
+                      type="button"
+                      aria-current={primaryTab === id ? 'page' : undefined}
+                      className={primaryTab === id ? 'active' : ''}
+                      onClick={() => setPrimaryTab(id)}
+                    >
+                      <Icon size={16} aria-hidden="true" />
+                      <span>{label}</span>
+                      <ChevronRight size={14} className="account-center-nav-chevron" />
+                    </button>
+                  ))}
+                </div>
+              ))}
+            </nav>
+            <div className="account-center-balance-summary">
+              <span>可用余额</span>
+              <div>
+                <strong>{balance ? formatBalanceUsd(balance.quota, balance.quotaPerUnit) : '—'}</strong>
+                <button
+                  type="button"
+                  className="account-center-recharge-button"
+                  onClick={() => {
+                    setPrimaryTab('wallet')
+                    setWalletTab('topup')
+                  }}
+                >
+                  充值
+                </button>
+              </div>
+            </div>
+          </aside>
 
-        <div className="account-center-body">
-          {tab === 'profile' && renderProfileTab()}
-          {tab === 'usage' && renderUsageTab()}
-          {tab === 'invite' && renderInviteTab()}
-          {tab === 'topup' && renderTopupTab()}
-          {tab === 'keys' && renderKeysTab()}
-          {tab === 'security' && renderSecurityTab()}
+          <section className="account-center-workspace" aria-labelledby={`account-center-${primaryTab}-title`}>
+            <header className="account-center-section-header">
+              <div>
+                <h2 id={`account-center-${primaryTab}-title`}>{activeTabDefinition.label}</h2>
+                <p>{activeTabDefinition.description}</p>
+              </div>
+            </header>
+            {primaryTab === 'wallet' && (
+              <div className="account-center-subtabs" role="tablist" aria-label="钱包分区">
+                {([
+                  ['subscriptions', '我的订阅'],
+                  ['topup', '充值 / 订阅'],
+                  ['orders', '我的订单'],
+                  ['redeem', '兑换'],
+                  ['invite', '邀请返利'],
+                ] as const).map(([id, label]) => (
+                  <button key={id} type="button" role="tab" aria-selected={walletTab === id} className={walletTab === id ? 'active' : ''} onClick={() => setWalletTab(id)}>{label}</button>
+                ))}
+              </div>
+            )}
+            {primaryTab === 'profile' && (
+              <div className="account-center-subtabs" role="tablist" aria-label="个人资料分区">
+                <button type="button" role="tab" aria-selected={profileTab === 'profile'} className={profileTab === 'profile' ? 'active' : ''} onClick={() => setProfileTab('profile')}>基本资料</button>
+                <button type="button" role="tab" aria-selected={profileTab === 'security'} className={profileTab === 'security' ? 'active' : ''} onClick={() => setProfileTab('security')}>安全与设备</button>
+              </div>
+            )}
+            <div className="account-center-body" role="tabpanel">
+              {primaryTab === 'overview' && renderProfileTab()}
+              {primaryTab === 'dashboard' && <AccountDashboardPanel balance={balance} />}
+              <AccountCommercePanels
+                activeTab={primaryTab === 'wallet' ? walletTab : null}
+                profile={profile}
+                balance={balance}
+                onRefreshAccount={loadProfile}
+                notify={notify}
+              />
+              {primaryTab === 'usage' && <AccountUsagePanel quotaPerUnit={balance?.quotaPerUnit} />}
+              {primaryTab === 'tasks' && <AccountTaskPanel quotaPerUnit={balance?.quotaPerUnit} />}
+              {primaryTab === 'keys' && renderKeysTab()}
+              {primaryTab === 'profile' && profileTab === 'profile' && renderPersonalProfileTab()}
+              {primaryTab === 'profile' && profileTab === 'security' && renderSecurityTab()}
+            </div>
+          </section>
         </div>
       </div>
 
@@ -966,6 +1076,46 @@ export function AccountCenterPage({ onClose, onLogout, notify }: AccountCenterPa
           onSubmit={(values) => void submitKeyEditor(values)}
           isSubmitting={keyEditorBusy}
         />
+      )}
+
+      {sessionRevokeTarget && (
+        <DialogBackdrop
+          className="config-modal-backdrop extension-backdrop"
+          onDismiss={revokingSessionId || revokingOtherSessions ? () => undefined : () => setSessionRevokeTarget(null)}
+        >
+          <section className="extension-confirm-dialog" role="alertdialog" aria-modal="true" aria-labelledby="revoke-session-title">
+            <span className="extension-confirm-icon danger"><LogOut size={20} /></span>
+            <h2 id="revoke-session-title">
+              {sessionRevokeTarget === 'others'
+                ? '退出所有其他设备'
+                : sessionRevokeTarget.current
+                  ? '退出当前设备'
+                  : '撤销此登录设备'}
+            </h2>
+            <p>
+              {sessionRevokeTarget === 'others'
+                ? '其他浏览器和客户端将立即退出登录，当前客户端不受影响。'
+                : sessionRevokeTarget.current
+                  ? '当前客户端会立即清除登录状态，需要重新输入账号密码登录。'
+                  : `${sessionDeviceLabel(sessionRevokeTarget.userAgent)}（${sessionRevokeTarget.ip || 'IP 未知'}）将立即退出登录。`}
+            </p>
+            <div className="extension-dialog-actions">
+              <button type="button" className="secondary-button" disabled={Boolean(revokingSessionId) || revokingOtherSessions} onClick={() => setSessionRevokeTarget(null)}>取消</button>
+              <button
+                type="button"
+                className="danger-button"
+                disabled={Boolean(revokingSessionId) || revokingOtherSessions}
+                onClick={() => {
+                  if (sessionRevokeTarget === 'others') void revokeOtherLoginSessions()
+                  else void revokeLoginSession(sessionRevokeTarget)
+                }}
+              >
+                {(revokingSessionId || revokingOtherSessions) ? <LoaderCircle className="spin" size={16} /> : <LogOut size={16} />}
+                确认退出
+              </button>
+            </div>
+          </section>
+        </DialogBackdrop>
       )}
     </div>
   )

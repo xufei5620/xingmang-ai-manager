@@ -2,6 +2,7 @@ export const AI_CHAT_ENDPOINTS = {
   chatCompletions: '/v1/chat/completions',
   imageGenerations: '/v1/images/generations',
   imageEdits: '/v1/images/edits',
+  videos: '/v1/videos',
 } as const
 
 export const AI_CHAT_LIMITS = {
@@ -11,6 +12,8 @@ export const AI_CHAT_LIMITS = {
   messageLength: 40_000,
   totalMessageLength: 120_000,
   promptLength: 40_000,
+  // An 8 MB owned image expands to roughly 10.7 MB after base64 encoding.
+  videoImageLength: 12 * 1024 * 1024,
   maxTokens: 131_072,
 } as const
 
@@ -37,7 +40,7 @@ export type AiChatParameters = {
 }
 
 export type ImageQuality = 'low' | 'medium' | 'high' | 'auto'
-export type ImageModelProvider = 'gpt-image' | 'jimeng'
+export type ImageModelProvider = 'gpt-image' | 'jimeng' | 'grok-image'
 
 export type ImageSizePolicy =
   | {
@@ -71,10 +74,21 @@ export type ImageModelCapability = {
   sizePolicy: ImageSizePolicy
   qualities: readonly ImageQuality[]
   defaultQuality?: ImageQuality
+  supportsEdits: boolean
   unavailableReason?: string
 }
 
-export type AiModelCapability = ChatModelCapability | ImageModelCapability
+export type VideoModelCapability = {
+  kind: 'video'
+  model: string
+  available: true
+  hidden: false
+  source: 'preset'
+  maximumSeconds: 15
+  supportsImageInput: true
+}
+
+export type AiModelCapability = ChatModelCapability | ImageModelCapability | VideoModelCapability
 
 export type ChatCompletionsRequestBody = {
   model: string
@@ -92,6 +106,7 @@ export type ImageGenerationRequestBody = {
   model: string
   prompt: string
   n: 1
+  response_format?: 'b64_json'
   size?: string
   quality?: ImageQuality
   extra_fields?: {
@@ -99,6 +114,19 @@ export type ImageGenerationRequestBody = {
     height: number
   }
 }
+
+export type VideoGenerationRequestBody = {
+  model: string
+  prompt: string
+  seconds: string
+  image?: string
+  width?: number
+  height?: number
+}
+
+const allowedVideoDimensions = new Set([
+  '1280x720', '720x1280', '1024x1024', '1024x768', '768x1024',
+])
 
 export type AiChatProtocolErrorCode =
   | 'invalid-model'
@@ -110,6 +138,8 @@ export type AiChatProtocolErrorCode =
   | 'model-unavailable'
   | 'invalid-image-size'
   | 'invalid-image-quality'
+  | 'model-not-video'
+  | 'invalid-video-seconds'
 
 export class AiChatProtocolError extends Error {
   readonly code: AiChatProtocolErrorCode
@@ -146,6 +176,12 @@ const JIMENG_POLICY: ImageSizePolicy = {
   default: '1024x1024',
 }
 
+const GROK_IMAGE_POLICY: ImageSizePolicy = {
+  kind: 'allow-list',
+  values: ['auto'],
+  default: 'auto',
+}
+
 type ImagePresetDefinition = Omit<ImageModelCapability, 'model' | 'source'>
 
 const IMAGE_PRESET_DEFINITIONS = {
@@ -157,6 +193,7 @@ const IMAGE_PRESET_DEFINITIONS = {
     sizePolicy: GPT_IMAGE_1_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
+    supportsEdits: true,
   },
   'gpt-image-1.5': {
     kind: 'image',
@@ -166,6 +203,7 @@ const IMAGE_PRESET_DEFINITIONS = {
     sizePolicy: GPT_IMAGE_2_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
+    supportsEdits: true,
     unavailableReason: '当前服务没有该模型的访问权限',
   },
   'gpt-image-2': {
@@ -176,6 +214,7 @@ const IMAGE_PRESET_DEFINITIONS = {
     sizePolicy: GPT_IMAGE_2_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
+    supportsEdits: true,
   },
   'gpt-image-2-2026-04-21': {
     kind: 'image',
@@ -185,6 +224,7 @@ const IMAGE_PRESET_DEFINITIONS = {
     sizePolicy: GPT_IMAGE_2_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
+    supportsEdits: true,
   },
   jimeng_high_aes_general_v21_L: {
     kind: 'image',
@@ -193,6 +233,34 @@ const IMAGE_PRESET_DEFINITIONS = {
     hidden: false,
     sizePolicy: JIMENG_POLICY,
     qualities: [],
+    supportsEdits: false,
+  },
+  'grok-imagine-image': {
+    kind: 'image',
+    provider: 'grok-image',
+    available: true,
+    hidden: false,
+    sizePolicy: GROK_IMAGE_POLICY,
+    qualities: [],
+    supportsEdits: true,
+  },
+  'grok-imagine-image-2.0': {
+    kind: 'image',
+    provider: 'grok-image',
+    available: true,
+    hidden: false,
+    sizePolicy: GROK_IMAGE_POLICY,
+    qualities: [],
+    supportsEdits: true,
+  },
+  'grok-imagine-image-quality': {
+    kind: 'image',
+    provider: 'grok-image',
+    available: true,
+    hidden: false,
+    sizePolicy: GROK_IMAGE_POLICY,
+    qualities: [],
+    supportsEdits: true,
   },
 } as const satisfies Record<string, ImagePresetDefinition>
 
@@ -204,6 +272,7 @@ const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/
 const GPT_IMAGE_MODEL_PATTERN = /^gpt-image-[a-z0-9][a-z0-9._-]*$/i
 const UNAVAILABLE_GPT_IMAGE_15_PATTERN = /^gpt-image-1\.5(?:-|$)/i
 const JIMENG_MODEL_PATTERN = /^jimeng_[a-z0-9][a-z0-9_]*$/i
+const GROK_IMAGE_MODEL_PATTERN = /^grok-imagine-image(?:-[a-z0-9][a-z0-9._-]*)?$/i
 const IMAGE_SIZE_PATTERN = /^(\d{3,4})x(\d{3,4})$/
 
 function requireBoundedIdentifier(
@@ -257,6 +326,13 @@ export function resolveAiModelCapability(model: string): AiModelCapability {
   const preset = IMAGE_PRESET_DEFINITIONS[normalized as keyof typeof IMAGE_PRESET_DEFINITIONS]
   if (preset) return createImageCapability(normalized, preset, 'preset')
 
+  if (normalized === 'grok-imagine-video' || normalized === 'grok-imagine-video-1.5') {
+    return {
+      kind: 'video', model: normalized, available: true, hidden: false,
+      source: 'preset', maximumSeconds: 15, supportsImageInput: true,
+    }
+  }
+
   if (UNAVAILABLE_GPT_IMAGE_15_PATTERN.test(normalized)) {
     return createImageCapability(normalized, IMAGE_PRESET_DEFINITIONS['gpt-image-1.5'], 'fallback')
   }
@@ -265,6 +341,9 @@ export function resolveAiModelCapability(model: string): AiModelCapability {
   }
   if (JIMENG_MODEL_PATTERN.test(normalized)) {
     return createImageCapability(normalized, IMAGE_PRESET_DEFINITIONS.jimeng_high_aes_general_v21_L, 'fallback')
+  }
+  if (GROK_IMAGE_MODEL_PATTERN.test(normalized)) {
+    return createImageCapability(normalized, IMAGE_PRESET_DEFINITIONS['grok-imagine-image'], 'fallback')
   }
   return {
     kind: 'chat',
@@ -290,6 +369,11 @@ const IMAGE_GROUP_MODEL_ORDER = [
   'gpt-image-2',
   'gpt-image-1',
   'jimeng_high_aes_general_v21_L',
+  'grok-imagine-image-2.0',
+  'grok-imagine-image-quality',
+  'grok-imagine-image',
+  'grok-imagine-video-1.5',
+  'grok-imagine-video',
 ] as const
 
 export function selectAiChatModelsForGroup(group: string, models: readonly string[]): string[] {
@@ -355,8 +439,8 @@ export function buildChatCompletionsRequest(input: {
   parameters?: AiChatParameters
 }): ChatCompletionsRequestBody {
   const capability = resolveAiModelCapability(input.model)
-  if (capability.kind === 'image') {
-    throw new AiChatProtocolError('invalid-model', 'image models cannot use chat completions')
+  if (capability.kind !== 'chat') {
+    throw new AiChatProtocolError('invalid-model', 'media models cannot use chat completions')
   }
   if (input.stream !== undefined && typeof input.stream !== 'boolean') {
     throw new AiChatProtocolError('invalid-parameter', 'stream must be a boolean')
@@ -445,6 +529,13 @@ export function buildImageGenerationRequest(input: {
     throw new AiChatProtocolError('input-limit-exceeded', 'image prompt is too long')
   }
 
+  if (capability.provider === 'grok-image') {
+    // xAI otherwise returns a short-lived imgen.x.ai URL. Asking new-api for
+    // base64 avoids a second network hop and keeps the generated result
+    // recoverable when the user's DNS proxy exposes CDN hosts as Fake-IP.
+    return { model: capability.model, prompt: input.prompt, n: 1, response_format: 'b64_json' }
+  }
+
   const size = validateImageSize(input.size ?? capability.sizePolicy.default, capability)
   if (capability.provider === 'jimeng') {
     const dimensions = parseImageDimensions(size)
@@ -469,5 +560,52 @@ export function buildImageGenerationRequest(input: {
     n: 1,
     size,
     quality,
+  }
+}
+
+export function buildVideoGenerationRequest(input: {
+  model: string
+  prompt: string
+  seconds: string
+  image?: string
+  width?: number
+  height?: number
+}): VideoGenerationRequestBody {
+  const capability = resolveAiModelCapability(input.model)
+  if (capability.kind !== 'video') {
+    throw new AiChatProtocolError('model-not-video', 'only verified video models can use video generations')
+  }
+  if (typeof input.prompt !== 'string' || input.prompt.trim().length === 0) {
+    throw new AiChatProtocolError('invalid-message', 'video prompt is required')
+  }
+  if (input.prompt.length > AI_CHAT_LIMITS.promptLength) {
+    throw new AiChatProtocolError('input-limit-exceeded', 'video prompt is too long')
+  }
+  if (typeof input.seconds !== 'string' || !/^(?:[1-9]|1[0-5])$/.test(input.seconds)) {
+    throw new AiChatProtocolError('invalid-video-seconds', 'video seconds must be an integer string between 1 and 15')
+  }
+  if (input.image !== undefined && (
+    typeof input.image !== 'string'
+    || input.image.length === 0
+    || input.image.length > AI_CHAT_LIMITS.videoImageLength
+    || !input.image.startsWith('data:image/')
+  )) {
+    throw new AiChatProtocolError('input-limit-exceeded', 'video image input is invalid or too large')
+  }
+  const hasWidth = input.width !== undefined
+  const hasHeight = input.height !== undefined
+  if (hasWidth !== hasHeight || (hasWidth && (
+    !Number.isSafeInteger(input.width)
+    || !Number.isSafeInteger(input.height)
+    || !allowedVideoDimensions.has(`${input.width}x${input.height}`)
+  ))) {
+    throw new AiChatProtocolError('invalid-parameter', 'video dimensions are not supported')
+  }
+  return {
+    model: capability.model,
+    prompt: input.prompt,
+    seconds: input.seconds,
+    ...(input.image ? { image: input.image } : {}),
+    ...(hasWidth ? { width: input.width, height: input.height } : {}),
   }
 }

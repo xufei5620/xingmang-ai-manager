@@ -10,6 +10,7 @@ export interface CanvasAccountRunService {
 
 export interface CanvasAccountLifecycleServices {
   imageService: CanvasAccountImageService
+  videoService: CanvasAccountImageService & { resumeUser(userId: number): Promise<unknown> }
   canvasRuns: CanvasAccountRunService
 }
 
@@ -29,6 +30,8 @@ export function createCanvasAccountLifecycle(options: CanvasAccountLifecycleOpti
   function initializeCurrent(userId: number, expectedRevision: number): void {
     if (!services) return
     const currentServices = services
+    void currentServices.videoService.resumeUser(userId)
+      .catch((error) => options.onInitializationError?.(userId, error))
     void currentServices.canvasRuns.initializeUser(userId)
       .then(async () => {
         if (revision !== expectedRevision || activeUserId !== userId || services !== currentServices) return
@@ -45,6 +48,7 @@ export function createCanvasAccountLifecycle(options: CanvasAccountLifecycleOpti
     revision += 1
     if (services && previousUserId !== null) {
       services.imageService.cancelUser(previousUserId)
+      services.videoService.cancelUser(previousUserId)
       services.canvasRuns.cancelUser(previousUserId)
     }
     if (nextUserId !== null) initializeCurrent(nextUserId, revision)

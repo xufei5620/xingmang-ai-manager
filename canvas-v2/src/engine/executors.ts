@@ -1,11 +1,22 @@
 import type { AssetRef, NodeKind } from '../model'
-import { defaultImageQuality, defaultImageSize, imageModelPreset } from '../models'
+import {
+  defaultImageQuality,
+  defaultImageSize,
+  defaultVideoModel,
+  defaultVideoSize,
+  parseImageSize,
+  normalizeVideoSeconds,
+  imageModelPreset,
+  validateImageModelOptions,
+  validateVideoModelOptions,
+} from '../models'
 import type { CanvasHostBridge } from '../host'
 import type { NodeExecutor } from './engine'
 
 export interface HostExecutorOptions {
-  group: string
-  host: Pick<CanvasHostBridge, 'generateImage' | 'editImage' | 'cancelRequest'>
+  imageGroup: string
+  videoGroup: string
+  host: Pick<CanvasHostBridge, 'generateImage' | 'editImage' | 'generateVideo' | 'cancelRequest'>
 }
 
 let requestSequence = 0
@@ -30,15 +41,35 @@ function toAssetRef(asset: Awaited<ReturnType<CanvasHostBridge['generateImage']>
   }
 }
 
+function toVideoAssetRef(asset: Awaited<ReturnType<CanvasHostBridge['generateVideo']>>): AssetRef {
+  return {
+    kind: 'video',
+    assetId: asset.assetId,
+    localUrl: asset.localUrl,
+    mimeType: asset.mimeType,
+    taskId: asset.taskId,
+    ...(asset.width ? { width: asset.width } : {}),
+    ...(asset.height ? { height: asset.height } : {}),
+  }
+}
+
 export function createHostExecutors(options: HostExecutorOptions): Record<NodeKind, NodeExecutor> {
   const text: NodeExecutor = async (node) => ({ output: { text: node.data.prompt } })
 
   const image: NodeExecutor = async (node, inputs, signal) => {
+      if (!options.imageGroup) throw new Error('请先在「生成配置」中选择生图分组')
       const prompt = combinedPrompt(inputs.text, node.data.prompt)
       if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
       const model = node.data.model.trim()
       if (!model) throw new Error('请选择图像模型')
       const preset = imageModelPreset(model)
+      const errors = validateImageModelOptions({
+        model,
+        operation: 'generate',
+        size: preset.supportsSize ? (node.data.size || defaultImageSize) : undefined,
+        quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
+      })
+      if (errors[0]) throw new Error(errors[0])
       const requestId = nextRequestId(node.id)
       const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
       signal.addEventListener('abort', cancel, { once: true })
@@ -46,10 +77,10 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
         if (signal.aborted) throw new Error('已取消')
         const assets = await options.host.generateImage({
           requestId,
-          group: options.group,
+          group: options.imageGroup,
           model,
           prompt,
-          size: node.data.size || defaultImageSize,
+          size: preset.supportsSize ? (node.data.size || defaultImageSize) : undefined,
           quality: preset.supportsQuality
             ? (node.data.quality || defaultImageQuality) as 'low' | 'medium' | 'high' | 'auto'
             : undefined,
@@ -63,6 +94,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
     }
 
   const imageEdit: NodeExecutor = async (node, inputs, signal) => {
+    if (!options.imageGroup) throw new Error('请先在「生成配置」中选择生图分组')
     const prompt = combinedPrompt(inputs.text, node.data.prompt)
     if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
     const sourceAssetIds = [...new Set(
@@ -75,7 +107,14 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
     const model = node.data.model.trim()
     if (!model) throw new Error('请选择图像模型')
     const preset = imageModelPreset(model)
-    if (!preset.supportsEdits) throw new Error(`模型「${preset.label}」不支持图片编辑，请换用 GPT Image 系列`)
+    const errors = validateImageModelOptions({
+      model,
+      operation: 'edit',
+      size: preset.supportsSize ? (node.data.size || defaultImageSize) : undefined,
+      quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
+      referenceImageCount: sourceAssetIds.length,
+    })
+    if (errors[0]) throw new Error(errors[0])
     const requestId = nextRequestId(node.id)
     const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
     signal.addEventListener('abort', cancel, { once: true })
@@ -83,11 +122,11 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
       if (signal.aborted) throw new Error('已取消')
       const assets = await options.host.editImage({
         requestId,
-        group: options.group,
+        group: options.imageGroup,
         model,
         prompt,
         sourceAssetIds,
-        size: node.data.size || defaultImageSize,
+        size: preset.supportsSize ? (node.data.size || defaultImageSize) : undefined,
         quality: preset.supportsQuality
           ? (node.data.quality || defaultImageQuality) as 'low' | 'medium' | 'high' | 'auto'
           : undefined,
@@ -100,13 +139,46 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
     }
   }
 
-  const video: NodeExecutor = async () => {
-    throw new Error('当前版本的视频生成正在迁移到安全宿主通道，请先使用图像工作流')
+  const video: NodeExecutor = async (node, inputs, signal) => {
+    if (!options.videoGroup) throw new Error('请先在「生成配置」中选择视频分组')
+    const prompt = combinedPrompt(inputs.text, node.data.prompt)
+    if (!prompt) throw new Error('请输入视频提示词或连接上游文本节点')
+    const model = node.data.model.trim() || defaultVideoModel
+    const secondsValue = node.data.seconds ?? node.data.settings?.seconds ?? node.data.settings?.durationSeconds
+    const seconds = normalizeVideoSeconds(secondsValue, model)
+    const videoSize = typeof node.data.size === 'string' ? node.data.size : defaultVideoSize
+    const dimensions = parseImageSize(videoSize)
+    const imageAssetId = inputs.images?.[0]?.assetId ?? inputs.image?.assetId
+    const errors = validateVideoModelOptions({ model, seconds: secondsValue, size: videoSize, hasImage: Boolean(imageAssetId) })
+    if (errors[0]) throw new Error(errors[0])
+    if (!seconds) throw new Error('视频时长必须是 1-15 秒之间的整数')
+    if (!dimensions) throw new Error('视频比例格式错误')
+    if (inputs.image && !imageAssetId) throw new Error('图生视频需要连接已保存到本地资产库的参考图片')
+    const requestId = nextRequestId(node.id)
+    const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
+    signal.addEventListener('abort', cancel, { once: true })
+    try {
+      if (signal.aborted) throw new Error('已取消')
+      const asset = await options.host.generateVideo({
+        requestId,
+        group: options.videoGroup,
+        model,
+        prompt,
+        seconds,
+        width: dimensions.width,
+        height: dimensions.height,
+        ...(imageAssetId ? { imageAssetId } : {}),
+      })
+      if (signal.aborted) throw new Error('已取消；服务端任务可能仍在继续，可稍后从运行记录续查')
+      return { output: { asset: toVideoAssetRef(asset) } }
+    } finally {
+      signal.removeEventListener('abort', cancel)
+    }
   }
   const unsupported: NodeExecutor = async () => { throw new Error('当前节点能力尚未接入，请勿提交付费请求') }
   return {
     text, image, video, prompt: text,
-    'image-input': unsupported, 'video-input': unsupported,
+    'image-input': unsupported, 'video-input': unsupported, 'audio-input': unsupported,
     'image-generate': image, 'image-edit': imageEdit, 'video-generate': video,
     'frame-extract': unsupported, router: unsupported, gallery: unsupported, output: unsupported,
     group: unsupported, note: unsupported,

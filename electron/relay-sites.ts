@@ -79,7 +79,7 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
 // remain allowlisted for the explicit "在浏览器打开" fallback only.
 export const userAgreementUrl = 'https://xm.solov.cc/user-agreement'
 export const privacyPolicyUrl = 'https://xm.solov.cc/privacy-policy'
-export const tutorialDocumentUrl = 'https://s4621e8xzb.feishu.cn/wiki/WpBUwh4PhiAs2skvWfmcnM5vnDb?from=from_copylink'
+export const supportServiceUrl = 'https://work.weixin.qq.com/kfid/kfc212a22c8e02da5f8'
 
 /**
  * The relay's own API origin, for connectivity probes (the models-list fetch
@@ -112,8 +112,8 @@ export function resolveRelaySite(id: string | null | undefined): RelaySite {
 }
 
 /**
- * External URLs a relay site's own UI buttons open: the marketing site, the
- * keys page, and -- for a new-api backed site -- the wallet/recharge page.
+ * External URLs a relay site's own UI buttons open: the marketing site and
+ * the keys page. Recharge is handled inside the desktop account center.
  * main.ts folds this into its `externalUrlAllowlist` (I12, href full
  * equality); kept here as a pure function, rather than inlined in main.ts,
  * so the derivation is unit-testable without importing Electron (main.ts
@@ -130,7 +130,6 @@ export function relaySiteExternalUrls(sites: readonly RelaySite[]): string[] {
   const urls = sites.flatMap((site) => [
     site.websiteUrl,
     site.keysPageUrl,
-    ...(site.accountBackend === 'new-api' && site.accountBaseUrl ? [`${site.accountBaseUrl}/wallet`] : []),
   ])
   return [...new Set(urls)]
 }

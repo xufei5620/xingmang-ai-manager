@@ -32,8 +32,28 @@ const loginPath = '/api/user/login'
 const refreshPath = '/api/user/auth/refresh'
 const selfPath = '/api/user/self'
 const logSelfPath = '/api/log/self'
+const logSelfStatPath = '/api/log/self/stat'
+const dataSelfPath = '/api/data/self'
+const taskSelfPath = '/api/task/self'
 const tokenCollectionPath = '/api/token/'
 const userGroupsPath = '/api/user/self/groups'
+const topupInfoPath = '/api/user/topup/info'
+const topupAmountPath = '/api/user/amount'
+const topupPaymentPath = '/api/user/pay'
+const topupOrdersPath = '/api/user/topup/self'
+const redemptionPath = '/api/user/topup'
+const affiliateTransferPath = '/api/user/aff_transfer'
+const subscriptionPlansPath = '/api/subscription/plans'
+const subscriptionSelfPath = '/api/subscription/self'
+const subscriptionPreferencePath = '/api/subscription/self/preference'
+const subscriptionBalancePaymentPath = '/api/subscription/balance/pay'
+const subscriptionPaymentPaths = Object.freeze({
+  epay: '/api/subscription/epay/pay',
+  stripe: '/api/subscription/stripe/pay',
+  creem: '/api/subscription/creem/pay',
+  'waffo-pancake': '/api/subscription/waffo-pancake/pay',
+})
+const loginSessionsPath = '/api/user/sessions'
 const legalDocumentPaths = {
   'user-agreement': '/api/user-agreement',
   'privacy-policy': '/api/privacy-policy',
@@ -47,6 +67,10 @@ function tokenKeyPath(id: number): string {
 
 function tokenIdPath(id: number): string {
   return `/api/token/${id}`
+}
+
+function loginSessionPath(sid: string): string {
+  return `${loginSessionsPath}/${encodeURIComponent(sid)}`
 }
 
 export type NewApiFetch = (input: string | URL, init?: RequestInit) => Promise<Response>
@@ -205,6 +229,195 @@ export interface NewApiAccountProfileDetail {
   affCode: string | null
   /** Number of users this account has referred -- shown on the 邀请 tab. */
   affCount: number
+  /** Pending referral quota that can be transferred into wallet balance. */
+  affQuota: number
+  /** Lifetime referral quota earned by this account. */
+  affHistoryQuota: number
+}
+
+export interface NewApiTopupPaymentMethod {
+  name: string
+  type: string
+  provider: 'epay' | 'stripe' | 'creem' | 'waffo' | 'waffo-pancake'
+  color: string | null
+  icon: string | null
+  minTopup: number
+}
+
+export interface NewApiTopupInfo {
+  onlineTopupEnabled: boolean
+  stripeTopupEnabled: boolean
+  creemTopupEnabled: boolean
+  waffoPancakeTopupEnabled: boolean
+  redemptionEnabled: boolean
+  paymentComplianceConfirmed: boolean
+  paymentComplianceTermsVersion: string | null
+  paymentMethods: NewApiTopupPaymentMethod[]
+  minTopup: number
+  amountOptions: number[]
+  discounts: Record<string, number>
+  topupLink: string | null
+}
+
+export interface NewApiTopupAmountInput {
+  amount: number
+}
+
+export interface NewApiTopupAmountQuote {
+  amount: number
+  payableAmount: number
+}
+
+export interface NewApiTopupPaymentInput extends NewApiTopupAmountInput {
+  paymentMethod: string
+}
+
+export interface NewApiPaymentFormField {
+  name: string
+  value: string
+}
+
+export interface NewApiPaymentForm {
+  action: string
+  allowedOrigin: string
+  method: 'POST'
+  fields: NewApiPaymentFormField[]
+  tradeNo: string | null
+}
+
+export interface NewApiTopupOrdersQuery {
+  page?: number
+  pageSize?: number
+  keyword?: string
+}
+
+export type NewApiTopupOrderStatus = 'pending' | 'success' | 'failed' | 'expired' | 'unknown'
+
+export interface NewApiTopupOrder {
+  id: number
+  amount: number
+  money: number
+  tradeNo: string
+  paymentMethod: string
+  paymentProvider: string
+  createdAt: string
+  completedAt: string | null
+  status: NewApiTopupOrderStatus
+}
+
+export interface NewApiTopupOrdersPage {
+  page: number
+  pageSize: number
+  total: number
+  orders: NewApiTopupOrder[]
+}
+
+export interface NewApiRedemptionResult {
+  quotaAdded: number
+}
+
+export interface NewApiAffiliateTransferInput {
+  quota: number
+}
+
+export interface NewApiSubscriptionPlan {
+  id: number
+  title: string
+  subtitle: string
+  priceAmount: number
+  currency: string
+  durationUnit: 'year' | 'month' | 'day' | 'hour' | 'custom'
+  durationValue: number
+  customSeconds: number
+  allowBalancePay: boolean
+  allowWalletOverflow: boolean
+  maxPurchasePerUser: number
+  totalAmount: number
+  upgradeGroup: string
+  downgradeGroup: string
+  quotaResetPeriod: 'never' | 'daily' | 'weekly' | 'monthly' | 'custom'
+  quotaResetCustomSeconds: number
+  stripePriceId: string | null
+  creemProductId: string | null
+  waffoPancakeProductId: string | null
+}
+
+export type NewApiBillingPreference =
+  | 'subscription_first'
+  | 'wallet_first'
+  | 'subscription_only'
+  | 'wallet_only'
+
+export type NewApiSubscriptionPaymentProvider = 'epay' | 'stripe' | 'creem' | 'waffo-pancake'
+
+export interface NewApiSubscriptionPaymentInput {
+  planId: number
+  provider: NewApiSubscriptionPaymentProvider
+  paymentMethod?: string
+}
+
+export type NewApiSubscriptionCheckout =
+  | {
+      kind: 'form'
+      form: NewApiPaymentForm
+      tradeNo: string | null
+      expiresAt: string | null
+    }
+  | {
+      kind: 'url'
+      url: string
+      tradeNo: string | null
+      expiresAt: string | null
+    }
+
+export interface NewApiSubscription {
+  id: number
+  planId: number
+  status: string
+  source: string
+  amountTotal: number
+  amountUsed: number
+  startedAt: string
+  endsAt: string
+  nextResetAt: string | null
+}
+
+export interface NewApiSubscriptionSelf {
+  billingPreference: NewApiBillingPreference
+  activeSubscriptions: NewApiSubscription[]
+  allSubscriptions: NewApiSubscription[]
+}
+
+export interface NewApiSubscriptionPurchaseResult {
+  purchased: true
+}
+
+export interface NewApiDisplayNameUpdateInput {
+  displayName: string
+}
+
+export interface NewApiProfileUpdateResult {
+  updated: true
+}
+
+export interface NewApiLoginSession {
+  sid: string
+  current: boolean
+  loginMethod: string
+  ip: string
+  userAgent: string
+  createdAt: string
+  lastActiveAt: string
+  expiresAt: string
+}
+
+export interface NewApiRevokeLoginSessionResult {
+  revokedSid: string
+  current: boolean
+}
+
+export interface NewApiRevokeOtherLoginSessionsResult {
+  revokedCount: number
 }
 
 export interface NewApiAccountUsageQuery {
@@ -212,14 +425,49 @@ export interface NewApiAccountUsageQuery {
   page?: number
   /** Server clamps to 100 regardless of what is sent (common/page_info.go). */
   pageSize?: number
+  type?: number
+  startTimestamp?: number
+  endTimestamp?: number
+  modelName?: string
+  tokenName?: string
+  group?: string
+  requestId?: string
+  upstreamRequestId?: string
 }
 
-// One row of GET /api/log/self's `items` array (model.Log, model/log.go).
-// Deliberately narrower than the full Log struct: channel/channel_name/
-// token_name/token_id/group/ip/request_id/upstream_request_id/content/other
-// are relay-internal debugging fields with no value to a customer looking at
-// their own usage, so they are dropped here rather than threaded across IPC
-// for no reason.
+export interface NewApiAccountUsageStreamStatus {
+  status: string
+  endReason: string
+  errorCount: number
+  endError: string
+  errors: string[]
+}
+
+export interface NewApiAccountUsageDetails {
+  cacheTokens: number
+  cacheCreationTokens: number
+  cacheCreationTokens5m: number
+  cacheCreationTokens1h: number
+  firstResponseTimeMs: number | null
+  reasoningEffort: string
+  modelRatio: number | null
+  completionRatio: number | null
+  modelPrice: number | null
+  groupRatio: number | null
+  userGroupRatio: number | null
+  cacheRatio: number | null
+  cacheCreationRatio: number | null
+  cacheCreationRatio5m: number | null
+  cacheCreationRatio1h: number | null
+  billingMode: string
+  matchedTier: string
+  upstreamModelName: string
+  streamStatus: NewApiAccountUsageStreamStatus | null
+}
+
+// One row of GET /api/log/self's `items` array. This remains an explicit
+// customer-facing whitelist: `other` itself, channel/admin data, IP and audit
+// fields never cross IPC.
 export interface NewApiAccountUsageRecord {
   id: number
   /** ISO 8601, converted from the wire's Unix-seconds Log.CreatedAt. */
@@ -232,6 +480,19 @@ export interface NewApiAccountUsageRecord {
   /** Integer quota units, same convention as NewApiBalance.quota. */
   quota: number
   isStream: boolean
+  tokenName: string
+  group: string
+  useTimeSeconds: number
+  content: string
+  requestId: string
+  upstreamRequestId: string
+  details: NewApiAccountUsageDetails
+}
+
+export interface NewApiAccountUsageStats {
+  quota: number
+  rpm: number
+  tpm: number
 }
 
 export interface NewApiAccountUsagePage {
@@ -239,6 +500,68 @@ export interface NewApiAccountUsagePage {
   pageSize: number
   total: number
   records: NewApiAccountUsageRecord[]
+  stats: NewApiAccountUsageStats
+}
+
+export interface NewApiAccountDashboardQuery {
+  startTimestamp: number
+  endTimestamp: number
+}
+
+// Customer-facing whitelist for GET /api/data/self. The upstream row also
+// contains user identity fields; only chart dimensions and metrics cross IPC.
+export interface NewApiAccountDashboardRecord {
+  createdAt: number
+  modelName: string
+  tokenUsed: number
+  count: number
+  quota: number
+}
+
+export interface NewApiAccountDashboardData {
+  startTimestamp: number
+  endTimestamp: number
+  records: NewApiAccountDashboardRecord[]
+}
+
+export interface NewApiAccountTaskQuery {
+  page?: number
+  pageSize?: number
+  platform?: string
+  taskId?: string
+  status?: string
+  action?: string
+  startTimestamp?: number
+  endTimestamp?: number
+}
+
+// Customer-facing whitelist for GET /api/task/self. The wire record also
+// contains user_id, channel_id, username, data and arbitrary properties; none
+// of those fields cross IPC. Only the two documented model-name properties
+// are extracted below.
+export interface NewApiAccountTaskRecord {
+  id: number
+  taskId: string
+  platform: string
+  group: string
+  quota: number
+  action: string
+  status: string
+  failReason: string
+  resultUrl: string
+  submitAt: string
+  startAt: string
+  finishAt: string
+  progress: string
+  originModelName: string
+  upstreamModelName: string
+}
+
+export interface NewApiAccountTaskPage {
+  page: number
+  pageSize: number
+  total: number
+  tasks: NewApiAccountTaskRecord[]
 }
 
 export interface NewApiAccountKeysQuery {
@@ -366,6 +689,17 @@ export interface NewApiClientService extends RelayBackendClient {
   isAuthenticated(): boolean
   getSessionState(): NewApiSessionState
   getBalance(): Promise<NewApiBalance>
+  getTopupInfo(): Promise<NewApiTopupInfo>
+  quoteTopupAmount(input: NewApiTopupAmountInput): Promise<NewApiTopupAmountQuote>
+  createTopupPayment(input: NewApiTopupPaymentInput): Promise<NewApiPaymentForm>
+  listTopupOrders(input?: NewApiTopupOrdersQuery): Promise<NewApiTopupOrdersPage>
+  redeemTopupCode(code: string): Promise<NewApiRedemptionResult>
+  transferAffiliateQuota(input: NewApiAffiliateTransferInput): Promise<void>
+  listSubscriptionPlans(): Promise<NewApiSubscriptionPlan[]>
+  getSubscriptionSelf(): Promise<NewApiSubscriptionSelf>
+  updateSubscriptionPreference(preference: NewApiBillingPreference): Promise<NewApiBillingPreference>
+  createSubscriptionPayment(input: NewApiSubscriptionPaymentInput): Promise<NewApiSubscriptionCheckout>
+  purchaseSubscriptionWithBalance(planId: number): Promise<NewApiSubscriptionPurchaseResult>
   // GET /api/user/self, parsed into the richer NewApiAccountProfileDetail DTO
   // for the 个人中心 profile/邀请 tabs (W4a). Deliberately does *not* also call
   // GET /api/status the way getBalance() above does: that would duplicate a
@@ -373,10 +707,15 @@ export interface NewApiClientService extends RelayBackendClient {
   // callers can already get for free from the existing getBalance() result
   // (both ultimately read the same /api/user/self quota/used_quota fields).
   getProfile(): Promise<NewApiAccountProfileDetail>
+  updateDisplayName(input: NewApiDisplayNameUpdateInput): Promise<NewApiProfileUpdateResult>
   // GET /api/log/self, paginated. `input` omitted or with omitted fields
   // falls back to new-api's own server-side defaults (page 1, page size 10 --
   // common/page_info.go's GetPageQuery).
   getUsage(input?: NewApiAccountUsageQuery): Promise<NewApiAccountUsagePage>
+  // GET /api/data/self, scoped server-side to the authenticated user.
+  getDashboard(input: NewApiAccountDashboardQuery): Promise<NewApiAccountDashboardData>
+  // GET /api/task/self, scoped server-side to the authenticated user.
+  getTasks(input?: NewApiAccountTaskQuery): Promise<NewApiAccountTaskPage>
   // GET /api/token/, paginated exactly like getUsage above (same
   // common/page_info.go PageInfo envelope). Feeds the 个人中心 Key 管理 tab
   // (W4b) -- see NewApiAccountKey's own doc comment for the I3 field
@@ -414,6 +753,9 @@ export interface NewApiClientService extends RelayBackendClient {
   // re-login needed) versus every *other* session (signed out immediately,
   // new-api's own security response to a password change).
   changePassword(input: NewApiChangePasswordInput): Promise<NewApiChangePasswordResult>
+  listLoginSessions(): Promise<NewApiLoginSession[]>
+  revokeLoginSession(sid: string): Promise<NewApiRevokeLoginSessionResult>
+  revokeOtherLoginSessions(): Promise<NewApiRevokeOtherLoginSessionsResult>
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
   /**
    * Looks up the most recently created existing token whose name starts with
@@ -636,6 +978,216 @@ function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly
   return envelope.data
 }
 
+interface LegacyBusinessEnvelope {
+  data: unknown
+  url: unknown
+}
+
+// The older billing handlers predate common.ApiSuccess and return
+// {message:'success', data, url} without a success boolean. Keep that
+// compatibility isolated to the two confirmed endpoints instead of making
+// the ordinary envelope parser accept ambiguous shapes globally.
+function unwrapLegacyBusinessEnvelope(
+  raw: NewApiRawResponse,
+  label: string,
+  secrets: readonly string[],
+): LegacyBusinessEnvelope {
+  const envelope = isRecord(raw.payload) ? raw.payload : null
+  const message = envelope && typeof envelope.message === 'string' ? envelope.message : ''
+  const dataMessage = envelope && typeof envelope.data === 'string' ? envelope.data : ''
+  const detail = sanitizeUpstreamMessage(message === 'error' ? dataMessage : message, secrets)
+  if (raw.status === 401) {
+    throw new NewApiAuthenticationError(detail || '登录状态已失效，请重新登录')
+  }
+  if (!envelope) {
+    throw new Error(raw.ok ? `${label}返回的不是有效 JSON` : (detail || `${label}失败，服务返回 HTTP ${raw.status}`))
+  }
+  const succeeded = envelope.success === true || message.toLowerCase() === 'success'
+  if (!raw.ok || !succeeded) {
+    throw new Error(detail || `${label}失败，服务返回 HTTP ${raw.status}`)
+  }
+  return { data: envelope.data, url: envelope.url }
+}
+
+function parseJsonArray(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value
+  if (typeof value !== 'string' || value.length > 256 * 1024) return []
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return Array.isArray(parsed) ? parsed : []
+  } catch {
+    return []
+  }
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> {
+  if (isRecord(value)) return value
+  if (typeof value !== 'string' || value.length > 256 * 1024) return {}
+  try {
+    const parsed: unknown = JSON.parse(value)
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function finiteNumberFromWire(value: unknown): number | null {
+  if (typeof value === 'number' && Number.isFinite(value)) return value
+  if (typeof value !== 'string' || !value.trim()) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function safeIntegerFromWire(value: unknown): number | null {
+  const parsed = finiteNumberFromWire(value)
+  return parsed !== null && Number.isSafeInteger(parsed) ? parsed : null
+}
+
+function unixSecondsToIso(value: unknown): string | null {
+  const seconds = finiteNumberFromWire(value)
+  if (seconds === null || seconds <= 0) return null
+  const milliseconds = seconds * 1_000
+  if (!Number.isFinite(milliseconds)) return null
+  try {
+    return new Date(milliseconds).toISOString()
+  } catch {
+    return null
+  }
+}
+
+function parseHttpsUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim() || value.length > 2_048) return null
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    return null
+  }
+  if (
+    parsed.protocol !== 'https:'
+    || parsed.username !== ''
+    || parsed.password !== ''
+    || parsed.hash !== ''
+  ) return null
+  return parsed.href
+}
+
+function parseCheckoutHttpsUrl(value: unknown): string | null {
+  if (typeof value !== 'string' || !value.trim() || value.length > 4_096) return null
+  try {
+    const parsed = new URL(value)
+    if (parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') return null
+    return parsed.href
+  } catch {
+    return null
+  }
+}
+
+const billingPreferences = new Set<NewApiBillingPreference>([
+  'subscription_first',
+  'wallet_first',
+  'subscription_only',
+  'wallet_only',
+])
+
+function normalizeBillingPreference(value: unknown): NewApiBillingPreference {
+  return typeof value === 'string' && billingPreferences.has(value as NewApiBillingPreference)
+    ? value as NewApiBillingPreference
+    : 'subscription_first'
+}
+
+function paymentProvider(type: string): NewApiTopupPaymentMethod['provider'] {
+  if (type === 'stripe') return 'stripe'
+  if (type === 'creem') return 'creem'
+  if (type === 'waffo') return 'waffo'
+  if (type === 'waffo_pancake') return 'waffo-pancake'
+  return 'epay'
+}
+
+export function parseTopupInfo(payload: unknown): NewApiTopupInfo {
+  if (!isRecord(payload)) throw new Error('充值配置响应格式异常')
+  const paymentMethods: NewApiTopupPaymentMethod[] = []
+  for (const entry of parseJsonArray(payload.pay_methods).slice(0, 32)) {
+    if (!isRecord(entry)) continue
+    const name = asString(entry.name, '').trim().slice(0, 80)
+    const type = asString(entry.type, '').trim().slice(0, 64)
+    if (!name || !type) continue
+    const minTopup = safeIntegerFromWire(entry.min_topup) ?? 0
+    paymentMethods.push({
+      name,
+      type,
+      provider: paymentProvider(type),
+      color: typeof entry.color === 'string' && entry.color.length <= 32 ? entry.color : null,
+      icon: parseHttpsUrl(entry.icon),
+      minTopup: Number.isFinite(minTopup) && minTopup >= 0 ? minTopup : 0,
+    })
+  }
+  const amountOptions = parseJsonArray(payload.amount_options)
+    .slice(0, 64)
+    .map(safeIntegerFromWire)
+    .filter((value): value is number => value !== null && value > 0)
+  const discounts: Record<string, number> = {}
+  for (const [key, value] of Object.entries(parseJsonRecord(payload.discount)).slice(0, 128)) {
+    const amount = finiteNumberFromWire(key)
+    const ratio = finiteNumberFromWire(value)
+    if (amount === null || amount <= 0 || ratio === null || ratio <= 0 || ratio > 10) continue
+    discounts[String(amount)] = ratio
+  }
+  const minTopup = safeIntegerFromWire(payload.min_topup) ?? 0
+  return {
+    onlineTopupEnabled: asBoolean(payload.enable_online_topup, false),
+    stripeTopupEnabled: asBoolean(payload.enable_stripe_topup, false),
+    creemTopupEnabled: asBoolean(payload.enable_creem_topup, false),
+    waffoPancakeTopupEnabled: asBoolean(payload.enable_waffo_pancake_topup, false),
+    redemptionEnabled: asBoolean(payload.enable_redemption, false),
+    paymentComplianceConfirmed: asBoolean(payload.payment_compliance_confirmed, false),
+    paymentComplianceTermsVersion: typeof payload.payment_compliance_terms_version === 'string'
+      && payload.payment_compliance_terms_version.length <= 128
+      ? payload.payment_compliance_terms_version
+      : null,
+    paymentMethods,
+    minTopup: minTopup >= 0 ? minTopup : 0,
+    amountOptions,
+    discounts,
+    topupLink: parseHttpsUrl(payload.topup_link),
+  }
+}
+
+export function parseTopupAmountQuote(payload: unknown, amount: number): NewApiTopupAmountQuote {
+  const payableAmount = finiteNumberFromWire(payload)
+  if (payableAmount === null || payableAmount < 0.01) throw new Error('充值金额试算响应格式异常')
+  return { amount, payableAmount }
+}
+
+export function parsePaymentForm(payload: LegacyBusinessEnvelope): NewApiPaymentForm {
+  const action = parseHttpsUrl(payload.url)
+  if (!action) throw new Error('支付地址格式异常，已取消打开')
+  const fieldsRecord = isRecord(payload.data) ? payload.data : null
+  if (!fieldsRecord) throw new Error('支付表单响应格式异常')
+  const entries = Object.entries(fieldsRecord)
+  if (entries.length === 0 || entries.length > 64) throw new Error('支付表单字段数量异常')
+  const fields: NewApiPaymentFormField[] = []
+  let totalLength = 0
+  for (const [name, rawValue] of entries) {
+    if (!/^[A-Za-z0-9_.:-]{1,80}$/.test(name)) throw new Error('支付表单字段名称异常')
+    const value = typeof rawValue === 'string'
+      ? rawValue
+      : typeof rawValue === 'number' && Number.isFinite(rawValue) ? String(rawValue) : null
+    if (value === null || value.length > 4_096) throw new Error('支付表单字段内容异常')
+    totalLength += name.length + value.length
+    if (totalLength > 64 * 1024) throw new Error('支付表单内容超过安全上限')
+    fields.push({ name, value })
+  }
+  const tradeNo = fields.find((field) => field.name === 'out_trade_no')?.value ?? null
+  return {
+    action,
+    allowedOrigin: new URL(action).origin,
+    method: 'POST',
+    fields,
+    tradeNo: tradeNo && tradeNo.length <= 255 ? tradeNo : null,
+  }
+}
+
 export function parseAccountStatus(payload: unknown): NewApiAccountStatus {
   if (!isRecord(payload)) throw new Error('账号服务状态响应格式异常')
   return {
@@ -697,6 +1249,261 @@ export function parseAccountProfileDetail(payload: unknown): NewApiAccountProfil
     requestCount: asOptionalFiniteNumber(data.request_count) ?? 0,
     affCode: typeof data.aff_code === 'string' && data.aff_code ? data.aff_code : null,
     affCount: asOptionalFiniteNumber(data.aff_count) ?? 0,
+    affQuota: asOptionalFiniteNumber(data.aff_quota) ?? 0,
+    affHistoryQuota: asOptionalFiniteNumber(data.aff_history_quota) ?? 0,
+  }
+}
+
+export function parseTopupOrder(payload: unknown): NewApiTopupOrder | null {
+  if (!isRecord(payload)) return null
+  const id = finiteNumberFromWire(payload.id)
+  const tradeNo = asString(payload.trade_no, '').trim()
+  if (id === null || !Number.isInteger(id) || id <= 0 || !tradeNo || tradeNo.length > 255) return null
+  const rawStatus = asString(payload.status, '')
+  const status: NewApiTopupOrderStatus = ['pending', 'success', 'failed', 'expired'].includes(rawStatus)
+    ? rawStatus as NewApiTopupOrderStatus
+    : 'unknown'
+  return {
+    id,
+    amount: finiteNumberFromWire(payload.amount) ?? 0,
+    money: finiteNumberFromWire(payload.money) ?? 0,
+    tradeNo,
+    paymentMethod: asString(payload.payment_method, '').slice(0, 64),
+    paymentProvider: asString(payload.payment_provider, '').slice(0, 64),
+    createdAt: unixSecondsToIso(payload.create_time) ?? '',
+    completedAt: unixSecondsToIso(payload.complete_time),
+    status,
+  }
+}
+
+export function parseTopupOrdersPage(payload: unknown): NewApiTopupOrdersPage {
+  if (!isRecord(payload)) throw new Error('充值订单响应格式异常')
+  const orders: NewApiTopupOrder[] = []
+  const items = Array.isArray(payload.items) ? payload.items.slice(0, 100) : []
+  for (const entry of items) {
+    const order = parseTopupOrder(entry)
+    if (order) orders.push(order)
+  }
+  return {
+    page: finiteNumberFromWire(payload.page) ?? 1,
+    pageSize: finiteNumberFromWire(payload.page_size) ?? 10,
+    total: finiteNumberFromWire(payload.total) ?? 0,
+    orders,
+  }
+}
+
+const subscriptionDurationUnits = new Set(['year', 'month', 'day', 'hour', 'custom'])
+const subscriptionResetPeriods = new Set(['never', 'daily', 'weekly', 'monthly', 'custom'])
+
+export function parseSubscriptionPlan(payload: unknown): NewApiSubscriptionPlan | null {
+  if (!isRecord(payload) || !isRecord(payload.plan)) return null
+  const plan = payload.plan
+  const id = finiteNumberFromWire(plan.id)
+  const title = asString(plan.title, '').trim()
+  const durationUnit = asString(plan.duration_unit, '')
+  const quotaResetPeriod = asString(plan.quota_reset_period, 'never')
+  if (
+    id === null
+    || !Number.isInteger(id)
+    || id <= 0
+    || !title
+    || title.length > 128
+    || !subscriptionDurationUnits.has(durationUnit)
+    || !subscriptionResetPeriods.has(quotaResetPeriod)
+  ) return null
+  return {
+    id,
+    title,
+    subtitle: asString(plan.subtitle, '').slice(0, 255),
+    priceAmount: finiteNumberFromWire(plan.price_amount) ?? 0,
+    currency: asString(plan.currency, 'USD').slice(0, 8),
+    durationUnit: durationUnit as NewApiSubscriptionPlan['durationUnit'],
+    durationValue: finiteNumberFromWire(plan.duration_value) ?? 0,
+    customSeconds: finiteNumberFromWire(plan.custom_seconds) ?? 0,
+    allowBalancePay: asBoolean(plan.allow_balance_pay, true),
+    allowWalletOverflow: asBoolean(plan.allow_wallet_overflow, true),
+    maxPurchasePerUser: finiteNumberFromWire(plan.max_purchase_per_user) ?? 0,
+    totalAmount: finiteNumberFromWire(plan.total_amount) ?? 0,
+    upgradeGroup: asString(plan.upgrade_group, '').slice(0, 64),
+    downgradeGroup: asString(plan.downgrade_group, '').slice(0, 64),
+    quotaResetPeriod: quotaResetPeriod as NewApiSubscriptionPlan['quotaResetPeriod'],
+    quotaResetCustomSeconds: finiteNumberFromWire(plan.quota_reset_custom_seconds) ?? 0,
+    stripePriceId: typeof plan.stripe_price_id === 'string' && plan.stripe_price_id.length <= 128
+      ? plan.stripe_price_id.trim() || null
+      : null,
+    creemProductId: typeof plan.creem_product_id === 'string' && plan.creem_product_id.length <= 128
+      ? plan.creem_product_id.trim() || null
+      : null,
+    waffoPancakeProductId: typeof plan.waffo_pancake_product_id === 'string'
+      && plan.waffo_pancake_product_id.length <= 128
+      ? plan.waffo_pancake_product_id.trim() || null
+      : null,
+  }
+}
+
+export function parseSubscriptionPlans(payload: unknown): NewApiSubscriptionPlan[] {
+  if (!Array.isArray(payload)) throw new Error('订阅方案响应格式异常')
+  const plans: NewApiSubscriptionPlan[] = []
+  for (const entry of payload.slice(0, 100)) {
+    const plan = parseSubscriptionPlan(entry)
+    if (plan) plans.push(plan)
+  }
+  return plans
+}
+
+export function parseSubscription(payload: unknown): NewApiSubscription | null {
+  if (!isRecord(payload) || !isRecord(payload.subscription)) return null
+  const subscription = payload.subscription
+  const id = finiteNumberFromWire(subscription.id)
+  const planId = finiteNumberFromWire(subscription.plan_id)
+  if (
+    id === null
+    || !Number.isInteger(id)
+    || id <= 0
+    || planId === null
+    || !Number.isInteger(planId)
+    || planId <= 0
+  ) return null
+  return {
+    id,
+    planId,
+    status: asString(subscription.status, '').slice(0, 32),
+    source: asString(subscription.source, '').slice(0, 32),
+    amountTotal: finiteNumberFromWire(subscription.amount_total) ?? 0,
+    amountUsed: finiteNumberFromWire(subscription.amount_used) ?? 0,
+    startedAt: unixSecondsToIso(subscription.start_time) ?? '',
+    endsAt: unixSecondsToIso(subscription.end_time) ?? '',
+    nextResetAt: unixSecondsToIso(subscription.next_reset_time),
+  }
+}
+
+function parseSubscriptionCollection(payload: unknown): NewApiSubscription[] {
+  if (!Array.isArray(payload)) return []
+  const subscriptions: NewApiSubscription[] = []
+  for (const entry of payload.slice(0, 200)) {
+    const subscription = parseSubscription(entry)
+    if (subscription) subscriptions.push(subscription)
+  }
+  return subscriptions
+}
+
+export function parseSubscriptionSelf(payload: unknown): NewApiSubscriptionSelf {
+  if (!isRecord(payload)) throw new Error('当前订阅响应格式异常')
+  return {
+    billingPreference: normalizeBillingPreference(payload.billing_preference),
+    activeSubscriptions: parseSubscriptionCollection(payload.subscriptions),
+    allSubscriptions: parseSubscriptionCollection(payload.all_subscriptions),
+  }
+}
+
+export function parseSubscriptionCheckout(
+  provider: NewApiSubscriptionPaymentProvider,
+  envelope: LegacyBusinessEnvelope,
+): NewApiSubscriptionCheckout {
+  if (provider === 'epay') {
+    const form = parsePaymentForm(envelope)
+    return { kind: 'form', form, tradeNo: form.tradeNo, expiresAt: null }
+  }
+
+  const data = isRecord(envelope.data) ? envelope.data : null
+  if (!data) throw new Error('订阅支付响应格式异常')
+  const rawUrl = provider === 'stripe' ? data.pay_link : data.checkout_url
+  const url = parseCheckoutHttpsUrl(rawUrl)
+  if (!url) throw new Error('订阅支付地址格式异常，已取消打开')
+  const rawTradeNo = data.order_id
+  const tradeNo = typeof rawTradeNo === 'string' && rawTradeNo.length <= 255
+    ? rawTradeNo
+    : null
+  const rawExpiresAt = data.expires_at
+  const expiresAt = typeof rawExpiresAt === 'string'
+    && rawExpiresAt.length <= 128
+    && Number.isFinite(Date.parse(rawExpiresAt))
+    ? new Date(rawExpiresAt).toISOString()
+    : null
+  return { kind: 'url', url, tradeNo, expiresAt }
+}
+
+const loginSessionIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+
+export function parseLoginSession(payload: unknown): NewApiLoginSession | null {
+  if (!isRecord(payload)) return null
+  const sid = asString(payload.sid, '').trim()
+  if (!loginSessionIdPattern.test(sid)) return null
+  return {
+    sid,
+    current: asBoolean(payload.current, false),
+    loginMethod: asString(payload.login_method, '').slice(0, 64),
+    ip: asString(payload.ip, '').slice(0, 128),
+    userAgent: asString(payload.user_agent, '').slice(0, 512),
+    createdAt: unixSecondsToIso(payload.created_at) ?? '',
+    lastActiveAt: unixSecondsToIso(payload.last_active_at) ?? '',
+    expiresAt: unixSecondsToIso(payload.expires_at) ?? '',
+  }
+}
+
+export function parseLoginSessions(payload: unknown): NewApiLoginSession[] {
+  if (!Array.isArray(payload)) throw new Error('登录设备响应格式异常')
+  const sessions: NewApiLoginSession[] = []
+  for (const entry of payload.slice(0, 100)) {
+    const sessionEntry = parseLoginSession(entry)
+    if (sessionEntry) sessions.push(sessionEntry)
+  }
+  return sessions
+}
+
+export function validateLoginSessionId(value: string): string {
+  const sid = value.trim()
+  if (!loginSessionIdPattern.test(sid)) throw new Error('登录会话 ID 格式错误')
+  return sid
+}
+
+function boundedUsageString(value: unknown, maxLength: number): string {
+  return asString(value, '').trim().slice(0, maxLength)
+}
+
+function nonNegativeUsageNumber(value: unknown): number {
+  const parsed = finiteNumberFromWire(value)
+  return parsed !== null && parsed >= 0 ? parsed : 0
+}
+
+function parseAccountUsageStreamStatus(value: unknown): NewApiAccountUsageStreamStatus | null {
+  if (!isRecord(value)) return null
+  return {
+    status: boundedUsageString(value.status, 32),
+    endReason: boundedUsageString(value.end_reason, 128),
+    errorCount: nonNegativeUsageNumber(value.error_count),
+    endError: boundedUsageString(value.end_error, 512),
+    errors: Array.isArray(value.errors)
+      ? value.errors
+        .filter((entry): entry is string => typeof entry === 'string')
+        .slice(0, 8)
+        .map((entry) => entry.slice(0, 256))
+      : [],
+  }
+}
+
+export function parseAccountUsageDetails(value: unknown): NewApiAccountUsageDetails {
+  const other = parseJsonRecord(value)
+  return {
+    cacheTokens: nonNegativeUsageNumber(other.cache_tokens),
+    cacheCreationTokens: nonNegativeUsageNumber(other.cache_creation_tokens),
+    cacheCreationTokens5m: nonNegativeUsageNumber(other.cache_creation_tokens_5m),
+    cacheCreationTokens1h: nonNegativeUsageNumber(other.cache_creation_tokens_1h),
+    firstResponseTimeMs: asOptionalFiniteNumber(other.frt),
+    reasoningEffort: boundedUsageString(other.reasoning_effort, 32),
+    modelRatio: asOptionalFiniteNumber(other.model_ratio),
+    completionRatio: asOptionalFiniteNumber(other.completion_ratio),
+    modelPrice: asOptionalFiniteNumber(other.model_price),
+    groupRatio: asOptionalFiniteNumber(other.group_ratio),
+    userGroupRatio: asOptionalFiniteNumber(other.user_group_ratio),
+    cacheRatio: asOptionalFiniteNumber(other.cache_ratio),
+    cacheCreationRatio: asOptionalFiniteNumber(other.cache_creation_ratio),
+    cacheCreationRatio5m: asOptionalFiniteNumber(other.cache_creation_ratio_5m),
+    cacheCreationRatio1h: asOptionalFiniteNumber(other.cache_creation_ratio_1h),
+    billingMode: boundedUsageString(other.billing_mode, 64),
+    matchedTier: boundedUsageString(other.matched_tier, 128),
+    upstreamModelName: boundedUsageString(other.upstream_model_name, 128),
+    streamStatus: parseAccountUsageStreamStatus(other.stream_status),
   }
 }
 
@@ -721,6 +1528,22 @@ export function parseAccountUsageRecord(payload: unknown): NewApiAccountUsageRec
     completionTokens: asFiniteNumber(payload.completion_tokens, 0),
     quota: asFiniteNumber(payload.quota, 0),
     isStream: asBoolean(payload.is_stream, false),
+    tokenName: boundedUsageString(payload.token_name, 128),
+    group: boundedUsageString(payload.group, 128),
+    useTimeSeconds: nonNegativeUsageNumber(payload.use_time),
+    content: boundedUsageString(payload.content, 2_000),
+    requestId: boundedUsageString(payload.request_id, 128),
+    upstreamRequestId: boundedUsageString(payload.upstream_request_id, 256),
+    details: parseAccountUsageDetails(payload.other),
+  }
+}
+
+export function parseAccountUsageStats(payload: unknown): NewApiAccountUsageStats {
+  const data = isRecord(payload) ? payload : {}
+  return {
+    quota: nonNegativeUsageNumber(data.quota),
+    rpm: nonNegativeUsageNumber(data.rpm),
+    tpm: nonNegativeUsageNumber(data.tpm),
   }
 }
 
@@ -729,7 +1552,10 @@ export function parseAccountUsageRecord(payload: unknown): NewApiAccountUsageRec
 // default to new-api's own GetPageQuery defaults (page 1, page size 10) if
 // somehow absent, so a malformed pagination header degrades to "page 1 of
 // whatever came back" instead of throwing away a page of real usage data.
-export function parseAccountUsagePage(payload: unknown): NewApiAccountUsagePage {
+export function parseAccountUsagePage(
+  payload: unknown,
+  stats: NewApiAccountUsageStats = { quota: 0, rpm: 0, tpm: 0 },
+): NewApiAccountUsagePage {
   const data = isRecord(payload) ? payload : null
   const items = data && Array.isArray(data.items) ? data.items : []
   const records: NewApiAccountUsageRecord[] = []
@@ -742,6 +1568,75 @@ export function parseAccountUsagePage(payload: unknown): NewApiAccountUsagePage 
     pageSize: data ? asFiniteNumber(data.page_size, 10) : 10,
     total: data ? asFiniteNumber(data.total, 0) : 0,
     records,
+    stats,
+  }
+}
+
+export function parseAccountDashboardRecord(payload: unknown): NewApiAccountDashboardRecord | null {
+  if (!isRecord(payload)) return null
+  const createdAt = safeIntegerFromWire(payload.created_at)
+  if (createdAt === null || createdAt <= 0) return null
+  const modelName = asString(payload.model_name, '').trim().slice(0, 128) || '未知模型'
+  return {
+    createdAt,
+    modelName,
+    tokenUsed: nonNegativeUsageNumber(payload.token_used),
+    count: nonNegativeUsageNumber(payload.count),
+    quota: nonNegativeUsageNumber(payload.quota),
+  }
+}
+
+export function parseAccountDashboardData(
+  payload: unknown,
+  query: NewApiAccountDashboardQuery,
+): NewApiAccountDashboardData {
+  const records: NewApiAccountDashboardRecord[] = []
+  if (Array.isArray(payload)) {
+    for (const entry of payload.slice(0, 20_000)) {
+      const record = parseAccountDashboardRecord(entry)
+      if (record) records.push(record)
+    }
+  }
+  return { ...query, records }
+}
+
+export function parseAccountTaskRecord(payload: unknown): NewApiAccountTaskRecord | null {
+  if (!isRecord(payload)) return null
+  const id = asFiniteNumber(payload.id, Number.NaN)
+  if (!Number.isSafeInteger(id) || id <= 0) return null
+  const properties = parseJsonRecord(payload.properties)
+  return {
+    id,
+    taskId: boundedUsageString(payload.task_id, 256),
+    platform: boundedUsageString(payload.platform, 64),
+    group: boundedUsageString(payload.group, 128),
+    quota: nonNegativeUsageNumber(payload.quota),
+    action: boundedUsageString(payload.action, 64),
+    status: boundedUsageString(payload.status, 32),
+    failReason: boundedUsageString(payload.fail_reason, 2_000),
+    resultUrl: boundedUsageString(payload.result_url, 2_048),
+    submitAt: unixSecondsToIso(payload.submit_time) ?? '',
+    startAt: unixSecondsToIso(payload.start_time) ?? '',
+    finishAt: unixSecondsToIso(payload.finish_time) ?? '',
+    progress: boundedUsageString(payload.progress, 32),
+    originModelName: boundedUsageString(properties.origin_model_name, 128),
+    upstreamModelName: boundedUsageString(properties.upstream_model_name, 128),
+  }
+}
+
+export function parseAccountTaskPage(payload: unknown): NewApiAccountTaskPage {
+  const data = isRecord(payload) ? payload : null
+  const items = data && Array.isArray(data.items) ? data.items : []
+  const tasks: NewApiAccountTaskRecord[] = []
+  for (const entry of items) {
+    const task = parseAccountTaskRecord(entry)
+    if (task) tasks.push(task)
+  }
+  return {
+    page: data ? asFiniteNumber(data.page, 1) : 1,
+    pageSize: data ? asFiniteNumber(data.page_size, 10) : 10,
+    total: data ? asFiniteNumber(data.total, 0) : 0,
+    tasks,
   }
 }
 
@@ -1063,6 +1958,10 @@ const newApiCapabilities: RelayBackendCapabilities = {
   supportsPasswordReset: true,
   supportsKeyManagement: true,
   supportsUsage: true,
+  supportsBilling: true,
+  supportsSubscriptions: true,
+  supportsProfileUpdate: true,
+  supportsSessionManagement: true,
   supportsAutoKeyProvision: true,
   supportsAccountSession: true,
 }
@@ -1341,6 +2240,208 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     }
   })
 
+  const getTopupInfo = (): Promise<NewApiTopupInfo> => withSession(async (current) => {
+    const raw = await performRequest(
+      ctx,
+      topupInfoPath,
+      { method: 'GET', headers: authHeaders(current) },
+      '充值配置查询',
+    )
+    return parseTopupInfo(unwrapEnvelope(raw, '充值配置查询', [current.accessToken]))
+  })
+
+  function validateTopupAmount(amount: number): number {
+    if (!Number.isSafeInteger(amount) || amount <= 0) throw new Error('充值数量格式错误')
+    return amount
+  }
+
+  const quoteTopupAmount = (input: NewApiTopupAmountInput): Promise<NewApiTopupAmountQuote> => (
+    withSession(async (current) => {
+      const amount = validateTopupAmount(input.amount)
+      const raw = await performRequest(
+        ctx,
+        topupAmountPath,
+        { method: 'POST', body: { amount }, headers: authHeaders(current) },
+        '充值金额试算',
+      )
+      const envelope = unwrapLegacyBusinessEnvelope(raw, '充值金额试算', [current.accessToken])
+      return parseTopupAmountQuote(envelope.data, amount)
+    })
+  )
+
+  const createTopupPayment = (input: NewApiTopupPaymentInput): Promise<NewApiPaymentForm> => (
+    withSession(async (current) => {
+      const amount = validateTopupAmount(input.amount)
+      const paymentMethod = input.paymentMethod.trim()
+      if (!paymentMethod || paymentMethod.length > 64) throw new Error('支付方式格式错误')
+      const raw = await performRequest(
+        ctx,
+        topupPaymentPath,
+        {
+          method: 'POST',
+          body: { amount, payment_method: paymentMethod },
+          headers: authHeaders(current),
+        },
+        '充值订单创建',
+      )
+      return parsePaymentForm(unwrapLegacyBusinessEnvelope(
+        raw,
+        '充值订单创建',
+        [current.accessToken],
+      ))
+    })
+  )
+
+  const listTopupOrders = (input: NewApiTopupOrdersQuery = {}): Promise<NewApiTopupOrdersPage> => (
+    withSession(async (current) => {
+      const params = new URLSearchParams()
+      if (input.page !== undefined) {
+        if (!Number.isSafeInteger(input.page) || input.page < 1 || input.page > 1_000_000) {
+          throw new Error('订单页码格式错误')
+        }
+        params.set('p', String(input.page))
+      }
+      if (input.pageSize !== undefined) {
+        if (!Number.isSafeInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > 100) {
+          throw new Error('订单分页大小格式错误')
+        }
+        params.set('page_size', String(input.pageSize))
+      }
+      const keyword = input.keyword?.trim() ?? ''
+      if (keyword.length > 128) throw new Error('订单搜索词不能超过 128 个字符')
+      if (keyword) params.set('keyword', keyword)
+      const query = params.toString()
+      const raw = await performRequest(
+        ctx,
+        query ? `${topupOrdersPath}?${query}` : topupOrdersPath,
+        { method: 'GET', headers: authHeaders(current) },
+        '充值订单查询',
+      )
+      return parseTopupOrdersPage(unwrapEnvelope(raw, '充值订单查询', [current.accessToken]))
+    })
+  )
+
+  const redeemTopupCode = (value: string): Promise<NewApiRedemptionResult> => (
+    withSession(async (current) => {
+      const code = value.trim()
+      if (!code || code.length > 256) throw new Error('兑换码格式错误')
+      const raw = await performRequest(
+        ctx,
+        redemptionPath,
+        { method: 'POST', body: { key: code }, headers: authHeaders(current) },
+        '兑换码兑换',
+      )
+      const quotaAdded = finiteNumberFromWire(unwrapEnvelope(
+        raw,
+        '兑换码兑换',
+        [current.accessToken, code],
+      ))
+      if (quotaAdded === null || !Number.isSafeInteger(quotaAdded) || quotaAdded < 0) {
+        throw new Error('兑换码响应格式异常')
+      }
+      return { quotaAdded }
+    })
+  )
+
+  const transferAffiliateQuota = (input: NewApiAffiliateTransferInput): Promise<void> => (
+    withSession(async (current) => {
+      if (!Number.isSafeInteger(input.quota) || input.quota <= 0) throw new Error('邀请额度格式错误')
+      const raw = await performRequest(
+        ctx,
+        affiliateTransferPath,
+        { method: 'POST', body: { quota: input.quota }, headers: authHeaders(current) },
+        '邀请额度转余额',
+      )
+      unwrapEnvelope(raw, '邀请额度转余额', [current.accessToken])
+    })
+  )
+
+  const listSubscriptionPlans = (): Promise<NewApiSubscriptionPlan[]> => (
+    withSession(async (current) => {
+      const raw = await performRequest(
+        ctx,
+        subscriptionPlansPath,
+        { method: 'GET', headers: authHeaders(current) },
+        '订阅方案查询',
+      )
+      return parseSubscriptionPlans(unwrapEnvelope(raw, '订阅方案查询', [current.accessToken]))
+    })
+  )
+
+  const getSubscriptionSelf = (): Promise<NewApiSubscriptionSelf> => (
+    withSession(async (current) => {
+      const raw = await performRequest(
+        ctx,
+        subscriptionSelfPath,
+        { method: 'GET', headers: authHeaders(current) },
+        '当前订阅查询',
+      )
+      return parseSubscriptionSelf(unwrapEnvelope(raw, '当前订阅查询', [current.accessToken]))
+    })
+  )
+
+  const updateSubscriptionPreference = (
+    preference: NewApiBillingPreference,
+  ): Promise<NewApiBillingPreference> => withSession(async (current) => {
+    if (!billingPreferences.has(preference)) throw new Error('订阅扣费顺序格式错误')
+    const raw = await performRequest(
+      ctx,
+      subscriptionPreferencePath,
+      {
+        method: 'PUT',
+        body: { billing_preference: preference },
+        headers: authHeaders(current),
+      },
+      '订阅扣费顺序更新',
+    )
+    const payload = unwrapEnvelope(raw, '订阅扣费顺序更新', [current.accessToken])
+    if (!isRecord(payload)) throw new Error('订阅扣费顺序响应格式异常')
+    return normalizeBillingPreference(payload.billing_preference)
+  })
+
+  const createSubscriptionPayment = (
+    input: NewApiSubscriptionPaymentInput,
+  ): Promise<NewApiSubscriptionCheckout> => withSession(async (current) => {
+    if (!Number.isSafeInteger(input.planId) || input.planId <= 0) throw new Error('订阅方案 ID 格式错误')
+    if (!Object.prototype.hasOwnProperty.call(subscriptionPaymentPaths, input.provider)) {
+      throw new Error('订阅支付渠道格式错误')
+    }
+    const body: Record<string, unknown> = { plan_id: input.planId }
+    if (input.provider === 'epay') {
+      const method = input.paymentMethod?.trim() ?? ''
+      if (!method || method.length > 64) throw new Error('订阅支付方式格式错误')
+      body.payment_method = method
+    } else if (input.paymentMethod !== undefined) {
+      throw new Error('当前订阅支付渠道不接受支付方式参数')
+    }
+    const raw = await performRequest(
+      ctx,
+      subscriptionPaymentPaths[input.provider],
+      { method: 'POST', body, headers: authHeaders(current) },
+      '订阅支付订单创建',
+    )
+    const envelope = unwrapLegacyBusinessEnvelope(
+      raw,
+      '订阅支付订单创建',
+      [current.accessToken],
+    )
+    return parseSubscriptionCheckout(input.provider, envelope)
+  })
+
+  const purchaseSubscriptionWithBalance = (planId: number): Promise<NewApiSubscriptionPurchaseResult> => (
+    withSession(async (current) => {
+      if (!Number.isSafeInteger(planId) || planId <= 0) throw new Error('订阅方案 ID 格式错误')
+      const raw = await performRequest(
+        ctx,
+        subscriptionBalancePaymentPath,
+        { method: 'POST', body: { plan_id: planId }, headers: authHeaders(current) },
+        '余额购买订阅',
+      )
+      unwrapEnvelope(raw, '余额购买订阅', [current.accessToken])
+      return { purchased: true }
+    })
+  )
+
   const getProfile = (): Promise<NewApiAccountProfileDetail> => withSession(async (current) => {
     const raw = await performRequest(
       ctx,
@@ -1351,6 +2452,27 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     return parseAccountProfileDetail(unwrapEnvelope(raw, '账号资料查询', [current.accessToken]))
   })
 
+  const updateDisplayName = (input: NewApiDisplayNameUpdateInput): Promise<NewApiProfileUpdateResult> => (
+    withSession(async (current) => {
+      const displayName = input.displayName.trim()
+      if (displayName.length > 20) throw new Error('显示名称不能超过 20 个字符')
+      const raw = await performRequest(
+        ctx,
+        selfPath,
+        {
+          method: 'PUT',
+          // UpdateSelf treats this as an overwrite DTO. Preserve username so
+          // a display-name-only edit can never blank the login identifier.
+          body: { username: current.profile.username, display_name: displayName },
+          headers: authHeaders(current),
+        },
+        '账号资料更新',
+      )
+      unwrapEnvelope(raw, '账号资料更新', [current.accessToken])
+      return { updated: true }
+    })
+  )
+
   const getUsage = (input: NewApiAccountUsageQuery = {}): Promise<NewApiAccountUsagePage> => (
     withSession(async (current) => {
       const params = new URLSearchParams()
@@ -1360,14 +2482,81 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       if (Number.isInteger(input.pageSize) && (input.pageSize as number) >= 1) {
         params.set('page_size', String(input.pageSize))
       }
+      if (input.type !== undefined) params.set('type', String(input.type))
+      if (input.startTimestamp !== undefined) params.set('start_timestamp', String(input.startTimestamp))
+      if (input.endTimestamp !== undefined) params.set('end_timestamp', String(input.endTimestamp))
+      if (input.modelName) params.set('model_name', input.modelName)
+      if (input.tokenName) params.set('token_name', input.tokenName)
+      if (input.group) params.set('group', input.group)
+      if (input.requestId) params.set('request_id', input.requestId)
+      if (input.upstreamRequestId) params.set('upstream_request_id', input.upstreamRequestId)
+      const listQuery = params.toString()
+      const statParams = new URLSearchParams(params)
+      statParams.delete('p')
+      statParams.delete('page_size')
+      statParams.delete('request_id')
+      statParams.delete('upstream_request_id')
+      const statQuery = statParams.toString()
+      const [listRaw, statRaw] = await Promise.all([
+        performRequest(
+          ctx,
+          listQuery ? `${logSelfPath}?${listQuery}` : logSelfPath,
+          { method: 'GET', headers: authHeaders(current) },
+          '用量明细查询',
+        ),
+        performRequest(
+          ctx,
+          statQuery ? `${logSelfStatPath}?${statQuery}` : logSelfStatPath,
+          { method: 'GET', headers: authHeaders(current) },
+          '用量统计查询',
+        ),
+      ])
+      const stats = parseAccountUsageStats(unwrapEnvelope(statRaw, '用量统计查询', [current.accessToken]))
+      return parseAccountUsagePage(
+        unwrapEnvelope(listRaw, '用量明细查询', [current.accessToken]),
+        stats,
+      )
+    })
+  )
+
+  const getDashboard = (input: NewApiAccountDashboardQuery): Promise<NewApiAccountDashboardData> => (
+    withSession(async (current) => {
+      const params = new URLSearchParams({
+        start_timestamp: String(input.startTimestamp),
+        end_timestamp: String(input.endTimestamp),
+      })
+      const raw = await performRequest(
+        ctx,
+        `${dataSelfPath}?${params.toString()}`,
+        { method: 'GET', headers: authHeaders(current) },
+        '数据看板查询',
+      )
+      return parseAccountDashboardData(
+        unwrapEnvelope(raw, '数据看板查询', [current.accessToken]),
+        input,
+      )
+    })
+  )
+
+  const getTasks = (input: NewApiAccountTaskQuery = {}): Promise<NewApiAccountTaskPage> => (
+    withSession(async (current) => {
+      const params = new URLSearchParams()
+      if (Number.isInteger(input.page) && (input.page as number) >= 1) params.set('p', String(input.page))
+      if (Number.isInteger(input.pageSize) && (input.pageSize as number) >= 1) params.set('page_size', String(input.pageSize))
+      if (input.platform) params.set('platform', input.platform)
+      if (input.taskId) params.set('task_id', input.taskId)
+      if (input.status) params.set('status', input.status)
+      if (input.action) params.set('action', input.action)
+      if (input.startTimestamp !== undefined) params.set('start_timestamp', String(input.startTimestamp))
+      if (input.endTimestamp !== undefined) params.set('end_timestamp', String(input.endTimestamp))
       const query = params.toString()
       const raw = await performRequest(
         ctx,
-        query ? `${logSelfPath}?${query}` : logSelfPath,
+        query ? `${taskSelfPath}?${query}` : taskSelfPath,
         { method: 'GET', headers: authHeaders(current) },
-        '用量明细查询',
+        '任务日志查询',
       )
-      return parseAccountUsagePage(unwrapEnvelope(raw, '用量明细查询', [current.accessToken]))
+      return parseAccountTaskPage(unwrapEnvelope(raw, '任务日志查询', [current.accessToken]))
     })
   )
 
@@ -1556,6 +2745,56 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     })
   )
 
+  const listLoginSessions = (): Promise<NewApiLoginSession[]> => (
+    withSession(async (current) => {
+      const raw = await performRequest(
+        ctx,
+        loginSessionsPath,
+        { method: 'GET', headers: authHeaders(current) },
+        '登录设备查询',
+      )
+      return parseLoginSessions(unwrapEnvelope(raw, '登录设备查询', [current.accessToken]))
+    })
+  )
+
+  const revokeLoginSession = (value: string): Promise<NewApiRevokeLoginSessionResult> => (
+    withSession(async (current) => {
+      const sid = validateLoginSessionId(value)
+      const raw = await performRequest(
+        ctx,
+        loginSessionPath(sid),
+        { method: 'DELETE', headers: authHeaders(current) },
+        '登录设备撤销',
+      )
+      const data = unwrapEnvelope(raw, '登录设备撤销', [current.accessToken])
+      if (!isRecord(data)) throw new Error('登录设备撤销响应格式异常')
+      const revokedSid = asString(data.revoked_sid, '')
+      if (revokedSid !== sid || typeof data.current !== 'boolean') {
+        throw new Error('登录设备撤销响应格式异常')
+      }
+      const result = { revokedSid, current: data.current }
+      if (result.current) setSession(null)
+      return result
+    })
+  )
+
+  const revokeOtherLoginSessions = (): Promise<NewApiRevokeOtherLoginSessionsResult> => (
+    withSession(async (current) => {
+      const raw = await performRequest(
+        ctx,
+        `${loginSessionsPath}/revoke-others`,
+        { method: 'POST', headers: authHeaders(current) },
+        '其他登录设备撤销',
+      )
+      const data = unwrapEnvelope(raw, '其他登录设备撤销', [current.accessToken])
+      const revokedCount = isRecord(data) ? finiteNumberFromWire(data.revoked_count) : null
+      if (revokedCount === null || !Number.isSafeInteger(revokedCount) || revokedCount < 0) {
+        throw new Error('其他登录设备撤销响应格式异常')
+      }
+      return { revokedCount }
+    })
+  )
+
   const listAllTokenRecords = async (current: InternalSession): Promise<unknown[]> => {
     const entries: unknown[] = []
     for (let page = 1; page <= 1_000; page += 1) {
@@ -1739,8 +2978,22 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     isAuthenticated,
     getSessionState,
     getBalance,
+    getTopupInfo,
+    quoteTopupAmount,
+    createTopupPayment,
+    listTopupOrders,
+    redeemTopupCode,
+    transferAffiliateQuota,
+    listSubscriptionPlans,
+    getSubscriptionSelf,
+    updateSubscriptionPreference,
+    createSubscriptionPayment,
+    purchaseSubscriptionWithBalance,
     getProfile,
+    updateDisplayName,
     getUsage,
+    getDashboard,
+    getTasks,
     listKeys,
     listUsableGroups,
     revealKey,
@@ -1748,6 +3001,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     createKey,
     updateKey,
     changePassword,
+    listLoginSessions,
+    revokeLoginSession,
+    revokeOtherLoginSessions,
     provisionCliKey,
     findExistingCliKey,
     refreshAccessToken,

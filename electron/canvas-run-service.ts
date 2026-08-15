@@ -24,6 +24,7 @@ export interface CanvasRunServiceOptions {
 export interface StartCanvasRunInput {
   userId: number
   ownerId: number
+  projectId?: string
   graphRevision: string
   graph: CanvasRunGraph
   scope: CanvasRunScope
@@ -74,6 +75,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     const promise = executeCanvasRun({
       userId: input.userId,
       ownerId: input.ownerId,
+      projectId: input.projectId,
       runId,
       graphRevision: input.graphRevision,
       graph: structuredClone(input.graph),
@@ -149,7 +151,10 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
 
   return {
     initializeUser: (userId: number) => options.store.initializeUser(userId),
-    listRuns: (userId: number) => options.store.listRuns(userId),
+    listRuns: async (userId: number, projectId?: string) => {
+      const runs = await options.store.listRuns(userId)
+      return projectId ? runs.filter((run) => run.projectId === projectId) : runs
+    },
     getRun: (userId: number, runId: string) => options.store.getRun(userId, runId),
     reconcileAssets: (userId: number) => options.store.reconcileAssets(userId),
     start,

@@ -7,11 +7,14 @@ import {
   relaySiteExternalUrls,
   relaySites,
   resolveRelaySite,
-  tutorialDocumentUrl,
+  supportServiceUrl,
   userAgreementUrl,
 } from './relay-sites'
 
 describe('relay site registry', () => {
+  it('pins the customer support destination to the exact enterprise WeChat link', () => {
+    expect(supportServiceUrl).toBe('https://work.weixin.qq.com/kfid/kfc212a22c8e02da5f8')
+  })
   it('ships the solov and sub2api sites, both reusing catalog providerBaseUrls by reference', () => {
     expect(relaySites).toHaveLength(2)
     expect(relaySites.map((site) => site.id)).toEqual(['solov', 'sub2api'])
@@ -91,14 +94,10 @@ describe('relay site registry', () => {
       // the dedup in relaySiteExternalUrls is what keeps it that way.
       // Updated 2026-08-10: 官网/取 Key 页移到账号域 xm.solov.cc(老板拍板;
       // 同日中转也统一切到 xm,见 catalog.ts),api.solov.cc 全面退出。
-      expect(relaySiteExternalUrls(relaySites)).toEqual([
-        'https://xm.solov.cc',
-        'https://xm.solov.cc/keys',
-        'https://xm.solov.cc/wallet',
-      ])
+      expect(relaySiteExternalUrls(relaySites)).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc/keys'])
     })
 
-    it('omits the wallet URL for a site with no account backend', () => {
+    it('returns only marketing and keys pages for a manual-key site', () => {
       const manualKeySite = {
         id: 'manual-example',
         label: 'Manual example',
@@ -135,9 +134,6 @@ describe('relay site registry', () => {
     it('serves the agreement and privacy pages from the account domain over https', () => {
       expect(userAgreementUrl).toBe('https://xm.solov.cc/user-agreement')
       expect(privacyPolicyUrl).toBe('https://xm.solov.cc/privacy-policy')
-      expect(tutorialDocumentUrl).toBe(
-        'https://s4621e8xzb.feishu.cn/wiki/WpBUwh4PhiAs2skvWfmcnM5vnDb?from=from_copylink',
-      )
       for (const url of [userAgreementUrl, privacyPolicyUrl]) {
         const parsed = new URL(url)
         expect(parsed.protocol).toBe('https:')

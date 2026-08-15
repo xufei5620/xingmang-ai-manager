@@ -3,8 +3,10 @@ import { platformCapabilitiesFor } from '../../electron/platform-capabilities'
 import {
   applyManualUninstallResult,
   codexDesktopMaintenanceControl,
+  cliMaintenanceAction,
   cliUninstallPresentation,
   runCodexDesktopMaintenanceAction,
+  updateStateLabel,
   type MaintenanceCliStatus,
   type MaintenanceSnapshot,
 } from './MaintenancePage'
@@ -13,6 +15,7 @@ function status(uninstall: MaintenanceCliStatus['uninstall']): MaintenanceCliSta
   return {
     installed: true,
     version: '0.1.0',
+    path: 'C:\\Users\\tester\\AppData\\Roaming\\npm\\tool.cmd',
     installDirectory: 'C:\\Users\\tester\\AppData\\Roaming\\npm',
     latestVersion: '0.1.0',
     updateAvailable: false,
@@ -27,6 +30,7 @@ function desktopStatus(
     installed: true,
     version: '26.727.51351',
     appVersion: '26.727.51351',
+    path: '/Applications/Codex.app',
     installDirectory: '/Applications/Codex.app',
     updateCheck: 'skipped',
     updateState: 'unknown',
@@ -84,6 +88,21 @@ describe('maintenance CLI uninstall presentation', () => {
     const automatic = status({ available: true, reason: null, manualCommand: null })
     const snapshot: MaintenanceSnapshot = {
       checkedAt: '2026-08-03T00:00:00.000Z',
+      runtime: {
+        node: {
+          installed: true,
+          version: '24.19.0',
+          path: 'C:\\Program Files\\nodejs\\node.exe',
+          installDirectory: 'C:\\Program Files\\nodejs',
+          versionStatus: 'supported',
+        },
+        npm: {
+          installed: true,
+          version: '11.17.0',
+          path: 'C:\\Program Files\\nodejs\\npm.cmd',
+          installDirectory: 'C:\\Program Files\\nodejs',
+        },
+      },
       clis: {
         claude: automatic,
         codex: automatic,
@@ -118,6 +137,31 @@ describe('maintenance CLI uninstall presentation', () => {
 })
 
 describe('Codex Desktop maintenance action', () => {
+  it('turns a failed detector into retry instead of install or launch', () => {
+    const failed = desktopStatus({
+      installed: false,
+      detectionFailed: true,
+      detectionError: 'AppX 查询失败',
+    })
+
+    expect(cliMaintenanceAction(failed)).toBe('check')
+    expect(updateStateLabel(failed)).toBe('检测失败')
+    expect(codexDesktopMaintenanceControl(
+      platformCapabilitiesFor('win32', 'x64'),
+      failed,
+      false,
+    )).toMatchObject({
+      action: 'check',
+      label: '重新检测',
+      statusLabel: '检测失败',
+    })
+    expect(codexDesktopMaintenanceControl(
+      platformCapabilitiesFor('darwin', 'arm64'),
+      failed,
+      false,
+    )).toMatchObject({ action: 'check', label: '重新检测' })
+  })
+
   it('presents an installed macOS app as an open action instead of an update check', () => {
     const control = codexDesktopMaintenanceControl(
       platformCapabilitiesFor('darwin', 'arm64'),

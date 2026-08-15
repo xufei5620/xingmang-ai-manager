@@ -20,7 +20,7 @@ export interface NodeDimensions {
 }
 
 export interface NodeCapabilityRequirement {
-  media: 'text' | 'image' | 'video'
+  media: 'text' | 'image' | 'video' | 'audio'
   operation: 'input' | 'generate' | 'edit' | 'extract' | 'route' | 'collect' | 'output'
 }
 

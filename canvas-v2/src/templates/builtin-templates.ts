@@ -46,7 +46,7 @@ const referenceEdit: CanvasTemplate = {
       { id: 'output', type: 'output', definitionVersion: 1, position: { x: 990, y: 150 }, config: {} },
     ],
     edges: [
-      { id: 'image-edit', source: 'image', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:image' },
+      { id: 'image-edit', source: 'image', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:images' },
       { id: 'prompt-edit', source: 'prompt', sourceHandle: 'out:text', target: 'edit', targetHandle: 'in:text' },
       { id: 'edit-gallery', source: 'edit', sourceHandle: 'out:image', target: 'gallery', targetHandle: 'in:images' },
       { id: 'gallery-output', source: 'gallery', sourceHandle: 'out:image', target: 'output', targetHandle: 'in:image' },
@@ -77,7 +77,7 @@ const productVideo: CanvasTemplate = {
       { id: 'output', type: 'output', definitionVersion: 1, position: { x: 990, y: 150 }, config: {} },
     ],
     edges: [
-      { id: 'image-generate', source: 'image', sourceHandle: 'out:image', target: 'generate', targetHandle: 'in:image' },
+      { id: 'image-generate', source: 'image', sourceHandle: 'out:image', target: 'generate', targetHandle: 'in:images' },
       { id: 'prompt-generate', source: 'prompt', sourceHandle: 'out:text', target: 'generate', targetHandle: 'in:text' },
       { id: 'generate-gallery', source: 'generate', sourceHandle: 'out:video', target: 'gallery', targetHandle: 'in:videos' },
       { id: 'gallery-output', source: 'gallery', sourceHandle: 'out:video', target: 'output', targetHandle: 'in:video' },

@@ -1,6 +1,6 @@
 export type CanvasShortcut =
   | 'undo' | 'redo' | 'select-all' | 'copy' | 'paste' | 'duplicate'
-  | 'delete' | 'save' | 'open' | 'run' | 'group' | 'ungroup' | 'layout'
+  | 'delete' | 'save' | 'open' | 'run' | 'group' | 'ungroup' | 'layout' | 'quick-insert'
 
 export interface CanvasShortcutEvent {
   key: string
@@ -35,5 +35,6 @@ export function resolveCanvasShortcut(event: CanvasShortcutEvent): CanvasShortcu
   if (key === 'enter') return 'run'
   if (key === 'g') return event.shiftKey ? 'ungroup' : 'group'
   if (key === 'l') return 'layout'
+  if (key === 'k') return 'quick-insert'
   return null
 }

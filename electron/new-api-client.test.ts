@@ -13,12 +13,25 @@ import {
   parseAccountProfileDetail,
   parseAccountStatus,
   parseAccountUsagePage,
+  parseAccountUsageDetails,
   parseAccountUsageRecord,
+  parseAccountDashboardData,
+  parseAccountDashboardRecord,
+  parseAccountTaskPage,
+  parseAccountTaskRecord,
   parseChangePasswordResponseData,
   parseCliKeySecret,
   parseLoginResponseData,
+  parseLoginSessions,
+  parsePaymentForm,
   parseRefreshResponseData,
   parseResetPasswordResponseData,
+  parseSubscriptionPlans,
+  parseSubscriptionCheckout,
+  parseSubscriptionSelf,
+  parseTopupAmountQuote,
+  parseTopupInfo,
+  parseTopupOrdersPage,
   type NewApiFetch,
 } from './new-api-client'
 
@@ -90,8 +103,8 @@ function userDetailData(overrides: Record<string, unknown> = {}) {
     request_count: 12,
     aff_code: 'ABC123',
     aff_count: 3,
-    aff_quota: 0,
-    aff_history_quota: 0,
+    aff_quota: 125_000,
+    aff_history_quota: 300_000,
     inviter_id: 0,
     ...overrides,
   }
@@ -209,6 +222,8 @@ describe('parseAccountProfileDetail', () => {
       requestCount: 12,
       affCode: 'ABC123',
       affCount: 3,
+      affQuota: 125_000,
+      affHistoryQuota: 300_000,
     })
   })
 
@@ -233,6 +248,8 @@ describe('parseAccountProfileDetail', () => {
       requestCount: 0,
       affCode: null,
       affCount: 0,
+      affQuota: 0,
+      affHistoryQuota: 0,
     })
   })
 
@@ -350,7 +367,7 @@ describe('parseAccountUsageRecord', () => {
   }
 
   it('converts the wire\'s Unix-seconds created_at into an ISO string and picks the customer-facing fields', () => {
-    expect(parseAccountUsageRecord(rawLog)).toEqual({
+    expect(parseAccountUsageRecord(rawLog)).toMatchObject({
       id: 501,
       createdAt: new Date(1_754_784_000 * 1000).toISOString(),
       type: 2,
@@ -359,14 +376,20 @@ describe('parseAccountUsageRecord', () => {
       completionTokens: 200,
       quota: 12_345,
       isStream: true,
+      tokenName: 'xingmang-desktop-abc',
+      group: 'default',
+      useTimeSeconds: 3,
+      content: 'internal detail, not surfaced',
+      details: { cacheTokens: 0 },
     })
   })
 
-  it('drops relay-internal fields (channel/token/ip/content/other) rather than forwarding them', () => {
+  it('drops relay-internal fields while forwarding only the explicit customer-facing whitelist', () => {
     const parsed = parseAccountUsageRecord(rawLog) as unknown as Record<string, unknown>
-    for (const internalKey of ['channel', 'channel_name', 'token_id', 'token_name', 'ip', 'content', 'other', 'group']) {
+    for (const internalKey of ['user_id', 'username', 'channel', 'channel_name', 'token_id', 'token_name', 'ip', 'other']) {
       expect(parsed[internalKey]).toBeUndefined()
     }
+    expect(parsed).toMatchObject({ tokenName: 'xingmang-desktop-abc', group: 'default', content: 'internal detail, not surfaced' })
   })
 
   it('returns null for a malformed entry instead of throwing, so one bad row degrades gracefully', () => {
@@ -413,9 +436,58 @@ describe('parseAccountUsagePage', () => {
   })
 
   it('defaults to page 1 / page size 10 / total 0 / empty records for a malformed envelope', () => {
-    expect(parseAccountUsagePage(null)).toEqual({ page: 1, pageSize: 10, total: 0, records: [] })
-    expect(parseAccountUsagePage({})).toEqual({ page: 1, pageSize: 10, total: 0, records: [] })
-    expect(parseAccountUsagePage({ items: 'not-an-array' })).toEqual({ page: 1, pageSize: 10, total: 0, records: [] })
+    const emptyPage = { page: 1, pageSize: 10, total: 0, records: [], stats: { quota: 0, rpm: 0, tpm: 0 } }
+    expect(parseAccountUsagePage(null)).toEqual(emptyPage)
+    expect(parseAccountUsagePage({})).toEqual(emptyPage)
+    expect(parseAccountUsagePage({ items: 'not-an-array' })).toEqual(emptyPage)
+  })
+})
+
+describe('parseAccountTaskRecord / parseAccountTaskPage', () => {
+  const wireTask = {
+    id: 41,
+    task_id: 'task_public_41',
+    platform: 'openai',
+    user_id: 36,
+    channel_id: 9,
+    username: 'hidden-user',
+    group: 'sora-image',
+    quota: 12_500,
+    action: 'video',
+    status: 'SUCCESS',
+    fail_reason: '',
+    result_url: 'https://cdn.example.test/result.mp4',
+    submit_time: 1_754_784_000,
+    start_time: 1_754_784_010,
+    finish_time: 1_754_784_030,
+    progress: '100%',
+    properties: {
+      input: 'private prompt',
+      origin_model_name: 'sora-2',
+      upstream_model_name: 'sora-2-pro',
+      secret_future_field: 'hidden',
+    },
+    data: { api_key: 'must-not-cross-ipc' },
+  }
+
+  it('keeps only the customer-facing whitelist and the two documented model names', () => {
+    const parsed = parseAccountTaskRecord(wireTask) as unknown as Record<string, unknown>
+    expect(parsed).toMatchObject({
+      id: 41, taskId: 'task_public_41', platform: 'openai', group: 'sora-image',
+      quota: 12_500, action: 'video', status: 'SUCCESS', progress: '100%',
+      originModelName: 'sora-2', upstreamModelName: 'sora-2-pro',
+    })
+    for (const key of ['user_id', 'channel_id', 'username', 'data', 'properties', 'input', 'secret_future_field']) {
+      expect(parsed[key]).toBeUndefined()
+    }
+  })
+
+  it('drops malformed task rows and preserves PageInfo pagination', () => {
+    expect(parseAccountTaskPage({
+      page: 3, page_size: 20, total: 42, items: [wireTask, { id: 0 }, null],
+    })).toMatchObject({ page: 3, pageSize: 20, total: 42, tasks: [{ id: 41 }] })
+    expect(parseAccountTaskRecord({ id: 0 })).toBeNull()
+    expect(parseAccountTaskPage(null)).toEqual({ page: 1, pageSize: 10, total: 0, tasks: [] })
   })
 })
 
@@ -1029,6 +1101,512 @@ describe('getBalance', () => {
   })
 })
 
+describe('billing, subscription, and login-session parsers', () => {
+  it('normalizes top-up configuration from both JSON strings and native values', () => {
+    const parsed = parseTopupInfo({
+      enable_online_topup: true,
+      enable_stripe_topup: true,
+      enable_creem_topup: true,
+      enable_waffo_pancake_topup: true,
+      enable_redemption: true,
+      payment_compliance_confirmed: true,
+      payment_compliance_terms_version: '2026-08',
+      pay_methods: JSON.stringify([
+        {
+          name: '支付宝',
+          type: 'alipay',
+          color: '#1677ff',
+          icon: 'https://cdn.example.com/alipay.png',
+          min_topup: '10',
+        },
+        { name: 'Stripe', type: 'stripe', icon: 'http://unsafe.example/icon.png' },
+        { name: 'Creem', type: 'creem' },
+        { name: 'Waffo', type: 'waffo' },
+        { name: 'Pancake', type: 'waffo_pancake' },
+      ]),
+      min_topup: '5',
+      amount_options: [10, '20', 0, -1, 'bad'],
+      discount: JSON.stringify({ 10: 0.9, 20: '0.8', bad: 1, 30: 20 }),
+      topup_link: 'https://billing.example.com/topup',
+      access_token: 'must-not-cross-parser',
+    })
+
+    expect(parsed).toEqual({
+      onlineTopupEnabled: true,
+      stripeTopupEnabled: true,
+      creemTopupEnabled: true,
+      waffoPancakeTopupEnabled: true,
+      redemptionEnabled: true,
+      paymentComplianceConfirmed: true,
+      paymentComplianceTermsVersion: '2026-08',
+      paymentMethods: [
+        {
+          name: '支付宝',
+          type: 'alipay',
+          provider: 'epay',
+          color: '#1677ff',
+          icon: 'https://cdn.example.com/alipay.png',
+          minTopup: 10,
+        },
+        {
+          name: 'Stripe', type: 'stripe', provider: 'stripe', color: null, icon: null, minTopup: 0,
+        },
+        {
+          name: 'Creem', type: 'creem', provider: 'creem', color: null, icon: null, minTopup: 0,
+        },
+        {
+          name: 'Waffo', type: 'waffo', provider: 'waffo', color: null, icon: null, minTopup: 0,
+        },
+        {
+          name: 'Pancake', type: 'waffo_pancake', provider: 'waffo-pancake', color: null, icon: null, minTopup: 0,
+        },
+      ],
+      minTopup: 5,
+      amountOptions: [10, 20],
+      discounts: { 10: 0.9, 20: 0.8 },
+      topupLink: 'https://billing.example.com/topup',
+    })
+    expect(JSON.stringify(parsed)).not.toMatch(/access_token|refresh_token|must-not-cross-parser/i)
+  })
+
+  it('parses legacy amount quotes without inventing a currency', () => {
+    expect(parseTopupAmountQuote('9.50', 10)).toEqual({ amount: 10, payableAmount: 9.5 })
+    expect(() => parseTopupAmountQuote('not-a-number', 10)).toThrow('充值金额试算响应格式异常')
+  })
+
+  it('drops fractional top-up presets because the New API request accepts int64 amounts', () => {
+    const parsed = parseTopupInfo({
+      enable_online_topup: true,
+      min_topup: '5.5',
+      amount_options: [5.5, '10', 20.25],
+      pay_methods: [{ name: '支付宝', type: 'alipay', min_topup: '3.5' }],
+    })
+
+    expect(parsed.minTopup).toBe(0)
+    expect(parsed.amountOptions).toEqual([10])
+    expect(parsed.paymentMethods[0]?.minTopup).toBe(0)
+  })
+
+  it('converts a safe HTTPS payment form into an explicit POST contract', () => {
+    expect(parsePaymentForm({
+      url: 'https://pay.example.com/submit',
+      data: { pid: 42, out_trade_no: 'trade-123', sign: 'signed' },
+    })).toEqual({
+      action: 'https://pay.example.com/submit',
+      allowedOrigin: 'https://pay.example.com',
+      method: 'POST',
+      fields: [
+        { name: 'pid', value: '42' },
+        { name: 'out_trade_no', value: 'trade-123' },
+        { name: 'sign', value: 'signed' },
+      ],
+      tradeNo: 'trade-123',
+    })
+  })
+
+  it('rejects unsafe payment actions and hostile form fields', () => {
+    for (const url of [
+      'http://pay.example.com/submit',
+      'https://user:pass@pay.example.com/submit',
+      'https://pay.example.com/submit#fragment',
+    ]) {
+      expect(() => parsePaymentForm({ url, data: { sign: 'x' } })).toThrow('支付地址格式异常')
+    }
+    expect(() => parsePaymentForm({
+      url: 'https://pay.example.com/submit',
+      data: { 'bad field': 'x' },
+    })).toThrow('支付表单字段名称异常')
+    expect(() => parsePaymentForm({
+      url: 'https://pay.example.com/submit',
+      data: Object.fromEntries(Array.from({ length: 65 }, (_, index) => [`field_${index}`, 'x'])),
+    })).toThrow('支付表单字段数量异常')
+    expect(() => parsePaymentForm({
+      url: 'https://pay.example.com/submit',
+      data: { value: 'x'.repeat(4_097) },
+    })).toThrow('支付表单字段内容异常')
+  })
+
+  it('whitelists order, subscription, and session fields', () => {
+    const orders = parseTopupOrdersPage({
+      page: '2',
+      page_size: '20',
+      total: '1',
+      items: [{
+        id: 7,
+        amount: '100',
+        money: '88.5',
+        trade_no: 'trade-7',
+        payment_method: 'alipay',
+        payment_provider: 'epay',
+        create_time: 1_700_000_000,
+        complete_time: 1_700_000_100,
+        status: 'success',
+        raw_gateway_response: 'secret',
+      }],
+    })
+    const plans = parseSubscriptionPlans([{ plan: {
+      id: 3,
+      title: '月度套餐',
+      subtitle: '每月重置',
+      price_amount: 19.9,
+      currency: 'CNY',
+      duration_unit: 'month',
+      duration_value: 1,
+      custom_seconds: 0,
+      allow_balance_pay: true,
+      allow_wallet_overflow: false,
+      max_purchase_per_user: 2,
+      total_amount: 1_000_000,
+      upgrade_group: 'vip',
+      downgrade_group: 'default',
+      quota_reset_period: 'monthly',
+      quota_reset_custom_seconds: 0,
+      stripe_price_id: 'price_monthly',
+      creem_product_id: 'prod_monthly',
+      waffo_pancake_product_id: 'pancake_monthly',
+      internal_note: 'secret',
+    } }])
+    const subscriptions = parseSubscriptionSelf({
+      billing_preference: 'subscription',
+      subscriptions: [{ subscription: {
+        id: 11,
+        plan_id: 3,
+        status: 'active',
+        source: 'balance',
+        amount_total: 1_000_000,
+        amount_used: 250_000,
+        start_time: 1_700_000_000,
+        end_time: 1_702_592_000,
+        next_reset_time: 1_701_000_000,
+      } }],
+      all_subscriptions: [],
+    })
+    const sessions = parseLoginSessions([{
+      sid: '123e4567-e89b-42d3-a456-426614174000',
+      current: true,
+      login_method: 'password',
+      ip: '127.0.0.1',
+      user_agent: 'Desktop',
+      created_at: 1_700_000_000,
+      last_active_at: 1_700_000_100,
+      expires_at: 1_800_000_000,
+      refresh_token: 'must-not-cross-parser',
+    }])
+
+    expect(orders).toMatchObject({ page: 2, pageSize: 20, total: 1, orders: [{ id: 7, status: 'success' }] })
+    expect(plans).toMatchObject([{
+      id: 3,
+      currency: 'CNY',
+      quotaResetPeriod: 'monthly',
+      stripePriceId: 'price_monthly',
+      creemProductId: 'prod_monthly',
+      waffoPancakeProductId: 'pancake_monthly',
+    }])
+    expect(subscriptions).toMatchObject({ activeSubscriptions: [{ id: 11, planId: 3 }] })
+    expect(sessions).toMatchObject([{ sid: '123e4567-e89b-42d3-a456-426614174000', current: true }])
+    expect(JSON.stringify({ orders, plans, subscriptions, sessions }))
+      .not.toMatch(/raw_gateway_response|internal_note|refresh_token|must-not-cross-parser/i)
+  })
+
+  it('normalizes billing preferences and strips payment tokens from subscription checkouts', () => {
+    expect(parseSubscriptionSelf({ billing_preference: 'not-supported' })).toEqual({
+      billingPreference: 'subscription_first',
+      activeSubscriptions: [],
+      allSubscriptions: [],
+    })
+    expect(parseSubscriptionCheckout('stripe', {
+      data: { pay_link: 'https://checkout.stripe.com/c/pay/cs_test_1' },
+      url: null,
+    })).toEqual({
+      kind: 'url',
+      url: 'https://checkout.stripe.com/c/pay/cs_test_1',
+      tradeNo: null,
+      expiresAt: null,
+    })
+    const pancake = parseSubscriptionCheckout('waffo-pancake', {
+      data: {
+        checkout_url: 'https://checkout.waffo.example/session#token=secret-fragment',
+        order_id: 'WAFFO_PANCAKE_SUB-1',
+        expires_at: '2026-08-15T12:30:00Z',
+        token: 'must-not-cross-ipc',
+        token_expires_at: '2026-08-15T12:20:00Z',
+      },
+      url: null,
+    })
+    expect(pancake).toEqual({
+      kind: 'url',
+      url: 'https://checkout.waffo.example/session#token=secret-fragment',
+      tradeNo: 'WAFFO_PANCAKE_SUB-1',
+      expiresAt: '2026-08-15T12:30:00.000Z',
+    })
+    expect(JSON.stringify(pancake)).not.toMatch(/must-not-cross-ipc|token_expires_at/)
+    expect(() => parseSubscriptionCheckout('creem', {
+      data: { checkout_url: 'http://unsafe.example/checkout' },
+      url: null,
+    })).toThrow('订阅支付地址格式异常')
+  })
+})
+
+describe('billing and subscription requests', () => {
+  it('uses both authentication headers and returns a normalized top-up configuration', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: {
+        enable_online_topup: true,
+        pay_methods: [{ name: '支付宝', type: 'alipay' }],
+        amount_options: '[10,20]',
+        discount: '{}',
+        access_token: 'upstream-secret',
+      },
+    }))
+
+    const result = await client.getTopupInfo()
+
+    expect(result.paymentMethods[0]).toMatchObject({ name: '支付宝', provider: 'epay' })
+    expect(JSON.stringify(result)).not.toMatch(/access_token|upstream-secret/i)
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/topup/info`)
+    expect(init?.method).toBe('GET')
+    const headers = init?.headers as Record<string, string>
+    expect(headers.Authorization).toBe('Bearer test-access-token-abc')
+    expect(headers['New-Api-User']).toBe('42')
+  })
+
+  it('supports the legacy quote envelope and surfaces a sanitized legacy error', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ message: 'success', data: '8.80', url: '' }))
+
+    await expect(client.quoteTopupAmount({ amount: 10 }))
+      .resolves.toEqual({ amount: 10, payableAmount: 8.8 })
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toEqual({ amount: 10 })
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      message: 'error',
+      data: 'Bearer test-access-token-abc rejected',
+      url: '',
+    }))
+    await expect(client.quoteTopupAmount({ amount: 10 })).rejects.toThrow('[REDACTED]')
+  })
+
+  it('creates a bounded payment form without exposing the upstream response envelope', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      message: 'success',
+      data: { out_trade_no: 'trade-9', type: 'alipay', sign: 'gateway-signature' },
+      url: 'https://pay.example.com/submit',
+      access_token: 'must-not-cross-ipc',
+    }))
+
+    const result = await client.createTopupPayment({ amount: 20, paymentMethod: ' alipay ' })
+
+    expect(result).toMatchObject({
+      action: 'https://pay.example.com/submit',
+      allowedOrigin: 'https://pay.example.com',
+      method: 'POST',
+      tradeNo: 'trade-9',
+    })
+    expect(JSON.stringify(result)).not.toMatch(/access_token|must-not-cross-ipc/i)
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toEqual({
+      amount: 20,
+      payment_method: 'alipay',
+    })
+  })
+
+  it('bounds order queries and parses only known order fields', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { page: 2, page_size: 25, total: 0, items: [] },
+    }))
+
+    await expect(client.listTopupOrders({ page: 2, pageSize: 25, keyword: ' trade 7 ' }))
+      .resolves.toEqual({ page: 2, pageSize: 25, total: 0, orders: [] })
+    expect(String(fetchImpl.mock.calls[0][0]))
+      .toBe(`${testBaseUrl}/api/user/topup/self?p=2&page_size=25&keyword=trade+7`)
+    await expect(client.listTopupOrders({ page: 0 })).rejects.toThrow('订单页码格式错误')
+    await expect(client.listTopupOrders({ pageSize: 101 })).rejects.toThrow('订单分页大小格式错误')
+    await expect(client.listTopupOrders({ keyword: 'x'.repeat(129) })).rejects.toThrow('订单搜索词')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('redeems a code and transfers referral quota with the documented request bodies', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: 500_000 }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
+
+    await expect(client.redeemTopupCode(' CODE-123 ')).resolves.toEqual({ quotaAdded: 500_000 })
+    await expect(client.transferAffiliateQuota({ quota: 100_000 })).resolves.toBeUndefined()
+
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toEqual({ key: 'CODE-123' })
+    expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toEqual({ quota: 100_000 })
+    for (const [, init] of fetchImpl.mock.calls) {
+      const headers = init?.headers as Record<string, string>
+      expect(headers.Authorization).toBe('Bearer test-access-token-abc')
+      expect(headers['New-Api-User']).toBe('42')
+    }
+  })
+
+  it('lists subscriptions, reads current subscriptions, and purchases a plan with balance', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: [{ plan: {
+        id: 3,
+        title: '月度套餐',
+        duration_unit: 'month',
+        duration_value: 1,
+        quota_reset_period: 'monthly',
+      } }] }))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { billing_preference: 'subscription', subscriptions: [], all_subscriptions: [] },
+      }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
+
+    await expect(client.listSubscriptionPlans()).resolves.toMatchObject([{ id: 3, title: '月度套餐' }])
+    await expect(client.getSubscriptionSelf()).resolves.toEqual({
+      billingPreference: 'subscription_first', activeSubscriptions: [], allSubscriptions: [],
+    })
+    await expect(client.purchaseSubscriptionWithBalance(3)).resolves.toEqual({ purchased: true })
+    expect(JSON.parse(String(fetchImpl.mock.calls[2][1]?.body))).toEqual({ plan_id: 3 })
+    await expect(client.purchaseSubscriptionWithBalance(0)).rejects.toThrow('订阅方案 ID 格式错误')
+    expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('updates billing preference and creates every enabled subscription checkout shape', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({
+        success: true, message: '', data: { billing_preference: 'wallet_first' },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        message: 'success',
+        data: { out_trade_no: 'sub-epay-1', sign: 'signed' },
+        url: 'https://pay.example.com/submit',
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        message: 'success', data: { pay_link: 'https://checkout.stripe.com/session' },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        message: 'success',
+        data: { checkout_url: 'https://checkout.creem.io/session', order_id: 'sub-creem-1' },
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        message: 'success',
+        data: {
+          checkout_url: 'https://checkout.waffo.example/session#token=opaque',
+          order_id: 'sub-waffo-1',
+          expires_at: '2026-08-15T12:30:00Z',
+          token: 'must-not-cross-ipc',
+        },
+      }))
+
+    await expect(client.updateSubscriptionPreference('wallet_first')).resolves.toBe('wallet_first')
+    await expect(client.createSubscriptionPayment({
+      planId: 3, provider: 'epay', paymentMethod: ' alipay ',
+    })).resolves.toMatchObject({ kind: 'form', tradeNo: 'sub-epay-1' })
+    await expect(client.createSubscriptionPayment({ planId: 3, provider: 'stripe' }))
+      .resolves.toMatchObject({ kind: 'url', url: 'https://checkout.stripe.com/session' })
+    await expect(client.createSubscriptionPayment({ planId: 3, provider: 'creem' }))
+      .resolves.toMatchObject({ kind: 'url', tradeNo: 'sub-creem-1' })
+    const waffo = await client.createSubscriptionPayment({ planId: 3, provider: 'waffo-pancake' })
+    expect(waffo).toMatchObject({ kind: 'url', tradeNo: 'sub-waffo-1' })
+    expect(JSON.stringify(waffo)).not.toContain('must-not-cross-ipc')
+
+    expect(fetchImpl.mock.calls.map(([url]) => String(url))).toEqual([
+      `${testBaseUrl}/api/subscription/self/preference`,
+      `${testBaseUrl}/api/subscription/epay/pay`,
+      `${testBaseUrl}/api/subscription/stripe/pay`,
+      `${testBaseUrl}/api/subscription/creem/pay`,
+      `${testBaseUrl}/api/subscription/waffo-pancake/pay`,
+    ])
+    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toEqual({ billing_preference: 'wallet_first' })
+    expect(JSON.parse(String(fetchImpl.mock.calls[1][1]?.body))).toEqual({
+      plan_id: 3, payment_method: 'alipay',
+    })
+    expect(JSON.parse(String(fetchImpl.mock.calls[2][1]?.body))).toEqual({ plan_id: 3 })
+    await expect(client.updateSubscriptionPreference('bad' as never)).rejects.toThrow('扣费顺序')
+    await expect(client.createSubscriptionPayment({
+      planId: 3, provider: 'epay',
+    })).rejects.toThrow('支付方式格式错误')
+    expect(fetchImpl).toHaveBeenCalledTimes(5)
+  })
+})
+
+describe('profile update and login sessions', () => {
+  it('preserves username when updating only the display name', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: null }))
+
+    await expect(client.updateDisplayName({ displayName: '  新昵称  ' })).resolves.toEqual({ updated: true })
+
+    const [url, init] = fetchImpl.mock.calls[0]
+    expect(String(url)).toBe(`${testBaseUrl}/api/user/self`)
+    expect(init?.method).toBe('PUT')
+    expect(JSON.parse(String(init?.body))).toEqual({ username: 'tester', display_name: '新昵称' })
+    await expect(client.updateDisplayName({ displayName: 'x'.repeat(21) })).rejects.toThrow('显示名称')
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+  })
+
+  it('lists and revokes login sessions while clearing local auth for the current session', async () => {
+    const sid = '123e4567-e89b-42d3-a456-426614174000'
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: [{
+        sid,
+        current: true,
+        login_method: 'password',
+        ip: '127.0.0.1',
+        user_agent: 'Desktop',
+        created_at: 1_700_000_000,
+        last_active_at: 1_700_000_100,
+        expires_at: 1_800_000_000,
+      }] }))
+      .mockResolvedValueOnce(jsonResponse({
+        success: true,
+        message: '',
+        data: { revoked_sid: sid, current: true },
+      }))
+
+    await expect(client.listLoginSessions()).resolves.toMatchObject([{ sid, current: true }])
+    await expect(client.revokeLoginSession(sid)).resolves.toEqual({ revokedSid: sid, current: true })
+    expect(String(fetchImpl.mock.calls[1][0])).toBe(`${testBaseUrl}/api/user/sessions/${sid}`)
+    expect(fetchImpl.mock.calls[1][1]?.method).toBe('DELETE')
+    expect(client.isAuthenticated()).toBe(false)
+    await expect(client.listLoginSessions()).rejects.toThrow('请先登录星芒账号')
+  })
+
+  it('revokes all other sessions and rejects malformed session IDs before I/O', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+
+    await expect(client.revokeLoginSession('../current')).rejects.toThrow('登录会话 ID 格式错误')
+    expect(fetchImpl).not.toHaveBeenCalled()
+
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { revoked_count: 4 },
+    }))
+    await expect(client.revokeOtherLoginSessions()).resolves.toEqual({ revokedCount: 4 })
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(`${testBaseUrl}/api/user/sessions/revoke-others`)
+    expect(fetchImpl.mock.calls[0][1]?.method).toBe('POST')
+  })
+})
+
 describe('getProfile', () => {
   it('requires login before it can be called', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
@@ -1055,6 +1633,8 @@ describe('getProfile', () => {
       requestCount: 12,
       affCode: 'ABC123',
       affCount: 3,
+      affQuota: 125_000,
+      affHistoryQuota: 300_000,
     })
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     const [url, init] = fetchImpl.mock.calls[0]
@@ -1091,13 +1671,25 @@ describe('getUsage', () => {
       message: '',
       data: { page: 1, page_size: 10, total: 0, items: [] },
     }))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: { quota: 12_500, rpm: 2, tpm: 320 },
+    }))
 
     const page = await client.getUsage()
 
-    expect(page).toEqual({ page: 1, pageSize: 10, total: 0, records: [] })
+    expect(page).toEqual({
+      page: 1,
+      pageSize: 10,
+      total: 0,
+      records: [],
+      stats: { quota: 12_500, rpm: 2, tpm: 320 },
+    })
     const [url, init] = fetchImpl.mock.calls[0]
     expect(String(url)).toBe(`${testBaseUrl}/api/log/self`)
     expect(init?.method).toBe('GET')
+    expect(String(fetchImpl.mock.calls[1][0])).toBe(`${testBaseUrl}/api/log/self/stat`)
   })
 
   it('forwards page/pageSize as the p/page_size query parameters', async () => {
@@ -1108,6 +1700,7 @@ describe('getUsage', () => {
       message: '',
       data: { page: 3, page_size: 8, total: 25, items: [] },
     }))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { quota: 0, rpm: 0, tpm: 0 } }))
 
     await client.getUsage({ page: 3, pageSize: 8 })
 
@@ -1116,6 +1709,40 @@ describe('getUsage', () => {
     expect(parsed.pathname).toBe('/api/log/self')
     expect(parsed.searchParams.get('p')).toBe('3')
     expect(parsed.searchParams.get('page_size')).toBe('8')
+  })
+
+  it('forwards supported filters to both endpoints and keeps request IDs list-only', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { page: 2, page_size: 20, total: 0, items: [] } }))
+      .mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { quota: 1, rpm: 2, tpm: 3 } }))
+
+    await client.getUsage({
+      page: 2,
+      pageSize: 20,
+      type: 2,
+      startTimestamp: 1_700_000_000,
+      endTimestamp: 1_700_086_400,
+      modelName: 'gpt-5',
+      tokenName: 'codex-key',
+      group: 'codex-pro',
+      requestId: 'req-local',
+      upstreamRequestId: 'req-upstream',
+    })
+
+    const listUrl = new URL(String(fetchImpl.mock.calls[0][0]))
+    const statUrl = new URL(String(fetchImpl.mock.calls[1][0]))
+    expect(Object.fromEntries(listUrl.searchParams)).toMatchObject({
+      p: '2', page_size: '20', type: '2', start_timestamp: '1700000000',
+      end_timestamp: '1700086400', model_name: 'gpt-5', token_name: 'codex-key',
+      group: 'codex-pro', request_id: 'req-local', upstream_request_id: 'req-upstream',
+    })
+    expect(statUrl.pathname).toBe('/api/log/self/stat')
+    expect(statUrl.searchParams.get('model_name')).toBe('gpt-5')
+    expect(statUrl.searchParams.has('p')).toBe(false)
+    expect(statUrl.searchParams.has('request_id')).toBe(false)
+    expect(statUrl.searchParams.has('upstream_request_id')).toBe(false)
   })
 
   it('parses the returned items into usage records', async () => {
@@ -1128,9 +1755,16 @@ describe('getUsage', () => {
         page: 1,
         page_size: 10,
         total: 1,
-        items: [{ id: 1, created_at: 1_754_784_000, type: 2, model_name: 'claude-3-5-sonnet', prompt_tokens: 10, completion_tokens: 20, quota: 30, is_stream: false }],
+        items: [{
+          id: 1, created_at: 1_754_784_000, type: 2, model_name: 'claude-3-5-sonnet',
+          prompt_tokens: 10, completion_tokens: 20, quota: 30, is_stream: true,
+          token_name: 'claude-key', group: 'Claude-MAX', use_time: 4, content: 'ok',
+          request_id: 'req-1', upstream_request_id: 'up-1',
+          other: JSON.stringify({ cache_tokens: 7, frt: 1200, reasoning_effort: 'high', group_ratio: 1.2 }),
+        }],
       },
     }))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '', data: { quota: 30, rpm: 1, tpm: 30 } }))
 
     const page = await client.getUsage()
 
@@ -1142,17 +1776,127 @@ describe('getUsage', () => {
       promptTokens: 10,
       completionTokens: 20,
       quota: 30,
-      isStream: false,
+      isStream: true,
+      tokenName: 'claude-key',
+      group: 'Claude-MAX',
+      useTimeSeconds: 4,
+      content: 'ok',
+      requestId: 'req-1',
+      upstreamRequestId: 'up-1',
+      details: expect.objectContaining({ cacheTokens: 7, firstResponseTimeMs: 1200, reasoningEffort: 'high', groupRatio: 1.2 }),
     }])
+    expect(page.stats).toEqual({ quota: 30, rpm: 1, tpm: 30 })
+  })
+
+  it('whitelists log other data and never exposes admin or audit fields', () => {
+    const details = parseAccountUsageDetails(JSON.stringify({
+      cache_tokens: 9,
+      billing_mode: 'tiered_expr',
+      matched_tier: 'base',
+      admin_info: { channel: 99, secret: 'hidden' },
+      audit_info: { route: '/admin' },
+      unknown_future_field: 'hidden',
+    }))
+    expect(details).toMatchObject({ cacheTokens: 9, billingMode: 'tiered_expr', matchedTier: 'base' })
+    expect(details).not.toHaveProperty('admin_info')
+    expect(details).not.toHaveProperty('audit_info')
+    expect(details).not.toHaveProperty('unknown_future_field')
   })
 
   it('clears the session and throws a typed error on a 401 response', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)
-    fetchImpl.mockResolvedValueOnce(failureResponse('登录状态已失效', 401))
+    fetchImpl.mockImplementation(async () => failureResponse('登录状态已失效', 401))
 
     await expect(client.getUsage()).rejects.toBeInstanceOf(NewApiAuthenticationError)
     expect(client.isAuthenticated()).toBe(false)
+  })
+})
+
+describe('getDashboard', () => {
+  it('calls GET /api/data/self with the requested range and strips identity fields', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: [{
+        id: 1, user_id: 42, username: 'tester', created_at: 1_754_784_000,
+        model_name: 'gpt-5.6-sol', token_used: 3_200, count: 4, quota: 5_000,
+      }],
+    }))
+
+    const dashboard = await client.getDashboard({ startTimestamp: 1_754_780_000, endTimestamp: 1_754_790_000 })
+    const requestUrl = new URL(String(fetchImpl.mock.calls[0][0]))
+    expect(requestUrl.pathname).toBe('/api/data/self')
+    expect(Object.fromEntries(requestUrl.searchParams)).toEqual({
+      start_timestamp: '1754780000', end_timestamp: '1754790000',
+    })
+    expect(dashboard.records).toEqual([{
+      createdAt: 1_754_784_000, modelName: 'gpt-5.6-sol', tokenUsed: 3_200, count: 4, quota: 5_000,
+    }])
+    expect(dashboard.records[0]).not.toHaveProperty('user_id')
+    expect(dashboard.records[0]).not.toHaveProperty('username')
+  })
+
+  it('drops malformed rows, clamps negative metrics and caps response rows', () => {
+    expect(parseAccountDashboardRecord({ created_at: 10, model_name: '', token_used: -1, count: '3', quota: 4 })).toEqual({
+      createdAt: 10, modelName: '未知模型', tokenUsed: 0, count: 3, quota: 4,
+    })
+    expect(parseAccountDashboardRecord({ created_at: 0 })).toBeNull()
+    const query = { startTimestamp: 1, endTimestamp: 2 }
+    const data = parseAccountDashboardData(Array.from({ length: 20_005 }, (_, index) => ({ created_at: index + 1 })), query)
+    expect(data.records).toHaveLength(20_000)
+  })
+
+  it('requires an authenticated account session', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.getDashboard({ startTimestamp: 1, endTimestamp: 2 })).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+})
+
+describe('getTasks', () => {
+  it('forwards every supported filter to GET /api/task/self and parses the page', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true,
+      message: '',
+      data: {
+        page: 2,
+        page_size: 20,
+        total: 1,
+        items: [{
+          id: 7, task_id: 'task_7', platform: 'openai', group: 'video', quota: 50,
+          action: 'video', status: 'IN_PROGRESS', progress: '70%', submit_time: 1_754_784_000,
+          properties: { origin_model_name: 'sora-2', upstream_model_name: 'sora-2-pro' },
+        }],
+      },
+    }))
+
+    const page = await client.getTasks({
+      page: 2, pageSize: 20, platform: 'openai', taskId: 'task_7',
+      status: 'IN_PROGRESS', action: 'video',
+      startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400,
+    })
+
+    const requestUrl = new URL(String(fetchImpl.mock.calls[0][0]))
+    expect(requestUrl.pathname).toBe('/api/task/self')
+    expect(Object.fromEntries(requestUrl.searchParams)).toEqual({
+      p: '2', page_size: '20', platform: 'openai', task_id: 'task_7',
+      status: 'IN_PROGRESS', action: 'video', start_timestamp: '1700000000',
+      end_timestamp: '1700086400',
+    })
+    expect(page).toMatchObject({ page: 2, pageSize: 20, total: 1, tasks: [{ id: 7, progress: '70%' }] })
+  })
+
+  it('requires an authenticated account session', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    await expect(client.getTasks()).rejects.toThrow('请先登录星芒账号')
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 })
 

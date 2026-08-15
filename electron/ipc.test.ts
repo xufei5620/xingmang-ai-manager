@@ -9,6 +9,7 @@ import type { NativeConfigSaveResult } from './config-files'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
+import { supportServiceUrl } from './relay-sites'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -17,7 +18,7 @@ const electronMocks = vi.hoisted(() => ({
   showOpenDialog: vi.fn(),
   showSaveDialog: vi.fn(),
   showMessageBox: vi.fn(async () => ({ response: 0 })),
-  browserWindowFromWebContents: vi.fn(() => undefined),
+  browserWindowFromWebContents: vi.fn<(...args: unknown[]) => unknown>(() => undefined),
   openExternal: vi.fn(),
   openPath: vi.fn(),
   writeText: vi.fn(),
@@ -97,6 +98,10 @@ function accountServiceStub(): NewApiClientService {
       supportsPasswordReset: true,
       supportsKeyManagement: true,
       supportsUsage: true,
+      supportsBilling: true,
+      supportsSubscriptions: true,
+      supportsProfileUpdate: true,
+      supportsSessionManagement: true,
       supportsAutoKeyProvision: true,
       supportsAccountSession: true,
     },
@@ -111,8 +116,22 @@ function accountServiceStub(): NewApiClientService {
     isAuthenticated: vi.fn(() => false),
     getSessionState: vi.fn(() => ({ authenticated: false, account: null })),
     getBalance: vi.fn() as never,
+    getTopupInfo: vi.fn() as never,
+    quoteTopupAmount: vi.fn() as never,
+    createTopupPayment: vi.fn() as never,
+    listTopupOrders: vi.fn() as never,
+    redeemTopupCode: vi.fn() as never,
+    transferAffiliateQuota: vi.fn() as never,
+    listSubscriptionPlans: vi.fn() as never,
+    getSubscriptionSelf: vi.fn() as never,
+    updateSubscriptionPreference: vi.fn() as never,
+    createSubscriptionPayment: vi.fn() as never,
+    purchaseSubscriptionWithBalance: vi.fn() as never,
     getProfile: vi.fn() as never,
+    updateDisplayName: vi.fn() as never,
     getUsage: vi.fn() as never,
+    getDashboard: vi.fn() as never,
+    getTasks: vi.fn() as never,
     listKeys: vi.fn() as never,
     listUsableGroups: vi.fn() as never,
     revokeKey: vi.fn() as never,
@@ -120,6 +139,9 @@ function accountServiceStub(): NewApiClientService {
     createKey: vi.fn(async () => undefined),
     updateKey: vi.fn(async () => undefined),
     changePassword: vi.fn() as never,
+    listLoginSessions: vi.fn() as never,
+    revokeLoginSession: vi.fn() as never,
+    revokeOtherLoginSessions: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
     findExistingCliKey: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
@@ -164,6 +186,14 @@ function updaterStub(): UpdaterService {
     install: vi.fn(() => ({ accepted: true as const })),
     subscribe: vi.fn(() => vi.fn()),
     dispose: vi.fn(),
+  }
+}
+
+function paymentWindowStub() {
+  return {
+    open: vi.fn(async () => undefined),
+    openUrl: vi.fn(async () => undefined),
+    destroy: vi.fn(),
   }
 }
 
@@ -236,9 +266,11 @@ function register(
     feedbackReport: vi.fn(async () => 'sanitized report\n'),
     clear: vi.fn(async () => undefined),
   }
+  const paymentWindow = paymentWindowStub()
   const dispose = registerIpcHandlers({
     systemService: service,
     accountService,
+    paymentWindow,
     accountCredentials,
     managedCliKeys,
     ...chatOverrides,
@@ -264,6 +296,7 @@ function register(
     previewOnboarding: false,
     externalUrlAllowlist: [
       'https://xm.solov.cc',
+      supportServiceUrl,
       'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
     ],
     externalShell: {
@@ -277,7 +310,6 @@ function register(
     broadcastUpdate: vi.fn(),
     setWindowMode: vi.fn(),
     setWindowTheme: vi.fn(),
-    openTutorialDocsWindow: vi.fn(async () => undefined),
     openCanvasWindow: vi.fn(async () => undefined),
     ...({ transformSystemSnapshot } as object),
   })
@@ -288,6 +320,7 @@ function register(
     extensionService,
     providerExtensionService,
     runtimeLog,
+    paymentWindow,
     sessionsService,
     providerSessionsService,
   }
@@ -305,6 +338,8 @@ beforeEach(() => {
   electronMocks.openPath.mockReset()
   electronMocks.openPath.mockResolvedValue('')
   electronMocks.writeText.mockReset()
+  electronMocks.browserWindowFromWebContents.mockReset()
+  electronMocks.browserWindowFromWebContents.mockReturnValue(undefined)
 })
 
 describe('registerIpcHandlers', () => {
@@ -319,6 +354,11 @@ describe('registerIpcHandlers', () => {
   })
 
   it('binds chat requests and cancellation to the trusted sender without exposing credentials', async () => {
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({
+      authenticated: true,
+      account: { userId: 7 },
+    } as never)
     const chatCredentials = {
       listGroups: vi.fn(async () => [{ name: 'codex-pro', description: 'Codex', ratio: 1 }]),
       prepareGroup: vi.fn(async () => ({
@@ -347,7 +387,7 @@ describe('registerIpcHandlers', () => {
       serviceStub(),
       'C:\\app-data\\logs',
       undefined,
-      accountServiceStub(),
+      accountService,
       undefined,
       undefined,
       { chatCredentials, chatService, imageService } as never,
@@ -368,6 +408,14 @@ describe('registerIpcHandlers', () => {
     expect(start(ownerEvent, input)).toEqual({ requestId: 'request-1', accepted: true })
     expect(chatService.start).toHaveBeenCalledWith(expect.objectContaining({ senderId: 17, ...input }))
     expect(JSON.stringify(await start(trustedEvent(undefined, 18), input))).not.toMatch(/apiKey|Authorization|Bearer|sk-secret/i)
+
+    const generateImage = electronMocks.handlers.get('chat:generate-image')!
+    await expect(generateImage(trustedEvent(undefined, 17), {
+      requestId: 'image-1', group: '生图分组', model: 'gpt-image-2', prompt: '海浪',
+    })).resolves.toEqual([])
+    expect(imageService.generate).toHaveBeenCalledWith(17, {
+      requestId: 'image-1', group: '生图分组', model: 'gpt-image-2', prompt: '海浪', expectedUserId: 7,
+    })
 
     const cancel = electronMocks.handlers.get('chat:cancel')!
     expect(cancel(trustedEvent(undefined, 22), 'request-1')).toEqual({
@@ -391,7 +439,7 @@ describe('registerIpcHandlers', () => {
     vi.mocked(accountService.logout).mockResolvedValue(undefined)
     const chatService = { cancelAll: vi.fn(() => 2), dispose: vi.fn() }
     const imageService = { cancelAll: vi.fn(() => 1) }
-    register(
+    const { paymentWindow } = register(
       serviceStub(),
       'C:\\app-data\\logs',
       undefined,
@@ -404,6 +452,7 @@ describe('registerIpcHandlers', () => {
     await expect(electronMocks.handlers.get('account:logout')!(trustedEvent())).resolves.toBeUndefined()
     expect(chatService.cancelAll).toHaveBeenCalledOnce()
     expect(imageService.cancelAll).toHaveBeenCalledOnce()
+    expect(paymentWindow.destroy).toHaveBeenCalledOnce()
     expect(accountService.logout).toHaveBeenCalledOnce()
   })
 
@@ -513,6 +562,25 @@ describe('registerIpcHandlers', () => {
     await expect(handler(trustedEvent(), 'https://xm.solov.cc')).resolves.toBe(true)
     expect(electronMocks.openExternal).toHaveBeenCalledOnce()
     expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
+  })
+
+  it('opens only the exact enterprise WeChat support URL', async () => {
+    register()
+    const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
+
+    await expect(handler(trustedEvent(), supportServiceUrl)).resolves.toBe(true)
+    expect(electronMocks.openExternal).toHaveBeenCalledWith(supportServiceUrl)
+
+    electronMocks.openExternal.mockClear()
+    for (const hostileUrl of [
+      supportServiceUrl + '?redirect=1',
+      supportServiceUrl + '/extra',
+      'https://work.weixin.qq.com.evil.example/kfid/kfc212a22c8e02da5f8',
+      'http://work.weixin.qq.com/kfid/kfc212a22c8e02da5f8',
+    ]) {
+      await expect(handler(trustedEvent(), hostileUrl)).rejects.toThrow('不允许打开该链接')
+    }
+    expect(electronMocks.openExternal).not.toHaveBeenCalled()
   })
 
   it('opens the exact Codex product in the local Microsoft Store', async () => {
@@ -779,6 +847,7 @@ describe('registerIpcHandlers', () => {
     const dispose = registerIpcHandlers({
       systemService: serviceStub(),
       accountService: accountServiceStub(),
+      paymentWindow: paymentWindowStub(),
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
@@ -793,7 +862,6 @@ describe('registerIpcHandlers', () => {
       broadcastUpdate: vi.fn(),
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
-      openTutorialDocsWindow: vi.fn(async () => undefined),
       openCanvasWindow,
     })
     try {
@@ -801,40 +869,6 @@ describe('registerIpcHandlers', () => {
 
       await expect(handler(trustedEvent())).resolves.toBeUndefined()
       expect(openCanvasWindow).toHaveBeenCalledTimes(1)
-      expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
-    } finally {
-      dispose()
-    }
-  })
-
-  it('delegates tutorial:open to the injected window controller and rejects untrusted senders', async () => {
-    const openTutorialDocsWindow = vi.fn(async () => undefined)
-    const dispose = registerIpcHandlers({
-      systemService: serviceStub(),
-      accountService: accountServiceStub(),
-      sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
-      providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
-      backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
-      runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
-      extensionService: {} as never,
-      providerExtensionService: {} as never,
-      urlPolicy: { rendererRoot: 'C:\\app\\dist', devServerUrl: 'http://localhost:5173' },
-      previewOnboarding: false,
-      externalUrlAllowlist: [],
-      updaterService: updaterStub(),
-      broadcastUpdate: vi.fn(),
-      setWindowMode: vi.fn(),
-      setWindowTheme: vi.fn(),
-      openTutorialDocsWindow,
-      openCanvasWindow: vi.fn(async () => undefined),
-    })
-    try {
-      const handler = electronMocks.handlers.get('tutorial:open')!
-      const event = trustedEvent()
-
-      await expect(handler(event)).resolves.toBeUndefined()
-      expect(openTutorialDocsWindow).toHaveBeenCalledWith(event.sender)
       expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('已拒绝来自非应用页面的操作请求')
     } finally {
       dispose()
@@ -902,6 +936,7 @@ describe('registerIpcHandlers', () => {
     const dispose = registerIpcHandlers({
       systemService: serviceStub(),
       accountService,
+      paymentWindow: paymentWindowStub(),
       accountSessionReady,
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
@@ -917,7 +952,6 @@ describe('registerIpcHandlers', () => {
       broadcastUpdate: vi.fn(),
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
-      openTutorialDocsWindow: vi.fn(async () => undefined),
       openCanvasWindow: vi.fn(async () => undefined),
     })
     try {
@@ -939,6 +973,7 @@ describe('registerIpcHandlers', () => {
     const dispose = registerIpcHandlers({
       systemService: serviceStub(),
       accountService,
+      paymentWindow: paymentWindowStub(),
       accountSessionReady: Promise.reject(new Error('restore blew up')),
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
@@ -954,7 +989,6 @@ describe('registerIpcHandlers', () => {
       broadcastUpdate: vi.fn(),
       setWindowMode: vi.fn(),
       setWindowTheme: vi.fn(),
-      openTutorialDocsWindow: vi.fn(async () => undefined),
       openCanvasWindow: vi.fn(async () => undefined),
     })
     try {
@@ -2508,6 +2542,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         requestCount: 12,
         affCode: 'ABC123',
         affCount: 3,
+        affQuota: 25_000,
+        affHistoryQuota: 75_000,
       }
       vi.mocked(accountService.getProfile).mockResolvedValue(profile)
       const handler = electronMocks.handlers.get('account:get-profile')!
@@ -2520,7 +2556,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('parseAccountUsageQuery (account:get-usage)', () => {
     it('parses a valid page/pageSize query and forwards it to the account service', async () => {
       const { accountService } = register()
-      const page = { page: 2, pageSize: 20, total: 45, records: [] }
+      const page = { page: 2, pageSize: 20, total: 45, records: [], stats: { quota: 0, rpm: 0, tpm: 0 } }
       vi.mocked(accountService.getUsage).mockResolvedValue(page)
       const handler = electronMocks.handlers.get('account:get-usage')!
 
@@ -2528,9 +2564,27 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.getUsage).toHaveBeenCalledWith({ page: 2, pageSize: 20 })
     })
 
+    it('validates and forwards the complete usage filter set', async () => {
+      const { accountService } = register()
+      const page = { page: 1, pageSize: 50, total: 0, records: [], stats: { quota: 0, rpm: 0, tpm: 0 } }
+      vi.mocked(accountService.getUsage).mockResolvedValue(page)
+      const handler = electronMocks.handlers.get('account:get-usage')!
+      const query = {
+        page: 1, pageSize: 50, type: 2, startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400,
+        modelName: ' gpt-5 ', tokenName: ' codex ', group: ' codex-pro ',
+        requestId: ' req-1 ', upstreamRequestId: ' up-1 ',
+      }
+
+      await handler(trustedEvent(), query)
+
+      expect(accountService.getUsage).toHaveBeenCalledWith({
+        ...query, modelName: 'gpt-5', tokenName: 'codex', group: 'codex-pro', requestId: 'req-1', upstreamRequestId: 'up-1',
+      })
+    })
+
     it('defaults to an empty query object when no input is given', async () => {
       const { accountService } = register()
-      vi.mocked(accountService.getUsage).mockResolvedValue({ page: 1, pageSize: 10, total: 0, records: [] })
+      vi.mocked(accountService.getUsage).mockResolvedValue({ page: 1, pageSize: 10, total: 0, records: [], stats: { quota: 0, rpm: 0, tpm: 0 } })
       const handler = electronMocks.handlers.get('account:get-usage')!
 
       await handler(trustedEvent(), undefined)
@@ -2563,12 +2617,78 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { pageSize: 0 })).toThrow('分页大小格式错误')
     })
 
+    it('rejects unknown fields, invalid types, reversed time ranges and unbounded text', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-usage')!
+
+      expect(() => handler(trustedEvent(), { surprise: true })).toThrow('未知字段')
+      expect(() => handler(trustedEvent(), { type: 8 })).toThrow('日志类型格式错误')
+      expect(() => handler(trustedEvent(), { startTimestamp: 20, endTimestamp: 10 })).toThrow('开始时间不能晚于结束时间')
+      expect(() => handler(trustedEvent(), { modelName: 'x'.repeat(129) })).toThrow('模型名称不能超过 128 个字符')
+      expect(accountService.getUsage).not.toHaveBeenCalled()
+    })
+
     it('never reaches the account service -- and never the real production client -- when validation fails', () => {
       const { accountService } = register()
       const handler = electronMocks.handlers.get('account:get-usage')!
 
       expect(() => handler(trustedEvent(), { pageSize: 999 })).toThrow()
       expect(accountService.getUsage).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountDashboardQuery (account:get-dashboard)', () => {
+    it('forwards a valid time range', async () => {
+      const { accountService } = register()
+      const data = { startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400, records: [] }
+      vi.mocked(accountService.getDashboard).mockResolvedValue(data)
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      await expect(handler(trustedEvent(), {
+        startTimestamp: data.startTimestamp, endTimestamp: data.endTimestamp,
+      })).resolves.toEqual(data)
+      expect(accountService.getDashboard).toHaveBeenCalledWith({
+        startTimestamp: data.startTimestamp, endTimestamp: data.endTimestamp,
+      })
+    })
+
+    it('rejects malformed, reversed, oversized and unknown ranges', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-dashboard')!
+      expect(() => handler(trustedEvent(), undefined)).toThrow('格式错误')
+      expect(() => handler(trustedEvent(), { startTimestamp: 20, endTimestamp: 10 })).toThrow('开始时间不能晚于结束时间')
+      expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2_592_002 })).toThrow('不能超过 30 天')
+      expect(() => handler(trustedEvent(), { startTimestamp: 1, endTimestamp: 2, userId: 9 })).toThrow('未知字段')
+      expect(accountService.getDashboard).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('parseAccountTaskQuery (account:get-tasks)', () => {
+    it('trims and forwards the complete task filter set', async () => {
+      const { accountService } = register()
+      const page = { page: 2, pageSize: 20, total: 1, tasks: [] }
+      vi.mocked(accountService.getTasks).mockResolvedValue(page)
+      const handler = electronMocks.handlers.get('account:get-tasks')!
+
+      await expect(handler(trustedEvent(), {
+        page: 2, pageSize: 20, platform: ' openai ', taskId: ' task_1 ',
+        status: 'IN_PROGRESS', action: ' video ',
+        startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400,
+      })).resolves.toEqual(page)
+      expect(accountService.getTasks).toHaveBeenCalledWith({
+        page: 2, pageSize: 20, platform: 'openai', taskId: 'task_1',
+        status: 'IN_PROGRESS', action: 'video',
+        startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400,
+      })
+    })
+
+    it('rejects unknown fields, invalid statuses and reversed time ranges before calling the service', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-tasks')!
+      expect(() => handler(trustedEvent(), { channelId: 9 })).toThrow('未知字段')
+      expect(() => handler(trustedEvent(), { status: 'done' })).toThrow('任务状态格式错误')
+      expect(() => handler(trustedEvent(), { startTimestamp: 20, endTimestamp: 10 })).toThrow('开始时间不能晚于结束时间')
+      expect(() => handler(trustedEvent(), { taskId: 'x'.repeat(257) })).toThrow('任务 ID不能超过 256 个字符')
+      expect(accountService.getTasks).not.toHaveBeenCalled()
     })
   })
 
@@ -2860,6 +2980,325 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         expect.any(Error),
         { userId: 42, keyId: 42, cache: 'ai-chat' },
       )
+    })
+  })
+
+  describe('account billing, subscription, profile, and login-session IPC', () => {
+    it('forwards read operations and normalized order pagination without reshaping DTOs', async () => {
+      const accountService = accountServiceStub()
+      const topupInfo = {
+        onlineTopupEnabled: true,
+        stripeTopupEnabled: false,
+        creemTopupEnabled: false,
+        waffoPancakeTopupEnabled: false,
+        redemptionEnabled: true,
+        paymentComplianceConfirmed: true,
+        paymentComplianceTermsVersion: '2026-08',
+        paymentMethods: [{
+          name: '支付宝',
+          type: 'alipay',
+          provider: 'epay' as const,
+          color: '#1677ff',
+          icon: null,
+          minTopup: 10,
+        }],
+        minTopup: 10,
+        amountOptions: [10, 20],
+        discounts: { 20: 0.9 },
+        topupLink: null,
+      }
+      const orders = { page: 2, pageSize: 25, total: 0, orders: [] }
+      const plans = [{
+        id: 3,
+        title: '月度套餐',
+        subtitle: '',
+        priceAmount: 19.9,
+        currency: 'CNY',
+        durationUnit: 'month' as const,
+        durationValue: 1,
+        customSeconds: 0,
+        allowBalancePay: true,
+        allowWalletOverflow: false,
+        maxPurchasePerUser: 0,
+        totalAmount: 1_000_000,
+        upgradeGroup: '',
+        downgradeGroup: '',
+        quotaResetPeriod: 'monthly' as const,
+        quotaResetCustomSeconds: 0,
+        stripePriceId: null,
+        creemProductId: null,
+        waffoPancakeProductId: null,
+      }]
+      const subscriptionSelf = {
+        billingPreference: 'subscription_first' as const, activeSubscriptions: [], allSubscriptions: [],
+      }
+      const sessions = [{
+        sid: '123e4567-e89b-42d3-a456-426614174000',
+        current: true,
+        loginMethod: 'password',
+        ip: '127.0.0.1',
+        userAgent: 'Desktop',
+        createdAt: '2026-08-01T00:00:00.000Z',
+        lastActiveAt: '2026-08-01T00:01:00.000Z',
+        expiresAt: '2026-09-01T00:00:00.000Z',
+      }]
+      vi.mocked(accountService.getTopupInfo).mockResolvedValue(topupInfo)
+      vi.mocked(accountService.listTopupOrders).mockResolvedValue(orders)
+      vi.mocked(accountService.listSubscriptionPlans).mockResolvedValue(plans)
+      vi.mocked(accountService.getSubscriptionSelf).mockResolvedValue(subscriptionSelf)
+      vi.mocked(accountService.listLoginSessions).mockResolvedValue(sessions)
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+
+      await expect(electronMocks.handlers.get('account:get-topup-info')!(trustedEvent()))
+        .resolves.toEqual(topupInfo)
+      await expect(electronMocks.handlers.get('account:list-topup-orders')!(trustedEvent(), {
+        page: 2, pageSize: 25, keyword: ' trade-7 ',
+      })).resolves.toEqual(orders)
+      await expect(electronMocks.handlers.get('account:list-subscription-plans')!(trustedEvent()))
+        .resolves.toEqual(plans)
+      await expect(electronMocks.handlers.get('account:get-subscription-self')!(trustedEvent()))
+        .resolves.toEqual(subscriptionSelf)
+      await expect(electronMocks.handlers.get('account:list-login-sessions')!(trustedEvent()))
+        .resolves.toEqual(sessions)
+
+      expect(accountService.listTopupOrders).toHaveBeenCalledWith({
+        page: 2, pageSize: 25, keyword: 'trade-7',
+      })
+      expect(accountService.listSubscriptionPlans).toHaveBeenCalledWith()
+      expect(accountService.getSubscriptionSelf).toHaveBeenCalledWith()
+      expect(accountService.listLoginSessions).toHaveBeenCalledWith()
+    })
+
+    it('forwards validated mutation DTOs and returns only service-level results', async () => {
+      const accountService = accountServiceStub()
+      const paymentForm = {
+        action: 'https://pay.example.com/submit',
+        allowedOrigin: 'https://pay.example.com',
+        method: 'POST' as const,
+        fields: [{ name: 'sign', value: 'signed' }],
+        tradeNo: 'trade-9',
+      }
+      vi.mocked(accountService.quoteTopupAmount).mockResolvedValue({ amount: 10, payableAmount: 8.8 })
+      vi.mocked(accountService.createTopupPayment).mockResolvedValue(paymentForm)
+      vi.mocked(accountService.redeemTopupCode).mockResolvedValue({ quotaAdded: 500_000 })
+      vi.mocked(accountService.transferAffiliateQuota).mockResolvedValue(undefined)
+      vi.mocked(accountService.updateSubscriptionPreference).mockResolvedValue('wallet_first')
+      vi.mocked(accountService.createSubscriptionPayment).mockResolvedValue({
+        kind: 'url',
+        url: 'https://checkout.example.com/session#token=opaque',
+        tradeNo: 'subscription-trade-1',
+        expiresAt: '2026-08-15T12:30:00.000Z',
+      })
+      vi.mocked(accountService.purchaseSubscriptionWithBalance).mockResolvedValue({ purchased: true })
+      vi.mocked(accountService.updateDisplayName).mockResolvedValue({ updated: true })
+      vi.mocked(accountService.revokeOtherLoginSessions).mockResolvedValue({ revokedCount: 3 })
+      const parentWindow = { id: 'main-window' }
+      electronMocks.browserWindowFromWebContents.mockReturnValue(parentWindow)
+      const { paymentWindow } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+
+      await expect(electronMocks.handlers.get('account:quote-topup')!(trustedEvent(), { amount: 10 }))
+        .resolves.toEqual({ amount: 10, payableAmount: 8.8 })
+      await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+        amount: 20, paymentMethod: ' alipay ',
+      })).resolves.toEqual({ opened: true, tradeNo: 'trade-9' })
+      await expect(electronMocks.handlers.get('account:redeem-topup-code')!(trustedEvent(), ' CODE-123 '))
+        .resolves.toEqual({ quotaAdded: 500_000 })
+      await expect(electronMocks.handlers.get('account:transfer-affiliate-quota')!(trustedEvent(), {
+        quota: 100_000,
+      })).resolves.toBeUndefined()
+      await expect(electronMocks.handlers.get('account:update-subscription-preference')!(
+        trustedEvent(),
+        'wallet_first',
+      )).resolves.toBe('wallet_first')
+      await expect(electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe',
+      })).resolves.toEqual({
+        opened: true,
+        tradeNo: 'subscription-trade-1',
+        expiresAt: '2026-08-15T12:30:00.000Z',
+      })
+      await expect(electronMocks.handlers.get('account:purchase-subscription-balance')!(trustedEvent(), 3))
+        .resolves.toEqual({ purchased: true })
+      await expect(electronMocks.handlers.get('account:update-display-name')!(trustedEvent(), {
+        displayName: ' 新昵称 ',
+      })).resolves.toEqual({ updated: true })
+      await expect(electronMocks.handlers.get('account:revoke-other-login-sessions')!(trustedEvent()))
+        .resolves.toEqual({ revokedCount: 3 })
+
+      expect(accountService.quoteTopupAmount).toHaveBeenCalledWith({ amount: 10 })
+      expect(accountService.createTopupPayment).toHaveBeenCalledWith({ amount: 20, paymentMethod: 'alipay' })
+      expect(paymentWindow.open).toHaveBeenCalledWith(paymentForm, parentWindow)
+      expect(accountService.redeemTopupCode).toHaveBeenCalledWith('CODE-123')
+      expect(accountService.transferAffiliateQuota).toHaveBeenCalledWith({ quota: 100_000 })
+      expect(accountService.updateSubscriptionPreference).toHaveBeenCalledWith('wallet_first')
+      expect(accountService.createSubscriptionPayment).toHaveBeenCalledWith({ planId: 3, provider: 'stripe' })
+      expect(paymentWindow.openUrl).toHaveBeenCalledWith(
+        'https://checkout.example.com/session#token=opaque',
+        parentWindow,
+      )
+      expect(accountService.purchaseSubscriptionWithBalance).toHaveBeenCalledWith(3)
+      expect(accountService.updateDisplayName).toHaveBeenCalledWith({ displayName: '新昵称' })
+      expect(accountService.revokeOtherLoginSessions).toHaveBeenCalledWith()
+    })
+
+    it('validates the backend payment form before opening the window or returning its trade number', async () => {
+      const accountService = accountServiceStub()
+      const { paymentWindow } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+      vi.mocked(accountService.createTopupPayment).mockResolvedValue({
+        action: 'https://attacker.example/submit',
+        allowedOrigin: 'https://attacker.example/not-an-origin',
+        method: 'POST',
+        fields: [{ name: 'sign', value: 'signed' }],
+        tradeNo: 'attacker-trade',
+      })
+
+      await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
+        amount: 10,
+        paymentMethod: 'alipay',
+      })).rejects.toThrow('支付来源与支付地址不匹配')
+      expect(paymentWindow.open).not.toHaveBeenCalled()
+    })
+
+    it('rejects malformed subscription payment inputs before dispatch', async () => {
+      const accountService = accountServiceStub()
+      const { paymentWindow } = register(serviceStub(), 'C:\app-data\logs', undefined, accountService)
+
+      expect(() => electronMocks.handlers.get('account:update-subscription-preference')!(
+        trustedEvent(),
+        'subscription',
+      )).toThrow('扣费顺序')
+      expect(() => electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'epay',
+      })).toThrow('支付方式不能为空')
+      expect(() => electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe', paymentMethod: 'alipay',
+      })).toThrow('不接受支付方式参数')
+      expect(() => electronMocks.handlers.get('account:create-subscription-payment')!(trustedEvent(), {
+        planId: 3, provider: 'stripe', unexpected: true,
+      })).toThrow('未知字段')
+
+      expect(accountService.updateSubscriptionPreference).not.toHaveBeenCalled()
+      expect(accountService.createSubscriptionPayment).not.toHaveBeenCalled()
+      expect(paymentWindow.open).not.toHaveBeenCalled()
+      expect(paymentWindow.openUrl).not.toHaveBeenCalled()
+    })
+
+    it('rejects hostile billing and profile inputs before they reach the service', () => {
+      const { accountService } = register()
+      const quote = electronMocks.handlers.get('account:quote-topup')!
+      const payment = electronMocks.handlers.get('account:create-topup-payment')!
+      const orders = electronMocks.handlers.get('account:list-topup-orders')!
+      const redeem = electronMocks.handlers.get('account:redeem-topup-code')!
+      const transfer = electronMocks.handlers.get('account:transfer-affiliate-quota')!
+      const purchase = electronMocks.handlers.get('account:purchase-subscription-balance')!
+      const updateDisplayName = electronMocks.handlers.get('account:update-display-name')!
+
+      for (const amount of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '10']) {
+        expect(() => quote(trustedEvent(), { amount })).toThrow('充值数量格式错误')
+      }
+      for (const paymentMethod of ['', ' '.repeat(3), 'x'.repeat(65), 42]) {
+        expect(() => payment(trustedEvent(), { amount: 10, paymentMethod })).toThrow('支付方式格式错误')
+      }
+      expect(() => payment(trustedEvent(), {
+        amount: 10,
+        paymentMethod: 'alipay',
+        fields: [{ name: 'sign', value: 'renderer-controlled' }],
+      })).toThrow('充值支付信息包含未知字段')
+      for (const query of [
+        null,
+        { page: 0 },
+        { page: 1.5 },
+        { page: 1_000_001 },
+        { pageSize: 0 },
+        { pageSize: 101 },
+        { keyword: 'x'.repeat(129) },
+      ]) {
+        expect(() => orders(trustedEvent(), query)).toThrow()
+      }
+      for (const code of ['', ' '.repeat(3), 'x'.repeat(257), 42]) {
+        expect(() => redeem(trustedEvent(), code)).toThrow('兑换码格式错误')
+      }
+      for (const quota of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '100']) {
+        expect(() => transfer(trustedEvent(), { quota })).toThrow('邀请额度格式错误')
+      }
+      for (const planId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '3']) {
+        expect(() => purchase(trustedEvent(), planId)).toThrow('订阅方案 ID格式错误')
+      }
+      for (const displayName of [42, 'x'.repeat(21)]) {
+        expect(() => updateDisplayName(trustedEvent(), { displayName })).toThrow('显示名称格式错误')
+      }
+
+      expect(accountService.quoteTopupAmount).not.toHaveBeenCalled()
+      expect(accountService.createTopupPayment).not.toHaveBeenCalled()
+      expect(accountService.listTopupOrders).not.toHaveBeenCalled()
+      expect(accountService.redeemTopupCode).not.toHaveBeenCalled()
+      expect(accountService.transferAffiliateQuota).not.toHaveBeenCalled()
+      expect(accountService.purchaseSubscriptionWithBalance).not.toHaveBeenCalled()
+      expect(accountService.updateDisplayName).not.toHaveBeenCalled()
+    })
+
+    it('rejects an untrusted payment sender before creating a server payment form', () => {
+      const { accountService, paymentWindow } = register()
+      const payment = electronMocks.handlers.get('account:create-topup-payment')!
+
+      expect(() => payment(trustedEvent('https://attacker.example/'), {
+        amount: 10,
+        paymentMethod: 'alipay',
+      })).toThrow('已拒绝来自非应用页面的操作请求')
+      expect(accountService.createTopupPayment).not.toHaveBeenCalled()
+      expect(paymentWindow.open).not.toHaveBeenCalled()
+    })
+
+    it('validates session IDs and cancels active AI work after revoking the current session', async () => {
+      const sid = '123e4567-e89b-42d3-a456-426614174000'
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.revokeLoginSession).mockResolvedValue({ revokedSid: sid, current: true })
+      const chatService = { cancelAll: vi.fn(() => 2), dispose: vi.fn() }
+      const imageService = { cancelAll: vi.fn(() => 1) }
+      const { paymentWindow } = register(
+        serviceStub(),
+        'C:\\app-data\\logs',
+        undefined,
+        accountService,
+        undefined,
+        undefined,
+        { chatService, imageService } as never,
+      )
+      const handler = electronMocks.handlers.get('account:revoke-login-session')!
+
+      await expect(handler(trustedEvent(), sid)).resolves.toEqual({ revokedSid: sid, current: true })
+      expect(accountService.revokeLoginSession).toHaveBeenCalledWith(sid)
+      expect(chatService.cancelAll).toHaveBeenCalledOnce()
+      expect(imageService.cancelAll).toHaveBeenCalledOnce()
+      expect(paymentWindow.destroy).toHaveBeenCalledOnce()
+
+      for (const value of ['', '../current', 'not-a-uuid', 'x'.repeat(65), 42]) {
+        await expect(handler(trustedEvent(), value)).rejects.toThrow()
+      }
+      expect(accountService.revokeLoginSession).toHaveBeenCalledTimes(1)
+    })
+
+    it('does not cancel active AI work when revoking a non-current session', async () => {
+      const sid = '123e4567-e89b-42d3-a456-426614174000'
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.revokeLoginSession).mockResolvedValue({ revokedSid: sid, current: false })
+      const chatService = { cancelAll: vi.fn(() => 0), dispose: vi.fn() }
+      const imageService = { cancelAll: vi.fn(() => 0) }
+      const { paymentWindow } = register(
+        serviceStub(),
+        'C:\\app-data\\logs',
+        undefined,
+        accountService,
+        undefined,
+        undefined,
+        { chatService, imageService } as never,
+      )
+
+      await expect(electronMocks.handlers.get('account:revoke-login-session')!(trustedEvent(), sid))
+        .resolves.toEqual({ revokedSid: sid, current: false })
+      expect(chatService.cancelAll).not.toHaveBeenCalled()
+      expect(imageService.cancelAll).not.toHaveBeenCalled()
+      expect(paymentWindow.destroy).not.toHaveBeenCalled()
     })
   })
 

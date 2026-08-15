@@ -1532,6 +1532,7 @@ export interface SystemServiceOptions {
   inspectProviderConfig?: typeof inspectProviderConfig
   resolveCliCommand?: typeof resolveCliCommand
   resolveCliInstallation?: typeof resolveCliInstallation
+  findExecutable?: typeof findExecutable
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
 }
@@ -1567,6 +1568,7 @@ export function createSystemService(
     providerCommandEnvironment(provider, process.env, codexEnv)
   const resolveVerifiedCliCommand = serviceOptions.resolveCliCommand ?? resolveCliCommand
   const resolveCliInstallationForService = serviceOptions.resolveCliInstallation ?? resolveCliInstallation
+  const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
   const executeCommand = serviceOptions.runCommand ?? runCommand
   const detectMacosCodexApp = serviceOptions.macosCodexAppDetector ?? inspectMacosCodexApp
   const installing = new Set<ProviderId>()
@@ -1627,7 +1629,7 @@ export function createSystemService(
    * process still blocks version execution from user-writable paths.
    */
   async function findInstalledExecutable(command: string): Promise<string | null> {
-    return findExecutable(command, {
+    return findExecutableForService(command, {
       env: commandEnvironment(),
       windowsPackageManagers: command.toLowerCase() === 'npm' ? ['npm'] : [],
     })
@@ -1975,13 +1977,11 @@ export function createSystemService(
     const codexDesktop = buildDesktopAppStatusFromSettled(codexDesktopResult)
     const network = buildNetworkLocationStatusFromSettled(networkResult)
     const npmGlobalRoot = await resolveNpmGlobalRoot(npm.path, commandEnvironment())
-    // 单个 CLI 探测异常时降级为未安装，避免拖垮整份系统快照
+    // 单个 CLI 探测异常不能伪装成“未安装”，否则维护页会自动勾选并重装。
     const cliProbes = await Promise.allSettled(
       providerIds.map((id) => inspectCliTool(id, npm.path, npmGlobalRoot)),
     )
-    const cliResults: ToolStatus[] = cliProbes.map((probe) => (probe.status === 'fulfilled'
-      ? probe.value.status
-      : { installed: false, version: null, path: null, installDirectory: null }))
+    const cliResults: ToolStatus[] = cliProbes.map(buildCliToolStatusFromSettled)
     const networkRegion = network.region
 
     const latestProbes = await Promise.allSettled(
@@ -2038,6 +2038,34 @@ export function createSystemService(
     if (nodeRuntimeInstalling) throw new Error('Node.js 正在安装中，请等待当前任务完成')
     nodeRuntimeInstalling = true
     try {
+      const [nodeResult, npmResult] = await Promise.allSettled([inspectNode(), inspectTool('npm')])
+      const node = buildToolStatusFromSettled(nodeResult)
+      const npm = buildToolStatusFromSettled(npmResult)
+      if (node.detectionFailed || npm.detectionFailed) {
+        throw new Error(node.detectionError ?? npm.detectionError ?? 'Node.js/npm 检测失败，请重新检测后再试')
+      }
+      if (node.installed && node.versionStatus === 'supported' && npm.installed) {
+        const architecture = process.arch === 'x64' || process.arch === 'arm64' ? process.arch : 'x64'
+        const result: NodeRuntimeInstallResult = {
+          installed: true,
+          action: 'unchanged',
+          method: null,
+          source: null,
+          version: node.version,
+          architecture,
+          pathRefreshRequired: false,
+          systemRestartRequired: false,
+        }
+        if (!target.isDestroyed()) {
+          target.send('runtime:node-install-progress', {
+            phase: 'complete',
+            source: null,
+            message: `已检测到可用的 Node.js ${node.version ?? ''} 和 npm，无需重复安装`.trim(),
+            percent: 100,
+          })
+        }
+        return result
+      }
       return await installNodeRuntimeLts({
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
@@ -2068,20 +2096,28 @@ export function createSystemService(
     target: RendererMessageTarget,
   ): Promise<string | null> {
     if (process.platform !== 'win32') {
-      return findExecutable('npm', {
+      return findExecutableForService('npm', {
         env: commandEnvironment(),
         windowsPackageManagers: ['npm'],
       })
     }
 
     const trustedOnly = windowsExecutionMode === 'trusted-only'
-    const findUsableNpm = () => findExecutable('npm', {
+    const findUsableNpm = () => findExecutableForService('npm', {
       env: trustedOnly ? trustedCommandEnvironment() : commandEnvironment(),
       windowsPackageManagers: ['npm'],
       trustedOnly,
     })
     let npmExecutable = await findUsableNpm()
     if (npmExecutable) return npmExecutable
+
+    const detectedNpm = await findInstalledExecutable('npm')
+    if (detectedNpm) {
+      if (!trustedOnly || isTrustedHighIntegrityExecutable(detectedNpm)) return detectedNpm
+      throw new Error(
+        `已检测到 npm（${detectedNpm}），但当前会话经过了显式提权或权限状态无法确认，不能安全执行该路径。请以普通权限启动本程序，或将 Node.js 安装到受保护的系统目录后重试`,
+      )
+    }
 
     sendInstallProgress(
       target,

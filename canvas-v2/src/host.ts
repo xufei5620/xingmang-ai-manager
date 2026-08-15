@@ -21,21 +21,58 @@ export interface CanvasGeneratedAsset {
   revisedPrompt?: string
 }
 
-export interface CanvasAssetSummary extends CanvasGeneratedAsset {
+export interface CanvasGeneratedVideoAsset {
+  assetId: string
+  localUrl: string
+  mimeType: 'video/mp4'
+  fileName: string
+  taskId: string
+  width?: number
+  height?: number
+  durationSeconds?: number
+}
+
+export interface CanvasImageAssetSummary extends CanvasGeneratedAsset {
   createdAt: string
   mediaType: 'image'
   thumbnailUrl: string
+  displayName?: string
 }
+
+export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
+  createdAt: string
+  mediaType: 'video'
+  thumbnailUrl: string
+  displayName?: string
+  width?: number
+  height?: number
+  durationSeconds?: number
+}
+
+export interface CanvasAudioAssetSummary {
+  assetId: string
+  localUrl: string
+  mimeType: 'audio/mpeg' | 'audio/wav' | 'audio/ogg' | 'audio/mp4'
+  fileName: string
+  createdAt: string
+  mediaType: 'audio'
+  thumbnailUrl: string
+  displayName?: string
+  durationSeconds?: number
+}
+
+export type CanvasAssetSummary = CanvasImageAssetSummary | CanvasVideoAssetSummary | CanvasAudioAssetSummary
+export type CanvasListedAssetSummary = CanvasAssetSummary & { displayName: string }
 
 export interface CanvasAssetQuery {
   offset?: number
   limit?: number
-  mediaType?: 'all' | 'image'
+  mediaType?: 'all' | 'image' | 'video' | 'audio'
   search?: string
 }
 
 export interface CanvasAssetPage {
-  items: CanvasAssetSummary[]
+  items: CanvasListedAssetSummary[]
   offset: number
   limit: number
   total: number
@@ -58,7 +95,7 @@ export interface CanvasRunGraph {
     kind: string
     definitionVersion: number
     disabled?: boolean
-    data: { prompt: string; model: string; group?: string; quality?: string; size?: string; adoptedAssetId?: string }
+    data: { prompt: string; model: string; group?: string; quality?: string; size?: string; seconds?: string; adoptedAssetId?: string }
   }>
   edges: Array<{ id: string; source: string; sourceHandle: string; target: string; targetHandle: string }>
 }
@@ -91,7 +128,7 @@ export interface CanvasRunCandidate {
   candidateId: string
   attemptId: string
   createdAt: string
-  asset: { kind: 'image' | 'video'; assetId: string; localUrl: string; mimeType?: string; width?: number; height?: number }
+  asset: { kind: 'image' | 'video' | 'audio'; assetId: string; localUrl: string; mimeType?: string; width?: number; height?: number }
   group?: string
   model?: string
   costQuota?: number
@@ -150,6 +187,16 @@ export interface CanvasProjectPreview {
   warnings: string[]
 }
 
+export interface CanvasStoredProjectSummary {
+  id: string
+  name: string
+  createdAt: string
+  updatedAt: string
+  nodeCount: number
+  workspaceName?: string
+  workspaceConfigured: boolean
+}
+
 export interface CanvasHostBridge {
   saveFile(suggestedName: string, content: string): Promise<{ savedPath: string } | null>
   pickFile(): Promise<{ name: string; content: string } | null>
@@ -174,13 +221,25 @@ export interface CanvasHostBridge {
     size?: string
     quality?: 'low' | 'medium' | 'high' | 'auto'
   }): Promise<CanvasGeneratedAsset[]>
+  generateVideo(input: {
+    requestId: string
+    group: string
+    model: string
+    prompt: string
+    seconds: string
+    imageAssetId?: string
+    width?: number
+    height?: number
+  }): Promise<CanvasGeneratedVideoAsset>
+  resumeVideoTask(taskId: string): Promise<CanvasGeneratedVideoAsset>
   cancelRequest(requestId: string): Promise<{ canceled: boolean; mayStillComplete: boolean }>
   copyAsset(assetId: string): Promise<void>
   saveAsset(assetId: string): Promise<{ saved: boolean }>
   showAssetMenu(assetId: string): Promise<void>
   listAssets(query?: CanvasAssetQuery): Promise<CanvasAssetPage>
-  pickAsset(): Promise<CanvasGeneratedAsset | null>
-  importAssetFile(file: File): Promise<CanvasGeneratedAsset>
+  renameAsset(input: { assetId: string; displayName: string }): Promise<{ assetId: string; displayName: string }>
+  pickAsset(): Promise<CanvasGeneratedAsset | CanvasAssetSummary | null>
+  importAssetFile(file: File): Promise<CanvasGeneratedAsset | CanvasAssetSummary>
   listPromptPresets(): Promise<CanvasPromptPreset[]>
   createPromptPreset(input: { name: string; prompt: string; tags?: string[] }): Promise<CanvasPromptPreset>
   updatePromptPreset(input: { id: string; name?: string; prompt?: string; tags?: string[] }): Promise<CanvasPromptPreset>
@@ -191,6 +250,10 @@ export interface CanvasHostBridge {
   exportProject(suggestedName: string, content: string): Promise<{ savedPath: string } | null>
   previewProject(): Promise<CanvasProjectPreview | null>
   importProject(previewId: string): Promise<{ content: string; warnings: string[]; importedAssetCount: number }>
+  listProjects(): Promise<CanvasStoredProjectSummary[]>
+  createProject(name: string): Promise<{ project: CanvasStoredProjectSummary; content: string } | null>
+  openProject(projectId: string): Promise<{ project: CanvasStoredProjectSummary; content: string }>
+  saveProject(projectId: string, content: string): Promise<CanvasStoredProjectSummary>
   onRunEvent(listener: (event: CanvasRunEvent) => void): () => void
 }
 
@@ -239,6 +302,8 @@ export function hostBridge(): CanvasHostBridge {
     async prepareGroup() { return unavailable() },
     async generateImage() { return unavailable() },
     async editImage() { return unavailable() },
+    async generateVideo() { return unavailable() },
+    async resumeVideoTask() { return unavailable() },
     async cancelRequest() { return { canceled: false, mayStillComplete: false } },
     async copyAsset() { return unavailable() },
     async saveAsset() { return unavailable() },
@@ -246,6 +311,7 @@ export function hostBridge(): CanvasHostBridge {
     async listAssets(query = {}) {
       return { items: [], offset: query.offset ?? 0, limit: query.limit ?? 24, total: 0, hasMore: false }
     },
+    async renameAsset() { return unavailable() },
     async pickAsset() { return unavailable() },
     async importAssetFile() { return unavailable() },
     async listPromptPresets() { return [] },
@@ -258,6 +324,10 @@ export function hostBridge(): CanvasHostBridge {
     async exportProject(suggestedName, content) { return this.saveFile(suggestedName, content) },
     async previewProject() { return null },
     async importProject() { return unavailable() },
+    async listProjects() { return [] },
+    async createProject() { return unavailable() },
+    async openProject() { return unavailable() },
+    async saveProject() { return unavailable() },
     onRunEvent() { return () => undefined },
   }
 }

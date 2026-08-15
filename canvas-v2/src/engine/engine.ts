@@ -12,6 +12,10 @@ export interface NodeInputs {
   image?: AssetRef
   /** 按连线顺序保留的全部图像输入；image 是向后兼容的首张图。 */
   images?: AssetRef[]
+  video?: AssetRef
+  videos?: AssetRef[]
+  audio?: AssetRef
+  audios?: AssetRef[]
 }
 
 export interface NodeExecutionResult {
@@ -102,6 +106,14 @@ function collectInputs(
     if (upstream.output.asset?.kind === 'image') {
       inputs.image ??= upstream.output.asset
       inputs.images = [...(inputs.images ?? []), upstream.output.asset]
+    }
+    if (upstream.output.asset?.kind === 'video') {
+      inputs.video ??= upstream.output.asset
+      inputs.videos = [...(inputs.videos ?? []), upstream.output.asset]
+    }
+    if (upstream.output.asset?.kind === 'audio') {
+      inputs.audio ??= upstream.output.asset
+      inputs.audios = [...(inputs.audios ?? []), upstream.output.asset]
     }
   }
   return inputs
@@ -195,7 +207,7 @@ export function createMockExecutors(delayMs = 600): Record<NodeKind, NodeExecuto
   const unsupported: NodeExecutor = async () => { throw new Error('该节点尚未接入可执行能力') }
   return {
     text, image, video, prompt: text,
-    'image-input': unsupported, 'video-input': unsupported,
+    'image-input': unsupported, 'video-input': unsupported, 'audio-input': unsupported,
     'image-generate': image, 'image-edit': image, 'video-generate': video,
     'frame-extract': unsupported, router: unsupported, gallery: unsupported, output: unsupported,
     group: unsupported, note: unsupported,

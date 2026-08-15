@@ -13,9 +13,12 @@ const imageInput: NodePortDefinition = { id: 'in:image', label: '图像', direct
 const imageInputs: NodePortDefinition = { id: 'in:images', label: '图像', direction: 'input', kind: 'image', cardinality: 'many' }
 const videoInput: NodePortDefinition = { id: 'in:video', label: '视频', direction: 'input', kind: 'video', cardinality: 'one' }
 const videoInputs: NodePortDefinition = { id: 'in:videos', label: '视频', direction: 'input', kind: 'video', cardinality: 'many' }
+const audioInput: NodePortDefinition = { id: 'in:audio', label: '音频', direction: 'input', kind: 'audio', cardinality: 'one' }
+const audioInputs: NodePortDefinition = { id: 'in:audios', label: '音频', direction: 'input', kind: 'audio', cardinality: 'many' }
 const textOutput: NodePortDefinition = { id: 'out:text', label: '文本', direction: 'output', kind: 'text', cardinality: 'many' }
 const imageOutput: NodePortDefinition = { id: 'out:image', label: '图像', direction: 'output', kind: 'image', cardinality: 'many' }
 const videoOutput: NodePortDefinition = { id: 'out:video', label: '视频', direction: 'output', kind: 'video', cardinality: 'many' }
+const audioOutput: NodePortDefinition = { id: 'out:audio', label: '音频', direction: 'output', kind: 'audio', cardinality: 'many' }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -32,7 +35,7 @@ function mediaDefinition(input: Omit<NodeDefinition, 'validate'>): NodeDefinitio
 export const builtinNodeDefinitions: readonly NodeDefinition[] = [
   mediaDefinition({
     type: 'prompt', version: 1, title: '提示词', description: '为下游节点提供文本', category: 'input',
-    ports: [textOutput], dimensions: { width: 260, height: 170 }, defaultData: { prompt: '' },
+    ports: [textOutput], dimensions: { width: 288, height: 176 }, defaultData: { prompt: '' },
     executable: true, structural: false, executorKind: 'prompt', capabilities: [{ media: 'text', operation: 'input' }],
   }),
   mediaDefinition({
@@ -46,18 +49,23 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
     executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'video', operation: 'input' }],
   }),
   mediaDefinition({
+    type: 'audio-input', version: 1, title: '音频素材', description: '引用本地音频资产', category: 'input',
+    ports: [audioOutput], dimensions: { width: 280, height: 180 }, defaultData: { assetId: '' },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'audio', operation: 'input' }],
+  }),
+  mediaDefinition({
     type: 'image-generate', version: 1, title: '图像生成', description: '根据提示词生成图像', category: 'generation',
-    ports: [textInput, imageOutput], dimensions: { width: 280, height: 300 }, defaultData: { prompt: '', model: '', quality: 'low', size: '1024x1024' },
+    ports: [textInput, imageOutput], dimensions: { width: 304, height: 300 }, defaultData: { prompt: '', model: '', quality: 'low', size: '1024x1024' },
     executable: true, structural: false, executorKind: 'image', capabilities: [{ media: 'image', operation: 'generate' }],
   }),
   mediaDefinition({
-    type: 'image-edit', version: 1, title: '图像编辑', description: '使用参考图和指令编辑图像', category: 'transform',
-    ports: [textInput, imageInputs, imageOutput], dimensions: { width: 300, height: 320 }, defaultData: { prompt: '', model: '', maskAssetId: '' },
+    type: 'image-edit', version: 1, title: '图像编辑', description: '使用 1-4 张参考图和指令编辑图像', category: 'transform',
+    ports: [textInput, imageInputs, imageOutput], dimensions: { width: 304, height: 360 }, defaultData: { prompt: '', model: '', maskAssetId: '' },
     executable: true, structural: false, executorKind: 'image', capabilities: [{ media: 'image', operation: 'edit' }],
   }),
   mediaDefinition({
-    type: 'video-generate', version: 1, title: '视频生成', description: '文生视频或图生视频', category: 'generation',
-    ports: [textInput, imageInput, videoOutput], dimensions: { width: 300, height: 300 }, defaultData: { prompt: '', model: '', durationSeconds: 5 },
+    type: 'video-generate', version: 1, title: '视频生成', description: '文生视频或图生视频（支持多前置输入）', category: 'generation',
+    ports: [textInput, imageInputs, audioInputs, videoOutput], dimensions: { width: 304, height: 360 }, defaultData: { prompt: '', model: '', durationSeconds: 5, size: '1280x720' },
     executable: true, structural: false, executorKind: 'video', capabilities: [{ media: 'video', operation: 'generate' }],
   }),
   mediaDefinition({
@@ -67,17 +75,17 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
   }),
   mediaDefinition({
     type: 'router', version: 1, title: '路由', description: '按媒体类型分流', category: 'flow',
-    ports: [textInput, imageInputs, videoInputs, textOutput, imageOutput, videoOutput], dimensions: { width: 240, height: 240 }, defaultData: { strategy: 'first-available' },
+    ports: [textInput, imageInputs, videoInputs, audioInputs, textOutput, imageOutput, videoOutput, audioOutput], dimensions: { width: 224, height: 182 }, defaultData: { strategy: 'first-available' },
     executable: true, structural: false, executorKind: 'flow', capabilities: [{ media: 'text', operation: 'route' }],
   }),
   mediaDefinition({
     type: 'gallery', version: 1, title: '候选画廊', description: '汇总并挑选多个生成结果', category: 'flow',
-    ports: [imageInputs, videoInputs, imageOutput, videoOutput], dimensions: { width: 360, height: 300 }, defaultData: { adoptedAssetId: '' },
+    ports: [imageInputs, videoInputs, audioInputs, imageOutput, videoOutput, audioOutput], dimensions: { width: 360, height: 300 }, defaultData: { adoptedAssetId: '' },
     executable: true, structural: false, executorKind: 'flow', capabilities: [{ media: 'image', operation: 'collect' }],
   }),
   mediaDefinition({
     type: 'output', version: 1, title: '输出', description: '标记工作流的最终产物', category: 'output',
-    ports: [textInput, imageInput, videoInput], dimensions: { width: 260, height: 220 }, defaultData: { label: '最终产物' },
+    ports: [textInput, imageInput, videoInput, audioInput], dimensions: { width: 240, height: 182 }, defaultData: { label: '最终产物' },
     executable: true, structural: false, executorKind: 'output', capabilities: [{ media: 'image', operation: 'output' }],
   }),
   mediaDefinition({
@@ -108,7 +116,7 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
   }),
   mediaDefinition({
     type: 'video', version: 1, title: '视频生成', description: '旧版视频节点', category: 'generation',
-    ports: [textInput, imageInput, videoOutput], dimensions: { width: 240, height: 300 }, defaultData: { prompt: '', model: '', status: 'idle' },
+    ports: [textInput, imageInputs, audioInputs, videoOutput], dimensions: { width: 240, height: 300 }, defaultData: { prompt: '', model: '', status: 'idle' },
     executable: true, structural: false, executorKind: 'video', capabilities: [{ media: 'video', operation: 'generate' }],
   }),
 ]

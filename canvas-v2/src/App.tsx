@@ -1,17 +1,17 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import {
-  addEdge,
   Background,
   Controls,
   MiniMap,
   ReactFlow,
   SelectionMode,
-  useEdgesState,
-  useNodesState,
   type Connection,
   type Edge,
+  type FinalConnectionState,
   type NodeChange,
+  type OnConnectStartParams,
   type ReactFlowInstance,
+  type Viewport,
   type XYPosition,
 } from '@xyflow/react'
 import '@xyflow/react/dist/style.css'
@@ -31,10 +31,23 @@ import { createMockExecutors, runWorkflow, type NodeInputs } from './engine/engi
 import { createHostExecutors } from './engine/executors'
 import { hostBridge } from './host'
 import { SimpleMode } from './SimpleMode'
-import { isValidWorkflowConnection } from './ports'
-import { defaultImageModel, defaultImageQuality, defaultImageSize } from './models'
-import { ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
-import type { CanvasAssetPage, CanvasAssetQuery, CanvasGeneratedAsset, CanvasGroupSummary, CanvasPromptPreset, CanvasRunRecord, CanvasRunScope } from './host'
+import {
+  compatibleInsertionHandle,
+  connectionForInsertedNode,
+  isValidWorkflowConnection,
+  type PendingCanvasConnection,
+} from './ports'
+import {
+  availableImageModelPresets,
+  availableVideoModelPresets,
+  defaultImageModel,
+  defaultImageQuality,
+  defaultImageSize,
+  defaultVideoModel,
+  defaultVideoSeconds,
+} from './models'
+import { CanvasModelAvailabilityProvider, CanvasUpstreamReferencesProvider, ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
+import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetSummary, CanvasGeneratedAsset, CanvasGeneratedVideoAsset, CanvasGroupSummary, CanvasPromptPreset, CanvasRunGraph, CanvasRunRecord, CanvasRunScope, CanvasStoredProjectSummary } from './host'
 import { AssetTray } from './components/AssetTray'
 import { MediaLightbox } from './components/MediaPreview'
 import { autoLayoutCanvasNodes } from './editor/auto-layout'
@@ -57,7 +70,13 @@ import {
   projectRunRecordToNodes,
   selectNodeCandidate,
 } from './runtime/run-projection'
-import { Redo2, Undo2 } from 'lucide-react'
+import { ChevronDown, Crosshair, FolderOpen, Focus, History, Image as ImageIcon, LayoutGrid, Map as MapIcon, MoreHorizontal, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Undo2, Video, X } from 'lucide-react'
+import { canvasNodeDocumentRecord, useCanvasDocument } from './store/use-canvas-document'
+import type { CanvasDocumentState, CanvasMediaGroups } from './store/canvas-state'
+import type { EditorNodeRecord } from './domain/node-definition'
+import { assetInputNodeKind, mediaAssetNodeDimensions, mediaResultNodeDimensions } from './library/media-assets'
+import { QuickInsert, type QuickInsertCommand } from './components/QuickInsert'
+import { findAvailableCanvasPosition } from './editor/node-placement'
 
 // 画布装配层:@xyflow/react 的 Node/Edge 与领域模型互相映射,引擎与
 // 持久化只见领域模型。M0 执行走 mock 执行器(不出网);M1 把 executors
@@ -70,11 +89,22 @@ function nextNodeId(): string {
   return `n${Date.now().toString(36)}-${nodeSequence}`
 }
 
+function connectionEventPoint(event: MouseEvent | TouchEvent): { x: number; y: number } | null {
+  const point = 'changedTouches' in event ? event.changedTouches[0] : event
+  return point ? { x: point.clientX, y: point.clientY } : null
+}
+
 export function toCanvasNode(node: WorkflowNode): CanvasNode {
   const displayKind = node.disabled && node.unknownKind ? 'unknown' : node.kind
   const dimensions = builtinNodeRegistry.resolve(displayKind)?.dimensions
-  const width = node.width ?? dimensions?.width
-  const height = node.height ?? dimensions?.height
+  const mediaDimensions = ['image-input', 'video-input', 'audio-input'].includes(displayKind) && node.data.result?.assetId
+    ? mediaAssetNodeDimensions(node.data.result)
+    : null
+  const width = mediaDimensions?.width ?? node.width ?? dimensions?.width
+  const resultDimensions = !mediaDimensions && node.data.result?.assetId && width && dimensions
+    ? mediaResultNodeDimensions(displayKind, node.data.result, width, node.height ?? dimensions.height, node.data.size)
+    : null
+  const height = mediaDimensions?.height ?? resultDimensions?.height ?? node.height ?? dimensions?.height
   return {
     id: node.id,
     type: displayKind,
@@ -107,6 +137,7 @@ export function toWorkflowNode(node: CanvasNode): WorkflowNode {
       model: node.data.model,
       quality: node.data.quality,
       size: node.data.size,
+      seconds: node.data.seconds,
       status: node.data.status,
       result: node.data.result,
       errorMessage: node.data.errorMessage,
@@ -117,7 +148,11 @@ export function toWorkflowNode(node: CanvasNode): WorkflowNode {
   }
 }
 
-export function toCanvasRunGraph(nodes: readonly CanvasNode[], edges: readonly Edge[], group: string) {
+export function toCanvasRunGraph(
+  nodes: readonly CanvasNode[],
+  edges: readonly Edge[],
+  groups: { image: string; video: string },
+): CanvasRunGraph {
   const runnableNodes = nodes.filter(isCanvasRunNode)
   const runnableIds = new Set(runnableNodes.map((node) => node.id))
   return {
@@ -129,9 +164,11 @@ export function toCanvasRunGraph(nodes: readonly CanvasNode[], edges: readonly E
       data: {
         prompt: node.data.prompt,
         model: node.data.model,
-        group,
+        ...(['image', 'image-generate', 'image-edit'].includes(node.type ?? '') ? { group: groups.image } : {}),
+        ...(['video', 'video-generate'].includes(node.type ?? '') ? { group: groups.video } : {}),
         quality: node.data.quality,
         size: node.data.size,
+        seconds: node.data.seconds,
         adoptedAssetId: node.data.result?.assetId,
       },
     })),
@@ -141,12 +178,68 @@ export function toCanvasRunGraph(nodes: readonly CanvasNode[], edges: readonly E
   }
 }
 
+const imageRunNodeKinds = new Set(['image', 'image-generate', 'image-edit'])
+const videoRunNodeKinds = new Set(['video', 'video-generate'])
+
+export function selectCanvasRunNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): Set<string> {
+  const nodeIds = new Set(graph.nodes.map((node) => node.id))
+  if (scope.kind === 'all') return nodeIds
+  const roots = scope.kind === 'to-node' ? [scope.nodeId] : scope.nodeIds
+  if (roots.length === 0) throw new Error('运行范围不能为空')
+  const incoming = new Map<string, string[]>()
+  for (const edge of graph.edges) incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source])
+  const selected = new Set<string>()
+  const queue = [...new Set(roots)]
+  while (queue.length > 0) {
+    const current = queue.pop() as string
+    if (!nodeIds.has(current)) throw new Error(`运行范围包含不存在的节点：${current}`)
+    if (selected.has(current)) continue
+    selected.add(current)
+    for (const source of incoming.get(current) ?? []) queue.push(source)
+  }
+  return selected
+}
+
+export function canvasMediaConfigurationErrors(
+  graph: CanvasRunGraph,
+  scope: CanvasRunScope,
+  configuration: {
+    imageGroup?: string
+    videoGroup?: string
+    imageModels: readonly string[]
+    videoModels: readonly string[]
+  },
+): string[] {
+  const selected = selectCanvasRunNodeIds(graph, scope)
+  const activeNodes = graph.nodes.filter((node) => selected.has(node.id) && !node.disabled)
+  const imageNodes = activeNodes.filter((node) => imageRunNodeKinds.has(node.kind))
+  const videoNodes = activeNodes.filter((node) => videoRunNodeKinds.has(node.kind))
+  const errors: string[] = []
+  if (imageNodes.length > 0 && !configuration.imageGroup) errors.push('请选择生图分组')
+  if (videoNodes.length > 0 && !configuration.videoGroup) errors.push('请选择视频分组')
+  const unavailableImageModels = [...new Set(imageNodes
+    .map((node) => node.data.model)
+    .filter((model) => !configuration.imageModels.includes(model)))]
+  const unavailableVideoModels = [...new Set(videoNodes
+    .map((node) => node.data.model)
+    .filter((model) => !configuration.videoModels.includes(model)))]
+  if (configuration.imageGroup && unavailableImageModels.length > 0) {
+    errors.push(`生图分组「${configuration.imageGroup}」不提供模型：${unavailableImageModels.join('、')}`)
+  }
+  if (configuration.videoGroup && unavailableVideoModels.length > 0) {
+    errors.push(`视频分组「${configuration.videoGroup}」不提供模型：${unavailableVideoModels.join('、')}`)
+  }
+  return errors
+}
+
 function isCanvasRunNode(node: CanvasNode): boolean {
   return node.type !== 'unknown' && !node.unknownKind
 }
 
 const rerunTextSourceKinds = new Set(['text', 'prompt'])
 const rerunImageSourceKinds = new Set(['image', 'image-input', 'image-generate', 'image-edit', 'gallery'])
+const rerunVideoSourceKinds = new Set(['video', 'video-input', 'video-generate', 'gallery'])
+const rerunAudioSourceKinds = new Set(['audio-input', 'gallery'])
 
 export function workflowNodeData(type: string, config: Record<string, unknown> = {}): WorkflowNodeData {
   const defaults = builtinNodeRegistry.require(type).defaultData
@@ -155,40 +248,150 @@ export function workflowNodeData(type: string, config: Record<string, unknown> =
   const model = typeof values.model === 'string' ? values.model : ''
   const quality = typeof values.quality === 'string' ? values.quality : undefined
   const size = typeof values.size === 'string' ? values.size : undefined
+  const seconds = typeof values.seconds === 'string' && /^(?:[1-9]|1[0-5])$/.test(values.seconds) ? values.seconds : undefined
   const assetId = typeof values.assetId === 'string' && /^[A-Za-z0-9_-]{43}$/.test(values.assetId)
     ? values.assetId
     : undefined
-  const assetKind = type === 'video-input' ? 'video' : 'image'
-  const result = assetId && (type === 'image-input' || type === 'video-input')
+  const assetKind = type === 'video-input' ? 'video' : type === 'audio-input' ? 'audio' : 'image'
+  const result = assetId && (type === 'image-input' || type === 'video-input' || type === 'audio-input')
     ? { kind: assetKind, assetId, localUrl: `xingmang-asset://${assetKind}/${assetId}` } as const
     : undefined
-  const settings = Object.fromEntries(Object.entries(values).filter(([key]) => !['prompt', 'model', 'quality', 'size', 'status', 'result', 'assetId'].includes(key)))
+  const settings = Object.fromEntries(Object.entries(values).filter(([key]) => !['prompt', 'model', 'quality', 'size', 'seconds', 'status', 'result', 'assetId'].includes(key)))
   return {
     prompt,
     model,
     status: result ? 'succeeded' : 'idle',
     ...(quality ? { quality } : {}),
     ...(size ? { size } : {}),
+    ...(seconds ? { seconds } : {}),
     ...(result ? { result } : {}),
     ...(Object.keys(settings).length > 0 ? { settings } : {}),
   }
 }
 
-function imageOperationDefaults(type: string): Record<string, unknown> {
-  return ['image', 'image-generate', 'image-edit'].includes(type)
-    ? { model: defaultImageModel, quality: defaultImageQuality, size: defaultImageSize }
-    : {}
+function imageOperationDefaults(
+  type: string,
+  imageModels: readonly string[] = [],
+  videoModels: readonly string[] = [],
+): Record<string, unknown> {
+  if (['image', 'image-generate', 'image-edit'].includes(type)) {
+    return {
+      model: availableImageModelPresets(imageModels)[0]?.id ?? defaultImageModel,
+      quality: defaultImageQuality,
+      size: defaultImageSize,
+    }
+  }
+  if (['video', 'video-generate'].includes(type)) {
+    return {
+      model: availableVideoModelPresets(videoModels)[0]?.id ?? defaultVideoModel,
+      seconds: String(defaultVideoSeconds),
+    }
+  }
+  return {}
 }
 
-function generatedAssetRef(asset: CanvasGeneratedAsset): AssetRef {
+function editorNodeToCanvasNode(node: EditorNodeRecord): CanvasNode {
+  const raw = node.data
+  const result = raw.result as AssetRef | undefined
+  const data: WorkflowNodeData = {
+    prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
+    model: typeof raw.model === 'string' ? raw.model : '',
+    status: result?.assetId ? 'succeeded' : 'idle',
+    ...(typeof raw.quality === 'string' ? { quality: raw.quality } : {}),
+    ...(typeof raw.size === 'string' ? { size: raw.size } : {}),
+    ...(typeof raw.seconds === 'string' ? { seconds: raw.seconds } : {}),
+    ...(result ? { result } : {}),
+    ...(raw.settings && typeof raw.settings === 'object' && !Array.isArray(raw.settings)
+      ? { settings: raw.settings as Record<string, unknown> }
+      : {}),
+    ...(Array.isArray(raw.candidateAssetIds)
+      ? { candidateAssetIds: raw.candidateAssetIds.filter((entry): entry is string => typeof entry === 'string') }
+      : {}),
+  }
+  return toCanvasNode({
+    id: node.id,
+    kind: node.type as NodeKind,
+    definitionVersion: node.definitionVersion,
+    position: node.position,
+    data,
+    ...(node.parentId ? { parentId: node.parentId } : {}),
+    ...(node.width ? { width: node.width } : {}),
+    ...(node.height ? { height: node.height } : {}),
+    ...(node.locked ? { locked: true } : {}),
+    ...(node.disabled ? { disabled: true } : {}),
+    ...(node.unknownKind ? { unknownKind: node.unknownKind } : {}),
+  })
+}
+
+function workflowDocument(workflow: WorkflowFile): CanvasDocumentState {
   return {
-    kind: 'image',
+    name: workflow.name,
+    mediaGroups: { ...(workflow.mediaGroups ?? {}) },
+    nodes: workflow.nodes.map((node) => ({
+      id: node.id,
+      type: node.kind,
+      definitionVersion: node.definitionVersion ?? 1,
+      position: { ...node.position },
+      data: structuredClone(node.data) as unknown as Record<string, unknown>,
+      ...(node.parentId ? { parentId: node.parentId } : {}),
+      ...(node.width ? { width: node.width } : {}),
+      ...(node.height ? { height: node.height } : {}),
+      ...(node.locked ? { locked: true } : {}),
+      ...(node.disabled ? { disabled: true } : {}),
+      ...(node.unknownKind ? { unknownKind: node.unknownKind } : {}),
+    })),
+    edges: workflow.edges.map((edge) => ({ ...edge })),
+    viewport: workflow.viewport ?? { x: 0, y: 0, zoom: 1 },
+    revision: 0,
+  }
+}
+
+function mediaAssetRef(asset: CanvasAssetSummary): AssetRef {
+  return {
+    kind: asset.mediaType,
     assetId: asset.assetId,
     localUrl: asset.localUrl,
     mimeType: asset.mimeType,
+    ...('width' in asset && asset.width ? { width: asset.width } : {}),
+    ...('height' in asset && asset.height ? { height: asset.height } : {}),
+    ...('taskId' in asset && asset.taskId ? { taskId: asset.taskId } : {}),
+  }
+}
+
+function generatedAssetRef(asset: CanvasGeneratedAsset): AssetRef {
+  return mediaAssetRef({
+    ...asset,
+    createdAt: '',
+    mediaType: 'image',
+    thumbnailUrl: asset.localUrl,
+    displayName: asset.fileName,
+  })
+}
+
+function generatedVideoAssetRef(asset: CanvasGeneratedVideoAsset): AssetRef {
+  return {
+    kind: 'video',
+    assetId: asset.assetId,
+    localUrl: asset.localUrl,
+    mimeType: asset.mimeType,
+    taskId: asset.taskId,
     ...(asset.width ? { width: asset.width } : {}),
     ...(asset.height ? { height: asset.height } : {}),
   }
+}
+
+function generatedImageSummary(asset: CanvasGeneratedAsset): CanvasAssetSummary {
+  return {
+    ...asset,
+    createdAt: new Date().toISOString(),
+    mediaType: 'image',
+    thumbnailUrl: asset.localUrl,
+    displayName: asset.fileName,
+  }
+}
+
+function importedAssetSummary(asset: CanvasGeneratedAsset | CanvasAssetSummary): CanvasAssetSummary {
+  return 'mediaType' in asset ? asset : generatedImageSummary(asset)
 }
 
 function toWorkflowEdge(edge: Edge): WorkflowEdge {
@@ -201,77 +404,404 @@ function toWorkflowEdge(edge: Edge): WorkflowEdge {
   }
 }
 
+function MediaConfiguration({
+  open,
+  groups,
+  imageGroup,
+  videoGroup,
+  imageModels,
+  videoModels,
+  preparing,
+  onToggle,
+  onClose,
+  onSelect,
+}: {
+  open: boolean
+  groups: readonly CanvasGroupSummary[]
+  imageGroup: string | null
+  videoGroup: string | null
+  imageModels: readonly string[]
+  videoModels: readonly string[]
+  preparing: 'image' | 'video' | 'all' | null
+  onToggle(): void
+  onClose(): void
+  onSelect(kind: 'image' | 'video', group: string): void
+}) {
+  const imagePresets = availableImageModelPresets(imageModels)
+  const videoPresets = availableVideoModelPresets(videoModels)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const panelRef = useRef<HTMLElement>(null)
+  const onCloseRef = useRef(onClose)
+  useEffect(() => { onCloseRef.current = onClose }, [onClose])
+  useEffect(() => {
+    if (!open) return
+    const focusFrame = window.requestAnimationFrame(() => panelRef.current
+      ?.querySelector<HTMLElement>('select:not(:disabled), button:not(:disabled)')
+      ?.focus())
+    const closeAndRestore = () => {
+      onCloseRef.current()
+      triggerRef.current?.focus()
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      event.preventDefault()
+      closeAndRestore()
+    }
+    const handlePointerDown = (event: PointerEvent) => {
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) onCloseRef.current()
+    }
+    document.addEventListener('keydown', handleKeyDown)
+    document.addEventListener('pointerdown', handlePointerDown)
+    return () => {
+      window.cancelAnimationFrame(focusFrame)
+      document.removeEventListener('keydown', handleKeyDown)
+      document.removeEventListener('pointerdown', handlePointerDown)
+    }
+  }, [open])
+
+  const closeAndRestoreFocus = () => {
+    onClose()
+    triggerRef.current?.focus()
+  }
+  return (
+    <div ref={rootRef} className="canvas-media-config">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="canvas-config-command"
+        aria-label="生成配置"
+        aria-haspopup="dialog"
+        aria-expanded={open}
+        aria-controls="canvas-media-config-panel"
+        title="分别设置生图与视频生成分组"
+        onClick={onToggle}
+      >
+        <SlidersHorizontal size={14} aria-hidden="true" />
+        <span>生成配置</span>
+      </button>
+      {open && (
+        <section ref={panelRef} id="canvas-media-config-panel" className="canvas-media-config-panel" role="dialog" aria-label="画布生成配置">
+          <header>
+            <span><strong>生成配置</strong><small>按能力选择分组</small></span>
+            <button type="button" className="canvas-icon-command" aria-label="关闭生成配置" title="关闭" onClick={closeAndRestoreFocus}><X size={14} /></button>
+          </header>
+          <label className="canvas-media-config-field">
+            <span className="canvas-media-config-label"><ImageIcon size={15} aria-hidden="true" /><span><strong>生图分组</strong><small>{preparing === 'image' || preparing === 'all' ? '正在准备 API Key…' : `${imagePresets.length} 个可用模型`}</small></span></span>
+            <select autoFocus aria-label="生图分组" value={imageGroup ?? ''} disabled={preparing !== null} onChange={(event) => onSelect('image', event.target.value)}>
+              {groups.map((group) => <option key={group.name} value={group.name}>{group.name} · {group.ratio}x</option>)}
+            </select>
+            <small className={imagePresets.length ? 'canvas-media-config-models' : 'canvas-media-config-models is-empty'}>
+              {imagePresets.length ? imagePresets.map((model) => model.label).join(' · ') : '该分组当前没有可用图像模型'}
+            </small>
+          </label>
+          <label className="canvas-media-config-field">
+            <span className="canvas-media-config-label"><Video size={15} aria-hidden="true" /><span><strong>视频分组</strong><small>{preparing === 'video' || preparing === 'all' ? '正在准备 API Key…' : `${videoPresets.length} 个可用模型`}</small></span></span>
+            <select aria-label="视频分组" value={videoGroup ?? ''} disabled={preparing !== null} onChange={(event) => onSelect('video', event.target.value)}>
+              {groups.map((group) => <option key={group.name} value={group.name}>{group.name} · {group.ratio}x</option>)}
+            </select>
+            <small className={videoPresets.length ? 'canvas-media-config-models' : 'canvas-media-config-models is-empty'}>
+              {videoPresets.length ? videoPresets.map((model) => model.label).join(' · ') : '该分组当前没有可用视频模型'}
+            </small>
+          </label>
+        </section>
+      )}
+    </div>
+  )
+}
+
+type MediaPreparationKind = 'image' | 'video' | 'all'
+
+interface PreparedMediaConfiguration {
+  mediaGroups: CanvasMediaGroups
+  imageModels: string[]
+  videoModels: string[]
+  keyCreatedGroups: string[]
+  warnings: string[]
+}
+
+function mediaGroupsSignature(mediaGroups: CanvasMediaGroups): string {
+  return `${mediaGroups.image ?? ''}\u0000${mediaGroups.video ?? ''}`
+}
+
+function preferredMediaGroups(availableGroups: readonly CanvasGroupSummary[]): CanvasMediaGroups {
+  if (availableGroups.length === 0) return {}
+  const image = availableGroups.find((entry) => entry.name === '生图分组')?.name
+    ?? availableGroups.find((entry) => entry.name === 'openai')?.name
+    ?? availableGroups[0].name
+  const video = availableGroups.find((entry) => entry.name.toLowerCase() === 'grok')?.name
+    ?? availableGroups.find((entry) => entry.name.toLowerCase().includes('grok'))?.name
+    ?? image
+  return { image, video }
+}
+
+function ProjectCenter({ projects, loading, error, onCreate, onOpen }: {
+  projects: readonly CanvasStoredProjectSummary[]
+  loading: boolean
+  error: string | null
+  onCreate(name: string): Promise<boolean>
+  onOpen(projectId: string): void
+}) {
+  const [name, setName] = useState('')
+  return (
+    <main className="canvas-project-center">
+      <section className="canvas-project-center-head">
+        <span><strong>星芒画布项目</strong><small>新建时选择工作文件夹，项目素材和生成结果会保存在其中</small></span>
+        <form onSubmit={(event) => { event.preventDefault(); const value = name.trim(); if (value) void onCreate(value).then((created) => { if (created) setName('') }) }}>
+          <input value={name} maxLength={128} placeholder="新项目名称" aria-label="新项目名称" onChange={(event) => setName(event.target.value)} />
+          <button type="submit" disabled={loading || !name.trim()}><Plus size={15} />新建项目</button>
+        </form>
+      </section>
+      <section className="canvas-project-list" aria-label="画布项目列表">
+        {error && <p className="canvas-project-error" role="alert">{error}</p>}
+        {loading && <p className="canvas-project-empty">正在读取项目…</p>}
+        {!loading && projects.length === 0 && <div className="canvas-project-empty"><FolderOpen size={30} /><strong>还没有画布项目</strong><span>输入名称创建第一个项目，节点和内容会自动保存。</span></div>}
+        {projects.map((project) => (
+          <button type="button" key={project.id} className="canvas-project-card" onClick={() => onOpen(project.id)}>
+            <span className="canvas-project-card-icon"><FolderOpen size={18} /></span>
+            <span><strong>{project.name}</strong><small>{project.nodeCount} 个节点 · {project.workspaceConfigured ? `工作文件夹：${project.workspaceName ?? '已选择'}` : '旧项目默认素材库'} · {new Date(project.updatedAt).toLocaleString()}</small></span>
+          </button>
+        ))}
+      </section>
+    </main>
+  )
+}
+
 export function App() {
-  const [nodes, setNodes, onNodesChange] = useNodesState<CanvasNode>([])
-  const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([])
+  const documentController = useCanvasDocument(editorNodeToCanvasNode)
+  const {
+    nodes,
+    edges,
+    viewport,
+    mediaGroups,
+    setNodes,
+    setViewport: setDocumentViewport,
+    execute,
+    undo,
+    redo,
+    onNodesChange,
+    onEdgesChange,
+    canUndo,
+    canRedo,
+  } = documentController
   const [running, setRunning] = useState(false)
+  const [projects, setProjects] = useState<CanvasStoredProjectSummary[]>([])
+  const [projectLoading, setProjectLoading] = useState(Boolean(window.xingmangCanvasHost))
+  const [activeProject, setActiveProject] = useState<CanvasStoredProjectSummary | null>(null)
+  const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle')
+  const autoSaveRevisionRef = useRef(0)
+  const projectHydrationRef = useRef(false)
+  const projectSaveChainRef = useRef<Promise<void>>(Promise.resolve())
   const [banner, setBanner] = useState<string | null>(null)
   // 双模式(M2):简单模式=固定表单的单节点工作流,默认给小白;画布模式
   // 给要自己编排管线的用户。两种模式共享同一套 executors。
   const [viewMode, setViewMode] = useState<'simple' | 'canvas'>('canvas')
-  const [selectedGroup, setSelectedGroup] = useState<string | null>(null)
   const [groups, setGroups] = useState<CanvasGroupSummary[]>([])
-  const [availableModels, setAvailableModels] = useState<string[]>([])
+  const [imageModels, setImageModels] = useState<string[]>([])
+  const [videoModels, setVideoModels] = useState<string[]>([])
+  const [mediaConfigOpen, setMediaConfigOpen] = useState(false)
+  const [preparingMedia, setPreparingMedia] = useState<MediaPreparationKind | null>(null)
   const [assetTrayOpen, setAssetTrayOpen] = useState(false)
   const [assetsLoading, setAssetsLoading] = useState(false)
   const [assetPage, setAssetPage] = useState<CanvasAssetPage>({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })
+  const [assetCatalog, setAssetCatalog] = useState<CanvasAssetSummary[]>([])
   const [userPromptPresets, setUserPromptPresets] = useState<CanvasPromptPreset[]>([])
   const [assetQuery, setAssetQuery] = useState<Required<Pick<CanvasAssetQuery, 'offset' | 'limit' | 'mediaType'>> & Pick<CanvasAssetQuery, 'search'>>({
     offset: 0, limit: 24, mediaType: 'all', search: '',
   })
   const [runInspectorOpen, setRunInspectorOpen] = useState(false)
+  const [resumingTaskIds, setResumingTaskIds] = useState<Set<string>>(() => new Set())
   const [runsLoading, setRunsLoading] = useState(false)
   const [runRecords, setRunRecords] = useState<CanvasRunRecord[]>([])
   const [selectedRunId, setSelectedRunId] = useState<string | null>(null)
   const [runScopeKind, setRunScopeKind] = useState<CanvasRunScope['kind']>('all')
   const [dirtyNodeIds, setDirtyNodeIds] = useState<Set<string>>(() => new Set())
   const [previewAsset, setPreviewAsset] = useState<AssetRef | null>(null)
-  const [history, setHistory] = useState<Array<{ nodes: CanvasNode[]; edges: Edge[] }>>([])
-  const [future, setFuture] = useState<Array<{ nodes: CanvasNode[]; edges: Edge[] }>>([])
+  const [moreActionsOpen, setMoreActionsOpen] = useState(false)
+  const [runMenuOpen, setRunMenuOpen] = useState(false)
+  const [minimapOpen, setMinimapOpen] = useState(false)
+  const [quickInsert, setQuickInsert] = useState<{
+    anchor: { x: number; y: number }
+    flowPosition: XYPosition
+    connection?: PendingCanvasConnection
+    compatibleHandles?: Readonly<Record<string, string>>
+  } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const resumingTaskIdsRef = useRef<Set<string>>(new Set())
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
   const clipboardRef = useRef<CanvasClipboardPayload | null>(null)
   const reactFlowRef = useRef<ReactFlowInstance<CanvasNode, Edge> | null>(null)
+  const moreActionsRef = useRef<HTMLDivElement>(null)
+  const runMenuRef = useRef<HTMLDivElement>(null)
+  const quickInsertTriggerRef = useRef<HTMLButtonElement>(null)
+  const connectionStartRef = useRef<PendingCanvasConnection | null>(null)
+  const moreActionsTriggerRef = useRef<HTMLButtonElement>(null)
+  const runMenuTriggerRef = useRef<HTMLButtonElement>(null)
+  const groupsRef = useRef<CanvasGroupSummary[]>([])
+  const mediaPreparationRevisionRef = useRef(0)
+  const appliedMediaSignatureRef = useRef(mediaGroupsSignature({}))
+  const imageGroup = mediaGroups.image ?? null
+  const videoGroup = mediaGroups.video ?? null
+
+  useEffect(() => {
+    if (!window.xingmangCanvasHost) return
+    setProjectLoading(true)
+    void hostBridge().listProjects().then(setProjects).catch((error) => setBanner(error instanceof Error ? error.message : String(error))).finally(() => setProjectLoading(false))
+  }, [])
 
   const fitCanvas = useCallback(() => {
     window.requestAnimationFrame(() => {
-      void reactFlowRef.current?.fitView({ padding: 0.16, maxZoom: 1 })
+      void reactFlowRef.current?.fitView({ padding: 0.14, minZoom: 0.2, maxZoom: 1, duration: 180 })
     })
   }, [])
 
-  useEffect(() => {
-    let active = true
-    void hostBridge().listGroups()
-      .then(async (groups) => {
-        if (!active || groups.length === 0) return
-        setGroups(groups)
-        const group = groups.find((entry) => entry.name === '生图分组')?.name
-          ?? groups.find((entry) => entry.name === 'openai')?.name
-          ?? groups[0].name
-        const prepared = await hostBridge().prepareGroup(group)
-        if (!active) return
-        setSelectedGroup(group)
-        setAvailableModels(prepared.models)
-        if (prepared.storageWarning) setBanner(prepared.storageWarning)
-      })
-      .catch(() => undefined)
-    return () => { active = false }
+  const fitSelection = useCallback(() => {
+    const selected = nodes.filter((node) => node.selected)
+    if (selected.length === 0) {
+      setBanner('请先选择要聚焦的节点')
+      return
+    }
+    window.requestAnimationFrame(() => {
+      void reactFlowRef.current?.fitView({ nodes: selected, padding: 0.24, minZoom: 0.35, maxZoom: 1.18, duration: 180 })
+    })
+  }, [nodes])
+
+  const restoreCanvasViewport = useCallback((nextViewport: Viewport) => {
+    window.requestAnimationFrame(() => {
+      void reactFlowRef.current?.setViewport(nextViewport, { duration: 0 })
+    })
   }, [])
 
-  const selectGroup = useCallback(async (group: string) => {
-    setBanner('正在准备分组 API Key…')
+  const openStoredProject = useCallback(async (projectId: string) => {
+    setProjectLoading(true)
     try {
-      const prepared = await hostBridge().prepareGroup(group)
-      setSelectedGroup(group)
-      setAvailableModels(prepared.models)
-      setBanner(prepared.keyCreated
+      const opened = await hostBridge().openProject(projectId)
+      const workflow = parseWorkflowFile(opened.content)
+      if (!workflow) throw new Error('项目内容无法读取')
+      const nextDocument = workflowDocument(workflow)
+      projectHydrationRef.current = true
+      execute({ type: 'replace-document', document: nextDocument })
+      setActiveProject(opened.project)
+      setAutoSaveState('saved')
+      restoreCanvasViewport(nextDocument.viewport)
+    } catch (error) { setBanner(error instanceof Error ? error.message : String(error)) }
+    finally { setProjectLoading(false) }
+  }, [execute, restoreCanvasViewport])
+
+  const createStoredProject = useCallback(async (name: string) => {
+    setProjectLoading(true)
+    try {
+      const created = await hostBridge().createProject(name)
+      if (!created) return false
+      setProjects((current) => [created.project, ...current.filter((project) => project.id !== created.project.id)])
+      await openStoredProject(created.project.id)
+      return true
+    } catch (error) { setBanner(error instanceof Error ? error.message : String(error)); return false }
+    finally { setProjectLoading(false) }
+  }, [openStoredProject])
+
+  const prepareMediaConfiguration = useCallback(async (
+    targetOrResolver: CanvasMediaGroups | ((availableGroups: readonly CanvasGroupSummary[]) => CanvasMediaGroups),
+    preparationKind: MediaPreparationKind,
+  ): Promise<PreparedMediaConfiguration | null> => {
+    const requestRevision = mediaPreparationRevisionRef.current + 1
+    mediaPreparationRevisionRef.current = requestRevision
+    setPreparingMedia(preparationKind)
+    try {
+      const availableGroups = groupsRef.current.length > 0
+        ? groupsRef.current
+        : await hostBridge().listGroups()
+      if (requestRevision !== mediaPreparationRevisionRef.current) return null
+      groupsRef.current = [...availableGroups]
+      setGroups([...availableGroups])
+      const target = typeof targetOrResolver === 'function'
+        ? targetOrResolver(availableGroups)
+        : targetOrResolver
+      const requestedGroups = [...new Set([target.image, target.video].filter((group): group is string => Boolean(group)))]
+      for (const group of requestedGroups) {
+        if (!availableGroups.some((entry) => entry.name === group)) throw new Error(`分组「${group}」已不存在，请重新选择`)
+      }
+      const preparedByGroup = new Map<string, Awaited<ReturnType<ReturnType<typeof hostBridge>['prepareGroup']>>>()
+      await Promise.all(requestedGroups.map(async (group) => {
+        preparedByGroup.set(group, await hostBridge().prepareGroup(group))
+      }))
+      if (requestRevision !== mediaPreparationRevisionRef.current) return null
+      const preparedImage = target.image ? preparedByGroup.get(target.image) : undefined
+      const preparedVideo = target.video ? preparedByGroup.get(target.video) : undefined
+      return {
+        mediaGroups: { ...(target.image ? { image: target.image } : {}), ...(target.video ? { video: target.video } : {}) },
+        imageModels: [...(preparedImage?.models ?? [])],
+        videoModels: [...(preparedVideo?.models ?? [])],
+        keyCreatedGroups: requestedGroups.filter((group) => preparedByGroup.get(group)?.keyCreated),
+        warnings: [...new Set(requestedGroups
+          .map((group) => preparedByGroup.get(group)?.storageWarning)
+          .filter((warning): warning is string => Boolean(warning)))],
+      }
+    } finally {
+      if (requestRevision === mediaPreparationRevisionRef.current) setPreparingMedia(null)
+    }
+  }, [])
+
+  const applyPreparedMediaConfiguration = useCallback((prepared: PreparedMediaConfiguration) => {
+    setImageModels(prepared.imageModels)
+    setVideoModels(prepared.videoModels)
+    appliedMediaSignatureRef.current = mediaGroupsSignature(prepared.mediaGroups)
+  }, [])
+
+  useEffect(() => {
+    if (!window.xingmangCanvasHost || !activeProject || imageGroup || videoGroup) return
+    void prepareMediaConfiguration(preferredMediaGroups, 'all').then((prepared) => {
+      if (!prepared || (!prepared.mediaGroups.image && !prepared.mediaGroups.video)) return
+      applyPreparedMediaConfiguration(prepared)
+      execute({ type: 'set-media-groups', mediaGroups: prepared.mediaGroups })
+      if (prepared.warnings.length > 0) setBanner(prepared.warnings.join('；'))
+    }).catch((error) => setBanner(error instanceof Error ? error.message : String(error)))
+    return () => { mediaPreparationRevisionRef.current += 1 }
+  }, [activeProject, applyPreparedMediaConfiguration, execute, imageGroup, prepareMediaConfiguration, videoGroup])
+
+  useEffect(() => {
+    if (!window.xingmangCanvasHost) return
+    const target = { ...(imageGroup ? { image: imageGroup } : {}), ...(videoGroup ? { video: videoGroup } : {}) }
+    const signature = mediaGroupsSignature(target)
+    if (signature === appliedMediaSignatureRef.current) return
+    void prepareMediaConfiguration(target, 'all').then((prepared) => {
+      if (!prepared) return
+      applyPreparedMediaConfiguration(prepared)
+      if (prepared.warnings.length > 0) setBanner(prepared.warnings.join('；'))
+    }).catch((error) => {
+      setImageModels([])
+      setVideoModels([])
+      setBanner(error instanceof Error ? error.message : String(error))
+    })
+  }, [applyPreparedMediaConfiguration, imageGroup, prepareMediaConfiguration, videoGroup])
+
+  const selectMediaGroup = useCallback(async (kind: 'image' | 'video', group: string) => {
+    if (!group) return
+    const otherKind = kind === 'image' ? 'video' : 'image'
+    const previousOtherGroup = mediaGroups[otherKind]
+    setBanner(`正在准备${kind === 'image' ? '生图' : '视频'}分组 API Key…`)
+    try {
+      const prepared = await prepareMediaConfiguration((availableGroups) => ({
+        [kind]: group,
+        ...(previousOtherGroup && availableGroups.some((entry) => entry.name === previousOtherGroup)
+          ? { [otherKind]: previousOtherGroup }
+          : {}),
+      }), kind)
+      if (!prepared) return
+      applyPreparedMediaConfiguration(prepared)
+      execute({ type: 'set-media-groups', mediaGroups: prepared.mediaGroups })
+      const created = prepared.keyCreatedGroups.includes(group)
+      const clearedInvalidGroup = previousOtherGroup && !prepared.mediaGroups[otherKind]
+      setBanner(clearedInvalidGroup
+        ? `已切换到「${group}」；原${otherKind === 'image' ? '生图' : '视频'}分组已失效并清除`
+        : created
         ? `已自动创建「${group}」分组 API Key`
-        : `已切换到「${group}」`)
-      if (prepared.storageWarning) setBanner(`分组已可用；${prepared.storageWarning}`)
+        : `${kind === 'image' ? '生图' : '视频'}已切换到「${group}」`)
+      if (prepared.warnings.length > 0) setBanner(`分组已可用；${prepared.warnings.join('；')}`)
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
-  }, [])
+  }, [applyPreparedMediaConfiguration, execute, mediaGroups, prepareMediaConfiguration])
 
   const patchNodeData = useCallback((nodeId: string, patch: Partial<CanvasNode['data']>) => {
     setNodes((current) => current.map((node) => (
@@ -290,48 +820,53 @@ export function App() {
         queue.push(edge.target)
       }
     }
-    setNodes((current) => markNodeAndDescendantsDirty(current, edges, nodeId, patch))
+    const updated = markNodeAndDescendantsDirty(nodes, edges, nodeId, patch)
+    execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord), mergeKey: `data:${nodeId}` })
+    setNodes(updated)
     setDirtyNodeIds((current) => new Set([...current, ...dirty]))
-  }, [edges, setNodes])
-
-  const remember = useCallback(() => {
-    setHistory((entries) => [...entries.slice(-49), { nodes: structuredClone(nodes), edges: structuredClone(edges) }])
-    setFuture([])
-  }, [nodes, edges])
-
-  const undo = useCallback(() => {
-    const previous = history.at(-1)
-    if (!previous) return
-    setFuture((entries) => [{ nodes: structuredClone(nodes), edges: structuredClone(edges) }, ...entries].slice(0, 50))
-    setNodes(previous.nodes)
-    setEdges(previous.edges)
-    setHistory((entries) => entries.slice(0, -1))
-  }, [history, nodes, edges, setNodes, setEdges])
-
-  const redo = useCallback(() => {
-    const next = future[0]
-    if (!next) return
-    setHistory((entries) => [...entries.slice(-49), { nodes: structuredClone(nodes), edges: structuredClone(edges) }])
-    setNodes(next.nodes)
-    setEdges(next.edges)
-    setFuture((entries) => entries.slice(1))
-  }, [future, nodes, edges, setNodes, setEdges])
+  }, [nodes, edges, execute, setNodes])
 
   const buildExecutors = useCallback(() => (
-    selectedGroup
-      ? createHostExecutors({ group: selectedGroup, host: hostBridge() })
+    window.xingmangCanvasHost
+      ? createHostExecutors({ imageGroup: imageGroup ?? '', videoGroup: videoGroup ?? '', host: hostBridge() })
       : createMockExecutors()
-  ), [selectedGroup])
+  ), [imageGroup, videoGroup])
 
   // 单节点重跑:输入不重新执行上游,直接取画布状态里上游节点的既有产物
   // (文本节点的输出=它的提示词;图像节点的输出=它上次成功的 result)。
   const rerunNode = useCallback(async (nodeId: string) => {
     if (running) return
+    if (preparingMedia) {
+      setBanner('生成配置正在准备，请稍候再运行节点')
+      return
+    }
+    if (resumingTaskIdsRef.current.size > 0) {
+      setBanner('请等待视频任务续查完成后再运行节点')
+      return
+    }
     const target = nodes.find((entry) => entry.id === nodeId)
     if (!target) return
     if (target.disabled || target.type === 'unknown') {
       setBanner('该节点已禁用，不能单独运行')
       return
+    }
+    if (window.xingmangCanvasHost && imageRunNodeKinds.has(target.type ?? '')) {
+      if (!imageGroup || !imageModels.includes(target.data.model)) {
+        setBanner(imageGroup
+          ? `生图分组「${imageGroup}」不提供模型「${target.data.model}」`
+          : '请先在「生成配置」中选择生图分组')
+        setMediaConfigOpen(true)
+        return
+      }
+    }
+    if (window.xingmangCanvasHost && videoRunNodeKinds.has(target.type ?? '')) {
+      if (!videoGroup || !videoModels.includes(target.data.model)) {
+        setBanner(videoGroup
+          ? `视频分组「${videoGroup}」不提供模型「${target.data.model}」`
+          : '请先在「生成配置」中选择视频分组')
+        setMediaConfigOpen(true)
+        return
+      }
     }
     const inputs: NodeInputs = {}
     for (const edge of edges) {
@@ -344,6 +879,14 @@ export function App() {
       if (rerunImageSourceKinds.has(source.type ?? '') && source.data.result?.kind === 'image') {
         inputs.image ??= source.data.result
         inputs.images = [...(inputs.images ?? []), source.data.result]
+      }
+      if (rerunVideoSourceKinds.has(source.type ?? '') && source.data.result?.kind === 'video') {
+        inputs.video ??= source.data.result
+        inputs.videos = [...(inputs.videos ?? []), source.data.result]
+      }
+      if (rerunAudioSourceKinds.has(source.type ?? '') && source.data.result?.kind === 'audio') {
+        inputs.audio ??= source.data.result
+        inputs.audios = [...(inputs.audios ?? []), source.data.result]
       }
     }
     setRunning(true)
@@ -363,7 +906,7 @@ export function App() {
       abortRef.current = null
       setRunning(false)
     }
-  }, [running, nodes, edges, patchNodeData, buildExecutors])
+  }, [running, preparingMedia, nodes, edges, imageGroup, imageModels, videoGroup, videoModels, patchNodeData, buildExecutors])
 
   const downloadNodeAsset = useCallback(async (nodeId: string) => {
     const node = nodes.find((entry) => entry.id === nodeId)
@@ -381,7 +924,13 @@ export function App() {
   const refreshAssets = useCallback(async (query: CanvasAssetQuery = assetQuery) => {
     setAssetsLoading(true)
     try {
-      setAssetPage(await hostBridge().listAssets(query))
+      const page = await hostBridge().listAssets(query)
+      setAssetPage(page)
+      setAssetCatalog((current) => {
+        const merged = new Map(current.map((asset) => [asset.assetId, asset]))
+        for (const asset of page.items) merged.set(asset.assetId, asset)
+        return [...merged.values()]
+      })
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     } finally {
@@ -389,11 +938,51 @@ export function App() {
     }
   }, [assetQuery])
 
+  const renameCanvasAsset = useCallback(async (assetId: string, displayName: string) => {
+    const renamed = await hostBridge().renameAsset({ assetId, displayName })
+    setAssetPage((current) => ({
+      ...current,
+      items: current.items.map((asset) => asset.assetId === renamed.assetId
+        ? { ...asset, displayName: renamed.displayName }
+        : asset),
+    }))
+    setAssetCatalog((current) => current.map((asset) => asset.assetId === renamed.assetId
+      ? { ...asset, displayName: renamed.displayName }
+      : asset))
+    setBanner('素材名称已更新')
+    void refreshAssets()
+  }, [refreshAssets])
+
   useEffect(() => {
-    if (!window.xingmangCanvasHost) return
-    void hostBridge().listAssets({ offset: 0, limit: 24, mediaType: 'all' }).then(setAssetPage).catch(() => undefined)
+    if (!window.xingmangCanvasHost) {
+      void hostBridge().listAssets({ offset: 0, limit: 24, mediaType: 'all' }).then((page) => {
+        setAssetPage(page)
+        setAssetCatalog(page.items)
+      }).catch(() => undefined)
+    }
     void hostBridge().listPromptPresets().then(setUserPromptPresets).catch(() => undefined)
   }, [])
+
+  useEffect(() => {
+    if (!window.xingmangCanvasHost) return
+    let active = true
+    const query = { offset: 0, limit: 24, mediaType: 'all' as const, search: '' }
+    setAssetQuery(query)
+    setAssetPage({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })
+    setAssetCatalog([])
+    if (!activeProject) return () => { active = false }
+    setAssetsLoading(true)
+    void hostBridge().listAssets(query).then((page) => {
+      if (!active) return
+      setAssetPage(page)
+      setAssetCatalog(page.items)
+    }).catch((error) => {
+      if (active) setBanner(error instanceof Error ? error.message : String(error))
+    }).finally(() => {
+      if (active) setAssetsLoading(false)
+    })
+    return () => { active = false }
+  }, [activeProject?.id])
 
   const savePromptPreset = useCallback(async (nodeId: string) => {
     const prompt = nodes.find((node) => node.id === nodeId)?.data.prompt.trim()
@@ -468,6 +1057,7 @@ export function App() {
   }, [selectedRunId, setNodes])
 
   const showAssetTray = useCallback(() => {
+    setRunInspectorOpen(false)
     setAssetTrayOpen(true)
     void refreshAssets()
   }, [refreshAssets])
@@ -502,23 +1092,52 @@ export function App() {
     if (running) return
     const node = nodes.find((entry) => entry.id === nodeId)
     const taskId = node?.data.result?.taskId
-    if (!taskId) return
-    setBanner(`视频任务 ${taskId} 的安全续查通道将在后续版本启用`)
-  }, [running, nodes])
+    if (!taskId || resumingTaskIdsRef.current.has(taskId)) return
+    resumingTaskIdsRef.current.add(taskId)
+    setResumingTaskIds(new Set(resumingTaskIdsRef.current))
+    setNodes((current) => current.map((entry) => (
+      entry.id === nodeId && entry.data.result?.taskId === taskId
+        ? { ...entry, data: { ...entry.data, status: 'running', errorMessage: undefined } }
+        : entry
+    )))
+    setBanner(`正在安全续查视频任务 ${taskId}`)
+    try {
+      const asset = await hostBridge().resumeVideoTask(taskId)
+      setNodes((current) => current.map((entry) => (
+        entry.id === nodeId && entry.data.result?.taskId === taskId
+          ? { ...entry, data: { ...entry.data, status: 'succeeded', result: generatedVideoAssetRef(asset), errorMessage: undefined } }
+          : entry
+      )))
+      setBanner('视频续查完成，产物已保存到本地素材库')
+      void refreshAssets({ ...assetQuery, offset: 0 })
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      setNodes((current) => current.map((entry) => (
+        entry.id === nodeId && entry.data.result?.taskId === taskId
+          ? { ...entry, data: { ...entry.data, status: 'failed', errorMessage } }
+          : entry
+      )))
+      setBanner(errorMessage)
+    } finally {
+      resumingTaskIdsRef.current.delete(taskId)
+      setResumingTaskIds(new Set(resumingTaskIdsRef.current))
+    }
+  }, [running, nodes, setNodes, refreshAssets, assetQuery])
 
   const selectCandidate = useCallback((nodeId: string, candidate: string | WorkflowCandidateRef) => {
     setNodes((current) => selectNodeCandidate(current, nodeId, candidate))
   }, [setNodes])
 
   const adoptCandidate = useCallback((nodeId: string, candidate: string | WorkflowCandidateRef) => {
-    remember()
     const candidateId = typeof candidate === 'string' ? candidate : candidate.candidateId
-    setNodes((current) => adoptNodeCandidate(
-      typeof candidate === 'string' ? current : selectNodeCandidate(current, nodeId, candidate),
+    const updated = adoptNodeCandidate(
+      typeof candidate === 'string' ? nodes : selectNodeCandidate(nodes, nodeId, candidate),
       edges,
       nodeId,
       candidateId,
-    ))
+    )
+    execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
+    setNodes(updated)
     const descendants = new Set<string>()
     const queue = [nodeId]
     while (queue.length > 0) {
@@ -531,10 +1150,15 @@ export function App() {
     }
     setDirtyNodeIds((current) => new Set([...current].filter((id) => id !== nodeId).concat([...descendants])))
     setBanner('已采纳候选；下游节点等待重新运行')
-  }, [edges, remember, setNodes])
+  }, [nodes, edges, execute, setNodes])
 
-  const bindAssetToNode = useCallback((nodeId: string, asset: CanvasGeneratedAsset) => {
-    remember()
+  const bindAssetToNode = useCallback((nodeId: string, asset: CanvasAssetSummary) => {
+    const target = nodes.find((node) => node.id === nodeId)
+    const expectedMediaType = target?.type === 'audio-input' ? 'audio' : target?.type === 'video-input' ? 'video' : 'image'
+    if (!target || asset.mediaType !== expectedMediaType) {
+      setBanner(`该节点只接受${expectedMediaType === 'audio' ? '音频' : expectedMediaType === 'video' ? '视频' : '图片'}素材`)
+      return
+    }
     const descendants = new Set<string>()
     const queue = [nodeId]
     while (queue.length > 0) {
@@ -545,34 +1169,59 @@ export function App() {
         queue.push(edge.target)
       }
     }
-    setNodes((current) => current.map((node) => {
-      if (node.id === nodeId && node.type === 'image-input') {
-        return { ...node, data: { ...node.data, result: generatedAssetRef(asset), status: 'succeeded', dirty: false, errorMessage: undefined } }
+    const updated: CanvasNode[] = nodes.map((node): CanvasNode => {
+      if (node.id === nodeId) {
+        const dimensions = mediaAssetNodeDimensions(asset)
+        return {
+          ...node,
+          width: dimensions.width,
+          height: dimensions.height,
+          style: { width: dimensions.width, height: dimensions.height },
+          data: { ...node.data, result: mediaAssetRef(asset), status: 'succeeded', dirty: false, errorMessage: undefined },
+        }
       }
       return descendants.has(node.id) ? { ...node, data: { ...node.data, dirty: true } } : node
-    }))
+    })
+    execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
+    setNodes(updated)
     setDirtyNodeIds((current) => new Set([...current].filter((id) => id !== nodeId).concat([...descendants])))
-    setBanner('图片素材已就绪；下游节点等待重新运行')
-  }, [edges, remember, setNodes])
+    setBanner(`${asset.mediaType === 'audio' ? '音频' : asset.mediaType === 'video' ? '视频' : '图片'}素材已就绪；下游节点等待重新运行`)
+  }, [nodes, edges, execute, setNodes])
 
-  const createAssetNode = useCallback((asset: CanvasGeneratedAsset, position?: XYPosition) => {
-    remember()
-    const definition = builtinNodeRegistry.require('image-input')
-    setNodes((current) => [...current, toCanvasNode({
-      id: nextNodeId(), kind: 'image-input', definitionVersion: definition.version,
-      position: position ?? { x: 140 + Math.random() * 180, y: 120 + Math.random() * 160 },
-      width: definition.dimensions.width,
-      height: definition.dimensions.height,
-      data: { prompt: '', model: '', status: 'succeeded', result: generatedAssetRef(asset) },
-    })])
-    setBanner('图片已导入到画布')
-  }, [remember, setNodes])
+  const createAssetNode = useCallback((asset: CanvasAssetSummary, position?: XYPosition) => {
+    const kind = assetInputNodeKind(asset)
+    const definition = builtinNodeRegistry.require(kind)
+    const dimensions = mediaAssetNodeDimensions(asset)
+    const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
+    const preferredCenter = bounds && reactFlowRef.current
+      ? reactFlowRef.current.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+      : { x: 420, y: 300 }
+    const resolvedPosition = position ?? findAvailableCanvasPosition(nodes, preferredCenter, dimensions)
+    const canvasNode = toCanvasNode({
+      id: nextNodeId(), kind, definitionVersion: definition.version,
+      position: resolvedPosition,
+      width: dimensions.width,
+      height: dimensions.height,
+      data: { prompt: '', model: '', status: 'succeeded', result: mediaAssetRef(asset) },
+    })
+    execute({ type: 'add-nodes', nodes: [canvasNodeDocumentRecord(canvasNode)] })
+    if (!position) {
+      window.requestAnimationFrame(() => {
+        void reactFlowRef.current?.setCenter(
+          resolvedPosition.x + dimensions.width / 2,
+          resolvedPosition.y + dimensions.height / 2,
+          { zoom: Math.min(viewport.zoom, 1), duration: 180 },
+        )
+      })
+    }
+    setBanner(asset.mediaType === 'video' ? '视频已添加到画布' : asset.mediaType === 'audio' ? '音频已添加到画布' : '图片已导入到画布')
+  }, [execute, nodes, viewport.zoom])
 
   const pickAssetForNode = useCallback(async (nodeId: string) => {
     try {
       const asset = await hostBridge().pickAsset()
       if (!asset) return
-      bindAssetToNode(nodeId, asset)
+      bindAssetToNode(nodeId, importedAssetSummary(asset))
       void refreshAssets({ ...assetQuery, offset: 0 })
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
@@ -582,7 +1231,7 @@ export function App() {
   const importAssetForNode = useCallback(async (nodeId: string, file: File) => {
     try {
       const asset = await hostBridge().importAssetFile(file)
-      bindAssetToNode(nodeId, asset)
+      bindAssetToNode(nodeId, importedAssetSummary(asset))
       void refreshAssets({ ...assetQuery, offset: 0 })
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
@@ -592,7 +1241,7 @@ export function App() {
   const importAssetToCanvas = useCallback(async (file: File, position: XYPosition) => {
     try {
       const asset = await hostBridge().importAssetFile(file)
-      createAssetNode(asset, position)
+      createAssetNode(importedAssetSummary(asset), position)
       void refreshAssets({ ...assetQuery, offset: 0 })
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
@@ -607,7 +1256,7 @@ export function App() {
       const position = bounds && reactFlowRef.current
         ? reactFlowRef.current.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
         : undefined
-      createAssetNode(asset, position)
+      createAssetNode(importedAssetSummary(asset), position)
       void refreshAssets({ ...assetQuery, offset: 0 })
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
@@ -620,6 +1269,7 @@ export function App() {
       onModelChange: (nodeId, model) => markDirtyFrom(nodeId, { model }),
       onQualityChange: (nodeId, quality) => markDirtyFrom(nodeId, { quality }),
       onSizeChange: (nodeId, size) => markDirtyFrom(nodeId, { size }),
+      onSecondsChange: (nodeId, seconds) => markDirtyFrom(nodeId, { seconds }),
       onSettingsChange: (nodeId, patch) => {
         const node = nodes.find((entry) => entry.id === nodeId)
         markDirtyFrom(nodeId, { settings: { ...node?.data.settings, ...patch } })
@@ -639,14 +1289,40 @@ export function App() {
       onPickAsset: (nodeId) => void pickAssetForNode(nodeId),
       onImportAssetFile: (nodeId, file) => void importAssetForNode(nodeId, file),
       onPreviewAsset: setPreviewAsset,
+      onMediaMetadata: (nodeId, assetId, width, height) => {
+        if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return
+        const target = nodes.find((node) => node.id === nodeId)
+        if (target?.data.result?.assetId !== assetId || !['image', 'video'].includes(target.data.result.kind)) return
+        const result = { ...target.data.result, width, height }
+        const resizeNode = ['image-input', 'video-input'].includes(target.type ?? '')
+        const dimensions = resizeNode
+          ? mediaAssetNodeDimensions(result)
+          : mediaResultNodeDimensions(target.type ?? '', result, target.width ?? 304, target.height ?? 360, target.data.size)
+        if (target.data.result.width === width && target.data.result.height === height
+          && (!dimensions || (target.width === dimensions.width && target.height === dimensions.height))) return
+        const updated = nodes.map((node) => node.id === nodeId
+          ? {
+              ...node,
+              ...(dimensions ? {
+                width: dimensions.width,
+                height: dimensions.height,
+                style: { ...node.style, width: dimensions.width, height: dimensions.height },
+              } : {}),
+              data: { ...node.data, result },
+            }
+          : node)
+        // Metadata is discovered by the media element after import. Persist it
+        // so reopening the project does not fall back to a generic 16:9 frame.
+        execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord), mergeKey: `media-metadata:${nodeId}` })
+        setNodes(updated)
+      },
     })
-  }, [nodes, markDirtyFrom, savePromptPreset, rerunNode, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
+  }, [nodes, execute, markDirtyFrom, savePromptPreset, rerunNode, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
 
-  const addNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}) => {
+  const createNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}): CanvasNode | null => {
     const kind = type as NodeKind
     const definition = builtinNodeRegistry.resolve(type)
-    if (!definition || kind === 'unknown') return
-    remember()
+    if (!definition || kind === 'unknown') return null
     const node: WorkflowNode = {
       id: nextNodeId(),
       kind,
@@ -654,24 +1330,69 @@ export function App() {
       position: position ?? { x: 120 + Math.random() * 240, y: 120 + Math.random() * 160 },
       width: definition.dimensions.width,
       height: definition.dimensions.height,
-      data: workflowNodeData(type, { ...imageOperationDefaults(type), ...config }),
+      data: workflowNodeData(type, { ...imageOperationDefaults(type, imageModels, videoModels), ...config }),
     }
-    setNodes((current) => [...current, toCanvasNode(node)])
+    return toCanvasNode(node)
+  }
+
+  const addNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}) => {
+    const node = createNode(type, position, config)
+    if (!node) return
+    execute({ type: 'add-nodes', nodes: [canvasNodeDocumentRecord(node)] })
+  }
+
+  const addConnectedNode = (
+    type: string,
+    position: XYPosition | undefined,
+    pending: PendingCanvasConnection,
+    insertedHandleId: string,
+  ) => {
+    const node = createNode(type, position)
+    if (!node) return
+    const connection = connectionForInsertedNode(pending, node.id, insertedHandleId)
+    const prospectiveTypes = new Map<string, string>(nodes.map((entry) => [entry.id, entry.type ?? 'unknown']))
+    prospectiveTypes.set(node.id, type)
+    if (!isValidWorkflowConnection(connection, {
+      nodeKindOf: (nodeId) => prospectiveTypes.get(nodeId) ?? null,
+      edges,
+    })) {
+      setBanner('当前端口已无法连接，请重新拖动连线')
+      return
+    }
+    execute({
+      type: 'add-nodes',
+      nodes: [canvasNodeDocumentRecord(node)],
+      edges: [{
+        id: nextNodeId(),
+        source: connection.source,
+        sourceHandle: connection.sourceHandle ?? '',
+        target: connection.target,
+        targetHandle: connection.targetHandle ?? '',
+      }],
+    })
+    setBanner(`已创建并连接「${builtinNodeRegistry.require(type).title}」`)
   }
 
   const onConnect = useCallback((connection: Connection) => {
-    remember()
-    setEdges((current) => addEdge(connection, current))
-  }, [remember, setEdges])
+    if (!connection.source || !connection.target) return
+    execute({
+      type: 'connect',
+      edge: {
+        id: nextNodeId(),
+        source: connection.source,
+        sourceHandle: connection.sourceHandle ?? '',
+        target: connection.target,
+        targetHandle: connection.targetHandle ?? '',
+      },
+    })
+  }, [execute])
 
   const onCanvasNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
-    if (changes.some((change) => change.type === 'remove')) remember()
     onNodesChange(changes)
-  }, [onNodesChange, remember])
+  }, [onNodesChange])
 
   const autoLayout = useCallback(() => {
     if (nodes.length === 0) return
-    remember()
     const laidOut = autoLayoutCanvasNodes(
       nodes.map((node) => ({
         id: node.id, type: node.type ?? 'unknown', definitionVersion: node.definitionVersion,
@@ -682,13 +1403,12 @@ export function App() {
       edges.map(toWorkflowEdge),
     )
     const positions = new Map(laidOut.map((node) => [node.id, node.position]))
-    setNodes((current) => current.map((node) => ({ ...node, position: positions.get(node.id) ?? node.position })))
-  }, [nodes, edges, remember, setNodes])
+    execute({ type: 'move-nodes', positions: Object.fromEntries(positions) })
+  }, [nodes, edges, execute])
 
   const loadTemplate = useCallback((templateId: string) => {
     const template = builtinCanvasTemplates.find((entry) => entry.id === templateId)
     if (!template) return
-    remember()
     try {
       const instance = placeTemplateInstance(instantiateTemplate(template, {
         availableNodeTypes: new Set(builtinNodeRegistry.list().map((definition) => definition.type)),
@@ -704,17 +1424,20 @@ export function App() {
           position: node.position,
           width: definition.dimensions.width,
           height: definition.dimensions.height,
-          data: workflowNodeData(node.type, { ...imageOperationDefaults(node.type), ...node.config }),
+          data: workflowNodeData(node.type, { ...imageOperationDefaults(node.type, imageModels, videoModels), ...node.config }),
         })
       })
-      setNodes((current) => [...current.map((node) => ({ ...node, selected: false })), ...insertedNodes.map((node) => ({ ...node, selected: true }))])
-      setEdges((current) => [...current.map((edge) => ({ ...edge, selected: false })), ...instance.edges.map((edge) => ({ ...edge, selected: true }))])
+      execute({
+        type: 'add-nodes',
+        nodes: insertedNodes.map(canvasNodeDocumentRecord),
+        edges: instance.edges.map((edge) => ({ ...edge })),
+      })
       setBanner(`已插入模板「${template.name}」`)
       fitCanvas()
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
-  }, [remember, nodes, setNodes, setEdges, fitCanvas])
+  }, [nodes, execute, fitCanvas, imageModels, videoModels])
 
   const addAssetNode = useCallback((assetId: string, position?: { x: number; y: number }) => {
     const asset = assetPage.items.find((entry) => entry.assetId === assetId)
@@ -748,15 +1471,12 @@ export function App() {
   const pasteSelection = useCallback(() => {
     const clipboard = clipboardRef.current
     if (!clipboard || clipboard.nodes.length === 0) return
-    remember()
     const pasted = pasteCanvasClipboard(clipboard, {
       offset: { x: 32, y: 32 },
       createNodeId: () => nextNodeId(),
       createEdgeId: () => nextNodeId(),
     })
-    setNodes((current) => [
-      ...current.map((node) => ({ ...node, selected: false })),
-      ...pasted.nodes.map((node) => toCanvasNode({
+    const pastedNodes = pasted.nodes.map((node) => toCanvasNode({
         id: node.id,
         kind: node.type as NodeKind,
         definitionVersion: node.definitionVersion,
@@ -768,10 +1488,9 @@ export function App() {
         ...(node.locked ? { locked: true } : {}),
         ...(node.disabled ? { disabled: true } : {}),
         ...(node.unknownKind ? { unknownKind: node.unknownKind } : {}),
-      })),
-    ])
-    setEdges((current) => [...current.map((edge) => ({ ...edge, selected: false })), ...pasted.edges])
-  }, [remember, setNodes, setEdges])
+      }))
+    execute({ type: 'add-nodes', nodes: pastedNodes.map(canvasNodeDocumentRecord), edges: pasted.edges })
+  }, [execute])
 
   const groupSelection = useCallback(() => {
     const selected = new Set(nodes.filter((node) => node.selected && node.type !== 'group').map((node) => node.id))
@@ -789,8 +1508,7 @@ export function App() {
     }))
     const grouped = groupCanvasNodes(editorNodes, selected, { groupId: nextNodeId(), title: '创作分组' })
     if (!grouped) return
-    remember()
-    setNodes(grouped.map((node) => toCanvasNode({
+    const updated = grouped.map((node) => toCanvasNode({
       id: node.id,
       kind: node.type as NodeKind,
       definitionVersion: node.definitionVersion,
@@ -803,8 +1521,9 @@ export function App() {
       ...(node.height ? { height: node.height } : {}),
       ...(node.disabled ? { disabled: true } : {}),
       ...(node.unknownKind ? { unknownKind: node.unknownKind } : {}),
-    })))
-  }, [nodes, remember, setNodes])
+    }))
+    execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
+  }, [nodes, execute])
 
   const ungroupSelection = useCallback(() => {
     const group = nodes.find((node) => node.selected && node.type === 'group')
@@ -822,8 +1541,7 @@ export function App() {
       ...(node.measured?.height ? { height: node.measured.height } : {}),
     })), group.id)
     if (!ungrouped) return
-    remember()
-    setNodes(ungrouped.map((node) => toCanvasNode({
+    const updated = ungrouped.map((node) => toCanvasNode({
       id: node.id,
       kind: node.type as NodeKind,
       definitionVersion: node.definitionVersion,
@@ -834,8 +1552,9 @@ export function App() {
       ...(node.height ? { height: node.height } : {}),
       ...(node.disabled ? { disabled: true } : {}),
       ...(node.unknownKind ? { unknownKind: node.unknownKind } : {}),
-    })))
-  }, [nodes, remember, setNodes])
+    }))
+    execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
+  }, [nodes, execute])
 
   const isValidConnection = useCallback((connection: Connection | Edge) => (
     isValidWorkflowConnection(connection as Connection, {
@@ -847,7 +1566,73 @@ export function App() {
     })
   ), [nodes, edges])
 
+  const openQuickInsertAt = useCallback((client: { x: number; y: number }, connection?: PendingCanvasConnection) => {
+    const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
+    const instance = reactFlowRef.current
+    if (!bounds || !instance) return
+    let compatibleHandles: Record<string, string> | undefined
+    if (connection) {
+      const graph = {
+        nodeKindOf: (nodeId: string) => nodes.find((entry) => entry.id === nodeId)?.type ?? null,
+        edges,
+      }
+      compatibleHandles = Object.fromEntries(builtinNodeRegistry.list().flatMap((definition) => {
+        const handleId = compatibleInsertionHandle(definition.type, connection, graph)
+        return handleId ? [[definition.type, handleId]] : []
+      }))
+      if (Object.keys(compatibleHandles).length === 0) {
+        setBanner('没有可连接到该端口的节点')
+        return
+      }
+    }
+    setRunMenuOpen(false)
+    setMoreActionsOpen(false)
+    setMediaConfigOpen(false)
+    setQuickInsert({
+      anchor: {
+        x: Math.max(12, Math.min(bounds.width - 372, client.x - bounds.left - 180)),
+        y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)),
+      },
+      flowPosition: instance.screenToFlowPosition(client),
+      ...(connection ? { connection, compatibleHandles } : {}),
+    })
+  }, [edges, nodes])
+
+  const onConnectStart = useCallback((_event: MouseEvent | TouchEvent, params: OnConnectStartParams) => {
+    connectionStartRef.current = params.nodeId && params.handleId && (params.handleType === 'source' || params.handleType === 'target')
+      ? { nodeId: params.nodeId, handleId: params.handleId, handleType: params.handleType }
+      : null
+  }, [])
+
+  const onConnectEnd = useCallback((event: MouseEvent | TouchEvent, state: FinalConnectionState) => {
+    const pending = connectionStartRef.current
+    connectionStartRef.current = null
+    if (!pending || state.isValid === true || state.toHandle) return
+    const point = connectionEventPoint(event)
+    if (point) openQuickInsertAt(point, pending)
+  }, [openQuickInsertAt])
+
   const selectedNodeIds = nodes.filter((node) => node.selected).map((node) => node.id)
+  const selectedRunnableCount = nodes.filter((node) => node.selected && isCanvasRunNode(node)).length
+  const runScopeLabel = runScopeKind === 'all'
+    ? '运行全部'
+    : runScopeKind === 'dirty'
+      ? `运行变更${dirtyNodeIds.size ? ` (${dirtyNodeIds.size})` : ''}`
+      : runScopeKind === 'selection'
+        ? `运行选中${selectedRunnableCount ? ` (${selectedRunnableCount})` : ''}`
+        : '运行到此'
+  const runScopeOptions: ReadonlyArray<{
+    kind: CanvasRunScope['kind']
+    label: string
+    description: string
+    disabled: boolean
+  }> = [
+    { kind: 'all', label: '运行全部', description: '执行当前工作流中的全部可运行节点', disabled: nodes.length === 0 },
+    { kind: 'dirty', label: `仅运行变更 (${dirtyNodeIds.size})`, description: '重新执行输入或结果发生变化的链路', disabled: dirtyNodeIds.size === 0 },
+    { kind: 'selection', label: `运行选中链路 (${selectedRunnableCount})`, description: '执行选中节点及其上游依赖', disabled: selectedRunnableCount === 0 },
+    { kind: 'to-node', label: '运行到选中节点', description: '需要且只能选择一个可运行节点', disabled: selectedRunnableCount !== 1 },
+  ]
+  const activeRunOption = runScopeOptions.find((option) => option.kind === runScopeKind) ?? runScopeOptions[0]
 
   const currentRunScope = useCallback((): CanvasRunScope => {
     const runnableIds = new Set(nodes.filter(isCanvasRunNode).map((node) => node.id))
@@ -869,14 +1654,35 @@ export function App() {
 
   const run = async () => {
     if (running) return
+    if (preparingMedia) {
+      setBanner('生成配置正在准备，请稍候再运行工作流')
+      return
+    }
+    if (resumingTaskIdsRef.current.size > 0) {
+      setBanner('请等待视频任务续查完成后再运行工作流')
+      return
+    }
     setRunning(true)
     setBanner(null)
-    if (selectedGroup && window.xingmangCanvasHost) {
+    if (window.xingmangCanvasHost) {
       try {
-        const graph = toCanvasRunGraph(nodes, edges, selectedGroup)
+        const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
         const scope = currentRunScope()
+        const configurationErrors = canvasMediaConfigurationErrors(graph, scope, {
+          imageGroup: imageGroup ?? undefined,
+          videoGroup: videoGroup ?? undefined,
+          imageModels,
+          videoModels,
+        })
+        if (configurationErrors.length > 0) {
+          setRunning(false)
+          setBanner(`${configurationErrors.join('；')}。请检查生成配置或节点模型`)
+          setMediaConfigOpen(true)
+          return
+        }
         const started = await hostBridge().startRun({ graph, scope })
         activeRunRef.current = { ...started, scope }
+        setAssetTrayOpen(false)
         setRunInspectorOpen(true)
         setBanner('工作流已交由安全运行服务')
         // 缓存命中的工作流可能在 startRun IPC 返回前已发出终态事件。
@@ -915,10 +1721,56 @@ export function App() {
   }
 
   const workflowSnapshot = (): WorkflowFile => ({
-    ...createEmptyWorkflow('画布工作流'),
+    ...createEmptyWorkflow(activeProject?.name ?? '画布工作流'),
+    mediaGroups: { ...mediaGroups },
     nodes: nodes.map(toWorkflowNode),
     edges: edges.map(toWorkflowEdge),
+    viewport: { ...viewport },
   })
+
+  const queueProjectSave = useCallback((project: CanvasStoredProjectSummary, content: string, revision: number) => {
+    const operation = projectSaveChainRef.current.then(async () => {
+      const saved = await hostBridge().saveProject(project.id, content)
+      if (autoSaveRevisionRef.current !== revision) return
+      setActiveProject(saved)
+      setProjects((current) => [saved, ...current.filter((entry) => entry.id !== saved.id)])
+      setAutoSaveState('saved')
+    })
+    projectSaveChainRef.current = operation.catch(() => undefined)
+    return operation
+  }, [])
+
+  const returnToProjectCenter = useCallback(async () => {
+    if (!activeProject) return
+    const revision = autoSaveRevisionRef.current + 1
+    autoSaveRevisionRef.current = revision
+    setAutoSaveState('saving')
+    try {
+      await queueProjectSave(activeProject, serializeWorkflow(workflowSnapshot()), revision)
+      setActiveProject(null)
+    } catch (error) {
+      setAutoSaveState('failed')
+      setBanner(error instanceof Error ? `自动保存失败：${error.message}` : `自动保存失败：${String(error)}`)
+    }
+  }, [activeProject, nodes, edges, viewport, mediaGroups, queueProjectSave])
+
+  const prepareWorkflowDocument = async (workflow: WorkflowFile): Promise<{
+    document: CanvasDocumentState
+    warnings: string[]
+  } | null> => {
+    setBanner('正在准备项目生成配置…')
+    const prepared = await prepareMediaConfiguration((availableGroups) => {
+      const preferred = preferredMediaGroups(availableGroups)
+      return {
+        image: workflow.mediaGroups?.image ?? imageGroup ?? preferred.image,
+        video: workflow.mediaGroups?.video ?? videoGroup ?? preferred.video,
+      }
+    }, 'all')
+    if (!prepared) return null
+    applyPreparedMediaConfiguration(prepared)
+    const normalizedWorkflow = { ...workflow, mediaGroups: prepared.mediaGroups }
+    return { document: workflowDocument(normalizedWorkflow), warnings: prepared.warnings }
+  }
 
   const save = async () => {
     const workflow = workflowSnapshot()
@@ -951,53 +1803,42 @@ export function App() {
       const result = await hostBridge().importProject(preview.previewId)
       const workflow = parseWorkflowFile(result.content)
       if (!workflow) throw new Error('导入项目中的工作流无法读取')
-      remember()
-      setNodes(workflow.nodes.map(toCanvasNode))
-      setEdges(workflow.edges.map((edge) => ({ ...edge })))
+      const prepared = await prepareWorkflowDocument(workflow)
+      if (!prepared) return
+      execute({ type: 'replace-document', document: prepared.document })
+      restoreCanvasViewport(prepared.document.viewport)
       void refreshAssets()
-      setBanner(`已导入项目和 ${result.importedAssetCount} 个本地素材${result.warnings.length ? `；${result.warnings.join('；')}` : ''}`)
-      fitCanvas()
+      const warnings = [...result.warnings, ...prepared.warnings]
+      setBanner(`已导入项目和 ${result.importedAssetCount} 个本地素材${warnings.length ? `；${warnings.join('；')}` : ''}`)
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
   }
 
   const load = async () => {
-    const picked = await hostBridge().pickFile()
-    if (!picked) return
-    const project = parseXingCanvasProject(picked.content)
-    const workflow = project?.workflow ?? parseWorkflowFile(picked.content)
-    if (!workflow) {
-      setBanner('无法读取该文件:不是有效的星芒工作流')
-      return
+    try {
+      const picked = await hostBridge().pickFile()
+      if (!picked) return
+      const project = parseXingCanvasProject(picked.content)
+      const workflow = project?.workflow ?? parseWorkflowFile(picked.content)
+      if (!workflow) throw new Error('无法读取该文件：不是有效的星芒工作流')
+      const prepared = await prepareWorkflowDocument(workflow)
+      if (!prepared) return
+      execute({ type: 'replace-document', document: prepared.document })
+      restoreCanvasViewport(prepared.document.viewport)
+      const warnings = [...(project?.warnings ?? []), ...prepared.warnings]
+      setBanner(warnings.length
+        ? `已打开「${workflow.name}」；${warnings.join('；')}`
+        : `已打开「${workflow.name}」`)
+    } catch (error) {
+      setBanner(error instanceof Error ? error.message : String(error))
     }
-    remember()
-    setNodes(workflow.nodes.map(toCanvasNode))
-    setEdges(workflow.edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      sourceHandle: edge.sourceHandle,
-      target: edge.target,
-      targetHandle: edge.targetHandle,
-    })))
-    setBanner(project?.warnings.length
-      ? `已打开「${workflow.name}」；${project.warnings.join('；')}`
-      : `已打开「${workflow.name}」`)
-    fitCanvas()
   }
 
   // 「展开到画布」:把简单模式的一次输入物化成节点链,替换当前画布内容
   // (简单模式是入口形态,此时画布通常为空;后续可加"合并而非替换"选项)。
   const expandToCanvas = (workflow: WorkflowFile) => {
-    remember()
-    setNodes(workflow.nodes.map(toCanvasNode))
-    setEdges(workflow.edges.map((edge) => ({
-      id: edge.id,
-      source: edge.source,
-      sourceHandle: edge.sourceHandle,
-      target: edge.target,
-      targetHandle: edge.targetHandle,
-    })))
+    execute({ type: 'replace-document', document: workflowDocument(workflow) })
     setViewMode('canvas')
     setBanner('已从简单模式展开为工作流,可继续编排')
     fitCanvas()
@@ -1013,6 +1854,23 @@ export function App() {
       else if (shortcut === 'open') { event.preventDefault(); void load() }
       else if (shortcut === 'run') { event.preventDefault(); void run() }
       else if (shortcut === 'layout') { event.preventDefault(); autoLayout() }
+      else if (shortcut === 'quick-insert') {
+        event.preventDefault()
+        if (quickInsert) {
+          setQuickInsert(null)
+          return
+        }
+        const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
+        if (!bounds || !reactFlowRef.current) return
+        setMediaConfigOpen(false)
+        setMoreActionsOpen(false)
+        setRunMenuOpen(false)
+        const client = { x: bounds.left + bounds.width / 2, y: bounds.top + Math.min(bounds.height * 0.38, 320) }
+        setQuickInsert({
+          anchor: { x: Math.max(12, Math.min(bounds.width - 372, client.x - bounds.left - 180)), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) },
+          flowPosition: reactFlowRef.current.screenToFlowPosition(client),
+        })
+      }
       else if (shortcut === 'copy') { event.preventDefault(); copySelection() }
       else if (shortcut === 'paste') { event.preventDefault(); pasteSelection() }
       else if (shortcut === 'duplicate') { event.preventDefault(); copySelection(); pasteSelection() }
@@ -1022,17 +1880,116 @@ export function App() {
         event.preventDefault()
         setNodes((current) => current.map((node) => ({ ...node, selected: true })))
       } else if (shortcut === 'delete') {
-        const selected = new Set(nodes.filter((node) => node.selected).map((node) => node.id))
-        if (!selected.size) return
+        const selectedNodes = nodes.filter((node) => node.selected).map((node) => node.id)
+        const selectedEdges = edges.filter((edge) => edge.selected).map((edge) => edge.id)
+        if (!selectedNodes.length && !selectedEdges.length) return
         event.preventDefault()
-        remember()
-        setNodes((current) => current.filter((node) => !selected.has(node.id)))
-        setEdges((current) => current.filter((edge) => !selected.has(edge.source) && !selected.has(edge.target)))
+        execute({ type: 'delete-elements', nodeIds: selectedNodes, edgeIds: selectedEdges })
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [undo, redo, save, load, run, autoLayout, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, remember, setNodes, setEdges])
+  }, [undo, redo, save, load, run, autoLayout, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert])
+
+  const serverBacked = Boolean(window.xingmangCanvasHost)
+  const mediaConnectionLabel = preparingMedia
+    ? '正在准备生成配置…'
+    : `图片 · ${imageGroup ?? '未配置'} / 视频 · ${videoGroup ?? '未配置'}`
+  const toggleMediaConfiguration = () => {
+    setMoreActionsOpen(false)
+    setRunMenuOpen(false)
+    setQuickInsert(null)
+    setMediaConfigOpen((open) => !open)
+  }
+
+  useEffect(() => {
+    if (!moreActionsOpen && !runMenuOpen) return
+    const handlePointerDown = (event: PointerEvent) => {
+      if (!(event.target instanceof Node)) return
+      if (moreActionsOpen && !moreActionsRef.current?.contains(event.target)) setMoreActionsOpen(false)
+      if (runMenuOpen && !runMenuRef.current?.contains(event.target)) setRunMenuOpen(false)
+    }
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        if (runMenuOpen) {
+          setRunMenuOpen(false)
+          runMenuTriggerRef.current?.focus()
+        }
+        if (moreActionsOpen) {
+          setMoreActionsOpen(false)
+          moreActionsTriggerRef.current?.focus()
+        }
+        return
+      }
+      if (!runMenuOpen || !['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return
+      const items = [...(runMenuRef.current?.querySelectorAll<HTMLButtonElement>('.canvas-run-menu button:not(:disabled)') ?? [])]
+      if (items.length === 0) return
+      event.preventDefault()
+      const current = items.indexOf(document.activeElement as HTMLButtonElement)
+      const next = event.key === 'Home' ? 0
+        : event.key === 'End' ? items.length - 1
+          : event.key === 'ArrowDown' ? (current + 1 + items.length) % items.length
+            : (current - 1 + items.length) % items.length
+      items[next]?.focus()
+    }
+    document.addEventListener('pointerdown', handlePointerDown)
+    document.addEventListener('keydown', handleKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown)
+      document.removeEventListener('keydown', handleKeyDown)
+    }
+  }, [moreActionsOpen, runMenuOpen])
+
+  useEffect(() => {
+    if (!runMenuOpen) return
+    const frame = window.requestAnimationFrame(() => {
+      runMenuRef.current?.querySelector<HTMLButtonElement>('.canvas-run-menu button[aria-checked="true"]:not(:disabled), .canvas-run-menu button:not(:disabled)')?.focus()
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [runMenuOpen])
+
+  useEffect(() => {
+    if (!window.xingmangCanvasHost || !activeProject) return
+    if (projectHydrationRef.current) {
+      projectHydrationRef.current = false
+      return
+    }
+    const revision = autoSaveRevisionRef.current + 1
+    autoSaveRevisionRef.current = revision
+    setAutoSaveState('saving')
+    const timeout = window.setTimeout(() => {
+      const content = serializeWorkflow(workflowSnapshot())
+      void queueProjectSave(activeProject, content, revision).catch((error) => {
+        if (autoSaveRevisionRef.current !== revision) return
+        setAutoSaveState('failed')
+        setBanner(error instanceof Error ? `自动保存失败：${error.message}` : `自动保存失败：${String(error)}`)
+      })
+    }, 800)
+    return () => window.clearTimeout(timeout)
+  }, [activeProject?.id, nodes, edges, viewport, mediaGroups, queueProjectSave])
+
+  useEffect(() => {
+    if (!window.xingmangCanvasHost || !activeProject) return
+    const flush = () => {
+      const revision = autoSaveRevisionRef.current + 1
+      autoSaveRevisionRef.current = revision
+      void queueProjectSave(activeProject, serializeWorkflow(workflowSnapshot()), revision).catch(() => undefined)
+    }
+    window.addEventListener('beforeunload', flush)
+    return () => window.removeEventListener('beforeunload', flush)
+  }, [activeProject, nodes, edges, viewport, mediaGroups, queueProjectSave])
+
+  if (window.xingmangCanvasHost && !activeProject) {
+    return (
+      <ProjectCenter
+        projects={projects}
+        loading={projectLoading}
+        error={banner}
+        onCreate={createStoredProject}
+        onOpen={(id) => void openStoredProject(id)}
+      />
+    )
+  }
 
   if (viewMode === 'simple') {
     return (
@@ -1040,23 +1997,31 @@ export function App() {
         <header className="canvas-toolbar">
           <strong>星芒 AI 生成</strong>
           <div className="canvas-toolbar-group">
-            <button type="button" onClick={() => setViewMode('canvas')}>画布模式</button>
+            <button type="button" onClick={() => { setMediaConfigOpen(false); setViewMode('canvas') }}>画布模式</button>
           </div>
-          {groups.length > 0 && (
-            <select
-              className="canvas-group-select"
-              value={selectedGroup ?? ''}
-              aria-label="生成分组"
-              onChange={(event) => void selectGroup(event.target.value)}
-            >
-              {groups.map((group) => <option key={group.name} value={group.name}>{group.name} · {group.ratio}x</option>)}
-            </select>
-          )}
-          <span className="canvas-mode">{selectedGroup ? `已连接 ${selectedGroup}` : '演示模式'}</span>
+          <MediaConfiguration
+            open={mediaConfigOpen}
+            groups={groups}
+            imageGroup={imageGroup}
+            videoGroup={videoGroup}
+            imageModels={imageModels}
+            videoModels={videoModels}
+            preparing={preparingMedia}
+            onToggle={toggleMediaConfiguration}
+            onClose={() => setMediaConfigOpen(false)}
+            onSelect={(kind, group) => void selectMediaGroup(kind, group)}
+          />
+          <span className="canvas-mode">{mediaConnectionLabel}</span>
+          {banner && <span className="canvas-banner" role="status" aria-live="polite">{banner}</span>}
         </header>
         <SimpleMode
           executors={buildExecutors()}
-          connected={selectedGroup !== null}
+          connected={serverBacked}
+          imageGroup={imageGroup}
+          videoGroup={videoGroup}
+          imageModels={imageModels}
+          videoModels={videoModels}
+          preparingMedia={preparingMedia !== null}
           onExpandToCanvas={expandToCanvas}
         />
         <ModelSuggestions />
@@ -1066,44 +2031,85 @@ export function App() {
 
   return (
     <div className="canvas-app">
-      <header className="canvas-toolbar">
-        <strong>星芒无限画布</strong>
-        <div className="canvas-toolbar-group">
-          <button type="button" onClick={() => setViewMode('simple')}>简单模式</button>
+      <header className="canvas-toolbar canvas-toolbar-editor">
+        <div className="canvas-brand">
+          <button type="button" className="canvas-project-back" title="保存并返回项目中心" onClick={() => void returnToProjectCenter()}><FolderOpen size={15} /></button>
+          <strong>{activeProject?.name ?? '星芒无限画布'}</strong>
+          <button type="button" className="canvas-mode-switch" onClick={() => { setMediaConfigOpen(false); setViewMode('simple') }}>简单模式</button>
         </div>
-        <div className="canvas-toolbar-group">
-          <button type="button" onClick={() => addNode('prompt')}>+ 提示词</button>
-          <button type="button" onClick={() => addNode('image-generate')}>+ 生图</button>
-          <button type="button" onClick={() => addNode('video-generate')}>+ 视频</button>
+        <div className="canvas-toolbar-group canvas-toolbar-center">
+          <button type="button" className="canvas-icon-command" title="撤销" aria-label="撤销" onClick={undo} disabled={!canUndo}><Undo2 size={15} /></button>
+          <button type="button" className="canvas-icon-command" title="重做" aria-label="重做" onClick={redo} disabled={!canRedo}><Redo2 size={15} /></button>
+          <button type="button" className="canvas-icon-command" title="自动布局" aria-label="自动布局" onClick={autoLayout} disabled={!nodes.length}><LayoutGrid size={15} /></button>
+          <button type="button" className="canvas-icon-command" title="适配全部内容" aria-label="适配全部内容" onClick={fitCanvas} disabled={!nodes.length}><Crosshair size={15} /></button>
         </div>
-        <div className="canvas-toolbar-group">
-          <button type="button" className="canvas-icon-command" title="撤销" aria-label="撤销" onClick={undo} disabled={!history.length}><Undo2 size={15} /></button>
-          <button type="button" className="canvas-icon-command" title="重做" aria-label="重做" onClick={redo} disabled={!future.length}><Redo2 size={15} /></button>
-          <button type="button" onClick={autoLayout} disabled={!nodes.length}>自动布局</button>
-          <button type="button" title="将选中节点收进分组" onClick={groupSelection}>分组</button>
-          <button type="button" onClick={() => loadTemplate(builtinCanvasTemplates[0].id)}>快速模板</button>
-          <button type="button" onClick={showAssetTray}>资产</button>
-          <button type="button" onClick={() => { setRunInspectorOpen(true); void refreshRuns() }}>运行历史</button>
-          <button type="button" onClick={() => void load()}>打开</button>
-          <button type="button" onClick={() => void save()}>保存</button>
-          <button type="button" onClick={() => void importProject()}>导入项目</button>
-          <button type="button" onClick={() => void exportProject()}>导出项目</button>
+        <div className="canvas-toolbar-group canvas-toolbar-actions">
+          <button
+            ref={quickInsertTriggerRef}
+            type="button"
+            className="canvas-icon-command canvas-quick-command"
+            title="快速创建 (Ctrl+K)"
+            aria-label="快速创建"
+            aria-haspopup="dialog"
+            aria-expanded={quickInsert !== null}
+            data-quick-insert-trigger="true"
+            onClick={() => {
+              if (quickInsert) {
+                setQuickInsert(null)
+                return
+              }
+              const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
+              if (!bounds || !reactFlowRef.current) return
+              setMediaConfigOpen(false)
+              setRunMenuOpen(false)
+              setMoreActionsOpen(false)
+              const client = { x: bounds.left + bounds.width / 2, y: bounds.top + Math.min(bounds.height * 0.38, 320) }
+              setQuickInsert({ anchor: { x: Math.max(12, bounds.width / 2 - 180), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) }, flowPosition: reactFlowRef.current.screenToFlowPosition(client) })
+            }}
+          ><Plus size={16} /></button>
+          <button type="button" className="canvas-icon-command canvas-history-command" title="打开运行历史" aria-label="运行历史" onClick={() => { setAssetTrayOpen(false); setRunInspectorOpen(true); void refreshRuns() }}><History size={15} /></button>
+          <MediaConfiguration
+            open={mediaConfigOpen}
+            groups={groups}
+            imageGroup={imageGroup}
+            videoGroup={videoGroup}
+            imageModels={imageModels}
+            videoModels={videoModels}
+            preparing={preparingMedia}
+            onToggle={toggleMediaConfiguration}
+            onClose={() => setMediaConfigOpen(false)}
+            onSelect={(kind, group) => void selectMediaGroup(kind, group)}
+          />
+          <div ref={moreActionsRef} className="canvas-more-actions">
+            <button ref={moreActionsTriggerRef} type="button" className="canvas-icon-command" title="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded={moreActionsOpen} onClick={() => { setMediaConfigOpen(false); setRunMenuOpen(false); setQuickInsert(null); setMoreActionsOpen((open) => !open) }}><MoreHorizontal size={16} /></button>
+            {moreActionsOpen && (
+              <div className="canvas-more-menu">
+                <button type="button" onClick={() => { setMoreActionsOpen(false); groupSelection() }}>将选中节点分组</button>
+                <button type="button" onClick={() => { setMoreActionsOpen(false); loadTemplate(builtinCanvasTemplates[0].id) }}><Sparkles size={14} />插入快速模板</button>
+                <button type="button" onClick={() => { setMoreActionsOpen(false); showAssetTray() }}><ImageIcon size={14} />打开素材库</button>
+                <button type="button" onClick={() => { setMoreActionsOpen(false); setAssetTrayOpen(false); setRunInspectorOpen(true); void refreshRuns() }}><History size={14} />打开运行历史</button>
+                <span className="canvas-more-divider" />
+                <button type="button" onClick={() => { setMoreActionsOpen(false); void load() }}>打开工作流</button>
+                <button type="button" onClick={() => { setMoreActionsOpen(false); void save() }}>保存工作流</button>
+                <button type="button" onClick={() => { setMoreActionsOpen(false); void importProject() }}>导入项目包</button>
+                <button type="button" onClick={() => { setMoreActionsOpen(false); void exportProject() }}>导出项目包</button>
+              </div>
+            )}
+          </div>
           {running
             ? <button type="button" className="canvas-run" onClick={cancel}>取消</button>
-            : <button type="button" className="canvas-run" onClick={() => void run()} disabled={nodes.length === 0}>运行工作流</button>}
+            : <div ref={runMenuRef} className="canvas-run-split">
+                <button type="button" className="canvas-run canvas-run-main" onClick={() => void run()} disabled={preparingMedia !== null || nodes.length === 0 || resumingTaskIds.size > 0 || activeRunOption.disabled}><Play size={14} aria-hidden="true" />{runScopeLabel}</button>
+                <button ref={runMenuTriggerRef} type="button" className="canvas-run canvas-run-menu-toggle" title="选择运行范围" aria-label="选择运行范围" aria-haspopup="menu" aria-expanded={runMenuOpen} onClick={() => { setMoreActionsOpen(false); setMediaConfigOpen(false); setQuickInsert(null); setRunMenuOpen((open) => !open) }}><ChevronDown size={14} /></button>
+                {runMenuOpen && <div className="canvas-run-menu" role="menu" aria-label="运行范围">
+                  {runScopeOptions.map((option) => (
+                    <button key={option.kind} type="button" role="menuitemradio" aria-checked={runScopeKind === option.kind} disabled={option.disabled} onClick={() => { setRunScopeKind(option.kind); setRunMenuOpen(false); runMenuTriggerRef.current?.focus() }}>
+                      <span><strong>{option.label}</strong><small>{option.description}</small></span>
+                    </button>
+                  ))}
+                </div>}
+              </div>}
         </div>
-        {groups.length > 0 && (
-          <select
-            className="canvas-group-select"
-            value={selectedGroup ?? ''}
-            aria-label="生成分组"
-            onChange={(event) => void selectGroup(event.target.value)}
-          >
-            {groups.map((group) => <option key={group.name} value={group.name}>{group.name} · {group.ratio}x</option>)}
-          </select>
-        )}
-        <span className="canvas-mode">{selectedGroup ? `已连接 ${selectedGroup}` : '演示模式'}</span>
-        {banner && <span className="canvas-banner" role="status" aria-live="polite">{banner}</span>}
       </header>
       <div className="canvas-workspace">
       <NodeLibrary
@@ -1117,7 +2123,23 @@ export function App() {
         assets={assetPage}
         userPromptPresets={userPromptPresets}
       />
-      <div className="canvas-flow">
+      <div
+        className={`canvas-flow${assetTrayOpen || runInspectorOpen ? ' has-right-panel' : ''}`}
+        onDoubleClick={(event) => {
+          if (!(event.target instanceof Element) || !event.target.classList.contains('react-flow__pane')) return
+          const bounds = event.currentTarget.getBoundingClientRect()
+          if (!reactFlowRef.current) return
+          setQuickInsert({
+            anchor: {
+              x: Math.max(12, Math.min(bounds.width - 372, event.clientX - bounds.left)),
+              y: Math.max(12, Math.min(bounds.height - 430, event.clientY - bounds.top)),
+            },
+            flowPosition: reactFlowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+          })
+        }}
+      >
+        <CanvasModelAvailabilityProvider connected={serverBacked} imageModels={imageModels} videoModels={videoModels}>
+        <CanvasUpstreamReferencesProvider nodes={nodes} edges={edges} assets={assetCatalog}>
         <ReactFlow
           nodes={nodes}
           edges={edges}
@@ -1125,14 +2147,25 @@ export function App() {
           onNodesChange={onCanvasNodesChange}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
+          onConnectStart={onConnectStart}
+          onConnectEnd={onConnectEnd}
           isValidConnection={isValidConnection}
+          deleteKeyCode={null}
           fitView
+          minZoom={0.15}
+          fitViewOptions={{ padding: 0.14, minZoom: 0.2, maxZoom: 1 }}
           proOptions={{ hideAttribution: false }}
           onInit={(instance) => { reactFlowRef.current = instance }}
+          onMoveEnd={(_, nextViewport) => setDocumentViewport(nextViewport)}
           selectionOnDrag
           selectionMode={SelectionMode.Partial}
           panOnDrag={[1, 2]}
           panOnScroll
+          onPaneClick={() => { setQuickInsert(null); setRunMenuOpen(false); setMoreActionsOpen(false) }}
+          onPaneContextMenu={(event) => {
+            event.preventDefault()
+            openQuickInsertAt({ x: event.clientX, y: event.clientY })
+          }}
           onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }}
           onDrop={(event) => {
             event.preventDefault()
@@ -1153,9 +2186,49 @@ export function App() {
           }}
         >
           <Background />
-          <MiniMap pannable zoomable />
+          {minimapOpen && <MiniMap pannable zoomable />}
           <Controls />
         </ReactFlow>
+        </CanvasUpstreamReferencesProvider>
+        </CanvasModelAvailabilityProvider>
+        {nodes.length === 0 && !quickInsert && <div className="canvas-empty-state">
+          <button type="button" className="is-primary" onClick={() => loadTemplate(builtinCanvasTemplates[0].id)}><Sparkles size={16} />从模板开始</button>
+          <button type="button" onClick={() => addNode('image-generate', { x: 120, y: 120 })}><Plus size={16} />新建生成节点</button>
+          <button type="button" onClick={() => void load()}>打开项目</button>
+        </div>}
+        <QuickInsert
+          open={quickInsert !== null}
+          anchor={quickInsert?.anchor ?? { x: 12, y: 12 }}
+          hasNodes={nodes.length > 0}
+          hasSelection={selectedNodeIds.length > 0}
+          allowedNodeTypes={quickInsert?.compatibleHandles ? Object.keys(quickInsert.compatibleHandles) : undefined}
+          onAddNode={(type) => {
+            const connection = quickInsert?.connection
+            const handleId = quickInsert?.compatibleHandles?.[type]
+            if (connection && handleId) addConnectedNode(type, quickInsert?.flowPosition, connection, handleId)
+            else addNode(type, quickInsert?.flowPosition)
+          }}
+          onLoadTemplate={loadTemplate}
+          onCommand={(command: QuickInsertCommand) => {
+            if (command === 'fit-all') fitCanvas()
+            else if (command === 'fit-selection') fitSelection()
+            else showAssetTray()
+          }}
+          onClose={() => setQuickInsert(null)}
+        />
+        {banner && <div className="canvas-toast" role="status" aria-live="polite"><span>{banner}</span><button type="button" aria-label="关闭提示" onClick={() => setBanner(null)}><X size={13} /></button></div>}
+        <div className="canvas-statusbar" aria-label="画布状态">
+          <span>{selectedNodeIds.length ? `已选 ${selectedNodeIds.length}` : `${nodes.length} 个节点`}</span>
+          {dirtyNodeIds.size > 0 && <span>{dirtyNodeIds.size} 个待更新</span>}
+          <span>{Math.round(viewport.zoom * 100)}%</span>
+          <span className="canvas-status-media">{mediaConnectionLabel}</span>
+          {activeProject && <span className={`canvas-autosave is-${autoSaveState}`}>{autoSaveState === 'saving' ? '保存中…' : autoSaveState === 'failed' ? '保存失败' : '已自动保存'}</span>}
+        </div>
+        <div className="canvas-navigation-tools" aria-label="画布导航">
+          <button type="button" title="适配全部内容" aria-label="适配全部内容" onClick={fitCanvas}><Crosshair size={15} /></button>
+          <button type="button" title="聚焦选中节点" aria-label="聚焦选中节点" onClick={fitSelection} disabled={!selectedNodeIds.length}><Focus size={15} /></button>
+          <button type="button" title={minimapOpen ? '隐藏缩略图' : '显示缩略图'} aria-label={minimapOpen ? '隐藏缩略图' : '显示缩略图'} aria-pressed={minimapOpen} onClick={() => setMinimapOpen((open) => !open)}><MapIcon size={15} /></button>
+        </div>
       </div>
       {assetTrayOpen && (
         <AssetTray
@@ -1167,6 +2240,7 @@ export function App() {
           onImport={() => void pickAssetToCanvas()}
           onAdd={addAssetNode}
           onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
+          onRename={renameCanvasAsset}
           onClose={() => setAssetTrayOpen(false)}
         />
       )}
@@ -1184,6 +2258,7 @@ export function App() {
         onSelectRun={setSelectedRunId}
         onSelectCandidate={selectCandidate}
         onAdopt={adoptCandidate}
+        onPreviewAsset={(asset) => setPreviewAsset({ ...asset })}
         onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
         onClose={() => setRunInspectorOpen(false)}
       />

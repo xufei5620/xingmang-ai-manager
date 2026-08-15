@@ -20,13 +20,17 @@ import {
 } from 'lucide-react'
 import { DialogBackdrop } from '../components/Dialog'
 import { errorMessage } from '../error-message'
+import { codexRuntimeSetupMessage, nodeRuntimeSupported } from '../onboarding-runtime'
 import { platformPresentation } from '../platform-presentation'
 import { managementProviderIds } from '../provider-registry'
 import type {
   CodexDesktopInstallProgress,
   CodexDesktopInstallResult,
+  NodeRuntimeInstallProgress,
+  NodeRuntimeInstallResult,
   PlatformCapabilities,
   ProviderId,
+  ToolStatus,
   ToolUninstallResult,
 } from '../types'
 
@@ -34,14 +38,11 @@ export const CODEX_DESKTOP_STORE_URI = 'ms-windows-store://pdp/?ProductId=9PLM9X
 
 export type MaintenanceJobState = 'idle' | 'queued' | 'running' | 'success' | 'error'
 
-export interface MaintenanceVersionStatus {
-  installed: boolean
+export interface MaintenanceVersionStatus extends ToolStatus {
   appVersion?: string | null
-  version: string | null
   mirrorVersion?: string | null
   mirrorUpdateAvailable?: boolean | null
   mirrorError?: string | null
-  installDirectory: string | null
   latestVersion?: string | null
   updateAvailable?: boolean | null
   updateSource?: 'npm' | 'native' | 'windows-appx' | 'official-manifest' | 'winget' | null
@@ -64,8 +65,17 @@ export interface MaintenanceCliStatus extends MaintenanceVersionStatus {
 
 export interface MaintenanceSnapshot {
   checkedAt: string
+  runtime: {
+    node: MaintenanceVersionStatus
+    npm: MaintenanceVersionStatus
+  }
   clis: Record<ProviderId, MaintenanceCliStatus>
   codexDesktop: MaintenanceVersionStatus & { running: boolean }
+}
+
+export type MaintenanceRuntimeActionResult = NodeRuntimeInstallResult | {
+  installed: false
+  action: 'external'
 }
 
 export interface MaintenanceProgress {
@@ -76,6 +86,7 @@ export interface MaintenanceProgress {
 
 export interface MaintenancePageApi {
   scan(forceRefresh?: boolean): Promise<MaintenanceSnapshot>
+  installNodeRuntime(): Promise<MaintenanceRuntimeActionResult>
   maintainCli(provider: ProviderId): Promise<void>
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
   checkCli(provider: ProviderId): Promise<MaintenanceCliStatus>
@@ -85,6 +96,7 @@ export interface MaintenancePageApi {
   openCodexDesktopStore(): Promise<void>
   launchCodexDesktop(): Promise<void>
   onProgress?(listener: (progress: MaintenanceProgress) => void): () => void
+  onNodeRuntimeProgress?(listener: (progress: NodeRuntimeInstallProgress) => void): () => void
   onDesktopProgress?(listener: (progress: CodexDesktopInstallProgress) => void): () => void
 }
 
@@ -100,7 +112,8 @@ const providerLabels: Record<ProviderId, string> = {
   grok: 'Grok CLI',
 }
 
-function updateStateLabel(status: MaintenanceVersionStatus): string {
+export function updateStateLabel(status: MaintenanceVersionStatus): string {
+  if (status.detectionFailed) return '检测失败'
   if (!status.installed) return '未安装'
   if (status.updateState === 'available' && status.mirrorUpdateAvailable === false) return '镜像同步中'
   if (status.updateState === 'available') return '可更新'
@@ -115,7 +128,8 @@ function updateStateClass(status: MaintenanceVersionStatus): string {
   return 'is-warn'
 }
 
-function cliMaintenanceAction(status: MaintenanceVersionStatus): 'install' | 'update' | 'check' {
+export function cliMaintenanceAction(status: MaintenanceVersionStatus): 'install' | 'update' | 'check' {
+  if (status.detectionFailed) return 'check'
   if (!status.installed) return 'install'
   return status.updateState === 'available' ? 'update' : 'check'
 }
@@ -138,6 +152,17 @@ export function codexDesktopMaintenanceControl(
   launching: boolean,
 ): CodexDesktopMaintenanceControlState {
   const presentation = platformPresentation(platform)
+  if (status.detectionFailed) {
+    return {
+      action: 'check',
+      disabled: false,
+      loading: false,
+      icon: 'refresh',
+      label: '重新检测',
+      statusClass: 'is-warn',
+      statusLabel: '检测失败',
+    }
+  }
   if (presentation.codexDesktopAction === 'launch') {
     return {
       action: 'launch',
@@ -538,6 +563,8 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
   ))
   const [loading, setLoading] = useState(true)
   const [batchRunning, setBatchRunning] = useState(false)
+  const [runtimeInstalling, setRuntimeInstalling] = useState(false)
+  const [runtimeProgress, setRuntimeProgress] = useState<NodeRuntimeInstallProgress | null>(null)
   const [desktopInstalling, setDesktopInstalling] = useState(false)
   const [desktopLaunching, setDesktopLaunching] = useState(false)
   const [desktopProgress, setDesktopProgress] = useState<CodexDesktopInstallProgress | null>(null)
@@ -578,12 +605,17 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     }))
   }), [api])
 
+  useEffect(() => api.onNodeRuntimeProgress?.((progress) => {
+    setRuntimeProgress(progress)
+    if (progress.phase === 'error') setError(progress.message)
+  }), [api])
+
   useEffect(() => api.onDesktopProgress?.((progress) => {
     setDesktopProgress(progress)
     if (progress.phase === 'error') setError(progress.message)
   }), [api])
 
-  const busy = batchRunning || desktopInstalling || desktopLaunching || checkingTarget !== null || uninstallingTarget !== null
+  const busy = runtimeInstalling || batchRunning || desktopInstalling || desktopLaunching || checkingTarget !== null || uninstallingTarget !== null
   const desktopControl = snapshot
     ? codexDesktopMaintenanceControl(platform, snapshot.codexDesktop, desktopLaunching)
     : null
@@ -600,6 +632,29 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
       else next.add(provider)
       return next
     })
+  }
+
+  const installRuntime = async () => {
+    if (runtimeInstalling) return
+    setRuntimeInstalling(true)
+    setRuntimeProgress({ phase: 'checking', source: null, percent: null, message: '正在复检现有 Node.js 与 npm' })
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await api.installNodeRuntime()
+      if (result.action === 'external') {
+        setNotice('已打开 Node.js 官网，请完成安装后返回重新检测')
+      } else {
+        setNotice(result.action === 'unchanged'
+          ? `已复用现有 Node.js ${result.version ?? ''} 和 npm，无需重复安装`.trim()
+          : `Node.js ${result.version ?? 'LTS'} 已安装，正在刷新环境状态`)
+        await refresh(true, 'preserve')
+      }
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setRuntimeInstalling(false)
+    }
   }
 
   const maintain = async (ids: readonly ProviderId[]) => {
@@ -774,6 +829,9 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     && targetedUninstall.mode === 'manual'
     ? targetedUninstall
     : null
+  const runtimeReady = Boolean(snapshot && nodeRuntimeSupported(snapshot.runtime) && snapshot.runtime.npm.installed)
+  const runtimeMessage = snapshot ? codexRuntimeSetupMessage(snapshot.runtime) : null
+  const runtimeDetectionFailed = Boolean(snapshot?.runtime.node.detectionFailed || snapshot?.runtime.npm.detectionFailed)
 
   return (
     <div className="page workspace-page operations-page" data-page-id="maintenance">
@@ -802,6 +860,72 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
 
       {error && <div className="operation-error" role="alert"><AlertCircle size={16} />{error}</div>}
       {notice && <div className="operation-notice" role="status"><CheckCircle2 size={16} />{notice}</div>}
+
+      <section className="environment-section maintenance-runtime-section" aria-labelledby="maintenance-runtime-title">
+        <div className="section-heading">
+          <div>
+            <h2 id="maintenance-runtime-title">前置环境</h2>
+            <span>安装 CLI 前先复用本机已有的 Node.js 与 npm</span>
+          </div>
+          <span className={`operation-state ${runtimeReady ? 'is-pass' : 'is-warn'}`}>
+            {runtimeDetectionFailed ? '检测失败' : runtimeReady ? '环境可用' : '需要处理'}
+          </span>
+        </div>
+        {loading && !snapshot ? (
+          <div className="operation-loading"><LoaderCircle className="spin" size={18} />正在检测 Node.js 与 npm</div>
+        ) : snapshot ? (
+          <div className="operations-list" role="list">
+            {(['node', 'npm'] as const).map((runtime) => {
+              const status = snapshot.runtime[runtime]
+              const label = runtime === 'node' ? 'Node.js' : 'npm'
+              const usable = runtime === 'node'
+                ? status.installed && !status.tooOld && status.versionStatus !== 'unknown'
+                : status.installed
+              return (
+                <article className="operation-row maintenance-row maintenance-runtime-row" role="listitem" key={runtime}>
+                  <div className="operation-status-icon">
+                    {runtimeInstalling ? <LoaderCircle className="spin" size={17} /> : usable ? <PackageCheck size={17} /> : <AlertCircle size={17} />}
+                  </div>
+                  <div className="operation-row-copy">
+                    <div className="operation-row-title">
+                      <strong>{label}</strong>
+                      <span className={`operation-state ${usable ? 'is-pass' : 'is-warn'}`}>
+                        {status.detectionFailed ? '检测失败' : usable ? '可用' : status.installed ? '需要升级' : '未检测到'}
+                      </span>
+                    </div>
+                    <p>版本 {status.version ?? '未知'}{status.path ? ` · ${status.path}` : ''}</p>
+                    {status.detectionError && <span className="operation-meta job-error">{status.detectionError}</span>}
+                  </div>
+                </article>
+              )
+            })}
+            {runtimeMessage && !runtimeDetectionFailed && <p className="maintenance-runtime-guidance">{runtimeMessage}</p>}
+            {runtimeProgress && runtimeInstalling && (
+              <div className={`node-runtime-progress maintenance-node-progress phase-${runtimeProgress.phase}`} role="status" aria-live="polite">
+                <div><span>{runtimeProgress.message}</span>{runtimeProgress.percent !== null && <strong>{Math.round(runtimeProgress.percent)}%</strong>}</div>
+                <progress max="100" value={runtimeProgress.percent ?? undefined} />
+              </div>
+            )}
+            <div className="maintenance-runtime-actions">
+              <button type="button" className="secondary-button" disabled={busy || loading} onClick={() => void refresh(true, 'preserve')}>
+                <RefreshCw size={15} className={loading ? 'spin' : undefined} />重新检测
+              </button>
+              <button type="button" className="primary-button" disabled={busy || loading || runtimeDetectionFailed} onClick={() => void installRuntime()}>
+                {runtimeInstalling ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}
+                {runtimeInstalling
+                  ? '正在处理'
+                  : platform.nodeRuntimeInstall === 'external'
+                    ? presentation.nodeActionLabel
+                    : runtimeReady
+                      ? '复检并复用'
+                      : snapshot.runtime.node.installed ? '修复 / 升级' : '一键安装'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="operation-empty"><AlertCircle size={20} />未能获取前置环境状态</div>
+        )}
+      </section>
 
       <section className="environment-section maintenance-cli-section" aria-labelledby="maintenance-cli-title">
         <div className="section-heading">
@@ -833,7 +957,11 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
                     />
                   </label>
                   <div className="operation-status-icon">
-                    {active ? <LoaderCircle className="spin" size={17} /> : status.installed ? <PackageCheck size={17} /> : <Download size={17} />}
+                    {active
+                      ? <LoaderCircle className="spin" size={17} />
+                      : status.detectionFailed
+                        ? <AlertCircle size={17} />
+                        : status.installed ? <PackageCheck size={17} /> : <Download size={17} />}
                   </div>
                   <div className="operation-row-copy">
                     <div className="operation-row-title">
@@ -843,7 +971,9 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
                       </span>
                     </div>
                     <p>当前 {status.version ?? '-'} · 最新 {status.latestVersion ?? '未知'}</p>
-                    {status.updateError && <span className="operation-meta job-error">{status.updateError}</span>}
+                    {(status.detectionError || status.updateError) && (
+                      <span className="operation-meta job-error">{status.detectionError ?? status.updateError}</span>
+                    )}
                     {uninstall.guidance && (
                       <span className="operation-meta uninstall-guidance" id={`uninstall-guidance-${provider}`}>
                         {uninstall.guidance}
@@ -863,7 +993,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
                         : action === 'check' ? <RefreshCw size={15} /> : <Download size={15} />}
                       {provider === 'grok' && presentation.grokAction === 'external-guidance'
                         ? presentation.grokActionLabel
-                        : action === 'install' ? '安装' : action === 'update' ? '安装最新版' : '检查更新'}
+                        : action === 'install' ? '安装' : action === 'update' ? '安装最新版' : status.detectionFailed ? '重新检测' : '检查更新'}
                     </button>
                     <button
                       className={`${manualUninstall ? 'secondary-button maintenance-help-button' : 'danger-button'} maintenance-uninstall-button`}
@@ -903,7 +1033,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
               {snapshot && (
                 <span
                   className={`operation-state ${desktopControl?.statusClass ?? updateStateClass(snapshot.codexDesktop)}`}
-                  title={snapshot.codexDesktop.updateError ?? undefined}
+                  title={snapshot.codexDesktop.detectionError ?? snapshot.codexDesktop.updateError ?? undefined}
                 >
                   {desktopControl?.statusLabel ?? updateStateLabel(snapshot.codexDesktop)}
                 </span>
@@ -916,7 +1046,9 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
             {presentation.showWindowsPackages && <span className="operation-meta">
               MSIX 包：当前 {snapshot?.codexDesktop.version ?? '未知'} · 官方最新 {snapshot?.codexDesktop.latestVersion ?? '未知'}
             </span>}
-            {snapshot?.codexDesktop.updateError && <span className="operation-meta job-error">{snapshot.codexDesktop.updateError}</span>}
+            {(snapshot?.codexDesktop.detectionError || snapshot?.codexDesktop.updateError) && (
+              <span className="operation-meta job-error">{snapshot.codexDesktop.detectionError ?? snapshot.codexDesktop.updateError}</span>
+            )}
             {desktopProgress && (
               <div className={`desktop-install-progress phase-${desktopProgress.phase}`} role="status" aria-live="polite">
                 <div>

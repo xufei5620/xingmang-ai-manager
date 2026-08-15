@@ -13,6 +13,7 @@ artifacts/
 output/
 .superpowers/
 coverage/
+test-results/
 .cache/
 .vite/
 .DS_Store

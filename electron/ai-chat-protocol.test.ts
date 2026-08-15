@@ -4,6 +4,7 @@ import {
   AiChatProtocolError,
   buildChatCompletionsRequest,
   buildImageGenerationRequest,
+  buildVideoGenerationRequest,
   getKnownImageModelPresets,
   isImageModel,
   resolveAiModelCapability,
@@ -18,6 +19,9 @@ describe('AI model capabilities', () => {
       'gpt-image-2',
       'gpt-image-2-2026-04-21',
       'jimeng_high_aes_general_v21_L',
+      'grok-imagine-image',
+      'grok-imagine-image-2.0',
+      'grok-imagine-image-quality',
     ]) {
       expect(resolveAiModelCapability(model)).toMatchObject({
         kind: 'image',
@@ -25,6 +29,17 @@ describe('AI model capabilities', () => {
         available: true,
         source: 'preset',
       })
+    }
+  })
+
+  it('recognizes the two verified Grok video models without treating them as chat', () => {
+    for (const model of ['grok-imagine-video', 'grok-imagine-video-1.5']) {
+      expect(resolveAiModelCapability(model)).toMatchObject({
+        kind: 'video', model, available: true, source: 'preset', maximumSeconds: 15,
+      })
+      expect(() => buildChatCompletionsRequest({
+        model, messages: [{ role: 'user', content: '海浪' }],
+      })).toThrowError(expect.objectContaining({ code: 'invalid-model' }))
     }
   })
 
@@ -57,6 +72,18 @@ describe('AI model capabilities', () => {
       'gpt-image-2',
       'gpt-image-1',
       'jimeng_high_aes_general_v21_L',
+    ])
+  })
+
+  it('retains verified video models for the image group only when the server returns them', () => {
+    expect(selectAiChatModelsForGroup('生图分组', [
+      'grok-imagine-video',
+      'gpt-image-2',
+      'grok-imagine-video-1.5',
+    ])).toEqual([
+      'gpt-image-2',
+      'grok-imagine-video-1.5',
+      'grok-imagine-video',
     ])
   })
 
@@ -233,6 +260,44 @@ describe('image generation protocol', () => {
       prompt: 'cat',
       size: '1280x720',
     })).toThrowError(expect.objectContaining({ code: 'invalid-image-size' }))
+  })
+
+  it('omits unsupported size and quality fields and requests inline output for Grok image models', () => {
+    expect(buildImageGenerationRequest({
+      model: 'grok-imagine-image-2.0', prompt: '电影感海岸', size: '1024x1024', quality: 'high',
+    })).toEqual({
+      model: 'grok-imagine-image-2.0', prompt: '电影感海岸', n: 1, response_format: 'b64_json',
+    })
+    expect(resolveAiModelCapability('grok-imagine-image-quality')).toMatchObject({
+      kind: 'image', provider: 'grok-image', supportsEdits: true,
+    })
+  })
+})
+
+describe('video generation protocol', () => {
+  it('builds an exact bounded OpenAI video request', () => {
+    expect(buildVideoGenerationRequest({
+      model: 'grok-imagine-video-1.5', prompt: '海浪拍打礁石', seconds: '15',
+      image: 'data:image/png;base64,aGVsbG8=', width: 1280, height: 720,
+    })).toEqual({
+      model: 'grok-imagine-video-1.5', prompt: '海浪拍打礁石', seconds: '15',
+      image: 'data:image/png;base64,aGVsbG8=', width: 1280, height: 720,
+    })
+  })
+
+  it('rejects invalid models, durations and oversized image inputs before dispatch', () => {
+    expect(() => buildVideoGenerationRequest({ model: 'gpt-4o', prompt: 'p', seconds: '5' }))
+      .toThrowError(expect.objectContaining({ code: 'model-not-video' }))
+    for (const seconds of ['0', '16', '5.5', '05', 'bad']) {
+      expect(() => buildVideoGenerationRequest({ model: 'grok-imagine-video', prompt: 'p', seconds }))
+        .toThrowError(expect.objectContaining({ code: 'invalid-video-seconds' }))
+    }
+    expect(() => buildVideoGenerationRequest({
+      model: 'grok-imagine-video', prompt: 'p', seconds: '5', image: `data:image/png;base64,${'a'.repeat(13 * 1024 * 1024)}`,
+    })).toThrowError(expect.objectContaining({ code: 'input-limit-exceeded' }))
+    expect(() => buildVideoGenerationRequest({
+      model: 'grok-imagine-video', prompt: 'p', seconds: '5', width: 1920, height: 1080,
+    })).toThrowError(expect.objectContaining({ code: 'invalid-parameter' }))
   })
 })
 

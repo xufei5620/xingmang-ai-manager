@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import fs from 'node:fs'
 import path from 'node:path'
 import { StringDecoder } from 'node:string_decoder'
@@ -94,6 +94,8 @@ export interface FindExecutableOptions {
   windowsPackageManagers?: readonly WindowsPackageManager[]
   trustedOnly?: boolean
   machinePaths?: WindowsMachinePaths
+  /** Test seam; production reads HKLM\\SOFTWARE\\Node.js\\InstallPath. */
+  windowsNodeInstallPaths?: readonly string[]
 }
 
 export interface WindowsSystemExecutableDependencies {
@@ -547,6 +549,47 @@ async function isExecutableFile(filePath: string): Promise<boolean> {
   }
 }
 
+export function parseWindowsNodeInstallPath(output: string): string | null {
+  if (!output || Buffer.byteLength(output, 'utf8') > 64 * 1024) return null
+  const value = output.match(/^\s*InstallPath\s+REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/im)?.[1]?.trim()
+  if (!value || value.includes('\0') || /%[^%]+%/.test(value) || !path.win32.isAbsolute(value)) return null
+  return value
+}
+
+function registeredWindowsNodeInstallPaths(machinePaths?: WindowsMachinePaths): string[] {
+  if (process.platform !== 'win32') return []
+  const roots = machinePaths ?? resolveWindowsMachinePaths()
+  const regExecutable = path.win32.join(roots.system32, 'reg.exe')
+  const values: string[] = []
+  for (const view of ['64', '32'] as const) {
+    try {
+      const output = execFileSync(regExecutable, [
+        'query',
+        'HKLM\\SOFTWARE\\Node.js',
+        '/v',
+        'InstallPath',
+        `/reg:${view}`,
+      ], {
+        encoding: 'utf8',
+        env: {
+          SystemRoot: roots.systemRoot,
+          WINDIR: roots.systemRoot,
+          PATH: roots.system32,
+        },
+        windowsHide: true,
+        timeout: 5_000,
+        maxBuffer: 64 * 1024,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      })
+      const installPath = parseWindowsNodeInstallPath(output)
+      if (installPath) values.push(installPath)
+    } catch {
+      // Missing registry views are normal for portable or per-user runtimes.
+    }
+  }
+  return [...new Map(values.map((value) => [path.win32.normalize(value).toLowerCase(), value])).values()]
+}
+
 /**
  * A trusted command must not resolve through a symlink/junction into a
  * user-writable tree. Checking only the textual path is insufficient on
@@ -618,9 +661,20 @@ export async function findExecutable(
     : commandEnvironment(options.env, options.additionalPaths)
   const managers = options.windowsPackageManagers ?? []
   const hasPathSeparator = command.includes('/') || command.includes('\\')
+  const windowsCommandName = path.win32.basename(command, path.win32.extname(command)).toLowerCase()
+  const registeredNodePaths = process.platform === 'win32'
+    && !path.isAbsolute(command)
+    && !hasPathSeparator
+    && (windowsCommandName === 'node' || windowsCommandName === 'npm' || windowsCommandName === 'npx')
+      ? (options.windowsNodeInstallPaths ?? registeredWindowsNodeInstallPaths(options.machinePaths))
+        .filter((directory) => {
+          if (!directory || directory.includes('\0') || !path.win32.isAbsolute(directory)) return false
+          return !options.trustedOnly || isTrustedWindowsMachinePath(directory, options.machinePaths)
+        })
+      : []
   const searchDirectories = path.isAbsolute(command) || hasPathSeparator
     ? ['']
-    : (env.PATH ?? '').split(path.delimiter).filter(Boolean)
+    : [...(env.PATH ?? '').split(path.delimiter).filter(Boolean), ...registeredNodePaths]
   const extension = path.extname(command)
   const extensions = process.platform === 'win32' && !extension
     ? managers.length
@@ -792,7 +846,11 @@ interface CommandArgumentPathReference {
  * load a user-writable script, config, plugin, or response file.
  */
 function windowsCommandArgumentPath(argument: string): CommandArgumentPathReference | null {
-  if (path.win32.isAbsolute(argument)) {
+  const fullyQualified = (value: string) => (
+    /^[A-Za-z]:[\\/]/.test(value)
+    || /^\\\\(?:\?\\|\.\\|[^\\])/.test(value)
+  )
+  if (fullyQualified(argument)) {
     return { value: argument, start: 0, end: argument.length }
   }
 
@@ -816,7 +874,7 @@ function windowsCommandArgumentPath(argument: string): CommandArgumentPathRefere
     end -= 1
   }
   const value = argument.slice(start, end)
-  return path.win32.isAbsolute(value) ? { value, start, end } : null
+  return fullyQualified(value) ? { value, start, end } : null
 }
 
 function replaceCanonicalTrustedPath(

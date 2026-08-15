@@ -6,6 +6,7 @@ function services() {
   const reconcileAssets = vi.fn<(_: number) => Promise<unknown>>(async () => undefined)
   return {
     imageService: { cancelUser: vi.fn(() => 0) },
+    videoService: { cancelUser: vi.fn(() => 0), resumeUser: vi.fn(async () => []) },
     canvasRuns: {
       initializeUser,
       reconcileAssets,
@@ -34,6 +35,7 @@ describe('createCanvasAccountLifecycle', () => {
 
     lifecycle.update(99)
     expect(runtime.imageService.cancelUser).toHaveBeenCalledWith(42)
+    expect(runtime.videoService.cancelUser).toHaveBeenCalledWith(42)
     expect(runtime.canvasRuns.cancelUser).toHaveBeenCalledWith(42)
     await vi.waitFor(() => expect(runtime.canvasRuns.reconcileAssets).toHaveBeenCalledWith(99))
 
@@ -69,6 +71,20 @@ describe('createCanvasAccountLifecycle', () => {
 
     await vi.waitFor(() => expect(runtime.canvasRuns.reconcileAssets).toHaveBeenCalledWith(99))
     expect(runtime.canvasRuns.reconcileAssets).not.toHaveBeenCalledWith(42)
+  })
+
+  it('does not block asset reconciliation while persisted video tasks are still resuming', async () => {
+    let finishResume!: () => void
+    const runtime = services()
+    runtime.videoService.resumeUser.mockImplementation(() => new Promise<never[]>((resolve) => {
+      finishResume = () => resolve([])
+    }))
+    const lifecycle = createCanvasAccountLifecycle()
+    lifecycle.bind(runtime)
+    lifecycle.update(42)
+    await vi.waitFor(() => expect(runtime.canvasRuns.reconcileAssets).toHaveBeenCalledWith(42))
+    expect(runtime.videoService.resumeUser).toHaveBeenCalledWith(42)
+    finishResume()
   })
 
   it('reports initialization failures without rejecting the session transition', async () => {

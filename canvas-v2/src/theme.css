@@ -1,16 +1,16 @@
 :root {
   color-scheme: dark;
   font-synthesis: none;
-  --canvas-bg: #111315;
+  --canvas-bg: #0e1013;
   --canvas-grid: rgba(205, 214, 227, 0.09);
-  --surface-1: #17191d;
-  --surface-2: #1d2025;
-  --surface-3: #24282f;
-  --surface-hover: #2b3038;
-  --surface-input: #121417;
+  --surface-1: #15181d;
+  --surface-2: #1b1f25;
+  --surface-3: #20252d;
+  --surface-hover: #282e37;
+  --surface-input: #111419;
   --surface-media: #0b0d10;
-  --border-subtle: #2d323a;
-  --border-strong: #424954;
+  --border-subtle: rgba(255, 255, 255, 0.09);
+  --border-strong: rgba(255, 255, 255, 0.16);
   --text-primary: #f2f4f7;
   --text-secondary: #adb5c0;
   --text-muted: #858e9a;

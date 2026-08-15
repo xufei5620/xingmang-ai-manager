@@ -2,11 +2,11 @@
 // 的类型,画布层(App.tsx)负责与 @xyflow/react 的 Node/Edge 互相映射。
 // MVP 数据模型最薄化,见 docs/CANVAS-V2-PLAN.md 第 4 节。
 
-export type PortKind = 'text' | 'image' | 'video'
+export type PortKind = 'text' | 'image' | 'video' | 'audio'
 
 export type NodeKind =
   | 'text' | 'image' | 'video'
-  | 'prompt' | 'image-input' | 'video-input'
+  | 'prompt' | 'image-input' | 'video-input' | 'audio-input'
   | 'image-generate' | 'image-edit' | 'video-generate'
   | 'frame-extract' | 'router' | 'gallery' | 'output'
   | 'group' | 'note' | 'unknown'
@@ -14,7 +14,7 @@ export type NodeKind =
 export type NodeStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
 
 export interface AssetRef {
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'audio'
   /** Stable identifier owned by the desktop asset store. */
   assetId?: string
   /** App-local URL derived from assetId; never an absolute filesystem path. */
@@ -47,6 +47,8 @@ export interface WorkflowNodeData {
   quality?: string
   /** 图像尺寸(按模型区分合法值,见 models.ts 预设)。 */
   size?: string
+  /** 视频生成时长，协议要求为 1-15 的整数字符串。 */
+  seconds?: string
   status: NodeStatus
   result?: AssetRef
   /** 面向用户的失败原因(中文),仅 status === 'failed' 时有意义。 */
@@ -98,6 +100,10 @@ export interface WorkflowFile {
   schemaVersion: 1 | 2
   name: string
   viewport?: { x: number; y: number; zoom: number }
+  mediaGroups?: {
+    image?: string
+    video?: string
+  }
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
 }
@@ -110,6 +116,7 @@ export const nodeOutputKind: Record<NodeKind, PortKind> = {
   prompt: 'text',
   'image-input': 'image',
   'video-input': 'video',
+  'audio-input': 'audio',
   'image-generate': 'image',
   'image-edit': 'image',
   'video-generate': 'video',
@@ -132,17 +139,18 @@ export const nodeOutputKind: Record<NodeKind, PortKind> = {
 export const nodeInputKinds: Record<NodeKind, readonly PortKind[]> = {
   text: [],
   image: ['text', 'image'],
-  video: ['text', 'image'],
+  video: ['text', 'image', 'audio'],
   prompt: [],
   'image-input': [],
   'video-input': [],
+  'audio-input': [],
   'image-generate': ['text'],
   'image-edit': ['text', 'image'],
-  'video-generate': ['text', 'image'],
+  'video-generate': ['text', 'image', 'audio'],
   'frame-extract': ['video'],
-  router: ['text', 'image', 'video'],
-  gallery: ['image', 'video'],
-  output: ['text', 'image', 'video'],
+  router: ['text', 'image', 'video', 'audio'],
+  gallery: ['image', 'video', 'audio'],
+  output: ['text', 'image', 'video', 'audio'],
   group: [],
   note: [],
   unknown: [],

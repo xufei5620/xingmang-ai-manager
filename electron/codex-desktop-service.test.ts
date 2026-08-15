@@ -15,13 +15,65 @@ import {
   buildDesktopUpdateStatus,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
+  downloadCodexDesktopPackageFromCandidates,
+  fetchCodexDesktopManifestCandidate,
   fetchCodexDesktopMirrorRelease,
   inspectCodexDesktopPackageFile,
   validateCodexDesktopResourceUrl,
+  type CodexDesktopManifestCandidate,
   type CodexDesktopWindowsProbes,
 } from './codex-desktop-service'
 
 const temporaryDirectories: string[] = []
+
+function testMirrorManifest(
+  version = '26.721.4979.0',
+  contentLength = 744072561,
+  sha256Base64 = '0a/lZGhbNAxLAd6xFNfKeRJZzzJzNErA1E5IYWnqHjM=',
+) {
+  return {
+    schemaVersion: 5,
+    sources: {
+      windows: {
+        updateManifest: {
+          buildVersion: version,
+          storeProductId: '9PLM9XGG6VKS',
+          packageIdentity: 'OpenAI.Codex',
+        },
+        architectures: {
+          x64: {
+            architecture: 'x64',
+            status: 'downloadable',
+            downloadable: true,
+            version,
+            contentLength,
+            catalog: {
+              packageFullName: `OpenAI.Codex_${version}_x64__2p2nqsd0c76g0`,
+              hashAlgorithm: 'SHA256',
+              hash: sha256Base64,
+              contentLength,
+            },
+          },
+        },
+      },
+    },
+  }
+}
+
+function testMirrorCandidate(
+  label: string,
+  packageUrl: string,
+  contentLength: number,
+  sha256Base64: string,
+): CodexDesktopManifestCandidate {
+  const version = '26.721.4979.0'
+  return {
+    source: { kind: 'mirror', label, url: `${new URL(packageUrl).origin}/latest/manifest` },
+    version,
+    release: { version, architecture: 'x64', contentLength, sha256Base64 },
+    packageSource: { label, url: packageUrl },
+  }
+}
 
 function createTestMsix(manifest: string): string {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-inspect-'))
@@ -225,6 +277,79 @@ describe('Codex Desktop update state', () => {
     )
   })
 
+  it('binds a primary manifest redirected to R2 to the R2 package route', async () => {
+    const primaryManifestUrl = 'https://codexapp.agentsmirror.com/latest/manifest'
+    const fallbackManifestUrl = 'https://codexapp-r2.agentsmirror.com/latest/manifest'
+    const redirect = new Response(null, {
+      status: 302,
+      headers: { Location: fallbackManifestUrl },
+    })
+    Object.defineProperty(redirect, 'url', { value: primaryManifestUrl })
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const url = String(value)
+      if (url === primaryManifestUrl) return redirect
+      if (url === fallbackManifestUrl) {
+        const response = new Response(JSON.stringify(testMirrorManifest()), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+        Object.defineProperty(response, 'url', { value: fallbackManifestUrl })
+        return response
+      }
+      throw new Error(`unexpected URL ${url}`)
+    })
+
+    const candidate = await fetchCodexDesktopManifestCandidate(
+      { kind: 'mirror', label: '国内镜像', url: primaryManifestUrl },
+      'x64',
+      fetchMock,
+    )
+
+    expect(candidate.packageSource).toEqual({
+      label: '镜像备用源',
+      url: 'https://codexapp-r2.agentsmirror.com/latest/win-x64',
+    })
+  })
+
+  it('keeps a signed object-storage manifest bound to its originating package route', async () => {
+    const primaryManifestUrl = 'https://codexapp.agentsmirror.com/latest/manifest'
+    const storageUrl = [
+      'https://fgws3-ocloud.ihep.ac.cn/20830-codex/latest/manifest',
+      'X-Amz-Algorithm=AWS4-HMAC-SHA256',
+      'X-Amz-Credential=NGhKOR9f3faa01GTyDTX%2F20260802%2Fauto%2Fs3%2Faws4_request',
+      'X-Amz-Date=20260802T033923Z',
+      'X-Amz-Expires=3600',
+      'X-Amz-SignedHeaders=host',
+      'response-content-disposition=attachment%3B%20filename%3D%22release-manifest.json%22',
+      'response-content-type=application%2Fjson',
+      `X-Amz-Signature=${'c'.repeat(64)}`,
+    ].join('&').replace('&X-Amz-Algorithm', '?X-Amz-Algorithm')
+    const redirect = new Response(null, { status: 302, headers: { Location: storageUrl } })
+    Object.defineProperty(redirect, 'url', { value: primaryManifestUrl })
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const url = String(value)
+      if (url === primaryManifestUrl) return redirect
+      if (url === storageUrl) {
+        const response = new Response(JSON.stringify(testMirrorManifest()), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+        Object.defineProperty(response, 'url', { value: storageUrl })
+        return response
+      }
+      throw new Error(`unexpected URL ${url}`)
+    })
+
+    const candidate = await fetchCodexDesktopManifestCandidate(
+      { kind: 'mirror', label: '国内镜像', url: primaryManifestUrl },
+      'x64',
+      fetchMock,
+    )
+
+    expect(candidate.packageSource).toEqual({
+      label: '国内镜像',
+      url: 'https://codexapp.agentsmirror.com/latest/win-x64',
+    })
+  })
+
   it('accepts only the complete signed IHEP package redirect shape', () => {
     const original = 'https://codexapp.agentsmirror.com/latest/win-x64'
     const valid = [
@@ -347,6 +472,102 @@ describe('Codex Desktop update state', () => {
       expectedSha256Base64: Buffer.alloc(32).toString('base64'),
     }, destination, () => undefined, vi.fn().mockResolvedValue(response)))
       .rejects.toThrow('SHA-256 与镜像清单不一致')
+    expect(fs.existsSync(destination)).toBe(false)
+  })
+
+  it('switches to the next manifest-bound source after a Content-Length mismatch', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-fallback-'))
+    temporaryDirectories.push(directory)
+    const destination = path.join(directory, 'Codex.msix')
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x42)
+    const hash = createHash('sha256').update(bytes).digest('base64')
+    const firstUrl = 'https://mirror-one.example/latest/win-x64'
+    const secondUrl = 'https://mirror-two.example/latest/win-x64'
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const url = String(value)
+      const response = new Response(bytes, {
+        headers: {
+          'Content-Type': 'application/vnd.ms-appx',
+          'Content-Length': String(url === firstUrl ? bytes.byteLength + 1 : bytes.byteLength),
+        },
+      })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+    const attempts: string[] = []
+
+    const result = await downloadCodexDesktopPackageFromCandidates([
+      testMirrorCandidate('主测试源', firstUrl, bytes.byteLength, hash),
+      testMirrorCandidate('备用测试源', secondUrl, bytes.byteLength, hash),
+    ], destination, {
+      fetchImplementation: fetchMock,
+      onAttempt: (candidate) => attempts.push(candidate.packageSource?.label ?? ''),
+    })
+
+    expect(result.candidate.packageSource?.url).toBe(secondUrl)
+    expect(attempts).toEqual(['主测试源', '备用测试源'])
+    expect(fs.statSync(destination).size).toBe(bytes.byteLength)
+  })
+
+  it('switches sources after SHA-256 rejection and removes the rejected package', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-fallback-'))
+    temporaryDirectories.push(directory)
+    const destination = path.join(directory, 'Codex.msix')
+    const rejectedBytes = Buffer.alloc(10 * 1024 * 1024, 0x43)
+    const acceptedBytes = Buffer.alloc(10 * 1024 * 1024, 0x44)
+    const expectedHash = createHash('sha256').update(acceptedBytes).digest('base64')
+    const firstUrl = 'https://mirror-one.example/latest/win-x64'
+    const secondUrl = 'https://mirror-two.example/latest/win-x64'
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const url = String(value)
+      const bytes = url === firstUrl ? rejectedBytes : acceptedBytes
+      const response = new Response(bytes, {
+        headers: {
+          'Content-Type': 'application/vnd.ms-appx',
+          'Content-Length': String(bytes.byteLength),
+        },
+      })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+
+    const result = await downloadCodexDesktopPackageFromCandidates([
+      testMirrorCandidate('主测试源', firstUrl, acceptedBytes.byteLength, expectedHash),
+      testMirrorCandidate('备用测试源', secondUrl, acceptedBytes.byteLength, expectedHash),
+    ], destination, { fetchImplementation: fetchMock })
+
+    expect(result.candidate.packageSource?.url).toBe(secondUrl)
+    expect(createHash('sha256').update(fs.readFileSync(destination)).digest('base64')).toBe(expectedHash)
+  })
+
+  it('leaves no MSIX when every manifest-bound source fails', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-msix-fallback-'))
+    temporaryDirectories.push(directory)
+    const destination = path.join(directory, 'Codex.msix')
+    const bytes = Buffer.alloc(10 * 1024 * 1024, 0x45)
+    const expectedHash = Buffer.alloc(32).toString('base64')
+    const candidates = [
+      testMirrorCandidate('主测试源', 'https://mirror-one.example/latest/win-x64', bytes.byteLength, expectedHash),
+      testMirrorCandidate('备用测试源', 'https://mirror-two.example/latest/win-x64', bytes.byteLength, expectedHash),
+    ]
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const url = String(value)
+      const response = new Response(bytes, {
+        headers: {
+          'Content-Type': 'application/vnd.ms-appx',
+          'Content-Length': String(bytes.byteLength),
+        },
+      })
+      Object.defineProperty(response, 'url', { value: url })
+      return response
+    })
+
+    await expect(downloadCodexDesktopPackageFromCandidates(
+      candidates,
+      destination,
+      { fetchImplementation: fetchMock },
+    )).rejects.toThrow('所有国内镜像均未通过完整校验')
+    expect(fetchMock).toHaveBeenCalledTimes(2)
     expect(fs.existsSync(destination)).toBe(false)
   })
 

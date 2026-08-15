@@ -133,7 +133,7 @@ function readInitialState(userId: string | number): AiChatState {
 
 export function resolveAiChatDisplayMode(model: string): 'chat' | 'image' {
   if (!model.trim()) return 'chat'
-  return resolveAiModelCapability(model).kind
+  return resolveAiModelCapability(model).kind === 'image' ? 'image' : 'chat'
 }
 
 export function buildAiChatRequestMessages(messages: readonly AiChatMessage[]) {

@@ -66,13 +66,13 @@ function readAssetReference(value: unknown, assetIds: Set<string>): void {
   if (value === undefined) return
   if (!isRecord(value)) throw new Error('画布项目资产引用格式错误')
   assertAllowedKeys(value, ['kind', 'assetId', 'localUrl', 'mimeType', 'width', 'height', 'taskId'], '画布项目资产引用')
-  if (value.kind !== 'image' && value.kind !== 'video') throw new Error('画布项目资产类型错误')
+  if (value.kind !== 'image' && value.kind !== 'video' && value.kind !== 'audio') throw new Error('画布项目资产类型错误')
   if (value.assetId !== undefined) {
     if (typeof value.assetId !== 'string' || !assetIdPattern.test(value.assetId)) throw new Error('画布项目资产标识错误')
-    if (value.kind !== 'image') throw new Error('当前项目包仅支持内嵌图片资产')
-    const expectedUrl = `xingmang-asset://image/${value.assetId}`
+    const expectedUrl = `xingmang-asset://${value.kind}/${value.assetId}`
     if (value.localUrl !== undefined && value.localUrl !== expectedUrl) throw new Error('画布项目本地资产地址错误')
-    assetIds.add(value.assetId)
+    // 当前项目包只内嵌图片；视频和音频保留账号隔离的本地资产引用。
+    if (value.kind === 'image') assetIds.add(value.assetId)
   } else if (value.localUrl !== undefined) {
     throw new Error('画布项目本地资产地址缺少标识')
   }
@@ -100,9 +100,9 @@ function validateWorkflowNode(value: unknown, assetIds: Set<string>, nodeIds: Se
   if (!isRecord(value.position) || Object.keys(value.position).some((key) => key !== 'x' && key !== 'y')) throw new Error('画布项目节点位置错误')
   if (![value.position.x, value.position.y].every((entry) => typeof entry === 'number' && Number.isFinite(entry) && Math.abs(entry) <= 10_000_000)) throw new Error('画布项目节点位置错误')
   if (!isRecord(value.data)) throw new Error('画布项目节点数据错误')
-  assertAllowedKeys(value.data, ['prompt', 'model', 'quality', 'size', 'result', 'settings', 'candidateAssetIds'], '画布项目节点数据')
+  assertAllowedKeys(value.data, ['prompt', 'model', 'quality', 'size', 'seconds', 'result', 'settings', 'candidateAssetIds'], '画布项目节点数据')
   if (!safeString(value.data.prompt, 100_000, true) || !safeString(value.data.model, 512, true)) throw new Error('画布项目节点文本错误')
-  for (const entry of [value.data.quality, value.data.size]) {
+  for (const entry of [value.data.quality, value.data.size, value.data.seconds]) {
     if (entry !== undefined && !safeString(entry, 128)) throw new Error('画布项目节点选项错误')
   }
   readAssetReference(value.data.result, assetIds)
@@ -111,7 +111,7 @@ function validateWorkflowNode(value: unknown, assetIds: Set<string>, nodeIds: Se
     if (!Array.isArray(value.data.candidateAssetIds) || value.data.candidateAssetIds.length > 16) throw new Error('画布项目候选资产错误')
     for (const assetId of value.data.candidateAssetIds) {
       if (typeof assetId !== 'string' || !assetIdPattern.test(assetId)) throw new Error('画布项目候选资产错误')
-      assetIds.add(assetId)
+      if (isRecord(value.data.result) && value.data.result.kind === 'image') assetIds.add(assetId)
     }
   }
 }
@@ -125,7 +125,7 @@ export function parseCanvasProjectWorkflow(content: string): { workflow: Record<
     throw new Error('画布项目工作流不是有效 JSON')
   }
   if (!isRecord(raw)) throw new Error('画布项目工作流格式错误')
-  assertAllowedKeys(raw, ['schemaVersion', 'name', 'viewport', 'nodes', 'edges'], '画布项目工作流')
+  assertAllowedKeys(raw, ['schemaVersion', 'name', 'viewport', 'mediaGroups', 'nodes', 'edges'], '画布项目工作流')
   if (raw.schemaVersion !== 2 || !safeString(raw.name, 256) || !Array.isArray(raw.nodes) || !Array.isArray(raw.edges)) throw new Error('画布项目工作流格式错误')
   if (raw.nodes.length > 5_000 || raw.edges.length > 20_000) throw new Error('画布项目图规模超出安全上限')
   if (raw.viewport !== undefined) {
@@ -137,6 +137,13 @@ export function parseCanvasProjectWorkflow(content: string): { workflow: Record<
       || typeof y !== 'number' || !Number.isFinite(y) || Math.abs(y) > 10_000_000
       || typeof zoom !== 'number' || !Number.isFinite(zoom) || zoom < 0.01 || zoom > 8) {
       throw new Error('画布项目视口格式错误')
+    }
+  }
+  if (raw.mediaGroups !== undefined) {
+    if (!isRecord(raw.mediaGroups)) throw new Error('画布项目生成分组格式错误')
+    assertAllowedKeys(raw.mediaGroups, ['image', 'video'], '画布项目生成分组')
+    for (const group of [raw.mediaGroups.image, raw.mediaGroups.video]) {
+      if (group !== undefined && !safeString(group, 128)) throw new Error('画布项目生成分组格式错误')
     }
   }
   const assetIds = new Set<string>()
@@ -237,7 +244,7 @@ function remapValue(value: unknown, mappings: ReadonlyMap<string, string>): unkn
     } else if (key === 'candidateAssetIds' && Array.isArray(entry)) {
       result[key] = entry.map((assetId) => typeof assetId === 'string' ? mappings.get(assetId) ?? assetId : assetId)
     } else if (key === 'localUrl' && typeof entry === 'string') {
-      const match = entry.match(/^xingmang-asset:\/\/(image|video)\/([A-Za-z0-9_-]{43})$/)
+      const match = entry.match(/^xingmang-asset:\/\/(image|video|audio)\/([A-Za-z0-9_-]{43})$/)
       result[key] = match && mappings.has(match[2]) ? `xingmang-asset://${match[1]}/${mappings.get(match[2])}` : entry
     } else {
       result[key] = remapValue(entry, mappings)

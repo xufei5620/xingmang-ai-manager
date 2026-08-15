@@ -12,7 +12,9 @@ function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
 
-async function waitForRendererReady(child, timeoutMilliseconds = 20_000) {
+// A cold Windows launch can spend up to 15 seconds on the fail-closed token
+// probe before the packaged renderer and IPC initialization begin.
+async function waitForRendererReady(child, timeoutMilliseconds = 40_000) {
   const deadline = Date.now() + timeoutMilliseconds
   const runtimeLog = path.join(userDataDirectory, 'logs', 'runtime.jsonl')
   while (Date.now() < deadline) {

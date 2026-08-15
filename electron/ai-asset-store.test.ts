@@ -95,6 +95,17 @@ describe('output root and image inspection', () => {
   })
 })
 
+describe('video image inputs', () => {
+  it('returns an owned bounded image data URI without exposing a local path', async () => {
+    const store = new AiAssetStore(storeOptions())
+    const asset = await store.storeBase64(42, png().toString('base64'))
+    await expect(store.readImageDataUri(42, asset.assetId)).resolves.toBe(
+      `data:image/png;base64,${png().toString('base64')}`,
+    )
+    await expect(store.readImageDataUri(99, asset.assetId)).rejects.toThrow('无权访问')
+  })
+})
+
 describe('AiAssetStore base64 and ownership', () => {
   it('imports a local image after validating bytes and account ownership', async () => {
     const sourceRoot = temporaryDirectory()
@@ -106,6 +117,25 @@ describe('AiAssetStore base64 and ownership', () => {
 
     expect(asset).toMatchObject({ mimeType: 'image/png', width: 640, height: 480 })
     await expect(store.readOwned(99, asset.assetId)).rejects.toThrow('无权访问')
+  })
+
+  it('reuses a content-addressed asset for repeated local imports', async () => {
+    const sourceRoot = temporaryDirectory()
+    const sourcePath = path.join(sourceRoot, 'reference.png')
+    fs.writeFileSync(sourcePath, png(640, 480))
+    const options = storeOptions()
+    const store = new AiAssetStore(options)
+
+    const first = await store.storeLocalFile(42, sourcePath)
+    const second = await store.storeLocalFile(42, sourcePath)
+    const assetDirectory = path.join(options.outputRoot, 'user-42', '2026-08-12')
+    fs.copyFileSync(
+      path.join(assetDirectory, first.fileName),
+      path.join(assetDirectory, `xingmang-${'L'.repeat(43)}.png`),
+    )
+
+    expect(second.assetId).toBe(first.assetId)
+    await expect(store.listOwned(42)).resolves.toEqual([expect.objectContaining({ assetId: first.assetId })])
   })
 
   it('rejects relative paths and files that are not valid images', async () => {
@@ -249,13 +279,25 @@ describe('AiAssetStore listing', () => {
       // base64url names that can differ by case only. NTFS is case-insensitive,
       // so those fixtures silently overwrite one another and undercount.
       const assetId = createHash('sha256').update(`asset-${index}`).digest()
-      fs.writeFileSync(path.join(directory, `xingmang-${assetId.toString('base64url')}.png`), png())
+      fs.writeFileSync(path.join(directory, `xingmang-${assetId.toString('base64url')}.png`), png(index + 1, index + 1))
     }
     const store = new AiAssetStore(options)
 
     await expect(store.listOwned(42)).resolves.toHaveLength(200)
     await expect(store.listOwned(42, 500)).resolves.toHaveLength(500)
     await expect(store.listOwned(42, 501)).rejects.toThrow('列表数量无效')
+  })
+
+  it('folds historical random identifiers with identical image content in the asset list', async () => {
+    const options = storeOptions()
+    const directory = path.join(options.outputRoot, 'user-42', '2026-08-12')
+    fs.mkdirSync(directory, { recursive: true })
+    for (const label of ['first', 'second']) {
+      const assetId = createHash('sha256').update(label).digest('base64url')
+      fs.writeFileSync(path.join(directory, `xingmang-${assetId}.png`), png(20, 20))
+    }
+
+    await expect(new AiAssetStore(options).listOwned(42)).resolves.toHaveLength(1)
   })
 
   it('pages, filters and searches 100 owned assets with stable metadata', async () => {
@@ -319,6 +361,45 @@ describe('AiAssetStore remote URL safety', () => {
     await expect(store.storeRemoteUrl(42, 'https://cdn.example/image.png')).rejects.toThrow('私网、回环或保留地址')
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     expect(dnsLookup).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses the proxy-aware fetch only for the exact xAI image host', async () => {
+    const image = png(20, 30)
+    const fetchImpl = vi.fn(async () => new Response(image, {
+      status: 200, headers: { 'Content-Type': 'image/png' },
+    }))
+    const trustedProxyFetchImpl = vi.fn(async () => new Response(image, {
+      status: 200, headers: { 'Content-Type': 'image/png' },
+    }))
+    const dnsLookup = vi.fn(async () => ['10.64.0.7'])
+    const proxyStore = new AiAssetStore({
+      ...storeOptions(), fetchImpl, trustedProxyFetchImpl, dnsLookup,
+    })
+
+    await expect(proxyStore.storeRemoteUrl(42, 'https://imgen.x.ai/result.png')).resolves.toMatchObject({
+      mimeType: 'image/png', width: 20, height: 30,
+    })
+    expect(trustedProxyFetchImpl).toHaveBeenCalledOnce()
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(dnsLookup).not.toHaveBeenCalled()
+    await expect(new AiAssetStore({
+      ...storeOptions(), fetchImpl, trustedProxyFetchImpl, dnsLookup: vi.fn(async () => ['10.64.0.7']),
+    }).storeRemoteUrl(42, 'https://cdn.example/result.png')).rejects.toThrow('私网、回环或保留地址')
+  })
+
+  it('revalidates redirects from the trusted xAI host before following them', async () => {
+    const trustedProxyFetchImpl = vi.fn(async () => new Response(null, {
+      status: 302, headers: { Location: 'https://internal.example/result.png' },
+    }))
+    const fetchImpl = vi.fn()
+    const store = new AiAssetStore({
+      ...storeOptions(), fetchImpl, trustedProxyFetchImpl,
+      dnsLookup: vi.fn(async () => ['127.0.0.1']),
+    })
+
+    await expect(store.storeRemoteUrl(42, 'https://imgen.x.ai/result.png')).rejects.toThrow('私网、回环或保留地址')
+    expect(trustedProxyFetchImpl).toHaveBeenCalledOnce()
+    expect(fetchImpl).not.toHaveBeenCalled()
   })
 
   it('streams a public PNG into the owned output store with manual redirects disabled', async () => {

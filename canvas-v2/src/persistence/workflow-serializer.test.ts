@@ -172,6 +172,64 @@ describe('workflow schema v2 parser', () => {
     expect(serialized).not.toContain('C:\\\\private')
   })
 
+  it('migrates legacy single-image handles to the multi-image ports', () => {
+    const source = {
+      id: 'asset', kind: 'image-input', definitionVersion: 1,
+      position: { x: 0, y: 0 }, data: { prompt: '', model: '' },
+    }
+    const edit = {
+      id: 'edit', kind: 'image-edit', definitionVersion: 1,
+      position: { x: 320, y: 0 }, data: { prompt: '编辑', model: 'gpt-image-2' },
+    }
+    const video = {
+      id: 'video', kind: 'video-generate', definitionVersion: 1,
+      position: { x: 640, y: 0 }, data: { prompt: '生成视频', model: 'grok-imagine-video' },
+    }
+    const workflow = parseWorkflowFile(JSON.stringify(v2Document({
+      nodes: [source, edit, video],
+      edges: [
+        { id: 'legacy-edit', source: 'asset', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:image' },
+        { id: 'legacy-video', source: 'asset', sourceHandle: 'out:image', target: 'video', targetHandle: 'in:image' },
+      ],
+    })))
+
+    expect(workflow?.edges).toEqual([
+      { id: 'legacy-edit', source: 'asset', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:images' },
+      { id: 'legacy-video', source: 'asset', sourceHandle: 'out:image', target: 'video', targetHandle: 'in:images' },
+    ])
+  })
+
+  it('drops stale video inputs from video generation while preserving image and audio fan-in', () => {
+    const workflow = parseWorkflowFileDetailed(JSON.stringify(v2Document({
+      nodes: [
+        {
+          id: 'image-source', kind: 'image-input', definitionVersion: 1,
+          position: { x: 0, y: 0 }, data: { prompt: '', model: '' },
+        },
+        {
+          id: 'video-source', kind: 'video-input', definitionVersion: 1,
+          position: { x: 0, y: 220 }, data: { prompt: '', model: '' },
+        },
+        {
+          id: 'audio-source', kind: 'audio-input', definitionVersion: 1,
+          position: { x: 0, y: 440 }, data: { prompt: '', model: '' },
+        },
+        {
+          id: 'target', kind: 'video-generate', definitionVersion: 1,
+          position: { x: 420, y: 0 }, data: { prompt: '生成视频', model: 'grok-imagine-video' },
+        },
+      ],
+      edges: [
+        { id: 'image', source: 'image-source', sourceHandle: 'out:image', target: 'target', targetHandle: 'in:images' },
+        { id: 'stale-video', source: 'video-source', sourceHandle: 'out:video', target: 'target', targetHandle: 'in:videos' },
+        { id: 'audio', source: 'audio-source', sourceHandle: 'out:audio', target: 'target', targetHandle: 'in:audios' },
+      ],
+    })))
+
+    expect(workflow?.workflow.edges.map((edge) => edge.id)).toEqual(['image', 'audio'])
+    expect(workflow?.warnings).toEqual(['已移除端口类型不匹配的连线：stale-video'])
+  })
+
   it('drops dangling, incompatible, over-capacity, and cyclic edges deterministically', () => {
     const input = v2Document({
       nodes: [
@@ -203,12 +261,45 @@ describe('workflow schema v2 parser', () => {
 
     const result = parseWorkflowFileDetailed(JSON.stringify(input))
 
-    expect(result?.workflow.edges.map((edge) => edge.id)).toEqual(['edge-1', 'image-input'])
-    expect(result?.warnings).toHaveLength(4)
+    expect(result?.workflow.edges.map((edge) => edge.id)).toEqual(['edge-1', 'image-input', 'image-input-2'])
+    expect(result?.warnings).toHaveLength(3)
   })
 })
 
 describe('workflow schema v2 serializer', () => {
+  it('round-trips the saved canvas viewport', () => {
+    const workflow = parseWorkflowFile(JSON.stringify(v2Document({
+      viewport: { x: 420, y: -160, zoom: 0.8 },
+    })))
+
+    expect(workflow?.viewport).toEqual({ x: 420, y: -160, zoom: 0.8 })
+    expect(parseWorkflowFile(serializeWorkflow(workflow as WorkflowFile))?.viewport).toEqual({
+      x: 420,
+      y: -160,
+      zoom: 0.8,
+    })
+  })
+
+  it('round-trips project media groups without storing any API Key', () => {
+    const workflow = parseWorkflowFile(JSON.stringify(v2Document({
+      mediaGroups: { image: '生图分组', video: 'grok' },
+    })))
+
+    const serialized = serializeWorkflow(workflow as WorkflowFile)
+
+    expect(serialized).not.toMatch(/api[_-]?key/i)
+    expect(parseWorkflowFile(serialized)?.mediaGroups).toEqual({ image: '生图分组', video: 'grok' })
+  })
+
+  it('ignores malformed media group configuration without rejecting the project', () => {
+    const result = parseWorkflowFileDetailed(JSON.stringify(v2Document({
+      mediaGroups: { image: 'x'.repeat(129), video: 'grok' },
+    })))
+
+    expect(result?.workflow.mediaGroups).toBeUndefined()
+    expect(result?.warnings).toContain('已忽略无效的生成分组配置')
+  })
+
   it('persists stable asset references and strips runtime and unsafe locations', () => {
     const workflow: WorkflowFile = {
       schemaVersion: 1,

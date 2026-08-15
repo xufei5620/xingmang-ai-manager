@@ -23,8 +23,9 @@ const DEFAULT_ASSET_RETENTION = 2_000
 const FILE_LABEL = '画布运行记录'
 const FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
+const PROJECT_ID_PATTERN = /^[a-f0-9-]{36}$/
 const CACHEABLE_NODE_KINDS = new Set<CanvasRunNodeKind>([
-  'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'image-generate', 'image-edit',
+  'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
 ])
 
@@ -72,18 +73,20 @@ function safeIdentifier(value: unknown): value is string {
 }
 
 function safeAsset(value: unknown): value is CanvasRunAsset {
-  if (!isRecord(value) || (value.kind !== 'image' && value.kind !== 'video')) return false
+  if (!isRecord(value) || (value.kind !== 'image' && value.kind !== 'video' && value.kind !== 'audio')) return false
   if (typeof value.assetId !== 'string' || !ASSET_ID_PATTERN.test(value.assetId)) return false
   if (value.localUrl !== `xingmang-asset://${value.kind}/${value.assetId}`) return false
   if (value.mimeType !== undefined && (typeof value.mimeType !== 'string' || value.mimeType.length > 128)) return false
   if (value.width !== undefined && (!Number.isSafeInteger(value.width) || (value.width as number) <= 0)) return false
   if (value.height !== undefined && (!Number.isSafeInteger(value.height) || (value.height as number) <= 0)) return false
+  if (value.taskId !== undefined && !safeIdentifier(value.taskId)) return false
   return true
 }
 
 function safeRunRecord(value: unknown, userId: number): value is CanvasRunRecord {
   if (!isRecord(value) || value.version !== canvasRunContractVersion || value.userId !== userId) return false
   if (!safeIdentifier(value.runId) || !safeIdentifier(value.graphRevision)) return false
+  if (value.projectId !== undefined && (typeof value.projectId !== 'string' || !PROJECT_ID_PATTERN.test(value.projectId))) return false
   if (!isIsoDate(value.createdAt) || !isIsoDate(value.startedAt)) return false
   if (!Array.isArray(value.nodes) || !Array.isArray(value.events)) return false
   if (value.nodes.length > 5_000 || value.events.length > 25_000) return false

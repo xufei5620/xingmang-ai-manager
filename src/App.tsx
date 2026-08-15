@@ -6,9 +6,8 @@ import { RegisterDialog } from './components/account/RegisterDialog'
 import { ForgotPasswordDialog } from './components/account/ForgotPasswordDialog'
 import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
 import { PasteKeyDialog } from './components/account/PasteKeyDialog'
-import { AccountCenterPage } from './components/account/AccountCenterPage'
+import { AccountCenterPage, type AccountCenterTab } from './components/account/AccountCenterPage'
 import { resolveAccountErrorMessage } from './components/account/account-errors'
-import { WALLET_URL } from './components/account/account-center'
 import { resolveAccountAreaStatus, shouldShowManualKeyEntry } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
 import {
@@ -46,7 +45,7 @@ import { Sidebar } from './components/Sidebar'
 import { WelcomePage } from './components/welcome/WelcomePage'
 import { StartupSplash } from './components/StartupSplash'
 import { Toast, type ToastMessage } from './components/Toast'
-import type { PageId } from './navigation'
+import { navigationItem, type PageId } from './navigation'
 import { nodeRuntimeSupported } from './onboarding-runtime'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { BackupsPage } from './pages/BackupsPage'
@@ -74,9 +73,11 @@ import {
 } from './platform-presentation'
 import { SkillsPage, type SkillImportRequest } from './pages/SkillsPage'
 import { UpdatePage } from './pages/UpdatePage'
+import { TutorialPage } from './pages/TutorialPage'
 import {
   providerIds,
   resolveRelaySite,
+  supportServiceUrl,
   type AccountBalance,
   type AccountProfile,
   type AccountSessionState,
@@ -103,11 +104,13 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>(initialTheme)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed)
   const [activePage, setActivePage] = useState<PageId>('overview')
+  const [systemNavigationExpanded, setSystemNavigationExpanded] = useState(false)
   const [platformCapabilities, setPlatformCapabilities] = useState<PlatformCapabilities>(() => {
     document.documentElement.dataset.platform = failClosedPlatformCapabilities.platform
     return failClosedPlatformCapabilities
   })
   const [appView, setAppView] = useState<AppView>('loading')
+  const [accountCenterSection, setAccountCenterSection] = useState<AccountCenterTab>('overview')
   const [startupStage, setStartupStage] = useState<StartupStage>('updates')
   // Dev-only onboarding preview (XINGMANG_ONBOARDING_PREVIEW). Fixed at mount,
   // false in every packaged build — see initialOnboardingPreview in
@@ -517,9 +520,17 @@ function App() {
       const next = result.snapshot ?? snapshotRef.current
       return {
         checkedAt: next.checkedAt,
+        runtime: { node: next.runtime.node, npm: next.runtime.npm },
         clis: next.clis,
         codexDesktop: next.desktopApps.codex,
       }
+    },
+    installNodeRuntime: async () => {
+      if (platformCapabilities.nodeRuntimeInstall === 'external') {
+        await performNodeRuntimeAction(platformCapabilities, window.xingmang)
+        return { installed: false as const, action: 'external' as const }
+      }
+      return window.xingmang.installNodeRuntime()
     },
     maintainCli: async (provider: ProviderId) => {
       const result = await performCliInstallAction(provider, platformCapabilities, window.xingmang)
@@ -555,6 +566,7 @@ function App() {
       await window.xingmang.launchCodexDesktop('open')
     },
     onProgress: window.xingmang.onInstallProgress,
+    onNodeRuntimeProgress: window.xingmang.onNodeRuntimeInstallProgress,
     onDesktopProgress: window.xingmang.onCodexDesktopInstallProgress,
   }), [platformCapabilities, scan])
 
@@ -583,18 +595,12 @@ function App() {
   }, [])
 
   const toggleSidebarMoreExpanded = useCallback(() => {
-    setSettings((current) => {
-      const next = !current.sidebarMoreExpanded
-      // 只发窄更新（①栏11）：载荷仅携带本次交互的真实意图，哪怕设置页的
-      // 全量保存正在途中，两笔写入无论先后落盘都互不覆盖对方的字段。
-      // 不用响应结果回填 setSettings：极快连点时慢响应可能晚于快响应落地，
-      // 用旧值覆盖刚设好的乐观状态，会让侧边栏"更多"展开态出现瞬时闪跳。
-      // 这里的乐观值已经是本次交互的真实意图，持久化失败也不影响当次会话
-      // 内的展开/折叠，下次切换会带着最新状态重新保存、自愈。
-      void window.xingmang.saveSettings({ version: 2, sidebarMoreExpanded: next }).catch(() => {})
-      return { ...current, sidebarMoreExpanded: next }
-    })
+    setSystemNavigationExpanded((current) => !current)
   }, [])
+
+  useEffect(() => {
+    setSystemNavigationExpanded(navigationItem(activePage).group === 'more')
+  }, [activePage])
 
   useEffect(() => {
     let active = true
@@ -1245,9 +1251,11 @@ function App() {
       setNodeGuideOpen(false)
       setToast({
         type: 'success',
-        message: refreshed.snapshot
-          ? `Node.js ${result.version ?? 'LTS'} 已安装，环境检测已刷新`
-          : `Node.js ${result.version ?? 'LTS'} 已安装，检测结果以最新一次环境检测为准`,
+        message: result.action === 'unchanged'
+          ? `已检测到 Node.js ${result.version ?? ''} 和 npm，无需重复安装`.trim()
+          : refreshed.snapshot
+            ? `Node.js ${result.version ?? 'LTS'} 已安装，环境检测已刷新`
+            : `Node.js ${result.version ?? 'LTS'} 已安装，检测结果以最新一次环境检测为准`,
       })
     } catch (error) {
       setToast({ type: 'error', message: errorMessage(error) })
@@ -1624,6 +1632,7 @@ function App() {
           onClose={() => setAppView('dashboard')}
           onLogout={() => void handleAccountLogout()}
           notify={setToast}
+          initialSection={accountCenterSection}
         />
         {toast && (
           <Toast
@@ -1645,7 +1654,7 @@ function App() {
         theme={theme}
         updateState={updateState}
         relaySite={activeRelaySite}
-        moreExpanded={Boolean(settings.sidebarMoreExpanded)}
+        moreExpanded={systemNavigationExpanded}
         onNavigate={handleNavigate}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
         onToggleTheme={() => {
@@ -1659,32 +1668,20 @@ function App() {
         accountSnapshot={accountSnapshot}
         onAccountLogin={() => setAccountDialog('login')}
         onAccountLogout={() => void handleAccountLogout()}
-        onRecharge={() => {
-          // Same destination and same "opens in the system browser, desktop
-          // session never travels there" reasoning as the 个人中心充值 Tab's
-          // own openWallet (AccountCenterPage.tsx) -- href already
-          // allowlisted in electron/main.ts (I12).
-          void window.xingmang.openExternal(WALLET_URL).catch((error: unknown) => {
-            setToast({ type: 'error', message: errorMessage(error) })
-          })
-        }}
+        onRecharge={() => { setAccountCenterSection('topup'); setAppView('account-center') }}
         onConfigureCliKey={handleConfigureCliKey}
         onRefreshBalance={() => void handleRefreshBalance()}
-        onOpenAccountCenter={() => setAppView('account-center')}
+        onOpenAccountCenter={() => { setAccountCenterSection('overview'); setAppView('account-center') }}
         onOpenTutorialDocs={() => {
-          void window.xingmang.openTutorialDocsWindow().catch((error: unknown) => {
+          setActivePage('tutorial')
+        }}
+        onOpenSupport={() => {
+          void window.xingmang.openExternal(supportServiceUrl).catch((error: unknown) => {
             setToast({ type: 'error', message: errorMessage(error) })
           })
         }}
         onPasteKey={handleOpenPasteKeyDialog}
-        onOpenKeysPage={() => {
-          // Same "opens in the system browser" reasoning as onRecharge above
-          // -- href already I12 allowlisted via relaySiteExternalUrls
-          // (electron/main.ts).
-          void window.xingmang.openExternal(activeRelaySite.keysPageUrl).catch((error: unknown) => {
-            setToast({ type: 'error', message: errorMessage(error) })
-          })
-        }}
+        onOpenKeysPage={() => { setAccountCenterSection('keys'); setAppView('account-center') }}
       />
 
       <main className="main-content">
@@ -1859,6 +1856,16 @@ function App() {
               setSettings((current) => current.theme === next ? current : { ...current, theme: next })
             }}
             onReplayOnboarding={() => setAppView('onboarding')}
+          />
+        ) : activePage === 'tutorial' ? (
+          <TutorialPage
+            onNavigate={setActivePage}
+            onOpenAccountCenter={() => { setAccountCenterSection('overview'); setAppView('account-center') }}
+            onOpenSupport={() => {
+              void window.xingmang.openExternal(supportServiceUrl).catch((error: unknown) => {
+                setToast({ type: 'error', message: errorMessage(error) })
+              })
+            }}
           />
         ) : (
           <PlaceholderPage pageId={activePage} />

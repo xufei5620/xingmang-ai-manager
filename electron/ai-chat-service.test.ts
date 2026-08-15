@@ -273,7 +273,7 @@ describe('AI chat streaming service', () => {
     expect(fetchImpl.mock.calls[0][1]?.headers).toMatchObject({ Authorization: `Bearer ${secret}` })
   })
 
-  it('rejects image models, duplicate ownership keys, and excessive per-sender concurrency', async () => {
+  it('rejects media models, duplicate ownership keys, and excessive per-sender concurrency', async () => {
     const streams = Array.from({ length: 3 }, () => controlledSseResponse())
     let nextStream = 0
     const fetchImpl = vi.fn<TestFetch>(async () => streams[nextStream++].response)
@@ -283,7 +283,8 @@ describe('AI chat streaming service', () => {
       emit: vi.fn(),
       limits: { concurrentRequestsPerSender: 2 },
     })
-    expect(() => service.start({ ...startInput(), model: 'gpt-image-2' })).toThrow('image models')
+    expect(() => service.start({ ...startInput(), model: 'gpt-image-2' })).toThrow('media models')
+    expect(() => service.start({ ...startInput(), model: 'grok-imagine-video' })).toThrow('media models')
     service.start(startInput(1, 'a'))
     expect(() => service.start(startInput(1, 'a'))).toThrow('正在处理中')
     service.start(startInput(1, 'b'))

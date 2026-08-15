@@ -7,6 +7,7 @@ import {
   resolvePackagedApplicationFile,
   type ApplicationUrlPolicy,
 } from './security'
+import { supportServiceUrl } from './relay-sites'
 
 const windowsPolicy: ApplicationUrlPolicy = {
   rendererRoot: 'C:\\Program Files\\XingMang API\\resources\\app\\dist',
@@ -189,6 +190,7 @@ describe('external URL allowlist', () => {
     'https://xm.solov.cc',
     'https://xm.solov.cc/keys',
     'https://nodejs.org/',
+    supportServiceUrl,
     'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
   ]
 
@@ -196,6 +198,7 @@ describe('external URL allowlist', () => {
     expect(isAllowedExternalUrl('https://xm.solov.cc/', allowlist)).toBe(true)
     expect(isAllowedExternalUrl('https://xm.solov.cc/keys', allowlist)).toBe(true)
     expect(isAllowedExternalUrl('https://nodejs.org/', allowlist)).toBe(true)
+    expect(isAllowedExternalUrl(supportServiceUrl, allowlist)).toBe(true)
     expect(isAllowedExternalUrl('ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS', allowlist)).toBe(true)
   })
 
@@ -205,6 +208,10 @@ describe('external URL allowlist', () => {
     expect(isAllowedExternalUrl('https://xm.solov.cc/keys#token', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('https://user@xm.solov.cc/keys', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('http://xm.solov.cc/keys', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl(supportServiceUrl + '?redirect=1', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl(supportServiceUrl + '/extra', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl('https://work.weixin.qq.com.evil.example/kfid/kfc212a22c8e02da5f8', allowlist)).toBe(false)
+    expect(isAllowedExternalUrl('http://work.weixin.qq.com/kfid/kfc212a22c8e02da5f8', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('ms-windows-store://pdp/?ProductId=OTHER', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('ms-windows-store://search/?query=Codex', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('javascript:alert(1)', allowlist)).toBe(false)

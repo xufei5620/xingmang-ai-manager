@@ -1,12 +1,15 @@
-import { useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { NodeExecutor } from './engine/engine'
 import type { AssetRef, NodeKind, WorkflowFile } from './model'
 import {
   defaultImageModel,
   defaultImageQuality,
+  availableImageModelPresets,
+  availableVideoModelPresets,
   imageModelPreset,
   imageModelPresets,
   imageQualityOptions,
+  videoModelPresets,
 } from './models'
 import { SafeImage } from './components/MediaPreview'
 import { hostBridge } from './host'
@@ -19,6 +22,11 @@ import { hostBridge } from './host'
 interface SimpleModeProps {
   executors: Record<NodeKind, NodeExecutor>
   connected: boolean
+  imageGroup: string | null
+  videoGroup: string | null
+  imageModels: readonly string[]
+  videoModels: readonly string[]
+  preparingMedia: boolean
   onExpandToCanvas(workflow: WorkflowFile): void
 }
 
@@ -29,7 +37,16 @@ function simpleNodeId(): string {
   return `s${Date.now().toString(36)}-${simpleSequence}`
 }
 
-export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleModeProps) {
+export function SimpleMode({
+  executors,
+  connected,
+  imageGroup,
+  videoGroup,
+  imageModels,
+  videoModels,
+  preparingMedia,
+  onExpandToCanvas,
+}: SimpleModeProps) {
   const [prompt, setPrompt] = useState('')
   const [imageModel, setImageModel] = useState(defaultImageModel)
   const [imageQuality, setImageQuality] = useState(defaultImageQuality)
@@ -44,9 +61,54 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
   const [image, setImage] = useState<AssetRef | null>(null)
   const [video, setVideo] = useState<AssetRef | null>(null)
   const abortRef = useRef<AbortController | null>(null)
+  const imagePresets = useMemo(
+    () => connected ? availableImageModelPresets(imageModels) : [...imageModelPresets],
+    [connected, imageModels],
+  )
+  const videoPresets = useMemo(
+    () => connected ? availableVideoModelPresets(videoModels) : [...videoModelPresets],
+    [connected, videoModels],
+  )
+  const imageModelAvailable = imagePresets.some((preset) => preset.id === imageModel)
+  const videoModelAvailable = videoPresets.some((preset) => preset.id === videoModel)
+  const generationBlocked = preparingMedia
+    || !prompt.trim()
+    || (connected && (!imageGroup || !imageModelAvailable || (wantVideo && (!videoGroup || !videoModelAvailable))))
+
+  useEffect(() => {
+    if (imagePresets.some((preset) => preset.id === imageModel)) return
+    setImageModel(imagePresets[0]?.id ?? '')
+  }, [imageModel, imagePresets])
+
+  useEffect(() => {
+    if (videoPresets.some((preset) => preset.id === videoModel)) return
+    setVideoModel(videoPresets[0]?.id ?? '')
+  }, [videoModel, videoPresets])
 
   const generate = async () => {
     if (busy) return
+    if (preparingMedia) {
+      setError('生成配置正在准备，请稍候')
+      return
+    }
+    if (connected && !imageGroup) {
+      setError('请先在顶部「生成配置」中选择生图分组')
+      return
+    }
+    const selectedImagePreset = imagePresets.find((preset) => preset.id === imageModel)
+    if (connected && !selectedImagePreset) {
+      setError(`生图分组「${imageGroup ?? '未选择'}」没有可用的图像模型`)
+      return
+    }
+    if (connected && wantVideo && !videoGroup) {
+      setError('请先在顶部「生成配置」中选择视频分组')
+      return
+    }
+    const selectedVideoPreset = videoPresets.find((preset) => preset.id === videoModel)
+    if (connected && wantVideo && !selectedVideoPreset) {
+      setError(`视频分组「${videoGroup ?? '未选择'}」没有可用的视频模型`)
+      return
+    }
     setError(null)
     setImage(null)
     setVideo(null)
@@ -103,13 +165,21 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
     const workflow: WorkflowFile = {
       schemaVersion: 1,
       name: '来自简单模式',
+      mediaGroups: {
+        ...(imageGroup ? { image: imageGroup } : {}),
+        ...(videoGroup ? { video: videoGroup } : {}),
+      },
       nodes: [
         { id: textId, kind: 'text', position: { x: 60, y: 160 }, data: { prompt, model: '', status: prompt ? 'succeeded' : 'idle' } },
         {
           id: imageId,
           kind: 'image',
           position: { x: 360, y: 140 },
-          data: { prompt: '', model: imageModel, status: image ? 'succeeded' : 'idle', result: image ?? undefined },
+          data: {
+            prompt: '', model: imageModel, quality: imageQuality,
+            size: modelPreset.sizes.includes(imageSize) ? imageSize : modelPreset.sizes[0],
+            status: image ? 'succeeded' : 'idle', result: image ?? undefined,
+          },
         },
       ],
       edges: [
@@ -129,7 +199,7 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
         source: imageId,
         sourceHandle: 'out:image',
         target: videoId,
-        targetHandle: 'in:image',
+        targetHandle: 'in:images',
       })
     }
     onExpandToCanvas(workflow)
@@ -144,7 +214,9 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
     <div className="simple-mode">
       <div className="simple-card">
         <h1>AI 生成</h1>
-        <p className="simple-hint">{connected ? '已连接星芒账号,生成消耗账户额度' : '演示模式:未连接账号,生成为模拟结果'}</p>
+        <p className="simple-hint">{connected
+          ? `图片${imageGroup ? `使用「${imageGroup}」` : '未配置'} · 视频${videoGroup ? `使用「${videoGroup}」` : '未配置'}`
+          : '演示模式:未连接账号,生成为模拟结果'}</p>
         <label>
           <span>想要生成什么?</span>
           <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} rows={3} placeholder="描述画面,例如:一只在霓虹雨夜里撑伞的橘猫" />
@@ -153,6 +225,7 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
           <span>图像模型</span>
           <select
             value={imageModel}
+            disabled={preparingMedia}
             onChange={(event) => {
               const nextModel = event.target.value
               setImageModel(nextModel)
@@ -160,7 +233,8 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
               if (!sizes.includes(imageSize)) setImageSize(sizes[0])
             }}
           >
-            {imageModelPresets.map((entry) => (
+            {imagePresets.length === 0 && <option value="">当前分组没有可用图像模型</option>}
+            {imagePresets.map((entry) => (
               <option key={entry.id} value={entry.id}>{entry.label}</option>
             ))}
           </select>
@@ -195,15 +269,23 @@ export function SimpleMode({ executors, connected, onExpandToCanvas }: SimpleMod
             </label>
             <label>
               <span>视频模型</span>
-              <input value={videoModel} list="wf-video-models" onChange={(event) => setVideoModel(event.target.value)} placeholder="视频模型(渠道接入后可用)" />
+              <select value={videoModel} disabled={preparingMedia} onChange={(event) => setVideoModel(event.target.value)}>
+                {videoPresets.length === 0 && <option value="">当前分组没有可用视频模型</option>}
+                {videoPresets.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+              </select>
             </label>
           </>
         )}
         <div className="simple-actions">
           {busy
             ? <button type="button" onClick={() => abortRef.current?.abort()}>取消</button>
-            : <button type="button" className="simple-primary" onClick={() => void generate()} disabled={!prompt.trim()}>生成</button>}
-          <button type="button" onClick={expand} disabled={!prompt.trim()}>展开到画布</button>
+            : <button
+                type="button"
+                className="simple-primary"
+                onClick={() => void generate()}
+                disabled={generationBlocked}
+              >生成</button>}
+          <button type="button" onClick={expand} disabled={preparingMedia || !prompt.trim()}>展开到画布</button>
         </div>
         {stage && <p className="simple-stage">{stage}</p>}
         {error && <p className="simple-error" role="alert">{error}</p>}

@@ -1,4 +1,4 @@
-import { AlertTriangle, KeyRound, LogOut, RefreshCw, UserRound, Wallet } from 'lucide-react'
+import { AlertTriangle, KeyRound, LogOut, RefreshCw, UserRound } from 'lucide-react'
 import { formatBalanceUsd, shouldShowManualKeyEntry, type AccountAreaStatus, type AccountSnapshot } from './account-stub'
 import type { RelaySite } from '../../types'
 
@@ -23,8 +23,8 @@ function isNestedButtonEvent(event: { target: EventTarget | null }): boolean {
  * (see account-stub.ts) — guest is the pre-existing W1 button, unchanged;
  * active/low-balance render an identity row (now with a small "配置星芒 Key"
  * button alongside the logout icon in its corner -- W2/W2.5,
- * docs/ACCOUNT-PLAN.md) plus a separate recharge row so the recharge control
- * is a real `<button>` and never nested inside another button. Both corner
+ * docs/ACCOUNT-PLAN.md) plus a compact recharge button in the balance row.
+ * The identity wrapper remains a div so all shortcut controls stay valid.
  * buttons nest fine: unlike the guest state, the identity wrapper here is a
  * plain `<div>`, not a `<button>` -- kept that way even now that it is
  * clickable (W4a) specifically so it can still contain real `<button>`
@@ -155,49 +155,52 @@ export function AccountArea({
         <span className="account-avatar" aria-hidden="true"><UserRound size={18} /></span>
         <span className="account-copy">
           <strong>{snapshot.nickname}</strong>
-          <small className={isLowBalance ? 'account-balance account-balance-warning' : 'account-balance'}>
-            {isLowBalance && <AlertTriangle size={11} aria-hidden="true" />}
-            余额 {balanceText}
-          </small>
         </span>
-        <button
-          type="button"
-          className="account-refresh-button"
-          aria-label="刷新余额"
-          title="刷新余额"
-          onClick={(event) => { event.stopPropagation(); onRefreshBalance() }}
-        >
-          <RefreshCw size={14} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="account-configure-button"
-          aria-label="配置星芒 Key 到已装 CLI"
-          title="配置星芒 Key"
-          onClick={(event) => { event.stopPropagation(); onConfigureCliKey() }}
-        >
-          <KeyRound size={14} aria-hidden="true" />
-        </button>
-        <button
-          type="button"
-          className="account-logout-button"
-          aria-label="登出星芒账号"
-          title="登出"
-          onClick={(event) => { event.stopPropagation(); onLogout() }}
-        >
-          <LogOut size={14} aria-hidden="true" />
-        </button>
+        <span className="account-actions" aria-label="账户快捷操作">
+          <button
+            type="button"
+            className="account-refresh-button"
+            aria-label="刷新余额"
+            title="刷新余额"
+            onClick={(event) => { event.stopPropagation(); onRefreshBalance() }}
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="account-configure-button"
+            aria-label="配置星芒 Key 到已装 CLI"
+            title="配置星芒 Key"
+            onClick={(event) => { event.stopPropagation(); onConfigureCliKey() }}
+          >
+            <KeyRound size={14} aria-hidden="true" />
+          </button>
+          <button
+            type="button"
+            className="account-logout-button"
+            aria-label="登出星芒账号"
+            title="登出"
+            onClick={(event) => { event.stopPropagation(); onLogout() }}
+          >
+            <LogOut size={14} aria-hidden="true" />
+          </button>
+        </span>
+        <small className={isLowBalance ? 'account-balance account-balance-warning' : 'account-balance'}>
+          <span className="account-balance-label">
+            {isLowBalance && <AlertTriangle size={11} aria-hidden="true" />}
+            余额
+          </span>
+          <strong className="account-balance-value">{balanceText}</strong>
+          <button
+            type="button"
+            className={isLowBalance ? 'account-recharge-button low-balance' : 'account-recharge-button'}
+            title={rechargeLabel}
+            onClick={(event) => { event.stopPropagation(); onRecharge() }}
+          >
+            充值
+          </button>
+        </small>
       </div>
-      <button
-        type="button"
-        className={isLowBalance ? 'account-recharge-button low-balance' : 'account-recharge-button'}
-        data-sidebar-tooltip={rechargeLabel}
-        title={rechargeLabel}
-        onClick={onRecharge}
-      >
-        <span className="account-recharge-icon" aria-hidden="true"><Wallet size={16} /></span>
-        <span>{rechargeLabel}</span>
-      </button>
     </>
   )
 }

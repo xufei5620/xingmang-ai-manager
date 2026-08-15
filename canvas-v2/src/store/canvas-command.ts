@@ -1,5 +1,5 @@
 import type { EditorEdgeRecord, EditorNodeRecord } from '../domain/node-definition'
-import type { CanvasDocumentState, CanvasViewport } from './canvas-state'
+import type { CanvasDocumentState, CanvasMediaGroups, CanvasViewport } from './canvas-state'
 
 export type CanvasCommand =
   | { type: 'add-nodes'; nodes: EditorNodeRecord[]; edges?: EditorEdgeRecord[]; mergeKey?: string }
@@ -10,6 +10,7 @@ export type CanvasCommand =
   | { type: 'connect'; edge: EditorEdgeRecord }
   | { type: 'disconnect'; edgeIds: string[] }
   | { type: 'set-viewport'; viewport: CanvasViewport; mergeKey?: string }
+  | { type: 'set-media-groups'; mediaGroups: CanvasMediaGroups }
   | { type: 'replace-document'; document: CanvasDocumentState }
   | { type: 'rename-document'; name: string }
 
