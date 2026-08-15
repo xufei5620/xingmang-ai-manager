@@ -276,7 +276,7 @@ body {
   min-width: 0;
   padding: 0 150px 0 12px;
   color: var(--text-secondary);
-  background: var(--surface-faint);
+  background: var(--surface-panel);
   border-bottom: 1px solid var(--border-subtle);
   font-size: var(--text-sm);
   font-weight: var(--font-weight-semibold);
