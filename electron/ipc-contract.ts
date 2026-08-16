@@ -73,6 +73,10 @@ import type {
   NodeRuntimeInstallResult as MainNodeRuntimeInstallResult,
 } from './node-runtime'
 import type {
+  PythonRuntimeInstallProgress as MainPythonRuntimeInstallProgress,
+  PythonRuntimeInstallResult as MainPythonRuntimeInstallResult,
+} from './python-runtime'
+import type {
   RuntimeLogEntry as MainRuntimeLogEntry,
   RuntimeLogSnapshot as MainRuntimeLogSnapshot,
 } from './runtime-log'
@@ -191,6 +195,8 @@ export type RuntimeLogSnapshot = MainRuntimeLogSnapshot
 export type RuntimeLogEntry = MainRuntimeLogEntry
 export type NodeRuntimeInstallProgress = MainNodeRuntimeInstallProgress
 export type NodeRuntimeInstallResult = MainNodeRuntimeInstallResult
+export type PythonRuntimeInstallProgress = MainPythonRuntimeInstallProgress
+export type PythonRuntimeInstallResult = MainPythonRuntimeInstallResult
 export type PlatformCapabilities = MainPlatformCapabilities
 export type AccountStatus = NewApiAccountStatus
 export type AccountProfile = NewApiAccountProfile
@@ -431,6 +437,7 @@ export interface XingmangInvokeContract {
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
+  installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
   installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId], void>
   uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId], ToolUninstallResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
@@ -691,6 +698,10 @@ export interface XingmangEventContract {
     'runtime:node-install-progress',
     NodeRuntimeInstallProgress
   >
+  onPythonRuntimeInstallProgress: IpcEventDefinition<
+    'runtime:python-install-progress',
+    PythonRuntimeInstallProgress
+  >
   onInstallProgress: IpcEventDefinition<'cli:install-progress', InstallProgress>
   onCodexDesktopStatus: IpcEventDefinition<
     'desktop:codex-status-changed',
@@ -725,6 +736,7 @@ export const ipcInvokeChannels = {
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',
+  installPythonRuntime: 'runtime:install-python',
   installCli: 'cli:install',
   uninstallCli: 'cli:uninstall',
   checkCliUpdate: 'cli:check-update',
@@ -846,6 +858,7 @@ export const ipcInvokeChannels = {
 export const ipcEventChannels = {
   onNavigate: 'navigation:open-page',
   onNodeRuntimeInstallProgress: 'runtime:node-install-progress',
+  onPythonRuntimeInstallProgress: 'runtime:python-install-progress',
   onInstallProgress: 'cli:install-progress',
   onCodexDesktopStatus: 'desktop:codex-status-changed',
   onCodexDesktopInstallProgress: 'desktop:codex-install-progress',

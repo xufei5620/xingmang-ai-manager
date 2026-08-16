@@ -8,6 +8,7 @@ describe('platformCapabilitiesFor', () => {
       architecture: 'x64',
       isMac: false,
       nodeRuntimeInstall: 'managed',
+      pythonRuntimeInstall: 'managed',
       cliInstall: {
         claude: 'managed',
         codex: 'managed',
@@ -31,6 +32,7 @@ describe('platformCapabilitiesFor', () => {
       architecture: 'arm64',
       isMac: true,
       nodeRuntimeInstall: 'external',
+      pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',
         codex: 'managed',
@@ -55,6 +57,7 @@ describe('platformCapabilitiesFor', () => {
       architecture: 'x64',
       isMac: false,
       nodeRuntimeInstall: 'external',
+      pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',
         codex: 'managed',
@@ -76,6 +79,7 @@ describe('platformCapabilitiesFor', () => {
       architecture: 'riscv64',
       isMac: false,
       nodeRuntimeInstall: 'external',
+      pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'managed',
         codex: 'managed',

@@ -949,6 +949,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'workspace:choose': '工作目录选择',
   'repository:get-context': '仓库上下文读取',
   'runtime:install-node': 'Node.js LTS 自动安装',
+  'runtime:install-python': 'Python 3.12 自动安装',
   'cli:install': 'CLI 安装或更新',
   'cli:uninstall': 'CLI 卸载',
   'cli:check-update': 'CLI 单项更新检查',
@@ -1149,6 +1150,7 @@ function ipcSuccessMessage(channel: string, args: unknown[], result: unknown): s
   if (channel === 'config:save' && provider) return `${provider} 配置已保存`
   if (channel === 'cli:install' && provider) return `${provider} 安装或更新已完成`
   if (channel === 'runtime:install-node') return 'Node.js LTS 自动安装完成'
+  if (channel === 'runtime:install-python') return 'Python 3.12 自动安装完成'
   if (channel === 'cli:uninstall' && provider) return `${provider} 卸载已完成`
   if (channel === 'cli:check-update' && provider) return `${provider} 更新检查已完成`
   if (channel === 'desktop:uninstall-codex') return 'Codex 桌面端卸载已完成'
@@ -1374,6 +1376,22 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       return result
     } catch (error) {
       options.runtimeLog.exception('maintenance', 'runtime.node.install.failed', error)
+      throw error
+    }
+  })
+  registerTrustedHandler('runtime:install-python', async (event) => {
+    options.runtimeLog.log('info', 'maintenance', 'runtime.python.install.started', '开始自动安装 Python 3.12')
+    try {
+      const result = await service.installPythonRuntime(event.sender)
+      options.runtimeLog.log('info', 'maintenance', 'runtime.python.install.completed', 'Python 3.12 自动安装完成', {
+        method: result.method,
+        source: result.source,
+        version: result.version,
+        architecture: result.architecture,
+      })
+      return result
+    } catch (error) {
+      options.runtimeLog.exception('maintenance', 'runtime.python.install.failed', error)
       throw error
     }
   })

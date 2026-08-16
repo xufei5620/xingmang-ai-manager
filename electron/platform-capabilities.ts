@@ -8,6 +8,7 @@ export interface PlatformCapabilities {
   readonly architecture: string
   readonly isMac: boolean
   readonly nodeRuntimeInstall: InstallManagement
+  readonly pythonRuntimeInstall: InstallManagement
   readonly cliInstall: Readonly<Record<ProviderId, InstallManagement>>
   readonly codexDesktop: Readonly<{
     install: InstallManagement
@@ -35,6 +36,7 @@ export function platformCapabilitiesFor(
     architecture,
     isMac: macos,
     nodeRuntimeInstall: windows ? 'managed' : 'external',
+    pythonRuntimeInstall: windows ? 'managed' : 'external',
     cliInstall: Object.freeze({
       claude: 'managed',
       codex: 'managed',

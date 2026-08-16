@@ -1,9 +1,11 @@
 import type {
+  CodexSetupStatus,
   CodexDesktopInstallProgress,
   DesktopAppStatus,
   PlatformCapabilities,
   SystemSnapshot,
 } from './types'
+import { nodeRuntimeSupported } from './onboarding-runtime'
 
 // 'account-center' is a top-level overlay, not a Sidebar/PageId destination
 // (see AccountCenterPage.tsx) -- entered from AccountArea's identity row,
@@ -17,6 +19,40 @@ export type StartupStage = 'updates' | 'codex'
 
 export const THEME_STORAGE_KEY = 'xingmang-theme-v2'
 export const SIDEBAR_STORAGE_KEY = 'xingmang-sidebar-collapsed'
+export const MANAGED_BOOTSTRAP_STORAGE_PREFIX = 'xingmang-managed-bootstrap-v1:'
+
+interface BootstrapStorage {
+  getItem(key: string): string | null
+  setItem(key: string, value: string): void
+}
+
+function bootstrapStorage(): BootstrapStorage | null {
+  return typeof window === 'undefined' ? null : window.localStorage
+}
+
+export function managedBootstrapCompleted(
+  userId: number,
+  storage: BootstrapStorage | null = bootstrapStorage(),
+): boolean {
+  if (!Number.isSafeInteger(userId) || userId <= 0) return false
+  try {
+    return storage?.getItem(`${MANAGED_BOOTSTRAP_STORAGE_PREFIX}${userId}`) === '1'
+  } catch {
+    return false
+  }
+}
+
+export function markManagedBootstrapCompleted(
+  userId: number,
+  storage: BootstrapStorage | null = bootstrapStorage(),
+): void {
+  if (!Number.isSafeInteger(userId) || userId <= 0) return
+  try {
+    storage?.setItem(`${MANAGED_BOOTSTRAP_STORAGE_PREFIX}${userId}`, '1')
+  } catch {
+    // A storage failure only makes the next launch verify the bootstrap again.
+  }
+}
 
 export function shortVersion(value: string | null): string {
   if (!value) return '已检测到'
@@ -101,6 +137,26 @@ export function codexDesktopLaunchDecision(
   running: boolean,
 ): 'open' | 'choose' {
   return running && platform.platform !== 'macos' ? 'choose' : 'open'
+}
+
+/**
+ * The persisted CLI config alone is not a completed first-run checkpoint.
+ * Startup may happen after the app was closed between config write, runtime
+ * installation, CLI installation, and desktop installation. Rechecking the
+ * durable machine state makes the bootstrap naturally resumable.
+ */
+export function codexSetupReadyForDashboard(
+  status: CodexSetupStatus,
+  platform: PlatformCapabilities,
+): boolean {
+  return !isDetectionFailed(status.runtime.node)
+    && !isDetectionFailed(status.runtime.npm)
+    && !isDetectionFailed(status.cli)
+    && !isDetectionFailed(status.desktop)
+    && nodeRuntimeSupported(status.runtime)
+    && status.runtime.npm.installed
+    && status.cli.installed
+    && (status.desktop.installed || platform.codexDesktop.install === 'external')
 }
 
 /**

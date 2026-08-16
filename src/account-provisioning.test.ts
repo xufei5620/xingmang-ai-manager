@@ -3,7 +3,9 @@ import {
   buildProvisioningTargets,
   configureManagedCliKeysForInstalledClis,
   filterProvisioningTargets,
+  managedCliConfigsReadyForDashboard,
   resolveCliProvisioningGate,
+  validateProvisionedCliConfigs,
   writeCliKeyForInstalledClis,
   type CliKeyWriteApi,
   type ManagedCliProvisioningApi,
@@ -107,6 +109,75 @@ describe('buildProvisioningTargets', () => {
   it('includes every installed provider when all four are installed', () => {
     const snapshot = snapshotWithInstalled(providerIds)
     expect(buildProvisioningTargets(snapshot)).toEqual(providerIds)
+  })
+})
+
+describe('validateProvisionedCliConfigs', () => {
+  const validProvider = {
+    hasApiKey: true,
+    matchesRelay: true,
+    model: 'model-1',
+  }
+
+  it('accepts every installed target only after its durable config reads back ready', () => {
+    const config = {
+      providers: {
+        claude: validProvider,
+        codex: validProvider,
+      },
+    } as unknown as import('./types').AppConfigSummary
+    expect(validateProvisionedCliConfigs(['claude', 'codex'], config)).toEqual([])
+  })
+
+  it('reports missing key, relay mismatch, and missing model per provider', () => {
+    const config = {
+      providers: {
+        claude: { ...validProvider, hasApiKey: false },
+        codex: { ...validProvider, matchesRelay: false },
+        gemini: { ...validProvider, model: '' },
+      },
+    } as unknown as import('./types').AppConfigSummary
+    expect(validateProvisionedCliConfigs(['claude', 'codex', 'gemini'], config)).toEqual([
+      { provider: 'claude', message: '配置文件未检测到 API Key' },
+      { provider: 'codex', message: 'Base URL 未指向当前星芒站点' },
+      { provider: 'gemini', message: '默认模型未写入配置' },
+    ])
+  })
+})
+
+describe('managedCliConfigsReadyForDashboard', () => {
+  function configWithReadyProviders(ready: readonly ProviderId[]) {
+    return {
+      providers: Object.fromEntries(providerIds.map((provider) => [provider, {
+        hasApiKey: ready.includes(provider),
+        matchesRelay: ready.includes(provider),
+        model: ready.includes(provider) ? 'model-1' : '',
+      }])),
+    } as unknown as import('./types').AppConfigSummary
+  }
+
+  it('accepts a completed machine only when every currently installed CLI still reads back ready', () => {
+    const snapshot = snapshotWithInstalled(['claude', 'codex'])
+    expect(managedCliConfigsReadyForDashboard(
+      snapshot,
+      configWithReadyProviders(['claude', 'codex']),
+    )).toBe(true)
+  })
+
+  it('invalidates an old checkpoint when a newly installed CLI has not been configured', () => {
+    const snapshot = snapshotWithInstalled(['claude', 'codex', 'gemini'])
+    expect(managedCliConfigsReadyForDashboard(
+      snapshot,
+      configWithReadyProviders(['claude', 'codex']),
+    )).toBe(false)
+  })
+
+  it('ignores stale config entries for CLIs that are no longer installed', () => {
+    const snapshot = snapshotWithInstalled(['codex'])
+    expect(managedCliConfigsReadyForDashboard(
+      snapshot,
+      configWithReadyProviders(['codex']),
+    )).toBe(true)
   })
 })
 

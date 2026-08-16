@@ -8,6 +8,7 @@ import {
   DEFAULT_CODEX_MODEL,
   installNodeAndPrepareCodexEnvironment,
   prepareCodexEnvironment,
+  prepareCodexEnvironmentAutomatically,
   type CodexSetupApi,
   type CodexSetupCallbacks,
 } from './onboarding-flow'
@@ -367,5 +368,102 @@ describe('installNodeAndPrepareCodexEnvironment', () => {
       setup: { outcome: 'ready', status: ready },
     })
     expect(api.getCodexSetupStatus).toHaveBeenCalledTimes(2)
+  })
+})
+
+describe('prepareCodexEnvironmentAutomatically', () => {
+  it('installs a confirmed missing Windows runtime and continues through CLI and desktop setup', async () => {
+    const missingRuntime = setupStatus({ node: false, npm: false, cli: false, desktop: false })
+    const runtimeReady = setupStatus({ cli: false, desktop: false })
+    const cliReady = setupStatus({ desktop: false })
+    const ready = setupStatus()
+    const api = {
+      getCodexSetupStatus: vi.fn()
+        .mockResolvedValueOnce(missingRuntime)
+        .mockResolvedValueOnce(runtimeReady)
+        .mockResolvedValueOnce(runtimeReady)
+        .mockResolvedValueOnce(cliReady)
+        .mockResolvedValueOnce(ready),
+      installNodeRuntime: vi.fn().mockResolvedValue({
+        installed: true,
+        action: 'installed' as const,
+        method: 'msi' as const,
+        source: 'npmmirror' as const,
+        version: 'v22.17.0',
+        architecture: 'x64' as const,
+        pathRefreshRequired: true,
+        systemRestartRequired: false,
+      }),
+      installCli: vi.fn().mockResolvedValue(undefined),
+      installCodexDesktop: vi.fn().mockResolvedValue(undefined),
+    }
+    const listener = callbacks()
+
+    await expect(prepareCodexEnvironmentAutomatically(
+      api,
+      listener.value,
+      platformCapabilitiesFor('win32', 'x64'),
+    )).resolves.toEqual({ outcome: 'ready', status: ready })
+    expect(api.installNodeRuntime).toHaveBeenCalledOnce()
+    expect(api.installCli).toHaveBeenCalledWith('codex')
+    expect(api.installCodexDesktop).toHaveBeenCalledOnce()
+  })
+
+  it('never installs over a detection failure', async () => {
+    const base = setupStatus({ node: false, npm: false })
+    const status: CodexSetupStatus = { ...base, runtime: { ...base.runtime, node: failedTool() } }
+    const api = {
+      getCodexSetupStatus: vi.fn().mockResolvedValue(status),
+      installNodeRuntime: vi.fn(),
+      installCli: vi.fn(),
+      installCodexDesktop: vi.fn(),
+    }
+
+    await expect(prepareCodexEnvironmentAutomatically(
+      api,
+      callbacks().value,
+      platformCapabilitiesFor('win32', 'x64'),
+      { wait: async () => undefined },
+    )).resolves.toMatchObject({ outcome: 'detection-failed' })
+    expect(api.installNodeRuntime).not.toHaveBeenCalled()
+    expect(api.getCodexSetupStatus).toHaveBeenCalledTimes(3)
+  })
+
+  it('recovers automatically when a transient detection failure clears', async () => {
+    const failed = { ...setupStatus(), cli: failedTool() }
+    const ready = setupStatus()
+    const wait = vi.fn(async () => undefined)
+    const api = {
+      getCodexSetupStatus: vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(ready),
+      installNodeRuntime: vi.fn(),
+      installCli: vi.fn(),
+      installCodexDesktop: vi.fn(),
+    }
+
+    await expect(prepareCodexEnvironmentAutomatically(
+      api,
+      callbacks().value,
+      platformCapabilitiesFor('win32', 'x64'),
+      { wait },
+    )).resolves.toEqual({ outcome: 'ready', status: ready })
+    expect(wait).toHaveBeenCalledWith(750)
+    expect(api.installNodeRuntime).not.toHaveBeenCalled()
+  })
+
+  it('keeps external-platform runtime installation manual', async () => {
+    const missingRuntime = setupStatus({ node: false, npm: false })
+    const api = {
+      getCodexSetupStatus: vi.fn().mockResolvedValue(missingRuntime),
+      installNodeRuntime: vi.fn(),
+      installCli: vi.fn(),
+      installCodexDesktop: vi.fn(),
+    }
+
+    await expect(prepareCodexEnvironmentAutomatically(
+      api,
+      callbacks().value,
+      platformCapabilitiesFor('darwin', 'arm64'),
+    )).resolves.toMatchObject({ outcome: 'runtime-required' })
+    expect(api.installNodeRuntime).not.toHaveBeenCalled()
   })
 })

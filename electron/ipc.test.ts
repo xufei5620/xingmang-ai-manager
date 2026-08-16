@@ -69,6 +69,7 @@ function serviceStub(): SystemService {
     scanSystem: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,
+    installPythonRuntime: vi.fn() as never,
     installCli: vi.fn() as never,
     uninstallCli: vi.fn() as never,
     inspectCliUpdate: vi.fn() as never,
@@ -495,6 +496,31 @@ describe('registerIpcHandlers', () => {
     })
     expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow(
       '已拒绝来自非应用页面的操作请求',
+    )
+  })
+
+  it('routes Python 3.12 installation through the trusted service and runtime log', async () => {
+    const service = serviceStub()
+    vi.mocked(service.installPythonRuntime).mockResolvedValue({
+      installed: true,
+      action: 'installed',
+      method: 'winget',
+      source: 'winget',
+      version: 'Python 3.12',
+      architecture: 'x64',
+      pathRefreshRequired: true,
+    })
+    const { runtimeLog } = register(service)
+    const event = trustedEvent()
+
+    await expect(electronMocks.handlers.get('runtime:install-python')!(event)).resolves.toMatchObject({
+      action: 'installed',
+      version: 'Python 3.12',
+    })
+    expect(service.installPythonRuntime).toHaveBeenCalledWith(event.sender)
+    expect(runtimeLog.log).toHaveBeenCalledWith(
+      'info', 'maintenance', 'runtime.python.install.completed', 'Python 3.12 自动安装完成',
+      expect.objectContaining({ method: 'winget', source: 'winget', version: 'Python 3.12' }),
     )
   })
 

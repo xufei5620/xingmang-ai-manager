@@ -13,18 +13,23 @@ import { resolveAccountSnapshot } from './components/account/account-session'
 import {
   buildProvisioningTargets,
   configureManagedCliKeysForInstalledClis,
+  managedCliConfigsReadyForDashboard,
   resolveCliProvisioningGate,
+  validateProvisionedCliConfigs,
   writeCliKeyForInstalledClis,
 } from './account-provisioning'
 import {
   codexDesktopInstallActive,
   codexDesktopLaunchDecision,
+  codexSetupReadyForDashboard,
   commitStartupPlatformCapabilities,
   EmptyStatus,
   initialOnboardingPreview,
   initialSidebarCollapsed,
   initialTheme,
   isDetectionFailed,
+  managedBootstrapCompleted,
+  markManagedBootstrapCompleted,
   resolveInitialAppView,
   sameDesktopStatus,
   SIDEBAR_STORAGE_KEY,
@@ -38,6 +43,7 @@ import { errorMessage } from './error-message'
 import { CodexLaunchDialog } from './components/config/CodexLaunchDialog'
 import { ConfigDialog } from './components/config/ConfigDialog'
 import { Dashboard } from './components/dashboard/Dashboard'
+import { PythonInstallConfirmDialog } from './components/dashboard/PythonInstallConfirmDialog'
 import { ErrorBoundary } from './components/ErrorBoundary'
 import { CodexOnboarding } from './components/onboarding/CodexOnboarding'
 import { NodeInstallGuide } from './components/onboarding/NodeInstallGuide'
@@ -47,6 +53,7 @@ import { StartupSplash } from './components/StartupSplash'
 import { Toast, type ToastMessage } from './components/Toast'
 import { navigationItem, type PageId } from './navigation'
 import { nodeRuntimeSupported } from './onboarding-runtime'
+import type { ManagedBootstrapProgressUpdate, ManagedBootstrapStepId } from './managed-bootstrap-progress'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { BackupsPage } from './pages/BackupsPage'
 import { AiChatPage } from './pages/AiChatPage'
@@ -88,6 +95,7 @@ import {
   type CodexDesktopStatusEvent,
   type InstallProgress,
   type NodeRuntimeInstallProgress,
+  type PythonRuntimeInstallProgress,
   type DiagnosticsReport,
   type McpServer,
   type PluginCatalog,
@@ -132,6 +140,10 @@ function App() {
   const [codexDesktopInstallProgress, setCodexDesktopInstallProgress] = useState<CodexDesktopInstallProgress | null>(null)
   const [nodeRuntimeInstalling, setNodeRuntimeInstalling] = useState(false)
   const [nodeRuntimeInstallProgress, setNodeRuntimeInstallProgress] = useState<NodeRuntimeInstallProgress | null>(null)
+  const [pythonRuntimeInstalling, setPythonRuntimeInstalling] = useState(false)
+  const [pythonRuntimeInstallProgress, setPythonRuntimeInstallProgress] = useState<PythonRuntimeInstallProgress | null>(null)
+  const [pythonInstallConfirmOpen, setPythonInstallConfirmOpen] = useState(false)
+  const pythonRuntimeInstallRequestedRef = useRef(false)
   const [nodeGuideOpen, setNodeGuideOpen] = useState(false)
   // "下一步" 任务卡的两个不可推导里程碑（方案 B 第 3 节）：纯会话内存态，
   // 不持久化、重启即清；挂在 App() 而非 Dashboard() 上是为了在页面间导航时
@@ -608,10 +620,12 @@ function App() {
     let cancelStartupWait: (() => void) | null = null
     const initialize = async () => {
       try {
+        let startupPlatform = failClosedPlatformCapabilities
         await commitStartupPlatformCapabilities(
           () => window.xingmang.getPlatformCapabilities(),
           (capabilities) => {
             if (!active) return
+            startupPlatform = capabilities
             setPlatformCapabilities(capabilities)
             document.documentElement.dataset.platform = capabilities.platform
           },
@@ -670,7 +684,7 @@ function App() {
         // account:get-session is awaited ahead of BOTH startup destinations
         // now -- 登录先行(老板拍板 2026-08-10):账号站点上未登录时,即使
         // 四个 CLI 早已配置齐全也不再直进工作台,先到欢迎页登录/注册,
-        // 登录成功后 handleAccountLoginSubmit 才转工作台并触发自动写 Key。
+        // 登录成功后 handleAccountLoginSubmit 才进入零点击初始化并自动写 Key。
         // 快速通道因此必须先知道登录态,旧的"只在 !codexReady 分支里读
         // session"的作用域优化不再成立。main.ts 的 accountSessionReady
         // 保证(见 ipc.ts account:get-session 的 doc comment)使这次读取
@@ -681,13 +695,48 @@ function App() {
         // relaySiteId 直接复用上面已读进闭包的 startupSettings,不再重复读。
         const startupAccountSession = await window.xingmang.getAccountSession().catch(() => null)
         if (!active) return
+        if (startupAccountSession) setAccountSession(startupAccountSession)
         const authenticated = startupAccountSession?.authenticated ?? false
         const manualKeySite = shouldShowManualKeyEntry(
           resolveRelaySite(startupSettings?.relaySiteId).accountBackend,
         )
-        if (codexReady && (authenticated || manualKeySite)) {
+        const codexSetup = codexReady && (authenticated || manualKeySite)
+          ? await window.xingmang.getCodexSetupStatus()
+          : null
+        if (!active) return
+        const managedBootstrapCheckpointReady = manualKeySite
+          || Boolean(
+            startupAccountSession?.account
+            && managedBootstrapCompleted(startupAccountSession.account.userId),
+          )
+        const durableCodexSetupReady = Boolean(
+          codexReady
+          && codexSetup
+          && codexSetupReadyForDashboard(codexSetup, startupPlatform)
+        )
+        let managedCliConfigsReady = manualKeySite
+        let startupScanCompleted = false
+        if (
+          !manualKeySite
+          && managedBootstrapCheckpointReady
+          && durableCodexSetupReady
+        ) {
+          const startupScan = await scan()
+          if (!active) return
+          startupScanCompleted = true
+          managedCliConfigsReady = Boolean(
+            startupScan.snapshot
+            && startupScan.config
+            && managedCliConfigsReadyForDashboard(startupScan.snapshot, startupScan.config),
+          )
+        }
+        if (
+          managedBootstrapCheckpointReady
+          && durableCodexSetupReady
+          && managedCliConfigsReady
+        ) {
           setAppView('dashboard')
-          void scan()
+          if (!startupScanCompleted) void scan()
           return
         }
         // The welcome/onboarding paths never run the initial scan, so config
@@ -773,6 +822,12 @@ function App() {
   useEffect(() => {
     return window.xingmang.onNodeRuntimeInstallProgress((progress) => {
       setNodeRuntimeInstallProgress(progress)
+    })
+  }, [])
+
+  useEffect(() => {
+    return window.xingmang.onPythonRuntimeInstallProgress((progress) => {
+      setPythonRuntimeInstallProgress(progress)
     })
   }, [])
 
@@ -1042,28 +1097,22 @@ function App() {
     }
   }
 
-  const finishAuthenticatedEntry = async (successMessage: string) => {
-    const warnings: string[] = []
-    try {
-      const synchronized = await window.xingmang.syncManagedCliKeys()
-      if (synchronized.failed.length > 0) {
-        warnings.push(`${synchronized.failed.length} 个专属 Key 未完成初始化`)
-      }
-      if (synchronized.storageWarning) warnings.push('API Key 本地加密保存失败')
-    } catch (error) {
-      warnings.push(resolveAccountErrorMessage(errorMessage(error)))
-    }
+  const finishAuthenticatedEntry = async (successMessage: string, initialWarnings: string[] = []) => {
+    const warnings = [...initialWarnings]
 
-    setAppView('dashboard')
-    try {
-      const scanResult = await scan()
-      offerCliProvisioning(scanResult.snapshot ?? snapshotRef.current)
-    } catch (error) {
-      warnings.push(`本机环境检测失败：${errorMessage(error)}`)
-    }
+    // Account-backed sites have a zero-click post-login bootstrap. The managed
+    // onboarding path reuses the cached codex-pro key, installs missing Node.js
+    // and Codex components, verifies the resulting config, then enters the
+    // dashboard automatically. The old dashboard-first path opened a second
+    // confirmation dialog and left installation as a separate manual task.
+    setAppView('onboarding')
+    // The managed progress panel becomes the source of truth immediately
+    // after login. A success toast repeated the same status and covered the
+    // first progress rows in the compact onboarding window; retain only
+    // actionable warnings here.
     setToast(warnings.length > 0
       ? { type: 'error', message: `${successMessage}，但${warnings.join('；')}` }
-      : { type: 'success', message: successMessage })
+      : null)
   }
 
   // identifier may be either a username or an email address -- new-api's
@@ -1074,8 +1123,9 @@ function App() {
     if (accountBusyRef.current) return
     accountBusyRef.current = true
     setAccountBusy(true)
+    let loginResult
     try {
-      await window.xingmang.loginAccount({ username: values.identifier, password: values.password })
+      loginResult = await window.xingmang.loginAccount({ username: values.identifier, password: values.password })
     } catch (error) {
       setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
       accountBusyRef.current = false
@@ -1094,13 +1144,20 @@ function App() {
       } else if (rememberedLogin && rememberedLogin.identifier === values.identifier) {
         void window.xingmang.setRememberedAccountLogin(null).catch(() => undefined)
       }
-      const account = await refreshAccountSession()
+      setAccountSession({ authenticated: true, account: loginResult.account })
+      const warnings: string[] = []
+      try {
+        setAccountBalance(await window.xingmang.getAccountBalance())
+      } catch (error) {
+        setAccountBalance(null)
+        warnings.push(`余额暂时无法刷新：${resolveAccountErrorMessage(errorMessage(error))}`)
+      }
       setAccountDialog(null)
       setAccountLoginPrefill('')
-      await finishAuthenticatedEntry(account ? `欢迎回来，${account.username}` : '登录成功')
+      await finishAuthenticatedEntry(`欢迎回来，${loginResult.account.username}`, warnings)
     } catch (error) {
       setAccountDialog(null)
-      setAppView('dashboard')
+      setAppView('onboarding')
       setToast({ type: 'error', message: `登录成功，但账号初始化失败：${resolveAccountErrorMessage(errorMessage(error))}` })
     } finally {
       accountBusyRef.current = false
@@ -1131,8 +1188,9 @@ function App() {
       return
     }
 
+    let loginResult
     try {
-      await window.xingmang.loginAccount({ username: values.username, password: values.password })
+      loginResult = await window.xingmang.loginAccount({ username: values.username, password: values.password })
     } catch {
       setAccountDialog('login')
       setAccountLoginPrefill(values.username)
@@ -1143,13 +1201,20 @@ function App() {
     }
 
     try {
-      const account = await refreshAccountSession()
+      setAccountSession({ authenticated: true, account: loginResult.account })
+      const warnings: string[] = []
+      try {
+        setAccountBalance(await window.xingmang.getAccountBalance())
+      } catch (error) {
+        setAccountBalance(null)
+        warnings.push(`余额暂时无法刷新：${resolveAccountErrorMessage(errorMessage(error))}`)
+      }
       setAccountDialog(null)
       setAccountLoginPrefill('')
-      await finishAuthenticatedEntry(account ? `欢迎，${account.username}，账号已创建` : '注册并登录成功')
+      await finishAuthenticatedEntry(`欢迎，${loginResult.account.username}，账号已创建`, warnings)
     } catch (error) {
       setAccountDialog(null)
-      setAppView('dashboard')
+      setAppView('onboarding')
       setToast({ type: 'error', message: `注册并登录成功，但账号初始化失败：${resolveAccountErrorMessage(errorMessage(error))}` })
     } finally {
       accountBusyRef.current = false
@@ -1262,6 +1327,49 @@ function App() {
       setNodeGuideOpen(true)
     } finally {
       setNodeRuntimeInstalling(false)
+    }
+  }
+
+  const installPythonRuntime = async () => {
+    if (pythonRuntimeInstalling || pythonRuntimeInstallRequestedRef.current) return
+    pythonRuntimeInstallRequestedRef.current = true
+    if (platformCapabilities.pythonRuntimeInstall === 'external') {
+      try {
+        await window.xingmang.openExternal('https://www.python.org/downloads/')
+        setToast({ type: 'success', message: '已打开 Python 官网，请完成安装后重新检测' })
+      } catch (error) {
+        setToast({ type: 'error', message: errorMessage(error) })
+      } finally {
+        pythonRuntimeInstallRequestedRef.current = false
+      }
+      return
+    }
+    setPythonRuntimeInstalling(true)
+    setPythonRuntimeInstallProgress({
+      phase: 'checking',
+      source: null,
+      percent: null,
+      message: '正在准备 Python 3.12 安装',
+    })
+    try {
+      const result = await window.xingmang.installPythonRuntime()
+      const refreshed = await scan(true)
+      if (refreshed.snapshot && !refreshed.snapshot.runtime.python.installed) {
+        throw new Error('Python 安装已完成，但当前进程仍未识别到 Python。请重启星芒AI管理工具后重新检测。')
+      }
+      setToast({
+        type: 'success',
+        message: result.action === 'unchanged'
+          ? '已检测到 ' + (result.version ?? 'Python') + '，无需重复安装'
+          : refreshed.snapshot
+            ? (result.version ?? 'Python 3.12') + ' 已安装，环境检测已刷新'
+            : (result.version ?? 'Python 3.12') + ' 已安装，检测结果以最新一次环境检测为准',
+      })
+    } catch (error) {
+      setToast({ type: 'error', message: errorMessage(error) })
+    } finally {
+      setPythonRuntimeInstalling(false)
+      pythonRuntimeInstallRequestedRef.current = false
     }
   }
 
@@ -1488,11 +1596,77 @@ function App() {
     }
   }
 
-  const finishOnboarding = async () => {
+  const finishOnboarding = async (onProgress?: (update: ManagedBootstrapProgressUpdate) => void) => {
     setInstallLog([])
     setLogOpen(false)
+    const failStep = (id: ManagedBootstrapStepId, error: unknown): never => {
+      const message = errorMessage(error)
+      onProgress?.({ id, status: 'failed', message })
+      throw error instanceof Error ? error : new Error(message)
+    }
+
+    onProgress?.({ id: 'scan-installed-clis', status: 'active', message: '正在扫描本机已安装的 AI CLI' })
+    let scanResult: Awaited<ReturnType<typeof scan>>
+    try {
+      scanResult = await scan(true)
+      if (!scanResult.snapshot) throw new Error('环境最终检测失败，正在等待下一次自动重试')
+      if (!scanResult.snapshot.clis.codex.installed || isDetectionFailed(scanResult.snapshot.clis.codex)) {
+        throw new Error('Codex CLI 安装后验证未通过，正在等待下一次自动重试')
+      }
+    } catch (error) {
+      return failStep('scan-installed-clis', error)
+    }
+    onProgress?.({ id: 'scan-installed-clis', status: 'completed', message: '本机 AI CLI 扫描完成' })
+    const latestSnapshot = scanResult.snapshot
+
+    if (accountSession?.authenticated && !shouldShowManualKeyEntry(activeRelaySite.accountBackend)) {
+      const targets = buildProvisioningTargets(latestSnapshot)
+      const preferredModels = Object.fromEntries(
+        providerIds.map((id) => [id, scanResult.config?.providers[id]?.model || config?.providers[id]?.model || undefined]),
+      ) as Partial<Record<ProviderId, string>>
+      onProgress?.({
+        id: 'configure-installed-clis',
+        status: 'active',
+        message: targets.length > 0 ? `正在配置 ${targets.length} 个已安装 AI CLI` : '当前没有其他 CLI 需要配置',
+      })
+      try {
+        const outcome = await configureManagedCliKeysForInstalledClis(targets, preferredModels, window.xingmang)
+        if (outcome.failed.length > 0) {
+          const failures = outcome.failed
+            .map((entry) => `${providers[entry.provider].name}：${entry.message}`)
+            .join('；')
+          throw new Error(`CLI 自动配置验证未完成：${failures}`)
+        }
+      } catch (error) {
+        return failStep('configure-installed-clis', error)
+      }
+      onProgress?.({ id: 'configure-installed-clis', status: 'completed', message: '已安装 CLI 配置写入完成' })
+      onProgress?.({ id: 'verify-config', status: 'active', message: '正在复核 Key、Relay 和默认模型' })
+      let verifiedConfig: AppConfigSummary
+      try {
+        verifiedConfig = await window.xingmang.getConfig()
+        const verificationFailures = validateProvisionedCliConfigs(targets, verifiedConfig)
+        if (verificationFailures.length > 0) {
+          const failures = verificationFailures
+            .map((entry) => `${providers[entry.provider].name}：${entry.message}`)
+            .join('；')
+          throw new Error(`CLI 配置读后验证未通过：${failures}`)
+        }
+      } catch (error) {
+        return failStep('verify-config', error)
+      }
+      onProgress?.({ id: 'verify-config', status: 'completed', message: 'Key、Relay 和默认模型验证通过' })
+      setConfig(verifiedConfig)
+      const userId = accountSession.account?.userId
+      if (userId) markManagedBootstrapCompleted(userId)
+    }
+
+    onProgress?.({ id: 'enter-dashboard', status: 'active', message: '正在载入工作台' })
+    onProgress?.({ id: 'enter-dashboard', status: 'completed', message: '工作台已准备完成' })
+    if (onProgress) {
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 220))
+    }
     setAppView('dashboard')
-    void scan()
   }
 
   const runUpdateAction = async (
@@ -1699,12 +1873,21 @@ function App() {
             codexDesktopInstallProgress={codexDesktopInstallProgress}
             nodeRuntimeInstalling={nodeRuntimeInstalling}
             nodeRuntimeInstallProgress={nodeRuntimeInstallProgress}
+            pythonRuntimeInstalling={pythonRuntimeInstalling}
+            pythonRuntimeInstallProgress={pythonRuntimeInstallProgress}
             runtimeReady={runtimeReady}
             installedCliCount={installedCliCount}
             installedToolCount={installedToolCount}
             nextStepsNudge={{ triedLaunch: nextStepsTriedLaunch, exploredMcp: nextStepsExploredMcp }}
             onScan={() => void scan(true)}
             onInstallNode={() => void installNodeRuntime()}
+            onInstallPython={() => {
+              if (platformCapabilities.pythonRuntimeInstall === 'managed') {
+                setPythonInstallConfirmOpen(true)
+                return
+              }
+              void installPythonRuntime()
+            }}
             onOpenNodeGuide={() => setNodeGuideOpen(true)}
             onInstall={(provider) => void install(provider)}
             onInstallAll={() => void installAll()}
@@ -1928,6 +2111,16 @@ function App() {
           onRecheck={() => {
             setNodeGuideOpen(false)
             void scan(true)
+          }}
+        />
+      )}
+
+      {pythonInstallConfirmOpen && !pythonRuntimeInstalling && (
+        <PythonInstallConfirmDialog
+          onCancel={() => setPythonInstallConfirmOpen(false)}
+          onConfirm={() => {
+            setPythonInstallConfirmOpen(false)
+            void installPythonRuntime()
           }}
         />
       )}
