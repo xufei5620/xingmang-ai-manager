@@ -15,6 +15,7 @@ import type {
   AppConfigSummary,
   CodexDesktopInstallProgress,
   NodeRuntimeInstallProgress,
+  PythonRuntimeInstallProgress,
   PlatformCapabilities,
   ProviderId,
   SystemSnapshot,
@@ -36,12 +37,15 @@ export function Dashboard({
   codexDesktopInstallProgress,
   nodeRuntimeInstalling,
   nodeRuntimeInstallProgress,
+  pythonRuntimeInstalling,
+  pythonRuntimeInstallProgress,
   runtimeReady,
   installedCliCount,
   installedToolCount,
   nextStepsNudge,
   onScan,
   onInstallNode,
+  onInstallPython,
   onOpenNodeGuide,
   onInstall,
   onInstallAll,
@@ -67,12 +71,15 @@ export function Dashboard({
   codexDesktopInstallProgress: CodexDesktopInstallProgress | null
   nodeRuntimeInstalling: boolean
   nodeRuntimeInstallProgress: NodeRuntimeInstallProgress | null
+  pythonRuntimeInstalling: boolean
+  pythonRuntimeInstallProgress: PythonRuntimeInstallProgress | null
   runtimeReady: boolean
   installedCliCount: number
   installedToolCount: number
   nextStepsNudge: NextStepsNudgeState
   onScan: () => void
   onInstallNode: () => void
+  onInstallPython: () => void
   onOpenNodeGuide: () => void
   onInstall: (provider: ProviderId) => void
   onInstallAll: () => void
@@ -148,7 +155,18 @@ export function Dashboard({
         <div className="runtime-grid">
           <RuntimeCell label="Node.js" status={snapshot.runtime.node} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={presentation.nodeAction === 'open-website' ? presentation.nodeActionLabel : snapshot.runtime.node.installed ? '升级' : '一键安装'} onInstall={onInstallNode} onRetry={onScan} />
           <RuntimeCell label="npm" status={snapshot.runtime.npm} loading={scanning || nodeRuntimeInstalling} busyLabel={nodeRuntimeInstalling ? '安装中...' : undefined} actionLabel={presentation.nodeAction === 'open-website' ? presentation.nodeActionLabel : '一键安装'} onInstall={onInstallNode} onRetry={onScan} />
-          <RuntimeCell label="Python" status={snapshot.runtime.python} loading={scanning} optional onInstall={() => void window.xingmang.openExternal('https://www.python.org/downloads/')} onRetry={onScan} />
+          <RuntimeCell
+            label="Python"
+            status={snapshot.runtime.python}
+            loading={scanning || pythonRuntimeInstalling}
+            busyLabel={pythonRuntimeInstalling ? '安装中...' : undefined}
+            optional
+            actionLabel={platform.pythonRuntimeInstall === 'managed'
+              ? '一键安装'
+              : '打开官网'}
+            onInstall={onInstallPython}
+            onRetry={onScan}
+          />
         </div>
         {nodeRuntimeInstallProgress && nodeRuntimeInstalling && (
           <div className={`node-runtime-progress dashboard-node-progress phase-${nodeRuntimeInstallProgress.phase}`} role="status" aria-live="polite">
@@ -157,6 +175,15 @@ export function Dashboard({
               {nodeRuntimeInstallProgress.percent !== null && <strong>{Math.round(nodeRuntimeInstallProgress.percent)}%</strong>}
             </div>
             <progress max="100" value={nodeRuntimeInstallProgress.percent ?? undefined} />
+          </div>
+        )}
+        {pythonRuntimeInstallProgress && pythonRuntimeInstalling && (
+          <div className={'node-runtime-progress dashboard-node-progress phase-' + pythonRuntimeInstallProgress.phase} role="status" aria-live="polite">
+            <div>
+              <span>{pythonRuntimeInstallProgress.message}</span>
+              {pythonRuntimeInstallProgress.percent !== null && <strong>{Math.round(pythonRuntimeInstallProgress.percent)}%</strong>}
+            </div>
+            <progress max="100" value={pythonRuntimeInstallProgress.percent ?? undefined} />
           </div>
         )}
       </section>

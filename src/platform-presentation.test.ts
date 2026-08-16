@@ -14,6 +14,7 @@ describe('platform presentation', () => {
       architecture: 'unknown',
       isMac: false,
       nodeRuntimeInstall: 'external',
+      pythonRuntimeInstall: 'external',
       cliInstall: {
         claude: 'external',
         codex: 'external',

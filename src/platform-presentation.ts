@@ -17,6 +17,7 @@ export const failClosedPlatformCapabilities: PlatformCapabilities = Object.freez
   architecture: 'unknown',
   isMac: false,
   nodeRuntimeInstall: 'external',
+  pythonRuntimeInstall: 'external',
   cliInstall: Object.freeze({
     claude: 'external',
     codex: 'external',

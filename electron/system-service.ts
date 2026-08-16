@@ -52,6 +52,12 @@ import {
   installNodeRuntime as installNodeRuntimeLts,
   type NodeRuntimeInstallResult,
 } from './node-runtime'
+import {
+  inspectInstalledPythonRuntime,
+  installPythonRuntime as installPythonRuntime312,
+  isPython312RuntimeVersion,
+  type PythonRuntimeInstallResult,
+} from './python-runtime'
 import { InstallationQueue } from './installation-queue'
 import {
   assertTrustedElevatedCliCommand,
@@ -596,6 +602,7 @@ export interface SystemService {
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
+  installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult>
   installCli(provider: ProviderId, target: RendererMessageTarget): Promise<void>
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
@@ -1535,6 +1542,8 @@ export interface SystemServiceOptions {
   findExecutable?: typeof findExecutable
   runCommand?: typeof runCommand
   macosCodexAppDetector?: typeof inspectMacosCodexApp
+  installPythonRuntime?: typeof installPythonRuntime312
+  inspectInstalledPythonRuntime?: typeof inspectInstalledPythonRuntime
 }
 
 export function providerCommandEnvironment(
@@ -1571,9 +1580,12 @@ export function createSystemService(
   const findExecutableForService = serviceOptions.findExecutable ?? findExecutable
   const executeCommand = serviceOptions.runCommand ?? runCommand
   const detectMacosCodexApp = serviceOptions.macosCodexAppDetector ?? inspectMacosCodexApp
+  const installPythonRuntimeForService = serviceOptions.installPythonRuntime ?? installPythonRuntime312
+  const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
   let nodeRuntimeInstalling = false
+  let pythonRuntimeInstalling = false
   const npmLatestCache = new Map<string, { expiresAt: number; value: LatestVersionProbe }>()
   // 失效时递增，让失效前发起的在途查询放弃回写过期结果
   let npmLatestCacheGeneration = 0
@@ -1779,10 +1791,25 @@ export function createSystemService(
     ] as const) {
       const result = await inspectTool(command, [...args])
       if (!result.installed) continue
-      if (result.version) return result
+      if (isPython312RuntimeVersion(result.version)) return result
       if (!isWindowsAppExecutionAlias(result.path)) fallback ??= result
     }
-    return fallback ?? { installed: false, version: null, path: null, installDirectory: null }
+    if (platform === 'win32') {
+      try {
+        const inspected = await inspectInstalledPythonRuntimeForService()
+        return {
+          installed: true,
+          version: inspected.version,
+          path: inspected.executable,
+          installDirectory: path.dirname(inspected.executable),
+        }
+      } catch {
+        // The fixed current-user Python 3.12 location is an additional probe,
+        // not a reason to turn a normal "not installed" result into a failure.
+      }
+    }
+    if (fallback) return fallback
+    return { installed: false, version: null, path: null, installDirectory: null }
   }
 
   async function inspectLatestNpmVersion(
@@ -2080,6 +2107,52 @@ export function createSystemService(
 
   function installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult> {
     return installationQueue.enqueue('runtime:node', () => installNodeRuntimeOperation(target))
+  }
+
+  async function installPythonRuntimeOperation(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult> {
+    if (pythonRuntimeInstalling) throw new Error('Python 正在安装中，请等待当前任务完成')
+    pythonRuntimeInstalling = true
+    try {
+      const [pythonResult] = await Promise.allSettled([inspectPython()])
+      const python = buildToolStatusFromSettled(pythonResult)
+      if (python.detectionFailed) {
+        throw new Error(python.detectionError ?? 'Python 检测失败，请重新检测后再试')
+      }
+      const architecture = process.arch === 'x64' || process.arch === 'arm64' ? process.arch : 'x64'
+      if (python.installed && Boolean(python.version?.trim())) {
+        const result: PythonRuntimeInstallResult = {
+          installed: true,
+          action: 'unchanged',
+          method: null,
+          source: null,
+          version: python.version,
+          architecture,
+          pathRefreshRequired: false,
+        }
+        if (!target.isDestroyed()) {
+          target.send('runtime:python-install-progress', {
+            phase: 'complete',
+            source: null,
+            message: '已检测到可用的 ' + python.version + '，无需重复安装',
+            percent: 100,
+          })
+        }
+        return result
+      }
+      return await installPythonRuntimeForService({
+        architecture: process.arch,
+        temporaryDirectoryMode: windowsExecutionMode,
+        onProgress: (progress) => {
+          if (!target.isDestroyed()) target.send('runtime:python-install-progress', progress)
+        },
+      })
+    } finally {
+      pythonRuntimeInstalling = false
+    }
+  }
+
+  function installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult> {
+    return installationQueue.enqueue('runtime:python', () => installPythonRuntimeOperation(target))
   }
 
   function sendInstallProgress(
@@ -3002,6 +3075,7 @@ export function createSystemService(
     scanSystem,
     inspectCodexSetupStatus,
     installNodeRuntime,
+    installPythonRuntime,
     installCli,
     uninstallCli,
     inspectCliUpdate,

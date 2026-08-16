@@ -3,7 +3,7 @@
 // enters renderer memory. The manual paste path remains renderer-driven
 // because the user explicitly supplies that key in a renderer form.
 import { errorMessage } from './error-message'
-import { providerIds, type ProviderId, type SystemSnapshot } from './types'
+import { providerIds, type AppConfigSummary, type ProviderId, type SystemSnapshot } from './types'
 
 /**
  * The subset of the write chain that both provisioning paths share: mint (or
@@ -115,6 +115,38 @@ export async function configureManagedCliKeysForInstalledClis(
  */
 export function buildProvisioningTargets(snapshot: SystemSnapshot): ProviderId[] {
   return providerIds.filter((id) => snapshot.clis[id].installed)
+}
+
+/**
+ * Verifies the durable renderer-safe projection after managed configuration
+ * writes. A resolved IPC call is not enough to admit the user to the dashboard:
+ * every installed target must read back with a key, the active relay URL, and a
+ * concrete model.
+ */
+export function validateProvisionedCliConfigs(
+  targets: readonly ProviderId[],
+  config: AppConfigSummary,
+): Array<{ provider: ProviderId; message: string }> {
+  return targets.flatMap((provider) => {
+    const summary = config.providers[provider]
+    if (!summary?.hasApiKey) return [{ provider, message: '配置文件未检测到 API Key' }]
+    if (!summary.matchesRelay) return [{ provider, message: 'Base URL 未指向当前星芒站点' }]
+    if (!summary.model.trim()) return [{ provider, message: '默认模型未写入配置' }]
+    return []
+  })
+}
+
+/**
+ * Revalidates the account bootstrap checkpoint against current machine state.
+ * A user may install another supported CLI, edit a config file, or switch the
+ * relay after the checkpoint was written; any such drift must re-enter the
+ * managed repair flow instead of being hidden by a stale completion marker.
+ */
+export function managedCliConfigsReadyForDashboard(
+  snapshot: SystemSnapshot,
+  config: AppConfigSummary,
+): boolean {
+  return validateProvisionedCliConfigs(buildProvisioningTargets(snapshot), config).length === 0
 }
 
 export type CliProvisioningGate = 'requires-login' | 'requires-install' | 'ready'

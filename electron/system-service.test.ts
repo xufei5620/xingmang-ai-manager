@@ -1648,6 +1648,115 @@ describe.runIf(process.platform === 'darwin')('Darwin managed npm update integra
   })
 })
 
+describe('Python runtime installation', () => {
+  it.runIf(process.platform === 'win32')('does not reinstall a PATH-visible Python 3.12 runtime', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-existing-python-runtime-'))
+    temporaryDirectories.push(directory)
+    const pythonExecutable = 'D:\Python312\python.exe'
+    const installPythonRuntime = vi.fn(async () => ({
+      installed: true as const,
+      action: 'installed' as const,
+      method: 'winget' as const,
+      source: 'winget' as const,
+      version: 'Python 3.12',
+      architecture: 'x64' as const,
+      pathRefreshRequired: true,
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async (command) => command === 'python' ? pythonExecutable : null,
+        runCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          stdout: 'Python 3.12.9\n', stderr: '', outputBytes: 14, durationMs: 1,
+        }),
+        installPythonRuntime,
+        inspectInstalledPythonRuntime: async () => { throw new Error('fixed probe must not run') },
+      },
+    )
+    const target = { isDestroyed: () => false, send: vi.fn() }
+
+    await expect(service.installPythonRuntime(target)).resolves.toMatchObject({
+      action: 'unchanged',
+      version: 'Python 3.12.9',
+      pathRefreshRequired: false,
+    })
+    expect(installPythonRuntime).not.toHaveBeenCalled()
+    expect(target.send).toHaveBeenCalledWith(
+      'runtime:python-install-progress',
+      expect.objectContaining({ phase: 'complete', message: expect.stringContaining('无需重复安装') }),
+    )
+  })
+
+  it.runIf(process.platform === 'win32')('reuses a PATH-visible Python 3.11 runtime', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-old-python-runtime-'))
+    temporaryDirectories.push(directory)
+    const pythonExecutable = 'D:\Python311\python.exe'
+    const installPythonRuntime = vi.fn(async () => ({
+      installed: true as const,
+      action: 'installed' as const,
+      method: 'winget' as const,
+      source: 'winget' as const,
+      version: 'Python 3.12',
+      architecture: 'x64' as const,
+      pathRefreshRequired: true,
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async (command) => command === 'python' ? pythonExecutable : null,
+        runCommand: async (spec) => ({
+          executable: spec.executable, argv: [...spec.argv], exitCode: 0, signal: null,
+          stdout: 'Python 3.11.9\n', stderr: '', outputBytes: 14, durationMs: 1,
+        }),
+        installPythonRuntime,
+        inspectInstalledPythonRuntime: async () => { throw new Error('Python 3.12 fixed install not found') },
+      },
+    )
+
+    await expect(service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() })).resolves.toMatchObject({
+      action: 'unchanged',
+      version: 'Python 3.11.9',
+      pathRefreshRequired: false,
+    })
+    expect(installPythonRuntime).not.toHaveBeenCalled()
+  })
+
+  it.runIf(process.platform === 'win32')('installs Python 3.12 only when no usable Python is visible', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-missing-python-runtime-'))
+    temporaryDirectories.push(directory)
+    const installPythonRuntime = vi.fn(async () => ({
+      installed: true as const,
+      action: 'installed' as const,
+      method: 'winget' as const,
+      source: 'winget' as const,
+      version: 'Python 3.12',
+      architecture: 'x64' as const,
+      pathRefreshRequired: true,
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async () => null,
+        installPythonRuntime,
+        inspectInstalledPythonRuntime: async () => { throw new Error('Python 3.12 fixed install not found') },
+      },
+    )
+
+    await expect(service.installPythonRuntime({ isDestroyed: () => false, send: vi.fn() })).resolves.toMatchObject({
+      action: 'installed',
+      version: 'Python 3.12',
+    })
+    expect(installPythonRuntime).toHaveBeenCalledWith(expect.objectContaining({ architecture: process.arch }))
+  })
+})
+
 describe('npm install progress reporting', () => {
   it.runIf(process.platform === 'win32')('does not reinstall a supported PATH-visible Node.js and npm runtime', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-existing-node-runtime-'))

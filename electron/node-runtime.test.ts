@@ -134,15 +134,19 @@ describe('Node.js installer routing and process plans', () => {
       ],
       acceptedExitCodes: [0],
     })
+    expect(winget.trustedOnly).toBeUndefined()
     expect(() => buildNodeRuntimeWingetPlan('winget.exe')).toThrow('系统级 winget 路径无效')
     expect(plan.signature.executable).toBe(powershell)
     expect(path.win32.isAbsolute(plan.signature.executable)).toBe(true)
     expect(plan.signature.argv).not.toContain(msiPath)
     expect(plan.signature.env?.XINGMANG_NODE_MSI_PATH).toBe(msiPath)
+    expect(plan.signature.env?.PSModulePath).toBe('')
     expect(plan.signature.trustedPaths).toEqual([msiPath])
     const encodedIndex = plan.signature.argv.indexOf('-EncodedCommand') + 1
     const decodedScript = Buffer.from(plan.signature.argv[encodedIndex], 'base64').toString('utf16le')
     expect(decodedScript).toContain('Get-AuthenticodeSignature')
+    expect(decodedScript).toContain("$ErrorActionPreference = 'Stop'")
+    expect(decodedScript).toContain('Microsoft.PowerShell.Security.psd1')
     expect(decodedScript).toContain('$env:XINGMANG_NODE_MSI_PATH')
     expect(decodedScript).not.toContain(msiPath)
     expect(plan.msi).toMatchObject({
@@ -155,6 +159,16 @@ describe('Node.js installer routing and process plans', () => {
     const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false, testMachinePaths)
     expect(sameUserPlan.signature.trustedOnly).toBe(false)
     expect(sameUserPlan.msi.trustedOnly).toBe(false)
+  })
+
+  it.runIf(process.platform === 'win32')('isolates signature checks to the real Windows PowerShell module directory', () => {
+    const plan = buildNodeRuntimeInstallPlan(
+      'C:\Temp\node-runtime.msi',
+      'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe',
+      false,
+    )
+    expect(plan.signature.env?.PSModulePath).toMatch(/WindowsPowerShell[\\/]v1\.0[\\/]Modules$/i)
+    expect(plan.signature.env?.PSModulePath).not.toContain('PowerShell\\7')
   })
 
   it('accepts only the system App Installer package under Program Files WindowsApps', () => {
@@ -232,7 +246,7 @@ describe('Node.js installer routing and process plans', () => {
     })).resolves.toMatchObject({ method: 'winget', source: 'winget', version: 'v22.17.0' })
 
     expect(runProcess).toHaveBeenCalledWith(
-      expect.objectContaining({ executable }),
+      expect.objectContaining({ executable, trustedOnly: false }),
       undefined,
     )
     expect(inspectInstalledNodeRuntime).toHaveBeenCalledWith(undefined)

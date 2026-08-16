@@ -68,6 +68,16 @@ export type CodexNodeInstallResult =
   | { outcome: 'setup'; setup: CodexSetupResult }
   | { outcome: 'node-failed'; status: CodexSetupStatus | null; error: unknown }
 
+export type CodexAutomaticSetupResult =
+  | CodexSetupResult
+  | { outcome: 'node-failed'; status: CodexSetupStatus | null; error: unknown }
+
+export interface CodexAutomaticSetupOptions {
+  detectionRetries?: number
+  retryDelayMs?: number
+  wait?: (delayMs: number) => Promise<void>
+}
+
 /**
  * A probe that threw must not be reinterpreted as "confirmed missing" this
  * far downstream either: left unchecked, `prepareCodexEnvironment` would
@@ -224,4 +234,35 @@ export async function installNodeAndPrepareCodexEnvironment(
     callbacks.onAction('idle')
     return { outcome: 'node-failed', status, error }
   }
+}
+
+/**
+ * Runs the complete managed first-run chain. A confirmed missing or outdated
+ * runtime is repaired automatically on platforms where the app owns Node.js
+ * installation. Detection failures remain retry-only because they are not
+ * evidence that an existing runtime is absent.
+ */
+export async function prepareCodexEnvironmentAutomatically(
+  api: CodexNodeInstallApi,
+  callbacks: CodexSetupCallbacks,
+  capabilities?: PlatformCapabilities,
+  options: CodexAutomaticSetupOptions = {},
+): Promise<CodexAutomaticSetupResult> {
+  const detectionRetries = Math.max(0, Math.floor(options.detectionRetries ?? 2))
+  const retryDelayMs = Math.max(0, Math.floor(options.retryDelayMs ?? 750))
+  const wait = options.wait ?? ((delayMs: number) => new Promise<void>((resolve) => {
+    setTimeout(resolve, delayMs)
+  }))
+  let setup = await prepareCodexEnvironment(api, callbacks, capabilities)
+  for (let attempt = 0; setup.outcome === 'detection-failed' && attempt < detectionRetries; attempt += 1) {
+    callbacks.onLog(`环境检测暂时失败，正在自动重试（${attempt + 1}/${detectionRetries}）`, 'append')
+    await wait(retryDelayMs)
+    setup = await prepareCodexEnvironment(api, callbacks, capabilities)
+  }
+  if (setup.outcome !== 'runtime-required' || capabilities?.nodeRuntimeInstall !== 'managed') {
+    return setup
+  }
+
+  const nodeResult = await installNodeAndPrepareCodexEnvironment(api, callbacks, capabilities)
+  return nodeResult.outcome === 'setup' ? nodeResult.setup : nodeResult
 }

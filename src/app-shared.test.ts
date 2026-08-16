@@ -1,10 +1,46 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import {
+  codexSetupReadyForDashboard,
   initialOnboardingPreview,
+  managedBootstrapCompleted,
+  markManagedBootstrapCompleted,
   isDetectionFailed,
   resolveInitialAppView,
   sameDesktopStatus,
 } from './app-shared'
+import { platformCapabilitiesFor } from '../electron/platform-capabilities'
+import type { CodexSetupStatus, ToolStatus } from './types'
+
+function setupTool(installed: boolean): ToolStatus {
+  return {
+    installed,
+    version: installed ? 'test-version' : null,
+    path: installed ? 'C:\\Program Files\\tool.exe' : null,
+    installDirectory: installed ? 'C:\\Program Files' : null,
+    ...(installed ? { versionStatus: 'supported' as const } : {}),
+  }
+}
+
+function resumableSetupStatus(options: { node?: boolean; npm?: boolean; cli?: boolean; desktop?: boolean } = {}): CodexSetupStatus {
+  const { node = true, npm = true, cli = true, desktop = true } = options
+  return {
+    checkedAt: '2026-08-16T00:00:00.000Z',
+    runtime: { node: setupTool(node), npm: setupTool(npm) },
+    cli: setupTool(cli),
+    desktop: {
+      ...setupTool(desktop),
+      appVersion: null,
+      mirrorVersion: null,
+      mirrorUpdateAvailable: null,
+      mirrorError: null,
+      running: false,
+      updateAvailable: false,
+      latestVersion: null,
+      updateState: 'unknown',
+      updateError: null,
+    },
+  }
+}
 import type { DesktopAppStatus } from './types'
 
 const baseDesktopStatus: DesktopAppStatus = {
@@ -30,6 +66,55 @@ describe('isDetectionFailed', () => {
 
   it('is true only when detectionFailed is explicitly true', () => {
     expect(isDetectionFailed({ detectionFailed: true })).toBe(true)
+  })
+})
+
+describe('codexSetupReadyForDashboard', () => {
+  const windows = platformCapabilitiesFor('win32', 'x64')
+
+  it('requires every durable Windows bootstrap step before using the dashboard fast path', () => {
+    expect(codexSetupReadyForDashboard(resumableSetupStatus(), windows)).toBe(true)
+    expect(codexSetupReadyForDashboard(resumableSetupStatus({ node: false }), windows)).toBe(false)
+    expect(codexSetupReadyForDashboard(resumableSetupStatus({ npm: false }), windows)).toBe(false)
+    expect(codexSetupReadyForDashboard(resumableSetupStatus({ cli: false }), windows)).toBe(false)
+    expect(codexSetupReadyForDashboard(resumableSetupStatus({ desktop: false }), windows)).toBe(false)
+  })
+
+  it('does not require an in-app desktop install on externally managed platforms', () => {
+    expect(codexSetupReadyForDashboard(
+      resumableSetupStatus({ desktop: false }),
+      platformCapabilitiesFor('darwin', 'arm64'),
+    )).toBe(true)
+  })
+
+  it('never fast-paths a status that contains a failed probe', () => {
+    const status = resumableSetupStatus()
+    status.cli.detectionFailed = true
+    status.cli.detectionError = '命令探测超时'
+    expect(codexSetupReadyForDashboard(status, windows)).toBe(false)
+  })
+})
+
+describe('managed bootstrap checkpoint', () => {
+  it('is keyed per account and only accepts a completed sentinel', () => {
+    const values = new Map<string, string>()
+    const storage = {
+      getItem: (key: string) => values.get(key) ?? null,
+      setItem: (key: string, value: string) => { values.set(key, value) },
+    }
+    expect(managedBootstrapCompleted(36, storage)).toBe(false)
+    markManagedBootstrapCompleted(36, storage)
+    expect(managedBootstrapCompleted(36, storage)).toBe(true)
+    expect(managedBootstrapCompleted(37, storage)).toBe(false)
+  })
+
+  it('rejects invalid user ids without touching storage', () => {
+    const setItem = vi.fn()
+    const storage = { getItem: vi.fn(() => null), setItem }
+    markManagedBootstrapCompleted(0, storage)
+    markManagedBootstrapCompleted(Number.NaN, storage)
+    expect(setItem).not.toHaveBeenCalled()
+    expect(managedBootstrapCompleted(-1, storage)).toBe(false)
   })
 })
 

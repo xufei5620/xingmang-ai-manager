@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import {
   runCommand,
+  trustedCommandEnvironment,
   windowsSystemExecutable,
   type CommandResult,
   type RunCommandOptions,
@@ -156,14 +157,20 @@ const sources: Record<Exclude<NodeRuntimeSource, 'winget'>, NodeRuntimeDownloadS
 
 const signatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-  "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_MSI_PATH",
+  "$ErrorActionPreference = 'Stop'",
+  "$ProgressPreference = 'SilentlyContinue'",
+  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_MSI_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
 ].join('; ')
 
 const installedNodeSignatureScript = [
   '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-  "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_EXE_PATH",
+  "$ErrorActionPreference = 'Stop'",
+  "$ProgressPreference = 'SilentlyContinue'",
+  "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+  "$signature = Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_NODE_EXE_PATH -ErrorAction Stop",
   "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
   '[PSCustomObject]@{ status = [string]$signature.Status; subject = [string]$subject } | ConvertTo-Json -Compress',
 ].join('; ')
@@ -548,8 +555,9 @@ export function buildNodeRuntimeInstallPlan(
   trustedOnly = true,
   machinePaths?: WindowsMachinePaths,
 ): NodeRuntimeInstallPlan {
+  const roots = machinePaths ?? (process.platform === 'win32' ? resolveWindowsMachinePaths() : undefined)
   const signatureEnv = {
-    ...process.env,
+    ...trustedCommandEnvironment(process.env, roots, roots ? 'win32' : process.platform),
     XINGMANG_NODE_MSI_PATH: msiPath,
   }
   return {
@@ -575,6 +583,7 @@ export function buildNodeRuntimeInstallPlan(
       argv: ['/i', msiPath, '/qn', '/norestart', 'ADDLOCAL=ALL'],
       timeoutMs: installerTimeoutMs,
       acceptedExitCodes: [0, 3010],
+      env: signatureEnv,
       trustedPaths: [msiPath],
       ...(!trustedOnly ? { trustedOnly: false } : {}),
     },
@@ -605,6 +614,18 @@ export function buildNodeRuntimeWingetPlan(executable: string): NodeRuntimeProce
     ],
     timeoutMs: wingetTimeoutMs,
     acceptedExitCodes: [0],
+  }
+}
+
+function verifiedNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPlan {
+  return {
+    ...buildNodeRuntimeWingetPlan(executable),
+    // The resolver immediately above this call validated the App Installer
+    // package identity, real install root, canonical executable and basename.
+    // Run it as the current user so WindowsApps ACL probing is not repeated by
+    // the high-integrity generic command path.
+    trustedOnly: false,
+    env: trustedCommandEnvironment(),
   }
 }
 
@@ -958,7 +979,7 @@ export async function installNodeRuntime(
       })
     } else {
       try {
-        await dependencies.runProcess(buildNodeRuntimeWingetPlan(winget.executable), options.signal)
+        await dependencies.runProcess(verifiedNodeRuntimeWingetPlan(winget.executable), options.signal)
         const installedRuntime = await dependencies.inspectInstalledNodeRuntime(options.signal)
         const result: NodeRuntimeInstallResult = {
           installed: true,
