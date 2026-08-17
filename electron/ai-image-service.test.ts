@@ -57,9 +57,10 @@ describe('AI image service', () => {
   it('uses the images endpoint and explicit low quality for GPT Image', async () => {
     const fetchImpl = vi.fn(async () => response({ data: [{ b64_json: 'aGVsbG8=', revised_prompt: 'revised' }] })) as unknown as typeof fetch
     const { service, assets } = setup(fetchImpl)
+    const stages: string[] = []
     const result = await service.generate(4, {
       requestId: 'r1', group: '生图分组', model: 'gpt-image-2', prompt: '一张图', size: '1024x1024',
-    })
+    }, { onStage: (stage) => { stages.push(stage) } })
     const [url, init] = vi.mocked(fetchImpl).mock.calls[0]
     expect(String(url)).toBe('https://xm.solov.cc/v1/images/generations')
     const body = JSON.parse(String(init?.body))
@@ -67,6 +68,7 @@ describe('AI image service', () => {
     expect(body).not.toHaveProperty('response_format')
     expect(String(url)).not.toContain('chat/completions')
     expect(assets.storeBase64).toHaveBeenCalledWith(7, 'aGVsbG8=', { revisedPrompt: 'revised' })
+    expect(stages).toEqual(['processing', 'downloading', 'saving'])
     expect(JSON.stringify(result)).not.toContain('sk-secret')
   })
 

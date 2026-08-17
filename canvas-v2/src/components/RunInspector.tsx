@@ -8,6 +8,8 @@ interface RunInspectorProps {
   records: readonly CanvasRunRecord[]
   selectedRunId: string | null
   selectedCandidateIds: Readonly<Record<string, string | undefined>>
+  adoptedCandidateIds: Readonly<Record<string, string | undefined>>
+  stagedCandidateIds: Readonly<Record<string, readonly string[] | undefined>>
   selectedScope: CanvasRunScope['kind']
   dirtyCount: number
   selectionCount: number
@@ -17,9 +19,12 @@ interface RunInspectorProps {
   onSelectRun(runId: string): void
   onSelectCandidate(nodeId: string, candidate: CanvasRunCandidate): void
   onAdopt(nodeId: string, candidate: CanvasRunCandidate): void
+  onDiscard(nodeId: string, candidateId: string): void
   onPreviewAsset(asset: CanvasRunCandidate['asset']): void
   onAssetMenu(assetId: string): void
+  onLocateNode(nodeId: string): void
   onClose(): void
+  embedded?: boolean
 }
 
 const statusLabel: Record<string, string> = {
@@ -27,17 +32,33 @@ const statusLabel: Record<string, string> = {
   cancelled: '已取消', interrupted: '已中断', cached: '缓存', skipped: '跳过',
 }
 
+const stageLabel: Record<string, string> = {
+  validating: '检查节点输入',
+  'resolving-cache': '检查本地缓存',
+  'waiting-slot': '等待执行槽位',
+  submitting: '提交生成请求',
+  processing: '服务端处理中',
+  downloading: '下载生成结果',
+  saving: '保存到工作目录',
+}
+
+function eventLabel(event: CanvasRunRecord['events'][number]): string {
+  if (event.type === 'run-terminal') return `运行${statusLabel[event.status] ?? event.status}`
+  if (event.type === 'node-stage') return `${event.nodeId}：${stageLabel[event.stage] ?? event.stage}`
+  return `${event.nodeId}：${statusLabel[event.state] ?? event.state}`
+}
+
 export function RunInspector(props: RunInspectorProps) {
   const selected = props.records.find((record) => record.runId === props.selectedRunId) ?? props.records[0]
   const nodes = selected?.nodes ?? []
   return (
-    <aside className={`run-inspector${props.open ? ' is-open' : ''}`} aria-label="运行与候选">
-      <header>
+    <aside className={`run-inspector${props.open ? ' is-open' : ''}${props.embedded ? ' is-embedded' : ''}`} aria-label="运行与候选">
+      {!props.embedded && <header>
         <History size={15} aria-hidden="true" />
         <strong>运行与候选</strong>
         <button type="button" title="刷新历史" aria-label="刷新历史" onClick={props.onRefresh}><RefreshCw size={15} /></button>
         <button type="button" title="关闭" aria-label="关闭运行面板" onClick={props.onClose}><X size={16} /></button>
-      </header>
+      </header>}
       <div className="run-scope-control">
         <label><span>运行范围</span>
           <select value={props.selectedScope} onChange={(event) => props.onScopeChange(event.target.value as CanvasRunScope['kind'])}>
@@ -69,14 +90,35 @@ export function RunInspector(props: RunInspectorProps) {
             <span>{typeof selected.durationMs === 'number' ? `${(selected.durationMs / 1000).toFixed(1)} 秒` : '正在执行'}</span>
           </section>
         )}
+        {selected && (selected.status === 'cancelled' || selected.status === 'interrupted') && (
+          <p className="run-recovery-hint">已停止本地等待；服务端生成任务可能仍在继续。对不确定的付费提交不要立即重复运行，可先续查或打开对应节点。</p>
+        )}
+        {selected && selected.events.length > 0 && (
+          <section className="run-timeline" aria-label="运行时间线">
+            <header><strong>运行时间线</strong><span>{selected.events.length} 个事件</span></header>
+            <ol>
+              {selected.events.slice(-24).map((event) => (
+                <li key={`${event.sequence}-${event.type}`}>
+                  <time>{new Date(event.at).toLocaleTimeString()}</time>
+                  {'nodeId' in event
+                    ? <button type="button" title="定位到画布节点" onClick={() => props.onLocateNode(event.nodeId)}>{eventLabel(event)}</button>
+                    : <span>{eventLabel(event)}</span>}
+                </li>
+              ))}
+            </ol>
+          </section>
+        )}
         {nodes.map((node) => {
           const attempt = node.attempts.at(-1)
           const candidates = node.attempts.flatMap((entry) => entry.candidates)
           const totalQuota = node.attempts.reduce((total, entry) => total + (entry.costQuota ?? 0), 0)
           return (
             <section className="run-node-record" key={node.nodeId}>
-              <div className="run-node-head"><strong>{node.kind}</strong><span>{statusLabel[node.state] ?? node.state}</span></div>
-              {node.errorMessage && <p role="alert">{node.errorMessage}</p>}
+              <div className="run-node-head">
+                <button type="button" title="定位到画布节点" onClick={() => props.onLocateNode(node.nodeId)}>{node.kind}</button>
+                <span>{node.latestStage ? stageLabel[node.latestStage] : statusLabel[node.state] ?? node.state}</span>
+              </div>
+              {node.errorMessage && <><p role="alert">{node.errorMessage}</p><small className="run-error-action">可先检查分组、模型和素材归属；若为网络或下载失败，可在当前节点重新发起。</small></>}
               {attempt && (
                 <div className="run-meta">
                   <span>{node.attempts.length} 次尝试</span>
@@ -87,7 +129,10 @@ export function RunInspector(props: RunInspectorProps) {
               {candidates.length ? (
                 <div className="candidate-grid">
                   {candidates.map((candidate) => (
-                    <article key={candidate.candidateId} className={props.selectedCandidateIds[node.nodeId] === candidate.candidateId ? 'is-selected' : ''}>
+                    <article
+                      key={candidate.candidateId}
+                      className={`${props.selectedCandidateIds[node.nodeId] === candidate.candidateId ? 'is-selected' : ''}${props.adoptedCandidateIds[node.nodeId] === candidate.candidateId ? ' is-adopted' : ''}`}
+                    >
                       {candidate.asset.kind === 'image'
                         ? <button type="button" className="candidate-preview" title="单击选择，双击放大" onClick={() => props.onSelectCandidate(node.nodeId, candidate)} onDoubleClick={() => props.onPreviewAsset(candidate.asset)}><SafeImage src={candidate.asset.localUrl} alt="生成候选" fallbackLabel="候选不可用" onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }} /></button>
                         : candidate.asset.kind === 'video' && isLocalCanvasAssetUrl(candidate.asset.localUrl)
@@ -96,8 +141,19 @@ export function RunInspector(props: RunInspectorProps) {
                             ? <div className="candidate-audio" title="双击放大预览" onDoubleClick={() => props.onPreviewAsset(candidate.asset)} onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }}><Music2 size={18} aria-hidden="true" /><AudioPreview src={candidate.asset.localUrl} /></div>
                             : <div className="candidate-video media-unavailable">{candidate.asset.kind === 'audio' ? '音频候选不可用' : '视频候选不可用'}</div>}
                       <div>
-                        <button type="button" onClick={() => props.onAdopt(node.nodeId, candidate)}><Check size={12} />采纳</button>
-                        <button type="button" title="更多资产操作" aria-label="候选资产操作" onClick={() => props.onAssetMenu(candidate.asset.assetId)}><MoreHorizontal size={14} /></button>
+                        <button
+                          type="button"
+                          disabled={props.adoptedCandidateIds[node.nodeId] === candidate.candidateId}
+                          onClick={() => props.onAdopt(node.nodeId, candidate)}
+                        ><Check size={12} />{props.adoptedCandidateIds[node.nodeId] === candidate.candidateId ? '已采纳' : '采纳'}</button>
+                        <button
+                          type="button"
+                          className="candidate-discard"
+                          title={props.stagedCandidateIds[node.nodeId]?.includes(candidate.candidateId) ? '从当前候选区丢弃，不删除素材' : '先单击候选，将它加入当前候选区'}
+                          disabled={props.adoptedCandidateIds[node.nodeId] === candidate.candidateId || !props.stagedCandidateIds[node.nodeId]?.includes(candidate.candidateId)}
+                          onClick={() => props.onDiscard(node.nodeId, candidate.candidateId)}
+                        ><X size={12} />丢弃</button>
+                        <button type="button" className="candidate-more" title="更多资产操作" aria-label="候选资产操作" onClick={() => props.onAssetMenu(candidate.asset.assetId)}><MoreHorizontal size={14} /></button>
                       </div>
                     </article>
                   ))}

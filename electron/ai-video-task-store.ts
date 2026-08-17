@@ -21,6 +21,10 @@ export interface StoredAiVideoTask {
   requestId: string
   createdAt: string
   projectId?: string
+  runId?: string
+  nodeId?: string
+  attemptId?: string
+  graphRevision?: string
 }
 
 interface AiVideoTaskState {
@@ -47,6 +51,14 @@ function safeString(value: unknown, maximum: number): value is string {
   return typeof value === 'string' && value.length > 0 && value.length <= maximum && !/[\x00-\x1F\x7F]/.test(value)
 }
 
+function safeCorrelationFields(task: Partial<StoredAiVideoTask>): boolean {
+  const fields = [task.runId, task.nodeId, task.attemptId, task.graphRevision]
+  const hasCorrelation = fields.some((value) => value !== undefined)
+  if (!hasCorrelation) return true
+  if (!fields.every((value) => safeString(value, 256))) return false
+  return /^[a-f0-9]{64}$/.test(task.graphRevision as string)
+}
+
 function safeTask(value: unknown, userId: number): value is StoredAiVideoTask {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const task = value as Partial<StoredAiVideoTask>
@@ -60,6 +72,7 @@ function safeTask(value: unknown, userId: number): value is StoredAiVideoTask {
     && typeof task.createdAt === 'string'
     && !Number.isNaN(Date.parse(task.createdAt))
     && (task.projectId === undefined || (typeof task.projectId === 'string' && /^[a-f0-9-]{36}$/.test(task.projectId)))
+    && safeCorrelationFields(task)
 }
 
 function parseState(content: string, userId: number): AiVideoTaskState {

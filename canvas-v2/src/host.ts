@@ -32,11 +32,23 @@ export interface CanvasGeneratedVideoAsset {
   durationSeconds?: number
 }
 
+export interface CanvasAssetLineage {
+  origin: 'generated'
+  runId: string
+  graphRevision: string
+  nodeId: string
+  attemptId: string
+  candidateId: string
+  projectId?: string
+  sourceAssetIds: string[]
+}
+
 export interface CanvasImageAssetSummary extends CanvasGeneratedAsset {
   createdAt: string
   mediaType: 'image'
   thumbnailUrl: string
   displayName?: string
+  lineage?: CanvasAssetLineage
 }
 
 export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
@@ -47,6 +59,7 @@ export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
   width?: number
   height?: number
   durationSeconds?: number
+  lineage?: CanvasAssetLineage
 }
 
 export interface CanvasAudioAssetSummary {
@@ -59,6 +72,7 @@ export interface CanvasAudioAssetSummary {
   thumbnailUrl: string
   displayName?: string
   durationSeconds?: number
+  lineage?: CanvasAssetLineage
 }
 
 export type CanvasAssetSummary = CanvasImageAssetSummary | CanvasVideoAssetSummary | CanvasAudioAssetSummary
@@ -77,6 +91,31 @@ export interface CanvasAssetPage {
   limit: number
   total: number
   hasMore: boolean
+}
+
+export interface CanvasAssetReferenceReport {
+  assetId: string
+  inUse: boolean
+  currentProject: {
+    projectId: string
+    projectName: string
+    nodeIds: string[]
+  }
+  projects: Array<{
+    projectId: string
+    projectName: string
+    nodeIds: string[]
+    archived: boolean
+  }>
+  runs: Array<{
+    runId: string
+    projectId?: string
+    createdAt: string
+    status: string
+    nodeIds: string[]
+    inputReferenceCount: number
+    candidateReferenceCount: number
+  }>
 }
 
 export interface CanvasPromptPreset {
@@ -100,18 +139,54 @@ export interface CanvasRunGraph {
   edges: Array<{ id: string; source: string; sourceHandle: string; target: string; targetHandle: string }>
 }
 
-export interface CanvasRunEvent {
-  type: 'node-state' | 'run-terminal'
+export const canvasRunTimelineLimit = 4_096
+
+export type CanvasRunNodeStage =
+  | 'validating'
+  | 'resolving-cache'
+  | 'waiting-slot'
+  | 'submitting'
+  | 'processing'
+  | 'downloading'
+  | 'saving'
+
+interface CanvasRunEventBase {
+  version: 1
   runId: string
   graphRevision: string
   sequence: number
-  nodeId?: string
-  state?: string
-  candidateIds?: string[]
-  errorMessage?: string
-  costQuota?: number
-  status?: string
+  at: string
 }
+
+export type CanvasRunEvent = CanvasRunEventBase & (
+  | {
+    type: 'node-state'
+    nodeId: string
+    state: CanvasRunNodeState
+    attemptId?: string
+    fingerprint?: string
+    candidateIds?: string[]
+    errorMessage?: string
+    costQuota?: number
+  }
+  | {
+    type: 'node-stage'
+    nodeId: string
+    stage: CanvasRunNodeStage
+    attemptId?: string
+  }
+  | {
+    type: 'run-terminal'
+    status: Exclude<CanvasRunStatus, 'running'>
+    outcome: {
+      succeeded: string[]
+      failed: string[]
+      skipped: string[]
+      cancelled: string[]
+      cached: string[]
+    }
+  }
+)
 
 export type CanvasRunNodeState =
   | 'queued' | 'running' | 'cancelling' | 'succeeded' | 'failed'
@@ -157,6 +232,9 @@ export interface CanvasRunRecord {
     nodeId: string
     kind: string
     state: CanvasRunNodeState
+    latestStage?: CanvasRunNodeStage
+    latestStageAt?: string
+    latestStageSequence?: number
     errorMessage?: string
     attempts: Array<{
       attemptId: string
@@ -166,6 +244,7 @@ export interface CanvasRunRecord {
       completedAt: string
       durationMs: number
       cached: boolean
+      inputAssetIds?: string[]
       candidates: CanvasRunCandidate[]
       outputText?: string
       errorMessage?: string
@@ -192,9 +271,18 @@ export interface CanvasStoredProjectSummary {
   name: string
   createdAt: string
   updatedAt: string
+  lastOpenedAt: string
   nodeCount: number
+  assetCount: number
   workspaceName?: string
   workspaceConfigured: boolean
+  workspaceStatus: 'ready' | 'missing' | 'legacy'
+  previewAsset?: {
+    kind: 'image' | 'video' | 'audio'
+    assetId: string
+    localUrl: string
+  }
+  archivedAt?: string
 }
 
 export interface CanvasHostBridge {
@@ -238,6 +326,7 @@ export interface CanvasHostBridge {
   showAssetMenu(assetId: string): Promise<void>
   listAssets(query?: CanvasAssetQuery): Promise<CanvasAssetPage>
   renameAsset(input: { assetId: string; displayName: string }): Promise<{ assetId: string; displayName: string }>
+  inspectAssetReferences(assetId: string, currentProjectContent: string): Promise<CanvasAssetReferenceReport>
   pickAsset(): Promise<CanvasGeneratedAsset | CanvasAssetSummary | null>
   importAssetFile(file: File): Promise<CanvasGeneratedAsset | CanvasAssetSummary>
   listPromptPresets(): Promise<CanvasPromptPreset[]>
@@ -254,7 +343,11 @@ export interface CanvasHostBridge {
   createProject(name: string): Promise<{ project: CanvasStoredProjectSummary; content: string } | null>
   openProject(projectId: string): Promise<{ project: CanvasStoredProjectSummary; content: string }>
   saveProject(projectId: string, content: string): Promise<CanvasStoredProjectSummary>
+  renameProject(projectId: string, name: string): Promise<CanvasStoredProjectSummary>
+  duplicateProject(projectId: string, name: string): Promise<{ project: CanvasStoredProjectSummary; content: string } | null>
+  setProjectArchived(projectId: string, archived: boolean): Promise<CanvasStoredProjectSummary>
   onRunEvent(listener: (event: CanvasRunEvent) => void): () => void
+  onThemeChange(listener: (theme: 'light' | 'dark') => void): () => void
 }
 
 declare global {
@@ -312,6 +405,7 @@ export function hostBridge(): CanvasHostBridge {
       return { items: [], offset: query.offset ?? 0, limit: query.limit ?? 24, total: 0, hasMore: false }
     },
     async renameAsset() { return unavailable() },
+    async inspectAssetReferences() { return unavailable() },
     async pickAsset() { return unavailable() },
     async importAssetFile() { return unavailable() },
     async listPromptPresets() { return [] },
@@ -328,6 +422,10 @@ export function hostBridge(): CanvasHostBridge {
     async createProject() { return unavailable() },
     async openProject() { return unavailable() },
     async saveProject() { return unavailable() },
+    async renameProject() { return unavailable() },
+    async duplicateProject() { return unavailable() },
+    async setProjectArchived() { return unavailable() },
     onRunEvent() { return () => undefined },
+    onThemeChange() { return () => undefined },
   }
 }

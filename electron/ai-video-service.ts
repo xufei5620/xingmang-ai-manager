@@ -5,6 +5,7 @@ import {
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiStoredVideoAsset } from './ai-video-asset-store'
 import type { AiVideoTaskStore, StoredAiVideoTask } from './ai-video-task-store'
+import type { AiOperationProgressObserver } from './ai-operation-progress'
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000
 const DEFAULT_MAXIMUM_POLL_INTERVAL_MS = 10_000
@@ -27,6 +28,10 @@ export interface AiVideoGenerationInput {
   height?: number
   expectedUserId?: number
   projectId?: string
+  runId?: string
+  nodeId?: string
+  attemptId?: string
+  graphRevision?: string
 }
 
 export interface GeneratedAiVideoAsset extends AiStoredVideoAsset {
@@ -244,7 +249,13 @@ export function createAiVideoService(options: {
     }
   }
 
-  async function downloadTask(task: StoredAiVideoTask, apiKey: string, signal: AbortSignal): Promise<GeneratedAiVideoAsset> {
+  async function downloadTask(
+    task: StoredAiVideoTask,
+    apiKey: string,
+    signal: AbortSignal,
+    progress?: AiOperationProgressObserver,
+  ): Promise<GeneratedAiVideoAsset> {
+    await progress?.onStage('downloading')
     const response = await fetchWithTimeout(
       new URL(`${AI_CHAT_ENDPOINTS.videos}/${encodeURIComponent(task.taskId)}/content`, baseUrl),
       { method: 'GET', headers: { Accept: 'video/mp4', Authorization: `Bearer ${apiKey}` } },
@@ -258,9 +269,11 @@ export function createAiVideoService(options: {
     if (contentType && contentType !== 'video/mp4' && contentType !== 'application/octet-stream') {
       throw new Error('视频下载响应类型不受支持')
     }
+    const bytes = await readBoundedBytes(response, MAXIMUM_VIDEO_BYTES, '视频文件')
+    await progress?.onStage('saving')
     const asset = await options.assets.storeMp4(
       task.userId,
-      await readBoundedBytes(response, MAXIMUM_VIDEO_BYTES, '视频文件'),
+      bytes,
       { taskId: task.taskId, ...(task.projectId ? { projectId: task.projectId } : {}) },
     )
     await options.tasks.remove(task.userId, task.taskId)
@@ -275,7 +288,11 @@ export function createAiVideoService(options: {
     return downloadTask(task, credential.apiKey, signal)
   }
 
-  async function generate(senderId: number, input: AiVideoGenerationInput): Promise<GeneratedAiVideoAsset> {
+  async function generate(
+    senderId: number,
+    input: AiVideoGenerationInput,
+    progress?: AiOperationProgressObserver,
+  ): Promise<GeneratedAiVideoAsset> {
     if (!Number.isSafeInteger(senderId) || senderId <= 0) throw new Error('视频窗口标识格式错误')
     const requestId = requiredIdentifier(input.requestId, '视频请求标识', 160)
     const key = requestKey(senderId, requestId)
@@ -352,6 +369,10 @@ export function createAiVideoService(options: {
         requestId,
         createdAt: now().toISOString(),
         ...(input.projectId ? { projectId: input.projectId } : {}),
+        ...(input.runId ? { runId: input.runId } : {}),
+        ...(input.nodeId ? { nodeId: input.nodeId } : {}),
+        ...(input.attemptId ? { attemptId: input.attemptId } : {}),
+        ...(input.graphRevision ? { graphRevision: input.graphRevision } : {}),
       }
       try {
         await options.tasks.commitReservation(reservationId, task)
@@ -360,8 +381,9 @@ export function createAiVideoService(options: {
       } catch {
         throw new Error(`视频任务已创建但本地恢复记录保存失败（任务 ${task.taskId}），请勿重复提交`)
       }
+      await progress?.onStage('processing')
       await pollTask(task, credential.apiKey, operation.controller.signal)
-      return await downloadTask(task, credential.apiKey, operation.controller.signal)
+      return await downloadTask(task, credential.apiKey, operation.controller.signal, progress)
     } catch (error) {
       if (operation.controller.signal.aborted) {
         if (operation.taskId) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动会继续查询')

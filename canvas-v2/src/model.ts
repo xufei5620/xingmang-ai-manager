@@ -12,6 +12,9 @@ export type NodeKind =
   | 'group' | 'note' | 'unknown'
 
 export type NodeStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
+export type NodeRunStage =
+  | 'validating' | 'resolving-cache' | 'waiting-slot' | 'submitting'
+  | 'processing' | 'downloading' | 'saving'
 
 export interface AssetRef {
   kind: 'image' | 'video' | 'audio'
@@ -50,6 +53,7 @@ export interface WorkflowNodeData {
   /** 视频生成时长，协议要求为 1-15 的整数字符串。 */
   seconds?: string
   status: NodeStatus
+  /** 已由用户采纳、允许持久化并作为下游输入的结果。暂存候选不得覆盖它。 */
   result?: AssetRef
   /** 面向用户的失败原因(中文),仅 status === 'failed' 时有意义。 */
   errorMessage?: string
@@ -59,7 +63,7 @@ export interface WorkflowNodeData {
   settings?: Record<string, unknown>
   /** 多候选节点当前展示的候选资产标识。 */
   candidateAssetIds?: string[]
-  /** 当前运行返回的候选；运行态数据，不进入工作流文件。 */
+  /** 当前运行返回、等待用户采纳或丢弃的候选；运行态数据，不进入工作流文件。 */
   candidates?: WorkflowCandidateRef[]
   /** 预览候选与已采纳候选分离，选择预览不会影响下游。 */
   selectedCandidateId?: string
@@ -68,6 +72,8 @@ export interface WorkflowNodeData {
   dirty?: boolean
   attemptCount?: number
   latestAttemptDurationMs?: number
+  /** 主进程签发的当前运行阶段；仅用于实时展示，不进入工作流文件。 */
+  runStage?: NodeRunStage
 }
 
 export interface WorkflowNode {

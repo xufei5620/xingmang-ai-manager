@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  appendCanvasRunTimelineEvent,
   canvasRunDescendants,
   executeCanvasRun,
   type CanvasNodeExecutors,
@@ -9,7 +10,9 @@ import type {
   CanvasRunCacheEntry,
   CanvasRunGraph,
   CanvasRunGraphNode,
+  CanvasRunRecord,
 } from './canvas-run-contract'
+import { canvasRunTimelineLimit } from './canvas-run-contract'
 
 function node(id: string, kind: CanvasRunGraphNode['kind'], prompt = id): CanvasRunGraphNode {
   return { id, kind, definitionVersion: 1, data: { prompt, model: kind === 'image' ? 'gpt-image-2' : '' } }
@@ -74,6 +77,48 @@ describe('executeCanvasRun', () => {
       expect(record.events.filter((event) => event.type === 'node-state' && event.nodeId === item.nodeId && ['succeeded', 'cached', 'failed', 'skipped', 'cancelled', 'interrupted'].includes(event.state))).toHaveLength(1)
     }
     expect(record.events.map((event) => event.sequence)).toEqual(record.events.map((_event, index) => index + 1))
+  })
+
+  it('persists ordered node stages and retains the latest stage outside the bounded timeline', async () => {
+    const imageExecutor = vi.fn(async ({ reportStage }) => {
+      await reportStage('downloading')
+      await reportStage('saving')
+      return { assets: [asset()] }
+    })
+    const record = await executeCanvasRun(runOptions(graph([node('image', 'image')]), {
+      executors: executors({ image: imageExecutor }),
+    }))
+    const stages = record.events
+      .filter((event) => event.type === 'node-stage')
+      .map((event) => event.stage)
+
+    expect(stages).toEqual([
+      'validating', 'resolving-cache', 'waiting-slot', 'submitting', 'processing', 'downloading', 'saving',
+    ])
+    expect(record.nodes[0]).toMatchObject({
+      latestStage: 'saving',
+      latestStageSequence: record.events.find((event) => event.type === 'node-stage' && event.stage === 'saving')?.sequence,
+    })
+    expect(record.events.map((event) => event.sequence)).toEqual(record.events.map((_event, index) => index + 1))
+  })
+
+  it('keeps a 5000-node stage timeline bounded with monotonic retained sequences', () => {
+    const events: CanvasRunRecord['events'] = []
+    for (let index = 1; index <= 5_000; index += 1) {
+      appendCanvasRunTimelineEvent(events, {
+        version: 1,
+        type: 'node-stage',
+        runId: 'run-1',
+        graphRevision: 'revision-1',
+        sequence: index,
+        at: '2026-08-17T01:00:00.000Z',
+        nodeId: `node-${index}`,
+        stage: 'validating',
+      })
+    }
+    expect(events).toHaveLength(canvasRunTimelineLimit)
+    expect(events[0].sequence).toBe(5_000 - canvasRunTimelineLimit + 1)
+    expect(events.at(-1)?.sequence).toBe(5_000)
   })
 
   it('preserves multiple image, video, and audio inputs for generic node executors', async () => {
@@ -142,6 +187,28 @@ describe('executeCanvasRun', () => {
     await expect(executeCanvasRun(runOptions(graph([node('a', 'text'), node('b', 'text')], [edge('a', 'b'), edge('b', 'a')]), {
       executors: executors({ text }),
     }))).rejects.toThrow('循环连接')
+    expect(text).not.toHaveBeenCalled()
+  })
+
+  it('requires initial record persistence before dispatching an executor', async () => {
+    const text = vi.fn(async () => ({ outputText: 'paid result' }))
+    const persistRecord = vi.fn(async () => undefined)
+    const admissionSnapshots: CanvasRunRecord[] = []
+    await expect(executeCanvasRun(runOptions(graph([node('a', 'text')]), {
+      executors: executors({ text }),
+      admitRecord: async (snapshot) => {
+        admissionSnapshots.push(snapshot)
+        throw new Error('disk unavailable')
+      },
+      persistRecord,
+    }))).rejects.toThrow('画布运行初始化持久化失败：disk unavailable')
+
+    expect(admissionSnapshots).toHaveLength(1)
+    expect(admissionSnapshots[0]).toMatchObject({ status: 'running', events: [] })
+    expect(admissionSnapshots[0].nodes).toEqual([
+      expect.objectContaining({ nodeId: 'a', state: 'queued', attempts: [] }),
+    ])
+    expect(persistRecord).not.toHaveBeenCalled()
     expect(text).not.toHaveBeenCalled()
   })
 
@@ -283,6 +350,31 @@ describe('executeCanvasRun', () => {
     }))
     expect(record.status).toBe('succeeded')
     expect(order.every((entry, index) => index % 2 === 0 ? entry.startsWith('persist:') : entry.startsWith('notify:'))).toBe(true)
+  })
+
+  it('continues persistence after one snapshot write fails without replaying the executor', async () => {
+    const text = vi.fn(async () => ({ outputText: 'paid result' }))
+    const persisted: Array<{ sequence: number | undefined; status: string }> = []
+    const notified: number[] = []
+    let failedOnce = false
+    const pending = executeCanvasRun(runOptions(graph([node('a', 'text')]), {
+      executors: executors({ text }),
+      persistRecord: async (snapshot) => {
+        const sequence = snapshot.events.at(-1)?.sequence
+        if (sequence === 2 && !failedOnce) {
+          failedOnce = true
+          throw new Error('transient disk error')
+        }
+        persisted.push({ sequence, status: snapshot.status })
+      },
+      onEvent: async (event) => { notified.push(event.sequence) },
+    }))
+
+    await expect(pending).rejects.toThrow('画布运行记录持久化失败：transient disk error')
+    expect(text).toHaveBeenCalledOnce()
+    expect(persisted.map((entry) => entry.sequence)).not.toContain(2)
+    expect(persisted.at(-1)?.status).toBe('succeeded')
+    expect(notified).toEqual(persisted.map((entry) => entry.sequence))
   })
 })
 

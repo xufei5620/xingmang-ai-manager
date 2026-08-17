@@ -1,6 +1,6 @@
 import { createContext, memo, useContext, useMemo, type DragEvent, type ReactNode } from 'react'
 import { Handle, Position, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import { AlertCircle, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Maximize2, MoreHorizontal, Music2, Play, Upload } from 'lucide-react'
+import { AlertCircle, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeDefinition } from '../domain/node-definition'
 import type { AssetRef, NodeKind, WorkflowNodeData } from '../model'
@@ -26,6 +26,8 @@ import { PromptEditor } from '../components/PromptEditor'
 import { buildCanvasUpstreamReferences, type UpstreamMediaReference } from '../components/upstream-references'
 import { mediaAssetAspectRatio } from '../library/media-assets'
 import { createNodeRendererRegistry } from './node-renderer-registry'
+import type { CanvasNodeLod } from './node-lod'
+import { nodeResultStagingState } from '../runtime/run-projection'
 
 export function ModelSuggestions() {
   return (
@@ -58,6 +60,13 @@ export function CanvasModelAvailabilityProvider({
       {children}
     </CanvasModelAvailabilityContext.Provider>
   )
+}
+
+const CanvasNodeViewContext = createContext<{ lod: CanvasNodeLod }>({ lod: 'detail' })
+
+export function CanvasNodeViewProvider({ lod, children }: { lod: CanvasNodeLod; children: ReactNode }) {
+  const value = useMemo(() => ({ lod }), [lod])
+  return <CanvasNodeViewContext.Provider value={value}>{children}</CanvasNodeViewContext.Provider>
 }
 
 export type CanvasNode = Node<WorkflowNodeData & Record<string, unknown>, NodeKind> & {
@@ -99,6 +108,16 @@ const statusIcon = {
   failed: AlertCircle,
 } satisfies Record<WorkflowNodeData['status'], typeof Circle>
 
+const runStageLabel: Record<NonNullable<WorkflowNodeData['runStage']>, string> = {
+  validating: '检查节点输入',
+  'resolving-cache': '检查本地缓存',
+  'waiting-slot': '等待执行槽位',
+  submitting: '提交生成请求',
+  processing: '服务端处理中',
+  downloading: '下载生成结果',
+  saving: '保存到工作目录',
+}
+
 interface NodeChangeHandlers {
   onPromptChange(nodeId: string, prompt: string): void
   onModelChange(nodeId: string, model: string): void
@@ -113,6 +132,7 @@ interface NodeChangeHandlers {
   onResumeTask(nodeId: string): void
   onSelectCandidate(nodeId: string, candidateId: string): void
   onAdoptCandidate(nodeId: string, candidateId: string): void
+  onDiscardCandidate(nodeId: string, candidateId: string): void
   onShowCandidateMenu(assetId: string): void
   onBindAsset(nodeId: string, assetId: string): void
   onPickAsset(nodeId: string): void
@@ -135,6 +155,7 @@ let handlers: NodeChangeHandlers = {
   onResumeTask: () => undefined,
   onSelectCandidate: () => undefined,
   onAdoptCandidate: () => undefined,
+  onDiscardCandidate: () => undefined,
   onShowCandidateMenu: () => undefined,
   onBindAsset: () => undefined,
   onPickAsset: () => undefined,
@@ -161,7 +182,7 @@ function mediaInputLabel(kind: NodeKind): string {
   return kind === 'video-input' ? '视频' : kind === 'audio-input' ? '音频' : '图片'
 }
 
-function MediaInputDropZone({ id, kind, asset }: { id: string; kind: 'image-input' | 'video-input' | 'audio-input'; asset?: AssetRef }) {
+function MediaInputDropZone({ id, kind, asset, locked = false, disabled = false }: { id: string; kind: 'image-input' | 'video-input' | 'audio-input'; asset?: AssetRef; locked?: boolean; disabled?: boolean }) {
   const label = mediaInputLabel(kind)
   const expectedAssetKind = kind === 'video-input' ? 'video' : kind === 'audio-input' ? 'audio' : 'image'
   const hasAsset = Boolean(asset?.assetId)
@@ -235,6 +256,10 @@ function MediaInputDropZone({ id, kind, asset }: { id: string; kind: 'image-inpu
           <button type="button" className="nodrag" title={`替换${label}素材`} aria-label={`替换${label}素材`} onClick={() => handlers.onPickAsset(id)}><FolderOpen size={13} /></button>
           <button type="button" className="nodrag" title={`放大${label}预览`} aria-label={`放大${label}预览`} onClick={() => handlers.onPreviewAsset(asset as AssetRef)}><Maximize2 size={13} /></button>
         </span>
+      </div>}
+      {hasAsset && (locked || disabled) && <div className="wf-media-state-badges" aria-label="节点状态">
+        {locked && <span className="wf-locked"><Lock size={10} aria-hidden="true" />已锁定</span>}
+        {disabled && <span className="wf-disabled">已禁用</span>}
       </div>}
       {!previewUrl && hasAsset && <small className="wf-input-preview-hint">素材引用无效，请重新选择</small>}
     </div>
@@ -355,7 +380,10 @@ function NodeSettings({ id, data, kind }: { id: string; data: WorkflowNodeData; 
     return <div className="wf-gallery-empty">{count > 0 ? `${count} 个候选，可在运行结果中采纳` : '运行生成节点后在此汇总候选'}</div>
   }
   if (kind === 'output') {
-    return <p className="wf-result-note">{data.result?.assetId ? '最终产物已确认' : '连接并采纳上游结果后完成交付'}</p>
+    const stagingState = nodeResultStagingState(data)
+    return <p className={`wf-result-note is-${stagingState}`}>
+      {stagingState === 'pending' ? '待确认结果' : stagingState === 'accepted' ? '最终产物已确认' : '连接上游后运行'}
+    </p>
   }
   if (kind === 'unknown') {
     return <p className="wf-error">{data.errorMessage || '当前版本无法识别这个节点'}</p>
@@ -363,11 +391,13 @@ function NodeSettings({ id, data, kind }: { id: string; data: WorkflowNodeData; 
   return null
 }
 
-function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData & Record<string, unknown>; kind: NodeKind }) {
+function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNodeData & Record<string, unknown>; kind: NodeKind; selected: boolean }) {
   const modelAvailability = useContext(CanvasModelAvailabilityContext)
+  const { lod } = useContext(CanvasNodeViewContext)
   const upstreamReferences = useContext(CanvasUpstreamReferencesContext).get(id) ?? []
   const definition = builtinNodeRegistry.resolve(kind) ?? builtinNodeRegistry.require('unknown')
   const disabled = data.__canvasDisabled === true
+  const locked = data.__canvasLocked === true
   const inputs = definition.ports.filter((port) => port.direction === 'input')
   const outputs = definition.ports.filter((port) => port.direction === 'output')
   const inputHint = multiInputHint(kind)
@@ -394,12 +424,27 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData & Re
     ?? data.candidates?.[0]
   const displayedResult = selectedCandidate?.asset ?? data.result
   const StatusIcon = statusIcon[data.status]
+  const summaryMode = lod === 'summary' && kind !== 'group' && !selected
+  const promptSummary = kind === 'note' ? textSetting(data, 'text') : data.prompt
+  const resultSummary = displayedResult?.kind === 'image'
+    ? '图像结果已就绪'
+    : displayedResult?.kind === 'video'
+      ? '视频结果已就绪'
+      : displayedResult?.kind === 'audio'
+        ? '音频结果已就绪'
+        : data.status === 'failed'
+          ? data.errorMessage || '运行失败'
+          : data.status === 'running' || data.status === 'queued'
+            ? data.runStage ? runStageLabel[data.runStage] : data.status === 'running' ? '正在生成结果' : '等待执行槽位'
+              : data.dirty
+                ? '输入已变化，等待重新运行'
+                : '尚无运行结果'
 
   if (mediaInput && data.result?.assetId) {
     const output = outputs[0]
     return (
-      <div className={`wf-node wf-media-bound wf-media-bound-${data.result.kind}`}>
-        <MediaInputDropZone id={id} kind={kind as 'image-input' | 'video-input' | 'audio-input'} asset={data.result} />
+      <div className={`wf-node wf-media-bound wf-media-bound-${data.result.kind}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}`}>
+        <MediaInputDropZone id={id} kind={kind as 'image-input' | 'video-input' | 'audio-input'} asset={data.result} locked={locked} disabled={disabled} />
         {output && <Handle
           type="source"
           id={output.id}
@@ -413,7 +458,7 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData & Re
   }
 
   return (
-    <div className={`wf-node wf-node-${kind} wf-category-${definition.category} wf-status-${data.status}${data.dirty ? ' wf-is-dirty' : ''}${disabled ? ' wf-is-disabled' : ''}`}>
+    <div className={`wf-node wf-node-${kind} wf-category-${definition.category} wf-status-${data.status}${data.dirty ? ' wf-is-dirty' : ''}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}${summaryMode ? ' wf-lod-summary' : ''}`}>
       {inputs.map((port, index) => (
         <Handle
           key={port.id}
@@ -438,10 +483,28 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData & Re
           {data.status === 'idle'
             ? <span className="wf-status-idle-dot" title="待运行" aria-label="待运行" />
             : <span className={`wf-status wf-status-${data.status}`}><StatusIcon size={12} aria-hidden="true" />{statusLabel[data.status]}</span>}
+          {locked && <span className="wf-locked" title="节点位置已锁定" role="img" aria-label="位置已锁定"><Lock size={10} aria-hidden="true" /></span>}
           {disabled && <span className="wf-disabled" title="此节点不会参与运行">已禁用</span>}
           {data.dirty && <span className="wf-dirty" title="输入或采纳结果已变化，需要重新运行">待更新</span>}
         </span>
       </header>
+
+      {summaryMode && (
+        <section className="wf-node-overview" aria-label={`${definition.title}摘要`}>
+          <div className="wf-node-overview-state">
+            <StatusIcon size={17} aria-hidden="true" />
+            <span><strong>{statusLabel[data.status]}</strong><small>{resultSummary}</small></span>
+          </div>
+          {supportsModel(kind) && <p title={selectedModel}><span>模型</span><strong>{selectedModel || '未设置'}</strong></p>}
+          {promptSummary.trim() && <blockquote title={promptSummary}>{promptSummary}</blockquote>}
+          <div className="wf-node-overview-ports">
+            {inputs.map((port) => <span key={port.id} className={`is-${port.kind}`}>输入·{port.label}{port.cardinality === 'many' ? '×N' : ''}</span>)}
+            {outputs.map((port) => <span key={port.id} className={`is-${port.kind}`}>输出·{port.label}</span>)}
+          </div>
+        </section>
+      )}
+
+      <div className="wf-node-details" aria-hidden={summaryMode || undefined}>
 
       {inputHint && <p className="wf-input-contract-hint" role="note">{inputHint}</p>}
 
@@ -524,8 +587,10 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData & Re
         <div className="wf-progress" role="status" aria-live="polite">
           <span className="wf-progress-bar" />
           <p>
-            {data.status === 'queued'
-              ? '正在等待可用执行槽位…'
+            {data.runStage
+              ? `${runStageLabel[data.runStage]}…`
+              : data.status === 'queued'
+                ? '正在等待可用执行槽位…'
               : videoOperation
                 ? '视频生成中，完成后会自动保存到本地 · 通常需要数分钟'
                 : data.quality === 'high'
@@ -606,6 +671,15 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData & Re
               </button>
               <button
                 type="button"
+                className="wf-discard-candidate"
+                title={selectedCandidate.candidateId === data.adoptedCandidateId ? '已采纳结果不能丢弃' : '从当前候选区丢弃，不删除素材'}
+                disabled={selectedCandidate.candidateId === data.adoptedCandidateId}
+                onClick={() => handlers.onDiscardCandidate(id, selectedCandidate.candidateId)}
+              >
+                <X size={12} />丢弃
+              </button>
+              <button
+                type="button"
                 className="wf-icon-command"
                 title="候选资产操作"
                 aria-label="候选资产操作"
@@ -641,6 +715,7 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData & Re
           <button type="button" className="nodrag wf-rerun" onClick={() => handlers.onResumeTask(id)}>续查任务</button>
         )}
       </div>
+      </div>
       {outputs.map((port, index) => (
         <Handle
           key={port.id}
@@ -657,7 +732,7 @@ function NodeShell({ id, data, kind }: { id: string; data: WorkflowNodeData & Re
 }
 
 function createRenderer(definition: NodeDefinition) {
-  const Renderer = ({ id, data }: NodeProps<CanvasNode>) => <NodeShell id={id} data={data} kind={definition.type as NodeKind} />
+  const Renderer = ({ id, data, selected }: NodeProps<CanvasNode>) => <NodeShell id={id} data={data} kind={definition.type as NodeKind} selected={selected} />
   Renderer.displayName = `${definition.type}Node`
   return memo(Renderer)
 }

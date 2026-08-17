@@ -6,6 +6,16 @@ export interface ProjectableCanvasNode {
   data: WorkflowNodeData
 }
 
+export type NodeResultStagingState = 'pending' | 'accepted' | 'empty'
+
+export function nodeResultStagingState(data: WorkflowNodeData): NodeResultStagingState {
+  const hasPendingCandidate = (data.candidates ?? []).some(
+    (candidate) => candidate.candidateId !== data.adoptedCandidateId,
+  )
+  if (hasPendingCandidate) return 'pending'
+  return data.result?.assetId ? 'accepted' : 'empty'
+}
+
 function nodeStatus(state: CanvasRunNodeState): WorkflowNodeData['status'] {
   if (state === 'queued') return 'queued'
   if (state === 'running' || state === 'cancelling') return 'running'
@@ -47,10 +57,9 @@ export function projectRunRecordToNodes<T extends ProjectableCanvasNode>(
     const candidates = uniqueCandidates(record)
     const existingCandidateId = node.data.adoptedCandidateId
     const adopted = candidates.find((candidate) => candidate.candidateId === existingCandidateId)
-    const compatibilityCandidate = adopted ?? candidates[0]
     const selectedCandidateId = candidates.some((candidate) => candidate.candidateId === node.data.selectedCandidateId)
       ? node.data.selectedCandidateId
-      : compatibilityCandidate?.candidateId
+      : candidates[0]?.candidateId
     const errorMessage = projectedError(record.state, record.errorMessage ?? latestAttempt?.errorMessage)
     const costQuota = record.attempts.reduce((total, attempt) => total + (attempt.costQuota ?? 0), 0)
     const terminalSuccess = record.state === 'succeeded' || record.state === 'cached'
@@ -59,6 +68,7 @@ export function projectRunRecordToNodes<T extends ProjectableCanvasNode>(
       data: {
         ...node.data,
         status: nodeStatus(record.state),
+        ...(record.latestStage ? { runStage: record.latestStage } : {}),
         dirty: !terminalSuccess,
         attemptCount: record.attempts.length,
         ...(latestAttempt ? { latestAttemptDurationMs: latestAttempt.durationMs } : {}),
@@ -77,9 +87,7 @@ export function projectRunRecordToNodes<T extends ProjectableCanvasNode>(
           candidateAssetIds: candidates.map((candidate) => candidate.asset.assetId),
           selectedCandidateId,
           adoptedCandidateId: adopted?.candidateId ?? node.data.adoptedCandidateId,
-          result: adopted
-            ? { ...adopted.asset }
-            : node.data.result ?? (compatibilityCandidate ? { ...compatibilityCandidate.asset } : undefined),
+          result: adopted ? { ...adopted.asset } : node.data.result,
         } : {}),
       },
     }
@@ -120,6 +128,8 @@ export function adoptNodeCandidate<T extends ProjectableCanvasNode>(
   const owner = nodes.find((node) => node.id === nodeId)
   const candidate = owner?.data.candidates?.find((entry) => entry.candidateId === candidateId)
   if (!owner || !candidate) return [...nodes]
+  if (owner.data.adoptedCandidateId === candidateId
+    && owner.data.result?.assetId === candidate.asset.assetId) return [...nodes]
 
   const descendants = new Set<string>()
   const queue = [nodeId]
@@ -149,6 +159,35 @@ export function adoptNodeCandidate<T extends ProjectableCanvasNode>(
     return descendants.has(node.id)
       ? { ...node, data: { ...node.data, dirty: true } }
       : node
+  })
+}
+
+export function discardNodeCandidate<T extends ProjectableCanvasNode>(
+  nodes: readonly T[],
+  nodeId: string,
+  candidateId: string,
+): T[] {
+  return nodes.map((node) => {
+    if (node.id !== nodeId || node.data.adoptedCandidateId === candidateId) return node
+    const candidates = node.data.candidates ?? []
+    if (!candidates.some((candidate) => candidate.candidateId === candidateId)) return node
+    const remaining = candidates.filter((candidate) => candidate.candidateId !== candidateId)
+    const selectedCandidateId = node.data.selectedCandidateId === candidateId
+      ? remaining.find((candidate) => candidate.candidateId === node.data.adoptedCandidateId)?.candidateId
+        ?? remaining[0]?.candidateId
+      : node.data.selectedCandidateId
+    const candidateAssetIds = remaining.flatMap((candidate) => (
+      candidate.asset.assetId ? [candidate.asset.assetId] : []
+    ))
+    return {
+      ...node,
+      data: {
+        ...node.data,
+        candidates: remaining,
+        ...(candidateAssetIds.length > 0 ? { candidateAssetIds } : { candidateAssetIds: undefined }),
+        ...(selectedCandidateId ? { selectedCandidateId } : { selectedCandidateId: undefined }),
+      },
+    }
   })
 }
 

@@ -9,21 +9,25 @@
   --surface-hover: #282e37;
   --surface-input: #111419;
   --surface-media: #0b0d10;
+  --surface-floating: rgba(27, 31, 37, 0.96);
+  --surface-floating-strong: rgba(27, 31, 37, 0.985);
+  --surface-rail: #12151a;
   --border-subtle: rgba(255, 255, 255, 0.09);
   --border-strong: rgba(255, 255, 255, 0.16);
   --text-primary: #f2f4f7;
   --text-secondary: #adb5c0;
   --text-muted: #858e9a;
-  --accent: #5b8cff;
-  --accent-hover: #75a0ff;
-  --accent-soft: rgba(91, 140, 255, 0.16);
+  --accent: #3fa4ad;
+  --accent-hover: #62bbc2;
+  --accent-soft: rgba(63, 164, 173, 0.16);
   --success: #58c58a;
   --warning: #e2ad4f;
   --danger: #ef7777;
-  --focus: #8eb0ff;
-  --port-text: #75a0ff;
+  --focus: #76c6ce;
+  --port-text: #72b9e8;
   --port-image: #65c592;
   --port-video: #e58b6e;
+  --port-audio: #d49ce8;
   --shadow-floating: 0 12px 30px rgba(0, 0, 0, 0.32);
   --radius-control: 6px;
   --radius-panel: 8px;
@@ -43,9 +47,44 @@
   --xy-controls-button-border-color-default: var(--border-subtle);
 }
 
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas-bg: #eef1f3;
+  --canvas-grid: rgba(50, 65, 74, 0.11);
+  --surface-1: #ffffff;
+  --surface-2: #f7f9fa;
+  --surface-3: #edf1f3;
+  --surface-hover: #e6ecef;
+  --surface-input: #ffffff;
+  --surface-media: #0b0d10;
+  --surface-floating: rgba(255, 255, 255, 0.96);
+  --surface-floating-strong: rgba(255, 255, 255, 0.985);
+  --surface-rail: #f3f6f7;
+  --border-subtle: rgba(32, 37, 43, 0.12);
+  --border-strong: rgba(32, 37, 43, 0.22);
+  --text-primary: #20252b;
+  --text-secondary: #58636d;
+  --text-muted: #77838e;
+  --accent: #167d86;
+  --accent-hover: #126b73;
+  --accent-soft: rgba(22, 125, 134, 0.13);
+  --success: #2b8f6d;
+  --warning: #94621b;
+  --danger: #b94750;
+  --focus: #25858d;
+  --port-text: #337fb5;
+  --port-image: #2d8d68;
+  --port-video: #bb654a;
+  --port-audio: #8957a3;
+  --shadow-floating: 0 14px 34px rgba(35, 47, 55, 0.18);
+  --xy-edge-stroke-default: #788792;
+  --xy-attribution-background-color-default: rgba(255, 255, 255, 0.86);
+  --xy-minimap-mask-background-color-default: rgba(238, 241, 243, 0.72);
+}
+
 ::selection {
   color: var(--text-primary);
-  background: rgba(91, 140, 255, 0.35);
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
 }
 
 :focus-visible {

@@ -10,6 +10,7 @@ import {
 import {
   canvasRunContractVersion,
   type CanvasRunAsset,
+  type CanvasRunAssetLineage,
   type CanvasRunAssetManifestEntry,
   type CanvasRunCacheEntry,
   type CanvasRunNodeKind,
@@ -27,6 +28,9 @@ const PROJECT_ID_PATTERN = /^[a-f0-9-]{36}$/
 const CACHEABLE_NODE_KINDS = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
+])
+const CANVAS_RUN_NODE_STAGES = new Set([
+  'validating', 'resolving-cache', 'waiting-slot', 'submitting', 'processing', 'downloading', 'saving',
 ])
 
 interface CanvasRunStateFile {
@@ -90,6 +94,10 @@ function safeRunRecord(value: unknown, userId: number): value is CanvasRunRecord
   if (!isIsoDate(value.createdAt) || !isIsoDate(value.startedAt)) return false
   if (!Array.isArray(value.nodes) || !Array.isArray(value.events)) return false
   if (value.nodes.length > 5_000 || value.events.length > 25_000) return false
+  if (value.nodes.some((node) => !isRecord(node)
+    || (node.latestStage !== undefined && !CANVAS_RUN_NODE_STAGES.has(node.latestStage as string)))) return false
+  if (value.events.some((event) => !isRecord(event)
+    || (event.type === 'node-stage' && !CANVAS_RUN_NODE_STAGES.has(event.stage as string)))) return false
   return value.status === 'running'
     || value.status === 'succeeded'
     || value.status === 'partial'
@@ -118,6 +126,17 @@ function safeManifestEntry(value: unknown): value is CanvasRunAssetManifestEntry
     && safeAsset(value.asset)
     && isIsoDate(value.createdAt)
     && isIsoDate(value.lastVerifiedAt)
+    && (value.lineage === undefined || safeLineage(value.lineage))
+}
+
+function safeLineage(value: unknown): value is CanvasRunAssetLineage {
+  if (!isRecord(value) || value.origin !== 'generated') return false
+  if (!safeIdentifier(value.runId) || !safeIdentifier(value.graphRevision)
+    || !safeIdentifier(value.nodeId) || !safeIdentifier(value.attemptId) || !safeIdentifier(value.candidateId)) return false
+  if (value.projectId !== undefined && (typeof value.projectId !== 'string' || !PROJECT_ID_PATTERN.test(value.projectId))) return false
+  return Array.isArray(value.sourceAssetIds)
+    && value.sourceAssetIds.length <= 256
+    && value.sourceAssetIds.every((assetId) => typeof assetId === 'string' && ASSET_ID_PATTERN.test(assetId))
 }
 
 function parseState(content: string, userId: number): CanvasRunStateFile {
@@ -210,6 +229,18 @@ export class CanvasRunStore {
     })
   }
 
+  async getAssetLineage(userId: number, assetIds: readonly string[]): Promise<Record<string, CanvasRunAssetLineage>> {
+    return this.enqueue(userId, async () => {
+      if (assetIds.length > 1_500) throw new Error('画布资产谱系查询数量超限')
+      const wanted = new Set(assetIds)
+      if ([...wanted].some((assetId) => !ASSET_ID_PATTERN.test(assetId))) throw new Error('画布资产标识格式错误')
+      const state = await this.readState(userId)
+      return Object.fromEntries(state.assets
+        .filter((entry) => entry.lineage && wanted.has(entry.asset.assetId))
+        .map((entry) => [entry.asset.assetId, structuredClone(entry.lineage!)]))
+    })
+  }
+
   async saveRun(userId: number, run: CanvasRunRecord): Promise<void> {
     return this.enqueue(userId, async () => {
       if (!safeRunRecord(run, userId)) throw new Error('画布运行记录格式错误')
@@ -221,7 +252,18 @@ export class CanvasRunStore {
       state.runs = state.runs.slice(0, this.runRetention)
       for (const node of copy.nodes) {
         for (const attempt of node.attempts) {
-          for (const candidate of attempt.candidates) this.recordAssetInState(state, candidate.asset, candidate.createdAt)
+          for (const candidate of attempt.candidates) {
+            this.recordAssetInState(state, candidate.asset, candidate.createdAt, attempt.cached ? undefined : {
+              origin: 'generated',
+              runId: copy.runId,
+              graphRevision: copy.graphRevision,
+              nodeId: node.nodeId,
+              attemptId: attempt.attemptId,
+              candidateId: candidate.candidateId,
+              ...(copy.projectId ? { projectId: copy.projectId } : {}),
+              sourceAssetIds: [...(attempt.inputAssetIds ?? [])],
+            })
+          }
         }
       }
       await this.writeState(userId, state)
@@ -295,16 +337,27 @@ export class CanvasRunStore {
     })
   }
 
-  private recordAssetInState(state: CanvasRunStateFile, asset: CanvasRunAsset, createdAt: string): void {
+  private recordAssetInState(
+    state: CanvasRunStateFile,
+    asset: CanvasRunAsset,
+    createdAt: string,
+    lineage?: CanvasRunAssetLineage,
+  ): void {
     if (!safeAsset(asset)) throw new Error('画布资产记录格式错误')
     const existing = state.assets.find((entry) => entry.asset.assetId === asset.assetId)
     const entry: CanvasRunAssetManifestEntry = existing
-      ? { ...existing, asset: structuredClone(asset), lastVerifiedAt: this.now().toISOString() }
+      ? {
+        ...existing,
+        asset: structuredClone(asset),
+        lastVerifiedAt: this.now().toISOString(),
+        ...(existing.lineage ? { lineage: existing.lineage } : lineage ? { lineage: structuredClone(lineage) } : {}),
+      }
       : {
         version: canvasRunContractVersion,
         asset: structuredClone(asset),
         createdAt,
         lastVerifiedAt: this.now().toISOString(),
+        ...(lineage ? { lineage: structuredClone(lineage) } : {}),
       }
     state.assets = [entry, ...state.assets.filter((item) => item.asset.assetId !== asset.assetId)]
       .slice(0, this.assetRetention)

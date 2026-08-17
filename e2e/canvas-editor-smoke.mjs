@@ -69,7 +69,8 @@ const videoAsset = {
   height: 672,
   durationSeconds: 5.041667,
 }
-let project = null
+let projects = []
+let nextProjectId = 1
 const emptyWorkflow = (name) => JSON.stringify({
   schemaVersion: 2,
   name,
@@ -77,6 +78,7 @@ const emptyWorkflow = (name) => JSON.stringify({
   nodes: [],
   edges: [],
 })
+let startRunCallCount = 0
 contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   listGroups: async () => [
     { name: '生图分组', ratio: 1 },
@@ -97,12 +99,34 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   },
   listPromptPresets: async () => [],
   listRuns: async () => [],
+  startRun: async () => {
+    startRunCallCount += 1
+    return { runId: 'smoke-run', graphRevision: 'smoke-revision' }
+  },
+  getStartRunCallCount: () => startRunCallCount,
   onRunEvent: () => undefined,
   showAssetMenu: async () => undefined,
   renameAsset: async ({ assetId: requestedAssetId, displayName }) => {
     if (requestedAssetId !== asset.assetId) throw new Error('素材不存在')
     asset = { ...asset, displayName }
     return { assetId: requestedAssetId, displayName }
+  },
+  inspectAssetReferences: async (requestedAssetId, currentProjectContent) => {
+    const current = JSON.parse(currentProjectContent)
+    const currentNodeIds = current.nodes.filter((node) => JSON.stringify(node.data).includes(requestedAssetId)).map((node) => node.id)
+    const savedProjects = projects.filter((project) => project.content.includes(requestedAssetId)).map((project) => ({
+      projectId: project.summary.id,
+      projectName: project.summary.name,
+      nodeIds: JSON.parse(project.content).nodes.filter((node) => JSON.stringify(node.data).includes(requestedAssetId)).map((node) => node.id),
+      archived: Boolean(project.summary.archivedAt),
+    }))
+    return {
+      assetId: requestedAssetId,
+      inUse: currentNodeIds.length > 0 || savedProjects.length > 0,
+      currentProject: { projectId: projects[0]?.summary.id || 'project', projectName: current.name, nodeIds: currentNodeIds },
+      projects: savedProjects,
+      runs: [],
+    }
   },
   pickAsset: async () => asset,
   importAssetFile: async (file) => {
@@ -111,26 +135,74 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
     if (name.endsWith('.wav')) return audioAsset
     return asset
   },
-  listProjects: async () => project ? [project.summary] : [],
+  listProjects: async () => projects.map((project) => project.summary),
   createProject: async (name) => {
     const now = new Date().toISOString()
-    project = {
-      summary: { id: '11111111-1111-4111-8111-111111111111', name, createdAt: now, updatedAt: now, nodeCount: 0 },
+    const project = {
+      summary: {
+        id: nextProjectId++ === 1 ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222',
+        name, createdAt: now, updatedAt: now, lastOpenedAt: now, nodeCount: 0, assetCount: 0,
+        workspaceName: name, workspaceConfigured: true, workspaceStatus: 'ready',
+      },
       content: emptyWorkflow(name),
     }
+    projects = [project, ...projects]
     return { project: project.summary, content: project.content }
   },
   openProject: async (projectId) => {
-    if (!project || project.summary.id !== projectId) throw new Error('项目不存在')
+    const project = projects.find((entry) => entry.summary.id === projectId)
+    if (!project) throw new Error('项目不存在')
+    project.summary = { ...project.summary, lastOpenedAt: new Date().toISOString() }
     return { project: project.summary, content: project.content }
   },
   saveProject: async (projectId, content) => {
-    if (!project || project.summary.id !== projectId) throw new Error('项目不存在')
+    const project = projects.find((entry) => entry.summary.id === projectId)
+    if (!project) throw new Error('项目不存在')
     const parsed = JSON.parse(content)
-    project = {
-      content,
-      summary: { ...project.summary, name: parsed.name, updatedAt: new Date().toISOString(), nodeCount: parsed.nodes.length },
+    const acceptedAssets = parsed.nodes.map((node) => node.data?.result?.assetId).filter(Boolean)
+    const previewResult = parsed.nodes.map((node) => node.data?.result).find((result) => result?.assetId && result?.kind)
+    project.content = content
+    project.summary = {
+      ...project.summary,
+      name: parsed.name,
+      updatedAt: new Date().toISOString(),
+      nodeCount: parsed.nodes.length,
+      assetCount: new Set(acceptedAssets).size,
+      ...(previewResult ? { previewAsset: { kind: previewResult.kind, assetId: previewResult.assetId, localUrl: previewResult.localUrl } } : {}),
     }
+    return project.summary
+  },
+  renameProject: async (projectId, name) => {
+    const project = projects.find((entry) => entry.summary.id === projectId)
+    if (!project) throw new Error('项目不存在')
+    const parsed = JSON.parse(project.content)
+    parsed.name = name
+    project.content = JSON.stringify(parsed)
+    project.summary = { ...project.summary, name, updatedAt: new Date().toISOString() }
+    return project.summary
+  },
+  duplicateProject: async (projectId, name) => {
+    const source = projects.find((entry) => entry.summary.id === projectId)
+    if (!source) throw new Error('项目不存在')
+    const now = new Date().toISOString()
+    const parsed = JSON.parse(source.content)
+    parsed.name = name
+    const duplicate = {
+      content: JSON.stringify(parsed),
+      summary: {
+        ...source.summary,
+        id: nextProjectId++ === 1 ? '11111111-1111-4111-8111-111111111111' : '22222222-2222-4222-8222-222222222222',
+        name, createdAt: now, updatedAt: now, lastOpenedAt: now, workspaceName: name,
+      },
+    }
+    projects = [duplicate, ...projects]
+    return { project: duplicate.summary, content: duplicate.content }
+  },
+  setProjectArchived: async (projectId, archived) => {
+    const project = projects.find((entry) => entry.summary.id === projectId)
+    if (!project) throw new Error('项目不存在')
+    const { archivedAt: _archivedAt, ...summary } = project.summary
+    project.summary = archived ? { ...summary, archivedAt: new Date().toISOString() } : summary
     return project.summary
   },
 })
@@ -314,7 +386,7 @@ try {
   await page.mouse.click(panePoint.x, panePoint.y, { button: 'right' })
   const contextQuickInsert = page.getByRole('dialog', { name: '快速创建' })
   await contextQuickInsert.waitFor({ state: 'visible' })
-  await contextQuickInsert.getByRole('combobox', { name: '搜索节点、模板或命令' }).fill('便签')
+  await contextQuickInsert.getByRole('combobox', { name: '搜索现有节点、新节点或命令' }).fill('便签')
   await page.keyboard.press('Enter')
   await page.waitForFunction((expected) => document.querySelectorAll('.react-flow__node').length === expected, beforeContextCreate + 1)
   assert.equal(await page.locator('.react-flow__node-note').count(), 1, '画布右键菜单没有创建便签节点')
@@ -379,6 +451,13 @@ try {
   await renamedAsset.locator('.asset-tray-item-preview').click()
   assert.equal(await renamedAsset.getByText('visual-fixture.png', { exact: true }).count(), 1, '重命名错误修改了原文件名')
   assert.equal(await renamedAsset.getByText(fixtureAssetId, { exact: true }).count(), 1, '重命名错误修改了资产 ID')
+  await renamedAsset.getByRole('button', { name: '检查素材引用：产品主视觉' }).click()
+  const referenceDialog = page.getByRole('dialog', { name: '素材引用检查' })
+  await referenceDialog.waitFor({ state: 'visible' })
+  assert.equal(await referenceDialog.getByText('素材仍被工作流引用', { exact: true }).count(), 1, '引用检查没有识别当前画布中的素材节点')
+  assert.equal(await referenceDialog.getByText('本版本不会删除该素材', { exact: false }).count(), 1, '引用检查没有明确只读删除保护')
+  await page.screenshot({ path: path.join(artifactRoot, 'asset-reference-guard.png') })
+  await referenceDialog.getByRole('button', { name: '关闭', exact: true }).click()
   const imageNodesBeforeDuplicateReference = await page.locator('.react-flow__node-image-input').count()
   await renamedAsset.hover()
   await renamedAsset.getByRole('button', { name: '添加资产到画布：产品主视觉' }).click()
@@ -434,6 +513,42 @@ try {
   const imageGenerateNode = page.locator('.react-flow__node-image-generate').first()
   const imageGenerateNodeId = await imageGenerateNode.getAttribute('data-id')
   assert.ok(imageGenerateNodeId, '图像生成节点缺少稳定标识')
+  await page.locator('.react-flow__pane').click({ position: { x: 18, y: 18 } })
+  assert.equal(await page.locator('.react-flow__node.selected').count(), 0, '搜索定位前未清空节点选择')
+  const startRunCallsBeforeLocate = await page.evaluate(() => window.xingmangCanvasHost.getStartRunCallCount())
+  await page.keyboard.press('Control+K')
+  const existingNodeSearch = page.getByRole('dialog', { name: '快速创建' })
+  await existingNodeSearch.waitFor({ state: 'visible' })
+  await existingNodeSearch.getByRole('combobox', { name: '搜索现有节点、新节点或命令' }).fill(imageGenerateNodeId)
+  const existingNodeOption = existingNodeSearch.getByRole('option').filter({ hasText: imageGenerateNodeId })
+  assert.equal(await existingNodeOption.count(), 1, '命令面板没有按节点 ID 找到现有节点')
+  await page.keyboard.press('Enter')
+  await existingNodeSearch.waitFor({ state: 'hidden' })
+  const nodeInspector = page.getByLabel('统一检查器')
+  await nodeInspector.waitFor({ state: 'visible' })
+  await page.waitForTimeout(280)
+  assert.equal(await page.locator('.react-flow__node.selected').count(), 1, '搜索定位后没有单选目标节点')
+  assert.equal(await imageGenerateNode.getAttribute('class').then((value) => value?.includes('selected')), true, '搜索定位选中了错误节点')
+  const locatedGeometry = await Promise.all([
+    imageGenerateNode.boundingBox(),
+    page.locator('.react-flow').boundingBox(),
+  ])
+  assert.ok(locatedGeometry[0] && locatedGeometry[1], '搜索定位后缺少节点或画布边界')
+  const nodeCenterX = locatedGeometry[0].x + locatedGeometry[0].width / 2
+  const nodeCenterY = locatedGeometry[0].y + locatedGeometry[0].height / 2
+  const flowCenterX = locatedGeometry[1].x + locatedGeometry[1].width / 2
+  const flowCenterY = locatedGeometry[1].y + locatedGeometry[1].height / 2
+  assert.ok(Math.abs(nodeCenterX - flowCenterX) <= locatedGeometry[1].width * 0.25, '搜索定位后节点没有水平居中')
+  assert.ok(Math.abs(nodeCenterY - flowCenterY) <= locatedGeometry[1].height * 0.25, '搜索定位后节点没有垂直居中')
+  assert.equal(await page.evaluate(() => window.xingmangCanvasHost.getStartRunCallCount()), startRunCallsBeforeLocate, '搜索定位错误触发了画布运行')
+  assert.equal(await nodeInspector.getByLabel('节点参数').count(), 1, '节点检查器缺少参数区')
+  assert.equal(await nodeInspector.getByLabel('节点端口').getByText('输入·文本', { exact: true }).count(), 1, '节点检查器缺少输入端口')
+  assert.equal(await nodeInspector.getByRole('button', { name: '运行此节点' }).count(), 1, '节点检查器缺少单节点运行操作')
+  await page.screenshot({ path: path.join(artifactRoot, 'node-inspector-1590x875.png') })
+  await nodeInspector.getByRole('button', { name: '关闭节点检查器' }).click()
+  await nodeInspector.waitFor({ state: 'hidden' })
+  await page.waitForTimeout(120)
+  assert.equal(await nodeInspector.count(), 0, '检查器关闭后在选择未变时自动重开')
   const qualityOptions = await imageGenerateNode.locator('select[aria-label="生成画质"] option').allTextContents()
   assert.deepEqual(qualityOptions, ['低', '中', '高'], '图像画质选项应只显示档位')
   assert.equal(/[¥$元]|quota|价格/i.test(qualityOptions.join(' ')), false, '图像画质仍显示价格估算')
@@ -563,7 +678,29 @@ try {
     { steps: 8 },
   )
   await page.mouse.up()
-  assert.ok(await page.locator('.react-flow__node.selected').count() >= 2, '从空白区域拖动没有框选多个节点')
+  const selectedCountForFlags = await page.locator('.react-flow__node.selected').count()
+  assert.ok(selectedCountForFlags >= 2, '从空白区域拖动没有框选多个节点')
+  const activeToastClose = page.getByRole('button', { name: '关闭提示' })
+  if (await activeToastClose.count()) await activeToastClose.click()
+  const selectionToolbar = page.getByRole('toolbar', { name: '选中节点操作' })
+  await selectionToolbar.getByRole('button', { name: '锁定选中节点位置' }).click()
+  await page.waitForFunction(
+    (expected) => document.querySelectorAll('.react-flow__node.selected .wf-node.wf-is-locked').length === expected,
+    selectedCountForFlags,
+  )
+  assert.equal(await selectionToolbar.getByRole('button', { name: '解锁选中节点位置' }).getAttribute('aria-pressed'), 'true', '批量锁定后工具条状态未更新')
+  const disableEligibleCount = await page.locator('.react-flow__node.selected .wf-node:not(.wf-category-structural)').count()
+  assert.ok(disableEligibleCount > 0, '批量禁用测试缺少可运行节点')
+  await selectionToolbar.getByRole('button', { name: '禁用选中节点' }).click()
+  await page.waitForFunction(
+    (expected) => document.querySelectorAll('.react-flow__node.selected .wf-node.wf-is-disabled').length === expected,
+    disableEligibleCount,
+  )
+  assert.equal(await selectionToolbar.getByRole('button', { name: '启用选中节点' }).getAttribute('aria-pressed'), 'true', '批量禁用后工具条状态未更新')
+  await selectionToolbar.getByRole('button', { name: '启用选中节点' }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.react-flow__node.selected .wf-node.wf-is-disabled').length === 0)
+  await selectionToolbar.getByRole('button', { name: '解锁选中节点位置' }).click()
+  await page.waitForFunction(() => document.querySelectorAll('.react-flow__node.selected .wf-node.wf-is-locked').length === 0)
   await page.getByRole('button', { name: '选择运行范围', exact: true }).click()
   await page.getByRole('menuitemradio', { name: /运行选中链路/ }).click()
   assert.equal(await page.locator('.canvas-run-main').isEnabled(), true, '有选中节点时选中链路应可运行')
@@ -571,6 +708,29 @@ try {
   assert.equal(await page.locator('.canvas-run-main').isDisabled(), true, '选区失效后主运行按钮仍可点击')
   await page.getByRole('button', { name: '选择运行范围', exact: true }).click()
   await page.getByRole('menuitemradio', { name: /运行全部/ }).click()
+
+  const boundMediaNode = page.locator('.react-flow__node-video-input').last()
+  const boundMediaNodeId = await boundMediaNode.getAttribute('data-id')
+  assert.ok(boundMediaNodeId, '纯媒体节点缺少稳定标识')
+  await page.keyboard.press('Control+K')
+  const mediaNodeSearch = page.getByRole('dialog', { name: '快速创建' })
+  await mediaNodeSearch.getByRole('combobox', { name: '搜索现有节点、新节点或命令' }).fill(boundMediaNodeId)
+  await page.keyboard.press('Enter')
+  await mediaNodeSearch.waitFor({ state: 'hidden' })
+  const mediaSelectionToolbar = page.getByRole('toolbar', { name: '选中节点操作' })
+  await mediaSelectionToolbar.getByRole('button', { name: '锁定选中节点位置' }).click()
+  await boundMediaNode.locator('.wf-media-bound.wf-is-locked').waitFor({ state: 'visible' })
+  assert.equal(await boundMediaNode.getByText('已锁定', { exact: true }).count(), 1, '纯媒体节点没有显示锁定标记')
+  await mediaSelectionToolbar.getByRole('button', { name: '禁用选中节点' }).click()
+  await boundMediaNode.locator('.wf-media-bound.wf-is-disabled').waitFor({ state: 'visible' })
+  assert.equal(await boundMediaNode.getByText('已禁用', { exact: true }).count(), 1, '纯媒体节点没有显示禁用标记')
+  await page.screenshot({ path: path.join(artifactRoot, 'selection-flags-1590x875.png') })
+  await mediaSelectionToolbar.getByRole('button', { name: '启用选中节点' }).click()
+  await mediaSelectionToolbar.getByRole('button', { name: '解锁选中节点位置' }).click()
+  await page.getByLabel('统一检查器').getByRole('button', { name: '关闭节点检查器' }).click()
+  await page.locator('.react-flow__pane').click({ position: { x: 16, y: 16 } })
+  await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
+  await page.waitForTimeout(240)
 
   for (const viewport of viewports) {
     await devtools.send('Emulation.setDeviceMetricsOverride', {
@@ -709,19 +869,32 @@ try {
       flow: bounds('.canvas-flow'),
       assets: bounds('.asset-tray'),
       runs: bounds('.run-inspector'),
+      inspector: bounds('.canvas-inspector'),
+      tabs: [...document.querySelectorAll('.canvas-inspector-tabs button')].map((button) => {
+        const rect = button.getBoundingClientRect()
+        return {
+          left: rect.left,
+          right: rect.right,
+          width: rect.width,
+          height: rect.height,
+          clipped: button.scrollWidth > button.clientWidth + 1 || button.scrollHeight > button.clientHeight + 1,
+        }
+      }),
     }
   })
-  assert.ok(compactAssetDrawer.library && compactAssetDrawer.flow && compactAssetDrawer.assets)
+  assert.ok(compactAssetDrawer.library && compactAssetDrawer.flow && compactAssetDrawer.assets && compactAssetDrawer.inspector)
   assert.equal(compactAssetDrawer.innerWidth, 960, '紧凑抽屉检查没有使用真实 960px CSS 视口')
   assert.equal(compactAssetDrawer.innerHeight, 620, '紧凑抽屉检查没有使用真实 620px CSS 视口')
   assert.ok(!compactAssetDrawer.runs || compactAssetDrawer.runs.width === 0, '打开素材抽屉后运行面板仍然可见')
   assert.ok(compactAssetDrawer.library.right <= compactAssetDrawer.flow.left + 1)
   assert.ok(compactAssetDrawer.assets.right <= compactAssetDrawer.innerWidth + 1, '素材抽屉越过窗口右边界')
   assert.ok(compactAssetDrawer.assets.left - compactAssetDrawer.flow.left >= 400, '960px 素材抽屉打开时画布可用宽度不足')
+  assert.equal(compactAssetDrawer.tabs.length, 3, '紧凑检查器没有保留节点、素材、运行三个页签')
+  assert.ok(compactAssetDrawer.tabs.every((tab) => tab.left >= compactAssetDrawer.inspector.left - 1 && tab.right <= compactAssetDrawer.inspector.right + 1), '紧凑检查器页签越过面板边界')
+  assert.ok(compactAssetDrawer.tabs.every((tab) => tab.width >= 60 && tab.height >= 26 && !tab.clipped), '紧凑检查器页签文字被裁切或点击区域过小')
   await page.screenshot({ path: path.join(artifactRoot, 'canvas-asset-drawer-960x620.png') })
 
-  await page.getByRole('button', { name: '更多操作', exact: true }).click()
-  await page.getByRole('button', { name: /打开运行历史/ }).click()
+  await page.locator('.canvas-inspector-tabs').getByRole('button', { name: '运行', exact: true }).click()
   await page.locator('.run-inspector').waitFor({ state: 'visible', timeout: 10_000 })
   await page.locator('.asset-tray').waitFor({ state: 'detached', timeout: 10_000 })
   const compactRunDrawer = await page.evaluate(() => {
@@ -732,6 +905,7 @@ try {
   assert.ok(compactRunDrawer.flow && compactRunDrawer.runs)
   assert.ok(compactRunDrawer.runs.right <= compactRunDrawer.innerWidth + 1, '运行抽屉越过窗口右边界')
   assert.ok(compactRunDrawer.runs.left - compactRunDrawer.flow.left >= 400, '960px 运行抽屉打开时画布可用宽度不足')
+  await page.screenshot({ path: path.join(artifactRoot, 'canvas-run-drawer-960x620.png') })
 
   for (const zoomFactor of [1.25, 1.5]) {
     await application.evaluate(({ BrowserWindow }, factor) => {
@@ -800,7 +974,22 @@ try {
   const savedVideoTargetTransform = await videoTarget.evaluate((element) => element.style.transform)
   await page.getByTitle('保存并返回项目中心').click()
   await page.locator('.canvas-project-center').waitFor({ state: 'visible', timeout: 10_000 })
-  await page.locator('.canvas-project-card').filter({ hasText: '视觉回归项目' }).click()
+  assert.equal(await page.getByText('工作目录就绪', { exact: true }).count(), 1, '项目中心没有显示工作目录健康状态')
+  await page.getByRole('button', { name: '重命名项目：视觉回归项目' }).click()
+  const renameProjectDialog = page.getByRole('dialog', { name: '重命名项目' })
+  await renameProjectDialog.getByRole('textbox', { name: '项目名称' }).fill('视觉回归项目-已重命名')
+  await renameProjectDialog.getByRole('button', { name: '保存名称' }).click()
+  await page.getByRole('button', { name: '复制项目：视觉回归项目-已重命名' }).click()
+  const duplicateProjectDialog = page.getByRole('dialog', { name: '复制项目' })
+  await duplicateProjectDialog.getByRole('textbox', { name: '项目名称' }).fill('视觉回归项目副本')
+  await duplicateProjectDialog.getByRole('button', { name: '选择文件夹并复制' }).click()
+  await page.getByRole('button', { name: '归档项目：视觉回归项目副本' }).click()
+  await page.getByRole('dialog', { name: '归档项目' }).getByRole('button', { name: '确认归档' }).click()
+  await page.getByRole('button', { name: /已归档/ }).click()
+  await page.getByRole('button', { name: '恢复项目：视觉回归项目副本' }).click()
+  await page.getByRole('button', { name: /最近项目/ }).click()
+  await page.screenshot({ path: path.join(artifactRoot, 'project-center-lifecycle-1590x875.png') })
+  await page.getByRole('button', { name: '打开项目：视觉回归项目-已重命名' }).click()
   await page.locator('.canvas-app').waitFor({ state: 'visible', timeout: 10_000 })
   const reopenedImageGenerate = page.locator(`.react-flow__node[data-id="${imageGenerateNodeId}"]`)
   const reopenedVideoTarget = page.locator(`.react-flow__node[data-id="${videoTargetId}"]`)

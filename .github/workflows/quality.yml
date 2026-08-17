@@ -38,6 +38,7 @@ jobs:
       - run: npm ci --registry=https://registry.npmjs.org/
       - run: npx --no-install playwright install chromium
       - run: npm run typecheck
+      - run: npm run test:canvas
       - run: npm run test:windows
       - name: Fail if the test run left files in the working tree
         shell: bash

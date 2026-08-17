@@ -1,6 +1,7 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto'
 import {
   canvasRunContractVersion,
+  canvasRunTimelineLimit,
   type CanvasRunAsset,
   type CanvasRunAttempt,
   type CanvasRunCacheEntry,
@@ -10,6 +11,7 @@ import {
   type CanvasRunGraphNode,
   type CanvasRunNodeKind,
   type CanvasRunNodeRecord,
+  type CanvasRunNodeStage,
   type CanvasRunNodeState,
   type CanvasRunOutcome,
   type CanvasRunRecord,
@@ -49,6 +51,7 @@ export interface CanvasNodeExecutionContext {
   node: CanvasRunGraphNode
   inputs: CanvasNodeInputs
   signal: AbortSignal
+  reportStage?(stage: Extract<CanvasRunNodeStage, 'processing' | 'downloading' | 'saving'>): Promise<void>
 }
 
 export type CanvasNodeExecutor = (
@@ -79,6 +82,7 @@ export interface CanvasRunEngineOptions {
   randomUUID?: () => string
   resolveCache?: (fingerprint: string, node: CanvasRunGraphNode) => Promise<CanvasRunCacheEntry | null>
   storeCache?: (entry: CanvasRunCacheEntry) => Promise<void>
+  admitRecord?: (record: CanvasRunRecord) => Promise<void>
   persistRecord?: (record: CanvasRunRecord) => Promise<void>
   onEvent?: (event: CanvasRunEvent, record: CanvasRunRecord) => void | Promise<void>
 }
@@ -94,6 +98,14 @@ interface NodeOutput {
   fingerprint: string
   text?: string
   asset?: CanvasRunAsset
+}
+
+function collectedInputAssetIds(inputs: CanvasNodeInputs): string[] {
+  return [...new Set([
+    ...(inputs.images ?? (inputs.image ? [inputs.image] : [])),
+    ...(inputs.videos ?? (inputs.video ? [inputs.video] : [])),
+    ...(inputs.audios ?? (inputs.audio ? [inputs.audio] : [])),
+  ].map((asset) => asset.assetId))].slice(0, 256)
 }
 
 interface Semaphore {
@@ -244,6 +256,25 @@ function isTerminalState(state: CanvasRunNodeState): boolean {
     || state === 'interrupted'
 }
 
+function usesRemoteGeneration(kind: CanvasRunNodeKind): boolean {
+  return kind === 'image'
+    || kind === 'video'
+    || kind === 'image-generate'
+    || kind === 'image-edit'
+    || kind === 'video-generate'
+}
+
+export function appendCanvasRunTimelineEvent(
+  events: CanvasRunEvent[],
+  event: CanvasRunEvent,
+  maximum = canvasRunTimelineLimit,
+): void {
+  if (!Number.isSafeInteger(maximum) || maximum < 1) throw new Error('画布运行时间线上限无效')
+  events.push(event)
+  const overflow = events.length - maximum
+  if (overflow > 0) events.splice(0, overflow)
+}
+
 function runStatus(outcome: CanvasRunOutcome): Exclude<CanvasRunStatus, 'running'> {
   if (outcome.cancelled.length > 0) return 'cancelled'
   if (outcome.failed.length > 0 && outcome.succeeded.length + outcome.cached.length > 0) return 'partial'
@@ -341,8 +372,14 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     nodes: admitted.map((nodeId) => nodeRecords.get(nodeId)!),
     events: [],
   }
+  try {
+    await options.admitRecord?.(cloneRecord(record))
+  } catch (error) {
+    throw new Error(`画布运行初始化持久化失败：${sanitizeRunError(error)}`)
+  }
   let sequence = 0
   let eventQueue = Promise.resolve()
+  let firstPersistenceError: unknown
 
   function emit(event: CanvasRunEventPayload): Promise<void> {
     const complete = {
@@ -353,10 +390,26 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       sequence: ++sequence,
       at: now().toISOString(),
     } as CanvasRunEvent
-    record.events.push(complete)
+    if (complete.type === 'node-stage') {
+      const nodeRecord = nodeRecords.get(complete.nodeId)
+      if (nodeRecord) {
+        nodeRecord.latestStage = complete.stage
+        nodeRecord.latestStageAt = complete.at
+        nodeRecord.latestStageSequence = complete.sequence
+      }
+    }
+    appendCanvasRunTimelineEvent(record.events, complete)
     const snapshot = cloneRecord(record)
     eventQueue = eventQueue.then(async () => {
-      await options.persistRecord?.(snapshot)
+      try {
+        await options.persistRecord?.(snapshot)
+      } catch (error) {
+        // A later snapshot contains the complete event stream, including this
+        // event. Keep the queue usable so a transient write failure cannot
+        // replay a paid executor or suppress every subsequent checkpoint.
+        firstPersistenceError ??= error
+        return
+      }
       try {
         await options.onEvent?.(structuredClone(complete), snapshot)
       } catch {
@@ -377,6 +430,17 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     nodeRecord.state = state
     if (details.errorMessage) nodeRecord.errorMessage = details.errorMessage
     await emit({ type: 'node-state', nodeId, state, ...details })
+    return true
+  }
+
+  async function updateStage(
+    nodeId: string,
+    stage: CanvasRunNodeStage,
+    attemptId?: string,
+  ): Promise<boolean> {
+    const nodeRecord = nodeRecords.get(nodeId)!
+    if (isTerminalState(nodeRecord.state) || nodeRecord.latestStage === stage) return false
+    await emit({ type: 'node-stage', nodeId, stage, ...(attemptId ? { attemptId } : {}) })
     return true
   }
 
@@ -406,6 +470,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     const node = index.nodesById.get(nodeId)!
     const task = (async () => {
       await Promise.all(upstreamSettled(nodeId))
+      await updateStage(nodeId, 'validating')
       if (options.signal.aborted) {
         await updateNode(nodeId, 'cancelled')
         return
@@ -427,7 +492,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       }
 
       const collected = collectInputs(nodeId, index, outputs)
+      const inputAssetIds = collectedInputAssetIds(collected.inputs)
       const fingerprint = computeCanvasNodeFingerprint({ projectId: options.projectId, node, upstream: collected.fingerprintInputs })
+      await updateStage(nodeId, 'resolving-cache')
       let cached: CanvasRunCacheEntry | null | undefined
       try {
         cached = options.resolveCache
@@ -452,6 +519,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           completedAt: completedAt.toISOString(),
           durationMs: 0,
           cached: true,
+          ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
           candidates: cached.candidate ? [structuredClone(cached.candidate)] : [],
           ...(cached.outputText !== undefined ? { outputText: cached.outputText } : {}),
           ...(cached.candidate?.costQuota !== undefined ? { costQuota: cached.candidate.costQuota } : {}),
@@ -474,6 +542,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
 
       let release: (() => void) | undefined
       try {
+        await updateStage(nodeId, 'waiting-slot')
         release = await semaphore.acquire(options.signal)
       } catch {
         await updateNode(nodeId, 'cancelled')
@@ -484,6 +553,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       await updateNode(nodeId, 'running', { attemptId, fingerprint })
       try {
         const executor = options.executors[node.kind] ?? options.executors[fallbackExecutorKind(node.kind)]
+        if (usesRemoteGeneration(node.kind)) await updateStage(nodeId, 'submitting', attemptId)
+        let releaseStageReporting!: () => void
+        const stageReportingReady = new Promise<void>((resolve) => { releaseStageReporting = resolve })
         const executorPromise = executor({
           runId: options.runId,
           graphRevision: options.graphRevision,
@@ -494,7 +566,13 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           node,
           inputs: collected.inputs,
           signal: options.signal,
+          reportStage: async (stage) => {
+            await stageReportingReady
+            await updateStage(nodeId, stage, attemptId)
+          },
         })
+        await updateStage(nodeId, 'processing', attemptId)
+        releaseStageReporting()
         const result = await raceWithAbort(executorPromise, options.signal)
         if (options.signal.aborted || isTerminalState(nodeRecords.get(nodeId)!.state)) return
         const completedAt = now()
@@ -515,6 +593,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           completedAt: completedAt.toISOString(),
           durationMs: Math.max(0, completedAt.getTime() - attemptStartedAt.getTime()),
           cached: false,
+          ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
           candidates,
           ...(result.outputText !== undefined ? { outputText: result.outputText } : {}),
           ...(result.costQuota !== undefined ? { costQuota: result.costQuota } : {}),
@@ -558,6 +637,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
             completedAt: completedAt.toISOString(),
             durationMs: Math.max(0, completedAt.getTime() - attemptStartedAt.getTime()),
             cached: false,
+            ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
             candidates: [],
             ...(node.data.group ? { group: node.data.group } : {}),
             ...(node.data.model ? { model: node.data.model } : {}),
@@ -574,6 +654,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
             completedAt: completedAt.toISOString(),
             durationMs: Math.max(0, completedAt.getTime() - attemptStartedAt.getTime()),
             cached: false,
+            ...(inputAssetIds.length > 0 ? { inputAssetIds } : {}),
             candidates: [],
             errorMessage,
             ...(node.data.group ? { group: node.data.group } : {}),
@@ -605,6 +686,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
   record.outcome = outcome
   await emit({ type: 'run-terminal', status: record.status, outcome })
   await eventQueue
+  if (firstPersistenceError !== undefined) {
+    throw new Error(`画布运行记录持久化失败：${sanitizeRunError(firstPersistenceError)}`)
+  }
   return cloneRecord(record)
 }
 

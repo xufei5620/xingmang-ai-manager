@@ -40,9 +40,31 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
       let changed = false
       const nodes = document.nodes.map((node) => {
         const position = command.positions[node.id]
-        if (!position || samePosition(node.position, position)) return node
+        if (node.locked || !position || samePosition(node.position, position)) return node
         changed = true
         return { ...node, position: { ...position } }
+      })
+      return changed ? { ...document, nodes, revision: nextRevision(document) } : document
+    }
+    case 'set-node-flags': {
+      const nodeIds = new Set(command.nodeIds)
+      let changed = false
+      const nodes = document.nodes.map((node) => {
+        if (!nodeIds.has(node.id)) return node
+        const locked = command.locked ?? Boolean(node.locked)
+        const cannotEnable = Boolean(node.unknownKind) || node.type === 'unknown'
+        const disabled = command.disabled === undefined
+          ? Boolean(node.disabled)
+          : cannotEnable && command.disabled === false
+            ? true
+            : command.disabled
+        if (locked === Boolean(node.locked) && disabled === Boolean(node.disabled)) return node
+        changed = true
+        return {
+          ...node,
+          ...(locked ? { locked: true } : { locked: undefined }),
+          ...(disabled ? { disabled: true } : { disabled: undefined }),
+        }
       })
       return changed ? { ...document, nodes, revision: nextRevision(document) } : document
     }
@@ -51,6 +73,26 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
       if (ids.size !== command.nodes.length) throw new Error('替换节点包含重复标识')
       const edges = document.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target))
       return { ...document, nodes: structuredClone(command.nodes), edges, revision: nextRevision(document) }
+    }
+    case 'insert-node-on-edge': {
+      if (document.nodes.some((node) => node.id === command.node.id)) throw new Error('插入节点标识已存在')
+      const edgeIndex = document.edges.findIndex((edge) => edge.id === command.edgeId)
+      if (edgeIndex < 0) throw new Error('待插入的连线不存在')
+      const original = document.edges[edgeIndex]
+      if (command.before.source !== original.source || command.before.target !== command.node.id
+        || command.after.source !== command.node.id || command.after.target !== original.target) {
+        throw new Error('插入节点连线关系无效')
+      }
+      const edgeIds = new Set(document.edges.map((edge) => edge.id))
+      if (command.before.id === command.after.id || edgeIds.has(command.before.id) || edgeIds.has(command.after.id)) {
+        throw new Error('插入节点连线标识已存在')
+      }
+      return {
+        ...document,
+        nodes: [...document.nodes, structuredClone(command.node)],
+        edges: [...document.edges.slice(0, edgeIndex), { ...command.before }, { ...command.after }, ...document.edges.slice(edgeIndex + 1)],
+        revision: nextRevision(document),
+      }
     }
     case 'delete-elements': {
       const nodeIds = new Set(command.nodeIds)

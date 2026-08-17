@@ -9,6 +9,7 @@ import {
   type BoundedOperationHandle,
 } from './bounded-operation-queue'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
+import type { AiOperationProgressObserver } from './ai-operation-progress'
 
 const DEFAULT_TIMEOUT_MS = 320_000
 const DEFAULT_MAX_ACTIVE = 2
@@ -211,6 +212,7 @@ export function createAiImageService(options: {
       signal: AbortSignal,
       markDispatched: () => void,
     ) => Promise<Response>,
+    progress?: AiOperationProgressObserver,
   ): Promise<GeneratedAiAsset[]> {
     if (!Number.isSafeInteger(senderId) || senderId <= 0) throw new Error('生图窗口标识格式错误')
     const requestId = requiredRequestId(input.requestId)
@@ -242,6 +244,8 @@ export function createAiImageService(options: {
           }
           throw error
         }
+        await progress?.onStage('processing')
+        await progress?.onStage('downloading')
         let bytes: Buffer
         try {
           bytes = await readBoundedResponseBytes(response, MAXIMUM_RESPONSE_BYTES)
@@ -272,6 +276,7 @@ export function createAiImageService(options: {
           throw ambiguousImageSubmission()
         }
         const results: GeneratedAiAsset[] = []
+        await progress?.onStage('saving')
         for (const entry of entries) {
           if (signal.aborted) throw signal.reason
           const metadata = {
@@ -320,7 +325,11 @@ export function createAiImageService(options: {
     }
   }
 
-  async function generate(senderId: number, input: AiImageGenerationInput): Promise<GeneratedAiAsset[]> {
+  async function generate(
+    senderId: number,
+    input: AiImageGenerationInput,
+    progress?: AiOperationProgressObserver,
+  ): Promise<GeneratedAiAsset[]> {
     const body = buildImageGenerationRequest(input)
     return runImageOperation(senderId, input, (credential, signal, markDispatched) => {
       markDispatched()
@@ -335,10 +344,14 @@ export function createAiImageService(options: {
         redirect: 'error',
         signal,
       })
-    })
+    }, progress)
   }
 
-  async function edit(senderId: number, input: AiImageEditInput): Promise<GeneratedAiAsset[]> {
+  async function edit(
+    senderId: number,
+    input: AiImageEditInput,
+    progress?: AiOperationProgressObserver,
+  ): Promise<GeneratedAiAsset[]> {
     const fields = buildImageGenerationRequest(input)
     const capability = resolveAiModelCapability(fields.model)
     if (capability.kind !== 'image' || !capability.supportsEdits) {
@@ -378,7 +391,7 @@ export function createAiImageService(options: {
         redirect: 'error',
         signal,
       })
-    })
+    }, progress)
   }
 
   function cancelOperation(

@@ -1,7 +1,7 @@
 import type { GeneratedAiAsset } from './ai-image-service'
 import type { GeneratedAiVideoAsset } from './ai-video-service'
 import type { CanvasPromptPreset } from './canvas-prompt-preset-store'
-import type { CanvasRunEvent, CanvasRunGraph, CanvasRunRecord, CanvasRunScope } from './canvas-run-contract'
+import type { CanvasRunAssetLineage, CanvasRunEvent, CanvasRunGraph, CanvasRunRecord, CanvasRunScope } from './canvas-run-contract'
 
 export const canvasHostChannels = {
   saveFile: 'canvas-host:save-file',
@@ -20,6 +20,7 @@ export const canvasHostChannels = {
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
   renameAsset: 'canvas-host:rename-asset',
+  inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
   listPromptPresets: 'canvas-host:list-prompt-presets',
@@ -36,7 +37,11 @@ export const canvasHostChannels = {
   createProject: 'canvas-host:create-project',
   openProject: 'canvas-host:open-project',
   saveProject: 'canvas-host:save-project',
+  renameProject: 'canvas-host:rename-project',
+  duplicateProject: 'canvas-host:duplicate-project',
+  setProjectArchived: 'canvas-host:set-project-archived',
   runEvent: 'canvas-host:run-event',
+  themeChanged: 'canvas-host:theme-changed',
 } as const
 
 export interface CanvasGroupSummary {
@@ -78,6 +83,7 @@ export interface CanvasAssetSummary extends CanvasGeneratedAsset {
   mediaType: 'image'
   thumbnailUrl: string
   displayName: string
+  lineage?: CanvasRunAssetLineage
 }
 
 export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
@@ -88,6 +94,7 @@ export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
   width?: number
   height?: number
   durationSeconds?: number
+  lineage?: CanvasRunAssetLineage
 }
 
 export interface CanvasAudioAssetSummary {
@@ -100,6 +107,7 @@ export interface CanvasAudioAssetSummary {
   thumbnailUrl: string
   displayName: string
   durationSeconds?: number
+  lineage?: CanvasRunAssetLineage
 }
 
 export interface CanvasRenameAssetInput {
@@ -110,6 +118,31 @@ export interface CanvasRenameAssetInput {
 export interface CanvasRenameAssetResult {
   assetId: string
   displayName: string
+}
+
+export interface CanvasAssetReferenceReport {
+  assetId: string
+  inUse: boolean
+  currentProject: {
+    projectId: string
+    projectName: string
+    nodeIds: string[]
+  }
+  projects: Array<{
+    projectId: string
+    projectName: string
+    nodeIds: string[]
+    archived: boolean
+  }>
+  runs: Array<{
+    runId: string
+    projectId?: string
+    createdAt: string
+    status: string
+    nodeIds: string[]
+    inputReferenceCount: number
+    candidateReferenceCount: number
+  }>
 }
 
 export interface CanvasAssetQuery {
@@ -158,7 +191,16 @@ export interface CanvasStoredProjectSummary {
   name: string
   createdAt: string
   updatedAt: string
+  lastOpenedAt: string
   nodeCount: number
+  assetCount: number
   workspaceName?: string
   workspaceConfigured: boolean
+  workspaceStatus: 'ready' | 'missing' | 'legacy'
+  previewAsset?: {
+    kind: 'image' | 'video' | 'audio'
+    assetId: string
+    localUrl: string
+  }
+  archivedAt?: string
 }

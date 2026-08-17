@@ -15,9 +15,11 @@ function memoryStore() {
   const cache = new Map<string, CanvasRunCacheEntry>()
   return {
     runs,
+    cache,
     initializeUser: async () => structuredClone(runs),
     listRuns: async () => structuredClone(runs),
     getRun: async (_userId: number, runId: string) => structuredClone(runs.find((run) => run.runId === runId) ?? null),
+    getAssetLineage: async () => ({}),
     saveRun: async (_userId: number, run: CanvasRunRecord) => {
       const index = runs.findIndex((entry) => entry.runId === run.runId)
       if (index >= 0) runs.splice(index, 1)
@@ -30,15 +32,15 @@ function memoryStore() {
 }
 
 describe('createCanvasRunService', () => {
-  it('rejects stale graph revisions before creating paid work', () => {
+  it('rejects stale graph revisions before creating paid work', async () => {
     const graph = workflow()
     const text = vi.fn(async () => ({ outputText: 'hello' }))
     const service = createCanvasRunService({
       store: memoryStore(),
       executors: { text, image: async () => ({ assets: [] }), video: async () => ({ assets: [] }) },
     })
-    expect(() => service.start({ userId: 7, ownerId: 9, graphRevision: 'stale', graph, scope: { kind: 'all' } }))
-      .toThrow('工作流已发生变化')
+    await expect(service.start({ userId: 7, ownerId: 9, graphRevision: 'stale', graph, scope: { kind: 'all' } }))
+      .rejects.toThrow('工作流已发生变化')
     expect(text).not.toHaveBeenCalled()
   })
 
@@ -53,9 +55,15 @@ describe('createCanvasRunService', () => {
     const observations: string[] = []
     service.subscribe(async ({ event, userId, ownerId }) => {
       expect({ userId, ownerId }).toEqual({ userId: 7, ownerId: 9 })
+      if (event.type === 'node-stage') {
+        expect(store.runs[0]?.nodes.find((node) => node.nodeId === event.nodeId)).toMatchObject({
+          latestStage: event.stage,
+          latestStageSequence: event.sequence,
+        })
+      }
       if (event.type === 'run-terminal') observations.push(store.runs[0]?.status ?? 'missing')
     })
-    const handle = service.start({
+    const handle = await service.start({
       userId: 7,
       ownerId: 9,
       graphRevision: computeCanvasGraphRevision(graph),
@@ -80,12 +88,85 @@ describe('createCanvasRunService', () => {
     })
     service.subscribe(() => { throw new Error('renderer gone') })
     const revision = computeCanvasGraphRevision(graph)
-    const first = service.start({ userId: 7, ownerId: 10, graphRevision: revision, graph, scope: { kind: 'all' } })
-    const second = service.start({ userId: 7, ownerId: 20, graphRevision: revision, graph, scope: { kind: 'all' } })
+    const [first, second] = await Promise.all([
+      service.start({ userId: 7, ownerId: 10, graphRevision: revision, graph, scope: { kind: 'all' } }),
+      service.start({ userId: 7, ownerId: 20, graphRevision: revision, graph, scope: { kind: 'all' } }),
+    ])
     await vi.waitFor(() => expect(gates.size).toBe(2))
     expect(service.cancelOwner(10)).toBe(1)
     gates.get(20)?.()
     await expect(first.promise).resolves.toMatchObject({ status: 'cancelled' })
     await expect(second.promise).resolves.toMatchObject({ status: 'succeeded' })
+  })
+
+  it('locks one active run per user, owner, and project until the terminal state', async () => {
+    const graph = workflow()
+    const store = memoryStore()
+    let releaseFirst: (() => void) | undefined
+    const text = vi.fn(({ projectId }: { projectId?: string }) => (
+      projectId === 'project-a'
+        ? new Promise<{ outputText: string }>((resolve) => { releaseFirst = () => resolve({ outputText: 'first' }) })
+        : Promise.resolve({ outputText: 'other project' })
+    ))
+    const service = createCanvasRunService({
+      store,
+      executors: { text, image: async () => ({ assets: [] }), video: async () => ({ assets: [] }) },
+    })
+    const revision = computeCanvasGraphRevision(graph)
+    const first = await service.start({
+      userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'all' },
+    })
+    await vi.waitFor(() => expect(text).toHaveBeenCalledOnce())
+
+    await expect(service.start({
+      userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'all' },
+    })).rejects.toThrow('已有工作流正在运行')
+
+    const otherProject = await service.start({
+      userId: 7, ownerId: 9, projectId: 'project-b', graphRevision: revision, graph, scope: { kind: 'all' },
+    })
+    await expect(otherProject.promise).resolves.toMatchObject({ status: 'succeeded' })
+    releaseFirst?.()
+    await expect(first.promise).resolves.toMatchObject({ status: 'succeeded' })
+    store.cache.clear()
+
+    const afterTerminal = await service.start({
+      userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'all' },
+    })
+    await vi.waitFor(() => expect(text).toHaveBeenCalledTimes(3))
+    releaseFirst?.()
+    await expect(afterTerminal.promise).resolves.toMatchObject({ status: 'succeeded' })
+    expect(text).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not admit paid work when the initial run record cannot be persisted', async () => {
+    const graph = workflow()
+    const store = memoryStore()
+    const originalSaveRun = store.saveRun
+    let failAdmission = true
+    store.saveRun = vi.fn(async (userId, record) => {
+      if (failAdmission) throw new Error('disk unavailable')
+      await originalSaveRun(userId, record)
+    })
+    const text = vi.fn(async () => ({ outputText: 'paid result' }))
+    const service = createCanvasRunService({
+      store,
+      executors: { text, image: async () => ({ assets: [] }), video: async () => ({ assets: [] }) },
+    })
+    const input = {
+      userId: 7,
+      ownerId: 9,
+      projectId: 'project-a',
+      graphRevision: computeCanvasGraphRevision(graph),
+      graph,
+      scope: { kind: 'all' } as const,
+    }
+
+    await expect(service.start(input)).rejects.toThrow('画布运行初始化持久化失败：disk unavailable')
+    expect(text).not.toHaveBeenCalled()
+    failAdmission = false
+    const retry = await service.start(input)
+    await expect(retry.promise).resolves.toMatchObject({ status: 'succeeded' })
+    expect(text).toHaveBeenCalledOnce()
   })
 })

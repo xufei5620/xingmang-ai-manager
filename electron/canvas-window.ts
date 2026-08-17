@@ -24,6 +24,7 @@ import { readBoundedUtf8File } from './bounded-file'
 import { writeAtomicSafeUtf8File } from './safe-local-data'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
+import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { canvasHostChannels } from './canvas-contract'
@@ -50,7 +51,8 @@ import type { AiVideoService } from './ai-video-service'
 import type { AiMediaAssetService } from './ai-media-asset-service'
 import type { CanvasRunService } from './canvas-run-service'
 import type { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
-import type { CanvasProjectStore } from './canvas-project-store'
+import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from './canvas-project-store'
+import { findCanvasRunAssetReferences } from './canvas-asset-references'
 import type { CanvasProjectAssetManager } from './canvas-project-asset-manager'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import {
@@ -86,6 +88,7 @@ export const canvasHostSaveAssetChannel = canvasHostChannels.saveAsset
 export const canvasHostShowAssetMenuChannel = canvasHostChannels.showAssetMenu
 export const canvasHostListAssetsChannel = canvasHostChannels.listAssets
 export const canvasHostRenameAssetChannel = canvasHostChannels.renameAsset
+export const canvasHostInspectAssetReferencesChannel = canvasHostChannels.inspectAssetReferences
 export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
 export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
 export const canvasHostListPromptPresetsChannel = canvasHostChannels.listPromptPresets
@@ -102,7 +105,11 @@ export const canvasHostListProjectsChannel = canvasHostChannels.listProjects
 export const canvasHostCreateProjectChannel = canvasHostChannels.createProject
 export const canvasHostOpenProjectChannel = canvasHostChannels.openProject
 export const canvasHostSaveProjectChannel = canvasHostChannels.saveProject
+export const canvasHostRenameProjectChannel = canvasHostChannels.renameProject
+export const canvasHostDuplicateProjectChannel = canvasHostChannels.duplicateProject
+export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProjectArchived
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
+export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
 
 const maximumSavedFileBytes = 20 * 1024 * 1024
 const maximumPickedFileBytes = 20 * 1024 * 1024
@@ -137,6 +144,8 @@ export interface CanvasWindowControllerOptions {
 export interface CanvasWindowController {
   /** Opens the canvas window, or focuses it if already open. Idempotent under rapid repeat calls (in-flight creation is reused, never doubled). */
   open(): Promise<void>
+  /** Applies the global application theme without exposing the settings record to the canvas renderer. */
+  setTheme(theme: AppTheme): void
   /** Closes the canvas window if one is open; a no-op otherwise. */
   closeIfOpen(): void
   /** Removes every IPC handler this controller registered. */
@@ -148,6 +157,11 @@ function senderUrlOf(event: IpcMainInvokeEvent): string {
 }
 
 export const canvasWindowBackgroundColor = '#111315'
+export const canvasWindowLightBackgroundColor = '#eef1f3'
+
+export function canvasWindowBackgroundForTheme(theme: AppTheme): string {
+  return theme === 'light' ? canvasWindowLightBackgroundColor : canvasWindowBackgroundColor
+}
 
 /**
  * Builds and wires an isolated BrowserWindow for the bundled infinite-canvas
@@ -169,6 +183,7 @@ export function createCanvasWindowController(
   const handleChannels: string[] = []
   let canvasWindow: BrowserWindow | null = null
   let pendingOpen: Promise<void> | null = null
+  let currentTheme: AppTheme = options.systemService.readStoredConfig().theme
   const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
 
@@ -336,6 +351,51 @@ export function createCanvasWindowController(
     return saved
   })
 
+  registerCanvasHandler(canvasHostRenameProjectChannel, async (_event, projectIdInput, nameInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const renamed = await options.projects.rename(
+      userId,
+      requiredCanvasString(projectIdInput, '画布项目标识', 64),
+      requiredCanvasString(nameInput, '画布项目名称', 128),
+    )
+    assertCanvasUserUnchanged(userId)
+    return renamed
+  })
+
+  registerCanvasHandler(canvasHostDuplicateProjectChannel, async (event, projectIdInput, nameInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    const name = requiredCanvasString(nameInput, '画布项目名称', 128)
+    const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const dialogOptions: OpenDialogOptions = {
+      title: '选择项目副本的工作文件夹',
+      buttonLabel: '复制到此文件夹',
+      properties: ['openDirectory', 'createDirectory', 'promptToCreate'],
+    }
+    const result = parentWindow
+      ? await dialog.showOpenDialog(parentWindow, dialogOptions)
+      : await dialog.showOpenDialog(dialogOptions)
+    if (result.canceled || !result.filePaths[0]) return null
+    assertCanvasUserUnchanged(userId)
+    const duplicated = await options.projects.duplicate(userId, projectId, name, result.filePaths[0])
+    assertCanvasUserUnchanged(userId)
+    return duplicated
+  })
+
+  registerCanvasHandler(canvasHostSetProjectArchivedChannel, async (event, projectIdInput, archivedInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    if (typeof archivedInput !== 'boolean') throw new Error('画布项目归档状态无效')
+    const userId = authenticatedCanvasUserId()
+    const projectId = requiredCanvasString(projectIdInput, '画布项目标识', 64)
+    const updated = await options.projects.setArchived(userId, projectId, archivedInput)
+    assertCanvasUserUnchanged(userId)
+    const active = activeProjects.get(event.sender.id)
+    if (archivedInput && active?.userId === userId && active.projectId === projectId) activeProjects.delete(event.sender.id)
+    return updated
+  })
+
   registerCanvasHandler(canvasHostPrepareGroupChannel, (_event, groupInput) => (
     options.chatCredentials.prepareGroup(requiredCanvasString(groupInput, '画布生图分组', 128))
   ))
@@ -447,8 +507,15 @@ export function createCanvasWindowController(
     const userId = authenticatedCanvasUserId()
     const context = await activeAssetContext(event.sender.id, userId)
     const assets = await (context?.media ?? options.mediaAssets).listOwnedPage(userId, parseCanvasAssetQuery(queryInput))
+    const lineage = await options.canvasRuns.getAssetLineage(userId, assets.items.map((asset) => asset.assetId))
     assertCanvasUserUnchanged(userId)
-    return assets
+    return {
+      ...assets,
+      items: assets.items.map((asset) => ({
+        ...asset,
+        ...(lineage[asset.assetId] ? { lineage: lineage[asset.assetId] } : {}),
+      })),
+    }
   })
 
   registerCanvasHandler(canvasHostRenameAssetChannel, async (event, input) => {
@@ -458,6 +525,34 @@ export function createCanvasWindowController(
     const renamed = await (context?.media ?? options.mediaAssets).rename(userId, assetId, displayName)
     assertCanvasUserUnchanged(userId)
     return renamed
+  })
+
+  registerCanvasHandler(canvasHostInspectAssetReferencesChannel, async (event, assetIdInput, currentProjectContentInput) => {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const userId = authenticatedCanvasUserId()
+    const projectId = activeProjectId(event.sender.id, userId)
+    if (!projectId) throw new Error('请先选择或新建一个画布项目')
+    const assetId = requiredCanvasString(assetIdInput, '画布资产标识', 64)
+    const currentProjectContent = requiredCanvasText(currentProjectContentInput, '当前画布项目内容', maximumSavedFileBytes)
+    const currentWorkflow = parseCanvasProjectWorkflow(currentProjectContent).workflow
+    const [projects, runs] = await Promise.all([
+      options.projects.findAssetReferences(userId, assetId),
+      options.canvasRuns.listRuns(userId),
+    ])
+    assertCanvasUserUnchanged(userId)
+    const currentNodeIds = findCanvasWorkflowAssetReferenceNodeIds(currentWorkflow, assetId)
+    const runReferences = findCanvasRunAssetReferences(runs, assetId)
+    return {
+      assetId,
+      inUse: currentNodeIds.length > 0 || projects.length > 0 || runReferences.length > 0,
+      currentProject: {
+        projectId,
+        projectName: String(currentWorkflow.name),
+        nodeIds: currentNodeIds,
+      },
+      projects,
+      runs: runReferences,
+    }
   })
 
   async function importCanvasAsset(ownerId: number, userId: number, filePath: string) {
@@ -517,11 +612,11 @@ export function createCanvasWindowController(
     return importCanvasAsset(event.sender.id, userId, filePath)
   })
 
-  registerCanvasHandler(canvasHostStartRunChannel, (event, input) => {
+  registerCanvasHandler(canvasHostStartRunChannel, async (event, input) => {
     const { graph, scope } = parseCanvasStartRunInput(input)
     const userId = authenticatedCanvasUserId()
     const projectId = activeProjectId(event.sender.id, userId)
-    const handle = options.canvasRuns.start({
+    const handle = await options.canvasRuns.start({
       userId,
       ownerId: event.sender.id,
       ...(projectId ? { projectId } : {}),
@@ -648,7 +743,7 @@ export function createCanvasWindowController(
       height: 860,
       minWidth: 960,
       minHeight: 620,
-      backgroundColor: canvasWindowBackgroundColor,
+      backgroundColor: canvasWindowBackgroundForTheme(currentTheme),
       show: false,
       title: '无限画布 - 星芒AI管理工具',
       webPreferences: {
@@ -708,7 +803,9 @@ export function createCanvasWindowController(
     // SPA uses createBrowserRouter and only registers '/', so a '/index.html'
     // path 404s in its router; the protocol handler's catch-all still serves
     // index.html for '/', letting the app boot on its home route.
-    await window.loadURL(canvasPackagedBaseUrl)
+    const canvasUrl = new URL(canvasPackagedBaseUrl)
+    canvasUrl.searchParams.set('theme', currentTheme)
+    await window.loadURL(canvasUrl.href)
   }
 
   return {
@@ -725,6 +822,12 @@ export function createCanvasWindowController(
         })
       }
       await pendingOpen
+    },
+    setTheme(theme) {
+      currentTheme = theme
+      if (!canvasWindow || canvasWindow.isDestroyed()) return
+      canvasWindow.setBackgroundColor(canvasWindowBackgroundForTheme(theme))
+      canvasWindow.webContents.send(canvasHostThemeChangedChannel, theme)
     },
     closeIfOpen() {
       if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.close()

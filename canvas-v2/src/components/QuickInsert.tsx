@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, FileStack, Focus, Image, LayoutGrid } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import { builtinCanvasTemplates } from '../templates/builtin-templates'
+import { searchExistingCanvasNodes } from '../editor/command-palette'
+import type { CanvasNode } from '../nodes/WorkflowNodes'
 
 export type QuickInsertCommand = 'fit-all' | 'fit-selection' | 'open-assets'
 
@@ -10,16 +12,18 @@ interface QuickInsertProps {
   anchor: { x: number; y: number }
   hasNodes: boolean
   hasSelection: boolean
+  canvasNodes: readonly CanvasNode[]
   allowedNodeTypes?: readonly string[]
   onAddNode(type: string): void
   onLoadTemplate(templateId: string): void
   onCommand(command: QuickInsertCommand): void
+  onLocateNode(nodeId: string): void
   onClose(): void
 }
 
 type QuickInsertEntry = {
   id: string
-  group: '节点' | '模板' | '画布命令'
+  group: '现有节点' | '节点' | '模板' | '画布命令'
   title: string
   description: string
   search: string
@@ -29,7 +33,7 @@ type QuickInsertEntry = {
 
 const hiddenNodeTypes = new Set(['text', 'image', 'video', 'unknown'])
 
-export function QuickInsert({ open, anchor, hasNodes, hasSelection, allowedNodeTypes, onAddNode, onLoadTemplate, onCommand, onClose }: QuickInsertProps) {
+export function QuickInsert({ open, anchor, hasNodes, hasSelection, canvasNodes, allowedNodeTypes, onAddNode, onLoadTemplate, onCommand, onLocateNode, onClose }: QuickInsertProps) {
   const [query, setQuery] = useState('')
   const [activeIndex, setActiveIndex] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
@@ -79,8 +83,19 @@ export function QuickInsert({ open, anchor, hasNodes, hasSelection, allowedNodeT
 
   const filtered = useMemo(() => {
     const normalized = query.trim().toLowerCase()
-    return normalized ? entries.filter((entry) => entry.search.includes(normalized)) : entries
-  }, [entries, query])
+    const base = normalized ? entries.filter((entry) => entry.search.includes(normalized)) : entries
+    if (!normalized || allowedNodeTypes) return base
+    const existing: QuickInsertEntry[] = searchExistingCanvasNodes(canvasNodes, normalized).map((node) => ({
+      id: `existing:${node.id}`,
+      group: '现有节点',
+      title: node.title,
+      description: node.description,
+      search: node.search,
+      icon: Focus,
+      run: () => onLocateNode(node.id),
+    }))
+    return [...existing, ...base]
+  }, [allowedNodeTypes, canvasNodes, entries, onLocateNode, query])
 
   useEffect(() => {
     if (!open) return
@@ -155,8 +170,8 @@ export function QuickInsert({ open, anchor, hasNodes, hasSelection, allowedNodeT
           autoComplete="off"
           value={query}
           onChange={(event) => { setQuery(event.target.value); setActiveIndex(0) }}
-          placeholder={allowedNodeTypes ? '搜索可连接节点' : '搜索节点、模板或命令'}
-          aria-label={allowedNodeTypes ? '搜索可连接节点' : '搜索节点、模板或命令'}
+          placeholder={allowedNodeTypes ? '搜索可连接节点' : '搜索现有节点、新节点或命令'}
+          aria-label={allowedNodeTypes ? '搜索可连接节点' : '搜索现有节点、新节点或命令'}
         />
         <kbd>Esc</kbd>
       </label>

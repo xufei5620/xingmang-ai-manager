@@ -72,8 +72,7 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
         fingerprint: entry.fingerprint,
         text: entry.text,
         asset: stableAsset(entry.asset),
-      }))
-      .sort((left, right) => canonicalCanvasJson(left).localeCompare(canonicalCanvasJson(right))),
+      })),
   })
 }
 
