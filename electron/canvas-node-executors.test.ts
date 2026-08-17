@@ -233,7 +233,8 @@ describe('createCanvasNodeExecutors', () => {
     expect(generate).toHaveBeenCalledWith(41, {
       requestId: 'canvas-run:attempt', group: 'grok', model: 'grok-imagine-video',
       prompt: '海岸\n镜头推进', seconds: '15', width: 720, height: 1280,
-      expectedUserId: 7, imageAssetId: 'a'.repeat(43),
+      expectedUserId: 7, runId: 'run', nodeId: 'video', attemptId: 'attempt',
+      graphRevision: 'revision', imageAssetId: 'a'.repeat(43),
     })
     expect(result.assets).toEqual([expect.objectContaining({
       kind: 'video', assetId: 'v'.repeat(43), taskId: 'video_123',
@@ -321,11 +322,19 @@ describe('createCanvasNodeExecutors', () => {
         width: 1280,
         height: 720,
         projectId: 'project-1',
-      }))
+      }), expect.objectContaining({ onStage: expect.any(Function) }))
       if (producerKind === 'image-edit') {
-        expect(imageEdit).toHaveBeenCalledWith(41, expect.objectContaining({ sourceAssetIds: [sourceAssetId] }))
+        expect(imageEdit).toHaveBeenCalledWith(
+          41,
+          expect.objectContaining({ sourceAssetIds: [sourceAssetId] }),
+          expect.objectContaining({ onStage: expect.any(Function) }),
+        )
       } else {
-        expect(imageGenerate).toHaveBeenCalledOnce()
+        expect(imageGenerate).toHaveBeenCalledWith(
+          41,
+          expect.objectContaining({ projectId: 'project-1' }),
+          expect.objectContaining({ onStage: expect.any(Function) }),
+        )
       }
     },
   )

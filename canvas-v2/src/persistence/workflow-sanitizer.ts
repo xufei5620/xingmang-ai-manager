@@ -239,7 +239,7 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
       warnings.push(`已移除指向不存在节点的连线：${edge.id}`)
       continue
     }
-    if (source.disabled || target.disabled || source.id === target.id) {
+    if (source.unknownKind || target.unknownKind || source.id === target.id) {
       warnings.push(`已移除不可执行的连线：${edge.id}`)
       continue
     }

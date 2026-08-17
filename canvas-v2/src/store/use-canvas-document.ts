@@ -25,8 +25,9 @@ import {
 } from './history'
 
 const runtimeDataKeys = new Set([
-  'status', 'errorMessage', 'costQuota', 'candidates', 'selectedCandidateId',
+  'status', 'errorMessage', 'costQuota', 'candidateAssetIds', 'candidates', 'selectedCandidateId',
   'adoptedCandidateId', 'dirty', 'attemptCount', 'latestAttemptDurationMs',
+  'runStage',
 ])
 
 interface DragTransaction {

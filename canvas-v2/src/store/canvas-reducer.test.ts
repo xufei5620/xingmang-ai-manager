@@ -24,12 +24,74 @@ describe('canvas command history', () => {
     expect(history.present.nodes.map((entry) => entry.id)).toEqual(['a'])
   })
 
+  it('inserts a node on an edge as one undoable structural command', () => {
+    const original = {
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240)],
+      edges: [{ id: 'edge', source: 'a', sourceHandle: 'out:text', target: 'b', targetHandle: 'in:text' }],
+    }
+    const inserted = node('middle', 120)
+    let history = applyCanvasCommand(createCanvasHistory(original), {
+      type: 'insert-node-on-edge',
+      node: inserted,
+      edgeId: 'edge',
+      before: { id: 'before', source: 'a', sourceHandle: 'out:text', target: 'middle', targetHandle: 'in:text' },
+      after: { id: 'after', source: 'middle', sourceHandle: 'out:text', target: 'b', targetHandle: 'in:text' },
+    })
+    expect(history.present.nodes.map((entry) => entry.id)).toEqual(['a', 'b', 'middle'])
+    expect(history.present.edges.map((edge) => edge.id)).toEqual(['before', 'after'])
+    history = undoCanvasHistory(history)
+    expect(history.present.edges.map((edge) => edge.id)).toEqual(['edge'])
+  })
+
   it('merges continuous drag updates into one undo step', () => {
     let history = createCanvasHistory({ ...createCanvasDocument(), nodes: [node('a')] })
     history = applyCanvasCommand(history, { type: 'move-nodes', positions: { a: { x: 10, y: 0 } }, mergeKey: 'drag:a' })
     history = applyCanvasCommand(history, { type: 'move-nodes', positions: { a: { x: 20, y: 0 } }, mergeKey: 'drag:a' })
     expect(history.past).toHaveLength(1)
     expect(undoCanvasHistory(history).present.nodes[0].position.x).toBe(0)
+  })
+
+  it('updates node flags atomically and restores them through undo and redo', () => {
+    const original = {
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240)],
+      edges: [{ id: 'edge', source: 'a', sourceHandle: 'out:text', target: 'b', targetHandle: 'in:text' }],
+    }
+    let history = applyCanvasCommand(createCanvasHistory(original), {
+      type: 'set-node-flags', nodeIds: ['a', 'b'], locked: true, disabled: true,
+    })
+    expect(history.present.nodes.every((entry) => entry.locked && entry.disabled)).toBe(true)
+    expect(history.present.edges).toEqual(original.edges)
+    expect(history.past).toHaveLength(1)
+
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes.every((entry) => !entry.locked && !entry.disabled)).toBe(true)
+    history = redoCanvasHistory(history)
+    expect(history.present.nodes.every((entry) => entry.locked && entry.disabled)).toBe(true)
+  })
+
+  it('does not move locked nodes and ignores flag no-ops', () => {
+    const locked = { ...node('locked'), locked: true }
+    let history = createCanvasHistory({ ...createCanvasDocument(), nodes: [locked, node('free', 20)] })
+    const unchanged = applyCanvasCommand(history, { type: 'set-node-flags', nodeIds: ['locked'], locked: true })
+    expect(unchanged).toBe(history)
+
+    history = applyCanvasCommand(history, {
+      type: 'move-nodes', positions: { locked: { x: 100, y: 0 }, free: { x: 120, y: 0 } },
+    })
+    expect(history.present.nodes.find((entry) => entry.id === 'locked')?.position.x).toBe(0)
+    expect(history.present.nodes.find((entry) => entry.id === 'free')?.position.x).toBe(120)
+  })
+
+  it('keeps unknown placeholders disabled', () => {
+    const unknown = { ...node('unknown'), type: 'unknown', disabled: true, unknownKind: 'future-node' }
+    const history = applyCanvasCommand(
+      createCanvasHistory({ ...createCanvasDocument(), nodes: [unknown] }),
+      { type: 'set-node-flags', nodeIds: ['unknown'], disabled: false },
+    )
+    expect(history.present.nodes[0].disabled).toBe(true)
+    expect(history.past).toHaveLength(0)
   })
 
   it('keeps the final drag frame in its gesture and starts a new undo step for the next drag', () => {

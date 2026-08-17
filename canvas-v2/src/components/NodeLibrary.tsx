@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react'
-import { Box, ChevronLeft, ChevronRight, FileStack, Film, Image, Library, MessageSquareText, MoreHorizontal, Music2, Plus } from 'lucide-react'
+import { Box, Check, ChevronLeft, ChevronRight, FileStack, Film, Image, Library, MessageSquareText, MoreHorizontal, Music2, Pencil, Plus, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeCategory } from '../domain/node-definition'
 import type { CanvasAssetPage, CanvasPromptPreset } from '../host'
@@ -13,11 +13,14 @@ interface NodeLibraryProps {
   onAddPrompt(prompt: string): void
   onAddAsset(assetId: string): void
   onDeletePromptPreset(id: string): void
+  onUpdatePromptPreset?(id: string, patch: { name: string; prompt: string }): void | Promise<void>
   onLoadTemplate(templateId: string): void
   onOpenAssets(): void
   onAssetMenu(assetId: string): void
   assets: CanvasAssetPage
   userPromptPresets: readonly CanvasPromptPreset[]
+  collapsed?: boolean
+  onCollapsedChange?(collapsed: boolean): void
 }
 
 type LibraryView = 'nodes' | 'prompts' | 'templates' | 'assets'
@@ -39,10 +42,17 @@ const categoryLabel: Record<NodeCategory, string> = {
   structural: '组织',
 }
 
-export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPreset, onLoadTemplate, onOpenAssets, onAssetMenu, assets, userPromptPresets }: NodeLibraryProps) {
+export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPreset, onUpdatePromptPreset, onLoadTemplate, onOpenAssets, onAssetMenu, assets, userPromptPresets, collapsed, onCollapsedChange }: NodeLibraryProps) {
   const [view, setView] = useState<LibraryView>('nodes')
   const [query, setQuery] = useState('')
-  const [expanded, setExpanded] = useState(true)
+  const [localExpanded, setLocalExpanded] = useState(true)
+  const [editingPreset, setEditingPreset] = useState<{ id: string; name: string; prompt: string } | null>(null)
+  const expanded = collapsed === undefined ? localExpanded : !collapsed
+  const setExpanded = (next: boolean | ((current: boolean) => boolean)) => {
+    const resolved = typeof next === 'function' ? next(expanded) : next
+    if (onCollapsedChange) onCollapsedChange(!resolved)
+    else setLocalExpanded(resolved)
+  }
   const normalized = query.trim().toLowerCase()
   const definitions = useMemo(() => builtinNodeRegistry.list().filter((definition) => (
     !['text', 'image', 'video', 'unknown'].includes(definition.type)
@@ -116,10 +126,17 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
           {userPresets.length > 0 && <>
             <div className="node-library-section-title">我的预设</div>
             {userPresets.map((preset) => (
-              <div key={preset.id} className="prompt-preset-row user-prompt-preset-row">
-                <button type="button" onClick={() => onAddPrompt(preset.prompt)}><span><strong>{preset.name}</strong><small>{preset.tags.join(' · ') || preset.prompt}</small></span></button>
-                <button type="button" className="prompt-preset-delete" title="删除预设" aria-label={`删除预设 ${preset.name}`} onClick={() => onDeletePromptPreset(preset.id)}>×</button>
-              </div>
+              editingPreset?.id === preset.id
+                ? <form key={preset.id} className="user-prompt-edit" onSubmit={(event) => { event.preventDefault(); if (editingPreset.name.trim() && editingPreset.prompt.trim()) { void onUpdatePromptPreset?.(preset.id, { name: editingPreset.name.trim(), prompt: editingPreset.prompt.trim() }); setEditingPreset(null) } }}>
+                    <input value={editingPreset.name} maxLength={80} aria-label="预设名称" onChange={(event) => setEditingPreset((current) => current ? { ...current, name: event.target.value } : current)} />
+                    <textarea value={editingPreset.prompt} maxLength={8_000} aria-label="预设内容" onChange={(event) => setEditingPreset((current) => current ? { ...current, prompt: event.target.value } : current)} />
+                    <span><button type="submit" title="保存预设" aria-label="保存预设"><Check size={13} /></button><button type="button" title="取消编辑" aria-label="取消编辑" onClick={() => setEditingPreset(null)}><X size={13} /></button></span>
+                  </form>
+                : <div key={preset.id} className="prompt-preset-row user-prompt-preset-row">
+                    <button type="button" onClick={() => onAddPrompt(preset.prompt)}><span><strong>{preset.name}</strong><small>{preset.tags.join(' · ') || preset.prompt}</small></span></button>
+                    {onUpdatePromptPreset && <button type="button" title="编辑预设" aria-label={`编辑预设 ${preset.name}`} onClick={() => setEditingPreset({ id: preset.id, name: preset.name, prompt: preset.prompt })}><Pencil size={12} /></button>}
+                    <button type="button" className="prompt-preset-delete" title="删除预设" aria-label={`删除预设 ${preset.name}`} onClick={() => onDeletePromptPreset(preset.id)}>×</button>
+                  </div>
             ))}
           </>}
           <div className="node-library-section-title">星芒提示词预设</div>

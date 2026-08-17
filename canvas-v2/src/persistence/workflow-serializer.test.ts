@@ -147,6 +147,20 @@ describe('workflow schema v2 parser', () => {
     expect(result?.warnings.join('\n')).toContain('不可执行的连线')
   })
 
+  it('preserves known disabled node connections and lock state', () => {
+    const input = v2Document({
+      nodes: [
+        v2Document().nodes[0],
+        { ...v2Document().nodes[1], disabled: true, locked: true },
+      ],
+    })
+    const parsed = parseWorkflowFileDetailed(JSON.stringify(input))
+
+    expect(parsed?.workflow.nodes[1]).toMatchObject({ kind: 'image', disabled: true, locked: true })
+    expect(parsed?.workflow.edges.map((edge) => edge.id)).toEqual(['edge-1'])
+    expect(parsed?.warnings).not.toContain('已移除不可执行的连线：edge-1')
+  })
+
   it('round-trips safe node settings and layout while stripping secrets and locations', () => {
     const workflow = parseWorkflowFile(JSON.stringify(v2Document({
       nodes: [{

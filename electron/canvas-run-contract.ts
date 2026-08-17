@@ -1,4 +1,5 @@
 export const canvasRunContractVersion = 1 as const
+export const canvasRunTimelineLimit = 4_096
 
 export type CanvasRunNodeKind =
   | 'text' | 'image' | 'video' | 'prompt'
@@ -60,6 +61,15 @@ export type CanvasRunNodeState =
   | 'cached'
   | 'interrupted'
 
+export type CanvasRunNodeStage =
+  | 'validating'
+  | 'resolving-cache'
+  | 'waiting-slot'
+  | 'submitting'
+  | 'processing'
+  | 'downloading'
+  | 'saving'
+
 export type CanvasRunStatus =
   | 'running'
   | 'succeeded'
@@ -86,6 +96,7 @@ export interface CanvasRunAttempt {
   completedAt: string
   durationMs: number
   cached: boolean
+  inputAssetIds?: string[]
   candidates: CanvasRunCandidate[]
   outputText?: string
   errorMessage?: string
@@ -98,6 +109,9 @@ export interface CanvasRunNodeRecord {
   nodeId: string
   kind: CanvasRunNodeKind
   state: CanvasRunNodeState
+  latestStage?: CanvasRunNodeStage
+  latestStageAt?: string
+  latestStageSequence?: number
   attempts: CanvasRunAttempt[]
   errorMessage?: string
 }
@@ -121,13 +135,20 @@ export interface CanvasRunNodeEvent extends CanvasRunEventBase {
   costQuota?: number
 }
 
+export interface CanvasRunNodeStageEvent extends CanvasRunEventBase {
+  type: 'node-stage'
+  nodeId: string
+  stage: CanvasRunNodeStage
+  attemptId?: string
+}
+
 export interface CanvasRunTerminalEvent extends CanvasRunEventBase {
   type: 'run-terminal'
   status: Exclude<CanvasRunStatus, 'running'>
   outcome: CanvasRunOutcome
 }
 
-export type CanvasRunEvent = CanvasRunNodeEvent | CanvasRunTerminalEvent
+export type CanvasRunEvent = CanvasRunNodeEvent | CanvasRunNodeStageEvent | CanvasRunTerminalEvent
 
 export interface CanvasRunOutcome {
   succeeded: string[]
@@ -170,6 +191,18 @@ export interface CanvasRunAssetManifestEntry {
   asset: CanvasRunAsset
   createdAt: string
   lastVerifiedAt: string
+  lineage?: CanvasRunAssetLineage
+}
+
+export interface CanvasRunAssetLineage {
+  origin: 'generated'
+  runId: string
+  graphRevision: string
+  nodeId: string
+  attemptId: string
+  candidateId: string
+  projectId?: string
+  sourceAssetIds: string[]
 }
 
 export function isCanvasRunEventOwnedBy(

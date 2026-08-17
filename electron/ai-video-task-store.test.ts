@@ -34,6 +34,26 @@ describe('AiVideoTaskStore', () => {
     expect(content).not.toMatch(/apiKey|accessToken|refreshToken|https?:\/\//)
   })
 
+  it('round-trips complete canvas run correlation and rejects partial or unsafe fields', async () => {
+    const { store } = fixture()
+    const correlated = {
+      ...task(),
+      runId: 'run-123',
+      nodeId: 'video-node',
+      attemptId: 'attempt-123',
+      graphRevision: 'a'.repeat(64),
+    }
+    await store.upsert(correlated)
+    await expect(store.list(7)).resolves.toEqual([correlated])
+    await expect(store.upsert({ ...task('partial'), runId: 'run-only' })).rejects.toThrow('任务记录格式错误')
+    await expect(store.upsert({ ...task('control'), runId: 'run\u0000bad', nodeId: 'node', attemptId: 'attempt', graphRevision: 'revision' }))
+      .rejects.toThrow('任务记录格式错误')
+    await expect(store.upsert({ ...task('long'), runId: 'x'.repeat(257), nodeId: 'node', attemptId: 'attempt', graphRevision: 'revision' }))
+      .rejects.toThrow('任务记录格式错误')
+    await expect(store.upsert({ ...task('revision'), runId: 'run', nodeId: 'node', attemptId: 'attempt', graphRevision: 'not-a-sha256' }))
+      .rejects.toThrow('任务记录格式错误')
+  })
+
   it('removes only an owned task and rejects unsafe identifiers', async () => {
     const { store } = fixture()
     await store.upsert(task('video-a'))

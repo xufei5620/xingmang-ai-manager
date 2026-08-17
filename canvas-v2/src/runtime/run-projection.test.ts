@@ -3,7 +3,9 @@ import type { CanvasRunRecord } from '../host'
 import type { WorkflowNodeData } from '../model'
 import {
   adoptNodeCandidate,
+  discardNodeCandidate,
   markNodeAndDescendantsDirty,
+  nodeResultStagingState,
   projectRunRecordToNodes,
   selectNodeCandidate,
 } from './run-projection'
@@ -54,15 +56,16 @@ function runRecord(): CanvasRunRecord {
 }
 
 describe('run record projection', () => {
-  it('maps terminal attempts and candidates back to node data', () => {
+  it('stages terminal candidates without silently accepting the first result', () => {
     const projected = projectRunRecordToNodes([{ id: 'generate', data: data() }], runRecord())
     expect(projected[0].data).toMatchObject({
       status: 'succeeded', dirty: false, attemptCount: 1, latestAttemptDurationMs: 2_000,
       candidateAssetIds: ['asset-1', 'asset-2'], selectedCandidateId: 'candidate-1',
       costQuota: 12,
-      result: { assetId: 'asset-1' },
     })
+    expect(projected[0].data.result).toBeUndefined()
     expect(projected[0].data.adoptedCandidateId).toBeUndefined()
+    expect(nodeResultStagingState(projected[0].data)).toBe('pending')
   })
 
   it('selects without changing output, then adopts and dirties descendants only', () => {
@@ -72,7 +75,7 @@ describe('run record projection', () => {
       { id: 'independent', data: data() },
     ], runRecord())
     const selected = selectNodeCandidate(projected, 'generate', 'candidate-2')
-    expect(selected[0].data.result?.assetId).toBe('asset-1')
+    expect(selected[0].data.result).toBeUndefined()
     expect(selected[0].data.selectedCandidateId).toBe('candidate-2')
 
     const adopted = adoptNodeCandidate(selected, [{ source: 'generate', target: 'output' }], 'generate', 'candidate-2')
@@ -80,6 +83,68 @@ describe('run record projection', () => {
     expect(adopted[0].data.dirty).toBe(false)
     expect(adopted[1].data.dirty).toBe(true)
     expect(adopted[2].data.dirty).toBeUndefined()
+    expect(nodeResultStagingState(adopted[0].data)).toBe('pending')
+  })
+
+  it('keeps an accepted result while a newer run waits for confirmation', () => {
+    const projected = projectRunRecordToNodes([{
+      id: 'generate',
+      data: {
+        ...data(),
+        result: { kind: 'image', assetId: 'accepted-old' },
+        adoptedCandidateId: 'candidate-old',
+      },
+    }], runRecord())
+    expect(projected[0].data.result?.assetId).toBe('accepted-old')
+    expect(projected[0].data.adoptedCandidateId).toBe('candidate-old')
+    expect(projected[0].data.selectedCandidateId).toBe('candidate-1')
+    expect(nodeResultStagingState(projected[0].data)).toBe('pending')
+  })
+
+  it('discards only staged candidates without changing accepted output or descendants', () => {
+    const nodes = [{
+      id: 'generate',
+      data: {
+        ...data(),
+        result: { kind: 'image' as const, assetId: 'accepted' },
+        adoptedCandidateId: 'accepted-candidate',
+        selectedCandidateId: 'staged-candidate',
+        candidates: [
+          { candidateId: 'accepted-candidate', attemptId: 'attempt-0', createdAt: '2026-08-13T00:00:00Z', asset: { kind: 'image' as const, assetId: 'accepted' } },
+          { candidateId: 'staged-candidate', attemptId: 'attempt-1', createdAt: '2026-08-13T01:00:00Z', asset: { kind: 'image' as const, assetId: 'staged' } },
+        ],
+        candidateAssetIds: ['accepted', 'staged'],
+      },
+    }, { id: 'output', data: data() }]
+    const discarded = discardNodeCandidate(nodes, 'generate', 'staged-candidate')
+    expect(discarded[0].data.result?.assetId).toBe('accepted')
+    expect(discarded[0].data.adoptedCandidateId).toBe('accepted-candidate')
+    expect(discarded[0].data.selectedCandidateId).toBe('accepted-candidate')
+    expect(discarded[0].data.candidateAssetIds).toEqual(['accepted'])
+    expect(discarded[1]).toBe(nodes[1])
+    expect(nodeResultStagingState(discarded[0].data)).toBe('accepted')
+  })
+
+  it('does not discard an accepted candidate or dirty descendants on repeated accept', () => {
+    const projected = projectRunRecordToNodes([{ id: 'generate', data: data() }, { id: 'output', data: data() }], runRecord())
+    const adopted = adoptNodeCandidate(projected, [{ source: 'generate', target: 'output' }], 'generate', 'candidate-1')
+    const repeated = adoptNodeCandidate(adopted.map((node) => (
+      node.id === 'output' ? { ...node, data: { ...node.data, dirty: false } } : node
+    )), [{ source: 'generate', target: 'output' }], 'generate', 'candidate-1')
+    const discarded = discardNodeCandidate(repeated, 'generate', 'candidate-1')
+    expect(repeated[1].data.dirty).toBe(false)
+    expect(discarded[0].data.candidates).toHaveLength(2)
+    expect(discarded[0].data.result?.assetId).toBe('asset-1')
+  })
+
+  it('clears candidate indexes when the last staged candidate is discarded', () => {
+    const projected = projectRunRecordToNodes([{ id: 'generate', data: data() }], runRecord())
+    const firstDiscard = discardNodeCandidate(projected, 'generate', 'candidate-1')
+    const secondDiscard = discardNodeCandidate(firstDiscard, 'generate', 'candidate-2')
+    expect(secondDiscard[0].data.candidates).toEqual([])
+    expect(secondDiscard[0].data.candidateAssetIds).toBeUndefined()
+    expect(secondDiscard[0].data.selectedCandidateId).toBeUndefined()
+    expect(nodeResultStagingState(secondDiscard[0].data)).toBe('empty')
   })
 
   it('marks edited node and transitive descendants dirty without clearing old output', () => {

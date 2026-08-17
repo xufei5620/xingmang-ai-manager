@@ -85,15 +85,34 @@ describe('createAiVideoService', () => {
     }) as unknown as typeof fetch
     const { service, tasks, assets } = setup(fetchImpl)
     vi.mocked(tasks.upsert).mockImplementation(async () => { order.push('persist') })
+    const stages: string[] = []
 
     await expect(service.generate(41, {
       requestId: 'request-1', group: '生图分组', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
-    })).resolves.toMatchObject({ taskId: 'video_123', mimeType: 'video/mp4' })
+    }, { onStage: (stage) => { stages.push(stage) } })).resolves.toMatchObject({ taskId: 'video_123', mimeType: 'video/mp4' })
     expect(order).toEqual(['post', 'persist', 'poll', 'content'])
     expect(tasks.releaseReservation).not.toHaveBeenCalled()
     expect(tasks.remove).toHaveBeenCalledWith(7, 'video_123')
     expect(assets.storeMp4).toHaveBeenCalledWith(7, expect.any(Buffer), { taskId: 'video_123' })
+    expect(stages).toEqual(['processing', 'downloading', 'saving'])
     expect(fetchImpl).toHaveBeenCalledTimes(3)
+  })
+
+  it('persists canvas correlation alongside a newly submitted task', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_correlated', status: 'queued' })
+      return String(input).endsWith('/content') ? mp4Response() : jsonResponse({ id: 'video_correlated', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service, tasks } = setup(fetchImpl)
+    await service.generate(41, {
+      requestId: 'request-correlation', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+      projectId: '11111111-1111-4111-8111-111111111111', runId: 'run-123', nodeId: 'video-node',
+      attemptId: 'attempt-123', graphRevision: 'a'.repeat(64),
+    })
+    expect(tasks.upsert).toHaveBeenCalledWith(expect.objectContaining({
+      taskId: 'video_correlated', projectId: '11111111-1111-4111-8111-111111111111', runId: 'run-123',
+      nodeId: 'video-node', attemptId: 'attempt-123', graphRevision: 'a'.repeat(64),
+    }))
   })
 
   it('uses an owned local image as a bounded data URI for image-to-video', async () => {

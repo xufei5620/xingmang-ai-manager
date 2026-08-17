@@ -35,7 +35,15 @@ describe('canvas media input and candidate wiring', () => {
     expect(inspector).toContain('props.onPreviewAsset(candidate.asset)')
     expect(inspector).toContain('<AudioPreview src={candidate.asset.localUrl} />')
     expect(inspector).toContain('mediaAssetAspectRatio(candidate.asset)')
+    expect(inspector).toContain('props.onDiscard(node.nodeId, candidate.candidateId)')
     const styles = source('../styles.css')
     expect(styles).toContain('.candidate-video { display: block; width: 100%; height: auto;')
+  })
+
+  it('keeps output confirmation explicit in both the node and run candidate controls', () => {
+    const workflowNodes = source('../nodes/WorkflowNodes.tsx')
+    expect(workflowNodes).toContain("stagingState === 'pending' ? '待确认结果'")
+    expect(workflowNodes).toContain("stagingState === 'accepted' ? '最终产物已确认'")
+    expect(workflowNodes).toContain('handlers.onDiscardCandidate(id, selectedCandidate.candidateId)')
   })
 })

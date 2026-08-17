@@ -5,10 +5,11 @@ import type {
   CanvasNodeExecutionResult,
   CanvasNodeExecutors,
 } from './canvas-run-engine'
+import type { AiOperationProgressObserver } from './ai-operation-progress'
 
 export interface CanvasImageOperationService {
-  generate(senderId: number, input: AiImageGenerationInput): ReturnType<AiImageService['generate']>
-  edit?(senderId: number, input: AiImageEditInput): ReturnType<AiImageService['edit']>
+  generate(senderId: number, input: AiImageGenerationInput, progress?: AiOperationProgressObserver): ReturnType<AiImageService['generate']>
+  edit?(senderId: number, input: AiImageEditInput, progress?: AiOperationProgressObserver): ReturnType<AiImageService['edit']>
   cancel(senderId: number, requestId: string): ReturnType<AiImageService['cancel']>
 }
 
@@ -23,7 +24,7 @@ export interface CanvasOwnedAssetService {
 }
 
 export interface CanvasVideoOperationService {
-  generate(senderId: number, input: AiVideoGenerationInput): ReturnType<AiVideoService['generate']>
+  generate(senderId: number, input: AiVideoGenerationInput, progress?: AiOperationProgressObserver): ReturnType<AiVideoService['generate']>
   cancel(senderId: number, requestId: string): ReturnType<AiVideoService['cancel']>
 }
 
@@ -66,7 +67,7 @@ export function createCanvasNodeExecutors(options: {
   videoGroup?: string
 }): CanvasNodeExecutors {
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
-  const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal }) => {
+  const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
     const group = node.data.group || options.imageGroup || '生图分组'
@@ -74,13 +75,13 @@ export function createCanvasNodeExecutors(options: {
     const onAbort = () => { options.imageService.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })
     try {
-      return imageResult(await options.imageService.generate(ownerId, {
+      const input: AiImageGenerationInput = {
         requestId,
         group,
         model: node.data.model,
         prompt,
         expectedUserId: userId,
-        projectId,
+        ...(projectId ? { projectId } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
         ...(node.data.quality === 'low'
           || node.data.quality === 'medium'
@@ -88,12 +89,16 @@ export function createCanvasNodeExecutors(options: {
           || node.data.quality === 'auto'
           ? { quality: node.data.quality }
           : {}),
-      }), group, node.data.model)
+      }
+      const assets = reportStage
+        ? await options.imageService.generate(ownerId, input, { onStage: reportStage })
+        : await options.imageService.generate(ownerId, input)
+      return imageResult(assets, group, node.data.model)
     } finally {
       signal.removeEventListener('abort', onAbort)
     }
   }
-  const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal }) => {
+  const imageEdit: CanvasNodeExecutors['image-edit'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
     if (!options.imageService.edit) throw new Error('图片编辑能力尚未接入，当前不会提交付费请求')
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入图片编辑指令或连接上游文本节点')
@@ -112,14 +117,14 @@ export function createCanvasNodeExecutors(options: {
     const onAbort = () => { options.imageService.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })
     try {
-      return imageResult(await options.imageService.edit(ownerId, {
+      const input: AiImageEditInput = {
         requestId,
         group,
         model: node.data.model,
         prompt,
         sourceAssetIds,
         expectedUserId: userId,
-        projectId,
+        ...(projectId ? { projectId } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
         ...(node.data.quality === 'low'
           || node.data.quality === 'medium'
@@ -127,7 +132,11 @@ export function createCanvasNodeExecutors(options: {
           || node.data.quality === 'auto'
           ? { quality: node.data.quality }
           : {}),
-      }), group, node.data.model)
+      }
+      const assets = reportStage
+        ? await options.imageService.edit(ownerId, input, { onStage: reportStage })
+        : await options.imageService.edit(ownerId, input)
+      return imageResult(assets, group, node.data.model)
     } finally {
       signal.removeEventListener('abort', onAbort)
     }
@@ -159,7 +168,7 @@ export function createCanvasNodeExecutors(options: {
     const owned = await options.assets.readOwned(userId, assetId, 'audio')
     return { assets: [{ kind: 'audio', ...owned.asset }] }
   }
-  const video: CanvasNodeExecutors['video'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal }) => {
+  const video: CanvasNodeExecutors['video'] = async ({ runId, graphRevision, ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
     if (!options.videoService) throw new Error('视频生成能力尚未接入，当前不会提交付费请求')
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入视频提示词或连接上游文本节点')
@@ -171,7 +180,7 @@ export function createCanvasNodeExecutors(options: {
     const onAbort = () => { options.videoService?.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })
     try {
-      const asset = await options.videoService.generate(ownerId, {
+      const input: AiVideoGenerationInput = {
         requestId,
         group,
         model: node.data.model,
@@ -179,9 +188,16 @@ export function createCanvasNodeExecutors(options: {
         seconds: node.data.seconds ?? '5',
         ...dimensions,
         expectedUserId: userId,
-        projectId,
+        ...(projectId ? { projectId } : {}),
+        runId,
+        nodeId: node.id,
+        attemptId,
+        graphRevision,
         ...(imageAssetId ? { imageAssetId } : {}),
-      })
+      }
+      const asset = reportStage
+        ? await options.videoService.generate(ownerId, input, { onStage: reportStage })
+        : await options.videoService.generate(ownerId, input)
       return {
         assets: [{
           kind: 'video', assetId: asset.assetId, localUrl: asset.localUrl,

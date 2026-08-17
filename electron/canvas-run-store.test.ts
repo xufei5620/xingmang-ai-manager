@@ -132,6 +132,56 @@ describe('CanvasRunStore', () => {
     await expect(store.resolveCache(7, 'b'.repeat(64))).resolves.toBeTruthy()
   })
 
+  it('projects generated asset lineage and preserves the original source across cache reuse', async () => {
+    const { store } = fixture()
+    const generated = asset('g')
+    const source = asset('s')
+    const generatedRun = record('run-generated')
+    generatedRun.projectId = '11111111-1111-4111-8111-111111111111'
+    generatedRun.nodes = [{
+      nodeId: 'image-node',
+      kind: 'image-generate',
+      state: 'succeeded',
+      attempts: [{
+        attemptId: 'attempt-generated',
+        fingerprint: 'f'.repeat(64),
+        state: 'succeeded',
+        startedAt: generatedRun.startedAt,
+        completedAt: generatedRun.completedAt!,
+        durationMs: 1_000,
+        cached: false,
+        inputAssetIds: [source.assetId],
+        candidates: [{
+          candidateId: 'candidate-generated',
+          attemptId: 'attempt-generated',
+          createdAt: generatedRun.completedAt!,
+          asset: generated,
+        }],
+      }],
+    }]
+    await store.saveRun(7, generatedRun)
+
+    const cachedRun = structuredClone(generatedRun)
+    cachedRun.runId = 'run-cached'
+    cachedRun.nodes[0].attempts[0].cached = true
+    cachedRun.nodes[0].attempts[0].attemptId = 'attempt-cached'
+    cachedRun.nodes[0].attempts[0].candidates[0].attemptId = 'attempt-cached'
+    await store.saveRun(7, cachedRun)
+
+    await expect(store.getAssetLineage(7, [generated.assetId])).resolves.toEqual({
+      [generated.assetId]: {
+        origin: 'generated',
+        runId: 'run-generated',
+        graphRevision: 'revision',
+        nodeId: 'image-node',
+        attemptId: 'attempt-generated',
+        candidateId: 'candidate-generated',
+        projectId: '11111111-1111-4111-8111-111111111111',
+        sourceAssetIds: [source.assetId],
+      },
+    })
+  })
+
   it('rejects secrets, remote URLs and absolute paths before persistence', async () => {
     const { store } = fixture()
     const secret = record('secret')

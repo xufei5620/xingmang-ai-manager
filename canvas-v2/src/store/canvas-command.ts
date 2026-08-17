@@ -5,7 +5,9 @@ export type CanvasCommand =
   | { type: 'add-nodes'; nodes: EditorNodeRecord[]; edges?: EditorEdgeRecord[]; mergeKey?: string }
   | { type: 'update-node-data'; nodeId: string; patch: Record<string, unknown>; mergeKey?: string }
   | { type: 'move-nodes'; positions: Readonly<Record<string, { x: number; y: number }>>; mergeKey?: string }
+  | { type: 'set-node-flags'; nodeIds: string[]; locked?: boolean; disabled?: boolean }
   | { type: 'replace-nodes'; nodes: EditorNodeRecord[]; mergeKey?: string }
+  | { type: 'insert-node-on-edge'; node: EditorNodeRecord; edgeId: string; before: EditorEdgeRecord; after: EditorEdgeRecord }
   | { type: 'delete-elements'; nodeIds: string[]; edgeIds?: string[] }
   | { type: 'connect'; edge: EditorEdgeRecord }
   | { type: 'disconnect'; edgeIds: string[] }

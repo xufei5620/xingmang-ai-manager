@@ -28,7 +28,7 @@ describe('canvas fingerprints', () => {
       .toBe('{"a":{"b":3,"d":2},"list":[2,1],"z":1}')
   })
 
-  it('is stable across upstream enumeration order and ignores local URLs', () => {
+  it('retains upstream execution order while ignoring local URLs', () => {
     const node = imageNode()
     const first = computeCanvasNodeFingerprint({
       node,
@@ -44,16 +44,29 @@ describe('canvas fingerprints', () => {
     const second = computeCanvasNodeFingerprint({
       node,
       upstream: [
-        { sourceNodeId: 'a', sourceHandle: 'out:text', targetHandle: 'in:text', fingerprint: 'a', text: 'hello' },
         { sourceNodeId: 'b', sourceHandle: 'out:image', targetHandle: 'in:image', fingerprint: 'b', asset: {
           kind: 'image',
           assetId: 'a'.repeat(43),
           localUrl: 'C:\\secret\\image.png',
         } },
+        { sourceNodeId: 'a', sourceHandle: 'out:text', targetHandle: 'in:text', fingerprint: 'a', text: 'hello' },
       ],
     })
     expect(first).toBe(second)
     expect(first).toMatch(/^[a-f0-9]{64}$/)
+
+    const reversed = computeCanvasNodeFingerprint({
+      node,
+      upstream: [
+        { sourceNodeId: 'a', sourceHandle: 'out:text', targetHandle: 'in:text', fingerprint: 'a', text: 'hello' },
+        { sourceNodeId: 'b', sourceHandle: 'out:image', targetHandle: 'in:image', fingerprint: 'b', asset: {
+          kind: 'image',
+          assetId: 'a'.repeat(43),
+          localUrl: 'xingmang-asset://image/ignored',
+        } },
+      ],
+    })
+    expect(reversed).not.toBe(first)
   })
 
   it('changes revisions for execution inputs but not graph enumeration order', () => {

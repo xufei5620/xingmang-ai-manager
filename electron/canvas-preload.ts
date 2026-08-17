@@ -19,6 +19,7 @@ const channels = {
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
   renameAsset: 'canvas-host:rename-asset',
+  inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
   listPromptPresets: 'canvas-host:list-prompt-presets',
@@ -35,7 +36,11 @@ const channels = {
   createProject: 'canvas-host:create-project',
   openProject: 'canvas-host:open-project',
   saveProject: 'canvas-host:save-project',
+  renameProject: 'canvas-host:rename-project',
+  duplicateProject: 'canvas-host:duplicate-project',
+  setProjectArchived: 'canvas-host:set-project-archived',
   runEvent: 'canvas-host:run-event',
+  themeChanged: 'canvas-host:theme-changed',
 } as const
 
 contextBridge.exposeInMainWorld('xingmangCanvasHost', {
@@ -57,6 +62,7 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   showAssetMenu: (assetId: string) => ipcRenderer.invoke(channels.showAssetMenu, assetId),
   listAssets: (query?: unknown) => ipcRenderer.invoke(channels.listAssets, query),
   renameAsset: (input: unknown) => ipcRenderer.invoke(channels.renameAsset, input),
+  inspectAssetReferences: (assetId: string, currentProjectContent: string) => ipcRenderer.invoke(channels.inspectAssetReferences, assetId, currentProjectContent),
   pickAsset: () => ipcRenderer.invoke(channels.pickAsset),
   importAssetFile: (file: File) => {
     const filePath = webUtils.getPathForFile(file)
@@ -77,9 +83,19 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   createProject: (name: string) => ipcRenderer.invoke(channels.createProject, name),
   openProject: (projectId: string) => ipcRenderer.invoke(channels.openProject, projectId),
   saveProject: (projectId: string, content: string) => ipcRenderer.invoke(channels.saveProject, projectId, content),
+  renameProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.renameProject, projectId, name),
+  duplicateProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.duplicateProject, projectId, name),
+  setProjectArchived: (projectId: string, archived: boolean) => ipcRenderer.invoke(channels.setProjectArchived, projectId, archived),
   onRunEvent: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload)
     ipcRenderer.on(channels.runEvent, wrapped)
     return () => ipcRenderer.removeListener(channels.runEvent, wrapped)
+  },
+  onThemeChange: (listener: (theme: 'light' | 'dark') => void) => {
+    const wrapped = (_event: unknown, payload: unknown) => {
+      if (payload === 'light' || payload === 'dark') listener(payload)
+    }
+    ipcRenderer.on(channels.themeChanged, wrapped)
+    return () => ipcRenderer.removeListener(channels.themeChanged, wrapped)
   },
 })

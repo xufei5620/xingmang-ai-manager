@@ -3,6 +3,8 @@ import type { Edge } from '@xyflow/react'
 import type { WorkflowNode } from './model'
 import {
   canvasMediaConfigurationErrors,
+  isCanvasGraphNode,
+  isCanvasRunnableTarget,
   selectCanvasRunNodeIds,
   toCanvasNode,
   toCanvasRunGraph,
@@ -117,6 +119,21 @@ describe('canvas workflow projection', () => {
 
     expect(graph.nodes).toEqual([expect.objectContaining({ id: 'disabled', definitionVersion: 4, disabled: true })])
     expect(graph.edges).toEqual([])
+  })
+
+  it('separates graph members from runnable targets and structural nodes', () => {
+    const active = toCanvasNode(workflowNode({ id: 'active', kind: 'image-generate', data: workflowNodeData('image-generate') }))
+    const disabled = toCanvasNode(workflowNode({ id: 'disabled', kind: 'image-generate', disabled: true, data: workflowNodeData('image-generate') }))
+    const group = toCanvasNode(workflowNode({ id: 'group', kind: 'group', data: workflowNodeData('group') }))
+    const note = toCanvasNode(workflowNode({ id: 'note', kind: 'note', data: workflowNodeData('note') }))
+
+    expect(isCanvasGraphNode(active)).toBe(true)
+    expect(isCanvasRunnableTarget(active)).toBe(true)
+    expect(isCanvasGraphNode(disabled)).toBe(true)
+    expect(isCanvasRunnableTarget(disabled)).toBe(false)
+    expect(isCanvasGraphNode(group)).toBe(false)
+    expect(isCanvasGraphNode(note)).toBe(false)
+    expect(toCanvasRunGraph([active, disabled, group, note], [], { image: '', video: '' }).nodes.map((node) => node.id)).toEqual(['active', 'disabled'])
   })
 
   it('projects a template-bound local asset into an owned image-input run', () => {

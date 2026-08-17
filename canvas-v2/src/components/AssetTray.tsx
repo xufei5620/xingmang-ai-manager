@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from 'react'
-import { ChevronLeft, ChevronRight, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, X } from 'lucide-react'
-import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetSummary } from '../host'
+import { ChevronLeft, ChevronRight, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, X } from 'lucide-react'
+import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
 import { AudioPreview, MediaLightbox, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
 import { mediaAssetAspectRatio } from '../library/media-assets'
@@ -14,8 +14,11 @@ interface AssetTrayProps {
   onImport(): void
   onAdd(assetId: string): void
   onAssetMenu(assetId: string): void
+  onLocateSourceNode?(nodeId: string): void
   onRename?(assetId: string, displayName: string): void | Promise<void>
+  onInspectReferences?(assetId: string): Promise<CanvasAssetReferenceReport>
   onClose(): void
+  embedded?: boolean
 }
 
 function assetLabel(asset: CanvasAssetSummary): string {
@@ -26,6 +29,11 @@ function assetLabel(asset: CanvasAssetSummary): string {
 
 function assetTypeName(asset: CanvasAssetSummary): string {
   return asset.mediaType === 'video' ? '视频' : asset.mediaType === 'audio' ? '音频' : '图片'
+}
+
+function assetAvailable(asset: CanvasAssetSummary): boolean {
+  const source = asset.mediaType === 'image' ? asset.thumbnailUrl : asset.localUrl
+  return isLocalCanvasAssetUrl(source, asset.mediaType)
 }
 
 export function formatAssetDuration(value: number): string {
@@ -56,7 +64,7 @@ function assetRef(asset: CanvasAssetSummary): AssetRef {
   }
 }
 
-export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onRename, onClose }: AssetTrayProps) {
+export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onLocateSourceNode, onRename, onInspectReferences, onClose, embedded = false }: AssetTrayProps) {
   const [search, setSearch] = useState(query.search ?? '')
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null)
   const [previewAsset, setPreviewAsset] = useState<CanvasAssetSummary | null>(null)
@@ -64,6 +72,10 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   const [renameDraft, setRenameDraft] = useState('')
   const [renameError, setRenameError] = useState<string | null>(null)
   const [renameSaving, setRenameSaving] = useState(false)
+  const [referenceAsset, setReferenceAsset] = useState<CanvasAssetSummary | null>(null)
+  const [referenceReport, setReferenceReport] = useState<CanvasAssetReferenceReport | null>(null)
+  const [referenceError, setReferenceError] = useState<string | null>(null)
+  const [referenceLoading, setReferenceLoading] = useState(false)
   useEffect(() => setSearch(query.search ?? ''), [query.search])
   useEffect(() => {
     if (selectedAssetId && !page.items.some((asset) => asset.assetId === selectedAssetId)) setSelectedAssetId(null)
@@ -99,9 +111,23 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       setRenameSaving(false)
     }
   }
+  const inspectReferences = async (asset: CanvasAssetSummary) => {
+    if (!onInspectReferences || referenceLoading) return
+    setReferenceAsset(asset)
+    setReferenceReport(null)
+    setReferenceError(null)
+    setReferenceLoading(true)
+    try {
+      setReferenceReport(await onInspectReferences(asset.assetId))
+    } catch (error) {
+      setReferenceError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setReferenceLoading(false)
+    }
+  }
 
   return (
-    <aside className="asset-tray" aria-label="本地资产">
+    <aside className={`asset-tray${embedded ? ' is-embedded' : ''}`} aria-label="本地资产">
       <header>
         <strong>本地资产</strong>
         <span>{page.total}</span>
@@ -131,6 +157,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
         {page.items.map((asset) => {
           const selected = selectedAssetId === asset.assetId
           const name = assetName(asset)
+          const available = assetAvailable(asset)
           return (
             <article
               className={`asset-tray-item asset-tray-item-${asset.mediaType}${selected ? ' is-selected' : ''}`}
@@ -169,8 +196,8 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                     : asset.mediaType === 'video' && isLocalCanvasAssetUrl(asset.localUrl, 'video')
                       ? <ViewportVideo src={asset.localUrl} aria-label={name} muted controls={selected} preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
                       : asset.mediaType === 'audio'
-                        ? <span className="asset-audio-placeholder"><Music2 size={22} /><small>音频素材</small></span>
-                        : <span className="asset-video-placeholder"><Film size={22} /><small>MP4 视频</small></span>}
+                        ? <span className="asset-audio-placeholder"><Music2 size={22} /><small>{available ? '音频素材' : '素材不可用'}</small></span>
+                        : <span className="asset-video-placeholder"><Film size={22} /><small>{available ? 'MP4 视频' : '素材不可用'}</small></span>}
               </div>
               <div className="asset-tray-item-tools" aria-label="素材操作">
                 <button type="button" title="添加到画布" aria-label={`添加资产到画布：${name}`} onClick={() => onAdd(asset.assetId)}><Plus size={13} /></button>
@@ -182,7 +209,9 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 ? <div className="asset-tray-item-details" aria-live="polite">
                     <div className="asset-tray-item-detail-head">
                       <strong title={name}>{name}</strong>
+                      {!available && <span className="asset-unavailable-badge">不可用</span>}
                       {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={12} /></button>}
+                      {onInspectReferences && <button type="button" title="检查引用与删除保护" aria-label={`检查素材引用：${name}`} onClick={() => void inspectReferences(asset)}><ShieldCheck size={12} /></button>}
                     </div>
                     <dl>
                       <div><dt>类型</dt><dd>{assetTypeName(asset)} · {asset.mimeType}</dd></div>
@@ -194,6 +223,12 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                         : null}
                       <div><dt>原文件</dt><dd title={asset.fileName}>{asset.fileName}</dd></div>
                       <div><dt>创建时间</dt><dd>{assetCreatedAt(asset)}</dd></div>
+                      {asset.lineage && <div><dt>生成来源</dt><dd>
+                        {onLocateSourceNode
+                          ? <button type="button" className="asset-lineage-link" title="定位到生成节点" onClick={() => onLocateSourceNode(asset.lineage!.nodeId)}>{asset.lineage.nodeId}</button>
+                          : asset.lineage.nodeId}
+                        {` · ${asset.lineage.sourceAssetIds.length} 个上游素材`}
+                      </dd></div>}
                       <div><dt>资产 ID</dt><dd title={asset.assetId}>{asset.assetId}</dd></div>
                     </dl>
                   </div>
@@ -232,6 +267,45 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               <button type="submit" className="is-primary" disabled={renameSaving || !renameDraft.trim()}>{renameSaving ? '保存中…' : '保存'}</button>
             </footer>
           </form>
+        </div>
+      )}
+      {referenceAsset && (
+        <div className="asset-reference-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !referenceLoading) setReferenceAsset(null)
+        }}>
+          <section className="asset-reference-dialog" role="dialog" aria-modal="true" aria-label="素材引用检查">
+            <header>
+              <span>{referenceReport?.inUse ? <TriangleAlert size={16} /> : <ShieldCheck size={16} />}<strong>素材引用检查</strong></span>
+              <button type="button" title="关闭" aria-label="关闭素材引用检查" disabled={referenceLoading} onClick={() => setReferenceAsset(null)}><X size={16} /></button>
+            </header>
+            <div className="asset-reference-target"><strong title={assetName(referenceAsset)}>{assetName(referenceAsset)}</strong><small title={referenceAsset.assetId}>{referenceAsset.assetId}</small></div>
+            {referenceLoading && <p role="status">正在扫描当前画布、项目和运行记录…</p>}
+            {referenceError && <p className="asset-reference-error" role="alert">{referenceError}</p>}
+            {referenceReport && (
+              <>
+                <p className={referenceReport.inUse ? 'is-referenced' : 'is-clear'}>
+                  <strong>{referenceReport.inUse ? '素材仍被工作流引用' : '未发现工作流引用'}</strong>
+                  <span>{referenceReport.inUse ? '为避免破坏项目、候选或运行记录，本版本不会删除该素材。' : '安全检查已完成；本次只生成引用报告，没有删除本地文件。'}</span>
+                </p>
+                <dl className="asset-reference-summary">
+                  <div><dt>当前画布</dt><dd>{referenceReport.currentProject.nodeIds.length} 个节点</dd></div>
+                  <div><dt>已保存项目</dt><dd>{referenceReport.projects.length} 个项目</dd></div>
+                  <div><dt>运行与候选</dt><dd>{referenceReport.runs.length} 条运行</dd></div>
+                </dl>
+                {(referenceReport.projects.length > 0 || referenceReport.runs.length > 0) && (
+                  <div className="asset-reference-list">
+                    {referenceReport.projects.slice(0, 8).map((project) => (
+                      <div key={project.projectId}><span><strong>{project.projectName}</strong><small>{project.archived ? '已归档项目' : '已保存项目'}</small></span><em>{project.nodeIds.length} 个节点</em></div>
+                    ))}
+                    {referenceReport.runs.slice(0, 8).map((run) => (
+                      <div key={run.runId}><span><strong title={run.runId}>{run.runId}</strong><small>{run.inputReferenceCount} 次输入 · {run.candidateReferenceCount} 个候选</small></span><em>{run.nodeIds.length} 个节点</em></div>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+            <footer><button type="button" disabled={referenceLoading} onClick={() => setReferenceAsset(null)}>关闭</button></footer>
+          </section>
         </div>
       )}
     </aside>

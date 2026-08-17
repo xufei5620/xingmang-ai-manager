@@ -17,6 +17,7 @@ const electronMocks = vi.hoisted(() => ({
   notificationShow: vi.fn(),
   notificationSupported: vi.fn(() => true),
   browserWindowOptions: [] as unknown[],
+  latestBrowserWindow: null as null | Record<string, unknown>,
   latestWebContents: null as null | Record<string, unknown>,
 }))
 
@@ -35,17 +36,20 @@ vi.mock('electron', () => ({
       on: vi.fn(),
     }
     electronMocks.latestWebContents = webContents
-    return {
+    const browserWindow = {
       webContents,
       once: vi.fn(),
       on: vi.fn(),
       loadURL: vi.fn(async () => undefined),
+      setBackgroundColor: vi.fn(),
       center: vi.fn(),
       show: vi.fn(),
       focus: vi.fn(),
       isDestroyed: vi.fn(() => false),
       isMinimized: vi.fn(() => false),
     }
+    electronMocks.latestBrowserWindow = browserWindow
+    return browserWindow
   }), { fromWebContents: electronMocks.browserWindowFromWebContents }),
   dialog: {
     showSaveDialog: electronMocks.showSaveDialog,
@@ -82,6 +86,7 @@ import {
   canvasHostCreateProjectChannel,
   canvasHostCreatePromptPresetChannel,
   canvasHostDeletePromptPresetChannel,
+  canvasHostDuplicateProjectChannel,
   canvasHostEditImageChannel,
   canvasHostGenerateImageChannel,
   canvasHostGenerateVideoChannel,
@@ -92,6 +97,7 @@ import {
   canvasHostListPromptPresetsChannel,
   canvasHostPickAssetChannel,
   canvasHostImportAssetFileChannel,
+  canvasHostInspectAssetReferencesChannel,
   canvasHostStartRunChannel,
   canvasHostCancelRunChannel,
   canvasHostExportProjectChannel,
@@ -104,13 +110,17 @@ import {
   canvasHostPrepareGroupChannel,
   canvasHostPreviewProjectChannel,
   canvasHostRenameAssetChannel,
+  canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
   canvasHostSaveFileChannel,
   canvasHostSaveAssetChannel,
   canvasHostSaveProjectChannel,
+  canvasHostSetProjectArchivedChannel,
   canvasHostShowAssetMenuChannel,
+  canvasHostThemeChangedChannel,
   canvasHostUpdatePromptPresetChannel,
   canvasWindowBackgroundColor,
+  canvasWindowLightBackgroundColor,
   createCanvasWindowController,
   type CanvasWindowControllerOptions,
 } from './canvas-window'
@@ -175,7 +185,10 @@ function controllerOptions(
   return {
     canvasDistRoot: temporaryCanvasDistDirectory(),
     externalUrlAllowlist: allowlist,
-    systemService: { revealApiKey: vi.fn(() => '') } as unknown as SystemService,
+    systemService: {
+      readStoredConfig: vi.fn(() => ({ theme: 'dark' })),
+      revealApiKey: vi.fn(() => ''),
+    } as unknown as SystemService,
     accountService: {
       getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 7 } })),
       provisionCliKey: vi.fn(),
@@ -224,6 +237,7 @@ function controllerOptions(
       cancel: vi.fn(() => false),
       cancelOwner: vi.fn(() => 0),
       listRuns: vi.fn(async () => []),
+      getAssetLineage: vi.fn(async () => ({})),
       subscribe: vi.fn((_listener: unknown) => () => undefined),
     } as never,
     externalShell: { openExternal: vi.fn(async () => undefined), openPath: vi.fn(async () => undefined) },
@@ -245,6 +259,7 @@ beforeEach(() => {
   electronMocks.notificationSupported.mockReset()
   electronMocks.notificationSupported.mockReturnValue(true)
   electronMocks.browserWindowOptions.length = 0
+  electronMocks.latestBrowserWindow = null
   electronMocks.latestWebContents = null
 })
 
@@ -269,6 +284,7 @@ describe('createCanvasWindowController', () => {
       canvasHostCreateProjectChannel,
       canvasHostCreatePromptPresetChannel,
       canvasHostDeletePromptPresetChannel,
+      canvasHostDuplicateProjectChannel,
       canvasHostEditImageChannel,
       canvasHostGenerateImageChannel,
       canvasHostGenerateVideoChannel,
@@ -278,6 +294,7 @@ describe('createCanvasWindowController', () => {
       canvasHostListPromptPresetsChannel,
       canvasHostPickAssetChannel,
       canvasHostImportAssetFileChannel,
+      canvasHostInspectAssetReferencesChannel,
       canvasHostStartRunChannel,
       canvasHostCancelRunChannel,
       canvasHostExportProjectChannel,
@@ -291,8 +308,10 @@ describe('createCanvasWindowController', () => {
       canvasHostPrepareGroupChannel,
       canvasHostPreviewProjectChannel,
       canvasHostRenameAssetChannel,
+      canvasHostRenameProjectChannel,
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
+      canvasHostSetProjectArchivedChannel,
       canvasHostSaveFileChannel,
       canvasHostShowAssetMenuChannel,
       canvasHostUpdatePromptPresetChannel,
@@ -309,6 +328,49 @@ describe('createCanvasWindowController', () => {
 
   it('defines the dark canvas color used before the renderer becomes visible', () => {
     expect(canvasWindowBackgroundColor).toBe('#111315')
+  })
+
+  it('opens with the stored dark theme in both the native background and renderer URL', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+
+    await controller.open()
+
+    expect(electronMocks.browserWindowOptions).toEqual([
+      expect.objectContaining({ backgroundColor: canvasWindowBackgroundColor }),
+    ])
+    expect(electronMocks.latestBrowserWindow?.loadURL).toHaveBeenCalledWith(
+      'xingmang-canvas://app/?theme=dark',
+    )
+  })
+
+  it('opens with the stored light theme in both the native background and renderer URL', async () => {
+    const systemService = {
+      readStoredConfig: vi.fn(() => ({ theme: 'light' })),
+      revealApiKey: vi.fn(() => ''),
+    } as unknown as SystemService
+    const controller = createCanvasWindowController(controllerOptions({ systemService }))
+
+    await controller.open()
+
+    expect(electronMocks.browserWindowOptions).toEqual([
+      expect.objectContaining({ backgroundColor: canvasWindowLightBackgroundColor }),
+    ])
+    expect(electronMocks.latestBrowserWindow?.loadURL).toHaveBeenCalledWith(
+      'xingmang-canvas://app/?theme=light',
+    )
+  })
+
+  it('updates the native canvas background and notifies its renderer when the theme changes', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
+
+    controller.setTheme('light')
+
+    expect(electronMocks.latestBrowserWindow?.setBackgroundColor).toHaveBeenCalledWith(
+      canvasWindowLightBackgroundColor,
+    )
+    expect(send).toHaveBeenCalledWith(canvasHostThemeChangedChannel, 'light')
   })
 
   it('rejects calls outside the current canvas main frame', async () => {
@@ -464,6 +526,97 @@ describe('createCanvasWindowController', () => {
     })
   })
 
+  it('routes project rename, duplicate and archive through account-scoped main-process handlers', async () => {
+    const workspace = temporaryDirectory()
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const duplicateId = '22222222-2222-4222-8222-222222222222'
+    const summary = {
+      id: projectId, name: '项目', createdAt: '2026-08-14T00:00:00.000Z', updatedAt: '2026-08-14T00:00:00.000Z',
+      lastOpenedAt: '2026-08-14T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+      workspaceName: 'project', workspaceConfigured: true, workspaceStatus: 'ready' as const,
+    }
+    const rename = vi.fn(async (_userId: number, _projectId: string, name: string) => ({ ...summary, name }))
+    const duplicate = vi.fn(async (_userId: number, _projectId: string, name: string, selected: string) => ({
+      project: { ...summary, id: duplicateId, name, workspaceName: path.basename(selected) },
+      content: JSON.stringify({ schemaVersion: 2, name, nodes: [], edges: [] }),
+    }))
+    const setArchived = vi.fn(async (_userId: number, _projectId: string, archived: boolean) => ({
+      ...summary,
+      ...(archived ? { archivedAt: '2026-08-17T00:00:00.000Z' } : {}),
+    }))
+    const projects = { list: vi.fn(), create: vi.fn(), open: vi.fn(), save: vi.fn(), rename, duplicate, setArchived }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never }))
+    await controller.open()
+
+    await expect(electronMocks.handlers.get(canvasHostRenameProjectChannel)!(trustedEvent(), projectId, '重命名'))
+      .resolves.toMatchObject({ name: '重命名' })
+    expect(rename).toHaveBeenCalledWith(7, projectId, '重命名')
+
+    await expect(electronMocks.handlers.get(canvasHostDuplicateProjectChannel)!(trustedEvent(), projectId, '项目副本'))
+      .resolves.toBeNull()
+    expect(duplicate).not.toHaveBeenCalled()
+    electronMocks.showOpenDialog.mockResolvedValueOnce({ canceled: false, filePaths: [workspace] })
+    const copied = await electronMocks.handlers.get(canvasHostDuplicateProjectChannel)!(trustedEvent(), projectId, '项目副本')
+    expect(duplicate).toHaveBeenCalledWith(7, projectId, '项目副本', workspace)
+    expect(JSON.stringify(copied)).not.toContain(workspace)
+    expect(copied).toMatchObject({ project: { id: duplicateId, workspaceName: path.basename(workspace) } })
+
+    await expect(electronMocks.handlers.get(canvasHostSetProjectArchivedChannel)!(trustedEvent(), projectId, true))
+      .resolves.toMatchObject({ archivedAt: expect.any(String) })
+    expect(setArchived).toHaveBeenCalledWith(7, projectId, true)
+    await expect(electronMocks.handlers.get(canvasHostSetProjectArchivedChannel)!(trustedEvent(), projectId, 'yes'))
+      .rejects.toThrow('归档状态无效')
+  })
+
+  it('combines current workflow, saved project and run candidate references without deleting assets', async () => {
+    const assetId = 'A'.repeat(43)
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const content = projectWorkflow([assetId])
+    const summary = {
+      id: projectId, name: '引用项目', createdAt: '2026-08-14T00:00:00.000Z', updatedAt: '2026-08-14T00:00:00.000Z',
+      lastOpenedAt: '2026-08-14T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+      workspaceName: 'references', workspaceConfigured: true, workspaceStatus: 'ready' as const,
+    }
+    const findAssetReferences = vi.fn(async () => [{ projectId, projectName: '引用项目', nodeIds: ['image-0'], archived: false }])
+    const projects = {
+      list: vi.fn(), create: vi.fn(), save: vi.fn(), rename: vi.fn(), duplicate: vi.fn(), setArchived: vi.fn(),
+      open: vi.fn(async () => ({ project: summary, content })),
+      findAssetReferences,
+    }
+    const run = {
+      version: 1, userId: 7, ownerId: 41, projectId, runId: 'run-reference', graphRevision: 'revision',
+      scope: { kind: 'all' }, status: 'succeeded', createdAt: '2026-08-17T00:00:00.000Z', startedAt: '2026-08-17T00:00:00.000Z', events: [],
+      nodes: [{
+        nodeId: 'image-generate', kind: 'image-generate', state: 'succeeded',
+        attempts: [{
+          attemptId: 'attempt-1', fingerprint: 'fingerprint', state: 'succeeded',
+          startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', durationMs: 1_000, cached: false,
+          inputAssetIds: [], candidates: [{ candidateId: 'candidate-1', attemptId: 'attempt-1', createdAt: '2026-08-17T00:00:01.000Z', asset: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}` } }],
+        }],
+      }],
+    }
+    const canvasRuns = {
+      start: vi.fn(), cancel: vi.fn(), cancelOwner: vi.fn(), getAssetLineage: vi.fn(), subscribe: vi.fn(() => () => undefined),
+      listRuns: vi.fn(async () => [run]),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ projects: projects as never, canvasRuns: canvasRuns as never }))
+    await controller.open()
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+
+    const report = await electronMocks.handlers.get(canvasHostInspectAssetReferencesChannel)!(trustedEvent(), assetId, content)
+    expect(report).toEqual({
+      assetId,
+      inUse: true,
+      currentProject: { projectId, projectName: '可移植项目', nodeIds: ['image-0'] },
+      projects: [{ projectId, projectName: '引用项目', nodeIds: ['image-0'], archived: false }],
+      runs: [{
+        runId: 'run-reference', projectId, createdAt: '2026-08-17T00:00:00.000Z', status: 'succeeded',
+        nodeIds: ['image-generate'], inputReferenceCount: 0, candidateReferenceCount: 1,
+      }],
+    })
+    expect(findAssetReferences).toHaveBeenCalledWith(7, assetId)
+  })
+
   it('imports a validated local image through the native picker without exposing its path', async () => {
     const directory = temporaryDirectory()
     const imagePath = path.join(directory, 'reference.png')
@@ -607,6 +760,7 @@ describe('createCanvasWindowController', () => {
     let listener: ((publication: { event: unknown; userId: number; ownerId: number }) => void) | undefined
     const canvasRuns = {
       start: vi.fn(), cancel: vi.fn(), cancelOwner: vi.fn(), listRuns: vi.fn(async () => []),
+      getAssetLineage: vi.fn(async () => ({})),
       subscribe: vi.fn((next: typeof listener) => { listener = next; return () => undefined }),
     }
     const controller = createCanvasWindowController(controllerOptions({

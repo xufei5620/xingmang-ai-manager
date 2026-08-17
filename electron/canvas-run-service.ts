@@ -14,7 +14,7 @@ import {
 import type { CanvasRunStore } from './canvas-run-store'
 
 export interface CanvasRunServiceOptions {
-  store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'saveRun' | 'resolveCache' | 'storeCache' | 'reconcileAssets'>
+  store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'reconcileAssets'>
   executors: CanvasNodeExecutors
   maxConcurrency?: number
   now?: () => Date
@@ -40,6 +40,7 @@ export interface CanvasRunHandle {
 interface ActiveRun {
   userId: number
   ownerId: number
+  lockKey: string
   controller: AbortController
   handle: CanvasRunHandle
 }
@@ -53,7 +54,12 @@ export interface CanvasRunPublication {
 export function createCanvasRunService(options: CanvasRunServiceOptions) {
   const randomUUID = options.randomUUID ?? nodeRandomUUID
   const active = new Map<string, ActiveRun>()
+  const activeLocks = new Map<string, string>()
   const listeners = new Set<(publication: CanvasRunPublication) => void | Promise<void>>()
+
+  function activeRunLockKey(input: Pick<StartCanvasRunInput, 'userId' | 'ownerId' | 'projectId'>): string {
+    return JSON.stringify([input.userId, input.ownerId, input.projectId ?? null])
+  }
 
   async function publish(event: CanvasRunEvent, userId: number, ownerId: number): Promise<void> {
     for (const listener of listeners) {
@@ -66,12 +72,24 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     }
   }
 
-  function start(input: StartCanvasRunInput): CanvasRunHandle {
+  async function start(input: StartCanvasRunInput): Promise<CanvasRunHandle> {
     const expectedRevision = computeCanvasGraphRevision(input.graph)
     if (expectedRevision !== input.graphRevision) throw new Error('工作流已发生变化，请重新发起运行')
+    const lockKey = activeRunLockKey(input)
+    if (activeLocks.has(lockKey)) throw new Error('当前画布项目已有工作流正在运行，请等待结束或先取消')
     const runId = randomUUID()
     const controller = new AbortController()
     const handle = {} as CanvasRunHandle
+    const activeRun = { userId: input.userId, ownerId: input.ownerId, lockKey, controller, handle }
+    active.set(runId, activeRun)
+    activeLocks.set(lockKey, runId)
+    let admissionSettled = false
+    let resolveAdmission!: () => void
+    let rejectAdmission!: (error: unknown) => void
+    const admission = new Promise<void>((resolve, reject) => {
+      resolveAdmission = resolve
+      rejectAdmission = reject
+    })
     const promise = executeCanvasRun({
       userId: input.userId,
       ownerId: input.ownerId,
@@ -87,10 +105,16 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
       randomUUID,
       resolveCache: (fingerprint) => options.store.resolveCache(input.userId, fingerprint),
       storeCache: (entry) => options.store.storeCache(input.userId, entry),
+      admitRecord: async (record) => {
+        await options.store.saveRun(input.userId, record)
+        admissionSettled = true
+        resolveAdmission()
+      },
       persistRecord: (record) => options.store.saveRun(input.userId, record),
       onEvent: (event) => publish(event, input.userId, input.ownerId),
     }).finally(() => {
       if (active.get(runId)?.handle === handle) active.delete(runId)
+      if (activeLocks.get(lockKey) === runId) activeLocks.delete(lockKey)
     })
     Object.assign(handle, {
       runId,
@@ -103,7 +127,17 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
         return true
       },
     })
-    active.set(runId, { userId: input.userId, ownerId: input.ownerId, controller, handle })
+    void promise.catch((error) => {
+      if (admissionSettled) return
+      admissionSettled = true
+      rejectAdmission(error)
+    })
+    try {
+      await admission
+    } catch (error) {
+      await promise.catch(() => undefined)
+      throw error
+    }
     return handle
   }
 
@@ -156,6 +190,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
       return projectId ? runs.filter((run) => run.projectId === projectId) : runs
     },
     getRun: (userId: number, runId: string) => options.store.getRun(userId, runId),
+    getAssetLineage: (userId: number, assetIds: readonly string[]) => options.store.getAssetLineage(userId, assetIds),
     reconcileAssets: (userId: number) => options.store.reconcileAssets(userId),
     start,
     cancel,

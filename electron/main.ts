@@ -976,7 +976,10 @@ if (!hasSingleInstanceLock) {
         }
       },
       setWindowMode,
-      setWindowTheme,
+      setWindowTheme: (contents, theme) => {
+        setWindowTheme(contents, theme)
+        canvasController.setTheme(theme)
+      },
       openCanvasWindow: () => canvasController.open(),
       ...(manualUninstallVisualFixtureEnabled
         ? {
