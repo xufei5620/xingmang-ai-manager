@@ -12,6 +12,29 @@ import {
 // share a rendererRoot, or a traversal bug in one would expose the other.
 export const canvasProtocolScheme = 'xingmang-canvas'
 export const canvasPackagedBaseUrl = `${canvasProtocolScheme}://app/`
+export const canvasContentSecurityPolicy = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob: xingmang-asset:",
+  "media-src 'self' blob: xingmang-asset:",
+  'connect-src xingmang-asset:',
+  "font-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-src 'none'",
+].join('; ')
+
+export function canvasSecurityResponseHeaders(
+  input: Record<string, string[] | undefined> = {},
+): Record<string, string[]> {
+  const headers = Object.fromEntries(Object.entries(input)
+    .filter(([name, value]) => value !== undefined && name.toLowerCase() !== 'content-security-policy')) as Record<string, string[]>
+  headers['Content-Security-Policy'] = [canvasContentSecurityPolicy]
+  headers['X-Content-Type-Options'] = ['nosniff']
+  return headers
+}
 
 function isFileRequestPath(pathname: string): boolean {
   const lastSegment = pathname.split('/').filter(Boolean).pop() ?? ''

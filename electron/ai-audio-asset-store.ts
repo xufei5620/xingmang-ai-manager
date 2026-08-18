@@ -206,8 +206,10 @@ export class AiAudioAssetStore {
       assertNoReparseComponents(accountRoot, FILE_LABEL)
       entries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
     } catch { throw new Error('AI 音频资产不存在或无权访问') }
+    if (entries.length > 4_096) throw new Error('AI 音频资产目录条目过多')
     for (const entry of entries) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || !DATE_DIRECTORY_PATTERN.test(entry.name)) continue
+      assertNoReparseComponents(path.join(accountRoot, entry.name), FILE_LABEL)
       for (const extension of ['mp3', 'wav', 'ogg', 'm4a']) {
         const fileName = `xingmang-${assetId}.${extension}`
         const filePath = path.join(accountRoot, entry.name, fileName)
@@ -235,16 +237,23 @@ export class AiAudioAssetStore {
     if (!Number.isSafeInteger(maximum) || maximum < 1 || maximum > 500) throw new Error('AI 音频列表数量无效')
     const accountRoot = path.join(this.outputRoot, `user-${userId}`)
     let entries: fs.Dirent[]
-    try { entries = await fs.promises.readdir(accountRoot, { withFileTypes: true }) } catch (error) {
+    try {
+      assertNoReparseComponents(accountRoot, FILE_LABEL)
+      entries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
       throw new Error('无法读取 AI 音频资产目录')
     }
+    if (entries.length > 4_096) throw new Error('AI 音频资产目录条目过多')
     const results: AiStoredAudioAssetListItem[] = []
     const seenContent = new Map<string, number>()
     for (const entry of entries.sort((left, right) => right.name.localeCompare(left.name))) {
       if (!entry.isDirectory() || entry.isSymbolicLink() || !DATE_DIRECTORY_PATTERN.test(entry.name)) continue
       const directory = path.join(accountRoot, entry.name)
-      for (const file of await fs.promises.readdir(directory, { withFileTypes: true })) {
+      assertNoReparseComponents(directory, FILE_LABEL)
+      const files = await fs.promises.readdir(directory, { withFileTypes: true })
+      if (files.length > 4_096) throw new Error('AI 音频资产目录条目过多')
+      for (const file of files.sort((left, right) => right.name.localeCompare(left.name))) {
         const match = file.name.match(/^xingmang-([A-Za-z0-9_-]{43})\.(mp3|wav|ogg|m4a)$/)
         if (!match || !file.isFile() || file.isSymbolicLink()) continue
         try {

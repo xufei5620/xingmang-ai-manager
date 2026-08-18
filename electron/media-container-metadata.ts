@@ -83,7 +83,15 @@ function trackDimensions(bytes: Buffer, box: IsoBox): { width?: number; height?:
   if (widthOffset < 0 || box.payloadStart + widthOffset + 8 > box.end) return {}
   const width = fixedDimension(bytes.readUInt32BE(box.payloadStart + widthOffset))
   const height = fixedDimension(bytes.readUInt32BE(box.payloadStart + widthOffset + 4))
-  return { ...(width ? { width } : {}), ...(height ? { height } : {}) }
+  const matrixOffset = box.payloadStart + widthOffset - 36
+  const a = bytes.readInt32BE(matrixOffset)
+  const b = bytes.readInt32BE(matrixOffset + 4)
+  const c = bytes.readInt32BE(matrixOffset + 12)
+  const d = bytes.readInt32BE(matrixOffset + 16)
+  const quarterTurn = a === 0 && d === 0 && Math.abs(b) === 65_536 && Math.abs(c) === 65_536
+  return quarterTurn
+    ? { ...(height ? { width: height } : {}), ...(width ? { height: width } : {}) }
+    : { ...(width ? { width } : {}), ...(height ? { height } : {}) }
 }
 
 function trackMetadata(bytes: Buffer, track: IsoBox, budget: { count: number }): {

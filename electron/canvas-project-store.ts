@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { ensureSafeDataDirectory, writeAtomicSafeUtf8File } from './safe-local-data'
-import { readBoundedUtf8File } from './bounded-file'
+import { copyBoundedFileExclusive, readBoundedUtf8File } from './bounded-file'
 import { parseCanvasProjectWorkflow } from './canvas-project-package'
 import { sameLocalPathIdentity } from './path-identity'
 
@@ -194,11 +194,9 @@ async function copyProjectAssets(sourceWorkspace: string, targetWorkspace: strin
           continue
         }
         if (!entry.isFile()) throw new Error('原项目素材包含不支持的文件类型')
-        const stat = await fs.promises.lstat(source)
-        if (!stat.isFile() || stat.isSymbolicLink()) throw new Error('原项目素材文件不安全')
-        byteCount += stat.size
-        if (byteCount > maximumCopiedBytes) throw new Error('原项目素材总大小超过复制上限')
-        await fs.promises.copyFile(source, target, fs.constants.COPYFILE_EXCL)
+        const remainingBytes = maximumCopiedBytes - byteCount
+        if (remainingBytes <= 0) throw new Error('原项目素材总大小超过复制上限')
+        byteCount += await copyBoundedFileExclusive(source, target, remainingBytes, '原项目素材文件')
       }
     }
   } catch (error) {

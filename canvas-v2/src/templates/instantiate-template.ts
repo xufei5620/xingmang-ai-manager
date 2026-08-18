@@ -9,11 +9,14 @@ import type {
 const maximumTemplateNodes = 100
 const maximumTemplateEdges = 400
 const credentialKeyPattern = /(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|secret|password)/i
+const prototypePathSegments = new Set(['__proto__', 'prototype', 'constructor'])
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
 
 function setPath(config: Record<string, unknown>, path: string, value: unknown): void {
   const segments = path.split('.')
-  if (segments.length === 0 || segments.some((segment) => !segment || credentialKeyPattern.test(segment))) {
+  if (segments.length === 0 || segments.some((segment) => (
+    !segment || credentialKeyPattern.test(segment) || prototypePathSegments.has(segment)
+  ))) {
     throw new Error(`模板变量路径无效：${path}`)
   }
   let target = config

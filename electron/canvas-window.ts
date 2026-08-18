@@ -21,7 +21,7 @@ import {
 } from './canvas-protocol'
 import { isAllowedExternalUrl } from './security'
 import { readBoundedUtf8File } from './bounded-file'
-import { writeAtomicSafeUtf8File } from './safe-local-data'
+import { assertNoReparseComponents, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 import type { AppTheme } from './app-settings'
@@ -558,6 +558,10 @@ export function createCanvasWindowController(
   })
 
   async function importCanvasAsset(ownerId: number, userId: number, filePath: string) {
+    if (!path.isAbsolute(filePath) || filePath.includes('\0')) throw new Error('本地媒体路径无效')
+    assertNoReparseComponents(filePath, '画布导入媒体')
+    const source = await fs.promises.lstat(filePath, { bigint: true })
+    if (!source.isFile() || source.isSymbolicLink() || source.nlink !== 1n) throw new Error('本地媒体文件不安全')
     const extension = path.extname(filePath).toLowerCase()
     const kind = ['.png', '.jpg', '.jpeg', '.webp'].includes(extension)
       ? 'image'

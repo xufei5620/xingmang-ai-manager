@@ -130,3 +130,56 @@ export async function readBoundedUtf8File(
     await handle.close()
   }
 }
+
+export async function copyBoundedFileExclusive(
+  sourcePath: string,
+  targetPath: string,
+  maximumBytes: number,
+  label: string,
+): Promise<number> {
+  if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
+    throw new Error(`${label}复制上限无效`)
+  }
+  const pathBeforeOpen = await pathSnapshot(sourcePath, label)
+  const source = await fs.promises.open(
+    sourcePath,
+    fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0),
+  )
+  let target: fs.promises.FileHandle | undefined
+  let targetCreated = false
+  let completed = false
+  try {
+    const before = await source.stat({ bigint: true })
+    assertSingleLinkRegularFile(before, label)
+    if (!sameFileSnapshot(pathBeforeOpen, before)) throw new Error(`${label}在打开期间发生变化`)
+    const size = readBufferSize(before, maximumBytes, label)
+    target = await fs.promises.open(targetPath, 'wx', 0o600)
+    targetCreated = true
+    const buffer = Buffer.allocUnsafe(Math.min(Math.max(size, 1), 1024 * 1024))
+    let offset = 0
+    while (offset < size) {
+      const length = Math.min(buffer.length, size - offset)
+      const { bytesRead } = await source.read(buffer, 0, length, offset)
+      if (bytesRead === 0) throw new Error(`${label}在复制过程中发生变化`)
+      let written = 0
+      while (written < bytesRead) {
+        const result = await target.write(buffer, written, bytesRead - written, offset + written)
+        if (result.bytesWritten === 0) throw new Error(`${label}复制写入失败`)
+        written += result.bytesWritten
+      }
+      offset += bytesRead
+    }
+    await target.sync()
+    const after = await source.stat({ bigint: true })
+    const pathAfterRead = await pathSnapshot(sourcePath, label)
+    if (!sameFileSnapshot(before, after) || !sameFileSnapshot(after, pathAfterRead)) {
+      throw new Error(`${label}在复制过程中发生变化`)
+    }
+    completed = true
+    return size
+  } finally {
+    await target?.close().catch(() => undefined)
+    await source.close().catch(() => undefined)
+    if (!completed && targetCreated) await fs.promises.rm(targetPath, { force: true }).catch(() => undefined)
+  }
+}
