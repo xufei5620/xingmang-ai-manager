@@ -134,7 +134,19 @@ export interface CanvasRunGraph {
     kind: string
     definitionVersion: number
     disabled?: boolean
-    data: { prompt: string; model: string; group?: string; quality?: string; size?: string; seconds?: string; adoptedAssetId?: string }
+    data: {
+      prompt: string
+      model: string
+      group?: string
+      quality?: string
+      size?: string
+      seconds?: string
+      adoptedAssetId?: string
+      videoMode?: 'auto' | 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'
+      videoResolution?: '480p' | '720p'
+      videoAspectRatio?: '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9' | '9:21' | '4:5' | '5:4'
+      promptOptimization?: boolean
+    }
   }>
   edges: Array<{ id: string; source: string; sourceHandle: string; target: string; targetHandle: string }>
 }
@@ -322,8 +334,15 @@ export interface CanvasHostBridge {
     prompt: string
     seconds: string
     imageAssetId?: string
+    imageAssetIds?: string[]
+    videoAssetIds?: string[]
+    audioAssetIds?: string[]
     width?: number
     height?: number
+    mode?: 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'
+    resolution?: '480p' | '720p'
+    aspectRatio?: '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9' | '9:21' | '4:5' | '5:4'
+    promptOptimization?: boolean
   }): Promise<CanvasGeneratedVideoAsset>
   resumeVideoTask(taskId: string): Promise<CanvasGeneratedVideoAsset>
   cancelRequest(requestId: string): Promise<{ canceled: boolean; mayStillComplete: boolean }>

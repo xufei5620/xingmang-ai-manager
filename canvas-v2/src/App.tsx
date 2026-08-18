@@ -193,6 +193,18 @@ export function toCanvasRunGraph(
         size: node.data.size,
         seconds: node.data.seconds,
         adoptedAssetId: node.data.result?.assetId,
+        videoMode: typeof node.data.settings?.videoMode === 'string'
+          ? node.data.settings.videoMode as CanvasRunGraph['nodes'][number]['data']['videoMode']
+          : undefined,
+        videoResolution: typeof node.data.settings?.videoResolution === 'string'
+          ? node.data.settings.videoResolution as CanvasRunGraph['nodes'][number]['data']['videoResolution']
+          : undefined,
+        videoAspectRatio: typeof node.data.settings?.videoAspectRatio === 'string'
+          ? node.data.settings.videoAspectRatio as CanvasRunGraph['nodes'][number]['data']['videoAspectRatio']
+          : undefined,
+        promptOptimization: typeof node.data.settings?.promptOptimization === 'boolean'
+          ? node.data.settings.promptOptimization
+          : undefined,
       },
     })),
     edges: edges

@@ -163,6 +163,19 @@ describe('canvas workflow projection', () => {
     expect(graph.nodes.find((node) => node.id === 'video')?.data.group).toBe('grok')
   })
 
+  it('projects only the bounded MiniMax settings needed by the main-process run', () => {
+    const video = toCanvasNode(workflowNode({
+      id: 'video', kind: 'video-generate', data: workflowNodeData('video-generate', {
+        model: 'minimax-h3-base',
+        videoMode: 'ref2va', videoResolution: '720p', videoAspectRatio: '9:16', promptOptimization: true, ignored: 'local-only',
+      }),
+    }))
+    expect(toCanvasRunGraph([video], [], { image: '', video: 'video' }).nodes[0].data).toMatchObject({
+      group: 'video', videoMode: 'ref2va', videoResolution: '720p', videoAspectRatio: '9:16', promptOptimization: true,
+    })
+    expect(toCanvasRunGraph([video], [], { image: '', video: 'video' }).nodes[0].data).not.toHaveProperty('ignored')
+  })
+
   it('validates media groups only for the selected run scope and its upstream dependencies', () => {
     const prompt = toCanvasNode(workflowNode({ id: 'prompt' }))
     const image = toCanvasNode(workflowNode({

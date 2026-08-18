@@ -127,12 +127,47 @@ export function imageSizeLabel(size: string): string {
 export interface VideoModelPreset {
   id: string
   label: string
+  provider: 'grok' | 'minimax-h3'
+  minimumSeconds: number
   maximumSeconds: number
   defaultSeconds: number
   supportsImage: boolean
+  supportsVideo: boolean
+  supportsAudio: boolean
   sizes: readonly string[]
   defaultSize: string
 }
+
+export type MiniMaxVideoMode = 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'
+export type CanvasVideoMode = 'auto' | MiniMaxVideoMode
+export type MiniMaxVideoResolution = '480p' | '720p'
+export type MiniMaxVideoAspectRatio = '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9' | '9:21' | '4:5' | '5:4'
+
+export const videoModeOptions: readonly { value: CanvasVideoMode; label: string }[] = [
+  { value: 'auto', label: '自动识别素材' },
+  { value: 't2va', label: 'T2VA · 文生视频' },
+  { value: 'i2va', label: 'I2VA · 首帧生视频' },
+  { value: 'fl2va', label: 'FL2VA · 首尾帧' },
+  { value: 'l2va', label: 'L2VA · 尾帧生视频' },
+  { value: 'ref2va', label: 'Ref2VA · 多模态参考' },
+]
+
+export const videoResolutionOptions: readonly { value: MiniMaxVideoResolution; label: string }[] = [
+  { value: '480p', label: '480p · 省成本' },
+  { value: '720p', label: '720p · 高清' },
+]
+
+export const videoAspectRatioOptions: readonly { value: MiniMaxVideoAspectRatio; label: string }[] = [
+  { value: '16:9', label: '16:9 · 横屏' },
+  { value: '9:16', label: '9:16 · 竖屏' },
+  { value: '1:1', label: '1:1 · 方屏' },
+  { value: '4:3', label: '4:3 · 横屏' },
+  { value: '3:4', label: '3:4 · 竖屏' },
+  { value: '21:9', label: '21:9 · 超宽屏' },
+  { value: '9:21', label: '9:21 · 超长屏' },
+  { value: '4:5', label: '4:5 · 竖幅' },
+  { value: '5:4', label: '5:4 · 横幅' },
+]
 
 export const videoSizeOptions = [
   { value: '1280x720', label: '16:9 · 横屏' },
@@ -146,20 +181,67 @@ export const videoModelPresets: readonly VideoModelPreset[] = [
   {
     id: 'grok-imagine-video',
     label: 'Grok Imagine Video',
+    provider: 'grok',
+    minimumSeconds: 1,
     maximumSeconds: 15,
     defaultSeconds: 5,
     supportsImage: true,
+    supportsVideo: false,
+    supportsAudio: false,
     sizes: videoSizeOptions.map((entry) => entry.value),
     defaultSize: '1280x720',
   },
   {
     id: 'grok-imagine-video-1.5',
     label: 'Grok Imagine Video 1.5 · 1080p',
+    provider: 'grok',
+    minimumSeconds: 1,
     maximumSeconds: 15,
     defaultSeconds: 5,
     supportsImage: true,
+    supportsVideo: false,
+    supportsAudio: false,
     sizes: videoSizeOptions.map((entry) => entry.value),
     defaultSize: '1280x720',
+  },
+  {
+    id: 'minimax-h3-mini',
+    label: 'MiniMax H3 Mini · 经济',
+    provider: 'minimax-h3',
+    minimumSeconds: 5,
+    maximumSeconds: 15,
+    defaultSeconds: 5,
+    supportsImage: true,
+    supportsVideo: true,
+    supportsAudio: true,
+    sizes: [],
+    defaultSize: '1280x736',
+  },
+  {
+    id: 'minimax-h3-fast',
+    label: 'MiniMax H3 Fast · 快速',
+    provider: 'minimax-h3',
+    minimumSeconds: 5,
+    maximumSeconds: 15,
+    defaultSeconds: 5,
+    supportsImage: true,
+    supportsVideo: true,
+    supportsAudio: true,
+    sizes: [],
+    defaultSize: '1280x736',
+  },
+  {
+    id: 'minimax-h3-base',
+    label: 'MiniMax H3 Base · 质量',
+    provider: 'minimax-h3',
+    minimumSeconds: 5,
+    maximumSeconds: 15,
+    defaultSeconds: 5,
+    supportsImage: true,
+    supportsVideo: true,
+    supportsAudio: true,
+    sizes: [],
+    defaultSize: '1280x736',
   },
 ]
 
@@ -177,12 +259,41 @@ export function videoModelPreset(id: string): VideoModelPreset {
   return videoModelPresets.find((preset) => preset.id === id) ?? {
     id,
     label: id,
+    provider: 'grok',
+    minimumSeconds: 1,
     maximumSeconds: 15,
     defaultSeconds: defaultVideoSeconds,
     supportsImage: true,
+    supportsVideo: false,
+    supportsAudio: false,
     sizes: videoSizeOptions.map((entry) => entry.value),
     defaultSize: defaultVideoSize,
   }
+}
+
+export function isMiniMaxVideoModel(model: string): boolean {
+  return videoModelPreset(model).provider === 'minimax-h3'
+}
+
+export function resolveMiniMaxVideoMode(input: {
+  mode?: unknown
+  imageCount?: number
+  videoCount?: number
+  audioCount?: number
+}): MiniMaxVideoMode | null {
+  const requested = typeof input.mode === 'string' ? input.mode : 'auto'
+  if (requested !== 'auto') {
+    return videoModeOptions.some((option) => option.value === requested)
+      ? requested as MiniMaxVideoMode
+      : null
+  }
+  const images = input.imageCount ?? 0
+  const videos = input.videoCount ?? 0
+  const audios = input.audioCount ?? 0
+  if (videos > 0 || audios > 0 || images > 2) return 'ref2va'
+  if (images === 2) return 'fl2va'
+  if (images === 1) return 'i2va'
+  return 't2va'
 }
 
 export function parseImageSize(size: string): { width: number; height: number } | null {
@@ -230,19 +341,70 @@ export function normalizeVideoSeconds(value: unknown, model: string): string | n
   const raw = typeof value === 'string' ? value.trim() : value
   if (raw === '') return null
   const parsed = Number(raw)
-  if (!Number.isInteger(parsed) || parsed < 1 || parsed > preset.maximumSeconds) return null
+  if (!Number.isInteger(parsed) || parsed < preset.minimumSeconds || parsed > preset.maximumSeconds) return null
   return String(parsed)
 }
 
-export function validateVideoModelOptions(input: { model: string; seconds: unknown; size?: unknown; hasImage?: boolean }): string[] {
+export function validateVideoModelOptions(input: {
+  model: string
+  seconds: unknown
+  size?: unknown
+  mode?: unknown
+  resolution?: unknown
+  aspectRatio?: unknown
+  imageCount?: number
+  videoCount?: number
+  audioCount?: number
+}): string[] {
   const errors: string[] = []
   const preset = videoModelPreset(input.model)
+  const imageCount = input.imageCount ?? 0
+  const videoCount = input.videoCount ?? 0
+  const audioCount = input.audioCount ?? 0
   if (!input.model.trim()) errors.push('请选择视频模型')
   if (normalizeVideoSeconds(input.seconds, input.model) === null) {
-    errors.push(`视频时长必须在 1-${preset.maximumSeconds} 秒之间`)
+    errors.push(`视频时长必须在 ${preset.minimumSeconds}-${preset.maximumSeconds} 秒之间`)
   }
-  if (input.hasImage && !preset.supportsImage) errors.push(`模型「${preset.label}」不支持图生视频`)
-  if (input.size !== undefined && (typeof input.size !== 'string' || !preset.sizes.includes(input.size))) {
+  if (imageCount > 0 && !preset.supportsImage) errors.push(`模型「${preset.label}」不支持图片参考`)
+  if (videoCount > 0 && !preset.supportsVideo) errors.push(`模型「${preset.label}」不支持视频参考`)
+  if (audioCount > 0 && !preset.supportsAudio) errors.push(`模型「${preset.label}」不支持音频参考`)
+
+  if (preset.provider === 'grok') {
+    if (imageCount > 1) errors.push('Grok 视频模型最多使用 1 张参考图')
+    if (input.size !== undefined && (typeof input.size !== 'string' || !preset.sizes.includes(input.size))) {
+      errors.push(`模型「${preset.label}」不支持这个视频比例`)
+    }
+    return errors
+  }
+
+  const mode = resolveMiniMaxVideoMode({
+    mode: input.mode,
+    imageCount,
+    videoCount,
+    audioCount,
+  })
+  if (!mode) errors.push('MiniMax 生成模式无效')
+  if (!videoResolutionOptions.some((option) => option.value === (input.resolution ?? '720p'))) {
+    errors.push('MiniMax 分辨率只能为 480p 或 720p')
+  }
+  if (!videoAspectRatioOptions.some((option) => option.value === (input.aspectRatio ?? '16:9'))) {
+    errors.push('MiniMax 视频比例不受支持')
+  }
+  if (imageCount > 9) errors.push('MiniMax 最多支持 9 张参考图')
+  if (videoCount > 3) errors.push('MiniMax 最多支持 3 个参考视频')
+  if (audioCount > 3) errors.push('MiniMax 最多支持 3 个参考音频')
+  if (imageCount + videoCount + audioCount > 15) errors.push('MiniMax 单次最多支持 15 个参考素材')
+  if (mode === 't2va' && imageCount + videoCount + audioCount > 0) errors.push('T2VA 文生视频不能连接媒体素材')
+  if ((mode === 'i2va' || mode === 'l2va') && (imageCount !== 1 || videoCount > 0 || audioCount > 0)) {
+    errors.push(`${mode.toUpperCase()} 需要且只能连接 1 张图片`)
+  }
+  if (mode === 'fl2va' && ((imageCount !== 1 && imageCount !== 2) || videoCount > 0 || audioCount > 0)) {
+    errors.push('FL2VA 需要连接 1-2 张图片，顺序为首帧、尾帧')
+  }
+  if (mode === 'ref2va' && imageCount + videoCount + audioCount === 0) {
+    errors.push('Ref2VA 至少需要连接 1 个图片、视频或音频素材')
+  }
+  if (input.size !== undefined && input.size !== '' && typeof input.size !== 'string') {
     errors.push(`模型「${preset.label}」不支持这个视频比例`)
   }
   return errors

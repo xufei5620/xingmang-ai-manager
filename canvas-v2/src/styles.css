@@ -1736,11 +1736,14 @@ button:disabled {
 .wf-video-params { display: grid; gap: 8px; }
 .wf-video-params .wf-inline-field { justify-content: space-between; }
 .wf-video-params .wf-inline-field .wf-model { min-width: 88px; width: auto; }
+.wf-video-toggle { display: flex; align-items: center; gap: 8px; margin: 0 10px; color: var(--text-secondary); font-size: 11px; }
+.wf-video-toggle input { width: 14px; height: 14px; accent-color: var(--node-accent); }
 .wf-progress { display: grid; gap: 6px; padding: 8px; border: 1px solid color-mix(in srgb, var(--node-accent) 38%, transparent); background: color-mix(in srgb, var(--node-accent) 8%, var(--surface-media)); }
 .wf-progress p { margin: 0; color: var(--text-muted); font-size: 11px; line-height: 1.45; }
 .wf-progress small { color: var(--text-muted); font-size: 10px; line-height: 1.45; }
 .wf-progress-bar { position: relative; display: block; height: 3px; overflow: hidden; background: color-mix(in srgb, var(--node-accent) 20%, transparent); }
 .wf-progress-bar::after { content: ''; position: absolute; inset-block: 0; width: 42%; background: var(--node-accent); animation: wf-progress 1.35s ease-in-out infinite; }
+.wf-progress-bar.is-determinate::after { left: 0; width: var(--wf-progress, 0%); animation: none; transition: width 180ms ease; }
 @keyframes wf-progress { from { left: -42%; } to { left: 100%; } }
 @media (prefers-reduced-motion: reduce) { .wf-progress-bar::after { animation: none; width: 100%; opacity: .65; } }
 

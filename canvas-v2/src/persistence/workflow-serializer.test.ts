@@ -213,7 +213,7 @@ describe('workflow schema v2 parser', () => {
     ])
   })
 
-  it('drops stale video inputs from video generation while preserving image and audio fan-in', () => {
+  it('preserves image, video, and audio fan-in for MiniMax-compatible video generation', () => {
     const workflow = parseWorkflowFileDetailed(JSON.stringify(v2Document({
       nodes: [
         {
@@ -235,13 +235,13 @@ describe('workflow schema v2 parser', () => {
       ],
       edges: [
         { id: 'image', source: 'image-source', sourceHandle: 'out:image', target: 'target', targetHandle: 'in:images' },
-        { id: 'stale-video', source: 'video-source', sourceHandle: 'out:video', target: 'target', targetHandle: 'in:videos' },
+        { id: 'video', source: 'video-source', sourceHandle: 'out:video', target: 'target', targetHandle: 'in:videos' },
         { id: 'audio', source: 'audio-source', sourceHandle: 'out:audio', target: 'target', targetHandle: 'in:audios' },
       ],
     })))
 
-    expect(workflow?.workflow.edges.map((edge) => edge.id)).toEqual(['image', 'audio'])
-    expect(workflow?.warnings).toEqual(['已移除端口类型不匹配的连线：stale-video'])
+    expect(workflow?.workflow.edges.map((edge) => edge.id)).toEqual(['image', 'video', 'audio'])
+    expect(workflow?.warnings).toEqual([])
   })
 
   it('drops dangling, incompatible, over-capacity, and cyclic edges deterministically', () => {

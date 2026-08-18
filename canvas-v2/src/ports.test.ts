@@ -69,7 +69,7 @@ describe('registry driven ports', () => {
   })
 
   it('keeps the legacy video alias on the same multi-input contract', () => {
-    expect(nodeInputKinds.video).toEqual(['text', 'image', 'audio'])
+    expect(nodeInputKinds.video).toEqual(['text', 'image', 'video', 'audio'])
     const existing = [
       { source: 'prompt-a', target: 'target', targetHandle: 'in:text' },
       { source: 'image-a', target: 'target', targetHandle: 'in:images' },
@@ -87,7 +87,7 @@ describe('registry driven ports', () => {
 
   it('does not expose video or audio inputs on image editing', () => {
     expect(nodeInputKinds['image-edit']).toEqual(['text', 'image'])
-    expect(nodeInputKinds['video-generate']).toEqual(['text', 'image', 'audio'])
+    expect(nodeInputKinds['video-generate']).toEqual(['text', 'image', 'video', 'audio'])
     expect(isValidWorkflowConnection(
       { source: 'video', sourceHandle: 'out:video', target: 'edit', targetHandle: 'in:videos' },
       graph({ video: 'video-input', edit: 'image-edit' }),
@@ -98,11 +98,11 @@ describe('registry driven ports', () => {
     )).toBe(false)
   })
 
-  it('does not expose an unsupported video input on video generation', () => {
+  it('allows reference videos on video generation', () => {
     expect(isValidWorkflowConnection(
       { source: 'video', sourceHandle: 'out:video', target: 'generate', targetHandle: 'in:videos' },
       graph({ video: 'video-input', generate: 'video-generate' }),
-    )).toBe(false)
+    )).toBe(true)
   })
 
   it('keeps legacy text, image, and video aliases compatible', () => {

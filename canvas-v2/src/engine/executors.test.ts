@@ -91,4 +91,26 @@ describe('canvas host executors', () => {
     )).rejects.toThrow('视频时长必须在 1-15 秒之间')
     expect(host.generateVideo).not.toHaveBeenCalled()
   })
+
+  it('auto-selects Ref2VA and forwards every owned media asset', async () => {
+    const host = hostMocks()
+    const executors = createHostExecutors({ imageGroup: '生图分组', videoGroup: 'video', host })
+    const node = workflowNode('video-generate', {
+      model: 'minimax-h3-fast', prompt: '复用角色动作与声音', seconds: '8',
+      settings: { videoMode: 'auto', videoResolution: '480p', videoAspectRatio: '4:5', promptOptimization: true },
+    })
+    await executors['video-generate'](node, {
+      images: [{ kind: 'image', assetId: 'a'.repeat(43) }, { kind: 'image', assetId: 'b'.repeat(43) }],
+      videos: [{ kind: 'video', assetId: 'v'.repeat(43) }],
+      audios: [{ kind: 'audio', assetId: 'm'.repeat(43) }],
+    }, new AbortController().signal)
+
+    expect(host.generateVideo).toHaveBeenCalledWith(expect.objectContaining({
+      model: 'minimax-h3-fast', seconds: '8', mode: 'ref2va', resolution: '480p', aspectRatio: '4:5',
+      promptOptimization: true,
+      imageAssetIds: ['a'.repeat(43), 'b'.repeat(43)],
+      videoAssetIds: ['v'.repeat(43)],
+      audioAssetIds: ['m'.repeat(43)],
+    }))
+  })
 })
