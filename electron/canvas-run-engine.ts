@@ -267,6 +267,25 @@ function usesRemoteGeneration(kind: CanvasRunNodeKind): boolean {
     || kind === 'video-generate'
 }
 
+export function canvasRunRemoteGenerationUpperBound(graph: CanvasRunGraph, scope: CanvasRunScope): number {
+  const index = validateGraph(graph)
+  const selected = selectScope(index, scope)
+  const skipped = new Set<string>()
+  let remoteCount = 0
+  for (const nodeId of index.topological) {
+    if (!selected.has(nodeId)) continue
+    const node = index.nodesById.get(nodeId)!
+    const upstreamSkipped = (index.incoming.get(nodeId) ?? [])
+      .some((edge) => selected.has(edge.source) && skipped.has(edge.source))
+    if (node.disabled || upstreamSkipped) {
+      skipped.add(nodeId)
+      continue
+    }
+    if (usesRemoteGeneration(node.kind)) remoteCount += 1
+  }
+  return remoteCount
+}
+
 export function appendCanvasRunTimelineEvent(
   events: CanvasRunEvent[],
   event: CanvasRunEvent,

@@ -8,6 +8,7 @@ import type {
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import {
   canvasRunDescendants,
+  canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
   type CanvasNodeExecutors,
 } from './canvas-run-engine'
@@ -17,6 +18,7 @@ export interface CanvasRunServiceOptions {
   store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'reconcileAssets'>
   executors: CanvasNodeExecutors
   maxConcurrency?: number
+  maxRemoteGenerationsPerRun?: number
   now?: () => Date
   randomUUID?: () => string
 }
@@ -53,6 +55,10 @@ export interface CanvasRunPublication {
 
 export function createCanvasRunService(options: CanvasRunServiceOptions) {
   const randomUUID = options.randomUUID ?? nodeRandomUUID
+  const maxRemoteGenerationsPerRun = options.maxRemoteGenerationsPerRun ?? 64
+  if (!Number.isSafeInteger(maxRemoteGenerationsPerRun) || maxRemoteGenerationsPerRun < 1 || maxRemoteGenerationsPerRun > 1_000) {
+    throw new Error('单次画布远程生成上限无效')
+  }
   const active = new Map<string, ActiveRun>()
   const activeLocks = new Map<string, string>()
   const listeners = new Set<(publication: CanvasRunPublication) => void | Promise<void>>()
@@ -75,6 +81,10 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
   async function start(input: StartCanvasRunInput): Promise<CanvasRunHandle> {
     const expectedRevision = computeCanvasGraphRevision(input.graph)
     if (expectedRevision !== input.graphRevision) throw new Error('工作流已发生变化，请重新发起运行')
+    const remoteGenerations = canvasRunRemoteGenerationUpperBound(input.graph, input.scope)
+    if (remoteGenerations > maxRemoteGenerationsPerRun) {
+      throw new Error(`单次运行最多允许 ${maxRemoteGenerationsPerRun} 个远程生成节点，请拆分后重试`)
+    }
     const lockKey = activeRunLockKey(input)
     if (activeLocks.has(lockKey)) throw new Error('当前画布项目已有工作流正在运行，请等待结束或先取消')
     const runId = randomUUID()
