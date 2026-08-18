@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildCanvasRunPreflight, selectCanvasRunNodeIdsForPreflight } from './run-preflight'
+import { buildCanvasRunPreflight, sameCanvasRunGraphSnapshot, selectCanvasRunNodeIdsForPreflight } from './run-preflight'
 import type { CanvasRunGraph } from '../host'
 
 function graph(): CanvasRunGraph {
@@ -42,5 +42,35 @@ describe('canvas run preflight', () => {
   it('rejects an empty or unknown scope deterministically', () => {
     expect(() => selectCanvasRunNodeIdsForPreflight(graph(), { kind: 'selection', nodeIds: [] })).toThrow('运行范围不能为空')
     expect(() => selectCanvasRunNodeIdsForPreflight(graph(), { kind: 'to-node', nodeId: 'missing' })).toThrow('不存在')
+  })
+
+  it('propagates a disabled upstream node as skip before validating paid downstream work', () => {
+    const input = graph()
+    const image = input.nodes.find((node) => node.id === 'image')!
+    image.disabled = true
+    const result = buildCanvasRunPreflight({
+      graph: input,
+      scope: { kind: 'to-node', nodeId: 'video' },
+      imageGroup: '生图分组',
+      videoGroup: 'grok',
+      imageModels: ['gpt-image-2'],
+      videoModels: [],
+    })
+
+    expect(result.items).toMatchObject([
+      { nodeId: 'prompt', action: 'execute' },
+      { nodeId: 'image', action: 'skip', reasonCode: 'disabled' },
+      { nodeId: 'video', action: 'skip', reasonCode: 'upstream-skip' },
+    ])
+    expect(result).toMatchObject({ canStart: true, blockedCount: 0, paidRequestCount: 0, skippedCount: 2 })
+  })
+
+  it('detects a graph change while a paid confirmation is open', () => {
+    const original = graph()
+    expect(sameCanvasRunGraphSnapshot(original, structuredClone(original))).toBe(true)
+    const changed = structuredClone(original)
+    changed.nodes = changed.nodes.filter((node) => node.id !== 'image')
+    changed.edges = []
+    expect(sameCanvasRunGraphSnapshot(original, changed)).toBe(false)
   })
 })

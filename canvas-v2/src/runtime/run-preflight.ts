@@ -26,6 +26,7 @@ export interface CanvasRunPreflightItem {
   group?: string
   model?: string
   reason?: string
+  reasonCode?: 'disabled' | 'upstream-skip' | 'missing-group' | 'unavailable-model' | 'missing-asset'
 }
 
 export interface CanvasRunPreflight {
@@ -44,7 +45,7 @@ export interface CanvasRunPreflight {
   canStart: boolean
 }
 
-function selectCanvasRunNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): Set<string> {
+export function selectCanvasRunNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): Set<string> {
   const nodeIds = new Set(graph.nodes.map((node) => node.id))
   if (scope.kind === 'all') return nodeIds
   const roots = scope.kind === 'to-node' ? [scope.nodeId] : scope.nodeIds
@@ -65,6 +66,10 @@ function selectCanvasRunNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): S
 
 export function selectCanvasRunNodeIdsForPreflight(graph: CanvasRunGraph, scope: CanvasRunScope): Set<string> {
   return selectCanvasRunNodeIds(graph, scope)
+}
+
+export function sameCanvasRunGraphSnapshot(left: CanvasRunGraph, right: CanvasRunGraph): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
 }
 
 function scopeLabel(scope: CanvasRunScope): string {
@@ -91,27 +96,70 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
   const cached = new Set(input.cachedNodeIds ?? [])
   const items: CanvasRunPreflightItem[] = []
   const warnings: string[] = []
-  for (const node of input.graph.nodes) {
-    if (!selected.has(node.id)) continue
+  const nodesById = new Map(input.graph.nodes.map((node) => [node.id, node]))
+  const incoming = new Map<string, string[]>()
+  for (const edge of input.graph.edges) {
+    if (!nodesById.has(edge.source) || !nodesById.has(edge.target)) throw new Error(`连线引用了不存在的节点：${edge.id}`)
+    incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source])
+  }
+  const planned = new Map<string, CanvasRunPreflightItem>()
+  const visiting = new Set<string>()
+
+  function planNode(nodeId: string): CanvasRunPreflightItem {
+    const existing = planned.get(nodeId)
+    if (existing) return existing
+    if (visiting.has(nodeId)) throw new Error('工作流中存在循环连接，请先断开成环的连线')
+    const node = nodesById.get(nodeId)
+    if (!node) throw new Error(`运行范围包含不存在的节点：${nodeId}`)
+    visiting.add(nodeId)
     const paid = paidRunNodeKinds.has(node.kind)
     const group = nodeGroup(node, input)
     let action: CanvasPreflightAction = cached.has(node.id) ? 'cached' : 'execute'
     let reason: string | undefined
+    let reasonCode: CanvasRunPreflightItem['reasonCode']
     if (node.disabled) {
       action = 'skip'
       reason = '节点已禁用'
+      reasonCode = 'disabled'
+    } else if ((incoming.get(node.id) ?? [])
+      .filter((sourceId) => selected.has(sourceId))
+      .some((sourceId) => planNode(sourceId).action === 'skip')) {
+      action = 'skip'
+      reason = '上游节点已跳过'
+      reasonCode = 'upstream-skip'
     } else if (paid && !group) {
       action = 'blocked'
       reason = node.kind.startsWith('video') ? '缺少视频分组' : '缺少生图分组'
+      reasonCode = 'missing-group'
     } else if (paid && !modelAvailable(node, input)) {
       action = 'blocked'
       reason = `模型「${node.data.model || '未设置'}」不属于当前分组`
+      reasonCode = 'unavailable-model'
     } else if (assetInputKinds.has(node.kind) && !node.data.adoptedAssetId) {
       action = 'blocked'
       reason = '缺少已保存的本地素材'
+      reasonCode = 'missing-asset'
     }
-    items.push({ nodeId: node.id, kind: node.kind, action, paid, ...(group ? { group } : {}), ...(node.data.model ? { model: node.data.model } : {}), ...(reason ? { reason } : {}) })
-    if (action === 'blocked') warnings.push(`${node.id}：${reason}`)
+    const item: CanvasRunPreflightItem = {
+      nodeId: node.id,
+      kind: node.kind,
+      action,
+      paid,
+      ...(group ? { group } : {}),
+      ...(node.data.model ? { model: node.data.model } : {}),
+      ...(reason ? { reason } : {}),
+      ...(reasonCode ? { reasonCode } : {}),
+    }
+    visiting.delete(nodeId)
+    planned.set(nodeId, item)
+    return item
+  }
+
+  for (const node of input.graph.nodes) {
+    if (!selected.has(node.id)) continue
+    const item = planNode(node.id)
+    items.push(item)
+    if (item.action === 'blocked') warnings.push(`${node.id}：${item.reason}`)
   }
   const requestCount = items.filter((item) => item.action === 'execute').length
   const cacheHitCount = items.filter((item) => item.action === 'cached').length
@@ -135,4 +183,32 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
     warnings: [scopeLabel(input.scope), ...warnings],
     canStart: selected.size > 0 && blockedCount === 0,
   }
+}
+
+export function canvasMediaConfigurationErrors(
+  graph: CanvasRunGraph,
+  scope: CanvasRunScope,
+  configuration: Omit<CanvasRunPreflightInput, 'graph' | 'scope' | 'cachedNodeIds'>,
+): string[] {
+  const preflight = buildCanvasRunPreflight({ graph, scope, ...configuration })
+  const errors: string[] = []
+  const missingImageGroup = preflight.items.some((item) => imageRunNodeKinds.has(item.kind) && item.reasonCode === 'missing-group')
+  const missingVideoGroup = preflight.items.some((item) => videoRunNodeKinds.has(item.kind) && item.reasonCode === 'missing-group')
+  if (missingImageGroup) errors.push('请选择生图分组')
+  if (missingVideoGroup) errors.push('请选择视频分组')
+  const unavailableImageModels = [...new Set(preflight.items
+    .filter((item) => imageRunNodeKinds.has(item.kind) && item.reasonCode === 'unavailable-model')
+    .map((item) => item.model)
+    .filter((model): model is string => Boolean(model)))]
+  const unavailableVideoModels = [...new Set(preflight.items
+    .filter((item) => videoRunNodeKinds.has(item.kind) && item.reasonCode === 'unavailable-model')
+    .map((item) => item.model)
+    .filter((model): model is string => Boolean(model)))]
+  if (configuration.imageGroup && unavailableImageModels.length > 0) {
+    errors.push(`生图分组「${configuration.imageGroup}」不提供模型：${unavailableImageModels.join('、')}`)
+  }
+  if (configuration.videoGroup && unavailableVideoModels.length > 0) {
+    errors.push(`视频分组「${configuration.videoGroup}」不提供模型：${unavailableVideoModels.join('、')}`)
+  }
+  return errors
 }
