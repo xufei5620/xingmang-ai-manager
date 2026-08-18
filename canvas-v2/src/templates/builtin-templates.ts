@@ -1,20 +1,24 @@
 import type { CanvasTemplate } from './template-types'
+import { industryCanvasTemplates } from './catalog/industry-templates'
 
 const quickImage: CanvasTemplate = {
   id: 'xingmang-quick-image',
   version: 1,
   name: '快速文生图',
-  description: '从一段提示词生成多个图像候选并选择结果。',
+  description: '从一段提示词生成一张图像结果。',
   category: 'image',
+  industry: 'social-media',
+  deliverable: '单张创意图片',
+  requirements: [{ media: 'image', operation: 'generate' }],
   tags: ['文生图', '候选'],
   thumbnail: { kind: 'color', value: '#315B9A' },
   requiredNodeTypes: ['prompt', 'image-generate', 'gallery', 'output'],
   workflow: {
     nodes: [
       { id: 'prompt', type: 'prompt', definitionVersion: 1, position: { x: 40, y: 140 }, config: { prompt: '' } },
-      { id: 'generate', type: 'image-generate', definitionVersion: 1, position: { x: 340, y: 120 }, config: { count: 4 } },
+      { id: 'generate', type: 'image-generate', definitionVersion: 1, position: { x: 340, y: 120 }, config: {} },
       { id: 'gallery', type: 'gallery', definitionVersion: 1, position: { x: 650, y: 100 }, config: {} },
-      { id: 'output', type: 'output', definitionVersion: 1, position: { x: 960, y: 130 }, config: {} },
+      { id: 'output', type: 'output', definitionVersion: 1, position: { x: 1050, y: 130 }, config: {} },
     ],
     edges: [
       { id: 'prompt-generate', source: 'prompt', sourceHandle: 'out:text', target: 'generate', targetHandle: 'in:text' },
@@ -32,18 +36,21 @@ const referenceEdit: CanvasTemplate = {
   id: 'xingmang-reference-edit',
   version: 1,
   name: '参考图改图',
-  description: '导入参考图，描述修改要求，再从候选结果中采纳一张。',
+  description: '导入参考图并描述修改要求，生成一张编辑结果。',
   category: 'image',
+  industry: 'social-media',
+  deliverable: '单张参考图编辑结果',
+  requirements: [{ media: 'image', operation: 'edit' }],
   tags: ['图生图', '编辑'],
   thumbnail: { kind: 'color', value: '#34775C' },
   requiredNodeTypes: ['image-input', 'prompt', 'image-edit', 'gallery', 'output'],
   workflow: {
     nodes: [
       { id: 'image', type: 'image-input', definitionVersion: 1, position: { x: 40, y: 60 }, config: {} },
-      { id: 'prompt', type: 'prompt', definitionVersion: 1, position: { x: 40, y: 280 }, config: { prompt: '' } },
-      { id: 'edit', type: 'image-edit', definitionVersion: 1, position: { x: 360, y: 140 }, config: { count: 4 } },
+      { id: 'prompt', type: 'prompt', definitionVersion: 1, position: { x: 40, y: 430 }, config: { prompt: '' } },
+      { id: 'edit', type: 'image-edit', definitionVersion: 1, position: { x: 360, y: 140 }, config: {} },
       { id: 'gallery', type: 'gallery', definitionVersion: 1, position: { x: 680, y: 120 }, config: {} },
-      { id: 'output', type: 'output', definitionVersion: 1, position: { x: 990, y: 150 }, config: {} },
+      { id: 'output', type: 'output', definitionVersion: 1, position: { x: 1080, y: 150 }, config: {} },
     ],
     edges: [
       { id: 'image-edit', source: 'image', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:images' },
@@ -65,16 +72,19 @@ const productVideo: CanvasTemplate = {
   name: '产品图生成短视频',
   description: '使用产品图和镜头描述生成短视频候选。',
   category: 'video',
+  industry: 'commerce',
+  deliverable: '产品短视频',
+  requirements: [{ media: 'video', operation: 'generate' }],
   tags: ['图生视频', '产品'],
   thumbnail: { kind: 'color', value: '#8A543D' },
   requiredNodeTypes: ['image-input', 'prompt', 'video-generate', 'gallery', 'output'],
   workflow: {
     nodes: [
       { id: 'image', type: 'image-input', definitionVersion: 1, position: { x: 40, y: 60 }, config: {} },
-      { id: 'prompt', type: 'prompt', definitionVersion: 1, position: { x: 40, y: 280 }, config: { prompt: '' } },
-      { id: 'generate', type: 'video-generate', definitionVersion: 1, position: { x: 360, y: 140 }, config: { durationSeconds: 5 } },
+      { id: 'prompt', type: 'prompt', definitionVersion: 1, position: { x: 40, y: 430 }, config: { prompt: '' } },
+      { id: 'generate', type: 'video-generate', definitionVersion: 1, position: { x: 360, y: 140 }, config: { seconds: '5' } },
       { id: 'gallery', type: 'gallery', definitionVersion: 1, position: { x: 680, y: 120 }, config: {} },
-      { id: 'output', type: 'output', definitionVersion: 1, position: { x: 990, y: 150 }, config: {} },
+      { id: 'output', type: 'output', definitionVersion: 1, position: { x: 1080, y: 150 }, config: {} },
     ],
     edges: [
       { id: 'image-generate', source: 'image', sourceHandle: 'out:image', target: 'generate', targetHandle: 'in:images' },
@@ -90,4 +100,4 @@ const productVideo: CanvasTemplate = {
   provenance: { kind: 'xingmang-original' },
 }
 
-export const builtinCanvasTemplates: readonly CanvasTemplate[] = [quickImage, referenceEdit, productVideo]
+export const builtinCanvasTemplates: readonly CanvasTemplate[] = [quickImage, referenceEdit, productVideo, ...industryCanvasTemplates]

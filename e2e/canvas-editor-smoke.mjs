@@ -12,9 +12,27 @@ const fixturePreload = path.join(fixtureRoot, 'preload.cjs')
 const fixtureAssetId = 'A'.repeat(43)
 const fixtureAudioAssetId = 'B'.repeat(43)
 const fixtureVideoAssetId = 'C'.repeat(43)
-const fixtureAudioPath = path.join(projectRoot, 'output', 'user-36', '2026-08-14', '8月14日.wav')
-const fixtureVideoPath = path.join(projectRoot, 'output', 'user-36', '2026-08-14', '视频1.mp4')
+// Match React Flow's platform default: Meta on macOS, Control elsewhere.
+const multiSelectModifiers = process.platform === 'darwin' ? ['Meta'] : ['Control']
+const fixtureAudioPath = path.join(fixtureRoot, 'audio.wav')
+const fixtureVideoPath = path.join(fixtureRoot, 'video.mp4')
 const fixturePng = 'iVBORw0KGgoAAAANSUhEUgAAAAQAAAAFCAYAAABirU3bAAAAAXNSR0IArs4c6QAAAARnQU1BAACxjwv8YQUAAAAJcEhZcwAADsMAAA7DAcdvqGQAAAA5SURBVBhXDcghAQAhAEPRxVkXzNXALAQNZjBXg37wxTNP/vYdCAp5EggKeREICvknEBTyIRD07PsAwFYxB4euEicAAAAASUVORK5CYII='
+const fixtureVideo = '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'
+
+function createFixtureWav() {
+  const sampleRate = 44_100
+  const sampleCount = sampleRate * 2
+  const buffer = Buffer.alloc(44 + sampleCount * 2)
+  buffer.write('RIFF', 0); buffer.writeUInt32LE(buffer.length - 8, 4); buffer.write('WAVEfmt ', 8)
+  buffer.writeUInt32LE(16, 16); buffer.writeUInt16LE(1, 20); buffer.writeUInt16LE(1, 22)
+  buffer.writeUInt32LE(sampleRate, 24); buffer.writeUInt32LE(sampleRate * 2, 28); buffer.writeUInt16LE(2, 32); buffer.writeUInt16LE(16, 34)
+  buffer.write('data', 36); buffer.writeUInt32LE(sampleCount * 2, 40)
+  for (let index = 0; index < sampleCount; index += 1) {
+    const envelope = .2 + .8 * Math.sin(Math.PI * index / sampleCount) ** 2
+    buffer.writeInt16LE(Math.round(Math.sin(2 * Math.PI * 220 * index / sampleRate) * envelope * 22_000), 44 + index * 2)
+  }
+  return buffer
+}
 const viewports = [
   { name: 'compact', width: 960, height: 620 },
   { name: 'laptop', width: 1366, height: 768 },
@@ -25,8 +43,8 @@ const viewports = [
 await fs.rm(artifactRoot, { recursive: true, force: true })
 await fs.mkdir(fixtureRoot, { recursive: true })
 await fs.access(canvasIndex)
-await fs.access(fixtureAudioPath)
-await fs.access(fixtureVideoPath)
+await fs.writeFile(fixtureAudioPath, createFixtureWav())
+await fs.writeFile(fixtureVideoPath, Buffer.from(fixtureVideo, 'base64'))
 await fs.writeFile(fixturePreload, `
 const { contextBridge } = require('electron')
 const assetId = ${JSON.stringify(fixtureAssetId)}
@@ -316,9 +334,17 @@ try {
   await application.evaluate(({ BrowserWindow }) => {
     BrowserWindow.getAllWindows()[0].setContentSize(1590, 875)
   })
+  const runCallsBeforeTemplate = await page.evaluate(() => window.xingmangCanvasHost.getStartRunCallCount())
   await page.getByRole('button', { name: '更多操作', exact: true }).click()
-  await page.getByRole('button', { name: /插入快速模板/ }).click()
+  await page.getByRole('button', { name: '打开行业模板库', exact: true }).click()
+  const templateCatalog = page.getByRole('dialog', { name: '行业模板库' })
+  await templateCatalog.waitFor({ state: 'visible' })
+  await templateCatalog.getByRole('textbox', { name: '搜索行业模板' }).fill('快速文生图')
+  await templateCatalog.getByRole('article').filter({ hasText: '快速文生图' }).getByRole('button', { name: '查看并配置' }).click()
+  const templateConfigurator = page.getByRole('dialog', { name: '配置模板：快速文生图' })
+  await templateConfigurator.getByRole('button', { name: '先插入空白骨架' }).click()
   await page.locator('.react-flow__node').first().waitFor({ state: 'visible', timeout: 10_000 })
+  assert.equal(await page.evaluate(() => window.xingmangCanvasHost.getStartRunCallCount()), runCallsBeforeTemplate, '插入模板错误触发了付费运行')
   const libraryTabs = ['节点', '提示词', '模板', '素材']
   for (const label of libraryTabs) {
     await page.getByRole('button', { name: label, exact: true }).click()
@@ -407,6 +433,7 @@ try {
   const runScopeMenu = page.getByRole('menu', { name: '运行范围' })
   assert.equal(await runScopeMenu.getByRole('menuitemradio').count(), 4, '运行范围菜单应提供四种范围')
   assert.equal(await runScopeMenu.getByRole('menuitemradio', { name: /运行全部/ }).getAttribute('aria-checked'), 'true')
+  await page.waitForFunction(() => document.querySelector('[role="menu"][aria-label="运行范围"]')?.contains(document.activeElement))
   assert.equal(await runScopeMenu.evaluate((element) => element.contains(document.activeElement)), true, '运行范围菜单打开后应聚焦有效选项')
   await page.keyboard.press('Escape')
   await runScopeMenu.waitFor({ state: 'hidden' })
@@ -603,10 +630,12 @@ try {
   assert.equal(await videoTarget.locator('.react-flow__handle[data-handleid="in:videos"]').count(), 1, '视频生成缺少多视频输入端口')
   assert.equal(await videoTarget.locator('.react-flow__handle[data-handleid="in:audios"]').count(), 1, '视频生成缺少多音频输入端口')
 
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(3840, 2160))
   await page.getByRole('button', { name: '自动布局', exact: true }).click()
   await page.waitForTimeout(240)
   await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
   await page.waitForTimeout(240)
+  await page.screenshot({ path: path.join(artifactRoot, 'connection-before-1590x875.png') })
   const imageSources = page.locator('.react-flow__node-image-input')
   const imageSource = imageSources.last()
   const secondImageSource = imageSources.nth((await imageSources.count()) - 2)
@@ -615,10 +644,12 @@ try {
   await page.locator('.react-flow__pane').click({ position: { x: 18, y: 18 } })
   const connectionNodes = [imageSource, secondImageSource, videoSource, audioSource, imageGenerateNode, videoTarget, imageEditTarget]
   for (const [index, node] of connectionNodes.entries()) {
-    await node.click({ position: { x: 8, y: 8 }, modifiers: index === 0 ? [] : ['Control'] })
+    await node.click({ position: { x: 42, y: 22 }, modifiers: index === 0 ? [] : multiSelectModifiers })
   }
   await page.getByLabel('画布导航').getByRole('button', { name: '聚焦选中节点' }).click()
   await page.waitForTimeout(240)
+  const emptyPointAfterFocus = await findEmptyPanePoint(page)
+  await page.mouse.click(emptyPointAfterFocus.x, emptyPointAfterFocus.y)
   await connectCanvasNodes(page, imageSource, 'out:image', videoTarget, 'in:images')
   await connectCanvasNodes(page, secondImageSource, 'out:image', videoTarget, 'in:images')
   await connectCanvasNodes(page, videoSource, 'out:video', videoTarget, 'in:videos')
@@ -629,6 +660,13 @@ try {
   await connectCanvasNodes(page, imageEditTarget, 'out:image', videoTarget, 'in:images')
   await connectCanvasNodes(page, imageSource, 'out:image', imageEditTarget, 'in:images')
   await connectCanvasNodes(page, secondImageSource, 'out:image', imageEditTarget, 'in:images')
+  await application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1590, 875))
+  await page.waitForTimeout(240)
+  await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
+  await page.waitForTimeout(300)
+  await videoTarget.click({ position: { x: 42, y: 22 }, force: true })
+  await page.getByLabel('画布导航').getByRole('button', { name: '聚焦选中节点' }).click()
+  await page.waitForTimeout(360)
   await videoTarget.locator('.wf-upstream-reference').nth(5).waitFor({ state: 'visible' })
   assert.equal(await videoTarget.locator('.wf-upstream-reference.is-image').count(), 4, '视频生成没有显示素材图片和生成节点的多图片上游')
   assert.equal(await videoTarget.locator('.wf-upstream-reference.is-video').count(), 1, '视频生成没有显示上游视频')
@@ -649,6 +687,8 @@ try {
 
   const beforeAutoConnectNodes = await page.locator('.react-flow__node').count()
   const beforeAutoConnectEdges = await page.locator('.react-flow__edge').count()
+  await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
+  await page.waitForTimeout(300)
   const emptyConnectionPoint = await findEmptyPanePoint(page)
   await dragHandleToPoint(page, imageSource, 'out:image', emptyConnectionPoint)
   const compatibleQuickInsert = page.getByRole('dialog', { name: '快速创建' })
@@ -797,6 +837,7 @@ try {
       return {
         innerWidth,
         innerHeight,
+        devicePixelRatio: window.devicePixelRatio,
         bodyScrollWidth: document.body.scrollWidth,
         bodyScrollHeight: document.body.scrollHeight,
         rootBackground: getComputedStyle(document.documentElement).backgroundColor,
@@ -842,18 +883,26 @@ try {
       }
     }, { bytes: [...screenshot] })
 
-    assert.equal(layout.innerWidth, viewport.width)
-    assert.equal(layout.innerHeight, viewport.height)
-    assert.ok(layout.bodyScrollWidth <= viewport.width + 1, `${viewport.name}: 页面横向溢出`)
-    assert.ok(layout.bodyScrollHeight <= viewport.height + 1, `${viewport.name}: 页面纵向溢出`)
+    // Retina Electron windows expose the emulated dimensions in physical
+    // pixels (2x on this Mac), while the layout still receives the same
+    // logical viewport request. Validate against the measured scale rather
+    // than assuming a 1x display.
+    const expectedWidth = Math.round(viewport.width * layout.devicePixelRatio)
+    const expectedHeight = Math.round(viewport.height * layout.devicePixelRatio)
+    assert.equal(layout.innerWidth, expectedWidth)
+    assert.equal(layout.innerHeight, expectedHeight)
+    assert.ok(layout.bodyScrollWidth <= expectedWidth + 1, `${viewport.name}: 页面横向溢出`)
+    assert.ok(layout.bodyScrollHeight <= expectedHeight + 1, `${viewport.name}: 页面纵向溢出`)
     assert.deepEqual(layout.clippedControls, [], `${viewport.name}: 工具栏控件文字被裁切`)
     assert.deepEqual(layout.brightNodeShells, [], `${viewport.name}: 节点外层出现亮色背景`)
     assert.equal(layout.overlap, 0, `${viewport.name}: 节点库与画布重叠`)
     assert.ok(layout.nodeCount >= 2, `${viewport.name}: 模板节点未渲染`)
     assert.equal(layout.rootBackground, 'rgb(14, 16, 19)')
     assert.equal(layout.bodyBackground, 'rgb(14, 16, 19)')
-    assert.equal(pixels.width, viewport.width)
-    assert.equal(pixels.height, viewport.height)
+    const screenshotScaleX = pixels.width / layout.innerWidth
+    const screenshotScaleY = pixels.height / layout.innerHeight
+    assert.ok(Math.abs(screenshotScaleX - screenshotScaleY) < 0.02, `${viewport.name}: 截图横纵缩放比例不一致`)
+    assert.ok(screenshotScaleX >= 1 && screenshotScaleX <= 3, `${viewport.name}: 截图缩放比例异常`)
     assert.ok(pixels.averageLuminance < 90, `${viewport.name}: 画面不再是暗色系`)
     assert.ok(pixels.veryLightRatio < 0.08, `${viewport.name}: 画面出现大面积亮色`)
     assert.ok(pixels.nonCanvasRatio > 0.02, `${viewport.name}: 画面近似空白`)
@@ -1116,15 +1165,19 @@ async function findEmptyPanePoint(page) {
 }
 
 async function connectCanvasNodes(page, sourceNode, sourceHandleId, targetNode, targetHandleId) {
+  // Re-fit the complete graph before every drag. This keeps both ends inside
+  // the real macOS viewport even when the window is capped by the display.
+  await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
+  await page.waitForTimeout(360)
   const edgeCount = await page.locator('.react-flow__edge').count()
   const sourceHandle = sourceNode.locator(`.react-flow__handle[data-handleid="${sourceHandleId}"]`)
   const targetHandle = targetNode.locator(`.react-flow__handle[data-handleid="${targetHandleId}"]`)
   const sourceBounds = await sourceHandle.boundingBox()
-  const targetBounds = await targetHandle.boundingBox()
   assert.ok(sourceBounds, `源端口不可见：${sourceHandleId}`)
-  assert.ok(targetBounds, `目标端口不可见：${targetHandleId}`)
-  await page.mouse.move(sourceBounds.x + sourceBounds.width / 2, sourceBounds.y + sourceBounds.height / 2)
+  await sourceHandle.hover()
   await page.mouse.down()
+  const targetBounds = await targetHandle.boundingBox()
+  assert.ok(targetBounds, `目标端口不可见：${targetHandleId}`)
   await page.mouse.move(targetBounds.x + targetBounds.width / 2, targetBounds.y + targetBounds.height / 2, { steps: 12 })
   await page.waitForTimeout(80)
   await page.mouse.up()

@@ -40,11 +40,6 @@ import {
 import {
   availableImageModelPresets,
   availableVideoModelPresets,
-  defaultImageModel,
-  defaultImageQuality,
-  defaultImageSize,
-  defaultVideoModel,
-  defaultVideoSeconds,
 } from './models'
 import { CanvasModelAvailabilityProvider, CanvasNodeViewProvider, CanvasUpstreamReferencesProvider, ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
 import { canvasNodeLodForZoom, type CanvasNodeLod } from './nodes/node-lod'
@@ -56,6 +51,7 @@ import { resolveCanvasShortcut } from './editor/shortcuts'
 import { builtinCanvasTemplates } from './templates/builtin-templates'
 import { instantiateTemplate, placeTemplateInstance } from './templates/instantiate-template'
 import { builtinNodeRegistry } from './domain/builtin-node-definitions'
+import { operationDefaultsForTemplateNode } from './domain/workflow-node-config'
 import { NodeLibrary } from './components/NodeLibrary'
 import { CanvasInspector, type CanvasInspectorNode, type CanvasInspectorTab } from './components/CanvasInspector'
 import { projectCanvasInspectorNodes } from './components/canvas-inspector-model'
@@ -83,6 +79,7 @@ import type { CanvasDocumentState, CanvasMediaGroups } from './store/canvas-stat
 import type { EditorNodeRecord } from './domain/node-definition'
 import { assetInputNodeKind, mediaAssetNodeDimensions, mediaResultNodeDimensions } from './library/media-assets'
 import { QuickInsert, type QuickInsertCommand } from './components/QuickInsert'
+import { TemplateCatalog } from './components/TemplateCatalog'
 import { findAvailableCanvasPosition } from './editor/node-placement'
 import { applyCanvasTheme, subscribeCanvasTheme, type CanvasTheme } from './theme/canvas-theme'
 import {
@@ -232,6 +229,7 @@ const rerunAudioSourceKinds = new Set(['audio-input', 'gallery'])
 export function workflowNodeData(type: string, config: Record<string, unknown> = {}): WorkflowNodeData {
   const defaults = builtinNodeRegistry.require(type).defaultData
   const values = { ...structuredClone(defaults), ...structuredClone(config) }
+  if ('durationSeconds' in config && !('seconds' in config)) delete values.seconds
   const prompt = typeof values.prompt === 'string' ? values.prompt : ''
   const model = typeof values.model === 'string' ? values.model : ''
   const quality = typeof values.quality === 'string' ? values.quality : undefined
@@ -262,20 +260,7 @@ function imageOperationDefaults(
   imageModels: readonly string[] = [],
   videoModels: readonly string[] = [],
 ): Record<string, unknown> {
-  if (['image', 'image-generate', 'image-edit'].includes(type)) {
-    return {
-      model: availableImageModelPresets(imageModels)[0]?.id ?? defaultImageModel,
-      quality: defaultImageQuality,
-      size: defaultImageSize,
-    }
-  }
-  if (['video', 'video-generate'].includes(type)) {
-    return {
-      model: availableVideoModelPresets(videoModels)[0]?.id ?? defaultVideoModel,
-      seconds: String(defaultVideoSeconds),
-    }
-  }
-  return {}
+  return operationDefaultsForTemplateNode(type, imageModels, videoModels).config
 }
 
 function editorNodeToCanvasNode(node: EditorNodeRecord): CanvasNode {
@@ -591,6 +576,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     edgeId?: string
     compatibleHandles?: Readonly<Record<string, string>>
   } | null>(null)
+  const [templateCatalog, setTemplateCatalog] = useState<{ initialTemplateId?: string } | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
@@ -1394,6 +1380,23 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [bindAssetToNode, refreshAssets, assetQuery])
 
+  const pickAssetForTemplate = useCallback(async (): Promise<CanvasAssetSummary | null> => {
+    try {
+      const asset = await hostBridge().pickAsset()
+      if (!asset) return null
+      const summary = importedAssetSummary(asset)
+      if (summary.mediaType !== 'image') {
+        setBanner('行业模板当前只支持图片素材作为参考输入')
+        return null
+      }
+      void refreshAssets({ ...assetQuery, offset: 0 })
+      return summary
+    } catch (error) {
+      setBanner(error instanceof Error ? error.message : String(error))
+      return null
+    }
+  }, [refreshAssets, assetQuery])
+
   const importAssetForNode = useCallback(async (nodeId: string, file: File) => {
     try {
       const asset = await hostBridge().importAssetFile(file)
@@ -1611,14 +1614,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     execute({ type: 'move-nodes', positions: Object.fromEntries(positions) })
   }, [nodes, edges, execute])
 
-  const loadTemplate = useCallback((templateId: string) => {
+  const insertTemplate = useCallback((templateId: string, values?: Readonly<Record<string, unknown>>, draft = true) => {
     const template = builtinCanvasTemplates.find((entry) => entry.id === templateId)
     if (!template) return
     try {
       const instance = placeTemplateInstance(instantiateTemplate(template, {
+        ...(values ? { values } : {}),
         availableNodeTypes: new Set(builtinNodeRegistry.list().map((definition) => definition.type)),
         createId: nextNodeId,
-        draft: true,
+        draft,
       }), nodes.map((node) => ({ position: node.position, height: node.measured?.height ?? node.height })))
       const insertedNodes = instance.nodes.map((node) => {
         const definition = builtinNodeRegistry.require(node.type)
@@ -1629,7 +1633,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           position: node.position,
           width: definition.dimensions.width,
           height: definition.dimensions.height,
-          data: workflowNodeData(node.type, { ...imageOperationDefaults(node.type, imageModels, videoModels), ...node.config }),
+          data: workflowNodeData(node.type, operationDefaultsForTemplateNode(node.type, imageModels, videoModels, node.config).config),
         })
       })
       execute({
@@ -1638,11 +1642,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         edges: instance.edges.map((edge) => ({ ...edge })),
       })
       setBanner(`已插入模板「${template.name}」`)
+      setTemplateCatalog(null)
       fitCanvas()
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
   }, [nodes, execute, fitCanvas, imageModels, videoModels])
+
+  const openTemplateCatalog = useCallback((templateId?: string) => {
+    setQuickInsert(null)
+    setTemplateCatalog(templateId ? { initialTemplateId: templateId } : {})
+  }, [])
 
   const addAssetNode = useCallback((assetId: string, position?: { x: number; y: number }) => {
     const asset = assetPage.items.find((entry) => entry.assetId === assetId)
@@ -2434,7 +2444,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             {moreActionsOpen && (
               <div className="canvas-more-menu">
                 <button type="button" onClick={() => { setMoreActionsOpen(false); groupSelection() }}>将选中节点分组</button>
-                <button type="button" onClick={() => { setMoreActionsOpen(false); loadTemplate(builtinCanvasTemplates[0].id) }}><Sparkles size={14} />插入快速模板</button>
+                <button type="button" onClick={() => { setMoreActionsOpen(false); openTemplateCatalog() }}><Sparkles size={14} />打开行业模板库</button>
                 <button type="button" onClick={() => { setMoreActionsOpen(false); showAssetTray() }}><ImageIcon size={14} />打开素材库</button>
                 <button type="button" onClick={() => { setMoreActionsOpen(false); openInspectorTab('runs') }}><History size={14} />打开运行历史</button>
                 <span className="canvas-more-divider" />
@@ -2469,7 +2479,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         onAddAsset={addAssetNode}
         onDeletePromptPreset={(id) => void deletePromptPreset(id)}
         onUpdatePromptPreset={updatePromptPreset}
-        onLoadTemplate={loadTemplate}
+        onLoadTemplate={(templateId) => openTemplateCatalog(templateId)}
         onOpenAssets={showAssetTray}
         onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
         assets={assetPage}
@@ -2568,7 +2578,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           onDelete={deleteSelection}
         />
         {nodes.length === 0 && !quickInsert && <div className="canvas-empty-state">
-          <button type="button" className="is-primary" onClick={() => loadTemplate(builtinCanvasTemplates[0].id)}><Sparkles size={16} />从模板开始</button>
+          <button type="button" className="is-primary" onClick={() => openTemplateCatalog()}><Sparkles size={16} />从模板开始</button>
           <button type="button" onClick={() => addNode('image-generate', { x: 120, y: 120 })}><Plus size={16} />新建生成节点</button>
           <button type="button" onClick={() => void load()}>打开项目</button>
         </div>}
@@ -2586,7 +2596,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             else if (connection && handleId) addConnectedNode(type, quickInsert?.flowPosition, connection, handleId)
             else addNode(type, quickInsert?.flowPosition)
           }}
-          onLoadTemplate={loadTemplate}
+          onLoadTemplate={(templateId) => openTemplateCatalog(templateId)}
           onCommand={(command: QuickInsertCommand) => {
             if (command === 'fit-all') fitCanvas()
             else if (command === 'fit-selection') fitSelection()
@@ -2596,6 +2606,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           onClose={() => setQuickInsert(null)}
         />
         {banner && <div className="canvas-toast" role="status" aria-live="polite"><span>{banner}</span><button type="button" aria-label="关闭提示" onClick={() => setBanner(null)}><X size={13} /></button></div>}
+        <TemplateCatalog
+          open={templateCatalog !== null}
+          templates={builtinCanvasTemplates}
+          assets={assetPage}
+          imageModels={imageModels}
+          videoModels={videoModels}
+          initialTemplateId={templateCatalog?.initialTemplateId}
+          onClose={() => setTemplateCatalog(null)}
+          onPickAsset={pickAssetForTemplate}
+          onInsert={insertTemplate}
+        />
         <div className="canvas-statusbar" aria-label="画布状态">
           <span>{selectedNodeIds.length ? `已选 ${selectedNodeIds.length}` : `${nodes.length} 个节点`}</span>
           {dirtyNodeIds.size > 0 && <span>{dirtyNodeIds.size} 个待更新</span>}

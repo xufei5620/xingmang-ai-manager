@@ -32,6 +32,8 @@ test('records every direct canvas runtime dependency in the provenance ledger', 
   assert.ok(provenance.ideaOnly.some((entry) => entry.licenseClass === 'copyleft'))
   assert.ok(provenance.ideaOnly.every((entry) => entry.forbidden.length > 0))
   assert.ok(provenance.templates.every((entry) => entry.provenance === 'xingmang-original'))
+  assert.equal(new Set(provenance.templates.map((entry) => entry.id)).size, provenance.templates.length, 'template provenance ids must be unique')
+  assert.equal(provenance.templates.length, 23)
 })
 
 test('keeps executable canvas sources free of copied research-only project names', () => {

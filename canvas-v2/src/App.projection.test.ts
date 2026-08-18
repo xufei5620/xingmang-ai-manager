@@ -11,6 +11,8 @@ import {
   toWorkflowNode,
   workflowNodeData,
 } from './App'
+import { builtinCanvasTemplates } from './templates/builtin-templates'
+import { instantiateTemplate } from './templates/instantiate-template'
 
 function workflowNode(overrides: Partial<WorkflowNode> = {}): WorkflowNode {
   return {
@@ -24,6 +26,27 @@ function workflowNode(overrides: Partial<WorkflowNode> = {}): WorkflowNode {
 }
 
 describe('canvas workflow projection', () => {
+  it('projects the product-video template with seconds and ignores durationSeconds', () => {
+    const template = builtinCanvasTemplates.find((item) => item.id === 'xingmang-product-video')!
+    const instance = instantiateTemplate(template, {
+      values: { product: 'p'.repeat(43), prompt: '轻微推近' },
+      availableNodeTypes: new Set(['prompt', 'image-input', 'video-generate', 'gallery', 'output']),
+      createId: (() => { let id = 0; return () => `template-${++id}` })(),
+    })
+    const videoTemplateNode = instance.nodes.find((node) => node.type === 'video-generate')!
+    const video = toCanvasNode(workflowNode({
+      id: videoTemplateNode.id,
+      kind: 'video-generate',
+      data: workflowNodeData('video-generate', videoTemplateNode.config),
+    }))
+    const graph = toCanvasRunGraph([video], [], { image: '生图分组', video: 'grok' })
+    expect(graph.nodes[0].data.seconds).toBe('5')
+    expect((graph.nodes[0].data as Record<string, unknown>).durationSeconds).toBeUndefined()
+
+    const legacy = workflowNodeData('video-generate', { durationSeconds: 8 })
+    expect(legacy.seconds).toBeUndefined()
+    expect(legacy.settings?.durationSeconds).toBe(8)
+  })
   it('restores registry dimensions for legacy asset nodes without saved geometry', () => {
     const canvas = toCanvasNode(workflowNode({ id: 'legacy-asset', kind: 'image-input', data: workflowNodeData('image-input') }))
 

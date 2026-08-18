@@ -50,7 +50,7 @@ describe('AiVideoAssetStore', () => {
   it('writes videos to the owned output tree and restores them after restart', async () => {
     const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-assets-'))
     roots.push(outputRoot)
-    const store = new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T00:00:00.000Z') })
+    const store = new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
     const asset = await store.storeMp4(7, mp4(), { taskId: 'video_123' })
     expect(asset).toMatchObject({
       mimeType: 'video/mp4', taskId: 'video_123', width: 1920, height: 1080, durationSeconds: 5.25,
@@ -75,7 +75,7 @@ describe('AiVideoAssetStore', () => {
     roots.push(outputRoot, sourceRoot)
     const sourcePath = path.join(sourceRoot, 'reference.mp4')
     fs.writeFileSync(sourcePath, mp4())
-    const store = new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T00:00:00.000Z') })
+    const store = new AiVideoAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
 
     const first = await store.storeLocalFile(7, sourcePath)
     const second = await store.storeLocalFile(7, sourcePath)
