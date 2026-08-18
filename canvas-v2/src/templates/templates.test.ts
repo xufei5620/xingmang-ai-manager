@@ -24,6 +24,12 @@ describe('built-in canvas templates', () => {
     }
   })
 
+  it('does not claim unsupported count semantics in built-in templates', () => {
+    for (const template of builtinCanvasTemplates) {
+      expect(JSON.stringify(template)).not.toMatch(/\"count\"\s*:/)
+    }
+  })
+
   it('remaps every node and edge ID and never auto-runs', () => {
     const instance = instantiateTemplate(builtinCanvasTemplates[0], {
       values: { prompt: '白色背景中的产品静物' },

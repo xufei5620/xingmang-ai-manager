@@ -4,7 +4,7 @@ const quickImage: CanvasTemplate = {
   id: 'xingmang-quick-image',
   version: 1,
   name: '快速文生图',
-  description: '从一段提示词生成多个图像候选并选择结果。',
+  description: '从一段提示词生成一张图像结果。',
   category: 'image',
   tags: ['文生图', '候选'],
   thumbnail: { kind: 'color', value: '#315B9A' },
@@ -12,7 +12,7 @@ const quickImage: CanvasTemplate = {
   workflow: {
     nodes: [
       { id: 'prompt', type: 'prompt', definitionVersion: 1, position: { x: 40, y: 140 }, config: { prompt: '' } },
-      { id: 'generate', type: 'image-generate', definitionVersion: 1, position: { x: 340, y: 120 }, config: { count: 4 } },
+      { id: 'generate', type: 'image-generate', definitionVersion: 1, position: { x: 340, y: 120 }, config: {} },
       { id: 'gallery', type: 'gallery', definitionVersion: 1, position: { x: 650, y: 100 }, config: {} },
       { id: 'output', type: 'output', definitionVersion: 1, position: { x: 960, y: 130 }, config: {} },
     ],
@@ -32,7 +32,7 @@ const referenceEdit: CanvasTemplate = {
   id: 'xingmang-reference-edit',
   version: 1,
   name: '参考图改图',
-  description: '导入参考图，描述修改要求，再从候选结果中采纳一张。',
+  description: '导入参考图并描述修改要求，生成一张编辑结果。',
   category: 'image',
   tags: ['图生图', '编辑'],
   thumbnail: { kind: 'color', value: '#34775C' },
@@ -41,7 +41,7 @@ const referenceEdit: CanvasTemplate = {
     nodes: [
       { id: 'image', type: 'image-input', definitionVersion: 1, position: { x: 40, y: 60 }, config: {} },
       { id: 'prompt', type: 'prompt', definitionVersion: 1, position: { x: 40, y: 280 }, config: { prompt: '' } },
-      { id: 'edit', type: 'image-edit', definitionVersion: 1, position: { x: 360, y: 140 }, config: { count: 4 } },
+      { id: 'edit', type: 'image-edit', definitionVersion: 1, position: { x: 360, y: 140 }, config: {} },
       { id: 'gallery', type: 'gallery', definitionVersion: 1, position: { x: 680, y: 120 }, config: {} },
       { id: 'output', type: 'output', definitionVersion: 1, position: { x: 990, y: 150 }, config: {} },
     ],
@@ -72,7 +72,7 @@ const productVideo: CanvasTemplate = {
     nodes: [
       { id: 'image', type: 'image-input', definitionVersion: 1, position: { x: 40, y: 60 }, config: {} },
       { id: 'prompt', type: 'prompt', definitionVersion: 1, position: { x: 40, y: 280 }, config: { prompt: '' } },
-      { id: 'generate', type: 'video-generate', definitionVersion: 1, position: { x: 360, y: 140 }, config: { durationSeconds: 5 } },
+      { id: 'generate', type: 'video-generate', definitionVersion: 1, position: { x: 360, y: 140 }, config: { seconds: '5' } },
       { id: 'gallery', type: 'gallery', definitionVersion: 1, position: { x: 680, y: 120 }, config: {} },
       { id: 'output', type: 'output', definitionVersion: 1, position: { x: 990, y: 150 }, config: {} },
     ],
