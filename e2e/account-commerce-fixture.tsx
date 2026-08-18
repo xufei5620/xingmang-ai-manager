@@ -4,7 +4,12 @@ import { AccountCommercePanels, type AccountCommerceTab } from '../src/component
 import { AccountCenterPage, type AccountCenterTab } from '../src/components/account/AccountCenterPage'
 import { TutorialPage } from '../src/pages/TutorialPage'
 import { Sidebar } from '../src/components/Sidebar'
-import type { AccountBalance, AccountProfileDetail, XingmangApi } from '../src/types'
+import type {
+  AccountBalance,
+  AccountPaymentWindowTerminalEvent,
+  AccountProfileDetail,
+  XingmangApi,
+} from '../src/types'
 import type { RelaySite } from '../src/types'
 import type { ToastMessage } from '../src/components/Toast'
 import '../src/styles.css'
@@ -31,12 +36,14 @@ interface HarnessState {
   accountCenterCalls: number
   usageQueries: unknown[]
   taskQueries: unknown[]
+  paymentWindowCloseCalls: number
 }
 
 declare global {
   interface Window {
     accountCommerceHarness: HarnessState
     releaseFirstOrderRequest: () => void
+    emitPaymentWindowTerminal: (event: AccountPaymentWindowTerminalEvent) => void
   }
 }
 
@@ -88,7 +95,11 @@ window.accountCommerceHarness = {
   accountCenterCalls: 0,
   usageQueries: [],
   taskQueries: [],
+  paymentWindowCloseCalls: 0,
 }
+
+let paymentWindowTerminalListener: ((event: AccountPaymentWindowTerminalEvent) => void) | null = null
+window.emitPaymentWindowTerminal = (event) => paymentWindowTerminalListener?.(event)
 
 let releaseFirstOrderRequest: (() => void) | null = null
 const firstOrderRequestGate = new Promise<void>((resolve) => {
@@ -232,6 +243,15 @@ const api = {
   },
   async createAccountTopupPayment() {
     return { opened: true as const, tradeNo: 'XM-VISUAL-PAYMENT' }
+  },
+  async closeAccountPaymentWindow() {
+    window.accountCommerceHarness.paymentWindowCloseCalls += 1
+  },
+  onAccountPaymentWindowTerminal(listener: (event: AccountPaymentWindowTerminalEvent) => void) {
+    paymentWindowTerminalListener = listener
+    return () => {
+      if (paymentWindowTerminalListener === listener) paymentWindowTerminalListener = null
+    }
   },
   async getAccountSubscriptionPlans() {
     return [{

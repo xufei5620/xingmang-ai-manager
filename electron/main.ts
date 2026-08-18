@@ -935,6 +935,17 @@ if (!hasSingleInstanceLock) {
         }
         runtimeLog.log('warn', 'payment', 'navigation.blocked', '已阻止支付窗口跳转到未授权地址', { origin })
       },
+      onTerminalState: (event) => {
+        runtimeLog.log('info', 'payment', 'window.terminal', '支付窗口已进入终态并自动关闭', {
+          status: event.status,
+          hasTradeNo: Boolean(event.tradeNo),
+        })
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (!window.isDestroyed()) {
+            window.webContents.send(ipcEventChannels.onAccountPaymentWindowTerminal, event)
+          }
+        }
+      },
     })
 
     // Empty update = read the effective record (file, .bak, or defaults) and

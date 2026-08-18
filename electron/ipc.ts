@@ -1706,6 +1706,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       return { opened: true as const, tradeNo: validated.tradeNo }
     })
   })
+  registerTrustedHandler('account:close-payment-window', () => {
+    options.paymentWindow.destroy()
+  })
   registerTrustedHandler('account:list-topup-orders', (_event, input: unknown) => (
     accountService.listTopupOrders(parseAccountTopupOrdersQuery(input))
   ))
@@ -1725,7 +1728,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
     return accountService.createSubscriptionPayment(parsed).then(async (checkout) => {
       if (checkout.kind === 'form') await options.paymentWindow.open(checkout.form, parent)
-      else await options.paymentWindow.openUrl(checkout.url, parent)
+      else await options.paymentWindow.openUrl(checkout.url, parent, checkout.tradeNo)
       return {
         opened: true as const,
         tradeNo: checkout.tradeNo,

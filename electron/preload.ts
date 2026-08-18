@@ -93,6 +93,7 @@ const ipcInvokeChannels = {
   getAccountTopupInfo: 'account:get-topup-info',
   quoteAccountTopupAmount: 'account:quote-topup',
   createAccountTopupPayment: 'account:create-topup-payment',
+  closeAccountPaymentWindow: 'account:close-payment-window',
   getAccountTopupOrders: 'account:list-topup-orders',
   redeemAccountTopupCode: 'account:redeem-topup-code',
   transferAccountAffiliateQuota: 'account:transfer-affiliate-quota',
@@ -148,6 +149,7 @@ const ipcEventChannels = {
   onCodexDesktopStatus: 'desktop:codex-status-changed',
   onCodexDesktopInstallProgress: 'desktop:codex-install-progress',
   onUpdateState: 'update:state-changed',
+  onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
@@ -257,6 +259,7 @@ const xingmangApi: XingmangApi = {
   getAccountTopupInfo: () => invoke('getAccountTopupInfo'),
   quoteAccountTopupAmount: (input) => invoke('quoteAccountTopupAmount', input),
   createAccountTopupPayment: (input) => invoke('createAccountTopupPayment', input),
+  closeAccountPaymentWindow: () => invoke('closeAccountPaymentWindow'),
   getAccountTopupOrders: (input) => invoke('getAccountTopupOrders', input),
   redeemAccountTopupCode: (code) => invoke('redeemAccountTopupCode', code),
   transferAccountAffiliateQuota: (input) => invoke('transferAccountAffiliateQuota', input),
@@ -307,6 +310,7 @@ const xingmangApi: XingmangApi = {
   onCodexDesktopStatus: (listener) => subscribe('onCodexDesktopStatus', listener),
   onCodexDesktopInstallProgress: (listener) => subscribe('onCodexDesktopInstallProgress', listener),
   onUpdateState: (listener) => subscribe('onUpdateState', listener),
+  onAccountPaymentWindowTerminal: (listener) => subscribe('onAccountPaymentWindowTerminal', listener),
   onAiChatStream: (listener) => subscribe('onAiChatStream', listener),
 }
 

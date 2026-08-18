@@ -7,7 +7,9 @@ vi.mock('electron', () => ({
 import type { NewApiPaymentForm } from './new-api-client'
 import {
   createPaymentWindowController,
+  detectPaymentWindowTerminalStatus,
   isAllowedPaymentNavigationUrl,
+  isPaymentWindowReady,
   paymentFormLimits,
   validatePaymentForm,
   validatePaymentUrl,
@@ -28,7 +30,7 @@ function paymentForm(overrides: Partial<NewApiPaymentForm> = {}): NewApiPaymentF
   }
 }
 
-function createHarness(loadError?: Error) {
+function createHarness(loadError?: Error, terminalSnapshot = '') {
   const windowEvents = new Map<string, (...args: any[]) => void>()
   const webContentsEvents = new Map<string, (...args: any[]) => void>()
   const sessionEvents = new Map<string, (...args: any[]) => void>()
@@ -44,6 +46,7 @@ function createHarness(loadError?: Error) {
     session,
     setWindowOpenHandler: vi.fn(),
     on: vi.fn((name: string, handler: (...args: any[]) => void) => webContentsEvents.set(name, handler)),
+    executeJavaScript: vi.fn(async () => terminalSnapshot),
   }
   const window = {
     webContents,
@@ -65,16 +68,21 @@ function createHarness(loadError?: Error) {
       destroyed = true
       windowEvents.get('closed')?.()
     }),
-    destroy: vi.fn(() => { destroyed = true }),
+    destroy: vi.fn(() => {
+      destroyed = true
+      windowEvents.get('closed')?.()
+    }),
     setTitle: vi.fn(),
   }
   const createWindow = vi.fn(() => window as never)
   const onBlockedNavigation = vi.fn()
-  const controller = createPaymentWindowController({ createWindow, onBlockedNavigation })
+  const onTerminalState = vi.fn()
+  const controller = createPaymentWindowController({ createWindow, onBlockedNavigation, onTerminalState })
   return {
     controller,
     createWindow,
     onBlockedNavigation,
+    onTerminalState,
     session,
     sessionEvents,
     webContents,
@@ -172,6 +180,42 @@ describe('payment navigation policy', () => {
   })
 })
 
+describe('payment terminal-state detection', () => {
+  it.each([
+    ['订单已超时', 'expired'],
+    ['二维码过期\n请重新下单', 'expired'],
+    ['交易已关闭', 'expired'],
+    ['支付失败', 'failed'],
+  ] as const)('maps %s to %s', (snapshot, status) => {
+    expect(detectPaymentWindowTerminalStatus(snapshot)).toBe(status)
+  })
+
+  it('does not treat countdown guidance as a terminal state', () => {
+    expect(detectPaymentWindowTerminalStatus('请在 5 分钟内支付，超时后订单将关闭')).toBeNull()
+    expect(detectPaymentWindowTerminalStatus([
+      '支付剩余时间',
+      '04:59',
+      '超时订单将自动关闭',
+      '支付超时后，请重新创建订单',
+    ].join('\n'))).toBeNull()
+    expect(detectPaymentWindowTerminalStatus(null)).toBeNull()
+  })
+
+  it('treats a real zero countdown as expired even when the page only shows guidance', () => {
+    expect(detectPaymentWindowTerminalStatus([
+      '支付剩余时间',
+      '00:00',
+      '支付超时后，请重新创建订单',
+    ].join('\n'))).toBe('expired')
+  })
+
+  it('arms terminal detection only after a real countdown replaces the loading placeholder', () => {
+    expect(isPaymentWindowReady('支付剩余时间 Na:Na')).toBe(false)
+    expect(isPaymentWindowReady('支付剩余时间 04:59')).toBe(true)
+    expect(isPaymentWindowReady('剩余 4 分 59 秒')).toBe(true)
+  })
+})
+
 describe('createPaymentWindowController', () => {
   it('opens a validated GET checkout URL without a POST body', async () => {
     const harness = createHarness()
@@ -197,7 +241,7 @@ describe('createPaymentWindowController', () => {
       parent,
       modal: true,
       show: false,
-      title: '安全支付 - 星芒AI管理工具',
+      title: '安全支付 - 星芒AI',
       webPreferences: expect.objectContaining({
         contextIsolation: true,
         nodeIntegration: false,
@@ -219,7 +263,51 @@ describe('createPaymentWindowController', () => {
     expect(harness.window.center).toHaveBeenCalledOnce()
     expect(harness.window.show).toHaveBeenCalledOnce()
     expect(harness.window.focus).toHaveBeenCalledOnce()
+    const pageTitleEvent = { preventDefault: vi.fn() }
+    harness.windowEvents.get('page-title-updated')?.(pageTitleEvent)
+    expect(pageTitleEvent.preventDefault).toHaveBeenCalledOnce()
+    expect(harness.window.setTitle).toHaveBeenCalledWith('安全支付 - 星芒AI')
     expect(harness.controller.isOpen()).toBe(true)
+  })
+
+  it('closes the window and reports the matching trade number when the provider page expires', async () => {
+    const harness = createHarness(undefined, '支付剩余时间\n00:00\n支付超时后，请重新创建订单')
+
+    await harness.controller.open(paymentForm())
+    await vi.waitFor(() => expect(harness.onTerminalState).toHaveBeenCalledWith({
+      status: 'expired',
+      tradeNo: 'XM-20260815-1',
+    }))
+    expect(harness.window.destroy).toHaveBeenCalledOnce()
+    expect(harness.window.close).not.toHaveBeenCalled()
+    expect(harness.window.destroy.mock.invocationCallOrder[0]).toBeLessThan(
+      harness.onTerminalState.mock.invocationCallOrder[0]!,
+    )
+    expect(harness.controller.isOpen()).toBe(false)
+  })
+
+  it('keeps a newly opened payment page alive while its countdown is still Na:Na', async () => {
+    const harness = createHarness(undefined, 'Na:Na 支付超时')
+
+    await harness.controller.open(paymentForm())
+    await vi.waitFor(() => expect(harness.webContents.executeJavaScript).toHaveBeenCalled())
+    expect(harness.onTerminalState).not.toHaveBeenCalled()
+    expect(harness.window.destroy).not.toHaveBeenCalled()
+    expect(harness.controller.isOpen()).toBe(true)
+  })
+
+  it('reports a user-closed payment window with its matching trade number', async () => {
+    const harness = createHarness()
+
+    await harness.controller.open(paymentForm())
+    harness.window.close()
+
+    expect(harness.onTerminalState).toHaveBeenCalledOnce()
+    expect(harness.onTerminalState).toHaveBeenCalledWith({
+      status: 'closed',
+      tradeNo: 'XM-20260815-1',
+    })
+    expect(harness.controller.isOpen()).toBe(false)
   })
 
   it('denies permissions, device access, downloads and every popup', async () => {
@@ -268,12 +356,14 @@ describe('createPaymentWindowController', () => {
     await graceful.controller.open(paymentForm())
     graceful.controller.close()
     expect(graceful.window.close).toHaveBeenCalledOnce()
+    expect(graceful.onTerminalState).not.toHaveBeenCalled()
     expect(graceful.controller.isOpen()).toBe(false)
 
     const forced = createHarness()
     await forced.controller.open(paymentForm())
     forced.controller.destroy()
     expect(forced.window.destroy).toHaveBeenCalledOnce()
+    expect(forced.onTerminalState).not.toHaveBeenCalled()
     expect(forced.controller.isOpen()).toBe(false)
   })
 
