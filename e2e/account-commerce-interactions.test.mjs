@@ -101,6 +101,58 @@ test('redemption blocks duplicate submits, recovers after failure, and refreshes
   })
 })
 
+test('top-up payment exits the waiting state when the payment window reports a timeout', async () => {
+  await withFixture(async (page, baseUrl) => {
+    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=topup`)
+    const submit = page.getByRole('button', { name: '确认充值' })
+    await submit.waitFor()
+    await assert.doesNotReject(() => submit.waitFor({ state: 'visible' }))
+    await page.waitForFunction(() => {
+      const button = Array.from(document.querySelectorAll('button'))
+        .find((candidate) => candidate.textContent?.includes('确认充值'))
+      return button instanceof HTMLButtonElement && !button.disabled
+    })
+    await submit.click()
+    await page.getByRole('button', { name: '使用支付宝支付' }).click()
+    await page.getByText('正在等待支付结果', { exact: true }).waitFor()
+
+    await page.evaluate(() => window.emitPaymentWindowTerminal({
+      status: 'expired',
+      tradeNo: 'XM-VISUAL-PAYMENT',
+    }))
+
+    await page.getByText('支付已超时', { exact: true }).waitFor()
+    assert.equal(await page.getByText('正在等待支付结果', { exact: true }).count(), 0)
+    assert.match(await page.getByTestId('toast').innerText(), /支付已超时/)
+  })
+})
+
+test('top-up payment reports a manually closed payment window without cancelling the order', async () => {
+  await withFixture(async (page, baseUrl) => {
+    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=topup`)
+    const submit = page.getByRole('button', { name: '确认充值' })
+    await submit.waitFor()
+    await page.waitForFunction(() => {
+      const button = Array.from(document.querySelectorAll('button'))
+        .find((candidate) => candidate.textContent?.includes('确认充值'))
+      return button instanceof HTMLButtonElement && !button.disabled
+    })
+    await submit.click()
+    await page.getByRole('button', { name: '使用支付宝支付' }).click()
+    await page.getByText('正在等待支付结果', { exact: true }).waitFor()
+
+    await page.evaluate(() => window.emitPaymentWindowTerminal({
+      status: 'closed',
+      tradeNo: 'XM-VISUAL-PAYMENT',
+    }))
+
+    await page.getByText('支付窗口已关闭', { exact: true }).waitFor()
+    assert.equal(await page.getByText('正在等待支付结果', { exact: true }).count(), 0)
+    assert.match(await page.getByRole('status').filter({ hasText: '支付窗口已关闭' }).innerText(), /订单没有取消/)
+    assert.match(await page.getByTestId('toast').innerText(), /支付窗口已手动关闭/)
+  })
+})
+
 test('profile save remains retryable after failure and reloads the accepted display name', async () => {
   await withFixture(async (page, baseUrl) => {
     await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=profile-retry`)

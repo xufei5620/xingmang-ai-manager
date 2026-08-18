@@ -5,8 +5,18 @@ import {
 import { randomUUID } from 'node:crypto'
 import type { NewApiPaymentForm, NewApiPaymentFormField } from './new-api-client'
 
-const paymentWindowTitle = '安全支付 - 星芒AI管理工具'
 const accountOrigin = 'https://xm.solov.cc'
+const paymentWindowTitle = '安全支付 - 星芒AI'
+const paymentWindowMonitorIntervalMs = 1_000
+const paymentWindowMaxLifetimeMs = 10 * 60_000
+const paymentPageSnapshotLimit = 8_192
+
+export type PaymentWindowTerminalStatus = 'expired' | 'failed' | 'closed'
+
+export interface PaymentWindowTerminalEvent {
+  status: PaymentWindowTerminalStatus
+  tradeNo: string | null
+}
 
 export const paymentFormLimits = Object.freeze({
   actionLength: 2_048,
@@ -31,14 +41,42 @@ export interface ValidatedPaymentForm {
 export interface PaymentWindowControllerOptions {
   createWindow?: (options: BrowserWindowConstructorOptions) => BrowserWindow
   onBlockedNavigation?: (url: string) => void
+  onTerminalState?: (event: PaymentWindowTerminalEvent) => void
 }
 
 export interface PaymentWindowController {
   open(form: NewApiPaymentForm, parent?: BrowserWindow): Promise<void>
-  openUrl(url: string, parent?: BrowserWindow): Promise<void>
+  openUrl(url: string, parent?: BrowserWindow, tradeNo?: string | null): Promise<void>
   close(): void
   destroy(): void
   isOpen(): boolean
+}
+
+const terminalPaymentPatterns: ReadonlyArray<readonly [PaymentWindowTerminalStatus, RegExp]> = [
+  ['expired', /^(?:订单|支付|二维码)(?:已)?(?:超时|过期|失效)(?=$|[，。!！:：])/u],
+  ['expired', /^(?:交易|订单)(?:已)?关闭(?=$|[，。!！:：])/u],
+  ['failed', /^(?:支付|交易|订单)(?:已)?失败(?=$|[，。!！:：])/u],
+]
+
+export function detectPaymentWindowTerminalStatus(value: unknown): PaymentWindowTerminalStatus | null {
+  if (typeof value !== 'string') return null
+  const lines = value
+    .slice(0, paymentPageSnapshotLimit)
+    .split(/\r?\n/gu)
+    .map((line) => line.replace(/\s+/gu, ''))
+    .filter(Boolean)
+  if (lines.some((line) => /^0{1,3}:00$/u.test(line))) return 'expired'
+  for (const line of lines) {
+    const status = terminalPaymentPatterns.find(([, pattern]) => pattern.test(line))?.[0]
+    if (status) return status
+  }
+  return null
+}
+
+export function isPaymentWindowReady(value: unknown): boolean {
+  if (typeof value !== 'string' || /Na\s*:\s*Na/iu.test(value)) return false
+  return /(?:^|\D)\d{1,3}:\d{2}(?:\D|$)/u.test(value)
+    || /\d{1,3}\s*分\s*\d{1,2}\s*秒/u.test(value)
 }
 
 function parseCredentialFreeHttpsUrl(value: unknown, label: string, allowFragment = false): URL {
@@ -161,9 +199,30 @@ export function createPaymentWindowController(
 ): PaymentWindowController {
   const createWindow = options.createWindow ?? ((windowOptions) => new BrowserWindow(windowOptions))
   let paymentWindow: BrowserWindow | null = null
+  let monitorTimer: NodeJS.Timeout | null = null
+  const silentClosures = new WeakSet<BrowserWindow>()
+
+  function stopMonitoring(): void {
+    if (monitorTimer) clearInterval(monitorTimer)
+    monitorTimer = null
+  }
 
   function release(window: BrowserWindow): void {
-    if (paymentWindow === window) paymentWindow = null
+    if (paymentWindow !== window) return
+    stopMonitoring()
+    paymentWindow = null
+  }
+
+  function destroySilently(window: BrowserWindow): void {
+    if (window.isDestroyed()) return
+    silentClosures.add(window)
+    window.destroy()
+  }
+
+  function closeSilently(window: BrowserWindow): void {
+    if (window.isDestroyed()) return
+    silentClosures.add(window)
+    window.close()
   }
 
   async function openTarget(
@@ -171,8 +230,10 @@ export function createPaymentWindowController(
     allowedOrigins: ReadonlySet<string>,
     parent?: BrowserWindow,
     loadOptions?: Electron.LoadURLOptions,
+    tradeNo: string | null = null,
   ): Promise<void> {
-    if (paymentWindow && !paymentWindow.isDestroyed()) paymentWindow.destroy()
+    stopMonitoring()
+    if (paymentWindow && !paymentWindow.isDestroyed()) destroySilently(paymentWindow)
 
     const window = createWindow({
       parent,
@@ -212,7 +273,12 @@ export function createPaymentWindowController(
       window.show()
       window.focus()
     })
-    window.on('closed', () => release(window))
+    window.on('closed', () => {
+      const wasActive = paymentWindow === window
+      const wasSilent = silentClosures.delete(window)
+      release(window)
+      if (wasActive && !wasSilent) options.onTerminalState?.({ status: 'closed', tradeNo })
+    })
     window.on('page-title-updated', (event) => {
       event.preventDefault()
       if (!window.isDestroyed()) window.setTitle(paymentWindowTitle)
@@ -231,8 +297,51 @@ export function createPaymentWindowController(
 
     try {
       await window.loadURL(targetUrl, loadOptions)
+      if (window.isDestroyed() || paymentWindow !== window) return
+
+      const openedAt = Date.now()
+      let inspectionInFlight = false
+      let terminalDetectionArmed = false
+      const finish = (status: PaymentWindowTerminalStatus) => {
+        if (window.isDestroyed() || paymentWindow !== window) return
+        stopMonitoring()
+        // BrowserWindow.close() can be cancelled by a third-party beforeunload
+        // handler. Destroy first so the UI never reports a window still open.
+        destroySilently(window)
+        release(window)
+        options.onTerminalState?.({ status, tradeNo })
+      }
+      const inspect = async () => {
+        if (inspectionInFlight || window.isDestroyed() || paymentWindow !== window) return
+        if (Date.now() - openedAt >= paymentWindowMaxLifetimeMs) {
+          finish('expired')
+          return
+        }
+        inspectionInFlight = true
+        try {
+          const snapshot = await window.webContents.executeJavaScript(`(() => {
+            const title = typeof document.title === 'string' ? document.title : '';
+            const body = typeof document.body?.innerText === 'string' ? document.body.innerText : '';
+            return (title + '\\n' + body).slice(0, ${paymentPageSnapshotLimit});
+          })()`, true)
+          if (!terminalDetectionArmed) {
+            terminalDetectionArmed = isPaymentWindowReady(snapshot)
+            if (!terminalDetectionArmed) return
+          }
+          const status = detectPaymentWindowTerminalStatus(snapshot)
+          if (status) finish(status)
+        } catch {
+          // Third-party pages may block inspection while navigating; the next bounded tick retries.
+        } finally {
+          inspectionInFlight = false
+        }
+      }
+      monitorTimer = setInterval(() => void inspect(), paymentWindowMonitorIntervalMs)
+      monitorTimer.unref?.()
+      void inspect()
     } catch (error) {
-      if (!window.isDestroyed()) window.destroy()
+      stopMonitoring()
+      if (!window.isDestroyed()) destroySilently(window)
       release(window)
       throw new Error('支付页面打开失败，请稍后重试', { cause: error })
     }
@@ -247,18 +356,19 @@ export function createPaymentWindowController(
             type: 'rawData',
             bytes: Buffer.from(validated.encodedBody, 'utf8'),
           }],
-      })
+      }, validated.tradeNo)
     },
-    async openUrl(url, parent) {
+    async openUrl(url, parent, tradeNo = null) {
       const validated = validatePaymentUrl(url)
-      await openTarget(validated.url, validated.allowedOrigins, parent)
+      await openTarget(validated.url, validated.allowedOrigins, parent, undefined, tradeNo)
     },
     close() {
-      if (paymentWindow && !paymentWindow.isDestroyed()) paymentWindow.close()
+      if (paymentWindow && !paymentWindow.isDestroyed()) closeSilently(paymentWindow)
     },
     destroy() {
-      if (paymentWindow && !paymentWindow.isDestroyed()) paymentWindow.destroy()
-      paymentWindow = null
+      const window = paymentWindow
+      if (window && !window.isDestroyed()) destroySilently(window)
+      if (window) release(window)
     },
     isOpen() {
       return Boolean(paymentWindow && !paymentWindow.isDestroyed())

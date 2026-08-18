@@ -3127,6 +3127,8 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       await expect(electronMocks.handlers.get('account:create-topup-payment')!(trustedEvent(), {
         amount: 20, paymentMethod: ' alipay ',
       })).resolves.toEqual({ opened: true, tradeNo: 'trade-9' })
+      expect(electronMocks.handlers.get('account:close-payment-window')!(trustedEvent()))
+        .toBeUndefined()
       await expect(electronMocks.handlers.get('account:redeem-topup-code')!(trustedEvent(), ' CODE-123 '))
         .resolves.toEqual({ quotaAdded: 500_000 })
       await expect(electronMocks.handlers.get('account:transfer-affiliate-quota')!(trustedEvent(), {
@@ -3154,6 +3156,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(accountService.quoteTopupAmount).toHaveBeenCalledWith({ amount: 10 })
       expect(accountService.createTopupPayment).toHaveBeenCalledWith({ amount: 20, paymentMethod: 'alipay' })
       expect(paymentWindow.open).toHaveBeenCalledWith(paymentForm, parentWindow)
+      expect(paymentWindow.destroy).toHaveBeenCalledOnce()
       expect(accountService.redeemTopupCode).toHaveBeenCalledWith('CODE-123')
       expect(accountService.transferAffiliateQuota).toHaveBeenCalledWith({ quota: 100_000 })
       expect(accountService.updateSubscriptionPreference).toHaveBeenCalledWith('wallet_first')
@@ -3161,6 +3164,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(paymentWindow.openUrl).toHaveBeenCalledWith(
         'https://checkout.example.com/session#token=opaque',
         parentWindow,
+        'subscription-trade-1',
       )
       expect(accountService.purchaseSubscriptionWithBalance).toHaveBeenCalledWith(3)
       expect(accountService.updateDisplayName).toHaveBeenCalledWith({ displayName: '新昵称' })

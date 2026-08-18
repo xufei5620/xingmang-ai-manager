@@ -3343,6 +3343,10 @@ input:focus-visible {
 :root[data-theme="dark"] .account-payment-pending { background: var(--dark-surface-info-soft); }
 .account-payment-pending span { display: grid; gap: 2px; }
 .account-payment-pending small { color: var(--text-muted); font-size: var(--text-2xs); line-height: 1.4; }
+.account-payment-result.is-success { color: var(--color-success); background: var(--surface-success-adaptive); }
+.account-payment-result.is-closed { color: var(--color-info); background: var(--surface-info-adaptive); }
+.account-payment-result.is-expired,
+.account-payment-result.is-failed { color: var(--color-danger); background: var(--surface-danger-adaptive); }
 
 .account-payment-confirm-dialog { width: min(430px, calc(100vw - 32px)); }
 .account-payment-confirm-summary {

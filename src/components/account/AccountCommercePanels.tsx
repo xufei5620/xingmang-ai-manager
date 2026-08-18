@@ -22,6 +22,7 @@ import {
 } from 'lucide-react'
 import type {
   AccountBalance,
+  AccountPaymentWindowTerminalEvent,
   AccountProfileDetail,
   AccountSubscriptionPlan,
   AccountSubscriptionBillingPreference,
@@ -189,6 +190,11 @@ export function AccountCommercePanels({
   const [paymentBusy, setPaymentBusy] = useState(false)
   const [paymentConfirmOpen, setPaymentConfirmOpen] = useState(false)
   const [pendingPayment, setPendingPayment] = useState<{ tradeNo: string | null; startedAt: number } | null>(null)
+  const pendingPaymentRef = useRef<typeof pendingPayment>(null)
+  const [paymentResult, setPaymentResult] = useState<{
+    status: 'success' | 'expired' | 'failed' | 'closed'
+    message: string
+  } | null>(null)
   const [ordersPageNumber, setOrdersPageNumber] = useState(1)
   const [orders, setOrders] = useState<AccountTopupOrdersPage | null>(null)
   const [ordersLoading, setOrdersLoading] = useState(false)
@@ -207,7 +213,9 @@ export function AccountCommercePanels({
     beforeIds: Set<number>
     startedAt: number
     expiresAt: string | null
+    tradeNo: string | null
   } | null>(null)
+  const pendingSubscriptionPaymentRef = useRef<typeof pendingSubscriptionPayment>(null)
   const [copiedInvite, setCopiedInvite] = useState<'code' | 'link' | null>(null)
   const [affiliateAmount, setAffiliateAmount] = useState('')
   const [affiliateBusy, setAffiliateBusy] = useState(false)
@@ -216,6 +224,41 @@ export function AccountCommercePanels({
     mounted.current = true
     return () => { mounted.current = false }
   }, [])
+
+  useEffect(() => { pendingPaymentRef.current = pendingPayment }, [pendingPayment])
+  useEffect(() => { pendingSubscriptionPaymentRef.current = pendingSubscriptionPayment }, [pendingSubscriptionPayment])
+
+  useEffect(() => window.xingmang.onAccountPaymentWindowTerminal((event: AccountPaymentWindowTerminalEvent) => {
+    const pendingTopup = pendingPaymentRef.current
+    const matchesTopup = pendingTopup
+      && (!event.tradeNo || !pendingTopup.tradeNo || event.tradeNo === pendingTopup.tradeNo)
+    if (matchesTopup) {
+      pendingPaymentRef.current = null
+      setPendingPayment(null)
+      const message = event.status === 'expired'
+        ? '支付已超时，支付窗口已自动关闭，请重新下单'
+        : event.status === 'closed'
+          ? '支付窗口已手动关闭，订单没有取消，可在“我的订单”查看后续状态'
+          : '支付未完成，支付窗口已自动关闭，请重试'
+      setPaymentResult({ status: event.status, message })
+      notify?.({ type: event.status === 'closed' ? 'info' : 'error', message })
+      return
+    }
+
+    const pendingSubscription = pendingSubscriptionPaymentRef.current
+    const matchesSubscription = pendingSubscription
+      && (!event.tradeNo || !pendingSubscription.tradeNo || event.tradeNo === pendingSubscription.tradeNo)
+    if (matchesSubscription) {
+      pendingSubscriptionPaymentRef.current = null
+      setPendingSubscriptionPayment(null)
+      const message = event.status === 'expired'
+        ? '订阅支付已超时，支付窗口已自动关闭'
+        : event.status === 'closed'
+          ? '订阅支付窗口已手动关闭，可在“我的订阅”查看是否生效'
+          : '订阅支付未完成，请重试'
+      notify?.({ type: event.status === 'closed' ? 'info' : 'error', message })
+    }
+  }), [notify])
 
   const loadTopupInfo = useCallback(async () => {
     const requestId = ++topupRequest.current
@@ -317,8 +360,12 @@ export function AccountCommercePanels({
     const check = async () => {
       if (!active) return
       if (Date.now() - pendingPayment.startedAt > PAYMENT_POLL_LIMIT_MS) {
+        pendingPaymentRef.current = null
         setPendingPayment(null)
-        notify?.({ type: 'info', message: '已停止自动刷新，可在“我的订单”中手动查看最新状态' })
+        const message = '支付等待已超时，支付窗口已自动关闭，可在“我的订单”中查看记录'
+        setPaymentResult({ status: 'expired', message })
+        void window.xingmang.closeAccountPaymentWindow().catch(() => undefined)
+        notify?.({ type: 'error', message })
         return
       }
       const latest = await loadOrders(1, true)
@@ -327,8 +374,11 @@ export function AccountCommercePanels({
         ? latest.orders.find((entry) => entry.tradeNo === pendingPayment.tradeNo)
         : latest.orders.find((entry) => Date.parse(entry.createdAt) >= pendingPayment.startedAt - 30_000)
       if (!order || order.status === 'pending' || order.status === 'unknown') return
+      pendingPaymentRef.current = null
       setPendingPayment(null)
+      void window.xingmang.closeAccountPaymentWindow().catch(() => undefined)
       if (order.status === 'success') {
+        setPaymentResult({ status: 'success', message: '支付已到账，账户余额已刷新' })
         try {
           await onRefreshAccount()
           notify?.({ type: 'success', message: '支付已到账，账户余额已刷新' })
@@ -336,6 +386,10 @@ export function AccountCommercePanels({
           notify?.({ type: 'info', message: `支付已到账，但余额刷新失败：${errorMessage(error)}` })
         }
       } else {
+        setPaymentResult({
+          status: order.status === 'expired' ? 'expired' : 'failed',
+          message: `订单${orderStatusLabel(order.status)}，支付窗口已关闭，请重新下单`,
+        })
         notify?.({ type: 'error', message: `订单${orderStatusLabel(order.status)}，请检查支付窗口或重新下单` })
       }
     }
@@ -347,10 +401,15 @@ export function AccountCommercePanels({
   const submitPayment = async () => {
     if (!parsedAmount || !topupInfo || parsedAmount < selectedMinimum || !selectedMethod || !quote || paymentBusy) return
     setPaymentBusy(true)
+    setPaymentResult(null)
     try {
       const opened = await window.xingmang.createAccountTopupPayment({ amount: parsedAmount, paymentMethod })
       setPaymentConfirmOpen(false)
-      setPendingPayment({ tradeNo: opened.tradeNo, startedAt: Date.now() })
+      const nextPending = { tradeNo: opened.tradeNo, startedAt: Date.now() }
+      pendingSubscriptionPaymentRef.current = null
+      setPendingSubscriptionPayment(null)
+      pendingPaymentRef.current = nextPending
+      setPendingPayment(nextPending)
       notify?.({ type: 'info', message: '支付窗口已打开，完成支付后将自动刷新余额' })
     } catch (error) {
       notify?.({ type: 'error', message: errorMessage(error) })
@@ -398,7 +457,16 @@ export function AccountCommercePanels({
           ...(option.paymentMethod ? { paymentMethod: option.paymentMethod } : {}),
         })
         setPurchaseTarget(null)
-        setPendingSubscriptionPayment({ beforeIds, startedAt: Date.now(), expiresAt: result.expiresAt })
+        const nextPending = {
+          beforeIds,
+          startedAt: Date.now(),
+          expiresAt: result.expiresAt,
+          tradeNo: result.tradeNo,
+        }
+        pendingPaymentRef.current = null
+        setPendingPayment(null)
+        pendingSubscriptionPaymentRef.current = nextPending
+        setPendingSubscriptionPayment(nextPending)
         notify?.({ type: 'info', message: '订阅支付窗口已打开，完成支付后将自动刷新订阅' })
       }
     } catch (error) {
@@ -500,8 +568,10 @@ export function AccountCommercePanels({
         ? Date.parse(pendingSubscriptionPayment.expiresAt)
         : Number.POSITIVE_INFINITY
       if (Date.now() > Math.min(hardDeadline, providerDeadline)) {
+        pendingSubscriptionPaymentRef.current = null
         setPendingSubscriptionPayment(null)
-        notify?.({ type: 'info', message: '已停止自动刷新，可点击订阅页刷新查看最新状态' })
+        void window.xingmang.closeAccountPaymentWindow().catch(() => undefined)
+        notify?.({ type: 'error', message: '订阅支付等待已超时，支付窗口已自动关闭' })
         return
       }
       checking = true
@@ -511,7 +581,9 @@ export function AccountCommercePanels({
         const created = next.allSubscriptions.find((entry) => !pendingSubscriptionPayment.beforeIds.has(entry.id))
         setSubscriptionSelf(next)
         if (!created) return
+        pendingSubscriptionPaymentRef.current = null
         setPendingSubscriptionPayment(null)
+        void window.xingmang.closeAccountPaymentWindow().catch(() => undefined)
         await onRefreshAccount()
         notify?.({ type: 'success', message: '订阅已生效，账户信息已刷新' })
       } catch {
@@ -605,10 +677,19 @@ export function AccountCommercePanels({
               <span><strong>正在等待支付结果</strong><small>完成后自动刷新余额，关闭窗口不代表支付成功。</small></span>
             </div>
           )}
+          {!pendingPayment && paymentResult && (
+            <div className={`account-payment-pending account-payment-result is-${paymentResult.status}`} role="status">
+              {paymentResult.status === 'success' ? <BadgeCheck size={16} /> : <Clock3 size={16} />}
+              <span>
+                <strong>{paymentResult.status === 'success' ? '支付已完成' : paymentResult.status === 'expired' ? '支付已超时' : paymentResult.status === 'closed' ? '支付窗口已关闭' : '支付未完成'}</strong>
+                <small>{paymentResult.message}</small>
+              </span>
+            </div>
+          )}
         </aside>
       </div>
     )
-  }, [topupLoading, topupInfo, topupError, loadTopupInfo, amount, paymentMethod, parsedAmount, selectedMethod, selectedMinimum, discount, quoteLoading, quote, payableDifference, paymentBusy, pendingPayment])
+  }, [topupLoading, topupInfo, topupError, loadTopupInfo, amount, paymentMethod, parsedAmount, selectedMethod, selectedMinimum, discount, quoteLoading, quote, payableDifference, paymentBusy, pendingPayment, paymentResult])
 
   const ordersPanel = ordersLoading && !orders
     ? <PanelLoading label="正在读取订单" />

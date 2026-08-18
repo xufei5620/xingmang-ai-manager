@@ -225,6 +225,10 @@ export interface AccountTopupPaymentResult {
   opened: true
   tradeNo: string | null
 }
+export interface AccountPaymentWindowTerminalEvent {
+  status: 'expired' | 'failed' | 'closed'
+  tradeNo: string | null
+}
 export type AccountTopupOrdersQuery = NewApiTopupOrdersQuery
 export type AccountTopupOrdersPage = NewApiTopupOrdersPage
 export type AccountRedemptionResult = NewApiRedemptionResult
@@ -571,6 +575,7 @@ export interface XingmangInvokeContract {
     [input: AccountTopupPaymentInput],
     AccountTopupPaymentResult
   >
+  closeAccountPaymentWindow: IpcInvokeDefinition<'account:close-payment-window', [], void>
   getAccountTopupOrders: IpcInvokeDefinition<
     'account:list-topup-orders',
     [input: AccountTopupOrdersQuery],
@@ -712,6 +717,10 @@ export interface XingmangEventContract {
     CodexDesktopInstallProgress
   >
   onUpdateState: IpcEventDefinition<'update:state-changed', UpdateSnapshot>
+  onAccountPaymentWindowTerminal: IpcEventDefinition<
+    'account:payment-window-terminal',
+    AccountPaymentWindowTerminalEvent
+  >
   onAiChatStream: IpcEventDefinition<'chat:stream-event', AiChatStreamEvent>
 }
 
@@ -808,6 +817,7 @@ export const ipcInvokeChannels = {
   getAccountTopupInfo: 'account:get-topup-info',
   quoteAccountTopupAmount: 'account:quote-topup',
   createAccountTopupPayment: 'account:create-topup-payment',
+  closeAccountPaymentWindow: 'account:close-payment-window',
   getAccountTopupOrders: 'account:list-topup-orders',
   redeemAccountTopupCode: 'account:redeem-topup-code',
   transferAccountAffiliateQuota: 'account:transfer-affiliate-quota',
@@ -863,6 +873,7 @@ export const ipcEventChannels = {
   onCodexDesktopStatus: 'desktop:codex-status-changed',
   onCodexDesktopInstallProgress: 'desktop:codex-install-progress',
   onUpdateState: 'update:state-changed',
+  onAccountPaymentWindowTerminal: 'account:payment-window-terminal',
   onAiChatStream: 'chat:stream-event',
 } as const satisfies {
   [Method in keyof XingmangEventContract]: XingmangEventContract[Method]['channel']
