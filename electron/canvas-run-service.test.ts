@@ -169,4 +169,26 @@ describe('createCanvasRunService', () => {
     await expect(retry.promise).resolves.toMatchObject({ status: 'succeeded' })
     expect(text).toHaveBeenCalledOnce()
   })
+
+  it('rejects a run that exceeds the bounded number of remote generation nodes', async () => {
+    const graph: CanvasRunGraph = {
+      nodes: Array.from({ length: 3 }, (_entry, index) => ({
+        id: `image-${index}`,
+        kind: 'image-generate',
+        definitionVersion: 1,
+        data: { prompt: String(index), model: 'gpt-image-2', group: '生图分组' },
+      })),
+      edges: [],
+    }
+    const image = vi.fn(async () => ({ assets: [] }))
+    const service = createCanvasRunService({
+      store: memoryStore(),
+      maxRemoteGenerationsPerRun: 2,
+      executors: { text: async () => ({ outputText: '' }), image, video: async () => ({ assets: [] }) },
+    })
+    await expect(service.start({
+      userId: 7, ownerId: 9, graphRevision: computeCanvasGraphRevision(graph), graph, scope: { kind: 'all' },
+    })).rejects.toThrow('最多允许 2 个远程生成节点')
+    expect(image).not.toHaveBeenCalled()
+  })
 })

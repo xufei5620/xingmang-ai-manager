@@ -100,6 +100,18 @@ describe('canvas request parser', () => {
     expect(() => parseCanvasVideoGenerateInput({
       requestId: 'video-1', group: 'g', model: 'm', prompt: 'p', seconds: '5', width: 1280,
     })).toThrow('比例不受支持')
+    const minimax = {
+      requestId: 'minimax-1', group: 'video', model: 'minimax-h3-base', prompt: '多参考视频', seconds: '10',
+      mode: 'ref2va', resolution: '720p', aspectRatio: '21:9', promptOptimization: true,
+      imageAssetIds: ['a'.repeat(43), 'b'.repeat(43)],
+      videoAssetIds: ['v'.repeat(43)],
+      audioAssetIds: ['m'.repeat(43)],
+    }
+    expect(parseCanvasVideoGenerateInput(minimax)).toEqual(minimax)
+    expect(() => parseCanvasVideoGenerateInput({ ...minimax, imageAssetIds: Array(10).fill('a'.repeat(43)) }))
+      .toThrow('数量格式错误')
+    expect(() => parseCanvasVideoGenerateInput({ ...minimax, mode: 'unknown' }))
+      .toThrow('生成模式不受支持')
   })
 
   it('accepts only a bounded opaque video task id', () => {
@@ -182,6 +194,20 @@ describe('canvas request parser', () => {
         ...input, graph: { ...input.graph, nodes: [{ ...input.graph.nodes[0], data: { ...input.graph.nodes[0].data, seconds } }] },
       })).toThrow('1-15 秒')
     }
+  })
+
+  it('accepts only bounded MiniMax settings in a workflow run', () => {
+    const input = {
+      graph: { nodes: [{ id: 'video', kind: 'video-generate', definitionVersion: 1, data: {
+        prompt: '多参考', model: 'minimax-h3-base', seconds: '10', videoMode: 'ref2va',
+        videoResolution: '720p', videoAspectRatio: '9:16', promptOptimization: true,
+      } }], edges: [] }, scope: { kind: 'all' },
+    }
+    expect(parseCanvasStartRunInput(input)).toEqual(input)
+    expect(() => parseCanvasStartRunInput({
+      ...input,
+      graph: { ...input.graph, nodes: [{ ...input.graph.nodes[0], data: { ...input.graph.nodes[0].data, videoResolution: '1080p' } }] },
+    })).toThrow('分辨率不受支持')
   })
 
   it('rejects empty and oversized run scopes', () => {

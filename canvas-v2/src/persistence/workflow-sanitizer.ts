@@ -97,6 +97,7 @@ function readNode(value: unknown): WorkflowNode | null {
   }
   const prompt = optionalSafeString(value.data.prompt, maximumPromptLength)
   const model = optionalSafeString(value.data.model, maximumModelLength)
+  const group = optionalSafeString(value.data.group, maximumGroupNameLength)
   const quality = optionalSafeString(value.data.quality, maximumOptionLength)
   const size = optionalSafeString(value.data.size, maximumOptionLength)
   const seconds = value.data.seconds === undefined
@@ -116,7 +117,7 @@ function readNode(value: unknown): WorkflowNode | null {
   const parentId = value.parentId === undefined ? undefined : safeString(value.parentId, maximumNodeIdLength)
   const width = value.width === undefined ? undefined : finiteCoordinate(value.width) && value.width >= 80 ? value.width : null
   const height = value.height === undefined ? undefined : finiteCoordinate(value.height) && value.height >= 40 ? value.height : null
-  if (prompt === null || model === null || quality === null || size === null || seconds === null || result === null
+  if (prompt === null || model === null || group === null || quality === null || size === null || seconds === null || result === null
     || settings === null || candidateAssetIds === null || parentId === null || width === null || height === null) return null
   const kind = knownNodeKind(wireKind)
   if (!kind) {
@@ -134,6 +135,7 @@ function readNode(value: unknown): WorkflowNode | null {
       data: {
         prompt: prompt ?? '',
         model: model ?? '',
+        ...(group ? { group } : {}),
         status: 'failed',
         errorMessage: `节点类型「${wireKind}」未安装，已禁用`,
         ...(quality ? { quality } : {}),
@@ -158,6 +160,7 @@ function readNode(value: unknown): WorkflowNode | null {
     data: {
       prompt: prompt ?? '',
       model: model ?? '',
+      ...(group ? { group } : {}),
       status: result?.assetId ? 'succeeded' : 'idle',
       ...(quality ? { quality } : {}),
       ...(size ? { size } : {}),

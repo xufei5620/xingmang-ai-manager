@@ -6,9 +6,11 @@ import {
   defaultVideoSize,
   parseImageSize,
   normalizeVideoSeconds,
+  resolveMiniMaxVideoMode,
   imageModelPreset,
   validateImageModelOptions,
   validateVideoModelOptions,
+  videoModelPreset,
 } from '../models'
 import type { CanvasHostBridge } from '../host'
 import type { NodeExecutor } from './engine'
@@ -144,16 +146,48 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
     const prompt = combinedPrompt(inputs.text, node.data.prompt)
     if (!prompt) throw new Error('请输入视频提示词或连接上游文本节点')
     const model = node.data.model.trim() || defaultVideoModel
+    const preset = videoModelPreset(model)
     const secondsValue = node.data.seconds ?? node.data.settings?.seconds ?? node.data.settings?.durationSeconds
     const seconds = normalizeVideoSeconds(secondsValue, model)
     const videoSize = typeof node.data.size === 'string' ? node.data.size : defaultVideoSize
-    const dimensions = parseImageSize(videoSize)
-    const imageAssetId = inputs.images?.[0]?.assetId ?? inputs.image?.assetId
-    const errors = validateVideoModelOptions({ model, seconds: secondsValue, size: videoSize, hasImage: Boolean(imageAssetId) })
+    const images = inputs.images ?? (inputs.image ? [inputs.image] : [])
+    const videos = inputs.videos ?? (inputs.video ? [inputs.video] : [])
+    const audios = inputs.audios ?? (inputs.audio ? [inputs.audio] : [])
+    const assetIds = (entries: typeof images, label: string) => {
+      const ids = [...new Set(entries.flatMap((asset) => asset.assetId ? [asset.assetId] : []))]
+      if (ids.length !== entries.length) throw new Error(`${label}需要连接已保存到本地资产库的素材`)
+      return ids
+    }
+    const imageAssetIds = assetIds(images, '视频参考图片')
+    const videoAssetIds = assetIds(videos, '视频参考视频')
+    const audioAssetIds = assetIds(audios, '视频参考音频')
+    const requestedMode = typeof node.data.settings?.videoMode === 'string' ? node.data.settings.videoMode : 'auto'
+    const mode = preset.provider === 'minimax-h3'
+      ? resolveMiniMaxVideoMode({
+        mode: requestedMode,
+        imageCount: imageAssetIds.length,
+        videoCount: videoAssetIds.length,
+        audioCount: audioAssetIds.length,
+      })
+      : null
+    const resolution = typeof node.data.settings?.videoResolution === 'string' ? node.data.settings.videoResolution : '720p'
+    const aspectRatio = typeof node.data.settings?.videoAspectRatio === 'string' ? node.data.settings.videoAspectRatio : '16:9'
+    const errors = validateVideoModelOptions({
+      model,
+      seconds: secondsValue,
+      ...(preset.provider === 'grok' ? { size: videoSize } : {}),
+      mode: requestedMode,
+      resolution,
+      aspectRatio,
+      imageCount: imageAssetIds.length,
+      videoCount: videoAssetIds.length,
+      audioCount: audioAssetIds.length,
+    })
     if (errors[0]) throw new Error(errors[0])
-    if (!seconds) throw new Error('视频时长必须是 1-15 秒之间的整数')
-    if (!dimensions) throw new Error('视频比例格式错误')
-    if (inputs.image && !imageAssetId) throw new Error('图生视频需要连接已保存到本地资产库的参考图片')
+    if (!seconds) throw new Error(`视频时长必须是 ${preset.minimumSeconds}-${preset.maximumSeconds} 秒之间的整数`)
+    const dimensions = preset.provider === 'grok' ? parseImageSize(videoSize) : null
+    if (preset.provider === 'grok' && !dimensions) throw new Error('视频比例格式错误')
+    if (preset.provider === 'minimax-h3' && !mode) throw new Error('MiniMax 生成模式无效')
     const requestId = nextRequestId(node.id)
     const cancel = () => { void options.host.cancelRequest(requestId).catch(() => undefined) }
     signal.addEventListener('abort', cancel, { once: true })
@@ -163,12 +197,25 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
         requestId,
         group: options.videoGroup,
         model,
-        prompt,
-        seconds,
-        width: dimensions.width,
-        height: dimensions.height,
-        ...(imageAssetId ? { imageAssetId } : {}),
-      })
+          prompt,
+          seconds,
+          ...(preset.provider === 'grok' && dimensions ? {
+            width: dimensions.width,
+            height: dimensions.height,
+            ...(imageAssetIds[0] ? { imageAssetId: imageAssetIds[0] } : {}),
+            ...(imageAssetIds.length > 1 ? { imageAssetIds } : {}),
+            ...(videoAssetIds.length > 0 ? { videoAssetIds } : {}),
+            ...(audioAssetIds.length > 0 ? { audioAssetIds } : {}),
+          } : {
+            mode: mode!,
+            resolution: resolution as '480p' | '720p',
+            aspectRatio: aspectRatio as '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9' | '9:21' | '4:5' | '5:4',
+            promptOptimization: node.data.settings?.promptOptimization === true,
+            ...(imageAssetIds.length > 0 ? { imageAssetIds } : {}),
+            ...(videoAssetIds.length > 0 ? { videoAssetIds } : {}),
+            ...(audioAssetIds.length > 0 ? { audioAssetIds } : {}),
+          }),
+        })
       if (signal.aborted) throw new Error('已取消；服务端任务可能仍在继续，可稍后从运行记录续查')
       return { output: { asset: toVideoAssetRef(asset) } }
     } finally {

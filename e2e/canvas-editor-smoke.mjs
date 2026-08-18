@@ -87,7 +87,10 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   prepareGroup: async (group) => ({
     group,
     models: group === 'grok'
-      ? ['grok-imagine-image-2.0', 'grok-imagine-video', 'grok-imagine-video-1.5']
+      ? [
+          'grok-imagine-image-2.0', 'grok-imagine-video', 'grok-imagine-video-1.5',
+          'minimax-h3-mini', 'minimax-h3-fast', 'minimax-h3-base',
+        ]
       : ['gpt-image-2', 'gpt-image-1', 'jimeng_high_aes_general_v21_L'],
     keyCreated: false,
   }),
@@ -569,6 +572,20 @@ try {
   const videoRatioOptions = await videoTarget.locator('select[aria-label="视频比例"] option').allTextContents()
   assert.deepEqual(videoRatioOptions, ['16:9 · 横屏', '9:16 · 竖屏', '1:1 · 方形', '4:3 · 横屏', '3:4 · 竖屏'], '视频比例选项不完整')
   await videoTarget.locator('select[aria-label="视频比例"]').selectOption('720x1280')
+  await videoTarget.locator('select[aria-label="视频模型"]').selectOption('minimax-h3-base')
+  assert.equal(await videoTarget.locator('select[aria-label="MiniMax 生成模式"] option').count(), 6, 'MiniMax 缺少自动或显式生成模式')
+  assert.deepEqual(
+    await videoTarget.locator('select[aria-label="MiniMax 视频分辨率"] option').allTextContents(),
+    ['480p · 省成本', '720p · 高清'],
+    'MiniMax 分辨率选项不完整',
+  )
+  assert.equal(await videoTarget.locator('select[aria-label="MiniMax 视频比例"] option').count(), 9, 'MiniMax 比例选项不完整')
+  assert.equal(await videoTarget.locator('select[aria-label="视频时长"] option').count(), 11, 'MiniMax 时长应覆盖 5 至 15 秒')
+  assert.equal(await videoTarget.getByText('AI 优化 H3 提示词', { exact: true }).count(), 1, 'MiniMax 缺少提示词优化开关')
+  await videoTarget.locator('select[aria-label="MiniMax 生成模式"]').selectOption('ref2va')
+  await videoTarget.locator('select[aria-label="MiniMax 视频分辨率"]').selectOption('480p')
+  await videoTarget.locator('select[aria-label="MiniMax 视频比例"]').selectOption('9:16')
+  await videoTarget.getByText('AI 优化 H3 提示词', { exact: true }).locator('..').locator('input').check()
 
   const beforeImageEdit = await page.locator('.react-flow__node-image-edit').count()
   await page.locator('.node-library-item').filter({ hasText: '图像编辑' }).click()
@@ -582,7 +599,9 @@ try {
   assert.equal(await imageEditTarget.locator('.react-flow__handle[data-handleid="in:images"]').count(), 1, '图像编辑缺少多图片输入端口')
   assert.equal(await imageEditTarget.locator('.react-flow__handle[data-handleid="in:videos"]').count(), 0, '图像编辑不应提供视频输入端口')
   assert.equal(await imageEditTarget.locator('.react-flow__handle[data-handleid="in:audios"]').count(), 0, '图像编辑不应提供音频输入端口')
-  assert.equal(await videoTarget.locator('.react-flow__handle[data-handleid="in:videos"]').count(), 0, '视频生成不应提供视频输入端口')
+  assert.equal(await videoTarget.locator('.react-flow__handle[data-handleid="in:images"]').count(), 1, '视频生成缺少多图片输入端口')
+  assert.equal(await videoTarget.locator('.react-flow__handle[data-handleid="in:videos"]').count(), 1, '视频生成缺少多视频输入端口')
+  assert.equal(await videoTarget.locator('.react-flow__handle[data-handleid="in:audios"]').count(), 1, '视频生成缺少多音频输入端口')
 
   await page.getByRole('button', { name: '自动布局', exact: true }).click()
   await page.waitForTimeout(240)
@@ -602,6 +621,7 @@ try {
   await page.waitForTimeout(240)
   await connectCanvasNodes(page, imageSource, 'out:image', videoTarget, 'in:images')
   await connectCanvasNodes(page, secondImageSource, 'out:image', videoTarget, 'in:images')
+  await connectCanvasNodes(page, videoSource, 'out:video', videoTarget, 'in:videos')
   await connectCanvasNodes(page, audioSource, 'out:audio', videoTarget, 'in:audios')
   await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
   await page.waitForTimeout(240)
@@ -609,9 +629,9 @@ try {
   await connectCanvasNodes(page, imageEditTarget, 'out:image', videoTarget, 'in:images')
   await connectCanvasNodes(page, imageSource, 'out:image', imageEditTarget, 'in:images')
   await connectCanvasNodes(page, secondImageSource, 'out:image', imageEditTarget, 'in:images')
-  await videoTarget.locator('.wf-upstream-reference').nth(4).waitFor({ state: 'visible' })
+  await videoTarget.locator('.wf-upstream-reference').nth(5).waitFor({ state: 'visible' })
   assert.equal(await videoTarget.locator('.wf-upstream-reference.is-image').count(), 4, '视频生成没有显示素材图片和生成节点的多图片上游')
-  assert.equal(await videoTarget.locator('.wf-upstream-reference.is-video').count(), 0, '视频生成错误显示了上游视频')
+  assert.equal(await videoTarget.locator('.wf-upstream-reference.is-video').count(), 1, '视频生成没有显示上游视频')
   assert.equal(await videoTarget.locator('.wf-upstream-reference.is-audio').count(), 1, '视频生成没有显示上游音频')
   assert.equal(await videoTarget.getByText('等待上游产物', { exact: true }).count(), 2, '图像生成或图像编辑节点没有作为等待产物的上游参考显示')
   assert.equal(await imageEditTarget.locator('.wf-upstream-reference.is-image').count(), 2, '图像编辑没有显示多张上游图片')
@@ -620,7 +640,7 @@ try {
   await videoPrompt.fill('@')
   const mentionMenu = videoTarget.getByRole('listbox', { name: '已连接的上游素材' })
   await mentionMenu.waitFor({ state: 'visible' })
-  assert.equal(await mentionMenu.getByRole('option').count(), 5, '@ 菜单没有列出素材图片、生成节点及音频上游')
+  assert.equal(await mentionMenu.getByRole('option').count(), 6, '@ 菜单没有列出图片、视频、音频和生成节点上游')
   const secondMention = await mentionMenu.getByRole('option').nth(1).locator('small').textContent()
   await videoPrompt.press('ArrowDown')
   await videoPrompt.press('Enter')
@@ -996,7 +1016,11 @@ try {
   const reopenedPortraitVideo = page.locator('.react-flow__node-video-input').last()
   await reopenedVideoTarget.waitFor({ state: 'attached' })
   assert.equal(await reopenedImageGenerate.locator('select[aria-label="生成尺寸"]').inputValue(), '1280x720', '重新打开项目后图片比例没有保存')
-  assert.equal(await reopenedVideoTarget.locator('select[aria-label="视频比例"]').inputValue(), '720x1280', '重新打开项目后视频比例没有保存')
+  assert.equal(await reopenedVideoTarget.locator('select[aria-label="视频模型"]').inputValue(), 'minimax-h3-base', '重新打开项目后 MiniMax 模型没有保存')
+  assert.equal(await reopenedVideoTarget.locator('select[aria-label="MiniMax 生成模式"]').inputValue(), 'ref2va', '重新打开项目后 MiniMax 模式没有保存')
+  assert.equal(await reopenedVideoTarget.locator('select[aria-label="MiniMax 视频分辨率"]').inputValue(), '480p', '重新打开项目后 MiniMax 分辨率没有保存')
+  assert.equal(await reopenedVideoTarget.locator('select[aria-label="MiniMax 视频比例"]').inputValue(), '9:16', '重新打开项目后 MiniMax 比例没有保存')
+  assert.equal(await reopenedVideoTarget.getByText('AI 优化 H3 提示词', { exact: true }).locator('..').locator('input').evaluate((input) => input.checked), true, '重新打开项目后提示词优化开关没有保存')
   assert.equal(await reopenedVideoTarget.evaluate((element) => element.style.transform), savedVideoTargetTransform, '重新打开项目后节点布局没有保存')
   const reopenedPortraitAppearance = await mediaNodeAppearance(reopenedPortraitVideo)
   assert.equal(reopenedPortraitAppearance.width, 320, '重新打开项目后竖屏视频宽度没有保存')

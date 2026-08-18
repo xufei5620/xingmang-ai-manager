@@ -1,5 +1,5 @@
 import type { AiImageEditInput, AiImageGenerationInput, AiImageService } from './ai-image-service'
-import { resolveAiModelCapability } from './ai-chat-protocol'
+import { resolveAiModelCapability, type MiniMaxVideoMode } from './ai-chat-protocol'
 import type { AiVideoGenerationInput, AiVideoService } from './ai-video-service'
 import type {
   CanvasNodeExecutionResult,
@@ -39,6 +39,31 @@ function videoDimensions(size: string | undefined): { width: number; height: num
   const [width, height] = normalized.split('x').map(Number)
   return { width, height }
 }
+
+function ownedInputAssetIds(
+  assets: readonly { assetId?: string }[] | undefined,
+  label: string,
+): string[] {
+  const entries = assets ?? []
+  const ids = [...new Set(entries.flatMap((asset) => asset.assetId ? [asset.assetId] : []))]
+  if (ids.length !== entries.length) throw new Error(`${label}需要连接已保存到本地资产库的素材`)
+  return ids
+}
+
+function miniMaxMode(
+  requested: CanvasNodeExecutionContextVideoMode,
+  imageCount: number,
+  videoCount: number,
+  audioCount: number,
+): MiniMaxVideoMode {
+  if (requested && requested !== 'auto') return requested
+  if (videoCount > 0 || audioCount > 0 || imageCount > 2) return 'ref2va'
+  if (imageCount === 2) return 'fl2va'
+  if (imageCount === 1) return 'i2va'
+  return 't2va'
+}
+
+type CanvasNodeExecutionContextVideoMode = 'auto' | MiniMaxVideoMode | undefined
 
 function imageResult(
   assets: Awaited<ReturnType<AiImageService['generate']>>,
@@ -175,8 +200,11 @@ export function createCanvasNodeExecutors(options: {
     const group = node.data.group || options.videoGroup
     if (!group) throw new Error('视频节点缺少生成分组，已在付费请求前停止')
     const requestId = `canvas-run:${attemptId}`
-    const dimensions = videoDimensions(node.data.size)
-    const imageAssetId = inputs.images?.[0]?.assetId ?? inputs.image?.assetId
+    const capability = resolveAiModelCapability(node.data.model)
+    if (capability.kind !== 'video') throw new Error('请选择可用的视频模型')
+    const imageAssetIds = ownedInputAssetIds(inputs.images ?? (inputs.image ? [inputs.image] : []), '视频参考图片')
+    const videoAssetIds = ownedInputAssetIds(inputs.videos ?? (inputs.video ? [inputs.video] : []), '视频参考视频')
+    const audioAssetIds = ownedInputAssetIds(inputs.audios ?? (inputs.audio ? [inputs.audio] : []), '视频参考音频')
     const onAbort = () => { options.videoService?.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })
     try {
@@ -186,17 +214,33 @@ export function createCanvasNodeExecutors(options: {
         model: node.data.model,
         prompt,
         seconds: node.data.seconds ?? '5',
-        ...dimensions,
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
         runId,
         nodeId: node.id,
         attemptId,
         graphRevision,
-        ...(imageAssetId ? { imageAssetId } : {}),
+        ...(capability.provider === 'minimax-h3' ? {
+          mode: miniMaxMode(node.data.videoMode, imageAssetIds.length, videoAssetIds.length, audioAssetIds.length),
+          resolution: node.data.videoResolution ?? '720p',
+          aspectRatio: node.data.videoAspectRatio ?? '16:9',
+          promptOptimization: node.data.promptOptimization ?? false,
+          ...(imageAssetIds.length > 0 ? { imageAssetIds } : {}),
+          ...(videoAssetIds.length > 0 ? { videoAssetIds } : {}),
+          ...(audioAssetIds.length > 0 ? { audioAssetIds } : {}),
+        } : {
+          ...videoDimensions(node.data.size),
+          ...(imageAssetIds[0] ? { imageAssetId: imageAssetIds[0] } : {}),
+          ...(imageAssetIds.length > 1 ? { imageAssetIds } : {}),
+          ...(videoAssetIds.length > 0 ? { videoAssetIds } : {}),
+          ...(audioAssetIds.length > 0 ? { audioAssetIds } : {}),
+        }),
       }
       const asset = reportStage
-        ? await options.videoService.generate(ownerId, input, { onStage: reportStage })
+        ? await options.videoService.generate(ownerId, input, {
+          onStage: reportStage,
+          onProgress: (update) => reportStage('processing', update),
+        })
         : await options.videoService.generate(ownerId, input)
       return {
         assets: [{

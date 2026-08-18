@@ -650,6 +650,21 @@ describe('createCanvasWindowController', () => {
     expect(aiAssets.storeLocalFile).not.toHaveBeenCalled()
   })
 
+  it('rejects a hard-linked dragged file before any asset store can read it', async () => {
+    const directory = temporaryDirectory()
+    const videoPath = path.join(directory, 'reference.mp4')
+    const hardLinkPath = path.join(directory, 'reference-copy.mp4')
+    fs.writeFileSync(videoPath, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(16)]))
+    fs.linkSync(videoPath, hardLinkPath)
+    const videoAssets = { storeLocalFile: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ videoAssets: videoAssets as never }))
+    await controller.open()
+
+    await expect(electronMocks.handlers.get(canvasHostImportAssetFileChannel)!(trustedEvent(), videoPath))
+      .rejects.toThrow('本地媒体文件不安全')
+    expect(videoAssets.storeLocalFile).not.toHaveBeenCalled()
+  })
+
   it('offers MP4 in the native media picker', async () => {
     const controller = createCanvasWindowController(controllerOptions())
     await controller.open()

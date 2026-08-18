@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
+import { copyBoundedFileExclusive, readBoundedUtf8File, readBoundedUtf8FileSync } from './bounded-file'
 
 const temporaryDirectories: string[] = []
 
@@ -36,6 +36,25 @@ describe('readBoundedUtf8File', () => {
     fs.symlinkSync(target, alias, process.platform === 'win32' ? 'junction' : 'dir')
     await expect(readBoundedUtf8File(path.join(alias, 'input.txt'), 64, '异步测试文件'))
       .rejects.toThrow('符号链接或目录联接')
+  })
+})
+
+describe('copyBoundedFileExclusive', () => {
+  it('copies through a verified source handle and never overwrites a target', async () => {
+    const source = temporaryFile('asset-bytes')
+    const target = path.join(path.dirname(source), 'copied.bin')
+    await expect(copyBoundedFileExclusive(source, target, 64, '复制测试文件')).resolves.toBe(11)
+    expect(fs.readFileSync(target, 'utf8')).toBe('asset-bytes')
+    await expect(copyBoundedFileExclusive(source, target, 64, '复制测试文件')).rejects.toMatchObject({ code: 'EEXIST' })
+    expect(fs.readFileSync(target, 'utf8')).toBe('asset-bytes')
+  })
+
+  it('rejects hard-linked sources before copying project data', async () => {
+    const source = temporaryFile('linked')
+    const hardLink = path.join(path.dirname(source), 'hard-link.txt')
+    fs.linkSync(source, hardLink)
+    await expect(copyBoundedFileExclusive(source, path.join(path.dirname(source), 'target.bin'), 64, '复制测试文件'))
+      .rejects.toThrow('单链接普通文件')
   })
 })
 

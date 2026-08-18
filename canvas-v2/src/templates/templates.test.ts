@@ -105,4 +105,18 @@ describe('built-in canvas templates', () => {
       createId: idFactory(),
     })).toThrow(/禁止包含凭据/)
   })
+
+  it.each(['__proto__.polluted', 'constructor.value', 'nested.prototype.value'])(
+    'rejects prototype mutation paths: %s',
+    (targetPath) => {
+      const poisoned = structuredClone(builtinCanvasTemplates[0])
+      poisoned.variables[0].target.path = targetPath
+      expect(() => instantiateTemplate(poisoned, {
+        values: { prompt: 'polluted' },
+        availableNodeTypes: nodeTypes,
+        createId: idFactory(),
+      })).toThrow('模板变量路径无效')
+      expect((Object.prototype as Record<string, unknown>).polluted).toBeUndefined()
+    },
+  )
 })

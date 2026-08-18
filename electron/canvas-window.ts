@@ -21,7 +21,7 @@ import {
 } from './canvas-protocol'
 import { isAllowedExternalUrl } from './security'
 import { readBoundedUtf8File } from './bounded-file'
-import { writeAtomicSafeUtf8File } from './safe-local-data'
+import { assertNoReparseComponents, writeAtomicSafeUtf8File } from './safe-local-data'
 import type { RelayBackendClient } from './relay-backend'
 import type { SystemService } from './system-service'
 import type { AppTheme } from './app-settings'
@@ -55,6 +55,7 @@ import { findCanvasWorkflowAssetReferenceNodeIds, type CanvasProjectStore } from
 import { findCanvasRunAssetReferences } from './canvas-asset-references'
 import type { CanvasProjectAssetManager } from './canvas-project-asset-manager'
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
+import { CanvasGenerationAdmission } from './canvas-generation-admission'
 import {
   buildCanvasProjectPackage,
   createCanvasProjectPreviewId,
@@ -186,6 +187,7 @@ export function createCanvasWindowController(
   let currentTheme: AppTheme = options.systemService.readStoredConfig().theme
   const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
+  const generationAdmission = new CanvasGenerationAdmission()
 
   function activeProjectId(ownerId: number, userId: number): string | undefined {
     if (!options.projects) return undefined
@@ -403,31 +405,31 @@ export function createCanvasWindowController(
   registerCanvasHandler(canvasHostGenerateImageChannel, (event, input) => {
     const userId = authenticatedCanvasUserId()
     const projectId = activeProjectId(event.sender.id, userId)
-    return options.imageService.generate(event.sender.id, {
+    return generationAdmission.run(event.sender.id, () => options.imageService.generate(event.sender.id, {
       ...parseCanvasImageGenerateInput(input),
       expectedUserId: userId,
       ...(projectId ? { projectId } : {}),
-    })
+    }))
   })
 
   registerCanvasHandler(canvasHostEditImageChannel, (event, input) => {
     const userId = authenticatedCanvasUserId()
     const projectId = activeProjectId(event.sender.id, userId)
-    return options.imageService.edit(event.sender.id, {
+    return generationAdmission.run(event.sender.id, () => options.imageService.edit(event.sender.id, {
       ...parseCanvasImageEditInput(input),
       expectedUserId: userId,
       ...(projectId ? { projectId } : {}),
-    })
+    }))
   })
 
   registerCanvasHandler(canvasHostGenerateVideoChannel, (event, input) => {
     const userId = authenticatedCanvasUserId()
     const projectId = activeProjectId(event.sender.id, userId)
-    return options.videoService.generate(event.sender.id, {
+    return generationAdmission.run(event.sender.id, () => options.videoService.generate(event.sender.id, {
       ...parseCanvasVideoGenerateInput(input),
       expectedUserId: userId,
       ...(projectId ? { projectId } : {}),
-    })
+    }))
   })
 
   registerCanvasHandler(canvasHostResumeVideoTaskChannel, async (event, taskIdInput) => {
@@ -556,6 +558,10 @@ export function createCanvasWindowController(
   })
 
   async function importCanvasAsset(ownerId: number, userId: number, filePath: string) {
+    if (!path.isAbsolute(filePath) || filePath.includes('\0')) throw new Error('本地媒体路径无效')
+    assertNoReparseComponents(filePath, '画布导入媒体')
+    const source = await fs.promises.lstat(filePath, { bigint: true })
+    if (!source.isFile() || source.isSymbolicLink() || source.nlink !== 1n) throw new Error('本地媒体文件不安全')
     const extension = path.extname(filePath).toLowerCase()
     const kind = ['.png', '.jpg', '.jpeg', '.webp'].includes(extension)
       ? 'image'
@@ -769,6 +775,7 @@ export function createCanvasWindowController(
       options.imageService.cancelSender(senderId)
       options.videoService.cancelSender(senderId)
       options.canvasRuns.cancelOwner(senderId)
+      generationAdmission.releaseOwner(senderId)
       pendingProjects.delete(senderId)
       activeProjects.delete(senderId)
       if (canvasWindow === window) canvasWindow = null

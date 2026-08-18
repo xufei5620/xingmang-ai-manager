@@ -94,10 +94,17 @@ function safeRunRecord(value: unknown, userId: number): value is CanvasRunRecord
   if (!isIsoDate(value.createdAt) || !isIsoDate(value.startedAt)) return false
   if (!Array.isArray(value.nodes) || !Array.isArray(value.events)) return false
   if (value.nodes.length > 5_000 || value.events.length > 25_000) return false
+  const safeProgress = (entry: Record<string, unknown>, progressKey: string, modeKey: string, healthKey: string) => (
+    (entry[progressKey] === undefined || (typeof entry[progressKey] === 'number' && Number.isFinite(entry[progressKey]) && (entry[progressKey] as number) >= 0 && (entry[progressKey] as number) <= 100))
+    && (entry[modeKey] === undefined || entry[modeKey] === 'determinate' || entry[modeKey] === 'indeterminate')
+    && (entry[healthKey] === undefined || entry[healthKey] === 'normal' || entry[healthKey] === 'delayed')
+  )
   if (value.nodes.some((node) => !isRecord(node)
-    || (node.latestStage !== undefined && !CANVAS_RUN_NODE_STAGES.has(node.latestStage as string)))) return false
+    || (node.latestStage !== undefined && !CANVAS_RUN_NODE_STAGES.has(node.latestStage as string))
+    || !safeProgress(node, 'latestProgress', 'latestProgressMode', 'latestHealth'))) return false
   if (value.events.some((event) => !isRecord(event)
-    || (event.type === 'node-stage' && !CANVAS_RUN_NODE_STAGES.has(event.stage as string)))) return false
+    || (event.type === 'node-stage' && (!CANVAS_RUN_NODE_STAGES.has(event.stage as string)
+      || !safeProgress(event, 'progress', 'progressMode', 'health'))))) return false
   return value.status === 'running'
     || value.status === 'succeeded'
     || value.status === 'partial'

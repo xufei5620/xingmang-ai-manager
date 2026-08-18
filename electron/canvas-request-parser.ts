@@ -61,11 +61,26 @@ export function parseCanvasImageEditInput(value: unknown): CanvasImageEditInput 
 
 export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGenerationInput {
   if (!isRecord(value)) throw new Error('画布视频请求格式错误')
-  assertOnlyFields(value, ['requestId', 'group', 'model', 'prompt', 'seconds', 'imageAssetId', 'width', 'height'], '画布视频请求')
+  assertOnlyFields(value, [
+    'requestId', 'group', 'model', 'prompt', 'seconds', 'imageAssetId', 'imageAssetIds', 'videoAssetIds', 'audioAssetIds',
+    'width', 'height', 'mode', 'resolution', 'aspectRatio', 'promptOptimization',
+  ], '画布视频请求')
   const imageAssetId = value.imageAssetId === undefined
     ? undefined
     : requiredCanvasString(value.imageAssetId, '画布视频参考图片资产标识', 64)
   if (imageAssetId && !assetIdPattern.test(imageAssetId)) throw new Error('画布视频参考图片资产标识格式错误')
+  const assetIds = (entry: unknown, label: string, maximum: number): string[] | undefined => {
+    if (entry === undefined) return undefined
+    if (!Array.isArray(entry) || entry.length > maximum) throw new Error(`${label}数量格式错误`)
+    const parsed = entry.map((assetId) => requiredCanvasString(assetId, `${label}资产标识`, 64))
+    if (parsed.some((assetId) => !assetIdPattern.test(assetId))) throw new Error(`${label}资产标识格式错误`)
+    if (new Set(parsed).size !== parsed.length) throw new Error(`${label}不能重复`)
+    return parsed
+  }
+  const imageAssetIds = assetIds(value.imageAssetIds, '画布视频参考图片', 9)
+  const videoAssetIds = assetIds(value.videoAssetIds, '画布视频参考视频', 3)
+  const audioAssetIds = assetIds(value.audioAssetIds, '画布视频参考音频', 3)
+  if (imageAssetId && imageAssetIds?.includes(imageAssetId)) throw new Error('画布视频参考图片不能重复')
   const seconds = requiredCanvasString(value.seconds, '画布视频时长', 2)
   if (!/^(?:[1-9]|1[0-5])$/.test(seconds)) throw new Error('画布视频时长必须是 1-15 秒的整数')
   const hasWidth = value.width !== undefined
@@ -76,6 +91,19 @@ export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGeneration
     || !Number.isSafeInteger(value.height)
     || !allowedDimensions.has(`${value.width}x${value.height}`)
   ))) throw new Error('画布视频比例不受支持')
+  const mode = value.mode
+  if (mode !== undefined && !['t2va', 'i2va', 'fl2va', 'l2va', 'ref2va'].includes(String(mode))) {
+    throw new Error('画布 MiniMax 生成模式不受支持')
+  }
+  const resolution = value.resolution
+  if (resolution !== undefined && resolution !== '480p' && resolution !== '720p') throw new Error('画布 MiniMax 分辨率不受支持')
+  const aspectRatio = value.aspectRatio
+  if (aspectRatio !== undefined && !['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', '4:5', '5:4'].includes(String(aspectRatio))) {
+    throw new Error('画布 MiniMax 视频比例不受支持')
+  }
+  if (value.promptOptimization !== undefined && typeof value.promptOptimization !== 'boolean') {
+    throw new Error('画布 MiniMax 提示词优化开关格式错误')
+  }
   return {
     requestId: requiredCanvasString(value.requestId, '画布视频请求标识', 160),
     group: requiredCanvasString(value.group, '画布视频分组', 128),
@@ -83,7 +111,14 @@ export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGeneration
     prompt: requiredCanvasString(value.prompt, '画布视频提示词', 40_000),
     seconds,
     ...(imageAssetId ? { imageAssetId } : {}),
+    ...(imageAssetIds ? { imageAssetIds } : {}),
+    ...(videoAssetIds ? { videoAssetIds } : {}),
+    ...(audioAssetIds ? { audioAssetIds } : {}),
     ...(hasWidth ? { width: value.width as number, height: value.height as number } : {}),
+    ...(mode ? { mode: mode as AiVideoGenerationInput['mode'] } : {}),
+    ...(resolution ? { resolution: resolution as AiVideoGenerationInput['resolution'] } : {}),
+    ...(aspectRatio ? { aspectRatio: aspectRatio as AiVideoGenerationInput['aspectRatio'] } : {}),
+    ...(typeof value.promptOptimization === 'boolean' ? { promptOptimization: value.promptOptimization } : {}),
   }
 }
 
@@ -221,7 +256,10 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
   const nodes: CanvasRunGraph['nodes'] = value.graph.nodes.map((entry) => {
     if (!isRecord(entry) || !isRecord(entry.data)) throw new Error('画布运行节点格式错误')
     assertOnlyFields(entry, ['id', 'kind', 'definitionVersion', 'disabled', 'data'], '画布运行节点')
-    assertOnlyFields(entry.data, ['prompt', 'model', 'group', 'quality', 'size', 'seconds', 'adoptedAssetId'], '画布运行节点数据')
+    assertOnlyFields(entry.data, [
+      'prompt', 'model', 'group', 'quality', 'size', 'seconds', 'adoptedAssetId',
+      'videoMode', 'videoResolution', 'videoAspectRatio', 'promptOptimization',
+    ], '画布运行节点数据')
     const kind = requiredCanvasString(entry.kind, '画布节点类型', 64) as CanvasRunNodeKind
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
@@ -237,6 +275,14 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     if (seconds && !/^(?:[1-9]|1[0-5])$/.test(seconds)) throw new Error('画布视频时长必须是 1-15 秒的整数')
     const adoptedAssetId = optionalCanvasString(entry.data.adoptedAssetId, '画布资产标识', 64)
     if (adoptedAssetId && !assetIdPattern.test(adoptedAssetId)) throw new Error('画布资产标识格式错误')
+    const videoMode = optionalCanvasString(entry.data.videoMode, '画布 MiniMax 生成模式', 16)
+    if (videoMode && !['auto', 't2va', 'i2va', 'fl2va', 'l2va', 'ref2va'].includes(videoMode)) throw new Error('画布 MiniMax 生成模式不受支持')
+    const videoResolution = optionalCanvasString(entry.data.videoResolution, '画布 MiniMax 分辨率', 8)
+    if (videoResolution && videoResolution !== '480p' && videoResolution !== '720p') throw new Error('画布 MiniMax 分辨率不受支持')
+    const videoAspectRatio = optionalCanvasString(entry.data.videoAspectRatio, '画布 MiniMax 视频比例', 8)
+    if (videoAspectRatio && !['16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', '4:5', '5:4'].includes(videoAspectRatio)) throw new Error('画布 MiniMax 视频比例不受支持')
+    const promptOptimization = entry.data.promptOptimization
+    if (promptOptimization !== undefined && typeof promptOptimization !== 'boolean') throw new Error('画布 MiniMax 提示词优化开关格式错误')
     return {
       id: requiredCanvasString(entry.id, '画布节点标识', 256),
       kind,
@@ -250,6 +296,10 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
         ...(size ? { size } : {}),
         ...(seconds ? { seconds } : {}),
         ...(adoptedAssetId ? { adoptedAssetId } : {}),
+        ...(videoMode ? { videoMode: videoMode as CanvasRunGraph['nodes'][number]['data']['videoMode'] } : {}),
+        ...(videoResolution ? { videoResolution: videoResolution as CanvasRunGraph['nodes'][number]['data']['videoResolution'] } : {}),
+        ...(videoAspectRatio ? { videoAspectRatio: videoAspectRatio as CanvasRunGraph['nodes'][number]['data']['videoAspectRatio'] } : {}),
+        ...(typeof promptOptimization === 'boolean' ? { promptOptimization } : {}),
       },
     }
   })

@@ -37,6 +37,7 @@ export interface PersistedWorkflowNodeV2 {
   data: {
     prompt: string
     model: string
+    group?: string
     quality?: string
     size?: string
     seconds?: string
@@ -95,6 +96,7 @@ export function toPersistedWorkflowV2(workflow: WorkflowFile): PersistedWorkflow
   const nodes: PersistedWorkflowNodeV2[] = workflow.nodes.map((node: WorkflowNode) => {
     const result = persistedAsset(node.data.result)
     const settings = persistedSettings(node.data.settings)
+    const group = optionalSafeString(node.data.group, maximumGroupNameLength)
     const candidateAssetIds = node.data.candidateAssetIds?.filter((assetId) => stableAssetId(assetId)).slice(0, 16)
     return {
       id: node.id,
@@ -109,6 +111,7 @@ export function toPersistedWorkflowV2(workflow: WorkflowFile): PersistedWorkflow
       data: {
         prompt: node.data.prompt,
         model: node.data.model,
+        ...(group ? { group } : {}),
         ...(node.data.quality ? { quality: node.data.quality } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
         ...(node.data.seconds ? { seconds: node.data.seconds } : {}),

@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest'
 import {
   canvasPackagedBaseUrl,
+  canvasContentSecurityPolicy,
   canvasProtocolScheme,
+  canvasSecurityResponseHeaders,
   resolveCanvasProtocolFile,
   type ApplicationUrlPolicy,
 } from './canvas-protocol'
@@ -15,6 +17,18 @@ describe('canvasProtocolScheme / canvasPackagedBaseUrl', () => {
   it('uses a distinct scheme from the main app protocol', () => {
     expect(canvasProtocolScheme).toBe('xingmang-canvas')
     expect(canvasPackagedBaseUrl).toBe('xingmang-canvas://app/')
+  })
+
+  it('forces the canvas CSP as a response header and replaces weaker copies', () => {
+    const headers = canvasSecurityResponseHeaders({
+      'content-security-policy': ["default-src *"],
+      'Cache-Control': ['no-store'],
+    })
+    expect(headers['Content-Security-Policy']).toEqual([canvasContentSecurityPolicy])
+    expect(headers['X-Content-Type-Options']).toEqual(['nosniff'])
+    expect(headers['Cache-Control']).toEqual(['no-store'])
+    expect(Object.keys(headers).filter((name) => name.toLowerCase() === 'content-security-policy')).toHaveLength(1)
+    expect(canvasContentSecurityPolicy).toContain('connect-src xingmang-asset:')
   })
 })
 

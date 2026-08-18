@@ -19,7 +19,8 @@ describe('canvas media input and candidate wiring', () => {
   it('documents the multi-input contract and avoids fixed video preview heights', () => {
     const workflowNodes = source('../nodes/WorkflowNodes.tsx')
     expect(workflowNodes).toContain('文本、图片前置节点均可多连')
-    expect(workflowNodes).toContain('文本、图片、音频前置节点均可多连')
+    expect(workflowNodes).toContain('文本、图片、视频、音频均可多连')
+    expect(workflowNodes).toContain('MiniMax 最多使用 9 图、3 视频、3 音频')
     const styles = source('../styles.css')
     expect(styles).toContain('.wf-input-preview-video {')
     expect(styles).toContain('height: auto;')

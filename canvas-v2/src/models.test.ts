@@ -3,6 +3,7 @@ import {
   imageSizeLabel,
   imageModelPreset,
   normalizeVideoSeconds,
+  resolveMiniMaxVideoMode,
   validateImageModelOptions,
   validateVideoModelOptions,
   videoModelPresets,
@@ -43,10 +44,13 @@ describe('canvas media model capabilities', () => {
     ])
   })
 
-  it('exposes the production Grok video models and rejects ambiguous duration', () => {
+  it('exposes all production video models and applies provider duration rules', () => {
     expect(videoModelPresets.map((preset) => preset.id)).toEqual([
       'grok-imagine-video',
       'grok-imagine-video-1.5',
+      'minimax-h3-mini',
+      'minimax-h3-fast',
+      'minimax-h3-base',
     ])
     expect(normalizeVideoSeconds(15, 'grok-imagine-video')).toBe('15')
     expect(normalizeVideoSeconds('5', 'grok-imagine-video')).toBe('5')
@@ -58,6 +62,23 @@ describe('canvas media model capabilities', () => {
     expect(validateVideoModelOptions({ model: 'grok-imagine-video', seconds: 5, size: '1280x720' })).toEqual([])
     expect(validateVideoModelOptions({ model: 'grok-imagine-video', seconds: 5, size: '111x222' }))
       .toEqual(['模型「Grok Imagine Video」不支持这个视频比例'])
+    expect(normalizeVideoSeconds('4', 'minimax-h3-mini')).toBeNull()
+    expect(normalizeVideoSeconds('6', 'minimax-h3-mini')).toBe('6')
+  })
+
+  it('derives and validates MiniMax modes from connected media', () => {
+    expect(resolveMiniMaxVideoMode({ imageCount: 0 })).toBe('t2va')
+    expect(resolveMiniMaxVideoMode({ imageCount: 1 })).toBe('i2va')
+    expect(resolveMiniMaxVideoMode({ imageCount: 2 })).toBe('fl2va')
+    expect(resolveMiniMaxVideoMode({ imageCount: 3 })).toBe('ref2va')
+    expect(resolveMiniMaxVideoMode({ audioCount: 1 })).toBe('ref2va')
+    expect(validateVideoModelOptions({
+      model: 'minimax-h3-base', seconds: 10, mode: 'ref2va', resolution: '720p', aspectRatio: '21:9',
+      imageCount: 9, videoCount: 3, audioCount: 3,
+    })).toEqual([])
+    expect(validateVideoModelOptions({
+      model: 'minimax-h3-fast', seconds: 5, mode: 'i2va', imageCount: 2,
+    })).toContain('I2VA 需要且只能连接 1 张图片')
   })
 
   it('labels common image dimensions with user-facing aspect ratios', () => {

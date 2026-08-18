@@ -51,7 +51,10 @@ export interface CanvasNodeExecutionContext {
   node: CanvasRunGraphNode
   inputs: CanvasNodeInputs
   signal: AbortSignal
-  reportStage?(stage: Extract<CanvasRunNodeStage, 'processing' | 'downloading' | 'saving'>): Promise<void>
+  reportStage?(
+    stage: Extract<CanvasRunNodeStage, 'processing' | 'downloading' | 'saving'>,
+    progress?: { value?: number; mode?: 'determinate' | 'indeterminate'; health?: 'normal' | 'delayed' },
+  ): Promise<void>
 }
 
 export type CanvasNodeExecutor = (
@@ -264,6 +267,25 @@ function usesRemoteGeneration(kind: CanvasRunNodeKind): boolean {
     || kind === 'video-generate'
 }
 
+export function canvasRunRemoteGenerationUpperBound(graph: CanvasRunGraph, scope: CanvasRunScope): number {
+  const index = validateGraph(graph)
+  const selected = selectScope(index, scope)
+  const skipped = new Set<string>()
+  let remoteCount = 0
+  for (const nodeId of index.topological) {
+    if (!selected.has(nodeId)) continue
+    const node = index.nodesById.get(nodeId)!
+    const upstreamSkipped = (index.incoming.get(nodeId) ?? [])
+      .some((edge) => selected.has(edge.source) && skipped.has(edge.source))
+    if (node.disabled || upstreamSkipped) {
+      skipped.add(nodeId)
+      continue
+    }
+    if (usesRemoteGeneration(node.kind)) remoteCount += 1
+  }
+  return remoteCount
+}
+
 export function appendCanvasRunTimelineEvent(
   events: CanvasRunEvent[],
   event: CanvasRunEvent,
@@ -379,7 +401,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
   }
   let sequence = 0
   let eventQueue = Promise.resolve()
-  let firstPersistenceError: unknown
+  let latestPersistenceError: unknown
 
   function emit(event: CanvasRunEventPayload): Promise<void> {
     const complete = {
@@ -396,6 +418,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
         nodeRecord.latestStage = complete.stage
         nodeRecord.latestStageAt = complete.at
         nodeRecord.latestStageSequence = complete.sequence
+        nodeRecord.latestProgress = complete.progress
+        nodeRecord.latestProgressMode = complete.progressMode
+        nodeRecord.latestHealth = complete.health
       }
     }
     appendCanvasRunTimelineEvent(record.events, complete)
@@ -403,12 +428,12 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     eventQueue = eventQueue.then(async () => {
       try {
         await options.persistRecord?.(snapshot)
+        latestPersistenceError = undefined
       } catch (error) {
         // A later snapshot contains the complete event stream, including this
         // event. Keep the queue usable so a transient write failure cannot
         // replay a paid executor or suppress every subsequent checkpoint.
-        firstPersistenceError ??= error
-        return
+        latestPersistenceError = error
       }
       try {
         await options.onEvent?.(structuredClone(complete), snapshot)
@@ -429,6 +454,14 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     if (isTerminalState(nodeRecord.state)) return false
     nodeRecord.state = state
     if (details.errorMessage) nodeRecord.errorMessage = details.errorMessage
+    if (isTerminalState(state)) {
+      delete nodeRecord.latestStage
+      delete nodeRecord.latestStageAt
+      delete nodeRecord.latestStageSequence
+      delete nodeRecord.latestProgress
+      delete nodeRecord.latestProgressMode
+      delete nodeRecord.latestHealth
+    }
     await emit({ type: 'node-state', nodeId, state, ...details })
     return true
   }
@@ -437,10 +470,25 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
     nodeId: string,
     stage: CanvasRunNodeStage,
     attemptId?: string,
+    progress?: { value?: number; mode?: 'determinate' | 'indeterminate'; health?: 'normal' | 'delayed' },
   ): Promise<boolean> {
     const nodeRecord = nodeRecords.get(nodeId)!
-    if (isTerminalState(nodeRecord.state) || nodeRecord.latestStage === stage) return false
-    await emit({ type: 'node-stage', nodeId, stage, ...(attemptId ? { attemptId } : {}) })
+    if (isTerminalState(nodeRecord.state)) return false
+    const normalizedProgress = progress?.value === undefined
+      ? undefined
+      : Math.max(0, Math.min(100, progress.value))
+    const unchanged = nodeRecord.latestStage === stage
+      && nodeRecord.latestProgress === normalizedProgress
+      && nodeRecord.latestProgressMode === progress?.mode
+      && nodeRecord.latestHealth === progress?.health
+    if (unchanged) return false
+    await emit({
+      type: 'node-stage', nodeId, stage,
+      ...(attemptId ? { attemptId } : {}),
+      ...(normalizedProgress === undefined ? {} : { progress: normalizedProgress }),
+      ...(progress?.mode ? { progressMode: progress.mode } : {}),
+      ...(progress?.health ? { health: progress.health } : {}),
+    })
     return true
   }
 
@@ -566,9 +614,9 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           node,
           inputs: collected.inputs,
           signal: options.signal,
-          reportStage: async (stage) => {
+          reportStage: async (stage, progress) => {
             await stageReportingReady
-            await updateStage(nodeId, stage, attemptId)
+            await updateStage(nodeId, stage, attemptId, progress)
           },
         })
         await updateStage(nodeId, 'processing', attemptId)
@@ -686,8 +734,16 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
   record.outcome = outcome
   await emit({ type: 'run-terminal', status: record.status, outcome })
   await eventQueue
-  if (firstPersistenceError !== undefined) {
-    throw new Error(`画布运行记录持久化失败：${sanitizeRunError(firstPersistenceError)}`)
+  if (latestPersistenceError !== undefined && options.persistRecord) {
+    try {
+      await options.persistRecord(cloneRecord(record))
+      latestPersistenceError = undefined
+    } catch (error) {
+      latestPersistenceError = error
+    }
+  }
+  if (latestPersistenceError !== undefined) {
+    throw new Error(`画布运行记录持久化失败：${sanitizeRunError(latestPersistenceError)}`)
   }
   return cloneRecord(record)
 }

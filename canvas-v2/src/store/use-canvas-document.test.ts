@@ -24,6 +24,9 @@ describe('canvas document runtime boundary', () => {
         selectedCandidateId: 'candidate-1',
         adoptedCandidateId: 'candidate-old',
         runStage: 'saving',
+        runProgress: 88,
+        runProgressMode: 'determinate',
+        runHealth: 'delayed',
         dirty: false,
       },
     }
@@ -35,6 +38,9 @@ describe('canvas document runtime boundary', () => {
     expect(persisted.data).not.toHaveProperty('selectedCandidateId')
     expect(persisted.data).not.toHaveProperty('adoptedCandidateId')
     expect(persisted.data).not.toHaveProperty('runStage')
+    expect(persisted.data).not.toHaveProperty('runProgress')
+    expect(persisted.data).not.toHaveProperty('runProgressMode')
+    expect(persisted.data).not.toHaveProperty('runHealth')
     expect(persisted.data).not.toHaveProperty('dirty')
   })
 })

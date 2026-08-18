@@ -85,7 +85,13 @@ import { assetInputNodeKind, mediaAssetNodeDimensions, mediaResultNodeDimensions
 import { QuickInsert, type QuickInsertCommand } from './components/QuickInsert'
 import { findAvailableCanvasPosition } from './editor/node-placement'
 import { applyCanvasTheme, subscribeCanvasTheme, type CanvasTheme } from './theme/canvas-theme'
-import { buildCanvasRunPreflight, type CanvasRunPreflight } from './runtime/run-preflight'
+import {
+  buildCanvasRunPreflight,
+  canvasMediaConfigurationErrors,
+  sameCanvasRunGraphSnapshot,
+  selectCanvasRunNodeIds,
+  type CanvasRunPreflight,
+} from './runtime/run-preflight'
 import { mergeCanvasRunEvent } from './runtime/run-events'
 import {
   defaultCanvasUiPreferences,
@@ -187,6 +193,18 @@ export function toCanvasRunGraph(
         size: node.data.size,
         seconds: node.data.seconds,
         adoptedAssetId: node.data.result?.assetId,
+        videoMode: typeof node.data.settings?.videoMode === 'string'
+          ? node.data.settings.videoMode as CanvasRunGraph['nodes'][number]['data']['videoMode']
+          : undefined,
+        videoResolution: typeof node.data.settings?.videoResolution === 'string'
+          ? node.data.settings.videoResolution as CanvasRunGraph['nodes'][number]['data']['videoResolution']
+          : undefined,
+        videoAspectRatio: typeof node.data.settings?.videoAspectRatio === 'string'
+          ? node.data.settings.videoAspectRatio as CanvasRunGraph['nodes'][number]['data']['videoAspectRatio']
+          : undefined,
+        promptOptimization: typeof node.data.settings?.promptOptimization === 'boolean'
+          ? node.data.settings.promptOptimization
+          : undefined,
       },
     })),
     edges: edges
@@ -195,59 +213,7 @@ export function toCanvasRunGraph(
   }
 }
 
-const imageRunNodeKinds = new Set(['image', 'image-generate', 'image-edit'])
-const videoRunNodeKinds = new Set(['video', 'video-generate'])
-
-export function selectCanvasRunNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): Set<string> {
-  const nodeIds = new Set(graph.nodes.map((node) => node.id))
-  if (scope.kind === 'all') return nodeIds
-  const roots = scope.kind === 'to-node' ? [scope.nodeId] : scope.nodeIds
-  if (roots.length === 0) throw new Error('运行范围不能为空')
-  const incoming = new Map<string, string[]>()
-  for (const edge of graph.edges) incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source])
-  const selected = new Set<string>()
-  const queue = [...new Set(roots)]
-  while (queue.length > 0) {
-    const current = queue.pop() as string
-    if (!nodeIds.has(current)) throw new Error(`运行范围包含不存在的节点：${current}`)
-    if (selected.has(current)) continue
-    selected.add(current)
-    for (const source of incoming.get(current) ?? []) queue.push(source)
-  }
-  return selected
-}
-
-export function canvasMediaConfigurationErrors(
-  graph: CanvasRunGraph,
-  scope: CanvasRunScope,
-  configuration: {
-    imageGroup?: string
-    videoGroup?: string
-    imageModels: readonly string[]
-    videoModels: readonly string[]
-  },
-): string[] {
-  const selected = selectCanvasRunNodeIds(graph, scope)
-  const activeNodes = graph.nodes.filter((node) => selected.has(node.id) && !node.disabled)
-  const imageNodes = activeNodes.filter((node) => imageRunNodeKinds.has(node.kind))
-  const videoNodes = activeNodes.filter((node) => videoRunNodeKinds.has(node.kind))
-  const errors: string[] = []
-  if (imageNodes.length > 0 && !configuration.imageGroup) errors.push('请选择生图分组')
-  if (videoNodes.length > 0 && !configuration.videoGroup) errors.push('请选择视频分组')
-  const unavailableImageModels = [...new Set(imageNodes
-    .map((node) => node.data.model)
-    .filter((model) => !configuration.imageModels.includes(model)))]
-  const unavailableVideoModels = [...new Set(videoNodes
-    .map((node) => node.data.model)
-    .filter((model) => !configuration.videoModels.includes(model)))]
-  if (configuration.imageGroup && unavailableImageModels.length > 0) {
-    errors.push(`生图分组「${configuration.imageGroup}」不提供模型：${unavailableImageModels.join('、')}`)
-  }
-  if (configuration.videoGroup && unavailableVideoModels.length > 0) {
-    errors.push(`视频分组「${configuration.videoGroup}」不提供模型：${unavailableVideoModels.join('、')}`)
-  }
-  return errors
-}
+export { canvasMediaConfigurationErrors, selectCanvasRunNodeIds }
 
 export function isCanvasGraphNode(node: CanvasNode): boolean {
   const definition = builtinNodeRegistry.resolve(node.type ?? 'unknown')
@@ -971,7 +937,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         setRunPreflight(preflight)
         if (!preflight.canStart) {
           setBanner(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '当前节点无法执行')
-          setMediaConfigOpen(true)
           return
         }
         setPendingCanvasRun({ graph, scope })
@@ -980,24 +945,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         setBanner(error instanceof Error ? error.message : String(error))
       }
       return
-    }
-    if (window.xingmangCanvasHost && imageRunNodeKinds.has(target.type ?? '')) {
-      if (!imageGroup || !imageModels.includes(target.data.model)) {
-        setBanner(imageGroup
-          ? `生图分组「${imageGroup}」不提供模型「${target.data.model}」`
-          : '请先在「生成配置」中选择生图分组')
-        setMediaConfigOpen(true)
-        return
-      }
-    }
-    if (window.xingmangCanvasHost && videoRunNodeKinds.has(target.type ?? '')) {
-      if (!videoGroup || !videoModels.includes(target.data.model)) {
-        setBanner(videoGroup
-          ? `视频分组「${videoGroup}」不提供模型「${target.data.model}」`
-          : '请先在「生成配置」中选择视频分组')
-        setMediaConfigOpen(true)
-        return
-      }
     }
     const inputs: NodeInputs = {}
     for (const edge of edges) {
@@ -1248,6 +1195,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     if (event.type === 'node-stage') {
       patchNodeData(event.nodeId, {
         runStage: event.stage,
+        runProgress: event.progress,
+        runProgressMode: event.progressMode,
+        runHealth: event.health,
         status: event.stage === 'validating' || event.stage === 'resolving-cache' || event.stage === 'waiting-slot'
           ? 'queued'
           : 'running',
@@ -1263,7 +1213,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         status: state,
         ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
         ...(typeof event.costQuota === 'number' ? { costQuota: event.costQuota } : {}),
-        ...(['succeeded', 'failed', 'skipped', 'cancelled', 'cached', 'interrupted'].includes(event.state) ? { runStage: undefined } : {}),
+        ...(['succeeded', 'failed', 'skipped', 'cancelled', 'cached', 'interrupted'].includes(event.state) ? {
+          runStage: undefined, runProgress: undefined, runProgressMode: undefined, runHealth: undefined,
+        } : {}),
       })
     }
     if (event.type === 'run-terminal') {
@@ -1993,11 +1945,34 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const confirmCanvasRun = useCallback(async () => {
     const pending = pendingCanvasRun
     if (!pending || running) return
-    setRunPreflight(null)
-    setPendingCanvasRun(null)
-    setRunning(true)
     try {
-      const started = await hostBridge().startRun(pending)
+      const currentGraph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+      const currentPreflight = buildCanvasRunPreflight({
+        graph: currentGraph,
+        scope: pending.scope,
+        imageGroup: imageGroup ?? undefined,
+        videoGroup: videoGroup ?? undefined,
+        imageModels,
+        videoModels,
+      })
+      if (!sameCanvasRunGraphSnapshot(pending.graph, currentGraph)) {
+        setRunPreflight(currentPreflight)
+        setPendingCanvasRun(currentPreflight.canStart ? { graph: currentGraph, scope: pending.scope } : null)
+        setBanner(currentPreflight.canStart
+          ? '工作流在确认期间发生变化，请核对新的运行范围后再次确认'
+          : '工作流在确认期间发生变化，请先修复新的阻塞项')
+        return
+      }
+      if (!currentPreflight.canStart) {
+        setRunPreflight(currentPreflight)
+        setPendingCanvasRun(null)
+        setBanner('当前运行范围出现新的阻塞项，请先修复后重新运行')
+        return
+      }
+      setRunPreflight(null)
+      setPendingCanvasRun(null)
+      setRunning(true)
+      const started = await hostBridge().startRun({ graph: currentGraph, scope: pending.scope })
       activeRunRef.current = { ...started, scope: pending.scope }
       openInspectorTab('runs')
       setBanner('工作流已交由安全运行服务')
@@ -2008,7 +1983,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       setRunning(false)
       setBanner(error instanceof Error ? error.message : String(error))
     }
-  }, [openInspectorTab, pendingCanvasRun, refreshRuns, running])
+  }, [edges, imageGroup, imageModels, nodes, openInspectorTab, pendingCanvasRun, refreshRuns, running, videoGroup, videoModels])
 
   const run = async () => {
     if (running) return
@@ -2038,19 +2013,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         if (!preflight.canStart) {
           setRunning(false)
           setBanner(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '当前运行范围无法执行')
-          setMediaConfigOpen(true)
-          return
-        }
-        const configurationErrors = canvasMediaConfigurationErrors(graph, scope, {
-          imageGroup: imageGroup ?? undefined,
-          videoGroup: videoGroup ?? undefined,
-          imageModels,
-          videoModels,
-        })
-        if (configurationErrors.length > 0) {
-          setRunning(false)
-          setBanner(`${configurationErrors.join('；')}。请检查生成配置或节点模型`)
-          setMediaConfigOpen(true)
           return
         }
         setPendingCanvasRun({ graph, scope })
@@ -2216,6 +2178,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (runPreflight) return
       const shortcut = resolveCanvasShortcut(event)
       if (!shortcut) return
       if (shortcut === 'undo') { event.preventDefault(); undo() }
@@ -2259,7 +2222,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [undo, redo, save, load, run, autoLayout, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert])
+  }, [undo, redo, save, load, run, autoLayout, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert, runPreflight])
 
   const serverBacked = Boolean(window.xingmangCanvasHost)
   const mediaConnectionLabel = preparingMedia
@@ -2721,6 +2684,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         <RunPreflight
           preflight={runPreflight}
           onCancel={() => { setRunPreflight(null); setPendingCanvasRun(null) }}
+          onConfigure={() => {
+            setRunPreflight(null)
+            setPendingCanvasRun(null)
+            setMediaConfigOpen(true)
+          }}
           onConfirm={() => void confirmCanvasRun()}
         />
       )}

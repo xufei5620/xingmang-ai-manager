@@ -1,4 +1,4 @@
-import { createContext, memo, useContext, useMemo, type DragEvent, type ReactNode } from 'react'
+import { createContext, memo, useContext, useMemo, type CSSProperties, type DragEvent, type ReactNode } from 'react'
 import { Handle, Position, type Edge, type Node, type NodeProps } from '@xyflow/react'
 import { AlertCircle, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
@@ -17,6 +17,9 @@ import {
   presetVideoModels,
   defaultVideoModel,
   defaultVideoSeconds,
+  videoAspectRatioOptions,
+  videoModeOptions,
+  videoResolutionOptions,
   videoSizeOptions,
   videoModelPreset,
   videoModelPresets,
@@ -178,6 +181,11 @@ function numberSetting(data: WorkflowNodeData, key: string, fallback: number): n
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
 }
 
+function booleanSetting(data: WorkflowNodeData, key: string, fallback: boolean): boolean {
+  const value = data.settings?.[key]
+  return typeof value === 'boolean' ? value : fallback
+}
+
 function mediaInputLabel(kind: NodeKind): string {
   return kind === 'video-input' ? '视频' : kind === 'audio-input' ? '音频' : '图片'
 }
@@ -276,7 +284,7 @@ function supportsModel(kind: NodeKind): boolean {
 
 function multiInputHint(kind: NodeKind): string | null {
   if (kind === 'image-edit') return '文本、图片前置节点均可多连 · 图片编辑最多使用 4 张参考图'
-  if (kind === 'video-generate' || kind === 'video') return '文本、图片、音频前置节点均可多连 · 视频接口使用第一张就绪参考图，音频保留为工作流依赖'
+  if (kind === 'video-generate' || kind === 'video') return '文本、图片、视频、音频均可多连 · MiniMax 最多使用 9 图、3 视频、3 音频'
   return null
 }
 
@@ -554,19 +562,65 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
             {videoModels.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
           </select>
           {!mediaModelAvailable && <p className="wf-error">当前分组不提供此视频模型，请重新选择</p>}
-          <label className="wf-inline-field">
-            <span>比例</span>
-            <select
-              className="wf-model"
-              aria-label="视频比例"
-              value={selectedVideoPreset.sizes.includes(data.size || '') ? data.size : selectedVideoPreset.defaultSize}
-              onChange={(event) => handlers.onSizeChange(id, event.target.value)}
-            >
-              {videoSizeOptions
-                .filter((size) => selectedVideoPreset.sizes.includes(size.value))
-                .map((size) => <option key={size.value} value={size.value}>{size.label}</option>)}
-            </select>
-          </label>
+          {selectedVideoPreset.provider === 'minimax-h3' ? (
+            <>
+              <label className="wf-inline-field">
+                <span>模式</span>
+                <select
+                  className="wf-model"
+                  aria-label="MiniMax 生成模式"
+                  value={textSetting(data, 'videoMode', 'auto')}
+                  onChange={(event) => handlers.onSettingsChange(id, { videoMode: event.target.value })}
+                >
+                  {videoModeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <label className="wf-inline-field">
+                <span>清晰度</span>
+                <select
+                  className="wf-model"
+                  aria-label="MiniMax 视频分辨率"
+                  value={textSetting(data, 'videoResolution', '720p')}
+                  onChange={(event) => handlers.onSettingsChange(id, { videoResolution: event.target.value })}
+                >
+                  {videoResolutionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <label className="wf-inline-field">
+                <span>比例</span>
+                <select
+                  className="wf-model"
+                  aria-label="MiniMax 视频比例"
+                  value={textSetting(data, 'videoAspectRatio', '16:9')}
+                  onChange={(event) => handlers.onSettingsChange(id, { videoAspectRatio: event.target.value })}
+                >
+                  {videoAspectRatioOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </label>
+              <label className="wf-video-toggle">
+                <input
+                  type="checkbox"
+                  checked={booleanSetting(data, 'promptOptimization', false)}
+                  onChange={(event) => handlers.onSettingsChange(id, { promptOptimization: event.target.checked })}
+                />
+                <span>AI 优化 H3 提示词</span>
+              </label>
+            </>
+          ) : (
+            <label className="wf-inline-field">
+              <span>比例</span>
+              <select
+                className="wf-model"
+                aria-label="视频比例"
+                value={selectedVideoPreset.sizes.includes(data.size || '') ? data.size : selectedVideoPreset.defaultSize}
+                onChange={(event) => handlers.onSizeChange(id, event.target.value)}
+              >
+                {videoSizeOptions
+                  .filter((size) => selectedVideoPreset.sizes.includes(size.value))
+                  .map((size) => <option key={size.value} value={size.value}>{size.label}</option>)}
+              </select>
+            </label>
+          )}
           <label className="wf-inline-field">
             <span>时长</span>
             <select
@@ -575,7 +629,13 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
               value={data.seconds ?? String(defaultVideoSeconds)}
               onChange={(event) => handlers.onSecondsChange(id, event.target.value)}
             >
-              {[5, 10, 15].filter((seconds) => seconds <= selectedVideoPreset.maximumSeconds).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
+              {(selectedVideoPreset.provider === 'minimax-h3'
+                ? Array.from(
+                  { length: selectedVideoPreset.maximumSeconds - selectedVideoPreset.minimumSeconds + 1 },
+                  (_, index) => selectedVideoPreset.minimumSeconds + index,
+                )
+                : [5, 10, 15]
+              ).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
             </select>
           </label>
         </div>
@@ -585,10 +645,15 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
 
       {(data.status === 'queued' || data.status === 'running') && (
         <div className="wf-progress" role="status" aria-live="polite">
-          <span className="wf-progress-bar" />
+          <span
+            className={`wf-progress-bar${data.runProgressMode === 'determinate' && typeof data.runProgress === 'number' ? ' is-determinate' : ''}`}
+            style={data.runProgressMode === 'determinate' && typeof data.runProgress === 'number'
+              ? { '--wf-progress': `${Math.max(0, Math.min(100, data.runProgress))}%` } as CSSProperties
+              : undefined}
+          />
           <p>
             {data.runStage
-              ? `${runStageLabel[data.runStage]}…`
+              ? `${runStageLabel[data.runStage]}${data.runProgressMode === 'determinate' && typeof data.runProgress === 'number' ? ` · ${Math.round(data.runProgress)}%` : '…'}`
               : data.status === 'queued'
                 ? '正在等待可用执行槽位…'
               : videoOperation
@@ -597,7 +662,10 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
                   ? '高清图像生成中 · 预计 2-3 分钟'
                   : '图像生成中 · 预计 10 秒至 1 分钟'}
           </p>
-          {videoOperation && <small>停止等待不等于取消已到达服务端的生成任务，可稍后从运行记录续查。</small>}
+          {data.runHealth === 'delayed' && <small>服务端仍在线，但本次生成已明显超过同规格历史耗时。</small>}
+          {videoOperation && <small>{selectedVideoPreset.provider === 'minimax-h3'
+            ? '停止时会向服务端请求取消；生成中的任务可能需要短暂等待才进入已取消状态。'
+            : '停止等待不等于取消已到达服务端的生成任务，可稍后从运行记录续查。'}</small>}
         </div>
       )}
       {data.status === 'failed' && data.errorMessage && kind !== 'unknown' && <p className="wf-error" role="alert">{data.errorMessage}</p>}

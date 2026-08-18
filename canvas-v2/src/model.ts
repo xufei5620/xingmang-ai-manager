@@ -46,6 +46,8 @@ export interface WorkflowNodeData {
   prompt: string
   /** relay 侧模型名。渠道配置好之前允许为空,mock 执行器不校验。 */
   model: string
+  /** 可选的节点级 relay 分组覆盖；为空时继承项目级生成配置。 */
+  group?: string
   /** 图像画质档(gpt-image 系必须显式传,默认 low——auto 有 35 倍费用陷阱,见 RECON-image-generation)。 */
   quality?: string
   /** 图像尺寸(按模型区分合法值,见 models.ts 预设)。 */
@@ -74,6 +76,9 @@ export interface WorkflowNodeData {
   latestAttemptDurationMs?: number
   /** 主进程签发的当前运行阶段；仅用于实时展示，不进入工作流文件。 */
   runStage?: NodeRunStage
+  runProgress?: number
+  runProgressMode?: 'determinate' | 'indeterminate'
+  runHealth?: 'normal' | 'delayed'
 }
 
 export interface WorkflowNode {
@@ -145,14 +150,14 @@ export const nodeOutputKind: Record<NodeKind, PortKind> = {
 export const nodeInputKinds: Record<NodeKind, readonly PortKind[]> = {
   text: [],
   image: ['text', 'image'],
-  video: ['text', 'image', 'audio'],
+  video: ['text', 'image', 'video', 'audio'],
   prompt: [],
   'image-input': [],
   'video-input': [],
   'audio-input': [],
   'image-generate': ['text'],
   'image-edit': ['text', 'image'],
-  'video-generate': ['text', 'image', 'audio'],
+  'video-generate': ['text', 'image', 'video', 'audio'],
   'frame-extract': ['video'],
   router: ['text', 'image', 'video', 'audio'],
   gallery: ['image', 'video', 'audio'],

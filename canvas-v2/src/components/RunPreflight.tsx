@@ -1,16 +1,44 @@
+import { useEffect, useRef } from 'react'
 import type { CanvasRunPreflight } from '../runtime/run-preflight'
 import { AlertTriangle, CheckCircle2, CircleDollarSign, X } from 'lucide-react'
 
 interface RunPreflightProps {
   preflight: CanvasRunPreflight
   onCancel(): void
+  onConfigure(): void
   onConfirm(): void
 }
 
-export function RunPreflight({ preflight, onCancel, onConfirm }: RunPreflightProps) {
+export function RunPreflight({ preflight, onCancel, onConfigure, onConfirm }: RunPreflightProps) {
+  const dialogRef = useRef<HTMLElement>(null)
+  useEffect(() => {
+    const dialog = dialogRef.current
+    const first = dialog?.querySelector<HTMLElement>('button:not([disabled])')
+    first?.focus()
+  }, [])
+
+  const trapFocus = (event: React.KeyboardEvent<HTMLElement>) => {
+    if (event.key === 'Escape') {
+      event.preventDefault()
+      event.stopPropagation()
+      onCancel()
+      return
+    }
+    if (event.key !== 'Tab') return
+    const focusable = [...(dialogRef.current?.querySelectorAll<HTMLElement>('button:not([disabled])') ?? [])]
+    if (focusable.length === 0) return
+    const current = document.activeElement
+    const index = focusable.indexOf(current as HTMLElement)
+    const next = event.shiftKey
+      ? focusable[(index <= 0 ? focusable.length : index) - 1]
+      : focusable[(index + 1) % focusable.length]
+    event.preventDefault()
+    next.focus()
+  }
+
   return (
     <div className="run-preflight-backdrop" role="presentation">
-      <section className="run-preflight" role="dialog" aria-modal="true" aria-label="运行前检查">
+      <section ref={dialogRef} className="run-preflight" role="dialog" aria-modal="true" aria-label="运行前检查" onKeyDown={trapFocus}>
         <header>
           <span><CircleDollarSign size={17} aria-hidden="true" /><strong>运行前检查</strong></span>
           <button type="button" title="关闭" aria-label="关闭运行前检查" onClick={onCancel}><X size={16} /></button>
@@ -40,6 +68,7 @@ export function RunPreflight({ preflight, onCancel, onConfirm }: RunPreflightPro
         {preflight.paidRequestCount > 0 && <p className="run-preflight-warning">本次最多提交 {preflight.paidRequestCount} 个付费请求，仅缓存未命中时才会提交；停止等待不代表上游已取消，请勿因不确定结果立即重复提交。</p>}
         <footer>
           <button type="button" onClick={onCancel}>取消</button>
+          {preflight.blockedCount > 0 && <button type="button" onClick={onConfigure}>打开生成配置</button>}
           <button type="button" className="is-primary" disabled={!preflight.canStart} onClick={onConfirm}>确认运行</button>
         </footer>
       </section>

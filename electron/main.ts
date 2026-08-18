@@ -34,7 +34,7 @@ import { AccountSessionStore, restoreAccountSessionOnStartup } from './account-s
 import { AppSettingsStore, type AppTheme } from './app-settings'
 import { ConfigBackupStore } from './backups'
 import { providerIds } from './catalog'
-import { canvasProtocolScheme } from './canvas-protocol'
+import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
 import { createCanvasAccountLifecycle } from './canvas-account-lifecycle'
 import { CanvasRunStore } from './canvas-run-store'
@@ -468,6 +468,12 @@ if (!hasSingleInstanceLock) {
       allowedPermissions.has(permission),
     )
     session.defaultSession.setDevicePermissionHandler(() => false)
+    session.defaultSession.webRequest.onHeadersReceived(
+      { urls: [`${canvasProtocolScheme}://*/*`] },
+      (details, callback) => callback({
+        responseHeaders: canvasSecurityResponseHeaders(details.responseHeaders),
+      }),
+    )
     const managerDataDirectory = app.getPath('userData')
     const codexContext = resolveCodexHomeContext({
       isPackaged: app.isPackaged,
@@ -892,6 +898,7 @@ if (!hasSingleInstanceLock) {
         prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
         storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
         readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
+        readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
       },
     })
     const canvasRunStore = new CanvasRunStore({

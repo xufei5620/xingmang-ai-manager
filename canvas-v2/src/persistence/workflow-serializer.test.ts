@@ -213,7 +213,7 @@ describe('workflow schema v2 parser', () => {
     ])
   })
 
-  it('drops stale video inputs from video generation while preserving image and audio fan-in', () => {
+  it('preserves image, video, and audio fan-in for MiniMax-compatible video generation', () => {
     const workflow = parseWorkflowFileDetailed(JSON.stringify(v2Document({
       nodes: [
         {
@@ -235,13 +235,13 @@ describe('workflow schema v2 parser', () => {
       ],
       edges: [
         { id: 'image', source: 'image-source', sourceHandle: 'out:image', target: 'target', targetHandle: 'in:images' },
-        { id: 'stale-video', source: 'video-source', sourceHandle: 'out:video', target: 'target', targetHandle: 'in:videos' },
+        { id: 'video', source: 'video-source', sourceHandle: 'out:video', target: 'target', targetHandle: 'in:videos' },
         { id: 'audio', source: 'audio-source', sourceHandle: 'out:audio', target: 'target', targetHandle: 'in:audios' },
       ],
     })))
 
-    expect(workflow?.workflow.edges.map((edge) => edge.id)).toEqual(['image', 'audio'])
-    expect(workflow?.warnings).toEqual(['已移除端口类型不匹配的连线：stale-video'])
+    expect(workflow?.workflow.edges.map((edge) => edge.id)).toEqual(['image', 'video', 'audio'])
+    expect(workflow?.warnings).toEqual([])
   })
 
   it('drops dangling, incompatible, over-capacity, and cyclic edges deterministically', () => {
@@ -303,6 +303,15 @@ describe('workflow schema v2 serializer', () => {
 
     expect(serialized).not.toMatch(/api[_-]?key/i)
     expect(parseWorkflowFile(serialized)?.mediaGroups).toEqual({ image: '生图分组', video: 'grok' })
+  })
+
+  it('round-trips a bounded node-level group override', () => {
+    const document = v2Document()
+    ;(document.nodes[0].data as Record<string, unknown>).group = '节点专用分组'
+    const workflow = parseWorkflowFile(JSON.stringify(document))
+    const serialized = serializeWorkflow(workflow as WorkflowFile)
+
+    expect(parseWorkflowFile(serialized)?.nodes[0].data.group).toBe('节点专用分组')
   })
 
   it('ignores malformed media group configuration without rejecting the project', () => {
