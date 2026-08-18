@@ -65,7 +65,7 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
   }),
   mediaDefinition({
     type: 'video-generate', version: 1, title: '视频生成', description: '文生视频或图生视频（支持多前置输入）', category: 'generation',
-    ports: [textInput, imageInputs, audioInputs, videoOutput], dimensions: { width: 304, height: 360 }, defaultData: { prompt: '', model: '', durationSeconds: 5, size: '1280x720' },
+    ports: [textInput, imageInputs, audioInputs, videoOutput], dimensions: { width: 304, height: 360 }, defaultData: { prompt: '', model: '', seconds: '5', size: '1280x720' },
     executable: true, structural: false, executorKind: 'video', capabilities: [{ media: 'video', operation: 'generate' }],
   }),
   mediaDefinition({

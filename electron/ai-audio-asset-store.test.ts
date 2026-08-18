@@ -107,7 +107,7 @@ describe('AiAudioAssetStore', () => {
     const fixtureRoot = audioFixtureRoot()
     const sourcePath = path.join(fixtureRoot, fileName)
     const before = fs.readFileSync(sourcePath)
-    const store = new AiAudioAssetStore({ outputRoot, now: () => new Date('2026-08-14T00:00:00.000Z') })
+    const store = new AiAudioAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
     const asset = await store.storeLocalFile(36, sourcePath)
     expect(asset).toMatchObject({ mimeType, localUrl: `xingmang-asset://audio/${asset.assetId}` })
     expect(asset.fileName).toMatch(new RegExp(`^xingmang-[A-Za-z0-9_-]{43}\\${extension}$`))
@@ -123,7 +123,7 @@ describe('AiAudioAssetStore', () => {
     roots.push(outputRoot)
     const fixtureRoot = audioFixtureRoot()
     const sourcePath = path.join(fixtureRoot, '8月14日.wav')
-    const store = new AiAudioAssetStore({ outputRoot, now: () => new Date('2026-08-14T00:00:00.000Z') })
+    const store = new AiAudioAssetStore({ outputRoot, now: () => new Date('2026-08-14T12:00:00.000Z') })
 
     const first = await store.storeLocalFile(36, sourcePath)
     const second = await store.storeLocalFile(36, sourcePath)

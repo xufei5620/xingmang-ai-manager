@@ -1,4 +1,18 @@
 export type TemplateVariableType = 'text' | 'asset' | 'select'
+export type CanvasTemplateIndustry =
+  | 'story'
+  | 'commerce'
+  | 'architecture'
+  | 'social-media'
+  | 'education'
+  | 'game'
+  | 'marketing-film'
+
+export interface CanvasTemplateRequirement {
+  media: 'image' | 'video'
+  operation: 'generate' | 'edit'
+  options?: readonly ('size' | 'quality')[]
+}
 
 export interface TemplatePosition {
   x: number
@@ -37,6 +51,11 @@ export interface CanvasTemplate {
   name: string
   description: string
   category: 'image' | 'video'
+  industry: CanvasTemplateIndustry
+  deliverable: string
+  disclaimer?: string
+  featured?: boolean
+  requirements: readonly CanvasTemplateRequirement[]
   tags: readonly string[]
   thumbnail: { kind: 'color'; value: string }
   requiredNodeTypes: readonly string[]

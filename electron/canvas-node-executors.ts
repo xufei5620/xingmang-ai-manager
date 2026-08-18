@@ -141,12 +141,16 @@ export function createCanvasNodeExecutors(options: {
       signal.removeEventListener('abort', onAbort)
     }
   }
-  const passThrough: CanvasNodeExecutors['gallery'] = async ({ inputs }) => ({
-    ...(inputs.text !== undefined ? { outputText: inputs.text } : {}),
-    ...(inputs.image ? { assets: [inputs.image] } : {}),
-    ...(!inputs.image && inputs.video ? { assets: [inputs.video] } : {}),
-    ...(!inputs.image && !inputs.video && inputs.audio ? { assets: [inputs.audio] } : {}),
-  })
+  const passThrough: CanvasNodeExecutors['gallery'] = async ({ inputs }) => {
+    const images = inputs.images ?? (inputs.image ? [inputs.image] : [])
+    const videos = inputs.videos ?? (inputs.video ? [inputs.video] : [])
+    const audios = inputs.audios ?? (inputs.audio ? [inputs.audio] : [])
+    const assets = images.length > 0 ? images : videos.length > 0 ? videos : audios
+    return {
+      ...(inputs.text !== undefined ? { outputText: inputs.text } : {}),
+      ...(assets.length > 0 ? { assets: assets.map((asset) => structuredClone(asset)) } : {}),
+    }
+  }
   const imageInput: CanvasNodeExecutors['image-input'] = async ({ userId, node, inputs }) => {
     if (inputs.image) return { assets: [inputs.image] }
     const assetId = node.data.adoptedAssetId

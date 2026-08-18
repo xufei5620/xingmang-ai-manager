@@ -39,6 +39,8 @@ export interface CanvasRunPreflight {
   skippedCount: number
   blockedCount: number
   paidRequestCount: number
+  imageRequestCount: number
+  videoRequestCount: number
   risk: CanvasPreflightSeverity
   warnings: string[]
   canStart: boolean
@@ -118,6 +120,8 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
   const skippedCount = items.filter((item) => item.action === 'skip').length
   const blockedCount = items.filter((item) => item.action === 'blocked').length
   const paidRequestCount = items.filter((item) => item.action === 'execute' && item.paid).length
+  const imageRequestCount = items.filter((item) => item.action === 'execute' && imageRunNodeKinds.has(item.kind)).length
+  const videoRequestCount = items.filter((item) => item.action === 'execute' && videoRunNodeKinds.has(item.kind)).length
   if (paidRequestCount > 0) warnings.push(`本次最多提交 ${paidRequestCount} 个付费生成请求；不确定的上游提交不会自动重试`)
   if (cacheHitCount > 0) warnings.push(`已有 ${cacheHitCount} 个节点可复用缓存结果`)
   return {
@@ -131,6 +135,8 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
     skippedCount,
     blockedCount,
     paidRequestCount,
+    imageRequestCount,
+    videoRequestCount,
     risk: blockedCount > 0 ? 'blocking' : paidRequestCount > 0 ? 'warning' : 'info',
     warnings: [scopeLabel(input.scope), ...warnings],
     canStart: selected.size > 0 && blockedCount === 0,

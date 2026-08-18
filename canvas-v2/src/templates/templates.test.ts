@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
+import { readFileSync } from 'node:fs'
 import { builtinCanvasTemplates } from './builtin-templates'
 import { instantiateTemplate, placeTemplateInstance } from './instantiate-template'
+import { validateCanvasTemplate } from './validate-template'
+import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 
-const nodeTypes = new Set([
-  'prompt', 'image-input', 'video-input', 'image-generate', 'image-edit',
-  'video-generate', 'frame-extract', 'router', 'gallery', 'output',
-])
+const nodeTypes = new Set(builtinNodeRegistry.list().map((definition) => definition.type))
 
 function idFactory() {
   let id = 0
@@ -13,15 +13,22 @@ function idFactory() {
 }
 
 describe('built-in canvas templates', () => {
-  it('provides three Xingmang-original templates without example media', () => {
-    expect(builtinCanvasTemplates.map((template) => template.name)).toEqual([
+  it('provides 23 Xingmang-original templates without example media', () => {
+    expect(builtinCanvasTemplates).toHaveLength(23)
+    expect(builtinCanvasTemplates.slice(0, 3).map((template) => template.name)).toEqual([
       '快速文生图', '参考图改图', '产品图生成短视频',
     ])
     for (const template of builtinCanvasTemplates) {
       expect(template.provenance.kind).toBe('xingmang-original')
       expect(template.thumbnail.kind).toBe('color')
       expect(JSON.stringify(template)).not.toMatch(/https?:|data:|api[_-]?key|token|password/i)
+      expect(() => validateCanvasTemplate(template)).not.toThrow()
     }
+    expect(new Set(builtinCanvasTemplates.map((template) => template.id)).size).toBe(23)
+    const provenance = JSON.parse(readFileSync(new URL('../../../docs/canvas-third-party.json', import.meta.url), 'utf8')) as {
+      templates: { id: string; provenance: string }[]
+    }
+    expect(provenance.templates.map((entry) => entry.id).sort()).toEqual(builtinCanvasTemplates.map((template) => template.id).sort())
   })
 
   it('does not claim unsupported count semantics in built-in templates', () => {
@@ -110,5 +117,38 @@ describe('built-in canvas templates', () => {
       availableNodeTypes: nodeTypes,
       createId: idFactory(),
     })).toThrow(/禁止包含凭据/)
+  })
+
+  it('rejects unsafe variable paths without polluting global prototypes', () => {
+    for (const path of ['__proto__.polluted', 'constructor.prototype', 'settings.prototype.value']) {
+      const poisoned = structuredClone(builtinCanvasTemplates[0])
+      poisoned.variables[0].target.path = path
+      expect(() => instantiateTemplate(poisoned, {
+        values: { prompt: '测试' }, availableNodeTypes: nodeTypes, createId: idFactory(),
+      })).toThrow(/变量路径无效/)
+    }
+    expect((Object.prototype as { polluted?: unknown }).polluted).toBeUndefined()
+  })
+
+  it('validates graph ids, registry ports, versions, cardinality and layout', () => {
+    const duplicateEdge = structuredClone(builtinCanvasTemplates[0])
+    duplicateEdge.workflow.edges[1].id = duplicateEdge.workflow.edges[0].id
+    expect(() => validateCanvasTemplate(duplicateEdge)).toThrow(/连线 ID 重复/)
+
+    const stale = structuredClone(builtinCanvasTemplates[0])
+    stale.workflow.nodes[0].definitionVersion = 99
+    expect(() => validateCanvasTemplate(stale)).toThrow(/版本已过期/)
+
+    const unknownHandle = structuredClone(builtinCanvasTemplates[0])
+    unknownHandle.workflow.edges[0].targetHandle = 'in:image'
+    expect(() => validateCanvasTemplate(unknownHandle)).toThrow(/目标端口无效/)
+
+    const overlap = structuredClone(builtinCanvasTemplates[0])
+    overlap.workflow.nodes[1].position = { ...overlap.workflow.nodes[0].position }
+    expect(() => validateCanvasTemplate(overlap)).toThrow(/节点发生重叠/)
+
+    const duplicateVariable = structuredClone(builtinCanvasTemplates[0])
+    duplicateVariable.variables = [...duplicateVariable.variables, structuredClone(duplicateVariable.variables[0])]
+    expect(() => validateCanvasTemplate(duplicateVariable)).toThrow(/变量 ID 重复/)
   })
 })

@@ -19,7 +19,8 @@ export function RunPreflight({ preflight, onCancel, onConfirm }: RunPreflightPro
           <div><strong>{preflight.selectedNodeIds.length}</strong><span>个节点</span></div>
           <div><strong>{preflight.requestCount}</strong><span>个执行项</span></div>
           <div><strong>{preflight.cacheHitCount}</strong><span>个缓存</span></div>
-          <div className={preflight.paidRequestCount > 0 ? 'is-warning' : ''}><strong>{preflight.paidRequestCount}</strong><span>个付费请求</span></div>
+          <div className={preflight.imageRequestCount > 0 ? 'is-warning' : ''}><strong>{preflight.imageRequestCount}</strong><span>图片请求</span></div>
+          <div className={preflight.videoRequestCount > 0 ? 'is-warning' : ''}><strong>{preflight.videoRequestCount}</strong><span>视频请求</span></div>
         </div>
         <p className="run-preflight-scope">{preflight.warnings[0] ?? '当前运行范围'}</p>
         {preflight.blockedCount > 0 && (

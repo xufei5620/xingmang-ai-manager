@@ -22,6 +22,11 @@ import { computeCanvasNodeFingerprint } from './canvas-fingerprint'
 
 const DEFAULT_MAX_CONCURRENCY = 2
 const MAXIMUM_ERROR_LENGTH = 300
+const nonCacheableCanvasNodeKinds = new Set<CanvasRunNodeKind>(['gallery', 'router', 'output'])
+
+export function isCanvasNodeCacheEligible(kind: CanvasRunNodeKind): boolean {
+  return !nonCacheableCanvasNodeKinds.has(kind)
+}
 
 export interface CanvasNodeInputs {
   text?: string
@@ -497,7 +502,7 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       await updateStage(nodeId, 'resolving-cache')
       let cached: CanvasRunCacheEntry | null | undefined
       try {
-        cached = options.resolveCache
+        cached = isCanvasNodeCacheEligible(node.kind) && options.resolveCache
           ? await raceWithAbort(options.resolveCache(fingerprint, node), options.signal)
           : undefined
       } catch {
@@ -607,15 +612,17 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
           ...(candidates[0] ? { asset: candidates[0].asset } : {}),
         })
         try {
-          await options.storeCache?.({
-            version: canvasRunContractVersion,
-            fingerprint,
-            nodeKind: node.kind,
-            ...(candidates[0] ? { candidate: candidates[0] } : {}),
-            ...(result.outputText !== undefined ? { outputText: result.outputText } : {}),
-            createdAt: completedAt.toISOString(),
-            lastUsedAt: completedAt.toISOString(),
-          })
+          if (isCanvasNodeCacheEligible(node.kind)) {
+            await options.storeCache?.({
+              version: canvasRunContractVersion,
+              fingerprint,
+              nodeKind: node.kind,
+              ...(candidates[0] ? { candidate: candidates[0] } : {}),
+              ...(result.outputText !== undefined ? { outputText: result.outputText } : {}),
+              createdAt: completedAt.toISOString(),
+              lastUsedAt: completedAt.toISOString(),
+            })
+          }
         } catch {
           // Cache availability never changes the result of paid work. The
           // terminal run record still retains its owned asset candidates.

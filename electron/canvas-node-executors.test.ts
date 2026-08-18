@@ -412,4 +412,25 @@ describe('createCanvasNodeExecutors', () => {
     })
     expect(result?.assets).toEqual([video])
   })
+
+  it('aggregates all ordered gallery inputs from the highest-priority media family', async () => {
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+    })
+    const images = Array.from({ length: 6 }, (_, index) => ({
+      kind: 'image' as const,
+      assetId: String(index).repeat(43),
+      localUrl: `xingmang-asset://image/${String(index).repeat(43)}`,
+    }))
+    const result = await executors.gallery?.({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'gallery', kind: 'gallery', definitionVersion: 1, data: { prompt: '', model: '' } },
+      inputs: {
+        images,
+        videos: [{ kind: 'video', assetId: 'v'.repeat(43), localUrl: `xingmang-asset://video/${'v'.repeat(43)}` }],
+      },
+      signal: new AbortController().signal,
+    })
+    expect(result?.assets?.map((asset) => asset.assetId)).toEqual(images.map((asset) => asset.assetId))
+  })
 })

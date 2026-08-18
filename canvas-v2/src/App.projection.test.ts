@@ -41,7 +41,7 @@ describe('canvas workflow projection', () => {
     }))
     const graph = toCanvasRunGraph([video], [], { image: '生图分组', video: 'grok' })
     expect(graph.nodes[0].data.seconds).toBe('5')
-    expect(graph.nodes[0].data.settings?.durationSeconds).toBeUndefined()
+    expect((graph.nodes[0].data as Record<string, unknown>).durationSeconds).toBeUndefined()
 
     const legacy = workflowNodeData('video-generate', { durationSeconds: 8 })
     expect(legacy.seconds).toBeUndefined()

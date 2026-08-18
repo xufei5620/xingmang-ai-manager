@@ -1722,12 +1722,14 @@ button:disabled {
 }
 
 .wf-port {
-  z-index: 5;
-  width: 11px;
-  height: 11px;
+  z-index: 20 !important;
+  width: 13px;
+  height: 13px;
+  pointer-events: auto !important;
   border: 2px solid var(--surface-2);
   box-shadow: 0 0 0 1px currentColor;
 }
+.wf-port::after { content: ''; position: absolute; inset: -6px; border-radius: 999px; }
 
 .wf-port-text { color: var(--port-text); background: var(--port-text); }
 .wf-port-image { color: var(--port-image); background: var(--port-image); }
@@ -1996,4 +1998,62 @@ button:disabled {
     width: min(280px, calc(100vw - 48px));
     min-width: 0;
   }
+}
+/* 行业模板店面：沿用画布的暗色表面与暖色主操作，不加载远程缩略图。 */
+.template-catalog-backdrop { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 24px; background: rgba(4, 7, 12, .72); backdrop-filter: blur(8px); }
+.template-catalog-dialog { width: min(1160px, calc(100vw - 48px)); height: min(820px, calc(100vh - 48px)); overflow: hidden; display: flex; flex-direction: column; color: var(--text, #eef2f8); background: linear-gradient(145deg, #111722, #0b1018); border: 1px solid rgba(255,255,255,.1); border-radius: 20px; box-shadow: 0 28px 90px rgba(0,0,0,.46); }
+.template-catalog-header { min-height: 64px; padding: 0 20px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px solid rgba(255,255,255,.08); }
+.template-catalog-header > div, .template-catalog-header span { display: flex; align-items: center; gap: 10px; }
+.template-back, .template-close { width: 34px; height: 34px; display: grid; place-items: center; color: inherit; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); border-radius: 10px; }
+.template-catalog-body { min-height: 0; flex: 1; overflow: auto; padding: 22px; }
+.template-catalog-tools { display: flex; gap: 12px; margin-bottom: 22px; }
+.template-catalog-tools label { flex: 1; display: flex; align-items: center; gap: 9px; padding: 0 12px; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.08); border-radius: 12px; }
+.template-catalog-tools input, .template-catalog-tools select, .template-configurator textarea, .template-configurator select { color: inherit; background: #151c28; border: 1px solid rgba(255,255,255,.1); border-radius: 10px; }
+.template-catalog-tools input { width: 100%; min-height: 42px; padding: 0; background: transparent; border: 0; outline: 0; }
+.template-catalog-tools select { min-width: 170px; padding: 0 12px; }
+.template-featured-title { display: flex; justify-content: space-between; margin-bottom: 12px; color: #aeb8c8; }
+.template-card-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; }
+.template-card { position: relative; min-height: 220px; display: flex; flex-direction: column; gap: 12px; padding: 18px; overflow: hidden; background: rgba(255,255,255,.045); border: 1px solid rgba(255,255,255,.08); border-radius: 15px; }
+.template-card:hover { border-color: rgba(255,183,77,.35); transform: translateY(-1px); }
+.template-card-swatch { position: absolute; inset: 0 0 auto; height: 4px; }
+.template-card h3 { margin: 5px 0 7px; font-size: 16px; }
+.template-card p, .template-card small { margin: 0; color: #98a4b6; }
+.template-card-meta { display: flex; gap: 8px; margin-top: auto; }
+.template-card-meta span { padding: 4px 8px; font-size: 12px; color: #c5cfdd; background: rgba(255,255,255,.06); border-radius: 999px; }
+.template-card button, .template-configurator footer button { min-height: 38px; color: inherit; background: rgba(255,255,255,.07); border: 1px solid rgba(255,255,255,.1); border-radius: 10px; }
+.template-card button:hover, .template-configurator footer button:hover { border-color: rgba(255,183,77,.4); }
+.template-card-warning { color: #d6a85f !important; }
+.template-configurator { min-height: 0; flex: 1; display: grid; grid-template-columns: 330px minmax(0, 1fr); }
+.template-configurator > aside { padding: 28px; background: rgba(255,255,255,.025); border-right: 1px solid rgba(255,255,255,.08); }
+.template-swatch-large { width: 68px; height: 68px; display: block; border-radius: 18px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.18); }
+.template-configurator aside h2 { margin: 22px 0 8px; }
+.template-configurator aside p { color: #aeb8c8; line-height: 1.6; }
+.template-disclaimer { margin-top: 20px; padding: 12px; display: grid; gap: 5px; color: #d6c49f; background: rgba(222,164,70,.08); border: 1px solid rgba(222,164,70,.2); border-radius: 12px; }
+.template-request-estimate { margin-top: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.template-request-estimate span, .template-request-estimate strong { padding: 9px; background: rgba(255,255,255,.05); border-radius: 9px; font-size: 12px; }
+.template-request-estimate strong { grid-column: 1 / -1; color: #ffca78; }
+.template-configurator form { min-height: 0; overflow: auto; padding: 26px 30px; }
+.template-configurator form > label { display: grid; gap: 7px; margin: 0 0 16px; }
+.template-configurator textarea, .template-configurator select { width: 100%; padding: 10px 12px; resize: vertical; }
+.template-import-asset { justify-self: start; min-height: 32px; padding: 0 10px; color: #cbd6e8; background: rgba(255,255,255,.05); border: 1px solid rgba(255,255,255,.1); border-radius: 8px; }
+.template-import-asset:hover { border-color: rgba(255,183,77,.4); color: #fff; }
+.template-configurator b, .template-field-error, .template-unavailable { color: #ff8f8f; }
+.template-configurator footer { position: sticky; bottom: -26px; display: flex; justify-content: flex-end; gap: 10px; padding: 16px 0 26px; background: linear-gradient(transparent, #0d131d 28%); }
+.template-configurator footer button { padding: 0 16px; }
+.template-configurator footer .is-primary { color: #201406; background: #f1ac4b; border-color: #f1ac4b; }
+.template-configurator footer .is-primary:disabled { cursor: not-allowed; opacity: .45; }
+.template-empty-assets, .template-unavailable { font-size: 12px; }
+@media (max-width: 960px) {
+  .template-catalog-backdrop { padding: 10px; }
+  .template-catalog-dialog { width: calc(100vw - 20px); height: calc(100vh - 20px); border-radius: 14px; }
+  .template-card-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .template-configurator { grid-template-columns: 260px minmax(0, 1fr); }
+}
+@media (max-width: 700px) {
+  .template-card-grid { grid-template-columns: 1fr; }
+  .template-configurator { display: block; overflow: auto; }
+  .template-configurator > aside { border-right: 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+  .template-configurator form { overflow: visible; }
+  .template-catalog-tools { flex-direction: column; }
+  .template-catalog-tools select { min-height: 42px; }
 }

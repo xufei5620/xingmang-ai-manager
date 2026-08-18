@@ -27,8 +27,26 @@ describe('canvas run preflight', () => {
     expect(result.requestCount).toBe(2)
     expect(result.cacheHitCount).toBe(1)
     expect(result.paidRequestCount).toBe(1)
+    expect(result.imageRequestCount).toBe(0)
+    expect(result.videoRequestCount).toBe(1)
     expect(result.canStart).toBe(true)
     expect(result.risk).toBe('warning')
+  })
+
+  it('counts image and video requests separately and discounts explicit cache hits', () => {
+    const nodes: CanvasRunGraph['nodes'] = Array.from({ length: 12 }, (_, index) => ({
+      id: `edit-${index}`, kind: 'image-edit', definitionVersion: 1,
+      data: { prompt: '改图', model: 'gpt-image-2', group: '生图分组', adoptedAssetId: 'a'.repeat(43) },
+    }))
+    const maximum = buildCanvasRunPreflight({
+      graph: { nodes, edges: [] }, scope: { kind: 'all' }, imageGroup: '生图分组', imageModels: ['gpt-image-2'], videoModels: [],
+    })
+    expect(maximum).toMatchObject({ imageRequestCount: 12, videoRequestCount: 0, paidRequestCount: 12 })
+    const cached = buildCanvasRunPreflight({
+      graph: { nodes, edges: [] }, scope: { kind: 'all' }, cachedNodeIds: nodes.slice(0, 4).map((node) => node.id),
+      imageGroup: '生图分组', imageModels: ['gpt-image-2'], videoModels: [],
+    })
+    expect(cached).toMatchObject({ imageRequestCount: 8, videoRequestCount: 0, paidRequestCount: 8, cacheHitCount: 4 })
   })
 
   it('blocks missing group/model and missing local input without touching credentials', () => {
