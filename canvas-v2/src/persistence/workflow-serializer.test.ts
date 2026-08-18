@@ -305,6 +305,15 @@ describe('workflow schema v2 serializer', () => {
     expect(parseWorkflowFile(serialized)?.mediaGroups).toEqual({ image: '生图分组', video: 'grok' })
   })
 
+  it('round-trips a bounded node-level group override', () => {
+    const document = v2Document()
+    ;(document.nodes[0].data as Record<string, unknown>).group = '节点专用分组'
+    const workflow = parseWorkflowFile(JSON.stringify(document))
+    const serialized = serializeWorkflow(workflow as WorkflowFile)
+
+    expect(parseWorkflowFile(serialized)?.nodes[0].data.group).toBe('节点专用分组')
+  })
+
   it('ignores malformed media group configuration without rejecting the project', () => {
     const result = parseWorkflowFileDetailed(JSON.stringify(v2Document({
       mediaGroups: { image: 'x'.repeat(129), video: 'grok' },

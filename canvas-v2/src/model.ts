@@ -46,6 +46,8 @@ export interface WorkflowNodeData {
   prompt: string
   /** relay 侧模型名。渠道配置好之前允许为空,mock 执行器不校验。 */
   model: string
+  /** 可选的节点级 relay 分组覆盖；为空时继承项目级生成配置。 */
+  group?: string
   /** 图像画质档(gpt-image 系必须显式传,默认 low——auto 有 35 倍费用陷阱,见 RECON-image-generation)。 */
   quality?: string
   /** 图像尺寸(按模型区分合法值,见 models.ts 预设)。 */
