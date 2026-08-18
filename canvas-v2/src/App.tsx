@@ -1183,6 +1183,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     if (event.type === 'node-stage') {
       patchNodeData(event.nodeId, {
         runStage: event.stage,
+        runProgress: event.progress,
+        runProgressMode: event.progressMode,
+        runHealth: event.health,
         status: event.stage === 'validating' || event.stage === 'resolving-cache' || event.stage === 'waiting-slot'
           ? 'queued'
           : 'running',
@@ -1198,7 +1201,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         status: state,
         ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
         ...(typeof event.costQuota === 'number' ? { costQuota: event.costQuota } : {}),
-        ...(['succeeded', 'failed', 'skipped', 'cancelled', 'cached', 'interrupted'].includes(event.state) ? { runStage: undefined } : {}),
+        ...(['succeeded', 'failed', 'skipped', 'cancelled', 'cached', 'interrupted'].includes(event.state) ? {
+          runStage: undefined, runProgress: undefined, runProgressMode: undefined, runHealth: undefined,
+        } : {}),
       })
     }
     if (event.type === 'run-terminal') {

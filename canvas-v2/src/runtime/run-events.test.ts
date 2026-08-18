@@ -22,7 +22,10 @@ function record(): CanvasRunRecord {
   }
 }
 
-function stageEvent(sequence: number, stage: 'processing' | 'saving' = 'processing'): CanvasRunEvent {
+function stageEvent(
+  sequence: number,
+  stage: 'processing' | 'saving' = 'processing',
+): Extract<CanvasRunEvent, { type: 'node-stage' }> {
   return {
     version: 1,
     type: 'node-stage',
@@ -44,6 +47,24 @@ describe('mergeCanvasRunEvent', () => {
     expect(second.nodes[0]).toMatchObject({ latestStage: 'saving', latestStageSequence: 2 })
     expect(second.events.map((event) => event.sequence)).toEqual([1, 2])
     expect(stale).toBe(second)
+  })
+
+  it('keeps same-stage progress changes as distinct ordered events', () => {
+    const first = mergeCanvasRunEvent([record()], {
+      ...stageEvent(1), progress: 12, progressMode: 'determinate', health: 'normal',
+    })[0]
+    const second = mergeCanvasRunEvent([first], {
+      ...stageEvent(2), progress: 42, progressMode: 'determinate', health: 'normal',
+    })[0]
+    const delayed = mergeCanvasRunEvent([second], {
+      ...stageEvent(3), progress: 42, progressMode: 'indeterminate', health: 'delayed',
+    })[0]
+
+    expect(delayed.events).toHaveLength(3)
+    expect(delayed.nodes[0]).toMatchObject({
+      latestStage: 'processing', latestProgress: 42,
+      latestProgressMode: 'indeterminate', latestHealth: 'delayed', latestStageSequence: 3,
+    })
   })
 
   it('bounds a long live renderer timeline without losing the latest stage', () => {

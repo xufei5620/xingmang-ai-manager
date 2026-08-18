@@ -174,6 +174,32 @@ describe('run record projection', () => {
     expect(projected[0].data.result?.assetId).toBe('old')
   })
 
+  it('shows live progress while running and clears it for terminal records', () => {
+    const running = runRecord()
+    running.status = 'running'
+    running.completedAt = undefined
+    running.nodes[0] = {
+      ...running.nodes[0],
+      state: 'running',
+      latestStage: 'processing',
+      latestProgress: 38,
+      latestProgressMode: 'determinate',
+      latestHealth: 'delayed',
+    }
+    const live = projectRunRecordToNodes([{ id: 'generate', data: data() }], running)
+    expect(live[0].data).toMatchObject({
+      runStage: 'processing', runProgress: 38, runProgressMode: 'determinate', runHealth: 'delayed',
+    })
+
+    running.status = 'succeeded'
+    running.nodes[0].state = 'succeeded'
+    const completed = projectRunRecordToNodes(live, running)
+    expect(completed[0].data.runStage).toBeUndefined()
+    expect(completed[0].data.runProgress).toBeUndefined()
+    expect(completed[0].data.runProgressMode).toBeUndefined()
+    expect(completed[0].data.runHealth).toBeUndefined()
+  })
+
   it('can reselect and adopt a candidate from an older run', () => {
     const historical = runRecord().nodes[0].attempts[0].candidates[1]
     const current = [{ id: 'generate', data: data() }, { id: 'output', data: data() }]

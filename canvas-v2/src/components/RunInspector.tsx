@@ -116,7 +116,9 @@ export function RunInspector(props: RunInspectorProps) {
             <section className="run-node-record" key={node.nodeId}>
               <div className="run-node-head">
                 <button type="button" title="定位到画布节点" onClick={() => props.onLocateNode(node.nodeId)}>{node.kind}</button>
-                <span>{node.latestStage ? stageLabel[node.latestStage] : statusLabel[node.state] ?? node.state}</span>
+                <span>{['running', 'cancelling', 'queued'].includes(node.state) && node.latestStage
+                  ? stageLabel[node.latestStage]
+                  : statusLabel[node.state] ?? node.state}</span>
               </div>
               {node.errorMessage && <><p role="alert">{node.errorMessage}</p><small className="run-error-action">可先检查分组、模型和素材归属；若为网络或下载失败，可在当前节点重新发起。</small></>}
               {attempt && (

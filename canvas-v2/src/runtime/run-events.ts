@@ -28,6 +28,9 @@ export function mergeCanvasRunEvent(
             latestStage: event.stage,
             latestStageAt: event.at,
             latestStageSequence: event.sequence,
+            latestProgress: event.progress,
+            latestProgressMode: event.progressMode,
+            latestHealth: event.health,
           }
           : node),
       }

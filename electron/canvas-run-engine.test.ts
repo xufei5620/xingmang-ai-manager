@@ -8,6 +8,7 @@ import {
 import type {
   CanvasRunAsset,
   CanvasRunCacheEntry,
+  CanvasRunEvent,
   CanvasRunGraph,
   CanvasRunGraphNode,
   CanvasRunRecord,
@@ -79,7 +80,7 @@ describe('executeCanvasRun', () => {
     expect(record.events.map((event) => event.sequence)).toEqual(record.events.map((_event, index) => index + 1))
   })
 
-  it('persists ordered node stages and retains the latest stage outside the bounded timeline', async () => {
+  it('persists ordered node stages and clears transient stage state at terminal success', async () => {
     const imageExecutor = vi.fn(async ({ reportStage }) => {
       await reportStage('downloading')
       await reportStage('saving')
@@ -95,11 +96,33 @@ describe('executeCanvasRun', () => {
     expect(stages).toEqual([
       'validating', 'resolving-cache', 'waiting-slot', 'submitting', 'processing', 'downloading', 'saving',
     ])
-    expect(record.nodes[0]).toMatchObject({
-      latestStage: 'saving',
-      latestStageSequence: record.events.find((event) => event.type === 'node-stage' && event.stage === 'saving')?.sequence,
-    })
+    expect(record.nodes[0]).not.toHaveProperty('latestStage')
+    expect(record.nodes[0]).not.toHaveProperty('latestStageSequence')
     expect(record.events.map((event) => event.sequence)).toEqual(record.events.map((_event, index) => index + 1))
+  })
+
+  it('persists changing progress on the same stage and suppresses only exact duplicates', async () => {
+    const imageExecutor = vi.fn(async ({ reportStage }) => {
+      await reportStage('processing', { value: 10, mode: 'determinate', health: 'normal' })
+      await reportStage('processing', { value: 45, mode: 'determinate', health: 'normal' })
+      await reportStage('processing', { value: 45, mode: 'determinate', health: 'normal' })
+      await reportStage('processing', { value: 45, mode: 'indeterminate', health: 'delayed' })
+      return { assets: [asset()] }
+    })
+    const record = await executeCanvasRun(runOptions(graph([node('image', 'image')]), {
+      executors: executors({ image: imageExecutor }),
+    }))
+    const progressEvents = record.events.filter((event) => (
+      event.type === 'node-stage' && event.stage === 'processing' && event.progress !== undefined
+    ))
+
+    expect(progressEvents).toMatchObject([
+      { progress: 10, progressMode: 'determinate', health: 'normal' },
+      { progress: 45, progressMode: 'determinate', health: 'normal' },
+      { progress: 45, progressMode: 'indeterminate', health: 'delayed' },
+    ])
+    expect(record.nodes[0]).not.toHaveProperty('latestStage')
+    expect(record.nodes[0]).not.toHaveProperty('latestProgress')
   })
 
   it('keeps a 5000-node stage timeline bounded with monotonic retained sequences', () => {
@@ -370,11 +393,25 @@ describe('executeCanvasRun', () => {
       onEvent: async (event) => { notified.push(event.sequence) },
     }))
 
-    await expect(pending).rejects.toThrow('画布运行记录持久化失败：transient disk error')
+    await expect(pending).resolves.toMatchObject({ status: 'succeeded' })
     expect(text).toHaveBeenCalledOnce()
     expect(persisted.map((entry) => entry.sequence)).not.toContain(2)
     expect(persisted.at(-1)?.status).toBe('succeeded')
-    expect(notified).toEqual(persisted.map((entry) => entry.sequence))
+    expect(notified).toContain(2)
+    expect(notified.at(-1)).toBe(persisted.at(-1)?.sequence)
+  })
+
+  it('delivers the terminal event even when its final durable snapshot fails', async () => {
+    const notified: CanvasRunEvent[] = []
+    const pending = executeCanvasRun(runOptions(graph([node('a', 'text')]), {
+      persistRecord: async (snapshot) => {
+        if (snapshot.events.at(-1)?.type === 'run-terminal') throw new Error('terminal disk error')
+      },
+      onEvent: async (event) => { notified.push(event) },
+    }))
+
+    await expect(pending).rejects.toThrow('画布运行记录持久化失败：terminal disk error')
+    expect(notified.at(-1)).toMatchObject({ type: 'run-terminal', status: 'succeeded' })
   })
 })
 

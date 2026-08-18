@@ -174,6 +174,9 @@ export type CanvasRunEvent = CanvasRunEventBase & (
     nodeId: string
     stage: CanvasRunNodeStage
     attemptId?: string
+    progress?: number
+    progressMode?: 'determinate' | 'indeterminate'
+    health?: 'normal' | 'delayed'
   }
   | {
     type: 'run-terminal'
@@ -235,6 +238,9 @@ export interface CanvasRunRecord {
     latestStage?: CanvasRunNodeStage
     latestStageAt?: string
     latestStageSequence?: number
+    latestProgress?: number
+    latestProgressMode?: 'determinate' | 'indeterminate'
+    latestHealth?: 'normal' | 'delayed'
     errorMessage?: string
     attempts: Array<{
       attemptId: string

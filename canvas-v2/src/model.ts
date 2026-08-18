@@ -74,6 +74,9 @@ export interface WorkflowNodeData {
   latestAttemptDurationMs?: number
   /** 主进程签发的当前运行阶段；仅用于实时展示，不进入工作流文件。 */
   runStage?: NodeRunStage
+  runProgress?: number
+  runProgressMode?: 'determinate' | 'indeterminate'
+  runHealth?: 'normal' | 'delayed'
 }
 
 export interface WorkflowNode {
