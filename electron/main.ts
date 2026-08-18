@@ -898,6 +898,7 @@ if (!hasSingleInstanceLock) {
         prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
         storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
         readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
+        readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
       },
     })
     const canvasRunStore = new CanvasRunStore({

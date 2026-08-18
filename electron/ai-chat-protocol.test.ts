@@ -32,8 +32,11 @@ describe('AI model capabilities', () => {
     }
   })
 
-  it('recognizes the two verified Grok video models without treating them as chat', () => {
-    for (const model of ['grok-imagine-video', 'grok-imagine-video-1.5']) {
+  it('recognizes every verified video model without treating it as chat', () => {
+    for (const model of [
+      'grok-imagine-video', 'grok-imagine-video-1.5',
+      'minimax-h3-mini', 'minimax-h3-fast', 'minimax-h3-base',
+    ]) {
       expect(resolveAiModelCapability(model)).toMatchObject({
         kind: 'video', model, available: true, source: 'preset', maximumSeconds: 15,
       })
@@ -298,6 +301,26 @@ describe('video generation protocol', () => {
     expect(() => buildVideoGenerationRequest({
       model: 'grok-imagine-video', prompt: 'p', seconds: '5', width: 1920, height: 1080,
     })).toThrowError(expect.objectContaining({ code: 'invalid-parameter' }))
+  })
+
+  it('builds and bounds the MiniMax H3 request contract', () => {
+    expect(buildVideoGenerationRequest({
+      model: 'minimax-h3-base', prompt: '镜头缓慢推进', seconds: '10', mode: 'ref2va',
+      resolution: '720p', aspectRatio: '21:9', promptOptimization: true,
+      imageCount: 2, videoCount: 1, audioCount: 1,
+    })).toEqual({
+      model: 'minimax-h3-base', mode: 'ref2va', resolution: '720p', prompt: '镜头缓慢推进',
+      seconds: '10', aspect_ratio: '21:9', prompt_optimization: true,
+    })
+    expect(() => buildVideoGenerationRequest({
+      model: 'minimax-h3-fast', prompt: 'p', seconds: '4', mode: 't2va',
+    })).toThrowError(expect.objectContaining({ code: 'invalid-video-seconds' }))
+    expect(() => buildVideoGenerationRequest({
+      model: 'minimax-h3-fast', prompt: 'p', seconds: '5', mode: 'i2va', imageCount: 2,
+    })).toThrowError(expect.objectContaining({ code: 'invalid-video-media' }))
+    expect(() => buildVideoGenerationRequest({
+      model: 'minimax-h3-fast', prompt: 'p', seconds: '5', mode: 'ref2va', imageCount: 10,
+    })).toThrowError(expect.objectContaining({ code: 'invalid-video-media' }))
   })
 })
 

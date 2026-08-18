@@ -112,6 +112,17 @@ export class CanvasProjectAssetManager {
     return `data:${owned.asset.mimeType};base64,${owned.bytes.toString('base64')}`
   }
 
+  async readMediaOwned(
+    userId: number,
+    assetId: string,
+    kind: 'image' | 'video' | 'audio',
+    projectId?: string,
+  ): Promise<AiOwnedAssetRead | AiVideoOwnedAssetRead | AiAudioOwnedAssetRead> {
+    if (!projectId) return this.readOwned(userId, assetId, kind)
+    const context = await this.forProject(userId, projectId)
+    return this.readFromContext(context, userId, assetId, kind)
+  }
+
   async readOwned(
     userId: number,
     assetId: string,

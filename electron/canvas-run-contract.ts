@@ -34,6 +34,10 @@ export interface CanvasRunGraphNode {
     size?: string
     seconds?: string
     adoptedAssetId?: string
+    videoMode?: 'auto' | 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'
+    videoResolution?: '480p' | '720p'
+    videoAspectRatio?: '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9' | '9:21' | '4:5' | '5:4'
+    promptOptimization?: boolean
   }
 }
 

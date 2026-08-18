@@ -241,6 +241,50 @@ describe('createCanvasNodeExecutors', () => {
     })])
   })
 
+  it('passes all owned MiniMax media references and explicit H3 settings', async () => {
+    const generate = vi.fn(async () => ({
+      assetId: 'z'.repeat(43), localUrl: `xingmang-asset://video/${'z'.repeat(43)}`,
+      mimeType: 'video/mp4' as const, fileName: 'video.mp4', taskId: 'minimax_task',
+    }))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoService: { generate, cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      videoGroup: 'video',
+    })
+    const images = ['a', 'b'].map((prefix) => ({
+      kind: 'image' as const,
+      assetId: prefix.repeat(43),
+      localUrl: `xingmang-asset://image/${prefix.repeat(43)}`,
+    }))
+    const videos = [{
+      kind: 'video' as const,
+      assetId: 'v'.repeat(43),
+      localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
+    }]
+    const audios = [{
+      kind: 'audio' as const,
+      assetId: 'm'.repeat(43),
+      localUrl: `xingmang-asset://audio/${'m'.repeat(43)}`,
+    }]
+
+    await executors.video({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 41, userId: 7,
+      node: { id: 'video', kind: 'video-generate', definitionVersion: 1, data: {
+        prompt: '保留人物和声音', model: 'minimax-h3-base', seconds: '10',
+        videoMode: 'ref2va', videoResolution: '720p', videoAspectRatio: '9:16', promptOptimization: true,
+      } },
+      inputs: { images, videos, audios }, signal: new AbortController().signal,
+    })
+
+    expect(generate).toHaveBeenCalledWith(41, expect.objectContaining({
+      model: 'minimax-h3-base', mode: 'ref2va', resolution: '720p', aspectRatio: '9:16',
+      promptOptimization: true,
+      imageAssetIds: ['a'.repeat(43), 'b'.repeat(43)],
+      videoAssetIds: ['v'.repeat(43)],
+      audioAssetIds: ['m'.repeat(43)],
+    }))
+  })
+
   it.each(['image-generate', 'image-edit'] as const)(
     'passes the saved %s result into downstream image-to-video generation',
     async (producerKind) => {

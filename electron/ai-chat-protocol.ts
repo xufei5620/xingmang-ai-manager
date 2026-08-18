@@ -41,6 +41,10 @@ export type AiChatParameters = {
 
 export type ImageQuality = 'low' | 'medium' | 'high' | 'auto'
 export type ImageModelProvider = 'gpt-image' | 'jimeng' | 'grok-image'
+export type VideoModelProvider = 'grok-video' | 'minimax-h3'
+export type MiniMaxVideoMode = 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'
+export type MiniMaxVideoResolution = '480p' | '720p'
+export type MiniMaxVideoAspectRatio = '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9' | '9:21' | '4:5' | '5:4'
 
 export type ImageSizePolicy =
   | {
@@ -81,11 +85,15 @@ export type ImageModelCapability = {
 export type VideoModelCapability = {
   kind: 'video'
   model: string
+  provider: VideoModelProvider
   available: true
   hidden: false
   source: 'preset'
+  minimumSeconds: number
   maximumSeconds: 15
-  supportsImageInput: true
+  supportsImageInput: boolean
+  supportsVideoInput: boolean
+  supportsAudioInput: boolean
 }
 
 export type AiModelCapability = ChatModelCapability | ImageModelCapability | VideoModelCapability
@@ -115,7 +123,7 @@ export type ImageGenerationRequestBody = {
   }
 }
 
-export type VideoGenerationRequestBody = {
+export type GrokVideoGenerationRequestBody = {
   model: string
   prompt: string
   seconds: string
@@ -123,6 +131,18 @@ export type VideoGenerationRequestBody = {
   width?: number
   height?: number
 }
+
+export type MiniMaxVideoGenerationRequestBody = {
+  model: string
+  mode: MiniMaxVideoMode
+  resolution: MiniMaxVideoResolution
+  prompt: string
+  seconds: string
+  aspect_ratio: MiniMaxVideoAspectRatio
+  prompt_optimization: boolean
+}
+
+export type VideoGenerationRequestBody = GrokVideoGenerationRequestBody | MiniMaxVideoGenerationRequestBody
 
 const allowedVideoDimensions = new Set([
   '1280x720', '720x1280', '1024x1024', '1024x768', '768x1024',
@@ -140,6 +160,10 @@ export type AiChatProtocolErrorCode =
   | 'invalid-image-quality'
   | 'model-not-video'
   | 'invalid-video-seconds'
+  | 'invalid-video-mode'
+  | 'invalid-video-resolution'
+  | 'invalid-video-aspect-ratio'
+  | 'invalid-video-media'
 
 export class AiChatProtocolError extends Error {
   readonly code: AiChatProtocolErrorCode
@@ -274,6 +298,12 @@ const UNAVAILABLE_GPT_IMAGE_15_PATTERN = /^gpt-image-1\.5(?:-|$)/i
 const JIMENG_MODEL_PATTERN = /^jimeng_[a-z0-9][a-z0-9_]*$/i
 const GROK_IMAGE_MODEL_PATTERN = /^grok-imagine-image(?:-[a-z0-9][a-z0-9._-]*)?$/i
 const IMAGE_SIZE_PATTERN = /^(\d{3,4})x(\d{3,4})$/
+const MINIMAX_VIDEO_MODEL_PATTERN = /^minimax-h3-(?:mini|fast|base)$/
+const MINIMAX_VIDEO_MODES = new Set<MiniMaxVideoMode>(['t2va', 'i2va', 'fl2va', 'l2va', 'ref2va'])
+const MINIMAX_VIDEO_RESOLUTIONS = new Set<MiniMaxVideoResolution>(['480p', '720p'])
+const MINIMAX_VIDEO_ASPECT_RATIOS = new Set<MiniMaxVideoAspectRatio>([
+  '16:9', '9:16', '1:1', '4:3', '3:4', '21:9', '9:21', '4:5', '5:4',
+])
 
 function requireBoundedIdentifier(
   value: unknown,
@@ -328,8 +358,17 @@ export function resolveAiModelCapability(model: string): AiModelCapability {
 
   if (normalized === 'grok-imagine-video' || normalized === 'grok-imagine-video-1.5') {
     return {
-      kind: 'video', model: normalized, available: true, hidden: false,
-      source: 'preset', maximumSeconds: 15, supportsImageInput: true,
+      kind: 'video', model: normalized, provider: 'grok-video', available: true, hidden: false,
+      source: 'preset', minimumSeconds: 1, maximumSeconds: 15,
+      supportsImageInput: true, supportsVideoInput: false, supportsAudioInput: false,
+    }
+  }
+
+  if (MINIMAX_VIDEO_MODEL_PATTERN.test(normalized)) {
+    return {
+      kind: 'video', model: normalized, provider: 'minimax-h3', available: true, hidden: false,
+      source: 'preset', minimumSeconds: 5, maximumSeconds: 15,
+      supportsImageInput: true, supportsVideoInput: true, supportsAudioInput: true,
     }
   }
 
@@ -374,6 +413,9 @@ const IMAGE_GROUP_MODEL_ORDER = [
   'grok-imagine-image',
   'grok-imagine-video-1.5',
   'grok-imagine-video',
+  'minimax-h3-base',
+  'minimax-h3-fast',
+  'minimax-h3-mini',
 ] as const
 
 export function selectAiChatModelsForGroup(group: string, models: readonly string[]): string[] {
@@ -570,6 +612,13 @@ export function buildVideoGenerationRequest(input: {
   image?: string
   width?: number
   height?: number
+  mode?: MiniMaxVideoMode
+  resolution?: MiniMaxVideoResolution
+  aspectRatio?: MiniMaxVideoAspectRatio
+  promptOptimization?: boolean
+  imageCount?: number
+  videoCount?: number
+  audioCount?: number
 }): VideoGenerationRequestBody {
   const capability = resolveAiModelCapability(input.model)
   if (capability.kind !== 'video') {
@@ -578,11 +627,74 @@ export function buildVideoGenerationRequest(input: {
   if (typeof input.prompt !== 'string' || input.prompt.trim().length === 0) {
     throw new AiChatProtocolError('invalid-message', 'video prompt is required')
   }
-  if (input.prompt.length > AI_CHAT_LIMITS.promptLength) {
+  const maximumPromptLength = capability.provider === 'minimax-h3' ? 30_000 : AI_CHAT_LIMITS.promptLength
+  if (input.prompt.length > maximumPromptLength) {
     throw new AiChatProtocolError('input-limit-exceeded', 'video prompt is too long')
   }
-  if (typeof input.seconds !== 'string' || !/^(?:[1-9]|1[0-5])$/.test(input.seconds)) {
-    throw new AiChatProtocolError('invalid-video-seconds', 'video seconds must be an integer string between 1 and 15')
+  const seconds = typeof input.seconds === 'string' && /^(?:[1-9]|1[0-5])$/.test(input.seconds)
+    ? Number(input.seconds)
+    : Number.NaN
+  if (!Number.isInteger(seconds) || seconds < capability.minimumSeconds || seconds > capability.maximumSeconds) {
+    throw new AiChatProtocolError(
+      'invalid-video-seconds',
+      `video seconds must be an integer string between ${capability.minimumSeconds} and ${capability.maximumSeconds}`,
+    )
+  }
+
+  const imageCount = input.imageCount ?? (input.image ? 1 : 0)
+  const videoCount = input.videoCount ?? 0
+  const audioCount = input.audioCount ?? 0
+  if (![imageCount, videoCount, audioCount].every((count) => Number.isSafeInteger(count) && count >= 0)) {
+    throw new AiChatProtocolError('invalid-video-media', 'video media counts are invalid')
+  }
+
+  if (capability.provider === 'minimax-h3') {
+    if (!input.mode || !MINIMAX_VIDEO_MODES.has(input.mode)) {
+      throw new AiChatProtocolError('invalid-video-mode', 'MiniMax video mode is invalid')
+    }
+    const resolution = input.resolution ?? '720p'
+    if (!MINIMAX_VIDEO_RESOLUTIONS.has(resolution)) {
+      throw new AiChatProtocolError('invalid-video-resolution', 'MiniMax video resolution is invalid')
+    }
+    const aspectRatio = input.aspectRatio ?? '16:9'
+    if (!MINIMAX_VIDEO_ASPECT_RATIOS.has(aspectRatio)) {
+      throw new AiChatProtocolError('invalid-video-aspect-ratio', 'MiniMax video aspect ratio is invalid')
+    }
+    if (imageCount > 9 || videoCount > 3 || audioCount > 3 || imageCount + videoCount + audioCount > 15) {
+      throw new AiChatProtocolError('invalid-video-media', 'MiniMax video media count exceeds the API limit')
+    }
+    const mediaCount = imageCount + videoCount + audioCount
+    if (input.mode === 't2va' && mediaCount !== 0) {
+      throw new AiChatProtocolError('invalid-video-media', 'T2VA does not accept media inputs')
+    }
+    if ((input.mode === 'i2va' || input.mode === 'l2va') && (imageCount !== 1 || videoCount !== 0 || audioCount !== 0)) {
+      throw new AiChatProtocolError('invalid-video-media', `${input.mode.toUpperCase()} requires exactly one image`)
+    }
+    if (input.mode === 'fl2va' && ((imageCount !== 1 && imageCount !== 2) || videoCount !== 0 || audioCount !== 0)) {
+      throw new AiChatProtocolError('invalid-video-media', 'FL2VA requires one or two images')
+    }
+    if (input.mode === 'ref2va' && mediaCount === 0) {
+      throw new AiChatProtocolError('invalid-video-media', 'Ref2VA requires at least one media input')
+    }
+    if (input.image !== undefined || input.width !== undefined || input.height !== undefined) {
+      throw new AiChatProtocolError('invalid-video-media', 'MiniMax media must be sent as owned multipart assets')
+    }
+    if (input.promptOptimization !== undefined && typeof input.promptOptimization !== 'boolean') {
+      throw new AiChatProtocolError('invalid-parameter', 'promptOptimization must be a boolean')
+    }
+    return {
+      model: capability.model,
+      mode: input.mode,
+      resolution,
+      prompt: input.prompt,
+      seconds: input.seconds,
+      aspect_ratio: aspectRatio,
+      prompt_optimization: input.promptOptimization ?? false,
+    }
+  }
+
+  if (videoCount > 0 || audioCount > 0 || imageCount > 1) {
+    throw new AiChatProtocolError('invalid-video-media', 'Grok video accepts at most one image input')
   }
   if (input.image !== undefined && (
     typeof input.image !== 'string'
