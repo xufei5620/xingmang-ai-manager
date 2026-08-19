@@ -992,6 +992,12 @@ try {
 
   await devtools.send('Emulation.clearDeviceMetricsOverride')
 
+  // React Flow ships English accessibility strings; ariaLabelConfig must have
+  // replaced them, otherwise a mistyped key would silently fall back.
+  const flowControls = page.getByRole('button', { name: '放大', exact: true })
+  assert.equal(await flowControls.count(), 1, 'React Flow 控件没有应用中文无障碍文案')
+  assert.equal(await page.getByRole('button', { name: 'Zoom In', exact: true }).count(), 0, 'React Flow 控件仍在使用英文无障碍文案')
+
   // The toolbar run-history toggle is hidden below 1320px, and the physical
   // display can clamp setContentSize, so force a wide viewport to exercise it.
   await devtools.send('Emulation.setDeviceMetricsOverride', {

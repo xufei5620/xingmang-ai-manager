@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlow,
@@ -32,6 +33,8 @@ import {
 import { createMockExecutors, runWorkflow, type NodeInputs } from './engine/engine'
 import { createHostExecutors } from './engine/executors'
 import { hostBridge } from './host'
+import { canvasAriaLabelConfig } from './aria-labels'
+import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
   connectionForInsertedNode,
@@ -2649,6 +2652,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           minZoom={0.15}
           fitViewOptions={{ padding: 0.14, minZoom: 0.2, maxZoom: 1 }}
           proOptions={{ hideAttribution: false }}
+          ariaLabelConfig={canvasAriaLabelConfig}
           onMove={(_, nextViewport) => setNodeLod((current) => canvasNodeLodForZoom(nextViewport.zoom, current))}
           onMoveEnd={(_, nextViewport) => setDocumentViewport(nextViewport)}
           selectionOnDrag
@@ -2682,8 +2686,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             if (file) void importAssetToCanvas(file, position)
           }}
         >
-          <Background />
-          {minimapOpen && <MiniMap pannable zoomable />}
+          {/* Two layers: a fine minor grid plus a coarser major one, so that
+              alignment and snapping have something to read against. */}
+          <Background id="canvas-grid-minor" variant={BackgroundVariant.Dots} gap={16} size={1} />
+          <Background id="canvas-grid-major" variant={BackgroundVariant.Lines} gap={96} lineWidth={1} />
+          {minimapOpen && <MiniMap pannable zoomable nodeColor={canvasMinimapNodeColor} nodeStrokeWidth={3} />}
           <Controls />
         </ReactFlow>
         </CanvasUpstreamReferencesProvider>
