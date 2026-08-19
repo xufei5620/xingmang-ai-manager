@@ -624,6 +624,12 @@ try {
   assert.ok(Math.abs(nodeCenterY - flowCenterY) <= locatedGeometry[1].height * 0.25, '搜索定位后节点没有垂直居中')
   assert.equal(await page.evaluate(() => window.xingmangCanvasHost.getStartRunCallCount()), startRunCallsBeforeLocate, '搜索定位错误触发了画布运行')
   assert.equal(await nodeInspector.getByLabel('节点参数').count(), 1, '节点检查器缺少参数区')
+  // The node body is the single editor. The inspector mirrors values read-only,
+  // otherwise every parameter has two independent controls for one piece of state.
+  const inspectorParameters = nodeInspector.getByLabel('节点参数')
+  assert.equal(await inspectorParameters.locator('select, textarea, input').count(), 0, '检查器参数区仍在重复节点体的编辑控件')
+  assert.ok(await inspectorParameters.locator('dt').count() > 0, '检查器参数区没有显示只读摘要')
+  assert.equal(await inspectorParameters.getByRole('button', { name: '在节点上编辑' }).count(), 1, '检查器参数区缺少回到节点编辑的入口')
   assert.equal(await nodeInspector.getByLabel('节点端口').getByText('输入·文本', { exact: true }).count(), 1, '节点检查器缺少输入端口')
   assert.equal(await nodeInspector.getByRole('button', { name: '运行此节点' }).count(), 1, '节点检查器缺少单节点运行操作')
   await page.screenshot({ path: path.join(artifactRoot, 'node-inspector-1590x875.png') })

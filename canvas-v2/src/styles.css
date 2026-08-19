@@ -594,7 +594,14 @@ button:disabled {
 .canvas-inspector-actions button.is-active { color: var(--warning); background: color-mix(in srgb, var(--warning) 10%, transparent); }
 .canvas-inspector-actions button:disabled { opacity: 0.36; }
 .canvas-inspector-section { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-8); padding: var(--space-10) var(--space-12) var(--space-12); border-bottom: 1px solid var(--border-subtle); }
-.canvas-inspector-section h3 { grid-column: 1 / -1; margin: 0 0 var(--space-2); color: var(--text-primary); font-size: var(--text-xs); font-weight: 650; }
+.canvas-inspector-section h3 { display: flex; grid-column: 1 / -1; align-items: baseline; justify-content: space-between; gap: var(--space-8); margin: 0 0 var(--space-2); color: var(--text-primary); font-size: var(--text-xs); font-weight: 650; }
+.canvas-inspector-section-action { padding: 0; color: var(--accent-hover); background: transparent; border: 0; font: inherit; font-weight: var(--weight-medium); }
+.canvas-inspector-section-action:hover { color: var(--text-primary); text-decoration: underline; }
+/* Read-only parameter mirror: the node body is where these are edited. */
+.canvas-inspector-parameters { display: grid; grid-column: 1 / -1; gap: var(--space-4); margin: 0; }
+.canvas-inspector-parameters > div { display: grid; grid-template-columns: minmax(48px, max-content) minmax(0, 1fr); align-items: baseline; gap: var(--space-8); font-size: var(--text-xs); }
+.canvas-inspector-parameters dt { color: var(--text-muted); }
+.canvas-inspector-parameters dd { margin: 0; overflow: hidden; color: var(--text-secondary); text-overflow: ellipsis; white-space: nowrap; }
 .canvas-inspector-field { display: grid; min-width: 0; gap: var(--space-4); }
 .canvas-inspector-field.is-wide { grid-column: 1 / -1; }
 .canvas-inspector-field > span { color: var(--text-muted); font-size: var(--text-xs); }

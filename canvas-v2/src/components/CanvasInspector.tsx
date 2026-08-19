@@ -1,19 +1,7 @@
 import type { ReactNode } from 'react'
 import { Ban, Box, CirclePlay, Crosshair, Film, Image as ImageIcon, Lock, LockOpen, Maximize2, Music2, SlidersHorizontal, X } from 'lucide-react'
-import type { WorkflowNodeData } from '../model'
-import {
-  defaultImageQuality,
-  defaultImageResolution,
-  defaultImageSize,
-  defaultVideoSeconds,
-  imageModelPreset,
-  imageQualityOptions,
-  imageResolutionOptions,
-  imageSizeLabel,
-  videoModelPreset,
-  videoSizeOptions,
-} from '../models'
 import { SafeImage, isLocalCanvasAssetUrl } from './MediaPreview'
+import { canvasInspectorParameterRows } from './canvas-inspector-model'
 import type { CanvasInspectorNode } from './canvas-inspector-model'
 
 export type { CanvasInspectorNode } from './canvas-inspector-model'
@@ -26,8 +14,6 @@ interface CanvasInspectorProps {
   videoModels: readonly string[]
   onTabChange(tab: CanvasInspectorTab): void
   onClose(): void
-  onPatch(nodeId: string, patch: Partial<WorkflowNodeData>): void
-  onSettingsPatch(nodeId: string, patch: Record<string, unknown>): void
   onLocate(nodeId: string): void
   onRun(nodeId: string): void
   onToggleLocked(nodeId: string, locked: boolean): void
@@ -41,83 +27,29 @@ const statusLabel: Record<string, string> = {
   cached: '缓存命中', cancelled: '已取消', skipped: '已跳过', interrupted: '已中断',
 }
 
-const promptKinds = new Set(['text', 'prompt', 'image', 'video', 'image-generate', 'image-edit', 'video-generate'])
-const imageKinds = new Set(['image', 'image-generate', 'image-edit'])
-const videoKinds = new Set(['video', 'video-generate'])
-
-function uniqueOptions(current: string, options: readonly string[]): string[] {
-  return [...new Set([current, ...options].filter(Boolean))]
-}
-
-function NodeParameters({
-  node,
-  imageModels,
-  videoModels,
-  onPatch,
-  onSettingsPatch,
-}: {
+/**
+ * Read-only. The node body owns parameter editing; mirroring the controls here
+ * gave every value two independent editors and consumed the space that run
+ * history, cost and error detail actually need.
+ */
+function NodeParameterSummary({ node, onLocate }: {
   node: CanvasInspectorNode
-  imageModels: readonly string[]
-  videoModels: readonly string[]
-  onPatch(nodeId: string, patch: Partial<WorkflowNodeData>): void
-  onSettingsPatch(nodeId: string, patch: Record<string, unknown>): void
+  onLocate(nodeId: string): void
 }) {
-  const imageOperation = imageKinds.has(node.kind)
-  const videoOperation = videoKinds.has(node.kind)
-  const imagePreset = imageOperation ? imageModelPreset(node.model) : null
-  const videoPreset = videoOperation ? videoModelPreset(node.model) : null
+  const rows = canvasInspectorParameterRows(node)
   return (
     <section className="canvas-inspector-section" aria-label="节点参数">
-      <h3>参数</h3>
-      {promptKinds.has(node.kind) && (
-        <label className="canvas-inspector-field is-wide"><span>提示词</span><textarea value={node.prompt} rows={4} onChange={(event) => onPatch(node.id, { prompt: event.target.value })} /></label>
-      )}
-      {imageOperation && (
-        <>
-          <label className="canvas-inspector-field"><span>模型</span><select value={node.model} onChange={(event) => {
-            const model = event.target.value
-            const preset = imageModelPreset(model)
-            const currentResolution = node.imageResolution ?? defaultImageResolution
-            onPatch(node.id, {
-              model,
-              ...(!preset.resolutions.includes(currentResolution) ? { imageResolution: preset.resolutions[0] } : {}),
-            })
-          }}>
-            {uniqueOptions(node.model, imageModels).map((model) => <option key={model} value={model}>{imageModelPreset(model).label}</option>)}
-          </select></label>
-          {imagePreset?.supportsQuality && <label className="canvas-inspector-field"><span>画质</span><select value={node.quality || defaultImageQuality} onChange={(event) => onPatch(node.id, { quality: event.target.value })}>
-            {imageQualityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select></label>}
-          {imagePreset && <label className="canvas-inspector-field"><span>清晰度</span><select
-            value={imagePreset.resolutions.includes(node.imageResolution ?? defaultImageResolution) ? (node.imageResolution ?? defaultImageResolution) : imagePreset.resolutions[0]}
-            title={imagePreset.resolutionNote ?? '输出清晰度'}
-            onChange={(event) => onPatch(node.id, { imageResolution: event.target.value as '1K' | '2K' | '4K' })}
-          >
-            {imageResolutionOptions.map((option) => <option key={option.value} value={option.value} disabled={!imagePreset.resolutions.includes(option.value)}>{option.label}{imagePreset.resolutions.includes(option.value) ? '' : '（不支持）'}</option>)}
-          </select></label>}
-          {imagePreset?.supportsSize && <label className="canvas-inspector-field"><span>尺寸</span><select value={imagePreset.sizes.includes(node.size || '') ? node.size : (imagePreset.sizes[0] ?? defaultImageSize)} onChange={(event) => onPatch(node.id, { size: event.target.value })}>
-            {imagePreset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
-          </select></label>}
-        </>
-      )}
-      {videoOperation && videoPreset && (
-        <>
-          <label className="canvas-inspector-field"><span>模型</span><select value={node.model} onChange={(event) => onPatch(node.id, { model: event.target.value })}>
-            {uniqueOptions(node.model, videoModels).map((model) => <option key={model} value={model}>{videoModelPreset(model).label}</option>)}
-          </select></label>
-          <label className="canvas-inspector-field"><span>比例</span><select value={videoPreset.sizes.includes(node.size || '') ? node.size : videoPreset.defaultSize} onChange={(event) => onPatch(node.id, { size: event.target.value })}>
-            {videoSizeOptions.filter((option) => videoPreset.sizes.includes(option.value)).map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
-          </select></label>
-          <label className="canvas-inspector-field"><span>时长</span><select value={node.seconds ?? String(defaultVideoSeconds)} onChange={(event) => onPatch(node.id, { seconds: event.target.value })}>
-            {[5, 10, 15].filter((seconds) => seconds <= videoPreset.maximumSeconds).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
-          </select></label>
-        </>
-      )}
-      {node.kind === 'frame-extract' && <label className="canvas-inspector-field"><span>时间点</span><input type="number" min="0" step="0.1" value={typeof node.settings.timestampSeconds === 'number' ? node.settings.timestampSeconds : 0} onChange={(event) => onSettingsPatch(node.id, { timestampSeconds: Number(event.target.value) })} /></label>}
-      {node.kind === 'router' && <label className="canvas-inspector-field"><span>路由策略</span><select value={typeof node.settings.strategy === 'string' ? node.settings.strategy : 'first-available'} onChange={(event) => onSettingsPatch(node.id, { strategy: event.target.value })}><option value="first-available">优先首个可用输入</option><option value="all">保留全部输入</option></select></label>}
-      {node.kind === 'note' && <label className="canvas-inspector-field is-wide"><span>便签</span><textarea rows={5} value={typeof node.settings.text === 'string' ? node.settings.text : ''} onChange={(event) => onSettingsPatch(node.id, { text: event.target.value })} /></label>}
-      {node.kind === 'group' && <label className="canvas-inspector-field"><span>分组名称</span><input value={typeof node.settings.title === 'string' ? node.settings.title : '新建分组'} onChange={(event) => onSettingsPatch(node.id, { title: event.target.value })} /></label>}
-      {!promptKinds.has(node.kind) && !imageOperation && !videoOperation && !['frame-extract', 'router', 'note', 'group'].includes(node.kind) && <p className="canvas-inspector-muted">该节点没有可编辑参数。</p>}
+      <h3>参数<button type="button" className="canvas-inspector-section-action" onClick={() => onLocate(node.id)}>在节点上编辑</button></h3>
+      {rows.length === 0
+        ? <p className="canvas-inspector-muted">该节点没有可编辑参数。</p>
+        : <dl className="canvas-inspector-parameters">
+            {rows.map((row) => (
+              <div key={row.label}>
+                <dt>{row.label}</dt>
+                <dd title={row.value}>{row.value}</dd>
+              </div>
+            ))}
+          </dl>}
     </section>
   )
 }
@@ -136,7 +68,7 @@ function NodePreview({ node, onPreview }: { node: CanvasInspectorNode; onPreview
 }
 
 type SingleNodeInspectorProps = Pick<CanvasInspectorProps,
-  'imageModels' | 'videoModels' | 'onPatch' | 'onSettingsPatch' | 'onLocate' | 'onRun'
+  'imageModels' | 'videoModels' | 'onLocate' | 'onRun'
   | 'onToggleLocked' | 'onToggleDisabled' | 'onPreview'> & { node: CanvasInspectorNode }
 
 function SingleNodeInspector(props: SingleNodeInspectorProps) {
@@ -157,7 +89,7 @@ function SingleNodeInspector(props: SingleNodeInspectorProps) {
         {node.executable && node.kind !== 'unknown' && <button type="button" className={node.disabled ? 'is-active' : ''} title={node.disabled ? '启用节点' : '禁用节点'} aria-label={node.disabled ? '启用节点' : '禁用节点'} onClick={() => props.onToggleDisabled(node.id, !node.disabled)}><Ban size={14} /></button>}
         {node.previewAsset && <button type="button" title="预览结果" aria-label="预览结果" onClick={() => props.onPreview(node)}><Maximize2 size={14} /></button>}
       </div>
-      <NodeParameters node={node} imageModels={props.imageModels} videoModels={props.videoModels} onPatch={props.onPatch} onSettingsPatch={props.onSettingsPatch} />
+      <NodeParameterSummary node={node} onLocate={props.onLocate} />
       <section className="canvas-inspector-section" aria-label="节点端口">
         <h3>连接</h3>
         <div className="canvas-inspector-ports">

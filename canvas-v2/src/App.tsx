@@ -893,16 +893,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     setDirtyNodeIds((current) => new Set([...current, ...dirty]))
   }, [nodes, edges, execute, setNodes])
 
-  const patchInspectorNode = useCallback((nodeId: string, patch: Partial<WorkflowNodeData>) => {
-    markDirtyFrom(nodeId, patch)
-  }, [markDirtyFrom])
-
-  const patchInspectorSettings = useCallback((nodeId: string, patch: Record<string, unknown>) => {
-    const node = nodes.find((entry) => entry.id === nodeId)
-    if (!node) return
-    markDirtyFrom(nodeId, { settings: { ...(node.data.settings ?? {}), ...patch } })
-  }, [markDirtyFrom, nodes])
-
   const setNodeFlags = useCallback((nodeIds: string[], flag: 'locked' | 'disabled', value: boolean) => {
     if (nodeIds.length === 0) return
     execute(flag === 'locked'
@@ -2778,8 +2768,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           videoModels={videoModels}
           onTabChange={openInspectorTab}
           onClose={closeInspector}
-          onPatch={patchInspectorNode}
-          onSettingsPatch={patchInspectorSettings}
           onLocate={locateNode}
           onRun={(nodeId) => void rerunNode(nodeId)}
           onToggleLocked={(nodeId, locked) => setInspectorNodeFlag(nodeId, 'locked', locked)}
