@@ -66,6 +66,26 @@ describe('canvas asset card markup', () => {
     expect(library).toContain('src={asset.thumbnailUrl}')
   })
 
+  it('derives a video cover frame off screen when the platform has no thumbnail', () => {
+    // Windows and macOS both decline some codecs, and a tile with no still is
+    // where a <video> would creep back in. The capture runs on a detached
+    // element behind a global queue instead, so the grid markup stays player
+    // free and only one decode is ever in flight.
+    for (const file of ['AssetTray.tsx', 'NodeLibrary.tsx']) {
+      const source = componentSource(file)
+      expect(source).toContain('<VideoCoverImage')
+      expect(source).toContain('videoUrl={asset.localUrl}')
+    }
+    const preview = componentSource('MediaPreview.tsx')
+    const coverComponent = preview.slice(
+      preview.indexOf('export function VideoCoverImage'),
+      preview.indexOf('const THUMBNAIL_URL_PATTERN'),
+    )
+    expect(coverComponent).toContain('videoCoverCache.resolve(videoUrl)')
+    expect(coverComponent).not.toContain('<video')
+    expect(coverComponent).not.toContain('<ViewportVideo')
+  })
+
   it('wires logical rename through the asset tray and preview', () => {
     const tray = componentSource('AssetTray.tsx')
     const preview = componentSource('MediaPreview.tsx')

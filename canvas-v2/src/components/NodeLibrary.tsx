@@ -5,7 +5,7 @@ import type { NodeCategory } from '../domain/node-definition'
 import type { CanvasAssetPage, CanvasPromptPreset } from '../host'
 import { searchPromptPresets } from '../library/prompt-presets'
 import { builtinCanvasTemplates } from '../templates/builtin-templates'
-import { SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
+import { SafeImage, VideoCoverImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
 import { mediaAssetAspectRatio } from '../library/media-assets'
 
 interface NodeLibraryProps {
@@ -169,13 +169,21 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
                       tile purely to paint a frame. */}
                   {asset.mediaType === 'audio'
                     ? <span className="asset-video-placeholder"><Music2 size={22} /><small>音频</small></span>
-                    : <SafeImage
-                        src={asset.thumbnailUrl}
-                        alt={asset.fileName}
-                        loading="lazy"
-                        fallbackLabel={asset.mediaType === 'video' ? '视频' : '素材不可用'}
-                        style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
-                      />}
+                    : asset.mediaType === 'video'
+                      ? <VideoCoverImage
+                          thumbnailUrl={asset.thumbnailUrl}
+                          videoUrl={asset.localUrl}
+                          alt={asset.fileName}
+                          loading="lazy"
+                          fallbackLabel="视频"
+                          style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
+                        />
+                      : <SafeImage
+                          src={asset.thumbnailUrl}
+                          alt={asset.fileName}
+                          loading="lazy"
+                          style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
+                        />}
                 </button>
                 <footer>
                   <span>{asset.fileName}</span>

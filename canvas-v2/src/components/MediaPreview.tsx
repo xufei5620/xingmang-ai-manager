@@ -9,6 +9,7 @@ import {
 } from 'react'
 import { ChevronLeft, ChevronRight, ImageOff, MoreHorizontal, Music2, Pause, Pencil, Play, Volume2, VolumeX, X } from 'lucide-react'
 import type { AssetRef } from '../model'
+import { videoCoverCache } from '../library/video-cover'
 
 interface SafeImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
   src: string
@@ -30,6 +31,59 @@ export function SafeImage({ src, fallbackLabel = '素材不可用', className, .
     )
   }
   return <img {...imageProps} className={className} src={src} onError={(event) => { setFailed(true); onError?.(event) }} />
+}
+
+interface VideoCoverImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
+  /** Derived still from the main process; absent whenever the OS declined the file. */
+  thumbnailUrl: string
+  /** The video itself, read only if the derived still is unavailable. */
+  videoUrl: string
+  fallbackLabel?: string
+}
+
+/**
+ * A video tile. Prefers the still the main process derived from the platform
+ * thumbnail provider; when that provider has nothing for this codec, one frame
+ * is captured here instead. The capture is queued globally, so a page of tiles
+ * still only ever has one media element alive, and the element is detached --
+ * the grid's markup stays free of players.
+ */
+export function VideoCoverImage({ thumbnailUrl, videoUrl, fallbackLabel = '视频素材', className, ...props }: VideoCoverImageProps) {
+  const [thumbnailFailed, setThumbnailFailed] = useState(false)
+  const [cover, setCover] = useState<string | null>(null)
+
+  useEffect(() => {
+    setThumbnailFailed(false)
+    setCover(null)
+  }, [thumbnailUrl, videoUrl])
+
+  const usable = !thumbnailFailed && isCanvasThumbnailUrl(thumbnailUrl)
+
+  useEffect(() => {
+    // Covers both ways the derived still can be missing: never generated, so
+    // the summary carries no thumbnail path, and generated but unreadable.
+    if (usable || cover || !isLocalCanvasAssetUrl(videoUrl, 'video')) return undefined
+    let active = true
+    void videoCoverCache.resolve(videoUrl).then((frame) => { if (active && frame) setCover(frame) })
+    return () => { active = false }
+  }, [cover, usable, videoUrl])
+
+  if (!usable && !cover) {
+    return (
+      <span className={`${className ?? ''} media-unavailable`} role="img" aria-label={fallbackLabel}>
+        <ImageOff size={18} aria-hidden="true" />
+        <span>{fallbackLabel}</span>
+      </span>
+    )
+  }
+  return (
+    <img
+      {...props}
+      className={className}
+      src={usable ? thumbnailUrl : cover as string}
+      onError={() => setThumbnailFailed(true)}
+    />
+  )
 }
 
 const THUMBNAIL_URL_PATTERN = /^xingmang-asset:\/\/thumb\/v[0-9]+\/(image|video)\/[A-Za-z0-9_-]{43}$/

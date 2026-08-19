@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, Clock3, Copy, Eye, Film, FolderOpen, MoreHor
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
 import { middleTruncate } from '../identifier-display'
-import { AudioPreview, MediaLightbox, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
+import { AudioPreview, MediaLightbox, SafeImage, VideoCoverImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
 import { mediaAssetAspectRatio } from '../library/media-assets'
 import {
   assetSelectionAfterKey,
@@ -529,15 +529,23 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                     pixels wide. */}
                 {asset.mediaType === 'audio'
                   ? <span className="asset-audio-placeholder"><Music2 size={22} /><small>{available ? '音频素材' : '素材不可用'}</small></span>
-                  : available
-                    ? <SafeImage
-                        src={asset.thumbnailUrl}
+                  : asset.mediaType === 'video'
+                    ? <VideoCoverImage
+                        thumbnailUrl={asset.thumbnailUrl}
+                        videoUrl={asset.localUrl}
                         alt={name}
                         loading="lazy"
-                        fallbackLabel={asset.mediaType === 'video' ? 'MP4 视频' : '素材不可用'}
+                        fallbackLabel={available ? 'MP4 视频' : '素材不可用'}
                         style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
                       />
-                    : <span className="asset-video-placeholder"><Film size={22} /><small>素材不可用</small></span>}
+                    : available
+                      ? <SafeImage
+                          src={asset.thumbnailUrl}
+                          alt={name}
+                          loading="lazy"
+                          style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
+                        />
+                      : <span className="asset-video-placeholder"><Film size={22} /><small>素材不可用</small></span>}
               </div>
               <div className="asset-tray-item-tools" aria-label="素材操作">
                 {onUpdateMetadata && <button type="button" className={asset.favorite ? 'is-favorite' : ''} title={asset.favorite ? '取消收藏' : '收藏'} aria-label={`${asset.favorite ? '取消收藏' : '收藏'}：${name}`} aria-pressed={asset.favorite} onClick={() => void onUpdateMetadata(asset.assetId, { favorite: !asset.favorite })}><Star size={13} fill={asset.favorite ? 'currentColor' : 'none'} /></button>}

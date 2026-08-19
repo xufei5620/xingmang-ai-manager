@@ -315,6 +315,13 @@ app.whenReady().then(async () => {
     // are served as immutable because the path carries both the pipeline
     // version and a content addressed identifier.
     if (url.hostname === 'thumb' && /^\\/v[0-9]+\\/(image|video)\\/[A-Za-z0-9_-]{43}$/.test(url.pathname)) {
+      // Stands in for a platform thumbnail provider with no handler for this
+      // codec, which is the case the renderer side cover frame exists for. The
+      // body is undecodable rather than a 404 so the harness stays free of the
+      // console noise a failed request would add.
+      if (url.pathname.startsWith('/v1/video/')) {
+        return new Response(Buffer.from('no thumbnail for this codec'), { headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'image/png' } })
+      }
       return new Response(Buffer.from(${JSON.stringify(fixturePng)}, 'base64'), {
         headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=31536000, immutable' },
       })
@@ -602,6 +609,21 @@ try {
   const fixtureAsset = page.getByRole('article', { name: /visual-fixture\.png/ })
   await fixtureAsset.waitFor({ state: 'visible' })
   assert.equal(await page.getByRole('navigation', { name: '素材快速视图' }).count(), 1, '素材库缺少全部/收藏/最近快速视图')
+  // The harness refuses to thumbnail videos, the way a platform provider does
+  // for a codec it has no handler for. The tile must still show the film rather
+  // than a grey label, by capturing one frame itself.
+  const videoTileImage = page.getByRole('article', { name: /视频1\.mp4/ }).locator('img')
+  await videoTileImage.waitFor({ state: 'visible', timeout: 20_000 })
+  await page.waitForFunction(
+    () => document.querySelector('.asset-tray-item-video img')?.src.startsWith('data:image/'),
+    undefined,
+    { timeout: 20_000 },
+  )
+  assert.equal(
+    await page.locator('.asset-tray-item-video video').count(),
+    0,
+    '视频封面帧不应该在网格里留下 video 元素',
+  )
   // Type, source and sort sat at their defaults nearly all the time and cost
   // two rows to say so. They live in a popover now, and whatever is actually
   // narrowing the results shows as a chip that can be taken off.
