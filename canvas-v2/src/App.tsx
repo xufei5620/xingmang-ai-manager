@@ -1488,8 +1488,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
     setNodes(updated)
     setDirtyNodeIds((current) => new Set([...current].filter((id) => id !== nodeId).concat([...descendants])))
+    // Recorded here rather than when the drag starts: a drag that is cancelled,
+    // dropped on nothing or rejected above for the wrong media type is not a use.
+    void markCanvasAssetUsed(asset.assetId)
     setBanner(`${asset.mediaType === 'audio' ? '音频' : asset.mediaType === 'video' ? '视频' : '图片'}素材已就绪；下游节点等待重新运行`)
-  }, [nodes, edges, execute, setNodes])
+  }, [nodes, edges, execute, markCanvasAssetUsed, setNodes])
 
   const createAssetNode = useCallback((asset: CanvasAssetSummary, position?: XYPosition) => {
     const kind = assetInputNodeKind(asset)
@@ -3168,7 +3171,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               onLocateSourceNode={locateNode}
               onRename={renameCanvasAsset}
               onUpdateMetadata={updateCanvasAssetMetadata}
-              onMarkUsed={markCanvasAssetUsed}
               onInspectReferences={(assetId) => hostBridge().inspectAssetReferences(assetId, serializeWorkflow(workflowSnapshot()))}
               onDelete={deleteCanvasAssets}
               onRestore={restoreCanvasAssets}

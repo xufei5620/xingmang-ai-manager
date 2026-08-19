@@ -75,13 +75,26 @@ describe('canvas asset card markup', () => {
     expect(preview).toContain('onRename?(assetId: string): void')
   })
 
-  it('persists favorites, tags and recent-use signals through host callbacks', () => {
+  it('persists favorites and tags through host callbacks', () => {
     const source = componentSource('AssetTray.tsx')
     expect(source).toContain('onUpdateMetadata?(assetId: string, input: { favorite?: boolean; tags?: string[] })')
-    expect(source).toContain('onMarkUsed?(assetId: string)')
     expect(source).toContain("{ favorite: !asset.favorite }")
     expect(source).toContain('await onUpdateMetadata(taggingAsset.assetId, { tags })')
-    expect(source).toContain('void onMarkUsed?.(asset.assetId)')
+  })
+
+  it('records recent use where the drop lands, not where the drag begins', () => {
+    // The tray used to mark the asset used in onDragStart, so a drag that was
+    // cancelled, dropped on empty space or rejected for the wrong media type
+    // still jumped to the front of the recent view and of used-desc sorting.
+    const tray = componentSource('AssetTray.tsx')
+    expect(tray).not.toContain('onMarkUsed')
+    const app = fs.readFileSync(path.join(import.meta.dirname, '..', 'App.tsx'), 'utf8')
+    const dragStart = app.slice(app.indexOf("getData('application/x-xingmang-asset-id')"))
+    expect(dragStart).toContain('addAssetNode(assetId, position)')
+    // Both accept paths: a new node on the pane, and binding onto an existing
+    // media node, which is also the one that can still refuse the asset.
+    expect(app).toContain('void markCanvasAssetUsed(assetId)')
+    expect(app).toContain('void markCanvasAssetUsed(asset.assetId)')
   })
 
   it('uses an article with sibling preview and menu controls in the content library', () => {

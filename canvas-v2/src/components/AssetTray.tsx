@@ -41,7 +41,6 @@ interface AssetTrayProps {
   onLocateSourceNode?(nodeId: string): void
   onRename?(assetId: string, displayName: string): void | Promise<void>
   onUpdateMetadata?(assetId: string, input: { favorite?: boolean; tags?: string[] }): void | Promise<void>
-  onMarkUsed?(assetId: string): void | Promise<void>
   onInspectReferences?(assetId: string): Promise<CanvasAssetReferenceReport>
   onDelete?(assetIds: readonly string[]): void | Promise<void>
   onRestore?(assetIds: readonly string[]): void | Promise<void>
@@ -93,7 +92,7 @@ function assetRef(asset: CanvasAssetSummary): AssetRef {
   }
 }
 
-export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onLocateSourceNode, onRename, onUpdateMetadata, onMarkUsed, onInspectReferences, onDelete, onRestore, onPurge, onClose, embedded = false }: AssetTrayProps) {
+export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onLocateSourceNode, onRename, onUpdateMetadata, onInspectReferences, onDelete, onRestore, onPurge, onClose, embedded = false }: AssetTrayProps) {
   const [search, setSearch] = useState(query.search ?? '')
   const [selection, setSelection] = useState<AssetSelection>(emptyAssetSelection)
   const [previewAsset, setPreviewAsset] = useState<CanvasAssetSummary | null>(null)
@@ -486,10 +485,13 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 onAssetMenu(asset.assetId)
               }}
               draggable
+              // Recent use is recorded by whoever accepts the drop. Marking it
+              // here counted drags that were cancelled, dropped on nothing or
+              // rejected for the wrong media type, which pushed assets the user
+              // never placed to the top of the recent view.
               onDragStart={(event) => {
                 event.dataTransfer.setData('application/x-xingmang-asset-id', asset.assetId)
                 event.dataTransfer.effectAllowed = 'copy'
-                void onMarkUsed?.(asset.assetId)
               }}
             >
               <div
