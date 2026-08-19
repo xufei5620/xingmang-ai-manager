@@ -93,6 +93,9 @@ export const canvasHostListAssetsChannel = canvasHostChannels.listAssets
 export const canvasHostRenameAssetChannel = canvasHostChannels.renameAsset
 export const canvasHostUpdateAssetMetadataChannel = canvasHostChannels.updateAssetMetadata
 export const canvasHostMarkAssetUsedChannel = canvasHostChannels.markAssetUsed
+export const canvasHostDeleteAssetChannel = canvasHostChannels.deleteAsset
+export const canvasHostRestoreAssetChannel = canvasHostChannels.restoreAsset
+export const canvasHostPurgeAssetChannel = canvasHostChannels.purgeAsset
 export const canvasHostInspectAssetReferencesChannel = canvasHostChannels.inspectAssetReferences
 export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
 export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
@@ -138,7 +141,7 @@ export interface CanvasWindowControllerOptions {
   aiAssets: AiAssetStore
   videoAssets?: AiVideoAssetStore
   audioAssets?: AiAudioAssetStore
-  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename' | 'updateMetadata' | 'markUsed' | 'setSource'>
+  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename' | 'updateMetadata' | 'markUsed' | 'setSource' | 'softDelete' | 'restore' | 'purge'>
   promptPresets: CanvasPromptPresetStore
   canvasRuns: CanvasRunService
   projects?: CanvasProjectStore
@@ -550,10 +553,9 @@ export function createCanvasWindowController(
     return updated
   })
 
-  registerCanvasHandler(canvasHostInspectAssetReferencesChannel, async (event, assetIdInput, currentProjectContentInput) => {
+  async function assetReferenceReport(senderId: number, userId: number, assetIdInput: unknown, currentProjectContentInput: unknown) {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
-    const userId = authenticatedCanvasUserId()
-    const projectId = activeProjectId(event.sender.id, userId)
+    const projectId = activeProjectId(senderId, userId)
     if (!projectId) throw new Error('请先选择或新建一个画布项目')
     const assetId = requiredCanvasString(assetIdInput, '画布资产标识', 64)
     const currentProjectContent = requiredCanvasText(currentProjectContentInput, '当前画布项目内容', maximumSavedFileBytes)
@@ -576,6 +578,45 @@ export function createCanvasWindowController(
       projects,
       runs: runReferences,
     }
+  }
+
+  registerCanvasHandler(canvasHostDeleteAssetChannel, async (event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const context = await activeAssetContext(event.sender.id, userId)
+    // Deliberately not reference-checked: assets are referenced because they
+    // were used, so blocking here would make the bin unreachable for exactly
+    // the assets a library needs to shed. Nothing leaves the disk yet.
+    const deleted = await (context?.media ?? options.mediaAssets).softDelete(userId, parseCanvasAssetId(assetIdInput))
+    assertCanvasUserUnchanged(userId)
+    return deleted
+  })
+
+  registerCanvasHandler(canvasHostRestoreAssetChannel, async (event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const context = await activeAssetContext(event.sender.id, userId)
+    const restored = await (context?.media ?? options.mediaAssets).restore(userId, parseCanvasAssetId(assetIdInput))
+    assertCanvasUserUnchanged(userId)
+    return restored
+  })
+
+  registerCanvasHandler(canvasHostPurgeAssetChannel, async (event, assetIdInput, currentProjectContentInput) => {
+    const userId = authenticatedCanvasUserId()
+    const assetId = parseCanvasAssetId(assetIdInput)
+    const context = await activeAssetContext(event.sender.id, userId)
+    // The reference check runs here, at the point of no return: a workflow that
+    // loses an input it still points at cannot be repaired by an undo.
+    const purged = await (context?.media ?? options.mediaAssets).purge(
+      userId,
+      assetId,
+      () => assetReferenceReport(event.sender.id, userId, assetId, currentProjectContentInput),
+    )
+    assertCanvasUserUnchanged(userId)
+    return purged
+  })
+
+  registerCanvasHandler(canvasHostInspectAssetReferencesChannel, async (event, assetIdInput, currentProjectContentInput) => {
+    const userId = authenticatedCanvasUserId()
+    return assetReferenceReport(event.sender.id, userId, assetIdInput, currentProjectContentInput)
   })
 
   async function importCanvasAsset(ownerId: number, userId: number, filePath: string) {

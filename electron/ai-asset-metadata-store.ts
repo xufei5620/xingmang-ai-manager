@@ -9,7 +9,7 @@ import {
 } from './safe-local-data'
 
 const FILE_LABEL = 'AI 素材元数据'
-const STORE_VERSION = 2
+const STORE_VERSION = 3
 const MAXIMUM_BYTES = 2 * 1024 * 1024
 const MAXIMUM_ITEMS = 5_000
 const MAXIMUM_TAGS = 12
@@ -26,6 +26,12 @@ export interface AiAssetLogicalMetadata {
   tags?: string[]
   lastUsedAt?: string
   source?: AiAssetSource
+  /**
+   * Set while the asset sits in the recycle bin. Deletion is logical here and
+   * only becomes a file operation when the bin is emptied, so a mistaken delete
+   * costs an undo rather than a restore from the OS trash.
+   */
+  deletedAt?: string
   updatedAt: string
 }
 
@@ -96,10 +102,12 @@ function parseSource(value: unknown): AiAssetSource | undefined {
   return value
 }
 
-function parseItem(value: unknown, version: 1 | typeof STORE_VERSION): AiAssetMetadataItem {
+function parseItem(value: unknown, version: 1 | 2 | typeof STORE_VERSION): AiAssetMetadataItem {
   const allowedFields = version === 1
     ? ['assetId', 'displayName', 'updatedAt']
-    : ['assetId', 'displayName', 'favorite', 'tags', 'lastUsedAt', 'source', 'updatedAt']
+    : version === 2
+      ? ['assetId', 'displayName', 'favorite', 'tags', 'lastUsedAt', 'source', 'updatedAt']
+      : ['assetId', 'displayName', 'favorite', 'tags', 'lastUsedAt', 'source', 'deletedAt', 'updatedAt']
   if (!isRecord(value) || !hasOnlyFields(value, allowedFields)) {
     throw new Error('AI 素材元数据格式错误')
   }
@@ -112,6 +120,7 @@ function parseItem(value: unknown, version: 1 | typeof STORE_VERSION): AiAssetMe
   if (version === 1 && !displayName) throw new Error('AI 素材显示名称格式错误')
   if (value.favorite !== undefined && typeof value.favorite !== 'boolean') throw new Error('AI 素材收藏状态格式错误')
   if (value.lastUsedAt !== undefined && !isIsoDate(value.lastUsedAt)) throw new Error('AI 素材最近使用时间格式错误')
+  if (value.deletedAt !== undefined && !isIsoDate(value.deletedAt)) throw new Error('AI 素材删除时间格式错误')
   return {
     assetId: value.assetId,
     ...(displayName ? { displayName } : {}),
@@ -119,13 +128,16 @@ function parseItem(value: unknown, version: 1 | typeof STORE_VERSION): AiAssetMe
     ...(tags && tags.length > 0 ? { tags } : {}),
     ...(typeof value.lastUsedAt === 'string' ? { lastUsedAt: value.lastUsedAt } : {}),
     ...(source ? { source } : {}),
+    ...(typeof value.deletedAt === 'string' ? { deletedAt: value.deletedAt } : {}),
     updatedAt: value.updatedAt,
   }
 }
 
 function parseState(content: string, userId: number): AiAssetMetadataState {
   const value = JSON.parse(content) as unknown
-  const version = isRecord(value) && (value.version === 1 || value.version === STORE_VERSION) ? value.version : null
+  const version = isRecord(value) && (value.version === 1 || value.version === 2 || value.version === STORE_VERSION)
+    ? value.version
+    : null
   if (
     !isRecord(value)
     || !hasOnlyFields(value, ['version', 'userId', 'items'])
@@ -224,6 +236,53 @@ export class AiAssetMetadataStore {
       item.lastUsedAt = updatedAt
       await this.writeState(userId, state)
       return structuredClone(item)
+    })
+  }
+
+  /**
+   * Moves an asset to the recycle bin. Nothing on disk changes: the file is
+   * only handed to the OS trash when the bin is emptied, so undoing costs one
+   * click rather than a trip through the system trash.
+   */
+  softDelete(userId: number, assetId: string): Promise<AiAssetMetadataItem> {
+    return this.enqueue(userId, async () => {
+      assertAssetId(assetId)
+      const state = await this.readState(userId)
+      const updatedAt = this.now().toISOString()
+      const item = this.upsert(state, assetId, updatedAt)
+      // Re-deleting keeps the original moment, so the bin stays ordered by when
+      // things were actually thrown away.
+      if (!item.deletedAt) item.deletedAt = updatedAt
+      await this.writeState(userId, state)
+      return structuredClone(item)
+    })
+  }
+
+  restore(userId: number, assetId: string): Promise<AiAssetMetadataItem> {
+    return this.enqueue(userId, async () => {
+      assertAssetId(assetId)
+      const state = await this.readState(userId)
+      const item = state.items.find((entry) => entry.assetId === assetId)
+      if (!item?.deletedAt) throw new Error('该素材不在回收站中')
+      delete item.deletedAt
+      item.updatedAt = this.now().toISOString()
+      await this.writeState(userId, state)
+      return structuredClone(item)
+    })
+  }
+
+  /**
+   * Drops the record entirely. Called after the bytes are gone, so a metadata
+   * row cannot outlive its file and reappear as a broken tile.
+   */
+  forget(userId: number, assetId: string): Promise<void> {
+    return this.enqueue(userId, async () => {
+      assertAssetId(assetId)
+      const state = await this.readState(userId)
+      const index = state.items.findIndex((entry) => entry.assetId === assetId)
+      if (index === -1) return
+      state.items.splice(index, 1)
+      await this.writeState(userId, state)
     })
   }
 

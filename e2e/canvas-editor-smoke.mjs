@@ -108,6 +108,8 @@ const emptyWorkflow = (name) => JSON.stringify({
   edges: [],
 })
 let startRunCallCount = 0
+const deletedAssets = new Map()
+const purgedAssets = new Set()
 contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   listGroups: async () => [
     { name: '生图分组', ratio: 1 },
@@ -127,6 +129,10 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
     let items = query.mediaType === 'image' ? [asset]
       : query.mediaType === 'audio' ? [audioAsset]
         : query.mediaType === 'video' ? [videoAsset] : [videoAsset, audioAsset, asset]
+    items = items.filter((entry) => !purgedAssets.has(entry.assetId))
+    items = query.view === 'trash'
+      ? items.filter((entry) => deletedAssets.has(entry.assetId)).map((entry) => ({ ...entry, deletedAt: deletedAssets.get(entry.assetId) }))
+      : items.filter((entry) => !deletedAssets.has(entry.assetId))
     if (query.view === 'favorites') items = items.filter((entry) => entry.favorite)
     if (query.view === 'recent') items = items.filter((entry) => entry.lastUsedAt)
     if (query.source && query.source !== 'all') items = items.filter((entry) => entry.source === query.source)
@@ -185,6 +191,20 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
       projects: savedProjects,
       runs: [],
     }
+  },
+  deleteAsset: async (requestedAssetId) => {
+    const deletedAt = new Date().toISOString()
+    deletedAssets.set(requestedAssetId, deletedAt)
+    return { assetId: requestedAssetId, deletedAt }
+  },
+  restoreAsset: async (requestedAssetId) => {
+    deletedAssets.delete(requestedAssetId)
+    return { assetId: requestedAssetId }
+  },
+  purgeAsset: async (requestedAssetId) => {
+    deletedAssets.delete(requestedAssetId)
+    purgedAssets.add(requestedAssetId)
+    return { assetId: requestedAssetId }
   },
   pickAsset: async () => asset,
   importAssetFile: async (file) => {
@@ -676,6 +696,30 @@ try {
     (expected) => document.querySelectorAll('.react-flow__node-image-input').length === expected,
     imageNodesBeforeDuplicateReference + 1,
   )
+  // Deleting is reversible twice over: the toast undoes it immediately, and the
+  // bin holds it afterwards. Nothing here touches the file on disk.
+  const selectionBar = page.locator('.asset-selection-bar')
+  await selectionBar.getByRole('button', { name: '删除' }).click()
+  await renamedAsset.waitFor({ state: 'detached' })
+  const undoToast = page.locator('.asset-undo-toast')
+  await undoToast.waitFor({ state: 'visible' })
+  await undoToast.getByRole('button', { name: '撤销', exact: true }).click()
+  await renamedAsset.waitFor({ state: 'visible' })
+  await renamedAsset.locator('.asset-tray-item-preview').click()
+  await selectionBar.getByRole('button', { name: '删除' }).click()
+  await renamedAsset.waitFor({ state: 'detached' })
+  const quickViews = page.getByRole('navigation', { name: '素材快速视图' })
+  await quickViews.getByRole('button', { name: '回收站' }).click()
+  await renamedAsset.waitFor({ state: 'visible' })
+  await renamedAsset.locator('.asset-tray-item-preview').click()
+  assert.equal(
+    await selectionBar.getByRole('button', { name: '删除', exact: true }).count(),
+    0,
+    '回收站里仍然出现了「删除」按钮，删除应当只在这里升级为彻底删除',
+  )
+  await selectionBar.getByRole('button', { name: '恢复' }).click()
+  await quickViews.getByRole('button', { name: '全部' }).click()
+  await renamedAsset.waitFor({ state: 'visible' })
   const audioFixture = page.getByRole('article', { name: /8月14日\.wav/ })
   const audioDetails = await openAssetDetails(audioFixture, '8月14日.wav')
   assert.equal(await audioDetails.getByText('音频 · audio/wav', { exact: true }).count(), 1, '音频详情缺少类型')

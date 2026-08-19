@@ -22,6 +22,9 @@ export const canvasHostChannels = {
   renameAsset: 'canvas-host:rename-asset',
   updateAssetMetadata: 'canvas-host:update-asset-metadata',
   markAssetUsed: 'canvas-host:mark-asset-used',
+  deleteAsset: 'canvas-host:delete-asset',
+  restoreAsset: 'canvas-host:restore-asset',
+  purgeAsset: 'canvas-host:purge-asset',
   inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
@@ -88,6 +91,8 @@ export interface CanvasAssetOrganization {
   tags: string[]
   source: CanvasAssetSource
   lastUsedAt?: string
+  /** Present only in the recycle bin view; absent means the asset is live. */
+  deletedAt?: string
 }
 
 export interface CanvasAssetSummary extends CanvasGeneratedAsset, CanvasAssetOrganization {
@@ -150,6 +155,19 @@ export interface CanvasMarkAssetUsedResult {
   lastUsedAt: string
 }
 
+export interface CanvasDeleteAssetResult {
+  assetId: string
+  deletedAt: string
+}
+
+export interface CanvasRestoreAssetResult {
+  assetId: string
+}
+
+export interface CanvasPurgeAssetResult {
+  assetId: string
+}
+
 export interface CanvasAssetReferenceReport {
   assetId: string
   inUse: boolean
@@ -180,7 +198,7 @@ export interface CanvasAssetQuery {
   limit?: number
   mediaType?: 'all' | 'image' | 'video' | 'audio'
   search?: string
-  view?: 'all' | 'favorites' | 'recent'
+  view?: 'all' | 'favorites' | 'recent' | 'trash'
   tag?: string
   source?: 'all' | CanvasAssetSource
   sort?: 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'

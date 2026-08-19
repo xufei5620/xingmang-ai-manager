@@ -8,9 +8,14 @@ function metadataStore(overrides: Record<string, unknown> = {}) {
     updatePreferences: vi.fn(),
     markUsed: vi.fn(),
     setSource: vi.fn(),
+    softDelete: vi.fn(),
+    restore: vi.fn(),
+    forget: vi.fn(),
     ...overrides,
   }
 }
+
+const trashItem = vi.fn(async () => undefined)
 
 function indexEntry(assetId: string, fileName: string, createdAt: string, mediaType: 'image' | 'video' | 'audio') {
   return { assetId, fileName, extension: fileName.split('.').pop() as string, createdAt, mediaType }
@@ -65,7 +70,7 @@ describe('createAiMediaAssetService', () => {
       saveAs: vi.fn(async () => true), contextMenu: vi.fn(async () => undefined),
     }
     const metadata = metadataStore()
-    const service = createAiMediaAssetService({ images: images as never, videos: videos as never, audios: audios as never, metadata })
+    const service = createAiMediaAssetService({ images: images as never, videos: videos as never, audios: audios as never, metadata, trashItem })
     const page = await service.listOwnedPage(7)
     expect(page.items.map(({ mediaType }) => mediaType)).toEqual(['audio', 'video', 'image'])
     expect(page.items).toEqual(expect.arrayContaining([
@@ -104,7 +109,7 @@ describe('createAiMediaAssetService', () => {
     const metadata = metadataStore({
       getAll: vi.fn(async () => ({ [needle.assetId]: { displayName: '罕见的锦鲤海报', updatedAt: '2026-08-14T02:00:00.000Z' } })),
     })
-    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata })
+    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata, trashItem })
 
     await expect(service.listOwnedPage(7)).resolves.toMatchObject({ total })
     await expect(service.listOwnedPage(7, { search: '锦鲤' })).resolves.toMatchObject({
@@ -140,7 +145,7 @@ describe('createAiMediaAssetService', () => {
         assetId, displayName, updatedAt: '2026-08-14T02:00:00.000Z',
       })),
     })
-    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata })
+    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata, trashItem })
 
     await expect(service.listOwnedPage(7, { search: '新品' })).resolves.toMatchObject({
       total: 1,
@@ -168,7 +173,7 @@ describe('createAiMediaAssetService', () => {
       copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(),
     }
     const metadata = metadataStore()
-    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata })
+    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata, trashItem })
 
     await expect(service.listOwnedPage(7)).resolves.toMatchObject({ items: [{ displayName: 'physical.png' }] })
 
@@ -210,6 +215,7 @@ describe('createAiMediaAssetService', () => {
       images: images as never,
       videos: emptyVideos() as never,
       metadata: metadata as never,
+      trashItem,
     })
 
     await expect(service.listOwnedPage(7, { view: 'favorites', source: 'imported', tag: '角色' })).resolves.toMatchObject({
@@ -254,7 +260,7 @@ describe('createAiMediaAssetService', () => {
         [ids[2] as string]: { tags: ['场景'], updatedAt: '2026-08-14T02:00:00.000Z' },
       })),
     })
-    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata })
+    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata, trashItem })
 
     const firstPage = await service.listOwnedPage(7, { limit: 1 })
     expect(firstPage.items).toHaveLength(1)
@@ -279,8 +285,46 @@ describe('createAiMediaAssetService', () => {
       images: { listOwnedIndex: vi.fn(async () => []), readOwned: vi.fn(), copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn() } as never,
       videos: emptyVideos() as never,
       metadata: metadataStore() as never,
+      trashItem,
     })
     await expect(service.listOwnedPage(7, { offset: 20_001 })).rejects.toThrow('AI 素材分页位置无效')
     await expect(service.listOwnedPage(7, { offset: 20_000 })).resolves.toMatchObject({ total: 0 })
+  })
+
+  it('moves assets to the recycle bin, restores them and only purges unreferenced files', async () => {
+    const assetId = 'd'.repeat(43)
+    const entry = indexEntry(assetId, 'image.png', '2026-08-14T00:00:00.000Z', 'image' as const)
+    const images = {
+      listOwnedIndex: vi.fn(async () => [entry]),
+      readOwned: vi.fn(async (_userId: number, id: string) => ({
+        asset: { assetId: id, localUrl: `xingmang-asset://image/${id}`, mimeType: 'image/png' as const, fileName: 'image.png' },
+        bytes: Buffer.from('image'),
+      })),
+      resolveOwnedFilePath: vi.fn(async () => 'C:/store/image.png'),
+      forgetOwned: vi.fn(),
+      copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const metadata = metadataStore({
+      getAll: vi.fn(async () => ({})),
+      softDelete: vi.fn(async (_userId: number, id: string) => ({ assetId: id, deletedAt: '2026-08-14T04:00:00.000Z', updatedAt: '2026-08-14T04:00:00.000Z' })),
+      restore: vi.fn(async (_userId: number, id: string) => ({ assetId: id, updatedAt: '2026-08-14T05:00:00.000Z' })),
+      forget: vi.fn(),
+    })
+    const trash = vi.fn(async () => undefined)
+    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata: metadata as never, trashItem: trash })
+
+    await expect(service.softDelete(7, assetId)).resolves.toEqual({ assetId, deletedAt: '2026-08-14T04:00:00.000Z' })
+    // Ownership is proven by reading the asset before any metadata is written.
+    expect(images.readOwned).toHaveBeenCalledBefore(metadata.softDelete)
+    await expect(service.restore(7, assetId)).resolves.toEqual({ assetId })
+
+    // Purging is the only destructive step, so it hands the file to the OS
+    // recycle bin rather than unlinking it, and forgets the metadata after.
+    await expect(service.purge(7, assetId)).resolves.toEqual({ assetId })
+    expect(trash).toHaveBeenCalledWith('C:/store/image.png')
+    expect(metadata.forget).toHaveBeenCalledWith(7, assetId)
+
+    images.readOwned.mockRejectedValueOnce(new Error('missing image'))
+    await expect(service.purge(7, assetId)).rejects.toThrow('不存在或无权访问')
   })
 })

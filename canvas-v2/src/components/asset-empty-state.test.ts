@@ -36,6 +36,12 @@ describe('asset empty state', () => {
     expect(recent.kind).not.toBe('import')
   })
 
+  it('explains what the recycle bin is for when it is empty', () => {
+    const trash = assetEmptyState({ ...base, view: 'trash' })
+    expect(trash).toMatchObject({ reason: 'trash', kind: 'show-all' })
+    expect(trash.description).toContain('恢复')
+  })
+
   it('resolves the most recent thing the user did first', () => {
     // Searching inside favourites with a tag on: the search is the newest and
     // cheapest thing to undo, so it is the one offered.

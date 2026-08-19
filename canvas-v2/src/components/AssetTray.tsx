@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ChevronLeft, ChevronRight, Clock3, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags, TriangleAlert, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Clock3, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags, Trash2, TriangleAlert, X } from 'lucide-react'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
 import { middleTruncate } from '../identifier-display'
@@ -43,6 +43,9 @@ interface AssetTrayProps {
   onUpdateMetadata?(assetId: string, input: { favorite?: boolean; tags?: string[] }): void | Promise<void>
   onMarkUsed?(assetId: string): void | Promise<void>
   onInspectReferences?(assetId: string): Promise<CanvasAssetReferenceReport>
+  onDelete?(assetIds: readonly string[]): void | Promise<void>
+  onRestore?(assetIds: readonly string[]): void | Promise<void>
+  onPurge?(assetIds: readonly string[]): void | Promise<void>
   onClose(): void
   embedded?: boolean
 }
@@ -90,7 +93,7 @@ function assetRef(asset: CanvasAssetSummary): AssetRef {
   }
 }
 
-export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onLocateSourceNode, onRename, onUpdateMetadata, onMarkUsed, onInspectReferences, onClose, embedded = false }: AssetTrayProps) {
+export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onLocateSourceNode, onRename, onUpdateMetadata, onMarkUsed, onInspectReferences, onDelete, onRestore, onPurge, onClose, embedded = false }: AssetTrayProps) {
   const [search, setSearch] = useState(query.search ?? '')
   const [selection, setSelection] = useState<AssetSelection>(emptyAssetSelection)
   const [previewAsset, setPreviewAsset] = useState<CanvasAssetSummary | null>(null)
@@ -124,6 +127,47 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   const setDensity = (next: AssetDensity) => {
     setDensityState(next)
     writeAssetDensity(next)
+  }
+  // The undo affordance is the whole point of a soft delete: without it the bin
+  // is somewhere you have to go looking, and a mistaken delete costs a trip.
+  const [undoDelete, setUndoDelete] = useState<{ ids: string[]; count: number } | null>(null)
+  const [assetActionError, setAssetActionError] = useState<string | null>(null)
+  useEffect(() => {
+    if (!undoDelete) return undefined
+    const timer = window.setTimeout(() => setUndoDelete(null), 10_000)
+    return () => window.clearTimeout(timer)
+  }, [undoDelete])
+  const runDelete = async (ids: string[]) => {
+    if (!onDelete || ids.length === 0) return
+    setAssetActionError(null)
+    try {
+      await onDelete(ids)
+      setSelection(emptyAssetSelection)
+      setUndoDelete({ ids, count: ids.length })
+    } catch (error) {
+      setAssetActionError(error instanceof Error ? error.message : String(error))
+    }
+  }
+  const runRestore = async (ids: string[]) => {
+    if (!onRestore || ids.length === 0) return
+    setAssetActionError(null)
+    try {
+      await onRestore(ids)
+      setSelection(emptyAssetSelection)
+      setUndoDelete(null)
+    } catch (error) {
+      setAssetActionError(error instanceof Error ? error.message : String(error))
+    }
+  }
+  const runPurge = async (ids: string[]) => {
+    if (!onPurge || ids.length === 0) return
+    setAssetActionError(null)
+    try {
+      await onPurge(ids)
+      setSelection(emptyAssetSelection)
+    } catch (error) {
+      setAssetActionError(error instanceof Error ? error.message : String(error))
+    }
   }
   const [filterMenuOpen, setFilterMenuOpen] = useState(false)
   const filterAnchorRef = useRef<HTMLDivElement | null>(null)
@@ -256,7 +300,19 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
         <button type="button" className={query.view === 'all' ? 'is-active' : ''} aria-pressed={query.view === 'all'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'all' })}>全部</button>
         <button type="button" className={query.view === 'favorites' ? 'is-active' : ''} aria-pressed={query.view === 'favorites'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'favorites' })}><Star size={12} />收藏</button>
         <button type="button" className={query.view === 'recent' ? 'is-active' : ''} aria-pressed={query.view === 'recent'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'recent', sort: 'used-desc' })}><Clock3 size={12} />最近</button>
+        {onDelete && <button type="button" className={query.view === 'trash' ? 'is-active' : ''} aria-pressed={query.view === 'trash'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'trash', sort: 'created-desc' })}><Trash2 size={12} />回收站</button>}
       </nav>
+      {selection.ids.size > 0 && (onDelete || onRestore) && (
+        <div className="asset-selection-bar" role="group" aria-label="选中素材操作">
+          <span>已选 {selection.ids.size} 项</span>
+          {query.view === 'trash'
+            ? <>
+                {onRestore && <button type="button" onClick={() => void runRestore([...selection.ids])}>恢复</button>}
+                {onPurge && <button type="button" className="is-danger" onClick={() => void runPurge([...selection.ids])}>彻底删除</button>}
+              </>
+            : onDelete && <button type="button" onClick={() => void runDelete([...selection.ids])}>删除</button>}
+        </div>
+      )}
       {/* One tool row instead of three stacked ones. The selects were about
           eighty pixels of chrome sitting at their defaults nearly all the time;
           they move into a popover, and what is actually narrowing the results
@@ -369,6 +425,13 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
         aria-multiselectable="true"
         onClick={(event) => { if (event.target === event.currentTarget) setSelection(emptyAssetSelection) }}
         onKeyDown={(event) => {
+          if (event.key === 'Delete' && selection.ids.size > 0) {
+            event.preventDefault()
+            // Delete never destroys anything here; in the bin it restores
+            // instead, because the destructive twin needs a deliberate press.
+            void (query.view === 'trash' ? runRestore([...selection.ids]) : runDelete([...selection.ids]))
+            return
+          }
           if (!(event.key === 'a' || event.key === 'A') || !(event.ctrlKey || event.metaKey)) return
           event.preventDefault()
           setSelection(assetSelectionSelectAll(visibleAssetIds))
@@ -528,6 +591,14 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
           </section>
         )
       })()}
+      {assetActionError && <p className="asset-tray-action-error" role="alert">{assetActionError}</p>}
+      {undoDelete && (
+        <div className="asset-undo-toast" role="status" aria-live="polite">
+          <span>已移入回收站 {undoDelete.count} 项</span>
+          <button type="button" onClick={() => void runRestore(undoDelete.ids)}>撤销</button>
+          <button type="button" aria-label="关闭撤销提示" onClick={() => setUndoDelete(null)}><X size={13} /></button>
+        </div>
+      )}
       <footer className="asset-tray-pagination">
         <span>{firstItem}-{lastItem} / {page.total}</span>
         <button type="button" title="上一页" aria-label="上一页资产" disabled={loading || page.offset === 0} onClick={() => onQueryChange({ ...query, offset: Math.max(0, page.offset - page.limit) })}><ChevronLeft size={15} /></button>

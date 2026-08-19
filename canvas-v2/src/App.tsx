@@ -1116,6 +1116,24 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [])
 
+  // Deleting reloads the page rather than splicing the tiles out locally: the
+  // total, the facet counts and the recycle bin all move together, and a
+  // hand-patched page would disagree with the next query.
+  const deleteCanvasAssets = useCallback(async (assetIds: readonly string[]) => {
+    for (const assetId of assetIds) await hostBridge().deleteAsset(assetId)
+    await refreshAssets()
+  }, [refreshAssets])
+
+  const restoreCanvasAssets = useCallback(async (assetIds: readonly string[]) => {
+    for (const assetId of assetIds) await hostBridge().restoreAsset(assetId)
+    await refreshAssets()
+  }, [refreshAssets])
+
+  const purgeCanvasAssets = useCallback(async (assetIds: readonly string[], content: string) => {
+    for (const assetId of assetIds) await hostBridge().purgeAsset(assetId, content)
+    await refreshAssets()
+  }, [refreshAssets])
+
   useEffect(() => {
     if (!window.xingmangCanvasHost) {
       void hostBridge().listAssets({ offset: 0, limit: 24, mediaType: 'all' }).then((page) => {
@@ -3130,6 +3148,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               onUpdateMetadata={updateCanvasAssetMetadata}
               onMarkUsed={markCanvasAssetUsed}
               onInspectReferences={(assetId) => hostBridge().inspectAssetReferences(assetId, serializeWorkflow(workflowSnapshot()))}
+              onDelete={deleteCanvasAssets}
+              onRestore={restoreCanvasAssets}
+              onPurge={(assetIds) => purgeCanvasAssets(assetIds, serializeWorkflow(workflowSnapshot()))}
               onClose={closeInspector}
             />
           )}

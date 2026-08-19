@@ -50,6 +50,7 @@ export interface CanvasAssetOrganization {
   tags?: string[]
   source?: CanvasAssetSource
   lastUsedAt?: string
+  deletedAt?: string
 }
 
 export interface CanvasImageAssetSummary extends CanvasGeneratedAsset, CanvasAssetOrganization {
@@ -92,7 +93,7 @@ export interface CanvasAssetQuery {
   limit?: number
   mediaType?: 'all' | 'image' | 'video' | 'audio'
   search?: string
-  view?: 'all' | 'favorites' | 'recent'
+  view?: 'all' | 'favorites' | 'recent' | 'trash'
   tag?: string
   source?: 'all' | CanvasAssetSource
   sort?: 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'
@@ -380,6 +381,9 @@ export interface CanvasHostBridge {
   renameAsset(input: { assetId: string; displayName: string }): Promise<{ assetId: string; displayName: string }>
   updateAssetMetadata(input: { assetId: string; favorite?: boolean; tags?: string[] }): Promise<{ assetId: string; favorite: boolean; tags: string[]; lastUsedAt?: string }>
   markAssetUsed(assetId: string): Promise<{ assetId: string; lastUsedAt: string }>
+  deleteAsset(assetId: string): Promise<{ assetId: string; deletedAt: string }>
+  restoreAsset(assetId: string): Promise<{ assetId: string }>
+  purgeAsset(assetId: string, currentProjectContent: string): Promise<{ assetId: string }>
   inspectAssetReferences(assetId: string, currentProjectContent: string): Promise<CanvasAssetReferenceReport>
   pickAsset(): Promise<CanvasGeneratedAsset | CanvasAssetSummary | null>
   importAssetFile(file: File): Promise<CanvasGeneratedAsset | CanvasAssetSummary>
@@ -461,6 +465,9 @@ export function hostBridge(): CanvasHostBridge {
     async renameAsset() { return unavailable() },
     async updateAssetMetadata() { return unavailable() },
     async markAssetUsed() { return unavailable() },
+    async deleteAsset() { return unavailable() },
+    async restoreAsset() { return unavailable() },
+    async purgeAsset() { return unavailable() },
     async inspectAssetReferences() { return unavailable() },
     async pickAsset() { return unavailable() },
     async importAssetFile() { return unavailable() },

@@ -33,6 +33,7 @@ function context(outputRoot: string, randomByte = 1) {
     new AiVideoAssetStore({ outputRoot, now }),
     new AiAudioAssetStore({ outputRoot, now }),
     new AiAssetMetadataStore({ outputRoot, now }),
+    async () => undefined,
   )
 }
 

@@ -216,6 +216,13 @@ export function createCanvasProjectAssetContext(
   videos: AiVideoAssetStore,
   audios: AiAudioAssetStore,
   metadata: AiAssetMetadataStore,
+  trashItem: (filePath: string) => Promise<void>,
 ): CanvasProjectAssetContext {
-  return { images, videos, audios, metadata, media: createAiMediaAssetService({ images, videos, audios, metadata }) }
+  return {
+    images,
+    videos,
+    audios,
+    metadata,
+    media: createAiMediaAssetService({ images, videos, audios, metadata, trashItem }),
+  }
 }

@@ -233,6 +233,42 @@ export class AiAudioAssetStore {
     throw new Error('AI 音频资产不存在或无权访问')
   }
 
+  /**
+   * Resolves the absolute path of an owned audio file after the same ownership
+   * and reparse checks `readOwned` performs, for callers that must hand a path
+   * to the OS rather than buffer the file. The path stays in the main process.
+   */
+  async resolveOwnedFilePath(userId: number, assetId: string): Promise<string> {
+    assertUserId(userId)
+    assertAssetId(assetId)
+    const accountRoot = path.join(this.outputRoot, `user-${userId}`)
+    let entries: fs.Dirent[]
+    try {
+      assertNoReparseComponents(accountRoot, FILE_LABEL)
+      entries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
+    } catch { throw new Error('AI 音频资产不存在或无权访问') }
+    if (entries.length > 4_096) throw new Error('AI 音频资产目录条目过多')
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !DATE_DIRECTORY_PATTERN.test(entry.name)) continue
+      assertNoReparseComponents(path.join(accountRoot, entry.name), FILE_LABEL)
+      for (const extension of ['mp3', 'wav', 'ogg', 'm4a']) {
+        const filePath = path.join(accountRoot, entry.name, `xingmang-${assetId}.${extension}`)
+        let stats: fs.Stats
+        try {
+          stats = await fs.promises.lstat(filePath)
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+          throw error
+        }
+        if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+          throw new Error('AI 音频资产必须是单链接普通文件')
+        }
+        return filePath
+      }
+    }
+    throw new Error('AI 音频资产不存在或无权访问')
+  }
+
   async listOwnedIndex(userId: number): Promise<AiAssetIndexEntry[]> {
     assertUserId(userId)
     return indexOwnedAssetFiles({

@@ -837,7 +837,11 @@ if (!hasSingleInstanceLock) {
       },
     })
     const assetMetadata = new AiAssetMetadataStore({ outputRoot: aiOutputRoot })
-    const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata })
+    // Permanent deletion hands the file to the OS recycle bin rather than
+    // unlinking it. The bytes are the user's artwork; the last recoverable copy
+    // should not depend on this program being right.
+    const trashItem = (filePath: string) => shell.trashItem(filePath)
+    const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata, trashItem })
     const canvasProjects = new CanvasProjectStore(path.join(managerDataDirectory, 'canvas-projects'))
     const createProjectAssetContext = (outputRoot: string) => {
       const images = new AiAssetStore({
@@ -891,11 +895,11 @@ if (!hasSingleInstanceLock) {
           },
         },
       })
-      return createCanvasProjectAssetContext(images, videos, audios, new AiAssetMetadataStore({ outputRoot }))
+      return createCanvasProjectAssetContext(images, videos, audios, new AiAssetMetadataStore({ outputRoot }), trashItem)
     }
     const canvasProjectAssets = new CanvasProjectAssetManager({
       projects: canvasProjects,
-      global: createCanvasProjectAssetContext(assetStore, videoAssets, audioAssets, assetMetadata),
+      global: createCanvasProjectAssetContext(assetStore, videoAssets, audioAssets, assetMetadata, trashItem),
       create: createProjectAssetContext,
       onMetadataError: (error, context) => runtimeLog.log(
         'warn',

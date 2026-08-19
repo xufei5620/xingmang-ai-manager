@@ -5,8 +5,13 @@ import type { AiAssetMetadataStore, AiAssetSource } from './ai-asset-metadata-st
 import { MAXIMUM_INDEXED_ASSETS, type AiAssetIndexEntry } from './ai-asset-index'
 import { assetThumbnailUrl } from './asset-thumbnail'
 
-export type AiMediaAssetView = 'all' | 'favorites' | 'recent'
-export type AiMediaAssetSort = 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'
+export type AiMediaAssetView = 'all' | 'favorites' | 'recent' | 'trash'
+/**
+ * `deleted-desc` is the recycle bin's own order and is not offered in the sort
+ * control: a bin ordered by anything other than when things went into it makes
+ * "what did I just delete" the hardest question to answer.
+ */
+export type AiMediaAssetSort = 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc' | 'deleted-desc'
 
 export interface AiMediaAssetListQuery {
   offset?: number
@@ -21,9 +26,9 @@ export interface AiMediaAssetListQuery {
 
 export interface AiMediaAssetListPage {
   items: Array<
-    | (AiStoredAsset & { createdAt: string; mediaType: 'image'; thumbnailUrl: string; displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string })
-    | (AiStoredVideoAssetListItem & { displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string })
-    | (AiStoredAudioAssetListItem & { displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string })
+    | (AiStoredAsset & { createdAt: string; mediaType: 'image'; thumbnailUrl: string; displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string })
+    | (AiStoredVideoAssetListItem & { displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string })
+    | (AiStoredAudioAssetListItem & { displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string })
   >
   offset: number
   limit: number
@@ -44,6 +49,7 @@ interface AiMediaAssetRow {
   tags: string[]
   source: AiAssetSource
   lastUsedAt?: string
+  deletedAt?: string
 }
 
 // Bounded so the facet panel cannot grow a DTO without limit: the metadata
@@ -62,10 +68,15 @@ function tagFacets(rows: readonly AiMediaAssetRow[]): AiMediaAssetFacets['tags']
 }
 
 export function createAiMediaAssetService(options: {
-  images: Pick<AiAssetStore, 'readOwned' | 'listOwnedIndex' | 'copy' | 'saveAs' | 'contextMenu'>
-  videos: Pick<AiVideoAssetStore, 'readOwned' | 'listOwnedIndex' | 'saveAs' | 'contextMenu'>
-  audios?: Pick<AiAudioAssetStore, 'readOwned' | 'listOwnedIndex' | 'saveAs' | 'contextMenu'>
-  metadata: Pick<AiAssetMetadataStore, 'getAll' | 'rename' | 'updatePreferences' | 'markUsed' | 'setSource'>
+  images: Pick<AiAssetStore, 'readOwned' | 'listOwnedIndex' | 'copy' | 'saveAs' | 'contextMenu' | 'resolveOwnedFilePath' | 'forgetOwned'>
+  videos: Pick<AiVideoAssetStore, 'readOwned' | 'listOwnedIndex' | 'saveAs' | 'contextMenu' | 'resolveOwnedFilePath'>
+  audios?: Pick<AiAudioAssetStore, 'readOwned' | 'listOwnedIndex' | 'saveAs' | 'contextMenu' | 'resolveOwnedFilePath'>
+  metadata: Pick<AiAssetMetadataStore, 'getAll' | 'rename' | 'updatePreferences' | 'markUsed' | 'setSource' | 'softDelete' | 'restore' | 'forget'>
+  /**
+   * Hands the file to the OS recycle bin. Injected so tests never delete
+   * anything real, and so the service never imports Electron's shell.
+   */
+  trashItem: (filePath: string) => Promise<void>
 }) {
   async function readOwned(userId: number, assetId: string, kind?: 'image' | 'video' | 'audio') {
     if (kind === 'image') return options.images.readOwned(userId, assetId)
@@ -92,15 +103,15 @@ export function createAiMediaAssetService(options: {
     const view = query.view ?? 'all'
     const tag = query.tag?.trim() ?? ''
     const source = query.source ?? 'all'
-    const sort = query.sort ?? (view === 'recent' ? 'used-desc' : 'created-desc')
+    const sort = query.sort ?? (view === 'recent' ? 'used-desc' : view === 'trash' ? 'deleted-desc' : 'created-desc')
     if (!Number.isSafeInteger(offset) || offset < 0 || offset > MAXIMUM_INDEXED_ASSETS) throw new Error('AI 素材分页位置无效')
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) throw new Error('AI 素材分页数量无效')
     if (!['all', 'image', 'video', 'audio'].includes(mediaType)) throw new Error('AI 素材媒体类型无效')
     if (search.length > 128 || /[\x00-\x1F\x7F]/.test(search)) throw new Error('AI 素材搜索内容无效')
-    if (!['all', 'favorites', 'recent'].includes(view)) throw new Error('AI 素材快速视图无效')
+    if (!['all', 'favorites', 'recent', 'trash'].includes(view)) throw new Error('AI 素材快速视图无效')
     if (tag.length > 32 || /[\x00-\x1F\x7F]/.test(tag)) throw new Error('AI 素材标签筛选无效')
     if (!['all', 'generated', 'imported', 'legacy'].includes(source)) throw new Error('AI 素材来源筛选无效')
-    if (!['created-desc', 'created-asc', 'used-desc', 'name-asc'].includes(sort)) throw new Error('AI 素材排序无效')
+    if (!['created-desc', 'created-asc', 'used-desc', 'name-asc', 'deleted-desc'].includes(sort)) throw new Error('AI 素材排序无效')
     // Filtering, sorting and paging all run on the complete index. The previous
     // implementation asked each store for its first 500 fully-decoded assets and
     // only then searched and sorted, so past that ceiling the library silently
@@ -122,8 +133,13 @@ export function createAiMediaAssetService(options: {
           tags: [...(logical?.tags ?? [])],
           source: logical?.source ?? 'legacy' as AiAssetSource,
           ...(logical?.lastUsedAt ? { lastUsedAt: logical.lastUsedAt } : {}),
+          ...(logical?.deletedAt ? { deletedAt: logical.deletedAt } : {}),
         }
       })
+      // A deleted asset is absent from every view but the bin, and the bin
+      // contains nothing else. Leaking one into the normal library would make
+      // "deleted" mean nothing.
+      .filter((row) => (view === 'trash') === Boolean(row.deletedAt))
       .filter((row) => view !== 'favorites' || row.favorite)
       .filter((row) => view !== 'recent' || Boolean(row.lastUsedAt))
       .filter((row) => source === 'all' || row.source === source)
@@ -139,6 +155,7 @@ export function createAiMediaAssetService(options: {
         if (sort === 'created-asc') return left.entry.createdAt.localeCompare(right.entry.createdAt) || left.entry.assetId.localeCompare(right.entry.assetId)
         if (sort === 'used-desc') return (right.lastUsedAt ?? '').localeCompare(left.lastUsedAt ?? '') || right.entry.createdAt.localeCompare(left.entry.createdAt) || right.entry.assetId.localeCompare(left.entry.assetId)
         if (sort === 'name-asc') return left.displayName.localeCompare(right.displayName, 'zh-CN') || right.entry.createdAt.localeCompare(left.entry.createdAt) || right.entry.assetId.localeCompare(left.entry.assetId)
+        if (sort === 'deleted-desc') return (right.deletedAt ?? '').localeCompare(left.deletedAt ?? '') || right.entry.createdAt.localeCompare(left.entry.createdAt) || right.entry.assetId.localeCompare(left.entry.assetId)
         return right.entry.createdAt.localeCompare(left.entry.createdAt) || right.entry.assetId.localeCompare(left.entry.assetId)
       })
     const page = rows.slice(offset, offset + limit)
@@ -168,6 +185,7 @@ export function createAiMediaAssetService(options: {
         tags: row.tags,
         source: row.source,
         ...(row.lastUsedAt ? { lastUsedAt: row.lastUsedAt } : {}),
+        ...(row.deletedAt ? { deletedAt: row.deletedAt } : {}),
       }
       try {
         // A file deleted or damaged between indexing and hydration is omitted
@@ -255,7 +273,62 @@ export function createAiMediaAssetService(options: {
     return { assetId: updated.assetId, source: updated.source as AiAssetSource }
   }
 
-  return { readOwned, listOwnedPage, copy, saveAs, contextMenu, rename, updateMetadata, markUsed, setSource }
+  /**
+   * Moves an asset to the recycle bin. Nothing is written outside the metadata
+   * file, so this is cheap to undo and cannot lose bytes.
+   */
+  async function softDelete(userId: number, assetId: string) {
+    await readOwned(userId, assetId)
+    const deleted = await options.metadata.softDelete(userId, assetId)
+    return { assetId: deleted.assetId, deletedAt: deleted.deletedAt as string }
+  }
+
+  async function restore(userId: number, assetId: string) {
+    await readOwned(userId, assetId)
+    const restored = await options.metadata.restore(userId, assetId)
+    return { assetId: restored.assetId }
+  }
+
+  /**
+   * Empties one asset out of the bin for good.
+   *
+   * Reference blocking happens here and only here. Refusing to soft delete a
+   * referenced asset would make the bin useless -- assets are referenced
+   * precisely because they were used -- while permanent deletion is the point
+   * of no return, and a workflow that loses an input it still points at cannot
+   * be repaired by undo.
+   *
+   * The bytes go to the OS trash rather than to unlink: this is a user's
+   * artwork, and the last recoverable copy should not depend on us.
+   */
+  async function purge(
+    userId: number,
+    assetId: string,
+    references?: () => Promise<{ inUse: boolean }>,
+  ) {
+    const kind = await assetKind(userId, assetId)
+    if (references) {
+      const report = await references()
+      if (report.inUse) throw new Error('该素材仍被工作流或运行记录引用，无法彻底删除')
+    }
+    const filePath = kind === 'image'
+      ? await options.images.resolveOwnedFilePath(userId, assetId)
+      : kind === 'video'
+        ? await options.videos.resolveOwnedFilePath(userId, assetId)
+        : await (options.audios ?? never('音频素材能力不可用')).resolveOwnedFilePath(userId, assetId)
+    await options.trashItem(filePath)
+    if (kind === 'image') options.images.forgetOwned(assetId)
+    // Metadata is dropped last: a record without a file shows as a broken tile,
+    // while a file without a record is simply an unnamed asset.
+    await options.metadata.forget(userId, assetId)
+    return { assetId }
+  }
+
+  function never(message: string): never {
+    throw new Error(message)
+  }
+
+  return { readOwned, listOwnedPage, copy, saveAs, contextMenu, rename, updateMetadata, markUsed, setSource, softDelete, restore, purge }
 }
 
 export type AiMediaAssetService = ReturnType<typeof createAiMediaAssetService>

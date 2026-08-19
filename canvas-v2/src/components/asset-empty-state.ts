@@ -14,7 +14,7 @@ export type AssetEmptyAction = 'import' | 'clear-search' | 'clear-filters' | 'sh
 
 export interface AssetEmptyState {
   /** Distinguishes the cases for tests; not shown. */
-  reason: 'library' | 'search' | 'filters' | 'favorite' | 'recent'
+  reason: 'library' | 'search' | 'filters' | 'favorite' | 'recent' | 'trash'
   title: string
   description: string
   kind: AssetEmptyAction
@@ -65,6 +65,15 @@ export function assetEmptyState(query: EmptyStateQuery): AssetEmptyState {
       reason: 'favorite',
       title: '还没有收藏素材',
       description: '在素材卡片上点星标，或选中后按句点键，收藏的素材会集中出现在这里。',
+      kind: 'show-all',
+      label: '查看全部素材',
+    }
+  }
+  if (query.view === 'trash') {
+    return {
+      reason: 'trash',
+      title: '回收站是空的',
+      description: '删除的素材会先放到这里，随时可以恢复；只有在这里彻底删除才会把文件交给系统回收站。',
       kind: 'show-all',
       label: '查看全部素材',
     }
