@@ -404,9 +404,9 @@ button:disabled {
   min-height: 0;
 }
 
-.canvas-workspace.is-focused .node-library,
-.canvas-workspace.is-focused .asset-tray,
-.canvas-workspace.is-focused .run-inspector.is-open {
+/* The inspector is not rendered at all in focus mode, so only the library
+   needs hiding here. */
+.canvas-workspace.is-focused .node-library {
   display: none;
 }
 
@@ -873,29 +873,24 @@ button:disabled {
 .template-picker small { color: var(--text-muted); line-height: 1.35; }
 .template-swatch { width: 34px; height: 34px; flex: 0 0 auto; border: 1px solid var(--border-strong); border-radius: var(--radius-control); }
 
+/* Both panels only ever render inside .canvas-inspector-content, which owns
+   their width, flex and edge. Sizing them here as standalone flex children was
+   left over from the pre-inspector layout and was dead. */
 .asset-tray {
   display: flex;
   flex-direction: column;
-  width: clamp(216px, 19vw, 292px);
-  min-width: 196px;
-  flex: 0 1 292px;
   overflow: hidden;
   color: var(--text-primary);
   background: var(--surface-1);
-  border-left: 1px solid var(--border-subtle);
 }
 
 .run-inspector {
   display: none;
-  width: clamp(252px, 22vw, 330px);
-  min-width: 232px;
-  flex: 0 1 330px;
+  flex-direction: column;
   overflow: hidden;
   color: var(--text-primary);
   background: var(--surface-1);
-  border-left: 1px solid var(--border-subtle);
 }
-.run-inspector.is-open { display: flex; flex-direction: column; }
 .run-inspector > header { display: flex; height: 44px; align-items: center; gap: 6px; padding: 0 10px 0 12px; border-bottom: 1px solid var(--border-subtle); }
 .run-inspector > header > svg { flex: 0 0 auto; color: var(--text-muted); }
 .run-inspector > header strong { margin-right: auto; font-size: var(--text-base); }
@@ -1809,8 +1804,6 @@ button:disabled {
     max-width: none;
   }
 
-  .asset-tray { width: 292px; min-width: 292px; flex-basis: 292px; }
-  .run-inspector { width: 220px; min-width: 220px; flex-basis: 220px; }
   .node-library { width: 268px; min-width: 48px; flex-basis: 268px; }
   .node-library.is-collapsed { width: 48px; flex-basis: 48px; }
   .library-drawer { width: 220px; }
@@ -1847,25 +1840,6 @@ button:disabled {
     height: 100%;
     box-shadow: var(--shadow-floating);
   }
-  .canvas-inspector-content > .asset-tray,
-  .canvas-inspector-content > .run-inspector.is-open {
-    position: static;
-    width: 100%;
-    min-width: 0;
-    height: auto;
-    box-shadow: none;
-  }
-  .asset-tray,
-  .run-inspector.is-open {
-    position: absolute;
-    z-index: 8;
-    top: 0;
-    right: 0;
-    width: min(292px, calc(100vw - 190px));
-    min-width: 220px;
-    height: 100%;
-    box-shadow: var(--shadow-floating);
-  }
 }
 
 @media (min-width: 2200px) {
@@ -1891,16 +1865,6 @@ button:disabled {
   .canvas-run-split .canvas-run-main { min-width: 98px; }
   .canvas-statusbar { left: 58px; transform: none; }
   .canvas-statusbar span:nth-child(n+2) { display: none; }
-  .asset-tray,
-  .run-inspector.is-open {
-    position: absolute;
-    z-index: 8;
-    top: 0;
-    right: 0;
-    width: min(280px, calc(100vw - 48px));
-    height: 100%;
-    box-shadow: var(--shadow-floating);
-  }
   .canvas-inspector {
     width: min(280px, calc(100vw - 48px));
     min-width: 0;
