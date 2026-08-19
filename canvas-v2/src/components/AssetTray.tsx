@@ -18,6 +18,15 @@ import {
 } from './asset-selection'
 import { adjacentAssetId, assetGridKeyAction, rovingTabIndex, skeletonTileCount } from './asset-grid-keyboard'
 import { assetEmptyState } from './asset-empty-state'
+import {
+  assetDensityLabel,
+  assetDensityOrder,
+  assetDensityTileSize,
+  defaultAssetDensity,
+  readAssetDensity,
+  writeAssetDensity,
+  type AssetDensity,
+} from '../persistence/asset-density'
 
 interface AssetTrayProps {
   page: CanvasAssetPage
@@ -107,6 +116,14 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
     () => Array.from({ length: skeletonTileCount(loading, page.items.length, query.limit) }, (_, index) => index),
     [loading, page.items.length, query.limit],
   )
+  // Read once on mount rather than on every render: reading localStorage is
+  // synchronous and the tray re-renders on every keystroke in the search box.
+  const [density, setDensityState] = useState<AssetDensity>(defaultAssetDensity)
+  useEffect(() => setDensityState(readAssetDensity()), [])
+  const setDensity = (next: AssetDensity) => {
+    setDensityState(next)
+    writeAssetDensity(next)
+  }
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const gridRef = useRef<HTMLDivElement | null>(null)
   const tileRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -251,7 +268,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
           <option value="name-asc">名称</option>
         </select>
       </form>
-      {(visibleTags.length > 0 || query.tag) && (
+      <div className="asset-tray-toolbar">
         <div className="asset-tag-filter" aria-label="按标签筛选">
           {query.tag && <button type="button" className="is-active" onClick={() => onQueryChange({ ...query, offset: 0, tag: '' })}>{query.tag}<X size={11} /></button>}
           {visibleTags.filter(({ tag }) => tag !== query.tag).map(({ tag, count }) => (
@@ -260,10 +277,24 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
             </button>
           ))}
         </div>
-      )}
+        <div className="asset-density-switch" role="group" aria-label="素材密度">
+          {assetDensityOrder.map((value) => (
+            <button
+              type="button"
+              key={value}
+              className={value === density ? 'is-active' : ''}
+              title={`${assetDensityLabel[value]}密度`}
+              aria-label={`${assetDensityLabel[value]}密度`}
+              aria-pressed={value === density}
+              onClick={() => setDensity(value)}
+            >{assetDensityLabel[value]}</button>
+          ))}
+        </div>
+      </div>
       <div
-        className={`asset-tray-grid${loading ? ' is-loading' : ''}`}
+        className={`asset-tray-grid is-density-${density}${loading ? ' is-loading' : ''}`}
         ref={gridRef}
+        style={{ gridTemplateColumns: `repeat(auto-fill, minmax(${assetDensityTileSize[density]}px, 1fr))` }}
         aria-busy={loading}
         aria-multiselectable="true"
         onClick={(event) => { if (event.target === event.currentTarget) setSelection(emptyAssetSelection) }}
@@ -362,9 +393,9 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               <div className="asset-tray-item-tools" aria-label="素材操作">
                 {onUpdateMetadata && <button type="button" className={asset.favorite ? 'is-favorite' : ''} title={asset.favorite ? '取消收藏' : '收藏'} aria-label={`${asset.favorite ? '取消收藏' : '收藏'}：${name}`} aria-pressed={asset.favorite} onClick={() => void onUpdateMetadata(asset.assetId, { favorite: !asset.favorite })}><Star size={13} fill={asset.favorite ? 'currentColor' : 'none'} /></button>}
                 <button type="button" title="添加到画布" aria-label={`添加资产到画布：${name}`} onClick={() => onAdd(asset.assetId)}><Plus size={13} /></button>
-                <button type="button" title="放大预览" aria-label={`放大预览：${name}`} onClick={() => setPreviewAsset(asset)}><Eye size={13} /></button>
-                {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={13} /></button>}
-                <button type="button" title="更多操作" aria-label={`打开素材操作：${name}`} onClick={() => onAssetMenu(asset.assetId)}><MoreHorizontal size={13} /></button>
+                <button type="button" className="is-optional-preview" title="放大预览" aria-label={`放大预览：${name}`} onClick={() => setPreviewAsset(asset)}><Eye size={13} /></button>
+                {onRename && <button type="button" className="is-optional-rename" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={13} /></button>}
+                <button type="button" className="is-optional-menu" title="更多操作" aria-label={`打开素材操作：${name}`} onClick={() => onAssetMenu(asset.assetId)}><MoreHorizontal size={13} /></button>
               </div>
               <div className="asset-tray-item-meta"><span title={name}>{name}</span><small>{assetLabel(asset)}</small></div>
             </article>

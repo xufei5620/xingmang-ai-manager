@@ -548,6 +548,28 @@ try {
     true,
     '斜杠没有把焦点送到素材搜索框',
   )
+  // Density is a user preference, not a project one: it has to survive a
+  // reload, and the grid has to actually reflow when it changes.
+  const gridColumns = () => page.locator('.asset-tray-grid').evaluate(
+    (element) => getComputedStyle(element).gridTemplateColumns.split(' ').filter(Boolean).length,
+  )
+  const cozyColumns = await gridColumns()
+  await page.getByRole('group', { name: '素材密度' }).getByRole('button', { name: '紧凑密度' }).click()
+  await page.locator('.asset-tray-grid.is-density-compact').waitFor({ state: 'visible' })
+  assert.match(
+    await page.locator('.asset-tray-grid').evaluate((element) => element.style.gridTemplateColumns),
+    /minmax\(72px/,
+    '紧凑密度没有改变素材网格的列宽下限',
+  )
+  // Narrower tiles can only fit more of them per row, never fewer.
+  assert.ok(await gridColumns() >= cozyColumns, '紧凑密度反而减少了每行素材数')
+  assert.equal(
+    await page.evaluate(() => JSON.parse(window.localStorage.getItem('xingmang.canvas.assets.density') || '{}').density),
+    'compact',
+    '素材密度没有被持久化',
+  )
+  await page.getByRole('group', { name: '素材密度' }).getByRole('button', { name: '标准密度' }).click()
+  await page.locator('.asset-tray-grid.is-density-cozy').waitFor({ state: 'visible' })
   // An empty grid used to say the same sentence whatever emptied it. Each cause
   // now names itself and offers the one thing that undoes it.
   await page.getByRole('textbox', { name: '搜索本地资产' }).fill('不存在的素材关键词')
