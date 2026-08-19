@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { Ban, Box, CirclePlay, Crosshair, Film, Image as ImageIcon, Lock, LockOpen, Maximize2, Music2, SlidersHorizontal, X } from 'lucide-react'
+import { middleTruncate } from '../identifier-display'
 import { SafeImage, isLocalCanvasAssetUrl } from './MediaPreview'
 import { canvasInspectorParameterRows } from './canvas-inspector-model'
 import type { CanvasInspectorNode } from './canvas-inspector-model'
@@ -132,7 +133,7 @@ export function CanvasInspector(props: CanvasInspectorProps) {
           ? <SingleNodeInspector {...props} node={single} />
           : <div className="canvas-inspector-node-panel">
               {props.nodes.length === 0 && <p className="canvas-inspector-empty">选择一个节点查看参数、输入和运行结果。</p>}
-              {props.nodes.length > 1 && <><div className="canvas-inspector-selection-summary"><strong>已选 {props.nodes.length} 个节点</strong><span>逐个定位后可编辑完整参数</span></div><div className="canvas-inspector-node-list">{props.nodes.map((node) => <button type="button" key={node.id} onClick={() => props.onLocate(node.id)}><span><strong>{node.title}</strong><small>{node.model || node.id}</small></span><em className={`is-${node.status}`}>{statusLabel[node.status] ?? node.status}</em><Crosshair size={13} /></button>)}</div></>}
+              {props.nodes.length > 1 && <><div className="canvas-inspector-selection-summary"><strong>已选 {props.nodes.length} 个节点</strong><span>逐个定位后可编辑完整参数</span></div><div className="canvas-inspector-node-list">{props.nodes.map((node) => <button type="button" key={node.id} onClick={() => props.onLocate(node.id)}><span><strong>{node.title}</strong><small title={node.model || node.id}>{middleTruncate(node.model || node.id, 22)}</small></span><em className={`is-${node.status}`}>{statusLabel[node.status] ?? node.status}</em><Crosshair size={13} /></button>)}</div></>}
             </div>
       ) : <div className="canvas-inspector-content">{props.children}</div>}
     </aside>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { ChevronLeft, ChevronRight, Clock3, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, Star, Tags, TriangleAlert, X } from 'lucide-react'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
+import { middleTruncate } from '../identifier-display'
 import { AudioPreview, MediaLightbox, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
 import { mediaAssetAspectRatio } from '../library/media-assets'
 
@@ -283,7 +284,9 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                           : asset.lineage.nodeId}
                         {` · ${asset.lineage.sourceAssetIds.length} 个上游素材`}
                       </dd></div>}
-                      <div><dt>资产 ID</dt><dd title={asset.assetId}>{asset.assetId}</dd></div>
+                      {/* Shown in full: this panel exists to give the exact
+                          value, and a truncated hash cannot be copied. */}
+                      <div><dt>资产 ID</dt><dd className="is-identifier" title={asset.assetId}>{asset.assetId}</dd></div>
                     </dl>
                     {(asset.tags?.length ?? 0) > 0 && <div className="asset-item-tags">{asset.tags?.map((tag) => <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>{tag}</button>)}</div>}
                   </div>
@@ -352,7 +355,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               <span>{referenceReport?.inUse ? <TriangleAlert size={16} /> : <ShieldCheck size={16} />}<strong>素材引用检查</strong></span>
               <button type="button" title="关闭" aria-label="关闭素材引用检查" disabled={referenceLoading} onClick={() => setReferenceAsset(null)}><X size={16} /></button>
             </header>
-            <div className="asset-reference-target"><strong title={assetName(referenceAsset)}>{assetName(referenceAsset)}</strong><small title={referenceAsset.assetId}>{referenceAsset.assetId}</small></div>
+            <div className="asset-reference-target"><strong title={assetName(referenceAsset)}>{assetName(referenceAsset)}</strong><small title={referenceAsset.assetId}>{middleTruncate(referenceAsset.assetId, 20)}</small></div>
             {referenceLoading && <p role="status">正在扫描当前画布、项目和运行记录…</p>}
             {referenceError && <p className="asset-reference-error" role="alert">{referenceError}</p>}
             {referenceReport && (

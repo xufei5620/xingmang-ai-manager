@@ -1062,6 +1062,9 @@ button:disabled {
 .asset-tray-item-details dd { min-width: 0; margin: 0; overflow: hidden; color: var(--text-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .asset-tray-item-details dt { color: var(--text-secondary); }
 .asset-tray-item-details dd { user-select: text; }
+/* A content hash clipped mid-string is useless. Let it wrap instead so the
+   whole value stays readable and selectable. */
+.asset-tray-item-details dd.is-identifier { overflow: visible; overflow-wrap: anywhere; white-space: normal; line-height: 1.4; }
 .asset-tray-item-tools { position: absolute; z-index: 2; top: 6px; right: 6px; display: flex; gap: var(--space-2); padding: var(--space-2); background: var(--media-overlay-bg); border: 1px solid var(--media-overlay-border); border-radius: var(--radius-chip); opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity 120ms ease, transform 120ms ease; }
 .asset-tray-item-audio .asset-tray-item-tools { top: auto; bottom: 4px; }
 .asset-tray-item:hover .asset-tray-item-tools,
