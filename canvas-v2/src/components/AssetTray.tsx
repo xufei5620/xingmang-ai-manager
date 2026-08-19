@@ -5,6 +5,7 @@ import type { AssetRef } from '../model'
 import { middleTruncate } from '../identifier-display'
 import { AudioPreview, MediaLightbox, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
 import { mediaAssetAspectRatio } from '../library/media-assets'
+import { assetSelectionAfterKey, retainedAssetSelection, toggleAssetSelection } from './asset-selection'
 
 interface AssetTrayProps {
   page: CanvasAssetPage
@@ -85,8 +86,8 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   const [tagSaving, setTagSaving] = useState(false)
   useEffect(() => setSearch(query.search ?? ''), [query.search])
   useEffect(() => {
-    if (selectedAssetId && !page.items.some((asset) => asset.assetId === selectedAssetId)) setSelectedAssetId(null)
-  }, [page.items, selectedAssetId])
+    setSelectedAssetId((value) => retainedAssetSelection(value, page.items.map((asset) => asset.assetId)))
+  }, [page.items])
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault()
@@ -201,7 +202,10 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
           {visibleTags.filter((tag) => tag !== query.tag).map((tag) => <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>{tag}</button>)}
         </div>
       )}
-      <div className="asset-tray-grid">
+      <div
+        className="asset-tray-grid"
+        onClick={(event) => { if (event.target === event.currentTarget) setSelectedAssetId(null) }}
+      >
         {loading && <p className="asset-tray-empty" role="status" aria-live="polite">正在读取...</p>}
         {!loading && page.items.length === 0 && <p className="asset-tray-empty">没有符合条件的本地资产</p>}
         {page.items.map((asset) => {
@@ -213,11 +217,6 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               className={`asset-tray-item asset-tray-item-${asset.mediaType}${selected ? ' is-selected' : ''}`}
               key={asset.assetId}
               aria-label={`${name}，${assetLabel(asset)}`}
-              onMouseLeave={(event) => {
-                setSelectedAssetId((value) => value === asset.assetId ? null : value)
-                const focused = document.activeElement
-                if (focused instanceof HTMLElement && event.currentTarget.contains(focused)) focused.blur()
-              }}
               onContextMenu={(event) => { event.preventDefault(); onAssetMenu(asset.assetId) }}
               draggable
               onDragStart={(event) => {
@@ -231,13 +230,14 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 role="group"
                 tabIndex={0}
                 aria-label={`查看素材详情：${name}`}
-                onClick={() => setSelectedAssetId(asset.assetId)}
+                aria-expanded={selected}
+                onClick={() => setSelectedAssetId((value) => toggleAssetSelection(value, asset.assetId))}
                 onDoubleClick={() => setPreviewAsset(asset)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter' || event.key === ' ') {
-                    event.preventDefault()
-                    setSelectedAssetId(asset.assetId)
-                  }
+                  const next = assetSelectionAfterKey(event.key, selectedAssetId, asset.assetId)
+                  if (next === undefined) return
+                  event.preventDefault()
+                  setSelectedAssetId(next)
                 }}
               >
                 {asset.mediaType === 'image'

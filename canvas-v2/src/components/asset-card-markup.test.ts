@@ -18,14 +18,26 @@ describe('canvas asset card markup', () => {
     expect(source).toContain('aria-label="\u7d20\u6750\u6765\u6e90"')
     expect(source).toContain('aria-label="\u7d20\u6750\u6392\u5e8f"')
     expect(source).toContain('onDoubleClick={() => setPreviewAsset(asset)}')
-    expect(source).toContain('onMouseLeave={(event) => {')
-    expect(source).toContain('event.currentTarget.contains(focused)')
     expect(source).toContain('className="asset-tray-item-detail-head"')
     expect(source).toContain('<dt>分辨率</dt>')
     expect(source).toContain('<dt>时长</dt>')
     expect(source).toContain('<dt>原文件</dt>')
     expect(source).toContain('<dt>资产 ID</dt>')
     expect(source).not.toMatch(/<button[^>]*className="asset-tray-item"/)
+  })
+
+  it('never lets pointer movement over the grid change selection or focus', () => {
+    // Tiles used to collapse on `onMouseLeave`, which also called `blur()` on
+    // whatever inside them held focus. A pointer crossing the grid therefore
+    // stole the keyboard focus of someone operating a tile without a mouse.
+    // Selection transitions now live in asset-selection.ts and are driven only
+    // by deliberate activation.
+    const source = componentSource('AssetTray.tsx')
+    expect(source).not.toContain('onMouseLeave')
+    expect(source).not.toContain('.blur()')
+    expect(source).toContain('assetSelectionAfterKey(event.key, selectedAssetId, asset.assetId)')
+    expect(source).toContain('toggleAssetSelection(value, asset.assetId)')
+    expect(source).toContain('aria-expanded={selected}')
   })
 
   it('wires logical rename through the asset tray and preview', () => {

@@ -496,30 +496,50 @@ try {
   await page.getByRole('navigation', { name: '素材快速视图' }).getByRole('button', { name: '收藏' }).click()
   await fixtureAsset.waitFor({ state: 'visible' })
   await page.getByRole('navigation', { name: '素材快速视图' }).getByRole('button', { name: '全部' }).click()
-  await fixtureAsset.locator('.asset-tray-item-preview').click()
+  // Activation toggles, and selection now survives pointer movement, drags and
+  // refreshes, so opening a tile has to be idempotent.
+  const openAssetDetails = async (asset) => {
+    const details = asset.locator('.asset-tray-item-details')
+    if (await details.count() === 0) await asset.locator('.asset-tray-item-preview').click()
+    await details.waitFor({ state: 'visible' })
+  }
   const fixtureDetails = fixtureAsset.locator('.asset-tray-item-details')
-  await fixtureDetails.waitFor({ state: 'visible' })
+  await openAssetDetails(fixtureAsset)
   assert.equal(await fixtureDetails.getByText('图片 · image/png', { exact: true }).count(), 1, '图片详情缺少类型')
   assert.equal(await fixtureDetails.getByText('800 × 1000', { exact: true }).count(), 1, '图片详情缺少分辨率')
   assert.equal(await fixtureDetails.locator('dd').filter({ hasText: 'visual-fixture.png' }).count(), 1, '图片详情缺少原文件名')
   assert.equal(await fixtureDetails.getByText(fixtureAssetId, { exact: true }).count(), 1, '图片详情缺少稳定资产 ID')
+  // Selection is explicit. Pointer movement must neither close a tile the user
+  // deliberately opened nor take focus away from someone operating it by
+  // keyboard; the tray used to do both on mouseleave.
   await page.locator('.asset-tray > header').hover()
+  await page.waitForTimeout(160)
+  assert.equal(await fixtureDetails.count(), 1, '鼠标移出素材栏后详情面板被意外关闭')
+  assert.equal(
+    await fixtureAsset.locator('.asset-tray-item-preview').evaluate((element) => element === document.activeElement),
+    true,
+    '鼠标移出素材栏后素材卡片的键盘焦点被抢走',
+  )
+  await fixtureAsset.locator('.asset-tray-item-preview').click()
   await fixtureDetails.waitFor({ state: 'detached' })
+  // Neither hovered nor focused, the action row returns to its hidden default.
+  await page.locator('.asset-tray > header strong').click()
+  await page.locator('.asset-tray > header').hover()
   await page.waitForTimeout(160)
   const hiddenToolStyle = await fixtureAsset.locator('.asset-tray-item-tools').evaluate((element) => {
     const style = getComputedStyle(element)
     return { opacity: style.opacity, pointerEvents: style.pointerEvents }
   })
   assert.deepEqual(hiddenToolStyle, { opacity: '0', pointerEvents: 'none' }, '鼠标移出后素材操作没有恢复默认隐藏态')
-  await fixtureAsset.locator('.asset-tray-item-preview').click()
-  await fixtureDetails.waitFor({ state: 'visible' })
+  await openAssetDetails(fixtureAsset)
   await fixtureAsset.dragTo(page.locator('.wf-drop-target').last())
   const importedPreview = page.locator('.react-flow__node-image-input .wf-preview').last()
   await importedPreview.waitFor({ state: 'visible' })
   await importedPreview.dblclick()
   await page.getByRole('dialog', { name: '图片预览' }).waitFor({ state: 'visible' })
   await page.getByRole('button', { name: '关闭媒体预览' }).click()
-  await fixtureAsset.locator('.asset-tray-item-preview').click()
+  // Still open: dragging the tile out and back, and opening a lightbox over it,
+  // are not deliberate deselections.
   await fixtureDetails.waitFor({ state: 'visible' })
   await fixtureAsset.locator('.asset-tray-item-detail-head').getByRole('button', { name: '重命名素材：visual-fixture.png' }).click()
   const renameDialog = page.getByRole('dialog', { name: '重命名素材' })
@@ -530,7 +550,7 @@ try {
   await page.getByRole('button', { name: '刷新资产' }).click()
   const renamedAsset = page.getByRole('article', { name: /产品主视觉/ })
   await renamedAsset.waitFor({ state: 'visible' })
-  await renamedAsset.locator('.asset-tray-item-preview').click()
+  await openAssetDetails(renamedAsset)
   assert.equal(await renamedAsset.getByText('visual-fixture.png', { exact: true }).count(), 1, '重命名错误修改了原文件名')
   assert.equal(await renamedAsset.getByText(fixtureAssetId, { exact: true }).count(), 1, '重命名错误修改了资产 ID')
   await renamedAsset.getByRole('button', { name: '检查素材引用：产品主视觉' }).click()
