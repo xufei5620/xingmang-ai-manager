@@ -1881,6 +1881,30 @@ button:disabled {
   transform: scale(1.18);
 }
 
+.wf-edge-hit { cursor: pointer; pointer-events: stroke; }
+.wf-edge { transition: stroke-width var(--duration-fast) var(--ease-out); }
+.wf-edge-toolbar {
+  display: flex;
+  gap: var(--space-2);
+  padding: var(--space-2);
+  background: var(--surface-floating-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-menu);
+}
+.wf-edge-toolbar button {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  padding: 0;
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-chip);
+}
+.wf-edge-toolbar button:hover { color: var(--text-primary); background: var(--surface-hover); }
+
 .wf-resize-line { border-color: var(--accent) !important; }
 .wf-resize-handle {
   width: 9px !important;

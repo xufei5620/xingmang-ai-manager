@@ -34,6 +34,7 @@ import { createMockExecutors, runWorkflow, type NodeInputs } from './engine/engi
 import { createHostExecutors } from './engine/executors'
 import { hostBridge } from './host'
 import { canvasAriaLabelConfig } from './aria-labels'
+import { CanvasEdgeHandlersProvider, defaultEdgeOptions, edgeTypes } from './edges/WorkflowEdge'
 import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
@@ -2015,6 +2016,16 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     })
   }, [edges, nodes, reactFlow])
 
+  // Handed to the custom edge through context rather than through edge data, so
+  // the callbacks are not serialized into the document on every render.
+  const edgeHandlers = useMemo(() => ({
+    onDisconnect: (edgeId: string) => execute({ type: 'disconnect', edgeIds: [edgeId] }),
+    onInsertNode: (edgeId: string, client: { x: number; y: number }) => {
+      const edge = edges.find((entry) => entry.id === edgeId)
+      if (edge) openEdgeQuickInsertAt(client, edge)
+    },
+  }), [edges, execute, openEdgeQuickInsertAt])
+
   const onConnectStart = useCallback((_event: MouseEvent | TouchEvent, params: OnConnectStartParams) => {
     connectionStartRef.current = params.nodeId && params.handleId && (params.handleType === 'source' || params.handleType === 'target')
       ? { nodeId: params.nodeId, handleId: params.handleId, handleType: params.handleType }
@@ -2627,11 +2638,14 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         <CanvasModelAvailabilityProvider connected={serverBacked} imageModels={imageModels} videoModels={videoModels}>
         <CanvasNodeViewProvider lod={nodeLod}>
         <CanvasUpstreamReferencesProvider nodes={nodes} edges={edges} assets={assetCatalog}>
+        <CanvasEdgeHandlersProvider handlers={edgeHandlers}>
         <ReactFlow
           colorMode={theme}
           nodes={nodes}
           edges={edges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          defaultEdgeOptions={defaultEdgeOptions}
           onNodesChange={onCanvasNodesChange}
           onNodeDragStart={onCanvasNodeDragStart}
           onNodeDragStop={onCanvasNodeDragStop}
@@ -2695,6 +2709,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           {minimapOpen && <MiniMap pannable zoomable nodeColor={canvasMinimapNodeColor} nodeStrokeWidth={3} />}
           <Controls />
         </ReactFlow>
+        </CanvasEdgeHandlersProvider>
         </CanvasUpstreamReferencesProvider>
         </CanvasNodeViewProvider>
         </CanvasModelAvailabilityProvider>
