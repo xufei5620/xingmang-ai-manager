@@ -88,6 +88,28 @@ describe('AiAssetMetadataStore', () => {
     await expect(store.getMany(7, [assetId])).resolves.toEqual({})
   })
 
+  it('records the generating prompt beside the source and keeps it out of user edits', async () => {
+    const { root, store } = fixture()
+    await store.setSource(7, assetId, 'generated', '  一只在雨里的橘猫\u0007，霓虹灯背景  ')
+    // Control characters would corrupt the stored view and are never typed.
+    await expect(store.getMany(7, [assetId])).resolves.toMatchObject({
+      [assetId]: { source: 'generated', prompt: '一只在雨里的橘猫 ，霓虹灯背景' },
+    })
+
+    // Renaming, tagging and re-marking the source must not disturb the record
+    // of how the asset came to exist.
+    await store.rename(7, assetId, '橘猫海报')
+    await store.updatePreferences(7, assetId, { favorite: true })
+    await store.setSource(7, assetId, 'generated')
+    const restarted = new AiAssetMetadataStore({ outputRoot: root })
+    await expect(restarted.getMany(7, [assetId])).resolves.toMatchObject({
+      [assetId]: { prompt: '一只在雨里的橘猫 ，霓虹灯背景', displayName: '橘猫海报', favorite: true },
+    })
+
+    await expect(store.setSource(7, assetId, 'generated', '   ')).rejects.toThrow('提示词格式错误')
+    await expect(store.setSource(7, assetId, 'generated', 42 as unknown as string)).rejects.toThrow('提示词格式错误')
+  })
+
   it('persists UTF-8 display names while isolating the same asset id by account', async () => {
     const { root, store } = fixture()
     await expect(store.rename(7, assetId, ' 产品主视觉 ')).resolves.toMatchObject({
@@ -141,7 +163,7 @@ describe('AiAssetMetadataStore', () => {
     }), 'utf8')
     await expect(store.getMany(7, [assetId])).resolves.toMatchObject({ [assetId]: { displayName: '旧名称' } })
     await store.markUsed(7, assetId)
-    expect(JSON.parse(fs.readFileSync(path.join(accountRoot, 'asset-metadata.json'), 'utf8'))).toMatchObject({ version: 3 })
+    expect(JSON.parse(fs.readFileSync(path.join(accountRoot, 'asset-metadata.json'), 'utf8'))).toMatchObject({ version: 4 })
 
     await expect(store.updatePreferences(7, assetId, { tags: ['重复', '重复'] })).rejects.toThrow('不能重复')
     await expect(store.updatePreferences(7, assetId, { tags: ['x'.repeat(33)] })).rejects.toThrow('标签格式错误')
@@ -167,7 +189,7 @@ describe('AiAssetMetadataStore', () => {
     expect(fs.readdirSync(accountRoot)).toContain('asset-metadata.json.corrupt-1786698000000-metadata-backup-id.bak')
     await store.rename(7, assetId, '恢复后的名称')
     expect(JSON.parse(fs.readFileSync(path.join(accountRoot, 'asset-metadata.json'), 'utf8'))).toMatchObject({
-      version: 3,
+      version: 4,
       userId: 7,
       items: [{ assetId, displayName: '恢复后的名称' }],
     })

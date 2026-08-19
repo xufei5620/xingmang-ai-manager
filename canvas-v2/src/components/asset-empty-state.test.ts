@@ -36,6 +36,12 @@ describe('asset empty state', () => {
     expect(recent.kind).not.toBe('import')
   })
 
+  it('treats an empty find-similar result as a removable filter', () => {
+    for (const query of [{ prompt: '橘猫' }, { runId: 'run-1' }, { nodeId: 'node-7' }]) {
+      expect(assetEmptyState({ ...base, ...query })).toMatchObject({ reason: 'filters', kind: 'clear-filters' })
+    }
+  })
+
   it('explains what the recycle bin is for when it is empty', () => {
     const trash = assetEmptyState({ ...base, view: 'trash' })
     expect(trash).toMatchObject({ reason: 'trash', kind: 'show-all' })

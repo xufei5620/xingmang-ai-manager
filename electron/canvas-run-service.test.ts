@@ -20,6 +20,7 @@ function memoryStore() {
     listRuns: async () => structuredClone(runs),
     getRun: async (_userId: number, runId: string) => structuredClone(runs.find((run) => run.runId === runId) ?? null),
     getAssetLineage: async () => ({}),
+    listAssetIdsByLineage: async () => [],
     saveRun: async (_userId: number, run: CanvasRunRecord) => {
       const index = runs.findIndex((entry) => entry.runId === run.runId)
       if (index >= 0) runs.splice(index, 1)

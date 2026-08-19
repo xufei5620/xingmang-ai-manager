@@ -51,6 +51,19 @@ describe('canvas request parser', () => {
       assetId, favorite: false, tags: ['角色', '主视觉'],
     })
     expect(parseCanvasAssetId(assetId)).toBe(assetId)
+    // The recycle bin is a view like the others; rejecting it here would make
+    // the bin unreachable through the real bridge.
+    expect(parseCanvasAssetQuery({ view: 'trash' })).toMatchObject({ view: 'trash' })
+    // Deep paging must reach the whole indexed library, not the first twenty pages.
+    expect(parseCanvasAssetQuery({ offset: 20_000 })).toMatchObject({ offset: 20_000 })
+    expect(() => parseCanvasAssetQuery({ offset: 20_001 })).toThrow('分页位置')
+    expect(parseCanvasAssetQuery({ prompt: ' 一只橘猫 ', runId: 'run-1', nodeId: 'node-7' })).toMatchObject({
+      prompt: '一只橘猫', runId: 'run-1', nodeId: 'node-7',
+    })
+    expect(() => parseCanvasAssetQuery({ prompt: 'bad\0prompt' })).toThrow('提示词筛选')
+    expect(() => parseCanvasAssetQuery({ prompt: 'x'.repeat(2_001) })).toThrow('提示词筛选')
+    expect(() => parseCanvasAssetQuery({ runId: 'bad\0run' })).toThrow('运行标识')
+    expect(() => parseCanvasAssetQuery({ nodeId: '' })).toThrow('节点标识')
     expect(() => parseCanvasAssetQuery({ view: 'secret' })).toThrow('快速视图')
     expect(() => parseCanvasAssetQuery({ source: 'remote' })).toThrow('来源筛选')
     expect(() => parseCanvasAssetQuery({ sort: 'random' })).toThrow('排序')

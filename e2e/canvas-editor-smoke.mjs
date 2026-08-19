@@ -97,6 +97,16 @@ const videoAsset = {
   favorite: false,
   tags: ['视频'],
   source: 'generated',
+  prompt: '一只在雨里的橘猫，霓虹灯背景',
+  lineage: {
+    origin: 'generated',
+    runId: 'run-fixture',
+    graphRevision: 'revision-fixture',
+    nodeId: 'video-node',
+    attemptId: 'attempt-fixture',
+    candidateId: 'candidate-fixture',
+    sourceAssetIds: [],
+  },
 }
 let projects = []
 let nextProjectId = 1
@@ -144,6 +154,9 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
       .map(([tag, count]) => ({ tag, count }))
       .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag, 'zh-CN'))
     if (query.tag) items = items.filter((entry) => entry.tags.includes(query.tag))
+    if (query.prompt) items = items.filter((entry) => entry.prompt === query.prompt)
+    if (query.runId) items = items.filter((entry) => entry.lineage?.runId === query.runId)
+    if (query.nodeId) items = items.filter((entry) => entry.lineage?.nodeId === query.nodeId)
     if (query.search) {
       const needle = query.search.trim().toLowerCase()
       items = items.filter((entry) => [entry.displayName, entry.fileName, entry.assetId]
@@ -719,6 +732,22 @@ try {
   )
   await selectionBar.getByRole('button', { name: '恢复' }).click()
   await quickViews.getByRole('button', { name: '全部' }).click()
+  await renamedAsset.waitFor({ state: 'visible' })
+  // The prompt leads the detail panel, and it is also the way back to
+  // everything that came out of the same idea or the same run.
+  const videoFixture = page.getByRole('article', { name: /视频1\.mp4/ })
+  const videoDetails = await openAssetDetails(videoFixture, '视频1.mp4')
+  assert.ok(
+    (await videoDetails.locator('.asset-detail-prompt p').textContent()).includes('橘猫'),
+    '素材详情没有优先展示生成提示词',
+  )
+  await videoDetails.getByRole('button', { name: '同一次运行' }).click()
+  const runChip = page.locator('.asset-filter-chips').getByRole('button', { name: '移除筛选：同一次运行' })
+  await runChip.waitFor({ state: 'visible' })
+  await videoFixture.waitFor({ state: 'visible' })
+  assert.equal(await page.locator('.asset-tray-item').count(), 1, '「同一次运行」没有把素材库收敛到这次运行的产出')
+  await runChip.click()
+  await page.locator('.asset-filter-chips').waitFor({ state: 'detached' })
   await renamedAsset.waitFor({ state: 'visible' })
   const audioFixture = page.getByRole('article', { name: /8月14日\.wav/ })
   const audioDetails = await openAssetDetails(audioFixture, '8月14日.wav')

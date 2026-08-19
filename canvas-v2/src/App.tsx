@@ -1212,6 +1212,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       tag: query.tag ?? '',
       source: query.source ?? 'all',
       sort: query.sort ?? (query.view === 'recent' ? 'used-desc' : 'created-desc'),
+      // Find-similar filters are absent rather than empty when off: the host
+      // contract treats an empty prompt or identifier as a parse error.
+      ...(query.prompt ? { prompt: query.prompt } : {}),
+      ...(query.runId ? { runId: query.runId } : {}),
+      ...(query.nodeId ? { nodeId: query.nodeId } : {}),
     }
     setAssetQuery(next)
     void refreshAssets(next)

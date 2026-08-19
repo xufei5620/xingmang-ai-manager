@@ -515,7 +515,20 @@ export function createCanvasWindowController(
   registerCanvasHandler(canvasHostListAssetsChannel, async (event, queryInput) => {
     const userId = authenticatedCanvasUserId()
     const context = await activeAssetContext(event.sender.id, userId)
-    const assets = await (context?.media ?? options.mediaAssets).listOwnedPage(userId, parseCanvasAssetQuery(queryInput))
+    const { runId, nodeId, ...query } = parseCanvasAssetQuery(queryInput)
+    // "Same run" and "same source node" are facts the run store owns, so they
+    // are resolved to identifiers here and handed to the library as a
+    // restriction. Filtering a page after the fact would make the total lie.
+    const restriction = runId || nodeId
+      ? await options.canvasRuns.listAssetIdsByLineage(userId, {
+        ...(runId ? { runId } : {}),
+        ...(nodeId ? { nodeId } : {}),
+      })
+      : null
+    const assets = await (context?.media ?? options.mediaAssets).listOwnedPage(userId, {
+      ...query,
+      ...(restriction ? { assetIds: restriction } : {}),
+    })
     const lineage = await options.canvasRuns.getAssetLineage(userId, assets.items.map((asset) => asset.assetId))
     assertCanvasUserUnchanged(userId)
     return {

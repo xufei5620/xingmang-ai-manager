@@ -34,8 +34,8 @@ export interface GeneratedAiAsset {
 
 export interface AiImageAssetWriter {
   prepareProject?(userId: number, projectId?: string): Promise<void>
-  storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string; projectId?: string }): Promise<GeneratedAiAsset>
-  storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string; projectId?: string }): Promise<GeneratedAiAsset>
+  storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string; projectId?: string; prompt?: string }): Promise<GeneratedAiAsset>
+  storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string; projectId?: string; prompt?: string }): Promise<GeneratedAiAsset>
   readOwned(userId: number, assetId: string, projectId?: string): Promise<{ asset: GeneratedAiAsset; bytes: Buffer }>
 }
 
@@ -311,6 +311,9 @@ export function createAiImageService(options: {
           const metadata = {
             ...(entry.revisedPrompt ? { revisedPrompt: entry.revisedPrompt } : {}),
             ...(input.projectId ? { projectId: input.projectId } : {}),
+            // What the user actually typed, not the provider's rewrite: it is
+            // what they will search for months later.
+            ...(input.prompt ? { prompt: input.prompt } : {}),
           }
           const storedMetadata = Object.keys(metadata).length > 0 ? metadata : undefined
           try {

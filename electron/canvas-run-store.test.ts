@@ -180,6 +180,15 @@ describe('CanvasRunStore', () => {
         sourceAssetIds: [source.assetId],
       },
     })
+
+    // "Find similar" asks the reverse question, and has to answer it over the
+    // whole history rather than one page of the library.
+    await expect(store.listAssetIdsByLineage(7, { runId: 'run-generated' })).resolves.toEqual([generated.assetId])
+    await expect(store.listAssetIdsByLineage(7, { nodeId: 'image-node' })).resolves.toEqual([generated.assetId])
+    await expect(store.listAssetIdsByLineage(7, { runId: 'run-cached' })).resolves.toEqual([])
+    await expect(store.listAssetIdsByLineage(7, { runId: 'run-generated', nodeId: 'other-node' })).resolves.toEqual([])
+    await expect(store.listAssetIdsByLineage(7, {})).rejects.toThrow('查询条件为空')
+    await expect(store.listAssetIdsByLineage(7, { runId: 'bad\u0000id' })).rejects.toThrow('运行标识格式错误')
   })
 
   it('rejects secrets, remote URLs and absolute paths before persistence', async () => {

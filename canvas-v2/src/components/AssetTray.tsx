@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ChevronLeft, ChevronRight, Clock3, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags, Trash2, TriangleAlert, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Clock3, Copy, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags, Trash2, TriangleAlert, X } from 'lucide-react'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
 import { middleTruncate } from '../identifier-display'
@@ -167,6 +167,20 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       setSelection(emptyAssetSelection)
     } catch (error) {
       setAssetActionError(error instanceof Error ? error.message : String(error))
+    }
+  }
+  const [copyNotice, setCopyNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (!copyNotice) return undefined
+    const timer = window.setTimeout(() => setCopyNotice(null), 2_400)
+    return () => window.clearTimeout(timer)
+  }, [copyNotice])
+  const copyText = async (value: string, notice: string) => {
+    try {
+      await navigator.clipboard.writeText(value)
+      setCopyNotice(notice)
+    } catch {
+      setAssetActionError('复制失败，请手动选中后复制')
     }
   }
   const [filterMenuOpen, setFilterMenuOpen] = useState(false)
@@ -448,7 +462,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               <button type="button" onClick={() => {
                 if (empty.kind === 'import') return onImport()
                 if (empty.kind === 'clear-search') { setSearch(''); return onQueryChange({ ...query, offset: 0, search: '' }) }
-                if (empty.kind === 'clear-filters') return onQueryChange({ ...query, offset: 0, tag: undefined, mediaType: 'all', source: 'all' })
+                if (empty.kind === 'clear-filters') return onQueryChange({ ...query, offset: 0, tag: undefined, mediaType: 'all', source: 'all', prompt: undefined, runId: undefined, nodeId: undefined })
                 onQueryChange({ ...query, offset: 0, view: 'all' })
               }}>{empty.label}</button>
             </div>
@@ -564,6 +578,23 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 {onInspectReferences && <button type="button" title="检查引用与删除保护" aria-label={`检查素材引用：${name}`} onClick={() => void inspectReferences(asset)}><ShieldCheck size={12} /></button>}
                 <button type="button" title="关闭详情" aria-label={`关闭素材详情：${name}`} onClick={() => setSelection(emptyAssetSelection)}><X size={12} /></button>
               </div>
+              {/* The prompt comes first because it is what the person who made
+                  the image remembers about it; the file name and the hash are
+                  what the computer remembers. */}
+              {asset.prompt && (
+                <div className="asset-detail-prompt">
+                  <div className="asset-detail-prompt-head">
+                    <dt>提示词</dt>
+                    <button type="button" title="复制提示词" aria-label={`复制提示词：${name}`} onClick={() => void copyText(asset.prompt!, '提示词已复制')}><Copy size={12} /></button>
+                  </div>
+                  <p>{asset.prompt}</p>
+                </div>
+              )}
+              <div className="asset-detail-similar" role="group" aria-label="查找相似素材">
+                {asset.prompt && <button type="button" onClick={() => onQueryChange({ ...query, offset: 0, prompt: asset.prompt, runId: undefined, nodeId: undefined })}>同提示词</button>}
+                {asset.lineage && <button type="button" onClick={() => onQueryChange({ ...query, offset: 0, runId: asset.lineage!.runId, nodeId: undefined, prompt: undefined })}>同一次运行</button>}
+                {asset.lineage && <button type="button" onClick={() => onQueryChange({ ...query, offset: 0, nodeId: asset.lineage!.nodeId, runId: undefined, prompt: undefined })}>同来源节点</button>}
+              </div>
               <dl>
                 <div><dt>类型</dt><dd>{assetTypeName(asset)} · {asset.mimeType}</dd></div>
                 {(asset.mediaType === 'image' || asset.mediaType === 'video') && asset.width && asset.height
@@ -584,7 +615,10 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 </dd></div>}
                 {/* Shown in full: this panel exists to give the exact value, and
                     a truncated hash cannot be copied. */}
-                <div><dt>资产 ID</dt><dd className="is-identifier" title={asset.assetId}>{asset.assetId}</dd></div>
+                <div><dt>资产 ID</dt><dd className="is-identifier" title={asset.assetId}>
+                  {asset.assetId}
+                  <button type="button" title="复制资产 ID" aria-label={`复制资产 ID：${name}`} onClick={() => void copyText(asset.assetId, '资产 ID 已复制')}><Copy size={11} /></button>
+                </dd></div>
               </dl>
               {(asset.tags?.length ?? 0) > 0 && <div className="asset-item-tags">{asset.tags?.map((tag) => <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>{tag}</button>)}</div>}
             </div>
@@ -592,6 +626,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
         )
       })()}
       {assetActionError && <p className="asset-tray-action-error" role="alert">{assetActionError}</p>}
+      {copyNotice && <p className="asset-tray-copy-notice" role="status">{copyNotice}</p>}
       {undoDelete && (
         <div className="asset-undo-toast" role="status" aria-live="polite">
           <span>已移入回收站 {undoDelete.count} 项</span>

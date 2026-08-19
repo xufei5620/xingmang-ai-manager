@@ -93,6 +93,8 @@ export interface CanvasAssetOrganization {
   lastUsedAt?: string
   /** Present only in the recycle bin view; absent means the asset is live. */
   deletedAt?: string
+  /** The prompt that generated the asset, recorded once when it was created. */
+  prompt?: string
 }
 
 export interface CanvasAssetSummary extends CanvasGeneratedAsset, CanvasAssetOrganization {
@@ -202,6 +204,14 @@ export interface CanvasAssetQuery {
   tag?: string
   source?: 'all' | CanvasAssetSource
   sort?: 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'
+  /**
+   * "Find similar" filters. `prompt` matches exactly; `runId` and `nodeId` are
+   * resolved against the run store into an identifier set before the library
+   * filters on them, so the total keeps describing the whole matching set.
+   */
+  prompt?: string
+  runId?: string
+  nodeId?: string
 }
 
 export interface CanvasAssetPage {

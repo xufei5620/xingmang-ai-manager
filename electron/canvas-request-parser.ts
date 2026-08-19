@@ -161,7 +161,7 @@ function assertOnlyFields(value: Record<string, unknown>, allowed: readonly stri
 export function parseCanvasAssetQuery(value: unknown): CanvasAssetQuery {
   if (value === undefined) return {}
   if (!isRecord(value)) throw new Error('画布资产查询格式错误')
-  assertOnlyFields(value, ['offset', 'limit', 'mediaType', 'search', 'view', 'tag', 'source', 'sort'], '画布资产查询')
+  assertOnlyFields(value, ['offset', 'limit', 'mediaType', 'search', 'view', 'tag', 'source', 'sort', 'prompt', 'runId', 'nodeId'], '画布资产查询')
   const offset = value.offset ?? 0
   const limit = value.limit ?? 24
   const mediaType = value.mediaType ?? 'all'
@@ -170,14 +170,22 @@ export function parseCanvasAssetQuery(value: unknown): CanvasAssetQuery {
   const tag = value.tag ?? ''
   const source = value.source
   const sort = value.sort
-  if (!Number.isSafeInteger(offset) || (offset as number) < 0 || (offset as number) > 500) throw new Error('画布资产分页位置无效')
+  const prompt = value.prompt ?? ''
+  const runId = value.runId
+  const nodeId = value.nodeId
+  // The ceiling matches the library index rather than the old 500, which turned
+  // deep paging into an error once a library grew past twenty pages.
+  if (!Number.isSafeInteger(offset) || (offset as number) < 0 || (offset as number) > 20_000) throw new Error('画布资产分页位置无效')
   if (!Number.isSafeInteger(limit) || (limit as number) < 1 || (limit as number) > 100) throw new Error('画布资产分页数量无效')
   if (mediaType !== 'all' && mediaType !== 'image' && mediaType !== 'video' && mediaType !== 'audio') throw new Error('画布资产媒体类型无效')
   if (typeof search !== 'string' || search.length > 128 || /[\x00-\x1F\x7F]/.test(search)) throw new Error('画布资产搜索内容无效')
-  if (view !== undefined && view !== 'all' && view !== 'favorites' && view !== 'recent') throw new Error('画布资产快速视图无效')
+  if (view !== undefined && view !== 'all' && view !== 'favorites' && view !== 'recent' && view !== 'trash') throw new Error('画布资产快速视图无效')
   if (typeof tag !== 'string' || tag.length > 32 || /[\x00-\x1F\x7F]/.test(tag)) throw new Error('画布资产标签筛选无效')
   if (source !== undefined && source !== 'all' && source !== 'generated' && source !== 'imported' && source !== 'legacy') throw new Error('画布资产来源筛选无效')
   if (sort !== undefined && sort !== 'created-desc' && sort !== 'created-asc' && sort !== 'used-desc' && sort !== 'name-asc') throw new Error('画布资产排序无效')
+  if (typeof prompt !== 'string' || prompt.length > 2_000 || /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(prompt)) throw new Error('画布资产提示词筛选无效')
+  if (runId !== undefined) requiredCanvasString(runId, '画布运行标识', 256)
+  if (nodeId !== undefined) requiredCanvasString(nodeId, '画布节点标识', 256)
   return {
     offset: offset as number,
     limit: limit as number,
@@ -187,6 +195,9 @@ export function parseCanvasAssetQuery(value: unknown): CanvasAssetQuery {
     ...(tag.trim() ? { tag: tag.trim() } : {}),
     ...(source ? { source } : {}),
     ...(sort ? { sort } : {}),
+    ...(prompt.trim() ? { prompt: prompt.trim() } : {}),
+    ...(runId ? { runId: runId as string } : {}),
+    ...(nodeId ? { nodeId: nodeId as string } : {}),
   }
 }
 

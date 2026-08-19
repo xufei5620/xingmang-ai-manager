@@ -15,7 +15,7 @@ import {
 import type { CanvasRunStore } from './canvas-run-store'
 
 export interface CanvasRunServiceOptions {
-  store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'reconcileAssets'>
+  store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'listAssetIdsByLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'reconcileAssets'>
   executors: CanvasNodeExecutors
   maxConcurrency?: number
   maxRemoteGenerationsPerRun?: number
@@ -201,6 +201,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     },
     getRun: (userId: number, runId: string) => options.store.getRun(userId, runId),
     getAssetLineage: (userId: number, assetIds: readonly string[]) => options.store.getAssetLineage(userId, assetIds),
+    listAssetIdsByLineage: (userId: number, selector: { runId?: string; nodeId?: string }) => options.store.listAssetIdsByLineage(userId, selector),
     reconcileAssets: (userId: number) => options.store.reconcileAssets(userId),
     start,
     cancel,

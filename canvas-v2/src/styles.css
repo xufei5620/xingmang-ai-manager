@@ -1015,6 +1015,18 @@ button:disabled {
 .asset-selection-bar button:hover { background: var(--surface-hover); }
 .asset-selection-bar button.is-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, var(--border-subtle)); }
 .asset-tray-action-error { margin: 0; padding: 0 var(--space-10) var(--space-8); color: var(--danger); font-size: var(--text-xs); }
+.asset-tray-copy-notice { margin: 0; padding: 0 var(--space-10) var(--space-8); color: var(--text-muted); font-size: var(--text-xs); }
+.asset-detail-prompt { margin-bottom: var(--space-6); }
+.asset-detail-prompt-head { display: flex; align-items: center; gap: var(--space-4); }
+.asset-detail-prompt-head dt { color: var(--text-muted); font-size: var(--text-xs); }
+.asset-detail-prompt-head button { display: grid; width: 18px; height: 18px; place-items: center; color: var(--text-secondary); background: transparent; border: 1px solid var(--border-subtle); border-radius: var(--radius-chip); }
+.asset-detail-prompt-head button:hover { color: var(--text-primary); background: var(--surface-hover); }
+.asset-detail-prompt p { margin: var(--space-4) 0 0; max-height: 84px; overflow: auto; color: var(--text-primary); font-size: var(--text-xs); line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.asset-detail-similar { display: flex; flex-wrap: wrap; gap: var(--space-4); margin-bottom: var(--space-6); }
+.asset-detail-similar button { height: 22px; padding: 0 var(--space-6); color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-subtle); border-radius: var(--radius-chip); font-size: var(--text-xs); }
+.asset-detail-similar button:hover { color: var(--text-primary); background: var(--surface-hover); }
+.asset-tray-item-details dd.is-identifier button { display: inline-grid; width: 16px; height: 16px; place-items: center; margin-left: var(--space-4); color: var(--text-secondary); background: transparent; border: 1px solid var(--border-subtle); border-radius: var(--radius-chip); vertical-align: middle; }
+.asset-tray-item-details dd.is-identifier button:hover { color: var(--text-primary); background: var(--surface-hover); }
 .asset-undo-toast { display: flex; align-items: center; gap: var(--space-6); margin: 0 var(--space-10) var(--space-8); padding: var(--space-6) var(--space-8); color: var(--text-primary); background: var(--surface-floating-strong); border: 1px solid var(--border-strong); border-radius: var(--radius-control); font-size: var(--text-xs); }
 .asset-undo-toast span { margin-right: auto; }
 .asset-undo-toast button { height: 22px; padding: 0 var(--space-6); color: var(--accent-hover); background: transparent; border: 1px solid color-mix(in srgb, var(--accent) 36%, transparent); border-radius: var(--radius-chip); font-size: var(--text-xs); }

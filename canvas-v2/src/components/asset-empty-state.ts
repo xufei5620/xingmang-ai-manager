@@ -21,12 +21,18 @@ export interface AssetEmptyState {
   label: string
 }
 
-type EmptyStateQuery = Pick<CanvasAssetQuery, 'search' | 'tag' | 'mediaType' | 'source' | 'view'>
+type EmptyStateQuery = Pick<CanvasAssetQuery, 'search' | 'tag' | 'mediaType' | 'source' | 'view' | 'prompt' | 'runId' | 'nodeId'>
 
 const mediaTypeNames: Record<string, string> = { image: '图片', video: '视频', audio: '音频' }
 const sourceNames: Record<string, string> = { generated: 'AI 生成', imported: '本地导入', legacy: '历史素材' }
 
 function activeFilterName(query: EmptyStateQuery): string | null {
+  // A "find similar" filter is checked first because it is the one the user is
+  // least likely to remember setting: it comes from a button in the detail
+  // panel rather than from the filter popover.
+  if (query.prompt) return '同提示词的素材'
+  if (query.runId) return '同一次运行产出的素材'
+  if (query.nodeId) return '同来源节点产出的素材'
   if (typeof query.tag === 'string' && query.tag.length > 0) return `标签「${query.tag}」`
   if (query.mediaType && query.mediaType !== 'all') return mediaTypeNames[query.mediaType] ?? null
   if (query.source && query.source !== 'all') return sourceNames[query.source] ?? null

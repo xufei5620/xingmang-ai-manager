@@ -11,13 +11,18 @@ import type { CanvasAssetQuery } from '../host'
  */
 
 export interface AssetFilterChip {
-  id: 'search' | 'tag' | 'mediaType' | 'source' | 'sort'
+  id: 'search' | 'tag' | 'mediaType' | 'source' | 'sort' | 'prompt' | 'runId' | 'nodeId'
   label: string
   /** Applied over the current query to take this filter off. */
   patch: Partial<CanvasAssetQuery>
 }
 
-type FilterQuery = Pick<CanvasAssetQuery, 'search' | 'tag' | 'mediaType' | 'source' | 'sort' | 'view'>
+type FilterQuery = Pick<CanvasAssetQuery, 'search' | 'tag' | 'mediaType' | 'source' | 'sort' | 'view' | 'prompt' | 'runId' | 'nodeId'>
+
+/** A prompt is a paragraph; a chip is a line. */
+function shortPrompt(prompt: string): string {
+  return prompt.length > 24 ? `${prompt.slice(0, 24)}…` : prompt
+}
 
 export const defaultAssetSort = 'created-desc'
 
@@ -37,6 +42,12 @@ export function activeAssetFilters(query: FilterQuery): AssetFilterChip[] {
   if (typeof query.tag === 'string' && query.tag.length > 0) {
     chips.push({ id: 'tag', label: `标签：${query.tag}`, patch: { tag: '' } })
   }
+  // "Find similar" is a filter like any other, so it has to be visible and
+  // removable; otherwise the library appears to have lost most of its contents.
+  const prompt = (query.prompt ?? '').trim()
+  if (prompt.length > 0) chips.push({ id: 'prompt', label: `同提示词：${shortPrompt(prompt)}`, patch: { prompt: undefined } })
+  if (query.runId) chips.push({ id: 'runId', label: '同一次运行', patch: { runId: undefined } })
+  if (query.nodeId) chips.push({ id: 'nodeId', label: `同来源节点：${query.nodeId}`, patch: { nodeId: undefined } })
   if (query.mediaType && query.mediaType !== 'all') {
     chips.push({ id: 'mediaType', label: mediaTypeNames[query.mediaType] ?? query.mediaType, patch: { mediaType: 'all' } })
   }

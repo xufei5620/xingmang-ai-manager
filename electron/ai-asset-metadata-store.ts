@@ -9,11 +9,12 @@ import {
 } from './safe-local-data'
 
 const FILE_LABEL = 'AI 素材元数据'
-const STORE_VERSION = 3
+const STORE_VERSION = 4
 const MAXIMUM_BYTES = 2 * 1024 * 1024
 const MAXIMUM_ITEMS = 5_000
 const MAXIMUM_TAGS = 12
 const MAXIMUM_TAG_LENGTH = 32
+const MAXIMUM_PROMPT_LENGTH = 2_000
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 const INVALID_DISPLAY_NAME_CHARACTERS = /[\x00-\x1F\x7F<>:"/\\|?*]/
 const INVALID_TAG_CHARACTERS = /[\x00-\x1F\x7F]/
@@ -26,6 +27,12 @@ export interface AiAssetLogicalMetadata {
   tags?: string[]
   lastUsedAt?: string
   source?: AiAssetSource
+  /**
+   * The prompt that produced the asset, recorded once at generation time. It is
+   * the only thing about a generated image the person who made it can recall
+   * later, so it is what the library indexes and what "find similar" matches on.
+   */
+  prompt?: string
   /**
    * Set while the asset sits in the recycle bin. Deletion is logical here and
    * only becomes a file operation when the bin is emptied, so a mistaken delete
@@ -96,18 +103,29 @@ export function normalizeAiAssetTags(value: unknown): string[] {
   return tags
 }
 
+export function normalizeAiAssetPrompt(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('AI 素材提示词格式错误')
+  // Control characters other than newline would corrupt the stored JSON view
+  // and are never part of a prompt a person typed.
+  const prompt = value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ' ').trim().slice(0, MAXIMUM_PROMPT_LENGTH)
+  if (!prompt) throw new Error('AI 素材提示词格式错误')
+  return prompt
+}
+
 function parseSource(value: unknown): AiAssetSource | undefined {
   if (value === undefined) return undefined
   if (value !== 'generated' && value !== 'imported' && value !== 'legacy') throw new Error('AI 素材来源格式错误')
   return value
 }
 
-function parseItem(value: unknown, version: 1 | 2 | typeof STORE_VERSION): AiAssetMetadataItem {
+function parseItem(value: unknown, version: 1 | 2 | 3 | typeof STORE_VERSION): AiAssetMetadataItem {
   const allowedFields = version === 1
     ? ['assetId', 'displayName', 'updatedAt']
     : version === 2
       ? ['assetId', 'displayName', 'favorite', 'tags', 'lastUsedAt', 'source', 'updatedAt']
-      : ['assetId', 'displayName', 'favorite', 'tags', 'lastUsedAt', 'source', 'deletedAt', 'updatedAt']
+      : version === 3
+        ? ['assetId', 'displayName', 'favorite', 'tags', 'lastUsedAt', 'source', 'deletedAt', 'updatedAt']
+        : ['assetId', 'displayName', 'favorite', 'tags', 'lastUsedAt', 'source', 'prompt', 'deletedAt', 'updatedAt']
   if (!isRecord(value) || !hasOnlyFields(value, allowedFields)) {
     throw new Error('AI 素材元数据格式错误')
   }
@@ -121,6 +139,7 @@ function parseItem(value: unknown, version: 1 | 2 | typeof STORE_VERSION): AiAss
   if (value.favorite !== undefined && typeof value.favorite !== 'boolean') throw new Error('AI 素材收藏状态格式错误')
   if (value.lastUsedAt !== undefined && !isIsoDate(value.lastUsedAt)) throw new Error('AI 素材最近使用时间格式错误')
   if (value.deletedAt !== undefined && !isIsoDate(value.deletedAt)) throw new Error('AI 素材删除时间格式错误')
+  const prompt = value.prompt === undefined ? undefined : normalizeAiAssetPrompt(value.prompt)
   return {
     assetId: value.assetId,
     ...(displayName ? { displayName } : {}),
@@ -128,6 +147,7 @@ function parseItem(value: unknown, version: 1 | 2 | typeof STORE_VERSION): AiAss
     ...(tags && tags.length > 0 ? { tags } : {}),
     ...(typeof value.lastUsedAt === 'string' ? { lastUsedAt: value.lastUsedAt } : {}),
     ...(source ? { source } : {}),
+    ...(prompt ? { prompt } : {}),
     ...(typeof value.deletedAt === 'string' ? { deletedAt: value.deletedAt } : {}),
     updatedAt: value.updatedAt,
   }
@@ -135,7 +155,8 @@ function parseItem(value: unknown, version: 1 | 2 | typeof STORE_VERSION): AiAss
 
 function parseState(content: string, userId: number): AiAssetMetadataState {
   const value = JSON.parse(content) as unknown
-  const version = isRecord(value) && (value.version === 1 || value.version === 2 || value.version === STORE_VERSION)
+  const version = isRecord(value)
+    && (value.version === 1 || value.version === 2 || value.version === 3 || value.version === STORE_VERSION)
     ? value.version
     : null
   if (
@@ -286,15 +307,20 @@ export class AiAssetMetadataStore {
     })
   }
 
-  setSource(userId: number, assetId: string, source: AiAssetSource): Promise<AiAssetMetadataItem> {
+  setSource(userId: number, assetId: string, source: AiAssetSource, prompt?: string): Promise<AiAssetMetadataItem> {
     return this.enqueue(userId, async () => {
       assertAssetId(assetId)
       const normalizedSource = parseSource(source)
       if (!normalizedSource) throw new Error('AI 素材来源格式错误')
+      // The prompt is written here rather than through its own mutator because
+      // it is a fact about how the asset came to exist, not something the user
+      // can edit afterwards.
+      const normalizedPrompt = prompt === undefined ? undefined : normalizeAiAssetPrompt(prompt)
       const state = await this.readState(userId)
       const updatedAt = this.now().toISOString()
       const item = this.upsert(state, assetId, updatedAt)
       item.source = normalizedSource
+      if (normalizedPrompt) item.prompt = normalizedPrompt
       await this.writeState(userId, state)
       return structuredClone(item)
     })

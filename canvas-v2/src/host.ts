@@ -51,6 +51,8 @@ export interface CanvasAssetOrganization {
   source?: CanvasAssetSource
   lastUsedAt?: string
   deletedAt?: string
+  /** The prompt that generated the asset, recorded once when it was created. */
+  prompt?: string
 }
 
 export interface CanvasImageAssetSummary extends CanvasGeneratedAsset, CanvasAssetOrganization {
@@ -97,6 +99,10 @@ export interface CanvasAssetQuery {
   tag?: string
   source?: 'all' | CanvasAssetSource
   sort?: 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'
+  /** "Find similar" filters: exact prompt, or everything from one run or one source node. */
+  prompt?: string
+  runId?: string
+  nodeId?: string
 }
 
 export interface CanvasAssetPage {

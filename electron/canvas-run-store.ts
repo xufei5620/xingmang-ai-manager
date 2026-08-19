@@ -248,6 +248,27 @@ export class CanvasRunStore {
     })
   }
 
+  /**
+   * The reverse of `getAssetLineage`: which assets came out of one run, or out
+   * of one node across every run. "Find similar" resolves to identifiers here
+   * and lets the library apply them as a filter, so the count and the paging
+   * still describe the whole matching set rather than one page of it.
+   */
+  async listAssetIdsByLineage(userId: number, selector: { runId?: string; nodeId?: string }): Promise<string[]> {
+    return this.enqueue(userId, async () => {
+      const { runId, nodeId } = selector
+      if (!runId && !nodeId) throw new Error('画布资产谱系查询条件为空')
+      if (runId !== undefined && !safeIdentifier(runId)) throw new Error('画布运行标识格式错误')
+      if (nodeId !== undefined && !safeIdentifier(nodeId)) throw new Error('画布节点标识格式错误')
+      const state = await this.readState(userId)
+      return state.assets
+        .filter((entry) => entry.lineage
+          && (!runId || entry.lineage.runId === runId)
+          && (!nodeId || entry.lineage.nodeId === nodeId))
+        .map((entry) => entry.asset.assetId)
+    })
+  }
+
   async saveRun(userId: number, run: CanvasRunRecord): Promise<void> {
     return this.enqueue(userId, async () => {
       if (!safeRunRecord(run, userId)) throw new Error('画布运行记录格式错误')

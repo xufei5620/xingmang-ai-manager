@@ -68,7 +68,9 @@ describe('AI image service', () => {
     expect(body).toMatchObject({ model: 'gpt-image-2', quality: 'low', n: 1 })
     expect(body).not.toHaveProperty('response_format')
     expect(String(url)).not.toContain('chat/completions')
-    expect(assets.storeBase64).toHaveBeenCalledWith(7, 'aGVsbG8=', { revisedPrompt: 'revised' })
+    // The submitted prompt is stored beside the provider's rewrite: it is what
+    // the user will search the library for later.
+    expect(assets.storeBase64).toHaveBeenCalledWith(7, 'aGVsbG8=', { revisedPrompt: 'revised', prompt: '一张图' })
     expect(stages).toEqual(['processing', 'downloading', 'saving'])
     expect(JSON.stringify(result)).not.toContain('sk-secret')
   })
@@ -109,7 +111,7 @@ describe('AI image service', () => {
       stream: false,
       extra_body: { google: { image_config: { aspect_ratio: '16:9', image_size: '2K' } } },
     })
-    expect(assets.storeBase64).toHaveBeenCalledWith(7, 'data:image/jpeg;base64,aGVsbG8=', undefined)
+    expect(assets.storeBase64).toHaveBeenCalledWith(7, 'data:image/jpeg;base64,aGVsbG8=', { prompt: '生成极简图标' })
     expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
   })
 
@@ -136,7 +138,7 @@ describe('AI image service', () => {
     expect(body).not.toHaveProperty('size')
     expect(body).not.toHaveProperty('response_format')
     expect(body.extra_fields).toEqual({ width: 1024, height: 1024 })
-    expect(assets.storeRemoteUrl).toHaveBeenCalledWith(7, 'https://images.example/result.jpg', undefined)
+    expect(assets.storeRemoteUrl).toHaveBeenCalledWith(7, 'https://images.example/result.jpg', { prompt: '一张图' })
   })
 
   it('requests inline Grok output and accepts a data URL returned through the url field', async () => {
@@ -150,7 +152,7 @@ describe('AI image service', () => {
 
     const body = JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0][1]?.body))
     expect(body).toMatchObject({ response_format: 'b64_json' })
-    expect(assets.storeBase64).toHaveBeenCalledWith(7, dataUrl, undefined)
+    expect(assets.storeBase64).toHaveBeenCalledWith(7, dataUrl, { prompt: '图' })
     expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
   })
 

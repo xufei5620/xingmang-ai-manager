@@ -25,6 +25,8 @@ export interface CanvasProjectAssetManagerOptions {
 
 export interface CanvasProjectImageMetadata extends AiAssetMetadata {
   projectId?: string
+  /** The prompt the user submitted, kept in logical metadata rather than beside the bytes. */
+  prompt?: string
 }
 
 function assertProjectId(projectId: string): void {
@@ -83,7 +85,7 @@ export class CanvasProjectAssetManager {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.images.storeBase64(userId, value, this.imageMetadata(metadata))
-    await this.markGenerated(context, userId, asset.assetId)
+    await this.markGenerated(context, userId, asset.assetId, metadata?.prompt)
     this.remember(userId, 'image', asset.assetId, projectId, context)
     return asset
   }
@@ -92,7 +94,7 @@ export class CanvasProjectAssetManager {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.images.storeRemoteUrl(userId, url, this.imageMetadata(metadata))
-    await this.markGenerated(context, userId, asset.assetId)
+    await this.markGenerated(context, userId, asset.assetId, metadata?.prompt)
     this.remember(userId, 'image', asset.assetId, projectId, context)
     return asset
   }
@@ -103,11 +105,11 @@ export class CanvasProjectAssetManager {
       : this.readOwned(userId, assetId, 'image') as Promise<AiOwnedAssetRead>
   }
 
-  async storeMp4(userId: number, bytes: Buffer, metadata: { taskId: string; projectId?: string }): Promise<AiStoredVideoAsset> {
+  async storeMp4(userId: number, bytes: Buffer, metadata: { taskId: string; projectId?: string; prompt?: string }): Promise<AiStoredVideoAsset> {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.videos.storeMp4(userId, bytes, { taskId: metadata.taskId })
-    await this.markGenerated(context, userId, asset.assetId)
+    await this.markGenerated(context, userId, asset.assetId, metadata.prompt)
     this.remember(userId, 'video', asset.assetId, projectId, context)
     return asset
   }
@@ -192,9 +194,9 @@ export class CanvasProjectAssetManager {
     this.locations.set(locationKey(userId, kind, assetId), context === this.global ? null : projectId)
   }
 
-  private async markGenerated(context: CanvasProjectAssetContext, userId: number, assetId: string): Promise<void> {
+  private async markGenerated(context: CanvasProjectAssetContext, userId: number, assetId: string, prompt?: string): Promise<void> {
     try {
-      await context.media.setSource(userId, assetId, 'generated')
+      await context.media.setSource(userId, assetId, 'generated', prompt)
     } catch (error) {
       this.onMetadataError?.(error, { userId, assetId, source: 'generated' })
     }

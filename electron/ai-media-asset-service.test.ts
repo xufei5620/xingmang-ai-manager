@@ -291,6 +291,43 @@ describe('createAiMediaAssetService', () => {
     await expect(service.listOwnedPage(7, { offset: 20_000 })).resolves.toMatchObject({ total: 0 })
   })
 
+  it('finds work again by its prompt and by an identifier set resolved elsewhere', async () => {
+    const ids = ['a', 'b', 'c'].map((letter) => letter.repeat(43))
+    const prompt = '一只在雨里的橘猫，霓虹灯背景'
+    const images = {
+      listOwnedIndex: vi.fn(async () => ids.map((assetId, position) => (
+        indexEntry(assetId, `${assetId}.png`, `2026-08-14T00:0${position}:00.000Z`, 'image' as const)
+      ))),
+      readOwned: vi.fn(async (_userId: number, assetId: string) => ({
+        asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' as const, fileName: `${assetId}.png` },
+        bytes: Buffer.from('image'),
+      })),
+      copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const metadata = metadataStore({
+      getAll: vi.fn(async () => ({
+        [ids[0] as string]: { prompt, updatedAt: '2026-08-14T02:00:00.000Z' },
+        [ids[1] as string]: { prompt: `${prompt}，胶片颗粒感`, updatedAt: '2026-08-14T02:00:00.000Z' },
+      })),
+    })
+    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata, trashItem })
+
+    // Free text search reaches the prompt, because that is what a person
+    // remembers about an image they generated weeks ago.
+    await expect(service.listOwnedPage(7, { search: '霓虹灯' })).resolves.toMatchObject({ total: 2 })
+    // "Find similar" is exact, so a longer prompt that merely contains it is a
+    // different piece of work.
+    const same = await service.listOwnedPage(7, { prompt })
+    expect(same.total).toBe(1)
+    expect(same.items[0]).toMatchObject({ assetId: ids[0], prompt })
+    // A run or source node is resolved to identifiers outside the service; the
+    // restriction runs before paging so the total describes the whole set.
+    await expect(service.listOwnedPage(7, { assetIds: [ids[1] as string, ids[2] as string], limit: 1 })).resolves.toMatchObject({
+      total: 2, hasMore: true,
+    })
+    await expect(service.listOwnedPage(7, { assetIds: [] })).resolves.toMatchObject({ total: 0 })
+  })
+
   it('moves assets to the recycle bin, restores them and only purges unreferenced files', async () => {
     const assetId = 'd'.repeat(43)
     const entry = indexEntry(assetId, 'image.png', '2026-08-14T00:00:00.000Z', 'image' as const)

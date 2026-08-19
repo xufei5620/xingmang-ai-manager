@@ -22,13 +22,21 @@ export interface AiMediaAssetListQuery {
   tag?: string
   source?: 'all' | AiAssetSource
   sort?: AiMediaAssetSort
+  /**
+   * Restricts the library to a known set of identifiers. "Find similar" resolves
+   * a run or a source node to its assets outside this service and hands the set
+   * in, so the restriction is applied before paging and the total stays honest.
+   */
+  assetIds?: readonly string[]
+  /** Exact prompt match, used by "find similar" where a substring search would drag in unrelated work. */
+  prompt?: string
 }
 
 export interface AiMediaAssetListPage {
   items: Array<
-    | (AiStoredAsset & { createdAt: string; mediaType: 'image'; thumbnailUrl: string; displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string })
-    | (AiStoredVideoAssetListItem & { displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string })
-    | (AiStoredAudioAssetListItem & { displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string })
+    | (AiStoredAsset & { createdAt: string; mediaType: 'image'; thumbnailUrl: string; displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string; prompt?: string })
+    | (AiStoredVideoAssetListItem & { displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string; prompt?: string })
+    | (AiStoredAudioAssetListItem & { displayName: string; favorite: boolean; tags: string[]; source: AiAssetSource; lastUsedAt?: string; deletedAt?: string; prompt?: string })
   >
   offset: number
   limit: number
@@ -50,6 +58,7 @@ interface AiMediaAssetRow {
   source: AiAssetSource
   lastUsedAt?: string
   deletedAt?: string
+  prompt?: string
 }
 
 // Bounded so the facet panel cannot grow a DTO without limit: the metadata
@@ -112,6 +121,10 @@ export function createAiMediaAssetService(options: {
     if (tag.length > 32 || /[\x00-\x1F\x7F]/.test(tag)) throw new Error('AI 素材标签筛选无效')
     if (!['all', 'generated', 'imported', 'legacy'].includes(source)) throw new Error('AI 素材来源筛选无效')
     if (!['created-desc', 'created-asc', 'used-desc', 'name-asc', 'deleted-desc'].includes(sort)) throw new Error('AI 素材排序无效')
+    const promptFilter = query.prompt?.trim() ?? ''
+    if (promptFilter.length > 2_000) throw new Error('AI 素材提示词筛选无效')
+    const restriction = query.assetIds ? new Set(query.assetIds) : null
+    if (restriction && restriction.size > MAXIMUM_INDEXED_ASSETS) throw new Error('AI 素材筛选集合过大')
     // Filtering, sorting and paging all run on the complete index. The previous
     // implementation asked each store for its first 500 fully-decoded assets and
     // only then searched and sorted, so past that ceiling the library silently
@@ -134,8 +147,11 @@ export function createAiMediaAssetService(options: {
           source: logical?.source ?? 'legacy' as AiAssetSource,
           ...(logical?.lastUsedAt ? { lastUsedAt: logical.lastUsedAt } : {}),
           ...(logical?.deletedAt ? { deletedAt: logical.deletedAt } : {}),
+          ...(logical?.prompt ? { prompt: logical.prompt } : {}),
         }
       })
+      .filter((row) => !restriction || restriction.has(row.entry.assetId))
+      .filter((row) => !promptFilter || row.prompt === promptFilter)
       // A deleted asset is absent from every view but the bin, and the bin
       // contains nothing else. Leaking one into the normal library would make
       // "deleted" mean nothing.
@@ -143,7 +159,9 @@ export function createAiMediaAssetService(options: {
       .filter((row) => view !== 'favorites' || row.favorite)
       .filter((row) => view !== 'recent' || Boolean(row.lastUsedAt))
       .filter((row) => source === 'all' || row.source === source)
-      .filter((row) => !normalizedSearch || [row.displayName, row.entry.fileName, row.entry.assetId, ...row.tags]
+      // The prompt is searchable because it is the one thing a person reliably
+      // remembers about an image they generated weeks ago.
+      .filter((row) => !normalizedSearch || [row.displayName, row.entry.fileName, row.entry.assetId, row.prompt ?? '', ...row.tags]
         .some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedSearch)))
     // Counted before the tag filter so that picking one tag does not erase its
     // siblings from the panel, and over the whole scoped library rather than
@@ -186,6 +204,7 @@ export function createAiMediaAssetService(options: {
         source: row.source,
         ...(row.lastUsedAt ? { lastUsedAt: row.lastUsedAt } : {}),
         ...(row.deletedAt ? { deletedAt: row.deletedAt } : {}),
+        ...(row.prompt ? { prompt: row.prompt } : {}),
       }
       try {
         // A file deleted or damaged between indexing and hydration is omitted
@@ -267,9 +286,9 @@ export function createAiMediaAssetService(options: {
     return { assetId: updated.assetId, lastUsedAt: updated.lastUsedAt as string }
   }
 
-  async function setSource(userId: number, assetId: string, source: AiAssetSource) {
+  async function setSource(userId: number, assetId: string, source: AiAssetSource, prompt?: string) {
     await readOwned(userId, assetId)
-    const updated = await options.metadata.setSource(userId, assetId, source)
+    const updated = await options.metadata.setSource(userId, assetId, source, prompt)
     return { assetId: updated.assetId, source: updated.source as AiAssetSource }
   }
 
