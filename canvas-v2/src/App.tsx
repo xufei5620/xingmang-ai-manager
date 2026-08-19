@@ -42,6 +42,7 @@ import type { CanvasContextAction } from './editor/context-menu'
 import { alignNodePositions, distributeNodePositions, type AlignableNode, type CanvasAlignMode, type CanvasDistributeAxis } from './editor/align'
 import { bridgeEdgesForRemoval } from './editor/bridge-edges'
 import { resolveSnapGuides, type SnapBox, type SnapGuide } from './editor/snap-guides'
+import { findEdgeDropTarget } from './editor/edge-drop'
 
 function snapBoxOfCanvasNode(node: { id: string; position: { x: number; y: number }; measured?: { width?: number; height?: number }; width?: number | null; height?: number | null; type?: string }): SnapBox {
   const fallback = builtinNodeRegistry.resolve(node.type ?? 'unknown')?.dimensions
@@ -57,6 +58,7 @@ import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
   connectionForInsertedNode,
+  handleKind,
   isValidWorkflowConnection,
   type PendingCanvasConnection,
 } from './ports'
@@ -609,6 +611,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null)
   const [snapGuides, setSnapGuides] = useState<readonly SnapGuide[]>([])
   const [nodeSearchOpen, setNodeSearchOpen] = useState(false)
+  const [edgeDropTargetId, setEdgeDropTargetId] = useState<string | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
@@ -1742,6 +1745,54 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [])
 
+  // Endpoint coordinates for hit testing a node dropped onto a wire. Handle
+  // offsets mirror the port layout in WorkflowNodes (52px + 26px per port).
+  const edgeEndpoints = useCallback(() => {
+    const byId = new Map(reactFlow.getNodes().map((entry) => [entry.id, entry]))
+    return edges.flatMap((edge) => {
+      const source = byId.get(edge.source)
+      const target = byId.get(edge.target)
+      if (!source || !target) return []
+      const sourceBox = snapBoxOfCanvasNode(source)
+      const targetBox = snapBoxOfCanvasNode(target)
+      return [{
+        id: edge.id,
+        source: edge.source,
+        sourceHandle: edge.sourceHandle,
+        target: edge.target,
+        targetHandle: edge.targetHandle,
+        sourcePoint: { x: sourceBox.x + sourceBox.width, y: sourceBox.y + 52 },
+        targetPoint: { x: targetBox.x, y: targetBox.y + 52 },
+      }]
+    })
+  }, [edges, reactFlow])
+
+  const spliceNodeOntoEdge = useCallback((nodeId: string, edgeId: string) => {
+    const original = edges.find((entry) => entry.id === edgeId)
+    const node = nodes.find((entry) => entry.id === nodeId)
+    if (!original || !node) return
+    const definition = builtinNodeRegistry.resolve(node.type ?? 'unknown')
+    if (!definition) return
+    const kind = handleKind(original.sourceHandle)
+    const input = definition.ports.find((port) => port.direction === 'input' && port.kind === kind)
+    const output = definition.ports.find((port) => port.direction === 'output' && port.kind === handleKind(original.targetHandle))
+    if (!input || !output) {
+      setBanner('该节点没有可以接上这条连线的端口')
+      return
+    }
+    const before = { id: nextNodeId(), source: original.source, sourceHandle: original.sourceHandle ?? '', target: nodeId, targetHandle: input.id }
+    const after = { id: nextNodeId(), source: nodeId, sourceHandle: output.id, target: original.target, targetHandle: original.targetHandle ?? '' }
+    const remaining = edges.filter((entry) => entry.id !== edgeId)
+    const view = { nodeKindOf: (id: string) => (nodes.find((entry) => entry.id === id)?.type as NodeKind | undefined) ?? null }
+    if (!isValidWorkflowConnection(before, { ...view, edges: remaining })
+      || !isValidWorkflowConnection(after, { ...view, edges: [...remaining, before] })) {
+      setBanner('该节点无法插入这条连线')
+      return
+    }
+    execute({ type: 'splice-node-on-edge', nodeId, edgeId, before, after })
+    setBanner(`已把「${definition.title}」接入连线`)
+  }, [edges, execute, nodes])
+
   // Alignment guides while dragging a single node. Only for a lone node: with
   // a multi-node drag the group has no single edge to align, and snapping one
   // member would silently shear the arrangement the user already built.
@@ -1761,10 +1812,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         entry.id === node.id ? { ...entry, position: result.position } : entry
       )))
     }
-  }, [reactFlow, setNodes, snapGuides.length])
+    const target = findEdgeDropTarget({ ...moving, ...result.position }, edgeEndpoints())
+    setEdgeDropTargetId(target?.id ?? null)
+  }, [edgeEndpoints, reactFlow, setNodes, snapGuides.length])
 
   const onCanvasNodeDragStop = useCallback((_event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
     setSnapGuides([])
+    const dropTargetId = edgeDropTargetId
+    setEdgeDropTargetId(null)
+    if (dropTargetId && draggedNodes.length <= 1 && !altDragSessionRef.current) {
+      spliceNodeOntoEdge(node.id, dropTargetId)
+    }
     const session = altDragSessionRef.current
     if (!session) return
     altDragSessionRef.current = null
@@ -2810,7 +2868,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         <ReactFlow
           colorMode={theme}
           nodes={nodes}
-          edges={edges}
+          edges={edgeDropTargetId
+            ? edges.map((edge) => (edge.id === edgeDropTargetId ? { ...edge, className: 'is-drop-target' } : edge))
+            : edges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           defaultEdgeOptions={defaultEdgeOptions}

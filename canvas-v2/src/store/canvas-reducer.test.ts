@@ -92,6 +92,42 @@ describe('canvas command history', () => {
     expect(history.present.edges[0].target).toBe('b')
   })
 
+  it('splices an existing node into a wire as one undoable command', () => {
+    let history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('loose', 120)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' }],
+    })
+    history = applyCanvasCommand(history, {
+      type: 'splice-node-on-edge',
+      nodeId: 'loose',
+      edgeId: 'e1',
+      before: { id: 'x1', source: 'a', sourceHandle: 'out:image', target: 'loose', targetHandle: 'in:images' },
+      after: { id: 'x2', source: 'loose', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' },
+    })
+    // The node already existed, so only the wiring changes.
+    expect(history.present.nodes).toHaveLength(3)
+    expect(history.present.edges.map((entry) => entry.id)).toEqual(['x1', 'x2'])
+
+    history = undoCanvasHistory(history)
+    expect(history.present.edges.map((entry) => entry.id)).toEqual(['e1'])
+  })
+
+  it('rejects a splice whose wiring does not actually pass through the node', () => {
+    const history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('loose', 120)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' }],
+    })
+    expect(() => applyCanvasCommand(history, {
+      type: 'splice-node-on-edge',
+      nodeId: 'loose',
+      edgeId: 'e1',
+      before: { id: 'x1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' },
+      after: { id: 'x2', source: 'loose', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' },
+    })).toThrow(/连线关系无效/)
+  })
+
   it('deletes a node and its bridge in one undoable command', () => {
     let history = createCanvasHistory({
       ...createCanvasDocument(),

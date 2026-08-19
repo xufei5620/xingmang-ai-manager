@@ -1950,6 +1950,8 @@ button:disabled {
 
 .wf-edge-hit { cursor: pointer; pointer-events: stroke; }
 .wf-edge { transition: stroke-width var(--duration-fast) var(--ease-out); }
+/* The wire a dragged node would splice into. */
+.react-flow__edge.is-drop-target .wf-edge { stroke-width: 3.2px; stroke-dasharray: 7 4; }
 .wf-edge-toolbar {
   display: flex;
   gap: var(--space-2);

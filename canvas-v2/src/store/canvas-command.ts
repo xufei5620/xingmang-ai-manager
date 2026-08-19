@@ -9,6 +9,7 @@ export type CanvasCommand =
   | { type: 'set-node-flags'; nodeIds: string[]; locked?: boolean; disabled?: boolean }
   | { type: 'replace-nodes'; nodes: EditorNodeRecord[]; mergeKey?: string }
   | { type: 'insert-node-on-edge'; node: EditorNodeRecord; edgeId: string; before: EditorEdgeRecord; after: EditorEdgeRecord }
+  | { type: 'splice-node-on-edge'; nodeId: string; edgeId: string; before: EditorEdgeRecord; after: EditorEdgeRecord }
   | { type: 'delete-elements'; nodeIds: string[]; edgeIds?: string[]; bridges?: EditorEdgeRecord[] }
   | { type: 'connect'; edge: EditorEdgeRecord }
   | { type: 'disconnect'; edgeIds: string[] }

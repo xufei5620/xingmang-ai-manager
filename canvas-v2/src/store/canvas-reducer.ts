@@ -87,6 +87,27 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
       const edges = document.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target))
       return { ...document, nodes: structuredClone(command.nodes), edges, revision: nextRevision(document) }
     }
+    case 'splice-node-on-edge': {
+      // Same shape as insert-node-on-edge, but the node already exists: the
+      // user dragged it onto the wire rather than creating it there.
+      const edgeIndex = document.edges.findIndex((edge) => edge.id === command.edgeId)
+      if (edgeIndex < 0) throw new Error('待插入的连线不存在')
+      if (!document.nodes.some((node) => node.id === command.nodeId)) throw new Error('要插入的节点不存在')
+      const original = document.edges[edgeIndex]
+      if (command.before.source !== original.source || command.before.target !== command.nodeId
+        || command.after.source !== command.nodeId || command.after.target !== original.target) {
+        throw new Error('插入节点连线关系无效')
+      }
+      const spliceIds = new Set(document.edges.map((edge) => edge.id))
+      if (command.before.id === command.after.id || spliceIds.has(command.before.id) || spliceIds.has(command.after.id)) {
+        throw new Error('插入节点连线标识已存在')
+      }
+      return {
+        ...document,
+        edges: [...document.edges.slice(0, edgeIndex), { ...command.before }, { ...command.after }, ...document.edges.slice(edgeIndex + 1)],
+        revision: nextRevision(document),
+      }
+    }
     case 'insert-node-on-edge': {
       if (document.nodes.some((node) => node.id === command.node.id)) throw new Error('插入节点标识已存在')
       const edgeIndex = document.edges.findIndex((edge) => edge.id === command.edgeId)
