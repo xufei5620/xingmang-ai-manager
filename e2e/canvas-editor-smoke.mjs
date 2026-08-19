@@ -992,9 +992,34 @@ try {
 
   await devtools.send('Emulation.clearDeviceMetricsOverride')
 
+  // The toolbar run-history toggle is hidden below 1320px, and the physical
+  // display can clamp setContentSize, so force a wide viewport to exercise it.
+  await devtools.send('Emulation.setDeviceMetricsOverride', {
+    width: 1590, height: 875, deviceScaleFactor: 1, mobile: false, screenWidth: 1590, screenHeight: 875,
+  })
+  await page.waitForTimeout(150)
+  const runHistoryToggle = page.getByRole('banner').getByRole('button', { name: '运行历史', exact: true })
+  assert.equal(await runHistoryToggle.getAttribute('aria-pressed'), 'false', '运行历史开关在面板关闭时没有报告未按下')
+  await runHistoryToggle.click()
+  await page.locator('.run-inspector').waitFor({ state: 'visible', timeout: 10_000 })
+  assert.equal(await runHistoryToggle.getAttribute('aria-pressed'), 'true', '运行历史开关在面板打开时没有报告按下')
+  await runHistoryToggle.click()
+  await page.locator('.run-inspector').waitFor({ state: 'detached', timeout: 10_000 })
+  assert.equal(await runHistoryToggle.getAttribute('aria-pressed'), 'false', '再次点击运行历史开关没有关闭面板')
+
+  // Below 1320px that toggle is hidden, so the overflow menu must still reach
+  // the run inspector. Losing this fallback would strand narrow windows.
+  await devtools.send('Emulation.setDeviceMetricsOverride', {
+    width: 1180, height: 820, deviceScaleFactor: 1, mobile: false, screenWidth: 1180, screenHeight: 820,
+  })
+  await page.waitForTimeout(150)
+  assert.equal(await runHistoryToggle.count(), 0, '窄窗口下运行历史开关应当隐藏,改由溢出菜单承担')
   await page.getByRole('button', { name: '更多操作', exact: true }).click()
   await page.getByRole('button', { name: /打开运行历史/ }).click()
   await page.locator('.run-inspector').waitFor({ state: 'visible', timeout: 10_000 })
+  await devtools.send('Emulation.clearDeviceMetricsOverride')
+  await page.waitForTimeout(150)
+
   await page.getByRole('button', { name: '更多操作', exact: true }).click()
   await page.getByRole('button', { name: /打开素材库/ }).click()
   await page.locator('.asset-tray').waitFor({ state: 'visible', timeout: 10_000 })

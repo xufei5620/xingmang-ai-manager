@@ -77,7 +77,7 @@ import {
   projectRunRecordToNodes,
   selectNodeCandidate,
 } from './runtime/run-projection'
-import { ChevronDown, Crosshair, FolderOpen, Focus, History, Image as ImageIcon, LayoutGrid, Map as MapIcon, MoreHorizontal, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Undo2, Video, X } from 'lucide-react'
+import { ChevronDown, Crosshair, FolderOpen, Focus, History, Image as ImageIcon, LayoutGrid, Map as MapIcon, MoreHorizontal, PanelRight, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Undo2, Video, X } from 'lucide-react'
 import { canvasNodeDocumentRecord, useCanvasDocument } from './store/use-canvas-document'
 import type { CanvasDocumentState, CanvasMediaGroups } from './store/canvas-state'
 import type { EditorNodeRecord } from './domain/node-definition'
@@ -1260,6 +1260,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     if (inspectorTab === 'assets' && assetTrayOpen) closeInspector()
     else showAssetTray()
   }, [assetTrayOpen, closeInspector, inspectorTab, showAssetTray])
+
+  const toggleRunInspector = useCallback(() => {
+    if (inspectorTab === 'runs' && runInspectorOpen) closeInspector()
+    else openInspectorTab('runs')
+  }, [closeInspector, inspectorTab, openInspectorTab, runInspectorOpen])
 
   useEffect(() => hostBridge().onRunEvent((event) => {
     const active = activeRunRef.current
@@ -2506,14 +2511,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           <button type="button" className="canvas-icon-command" title="重做" aria-label="重做" onClick={redo} disabled={!canRedo}><Redo2 size={15} /></button>
           <button type="button" className="canvas-icon-command" title="自动布局" aria-label="自动布局" onClick={autoLayout} disabled={!nodes.length}><LayoutGrid size={15} /></button>
           <button type="button" className="canvas-icon-command" title="适配全部内容" aria-label="适配全部内容" onClick={fitCanvas} disabled={!nodes.length}><Crosshair size={15} /></button>
-          <button
-            type="button"
-            className={`canvas-icon-command${focusMode ? ' is-active' : ''}`}
-            title={focusMode ? '退出聚焦模式' : '进入聚焦模式'}
-            aria-label={focusMode ? '退出聚焦模式' : '进入聚焦模式'}
-            aria-pressed={focusMode}
-            onClick={() => setFocusMode((current) => !current)}
-          ><Focus size={15} /></button>
         </div>
         <div className="canvas-toolbar-group canvas-toolbar-actions">
           <button
@@ -2539,7 +2536,24 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               setQuickInsert({ anchor: { x: Math.max(12, bounds.width / 2 - 180), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) }, flowPosition: reactFlow.screenToFlowPosition(client) })
             }}
           ><Plus size={16} /></button>
-          <button type="button" className="canvas-icon-command canvas-history-command" title="打开运行历史" aria-label="运行历史" onClick={() => openInspectorTab('runs')}><History size={15} /></button>
+          <button
+            type="button"
+            className={`canvas-icon-command canvas-history-command${inspectorTab === 'runs' && runInspectorOpen ? ' is-active' : ''}`}
+            title="运行历史"
+            aria-label="运行历史"
+            aria-pressed={inspectorTab === 'runs' && runInspectorOpen}
+            onClick={toggleRunInspector}
+          ><History size={15} /></button>
+          {/* Distinct icon from the bottom-right "focus selection" control: this
+              one hides the side panels, it does not move the viewport. */}
+          <button
+            type="button"
+            className={`canvas-icon-command${focusMode ? ' is-active' : ''}`}
+            title={focusMode ? '显示侧边面板' : '隐藏侧边面板,专注画布'}
+            aria-label={focusMode ? '显示侧边面板' : '隐藏侧边面板'}
+            aria-pressed={focusMode}
+            onClick={() => setFocusMode((current) => !current)}
+          ><PanelRight size={15} /></button>
           <MediaConfiguration
             open={mediaConfigOpen}
             groups={groups}
@@ -2559,6 +2573,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
                 <button type="button" onClick={() => { setMoreActionsOpen(false); groupSelection() }}>将选中节点分组</button>
                 <button type="button" onClick={() => { setMoreActionsOpen(false); openTemplateCatalog() }}><Sparkles size={14} />打开行业模板库</button>
                 <button type="button" onClick={() => { setMoreActionsOpen(false); showAssetTray() }}><ImageIcon size={14} />打开素材库</button>
+                {/* Overflow fallback: the toolbar toggle is hidden below 1320px,
+                    so narrow windows would otherwise lose every entry point. */}
                 <button type="button" onClick={() => { setMoreActionsOpen(false); openInspectorTab('runs') }}><History size={14} />打开运行历史</button>
                 <span className="canvas-more-divider" />
                 <button type="button" onClick={() => { setMoreActionsOpen(false); void load() }}>打开工作流</button>
@@ -2736,8 +2752,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           <span className="canvas-status-media">{mediaConnectionLabel}</span>
           {activeProject && <span className={`canvas-autosave is-${autoSaveState}`}>{autoSaveState === 'saving' ? '保存中…' : autoSaveState === 'failed' ? '保存失败' : '已自动保存'}</span>}
         </div>
+        {/* Canvas-local navigation only. "Fit all" lives in the toolbar with the
+            other commands; duplicating it here made two controls with one job. */}
         <div className="canvas-navigation-tools" aria-label="画布导航">
-          <button type="button" title="适配全部内容" aria-label="适配全部内容" onClick={fitCanvas}><Crosshair size={15} /></button>
           <button type="button" title="聚焦选中节点" aria-label="聚焦选中节点" onClick={fitSelection} disabled={!selectedNodeIds.length}><Focus size={15} /></button>
           <button type="button" title={minimapOpen ? '隐藏缩略图' : '显示缩略图'} aria-label={minimapOpen ? '隐藏缩略图' : '显示缩略图'} aria-pressed={minimapOpen} onClick={() => setMinimapOpen((open) => !open)}><MapIcon size={15} /></button>
         </div>
