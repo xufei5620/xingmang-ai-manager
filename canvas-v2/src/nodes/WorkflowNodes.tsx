@@ -531,9 +531,10 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
         />
       ))}
       <header>
+        {/* Both lines ellipsize, so the full text must stay reachable. */}
         <span className="wf-node-title">
-          <strong>{definition.title}</strong>
-          <small>{definition.description}</small>
+          <strong title={definition.title}>{definition.title}</strong>
+          <small title={definition.description}>{definition.description}</small>
         </span>
         <span className="wf-head-right">
           {supportsPrompt(kind) && data.prompt.trim() && (
@@ -590,29 +591,41 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
               {imageModels.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
             </select>
             {!mediaModelAvailable && <p className="wf-error">当前分组不提供此图像模型，请重新选择</p>}
+            {/* One parameter per row on a shared label/control subgrid. Three
+                selects abreast left each about 93px, which truncated every
+                size and quality label. */}
             <div className="wf-params nodrag">
               {preset.supportsQuality && (
-                <select className="wf-model" value={data.quality || defaultImageQuality} title="画质" aria-label="生成画质" onChange={(event) => handlers.onQualityChange(id, event.target.value)}>
-                  {imageQualityOptions.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
-                </select>
+                <label className="wf-inline-field">
+                  <span>画质</span>
+                  <select className="wf-model" value={data.quality || defaultImageQuality} aria-label="生成画质" onChange={(event) => handlers.onQualityChange(id, event.target.value)}>
+                    {imageQualityOptions.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+                  </select>
+                </label>
               )}
-              <select
-                className="wf-model"
-                value={preset.resolutions.includes(data.imageResolution ?? defaultImageResolution) ? (data.imageResolution ?? defaultImageResolution) : preset.resolutions[0]}
-                title={preset.resolutionNote ?? '输出清晰度'}
-                aria-label="生成清晰度"
-                onChange={(event) => handlers.onImageResolutionChange(id, event.target.value as '1K' | '2K' | '4K')}
-              >
-                {imageResolutionOptions.map((entry) => (
-                  <option key={entry.value} value={entry.value} disabled={!preset.resolutions.includes(entry.value)}>
-                    {entry.label}{preset.resolutions.includes(entry.value) ? '' : '（当前模型不支持）'}
-                  </option>
-                ))}
-              </select>
-              {preset.supportsSize && (
-                <select className="wf-model" value={preset.sizes.includes(data.size || '') ? data.size : (preset.sizes[0] ?? defaultImageSize)} title="尺寸" aria-label="生成尺寸" onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
-                  {preset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
+              <label className="wf-inline-field">
+                <span>清晰度</span>
+                <select
+                  className="wf-model"
+                  value={preset.resolutions.includes(data.imageResolution ?? defaultImageResolution) ? (data.imageResolution ?? defaultImageResolution) : preset.resolutions[0]}
+                  title={preset.resolutionNote ?? '输出清晰度'}
+                  aria-label="生成清晰度"
+                  onChange={(event) => handlers.onImageResolutionChange(id, event.target.value as '1K' | '2K' | '4K')}
+                >
+                  {imageResolutionOptions.map((entry) => (
+                    <option key={entry.value} value={entry.value} disabled={!preset.resolutions.includes(entry.value)}>
+                      {entry.label}{preset.resolutions.includes(entry.value) ? '' : '（当前模型不支持）'}
+                    </option>
+                  ))}
                 </select>
+              </label>
+              {preset.supportsSize && (
+                <label className="wf-inline-field">
+                  <span>尺寸</span>
+                  <select className="wf-model" value={preset.sizes.includes(data.size || '') ? data.size : (preset.sizes[0] ?? defaultImageSize)} aria-label="生成尺寸" onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
+                    {preset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
+                  </select>
+                </label>
               )}
             </div>
           </>

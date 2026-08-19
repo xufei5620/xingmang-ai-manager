@@ -1225,6 +1225,7 @@ button:disabled {
 }
 
 .wf-node {
+  position: relative;
   width: 100%;
   min-height: 100%;
   overflow: hidden;
@@ -1235,6 +1236,31 @@ button:disabled {
   box-shadow: var(--shadow-panel);
   font-size: var(--text-sm);
 }
+
+/* State spine. Full height on the left edge so run state stays legible when
+   the header is only a few pixels tall at low zoom, and in peripheral vision
+   across a large graph. Node *category* is a separate axis and lives on the
+   header's top band, so the two never fight for the same edge. */
+.wf-node::before {
+  content: '';
+  position: absolute;
+  z-index: 1;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: var(--node-spine-width);
+  background: var(--wf-spine, transparent);
+  pointer-events: none;
+}
+
+.wf-node.wf-status-queued { --wf-spine: var(--state-queued); }
+.wf-node.wf-status-running { --wf-spine: var(--state-running); }
+.wf-node.wf-status-succeeded { --wf-spine: var(--state-succeeded); }
+.wf-node.wf-status-failed { --wf-spine: var(--state-failed); }
+/* Dirty outranks a stale success but never masks an in-flight or failed run. */
+.wf-node.wf-is-dirty.wf-status-idle,
+.wf-node.wf-is-dirty.wf-status-succeeded { --wf-spine: var(--state-dirty); }
+.wf-node.wf-is-disabled { --wf-spine: var(--state-cached); }
 
 .wf-node-details { display: contents; }
 .wf-node-overview {
@@ -1312,7 +1338,8 @@ button:disabled {
   padding: var(--space-6) var(--space-10) var(--space-6) var(--space-12);
   background: var(--surface-3);
   border-bottom: 1px solid var(--border-subtle);
-  box-shadow: inset 3px 0 0 var(--node-accent, var(--accent));
+  /* Category band on the top edge, leaving the left edge to the state spine. */
+  box-shadow: inset 0 2px 0 var(--node-accent, var(--accent));
 }
 .wf-input-contract-hint {
   margin: var(--space-6) var(--space-10) 0;
@@ -1507,6 +1534,18 @@ button:disabled {
 .wf-pick-asset { display: inline-flex; min-height: 26px; align-items: center; justify-content: center; gap: var(--space-4); padding: var(--space-2) var(--space-6); color: var(--text-secondary); background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: var(--radius-control); font-size: var(--text-xs); }
 .wf-pick-asset:hover { color: var(--text-primary); border-color: var(--accent); }
 .wf-inline-field { display: flex; align-items: center; gap: var(--space-6); margin: var(--space-8) var(--space-10) 0; color: var(--text-secondary); }
+/* Inside a params block the rows share one label/control subgrid so controls
+   line up across rows and the control track can never be squeezed below
+   --node-control-min. */
+.wf-params > .wf-inline-field,
+.wf-video-params > .wf-inline-field {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  margin: 0;
+}
+.wf-params > .wf-inline-field > span,
+.wf-video-params > .wf-inline-field > span { color: var(--text-muted); font-size: var(--text-xs); }
 .wf-inline-field input { width: 84px; min-height: 30px; padding: var(--space-4) var(--space-6); color: var(--text-primary); background: var(--surface-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
 
 .wf-node textarea::placeholder,
@@ -1733,17 +1772,17 @@ button:disabled {
 .wf-run-node:disabled svg { animation: wf-status-spin 900ms linear infinite; }
 
 .wf-params {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(40px, max-content) minmax(var(--node-control-min), 1fr);
   gap: var(--space-6);
-  margin: 0 var(--space-10);
+  margin: var(--space-8) var(--space-10) 0;
 }
 
 .wf-params .wf-model,
 .wf-params select.wf-model {
-  flex: 1;
-  width: auto;
+  width: 100%;
   min-width: 0;
-  margin: var(--space-8) 0 0;
+  margin: 0;
 }
 
 .wf-node select.wf-model {
@@ -1764,9 +1803,10 @@ button:disabled {
 .wf-port-image { color: var(--port-image); background: var(--port-image); }
 .wf-port-video { color: var(--port-video); background: var(--port-video); }
 
-.wf-video-params { display: grid; gap: var(--space-8); }
-.wf-video-params .wf-inline-field { justify-content: space-between; }
-.wf-video-params .wf-inline-field .wf-model { min-width: 88px; width: auto; }
+.wf-video-params { display: grid; grid-template-columns: minmax(40px, max-content) minmax(var(--node-control-min), 1fr); gap: var(--space-8) var(--space-6); }
+/* Full-width children (the model select, errors, toggles) span both tracks. */
+.wf-video-params > :not(.wf-inline-field) { grid-column: 1 / -1; }
+.wf-video-params .wf-inline-field .wf-model { width: 100%; min-width: 0; }
 .wf-video-toggle { display: flex; align-items: center; gap: var(--space-8); margin: 0 var(--space-10); color: var(--text-secondary); font-size: var(--text-xs); }
 .wf-video-toggle input { width: 14px; height: 14px; accent-color: var(--node-accent); }
 .wf-progress { display: grid; gap: var(--space-6); padding: var(--space-8); border: 1px solid color-mix(in srgb, var(--node-accent) 38%, transparent); background: color-mix(in srgb, var(--node-accent) 8%, var(--surface-media)); }

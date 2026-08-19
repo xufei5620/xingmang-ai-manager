@@ -639,7 +639,17 @@ try {
   await claritySelect.selectOption('4K')
   await imageGenerateNode.locator('select[aria-label="图像模型"]').selectOption('gpt-image-1')
   assert.equal(await claritySelect.inputValue(), '1K', '切换到仅支持 1K 的模型后没有安全回退')
-  assert.equal(await claritySelect.locator('option[value="2K"]').isDisabled(), true, 'GPT Image 1 错误开放了 2K')
+  // Read the option state straight off the DOM. Playwright's isDisabled() does
+  // not agree with a disabled <option> once the select sits inside a <label>,
+  // while the attribute, the live property and the user-visible suffix all say
+  // it is disabled. Asserting all three is stronger than the helper was.
+  const clarityState = await claritySelect.evaluate((select) => {
+    const option = select.querySelector('option[value="2K"]')
+    return { attribute: option?.hasAttribute('disabled'), property: option?.disabled, text: option?.textContent }
+  })
+  assert.equal(clarityState.attribute, true, 'GPT Image 1 错误开放了 2K(缺少 disabled 属性)')
+  assert.equal(clarityState.property, true, 'GPT Image 1 错误开放了 2K(disabled 属性未生效)')
+  assert.match(clarityState.text ?? '', /当前模型不支持/, 'GPT Image 1 的 2K 选项没有说明为何不可选')
   await imageGenerateNode.locator('select[aria-label="图像模型"]').selectOption('gpt-image-2')
   const imageSizeOptions = await imageGenerateNode.locator('select[aria-label="生成尺寸"] option').allTextContents()
   assert.ok(imageSizeOptions.includes('1:1 · 1024x1024'), '图片比例缺少 1:1')
