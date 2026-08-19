@@ -27,7 +27,7 @@ import {
 const runtimeDataKeys = new Set([
   'status', 'errorMessage', 'costQuota', 'candidateAssetIds', 'candidates', 'selectedCandidateId',
   'adoptedCandidateId', 'dirty', 'attemptCount', 'latestAttemptDurationMs',
-  'runStartedAt', 'runStage', 'runProgress', 'runProgressMode', 'runHealth',
+  'runStartedAt', 'runStage', 'runProgress', 'runProgressMode', 'runHealth', 'fromCache',
 ])
 
 interface DragTransaction {

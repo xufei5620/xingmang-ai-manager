@@ -75,6 +75,9 @@ export function projectRunRecordToNodes<T extends ProjectableCanvasNode>(
         runProgress: showRunProgress ? record.latestProgress : undefined,
         runProgressMode: showRunProgress ? record.latestProgressMode : undefined,
         runHealth: showRunProgress ? record.latestHealth : undefined,
+        // Survives a reload: restoring from history must not silently turn a
+        // cache hit into something that looks freshly generated.
+        fromCache: record.state === 'cached',
         dirty: !terminalSuccess,
         attemptCount: record.attempts.length,
         ...(latestAttempt ? { latestAttemptDurationMs: latestAttempt.durationMs } : {}),

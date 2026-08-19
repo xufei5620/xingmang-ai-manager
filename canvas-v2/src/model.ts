@@ -83,6 +83,12 @@ export interface WorkflowNodeData {
   runProgress?: number
   runProgressMode?: 'determinate' | 'indeterminate'
   runHealth?: 'normal' | 'delayed'
+  /**
+   * The last terminal state was a fingerprint cache hit rather than a fresh
+   * paid run. Runtime only: it describes how the current result was obtained,
+   * not what the workflow is, so it never reaches persistence.
+   */
+  fromCache?: boolean
 }
 
 export interface WorkflowNode {

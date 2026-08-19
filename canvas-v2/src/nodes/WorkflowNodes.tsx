@@ -509,7 +509,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
   }
 
   return (
-    <div className={`wf-node wf-node-${kind} wf-category-${definition.category} wf-status-${data.status}${data.dirty ? ' wf-is-dirty' : ''}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}${summaryMode ? ' wf-lod-summary' : ''}`}>
+    <div className={`wf-node wf-node-${kind} wf-category-${definition.category} wf-status-${data.status}${data.dirty ? ' wf-is-dirty' : ''}${data.fromCache && data.status === 'succeeded' && !data.dirty ? ' wf-is-cached' : ''}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}${summaryMode ? ' wf-lod-summary' : ''}`}>
       {canRunNode && (
         <NodeRunToolbar
           id={id}
@@ -534,6 +534,9 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           {data.status === 'idle'
             ? <span className="wf-status-idle-dot" title="待运行" aria-label="待运行" />
             : <span className={`wf-status wf-status-${data.status}`}><StatusIcon size={12} aria-hidden="true" />{statusLabel[data.status]}</span>}
+          {data.fromCache && data.status === 'succeeded' && !data.dirty && (
+            <span className="wf-cached" title="输入未变化，本次复用了上次结果，没有产生新的付费请求">已缓存</span>
+          )}
           {locked && <span className="wf-locked" title="节点位置已锁定" role="img" aria-label="位置已锁定"><Lock size={10} aria-hidden="true" /></span>}
           {disabled && <span className="wf-disabled" title="此节点不会参与运行">已禁用</span>}
           {data.dirty && <span className="wf-dirty" title="输入或采纳结果已变化，需要重新运行">待更新</span>}

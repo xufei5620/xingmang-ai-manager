@@ -1656,6 +1656,21 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* A cache hit is a success that cost nothing. Without its own treatment it is
+   indistinguishable from a fresh paid generation, which is exactly the fact a
+   user re-running a large graph wants to see. */
+.wf-cached {
+  padding: var(--space-2) var(--space-4);
+  color: var(--state-cached);
+  background: color-mix(in srgb, var(--state-cached) 16%, transparent);
+  border-radius: var(--radius-chip);
+  font-size: var(--text-xs);
+  white-space: nowrap;
+}
+
+.wf-node.wf-is-cached { --wf-spine: var(--state-cached); }
+.wf-node.wf-is-cached .wf-node-title strong { color: var(--text-secondary); }
+
 /* Two error kinds that must not look alike. A validation problem is the user's
    to fix before running (wrong model for the group); an execution failure
    happened at runtime and may not be their fault (503, quota, filter). Showing

@@ -68,6 +68,20 @@ describe('run record projection', () => {
     expect(nodeResultStagingState(projected[0].data)).toBe('pending')
   })
 
+  it('keeps a cache hit distinguishable from a fresh paid run after reload', () => {
+    const fresh = projectRunRecordToNodes([{ id: 'generate', data: data() }], runRecord())
+    expect(fresh[0].data.fromCache).toBe(false)
+
+    const record = runRecord()
+    record.nodes[0].state = 'cached'
+    const cached = projectRunRecordToNodes([{ id: 'generate', data: data() }], record)
+    // A cache hit is still a success for run semantics, but the user must be
+    // able to tell nothing was regenerated or paid for.
+    expect(cached[0].data.status).toBe('succeeded')
+    expect(cached[0].data.dirty).toBe(false)
+    expect(cached[0].data.fromCache).toBe(true)
+  })
+
   it('selects without changing output, then adopts and dirties descendants only', () => {
     const projected = projectRunRecordToNodes([
       { id: 'generate', data: data() },

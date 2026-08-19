@@ -1282,6 +1282,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             : event.state as CanvasNode['data']['status']
       patchNodeData(event.nodeId, {
         status: state,
+        // A cache hit collapses to 'succeeded' for run semantics, but the user
+        // still needs to know nothing was paid for or regenerated.
+        ...(['succeeded', 'cached'].includes(event.state) ? { fromCache: event.state === 'cached' } : {}),
         ...((event.state === 'queued' || event.state === 'running') ? { runStartedAt: event.at } : {}),
         ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
         ...(typeof event.costQuota === 'number' ? { costQuota: event.costQuota } : {}),
