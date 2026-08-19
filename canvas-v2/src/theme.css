@@ -29,8 +29,61 @@
   --port-video: #e58b6e;
   --port-audio: #d49ce8;
   --shadow-floating: 0 12px 30px rgba(0, 0, 0, 0.32);
+  --radius-chip: 4px;
   --radius-control: 6px;
   --radius-panel: 8px;
+  --radius-round: 999px;
+
+  /* Run states are kept separate from success/warning/danger so queued and
+     cached can be retuned without disturbing generic feedback colors. */
+  --state-dirty: var(--warning);
+  --state-queued: #6c8cd5;
+  --state-running: var(--accent);
+  --state-cached: #6b7683;
+  --state-succeeded: var(--success);
+  --state-failed: var(--danger);
+  --port-any: #8b95a3;
+
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+
+  /* 11px is a hard floor. Below it, switch to a simplified representation
+     rather than shrinking type further. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-strong: 650;
+
+  --z-canvas-overlay: 10;
+  --z-panel: 20;
+  --z-floating: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+
+  --node-width: 280px;
+  --node-width-min: 240px;
+  --node-header-height: 36px;
+  --node-row-height: 28px;
+  --node-spine-width: 3px;
+  --node-label-column: 92px;
+  --node-control-min: 128px;
 
   --xy-background-color-default: var(--canvas-bg);
   --xy-background-pattern-color-default: var(--canvas-grid);
@@ -76,6 +129,11 @@
   --port-image: #2d8d68;
   --port-video: #bb654a;
   --port-audio: #8957a3;
+  --port-any: #6b7683;
+  /* --state-dirty/running/succeeded/failed follow the tokens they alias and
+     need no light override. Only the two standalone hues do. */
+  --state-queued: #4a6ab0;
+  --state-cached: #7c8794;
   --shadow-floating: 0 14px 34px rgba(35, 47, 55, 0.18);
   --xy-edge-stroke-default: #788792;
   --xy-attribution-background-color-default: rgba(255, 255, 255, 0.86);

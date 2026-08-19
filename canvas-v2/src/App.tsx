@@ -6,12 +6,12 @@ import {
   ReactFlow,
   SelectionMode,
   applyNodeChanges,
+  useReactFlow,
   type Connection,
   type Edge,
   type FinalConnectionState,
   type NodeChange,
   type OnConnectStartParams,
-  type ReactFlowInstance,
   type Viewport,
   type XYPosition,
 } from '@xyflow/react'
@@ -588,7 +588,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
   const clipboardRef = useRef<CanvasClipboardPayload | null>(null)
-  const reactFlowRef = useRef<ReactFlowInstance<CanvasNode, Edge> | null>(null)
+  const reactFlow = useReactFlow<CanvasNode, Edge>()
   const overviewViewportRef = useRef<Viewport | null>(null)
   const altDragSessionRef = useRef<{
     nodeIds: string[]
@@ -646,23 +646,22 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     window.requestAnimationFrame(() => {
       // Keep the overview complete for large graphs; focus mode raises the
       // floor slightly and is the readable path for editing a subset.
-      void reactFlowRef.current?.fitView({ padding: focusMode ? 0.2 : 0.14, minZoom: focusMode ? 0.26 : 0.2, maxZoom: 1, duration: 180 })
+      void reactFlow.fitView({ padding: focusMode ? 0.2 : 0.14, minZoom: focusMode ? 0.26 : 0.2, maxZoom: 1, duration: 180 })
     })
-  }, [focusMode])
+  }, [focusMode, reactFlow])
 
   const toggleCanvasOverview = useCallback(() => {
-    const instance = reactFlowRef.current
-    if (!instance || nodes.length === 0) return
+    if (nodes.length === 0) return
     const restore = overviewViewportRef.current
     if (restore) {
       overviewViewportRef.current = null
-      void instance.setViewport(restore, { duration: 180 })
+      void reactFlow.setViewport(restore, { duration: 180 })
       setDocumentViewport(restore)
       return
     }
-    overviewViewportRef.current = instance.getViewport()
-    void instance.fitView({ padding: 0.14, minZoom: 0.15, maxZoom: 1, duration: 180 })
-  }, [nodes.length, setDocumentViewport])
+    overviewViewportRef.current = reactFlow.getViewport()
+    void reactFlow.fitView({ padding: 0.14, minZoom: 0.15, maxZoom: 1, duration: 180 })
+  }, [nodes.length, reactFlow, setDocumentViewport])
 
   const fitSelection = useCallback(() => {
     const selected = nodes.filter((node) => node.selected)
@@ -671,16 +670,16 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return
     }
     window.requestAnimationFrame(() => {
-      void reactFlowRef.current?.fitView({ nodes: selected, padding: 0.24, minZoom: 0.35, maxZoom: 1.18, duration: 180 })
+      void reactFlow.fitView({ nodes: selected, padding: 0.24, minZoom: 0.35, maxZoom: 1.18, duration: 180 })
     })
-  }, [nodes])
+  }, [nodes, reactFlow])
 
   const restoreCanvasViewport = useCallback((nextViewport: Viewport) => {
     overviewViewportRef.current = null
     window.requestAnimationFrame(() => {
-      void reactFlowRef.current?.setViewport(nextViewport, { duration: 0 })
+      void reactFlow.setViewport(nextViewport, { duration: 0 })
     })
-  }, [])
+  }, [reactFlow])
 
   useEffect(() => {
     if (nodes.length === 0) overviewViewportRef.current = null
@@ -1249,9 +1248,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     setRunInspectorOpen(false)
     setNodeInspectorOpen(true)
     window.requestAnimationFrame(() => {
-      void reactFlowRef.current?.fitView({ nodes: [target], padding: 0.55, minZoom: 0.65, maxZoom: 1.15, duration: 220 })
+      void reactFlow.fitView({ nodes: [target], padding: 0.55, minZoom: 0.65, maxZoom: 1.15, duration: 220 })
     })
-  }, [nodes, setNodes])
+  }, [nodes, reactFlow, setNodes])
 
   const showAssetTray = useCallback(() => {
     openInspectorTab('assets')
@@ -1434,8 +1433,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     const definition = builtinNodeRegistry.require(kind)
     const dimensions = mediaAssetNodeDimensions(asset)
     const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-    const preferredCenter = bounds && reactFlowRef.current
-      ? reactFlowRef.current.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+    const preferredCenter = bounds
+      ? reactFlow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
       : { x: 420, y: 300 }
     const resolvedPosition = position ?? findAvailableCanvasPosition(nodes, preferredCenter, dimensions)
     const canvasNode = toCanvasNode({
@@ -1448,7 +1447,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     execute({ type: 'add-nodes', nodes: [canvasNodeDocumentRecord(canvasNode)] })
     if (!position) {
       window.requestAnimationFrame(() => {
-        void reactFlowRef.current?.setCenter(
+        void reactFlow.setCenter(
           resolvedPosition.x + dimensions.width / 2,
           resolvedPosition.y + dimensions.height / 2,
           { zoom: Math.min(viewport.zoom, 1), duration: 180 },
@@ -1456,7 +1455,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       })
     }
     setBanner(asset.mediaType === 'video' ? '视频已添加到画布' : asset.mediaType === 'audio' ? '音频已添加到画布' : '图片已导入到画布')
-  }, [execute, nodes, viewport.zoom])
+  }, [execute, nodes, reactFlow, viewport.zoom])
 
   const pickAssetForNode = useCallback(async (nodeId: string) => {
     try {
@@ -1511,15 +1510,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       const asset = await hostBridge().pickAsset()
       if (!asset) return
       const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-      const position = bounds && reactFlowRef.current
-        ? reactFlowRef.current.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+      const position = bounds
+        ? reactFlow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
         : undefined
       createAssetNode(importedAssetSummary(asset), position)
       void refreshAssets({ ...assetQuery, offset: 0 })
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
-  }, [createAssetNode, refreshAssets, assetQuery])
+  }, [createAssetNode, reactFlow, refreshAssets, assetQuery])
 
   useEffect(() => {
     registerNodeChangeHandlers({
@@ -1721,7 +1720,10 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     if (!session) return
     altDragSessionRef.current = null
 
-    const liveNodes = reactFlowRef.current?.getNodes() ?? (draggedNodes.length > 0 ? draggedNodes : [node])
+    // useReactFlow returns an empty array before the flow mounts, so an
+    // emptiness check replaces the old null-instance fallback.
+    const storeNodes = reactFlow.getNodes()
+    const liveNodes = storeNodes.length > 0 ? storeNodes : (draggedNodes.length > 0 ? draggedNodes : [node])
     const liveById = new Map(liveNodes.map((entry) => [entry.id, entry]))
     const sourceRecords = nodes.map((entry) => {
       const live = liveById.get(entry.id)
@@ -1751,7 +1753,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     setBanner(session.preserveInputConnections
       ? `已复制 ${duplicated.nodes.length} 个节点并保留输入连接`
       : `已复制 ${duplicated.nodes.length} 个节点`)
-  }, [edges, execute, nodes, setNodes])
+  }, [edges, execute, nodes, reactFlow, setNodes])
 
   const autoLayout = useCallback(() => {
     if (nodes.length === 0) return
@@ -1950,8 +1952,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   const openQuickInsertAt = useCallback((client: { x: number; y: number }, connection?: PendingCanvasConnection) => {
     const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-    const instance = reactFlowRef.current
-    if (!bounds || !instance) return
+    if (!bounds) return
     let compatibleHandles: Record<string, string> | undefined
     if (connection) {
       const graph = {
@@ -1975,15 +1976,14 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         x: Math.max(12, Math.min(bounds.width - 372, client.x - bounds.left - 180)),
         y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)),
       },
-      flowPosition: instance.screenToFlowPosition(client),
+      flowPosition: reactFlow.screenToFlowPosition(client),
       ...(connection ? { connection, compatibleHandles } : {}),
     })
-  }, [edges, nodes])
+  }, [edges, nodes, reactFlow])
 
   const openEdgeQuickInsertAt = useCallback((client: { x: number; y: number }, edge: Edge) => {
     const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-    const instance = reactFlowRef.current
-    if (!bounds || !instance) return
+    if (!bounds) return
     const remainingEdges = edges.filter((entry) => entry.id !== edge.id)
     const graph = {
       nodeKindOf: (nodeId: string) => nodes.find((entry) => entry.id === nodeId)?.type ?? null,
@@ -2008,11 +2008,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         x: Math.max(12, Math.min(bounds.width - 372, client.x - bounds.left - 180)),
         y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)),
       },
-      flowPosition: instance.screenToFlowPosition(client),
+      flowPosition: reactFlow.screenToFlowPosition(client),
       edgeId: edge.id,
       compatibleHandles,
     })
-  }, [edges, nodes])
+  }, [edges, nodes, reactFlow])
 
   const onConnectStart = useCallback((_event: MouseEvent | TouchEvent, params: OnConnectStartParams) => {
     connectionStartRef.current = params.nodeId && params.handleId && (params.handleType === 'source' || params.handleType === 'target')
@@ -2356,14 +2356,14 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           return
         }
         const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-        if (!bounds || !reactFlowRef.current) return
+        if (!bounds) return
         setMediaConfigOpen(false)
         setMoreActionsOpen(false)
         setRunMenuOpen(false)
         const client = { x: bounds.left + bounds.width / 2, y: bounds.top + Math.min(bounds.height * 0.38, 320) }
         setQuickInsert({
           anchor: { x: Math.max(12, Math.min(bounds.width - 372, client.x - bounds.left - 180)), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) },
-          flowPosition: reactFlowRef.current.screenToFlowPosition(client),
+          flowPosition: reactFlow.screenToFlowPosition(client),
         })
       }
       else if (shortcut === 'copy') { event.preventDefault(); copySelection() }
@@ -2384,7 +2384,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [undo, redo, save, load, run, autoLayout, toggleAssetTray, toggleCanvasOverview, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert, runPreflight])
+  }, [undo, redo, save, load, run, autoLayout, toggleAssetTray, toggleCanvasOverview, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert, reactFlow, runPreflight])
 
   const serverBacked = Boolean(window.xingmangCanvasHost)
   const mediaConnectionLabel = preparingMedia
@@ -2531,12 +2531,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
                 return
               }
               const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-              if (!bounds || !reactFlowRef.current) return
+              if (!bounds) return
               setMediaConfigOpen(false)
               setRunMenuOpen(false)
               setMoreActionsOpen(false)
               const client = { x: bounds.left + bounds.width / 2, y: bounds.top + Math.min(bounds.height * 0.38, 320) }
-              setQuickInsert({ anchor: { x: Math.max(12, bounds.width / 2 - 180), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) }, flowPosition: reactFlowRef.current.screenToFlowPosition(client) })
+              setQuickInsert({ anchor: { x: Math.max(12, bounds.width / 2 - 180), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) }, flowPosition: reactFlow.screenToFlowPosition(client) })
             }}
           ><Plus size={16} /></button>
           <button type="button" className="canvas-icon-command canvas-history-command" title="打开运行历史" aria-label="运行历史" onClick={() => openInspectorTab('runs')}><History size={15} /></button>
@@ -2603,13 +2603,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         onDoubleClick={(event) => {
           if (!(event.target instanceof Element) || !event.target.classList.contains('react-flow__pane')) return
           const bounds = event.currentTarget.getBoundingClientRect()
-          if (!reactFlowRef.current) return
           setQuickInsert({
             anchor: {
               x: Math.max(12, Math.min(bounds.width - 372, event.clientX - bounds.left)),
               y: Math.max(12, Math.min(bounds.height - 430, event.clientY - bounds.top)),
             },
-            flowPosition: reactFlowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+            flowPosition: reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
           })
         }}
       >
@@ -2634,7 +2633,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           minZoom={0.15}
           fitViewOptions={{ padding: 0.14, minZoom: 0.2, maxZoom: 1 }}
           proOptions={{ hideAttribution: false }}
-          onInit={(instance) => { reactFlowRef.current = instance }}
           onMove={(_, nextViewport) => setNodeLod((current) => canvasNodeLodForZoom(nextViewport.zoom, current))}
           onMoveEnd={(_, nextViewport) => setDocumentViewport(nextViewport)}
           selectionOnDrag
@@ -2653,8 +2651,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }}
           onDrop={(event) => {
             event.preventDefault()
-            const position = reactFlowRef.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY })
-            if (!position) return
+            const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
             const nodeType = event.dataTransfer.getData('application/x-xingmang-node')
             if (nodeType) {
               addNode(nodeType, position)
