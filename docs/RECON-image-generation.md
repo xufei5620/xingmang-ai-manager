@@ -1,6 +1,6 @@
 # 星芒AI 图片生成接入文档（给无限画布）
 
-> 版本：2026-08-12 · 依据：xm.solov.cc 生产环境全链路实测（含与 OpenAI 官方账单逐笔对账）
+> 版本：2026-08-19 · 依据：xm.solov.cc 生产环境全链路实测（含与 OpenAI 官方账单逐笔对账）
 > 网关：New API v1.0.0-rc.24 · 所有数字均为实测值，非文档抄录
 
 ---
@@ -10,13 +10,13 @@
 | 项 | 值 |
 |---|---|
 | Base URL | `https://xm.solov.cc` |
-| 文生图端点 | `POST /v1/images/generations`（JSON） |
+| 文生图端点 | GPT Image / 即梦 / Grok 使用 `POST /v1/images/generations`；Gemini 3.1 Flash Image 使用 `POST /v1/chat/completions` |
 | 图生图端点 | `POST /v1/images/edits`（**multipart/form-data，不接受 JSON**） |
 | 鉴权 | `Authorization: Bearer sk-xxx`（星芒后台「API 密钥」页签发） |
-| 令牌分组 | 令牌须属于包含目标模型的分组：`openai`（含全部 gpt-image + 文本模型）或 `生图分组`（gpt-image + 即梦） |
+| 令牌分组 | 令牌须属于包含目标模型的分组；无限画布默认使用 `生图分组` |
 | 超时建议 | **客户端 ≥ 300 秒**。4K high 实测最长 183 秒；网关侧 nginx 已放宽到 1800s，瓶颈只在客户端 |
 
-> ⚠️ 不要走 `/pg/chat/completions`（游乐场通道）或聊天接口生图。即梦等原生协议模型在聊天通道会报 `missing req_key`——图片必须走 images 专用端点。
+> 不要走 `/pg/chat/completions`（网页游乐场通道）。GPT Image、即梦和 Grok 继续走 Images API；`gemini-3.1-flash-image` 是明确例外，New API 只在 `/v1/chat/completions` 中为它设置 `TEXT + IMAGE` 输出，传统 `/v1/images/generations` 会以“only imagen models are supported”拒绝。
 
 ---
 
@@ -29,6 +29,7 @@
 | `gpt-image-1` | OpenAI 官方 | 同上 | b64_json | ✅ 可用，但同画质成本高于 image-2，无理由不选 |
 | `gpt-image-1.5` | OpenAI 官方 | — | — | ❌ 项目权限 403，**暂不可用，不要暴露给用户** |
 | `jimeng_high_aes_general_v21_L` | 火山引擎即梦 | 仅 generations | **url**（字节 CDN） | ✅ 可用；便宜、快（8–20s），中文语义好 |
+| `gemini-3.1-flash-image` | Google Gemini | chat completions | `message.content` 内的 Markdown data URL | ✅ 2026-08-19 生产实测 200；约 25.6s |
 
 ---
 
@@ -41,8 +42,23 @@
 | gpt-image-2 系 | **任意尺寸，但宽、高都必须是 16 的倍数**（如 1536x1152、3840x2160、720x1280） | `Invalid size 'WxH'. Width and height must both be divisible by 16.` |
 | gpt-image-1 | 仅 `1024x1024` / `1024x1536` / `1536x1024` / `auto` 四选一 | `Invalid size ... Supported sizes are 1024x1024, 1024x1536, 1536x1024, and auto.` |
 | 即梦 | `1024x1024` 等常规尺寸 | — |
+| Gemini 3.1 Flash Image | 前端尺寸预设映射为 `extra_body.google.image_config.aspect_ratio`；当前支持 1:1、4:3、3:4、16:9、9:16、3:2、2:3、5:4、4:5、21:9 | 不支持的比例在付费请求前拦截 |
 
 **前端务必做 16 倍数校验**（gpt-image-2），否则请求直接 400 浪费一次往返。
+
+### 3.1.1 清晰度档位 `imageResolution`
+
+无限画布使用独立字段 `imageResolution` 表达 `1K / 2K / 4K`，不要与 MiniMax 视频 `resolution` 混用：
+
+| 模型 | 1K | 2K | 4K | 请求映射 |
+|---|---:|---:|---:|---|
+| Gemini 3.1 Flash Image | ✅ | ✅ | ✅ | `extra_body.google.image_config.image_size` |
+| GPT Image 2 | ✅ | ✅ | ✅ | 按比例映射为 Images API `size`；例如 16:9 的 4K 为 `3840x2160` |
+| GPT Image 1 | ✅ | — | — | 上游只接受 1024/1536 固定尺寸 |
+| 即梦 | ✅ | — | — | 当前适配器没有三档原生参数，继续使用上游超分默认值 |
+| Grok Imagine 系 | ✅ | — | — | 当前 New API xAI 适配器会丢弃 `size/quality`，输出尺寸由上游决定 |
+
+UI 对所有模型显示三个档位；不支持的 2K/4K 保持可见但禁用，并在付费请求前再次校验。不得通过普通插值放大伪装为原生 4K。
 
 ### 3.2 画质 `quality`（仅 gpt-image 系）
 
@@ -76,6 +92,23 @@
 
 1. **`&` 转义**：原始 JSON 文本里 `&` 是 `&`。必须经 `JSON.parse` 后取值（parse 会自动还原）；任何字符串拼接/正则截取原文的做法都会得到打不开的 403 链接。
 2. **URL 24 小时过期**（`x-expires` 签名）：画布若要持久保存，**必须在拿到 URL 后立即下载转存**，不能只存链接。
+
+### 4.3 Gemini 3.1 Flash Image 返回 Chat Completions 内嵌图片
+
+请求体使用 OpenAI Chat Completions 形状，New API 会根据模型自动注入 Gemini `responseModalities: ["TEXT", "IMAGE"]`：
+
+```json
+{
+  "model": "gemini-3.1-flash-image",
+  "messages": [{ "role": "user", "content": "生成一张极简图标" }],
+  "stream": false,
+  "extra_body": {
+    "google": { "image_config": { "aspect_ratio": "1:1" } }
+  }
+}
+```
+
+响应图片位于 `choices[].message.content`，形如 `![image](data:image/jpeg;base64,...)`。主进程只提取 PNG/JPEG/WebP，校验实际文件魔数后立即写入账号/项目资产目录；base64 不得进入 renderer、日志或工作流 JSON。该模型当前不支持 `/v1/images/edits`，图像编辑节点必须在请求前拒绝。
 
 ---
 
@@ -158,7 +191,7 @@ curl -X POST https://xm.solov.cc/v1/images/edits \
 
 ## 8. 给画布的集成建议清单
 
-1. **模型下拉只放 3 个**：`gpt-image-2`（默认）、`gpt-image-1`、`jimeng_high_aes_general_v21_L`；隐藏 1.5 和快照版
+1. **模型下拉使用服务端列表与本地能力表的交集**：当前显示 `gpt-image-2`（默认）、`gemini-3.1-flash-image`、`gpt-image-1`、即梦和已验证的 Grok 图片模型；隐藏 1.5 和快照版
 2. **quality 显式传参**，默认 `low`；"高清出图"按钮才用 `high`，并在 UI 上提示费用与耗时差
 3. **尺寸预设 + 自定义校验**：预设 1024²、1536×1152（4:3）、1280×720（16:9）、720×1280（9:16）、3840×2160（4K）；自定义输入实时校验 16 倍数
 4. **草稿→定稿工作流**：构图阶段 low（约 0.09 元/张），确认后同参数 high 重出（比全程 high 省 95%）

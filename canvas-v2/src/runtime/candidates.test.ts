@@ -76,16 +76,21 @@ describe('candidate runtime state', () => {
     expect(dirty.nodes.b.status).toBe('idle')
   })
 
-  it('resolves all, dirty, selected and upstream-to-target scopes', () => {
-    const state = createCandidateState(['a', 'b', 'c', 'd'])
+  it('resolves all, dirty, selected, upstream-to-target and downstream scopes', () => {
+    const state = createCandidateState(['a', 'b', 'c', 'd', 'dependency', 'merged', 'other'])
     const edges = [
       { source: 'a', target: 'b' },
       { source: 'b', target: 'c' },
+      { source: 'c', target: 'merged' },
+      { source: 'dependency', target: 'merged' },
     ]
-    expect(resolveRunScope(state, ['a', 'b', 'c', 'd'], edges, { kind: 'all' })).toEqual(['a', 'b', 'c', 'd'])
-    expect(resolveRunScope(state, ['a', 'b', 'c', 'd'], edges, { kind: 'dirty' })).toEqual(['a', 'b', 'c', 'd'])
-    expect(resolveRunScope(state, ['a', 'b', 'c', 'd'], edges, { kind: 'selection', nodeIds: ['b', 'd'] })).toEqual(['a', 'b', 'd'])
-    expect(resolveRunScope(state, ['a', 'b', 'c', 'd'], edges, { kind: 'to-node', nodeId: 'c' })).toEqual(['a', 'b', 'c'])
+    const allNodeIds = ['a', 'b', 'c', 'd', 'dependency', 'merged', 'other']
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'all' })).toEqual(allNodeIds)
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'dirty' })).toEqual(allNodeIds)
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'selection', nodeIds: ['b', 'd'] })).toEqual(['a', 'b', 'd'])
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'to-node', nodeId: 'c' })).toEqual(['a', 'b', 'c'])
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'from-node', nodeId: 'b' }))
+      .toEqual(['a', 'b', 'c', 'dependency', 'merged'])
   })
 
   it('rejects duplicate candidates and oversized candidate sets', () => {

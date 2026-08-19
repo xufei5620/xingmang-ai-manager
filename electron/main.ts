@@ -832,6 +832,13 @@ if (!hasSingleInstanceLock) {
       projects: canvasProjects,
       global: createCanvasProjectAssetContext(assetStore, videoAssets, audioAssets, assetMetadata),
       create: createProjectAssetContext,
+      onMetadataError: (error, context) => runtimeLog.log(
+        'warn',
+        'canvas',
+        'asset.source.persist.failed',
+        '生成素材已保存，但来源信息保存失败',
+        { ...context, reason: error instanceof Error ? error.message : String(error) },
+      ),
     })
     registerAiAssetProtocol(canvasProjectAssets, accountService)
     const chatService = createAiChatService({

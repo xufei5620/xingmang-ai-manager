@@ -1,5 +1,5 @@
-import { useEffect, useState, type FormEvent } from 'react'
-import { ChevronLeft, ChevronRight, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, TriangleAlert, X } from 'lucide-react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { ChevronLeft, ChevronRight, Clock3, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, Star, Tags, TriangleAlert, X } from 'lucide-react'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
 import { AudioPreview, MediaLightbox, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
@@ -7,7 +7,7 @@ import { mediaAssetAspectRatio } from '../library/media-assets'
 
 interface AssetTrayProps {
   page: CanvasAssetPage
-  query: Required<Pick<CanvasAssetQuery, 'offset' | 'limit' | 'mediaType'>> & Pick<CanvasAssetQuery, 'search'>
+  query: Required<Pick<CanvasAssetQuery, 'offset' | 'limit' | 'mediaType' | 'view' | 'source' | 'sort'>> & Pick<CanvasAssetQuery, 'search' | 'tag'>
   loading: boolean
   onQueryChange(query: CanvasAssetQuery): void
   onRefresh(): void
@@ -16,6 +16,8 @@ interface AssetTrayProps {
   onAssetMenu(assetId: string): void
   onLocateSourceNode?(nodeId: string): void
   onRename?(assetId: string, displayName: string): void | Promise<void>
+  onUpdateMetadata?(assetId: string, input: { favorite?: boolean; tags?: string[] }): void | Promise<void>
+  onMarkUsed?(assetId: string): void | Promise<void>
   onInspectReferences?(assetId: string): Promise<CanvasAssetReferenceReport>
   onClose(): void
   embedded?: boolean
@@ -64,7 +66,7 @@ function assetRef(asset: CanvasAssetSummary): AssetRef {
   }
 }
 
-export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onLocateSourceNode, onRename, onInspectReferences, onClose, embedded = false }: AssetTrayProps) {
+export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onLocateSourceNode, onRename, onUpdateMetadata, onMarkUsed, onInspectReferences, onClose, embedded = false }: AssetTrayProps) {
   const [search, setSearch] = useState(query.search ?? '')
   const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null)
   const [previewAsset, setPreviewAsset] = useState<CanvasAssetSummary | null>(null)
@@ -76,6 +78,10 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   const [referenceReport, setReferenceReport] = useState<CanvasAssetReferenceReport | null>(null)
   const [referenceError, setReferenceError] = useState<string | null>(null)
   const [referenceLoading, setReferenceLoading] = useState(false)
+  const [taggingAsset, setTaggingAsset] = useState<CanvasAssetSummary | null>(null)
+  const [tagDraft, setTagDraft] = useState('')
+  const [tagError, setTagError] = useState<string | null>(null)
+  const [tagSaving, setTagSaving] = useState(false)
   useEffect(() => setSearch(query.search ?? ''), [query.search])
   useEffect(() => {
     if (selectedAssetId && !page.items.some((asset) => asset.assetId === selectedAssetId)) setSelectedAssetId(null)
@@ -87,6 +93,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   }
   const firstItem = page.total === 0 ? 0 : page.offset + 1
   const lastItem = page.offset + page.items.length
+  const visibleTags = useMemo(() => [...new Set(page.items.flatMap((asset) => asset.tags ?? []))].sort((left, right) => left.localeCompare(right, 'zh-CN')).slice(0, 12), [page.items])
   const beginRename = (asset: CanvasAssetSummary) => {
     setRenamingAsset(asset)
     setRenameDraft(assetName(asset))
@@ -125,16 +132,40 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       setReferenceLoading(false)
     }
   }
+  const submitTags = async (event: FormEvent) => {
+    event.preventDefault()
+    if (!onUpdateMetadata || !taggingAsset || tagSaving) return
+    const tags = tagDraft.split(/[,\uff0c]/).map((tag) => tag.trim()).filter(Boolean)
+    if (tags.length > 12 || tags.some((tag) => tag.length > 32) || new Set(tags.map((tag) => tag.toLocaleLowerCase('zh-CN'))).size !== tags.length) {
+      setTagError('最多 12 个不重复标签，每个不超过 32 个字符')
+      return
+    }
+    setTagSaving(true)
+    setTagError(null)
+    try {
+      await onUpdateMetadata(taggingAsset.assetId, { tags })
+      setTaggingAsset(null)
+    } catch (error) {
+      setTagError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setTagSaving(false)
+    }
+  }
 
   return (
     <aside className={`asset-tray${embedded ? ' is-embedded' : ''}`} aria-label="本地资产">
       <header>
-        <strong>本地资产</strong>
+        <strong>素材库</strong>
         <span>{page.total}</span>
         <button type="button" title="从文件导入素材" aria-label="从文件导入素材" onClick={onImport} disabled={loading}><FolderOpen size={15} /></button>
         <button type="button" title="刷新资产" aria-label="刷新资产" onClick={onRefresh} disabled={loading}><RefreshCw size={15} /></button>
         <button type="button" title="关闭资产栏" aria-label="关闭资产栏" onClick={onClose}><X size={16} /></button>
       </header>
+      <nav className="asset-quick-views" aria-label="素材快速视图">
+        <button type="button" className={query.view === 'all' ? 'is-active' : ''} aria-pressed={query.view === 'all'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'all' })}>全部</button>
+        <button type="button" className={query.view === 'favorites' ? 'is-active' : ''} aria-pressed={query.view === 'favorites'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'favorites' })}><Star size={12} />收藏</button>
+        <button type="button" className={query.view === 'recent' ? 'is-active' : ''} aria-pressed={query.view === 'recent'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'recent', sort: 'used-desc' })}><Clock3 size={12} />最近</button>
+      </nav>
       <form className="asset-tray-filters" role="search" onSubmit={submitSearch}>
         <label>
           <Search size={14} aria-hidden="true" />
@@ -150,7 +181,25 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
           <option value="video">视频</option>
           <option value="audio">音频</option>
         </select>
+        <select aria-label="素材来源" value={query.source} onChange={(event) => onQueryChange({ ...query, offset: 0, source: event.target.value as CanvasAssetQuery['source'] })}>
+          <option value="all">全部来源</option>
+          <option value="generated">AI 生成</option>
+          <option value="imported">本地导入</option>
+          <option value="legacy">历史素材</option>
+        </select>
+        <select aria-label="素材排序" value={query.sort} onChange={(event) => onQueryChange({ ...query, offset: 0, sort: event.target.value as CanvasAssetQuery['sort'] })}>
+          <option value="created-desc">最新创建</option>
+          <option value="created-asc">最早创建</option>
+          <option value="used-desc">最近使用</option>
+          <option value="name-asc">名称</option>
+        </select>
       </form>
+      {(visibleTags.length > 0 || query.tag) && (
+        <div className="asset-tag-filter" aria-label="按标签筛选">
+          {query.tag && <button type="button" className="is-active" onClick={() => onQueryChange({ ...query, offset: 0, tag: '' })}>{query.tag}<X size={11} /></button>}
+          {visibleTags.filter((tag) => tag !== query.tag).map((tag) => <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>{tag}</button>)}
+        </div>
+      )}
       <div className="asset-tray-grid">
         {loading && <p className="asset-tray-empty" role="status" aria-live="polite">正在读取...</p>}
         {!loading && page.items.length === 0 && <p className="asset-tray-empty">没有符合条件的本地资产</p>}
@@ -173,6 +222,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               onDragStart={(event) => {
                 event.dataTransfer.setData('application/x-xingmang-asset-id', asset.assetId)
                 event.dataTransfer.effectAllowed = 'copy'
+                void onMarkUsed?.(asset.assetId)
               }}
             >
               <div
@@ -200,6 +250,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                         : <span className="asset-video-placeholder"><Film size={22} /><small>{available ? 'MP4 视频' : '素材不可用'}</small></span>}
               </div>
               <div className="asset-tray-item-tools" aria-label="素材操作">
+                {onUpdateMetadata && <button type="button" className={asset.favorite ? 'is-favorite' : ''} title={asset.favorite ? '取消收藏' : '收藏'} aria-label={`${asset.favorite ? '取消收藏' : '收藏'}：${name}`} aria-pressed={asset.favorite} onClick={() => void onUpdateMetadata(asset.assetId, { favorite: !asset.favorite })}><Star size={13} fill={asset.favorite ? 'currentColor' : 'none'} /></button>}
                 <button type="button" title="添加到画布" aria-label={`添加资产到画布：${name}`} onClick={() => onAdd(asset.assetId)}><Plus size={13} /></button>
                 <button type="button" title="放大预览" aria-label={`放大预览：${name}`} onClick={() => setPreviewAsset(asset)}><Eye size={13} /></button>
                 {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={13} /></button>}
@@ -211,6 +262,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                       <strong title={name}>{name}</strong>
                       {!available && <span className="asset-unavailable-badge">不可用</span>}
                       {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={12} /></button>}
+                      {onUpdateMetadata && <button type="button" title="编辑标签" aria-label={`编辑素材标签：${name}`} onClick={() => { setTaggingAsset(asset); setTagDraft((asset.tags ?? []).join(', ')); setTagError(null) }}><Tags size={12} /></button>}
                       {onInspectReferences && <button type="button" title="检查引用与删除保护" aria-label={`检查素材引用：${name}`} onClick={() => void inspectReferences(asset)}><ShieldCheck size={12} /></button>}
                     </div>
                     <dl>
@@ -223,6 +275,8 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                         : null}
                       <div><dt>原文件</dt><dd title={asset.fileName}>{asset.fileName}</dd></div>
                       <div><dt>创建时间</dt><dd>{assetCreatedAt(asset)}</dd></div>
+                      <div><dt>来源</dt><dd>{asset.source === 'generated' ? 'AI 生成' : asset.source === 'imported' ? '本地导入' : '历史素材'}</dd></div>
+                      {asset.lastUsedAt && <div><dt>最近使用</dt><dd>{new Date(asset.lastUsedAt).toLocaleString()}</dd></div>}
                       {asset.lineage && <div><dt>生成来源</dt><dd>
                         {onLocateSourceNode
                           ? <button type="button" className="asset-lineage-link" title="定位到生成节点" onClick={() => onLocateSourceNode(asset.lineage!.nodeId)}>{asset.lineage.nodeId}</button>
@@ -231,6 +285,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                       </dd></div>}
                       <div><dt>资产 ID</dt><dd title={asset.assetId}>{asset.assetId}</dd></div>
                     </dl>
+                    {(asset.tags?.length ?? 0) > 0 && <div className="asset-item-tags">{asset.tags?.map((tag) => <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>{tag}</button>)}</div>}
                   </div>
                 : <div className="asset-tray-item-meta"><span title={name}>{name}</span><small>{assetLabel(asset)}</small></div>}
             </article>
@@ -265,6 +320,25 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
             <footer>
               <button type="button" disabled={renameSaving} onClick={() => setRenamingAsset(null)}>取消</button>
               <button type="submit" className="is-primary" disabled={renameSaving || !renameDraft.trim()}>{renameSaving ? '保存中…' : '保存'}</button>
+            </footer>
+          </form>
+        </div>
+      )}
+      {taggingAsset && (
+        <div className="asset-rename-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !tagSaving) setTaggingAsset(null)
+        }}>
+          <form className="asset-rename-dialog asset-tag-dialog" role="dialog" aria-modal="true" aria-label="编辑素材标签" onSubmit={(event) => void submitTags(event)}>
+            <header><strong>编辑素材标签</strong><button type="button" title="关闭" aria-label="关闭标签编辑" disabled={tagSaving} onClick={() => setTaggingAsset(null)}><X size={16} /></button></header>
+            <label>
+              <span>标签</span>
+              <input autoFocus value={tagDraft} maxLength={395} placeholder="例如：产品图, 已定稿" onChange={(event) => setTagDraft(event.target.value)} />
+            </label>
+            <small>使用中英文逗号分隔，最多 12 个。</small>
+            {tagError && <p role="alert">{tagError}</p>}
+            <footer>
+              <button type="button" disabled={tagSaving} onClick={() => setTaggingAsset(null)}>取消</button>
+              <button type="submit" className="is-primary" disabled={tagSaving}>{tagSaving ? '保存中…' : '保存'}</button>
             </footer>
           </form>
         </div>

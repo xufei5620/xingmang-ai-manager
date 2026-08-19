@@ -174,7 +174,7 @@ describe('canvas workflow projection', () => {
 
   it('projects image and video nodes with their independently configured groups', () => {
     const image = toCanvasNode(workflowNode({
-      id: 'image', kind: 'image-generate', data: workflowNodeData('image-generate', { model: 'gpt-image-2' }),
+      id: 'image', kind: 'image-generate', data: workflowNodeData('image-generate', { model: 'gpt-image-2', imageResolution: '4K' }),
     }))
     const video = toCanvasNode(workflowNode({
       id: 'video', kind: 'video-generate', data: workflowNodeData('video-generate', { model: 'grok-imagine-video' }),
@@ -183,6 +183,7 @@ describe('canvas workflow projection', () => {
     const graph = toCanvasRunGraph([image, video], [], { image: '生图分组', video: 'grok' })
 
     expect(graph.nodes.find((node) => node.id === 'image')?.data.group).toBe('生图分组')
+    expect(graph.nodes.find((node) => node.id === 'image')?.data.imageResolution).toBe('4K')
     expect(graph.nodes.find((node) => node.id === 'video')?.data.group).toBe('grok')
   })
 

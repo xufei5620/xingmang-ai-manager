@@ -17,6 +17,7 @@ function setup(
       userId: 7,
       group,
       models: [
+        'gemini-3.1-flash-image',
         'gpt-image-1',
         'gpt-image-2',
         'jimeng_high_aes_general_v21_L',
@@ -82,6 +83,46 @@ describe('AI image service', () => {
     const body = JSON.parse(String(vi.mocked(fetchImpl).mock.calls[0][1]?.body))
     expect(body).toMatchObject({ model: 'gpt-image-1', quality: 'low', n: 1, size: '1024x1024' })
     expect(body).not.toHaveProperty('response_format')
+  })
+
+  it('uses Chat Completions for Gemini image generation and stores its Markdown data URL', async () => {
+    const fetchImpl = vi.fn(async () => response({
+      choices: [{
+        message: {
+          role: 'assistant',
+          content: '已生成\n![image](data:image/jpeg;base64,aGVsbG8=)',
+        },
+      }],
+    })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+
+    await service.generate(4, {
+      requestId: 'gemini-image', group: '生图分组', model: 'gemini-3.1-flash-image',
+      prompt: '生成极简图标', size: '1280x720', quality: 'high', imageResolution: '2K',
+    })
+
+    const [url, init] = vi.mocked(fetchImpl).mock.calls[0]
+    expect(String(url)).toBe('https://xm.solov.cc/v1/chat/completions')
+    expect(JSON.parse(String(init?.body))).toEqual({
+      model: 'gemini-3.1-flash-image',
+      messages: [{ role: 'user', content: '生成极简图标' }],
+      stream: false,
+      extra_body: { google: { image_config: { aspect_ratio: '16:9', image_size: '2K' } } },
+    })
+    expect(assets.storeBase64).toHaveBeenCalledWith(7, 'data:image/jpeg;base64,aGVsbG8=', undefined)
+    expect(assets.storeRemoteUrl).not.toHaveBeenCalled()
+  })
+
+  it('rejects unsupported Gemini inline media without exposing it as an image asset', async () => {
+    const fetchImpl = vi.fn(async () => response({
+      choices: [{ message: { content: '![image](data:image/svg+xml;base64,aGVsbG8=)' } }],
+    })) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+
+    await expect(service.generate(4, {
+      requestId: 'gemini-unsupported-media', group: '生图分组', model: 'gemini-3.1-flash-image', prompt: '图',
+    })).rejects.toThrow('结果不明确')
+    expect(assets.storeBase64).not.toHaveBeenCalled()
   })
 
   it('omits quality and maps dimensions for Jimeng', async () => {
@@ -262,6 +303,10 @@ describe('AI image service', () => {
     const { service, assets } = setup(fetchImpl)
     await expect(service.edit(4, {
       requestId: 'edit-unsupported', group: '生图分组', model: 'jimeng_high_aes_general_v21_L', prompt: '改成夜景',
+      sourceAssetIds: ['a'.repeat(43)],
+    })).rejects.toThrow('不支持图片编辑')
+    await expect(service.edit(4, {
+      requestId: 'edit-gemini-unsupported', group: '生图分组', model: 'gemini-3.1-flash-image', prompt: '改成夜景',
       sourceAssetIds: ['a'.repeat(43)],
     })).rejects.toThrow('不支持图片编辑')
     expect(assets.readOwned).not.toHaveBeenCalled()

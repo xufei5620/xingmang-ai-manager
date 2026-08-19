@@ -94,6 +94,17 @@ describe('workflow schema v2 parser', () => {
     expect(parseWorkflowFile(' '.repeat(maximumWorkflowBytes + 1))).toBeNull()
   })
 
+  it('round-trips a bounded image clarity tier and rejects unknown tiers', () => {
+    const document = v2Document()
+    ;(document.nodes[1].data as Record<string, unknown>).imageResolution = '4K'
+    const parsed = parseWorkflowFile(JSON.stringify(document))
+    expect(parsed?.nodes[1].data.imageResolution).toBe('4K')
+    expect(JSON.parse(serializeWorkflow(parsed!)).nodes[1].data.imageResolution).toBe('4K')
+
+    ;(document.nodes[1].data as Record<string, unknown>).imageResolution = '8K'
+    expect(parseWorkflowFile(JSON.stringify(document))).toBeNull()
+  })
+
   it.each([
     ['duplicate node ids', { nodes: [v2Document().nodes[0], v2Document().nodes[0]] }],
     ['duplicate edge ids', { edges: [v2Document().edges[0], v2Document().edges[0]] }],

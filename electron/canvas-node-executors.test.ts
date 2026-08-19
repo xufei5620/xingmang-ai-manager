@@ -23,7 +23,7 @@ describe('createCanvasNodeExecutors', () => {
         id: 'image',
         kind: 'image',
         definitionVersion: 1,
-        data: { prompt: 'local', model: 'gpt-image-2', group: '生图', size: '1024x1024', quality: 'low' },
+        data: { prompt: 'local', model: 'gpt-image-2', group: '生图', size: '1024x1024', quality: 'low', imageResolution: '4K' },
       },
       inputs: { text: 'upstream' },
       signal: new AbortController().signal,
@@ -36,6 +36,7 @@ describe('createCanvasNodeExecutors', () => {
       expectedUserId: 7,
       size: '1024x1024',
       quality: 'low',
+      imageResolution: '4K',
     })
     expect(result.assets?.[0]).toMatchObject({ kind: 'image', assetId: 'a'.repeat(43) })
   })
@@ -80,7 +81,7 @@ describe('createCanvasNodeExecutors', () => {
       runId: 'run', graphRevision: 'revision', attemptId: 'edit-attempt', ownerId: 9, userId: 42,
       node: {
         id: 'edit', kind: 'image-edit', definitionVersion: 1,
-        data: { prompt: '夜景', model: 'gpt-image-2', group: '生图', size: '1024x1024', quality: 'low' },
+        data: { prompt: '夜景', model: 'gpt-image-2', group: '生图', size: '1024x1024', quality: 'low', imageResolution: '2K' },
       },
       inputs: { text: '保持主体', image: sourceA, images: [sourceA, sourceB, sourceA] },
       signal: new AbortController().signal,
@@ -89,7 +90,7 @@ describe('createCanvasNodeExecutors', () => {
     expect(edit).toHaveBeenCalledWith(9, {
       requestId: 'canvas-run:edit-attempt', group: '生图', model: 'gpt-image-2',
       prompt: '保持主体\n夜景', sourceAssetIds: ['a'.repeat(43), 'b'.repeat(43)], expectedUserId: 42,
-      size: '1024x1024', quality: 'low',
+      size: '1024x1024', quality: 'low', imageResolution: '2K',
     })
     expect(result.assets?.[0]).toMatchObject({ assetId: 'c'.repeat(43) })
   })

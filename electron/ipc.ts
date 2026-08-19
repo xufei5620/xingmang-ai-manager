@@ -930,6 +930,10 @@ function parseAiImageGenerateInput(value: unknown): AiImageGenerateInput {
   if (quality !== undefined && !['low', 'medium', 'high', 'auto'].includes(String(quality))) {
     throw new Error('生图画质格式错误')
   }
+  const imageResolution = value.imageResolution
+  if (imageResolution !== undefined && !['1K', '2K', '4K'].includes(String(imageResolution))) {
+    throw new Error('生图清晰度格式错误')
+  }
   return {
     requestId: requiredString(value.requestId, '生图请求标识', 160),
     group: requiredString(value.group, '生图分组', 128),
@@ -937,6 +941,7 @@ function parseAiImageGenerateInput(value: unknown): AiImageGenerateInput {
     prompt: requiredString(value.prompt, '生图提示词', 40_000),
     ...(value.size === undefined ? {} : { size: requiredString(value.size, '生图尺寸', 32) }),
     ...(quality === undefined ? {} : { quality: quality as AiImageGenerateInput['quality'] }),
+    ...(imageResolution === undefined ? {} : { imageResolution: imageResolution as AiImageGenerateInput['imageResolution'] }),
   }
 }
 

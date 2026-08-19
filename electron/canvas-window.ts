@@ -30,12 +30,14 @@ import { createExternalShellLauncher, type ExternalShellLauncher } from './syste
 import { canvasHostChannels } from './canvas-contract'
 import {
   parseCanvasAssetQuery,
+  parseCanvasAssetId,
   parseCanvasImageEditInput,
   parseCanvasImageGenerateInput,
   parseCanvasPromptPresetId,
   parseCanvasPromptPresetInput,
   parseCanvasPromptPresetUpdate,
   parseCanvasRenameAssetInput,
+  parseCanvasUpdateAssetMetadataInput,
   parseCanvasStartRunInput,
   parseCanvasVideoGenerateInput,
   parseCanvasVideoTaskId,
@@ -89,6 +91,8 @@ export const canvasHostSaveAssetChannel = canvasHostChannels.saveAsset
 export const canvasHostShowAssetMenuChannel = canvasHostChannels.showAssetMenu
 export const canvasHostListAssetsChannel = canvasHostChannels.listAssets
 export const canvasHostRenameAssetChannel = canvasHostChannels.renameAsset
+export const canvasHostUpdateAssetMetadataChannel = canvasHostChannels.updateAssetMetadata
+export const canvasHostMarkAssetUsedChannel = canvasHostChannels.markAssetUsed
 export const canvasHostInspectAssetReferencesChannel = canvasHostChannels.inspectAssetReferences
 export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
 export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
@@ -134,7 +138,7 @@ export interface CanvasWindowControllerOptions {
   aiAssets: AiAssetStore
   videoAssets?: AiVideoAssetStore
   audioAssets?: AiAudioAssetStore
-  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename'>
+  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename' | 'updateMetadata' | 'markUsed' | 'setSource'>
   promptPresets: CanvasPromptPresetStore
   canvasRuns: CanvasRunService
   projects?: CanvasProjectStore
@@ -529,6 +533,23 @@ export function createCanvasWindowController(
     return renamed
   })
 
+  registerCanvasHandler(canvasHostUpdateAssetMetadataChannel, async (event, input) => {
+    const userId = authenticatedCanvasUserId()
+    const { assetId, ...metadata } = parseCanvasUpdateAssetMetadataInput(input)
+    const context = await activeAssetContext(event.sender.id, userId)
+    const updated = await (context?.media ?? options.mediaAssets).updateMetadata(userId, assetId, metadata)
+    assertCanvasUserUnchanged(userId)
+    return updated
+  })
+
+  registerCanvasHandler(canvasHostMarkAssetUsedChannel, async (event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const context = await activeAssetContext(event.sender.id, userId)
+    const updated = await (context?.media ?? options.mediaAssets).markUsed(userId, parseCanvasAssetId(assetIdInput))
+    assertCanvasUserUnchanged(userId)
+    return updated
+  })
+
   registerCanvasHandler(canvasHostInspectAssetReferencesChannel, async (event, assetIdInput, currentProjectContentInput) => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     const userId = authenticatedCanvasUserId()
@@ -583,6 +604,13 @@ export function createCanvasWindowController(
         ? await videoStore!.storeLocalFile(userId, filePath)
         : await imageStore.storeLocalFile(userId, filePath)
     try {
+      assertCanvasUserUnchanged(userId)
+      await (context?.media ?? options.mediaAssets).setSource(userId, asset.assetId, 'imported').catch((error) => {
+        options.runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '素材已导入，但来源信息保存失败', {
+          assetId: asset.assetId,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      })
       assertCanvasUserUnchanged(userId)
       return kind === 'image' ? asset : { ...asset, mediaType: kind }
     } catch (error) {
@@ -704,11 +732,18 @@ export function createCanvasWindowController(
     const mappings = new Map<string, string>()
     const context = await activeAssetContext(event.sender.id, userId)
     const imageStore = context?.images ?? options.aiAssets
+    const media = context?.media ?? options.mediaAssets
     try {
       for (const entry of pending.parsed.assets) {
         assertCanvasUserUnchanged(userId)
         const asset = await imageStore.storeBase64(userId, `data:${entry.mimeType};base64,${entry.bytes.toString('base64')}`)
         imported.push(asset.assetId)
+        await media.setSource(userId, asset.assetId, 'imported').catch((error) => {
+          options.runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '项目素材已导入，但来源信息保存失败', {
+            assetId: asset.assetId,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        })
         mappings.set(entry.assetId, asset.assetId)
       }
       assertCanvasUserUnchanged(userId)

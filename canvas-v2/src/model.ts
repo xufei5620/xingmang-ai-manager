@@ -52,6 +52,8 @@ export interface WorkflowNodeData {
   quality?: string
   /** 图像尺寸(按模型区分合法值,见 models.ts 预设)。 */
   size?: string
+  /** 图像输出清晰度档位；与视频 resolution 分离。 */
+  imageResolution?: '1K' | '2K' | '4K'
   /** 视频生成时长，协议要求为 1-15 的整数字符串。 */
   seconds?: string
   status: NodeStatus
@@ -74,6 +76,8 @@ export interface WorkflowNodeData {
   dirty?: boolean
   attemptCount?: number
   latestAttemptDurationMs?: number
+  /** 主进程运行开始时间；仅用于节点实时计时，不进入工作流文件。 */
+  runStartedAt?: string
   /** 主进程签发的当前运行阶段；仅用于实时展示，不进入工作流文件。 */
   runStage?: NodeRunStage
   runProgress?: number

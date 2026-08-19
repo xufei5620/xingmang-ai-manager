@@ -94,6 +94,7 @@ import {
   canvasHostListGroupsChannel,
   canvasHostListAssetsChannel,
   canvasHostListProjectsChannel,
+  canvasHostMarkAssetUsedChannel,
   canvasHostListPromptPresetsChannel,
   canvasHostPickAssetChannel,
   canvasHostImportAssetFileChannel,
@@ -110,6 +111,7 @@ import {
   canvasHostPrepareGroupChannel,
   canvasHostPreviewProjectChannel,
   canvasHostRenameAssetChannel,
+  canvasHostUpdateAssetMetadataChannel,
   canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
   canvasHostSaveFileChannel,
@@ -225,6 +227,7 @@ function controllerOptions(
       listOwnedPage: vi.fn(async () => ({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })),
       copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => false), contextMenu: vi.fn(async () => undefined),
       rename: vi.fn(),
+      updateMetadata: vi.fn(), markUsed: vi.fn(), setSource: vi.fn(async () => undefined),
     } as never,
     promptPresets: {
       list: vi.fn(async () => []),
@@ -290,6 +293,7 @@ describe('createCanvasWindowController', () => {
       canvasHostGenerateVideoChannel,
       canvasHostResumeVideoTaskChannel,
       canvasHostListAssetsChannel,
+      canvasHostMarkAssetUsedChannel,
       canvasHostListProjectsChannel,
       canvasHostListPromptPresetsChannel,
       canvasHostPickAssetChannel,
@@ -308,6 +312,7 @@ describe('createCanvasWindowController', () => {
       canvasHostPrepareGroupChannel,
       canvasHostPreviewProjectChannel,
       canvasHostRenameAssetChannel,
+      canvasHostUpdateAssetMetadataChannel,
       canvasHostRenameProjectChannel,
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
@@ -627,11 +632,19 @@ describe('createCanvasWindowController', () => {
       copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwnedPage: vi.fn(),
       storeLocalFile: vi.fn(async () => imported), removeOwned: vi.fn(async () => undefined),
     }
-    const controller = createCanvasWindowController(controllerOptions({ aiAssets: aiAssets as never }))
+    const setSource = vi.fn(async () => ({ assetId: imported.assetId, source: 'imported' as const }))
+    const controller = createCanvasWindowController(controllerOptions({
+      aiAssets: aiAssets as never,
+      mediaAssets: {
+        listOwnedPage: vi.fn(), copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), rename: vi.fn(),
+        updateMetadata: vi.fn(), markUsed: vi.fn(), setSource,
+      } as never,
+    }))
     await controller.open()
 
     await expect(electronMocks.handlers.get(canvasHostPickAssetChannel)!(trustedEvent())).resolves.toEqual(imported)
     expect(aiAssets.storeLocalFile).toHaveBeenCalledWith(7, imagePath)
+    expect(setSource).toHaveBeenCalledWith(7, imported.assetId, 'imported')
   })
 
   it('routes a dragged local MP4 to the video asset store', async () => {
@@ -818,6 +831,11 @@ describe('createCanvasWindowController', () => {
       listOwnedPage: vi.fn(async () => ({ items: [], offset: 24, limit: 24, total: 25, hasMore: false })),
       copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => true), contextMenu: vi.fn(async () => undefined),
       rename: vi.fn(async (_userId: number, assetId: string, displayName: string) => ({ assetId, displayName })),
+      updateMetadata: vi.fn(async (_userId: number, assetId: string, metadata: { favorite?: boolean; tags?: string[] }) => ({
+        assetId, favorite: metadata.favorite ?? false, tags: metadata.tags ?? [],
+      })),
+      markUsed: vi.fn(async (_userId: number, assetId: string) => ({ assetId, lastUsedAt: '2026-08-19T00:00:00.000Z' })),
+      setSource: vi.fn(),
     }
     const controller = createCanvasWindowController(controllerOptions({
       chatCredentials,
@@ -845,6 +863,11 @@ describe('createCanvasWindowController', () => {
     await expect(electronMocks.handlers.get(canvasHostRenameAssetChannel)!(trustedEvent(), {
       assetId: 'a'.repeat(43), displayName: ' 产品主视觉 ',
     })).resolves.toEqual({ assetId: 'a'.repeat(43), displayName: '产品主视觉' })
+    await expect(electronMocks.handlers.get(canvasHostUpdateAssetMetadataChannel)!(trustedEvent(), {
+      assetId: 'a'.repeat(43), favorite: true, tags: [' 产品 '],
+    })).resolves.toEqual({ assetId: 'a'.repeat(43), favorite: true, tags: ['产品'] })
+    await expect(electronMocks.handlers.get(canvasHostMarkAssetUsedChannel)!(trustedEvent(), 'a'.repeat(43)))
+      .resolves.toEqual({ assetId: 'a'.repeat(43), lastUsedAt: '2026-08-19T00:00:00.000Z' })
 
     expect(JSON.stringify({ groups, prepared, generated, edited })).not.toContain('apiKey')
     expect(imageService.generate).toHaveBeenCalledWith(41, expect.objectContaining({ requestId: 'request-1', expectedUserId: 7 }))
@@ -855,6 +878,8 @@ describe('createCanvasWindowController', () => {
     expect(mediaAssets.copy).toHaveBeenCalledWith(7, 'a'.repeat(43), expect.any(Function))
     expect(mediaAssets.listOwnedPage).toHaveBeenCalledWith(7, { offset: 24, limit: 24, mediaType: 'image', search: '产品' })
     expect(mediaAssets.rename).toHaveBeenCalledWith(7, 'a'.repeat(43), '产品主视觉')
+    expect(mediaAssets.updateMetadata).toHaveBeenCalledWith(7, 'a'.repeat(43), { favorite: true, tags: ['产品'] })
+    expect(mediaAssets.markUsed).toHaveBeenCalledWith(7, 'a'.repeat(43))
   })
 
   it('rejects a completed asset rename when the account changes in flight', async () => {
@@ -876,6 +901,29 @@ describe('createCanvasWindowController', () => {
     await vi.waitFor(() => expect(rename).toHaveBeenCalled())
     activeUserId = 8
     release({ assetId: 'a'.repeat(43), displayName: '新名称' })
+    await expect(pending).rejects.toThrow('账号已切换')
+  })
+
+  it('does not return a completed asset metadata mutation after the account changes', async () => {
+    let activeUserId = 7
+    let release!: (value: { assetId: string; favorite: boolean; tags: string[] }) => void
+    const updateMetadata = vi.fn((_userId: number, assetId: string) => new Promise((resolve) => {
+      release = resolve
+    }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: activeUserId } })) } as never,
+      mediaAssets: {
+        listOwnedPage: vi.fn(), copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), rename: vi.fn(),
+        updateMetadata, markUsed: vi.fn(), setSource: vi.fn(),
+      } as never,
+    }))
+    await controller.open()
+    const pending = electronMocks.handlers.get(canvasHostUpdateAssetMetadataChannel)!(trustedEvent(), {
+      assetId: 'a'.repeat(43), favorite: true,
+    })
+    await vi.waitFor(() => expect(updateMetadata).toHaveBeenCalled())
+    activeUserId = 8
+    release({ assetId: 'a'.repeat(43), favorite: true, tags: [] })
     await expect(pending).rejects.toThrow('账号已切换')
   })
 
@@ -1001,6 +1049,7 @@ describe('createCanvasWindowController', () => {
       canvasHostCreatePromptPresetChannel, canvasHostDeletePromptPresetChannel,
       canvasHostSaveAssetChannel, canvasHostShowAssetMenuChannel, canvasHostListAssetsChannel,
       canvasHostRenameAssetChannel,
+      canvasHostUpdateAssetMetadataChannel, canvasHostMarkAssetUsedChannel,
       canvasHostStartRunChannel, canvasHostCancelRunChannel, canvasHostListRunsChannel,
       canvasHostExportProjectChannel, canvasHostPreviewProjectChannel, canvasHostImportProjectChannel,
       canvasHostListPromptPresetsChannel, canvasHostUpdatePromptPresetChannel,

@@ -1,6 +1,7 @@
 import type { AssetRef, NodeKind } from '../model'
 import {
   defaultImageQuality,
+  defaultImageResolution,
   defaultImageSize,
   defaultVideoModel,
   defaultVideoSize,
@@ -70,6 +71,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
         operation: 'generate',
         size: preset.supportsSize ? (node.data.size || defaultImageSize) : undefined,
         quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
+        imageResolution: node.data.imageResolution || defaultImageResolution,
       })
       if (errors[0]) throw new Error(errors[0])
       const requestId = nextRequestId(node.id)
@@ -86,6 +88,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
           quality: preset.supportsQuality
             ? (node.data.quality || defaultImageQuality) as 'low' | 'medium' | 'high' | 'auto'
             : undefined,
+          imageResolution: node.data.imageResolution || defaultImageResolution,
         })
         if (signal.aborted) throw new Error('已取消')
         if (!assets[0]) throw new Error('生图接口没有返回图片')
@@ -114,6 +117,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
       operation: 'edit',
       size: preset.supportsSize ? (node.data.size || defaultImageSize) : undefined,
       quality: preset.supportsQuality ? (node.data.quality || defaultImageQuality) : undefined,
+      imageResolution: node.data.imageResolution || defaultImageResolution,
       referenceImageCount: sourceAssetIds.length,
     })
     if (errors[0]) throw new Error(errors[0])
@@ -132,6 +136,7 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
         quality: preset.supportsQuality
           ? (node.data.quality || defaultImageQuality) as 'low' | 'medium' | 'high' | 'auto'
           : undefined,
+        imageResolution: node.data.imageResolution || defaultImageResolution,
       })
       if (signal.aborted) throw new Error('已取消')
       if (!assets[0]) throw new Error('图片编辑接口没有返回图片')

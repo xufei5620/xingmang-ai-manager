@@ -19,6 +19,8 @@ const channels = {
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
   renameAsset: 'canvas-host:rename-asset',
+  updateAssetMetadata: 'canvas-host:update-asset-metadata',
+  markAssetUsed: 'canvas-host:mark-asset-used',
   inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
@@ -62,6 +64,8 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   showAssetMenu: (assetId: string) => ipcRenderer.invoke(channels.showAssetMenu, assetId),
   listAssets: (query?: unknown) => ipcRenderer.invoke(channels.listAssets, query),
   renameAsset: (input: unknown) => ipcRenderer.invoke(channels.renameAsset, input),
+  updateAssetMetadata: (input: unknown) => ipcRenderer.invoke(channels.updateAssetMetadata, input),
+  markAssetUsed: (assetId: string) => ipcRenderer.invoke(channels.markAssetUsed, assetId),
   inspectAssetReferences: (assetId: string, currentProjectContent: string) => ipcRenderer.invoke(channels.inspectAssetReferences, assetId, currentProjectContent),
   pickAsset: () => ipcRenderer.invoke(channels.pickAsset),
   importAssetFile: (file: File) => {

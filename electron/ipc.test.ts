@@ -412,11 +412,14 @@ describe('registerIpcHandlers', () => {
 
     const generateImage = electronMocks.handlers.get('chat:generate-image')!
     await expect(generateImage(trustedEvent(undefined, 17), {
-      requestId: 'image-1', group: '生图分组', model: 'gpt-image-2', prompt: '海浪',
+      requestId: 'image-1', group: '生图分组', model: 'gpt-image-2', prompt: '海浪', imageResolution: '4K',
     })).resolves.toEqual([])
     expect(imageService.generate).toHaveBeenCalledWith(17, {
-      requestId: 'image-1', group: '生图分组', model: 'gpt-image-2', prompt: '海浪', expectedUserId: 7,
+      requestId: 'image-1', group: '生图分组', model: 'gpt-image-2', prompt: '海浪', imageResolution: '4K', expectedUserId: 7,
     })
+    expect(() => generateImage(trustedEvent(undefined, 17), {
+      requestId: 'image-bad', group: '生图分组', model: 'gpt-image-2', prompt: '海浪', imageResolution: '8K',
+    })).toThrow('生图清晰度格式错误')
 
     const cancel = electronMocks.handlers.get('chat:cancel')!
     expect(cancel(trustedEvent(undefined, 22), 'request-1')).toEqual({

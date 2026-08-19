@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   appendCanvasRunTimelineEvent,
   canvasRunDescendants,
+  canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
   type CanvasNodeExecutors,
 } from './canvas-run-engine'
@@ -59,6 +60,42 @@ function runOptions(workflow: CanvasRunGraph, overrides: Partial<Parameters<type
 }
 
 describe('executeCanvasRun', () => {
+  it('runs a downstream closure and adds only the upstream dependencies required by that closure', async () => {
+    const executed: string[] = []
+    const text = vi.fn(async ({ node }: { node: CanvasRunGraphNode }) => {
+      executed.push(node.id)
+      return { outputText: node.data.prompt }
+    })
+    const workflow = graph(
+      [
+        node('root', 'text'), node('start', 'text'), node('downstream', 'text'), node('merge-dependency', 'text'),
+        node('merged', 'text'), node('unrelated-root', 'text'), node('unrelated-leaf', 'text'),
+      ],
+      [
+        edge('root', 'start'), edge('start', 'downstream'), edge('downstream', 'merged'),
+        edge('merge-dependency', 'merged'), edge('unrelated-root', 'unrelated-leaf'),
+      ],
+    )
+    const record = await executeCanvasRun(runOptions(workflow, {
+      scope: { kind: 'from-node', nodeId: 'start' },
+      executors: executors({ text }),
+    }))
+
+    expect(record.scope).toEqual({ kind: 'from-node', nodeId: 'start' })
+    expect(record.nodes.map((entry) => entry.nodeId)).toEqual(['root', 'merge-dependency', 'start', 'downstream', 'merged'])
+    expect(executed).toEqual(['root', 'merge-dependency', 'start', 'downstream', 'merged'])
+    expect(record.outcome?.succeeded).toEqual(['root', 'merge-dependency', 'start', 'downstream', 'merged'])
+  })
+
+  it('uses the downstream scope for remote request admission estimates', () => {
+    const workflow = graph(
+      [node('prompt', 'text'), node('start', 'image'), node('video', 'video'), node('other', 'image')],
+      [edge('prompt', 'start'), edge('start', 'video', 'image')],
+    )
+    expect(canvasRunRemoteGenerationUpperBound(workflow, { kind: 'from-node', nodeId: 'start' })).toBe(2)
+    expect(() => canvasRunRemoteGenerationUpperBound(workflow, { kind: 'from-node', nodeId: 'missing' })).toThrow('不存在')
+  })
+
   it('executes a diamond and concatenates fan-in text deterministically', async () => {
     const imageExecutor = vi.fn(async ({ inputs }) => {
       expect(inputs.text).toBe('left\nright')

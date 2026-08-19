@@ -20,6 +20,8 @@ export const canvasHostChannels = {
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
   renameAsset: 'canvas-host:rename-asset',
+  updateAssetMetadata: 'canvas-host:update-asset-metadata',
+  markAssetUsed: 'canvas-host:mark-asset-used',
   inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
@@ -64,6 +66,7 @@ export interface CanvasImageGenerateInput {
   prompt: string
   size?: string
   quality?: 'low' | 'medium' | 'high' | 'auto'
+  imageResolution?: '1K' | '2K' | '4K'
 }
 
 export interface CanvasImageEditInput extends CanvasImageGenerateInput {
@@ -78,7 +81,16 @@ export interface CanvasCancelResult {
   mayStillComplete: boolean
 }
 
-export interface CanvasAssetSummary extends CanvasGeneratedAsset {
+export type CanvasAssetSource = 'generated' | 'imported' | 'legacy'
+
+export interface CanvasAssetOrganization {
+  favorite: boolean
+  tags: string[]
+  source: CanvasAssetSource
+  lastUsedAt?: string
+}
+
+export interface CanvasAssetSummary extends CanvasGeneratedAsset, CanvasAssetOrganization {
   createdAt: string
   mediaType: 'image'
   thumbnailUrl: string
@@ -86,7 +98,7 @@ export interface CanvasAssetSummary extends CanvasGeneratedAsset {
   lineage?: CanvasRunAssetLineage
 }
 
-export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
+export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset, CanvasAssetOrganization {
   createdAt: string
   mediaType: 'video'
   thumbnailUrl: string
@@ -97,7 +109,7 @@ export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
   lineage?: CanvasRunAssetLineage
 }
 
-export interface CanvasAudioAssetSummary {
+export interface CanvasAudioAssetSummary extends CanvasAssetOrganization {
   assetId: string
   localUrl: string
   mimeType: 'audio/mpeg' | 'audio/wav' | 'audio/ogg' | 'audio/mp4'
@@ -118,6 +130,24 @@ export interface CanvasRenameAssetInput {
 export interface CanvasRenameAssetResult {
   assetId: string
   displayName: string
+}
+
+export interface CanvasUpdateAssetMetadataInput {
+  assetId: string
+  favorite?: boolean
+  tags?: string[]
+}
+
+export interface CanvasUpdateAssetMetadataResult {
+  assetId: string
+  favorite: boolean
+  tags: string[]
+  lastUsedAt?: string
+}
+
+export interface CanvasMarkAssetUsedResult {
+  assetId: string
+  lastUsedAt: string
 }
 
 export interface CanvasAssetReferenceReport {
@@ -150,6 +180,10 @@ export interface CanvasAssetQuery {
   limit?: number
   mediaType?: 'all' | 'image' | 'video' | 'audio'
   search?: string
+  view?: 'all' | 'favorites' | 'recent'
+  tag?: string
+  source?: 'all' | CanvasAssetSource
+  sort?: 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'
 }
 
 export interface CanvasAssetPage {

@@ -48,6 +48,7 @@ describe('canvas host executors', () => {
       prompt: '测试图片',
       size: undefined,
       quality: undefined,
+      imageResolution: '1K',
     }))
   })
 

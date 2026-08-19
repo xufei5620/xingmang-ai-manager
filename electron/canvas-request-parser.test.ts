@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import {
   parseCanvasAssetQuery,
+  parseCanvasAssetId,
   parseCanvasImageEditInput,
   parseCanvasImageGenerateInput,
   parseCanvasPromptPresetId,
   parseCanvasPromptPresetInput,
   parseCanvasPromptPresetUpdate,
   parseCanvasRenameAssetInput,
+  parseCanvasUpdateAssetMetadataInput,
   parseCanvasStartRunInput,
   parseCanvasVideoGenerateInput,
   parseCanvasVideoTaskId,
@@ -38,6 +40,25 @@ describe('canvas request parser', () => {
     expect(() => parseCanvasAssetQuery({ apiKey: 'secret' })).toThrow('未知字段')
   })
 
+  it('parses asset organization filters and bounded metadata mutations', () => {
+    const assetId = 'a'.repeat(43)
+    expect(parseCanvasAssetQuery({
+      view: 'favorites', tag: ' 角色 ', source: 'generated', sort: 'name-asc',
+    })).toEqual({
+      offset: 0, limit: 24, mediaType: 'all', view: 'favorites', tag: '角色', source: 'generated', sort: 'name-asc',
+    })
+    expect(parseCanvasUpdateAssetMetadataInput({ assetId, favorite: false, tags: [' 角色 ', '主视觉'] })).toEqual({
+      assetId, favorite: false, tags: ['角色', '主视觉'],
+    })
+    expect(parseCanvasAssetId(assetId)).toBe(assetId)
+    expect(() => parseCanvasAssetQuery({ view: 'secret' })).toThrow('快速视图')
+    expect(() => parseCanvasAssetQuery({ source: 'remote' })).toThrow('来源筛选')
+    expect(() => parseCanvasAssetQuery({ sort: 'random' })).toThrow('排序')
+    expect(() => parseCanvasUpdateAssetMetadataInput({ assetId })).toThrow('不能为空')
+    expect(() => parseCanvasUpdateAssetMetadataInput({ assetId, tags: ['角色', '角色'] })).toThrow('不能重复')
+    expect(() => parseCanvasUpdateAssetMetadataInput({ assetId, favorite: true, apiKey: 'secret' })).toThrow('未知字段')
+  })
+
   it('accepts safe logical asset names and rejects path-like rename payloads', () => {
     const assetId = 'a'.repeat(43)
     expect(parseCanvasRenameAssetInput({ assetId, displayName: ' 产品主视觉 ' })).toEqual({
@@ -60,6 +81,7 @@ describe('canvas request parser', () => {
       prompt: '生成一张产品图',
       size: '1024x1024',
       quality: 'high',
+      imageResolution: '4K',
     })).toEqual({
       requestId: 'run-1',
       group: '生图分组',
@@ -67,6 +89,7 @@ describe('canvas request parser', () => {
       prompt: '生成一张产品图',
       size: '1024x1024',
       quality: 'high',
+      imageResolution: '4K',
     })
   })
 
@@ -81,6 +104,16 @@ describe('canvas request parser', () => {
     expect(() => parseCanvasImageGenerateInput({
       requestId: 'run-1', group: 'g', model: 'm', prompt: 'p', quality: 'ultra',
     })).toThrow('画质格式错误')
+  })
+
+  it('rejects unsupported image clarity values at both canvas boundaries', () => {
+    expect(() => parseCanvasImageGenerateInput({
+      requestId: 'run-1', group: 'g', model: 'm', prompt: 'p', imageResolution: '8K',
+    })).toThrow('清晰度格式错误')
+    expect(() => parseCanvasStartRunInput({
+      graph: { nodes: [{ id: 'image', kind: 'image', definitionVersion: 1, data: { prompt: 'p', model: 'm', imageResolution: '8K' } }], edges: [] },
+      scope: { kind: 'all' },
+    })).toThrow('清晰度不受支持')
   })
 
   it('accepts exact bounded video requests and rejects credentials or duration ambiguity', () => {
@@ -214,6 +247,14 @@ describe('canvas request parser', () => {
     const graph = { nodes: [{ id: 'a', kind: 'prompt', definitionVersion: 1, data: { prompt: '', model: '' } }], edges: [] }
     expect(() => parseCanvasStartRunInput({ graph, scope: { kind: 'dirty', nodeIds: [] } })).toThrow('节点范围')
     expect(() => parseCanvasStartRunInput({ graph, scope: { kind: 'unknown' } })).toThrow('运行范围')
+  })
+
+  it('parses a downstream run scope without accepting extra fields', () => {
+    const graph = { nodes: [{ id: 'start', kind: 'prompt', definitionVersion: 1, data: { prompt: '', model: '' } }], edges: [] }
+    expect(parseCanvasStartRunInput({ graph, scope: { kind: 'from-node', nodeId: 'start' } }))
+      .toEqual({ graph, scope: { kind: 'from-node', nodeId: 'start' } })
+    expect(() => parseCanvasStartRunInput({ graph, scope: { kind: 'from-node', nodeId: 'start', nodeIds: ['start'] } }))
+      .toThrow('运行范围包含未知字段')
   })
 
   it('rejects unknown fields at every run request boundary', () => {

@@ -50,15 +50,39 @@ export interface CanvasRunPreflight {
 export function selectCanvasRunNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): Set<string> {
   const nodeIds = new Set(graph.nodes.map((node) => node.id))
   if (scope.kind === 'all') return nodeIds
-  const roots = scope.kind === 'to-node' ? [scope.nodeId] : scope.nodeIds
+  const roots = scope.kind === 'to-node' || scope.kind === 'from-node' ? [scope.nodeId] : scope.nodeIds
   if (roots.length === 0) throw new Error('运行范围不能为空')
   const incoming = new Map<string, string[]>()
-  for (const edge of graph.edges) incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source])
+  const outgoing = new Map<string, string[]>()
+  for (const edge of graph.edges) {
+    incoming.set(edge.target, [...(incoming.get(edge.target) ?? []), edge.source])
+    outgoing.set(edge.source, [...(outgoing.get(edge.source) ?? []), edge.target])
+  }
+  for (const root of new Set(roots)) {
+    if (!nodeIds.has(root)) throw new Error(`运行范围包含不存在的节点：${root}`)
+  }
   const selected = new Set<string>()
   const queue = [...new Set(roots)]
+  if (scope.kind === 'from-node') {
+    while (queue.length > 0) {
+      const current = queue.pop() as string
+      if (selected.has(current)) continue
+      selected.add(current)
+      for (const target of outgoing.get(current) ?? []) queue.push(target)
+    }
+    const dependencies = [...selected]
+    while (dependencies.length > 0) {
+      const current = dependencies.pop() as string
+      for (const source of incoming.get(current) ?? []) {
+        if (selected.has(source)) continue
+        selected.add(source)
+        dependencies.push(source)
+      }
+    }
+    return selected
+  }
   while (queue.length > 0) {
     const current = queue.pop() as string
-    if (!nodeIds.has(current)) throw new Error(`运行范围包含不存在的节点：${current}`)
     if (selected.has(current)) continue
     selected.add(current)
     for (const source of incoming.get(current) ?? []) queue.push(source)
@@ -78,6 +102,7 @@ function scopeLabel(scope: CanvasRunScope): string {
   if (scope.kind === 'all') return '全部节点'
   if (scope.kind === 'dirty') return `变更链路（${scope.nodeIds.length} 个入口）`
   if (scope.kind === 'selection') return `选中链路（${scope.nodeIds.length} 个入口）`
+  if (scope.kind === 'from-node') return '从选中节点向后运行'
   return '运行到选中节点'
 }
 

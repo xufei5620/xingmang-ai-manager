@@ -1,6 +1,6 @@
-import { createContext, memo, useContext, useMemo, type CSSProperties, type DragEvent, type ReactNode } from 'react'
-import { Handle, Position, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import { AlertCircle, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
+import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
+import { Handle, NodeToolbar, Position, type Edge, type Node, type NodeProps } from '@xyflow/react'
+import { AlertCircle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeDefinition } from '../domain/node-definition'
 import type { AssetRef, NodeKind, WorkflowNodeData } from '../model'
@@ -9,11 +9,13 @@ import {
   availableImageModelPresets,
   availableVideoModelPresets,
   defaultImageQuality,
+  defaultImageResolution,
   defaultImageSize,
   imageSizeLabel,
   imageModelPreset,
   imageModelPresets,
   imageQualityOptions,
+  imageResolutionOptions,
   presetVideoModels,
   defaultVideoModel,
   defaultVideoSeconds,
@@ -31,6 +33,7 @@ import { mediaAssetAspectRatio } from '../library/media-assets'
 import { createNodeRendererRegistry } from './node-renderer-registry'
 import type { CanvasNodeLod } from './node-lod'
 import { nodeResultStagingState } from '../runtime/run-projection'
+import { formatRunElapsed, runElapsedMilliseconds } from './run-timing'
 
 export function ModelSuggestions() {
   return (
@@ -125,11 +128,13 @@ interface NodeChangeHandlers {
   onPromptChange(nodeId: string, prompt: string): void
   onModelChange(nodeId: string, model: string): void
   onQualityChange(nodeId: string, quality: string): void
+  onImageResolutionChange(nodeId: string, imageResolution: '1K' | '2K' | '4K'): void
   onSizeChange(nodeId: string, size: string): void
   onSecondsChange(nodeId: string, seconds: string): void
   onSettingsChange(nodeId: string, patch: Record<string, unknown>): void
   onSavePromptPreset(nodeId: string): void
-  onRerun(nodeId: string): void
+  onRunToNode(nodeId: string): void
+  onRunFromNode(nodeId: string): void
   onDownloadAsset(nodeId: string): void
   onShowAssetMenu(nodeId: string): void
   onResumeTask(nodeId: string): void
@@ -148,11 +153,13 @@ let handlers: NodeChangeHandlers = {
   onPromptChange: () => undefined,
   onModelChange: () => undefined,
   onQualityChange: () => undefined,
+  onImageResolutionChange: () => undefined,
   onSizeChange: () => undefined,
   onSecondsChange: () => undefined,
   onSettingsChange: () => undefined,
   onSavePromptPreset: () => undefined,
-  onRerun: () => undefined,
+  onRunToNode: () => undefined,
+  onRunFromNode: () => undefined,
   onDownloadAsset: () => undefined,
   onShowAssetMenu: () => undefined,
   onResumeTask: () => undefined,
@@ -286,6 +293,41 @@ function multiInputHint(kind: NodeKind): string | null {
   if (kind === 'image-edit') return '文本、图片前置节点均可多连 · 图片编辑最多使用 4 张参考图'
   if (kind === 'video-generate' || kind === 'video') return '文本、图片、视频、音频均可多连 · MiniMax 最多使用 9 图、3 视频、3 音频'
   return null
+}
+
+function RunningElapsed({ startedAt }: { startedAt?: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+  const elapsed = formatRunElapsed(runElapsedMilliseconds(startedAt, now))
+  return <time className="wf-run-elapsed" dateTime={startedAt} title="本次运行已用时间">已用时 {elapsed}</time>
+}
+
+function NodeRunToolbar({
+  id,
+  title,
+  selected,
+  disabled,
+}: {
+  id: string
+  title: string
+  selected: boolean
+  disabled: boolean
+}) {
+  if (!selected) return null
+  return (
+    <NodeToolbar position={Position.Top} offset={8} className="wf-node-toolbar" role="toolbar" aria-label={`${title}节点操作`}>
+      <button type="button" title="运行到此：执行该节点及其所需上游" disabled={disabled} onClick={() => handlers.onRunToNode(id)}>
+        <Play size={13} aria-hidden="true" /><span>运行到此</span>
+      </button>
+      <button type="button" title="从此向后：执行该节点的下游链路及必要依赖" disabled={disabled} onClick={() => handlers.onRunFromNode(id)}>
+        <ArrowRight size={13} aria-hidden="true" /><span>从此向后</span>
+      </button>
+    </NodeToolbar>
+  )
 }
 
 function UpstreamReferencePreview({ reference }: { reference: UpstreamMediaReference }) {
@@ -452,6 +494,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
     const output = outputs[0]
     return (
       <div className={`wf-node wf-media-bound wf-media-bound-${data.result.kind}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}`}>
+        {canRunNode && <NodeRunToolbar id={id} title={definition.title} selected={selected} disabled={nodeRunning} />}
         <MediaInputDropZone id={id} kind={kind as 'image-input' | 'video-input' | 'audio-input'} asset={data.result} locked={locked} disabled={disabled} />
         {output && <Handle
           type="source"
@@ -467,6 +510,14 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
 
   return (
     <div className={`wf-node wf-node-${kind} wf-category-${definition.category} wf-status-${data.status}${data.dirty ? ' wf-is-dirty' : ''}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}${summaryMode ? ' wf-lod-summary' : ''}`}>
+      {canRunNode && (
+        <NodeRunToolbar
+          id={id}
+          title={definition.title}
+          selected={selected}
+          disabled={nodeRunning || ((imageOperation || videoOperation) && !mediaModelAvailable)}
+        />
+      )}
       {inputs.map((port, index) => (
         <Handle
           key={port.id}
@@ -545,6 +596,19 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
                   {imageQualityOptions.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
                 </select>
               )}
+              <select
+                className="wf-model"
+                value={preset.resolutions.includes(data.imageResolution ?? defaultImageResolution) ? (data.imageResolution ?? defaultImageResolution) : preset.resolutions[0]}
+                title={preset.resolutionNote ?? '输出清晰度'}
+                aria-label="生成清晰度"
+                onChange={(event) => handlers.onImageResolutionChange(id, event.target.value as '1K' | '2K' | '4K')}
+              >
+                {imageResolutionOptions.map((entry) => (
+                  <option key={entry.value} value={entry.value} disabled={!preset.resolutions.includes(entry.value)}>
+                    {entry.label}{preset.resolutions.includes(entry.value) ? '' : '（当前模型不支持）'}
+                  </option>
+                ))}
+              </select>
               {preset.supportsSize && (
                 <select className="wf-model" value={preset.sizes.includes(data.size || '') ? data.size : (preset.sizes[0] ?? defaultImageSize)} title="尺寸" aria-label="生成尺寸" onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
                   {preset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
@@ -662,6 +726,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
                   ? '高清图像生成中 · 预计 2-3 分钟'
                   : '图像生成中 · 预计 10 秒至 1 分钟'}
           </p>
+          <RunningElapsed startedAt={data.runStartedAt} />
           {data.runHealth === 'delayed' && <small>服务端仍在线，但本次生成已明显超过同规格历史耗时。</small>}
           {videoOperation && <small>{selectedVideoPreset.provider === 'minimax-h3'
             ? '停止时会向服务端请求取消；生成中的任务可能需要短暂等待才进入已取消状态。'
@@ -772,7 +837,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
             aria-label={`运行${definition.title}节点`}
             title="使用已有上游结果运行此节点"
             disabled={nodeRunning || ((imageOperation || videoOperation) && !mediaModelAvailable)}
-            onClick={() => handlers.onRerun(id)}
+            onClick={() => handlers.onRunToNode(id)}
           >
             {nodeRunning ? <LoaderCircle size={13} aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
             {nodeRunning ? '运行中' : '运行此节点'}

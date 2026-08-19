@@ -43,7 +43,16 @@ export interface CanvasAssetLineage {
   sourceAssetIds: string[]
 }
 
-export interface CanvasImageAssetSummary extends CanvasGeneratedAsset {
+export type CanvasAssetSource = 'generated' | 'imported' | 'legacy'
+
+export interface CanvasAssetOrganization {
+  favorite?: boolean
+  tags?: string[]
+  source?: CanvasAssetSource
+  lastUsedAt?: string
+}
+
+export interface CanvasImageAssetSummary extends CanvasGeneratedAsset, CanvasAssetOrganization {
   createdAt: string
   mediaType: 'image'
   thumbnailUrl: string
@@ -51,7 +60,7 @@ export interface CanvasImageAssetSummary extends CanvasGeneratedAsset {
   lineage?: CanvasAssetLineage
 }
 
-export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
+export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset, CanvasAssetOrganization {
   createdAt: string
   mediaType: 'video'
   thumbnailUrl: string
@@ -62,7 +71,7 @@ export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
   lineage?: CanvasAssetLineage
 }
 
-export interface CanvasAudioAssetSummary {
+export interface CanvasAudioAssetSummary extends CanvasAssetOrganization {
   assetId: string
   localUrl: string
   mimeType: 'audio/mpeg' | 'audio/wav' | 'audio/ogg' | 'audio/mp4'
@@ -83,6 +92,10 @@ export interface CanvasAssetQuery {
   limit?: number
   mediaType?: 'all' | 'image' | 'video' | 'audio'
   search?: string
+  view?: 'all' | 'favorites' | 'recent'
+  tag?: string
+  source?: 'all' | CanvasAssetSource
+  sort?: 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'
 }
 
 export interface CanvasAssetPage {
@@ -140,6 +153,7 @@ export interface CanvasRunGraph {
       group?: string
       quality?: string
       size?: string
+      imageResolution?: '1K' | '2K' | '4K'
       seconds?: string
       adoptedAssetId?: string
       videoMode?: 'auto' | 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'
@@ -211,6 +225,7 @@ export type CanvasRunStatus = 'running' | 'succeeded' | 'partial' | 'failed' | '
 export type CanvasRunScope =
   | { kind: 'all' }
   | { kind: 'to-node'; nodeId: string }
+  | { kind: 'from-node'; nodeId: string }
   | { kind: 'selection'; nodeIds: string[] }
   | { kind: 'dirty'; nodeIds: string[] }
 
@@ -317,6 +332,7 @@ export interface CanvasHostBridge {
     prompt: string
     size?: string
     quality?: 'low' | 'medium' | 'high' | 'auto'
+    imageResolution?: '1K' | '2K' | '4K'
   }): Promise<CanvasGeneratedAsset[]>
   editImage(input: {
     requestId: string
@@ -326,6 +342,7 @@ export interface CanvasHostBridge {
     sourceAssetIds: string[]
     size?: string
     quality?: 'low' | 'medium' | 'high' | 'auto'
+    imageResolution?: '1K' | '2K' | '4K'
   }): Promise<CanvasGeneratedAsset[]>
   generateVideo(input: {
     requestId: string
@@ -351,6 +368,8 @@ export interface CanvasHostBridge {
   showAssetMenu(assetId: string): Promise<void>
   listAssets(query?: CanvasAssetQuery): Promise<CanvasAssetPage>
   renameAsset(input: { assetId: string; displayName: string }): Promise<{ assetId: string; displayName: string }>
+  updateAssetMetadata(input: { assetId: string; favorite?: boolean; tags?: string[] }): Promise<{ assetId: string; favorite: boolean; tags: string[]; lastUsedAt?: string }>
+  markAssetUsed(assetId: string): Promise<{ assetId: string; lastUsedAt: string }>
   inspectAssetReferences(assetId: string, currentProjectContent: string): Promise<CanvasAssetReferenceReport>
   pickAsset(): Promise<CanvasGeneratedAsset | CanvasAssetSummary | null>
   importAssetFile(file: File): Promise<CanvasGeneratedAsset | CanvasAssetSummary>
@@ -430,6 +449,8 @@ export function hostBridge(): CanvasHostBridge {
       return { items: [], offset: query.offset ?? 0, limit: query.limit ?? 24, total: 0, hasMore: false }
     },
     async renameAsset() { return unavailable() },
+    async updateAssetMetadata() { return unavailable() },
+    async markAssetUsed() { return unavailable() },
     async inspectAssetReferences() { return unavailable() },
     async pickAsset() { return unavailable() },
     async importAssetFile() { return unavailable() },

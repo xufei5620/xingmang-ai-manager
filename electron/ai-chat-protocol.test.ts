@@ -15,6 +15,7 @@ import {
 describe('AI model capabilities', () => {
   it('uses explicit presets for verified image models', () => {
     for (const model of [
+      'gemini-3.1-flash-image',
       'gpt-image-1',
       'gpt-image-2',
       'gpt-image-2-2026-04-21',
@@ -65,6 +66,7 @@ describe('AI model capabilities', () => {
 
   it('keeps only production-verified models in the image group and puts GPT Image 2 first', () => {
     expect(selectAiChatModelsForGroup('生图分组', [
+      'gemini-3.1-flash-image',
       'gpt-image-1',
       'gpt-image-1.5',
       'gpt-image-2-2026-04-21',
@@ -73,6 +75,7 @@ describe('AI model capabilities', () => {
       'gpt-4o',
     ])).toEqual([
       'gpt-image-2',
+      'gemini-3.1-flash-image',
       'gpt-image-1',
       'jimeng_high_aes_general_v21_L',
     ])
@@ -194,7 +197,7 @@ describe('image generation protocol', () => {
       model: 'gpt-image-2',
       prompt: 'cat',
       quality: 'high',
-    }).quality).toBe('high')
+    })).toMatchObject({ quality: 'high' })
     expect(() => buildImageGenerationRequest({
       model: 'gpt-image-2',
       prompt: 'cat',
@@ -212,7 +215,7 @@ describe('image generation protocol', () => {
       model: 'gpt-image-1',
       prompt: 'cat',
       size: 'auto',
-    }).size).toBe('auto')
+    })).toMatchObject({ size: 'auto' })
     expect(() => buildImageGenerationRequest({
       model: 'gpt-image-2',
       prompt: 'cat',
@@ -223,6 +226,18 @@ describe('image generation protocol', () => {
       prompt: 'cat',
       size: '8192x8192',
     })).toThrowError(expect.objectContaining({ code: 'invalid-image-size' }))
+  })
+
+  it('maps GPT Image 2 clarity tiers to bounded native pixel sizes', () => {
+    expect(buildImageGenerationRequest({
+      model: 'gpt-image-2', prompt: 'square', size: '1024x1024', imageResolution: '2K',
+    })).toMatchObject({ size: '2048x2048' })
+    expect(buildImageGenerationRequest({
+      model: 'gpt-image-2', prompt: 'wide', size: '1280x720', imageResolution: '4K',
+    })).toMatchObject({ size: '3840x2160' })
+    expect(() => buildImageGenerationRequest({
+      model: 'gpt-image-1', prompt: 'cat', imageResolution: '2K',
+    })).toThrowError(expect.objectContaining({ code: 'invalid-image-resolution' }))
   })
 
   it('maps Jimeng dimensions to extra_fields and never sends quality', () => {
@@ -246,7 +261,7 @@ describe('image generation protocol', () => {
     expect(buildImageGenerationRequest({
       model: 'jimeng_high_aes_general_v21_L',
       prompt: '方形插画',
-    }).extra_fields).toEqual({ width: 1024, height: 1024 })
+    })).toMatchObject({ extra_fields: { width: 1024, height: 1024 } })
   })
 
   it('rejects unavailable, chat, oversized prompt, and invalid Jimeng requests', () => {
@@ -267,13 +282,33 @@ describe('image generation protocol', () => {
 
   it('omits unsupported size and quality fields and requests inline output for Grok image models', () => {
     expect(buildImageGenerationRequest({
-      model: 'grok-imagine-image-2.0', prompt: '电影感海岸', size: '1024x1024', quality: 'high',
+      model: 'grok-imagine-image-2.0', prompt: '电影感海岸', size: '1024x1024', quality: 'high', imageResolution: '1K',
     })).toEqual({
       model: 'grok-imagine-image-2.0', prompt: '电影感海岸', n: 1, response_format: 'b64_json',
     })
     expect(resolveAiModelCapability('grok-imagine-image-quality')).toMatchObject({
-      kind: 'image', provider: 'grok-image', supportsEdits: true,
+      kind: 'image', provider: 'grok-image', supportsEdits: true, resolutions: ['1K'],
     })
+    expect(() => buildImageGenerationRequest({
+      model: 'grok-imagine-image-2.0', prompt: '电影感海岸', imageResolution: '4K',
+    })).toThrowError(expect.objectContaining({ code: 'invalid-image-resolution' }))
+  })
+
+  it('routes Gemini image generation through Chat Completions with an explicit aspect ratio', () => {
+    expect(buildImageGenerationRequest({
+      model: 'gemini-3.1-flash-image', prompt: '电影感海岸', size: '1280x720', quality: 'high', imageResolution: '4K',
+    })).toEqual({
+      model: 'gemini-3.1-flash-image',
+      messages: [{ role: 'user', content: '电影感海岸' }],
+      stream: false,
+      extra_body: { google: { image_config: { aspect_ratio: '16:9', image_size: '4K' } } },
+    })
+    expect(resolveAiModelCapability('gemini-3.1-flash-image')).toMatchObject({
+      kind: 'image', provider: 'gemini-image', supportsEdits: false, resolutions: ['1K', '2K', '4K'],
+    })
+    expect(() => buildImageGenerationRequest({
+      model: 'gemini-3.1-flash-image', prompt: '图', size: '1111x777',
+    })).toThrowError(expect.objectContaining({ code: 'invalid-image-size' }))
   })
 })
 

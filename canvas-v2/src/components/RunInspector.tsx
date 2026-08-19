@@ -23,6 +23,7 @@ interface RunInspectorProps {
   onPreviewAsset(asset: CanvasRunCandidate['asset']): void
   onAssetMenu(assetId: string): void
   onLocateNode(nodeId: string): void
+  onRetryNode?(nodeId: string, scope: 'to-node' | 'from-node'): void
   onClose(): void
   embedded?: boolean
 }
@@ -66,6 +67,7 @@ export function RunInspector(props: RunInspectorProps) {
             <option value="dirty">仅变更节点 ({props.dirtyCount})</option>
             <option value="selection">选中链路 ({props.selectionCount})</option>
             <option value="to-node">运行到选中节点</option>
+            <option value="from-node">从选中节点向后运行</option>
           </select>
         </label>
       </div>
@@ -120,7 +122,7 @@ export function RunInspector(props: RunInspectorProps) {
                   ? stageLabel[node.latestStage]
                   : statusLabel[node.state] ?? node.state}</span>
               </div>
-              {node.errorMessage && <><p role="alert">{node.errorMessage}</p><small className="run-error-action">可先检查分组、模型和素材归属；若为网络或下载失败，可在当前节点重新发起。</small></>}
+              {node.errorMessage && <><p role="alert">{node.errorMessage}</p><small className="run-error-action">可先检查分组、模型和素材归属；重试仍会经过运行预检和付费确认。</small>{props.onRetryNode && node.state === 'failed' && selected.status !== 'running' && <div className="run-error-action"><button type="button" onClick={() => props.onRetryNode?.(node.nodeId, 'to-node')}>重试到此节点</button><button type="button" onClick={() => props.onRetryNode?.(node.nodeId, 'from-node')}>从此向后重试</button></div>}</>}
               {attempt && (
                 <div className="run-meta">
                   <span>{node.attempts.length} 次尝试</span>

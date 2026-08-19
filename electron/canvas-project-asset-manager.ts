@@ -20,6 +20,7 @@ export interface CanvasProjectAssetManagerOptions {
   projects: Pick<CanvasProjectStore, 'list' | 'getUsableWorkspaceDirectory'>
   global: CanvasProjectAssetContext
   create(outputRoot: string): CanvasProjectAssetContext
+  onMetadataError?(error: unknown, context: { userId: number; assetId: string; source: 'generated' }): void
 }
 
 export interface CanvasProjectImageMetadata extends AiAssetMetadata {
@@ -42,6 +43,7 @@ export class CanvasProjectAssetManager {
   private readonly projects: CanvasProjectAssetManagerOptions['projects']
   private readonly global: CanvasProjectAssetContext
   private readonly createContext: CanvasProjectAssetManagerOptions['create']
+  private readonly onMetadataError: CanvasProjectAssetManagerOptions['onMetadataError']
   private readonly contexts = new Map<string, Promise<CanvasProjectAssetContext>>()
   private readonly locations = new Map<string, string | null>()
 
@@ -49,6 +51,7 @@ export class CanvasProjectAssetManager {
     this.projects = options.projects
     this.global = options.global
     this.createContext = options.create
+    this.onMetadataError = options.onMetadataError
   }
 
   async forProject(userId: number, projectId: string): Promise<CanvasProjectAssetContext> {
@@ -80,6 +83,7 @@ export class CanvasProjectAssetManager {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.images.storeBase64(userId, value, this.imageMetadata(metadata))
+    await this.markGenerated(context, userId, asset.assetId)
     this.remember(userId, 'image', asset.assetId, projectId, context)
     return asset
   }
@@ -88,6 +92,7 @@ export class CanvasProjectAssetManager {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.images.storeRemoteUrl(userId, url, this.imageMetadata(metadata))
+    await this.markGenerated(context, userId, asset.assetId)
     this.remember(userId, 'image', asset.assetId, projectId, context)
     return asset
   }
@@ -102,6 +107,7 @@ export class CanvasProjectAssetManager {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.videos.storeMp4(userId, bytes, { taskId: metadata.taskId })
+    await this.markGenerated(context, userId, asset.assetId)
     this.remember(userId, 'video', asset.assetId, projectId, context)
     return asset
   }
@@ -184,6 +190,14 @@ export class CanvasProjectAssetManager {
     context: CanvasProjectAssetContext,
   ): void {
     this.locations.set(locationKey(userId, kind, assetId), context === this.global ? null : projectId)
+  }
+
+  private async markGenerated(context: CanvasProjectAssetContext, userId: number, assetId: string): Promise<void> {
+    try {
+      await context.media.setSource(userId, assetId, 'generated')
+    } catch (error) {
+      this.onMetadataError?.(error, { userId, assetId, source: 'generated' })
+    }
   }
 
   private requiredMetadataProjectId(metadata: { projectId?: string } | undefined): string {

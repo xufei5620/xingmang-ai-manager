@@ -40,6 +40,7 @@ export interface PersistedWorkflowNodeV2 {
     group?: string
     quality?: string
     size?: string
+    imageResolution?: '1K' | '2K' | '4K'
     seconds?: string
     result?: PersistedAssetRefV2
     settings?: Record<string, unknown>
@@ -114,6 +115,7 @@ export function toPersistedWorkflowV2(workflow: WorkflowFile): PersistedWorkflow
         ...(group ? { group } : {}),
         ...(node.data.quality ? { quality: node.data.quality } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
+        ...(node.data.imageResolution ? { imageResolution: node.data.imageResolution } : {}),
         ...(node.data.seconds ? { seconds: node.data.seconds } : {}),
         ...(result ? { result } : {}),
         ...(settings ? { settings } : {}),

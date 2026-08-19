@@ -178,13 +178,33 @@ function validateGraph(graph: CanvasRunGraph): GraphIndex {
 
 function selectScope(index: GraphIndex, scope: CanvasRunScope): Set<string> {
   if (scope.kind === 'all') return new Set(index.topological)
-  const roots = scope.kind === 'to-node' ? [scope.nodeId] : scope.nodeIds
+  const roots = scope.kind === 'to-node' || scope.kind === 'from-node' ? [scope.nodeId] : scope.nodeIds
   if (roots.length === 0) throw new Error('运行范围不能为空')
+  for (const root of new Set(roots)) {
+    if (!index.nodesById.has(root)) throw new Error(`运行范围包含不存在的节点：${root}`)
+  }
   const selected = new Set<string>()
   const queue = [...new Set(roots)]
+  if (scope.kind === 'from-node') {
+    while (queue.length > 0) {
+      const current = queue.pop() as string
+      if (selected.has(current)) continue
+      selected.add(current)
+      for (const edge of index.outgoing.get(current) ?? []) queue.push(edge.target)
+    }
+    const dependencies = [...selected]
+    while (dependencies.length > 0) {
+      const current = dependencies.pop() as string
+      for (const edge of index.incoming.get(current) ?? []) {
+        if (selected.has(edge.source)) continue
+        selected.add(edge.source)
+        dependencies.push(edge.source)
+      }
+    }
+    return selected
+  }
   while (queue.length > 0) {
     const current = queue.pop() as string
-    if (!index.nodesById.has(current)) throw new Error(`运行范围包含不存在的节点：${current}`)
     if (selected.has(current)) continue
     selected.add(current)
     for (const edge of index.incoming.get(current) ?? []) queue.push(edge.source)

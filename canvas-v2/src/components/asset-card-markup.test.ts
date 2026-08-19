@@ -12,6 +12,11 @@ describe('canvas asset card markup', () => {
     expect(source).toContain('className={`asset-tray-item asset-tray-item-${asset.mediaType}')
     expect(source).toContain('className="asset-tray-item-preview"')
     expect(source).toContain('className="asset-tray-item-tools"')
+    expect(source).toContain('className="asset-quick-views"')
+    expect(source).toContain("view: 'favorites'")
+    expect(source).toContain("view: 'recent'")
+    expect(source).toContain('aria-label="\u7d20\u6750\u6765\u6e90"')
+    expect(source).toContain('aria-label="\u7d20\u6750\u6392\u5e8f"')
     expect(source).toContain('onDoubleClick={() => setPreviewAsset(asset)}')
     expect(source).toContain('onMouseLeave={(event) => {')
     expect(source).toContain('event.currentTarget.contains(focused)')
@@ -30,6 +35,15 @@ describe('canvas asset card markup', () => {
     expect(tray).toContain('className="asset-rename-dialog"')
     expect(tray).toContain('await onRename(renamingAsset.assetId, displayName)')
     expect(preview).toContain('onRename?(assetId: string): void')
+  })
+
+  it('persists favorites, tags and recent-use signals through host callbacks', () => {
+    const source = componentSource('AssetTray.tsx')
+    expect(source).toContain('onUpdateMetadata?(assetId: string, input: { favorite?: boolean; tags?: string[] })')
+    expect(source).toContain('onMarkUsed?(assetId: string)')
+    expect(source).toContain("{ favorite: !asset.favorite }")
+    expect(source).toContain('await onUpdateMetadata(taggingAsset.assetId, { tags })')
+    expect(source).toContain('void onMarkUsed?.(asset.assetId)')
   })
 
   it('uses an article with sibling preview and menu controls in the content library', () => {

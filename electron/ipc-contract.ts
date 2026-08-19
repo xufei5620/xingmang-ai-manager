@@ -336,6 +336,7 @@ export interface AiImageGenerateInput {
   prompt: string
   size?: string
   quality?: 'low' | 'medium' | 'high' | 'auto'
+  imageResolution?: '1K' | '2K' | '4K'
 }
 
 export interface AiChatAsset {

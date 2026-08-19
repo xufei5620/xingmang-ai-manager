@@ -5,6 +5,7 @@ export type RunScope =
   | { kind: 'dirty' }
   | { kind: 'selection'; nodeIds: readonly string[] }
   | { kind: 'to-node'; nodeId: string }
+  | { kind: 'from-node'; nodeId: string }
 
 export interface AttemptError {
   code?: string
@@ -301,6 +302,24 @@ export function resolveRunScope(
   const targets = scope.kind === 'selection' ? scope.nodeIds : [scope.nodeId]
   const selected = new Set<string>()
   const queue = [...targets]
+  if (scope.kind === 'from-node') {
+    while (queue.length > 0) {
+      const current = queue.shift() as string
+      if (!all.has(current) || selected.has(current)) continue
+      selected.add(current)
+      for (const edge of edges) if (edge.source === current) queue.push(edge.target)
+    }
+    const dependencies = [...selected]
+    while (dependencies.length > 0) {
+      const current = dependencies.shift() as string
+      for (const edge of edges) {
+        if (edge.target !== current || !all.has(edge.source) || selected.has(edge.source)) continue
+        selected.add(edge.source)
+        dependencies.push(edge.source)
+      }
+    }
+    return allNodeIds.filter((nodeId) => selected.has(nodeId))
+  }
   while (queue.length > 0) {
     const current = queue.shift() as string
     if (!all.has(current) || selected.has(current)) continue

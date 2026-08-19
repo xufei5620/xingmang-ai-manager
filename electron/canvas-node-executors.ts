@@ -108,6 +108,7 @@ export function createCanvasNodeExecutors(options: {
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
+        ...(node.data.imageResolution ? { imageResolution: node.data.imageResolution } : {}),
         ...(node.data.quality === 'low'
           || node.data.quality === 'medium'
           || node.data.quality === 'high'
@@ -151,6 +152,7 @@ export function createCanvasNodeExecutors(options: {
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
+        ...(node.data.imageResolution ? { imageResolution: node.data.imageResolution } : {}),
         ...(node.data.quality === 'low'
           || node.data.quality === 'medium'
           || node.data.quality === 'high'

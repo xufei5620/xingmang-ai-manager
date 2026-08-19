@@ -20,4 +20,14 @@ describe('canvas shortcuts', () => {
     expect(resolveCanvasShortcut({ key: 'Delete' })).toBe('delete')
     expect(resolveCanvasShortcut({ key: 'Backspace' })).toBe('delete')
   })
+
+  it('maps unmodified asset and overview navigation without stealing variants', () => {
+    expect(resolveCanvasShortcut({ key: 'a' })).toBe('toggle-assets')
+    expect(resolveCanvasShortcut({ key: 'Z' })).toBe('toggle-overview')
+    expect(resolveCanvasShortcut({ key: 'a', shiftKey: true })).toBeNull()
+    expect(resolveCanvasShortcut({ key: 'Delete', shiftKey: true })).toBe('delete')
+    expect(resolveCanvasShortcut({ key: 'z', altKey: true })).toBeNull()
+    expect(resolveCanvasShortcut({ key: 'a', target: { tagName: 'INPUT' } })).toBeNull()
+    expect(resolveCanvasShortcut({ key: 'z', isComposing: true })).toBeNull()
+  })
 })

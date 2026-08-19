@@ -100,6 +100,8 @@ function readNode(value: unknown): WorkflowNode | null {
   const group = optionalSafeString(value.data.group, maximumGroupNameLength)
   const quality = optionalSafeString(value.data.quality, maximumOptionLength)
   const size = optionalSafeString(value.data.size, maximumOptionLength)
+  const imageResolution = optionalSafeString(value.data.imageResolution, 2)
+  if (imageResolution && imageResolution !== '1K' && imageResolution !== '2K' && imageResolution !== '4K') return null
   const seconds = value.data.seconds === undefined
     ? undefined
     : typeof value.data.seconds === 'string' && /^(?:[1-9]|1[0-5])$/.test(value.data.seconds)
@@ -117,7 +119,7 @@ function readNode(value: unknown): WorkflowNode | null {
   const parentId = value.parentId === undefined ? undefined : safeString(value.parentId, maximumNodeIdLength)
   const width = value.width === undefined ? undefined : finiteCoordinate(value.width) && value.width >= 80 ? value.width : null
   const height = value.height === undefined ? undefined : finiteCoordinate(value.height) && value.height >= 40 ? value.height : null
-  if (prompt === null || model === null || group === null || quality === null || size === null || seconds === null || result === null
+  if (prompt === null || model === null || group === null || quality === null || size === null || imageResolution === null || seconds === null || result === null
     || settings === null || candidateAssetIds === null || parentId === null || width === null || height === null) return null
   const kind = knownNodeKind(wireKind)
   if (!kind) {
@@ -140,6 +142,7 @@ function readNode(value: unknown): WorkflowNode | null {
         errorMessage: `节点类型「${wireKind}」未安装，已禁用`,
         ...(quality ? { quality } : {}),
         ...(size ? { size } : {}),
+        ...(imageResolution ? { imageResolution: imageResolution as '1K' | '2K' | '4K' } : {}),
         ...(seconds ? { seconds } : {}),
         ...(result ? { result } : {}),
         ...(settings ? { settings } : {}),
@@ -164,6 +167,7 @@ function readNode(value: unknown): WorkflowNode | null {
       status: result?.assetId ? 'succeeded' : 'idle',
       ...(quality ? { quality } : {}),
       ...(size ? { size } : {}),
+      ...(imageResolution ? { imageResolution: imageResolution as '1K' | '2K' | '4K' } : {}),
       ...(seconds ? { seconds } : {}),
       ...(result ? { result } : {}),
       ...(settings ? { settings } : {}),

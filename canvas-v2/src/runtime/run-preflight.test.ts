@@ -33,6 +33,25 @@ describe('canvas run preflight', () => {
     expect(result.risk).toBe('warning')
   })
 
+  it('selects downstream nodes plus their required upstream dependencies', () => {
+    const input = graph()
+    input.nodes.push(
+      { id: 'audio', kind: 'audio-input', definitionVersion: 1, data: { prompt: '', model: '', adoptedAssetId: 'a'.repeat(43) } },
+      { id: 'unrelated', kind: 'prompt', definitionVersion: 1, data: { prompt: '无关', model: '' } },
+    )
+    input.edges.push({ id: 'audio-video', source: 'audio', sourceHandle: 'out:audio', target: 'video', targetHandle: 'in:audios' })
+
+    const selected = selectCanvasRunNodeIdsForPreflight(input, { kind: 'from-node', nodeId: 'image' })
+    expect(selected).toEqual(new Set(['prompt', 'image', 'video', 'audio']))
+    const result = buildCanvasRunPreflight({
+      graph: input, scope: { kind: 'from-node', nodeId: 'image' }, imageGroup: '生图分组', videoGroup: 'grok',
+      imageModels: ['gpt-image-2'], videoModels: ['grok-imagine-video'],
+    })
+    expect(result.selectedNodeIds).toEqual(['prompt', 'image', 'video', 'audio'])
+    expect(result.warnings[0]).toBe('从选中节点向后运行')
+    expect(result.paidRequestCount).toBe(2)
+  })
+
   it('counts image and video requests separately and discounts explicit cache hits', () => {
     const nodes: CanvasRunGraph['nodes'] = Array.from({ length: 12 }, (_, index) => ({
       id: `edit-${index}`, kind: 'image-edit', definitionVersion: 1,
@@ -60,6 +79,7 @@ describe('canvas run preflight', () => {
   it('rejects an empty or unknown scope deterministically', () => {
     expect(() => selectCanvasRunNodeIdsForPreflight(graph(), { kind: 'selection', nodeIds: [] })).toThrow('运行范围不能为空')
     expect(() => selectCanvasRunNodeIdsForPreflight(graph(), { kind: 'to-node', nodeId: 'missing' })).toThrow('不存在')
+    expect(() => selectCanvasRunNodeIdsForPreflight(graph(), { kind: 'from-node', nodeId: 'missing' })).toThrow('不存在')
   })
 
   it('propagates a disabled upstream node as skip before validating paid downstream work', () => {

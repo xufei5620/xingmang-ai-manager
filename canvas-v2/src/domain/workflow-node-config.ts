@@ -3,16 +3,22 @@ import {
   availableVideoModelPresets,
   defaultImageModel,
   defaultImageQuality,
+  defaultImageResolution,
   defaultImageSize,
   defaultVideoModel,
   defaultVideoSeconds,
   imageModelPreset,
+  type ImageResolution,
 } from '../models'
 
 export interface OperationDefaultsResult {
   available: boolean
   config: Record<string, unknown>
   reason?: string
+}
+
+function isImageResolution(value: unknown): value is ImageResolution {
+  return value === '1K' || value === '2K' || value === '4K'
 }
 
 export function operationDefaultsForTemplateNode(
@@ -40,6 +46,9 @@ export function operationDefaultsForTemplateNode(
       model: selected.id,
       ...(selected.supportsQuality ? { quality: typeof preferred.quality === 'string' ? preferred.quality : defaultImageQuality } : {}),
       ...(selected.supportsSize ? { size: typeof preferred.size === 'string' ? preferred.size : defaultImageSize } : {}),
+      imageResolution: isImageResolution(preferred.imageResolution) && selected.resolutions.includes(preferred.imageResolution)
+        ? preferred.imageResolution
+        : defaultImageResolution,
     }
     if (!selected.supportsQuality) delete config.quality
     if (!selected.supportsSize) delete config.size

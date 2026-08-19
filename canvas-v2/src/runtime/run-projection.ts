@@ -64,11 +64,13 @@ export function projectRunRecordToNodes<T extends ProjectableCanvasNode>(
     const costQuota = record.attempts.reduce((total, attempt) => total + (attempt.costQuota ?? 0), 0)
     const terminalSuccess = record.state === 'succeeded' || record.state === 'cached'
     const showRunProgress = record.state === 'running' || record.state === 'cancelling'
+    const showRunTiming = record.state === 'queued' || showRunProgress
     return {
       ...node,
       data: {
         ...node.data,
         status: nodeStatus(record.state),
+        runStartedAt: showRunTiming ? (latestAttempt?.startedAt ?? run.startedAt) : undefined,
         runStage: showRunProgress ? record.latestStage : undefined,
         runProgress: showRunProgress ? record.latestProgress : undefined,
         runProgressMode: showRunProgress ? record.latestProgressMode : undefined,

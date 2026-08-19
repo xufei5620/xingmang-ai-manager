@@ -18,6 +18,7 @@ export interface CanvasInspectorNode {
   model: string
   quality?: string
   size?: string
+  imageResolution?: '1K' | '2K' | '4K'
   seconds?: string
   group?: string
   settings: Record<string, unknown>
@@ -66,6 +67,7 @@ export function projectCanvasInspectorNodes(
       model: node.data.model,
       ...(node.data.quality ? { quality: node.data.quality } : {}),
       ...(node.data.size ? { size: node.data.size } : {}),
+      ...(node.data.imageResolution ? { imageResolution: node.data.imageResolution } : {}),
       ...(node.data.seconds ? { seconds: node.data.seconds } : {}),
       ...(typeof node.data.group === 'string' && node.data.group ? { group: node.data.group } : {}),
       settings: { ...(node.data.settings ?? {}) },

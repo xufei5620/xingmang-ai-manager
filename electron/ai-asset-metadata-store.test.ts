@@ -43,6 +43,48 @@ describe('AiAssetMetadataStore', () => {
     })
   })
 
+  it('persists favorites, bounded tags, source and recent usage independently from display names', async () => {
+    const { root, store } = fixture()
+    await expect(store.updatePreferences(7, assetId, { favorite: true, tags: ['角色', '主视觉'] })).resolves.toMatchObject({
+      assetId,
+      favorite: true,
+      tags: ['角色', '主视觉'],
+    })
+    await store.setSource(7, assetId, 'imported')
+    await store.markUsed(7, assetId)
+
+    const restarted = new AiAssetMetadataStore({ outputRoot: root })
+    await expect(restarted.getMany(7, [assetId])).resolves.toEqual({
+      [assetId]: {
+        favorite: true,
+        tags: ['角色', '主视觉'],
+        source: 'imported',
+        lastUsedAt: '2026-08-14T09:00:00.000Z',
+        updatedAt: '2026-08-14T09:00:00.000Z',
+      },
+    })
+    await expect(store.updatePreferences(7, assetId, { favorite: false, tags: [] })).resolves.not.toHaveProperty('favorite')
+    await expect(store.getMany(7, [assetId])).resolves.toMatchObject({ [assetId]: { source: 'imported' } })
+  })
+
+  it('migrates version 1 metadata and rejects invalid or duplicate tags', async () => {
+    const { root, store } = fixture()
+    const accountRoot = path.join(root, 'user-7')
+    fs.mkdirSync(accountRoot, { recursive: true })
+    fs.writeFileSync(path.join(accountRoot, 'asset-metadata.json'), JSON.stringify({
+      version: 1,
+      userId: 7,
+      items: [{ assetId, displayName: '旧名称', updatedAt: '2026-08-14T08:00:00.000Z' }],
+    }), 'utf8')
+    await expect(store.getMany(7, [assetId])).resolves.toMatchObject({ [assetId]: { displayName: '旧名称' } })
+    await store.markUsed(7, assetId)
+    expect(JSON.parse(fs.readFileSync(path.join(accountRoot, 'asset-metadata.json'), 'utf8'))).toMatchObject({ version: 2 })
+
+    await expect(store.updatePreferences(7, assetId, { tags: ['重复', '重复'] })).rejects.toThrow('不能重复')
+    await expect(store.updatePreferences(7, assetId, { tags: ['x'.repeat(33)] })).rejects.toThrow('标签格式错误')
+    await expect(store.updatePreferences(7, assetId, { tags: Array.from({ length: 13 }, (_, index) => String(index)) })).rejects.toThrow('标签格式错误')
+  })
+
   it('accepts 1-120 characters and rejects empty, oversized or path-like names', async () => {
     const { store } = fixture()
     await expect(store.rename(7, assetId, '名')).resolves.toMatchObject({ displayName: '名' })
@@ -62,7 +104,7 @@ describe('AiAssetMetadataStore', () => {
     expect(fs.readdirSync(accountRoot)).toContain('asset-metadata.json.corrupt-1786698000000-metadata-backup-id.bak')
     await store.rename(7, assetId, '恢复后的名称')
     expect(JSON.parse(fs.readFileSync(path.join(accountRoot, 'asset-metadata.json'), 'utf8'))).toMatchObject({
-      version: 1,
+      version: 2,
       userId: 7,
       items: [{ assetId, displayName: '恢复后的名称' }],
     })

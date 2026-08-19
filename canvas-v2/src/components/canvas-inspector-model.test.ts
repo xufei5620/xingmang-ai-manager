@@ -6,7 +6,7 @@ import { projectCanvasInspectorNodes } from './canvas-inspector-model'
 function node(overrides: Partial<CanvasNode> = {}): CanvasNode {
   return {
     id: 'image-edit', type: 'image-edit', definitionVersion: 1, position: { x: 0, y: 0 }, selected: true,
-    data: { prompt: 'edit', model: 'gpt-image-2', status: 'succeeded' },
+    data: { prompt: 'edit', model: 'gpt-image-2', imageResolution: '4K', status: 'succeeded' },
     ...overrides,
   }
 }
@@ -20,6 +20,7 @@ describe('projectCanvasInspectorNodes', () => {
     ]
     const projected = projectCanvasInspectorNodes([node()], edges)[0]
 
+    expect(projected.imageResolution).toBe('4K')
     expect(projected.ports.find((port) => port.id === 'in:text')).toMatchObject({ cardinality: 'many', connectionCount: 1 })
     expect(projected.ports.find((port) => port.id === 'in:images')).toMatchObject({ cardinality: 'many', connectionCount: 2 })
     expect(projected.ports.find((port) => port.id === 'out:image')).toMatchObject({ direction: 'output', connectionCount: 0 })

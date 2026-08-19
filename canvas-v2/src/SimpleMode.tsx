@@ -4,11 +4,13 @@ import type { AssetRef, NodeKind, WorkflowFile } from './model'
 import {
   defaultImageModel,
   defaultImageQuality,
+  defaultImageResolution,
   availableImageModelPresets,
   availableVideoModelPresets,
   imageModelPreset,
   imageModelPresets,
   imageQualityOptions,
+  imageResolutionOptions,
   videoModelPresets,
 } from './models'
 import { SafeImage } from './components/MediaPreview'
@@ -50,6 +52,7 @@ export function SimpleMode({
   const [prompt, setPrompt] = useState('')
   const [imageModel, setImageModel] = useState(defaultImageModel)
   const [imageQuality, setImageQuality] = useState(defaultImageQuality)
+  const [imageResolution, setImageResolution] = useState(defaultImageResolution)
   const [imageSize, setImageSize] = useState(imageModelPreset(defaultImageModel).sizes[0])
   const modelPreset = imageModelPreset(imageModel)
   const [wantVideo, setWantVideo] = useState(false)
@@ -126,6 +129,7 @@ export function SimpleMode({
             prompt,
             model: imageModel,
             quality: imageQuality,
+            imageResolution,
             size: modelPreset.sizes.includes(imageSize) ? imageSize : modelPreset.sizes[0],
             status: 'idle',
           },
@@ -176,7 +180,7 @@ export function SimpleMode({
           kind: 'image',
           position: { x: 360, y: 140 },
           data: {
-            prompt: '', model: imageModel, quality: imageQuality,
+            prompt: '', model: imageModel, quality: imageQuality, imageResolution,
             size: modelPreset.sizes.includes(imageSize) ? imageSize : modelPreset.sizes[0],
             status: image ? 'succeeded' : 'idle', result: image ?? undefined,
           },
@@ -231,6 +235,8 @@ export function SimpleMode({
               setImageModel(nextModel)
               const sizes = imageModelPreset(nextModel).sizes
               if (!sizes.includes(imageSize)) setImageSize(sizes[0])
+              const resolutions = imageModelPreset(nextModel).resolutions
+              if (!resolutions.includes(imageResolution)) setImageResolution(resolutions[0] ?? defaultImageResolution)
             }}
           >
             {imagePresets.length === 0 && <option value="">当前分组没有可用图像模型</option>}
@@ -251,11 +257,19 @@ export function SimpleMode({
             </label>
           )}
           <label>
-            <span>尺寸</span>
-            <select value={modelPreset.sizes.includes(imageSize) ? imageSize : modelPreset.sizes[0]} onChange={(event) => setImageSize(event.target.value)}>
-              {modelPreset.sizes.map((size) => <option key={size} value={size}>{size}</option>)}
+            <span>清晰度</span>
+            <select value={modelPreset.resolutions.includes(imageResolution) ? imageResolution : modelPreset.resolutions[0]} onChange={(event) => setImageResolution(event.target.value as typeof imageResolution)}>
+              {imageResolutionOptions.map((entry) => <option key={entry.value} value={entry.value} disabled={!modelPreset.resolutions.includes(entry.value)}>{entry.label}{modelPreset.resolutions.includes(entry.value) ? '' : '（当前模型不支持）'}</option>)}
             </select>
           </label>
+          {modelPreset.supportsSize && (
+            <label>
+              <span>尺寸</span>
+              <select value={modelPreset.sizes.includes(imageSize) ? imageSize : modelPreset.sizes[0]} onChange={(event) => setImageSize(event.target.value)}>
+                {modelPreset.sizes.map((size) => <option key={size} value={size}>{size}</option>)}
+              </select>
+            </label>
+          )}
         </div>
         <label className="simple-check">
           <input type="checkbox" checked={wantVideo} onChange={(event) => setWantVideo(event.target.checked)} />

@@ -62,6 +62,9 @@ let asset = {
   displayName: 'visual-fixture.png',
   createdAt: '2026-08-13T00:00:00.000Z',
   mediaType: 'image',
+  favorite: false,
+  tags: ['主视觉'],
+  source: 'imported',
 }
 const audioAsset = {
   assetId: audioAssetId,
@@ -73,6 +76,9 @@ const audioAsset = {
   createdAt: '2026-08-14T00:01:00.000Z',
   mediaType: 'audio',
   durationSeconds: 2.113016,
+  favorite: false,
+  tags: ['音频'],
+  source: 'imported',
 }
 const videoAsset = {
   assetId: videoAssetId,
@@ -86,6 +92,9 @@ const videoAsset = {
   width: 448,
   height: 672,
   durationSeconds: 5.041667,
+  favorite: false,
+  tags: ['视频'],
+  source: 'generated',
 }
 let projects = []
 let nextProjectId = 1
@@ -109,13 +118,17 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
           'grok-imagine-image-2.0', 'grok-imagine-video', 'grok-imagine-video-1.5',
           'minimax-h3-mini', 'minimax-h3-fast', 'minimax-h3-base',
         ]
-      : ['gpt-image-2', 'gpt-image-1', 'jimeng_high_aes_general_v21_L'],
+      : ['gpt-image-2', 'gemini-3.1-flash-image', 'gpt-image-1', 'jimeng_high_aes_general_v21_L'],
     keyCreated: false,
   }),
   listAssets: async (query = {}) => {
-    const items = query.mediaType === 'image' ? [asset]
+    let items = query.mediaType === 'image' ? [asset]
       : query.mediaType === 'audio' ? [audioAsset]
         : query.mediaType === 'video' ? [videoAsset] : [videoAsset, audioAsset, asset]
+    if (query.view === 'favorites') items = items.filter((entry) => entry.favorite)
+    if (query.view === 'recent') items = items.filter((entry) => entry.lastUsedAt)
+    if (query.source && query.source !== 'all') items = items.filter((entry) => entry.source === query.source)
+    if (query.tag) items = items.filter((entry) => entry.tags.includes(query.tag))
     return { items, offset: query.offset || 0, limit: query.limit || 24, total: items.length, hasMore: false }
   },
   listPromptPresets: async () => [],
@@ -131,6 +144,16 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
     if (requestedAssetId !== asset.assetId) throw new Error('素材不存在')
     asset = { ...asset, displayName }
     return { assetId: requestedAssetId, displayName }
+  },
+  updateAssetMetadata: async ({ assetId: requestedAssetId, favorite, tags }) => {
+    if (requestedAssetId !== asset.assetId) throw new Error('素材不存在')
+    asset = { ...asset, ...(typeof favorite === 'boolean' ? { favorite } : {}), ...(Array.isArray(tags) ? { tags } : {}) }
+    return { assetId: requestedAssetId, favorite: asset.favorite, tags: asset.tags, lastUsedAt: asset.lastUsedAt }
+  },
+  markAssetUsed: async (requestedAssetId) => {
+    const lastUsedAt = new Date().toISOString()
+    if (requestedAssetId === asset.assetId) asset = { ...asset, lastUsedAt }
+    return { assetId: requestedAssetId, lastUsedAt }
   },
   inspectAssetReferences: async (requestedAssetId, currentProjectContent) => {
     const current = JSON.parse(currentProjectContent)
@@ -310,6 +333,7 @@ try {
   const mediaConfiguration = page.getByRole('dialog', { name: '画布生成配置' })
   await mediaConfiguration.waitFor({ state: 'visible' })
   assert.equal(await mediaConfiguration.getByRole('combobox').count(), 2, '生成配置应分别提供生图与视频分组')
+  assert.equal(await mediaConfiguration.getByText('Gemini 3.1 Flash Image', { exact: false }).count(), 1, '生成配置应展示 Gemini 3.1 Flash Image')
   await page.waitForFunction(() => document.querySelector('.canvas-media-config-panel')?.textContent?.includes('Grok Imagine Video'))
   assert.equal(await mediaConfiguration.evaluate((element) => element.contains(document.activeElement)), true, '打开配置后焦点应位于弹层内部')
   await page.keyboard.press('Escape')
@@ -431,19 +455,47 @@ try {
   const runScopeTrigger = page.getByRole('button', { name: '选择运行范围', exact: true })
   await runScopeTrigger.click()
   const runScopeMenu = page.getByRole('menu', { name: '运行范围' })
-  assert.equal(await runScopeMenu.getByRole('menuitemradio').count(), 4, '运行范围菜单应提供四种范围')
+  assert.equal(await runScopeMenu.getByRole('menuitemradio').count(), 5, '运行范围菜单应提供五种范围')
   assert.equal(await runScopeMenu.getByRole('menuitemradio', { name: /运行全部/ }).getAttribute('aria-checked'), 'true')
+  assert.equal(await runScopeMenu.getByRole('menuitemradio', { name: /从选中节点向后运行/ }).count(), 1, '缺少下游链路运行入口')
   await page.waitForFunction(() => document.querySelector('[role="menu"][aria-label="运行范围"]')?.contains(document.activeElement))
   assert.equal(await runScopeMenu.evaluate((element) => element.contains(document.activeElement)), true, '运行范围菜单打开后应聚焦有效选项')
   await page.keyboard.press('Escape')
   await runScopeMenu.waitFor({ state: 'hidden' })
   assert.equal(await runScopeTrigger.evaluate((element) => element === document.activeElement), true, '运行范围菜单关闭后应恢复触发按钮焦点')
+  const runnableNode = page.locator('.react-flow__node-image-generate').first()
+  await runnableNode.evaluate((element) => element.click())
+  const nodeToolbar = page.locator('.wf-node-toolbar')
+  await nodeToolbar.waitFor({ state: 'visible' })
+  assert.equal(await nodeToolbar.getByRole('button', { name: '运行到此' }).count(), 1, '单节点工具条缺少运行到此')
+  assert.equal(await nodeToolbar.getByRole('button', { name: '从此向后' }).count(), 1, '单节点工具条缺少下游运行')
+  const clearSelectionPoint = await findEmptyPanePoint(page)
+  await page.mouse.click(clearSelectionPoint.x, clearSelectionPoint.y)
+  await nodeToolbar.waitFor({ state: 'hidden' })
+  const viewportBeforeOverview = await page.locator('.react-flow__viewport').getAttribute('style')
+  await page.keyboard.press('z')
+  await page.waitForTimeout(260)
+  await page.keyboard.press('z')
+  await page.waitForTimeout(260)
+  assert.equal(await page.locator('.react-flow__viewport').getAttribute('style'), viewportBeforeOverview, 'Z 全局概览未恢复原视口')
   await page.locator('.node-library-item').filter({ hasText: '图片素材' }).click()
   assert.ok(await page.getByRole('button', { name: '从文件选择', exact: true }).count() >= 1, '图片素材节点缺少文件选择入口')
+  await page.keyboard.press('a')
+  await page.getByRole('complementary', { name: '本地资产' }).waitFor({ state: 'visible' })
+  await page.keyboard.press('a')
+  await page.getByRole('complementary', { name: '本地资产' }).waitFor({ state: 'hidden' })
   await page.getByRole('button', { name: '更多操作', exact: true }).click()
   await page.getByRole('button', { name: /打开素材库/ }).click()
   const fixtureAsset = page.getByRole('article', { name: /visual-fixture\.png/ })
   await fixtureAsset.waitFor({ state: 'visible' })
+  assert.equal(await page.getByRole('navigation', { name: '素材快速视图' }).count(), 1, '素材库缺少全部/收藏/最近快速视图')
+  assert.equal(await page.getByRole('combobox', { name: '素材来源' }).count(), 1, '素材库缺少来源筛选')
+  assert.equal(await page.getByRole('combobox', { name: '素材排序' }).count(), 1, '素材库缺少排序')
+  await fixtureAsset.hover()
+  await fixtureAsset.getByRole('button', { name: /收藏：visual-fixture\.png/ }).click()
+  await page.getByRole('navigation', { name: '素材快速视图' }).getByRole('button', { name: '收藏' }).click()
+  await fixtureAsset.waitFor({ state: 'visible' })
+  await page.getByRole('navigation', { name: '素材快速视图' }).getByRole('button', { name: '全部' }).click()
   await fixtureAsset.locator('.asset-tray-item-preview').click()
   const fixtureDetails = fixtureAsset.locator('.asset-tray-item-details')
   await fixtureDetails.waitFor({ state: 'visible' })
@@ -582,6 +634,13 @@ try {
   const qualityOptions = await imageGenerateNode.locator('select[aria-label="生成画质"] option').allTextContents()
   assert.deepEqual(qualityOptions, ['低', '中', '高'], '图像画质选项应只显示档位')
   assert.equal(/[¥$元]|quota|价格/i.test(qualityOptions.join(' ')), false, '图像画质仍显示价格估算')
+  const claritySelect = imageGenerateNode.locator('select[aria-label="生成清晰度"]')
+  assert.deepEqual(await claritySelect.locator('option').allTextContents(), ['1K', '2K', '4K'], 'GPT Image 2 清晰度档位不完整')
+  await claritySelect.selectOption('4K')
+  await imageGenerateNode.locator('select[aria-label="图像模型"]').selectOption('gpt-image-1')
+  assert.equal(await claritySelect.inputValue(), '1K', '切换到仅支持 1K 的模型后没有安全回退')
+  assert.equal(await claritySelect.locator('option[value="2K"]').isDisabled(), true, 'GPT Image 1 错误开放了 2K')
+  await imageGenerateNode.locator('select[aria-label="图像模型"]').selectOption('gpt-image-2')
   const imageSizeOptions = await imageGenerateNode.locator('select[aria-label="生成尺寸"] option').allTextContents()
   assert.ok(imageSizeOptions.includes('1:1 · 1024x1024'), '图片比例缺少 1:1')
   assert.ok(imageSizeOptions.includes('16:9 · 1280x720'), '图片比例缺少 16:9')
@@ -612,7 +671,9 @@ try {
   await videoTarget.locator('select[aria-label="MiniMax 生成模式"]').selectOption('ref2va')
   await videoTarget.locator('select[aria-label="MiniMax 视频分辨率"]').selectOption('480p')
   await videoTarget.locator('select[aria-label="MiniMax 视频比例"]').selectOption('9:16')
-  await videoTarget.getByText('AI 优化 H3 提示词', { exact: true }).locator('..').locator('input').check()
+  const optimizePromptCheckbox = videoTarget.getByText('AI 优化 H3 提示词', { exact: true }).locator('..').locator('input')
+  await optimizePromptCheckbox.evaluate((element) => element.click())
+  assert.equal(await optimizePromptCheckbox.isChecked(), true, 'MiniMax 提示词优化开关没有保存状态')
 
   const beforeImageEdit = await page.locator('.react-flow__node-image-edit').count()
   await page.locator('.node-library-item').filter({ hasText: '图像编辑' }).click()
@@ -665,7 +726,7 @@ try {
   await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
   await page.waitForTimeout(300)
   await videoTarget.click({ position: { x: 42, y: 22 }, force: true })
-  await page.getByLabel('画布导航').getByRole('button', { name: '聚焦选中节点' }).click()
+  await page.getByLabel('画布导航').getByRole('button', { name: '聚焦选中节点' }).click({ force: true })
   await page.waitForTimeout(360)
   await videoTarget.locator('.wf-upstream-reference').nth(5).waitFor({ state: 'visible' })
   assert.equal(await videoTarget.locator('.wf-upstream-reference.is-image').count(), 4, '视频生成没有显示素材图片和生成节点的多图片上游')
@@ -726,17 +787,35 @@ try {
   await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
   await page.waitForTimeout(240)
   await page.locator('.react-flow__pane').click({ position: { x: 16, y: 16 } })
-  const selectableNodes = page.locator('.react-flow__node')
-  const firstRect = await selectableNodes.nth(0).boundingBox()
-  const secondRect = await selectableNodes.nth(1).boundingBox()
-  assert.ok(firstRect && secondRect, '框选测试缺少可见节点')
-  await page.mouse.move(Math.min(firstRect.x, secondRect.x) - 12, Math.min(firstRect.y, secondRect.y) - 12)
+  const selectionDrag = await page.evaluate(() => {
+    const pane = document.querySelector('.react-flow__pane')
+    if (!(pane instanceof Element)) throw new Error('框选测试缺少画布空白层')
+    const paneRect = pane.getBoundingClientRect()
+    const rects = [...document.querySelectorAll('.react-flow__node')]
+      .map((node) => node.getBoundingClientRect())
+      .filter((rect) => rect.width > 0 && rect.height > 0)
+    for (let first = 0; first < rects.length; first += 1) {
+      for (let second = first + 1; second < rects.length; second += 1) {
+        const start = {
+          x: Math.min(rects[first].left, rects[second].left) - 12,
+          y: Math.min(rects[first].top, rects[second].top) - 12,
+        }
+        const end = {
+          x: Math.max(rects[first].right, rects[second].right) + 12,
+          y: Math.max(rects[first].bottom, rects[second].bottom) + 12,
+        }
+        const insidePane = start.x > paneRect.left && start.y > paneRect.top
+          && end.x < paneRect.right && end.y < paneRect.bottom
+        if (insidePane && document.elementFromPoint(start.x, start.y) === pane && document.elementFromPoint(end.x, end.y) === pane) {
+          return { start, end }
+        }
+      }
+    }
+    throw new Error('框选测试找不到两端均为空白画布的可见节点组合')
+  })
+  await page.mouse.move(selectionDrag.start.x, selectionDrag.start.y)
   await page.mouse.down()
-  await page.mouse.move(
-    Math.max(firstRect.x + firstRect.width, secondRect.x + secondRect.width) + 12,
-    Math.max(firstRect.y + firstRect.height, secondRect.y + secondRect.height) + 12,
-    { steps: 8 },
-  )
+  await page.mouse.move(selectionDrag.end.x, selectionDrag.end.y, { steps: 8 })
   await page.mouse.up()
   const selectedCountForFlags = await page.locator('.react-flow__node.selected').count()
   assert.ok(selectedCountForFlags >= 2, '从空白区域拖动没有框选多个节点')

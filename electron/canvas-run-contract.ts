@@ -8,6 +8,7 @@ export type CanvasRunNodeKind =
 export type CanvasRunScope =
   | { kind: 'all' }
   | { kind: 'to-node'; nodeId: string }
+  | { kind: 'from-node'; nodeId: string }
   | { kind: 'selection'; nodeIds: string[] }
   | { kind: 'dirty'; nodeIds: string[] }
 
@@ -32,6 +33,7 @@ export interface CanvasRunGraphNode {
     group?: string
     quality?: string
     size?: string
+    imageResolution?: '1K' | '2K' | '4K'
     seconds?: string
     adoptedAssetId?: string
     videoMode?: 'auto' | 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'

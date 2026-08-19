@@ -5,6 +5,7 @@ import {
   MiniMap,
   ReactFlow,
   SelectionMode,
+  applyNodeChanges,
   type Connection,
   type Edge,
   type FinalConnectionState,
@@ -14,6 +15,7 @@ import {
   type Viewport,
   type XYPosition,
 } from '@xyflow/react'
+import { flushSync } from 'react-dom'
 import '@xyflow/react/dist/style.css'
 import {
   createEmptyWorkflow,
@@ -40,6 +42,8 @@ import {
 import {
   availableImageModelPresets,
   availableVideoModelPresets,
+  defaultImageResolution,
+  imageModelPreset,
 } from './models'
 import { CanvasModelAvailabilityProvider, CanvasNodeViewProvider, CanvasUpstreamReferencesProvider, ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
 import { canvasNodeLodForZoom, type CanvasNodeLod } from './nodes/node-lod'
@@ -48,6 +52,7 @@ import { AssetTray } from './components/AssetTray'
 import { MediaLightbox } from './components/MediaPreview'
 import { autoLayoutCanvasNodes } from './editor/auto-layout'
 import { resolveCanvasShortcut } from './editor/shortcuts'
+import { duplicateCanvasNodesForAltDrag } from './editor/alt-drag'
 import { builtinCanvasTemplates } from './templates/builtin-templates'
 import { instantiateTemplate, placeTemplateInstance } from './templates/instantiate-template'
 import { builtinNodeRegistry } from './domain/builtin-node-definitions'
@@ -157,6 +162,7 @@ export function toWorkflowNode(node: CanvasNode): WorkflowNode {
       model: node.data.model,
       quality: node.data.quality,
       size: node.data.size,
+      imageResolution: node.data.imageResolution,
       seconds: node.data.seconds,
       status: node.data.status,
       result: node.data.result,
@@ -188,6 +194,7 @@ export function toCanvasRunGraph(
         ...(['video', 'video-generate'].includes(node.type ?? '') ? { group: groups.video } : {}),
         quality: node.data.quality,
         size: node.data.size,
+        imageResolution: node.data.imageResolution,
         seconds: node.data.seconds,
         adoptedAssetId: node.data.result?.assetId,
         videoMode: typeof node.data.settings?.videoMode === 'string'
@@ -234,6 +241,9 @@ export function workflowNodeData(type: string, config: Record<string, unknown> =
   const model = typeof values.model === 'string' ? values.model : ''
   const quality = typeof values.quality === 'string' ? values.quality : undefined
   const size = typeof values.size === 'string' ? values.size : undefined
+  const imageResolution = values.imageResolution === '1K' || values.imageResolution === '2K' || values.imageResolution === '4K'
+    ? values.imageResolution
+    : undefined
   const seconds = typeof values.seconds === 'string' && /^(?:[1-9]|1[0-5])$/.test(values.seconds) ? values.seconds : undefined
   const assetId = typeof values.assetId === 'string' && /^[A-Za-z0-9_-]{43}$/.test(values.assetId)
     ? values.assetId
@@ -242,13 +252,14 @@ export function workflowNodeData(type: string, config: Record<string, unknown> =
   const result = assetId && (type === 'image-input' || type === 'video-input' || type === 'audio-input')
     ? { kind: assetKind, assetId, localUrl: `xingmang-asset://${assetKind}/${assetId}` } as const
     : undefined
-  const settings = Object.fromEntries(Object.entries(values).filter(([key]) => !['prompt', 'model', 'quality', 'size', 'seconds', 'status', 'result', 'assetId'].includes(key)))
+  const settings = Object.fromEntries(Object.entries(values).filter(([key]) => !['prompt', 'model', 'quality', 'size', 'imageResolution', 'seconds', 'status', 'result', 'assetId'].includes(key)))
   return {
     prompt,
     model,
     status: result ? 'succeeded' : 'idle',
     ...(quality ? { quality } : {}),
     ...(size ? { size } : {}),
+    ...(imageResolution ? { imageResolution } : {}),
     ...(seconds ? { seconds } : {}),
     ...(result ? { result } : {}),
     ...(Object.keys(settings).length > 0 ? { settings } : {}),
@@ -549,8 +560,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [assetPage, setAssetPage] = useState<CanvasAssetPage>({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })
   const [assetCatalog, setAssetCatalog] = useState<CanvasAssetSummary[]>([])
   const [userPromptPresets, setUserPromptPresets] = useState<CanvasPromptPreset[]>([])
-  const [assetQuery, setAssetQuery] = useState<Required<Pick<CanvasAssetQuery, 'offset' | 'limit' | 'mediaType'>> & Pick<CanvasAssetQuery, 'search'>>({
-    offset: 0, limit: 24, mediaType: 'all', search: '',
+  const [assetQuery, setAssetQuery] = useState<Required<Pick<CanvasAssetQuery, 'offset' | 'limit' | 'mediaType' | 'view' | 'source' | 'sort'>> & Pick<CanvasAssetQuery, 'search' | 'tag'>>({
+    offset: 0, limit: 24, mediaType: 'all', search: '', view: 'all', source: 'all', sort: 'created-desc', tag: '',
   })
   const [inspectorTab, setInspectorTab] = useState<CanvasInspectorTab>('node')
   const [nodeInspectorOpen, setNodeInspectorOpen] = useState(false)
@@ -582,6 +593,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
   const clipboardRef = useRef<CanvasClipboardPayload | null>(null)
   const reactFlowRef = useRef<ReactFlowInstance<CanvasNode, Edge> | null>(null)
+  const overviewViewportRef = useRef<Viewport | null>(null)
+  const altDragSessionRef = useRef<{
+    nodeIds: string[]
+    originalPositions: ReadonlyMap<string, XYPosition>
+    preserveInputConnections: boolean
+  } | null>(null)
   const moreActionsRef = useRef<HTMLDivElement>(null)
   const runMenuRef = useRef<HTMLDivElement>(null)
   const quickInsertTriggerRef = useRef<HTMLButtonElement>(null)
@@ -637,6 +654,20 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     })
   }, [focusMode])
 
+  const toggleCanvasOverview = useCallback(() => {
+    const instance = reactFlowRef.current
+    if (!instance || nodes.length === 0) return
+    const restore = overviewViewportRef.current
+    if (restore) {
+      overviewViewportRef.current = null
+      void instance.setViewport(restore, { duration: 180 })
+      setDocumentViewport(restore)
+      return
+    }
+    overviewViewportRef.current = instance.getViewport()
+    void instance.fitView({ padding: 0.14, minZoom: 0.15, maxZoom: 1, duration: 180 })
+  }, [nodes.length, setDocumentViewport])
+
   const fitSelection = useCallback(() => {
     const selected = nodes.filter((node) => node.selected)
     if (selected.length === 0) {
@@ -649,10 +680,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }, [nodes])
 
   const restoreCanvasViewport = useCallback((nextViewport: Viewport) => {
+    overviewViewportRef.current = null
     window.requestAnimationFrame(() => {
       void reactFlowRef.current?.setViewport(nextViewport, { duration: 0 })
     })
   }, [])
+
+  useEffect(() => {
+    if (nodes.length === 0) overviewViewportRef.current = null
+  }, [nodes.length])
 
   const openStoredProject = useCallback(async (projectId: string) => {
     setProjectLoading(true)
@@ -890,48 +926,60 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       : createMockExecutors()
   ), [imageGroup, videoGroup])
 
-  // 单节点重跑:输入不重新执行上游,直接取画布状态里上游节点的既有产物
-  // (文本节点的输出=它的提示词;图像节点的输出=它上次成功的 result)。
-  const rerunNode = useCallback(async (nodeId: string) => {
-    if (running) return
+  const requestNodeScopeRun = useCallback((nodeId: string, kind: 'to-node' | 'from-node'): boolean => {
+    if (running) return false
     if (preparingMedia) {
       setBanner('生成配置正在准备，请稍候再运行节点')
-      return
+      return false
     }
     if (resumingTaskIdsRef.current.size > 0) {
       setBanner('请等待视频任务续查完成后再运行节点')
-      return
+      return false
     }
     const target = nodes.find((entry) => entry.id === nodeId)
-    if (!target) return
+    if (!target) return false
     if (target.disabled || target.type === 'unknown') {
       setBanner('该节点已禁用，不能单独运行')
-      return
+      return false
     }
-    if (window.xingmangCanvasHost) {
-      try {
-        const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
-        const scope: CanvasRunScope = { kind: 'to-node', nodeId }
-        const preflight = buildCanvasRunPreflight({
-          graph,
-          scope,
-          imageGroup: imageGroup ?? undefined,
-          videoGroup: videoGroup ?? undefined,
-          imageModels,
-          videoModels,
-        })
-        setRunPreflight(preflight)
-        if (!preflight.canStart) {
-          setBanner(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '当前节点无法执行')
-          return
-        }
-        setPendingCanvasRun({ graph, scope })
-        setBanner('请确认单节点运行范围和额度风险')
-      } catch (error) {
-        setBanner(error instanceof Error ? error.message : String(error))
+    if (!window.xingmangCanvasHost) {
+      if (kind === 'from-node') setBanner('从此向后运行仅在桌面开发界面中可用')
+      return false
+    }
+    try {
+      const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+      const scope: CanvasRunScope = { kind, nodeId }
+      const preflight = buildCanvasRunPreflight({
+        graph,
+        scope,
+        imageGroup: imageGroup ?? undefined,
+        videoGroup: videoGroup ?? undefined,
+        imageModels,
+        videoModels,
+      })
+      setRunPreflight(preflight)
+      if (!preflight.canStart) {
+        setBanner(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '当前节点无法执行')
+        return false
       }
+      setPendingCanvasRun({ graph, scope })
+      setBanner(kind === 'from-node' ? '请确认从此向后的运行范围和额度风险' : '请确认运行到此的范围和额度风险')
+      return true
+    } catch (error) {
+      setBanner(error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }, [running, preparingMedia, nodes, edges, imageGroup, videoGroup, imageModels, videoModels])
+
+  // 浏览器预览保留轻量单节点执行；桌面端始终经主进程预检和运行服务。
+  const rerunNode = useCallback(async (nodeId: string) => {
+    if (window.xingmangCanvasHost) {
+      requestNodeScopeRun(nodeId, 'to-node')
       return
     }
+    if (running || preparingMedia || resumingTaskIdsRef.current.size > 0) return
+    const target = nodes.find((entry) => entry.id === nodeId)
+    if (!target || target.disabled || target.type === 'unknown') return
     const inputs: NodeInputs = {}
     for (const edge of edges) {
       if (edge.target !== nodeId) continue
@@ -956,21 +1004,34 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     setRunning(true)
     const controller = new AbortController()
     abortRef.current = controller
-    patchNodeData(nodeId, { status: 'running', errorMessage: undefined })
+    const runStartedAt = new Date().toISOString()
+    patchNodeData(nodeId, { status: 'running', errorMessage: undefined, runStartedAt })
     try {
       const executors = buildExecutors()
       const result = await executors[target.type as NodeKind](toWorkflowNode(target), inputs, controller.signal)
-      patchNodeData(nodeId, { status: 'succeeded', result: result.output.asset, costQuota: result.costQuota })
+      patchNodeData(nodeId, {
+        status: 'succeeded',
+        result: result.output.asset,
+        costQuota: result.costQuota,
+        latestAttemptDurationMs: Date.now() - Date.parse(runStartedAt),
+        runStartedAt: undefined,
+      })
     } catch (error) {
       patchNodeData(nodeId, {
         status: 'failed',
         errorMessage: error instanceof Error ? error.message : String(error),
+        latestAttemptDurationMs: Date.now() - Date.parse(runStartedAt),
+        runStartedAt: undefined,
       })
     } finally {
       abortRef.current = null
       setRunning(false)
     }
-  }, [running, preparingMedia, nodes, edges, imageGroup, imageModels, videoGroup, videoModels, patchNodeData, buildExecutors])
+  }, [running, preparingMedia, nodes, edges, patchNodeData, buildExecutors, requestNodeScopeRun])
+
+  const runFromNode = useCallback((nodeId: string) => {
+    requestNodeScopeRun(nodeId, 'from-node')
+  }, [requestNodeScopeRun])
 
   const downloadNodeAsset = useCallback(async (nodeId: string) => {
     const node = nodes.find((entry) => entry.id === nodeId)
@@ -1017,6 +1078,28 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     void refreshAssets()
   }, [refreshAssets])
 
+  const updateCanvasAssetMetadata = useCallback(async (assetId: string, input: { favorite?: boolean; tags?: string[] }) => {
+    const updated = await hostBridge().updateAssetMetadata({ assetId, ...input })
+    const apply = <T extends CanvasAssetSummary>(asset: T): T => (asset.assetId === updated.assetId
+      ? { ...asset, favorite: updated.favorite, tags: [...updated.tags], ...(updated.lastUsedAt ? { lastUsedAt: updated.lastUsedAt } : {}) }
+      : asset) as T
+    setAssetPage((current) => ({ ...current, items: current.items.map(apply) }))
+    setAssetCatalog((current) => current.map(apply))
+    setBanner(input.favorite === true ? '已收藏素材' : input.favorite === false ? '已取消收藏' : '素材标签已更新')
+    void refreshAssets()
+  }, [refreshAssets])
+
+  const markCanvasAssetUsed = useCallback(async (assetId: string) => {
+    try {
+      const updated = await hostBridge().markAssetUsed(assetId)
+      const apply = <T extends CanvasAssetSummary>(asset: T): T => (asset.assetId === updated.assetId ? { ...asset, lastUsedAt: updated.lastUsedAt } : asset) as T
+      setAssetPage((current) => ({ ...current, items: current.items.map(apply) }))
+      setAssetCatalog((current) => current.map(apply))
+    } catch {
+      // Usage ranking is auxiliary; a metadata write must not block canvas editing.
+    }
+  }, [])
+
   useEffect(() => {
     if (!window.xingmangCanvasHost) {
       void hostBridge().listAssets({ offset: 0, limit: 24, mediaType: 'all' }).then((page) => {
@@ -1030,7 +1113,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   useEffect(() => {
     if (!window.xingmangCanvasHost) return
     let active = true
-    const query = { offset: 0, limit: 24, mediaType: 'all' as const, search: '' }
+    const query = { offset: 0, limit: 24, mediaType: 'all' as const, search: '', view: 'all' as const, source: 'all' as const, sort: 'created-desc' as const, tag: '' }
     setAssetQuery(query)
     setAssetPage({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })
     setAssetCatalog([])
@@ -1091,6 +1174,10 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       limit: query.limit ?? 24,
       mediaType: query.mediaType ?? 'all',
       search: query.search ?? '',
+      view: query.view ?? 'all',
+      tag: query.tag ?? '',
+      source: query.source ?? 'all',
+      sort: query.sort ?? (query.view === 'recent' ? 'used-desc' : 'created-desc'),
     }
     setAssetQuery(next)
     void refreshAssets(next)
@@ -1174,6 +1261,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     openInspectorTab('assets')
   }, [openInspectorTab])
 
+  const toggleAssetTray = useCallback(() => {
+    if (inspectorTab === 'assets' && assetTrayOpen) closeInspector()
+    else showAssetTray()
+  }, [assetTrayOpen, closeInspector, inspectorTab, showAssetTray])
+
   useEffect(() => hostBridge().onRunEvent((event) => {
     const active = activeRunRef.current
     if (!active || event.runId !== active.runId || event.graphRevision !== active.graphRevision) return
@@ -1197,10 +1289,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             : event.state as CanvasNode['data']['status']
       patchNodeData(event.nodeId, {
         status: state,
+        ...((event.state === 'queued' || event.state === 'running') ? { runStartedAt: event.at } : {}),
         ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
         ...(typeof event.costQuota === 'number' ? { costQuota: event.costQuota } : {}),
         ...(['succeeded', 'failed', 'skipped', 'cancelled', 'cached', 'interrupted'].includes(event.state) ? {
-          runStage: undefined, runProgress: undefined, runProgressMode: undefined, runHealth: undefined,
+          runStartedAt: undefined, runStage: undefined, runProgress: undefined, runProgressMode: undefined, runHealth: undefined,
         } : {}),
       })
     }
@@ -1435,8 +1528,20 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   useEffect(() => {
     registerNodeChangeHandlers({
       onPromptChange: (nodeId, prompt) => markDirtyFrom(nodeId, { prompt }),
-      onModelChange: (nodeId, model) => markDirtyFrom(nodeId, { model }),
+      onModelChange: (nodeId, model) => {
+        const node = nodes.find((entry) => entry.id === nodeId)
+        const imageOperation = ['image', 'image-generate', 'image-edit'].includes(node?.type ?? '')
+        const preset = imageOperation ? imageModelPreset(model) : null
+        const currentResolution = node?.data.imageResolution ?? defaultImageResolution
+        markDirtyFrom(nodeId, {
+          model,
+          ...(preset && !preset.resolutions.includes(currentResolution)
+            ? { imageResolution: preset.resolutions[0] ?? defaultImageResolution }
+            : {}),
+        })
+      },
       onQualityChange: (nodeId, quality) => markDirtyFrom(nodeId, { quality }),
+      onImageResolutionChange: (nodeId, imageResolution) => markDirtyFrom(nodeId, { imageResolution }),
       onSizeChange: (nodeId, size) => markDirtyFrom(nodeId, { size }),
       onSecondsChange: (nodeId, seconds) => markDirtyFrom(nodeId, { seconds }),
       onSettingsChange: (nodeId, patch) => {
@@ -1444,7 +1549,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         markDirtyFrom(nodeId, { settings: { ...node?.data.settings, ...patch } })
       },
       onSavePromptPreset: (nodeId) => void savePromptPreset(nodeId),
-      onRerun: (nodeId) => void rerunNode(nodeId),
+      onRunToNode: (nodeId) => void rerunNode(nodeId),
+      onRunFromNode: runFromNode,
       onDownloadAsset: (nodeId) => void downloadNodeAsset(nodeId),
       onShowAssetMenu: (nodeId) => void showNodeAssetMenu(nodeId),
       onResumeTask: (nodeId) => void resumeTask(nodeId),
@@ -1487,7 +1593,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         setNodes(updated)
       },
     })
-  }, [nodes, execute, markDirtyFrom, savePromptPreset, rerunNode, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, discardCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
+  }, [nodes, execute, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, discardCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
 
   const createNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}): CanvasNode | null => {
     const kind = type as NodeKind
@@ -1595,8 +1701,61 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }, [execute])
 
   const onCanvasNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
+    if (altDragSessionRef.current && changes.some((change) => change.type === 'position')) {
+      // Preview the copied gesture without recording movement for the originals.
+      // The final frame is committed as one add-nodes history entry on drag stop.
+      setNodes((current) => applyNodeChanges(changes, current))
+      return
+    }
     onNodesChange(changes)
-  }, [onNodesChange])
+  }, [onNodesChange, setNodes])
+
+  const onCanvasNodeDragStart = useCallback((event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
+    if (!('altKey' in event) || !event.altKey) return
+    const sources = draggedNodes.length > 0 ? draggedNodes : [node]
+    altDragSessionRef.current = {
+      nodeIds: sources.map((entry) => entry.id),
+      originalPositions: new Map(sources.map((entry) => [entry.id, { ...entry.position }])),
+      preserveInputConnections: event.shiftKey,
+    }
+  }, [])
+
+  const onCanvasNodeDragStop = useCallback((_event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
+    const session = altDragSessionRef.current
+    if (!session) return
+    altDragSessionRef.current = null
+
+    const liveNodes = reactFlowRef.current?.getNodes() ?? (draggedNodes.length > 0 ? draggedNodes : [node])
+    const liveById = new Map(liveNodes.map((entry) => [entry.id, entry]))
+    const sourceRecords = nodes.map((entry) => {
+      const live = liveById.get(entry.id)
+      return canvasNodeDocumentRecord(live ?? entry)
+    })
+    const duplicated = duplicateCanvasNodesForAltDrag(sourceRecords, edges.map(toWorkflowEdge), {
+      nodeIds: session.nodeIds,
+      preserveInputConnections: session.preserveInputConnections,
+      createNodeId: () => nextNodeId(),
+      createEdgeId: () => nextNodeId(),
+    })
+    if (duplicated.nodes.length === 0) return
+
+    // React Flow has already previewed movement on the original ids. Restore
+    // them synchronously before the document command seeds its undo snapshot.
+    flushSync(() => {
+      setNodes((current) => current.map((entry) => {
+        const original = session.originalPositions.get(entry.id)
+        return original ? { ...entry, position: { ...original } } : entry
+      }))
+    })
+    execute({ type: 'add-nodes', nodes: duplicated.nodes, edges: duplicated.edges })
+    const duplicateIds = new Set(duplicated.nodes.map((entry) => entry.id))
+    window.requestAnimationFrame(() => {
+      setNodes((current) => current.map((entry) => ({ ...entry, selected: duplicateIds.has(entry.id) })))
+    })
+    setBanner(session.preserveInputConnections
+      ? `已复制 ${duplicated.nodes.length} 个节点并保留输入连接`
+      : `已复制 ${duplicated.nodes.length} 个节点`)
+  }, [edges, execute, nodes, setNodes])
 
   const autoLayout = useCallback(() => {
     if (nodes.length === 0) return
@@ -1658,7 +1817,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     const asset = assetPage.items.find((entry) => entry.assetId === assetId)
     if (!asset) return
     createAssetNode(asset, position)
-  }, [assetPage.items, createAssetNode])
+    void markCanvasAssetUsed(assetId)
+  }, [assetPage.items, createAssetNode, markCanvasAssetUsed])
 
   const copySelection = useCallback(() => {
     const selected = new Set(nodes.filter((node) => node.selected).map((node) => node.id))
@@ -1920,7 +2080,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       ? `运行变更${dirtyNodeIds.size ? ` (${dirtyNodeIds.size})` : ''}`
       : runScopeKind === 'selection'
         ? `运行选中${selectedRunnableCount ? ` (${selectedRunnableCount})` : ''}`
-        : '运行到此'
+        : runScopeKind === 'from-node'
+          ? '从此向后'
+          : '运行到此'
   const runScopeOptions: ReadonlyArray<{
     kind: CanvasRunScope['kind']
     label: string
@@ -1931,6 +2093,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     { kind: 'dirty', label: `仅运行变更 (${dirtyNodeIds.size})`, description: '重新执行输入或结果发生变化的链路', disabled: dirtyNodeIds.size === 0 },
     { kind: 'selection', label: `运行选中链路 (${selectedRunnableCount})`, description: '执行选中节点及其上游依赖', disabled: selectedRunnableCount === 0 },
     { kind: 'to-node', label: '运行到选中节点', description: '需要且只能选择一个可运行节点', disabled: selectedRunnableCount !== 1 },
+    { kind: 'from-node', label: '从选中节点向后运行', description: '执行下游链路并补齐必要依赖', disabled: selectedRunnableCount !== 1 },
   ]
   const activeRunOption = runScopeOptions.find((option) => option.kind === runScopeKind) ?? runScopeOptions[0]
 
@@ -1948,8 +2111,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return { kind: 'selection', nodeIds }
     }
     const nodeIds = selectedNodeIds.filter((id) => runnableIds.has(id))
-    if (nodeIds.length !== 1) throw new Error('“运行到节点”需要且只能选择一个可运行节点')
-    return { kind: 'to-node', nodeId: nodeIds[0] }
+    if (nodeIds.length !== 1) throw new Error('该运行范围需要且只能选择一个可运行节点')
+    return { kind: runScopeKind === 'from-node' ? 'from-node' : 'to-node', nodeId: nodeIds[0] }
   }, [runScopeKind, nodes, dirtyNodeIds, selectedNodeIds])
 
   const confirmCanvasRun = useCallback(async () => {
@@ -2197,6 +2360,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       else if (shortcut === 'open') { event.preventDefault(); void load() }
       else if (shortcut === 'run') { event.preventDefault(); void run() }
       else if (shortcut === 'layout') { event.preventDefault(); autoLayout() }
+      else if (shortcut === 'toggle-assets') { event.preventDefault(); toggleAssetTray() }
+      else if (shortcut === 'toggle-overview') { event.preventDefault(); toggleCanvasOverview() }
       else if (shortcut === 'quick-insert') {
         event.preventDefault()
         if (quickInsert) {
@@ -2232,7 +2397,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [undo, redo, save, load, run, autoLayout, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert, runPreflight])
+  }, [undo, redo, save, load, run, autoLayout, toggleAssetTray, toggleCanvasOverview, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert, runPreflight])
 
   const serverBacked = Boolean(window.xingmangCanvasHost)
   const mediaConnectionLabel = preparingMedia
@@ -2509,6 +2674,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           edges={edges}
           nodeTypes={nodeTypes}
           onNodesChange={onCanvasNodesChange}
+          onNodeDragStart={onCanvasNodeDragStart}
+          onNodeDragStop={onCanvasNodeDragStop}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onConnectStart={onConnectStart}
@@ -2663,6 +2830,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
               onLocateSourceNode={locateNode}
               onRename={renameCanvasAsset}
+              onUpdateMetadata={updateCanvasAssetMetadata}
+              onMarkUsed={markCanvasAssetUsed}
               onInspectReferences={(assetId) => hostBridge().inspectAssetReferences(assetId, serializeWorkflow(workflowSnapshot()))}
               onClose={closeInspector}
             />
@@ -2689,6 +2858,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               onPreviewAsset={(asset) => setPreviewAsset({ ...asset })}
               onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
               onLocateNode={locateNode}
+              onRetryNode={(nodeId, scope) => { requestNodeScopeRun(nodeId, scope) }}
               onClose={closeInspector}
             />
           )}

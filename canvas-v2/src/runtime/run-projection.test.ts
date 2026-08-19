@@ -188,12 +188,14 @@ describe('run record projection', () => {
     }
     const live = projectRunRecordToNodes([{ id: 'generate', data: data() }], running)
     expect(live[0].data).toMatchObject({
+      runStartedAt: '2026-08-13T01:00:00Z',
       runStage: 'processing', runProgress: 38, runProgressMode: 'determinate', runHealth: 'delayed',
     })
 
     running.status = 'succeeded'
     running.nodes[0].state = 'succeeded'
     const completed = projectRunRecordToNodes(live, running)
+    expect(completed[0].data.runStartedAt).toBeUndefined()
     expect(completed[0].data.runStage).toBeUndefined()
     expect(completed[0].data.runProgress).toBeUndefined()
     expect(completed[0].data.runProgressMode).toBeUndefined()

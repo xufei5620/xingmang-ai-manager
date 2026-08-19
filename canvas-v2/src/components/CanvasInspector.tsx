@@ -3,10 +3,12 @@ import { Ban, Box, CirclePlay, Crosshair, Film, Image as ImageIcon, Lock, LockOp
 import type { WorkflowNodeData } from '../model'
 import {
   defaultImageQuality,
+  defaultImageResolution,
   defaultImageSize,
   defaultVideoSeconds,
   imageModelPreset,
   imageQualityOptions,
+  imageResolutionOptions,
   imageSizeLabel,
   videoModelPreset,
   videoSizeOptions,
@@ -72,11 +74,26 @@ function NodeParameters({
       )}
       {imageOperation && (
         <>
-          <label className="canvas-inspector-field"><span>模型</span><select value={node.model} onChange={(event) => onPatch(node.id, { model: event.target.value })}>
+          <label className="canvas-inspector-field"><span>模型</span><select value={node.model} onChange={(event) => {
+            const model = event.target.value
+            const preset = imageModelPreset(model)
+            const currentResolution = node.imageResolution ?? defaultImageResolution
+            onPatch(node.id, {
+              model,
+              ...(!preset.resolutions.includes(currentResolution) ? { imageResolution: preset.resolutions[0] } : {}),
+            })
+          }}>
             {uniqueOptions(node.model, imageModels).map((model) => <option key={model} value={model}>{imageModelPreset(model).label}</option>)}
           </select></label>
           {imagePreset?.supportsQuality && <label className="canvas-inspector-field"><span>画质</span><select value={node.quality || defaultImageQuality} onChange={(event) => onPatch(node.id, { quality: event.target.value })}>
             {imageQualityOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+          </select></label>}
+          {imagePreset && <label className="canvas-inspector-field"><span>清晰度</span><select
+            value={imagePreset.resolutions.includes(node.imageResolution ?? defaultImageResolution) ? (node.imageResolution ?? defaultImageResolution) : imagePreset.resolutions[0]}
+            title={imagePreset.resolutionNote ?? '输出清晰度'}
+            onChange={(event) => onPatch(node.id, { imageResolution: event.target.value as '1K' | '2K' | '4K' })}
+          >
+            {imageResolutionOptions.map((option) => <option key={option.value} value={option.value} disabled={!imagePreset.resolutions.includes(option.value)}>{option.label}{imagePreset.resolutions.includes(option.value) ? '' : '（不支持）'}</option>)}
           </select></label>}
           {imagePreset?.supportsSize && <label className="canvas-inspector-field"><span>尺寸</span><select value={imagePreset.sizes.includes(node.size || '') ? node.size : (imagePreset.sizes[0] ?? defaultImageSize)} onChange={(event) => onPatch(node.id, { size: event.target.value })}>
             {imagePreset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}

@@ -13,6 +13,7 @@ describe('canvas media model capabilities', () => {
   it('does not send unsupported image options to Grok models', () => {
     const preset = imageModelPreset('grok-imagine-image-2.0')
     expect(preset).toMatchObject({ supportsSize: false, supportsQuality: false, supportsEdits: true })
+    expect(preset.resolutions).toEqual(['1K'])
     expect(validateImageModelOptions({
       model: preset.id,
       operation: 'generate',
@@ -22,6 +23,33 @@ describe('canvas media model capabilities', () => {
       '模型「Grok Imagine 2.0」不接受尺寸参数',
       '模型「Grok Imagine 2.0」不接受画质参数',
     ])
+  })
+
+  it('exposes Gemini 3.1 Flash Image with ratio selection and no edit or quality claim', () => {
+    const preset = imageModelPreset('gemini-3.1-flash-image')
+    expect(preset).toMatchObject({
+      label: 'Gemini 3.1 Flash Image', supportsSize: true, supportsQuality: false, supportsEdits: false,
+      resolutions: ['1K', '2K', '4K'],
+    })
+    expect(preset.sizes).toContain('1280x720')
+    expect(validateImageModelOptions({
+      model: preset.id, operation: 'generate', size: '1280x720',
+    })).toEqual([])
+    expect(validateImageModelOptions({
+      model: preset.id, operation: 'generate', size: '1111x777',
+    })).toContain('模型「Gemini 3.1 Flash Image」不支持这个图片尺寸')
+    expect(validateImageModelOptions({
+      model: preset.id, operation: 'edit', referenceImageCount: 1,
+    })).toContain('模型「Gemini 3.1 Flash Image」不支持图片编辑')
+  })
+
+  it('exposes native clarity tiers only where the provider supports them', () => {
+    expect(imageModelPreset('gpt-image-2').resolutions).toEqual(['1K', '2K', '4K'])
+    for (const model of ['gpt-image-1', 'jimeng_high_aes_general_v21_L', 'grok-imagine-image']) {
+      expect(imageModelPreset(model).resolutions).toEqual(['1K'])
+      expect(validateImageModelOptions({ model, operation: 'generate', imageResolution: '4K' }))
+        .toContain(`模型「${imageModelPreset(model).label}」不支持 4K 清晰度`)
+    }
   })
 
   it('rejects invalid GPT Image 2 dimensions before a paid request', () => {

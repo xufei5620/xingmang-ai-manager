@@ -90,6 +90,10 @@ describe('canvas fingerprints', () => {
     }))
     expect(computeCanvasGraphRevision(graph)).not.toBe(computeCanvasGraphRevision({
       ...graph,
+      nodes: [text, imageNode({ imageResolution: '4K' })],
+    }))
+    expect(computeCanvasGraphRevision(graph)).not.toBe(computeCanvasGraphRevision({
+      ...graph,
       nodes: [text, imageNode({ seconds: '10' })],
     }))
   })

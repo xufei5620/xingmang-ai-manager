@@ -90,6 +90,7 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         group: node.data.group,
         quality: node.data.quality,
         size: node.data.size,
+        imageResolution: node.data.imageResolution,
         seconds: node.data.seconds,
         adoptedAssetId: node.data.adoptedAssetId,
       }))

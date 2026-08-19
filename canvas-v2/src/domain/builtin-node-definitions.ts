@@ -55,7 +55,7 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
   }),
   mediaDefinition({
     type: 'image-generate', version: 1, title: '图像生成', description: '根据提示词生成图像', category: 'generation',
-    ports: [textInput, imageOutput], dimensions: { width: 304, height: 300 }, defaultData: { prompt: '', model: '', quality: 'low', size: '1024x1024' },
+    ports: [textInput, imageOutput], dimensions: { width: 304, height: 300 }, defaultData: { prompt: '', model: '', quality: 'low', size: '1024x1024', imageResolution: '1K' },
     executable: true, structural: false, executorKind: 'image', capabilities: [{ media: 'image', operation: 'generate' }],
   }),
   mediaDefinition({
@@ -127,7 +127,7 @@ export const legacyNodeAdapters: readonly LegacyNodeAdapter[] = [
   { legacyType: 'text', definitionType: 'prompt', toDefinitionData: (data) => ({ prompt: data.prompt }) },
   {
     legacyType: 'image', definitionType: 'image-generate',
-    toDefinitionData: (data: WorkflowNodeData) => ({ prompt: data.prompt, model: data.model, quality: data.quality, size: data.size }),
+    toDefinitionData: (data: WorkflowNodeData) => ({ prompt: data.prompt, model: data.model, quality: data.quality, size: data.size, imageResolution: data.imageResolution }),
   },
   {
     legacyType: 'video', definitionType: 'video-generate',

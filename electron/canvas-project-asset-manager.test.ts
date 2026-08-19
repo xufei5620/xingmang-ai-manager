@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AiAssetStore } from './ai-asset-store'
 import { AiAudioAssetStore } from './ai-audio-asset-store'
 import { AiAssetMetadataStore } from './ai-asset-metadata-store'
@@ -41,6 +41,26 @@ afterEach(() => {
 })
 
 describe('CanvasProjectAssetManager', () => {
+  it('keeps a saved generated asset usable when only source metadata persistence fails', async () => {
+    const asset = { assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, mimeType: 'image/png', fileName: 'generated.png' }
+    const metadataError = new Error('metadata disk full')
+    const onMetadataError = vi.fn()
+    const global = {
+      images: { ensureOutputDirectory: vi.fn(), storeBase64: vi.fn(async () => asset) },
+      videos: {}, audios: {}, metadata: {},
+      media: { setSource: vi.fn(async () => { throw metadataError }) },
+    }
+    const manager = new CanvasProjectAssetManager({
+      projects: { list: vi.fn(async () => []), getUsableWorkspaceDirectory: vi.fn(async () => null) },
+      global: global as never,
+      create: vi.fn(),
+      onMetadataError,
+    })
+
+    await expect(manager.storeBase64(7, png, { projectId: '11111111-1111-1111-1111-111111111111' })).resolves.toEqual(asset)
+    expect(onMetadataError).toHaveBeenCalledWith(metadataError, { userId: 7, assetId: asset.assetId, source: 'generated' })
+  })
+
   it('isolates generated and imported media in each selected project folder while leaving global output unchanged', async () => {
     const projectDataRoot = temporaryRoot('xingmang-project-data-')
     const globalOutput = temporaryRoot('xingmang-global-output-')
@@ -70,13 +90,13 @@ describe('CanvasProjectAssetManager', () => {
 
     await expect(firstContext.media.listOwnedPage(7)).resolves.toMatchObject({
       items: expect.arrayContaining([
-        expect.objectContaining({ assetId: firstImage.assetId, mediaType: 'image' }),
+        expect.objectContaining({ assetId: firstImage.assetId, mediaType: 'image', source: 'generated' }),
         expect.objectContaining({ assetId: firstAudio.assetId, mediaType: 'audio' }),
       ]),
       total: 2,
     })
     await expect((await manager.forProject(7, second.project.id)).media.listOwnedPage(7)).resolves.toMatchObject({
-      items: [expect.objectContaining({ assetId: secondVideo.assetId, mediaType: 'video' })],
+      items: [expect.objectContaining({ assetId: secondVideo.assetId, mediaType: 'video', source: 'generated' })],
       total: 1,
     })
 
