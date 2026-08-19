@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import { ChevronLeft, ChevronRight, Clock3, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, Star, Tags, TriangleAlert, X } from 'lucide-react'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
@@ -16,6 +16,7 @@ import {
   retainedAssetSelection,
   type AssetSelection,
 } from './asset-selection'
+import { adjacentAssetId, assetGridKeyAction, rovingTabIndex } from './asset-grid-keyboard'
 
 interface AssetTrayProps {
   page: CanvasAssetPage
@@ -101,6 +102,42 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   }, [visibleAssetIds])
   const detailAssetId = assetSelectionDetailId(selection)
   const detailAsset = detailAssetId ? page.items.find((asset) => asset.assetId === detailAssetId) ?? null : null
+  const searchInputRef = useRef<HTMLInputElement | null>(null)
+  const gridRef = useRef<HTMLDivElement | null>(null)
+  const tileRefs = useRef<(HTMLDivElement | null)[]>([])
+  const [focusIndex, setFocusIndex] = useState(-1)
+  const tabStopIndex = rovingTabIndex(
+    focusIndex,
+    detailAssetId ? visibleAssetIds.indexOf(detailAssetId) : -1,
+    visibleAssetIds.length,
+  )
+  const previewNeighbour = (step: -1 | 1): CanvasAssetSummary | null => {
+    const assetId = adjacentAssetId(visibleAssetIds, previewAsset?.assetId ?? null, step)
+    return assetId ? page.items.find((asset) => asset.assetId === assetId) ?? null : null
+  }
+  const handleGridKey = (key: string, index: number, asset: CanvasAssetSummary): boolean => {
+    // Column count comes from the live layout rather than a constant: the grid
+    // is responsive and audio tiles span a full row, so a hard-coded stride
+    // would send ArrowDown to the wrong tile at some widths.
+    const columns = gridRef.current
+      ? getComputedStyle(gridRef.current).gridTemplateColumns.split(' ').filter(Boolean).length
+      : 2
+    const action = assetGridKeyAction(key, index, visibleAssetIds.length, columns)
+    if (!action) return false
+    if (action.kind === 'search') {
+      searchInputRef.current?.focus()
+      searchInputRef.current?.select()
+      return true
+    }
+    if (action.kind === 'favorite') {
+      if (!onUpdateMetadata) return false
+      void onUpdateMetadata(asset.assetId, { favorite: !asset.favorite })
+      return true
+    }
+    setFocusIndex(action.index)
+    tileRefs.current[action.index]?.focus()
+    return true
+  }
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault()
@@ -184,7 +221,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       <form className="asset-tray-filters" role="search" onSubmit={submitSearch}>
         <label>
           <Search size={14} aria-hidden="true" />
-          <input value={search} maxLength={128} aria-label="搜索本地资产" placeholder="名称或资产 ID" onChange={(event) => setSearch(event.target.value)} />
+          <input ref={searchInputRef} value={search} maxLength={128} aria-label="搜索本地资产" placeholder="名称或资产 ID" onChange={(event) => setSearch(event.target.value)} />
         </label>
         <select
           aria-label="资产类型"
@@ -221,6 +258,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       )}
       <div
         className="asset-tray-grid"
+        ref={gridRef}
         aria-multiselectable="true"
         onClick={(event) => { if (event.target === event.currentTarget) setSelection(emptyAssetSelection) }}
         onKeyDown={(event) => {
@@ -231,7 +269,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       >
         {loading && <p className="asset-tray-empty" role="status" aria-live="polite">正在读取...</p>}
         {!loading && page.items.length === 0 && <p className="asset-tray-empty">没有符合条件的本地资产</p>}
-        {page.items.map((asset) => {
+        {page.items.map((asset, index) => {
           const selected = isAssetSelected(selection, asset.assetId)
           const expanded = detailAssetId === asset.assetId
           const name = assetName(asset)
@@ -258,10 +296,15 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               <div
                 className="asset-tray-item-preview"
                 role="group"
-                tabIndex={0}
+                ref={(element) => { tileRefs.current[index] = element }}
+                // Roving tabindex: the grid is one tab stop, not one per tile,
+                // so Tab reaches the pagination controls without twenty-four
+                // presses. Arrow keys move within it.
+                tabIndex={index === tabStopIndex ? 0 : -1}
                 aria-label={`查看素材详情：${name}`}
                 aria-expanded={expanded}
                 aria-controls="asset-tray-detail-panel"
+                onFocus={() => setFocusIndex(index)}
                 onClick={(event) => setSelection((value) => assetSelectionForActivation(
                   value, asset.assetId, visibleAssetIds, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey },
                 ))}
@@ -270,7 +313,10 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                   const next = assetSelectionAfterKey(
                     event.key, selection, asset.assetId, visibleAssetIds, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey },
                   )
-                  if (next === undefined) return
+                  if (next === undefined) {
+                    if (handleGridKey(event.key, index, asset)) event.preventDefault()
+                    return
+                  }
                   event.preventDefault()
                   setSelection(next)
                 }}
@@ -372,6 +418,8 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
         onClose={() => setPreviewAsset(null)}
         onAssetMenu={onAssetMenu}
         onRename={onRename && previewAsset ? () => beginRename(previewAsset) : undefined}
+        onPrevious={previewNeighbour(-1) ? () => setPreviewAsset(previewNeighbour(-1)) : undefined}
+        onNext={previewNeighbour(1) ? () => setPreviewAsset(previewNeighbour(1)) : undefined}
       />
       {renamingAsset && (
         <div className="asset-rename-backdrop" role="presentation" onMouseDown={(event) => {

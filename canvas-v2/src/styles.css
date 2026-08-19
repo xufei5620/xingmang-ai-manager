@@ -1760,6 +1760,7 @@ button:disabled {
 .media-lightbox-toolbar time { color: var(--text-muted); font-size: var(--text-xs); }
 .media-lightbox-toolbar button { display: grid; width: 32px; height: 32px; place-items: center; padding: 0; color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-control); }
 .media-lightbox-toolbar button:hover { color: var(--text-primary); background: var(--surface-hover); }
+.media-lightbox-toolbar button:disabled { opacity: 0.35; }
 .media-lightbox-image { display: block; width: auto; max-width: min(92vw, 1600px); height: auto; max-height: calc(100vh - 88px); object-fit: contain; border: 1px solid var(--border-subtle); border-radius: var(--radius-control); box-shadow: var(--shadow-lightbox); }
 .media-lightbox-image.media-unavailable { width: min(480px, 80vw); height: 240px; }
 .media-lightbox-video { display: block; width: auto; max-width: min(92vw, 1440px); height: auto; max-height: calc(100vh - 100px); object-fit: contain; background: var(--surface-media); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); box-shadow: var(--shadow-lightbox); }

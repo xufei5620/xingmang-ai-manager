@@ -513,6 +513,46 @@ try {
   await page.getByRole('navigation', { name: '素材快速视图' }).getByRole('button', { name: '收藏' }).click()
   await fixtureAsset.waitFor({ state: 'visible' })
   await page.getByRole('navigation', { name: '素材快速视图' }).getByRole('button', { name: '全部' }).click()
+  // Roving tabindex: the grid is one tab stop rather than one per tile, so
+  // reaching the pagination controls past a full page no longer costs
+  // twenty-four presses of Tab. Arrow keys move inside it.
+  const tilePreviews = page.locator('.asset-tray-item-preview')
+  assert.ok(await tilePreviews.count() >= 2, '素材库固定素材不足以验证键盘导航')
+  assert.equal(await page.locator('.asset-tray-item-preview[tabindex="0"]').count(), 1, '素材网格不是单一 Tab 停靠点')
+  await tilePreviews.first().focus()
+  await page.keyboard.press('ArrowRight')
+  assert.equal(
+    await tilePreviews.nth(1).evaluate((element) => element === document.activeElement),
+    true,
+    '方向键没有在素材网格内移动焦点',
+  )
+  await page.keyboard.press('Home')
+  assert.equal(
+    await tilePreviews.first().evaluate((element) => element === document.activeElement),
+    true,
+    'Home 没有回到素材网格首项',
+  )
+  await fixtureAsset.locator('.asset-tray-item-preview').focus()
+  await page.keyboard.press('.')
+  await fixtureAsset.getByRole('button', { name: /^收藏：visual-fixture\.png$/ }).waitFor({ state: 'attached' })
+  await page.keyboard.press('.')
+  await fixtureAsset.getByRole('button', { name: /取消收藏：visual-fixture\.png/ }).waitFor({ state: 'attached' })
+  await page.keyboard.press('/')
+  assert.equal(
+    await page.getByRole('textbox', { name: '搜索本地资产' }).evaluate((element) => element === document.activeElement),
+    true,
+    '斜杠没有把焦点送到素材搜索框',
+  )
+  // The viewer steps through the page with the arrow keys, so comparing two
+  // assets does not mean closing and reopening it.
+  await fixtureAsset.hover()
+  await fixtureAsset.getByRole('button', { name: /放大预览：visual-fixture\.png/ }).click()
+  const fixtureLightbox = page.getByRole('dialog', { name: 'visual-fixture.png' })
+  await fixtureLightbox.waitFor({ state: 'visible' })
+  const canStepForward = await fixtureLightbox.getByRole('button', { name: '下一个素材' }).isEnabled()
+  await page.keyboard.press(canStepForward ? 'ArrowRight' : 'ArrowLeft')
+  await fixtureLightbox.waitFor({ state: 'detached' })
+  await page.getByRole('button', { name: '关闭媒体预览' }).click()
   // Activation toggles, and selection now survives pointer movement, drags and
   // refreshes, so opening a tile has to be idempotent.
   // The panel is docked below the grid rather than expanded inside the tile, so

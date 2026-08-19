@@ -7,7 +7,7 @@ import {
   type ImgHTMLAttributes,
   type VideoHTMLAttributes,
 } from 'react'
-import { ImageOff, MoreHorizontal, Music2, Pause, Pencil, Play, Volume2, VolumeX, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ImageOff, MoreHorizontal, Music2, Pause, Pencil, Play, Volume2, VolumeX, X } from 'lucide-react'
 import type { AssetRef } from '../model'
 
 interface SafeImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
@@ -285,17 +285,26 @@ interface MediaLightboxProps {
   onClose(): void
   onAssetMenu(assetId: string): void
   onRename?(assetId: string): void
+  /** Absent when there is nothing before or after, which also disables the key. */
+  onPrevious?(): void
+  onNext?(): void
 }
 
-export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, onRename }: MediaLightboxProps) {
+export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, onRename, onPrevious, onNext }: MediaLightboxProps) {
   useEffect(() => {
     if (!asset) return undefined
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') return onClose()
+      // Arrow keys belong to a focused video's scrubber while it has focus;
+      // stepping the viewer is only safe when they are not being used to seek.
+      const active = document.activeElement
+      if (active instanceof HTMLMediaElement) return
+      if (event.key === 'ArrowLeft' && onPrevious) { event.preventDefault(); onPrevious() }
+      if (event.key === 'ArrowRight' && onNext) { event.preventDefault(); onNext() }
     }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [asset, onClose])
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [asset, onClose, onPrevious, onNext])
 
   if (!asset?.localUrl) return null
   const mediaLabel = asset.kind === 'video' ? '视频预览' : asset.kind === 'audio' ? '音频预览' : '图片预览'
@@ -306,6 +315,12 @@ export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, o
       <div className="media-lightbox-toolbar">
         <span>{title || (asset.width && asset.height ? `${asset.width} × ${asset.height}` : mediaLabel)}</span>
         {createdAt && <time dateTime={createdAt}>{new Date(createdAt).toLocaleString()}</time>}
+        {(onPrevious || onNext) && (
+          <>
+            <button type="button" title="上一个素材" aria-label="上一个素材" disabled={!onPrevious} onClick={() => onPrevious?.()}><ChevronLeft size={18} /></button>
+            <button type="button" title="下一个素材" aria-label="下一个素材" disabled={!onNext} onClick={() => onNext?.()}><ChevronRight size={18} /></button>
+          </>
+        )}
         {asset.assetId && onRename && (
           <button type="button" title="重命名" aria-label="重命名素材" onClick={() => onRename(asset.assetId as string)}><Pencil size={16} /></button>
         )}
