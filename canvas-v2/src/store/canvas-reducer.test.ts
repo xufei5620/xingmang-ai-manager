@@ -92,6 +92,43 @@ describe('canvas command history', () => {
     expect(history.present.edges[0].target).toBe('b')
   })
 
+  it('deletes a node and its bridge in one undoable command', () => {
+    let history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('c', 480)],
+      edges: [
+        { id: 'e1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' },
+        { id: 'e2', source: 'b', sourceHandle: 'out:image', target: 'c', targetHandle: 'in:images' },
+      ],
+    })
+    history = applyCanvasCommand(history, {
+      type: 'delete-elements',
+      nodeIds: ['b'],
+      bridges: [{ id: 'bridge', source: 'a', sourceHandle: 'out:image', target: 'c', targetHandle: 'in:images' }],
+    })
+    expect(history.present.nodes.map((entry) => entry.id)).toEqual(['a', 'c'])
+    expect(history.present.edges).toEqual([
+      { id: 'bridge', source: 'a', sourceHandle: 'out:image', target: 'c', targetHandle: 'in:images' },
+    ])
+
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes).toHaveLength(3)
+    expect(history.present.edges.map((entry) => entry.id)).toEqual(['e1', 'e2'])
+  })
+
+  it('drops a bridge that would point at a node being removed', () => {
+    const history = applyCanvasCommand(createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('c', 480)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' }],
+    }), {
+      type: 'delete-elements',
+      nodeIds: ['b', 'c'],
+      bridges: [{ id: 'bridge', source: 'a', sourceHandle: 'out:image', target: 'c', targetHandle: 'in:images' }],
+    })
+    expect(history.present.edges).toEqual([])
+  })
+
   it('rejects a retarget onto a node that does not exist', () => {
     const history = createCanvasHistory({
       ...createCanvasDocument(),

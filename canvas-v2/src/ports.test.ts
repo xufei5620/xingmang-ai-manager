@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   compatibleInsertionHandle,
   connectionForInsertedNode,
+  handleKind,
   isValidWorkflowConnection,
   type ConnectionGraphView,
 } from './ports'
@@ -10,6 +11,29 @@ import { nodeInputKinds } from './model'
 function graph(types: Record<string, string>, edges: ConnectionGraphView['edges'] = []): ConnectionGraphView {
   return { nodeKindOf: (id) => types[id] ?? null, edges }
 }
+
+describe('handleKind', () => {
+  it('reads the media kind from singular handles', () => {
+    expect(handleKind('out:image')).toBe('image')
+    expect(handleKind('in:video')).toBe('video')
+    expect(handleKind('in:text')).toBe('text')
+  })
+
+  it('reads multi-input ports, which are named in the plural', () => {
+    // in:images / in:videos / in:audios are real port ids in the builtin
+    // registry, and they used to fall through to null.
+    expect(handleKind('in:images')).toBe('image')
+    expect(handleKind('in:videos')).toBe('video')
+    expect(handleKind('in:audios')).toBe('audio')
+  })
+
+  it('returns null rather than guessing for unknown or missing handles', () => {
+    expect(handleKind(null)).toBeNull()
+    expect(handleKind('')).toBeNull()
+    expect(handleKind('in:hologram')).toBeNull()
+    expect(handleKind('image')).toBeNull()
+  })
+})
 
 describe('registry driven ports', () => {
   it('accepts ports declared by new definitions', () => {

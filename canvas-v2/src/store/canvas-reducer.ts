@@ -115,7 +115,15 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
         !edgeIds.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)
       ))
       if (nodes.length === document.nodes.length && edges.length === document.edges.length) return document
-      return { ...document, nodes, edges, revision: nextRevision(document) }
+      // Bridges heal the chain the removal broke. They are part of the same
+      // command so one undo restores both the node and its original wiring.
+      const surviving = new Set(nodes.map((node) => node.id))
+      const bridged = (command.bridges ?? []).filter((edge) => (
+        surviving.has(edge.source)
+        && surviving.has(edge.target)
+        && !edges.some((entry) => entry.id === edge.id)
+      ))
+      return { ...document, nodes, edges: [...edges, ...bridged.map((edge) => ({ ...edge }))], revision: nextRevision(document) }
     }
     case 'connect': {
       if (document.edges.some((edge) => edge.id === command.edge.id)) throw new Error('连线标识已存在')

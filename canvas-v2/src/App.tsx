@@ -38,6 +38,7 @@ import { CanvasEdgeHandlersProvider, defaultEdgeOptions, edgeTypes } from './edg
 import { CanvasContextMenu, type CanvasContextMenuState } from './components/CanvasContextMenu'
 import type { CanvasContextAction } from './editor/context-menu'
 import { alignNodePositions, distributeNodePositions, type AlignableNode, type CanvasAlignMode, type CanvasDistributeAxis } from './editor/align'
+import { bridgeEdgesForRemoval } from './editor/bridge-edges'
 import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
@@ -1996,12 +1997,21 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     })
   }, [nodes])
 
+  // Removing a node from the middle of a chain leaves two dangling ends. Heal
+  // them in the same command so one undo restores the original wiring too.
+  const deleteNodesBridging = useCallback((nodeIds: readonly string[]) => {
+    const bridges = bridgeEdgesForRemoval(edges, nodeIds).map((draft) => ({ id: nextNodeId(), ...draft }))
+    execute({ type: 'delete-elements', nodeIds: [...nodeIds], ...(bridges.length > 0 ? { bridges } : {}) })
+    setBanner(bridges.length > 0
+      ? `已删除 ${nodeIds.length} 个节点，并接通 ${bridges.length} 条连线`
+      : `已删除 ${nodeIds.length} 个节点`)
+  }, [edges, execute])
+
   const deleteSelection = useCallback(() => {
     const nodeIds = nodes.filter((node) => node.selected).map((node) => node.id)
     if (nodeIds.length === 0) return
-    execute({ type: 'delete-elements', nodeIds })
-    setBanner(`已删除 ${nodeIds.length} 个节点`)
-  }, [execute, nodes])
+    deleteNodesBridging(nodeIds)
+  }, [deleteNodesBridging, nodes])
 
   const isValidConnection = useCallback((connection: Connection | Edge) => (
     isValidWorkflowConnection(connection as Connection, {
@@ -2122,11 +2132,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     if (action === 'ungroup') { ungroupSelection(); return }
     if (action === 'lock' || action === 'unlock') { setNodeFlags(scopeIds, 'locked', action === 'lock'); return }
     if (action === 'disable' || action === 'enable') { setNodeFlags(disableEligible, 'disabled', action === 'disable'); return }
-    if (action === 'delete') {
-      execute({ type: 'delete-elements', nodeIds: scopeIds })
-      setBanner(`已删除 ${scopeIds.length} 个节点`)
-    }
-  }, [contextMenu, copySelection, execute, groupSelection, locateNode, nodes, pasteSelection, rerunNode, setNodeFlags, ungroupSelection])
+    if (action === 'delete') deleteNodesBridging(scopeIds)
+  }, [contextMenu, copySelection, deleteNodesBridging, groupSelection, locateNode, nodes, pasteSelection, rerunNode, setNodeFlags, ungroupSelection])
 
   // Handed to the custom edge through context rather than through edge data, so
   // the callbacks are not serialized into the document on every render.
@@ -2503,7 +2510,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         const selectedEdges = edges.filter((edge) => edge.selected).map((edge) => edge.id)
         if (!selectedNodes.length && !selectedEdges.length) return
         event.preventDefault()
-        execute({ type: 'delete-elements', nodeIds: selectedNodes, edgeIds: selectedEdges })
+        // Only bridge when nodes alone are removed. Deleting an edge on purpose
+        // must not be undone by a bridge that puts an equivalent one back.
+        const bridges = selectedEdges.length === 0
+          ? bridgeEdgesForRemoval(edges, selectedNodes).map((draft) => ({ id: nextNodeId(), ...draft }))
+          : []
+        execute({
+          type: 'delete-elements',
+          nodeIds: selectedNodes,
+          edgeIds: selectedEdges,
+          ...(bridges.length > 0 ? { bridges } : {}),
+        })
       }
     }
     window.addEventListener('keydown', onKeyDown)
@@ -2781,6 +2798,10 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           selectionMode={SelectionMode.Partial}
           panOnDrag={[1, 2]}
           panOnScroll
+          // Shift adds to a selection; space temporarily turns drag into pan,
+          // which is the convention in every design tool our users have used.
+          multiSelectionKeyCode="Shift"
+          panActivationKeyCode="Space"
           // Double-click is reclaimed for quick insert / rename. Leaving the
           // default on made every one of those gestures also zoom the canvas.
           zoomOnDoubleClick={false}

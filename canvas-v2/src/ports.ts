@@ -16,7 +16,10 @@ export function outputHandleId(kind: PortKind): string {
 
 export function handleKind(handleId: string | null | undefined): PortKind | null {
   if (!handleId) return null
-  const [, kind] = handleId.split(':')
+  const [, name] = handleId.split(':')
+  // Multi-input ports are named in the plural (in:images, in:videos, in:audios)
+  // and carry the same media kind as their singular counterparts.
+  const kind = name === 'images' || name === 'videos' || name === 'audios' ? name.slice(0, -1) : name
   return kind === 'text' || kind === 'image' || kind === 'video' || kind === 'audio' ? kind : null
 }
 
