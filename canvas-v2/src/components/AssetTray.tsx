@@ -16,7 +16,7 @@ import {
   retainedAssetSelection,
   type AssetSelection,
 } from './asset-selection'
-import { adjacentAssetId, assetGridKeyAction, rovingTabIndex } from './asset-grid-keyboard'
+import { adjacentAssetId, assetGridKeyAction, rovingTabIndex, skeletonTileCount } from './asset-grid-keyboard'
 
 interface AssetTrayProps {
   page: CanvasAssetPage
@@ -102,6 +102,10 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   }, [visibleAssetIds])
   const detailAssetId = assetSelectionDetailId(selection)
   const detailAsset = detailAssetId ? page.items.find((asset) => asset.assetId === detailAssetId) ?? null : null
+  const skeletonTiles = useMemo(
+    () => Array.from({ length: skeletonTileCount(loading, page.items.length, query.limit) }, (_, index) => index),
+    [loading, page.items.length, query.limit],
+  )
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const gridRef = useRef<HTMLDivElement | null>(null)
   const tileRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -257,8 +261,9 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
         </div>
       )}
       <div
-        className="asset-tray-grid"
+        className={`asset-tray-grid${loading ? ' is-loading' : ''}`}
         ref={gridRef}
+        aria-busy={loading}
         aria-multiselectable="true"
         onClick={(event) => { if (event.target === event.currentTarget) setSelection(emptyAssetSelection) }}
         onKeyDown={(event) => {
@@ -267,7 +272,8 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
           setSelection(assetSelectionSelectAll(visibleAssetIds))
         }}
       >
-        {loading && <p className="asset-tray-empty" role="status" aria-live="polite">正在读取...</p>}
+        <p className="asset-tray-live-status" role="status" aria-live="polite">{loading ? '正在读取素材' : ''}</p>
+        {skeletonTiles.map((key) => <div className="asset-tray-skeleton" key={key} aria-hidden="true" />)}
         {!loading && page.items.length === 0 && <p className="asset-tray-empty">没有符合条件的本地资产</p>}
         {page.items.map((asset, index) => {
           const selected = isAssetSelected(selection, asset.assetId)

@@ -56,6 +56,22 @@ export function rovingTabIndex(focusIndex: number, selectedIndex: number, count:
   return 0
 }
 
+/**
+ * How many placeholder tiles to draw while a query is in flight.
+ *
+ * The tray used to push a one-line "loading" paragraph above the results and
+ * then drop it again, so every filter change nudged the whole grid up and down.
+ *
+ * Tiles already on screen are the best placeholder there is: they hold exactly
+ * the right space and, unlike a skeleton, they do not destroy the focus of
+ * someone operating one by keyboard. So skeletons only appear when there is
+ * nothing to hold the space -- the first load, or a page that came back empty.
+ */
+export function skeletonTileCount(loading: boolean, renderedCount: number, limit: number): number {
+  if (!loading || renderedCount > 0) return 0
+  return Math.max(1, Math.trunc(Number.isFinite(limit) ? limit : 1))
+}
+
 /** Steps the lightbox through the current page, clamping at both ends. */
 export function adjacentAssetId(
   orderedIds: readonly string[],

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { adjacentAssetId, assetGridKeyAction, rovingTabIndex } from './asset-grid-keyboard'
+import { adjacentAssetId, assetGridKeyAction, rovingTabIndex, skeletonTileCount } from './asset-grid-keyboard'
 
 describe('asset grid keyboard', () => {
   it('moves one tile horizontally and one row vertically', () => {
@@ -50,6 +50,18 @@ describe('asset grid keyboard', () => {
     expect(rovingTabIndex(9, -1, 6)).toBe(0)
     expect(rovingTabIndex(9, 4, 6)).toBe(4)
     expect(rovingTabIndex(0, 0, 0)).toBe(-1)
+  })
+
+  it('only draws skeletons when nothing is holding the space', () => {
+    // Tiles already on screen hold exactly the right space and, unlike a
+    // skeleton, do not destroy the focus of someone operating one. Replacing
+    // them mid-query would drop focus to the body and swallow the next key.
+    expect(skeletonTileCount(true, 12, 24)).toBe(0)
+    expect(skeletonTileCount(false, 0, 24)).toBe(0)
+    // Nothing to go on: reserve a full page rather than collapse to a line.
+    expect(skeletonTileCount(true, 0, 24)).toBe(24)
+    expect(skeletonTileCount(true, 0, 0)).toBe(1)
+    expect(skeletonTileCount(true, 0, Number.NaN)).toBe(1)
   })
 
   it('steps the viewer through the page and stops at both ends', () => {
