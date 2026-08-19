@@ -39,7 +39,7 @@ function storageOrNull(storage?: CanvasUiPreferencesStorage): CanvasUiPreference
   }
 }
 
-function parsePreferences(value: unknown): CanvasUiPreferences {
+function normalizePreferences(value: unknown): CanvasUiPreferences {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...defaultCanvasUiPreferences }
   const raw = value as Partial<CanvasUiPreferences>
   return {
@@ -49,6 +49,17 @@ function parsePreferences(value: unknown): CanvasUiPreferences {
     rightPanel: raw.rightPanel === 'assets' || raw.rightPanel === 'runs' ? raw.rightPanel : null,
     minimapOpen: raw.minimapOpen === true,
   }
+}
+
+function parseStoredPreferences(value: unknown): CanvasUiPreferences {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return { ...defaultCanvasUiPreferences }
+  // The version field only earns its place if reads enforce it. An unrecognized
+  // version means some other build wrote this payload, so the meaning of its
+  // fields cannot be assumed — fall back rather than reinterpret them.
+  if ((value as Partial<CanvasUiPreferences>).version !== canvasUiPreferencesVersion) {
+    return { ...defaultCanvasUiPreferences }
+  }
+  return normalizePreferences(value)
 }
 
 export function readCanvasUiPreferences(
@@ -61,7 +72,7 @@ export function readCanvasUiPreferences(
   try {
     const content = target.getItem(key)
     if (!content) return { ...defaultCanvasUiPreferences }
-    return parsePreferences(JSON.parse(content))
+    return parseStoredPreferences(JSON.parse(content))
   } catch {
     return { ...defaultCanvasUiPreferences }
   }
@@ -76,7 +87,7 @@ export function writeCanvasUiPreferences(
   const target = storageOrNull(storage)
   if (!key || !target) return
   try {
-    target.setItem(key, JSON.stringify(parsePreferences(preferences)))
+    target.setItem(key, JSON.stringify(normalizePreferences(preferences)))
   } catch {
     // UI preferences are an enhancement. Storage quota and private-window
     // failures must never block opening or saving a project.
