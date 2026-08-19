@@ -1827,6 +1827,16 @@ button:disabled {
 
 @media (max-width: 1180px) {
   .canvas-workspace { position: relative; }
+  /* The inspector floats over the canvas at this width, so a 288px library
+     would leave under 480px of usable canvas at 960px. Fall back to the rail
+     while a panel is open; this is presentational and never writes back to the
+     saved libraryCollapsed preference. */
+  .canvas-workspace:has(.canvas-inspector) .node-library,
+  .canvas-workspace:has(.canvas-inspector) .node-library.is-expanded {
+    width: 48px;
+    min-width: 48px;
+    flex-basis: 48px;
+  }
   .canvas-inspector {
     position: absolute;
     z-index: 8;

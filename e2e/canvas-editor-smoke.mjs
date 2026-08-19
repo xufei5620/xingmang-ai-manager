@@ -1067,7 +1067,10 @@ try {
   assert.ok(!compactAssetDrawer.runs || compactAssetDrawer.runs.width === 0, '打开素材抽屉后运行面板仍然可见')
   assert.ok(compactAssetDrawer.library.right <= compactAssetDrawer.flow.left + 1)
   assert.ok(compactAssetDrawer.assets.right <= compactAssetDrawer.innerWidth + 1, '素材抽屉越过窗口右边界')
-  assert.ok(compactAssetDrawer.assets.left - compactAssetDrawer.flow.left >= 400, '960px 素材抽屉打开时画布可用宽度不足')
+  // Floor is 480px of usable canvas. The library falls back to its rail while a
+  // panel is open at this width, so the real value should be well above it.
+  assert.ok(compactAssetDrawer.library.width <= 56, '960px 打开面板时创作库没有退回图标轨')
+  assert.ok(compactAssetDrawer.assets.left - compactAssetDrawer.flow.left >= 560, '960px 素材抽屉打开时画布可用宽度不足')
   assert.equal(compactAssetDrawer.tabs.length, 3, '紧凑检查器没有保留节点、素材、运行三个页签')
   assert.ok(compactAssetDrawer.tabs.every((tab) => tab.left >= compactAssetDrawer.inspector.left - 1 && tab.right <= compactAssetDrawer.inspector.right + 1), '紧凑检查器页签越过面板边界')
   assert.ok(compactAssetDrawer.tabs.every((tab) => tab.width >= 60 && tab.height >= 26 && !tab.clipped), '紧凑检查器页签文字被裁切或点击区域过小')
@@ -1083,7 +1086,7 @@ try {
   })
   assert.ok(compactRunDrawer.flow && compactRunDrawer.runs)
   assert.ok(compactRunDrawer.runs.right <= compactRunDrawer.innerWidth + 1, '运行抽屉越过窗口右边界')
-  assert.ok(compactRunDrawer.runs.left - compactRunDrawer.flow.left >= 400, '960px 运行抽屉打开时画布可用宽度不足')
+  assert.ok(compactRunDrawer.runs.left - compactRunDrawer.flow.left >= 560, '960px 运行抽屉打开时画布可用宽度不足')
   await page.screenshot({ path: path.join(artifactRoot, 'canvas-run-drawer-960x620.png') })
 
   for (const zoomFactor of [1.25, 1.5]) {
