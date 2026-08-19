@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { EditorNodeRecord } from '../domain/node-definition'
-import { applyCanvasCommand, createCanvasHistory, redoCanvasHistory, undoCanvasHistory } from './history'
+import { applyCanvasCommand, canvasHistoryMergeWindowMs, createCanvasHistory, redoCanvasHistory, undoCanvasHistory } from './history'
 import { collectDownstreamNodeIds, createCanvasDocument } from './canvas-state'
 import { canvasNodeRuntimePatch, resolveDragTransaction, updateCanvasHistoryViewport } from './use-canvas-document'
 import type { CanvasNode } from '../nodes/WorkflowNodes'
@@ -47,6 +47,30 @@ describe('canvas command history', () => {
     expect(history.past.length).toBe(depth + 1)
     history = undoCanvasHistory(history)
     expect(history.present.nodes[0].width).toBeUndefined()
+  })
+
+  it('merges a burst of edits to one node but starts fresh after a pause', () => {
+    let history = createCanvasHistory(createCanvasDocument())
+    history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [node('a')] }, 50, 0)
+    const depth = history.past.length
+
+    // A burst: same node, same merge key, keystrokes close together.
+    history = applyCanvasCommand(history, { type: 'update-node-data', nodeId: 'a', patch: { prompt: '一只' }, mergeKey: 'data:a' }, 50, 100)
+    history = applyCanvasCommand(history, { type: 'update-node-data', nodeId: 'a', patch: { prompt: '一只猫' }, mergeKey: 'data:a' }, 50, 900)
+    expect(history.past.length).toBe(depth + 1)
+
+    // Coming back later is a separate edit, even though the key is unchanged.
+    history = applyCanvasCommand(history, { type: 'update-node-data', nodeId: 'a', patch: { prompt: '一只黑猫' }, mergeKey: 'data:a' }, 50, 900 + canvasHistoryMergeWindowMs + 1)
+    expect(history.past.length).toBe(depth + 2)
+
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes[0].data.prompt).toBe('一只猫')
+  })
+
+  it('keeps the merge window wide enough for IME word-by-word input', () => {
+    // Each committed Chinese word arrives as its own command and the gaps
+    // between them are long. A short window would shatter one sentence.
+    expect(canvasHistoryMergeWindowMs).toBeGreaterThanOrEqual(2_000)
   })
 
   it('retargets a connection as one undoable command', () => {
