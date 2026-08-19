@@ -10,10 +10,12 @@ import {
 const FILE_LABEL = 'AI 视频任务记录'
 const MAXIMUM_FILE_BYTES = 2 * 1024 * 1024
 export const MAXIMUM_VIDEO_TASKS = 200
+export const AI_VIDEO_TASK_VERSION = 2
+const MAXIMUM_PROMPT_LENGTH = 2_000
 const TASK_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
 
 export interface StoredAiVideoTask {
-  version: 1
+  version: typeof AI_VIDEO_TASK_VERSION
   userId: number
   taskId: string
   group: string
@@ -25,10 +27,17 @@ export interface StoredAiVideoTask {
   nodeId?: string
   attemptId?: string
   graphRevision?: string
+  /**
+   * What the person asked for. Carried here because a video outlives the
+   * session that requested it: the record is what a resumed task has to write
+   * onto the finished asset, and the prompt is the one thing about a clip that
+   * is still recognisable weeks later.
+   */
+  prompt?: string
 }
 
 interface AiVideoTaskState {
-  version: 1
+  version: typeof AI_VIDEO_TASK_VERSION
   userId: number
   tasks: StoredAiVideoTask[]
 }
@@ -59,11 +68,28 @@ function safeCorrelationFields(task: Partial<StoredAiVideoTask>): boolean {
   return /^[a-f0-9]{64}$/.test(task.graphRevision as string)
 }
 
-function safeTask(value: unknown, userId: number): value is StoredAiVideoTask {
+export function normalizeAiVideoTaskPrompt(value: unknown): string {
+  if (typeof value !== 'string') throw new Error('AI 视频提示词格式错误')
+  // Newlines and tabs are ordinary in a prompt; the rest would corrupt the
+  // stored JSON view and never came from a person typing.
+  const prompt = value.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, ' ').trim().slice(0, MAXIMUM_PROMPT_LENGTH)
+  if (!prompt) throw new Error('AI 视频提示词格式错误')
+  return prompt
+}
+
+function safePrompt(value: unknown): boolean {
+  if (value === undefined) return true
+  try {
+    return normalizeAiVideoTaskPrompt(value) === value
+  } catch {
+    return false
+  }
+}
+
+function safeTaskFields(value: unknown, userId: number): boolean {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false
   const task = value as Partial<StoredAiVideoTask>
-  return task.version === 1
-    && task.userId === userId
+  return task.userId === userId
     && typeof task.taskId === 'string'
     && TASK_ID_PATTERN.test(task.taskId)
     && safeString(task.group, 128)
@@ -75,16 +101,46 @@ function safeTask(value: unknown, userId: number): value is StoredAiVideoTask {
     && safeCorrelationFields(task)
 }
 
-function parseState(content: string, userId: number): AiVideoTaskState {
-  if (/\b(?:apiKey|accessToken|refreshToken)\b|https?:\/\//i.test(content)) {
-    throw new Error('AI 视频任务记录包含凭据或远程地址')
+function safeTask(value: unknown, userId: number): value is StoredAiVideoTask {
+  return safeTaskFields(value, userId)
+    && (value as Partial<StoredAiVideoTask>).version === AI_VIDEO_TASK_VERSION
+    && safePrompt((value as Partial<StoredAiVideoTask>).prompt)
+}
+
+/**
+ * Version 1 records predate the prompt and are read as they stand, with the
+ * prompt simply absent: a task submitted before the upgrade still has to be
+ * resumable, and its asset just lands without a prompt the way it would have
+ * anyway.
+ */
+function migrateTask(value: unknown, userId: number): StoredAiVideoTask | null {
+  if (!safeTaskFields(value, userId)) return null
+  if ((value as { version?: unknown }).version === 1) {
+    const { prompt: _legacyPrompt, ...rest } = value as StoredAiVideoTask
+    return { ...rest, version: AI_VIDEO_TASK_VERSION }
   }
+  return safeTask(value, userId) ? value : null
+}
+
+function parseState(content: string, userId: number): AiVideoTaskState {
   const value = JSON.parse(content) as Partial<AiVideoTaskState>
-  if (value.version !== 1 || value.userId !== userId || !Array.isArray(value.tasks)
-    || value.tasks.length > MAXIMUM_VIDEO_TASKS || !value.tasks.every((task) => safeTask(task, userId))) {
+  const version = (value as { version?: unknown }).version
+  if ((version !== 1 && version !== AI_VIDEO_TASK_VERSION) || value.userId !== userId
+    || !Array.isArray(value.tasks) || value.tasks.length > MAXIMUM_VIDEO_TASKS) {
     throw new Error('AI 视频任务记录格式错误')
   }
-  return value as AiVideoTaskState
+  const tasks = value.tasks.map((task) => migrateTask(task, userId))
+  if (tasks.some((task) => task === null)) throw new Error('AI 视频任务记录格式错误')
+  // The tripwire keeping credentials and endpoints out of this file runs over
+  // everything except the prompts. A prompt is text the user wrote and may
+  // legitimately quote a URL; it is never fetched, and it is already persisted
+  // verbatim beside the asset. Scanning it here would let one such prompt
+  // condemn the whole file and lose every task waiting to be resumed.
+  const scanned = JSON.stringify({ ...value, tasks: tasks.map((task) => ({ ...task, prompt: undefined })) })
+  if (/\b(?:apiKey|accessToken|refreshToken)\b|https?:\/\//i.test(scanned)) {
+    throw new Error('AI 视频任务记录包含凭据或远程地址')
+  }
+  return { version: AI_VIDEO_TASK_VERSION, userId, tasks: tasks as StoredAiVideoTask[] }
 }
 
 export class AiVideoTaskStore {
@@ -190,7 +246,7 @@ export class AiVideoTaskStore {
     const filePath = this.filePath(userId)
     try {
       const content = await readSafeUtf8File(filePath, FILE_LABEL, MAXIMUM_FILE_BYTES)
-      return content === null ? { version: 1, userId, tasks: [] } : parseState(content, userId)
+      return content === null ? { version: AI_VIDEO_TASK_VERSION, userId, tasks: [] } : parseState(content, userId)
     } catch {
       try {
         const backup = `${filePath}.corrupt-${this.now().getTime()}-${this.randomUUID()}.bak`
@@ -198,7 +254,7 @@ export class AiVideoTaskStore {
       } catch {
         // Unsafe or missing state is left untouched and ignored.
       }
-      return { version: 1, userId, tasks: [] }
+      return { version: AI_VIDEO_TASK_VERSION, userId, tasks: [] }
     }
   }
 

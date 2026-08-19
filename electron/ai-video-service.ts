@@ -8,6 +8,7 @@ import {
 } from './ai-chat-protocol'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiStoredVideoAsset } from './ai-video-asset-store'
+import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-task-store'
 import type { AiVideoTaskStore, StoredAiVideoTask } from './ai-video-task-store'
 import type { AiOperationProgressObserver, AiOperationProgressUpdate } from './ai-operation-progress'
 
@@ -55,7 +56,7 @@ export interface GeneratedAiVideoAsset extends AiStoredVideoAsset {
 
 export interface AiVideoAssetWriter {
   prepareProject?(userId: number, projectId?: string): Promise<void>
-  storeMp4(userId: number, bytes: Buffer, metadata: { taskId: string; projectId?: string }): Promise<AiStoredVideoAsset>
+  storeMp4(userId: number, bytes: Buffer, metadata: { taskId: string; projectId?: string; prompt?: string }): Promise<AiStoredVideoAsset>
   readImageDataUri(userId: number, assetId: string, projectId?: string): Promise<string>
   readOwned?(
     userId: number,
@@ -426,7 +427,11 @@ export function createAiVideoService(options: {
     const asset = await options.assets.storeMp4(
       task.userId,
       bytes,
-      { taskId: task.taskId, ...(task.projectId ? { projectId: task.projectId } : {}) },
+      {
+        taskId: task.taskId,
+        ...(task.projectId ? { projectId: task.projectId } : {}),
+        ...(task.prompt ? { prompt: task.prompt } : {}),
+      },
     )
     await options.tasks.remove(task.userId, task.taskId)
     return { ...asset, taskId: task.taskId }
@@ -541,8 +546,16 @@ export function createAiVideoService(options: {
       } catch {
         throw ambiguousVideoSubmission()
       }
+      // A prompt too odd to record must not sink a task the server already
+      // accepted; the clip then simply lands without one.
+      let recordedPrompt: string | undefined
+      try {
+        recordedPrompt = normalizeAiVideoTaskPrompt(body.prompt)
+      } catch {
+        recordedPrompt = undefined
+      }
       const task: StoredAiVideoTask = {
-        version: 1,
+        version: AI_VIDEO_TASK_VERSION,
         userId: credential.userId,
         taskId,
         group: requiredIdentifier(input.group, '视频分组', 128),
@@ -554,6 +567,7 @@ export function createAiVideoService(options: {
         ...(input.nodeId ? { nodeId: input.nodeId } : {}),
         ...(input.attemptId ? { attemptId: input.attemptId } : {}),
         ...(input.graphRevision ? { graphRevision: input.graphRevision } : {}),
+        ...(recordedPrompt ? { prompt: recordedPrompt } : {}),
       }
       try {
         await options.tasks.commitReservation(reservationId, task)
