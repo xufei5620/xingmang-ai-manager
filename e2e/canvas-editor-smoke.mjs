@@ -498,6 +498,64 @@ try {
   await page.keyboard.press('Enter')
   await page.waitForFunction((expected) => document.querySelectorAll('.react-flow__node').length === expected, beforeContextCreate + 1)
   assert.equal(await page.locator('.react-flow__node-note').count(), 1, '画布右键菜单没有创建便签节点')
+  // Alignment snapping used to exist only in the view: the guides appeared and
+  // the node looked like it clicked into place, while the coordinate that went
+  // into the document, history and autosave stayed on the raw pointer. Drag
+  // stop, undo and redo all have to land on the snapped value.
+  await page.locator('.react-flow__node-note').first().locator('header').click()
+  await page.keyboard.press('Control+d')
+  await page.waitForFunction(() => document.querySelectorAll('.react-flow__node-note').length === 2)
+  await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
+  await page.waitForTimeout(360)
+  // The duplicate lands 32px off its original and stays selected, so it is the
+  // one on top and the one the pointer will grab.
+  const draggedNoteId = await page.locator('.react-flow__node-note.selected').first().getAttribute('data-id')
+  const noteIds = await page.locator('.react-flow__node-note').evaluateAll((elements) => elements.map((element) => element.getAttribute('data-id')))
+  const anchorNoteId = noteIds.find((id) => id !== draggedNoteId)
+  assert.ok(anchorNoteId, '复制便签之后找不到参照节点')
+  const anchorNote = page.locator(`.react-flow__node[data-id="${anchorNoteId}"]`)
+  const draggedNote = page.locator(`.react-flow__node[data-id="${draggedNoteId}"]`)
+  const anchorPosition = await canvasNodePosition(anchorNote)
+  const beforeDrag = await canvasNodePosition(draggedNote)
+  // A third node whose edge also lands within the threshold would win the snap
+  // and make this assertion measure the wrong thing, so rule that out first.
+  assert.equal(await page.evaluate(({ target, ignored }) => [...document.querySelectorAll('.react-flow__node')]
+    .filter((element) => !ignored.includes(element.getAttribute('data-id')))
+    .filter((element) => {
+      const match = /translate\((-?[\d.]+)px/.exec(element.style.transform)
+      if (!match) return false
+      const x = Number(match[1])
+      return [x, x + element.offsetWidth / 2, x + element.offsetWidth].some((edge) => Math.abs(edge - target) <= 6)
+    }).length, {
+    target: anchorPosition.x,
+    ignored: [anchorNoteId, draggedNoteId],
+  }), 0, '除了参照节点还有别的节点靠近吸附目标，这条断言测不准')
+  // Three canvas pixels off the anchor's left edge: inside the six pixel snap
+  // threshold, and far enough from it that a rounding error cannot pass.
+  const snapped = await dragCanvasNode(page, draggedNote, {
+    x: anchorPosition.x + 3 - beforeDrag.x,
+    y: anchorPosition.y + 260 - beforeDrag.y,
+  })
+  assert.equal(snapped.x, anchorPosition.x, '拖拽结束后文档里记录的仍是未吸附的坐标')
+  await page.keyboard.press('Control+z')
+  await page.waitForFunction(
+    ({ id, x }) => Math.abs(Number(/translate\((-?[\d.]+)px/.exec(document.querySelector(`.react-flow__node[data-id="${id}"]`).style.transform)[1]) - x) > 0.5,
+    { id: draggedNoteId, x: snapped.x },
+  )
+  await page.keyboard.press('Control+Shift+z')
+  await page.waitForFunction(
+    ({ id, x }) => Math.abs(Number(/translate\((-?[\d.]+)px/.exec(document.querySelector(`.react-flow__node[data-id="${id}"]`).style.transform)[1]) - x) < 0.5,
+    { id: draggedNoteId, x: snapped.x },
+  )
+  assert.equal((await canvasNodePosition(draggedNote)).x, anchorPosition.x, '重做之后吸附坐标丢失')
+  // Put the graph back the way the rest of the run expects it: an extra node
+  // this far down would widen the fitted bounds and push every node into the
+  // summary level of detail.
+  await draggedNote.locator('header').click()
+  await page.keyboard.press('Delete')
+  await page.waitForFunction(() => document.querySelectorAll('.react-flow__node-note').length === 1)
+  await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
+  await page.waitForTimeout(360)
   await page.getByRole('button', { name: '快速创建', exact: true }).click()
   const quickInsert = page.getByRole('dialog', { name: '快速创建' })
   await quickInsert.waitFor({ state: 'visible' })
@@ -1493,6 +1551,37 @@ async function findEmptyPanePoint(page) {
     }
     throw new Error('画布内没有可用空白位置')
   })
+}
+
+/** The canvas coordinate React Flow renders the node at, which is the document's. */
+async function canvasNodePosition(node) {
+  return node.evaluate((element) => {
+    const match = /translate\((-?[\d.]+)px,\s*(-?[\d.]+)px\)/.exec(element.style.transform)
+    if (!match) throw new Error('节点没有画布坐标')
+    return { x: Number(match[1]), y: Number(match[2]) }
+  })
+}
+
+/** Drags by a delta expressed in canvas units, and reports where the node landed. */
+async function dragCanvasNode(page, node, delta) {
+  const zoom = await page.evaluate(() => {
+    const viewport = document.querySelector('.react-flow__viewport')
+    const match = /scale\((-?[\d.]+)\)/.exec(viewport?.style.transform ?? '')
+    return match ? Number(match[1]) : 1
+  })
+  const bounds = await node.boundingBox()
+  assert.ok(bounds, '待拖拽节点不可见')
+  // The title strip is the only part of a note that is not `nodrag`.
+  const from = { x: bounds.x + bounds.width / 2, y: bounds.y + 8 }
+  await page.mouse.move(from.x, from.y)
+  await page.mouse.down()
+  // React Flow only enters a drag once the pointer has actually moved, so the
+  // gesture opens with a nudge before the real travel.
+  await page.mouse.move(from.x + 4, from.y + 4)
+  await page.mouse.move(from.x + delta.x * zoom, from.y + delta.y * zoom, { steps: 12 })
+  await page.mouse.up()
+  await page.waitForTimeout(120)
+  return canvasNodePosition(node)
 }
 
 async function connectCanvasNodes(page, sourceNode, sourceHandleId, targetNode, targetHandleId) {

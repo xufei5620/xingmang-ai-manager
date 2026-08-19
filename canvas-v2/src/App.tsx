@@ -41,7 +41,8 @@ import { NodeSearchPalette } from './components/NodeSearchPalette'
 import type { CanvasContextAction } from './editor/context-menu'
 import { alignNodePositions, distributeNodePositions, type AlignableNode, type CanvasAlignMode, type CanvasDistributeAxis } from './editor/align'
 import { bridgeEdgesForRemoval } from './editor/bridge-edges'
-import { resolveSnapGuides, type SnapBox, type SnapGuide } from './editor/snap-guides'
+import { type SnapBox, type SnapGuide } from './editor/snap-guides'
+import { snapDragPositionChanges } from './editor/drag-snap'
 import { findEdgeDropTarget } from './editor/edge-drop'
 import { edgesCrossedByStroke, strokePath, type Point } from './editor/cut-gesture'
 
@@ -1758,8 +1759,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       setNodes((current) => applyNodeChanges(changes, current))
       return
     }
-    onNodesChange(changes)
-  }, [onNodesChange, setNodes])
+    // Snapping happens here rather than in onNodeDrag because this is the frame
+    // the document records. Adjusting the view afterwards only moved the pixels.
+    const boxes = reactFlow.getNodes().map(snapBoxOfCanvasNode)
+    const groupIds = new Set(reactFlow.getNodes().filter((entry) => entry.type === 'group').map((entry) => entry.id))
+    const snapped = snapDragPositionChanges(changes, {
+      all: boxes,
+      candidates: boxes.filter((entry) => !groupIds.has(entry.id)),
+    })
+    setSnapGuides(snapped.guides)
+    onNodesChange(snapped.changes)
+  }, [onNodesChange, reactFlow, setNodes])
 
   const onCanvasNodeDragStart = useCallback((event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
     if (!('altKey' in event) || !event.altKey) return
@@ -1847,28 +1857,18 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     setBanner(`已把「${definition.title}」接入连线`)
   }, [edges, execute, nodes])
 
-  // Alignment guides while dragging a single node. Only for a lone node: with
-  // a multi-node drag the group has no single edge to align, and snapping one
-  // member would silently shear the arrangement the user already built.
+  // Where a dropped node would splice into a wire. The snapping itself happens
+  // in onCanvasNodesChange, so this reads the committed position rather than the
+  // raw pointer one and the highlight agrees with where the node will land.
   const onCanvasNodeDrag = useCallback((_event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
     if (draggedNodes.length > 1 || altDragSessionRef.current) {
-      if (snapGuides.length > 0) setSnapGuides([])
+      if (edgeDropTargetId) setEdgeDropTargetId(null)
       return
     }
-    const boxes = reactFlow.getNodes()
-      .filter((entry) => entry.id !== node.id && entry.type !== 'group')
-      .map(snapBoxOfCanvasNode)
-    const moving = snapBoxOfCanvasNode(node)
-    const result = resolveSnapGuides(moving, boxes)
-    setSnapGuides(result.guides)
-    if (result.position.x !== moving.x || result.position.y !== moving.y) {
-      setNodes((current) => current.map((entry) => (
-        entry.id === node.id ? { ...entry, position: result.position } : entry
-      )))
-    }
-    const target = findEdgeDropTarget({ ...moving, ...result.position }, edgeEndpoints())
+    const live = reactFlow.getNodes().find((entry) => entry.id === node.id) ?? node
+    const target = findEdgeDropTarget(snapBoxOfCanvasNode(live), edgeEndpoints())
     setEdgeDropTargetId(target?.id ?? null)
-  }, [edgeEndpoints, reactFlow, setNodes, snapGuides.length])
+  }, [edgeDropTargetId, edgeEndpoints, reactFlow])
 
   const onCanvasNodeDragStop = useCallback((_event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
     setSnapGuides([])
