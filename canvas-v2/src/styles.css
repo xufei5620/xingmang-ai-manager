@@ -1646,10 +1646,29 @@ button:disabled {
   white-space: nowrap;
 }
 
+/* Two error kinds that must not look alike. A validation problem is the user's
+   to fix before running (wrong model for the group); an execution failure
+   happened at runtime and may not be their fault (503, quota, filter). Showing
+   both in the same red is why people cannot tell "you configured this wrong"
+   from "the service hiccuped". */
 .wf-error {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-6);
   margin: var(--space-6) var(--space-10) 0;
   color: var(--danger);
   line-height: 1.45;
+}
+
+/* Optical alignment against the first text line, not spacing rhythm. */
+.wf-error > svg { flex: 0 0 auto; transform: translateY(1px); }
+
+.wf-error.is-validation {
+  padding: var(--space-6) var(--space-8);
+  color: var(--warning);
+  background: color-mix(in srgb, var(--warning) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--warning) 28%, transparent);
+  border-radius: var(--radius-chip);
 }
 
 .wf-result-note,

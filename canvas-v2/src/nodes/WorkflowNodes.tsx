@@ -1,6 +1,6 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
 import { Handle, NodeToolbar, Position, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import { AlertCircle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeDefinition } from '../domain/node-definition'
 import type { AssetRef, NodeKind, WorkflowNodeData } from '../model'
@@ -601,7 +601,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
               {!mediaModelAvailable && <option value={selectedModel} disabled>{imageModelPreset(selectedModel).label}（当前分组不可用）</option>}
               {imageModels.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
             </select>
-            {!mediaModelAvailable && <p className="wf-error">当前分组不提供此图像模型，请重新选择</p>}
+            {!mediaModelAvailable && <p className="wf-error is-validation" role="status"><AlertTriangle size={13} aria-hidden="true" />当前分组不提供此图像模型，请重新选择</p>}
             {/* One parameter per row on a shared label/control subgrid. Three
                 selects abreast left each about 93px, which truncated every
                 size and quality label. */}
@@ -649,7 +649,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
             {!mediaModelAvailable && <option value={selectedModel} disabled>{selectedVideoPreset.label}（当前分组不可用）</option>}
             {videoModels.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
           </select>
-          {!mediaModelAvailable && <p className="wf-error">当前分组不提供此视频模型，请重新选择</p>}
+          {!mediaModelAvailable && <p className="wf-error is-validation" role="status"><AlertTriangle size={13} aria-hidden="true" />当前分组不提供此视频模型，请重新选择</p>}
           {selectedVideoPreset.provider === 'minimax-h3' ? (
             <>
               <label className="wf-inline-field">
@@ -751,7 +751,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
             : '停止等待不等于取消已到达服务端的生成任务，可稍后从运行记录续查。'}</small>}
         </div>
       )}
-      {data.status === 'failed' && data.errorMessage && kind !== 'unknown' && <p className="wf-error" role="alert">{data.errorMessage}</p>}
+      {data.status === 'failed' && data.errorMessage && kind !== 'unknown' && <p className="wf-error" role="alert"><AlertCircle size={13} aria-hidden="true" />{data.errorMessage}</p>}
       {!mediaInput && displayedResult?.localUrl && displayedResult.kind === 'image' && (
         <SafeImage
           className="wf-preview"
