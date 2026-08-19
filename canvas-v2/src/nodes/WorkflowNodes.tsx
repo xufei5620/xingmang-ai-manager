@@ -31,6 +31,7 @@ import { PromptEditor } from '../components/PromptEditor'
 import { buildCanvasUpstreamReferences, type UpstreamMediaReference } from '../components/upstream-references'
 import { mediaAssetAspectRatio } from '../library/media-assets'
 import { createNodeRendererRegistry } from './node-renderer-registry'
+import { isMediaSourceKind, portSlotOffsetY } from './port-geometry'
 import type { CanvasNodeLod } from './node-lod'
 import { nodeResultStagingState } from '../runtime/run-projection'
 import { formatRunElapsed, runElapsedMilliseconds } from './run-timing'
@@ -459,7 +460,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
   const inputHint = multiInputHint(kind)
   const imageOperation = kind === 'image' || kind === 'image-generate' || kind === 'image-edit'
   const videoOperation = kind === 'video' || kind === 'video-generate'
-  const mediaInput = kind === 'image-input' || kind === 'video-input' || kind === 'audio-input'
+  const mediaInput = isMediaSourceKind(kind)
   const imageModels = modelAvailability.connected
     ? availableImageModelPresets(modelAvailability.imageModels)
     : [...imageModelPresets]
@@ -928,7 +929,7 @@ function PortHandle({ nodeId, port, index }: { nodeId: string; port: NodePortDef
       type={input ? 'target' : 'source'}
       id={port.id}
       position={input ? Position.Left : Position.Right}
-      style={{ top: 52 + index * 26 }}
+      style={{ top: portSlotOffsetY(index) }}
       className={`wf-port wf-port-${port.kind}${many ? ' wf-port-many' : ''}${connections.length > 0 ? ' is-connected' : ''}${guidance}`}
       title={`${port.label}${suffix} · ${state}`}
       aria-label={`${port.label}${many ? '，可连接多个' : ''}，${state}`}

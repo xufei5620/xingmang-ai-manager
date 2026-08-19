@@ -56,6 +56,16 @@ function snapBoxOfCanvasNode(node: { id: string; position: { x: number; y: numbe
     height: node.measured?.height ?? node.height ?? fallback?.height ?? 180,
   }
 }
+
+function portGeometryOfCanvasNode(node: CanvasNode, height: number): PortGeometryNode {
+  const kind = node.type ?? 'unknown'
+  return {
+    height,
+    centredOutput: isMediaSourceKind(kind) && Boolean(node.data?.result?.assetId),
+    ports: builtinNodeRegistry.resolve(kind)?.ports ?? [],
+  }
+}
+import { isMediaSourceKind, portOffsetY, type PortGeometryNode } from './nodes/port-geometry'
 import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
@@ -1781,8 +1791,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [])
 
-  // Endpoint coordinates for hit testing a node dropped onto a wire. Handle
-  // offsets mirror the port layout in WorkflowNodes (52px + 26px per port).
+  // Endpoint coordinates for cutting wires and for dropping a node onto one.
+  // The offsets come from the same module the handles are rendered from, so a
+  // node with several ports is hit tested where its wires actually attach.
   const edgeEndpoints = useCallback(() => {
     const byId = new Map(reactFlow.getNodes().map((entry) => [entry.id, entry]))
     return edges.flatMap((edge) => {
@@ -1797,8 +1808,14 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         sourceHandle: edge.sourceHandle,
         target: edge.target,
         targetHandle: edge.targetHandle,
-        sourcePoint: { x: sourceBox.x + sourceBox.width, y: sourceBox.y + 52 },
-        targetPoint: { x: targetBox.x, y: targetBox.y + 52 },
+        sourcePoint: {
+          x: sourceBox.x + sourceBox.width,
+          y: sourceBox.y + portOffsetY(portGeometryOfCanvasNode(source, sourceBox.height), 'output', edge.sourceHandle),
+        },
+        targetPoint: {
+          x: targetBox.x,
+          y: targetBox.y + portOffsetY(portGeometryOfCanvasNode(target, targetBox.height), 'input', edge.targetHandle),
+        },
       }]
     })
   }, [edges, reactFlow])
