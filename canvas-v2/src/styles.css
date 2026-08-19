@@ -1887,6 +1887,8 @@ button:disabled {
   transform: scale(1.18);
 }
 
+.canvas-selection-toolbar-group { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4); border-right: 1px solid var(--border-subtle); border-left: 1px solid var(--border-subtle); }
+
 .canvas-context-menu {
   position: absolute;
   z-index: var(--z-floating);

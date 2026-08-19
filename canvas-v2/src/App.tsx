@@ -37,6 +37,7 @@ import { canvasAriaLabelConfig } from './aria-labels'
 import { CanvasEdgeHandlersProvider, defaultEdgeOptions, edgeTypes } from './edges/WorkflowEdge'
 import { CanvasContextMenu, type CanvasContextMenuState } from './components/CanvasContextMenu'
 import type { CanvasContextAction } from './editor/context-menu'
+import { alignNodePositions, distributeNodePositions, type AlignableNode, type CanvasAlignMode, type CanvasDistributeAxis } from './editor/align'
 import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
@@ -1942,6 +1943,33 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
   }, [nodes, execute])
 
+  // React Flow keeps measured size on node.measured; the definition size is the
+  // fallback for a node that has not been laid out yet.
+  const alignableCanvasNode = useCallback((node: CanvasNode): AlignableNode => {
+    const fallback = builtinNodeRegistry.resolve(node.type ?? 'unknown')?.dimensions
+    return {
+      id: node.id,
+      position: node.position,
+      width: node.measured?.width ?? node.width ?? fallback?.width ?? 240,
+      height: node.measured?.height ?? node.height ?? fallback?.height ?? 180,
+      locked: node.draggable === false,
+    }
+  }, [])
+
+  const alignSelection = useCallback((mode: CanvasAlignMode) => {
+    const selected = nodes.filter((node) => node.selected)
+    const positions = alignNodePositions(selected.map(alignableCanvasNode), mode)
+    if (Object.keys(positions).length === 0) return
+    execute({ type: 'move-nodes', positions })
+  }, [execute, nodes])
+
+  const distributeSelection = useCallback((axis: CanvasDistributeAxis) => {
+    const selected = nodes.filter((node) => node.selected)
+    const positions = distributeNodePositions(selected.map(alignableCanvasNode), axis)
+    if (Object.keys(positions).length === 0) return
+    execute({ type: 'move-nodes', positions })
+  }, [execute, nodes])
+
   const openContextMenuFor = useCallback((event: { clientX: number; clientY: number; preventDefault(): void }, node: CanvasNode) => {
     event.preventDefault()
     const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
@@ -2816,6 +2844,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           allLocked={allSelectedLocked}
           canToggleDisabled={selectedDisableEligibleIds.length > 0}
           allDisabled={allSelectedDisabled}
+          onAlign={alignSelection}
+          onDistribute={distributeSelection}
           onCopy={copySelection}
           onDuplicate={() => { copySelection(); pasteSelection() }}
           onGroup={groupSelection}
