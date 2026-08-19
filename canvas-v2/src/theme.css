@@ -66,14 +66,23 @@
   --state-failed: var(--danger);
   --port-any: #8b95a3;
 
-  --space-1: 4px;
-  --space-2: 8px;
-  --space-3: 12px;
-  --space-4: 16px;
-  --space-5: 20px;
-  --space-6: 24px;
-  --space-8: 32px;
-  --space-12: 48px;
+  /* Named by value on purpose: --space-10 is 10px, with no index-to-pixel
+     lookup to get wrong. A 2px base rather than 4px, because this is a dense
+     tool UI whose controls were built on an even-pixel rhythm; forcing a 4px
+     grid would move 300+ declarations by up to 33% for no visual gain. */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-56: 56px;
 
   /* 11px is a hard floor. Below it, switch to a simplified representation
      rather than shrinking type further. */

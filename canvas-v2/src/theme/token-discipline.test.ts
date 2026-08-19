@@ -61,6 +61,19 @@ describe('canvas token discipline', () => {
     expect(Number(floor?.[1])).toBeGreaterThanOrEqual(11)
   })
 
+  it('draws every spacing value from the scale', () => {
+    const offenders = [...styleSheet().matchAll(
+      /(?:^|[;{\s])(padding|margin|gap|row-gap|column-gap)(?:-[a-z-]+)?\s*:\s*([^;}]+)/g,
+    )].flatMap((match) => {
+      const value = match[2].trim()
+      // Viewport-relative formulas and deliberate negative overlaps are not
+      // rhythm and are exempt by design.
+      if (/(calc|clamp|min|max)\(/.test(value)) return []
+      return value.split(/\s+/).filter((token) => /^[0-9.]+px$/.test(token)).map((token) => `${match[1]}: ${value}`)
+    })
+    expect([...new Set(offenders)]).toEqual([])
+  })
+
   it('keeps every corner radius within the eight pixel ceiling', () => {
     const offenders = [...styleSheet().matchAll(/border-radius:\s*([^;}]+)/g)]
       .flatMap((match) => match[1].trim().split(/\s+/))
