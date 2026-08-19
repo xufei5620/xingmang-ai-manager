@@ -28,6 +28,28 @@
   --port-image: #65c592;
   --port-video: #e58b6e;
   --port-audio: #d49ce8;
+  /* Chrome that sits on filled accent or over media keeps the same values in
+     both themes, because the surface underneath is dark either way. This is
+     the existing --surface-media convention. */
+  --text-on-accent: #ffffff;
+  --divider-on-accent: rgba(255, 255, 255, 0.2);
+  --media-overlay-bg: rgba(10, 13, 17, 0.85);
+  --media-overlay-border: rgba(255, 255, 255, 0.12);
+  --media-overlay-text: #e8edf5;
+  --media-overlay-text-strong: #ffffff;
+  --overlay-hover: rgba(255, 255, 255, 0.13);
+  --favorite: #ffd166;
+  --waveform: #1cb7d7;
+
+  --backdrop-soft: rgba(5, 7, 9, 0.6);
+  --backdrop: rgba(5, 7, 9, 0.72);
+  --backdrop-strong: rgba(5, 7, 9, 0.88);
+
+  --shadow-edge-highlight: 0 1px 0 rgba(255, 255, 255, 0.02);
+  --shadow-menu: 0 6px 18px rgba(0, 0, 0, 0.26);
+  --shadow-panel: 0 8px 22px rgba(0, 0, 0, 0.28);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.48);
+  --shadow-lightbox: 0 20px 70px rgba(0, 0, 0, 0.55);
   --shadow-floating: 0 12px 30px rgba(0, 0, 0, 0.32);
   --radius-chip: 4px;
   --radius-control: 6px;
@@ -134,6 +156,11 @@
      need no light override. Only the two standalone hues do. */
   --state-queued: #4a6ab0;
   --state-cached: #7c8794;
+  --shadow-edge-highlight: 0 1px 0 rgba(255, 255, 255, 0.5);
+  --shadow-menu: 0 6px 18px rgba(35, 47, 55, 0.14);
+  --shadow-panel: 0 8px 22px rgba(35, 47, 55, 0.16);
+  --shadow-modal: 0 20px 60px rgba(35, 47, 55, 0.24);
+  --shadow-lightbox: 0 20px 70px rgba(35, 47, 55, 0.3);
   --shadow-floating: 0 14px 34px rgba(35, 47, 55, 0.18);
   --xy-edge-stroke-default: #788792;
   --xy-attribution-background-color-default: rgba(255, 255, 255, 0.86);

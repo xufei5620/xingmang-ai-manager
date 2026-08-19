@@ -263,9 +263,9 @@ git diff --check
 
 | 项 | 状态 | 提交 | 备注 |
 |---|---|---|---|
-| B1-1 令牌补齐 | ● | (见下) | 新增间距 8 档、字阶 6 档、字重 4 档、层级 5 档、动效 3 项、运行状态 6 色、`--port-any`、节点几何 7 项;亮色主题补 3 个独立色值 |
-| B1-2 ReactFlowProvider 接管 | ● | (见下) | `main.tsx` 包 Provider;`App.tsx` 18 处 `reactFlowRef.current` → `useReactFlow()`,删 `onInit`。**语义修正**:`getNodes()` 在 hook 下返回 `[]` 而非 `undefined`,alt-drag 的 `?? fallback` 改为长度判断 |
-| B1-3 颜色迁移 | ○ | | 基线实测 91 处(37 hex + 54 rgba) |
+| B1-1 令牌补齐 | ● | `f62c6be` | 新增间距 8 档、字阶 6 档、字重 4 档、层级 5 档、动效 3 项、运行状态 6 色、`--port-any`、节点几何 7 项;亮色主题补 3 个独立色值 |
+| B1-2 ReactFlowProvider 接管 | ● | `f62c6be` | `main.tsx` 包 Provider;`App.tsx` 18 处 `reactFlowRef.current` → `useReactFlow()`,删 `onInit`。**语义修正**:`getNodes()` 在 hook 下返回 `[]` 而非 `undefined`,alt-drag 的 `?? fallback` 改为长度判断 |
+| B1-3 颜色迁移 | ● | (见下) | 91 → 44。新增 19 个语义令牌:`--text-on-accent`、`--divider-on-accent`、媒体覆盖层 4 项、`--overlay-hover`、`--favorite`、`--waveform`、背景遮罩 3 档、阴影 5 档。**剩余 44 处全部落在行业模板库 1900-1952 行**,归 B1-6。四视口平均亮度与基线逐位相同(28.6/26.0/25.0/21.2),迁移视觉忠实 |
 | B1-4 字阶统一 | ○ | | 基线实测 11 种字号,其中 8/9/10px 低于下限 |
 | B1-5 间距统一 | ○ | | |
 | B1-6 模板库微设计并入 | ○ | | 基线实测 `border-radius` 有 7 种超 8px 上限:9/10/12/14/15/18/20px,不只模板库一处 |
