@@ -1,8 +1,8 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
-import { Handle, NodeToolbar, Position, type Edge, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, NodeToolbar, Position, useNodeConnections, type Edge, type Node, type NodeProps } from '@xyflow/react'
 import { AlertCircle, AlertTriangle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
-import type { NodeDefinition } from '../domain/node-definition'
+import type { NodeDefinition, NodePortDefinition } from '../domain/node-definition'
 import type { AssetRef, NodeKind, WorkflowNodeData } from '../model'
 import type { CanvasAssetSummary } from '../host'
 import {
@@ -519,16 +519,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
         />
       )}
       {inputs.map((port, index) => (
-        <Handle
-          key={port.id}
-          type="target"
-          id={port.id}
-          position={Position.Left}
-          style={{ top: 52 + index * 26 }}
-          className={`wf-port wf-port-${port.kind}${port.cardinality === 'many' ? ' wf-port-many' : ''}`}
-          title={`${port.label}${port.cardinality === 'many' ? '（可连接多个）' : ''}`}
-          aria-label={`${port.label}${port.cardinality === 'many' ? '，可连接多个' : ''}`}
-        />
+        <PortHandle key={port.id} nodeId={id} port={port} index={index} />
       ))}
       <header>
         {/* Both lines ellipsize, so the full text must stay reachable. */}
@@ -868,17 +859,37 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
       </div>
       </div>
       {outputs.map((port, index) => (
-        <Handle
-          key={port.id}
-          type="source"
-          id={port.id}
-          position={Position.Right}
-          style={{ top: 52 + index * 26 }}
-          className={`wf-port wf-port-${port.kind}`}
-          title={port.label}
-        />
+        <PortHandle key={port.id} nodeId={id} port={port} index={index} />
       ))}
     </div>
+  )
+}
+
+/**
+ * A port encodes three independent facts: hue is the media type, shape is the
+ * cardinality, and fill is whether anything is actually attached. Reading the
+ * connection state needs a hook, so each port is its own component.
+ */
+function PortHandle({ nodeId, port, index }: { nodeId: string; port: NodePortDefinition; index: number }) {
+  const input = port.direction === 'input'
+  const connections = useNodeConnections({
+    id: nodeId,
+    handleType: input ? 'target' : 'source',
+    handleId: port.id,
+  })
+  const many = port.cardinality === 'many'
+  const suffix = many ? '（可连接多个）' : ''
+  const state = connections.length > 0 ? `已连接 ${connections.length} 条` : '未连接'
+  return (
+    <Handle
+      type={input ? 'target' : 'source'}
+      id={port.id}
+      position={input ? Position.Left : Position.Right}
+      style={{ top: 52 + index * 26 }}
+      className={`wf-port wf-port-${port.kind}${many ? ' wf-port-many' : ''}${connections.length > 0 ? ' is-connected' : ''}`}
+      title={`${port.label}${suffix} · ${state}`}
+      aria-label={`${port.label}${many ? '，可连接多个' : ''}，${state}`}
+    />
   )
 }
 

@@ -1836,6 +1836,12 @@ button:disabled {
    square accepts a list, a circle accepts one. */
 .wf-port-many { border-radius: 3px; }
 
+/* Fill encodes whether anything is attached. Resting ports are hollow rings so
+   an unwired input reads as an open socket rather than a finished connection;
+   hue and shape stay legible either way. */
+.wf-port:not(.is-connected) { background: var(--surface-2); }
+.wf-port.is-connected { box-shadow: 0 0 0 1px currentColor, 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent); }
+
 .wf-video-params { display: grid; grid-template-columns: minmax(40px, max-content) minmax(var(--node-control-min), 1fr); gap: var(--space-8) var(--space-6); }
 /* Full-width children (the model select, errors, toggles) span both tracks. */
 .wf-video-params > :not(.wf-inline-field) { grid-column: 1 / -1; }
