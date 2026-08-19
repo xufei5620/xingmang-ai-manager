@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
-import { ChevronLeft, ChevronRight, Clock3, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, Star, Tags, TriangleAlert, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, Clock3, Eye, Film, FolderOpen, MoreHorizontal, Music2, Pencil, Plus, RefreshCw, Search, ShieldCheck, SlidersHorizontal, Star, Tags, TriangleAlert, X } from 'lucide-react'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
 import { middleTruncate } from '../identifier-display'
@@ -18,6 +18,7 @@ import {
 } from './asset-selection'
 import { adjacentAssetId, assetGridKeyAction, rovingTabIndex, skeletonTileCount } from './asset-grid-keyboard'
 import { assetEmptyState } from './asset-empty-state'
+import { activeAssetFilters } from './asset-filter-chips'
 import {
   assetDensityLabel,
   assetDensityOrder,
@@ -124,6 +125,22 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
     setDensityState(next)
     writeAssetDensity(next)
   }
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false)
+  const filterAnchorRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (!filterMenuOpen) return undefined
+    // Pointer down rather than click: a select inside the popover swallows the
+    // click that dismisses its own dropdown, which would leave the popover open
+    // behind it on some platforms.
+    const closeOnOutside = (event: PointerEvent) => {
+      const anchor = filterAnchorRef.current
+      if (anchor && event.target instanceof Node && !anchor.contains(event.target)) setFilterMenuOpen(false)
+    }
+    window.addEventListener('pointerdown', closeOnOutside)
+    return () => window.removeEventListener('pointerdown', closeOnOutside)
+  }, [filterMenuOpen])
+  const filterChips = useMemo(() => activeAssetFilters(query), [query])
+  const filterCount = filterChips.length
   const searchInputRef = useRef<HTMLInputElement | null>(null)
   const gridRef = useRef<HTMLDivElement | null>(null)
   const tileRefs = useRef<(HTMLDivElement | null)[]>([])
@@ -240,42 +257,80 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
         <button type="button" className={query.view === 'favorites' ? 'is-active' : ''} aria-pressed={query.view === 'favorites'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'favorites' })}><Star size={12} />收藏</button>
         <button type="button" className={query.view === 'recent' ? 'is-active' : ''} aria-pressed={query.view === 'recent'} onClick={() => onQueryChange({ ...query, offset: 0, view: 'recent', sort: 'used-desc' })}><Clock3 size={12} />最近</button>
       </nav>
-      <form className="asset-tray-filters" role="search" onSubmit={submitSearch}>
-        <label>
-          <Search size={14} aria-hidden="true" />
-          <input ref={searchInputRef} value={search} maxLength={128} aria-label="搜索本地资产" placeholder="名称或资产 ID" onChange={(event) => setSearch(event.target.value)} />
-        </label>
-        <select
-          aria-label="资产类型"
-          value={query.mediaType}
-          onChange={(event) => onQueryChange({ ...query, offset: 0, mediaType: event.target.value as 'all' | 'image' | 'video' | 'audio' })}
-        >
-          <option value="all">全部类型</option>
-          <option value="image">图片</option>
-          <option value="video">视频</option>
-          <option value="audio">音频</option>
-        </select>
-        <select aria-label="素材来源" value={query.source} onChange={(event) => onQueryChange({ ...query, offset: 0, source: event.target.value as CanvasAssetQuery['source'] })}>
-          <option value="all">全部来源</option>
-          <option value="generated">AI 生成</option>
-          <option value="imported">本地导入</option>
-          <option value="legacy">历史素材</option>
-        </select>
-        <select aria-label="素材排序" value={query.sort} onChange={(event) => onQueryChange({ ...query, offset: 0, sort: event.target.value as CanvasAssetQuery['sort'] })}>
-          <option value="created-desc">最新创建</option>
-          <option value="created-asc">最早创建</option>
-          <option value="used-desc">最近使用</option>
-          <option value="name-asc">名称</option>
-        </select>
-      </form>
+      {/* One tool row instead of three stacked ones. The selects were about
+          eighty pixels of chrome sitting at their defaults nearly all the time;
+          they move into a popover, and what is actually narrowing the results
+          shows below as chips that can each be taken off. */}
       <div className="asset-tray-toolbar">
-        <div className="asset-tag-filter" aria-label="按标签筛选">
-          {query.tag && <button type="button" className="is-active" onClick={() => onQueryChange({ ...query, offset: 0, tag: '' })}>{query.tag}<X size={11} /></button>}
-          {visibleTags.filter(({ tag }) => tag !== query.tag).map(({ tag, count }) => (
-            <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>
-              {tag}<small>{count}</small>
-            </button>
-          ))}
+        <form className="asset-tray-search" role="search" onSubmit={submitSearch}>
+          <label>
+            <Search size={14} aria-hidden="true" />
+            <input ref={searchInputRef} value={search} maxLength={128} aria-label="搜索本地资产" placeholder="名称或资产 ID" onChange={(event) => setSearch(event.target.value)} />
+          </label>
+        </form>
+        <div className="asset-filter-anchor" ref={filterAnchorRef}>
+          <button
+            type="button"
+            className={`asset-filter-trigger${filterCount > 0 ? ' is-active' : ''}`}
+            title="筛选与排序"
+            aria-label="筛选与排序"
+            aria-expanded={filterMenuOpen}
+            aria-haspopup="dialog"
+            onClick={() => setFilterMenuOpen((open) => !open)}
+          >
+            <SlidersHorizontal size={14} />
+            {filterCount > 0 && <small>{filterCount}</small>}
+          </button>
+          {filterMenuOpen && (
+            <div
+              className="asset-filter-popover"
+              role="dialog"
+              aria-label="筛选与排序"
+              onKeyDown={(event) => { if (event.key === 'Escape') setFilterMenuOpen(false) }}
+            >
+              <label>
+                <span>类型</span>
+                <select
+                  aria-label="资产类型"
+                  value={query.mediaType}
+                  onChange={(event) => onQueryChange({ ...query, offset: 0, mediaType: event.target.value as 'all' | 'image' | 'video' | 'audio' })}
+                >
+                  <option value="all">全部类型</option>
+                  <option value="image">图片</option>
+                  <option value="video">视频</option>
+                  <option value="audio">音频</option>
+                </select>
+              </label>
+              <label>
+                <span>来源</span>
+                <select aria-label="素材来源" value={query.source} onChange={(event) => onQueryChange({ ...query, offset: 0, source: event.target.value as CanvasAssetQuery['source'] })}>
+                  <option value="all">全部来源</option>
+                  <option value="generated">AI 生成</option>
+                  <option value="imported">本地导入</option>
+                  <option value="legacy">历史素材</option>
+                </select>
+              </label>
+              <label>
+                <span>排序</span>
+                <select aria-label="素材排序" value={query.sort} onChange={(event) => onQueryChange({ ...query, offset: 0, sort: event.target.value as CanvasAssetQuery['sort'] })}>
+                  <option value="created-desc">最新创建</option>
+                  <option value="created-asc">最早创建</option>
+                  <option value="used-desc">最近使用</option>
+                  <option value="name-asc">名称</option>
+                </select>
+              </label>
+              {(visibleTags.length > 0 || query.tag) && (
+                <div className="asset-tag-filter" aria-label="按标签筛选">
+                  {query.tag && <button type="button" className="is-active" onClick={() => onQueryChange({ ...query, offset: 0, tag: '' })}>{query.tag}<X size={11} /></button>}
+                  {visibleTags.filter(({ tag }) => tag !== query.tag).map(({ tag, count }) => (
+                    <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>
+                      {tag}<small>{count}</small>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
         <div className="asset-density-switch" role="group" aria-label="素材密度">
           {assetDensityOrder.map((value) => (
@@ -291,6 +346,21 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
           ))}
         </div>
       </div>
+      {filterChips.length > 0 && (
+        <div className="asset-filter-chips" aria-label="生效中的筛选">
+          {filterChips.map((chip) => (
+            <button
+              type="button"
+              key={chip.id}
+              aria-label={`移除筛选：${chip.label}`}
+              onClick={() => {
+                if (chip.id === 'search') setSearch('')
+                onQueryChange({ ...query, offset: 0, ...chip.patch })
+              }}
+            >{chip.label}<X size={11} /></button>
+          ))}
+        </div>
+      )}
       <div
         className={`asset-tray-grid is-density-${density}${loading ? ' is-loading' : ''}`}
         ref={gridRef}

@@ -511,8 +511,21 @@ try {
   const fixtureAsset = page.getByRole('article', { name: /visual-fixture\.png/ })
   await fixtureAsset.waitFor({ state: 'visible' })
   assert.equal(await page.getByRole('navigation', { name: '素材快速视图' }).count(), 1, '素材库缺少全部/收藏/最近快速视图')
-  assert.equal(await page.getByRole('combobox', { name: '素材来源' }).count(), 1, '素材库缺少来源筛选')
-  assert.equal(await page.getByRole('combobox', { name: '素材排序' }).count(), 1, '素材库缺少排序')
+  // Type, source and sort sat at their defaults nearly all the time and cost
+  // two rows to say so. They live in a popover now, and whatever is actually
+  // narrowing the results shows as a chip that can be taken off.
+  const filterTrigger = page.getByRole('button', { name: '筛选与排序' })
+  await filterTrigger.click()
+  const filterPopover = page.getByRole('dialog', { name: '筛选与排序' })
+  await filterPopover.waitFor({ state: 'visible' })
+  assert.equal(await filterPopover.getByRole('combobox', { name: '素材来源' }).count(), 1, '筛选弹层缺少来源筛选')
+  assert.equal(await filterPopover.getByRole('combobox', { name: '素材排序' }).count(), 1, '筛选弹层缺少排序')
+  await filterPopover.getByRole('combobox', { name: '资产类型' }).selectOption('image')
+  await page.locator('.asset-filter-chips').getByRole('button', { name: '移除筛选：图片' }).waitFor({ state: 'visible' })
+  await page.mouse.click(4, 4)
+  await filterPopover.waitFor({ state: 'detached' })
+  await page.locator('.asset-filter-chips').getByRole('button', { name: '移除筛选：图片' }).click()
+  await page.locator('.asset-filter-chips').waitFor({ state: 'detached' })
   await fixtureAsset.hover()
   await fixtureAsset.getByRole('button', { name: /收藏：visual-fixture\.png/ }).click()
   await page.getByRole('navigation', { name: '素材快速视图' }).getByRole('button', { name: '收藏' }).click()
