@@ -515,13 +515,16 @@ try {
   await page.getByRole('navigation', { name: '素材快速视图' }).getByRole('button', { name: '全部' }).click()
   // Activation toggles, and selection now survives pointer movement, drags and
   // refreshes, so opening a tile has to be idempotent.
-  const openAssetDetails = async (asset) => {
-    const details = asset.locator('.asset-tray-item-details')
-    if (await details.count() === 0) await asset.locator('.asset-tray-item-preview').click()
-    await details.waitFor({ state: 'visible' })
+  // The panel is docked below the grid rather than expanded inside the tile, so
+  // opening a tile no longer reflows the tiles after it.
+  const openAssetDetails = async (asset, name) => {
+    const panel = page.getByRole('region', { name: `素材详情：${name}` })
+    if (await panel.count() === 0) await asset.locator('.asset-tray-item-preview').click()
+    await panel.waitFor({ state: 'visible' })
+    return panel
   }
-  const fixtureDetails = fixtureAsset.locator('.asset-tray-item-details')
-  await openAssetDetails(fixtureAsset)
+  const fixtureDetails = page.locator('.asset-tray-detail')
+  await openAssetDetails(fixtureAsset, 'visual-fixture.png')
   assert.equal(await fixtureDetails.getByText('图片 · image/png', { exact: true }).count(), 1, '图片详情缺少类型')
   assert.equal(await fixtureDetails.getByText('800 × 1000', { exact: true }).count(), 1, '图片详情缺少分辨率')
   assert.equal(await fixtureDetails.locator('dd').filter({ hasText: 'visual-fixture.png' }).count(), 1, '图片详情缺少原文件名')
@@ -548,7 +551,7 @@ try {
     return { opacity: style.opacity, pointerEvents: style.pointerEvents }
   })
   assert.deepEqual(hiddenToolStyle, { opacity: '0', pointerEvents: 'none' }, '鼠标移出后素材操作没有恢复默认隐藏态')
-  await openAssetDetails(fixtureAsset)
+  await openAssetDetails(fixtureAsset, 'visual-fixture.png')
   await fixtureAsset.dragTo(page.locator('.wf-drop-target').last())
   const importedPreview = page.locator('.react-flow__node-image-input .wf-preview').last()
   await importedPreview.waitFor({ state: 'visible' })
@@ -558,19 +561,19 @@ try {
   // Still open: dragging the tile out and back, and opening a lightbox over it,
   // are not deliberate deselections.
   await fixtureDetails.waitFor({ state: 'visible' })
-  await fixtureAsset.locator('.asset-tray-item-detail-head').getByRole('button', { name: '重命名素材：visual-fixture.png' }).click()
+  await fixtureDetails.locator('.asset-tray-item-detail-head').getByRole('button', { name: '重命名素材：visual-fixture.png' }).click()
   const renameDialog = page.getByRole('dialog', { name: '重命名素材' })
   await renameDialog.getByRole('textbox', { name: '显示名称' }).fill('产品主视觉')
   await renameDialog.getByRole('button', { name: '保存', exact: true }).click()
   await renameDialog.waitFor({ state: 'detached' })
-  await page.getByText('产品主视觉', { exact: true }).waitFor({ state: 'visible' })
+  await page.getByRole('article', { name: /产品主视觉/ }).waitFor({ state: 'visible' })
   await page.getByRole('button', { name: '刷新资产' }).click()
   const renamedAsset = page.getByRole('article', { name: /产品主视觉/ })
   await renamedAsset.waitFor({ state: 'visible' })
-  await openAssetDetails(renamedAsset)
-  assert.equal(await renamedAsset.getByText('visual-fixture.png', { exact: true }).count(), 1, '重命名错误修改了原文件名')
-  assert.equal(await renamedAsset.getByText(fixtureAssetId, { exact: true }).count(), 1, '重命名错误修改了资产 ID')
-  await renamedAsset.getByRole('button', { name: '检查素材引用：产品主视觉' }).click()
+  const renamedDetails = await openAssetDetails(renamedAsset, '产品主视觉')
+  assert.equal(await renamedDetails.getByText('visual-fixture.png', { exact: true }).count(), 1, '重命名错误修改了原文件名')
+  assert.equal(await renamedDetails.getByText(fixtureAssetId, { exact: true }).count(), 1, '重命名错误修改了资产 ID')
+  await renamedDetails.getByRole('button', { name: '检查素材引用：产品主视觉' }).click()
   const referenceDialog = page.getByRole('dialog', { name: '素材引用检查' })
   await referenceDialog.waitFor({ state: 'visible' })
   assert.equal(await referenceDialog.getByText('素材仍被工作流引用', { exact: true }).count(), 1, '引用检查没有识别当前画布中的素材节点')
@@ -585,9 +588,9 @@ try {
     imageNodesBeforeDuplicateReference + 1,
   )
   const audioFixture = page.getByRole('article', { name: /8月14日\.wav/ })
-  await audioFixture.locator('.asset-tray-item-preview').click()
-  assert.equal(await audioFixture.getByText('音频 · audio/wav', { exact: true }).count(), 1, '音频详情缺少类型')
-  assert.equal(await audioFixture.getByText('0:02', { exact: true }).count(), 1, '音频详情缺少时长')
+  const audioDetails = await openAssetDetails(audioFixture, '8月14日.wav')
+  assert.equal(await audioDetails.getByText('音频 · audio/wav', { exact: true }).count(), 1, '音频详情缺少类型')
+  assert.equal(await audioDetails.getByText('0:02', { exact: true }).count(), 1, '音频详情缺少时长')
   await audioFixture.hover()
   await audioFixture.getByRole('button', { name: '添加资产到画布：8月14日.wav' }).click()
   const audioPreview = page.locator('.react-flow__node-audio-input audio').last()

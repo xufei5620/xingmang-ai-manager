@@ -100,6 +100,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
     setSelection((value) => retainedAssetSelection(value, visibleAssetIds))
   }, [visibleAssetIds])
   const detailAssetId = assetSelectionDetailId(selection)
+  const detailAsset = detailAssetId ? page.items.find((asset) => asset.assetId === detailAssetId) ?? null : null
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault()
@@ -260,6 +261,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 tabIndex={0}
                 aria-label={`查看素材详情：${name}`}
                 aria-expanded={expanded}
+                aria-controls="asset-tray-detail-panel"
                 onClick={(event) => setSelection((value) => assetSelectionForActivation(
                   value, asset.assetId, visibleAssetIds, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey },
                 ))}
@@ -273,22 +275,22 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                   setSelection(next)
                 }}
               >
-                {/* At most one live media element exists in the grid: only the
-                    open tile mounts a video or audio player, every other tile
-                    shows a derived still. A page of tiles each holding their
-                    own <video> used to decode the full source media just to
-                    paint a preview a few hundred pixels wide. */}
-                {asset.mediaType === 'image'
-                  ? <SafeImage src={asset.thumbnailUrl} alt={name} loading="lazy" />
-                  : asset.mediaType === 'audio'
-                    ? expanded && isLocalCanvasAssetUrl(asset.localUrl, 'audio')
-                      ? <AudioPreview src={asset.localUrl} aria-label={name} />
-                      : <span className="asset-audio-placeholder"><Music2 size={22} /><small>{available ? '音频素材' : '素材不可用'}</small></span>
-                    : expanded && isLocalCanvasAssetUrl(asset.localUrl, 'video')
-                      ? <ViewportVideo src={asset.localUrl} aria-label={name} muted controls preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
-                      : available
-                        ? <SafeImage src={asset.thumbnailUrl} alt={name} loading="lazy" fallbackLabel="MP4 视频" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
-                        : <span className="asset-video-placeholder"><Film size={22} /><small>素材不可用</small></span>}
+                {/* The grid holds no live media at all: players live in the
+                    detail panel below, so at most one exists at a time. A page
+                    of tiles each holding their own <video> used to decode the
+                    full source media just to paint a preview a few hundred
+                    pixels wide. */}
+                {asset.mediaType === 'audio'
+                  ? <span className="asset-audio-placeholder"><Music2 size={22} /><small>{available ? '音频素材' : '素材不可用'}</small></span>
+                  : available
+                    ? <SafeImage
+                        src={asset.thumbnailUrl}
+                        alt={name}
+                        loading="lazy"
+                        fallbackLabel={asset.mediaType === 'video' ? 'MP4 视频' : '素材不可用'}
+                        style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
+                      />
+                    : <span className="asset-video-placeholder"><Film size={22} /><small>素材不可用</small></span>}
               </div>
               <div className="asset-tray-item-tools" aria-label="素材操作">
                 {onUpdateMetadata && <button type="button" className={asset.favorite ? 'is-favorite' : ''} title={asset.favorite ? '取消收藏' : '收藏'} aria-label={`${asset.favorite ? '取消收藏' : '收藏'}：${name}`} aria-pressed={asset.favorite} onClick={() => void onUpdateMetadata(asset.assetId, { favorite: !asset.favorite })}><Star size={13} fill={asset.favorite ? 'currentColor' : 'none'} /></button>}
@@ -297,44 +299,67 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={13} /></button>}
                 <button type="button" title="更多操作" aria-label={`打开素材操作：${name}`} onClick={() => onAssetMenu(asset.assetId)}><MoreHorizontal size={13} /></button>
               </div>
-              {expanded
-                ? <div className="asset-tray-item-details" aria-live="polite">
-                    <div className="asset-tray-item-detail-head">
-                      <strong title={name}>{name}</strong>
-                      {!available && <span className="asset-unavailable-badge">不可用</span>}
-                      {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={12} /></button>}
-                      {onUpdateMetadata && <button type="button" title="编辑标签" aria-label={`编辑素材标签：${name}`} onClick={() => { setTaggingAsset(asset); setTagDraft((asset.tags ?? []).join(', ')); setTagError(null) }}><Tags size={12} /></button>}
-                      {onInspectReferences && <button type="button" title="检查引用与删除保护" aria-label={`检查素材引用：${name}`} onClick={() => void inspectReferences(asset)}><ShieldCheck size={12} /></button>}
-                    </div>
-                    <dl>
-                      <div><dt>类型</dt><dd>{assetTypeName(asset)} · {asset.mimeType}</dd></div>
-                      {(asset.mediaType === 'image' || asset.mediaType === 'video') && asset.width && asset.height
-                        ? <div><dt>分辨率</dt><dd>{asset.width} × {asset.height}</dd></div>
-                        : null}
-                      {(asset.mediaType === 'video' || asset.mediaType === 'audio') && asset.durationSeconds
-                        ? <div><dt>时长</dt><dd>{formatAssetDuration(asset.durationSeconds)}</dd></div>
-                        : null}
-                      <div><dt>原文件</dt><dd title={asset.fileName}>{asset.fileName}</dd></div>
-                      <div><dt>创建时间</dt><dd>{assetCreatedAt(asset)}</dd></div>
-                      <div><dt>来源</dt><dd>{asset.source === 'generated' ? 'AI 生成' : asset.source === 'imported' ? '本地导入' : '历史素材'}</dd></div>
-                      {asset.lastUsedAt && <div><dt>最近使用</dt><dd>{new Date(asset.lastUsedAt).toLocaleString()}</dd></div>}
-                      {asset.lineage && <div><dt>生成来源</dt><dd>
-                        {onLocateSourceNode
-                          ? <button type="button" className="asset-lineage-link" title="定位到生成节点" onClick={() => onLocateSourceNode(asset.lineage!.nodeId)}>{asset.lineage.nodeId}</button>
-                          : asset.lineage.nodeId}
-                        {` · ${asset.lineage.sourceAssetIds.length} 个上游素材`}
-                      </dd></div>}
-                      {/* Shown in full: this panel exists to give the exact
-                          value, and a truncated hash cannot be copied. */}
-                      <div><dt>资产 ID</dt><dd className="is-identifier" title={asset.assetId}>{asset.assetId}</dd></div>
-                    </dl>
-                    {(asset.tags?.length ?? 0) > 0 && <div className="asset-item-tags">{asset.tags?.map((tag) => <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>{tag}</button>)}</div>}
-                  </div>
-                : <div className="asset-tray-item-meta"><span title={name}>{name}</span><small>{assetLabel(asset)}</small></div>}
+              <div className="asset-tray-item-meta"><span title={name}>{name}</span><small>{assetLabel(asset)}</small></div>
             </article>
           )
         })}
       </div>
+      {/* The detail panel is docked below the grid rather than expanded inside
+          the tile. Growing a tile in place reflowed every tile after it, which
+          moved the thing being inspected out from under the pointer. */}
+      {detailAsset && (() => {
+        const asset = detailAsset
+        const name = assetName(asset)
+        const available = assetAvailable(asset)
+        return (
+          <section className="asset-tray-detail" id="asset-tray-detail-panel" aria-live="polite" aria-label={`素材详情：${name}`}>
+            <div className="asset-tray-detail-preview">
+              {asset.mediaType === 'audio'
+                ? isLocalCanvasAssetUrl(asset.localUrl, 'audio')
+                  ? <AudioPreview src={asset.localUrl} aria-label={name} />
+                  : <span className="asset-audio-placeholder"><Music2 size={22} /><small>素材不可用</small></span>
+                : asset.mediaType === 'video'
+                  ? isLocalCanvasAssetUrl(asset.localUrl, 'video')
+                    ? <ViewportVideo src={asset.localUrl} aria-label={name} muted controls preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
+                    : <span className="asset-video-placeholder"><Film size={22} /><small>素材不可用</small></span>
+                  : <SafeImage src={asset.thumbnailUrl} alt={name} loading="lazy" />}
+            </div>
+            <div className="asset-tray-item-details">
+              <div className="asset-tray-item-detail-head">
+                <strong title={name}>{name}</strong>
+                {!available && <span className="asset-unavailable-badge">不可用</span>}
+                {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={12} /></button>}
+                {onUpdateMetadata && <button type="button" title="编辑标签" aria-label={`编辑素材标签：${name}`} onClick={() => { setTaggingAsset(asset); setTagDraft((asset.tags ?? []).join(', ')); setTagError(null) }}><Tags size={12} /></button>}
+                {onInspectReferences && <button type="button" title="检查引用与删除保护" aria-label={`检查素材引用：${name}`} onClick={() => void inspectReferences(asset)}><ShieldCheck size={12} /></button>}
+                <button type="button" title="关闭详情" aria-label={`关闭素材详情：${name}`} onClick={() => setSelection(emptyAssetSelection)}><X size={12} /></button>
+              </div>
+              <dl>
+                <div><dt>类型</dt><dd>{assetTypeName(asset)} · {asset.mimeType}</dd></div>
+                {(asset.mediaType === 'image' || asset.mediaType === 'video') && asset.width && asset.height
+                  ? <div><dt>分辨率</dt><dd>{asset.width} × {asset.height}</dd></div>
+                  : null}
+                {(asset.mediaType === 'video' || asset.mediaType === 'audio') && asset.durationSeconds
+                  ? <div><dt>时长</dt><dd>{formatAssetDuration(asset.durationSeconds)}</dd></div>
+                  : null}
+                <div><dt>原文件</dt><dd title={asset.fileName}>{asset.fileName}</dd></div>
+                <div><dt>创建时间</dt><dd>{assetCreatedAt(asset)}</dd></div>
+                <div><dt>来源</dt><dd>{asset.source === 'generated' ? 'AI 生成' : asset.source === 'imported' ? '本地导入' : '历史素材'}</dd></div>
+                {asset.lastUsedAt && <div><dt>最近使用</dt><dd>{new Date(asset.lastUsedAt).toLocaleString()}</dd></div>}
+                {asset.lineage && <div><dt>生成来源</dt><dd>
+                  {onLocateSourceNode
+                    ? <button type="button" className="asset-lineage-link" title="定位到生成节点" onClick={() => onLocateSourceNode(asset.lineage!.nodeId)}>{asset.lineage.nodeId}</button>
+                    : asset.lineage.nodeId}
+                  {` · ${asset.lineage.sourceAssetIds.length} 个上游素材`}
+                </dd></div>}
+                {/* Shown in full: this panel exists to give the exact value, and
+                    a truncated hash cannot be copied. */}
+                <div><dt>资产 ID</dt><dd className="is-identifier" title={asset.assetId}>{asset.assetId}</dd></div>
+              </dl>
+              {(asset.tags?.length ?? 0) > 0 && <div className="asset-item-tags">{asset.tags?.map((tag) => <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>{tag}</button>)}</div>}
+            </div>
+          </section>
+        )
+      })()}
       <footer className="asset-tray-pagination">
         <span>{firstItem}-{lastItem} / {page.total}</span>
         <button type="button" title="上一页" aria-label="上一页资产" disabled={loading || page.offset === 0} onClick={() => onQueryChange({ ...query, offset: Math.max(0, page.offset - page.limit) })}><ChevronLeft size={15} /></button>

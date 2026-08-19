@@ -381,7 +381,8 @@ git diff --check
 | B4-4 视频封面帧 | ◐ | | 走 `nativeImage.createThumbnailFromPath`(Windows/macOS,正是本产品的两个平台),其他平台返回 null 由界面回退占位图。**`<video>` seek 回退未做**:那需要渲染进程里的 video 元素,与 B4-5「全网格最多一个活动媒体元素」直接冲突,且只为我们不发布的平台服务 |
 | B4-5 停止每瓦片挂 video | ◐ | | 资产栏只有**展开中的那一张**挂 video/audio 播放器,其余一律渲染派生静帧;`NodeLibrary` 的素材条从不播放,已整条改为静帧。**悬停擦除雪碧图未做**:多帧抽取需要按任意时间戳 seek,`createThumbnailFromPath` 只给一帧,而唯一的通用方案 ffmpeg 的 npm 包是 GPL-3.0-or-later,已排除。零依赖约束下做不到 |
 | B4-8 多选 | ● | | 选中从单个 id 换成 `{ ids: Set, anchor }`:Ctrl/Cmd 切换、Shift 从锚点拉范围(锚点不动,范围可反复重画)、Ctrl+A 全选当前页、右键命中已选区时保留整个选区。**「展开」与「选中」拆开**——详情面板只在恰好选中一个时出现,`is-selected` 只画描边、`is-expanded` 才占整行,否则拉一个范围会把每张卡都撑成整行 |
-| B4-9 … B4-16 | ○ | | |
+| B4-9 详情面板移出卡片 | ● | | 详情改为停靠在网格下方(`.asset-tray-detail`,`max-height: 42%` 自带滚动),瓦片不再原地长高,后面的瓦片不会被推走。顺带把 B4-5 做到底:播放器只存在于详情面板,**网格里一个 live media 都没有**(旧写法是「展开的那张挂播放器」) |
+| B4-10 … B4-16 | ○ | | |
 
 ---
 

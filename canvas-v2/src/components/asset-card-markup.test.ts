@@ -51,10 +51,15 @@ describe('canvas asset card markup', () => {
   it('renders derived stills and keeps at most one live media element in the grid', () => {
     // Every video tile used to mount its own <video>, so a page of two dozen
     // decoded the full source media just to paint previews a few hundred pixels
-    // wide. Only the open tile gets a player now; the rest show a thumbnail.
+    // wide. Players now live only in the docked detail panel, of which there is
+    // one, so the grid itself holds no live media at all.
     const tray = componentSource('AssetTray.tsx')
-    expect(tray).toContain("expanded && isLocalCanvasAssetUrl(asset.localUrl, 'video')")
-    expect(tray).toContain("expanded && isLocalCanvasAssetUrl(asset.localUrl, 'audio')")
+    const gridMarkup = tray.slice(tray.indexOf('className="asset-tray-grid"'), tray.indexOf('className="asset-tray-detail"'))
+    const detailMarkup = tray.slice(tray.indexOf('className="asset-tray-detail"'))
+    expect(gridMarkup).not.toContain('<ViewportVideo')
+    expect(gridMarkup).not.toContain('<AudioPreview')
+    expect(detailMarkup).toContain("isLocalCanvasAssetUrl(asset.localUrl, 'video')")
+    expect(detailMarkup).toContain("isLocalCanvasAssetUrl(asset.localUrl, 'audio')")
     expect(tray).not.toMatch(/controls=\{(selected|expanded)\}/)
     const library = componentSource('NodeLibrary.tsx')
     expect(library).not.toContain('<ViewportVideo')

@@ -1041,7 +1041,6 @@ button:disabled {
 /* Selection marks a tile; only the single expanded tile takes the full row,
    otherwise selecting a range would stack every tile into one column. */
 .asset-tray-item.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
-.asset-tray-item.is-expanded { grid-column: 1 / -1; }
 .asset-tray-item-audio { grid-column: 1 / -1; }
 .asset-tray-item-audio .asset-tray-item-preview { min-height: 76px; }
 .asset-tray-item-preview { display: grid; width: 100%; min-height: 96px; place-items: center; overflow: hidden; padding: 0; background: var(--surface-media); border: 0; cursor: pointer; outline: 0; }
@@ -1053,6 +1052,12 @@ button:disabled {
 .asset-tray-item-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .asset-tray-item-meta > span { font-size: var(--text-xs); }
 .asset-tray-item-meta > small { color: var(--text-muted); font-size: var(--text-xs); }
+/* Docked below the grid, capped so a long metadata list cannot squeeze the grid
+   out of view; the grid keeps its own scroll area above. */
+.asset-tray-detail { display: grid; max-height: 42%; flex: 0 0 auto; gap: 0; overflow: auto; border-top: 1px solid var(--border-subtle); }
+.asset-tray-detail-preview { display: grid; min-height: 96px; place-items: center; overflow: hidden; background: var(--surface-media); }
+.asset-tray-detail-preview img,
+.asset-tray-detail-preview video { display: block; width: auto; max-width: 100%; height: auto; max-height: 176px; object-fit: contain; }
 .asset-tray-item-details { display: grid; min-height: 40px; gap: var(--space-6); padding: var(--space-6) var(--space-8) var(--space-8); background: var(--surface-2); border-top: 1px solid var(--border-subtle); }
 .asset-tray-item-detail-head { display: flex; min-width: 0; align-items: center; gap: var(--space-4); }
 .asset-tray-item-detail-head strong { min-width: 0; flex: 1; }
