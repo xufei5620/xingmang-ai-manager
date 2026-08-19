@@ -1881,6 +1881,34 @@ button:disabled {
   transform: scale(1.18);
 }
 
+.canvas-context-menu {
+  position: absolute;
+  z-index: var(--z-floating);
+  display: grid;
+  min-width: 168px;
+  padding: var(--space-4);
+  background: var(--surface-floating-strong);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-control);
+  box-shadow: var(--shadow-menu);
+}
+.canvas-context-menu button {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  padding: 0 var(--space-8);
+  color: var(--text-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-chip);
+  font-size: var(--text-xs);
+  text-align: left;
+}
+.canvas-context-menu button:hover:not(:disabled) { color: var(--text-primary); background: var(--surface-hover); }
+.canvas-context-menu button:disabled { opacity: .45; }
+.canvas-context-menu button.has-separator { margin-top: var(--space-4); border-top: 1px solid var(--border-subtle); padding-top: var(--space-6); border-radius: 0 0 var(--radius-chip) var(--radius-chip); }
+.canvas-context-menu button.is-danger { color: var(--danger); }
+
 .wf-edge-hit { cursor: pointer; pointer-events: stroke; }
 .wf-edge { transition: stroke-width var(--duration-fast) var(--ease-out); }
 .wf-edge-toolbar {

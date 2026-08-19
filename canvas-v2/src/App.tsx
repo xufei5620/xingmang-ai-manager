@@ -35,6 +35,8 @@ import { createHostExecutors } from './engine/executors'
 import { hostBridge } from './host'
 import { canvasAriaLabelConfig } from './aria-labels'
 import { CanvasEdgeHandlersProvider, defaultEdgeOptions, edgeTypes } from './edges/WorkflowEdge'
+import { CanvasContextMenu, type CanvasContextMenuState } from './components/CanvasContextMenu'
+import type { CanvasContextAction } from './editor/context-menu'
 import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
@@ -588,6 +590,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     compatibleHandles?: Readonly<Record<string, string>>
   } | null>(null)
   const [templateCatalog, setTemplateCatalog] = useState<{ initialTemplateId?: string } | null>(null)
+  const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null)
   const abortRef = useRef<AbortController | null>(null)
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
@@ -1935,6 +1938,32 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
   }, [nodes, execute])
 
+  const openContextMenuFor = useCallback((event: { clientX: number; clientY: number; preventDefault(): void }, node: CanvasNode) => {
+    event.preventDefault()
+    const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
+    if (!bounds) return
+    // Right-clicking an unselected node acts on that node alone; right-clicking
+    // inside an existing selection acts on the whole selection. This is the
+    // file-manager convention and users rely on it for batch actions.
+    const selected = nodes.filter((entry) => entry.selected)
+    const scope = selected.some((entry) => entry.id === node.id) && selected.length > 1 ? selected : [node]
+    const disableEligible = scope.filter((entry) => entry.type !== 'unknown')
+    setQuickInsert(null)
+    setContextMenu({
+      nodeId: node.id,
+      x: Math.max(8, Math.min(bounds.width - 190, event.clientX - bounds.left)),
+      y: Math.max(8, Math.min(bounds.height - 260, event.clientY - bounds.top)),
+      target: scope.length > 1 ? 'selection' : 'node',
+      selectionCount: scope.length,
+      executable: builtinNodeRegistry.resolve(node.type ?? 'unknown')?.executable === true,
+      running: node.data.status === 'running' || node.data.status === 'queued',
+      hasGroup: scope.some((entry) => entry.type === 'group'),
+      allLocked: scope.every((entry) => entry.draggable === false),
+      allDisabled: disableEligible.length > 0 && disableEligible.every((entry) => entry.disabled === true),
+      canDisable: disableEligible.length > 0,
+    })
+  }, [nodes])
+
   const deleteSelection = useCallback(() => {
     const nodeIds = nodes.filter((node) => node.selected).map((node) => node.id)
     if (nodeIds.length === 0) return
@@ -2045,6 +2074,27 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       compatibleHandles,
     })
   }, [edges, nodes, reactFlow])
+
+  const runContextAction = useCallback((action: CanvasContextAction, nodeId: string) => {
+    const scopeIds = contextMenu && contextMenu.selectionCount > 1
+      ? nodes.filter((node) => node.selected).map((node) => node.id)
+      : [nodeId]
+    const disableEligible = nodes
+      .filter((node) => scopeIds.includes(node.id) && node.type !== 'unknown')
+      .map((node) => node.id)
+    if (action === 'run') { void rerunNode(nodeId); return }
+    if (action === 'locate') { locateNode(nodeId); return }
+    if (action === 'copy') { copySelection(); return }
+    if (action === 'duplicate') { copySelection(); pasteSelection(); return }
+    if (action === 'group') { groupSelection(); return }
+    if (action === 'ungroup') { ungroupSelection(); return }
+    if (action === 'lock' || action === 'unlock') { setNodeFlags(scopeIds, 'locked', action === 'lock'); return }
+    if (action === 'disable' || action === 'enable') { setNodeFlags(disableEligible, 'disabled', action === 'disable'); return }
+    if (action === 'delete') {
+      execute({ type: 'delete-elements', nodeIds: scopeIds })
+      setBanner(`已删除 ${scopeIds.length} 个节点`)
+    }
+  }, [contextMenu, copySelection, execute, groupSelection, locateNode, nodes, pasteSelection, rerunNode, setNodeFlags, ungroupSelection])
 
   // Handed to the custom edge through context rather than through edge data, so
   // the callbacks are not serialized into the document on every render.
@@ -2708,7 +2758,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           // Nodes host textareas and selects: without a threshold a 2px twitch
           // while clicking one starts a node drag instead.
           nodeDragThreshold={3}
-          onPaneClick={() => { setQuickInsert(null); setRunMenuOpen(false); setMoreActionsOpen(false) }}
+          onNodeContextMenu={(event, node) => openContextMenuFor(event, node)}
+          onSelectionContextMenu={(event, selected) => { if (selected[0]) openContextMenuFor(event, selected[0]) }}
+          onPaneClick={() => { setQuickInsert(null); setContextMenu(null); setRunMenuOpen(false); setMoreActionsOpen(false) }}
           onPaneContextMenu={(event) => {
             event.preventDefault()
             openQuickInsertAt({ x: event.clientX, y: event.clientY })
@@ -2743,6 +2795,13 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           <Controls />
         </ReactFlow>
         </CanvasEdgeHandlersProvider>
+        {contextMenu && (
+          <CanvasContextMenu
+            state={contextMenu}
+            onAction={runContextAction}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
         </CanvasUpstreamReferencesProvider>
         </CanvasNodeViewProvider>
         </CanvasModelAvailabilityProvider>
