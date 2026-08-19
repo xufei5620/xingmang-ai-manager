@@ -104,6 +104,16 @@ export interface CanvasAssetPage {
   limit: number
   total: number
   hasMore: boolean
+  /** Counted over the whole library, so the panel does not change while paging. */
+  facets: CanvasAssetFacets
+}
+
+export interface CanvasAssetFacets {
+  tags: Array<{ tag: string; count: number }>
+}
+
+export function emptyCanvasAssetPage(offset = 0, limit = 24): CanvasAssetPage {
+  return { items: [], offset, limit, total: 0, hasMore: false, facets: { tags: [] } }
 }
 
 export interface CanvasAssetReferenceReport {
@@ -446,7 +456,7 @@ export function hostBridge(): CanvasHostBridge {
     async saveAsset() { return unavailable() },
     async showAssetMenu() { return unavailable() },
     async listAssets(query = {}) {
-      return { items: [], offset: query.offset ?? 0, limit: query.limit ?? 24, total: 0, hasMore: false }
+      return emptyCanvasAssetPage(query.offset ?? 0, query.limit ?? 24)
     },
     async renameAsset() { return unavailable() },
     async updateAssetMetadata() { return unavailable() },

@@ -375,6 +375,7 @@ git diff --check
 |---|---|---|---|
 | B4-1 修正截断搜索 | ● | | 新增 `electron/ai-asset-index.ts`:只走 readdir + lstat、**不读任何媒体字节**地枚举全部资产,三个 store 各加 `listOwnedIndex`。`listOwnedPage` 改为「索引全集 → 关联元数据 → 筛选 → 排序 → 切页 → 只水合当前页」。`total` 与 `hasMore` 现在是真实值;offset 上限从 500 提到 20000。元数据关联改用新增的 `metadata.getAll`(`getMany` 有 1500 个 id 上限,分块会把同一状态文件重复读多遍)。水合串行执行:每次读入一个受 store 上限约束的完整文件,128 MB 视频乘并发度是真实的内存尖峰;串行读至多 `limit` 个文件仍远优于旧路径的 500 个 |
 | B4-7 选中模型显式化 | ● | | 删掉 `onMouseLeave` 里的清选中 + `focused.blur()`:指针划过网格会抢走键盘用户正在操作的卡片焦点,是无障碍缺陷。选中改为显式:激活打开、再次激活关闭、Esc 关闭、点空白处关闭,指针移动不再影响选中或焦点。状态迁移抽到纯模块 `canvas-v2/src/components/asset-selection.ts` 并单测。补 `aria-expanded` |
+| B4-6 分面计数走全集 | ● | | 标签筛选面原先从 `page.items` 派生,翻一页就变。服务层在全集上算 `facets.tags`(含计数),**在标签筛选之前统计**,选中某个标签不会抹掉同级标签;其他筛选(视图/来源/搜索)仍会收窄计数,保持面板诚实。`CanvasAssetPage` 新增必填 `facets`,空页统一走新的 `emptyCanvasAssetPage()`。服务侧计数上限 64 项以免 DTO 无界增长 |
 | B4-2 … B4-16 | ○ | | |
 
 ---

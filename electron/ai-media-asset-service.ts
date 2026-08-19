@@ -28,6 +28,12 @@ export interface AiMediaAssetListPage {
   limit: number
   total: number
   hasMore: boolean
+  facets: AiMediaAssetFacets
+}
+
+export interface AiMediaAssetFacets {
+  /** Ordered by descending count, then by name. Counts cover the whole library. */
+  tags: Array<{ tag: string; count: number }>
 }
 
 interface AiMediaAssetRow {
@@ -37,6 +43,21 @@ interface AiMediaAssetRow {
   tags: string[]
   source: AiAssetSource
   lastUsedAt?: string
+}
+
+// Bounded so the facet panel cannot grow a DTO without limit: the metadata
+// store allows twelve tags per asset across five thousand assets.
+const MAXIMUM_TAG_FACETS = 64
+
+function tagFacets(rows: readonly AiMediaAssetRow[]): AiMediaAssetFacets['tags'] {
+  const counts = new Map<string, number>()
+  for (const row of rows) {
+    for (const tag of row.tags) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+  }
+  return [...counts]
+    .map(([tag, count]) => ({ tag, count }))
+    .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag, 'zh-CN'))
+    .slice(0, MAXIMUM_TAG_FACETS)
 }
 
 export function createAiMediaAssetService(options: {
@@ -90,7 +111,7 @@ export function createAiMediaAssetService(options: {
     ])
     const metadata = await options.metadata.getAll(userId)
     const normalizedSearch = search.toLocaleLowerCase('zh-CN')
-    const rows = [...images, ...videos, ...audios]
+    const scoped = [...images, ...videos, ...audios]
       .map((entry): AiMediaAssetRow => {
         const logical = metadata[entry.assetId]
         return {
@@ -104,10 +125,15 @@ export function createAiMediaAssetService(options: {
       })
       .filter((row) => view !== 'favorites' || row.favorite)
       .filter((row) => view !== 'recent' || Boolean(row.lastUsedAt))
-      .filter((row) => !tag || row.tags.includes(tag))
       .filter((row) => source === 'all' || row.source === source)
       .filter((row) => !normalizedSearch || [row.displayName, row.entry.fileName, row.entry.assetId, ...row.tags]
         .some((value) => value.toLocaleLowerCase('zh-CN').includes(normalizedSearch)))
+    // Counted before the tag filter so that picking one tag does not erase its
+    // siblings from the panel, and over the whole scoped library rather than
+    // the current page, which used to make the tag list change while paging.
+    const facets = { tags: tagFacets(scoped) }
+    const rows = scoped
+      .filter((row) => !tag || row.tags.includes(tag))
       .sort((left, right) => {
         if (sort === 'created-asc') return left.entry.createdAt.localeCompare(right.entry.createdAt) || left.entry.assetId.localeCompare(right.entry.assetId)
         if (sort === 'used-desc') return (right.lastUsedAt ?? '').localeCompare(left.lastUsedAt ?? '') || right.entry.createdAt.localeCompare(left.entry.createdAt) || right.entry.assetId.localeCompare(left.entry.assetId)
@@ -121,6 +147,7 @@ export function createAiMediaAssetService(options: {
       limit,
       total: rows.length,
       hasMore: offset + page.length < rows.length,
+      facets,
     }
   }
 

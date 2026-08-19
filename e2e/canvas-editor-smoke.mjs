@@ -128,8 +128,15 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
     if (query.view === 'favorites') items = items.filter((entry) => entry.favorite)
     if (query.view === 'recent') items = items.filter((entry) => entry.lastUsedAt)
     if (query.source && query.source !== 'all') items = items.filter((entry) => entry.source === query.source)
+    // Facets are counted before the tag filter, matching the real service, so
+    // that picking a tag does not erase its siblings from the panel.
+    const counts = new Map()
+    for (const entry of items) for (const tag of entry.tags) counts.set(tag, (counts.get(tag) || 0) + 1)
+    const tags = [...counts]
+      .map(([tag, count]) => ({ tag, count }))
+      .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag, 'zh-CN'))
     if (query.tag) items = items.filter((entry) => entry.tags.includes(query.tag))
-    return { items, offset: query.offset || 0, limit: query.limit || 24, total: items.length, hasMore: false }
+    return { items, offset: query.offset || 0, limit: query.limit || 24, total: items.length, hasMore: false, facets: { tags } }
   },
   listPromptPresets: async () => [],
   listRuns: async () => [],

@@ -72,6 +72,7 @@ import {
 import { CanvasModelAvailabilityProvider, CanvasNodeViewProvider, CanvasUpstreamReferencesProvider, ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
 import { canvasNodeLodForZoom, type CanvasNodeLod } from './nodes/node-lod'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetSummary, CanvasGeneratedAsset, CanvasGeneratedVideoAsset, CanvasGroupSummary, CanvasPromptPreset, CanvasRunGraph, CanvasRunRecord, CanvasRunScope, CanvasStoredProjectSummary } from './host'
+import { emptyCanvasAssetPage } from './host'
 import { AssetTray } from './components/AssetTray'
 import { MediaLightbox } from './components/MediaPreview'
 import { autoLayoutCanvasNodes } from './editor/auto-layout'
@@ -578,7 +579,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [preparingMedia, setPreparingMedia] = useState<MediaPreparationKind | null>(null)
   const [assetTrayOpen, setAssetTrayOpen] = useState(false)
   const [assetsLoading, setAssetsLoading] = useState(false)
-  const [assetPage, setAssetPage] = useState<CanvasAssetPage>({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })
+  const [assetPage, setAssetPage] = useState<CanvasAssetPage>(emptyCanvasAssetPage())
   const [assetCatalog, setAssetCatalog] = useState<CanvasAssetSummary[]>([])
   const [userPromptPresets, setUserPromptPresets] = useState<CanvasPromptPreset[]>([])
   const [assetQuery, setAssetQuery] = useState<Required<Pick<CanvasAssetQuery, 'offset' | 'limit' | 'mediaType' | 'view' | 'source' | 'sort'>> & Pick<CanvasAssetQuery, 'search' | 'tag'>>({
@@ -1130,7 +1131,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     let active = true
     const query = { offset: 0, limit: 24, mediaType: 'all' as const, search: '', view: 'all' as const, source: 'all' as const, sort: 'created-desc' as const, tag: '' }
     setAssetQuery(query)
-    setAssetPage({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })
+    setAssetPage(emptyCanvasAssetPage())
     setAssetCatalog([])
     if (!activeProject) return () => { active = false }
     setAssetsLoading(true)

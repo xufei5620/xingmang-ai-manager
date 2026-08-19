@@ -233,6 +233,47 @@ describe('createAiMediaAssetService', () => {
     expect(metadata.updatePreferences).toHaveBeenCalledTimes(1)
   })
 
+  it('counts tag facets over the whole library rather than the current page', async () => {
+    // The tray derived its tag chips from page.items, so the filter panel
+    // changed every time the user turned a page.
+    const ids = ['a', 'b', 'c'].map((letter) => letter.repeat(43))
+    const images = {
+      listOwnedIndex: vi.fn(async () => ids.map((assetId, position) => (
+        indexEntry(assetId, `${assetId}.png`, `2026-08-14T00:0${position}:00.000Z`, 'image' as const)
+      ))),
+      readOwned: vi.fn(async (_userId: number, assetId: string) => ({
+        asset: { assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' as const, fileName: `${assetId}.png` },
+        bytes: Buffer.from('image'),
+      })),
+      copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(),
+    }
+    const metadata = metadataStore({
+      getAll: vi.fn(async () => ({
+        [ids[0] as string]: { tags: ['角色', '海报'], updatedAt: '2026-08-14T02:00:00.000Z' },
+        [ids[1] as string]: { tags: ['角色'], updatedAt: '2026-08-14T02:00:00.000Z' },
+        [ids[2] as string]: { tags: ['场景'], updatedAt: '2026-08-14T02:00:00.000Z' },
+      })),
+    })
+    const service = createAiMediaAssetService({ images: images as never, videos: emptyVideos() as never, metadata })
+
+    const firstPage = await service.listOwnedPage(7, { limit: 1 })
+    expect(firstPage.items).toHaveLength(1)
+    expect(firstPage.facets.tags).toEqual([
+      { tag: '角色', count: 2 }, { tag: '场景', count: 1 }, { tag: '海报', count: 1 },
+    ])
+    const secondPage = await service.listOwnedPage(7, { limit: 1, offset: 1 })
+    expect(secondPage.facets.tags).toEqual(firstPage.facets.tags)
+
+    // Selecting a tag must not erase its siblings from the panel.
+    const filtered = await service.listOwnedPage(7, { tag: '角色' })
+    expect(filtered.total).toBe(2)
+    expect(filtered.facets.tags).toEqual(firstPage.facets.tags)
+
+    // Other filters do narrow the facet counts, so the panel stays truthful.
+    const searched = await service.listOwnedPage(7, { search: ids[2] as string })
+    expect(searched.facets.tags).toEqual([{ tag: '场景', count: 1 }])
+  })
+
   it('rejects paging positions beyond the indexed ceiling', async () => {
     const service = createAiMediaAssetService({
       images: { listOwnedIndex: vi.fn(async () => []), readOwned: vi.fn(), copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn() } as never,

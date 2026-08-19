@@ -95,7 +95,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   }
   const firstItem = page.total === 0 ? 0 : page.offset + 1
   const lastItem = page.offset + page.items.length
-  const visibleTags = useMemo(() => [...new Set(page.items.flatMap((asset) => asset.tags ?? []))].sort((left, right) => left.localeCompare(right, 'zh-CN')).slice(0, 12), [page.items])
+  const visibleTags = useMemo(() => page.facets.tags.slice(0, 12), [page.facets.tags])
   const beginRename = (asset: CanvasAssetSummary) => {
     setRenamingAsset(asset)
     setRenameDraft(assetName(asset))
@@ -199,7 +199,11 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       {(visibleTags.length > 0 || query.tag) && (
         <div className="asset-tag-filter" aria-label="按标签筛选">
           {query.tag && <button type="button" className="is-active" onClick={() => onQueryChange({ ...query, offset: 0, tag: '' })}>{query.tag}<X size={11} /></button>}
-          {visibleTags.filter((tag) => tag !== query.tag).map((tag) => <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>{tag}</button>)}
+          {visibleTags.filter(({ tag }) => tag !== query.tag).map(({ tag, count }) => (
+            <button type="button" key={tag} onClick={() => onQueryChange({ ...query, offset: 0, tag })}>
+              {tag}<small>{count}</small>
+            </button>
+          ))}
         </div>
       )}
       <div

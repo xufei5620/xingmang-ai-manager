@@ -192,6 +192,11 @@ export interface CanvasAssetPage {
   limit: number
   total: number
   hasMore: boolean
+  facets: CanvasAssetFacets
+}
+
+export interface CanvasAssetFacets {
+  tags: Array<{ tag: string; count: number }>
 }
 
 export type CanvasPromptPresetDto = CanvasPromptPreset
