@@ -1913,6 +1913,9 @@ button:disabled {
 .canvas-node-search small { overflow: hidden; color: var(--text-muted); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .canvas-node-search-empty { margin: 0; padding: var(--space-6); color: var(--text-muted); font-size: var(--text-xs); }
 
+.canvas-cut-stroke { position: absolute; overflow: visible; width: 1px; height: 1px; pointer-events: none; }
+.canvas-cut-stroke path { fill: none; stroke: var(--danger); stroke-dasharray: 5 4; stroke-width: 2; }
+
 /* Drawn inside the viewport so the guide tracks pan and zoom with the nodes. */
 .canvas-snap-guide { position: absolute; z-index: var(--z-canvas-overlay); background: var(--accent); pointer-events: none; }
 .canvas-snap-guide.is-x { width: 1px; }

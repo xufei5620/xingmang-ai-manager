@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   Background,
   BackgroundVariant,
@@ -43,6 +43,7 @@ import { alignNodePositions, distributeNodePositions, type AlignableNode, type C
 import { bridgeEdgesForRemoval } from './editor/bridge-edges'
 import { resolveSnapGuides, type SnapBox, type SnapGuide } from './editor/snap-guides'
 import { findEdgeDropTarget } from './editor/edge-drop'
+import { edgesCrossedByStroke, strokePath, type Point } from './editor/cut-gesture'
 
 function snapBoxOfCanvasNode(node: { id: string; position: { x: number; y: number }; measured?: { width?: number; height?: number }; width?: number | null; height?: number | null; type?: string }): SnapBox {
   const fallback = builtinNodeRegistry.resolve(node.type ?? 'unknown')?.dimensions
@@ -612,6 +613,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [snapGuides, setSnapGuides] = useState<readonly SnapGuide[]>([])
   const [nodeSearchOpen, setNodeSearchOpen] = useState(false)
   const [edgeDropTargetId, setEdgeDropTargetId] = useState<string | null>(null)
+  const [cutStroke, setCutStroke] = useState<readonly Point[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
@@ -1767,6 +1769,34 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     })
   }, [edges, reactFlow])
 
+  // Ctrl-drag across wires to cut them. Tracked in flow coordinates so the
+  // stroke stays aligned with the edges even if the canvas pans mid-gesture.
+  const beginCutStroke = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey && !event.metaKey) return
+    if (event.button !== 0) return
+    if (!(event.target instanceof Element) || !event.target.classList.contains('react-flow__pane')) return
+    event.preventDefault()
+    event.stopPropagation()
+    let stroke: Point[] = [reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY })]
+    setCutStroke(stroke)
+
+    const onMove = (moveEvent: PointerEvent) => {
+      stroke = [...stroke, reactFlow.screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY })]
+      setCutStroke(stroke)
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      setCutStroke([])
+      const cut = edgesCrossedByStroke(stroke, edgeEndpoints())
+      if (cut.length === 0) return
+      execute({ type: 'disconnect', edgeIds: cut })
+      setBanner(`已剪断 ${cut.length} 条连线`)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [edgeEndpoints, execute, reactFlow])
+
   const spliceNodeOntoEdge = useCallback((nodeId: string, edgeId: string) => {
     const original = edges.find((entry) => entry.id === edgeId)
     const node = nodes.find((entry) => entry.id === nodeId)
@@ -2849,6 +2879,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       />
       <div
         className={`canvas-flow${!focusMode && (assetTrayOpen || runInspectorOpen) ? ' has-right-panel' : ''}`}
+        onMouseDownCapture={beginCutStroke}
         onDoubleClick={(event) => {
           if (!(event.target instanceof Element) || !event.target.classList.contains('react-flow__pane')) return
           const bounds = event.currentTarget.getBoundingClientRect()
@@ -2944,6 +2975,13 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               alignment and snapping have something to read against. */}
           <Background id="canvas-grid-minor" variant={BackgroundVariant.Dots} gap={16} size={1} />
           <Background id="canvas-grid-major" variant={BackgroundVariant.Lines} gap={96} lineWidth={1} />
+          {cutStroke.length > 1 && (
+            <ViewportPortal>
+              <svg className="canvas-cut-stroke" aria-hidden="true">
+                <path d={strokePath(cutStroke)} />
+              </svg>
+            </ViewportPortal>
+          )}
           {snapGuides.length > 0 && (
             <ViewportPortal>
               {snapGuides.map((guide) => (
