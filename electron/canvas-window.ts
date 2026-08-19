@@ -487,7 +487,7 @@ export function createCanvasWindowController(
     const context = await activeAssetContext(event.sender.id, userId)
     await (context?.media ?? options.mediaAssets).copy(
       userId,
-      requiredCanvasString(assetIdInput, '画布图片资产标识', 64),
+      parseCanvasAssetId(assetIdInput),
       () => assertCanvasUserUnchanged(userId),
     )
   })
@@ -497,7 +497,7 @@ export function createCanvasWindowController(
     const context = await activeAssetContext(event.sender.id, userId)
     const saved = await (context?.media ?? options.mediaAssets).saveAs(
       userId,
-      requiredCanvasString(assetIdInput, '画布图片资产标识', 64),
+      parseCanvasAssetId(assetIdInput),
       () => assertCanvasUserUnchanged(userId),
     )
     return { saved }
@@ -505,7 +505,7 @@ export function createCanvasWindowController(
 
   registerCanvasHandler(canvasHostShowAssetMenuChannel, async (event, assetIdInput) => {
     const userId = authenticatedCanvasUserId()
-    const assetId = requiredCanvasString(assetIdInput, '画布图片资产标识', 64)
+    const assetId = parseCanvasAssetId(assetIdInput)
     const context = await activeAssetContext(event.sender.id, userId)
     await (context?.media ?? options.mediaAssets).contextMenu(userId, assetId, () => {
       if (authenticatedCanvasUserId() !== userId) throw new Error('星芒账号已切换，已停止图片操作')
@@ -570,22 +570,32 @@ export function createCanvasWindowController(
     if (!options.projects) throw new Error('项目自动保存能力不可用')
     const projectId = activeProjectId(senderId, userId)
     if (!projectId) throw new Error('请先选择或新建一个画布项目')
-    const assetId = requiredCanvasString(assetIdInput, '画布资产标识', 64)
+    const assetId = parseCanvasAssetId(assetIdInput)
     const currentProjectContent = requiredCanvasText(currentProjectContentInput, '当前画布项目内容', maximumSavedFileBytes)
     const currentWorkflow = parseCanvasProjectWorkflow(currentProjectContent).workflow
-    const [projects, runs] = await Promise.all([
+    const [projects, runs, summaries] = await Promise.all([
       options.projects.findAssetReferences(userId, assetId),
       options.canvasRuns.listRuns(userId),
+      options.projects.list(userId),
     ])
     assertCanvasUserUnchanged(userId)
-    const currentNodeIds = findCanvasWorkflowAssetReferenceNodeIds(currentWorkflow, assetId)
+    // The stored copy of the active project is the authority here. The canvas
+    // also sends what it currently has on screen, because edits made since the
+    // last autosave are real references, but a canvas that under-reports its
+    // own content must not be able to talk the purge into deleting an asset
+    // that is still wired into the project on disk.
+    const storedActive = projects.find((entry) => entry.projectId === projectId)
+    const currentNodeIds = [...new Set([
+      ...(storedActive?.nodeIds ?? []),
+      ...findCanvasWorkflowAssetReferenceNodeIds(currentWorkflow, assetId),
+    ])]
     const runReferences = findCanvasRunAssetReferences(runs, assetId)
     return {
       assetId,
       inUse: currentNodeIds.length > 0 || projects.length > 0 || runReferences.length > 0,
       currentProject: {
         projectId,
-        projectName: String(currentWorkflow.name),
+        projectName: summaries.find((entry) => entry.id === projectId)?.name ?? String(currentWorkflow.name),
         nodeIds: currentNodeIds,
       },
       projects,

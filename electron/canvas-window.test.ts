@@ -590,7 +590,7 @@ describe('createCanvasWindowController', () => {
     }
     const findAssetReferences = vi.fn(async () => [{ projectId, projectName: '引用项目', nodeIds: ['image-0'], archived: false }])
     const projects = {
-      list: vi.fn(), create: vi.fn(), save: vi.fn(), rename: vi.fn(), duplicate: vi.fn(), setArchived: vi.fn(),
+      list: vi.fn(async () => [summary]), create: vi.fn(), save: vi.fn(), rename: vi.fn(), duplicate: vi.fn(), setArchived: vi.fn(),
       open: vi.fn(async () => ({ project: summary, content })),
       findAssetReferences,
     }
@@ -618,7 +618,9 @@ describe('createCanvasWindowController', () => {
     expect(report).toEqual({
       assetId,
       inUse: true,
-      currentProject: { projectId, projectName: '可移植项目', nodeIds: ['image-0'] },
+      // The project's name comes from the store, which is where renaming is
+      // recorded, rather than from whatever the canvas put in its payload.
+      currentProject: { projectId, projectName: '引用项目', nodeIds: ['image-0'] },
       projects: [{ projectId, projectName: '引用项目', nodeIds: ['image-0'], archived: false }],
       runs: [{
         runId: 'run-reference', projectId, createdAt: '2026-08-17T00:00:00.000Z', status: 'succeeded',
@@ -626,6 +628,47 @@ describe('createCanvasWindowController', () => {
       }],
     })
     expect(findAssetReferences).toHaveBeenCalledWith(7, assetId)
+  })
+
+  it('blocks a purge on the stored project even when the canvas reports no references', async () => {
+    // The active project's references used to be read only from the payload the
+    // renderer sent. A canvas that under-reports its own content could then walk
+    // an asset it is still wired to into the bin, and a purge does not undo.
+    const assetId = 'A'.repeat(43)
+    const projectId = '22222222-2222-4222-8222-222222222222'
+    const summary = {
+      id: projectId, name: '在用项目', createdAt: '2026-08-14T00:00:00.000Z', updatedAt: '2026-08-14T00:00:00.000Z',
+      lastOpenedAt: '2026-08-14T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+      workspaceConfigured: false, workspaceStatus: 'ready' as const,
+    }
+    const projects = {
+      list: vi.fn(async () => [summary]), create: vi.fn(), save: vi.fn(), rename: vi.fn(), duplicate: vi.fn(), setArchived: vi.fn(),
+      open: vi.fn(async () => ({ project: summary, content: projectWorkflow([assetId]) })),
+      findAssetReferences: vi.fn(async () => [{ projectId, projectName: '在用项目', nodeIds: ['image-0'], archived: false }]),
+    }
+    const canvasRuns = {
+      start: vi.fn(), cancel: vi.fn(), cancelOwner: vi.fn(), getAssetLineage: vi.fn(), subscribe: vi.fn(() => () => undefined),
+      listRuns: vi.fn(async () => []),
+    }
+    const purge = vi.fn(async (_userId: number, _assetId: string, references: () => Promise<{ inUse: boolean }>) => {
+      const report = await references()
+      if (report.inUse) throw new Error('素材仍在使用中')
+      return { assetId: _assetId }
+    })
+    const controller = createCanvasWindowController(controllerOptions({
+      projects: projects as never,
+      canvasRuns: canvasRuns as never,
+      mediaAssets: { purge } as never,
+    }))
+    await controller.open()
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+
+    // An empty workflow: the canvas claiming it uses nothing at all.
+    const emptyClaim = projectWorkflow([])
+    await expect(electronMocks.handlers.get(canvasHostPurgeAssetChannel)!(trustedEvent(), assetId, emptyClaim))
+      .rejects.toThrow('素材仍在使用中')
+    await expect(electronMocks.handlers.get(canvasHostInspectAssetReferencesChannel)!(trustedEvent(), assetId, emptyClaim))
+      .resolves.toMatchObject({ inUse: true, currentProject: { projectId, nodeIds: ['image-0'] } })
   })
 
   it('imports a validated local image through the native picker without exposing its path', async () => {
@@ -886,6 +929,42 @@ describe('createCanvasWindowController', () => {
     expect(mediaAssets.rename).toHaveBeenCalledWith(7, 'a'.repeat(43), '产品主视觉')
     expect(mediaAssets.updateMetadata).toHaveBeenCalledWith(7, 'a'.repeat(43), { favorite: true, tags: ['产品'] })
     expect(mediaAssets.markUsed).toHaveBeenCalledWith(7, 'a'.repeat(43))
+  })
+
+  it('holds every asset channel to the same identifier shape', async () => {
+    // copy, save and the context menu used to accept any string up to 64
+    // characters while the rest demanded the 43 character asset id. The stores
+    // caught the difference, but two validation strengths for one identifier is
+    // how a gap eventually gets through.
+    const mediaAssets = {
+      copy: vi.fn(async () => undefined),
+      saveAs: vi.fn(async () => true),
+      contextMenu: vi.fn(async () => undefined),
+      markUsed: vi.fn(async () => ({ assetId: 'a', lastUsedAt: '2026-08-19T00:00:00.000Z' })),
+      softDelete: vi.fn(async () => ({ assetId: 'a', deletedAt: '2026-08-19T00:00:00.000Z' })),
+      restore: vi.fn(async () => ({ assetId: 'a' })),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ mediaAssets: mediaAssets as never }))
+    await controller.open()
+
+    for (const channel of [
+      canvasHostCopyAssetChannel,
+      canvasHostSaveAssetChannel,
+      canvasHostShowAssetMenuChannel,
+      canvasHostMarkAssetUsedChannel,
+      canvasHostDeleteAssetChannel,
+      canvasHostRestoreAssetChannel,
+    ]) {
+      for (const rejected of ['../secrets', 'a'.repeat(44), 'a'.repeat(42), `${'a'.repeat(42)}/`, '']) {
+        await expect(electronMocks.handlers.get(channel)!(trustedEvent(), rejected)).rejects.toThrow(/画布资产标识/)
+      }
+    }
+    expect(mediaAssets.copy).not.toHaveBeenCalled()
+    expect(mediaAssets.saveAs).not.toHaveBeenCalled()
+    expect(mediaAssets.contextMenu).not.toHaveBeenCalled()
+    expect(mediaAssets.markUsed).not.toHaveBeenCalled()
+    expect(mediaAssets.softDelete).not.toHaveBeenCalled()
+    expect(mediaAssets.restore).not.toHaveBeenCalled()
   })
 
   it('rejects a completed asset rename when the account changes in flight', async () => {
