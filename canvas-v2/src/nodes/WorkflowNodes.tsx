@@ -1,5 +1,5 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
-import { Handle, NodeToolbar, Position, useNodeConnections, type Edge, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, NodeResizer, NodeToolbar, Position, useNodeConnections, type Edge, type Node, type NodeProps } from '@xyflow/react'
 import { AlertCircle, AlertTriangle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeDefinition, NodePortDefinition } from '../domain/node-definition'
@@ -494,6 +494,21 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
     const output = outputs[0]
     return (
       <div className={`wf-node wf-media-bound wf-media-bound-${data.result.kind}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}`}>
+        {/* Media is the whole point of these nodes, so let the user scale the
+            preview. Aspect is locked because the asset's is fixed, and the
+            control only appears while selected to keep the canvas calm. */}
+        {!locked && (
+          <NodeResizer
+            isVisible={selected}
+            keepAspectRatio={data.result.kind !== 'audio'}
+            minWidth={160}
+            minHeight={data.result.kind === 'audio' ? 88 : 120}
+            maxWidth={720}
+            maxHeight={720}
+            lineClassName="wf-resize-line"
+            handleClassName="wf-resize-handle"
+          />
+        )}
         {canRunNode && <NodeRunToolbar id={id} title={definition.title} selected={selected} disabled={nodeRunning} />}
         <MediaInputDropZone id={id} kind={kind as 'image-input' | 'video-input' | 'audio-input'} asset={data.result} locked={locked} disabled={disabled} />
         {output && <Handle

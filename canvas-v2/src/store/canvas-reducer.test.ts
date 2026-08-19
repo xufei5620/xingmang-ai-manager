@@ -24,6 +24,38 @@ describe('canvas command history', () => {
     expect(history.present.nodes.map((entry) => entry.id)).toEqual(['a'])
   })
 
+  it('records a resize as document state so it survives undo and reload', () => {
+    let history = createCanvasHistory(createCanvasDocument())
+    history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [node('a')] })
+    history = applyCanvasCommand(history, { type: 'resize-nodes', dimensions: { a: { width: 320, height: 240 } } })
+    expect(history.present.nodes[0]).toMatchObject({ width: 320, height: 240 })
+
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes[0].width).toBeUndefined()
+    history = redoCanvasHistory(history)
+    expect(history.present.nodes[0]).toMatchObject({ width: 320, height: 240 })
+  })
+
+  it('coalesces one resize gesture into a single undo entry', () => {
+    let history = createCanvasHistory(createCanvasDocument())
+    history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [node('a')] })
+    const depth = history.past.length
+    for (const width of [260, 280, 300, 320]) {
+      history = applyCanvasCommand(history, { type: 'resize-nodes', dimensions: { a: { width, height: 200 } }, mergeKey: 'resize:1:a' })
+    }
+    expect(history.present.nodes[0].width).toBe(320)
+    expect(history.past.length).toBe(depth + 1)
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes[0].width).toBeUndefined()
+  })
+
+  it('refuses to resize a locked node', () => {
+    let history = createCanvasHistory(createCanvasDocument())
+    history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [{ ...node('a'), locked: true }] })
+    history = applyCanvasCommand(history, { type: 'resize-nodes', dimensions: { a: { width: 320, height: 240 } } })
+    expect(history.present.nodes[0].width).toBeUndefined()
+  })
+
   it('inserts a node on an edge as one undoable structural command', () => {
     const original = {
       ...createCanvasDocument(),

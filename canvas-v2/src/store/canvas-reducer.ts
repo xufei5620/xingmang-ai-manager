@@ -46,6 +46,19 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
       })
       return changed ? { ...document, nodes, revision: nextRevision(document) } : document
     }
+    case 'resize-nodes': {
+      // Dimensions are document state, not transient view state: a resize has
+      // to survive undo/redo and a project reload the same way a move does.
+      let changed = false
+      const nodes = document.nodes.map((node) => {
+        const size = command.dimensions[node.id]
+        if (node.locked || !size) return node
+        if (node.width === size.width && node.height === size.height) return node
+        changed = true
+        return { ...node, width: size.width, height: size.height }
+      })
+      return changed ? { ...document, nodes, revision: nextRevision(document) } : document
+    }
     case 'set-node-flags': {
       const nodeIds = new Set(command.nodeIds)
       let changed = false

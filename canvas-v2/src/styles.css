@@ -1881,6 +1881,15 @@ button:disabled {
   transform: scale(1.18);
 }
 
+.wf-resize-line { border-color: var(--accent) !important; }
+.wf-resize-handle {
+  width: 9px !important;
+  height: 9px !important;
+  background: var(--accent) !important;
+  border: 1px solid var(--surface-1) !important;
+  border-radius: var(--radius-chip) !important;
+}
+
 @media (max-width: 1320px) {
   .canvas-history-command { display: none !important; }
   .canvas-config-command > span { display: none; }
