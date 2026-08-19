@@ -37,6 +37,7 @@ import { hostBridge } from './host'
 import { canvasAriaLabelConfig } from './aria-labels'
 import { CanvasEdgeHandlersProvider, defaultEdgeOptions, edgeTypes } from './edges/WorkflowEdge'
 import { CanvasContextMenu, type CanvasContextMenuState } from './components/CanvasContextMenu'
+import { NodeSearchPalette } from './components/NodeSearchPalette'
 import type { CanvasContextAction } from './editor/context-menu'
 import { alignNodePositions, distributeNodePositions, type AlignableNode, type CanvasAlignMode, type CanvasDistributeAxis } from './editor/align'
 import { bridgeEdgesForRemoval } from './editor/bridge-edges'
@@ -607,6 +608,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [templateCatalog, setTemplateCatalog] = useState<{ initialTemplateId?: string } | null>(null)
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null)
   const [snapGuides, setSnapGuides] = useState<readonly SnapGuide[]>([])
+  const [nodeSearchOpen, setNodeSearchOpen] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
@@ -2538,6 +2540,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       else if (shortcut === 'duplicate') { event.preventDefault(); copySelection(); pasteSelection() }
       else if (shortcut === 'group') { event.preventDefault(); groupSelection() }
       else if (shortcut === 'ungroup') { event.preventDefault(); ungroupSelection() }
+      else if (shortcut === 'find-node') { event.preventDefault(); setNodeSearchOpen(true) }
       else if (shortcut === 'select-all') {
         event.preventDefault()
         setNodes((current) => current.map((node) => ({ ...node, selected: true })))
@@ -2898,6 +2901,20 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           <Controls />
         </ReactFlow>
         </CanvasEdgeHandlersProvider>
+        {nodeSearchOpen && (
+          <NodeSearchPalette
+            nodes={nodes.map((node) => ({
+              id: node.id,
+              title: builtinNodeRegistry.resolve(node.type ?? 'unknown')?.title ?? node.type ?? '节点',
+              kind: node.type ?? 'unknown',
+              prompt: node.data.prompt,
+              model: node.data.model,
+              status: node.data.status,
+            }))}
+            onJump={locateNode}
+            onClose={() => setNodeSearchOpen(false)}
+          />
+        )}
         {contextMenu && (
           <CanvasContextMenu
             state={contextMenu}

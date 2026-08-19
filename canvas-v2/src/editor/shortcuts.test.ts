@@ -8,6 +8,14 @@ describe('canvas shortcuts', () => {
     expect(resolveCanvasShortcut({ key: 'g', ctrlKey: true })).toBe('group')
     expect(resolveCanvasShortcut({ key: 'g', ctrlKey: true, shiftKey: true })).toBe('ungroup')
     expect(resolveCanvasShortcut({ key: 'k', ctrlKey: true })).toBe('quick-insert')
+    expect(resolveCanvasShortcut({ key: 'f', ctrlKey: true })).toBe('find-node')
+    expect(resolveCanvasShortcut({ key: 'F', metaKey: true })).toBe('find-node')
+  })
+
+  it('leaves find alone while the search field itself has focus', () => {
+    // Otherwise typing in the palette would reopen it on every f.
+    expect(resolveCanvasShortcut({ key: 'f', ctrlKey: true, target: { tagName: 'INPUT' } })).toBeNull()
+    expect(resolveCanvasShortcut({ key: 'f' })).toBeNull()
   })
 
   it('does not steal keys from editable or composing targets', () => {
