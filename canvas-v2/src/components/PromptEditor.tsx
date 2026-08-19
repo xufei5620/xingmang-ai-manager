@@ -86,8 +86,10 @@ export function PromptEditor({ label, value, placeholder, references, onChange }
     }
   }
 
+  // nowheel as well as nodrag: a prompt longer than the textarea is
+  // scrollable, and without it the wheel zooms the canvas instead.
   return (
-    <div className={`wf-prompt-editor nodrag${mentionQuery ? ' is-mentioning' : ''}`}>
+    <div className={`wf-prompt-editor nodrag nowheel${mentionQuery ? ' is-mentioning' : ''}`}>
       <textarea
         ref={textareaRef}
         aria-label={label}

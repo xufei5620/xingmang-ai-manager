@@ -320,7 +320,12 @@ git diff --check
 
 ### 批次 3 · 交互层
 
-B3-1 … B3-18 全部 `○`
+| 项 | 状态 | 提交 | 备注 |
+|---|---|---|---|
+| B3-5 双击语义归位 | ● | (见下) | `zoomOnDoubleClick={false}`。此前双击空白既开快速创建**又**缩放画布,两个语义打架 |
+| B3-7 选中层级 | ● | (见下) | `elevateNodesOnSelect` + `elevateEdgesOnSelect`,选中节点不再被未选中的邻居盖住 |
+| B3-8 拖拽阈值 | ● | (见下) | `nodeDragThreshold={3}`。另修真缺陷:`PromptEditor` 只有 `nodrag` 没有 `nowheel`,提示词超出文本框高度后滚动会缩放画布而不是滚动内容。`nodrag/nowheel/nopan` 三个 className prop 本就是 React Flow 默认值,显式设置无意义,已不加 |
+| B3-1 … B3-4 / B3-6 / B3-9 … B3-18 | ○ | | |
 
 ### 批次 4 · 资产库
 

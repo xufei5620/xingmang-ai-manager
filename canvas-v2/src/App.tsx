@@ -2652,6 +2652,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           selectionMode={SelectionMode.Partial}
           panOnDrag={[1, 2]}
           panOnScroll
+          // Double-click is reclaimed for quick insert / rename. Leaving the
+          // default on made every one of those gestures also zoom the canvas.
+          zoomOnDoubleClick={false}
+          // A selected node must never paint under an unselected neighbour.
+          elevateNodesOnSelect
+          elevateEdgesOnSelect
+          // Nodes host textareas and selects: without a threshold a 2px twitch
+          // while clicking one starts a node drag instead.
+          nodeDragThreshold={3}
           onPaneClick={() => { setQuickInsert(null); setRunMenuOpen(false); setMoreActionsOpen(false) }}
           onPaneContextMenu={(event) => {
             event.preventDefault()
