@@ -1330,6 +1330,7 @@ button:disabled {
 .wf-node-toolbar button:disabled { cursor: default; opacity: 0.48; }
 
 .wf-node header {
+  position: relative;
   display: flex;
   min-height: 42px;
   align-items: center;
@@ -1799,9 +1800,15 @@ button:disabled {
 }
 .wf-port::after { content: ''; position: absolute; inset: -6px; border-radius: var(--radius-round); }
 
+/* Hue encodes media type. Audio had no rule at all, so audio ports rendered
+   with no fill and were indistinguishable from a disabled dot. */
 .wf-port-text { color: var(--port-text); background: var(--port-text); }
 .wf-port-image { color: var(--port-image); background: var(--port-image); }
 .wf-port-video { color: var(--port-video); background: var(--port-video); }
+.wf-port-audio { color: var(--port-audio); background: var(--port-audio); }
+/* Shape encodes cardinality, because hue is already spent on type: a rounded
+   square accepts a list, a circle accepts one. */
+.wf-port-many { border-radius: 3px; }
 
 .wf-video-params { display: grid; grid-template-columns: minmax(40px, max-content) minmax(var(--node-control-min), 1fr); gap: var(--space-8) var(--space-6); }
 /* Full-width children (the model select, errors, toggles) span both tracks. */
@@ -1812,11 +1819,13 @@ button:disabled {
 .wf-progress { display: grid; gap: var(--space-6); padding: var(--space-8); border: 1px solid color-mix(in srgb, var(--node-accent) 38%, transparent); background: color-mix(in srgb, var(--node-accent) 8%, var(--surface-media)); }
 .wf-progress p { margin: 0; color: var(--text-muted); font-size: var(--text-xs); line-height: 1.45; }
 .wf-progress small { color: var(--text-muted); font-size: var(--text-xs); line-height: 1.45; }
-.wf-progress-bar { position: relative; display: block; height: 3px; overflow: hidden; background: color-mix(in srgb, var(--node-accent) 20%, transparent); }
-.wf-progress-bar::after { content: ''; position: absolute; inset-block: 0; width: 42%; background: var(--node-accent); animation: wf-progress 1.35s ease-in-out infinite; }
-.wf-progress-bar.is-determinate::after { left: 0; width: var(--wf-progress, 0%); animation: none; transition: width 180ms ease; }
+/* Sits on the header's bottom border rather than in the flow, so entering the
+   running state adds no height and the node never reflows mid-run. */
+.wf-head-progress { position: absolute; z-index: 2; right: 0; bottom: -1px; left: 0; height: 2px; overflow: hidden; background: color-mix(in srgb, var(--state-running) 22%, transparent); }
+.wf-head-progress::after { content: ''; position: absolute; inset-block: 0; width: 42%; background: var(--state-running); animation: wf-progress 1.35s ease-in-out infinite; }
+.wf-head-progress.is-determinate::after { left: 0; width: var(--wf-progress, 0%); animation: none; transition: width 180ms ease; }
 @keyframes wf-progress { from { left: -42%; } to { left: 100%; } }
-@media (prefers-reduced-motion: reduce) { .wf-progress-bar::after { animation: none; width: 100%; opacity: .65; } }
+@media (prefers-reduced-motion: reduce) { .wf-head-progress::after { animation: none; width: 100%; opacity: .65; } }
 
 .wf-port:hover {
   transform: scale(1.18);

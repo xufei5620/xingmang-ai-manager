@@ -525,7 +525,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           id={port.id}
           position={Position.Left}
           style={{ top: 52 + index * 26 }}
-          className={`wf-port wf-port-${port.kind}`}
+          className={`wf-port wf-port-${port.kind}${port.cardinality === 'many' ? ' wf-port-many' : ''}`}
           title={`${port.label}${port.cardinality === 'many' ? '（可连接多个）' : ''}`}
           aria-label={`${port.label}${port.cardinality === 'many' ? '，可连接多个' : ''}`}
         />
@@ -547,6 +547,17 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           {disabled && <span className="wf-disabled" title="此节点不会参与运行">已禁用</span>}
           {data.dirty && <span className="wf-dirty" title="输入或采纳结果已变化，需要重新运行">待更新</span>}
         </span>
+        {/* Pinned to the header's bottom border so a run costs zero height and
+            the graph never reflows mid-execution. */}
+        {(data.status === 'queued' || data.status === 'running') && (
+          <span
+            className={`wf-head-progress${data.runProgressMode === 'determinate' && typeof data.runProgress === 'number' ? ' is-determinate' : ''}`}
+            style={data.runProgressMode === 'determinate' && typeof data.runProgress === 'number'
+              ? { '--wf-progress': `${Math.max(0, Math.min(100, data.runProgress))}%` } as CSSProperties
+              : undefined}
+            aria-hidden="true"
+          />
+        )}
       </header>
 
       {summaryMode && (
@@ -722,12 +733,6 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
 
       {(data.status === 'queued' || data.status === 'running') && (
         <div className="wf-progress" role="status" aria-live="polite">
-          <span
-            className={`wf-progress-bar${data.runProgressMode === 'determinate' && typeof data.runProgress === 'number' ? ' is-determinate' : ''}`}
-            style={data.runProgressMode === 'determinate' && typeof data.runProgress === 'number'
-              ? { '--wf-progress': `${Math.max(0, Math.min(100, data.runProgress))}%` } as CSSProperties
-              : undefined}
-          />
           <p>
             {data.runStage
               ? `${runStageLabel[data.runStage]}${data.runProgressMode === 'determinate' && typeof data.runProgress === 'number' ? ` · ${Math.round(data.runProgress)}%` : '…'}`

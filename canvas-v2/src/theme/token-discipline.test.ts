@@ -106,10 +106,20 @@ describe('canvas token discipline', () => {
     const lightBlock = theme.slice(theme.indexOf(':root[data-theme="light"]'))
     expect(lightBlock).toContain('--state-queued:')
     expect(lightBlock).toContain('--state-cached:')
-    expect(lightBlock).toContain('--port-any:')
     expect(lightBlock).toContain('--shadow-menu:')
     expect(lightBlock).toContain('--shadow-panel:')
     expect(lightBlock).toContain('--shadow-modal:')
     expect(lightBlock).toContain('--shadow-lightbox:')
+  })
+
+  it('gives every port kind a hue', () => {
+    const theme = themeSheet()
+    const styles = styleSheet()
+    // Mirrors PortKind in model.ts. Audio shipped without a rule, so audio
+    // ports rendered unfilled and read as disabled.
+    for (const kind of ['text', 'image', 'video', 'audio']) {
+      expect(theme).toContain(`--port-${kind}:`)
+      expect(styles).toContain(`.wf-port-${kind} {`)
+    }
   })
 })

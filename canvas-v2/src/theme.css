@@ -40,6 +40,7 @@
   --overlay-hover: rgba(255, 255, 255, 0.13);
   --favorite: #ffd166;
   --waveform: #1cb7d7;
+  /* PortKind is text | image | video | audio; each has a --port-* hue above. */
 
   --backdrop-soft: rgba(5, 7, 9, 0.6);
   --backdrop: rgba(5, 7, 9, 0.72);
@@ -64,7 +65,6 @@
   --state-cached: #6b7683;
   --state-succeeded: var(--success);
   --state-failed: var(--danger);
-  --port-any: #8b95a3;
 
   /* Named by value on purpose: --space-10 is 10px, with no index-to-pixel
      lookup to get wrong. A 2px base rather than 4px, because this is a dense
@@ -160,7 +160,6 @@
   --port-image: #2d8d68;
   --port-video: #bb654a;
   --port-audio: #8957a3;
-  --port-any: #6b7683;
   /* --state-dirty/running/succeeded/failed follow the tokens they alias and
      need no light override. Only the two standalone hues do. */
   --state-queued: #4a6ab0;
