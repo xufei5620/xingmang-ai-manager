@@ -175,7 +175,7 @@ export function createEmptyWorkflow(name = '未命名工作流'): WorkflowFile {
   return { schemaVersion: 2, name, nodes: [], edges: [] }
 }
 
-// Compatibility exports keep App/SimpleMode stable while persistence evolves.
+// Compatibility exports keep App stable while persistence evolves.
 export {
   parseWorkflowFile,
   parseWorkflowFileDetailed,

@@ -159,7 +159,6 @@ button:disabled {
 }
 
 .canvas-brand strong { font-size: 14px; font-weight: 650; white-space: nowrap; }
-.canvas-mode-switch { min-height: 26px !important; padding: 2px 8px !important; font-size: 11px !important; }
 .canvas-toolbar-center { justify-self: center; }
 .canvas-toolbar-actions { min-width: max-content; justify-self: end; flex-wrap: nowrap; }
 
@@ -190,8 +189,6 @@ button:disabled {
 
 .canvas-toolbar button,
 .canvas-group-select,
-.simple-actions button,
-.simple-result button,
 .wf-rerun {
   min-height: 30px;
   padding: 4px 10px;
@@ -326,21 +323,17 @@ button:disabled {
 }
 
 .canvas-toolbar button:hover,
-.simple-actions button:hover,
-.simple-result button:hover,
 .wf-rerun:hover {
   color: var(--text-primary);
   background: var(--surface-hover);
   border-color: var(--border-strong);
 }
 
-.canvas-toolbar button:disabled,
-.simple-actions button:disabled {
+.canvas-toolbar button:disabled {
   opacity: 0.46;
 }
 
-.canvas-toolbar .canvas-run,
-.simple-actions .simple-primary {
+.canvas-toolbar .canvas-run {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -350,8 +343,7 @@ button:disabled {
   border-color: var(--accent);
 }
 
-.canvas-toolbar .canvas-run:hover,
-.simple-actions .simple-primary:hover {
+.canvas-toolbar .canvas-run:hover {
   background: var(--accent-hover);
   border-color: var(--accent-hover);
 }
@@ -1358,11 +1350,7 @@ button:disabled {
 .react-flow__node-group.selected .wf-node { background: color-mix(in srgb, var(--accent) 6%, transparent); border-color: color-mix(in srgb, var(--accent) 70%, transparent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 16%, transparent); }
 
 .wf-node textarea,
-.wf-node .wf-model,
-.simple-card textarea,
-.simple-card input[type='text'],
-.simple-card input:not([type]),
-.simple-card select {
+.wf-node .wf-model {
   color: var(--text-primary);
   background: var(--surface-input);
   border: 1px solid var(--border-subtle);
@@ -1527,9 +1515,7 @@ button:disabled {
 .wf-inline-field input { width: 84px; min-height: 30px; padding: 4px 7px; color: var(--text-primary); background: var(--surface-input); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
 
 .wf-node textarea::placeholder,
-.wf-node input::placeholder,
-.simple-card textarea::placeholder,
-.simple-card input::placeholder {
+.wf-node input::placeholder {
   color: var(--text-muted);
 }
 
@@ -1801,142 +1787,7 @@ button:disabled {
   transform: scale(1.18);
 }
 
-.simple-mode {
-  flex: 1;
-  overflow: auto;
-  display: flex;
-  justify-content: center;
-  padding: 32px 16px;
-  background: var(--canvas-bg);
-}
-
-.simple-card {
-  width: 520px;
-  max-width: 100%;
-  height: fit-content;
-  padding: 24px;
-  background: var(--surface-1);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-panel);
-  box-shadow: var(--shadow-floating);
-}
-
-.simple-card h1 {
-  margin: 0 0 4px;
-  font-size: 20px;
-  font-weight: 650;
-}
-
-.simple-hint {
-  margin: 0 0 18px;
-  color: var(--text-muted);
-  font-size: 13px;
-  line-height: 1.5;
-}
-
-.simple-card label {
-  display: block;
-  margin-bottom: 14px;
-  color: var(--text-secondary);
-  font-size: 13px;
-}
-
-.simple-card label > span {
-  display: block;
-  margin-bottom: 6px;
-  color: var(--text-primary);
-  font-weight: 600;
-}
-
-.simple-card textarea,
-.simple-card input[type='text'],
-.simple-card input:not([type]),
-.simple-card select {
-  width: 100%;
-  padding: 8px 10px;
-  font-size: 13px;
-}
-
-.simple-card textarea {
-  min-height: 76px;
-  resize: vertical;
-}
-
-.simple-params {
-  display: flex;
-  gap: 12px;
-}
-
-.simple-params label {
-  flex: 1;
-  min-width: 0;
-}
-
-.simple-check {
-  display: flex !important;
-  align-items: center;
-  gap: 8px;
-}
-
-.simple-check input {
-  width: 15px;
-  height: 15px;
-  accent-color: var(--accent);
-}
-
-.simple-check span {
-  margin: 0 !important;
-}
-
-.simple-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 6px;
-}
-
-.simple-actions button {
-  min-height: 34px;
-  padding: 7px 16px;
-  font-size: 13px;
-}
-
-.simple-stage,
-.simple-error {
-  margin: 12px 0 0;
-  font-size: 13px;
-}
-
-.simple-stage { color: var(--accent-hover); }
-.simple-error { color: var(--danger); }
-
-.simple-result {
-  margin-top: 16px;
-  padding-top: 16px;
-  border-top: 1px solid var(--border-subtle);
-}
-
-.simple-result img {
-  display: block;
-  width: 100%;
-  max-height: 420px;
-  object-fit: contain;
-  background: var(--surface-media);
-  border: 1px solid var(--border-subtle);
-  border-radius: var(--radius-control);
-}
-
-.simple-result p {
-  overflow-wrap: anywhere;
-  color: var(--text-secondary);
-  line-height: 1.5;
-}
-
-.simple-result button {
-  margin-top: 8px;
-}
-
 @media (max-width: 1320px) {
-  .canvas-mode-switch,
   .canvas-history-command { display: none !important; }
   .canvas-config-command > span { display: none; }
   .canvas-toolbar .canvas-config-command { min-width: 30px; width: 30px; padding: 0; }
@@ -1956,10 +1807,6 @@ button:disabled {
   .canvas-banner {
     width: 100%;
     max-width: none;
-  }
-
-  .simple-mode {
-    padding: 16px 10px;
   }
 
   .asset-tray { width: 292px; min-width: 292px; flex-basis: 292px; }
@@ -2023,7 +1870,6 @@ button:disabled {
   .canvas-flow { min-width: 0; }
   .canvas-toolbar-center { display: none; }
   .canvas-history-command { display: none !important; }
-  .canvas-mode-switch { display: none !important; }
   .canvas-toolbar-editor { grid-template-columns: auto 1fr; }
   .canvas-toolbar-actions { min-width: 0; }
   .node-library,

@@ -32,7 +32,6 @@ import {
 import { createMockExecutors, runWorkflow, type NodeInputs } from './engine/engine'
 import { createHostExecutors } from './engine/executors'
 import { hostBridge } from './host'
-import { SimpleMode } from './SimpleMode'
 import {
   compatibleInsertionHandle,
   connectionForInsertedNode,
@@ -547,9 +546,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const projectHydrationRef = useRef(false)
   const projectSaveChainRef = useRef<Promise<void>>(Promise.resolve())
   const [banner, setBanner] = useState<string | null>(null)
-  // 双模式(M2):简单模式=固定表单的单节点工作流,默认给小白;画布模式
-  // 给要自己编排管线的用户。两种模式共享同一套 executors。
-  const [viewMode, setViewMode] = useState<'simple' | 'canvas'>('canvas')
   const [groups, setGroups] = useState<CanvasGroupSummary[]>([])
   const [imageModels, setImageModels] = useState<string[]>([])
   const [videoModels, setVideoModels] = useState<string[]>([])
@@ -2340,15 +2336,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }
 
-  // 「展开到画布」:把简单模式的一次输入物化成节点链,替换当前画布内容
-  // (简单模式是入口形态,此时画布通常为空;后续可加"合并而非替换"选项)。
-  const expandToCanvas = (workflow: WorkflowFile) => {
-    execute({ type: 'replace-document', document: workflowDocument(workflow) })
-    setViewMode('canvas')
-    setBanner('已从简单模式展开为工作流,可继续编排')
-    fitCanvas()
-  }
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (runPreflight) return
@@ -2507,51 +2494,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     )
   }
 
-  if (viewMode === 'simple') {
-    return (
-      <div className="canvas-app">
-        <header className="canvas-toolbar">
-          <strong>星芒 AI 生成</strong>
-          <div className="canvas-toolbar-group">
-            <button type="button" onClick={() => { setMediaConfigOpen(false); setViewMode('canvas') }}>画布模式</button>
-          </div>
-          <MediaConfiguration
-            open={mediaConfigOpen}
-            groups={groups}
-            imageGroup={imageGroup}
-            videoGroup={videoGroup}
-            imageModels={imageModels}
-            videoModels={videoModels}
-            preparing={preparingMedia}
-            onToggle={toggleMediaConfiguration}
-            onClose={() => setMediaConfigOpen(false)}
-            onSelect={(kind, group) => void selectMediaGroup(kind, group)}
-          />
-          <span className="canvas-mode">{mediaConnectionLabel}</span>
-          {banner && <span className="canvas-banner" role="status" aria-live="polite">{banner}</span>}
-        </header>
-        <SimpleMode
-          executors={buildExecutors()}
-          connected={serverBacked}
-          imageGroup={imageGroup}
-          videoGroup={videoGroup}
-          imageModels={imageModels}
-          videoModels={videoModels}
-          preparingMedia={preparingMedia !== null}
-          onExpandToCanvas={expandToCanvas}
-        />
-        <ModelSuggestions />
-      </div>
-    )
-  }
-
   return (
     <div className="canvas-app">
       <header className="canvas-toolbar canvas-toolbar-editor">
         <div className="canvas-brand">
           <button type="button" className="canvas-project-back" title="保存并返回项目中心" onClick={() => void returnToProjectCenter()}><FolderOpen size={15} /></button>
           <strong>{activeProject?.name ?? '星芒无限画布'}</strong>
-          <button type="button" className="canvas-mode-switch" onClick={() => { setMediaConfigOpen(false); setViewMode('simple') }}>简单模式</button>
         </div>
         <div className="canvas-toolbar-group canvas-toolbar-center">
           <button type="button" className="canvas-icon-command" title="撤销" aria-label="撤销" onClick={undo} disabled={!canUndo}><Undo2 size={15} /></button>
