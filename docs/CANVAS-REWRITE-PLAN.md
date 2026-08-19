@@ -154,7 +154,7 @@ ComfyUI 与 ComfyUI_frontend(**GPL-3.0**,含内嵌 litegraph)、ComfyUI-Manager�
 | B1-2 | `ReactFlowProvider` 接管:`App.tsx` 拆掉 `onInit` + `reactFlowRef`,改用 `useReactFlow`,解锁子组件 hook |
 | B1-3 | `styles.css` 硬编码迁移第一轮:颜色 91 处 → 令牌 |
 | B1-4 | `styles.css` 字号统一到六档字阶;消灭所有 <11px |
-| B1-5 | `styles.css` 间距统一到 `--space-*` |
+| B1-5 | `styles.css` 间距统一到 `--space-*`。**执行顺序已调整到批次 1 最后**:间距是被布局决定的,而 B1-7 工具栏重组、B1-12 响应式抽屉与批次 2 节点解剖会大面积重写这些声明,先对齐等于做两遍。字号则相反(驱动布局),故 B1-4 必须先做 |
 | B1-6 | 行业模板库微设计并入主令牌(`styles.css:2054` 起,含 20px 圆角违规) |
 | B1-7 | 工具栏重组:文件菜单 / 编辑组 / **运行分裂按钮**(吞掉 4 种运行范围) / 视图与面板切换,15 项收成 11 项 |
 | B1-8 | 消除导航控件重复:顶栏中间与右下角当前都有适配/聚焦,保留一处 |
@@ -165,6 +165,7 @@ ComfyUI 与 ComfyUI_frontend(**GPL-3.0**,含内嵌 litegraph)、ComfyUI-Manager�
 | B1-13 | 面板状态存比例不存像素,按布局模式分键;恢复时校验并自愈越界值 |
 | B1-14 | `ariaLabelConfig` 中文化(React Flow 内置英文无障碍文案对中文产品是可见缺陷) |
 | B1-15 | 清理遗留死 CSS:独立 `.asset-tray` / `.run-inspector.is-open` 浮层规则与嵌入式检查器并存 |
+| B1-16 | 令牌纪律自动门禁:`canvas-v2/src/theme/token-discipline.test.ts` 扫描 `styles.css`,断言零字面色、字号只取六档、圆角不超 8px、每个 `var(--x)` 都能解析 |
 
 ### 批次 2 · 节点解剖
 
@@ -271,8 +272,9 @@ git diff --check
 | B1-2 ReactFlowProvider 接管 | ● | `f62c6be` | `main.tsx` 包 Provider;`App.tsx` 18 处 `reactFlowRef.current` → `useReactFlow()`,删 `onInit`。**语义修正**:`getNodes()` 在 hook 下返回 `[]` 而非 `undefined`,alt-drag 的 `?? fallback` 改为长度判断 |
 | B1-3 颜色迁移 | ● | `2d0c342` | 91 → 44。新增 19 个语义令牌:`--text-on-accent`、`--divider-on-accent`、媒体覆盖层 4 项、`--overlay-hover`、`--favorite`、`--waveform`、背景遮罩 3 档、阴影 5 档。**剩余 44 处全部落在行业模板库 1900-1952 行**,归 B1-6。四视口平均亮度与基线逐位相同(28.6/26.0/25.0/21.2),迁移视觉忠实 |
 | B1-4 字阶统一 | ● | `76a0aac` | 167 处声明归入六档。**基线里 168 处有 107 处低于 11px**(8px 7 处、9px 45 处、10px 55 处),即 64% 的画布文字此前渲染在 8-10px——这是「观感差」的首要原因。提到 11px 后四视口 `clipped=0`,布局宽度未变 |
-| B1-5 间距统一 | ○ | | |
-| B1-6 模板库微设计并入 | ○ | | 基线实测 `border-radius` 有 7 种超 8px 上限:9/10/12/14/15/18/20px,不只模板库一处 |
+| B1-6 模板库微设计并入 | ● | (见下) | **字面色 44 → 0,超标圆角 7 种 → 0**,另顺手令牌化 42 处合规圆角。修掉两个真 bug:`color: var(--text, #eef2f8)` 引用的 `--text` **从未定义过**;整块硬编码深色面导致亮色主题下弹窗仍是深色板。琥珀主操作色统一到 `--accent` |
+| B1-16 令牌纪律门禁 | ● | (见下) | 新增 7 项断言。`theme.css`+`styles.css` 共 103 个令牌,`styles.css` 引用 56 个,唯一未定义的 `--wf-progress` 是 JS 注入且带 fallback,已列入白名单并断言其必须保留 fallback |
+| B1-5 间距统一 | ○ | | **已调整到批次 1 最后执行**(理由见 §5)。基线实测:472 条声明、26 种 px 取值、514 次使用,其中 **356 次(69%)不在 4px 栅格上**,最密集的是 10px×71、6px×51、7px×49、5px×46 |
 | B1-7 工具栏重组 | ○ | | |
 | B1-8 导航控件去重 | ○ | | |
 | B1-9 自绘 Controls | ○ | | |
