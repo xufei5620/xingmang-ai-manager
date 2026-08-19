@@ -155,6 +155,19 @@ export class AiAssetMetadataStore {
     this.randomUUID = options.randomUUID ?? nodeRandomUUID
   }
 
+  /**
+   * Returns every logical record for one account. The library index can exceed
+   * the 1,500 identifier ceiling that `getMany` enforces, and joining a full
+   * index in 1,500 wide chunks would re-read and re-parse the same state file
+   * once per chunk. Records are bounded by MAXIMUM_ITEMS, so one read is safe.
+   */
+  getAll(userId: number): Promise<Record<string, AiAssetLogicalMetadata>> {
+    return this.enqueue(userId, async () => {
+      const state = await this.readState(userId)
+      return Object.fromEntries(state.items.map(({ assetId, ...metadata }) => [assetId, structuredClone(metadata)]))
+    })
+  }
+
   getMany(userId: number, assetIds: readonly string[]): Promise<Record<string, AiAssetLogicalMetadata>> {
     return this.enqueue(userId, async () => {
       if (assetIds.length > 1_500) throw new Error('AI 素材元数据查询数量超限')

@@ -5,6 +5,7 @@ import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local
 import { sameLocalPathIdentity } from './path-identity'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { inspectIsoBmffMediaMetadata } from './media-container-metadata'
+import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 
 const FILE_LABEL = 'AI 视频资产'
 const DEFAULT_MAXIMUM_VIDEO_BYTES = 512 * 1024 * 1024
@@ -242,6 +243,16 @@ export class AiVideoAssetStore {
       }
     }
     throw new Error('AI 视频资产不存在或无权访问')
+  }
+
+  async listOwnedIndex(userId: number): Promise<AiAssetIndexEntry[]> {
+    assertUserId(userId)
+    return indexOwnedAssetFiles({
+      accountRoot: path.join(this.outputRoot, `user-${userId}`),
+      mediaType: 'video',
+      filePattern: /^xingmang-([A-Za-z0-9_-]{43})\.(mp4)$/,
+      label: FILE_LABEL,
+    })
   }
 
   async listOwned(userId: number, maximum = 500): Promise<AiStoredVideoAssetListItem[]> {

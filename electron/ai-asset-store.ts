@@ -12,6 +12,7 @@ import {
 } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
 import { scopedLocalAssetId } from './content-addressed-asset'
+import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 
 const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_VIDEO_INPUT_IMAGE_BYTES = 8 * 1024 * 1024
@@ -632,6 +633,16 @@ export class AiAssetStore {
       throw new Error('视频参考图片超过 8 MB 安全上限，请压缩后重试')
     }
     return `data:${owned.asset.mimeType};base64,${owned.bytes.toString('base64')}`
+  }
+
+  async listOwnedIndex(userId: number): Promise<AiAssetIndexEntry[]> {
+    assertUserId(userId)
+    return indexOwnedAssetFiles({
+      accountRoot: path.join(this.outputRoot, `user-${userId}`),
+      mediaType: 'image',
+      filePattern: /^xingmang-([A-Za-z0-9_-]{43})\.(png|jpg|webp)$/,
+      label: FILE_LABEL,
+    })
   }
 
   async listOwned(userId: number, maximum = 200): Promise<Array<AiStoredAsset & { createdAt: string }>> {

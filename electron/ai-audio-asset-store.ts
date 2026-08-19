@@ -5,6 +5,7 @@ import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local
 import { sameLocalPathIdentity } from './path-identity'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { inspectIsoBmffMediaMetadata, inspectWaveDurationSeconds } from './media-container-metadata'
+import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 
 const FILE_LABEL = 'AI 音频资产'
 const DEFAULT_MAXIMUM_AUDIO_BYTES = 128 * 1024 * 1024
@@ -230,6 +231,16 @@ export class AiAudioAssetStore {
       }
     }
     throw new Error('AI 音频资产不存在或无权访问')
+  }
+
+  async listOwnedIndex(userId: number): Promise<AiAssetIndexEntry[]> {
+    assertUserId(userId)
+    return indexOwnedAssetFiles({
+      accountRoot: path.join(this.outputRoot, `user-${userId}`),
+      mediaType: 'audio',
+      filePattern: /^xingmang-([A-Za-z0-9_-]{43})\.(mp3|wav|ogg|m4a)$/,
+      label: FILE_LABEL,
+    })
   }
 
   async listOwned(userId: number, maximum = 500): Promise<AiStoredAudioAssetListItem[]> {
