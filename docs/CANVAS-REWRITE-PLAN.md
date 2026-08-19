@@ -327,7 +327,8 @@ git diff --check
 | B3-8 拖拽阈值 | ● | (见下) | `nodeDragThreshold={3}`。另修真缺陷:`PromptEditor` 只有 `nodrag` 没有 `nowheel`,提示词超出文本框高度后滚动会缩放画布而不是滚动内容。`nodrag/nowheel/nopan` 三个 className prop 本就是 React Flow 默认值,显式设置无意义,已不加 |
 | B3-1 自定义 edgeTypes | ● | (见下) | 此前注册的是**零个**自定义边:没有悬停态、不按类型着色、命中区域只有 1.6px 描边宽。新增 `edges/WorkflowEdge.tsx`——18px 透明命中路径、悬停/选中加粗、按**源端口**推导媒体色(目标端口可接受多种类型,不能用来定色)。色调与中点抽成 `workflow-edge-model.ts` 纯函数 +5 测试 |
 | B3-2 EdgeToolbar | ● | (见下) | 选中边时在中点浮出工具条:在此插入节点、删除连线。回调经 context 传入而非塞进 edge data,避免每次渲染把函数序列化进文档 |
-| B3-3 / B3-4 / B3-6 / B3-9 … B3-18 | ○ | | |
+| B3-3 改接连线 | ● | (见下) | 新增 `reconnect-edge` 命令,一次手势一条历史(而非删+连两步撤销)。校验时**排除被改接的那条边**,否则单容量目标端口会被它自己占用而拒绝改接。+2 reducer 测试 |
+| B3-4 / B3-6 / B3-9 … B3-18 | ○ | | |
 
 ### 批次 4 · 资产库
 

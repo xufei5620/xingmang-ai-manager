@@ -12,6 +12,7 @@ export type CanvasCommand =
   | { type: 'delete-elements'; nodeIds: string[]; edgeIds?: string[] }
   | { type: 'connect'; edge: EditorEdgeRecord }
   | { type: 'disconnect'; edgeIds: string[] }
+  | { type: 'reconnect-edge'; edgeId: string; edge: EditorEdgeRecord }
   | { type: 'set-viewport'; viewport: CanvasViewport; mergeKey?: string }
   | { type: 'set-media-groups'; mediaGroups: CanvasMediaGroups }
   | { type: 'replace-document'; document: CanvasDocumentState }

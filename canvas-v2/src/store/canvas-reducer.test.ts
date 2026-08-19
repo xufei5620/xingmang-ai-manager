@@ -49,6 +49,38 @@ describe('canvas command history', () => {
     expect(history.present.nodes[0].width).toBeUndefined()
   })
 
+  it('retargets a connection as one undoable command', () => {
+    let history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('c', 480)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:text', target: 'b', targetHandle: 'in:text' }],
+    })
+    history = applyCanvasCommand(history, {
+      type: 'reconnect-edge',
+      edgeId: 'e1',
+      edge: { id: 'e1', source: 'a', sourceHandle: 'out:text', target: 'c', targetHandle: 'in:text' },
+    })
+    expect(history.present.edges).toHaveLength(1)
+    expect(history.present.edges[0].target).toBe('c')
+
+    // One gesture, one undo: the old wire must come back in a single step.
+    history = undoCanvasHistory(history)
+    expect(history.present.edges[0].target).toBe('b')
+  })
+
+  it('rejects a retarget onto a node that does not exist', () => {
+    const history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:text', target: 'b', targetHandle: 'in:text' }],
+    })
+    expect(() => applyCanvasCommand(history, {
+      type: 'reconnect-edge',
+      edgeId: 'e1',
+      edge: { id: 'e1', source: 'a', sourceHandle: 'out:text', target: 'ghost', targetHandle: 'in:text' },
+    })).toThrow(/不存在的节点/)
+  })
+
   it('refuses to resize a locked node', () => {
     let history = createCanvasHistory(createCanvasDocument())
     history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [{ ...node('a'), locked: true }] })

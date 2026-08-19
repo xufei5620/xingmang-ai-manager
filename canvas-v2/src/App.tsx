@@ -1952,6 +1952,36 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     })
   ), [nodes, edges])
 
+  // Retargeting an existing connection. Without it, moving where a wire lands
+  // means delete plus redraw, which is two undo steps for one intention.
+  const onReconnect = useCallback((edge: Edge, connection: Connection) => {
+    if (!connection.source || !connection.target) return
+    // Validate against the graph *without* this edge. Leaving it in makes a
+    // single-capacity target reject the very wire that already occupies it.
+    const valid = isValidWorkflowConnection(connection, {
+      nodeKindOf: (nodeId) => {
+        const node = nodes.find((entry) => entry.id === nodeId)
+        return (node?.type as NodeKind | undefined) ?? null
+      },
+      edges: edges.filter((entry) => entry.id !== edge.id),
+    })
+    if (!valid) {
+      setBanner('该端口不接受这条连线')
+      return
+    }
+    execute({
+      type: 'reconnect-edge',
+      edgeId: edge.id,
+      edge: {
+        id: edge.id,
+        source: connection.source,
+        sourceHandle: connection.sourceHandle ?? '',
+        target: connection.target,
+        targetHandle: connection.targetHandle ?? '',
+      },
+    })
+  }, [edges, execute, nodes])
+
   const openQuickInsertAt = useCallback((client: { x: number; y: number }, connection?: PendingCanvasConnection) => {
     const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
     if (!bounds) return
@@ -2654,6 +2684,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           onConnectStart={onConnectStart}
           onConnectEnd={onConnectEnd}
           isValidConnection={isValidConnection}
+          edgesReconnectable
+          onReconnect={onReconnect}
+          reconnectRadius={14}
           deleteKeyCode={null}
           fitView
           minZoom={0.15}

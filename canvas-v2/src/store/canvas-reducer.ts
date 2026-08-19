@@ -128,6 +128,20 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
       const edges = document.edges.filter((edge) => !ids.has(edge.id))
       return edges.length === document.edges.length ? document : { ...document, edges, revision: nextRevision(document) }
     }
+    case 'reconnect-edge': {
+      // Retargeting is one user gesture, so it must be one history entry
+      // rather than a disconnect the user has to undo twice.
+      const index = document.edges.findIndex((edge) => edge.id === command.edgeId)
+      if (index < 0) throw new Error('要改接的连线不存在')
+      const nodeIds = new Set(document.nodes.map((node) => node.id))
+      if (!nodeIds.has(command.edge.source) || !nodeIds.has(command.edge.target)) throw new Error('连线指向不存在的节点')
+      if (command.edge.id !== command.edgeId && document.edges.some((edge) => edge.id === command.edge.id)) {
+        throw new Error('连线标识已存在')
+      }
+      const edges = [...document.edges]
+      edges[index] = { ...command.edge }
+      return { ...document, edges, revision: nextRevision(document) }
+    }
     case 'set-viewport':
       return { ...document, viewport: { ...command.viewport }, revision: nextRevision(document) }
     case 'set-media-groups': {
