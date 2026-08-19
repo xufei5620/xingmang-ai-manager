@@ -244,15 +244,22 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                   setSelectedAssetId(next)
                 }}
               >
+                {/* At most one live media element exists in the grid: only the
+                    open tile mounts a video or audio player, every other tile
+                    shows a derived still. A page of tiles each holding their
+                    own <video> used to decode the full source media just to
+                    paint a preview a few hundred pixels wide. */}
                 {asset.mediaType === 'image'
                   ? <SafeImage src={asset.thumbnailUrl} alt={name} loading="lazy" />
-                  : asset.mediaType === 'audio' && isLocalCanvasAssetUrl(asset.localUrl, 'audio')
-                    ? <AudioPreview src={asset.localUrl} aria-label={name} />
-                    : asset.mediaType === 'video' && isLocalCanvasAssetUrl(asset.localUrl, 'video')
-                      ? <ViewportVideo src={asset.localUrl} aria-label={name} muted controls={selected} preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
-                      : asset.mediaType === 'audio'
-                        ? <span className="asset-audio-placeholder"><Music2 size={22} /><small>{available ? '音频素材' : '素材不可用'}</small></span>
-                        : <span className="asset-video-placeholder"><Film size={22} /><small>{available ? 'MP4 视频' : '素材不可用'}</small></span>}
+                  : asset.mediaType === 'audio'
+                    ? selected && isLocalCanvasAssetUrl(asset.localUrl, 'audio')
+                      ? <AudioPreview src={asset.localUrl} aria-label={name} />
+                      : <span className="asset-audio-placeholder"><Music2 size={22} /><small>{available ? '音频素材' : '素材不可用'}</small></span>
+                    : selected && isLocalCanvasAssetUrl(asset.localUrl, 'video')
+                      ? <ViewportVideo src={asset.localUrl} aria-label={name} muted controls preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
+                      : available
+                        ? <SafeImage src={asset.thumbnailUrl} alt={name} loading="lazy" fallbackLabel="MP4 视频" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
+                        : <span className="asset-video-placeholder"><Film size={22} /><small>素材不可用</small></span>}
               </div>
               <div className="asset-tray-item-tools" aria-label="素材操作">
                 {onUpdateMetadata && <button type="button" className={asset.favorite ? 'is-favorite' : ''} title={asset.favorite ? '取消收藏' : '收藏'} aria-label={`${asset.favorite ? '取消收藏' : '收藏'}：${name}`} aria-pressed={asset.favorite} onClick={() => void onUpdateMetadata(asset.assetId, { favorite: !asset.favorite })}><Star size={13} fill={asset.favorite ? 'currentColor' : 'none'} /></button>}

@@ -164,13 +164,18 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
                 }}
               >
                 <button type="button" className="library-asset-preview" aria-label={`添加素材到画布：${asset.fileName}`} onClick={() => onAddAsset(asset.assetId)}>
-                  {asset.mediaType === 'image'
-                    ? <SafeImage src={asset.thumbnailUrl} alt={asset.fileName} loading="lazy" />
-                    : asset.mediaType === 'audio'
-                      ? <span className="asset-video-placeholder"><Music2 size={22} /><small>音频</small></span>
-                    : isLocalCanvasAssetUrl(asset.localUrl)
-                      ? <ViewportVideo src={asset.localUrl} aria-label={asset.fileName} muted preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
-                      : <span className="asset-video-placeholder"><Film size={18} /><small>视频</small></span>}
+                  {/* This strip never plays anything, so a derived still is all
+                      it ever needed; it used to mount one video element per
+                      tile purely to paint a frame. */}
+                  {asset.mediaType === 'audio'
+                    ? <span className="asset-video-placeholder"><Music2 size={22} /><small>音频</small></span>
+                    : <SafeImage
+                        src={asset.thumbnailUrl}
+                        alt={asset.fileName}
+                        loading="lazy"
+                        fallbackLabel={asset.mediaType === 'video' ? '视频' : '素材不可用'}
+                        style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
+                      />}
                 </button>
                 <footer>
                   <span>{asset.fileName}</span>

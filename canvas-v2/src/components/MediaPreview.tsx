@@ -21,7 +21,7 @@ export function SafeImage({ src, fallbackLabel = '素材不可用', className, .
 
   useEffect(() => setFailed(false), [src])
 
-  if (failed || !isLocalCanvasAssetUrl(src, 'image')) {
+  if (failed || !(isLocalCanvasAssetUrl(src, 'image') || isCanvasThumbnailUrl(src))) {
     return (
       <span className={`${className ?? ''} media-unavailable`} role="img" aria-label={fallbackLabel}>
         <ImageOff size={18} aria-hidden="true" />
@@ -30,6 +30,17 @@ export function SafeImage({ src, fallbackLabel = '素材不可用', className, .
     )
   }
   return <img {...imageProps} className={className} src={src} onError={(event) => { setFailed(true); onError?.(event) }} />
+}
+
+const THUMBNAIL_URL_PATTERN = /^xingmang-asset:\/\/thumb\/v[0-9]+\/(image|video)\/[A-Za-z0-9_-]{43}$/
+
+/**
+ * Derived thumbnails live under their own protocol host so they can be served
+ * as immutable. They are still images whatever the source media was, so a video
+ * tile can render its cover frame without mounting a video element.
+ */
+export function isCanvasThumbnailUrl(value: string | undefined): value is string {
+  return typeof value === 'string' && THUMBNAIL_URL_PATTERN.test(value)
 }
 
 export function isLocalCanvasAssetUrl(

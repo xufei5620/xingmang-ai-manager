@@ -54,7 +54,9 @@ const localUrl = 'xingmang-asset://image/' + assetId
 let asset = {
   assetId,
   localUrl,
-  thumbnailUrl: localUrl,
+  // The service hands the grid a derived still under its own protocol host,
+  // never the original media.
+  thumbnailUrl: 'xingmang-asset://thumb/v1/image/' + assetId,
   mimeType: 'image/png',
   width: 800,
   height: 1000,
@@ -83,7 +85,7 @@ const audioAsset = {
 const videoAsset = {
   assetId: videoAssetId,
   localUrl: 'xingmang-asset://video/' + videoAssetId,
-  thumbnailUrl: 'xingmang-asset://video/' + videoAssetId,
+  thumbnailUrl: 'xingmang-asset://thumb/v1/video/' + videoAssetId,
   mimeType: 'video/mp4',
   fileName: '视频1.mp4',
   displayName: '视频1.mp4',
@@ -270,6 +272,14 @@ app.whenReady().then(async () => {
     const url = new URL(request.url)
     if (url.hostname === 'image' && url.pathname === '/${fixtureAssetId}') {
       return new Response(Buffer.from(${JSON.stringify(fixturePng)}, 'base64'), { headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'image/png' } })
+    }
+    // Derived thumbnails are still images whatever the source media was, and
+    // are served as immutable because the path carries both the pipeline
+    // version and a content addressed identifier.
+    if (url.hostname === 'thumb' && /^\\/v[0-9]+\\/(image|video)\\/[A-Za-z0-9_-]{43}$/.test(url.pathname)) {
+      return new Response(Buffer.from(${JSON.stringify(fixturePng)}, 'base64'), {
+        headers: { 'Access-Control-Allow-Origin': '*', 'Content-Type': 'image/png', 'Cache-Control': 'public, max-age=31536000, immutable' },
+      })
     }
     const sourcePath = url.hostname === 'audio' && url.pathname === '/${fixtureAudioAssetId}'
       ? ${JSON.stringify(fixtureAudioPath)}

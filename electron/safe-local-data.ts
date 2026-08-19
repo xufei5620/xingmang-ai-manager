@@ -257,6 +257,23 @@ export async function writeAtomicSafeUtf8File(
   content: string,
   label: string,
 ): Promise<void> {
+  return writeAtomicSafeFile(filePath, content, 'utf8', label)
+}
+
+export async function writeAtomicSafeBinaryFile(
+  filePath: string,
+  content: Buffer,
+  label: string,
+): Promise<void> {
+  return writeAtomicSafeFile(filePath, content, null, label)
+}
+
+async function writeAtomicSafeFile(
+  filePath: string,
+  content: string | Buffer,
+  encoding: BufferEncoding | null,
+  label: string,
+): Promise<void> {
   const directory = path.dirname(path.resolve(filePath))
   assertNoReparseComponents(directory, label)
   const directoryStats = fs.lstatSync(directory)
@@ -268,7 +285,7 @@ export async function writeAtomicSafeUtf8File(
   let handle: fs.promises.FileHandle | null = null
   try {
     handle = await fs.promises.open(temporaryPath, 'wx', 0o600)
-    await handle.writeFile(content, { encoding: 'utf8' })
+    await handle.writeFile(content, { encoding })
     await handle.sync()
     await handle.close()
     handle = null

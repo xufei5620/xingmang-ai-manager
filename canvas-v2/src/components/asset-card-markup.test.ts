@@ -40,6 +40,19 @@ describe('canvas asset card markup', () => {
     expect(source).toContain('aria-expanded={selected}')
   })
 
+  it('renders derived stills and keeps at most one live media element in the grid', () => {
+    // Every video tile used to mount its own <video>, so a page of two dozen
+    // decoded the full source media just to paint previews a few hundred pixels
+    // wide. Only the open tile gets a player now; the rest show a thumbnail.
+    const tray = componentSource('AssetTray.tsx')
+    expect(tray).toContain("selected && isLocalCanvasAssetUrl(asset.localUrl, 'video')")
+    expect(tray).toContain("selected && isLocalCanvasAssetUrl(asset.localUrl, 'audio')")
+    expect(tray).not.toMatch(/controls=\{selected\}/)
+    const library = componentSource('NodeLibrary.tsx')
+    expect(library).not.toContain('<ViewportVideo')
+    expect(library).toContain('src={asset.thumbnailUrl}')
+  })
+
   it('wires logical rename through the asset tray and preview', () => {
     const tray = componentSource('AssetTray.tsx')
     const preview = componentSource('MediaPreview.tsx')

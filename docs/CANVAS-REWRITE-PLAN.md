@@ -376,7 +376,11 @@ git diff --check
 | B4-1 修正截断搜索 | ● | | 新增 `electron/ai-asset-index.ts`:只走 readdir + lstat、**不读任何媒体字节**地枚举全部资产,三个 store 各加 `listOwnedIndex`。`listOwnedPage` 改为「索引全集 → 关联元数据 → 筛选 → 排序 → 切页 → 只水合当前页」。`total` 与 `hasMore` 现在是真实值;offset 上限从 500 提到 20000。元数据关联改用新增的 `metadata.getAll`(`getMany` 有 1500 个 id 上限,分块会把同一状态文件重复读多遍)。水合串行执行:每次读入一个受 store 上限约束的完整文件,128 MB 视频乘并发度是真实的内存尖峰;串行读至多 `limit` 个文件仍远优于旧路径的 500 个 |
 | B4-7 选中模型显式化 | ● | | 删掉 `onMouseLeave` 里的清选中 + `focused.blur()`:指针划过网格会抢走键盘用户正在操作的卡片焦点,是无障碍缺陷。选中改为显式:激活打开、再次激活关闭、Esc 关闭、点空白处关闭,指针移动不再影响选中或焦点。状态迁移抽到纯模块 `canvas-v2/src/components/asset-selection.ts` 并单测。补 `aria-expanded` |
 | B4-6 分面计数走全集 | ● | | 标签筛选面原先从 `page.items` 派生,翻一页就变。服务层在全集上算 `facets.tags`(含计数),**在标签筛选之前统计**,选中某个标签不会抹掉同级标签;其他筛选(视图/来源/搜索)仍会收窄计数,保持面板诚实。`CanvasAssetPage` 新增必填 `facets`,空页统一走新的 `emptyCanvasAssetPage()`。服务侧计数上限 64 项以免 DTO 无界增长 |
-| B4-2 … B4-16 | ○ | | |
+| B4-2 缩略图管线 | ● | | 新增 `asset-thumbnail.ts`(纯:URL/尺寸/格式)、`asset-thumbnail-store.ts`(磁盘缓存,原子写)、`asset-thumbnail-service.ts`(编排,串行队列 + 同资产在途去重)。**计划里的 `createImageBitmap` + `OffscreenCanvas` 跑 `utilityProcess` 不可行**:utilityProcess 是 Node 环境(带 Electron `net`),没有 Blink,两个 API 都不存在;要保留它们只能开隐藏 `BrowserWindow`,等于凭空多一个渲染面。改用 Electron 自带的 `nativeImage`(同一批 Chromium 解码器,主进程内,同样零新依赖),代价是同步执行,所以生成排在并发度 1 的队列后面 |
+| B4-3 缩略图独立协议主机 | ● | | `xingmang-asset://thumb/<version>/<image\|video>/<assetId>`,响应头 `public, max-age=31536000, immutable`。资产 ID 是内容寻址、版本段在路径里,所以响应不可能就地过期;版本一升就整代失效。路径解析 `parseAssetThumbnailPath` 只认「版本/媒体类型/43 位 ID」三段,穿越与畸形 ID 根本进不到 store。媒体类型只决定问哪个 store,归属仍由 store 证明 |
+| B4-4 视频封面帧 | ◐ | | 走 `nativeImage.createThumbnailFromPath`(Windows/macOS,正是本产品的两个平台),其他平台返回 null 由界面回退占位图。**`<video>` seek 回退未做**:那需要渲染进程里的 video 元素,与 B4-5「全网格最多一个活动媒体元素」直接冲突,且只为我们不发布的平台服务 |
+| B4-5 停止每瓦片挂 video | ◐ | | 资产栏只有**展开中的那一张**挂 video/audio 播放器,其余一律渲染派生静帧;`NodeLibrary` 的素材条从不播放,已整条改为静帧。**悬停擦除雪碧图未做**:多帧抽取需要按任意时间戳 seek,`createThumbnailFromPath` 只给一帧,而唯一的通用方案 ffmpeg 的 npm 包是 GPL-3.0-or-later,已排除。零依赖约束下做不到 |
+| B4-8 … B4-16 | ○ | | |
 
 ---
 

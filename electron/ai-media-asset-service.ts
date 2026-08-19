@@ -3,6 +3,7 @@ import type { AiStoredVideoAssetListItem, AiVideoAssetStore } from './ai-video-a
 import type { AiAudioAssetStore, AiStoredAudioAssetListItem } from './ai-audio-asset-store'
 import type { AiAssetMetadataStore, AiAssetSource } from './ai-asset-metadata-store'
 import { MAXIMUM_INDEXED_ASSETS, type AiAssetIndexEntry } from './ai-asset-index'
+import { assetThumbnailUrl } from './asset-thumbnail'
 
 export type AiMediaAssetView = 'all' | 'favorites' | 'recent'
 export type AiMediaAssetSort = 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'
@@ -171,12 +172,16 @@ export function createAiMediaAssetService(options: {
       try {
         // A file deleted or damaged between indexing and hydration is omitted
         // rather than failing the whole page.
+        // thumbnailUrl points at the derived 320 pixel image rather than the
+        // original. A grid of two dozen tiles used to decode close to a hundred
+        // megabytes of full resolution bitmaps for previews a few hundred
+        // pixels wide.
         if (row.entry.mediaType === 'image') {
           const { asset } = await options.images.readOwned(userId, row.entry.assetId)
-          items.push({ ...asset, createdAt: row.entry.createdAt, mediaType: 'image', thumbnailUrl: asset.localUrl, ...organization })
+          items.push({ ...asset, createdAt: row.entry.createdAt, mediaType: 'image', thumbnailUrl: assetThumbnailUrl(row.entry.assetId, 'image'), ...organization })
         } else if (row.entry.mediaType === 'video') {
           const { asset } = await options.videos.readOwned(userId, row.entry.assetId)
-          items.push({ ...asset, createdAt: row.entry.createdAt, mediaType: 'video', thumbnailUrl: asset.localUrl, ...organization })
+          items.push({ ...asset, createdAt: row.entry.createdAt, mediaType: 'video', thumbnailUrl: assetThumbnailUrl(row.entry.assetId, 'video'), ...organization })
         } else if (options.audios) {
           const { asset } = await options.audios.readOwned(userId, row.entry.assetId)
           items.push({ ...asset, createdAt: row.entry.createdAt, mediaType: 'audio', thumbnailUrl: asset.localUrl, ...organization })

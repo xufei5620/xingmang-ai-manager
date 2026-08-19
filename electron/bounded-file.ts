@@ -97,6 +97,14 @@ export async function readBoundedUtf8File(
   maximumBytes: number,
   label: string,
 ): Promise<string> {
+  return (await readBoundedFile(filePath, maximumBytes, label)).toString('utf8')
+}
+
+export async function readBoundedFile(
+  filePath: string,
+  maximumBytes: number,
+  label: string,
+): Promise<Buffer> {
   if (!Number.isSafeInteger(maximumBytes) || maximumBytes <= 0) {
     throw new Error(`${label}读取上限无效`)
   }
@@ -125,7 +133,7 @@ export async function readBoundedUtf8File(
     ) {
       throw new Error(`${label}在读取过程中发生变化`)
     }
-    return buffer.toString('utf8')
+    return buffer
   } finally {
     await handle.close()
   }

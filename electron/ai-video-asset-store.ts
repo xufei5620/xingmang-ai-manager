@@ -245,6 +245,46 @@ export class AiVideoAssetStore {
     throw new Error('AI 视频资产不存在或无权访问')
   }
 
+  /**
+   * Resolves the absolute path of an owned video after the same ownership and
+   * reparse checks `readOwned` performs, for callers that must hand a path to a
+   * platform decoder instead of buffering the whole file. The path stays inside
+   * the main process: no renderer ever receives one.
+   */
+  async resolveOwnedFilePath(userId: number, assetId: string): Promise<string> {
+    assertUserId(userId)
+    assertAssetId(assetId)
+    const accountRoot = path.join(this.outputRoot, `user-${userId}`)
+    let entries: fs.Dirent[]
+    try {
+      assertNoReparseComponents(accountRoot, FILE_LABEL)
+      entries = await fs.promises.readdir(accountRoot, { withFileTypes: true })
+    } catch {
+      throw new Error('AI 视频资产不存在或无权访问')
+    }
+    if (entries.length > 4_096) throw new Error('AI 视频资产目录条目过多')
+    for (const entry of entries) {
+      if (!entry.isDirectory() || entry.isSymbolicLink() || !DATE_DIRECTORY_PATTERN.test(entry.name)) continue
+      const filePath = path.join(accountRoot, entry.name, `xingmang-${assetId}.mp4`)
+      let stats: fs.Stats
+      try {
+        assertNoReparseComponents(path.dirname(filePath), FILE_LABEL)
+        stats = await fs.promises.lstat(filePath)
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue
+        throw error
+      }
+      if (!stats.isFile() || stats.isSymbolicLink() || stats.nlink !== 1) {
+        throw new Error('AI 视频资产必须是单链接普通文件')
+      }
+      if (!sameLocalPathIdentity(await fs.promises.realpath(filePath), filePath)) {
+        throw new Error('AI 视频资产不能经过符号链接或目录联接')
+      }
+      return filePath
+    }
+    throw new Error('AI 视频资产不存在或无权访问')
+  }
+
   async listOwnedIndex(userId: number): Promise<AiAssetIndexEntry[]> {
     assertUserId(userId)
     return indexOwnedAssetFiles({

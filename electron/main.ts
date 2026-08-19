@@ -27,6 +27,9 @@ import { AiAssetMetadataStore } from './ai-asset-metadata-store'
 import { AiVideoTaskStore } from './ai-video-task-store'
 import { createAiVideoService } from './ai-video-service'
 import { createAiMediaAssetService } from './ai-media-asset-service'
+import { assetThumbnailMaxEdge, assetThumbnailSize, assetThumbnailVersion, parseAssetThumbnailPath } from './asset-thumbnail'
+import { AssetThumbnailStore } from './asset-thumbnail-store'
+import { createAssetThumbnailService, type AssetThumbnailRenderer, type AssetThumbnailService } from './asset-thumbnail-service'
 import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
@@ -215,15 +218,77 @@ function registerApplicationProtocol(policy: ApplicationUrlPolicy): void {
   })
 }
 
+/**
+ * Derives thumbnails with Electron's bundled Skia encoder.
+ *
+ * The plan called for `createImageBitmap` plus `OffscreenCanvas` in a
+ * `utilityProcess`. That is not available: a utility process is a Node.js
+ * environment with Electron's `net` module, not a Blink one, so it has neither
+ * global. The alternative that keeps those APIs would be a hidden
+ * `BrowserWindow`, which adds a renderer surface for no benefit. `nativeImage`
+ * gives the same Chromium decoders synchronously in the main process with zero
+ * new dependencies, which is why generation is serialized behind a queue.
+ */
+function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
+  return {
+    async fromImageBytes(bytes, mimeType) {
+      const image = nativeImage.createFromBuffer(bytes)
+      if (image.isEmpty()) return null
+      const { width, height } = image.getSize()
+      const contained = assetThumbnailSize(width, height)
+      const resized = image.resize({ ...contained, quality: 'better' })
+      if (resized.isEmpty()) return null
+      return mimeType === 'image/jpeg' ? resized.toJPEG(82) : resized.toPNG()
+    },
+    async fromMediaFile(filePath) {
+      // Backed by the platform shell thumbnail provider, which exists only on
+      // Windows and macOS. Both are the platforms this product ships on, and
+      // elsewhere the tray falls back to its own placeholder.
+      if (process.platform !== 'win32' && process.platform !== 'darwin') return null
+      try {
+        const image = await nativeImage.createThumbnailFromPath(filePath, {
+          width: assetThumbnailMaxEdge,
+          height: assetThumbnailMaxEdge,
+        })
+        return image.isEmpty() ? null : image.toPNG()
+      } catch {
+        return null
+      }
+    },
+  }
+}
+
 function registerAiAssetProtocol(
   assets: Pick<CanvasProjectAssetManager, 'readOwned'>,
   accountService: Pick<RelayBackendClient, 'getSessionState'>,
+  thumbnails: Pick<AssetThumbnailService, 'resolve'>,
 ): void {
   protocol.handle('xingmang-asset', async (request) => {
     try {
       const url = new URL(request.url)
-      if (!['image', 'video', 'audio'].includes(url.hostname) || url.username || url.password || url.search || url.hash) {
+      if (!['image', 'video', 'audio', 'thumb'].includes(url.hostname) || url.username || url.password || url.search || url.hash) {
         return new Response(null, { status: 404 })
+      }
+      const sessionStateForThumbnail = accountService.getSessionState()
+      if (url.hostname === 'thumb') {
+        const parsed = parseAssetThumbnailPath(url.pathname)
+        if (!parsed || parsed.version !== assetThumbnailVersion) return new Response(null, { status: 404 })
+        const owner = sessionStateForThumbnail.authenticated ? sessionStateForThumbnail.account?.userId : undefined
+        if (!owner) return new Response(null, { status: 401 })
+        const derived = await thumbnails.resolve(owner, parsed.assetId, parsed.mediaKind)
+        if (!derived) return new Response(null, { status: 404 })
+        return new Response(derived.bytes, {
+          status: 200,
+          headers: {
+            'Access-Control-Allow-Origin': '*',
+            // Asset identifiers are content addressed and the pipeline version
+            // is part of the path, so a response can never go stale in place.
+            'Cache-Control': 'public, max-age=31536000, immutable',
+            'Content-Length': String(derived.bytes.byteLength),
+            'Content-Type': derived.mimeType,
+            'X-Content-Type-Options': 'nosniff',
+          },
+        })
       }
       const assetId = decodeURIComponent(url.pathname.replace(/^\//, ''))
       const sessionState = accountService.getSessionState()
@@ -840,7 +905,25 @@ if (!hasSingleInstanceLock) {
         { ...context, reason: error instanceof Error ? error.message : String(error) },
       ),
     })
-    registerAiAssetProtocol(canvasProjectAssets, accountService)
+    const assetThumbnails = createAssetThumbnailService({
+      store: new AssetThumbnailStore({ cacheRoot: path.join(managerDataDirectory, 'asset-thumbnails') }),
+      renderer: createNativeThumbnailRenderer(),
+      sources: {
+        readImage: async (userId, assetId) => {
+          const owned = await assetStore.readOwned(userId, assetId)
+          return { bytes: owned.bytes, mimeType: owned.asset.mimeType }
+        },
+        resolveVideoPath: (userId, assetId) => videoAssets.resolveOwnedFilePath(userId, assetId),
+      },
+      onFailure: (assetId, reason) => runtimeLog.log(
+        'warn',
+        'canvas',
+        'asset.thumbnail.failed',
+        '素材缩略图生成失败，已回退到占位图',
+        { assetId, reason },
+      ),
+    })
+    registerAiAssetProtocol(canvasProjectAssets, accountService, assetThumbnails)
     const chatService = createAiChatService({
       credentialCoordinator: chatCredentials,
       emit: (senderId, event) => {
