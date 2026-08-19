@@ -138,6 +138,11 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
       .map(([tag, count]) => ({ tag, count }))
       .sort((left, right) => right.count - left.count || left.tag.localeCompare(right.tag, 'zh-CN'))
     if (query.tag) items = items.filter((entry) => entry.tags.includes(query.tag))
+    if (query.search) {
+      const needle = query.search.trim().toLowerCase()
+      items = items.filter((entry) => [entry.displayName, entry.fileName, entry.assetId]
+        .some((field) => (field || '').toLowerCase().includes(needle)))
+    }
     return { items, offset: query.offset || 0, limit: query.limit || 24, total: items.length, hasMore: false, facets: { tags } }
   },
   listPromptPresets: async () => [],
@@ -543,6 +548,15 @@ try {
     true,
     '斜杠没有把焦点送到素材搜索框',
   )
+  // An empty grid used to say the same sentence whatever emptied it. Each cause
+  // now names itself and offers the one thing that undoes it.
+  await page.getByRole('textbox', { name: '搜索本地资产' }).fill('不存在的素材关键词')
+  await page.keyboard.press('Enter')
+  const emptyState = page.locator('.asset-tray-empty')
+  await emptyState.waitFor({ state: 'visible' })
+  assert.ok((await emptyState.textContent()).includes('不存在的素材关键词'), '搜索空状态没有回显搜索词')
+  await emptyState.getByRole('button', { name: '清除搜索' }).click()
+  await fixtureAsset.waitFor({ state: 'visible' })
   // The viewer steps through the page with the arrow keys, so comparing two
   // assets does not mean closing and reopening it.
   await fixtureAsset.hover()

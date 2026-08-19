@@ -17,6 +17,7 @@ import {
   type AssetSelection,
 } from './asset-selection'
 import { adjacentAssetId, assetGridKeyAction, rovingTabIndex, skeletonTileCount } from './asset-grid-keyboard'
+import { assetEmptyState } from './asset-empty-state'
 
 interface AssetTrayProps {
   page: CanvasAssetPage
@@ -274,7 +275,21 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       >
         <p className="asset-tray-live-status" role="status" aria-live="polite">{loading ? '正在读取素材' : ''}</p>
         {skeletonTiles.map((key) => <div className="asset-tray-skeleton" key={key} aria-hidden="true" />)}
-        {!loading && page.items.length === 0 && <p className="asset-tray-empty">没有符合条件的本地资产</p>}
+        {!loading && page.items.length === 0 && (() => {
+          const empty = assetEmptyState(query)
+          return (
+            <div className="asset-tray-empty">
+              <strong>{empty.title}</strong>
+              <p>{empty.description}</p>
+              <button type="button" onClick={() => {
+                if (empty.kind === 'import') return onImport()
+                if (empty.kind === 'clear-search') { setSearch(''); return onQueryChange({ ...query, offset: 0, search: '' }) }
+                if (empty.kind === 'clear-filters') return onQueryChange({ ...query, offset: 0, tag: undefined, mediaType: 'all', source: 'all' })
+                onQueryChange({ ...query, offset: 0, view: 'all' })
+              }}>{empty.label}</button>
+            </div>
+          )
+        })()}
         {page.items.map((asset, index) => {
           const selected = isAssetSelected(selection, asset.assetId)
           const expanded = detailAssetId === asset.assetId

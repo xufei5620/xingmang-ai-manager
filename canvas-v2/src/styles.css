@@ -1086,7 +1086,11 @@ button:disabled {
 .asset-video-placeholder { display: grid !important; width: 100%; aspect-ratio: 1; place-items: center; align-content: center; gap: var(--space-4); color: var(--text-muted); background: var(--surface-media); }
 .asset-audio-placeholder small,
 .asset-video-placeholder small { font-size: var(--text-xs); }
-.asset-tray-empty { grid-column: 1 / -1; color: var(--text-muted); font-size: var(--text-sm); text-align: center; }
+.asset-tray-empty { display: grid; grid-column: 1 / -1; justify-items: center; gap: var(--space-6); padding: var(--space-16) var(--space-12); color: var(--text-muted); font-size: var(--text-sm); text-align: center; }
+.asset-tray-empty strong { color: var(--text-primary); font-size: var(--text-sm); font-weight: 600; }
+.asset-tray-empty p { margin: 0; color: var(--text-muted); font-size: var(--text-xs); line-height: 1.6; }
+.asset-tray-empty button { min-height: 28px; padding: 0 var(--space-12); color: var(--text-primary); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-control); font-size: var(--text-xs); }
+.asset-tray-empty button:hover { background: var(--surface-hover); }
 /* Announced, never drawn: a visible loading line would push the grid down and
    let it spring back, which is exactly the jump the skeletons remove. */
 .asset-tray-live-status { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
