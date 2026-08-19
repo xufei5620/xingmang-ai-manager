@@ -6,6 +6,7 @@ import {
   MiniMap,
   ReactFlow,
   SelectionMode,
+  ViewportPortal,
   applyNodeChanges,
   useReactFlow,
   type Connection,
@@ -39,6 +40,18 @@ import { CanvasContextMenu, type CanvasContextMenuState } from './components/Can
 import type { CanvasContextAction } from './editor/context-menu'
 import { alignNodePositions, distributeNodePositions, type AlignableNode, type CanvasAlignMode, type CanvasDistributeAxis } from './editor/align'
 import { bridgeEdgesForRemoval } from './editor/bridge-edges'
+import { resolveSnapGuides, type SnapBox, type SnapGuide } from './editor/snap-guides'
+
+function snapBoxOfCanvasNode(node: { id: string; position: { x: number; y: number }; measured?: { width?: number; height?: number }; width?: number | null; height?: number | null; type?: string }): SnapBox {
+  const fallback = builtinNodeRegistry.resolve(node.type ?? 'unknown')?.dimensions
+  return {
+    id: node.id,
+    x: node.position.x,
+    y: node.position.y,
+    width: node.measured?.width ?? node.width ?? fallback?.width ?? 240,
+    height: node.measured?.height ?? node.height ?? fallback?.height ?? 180,
+  }
+}
 import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
@@ -593,6 +606,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   } | null>(null)
   const [templateCatalog, setTemplateCatalog] = useState<{ initialTemplateId?: string } | null>(null)
   const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null)
+  const [snapGuides, setSnapGuides] = useState<readonly SnapGuide[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
   const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
@@ -1726,7 +1740,29 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [])
 
+  // Alignment guides while dragging a single node. Only for a lone node: with
+  // a multi-node drag the group has no single edge to align, and snapping one
+  // member would silently shear the arrangement the user already built.
+  const onCanvasNodeDrag = useCallback((_event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
+    if (draggedNodes.length > 1 || altDragSessionRef.current) {
+      if (snapGuides.length > 0) setSnapGuides([])
+      return
+    }
+    const boxes = reactFlow.getNodes()
+      .filter((entry) => entry.id !== node.id && entry.type !== 'group')
+      .map(snapBoxOfCanvasNode)
+    const moving = snapBoxOfCanvasNode(node)
+    const result = resolveSnapGuides(moving, boxes)
+    setSnapGuides(result.guides)
+    if (result.position.x !== moving.x || result.position.y !== moving.y) {
+      setNodes((current) => current.map((entry) => (
+        entry.id === node.id ? { ...entry, position: result.position } : entry
+      )))
+    }
+  }, [reactFlow, setNodes, snapGuides.length])
+
   const onCanvasNodeDragStop = useCallback((_event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
+    setSnapGuides([])
     const session = altDragSessionRef.current
     if (!session) return
     altDragSessionRef.current = null
@@ -2777,6 +2813,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           defaultEdgeOptions={defaultEdgeOptions}
           onNodesChange={onCanvasNodesChange}
           onNodeDragStart={onCanvasNodeDragStart}
+          onNodeDrag={onCanvasNodeDrag}
           onNodeDragStop={onCanvasNodeDragStop}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
@@ -2844,6 +2881,19 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               alignment and snapping have something to read against. */}
           <Background id="canvas-grid-minor" variant={BackgroundVariant.Dots} gap={16} size={1} />
           <Background id="canvas-grid-major" variant={BackgroundVariant.Lines} gap={96} lineWidth={1} />
+          {snapGuides.length > 0 && (
+            <ViewportPortal>
+              {snapGuides.map((guide) => (
+                <div
+                  key={`${guide.axis}:${guide.position}`}
+                  className={`canvas-snap-guide is-${guide.axis}`}
+                  style={guide.axis === 'x'
+                    ? { left: guide.position, top: guide.start, height: guide.end - guide.start }
+                    : { left: guide.start, top: guide.position, width: guide.end - guide.start }}
+                />
+              ))}
+            </ViewportPortal>
+          )}
           {minimapOpen && <MiniMap pannable zoomable nodeColor={canvasMinimapNodeColor} nodeStrokeWidth={3} />}
           <Controls />
         </ReactFlow>

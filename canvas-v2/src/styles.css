@@ -1887,6 +1887,11 @@ button:disabled {
   transform: scale(1.18);
 }
 
+/* Drawn inside the viewport so the guide tracks pan and zoom with the nodes. */
+.canvas-snap-guide { position: absolute; z-index: var(--z-canvas-overlay); background: var(--accent); pointer-events: none; }
+.canvas-snap-guide.is-x { width: 1px; }
+.canvas-snap-guide.is-y { height: 1px; }
+
 .canvas-selection-toolbar-group { display: flex; align-items: center; gap: var(--space-2); padding: 0 var(--space-4); border-right: 1px solid var(--border-subtle); border-left: 1px solid var(--border-subtle); }
 
 .canvas-context-menu {
