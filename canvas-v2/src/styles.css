@@ -1038,7 +1038,10 @@ button:disabled {
   align-self: start;
 }
 .asset-tray-item:hover { border-color: var(--border-strong); }
-.asset-tray-item.is-selected { grid-column: 1 / -1; border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+/* Selection marks a tile; only the single expanded tile takes the full row,
+   otherwise selecting a range would stack every tile into one column. */
+.asset-tray-item.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.asset-tray-item.is-expanded { grid-column: 1 / -1; }
 .asset-tray-item-audio { grid-column: 1 / -1; }
 .asset-tray-item-audio .asset-tray-item-preview { min-height: 76px; }
 .asset-tray-item-preview { display: grid; width: 100%; min-height: 96px; place-items: center; overflow: hidden; padding: 0; background: var(--surface-media); border: 0; cursor: pointer; outline: 0; }

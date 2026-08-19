@@ -5,7 +5,17 @@ import type { AssetRef } from '../model'
 import { middleTruncate } from '../identifier-display'
 import { AudioPreview, MediaLightbox, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
 import { mediaAssetAspectRatio } from '../library/media-assets'
-import { assetSelectionAfterKey, retainedAssetSelection, toggleAssetSelection } from './asset-selection'
+import {
+  assetSelectionAfterKey,
+  assetSelectionDetailId,
+  assetSelectionForActivation,
+  assetSelectionForContextMenu,
+  assetSelectionSelectAll,
+  emptyAssetSelection,
+  isAssetSelected,
+  retainedAssetSelection,
+  type AssetSelection,
+} from './asset-selection'
 
 interface AssetTrayProps {
   page: CanvasAssetPage
@@ -70,7 +80,7 @@ function assetRef(asset: CanvasAssetSummary): AssetRef {
 
 export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onImport, onAdd, onAssetMenu, onLocateSourceNode, onRename, onUpdateMetadata, onMarkUsed, onInspectReferences, onClose, embedded = false }: AssetTrayProps) {
   const [search, setSearch] = useState(query.search ?? '')
-  const [selectedAssetId, setSelectedAssetId] = useState<string | null>(null)
+  const [selection, setSelection] = useState<AssetSelection>(emptyAssetSelection)
   const [previewAsset, setPreviewAsset] = useState<CanvasAssetSummary | null>(null)
   const [renamingAsset, setRenamingAsset] = useState<CanvasAssetSummary | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
@@ -85,9 +95,11 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
   const [tagError, setTagError] = useState<string | null>(null)
   const [tagSaving, setTagSaving] = useState(false)
   useEffect(() => setSearch(query.search ?? ''), [query.search])
+  const visibleAssetIds = useMemo(() => page.items.map((asset) => asset.assetId), [page.items])
   useEffect(() => {
-    setSelectedAssetId((value) => retainedAssetSelection(value, page.items.map((asset) => asset.assetId)))
-  }, [page.items])
+    setSelection((value) => retainedAssetSelection(value, visibleAssetIds))
+  }, [visibleAssetIds])
+  const detailAssetId = assetSelectionDetailId(selection)
 
   const submitSearch = (event: FormEvent) => {
     event.preventDefault()
@@ -158,7 +170,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
     <aside className={`asset-tray${embedded ? ' is-embedded' : ''}`} aria-label="本地资产">
       <header>
         <strong>素材库</strong>
-        <span>{page.total}</span>
+        <span>{selection.ids.size > 1 ? `已选 ${selection.ids.size} / ${page.total}` : page.total}</span>
         <button type="button" title="从文件导入素材" aria-label="从文件导入素材" onClick={onImport} disabled={loading}><FolderOpen size={15} /></button>
         <button type="button" title="刷新资产" aria-label="刷新资产" onClick={onRefresh} disabled={loading}><RefreshCw size={15} /></button>
         <button type="button" title="关闭资产栏" aria-label="关闭资产栏" onClick={onClose}><X size={16} /></button>
@@ -208,20 +220,33 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
       )}
       <div
         className="asset-tray-grid"
-        onClick={(event) => { if (event.target === event.currentTarget) setSelectedAssetId(null) }}
+        aria-multiselectable="true"
+        onClick={(event) => { if (event.target === event.currentTarget) setSelection(emptyAssetSelection) }}
+        onKeyDown={(event) => {
+          if (!(event.key === 'a' || event.key === 'A') || !(event.ctrlKey || event.metaKey)) return
+          event.preventDefault()
+          setSelection(assetSelectionSelectAll(visibleAssetIds))
+        }}
       >
         {loading && <p className="asset-tray-empty" role="status" aria-live="polite">正在读取...</p>}
         {!loading && page.items.length === 0 && <p className="asset-tray-empty">没有符合条件的本地资产</p>}
         {page.items.map((asset) => {
-          const selected = selectedAssetId === asset.assetId
+          const selected = isAssetSelected(selection, asset.assetId)
+          const expanded = detailAssetId === asset.assetId
           const name = assetName(asset)
           const available = assetAvailable(asset)
           return (
             <article
-              className={`asset-tray-item asset-tray-item-${asset.mediaType}${selected ? ' is-selected' : ''}`}
+              className={`asset-tray-item asset-tray-item-${asset.mediaType}${selected ? ' is-selected' : ''}${expanded ? ' is-expanded' : ''}`}
               key={asset.assetId}
               aria-label={`${name}，${assetLabel(asset)}`}
-              onContextMenu={(event) => { event.preventDefault(); onAssetMenu(asset.assetId) }}
+              onContextMenu={(event) => {
+                event.preventDefault()
+                // Acting on one of several selected tiles must not silently
+                // discard the rest of the selection.
+                setSelection((value) => assetSelectionForContextMenu(value, asset.assetId))
+                onAssetMenu(asset.assetId)
+              }}
               draggable
               onDragStart={(event) => {
                 event.dataTransfer.setData('application/x-xingmang-asset-id', asset.assetId)
@@ -234,14 +259,18 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 role="group"
                 tabIndex={0}
                 aria-label={`查看素材详情：${name}`}
-                aria-expanded={selected}
-                onClick={() => setSelectedAssetId((value) => toggleAssetSelection(value, asset.assetId))}
+                aria-expanded={expanded}
+                onClick={(event) => setSelection((value) => assetSelectionForActivation(
+                  value, asset.assetId, visibleAssetIds, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey },
+                ))}
                 onDoubleClick={() => setPreviewAsset(asset)}
                 onKeyDown={(event) => {
-                  const next = assetSelectionAfterKey(event.key, selectedAssetId, asset.assetId)
+                  const next = assetSelectionAfterKey(
+                    event.key, selection, asset.assetId, visibleAssetIds, { toggle: event.ctrlKey || event.metaKey, range: event.shiftKey },
+                  )
                   if (next === undefined) return
                   event.preventDefault()
-                  setSelectedAssetId(next)
+                  setSelection(next)
                 }}
               >
                 {/* At most one live media element exists in the grid: only the
@@ -252,10 +281,10 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 {asset.mediaType === 'image'
                   ? <SafeImage src={asset.thumbnailUrl} alt={name} loading="lazy" />
                   : asset.mediaType === 'audio'
-                    ? selected && isLocalCanvasAssetUrl(asset.localUrl, 'audio')
+                    ? expanded && isLocalCanvasAssetUrl(asset.localUrl, 'audio')
                       ? <AudioPreview src={asset.localUrl} aria-label={name} />
                       : <span className="asset-audio-placeholder"><Music2 size={22} /><small>{available ? '音频素材' : '素材不可用'}</small></span>
-                    : selected && isLocalCanvasAssetUrl(asset.localUrl, 'video')
+                    : expanded && isLocalCanvasAssetUrl(asset.localUrl, 'video')
                       ? <ViewportVideo src={asset.localUrl} aria-label={name} muted controls preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
                       : available
                         ? <SafeImage src={asset.thumbnailUrl} alt={name} loading="lazy" fallbackLabel="MP4 视频" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
@@ -268,7 +297,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                 {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={13} /></button>}
                 <button type="button" title="更多操作" aria-label={`打开素材操作：${name}`} onClick={() => onAssetMenu(asset.assetId)}><MoreHorizontal size={13} /></button>
               </div>
-              {selected
+              {expanded
                 ? <div className="asset-tray-item-details" aria-live="polite">
                     <div className="asset-tray-item-detail-head">
                       <strong title={name}>{name}</strong>

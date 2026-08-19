@@ -35,9 +35,17 @@ describe('canvas asset card markup', () => {
     const source = componentSource('AssetTray.tsx')
     expect(source).not.toContain('onMouseLeave')
     expect(source).not.toContain('.blur()')
-    expect(source).toContain('assetSelectionAfterKey(event.key, selectedAssetId, asset.assetId)')
-    expect(source).toContain('toggleAssetSelection(value, asset.assetId)')
-    expect(source).toContain('aria-expanded={selected}')
+    expect(source).toContain('assetSelectionAfterKey(')
+    expect(source).toContain('assetSelectionForActivation(')
+    expect(source).toContain('aria-expanded={expanded}')
+  })
+
+  it('supports the selection gestures a file grid is expected to have', () => {
+    const source = componentSource('AssetTray.tsx')
+    expect(source).toContain('toggle: event.ctrlKey || event.metaKey, range: event.shiftKey')
+    expect(source).toContain('assetSelectionSelectAll(visibleAssetIds)')
+    expect(source).toContain('assetSelectionForContextMenu(value, asset.assetId)')
+    expect(source).toContain('aria-multiselectable="true"')
   })
 
   it('renders derived stills and keeps at most one live media element in the grid', () => {
@@ -45,9 +53,9 @@ describe('canvas asset card markup', () => {
     // decoded the full source media just to paint previews a few hundred pixels
     // wide. Only the open tile gets a player now; the rest show a thumbnail.
     const tray = componentSource('AssetTray.tsx')
-    expect(tray).toContain("selected && isLocalCanvasAssetUrl(asset.localUrl, 'video')")
-    expect(tray).toContain("selected && isLocalCanvasAssetUrl(asset.localUrl, 'audio')")
-    expect(tray).not.toMatch(/controls=\{selected\}/)
+    expect(tray).toContain("expanded && isLocalCanvasAssetUrl(asset.localUrl, 'video')")
+    expect(tray).toContain("expanded && isLocalCanvasAssetUrl(asset.localUrl, 'audio')")
+    expect(tray).not.toMatch(/controls=\{(selected|expanded)\}/)
     const library = componentSource('NodeLibrary.tsx')
     expect(library).not.toContain('<ViewportVideo')
     expect(library).toContain('src={asset.thumbnailUrl}')
