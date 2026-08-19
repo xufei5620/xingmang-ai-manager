@@ -1860,6 +1860,12 @@ button:disabled {
 .wf-port:not(.is-connected) { background: var(--surface-2); }
 .wf-port.is-connected { box-shadow: 0 0 0 1px currentColor, 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent); }
 
+/* Guidance while a wire is being dragged: enlarge what would accept it, fade
+   what would not, so the user does not have to release to find out. */
+.wf-port.is-connect-target { transform: scale(1.35); box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 5px color-mix(in srgb, currentColor 55%, transparent); }
+.wf-port.is-connect-blocked { opacity: .28; }
+.wf-port.is-connect-origin { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }
+
 .wf-video-params { display: grid; grid-template-columns: minmax(40px, max-content) minmax(var(--node-control-min), 1fr); gap: var(--space-8) var(--space-6); }
 /* Full-width children (the model select, errors, toggles) span both tracks. */
 .wf-video-params > :not(.wf-inline-field) { grid-column: 1 / -1; }

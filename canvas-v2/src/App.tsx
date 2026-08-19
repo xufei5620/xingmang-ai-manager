@@ -1592,8 +1592,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord), mergeKey: `media-metadata:${nodeId}` })
         setNodes(updated)
       },
+      isPortCompatible: (connection) => isValidWorkflowConnection(connection, {
+        nodeKindOf: (id) => (nodes.find((entry) => entry.id === id)?.type as NodeKind | undefined) ?? null,
+        edges,
+      }),
     })
-  }, [nodes, execute, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, discardCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
+  }, [nodes, edges, execute, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, discardCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
 
   const createNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}): CanvasNode | null => {
     const kind = type as NodeKind

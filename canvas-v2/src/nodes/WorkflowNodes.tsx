@@ -1,5 +1,5 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
-import { Handle, NodeResizer, NodeToolbar, Position, useNodeConnections, type Edge, type Node, type NodeProps } from '@xyflow/react'
+import { Handle, NodeResizer, NodeToolbar, Position, useConnection, useNodeConnections, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react'
 import { AlertCircle, AlertTriangle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeDefinition, NodePortDefinition } from '../domain/node-definition'
@@ -147,6 +147,11 @@ interface NodeChangeHandlers {
   onImportAssetFile(nodeId: string, file: File): void
   onPreviewAsset(asset: AssetRef): void
   onMediaMetadata(nodeId: string, assetId: string, width: number, height: number): void
+  /**
+   * Whether a port would accept the connection currently being dragged. Lives
+   * here rather than in the port component because only App holds the graph.
+   */
+  isPortCompatible(connection: Connection): boolean
 }
 
 let handlers: NodeChangeHandlers = {
@@ -172,6 +177,7 @@ let handlers: NodeChangeHandlers = {
   onImportAssetFile: () => undefined,
   onPreviewAsset: () => undefined,
   onMediaMetadata: () => undefined,
+  isPortCompatible: () => true,
 }
 
 export function registerNodeChangeHandlers(next: NodeChangeHandlers): void {
@@ -895,16 +901,35 @@ function PortHandle({ nodeId, port, index }: { nodeId: string; port: NodePortDef
     handleType: input ? 'target' : 'source',
     handleId: port.id,
   })
+  const connection = useConnection()
   const many = port.cardinality === 'many'
   const suffix = many ? '（可连接多个）' : ''
   const state = connections.length > 0 ? `已连接 ${connections.length} 条` : '未连接'
+
+  // While a wire is being dragged, say up front which ports would accept it.
+  // Without this the user finds out only by releasing and watching it fail.
+  let guidance = ''
+  if (connection.inProgress && connection.fromHandle && connection.fromNode) {
+    const source = connection.fromHandle.type === 'source'
+    const origin = connection.fromNode.id === nodeId && connection.fromHandle.id === port.id
+    if (origin) guidance = ' is-connect-origin'
+    else if (source === input) {
+      guidance = handlers.isPortCompatible({
+        source: source ? connection.fromNode.id : nodeId,
+        sourceHandle: source ? connection.fromHandle.id ?? null : port.id,
+        target: source ? nodeId : connection.fromNode.id,
+        targetHandle: source ? port.id : connection.fromHandle.id ?? null,
+      }) ? ' is-connect-target' : ' is-connect-blocked'
+    } else guidance = ' is-connect-blocked'
+  }
+
   return (
     <Handle
       type={input ? 'target' : 'source'}
       id={port.id}
       position={input ? Position.Left : Position.Right}
       style={{ top: 52 + index * 26 }}
-      className={`wf-port wf-port-${port.kind}${many ? ' wf-port-many' : ''}${connections.length > 0 ? ' is-connected' : ''}`}
+      className={`wf-port wf-port-${port.kind}${many ? ' wf-port-many' : ''}${connections.length > 0 ? ' is-connected' : ''}${guidance}`}
       title={`${port.label}${suffix} · ${state}`}
       aria-label={`${port.label}${many ? '，可连接多个' : ''}，${state}`}
     />
