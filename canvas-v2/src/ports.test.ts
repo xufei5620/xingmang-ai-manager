@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   compatibleInsertionHandle,
   connectionForInsertedNode,
+  handleKind,
   isValidWorkflowConnection,
   type ConnectionGraphView,
 } from './ports'
@@ -10,6 +11,29 @@ import { nodeInputKinds } from './model'
 function graph(types: Record<string, string>, edges: ConnectionGraphView['edges'] = []): ConnectionGraphView {
   return { nodeKindOf: (id) => types[id] ?? null, edges }
 }
+
+describe('handleKind', () => {
+  it('reads the media kind from singular handles', () => {
+    expect(handleKind('out:image')).toBe('image')
+    expect(handleKind('in:video')).toBe('video')
+    expect(handleKind('in:text')).toBe('text')
+  })
+
+  it('reads multi-input ports, which are named in the plural', () => {
+    // in:images / in:videos / in:audios are real port ids in the builtin
+    // registry, and they used to fall through to null.
+    expect(handleKind('in:images')).toBe('image')
+    expect(handleKind('in:videos')).toBe('video')
+    expect(handleKind('in:audios')).toBe('audio')
+  })
+
+  it('returns null rather than guessing for unknown or missing handles', () => {
+    expect(handleKind(null)).toBeNull()
+    expect(handleKind('')).toBeNull()
+    expect(handleKind('in:hologram')).toBeNull()
+    expect(handleKind('image')).toBeNull()
+  })
+})
 
 describe('registry driven ports', () => {
   it('accepts ports declared by new definitions', () => {
@@ -39,6 +63,10 @@ describe('registry driven ports', () => {
     expect(isValidWorkflowConnection(
       { source: 'image-b', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:images' },
       graph({ 'image-b': 'image-input', edit: 'image-edit' }, [{ source: 'image-a', target: 'edit', targetHandle: 'in:images' }]),
+    )).toBe(true)
+    expect(isValidWorkflowConnection(
+      { source: 'image-b', sourceHandle: 'out:image', target: 'generate', targetHandle: 'in:images' },
+      graph({ 'image-b': 'image-input', generate: 'image-generate' }, [{ source: 'image-a', target: 'generate', targetHandle: 'in:images' }]),
     )).toBe(true)
   })
 
@@ -86,6 +114,7 @@ describe('registry driven ports', () => {
   })
 
   it('does not expose video or audio inputs on image editing', () => {
+    expect(nodeInputKinds['image-generate']).toEqual(['text', 'image'])
     expect(nodeInputKinds['image-edit']).toEqual(['text', 'image'])
     expect(nodeInputKinds['video-generate']).toEqual(['text', 'image', 'video', 'audio'])
     expect(isValidWorkflowConnection(

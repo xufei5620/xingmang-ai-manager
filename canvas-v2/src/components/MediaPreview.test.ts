@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { downsampleWaveform, formatMediaTime, isLocalCanvasAssetUrl, waveformAreaPath } from './MediaPreview'
+import { canvasAssetIsPreviewable, downsampleWaveform, formatMediaTime, isCanvasImagePreviewUrl, isLocalCanvasAssetUrl, waveformAreaPath } from './MediaPreview'
 
 describe('canvas media preview protocol', () => {
   it('accepts owned image, video, and audio asset URLs', () => {
@@ -22,6 +22,28 @@ describe('canvas media preview protocol', () => {
     expect(isLocalCanvasAssetUrl('xingmang-asset://video/short-id')).toBe(false)
     expect(isLocalCanvasAssetUrl('xingmang-asset://image/' + 'a'.repeat(42))).toBe(false)
     expect(isLocalCanvasAssetUrl('xingmang-asset://image/' + 'a'.repeat(44))).toBe(false)
+  })
+
+  it('treats a derived thumbnail URL as a paintable image still', () => {
+    const assetId = 'b'.repeat(43)
+    expect(isCanvasImagePreviewUrl(`xingmang-asset://thumb/v1/image/${assetId}`)).toBe(true)
+    expect(isCanvasImagePreviewUrl(`xingmang-asset://image/${assetId}`)).toBe(true)
+    expect(isCanvasImagePreviewUrl(`xingmang-asset://video/${assetId}`)).toBe(false)
+    expect(canvasAssetIsPreviewable({
+      mediaType: 'image',
+      localUrl: `xingmang-asset://image/${assetId}`,
+      thumbnailUrl: `xingmang-asset://thumb/v1/image/${assetId}`,
+    })).toBe(true)
+    expect(canvasAssetIsPreviewable({
+      mediaType: 'video',
+      localUrl: `xingmang-asset://video/${assetId}`,
+      thumbnailUrl: `xingmang-asset://thumb/v1/video/${assetId}`,
+    })).toBe(true)
+    expect(canvasAssetIsPreviewable({
+      mediaType: 'image',
+      localUrl: '',
+      thumbnailUrl: `xingmang-asset://video/${assetId}`,
+    })).toBe(false)
   })
 })
 

@@ -2,6 +2,7 @@ import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import {
   buildNodeRuntimeInstallPlan,
+  buildNodeRuntimeUacBrokerScript,
   buildNodeRuntimeWingetPlan,
   fetchTrustedNodeResource,
   installNodeRuntime,
@@ -11,6 +12,7 @@ import {
   parseNodeReleaseIndex,
   parseNodeShasums,
   parseSystemWingetPackage,
+  parseWindowsRestartStatus,
   systemWingetCandidate,
   validateNodeAuthenticodeSignature,
   validateInstalledNodeRuntimeInspection,
@@ -111,7 +113,7 @@ describe('Node.js installer routing and process plans', () => {
   })
 
   it('builds argument arrays without interpolating an MSI path into PowerShell code', () => {
-    const msiPath = path.join('C:\\Temp', "Node package 'quoted'; calc.exe.msi")
+    const msiPath = path.win32.join('C:\\Temp', "Node package 'quoted'; calc.exe.msi")
     const powershell = 'D:\\Program Files\\PowerShell\\7\\pwsh.exe'
     const plan = buildNodeRuntimeInstallPlan(msiPath, powershell, true, testMachinePaths)
 
@@ -154,7 +156,12 @@ describe('Node.js installer routing and process plans', () => {
       argv: ['/i', msiPath, '/qn', '/norestart', 'ADDLOCAL=ALL'],
       acceptedExitCodes: [0, 3010],
       trustedPaths: [msiPath],
+      elevation: 'uac',
     })
+    const brokerScript = buildNodeRuntimeUacBrokerScript(plan.msi)
+    expect(brokerScript).toContain('-Verb RunAs -Wait -PassThru')
+    expect(brokerScript).toContain("'\"C:\\Temp\\Node package ''quoted''; calc.exe.msi\"'")
+    expect(brokerScript).toContain("'\"ADDLOCAL=ALL\"'")
 
     const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false, testMachinePaths)
     expect(sameUserPlan.signature.trustedOnly).toBe(false)
@@ -190,6 +197,22 @@ describe('Node.js installer routing and process plans', () => {
       packageFamilyName: 'Microsoft.DesktopAppInstaller_attacker',
     }, testMachinePaths)).toBeNull()
     expect(parseSystemWingetPackage('not json')).toBeNull()
+  })
+
+  it('parses Windows reboot markers and preserves explicit reasons', () => {
+    expect(parseWindowsRestartStatus(JSON.stringify({ required: true, reasons: ['Windows Update 待重启'] }))).toEqual({
+      required: true,
+      reasons: ['Windows Update 待重启'],
+    })
+    expect(parseWindowsRestartStatus(JSON.stringify({ required: false, reasons: [] }))).toEqual({
+      required: false,
+      reasons: [],
+    })
+    expect(parseWindowsRestartStatus(JSON.stringify({ required: false, reasons: ['安装文件替换待重启'] }))).toEqual({
+      required: true,
+      reasons: ['安装文件替换待重启'],
+    })
+    expect(() => parseWindowsRestartStatus('not json')).toThrow('Windows 待重启状态格式无效')
   })
 
   it.runIf(process.platform === 'win32')('skips an untrusted winget resolution and falls back to MSI sources', async () => {

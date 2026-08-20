@@ -9,6 +9,7 @@ import {
   Download,
   ExternalLink,
   LoaderCircle,
+  Languages,
   MonitorDown,
   PackageCheck,
   RefreshCw,
@@ -32,6 +33,8 @@ import type {
   ProviderId,
   ToolStatus,
   ToolUninstallResult,
+  CodexDesktopLocaleResult,
+  CodexDesktopLocaleStatus,
 } from '../types'
 
 export const CODEX_DESKTOP_STORE_URI = 'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS'
@@ -87,6 +90,7 @@ export interface MaintenanceProgress {
 export interface MaintenancePageApi {
   scan(forceRefresh?: boolean): Promise<MaintenanceSnapshot>
   installNodeRuntime(): Promise<MaintenanceRuntimeActionResult>
+  restartWindows(): Promise<void>
   maintainCli(provider: ProviderId): Promise<void>
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
   checkCli(provider: ProviderId): Promise<MaintenanceCliStatus>
@@ -95,6 +99,8 @@ export interface MaintenancePageApi {
   checkCodexDesktop(): Promise<MaintenanceVersionStatus & { running: boolean }>
   openCodexDesktopStore(): Promise<void>
   launchCodexDesktop(): Promise<void>
+  inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
+  setCodexDesktopLocale(locale: 'zh-CN' | 'system'): Promise<CodexDesktopLocaleResult>
   onProgress?(listener: (progress: MaintenanceProgress) => void): () => void
   onNodeRuntimeProgress?(listener: (progress: NodeRuntimeInstallProgress) => void): () => void
   onDesktopProgress?(listener: (progress: CodexDesktopInstallProgress) => void): () => void
@@ -144,6 +150,16 @@ export interface CodexDesktopMaintenanceControlState {
   label: string
   statusClass: string
   statusLabel: string
+}
+
+export function canSwitchCodexDesktopToChinese(
+  status: CodexDesktopLocaleStatus | null,
+): boolean {
+  return Boolean(
+    status?.installed
+    && status.chineseResources.available
+    && status.effectiveLocale !== 'zh-CN',
+  )
 }
 
 export function codexDesktopMaintenanceControl(
@@ -569,11 +585,14 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
   const [desktopLaunching, setDesktopLaunching] = useState(false)
   const [desktopProgress, setDesktopProgress] = useState<CodexDesktopInstallProgress | null>(null)
   const [desktopInstallDialogOpen, setDesktopInstallDialogOpen] = useState(false)
+  const [localeStatus, setLocaleStatus] = useState<CodexDesktopLocaleStatus | null>(null)
+  const [localeBusy, setLocaleBusy] = useState(false)
   const [checkingTarget, setCheckingTarget] = useState<ProviderId | 'desktop' | null>(null)
   const [uninstallTarget, setUninstallTarget] = useState<ProviderId | 'desktop' | null>(null)
   const [uninstallingTarget, setUninstallingTarget] = useState<ProviderId | 'desktop' | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  const [restartingWindows, setRestartingWindows] = useState(false)
 
   const refresh = async (forceRefresh = false, selectionMode: 'auto' | 'preserve' = 'auto') => {
     setLoading(true)
@@ -615,6 +634,34 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     if (progress.phase === 'error') setError(progress.message)
   }), [api])
 
+  const refreshLocale = async () => {
+    try {
+      setLocaleStatus(await api.inspectCodexDesktopLocale())
+    } catch (cause) {
+      setLocaleStatus((current) => current ?? {
+        installed: false,
+        version: null,
+        running: false,
+        configPath: '',
+        configuredLocale: null,
+        effectiveLocale: 'system',
+        chineseResources: {
+          available: false,
+          frontendChunk: false,
+          menuLocale: false,
+          pakLocale: false,
+          resourceRoot: null,
+        },
+        needsRestart: false,
+        error: errorMessage(cause),
+      })
+    }
+  }
+
+  useEffect(() => {
+    void refreshLocale()
+  }, [api])
+
   const busy = runtimeInstalling || batchRunning || desktopInstalling || desktopLaunching || checkingTarget !== null || uninstallingTarget !== null
   const desktopControl = snapshot
     ? codexDesktopMaintenanceControl(platform, snapshot.codexDesktop, desktopLaunching)
@@ -654,6 +701,21 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
       setError(errorMessage(cause))
     } finally {
       setRuntimeInstalling(false)
+    }
+  }
+
+  const restartWindows = async () => {
+    if (restartingWindows) return
+    if (!window.confirm('Windows 有待完成的系统更新。确认现在重启电脑吗？系统将在 15 秒后重启，请先保存其他工作。')) return
+    setRestartingWindows(true)
+    setError(null)
+    try {
+      await api.restartWindows()
+      setNotice('电脑将在 15 秒后重启，请保存其他工作。')
+    } catch (cause) {
+      setError(errorMessage(cause))
+    } finally {
+      setRestartingWindows(false)
     }
   }
 
@@ -778,6 +840,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
       setError(errorMessage(cause))
     } finally {
       await refresh(true)
+      await refreshLocale()
       setDesktopInstalling(false)
     }
   }
@@ -816,6 +879,25 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
       await api.openCodexDesktopStore()
     } catch (cause) {
       setError(errorMessage(cause))
+    }
+  }
+
+  const changeLocale = async (locale: 'zh-CN' | 'system') => {
+    if (localeBusy) return
+    setLocaleBusy(true)
+    setError(null)
+    setNotice(null)
+    try {
+      const result = await api.setCodexDesktopLocale(locale)
+      setLocaleStatus(result)
+      setNotice(locale === 'zh-CN'
+        ? (result.restarted ? 'Codex Desktop 已重启，正在使用简体中文' : '已切换为简体中文，下次启动 Codex Desktop 生效')
+        : (result.restarted ? 'Codex Desktop 已重启，已恢复系统语言' : '已恢复系统语言'))
+    } catch (cause) {
+      setError(errorMessage(cause))
+      await refreshLocale()
+    } finally {
+      setLocaleBusy(false)
     }
   }
 
@@ -858,7 +940,18 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
         </div>
       </header>
 
-      {error && <div className="operation-error" role="alert"><AlertCircle size={16} />{error}</div>}
+      {error && (
+        <div className="operation-error" role="alert">
+          <AlertCircle size={16} />
+          <span>{error}</span>
+          {platform.platform === 'windows' && /请先重启电脑/.test(error) && (
+            <button type="button" className="secondary-button operation-error-action" onClick={() => void restartWindows()} disabled={busy || restartingWindows}>
+              {restartingWindows ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
+              {restartingWindows ? '正在安排重启' : '立即重启'}
+            </button>
+          )}
+        </div>
+      )}
       {notice && <div className="operation-notice" role="status"><CheckCircle2 size={16} />{notice}</div>}
 
       <section className="environment-section maintenance-runtime-section" aria-labelledby="maintenance-runtime-title">
@@ -1084,6 +1177,53 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
             >
               <Trash2 size={15} />卸载
             </button>}
+          </div>
+        </div>
+        <div className="operation-row maintenance-row maintenance-locale-row">
+          <div className="operation-status-icon"><Languages size={17} /></div>
+          <div className="operation-row-copy">
+            <div className="operation-row-title">
+              <strong>界面语言资源</strong>
+              <span className={`operation-state ${localeStatus?.effectiveLocale === 'zh-CN' && localeStatus.chineseResources.available ? 'is-pass' : 'is-warn'}`}>
+                {localeStatus?.effectiveLocale === 'zh-CN' ? '简体中文' : '跟随系统'}
+              </span>
+            </div>
+            <p>
+              {localeStatus?.chineseResources.available
+                ? '使用 Codex 安装包内置的简体中文资源，不依赖网络刷新'
+                : '当前安装包未检测到完整中文资源，请先更新 Codex Desktop'}
+            </p>
+            {localeStatus?.error && <span className="operation-meta job-error">{localeStatus.error}</span>}
+            {localeStatus?.configPath && <span className="operation-meta">语言配置已绑定当前 CODEX_HOME</span>}
+          </div>
+          <div className="maintenance-row-actions">
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void changeLocale('zh-CN')}
+              disabled={busy || localeBusy || loading || !canSwitchCodexDesktopToChinese(localeStatus)}
+            >
+              {localeBusy ? <LoaderCircle className="spin" size={15} /> : <Languages size={15} />}
+              {localeStatus?.effectiveLocale === 'zh-CN' ? '已是简体中文' : '切换简体中文'}
+            </button>
+            <button
+              className="secondary-button"
+              type="button"
+              onClick={() => void changeLocale('system')}
+              disabled={busy || localeBusy || loading || !localeStatus?.installed || localeStatus?.effectiveLocale !== 'zh-CN'}
+            >
+              恢复系统语言
+            </button>
+            <button
+              className="icon-button"
+              type="button"
+              title="重新检测语言资源"
+              aria-label="重新检测语言资源"
+              onClick={() => void refreshLocale()}
+              disabled={busy || localeBusy || loading}
+            >
+              <RefreshCw size={15} />
+            </button>
           </div>
         </div>
       </section>

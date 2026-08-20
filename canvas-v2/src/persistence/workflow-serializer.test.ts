@@ -94,6 +94,17 @@ describe('workflow schema v2 parser', () => {
     expect(parseWorkflowFile(' '.repeat(maximumWorkflowBytes + 1))).toBeNull()
   })
 
+  it('round-trips a bounded image clarity tier and rejects unknown tiers', () => {
+    const document = v2Document()
+    ;(document.nodes[1].data as Record<string, unknown>).imageResolution = '4K'
+    const parsed = parseWorkflowFile(JSON.stringify(document))
+    expect(parsed?.nodes[1].data.imageResolution).toBe('4K')
+    expect(JSON.parse(serializeWorkflow(parsed!)).nodes[1].data.imageResolution).toBe('4K')
+
+    ;(document.nodes[1].data as Record<string, unknown>).imageResolution = '8K'
+    expect(parseWorkflowFile(JSON.stringify(document))).toBeNull()
+  })
+
   it.each([
     ['duplicate node ids', { nodes: [v2Document().nodes[0], v2Document().nodes[0]] }],
     ['duplicate edge ids', { edges: [v2Document().edges[0], v2Document().edges[0]] }],
@@ -398,5 +409,78 @@ describe('workflow schema v2 serializer', () => {
       status: 'idle',
       result: { kind: 'video', taskId: 'task-123' },
     })
+  })
+
+  it('round-trips a video asset duration separately from generation elapsed time', () => {
+    const workflow: WorkflowFile = {
+      schemaVersion: 2,
+      name: '视频时长',
+      nodes: [{
+        id: 'video-1',
+        kind: 'video-input',
+        position: { x: 0, y: 0 },
+        data: {
+          prompt: '',
+          model: '',
+          status: 'succeeded',
+          result: {
+            kind: 'video',
+            assetId: 'a'.repeat(43),
+            localUrl: `xingmang-asset://video/${'a'.repeat(43)}`,
+            mimeType: 'video/mp4',
+            width: 1280,
+            height: 720,
+            durationSeconds: 5.2,
+          },
+        },
+      }],
+      edges: [],
+    }
+    expect(parseWorkflowFile(serializeWorkflow(workflow))?.nodes[0].data.result).toMatchObject({
+      durationSeconds: 5.2,
+      width: 1280,
+      height: 720,
+    })
+  })
+
+  it('drops generation elapsed time so a reopen does not keep the chip', () => {
+    const workflow: WorkflowFile = {
+      schemaVersion: 2,
+      name: '生成耗时',
+      nodes: [{
+        id: 'image-1',
+        kind: 'image-generate',
+        position: { x: 0, y: 0 },
+        data: {
+          prompt: '角色',
+          model: 'gpt-image-2',
+          status: 'succeeded',
+          latestAttemptDurationMs: 8_123,
+          result: {
+            kind: 'image',
+            assetId: 'a'.repeat(43),
+            localUrl: `xingmang-asset://image/${'a'.repeat(43)}`,
+          },
+        },
+      }],
+      edges: [],
+    }
+    expect(JSON.parse(serializeWorkflow(workflow)).nodes[0].data.latestAttemptDurationMs).toBeUndefined()
+    expect(parseWorkflowFile(serializeWorkflow(workflow))?.nodes[0].data.latestAttemptDurationMs).toBeUndefined()
+    expect(parseWorkflowFile(JSON.stringify({
+      schemaVersion: 2,
+      name: '旧耗时',
+      nodes: [{
+        id: 'image-1',
+        kind: 'image-generate',
+        position: { x: 0, y: 0 },
+        data: {
+          prompt: '角色',
+          model: 'gpt-image-2',
+          latestAttemptDurationMs: 8_123,
+        },
+      }],
+      edges: [],
+    }))?.nodes[0].data.latestAttemptDurationMs).toBeUndefined()
   })
 })

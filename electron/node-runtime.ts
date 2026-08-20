@@ -17,6 +17,8 @@ import {
   type WindowsMachinePaths,
 } from './windows-machine-paths'
 import {
+  encodeWindowsPowerShellCommand,
+  powerShellLiteral,
   resolveWindowsPowerShellExecutable,
   windowsPowerShellExecutable,
 } from './windows-elevation'
@@ -81,6 +83,8 @@ export interface NodeRuntimeProcessPlan {
   env?: NodeJS.ProcessEnv
   trustedPaths?: readonly string[]
   trustedOnly?: boolean
+  /** Runs the fixed system installer through a UAC broker. */
+  elevation?: 'uac'
 }
 
 export interface NodeRuntimeInstallPlan {
@@ -97,6 +101,11 @@ export interface SystemWingetPackage {
   name: string
   packageFamilyName: string
   installLocation: string
+}
+
+export interface WindowsRestartStatus {
+  required: boolean
+  reasons: string[]
 }
 
 export interface NodeRuntimeInstallerDependencies {
@@ -141,6 +150,19 @@ const appInstallerPackageName = 'Microsoft.DesktopAppInstaller'
 const appInstallerPackageFamily = 'Microsoft.DesktopAppInstaller_8wekyb3d8bbwe'
 const maximumNodeRedirects = 2
 const nodeRedirectStatuses = new Set([301, 302, 303, 307, 308])
+
+const windowsRestartStatusScript = [
+  '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+  "$ErrorActionPreference = 'Stop'",
+  '$reasons = [System.Collections.Generic.List[string]]::new()',
+  "$componentServicing = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Component Based Servicing\\RebootPending'",
+  "$windowsUpdate = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired'",
+  "if (Test-Path -LiteralPath $componentServicing) { [void]$reasons.Add('Windows 组件更新待重启') }",
+  "if (Test-Path -LiteralPath $windowsUpdate) { [void]$reasons.Add('Windows Update 待重启') }",
+  "$sessionManager = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -ErrorAction SilentlyContinue",
+  "if ($null -ne $sessionManager.PendingFileRenameOperations) { [void]$reasons.Add('安装文件替换待重启') }",
+  '[pscustomobject]@{ required = ($reasons.Count -gt 0); reasons = @($reasons) } | ConvertTo-Json -Compress',
+].join('; ')
 
 const sources: Record<Exclude<NodeRuntimeSource, 'winget'>, NodeRuntimeDownloadSource> = {
   npmmirror: {
@@ -221,6 +243,49 @@ export function parseSystemWingetPackage(value: string): SystemWingetPackage | n
     : ''
   if (!name || !packageFamilyName || !installLocation) return null
   return { name, packageFamilyName, installLocation }
+}
+
+export function parseWindowsRestartStatus(value: string): WindowsRestartStatus {
+  const text = value.replace(/^\uFEFF/, '').trim()
+  if (!text) throw new Error('Windows 待重启状态为空')
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(text) as unknown
+  } catch {
+    throw new Error('Windows 待重启状态格式无效')
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('Windows 待重启状态格式无效')
+  }
+  const record = parsed as Record<string, unknown>
+  if (typeof record.required !== 'boolean' || !Array.isArray(record.reasons)) {
+    throw new Error('Windows 待重启状态格式无效')
+  }
+  const reasons = record.reasons.filter((reason): reason is string => typeof reason === 'string' && reason.trim().length > 0)
+  return { required: record.required || reasons.length > 0, reasons }
+}
+
+/** Reads the fixed Windows reboot markers without touching user-controlled PATH. */
+export async function inspectWindowsRestartRequired(signal?: AbortSignal): Promise<WindowsRestartStatus> {
+  if (process.platform !== 'win32') return { required: false, reasons: [] }
+  const machinePaths = resolveWindowsMachinePaths()
+  const result = await runCommand({
+    executable: resolveWindowsPowerShellExecutable({ machinePaths }),
+    argv: [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-EncodedCommand',
+      encodedPowerShellCommand(windowsRestartStatusScript),
+    ],
+  }, {
+    env: trustedCommandEnvironment(process.env, machinePaths, 'win32'),
+    trustedOnly: true,
+    timeoutMs: 10_000,
+    maxOutputBytes: 64 * 1024,
+    signal,
+  })
+  return parseWindowsRestartStatus(result.stdout)
 }
 
 export function systemWingetCandidate(
@@ -306,8 +371,20 @@ function throwIfAborted(signal?: AbortSignal): void {
 }
 
 function errorText(reason: unknown): string {
-  if (reason instanceof Error && reason.message.trim()) return reason.message.trim()
-  if (typeof reason === 'string' && reason.trim()) return reason.trim()
+  const candidate = reason as { message?: unknown; stderr?: unknown } | null
+  const raw = [
+    typeof candidate?.message === 'string' ? candidate.message : '',
+    typeof candidate?.stderr === 'string' ? candidate.stderr : '',
+    typeof reason === 'string' ? reason : '',
+  ].filter(Boolean).join(' ').replace(/\s+/g, ' ').trim()
+  if (/\b1602\b|取消|cancell?ed|declined/i.test(raw)) return '已取消管理员授权，Node.js 尚未安装'
+  if (/\b1925\b/i.test(raw)) {
+    return 'Windows Installer 拒绝了机器级安装（错误 1925）。请在管理员授权提示中选择“是”；如果系统有待重启更新，请先重启电脑后再试'
+  }
+  if (/\b1603\b/i.test(raw)) {
+    return 'Windows Installer 安装失败（错误 1603）。请先重启 Windows 完成挂起更新，再重新点击一键安装；如果仍失败，请检查系统安装权限'
+  }
+  if (raw) return raw
   return '未知错误'
 }
 
@@ -585,6 +662,7 @@ export function buildNodeRuntimeInstallPlan(
       acceptedExitCodes: [0, 3010],
       env: signatureEnv,
       trustedPaths: [msiPath],
+      elevation: 'uac',
       ...(!trustedOnly ? { trustedOnly: false } : {}),
     },
   }
@@ -629,10 +707,60 @@ function verifiedNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPl
   }
 }
 
+/** Quotes one value for the Windows command line assembled by Start-Process. */
+function windowsProcessArgument(value: string): string {
+  const escaped = value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1')
+  return `"${escaped}"`
+}
+
+export function buildNodeRuntimeUacBrokerScript(plan: NodeRuntimeProcessPlan): string {
+  if (plan.elevation !== 'uac') throw new Error('未配置 UAC 安装计划')
+  const argumentsList = plan.argv
+    .map((argument) => powerShellLiteral(windowsProcessArgument(argument)))
+    .join(', ')
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    `$process = Start-Process -FilePath ${powerShellLiteral(plan.executable)} -ArgumentList @(${argumentsList}) -Verb RunAs -Wait -PassThru`,
+    'if ($null -eq $process) { exit 1602 }',
+    'exit $process.ExitCode',
+  ].join('; ')
+}
+
+async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult> {
+  if (process.platform !== 'win32') throw new Error('UAC 安装仅支持 Windows')
+  const machinePaths = resolveWindowsMachinePaths()
+  const powershell = resolveWindowsPowerShellExecutable({ machinePaths })
+  return runCommand({
+    executable: powershell,
+    argv: [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-EncodedCommand',
+      encodeWindowsPowerShellCommand(buildNodeRuntimeUacBrokerScript(plan)),
+    ],
+  }, {
+    // The encoded command contains the already hash-checked MSI path, so no
+    // user-controlled path is parsed as a PowerShell argument by the broker.
+    // The broker itself is the fixed inbox PowerShell executable and remains
+    // subject to the trusted system-path check.
+    env: trustedCommandEnvironment(plan.env ?? process.env, machinePaths, 'win32'),
+    trustedOnly: true,
+    timeoutMs: plan.timeoutMs,
+    acceptedExitCodes: plan.acceptedExitCodes,
+    maxOutputBytes: 2 * 1024 * 1024,
+    windowsHide: true,
+    signal,
+  })
+}
+
 async function defaultRunProcess(
   plan: NodeRuntimeProcessPlan,
   signal?: AbortSignal,
 ): Promise<CommandResult> {
+  if (plan.elevation === 'uac') return runUacProcess(plan, signal)
   const options: RunCommandOptions = {
     timeoutMs: plan.timeoutMs,
     acceptedExitCodes: plan.acceptedExitCodes,

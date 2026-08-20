@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react'
 import { Box, Check, ChevronLeft, ChevronRight, FileStack, Film, Image, Library, MessageSquareText, MoreHorizontal, Music2, Pencil, Plus, X } from 'lucide-react'
-import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
+import { builtinNodeRegistry, hiddenLibraryNodeTypes } from '../domain/builtin-node-definitions'
 import type { NodeCategory } from '../domain/node-definition'
 import type { CanvasAssetPage, CanvasPromptPreset } from '../host'
 import { searchPromptPresets } from '../library/prompt-presets'
 import { builtinCanvasTemplates } from '../templates/builtin-templates'
-import { SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
+import { SafeImage, VideoCoverImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
 import { mediaAssetAspectRatio } from '../library/media-assets'
 
 interface NodeLibraryProps {
@@ -55,7 +55,7 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
   }
   const normalized = query.trim().toLowerCase()
   const definitions = useMemo(() => builtinNodeRegistry.list().filter((definition) => (
-    !['text', 'image', 'video', 'unknown'].includes(definition.type)
+    !hiddenLibraryNodeTypes.has(definition.type)
     && (!normalized || `${definition.title} ${definition.description} ${definition.type}`.toLowerCase().includes(normalized))
   )), [normalized])
   const promptPresets = useMemo(() => searchPromptPresets(query), [query])
@@ -164,13 +164,27 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
                 }}
               >
                 <button type="button" className="library-asset-preview" aria-label={`添加素材到画布：${asset.fileName}`} onClick={() => onAddAsset(asset.assetId)}>
-                  {asset.mediaType === 'image'
-                    ? <SafeImage src={asset.thumbnailUrl} alt={asset.fileName} loading="lazy" />
-                    : asset.mediaType === 'audio'
-                      ? <span className="asset-video-placeholder"><Music2 size={22} /><small>音频</small></span>
-                    : isLocalCanvasAssetUrl(asset.localUrl)
-                      ? <ViewportVideo src={asset.localUrl} aria-label={asset.fileName} muted preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
-                      : <span className="asset-video-placeholder"><Film size={18} /><small>视频</small></span>}
+                  {/* This strip never plays anything, so a derived still is all
+                      it ever needed; it used to mount one video element per
+                      tile purely to paint a frame. */}
+                  {asset.mediaType === 'audio'
+                    ? <span className="asset-video-placeholder"><Music2 size={22} /><small>音频</small></span>
+                    : asset.mediaType === 'video'
+                      ? <VideoCoverImage
+                          thumbnailUrl={asset.thumbnailUrl}
+                          videoUrl={asset.localUrl}
+                          alt={asset.fileName}
+                          loading="lazy"
+                          fallbackLabel="视频"
+                          style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
+                        />
+                      : <SafeImage
+                          src={asset.thumbnailUrl}
+                          fallbackSrc={asset.localUrl}
+                          alt={asset.fileName}
+                          loading="lazy"
+                          style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
+                        />}
                 </button>
                 <footer>
                   <span>{asset.fileName}</span>

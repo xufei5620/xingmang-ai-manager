@@ -3,6 +3,7 @@ import {
   buildImageGenerationRequest,
   resolveAiModelCapability,
   type ImageQuality,
+  type ImageResolution,
 } from './ai-chat-protocol'
 import {
   BoundedOperationQueue,
@@ -33,8 +34,8 @@ export interface GeneratedAiAsset {
 
 export interface AiImageAssetWriter {
   prepareProject?(userId: number, projectId?: string): Promise<void>
-  storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string; projectId?: string }): Promise<GeneratedAiAsset>
-  storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string; projectId?: string }): Promise<GeneratedAiAsset>
+  storeBase64(userId: number, value: string, metadata?: { revisedPrompt?: string; projectId?: string; prompt?: string }): Promise<GeneratedAiAsset>
+  storeRemoteUrl(userId: number, url: string, metadata?: { revisedPrompt?: string; projectId?: string; prompt?: string }): Promise<GeneratedAiAsset>
   readOwned(userId: number, assetId: string, projectId?: string): Promise<{ asset: GeneratedAiAsset; bytes: Buffer }>
 }
 
@@ -45,6 +46,7 @@ export interface AiImageGenerationInput {
   prompt: string
   size?: string
   quality?: ImageQuality
+  imageResolution?: ImageResolution
   expectedUserId?: number
   projectId?: string
 }
@@ -161,10 +163,12 @@ function responseEntries(payload: unknown): Array<{
   b64Json?: string
   revisedPrompt?: string
 }> {
-  if (!payload || typeof payload !== 'object' || !Array.isArray((payload as { data?: unknown }).data)) {
+  if (!payload || typeof payload !== 'object') {
     throw new Error('生图接口返回数据不完整')
   }
-  const results = (payload as { data: unknown[] }).data.slice(0, 8).flatMap((value) => {
+  const data = (payload as { data?: unknown }).data
+  if (!Array.isArray(data)) return chatCompletionImageEntries(payload)
+  const results = data.slice(0, 8).flatMap((value) => {
     if (!value || typeof value !== 'object') return []
     const entry = value as Record<string, unknown>
     const rawUrl = typeof entry.url === 'string' && entry.url.length <= 128 * 1024 * 1024 ? entry.url : undefined
@@ -179,6 +183,31 @@ function responseEntries(payload: unknown): Array<{
       : undefined
     return [{ url, b64Json, revisedPrompt }]
   })
+  if (results.length === 0) throw new Error('生图接口没有返回图片')
+  return results
+}
+
+const CHAT_IMAGE_MARKDOWN_PATTERN = /!\[[^\]\r\n]{0,128}\]\(data:(image\/(?:png|jpeg|webp));base64,([A-Za-z0-9+/=\r\n]+)\)/gi
+
+function chatCompletionImageEntries(payload: unknown): Array<{
+  b64Json: string
+}> {
+  const choices = (payload as { choices?: unknown }).choices
+  if (!Array.isArray(choices)) throw new Error('生图接口返回数据不完整')
+  const results: Array<{ b64Json: string }> = []
+  for (const value of choices.slice(0, 8)) {
+    if (!value || typeof value !== 'object') continue
+    const message = (value as { message?: unknown }).message
+    if (!message || typeof message !== 'object') continue
+    const content = (message as { content?: unknown }).content
+    if (typeof content !== 'string') continue
+    for (const match of content.matchAll(CHAT_IMAGE_MARKDOWN_PATTERN)) {
+      const base64 = match[2].replace(/[\r\n]/g, '')
+      const b64Json = `data:${match[1].toLowerCase()};base64,${base64}`
+      if (b64Json.length <= 128 * 1024 * 1024) results.push({ b64Json })
+      if (results.length >= 8) return results
+    }
+  }
   if (results.length === 0) throw new Error('生图接口没有返回图片')
   return results
 }
@@ -282,6 +311,9 @@ export function createAiImageService(options: {
           const metadata = {
             ...(entry.revisedPrompt ? { revisedPrompt: entry.revisedPrompt } : {}),
             ...(input.projectId ? { projectId: input.projectId } : {}),
+            // What the user actually typed, not the provider's rewrite: it is
+            // what they will search for months later.
+            ...(input.prompt ? { prompt: input.prompt } : {}),
           }
           const storedMetadata = Object.keys(metadata).length > 0 ? metadata : undefined
           try {
@@ -330,10 +362,15 @@ export function createAiImageService(options: {
     input: AiImageGenerationInput,
     progress?: AiOperationProgressObserver,
   ): Promise<GeneratedAiAsset[]> {
+    const capability = resolveAiModelCapability(input.model)
+    if (capability.kind !== 'image') throw new Error('当前模型不支持图片生成')
     const body = buildImageGenerationRequest(input)
     return runImageOperation(senderId, input, (credential, signal, markDispatched) => {
       markDispatched()
-      return fetchImpl(new URL(AI_CHAT_ENDPOINTS.imageGenerations, baseUrl), {
+      const endpoint = capability.provider === 'gemini-image'
+        ? AI_CHAT_ENDPOINTS.chatCompletions
+        : AI_CHAT_ENDPOINTS.imageGenerations
+      return fetchImpl(new URL(endpoint, baseUrl), {
         method: 'POST',
         headers: {
           Accept: 'application/json',
@@ -352,10 +389,13 @@ export function createAiImageService(options: {
     input: AiImageEditInput,
     progress?: AiOperationProgressObserver,
   ): Promise<GeneratedAiAsset[]> {
-    const fields = buildImageGenerationRequest(input)
-    const capability = resolveAiModelCapability(fields.model)
+    const capability = resolveAiModelCapability(input.model)
     if (capability.kind !== 'image' || !capability.supportsEdits) {
       throw new Error('当前模型不支持图片编辑，请换用支持编辑的图像模型')
+    }
+    const fields = buildImageGenerationRequest(input)
+    if (!('prompt' in fields) || !('n' in fields)) {
+      throw new Error('当前模型不支持 Images API 图片编辑')
     }
     const sourceAssetIds = requiredSourceAssetIds(input.sourceAssetIds)
     return runImageOperation(senderId, input, async (credential, signal, markDispatched) => {

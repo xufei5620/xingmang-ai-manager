@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import { createAiVideoService, delayVideoPoll } from './ai-video-service'
-import { AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type StoredAiVideoTask } from './ai-video-task-store'
+import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, MAXIMUM_VIDEO_TASKS, type StoredAiVideoTask } from './ai-video-task-store'
 
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
@@ -17,7 +17,10 @@ function mp4Response(): Response {
   return new Response(bytes, { headers: { 'Content-Type': 'video/mp4', 'Content-Length': String(bytes.length) } })
 }
 
-function setup(fetchImpl: typeof fetch, options: { pending?: StoredAiVideoTask[] } = {}) {
+function setup(
+  fetchImpl: typeof fetch,
+  options: { pending?: StoredAiVideoTask[]; tasks?: AiVideoTaskStore } = {},
+) {
   const credentials = {
     resolveCredential: vi.fn(async (group: string) => ({
       userId: 7, group, models: [
@@ -67,7 +70,7 @@ function setup(fetchImpl: typeof fetch, options: { pending?: StoredAiVideoTask[]
   return {
     credentials, tasks, assets,
     service: createAiVideoService({
-      baseUrl: 'https://xm.solov.cc', credentials, tasks, assets, fetchImpl,
+      baseUrl: 'https://xm.solov.cc', credentials, tasks: options.tasks ?? tasks, assets, fetchImpl,
       pollIntervalMs: 1, maximumPollIntervalMs: 2, maximumWaitMs: 2_000,
     }),
   }
@@ -105,7 +108,7 @@ describe('createAiVideoService', () => {
     expect(order).toEqual(['post', 'persist', 'poll', 'content'])
     expect(tasks.releaseReservation).not.toHaveBeenCalled()
     expect(tasks.remove).toHaveBeenCalledWith(7, 'video_123')
-    expect(assets.storeMp4).toHaveBeenCalledWith(7, expect.any(Buffer), { taskId: 'video_123' })
+    expect(assets.storeMp4).toHaveBeenCalledWith(7, expect.any(Buffer), { taskId: 'video_123', prompt: '海浪' })
     expect(stages).toEqual(['processing', 'downloading', 'saving'])
     expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
@@ -407,7 +410,7 @@ describe('createAiVideoService', () => {
 
   it('reserves recovery capacity before dispatching a paid video request', async () => {
     const pending = Array.from({ length: 200 }, (_, index): StoredAiVideoTask => ({
-      version: 1,
+      version: AI_VIDEO_TASK_VERSION,
       userId: 7,
       taskId: `video_pending_${index}`,
       group: 'grok',
@@ -444,7 +447,7 @@ describe('createAiVideoService', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-reservation-'))
     try {
       const pending = Array.from({ length: 199 }, (_, index): StoredAiVideoTask => ({
-        version: 1,
+        version: AI_VIDEO_TASK_VERSION,
         userId: 7,
         taskId: `video_pending_${index}`,
         group: 'grok',
@@ -544,7 +547,7 @@ describe('createAiVideoService', () => {
 
   it('recovers by polling persisted ids only and never submits again', async () => {
     const stored: StoredAiVideoTask = {
-      version: 1, userId: 7, taskId: 'video_resume', group: '生图分组', model: 'grok-imagine-video',
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_resume', group: '生图分组', model: 'grok-imagine-video',
       requestId: 'old-request', createdAt: '2026-08-14T00:00:00.000Z',
       projectId: '11111111-1111-4111-8111-111111111111',
     }
@@ -562,9 +565,44 @@ describe('createAiVideoService', () => {
     })
   })
 
+  it('records the prompt with the task and writes it onto the clip a later session finishes', async () => {
+    // The task record is the only thing that survives a restart, so a prompt
+    // that is not on it is a prompt the resumed clip can never carry.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-video-prompt-'))
+    try {
+      const tasks = new AiVideoTaskStore({ rootDirectory: root })
+      const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => (
+        init?.method === 'POST'
+          ? jsonResponse({ id: 'video_prompted', status: 'queued' })
+          : jsonResponse({ id: 'video_prompted', status: 'queued' })
+      )) as unknown as typeof fetch
+      const { service } = setup(fetchImpl, { tasks })
+      const pending = service.generate(41, {
+        requestId: 'prompted', group: 'grok', model: 'grok-imagine-video', prompt: ' 海边的黄昏 ', seconds: '5',
+      })
+      await vi.waitFor(async () => expect(await tasks.list(7)).toHaveLength(1))
+      expect((await tasks.list(7))[0]).toMatchObject({ taskId: 'video_prompted', prompt: '海边的黄昏' })
+      service.cancel(41, 'prompted')
+      await expect(pending).rejects.toThrow(/视频/)
+
+      // A fresh process reads the record back and hands the prompt to the store.
+      const reopened = new AiVideoTaskStore({ rootDirectory: root })
+      const download = vi.fn(async (input: URL | RequestInfo) => (
+        String(input).endsWith('/content') ? mp4Response() : jsonResponse({ id: 'video_prompted', status: 'completed' })
+      )) as unknown as typeof fetch
+      const resumed = setup(download, { tasks: reopened })
+      await resumed.service.resumeUser(7)
+      expect(resumed.assets.storeMp4).toHaveBeenCalledWith(7, expect.any(Buffer), {
+        taskId: 'video_prompted', prompt: '海边的黄昏',
+      })
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true })
+    }
+  })
+
   it('removes a persisted task after the server reports terminal failure without POST', async () => {
     const stored: StoredAiVideoTask = {
-      version: 1, userId: 7, taskId: 'video_failed', group: 'grok', model: 'grok-imagine-video',
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_failed', group: 'grok', model: 'grok-imagine-video',
       requestId: 'old-request', createdAt: '2026-08-14T00:00:00.000Z',
     }
     const fetchImpl = vi.fn(async () => jsonResponse({
@@ -580,7 +618,7 @@ describe('createAiVideoService', () => {
 
   it('resumes exactly one persisted task for the requested account without POST', async () => {
     const stored: StoredAiVideoTask = {
-      version: 1, userId: 7, taskId: 'video_single', group: 'grok', model: 'grok-imagine-video',
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_single', group: 'grok', model: 'grok-imagine-video',
       requestId: 'old-request', createdAt: '2026-08-14T00:00:00.000Z',
     }
     const unrelated: StoredAiVideoTask = { ...stored, taskId: 'video_unrelated' }
@@ -603,7 +641,7 @@ describe('createAiVideoService', () => {
 
   it('owns a manual resume by its canvas sender so closing the window stops the wait', async () => {
     const stored: StoredAiVideoTask = {
-      version: 1, userId: 7, taskId: 'video_window_owned', group: 'grok', model: 'grok-imagine-video',
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_window_owned', group: 'grok', model: 'grok-imagine-video',
       requestId: 'old-request', createdAt: '2026-08-14T00:00:00.000Z',
     }
     const fetchImpl = vi.fn((_input: URL | RequestInfo, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
@@ -620,7 +658,7 @@ describe('createAiVideoService', () => {
 
   it('rejects unknown and cross-account task ids before resolving credentials or fetching', async () => {
     const otherAccountTask: StoredAiVideoTask = {
-      version: 1, userId: 8, taskId: 'video_foreign', group: 'grok', model: 'grok-imagine-video',
+      version: AI_VIDEO_TASK_VERSION, userId: 8, taskId: 'video_foreign', group: 'grok', model: 'grok-imagine-video',
       requestId: 'old-request', createdAt: '2026-08-14T00:00:00.000Z',
     }
     const fetchImpl = vi.fn() as unknown as typeof fetch
@@ -634,7 +672,7 @@ describe('createAiVideoService', () => {
 
   it('stops a persisted task before querying when credential ownership changed', async () => {
     const stored: StoredAiVideoTask = {
-      version: 1, userId: 7, taskId: 'video_account_switch', group: 'grok', model: 'grok-imagine-video',
+      version: AI_VIDEO_TASK_VERSION, userId: 7, taskId: 'video_account_switch', group: 'grok', model: 'grok-imagine-video',
       requestId: 'old-request', createdAt: '2026-08-14T00:00:00.000Z',
     }
     const fetchImpl = vi.fn() as unknown as typeof fetch

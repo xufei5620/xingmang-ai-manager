@@ -1,6 +1,7 @@
 export type CanvasShortcut =
   | 'undo' | 'redo' | 'select-all' | 'copy' | 'paste' | 'duplicate'
   | 'delete' | 'save' | 'open' | 'run' | 'group' | 'ungroup' | 'layout' | 'quick-insert'
+  | 'toggle-assets' | 'toggle-overview' | 'find-node'
 
 export interface CanvasShortcutEvent {
   key: string
@@ -23,7 +24,13 @@ export function resolveCanvasShortcut(event: CanvasShortcutEvent): CanvasShortcu
   if (event.isComposing || event.altKey || isEditableTarget(event.target)) return null
   const modifier = Boolean(event.ctrlKey || event.metaKey)
   const key = event.key.toLowerCase()
-  if (!modifier) return key === 'delete' || key === 'backspace' ? 'delete' : null
+  if (!modifier) {
+    if (key === 'delete' || key === 'backspace') return 'delete'
+    if (event.shiftKey) return null
+    if (key === 'a') return 'toggle-assets'
+    if (key === 'z') return 'toggle-overview'
+    return null
+  }
   if (key === 'z') return event.shiftKey ? 'redo' : 'undo'
   if (key === 'y') return 'redo'
   if (key === 'a') return 'select-all'
@@ -36,5 +43,6 @@ export function resolveCanvasShortcut(event: CanvasShortcutEvent): CanvasShortcu
   if (key === 'g') return event.shiftKey ? 'ungroup' : 'group'
   if (key === 'l') return 'layout'
   if (key === 'k') return 'quick-insert'
+  if (key === 'f') return 'find-node'
   return null
 }

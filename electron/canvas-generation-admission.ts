@@ -14,8 +14,8 @@ export class CanvasGenerationAdmission {
   private readonly starts = new Map<number, number[]>()
 
   constructor(options: CanvasGenerationAdmissionOptions = {}) {
-    this.maxActive = options.maxActive ?? 4
-    this.maxStartsPerWindow = options.maxStartsPerWindow ?? 20
+    this.maxActive = options.maxActive ?? 20
+    this.maxStartsPerWindow = options.maxStartsPerWindow ?? 80
     this.windowMs = options.windowMs ?? 60_000
     this.now = options.now ?? Date.now
     if (![this.maxActive, this.maxStartsPerWindow, this.windowMs].every((value) => Number.isSafeInteger(value) && value > 0)) {

@@ -20,7 +20,12 @@ function hostMocks() {
       mimeType: 'image/png' as const,
       fileName: 'image.png',
     }]),
-    editImage: vi.fn(async () => []),
+    editImage: vi.fn(async () => [{
+      assetId: 'e'.repeat(43),
+      localUrl: `xingmang-asset://image/${'e'.repeat(43)}`,
+      mimeType: 'image/png' as const,
+      fileName: 'edited.png',
+    }]),
     generateVideo: vi.fn(async () => ({
       assetId: 'v'.repeat(43),
       localUrl: `xingmang-asset://video/${'v'.repeat(43)}`,
@@ -48,6 +53,26 @@ describe('canvas host executors', () => {
       prompt: '测试图片',
       size: undefined,
       quality: undefined,
+      imageResolution: '1K',
+    }))
+    expect(host.editImage).not.toHaveBeenCalled()
+  })
+
+  it('routes a generate node to image edit when reference images are connected', async () => {
+    const host = hostMocks()
+    const executors = createHostExecutors({ imageGroup: '生图分组', videoGroup: '', host })
+    await executors['image-generate'](
+      workflowNode('image-generate', { model: 'gpt-image-2', prompt: '改成夜景' }),
+      { images: [{ kind: 'image', assetId: 'r'.repeat(43) }] },
+      new AbortController().signal,
+    )
+
+    expect(host.generateImage).not.toHaveBeenCalled()
+    expect(host.editImage).toHaveBeenCalledWith(expect.objectContaining({
+      group: '生图分组',
+      model: 'gpt-image-2',
+      prompt: '改成夜景',
+      sourceAssetIds: ['r'.repeat(43)],
     }))
   })
 

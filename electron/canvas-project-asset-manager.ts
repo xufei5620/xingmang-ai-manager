@@ -20,10 +20,13 @@ export interface CanvasProjectAssetManagerOptions {
   projects: Pick<CanvasProjectStore, 'list' | 'getUsableWorkspaceDirectory'>
   global: CanvasProjectAssetContext
   create(outputRoot: string): CanvasProjectAssetContext
+  onMetadataError?(error: unknown, context: { userId: number; assetId: string; source: 'generated' }): void
 }
 
 export interface CanvasProjectImageMetadata extends AiAssetMetadata {
   projectId?: string
+  /** The prompt the user submitted, kept in logical metadata rather than beside the bytes. */
+  prompt?: string
 }
 
 function assertProjectId(projectId: string): void {
@@ -42,6 +45,7 @@ export class CanvasProjectAssetManager {
   private readonly projects: CanvasProjectAssetManagerOptions['projects']
   private readonly global: CanvasProjectAssetContext
   private readonly createContext: CanvasProjectAssetManagerOptions['create']
+  private readonly onMetadataError: CanvasProjectAssetManagerOptions['onMetadataError']
   private readonly contexts = new Map<string, Promise<CanvasProjectAssetContext>>()
   private readonly locations = new Map<string, string | null>()
 
@@ -49,6 +53,7 @@ export class CanvasProjectAssetManager {
     this.projects = options.projects
     this.global = options.global
     this.createContext = options.create
+    this.onMetadataError = options.onMetadataError
   }
 
   async forProject(userId: number, projectId: string): Promise<CanvasProjectAssetContext> {
@@ -80,6 +85,7 @@ export class CanvasProjectAssetManager {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.images.storeBase64(userId, value, this.imageMetadata(metadata))
+    await this.markGenerated(context, userId, asset.assetId, metadata?.prompt)
     this.remember(userId, 'image', asset.assetId, projectId, context)
     return asset
   }
@@ -88,6 +94,7 @@ export class CanvasProjectAssetManager {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.images.storeRemoteUrl(userId, url, this.imageMetadata(metadata))
+    await this.markGenerated(context, userId, asset.assetId, metadata?.prompt)
     this.remember(userId, 'image', asset.assetId, projectId, context)
     return asset
   }
@@ -98,10 +105,11 @@ export class CanvasProjectAssetManager {
       : this.readOwned(userId, assetId, 'image') as Promise<AiOwnedAssetRead>
   }
 
-  async storeMp4(userId: number, bytes: Buffer, metadata: { taskId: string; projectId?: string }): Promise<AiStoredVideoAsset> {
+  async storeMp4(userId: number, bytes: Buffer, metadata: { taskId: string; projectId?: string; prompt?: string }): Promise<AiStoredVideoAsset> {
     const projectId = this.requiredMetadataProjectId(metadata)
     const context = await this.forProject(userId, projectId)
     const asset = await context.videos.storeMp4(userId, bytes, { taskId: metadata.taskId })
+    await this.markGenerated(context, userId, asset.assetId, metadata.prompt)
     this.remember(userId, 'video', asset.assetId, projectId, context)
     return asset
   }
@@ -165,6 +173,56 @@ export class CanvasProjectAssetManager {
     throw new Error('AI 素材不存在或无权访问')
   }
 
+  /**
+   * Filesystem path of an owned asset, resolved through the same global-then-
+   * project search as `readOwned`. Thumbnail derivation needs a real path for
+   * the platform provider, and resolving it against the global store alone
+   * misses every asset that lives in a project workspace.
+   */
+  async resolveOwnedFilePath(
+    userId: number,
+    assetId: string,
+    kind: 'image' | 'video' | 'audio',
+  ): Promise<string> {
+    assertUserId(userId)
+    const cachedProjectId = this.locations.get(locationKey(userId, kind, assetId))
+    if (cachedProjectId !== undefined) {
+      const context = cachedProjectId === null ? this.global : await this.forProject(userId, cachedProjectId)
+      return this.filePathFromContext(context, userId, assetId, kind)
+    }
+    try {
+      const filePath = await this.filePathFromContext(this.global, userId, assetId, kind)
+      this.locations.set(locationKey(userId, kind, assetId), null)
+      return filePath
+    } catch {
+      // Fall through to the user's project workspaces, exactly as readOwned does.
+    }
+    const projects = await this.projects.list(userId)
+    for (const project of projects) {
+      if (!project.workspaceConfigured) continue
+      try {
+        const context = await this.forProject(userId, project.id)
+        const filePath = await this.filePathFromContext(context, userId, assetId, kind)
+        this.remember(userId, kind, assetId, project.id, context)
+        return filePath
+      } catch {
+        // A missing workspace does not hide assets in the remaining projects.
+      }
+    }
+    throw new Error('AI 素材不存在或无权访问')
+  }
+
+  private async filePathFromContext(
+    context: CanvasProjectAssetContext,
+    userId: number,
+    assetId: string,
+    kind: 'image' | 'video' | 'audio',
+  ): Promise<string> {
+    if (kind === 'image') return context.images.resolveOwnedFilePath(userId, assetId)
+    if (kind === 'video') return context.videos.resolveOwnedFilePath(userId, assetId)
+    return context.audios.resolveOwnedFilePath(userId, assetId)
+  }
+
   private async readFromContext(
     context: CanvasProjectAssetContext,
     userId: number,
@@ -186,6 +244,14 @@ export class CanvasProjectAssetManager {
     this.locations.set(locationKey(userId, kind, assetId), context === this.global ? null : projectId)
   }
 
+  private async markGenerated(context: CanvasProjectAssetContext, userId: number, assetId: string, prompt?: string): Promise<void> {
+    try {
+      await context.media.setSource(userId, assetId, 'generated', prompt)
+    } catch (error) {
+      this.onMetadataError?.(error, { userId, assetId, source: 'generated' })
+    }
+  }
+
   private requiredMetadataProjectId(metadata: { projectId?: string } | undefined): string {
     if (!metadata?.projectId) throw new Error('画布项目尚未选择，无法保存生成素材')
     assertProjectId(metadata.projectId)
@@ -202,6 +268,13 @@ export function createCanvasProjectAssetContext(
   videos: AiVideoAssetStore,
   audios: AiAudioAssetStore,
   metadata: AiAssetMetadataStore,
+  trashItem: (filePath: string) => Promise<void>,
 ): CanvasProjectAssetContext {
-  return { images, videos, audios, metadata, media: createAiMediaAssetService({ images, videos, audios, metadata }) }
+  return {
+    images,
+    videos,
+    audios,
+    metadata,
+    media: createAiMediaAssetService({ images, videos, audios, metadata, trashItem }),
+  }
 }

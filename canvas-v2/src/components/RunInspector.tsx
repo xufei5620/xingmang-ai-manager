@@ -7,9 +7,8 @@ interface RunInspectorProps {
   open: boolean
   records: readonly CanvasRunRecord[]
   selectedRunId: string | null
-  selectedCandidateIds: Readonly<Record<string, string | undefined>>
-  adoptedCandidateIds: Readonly<Record<string, string | undefined>>
-  stagedCandidateIds: Readonly<Record<string, readonly string[] | undefined>>
+  /** 每个节点当前的产物候选。切换候选即切换产物，两者不再是两步。 */
+  resultCandidateIds: Readonly<Record<string, string | undefined>>
   selectedScope: CanvasRunScope['kind']
   dirtyCount: number
   selectionCount: number
@@ -17,12 +16,11 @@ interface RunInspectorProps {
   onScopeChange(scope: CanvasRunScope['kind']): void
   onRefresh(): void
   onSelectRun(runId: string): void
-  onSelectCandidate(nodeId: string, candidate: CanvasRunCandidate): void
-  onAdopt(nodeId: string, candidate: CanvasRunCandidate): void
-  onDiscard(nodeId: string, candidateId: string): void
+  onUseCandidate(nodeId: string, candidate: CanvasRunCandidate): void
   onPreviewAsset(asset: CanvasRunCandidate['asset']): void
   onAssetMenu(assetId: string): void
   onLocateNode(nodeId: string): void
+  onRetryNode?(nodeId: string, scope: 'to-node' | 'from-node'): void
   onClose(): void
   embedded?: boolean
 }
@@ -66,6 +64,7 @@ export function RunInspector(props: RunInspectorProps) {
             <option value="dirty">仅变更节点 ({props.dirtyCount})</option>
             <option value="selection">选中链路 ({props.selectionCount})</option>
             <option value="to-node">运行到选中节点</option>
+            <option value="from-node">从选中节点向后运行</option>
           </select>
         </label>
       </div>
@@ -120,7 +119,7 @@ export function RunInspector(props: RunInspectorProps) {
                   ? stageLabel[node.latestStage]
                   : statusLabel[node.state] ?? node.state}</span>
               </div>
-              {node.errorMessage && <><p role="alert">{node.errorMessage}</p><small className="run-error-action">可先检查分组、模型和素材归属；若为网络或下载失败，可在当前节点重新发起。</small></>}
+              {node.errorMessage && <><p role="alert">{node.errorMessage}</p><small className="run-error-action">可先检查分组、模型和素材归属；重试仍会经过运行预检和付费确认。</small>{props.onRetryNode && node.state === 'failed' && selected.status !== 'running' && <div className="run-error-action"><button type="button" onClick={() => props.onRetryNode?.(node.nodeId, 'to-node')}>重试到此节点</button><button type="button" onClick={() => props.onRetryNode?.(node.nodeId, 'from-node')}>从此向后重试</button></div>}</>}
               {attempt && (
                 <div className="run-meta">
                   <span>{node.attempts.length} 次尝试</span>
@@ -133,28 +132,24 @@ export function RunInspector(props: RunInspectorProps) {
                   {candidates.map((candidate) => (
                     <article
                       key={candidate.candidateId}
-                      className={`${props.selectedCandidateIds[node.nodeId] === candidate.candidateId ? 'is-selected' : ''}${props.adoptedCandidateIds[node.nodeId] === candidate.candidateId ? ' is-adopted' : ''}`}
+                      className={props.resultCandidateIds[node.nodeId] === candidate.candidateId ? 'is-adopted' : ''}
                     >
                       {candidate.asset.kind === 'image'
-                        ? <button type="button" className="candidate-preview" title="单击选择，双击放大" onClick={() => props.onSelectCandidate(node.nodeId, candidate)} onDoubleClick={() => props.onPreviewAsset(candidate.asset)}><SafeImage src={candidate.asset.localUrl} alt="生成候选" fallbackLabel="候选不可用" onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }} /></button>
+                        ? <button type="button" className="candidate-preview" title="单击设为产物，双击放大" onClick={() => props.onUseCandidate(node.nodeId, candidate)} onDoubleClick={() => props.onPreviewAsset(candidate.asset)}><SafeImage src={candidate.asset.localUrl} alt="生成候选" fallbackLabel="候选不可用" onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }} /></button>
                         : candidate.asset.kind === 'video' && isLocalCanvasAssetUrl(candidate.asset.localUrl)
                           ? <ViewportVideo className="candidate-video" src={candidate.asset.localUrl} controls title="双击放大预览" style={{ aspectRatio: mediaAssetAspectRatio(candidate.asset) }} onDoubleClick={(event) => { event.stopPropagation(); props.onPreviewAsset(candidate.asset) }} onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }} />
                           : candidate.asset.kind === 'audio' && isLocalCanvasAssetUrl(candidate.asset.localUrl)
                             ? <div className="candidate-audio" title="双击放大预览" onDoubleClick={() => props.onPreviewAsset(candidate.asset)} onContextMenu={(event) => { event.preventDefault(); props.onAssetMenu(candidate.asset.assetId) }}><Music2 size={18} aria-hidden="true" /><AudioPreview src={candidate.asset.localUrl} /></div>
                             : <div className="candidate-video media-unavailable">{candidate.asset.kind === 'audio' ? '音频候选不可用' : '视频候选不可用'}</div>}
                       <div>
+                        {/* 历史里的每个候选都能重新成为产物：这正是「最新候选
+                            自动覆盖」可以接受的前提——旧图一直在这里。 */}
                         <button
                           type="button"
-                          disabled={props.adoptedCandidateIds[node.nodeId] === candidate.candidateId}
-                          onClick={() => props.onAdopt(node.nodeId, candidate)}
-                        ><Check size={12} />{props.adoptedCandidateIds[node.nodeId] === candidate.candidateId ? '已采纳' : '采纳'}</button>
-                        <button
-                          type="button"
-                          className="candidate-discard"
-                          title={props.stagedCandidateIds[node.nodeId]?.includes(candidate.candidateId) ? '从当前候选区丢弃，不删除素材' : '先单击候选，将它加入当前候选区'}
-                          disabled={props.adoptedCandidateIds[node.nodeId] === candidate.candidateId || !props.stagedCandidateIds[node.nodeId]?.includes(candidate.candidateId)}
-                          onClick={() => props.onDiscard(node.nodeId, candidate.candidateId)}
-                        ><X size={12} />丢弃</button>
+                          title={props.resultCandidateIds[node.nodeId] === candidate.candidateId ? '这就是该节点当前的产物' : '设为该节点产物，下游会标记为待重新运行'}
+                          disabled={props.resultCandidateIds[node.nodeId] === candidate.candidateId}
+                          onClick={() => props.onUseCandidate(node.nodeId, candidate)}
+                        ><Check size={12} />{props.resultCandidateIds[node.nodeId] === candidate.candidateId ? '当前产物' : '设为产物'}</button>
                         <button type="button" className="candidate-more" title="更多资产操作" aria-label="候选资产操作" onClick={() => props.onAssetMenu(candidate.asset.assetId)}><MoreHorizontal size={14} /></button>
                       </div>
                     </article>

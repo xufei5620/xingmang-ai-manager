@@ -39,8 +39,11 @@ test('the configured macOS development origin renders the real Electron app', {
   assert.equal(configuredOrigin.hostname, viteConfig.server.host)
   assert.equal(Number(configuredOrigin.port), viteConfig.server.port)
   assert.equal(viteConfig.server.strictPort, true)
+  const devScript = packageJson.scripts.dev
+  const waitOnIndex = devScript.indexOf('wait-on')
+  const configuredEndpointIndex = devScript.indexOf(`tcp:${configuredOrigin.host}`, waitOnIndex)
   assert.ok(
-    packageJson.scripts.dev.includes(`wait-on tcp:${configuredOrigin.host}`),
+    waitOnIndex >= 0 && configuredEndpointIndex > waitOnIndex,
     'dev script must wait on the same origin that Electron loads',
   )
 

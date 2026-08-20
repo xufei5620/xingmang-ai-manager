@@ -30,12 +30,14 @@ import { createExternalShellLauncher, type ExternalShellLauncher } from './syste
 import { canvasHostChannels } from './canvas-contract'
 import {
   parseCanvasAssetQuery,
+  parseCanvasAssetId,
   parseCanvasImageEditInput,
   parseCanvasImageGenerateInput,
   parseCanvasPromptPresetId,
   parseCanvasPromptPresetInput,
   parseCanvasPromptPresetUpdate,
   parseCanvasRenameAssetInput,
+  parseCanvasUpdateAssetMetadataInput,
   parseCanvasStartRunInput,
   parseCanvasVideoGenerateInput,
   parseCanvasVideoTaskId,
@@ -89,6 +91,11 @@ export const canvasHostSaveAssetChannel = canvasHostChannels.saveAsset
 export const canvasHostShowAssetMenuChannel = canvasHostChannels.showAssetMenu
 export const canvasHostListAssetsChannel = canvasHostChannels.listAssets
 export const canvasHostRenameAssetChannel = canvasHostChannels.renameAsset
+export const canvasHostUpdateAssetMetadataChannel = canvasHostChannels.updateAssetMetadata
+export const canvasHostMarkAssetUsedChannel = canvasHostChannels.markAssetUsed
+export const canvasHostDeleteAssetChannel = canvasHostChannels.deleteAsset
+export const canvasHostRestoreAssetChannel = canvasHostChannels.restoreAsset
+export const canvasHostPurgeAssetChannel = canvasHostChannels.purgeAsset
 export const canvasHostInspectAssetReferencesChannel = canvasHostChannels.inspectAssetReferences
 export const canvasHostPickAssetChannel = canvasHostChannels.pickAsset
 export const canvasHostImportAssetFileChannel = canvasHostChannels.importAssetFile
@@ -134,7 +141,7 @@ export interface CanvasWindowControllerOptions {
   aiAssets: AiAssetStore
   videoAssets?: AiVideoAssetStore
   audioAssets?: AiAudioAssetStore
-  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename'>
+  mediaAssets: Pick<AiMediaAssetService, 'listOwnedPage' | 'copy' | 'saveAs' | 'contextMenu' | 'rename' | 'updateMetadata' | 'markUsed' | 'setSource' | 'softDelete' | 'restore' | 'purge'>
   promptPresets: CanvasPromptPresetStore
   canvasRuns: CanvasRunService
   projects?: CanvasProjectStore
@@ -480,7 +487,7 @@ export function createCanvasWindowController(
     const context = await activeAssetContext(event.sender.id, userId)
     await (context?.media ?? options.mediaAssets).copy(
       userId,
-      requiredCanvasString(assetIdInput, '画布图片资产标识', 64),
+      parseCanvasAssetId(assetIdInput),
       () => assertCanvasUserUnchanged(userId),
     )
   })
@@ -490,7 +497,7 @@ export function createCanvasWindowController(
     const context = await activeAssetContext(event.sender.id, userId)
     const saved = await (context?.media ?? options.mediaAssets).saveAs(
       userId,
-      requiredCanvasString(assetIdInput, '画布图片资产标识', 64),
+      parseCanvasAssetId(assetIdInput),
       () => assertCanvasUserUnchanged(userId),
     )
     return { saved }
@@ -498,7 +505,7 @@ export function createCanvasWindowController(
 
   registerCanvasHandler(canvasHostShowAssetMenuChannel, async (event, assetIdInput) => {
     const userId = authenticatedCanvasUserId()
-    const assetId = requiredCanvasString(assetIdInput, '画布图片资产标识', 64)
+    const assetId = parseCanvasAssetId(assetIdInput)
     const context = await activeAssetContext(event.sender.id, userId)
     await (context?.media ?? options.mediaAssets).contextMenu(userId, assetId, () => {
       if (authenticatedCanvasUserId() !== userId) throw new Error('星芒账号已切换，已停止图片操作')
@@ -508,7 +515,20 @@ export function createCanvasWindowController(
   registerCanvasHandler(canvasHostListAssetsChannel, async (event, queryInput) => {
     const userId = authenticatedCanvasUserId()
     const context = await activeAssetContext(event.sender.id, userId)
-    const assets = await (context?.media ?? options.mediaAssets).listOwnedPage(userId, parseCanvasAssetQuery(queryInput))
+    const { runId, nodeId, ...query } = parseCanvasAssetQuery(queryInput)
+    // "Same run" and "same source node" are facts the run store owns, so they
+    // are resolved to identifiers here and handed to the library as a
+    // restriction. Filtering a page after the fact would make the total lie.
+    const restriction = runId || nodeId
+      ? await options.canvasRuns.listAssetIdsByLineage(userId, {
+        ...(runId ? { runId } : {}),
+        ...(nodeId ? { nodeId } : {}),
+      })
+      : null
+    const assets = await (context?.media ?? options.mediaAssets).listOwnedPage(userId, {
+      ...query,
+      ...(restriction ? { assetIds: restriction } : {}),
+    })
     const lineage = await options.canvasRuns.getAssetLineage(userId, assets.items.map((asset) => asset.assetId))
     assertCanvasUserUnchanged(userId)
     return {
@@ -529,32 +549,97 @@ export function createCanvasWindowController(
     return renamed
   })
 
-  registerCanvasHandler(canvasHostInspectAssetReferencesChannel, async (event, assetIdInput, currentProjectContentInput) => {
-    if (!options.projects) throw new Error('项目自动保存能力不可用')
+  registerCanvasHandler(canvasHostUpdateAssetMetadataChannel, async (event, input) => {
     const userId = authenticatedCanvasUserId()
-    const projectId = activeProjectId(event.sender.id, userId)
+    const { assetId, ...metadata } = parseCanvasUpdateAssetMetadataInput(input)
+    const context = await activeAssetContext(event.sender.id, userId)
+    const updated = await (context?.media ?? options.mediaAssets).updateMetadata(userId, assetId, metadata)
+    assertCanvasUserUnchanged(userId)
+    return updated
+  })
+
+  registerCanvasHandler(canvasHostMarkAssetUsedChannel, async (event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const context = await activeAssetContext(event.sender.id, userId)
+    const updated = await (context?.media ?? options.mediaAssets).markUsed(userId, parseCanvasAssetId(assetIdInput))
+    assertCanvasUserUnchanged(userId)
+    return updated
+  })
+
+  async function assetReferenceReport(senderId: number, userId: number, assetIdInput: unknown, currentProjectContentInput: unknown) {
+    if (!options.projects) throw new Error('项目自动保存能力不可用')
+    const projectId = activeProjectId(senderId, userId)
     if (!projectId) throw new Error('请先选择或新建一个画布项目')
-    const assetId = requiredCanvasString(assetIdInput, '画布资产标识', 64)
+    const assetId = parseCanvasAssetId(assetIdInput)
     const currentProjectContent = requiredCanvasText(currentProjectContentInput, '当前画布项目内容', maximumSavedFileBytes)
     const currentWorkflow = parseCanvasProjectWorkflow(currentProjectContent).workflow
-    const [projects, runs] = await Promise.all([
+    const [projects, runs, summaries] = await Promise.all([
       options.projects.findAssetReferences(userId, assetId),
       options.canvasRuns.listRuns(userId),
+      options.projects.list(userId),
     ])
     assertCanvasUserUnchanged(userId)
-    const currentNodeIds = findCanvasWorkflowAssetReferenceNodeIds(currentWorkflow, assetId)
+    // The stored copy of the active project is the authority here. The canvas
+    // also sends what it currently has on screen, because edits made since the
+    // last autosave are real references, but a canvas that under-reports its
+    // own content must not be able to talk the purge into deleting an asset
+    // that is still wired into the project on disk.
+    const storedActive = projects.find((entry) => entry.projectId === projectId)
+    const currentNodeIds = [...new Set([
+      ...(storedActive?.nodeIds ?? []),
+      ...findCanvasWorkflowAssetReferenceNodeIds(currentWorkflow, assetId),
+    ])]
     const runReferences = findCanvasRunAssetReferences(runs, assetId)
     return {
       assetId,
       inUse: currentNodeIds.length > 0 || projects.length > 0 || runReferences.length > 0,
       currentProject: {
         projectId,
-        projectName: String(currentWorkflow.name),
+        projectName: summaries.find((entry) => entry.id === projectId)?.name ?? String(currentWorkflow.name),
         nodeIds: currentNodeIds,
       },
       projects,
       runs: runReferences,
     }
+  }
+
+  registerCanvasHandler(canvasHostDeleteAssetChannel, async (event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const context = await activeAssetContext(event.sender.id, userId)
+    // Deliberately not reference-checked: assets are referenced because they
+    // were used, so blocking here would make the bin unreachable for exactly
+    // the assets a library needs to shed. Nothing leaves the disk yet.
+    const deleted = await (context?.media ?? options.mediaAssets).softDelete(userId, parseCanvasAssetId(assetIdInput))
+    assertCanvasUserUnchanged(userId)
+    return deleted
+  })
+
+  registerCanvasHandler(canvasHostRestoreAssetChannel, async (event, assetIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const context = await activeAssetContext(event.sender.id, userId)
+    const restored = await (context?.media ?? options.mediaAssets).restore(userId, parseCanvasAssetId(assetIdInput))
+    assertCanvasUserUnchanged(userId)
+    return restored
+  })
+
+  registerCanvasHandler(canvasHostPurgeAssetChannel, async (event, assetIdInput, currentProjectContentInput) => {
+    const userId = authenticatedCanvasUserId()
+    const assetId = parseCanvasAssetId(assetIdInput)
+    const context = await activeAssetContext(event.sender.id, userId)
+    // The reference check runs here, at the point of no return: a workflow that
+    // loses an input it still points at cannot be repaired by an undo.
+    const purged = await (context?.media ?? options.mediaAssets).purge(
+      userId,
+      assetId,
+      () => assetReferenceReport(event.sender.id, userId, assetId, currentProjectContentInput),
+    )
+    assertCanvasUserUnchanged(userId)
+    return purged
+  })
+
+  registerCanvasHandler(canvasHostInspectAssetReferencesChannel, async (event, assetIdInput, currentProjectContentInput) => {
+    const userId = authenticatedCanvasUserId()
+    return assetReferenceReport(event.sender.id, userId, assetIdInput, currentProjectContentInput)
   })
 
   async function importCanvasAsset(ownerId: number, userId: number, filePath: string) {
@@ -583,6 +668,13 @@ export function createCanvasWindowController(
         ? await videoStore!.storeLocalFile(userId, filePath)
         : await imageStore.storeLocalFile(userId, filePath)
     try {
+      assertCanvasUserUnchanged(userId)
+      await (context?.media ?? options.mediaAssets).setSource(userId, asset.assetId, 'imported').catch((error) => {
+        options.runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '素材已导入，但来源信息保存失败', {
+          assetId: asset.assetId,
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      })
       assertCanvasUserUnchanged(userId)
       return kind === 'image' ? asset : { ...asset, mediaType: kind }
     } catch (error) {
@@ -704,11 +796,18 @@ export function createCanvasWindowController(
     const mappings = new Map<string, string>()
     const context = await activeAssetContext(event.sender.id, userId)
     const imageStore = context?.images ?? options.aiAssets
+    const media = context?.media ?? options.mediaAssets
     try {
       for (const entry of pending.parsed.assets) {
         assertCanvasUserUnchanged(userId)
         const asset = await imageStore.storeBase64(userId, `data:${entry.mimeType};base64,${entry.bytes.toString('base64')}`)
         imported.push(asset.assetId)
+        await media.setSource(userId, asset.assetId, 'imported').catch((error) => {
+          options.runtimeLog.log('warn', 'canvas', 'asset.source.persist.failed', '项目素材已导入，但来源信息保存失败', {
+            assetId: asset.assetId,
+            reason: error instanceof Error ? error.message : String(error),
+          })
+        })
         mappings.set(entry.assetId, asset.assetId)
       }
       assertCanvasUserUnchanged(userId)

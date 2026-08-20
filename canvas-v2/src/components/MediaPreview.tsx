@@ -5,23 +5,32 @@ import {
   useState,
   type AudioHTMLAttributes,
   type ImgHTMLAttributes,
+  type MouseEvent,
   type VideoHTMLAttributes,
 } from 'react'
-import { ImageOff, MoreHorizontal, Music2, Pause, Pencil, Play, Volume2, VolumeX, X } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ImageOff, MoreHorizontal, Music2, Pause, Pencil, Play, Volume2, VolumeX, X } from 'lucide-react'
 import type { AssetRef } from '../model'
+import { videoCoverCache } from '../library/video-cover'
 
 interface SafeImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
   src: string
+  /** Used when `src` is a derived thumbnail that 404s; the original asset is
+   *  still on disk. The grid used to treat a thumb:// URL as "no file". */
+  fallbackSrc?: string
   fallbackLabel?: string
 }
 
-export function SafeImage({ src, fallbackLabel = '素材不可用', className, ...props }: SafeImageProps) {
-  const [failed, setFailed] = useState(false)
+export function SafeImage({ src, fallbackSrc, fallbackLabel = '素材不可用', className, ...props }: SafeImageProps) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const { onError, ...imageProps } = props
 
-  useEffect(() => setFailed(false), [src])
+  useEffect(() => setFailedSrc(null), [src, fallbackSrc])
 
-  if (failed || !isLocalCanvasAssetUrl(src, 'image')) {
+  const primary = isCanvasImagePreviewUrl(src) ? src : undefined
+  const fallback = isCanvasImagePreviewUrl(fallbackSrc) && fallbackSrc !== src ? fallbackSrc : undefined
+  const activeSrc = primary && failedSrc !== primary ? primary : fallback
+
+  if (!activeSrc || failedSrc === activeSrc) {
     return (
       <span className={`${className ?? ''} media-unavailable`} role="img" aria-label={fallbackLabel}>
         <ImageOff size={18} aria-hidden="true" />
@@ -29,7 +38,92 @@ export function SafeImage({ src, fallbackLabel = '素材不可用', className, .
       </span>
     )
   }
-  return <img {...imageProps} className={className} src={src} onError={(event) => { setFailed(true); onError?.(event) }} />
+  return <img {...imageProps} className={className} src={activeSrc} onError={(event) => { setFailedSrc(activeSrc); onError?.(event) }} />
+}
+
+interface VideoCoverImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
+  /** Derived still from the main process; absent whenever the OS declined the file. */
+  thumbnailUrl: string
+  /** The video itself, read only if the derived still is unavailable. */
+  videoUrl: string
+  fallbackLabel?: string
+}
+
+/**
+ * A video tile. Prefers the still the main process derived from the platform
+ * thumbnail provider; when that provider has nothing for this codec, one frame
+ * is captured here instead. The capture is queued globally, so a page of tiles
+ * still only ever has one media element alive, and the element is detached --
+ * the grid's markup stays free of players.
+ */
+export function VideoCoverImage({ thumbnailUrl, videoUrl, fallbackLabel = '视频素材', className, ...props }: VideoCoverImageProps) {
+  const [thumbnailFailed, setThumbnailFailed] = useState(false)
+  const [cover, setCover] = useState<string | null>(null)
+
+  useEffect(() => {
+    setThumbnailFailed(false)
+    setCover(null)
+  }, [thumbnailUrl, videoUrl])
+
+  const usable = !thumbnailFailed && isCanvasThumbnailUrl(thumbnailUrl)
+
+  useEffect(() => {
+    // Covers both ways the derived still can be missing: never generated, so
+    // the summary carries no thumbnail path, and generated but unreadable.
+    if (usable || cover || !isLocalCanvasAssetUrl(videoUrl, 'video')) return undefined
+    let active = true
+    void videoCoverCache.resolve(videoUrl).then((frame) => { if (active && frame) setCover(frame) })
+    return () => { active = false }
+  }, [cover, usable, videoUrl])
+
+  if (!usable && !cover) {
+    return (
+      <span className={`${className ?? ''} media-unavailable`} role="img" aria-label={fallbackLabel}>
+        <ImageOff size={18} aria-hidden="true" />
+        <span>{fallbackLabel}</span>
+      </span>
+    )
+  }
+  return (
+    <img
+      {...props}
+      className={className}
+      src={usable ? thumbnailUrl : cover as string}
+      onError={() => setThumbnailFailed(true)}
+    />
+  )
+}
+
+const THUMBNAIL_URL_PATTERN = /^xingmang-asset:\/\/thumb\/v[0-9]+\/(image|video)\/[A-Za-z0-9_-]{43}$/
+
+/**
+ * Derived thumbnails live under their own protocol host so they can be served
+ * as immutable. They are still images whatever the source media was, so a video
+ * tile can render its cover frame without mounting a video element.
+ */
+export function isCanvasThumbnailUrl(value: string | undefined): value is string {
+  return typeof value === 'string' && THUMBNAIL_URL_PATTERN.test(value)
+}
+
+/** A still the image tile can paint: the derived thumb, or the original file. */
+export function isCanvasImagePreviewUrl(value: string | undefined): value is string {
+  return isCanvasThumbnailUrl(value) || isLocalCanvasAssetUrl(value, 'image')
+}
+
+/**
+ * Whether the library card should try to paint this asset. Image tiles list a
+ * `xingmang-asset://thumb/...` URL; treating only `://image/` as present made
+ * every derived-thumb card read as missing.
+ */
+export function canvasAssetIsPreviewable(asset: {
+  mediaType: 'image' | 'video' | 'audio'
+  localUrl: string
+  thumbnailUrl?: string
+}): boolean {
+  if (asset.mediaType === 'image') {
+    return isCanvasImagePreviewUrl(asset.thumbnailUrl) || isLocalCanvasAssetUrl(asset.localUrl, 'image')
+  }
+  return isLocalCanvasAssetUrl(asset.localUrl, asset.mediaType)
 }
 
 export function isLocalCanvasAssetUrl(
@@ -44,14 +138,21 @@ export function isLocalCanvasAssetUrl(
 interface ViewportVideoProps extends Omit<VideoHTMLAttributes<HTMLVideoElement>, 'src'> {
   src: string
   fallbackLabel?: string
+  /** Canvas nodes keep the surface draggable. Native controls steal the
+   *  pointer, so playback is a single overlay button marked `nodrag`. */
+  canvasPlayback?: boolean
 }
 
-export function ViewportVideo({ src, fallbackLabel = '视频素材不可用', className, ...props }: ViewportVideoProps) {
+export function ViewportVideo({ src, fallbackLabel = '视频素材不可用', className, canvasPlayback = false, ...props }: ViewportVideoProps) {
   const ref = useRef<HTMLVideoElement>(null)
   const [failed, setFailed] = useState(false)
-  const { onError, ...videoProps } = props
+  const [playing, setPlaying] = useState(false)
+  const { onError, onPlay, onPause, onDoubleClick, style, title, controls, ...videoProps } = props
 
-  useEffect(() => setFailed(false), [src])
+  useEffect(() => {
+    setFailed(false)
+    setPlaying(false)
+  }, [src])
   useEffect(() => {
     const video = ref.current
     if (!video || typeof IntersectionObserver === 'undefined') return undefined
@@ -75,7 +176,54 @@ export function ViewportVideo({ src, fallbackLabel = '视频素材不可用', cl
       </span>
     )
   }
-  return <video {...videoProps} ref={ref} className={className} src={src} preload="metadata" onError={(event) => { setFailed(true); onError?.(event) }} />
+
+  const togglePlayback = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    const video = ref.current
+    if (!video) return
+    if (video.paused) void video.play().catch(() => undefined)
+    else video.pause()
+  }
+
+  const video = (
+    <video
+      {...videoProps}
+      ref={ref}
+      className={canvasPlayback ? 'wf-canvas-video-el' : className}
+      src={src}
+      preload="metadata"
+      controls={canvasPlayback ? false : controls}
+      style={canvasPlayback ? undefined : style}
+      title={canvasPlayback ? undefined : title}
+      onError={(event) => { setFailed(true); onError?.(event) }}
+      onPlay={(event) => { setPlaying(true); onPlay?.(event) }}
+      onPause={(event) => { setPlaying(false); onPause?.(event) }}
+      onDoubleClick={canvasPlayback ? undefined : onDoubleClick}
+    />
+  )
+  if (!canvasPlayback) return video
+  return (
+    <div
+      className={`wf-canvas-video ${className ?? ''}`.trim()}
+      style={style}
+      title={title}
+      onDoubleClick={onDoubleClick
+        ? (event) => onDoubleClick(event as never)
+        : undefined}
+    >
+      {video}
+      <button
+        type="button"
+        className="wf-canvas-video-toggle nodrag"
+        title={playing ? '暂停' : '播放'}
+        aria-label={playing ? '暂停视频' : '播放视频'}
+        onClick={togglePlayback}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
+        {playing ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
+      </button>
+    </div>
+  )
 }
 
 interface WaveformBuffer {
@@ -274,17 +422,26 @@ interface MediaLightboxProps {
   onClose(): void
   onAssetMenu(assetId: string): void
   onRename?(assetId: string): void
+  /** Absent when there is nothing before or after, which also disables the key. */
+  onPrevious?(): void
+  onNext?(): void
 }
 
-export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, onRename }: MediaLightboxProps) {
+export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, onRename, onPrevious, onNext }: MediaLightboxProps) {
   useEffect(() => {
     if (!asset) return undefined
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') return onClose()
+      // Arrow keys belong to a focused video's scrubber while it has focus;
+      // stepping the viewer is only safe when they are not being used to seek.
+      const active = document.activeElement
+      if (active instanceof HTMLMediaElement) return
+      if (event.key === 'ArrowLeft' && onPrevious) { event.preventDefault(); onPrevious() }
+      if (event.key === 'ArrowRight' && onNext) { event.preventDefault(); onNext() }
     }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
-  }, [asset, onClose])
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [asset, onClose, onPrevious, onNext])
 
   if (!asset?.localUrl) return null
   const mediaLabel = asset.kind === 'video' ? '视频预览' : asset.kind === 'audio' ? '音频预览' : '图片预览'
@@ -295,6 +452,12 @@ export function MediaLightbox({ asset, title, createdAt, onClose, onAssetMenu, o
       <div className="media-lightbox-toolbar">
         <span>{title || (asset.width && asset.height ? `${asset.width} × ${asset.height}` : mediaLabel)}</span>
         {createdAt && <time dateTime={createdAt}>{new Date(createdAt).toLocaleString()}</time>}
+        {(onPrevious || onNext) && (
+          <>
+            <button type="button" title="上一个素材" aria-label="上一个素材" disabled={!onPrevious} onClick={() => onPrevious?.()}><ChevronLeft size={18} /></button>
+            <button type="button" title="下一个素材" aria-label="下一个素材" disabled={!onNext} onClick={() => onNext?.()}><ChevronRight size={18} /></button>
+          </>
+        )}
         {asset.assetId && onRename && (
           <button type="button" title="重命名" aria-label="重命名素材" onClick={() => onRename(asset.assetId as string)}><Pencil size={16} /></button>
         )}

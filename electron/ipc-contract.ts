@@ -48,6 +48,11 @@ import type {
   NativeConfigSaveResult,
 } from './config-files'
 import type {
+  CodexDesktopLocale as MainCodexDesktopLocale,
+  CodexDesktopLocaleResult as MainCodexDesktopLocaleResult,
+  CodexDesktopLocaleStatus as MainCodexDesktopLocaleStatus,
+} from './codex-desktop-locale'
+import type {
   DiagnosticState as MainDiagnosticState,
   DiagnosticsReport as MainDiagnosticsReport,
 } from './diagnostics'
@@ -167,6 +172,9 @@ export type MultiProviderSessionExportResult = ProviderSessionExportResult
 export type ToolStatus = MainToolStatus
 export type CliStatus = MainCliStatus
 export type DesktopAppStatus = MainDesktopAppStatus
+export type CodexDesktopLocale = MainCodexDesktopLocale
+export type CodexDesktopLocaleStatus = MainCodexDesktopLocaleStatus
+export type CodexDesktopLocaleResult = MainCodexDesktopLocaleResult
 export type SystemSnapshot = MainSystemSnapshot
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
@@ -336,6 +344,7 @@ export interface AiImageGenerateInput {
   prompt: string
   size?: string
   quality?: 'low' | 'medium' | 'high' | 'auto'
+  imageResolution?: '1K' | '2K' | '4K'
 }
 
 export interface AiChatAsset {
@@ -441,6 +450,7 @@ export interface XingmangInvokeContract {
   chooseWorkspace: IpcInvokeDefinition<'workspace:choose', [], string | null>
   getRepositoryContext: IpcInvokeDefinition<'repository:get-context', [], RepositoryContext>
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
+  restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
   installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId], void>
   uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId], ToolUninstallResult>
@@ -451,6 +461,16 @@ export interface XingmangInvokeContract {
   checkCodexDesktopUpdate: IpcInvokeDefinition<'desktop:check-update-codex', [], DesktopAppStatus>
   launchCli: IpcInvokeDefinition<'cli:launch', [provider: ProviderId, workspace: string], void>
   getCodexDesktopStatus: IpcInvokeDefinition<'desktop:codex-status', [], DesktopAppStatus>
+  inspectCodexDesktopLocale: IpcInvokeDefinition<
+    'desktop:codex-locale-status',
+    [],
+    CodexDesktopLocaleStatus
+  >
+  setCodexDesktopLocale: IpcInvokeDefinition<
+    'desktop:set-codex-locale',
+    [locale: CodexDesktopLocale],
+    CodexDesktopLocaleResult
+  >
   launchCodexDesktop: IpcInvokeDefinition<
     'desktop:launch-codex',
     [mode: CodexDesktopLaunchMode],
@@ -745,6 +765,7 @@ export const ipcInvokeChannels = {
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
   installNodeRuntime: 'runtime:install-node',
+  restartWindows: 'runtime:restart-windows',
   installPythonRuntime: 'runtime:install-python',
   installCli: 'cli:install',
   uninstallCli: 'cli:uninstall',
@@ -755,6 +776,8 @@ export const ipcInvokeChannels = {
   checkCodexDesktopUpdate: 'desktop:check-update-codex',
   launchCli: 'cli:launch',
   getCodexDesktopStatus: 'desktop:codex-status',
+  inspectCodexDesktopLocale: 'desktop:codex-locale-status',
+  setCodexDesktopLocale: 'desktop:set-codex-locale',
   launchCodexDesktop: 'desktop:launch-codex',
   listModels: 'models:list',
   listConfiguredModels: 'models:list-configured',

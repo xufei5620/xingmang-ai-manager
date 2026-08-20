@@ -20,6 +20,11 @@ export const canvasHostChannels = {
   showAssetMenu: 'canvas-host:asset-menu',
   listAssets: 'canvas-host:list-assets',
   renameAsset: 'canvas-host:rename-asset',
+  updateAssetMetadata: 'canvas-host:update-asset-metadata',
+  markAssetUsed: 'canvas-host:mark-asset-used',
+  deleteAsset: 'canvas-host:delete-asset',
+  restoreAsset: 'canvas-host:restore-asset',
+  purgeAsset: 'canvas-host:purge-asset',
   inspectAssetReferences: 'canvas-host:inspect-asset-references',
   pickAsset: 'canvas-host:pick-asset',
   importAssetFile: 'canvas-host:import-asset-file',
@@ -64,6 +69,7 @@ export interface CanvasImageGenerateInput {
   prompt: string
   size?: string
   quality?: 'low' | 'medium' | 'high' | 'auto'
+  imageResolution?: '1K' | '2K' | '4K'
 }
 
 export interface CanvasImageEditInput extends CanvasImageGenerateInput {
@@ -78,7 +84,20 @@ export interface CanvasCancelResult {
   mayStillComplete: boolean
 }
 
-export interface CanvasAssetSummary extends CanvasGeneratedAsset {
+export type CanvasAssetSource = 'generated' | 'imported' | 'legacy'
+
+export interface CanvasAssetOrganization {
+  favorite: boolean
+  tags: string[]
+  source: CanvasAssetSource
+  lastUsedAt?: string
+  /** Present only in the recycle bin view; absent means the asset is live. */
+  deletedAt?: string
+  /** The prompt that generated the asset, recorded once when it was created. */
+  prompt?: string
+}
+
+export interface CanvasAssetSummary extends CanvasGeneratedAsset, CanvasAssetOrganization {
   createdAt: string
   mediaType: 'image'
   thumbnailUrl: string
@@ -86,7 +105,7 @@ export interface CanvasAssetSummary extends CanvasGeneratedAsset {
   lineage?: CanvasRunAssetLineage
 }
 
-export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
+export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset, CanvasAssetOrganization {
   createdAt: string
   mediaType: 'video'
   thumbnailUrl: string
@@ -97,7 +116,7 @@ export interface CanvasVideoAssetSummary extends CanvasGeneratedVideoAsset {
   lineage?: CanvasRunAssetLineage
 }
 
-export interface CanvasAudioAssetSummary {
+export interface CanvasAudioAssetSummary extends CanvasAssetOrganization {
   assetId: string
   localUrl: string
   mimeType: 'audio/mpeg' | 'audio/wav' | 'audio/ogg' | 'audio/mp4'
@@ -118,6 +137,37 @@ export interface CanvasRenameAssetInput {
 export interface CanvasRenameAssetResult {
   assetId: string
   displayName: string
+}
+
+export interface CanvasUpdateAssetMetadataInput {
+  assetId: string
+  favorite?: boolean
+  tags?: string[]
+}
+
+export interface CanvasUpdateAssetMetadataResult {
+  assetId: string
+  favorite: boolean
+  tags: string[]
+  lastUsedAt?: string
+}
+
+export interface CanvasMarkAssetUsedResult {
+  assetId: string
+  lastUsedAt: string
+}
+
+export interface CanvasDeleteAssetResult {
+  assetId: string
+  deletedAt: string
+}
+
+export interface CanvasRestoreAssetResult {
+  assetId: string
+}
+
+export interface CanvasPurgeAssetResult {
+  assetId: string
 }
 
 export interface CanvasAssetReferenceReport {
@@ -150,6 +200,18 @@ export interface CanvasAssetQuery {
   limit?: number
   mediaType?: 'all' | 'image' | 'video' | 'audio'
   search?: string
+  view?: 'all' | 'favorites' | 'recent' | 'trash'
+  tag?: string
+  source?: 'all' | CanvasAssetSource
+  sort?: 'created-desc' | 'created-asc' | 'used-desc' | 'name-asc'
+  /**
+   * "Find similar" filters. `prompt` matches exactly; `runId` and `nodeId` are
+   * resolved against the run store into an identifier set before the library
+   * filters on them, so the total keeps describing the whole matching set.
+   */
+  prompt?: string
+  runId?: string
+  nodeId?: string
 }
 
 export interface CanvasAssetPage {
@@ -158,6 +220,11 @@ export interface CanvasAssetPage {
   limit: number
   total: number
   hasMore: boolean
+  facets: CanvasAssetFacets
+}
+
+export interface CanvasAssetFacets {
+  tags: Array<{ tag: string; count: number }>
 }
 
 export type CanvasPromptPresetDto = CanvasPromptPreset

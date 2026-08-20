@@ -13,7 +13,7 @@ import {
 
 describe('relay site registry', () => {
   it('pins the customer support destination to the exact enterprise WeChat link', () => {
-    expect(supportServiceUrl).toBe('https://work.weixin.qq.com/kfid/kfc212a22c8e02da5f8')
+    expect(supportServiceUrl).toBe('https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4')
   })
   it('ships the solov and sub2api sites, both reusing catalog providerBaseUrls by reference', () => {
     expect(relaySites).toHaveLength(2)

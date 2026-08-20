@@ -27,7 +27,7 @@ import {
 const runtimeDataKeys = new Set([
   'status', 'errorMessage', 'costQuota', 'candidateAssetIds', 'candidates', 'selectedCandidateId',
   'adoptedCandidateId', 'dirty', 'attemptCount', 'latestAttemptDurationMs',
-  'runStage', 'runProgress', 'runProgressMode', 'runHealth',
+  'runStartedAt', 'runStage', 'runProgress', 'runProgressMode', 'runHealth', 'fromCache',
 ])
 
 interface DragTransaction {
@@ -141,6 +141,8 @@ export function useCanvasDocument(
   const historyRef = useRef<CanvasHistoryState>(initial)
   const dragTransactionRef = useRef<DragTransaction | null>(null)
   const dragSequenceRef = useRef(0)
+  const resizeTransactionRef = useRef<DragTransaction | null>(null)
+  const resizeSequenceRef = useRef(0)
   const [historyVersion, setHistoryVersion] = useState(0)
   const [nodes, setNodes] = useState<CanvasNode[]>([])
   const [edges, setEdges] = useState<Edge[]>([])
@@ -212,7 +214,30 @@ export function useCanvasDocument(
       const mergeKey = transaction.mergeKey
       execute({ type: 'move-nodes', positions, ...(mergeKey ? { mergeKey } : {}) })
     }
-    const transient = changes.filter((change) => change.type !== 'position')
+    // React Flow reports resizing as a stream of dimension changes with
+    // resizing: true, then one final frame. Treating them as transient would
+    // apply the size to the view but never to the document, so the node would
+    // snap back on the next undo, redo or project reload.
+    const resizes = Object.fromEntries(changes.flatMap((change) => (
+      change.type === 'dimensions' && change.resizing !== undefined && change.dimensions
+        ? [[change.id, { width: change.dimensions.width, height: change.dimensions.height }] as const]
+        : []
+    )))
+    if (Object.keys(resizes).length > 0) {
+      const signature = Object.keys(resizes).sort().join(',')
+      const stillResizing = changes.some((change) => change.type === 'dimensions' && change.resizing === true)
+      if (resizeTransactionRef.current?.signature !== signature) {
+        resizeSequenceRef.current += 1
+        resizeTransactionRef.current = { key: `resize:${resizeSequenceRef.current}:${signature}`, signature }
+      }
+      const mergeKey = resizeTransactionRef.current.key
+      if (!stillResizing) resizeTransactionRef.current = null
+      execute({ type: 'resize-nodes', dimensions: resizes, mergeKey })
+    }
+    const transient = changes.filter((change) => (
+      change.type !== 'position'
+      && !(change.type === 'dimensions' && change.resizing !== undefined)
+    ))
     if (transient.length > 0) setNodes((current) => applyNodeChanges(transient, current))
   }, [execute])
 

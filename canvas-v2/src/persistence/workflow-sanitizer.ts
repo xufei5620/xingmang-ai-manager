@@ -73,6 +73,12 @@ function readAsset(value: unknown): AssetRef | undefined | null {
   if (!assetId && !taskId) return undefined
   const width = Number.isInteger(value.width) && (value.width as number) > 0 ? value.width as number : undefined
   const height = Number.isInteger(value.height) && (value.height as number) > 0 ? value.height as number : undefined
+  const durationSeconds = typeof value.durationSeconds === 'number'
+    && Number.isFinite(value.durationSeconds)
+    && value.durationSeconds > 0
+    && value.durationSeconds <= 86_400
+    ? value.durationSeconds
+    : undefined
   const mimeType = assetId && typeof value.mimeType === 'string' && value.mimeType.length <= 128
     ? value.mimeType
     : undefined
@@ -82,6 +88,7 @@ function readAsset(value: unknown): AssetRef | undefined | null {
     ...(mimeType ? { mimeType } : {}),
     ...(width ? { width } : {}),
     ...(height ? { height } : {}),
+    ...(durationSeconds ? { durationSeconds } : {}),
     ...(taskId ? { taskId } : {}),
   }
 }
@@ -100,6 +107,8 @@ function readNode(value: unknown): WorkflowNode | null {
   const group = optionalSafeString(value.data.group, maximumGroupNameLength)
   const quality = optionalSafeString(value.data.quality, maximumOptionLength)
   const size = optionalSafeString(value.data.size, maximumOptionLength)
+  const imageResolution = optionalSafeString(value.data.imageResolution, 2)
+  if (imageResolution && imageResolution !== '1K' && imageResolution !== '2K' && imageResolution !== '4K') return null
   const seconds = value.data.seconds === undefined
     ? undefined
     : typeof value.data.seconds === 'string' && /^(?:[1-9]|1[0-5])$/.test(value.data.seconds)
@@ -117,7 +126,7 @@ function readNode(value: unknown): WorkflowNode | null {
   const parentId = value.parentId === undefined ? undefined : safeString(value.parentId, maximumNodeIdLength)
   const width = value.width === undefined ? undefined : finiteCoordinate(value.width) && value.width >= 80 ? value.width : null
   const height = value.height === undefined ? undefined : finiteCoordinate(value.height) && value.height >= 40 ? value.height : null
-  if (prompt === null || model === null || group === null || quality === null || size === null || seconds === null || result === null
+  if (prompt === null || model === null || group === null || quality === null || size === null || imageResolution === null || seconds === null || result === null
     || settings === null || candidateAssetIds === null || parentId === null || width === null || height === null) return null
   const kind = knownNodeKind(wireKind)
   if (!kind) {
@@ -140,6 +149,7 @@ function readNode(value: unknown): WorkflowNode | null {
         errorMessage: `节点类型「${wireKind}」未安装，已禁用`,
         ...(quality ? { quality } : {}),
         ...(size ? { size } : {}),
+        ...(imageResolution ? { imageResolution: imageResolution as '1K' | '2K' | '4K' } : {}),
         ...(seconds ? { seconds } : {}),
         ...(result ? { result } : {}),
         ...(settings ? { settings } : {}),
@@ -164,6 +174,7 @@ function readNode(value: unknown): WorkflowNode | null {
       status: result?.assetId ? 'succeeded' : 'idle',
       ...(quality ? { quality } : {}),
       ...(size ? { size } : {}),
+      ...(imageResolution ? { imageResolution: imageResolution as '1K' | '2K' | '4K' } : {}),
       ...(seconds ? { seconds } : {}),
       ...(result ? { result } : {}),
       ...(settings ? { settings } : {}),
@@ -247,7 +258,8 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
       continue
     }
     const normalizedEdge = edge.targetHandle === 'in:image'
-      && (target.kind === 'image-edit' || target.kind === 'video-generate' || target.kind === 'video')
+      && (target.kind === 'image-edit' || target.kind === 'image-generate' || target.kind === 'image'
+        || target.kind === 'video-generate' || target.kind === 'video')
       ? { ...edge, targetHandle: 'in:images' }
       : edge
     const sourcePort = builtinNodeRegistry.port(source.kind, normalizedEdge.sourceHandle, 'output')

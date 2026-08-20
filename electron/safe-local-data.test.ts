@@ -58,6 +58,32 @@ describe('safe local data files', () => {
     expect(fs.readFileSync(filePath, 'utf8')).toBe('second')
   })
 
+  it('retries a briefly locked rename instead of aborting the write', async () => {
+    const filePath = path.join(temporaryDirectory(), 'report.txt')
+    await writeAtomicSafeUtf8File(filePath, 'first', '测试导出')
+    const original = fs.promises.rename.bind(fs.promises)
+    let locked = 1
+    vi.spyOn(fs.promises, 'rename').mockImplementation(async (from, to, ...rest) => {
+      if (locked > 0 && path.resolve(String(to)) === path.resolve(filePath)) {
+        locked -= 1
+        throw Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' })
+      }
+      return original(from, to, ...rest)
+    })
+    await writeAtomicSafeUtf8File(filePath, 'second', '测试导出')
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('second')
+  })
+
+  it('overwrites in place when rename stays locked', async () => {
+    const filePath = path.join(temporaryDirectory(), 'report.txt')
+    await writeAtomicSafeUtf8File(filePath, 'first', '测试导出')
+    vi.spyOn(fs.promises, 'rename').mockRejectedValue(
+      Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }),
+    )
+    await writeAtomicSafeUtf8File(filePath, 'second', '测试导出')
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('second')
+  })
+
   it('refuses to overwrite a hard-linked export target', async () => {
     const directory = temporaryDirectory()
     const victim = path.join(directory, 'victim.txt')

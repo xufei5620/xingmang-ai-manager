@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  adoptCandidate,
   beginAttempt,
   cancelAttempt,
   completeAttempt,
@@ -9,10 +8,12 @@ import {
   markNodesDirty,
   resolveRunScope,
   startAttempt,
+  useCandidate,
 } from './candidates'
 
 describe('candidate runtime state', () => {
-  it('keeps sibling candidates until explicit adoption', () => {
+  // 2026-08-20 产品决策（老板拍板）：完成即固定最新候选为产物，采纳那一步取消。
+  it('fixes the first candidate on completion and keeps its siblings switchable', () => {
     const initial = createCandidateState(['source', 'generate', 'output'])
     const queued = beginAttempt(initial, {
       id: 'attempt-1',
@@ -27,16 +28,17 @@ describe('candidate runtime state', () => {
     ], '2026-08-13T01:01:02Z', { quota: 12 })
 
     expect(completed.attempts['attempt-1'].candidateIds).toEqual(['candidate-1', 'candidate-2'])
-    expect(completed.nodes.generate.selectedCandidateId).toBeUndefined()
+    expect(completed.nodes.generate.selectedCandidateId).toBe('candidate-1')
     expect(completed.nodes.generate.dirty).toBe(false)
 
-    const adopted = adoptCandidate(completed, 'candidate-2', [
+    const switched = useCandidate(completed, 'candidate-2', [
       { source: 'source', target: 'generate' },
       { source: 'generate', target: 'output' },
     ])
-    expect(adopted.nodes.generate.selectedCandidateId).toBe('candidate-2')
-    expect(adopted.nodes.output.dirty).toBe(true)
-    expect(Object.keys(adopted.candidates)).toEqual(['candidate-1', 'candidate-2'])
+    expect(switched.nodes.generate.selectedCandidateId).toBe('candidate-2')
+    // Marked for a rerun, never started: switching the product spends nothing.
+    expect(switched.nodes.output.dirty).toBe(true)
+    expect(Object.keys(switched.candidates)).toEqual(['candidate-1', 'candidate-2'])
   })
 
   it('numbers retries and never mutates a terminal attempt', () => {
@@ -54,7 +56,7 @@ describe('candidate runtime state', () => {
     expect(() => startAttempt(failed, 'attempt-1', 'later')).toThrow(/已结束/)
   })
 
-  it('makes cancellation idempotent without deleting a previous adoption', () => {
+  it('makes cancellation idempotent without deleting the previous product', () => {
     let state = beginAttempt(createCandidateState(['generate']), {
       id: 'attempt-1', runId: 'run-1', nodeId: 'generate', requestSnapshot: {},
     })
@@ -76,16 +78,21 @@ describe('candidate runtime state', () => {
     expect(dirty.nodes.b.status).toBe('idle')
   })
 
-  it('resolves all, dirty, selected and upstream-to-target scopes', () => {
-    const state = createCandidateState(['a', 'b', 'c', 'd'])
+  it('resolves all, dirty, selected, upstream-to-target and downstream scopes', () => {
+    const state = createCandidateState(['a', 'b', 'c', 'd', 'dependency', 'merged', 'other'])
     const edges = [
       { source: 'a', target: 'b' },
       { source: 'b', target: 'c' },
+      { source: 'c', target: 'merged' },
+      { source: 'dependency', target: 'merged' },
     ]
-    expect(resolveRunScope(state, ['a', 'b', 'c', 'd'], edges, { kind: 'all' })).toEqual(['a', 'b', 'c', 'd'])
-    expect(resolveRunScope(state, ['a', 'b', 'c', 'd'], edges, { kind: 'dirty' })).toEqual(['a', 'b', 'c', 'd'])
-    expect(resolveRunScope(state, ['a', 'b', 'c', 'd'], edges, { kind: 'selection', nodeIds: ['b', 'd'] })).toEqual(['a', 'b', 'd'])
-    expect(resolveRunScope(state, ['a', 'b', 'c', 'd'], edges, { kind: 'to-node', nodeId: 'c' })).toEqual(['a', 'b', 'c'])
+    const allNodeIds = ['a', 'b', 'c', 'd', 'dependency', 'merged', 'other']
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'all' })).toEqual(allNodeIds)
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'dirty' })).toEqual(allNodeIds)
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'selection', nodeIds: ['b', 'd'] })).toEqual(['a', 'b', 'd'])
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'to-node', nodeId: 'c' })).toEqual(['a', 'b', 'c'])
+    expect(resolveRunScope(state, allNodeIds, edges, { kind: 'from-node', nodeId: 'b' }))
+      .toEqual(['a', 'b', 'c', 'dependency', 'merged'])
   })
 
   it('rejects duplicate candidates and oversized candidate sets', () => {

@@ -8,6 +8,7 @@ import type {
 import { computeCanvasGraphRevision } from './canvas-fingerprint'
 import {
   canvasRunDescendants,
+  canvasRunExclusiveNodeIds,
   canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
   type CanvasNodeExecutors,
@@ -15,9 +16,10 @@ import {
 import type { CanvasRunStore } from './canvas-run-store'
 
 export interface CanvasRunServiceOptions {
-  store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'reconcileAssets'>
+  store: Pick<CanvasRunStore, 'initializeUser' | 'listRuns' | 'getRun' | 'getAssetLineage' | 'listAssetIdsByLineage' | 'saveRun' | 'resolveCache' | 'storeCache' | 'reconcileAssets'>
   executors: CanvasNodeExecutors
   maxConcurrency?: number
+  maxActiveRuns?: number
   maxRemoteGenerationsPerRun?: number
   now?: () => Date
   randomUUID?: () => string
@@ -43,6 +45,7 @@ interface ActiveRun {
   userId: number
   ownerId: number
   lockKey: string
+  exclusiveNodeIds: string[]
   controller: AbortController
   handle: CanvasRunHandle
 }
@@ -56,11 +59,19 @@ export interface CanvasRunPublication {
 export function createCanvasRunService(options: CanvasRunServiceOptions) {
   const randomUUID = options.randomUUID ?? nodeRandomUUID
   const maxRemoteGenerationsPerRun = options.maxRemoteGenerationsPerRun ?? 64
+  const maxActiveRuns = options.maxActiveRuns ?? 20
   if (!Number.isSafeInteger(maxRemoteGenerationsPerRun) || maxRemoteGenerationsPerRun < 1 || maxRemoteGenerationsPerRun > 1_000) {
     throw new Error('单次画布远程生成上限无效')
   }
+  if (!Number.isSafeInteger(maxActiveRuns) || maxActiveRuns < 1 || maxActiveRuns > 64) {
+    throw new Error('画布并行运行上限无效')
+  }
   const active = new Map<string, ActiveRun>()
-  const activeLocks = new Map<string, string>()
+  const nodeLocks = new Map<string, string>()
+
+  function nodeLockId(lockKey: string, nodeId: string): string {
+    return `${lockKey}\u0000${nodeId}`
+  }
   const listeners = new Set<(publication: CanvasRunPublication) => void | Promise<void>>()
 
   function activeRunLockKey(input: Pick<StartCanvasRunInput, 'userId' | 'ownerId' | 'projectId'>): string {
@@ -86,13 +97,18 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
       throw new Error(`单次运行最多允许 ${maxRemoteGenerationsPerRun} 个远程生成节点，请拆分后重试`)
     }
     const lockKey = activeRunLockKey(input)
-    if (activeLocks.has(lockKey)) throw new Error('当前画布项目已有工作流正在运行，请等待结束或先取消')
+    const exclusiveNodeIds = canvasRunExclusiveNodeIds(input.graph, input.scope)
+    if (exclusiveNodeIds.some((nodeId) => nodeLocks.has(nodeLockId(lockKey, nodeId)))) {
+      throw new Error('这些节点已在生成中，请等待结束或先取消后再运行')
+    }
+    const activeForProject = [...active.values()].filter((run) => run.lockKey === lockKey).length
+    if (activeForProject >= maxActiveRuns) throw new Error('当前生成任务过多，请等待已有任务完成')
     const runId = randomUUID()
     const controller = new AbortController()
     const handle = {} as CanvasRunHandle
-    const activeRun = { userId: input.userId, ownerId: input.ownerId, lockKey, controller, handle }
+    const activeRun = { userId: input.userId, ownerId: input.ownerId, lockKey, exclusiveNodeIds, controller, handle }
     active.set(runId, activeRun)
-    activeLocks.set(lockKey, runId)
+    for (const nodeId of exclusiveNodeIds) nodeLocks.set(nodeLockId(lockKey, nodeId), runId)
     let admissionSettled = false
     let resolveAdmission!: () => void
     let rejectAdmission!: (error: unknown) => void
@@ -124,7 +140,10 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
       onEvent: (event) => publish(event, input.userId, input.ownerId),
     }).finally(() => {
       if (active.get(runId)?.handle === handle) active.delete(runId)
-      if (activeLocks.get(lockKey) === runId) activeLocks.delete(lockKey)
+      for (const nodeId of exclusiveNodeIds) {
+        const key = nodeLockId(lockKey, nodeId)
+        if (nodeLocks.get(key) === runId) nodeLocks.delete(key)
+      }
     })
     Object.assign(handle, {
       runId,
@@ -201,6 +220,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     },
     getRun: (userId: number, runId: string) => options.store.getRun(userId, runId),
     getAssetLineage: (userId: number, assetIds: readonly string[]) => options.store.getAssetLineage(userId, assetIds),
+    listAssetIdsByLineage: (userId: number, selector: { runId?: string; nodeId?: string }) => options.store.listAssetIdsByLineage(userId, selector),
     reconcileAssets: (userId: number) => options.store.reconcileAssets(userId),
     start,
     cancel,

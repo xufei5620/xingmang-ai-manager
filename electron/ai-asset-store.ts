@@ -12,6 +12,7 @@ import {
 } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
 import { scopedLocalAssetId } from './content-addressed-asset'
+import { indexOwnedAssetFiles, type AiAssetIndexEntry } from './ai-asset-index'
 
 const DEFAULT_MAXIMUM_IMAGE_BYTES = 64 * 1024 * 1024
 const MAXIMUM_VIDEO_INPUT_IMAGE_BYTES = 8 * 1024 * 1024
@@ -626,12 +627,40 @@ export class AiAssetStore {
     }
   }
 
+  /**
+   * Resolves the absolute path of an owned image after the same ownership and
+   * reparse checks `readOwned` performs, for callers that must hand a path to
+   * the OS rather than buffer the file. The path stays in the main process.
+   */
+  async resolveOwnedFilePath(userId: number, assetId: string): Promise<string> {
+    const record = await this.resolveOwned(userId, assetId)
+    return record.filePath
+  }
+
+  /**
+   * Drops the cached location of an asset. Called once its bytes are gone, so a
+   * cached record cannot answer for a file that no longer exists.
+   */
+  forgetOwned(assetId: string): void {
+    this.records.delete(assetId)
+  }
+
   async readImageDataUri(userId: number, assetId: string): Promise<string> {
     const owned = await this.readOwned(userId, assetId)
     if (owned.bytes.byteLength > MAXIMUM_VIDEO_INPUT_IMAGE_BYTES) {
       throw new Error('视频参考图片超过 8 MB 安全上限，请压缩后重试')
     }
     return `data:${owned.asset.mimeType};base64,${owned.bytes.toString('base64')}`
+  }
+
+  async listOwnedIndex(userId: number): Promise<AiAssetIndexEntry[]> {
+    assertUserId(userId)
+    return indexOwnedAssetFiles({
+      accountRoot: path.join(this.outputRoot, `user-${userId}`),
+      mediaType: 'image',
+      filePattern: /^xingmang-([A-Za-z0-9_-]{43})\.(png|jpg|webp)$/,
+      label: FILE_LABEL,
+    })
   }
 
   async listOwned(userId: number, maximum = 200): Promise<Array<AiStoredAsset & { createdAt: string }>> {

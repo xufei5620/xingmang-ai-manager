@@ -40,6 +40,13 @@ function videoDimensions(size: string | undefined): { width: number; height: num
   return { width, height }
 }
 
+function sourceImageAssetIds(inputs: { image?: { assetId?: string }; images?: readonly { assetId?: string }[] }): string[] {
+  return [...new Set(
+    (inputs.images ?? (inputs.image ? [inputs.image] : []))
+      .flatMap((asset) => asset.assetId ? [asset.assetId] : []),
+  )]
+}
+
 function ownedInputAssetIds(
   assets: readonly { assetId?: string }[] | undefined,
   label: string,
@@ -108,6 +115,7 @@ export function createCanvasNodeExecutors(options: {
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
+        ...(node.data.imageResolution ? { imageResolution: node.data.imageResolution } : {}),
         ...(node.data.quality === 'low'
           || node.data.quality === 'medium'
           || node.data.quality === 'high'
@@ -151,6 +159,7 @@ export function createCanvasNodeExecutors(options: {
         expectedUserId: userId,
         ...(projectId ? { projectId } : {}),
         ...(node.data.size ? { size: node.data.size } : {}),
+        ...(node.data.imageResolution ? { imageResolution: node.data.imageResolution } : {}),
         ...(node.data.quality === 'low'
           || node.data.quality === 'medium'
           || node.data.quality === 'high'
@@ -165,6 +174,11 @@ export function createCanvasNodeExecutors(options: {
     } finally {
       signal.removeEventListener('abort', onAbort)
     }
+  }
+  const imageOrEdit: CanvasNodeExecutors['image-generate'] = async (context) => {
+    return sourceImageAssetIds(context.inputs).length > 0
+      ? imageEdit(context)
+      : image(context)
   }
   const passThrough: CanvasNodeExecutors['gallery'] = async ({ inputs }) => {
     const images = inputs.images ?? (inputs.image ? [inputs.image] : [])
@@ -264,7 +278,7 @@ export function createCanvasNodeExecutors(options: {
     throw new Error('该节点能力尚未接入，当前不会提交付费请求')
   }
   return {
-    text, prompt: text, image, 'image-generate': image,
+    text, prompt: text, image: imageOrEdit, 'image-generate': imageOrEdit,
     video, 'video-generate': video, 'image-edit': imageEdit,
     'frame-extract': unsupported, 'video-input': videoInput,
     'image-input': imageInput, 'audio-input': audioInput, router: passThrough, gallery: passThrough, output: passThrough,

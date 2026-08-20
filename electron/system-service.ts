@@ -20,6 +20,7 @@ import {
   redactCommandText,
   runCommand,
   trustedCommandEnvironment,
+  windowsSystemExecutable,
   type WindowsPackageManager,
 } from './command-runner'
 import { isCodexDesktopExecutable } from './codex-desktop'
@@ -49,8 +50,10 @@ import {
 } from './tool-installation'
 import { isNewerVersion, nodeVersionStatus, type NodeVersionStatus } from './versions'
 import {
+  inspectWindowsRestartRequired,
   installNodeRuntime as installNodeRuntimeLts,
   type NodeRuntimeInstallResult,
+  type WindowsRestartStatus,
 } from './node-runtime'
 import {
   inspectInstalledPythonRuntime,
@@ -70,6 +73,14 @@ import { createTrustedTemporaryDirectory } from './trusted-temp'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { createManagedNpmCache, ensureManagedNpmLayout, type ManagedNpmLayout } from './managed-cli'
 import { managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths'
+import {
+  codexDesktopLocaleNeedsChange,
+  inspectCodexDesktopLocale as inspectCodexDesktopLocaleStatus,
+  writeCodexDesktopLocale,
+  type CodexDesktopLocale,
+  type CodexDesktopLocaleResult,
+  type CodexDesktopLocaleStatus,
+} from './codex-desktop-locale'
 import { fetchGrokStableVersion } from './grok-update'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
@@ -602,6 +613,7 @@ export interface SystemService {
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
+  restartWindows(): Promise<void>
   installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult>
   installCli(provider: ProviderId, target: RendererMessageTarget): Promise<void>
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
@@ -611,6 +623,11 @@ export interface SystemService {
   inspectCodexDesktopUpdate(forceRefresh?: boolean): Promise<DesktopAppStatus>
   launchProvider(provider: ProviderId, workspace: string): Promise<void>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
+  inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
+  setCodexDesktopLocale(
+    locale: CodexDesktopLocale,
+    target: RendererMessageTarget,
+  ): Promise<CodexDesktopLocaleResult>
   launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
@@ -1544,6 +1561,10 @@ export interface SystemServiceOptions {
   macosCodexAppDetector?: typeof inspectMacosCodexApp
   installPythonRuntime?: typeof installPythonRuntime312
   inspectInstalledPythonRuntime?: typeof inspectInstalledPythonRuntime
+  inspectWindowsRestartRequired?: typeof inspectWindowsRestartRequired
+  installNodeRuntime?: typeof installNodeRuntimeLts
+  /** Test seam for Windows-only operations exercised on non-Windows CI runners. */
+  resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
 }
 
 export function providerCommandEnvironment(
@@ -1582,6 +1603,9 @@ export function createSystemService(
   const detectMacosCodexApp = serviceOptions.macosCodexAppDetector ?? inspectMacosCodexApp
   const installPythonRuntimeForService = serviceOptions.installPythonRuntime ?? installPythonRuntime312
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
+  const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
+  const installNodeRuntimeForService = serviceOptions.installNodeRuntime ?? installNodeRuntimeLts
+  const resolveWindowsMachinePathsForService = serviceOptions.resolveWindowsMachinePaths ?? resolveWindowsMachinePaths
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
   let nodeRuntimeInstalling = false
@@ -2093,7 +2117,41 @@ export function createSystemService(
         }
         return result
       }
-      return await installNodeRuntimeLts({
+      if (platform === 'win32') {
+        let restartStatus: WindowsRestartStatus
+        try {
+          restartStatus = await inspectWindowsRestartRequiredForService()
+        } catch (error) {
+          // A probe failure must not turn into a false "reboot required" state.
+          // The installer still has its own verified fallback and will report
+          // the actual Windows Installer result if the probe is unavailable.
+          restartStatus = { required: false, reasons: [] }
+          if (!target.isDestroyed()) {
+            target.send('runtime:node-install-progress', {
+              phase: 'checking',
+              source: null,
+              message: `无法确认 Windows 待重启状态，将继续安装：${error instanceof Error ? error.message : String(error)}`,
+              percent: null,
+            })
+          }
+        }
+        if (restartStatus.required) {
+          const reasons = restartStatus.reasons.length > 0
+            ? `（${restartStatus.reasons.join('、')}）`
+            : ''
+          const message = `检测到 Windows 有待完成的系统更新${reasons}，请先重启电脑；重启后回到这里重新检测，再自动安装 Node.js LTS`
+          if (!target.isDestroyed()) {
+            target.send('runtime:node-install-progress', {
+              phase: 'error',
+              source: null,
+              message,
+              percent: null,
+            })
+          }
+          throw new Error(message)
+        }
+      }
+      return await installNodeRuntimeForService({
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
         onProgress: (progress) => {
@@ -2107,6 +2165,20 @@ export function createSystemService(
 
   function installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult> {
     return installationQueue.enqueue('runtime:node', () => installNodeRuntimeOperation(target))
+  }
+
+  async function restartWindows(): Promise<void> {
+    if (platform !== 'win32') throw new Error('系统重启仅支持 Windows')
+    const machinePaths = resolveWindowsMachinePathsForService()
+    await executeCommand({
+      executable: windowsSystemExecutable('shutdown.exe', process.env, 'win32', machinePaths),
+      argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', 'XingMang AI requires a restart to finish Windows updates'],
+    }, {
+      env: trustedCommandEnvironment(process.env, machinePaths, 'win32'),
+      trustedOnly: true,
+      timeoutMs: 10_000,
+      maxOutputBytes: 64 * 1024,
+    })
   }
 
   async function installPythonRuntimeOperation(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult> {
@@ -2914,6 +2986,45 @@ export function createSystemService(
     )
   }
 
+  async function inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus> {
+    const desktop = await inspectCodexDesktop()
+    return inspectCodexDesktopLocaleStatus({
+      codexHome: providerRoots.codexHome,
+      installed: desktop.installed,
+      version: desktop.version,
+      installDirectory: desktop.installDirectory,
+      running: desktop.running,
+      platform,
+    })
+  }
+
+  async function setCodexDesktopLocale(
+    locale: CodexDesktopLocale,
+    target: RendererMessageTarget,
+  ): Promise<CodexDesktopLocaleResult> {
+    if (locale !== 'zh-CN' && locale !== 'system') throw new Error('Codex Desktop 语言选项无效')
+    const before = await inspectCodexDesktopLocale()
+    if (before.error) throw new Error(before.error)
+    if (!before.installed) throw new Error('未检测到 Codex Desktop，请先安装后重新检测')
+    if (locale === 'zh-CN' && !before.chineseResources.available) {
+      throw new Error('当前 Codex Desktop 安装包没有本地简体中文资源，请先通过镜像更新 Codex Desktop')
+    }
+    if (!codexDesktopLocaleNeedsChange(before.configuredLocale, locale)) {
+      return { ...before, needsRestart: false, restarted: false }
+    }
+    await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale)
+    let restarted = false
+    if (before.running) {
+      await launchCodexDesktop('restart', target)
+      restarted = true
+    }
+    const after = await inspectCodexDesktopLocale()
+    if (locale === 'zh-CN' && after.configuredLocale !== 'zh-CN') {
+      throw new Error('语言设置已写入，但 Codex Desktop 重启后没有读取到简体中文配置')
+    }
+    return { ...after, restarted }
+  }
+
   async function fetchAvailableModels(
     apiKeyInput: string,
     options: { bypassCache?: boolean } = {},
@@ -3075,6 +3186,7 @@ export function createSystemService(
     scanSystem,
     inspectCodexSetupStatus,
     installNodeRuntime,
+    restartWindows,
     installPythonRuntime,
     installCli,
     uninstallCli,
@@ -3084,6 +3196,8 @@ export function createSystemService(
     inspectCodexDesktopUpdate,
     launchProvider,
     inspectCodexDesktop,
+    inspectCodexDesktopLocale,
+    setCodexDesktopLocale,
     launchCodexDesktop,
     fetchAvailableModels,
   }

@@ -25,6 +25,8 @@ export interface AssetRef {
   mimeType?: string
   width?: number
   height?: number
+  /** 视频/音频自身的播放时长，不是生成耗时。 */
+  durationSeconds?: number
   /** relay 返回的产物 URL(生成在服务端,主通路是网络拉取,不走本地桥)。 */
   remoteUrl?: string
   /** 视频异步任务 id,应用重启后凭它恢复轮询(断线恢复)。 */
@@ -52,6 +54,8 @@ export interface WorkflowNodeData {
   quality?: string
   /** 图像尺寸(按模型区分合法值,见 models.ts 预设)。 */
   size?: string
+  /** 图像输出清晰度档位；与视频 resolution 分离。 */
+  imageResolution?: '1K' | '2K' | '4K'
   /** 视频生成时长，协议要求为 1-15 的整数字符串。 */
   seconds?: string
   status: NodeStatus
@@ -73,12 +77,21 @@ export interface WorkflowNodeData {
   /** 输入或采纳结果变化后，等待用户显式运行的标记。 */
   dirty?: boolean
   attemptCount?: number
+  /** 本次打开画布期间的生成耗时。只活在内存里，不进工作流文件，重开后不恢复。 */
   latestAttemptDurationMs?: number
+  /** 主进程运行开始时间；仅用于节点实时计时，不进入工作流文件。 */
+  runStartedAt?: string
   /** 主进程签发的当前运行阶段；仅用于实时展示，不进入工作流文件。 */
   runStage?: NodeRunStage
   runProgress?: number
   runProgressMode?: 'determinate' | 'indeterminate'
   runHealth?: 'normal' | 'delayed'
+  /**
+   * The last terminal state was a fingerprint cache hit rather than a fresh
+   * paid run. Runtime only: it describes how the current result was obtained,
+   * not what the workflow is, so it never reaches persistence.
+   */
+  fromCache?: boolean
 }
 
 export interface WorkflowNode {
@@ -155,7 +168,7 @@ export const nodeInputKinds: Record<NodeKind, readonly PortKind[]> = {
   'image-input': [],
   'video-input': [],
   'audio-input': [],
-  'image-generate': ['text'],
+  'image-generate': ['text', 'image'],
   'image-edit': ['text', 'image'],
   'video-generate': ['text', 'image', 'video', 'audio'],
   'frame-extract': ['video'],
@@ -171,7 +184,7 @@ export function createEmptyWorkflow(name = '未命名工作流'): WorkflowFile {
   return { schemaVersion: 2, name, nodes: [], edges: [] }
 }
 
-// Compatibility exports keep App/SimpleMode stable while persistence evolves.
+// Compatibility exports keep App stable while persistence evolves.
 export {
   parseWorkflowFile,
   parseWorkflowFileDetailed,

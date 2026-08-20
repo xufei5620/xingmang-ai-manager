@@ -48,6 +48,17 @@ function sha256(value: unknown): string {
   return createHash('sha256').update(canonicalCanvasJson(value), 'utf8').digest('hex')
 }
 
+function adoptedAssetIdForFingerprint(node: CanvasRunGraphNode): string | undefined {
+  // Input nodes read this id as their payload. Generate nodes write the last
+  // result back into the same field, and that output must not change the next
+  // cache key — otherwise a finished image is treated as a brand-new request
+  // the moment a downstream node runs.
+  if (node.kind === 'image-input' || node.kind === 'video-input' || node.kind === 'audio-input') {
+    return node.data.adoptedAssetId
+  }
+  return undefined
+}
+
 export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): string {
   return sha256({
     version: 1,
@@ -62,7 +73,7 @@ export function computeCanvasNodeFingerprint(input: CanvasFingerprintInput): str
       quality: input.node.data.quality,
       size: input.node.data.size,
       seconds: input.node.data.seconds,
-      adoptedAssetId: input.node.data.adoptedAssetId,
+      adoptedAssetId: adoptedAssetIdForFingerprint(input.node),
     },
     upstream: input.upstream
       .map((entry) => ({
@@ -90,6 +101,7 @@ export function computeCanvasGraphRevision(graph: CanvasRunGraph): string {
         group: node.data.group,
         quality: node.data.quality,
         size: node.data.size,
+        imageResolution: node.data.imageResolution,
         seconds: node.data.seconds,
         adoptedAssetId: node.data.adoptedAssetId,
       }))

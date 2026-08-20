@@ -46,6 +46,19 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
       })
       return changed ? { ...document, nodes, revision: nextRevision(document) } : document
     }
+    case 'resize-nodes': {
+      // Dimensions are document state, not transient view state: a resize has
+      // to survive undo/redo and a project reload the same way a move does.
+      let changed = false
+      const nodes = document.nodes.map((node) => {
+        const size = command.dimensions[node.id]
+        if (node.locked || !size) return node
+        if (node.width === size.width && node.height === size.height) return node
+        changed = true
+        return { ...node, width: size.width, height: size.height }
+      })
+      return changed ? { ...document, nodes, revision: nextRevision(document) } : document
+    }
     case 'set-node-flags': {
       const nodeIds = new Set(command.nodeIds)
       let changed = false
@@ -73,6 +86,27 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
       if (ids.size !== command.nodes.length) throw new Error('替换节点包含重复标识')
       const edges = document.edges.filter((edge) => ids.has(edge.source) && ids.has(edge.target))
       return { ...document, nodes: structuredClone(command.nodes), edges, revision: nextRevision(document) }
+    }
+    case 'splice-node-on-edge': {
+      // Same shape as insert-node-on-edge, but the node already exists: the
+      // user dragged it onto the wire rather than creating it there.
+      const edgeIndex = document.edges.findIndex((edge) => edge.id === command.edgeId)
+      if (edgeIndex < 0) throw new Error('待插入的连线不存在')
+      if (!document.nodes.some((node) => node.id === command.nodeId)) throw new Error('要插入的节点不存在')
+      const original = document.edges[edgeIndex]
+      if (command.before.source !== original.source || command.before.target !== command.nodeId
+        || command.after.source !== command.nodeId || command.after.target !== original.target) {
+        throw new Error('插入节点连线关系无效')
+      }
+      const spliceIds = new Set(document.edges.map((edge) => edge.id))
+      if (command.before.id === command.after.id || spliceIds.has(command.before.id) || spliceIds.has(command.after.id)) {
+        throw new Error('插入节点连线标识已存在')
+      }
+      return {
+        ...document,
+        edges: [...document.edges.slice(0, edgeIndex), { ...command.before }, { ...command.after }, ...document.edges.slice(edgeIndex + 1)],
+        revision: nextRevision(document),
+      }
     }
     case 'insert-node-on-edge': {
       if (document.nodes.some((node) => node.id === command.node.id)) throw new Error('插入节点标识已存在')
@@ -102,7 +136,15 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
         !edgeIds.has(edge.id) && !nodeIds.has(edge.source) && !nodeIds.has(edge.target)
       ))
       if (nodes.length === document.nodes.length && edges.length === document.edges.length) return document
-      return { ...document, nodes, edges, revision: nextRevision(document) }
+      // Bridges heal the chain the removal broke. They are part of the same
+      // command so one undo restores both the node and its original wiring.
+      const surviving = new Set(nodes.map((node) => node.id))
+      const bridged = (command.bridges ?? []).filter((edge) => (
+        surviving.has(edge.source)
+        && surviving.has(edge.target)
+        && !edges.some((entry) => entry.id === edge.id)
+      ))
+      return { ...document, nodes, edges: [...edges, ...bridged.map((edge) => ({ ...edge }))], revision: nextRevision(document) }
     }
     case 'connect': {
       if (document.edges.some((edge) => edge.id === command.edge.id)) throw new Error('连线标识已存在')
@@ -114,6 +156,20 @@ export function reduceCanvasDocument(document: CanvasDocumentState, command: Can
       const ids = new Set(command.edgeIds)
       const edges = document.edges.filter((edge) => !ids.has(edge.id))
       return edges.length === document.edges.length ? document : { ...document, edges, revision: nextRevision(document) }
+    }
+    case 'reconnect-edge': {
+      // Retargeting is one user gesture, so it must be one history entry
+      // rather than a disconnect the user has to undo twice.
+      const index = document.edges.findIndex((edge) => edge.id === command.edgeId)
+      if (index < 0) throw new Error('要改接的连线不存在')
+      const nodeIds = new Set(document.nodes.map((node) => node.id))
+      if (!nodeIds.has(command.edge.source) || !nodeIds.has(command.edge.target)) throw new Error('连线指向不存在的节点')
+      if (command.edge.id !== command.edgeId && document.edges.some((edge) => edge.id === command.edge.id)) {
+        throw new Error('连线标识已存在')
+      }
+      const edges = [...document.edges]
+      edges[index] = { ...command.edge }
+      return { ...document, edges, revision: nextRevision(document) }
     }
     case 'set-viewport':
       return { ...document, viewport: { ...command.viewport }, revision: nextRevision(document) }

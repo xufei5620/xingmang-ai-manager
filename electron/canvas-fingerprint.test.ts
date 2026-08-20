@@ -90,7 +90,32 @@ describe('canvas fingerprints', () => {
     }))
     expect(computeCanvasGraphRevision(graph)).not.toBe(computeCanvasGraphRevision({
       ...graph,
+      nodes: [text, imageNode({ imageResolution: '4K' })],
+    }))
+    expect(computeCanvasGraphRevision(graph)).not.toBe(computeCanvasGraphRevision({
+      ...graph,
       nodes: [text, imageNode({ seconds: '10' })],
     }))
+  })
+
+  it('does not change a generate node fingerprint when its own result is pinned', () => {
+    const generated = imageNode({ adoptedAssetId: 'a'.repeat(43) })
+    expect(computeCanvasNodeFingerprint({ node: imageNode(), upstream: [] }))
+      .toBe(computeCanvasNodeFingerprint({ node: generated, upstream: [] }))
+  })
+
+  it('does change an input node fingerprint when the imported asset changes', () => {
+    const first: CanvasRunGraphNode = {
+      id: 'input',
+      kind: 'image-input',
+      definitionVersion: 1,
+      data: { prompt: '', model: '', adoptedAssetId: 'a'.repeat(43) },
+    }
+    const second: CanvasRunGraphNode = {
+      ...first,
+      data: { ...first.data, adoptedAssetId: 'b'.repeat(43) },
+    }
+    expect(computeCanvasNodeFingerprint({ node: first, upstream: [] }))
+      .not.toBe(computeCanvasNodeFingerprint({ node: second, upstream: [] }))
   })
 })

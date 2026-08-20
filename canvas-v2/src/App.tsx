@@ -1,19 +1,24 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react'
 import {
   Background,
+  BackgroundVariant,
+  ConnectionLineType,
   Controls,
   MiniMap,
   ReactFlow,
   SelectionMode,
+  ViewportPortal,
+  applyNodeChanges,
+  useReactFlow,
   type Connection,
   type Edge,
   type FinalConnectionState,
   type NodeChange,
   type OnConnectStartParams,
-  type ReactFlowInstance,
   type Viewport,
   type XYPosition,
 } from '@xyflow/react'
+import { flushSync } from 'react-dom'
 import '@xyflow/react/dist/style.css'
 import {
   createEmptyWorkflow,
@@ -30,24 +35,63 @@ import {
 import { createMockExecutors, runWorkflow, type NodeInputs } from './engine/engine'
 import { createHostExecutors } from './engine/executors'
 import { hostBridge } from './host'
-import { SimpleMode } from './SimpleMode'
+import { canvasAriaLabelConfig } from './aria-labels'
+import { canvasEdgeClassName, canvasEdgeIsFlowing, canvasEdgeTouchesSelection } from './edges/workflow-edge-model'
+import { CanvasEdgeHandlersProvider, defaultEdgeOptions, edgeTypes } from './edges/WorkflowEdge'
+import { CanvasContextMenu, type CanvasContextMenuState } from './components/CanvasContextMenu'
+import { NodeSearchPalette } from './components/NodeSearchPalette'
+import type { CanvasContextAction } from './editor/context-menu'
+import { alignNodePositions, distributeNodePositions, type AlignableNode, type CanvasAlignMode, type CanvasDistributeAxis } from './editor/align'
+import { bridgeEdgesForRemoval } from './editor/bridge-edges'
+import { type SnapBox, type SnapGuide } from './editor/snap-guides'
+import { snapDragPositionChanges } from './editor/drag-snap'
+import { findEdgeDropTarget } from './editor/edge-drop'
+import { edgesCrossedByStroke, strokePath, type Point } from './editor/cut-gesture'
+
+function snapBoxOfCanvasNode(node: { id: string; position: { x: number; y: number }; measured?: { width?: number; height?: number }; width?: number | null; height?: number | null; type?: string }): SnapBox {
+  const fallback = builtinNodeRegistry.resolve(node.type ?? 'unknown')?.dimensions
+  return {
+    id: node.id,
+    x: node.position.x,
+    y: node.position.y,
+    width: node.measured?.width ?? node.width ?? fallback?.width ?? 240,
+    height: node.measured?.height ?? node.height ?? fallback?.height ?? 180,
+  }
+}
+
+function portGeometryOfCanvasNode(node: CanvasNode, height: number): PortGeometryNode {
+  const kind = node.type ?? 'unknown'
+  return {
+    height,
+    centredOutput: usesMediaBoundLayout(kind, node.data?.result?.assetId),
+    ports: builtinNodeRegistry.resolve(kind)?.ports ?? [],
+  }
+}
+import { usesMediaBoundLayout } from './nodes/media-bound'
+import { portOffsetY, type PortGeometryNode } from './nodes/port-geometry'
+import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
   connectionForInsertedNode,
+  handleKind,
   isValidWorkflowConnection,
   type PendingCanvasConnection,
 } from './ports'
 import {
   availableImageModelPresets,
   availableVideoModelPresets,
+  defaultImageResolution,
+  imageModelPreset,
 } from './models'
 import { CanvasModelAvailabilityProvider, CanvasNodeViewProvider, CanvasUpstreamReferencesProvider, ModelSuggestions, nodeTypes, registerNodeChangeHandlers, type CanvasNode } from './nodes/WorkflowNodes'
 import { canvasNodeLodForZoom, type CanvasNodeLod } from './nodes/node-lod'
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetSummary, CanvasGeneratedAsset, CanvasGeneratedVideoAsset, CanvasGroupSummary, CanvasPromptPreset, CanvasRunGraph, CanvasRunRecord, CanvasRunScope, CanvasStoredProjectSummary } from './host'
+import { emptyCanvasAssetPage } from './host'
 import { AssetTray } from './components/AssetTray'
 import { MediaLightbox } from './components/MediaPreview'
 import { autoLayoutCanvasNodes } from './editor/auto-layout'
 import { resolveCanvasShortcut } from './editor/shortcuts'
+import { duplicateCanvasNodesForAltDrag } from './editor/alt-drag'
 import { builtinCanvasTemplates } from './templates/builtin-templates'
 import { instantiateTemplate, placeTemplateInstance } from './templates/instantiate-template'
 import { builtinNodeRegistry } from './domain/builtin-node-definitions'
@@ -67,17 +111,18 @@ import { RunInspector } from './components/RunInspector'
 import { ProjectCenter } from './components/ProjectCenter'
 import { parseXingCanvasProject, serializeXingCanvasProject } from './persistence/project-package'
 import {
-  adoptNodeCandidate,
-  discardNodeCandidate,
+  autoFixedDownstreamNodeIds,
+  downstreamNodeIds,
   markNodeAndDescendantsDirty,
   projectRunRecordToNodes,
   selectNodeCandidate,
 } from './runtime/run-projection'
-import { ChevronDown, Crosshair, FolderOpen, Focus, History, Image as ImageIcon, LayoutGrid, Map as MapIcon, MoreHorizontal, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Undo2, Video, X } from 'lucide-react'
+import { ChevronDown, Crosshair, FolderOpen, Focus, History, Image as ImageIcon, LayoutGrid, Map as MapIcon, MoreHorizontal, PanelRight, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Undo2, Video, X } from 'lucide-react'
 import { canvasNodeDocumentRecord, useCanvasDocument } from './store/use-canvas-document'
 import type { CanvasDocumentState, CanvasMediaGroups } from './store/canvas-state'
 import type { EditorNodeRecord } from './domain/node-definition'
-import { assetInputNodeKind, mediaAssetNodeDimensions, mediaResultNodeDimensions } from './library/media-assets'
+import { applyCatalogClipDurationToNodes, assetInputNodeKind, mediaAssetNodeDimensions, pendingMediaNodeDimensions, requestedClipDurationSeconds } from './library/media-assets'
+import { cachedNodeIdsForPreflight } from './runtime/pinned-reuse'
 import { QuickInsert, type QuickInsertCommand } from './components/QuickInsert'
 import { TemplateCatalog } from './components/TemplateCatalog'
 import { findAvailableCanvasPosition } from './editor/node-placement'
@@ -91,12 +136,15 @@ import {
 } from './runtime/run-preflight'
 import { mergeCanvasRunEvent } from './runtime/run-events'
 import {
+  canvasStartupUiPreferences,
   defaultCanvasUiPreferences,
   readCanvasUiPreferences,
   writeCanvasUiPreferences,
   type CanvasRightPanel,
   type CanvasUiPreferences,
 } from './persistence/canvas-ui-preferences'
+import { canvasAutosaveErrorMessage, canvasAutosaveGraphSignature, canvasAutosaveSignature } from './persistence/canvas-autosave'
+import { commitGenerationPrompts } from './nodes/generation-composer'
 
 // 画布装配层:@xyflow/react 的 Node/Edge 与领域模型互相映射,引擎与
 // 持久化只见领域模型。M0 执行走 mock 执行器(不出网);M1 把 executors
@@ -117,14 +165,14 @@ function connectionEventPoint(event: MouseEvent | TouchEvent): { x: number; y: n
 export function toCanvasNode(node: WorkflowNode): CanvasNode {
   const displayKind = node.disabled && node.unknownKind ? 'unknown' : node.kind
   const dimensions = builtinNodeRegistry.resolve(displayKind)?.dimensions
-  const mediaDimensions = ['image-input', 'video-input', 'audio-input'].includes(displayKind) && node.data.result?.assetId
-    ? mediaAssetNodeDimensions(node.data.result)
-    : null
+  const mediaBound = usesMediaBoundLayout(displayKind, node.data.result?.assetId)
+  const mediaDimensions = mediaBound && node.data.result
+    ? mediaAssetNodeDimensions(node.data.result, node.data.size)
+    : mediaBound
+      ? pendingMediaNodeDimensions(displayKind, node.data.size)
+      : null
   const width = mediaDimensions?.width ?? node.width ?? dimensions?.width
-  const resultDimensions = !mediaDimensions && node.data.result?.assetId && width && dimensions
-    ? mediaResultNodeDimensions(displayKind, node.data.result, width, node.height ?? dimensions.height, node.data.size)
-    : null
-  const height = mediaDimensions?.height ?? resultDimensions?.height ?? node.height ?? dimensions?.height
+  const height = mediaDimensions?.height ?? node.height ?? dimensions?.height
   return {
     id: node.id,
     type: displayKind,
@@ -157,6 +205,7 @@ export function toWorkflowNode(node: CanvasNode): WorkflowNode {
       model: node.data.model,
       quality: node.data.quality,
       size: node.data.size,
+      imageResolution: node.data.imageResolution,
       seconds: node.data.seconds,
       status: node.data.status,
       result: node.data.result,
@@ -164,6 +213,7 @@ export function toWorkflowNode(node: CanvasNode): WorkflowNode {
       costQuota: node.data.costQuota,
       settings: node.data.settings,
       candidateAssetIds: node.data.candidateAssetIds,
+      latestAttemptDurationMs: node.data.latestAttemptDurationMs,
     },
   }
 }
@@ -188,6 +238,7 @@ export function toCanvasRunGraph(
         ...(['video', 'video-generate'].includes(node.type ?? '') ? { group: groups.video } : {}),
         quality: node.data.quality,
         size: node.data.size,
+        imageResolution: node.data.imageResolution,
         seconds: node.data.seconds,
         adoptedAssetId: node.data.result?.assetId,
         videoMode: typeof node.data.settings?.videoMode === 'string'
@@ -234,6 +285,9 @@ export function workflowNodeData(type: string, config: Record<string, unknown> =
   const model = typeof values.model === 'string' ? values.model : ''
   const quality = typeof values.quality === 'string' ? values.quality : undefined
   const size = typeof values.size === 'string' ? values.size : undefined
+  const imageResolution = values.imageResolution === '1K' || values.imageResolution === '2K' || values.imageResolution === '4K'
+    ? values.imageResolution
+    : undefined
   const seconds = typeof values.seconds === 'string' && /^(?:[1-9]|1[0-5])$/.test(values.seconds) ? values.seconds : undefined
   const assetId = typeof values.assetId === 'string' && /^[A-Za-z0-9_-]{43}$/.test(values.assetId)
     ? values.assetId
@@ -242,13 +296,14 @@ export function workflowNodeData(type: string, config: Record<string, unknown> =
   const result = assetId && (type === 'image-input' || type === 'video-input' || type === 'audio-input')
     ? { kind: assetKind, assetId, localUrl: `xingmang-asset://${assetKind}/${assetId}` } as const
     : undefined
-  const settings = Object.fromEntries(Object.entries(values).filter(([key]) => !['prompt', 'model', 'quality', 'size', 'seconds', 'status', 'result', 'assetId'].includes(key)))
+  const settings = Object.fromEntries(Object.entries(values).filter(([key]) => !['prompt', 'model', 'quality', 'size', 'imageResolution', 'seconds', 'status', 'result', 'assetId'].includes(key)))
   return {
     prompt,
     model,
     status: result ? 'succeeded' : 'idle',
     ...(quality ? { quality } : {}),
     ...(size ? { size } : {}),
+    ...(imageResolution ? { imageResolution } : {}),
     ...(seconds ? { seconds } : {}),
     ...(result ? { result } : {}),
     ...(Object.keys(settings).length > 0 ? { settings } : {}),
@@ -327,6 +382,7 @@ function mediaAssetRef(asset: CanvasAssetSummary): AssetRef {
     mimeType: asset.mimeType,
     ...('width' in asset && asset.width ? { width: asset.width } : {}),
     ...('height' in asset && asset.height ? { height: asset.height } : {}),
+    ...('durationSeconds' in asset && asset.durationSeconds ? { durationSeconds: asset.durationSeconds } : {}),
     ...('taskId' in asset && asset.taskId ? { taskId: asset.taskId } : {}),
   }
 }
@@ -350,6 +406,7 @@ function generatedVideoAssetRef(asset: CanvasGeneratedVideoAsset): AssetRef {
     taskId: asset.taskId,
     ...(asset.width ? { width: asset.width } : {}),
     ...(asset.height ? { height: asset.height } : {}),
+    ...(asset.durationSeconds ? { durationSeconds: asset.durationSeconds } : {}),
   }
 }
 
@@ -533,12 +590,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [uiPreferences, setUiPreferences] = useState<CanvasUiPreferences>(() => ({ ...defaultCanvasUiPreferences }))
   const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle')
   const autoSaveRevisionRef = useRef(0)
+  const lastAutosaveSignatureRef = useRef<string | null>(null)
+  const lastAutosaveGraphSignatureRef = useRef<string | null>(null)
   const projectHydrationRef = useRef(false)
   const projectSaveChainRef = useRef<Promise<void>>(Promise.resolve())
   const [banner, setBanner] = useState<string | null>(null)
-  // 双模式(M2):简单模式=固定表单的单节点工作流,默认给小白;画布模式
-  // 给要自己编排管线的用户。两种模式共享同一套 executors。
-  const [viewMode, setViewMode] = useState<'simple' | 'canvas'>('canvas')
   const [groups, setGroups] = useState<CanvasGroupSummary[]>([])
   const [imageModels, setImageModels] = useState<string[]>([])
   const [videoModels, setVideoModels] = useState<string[]>([])
@@ -546,11 +602,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [preparingMedia, setPreparingMedia] = useState<MediaPreparationKind | null>(null)
   const [assetTrayOpen, setAssetTrayOpen] = useState(false)
   const [assetsLoading, setAssetsLoading] = useState(false)
-  const [assetPage, setAssetPage] = useState<CanvasAssetPage>({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })
+  const [assetPage, setAssetPage] = useState<CanvasAssetPage>(emptyCanvasAssetPage())
   const [assetCatalog, setAssetCatalog] = useState<CanvasAssetSummary[]>([])
   const [userPromptPresets, setUserPromptPresets] = useState<CanvasPromptPreset[]>([])
-  const [assetQuery, setAssetQuery] = useState<Required<Pick<CanvasAssetQuery, 'offset' | 'limit' | 'mediaType'>> & Pick<CanvasAssetQuery, 'search'>>({
-    offset: 0, limit: 24, mediaType: 'all', search: '',
+  const [assetQuery, setAssetQuery] = useState<Required<Pick<CanvasAssetQuery, 'offset' | 'limit' | 'mediaType' | 'view' | 'source' | 'sort'>> & Pick<CanvasAssetQuery, 'search' | 'tag'>>({
+    offset: 0, limit: 24, mediaType: 'all', search: '', view: 'all', source: 'all', sort: 'created-desc', tag: '',
   })
   const [inspectorTab, setInspectorTab] = useState<CanvasInspectorTab>('node')
   const [nodeInspectorOpen, setNodeInspectorOpen] = useState(false)
@@ -577,18 +633,38 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     compatibleHandles?: Readonly<Record<string, string>>
   } | null>(null)
   const [templateCatalog, setTemplateCatalog] = useState<{ initialTemplateId?: string } | null>(null)
+  const [contextMenu, setContextMenu] = useState<CanvasContextMenuState | null>(null)
+  const [snapGuides, setSnapGuides] = useState<readonly SnapGuide[]>([])
+  const [nodeSearchOpen, setNodeSearchOpen] = useState(false)
+  const [edgeDropTargetId, setEdgeDropTargetId] = useState<string | null>(null)
+  const [cutStroke, setCutStroke] = useState<readonly Point[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
-  const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
+  const activeRunsRef = useRef(new Map<string, { graphRevision: string; scope?: CanvasRunScope }>())
+
+  const rememberActiveRun = useCallback((entry: { runId: string; graphRevision: string; scope?: CanvasRunScope }) => {
+    activeRunsRef.current.set(entry.runId, { graphRevision: entry.graphRevision, scope: entry.scope })
+    setRunning(true)
+  }, [])
+
+  const forgetActiveRun = useCallback((runId: string) => {
+    if (!activeRunsRef.current.delete(runId)) return
+    setRunning(activeRunsRef.current.size > 0)
+  }, [])
   const clipboardRef = useRef<CanvasClipboardPayload | null>(null)
-  const reactFlowRef = useRef<ReactFlowInstance<CanvasNode, Edge> | null>(null)
+  const reactFlow = useReactFlow<CanvasNode, Edge>()
+  const overviewViewportRef = useRef<Viewport | null>(null)
+  const altDragSessionRef = useRef<{
+    nodeIds: string[]
+    originalPositions: ReadonlyMap<string, XYPosition>
+    preserveInputConnections: boolean
+  } | null>(null)
   const moreActionsRef = useRef<HTMLDivElement>(null)
   const runMenuRef = useRef<HTMLDivElement>(null)
   const quickInsertTriggerRef = useRef<HTMLButtonElement>(null)
   const connectionStartRef = useRef<PendingCanvasConnection | null>(null)
   const moreActionsTriggerRef = useRef<HTMLButtonElement>(null)
   const runMenuTriggerRef = useRef<HTMLButtonElement>(null)
-  const selectedNodeSignatureRef = useRef('')
   const groupsRef = useRef<CanvasGroupSummary[]>([])
   const mediaPreparationRevisionRef = useRef(0)
   const appliedMediaSignatureRef = useRef(mediaGroupsSignature({}))
@@ -633,9 +709,22 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     window.requestAnimationFrame(() => {
       // Keep the overview complete for large graphs; focus mode raises the
       // floor slightly and is the readable path for editing a subset.
-      void reactFlowRef.current?.fitView({ padding: focusMode ? 0.2 : 0.14, minZoom: focusMode ? 0.26 : 0.2, maxZoom: 1, duration: 180 })
+      void reactFlow.fitView({ padding: focusMode ? 0.2 : 0.14, minZoom: focusMode ? 0.26 : 0.2, maxZoom: 1, duration: 180 })
     })
-  }, [focusMode])
+  }, [focusMode, reactFlow])
+
+  const toggleCanvasOverview = useCallback(() => {
+    if (nodes.length === 0) return
+    const restore = overviewViewportRef.current
+    if (restore) {
+      overviewViewportRef.current = null
+      void reactFlow.setViewport(restore, { duration: 180 })
+      setDocumentViewport(restore)
+      return
+    }
+    overviewViewportRef.current = reactFlow.getViewport()
+    void reactFlow.fitView({ padding: 0.14, minZoom: 0.15, maxZoom: 1, duration: 180 })
+  }, [nodes.length, reactFlow, setDocumentViewport])
 
   const fitSelection = useCallback(() => {
     const selected = nodes.filter((node) => node.selected)
@@ -644,15 +733,20 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return
     }
     window.requestAnimationFrame(() => {
-      void reactFlowRef.current?.fitView({ nodes: selected, padding: 0.24, minZoom: 0.35, maxZoom: 1.18, duration: 180 })
+      void reactFlow.fitView({ nodes: selected, padding: 0.24, minZoom: 0.35, maxZoom: 1.18, duration: 180 })
     })
-  }, [nodes])
+  }, [nodes, reactFlow])
 
   const restoreCanvasViewport = useCallback((nextViewport: Viewport) => {
+    overviewViewportRef.current = null
     window.requestAnimationFrame(() => {
-      void reactFlowRef.current?.setViewport(nextViewport, { duration: 0 })
+      void reactFlow.setViewport(nextViewport, { duration: 0 })
     })
-  }, [])
+  }, [reactFlow])
+
+  useEffect(() => {
+    if (nodes.length === 0) overviewViewportRef.current = null
+  }, [nodes.length])
 
   const openStoredProject = useCallback(async (projectId: string) => {
     setProjectLoading(true)
@@ -665,8 +759,10 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       execute({ type: 'replace-document', document: nextDocument })
       setActiveProject(opened.project)
       setProjects((current) => [opened.project, ...current.filter((project) => project.id !== opened.project.id)])
+      setSelectedRunId(null)
+      setRunRecords([])
       setBanner(null)
-      applyProjectUiPreferences(readCanvasUiPreferences(opened.project.id))
+      applyProjectUiPreferences(canvasStartupUiPreferences(readCanvasUiPreferences(opened.project.id)))
       setAutoSaveState('saved')
       restoreCanvasViewport(nextDocument.viewport)
     } catch (error) { setBanner(error instanceof Error ? error.message : String(error)) }
@@ -836,6 +932,24 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [applyPreparedMediaConfiguration, execute, mediaGroups, prepareMediaConfiguration])
 
+  // Run bookkeeping reacts to main-process events and must see the current graph
+  // without making the subscription depend on it: re-subscribing on every node
+  // change would tear the run event listener down mid-run.
+  const graphRef = useRef({ nodes, edges })
+  graphRef.current = { nodes, edges }
+
+  // Removing a node from the middle of a chain leaves two dangling ends. Heal
+  // them in the same command so one undo restores the original wiring too.
+  // Declared this early because the node handler registration below lists it as
+  // a dependency, and a dependency array is read while rendering.
+  const deleteNodesBridging = useCallback((nodeIds: readonly string[]) => {
+    const bridges = bridgeEdgesForRemoval(edges, nodeIds).map((draft) => ({ id: nextNodeId(), ...draft }))
+    execute({ type: 'delete-elements', nodeIds: [...nodeIds], ...(bridges.length > 0 ? { bridges } : {}) })
+    setBanner(bridges.length > 0
+      ? `已删除 ${nodeIds.length} 个节点，并接通 ${bridges.length} 条连线`
+      : `已删除 ${nodeIds.length} 个节点`)
+  }, [edges, execute])
+
   const patchNodeData = useCallback((nodeId: string, patch: Partial<CanvasNode['data']>) => {
     setNodes((current) => current.map((node) => (
       node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node
@@ -843,31 +957,35 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }, [setNodes])
 
   const markDirtyFrom = useCallback((nodeId: string, patch: Partial<WorkflowNodeData> = {}) => {
+    const { nodes: currentNodes, edges: currentEdges } = graphRef.current
     const dirty = new Set<string>([nodeId])
     const queue = [nodeId]
     while (queue.length > 0) {
       const source = queue.shift() as string
-      for (const edge of edges) {
+      for (const edge of currentEdges) {
         if (edge.source !== source || dirty.has(edge.target)) continue
         dirty.add(edge.target)
         queue.push(edge.target)
       }
     }
-    const updated = markNodeAndDescendantsDirty(nodes, edges, nodeId, patch)
+    const updated = markNodeAndDescendantsDirty(currentNodes, currentEdges, nodeId, patch)
+    graphRef.current = { nodes: updated, edges: currentEdges }
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord), mergeKey: `data:${nodeId}` })
-    setNodes(updated)
     setDirtyNodeIds((current) => new Set([...current, ...dirty]))
-  }, [nodes, edges, execute, setNodes])
+  }, [execute])
 
-  const patchInspectorNode = useCallback((nodeId: string, patch: Partial<WorkflowNodeData>) => {
-    markDirtyFrom(nodeId, patch)
-  }, [markDirtyFrom])
-
-  const patchInspectorSettings = useCallback((nodeId: string, patch: Record<string, unknown>) => {
-    const node = nodes.find((entry) => entry.id === nodeId)
-    if (!node) return
-    markDirtyFrom(nodeId, { settings: { ...(node.data.settings ?? {}), ...patch } })
-  }, [markDirtyFrom, nodes])
+  // Typing must not go through execute(): replace-nodes remaps every node and
+  // React Flow remounts the composer textarea, which throws the caret to the end.
+  const applyPromptDraft = useCallback((nodeId: string, prompt: string) => {
+    const { nodes: currentNodes, edges: currentEdges } = graphRef.current
+    const current = currentNodes.find((node) => node.id === nodeId)
+    if (!current || current.data.prompt === prompt) return
+    const updated = currentNodes.map((node) => (
+      node.id === nodeId ? { ...node, data: { ...node.data, prompt } } : node
+    ))
+    graphRef.current = { nodes: updated, edges: currentEdges }
+    setNodes(updated)
+  }, [setNodes])
 
   const setNodeFlags = useCallback((nodeIds: string[], flag: 'locked' | 'disabled', value: boolean) => {
     if (nodeIds.length === 0) return
@@ -890,48 +1008,69 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       : createMockExecutors()
   ), [imageGroup, videoGroup])
 
-  // 单节点重跑:输入不重新执行上游,直接取画布状态里上游节点的既有产物
-  // (文本节点的输出=它的提示词;图像节点的输出=它上次成功的 result)。
-  const rerunNode = useCallback(async (nodeId: string) => {
-    if (running) return
+  const requestNodeScopeRun = useCallback((nodeId: string, kind: 'to-node' | 'from-node'): boolean => {
     if (preparingMedia) {
       setBanner('生成配置正在准备，请稍候再运行节点')
-      return
-    }
-    if (resumingTaskIdsRef.current.size > 0) {
-      setBanner('请等待视频任务续查完成后再运行节点')
-      return
+      return false
     }
     const target = nodes.find((entry) => entry.id === nodeId)
-    if (!target) return
+    if (!target) return false
+    if (target.data.status === 'running' || target.data.status === 'queued') {
+      setBanner('该节点正在生成，请等待结束或先取消')
+      return false
+    }
+    const resumeTaskId = target.data.result?.taskId
+    if (resumeTaskId && resumingTaskIdsRef.current.has(resumeTaskId)) {
+      setBanner('请等待该节点的视频任务续查完成后再运行')
+      return false
+    }
     if (target.disabled || target.type === 'unknown') {
       setBanner('该节点已禁用，不能单独运行')
-      return
+      return false
     }
-    if (window.xingmangCanvasHost) {
-      try {
-        const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
-        const scope: CanvasRunScope = { kind: 'to-node', nodeId }
-        const preflight = buildCanvasRunPreflight({
-          graph,
-          scope,
-          imageGroup: imageGroup ?? undefined,
-          videoGroup: videoGroup ?? undefined,
-          imageModels,
-          videoModels,
-        })
-        setRunPreflight(preflight)
-        if (!preflight.canStart) {
-          setBanner(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '当前节点无法执行')
-          return
-        }
-        setPendingCanvasRun({ graph, scope })
-        setBanner('请确认单节点运行范围和额度风险')
-      } catch (error) {
-        setBanner(error instanceof Error ? error.message : String(error))
+    if (!window.xingmangCanvasHost) {
+      if (kind === 'from-node') setBanner('从此向后运行仅在桌面开发界面中可用')
+      return false
+    }
+    try {
+      const committed = commitGenerationPrompts(nodes, edges)
+      if (committed !== nodes) setNodes(committed)
+      const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+      const scope: CanvasRunScope = { kind, nodeId }
+      const preflight = buildCanvasRunPreflight({
+        graph,
+        scope,
+        cachedNodeIds: cachedNodeIdsForPreflight(committed, scope),
+        imageGroup: imageGroup ?? undefined,
+        videoGroup: videoGroup ?? undefined,
+        imageModels,
+        videoModels,
+      })
+      setRunPreflight(preflight)
+      if (!preflight.canStart) {
+        setBanner(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '当前节点无法执行')
+        return false
       }
+      setPendingCanvasRun({ graph, scope })
+      setBanner(kind === 'from-node' ? '请确认从此向后的运行范围和额度风险' : '请确认运行到此的范围和额度风险')
+      return true
+    } catch (error) {
+      setBanner(error instanceof Error ? error.message : String(error))
+      return false
+    }
+  }, [preparingMedia, nodes, edges, imageGroup, videoGroup, imageModels, videoModels])
+
+  // 浏览器预览保留轻量单节点执行；桌面端始终经主进程预检和运行服务。
+  const rerunNode = useCallback(async (nodeId: string) => {
+    if (window.xingmangCanvasHost) {
+      requestNodeScopeRun(nodeId, 'to-node')
       return
     }
+    if (running || preparingMedia || resumingTaskIdsRef.current.size > 0) return
+    const committed = commitGenerationPrompts(nodes, edges)
+    if (committed !== nodes) setNodes(committed)
+    const target = committed.find((entry) => entry.id === nodeId)
+    if (!target || target.disabled || target.type === 'unknown') return
     const inputs: NodeInputs = {}
     for (const edge of edges) {
       if (edge.target !== nodeId) continue
@@ -956,21 +1095,34 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     setRunning(true)
     const controller = new AbortController()
     abortRef.current = controller
-    patchNodeData(nodeId, { status: 'running', errorMessage: undefined })
+    const runStartedAt = new Date().toISOString()
+    patchNodeData(nodeId, { status: 'running', errorMessage: undefined, runStartedAt })
     try {
       const executors = buildExecutors()
       const result = await executors[target.type as NodeKind](toWorkflowNode(target), inputs, controller.signal)
-      patchNodeData(nodeId, { status: 'succeeded', result: result.output.asset, costQuota: result.costQuota })
+      patchNodeData(nodeId, {
+        status: 'succeeded',
+        result: result.output.asset,
+        costQuota: result.costQuota,
+        latestAttemptDurationMs: Date.now() - Date.parse(runStartedAt),
+        runStartedAt: undefined,
+      })
     } catch (error) {
       patchNodeData(nodeId, {
         status: 'failed',
         errorMessage: error instanceof Error ? error.message : String(error),
+        latestAttemptDurationMs: Date.now() - Date.parse(runStartedAt),
+        runStartedAt: undefined,
       })
     } finally {
       abortRef.current = null
       setRunning(false)
     }
-  }, [running, preparingMedia, nodes, edges, imageGroup, imageModels, videoGroup, videoModels, patchNodeData, buildExecutors])
+  }, [running, preparingMedia, nodes, edges, patchNodeData, buildExecutors, requestNodeScopeRun])
+
+  const runFromNode = useCallback((nodeId: string) => {
+    requestNodeScopeRun(nodeId, 'from-node')
+  }, [requestNodeScopeRun])
 
   const downloadNodeAsset = useCallback(async (nodeId: string) => {
     const node = nodes.find((entry) => entry.id === nodeId)
@@ -995,6 +1147,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         for (const asset of page.items) merged.set(asset.assetId, asset)
         return [...merged.values()]
       })
+      setNodes((current) => applyCatalogClipDurationToNodes(current, page.items))
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     } finally {
@@ -1017,6 +1170,46 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     void refreshAssets()
   }, [refreshAssets])
 
+  const updateCanvasAssetMetadata = useCallback(async (assetId: string, input: { favorite?: boolean; tags?: string[] }) => {
+    const updated = await hostBridge().updateAssetMetadata({ assetId, ...input })
+    const apply = <T extends CanvasAssetSummary>(asset: T): T => (asset.assetId === updated.assetId
+      ? { ...asset, favorite: updated.favorite, tags: [...updated.tags], ...(updated.lastUsedAt ? { lastUsedAt: updated.lastUsedAt } : {}) }
+      : asset) as T
+    setAssetPage((current) => ({ ...current, items: current.items.map(apply) }))
+    setAssetCatalog((current) => current.map(apply))
+    setBanner(input.favorite === true ? '已收藏素材' : input.favorite === false ? '已取消收藏' : '素材标签已更新')
+    void refreshAssets()
+  }, [refreshAssets])
+
+  const markCanvasAssetUsed = useCallback(async (assetId: string) => {
+    try {
+      const updated = await hostBridge().markAssetUsed(assetId)
+      const apply = <T extends CanvasAssetSummary>(asset: T): T => (asset.assetId === updated.assetId ? { ...asset, lastUsedAt: updated.lastUsedAt } : asset) as T
+      setAssetPage((current) => ({ ...current, items: current.items.map(apply) }))
+      setAssetCatalog((current) => current.map(apply))
+    } catch {
+      // Usage ranking is auxiliary; a metadata write must not block canvas editing.
+    }
+  }, [])
+
+  // Deleting reloads the page rather than splicing the tiles out locally: the
+  // total, the facet counts and the recycle bin all move together, and a
+  // hand-patched page would disagree with the next query.
+  const deleteCanvasAssets = useCallback(async (assetIds: readonly string[]) => {
+    for (const assetId of assetIds) await hostBridge().deleteAsset(assetId)
+    await refreshAssets()
+  }, [refreshAssets])
+
+  const restoreCanvasAssets = useCallback(async (assetIds: readonly string[]) => {
+    for (const assetId of assetIds) await hostBridge().restoreAsset(assetId)
+    await refreshAssets()
+  }, [refreshAssets])
+
+  const purgeCanvasAssets = useCallback(async (assetIds: readonly string[], content: string) => {
+    for (const assetId of assetIds) await hostBridge().purgeAsset(assetId, content)
+    await refreshAssets()
+  }, [refreshAssets])
+
   useEffect(() => {
     if (!window.xingmangCanvasHost) {
       void hostBridge().listAssets({ offset: 0, limit: 24, mediaType: 'all' }).then((page) => {
@@ -1030,9 +1223,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   useEffect(() => {
     if (!window.xingmangCanvasHost) return
     let active = true
-    const query = { offset: 0, limit: 24, mediaType: 'all' as const, search: '' }
+    const query = { offset: 0, limit: 24, mediaType: 'all' as const, search: '', view: 'all' as const, source: 'all' as const, sort: 'created-desc' as const, tag: '' }
     setAssetQuery(query)
-    setAssetPage({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })
+    setAssetPage(emptyCanvasAssetPage())
     setAssetCatalog([])
     if (!activeProject) return () => { active = false }
     setAssetsLoading(true)
@@ -1040,6 +1233,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       if (!active) return
       setAssetPage(page)
       setAssetCatalog(page.items)
+      setNodes((current) => applyCatalogClipDurationToNodes(current, page.items))
     }).catch((error) => {
       if (active) setBanner(error instanceof Error ? error.message : String(error))
     }).finally(() => {
@@ -1091,6 +1285,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       limit: query.limit ?? 24,
       mediaType: query.mediaType ?? 'all',
       search: query.search ?? '',
+      view: query.view ?? 'all',
+      tag: query.tag ?? '',
+      source: query.source ?? 'all',
+      sort: query.sort ?? (query.view === 'recent' ? 'used-desc' : 'created-desc'),
+      // Find-similar filters are absent rather than empty when off: the host
+      // contract treats an empty prompt or identifier as a parse error.
+      ...(query.prompt ? { prompt: query.prompt } : {}),
+      ...(query.runId ? { runId: query.runId } : {}),
+      ...(query.nodeId ? { nodeId: query.nodeId } : {}),
     }
     setAssetQuery(next)
     void refreshAssets(next)
@@ -1106,29 +1309,38 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         const completed = records.find((record) => record.runId === projectRunId)
         if (completed) {
           setSelectedRunId(completed.runId)
-          setNodes((current) => projectRunRecordToNodes(current, completed))
+          const graph = graphRef.current
+          setNodes((current) => projectRunRecordToNodes(current, completed, graph.edges))
           setDirtyNodeIds((current) => {
             const next = new Set(current)
             for (const record of completed.nodes) {
               if (record.state === 'succeeded' || record.state === 'cached') next.delete(record.nodeId)
               else next.add(record.nodeId)
             }
+            // 自动固定产物换掉了这些节点的输入，但它们没参与本次运行：只标记
+            // 待重新运行，绝不自动发起新的付费请求。
+            for (const nodeId of autoFixedDownstreamNodeIds(graph.nodes, completed, graph.edges)) next.add(nodeId)
             return next
           })
-          if (completed.status !== 'running') {
-            setRunning(false)
-            if (activeRunRef.current?.runId === completed.runId) activeRunRef.current = null
-          }
+          if (completed.status !== 'running') forgetActiveRun(completed.runId)
         }
-      } else if (!selectedRunId && records[0]) {
-        setSelectedRunId(records[0].runId)
+      } else {
+        if (!selectedRunId && records[0]) setSelectedRunId(records[0].runId)
       }
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     } finally {
       setRunsLoading(false)
     }
-  }, [selectedRunId, setNodes])
+  }, [forgetActiveRun, selectedRunId, setNodes])
+
+  const refreshRunsRef = useRef(refreshRuns)
+  refreshRunsRef.current = refreshRuns
+
+  useEffect(() => {
+    if (!window.xingmangCanvasHost || !activeProject) return
+    void refreshRunsRef.current()
+  }, [activeProject?.id])
 
   const openInspectorTab = useCallback((tab: CanvasInspectorTab) => {
     if (focusMode && tab !== 'node') setFocusMode(false)
@@ -1166,17 +1378,27 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     setRunInspectorOpen(false)
     setNodeInspectorOpen(true)
     window.requestAnimationFrame(() => {
-      void reactFlowRef.current?.fitView({ nodes: [target], padding: 0.55, minZoom: 0.65, maxZoom: 1.15, duration: 220 })
+      void reactFlow.fitView({ nodes: [target], padding: 0.55, minZoom: 0.65, maxZoom: 1.15, duration: 220 })
     })
-  }, [nodes, setNodes])
+  }, [nodes, reactFlow, setNodes])
 
   const showAssetTray = useCallback(() => {
     openInspectorTab('assets')
   }, [openInspectorTab])
 
+  const toggleAssetTray = useCallback(() => {
+    if (inspectorTab === 'assets' && assetTrayOpen) closeInspector()
+    else showAssetTray()
+  }, [assetTrayOpen, closeInspector, inspectorTab, showAssetTray])
+
+  const toggleRunInspector = useCallback(() => {
+    if (inspectorTab === 'runs' && runInspectorOpen) closeInspector()
+    else openInspectorTab('runs')
+  }, [closeInspector, inspectorTab, openInspectorTab, runInspectorOpen])
+
   useEffect(() => hostBridge().onRunEvent((event) => {
-    const active = activeRunRef.current
-    if (!active || event.runId !== active.runId || event.graphRevision !== active.graphRevision) return
+    const active = activeRunsRef.current.get(event.runId)
+    if (!active || event.graphRevision !== active.graphRevision) return
     setRunRecords((current) => mergeCanvasRunEvent(current, event))
     if (event.type === 'node-stage') {
       patchNodeData(event.nodeId, {
@@ -1197,26 +1419,31 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             : event.state as CanvasNode['data']['status']
       patchNodeData(event.nodeId, {
         status: state,
+        // A cache hit collapses to 'succeeded' for run semantics, but the user
+        // still needs to know nothing was paid for or regenerated.
+        ...(['succeeded', 'cached'].includes(event.state) ? { fromCache: event.state === 'cached' } : {}),
+        ...((event.state === 'queued' || event.state === 'running') ? { runStartedAt: event.at } : {}),
         ...(event.errorMessage ? { errorMessage: event.errorMessage } : {}),
         ...(typeof event.costQuota === 'number' ? { costQuota: event.costQuota } : {}),
         ...(['succeeded', 'failed', 'skipped', 'cancelled', 'cached', 'interrupted'].includes(event.state) ? {
-          runStage: undefined, runProgress: undefined, runProgressMode: undefined, runHealth: undefined,
+          runStartedAt: undefined, runStage: undefined, runProgress: undefined, runProgressMode: undefined, runHealth: undefined,
         } : {}),
       })
     }
     if (event.type === 'run-terminal') {
-      setRunning(false)
-      setBanner(`运行结束：${event.status ?? '已完成'}`)
-      activeRunRef.current = null
+      forgetActiveRun(event.runId)
+      const remaining = activeRunsRef.current.size
+      setBanner(remaining > 0
+        ? `运行结束：${event.status ?? '已完成'}（还有 ${remaining} 个任务在生成）`
+        : `运行结束：${event.status ?? '已完成'}`)
       void refreshAssets({ ...assetQuery, offset: 0 })
       void refreshRuns(event.runId)
     }
-  }), [patchNodeData, refreshAssets, refreshRuns, assetQuery])
+  }), [forgetActiveRun, patchNodeData, refreshAssets, refreshRuns, assetQuery])
 
   // 断线恢复:视频节点凭已落盘的 taskId 继续轮询(应用重启/中途关窗后
   // 打开工作流文件即可续查,不重新扣费提交任务)。
   const resumeTask = useCallback(async (nodeId: string) => {
-    if (running) return
     const node = nodes.find((entry) => entry.id === nodeId)
     const taskId = node?.data.result?.taskId
     if (!taskId || resumingTaskIdsRef.current.has(taskId)) return
@@ -1249,60 +1476,33 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       resumingTaskIdsRef.current.delete(taskId)
       setResumingTaskIds(new Set(resumingTaskIdsRef.current))
     }
-  }, [running, nodes, setNodes, refreshAssets, assetQuery])
+  }, [nodes, setNodes, refreshAssets, assetQuery])
 
-  const selectCandidate = useCallback((nodeId: string, candidate: string | WorkflowCandidateRef) => {
-    setNodes((current) => selectNodeCandidate(current, nodeId, candidate))
-  }, [setNodes])
-
-  const adoptCandidate = useCallback((nodeId: string, candidate: string | WorkflowCandidateRef) => {
+  /**
+   * 切换到某个候选。2026-08-20 起选择与采纳合并为一个动作：被选中的候选立刻
+   * 成为节点产物，下游只标记为待重新运行，绝不自动发起新的付费请求。
+   */
+  const useCandidate = useCallback((nodeId: string, candidate: string | WorkflowCandidateRef) => {
     const candidateId = typeof candidate === 'string' ? candidate : candidate.candidateId
-    const stagedNodes = typeof candidate === 'string' ? nodes : selectNodeCandidate(nodes, nodeId, candidate)
-    const owner = stagedNodes.find((node) => node.id === nodeId)
-    const target = owner?.data.candidates?.find((entry) => entry.candidateId === candidateId)
+    const owner = nodes.find((node) => node.id === nodeId)
+    const target = typeof candidate === 'string'
+      ? owner?.data.candidates?.find((entry) => entry.candidateId === candidateId)
+      : candidate
     if (!owner || !target) {
       setBanner('候选已不在当前运行记录中')
       return
     }
     if (owner.data.adoptedCandidateId === candidateId && owner.data.result?.assetId === target.asset.assetId) {
-      setBanner('该候选已经采纳')
+      setBanner('这就是该节点当前的产物')
       return
     }
-    const updated = adoptNodeCandidate(
-      stagedNodes,
-      edges,
-      nodeId,
-      candidateId,
-    )
+    const updated = selectNodeCandidate(nodes, edges, nodeId, candidate)
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
     setNodes(updated)
-    const descendants = new Set<string>()
-    const queue = [nodeId]
-    while (queue.length > 0) {
-      const source = queue.shift() as string
-      for (const edge of edges) {
-        if (edge.source !== source || descendants.has(edge.target)) continue
-        descendants.add(edge.target)
-        queue.push(edge.target)
-      }
-    }
-    setDirtyNodeIds((current) => new Set([...current].filter((id) => id !== nodeId).concat([...descendants])))
-    setBanner('已采纳候选；下游节点等待重新运行')
+    const descendants = downstreamNodeIds([nodeId], edges)
+    setDirtyNodeIds((current) => new Set([...current].filter((id) => id !== nodeId).concat(descendants)))
+    setBanner('已切换节点产物；下游节点等待重新运行')
   }, [nodes, edges, execute, setNodes])
-
-  const discardCandidate = useCallback((nodeId: string, candidateId: string) => {
-    const owner = nodes.find((node) => node.id === nodeId)
-    if (!owner?.data.candidates?.some((candidate) => candidate.candidateId === candidateId)) {
-      setBanner('该候选不在当前暂存区')
-      return
-    }
-    if (owner.data.adoptedCandidateId === candidateId) {
-      setBanner('已采纳结果不能丢弃，可先采纳其他候选')
-      return
-    }
-    setNodes((current) => discardNodeCandidate(current, nodeId, candidateId))
-    setBanner('候选已丢弃；已确认结果和下游状态保持不变')
-  }, [nodes, setNodes])
 
   const bindAssetToNode = useCallback((nodeId: string, asset: CanvasAssetSummary) => {
     const target = nodes.find((node) => node.id === nodeId)
@@ -1337,16 +1537,19 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
     setNodes(updated)
     setDirtyNodeIds((current) => new Set([...current].filter((id) => id !== nodeId).concat([...descendants])))
+    // Recorded here rather than when the drag starts: a drag that is cancelled,
+    // dropped on nothing or rejected above for the wrong media type is not a use.
+    void markCanvasAssetUsed(asset.assetId)
     setBanner(`${asset.mediaType === 'audio' ? '音频' : asset.mediaType === 'video' ? '视频' : '图片'}素材已就绪；下游节点等待重新运行`)
-  }, [nodes, edges, execute, setNodes])
+  }, [nodes, edges, execute, markCanvasAssetUsed, setNodes])
 
   const createAssetNode = useCallback((asset: CanvasAssetSummary, position?: XYPosition) => {
     const kind = assetInputNodeKind(asset)
     const definition = builtinNodeRegistry.require(kind)
     const dimensions = mediaAssetNodeDimensions(asset)
     const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-    const preferredCenter = bounds && reactFlowRef.current
-      ? reactFlowRef.current.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+    const preferredCenter = bounds
+      ? reactFlow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
       : { x: 420, y: 300 }
     const resolvedPosition = position ?? findAvailableCanvasPosition(nodes, preferredCenter, dimensions)
     const canvasNode = toCanvasNode({
@@ -1359,7 +1562,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     execute({ type: 'add-nodes', nodes: [canvasNodeDocumentRecord(canvasNode)] })
     if (!position) {
       window.requestAnimationFrame(() => {
-        void reactFlowRef.current?.setCenter(
+        void reactFlow.setCenter(
           resolvedPosition.x + dimensions.width / 2,
           resolvedPosition.y + dimensions.height / 2,
           { zoom: Math.min(viewport.zoom, 1), duration: 180 },
@@ -1367,7 +1570,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       })
     }
     setBanner(asset.mediaType === 'video' ? '视频已添加到画布' : asset.mediaType === 'audio' ? '音频已添加到画布' : '图片已导入到画布')
-  }, [execute, nodes, viewport.zoom])
+  }, [execute, nodes, reactFlow, viewport.zoom])
 
   const pickAssetForNode = useCallback(async (nodeId: string) => {
     try {
@@ -1422,21 +1625,34 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       const asset = await hostBridge().pickAsset()
       if (!asset) return
       const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-      const position = bounds && reactFlowRef.current
-        ? reactFlowRef.current.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+      const position = bounds
+        ? reactFlow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
         : undefined
       createAssetNode(importedAssetSummary(asset), position)
       void refreshAssets({ ...assetQuery, offset: 0 })
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
-  }, [createAssetNode, refreshAssets, assetQuery])
+  }, [createAssetNode, reactFlow, refreshAssets, assetQuery])
 
   useEffect(() => {
     registerNodeChangeHandlers({
-      onPromptChange: (nodeId, prompt) => markDirtyFrom(nodeId, { prompt }),
-      onModelChange: (nodeId, model) => markDirtyFrom(nodeId, { model }),
+      onPromptChange: applyPromptDraft,
+      onPromptCommit: (nodeId, prompt) => markDirtyFrom(nodeId, { prompt }),
+      onModelChange: (nodeId, model) => {
+        const node = nodes.find((entry) => entry.id === nodeId)
+        const imageOperation = ['image', 'image-generate', 'image-edit'].includes(node?.type ?? '')
+        const preset = imageOperation ? imageModelPreset(model) : null
+        const currentResolution = node?.data.imageResolution ?? defaultImageResolution
+        markDirtyFrom(nodeId, {
+          model,
+          ...(preset && !preset.resolutions.includes(currentResolution)
+            ? { imageResolution: preset.resolutions[0] ?? defaultImageResolution }
+            : {}),
+        })
+      },
       onQualityChange: (nodeId, quality) => markDirtyFrom(nodeId, { quality }),
+      onImageResolutionChange: (nodeId, imageResolution) => markDirtyFrom(nodeId, { imageResolution }),
       onSizeChange: (nodeId, size) => markDirtyFrom(nodeId, { size }),
       onSecondsChange: (nodeId, seconds) => markDirtyFrom(nodeId, { seconds }),
       onSettingsChange: (nodeId, patch) => {
@@ -1444,13 +1660,13 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         markDirtyFrom(nodeId, { settings: { ...node?.data.settings, ...patch } })
       },
       onSavePromptPreset: (nodeId) => void savePromptPreset(nodeId),
-      onRerun: (nodeId) => void rerunNode(nodeId),
+      onRunToNode: (nodeId) => void rerunNode(nodeId),
+      onRunFromNode: runFromNode,
+      onDeleteNode: (nodeId) => deleteNodesBridging([nodeId]),
       onDownloadAsset: (nodeId) => void downloadNodeAsset(nodeId),
       onShowAssetMenu: (nodeId) => void showNodeAssetMenu(nodeId),
       onResumeTask: (nodeId) => void resumeTask(nodeId),
-      onSelectCandidate: selectCandidate,
-      onAdoptCandidate: adoptCandidate,
-      onDiscardCandidate: discardCandidate,
+      onSelectCandidate: useCandidate,
       onShowCandidateMenu: (assetId) => void hostBridge().showAssetMenu(assetId),
       onBindAsset: (nodeId, assetId) => {
         const asset = assetPage.items.find((entry) => entry.assetId === assetId)
@@ -1459,16 +1675,26 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       onPickAsset: (nodeId) => void pickAssetForNode(nodeId),
       onImportAssetFile: (nodeId, file) => void importAssetForNode(nodeId, file),
       onPreviewAsset: setPreviewAsset,
-      onMediaMetadata: (nodeId, assetId, width, height) => {
-        if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return
+      onDisconnectIncoming: (edgeId) => execute({ type: 'disconnect', edgeIds: [edgeId] }),
+      onMediaMetadata: (nodeId, assetId, width, height, durationSeconds) => {
         const target = nodes.find((node) => node.id === nodeId)
-        if (target?.data.result?.assetId !== assetId || !['image', 'video'].includes(target.data.result.kind)) return
-        const result = { ...target.data.result, width, height }
-        const resizeNode = ['image-input', 'video-input'].includes(target.type ?? '')
-        const dimensions = resizeNode
-          ? mediaAssetNodeDimensions(result)
-          : mediaResultNodeDimensions(target.type ?? '', result, target.width ?? 304, target.height ?? 360, target.data.size)
-        if (target.data.result.width === width && target.data.result.height === height
+        if (target?.data.result?.assetId !== assetId || !['image', 'video', 'audio'].includes(target.data.result.kind)) return
+        const nextWidth = Number.isInteger(width) && width > 0 ? width : target.data.result.width
+        const nextHeight = Number.isInteger(height) && height > 0 ? height : target.data.result.height
+        const nextDuration = typeof durationSeconds === 'number' && Number.isFinite(durationSeconds) && durationSeconds > 0 && durationSeconds <= 86_400
+          ? durationSeconds
+          : target.data.result.durationSeconds ?? requestedClipDurationSeconds(target.data.seconds)
+        const result = {
+          ...target.data.result,
+          ...(nextWidth ? { width: nextWidth } : {}),
+          ...(nextHeight ? { height: nextHeight } : {}),
+          ...(nextDuration ? { durationSeconds: nextDuration } : {}),
+        }
+        const dimensions = usesMediaBoundLayout(target.type ?? '', result.assetId)
+          ? mediaAssetNodeDimensions(result, target.data.size)
+          : null
+        if (target.data.result.width === result.width && target.data.result.height === result.height
+          && target.data.result.durationSeconds === result.durationSeconds
           && (!dimensions || (target.width === dimensions.width && target.height === dimensions.height))) return
         const updated = nodes.map((node) => node.id === nodeId
           ? {
@@ -1486,8 +1712,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord), mergeKey: `media-metadata:${nodeId}` })
         setNodes(updated)
       },
+      isPortCompatible: (connection) => isValidWorkflowConnection(connection, {
+        nodeKindOf: (id) => (nodes.find((entry) => entry.id === id)?.type as NodeKind | undefined) ?? null,
+        edges,
+      }),
     })
-  }, [nodes, execute, markDirtyFrom, savePromptPreset, rerunNode, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, discardCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
+  }, [nodes, edges, execute, applyPromptDraft, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, deleteNodesBridging, downloadNodeAsset, showNodeAssetMenu, resumeTask, useCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
 
   const createNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}): CanvasNode | null => {
     const kind = type as NodeKind
@@ -1595,8 +1825,175 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }, [execute])
 
   const onCanvasNodesChange = useCallback((changes: NodeChange<CanvasNode>[]) => {
-    onNodesChange(changes)
-  }, [onNodesChange])
+    if (altDragSessionRef.current && changes.some((change) => change.type === 'position')) {
+      // Preview the copied gesture without recording movement for the originals.
+      // The final frame is committed as one add-nodes history entry on drag stop.
+      setNodes((current) => applyNodeChanges(changes, current))
+      return
+    }
+    // Snapping happens here rather than in onNodeDrag because this is the frame
+    // the document records. Adjusting the view afterwards only moved the pixels.
+    const boxes = reactFlow.getNodes().map(snapBoxOfCanvasNode)
+    const groupIds = new Set(reactFlow.getNodes().filter((entry) => entry.type === 'group').map((entry) => entry.id))
+    const snapped = snapDragPositionChanges(changes, {
+      all: boxes,
+      candidates: boxes.filter((entry) => !groupIds.has(entry.id)),
+    })
+    setSnapGuides(snapped.guides)
+    onNodesChange(snapped.changes)
+  }, [onNodesChange, reactFlow, setNodes])
+
+  const onCanvasNodeDragStart = useCallback((event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
+    if (!('altKey' in event) || !event.altKey) return
+    const sources = draggedNodes.length > 0 ? draggedNodes : [node]
+    altDragSessionRef.current = {
+      nodeIds: sources.map((entry) => entry.id),
+      originalPositions: new Map(sources.map((entry) => [entry.id, { ...entry.position }])),
+      preserveInputConnections: event.shiftKey,
+    }
+  }, [])
+
+  // Endpoint coordinates for cutting wires and for dropping a node onto one.
+  // The offsets come from the same module the handles are rendered from, so a
+  // node with several ports is hit tested where its wires actually attach.
+  const edgeEndpoints = useCallback(() => {
+    const byId = new Map(reactFlow.getNodes().map((entry) => [entry.id, entry]))
+    return edges.flatMap((edge) => {
+      const source = byId.get(edge.source)
+      const target = byId.get(edge.target)
+      if (!source || !target) return []
+      const sourceBox = snapBoxOfCanvasNode(source)
+      const targetBox = snapBoxOfCanvasNode(target)
+      return [{
+        id: edge.id,
+        source: edge.source,
+        sourceHandle: edge.sourceHandle,
+        target: edge.target,
+        targetHandle: edge.targetHandle,
+        sourcePoint: {
+          x: sourceBox.x + sourceBox.width,
+          y: sourceBox.y + portOffsetY(portGeometryOfCanvasNode(source, sourceBox.height), 'output', edge.sourceHandle),
+        },
+        targetPoint: {
+          x: targetBox.x,
+          y: targetBox.y + portOffsetY(portGeometryOfCanvasNode(target, targetBox.height), 'input', edge.targetHandle),
+        },
+      }]
+    })
+  }, [edges, reactFlow])
+
+  // Ctrl-drag across wires to cut them. Tracked in flow coordinates so the
+  // stroke stays aligned with the edges even if the canvas pans mid-gesture.
+  const beginCutStroke = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey && !event.metaKey) return
+    if (event.button !== 0) return
+    if (!(event.target instanceof Element) || !event.target.classList.contains('react-flow__pane')) return
+    event.preventDefault()
+    event.stopPropagation()
+    let stroke: Point[] = [reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY })]
+    setCutStroke(stroke)
+
+    const onMove = (moveEvent: PointerEvent) => {
+      stroke = [...stroke, reactFlow.screenToFlowPosition({ x: moveEvent.clientX, y: moveEvent.clientY })]
+      setCutStroke(stroke)
+    }
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      setCutStroke([])
+      const cut = edgesCrossedByStroke(stroke, edgeEndpoints())
+      if (cut.length === 0) return
+      execute({ type: 'disconnect', edgeIds: cut })
+      setBanner(`已剪断 ${cut.length} 条连线`)
+    }
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+  }, [edgeEndpoints, execute, reactFlow])
+
+  const spliceNodeOntoEdge = useCallback((nodeId: string, edgeId: string) => {
+    const original = edges.find((entry) => entry.id === edgeId)
+    const node = nodes.find((entry) => entry.id === nodeId)
+    if (!original || !node) return
+    const definition = builtinNodeRegistry.resolve(node.type ?? 'unknown')
+    if (!definition) return
+    const kind = handleKind(original.sourceHandle)
+    const input = definition.ports.find((port) => port.direction === 'input' && port.kind === kind)
+    const output = definition.ports.find((port) => port.direction === 'output' && port.kind === handleKind(original.targetHandle))
+    if (!input || !output) {
+      setBanner('该节点没有可以接上这条连线的端口')
+      return
+    }
+    const before = { id: nextNodeId(), source: original.source, sourceHandle: original.sourceHandle ?? '', target: nodeId, targetHandle: input.id }
+    const after = { id: nextNodeId(), source: nodeId, sourceHandle: output.id, target: original.target, targetHandle: original.targetHandle ?? '' }
+    const remaining = edges.filter((entry) => entry.id !== edgeId)
+    const view = { nodeKindOf: (id: string) => (nodes.find((entry) => entry.id === id)?.type as NodeKind | undefined) ?? null }
+    if (!isValidWorkflowConnection(before, { ...view, edges: remaining })
+      || !isValidWorkflowConnection(after, { ...view, edges: [...remaining, before] })) {
+      setBanner('该节点无法插入这条连线')
+      return
+    }
+    execute({ type: 'splice-node-on-edge', nodeId, edgeId, before, after })
+    setBanner(`已把「${definition.title}」接入连线`)
+  }, [edges, execute, nodes])
+
+  // Where a dropped node would splice into a wire. The snapping itself happens
+  // in onCanvasNodesChange, so this reads the committed position rather than the
+  // raw pointer one and the highlight agrees with where the node will land.
+  const onCanvasNodeDrag = useCallback((_event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
+    if (draggedNodes.length > 1 || altDragSessionRef.current) {
+      if (edgeDropTargetId) setEdgeDropTargetId(null)
+      return
+    }
+    const live = reactFlow.getNodes().find((entry) => entry.id === node.id) ?? node
+    const target = findEdgeDropTarget(snapBoxOfCanvasNode(live), edgeEndpoints())
+    setEdgeDropTargetId(target?.id ?? null)
+  }, [edgeDropTargetId, edgeEndpoints, reactFlow])
+
+  const onCanvasNodeDragStop = useCallback((_event: MouseEvent | TouchEvent, node: CanvasNode, draggedNodes: CanvasNode[]) => {
+    setSnapGuides([])
+    const dropTargetId = edgeDropTargetId
+    setEdgeDropTargetId(null)
+    if (dropTargetId && draggedNodes.length <= 1 && !altDragSessionRef.current) {
+      spliceNodeOntoEdge(node.id, dropTargetId)
+    }
+    const session = altDragSessionRef.current
+    if (!session) return
+    altDragSessionRef.current = null
+
+    // useReactFlow returns an empty array before the flow mounts, so an
+    // emptiness check replaces the old null-instance fallback.
+    const storeNodes = reactFlow.getNodes()
+    const liveNodes = storeNodes.length > 0 ? storeNodes : (draggedNodes.length > 0 ? draggedNodes : [node])
+    const liveById = new Map(liveNodes.map((entry) => [entry.id, entry]))
+    const sourceRecords = nodes.map((entry) => {
+      const live = liveById.get(entry.id)
+      return canvasNodeDocumentRecord(live ?? entry)
+    })
+    const duplicated = duplicateCanvasNodesForAltDrag(sourceRecords, edges.map(toWorkflowEdge), {
+      nodeIds: session.nodeIds,
+      preserveInputConnections: session.preserveInputConnections,
+      createNodeId: () => nextNodeId(),
+      createEdgeId: () => nextNodeId(),
+    })
+    if (duplicated.nodes.length === 0) return
+
+    // React Flow has already previewed movement on the original ids. Restore
+    // them synchronously before the document command seeds its undo snapshot.
+    flushSync(() => {
+      setNodes((current) => current.map((entry) => {
+        const original = session.originalPositions.get(entry.id)
+        return original ? { ...entry, position: { ...original } } : entry
+      }))
+    })
+    execute({ type: 'add-nodes', nodes: duplicated.nodes, edges: duplicated.edges })
+    const duplicateIds = new Set(duplicated.nodes.map((entry) => entry.id))
+    window.requestAnimationFrame(() => {
+      setNodes((current) => current.map((entry) => ({ ...entry, selected: duplicateIds.has(entry.id) })))
+    })
+    setBanner(session.preserveInputConnections
+      ? `已复制 ${duplicated.nodes.length} 个节点并保留输入连接`
+      : `已复制 ${duplicated.nodes.length} 个节点`)
+  }, [edges, execute, nodes, reactFlow, setNodes])
 
   const autoLayout = useCallback(() => {
     if (nodes.length === 0) return
@@ -1658,7 +2055,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     const asset = assetPage.items.find((entry) => entry.assetId === assetId)
     if (!asset) return
     createAssetNode(asset, position)
-  }, [assetPage.items, createAssetNode])
+    void markCanvasAssetUsed(assetId)
+  }, [assetPage.items, createAssetNode, markCanvasAssetUsed])
 
   const copySelection = useCallback(() => {
     const selected = new Set(nodes.filter((node) => node.selected).map((node) => node.id))
@@ -1775,12 +2173,64 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
   }, [nodes, execute])
 
+  // React Flow keeps measured size on node.measured; the definition size is the
+  // fallback for a node that has not been laid out yet.
+  const alignableCanvasNode = useCallback((node: CanvasNode): AlignableNode => {
+    const fallback = builtinNodeRegistry.resolve(node.type ?? 'unknown')?.dimensions
+    return {
+      id: node.id,
+      position: node.position,
+      width: node.measured?.width ?? node.width ?? fallback?.width ?? 240,
+      height: node.measured?.height ?? node.height ?? fallback?.height ?? 180,
+      locked: node.draggable === false,
+    }
+  }, [])
+
+  const alignSelection = useCallback((mode: CanvasAlignMode) => {
+    const selected = nodes.filter((node) => node.selected)
+    const positions = alignNodePositions(selected.map(alignableCanvasNode), mode)
+    if (Object.keys(positions).length === 0) return
+    execute({ type: 'move-nodes', positions })
+  }, [execute, nodes])
+
+  const distributeSelection = useCallback((axis: CanvasDistributeAxis) => {
+    const selected = nodes.filter((node) => node.selected)
+    const positions = distributeNodePositions(selected.map(alignableCanvasNode), axis)
+    if (Object.keys(positions).length === 0) return
+    execute({ type: 'move-nodes', positions })
+  }, [execute, nodes])
+
+  const openContextMenuFor = useCallback((event: { clientX: number; clientY: number; preventDefault(): void }, node: CanvasNode) => {
+    event.preventDefault()
+    const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
+    if (!bounds) return
+    // Right-clicking an unselected node acts on that node alone; right-clicking
+    // inside an existing selection acts on the whole selection. This is the
+    // file-manager convention and users rely on it for batch actions.
+    const selected = nodes.filter((entry) => entry.selected)
+    const scope = selected.some((entry) => entry.id === node.id) && selected.length > 1 ? selected : [node]
+    const disableEligible = scope.filter((entry) => entry.type !== 'unknown')
+    setQuickInsert(null)
+    setContextMenu({
+      nodeId: node.id,
+      x: Math.max(8, Math.min(bounds.width - 190, event.clientX - bounds.left)),
+      y: Math.max(8, Math.min(bounds.height - 260, event.clientY - bounds.top)),
+      target: scope.length > 1 ? 'selection' : 'node',
+      selectionCount: scope.length,
+      executable: builtinNodeRegistry.resolve(node.type ?? 'unknown')?.executable === true,
+      running: node.data.status === 'running' || node.data.status === 'queued',
+      hasGroup: scope.some((entry) => entry.type === 'group'),
+      allLocked: scope.every((entry) => entry.draggable === false),
+      allDisabled: disableEligible.length > 0 && disableEligible.every((entry) => entry.disabled === true),
+      canDisable: disableEligible.length > 0,
+    })
+  }, [nodes])
+
   const deleteSelection = useCallback(() => {
     const nodeIds = nodes.filter((node) => node.selected).map((node) => node.id)
     if (nodeIds.length === 0) return
-    execute({ type: 'delete-elements', nodeIds })
-    setBanner(`已删除 ${nodeIds.length} 个节点`)
-  }, [execute, nodes])
+    deleteNodesBridging(nodeIds)
+  }, [deleteNodesBridging, nodes])
 
   const isValidConnection = useCallback((connection: Connection | Edge) => (
     isValidWorkflowConnection(connection as Connection, {
@@ -1792,10 +2242,39 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     })
   ), [nodes, edges])
 
+  // Retargeting an existing connection. Without it, moving where a wire lands
+  // means delete plus redraw, which is two undo steps for one intention.
+  const onReconnect = useCallback((edge: Edge, connection: Connection) => {
+    if (!connection.source || !connection.target) return
+    // Validate against the graph *without* this edge. Leaving it in makes a
+    // single-capacity target reject the very wire that already occupies it.
+    const valid = isValidWorkflowConnection(connection, {
+      nodeKindOf: (nodeId) => {
+        const node = nodes.find((entry) => entry.id === nodeId)
+        return (node?.type as NodeKind | undefined) ?? null
+      },
+      edges: edges.filter((entry) => entry.id !== edge.id),
+    })
+    if (!valid) {
+      setBanner('该端口不接受这条连线')
+      return
+    }
+    execute({
+      type: 'reconnect-edge',
+      edgeId: edge.id,
+      edge: {
+        id: edge.id,
+        source: connection.source,
+        sourceHandle: connection.sourceHandle ?? '',
+        target: connection.target,
+        targetHandle: connection.targetHandle ?? '',
+      },
+    })
+  }, [edges, execute, nodes])
+
   const openQuickInsertAt = useCallback((client: { x: number; y: number }, connection?: PendingCanvasConnection) => {
     const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-    const instance = reactFlowRef.current
-    if (!bounds || !instance) return
+    if (!bounds) return
     let compatibleHandles: Record<string, string> | undefined
     if (connection) {
       const graph = {
@@ -1819,15 +2298,14 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         x: Math.max(12, Math.min(bounds.width - 372, client.x - bounds.left - 180)),
         y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)),
       },
-      flowPosition: instance.screenToFlowPosition(client),
+      flowPosition: reactFlow.screenToFlowPosition(client),
       ...(connection ? { connection, compatibleHandles } : {}),
     })
-  }, [edges, nodes])
+  }, [edges, nodes, reactFlow])
 
   const openEdgeQuickInsertAt = useCallback((client: { x: number; y: number }, edge: Edge) => {
     const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-    const instance = reactFlowRef.current
-    if (!bounds || !instance) return
+    if (!bounds) return
     const remainingEdges = edges.filter((entry) => entry.id !== edge.id)
     const graph = {
       nodeKindOf: (nodeId: string) => nodes.find((entry) => entry.id === nodeId)?.type ?? null,
@@ -1852,11 +2330,39 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         x: Math.max(12, Math.min(bounds.width - 372, client.x - bounds.left - 180)),
         y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)),
       },
-      flowPosition: instance.screenToFlowPosition(client),
+      flowPosition: reactFlow.screenToFlowPosition(client),
       edgeId: edge.id,
       compatibleHandles,
     })
-  }, [edges, nodes])
+  }, [edges, nodes, reactFlow])
+
+  const runContextAction = useCallback((action: CanvasContextAction, nodeId: string) => {
+    const scopeIds = contextMenu && contextMenu.selectionCount > 1
+      ? nodes.filter((node) => node.selected).map((node) => node.id)
+      : [nodeId]
+    const disableEligible = nodes
+      .filter((node) => scopeIds.includes(node.id) && node.type !== 'unknown')
+      .map((node) => node.id)
+    if (action === 'run') { void rerunNode(nodeId); return }
+    if (action === 'locate') { locateNode(nodeId); return }
+    if (action === 'copy') { copySelection(); return }
+    if (action === 'duplicate') { copySelection(); pasteSelection(); return }
+    if (action === 'group') { groupSelection(); return }
+    if (action === 'ungroup') { ungroupSelection(); return }
+    if (action === 'lock' || action === 'unlock') { setNodeFlags(scopeIds, 'locked', action === 'lock'); return }
+    if (action === 'disable' || action === 'enable') { setNodeFlags(disableEligible, 'disabled', action === 'disable'); return }
+    if (action === 'delete') deleteNodesBridging(scopeIds)
+  }, [contextMenu, copySelection, deleteNodesBridging, groupSelection, locateNode, nodes, pasteSelection, rerunNode, setNodeFlags, ungroupSelection])
+
+  // Handed to the custom edge through context rather than through edge data, so
+  // the callbacks are not serialized into the document on every render.
+  const edgeHandlers = useMemo(() => ({
+    onDisconnect: (edgeId: string) => execute({ type: 'disconnect', edgeIds: [edgeId] }),
+    onInsertNode: (edgeId: string, client: { x: number; y: number }) => {
+      const edge = edges.find((entry) => entry.id === edgeId)
+      if (edge) openEdgeQuickInsertAt(client, edge)
+    },
+  }), [edges, execute, openEdgeQuickInsertAt])
 
   const onConnectStart = useCallback((_event: MouseEvent | TouchEvent, params: OnConnectStartParams) => {
     connectionStartRef.current = params.nodeId && params.handleId && (params.handleType === 'source' || params.handleType === 'target')
@@ -1900,27 +2406,37 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   const selectedNodes = nodes.filter((node) => node.selected)
   const selectedNodeIds = selectedNodes.map((node) => node.id)
+  const renderedEdges = useMemo(() => {
+    const selected = new Set(selectedNodeIds)
+    return edges.map((edge) => {
+      const flowing = canvasEdgeTouchesSelection(edge, selected)
+      const className = canvasEdgeClassName({
+        dropTarget: edge.id === edgeDropTargetId,
+        flowing,
+      })
+      const currentFlowing = canvasEdgeIsFlowing(edge.data)
+      if (className === edge.className && currentFlowing === flowing) return edge
+      return {
+        ...edge,
+        className,
+        data: { ...(edge.data && typeof edge.data === 'object' ? edge.data : {}), flowing },
+      }
+    })
+  }, [edgeDropTargetId, edges, selectedNodeIds])
   const allSelectedLocked = selectedNodes.length > 0 && selectedNodes.every((node) => node.draggable === false)
   const selectedDisableEligibleNodes = selectedNodes.filter(isCanvasGraphNode)
   const selectedDisableEligibleIds = selectedDisableEligibleNodes.map((node) => node.id)
   const allSelectedDisabled = selectedDisableEligibleNodes.length > 0 && selectedDisableEligibleNodes.every((node) => node.disabled)
-  const selectedNodeSignature = [...selectedNodeIds].sort().join('\0')
   const selectedRunnableCount = nodes.filter((node) => node.selected && isCanvasRunnableTarget(node)).length
-  useEffect(() => {
-    const previous = selectedNodeSignatureRef.current
-    selectedNodeSignatureRef.current = selectedNodeSignature
-    if (!selectedNodeSignature || selectedNodeSignature === previous) return
-    if (assetTrayOpen || runInspectorOpen) return
-    setInspectorTab('node')
-    setNodeInspectorOpen(true)
-  }, [assetTrayOpen, runInspectorOpen, selectedNodeSignature])
   const runScopeLabel = runScopeKind === 'all'
     ? '运行全部'
     : runScopeKind === 'dirty'
       ? `运行变更${dirtyNodeIds.size ? ` (${dirtyNodeIds.size})` : ''}`
       : runScopeKind === 'selection'
         ? `运行选中${selectedRunnableCount ? ` (${selectedRunnableCount})` : ''}`
-        : '运行到此'
+        : runScopeKind === 'from-node'
+          ? '从此向后'
+          : '运行到此'
   const runScopeOptions: ReadonlyArray<{
     kind: CanvasRunScope['kind']
     label: string
@@ -1931,6 +2447,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     { kind: 'dirty', label: `仅运行变更 (${dirtyNodeIds.size})`, description: '重新执行输入或结果发生变化的链路', disabled: dirtyNodeIds.size === 0 },
     { kind: 'selection', label: `运行选中链路 (${selectedRunnableCount})`, description: '执行选中节点及其上游依赖', disabled: selectedRunnableCount === 0 },
     { kind: 'to-node', label: '运行到选中节点', description: '需要且只能选择一个可运行节点', disabled: selectedRunnableCount !== 1 },
+    { kind: 'from-node', label: '从选中节点向后运行', description: '执行下游链路并补齐必要依赖', disabled: selectedRunnableCount !== 1 },
   ]
   const activeRunOption = runScopeOptions.find((option) => option.kind === runScopeKind) ?? runScopeOptions[0]
 
@@ -1948,18 +2465,21 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return { kind: 'selection', nodeIds }
     }
     const nodeIds = selectedNodeIds.filter((id) => runnableIds.has(id))
-    if (nodeIds.length !== 1) throw new Error('“运行到节点”需要且只能选择一个可运行节点')
-    return { kind: 'to-node', nodeId: nodeIds[0] }
+    if (nodeIds.length !== 1) throw new Error('该运行范围需要且只能选择一个可运行节点')
+    return { kind: runScopeKind === 'from-node' ? 'from-node' : 'to-node', nodeId: nodeIds[0] }
   }, [runScopeKind, nodes, dirtyNodeIds, selectedNodeIds])
 
   const confirmCanvasRun = useCallback(async () => {
     const pending = pendingCanvasRun
-    if (!pending || running) return
+    if (!pending) return
     try {
-      const currentGraph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+      const committed = commitGenerationPrompts(nodes, edges)
+      if (committed !== nodes) setNodes(committed)
+      const currentGraph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
       const currentPreflight = buildCanvasRunPreflight({
         graph: currentGraph,
         scope: pending.scope,
+        cachedNodeIds: cachedNodeIdsForPreflight(committed, pending.scope),
         imageGroup: imageGroup ?? undefined,
         videoGroup: videoGroup ?? undefined,
         imageModels,
@@ -1981,22 +2501,19 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       }
       setRunPreflight(null)
       setPendingCanvasRun(null)
-      setRunning(true)
       const started = await hostBridge().startRun({ graph: currentGraph, scope: pending.scope })
-      activeRunRef.current = { ...started, scope: pending.scope }
+      rememberActiveRun({ ...started, scope: pending.scope })
       openInspectorTab('runs')
-      setBanner('工作流已交由安全运行服务')
+      setBanner(activeRunsRef.current.size > 1 ? `已开始第 ${activeRunsRef.current.size} 路生成` : '工作流已交由安全运行服务')
       // 缓存命中的工作流可能在 startRun IPC 返回前已发出终态事件。
       // 立即读取持久记录可补回该事件，避免运行按钮永久停在“取消”。
       void refreshRuns(started.runId)
     } catch (error) {
-      setRunning(false)
       setBanner(error instanceof Error ? error.message : String(error))
     }
-  }, [edges, imageGroup, imageModels, nodes, openInspectorTab, pendingCanvasRun, refreshRuns, running, videoGroup, videoModels])
+  }, [edges, imageGroup, imageModels, nodes, openInspectorTab, pendingCanvasRun, refreshRuns, rememberActiveRun, videoGroup, videoModels])
 
   const run = async () => {
-    if (running) return
     if (preparingMedia) {
       setBanner('生成配置正在准备，请稍候再运行工作流')
       return
@@ -2005,15 +2522,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       setBanner('请等待视频任务续查完成后再运行工作流')
       return
     }
-    setRunning(true)
     setBanner(null)
     if (window.xingmangCanvasHost) {
       try {
-        const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+        const committed = commitGenerationPrompts(nodes, edges)
+        if (committed !== nodes) setNodes(committed)
+        const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
         const scope = currentRunScope()
         const preflight = buildCanvasRunPreflight({
           graph,
           scope,
+          cachedNodeIds: cachedNodeIdsForPreflight(committed, scope),
           imageGroup: imageGroup ?? undefined,
           videoGroup: videoGroup ?? undefined,
           imageModels,
@@ -2021,20 +2540,19 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         })
         setRunPreflight(preflight)
         if (!preflight.canStart) {
-          setRunning(false)
           setBanner(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '当前运行范围无法执行')
           return
         }
         setPendingCanvasRun({ graph, scope })
-        setRunning(false)
         setBanner('请确认运行范围和本次额度风险')
         return
       } catch (error) {
-        setRunning(false)
         setBanner(error instanceof Error ? error.message : String(error))
         return
       }
     }
+    if (running) return
+    setRunning(true)
     const controller = new AbortController()
     abortRef.current = controller
     try {
@@ -2055,9 +2573,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }
 
   const cancel = () => {
-    const active = activeRunRef.current
-    if (active) void hostBridge().cancelRun(active.runId)
-    else abortRef.current?.abort()
+    const runIds = [...activeRunsRef.current.keys()]
+    if (runIds.length > 0) {
+      for (const runId of runIds) void hostBridge().cancelRun(runId)
+      return
+    }
+    abortRef.current?.abort()
   }
 
   const workflowSnapshot = (): WorkflowFile => ({
@@ -2092,7 +2613,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       applyProjectUiPreferences({ ...defaultCanvasUiPreferences })
     } catch (error) {
       setAutoSaveState('failed')
-      setBanner(error instanceof Error ? `自动保存失败：${error.message}` : `自动保存失败：${String(error)}`)
+      setBanner(canvasAutosaveErrorMessage(error))
     }
   }, [activeProject, applyProjectUiPreferences, nodes, edges, viewport, mediaGroups, queueProjectSave])
 
@@ -2177,15 +2698,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }
 
-  // 「展开到画布」:把简单模式的一次输入物化成节点链,替换当前画布内容
-  // (简单模式是入口形态,此时画布通常为空;后续可加"合并而非替换"选项)。
-  const expandToCanvas = (workflow: WorkflowFile) => {
-    execute({ type: 'replace-document', document: workflowDocument(workflow) })
-    setViewMode('canvas')
-    setBanner('已从简单模式展开为工作流,可继续编排')
-    fitCanvas()
-  }
-
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (runPreflight) return
@@ -2197,6 +2709,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       else if (shortcut === 'open') { event.preventDefault(); void load() }
       else if (shortcut === 'run') { event.preventDefault(); void run() }
       else if (shortcut === 'layout') { event.preventDefault(); autoLayout() }
+      else if (shortcut === 'toggle-assets') { event.preventDefault(); toggleAssetTray() }
+      else if (shortcut === 'toggle-overview') { event.preventDefault(); toggleCanvasOverview() }
       else if (shortcut === 'quick-insert') {
         event.preventDefault()
         if (quickInsert) {
@@ -2204,14 +2718,14 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           return
         }
         const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-        if (!bounds || !reactFlowRef.current) return
+        if (!bounds) return
         setMediaConfigOpen(false)
         setMoreActionsOpen(false)
         setRunMenuOpen(false)
         const client = { x: bounds.left + bounds.width / 2, y: bounds.top + Math.min(bounds.height * 0.38, 320) }
         setQuickInsert({
           anchor: { x: Math.max(12, Math.min(bounds.width - 372, client.x - bounds.left - 180)), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) },
-          flowPosition: reactFlowRef.current.screenToFlowPosition(client),
+          flowPosition: reactFlow.screenToFlowPosition(client),
         })
       }
       else if (shortcut === 'copy') { event.preventDefault(); copySelection() }
@@ -2219,6 +2733,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       else if (shortcut === 'duplicate') { event.preventDefault(); copySelection(); pasteSelection() }
       else if (shortcut === 'group') { event.preventDefault(); groupSelection() }
       else if (shortcut === 'ungroup') { event.preventDefault(); ungroupSelection() }
+      else if (shortcut === 'find-node') { event.preventDefault(); setNodeSearchOpen(true) }
       else if (shortcut === 'select-all') {
         event.preventDefault()
         setNodes((current) => current.map((node) => ({ ...node, selected: true })))
@@ -2227,12 +2742,22 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         const selectedEdges = edges.filter((edge) => edge.selected).map((edge) => edge.id)
         if (!selectedNodes.length && !selectedEdges.length) return
         event.preventDefault()
-        execute({ type: 'delete-elements', nodeIds: selectedNodes, edgeIds: selectedEdges })
+        // Only bridge when nodes alone are removed. Deleting an edge on purpose
+        // must not be undone by a bridge that puts an equivalent one back.
+        const bridges = selectedEdges.length === 0
+          ? bridgeEdgesForRemoval(edges, selectedNodes).map((draft) => ({ id: nextNodeId(), ...draft }))
+          : []
+        execute({
+          type: 'delete-elements',
+          nodeIds: selectedNodes,
+          edgeIds: selectedEdges,
+          ...(bridges.length > 0 ? { bridges } : {}),
+        })
       }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [undo, redo, save, load, run, autoLayout, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert, runPreflight])
+  }, [undo, redo, save, load, run, autoLayout, toggleAssetTray, toggleCanvasOverview, copySelection, pasteSelection, groupSelection, ungroupSelection, nodes, edges, execute, setNodes, quickInsert, reactFlow, runPreflight])
 
   const serverBacked = Boolean(window.xingmangCanvasHost)
   const mediaConnectionLabel = preparingMedia
@@ -2293,23 +2818,41 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   useEffect(() => {
     if (!window.xingmangCanvasHost || !activeProject) return
+    const parts = {
+      mediaGroups: { ...mediaGroups },
+      nodes: nodes.map(toWorkflowNode),
+      edges: edges.map(toWorkflowEdge),
+    }
+    const signature = canvasAutosaveSignature(parts)
+    const graphSignature = canvasAutosaveGraphSignature(parts)
     if (projectHydrationRef.current) {
       projectHydrationRef.current = false
+      lastAutosaveSignatureRef.current = signature
+      lastAutosaveGraphSignatureRef.current = graphSignature
+      setAutoSaveState('saved')
       return
     }
+    if (signature === lastAutosaveSignatureRef.current) return
     const revision = autoSaveRevisionRef.current + 1
     autoSaveRevisionRef.current = revision
-    setAutoSaveState('saving')
+    const showProgress = graphSignature !== lastAutosaveGraphSignatureRef.current
     const timeout = window.setTimeout(() => {
+      if (showProgress) setAutoSaveState('saving')
       const content = serializeWorkflow(workflowSnapshot())
-      void queueProjectSave(activeProject, content, revision).catch((error) => {
-        if (autoSaveRevisionRef.current !== revision) return
-        setAutoSaveState('failed')
-        setBanner(error instanceof Error ? `自动保存失败：${error.message}` : `自动保存失败：${String(error)}`)
-      })
+      void queueProjectSave(activeProject, content, revision)
+        .then(() => {
+          if (autoSaveRevisionRef.current !== revision) return
+          lastAutosaveSignatureRef.current = signature
+          lastAutosaveGraphSignatureRef.current = graphSignature
+        })
+        .catch((error) => {
+          if (autoSaveRevisionRef.current !== revision) return
+          setAutoSaveState('failed')
+          setBanner(canvasAutosaveErrorMessage(error))
+        })
     }, 800)
     return () => window.clearTimeout(timeout)
-  }, [activeProject?.id, nodes, edges, viewport, mediaGroups, queueProjectSave])
+  }, [activeProject?.id, nodes, edges, mediaGroups, queueProjectSave])
 
   useEffect(() => {
     if (!window.xingmangCanvasHost || !activeProject) return
@@ -2342,65 +2885,18 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     )
   }
 
-  if (viewMode === 'simple') {
-    return (
-      <div className="canvas-app">
-        <header className="canvas-toolbar">
-          <strong>星芒 AI 生成</strong>
-          <div className="canvas-toolbar-group">
-            <button type="button" onClick={() => { setMediaConfigOpen(false); setViewMode('canvas') }}>画布模式</button>
-          </div>
-          <MediaConfiguration
-            open={mediaConfigOpen}
-            groups={groups}
-            imageGroup={imageGroup}
-            videoGroup={videoGroup}
-            imageModels={imageModels}
-            videoModels={videoModels}
-            preparing={preparingMedia}
-            onToggle={toggleMediaConfiguration}
-            onClose={() => setMediaConfigOpen(false)}
-            onSelect={(kind, group) => void selectMediaGroup(kind, group)}
-          />
-          <span className="canvas-mode">{mediaConnectionLabel}</span>
-          {banner && <span className="canvas-banner" role="status" aria-live="polite">{banner}</span>}
-        </header>
-        <SimpleMode
-          executors={buildExecutors()}
-          connected={serverBacked}
-          imageGroup={imageGroup}
-          videoGroup={videoGroup}
-          imageModels={imageModels}
-          videoModels={videoModels}
-          preparingMedia={preparingMedia !== null}
-          onExpandToCanvas={expandToCanvas}
-        />
-        <ModelSuggestions />
-      </div>
-    )
-  }
-
   return (
     <div className="canvas-app">
       <header className="canvas-toolbar canvas-toolbar-editor">
         <div className="canvas-brand">
           <button type="button" className="canvas-project-back" title="保存并返回项目中心" onClick={() => void returnToProjectCenter()}><FolderOpen size={15} /></button>
           <strong>{activeProject?.name ?? '星芒无限画布'}</strong>
-          <button type="button" className="canvas-mode-switch" onClick={() => { setMediaConfigOpen(false); setViewMode('simple') }}>简单模式</button>
         </div>
         <div className="canvas-toolbar-group canvas-toolbar-center">
           <button type="button" className="canvas-icon-command" title="撤销" aria-label="撤销" onClick={undo} disabled={!canUndo}><Undo2 size={15} /></button>
           <button type="button" className="canvas-icon-command" title="重做" aria-label="重做" onClick={redo} disabled={!canRedo}><Redo2 size={15} /></button>
           <button type="button" className="canvas-icon-command" title="自动布局" aria-label="自动布局" onClick={autoLayout} disabled={!nodes.length}><LayoutGrid size={15} /></button>
           <button type="button" className="canvas-icon-command" title="适配全部内容" aria-label="适配全部内容" onClick={fitCanvas} disabled={!nodes.length}><Crosshair size={15} /></button>
-          <button
-            type="button"
-            className={`canvas-icon-command${focusMode ? ' is-active' : ''}`}
-            title={focusMode ? '退出聚焦模式' : '进入聚焦模式'}
-            aria-label={focusMode ? '退出聚焦模式' : '进入聚焦模式'}
-            aria-pressed={focusMode}
-            onClick={() => setFocusMode((current) => !current)}
-          ><Focus size={15} /></button>
         </div>
         <div className="canvas-toolbar-group canvas-toolbar-actions">
           <button
@@ -2418,15 +2914,32 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
                 return
               }
               const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
-              if (!bounds || !reactFlowRef.current) return
+              if (!bounds) return
               setMediaConfigOpen(false)
               setRunMenuOpen(false)
               setMoreActionsOpen(false)
               const client = { x: bounds.left + bounds.width / 2, y: bounds.top + Math.min(bounds.height * 0.38, 320) }
-              setQuickInsert({ anchor: { x: Math.max(12, bounds.width / 2 - 180), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) }, flowPosition: reactFlowRef.current.screenToFlowPosition(client) })
+              setQuickInsert({ anchor: { x: Math.max(12, bounds.width / 2 - 180), y: Math.max(12, Math.min(bounds.height - 430, client.y - bounds.top - 70)) }, flowPosition: reactFlow.screenToFlowPosition(client) })
             }}
           ><Plus size={16} /></button>
-          <button type="button" className="canvas-icon-command canvas-history-command" title="打开运行历史" aria-label="运行历史" onClick={() => openInspectorTab('runs')}><History size={15} /></button>
+          <button
+            type="button"
+            className={`canvas-icon-command canvas-history-command${inspectorTab === 'runs' && runInspectorOpen ? ' is-active' : ''}`}
+            title="运行历史"
+            aria-label="运行历史"
+            aria-pressed={inspectorTab === 'runs' && runInspectorOpen}
+            onClick={toggleRunInspector}
+          ><History size={15} /></button>
+          {/* Distinct icon from the bottom-right "focus selection" control: this
+              one hides the side panels, it does not move the viewport. */}
+          <button
+            type="button"
+            className={`canvas-icon-command${focusMode ? ' is-active' : ''}`}
+            title={focusMode ? '显示侧边面板' : '隐藏侧边面板,专注画布'}
+            aria-label={focusMode ? '显示侧边面板' : '隐藏侧边面板'}
+            aria-pressed={focusMode}
+            onClick={() => setFocusMode((current) => !current)}
+          ><PanelRight size={15} /></button>
           <MediaConfiguration
             open={mediaConfigOpen}
             groups={groups}
@@ -2446,6 +2959,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
                 <button type="button" onClick={() => { setMoreActionsOpen(false); groupSelection() }}>将选中节点分组</button>
                 <button type="button" onClick={() => { setMoreActionsOpen(false); openTemplateCatalog() }}><Sparkles size={14} />打开行业模板库</button>
                 <button type="button" onClick={() => { setMoreActionsOpen(false); showAssetTray() }}><ImageIcon size={14} />打开素材库</button>
+                {/* Overflow fallback: the toolbar toggle is hidden below 1320px,
+                    so narrow windows would otherwise lose every entry point. */}
                 <button type="button" onClick={() => { setMoreActionsOpen(false); openInspectorTab('runs') }}><History size={14} />打开运行历史</button>
                 <span className="canvas-more-divider" />
                 <button type="button" onClick={() => { setMoreActionsOpen(false); void load() }}>打开工作流</button>
@@ -2487,46 +3002,69 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       />
       <div
         className={`canvas-flow${!focusMode && (assetTrayOpen || runInspectorOpen) ? ' has-right-panel' : ''}`}
+        onMouseDownCapture={beginCutStroke}
         onDoubleClick={(event) => {
           if (!(event.target instanceof Element) || !event.target.classList.contains('react-flow__pane')) return
           const bounds = event.currentTarget.getBoundingClientRect()
-          if (!reactFlowRef.current) return
           setQuickInsert({
             anchor: {
               x: Math.max(12, Math.min(bounds.width - 372, event.clientX - bounds.left)),
               y: Math.max(12, Math.min(bounds.height - 430, event.clientY - bounds.top)),
             },
-            flowPosition: reactFlowRef.current.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
+            flowPosition: reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY }),
           })
         }}
       >
         <CanvasModelAvailabilityProvider connected={serverBacked} imageModels={imageModels} videoModels={videoModels}>
         <CanvasNodeViewProvider lod={nodeLod}>
         <CanvasUpstreamReferencesProvider nodes={nodes} edges={edges} assets={assetCatalog}>
+        <CanvasEdgeHandlersProvider handlers={edgeHandlers}>
         <ReactFlow
           colorMode={theme}
           nodes={nodes}
-          edges={edges}
+          edges={renderedEdges}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          defaultEdgeOptions={defaultEdgeOptions}
+          connectionLineType={ConnectionLineType.Bezier}
           onNodesChange={onCanvasNodesChange}
+          onNodeDragStart={onCanvasNodeDragStart}
+          onNodeDrag={onCanvasNodeDrag}
+          onNodeDragStop={onCanvasNodeDragStop}
           onEdgesChange={onEdgesChange}
           onConnect={onConnect}
           onConnectStart={onConnectStart}
           onConnectEnd={onConnectEnd}
           isValidConnection={isValidConnection}
+          edgesReconnectable
+          onReconnect={onReconnect}
+          reconnectRadius={14}
           deleteKeyCode={null}
-          fitView
           minZoom={0.15}
-          fitViewOptions={{ padding: 0.14, minZoom: 0.2, maxZoom: 1 }}
           proOptions={{ hideAttribution: false }}
-          onInit={(instance) => { reactFlowRef.current = instance }}
+          ariaLabelConfig={canvasAriaLabelConfig}
           onMove={(_, nextViewport) => setNodeLod((current) => canvasNodeLodForZoom(nextViewport.zoom, current))}
           onMoveEnd={(_, nextViewport) => setDocumentViewport(nextViewport)}
           selectionOnDrag
           selectionMode={SelectionMode.Partial}
           panOnDrag={[1, 2]}
           panOnScroll
-          onPaneClick={() => { setQuickInsert(null); setRunMenuOpen(false); setMoreActionsOpen(false) }}
+          // Shift adds to a selection; space temporarily turns drag into pan,
+          // which is the convention in every design tool our users have used.
+          multiSelectionKeyCode="Shift"
+          panActivationKeyCode="Space"
+          // Double-click is reclaimed for quick insert / rename. Leaving the
+          // default on made every one of those gestures also zoom the canvas.
+          zoomOnDoubleClick={false}
+          // A selected node must never paint under an unselected neighbour.
+          elevateNodesOnSelect
+          elevateEdgesOnSelect
+          // Nodes host textareas and selects: without a threshold a 2px twitch
+          // while clicking one starts a node drag instead.
+          nodeDragThreshold={3}
+          onNodeContextMenu={(event, node) => openContextMenuFor(event, node)}
+          onSelectionContextMenu={(event, selected) => { if (selected[0]) openContextMenuFor(event, selected[0]) }}
+          onPaneClick={() => { setQuickInsert(null); setContextMenu(null); setRunMenuOpen(false); setMoreActionsOpen(false) }}
           onPaneContextMenu={(event) => {
             event.preventDefault()
             openQuickInsertAt({ x: event.clientX, y: event.clientY })
@@ -2538,8 +3076,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           onDragOver={(event) => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy' }}
           onDrop={(event) => {
             event.preventDefault()
-            const position = reactFlowRef.current?.screenToFlowPosition({ x: event.clientX, y: event.clientY })
-            if (!position) return
+            const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY })
             const nodeType = event.dataTransfer.getData('application/x-xingmang-node')
             if (nodeType) {
               addNode(nodeType, position)
@@ -2554,10 +3091,52 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             if (file) void importAssetToCanvas(file, position)
           }}
         >
-          <Background />
-          {minimapOpen && <MiniMap pannable zoomable />}
+          <Background id="canvas-grid" variant={BackgroundVariant.Dots} gap={22} size={1.35} />
+          {cutStroke.length > 1 && (
+            <ViewportPortal>
+              <svg className="canvas-cut-stroke" aria-hidden="true">
+                <path d={strokePath(cutStroke)} />
+              </svg>
+            </ViewportPortal>
+          )}
+          {snapGuides.length > 0 && (
+            <ViewportPortal>
+              {snapGuides.map((guide) => (
+                <div
+                  key={`${guide.axis}:${guide.position}`}
+                  className={`canvas-snap-guide is-${guide.axis}`}
+                  style={guide.axis === 'x'
+                    ? { left: guide.position, top: guide.start, height: guide.end - guide.start }
+                    : { left: guide.start, top: guide.position, width: guide.end - guide.start }}
+                />
+              ))}
+            </ViewportPortal>
+          )}
+          {minimapOpen && <MiniMap pannable zoomable nodeColor={canvasMinimapNodeColor} nodeStrokeWidth={3} />}
           <Controls />
         </ReactFlow>
+        </CanvasEdgeHandlersProvider>
+        {nodeSearchOpen && (
+          <NodeSearchPalette
+            nodes={nodes.map((node) => ({
+              id: node.id,
+              title: builtinNodeRegistry.resolve(node.type ?? 'unknown')?.title ?? node.type ?? '节点',
+              kind: node.type ?? 'unknown',
+              prompt: node.data.prompt,
+              model: node.data.model,
+              status: node.data.status,
+            }))}
+            onJump={locateNode}
+            onClose={() => setNodeSearchOpen(false)}
+          />
+        )}
+        {contextMenu && (
+          <CanvasContextMenu
+            state={contextMenu}
+            onAction={runContextAction}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
         </CanvasUpstreamReferencesProvider>
         </CanvasNodeViewProvider>
         </CanvasModelAvailabilityProvider>
@@ -2568,6 +3147,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           allLocked={allSelectedLocked}
           canToggleDisabled={selectedDisableEligibleIds.length > 0}
           allDisabled={allSelectedDisabled}
+          onAlign={alignSelection}
+          onDistribute={distributeSelection}
           onCopy={copySelection}
           onDuplicate={() => { copySelection(); pasteSelection() }}
           onGroup={groupSelection}
@@ -2580,7 +3161,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         {nodes.length === 0 && !quickInsert && <div className="canvas-empty-state">
           <button type="button" className="is-primary" onClick={() => openTemplateCatalog()}><Sparkles size={16} />从模板开始</button>
           <button type="button" onClick={() => addNode('image-generate', { x: 120, y: 120 })}><Plus size={16} />新建生成节点</button>
-          <button type="button" onClick={() => void load()}>打开项目</button>
         </div>}
         <QuickInsert
           open={quickInsert !== null}
@@ -2624,8 +3204,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           <span className="canvas-status-media">{mediaConnectionLabel}</span>
           {activeProject && <span className={`canvas-autosave is-${autoSaveState}`}>{autoSaveState === 'saving' ? '保存中…' : autoSaveState === 'failed' ? '保存失败' : '已自动保存'}</span>}
         </div>
+        {/* Canvas-local navigation only. "Fit all" lives in the toolbar with the
+            other commands; duplicating it here made two controls with one job. */}
         <div className="canvas-navigation-tools" aria-label="画布导航">
-          <button type="button" title="适配全部内容" aria-label="适配全部内容" onClick={fitCanvas}><Crosshair size={15} /></button>
           <button type="button" title="聚焦选中节点" aria-label="聚焦选中节点" onClick={fitSelection} disabled={!selectedNodeIds.length}><Focus size={15} /></button>
           <button type="button" title={minimapOpen ? '隐藏缩略图' : '显示缩略图'} aria-label={minimapOpen ? '隐藏缩略图' : '显示缩略图'} aria-pressed={minimapOpen} onClick={() => setMinimapOpen((open) => !open)}><MapIcon size={15} /></button>
         </div>
@@ -2642,8 +3223,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           videoModels={videoModels}
           onTabChange={openInspectorTab}
           onClose={closeInspector}
-          onPatch={patchInspectorNode}
-          onSettingsPatch={patchInspectorSettings}
           onLocate={locateNode}
           onRun={(nodeId) => void rerunNode(nodeId)}
           onToggleLocked={(nodeId, locked) => setInspectorNodeFlag(nodeId, 'locked', locked)}
@@ -2663,7 +3242,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
               onLocateSourceNode={locateNode}
               onRename={renameCanvasAsset}
+              onUpdateMetadata={updateCanvasAssetMetadata}
               onInspectReferences={(assetId) => hostBridge().inspectAssetReferences(assetId, serializeWorkflow(workflowSnapshot()))}
+              onDelete={deleteCanvasAssets}
+              onRestore={restoreCanvasAssets}
+              onPurge={(assetIds) => purgeCanvasAssets(assetIds, serializeWorkflow(workflowSnapshot()))}
               onClose={closeInspector}
             />
           )}
@@ -2673,9 +3256,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               open
               records={runRecords}
               selectedRunId={selectedRunId}
-              selectedCandidateIds={Object.fromEntries(nodes.map((node) => [node.id, node.data.selectedCandidateId]))}
-              adoptedCandidateIds={Object.fromEntries(nodes.map((node) => [node.id, node.data.adoptedCandidateId]))}
-              stagedCandidateIds={Object.fromEntries(nodes.map((node) => [node.id, node.data.candidates?.map((candidate) => candidate.candidateId)]))}
+              resultCandidateIds={Object.fromEntries(nodes.map((node) => [node.id, node.data.adoptedCandidateId]))}
               selectedScope={runScopeKind}
               dirtyCount={dirtyNodeIds.size}
               selectionCount={selectedNodeIds.length}
@@ -2683,12 +3264,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               onScopeChange={setRunScopeKind}
               onRefresh={() => void refreshRuns()}
               onSelectRun={setSelectedRunId}
-              onSelectCandidate={selectCandidate}
-              onAdopt={adoptCandidate}
-              onDiscard={discardCandidate}
+              onUseCandidate={useCandidate}
               onPreviewAsset={(asset) => setPreviewAsset({ ...asset })}
               onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
               onLocateNode={locateNode}
+              onRetryNode={(nodeId, scope) => { requestNodeScopeRun(nodeId, scope) }}
               onClose={closeInspector}
             />
           )}

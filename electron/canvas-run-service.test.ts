@@ -20,6 +20,7 @@ function memoryStore() {
     listRuns: async () => structuredClone(runs),
     getRun: async (_userId: number, runId: string) => structuredClone(runs.find((run) => run.runId === runId) ?? null),
     getAssetLineage: async () => ({}),
+    listAssetIdsByLineage: async () => [],
     saveRun: async (_userId: number, run: CanvasRunRecord) => {
       const index = runs.findIndex((entry) => entry.runId === run.runId)
       if (index >= 0) runs.splice(index, 1)
@@ -99,14 +100,21 @@ describe('createCanvasRunService', () => {
     await expect(second.promise).resolves.toMatchObject({ status: 'succeeded' })
   })
 
-  it('locks one active run per user, owner, and project until the terminal state', async () => {
-    const graph = workflow()
+  it('lets sibling generate nodes run together and only locks the overlapping ones', async () => {
+    const graph: CanvasRunGraph = {
+      nodes: [
+        { id: 'left', kind: 'text', definitionVersion: 1, data: { prompt: 'left', model: '' } },
+        { id: 'right', kind: 'text', definitionVersion: 1, data: { prompt: 'right', model: '' } },
+      ],
+      edges: [],
+    }
     const store = memoryStore()
-    let releaseFirst: (() => void) | undefined
-    const text = vi.fn(({ projectId }: { projectId?: string }) => (
-      projectId === 'project-a'
-        ? new Promise<{ outputText: string }>((resolve) => { releaseFirst = () => resolve({ outputText: 'first' }) })
-        : Promise.resolve({ outputText: 'other project' })
+    const gates = new Map<string, () => void>()
+    let holdProjectA = true
+    const text = vi.fn((context: { node: { id: string }; projectId?: string }) => (
+      context.projectId === 'project-a' && holdProjectA
+        ? new Promise<{ outputText: string }>((resolve) => { gates.set(context.node.id, () => resolve({ outputText: context.node.id })) })
+        : Promise.resolve({ outputText: context.projectId === 'project-a' ? context.node.id : 'other project' })
     ))
     const service = createCanvasRunService({
       store,
@@ -114,29 +122,36 @@ describe('createCanvasRunService', () => {
     })
     const revision = computeCanvasGraphRevision(graph)
     const first = await service.start({
-      userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'all' },
+      userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'to-node', nodeId: 'left' },
     })
-    await vi.waitFor(() => expect(text).toHaveBeenCalledOnce())
+    const second = await service.start({
+      userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'to-node', nodeId: 'right' },
+    })
+    await vi.waitFor(() => expect(gates.size).toBe(2))
+
+    await expect(service.start({
+      userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'to-node', nodeId: 'left' },
+    })).rejects.toThrow('已在生成中')
 
     await expect(service.start({
       userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'all' },
-    })).rejects.toThrow('已有工作流正在运行')
+    })).rejects.toThrow('已在生成中')
 
     const otherProject = await service.start({
       userId: 7, ownerId: 9, projectId: 'project-b', graphRevision: revision, graph, scope: { kind: 'all' },
     })
     await expect(otherProject.promise).resolves.toMatchObject({ status: 'succeeded' })
-    releaseFirst?.()
+    gates.get('left')?.()
+    gates.get('right')?.()
     await expect(first.promise).resolves.toMatchObject({ status: 'succeeded' })
+    await expect(second.promise).resolves.toMatchObject({ status: 'succeeded' })
     store.cache.clear()
+    holdProjectA = false
 
     const afterTerminal = await service.start({
       userId: 7, ownerId: 9, projectId: 'project-a', graphRevision: revision, graph, scope: { kind: 'all' },
     })
-    await vi.waitFor(() => expect(text).toHaveBeenCalledTimes(3))
-    releaseFirst?.()
     await expect(afterTerminal.promise).resolves.toMatchObject({ status: 'succeeded' })
-    expect(text).toHaveBeenCalledTimes(3)
   })
 
   it('does not admit paid work when the initial run record cannot be persisted', async () => {

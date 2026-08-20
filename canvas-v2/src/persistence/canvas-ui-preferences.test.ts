@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canvasStartupUiPreferences,
   defaultCanvasUiPreferences,
   readCanvasUiPreferences,
   writeCanvasUiPreferences,
@@ -23,17 +24,50 @@ describe('canvas UI preferences', () => {
     expect(readCanvasUiPreferences('22222222-2222-4222-8222-222222222222', target)).toEqual(defaultCanvasUiPreferences)
   })
 
-  it('sanitizes malformed data and never accepts an untrusted project key', () => {
+  it('never accepts an untrusted project key', () => {
     const target = storage()
     writeCanvasUiPreferences('../escape', { ...defaultCanvasUiPreferences, focusMode: true }, target)
     expect(readCanvasUiPreferences('../escape', target)).toEqual(defaultCanvasUiPreferences)
+  })
+
+  it('sanitizes malformed fields written at the current version', () => {
     const malformed = {
-      getItem: () => JSON.stringify({ version: 99, libraryCollapsed: 'yes', focusMode: 1, rightPanel: 'settings', minimapOpen: true }),
+      getItem: () => JSON.stringify({
+        version: 1,
+        libraryCollapsed: 'yes',
+        focusMode: 1,
+        rightPanel: 'settings',
+        minimapOpen: true,
+      }),
       setItem: () => undefined,
     }
     expect(readCanvasUiPreferences('11111111-1111-4111-8111-111111111111', malformed)).toEqual({
       ...defaultCanvasUiPreferences,
+      libraryCollapsed: false,
       minimapOpen: true,
+    })
+  })
+
+  it('discards a payload whose version it does not recognize', () => {
+    for (const version of [99, 0, '1', null, undefined]) {
+      const foreign = {
+        getItem: () => JSON.stringify({ version, libraryCollapsed: true, focusMode: true, rightPanel: 'runs', minimapOpen: true }),
+        setItem: () => undefined,
+      }
+      expect(readCanvasUiPreferences('11111111-1111-4111-8111-111111111111', foreign)).toEqual(defaultCanvasUiPreferences)
+    }
+  })
+
+  it('starts every project session with the node library collapsed', () => {
+    expect(defaultCanvasUiPreferences.libraryCollapsed).toBe(true)
+    expect(canvasStartupUiPreferences({
+      ...defaultCanvasUiPreferences,
+      libraryCollapsed: false,
+      focusMode: true,
+    })).toEqual({
+      ...defaultCanvasUiPreferences,
+      libraryCollapsed: true,
+      focusMode: true,
     })
   })
 

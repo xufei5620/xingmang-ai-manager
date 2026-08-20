@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { EditorNodeRecord } from '../domain/node-definition'
-import { applyCanvasCommand, createCanvasHistory, redoCanvasHistory, undoCanvasHistory } from './history'
+import { applyCanvasCommand, canvasHistoryMergeWindowMs, createCanvasHistory, redoCanvasHistory, undoCanvasHistory } from './history'
 import { collectDownstreamNodeIds, createCanvasDocument } from './canvas-state'
 import { canvasNodeRuntimePatch, resolveDragTransaction, updateCanvasHistoryViewport } from './use-canvas-document'
 import type { CanvasNode } from '../nodes/WorkflowNodes'
@@ -22,6 +22,167 @@ describe('canvas command history', () => {
     expect(history.present.nodes).toHaveLength(0)
     history = redoCanvasHistory(history)
     expect(history.present.nodes.map((entry) => entry.id)).toEqual(['a'])
+  })
+
+  it('records a resize as document state so it survives undo and reload', () => {
+    let history = createCanvasHistory(createCanvasDocument())
+    history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [node('a')] })
+    history = applyCanvasCommand(history, { type: 'resize-nodes', dimensions: { a: { width: 320, height: 240 } } })
+    expect(history.present.nodes[0]).toMatchObject({ width: 320, height: 240 })
+
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes[0].width).toBeUndefined()
+    history = redoCanvasHistory(history)
+    expect(history.present.nodes[0]).toMatchObject({ width: 320, height: 240 })
+  })
+
+  it('coalesces one resize gesture into a single undo entry', () => {
+    let history = createCanvasHistory(createCanvasDocument())
+    history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [node('a')] })
+    const depth = history.past.length
+    for (const width of [260, 280, 300, 320]) {
+      history = applyCanvasCommand(history, { type: 'resize-nodes', dimensions: { a: { width, height: 200 } }, mergeKey: 'resize:1:a' })
+    }
+    expect(history.present.nodes[0].width).toBe(320)
+    expect(history.past.length).toBe(depth + 1)
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes[0].width).toBeUndefined()
+  })
+
+  it('merges a burst of edits to one node but starts fresh after a pause', () => {
+    let history = createCanvasHistory(createCanvasDocument())
+    history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [node('a')] }, 50, 0)
+    const depth = history.past.length
+
+    // A burst: same node, same merge key, keystrokes close together.
+    history = applyCanvasCommand(history, { type: 'update-node-data', nodeId: 'a', patch: { prompt: '一只' }, mergeKey: 'data:a' }, 50, 100)
+    history = applyCanvasCommand(history, { type: 'update-node-data', nodeId: 'a', patch: { prompt: '一只猫' }, mergeKey: 'data:a' }, 50, 900)
+    expect(history.past.length).toBe(depth + 1)
+
+    // Coming back later is a separate edit, even though the key is unchanged.
+    history = applyCanvasCommand(history, { type: 'update-node-data', nodeId: 'a', patch: { prompt: '一只黑猫' }, mergeKey: 'data:a' }, 50, 900 + canvasHistoryMergeWindowMs + 1)
+    expect(history.past.length).toBe(depth + 2)
+
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes[0].data.prompt).toBe('一只猫')
+  })
+
+  it('keeps the merge window wide enough for IME word-by-word input', () => {
+    // Each committed Chinese word arrives as its own command and the gaps
+    // between them are long. A short window would shatter one sentence.
+    expect(canvasHistoryMergeWindowMs).toBeGreaterThanOrEqual(2_000)
+  })
+
+  it('retargets a connection as one undoable command', () => {
+    let history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('c', 480)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:text', target: 'b', targetHandle: 'in:text' }],
+    })
+    history = applyCanvasCommand(history, {
+      type: 'reconnect-edge',
+      edgeId: 'e1',
+      edge: { id: 'e1', source: 'a', sourceHandle: 'out:text', target: 'c', targetHandle: 'in:text' },
+    })
+    expect(history.present.edges).toHaveLength(1)
+    expect(history.present.edges[0].target).toBe('c')
+
+    // One gesture, one undo: the old wire must come back in a single step.
+    history = undoCanvasHistory(history)
+    expect(history.present.edges[0].target).toBe('b')
+  })
+
+  it('splices an existing node into a wire as one undoable command', () => {
+    let history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('loose', 120)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' }],
+    })
+    history = applyCanvasCommand(history, {
+      type: 'splice-node-on-edge',
+      nodeId: 'loose',
+      edgeId: 'e1',
+      before: { id: 'x1', source: 'a', sourceHandle: 'out:image', target: 'loose', targetHandle: 'in:images' },
+      after: { id: 'x2', source: 'loose', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' },
+    })
+    // The node already existed, so only the wiring changes.
+    expect(history.present.nodes).toHaveLength(3)
+    expect(history.present.edges.map((entry) => entry.id)).toEqual(['x1', 'x2'])
+
+    history = undoCanvasHistory(history)
+    expect(history.present.edges.map((entry) => entry.id)).toEqual(['e1'])
+  })
+
+  it('rejects a splice whose wiring does not actually pass through the node', () => {
+    const history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('loose', 120)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' }],
+    })
+    expect(() => applyCanvasCommand(history, {
+      type: 'splice-node-on-edge',
+      nodeId: 'loose',
+      edgeId: 'e1',
+      before: { id: 'x1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' },
+      after: { id: 'x2', source: 'loose', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' },
+    })).toThrow(/连线关系无效/)
+  })
+
+  it('deletes a node and its bridge in one undoable command', () => {
+    let history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('c', 480)],
+      edges: [
+        { id: 'e1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' },
+        { id: 'e2', source: 'b', sourceHandle: 'out:image', target: 'c', targetHandle: 'in:images' },
+      ],
+    })
+    history = applyCanvasCommand(history, {
+      type: 'delete-elements',
+      nodeIds: ['b'],
+      bridges: [{ id: 'bridge', source: 'a', sourceHandle: 'out:image', target: 'c', targetHandle: 'in:images' }],
+    })
+    expect(history.present.nodes.map((entry) => entry.id)).toEqual(['a', 'c'])
+    expect(history.present.edges).toEqual([
+      { id: 'bridge', source: 'a', sourceHandle: 'out:image', target: 'c', targetHandle: 'in:images' },
+    ])
+
+    history = undoCanvasHistory(history)
+    expect(history.present.nodes).toHaveLength(3)
+    expect(history.present.edges.map((entry) => entry.id)).toEqual(['e1', 'e2'])
+  })
+
+  it('drops a bridge that would point at a node being removed', () => {
+    const history = applyCanvasCommand(createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240), node('c', 480)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:image', target: 'b', targetHandle: 'in:images' }],
+    }), {
+      type: 'delete-elements',
+      nodeIds: ['b', 'c'],
+      bridges: [{ id: 'bridge', source: 'a', sourceHandle: 'out:image', target: 'c', targetHandle: 'in:images' }],
+    })
+    expect(history.present.edges).toEqual([])
+  })
+
+  it('rejects a retarget onto a node that does not exist', () => {
+    const history = createCanvasHistory({
+      ...createCanvasDocument(),
+      nodes: [node('a'), node('b', 240)],
+      edges: [{ id: 'e1', source: 'a', sourceHandle: 'out:text', target: 'b', targetHandle: 'in:text' }],
+    })
+    expect(() => applyCanvasCommand(history, {
+      type: 'reconnect-edge',
+      edgeId: 'e1',
+      edge: { id: 'e1', source: 'a', sourceHandle: 'out:text', target: 'ghost', targetHandle: 'in:text' },
+    })).toThrow(/不存在的节点/)
+  })
+
+  it('refuses to resize a locked node', () => {
+    let history = createCanvasHistory(createCanvasDocument())
+    history = applyCanvasCommand(history, { type: 'add-nodes', nodes: [{ ...node('a'), locked: true }] })
+    history = applyCanvasCommand(history, { type: 'resize-nodes', dimensions: { a: { width: 320, height: 240 } } })
+    expect(history.present.nodes[0].width).toBeUndefined()
   })
 
   it('inserts a node on an edge as one undoable structural command', () => {

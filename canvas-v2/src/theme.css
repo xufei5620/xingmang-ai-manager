@@ -2,7 +2,8 @@
   color-scheme: dark;
   font-synthesis: none;
   --canvas-bg: #0e1013;
-  --canvas-grid: rgba(205, 214, 227, 0.09);
+  --canvas-grid: rgba(205, 214, 227, 0.18);
+  --canvas-edge: #8b93ad;
   --surface-1: #15181d;
   --surface-2: #1b1f25;
   --surface-3: #20252d;
@@ -28,15 +29,99 @@
   --port-image: #65c592;
   --port-video: #e58b6e;
   --port-audio: #d49ce8;
+  /* Chrome that sits on filled accent or over media keeps the same values in
+     both themes, because the surface underneath is dark either way. This is
+     the existing --surface-media convention. */
+  --text-on-accent: #ffffff;
+  --divider-on-accent: rgba(255, 255, 255, 0.2);
+  --media-overlay-bg: rgba(10, 13, 17, 0.85);
+  --media-overlay-border: rgba(255, 255, 255, 0.12);
+  --media-overlay-text: #e8edf5;
+  --media-overlay-text-strong: #ffffff;
+  --overlay-hover: rgba(255, 255, 255, 0.13);
+  --favorite: #ffd166;
+  --waveform: #1cb7d7;
+  /* PortKind is text | image | video | audio; each has a --port-* hue above. */
+
+  --backdrop-soft: rgba(5, 7, 9, 0.6);
+  --backdrop: rgba(5, 7, 9, 0.72);
+  --backdrop-strong: rgba(5, 7, 9, 0.88);
+
+  --shadow-edge-highlight: 0 1px 0 rgba(255, 255, 255, 0.02);
+  --shadow-menu: 0 6px 18px rgba(0, 0, 0, 0.26);
+  --shadow-panel: 0 8px 22px rgba(0, 0, 0, 0.28);
+  --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.48);
+  --shadow-lightbox: 0 20px 70px rgba(0, 0, 0, 0.55);
   --shadow-floating: 0 12px 30px rgba(0, 0, 0, 0.32);
+  --radius-chip: 4px;
   --radius-control: 6px;
   --radius-panel: 8px;
+  --radius-round: 999px;
+
+  /* Run states are kept separate from success/warning/danger so queued and
+     cached can be retuned without disturbing generic feedback colors. */
+  --state-dirty: var(--warning);
+  --state-queued: #6c8cd5;
+  --state-running: var(--accent);
+  --state-cached: #6b7683;
+  --state-succeeded: var(--success);
+  --state-failed: var(--danger);
+
+  /* Named by value on purpose: --space-10 is 10px, with no index-to-pixel
+     lookup to get wrong. A 2px base rather than 4px, because this is a dense
+     tool UI whose controls were built on an even-pixel rhythm; forcing a 4px
+     grid would move 300+ declarations by up to 33% for no visual gain. */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-10: 10px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --space-40: 40px;
+  --space-48: 48px;
+  --space-56: 56px;
+
+  /* 11px is a hard floor. Below it, switch to a simplified representation
+     rather than shrinking type further. */
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 20px;
+
+  --weight-normal: 400;
+  --weight-medium: 500;
+  --weight-semibold: 600;
+  --weight-strong: 650;
+
+  --z-canvas-overlay: 10;
+  --z-panel: 20;
+  --z-floating: 30;
+  --z-modal: 40;
+  --z-toast: 50;
+
+  --duration-fast: 120ms;
+  --duration-base: 180ms;
+  --ease-out: cubic-bezier(0.2, 0, 0, 1);
+
+  --node-width: 280px;
+  --node-width-min: 240px;
+  --node-header-height: 36px;
+  --node-row-height: 28px;
+  --node-spine-width: 3px;
+  --node-label-column: 92px;
+  --node-control-min: 128px;
 
   --xy-background-color-default: var(--canvas-bg);
   --xy-background-pattern-color-default: var(--canvas-grid);
-  --xy-edge-stroke-default: #68717e;
-  --xy-edge-stroke-selected-default: var(--accent);
-  --xy-connectionline-stroke-default: var(--accent);
+  --xy-edge-stroke-default: var(--canvas-edge);
+  --xy-edge-stroke-selected-default: var(--canvas-edge);
+  --xy-connectionline-stroke-default: var(--canvas-edge);
   --xy-attribution-background-color-default: rgba(17, 19, 21, 0.8);
   --xy-minimap-background-color-default: var(--surface-1);
   --xy-minimap-mask-background-color-default: rgba(8, 10, 12, 0.72);
@@ -50,7 +135,8 @@
 :root[data-theme="light"] {
   color-scheme: light;
   --canvas-bg: #eef1f3;
-  --canvas-grid: rgba(50, 65, 74, 0.11);
+  --canvas-grid: rgba(50, 65, 74, 0.2);
+  --canvas-edge: #7d84a3;
   --surface-1: #ffffff;
   --surface-2: #f7f9fa;
   --surface-3: #edf1f3;
@@ -76,8 +162,17 @@
   --port-image: #2d8d68;
   --port-video: #bb654a;
   --port-audio: #8957a3;
+  /* --state-dirty/running/succeeded/failed follow the tokens they alias and
+     need no light override. Only the two standalone hues do. */
+  --state-queued: #4a6ab0;
+  --state-cached: #7c8794;
+  --shadow-edge-highlight: 0 1px 0 rgba(255, 255, 255, 0.5);
+  --shadow-menu: 0 6px 18px rgba(35, 47, 55, 0.14);
+  --shadow-panel: 0 8px 22px rgba(35, 47, 55, 0.16);
+  --shadow-modal: 0 20px 60px rgba(35, 47, 55, 0.24);
+  --shadow-lightbox: 0 20px 70px rgba(35, 47, 55, 0.3);
   --shadow-floating: 0 14px 34px rgba(35, 47, 55, 0.18);
-  --xy-edge-stroke-default: #788792;
+  --xy-edge-stroke-default: var(--canvas-edge);
   --xy-attribution-background-color-default: rgba(255, 255, 255, 0.86);
   --xy-minimap-mask-background-color-default: rgba(238, 241, 243, 0.72);
 }

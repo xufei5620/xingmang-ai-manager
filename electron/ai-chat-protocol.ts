@@ -40,7 +40,8 @@ export type AiChatParameters = {
 }
 
 export type ImageQuality = 'low' | 'medium' | 'high' | 'auto'
-export type ImageModelProvider = 'gpt-image' | 'jimeng' | 'grok-image'
+export type ImageResolution = '1K' | '2K' | '4K'
+export type ImageModelProvider = 'gpt-image' | 'gemini-image' | 'jimeng' | 'grok-image'
 export type VideoModelProvider = 'grok-video' | 'minimax-h3'
 export type MiniMaxVideoMode = 't2va' | 'i2va' | 'fl2va' | 'l2va' | 'ref2va'
 export type MiniMaxVideoResolution = '480p' | '720p'
@@ -78,6 +79,8 @@ export type ImageModelCapability = {
   sizePolicy: ImageSizePolicy
   qualities: readonly ImageQuality[]
   defaultQuality?: ImageQuality
+  resolutions: readonly ImageResolution[]
+  defaultResolution: ImageResolution
   supportsEdits: boolean
   unavailableReason?: string
 }
@@ -110,7 +113,7 @@ export type ChatCompletionsRequestBody = {
   seed?: number
 }
 
-export type ImageGenerationRequestBody = {
+export type ImagesApiGenerationRequestBody = {
   model: string
   prompt: string
   n: 1
@@ -122,6 +125,22 @@ export type ImageGenerationRequestBody = {
     height: number
   }
 }
+
+export type GeminiImageGenerationRequestBody = {
+  model: string
+  messages: [{ role: 'user'; content: string }]
+  stream: false
+  extra_body: {
+    google: {
+      image_config: {
+        aspect_ratio: string
+        image_size: ImageResolution
+      }
+    }
+  }
+}
+
+export type ImageGenerationRequestBody = ImagesApiGenerationRequestBody | GeminiImageGenerationRequestBody
 
 export type GrokVideoGenerationRequestBody = {
   model: string
@@ -158,6 +177,7 @@ export type AiChatProtocolErrorCode =
   | 'model-unavailable'
   | 'invalid-image-size'
   | 'invalid-image-quality'
+  | 'invalid-image-resolution'
   | 'model-not-video'
   | 'invalid-video-seconds'
   | 'invalid-video-mode'
@@ -177,6 +197,8 @@ export class AiChatProtocolError extends Error {
 
 const GPT_IMAGE_1_SIZES = ['1024x1024', '1024x1536', '1536x1024', 'auto'] as const
 const GPT_IMAGE_QUALITIES = ['low', 'medium', 'high', 'auto'] as const
+const ALL_IMAGE_RESOLUTIONS = ['1K', '2K', '4K'] as const
+const ONE_K_IMAGE_RESOLUTION = ['1K'] as const
 
 const GPT_IMAGE_1_POLICY: ImageSizePolicy = {
   kind: 'allow-list',
@@ -206,9 +228,66 @@ const GROK_IMAGE_POLICY: ImageSizePolicy = {
   default: 'auto',
 }
 
+const GEMINI_IMAGE_ASPECT_RATIO_BY_SIZE = {
+  '1024x1024': '1:1',
+  '1536x1152': '4:3',
+  '1152x1536': '3:4',
+  '1280x720': '16:9',
+  '720x1280': '9:16',
+  '1536x1024': '3:2',
+  '1024x1536': '2:3',
+  '1280x1024': '5:4',
+  '1024x1280': '4:5',
+  '1792x768': '21:9',
+} as const
+
+const GEMINI_IMAGE_POLICY: ImageSizePolicy = {
+  kind: 'allow-list',
+  values: Object.keys(GEMINI_IMAGE_ASPECT_RATIO_BY_SIZE),
+  default: '1024x1024',
+}
+
+const GPT_IMAGE_2_SIZES_BY_RESOLUTION: Readonly<Record<Exclude<ImageResolution, '1K'>, Readonly<Record<string, string>>>> = {
+  '2K': {
+    '1024x1024': '2048x2048',
+    '1536x1152': '2048x1536',
+    '1152x1536': '1536x2048',
+    '1280x720': '1920x1088',
+    '720x1280': '1088x1920',
+    '1536x1024': '2048x1360',
+    '1024x1536': '1360x2048',
+    '1280x1024': '2048x1648',
+    '1024x1280': '1648x2048',
+    '1792x768': '2048x880',
+  },
+  '4K': {
+    '1024x1024': '4096x4096',
+    '1536x1152': '4096x3072',
+    '1152x1536': '3072x4096',
+    '1280x720': '3840x2160',
+    '720x1280': '2160x3840',
+    '1536x1024': '4096x2736',
+    '1024x1536': '2736x4096',
+    '1280x1024': '4096x3280',
+    '1024x1280': '3280x4096',
+    '1792x768': '4096x1760',
+  },
+}
+
 type ImagePresetDefinition = Omit<ImageModelCapability, 'model' | 'source'>
 
 const IMAGE_PRESET_DEFINITIONS = {
+  'gemini-3.1-flash-image': {
+    kind: 'image',
+    provider: 'gemini-image',
+    available: true,
+    hidden: false,
+    sizePolicy: GEMINI_IMAGE_POLICY,
+    qualities: [],
+    resolutions: ALL_IMAGE_RESOLUTIONS,
+    defaultResolution: '1K',
+    supportsEdits: false,
+  },
   'gpt-image-1': {
     kind: 'image',
     provider: 'gpt-image',
@@ -217,6 +296,8 @@ const IMAGE_PRESET_DEFINITIONS = {
     sizePolicy: GPT_IMAGE_1_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
+    resolutions: ONE_K_IMAGE_RESOLUTION,
+    defaultResolution: '1K',
     supportsEdits: true,
   },
   'gpt-image-1.5': {
@@ -227,6 +308,8 @@ const IMAGE_PRESET_DEFINITIONS = {
     sizePolicy: GPT_IMAGE_2_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
+    resolutions: ONE_K_IMAGE_RESOLUTION,
+    defaultResolution: '1K',
     supportsEdits: true,
     unavailableReason: '当前服务没有该模型的访问权限',
   },
@@ -238,6 +321,8 @@ const IMAGE_PRESET_DEFINITIONS = {
     sizePolicy: GPT_IMAGE_2_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
+    resolutions: ALL_IMAGE_RESOLUTIONS,
+    defaultResolution: '1K',
     supportsEdits: true,
   },
   'gpt-image-2-2026-04-21': {
@@ -248,6 +333,8 @@ const IMAGE_PRESET_DEFINITIONS = {
     sizePolicy: GPT_IMAGE_2_POLICY,
     qualities: GPT_IMAGE_QUALITIES,
     defaultQuality: 'low',
+    resolutions: ALL_IMAGE_RESOLUTIONS,
+    defaultResolution: '1K',
     supportsEdits: true,
   },
   jimeng_high_aes_general_v21_L: {
@@ -257,6 +344,8 @@ const IMAGE_PRESET_DEFINITIONS = {
     hidden: false,
     sizePolicy: JIMENG_POLICY,
     qualities: [],
+    resolutions: ONE_K_IMAGE_RESOLUTION,
+    defaultResolution: '1K',
     supportsEdits: false,
   },
   'grok-imagine-image': {
@@ -266,6 +355,8 @@ const IMAGE_PRESET_DEFINITIONS = {
     hidden: false,
     sizePolicy: GROK_IMAGE_POLICY,
     qualities: [],
+    resolutions: ONE_K_IMAGE_RESOLUTION,
+    defaultResolution: '1K',
     supportsEdits: true,
   },
   'grok-imagine-image-2.0': {
@@ -275,6 +366,8 @@ const IMAGE_PRESET_DEFINITIONS = {
     hidden: false,
     sizePolicy: GROK_IMAGE_POLICY,
     qualities: [],
+    resolutions: ONE_K_IMAGE_RESOLUTION,
+    defaultResolution: '1K',
     supportsEdits: true,
   },
   'grok-imagine-image-quality': {
@@ -284,6 +377,8 @@ const IMAGE_PRESET_DEFINITIONS = {
     hidden: false,
     sizePolicy: GROK_IMAGE_POLICY,
     qualities: [],
+    resolutions: ONE_K_IMAGE_RESOLUTION,
+    defaultResolution: '1K',
     supportsEdits: true,
   },
 } as const satisfies Record<string, ImagePresetDefinition>
@@ -348,6 +443,7 @@ function createImageCapability(
       ? { ...definition.sizePolicy, values: [...definition.sizePolicy.values] }
       : { ...definition.sizePolicy },
     qualities: [...definition.qualities],
+    resolutions: [...definition.resolutions],
   }
 }
 
@@ -406,6 +502,7 @@ export function isImageModel(model: string): boolean {
 const IMAGE_GROUP_NAME = '生图分组'
 const IMAGE_GROUP_MODEL_ORDER = [
   'gpt-image-2',
+  'gemini-3.1-flash-image',
   'gpt-image-1',
   'jimeng_high_aes_general_v21_L',
   'grok-imagine-image-2.0',
@@ -548,11 +645,38 @@ export function validateImageSize(size: string, capability: ImageModelCapability
   return normalized
 }
 
+export function validateImageResolution(
+  resolution: ImageResolution,
+  capability: ImageModelCapability,
+): ImageResolution {
+  if (!capability.resolutions.includes(resolution)) {
+    throw new AiChatProtocolError(
+      'invalid-image-resolution',
+      `${capability.model} does not support ${resolution} image resolution`,
+    )
+  }
+  return resolution
+}
+
+function scaleGptImage2Size(size: string, resolution: ImageResolution): string {
+  if (resolution === '1K') return size
+  const preset = GPT_IMAGE_2_SIZES_BY_RESOLUTION[resolution][size]
+  if (preset) return preset
+  const dimensions = parseImageDimensions(size)
+  if (!dimensions) throw new AiChatProtocolError('invalid-image-size', 'GPT Image 2 requires explicit dimensions')
+  const target = resolution === '2K' ? 2048 : 4096
+  const scale = target / Math.max(dimensions.width, dimensions.height)
+  const width = Math.max(256, Math.min(4096, Math.round((dimensions.width * scale) / 16) * 16))
+  const height = Math.max(256, Math.min(4096, Math.round((dimensions.height * scale) / 16) * 16))
+  return `${width}x${height}`
+}
+
 export function buildImageGenerationRequest(input: {
   model: string
   prompt: string
   size?: string
   quality?: ImageQuality
+  imageResolution?: ImageResolution
 }): ImageGenerationRequestBody {
   const capability = resolveAiModelCapability(input.model)
   if (capability.kind !== 'image') {
@@ -571,6 +695,11 @@ export function buildImageGenerationRequest(input: {
     throw new AiChatProtocolError('input-limit-exceeded', 'image prompt is too long')
   }
 
+  const imageResolution = validateImageResolution(
+    input.imageResolution ?? capability.defaultResolution,
+    capability,
+  )
+
   if (capability.provider === 'grok-image') {
     // xAI otherwise returns a short-lived imgen.x.ai URL. Asking new-api for
     // base64 avoids a second network hop and keeps the generated result
@@ -579,6 +708,22 @@ export function buildImageGenerationRequest(input: {
   }
 
   const size = validateImageSize(input.size ?? capability.sizePolicy.default, capability)
+  if (capability.provider === 'gemini-image') {
+    const aspectRatio = GEMINI_IMAGE_ASPECT_RATIO_BY_SIZE[size as keyof typeof GEMINI_IMAGE_ASPECT_RATIO_BY_SIZE]
+    if (!aspectRatio) {
+      throw new AiChatProtocolError('invalid-image-size', 'Gemini image aspect ratio is not supported')
+    }
+    return {
+      model: capability.model,
+      messages: [{ role: 'user', content: input.prompt }],
+      stream: false,
+      extra_body: {
+        google: {
+          image_config: { aspect_ratio: aspectRatio, image_size: imageResolution },
+        },
+      },
+    }
+  }
   if (capability.provider === 'jimeng') {
     const dimensions = parseImageDimensions(size)
     if (!dimensions) {
@@ -600,7 +745,9 @@ export function buildImageGenerationRequest(input: {
     model: capability.model,
     prompt: input.prompt,
     n: 1,
-    size,
+    size: /^gpt-image-2(?:-|$)/i.test(capability.model)
+      ? validateImageSize(scaleGptImage2Size(size, imageResolution), capability)
+      : size,
     quality,
   }
 }

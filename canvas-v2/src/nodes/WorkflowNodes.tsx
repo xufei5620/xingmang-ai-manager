@@ -1,19 +1,21 @@
-import { createContext, memo, useContext, useMemo, type CSSProperties, type DragEvent, type ReactNode } from 'react'
-import { Handle, Position, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import { AlertCircle, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
+import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
+import { Handle, NodeResizer, NodeToolbar, Position, useConnection, useNodeConnections, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react'
+import { AlertCircle, AlertTriangle, ArrowRight, ArrowUp, BookmarkPlus, CheckCircle2, Circle, Clock3, Download, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, RefreshCw, Trash2, Type, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
-import type { NodeDefinition } from '../domain/node-definition'
+import type { NodeDefinition, NodePortDefinition } from '../domain/node-definition'
 import type { AssetRef, NodeKind, WorkflowNodeData } from '../model'
 import type { CanvasAssetSummary } from '../host'
 import {
   availableImageModelPresets,
   availableVideoModelPresets,
   defaultImageQuality,
+  defaultImageResolution,
   defaultImageSize,
   imageSizeLabel,
   imageModelPreset,
   imageModelPresets,
   imageQualityOptions,
+  imageResolutionOptions,
   presetVideoModels,
   defaultVideoModel,
   defaultVideoSeconds,
@@ -26,11 +28,16 @@ import {
 } from '../models'
 import { AudioPreview, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from '../components/MediaPreview'
 import { PromptEditor } from '../components/PromptEditor'
+import { promptMentionMime } from '../components/prompt-mentions'
 import { buildCanvasUpstreamReferences, type UpstreamMediaReference } from '../components/upstream-references'
-import { mediaAssetAspectRatio } from '../library/media-assets'
+import { finiteMediaDurationSeconds, mediaAssetAspectRatio, mediaAssetDurationSeconds, mediaAssetSizeLabel, mediaClipDurationChipLabel, mediaHoverTitle, requestedClipDurationSeconds, requestedSizeLabel } from '../library/media-assets'
 import { createNodeRendererRegistry } from './node-renderer-registry'
+import { composerFieldLabel, composerPromptPlaceholder, composerToolbarFields } from './generation-composer'
+import { isMediaResultKind, mediaBoundChipKind, mediaBoundChipLabel, usesMediaBoundLayout } from './media-bound'
+import { isMediaSourceKind, portSlotOffsetY } from './port-geometry'
 import type { CanvasNodeLod } from './node-lod'
 import { nodeResultStagingState } from '../runtime/run-projection'
+import { formatRunElapsed, generationElapsedChipLabel, runElapsedMilliseconds } from './run-timing'
 
 export function ModelSuggestions() {
   return (
@@ -123,48 +130,61 @@ const runStageLabel: Record<NonNullable<WorkflowNodeData['runStage']>, string> =
 
 interface NodeChangeHandlers {
   onPromptChange(nodeId: string, prompt: string): void
+  onPromptCommit(nodeId: string, prompt: string): void
   onModelChange(nodeId: string, model: string): void
   onQualityChange(nodeId: string, quality: string): void
+  onImageResolutionChange(nodeId: string, imageResolution: '1K' | '2K' | '4K'): void
   onSizeChange(nodeId: string, size: string): void
   onSecondsChange(nodeId: string, seconds: string): void
   onSettingsChange(nodeId: string, patch: Record<string, unknown>): void
   onSavePromptPreset(nodeId: string): void
-  onRerun(nodeId: string): void
+  onRunToNode(nodeId: string): void
+  onRunFromNode(nodeId: string): void
+  onDeleteNode(nodeId: string): void
   onDownloadAsset(nodeId: string): void
   onShowAssetMenu(nodeId: string): void
   onResumeTask(nodeId: string): void
+  /** 切换候选就是切换产物；旧模型里的采纳/丢弃两步已取消。 */
   onSelectCandidate(nodeId: string, candidateId: string): void
-  onAdoptCandidate(nodeId: string, candidateId: string): void
-  onDiscardCandidate(nodeId: string, candidateId: string): void
   onShowCandidateMenu(assetId: string): void
   onBindAsset(nodeId: string, assetId: string): void
   onPickAsset(nodeId: string): void
   onImportAssetFile(nodeId: string, file: File): void
   onPreviewAsset(asset: AssetRef): void
-  onMediaMetadata(nodeId: string, assetId: string, width: number, height: number): void
+  onDisconnectIncoming(edgeId: string): void
+  onMediaMetadata(nodeId: string, assetId: string, width: number, height: number, durationSeconds?: number): void
+  /**
+   * Whether a port would accept the connection currently being dragged. Lives
+   * here rather than in the port component because only App holds the graph.
+   */
+  isPortCompatible(connection: Connection): boolean
 }
 
 let handlers: NodeChangeHandlers = {
   onPromptChange: () => undefined,
+  onPromptCommit: () => undefined,
   onModelChange: () => undefined,
   onQualityChange: () => undefined,
+  onImageResolutionChange: () => undefined,
   onSizeChange: () => undefined,
   onSecondsChange: () => undefined,
   onSettingsChange: () => undefined,
   onSavePromptPreset: () => undefined,
-  onRerun: () => undefined,
+  onRunToNode: () => undefined,
+  onRunFromNode: () => undefined,
+  onDeleteNode: () => undefined,
   onDownloadAsset: () => undefined,
   onShowAssetMenu: () => undefined,
   onResumeTask: () => undefined,
   onSelectCandidate: () => undefined,
-  onAdoptCandidate: () => undefined,
-  onDiscardCandidate: () => undefined,
   onShowCandidateMenu: () => undefined,
   onBindAsset: () => undefined,
   onPickAsset: () => undefined,
   onImportAssetFile: () => undefined,
   onPreviewAsset: () => undefined,
+  onDisconnectIncoming: () => undefined,
   onMediaMetadata: () => undefined,
+  isPortCompatible: () => true,
 }
 
 export function registerNodeChangeHandlers(next: NodeChangeHandlers): void {
@@ -190,14 +210,62 @@ function mediaInputLabel(kind: NodeKind): string {
   return kind === 'video-input' ? '视频' : kind === 'audio-input' ? '音频' : '图片'
 }
 
-function MediaInputDropZone({ id, kind, asset, locked = false, disabled = false }: { id: string; kind: 'image-input' | 'video-input' | 'audio-input'; asset?: AssetRef; locked?: boolean; disabled?: boolean }) {
-  const label = mediaInputLabel(kind)
-  const expectedAssetKind = kind === 'video-input' ? 'video' : kind === 'audio-input' ? 'audio' : 'image'
+const mediaKindIcon = {
+  image: ImageIcon,
+  video: Film,
+  audio: Music2,
+} satisfies Record<AssetRef['kind'], typeof ImageIcon>
+
+function reportPreviewMetadata(nodeId: string, assetId: string | undefined, media: HTMLImageElement | HTMLVideoElement): void {
+  if (!assetId) return
+  if (media instanceof HTMLVideoElement) {
+    handlers.onMediaMetadata(nodeId, assetId, media.videoWidth, media.videoHeight, finiteMediaDurationSeconds(media.duration))
+    return
+  }
+  handlers.onMediaMetadata(nodeId, assetId, media.naturalWidth, media.naturalHeight)
+}
+
+function MediaBoundPreview({
+  id,
+  kind,
+  asset,
+  requestedSize,
+  durationMs,
+  runningStartedAt,
+  requestedSeconds,
+  replaceable,
+  locked = false,
+  disabled = false,
+}: {
+  id: string
+  kind: string
+  asset?: AssetRef
+  requestedSize?: string
+  durationMs?: number
+  runningStartedAt?: string
+  requestedSeconds?: string
+  replaceable: boolean
+  locked?: boolean
+  disabled?: boolean
+}) {
+  const label = isMediaSourceKind(kind) ? mediaInputLabel(kind as NodeKind) : mediaBoundChipLabel(kind)
+  const expectedAssetKind = isMediaSourceKind(kind)
+    ? (kind === 'video-input' ? 'video' : kind === 'audio-input' ? 'audio' : 'image')
+    : mediaBoundChipKind(kind)
   const hasAsset = Boolean(asset?.assetId)
+  const pending = isMediaResultKind(kind) && !hasAsset
   const previewUrl = asset?.kind === expectedAssetKind && isLocalCanvasAssetUrl(asset.localUrl, expectedAssetKind)
     ? asset.localUrl
     : undefined
+  const KindIcon = mediaKindIcon[expectedAssetKind]
+  const sizeLabel = mediaAssetSizeLabel(asset) ?? requestedSizeLabel(requestedSize)
+  const clipLabel = (expectedAssetKind === 'video' || expectedAssetKind === 'audio')
+    ? mediaClipDurationChipLabel(mediaAssetDurationSeconds(asset) ?? requestedClipDurationSeconds(requestedSeconds))
+    : null
+  const elapsedLabel = isMediaResultKind(kind) ? generationElapsedChipLabel(durationMs) : null
+  const previewTitle = mediaHoverTitle([sizeLabel, pending ? undefined : '双击放大预览'])
   const acceptDrag = (event: DragEvent<HTMLDivElement>) => {
+    if (!replaceable) return
     if (event.dataTransfer.types.includes('application/x-xingmang-asset-id') || event.dataTransfer.types.includes('Files')) {
       event.preventDefault()
       event.stopPropagation()
@@ -212,36 +280,39 @@ function MediaInputDropZone({ id, kind, asset, locked = false, disabled = false 
         alt={`${label}素材预览`}
         draggable={false}
         style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
-        title="双击放大预览"
-        onLoad={(event) => asset.assetId && handlers.onMediaMetadata(id, asset.assetId, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)}
+        title={previewTitle}
+        onLoad={(event) => reportPreviewMetadata(id, asset.assetId, event.currentTarget)}
         onDoubleClick={(event) => { event.stopPropagation(); handlers.onPreviewAsset(asset) }}
       />
     : previewUrl && asset?.kind === 'video'
       ? <ViewportVideo
-          className="wf-input-preview wf-preview wf-input-preview-video nodrag nowheel"
+          className="wf-input-preview wf-preview wf-input-preview-video"
           src={previewUrl}
           aria-label={`${label}素材预览`}
-          controls
+          canvasPlayback
           draggable={false}
           style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
-          title="双击放大预览"
-          onLoadedMetadata={(event) => asset.assetId && handlers.onMediaMetadata(id, asset.assetId, event.currentTarget.videoWidth, event.currentTarget.videoHeight)}
+          title={previewTitle}
+          onLoadedMetadata={(event) => reportPreviewMetadata(id, asset.assetId, event.currentTarget)}
           onDoubleClick={(event) => { event.stopPropagation(); handlers.onPreviewAsset(asset) }}
         />
       : previewUrl && asset?.kind === 'audio'
         ? <div className="wf-input-preview wf-preview wf-input-preview-audio"><AudioPreview className="nodrag" src={previewUrl} /></div>
         : hasAsset
           ? <span className="wf-input-preview media-unavailable" role="img" aria-label={`${label}素材不可用`}><Upload size={16} aria-hidden="true" /><span>素材不可用</span></span>
-          : null
+          : pending
+            ? <span className="wf-media-pending" role="img" aria-label="待生成">待生成</span>
+            : null
   return (
     <div
-      className={`wf-drop-target${hasAsset ? ' has-asset' : ' nodrag'}`}
+      className={`wf-drop-target${hasAsset ? ' has-asset' : pending ? ' is-pending' : ' nodrag'}`}
       onDragOver={acceptDrag}
       onDragLeave={(event) => event.currentTarget.classList.remove('is-drag-over')}
       onDrop={(event) => {
         event.preventDefault()
         event.stopPropagation()
         event.currentTarget.classList.remove('is-drag-over')
+        if (!replaceable) return
         const assetId = event.dataTransfer.getData('application/x-xingmang-asset-id')
         if (assetId) handlers.onBindAsset(id, assetId)
         else if (event.dataTransfer.files[0]) handlers.onImportAssetFile(id, event.dataTransfer.files[0])
@@ -253,22 +324,36 @@ function MediaInputDropZone({ id, kind, asset, locked = false, disabled = false 
       }}
     >
       {preview}
-      {!hasAsset && <Upload size={16} aria-hidden="true" />}
-      {!hasAsset && <span>{`拖入${label}素材或从文件选择`}</span>}
-      {!hasAsset && <button type="button" className="wf-pick-asset" onClick={() => handlers.onPickAsset(id)}>
+      {replaceable && !hasAsset && <Upload size={16} aria-hidden="true" />}
+      {replaceable && !hasAsset && <span>{`拖入${label}素材或从文件选择`}</span>}
+      {replaceable && !hasAsset && <button type="button" className="wf-pick-asset" onClick={() => handlers.onPickAsset(id)}>
         <FolderOpen size={13} aria-hidden="true" />从文件选择
       </button>}
-      {hasAsset && previewUrl && <div className="wf-media-input-overlay">
-        <strong>{label}素材</strong>
-        <span>
-          <button type="button" className="nodrag" title={`替换${label}素材`} aria-label={`替换${label}素材`} onClick={() => handlers.onPickAsset(id)}><FolderOpen size={13} /></button>
-          <button type="button" className="nodrag" title={`放大${label}预览`} aria-label={`放大${label}预览`} onClick={() => handlers.onPreviewAsset(asset as AssetRef)}><Maximize2 size={13} /></button>
-        </span>
-      </div>}
+      {/* A bound media node has no header, so the type chip is the only place
+          the kind can be read at a glance. The hue is the port hue, so the chip
+          and the wire leaving the node say the same thing. Keep the type chip
+          at every zoom: hiding it with the summary LOD made a still-readable
+          picture look unlabeled. Pixel size stays hover-only. */}
+      {(pending || (hasAsset && previewUrl)) && (
+        <div className="wf-media-chips">
+          <span className={`wf-media-kind is-${expectedAssetKind}`}><KindIcon size={12} aria-hidden="true" />{label}</span>
+          {sizeLabel && <span className="wf-media-size">{sizeLabel}</span>}
+        </div>
+      )}
       {hasAsset && (locked || disabled) && <div className="wf-media-state-badges" aria-label="节点状态">
         {locked && <span className="wf-locked"><Lock size={10} aria-hidden="true" />已锁定</span>}
         {disabled && <span className="wf-disabled">已禁用</span>}
       </div>}
+      {(runningStartedAt || elapsedLabel || clipLabel) && (
+        <div className="wf-media-readouts" aria-label="生成耗时与素材时长">
+          {isMediaResultKind(kind) && runningStartedAt
+            ? <MediaDurationChip live startedAt={runningStartedAt} kind="elapsed" />
+            : elapsedLabel
+              ? <MediaDurationChip label={elapsedLabel} kind="elapsed" />
+              : null}
+          {clipLabel ? <MediaDurationChip label={clipLabel} kind="clip" /> : null}
+        </div>
+      )}
       {!previewUrl && hasAsset && <small className="wf-input-preview-hint">素材引用无效，请重新选择</small>}
     </div>
   )
@@ -283,9 +368,370 @@ function supportsModel(kind: NodeKind): boolean {
 }
 
 function multiInputHint(kind: NodeKind): string | null {
-  if (kind === 'image-edit') return '文本、图片前置节点均可多连 · 图片编辑最多使用 4 张参考图'
+  if (kind === 'image-edit' || kind === 'image-generate' || kind === 'image') {
+    return '文本、图片前置节点均可多连 · 接上参考图后自动走图像编辑，最多 4 张'
+  }
   if (kind === 'video-generate' || kind === 'video') return '文本、图片、视频、音频均可多连 · MiniMax 最多使用 9 图、3 视频、3 音频'
   return null
+}
+
+function RunningElapsed({ startedAt }: { startedAt?: string }) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [startedAt])
+  const elapsed = formatRunElapsed(runElapsedMilliseconds(startedAt, now))
+  return <time className="wf-run-elapsed" dateTime={startedAt} title="本次运行已用时间">已用时 {elapsed}</time>
+}
+
+function MediaDurationChip({
+  label,
+  live = false,
+  startedAt,
+  kind,
+}: {
+  label?: string
+  live?: boolean
+  startedAt?: string
+  kind: 'elapsed' | 'clip'
+}) {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!live) return undefined
+    setNow(Date.now())
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000)
+    return () => window.clearInterval(timer)
+  }, [live, startedAt])
+  const text = live ? `耗时 ${formatRunElapsed(runElapsedMilliseconds(startedAt, now))}` : label
+  if (!text) return null
+  return (
+    <time
+      className={`wf-media-duration is-${kind}`}
+      dateTime={startedAt}
+      title={kind === 'elapsed' ? (live ? '本次生成已用时间' : '上次生成耗时') : '素材播放时长'}
+    >{text}</time>
+  )
+}
+
+function NodeRunToolbar({
+  id,
+  title,
+  selected,
+  disabled,
+}: {
+  id: string
+  title: string
+  selected: boolean
+  disabled: boolean
+}) {
+  if (!selected) return null
+  return (
+    <NodeToolbar position={Position.Top} offset={8} className="wf-node-toolbar" role="toolbar" aria-label={`${title}节点操作`}>
+      <button type="button" title="运行到此：执行该节点及其所需上游" disabled={disabled} onClick={() => handlers.onRunToNode(id)}>
+        <Play size={13} aria-hidden="true" /><span>运行到此</span>
+      </button>
+      <button type="button" title="从此向后：执行该节点的下游链路及必要依赖" disabled={disabled} onClick={() => handlers.onRunFromNode(id)}>
+        <ArrowRight size={13} aria-hidden="true" /><span>从此向后</span>
+      </button>
+    </NodeToolbar>
+  )
+}
+
+/**
+ * The bar that floats under a bound media node while it is selected. The node
+ * itself shows nothing but the picture, so every command lives here rather than
+ * as chrome the user has to look at all day.
+ *
+ * The two run commands are conditional on purpose. A media source node has no
+ * input ports and its asset was imported rather than generated, so "run" and
+ * "regenerate" have nothing to act on there; they appear for any media kind
+ * that can actually execute. Icon-only with Chinese titles keeps the bar
+ * narrower than the node it hangs from.
+ */
+function MediaNodeToolbar({
+  id,
+  label,
+  asset,
+  canRun,
+  running,
+  locked,
+  selected,
+}: {
+  id: string
+  label: string
+  asset: AssetRef
+  canRun: boolean
+  running: boolean
+  locked: boolean
+  selected: boolean
+}) {
+  if (!selected) return null
+  return (
+    <NodeToolbar position={Position.Bottom} offset={8} className="wf-node-toolbar wf-media-toolbar" role="toolbar" aria-label={`${label}素材操作`}>
+      {canRun && (
+        <button type="button" title="运行此节点：执行该节点及其所需上游" aria-label="运行此节点" disabled={running} onClick={() => handlers.onRunToNode(id)}>
+          <Play size={14} aria-hidden="true" />
+        </button>
+      )}
+      {canRun && (
+        <button type="button" title="重新生成：重跑该节点并刷新下游" aria-label="重新生成" disabled={running} onClick={() => handlers.onRunToNode(id)}>
+          <RefreshCw size={14} aria-hidden="true" />
+        </button>
+      )}
+      <button type="button" title="从此向后：用这份素材执行下游链路" aria-label="从此向后运行" disabled={running} onClick={() => handlers.onRunFromNode(id)}>
+        <ArrowRight size={14} aria-hidden="true" />
+      </button>
+      <button type="button" title={`放大${label}预览`} aria-label={`放大${label}预览`} onClick={() => handlers.onPreviewAsset(asset)}>
+        <Maximize2 size={14} aria-hidden="true" />
+      </button>
+      <button type="button" title="另存到本机" aria-label="另存素材" onClick={() => handlers.onDownloadAsset(id)}>
+        <Download size={14} aria-hidden="true" />
+      </button>
+      {/* The reveal command lives in the main process asset menu together with
+          copy and save-as; this opens that menu rather than adding a channel. */}
+      <button type="button" title="在文件夹中显示（打开系统素材菜单）" aria-label="在文件夹中显示" onClick={() => handlers.onShowAssetMenu(id)}>
+        <FolderOpen size={14} aria-hidden="true" />
+      </button>
+      <button type="button" title={locked ? '节点已锁定，无法替换素材' : `替换${label}素材`} aria-label={`替换${label}素材`} disabled={locked} onClick={() => handlers.onPickAsset(id)}>
+        <Upload size={14} aria-hidden="true" />
+      </button>
+      <button type="button" className="is-danger" title="从画布删除该节点" aria-label="删除节点" onClick={() => handlers.onDeleteNode(id)}>
+        <Trash2 size={14} aria-hidden="true" />
+      </button>
+    </NodeToolbar>
+  )
+}
+
+function GenerationInfoPanel({
+  id,
+  kind,
+  data,
+  title,
+  selected,
+  canRun,
+  running,
+  modelAvailable,
+  selectedModel,
+  imageModels,
+  videoModels,
+  references,
+}: {
+  id: string
+  kind: NodeKind
+  data: WorkflowNodeData
+  title: string
+  selected: boolean
+  canRun: boolean
+  running: boolean
+  modelAvailable: boolean
+  selectedModel: string
+  imageModels: readonly { id: string; label: string }[]
+  videoModels: readonly { id: string; label: string }[]
+  references: readonly UpstreamMediaReference[]
+}) {
+  const incoming = useNodeConnections({ id, handleType: 'target' })
+  if (!selected) return null
+  const fields = composerToolbarFields(kind, selectedModel)
+  const imagePreset = imageModelPreset(selectedModel)
+  const videoPreset = videoModelPreset(selectedModel)
+  const hasImageRefs = references.some((reference) => reference.kind === 'image')
+  const composerImageModels = hasImageRefs
+    ? imageModels.filter((entry) => imageModelPreset(entry.id).supportsEdits)
+    : imageModels
+  const editBlocked = hasImageRefs && !imagePreset.supportsEdits
+  const submit = () => {
+    if (canRun && !running && modelAvailable && !editBlocked) handlers.onRunToNode(id)
+  }
+  const textChips = incoming.filter((connection) => (connection.sourceHandle ?? '').startsWith('out:text'))
+  const hasChips = references.length > 0 || textChips.length > 0
+  return (
+    <NodeToolbar position={Position.Bottom} offset={10} className="wf-composer nodrag nowheel" role="dialog" aria-label={`${title}生成条`}>
+      <div className="wf-composer-prompt">
+        {hasChips && (
+          <div className="wf-composer-chips">
+            {references.map((reference) => (
+              <span
+                key={reference.edgeId}
+                className={`wf-composer-chip is-${reference.kind}`}
+                draggable
+                title={`拖到提示词中插入${reference.label}`}
+                onDragStart={(event) => {
+                  if (event.target instanceof Element && event.target.closest('button')) {
+                    event.preventDefault()
+                    return
+                  }
+                  event.dataTransfer.setData(promptMentionMime, reference.mention)
+                  event.dataTransfer.setData('text/plain', reference.mention)
+                  event.dataTransfer.effectAllowed = 'copy'
+                }}
+              >
+                {reference.asset?.kind === 'image' && reference.asset.localUrl
+                  ? <SafeImage src={reference.asset.localUrl} alt="" draggable={false} />
+                  : reference.kind === 'image'
+                    ? <ImageIcon size={20} aria-hidden="true" />
+                    : reference.kind === 'video'
+                      ? <Film size={20} aria-hidden="true" />
+                      : <Music2 size={20} aria-hidden="true" />}
+                <button type="button" title={`移除${reference.label}`} aria-label={`移除${reference.label}`} onClick={() => handlers.onDisconnectIncoming(reference.edgeId)}>
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+            {textChips.map((connection) => (
+              <span key={connection.edgeId} className="wf-composer-chip is-text">
+                <Type size={20} aria-hidden="true" />
+                <button type="button" title="移除文本输入" aria-label="移除文本输入" onClick={() => handlers.onDisconnectIncoming(connection.edgeId)}>
+                  <X size={12} aria-hidden="true" />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        <PromptEditor
+          label={`${title}提示词`}
+          value={data.prompt}
+          placeholder={composerPromptPlaceholder(kind)}
+          references={references}
+          rows={8}
+          onChange={(prompt) => handlers.onPromptChange(id, prompt)}
+          onCommit={(prompt) => handlers.onPromptCommit(id, prompt)}
+          onSubmit={submit}
+        />
+      </div>
+      <div className="wf-composer-footer">
+        <div className="wf-composer-toolbar">
+        {fields.includes('model') && (
+          <label className="wf-composer-field">
+            <select
+              className="wf-composer-select"
+              aria-label={kind.startsWith('video') ? '视频模型' : '图像模型'}
+              title={composerFieldLabel('model')}
+              value={selectedModel}
+              onChange={(event) => handlers.onModelChange(id, event.target.value)}
+            >
+              {(!modelAvailable || editBlocked) && <option value={selectedModel} disabled>{(kind.startsWith('video') ? videoPreset : imagePreset).label}{editBlocked ? '（不支持参考图编辑）' : '（当前分组不可用）'}</option>}
+              {(kind.startsWith('video') ? videoModels : composerImageModels).map((entry) => (
+                <option key={entry.id} value={entry.id}>{entry.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        {fields.includes('quality') && (
+          <label className="wf-composer-field">
+            <select className="wf-composer-select" aria-label="生成画质" title={composerFieldLabel('quality')} value={data.quality || defaultImageQuality} onChange={(event) => handlers.onQualityChange(id, event.target.value)}>
+              {imageQualityOptions.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('imageResolution') && (
+          <label className="wf-composer-field">
+            <select
+              className="wf-composer-select"
+              aria-label="生成清晰度"
+              title={composerFieldLabel('imageResolution')}
+              value={imagePreset.resolutions.includes(data.imageResolution ?? defaultImageResolution) ? (data.imageResolution ?? defaultImageResolution) : imagePreset.resolutions[0]}
+              onChange={(event) => handlers.onImageResolutionChange(id, event.target.value as '1K' | '2K' | '4K')}
+            >
+              {imageResolutionOptions.map((entry) => (
+                <option key={entry.value} value={entry.value} disabled={!imagePreset.resolutions.includes(entry.value)}>
+                  {entry.label}{imagePreset.resolutions.includes(entry.value) ? '' : '（当前模型不支持）'}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        {fields.includes('size') && !kind.startsWith('video') && (
+          <label className="wf-composer-field">
+            <select className="wf-composer-select" aria-label="生成尺寸" title={composerFieldLabel('size', kind)} value={imagePreset.sizes.includes(data.size || '') ? data.size : (imagePreset.sizes[0] ?? defaultImageSize)} onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
+              {imagePreset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('size') && kind.startsWith('video') && (
+          <label className="wf-composer-field">
+            <select className="wf-composer-select" aria-label="视频比例" title={composerFieldLabel('size', kind)} value={videoPreset.sizes.includes(data.size || '') ? data.size : videoPreset.defaultSize} onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
+              {videoSizeOptions.filter((size) => videoPreset.sizes.includes(size.value)).map((size) => (
+                <option key={size.value} value={size.value}>{size.label}</option>
+              ))}
+            </select>
+          </label>
+        )}
+        {fields.includes('videoMode') && (
+          <label className="wf-composer-field">
+            <select className="wf-composer-select" aria-label="MiniMax 生成模式" title={composerFieldLabel('videoMode')} value={textSetting(data, 'videoMode', 'auto')} onChange={(event) => handlers.onSettingsChange(id, { videoMode: event.target.value })}>
+              {videoModeOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('videoResolution') && (
+          <label className="wf-composer-field">
+            <select className="wf-composer-select" aria-label="MiniMax 视频分辨率" title={composerFieldLabel('videoResolution')} value={textSetting(data, 'videoResolution', '720p')} onChange={(event) => handlers.onSettingsChange(id, { videoResolution: event.target.value })}>
+              {videoResolutionOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('videoAspectRatio') && (
+          <label className="wf-composer-field">
+            <select className="wf-composer-select" aria-label="MiniMax 视频比例" title={composerFieldLabel('videoAspectRatio')} value={textSetting(data, 'videoAspectRatio', '16:9')} onChange={(event) => handlers.onSettingsChange(id, { videoAspectRatio: event.target.value })}>
+              {videoAspectRatioOptions.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+            </select>
+          </label>
+        )}
+        {fields.includes('seconds') && (
+          <label className="wf-composer-field">
+            <select className="wf-composer-select" aria-label="视频时长" title={composerFieldLabel('seconds')} value={data.seconds ?? String(defaultVideoSeconds)} onChange={(event) => handlers.onSecondsChange(id, event.target.value)}>
+              {(videoPreset.provider === 'minimax-h3'
+                ? Array.from({ length: videoPreset.maximumSeconds - videoPreset.minimumSeconds + 1 }, (_, index) => videoPreset.minimumSeconds + index)
+                : [5, 10, 15]
+              ).map((seconds) => <option key={seconds} value={seconds}>{seconds} 秒</option>)}
+            </select>
+          </label>
+        )}
+          {fields.includes('promptOptimization') && (
+            <label className="wf-composer-toggle">
+              <input
+                type="checkbox"
+                checked={booleanSetting(data, 'promptOptimization', false)}
+                onChange={(event) => handlers.onSettingsChange(id, { promptOptimization: event.target.checked })}
+              />
+              <span>AI 优化 H3 提示词</span>
+            </label>
+          )}
+        </div>
+        <div className="wf-composer-actions">
+          <button type="button" className="wf-composer-icon" title="保存为提示词预设" aria-label="保存为提示词预设" onClick={() => handlers.onSavePromptPreset(id)}>
+            <BookmarkPlus size={15} aria-hidden="true" />
+          </button>
+          {data.result && (
+            <>
+              <button type="button" className="wf-composer-icon" title="放大预览" aria-label="放大预览" onClick={() => handlers.onPreviewAsset(data.result!)}>
+                <Maximize2 size={15} aria-hidden="true" />
+              </button>
+              <button type="button" className="wf-composer-icon" title="另存到本机" aria-label="另存素材" onClick={() => handlers.onDownloadAsset(id)}>
+                <Download size={15} aria-hidden="true" />
+              </button>
+            </>
+          )}
+          <button
+            type="button"
+            className="wf-composer-send"
+            title={
+              editBlocked
+                ? '当前模型不支持参考图编辑，请换用支持编辑的图像模型'
+                : running ? '正在生成' : '重新生成此节点，已完成的上游直接复用。Ctrl+Enter 也可提交'
+            }
+            aria-label={running ? '正在生成' : '重新生成'}
+            disabled={!canRun || running || !modelAvailable || editBlocked}
+            onClick={submit}
+          >
+            {running ? <LoaderCircle size={16} aria-hidden="true" /> : <ArrowUp size={16} aria-hidden="true" />}
+          </button>
+        </div>
+      </div>
+    </NodeToolbar>
+  )
 }
 
 function UpstreamReferencePreview({ reference }: { reference: UpstreamMediaReference }) {
@@ -353,7 +799,9 @@ function NodeSettings({ id, data, kind }: { id: string; data: WorkflowNodeData; 
       />
     )
   }
-  if (kind === 'image-input' || kind === 'video-input' || kind === 'audio-input') return <MediaInputDropZone id={id} kind={kind} asset={data.result} />
+  if (kind === 'image-input' || kind === 'video-input' || kind === 'audio-input') {
+    return <MediaBoundPreview id={id} kind={kind} asset={data.result} replaceable />
+  }
   if (kind === 'frame-extract') {
     return (
       <label className="wf-inline-field nodrag">
@@ -390,7 +838,7 @@ function NodeSettings({ id, data, kind }: { id: string; data: WorkflowNodeData; 
   if (kind === 'output') {
     const stagingState = nodeResultStagingState(data)
     return <p className={`wf-result-note is-${stagingState}`}>
-      {stagingState === 'pending' ? '待确认结果' : stagingState === 'accepted' ? '最终产物已确认' : '连接上游后运行'}
+      {stagingState === 'accepted' ? '最终产物已就绪' : '连接上游后运行'}
     </p>
   }
   if (kind === 'unknown') {
@@ -411,7 +859,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
   const inputHint = multiInputHint(kind)
   const imageOperation = kind === 'image' || kind === 'image-generate' || kind === 'image-edit'
   const videoOperation = kind === 'video' || kind === 'video-generate'
-  const mediaInput = kind === 'image-input' || kind === 'video-input' || kind === 'audio-input'
+  const mediaInput = isMediaSourceKind(kind)
   const imageModels = modelAvailability.connected
     ? availableImageModelPresets(modelAvailability.imageModels)
     : [...imageModelPresets]
@@ -448,11 +896,72 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
                 ? '输入已变化，等待重新运行'
                 : '尚无运行结果'
 
-  if (mediaInput && data.result?.assetId) {
+  if (usesMediaBoundLayout(kind, displayedResult?.assetId)) {
     const output = outputs[0]
+    const mediaKind = displayedResult?.kind ?? mediaBoundChipKind(kind)
     return (
-      <div className={`wf-node wf-media-bound wf-media-bound-${data.result.kind}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}`}>
-        <MediaInputDropZone id={id} kind={kind as 'image-input' | 'video-input' | 'audio-input'} asset={data.result} locked={locked} disabled={disabled} />
+      <div className={`wf-node wf-media-bound wf-media-bound-${mediaKind}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}`}>
+        {/* Media is the whole point of these nodes, so let the user scale the
+            preview. Aspect is locked because the asset's is fixed, and the
+            control only appears while selected to keep the canvas calm. */}
+        {!locked && (
+          <NodeResizer
+            isVisible={selected}
+            keepAspectRatio={mediaKind !== 'audio'}
+            minWidth={160}
+            minHeight={mediaKind === 'audio' ? 88 : 120}
+            maxWidth={720}
+            maxHeight={720}
+            lineClassName="wf-resize-line"
+            handleClassName="wf-resize-handle"
+          />
+        )}
+        {isMediaSourceKind(kind) && displayedResult ? (
+          <MediaNodeToolbar
+            id={id}
+            label={mediaInputLabel(kind)}
+            asset={displayedResult}
+            canRun={canRunNode}
+            running={nodeRunning}
+            locked={locked}
+            selected={selected}
+          />
+        ) : !isMediaSourceKind(kind) ? (
+          <GenerationInfoPanel
+            id={id}
+            kind={kind}
+            data={data}
+            title={definition.title}
+            selected={selected}
+            canRun={canRunNode}
+            running={nodeRunning}
+            modelAvailable={mediaModelAvailable}
+            selectedModel={selectedModel}
+            imageModels={imageModels}
+            videoModels={videoModels}
+            references={upstreamReferences}
+          />
+        ) : null}
+        <MediaBoundPreview
+          id={id}
+          kind={kind}
+          asset={displayedResult}
+          requestedSize={data.size}
+          requestedSeconds={data.seconds}
+          durationMs={data.latestAttemptDurationMs}
+          runningStartedAt={nodeRunning ? data.runStartedAt : undefined}
+          replaceable={mediaInput && !locked && !disabled}
+          locked={locked}
+          disabled={disabled}
+        />
+        {nodeRunning && (
+          <div className="wf-media-state-badges" aria-label="正在生成">
+            <span className="wf-status wf-status-running"><LoaderCircle size={10} aria-hidden="true" />{statusLabel[data.status]}</span>
+          </div>
+        )}
+        {inputs.map((port, index) => (
+          <PortHandle key={port.id} nodeId={id} port={port} index={index} />
+        ))}
         {output && <Handle
           type="source"
           id={output.id}
@@ -466,23 +975,23 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
   }
 
   return (
-    <div className={`wf-node wf-node-${kind} wf-category-${definition.category} wf-status-${data.status}${data.dirty ? ' wf-is-dirty' : ''}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}${summaryMode ? ' wf-lod-summary' : ''}`}>
-      {inputs.map((port, index) => (
-        <Handle
-          key={port.id}
-          type="target"
-          id={port.id}
-          position={Position.Left}
-          style={{ top: 52 + index * 26 }}
-          className={`wf-port wf-port-${port.kind}`}
-          title={`${port.label}${port.cardinality === 'many' ? '（可连接多个）' : ''}`}
-          aria-label={`${port.label}${port.cardinality === 'many' ? '，可连接多个' : ''}`}
+    <div className={`wf-node wf-node-${kind} wf-category-${definition.category} wf-status-${data.status}${data.dirty ? ' wf-is-dirty' : ''}${data.fromCache && data.status === 'succeeded' && !data.dirty ? ' wf-is-cached' : ''}${disabled ? ' wf-is-disabled' : ''}${locked ? ' wf-is-locked' : ''}${summaryMode ? ' wf-lod-summary' : ''}`}>
+      {canRunNode && (
+        <NodeRunToolbar
+          id={id}
+          title={definition.title}
+          selected={selected}
+          disabled={nodeRunning || ((imageOperation || videoOperation) && !mediaModelAvailable)}
         />
+      )}
+      {inputs.map((port, index) => (
+        <PortHandle key={port.id} nodeId={id} port={port} index={index} />
       ))}
       <header>
+        {/* Both lines ellipsize, so the full text must stay reachable. */}
         <span className="wf-node-title">
-          <strong>{definition.title}</strong>
-          <small>{definition.description}</small>
+          <strong title={definition.title}>{definition.title}</strong>
+          <small title={definition.description}>{definition.description}</small>
         </span>
         <span className="wf-head-right">
           {supportsPrompt(kind) && data.prompt.trim() && (
@@ -491,10 +1000,24 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           {data.status === 'idle'
             ? <span className="wf-status-idle-dot" title="待运行" aria-label="待运行" />
             : <span className={`wf-status wf-status-${data.status}`}><StatusIcon size={12} aria-hidden="true" />{statusLabel[data.status]}</span>}
+          {data.fromCache && data.status === 'succeeded' && !data.dirty && (
+            <span className="wf-cached" title="输入未变化，本次复用了上次结果，没有产生新的付费请求">已缓存</span>
+          )}
           {locked && <span className="wf-locked" title="节点位置已锁定" role="img" aria-label="位置已锁定"><Lock size={10} aria-hidden="true" /></span>}
           {disabled && <span className="wf-disabled" title="此节点不会参与运行">已禁用</span>}
           {data.dirty && <span className="wf-dirty" title="输入或采纳结果已变化，需要重新运行">待更新</span>}
         </span>
+        {/* Pinned to the header's bottom border so a run costs zero height and
+            the graph never reflows mid-execution. */}
+        {(data.status === 'queued' || data.status === 'running') && (
+          <span
+            className={`wf-head-progress${data.runProgressMode === 'determinate' && typeof data.runProgress === 'number' ? ' is-determinate' : ''}`}
+            style={data.runProgressMode === 'determinate' && typeof data.runProgress === 'number'
+              ? { '--wf-progress': `${Math.max(0, Math.min(100, data.runProgress))}%` } as CSSProperties
+              : undefined}
+            aria-hidden="true"
+          />
+        )}
       </header>
 
       {summaryMode && (
@@ -523,10 +1046,11 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           placeholder={kind === 'text' || kind === 'prompt' ? '输入提示词或指令' : '补充这个节点的提示词'}
           references={upstreamReferences}
           onChange={(prompt) => handlers.onPromptChange(id, prompt)}
+          onCommit={(prompt) => handlers.onPromptCommit(id, prompt)}
         />
       )}
 
-      {(kind === 'image-edit' || kind === 'video-generate' || kind === 'video') && (
+      {(kind === 'image-edit' || kind === 'image-generate' || kind === 'image' || kind === 'video-generate' || kind === 'video') && (
         <UpstreamReferencesPanel references={upstreamReferences} />
       )}
 
@@ -538,17 +1062,42 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
               {!mediaModelAvailable && <option value={selectedModel} disabled>{imageModelPreset(selectedModel).label}（当前分组不可用）</option>}
               {imageModels.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
             </select>
-            {!mediaModelAvailable && <p className="wf-error">当前分组不提供此图像模型，请重新选择</p>}
+            {!mediaModelAvailable && <p className="wf-error is-validation" role="status"><AlertTriangle size={13} aria-hidden="true" />当前分组不提供此图像模型，请重新选择</p>}
+            {/* One parameter per row on a shared label/control subgrid. Three
+                selects abreast left each about 93px, which truncated every
+                size and quality label. */}
             <div className="wf-params nodrag">
               {preset.supportsQuality && (
-                <select className="wf-model" value={data.quality || defaultImageQuality} title="画质" aria-label="生成画质" onChange={(event) => handlers.onQualityChange(id, event.target.value)}>
-                  {imageQualityOptions.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
-                </select>
+                <label className="wf-inline-field">
+                  <span>画质</span>
+                  <select className="wf-model" value={data.quality || defaultImageQuality} aria-label="生成画质" onChange={(event) => handlers.onQualityChange(id, event.target.value)}>
+                    {imageQualityOptions.map((entry) => <option key={entry.value} value={entry.value}>{entry.label}</option>)}
+                  </select>
+                </label>
               )}
-              {preset.supportsSize && (
-                <select className="wf-model" value={preset.sizes.includes(data.size || '') ? data.size : (preset.sizes[0] ?? defaultImageSize)} title="尺寸" aria-label="生成尺寸" onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
-                  {preset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
+              <label className="wf-inline-field">
+                <span>清晰度</span>
+                <select
+                  className="wf-model"
+                  value={preset.resolutions.includes(data.imageResolution ?? defaultImageResolution) ? (data.imageResolution ?? defaultImageResolution) : preset.resolutions[0]}
+                  title={preset.resolutionNote ?? '输出清晰度'}
+                  aria-label="生成清晰度"
+                  onChange={(event) => handlers.onImageResolutionChange(id, event.target.value as '1K' | '2K' | '4K')}
+                >
+                  {imageResolutionOptions.map((entry) => (
+                    <option key={entry.value} value={entry.value} disabled={!preset.resolutions.includes(entry.value)}>
+                      {entry.label}{preset.resolutions.includes(entry.value) ? '' : '（当前模型不支持）'}
+                    </option>
+                  ))}
                 </select>
+              </label>
+              {preset.supportsSize && (
+                <label className="wf-inline-field">
+                  <span>尺寸</span>
+                  <select className="wf-model" value={preset.sizes.includes(data.size || '') ? data.size : (preset.sizes[0] ?? defaultImageSize)} aria-label="生成尺寸" onChange={(event) => handlers.onSizeChange(id, event.target.value)}>
+                    {preset.sizes.map((size) => <option key={size} value={size}>{imageSizeLabel(size)}</option>)}
+                  </select>
+                </label>
               )}
             </div>
           </>
@@ -561,7 +1110,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
             {!mediaModelAvailable && <option value={selectedModel} disabled>{selectedVideoPreset.label}（当前分组不可用）</option>}
             {videoModels.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
           </select>
-          {!mediaModelAvailable && <p className="wf-error">当前分组不提供此视频模型，请重新选择</p>}
+          {!mediaModelAvailable && <p className="wf-error is-validation" role="status"><AlertTriangle size={13} aria-hidden="true" />当前分组不提供此视频模型，请重新选择</p>}
           {selectedVideoPreset.provider === 'minimax-h3' ? (
             <>
               <label className="wf-inline-field">
@@ -645,12 +1194,6 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
 
       {(data.status === 'queued' || data.status === 'running') && (
         <div className="wf-progress" role="status" aria-live="polite">
-          <span
-            className={`wf-progress-bar${data.runProgressMode === 'determinate' && typeof data.runProgress === 'number' ? ' is-determinate' : ''}`}
-            style={data.runProgressMode === 'determinate' && typeof data.runProgress === 'number'
-              ? { '--wf-progress': `${Math.max(0, Math.min(100, data.runProgress))}%` } as CSSProperties
-              : undefined}
-          />
           <p>
             {data.runStage
               ? `${runStageLabel[data.runStage]}${data.runProgressMode === 'determinate' && typeof data.runProgress === 'number' ? ` · ${Math.round(data.runProgress)}%` : '…'}`
@@ -662,13 +1205,14 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
                   ? '高清图像生成中 · 预计 2-3 分钟'
                   : '图像生成中 · 预计 10 秒至 1 分钟'}
           </p>
+          <RunningElapsed startedAt={data.runStartedAt} />
           {data.runHealth === 'delayed' && <small>服务端仍在线，但本次生成已明显超过同规格历史耗时。</small>}
           {videoOperation && <small>{selectedVideoPreset.provider === 'minimax-h3'
             ? '停止时会向服务端请求取消；生成中的任务可能需要短暂等待才进入已取消状态。'
             : '停止等待不等于取消已到达服务端的生成任务，可稍后从运行记录续查。'}</small>}
         </div>
       )}
-      {data.status === 'failed' && data.errorMessage && kind !== 'unknown' && <p className="wf-error" role="alert">{data.errorMessage}</p>}
+      {data.status === 'failed' && data.errorMessage && kind !== 'unknown' && <p className="wf-error" role="alert"><AlertCircle size={13} aria-hidden="true" />{data.errorMessage}</p>}
       {!mediaInput && displayedResult?.localUrl && displayedResult.kind === 'image' && (
         <SafeImage
           className="wf-preview"
@@ -676,8 +1220,8 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           alt={selectedCandidate ? '生成候选预览' : '生成结果'}
           loading="lazy"
           style={{ aspectRatio: mediaAssetAspectRatio(displayedResult, data.size) }}
-          title="双击放大预览"
-          onLoad={(event) => displayedResult.assetId && handlers.onMediaMetadata(id, displayedResult.assetId, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)}
+          title={mediaHoverTitle([mediaAssetSizeLabel(displayedResult), '双击放大预览'])}
+          onLoad={(event) => reportPreviewMetadata(id, displayedResult.assetId, event.currentTarget)}
           onDoubleClick={(event) => {
             event.stopPropagation()
             handlers.onPreviewAsset(displayedResult)
@@ -694,10 +1238,10 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           className="wf-preview"
           src={displayedResult.localUrl}
           aria-label="视频素材预览"
-          controls
+          canvasPlayback
           style={{ aspectRatio: mediaAssetAspectRatio(displayedResult, data.size) }}
-          title="双击放大预览"
-          onLoadedMetadata={(event) => displayedResult.assetId && handlers.onMediaMetadata(id, displayedResult.assetId, event.currentTarget.videoWidth, event.currentTarget.videoHeight)}
+          title={mediaHoverTitle([mediaAssetSizeLabel(displayedResult), '双击放大预览'])}
+          onLoadedMetadata={(event) => reportPreviewMetadata(id, displayedResult.assetId, event.currentTarget)}
           onDoubleClick={(event) => { event.stopPropagation(); handlers.onPreviewAsset(displayedResult) }}
         />
       )}
@@ -729,23 +1273,9 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           </div>
           {selectedCandidate && (
             <div className="wf-candidate-actions">
-              <button
-                type="button"
-                className="wf-rerun"
-                disabled={selectedCandidate.candidateId === data.adoptedCandidateId}
-                onClick={() => handlers.onAdoptCandidate(id, selectedCandidate.candidateId)}
-              >
-                <Check size={12} />{selectedCandidate.candidateId === data.adoptedCandidateId ? '已采纳' : '采纳此候选'}
-              </button>
-              <button
-                type="button"
-                className="wf-discard-candidate"
-                title={selectedCandidate.candidateId === data.adoptedCandidateId ? '已采纳结果不能丢弃' : '从当前候选区丢弃，不删除素材'}
-                disabled={selectedCandidate.candidateId === data.adoptedCandidateId}
-                onClick={() => handlers.onDiscardCandidate(id, selectedCandidate.candidateId)}
-              >
-                <X size={12} />丢弃
-              </button>
+              {/* 采纳与丢弃已取消（2026-08-20 产品决策）：最新候选自动就是产物，
+                  切换候选即切换产物，重跑入口在运行按钮与操作条上。 */}
+              <small>{data.candidates.length > 1 ? '点击候选即切换产物' : '本次产物'}</small>
               <button
                 type="button"
                 className="wf-icon-command"
@@ -772,7 +1302,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
             aria-label={`运行${definition.title}节点`}
             title="使用已有上游结果运行此节点"
             disabled={nodeRunning || ((imageOperation || videoOperation) && !mediaModelAvailable)}
-            onClick={() => handlers.onRerun(id)}
+            onClick={() => handlers.onRunToNode(id)}
           >
             {nodeRunning ? <LoaderCircle size={13} aria-hidden="true" /> : <Play size={13} aria-hidden="true" />}
             {nodeRunning ? '运行中' : '运行此节点'}
@@ -785,17 +1315,56 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
       </div>
       </div>
       {outputs.map((port, index) => (
-        <Handle
-          key={port.id}
-          type="source"
-          id={port.id}
-          position={Position.Right}
-          style={{ top: 52 + index * 26 }}
-          className={`wf-port wf-port-${port.kind}`}
-          title={port.label}
-        />
+        <PortHandle key={port.id} nodeId={id} port={port} index={index} />
       ))}
     </div>
+  )
+}
+
+/**
+ * A port encodes three independent facts: hue is the media type, shape is the
+ * cardinality, and fill is whether anything is actually attached. Reading the
+ * connection state needs a hook, so each port is its own component.
+ */
+function PortHandle({ nodeId, port, index }: { nodeId: string; port: NodePortDefinition; index: number }) {
+  const input = port.direction === 'input'
+  const connections = useNodeConnections({
+    id: nodeId,
+    handleType: input ? 'target' : 'source',
+    handleId: port.id,
+  })
+  const connection = useConnection()
+  const many = port.cardinality === 'many'
+  const suffix = many ? '（可连接多个）' : ''
+  const state = connections.length > 0 ? `已连接 ${connections.length} 条` : '未连接'
+
+  // While a wire is being dragged, say up front which ports would accept it.
+  // Without this the user finds out only by releasing and watching it fail.
+  let guidance = ''
+  if (connection.inProgress && connection.fromHandle && connection.fromNode) {
+    const source = connection.fromHandle.type === 'source'
+    const origin = connection.fromNode.id === nodeId && connection.fromHandle.id === port.id
+    if (origin) guidance = ' is-connect-origin'
+    else if (source === input) {
+      guidance = handlers.isPortCompatible({
+        source: source ? connection.fromNode.id : nodeId,
+        sourceHandle: source ? connection.fromHandle.id ?? null : port.id,
+        target: source ? nodeId : connection.fromNode.id,
+        targetHandle: source ? port.id : connection.fromHandle.id ?? null,
+      }) ? ' is-connect-target' : ' is-connect-blocked'
+    } else guidance = ' is-connect-blocked'
+  }
+
+  return (
+    <Handle
+      type={input ? 'target' : 'source'}
+      id={port.id}
+      position={input ? Position.Left : Position.Right}
+      style={{ top: portSlotOffsetY(index) }}
+      className={`wf-port wf-port-${port.kind}${many ? ' wf-port-many' : ''}${connections.length > 0 ? ' is-connected' : ''}${guidance}`}
+      title={`${port.label}${suffix} · ${state}`}
+      aria-label={`${port.label}${many ? '，可连接多个' : ''}，${state}`}
+    />
   )
 }
 

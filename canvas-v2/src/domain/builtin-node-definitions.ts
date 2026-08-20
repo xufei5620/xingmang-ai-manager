@@ -54,17 +54,17 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
     executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'audio', operation: 'input' }],
   }),
   mediaDefinition({
-    type: 'image-generate', version: 1, title: '图像生成', description: '根据提示词生成图像', category: 'generation',
-    ports: [textInput, imageOutput], dimensions: { width: 304, height: 300 }, defaultData: { prompt: '', model: '', quality: 'low', size: '1024x1024' },
-    executable: true, structural: false, executorKind: 'image', capabilities: [{ media: 'image', operation: 'generate' }],
+    type: 'image-generate', version: 1, title: '图像节点', description: '图像生成与图像编辑合一：无参考图文生图，接上参考图后修图', category: 'generation',
+    ports: [textInput, imageInputs, imageOutput], dimensions: { width: 280, height: 280 }, defaultData: { prompt: '', model: '', quality: 'low', size: '1024x1024', imageResolution: '1K' },
+    executable: true, structural: false, executorKind: 'image', capabilities: [{ media: 'image', operation: 'generate' }, { media: 'image', operation: 'edit' }],
   }),
   mediaDefinition({
-    type: 'image-edit', version: 1, title: '图像编辑', description: '使用 1-4 张参考图和指令编辑图像', category: 'transform',
-    ports: [textInput, imageInputs, imageOutput], dimensions: { width: 304, height: 360 }, defaultData: { prompt: '', model: '', maskAssetId: '' },
+    type: 'image-edit', version: 1, title: '图像节点', description: '旧版图像编辑节点，接参考图后编辑图像', category: 'transform',
+    ports: [textInput, imageInputs, imageOutput], dimensions: { width: 280, height: 280 }, defaultData: { prompt: '', model: '', maskAssetId: '' },
     executable: true, structural: false, executorKind: 'image', capabilities: [{ media: 'image', operation: 'edit' }],
   }),
   mediaDefinition({
-    type: 'video-generate', version: 1, title: '视频生成', description: '文生视频或图生视频（支持多前置输入）', category: 'generation',
+    type: 'video-generate', version: 1, title: '视频节点', description: '视频生成：文生视频或图生视频（支持多前置输入）', category: 'generation',
     ports: [textInput, imageInputs, videoInputs, audioInputs, videoOutput], dimensions: { width: 304, height: 480 }, defaultData: { prompt: '', model: '', seconds: '5', size: '1280x720' },
     executable: true, structural: false, executorKind: 'video', capabilities: [{ media: 'video', operation: 'generate' }],
   }),
@@ -110,8 +110,8 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
     executable: true, structural: false, executorKind: 'prompt', capabilities: [{ media: 'text', operation: 'input' }],
   }),
   mediaDefinition({
-    type: 'image', version: 1, title: '图像生成', description: '旧版图像节点', category: 'generation',
-    ports: [textInput, imageOutput], dimensions: { width: 240, height: 300 }, defaultData: { prompt: '', model: '', status: 'idle' },
+    type: 'image', version: 1, title: '图像节点', description: '旧版图像节点', category: 'generation',
+    ports: [textInput, imageInputs, imageOutput], dimensions: { width: 280, height: 280 }, defaultData: { prompt: '', model: '', status: 'idle' },
     executable: true, structural: false, executorKind: 'image', capabilities: [{ media: 'image', operation: 'generate' }],
   }),
   mediaDefinition({
@@ -121,13 +121,15 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
   }),
 ]
 
+export const hiddenLibraryNodeTypes = new Set(['text', 'image', 'video', 'unknown', 'image-edit'])
+
 export const builtinNodeRegistry = createNodeRegistry(builtinNodeDefinitions)
 
 export const legacyNodeAdapters: readonly LegacyNodeAdapter[] = [
   { legacyType: 'text', definitionType: 'prompt', toDefinitionData: (data) => ({ prompt: data.prompt }) },
   {
     legacyType: 'image', definitionType: 'image-generate',
-    toDefinitionData: (data: WorkflowNodeData) => ({ prompt: data.prompt, model: data.model, quality: data.quality, size: data.size }),
+    toDefinitionData: (data: WorkflowNodeData) => ({ prompt: data.prompt, model: data.model, quality: data.quality, size: data.size, imageResolution: data.imageResolution }),
   },
   {
     legacyType: 'video', definitionType: 'video-generate',

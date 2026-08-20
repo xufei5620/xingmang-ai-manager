@@ -7,20 +7,94 @@ function componentSource(name: string): string {
 }
 
 describe('canvas asset card markup', () => {
+  it('sizes tray tiles without a container query on the grid item', () => {
+    const styles = fs.readFileSync(path.join(import.meta.dirname, '../styles.css'), 'utf8')
+    const itemBlock = styles.slice(styles.indexOf('.asset-tray-item {'), styles.indexOf('.asset-tray-item:hover'))
+    expect(itemBlock).not.toContain('container-type')
+    expect(styles).toContain('.asset-tray-item-preview { position: relative; display: block; width: 100%; height: 0; padding-bottom: 100%;')
+    expect(styles).toContain('.asset-tray-grid.is-density-compact .asset-tray-item-tools .is-optional-preview { display: none; }')
+    expect(styles).not.toContain('@container (max-width: 143px)')
+  })
+
   it('keeps preview and action buttons as siblings in the asset tray', () => {
     const source = componentSource('AssetTray.tsx')
     expect(source).toContain('className={`asset-tray-item asset-tray-item-${asset.mediaType}')
     expect(source).toContain('className="asset-tray-item-preview"')
+    expect(source).toContain('canvasAssetIsPreviewable')
+    expect(source).toContain('fallbackSrc={asset.localUrl}')
     expect(source).toContain('className="asset-tray-item-tools"')
+    expect(source).toContain('className="asset-quick-views"')
+    expect(source).toContain("view: 'favorites'")
+    expect(source).toContain("view: 'recent'")
+    expect(source).toContain('aria-label="\u7d20\u6750\u6765\u6e90"')
+    expect(source).toContain('aria-label="\u7d20\u6750\u6392\u5e8f"')
     expect(source).toContain('onDoubleClick={() => setPreviewAsset(asset)}')
-    expect(source).toContain('onMouseLeave={(event) => {')
-    expect(source).toContain('event.currentTarget.contains(focused)')
     expect(source).toContain('className="asset-tray-item-detail-head"')
     expect(source).toContain('<dt>分辨率</dt>')
     expect(source).toContain('<dt>时长</dt>')
     expect(source).toContain('<dt>原文件</dt>')
     expect(source).toContain('<dt>资产 ID</dt>')
     expect(source).not.toMatch(/<button[^>]*className="asset-tray-item"/)
+  })
+
+  it('never lets pointer movement over the grid change selection or focus', () => {
+    // Tiles used to collapse on `onMouseLeave`, which also called `blur()` on
+    // whatever inside them held focus. A pointer crossing the grid therefore
+    // stole the keyboard focus of someone operating a tile without a mouse.
+    // Selection transitions now live in asset-selection.ts and are driven only
+    // by deliberate activation.
+    const source = componentSource('AssetTray.tsx')
+    expect(source).not.toContain('onMouseLeave')
+    expect(source).not.toContain('.blur()')
+    expect(source).toContain('assetSelectionAfterKey(')
+    expect(source).toContain('assetSelectionForActivation(')
+    expect(source).toContain('aria-expanded={expanded}')
+  })
+
+  it('supports the selection gestures a file grid is expected to have', () => {
+    const source = componentSource('AssetTray.tsx')
+    expect(source).toContain('toggle: event.ctrlKey || event.metaKey, range: event.shiftKey')
+    expect(source).toContain('assetSelectionSelectAll(visibleAssetIds)')
+    expect(source).toContain('assetSelectionForContextMenu(value, asset.assetId)')
+    expect(source).toContain('aria-multiselectable="true"')
+  })
+
+  it('renders derived stills and keeps at most one live media element in the grid', () => {
+    // Every video tile used to mount its own <video>, so a page of two dozen
+    // decoded the full source media just to paint previews a few hundred pixels
+    // wide. Players now live only in the docked detail panel, of which there is
+    // one, so the grid itself holds no live media at all.
+    const tray = componentSource('AssetTray.tsx')
+    const gridMarkup = tray.slice(tray.indexOf('className="asset-tray-grid"'), tray.indexOf('className="asset-tray-detail"'))
+    const detailMarkup = tray.slice(tray.indexOf('className="asset-tray-detail"'))
+    expect(gridMarkup).not.toContain('<ViewportVideo')
+    expect(gridMarkup).not.toContain('<AudioPreview')
+    expect(detailMarkup).toContain("isLocalCanvasAssetUrl(asset.localUrl, 'video')")
+    expect(detailMarkup).toContain("isLocalCanvasAssetUrl(asset.localUrl, 'audio')")
+    expect(tray).not.toMatch(/controls=\{(selected|expanded)\}/)
+    const library = componentSource('NodeLibrary.tsx')
+    expect(library).not.toContain('<ViewportVideo')
+    expect(library).toContain('src={asset.thumbnailUrl}')
+  })
+
+  it('derives a video cover frame off screen when the platform has no thumbnail', () => {
+    // Windows and macOS both decline some codecs, and a tile with no still is
+    // where a <video> would creep back in. The capture runs on a detached
+    // element behind a global queue instead, so the grid markup stays player
+    // free and only one decode is ever in flight.
+    for (const file of ['AssetTray.tsx', 'NodeLibrary.tsx']) {
+      const source = componentSource(file)
+      expect(source).toContain('<VideoCoverImage')
+      expect(source).toContain('videoUrl={asset.localUrl}')
+    }
+    const preview = componentSource('MediaPreview.tsx')
+    const coverComponent = preview.slice(
+      preview.indexOf('export function VideoCoverImage'),
+      preview.indexOf('const THUMBNAIL_URL_PATTERN'),
+    )
+    expect(coverComponent).toContain('videoCoverCache.resolve(videoUrl)')
+    expect(coverComponent).not.toContain('<video')
+    expect(coverComponent).not.toContain('<ViewportVideo')
   })
 
   it('wires logical rename through the asset tray and preview', () => {
@@ -30,6 +104,28 @@ describe('canvas asset card markup', () => {
     expect(tray).toContain('className="asset-rename-dialog"')
     expect(tray).toContain('await onRename(renamingAsset.assetId, displayName)')
     expect(preview).toContain('onRename?(assetId: string): void')
+  })
+
+  it('persists favorites and tags through host callbacks', () => {
+    const source = componentSource('AssetTray.tsx')
+    expect(source).toContain('onUpdateMetadata?(assetId: string, input: { favorite?: boolean; tags?: string[] })')
+    expect(source).toContain("{ favorite: !asset.favorite }")
+    expect(source).toContain('await onUpdateMetadata(taggingAsset.assetId, { tags })')
+  })
+
+  it('records recent use where the drop lands, not where the drag begins', () => {
+    // The tray used to mark the asset used in onDragStart, so a drag that was
+    // cancelled, dropped on empty space or rejected for the wrong media type
+    // still jumped to the front of the recent view and of used-desc sorting.
+    const tray = componentSource('AssetTray.tsx')
+    expect(tray).not.toContain('onMarkUsed')
+    const app = fs.readFileSync(path.join(import.meta.dirname, '..', 'App.tsx'), 'utf8')
+    const dragStart = app.slice(app.indexOf("getData('application/x-xingmang-asset-id')"))
+    expect(dragStart).toContain('addAssetNode(assetId, position)')
+    // Both accept paths: a new node on the pane, and binding onto an existing
+    // media node, which is also the one that can still refuse the asset.
+    expect(app).toContain('void markCanvasAssetUsed(assetId)')
+    expect(app).toContain('void markCanvasAssetUsed(asset.assetId)')
   })
 
   it('uses an article with sibling preview and menu controls in the content library', () => {

@@ -31,7 +31,7 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没
 | `electron/`（主进程，全部特权操作） | 86 个模块 | 81 个 |
 | `src/`（渲染进程，纯 UI） | 71 个文件 | 33 个 |
 
-**1669 个 vitest 用例**（125 个文件；该数字是历史基线，合并新测试后以 CI 输出为准），`npm test` 还串带 scripts/e2e 下的 node --test 套件。IPC：**108 个主窗口 invoke 通道**（另有 38 个画布宿主通道：36 invoke + 2 push，在 108 之外，见 I4 例外）。
+**1669 个 vitest 用例**（125 个文件；该数字是历史基线，合并新测试后以 CI 输出为准），`npm test` 还串带 scripts/e2e 下的 node --test 套件。IPC：**108 个主窗口 invoke 通道**（另有 43 个画布宿主通道：41 invoke + 2 push，在 108 之外，见 I4 例外）。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
@@ -114,9 +114,9 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 
 > 架构在 PR #85（2026-08-12）统一：**画布再也拿不到 API Key**。此前的做法是把 relay Key 注入画布 localStorage、由画布自己出网（`canvas-auth.ts` / `canvas-ai-config.ts` / `canvas-v2` 内的 relay 客户端），这三者已删除。现在全部 AI 调用都在主进程完成，画布只能经 `canvas-host:*` 通道请求。**改画布相关代码前先理解这条边界**：它是 I15 的兑现方式——被投毒的画布连 Key 都摸不到，因为它从来没有过。
 
-- `canvas-window.ts` — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 **38 个** `canvas-host:*` 宿主通道（36 invoke + 2 push，I4 的例外，见下）
+- `canvas-window.ts` — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 **43 个** `canvas-host:*` 宿主通道（41 invoke + 2 push，I4 的例外，见下）
 - `canvas-protocol.ts` (62) — `xingmang-canvas://` 解析。穿越/根包含检查**全部委托**主窗口同款 `resolvePackagedApplicationFile`，SPA 回退用字面量 `'index.html'` 重走同一函数，**绝不手工拼路径**；与主窗口不共享 rendererRoot
-- `canvas-preload.ts` — 宿主桥暴露 36 个 invoke 能力并接收 2 个主进程推送，拿不到 `window.xingmang`。通道名与 `canvas-contract.ts` 是有意重复的字面量（I7），由测试钉死
+- `canvas-preload.ts` — 宿主桥暴露 41 个 invoke 能力并接收 2 个主进程推送，拿不到 `window.xingmang`。通道名与 `canvas-contract.ts` 是有意重复的字面量（I7），由测试钉死
 - `canvas-contract.ts` — 宿主通道名的单一真相源（主进程侧）
 - `canvas-request-parser.ts` / `canvas-run-contract.ts` / `canvas-run-engine.ts` / `canvas-node-executors.ts` — 入参白名单校验、运行契约、DAG 运行引擎与节点执行器（**都在主进程**）
 - `canvas-account-lifecycle.ts` / `canvas-fingerprint.ts` — 账号切换隔离与画布指纹
@@ -167,7 +167,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 *违反后果*：用户一次"导出反馈"就把付费 Key 发到客服群。
 
 **I4. 所有 `ipcMain.handle` 必须经 `registerTrustedHandler`。**
-它统一做 sender URL 校验、结构化日志、dispose 注册。**唯一例外**：38 个 `canvas-host:*` 通道由 `canvas-window.ts` 的 `registerCanvasHandler` 注册——它做的是**更窄**的校验（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender），主窗口调这些通道会被拒。新通道不许效仿，除非同样只服务一个隔离窗口。
+它统一做 sender URL 校验、结构化日志、dispose 注册。**唯一例外**：43 个 `canvas-host:*` 通道由 `canvas-window.ts` 的 `registerCanvasHandler` 注册——它做的是**更窄**的校验（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender），主窗口调这些通道会被拒。新通道不许效仿，除非同样只服务一个隔离窗口。
 
 **I5. IPC 入参一律视为敌意输入，必须显式校验。**
 渲染进程虽是自家代码，但 XSS/依赖投毒后就是攻击面。`parseSessionId` 的 UUID 正则同时防路径穿越。
@@ -206,7 +206,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 **I15. 画布是运行第三方前端代码的隔离区，凭据永不下放，能力只减不增。**
 画布窗口与主窗口**不共享 rendererRoot**、协议解析必须委托 `resolvePackagedApplicationFile`，且 `xingmang-canvas://` 的 CSP 必须由主进程响应头强制注入。**API Key 只在主进程按账号与分组解析，绝不进入渲染进程**（`chat-credential-coordinator.ts`）——这是 2026-08-12 架构统一的核心：画布发的是"请求"，不是"带着 Key 的请求"。给画布加任何新能力前先回答：**画布被供应链投毒后，这个能力能干什么？** 文件读写必须走原生对话框（用户选路径）+ `bounded-*`/原子写，外链必须过白名单，入参必须过 `canvas-request-parser.ts` 的字段白名单。唯一的文件路径例外是 OS 拖放：路径只能由隔离 preload 的 `webUtils.getPathForFile(File)` 取得，主进程仍须执行绝对路径、reparse、单链接普通文件校验，最终资产 store 再以 open + fstat 复核。
 *违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它既摸不到主进程 IPC，也拿不到 Key。
-*当前状态*：宿主桥共 38 个通道（36 invoke + 2 push），已完成通道级投毒审计。`importAssetFile` 的 OS 拖放路径属于上述明确例外；不得新增第二个由 renderer 提供绝对路径的通道。
+*当前状态*：宿主桥共 43 个通道（41 invoke + 2 push），已完成通道级投毒审计。`importAssetFile` 的 OS 拖放路径属于上述明确例外；不得新增第二个由 renderer 提供绝对路径的通道。
 
 ---
 

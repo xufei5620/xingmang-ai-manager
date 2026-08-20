@@ -94,6 +94,7 @@ import {
   canvasHostListGroupsChannel,
   canvasHostListAssetsChannel,
   canvasHostListProjectsChannel,
+  canvasHostMarkAssetUsedChannel,
   canvasHostListPromptPresetsChannel,
   canvasHostPickAssetChannel,
   canvasHostImportAssetFileChannel,
@@ -110,6 +111,10 @@ import {
   canvasHostPrepareGroupChannel,
   canvasHostPreviewProjectChannel,
   canvasHostRenameAssetChannel,
+  canvasHostUpdateAssetMetadataChannel,
+  canvasHostDeleteAssetChannel,
+  canvasHostRestoreAssetChannel,
+  canvasHostPurgeAssetChannel,
   canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
   canvasHostSaveFileChannel,
@@ -225,6 +230,7 @@ function controllerOptions(
       listOwnedPage: vi.fn(async () => ({ items: [], offset: 0, limit: 24, total: 0, hasMore: false })),
       copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => false), contextMenu: vi.fn(async () => undefined),
       rename: vi.fn(),
+      updateMetadata: vi.fn(), markUsed: vi.fn(), setSource: vi.fn(async () => undefined),
     } as never,
     promptPresets: {
       list: vi.fn(async () => []),
@@ -290,6 +296,7 @@ describe('createCanvasWindowController', () => {
       canvasHostGenerateVideoChannel,
       canvasHostResumeVideoTaskChannel,
       canvasHostListAssetsChannel,
+      canvasHostMarkAssetUsedChannel,
       canvasHostListProjectsChannel,
       canvasHostListPromptPresetsChannel,
       canvasHostPickAssetChannel,
@@ -308,6 +315,10 @@ describe('createCanvasWindowController', () => {
       canvasHostPrepareGroupChannel,
       canvasHostPreviewProjectChannel,
       canvasHostRenameAssetChannel,
+      canvasHostUpdateAssetMetadataChannel,
+      canvasHostDeleteAssetChannel,
+      canvasHostRestoreAssetChannel,
+      canvasHostPurgeAssetChannel,
       canvasHostRenameProjectChannel,
       canvasHostSaveAssetChannel,
       canvasHostSaveProjectChannel,
@@ -579,7 +590,7 @@ describe('createCanvasWindowController', () => {
     }
     const findAssetReferences = vi.fn(async () => [{ projectId, projectName: '引用项目', nodeIds: ['image-0'], archived: false }])
     const projects = {
-      list: vi.fn(), create: vi.fn(), save: vi.fn(), rename: vi.fn(), duplicate: vi.fn(), setArchived: vi.fn(),
+      list: vi.fn(async () => [summary]), create: vi.fn(), save: vi.fn(), rename: vi.fn(), duplicate: vi.fn(), setArchived: vi.fn(),
       open: vi.fn(async () => ({ project: summary, content })),
       findAssetReferences,
     }
@@ -607,7 +618,9 @@ describe('createCanvasWindowController', () => {
     expect(report).toEqual({
       assetId,
       inUse: true,
-      currentProject: { projectId, projectName: '可移植项目', nodeIds: ['image-0'] },
+      // The project's name comes from the store, which is where renaming is
+      // recorded, rather than from whatever the canvas put in its payload.
+      currentProject: { projectId, projectName: '引用项目', nodeIds: ['image-0'] },
       projects: [{ projectId, projectName: '引用项目', nodeIds: ['image-0'], archived: false }],
       runs: [{
         runId: 'run-reference', projectId, createdAt: '2026-08-17T00:00:00.000Z', status: 'succeeded',
@@ -615,6 +628,47 @@ describe('createCanvasWindowController', () => {
       }],
     })
     expect(findAssetReferences).toHaveBeenCalledWith(7, assetId)
+  })
+
+  it('blocks a purge on the stored project even when the canvas reports no references', async () => {
+    // The active project's references used to be read only from the payload the
+    // renderer sent. A canvas that under-reports its own content could then walk
+    // an asset it is still wired to into the bin, and a purge does not undo.
+    const assetId = 'A'.repeat(43)
+    const projectId = '22222222-2222-4222-8222-222222222222'
+    const summary = {
+      id: projectId, name: '在用项目', createdAt: '2026-08-14T00:00:00.000Z', updatedAt: '2026-08-14T00:00:00.000Z',
+      lastOpenedAt: '2026-08-14T00:00:00.000Z', nodeCount: 1, assetCount: 1,
+      workspaceConfigured: false, workspaceStatus: 'ready' as const,
+    }
+    const projects = {
+      list: vi.fn(async () => [summary]), create: vi.fn(), save: vi.fn(), rename: vi.fn(), duplicate: vi.fn(), setArchived: vi.fn(),
+      open: vi.fn(async () => ({ project: summary, content: projectWorkflow([assetId]) })),
+      findAssetReferences: vi.fn(async () => [{ projectId, projectName: '在用项目', nodeIds: ['image-0'], archived: false }]),
+    }
+    const canvasRuns = {
+      start: vi.fn(), cancel: vi.fn(), cancelOwner: vi.fn(), getAssetLineage: vi.fn(), subscribe: vi.fn(() => () => undefined),
+      listRuns: vi.fn(async () => []),
+    }
+    const purge = vi.fn(async (_userId: number, _assetId: string, references: () => Promise<{ inUse: boolean }>) => {
+      const report = await references()
+      if (report.inUse) throw new Error('素材仍在使用中')
+      return { assetId: _assetId }
+    })
+    const controller = createCanvasWindowController(controllerOptions({
+      projects: projects as never,
+      canvasRuns: canvasRuns as never,
+      mediaAssets: { purge } as never,
+    }))
+    await controller.open()
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+
+    // An empty workflow: the canvas claiming it uses nothing at all.
+    const emptyClaim = projectWorkflow([])
+    await expect(electronMocks.handlers.get(canvasHostPurgeAssetChannel)!(trustedEvent(), assetId, emptyClaim))
+      .rejects.toThrow('素材仍在使用中')
+    await expect(electronMocks.handlers.get(canvasHostInspectAssetReferencesChannel)!(trustedEvent(), assetId, emptyClaim))
+      .resolves.toMatchObject({ inUse: true, currentProject: { projectId, nodeIds: ['image-0'] } })
   })
 
   it('imports a validated local image through the native picker without exposing its path', async () => {
@@ -627,11 +681,19 @@ describe('createCanvasWindowController', () => {
       copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), listOwnedPage: vi.fn(),
       storeLocalFile: vi.fn(async () => imported), removeOwned: vi.fn(async () => undefined),
     }
-    const controller = createCanvasWindowController(controllerOptions({ aiAssets: aiAssets as never }))
+    const setSource = vi.fn(async () => ({ assetId: imported.assetId, source: 'imported' as const }))
+    const controller = createCanvasWindowController(controllerOptions({
+      aiAssets: aiAssets as never,
+      mediaAssets: {
+        listOwnedPage: vi.fn(), copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), rename: vi.fn(),
+        updateMetadata: vi.fn(), markUsed: vi.fn(), setSource,
+      } as never,
+    }))
     await controller.open()
 
     await expect(electronMocks.handlers.get(canvasHostPickAssetChannel)!(trustedEvent())).resolves.toEqual(imported)
     expect(aiAssets.storeLocalFile).toHaveBeenCalledWith(7, imagePath)
+    expect(setSource).toHaveBeenCalledWith(7, imported.assetId, 'imported')
   })
 
   it('routes a dragged local MP4 to the video asset store', async () => {
@@ -818,6 +880,11 @@ describe('createCanvasWindowController', () => {
       listOwnedPage: vi.fn(async () => ({ items: [], offset: 24, limit: 24, total: 25, hasMore: false })),
       copy: vi.fn(async () => undefined), saveAs: vi.fn(async () => true), contextMenu: vi.fn(async () => undefined),
       rename: vi.fn(async (_userId: number, assetId: string, displayName: string) => ({ assetId, displayName })),
+      updateMetadata: vi.fn(async (_userId: number, assetId: string, metadata: { favorite?: boolean; tags?: string[] }) => ({
+        assetId, favorite: metadata.favorite ?? false, tags: metadata.tags ?? [],
+      })),
+      markUsed: vi.fn(async (_userId: number, assetId: string) => ({ assetId, lastUsedAt: '2026-08-19T00:00:00.000Z' })),
+      setSource: vi.fn(),
     }
     const controller = createCanvasWindowController(controllerOptions({
       chatCredentials,
@@ -845,6 +912,11 @@ describe('createCanvasWindowController', () => {
     await expect(electronMocks.handlers.get(canvasHostRenameAssetChannel)!(trustedEvent(), {
       assetId: 'a'.repeat(43), displayName: ' 产品主视觉 ',
     })).resolves.toEqual({ assetId: 'a'.repeat(43), displayName: '产品主视觉' })
+    await expect(electronMocks.handlers.get(canvasHostUpdateAssetMetadataChannel)!(trustedEvent(), {
+      assetId: 'a'.repeat(43), favorite: true, tags: [' 产品 '],
+    })).resolves.toEqual({ assetId: 'a'.repeat(43), favorite: true, tags: ['产品'] })
+    await expect(electronMocks.handlers.get(canvasHostMarkAssetUsedChannel)!(trustedEvent(), 'a'.repeat(43)))
+      .resolves.toEqual({ assetId: 'a'.repeat(43), lastUsedAt: '2026-08-19T00:00:00.000Z' })
 
     expect(JSON.stringify({ groups, prepared, generated, edited })).not.toContain('apiKey')
     expect(imageService.generate).toHaveBeenCalledWith(41, expect.objectContaining({ requestId: 'request-1', expectedUserId: 7 }))
@@ -855,6 +927,44 @@ describe('createCanvasWindowController', () => {
     expect(mediaAssets.copy).toHaveBeenCalledWith(7, 'a'.repeat(43), expect.any(Function))
     expect(mediaAssets.listOwnedPage).toHaveBeenCalledWith(7, { offset: 24, limit: 24, mediaType: 'image', search: '产品' })
     expect(mediaAssets.rename).toHaveBeenCalledWith(7, 'a'.repeat(43), '产品主视觉')
+    expect(mediaAssets.updateMetadata).toHaveBeenCalledWith(7, 'a'.repeat(43), { favorite: true, tags: ['产品'] })
+    expect(mediaAssets.markUsed).toHaveBeenCalledWith(7, 'a'.repeat(43))
+  })
+
+  it('holds every asset channel to the same identifier shape', async () => {
+    // copy, save and the context menu used to accept any string up to 64
+    // characters while the rest demanded the 43 character asset id. The stores
+    // caught the difference, but two validation strengths for one identifier is
+    // how a gap eventually gets through.
+    const mediaAssets = {
+      copy: vi.fn(async () => undefined),
+      saveAs: vi.fn(async () => true),
+      contextMenu: vi.fn(async () => undefined),
+      markUsed: vi.fn(async () => ({ assetId: 'a', lastUsedAt: '2026-08-19T00:00:00.000Z' })),
+      softDelete: vi.fn(async () => ({ assetId: 'a', deletedAt: '2026-08-19T00:00:00.000Z' })),
+      restore: vi.fn(async () => ({ assetId: 'a' })),
+    }
+    const controller = createCanvasWindowController(controllerOptions({ mediaAssets: mediaAssets as never }))
+    await controller.open()
+
+    for (const channel of [
+      canvasHostCopyAssetChannel,
+      canvasHostSaveAssetChannel,
+      canvasHostShowAssetMenuChannel,
+      canvasHostMarkAssetUsedChannel,
+      canvasHostDeleteAssetChannel,
+      canvasHostRestoreAssetChannel,
+    ]) {
+      for (const rejected of ['../secrets', 'a'.repeat(44), 'a'.repeat(42), `${'a'.repeat(42)}/`, '']) {
+        await expect(electronMocks.handlers.get(channel)!(trustedEvent(), rejected)).rejects.toThrow(/画布资产标识/)
+      }
+    }
+    expect(mediaAssets.copy).not.toHaveBeenCalled()
+    expect(mediaAssets.saveAs).not.toHaveBeenCalled()
+    expect(mediaAssets.contextMenu).not.toHaveBeenCalled()
+    expect(mediaAssets.markUsed).not.toHaveBeenCalled()
+    expect(mediaAssets.softDelete).not.toHaveBeenCalled()
+    expect(mediaAssets.restore).not.toHaveBeenCalled()
   })
 
   it('rejects a completed asset rename when the account changes in flight', async () => {
@@ -876,6 +986,29 @@ describe('createCanvasWindowController', () => {
     await vi.waitFor(() => expect(rename).toHaveBeenCalled())
     activeUserId = 8
     release({ assetId: 'a'.repeat(43), displayName: '新名称' })
+    await expect(pending).rejects.toThrow('账号已切换')
+  })
+
+  it('does not return a completed asset metadata mutation after the account changes', async () => {
+    let activeUserId = 7
+    let release!: (value: { assetId: string; favorite: boolean; tags: string[] }) => void
+    const updateMetadata = vi.fn((_userId: number, assetId: string) => new Promise((resolve) => {
+      release = resolve
+    }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: activeUserId } })) } as never,
+      mediaAssets: {
+        listOwnedPage: vi.fn(), copy: vi.fn(), saveAs: vi.fn(), contextMenu: vi.fn(), rename: vi.fn(),
+        updateMetadata, markUsed: vi.fn(), setSource: vi.fn(),
+      } as never,
+    }))
+    await controller.open()
+    const pending = electronMocks.handlers.get(canvasHostUpdateAssetMetadataChannel)!(trustedEvent(), {
+      assetId: 'a'.repeat(43), favorite: true,
+    })
+    await vi.waitFor(() => expect(updateMetadata).toHaveBeenCalled())
+    activeUserId = 8
+    release({ assetId: 'a'.repeat(43), favorite: true, tags: [] })
     await expect(pending).rejects.toThrow('账号已切换')
   })
 
@@ -1001,6 +1134,8 @@ describe('createCanvasWindowController', () => {
       canvasHostCreatePromptPresetChannel, canvasHostDeletePromptPresetChannel,
       canvasHostSaveAssetChannel, canvasHostShowAssetMenuChannel, canvasHostListAssetsChannel,
       canvasHostRenameAssetChannel,
+      canvasHostUpdateAssetMetadataChannel, canvasHostMarkAssetUsedChannel,
+      canvasHostDeleteAssetChannel, canvasHostRestoreAssetChannel, canvasHostPurgeAssetChannel,
       canvasHostStartRunChannel, canvasHostCancelRunChannel, canvasHostListRunsChannel,
       canvasHostExportProjectChannel, canvasHostPreviewProjectChannel, canvasHostImportProjectChannel,
       canvasHostListPromptPresetsChannel, canvasHostUpdatePromptPresetChannel,

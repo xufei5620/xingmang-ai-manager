@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { AiVideoTaskStore, type StoredAiVideoTask } from './ai-video-task-store'
+import { AI_VIDEO_TASK_VERSION, AiVideoTaskStore, type StoredAiVideoTask } from './ai-video-task-store'
 
 const roots: string[] = []
 
@@ -18,7 +18,7 @@ function fixture() {
 
 function task(taskId = 'video_123'): StoredAiVideoTask {
   return {
-    version: 1, userId: 7, taskId, group: '生图分组', model: 'grok-imagine-video',
+    version: AI_VIDEO_TASK_VERSION, userId: 7, taskId, group: '生图分组', model: 'grok-imagine-video',
     requestId: 'request-1', createdAt: '2026-08-14T00:00:00.000Z',
   }
 }
@@ -70,6 +70,70 @@ describe('AiVideoTaskStore', () => {
     fs.writeFileSync(filePath, '{invalid', 'utf8')
     expect(await store.list(7)).toEqual([])
     expect(fs.readdirSync(path.dirname(filePath)).some((entry) => entry.includes('.corrupt-'))).toBe(true)
+  })
+
+  it('carries the prompt so a task resumed after a restart can still label its clip', async () => {
+    const { root, store } = fixture()
+    const prompted = { ...task(), prompt: '海边的黄昏，镜头缓慢推近' }
+    await store.upsert(prompted)
+    await expect(store.list(7)).resolves.toEqual([prompted])
+    const reopened = new AiVideoTaskStore({ rootDirectory: root })
+    await expect(reopened.list(7)).resolves.toEqual([prompted])
+  })
+
+  it('refuses a prompt that is empty, over-long or carries control characters', async () => {
+    const { store } = fixture()
+    await expect(store.upsert({ ...task('blank'), prompt: '   ' })).rejects.toThrow('任务记录格式错误')
+    await expect(store.upsert({ ...task('long'), prompt: 'x'.repeat(2_001) })).rejects.toThrow('任务记录格式错误')
+    await expect(store.upsert({ ...task('control'), prompt: 'a\u0000b' })).rejects.toThrow('任务记录格式错误')
+    // Newlines are ordinary in a prompt and must survive.
+    await expect(store.upsert({ ...task('lines'), prompt: '第一行\n第二行' })).resolves.toBeUndefined()
+  })
+
+  it('reads a version 1 record written before prompts existed', async () => {
+    const { root, store } = fixture()
+    const directory = path.join(root, 'user-7')
+    fs.mkdirSync(directory, { recursive: true })
+    const legacy = {
+      version: 1, userId: 7, taskId: 'video-legacy', group: '生图分组', model: 'grok-imagine-video',
+      requestId: 'request-1', createdAt: '2026-08-14T00:00:00.000Z',
+    }
+    fs.writeFileSync(path.join(directory, 'video-tasks.json'), `${JSON.stringify({ version: 1, userId: 7, tasks: [legacy] })}\n`, 'utf8')
+
+    // A task submitted before the upgrade still has to be resumable; it just
+    // has no prompt to put on the finished asset.
+    await expect(store.list(7)).resolves.toEqual([{ ...legacy, version: AI_VIDEO_TASK_VERSION }])
+    expect(fs.readdirSync(directory).some((entry) => entry.includes('.corrupt-'))).toBe(false)
+  })
+
+  it('rejects an unknown schema version rather than reading fields it cannot vouch for', async () => {
+    const { root, store } = fixture()
+    const directory = path.join(root, 'user-7')
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(
+      path.join(directory, 'video-tasks.json'),
+      `${JSON.stringify({ version: AI_VIDEO_TASK_VERSION + 1, userId: 7, tasks: [task()] })}\n`,
+      'utf8',
+    )
+    expect(await store.list(7)).toEqual([])
+    expect(fs.readdirSync(directory).some((entry) => entry.includes('.corrupt-'))).toBe(true)
+  })
+
+  it('keeps one prompt quoting a URL from condemning every task waiting to resume', async () => {
+    const { root, store } = fixture()
+    // The tripwire against credentials and endpoints still runs over the rest
+    // of the record, but a prompt is text the user wrote and is never fetched.
+    const quoting = { ...task('video-quoting'), prompt: '参考 https://example.com/board 的构图' }
+    await store.upsert(quoting)
+    await store.upsert(task('video-other'))
+    const reopened = new AiVideoTaskStore({ rootDirectory: root })
+    expect((await reopened.list(7)).map(({ taskId }) => taskId)).toEqual(['video-other', 'video-quoting'])
+
+    const filePath = path.join(root, 'user-7', 'video-tasks.json')
+    const state = JSON.parse(fs.readFileSync(filePath, 'utf8')) as { tasks: Record<string, unknown>[] }
+    state.tasks[0].group = 'https://evil.example/relay'
+    fs.writeFileSync(filePath, `${JSON.stringify(state)}\n`, 'utf8')
+    expect(await new AiVideoTaskStore({ rootDirectory: root }).list(7)).toEqual([])
   })
 
   it('preserves all existing paid task ids when the recovery store reaches its limit', async () => {

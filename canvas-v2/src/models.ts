@@ -8,6 +8,8 @@
 // - 尺寸按模型区分:gpt-image-1 只认三种固定值;gpt-image-2 任意但宽高
 //   必须都是 16 的倍数(预设已全部满足);即梦用常规 1024
 // - 即梦返回的 CDN URL 24 小时过期,UI 要提示尽快下载转存
+// - Gemini 3.1 Flash Image 通过 Chat Completions 返回内嵌图片，size
+//   在主进程转换为 aspect_ratio，不支持 Images API 编辑
 
 export interface ImageModelPreset {
   id: string
@@ -16,11 +18,20 @@ export interface ImageModelPreset {
   /** Whether the relay accepts a size field for this model. */
   supportsSize: boolean
   supportsQuality: boolean
+  resolutions: readonly ImageResolution[]
+  resolutionNote?: string
   /** 支持 /v1/images/edits(图生图)。仅 gpt-image 系,即梦不支持。 */
   supportsEdits: boolean
   /** 生成产物为带签名的临时 URL(24h 过期),需提示用户尽快下载。 */
   ephemeralUrl?: boolean
 }
+
+export type ImageResolution = '1K' | '2K' | '4K'
+export const imageResolutionOptions: readonly { value: ImageResolution; label: string }[] = [
+  { value: '1K', label: '1K' },
+  { value: '2K', label: '2K' },
+  { value: '4K', label: '4K' },
+]
 
 export const imageModelPresets: readonly ImageModelPreset[] = [
   {
@@ -32,7 +43,20 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     ],
     supportsSize: true,
     supportsQuality: true,
+    resolutions: ['1K', '2K', '4K'],
     supportsEdits: true,
+  },
+  {
+    id: 'gemini-3.1-flash-image',
+    label: 'Gemini 3.1 Flash Image',
+    sizes: [
+      '1024x1024', '1536x1152', '1152x1536', '1280x720', '720x1280',
+      '1536x1024', '1024x1536', '1280x1024', '1024x1280', '1792x768',
+    ],
+    supportsSize: true,
+    supportsQuality: false,
+    resolutions: ['1K', '2K', '4K'],
+    supportsEdits: false,
   },
   {
     id: 'gpt-image-1',
@@ -40,6 +64,8 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     sizes: ['1024x1024', '1024x1536', '1536x1024'],
     supportsSize: true,
     supportsQuality: true,
+    resolutions: ['1K'],
+    resolutionNote: 'GPT Image 1 接口最高只支持 1024/1536 固定尺寸',
     supportsEdits: true,
   },
   {
@@ -48,6 +74,8 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     sizes: [],
     supportsSize: false,
     supportsQuality: false,
+    resolutions: ['1K'],
+    resolutionNote: '即梦当前接口没有 2K/4K 原生档位',
     supportsEdits: false,
     ephemeralUrl: true,
   },
@@ -57,6 +85,8 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     sizes: [],
     supportsSize: false,
     supportsQuality: false,
+    resolutions: ['1K'],
+    resolutionNote: 'Grok 当前接口由上游决定输出尺寸',
     supportsEdits: true,
   },
   {
@@ -65,6 +95,8 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     sizes: [],
     supportsSize: false,
     supportsQuality: false,
+    resolutions: ['1K'],
+    resolutionNote: 'Grok 当前接口由上游决定输出尺寸',
     supportsEdits: true,
   },
   {
@@ -73,6 +105,8 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
     sizes: [],
     supportsSize: false,
     supportsQuality: false,
+    resolutions: ['1K'],
+    resolutionNote: 'Grok 当前接口由上游决定输出尺寸',
     supportsEdits: true,
   },
 ]
@@ -80,6 +114,7 @@ export const imageModelPresets: readonly ImageModelPreset[] = [
 export const defaultImageModel: string = imageModelPresets[0].id
 export const defaultImageSize = '1024x1024'
 export const defaultImageQuality = 'low'
+export const defaultImageResolution: ImageResolution = '1K'
 
 export function availableImageModelPresets(models: readonly string[]): ImageModelPreset[] {
   const available = new Set(models)
@@ -94,6 +129,7 @@ export function imageModelPreset(id: string): ImageModelPreset {
     sizes: imageModelPresets[0].sizes,
     supportsSize: true,
     supportsQuality: true,
+    resolutions: ['1K', '2K', '4K'],
     supportsEdits: true,
   }
 }
@@ -309,6 +345,7 @@ export function validateImageModelOptions(input: {
   operation: 'generate' | 'edit'
   size?: string
   quality?: string
+  imageResolution?: string
   referenceImageCount?: number
 }): string[] {
   const errors: string[] = []
@@ -319,6 +356,10 @@ export function validateImageModelOptions(input: {
   if ((input.referenceImageCount ?? 0) > 4) errors.push('图片编辑最多支持 4 张参考图')
   if (!preset.supportsSize && input.size) errors.push(`模型「${preset.label}」不接受尺寸参数`)
   if (!preset.supportsQuality && input.quality) errors.push(`模型「${preset.label}」不接受画质参数`)
+  const imageResolution = input.imageResolution ?? defaultImageResolution
+  if (!preset.resolutions.includes(imageResolution as ImageResolution)) {
+    errors.push(`模型「${preset.label}」不支持 ${imageResolution} 清晰度`)
+  }
   if (preset.supportsQuality && input.quality && !['low', 'medium', 'high', 'auto'].includes(input.quality)) {
     errors.push('画质只能为 low、medium、high 或 auto')
   }
@@ -327,8 +368,8 @@ export function validateImageModelOptions(input: {
     if (!dimensions) errors.push('图片尺寸格式必须为“宽x高”')
     else if (input.model === 'gpt-image-2' && (dimensions.width % 16 !== 0 || dimensions.height % 16 !== 0)) {
       errors.push('GPT Image 2 的宽高必须都是 16 的倍数')
-    } else if (input.model === 'gpt-image-1' && !preset.sizes.includes(input.size)) {
-      errors.push('GPT Image 1 不支持这个图片尺寸')
+    } else if (input.model !== 'gpt-image-2' && !preset.sizes.includes(input.size)) {
+      errors.push(`模型「${preset.label}」不支持这个图片尺寸`)
     }
   }
   return errors

@@ -37,6 +37,7 @@ import {
   type ProviderSessionListQuery,
 } from './provider-sessions'
 import type { NativeConfigSaveMode } from './config-files'
+import type { CodexDesktopLocale } from './codex-desktop-locale'
 import {
   isAllowedExternalUrl,
   isTrustedIpcSenderUrl,
@@ -384,6 +385,11 @@ function parseWorkspace(workspace: unknown, fallback: string): string {
 function parseDesktopLaunchMode(mode: unknown): CodexDesktopLaunchMode {
   if (mode !== 'open' && mode !== 'restart') throw new Error('Codex 桌面端启动方式错误')
   return mode
+}
+
+function parseCodexDesktopLocale(locale: unknown): CodexDesktopLocale {
+  if (locale !== 'zh-CN' && locale !== 'system') throw new Error('Codex Desktop 语言选项错误')
+  return locale
 }
 
 function parseSessionId(value: unknown): string {
@@ -930,6 +936,10 @@ function parseAiImageGenerateInput(value: unknown): AiImageGenerateInput {
   if (quality !== undefined && !['low', 'medium', 'high', 'auto'].includes(String(quality))) {
     throw new Error('生图画质格式错误')
   }
+  const imageResolution = value.imageResolution
+  if (imageResolution !== undefined && !['1K', '2K', '4K'].includes(String(imageResolution))) {
+    throw new Error('生图清晰度格式错误')
+  }
   return {
     requestId: requiredString(value.requestId, '生图请求标识', 160),
     group: requiredString(value.group, '生图分组', 128),
@@ -937,6 +947,7 @@ function parseAiImageGenerateInput(value: unknown): AiImageGenerateInput {
     prompt: requiredString(value.prompt, '生图提示词', 40_000),
     ...(value.size === undefined ? {} : { size: requiredString(value.size, '生图尺寸', 32) }),
     ...(quality === undefined ? {} : { quality: quality as AiImageGenerateInput['quality'] }),
+    ...(imageResolution === undefined ? {} : { imageResolution: imageResolution as AiImageGenerateInput['imageResolution'] }),
   }
 }
 
@@ -959,6 +970,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'desktop:check-update-codex': 'Codex 桌面端更新检查',
   'cli:launch': 'CLI 终端启动',
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
+  'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
+  'desktop:set-codex-locale': 'Codex Desktop 语言设置',
   'desktop:launch-codex': 'Codex 桌面端启动',
   'models:list': '可用模型读取',
   'models:list-configured': '已配置 CLI 可用模型读取',
@@ -1051,6 +1064,7 @@ const quietIpcSuccessChannels = new Set([
   'repository:get-context',
   'setup:codex-status',
   'desktop:codex-status',
+  'desktop:codex-locale-status',
   'window:set-mode',
   'window:set-theme',
   'update:get-state',
@@ -1379,6 +1393,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       throw error
     }
   })
+  registerTrustedHandler('runtime:restart-windows', async () => {
+    options.runtimeLog.log('info', 'maintenance', 'runtime.windows.restart.requested', '用户请求重启 Windows 完成系统更新')
+    await service.restartWindows()
+  })
   registerTrustedHandler('runtime:install-python', async (event) => {
     options.runtimeLog.log('info', 'maintenance', 'runtime.python.install.started', '开始自动安装 Python 3.12')
     try {
@@ -1438,6 +1456,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return service.launchProvider(provider, parseWorkspace(workspace, stored.workspace))
   })
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
+  registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())
+  registerTrustedHandler('desktop:set-codex-locale', (event, locale: unknown) => (
+    service.setCodexDesktopLocale(parseCodexDesktopLocale(locale), event.sender)
+  ))
   registerTrustedHandler('desktop:launch-codex', (event, mode: unknown) => (
     service.launchCodexDesktop(parseDesktopLaunchMode(mode), event.sender)
   ))
