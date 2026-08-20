@@ -20,7 +20,7 @@ import {
 } from './canvas-run-contract'
 import { computeCanvasNodeFingerprint } from './canvas-fingerprint'
 
-const DEFAULT_MAX_CONCURRENCY = 2
+const DEFAULT_MAX_CONCURRENCY = 20
 const MAXIMUM_ERROR_LENGTH = 300
 const nonCacheableCanvasNodeKinds = new Set<CanvasRunNodeKind>(['gallery', 'router', 'output'])
 
@@ -290,6 +290,22 @@ function usesRemoteGeneration(kind: CanvasRunNodeKind): boolean {
     || kind === 'image-generate'
     || kind === 'image-edit'
     || kind === 'video-generate'
+}
+
+export function canvasRunExclusiveNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): string[] {
+  const index = validateGraph(graph)
+  if (scope.kind === 'to-node') {
+    if (!index.nodesById.has(scope.nodeId)) throw new Error(`运行范围包含不存在的节点：${scope.nodeId}`)
+    return [scope.nodeId]
+  }
+  const selected = selectScope(index, scope)
+  const remote = index.topological.filter((nodeId) => {
+    if (!selected.has(nodeId)) return false
+    const node = index.nodesById.get(nodeId)!
+    return usesRemoteGeneration(node.kind) && !node.disabled
+  })
+  if (remote.length > 0) return remote
+  return index.topological.filter((nodeId) => selected.has(nodeId))
 }
 
 export function canvasRunRemoteGenerationUpperBound(graph: CanvasRunGraph, scope: CanvasRunScope): number {
@@ -570,7 +586,10 @@ export async function executeCanvasRun(options: CanvasRunEngineOptions): Promise
       await updateStage(nodeId, 'resolving-cache')
       let cached: CanvasRunCacheEntry | null | undefined
       try {
-        cached = isCanvasNodeCacheEligible(node.kind) && options.resolveCache
+        // 「运行到此」点在哪个节点，那个节点就必须真的跑一遍。上游已固定的
+        // 产物仍走缓存，否则下游单独运行会把前面的图再付费生成一次。
+        const bypassCache = options.scope.kind === 'to-node' && options.scope.nodeId === nodeId
+        cached = !bypassCache && isCanvasNodeCacheEligible(node.kind) && options.resolveCache
           ? await raceWithAbort(options.resolveCache(fingerprint, node), options.signal)
           : undefined
       } catch {

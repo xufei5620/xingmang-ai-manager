@@ -64,6 +64,10 @@ describe('registry driven ports', () => {
       { source: 'image-b', sourceHandle: 'out:image', target: 'edit', targetHandle: 'in:images' },
       graph({ 'image-b': 'image-input', edit: 'image-edit' }, [{ source: 'image-a', target: 'edit', targetHandle: 'in:images' }]),
     )).toBe(true)
+    expect(isValidWorkflowConnection(
+      { source: 'image-b', sourceHandle: 'out:image', target: 'generate', targetHandle: 'in:images' },
+      graph({ 'image-b': 'image-input', generate: 'image-generate' }, [{ source: 'image-a', target: 'generate', targetHandle: 'in:images' }]),
+    )).toBe(true)
   })
 
   it('accepts multiple text, image, and audio inputs for video generation', () => {
@@ -110,6 +114,7 @@ describe('registry driven ports', () => {
   })
 
   it('does not expose video or audio inputs on image editing', () => {
+    expect(nodeInputKinds['image-generate']).toEqual(['text', 'image'])
     expect(nodeInputKinds['image-edit']).toEqual(['text', 'image'])
     expect(nodeInputKinds['video-generate']).toEqual(['text', 'image', 'video', 'audio'])
     expect(isValidWorkflowConnection(

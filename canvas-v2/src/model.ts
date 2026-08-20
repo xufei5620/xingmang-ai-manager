@@ -25,6 +25,8 @@ export interface AssetRef {
   mimeType?: string
   width?: number
   height?: number
+  /** 视频/音频自身的播放时长，不是生成耗时。 */
+  durationSeconds?: number
   /** relay 返回的产物 URL(生成在服务端,主通路是网络拉取,不走本地桥)。 */
   remoteUrl?: string
   /** 视频异步任务 id,应用重启后凭它恢复轮询(断线恢复)。 */
@@ -75,6 +77,7 @@ export interface WorkflowNodeData {
   /** 输入或采纳结果变化后，等待用户显式运行的标记。 */
   dirty?: boolean
   attemptCount?: number
+  /** 本次打开画布期间的生成耗时。只活在内存里，不进工作流文件，重开后不恢复。 */
   latestAttemptDurationMs?: number
   /** 主进程运行开始时间；仅用于节点实时计时，不进入工作流文件。 */
   runStartedAt?: string
@@ -165,7 +168,7 @@ export const nodeInputKinds: Record<NodeKind, readonly PortKind[]> = {
   'image-input': [],
   'video-input': [],
   'audio-input': [],
-  'image-generate': ['text'],
+  'image-generate': ['text', 'image'],
   'image-edit': ['text', 'image'],
   'video-generate': ['text', 'image', 'video', 'audio'],
   'frame-extract': ['video'],

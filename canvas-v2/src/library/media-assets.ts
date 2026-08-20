@@ -68,9 +68,56 @@ export function formatMediaDuration(value: number): string {
   return hours ? `${hours}:${tail}` : tail
 }
 
+const maximumMediaDurationSeconds = 86_400
+
+export function finiteMediaDurationSeconds(value: number | undefined | null): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 && value <= maximumMediaDurationSeconds
+    ? value
+    : undefined
+}
+
 /** Duration line for the hover readout; absent metadata omits the line. */
 export function mediaDurationLabel(value: number | undefined | null): string | null {
-  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? formatMediaDuration(value) : null
+  const seconds = finiteMediaDurationSeconds(value)
+  return seconds === undefined ? null : formatMediaDuration(seconds)
+}
+
+export function mediaClipDurationChipLabel(value: number | undefined | null): string | null {
+  const label = mediaDurationLabel(value)
+  return label ? `时长 ${label}` : null
+}
+
+export function mediaAssetDurationSeconds(asset: CanvasAssetSummary | AssetRef | undefined | null): number | undefined {
+  if (!asset) return undefined
+  return finiteMediaDurationSeconds('durationSeconds' in asset ? asset.durationSeconds : undefined)
+}
+
+/** 生成节点上选的秒数。元数据还没量到时，角标先用这个，避免空白。 */
+export function requestedClipDurationSeconds(seconds: string | undefined): number | undefined {
+  if (typeof seconds !== 'string' || !/^(?:[1-9]|1[0-5])$/.test(seconds)) return undefined
+  return Number(seconds)
+}
+
+export function applyCatalogClipDurationToNodes<T extends { data: { result?: AssetRef } }>(
+  nodes: readonly T[],
+  assets: readonly { assetId: string; durationSeconds?: number }[],
+): T[] {
+  const durationById = new Map<string, number>()
+  for (const asset of assets) {
+    const duration = finiteMediaDurationSeconds(asset.durationSeconds)
+    if (duration !== undefined) durationById.set(asset.assetId, duration)
+  }
+  if (durationById.size === 0) return nodes as T[]
+  let changed = false
+  const next = nodes.map((node) => {
+    const result = node.data.result
+    if (!result?.assetId || result.durationSeconds) return node
+    const duration = durationById.get(result.assetId)
+    if (duration === undefined) return node
+    changed = true
+    return { ...node, data: { ...node.data, result: { ...result, durationSeconds: duration } } }
+  })
+  return changed ? next : nodes as T[]
 }
 
 /** Joins the readout lines that exist. Nothing to say means no tooltip at all. */
@@ -79,16 +126,54 @@ export function mediaHoverTitle(lines: readonly (string | null | undefined)[]): 
   return present.length > 0 ? present.join('\n') : undefined
 }
 
-export function mediaAssetNodeDimensions(asset: CanvasAssetSummary | AssetRef): MediaNodeDimensions {
+export function parseSizePixels(size: string | undefined): { width: number; height: number } | null {
+  if (typeof size !== 'string') return null
+  const match = /^(\d+)x(\d+)$/.exec(size.trim())
+  if (!match) return null
+  const width = Number(match[1])
+  const height = Number(match[2])
+  return validRatioPart(width) && validRatioPart(height) ? { width, height } : null
+}
+
+export function requestedSizeLabel(size: string | undefined): string | null {
+  const pixels = parseSizePixels(size)
+  return pixels ? `${pixels.width} × ${pixels.height}` : null
+}
+
+/** 还没出图的生成节点，按当前选的尺寸先占一块预览盒子。 */
+export function pendingMediaNodeDimensions(kind: string, size?: string): MediaNodeDimensions {
+  const video = kind === 'video' || kind === 'video-generate'
+  const pixels = parseSizePixels(size)
+  return mediaAssetNodeDimensions({
+    kind: video ? 'video' : 'image',
+    assetId: '',
+    localUrl: '',
+    ...(pixels ?? {}),
+  }, size)
+}
+
+export function mediaAssetNodeDimensions(
+  asset: CanvasAssetSummary | AssetRef,
+  fallbackSize?: string,
+): MediaNodeDimensions {
   const kind = mediaKind(asset)
   if (kind === 'audio') return { width: 360, height: 104 }
 
   const fallback = kind === 'video' ? { width: 320, height: 180 } : { width: 280, height: 280 }
   const sourceWidth = 'width' in asset ? asset.width : undefined
   const sourceHeight = 'height' in asset ? asset.height : undefined
-  if (!sourceWidth || !sourceHeight || sourceWidth <= 0 || sourceHeight <= 0) return fallback
-
-  const ratio = sourceWidth / sourceHeight
+  let ratio: number
+  if (validRatioPart(sourceWidth) && validRatioPart(sourceHeight)) {
+    ratio = sourceWidth / sourceHeight
+  } else if (kind === 'video') {
+    const fallbackRatio = videoAspectRatioForSize(fallbackSize)
+    if (!fallbackRatio) return fallback
+    const [width, height] = fallbackRatio.split('/').map(Number)
+    if (!validRatioPart(width) || !validRatioPart(height)) return fallback
+    ratio = width / height
+  } else {
+    return fallback
+  }
   let width = kind === 'video' ? 320 : 280
   let height = Math.round(width / ratio)
   if (height > 480) {

@@ -5,6 +5,7 @@ import {
   useState,
   type AudioHTMLAttributes,
   type ImgHTMLAttributes,
+  type MouseEvent,
   type VideoHTMLAttributes,
 } from 'react'
 import { ChevronLeft, ChevronRight, ImageOff, MoreHorizontal, Music2, Pause, Pencil, Play, Volume2, VolumeX, X } from 'lucide-react'
@@ -13,16 +14,23 @@ import { videoCoverCache } from '../library/video-cover'
 
 interface SafeImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
   src: string
+  /** Used when `src` is a derived thumbnail that 404s; the original asset is
+   *  still on disk. The grid used to treat a thumb:// URL as "no file". */
+  fallbackSrc?: string
   fallbackLabel?: string
 }
 
-export function SafeImage({ src, fallbackLabel = '素材不可用', className, ...props }: SafeImageProps) {
-  const [failed, setFailed] = useState(false)
+export function SafeImage({ src, fallbackSrc, fallbackLabel = '素材不可用', className, ...props }: SafeImageProps) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null)
   const { onError, ...imageProps } = props
 
-  useEffect(() => setFailed(false), [src])
+  useEffect(() => setFailedSrc(null), [src, fallbackSrc])
 
-  if (failed || !(isLocalCanvasAssetUrl(src, 'image') || isCanvasThumbnailUrl(src))) {
+  const primary = isCanvasImagePreviewUrl(src) ? src : undefined
+  const fallback = isCanvasImagePreviewUrl(fallbackSrc) && fallbackSrc !== src ? fallbackSrc : undefined
+  const activeSrc = primary && failedSrc !== primary ? primary : fallback
+
+  if (!activeSrc || failedSrc === activeSrc) {
     return (
       <span className={`${className ?? ''} media-unavailable`} role="img" aria-label={fallbackLabel}>
         <ImageOff size={18} aria-hidden="true" />
@@ -30,7 +38,7 @@ export function SafeImage({ src, fallbackLabel = '素材不可用', className, .
       </span>
     )
   }
-  return <img {...imageProps} className={className} src={src} onError={(event) => { setFailed(true); onError?.(event) }} />
+  return <img {...imageProps} className={className} src={activeSrc} onError={(event) => { setFailedSrc(activeSrc); onError?.(event) }} />
 }
 
 interface VideoCoverImageProps extends Omit<ImgHTMLAttributes<HTMLImageElement>, 'src'> {
@@ -97,6 +105,27 @@ export function isCanvasThumbnailUrl(value: string | undefined): value is string
   return typeof value === 'string' && THUMBNAIL_URL_PATTERN.test(value)
 }
 
+/** A still the image tile can paint: the derived thumb, or the original file. */
+export function isCanvasImagePreviewUrl(value: string | undefined): value is string {
+  return isCanvasThumbnailUrl(value) || isLocalCanvasAssetUrl(value, 'image')
+}
+
+/**
+ * Whether the library card should try to paint this asset. Image tiles list a
+ * `xingmang-asset://thumb/...` URL; treating only `://image/` as present made
+ * every derived-thumb card read as missing.
+ */
+export function canvasAssetIsPreviewable(asset: {
+  mediaType: 'image' | 'video' | 'audio'
+  localUrl: string
+  thumbnailUrl?: string
+}): boolean {
+  if (asset.mediaType === 'image') {
+    return isCanvasImagePreviewUrl(asset.thumbnailUrl) || isLocalCanvasAssetUrl(asset.localUrl, 'image')
+  }
+  return isLocalCanvasAssetUrl(asset.localUrl, asset.mediaType)
+}
+
 export function isLocalCanvasAssetUrl(
   value: string | undefined,
   expectedKind?: AssetRef['kind'],
@@ -109,14 +138,21 @@ export function isLocalCanvasAssetUrl(
 interface ViewportVideoProps extends Omit<VideoHTMLAttributes<HTMLVideoElement>, 'src'> {
   src: string
   fallbackLabel?: string
+  /** Canvas nodes keep the surface draggable. Native controls steal the
+   *  pointer, so playback is a single overlay button marked `nodrag`. */
+  canvasPlayback?: boolean
 }
 
-export function ViewportVideo({ src, fallbackLabel = '视频素材不可用', className, ...props }: ViewportVideoProps) {
+export function ViewportVideo({ src, fallbackLabel = '视频素材不可用', className, canvasPlayback = false, ...props }: ViewportVideoProps) {
   const ref = useRef<HTMLVideoElement>(null)
   const [failed, setFailed] = useState(false)
-  const { onError, ...videoProps } = props
+  const [playing, setPlaying] = useState(false)
+  const { onError, onPlay, onPause, onDoubleClick, style, title, controls, ...videoProps } = props
 
-  useEffect(() => setFailed(false), [src])
+  useEffect(() => {
+    setFailed(false)
+    setPlaying(false)
+  }, [src])
   useEffect(() => {
     const video = ref.current
     if (!video || typeof IntersectionObserver === 'undefined') return undefined
@@ -140,7 +176,54 @@ export function ViewportVideo({ src, fallbackLabel = '视频素材不可用', cl
       </span>
     )
   }
-  return <video {...videoProps} ref={ref} className={className} src={src} preload="metadata" onError={(event) => { setFailed(true); onError?.(event) }} />
+
+  const togglePlayback = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation()
+    const video = ref.current
+    if (!video) return
+    if (video.paused) void video.play().catch(() => undefined)
+    else video.pause()
+  }
+
+  const video = (
+    <video
+      {...videoProps}
+      ref={ref}
+      className={canvasPlayback ? 'wf-canvas-video-el' : className}
+      src={src}
+      preload="metadata"
+      controls={canvasPlayback ? false : controls}
+      style={canvasPlayback ? undefined : style}
+      title={canvasPlayback ? undefined : title}
+      onError={(event) => { setFailed(true); onError?.(event) }}
+      onPlay={(event) => { setPlaying(true); onPlay?.(event) }}
+      onPause={(event) => { setPlaying(false); onPause?.(event) }}
+      onDoubleClick={canvasPlayback ? undefined : onDoubleClick}
+    />
+  )
+  if (!canvasPlayback) return video
+  return (
+    <div
+      className={`wf-canvas-video ${className ?? ''}`.trim()}
+      style={style}
+      title={title}
+      onDoubleClick={onDoubleClick
+        ? (event) => onDoubleClick(event as never)
+        : undefined}
+    >
+      {video}
+      <button
+        type="button"
+        className="wf-canvas-video-toggle nodrag"
+        title={playing ? '暂停' : '播放'}
+        aria-label={playing ? '暂停视频' : '播放视频'}
+        onClick={togglePlayback}
+        onDoubleClick={(event) => event.stopPropagation()}
+      >
+        {playing ? <Pause size={14} fill="currentColor" /> : <Play size={14} fill="currentColor" />}
+      </button>
+    </div>
+  )
 }
 
 interface WaveformBuffer {

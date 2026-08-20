@@ -13,6 +13,7 @@ export const maximumGroupNameLength = 128
 export const maximumOptionLength = 128
 export const maximumTaskIdLength = 512
 export const maximumCoordinateMagnitude = 10_000_000
+export const maximumGenerationDurationMs = 86_400_000
 
 export interface PersistedAssetRefV2 {
   kind: 'image' | 'video' | 'audio'
@@ -21,6 +22,7 @@ export interface PersistedAssetRefV2 {
   mimeType?: string
   width?: number
   height?: number
+  durationSeconds?: number
   taskId?: string
 }
 
@@ -45,6 +47,8 @@ export interface PersistedWorkflowNodeV2 {
     result?: PersistedAssetRefV2
     settings?: Record<string, unknown>
     candidateAssetIds?: string[]
+    /** 旧文件可能还带着；新保存不再写入，加载时也不恢复到节点上。 */
+    latestAttemptDurationMs?: number
   }
 }
 
@@ -91,6 +95,11 @@ export function stableAssetId(value: unknown): string | null {
 
 export function localAssetUrl(kind: AssetRef['kind'], assetId: string): string {
   return `xingmang-asset://${kind}/${assetId}`
+}
+
+export function persistedDurationMs(value: unknown): number | undefined {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > maximumGenerationDurationMs) return undefined
+  return Math.round(value)
 }
 
 export function toPersistedWorkflowV2(workflow: WorkflowFile): PersistedWorkflowV2 {
@@ -180,6 +189,9 @@ function persistedAsset(asset: AssetRef | undefined): PersistedAssetRefV2 | unde
     ...(assetId && typeof asset.mimeType === 'string' && asset.mimeType.length <= 128 ? { mimeType: asset.mimeType } : {}),
     ...(assetId && Number.isInteger(asset.width) && (asset.width as number) > 0 ? { width: asset.width } : {}),
     ...(assetId && Number.isInteger(asset.height) && (asset.height as number) > 0 ? { height: asset.height } : {}),
+    ...(assetId && typeof asset.durationSeconds === 'number' && Number.isFinite(asset.durationSeconds) && asset.durationSeconds > 0 && asset.durationSeconds <= 86_400
+      ? { durationSeconds: asset.durationSeconds }
+      : {}),
     ...(taskId ? { taskId } : {}),
   }
 }

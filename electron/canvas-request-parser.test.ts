@@ -113,6 +113,40 @@ describe('canvas request parser', () => {
     expect(() => requiredCanvasString('bad\0value', '值', 20)).toThrow('值格式错误')
   })
 
+  it('accepts multi-line prompts on every paid path but still rejects control characters', () => {
+    // The node prompt editor is a multi-line box and presets are stored with
+    // line breaks, yet every prompt used to go through the identifier-grade
+    // check that treats \n as a control character, so no structured prompt
+    // could ever be run.
+    const prompt = '生成角色的多视图；上下板块展示。\n上方板块：正面、半侧面、背面。\n\t缩进也是普通内容。'
+
+    expect(parseCanvasImageGenerateInput({
+      requestId: 'run-1', group: 'g', model: 'm', prompt,
+    }).prompt).toBe(prompt)
+
+    expect(parseCanvasVideoGenerateInput({
+      requestId: 'run-1', group: 'g', model: 'm', prompt, seconds: '5',
+    }).prompt).toBe(prompt)
+
+    const graph = { nodes: [{ id: 'image', kind: 'image', definitionVersion: 1, data: { prompt, model: 'm' } }], edges: [] }
+    expect(parseCanvasStartRunInput({ graph, scope: { kind: 'all' } }).graph.nodes[0].data.prompt).toBe(prompt)
+
+    for (const hostile of ['bad\0value', 'bad\x07value', 'bad\x1Bvalue']) {
+      expect(() => parseCanvasImageGenerateInput({
+        requestId: 'run-1', group: 'g', model: 'm', prompt: hostile,
+      })).toThrow('提示词格式错误')
+      expect(() => parseCanvasStartRunInput({
+        graph: { nodes: [{ id: 'image', kind: 'image', definitionVersion: 1, data: { prompt: hostile, model: 'm' } }], edges: [] },
+        scope: { kind: 'all' },
+      })).toThrow('提示词格式错误')
+    }
+
+    // Identifiers must keep the stricter rule.
+    expect(() => parseCanvasImageGenerateInput({
+      requestId: 'run-1', group: 'g', model: 'model\nwith-break', prompt: '正常提示词',
+    })).toThrow('模型格式错误')
+  })
+
   it('rejects unsupported quality values', () => {
     expect(() => parseCanvasImageGenerateInput({
       requestId: 'run-1', group: 'g', model: 'm', prompt: 'p', quality: 'ultra',

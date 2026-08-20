@@ -8,7 +8,7 @@
  */
 
 export const portSlotFirstOffsetPx = 52
-export const portSlotSpacingPx = 26
+export const portSlotSpacingPx = 20
 
 /** Vertical offset of the nth port down one side of a node. */
 export function portSlotOffsetY(index: number): number {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  canvasStartupUiPreferences,
   defaultCanvasUiPreferences,
   readCanvasUiPreferences,
   writeCanvasUiPreferences,
@@ -42,6 +43,7 @@ describe('canvas UI preferences', () => {
     }
     expect(readCanvasUiPreferences('11111111-1111-4111-8111-111111111111', malformed)).toEqual({
       ...defaultCanvasUiPreferences,
+      libraryCollapsed: false,
       minimapOpen: true,
     })
   })
@@ -54,6 +56,19 @@ describe('canvas UI preferences', () => {
       }
       expect(readCanvasUiPreferences('11111111-1111-4111-8111-111111111111', foreign)).toEqual(defaultCanvasUiPreferences)
     }
+  })
+
+  it('starts every project session with the node library collapsed', () => {
+    expect(defaultCanvasUiPreferences.libraryCollapsed).toBe(true)
+    expect(canvasStartupUiPreferences({
+      ...defaultCanvasUiPreferences,
+      libraryCollapsed: false,
+      focusMode: true,
+    })).toEqual({
+      ...defaultCanvasUiPreferences,
+      libraryCollapsed: true,
+      focusMode: true,
+    })
   })
 
   it('ignores storage failures', () => {

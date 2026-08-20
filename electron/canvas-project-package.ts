@@ -65,7 +65,11 @@ function validateSettings(value: unknown, depth = 0): boolean {
 function readAssetReference(value: unknown, assetIds: Set<string>): void {
   if (value === undefined) return
   if (!isRecord(value)) throw new Error('画布项目资产引用格式错误')
-  assertAllowedKeys(value, ['kind', 'assetId', 'localUrl', 'mimeType', 'width', 'height', 'taskId'], '画布项目资产引用')
+  // Must stay in step with PersistedAssetRefV2 in
+  // canvas-v2/src/persistence/workflow-schema.ts. `durationSeconds` was added
+  // to the serializer so video chips can keep clip length; rejecting it here
+  // failed every autosave whose node had already measured a video.
+  assertAllowedKeys(value, ['kind', 'assetId', 'localUrl', 'mimeType', 'width', 'height', 'durationSeconds', 'taskId'], '画布项目资产引用')
   if (value.kind !== 'image' && value.kind !== 'video' && value.kind !== 'audio') throw new Error('画布项目资产类型错误')
   if (value.assetId !== undefined) {
     if (typeof value.assetId !== 'string' || !assetIdPattern.test(value.assetId)) throw new Error('画布项目资产标识错误')
@@ -80,6 +84,11 @@ function readAssetReference(value: unknown, assetIds: Set<string>): void {
   if (value.mimeType !== undefined && !safeString(value.mimeType, 128)) throw new Error('画布项目资产类型错误')
   for (const dimension of [value.width, value.height]) {
     if (dimension !== undefined && (!Number.isSafeInteger(dimension) || (dimension as number) <= 0)) throw new Error('画布项目资产尺寸错误')
+  }
+  if (value.durationSeconds !== undefined) {
+    if (typeof value.durationSeconds !== 'number' || !Number.isFinite(value.durationSeconds) || value.durationSeconds <= 0 || value.durationSeconds > 86_400) {
+      throw new Error('画布项目资产时长错误')
+    }
   }
 }
 
@@ -100,10 +109,28 @@ function validateWorkflowNode(value: unknown, assetIds: Set<string>, nodeIds: Se
   if (!isRecord(value.position) || Object.keys(value.position).some((key) => key !== 'x' && key !== 'y')) throw new Error('画布项目节点位置错误')
   if (![value.position.x, value.position.y].every((entry) => typeof entry === 'number' && Number.isFinite(entry) && Math.abs(entry) <= 10_000_000)) throw new Error('画布项目节点位置错误')
   if (!isRecord(value.data)) throw new Error('画布项目节点数据错误')
-  assertAllowedKeys(value.data, ['prompt', 'model', 'quality', 'size', 'seconds', 'result', 'settings', 'candidateAssetIds'], '画布项目节点数据')
+  // Must stay in step with PersistedWorkflowNodeV2['data'] in
+  // canvas-v2/src/persistence/workflow-schema.ts. `group` and `imageResolution`
+  // were added to the serializer without being added here, so every project
+  // whose node carried either field failed to save. `latestAttemptDurationMs`
+  // is accepted on old files only; the renderer no longer writes or restores it.
+  assertAllowedKeys(value.data, ['prompt', 'model', 'group', 'quality', 'size', 'imageResolution', 'seconds', 'result', 'settings', 'candidateAssetIds', 'latestAttemptDurationMs'], '画布项目节点数据')
   if (!safeString(value.data.prompt, 100_000, true) || !safeString(value.data.model, 512, true)) throw new Error('画布项目节点文本错误')
-  for (const entry of [value.data.quality, value.data.size, value.data.seconds]) {
+  for (const entry of [value.data.group, value.data.quality, value.data.size, value.data.seconds]) {
     if (entry !== undefined && !safeString(entry, 128)) throw new Error('画布项目节点选项错误')
+  }
+  if (value.data.imageResolution !== undefined && !['1K', '2K', '4K'].includes(value.data.imageResolution as string)) {
+    throw new Error('画布项目节点清晰度错误')
+  }
+  if (value.data.latestAttemptDurationMs !== undefined) {
+    if (
+      typeof value.data.latestAttemptDurationMs !== 'number'
+      || !Number.isFinite(value.data.latestAttemptDurationMs)
+      || value.data.latestAttemptDurationMs <= 0
+      || value.data.latestAttemptDurationMs > 86_400_000
+    ) {
+      throw new Error('画布项目节点耗时错误')
+    }
   }
   readAssetReference(value.data.result, assetIds)
   if (value.data.settings !== undefined && !validateSettings(value.data.settings)) throw new Error('画布项目节点设置不安全')

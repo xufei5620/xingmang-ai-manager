@@ -173,6 +173,56 @@ export class CanvasProjectAssetManager {
     throw new Error('AI 素材不存在或无权访问')
   }
 
+  /**
+   * Filesystem path of an owned asset, resolved through the same global-then-
+   * project search as `readOwned`. Thumbnail derivation needs a real path for
+   * the platform provider, and resolving it against the global store alone
+   * misses every asset that lives in a project workspace.
+   */
+  async resolveOwnedFilePath(
+    userId: number,
+    assetId: string,
+    kind: 'image' | 'video' | 'audio',
+  ): Promise<string> {
+    assertUserId(userId)
+    const cachedProjectId = this.locations.get(locationKey(userId, kind, assetId))
+    if (cachedProjectId !== undefined) {
+      const context = cachedProjectId === null ? this.global : await this.forProject(userId, cachedProjectId)
+      return this.filePathFromContext(context, userId, assetId, kind)
+    }
+    try {
+      const filePath = await this.filePathFromContext(this.global, userId, assetId, kind)
+      this.locations.set(locationKey(userId, kind, assetId), null)
+      return filePath
+    } catch {
+      // Fall through to the user's project workspaces, exactly as readOwned does.
+    }
+    const projects = await this.projects.list(userId)
+    for (const project of projects) {
+      if (!project.workspaceConfigured) continue
+      try {
+        const context = await this.forProject(userId, project.id)
+        const filePath = await this.filePathFromContext(context, userId, assetId, kind)
+        this.remember(userId, kind, assetId, project.id, context)
+        return filePath
+      } catch {
+        // A missing workspace does not hide assets in the remaining projects.
+      }
+    }
+    throw new Error('AI 素材不存在或无权访问')
+  }
+
+  private async filePathFromContext(
+    context: CanvasProjectAssetContext,
+    userId: number,
+    assetId: string,
+    kind: 'image' | 'video' | 'audio',
+  ): Promise<string> {
+    if (kind === 'image') return context.images.resolveOwnedFilePath(userId, assetId)
+    if (kind === 'video') return context.videos.resolveOwnedFilePath(userId, assetId)
+    return context.audios.resolveOwnedFilePath(userId, assetId)
+  }
+
   private async readFromContext(
     context: CanvasProjectAssetContext,
     userId: number,

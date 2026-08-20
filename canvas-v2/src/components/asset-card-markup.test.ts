@@ -7,10 +7,21 @@ function componentSource(name: string): string {
 }
 
 describe('canvas asset card markup', () => {
+  it('sizes tray tiles without a container query on the grid item', () => {
+    const styles = fs.readFileSync(path.join(import.meta.dirname, '../styles.css'), 'utf8')
+    const itemBlock = styles.slice(styles.indexOf('.asset-tray-item {'), styles.indexOf('.asset-tray-item:hover'))
+    expect(itemBlock).not.toContain('container-type')
+    expect(styles).toContain('.asset-tray-item-preview { position: relative; display: block; width: 100%; height: 0; padding-bottom: 100%;')
+    expect(styles).toContain('.asset-tray-grid.is-density-compact .asset-tray-item-tools .is-optional-preview { display: none; }')
+    expect(styles).not.toContain('@container (max-width: 143px)')
+  })
+
   it('keeps preview and action buttons as siblings in the asset tray', () => {
     const source = componentSource('AssetTray.tsx')
     expect(source).toContain('className={`asset-tray-item asset-tray-item-${asset.mediaType}')
     expect(source).toContain('className="asset-tray-item-preview"')
+    expect(source).toContain('canvasAssetIsPreviewable')
+    expect(source).toContain('fallbackSrc={asset.localUrl}')
     expect(source).toContain('className="asset-tray-item-tools"')
     expect(source).toContain('className="asset-quick-views"')
     expect(source).toContain("view: 'favorites'")

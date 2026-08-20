@@ -544,6 +544,7 @@ function App() {
       }
       return window.xingmang.installNodeRuntime()
     },
+    restartWindows: async () => window.xingmang.restartWindows(),
     maintainCli: async (provider: ProviderId) => {
       const result = await performCliInstallAction(provider, platformCapabilities, window.xingmang)
       if (result.kind === 'external') throw new Error(result.guidance)
@@ -577,6 +578,10 @@ function App() {
     launchCodexDesktop: async () => {
       await window.xingmang.launchCodexDesktop('open')
     },
+    inspectCodexDesktopLocale: async () => window.xingmang.inspectCodexDesktopLocale(),
+    setCodexDesktopLocale: async (locale: 'zh-CN' | 'system') => (
+      window.xingmang.setCodexDesktopLocale(locale)
+    ),
     onProgress: window.xingmang.onInstallProgress,
     onNodeRuntimeProgress: window.xingmang.onNodeRuntimeInstallProgress,
     onDesktopProgress: window.xingmang.onCodexDesktopInstallProgress,

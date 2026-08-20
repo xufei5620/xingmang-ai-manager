@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { builtinNodeDefinitions, builtinNodeRegistry, resolveLegacyDefinitionType } from './builtin-node-definitions'
+import { builtinNodeDefinitions, builtinNodeRegistry, hiddenLibraryNodeTypes, resolveLegacyDefinitionType } from './builtin-node-definitions'
 import { createNodeRegistry } from './node-registry'
 
 describe('node registry', () => {
@@ -9,6 +9,14 @@ describe('node registry', () => {
       'prompt', 'image-input', 'video-input', 'image-generate', 'image-edit',
       'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note', 'unknown',
     ]))
+  })
+
+  it('keeps image-edit loadable but off the insert palette', () => {
+    expect(builtinNodeRegistry.require('image-generate').ports.some((port) => port.id === 'in:images')).toBe(true)
+    expect(builtinNodeRegistry.require('image-generate').title).toBe('图像节点')
+    expect(builtinNodeRegistry.require('video-generate').title).toBe('视频节点')
+    expect(hiddenLibraryNodeTypes.has('image-edit')).toBe(true)
+    expect(hiddenLibraryNodeTypes.has('image-generate')).toBe(false)
   })
 
   it('creates independent default data', () => {

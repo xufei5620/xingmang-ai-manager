@@ -1,3 +1,5 @@
+import fs from 'node:fs'
+import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 import {
   buildCanvasProjectPackage,
@@ -33,6 +35,66 @@ describe('canvas project package', () => {
     expect(remapped).not.toContain(assetId)
     expect(remapped).toContain(replacement)
     expect(content).not.toMatch(/apiKey|accessToken|refreshToken|Authorization|[A-Z]:\\/i)
+  })
+
+  it('accepts every node data field the renderer schema can serialize', () => {
+    // The renderer's serializer and this validator are two hand-maintained
+    // lists in different tsconfig programs, so nothing makes them agree.
+    // `group` and `imageResolution` were added to the schema and not here,
+    // which failed every autosave whose node carried either one.
+    const schema = fs.readFileSync(
+      path.join(__dirname, '..', 'canvas-v2', 'src', 'persistence', 'workflow-schema.ts'),
+      'utf8',
+    )
+    const block = schema.slice(schema.indexOf('interface PersistedWorkflowNodeV2'))
+    const dataBlock = block.slice(block.indexOf('data: {'), block.indexOf('\n}'))
+    const fields = [...dataBlock.matchAll(/^\s{4}([a-zA-Z]+)\??:/gm)].map((match) => match[1])
+    expect(fields).toContain('group')
+    expect(fields).toContain('imageResolution')
+    expect(fields).toContain('latestAttemptDurationMs')
+
+    const sample: Record<string, unknown> = {
+      prompt: '多行\n提示词', model: 'gpt-image-2', group: '生图分组', quality: 'low',
+      size: '1152x1536', imageResolution: '4K', seconds: '5',
+      result: { kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}`, mimeType: 'image/png' },
+      settings: { videoMode: 'auto' }, candidateAssetIds: [assetId],
+      latestAttemptDurationMs: 8_123,
+    }
+    // Every declared field must be represented in the sample, so a new schema
+    // field cannot slip past this test either.
+    expect(Object.keys(sample).sort()).toEqual([...fields].sort())
+
+    const document = JSON.parse(workflow())
+    document.nodes[0].data = sample
+    expect(() => parseCanvasProjectWorkflow(JSON.stringify(document))).not.toThrow()
+  })
+
+  it('accepts every asset reference field the renderer schema can serialize', () => {
+    const schema = fs.readFileSync(
+      path.join(__dirname, '..', 'canvas-v2', 'src', 'persistence', 'workflow-schema.ts'),
+      'utf8',
+    )
+    const block = schema.slice(schema.indexOf('interface PersistedAssetRefV2'))
+    const fields = [...block.slice(0, block.indexOf('\n}')).matchAll(/^\s{2}([a-zA-Z]+)\??:/gm)].map((match) => match[1])
+    expect(fields).toContain('durationSeconds')
+
+    const sample: Record<string, unknown> = {
+      kind: 'video',
+      assetId,
+      localUrl: `xingmang-asset://video/${assetId}`,
+      mimeType: 'video/mp4',
+      width: 1280,
+      height: 720,
+      durationSeconds: 5.2,
+      taskId: 'task-1',
+    }
+    expect(Object.keys(sample).sort()).toEqual([...fields].sort())
+
+    const document = JSON.parse(workflow())
+    document.nodes[0].data.result = sample
+    expect(() => parseCanvasProjectWorkflow(JSON.stringify(document))).not.toThrow()
+    document.nodes[0].data.result = { ...sample, filePath: 'C:\\\\Users\\\\secret.mp4' }
+    expect(() => parseCanvasProjectWorkflow(JSON.stringify(document))).toThrow('未知或敏感字段')
   })
 
   it('rejects sensitive fields, remote locations and dangling edges', () => {

@@ -27,10 +27,10 @@ describe('port geometry', () => {
   })
 
   it('counts each side separately, so the first output is level with the first input', () => {
-    expect(portOffsetY(multiPort, 'input', 'in:image')).toBe(52)
-    expect(portOffsetY(multiPort, 'input', 'in:prompt')).toBe(104)
-    expect(portOffsetY(multiPort, 'output', 'out:image')).toBe(52)
-    expect(portOffsetY(multiPort, 'output', 'out:report')).toBe(78)
+    expect(portOffsetY(multiPort, 'input', 'in:image')).toBe(portSlotFirstOffsetPx)
+    expect(portOffsetY(multiPort, 'input', 'in:prompt')).toBe(portSlotOffsetY(2))
+    expect(portOffsetY(multiPort, 'output', 'out:image')).toBe(portSlotFirstOffsetPx)
+    expect(portOffsetY(multiPort, 'output', 'out:report')).toBe(portSlotOffsetY(1))
   })
 
   it('centres the output of a media source node on its preview', () => {
@@ -46,6 +46,12 @@ describe('port geometry', () => {
   it('knows which node kinds collapse to a centred output', () => {
     expect(['image-input', 'video-input', 'audio-input'].every(isMediaSourceKind)).toBe(true)
     expect(isMediaSourceKind('image-generate')).toBe(false)
+  })
+
+  it('centres the output of a generate node once it is showing its result', () => {
+    const bound = { height: 373, centredOutput: true, ports: builtinNodeRegistry.require('image-generate').ports }
+    expect(portOffsetY(bound, 'output', 'out:image')).toBe(186.5)
+    expect(portOffsetY(bound, 'input', 'in:text')).toBe(portSlotFirstOffsetPx)
   })
 
   it('agrees with the ports every builtin node actually declares', () => {

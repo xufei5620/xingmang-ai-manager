@@ -138,6 +138,7 @@ describe('run record projection', () => {
     expect(cached[0].data.status).toBe('succeeded')
     expect(cached[0].data.dirty).toBe(false)
     expect(cached[0].data.fromCache).toBe(true)
+    expect(cached[0].data.latestAttemptDurationMs).toBe(2_000)
   })
 
   it('switches the result on selection and dirties descendants only', () => {
@@ -258,4 +259,5 @@ describe('run record projection', () => {
     expect(restored[0].data.result?.assetId).toBe('asset-2')
     expect(restored[1].data.dirty).toBe(true)
   })
+
 })

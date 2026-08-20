@@ -913,11 +913,15 @@ if (!hasSingleInstanceLock) {
       store: new AssetThumbnailStore({ cacheRoot: path.join(managerDataDirectory, 'asset-thumbnails') }),
       renderer: createNativeThumbnailRenderer(),
       sources: {
+        // Must resolve through the project asset manager, not the global store.
+        // Canvas projects keep their media under the project workspace, so
+        // deriving from `output/` alone left every project asset without a
+        // thumbnail and the tray showed a placeholder for all of them.
         readImage: async (userId, assetId) => {
-          const owned = await assetStore.readOwned(userId, assetId)
+          const owned = await canvasProjectAssets.readOwned(userId, assetId, 'image')
           return { bytes: owned.bytes, mimeType: owned.asset.mimeType }
         },
-        resolveVideoPath: (userId, assetId) => videoAssets.resolveOwnedFilePath(userId, assetId),
+        resolveVideoPath: (userId, assetId) => canvasProjectAssets.resolveOwnedFilePath(userId, assetId, 'video'),
       },
       onFailure: (assetId, reason) => runtimeLog.log(
         'warn',

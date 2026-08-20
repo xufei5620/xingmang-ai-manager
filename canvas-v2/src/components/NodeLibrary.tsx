@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { Box, Check, ChevronLeft, ChevronRight, FileStack, Film, Image, Library, MessageSquareText, MoreHorizontal, Music2, Pencil, Plus, X } from 'lucide-react'
-import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
+import { builtinNodeRegistry, hiddenLibraryNodeTypes } from '../domain/builtin-node-definitions'
 import type { NodeCategory } from '../domain/node-definition'
 import type { CanvasAssetPage, CanvasPromptPreset } from '../host'
 import { searchPromptPresets } from '../library/prompt-presets'
@@ -55,7 +55,7 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
   }
   const normalized = query.trim().toLowerCase()
   const definitions = useMemo(() => builtinNodeRegistry.list().filter((definition) => (
-    !['text', 'image', 'video', 'unknown'].includes(definition.type)
+    !hiddenLibraryNodeTypes.has(definition.type)
     && (!normalized || `${definition.title} ${definition.description} ${definition.type}`.toLowerCase().includes(normalized))
   )), [normalized])
   const promptPresets = useMemo(() => searchPromptPresets(query), [query])
@@ -180,6 +180,7 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
                         />
                       : <SafeImage
                           src={asset.thumbnailUrl}
+                          fallbackSrc={asset.localUrl}
                           alt={asset.fileName}
                           loading="lazy"
                           style={{ aspectRatio: mediaAssetAspectRatio(asset) }}

@@ -3,7 +3,7 @@ import { ChevronLeft, ChevronRight, Clock3, Copy, Eye, Film, FolderOpen, MoreHor
 import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, CanvasAssetSummary } from '../host'
 import type { AssetRef } from '../model'
 import { middleTruncate } from '../identifier-display'
-import { AudioPreview, MediaLightbox, SafeImage, VideoCoverImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
+import { AudioPreview, MediaLightbox, SafeImage, VideoCoverImage, ViewportVideo, canvasAssetIsPreviewable, isLocalCanvasAssetUrl } from './MediaPreview'
 import {
   formatMediaDuration as formatAssetDuration,
   mediaAssetAspectRatio,
@@ -75,8 +75,7 @@ function assetTypeName(asset: CanvasAssetSummary): string {
 }
 
 function assetAvailable(asset: CanvasAssetSummary): boolean {
-  const source = asset.mediaType === 'image' ? asset.thumbnailUrl : asset.localUrl
-  return isLocalCanvasAssetUrl(source, asset.mediaType)
+  return canvasAssetIsPreviewable(asset)
 }
 
 function assetName(asset: CanvasAssetSummary): string {
@@ -543,14 +542,13 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                         alt={name}
                         loading="lazy"
                         fallbackLabel={available ? 'MP4 视频' : '素材不可用'}
-                        style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
                       />
                     : available
                       ? <SafeImage
                           src={asset.thumbnailUrl}
+                          fallbackSrc={asset.localUrl}
                           alt={name}
                           loading="lazy"
-                          style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
                         />
                       : <span className="asset-video-placeholder"><Film size={22} /><small>素材不可用</small></span>}
               </div>
@@ -584,7 +582,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
                   ? isLocalCanvasAssetUrl(asset.localUrl, 'video')
                     ? <ViewportVideo src={asset.localUrl} aria-label={name} muted controls preload="metadata" style={{ aspectRatio: mediaAssetAspectRatio(asset) }} />
                     : <span className="asset-video-placeholder"><Film size={22} /><small>素材不可用</small></span>
-                  : <SafeImage src={asset.thumbnailUrl} alt={name} loading="lazy" />}
+                  : <SafeImage src={asset.thumbnailUrl} fallbackSrc={asset.localUrl} alt={name} loading="lazy" />}
             </div>
             <div className="asset-tray-item-details">
               <div className="asset-tray-item-detail-head">

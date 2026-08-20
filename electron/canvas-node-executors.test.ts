@@ -95,6 +95,34 @@ describe('createCanvasNodeExecutors', () => {
     expect(result.assets?.[0]).toMatchObject({ assetId: 'c'.repeat(43) })
   })
 
+  it('routes image-generate to edit when reference images are connected', async () => {
+    const generate = vi.fn()
+    const edit = vi.fn(async () => [{
+      assetId: 'e'.repeat(43), localUrl: `xingmang-asset://image/${'e'.repeat(43)}`,
+      mimeType: 'image/png' as const, fileName: 'edited.png',
+    }])
+    const executors = createCanvasNodeExecutors({
+      imageService: {
+        generate, edit,
+        cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })),
+      },
+    })
+    const source = { kind: 'image' as const, assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}` }
+    await executors['image-generate']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'generate-edit', ownerId: 9, userId: 42,
+      node: {
+        id: 'image', kind: 'image-generate', definitionVersion: 1,
+        data: { prompt: '改成夜景', model: 'gpt-image-2', group: '生图' },
+      },
+      inputs: { images: [source] },
+      signal: new AbortController().signal,
+    })
+    expect(generate).not.toHaveBeenCalled()
+    expect(edit).toHaveBeenCalledWith(9, expect.objectContaining({
+      model: 'gpt-image-2', sourceAssetIds: ['a'.repeat(43)],
+    }))
+  })
+
   it('rejects image editing without a local reference before paid dispatch', async () => {
     const edit = vi.fn()
     const executors = createCanvasNodeExecutors({

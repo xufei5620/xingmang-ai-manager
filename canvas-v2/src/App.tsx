@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as R
 import {
   Background,
   BackgroundVariant,
+  ConnectionLineType,
   Controls,
   MiniMap,
   ReactFlow,
@@ -35,6 +36,7 @@ import { createMockExecutors, runWorkflow, type NodeInputs } from './engine/engi
 import { createHostExecutors } from './engine/executors'
 import { hostBridge } from './host'
 import { canvasAriaLabelConfig } from './aria-labels'
+import { canvasEdgeClassName, canvasEdgeIsFlowing, canvasEdgeTouchesSelection } from './edges/workflow-edge-model'
 import { CanvasEdgeHandlersProvider, defaultEdgeOptions, edgeTypes } from './edges/WorkflowEdge'
 import { CanvasContextMenu, type CanvasContextMenuState } from './components/CanvasContextMenu'
 import { NodeSearchPalette } from './components/NodeSearchPalette'
@@ -61,11 +63,12 @@ function portGeometryOfCanvasNode(node: CanvasNode, height: number): PortGeometr
   const kind = node.type ?? 'unknown'
   return {
     height,
-    centredOutput: isMediaSourceKind(kind) && Boolean(node.data?.result?.assetId),
+    centredOutput: usesMediaBoundLayout(kind, node.data?.result?.assetId),
     ports: builtinNodeRegistry.resolve(kind)?.ports ?? [],
   }
 }
-import { isMediaSourceKind, portOffsetY, type PortGeometryNode } from './nodes/port-geometry'
+import { usesMediaBoundLayout } from './nodes/media-bound'
+import { portOffsetY, type PortGeometryNode } from './nodes/port-geometry'
 import { canvasMinimapNodeColor } from './nodes/minimap-node-color'
 import {
   compatibleInsertionHandle,
@@ -118,7 +121,8 @@ import { ChevronDown, Crosshair, FolderOpen, Focus, History, Image as ImageIcon,
 import { canvasNodeDocumentRecord, useCanvasDocument } from './store/use-canvas-document'
 import type { CanvasDocumentState, CanvasMediaGroups } from './store/canvas-state'
 import type { EditorNodeRecord } from './domain/node-definition'
-import { assetInputNodeKind, mediaAssetNodeDimensions, mediaResultNodeDimensions } from './library/media-assets'
+import { applyCatalogClipDurationToNodes, assetInputNodeKind, mediaAssetNodeDimensions, pendingMediaNodeDimensions, requestedClipDurationSeconds } from './library/media-assets'
+import { cachedNodeIdsForPreflight } from './runtime/pinned-reuse'
 import { QuickInsert, type QuickInsertCommand } from './components/QuickInsert'
 import { TemplateCatalog } from './components/TemplateCatalog'
 import { findAvailableCanvasPosition } from './editor/node-placement'
@@ -132,12 +136,15 @@ import {
 } from './runtime/run-preflight'
 import { mergeCanvasRunEvent } from './runtime/run-events'
 import {
+  canvasStartupUiPreferences,
   defaultCanvasUiPreferences,
   readCanvasUiPreferences,
   writeCanvasUiPreferences,
   type CanvasRightPanel,
   type CanvasUiPreferences,
 } from './persistence/canvas-ui-preferences'
+import { canvasAutosaveErrorMessage, canvasAutosaveGraphSignature, canvasAutosaveSignature } from './persistence/canvas-autosave'
+import { commitGenerationPrompts } from './nodes/generation-composer'
 
 // 画布装配层:@xyflow/react 的 Node/Edge 与领域模型互相映射,引擎与
 // 持久化只见领域模型。M0 执行走 mock 执行器(不出网);M1 把 executors
@@ -158,14 +165,14 @@ function connectionEventPoint(event: MouseEvent | TouchEvent): { x: number; y: n
 export function toCanvasNode(node: WorkflowNode): CanvasNode {
   const displayKind = node.disabled && node.unknownKind ? 'unknown' : node.kind
   const dimensions = builtinNodeRegistry.resolve(displayKind)?.dimensions
-  const mediaDimensions = ['image-input', 'video-input', 'audio-input'].includes(displayKind) && node.data.result?.assetId
-    ? mediaAssetNodeDimensions(node.data.result)
-    : null
+  const mediaBound = usesMediaBoundLayout(displayKind, node.data.result?.assetId)
+  const mediaDimensions = mediaBound && node.data.result
+    ? mediaAssetNodeDimensions(node.data.result, node.data.size)
+    : mediaBound
+      ? pendingMediaNodeDimensions(displayKind, node.data.size)
+      : null
   const width = mediaDimensions?.width ?? node.width ?? dimensions?.width
-  const resultDimensions = !mediaDimensions && node.data.result?.assetId && width && dimensions
-    ? mediaResultNodeDimensions(displayKind, node.data.result, width, node.height ?? dimensions.height, node.data.size)
-    : null
-  const height = mediaDimensions?.height ?? resultDimensions?.height ?? node.height ?? dimensions?.height
+  const height = mediaDimensions?.height ?? node.height ?? dimensions?.height
   return {
     id: node.id,
     type: displayKind,
@@ -206,6 +213,7 @@ export function toWorkflowNode(node: CanvasNode): WorkflowNode {
       costQuota: node.data.costQuota,
       settings: node.data.settings,
       candidateAssetIds: node.data.candidateAssetIds,
+      latestAttemptDurationMs: node.data.latestAttemptDurationMs,
     },
   }
 }
@@ -374,6 +382,7 @@ function mediaAssetRef(asset: CanvasAssetSummary): AssetRef {
     mimeType: asset.mimeType,
     ...('width' in asset && asset.width ? { width: asset.width } : {}),
     ...('height' in asset && asset.height ? { height: asset.height } : {}),
+    ...('durationSeconds' in asset && asset.durationSeconds ? { durationSeconds: asset.durationSeconds } : {}),
     ...('taskId' in asset && asset.taskId ? { taskId: asset.taskId } : {}),
   }
 }
@@ -397,6 +406,7 @@ function generatedVideoAssetRef(asset: CanvasGeneratedVideoAsset): AssetRef {
     taskId: asset.taskId,
     ...(asset.width ? { width: asset.width } : {}),
     ...(asset.height ? { height: asset.height } : {}),
+    ...(asset.durationSeconds ? { durationSeconds: asset.durationSeconds } : {}),
   }
 }
 
@@ -580,6 +590,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [uiPreferences, setUiPreferences] = useState<CanvasUiPreferences>(() => ({ ...defaultCanvasUiPreferences }))
   const [autoSaveState, setAutoSaveState] = useState<'idle' | 'saving' | 'saved' | 'failed'>('idle')
   const autoSaveRevisionRef = useRef(0)
+  const lastAutosaveSignatureRef = useRef<string | null>(null)
+  const lastAutosaveGraphSignatureRef = useRef<string | null>(null)
   const projectHydrationRef = useRef(false)
   const projectSaveChainRef = useRef<Promise<void>>(Promise.resolve())
   const [banner, setBanner] = useState<string | null>(null)
@@ -628,7 +640,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [cutStroke, setCutStroke] = useState<readonly Point[]>([])
   const abortRef = useRef<AbortController | null>(null)
   const resumingTaskIdsRef = useRef<Set<string>>(new Set())
-  const activeRunRef = useRef<{ runId: string; graphRevision: string; scope?: CanvasRunScope } | null>(null)
+  const activeRunsRef = useRef(new Map<string, { graphRevision: string; scope?: CanvasRunScope }>())
+
+  const rememberActiveRun = useCallback((entry: { runId: string; graphRevision: string; scope?: CanvasRunScope }) => {
+    activeRunsRef.current.set(entry.runId, { graphRevision: entry.graphRevision, scope: entry.scope })
+    setRunning(true)
+  }, [])
+
+  const forgetActiveRun = useCallback((runId: string) => {
+    if (!activeRunsRef.current.delete(runId)) return
+    setRunning(activeRunsRef.current.size > 0)
+  }, [])
   const clipboardRef = useRef<CanvasClipboardPayload | null>(null)
   const reactFlow = useReactFlow<CanvasNode, Edge>()
   const overviewViewportRef = useRef<Viewport | null>(null)
@@ -643,7 +665,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const connectionStartRef = useRef<PendingCanvasConnection | null>(null)
   const moreActionsTriggerRef = useRef<HTMLButtonElement>(null)
   const runMenuTriggerRef = useRef<HTMLButtonElement>(null)
-  const selectedNodeSignatureRef = useRef('')
   const groupsRef = useRef<CanvasGroupSummary[]>([])
   const mediaPreparationRevisionRef = useRef(0)
   const appliedMediaSignatureRef = useRef(mediaGroupsSignature({}))
@@ -738,8 +759,10 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       execute({ type: 'replace-document', document: nextDocument })
       setActiveProject(opened.project)
       setProjects((current) => [opened.project, ...current.filter((project) => project.id !== opened.project.id)])
+      setSelectedRunId(null)
+      setRunRecords([])
       setBanner(null)
-      applyProjectUiPreferences(readCanvasUiPreferences(opened.project.id))
+      applyProjectUiPreferences(canvasStartupUiPreferences(readCanvasUiPreferences(opened.project.id)))
       setAutoSaveState('saved')
       restoreCanvasViewport(nextDocument.viewport)
     } catch (error) { setBanner(error instanceof Error ? error.message : String(error)) }
@@ -934,21 +957,35 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }, [setNodes])
 
   const markDirtyFrom = useCallback((nodeId: string, patch: Partial<WorkflowNodeData> = {}) => {
+    const { nodes: currentNodes, edges: currentEdges } = graphRef.current
     const dirty = new Set<string>([nodeId])
     const queue = [nodeId]
     while (queue.length > 0) {
       const source = queue.shift() as string
-      for (const edge of edges) {
+      for (const edge of currentEdges) {
         if (edge.source !== source || dirty.has(edge.target)) continue
         dirty.add(edge.target)
         queue.push(edge.target)
       }
     }
-    const updated = markNodeAndDescendantsDirty(nodes, edges, nodeId, patch)
+    const updated = markNodeAndDescendantsDirty(currentNodes, currentEdges, nodeId, patch)
+    graphRef.current = { nodes: updated, edges: currentEdges }
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord), mergeKey: `data:${nodeId}` })
-    setNodes(updated)
     setDirtyNodeIds((current) => new Set([...current, ...dirty]))
-  }, [nodes, edges, execute, setNodes])
+  }, [execute])
+
+  // Typing must not go through execute(): replace-nodes remaps every node and
+  // React Flow remounts the composer textarea, which throws the caret to the end.
+  const applyPromptDraft = useCallback((nodeId: string, prompt: string) => {
+    const { nodes: currentNodes, edges: currentEdges } = graphRef.current
+    const current = currentNodes.find((node) => node.id === nodeId)
+    if (!current || current.data.prompt === prompt) return
+    const updated = currentNodes.map((node) => (
+      node.id === nodeId ? { ...node, data: { ...node.data, prompt } } : node
+    ))
+    graphRef.current = { nodes: updated, edges: currentEdges }
+    setNodes(updated)
+  }, [setNodes])
 
   const setNodeFlags = useCallback((nodeIds: string[], flag: 'locked' | 'disabled', value: boolean) => {
     if (nodeIds.length === 0) return
@@ -972,17 +1009,21 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   ), [imageGroup, videoGroup])
 
   const requestNodeScopeRun = useCallback((nodeId: string, kind: 'to-node' | 'from-node'): boolean => {
-    if (running) return false
     if (preparingMedia) {
       setBanner('生成配置正在准备，请稍候再运行节点')
       return false
     }
-    if (resumingTaskIdsRef.current.size > 0) {
-      setBanner('请等待视频任务续查完成后再运行节点')
-      return false
-    }
     const target = nodes.find((entry) => entry.id === nodeId)
     if (!target) return false
+    if (target.data.status === 'running' || target.data.status === 'queued') {
+      setBanner('该节点正在生成，请等待结束或先取消')
+      return false
+    }
+    const resumeTaskId = target.data.result?.taskId
+    if (resumeTaskId && resumingTaskIdsRef.current.has(resumeTaskId)) {
+      setBanner('请等待该节点的视频任务续查完成后再运行')
+      return false
+    }
     if (target.disabled || target.type === 'unknown') {
       setBanner('该节点已禁用，不能单独运行')
       return false
@@ -992,11 +1033,14 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return false
     }
     try {
-      const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+      const committed = commitGenerationPrompts(nodes, edges)
+      if (committed !== nodes) setNodes(committed)
+      const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
       const scope: CanvasRunScope = { kind, nodeId }
       const preflight = buildCanvasRunPreflight({
         graph,
         scope,
+        cachedNodeIds: cachedNodeIdsForPreflight(committed, scope),
         imageGroup: imageGroup ?? undefined,
         videoGroup: videoGroup ?? undefined,
         imageModels,
@@ -1014,7 +1058,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       setBanner(error instanceof Error ? error.message : String(error))
       return false
     }
-  }, [running, preparingMedia, nodes, edges, imageGroup, videoGroup, imageModels, videoModels])
+  }, [preparingMedia, nodes, edges, imageGroup, videoGroup, imageModels, videoModels])
 
   // 浏览器预览保留轻量单节点执行；桌面端始终经主进程预检和运行服务。
   const rerunNode = useCallback(async (nodeId: string) => {
@@ -1023,7 +1067,9 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return
     }
     if (running || preparingMedia || resumingTaskIdsRef.current.size > 0) return
-    const target = nodes.find((entry) => entry.id === nodeId)
+    const committed = commitGenerationPrompts(nodes, edges)
+    if (committed !== nodes) setNodes(committed)
+    const target = committed.find((entry) => entry.id === nodeId)
     if (!target || target.disabled || target.type === 'unknown') return
     const inputs: NodeInputs = {}
     for (const edge of edges) {
@@ -1101,6 +1147,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         for (const asset of page.items) merged.set(asset.assetId, asset)
         return [...merged.values()]
       })
+      setNodes((current) => applyCatalogClipDurationToNodes(current, page.items))
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     } finally {
@@ -1186,6 +1233,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       if (!active) return
       setAssetPage(page)
       setAssetCatalog(page.items)
+      setNodes((current) => applyCatalogClipDurationToNodes(current, page.items))
     }).catch((error) => {
       if (active) setBanner(error instanceof Error ? error.message : String(error))
     }).finally(() => {
@@ -1274,20 +1322,25 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             for (const nodeId of autoFixedDownstreamNodeIds(graph.nodes, completed, graph.edges)) next.add(nodeId)
             return next
           })
-          if (completed.status !== 'running') {
-            setRunning(false)
-            if (activeRunRef.current?.runId === completed.runId) activeRunRef.current = null
-          }
+          if (completed.status !== 'running') forgetActiveRun(completed.runId)
         }
-      } else if (!selectedRunId && records[0]) {
-        setSelectedRunId(records[0].runId)
+      } else {
+        if (!selectedRunId && records[0]) setSelectedRunId(records[0].runId)
       }
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     } finally {
       setRunsLoading(false)
     }
-  }, [selectedRunId, setNodes])
+  }, [forgetActiveRun, selectedRunId, setNodes])
+
+  const refreshRunsRef = useRef(refreshRuns)
+  refreshRunsRef.current = refreshRuns
+
+  useEffect(() => {
+    if (!window.xingmangCanvasHost || !activeProject) return
+    void refreshRunsRef.current()
+  }, [activeProject?.id])
 
   const openInspectorTab = useCallback((tab: CanvasInspectorTab) => {
     if (focusMode && tab !== 'node') setFocusMode(false)
@@ -1344,8 +1397,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }, [closeInspector, inspectorTab, openInspectorTab, runInspectorOpen])
 
   useEffect(() => hostBridge().onRunEvent((event) => {
-    const active = activeRunRef.current
-    if (!active || event.runId !== active.runId || event.graphRevision !== active.graphRevision) return
+    const active = activeRunsRef.current.get(event.runId)
+    if (!active || event.graphRevision !== active.graphRevision) return
     setRunRecords((current) => mergeCanvasRunEvent(current, event))
     if (event.type === 'node-stage') {
       patchNodeData(event.nodeId, {
@@ -1378,18 +1431,19 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       })
     }
     if (event.type === 'run-terminal') {
-      setRunning(false)
-      setBanner(`运行结束：${event.status ?? '已完成'}`)
-      activeRunRef.current = null
+      forgetActiveRun(event.runId)
+      const remaining = activeRunsRef.current.size
+      setBanner(remaining > 0
+        ? `运行结束：${event.status ?? '已完成'}（还有 ${remaining} 个任务在生成）`
+        : `运行结束：${event.status ?? '已完成'}`)
       void refreshAssets({ ...assetQuery, offset: 0 })
       void refreshRuns(event.runId)
     }
-  }), [patchNodeData, refreshAssets, refreshRuns, assetQuery])
+  }), [forgetActiveRun, patchNodeData, refreshAssets, refreshRuns, assetQuery])
 
   // 断线恢复:视频节点凭已落盘的 taskId 继续轮询(应用重启/中途关窗后
   // 打开工作流文件即可续查,不重新扣费提交任务)。
   const resumeTask = useCallback(async (nodeId: string) => {
-    if (running) return
     const node = nodes.find((entry) => entry.id === nodeId)
     const taskId = node?.data.result?.taskId
     if (!taskId || resumingTaskIdsRef.current.has(taskId)) return
@@ -1422,7 +1476,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       resumingTaskIdsRef.current.delete(taskId)
       setResumingTaskIds(new Set(resumingTaskIdsRef.current))
     }
-  }, [running, nodes, setNodes, refreshAssets, assetQuery])
+  }, [nodes, setNodes, refreshAssets, assetQuery])
 
   /**
    * 切换到某个候选。2026-08-20 起选择与采纳合并为一个动作：被选中的候选立刻
@@ -1583,7 +1637,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   useEffect(() => {
     registerNodeChangeHandlers({
-      onPromptChange: (nodeId, prompt) => markDirtyFrom(nodeId, { prompt }),
+      onPromptChange: applyPromptDraft,
+      onPromptCommit: (nodeId, prompt) => markDirtyFrom(nodeId, { prompt }),
       onModelChange: (nodeId, model) => {
         const node = nodes.find((entry) => entry.id === nodeId)
         const imageOperation = ['image', 'image-generate', 'image-edit'].includes(node?.type ?? '')
@@ -1620,16 +1675,26 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       onPickAsset: (nodeId) => void pickAssetForNode(nodeId),
       onImportAssetFile: (nodeId, file) => void importAssetForNode(nodeId, file),
       onPreviewAsset: setPreviewAsset,
-      onMediaMetadata: (nodeId, assetId, width, height) => {
-        if (!Number.isInteger(width) || !Number.isInteger(height) || width <= 0 || height <= 0) return
+      onDisconnectIncoming: (edgeId) => execute({ type: 'disconnect', edgeIds: [edgeId] }),
+      onMediaMetadata: (nodeId, assetId, width, height, durationSeconds) => {
         const target = nodes.find((node) => node.id === nodeId)
-        if (target?.data.result?.assetId !== assetId || !['image', 'video'].includes(target.data.result.kind)) return
-        const result = { ...target.data.result, width, height }
-        const resizeNode = ['image-input', 'video-input'].includes(target.type ?? '')
-        const dimensions = resizeNode
-          ? mediaAssetNodeDimensions(result)
-          : mediaResultNodeDimensions(target.type ?? '', result, target.width ?? 304, target.height ?? 360, target.data.size)
-        if (target.data.result.width === width && target.data.result.height === height
+        if (target?.data.result?.assetId !== assetId || !['image', 'video', 'audio'].includes(target.data.result.kind)) return
+        const nextWidth = Number.isInteger(width) && width > 0 ? width : target.data.result.width
+        const nextHeight = Number.isInteger(height) && height > 0 ? height : target.data.result.height
+        const nextDuration = typeof durationSeconds === 'number' && Number.isFinite(durationSeconds) && durationSeconds > 0 && durationSeconds <= 86_400
+          ? durationSeconds
+          : target.data.result.durationSeconds ?? requestedClipDurationSeconds(target.data.seconds)
+        const result = {
+          ...target.data.result,
+          ...(nextWidth ? { width: nextWidth } : {}),
+          ...(nextHeight ? { height: nextHeight } : {}),
+          ...(nextDuration ? { durationSeconds: nextDuration } : {}),
+        }
+        const dimensions = usesMediaBoundLayout(target.type ?? '', result.assetId)
+          ? mediaAssetNodeDimensions(result, target.data.size)
+          : null
+        if (target.data.result.width === result.width && target.data.result.height === result.height
+          && target.data.result.durationSeconds === result.durationSeconds
           && (!dimensions || (target.width === dimensions.width && target.height === dimensions.height))) return
         const updated = nodes.map((node) => node.id === nodeId
           ? {
@@ -1652,7 +1717,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         edges,
       }),
     })
-  }, [nodes, edges, execute, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, deleteNodesBridging, downloadNodeAsset, showNodeAssetMenu, resumeTask, useCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
+  }, [nodes, edges, execute, applyPromptDraft, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, deleteNodesBridging, downloadNodeAsset, showNodeAssetMenu, resumeTask, useCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
 
   const createNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}): CanvasNode | null => {
     const kind = type as NodeKind
@@ -2341,20 +2406,28 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   const selectedNodes = nodes.filter((node) => node.selected)
   const selectedNodeIds = selectedNodes.map((node) => node.id)
+  const renderedEdges = useMemo(() => {
+    const selected = new Set(selectedNodeIds)
+    return edges.map((edge) => {
+      const flowing = canvasEdgeTouchesSelection(edge, selected)
+      const className = canvasEdgeClassName({
+        dropTarget: edge.id === edgeDropTargetId,
+        flowing,
+      })
+      const currentFlowing = canvasEdgeIsFlowing(edge.data)
+      if (className === edge.className && currentFlowing === flowing) return edge
+      return {
+        ...edge,
+        className,
+        data: { ...(edge.data && typeof edge.data === 'object' ? edge.data : {}), flowing },
+      }
+    })
+  }, [edgeDropTargetId, edges, selectedNodeIds])
   const allSelectedLocked = selectedNodes.length > 0 && selectedNodes.every((node) => node.draggable === false)
   const selectedDisableEligibleNodes = selectedNodes.filter(isCanvasGraphNode)
   const selectedDisableEligibleIds = selectedDisableEligibleNodes.map((node) => node.id)
   const allSelectedDisabled = selectedDisableEligibleNodes.length > 0 && selectedDisableEligibleNodes.every((node) => node.disabled)
-  const selectedNodeSignature = [...selectedNodeIds].sort().join('\0')
   const selectedRunnableCount = nodes.filter((node) => node.selected && isCanvasRunnableTarget(node)).length
-  useEffect(() => {
-    const previous = selectedNodeSignatureRef.current
-    selectedNodeSignatureRef.current = selectedNodeSignature
-    if (!selectedNodeSignature || selectedNodeSignature === previous) return
-    if (assetTrayOpen || runInspectorOpen) return
-    setInspectorTab('node')
-    setNodeInspectorOpen(true)
-  }, [assetTrayOpen, runInspectorOpen, selectedNodeSignature])
   const runScopeLabel = runScopeKind === 'all'
     ? '运行全部'
     : runScopeKind === 'dirty'
@@ -2398,12 +2471,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   const confirmCanvasRun = useCallback(async () => {
     const pending = pendingCanvasRun
-    if (!pending || running) return
+    if (!pending) return
     try {
-      const currentGraph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+      const committed = commitGenerationPrompts(nodes, edges)
+      if (committed !== nodes) setNodes(committed)
+      const currentGraph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
       const currentPreflight = buildCanvasRunPreflight({
         graph: currentGraph,
         scope: pending.scope,
+        cachedNodeIds: cachedNodeIdsForPreflight(committed, pending.scope),
         imageGroup: imageGroup ?? undefined,
         videoGroup: videoGroup ?? undefined,
         imageModels,
@@ -2425,22 +2501,19 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       }
       setRunPreflight(null)
       setPendingCanvasRun(null)
-      setRunning(true)
       const started = await hostBridge().startRun({ graph: currentGraph, scope: pending.scope })
-      activeRunRef.current = { ...started, scope: pending.scope }
+      rememberActiveRun({ ...started, scope: pending.scope })
       openInspectorTab('runs')
-      setBanner('工作流已交由安全运行服务')
+      setBanner(activeRunsRef.current.size > 1 ? `已开始第 ${activeRunsRef.current.size} 路生成` : '工作流已交由安全运行服务')
       // 缓存命中的工作流可能在 startRun IPC 返回前已发出终态事件。
       // 立即读取持久记录可补回该事件，避免运行按钮永久停在“取消”。
       void refreshRuns(started.runId)
     } catch (error) {
-      setRunning(false)
       setBanner(error instanceof Error ? error.message : String(error))
     }
-  }, [edges, imageGroup, imageModels, nodes, openInspectorTab, pendingCanvasRun, refreshRuns, running, videoGroup, videoModels])
+  }, [edges, imageGroup, imageModels, nodes, openInspectorTab, pendingCanvasRun, refreshRuns, rememberActiveRun, videoGroup, videoModels])
 
   const run = async () => {
-    if (running) return
     if (preparingMedia) {
       setBanner('生成配置正在准备，请稍候再运行工作流')
       return
@@ -2449,15 +2522,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       setBanner('请等待视频任务续查完成后再运行工作流')
       return
     }
-    setRunning(true)
     setBanner(null)
     if (window.xingmangCanvasHost) {
       try {
-        const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+        const committed = commitGenerationPrompts(nodes, edges)
+        if (committed !== nodes) setNodes(committed)
+        const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
         const scope = currentRunScope()
         const preflight = buildCanvasRunPreflight({
           graph,
           scope,
+          cachedNodeIds: cachedNodeIdsForPreflight(committed, scope),
           imageGroup: imageGroup ?? undefined,
           videoGroup: videoGroup ?? undefined,
           imageModels,
@@ -2465,20 +2540,19 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         })
         setRunPreflight(preflight)
         if (!preflight.canStart) {
-          setRunning(false)
           setBanner(preflight.warnings.filter((entry) => entry.includes('：')).join('；') || '当前运行范围无法执行')
           return
         }
         setPendingCanvasRun({ graph, scope })
-        setRunning(false)
         setBanner('请确认运行范围和本次额度风险')
         return
       } catch (error) {
-        setRunning(false)
         setBanner(error instanceof Error ? error.message : String(error))
         return
       }
     }
+    if (running) return
+    setRunning(true)
     const controller = new AbortController()
     abortRef.current = controller
     try {
@@ -2499,9 +2573,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }
 
   const cancel = () => {
-    const active = activeRunRef.current
-    if (active) void hostBridge().cancelRun(active.runId)
-    else abortRef.current?.abort()
+    const runIds = [...activeRunsRef.current.keys()]
+    if (runIds.length > 0) {
+      for (const runId of runIds) void hostBridge().cancelRun(runId)
+      return
+    }
+    abortRef.current?.abort()
   }
 
   const workflowSnapshot = (): WorkflowFile => ({
@@ -2536,7 +2613,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       applyProjectUiPreferences({ ...defaultCanvasUiPreferences })
     } catch (error) {
       setAutoSaveState('failed')
-      setBanner(error instanceof Error ? `自动保存失败：${error.message}` : `自动保存失败：${String(error)}`)
+      setBanner(canvasAutosaveErrorMessage(error))
     }
   }, [activeProject, applyProjectUiPreferences, nodes, edges, viewport, mediaGroups, queueProjectSave])
 
@@ -2741,23 +2818,41 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   useEffect(() => {
     if (!window.xingmangCanvasHost || !activeProject) return
+    const parts = {
+      mediaGroups: { ...mediaGroups },
+      nodes: nodes.map(toWorkflowNode),
+      edges: edges.map(toWorkflowEdge),
+    }
+    const signature = canvasAutosaveSignature(parts)
+    const graphSignature = canvasAutosaveGraphSignature(parts)
     if (projectHydrationRef.current) {
       projectHydrationRef.current = false
+      lastAutosaveSignatureRef.current = signature
+      lastAutosaveGraphSignatureRef.current = graphSignature
+      setAutoSaveState('saved')
       return
     }
+    if (signature === lastAutosaveSignatureRef.current) return
     const revision = autoSaveRevisionRef.current + 1
     autoSaveRevisionRef.current = revision
-    setAutoSaveState('saving')
+    const showProgress = graphSignature !== lastAutosaveGraphSignatureRef.current
     const timeout = window.setTimeout(() => {
+      if (showProgress) setAutoSaveState('saving')
       const content = serializeWorkflow(workflowSnapshot())
-      void queueProjectSave(activeProject, content, revision).catch((error) => {
-        if (autoSaveRevisionRef.current !== revision) return
-        setAutoSaveState('failed')
-        setBanner(error instanceof Error ? `自动保存失败：${error.message}` : `自动保存失败：${String(error)}`)
-      })
+      void queueProjectSave(activeProject, content, revision)
+        .then(() => {
+          if (autoSaveRevisionRef.current !== revision) return
+          lastAutosaveSignatureRef.current = signature
+          lastAutosaveGraphSignatureRef.current = graphSignature
+        })
+        .catch((error) => {
+          if (autoSaveRevisionRef.current !== revision) return
+          setAutoSaveState('failed')
+          setBanner(canvasAutosaveErrorMessage(error))
+        })
     }, 800)
     return () => window.clearTimeout(timeout)
-  }, [activeProject?.id, nodes, edges, viewport, mediaGroups, queueProjectSave])
+  }, [activeProject?.id, nodes, edges, mediaGroups, queueProjectSave])
 
   useEffect(() => {
     if (!window.xingmangCanvasHost || !activeProject) return
@@ -2927,12 +3022,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         <ReactFlow
           colorMode={theme}
           nodes={nodes}
-          edges={edgeDropTargetId
-            ? edges.map((edge) => (edge.id === edgeDropTargetId ? { ...edge, className: 'is-drop-target' } : edge))
-            : edges}
+          edges={renderedEdges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           defaultEdgeOptions={defaultEdgeOptions}
+          connectionLineType={ConnectionLineType.Bezier}
           onNodesChange={onCanvasNodesChange}
           onNodeDragStart={onCanvasNodeDragStart}
           onNodeDrag={onCanvasNodeDrag}
@@ -2946,9 +3040,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           onReconnect={onReconnect}
           reconnectRadius={14}
           deleteKeyCode={null}
-          fitView
           minZoom={0.15}
-          fitViewOptions={{ padding: 0.14, minZoom: 0.2, maxZoom: 1 }}
           proOptions={{ hideAttribution: false }}
           ariaLabelConfig={canvasAriaLabelConfig}
           onMove={(_, nextViewport) => setNodeLod((current) => canvasNodeLodForZoom(nextViewport.zoom, current))}
@@ -2999,10 +3091,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             if (file) void importAssetToCanvas(file, position)
           }}
         >
-          {/* Two layers: a fine minor grid plus a coarser major one, so that
-              alignment and snapping have something to read against. */}
-          <Background id="canvas-grid-minor" variant={BackgroundVariant.Dots} gap={16} size={1} />
-          <Background id="canvas-grid-major" variant={BackgroundVariant.Lines} gap={96} lineWidth={1} />
+          <Background id="canvas-grid" variant={BackgroundVariant.Dots} gap={22} size={1.35} />
           {cutStroke.length > 1 && (
             <ViewportPortal>
               <svg className="canvas-cut-stroke" aria-hidden="true">
@@ -3072,7 +3161,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         {nodes.length === 0 && !quickInsert && <div className="canvas-empty-state">
           <button type="button" className="is-primary" onClick={() => openTemplateCatalog()}><Sparkles size={16} />从模板开始</button>
           <button type="button" onClick={() => addNode('image-generate', { x: 120, y: 120 })}><Plus size={16} />新建生成节点</button>
-          <button type="button" onClick={() => void load()}>打开项目</button>
         </div>}
         <QuickInsert
           open={quickInsert !== null}

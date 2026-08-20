@@ -37,6 +37,18 @@ function uniqueCandidates(record: CanvasRunRecord['nodes'][number]): CanvasRunCa
   return candidates
 }
 
+/** 角标上的生成耗时：缓存命中要回看上次付费跑，不能把 0ms 缓存写成「没花时间」。 */
+export function latestPaidAttemptDurationMs(record: CanvasRunRecord['nodes'][number]): number | undefined {
+  for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
+    const attempt = record.attempts[index]
+    if (attempt.cached) continue
+    if (typeof attempt.durationMs === 'number' && Number.isFinite(attempt.durationMs) && attempt.durationMs > 0) {
+      return attempt.durationMs
+    }
+  }
+  return undefined
+}
+
 /** 最近一次真正产出东西的 attempt。失败重试不会抹掉上一次的候选。 */
 function latestAttemptCandidates(record: CanvasRunRecord['nodes'][number]): readonly CanvasRunCandidate[] {
   for (let index = record.attempts.length - 1; index >= 0; index -= 1) {
@@ -131,6 +143,7 @@ export function projectRunRecordToNodes<T extends ProjectableCanvasNode>(
     const terminalSuccess = record.state === 'succeeded' || record.state === 'cached'
     const showRunProgress = record.state === 'running' || record.state === 'cancelling'
     const showRunTiming = record.state === 'queued' || showRunProgress
+    const paidDurationMs = latestPaidAttemptDurationMs(record)
     return {
       ...node,
       data: {
@@ -141,12 +154,10 @@ export function projectRunRecordToNodes<T extends ProjectableCanvasNode>(
         runProgress: showRunProgress ? record.latestProgress : undefined,
         runProgressMode: showRunProgress ? record.latestProgressMode : undefined,
         runHealth: showRunProgress ? record.latestHealth : undefined,
-        // Survives a reload: restoring from history must not silently turn a
-        // cache hit into something that looks freshly generated.
         fromCache: record.state === 'cached',
         dirty: !terminalSuccess,
         attemptCount: record.attempts.length,
-        ...(latestAttempt ? { latestAttemptDurationMs: latestAttempt.durationMs } : {}),
+        ...(paidDurationMs !== undefined ? { latestAttemptDurationMs: paidDurationMs } : {}),
         ...(errorMessage ? { errorMessage } : { errorMessage: undefined }),
         ...(costQuota > 0 ? { costQuota } : {}),
         ...(candidates.length > 0 ? {

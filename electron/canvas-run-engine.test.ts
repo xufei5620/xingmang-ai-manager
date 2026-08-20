@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   appendCanvasRunTimelineEvent,
   canvasRunDescendants,
+  canvasRunExclusiveNodeIds,
   canvasRunRemoteGenerationUpperBound,
   executeCanvasRun,
   type CanvasNodeExecutors,
@@ -333,6 +334,42 @@ describe('executeCanvasRun', () => {
     expect(record.outcome?.cached).toEqual(['a'])
   })
 
+  it('still executes the explicit to-node target even when a cache entry exists', async () => {
+    const image = vi.fn(async () => ({ assets: [asset()] }))
+    const record = await executeCanvasRun(runOptions(graph(
+      [node('prompt', 'text'), node('image', 'image-generate')],
+      [edge('prompt', 'image')],
+    ), {
+      scope: { kind: 'to-node', nodeId: 'image' },
+      executors: executors({ image }),
+      resolveCache: async (fingerprint, current) => current.kind === 'image-generate'
+        ? {
+          version: 1,
+          fingerprint,
+          nodeKind: 'image-generate',
+          candidate: {
+            candidateId: 'cached-image',
+            attemptId: 'cached-attempt',
+            createdAt: '2026-08-13T00:00:00.000Z',
+            asset: asset(),
+          },
+          createdAt: '2026-08-13T00:00:00.000Z',
+          lastUsedAt: '2026-08-13T00:00:00.000Z',
+        }
+        : {
+          version: 1,
+          fingerprint,
+          nodeKind: 'text',
+          outputText: 'cached',
+          createdAt: '2026-08-13T00:00:00.000Z',
+          lastUsedAt: '2026-08-13T00:00:00.000Z',
+        },
+    }))
+    expect(image).toHaveBeenCalledOnce()
+    expect(record.nodes.find((entry) => entry.nodeId === 'prompt')?.state).toBe('cached')
+    expect(record.nodes.find((entry) => entry.nodeId === 'image')?.state).toBe('succeeded')
+  })
+
   it('cancels while cache lookup is pending and suppresses the late cache hit', async () => {
     const controller = new AbortController()
     let resolveCache: ((entry: CanvasRunCacheEntry | null) => void) | undefined
@@ -459,5 +496,21 @@ describe('canvasRunDescendants', () => {
       [edge('a', 'b'), edge('a', 'c'), edge('b', 'd'), edge('c', 'd')],
     )
     expect(canvasRunDescendants(workflow, ['a'])).toEqual(['b', 'c', 'd'])
+  })
+})
+
+describe('canvasRunExclusiveNodeIds', () => {
+  it('locks only the target of a to-node run so sibling generations can overlap', () => {
+    const workflow = graph(
+      [node('prompt', 'text'), node('left', 'image-generate'), node('right', 'video-generate')],
+      [edge('prompt', 'left'), edge('prompt', 'right')],
+    )
+    expect(canvasRunExclusiveNodeIds(workflow, { kind: 'to-node', nodeId: 'left' })).toEqual(['left'])
+    expect(canvasRunExclusiveNodeIds(workflow, { kind: 'to-node', nodeId: 'right' })).toEqual(['right'])
+    expect(canvasRunExclusiveNodeIds(workflow, { kind: 'all' })).toEqual(['left', 'right'])
+    expect(canvasRunExclusiveNodeIds(
+      graph([node('a', 'text'), node('b', 'text')]),
+      { kind: 'all' },
+    )).toEqual(['a', 'b'])
   })
 })

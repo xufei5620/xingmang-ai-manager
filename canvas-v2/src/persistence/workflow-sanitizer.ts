@@ -73,6 +73,12 @@ function readAsset(value: unknown): AssetRef | undefined | null {
   if (!assetId && !taskId) return undefined
   const width = Number.isInteger(value.width) && (value.width as number) > 0 ? value.width as number : undefined
   const height = Number.isInteger(value.height) && (value.height as number) > 0 ? value.height as number : undefined
+  const durationSeconds = typeof value.durationSeconds === 'number'
+    && Number.isFinite(value.durationSeconds)
+    && value.durationSeconds > 0
+    && value.durationSeconds <= 86_400
+    ? value.durationSeconds
+    : undefined
   const mimeType = assetId && typeof value.mimeType === 'string' && value.mimeType.length <= 128
     ? value.mimeType
     : undefined
@@ -82,6 +88,7 @@ function readAsset(value: unknown): AssetRef | undefined | null {
     ...(mimeType ? { mimeType } : {}),
     ...(width ? { width } : {}),
     ...(height ? { height } : {}),
+    ...(durationSeconds ? { durationSeconds } : {}),
     ...(taskId ? { taskId } : {}),
   }
 }
@@ -251,7 +258,8 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
       continue
     }
     const normalizedEdge = edge.targetHandle === 'in:image'
-      && (target.kind === 'image-edit' || target.kind === 'video-generate' || target.kind === 'video')
+      && (target.kind === 'image-edit' || target.kind === 'image-generate' || target.kind === 'image'
+        || target.kind === 'video-generate' || target.kind === 'video')
       ? { ...edge, targetHandle: 'in:images' }
       : edge
     const sourcePort = builtinNodeRegistry.port(source.kind, normalizedEdge.sourceHandle, 'output')

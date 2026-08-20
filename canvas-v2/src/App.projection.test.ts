@@ -77,7 +77,39 @@ describe('canvas workflow projection', () => {
     expect(toWorkflowNode(canvas).data.result).toMatchObject({ width: 448, height: 672 })
   })
 
-  it('expands a generated portrait video node so the result preview is not clipped', () => {
+  it('keeps generation elapsed time on the in-memory canvas node', () => {
+    const canvas = toCanvasNode(workflowNode({
+      kind: 'image-generate',
+      data: {
+        prompt: '角色', model: 'gpt-image-2', status: 'succeeded',
+        latestAttemptDurationMs: 8_123,
+      },
+    }))
+    expect(toWorkflowNode(canvas).data.latestAttemptDurationMs).toBe(8_123)
+  })
+
+  it('sizes a generated image node to the picture, without form chrome', () => {
+    const assetId = 'i'.repeat(43)
+    const canvas = toCanvasNode(workflowNode({
+      id: 'portrait-image-result',
+      kind: 'image-generate',
+      width: 304,
+      height: 360,
+      data: {
+        prompt: '角色三视图', model: 'gpt-image-2', status: 'succeeded',
+        result: {
+          kind: 'image', assetId, localUrl: `xingmang-asset://image/${assetId}`,
+          width: 1152, height: 1536,
+        },
+      },
+    }))
+
+    expect(canvas.width).toBe(280)
+    expect(canvas.height).toBe(373)
+    expect(canvas.style).toMatchObject({ width: 280, height: 373 })
+  })
+
+  it('sizes a generated portrait video node to the picture, without form chrome', () => {
     const assetId = 'g'.repeat(43)
     const canvas = toCanvasNode(workflowNode({
       id: 'portrait-video-result',
@@ -93,9 +125,9 @@ describe('canvas workflow projection', () => {
       },
     }))
 
-    expect(canvas.width).toBe(304)
-    expect(canvas.height).toBe(672)
-    expect(canvas.style).toMatchObject({ width: 304, height: 672 })
+    expect(canvas.width).toBe(320)
+    expect(canvas.height).toBe(480)
+    expect(canvas.style).toMatchObject({ width: 320, height: 480 })
   })
 
   it('uses the requested video size while metadata is still unavailable', () => {
@@ -111,7 +143,7 @@ describe('canvas workflow projection', () => {
       },
     }))
 
-    expect(canvas.style).toMatchObject({ width: 304, height: 751 })
+    expect(canvas.style).toMatchObject({ width: 270, height: 480 })
   })
 
   it('round-trips definition metadata without leaking it into user settings', () => {
@@ -142,6 +174,17 @@ describe('canvas workflow projection', () => {
 
     expect(graph.nodes).toEqual([expect.objectContaining({ id: 'disabled', definitionVersion: 4, disabled: true })])
     expect(graph.edges).toEqual([])
+  })
+
+  it('projects an empty generate node as a pending media box', () => {
+    const image = toCanvasNode(workflowNode({
+      id: 'pending-image', kind: 'image-generate', data: workflowNodeData('image-generate', { size: '1152x1536' }),
+    }))
+    const video = toCanvasNode(workflowNode({
+      id: 'pending-video', kind: 'video-generate', data: workflowNodeData('video-generate', { size: '1280x720' }),
+    }))
+    expect(image).toMatchObject({ width: 280, height: 373 })
+    expect(video).toMatchObject({ width: 320, height: 180 })
   })
 
   it('separates graph members from runnable targets and structural nodes', () => {

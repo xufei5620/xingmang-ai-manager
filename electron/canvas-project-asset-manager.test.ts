@@ -42,6 +42,29 @@ afterEach(() => {
 })
 
 describe('CanvasProjectAssetManager', () => {
+  it('resolves a file path for assets that live in a project workspace, not just the global root', async () => {
+    // Thumbnail derivation needs a real path. Resolving it against the global
+    // store alone left every project-workspace asset without a thumbnail, and
+    // the tray rendered a placeholder for all of them.
+    const projectId = '22222222-2222-2222-2222-222222222222'
+    const globalRoot = temporaryRoot('xingmang-global-')
+    const projectRoot = temporaryRoot('xingmang-project-')
+    const projectContext = context(projectRoot, 2)
+    const stored = await projectContext.images.storeBase64(7, png)
+
+    const manager = new CanvasProjectAssetManager({
+      projects: {
+        list: vi.fn(async () => [{ id: projectId, workspaceConfigured: true }] as never),
+        getUsableWorkspaceDirectory: vi.fn(async () => projectRoot),
+      },
+      global: context(globalRoot, 1),
+      create: () => projectContext,
+    })
+
+    await expect(manager.resolveOwnedFilePath(7, stored.assetId, 'image')).resolves.toContain(projectRoot)
+    await expect(manager.resolveOwnedFilePath(7, 'z'.repeat(43), 'image')).rejects.toThrow('不存在或无权访问')
+  })
+
   it('keeps a saved generated asset usable when only source metadata persistence fails', async () => {
     const asset = { assetId: 'a'.repeat(43), localUrl: `xingmang-asset://image/${'a'.repeat(43)}`, mimeType: 'image/png', fileName: 'generated.png' }
     const metadataError = new Error('metadata disk full')

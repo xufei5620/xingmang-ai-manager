@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { platformCapabilitiesFor } from '../../electron/platform-capabilities'
 import {
   applyManualUninstallResult,
+  canSwitchCodexDesktopToChinese,
   codexDesktopMaintenanceControl,
   cliMaintenanceAction,
   cliUninstallPresentation,
@@ -10,6 +11,35 @@ import {
   type MaintenanceCliStatus,
   type MaintenanceSnapshot,
 } from './MaintenancePage'
+
+function localeStatus(effectiveLocale: string, available = true) {
+  return {
+    installed: true,
+    version: '26.818.2441.0',
+    running: true,
+    configPath: 'C:\\Users\\tester\\.codex\\config.toml',
+    configuredLocale: effectiveLocale === 'zh-CN' ? 'zh-CN' : null,
+    effectiveLocale,
+    chineseResources: {
+      available,
+      frontendChunk: available,
+      menuLocale: available,
+      pakLocale: available,
+      resourceRoot: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex',
+    },
+    needsRestart: false,
+    error: null,
+  }
+}
+
+describe('Codex Desktop locale controls', () => {
+  it('disables switching when simplified Chinese is already active', () => {
+    expect(canSwitchCodexDesktopToChinese(localeStatus('zh-CN'))).toBe(false)
+    expect(canSwitchCodexDesktopToChinese(localeStatus('system'))).toBe(true)
+    expect(canSwitchCodexDesktopToChinese(localeStatus('system', false))).toBe(false)
+    expect(canSwitchCodexDesktopToChinese(null)).toBe(false)
+  })
+})
 
 function status(uninstall: MaintenanceCliStatus['uninstall']): MaintenanceCliStatus {
   return {

@@ -33,6 +33,14 @@ function combinedPrompt(upstreamText: string | undefined, ownPrompt: string): st
   return [upstreamText, ownPrompt].filter((part) => part && part.trim()).join('\n')
 }
 
+function sourceImageAssetIds(inputs: { image?: AssetRef; images?: readonly AssetRef[] }): string[] {
+  return [...new Set(
+    (inputs.images ?? (inputs.image ? [inputs.image] : []))
+      .map((asset) => asset.assetId)
+      .filter((assetId): assetId is string => Boolean(assetId)),
+  )]
+}
+
 function toAssetRef(asset: Awaited<ReturnType<CanvasHostBridge['generateImage']>>[number]): AssetRef {
   return {
     kind: 'image',
@@ -146,6 +154,12 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
     }
   }
 
+  const imageOrEdit: NodeExecutor = async (node, inputs, signal) => {
+    return sourceImageAssetIds(inputs).length > 0
+      ? imageEdit(node, inputs, signal)
+      : image(node, inputs, signal)
+  }
+
   const video: NodeExecutor = async (node, inputs, signal) => {
     if (!options.videoGroup) throw new Error('请先在「生成配置」中选择视频分组')
     const prompt = combinedPrompt(inputs.text, node.data.prompt)
@@ -229,9 +243,9 @@ export function createHostExecutors(options: HostExecutorOptions): Record<NodeKi
   }
   const unsupported: NodeExecutor = async () => { throw new Error('当前节点能力尚未接入，请勿提交付费请求') }
   return {
-    text, image, video, prompt: text,
+    text, video, prompt: text,
     'image-input': unsupported, 'video-input': unsupported, 'audio-input': unsupported,
-    'image-generate': image, 'image-edit': imageEdit, 'video-generate': video,
+    image: imageOrEdit, 'image-generate': imageOrEdit, 'image-edit': imageEdit, 'video-generate': video,
     'frame-extract': unsupported, router: unsupported, gallery: unsupported, output: unsupported,
     group: unsupported, note: unsupported,
     unknown: unsupported,

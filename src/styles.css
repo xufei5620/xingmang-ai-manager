@@ -6984,6 +6984,12 @@ button:disabled {
   border-color: #cfe9de;
 }
 
+.operation-error-action {
+  flex: 0 0 auto;
+  margin-left: auto;
+  white-space: nowrap;
+}
+
 .extension-list {
   min-width: 0;
   overflow: hidden;

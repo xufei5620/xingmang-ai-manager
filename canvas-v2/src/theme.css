@@ -2,7 +2,8 @@
   color-scheme: dark;
   font-synthesis: none;
   --canvas-bg: #0e1013;
-  --canvas-grid: rgba(205, 214, 227, 0.09);
+  --canvas-grid: rgba(205, 214, 227, 0.18);
+  --canvas-edge: #8b93ad;
   --surface-1: #15181d;
   --surface-2: #1b1f25;
   --surface-3: #20252d;
@@ -118,9 +119,9 @@
 
   --xy-background-color-default: var(--canvas-bg);
   --xy-background-pattern-color-default: var(--canvas-grid);
-  --xy-edge-stroke-default: #68717e;
-  --xy-edge-stroke-selected-default: var(--accent);
-  --xy-connectionline-stroke-default: var(--accent);
+  --xy-edge-stroke-default: var(--canvas-edge);
+  --xy-edge-stroke-selected-default: var(--canvas-edge);
+  --xy-connectionline-stroke-default: var(--canvas-edge);
   --xy-attribution-background-color-default: rgba(17, 19, 21, 0.8);
   --xy-minimap-background-color-default: var(--surface-1);
   --xy-minimap-mask-background-color-default: rgba(8, 10, 12, 0.72);
@@ -134,7 +135,8 @@
 :root[data-theme="light"] {
   color-scheme: light;
   --canvas-bg: #eef1f3;
-  --canvas-grid: rgba(50, 65, 74, 0.11);
+  --canvas-grid: rgba(50, 65, 74, 0.2);
+  --canvas-edge: #7d84a3;
   --surface-1: #ffffff;
   --surface-2: #f7f9fa;
   --surface-3: #edf1f3;
@@ -170,7 +172,7 @@
   --shadow-modal: 0 20px 60px rgba(35, 47, 55, 0.24);
   --shadow-lightbox: 0 20px 70px rgba(35, 47, 55, 0.3);
   --shadow-floating: 0 14px 34px rgba(35, 47, 55, 0.18);
-  --xy-edge-stroke-default: #788792;
+  --xy-edge-stroke-default: var(--canvas-edge);
   --xy-attribution-background-color-default: rgba(255, 255, 255, 0.86);
   --xy-minimap-mask-background-color-default: rgba(238, 241, 243, 0.72);
 }

@@ -17,10 +17,16 @@ export interface CanvasUiPreferencesStorage {
 
 export const defaultCanvasUiPreferences: CanvasUiPreferences = {
   version: canvasUiPreferencesVersion,
-  libraryCollapsed: false,
+  libraryCollapsed: true,
   focusMode: false,
   rightPanel: null,
   minimapOpen: false,
+}
+
+/** Opening a project always starts with the node library as a rail. Expanding
+ *  it during the session still writes back; the next launch collapses again. */
+export function canvasStartupUiPreferences(stored: CanvasUiPreferences): CanvasUiPreferences {
+  return { ...stored, libraryCollapsed: true }
 }
 
 const projectIdPattern = /^[a-f0-9-]{36}$/i

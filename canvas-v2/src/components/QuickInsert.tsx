@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Box, FileStack, Focus, Image, LayoutGrid } from 'lucide-react'
-import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
+import { builtinNodeRegistry, hiddenLibraryNodeTypes } from '../domain/builtin-node-definitions'
 import { builtinCanvasTemplates } from '../templates/builtin-templates'
 import { searchExistingCanvasNodes } from '../editor/command-palette'
 import type { CanvasNode } from '../nodes/WorkflowNodes'
@@ -31,7 +31,7 @@ type QuickInsertEntry = {
   run(): void
 }
 
-const hiddenNodeTypes = new Set(['text', 'image', 'video', 'unknown'])
+const hiddenNodeTypes = hiddenLibraryNodeTypes
 
 export function QuickInsert({ open, anchor, hasNodes, hasSelection, canvasNodes, allowedNodeTypes, onAddNode, onLoadTemplate, onCommand, onLocateNode, onClose }: QuickInsertProps) {
   const [query, setQuery] = useState('')

@@ -1757,6 +1757,50 @@ describe('Python runtime installation', () => {
   })
 })
 
+describe('Windows restart handoff', () => {
+  it('uses the fixed system shutdown command with a delayed restart', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-windows-restart-'))
+    temporaryDirectories.push(directory)
+    const runCommand = vi.fn<typeof productionRunCommand>(async (spec: { executable: string; argv: readonly string[] }) => ({
+      executable: spec.executable,
+      argv: [...spec.argv],
+      exitCode: 0,
+      signal: null,
+      stdout: '',
+      stderr: '',
+      outputBytes: 0,
+      durationMs: 1,
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      { platform: 'win32', runCommand },
+    )
+
+    await service.restartWindows()
+
+    expect(runCommand).toHaveBeenCalledWith(
+      expect.objectContaining({
+        executable: expect.stringMatching(/System32[\\/]shutdown\.exe$/i),
+        argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', 'XingMang AI requires a restart to finish Windows updates'],
+      }),
+      expect.objectContaining({ trustedOnly: true, timeoutMs: 10_000 }),
+    )
+  })
+
+  it('does not expose a restart operation on non-Windows platforms', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-non-windows-restart-'))
+    temporaryDirectories.push(directory)
+    const runCommand = vi.fn<typeof productionRunCommand>()
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      { platform: 'darwin', runCommand },
+    )
+
+    await expect(service.restartWindows()).rejects.toThrow('系统重启仅支持 Windows')
+    expect(runCommand).not.toHaveBeenCalled()
+  })
+})
+
 describe('npm install progress reporting', () => {
   it.runIf(process.platform === 'win32')('does not reinstall a supported PATH-visible Node.js and npm runtime', async () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-existing-node-runtime-'))
@@ -1832,6 +1876,35 @@ describe('npm install progress reporting', () => {
     expect(target.send).not.toHaveBeenCalledWith(
       'cli:install-progress',
       expect.objectContaining({ message: expect.stringContaining('自动安装 Node.js') }),
+    )
+  })
+
+  it.runIf(process.platform === 'win32')('blocks Node.js installation before MSI when Windows has a pending reboot', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-pending-reboot-node-runtime-'))
+    temporaryDirectories.push(directory)
+    const target = { isDestroyed: () => false, send: vi.fn() }
+    const installNodeRuntime = vi.fn()
+    const service = createSystemService(
+      new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+      {
+        platform: 'win32',
+        windowsExecutionMode: 'same-user',
+        findExecutable: async () => null,
+        inspectWindowsRestartRequired: async () => ({
+          required: true,
+          reasons: ['Windows Update 待重启', '安装文件替换待重启'],
+        }),
+        installNodeRuntime,
+      },
+    )
+
+    await expect(service.installNodeRuntime(target)).rejects.toThrow(
+      '检测到 Windows 有待完成的系统更新（Windows Update 待重启、安装文件替换待重启）',
+    )
+    expect(installNodeRuntime).not.toHaveBeenCalled()
+    expect(target.send).toHaveBeenCalledWith(
+      'runtime:node-install-progress',
+      expect.objectContaining({ phase: 'error', message: expect.stringContaining('请先重启电脑') }),
     )
   })
 

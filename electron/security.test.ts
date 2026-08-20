@@ -210,8 +210,10 @@ describe('external URL allowlist', () => {
     expect(isAllowedExternalUrl('http://xm.solov.cc/keys', allowlist)).toBe(false)
     expect(isAllowedExternalUrl(supportServiceUrl + '?redirect=1', allowlist)).toBe(false)
     expect(isAllowedExternalUrl(supportServiceUrl + '/extra', allowlist)).toBe(false)
-    expect(isAllowedExternalUrl('https://work.weixin.qq.com.evil.example/kfid/kfc212a22c8e02da5f8', allowlist)).toBe(false)
-    expect(isAllowedExternalUrl('http://work.weixin.qq.com/kfid/kfc212a22c8e02da5f8', allowlist)).toBe(false)
+    // Derived from the constant so a support-account change cannot quietly
+    // turn these into assertions about a URL nobody uses any more.
+    expect(isAllowedExternalUrl(supportServiceUrl.replace('work.weixin.qq.com', 'work.weixin.qq.com.evil.example'), allowlist)).toBe(false)
+    expect(isAllowedExternalUrl(supportServiceUrl.replace('https://', 'http://'), allowlist)).toBe(false)
     expect(isAllowedExternalUrl('ms-windows-store://pdp/?ProductId=OTHER', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('ms-windows-store://search/?query=Codex', allowlist)).toBe(false)
     expect(isAllowedExternalUrl('javascript:alert(1)', allowlist)).toBe(false)

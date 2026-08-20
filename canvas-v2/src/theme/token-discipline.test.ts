@@ -110,6 +110,7 @@ describe('canvas token discipline', () => {
     expect(lightBlock).toContain('--shadow-panel:')
     expect(lightBlock).toContain('--shadow-modal:')
     expect(lightBlock).toContain('--shadow-lightbox:')
+    expect(lightBlock).toContain('--canvas-edge:')
   })
 
   it('gives every port kind a hue', () => {

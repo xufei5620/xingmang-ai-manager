@@ -643,7 +643,7 @@ button:disabled {
 .canvas-inspector-node-list small { color: var(--text-muted); font-size: var(--text-xs); }
 .canvas-inspector-content { display: flex; min-height: 0; flex: 1; flex-direction: column; }
 .canvas-inspector-content > .asset-tray,
-.canvas-inspector-content > .run-inspector { width: 100%; min-width: 0; flex: 1; border-left: 0; }
+.canvas-inspector-content > .run-inspector { width: 100%; min-width: 0; min-height: 0; flex: 1; border-left: 0; }
 .canvas-inspector-content > .asset-tray.is-embedded,
 .canvas-inspector-content > .run-inspector.is-embedded { display: flex; }
 
@@ -885,6 +885,7 @@ button:disabled {
    left over from the pre-inspector layout and was dead. */
 .asset-tray {
   display: flex;
+  min-height: 0;
   flex-direction: column;
   overflow: hidden;
   color: var(--text-primary);
@@ -1041,18 +1042,21 @@ button:disabled {
 .asset-tray-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-auto-rows: max-content;
   gap: var(--space-8);
   min-height: 0;
   flex: 1;
   padding: var(--space-10);
   overflow-y: auto;
   align-content: start;
+  align-items: start;
 }
 
 .asset-tray-item {
   position: relative;
-  container-type: inline-size;
+  display: flex;
   min-width: 0;
+  flex-direction: column;
   padding: 0;
   overflow: hidden;
   color: var(--text-secondary);
@@ -1060,25 +1064,23 @@ button:disabled {
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-control);
   text-align: left;
-  align-self: start;
 }
 .asset-tray-item:hover { border-color: var(--border-strong); }
 /* Selection only marks a tile. Detail lives in the docked panel below the grid,
    so nothing changes size and the grid never reflows under the pointer. */
 .asset-tray-item.is-selected { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
 .asset-tray-item-audio { grid-column: 1 / -1; }
-.asset-tray-item-audio .asset-tray-item-preview { min-height: 76px; }
-/* Preview height follows the column width so a tile stays roughly square at
-   every density; a fixed height would make compact tiles taller than wide. */
-.asset-tray-grid.is-density-compact .asset-tray-item-preview { min-height: 72px; }
-.asset-tray-grid.is-density-compact .asset-tray-item-preview img,
-.asset-tray-grid.is-density-compact .asset-tray-item-preview video { max-height: 108px; }
-.asset-tray-grid.is-density-roomy .asset-tray-item-preview { min-height: 132px; }
+.asset-tray-item-audio .asset-tray-item-preview { height: auto; padding-bottom: 0; min-height: 76px; }
+.asset-tray-item-audio .asset-tray-item-preview > * { position: static; inset: auto; height: auto; }
 .asset-tray-grid.is-density-compact .asset-tray-item-meta small { display: none; }
-.asset-tray-item-preview { display: grid; width: 100%; min-height: 96px; place-items: center; overflow: hidden; padding: 0; background: var(--surface-media); border: 0; cursor: pointer; outline: 0; }
+/* Square from width via padding, not aspect-ratio. Chromium still collapses
+   aspect-ratio rows to 0 inside this nested flex/grid, which stacked every
+   card on the first. Padding percentage is always the column width. */
+.asset-tray-item-preview { position: relative; display: block; width: 100%; height: 0; padding-bottom: 100%; overflow: hidden; background: var(--surface-media); border: 0; cursor: pointer; outline: 0; }
 .asset-tray-item-preview:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.asset-tray-item-preview > * { position: absolute; inset: 0; width: 100%; height: 100%; }
 .asset-tray-item-preview img,
-.asset-tray-item-preview video { display: block; width: auto; max-width: 100%; height: auto; max-height: 176px; object-fit: contain; background: var(--surface-media); }
+.asset-tray-item-preview video { display: block; width: 100%; height: 100%; max-width: none; max-height: none; object-fit: cover; background: var(--surface-media); }
 .asset-tray-item-preview .media-audio-player { width: calc(100% - 12px); margin: var(--space-8) var(--space-6); }
 .asset-tray-item-meta { display: grid; min-height: 32px; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-4); padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border-subtle); }
 .asset-tray-item-meta > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1112,13 +1114,13 @@ button:disabled {
 .asset-tray-item:focus-within .asset-tray-item-tools { opacity: 1; pointer-events: auto; transform: translateY(0); }
 /* The action row is wider than a tile once the grid gets dense. Wrapping it put
    buttons over the middle of the preview, and letting it overflow put their
-   centres outside the tray where the canvas swallowed the click. Instead the
-   row sheds actions it cannot fit, least essential first. Nothing becomes
-   unreachable: rename, enlarge and the overflow menu are all still on the
-   detail panel, the double click and the context menu. */
-@container (max-width: 143px) { .asset-tray-item-tools .is-optional-rename { display: none; } }
-@container (max-width: 119px) { .asset-tray-item-tools .is-optional-menu { display: none; } }
-@container (max-width: 95px) { .asset-tray-item-tools .is-optional-preview { display: none; } }
+   centres outside the tray where the canvas swallowed the click. Density
+   sheds the least essential actions; rename, enlarge and the overflow menu
+   remain on the detail panel, the double click and the context menu. */
+.asset-tray-grid.is-density-cozy .asset-tray-item-tools .is-optional-rename,
+.asset-tray-grid.is-density-compact .asset-tray-item-tools .is-optional-rename,
+.asset-tray-grid.is-density-compact .asset-tray-item-tools .is-optional-menu,
+.asset-tray-grid.is-density-compact .asset-tray-item-tools .is-optional-preview { display: none; }
 .asset-tray-item-tools button { display: grid; width: 24px; height: 24px; place-items: center; padding: 0; color: var(--media-overlay-text); background: transparent; border: 0; border-radius: var(--radius-chip); }
 .asset-tray-item-tools button:hover { color: var(--media-overlay-text-strong); background: var(--overlay-hover); }
 .asset-tray-item-tools button.is-favorite { color: var(--favorite); }
@@ -1224,7 +1226,9 @@ button:disabled {
   font-size: var(--text-xs);
   text-align: center;
 }
-.asset-tray-item-preview > .media-unavailable { width: 100%; min-height: 96px; }
+.asset-tray-item-preview > .media-unavailable,
+.asset-tray-item-preview > .asset-audio-placeholder,
+.asset-tray-item-preview > .asset-video-placeholder { width: 100%; height: 100%; min-height: 0; aspect-ratio: auto; }
 .wf-preview.media-unavailable { display: grid; }
 
 .react-flow {
@@ -1456,7 +1460,7 @@ button:disabled {
   background: var(--surface-input);
   border: 1px solid var(--border-subtle);
   border-radius: var(--radius-control);
-  font-size: var(--text-sm);
+  font-size: var(--text-md);
 }
 
 .wf-node textarea,
@@ -1468,12 +1472,85 @@ button:disabled {
 }
 
 .wf-node textarea {
-  min-height: 68px;
-  max-height: 180px;
+  min-height: 110px;
+  max-height: 280px;
   resize: vertical;
 }
 
-.wf-prompt-editor { position: relative; display: grid; }
+.wf-node .wf-prompt-editor {
+  width: calc(100% - 20px);
+  margin: var(--space-8) var(--space-10) 0;
+}
+.wf-node .wf-prompt-editor textarea,
+.wf-node .wf-prompt-editor .wf-prompt-highlight {
+  width: 100%;
+  margin: 0;
+  padding: var(--space-6) var(--space-8) var(--space-32);
+  line-height: 1.7;
+}
+
+.wf-prompt-editor { position: relative; display: grid; grid-template: minmax(0, auto) / minmax(0, 1fr); }
+.wf-prompt-editor.is-dropping textarea {
+  box-shadow: inset 0 0 0 1px var(--accent);
+}
+.wf-prompt-editor > textarea,
+.wf-prompt-editor > .wf-prompt-highlight {
+  grid-area: 1 / 1;
+  box-sizing: border-box;
+  min-width: 0;
+  font: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  letter-spacing: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: break-word;
+  word-break: normal;
+}
+.wf-prompt-highlight {
+  overflow: hidden;
+  pointer-events: none;
+  color: var(--text-primary);
+}
+.wf-prompt-editor.is-filled textarea {
+  color: transparent;
+  caret-color: var(--text-primary);
+}
+.wf-prompt-editor.is-filled textarea::selection {
+  color: transparent;
+  background: color-mix(in srgb, var(--accent) 28%, transparent);
+}
+.wf-prompt-mention { color: var(--accent); white-space: nowrap; }
+.wf-prompt-mention.is-image { color: var(--port-image); }
+.wf-prompt-mention.is-video { color: var(--port-video); }
+.wf-prompt-mention.is-audio { color: var(--port-audio); }
+.wf-prompt-mention-glyph { display: inline; }
+.wf-prompt-mention-thumb {
+  display: inline-block;
+  width: 2em;
+  height: 1.5em;
+  margin: 0;
+  vertical-align: middle;
+  overflow: hidden;
+  object-fit: cover;
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-chip);
+}
+.wf-prompt-count {
+  position: absolute;
+  z-index: 1;
+  right: var(--space-8);
+  bottom: var(--space-8);
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  pointer-events: none;
+}
+.wf-prompt-count.is-limit { color: var(--warning); }
+.wf-prompt-mention-thumb.is-image { color: var(--port-image); }
+.wf-prompt-mention-thumb.is-video { color: var(--port-video); }
+.wf-prompt-mention-thumb.is-audio { color: var(--port-audio); }
 .react-flow__node:has(.wf-mention-menu) { z-index: 22 !important; }
 .wf-node:has(.wf-mention-menu) { overflow: visible; }
 .wf-mention-menu { position: absolute; z-index: 30; top: calc(100% + 4px); right: 10px; left: 10px; max-height: 190px; overflow-y: auto; padding: var(--space-4); background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: var(--radius-control); box-shadow: var(--shadow-floating); }
@@ -1533,7 +1610,7 @@ button:disabled {
 .wf-drop-target strong { color: var(--text-secondary); font-size: var(--text-xs); }
 .wf-drop-target span,
 .wf-gallery-empty { font-size: var(--text-xs); }
-.wf-drop-target svg { margin: 0 auto; color: var(--text-muted); }
+.wf-drop-target:not(.has-asset):not(.is-pending) svg { margin: 0 auto; color: var(--text-muted); }
 .wf-drop-target.is-drag-over { color: var(--text-primary); background: var(--accent-soft); border-color: var(--accent); }
 .wf-drop-target.has-asset { position: relative; min-height: 0; grid-template-columns: 1fr; place-content: stretch; align-items: stretch; gap: 0; padding: 0; color: var(--text-secondary); background: transparent; border: 0; border-radius: 0; text-align: left; }
 .wf-drop-target.has-asset > span:not(.wf-input-preview) { display: none; }
@@ -1565,7 +1642,19 @@ button:disabled {
   border-radius: var(--radius-control);
   box-shadow: 0 0 0 1px var(--border-strong), var(--shadow-menu);
 }
-.wf-media-bound .wf-drop-target.has-asset { width: 100%; height: 100%; margin: 0; overflow: hidden; border-radius: var(--radius-control); }
+.wf-media-bound .wf-drop-target.has-asset,
+.wf-media-bound .wf-drop-target.is-pending { width: 100%; height: 100%; margin: 0; overflow: hidden; border-radius: var(--radius-control); }
+.wf-media-bound .wf-drop-target.is-pending {
+  display: grid;
+  place-items: center;
+  color: var(--text-muted);
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--surface-media) 88%, var(--surface-3)) 0%, var(--surface-media) 100%);
+}
+.wf-media-pending {
+  font-size: var(--text-sm);
+  letter-spacing: 0.04em;
+}
 .wf-media-bound .wf-input-preview,
 .wf-media-bound .wf-input-preview.wf-preview {
   width: 100%;
@@ -1582,6 +1671,34 @@ button:disabled {
   aspect-ratio: auto;
   object-fit: contain;
 }
+.wf-canvas-video {
+  position: relative;
+  display: block;
+  overflow: hidden;
+}
+.wf-canvas-video-el {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  pointer-events: none;
+}
+.wf-canvas-video-toggle {
+  position: absolute;
+  left: var(--space-8);
+  bottom: var(--space-8);
+  z-index: 7;
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  color: var(--media-overlay-text);
+  background: var(--media-overlay-bg);
+  border: 1px solid var(--media-overlay-border);
+  border-radius: var(--radius-round);
+}
+.wf-canvas-video-toggle:hover { color: var(--text-primary); background: var(--surface-floating-strong); }
 .wf-media-state-badges { position: absolute; z-index: 6; bottom: 7px; left: 7px; display: flex; align-items: center; gap: var(--space-4); pointer-events: none; }
 .wf-media-state-badges > span { min-height: 18px; align-items: center; padding: var(--space-2) var(--space-4); color: var(--media-overlay-text); background: var(--media-overlay-bg); border: 1px solid var(--media-overlay-border); }
 .wf-media-bound-audio .wf-input-preview-audio { padding: var(--space-10) var(--space-12); }
@@ -1591,7 +1708,7 @@ button:disabled {
    click target for selecting and dragging the node. */
 .wf-media-chips {
   position: absolute;
-  z-index: 4;
+  z-index: 8;
   top: var(--space-6);
   right: var(--space-6);
   left: var(--space-6);
@@ -1601,8 +1718,10 @@ button:disabled {
   gap: var(--space-8);
   pointer-events: none;
 }
+.wf-media-chips svg { margin: 0; }
 .wf-media-chips > span {
   display: inline-flex;
+  flex: 0 0 auto;
   min-width: 0;
   align-items: center;
   gap: var(--space-4);
@@ -1623,10 +1742,180 @@ button:disabled {
    media, and an instant answer beats a prettier one. */
 .wf-media-size { opacity: 0; font-variant-numeric: tabular-nums; }
 .wf-drop-target.has-asset:hover .wf-media-size,
-.wf-drop-target.has-asset:focus-within .wf-media-size { opacity: 1; }
+.wf-drop-target.has-asset:focus-within .wf-media-size,
+.wf-drop-target.is-pending:hover .wf-media-size,
+.wf-drop-target.is-pending:focus-within .wf-media-size { opacity: 1; }
+.wf-media-readouts {
+  position: absolute;
+  z-index: 5;
+  right: var(--space-6);
+  bottom: var(--space-6);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-4);
+  pointer-events: none;
+}
+.wf-media-duration {
+  display: inline-flex;
+  min-height: 18px;
+  align-items: center;
+  padding: var(--space-2) var(--space-6);
+  color: var(--media-overlay-text);
+  background: var(--media-overlay-bg);
+  border: 1px solid var(--media-overlay-border);
+  border-radius: var(--radius-chip);
+  font-size: var(--text-xs);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.wf-media-duration.is-clip { font-weight: 600; }
 /* Icon only, so eight commands stay narrower than the node they hang under. */
 .wf-media-toolbar button { display: grid; width: 28px; height: 28px; place-items: center; padding: 0; }
 .wf-media-toolbar button.is-danger:hover:not(:disabled) { color: var(--danger); background: var(--surface-hover); }
+.wf-composer {
+  display: grid;
+  gap: var(--space-12);
+  width: min(720px, 92vw);
+  min-width: 420px;
+  padding: var(--space-12) var(--space-12) var(--space-10);
+  color: var(--text-primary);
+  background: var(--surface-floating);
+  backdrop-filter: blur(18px);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-panel);
+  box-shadow: var(--shadow-floating);
+}
+.wf-composer-prompt {
+  display: grid;
+  gap: var(--space-8);
+  min-width: 0;
+}
+.wf-composer-chips { display: flex; flex-wrap: wrap; gap: var(--space-6); min-height: 0; }
+.wf-composer-chip {
+  position: relative;
+  display: grid;
+  width: var(--space-48);
+  height: var(--space-48);
+  place-items: center;
+  overflow: hidden;
+  color: var(--text-secondary);
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-chip);
+}
+.wf-composer-chip[draggable="true"] { cursor: grab; }
+.wf-composer-chip[draggable="true"]:active { cursor: grabbing; }
+.wf-composer-chip img,
+.wf-composer-chip .wf-preview { width: 100%; height: 100%; object-fit: cover; }
+.wf-composer-chip.is-text { color: var(--port-text); }
+.wf-composer-chip.is-image { color: var(--port-image); }
+.wf-composer-chip.is-video { color: var(--port-video); }
+.wf-composer-chip.is-audio { color: var(--port-audio); }
+.wf-composer-chip > button {
+  position: absolute;
+  top: var(--space-2);
+  right: var(--space-2);
+  display: grid;
+  width: var(--space-16);
+  height: var(--space-16);
+  place-items: center;
+  padding: 0;
+  color: var(--media-overlay-text);
+  background: var(--media-overlay-bg);
+  border: 0;
+  border-radius: var(--radius-round);
+}
+.wf-composer .wf-prompt-editor textarea,
+.wf-composer .wf-prompt-editor .wf-prompt-highlight {
+  min-height: 176px;
+  padding: var(--space-8) var(--space-12);
+  background: transparent;
+  border: 0;
+  font-size: var(--text-lg);
+  line-height: 1.7;
+}
+.wf-composer .wf-prompt-editor.has-mentions textarea,
+.wf-composer .wf-prompt-editor.has-mentions .wf-prompt-highlight {
+  line-height: 1.7;
+}
+.wf-composer .wf-prompt-editor textarea,
+.wf-composer .wf-prompt-editor .wf-prompt-highlight {
+  padding-bottom: var(--space-32);
+}
+.wf-composer .wf-prompt-editor textarea {
+  color: var(--text-primary);
+  resize: vertical;
+}
+.wf-composer .wf-prompt-editor.is-filled textarea { color: transparent; }
+.wf-composer-field { display: inline-flex; min-width: 0; align-items: center; }
+.wf-composer-select {
+  width: auto;
+  max-width: 148px;
+  min-width: 0;
+  min-height: 28px;
+  padding: 0 var(--space-8);
+  color: var(--text-secondary);
+  background: var(--surface-3);
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-chip);
+  font-size: var(--text-xs);
+}
+.wf-composer-select:hover { color: var(--text-primary); border-color: var(--border-strong); }
+.wf-composer-footer {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-8);
+}
+.wf-composer-toolbar {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-6);
+}
+.wf-composer-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+.wf-composer-toggle {
+  display: inline-flex;
+  min-height: 22px;
+  align-items: center;
+  gap: var(--space-6);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+}
+.wf-composer-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  place-items: center;
+  padding: 0;
+  color: var(--text-muted);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-chip);
+}
+.wf-composer-icon:hover { color: var(--text-primary); background: var(--surface-hover); }
+.wf-composer-send {
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  padding: 0;
+  color: var(--text-on-accent);
+  background: var(--accent);
+  border: 0;
+  border-radius: var(--radius-round);
+}
+.wf-composer-send:hover:not(:disabled) { background: var(--accent-hover); }
+.wf-composer-send:disabled { cursor: default; opacity: 0.48; }
 .wf-pick-asset { display: inline-flex; min-height: 26px; align-items: center; justify-content: center; gap: var(--space-4); padding: var(--space-2) var(--space-6); color: var(--text-secondary); background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: var(--radius-control); font-size: var(--text-xs); }
 .wf-pick-asset:hover { color: var(--text-primary); border-color: var(--accent); }
 .wf-inline-field { display: flex; align-items: center; gap: var(--space-6); margin: var(--space-8) var(--space-10) 0; color: var(--text-secondary); }
@@ -1919,13 +2208,13 @@ button:disabled {
 
 .wf-port {
   z-index: 20 !important;
-  width: 13px;
-  height: 13px;
+  width: 8px;
+  height: 8px;
   pointer-events: auto !important;
-  border: 2px solid var(--surface-2);
+  border: 1px solid var(--surface-2);
   box-shadow: 0 0 0 1px currentColor;
 }
-.wf-port::after { content: ''; position: absolute; inset: -6px; border-radius: var(--radius-round); }
+.wf-port::after { content: ''; position: absolute; inset: -8px; border-radius: var(--radius-round); }
 
 /* Hue encodes media type. Audio had no rule at all, so audio ports rendered
    with no fill and were indistinguishable from a disabled dot. */
@@ -1941,13 +2230,13 @@ button:disabled {
    an unwired input reads as an open socket rather than a finished connection;
    hue and shape stay legible either way. */
 .wf-port:not(.is-connected) { background: var(--surface-2); }
-.wf-port.is-connected { box-shadow: 0 0 0 1px currentColor, 0 0 0 4px color-mix(in srgb, currentColor 18%, transparent); }
+.wf-port.is-connected { box-shadow: 0 0 0 1px currentColor, 0 0 0 2px color-mix(in srgb, currentColor 22%, transparent); }
 
 /* Guidance while a wire is being dragged: enlarge what would accept it, fade
    what would not, so the user does not have to release to find out. */
-.wf-port.is-connect-target { transform: scale(1.35); box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 5px color-mix(in srgb, currentColor 55%, transparent); }
+.wf-port.is-connect-target { transform: scale(1.22); box-shadow: 0 0 0 1px var(--surface-2), 0 0 0 3px color-mix(in srgb, currentColor 55%, transparent); }
 .wf-port.is-connect-blocked { opacity: .28; }
-.wf-port.is-connect-origin { box-shadow: 0 0 0 2px var(--surface-2), 0 0 0 5px color-mix(in srgb, var(--accent) 70%, transparent); }
+.wf-port.is-connect-origin { box-shadow: 0 0 0 1px var(--surface-2), 0 0 0 3px color-mix(in srgb, var(--accent) 70%, transparent); }
 
 .wf-video-params { display: grid; grid-template-columns: minmax(40px, max-content) minmax(var(--node-control-min), 1fr); gap: var(--space-8) var(--space-6); }
 /* Full-width children (the model select, errors, toggles) span both tracks. */
@@ -1967,7 +2256,7 @@ button:disabled {
 @media (prefers-reduced-motion: reduce) { .wf-head-progress::after { animation: none; width: 100%; opacity: .65; } }
 
 .wf-port:hover {
-  transform: scale(1.18);
+  transform: scale(1.12);
 }
 
 .canvas-node-search {
@@ -2035,9 +2324,24 @@ button:disabled {
 .canvas-context-menu button.is-danger { color: var(--danger); }
 
 .wf-edge-hit { cursor: pointer; pointer-events: stroke; }
-.wf-edge { transition: stroke-width var(--duration-fast) var(--ease-out); }
+.wf-edge { transition: stroke-width var(--duration-fast) var(--ease-out); opacity: 0.78; }
+.wf-edge.is-active { opacity: 1; }
+.wf-edge-flow {
+  pointer-events: none;
+  stroke-dasharray: 6 34;
+  animation: wf-edge-flow 1.8s linear infinite;
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--canvas-edge) 40%, transparent));
+  opacity: 0.72;
+}
+@keyframes wf-edge-flow {
+  to { stroke-dashoffset: -43; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wf-edge-flow { animation: none; stroke-dasharray: none; opacity: 0.55; }
+}
 /* The wire a dragged node would splice into. */
-.react-flow__edge.is-drop-target .wf-edge { stroke-width: 3.2px; stroke-dasharray: 7 4; }
+.react-flow__edge.is-drop-target .wf-edge { stroke-width: 2px; stroke-dasharray: 6 5; }
+.react-flow__edge.is-drop-target .wf-edge-flow { display: none; }
 .wf-edge-toolbar {
   display: flex;
   gap: var(--space-2);

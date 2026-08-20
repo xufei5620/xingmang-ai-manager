@@ -268,6 +268,49 @@ export async function writeAtomicSafeBinaryFile(
   return writeAtomicSafeFile(filePath, content, null, label)
 }
 
+function isTransientReplaceError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code
+  return code === 'EPERM' || code === 'EACCES' || code === 'EBUSY' || code === 'EAGAIN'
+}
+
+function delayReplaceRetry(attempt: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, 20 * (2 ** attempt))
+  })
+}
+
+/**
+ * `rename(tmp, dest)` is atomic on a quiet disk. Windows Defender and the
+ * indexer often hold the destination for a few milliseconds, which surfaces
+ * as EPERM and used to abort canvas autosave mid-keystroke.
+ */
+async function replaceSafeDataFile(temporaryPath: string, filePath: string, label: string): Promise<void> {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await fs.promises.rename(temporaryPath, filePath)
+      return
+    } catch (error) {
+      lastError = error
+      if (!isTransientReplaceError(error)) throw error
+      if (attempt < 4) await delayReplaceRetry(attempt)
+    }
+  }
+  if (assertSafeDataFile(filePath, label)) {
+    try {
+      await fs.promises.copyFile(temporaryPath, filePath)
+      return
+    } catch (error) {
+      lastError = error
+    }
+  }
+  const code = (lastError as NodeJS.ErrnoException | undefined)?.code
+  if (code === 'EPERM' || code === 'EACCES' || code === 'EBUSY') {
+    throw new Error(`${label}写入被系统占用，请稍后重试`)
+  }
+  throw lastError
+}
+
 async function writeAtomicSafeFile(
   filePath: string,
   content: string | Buffer,
@@ -290,7 +333,7 @@ async function writeAtomicSafeFile(
     await handle.close()
     handle = null
     assertSafeDataFile(filePath, label)
-    await fs.promises.rename(temporaryPath, filePath)
+    await replaceSafeDataFile(temporaryPath, filePath, label)
   } finally {
     await handle?.close().catch(() => undefined)
     await removeSafeDataFile(temporaryPath, `${label}临时文件`).catch(() => undefined)

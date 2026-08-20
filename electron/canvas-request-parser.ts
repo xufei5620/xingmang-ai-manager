@@ -17,6 +17,27 @@ export function requiredCanvasString(value: unknown, label: string, maximum: num
   return value
 }
 
+/**
+ * A prompt is free text somebody typed into a multi-line box, so tabs and line
+ * breaks are ordinary content rather than an attack. Only the control
+ * characters that would corrupt the stored JSON view are rejected. Identifiers,
+ * models and sizes keep the stricter `requiredCanvasString`.
+ */
+export function requiredCanvasPrompt(value: unknown, label: string, maximum: number): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > maximum || /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(value)) {
+    throw new Error(`${label}格式错误`)
+  }
+  return value
+}
+
+/** Same rule, but a node may legitimately carry an empty prompt. */
+export function canvasPrompt(value: unknown, label: string, maximum: number): string {
+  if (typeof value !== 'string' || value.length > maximum || /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(value)) {
+    throw new Error(`${label}格式错误`)
+  }
+  return value
+}
+
 export function requiredCanvasText(value: unknown, label: string, maximumBytes: number): string {
   if (
     typeof value !== 'string'
@@ -34,7 +55,7 @@ export function parseCanvasImageGenerateInput(value: unknown): CanvasImageGenera
   const requestId = requiredCanvasString(value.requestId, '画布生图请求标识', 160)
   const group = requiredCanvasString(value.group, '画布生图分组', 128)
   const model = requiredCanvasString(value.model, '画布生图模型', 200)
-  const prompt = requiredCanvasString(value.prompt, '画布生图提示词', 40_000)
+  const prompt = requiredCanvasPrompt(value.prompt, '画布生图提示词', 40_000)
   const size = value.size === undefined ? undefined : requiredCanvasString(value.size, '画布生图尺寸', 64)
   const quality = value.quality
   if (quality !== undefined && quality !== 'low' && quality !== 'medium' && quality !== 'high' && quality !== 'auto') {
@@ -117,7 +138,7 @@ export function parseCanvasVideoGenerateInput(value: unknown): AiVideoGeneration
     requestId: requiredCanvasString(value.requestId, '画布视频请求标识', 160),
     group: requiredCanvasString(value.group, '画布视频分组', 128),
     model: requiredCanvasString(value.model, '画布视频模型', 128),
-    prompt: requiredCanvasString(value.prompt, '画布视频提示词', 40_000),
+    prompt: requiredCanvasPrompt(value.prompt, '画布视频提示词', 40_000),
     seconds,
     ...(imageAssetId ? { imageAssetId } : {}),
     ...(imageAssetIds ? { imageAssetIds } : {}),
@@ -324,7 +345,7 @@ export function parseCanvasStartRunInput(value: unknown): CanvasStartRunInput {
     if (!canvasNodeKinds.has(kind)) throw new Error('画布节点类型不受支持')
     if (!Number.isSafeInteger(entry.definitionVersion) || (entry.definitionVersion as number) < 1 || (entry.definitionVersion as number) > 10_000) throw new Error('画布节点版本格式错误')
     if (entry.disabled !== undefined && typeof entry.disabled !== 'boolean') throw new Error('画布节点禁用状态格式错误')
-    const prompt = canvasString(entry.data.prompt, '画布节点提示词', 100_000)
+    const prompt = canvasPrompt(entry.data.prompt, '画布节点提示词', 100_000)
     const model = canvasString(entry.data.model, '画布节点模型', 512)
     const group = optionalCanvasString(entry.data.group, '画布分组', 128)
     const quality = optionalCanvasString(entry.data.quality, '画布画质', 64)

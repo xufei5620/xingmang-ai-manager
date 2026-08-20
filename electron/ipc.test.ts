@@ -69,6 +69,7 @@ function serviceStub(): SystemService {
     scanSystem: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,
+    restartWindows: vi.fn() as never,
     installPythonRuntime: vi.fn() as never,
     installCli: vi.fn() as never,
     uninstallCli: vi.fn() as never,
@@ -78,6 +79,8 @@ function serviceStub(): SystemService {
     inspectCodexDesktopUpdate: vi.fn() as never,
     launchProvider: vi.fn() as never,
     inspectCodexDesktop: vi.fn() as never,
+    inspectCodexDesktopLocale: vi.fn() as never,
+    setCodexDesktopLocale: vi.fn() as never,
     launchCodexDesktop: vi.fn() as never,
     fetchAvailableModels: vi.fn() as never,
   }
@@ -604,8 +607,10 @@ describe('registerIpcHandlers', () => {
     for (const hostileUrl of [
       supportServiceUrl + '?redirect=1',
       supportServiceUrl + '/extra',
-      'https://work.weixin.qq.com.evil.example/kfid/kfc212a22c8e02da5f8',
-      'http://work.weixin.qq.com/kfid/kfc212a22c8e02da5f8',
+      // Derived from the constant so a support-account change cannot quietly
+      // turn these into assertions about a URL nobody uses any more.
+      supportServiceUrl.replace('work.weixin.qq.com', 'work.weixin.qq.com.evil.example'),
+      supportServiceUrl.replace('https://', 'http://'),
     ]) {
       await expect(handler(trustedEvent(), hostileUrl)).rejects.toThrow('不允许打开该链接')
     }
@@ -2044,6 +2049,44 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       for (const bad of ['Open', 'close', 1, null, undefined, {}]) {
         expect(() => handler(trustedEvent(), bad)).toThrow('Codex 桌面端启动方式错误')
+      }
+    })
+  })
+
+  describe('Codex Desktop locale handlers', () => {
+    it('reads locale status through the main service', async () => {
+      const { service } = register()
+      const expected = {
+        installed: true,
+        version: '26.810.7004.0',
+        running: false,
+        configPath: 'C:\\Users\\tester\\.codex\\config.toml',
+        configuredLocale: 'zh-CN',
+        effectiveLocale: 'zh-CN',
+        chineseResources: {
+          available: true,
+          frontendChunk: true,
+          menuLocale: true,
+          pakLocale: true,
+          resourceRoot: 'C:\\Program Files\\WindowsApps\\Codex',
+        },
+        needsRestart: false,
+        error: null,
+      }
+      vi.mocked(service.inspectCodexDesktopLocale).mockResolvedValueOnce(expected)
+
+      await expect(electronMocks.handlers.get('desktop:codex-locale-status')!(trustedEvent()))
+        .resolves.toEqual(expected)
+      expect(service.inspectCodexDesktopLocale).toHaveBeenCalledOnce()
+    })
+
+    it('validates locale values before passing them to the main service', () => {
+      const { service } = register()
+      const event = trustedEvent()
+      expect(() => electronMocks.handlers.get('desktop:set-codex-locale')!(event, 'zh-CN')).not.toThrow()
+      expect(service.setCodexDesktopLocale).toHaveBeenCalledWith('zh-CN', event.sender)
+      for (const value of ['ZH-CN', 'en-US', null, 1, undefined]) {
+        expect(() => electronMocks.handlers.get('desktop:set-codex-locale')!(event, value)).toThrow('语言选项')
       }
     })
   })
