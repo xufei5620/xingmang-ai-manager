@@ -113,7 +113,7 @@ describe('Node.js installer routing and process plans', () => {
   })
 
   it('builds argument arrays without interpolating an MSI path into PowerShell code', () => {
-    const msiPath = path.join('C:\\Temp', "Node package 'quoted'; calc.exe.msi")
+    const msiPath = path.win32.join('C:\\Temp', "Node package 'quoted'; calc.exe.msi")
     const powershell = 'D:\\Program Files\\PowerShell\\7\\pwsh.exe'
     const plan = buildNodeRuntimeInstallPlan(msiPath, powershell, true, testMachinePaths)
 

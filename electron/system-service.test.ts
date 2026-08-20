@@ -1773,7 +1773,7 @@ describe('Windows restart handoff', () => {
     }))
     const service = createSystemService(
       new AppSettingsStore(path.join(directory, 'settings.json'), directory),
-      { platform: 'win32', runCommand },
+      { platform: 'win32', runCommand, resolveWindowsMachinePaths: () => testMachinePaths },
     )
 
     await service.restartWindows()

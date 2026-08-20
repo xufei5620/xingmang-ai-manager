@@ -1563,6 +1563,8 @@ export interface SystemServiceOptions {
   inspectInstalledPythonRuntime?: typeof inspectInstalledPythonRuntime
   inspectWindowsRestartRequired?: typeof inspectWindowsRestartRequired
   installNodeRuntime?: typeof installNodeRuntimeLts
+  /** Test seam for Windows-only operations exercised on non-Windows CI runners. */
+  resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
 }
 
 export function providerCommandEnvironment(
@@ -1603,6 +1605,7 @@ export function createSystemService(
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
   const installNodeRuntimeForService = serviceOptions.installNodeRuntime ?? installNodeRuntimeLts
+  const resolveWindowsMachinePathsForService = serviceOptions.resolveWindowsMachinePaths ?? resolveWindowsMachinePaths
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
   let nodeRuntimeInstalling = false
@@ -2166,11 +2169,12 @@ export function createSystemService(
 
   async function restartWindows(): Promise<void> {
     if (platform !== 'win32') throw new Error('系统重启仅支持 Windows')
+    const machinePaths = resolveWindowsMachinePathsForService()
     await executeCommand({
-      executable: windowsSystemExecutable('shutdown.exe', process.env, 'win32'),
+      executable: windowsSystemExecutable('shutdown.exe', process.env, 'win32', machinePaths),
       argv: ['/r', '/t', '15', '/d', 'p:0:0', '/c', 'XingMang AI requires a restart to finish Windows updates'],
     }, {
-      env: trustedCommandEnvironment(process.env, resolveWindowsMachinePaths(), 'win32'),
+      env: trustedCommandEnvironment(process.env, machinePaths, 'win32'),
       trustedOnly: true,
       timeoutMs: 10_000,
       maxOutputBytes: 64 * 1024,
