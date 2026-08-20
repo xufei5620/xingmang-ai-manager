@@ -45,6 +45,40 @@ function mediaKind(asset: CanvasAssetSummary | AssetRef): AssetRef['kind'] {
   return 'mediaType' in asset ? asset.mediaType : asset.kind
 }
 
+/**
+ * Pixel size of the asset itself, for the hover readout.
+ *
+ * Returns null whenever the record does not carry both numbers. The node box
+ * and the fallback aspect ratios above are always available and always look
+ * like an answer, which is exactly why they must not be substituted here: a
+ * made-up resolution is worse than no line at all.
+ */
+export function mediaAssetSizeLabel(asset: CanvasAssetSummary | AssetRef | undefined | null): string | null {
+  const width = asset && 'width' in asset ? asset.width : undefined
+  const height = asset && 'height' in asset ? asset.height : undefined
+  return validRatioPart(width) && validRatioPart(height) ? `${width} × ${height}` : null
+}
+
+export function formatMediaDuration(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '0:00'
+  const seconds = Math.floor(value)
+  const minutes = Math.floor(seconds / 60)
+  const hours = Math.floor(minutes / 60)
+  const tail = `${String(minutes % 60).padStart(hours ? 2 : 1, '0')}:${String(seconds % 60).padStart(2, '0')}`
+  return hours ? `${hours}:${tail}` : tail
+}
+
+/** Duration line for the hover readout; absent metadata omits the line. */
+export function mediaDurationLabel(value: number | undefined | null): string | null {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? formatMediaDuration(value) : null
+}
+
+/** Joins the readout lines that exist. Nothing to say means no tooltip at all. */
+export function mediaHoverTitle(lines: readonly (string | null | undefined)[]): string | undefined {
+  const present = lines.filter((line): line is string => typeof line === 'string' && line.length > 0)
+  return present.length > 0 ? present.join('\n') : undefined
+}
+
 export function mediaAssetNodeDimensions(asset: CanvasAssetSummary | AssetRef): MediaNodeDimensions {
   const kind = mediaKind(asset)
   if (kind === 'audio') return { width: 360, height: 104 }

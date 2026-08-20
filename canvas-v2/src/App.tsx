@@ -909,6 +909,18 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [applyPreparedMediaConfiguration, execute, mediaGroups, prepareMediaConfiguration])
 
+  // Removing a node from the middle of a chain leaves two dangling ends. Heal
+  // them in the same command so one undo restores the original wiring too.
+  // Declared this early because the node handler registration below lists it as
+  // a dependency, and a dependency array is read while rendering.
+  const deleteNodesBridging = useCallback((nodeIds: readonly string[]) => {
+    const bridges = bridgeEdgesForRemoval(edges, nodeIds).map((draft) => ({ id: nextNodeId(), ...draft }))
+    execute({ type: 'delete-elements', nodeIds: [...nodeIds], ...(bridges.length > 0 ? { bridges } : {}) })
+    setBanner(bridges.length > 0
+      ? `已删除 ${nodeIds.length} 个节点，并接通 ${bridges.length} 条连线`
+      : `已删除 ${nodeIds.length} 个节点`)
+  }, [edges, execute])
+
   const patchNodeData = useCallback((nodeId: string, patch: Partial<CanvasNode['data']>) => {
     setNodes((current) => current.map((node) => (
       node.id === nodeId ? { ...node, data: { ...node.data, ...patch } } : node
@@ -1612,6 +1624,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       onSavePromptPreset: (nodeId) => void savePromptPreset(nodeId),
       onRunToNode: (nodeId) => void rerunNode(nodeId),
       onRunFromNode: runFromNode,
+      onDeleteNode: (nodeId) => deleteNodesBridging([nodeId]),
       onDownloadAsset: (nodeId) => void downloadNodeAsset(nodeId),
       onShowAssetMenu: (nodeId) => void showNodeAssetMenu(nodeId),
       onResumeTask: (nodeId) => void resumeTask(nodeId),
@@ -1658,7 +1671,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         edges,
       }),
     })
-  }, [nodes, edges, execute, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, discardCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
+  }, [nodes, edges, execute, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, deleteNodesBridging, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, discardCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
 
   const createNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}): CanvasNode | null => {
     const kind = type as NodeKind
@@ -2166,16 +2179,6 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       canDisable: disableEligible.length > 0,
     })
   }, [nodes])
-
-  // Removing a node from the middle of a chain leaves two dangling ends. Heal
-  // them in the same command so one undo restores the original wiring too.
-  const deleteNodesBridging = useCallback((nodeIds: readonly string[]) => {
-    const bridges = bridgeEdgesForRemoval(edges, nodeIds).map((draft) => ({ id: nextNodeId(), ...draft }))
-    execute({ type: 'delete-elements', nodeIds: [...nodeIds], ...(bridges.length > 0 ? { bridges } : {}) })
-    setBanner(bridges.length > 0
-      ? `已删除 ${nodeIds.length} 个节点，并接通 ${bridges.length} 条连线`
-      : `已删除 ${nodeIds.length} 个节点`)
-  }, [edges, execute])
 
   const deleteSelection = useCallback(() => {
     const nodeIds = nodes.filter((node) => node.selected).map((node) => node.id)

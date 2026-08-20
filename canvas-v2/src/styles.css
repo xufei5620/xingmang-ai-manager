@@ -1538,9 +1538,6 @@ button:disabled {
 .wf-drop-target.is-drag-over { color: var(--text-primary); background: var(--accent-soft); border-color: var(--accent); }
 .wf-drop-target.has-asset { position: relative; min-height: 0; grid-template-columns: 1fr; place-content: stretch; align-items: stretch; gap: 0; padding: 0; color: var(--text-secondary); background: transparent; border: 0; border-radius: 0; text-align: left; }
 .wf-drop-target.has-asset > span:not(.wf-input-preview) { display: none; }
-.wf-drop-target.has-asset > .wf-pick-asset { position: absolute; z-index: 3; top: 7px; left: 7px; justify-self: start; color: var(--media-overlay-text); background: var(--media-overlay-bg); border-color: var(--media-overlay-border); opacity: 0; pointer-events: none; transform: translateY(-2px); transition: opacity 120ms ease, transform 120ms ease; }
-.wf-drop-target.has-asset:hover > .wf-pick-asset,
-.wf-drop-target.has-asset:focus-within > .wf-pick-asset { opacity: 1; pointer-events: auto; transform: translateY(0); }
 .wf-input-preview { display: grid; width: 100%; min-height: 56px; place-items: center; overflow: hidden; color: var(--text-muted); background: var(--surface-media); border: 1px solid var(--border-subtle); border-radius: var(--radius-control); }
 .wf-input-preview.wf-preview { width: 100%; margin: 0; aspect-ratio: auto; }
 .wf-input-preview-image { height: 132px; object-fit: contain; }
@@ -1590,32 +1587,47 @@ button:disabled {
 .wf-media-state-badges > span { min-height: 18px; align-items: center; padding: var(--space-2) var(--space-4); color: var(--media-overlay-text); background: var(--media-overlay-bg); border: 1px solid var(--media-overlay-border); }
 .wf-media-bound-audio .wf-input-preview-audio { padding: var(--space-10) var(--space-12); }
 .wf-media-bound-audio .media-audio-player { height: 100%; min-height: 0; }
-.wf-media-input-overlay {
+/* Type chip on the left, pixel size on the right. Both float over the corners
+   of the media and never take pointer events, so the whole surface stays a
+   click target for selecting and dragging the node. */
+.wf-media-chips {
   position: absolute;
   z-index: 4;
-  top: 7px;
-  right: 7px;
-  left: 7px;
+  top: var(--space-6);
+  right: var(--space-6);
+  left: var(--space-6);
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-8);
-  padding: var(--space-4) var(--space-6) var(--space-4) var(--space-8);
+  pointer-events: none;
+}
+.wf-media-chips > span {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-4);
+  overflow: hidden;
+  padding: var(--space-2) var(--space-6);
   color: var(--media-overlay-text);
   background: var(--media-overlay-bg);
   border: 1px solid var(--media-overlay-border);
   border-radius: var(--radius-chip);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(-3px);
-  transition: opacity 120ms ease, transform 120ms ease;
+  font-size: var(--text-xs);
+  white-space: nowrap;
 }
-.wf-drop-target.has-asset:hover > .wf-media-input-overlay,
-.wf-drop-target.has-asset:focus-within > .wf-media-input-overlay { opacity: 1; transform: translateY(0); }
-.wf-media-input-overlay strong { overflow: hidden; font-size: var(--text-xs); font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.wf-media-input-overlay > span { display: flex !important; gap: var(--space-2); }
-.wf-media-input-overlay button { display: grid; width: 25px; height: 25px; place-items: center; padding: 0; color: var(--media-overlay-text); background: transparent; border: 0; border-radius: var(--radius-chip); pointer-events: auto; }
-.wf-media-input-overlay button:hover { color: var(--media-overlay-text-strong); background: var(--overlay-hover); }
+.wf-media-kind > svg { flex: 0 0 auto; }
+.wf-media-kind.is-image > svg { color: var(--port-image); }
+.wf-media-kind.is-video > svg { color: var(--port-video); }
+.wf-media-kind.is-audio > svg { color: var(--port-audio); }
+/* Revealed with no fade: it is a readout the user asked for by pointing at the
+   media, and an instant answer beats a prettier one. */
+.wf-media-size { opacity: 0; font-variant-numeric: tabular-nums; }
+.wf-drop-target.has-asset:hover .wf-media-size,
+.wf-drop-target.has-asset:focus-within .wf-media-size { opacity: 1; }
+/* Icon only, so eight commands stay narrower than the node they hang under. */
+.wf-media-toolbar button { display: grid; width: 28px; height: 28px; place-items: center; padding: 0; }
+.wf-media-toolbar button.is-danger:hover:not(:disabled) { color: var(--danger); background: var(--surface-hover); }
 .wf-pick-asset { display: inline-flex; min-height: 26px; align-items: center; justify-content: center; gap: var(--space-4); padding: var(--space-2) var(--space-6); color: var(--text-secondary); background: var(--surface-3); border: 1px solid var(--border-strong); border-radius: var(--radius-control); font-size: var(--text-xs); }
 .wf-pick-asset:hover { color: var(--text-primary); border-color: var(--accent); }
 .wf-inline-field { display: flex; align-items: center; gap: var(--space-6); margin: var(--space-8) var(--space-10) 0; color: var(--text-secondary); }

@@ -860,9 +860,20 @@ try {
     return audio instanceof HTMLAudioElement && !audio.paused && audio.currentTime > 0.05
   }, await audioNode.getAttribute('data-id'))
   await audioNode.getByRole('button', { name: '暂停音频' }).click()
-  await page.locator('.react-flow__node-audio-input').last().getByRole('button', { name: '放大音频预览' }).click()
+  // Enlarging used to live in a hover overlay pinned over the media. It is now
+  // in the operation bar that floats under the selected node, so the node shows
+  // nothing but the waveform until it is picked.
+  await audioNode.click({ position: { x: 10, y: 10 } })
+  const audioToolbar = page.locator('.wf-media-toolbar')
+  await audioToolbar.waitFor({ state: 'visible' })
+  assert.deepEqual(
+    await audioToolbar.locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label'))),
+    ['从此向后运行', '放大音频预览', '另存素材', '在文件夹中显示', '替换音频素材', '删除节点'],
+    '音频素材操作条的命令集合不符',
+  )
+  await audioToolbar.getByRole('button', { name: '放大音频预览' }).click()
   await page.getByRole('dialog', { name: '音频预览' }).waitFor({ state: 'visible' })
-  assert.equal(await page.getByText('音频预览', { exact: true }).count(), 1, '音频双击没有进入大预览')
+  assert.equal(await page.getByText('音频预览', { exact: true }).count(), 1, '音频操作条没有进入大预览')
   await page.getByRole('button', { name: '关闭媒体预览' }).click()
   await page.getByRole('button', { name: '关闭资产栏' }).click()
   await page.getByRole('button', { name: '自动布局', exact: true }).click()
@@ -873,8 +884,79 @@ try {
   assert.ok(Math.abs(assetNodeGeometry.width - 280) < 1, '图片素材节点宽度没有按素材比例约束')
   assert.ok(Math.abs(assetNodeGeometry.height - 350) < 1, '4:5 图片素材节点没有保持原始比例')
   assertPureMediaNode(await mediaNodeAppearance(page.locator('.react-flow__node-image-input').last()), '图片')
-  await assertSelectionHugsMedia(page, page.locator('.react-flow__node-image-input').last(), '图片')
-  await assertSelectionHugsMedia(page, page.locator('.react-flow__node-video-input').last(), '视频')
+  // Pin the node by identity: `.last()` re-resolves on every use, and React
+  // Flow is free to reorder while selection and layout change underneath.
+  const boundImageNodeId = await page.locator('.react-flow__node-image-input').last().getAttribute('data-id')
+  const boundImageNode = page.locator(`.react-flow__node[data-id="${boundImageNodeId}"]`)
+  await assertSelectionHugsMedia(page, boundImageNode, '图片')
+  // Centre it before touching hover state. After auto layout this node sits far
+  // down the graph, and Chromium does not tick a composited opacity transition
+  // on an element outside the viewport, so a hover assertion would hang on a
+  // value that is correct in style but frozen in time.
+  await page.getByRole('button', { name: '聚焦选中节点' }).first().click()
+  await page.waitForTimeout(360)
+  // Type chip: a bound media node has no header, so this is the only readable
+  // statement of what the node holds. Hue must be the port hue, not a new one.
+  const imageKindChip = boundImageNode.locator('.wf-media-kind')
+  assert.equal((await imageKindChip.textContent()).trim(), '图片', '图片素材节点缺少类型标签')
+  const portImageHue = await page.evaluate(() => {
+    const probe = document.createElement('span')
+    probe.style.color = 'var(--port-image)'
+    document.body.append(probe)
+    const value = getComputedStyle(probe).color
+    probe.remove()
+    return value
+  })
+  assert.equal(
+    await imageKindChip.locator('svg').evaluate((icon) => getComputedStyle(icon).color),
+    portImageHue,
+    '类型标签没有沿用端口色相',
+  )
+  // Size only on hover, and only when the record actually knows it. The chip
+  // reads the node's asset record, which the media element corrects to the real
+  // decoded size: the fixture PNG is 4x5 while the stub library claims 800x1000,
+  // so this also proves the number is not the node box (280 x 350) in disguise.
+  assert.equal((await boundImageNode.locator('.wf-media-size').textContent()).trim(), '4 × 5', '素材悬停没有显示资产记录里的真实尺寸')
+  // The pointer is still resting on the node from the selection click, so park
+  // it elsewhere first and let the fade settle: a mid-transition reading would
+  // make this assertion meaningless whichever way it went.
+  await page.mouse.move(4, 4)
+  await page.waitForFunction(
+    ({ id, opacity }) => getComputedStyle(document.querySelector(`.react-flow__node[data-id="${id}"] .wf-media-size`)).opacity === opacity,
+    { id: boundImageNodeId, opacity: '0' },
+  )
+  await boundImageNode.locator('.wf-input-preview').hover()
+  await page.waitForFunction(
+    ({ id, opacity }) => getComputedStyle(document.querySelector(`.react-flow__node[data-id="${id}"] .wf-media-size`)).opacity === opacity,
+    { id: boundImageNodeId, opacity: '1' },
+  )
+  // Operation bar: nothing is permanent on the node, everything hangs below it
+  // once selected.
+  const mediaToolbar = page.locator('.wf-media-toolbar')
+  await mediaToolbar.waitFor({ state: 'visible' })
+  assert.deepEqual(
+    await mediaToolbar.locator('button').evaluateAll((buttons) => buttons.map((button) => button.getAttribute('aria-label'))),
+    ['从此向后运行', '放大图片预览', '另存素材', '在文件夹中显示', '替换图片素材', '删除节点'],
+    '媒体操作条的命令集合不符',
+  )
+  const mediaToolbarBounds = await mediaToolbar.boundingBox()
+  const boundImageBounds = await boundImageNode.boundingBox()
+  assert.ok(mediaToolbarBounds && boundImageBounds, '媒体操作条或素材节点缺少边界')
+  assert.ok(
+    mediaToolbarBounds.y >= boundImageBounds.y + boundImageBounds.height - 1,
+    `媒体操作条没有浮在节点下方：${JSON.stringify({ toolbar: mediaToolbarBounds, node: boundImageBounds })}`,
+  )
+  await page.screenshot({ path: path.join(artifactRoot, 'media-node-toolbar-1590x875.png') })
+  const boundVideoNodeId = await page.locator('.react-flow__node-video-input').last().getAttribute('data-id')
+  const boundVideoNode = page.locator(`.react-flow__node[data-id="${boundVideoNodeId}"]`)
+  await assertSelectionHugsMedia(page, boundVideoNode, '视频')
+  // Fitting the whole graph can drop the zoom into the summary LOD, where both
+  // chips are deliberately dropped, so read the chip at a readable zoom.
+  await page.getByRole('button', { name: '聚焦选中节点' }).first().click()
+  await page.waitForTimeout(360)
+  assert.equal((await boundVideoNode.locator('.wf-media-kind').textContent()).trim(), '视频', '视频素材节点缺少类型标签')
+  await page.locator('.react-flow__pane').click({ position: { x: 18, y: 18 } })
+  assert.equal(await page.locator('.wf-media-toolbar').count(), 0, '取消选中后媒体操作条仍驻留在画布上')
 
   const imageGenerateNode = page.locator('.react-flow__node-image-generate').first()
   const imageGenerateNodeId = await imageGenerateNode.getAttribute('data-id')
@@ -1584,6 +1666,10 @@ function assertPureMediaNode(appearance, label) {
  * install: the drop target had kept the generic `8px 10px 0` margin.
  */
 async function assertSelectionHugsMedia(page, node, label) {
+  // Re-fit first: after auto layout a media node can sit far outside the real
+  // viewport, and a click there lands on the document instead of the node.
+  await page.getByRole('banner').getByRole('button', { name: '适配全部内容', exact: true }).click()
+  await page.waitForTimeout(360)
   await node.click({ position: { x: 12, y: 12 } })
   await page.waitForFunction(
     (id) => document.querySelector(`.react-flow__node[data-id="${id}"]`)?.classList.contains('selected') === true,

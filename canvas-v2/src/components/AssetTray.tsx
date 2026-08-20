@@ -4,7 +4,13 @@ import type { CanvasAssetPage, CanvasAssetQuery, CanvasAssetReferenceReport, Can
 import type { AssetRef } from '../model'
 import { middleTruncate } from '../identifier-display'
 import { AudioPreview, MediaLightbox, SafeImage, VideoCoverImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
-import { mediaAssetAspectRatio } from '../library/media-assets'
+import {
+  formatMediaDuration as formatAssetDuration,
+  mediaAssetAspectRatio,
+  mediaAssetSizeLabel,
+  mediaDurationLabel,
+  mediaHoverTitle,
+} from '../library/media-assets'
 import {
   assetSelectionAfterKey,
   assetSelectionDetailId,
@@ -55,6 +61,15 @@ function assetLabel(asset: CanvasAssetSummary): string {
   return asset.mediaType === 'video' ? '视频' : asset.mediaType === 'audio' ? '音频' : '图片'
 }
 
+/**
+ * Hover readout for a tile. Resolution and duration each appear only when the
+ * record actually carries them, so the tooltip never invents a number.
+ */
+function assetHoverTitle(asset: CanvasAssetSummary): string | undefined {
+  const duration = mediaDurationLabel('durationSeconds' in asset ? asset.durationSeconds : undefined)
+  return mediaHoverTitle([assetName(asset), mediaAssetSizeLabel(asset), duration ? `时长 ${duration}` : null])
+}
+
 function assetTypeName(asset: CanvasAssetSummary): string {
   return asset.mediaType === 'video' ? '视频' : asset.mediaType === 'audio' ? '音频' : '图片'
 }
@@ -62,15 +77,6 @@ function assetTypeName(asset: CanvasAssetSummary): string {
 function assetAvailable(asset: CanvasAssetSummary): boolean {
   const source = asset.mediaType === 'image' ? asset.thumbnailUrl : asset.localUrl
   return isLocalCanvasAssetUrl(source, asset.mediaType)
-}
-
-export function formatAssetDuration(value: number): string {
-  if (!Number.isFinite(value) || value < 0) return '0:00'
-  const seconds = Math.floor(value)
-  const minutes = Math.floor(seconds / 60)
-  const hours = Math.floor(minutes / 60)
-  const tail = `${String(minutes % 60).padStart(hours ? 2 : 1, '0')}:${String(seconds % 60).padStart(2, '0')}`
-  return hours ? `${hours}:${tail}` : tail
 }
 
 function assetName(asset: CanvasAssetSummary): string {
@@ -497,6 +503,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               <div
                 className="asset-tray-item-preview"
                 role="group"
+                title={assetHoverTitle(asset)}
                 ref={(element) => { tileRefs.current[index] = element }}
                 // Roving tabindex: the grid is one tab stop, not one per tile,
                 // so Tab reaches the pagination controls without twenty-four

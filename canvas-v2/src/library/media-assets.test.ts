@@ -1,6 +1,17 @@
 import { describe, expect, it } from 'vitest'
 import type { CanvasAudioAssetSummary, CanvasImageAssetSummary, CanvasVideoAssetSummary } from '../host'
-import { assetInputNodeKind, imageAssetForBinding, mediaAssetAspectRatio, mediaAssetNodeDimensions, mediaResultNodeDimensions, videoAspectRatioForSize } from './media-assets'
+import {
+  assetInputNodeKind,
+  formatMediaDuration,
+  imageAssetForBinding,
+  mediaAssetAspectRatio,
+  mediaAssetNodeDimensions,
+  mediaAssetSizeLabel,
+  mediaDurationLabel,
+  mediaHoverTitle,
+  mediaResultNodeDimensions,
+  videoAspectRatioForSize,
+} from './media-assets'
 
 const image: CanvasImageAssetSummary = {
   assetId: 'i'.repeat(43),
@@ -69,5 +80,32 @@ describe('canvas media asset projection', () => {
   it('never binds a video asset to an image input', () => {
     expect(imageAssetForBinding(image)).toBe(image)
     expect(imageAssetForBinding(video)).toBeNull()
+  })
+
+  it('reports the real pixel size and omits the line when the record has none', () => {
+    expect(mediaAssetSizeLabel({ ...image, width: 800, height: 1000 })).toBe('800 × 1000')
+    expect(mediaAssetSizeLabel({ kind: 'video', width: 448, height: 672 })).toBe('448 × 672')
+    // The node box and the fallback ratios would both produce a confident
+    // number here. Guessing is worse than staying silent.
+    expect(mediaAssetSizeLabel(image)).toBeNull()
+    expect(mediaAssetSizeLabel({ ...image, width: 800 })).toBeNull()
+    expect(mediaAssetSizeLabel({ ...image, width: 0, height: 1000 })).toBeNull()
+    expect(mediaAssetSizeLabel(audio)).toBeNull()
+    expect(mediaAssetSizeLabel(undefined)).toBeNull()
+  })
+
+  it('formats duration only when the metadata carries one', () => {
+    expect(formatMediaDuration(5.04)).toBe('0:05')
+    expect(formatMediaDuration(3_671)).toBe('1:01:11')
+    expect(mediaDurationLabel(2.113)).toBe('0:02')
+    expect(mediaDurationLabel(undefined)).toBeNull()
+    expect(mediaDurationLabel(0)).toBeNull()
+    expect(mediaDurationLabel(Number.NaN)).toBeNull()
+  })
+
+  it('joins only the hover lines that exist', () => {
+    expect(mediaHoverTitle(['视频1.mp4', '448 × 672', '时长 0:05'])).toBe('视频1.mp4\n448 × 672\n时长 0:05')
+    expect(mediaHoverTitle([null, '双击放大预览'])).toBe('双击放大预览')
+    expect(mediaHoverTitle([null, undefined, ''])).toBeUndefined()
   })
 })

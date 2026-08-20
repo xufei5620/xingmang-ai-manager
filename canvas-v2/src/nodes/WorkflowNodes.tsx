@@ -1,6 +1,6 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
 import { Handle, NodeResizer, NodeToolbar, Position, useConnection, useNodeConnections, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import { AlertCircle, AlertTriangle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, Upload, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Download, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, RefreshCw, Trash2, Upload, X } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeDefinition, NodePortDefinition } from '../domain/node-definition'
 import type { AssetRef, NodeKind, WorkflowNodeData } from '../model'
@@ -29,7 +29,7 @@ import {
 import { AudioPreview, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from '../components/MediaPreview'
 import { PromptEditor } from '../components/PromptEditor'
 import { buildCanvasUpstreamReferences, type UpstreamMediaReference } from '../components/upstream-references'
-import { mediaAssetAspectRatio } from '../library/media-assets'
+import { mediaAssetAspectRatio, mediaAssetSizeLabel, mediaHoverTitle } from '../library/media-assets'
 import { createNodeRendererRegistry } from './node-renderer-registry'
 import { isMediaSourceKind, portSlotOffsetY } from './port-geometry'
 import type { CanvasNodeLod } from './node-lod'
@@ -136,6 +136,7 @@ interface NodeChangeHandlers {
   onSavePromptPreset(nodeId: string): void
   onRunToNode(nodeId: string): void
   onRunFromNode(nodeId: string): void
+  onDeleteNode(nodeId: string): void
   onDownloadAsset(nodeId: string): void
   onShowAssetMenu(nodeId: string): void
   onResumeTask(nodeId: string): void
@@ -166,6 +167,7 @@ let handlers: NodeChangeHandlers = {
   onSavePromptPreset: () => undefined,
   onRunToNode: () => undefined,
   onRunFromNode: () => undefined,
+  onDeleteNode: () => undefined,
   onDownloadAsset: () => undefined,
   onShowAssetMenu: () => undefined,
   onResumeTask: () => undefined,
@@ -204,13 +206,23 @@ function mediaInputLabel(kind: NodeKind): string {
   return kind === 'video-input' ? '视频' : kind === 'audio-input' ? '音频' : '图片'
 }
 
+const mediaKindIcon = {
+  image: ImageIcon,
+  video: Film,
+  audio: Music2,
+} satisfies Record<AssetRef['kind'], typeof ImageIcon>
+
 function MediaInputDropZone({ id, kind, asset, locked = false, disabled = false }: { id: string; kind: 'image-input' | 'video-input' | 'audio-input'; asset?: AssetRef; locked?: boolean; disabled?: boolean }) {
+  const { lod } = useContext(CanvasNodeViewContext)
   const label = mediaInputLabel(kind)
   const expectedAssetKind = kind === 'video-input' ? 'video' : kind === 'audio-input' ? 'audio' : 'image'
   const hasAsset = Boolean(asset?.assetId)
   const previewUrl = asset?.kind === expectedAssetKind && isLocalCanvasAssetUrl(asset.localUrl, expectedAssetKind)
     ? asset.localUrl
     : undefined
+  const KindIcon = mediaKindIcon[expectedAssetKind]
+  const sizeLabel = mediaAssetSizeLabel(asset)
+  const previewTitle = mediaHoverTitle([sizeLabel, '双击放大预览'])
   const acceptDrag = (event: DragEvent<HTMLDivElement>) => {
     if (event.dataTransfer.types.includes('application/x-xingmang-asset-id') || event.dataTransfer.types.includes('Files')) {
       event.preventDefault()
@@ -226,7 +238,7 @@ function MediaInputDropZone({ id, kind, asset, locked = false, disabled = false 
         alt={`${label}素材预览`}
         draggable={false}
         style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
-        title="双击放大预览"
+        title={previewTitle}
         onLoad={(event) => asset.assetId && handlers.onMediaMetadata(id, asset.assetId, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)}
         onDoubleClick={(event) => { event.stopPropagation(); handlers.onPreviewAsset(asset) }}
       />
@@ -238,7 +250,7 @@ function MediaInputDropZone({ id, kind, asset, locked = false, disabled = false 
           controls
           draggable={false}
           style={{ aspectRatio: mediaAssetAspectRatio(asset) }}
-          title="双击放大预览"
+          title={previewTitle}
           onLoadedMetadata={(event) => asset.assetId && handlers.onMediaMetadata(id, asset.assetId, event.currentTarget.videoWidth, event.currentTarget.videoHeight)}
           onDoubleClick={(event) => { event.stopPropagation(); handlers.onPreviewAsset(asset) }}
         />
@@ -272,13 +284,20 @@ function MediaInputDropZone({ id, kind, asset, locked = false, disabled = false 
       {!hasAsset && <button type="button" className="wf-pick-asset" onClick={() => handlers.onPickAsset(id)}>
         <FolderOpen size={13} aria-hidden="true" />从文件选择
       </button>}
-      {hasAsset && previewUrl && <div className="wf-media-input-overlay">
-        <strong>{label}素材</strong>
-        <span>
-          <button type="button" className="nodrag" title={`替换${label}素材`} aria-label={`替换${label}素材`} onClick={() => handlers.onPickAsset(id)}><FolderOpen size={13} /></button>
-          <button type="button" className="nodrag" title={`放大${label}预览`} aria-label={`放大${label}预览`} onClick={() => handlers.onPreviewAsset(asset as AssetRef)}><Maximize2 size={13} /></button>
-        </span>
-      </div>}
+      {/* A bound media node has no header, so the type chip is the only place
+          the kind can be read at a glance. The hue is the port hue, so the chip
+          and the wire leaving the node say the same thing. Both chips are
+          dropped in the summary LOD: 11px is the readability floor, and below
+          it they would be noise sitting on top of the picture. */}
+      {hasAsset && previewUrl && lod === 'detail' && (
+        <div className="wf-media-chips">
+          <span className={`wf-media-kind is-${expectedAssetKind}`}><KindIcon size={12} aria-hidden="true" />{label}</span>
+          {/* Pixel size only on hover: it answers a question the user asks
+              occasionally, and it is absent entirely when the record does not
+              know the real numbers. */}
+          {sizeLabel && <span className="wf-media-size">{sizeLabel}</span>}
+        </div>
+      )}
       {hasAsset && (locked || disabled) && <div className="wf-media-state-badges" aria-label="节点状态">
         {locked && <span className="wf-locked"><Lock size={10} aria-hidden="true" />已锁定</span>}
         {disabled && <span className="wf-disabled">已禁用</span>}
@@ -332,6 +351,71 @@ function NodeRunToolbar({
       </button>
       <button type="button" title="从此向后：执行该节点的下游链路及必要依赖" disabled={disabled} onClick={() => handlers.onRunFromNode(id)}>
         <ArrowRight size={13} aria-hidden="true" /><span>从此向后</span>
+      </button>
+    </NodeToolbar>
+  )
+}
+
+/**
+ * The bar that floats under a bound media node while it is selected. The node
+ * itself shows nothing but the picture, so every command lives here rather than
+ * as chrome the user has to look at all day.
+ *
+ * The two run commands are conditional on purpose. A media source node has no
+ * input ports and its asset was imported rather than generated, so "run" and
+ * "regenerate" have nothing to act on there; they appear for any media kind
+ * that can actually execute. Icon-only with Chinese titles keeps the bar
+ * narrower than the node it hangs from.
+ */
+function MediaNodeToolbar({
+  id,
+  label,
+  asset,
+  canRun,
+  running,
+  locked,
+  selected,
+}: {
+  id: string
+  label: string
+  asset: AssetRef
+  canRun: boolean
+  running: boolean
+  locked: boolean
+  selected: boolean
+}) {
+  if (!selected) return null
+  return (
+    <NodeToolbar position={Position.Bottom} offset={8} className="wf-node-toolbar wf-media-toolbar" role="toolbar" aria-label={`${label}素材操作`}>
+      {canRun && (
+        <button type="button" title="运行此节点：执行该节点及其所需上游" aria-label="运行此节点" disabled={running} onClick={() => handlers.onRunToNode(id)}>
+          <Play size={14} aria-hidden="true" />
+        </button>
+      )}
+      {canRun && (
+        <button type="button" title="重新生成：重跑该节点并刷新下游" aria-label="重新生成" disabled={running} onClick={() => handlers.onRunToNode(id)}>
+          <RefreshCw size={14} aria-hidden="true" />
+        </button>
+      )}
+      <button type="button" title="从此向后：用这份素材执行下游链路" aria-label="从此向后运行" disabled={running} onClick={() => handlers.onRunFromNode(id)}>
+        <ArrowRight size={14} aria-hidden="true" />
+      </button>
+      <button type="button" title={`放大${label}预览`} aria-label={`放大${label}预览`} onClick={() => handlers.onPreviewAsset(asset)}>
+        <Maximize2 size={14} aria-hidden="true" />
+      </button>
+      <button type="button" title="另存到本机" aria-label="另存素材" onClick={() => handlers.onDownloadAsset(id)}>
+        <Download size={14} aria-hidden="true" />
+      </button>
+      {/* The reveal command lives in the main process asset menu together with
+          copy and save-as; this opens that menu rather than adding a channel. */}
+      <button type="button" title="在文件夹中显示（打开系统素材菜单）" aria-label="在文件夹中显示" onClick={() => handlers.onShowAssetMenu(id)}>
+        <FolderOpen size={14} aria-hidden="true" />
+      </button>
+      <button type="button" title={locked ? '节点已锁定，无法替换素材' : `替换${label}素材`} aria-label={`替换${label}素材`} disabled={locked} onClick={() => handlers.onPickAsset(id)}>
+        <Upload size={14} aria-hidden="true" />
+      </button>
+      <button type="button" className="is-danger" title="从画布删除该节点" aria-label="删除节点" onClick={() => handlers.onDeleteNode(id)}>
+        <Trash2 size={14} aria-hidden="true" />
       </button>
     </NodeToolbar>
   )
@@ -516,7 +600,15 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
             handleClassName="wf-resize-handle"
           />
         )}
-        {canRunNode && <NodeRunToolbar id={id} title={definition.title} selected={selected} disabled={nodeRunning} />}
+        <MediaNodeToolbar
+          id={id}
+          label={mediaInputLabel(kind)}
+          asset={data.result}
+          canRun={canRunNode}
+          running={nodeRunning}
+          locked={locked}
+          selected={selected}
+        />
         <MediaInputDropZone id={id} kind={kind as 'image-input' | 'video-input' | 'audio-input'} asset={data.result} locked={locked} disabled={disabled} />
         {output && <Handle
           type="source"
@@ -775,7 +867,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           alt={selectedCandidate ? '生成候选预览' : '生成结果'}
           loading="lazy"
           style={{ aspectRatio: mediaAssetAspectRatio(displayedResult, data.size) }}
-          title="双击放大预览"
+          title={mediaHoverTitle([mediaAssetSizeLabel(displayedResult), '双击放大预览'])}
           onLoad={(event) => displayedResult.assetId && handlers.onMediaMetadata(id, displayedResult.assetId, event.currentTarget.naturalWidth, event.currentTarget.naturalHeight)}
           onDoubleClick={(event) => {
             event.stopPropagation()
@@ -795,7 +887,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           aria-label="视频素材预览"
           controls
           style={{ aspectRatio: mediaAssetAspectRatio(displayedResult, data.size) }}
-          title="双击放大预览"
+          title={mediaHoverTitle([mediaAssetSizeLabel(displayedResult), '双击放大预览'])}
           onLoadedMetadata={(event) => displayedResult.assetId && handlers.onMediaMetadata(id, displayedResult.assetId, event.currentTarget.videoWidth, event.currentTarget.videoHeight)}
           onDoubleClick={(event) => { event.stopPropagation(); handlers.onPreviewAsset(displayedResult) }}
         />
