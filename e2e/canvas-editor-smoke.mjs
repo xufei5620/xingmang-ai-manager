@@ -873,6 +873,8 @@ try {
   assert.ok(Math.abs(assetNodeGeometry.width - 280) < 1, '图片素材节点宽度没有按素材比例约束')
   assert.ok(Math.abs(assetNodeGeometry.height - 350) < 1, '4:5 图片素材节点没有保持原始比例')
   assertPureMediaNode(await mediaNodeAppearance(page.locator('.react-flow__node-image-input').last()), '图片')
+  await assertSelectionHugsMedia(page, page.locator('.react-flow__node-image-input').last(), '图片')
+  await assertSelectionHugsMedia(page, page.locator('.react-flow__node-video-input').last(), '视频')
 
   const imageGenerateNode = page.locator('.react-flow__node-image-generate').first()
   const imageGenerateNodeId = await imageGenerateNode.getAttribute('data-id')
@@ -1533,16 +1535,27 @@ async function mediaNodeAppearance(node) {
     }
     const mediaRect = preview.getBoundingClientRect()
     const shellRect = shell.getBoundingClientRect()
+    const nodeRect = element.getBoundingClientRect()
     return {
       width: element.clientWidth,
       height: element.clientHeight,
       shellBorder: borderWidth(shell),
+      shellShadow: getComputedStyle(shell).boxShadow,
       dropBorder: borderWidth(dropTarget),
       previewBorder: borderWidth(preview),
       shellWidth: shellRect.width,
       shellHeight: shellRect.height,
       previewWidth: mediaRect.width,
       previewHeight: mediaRect.height,
+      // Signed gaps between the node box React Flow decorates and the media
+      // the user actually sees, one per edge.
+      mediaInset: {
+        左: mediaRect.left - nodeRect.left,
+        上: mediaRect.top - nodeRect.top,
+        右: nodeRect.right - mediaRect.right,
+        下: nodeRect.bottom - mediaRect.bottom,
+      },
+      selected: element.classList.contains('selected'),
       headers: shell.querySelectorAll(':scope > header').length,
       actions: shell.querySelectorAll(':scope > .wf-actions').length,
       permanentLabels: shell.querySelectorAll(':scope > .wf-drop-target > span:not(.wf-input-preview)').length,
@@ -1551,7 +1564,10 @@ async function mediaNodeAppearance(node) {
 }
 
 function assertPureMediaNode(appearance, label) {
-  assert.deepEqual(appearance.shellBorder, ['1px', '1px', '1px', '1px'], `${label}节点外框不是 1px 窄边框`)
+  // The outer hairline is a shadow ring, not a border: a border would take a
+  // pixel per side out of the box the selection outline is drawn on.
+  assert.deepEqual(appearance.shellBorder, ['0px', '0px', '0px', '0px'], `${label}节点外框占用了布局空间`)
+  assert.ok(/1px/.test(appearance.shellShadow), `${label}节点缺少 1px 描边环：${appearance.shellShadow}`)
   assert.deepEqual(appearance.dropBorder, ['0px', '0px', '0px', '0px'], `${label}节点存在第二层投放边框`)
   assert.deepEqual(appearance.previewBorder, ['0px', '0px', '0px', '0px'], `${label}节点存在第二层预览边框`)
   assert.ok(Math.abs(appearance.shellWidth - appearance.previewWidth) <= 2.1, `${label}素材没有填满窄边框内的横向空间`)
@@ -1559,6 +1575,26 @@ function assertPureMediaNode(appearance, label) {
   assert.equal(appearance.headers, 0, `${label}素材默认态仍显示标题栏`)
   assert.equal(appearance.actions, 0, `${label}素材默认态仍显示底部操作`)
   assert.equal(appearance.permanentLabels, 0, `${label}素材默认态仍显示说明文字`)
+}
+
+/**
+ * The selection outline and the resize handles are drawn on the node box, so a
+ * media node whose media sits anywhere but exactly in that box shows a cyan
+ * frame that is visibly offset from the picture. Boss caught this on a real
+ * install: the drop target had kept the generic `8px 10px 0` margin.
+ */
+async function assertSelectionHugsMedia(page, node, label) {
+  await node.click({ position: { x: 12, y: 12 } })
+  await page.waitForFunction(
+    (id) => document.querySelector(`.react-flow__node[data-id="${id}"]`)?.classList.contains('selected') === true,
+    await node.getAttribute('data-id'),
+  )
+  const appearance = await mediaNodeAppearance(node)
+  assert.equal(appearance.selected, true, `${label}素材节点未进入选中态`)
+  for (const [edge, gap] of Object.entries(appearance.mediaInset)) {
+    assert.ok(Math.abs(gap) <= 2, `${label}素材选中框与媒体在${edge}边相差 ${gap.toFixed(2)}px：${JSON.stringify(appearance.mediaInset)}`)
+  }
+  assert.equal(await node.locator('.wf-resize-handle').count() > 0, true, `${label}素材选中后缺少缩放手柄`)
 }
 
 async function findEmptyPanePoint(page) {
