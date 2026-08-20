@@ -108,8 +108,8 @@ import { RunInspector } from './components/RunInspector'
 import { ProjectCenter } from './components/ProjectCenter'
 import { parseXingCanvasProject, serializeXingCanvasProject } from './persistence/project-package'
 import {
-  adoptNodeCandidate,
-  discardNodeCandidate,
+  autoFixedDownstreamNodeIds,
+  downstreamNodeIds,
   markNodeAndDescendantsDirty,
   projectRunRecordToNodes,
   selectNodeCandidate,
@@ -909,6 +909,12 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [applyPreparedMediaConfiguration, execute, mediaGroups, prepareMediaConfiguration])
 
+  // Run bookkeeping reacts to main-process events and must see the current graph
+  // without making the subscription depend on it: re-subscribing on every node
+  // change would tear the run event listener down mid-run.
+  const graphRef = useRef({ nodes, edges })
+  graphRef.current = { nodes, edges }
+
   // Removing a node from the middle of a chain leaves two dangling ends. Heal
   // them in the same command so one undo restores the original wiring too.
   // Declared this early because the node handler registration below lists it as
@@ -1255,13 +1261,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         const completed = records.find((record) => record.runId === projectRunId)
         if (completed) {
           setSelectedRunId(completed.runId)
-          setNodes((current) => projectRunRecordToNodes(current, completed))
+          const graph = graphRef.current
+          setNodes((current) => projectRunRecordToNodes(current, completed, graph.edges))
           setDirtyNodeIds((current) => {
             const next = new Set(current)
             for (const record of completed.nodes) {
               if (record.state === 'succeeded' || record.state === 'cached') next.delete(record.nodeId)
               else next.add(record.nodeId)
             }
+            // 自动固定产物换掉了这些节点的输入，但它们没参与本次运行：只标记
+            // 待重新运行，绝不自动发起新的付费请求。
+            for (const nodeId of autoFixedDownstreamNodeIds(graph.nodes, completed, graph.edges)) next.add(nodeId)
             return next
           })
           if (completed.status !== 'running') {
@@ -1414,58 +1424,31 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     }
   }, [running, nodes, setNodes, refreshAssets, assetQuery])
 
-  const selectCandidate = useCallback((nodeId: string, candidate: string | WorkflowCandidateRef) => {
-    setNodes((current) => selectNodeCandidate(current, nodeId, candidate))
-  }, [setNodes])
-
-  const adoptCandidate = useCallback((nodeId: string, candidate: string | WorkflowCandidateRef) => {
+  /**
+   * 切换到某个候选。2026-08-20 起选择与采纳合并为一个动作：被选中的候选立刻
+   * 成为节点产物，下游只标记为待重新运行，绝不自动发起新的付费请求。
+   */
+  const useCandidate = useCallback((nodeId: string, candidate: string | WorkflowCandidateRef) => {
     const candidateId = typeof candidate === 'string' ? candidate : candidate.candidateId
-    const stagedNodes = typeof candidate === 'string' ? nodes : selectNodeCandidate(nodes, nodeId, candidate)
-    const owner = stagedNodes.find((node) => node.id === nodeId)
-    const target = owner?.data.candidates?.find((entry) => entry.candidateId === candidateId)
+    const owner = nodes.find((node) => node.id === nodeId)
+    const target = typeof candidate === 'string'
+      ? owner?.data.candidates?.find((entry) => entry.candidateId === candidateId)
+      : candidate
     if (!owner || !target) {
       setBanner('候选已不在当前运行记录中')
       return
     }
     if (owner.data.adoptedCandidateId === candidateId && owner.data.result?.assetId === target.asset.assetId) {
-      setBanner('该候选已经采纳')
+      setBanner('这就是该节点当前的产物')
       return
     }
-    const updated = adoptNodeCandidate(
-      stagedNodes,
-      edges,
-      nodeId,
-      candidateId,
-    )
+    const updated = selectNodeCandidate(nodes, edges, nodeId, candidate)
     execute({ type: 'replace-nodes', nodes: updated.map(canvasNodeDocumentRecord) })
     setNodes(updated)
-    const descendants = new Set<string>()
-    const queue = [nodeId]
-    while (queue.length > 0) {
-      const source = queue.shift() as string
-      for (const edge of edges) {
-        if (edge.source !== source || descendants.has(edge.target)) continue
-        descendants.add(edge.target)
-        queue.push(edge.target)
-      }
-    }
-    setDirtyNodeIds((current) => new Set([...current].filter((id) => id !== nodeId).concat([...descendants])))
-    setBanner('已采纳候选；下游节点等待重新运行')
+    const descendants = downstreamNodeIds([nodeId], edges)
+    setDirtyNodeIds((current) => new Set([...current].filter((id) => id !== nodeId).concat(descendants)))
+    setBanner('已切换节点产物；下游节点等待重新运行')
   }, [nodes, edges, execute, setNodes])
-
-  const discardCandidate = useCallback((nodeId: string, candidateId: string) => {
-    const owner = nodes.find((node) => node.id === nodeId)
-    if (!owner?.data.candidates?.some((candidate) => candidate.candidateId === candidateId)) {
-      setBanner('该候选不在当前暂存区')
-      return
-    }
-    if (owner.data.adoptedCandidateId === candidateId) {
-      setBanner('已采纳结果不能丢弃，可先采纳其他候选')
-      return
-    }
-    setNodes((current) => discardNodeCandidate(current, nodeId, candidateId))
-    setBanner('候选已丢弃；已确认结果和下游状态保持不变')
-  }, [nodes, setNodes])
 
   const bindAssetToNode = useCallback((nodeId: string, asset: CanvasAssetSummary) => {
     const target = nodes.find((node) => node.id === nodeId)
@@ -1628,9 +1611,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       onDownloadAsset: (nodeId) => void downloadNodeAsset(nodeId),
       onShowAssetMenu: (nodeId) => void showNodeAssetMenu(nodeId),
       onResumeTask: (nodeId) => void resumeTask(nodeId),
-      onSelectCandidate: selectCandidate,
-      onAdoptCandidate: adoptCandidate,
-      onDiscardCandidate: discardCandidate,
+      onSelectCandidate: useCandidate,
       onShowCandidateMenu: (assetId) => void hostBridge().showAssetMenu(assetId),
       onBindAsset: (nodeId, assetId) => {
         const asset = assetPage.items.find((entry) => entry.assetId === assetId)
@@ -1671,7 +1652,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         edges,
       }),
     })
-  }, [nodes, edges, execute, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, deleteNodesBridging, downloadNodeAsset, showNodeAssetMenu, resumeTask, selectCandidate, adoptCandidate, discardCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
+  }, [nodes, edges, execute, markDirtyFrom, savePromptPreset, rerunNode, runFromNode, deleteNodesBridging, downloadNodeAsset, showNodeAssetMenu, resumeTask, useCandidate, assetPage.items, bindAssetToNode, pickAssetForNode, importAssetForNode])
 
   const createNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}): CanvasNode | null => {
     const kind = type as NodeKind
@@ -3187,9 +3168,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               open
               records={runRecords}
               selectedRunId={selectedRunId}
-              selectedCandidateIds={Object.fromEntries(nodes.map((node) => [node.id, node.data.selectedCandidateId]))}
-              adoptedCandidateIds={Object.fromEntries(nodes.map((node) => [node.id, node.data.adoptedCandidateId]))}
-              stagedCandidateIds={Object.fromEntries(nodes.map((node) => [node.id, node.data.candidates?.map((candidate) => candidate.candidateId)]))}
+              resultCandidateIds={Object.fromEntries(nodes.map((node) => [node.id, node.data.adoptedCandidateId]))}
               selectedScope={runScopeKind}
               dirtyCount={dirtyNodeIds.size}
               selectionCount={selectedNodeIds.length}
@@ -3197,9 +3176,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
               onScopeChange={setRunScopeKind}
               onRefresh={() => void refreshRuns()}
               onSelectRun={setSelectedRunId}
-              onSelectCandidate={selectCandidate}
-              onAdopt={adoptCandidate}
-              onDiscard={discardCandidate}
+              onUseCandidate={useCandidate}
               onPreviewAsset={(asset) => setPreviewAsset({ ...asset })}
               onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
               onLocateNode={locateNode}

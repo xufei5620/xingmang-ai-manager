@@ -200,10 +200,13 @@ export function completeAttempt(
     ...(usage ? { usage: { ...usage } } : {}),
   }
   const current = runtimeNode(state, attempt.nodeId)
+  // 2026-08-20 产品决策（老板拍板）：一次运行结束，最新候选立刻就是节点产物，
+  // 不再等用户采纳。同级候选全部保留，可随后切换。
   return updateAttempt(state, nextAttempt, {
     ...current,
     status: 'succeeded',
     dirty: false,
+    selectedCandidateId: candidateIds[0],
   }, candidates)
 }
 
@@ -236,7 +239,11 @@ export function cancelAttempt(state: CandidateState, attemptId: string, finished
   return updateAttempt(state, nextAttempt, { ...current, status: 'idle', dirty: true })
 }
 
-export function adoptCandidate(
+/**
+ * 把另一个候选切换为节点产物。自动固定之后这仍然需要存在：多候选时用户要能
+ * 换一张，历史里的旧候选也要能回来。切换只把下游标记为待重新运行。
+ */
+export function useCandidate(
   state: CandidateState,
   candidateId: string,
   edges: readonly RuntimeEdge[],
@@ -244,7 +251,7 @@ export function adoptCandidate(
   const candidate = state.candidates[candidateId]
   if (!candidate) throw new Error(`找不到候选结果：${candidateId}`)
   const attempt = state.attempts[candidate.attemptId]
-  if (!attempt || attempt.status !== 'succeeded') throw new Error('只能采纳已完成任务的候选结果')
+  if (!attempt || attempt.status !== 'succeeded') throw new Error('只能使用已完成任务的候选结果')
 
   const nodes = { ...state.nodes }
   const owner = runtimeNode(state, candidate.nodeId)

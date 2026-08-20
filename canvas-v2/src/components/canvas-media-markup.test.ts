@@ -36,15 +36,22 @@ describe('canvas media input and candidate wiring', () => {
     expect(inspector).toContain('props.onPreviewAsset(candidate.asset)')
     expect(inspector).toContain('<AudioPreview src={candidate.asset.localUrl} />')
     expect(inspector).toContain('mediaAssetAspectRatio(candidate.asset)')
-    expect(inspector).toContain('props.onDiscard(node.nodeId, candidate.candidateId)')
+    expect(inspector).toContain('props.onUseCandidate(node.nodeId, candidate)')
     const styles = source('../styles.css')
     expect(styles).toContain('.candidate-video { display: block; width: 100%; height: auto;')
   })
 
-  it('keeps output confirmation explicit in both the node and run candidate controls', () => {
+  // 2026-08-20 产品决策（老板拍板）：最新候选自动成为产物。原先这条用例钉的是
+  // 「节点上必须有采纳/丢弃、Output 显示待确认结果」，那正是被推翻的那一档。
+  it('keeps every candidate reachable as the product without an adoption step', () => {
     const workflowNodes = source('../nodes/WorkflowNodes.tsx')
-    expect(workflowNodes).toContain("stagingState === 'pending' ? '待确认结果'")
-    expect(workflowNodes).toContain("stagingState === 'accepted' ? '最终产物已确认'")
-    expect(workflowNodes).toContain('handlers.onDiscardCandidate(id, selectedCandidate.candidateId)')
+    expect(workflowNodes).toContain("stagingState === 'accepted' ? '最终产物已就绪'")
+    expect(workflowNodes).not.toContain('采纳此候选')
+    expect(workflowNodes).not.toContain('onDiscardCandidate')
+    // Switching candidates is the only remaining product control on the node.
+    expect(workflowNodes).toContain('handlers.onSelectCandidate(id, candidate.candidateId)')
+    const inspector = source('RunInspector.tsx')
+    expect(inspector).toContain("'当前产物' : '设为产物'")
+    expect(inspector).not.toContain('丢弃')
   })
 })

@@ -1,6 +1,6 @@
 import { createContext, memo, useContext, useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from 'react'
 import { Handle, NodeResizer, NodeToolbar, Position, useConnection, useNodeConnections, type Connection, type Edge, type Node, type NodeProps } from '@xyflow/react'
-import { AlertCircle, AlertTriangle, ArrowRight, BookmarkPlus, Check, CheckCircle2, Circle, Clock3, Download, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, RefreshCw, Trash2, Upload, X } from 'lucide-react'
+import { AlertCircle, AlertTriangle, ArrowRight, BookmarkPlus, CheckCircle2, Circle, Clock3, Download, Film, FolderOpen, Image as ImageIcon, LoaderCircle, Lock, Maximize2, MoreHorizontal, Music2, Play, RefreshCw, Trash2, Upload } from 'lucide-react'
 import { builtinNodeRegistry } from '../domain/builtin-node-definitions'
 import type { NodeDefinition, NodePortDefinition } from '../domain/node-definition'
 import type { AssetRef, NodeKind, WorkflowNodeData } from '../model'
@@ -140,9 +140,8 @@ interface NodeChangeHandlers {
   onDownloadAsset(nodeId: string): void
   onShowAssetMenu(nodeId: string): void
   onResumeTask(nodeId: string): void
+  /** 切换候选就是切换产物；旧模型里的采纳/丢弃两步已取消。 */
   onSelectCandidate(nodeId: string, candidateId: string): void
-  onAdoptCandidate(nodeId: string, candidateId: string): void
-  onDiscardCandidate(nodeId: string, candidateId: string): void
   onShowCandidateMenu(assetId: string): void
   onBindAsset(nodeId: string, assetId: string): void
   onPickAsset(nodeId: string): void
@@ -172,8 +171,6 @@ let handlers: NodeChangeHandlers = {
   onShowAssetMenu: () => undefined,
   onResumeTask: () => undefined,
   onSelectCandidate: () => undefined,
-  onAdoptCandidate: () => undefined,
-  onDiscardCandidate: () => undefined,
   onShowCandidateMenu: () => undefined,
   onBindAsset: () => undefined,
   onPickAsset: () => undefined,
@@ -523,7 +520,7 @@ function NodeSettings({ id, data, kind }: { id: string; data: WorkflowNodeData; 
   if (kind === 'output') {
     const stagingState = nodeResultStagingState(data)
     return <p className={`wf-result-note is-${stagingState}`}>
-      {stagingState === 'pending' ? '待确认结果' : stagingState === 'accepted' ? '最终产物已确认' : '连接上游后运行'}
+      {stagingState === 'accepted' ? '最终产物已就绪' : '连接上游后运行'}
     </p>
   }
   if (kind === 'unknown') {
@@ -920,23 +917,9 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
           </div>
           {selectedCandidate && (
             <div className="wf-candidate-actions">
-              <button
-                type="button"
-                className="wf-rerun"
-                disabled={selectedCandidate.candidateId === data.adoptedCandidateId}
-                onClick={() => handlers.onAdoptCandidate(id, selectedCandidate.candidateId)}
-              >
-                <Check size={12} />{selectedCandidate.candidateId === data.adoptedCandidateId ? '已采纳' : '采纳此候选'}
-              </button>
-              <button
-                type="button"
-                className="wf-discard-candidate"
-                title={selectedCandidate.candidateId === data.adoptedCandidateId ? '已采纳结果不能丢弃' : '从当前候选区丢弃，不删除素材'}
-                disabled={selectedCandidate.candidateId === data.adoptedCandidateId}
-                onClick={() => handlers.onDiscardCandidate(id, selectedCandidate.candidateId)}
-              >
-                <X size={12} />丢弃
-              </button>
+              {/* 采纳与丢弃已取消（2026-08-20 产品决策）：最新候选自动就是产物，
+                  切换候选即切换产物，重跑入口在运行按钮与操作条上。 */}
+              <small>{data.candidates.length > 1 ? '点击候选即切换产物' : '本次产物'}</small>
               <button
                 type="button"
                 className="wf-icon-command"
