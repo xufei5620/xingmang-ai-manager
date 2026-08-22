@@ -228,7 +228,22 @@ page.on('dialog', async (dialog) => {
 
 try {
   await page.waitForLoadState('domcontentloaded')
-  await page.locator('.app-shell').waitFor({ state: 'visible', timeout: 60_000 })
+  const appShell = page.locator('.app-shell')
+  const onboardingShell = page.locator('.onboarding-shell')
+  await Promise.race([
+    appShell.waitFor({ state: 'visible', timeout: 60_000 }),
+    onboardingShell.waitFor({ state: 'visible', timeout: 60_000 }),
+  ])
+  // A manual-key fixture with a valid existing Codex config may still open
+  // the resumable onboarding shell when the runner has no Store Desktop.
+  // This smoke test owns no installation flow; return to the workbench and
+  // keep exercising the dashboard contract.
+  if (await onboardingShell.isVisible().catch(() => false)) {
+    const returnButton = page.getByRole('button', { name: /返回工作台/ })
+    await returnButton.waitFor({ state: 'visible', timeout: 10_000 })
+    await returnButton.click()
+    await appShell.waitFor({ state: 'visible', timeout: 60_000 })
+  }
   await page.waitForFunction(() => !document.body.textContent?.includes('检测中...'), null, { timeout: 60_000 })
   const windowMetrics = await application.evaluate(({ BrowserWindow, screen }) => {
     const browserWindow = BrowserWindow.getAllWindows()[0]
