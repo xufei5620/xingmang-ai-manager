@@ -98,22 +98,22 @@ jobs:
             exit 1
           }
 
-      - name: Trust the self-signed certificate on this runner only
-        if: ${{ inputs.test_signing }}
+      - name: Trust the signing certificate on this runner only
         shell: pwsh
         env:
           CERTIFICATE: ${{ secrets.WIN_CSC_LINK_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |
-          # 发布门禁要求 Get-AuthenticodeSignature 返回 Valid,而自签名证书只有
-          # 在签名者被本机信任时才是 Valid。runner 是一次性虚拟机,用完即销毁,
-          # 因此在它的信任存储里放这张证书不会影响任何其他环境。
+          # 发布门禁要求 Get-AuthenticodeSignature 返回 Valid。正式证书的
+          # 中间链可能不在临时 runner 的证书存储里，自签名证书更必须显式
+          # 信任。runner 是一次性虚拟机，用完即销毁，不会改变客户机器的信任。
           $pfxPath = Join-Path $env:RUNNER_TEMP 'test-signing.pfx'
           try {
             [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CERTIFICATE))
             $password = ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force
             Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\LocalMachine\Root -Password $password | Out-Null
-            Write-Host '自签名证书已导入本 runner 的受信任根存储'
+            Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\LocalMachine\TrustedPublisher -Password $password | Out-Null
+            Write-Host '签名证书已导入本 runner 的 Root 和 TrustedPublisher 存储'
           } finally {
             if (Test-Path $pfxPath) { Remove-Item $pfxPath -Force }
           }
