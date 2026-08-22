@@ -379,7 +379,9 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
     assert.equal(expanded.documentOverflow, false)
     assert.equal(expanded.balanceClipped, false)
     assert.equal(expanded.balanceInsideSidebar, true)
-    assert.deepEqual(expanded.serviceRows, [expanded.serviceRows[0], expanded.serviceRows[0], expanded.serviceRows[0]])
+    assert.deepEqual(expanded.serviceRows, [])
+    assert.equal(await page.locator('.sidebar-service-button').count(), 0)
+    assert.equal(await page.locator('.sidebar-official-button').count(), 0)
     assert.equal(expanded.systemLabel, '系统管理')
     assert.equal(await page.locator('.nav-more-toggle').getAttribute('aria-expanded'), 'false')
     assert.equal(await page.locator('.nav-more-items').count(), 0)
@@ -387,18 +389,18 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
 
     await page.getByRole('button', { name: '系统管理' }).click()
     assert.equal(await page.locator('.nav-more-toggle').getAttribute('aria-expanded'), 'true')
-    assert.equal(await page.locator('.nav-more-items .nav-item').count(), 6)
+    assert.equal(await page.locator('.nav-more-items .nav-item').count(), 7)
     const systemRows = await page.locator('.nav-more-items .nav-item').evaluateAll((items) =>
       items.map((item) => Math.round(item.getBoundingClientRect().top)),
     )
     assert.deepEqual(systemRows.slice(0, 2), [systemRows[0], systemRows[0]])
-    assert.equal(new Set(systemRows).size, 3)
+    assert.equal(new Set(systemRows).size, 4)
 
     await page.getByRole('button', { name: '收起侧边栏' }).click()
     await page.locator('.sidebar-collapsed').waitFor()
     const popover = page.locator('.nav-more-popover')
     await popover.waitFor()
-    assert.equal(await popover.locator('.nav-item').count(), 6)
+    assert.equal(await popover.locator('.nav-item').count(), 7)
     const popoverRect = await popover.boundingBox()
     assert.ok(popoverRect)
     assert.ok(popoverRect.x >= 72)

@@ -4,13 +4,19 @@ import { availableImageModelPresets, availableVideoModelPresets, defaultImageMod
 export type MediaCapabilityKind = 'image' | 'video' | 'text'
 
 export const defaultCanvasMediaPreferences = {
-  image: '生图分组',
-  video: '视频分组',
-  text: 'Gemini',
+  image: '图片模型-中转/订阅',
+  video: '视频模型-中转/订阅',
+  text: 'Gemini-中转/订阅',
   imageModel: defaultImageModel,
   videoModel: 'minimax-h3-base',
   textModel: 'gemini-3.7-flash',
 } as const
+
+const legacyDefaultGroupAliases: Record<MediaCapabilityKind, readonly string[]> = {
+  image: ['生图分组'],
+  video: ['视频分组'],
+  text: ['Gemini'],
+}
 
 function pickPreferredGroup(
   availableGroups: readonly { name: string }[],
@@ -89,13 +95,13 @@ export function withResolvedMediaModels(
 
 export function preferredMediaGroups(availableGroups: readonly { name: string }[]): CanvasMediaGroups {
   if (availableGroups.length === 0) return {}
-  const image = pickPreferredGroup(availableGroups, defaultCanvasMediaPreferences.image, ['openai'])
-  const video = pickPreferredGroup(availableGroups, defaultCanvasMediaPreferences.video, ['grok', /grok/i])
+  const image = pickPreferredGroup(availableGroups, defaultCanvasMediaPreferences.image, ['生图分组', 'openai', /图片.*中转/i])
+  const video = pickPreferredGroup(availableGroups, defaultCanvasMediaPreferences.video, ['视频分组', 'grok', /视频.*中转/i, /grok/i])
     ?? image
   const text = pickPreferredGroup(
     availableGroups,
     defaultCanvasMediaPreferences.text,
-    [/gemini/i, /chat|文字|对话|文本/i],
+    ['Gemini', /gemini/i, /chat|文字|对话|文本/i],
     false,
   )
   return {
@@ -113,10 +119,19 @@ export function withPreferredMediaDefaults(
   availableGroups: readonly { name: string }[],
 ): CanvasMediaGroups {
   const preferred = preferredMediaGroups(availableGroups)
+  const availableNames = new Set(availableGroups.map((entry) => entry.name))
+  const resolveGroup = (kind: MediaCapabilityKind, value: string | undefined, fallback: string | undefined) => {
+    if (value && availableNames.has(value)) return value
+    if (value && legacyDefaultGroupAliases[kind].includes(value)) return fallback
+    return value ?? fallback
+  }
+  const image = resolveGroup('image', current.image, preferred.image)
+  const video = resolveGroup('video', current.video, preferred.video)
+  const text = resolveGroup('text', current.text, preferred.text)
   return {
-    ...(current.image ?? preferred.image ? { image: current.image ?? preferred.image } : {}),
-    ...(current.video ?? preferred.video ? { video: current.video ?? preferred.video } : {}),
-    ...(current.text ?? preferred.text ? { text: current.text ?? preferred.text } : {}),
+    ...(image ? { image } : {}),
+    ...(video ? { video } : {}),
+    ...(text ? { text } : {}),
     imageModel: current.imageModel ?? preferred.imageModel,
     videoModel: current.videoModel ?? preferred.videoModel,
     textModel: current.textModel ?? preferred.textModel,

@@ -131,7 +131,7 @@ export function mentionRenderParts(text: string): { marker: string; rest: string
     : { marker: '', rest: text }
 }
 
-export const promptEditorMaxLength = 2500
+export const promptEditorMaxLength = 10_000
 
 export function clipPromptEditorValue(value: string, caret: number | null = null): { value: string; caret: number | null } {
   if (value.length <= promptEditorMaxLength) return { value, caret }

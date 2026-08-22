@@ -15,6 +15,7 @@ describe('navigation grouping', () => {
       ['health', 'more'],
       ['maintenance', 'more'],
       ['feedback', 'more'],
+      ['tutorial', 'more'],
       ['updates', 'more'],
       ['settings', 'more'],
     ])

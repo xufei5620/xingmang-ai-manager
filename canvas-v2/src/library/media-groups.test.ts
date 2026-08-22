@@ -42,6 +42,9 @@ describe('media group defaults', () => {
 
   it('defaults to the production image, video, and Gemini groups', () => {
     expect(preferredMediaGroups([
+      { name: '图片模型-中转/订阅' },
+      { name: '视频模型-中转/订阅' },
+      { name: 'Gemini-中转/订阅' },
       { name: 'openai' },
       { name: '生图分组' },
       { name: 'grok' },
@@ -49,9 +52,9 @@ describe('media group defaults', () => {
       { name: '对话分组' },
       { name: 'Gemini' },
     ])).toEqual({
-      image: '生图分组',
-      video: '视频分组',
-      text: 'Gemini',
+      image: '图片模型-中转/订阅',
+      video: '视频模型-中转/订阅',
+      text: 'Gemini-中转/订阅',
       imageModel: defaultCanvasMediaPreferences.imageModel,
       videoModel: defaultCanvasMediaPreferences.videoModel,
       textModel: defaultCanvasMediaPreferences.textModel,
@@ -93,6 +96,21 @@ describe('media group defaults', () => {
       video: 'grok',
       text: '对话分组',
       videoModel: 'grok-imagine-video',
+    })
+  })
+
+  it('migrates historical default groups when the production names changed', () => {
+    expect(withPreferredMediaDefaults(
+      { image: '生图分组', video: '视频分组', text: 'Gemini' },
+      [
+        { name: '图片模型-中转/订阅' },
+        { name: '视频模型-中转/订阅' },
+        { name: 'Gemini-中转/订阅' },
+      ],
+    )).toMatchObject({
+      image: '图片模型-中转/订阅',
+      video: '视频模型-中转/订阅',
+      text: 'Gemini-中转/订阅',
     })
   })
 

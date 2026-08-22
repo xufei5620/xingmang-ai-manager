@@ -499,7 +499,7 @@ export function isImageModel(model: string): boolean {
   return resolveAiModelCapability(model).kind === 'image'
 }
 
-const IMAGE_GROUP_NAME = '生图分组'
+const IMAGE_GROUP_NAMES = new Set(['图片模型-中转/订阅', '生图分组'])
 const IMAGE_GROUP_MODEL_ORDER = [
   'gpt-image-2',
   'gemini-3.1-flash-image',
@@ -524,7 +524,7 @@ export function selectAiChatModelsForGroup(group: string, models: readonly strin
       return false
     }
   })
-  if (group.trim() !== IMAGE_GROUP_NAME) return visible
+  if (!IMAGE_GROUP_NAMES.has(group.trim())) return visible
 
   const available = new Set(visible)
   return IMAGE_GROUP_MODEL_ORDER.filter((model) => available.has(model))
@@ -691,10 +691,6 @@ export function buildImageGenerationRequest(input: {
   if (typeof input.prompt !== 'string' || input.prompt.trim().length === 0) {
     throw new AiChatProtocolError('invalid-message', 'image prompt is required')
   }
-  if (input.prompt.length > AI_CHAT_LIMITS.promptLength) {
-    throw new AiChatProtocolError('input-limit-exceeded', 'image prompt is too long')
-  }
-
   const imageResolution = validateImageResolution(
     input.imageResolution ?? capability.defaultResolution,
     capability,

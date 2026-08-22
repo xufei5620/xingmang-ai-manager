@@ -118,7 +118,7 @@ export function createCanvasNodeExecutors(options: {
   const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
     const prompt = promptForNode(node.data.prompt, inputs.text)
     if (!prompt) throw new Error('请输入图像提示词或连接上游文本节点')
-    const group = node.data.group || options.imageGroup || '生图分组'
+    const group = node.data.group || options.imageGroup || '图片模型-中转/订阅'
     const requestId = `canvas-run:${attemptId}`
     const onAbort = () => { options.imageService.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })
@@ -161,7 +161,7 @@ export function createCanvasNodeExecutors(options: {
     )]
     if (sourceAssetIds.length === 0) throw new Error('请连接至少一张已保存到本地资产库的参考图片')
     if (sourceAssetIds.length > 4) throw new Error('图片编辑最多支持 4 张参考图片')
-    const group = node.data.group || options.imageGroup || '生图分组'
+    const group = node.data.group || options.imageGroup || '图片模型-中转/订阅'
     const requestId = `canvas-run:${attemptId}`
     const onAbort = () => { options.imageService.cancel(ownerId, requestId) }
     signal.addEventListener('abort', onAbort, { once: true })

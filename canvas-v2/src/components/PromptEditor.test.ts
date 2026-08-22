@@ -69,8 +69,8 @@ describe('prompt upstream mentions', () => {
     })
     expect(dataTransferHasPromptMention([promptMentionMime, 'text/plain'])).toBe(true)
     expect(dataTransferHasPromptMention(['text/plain'])).toBe(false)
-    expect(promptEditorMaxLength).toBe(2500)
-    expect(clipPromptEditorValue('a'.repeat(2501), 2501)).toEqual({ value: 'a'.repeat(2500), caret: 2500 })
+    expect(promptEditorMaxLength).toBe(10_000)
+    expect(clipPromptEditorValue('a'.repeat(10_001), 10_001)).toEqual({ value: 'a'.repeat(10_000), caret: 10_000 })
   })
 
   it('deletes a known mention as one token from either side or the middle', () => {

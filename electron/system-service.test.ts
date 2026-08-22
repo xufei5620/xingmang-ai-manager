@@ -2496,6 +2496,58 @@ describe('npm install network routing', () => {
     })
   })
 
+  it('uses the country-only fallback when Cloudflare trace is blocked', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      if (String(input).includes('cloudflare.com/cdn-cgi/trace')) {
+        throw new Error('network unavailable')
+      }
+      if (String(input).includes('myip.ipip.net')) {
+        return new Response('当前 IP：203.0.113.8 来自于：中国', { status: 200 })
+      }
+      return new Response(JSON.stringify({ ip: '203.0.113.8', country_code: 'CN' }), { status: 200 })
+    })
+
+    await expect(detectNetworkLocation(fetchMock, 1_000)).resolves.toMatchObject({
+      publicIp: '203.0.113.8',
+      countryCode: 'CN',
+      region: 'mainland-china',
+      error: null,
+    })
+    expect(fetchMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('uses a fallback provider when Cloudflare returns country without an IP', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) return new Response('loc=CN\n', { status: 200 })
+      if (url.includes('ipapi.co')) return new Response('', { status: 403 })
+      return new Response('当前 IP：106.117.85.131 来自于：中国 河北 石家庄 电信', { status: 200 })
+    })
+
+    await expect(detectNetworkLocation(fetchMock, 1_000)).resolves.toMatchObject({
+      publicIp: '106.117.85.131',
+      countryCode: 'CN',
+      region: 'mainland-china',
+      error: null,
+    })
+  })
+
+  it('parses an IPIP fallback response with both IP and country', async () => {
+    const fetchMock = vi.fn(async (input: string | URL | Request, _init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('cloudflare.com/cdn-cgi/trace')) throw new Error('blocked')
+      if (url.includes('ipapi.co')) return new Response('', { status: 403 })
+      return new Response('当前 IP：106.117.85.131 来自于：中国 河北 石家庄 电信', { status: 200 })
+    })
+
+    await expect(detectNetworkLocation(fetchMock, 1_000)).resolves.toMatchObject({
+      publicIp: '106.117.85.131',
+      countryCode: 'CN',
+      region: 'mainland-china',
+      error: null,
+    })
+  })
+
   it('bounds a chunked network-location response while it is being read', async () => {
     const oversizedResponse = vi.fn().mockResolvedValue(new Response(new ReadableStream<Uint8Array>({
       start(controller) {

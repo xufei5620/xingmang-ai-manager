@@ -33,9 +33,9 @@ describe('upstream reference UI wiring', () => {
     expect(app).not.toContain('if (!pending || running) return')
   })
 
-  it('commits upstream text into generate nodes before a run and localizes autosave lock errors', () => {
+  it('keeps upstream text in the runtime graph and localizes autosave lock errors', () => {
     const app = source('../App.tsx')
-    expect(app).toContain('commitGenerationPrompts')
+    expect(app).not.toContain('commitGenerationPrompts')
     expect(app).toContain('applyPromptDraft')
     expect(app).toContain('onPromptCommit')
     expect(app).toContain('canvasAutosaveErrorMessage')

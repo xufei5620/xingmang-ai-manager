@@ -96,7 +96,6 @@ async function resolveManagedCliKeys(
   const operation = (async (): Promise<ResolvedManagedCliKeys> => {
     assertSameAuthenticatedUser(accountService, userId)
     let cached: StoredManagedCliKey[] = []
-    let cacheReadWarning: string | undefined
     if (keyStore) {
       try {
         cached = await keyStore.read(userId)
@@ -105,12 +104,20 @@ async function resolveManagedCliKeys(
         // machine in onboarding. Keep the read API explicit for callers that
         // need to distinguish corruption, but let provisioning rebuild the
         // cache through save() (which quarantines a damaged record).
-        cacheReadWarning = error instanceof Error ? error.message : '本地 API Key 缓存读取失败'
+        // The save path below rebuilds the record after provisioning. A
+        // recoverable read failure is therefore not itself a user-facing
+        // storage failure.
       }
     }
     const cacheRevision = keyStore?.captureRevision?.()
     assertSameAuthenticatedUser(accountService, userId)
-    const keys = new Map(cached.map((entry) => [entry.provider, entry]))
+    // A group rename on the account backend must invalidate the old local
+    // entry. Otherwise a cached secret from the previous production config
+    // would bypass provisioning and keep writing requests to a stale group.
+    const keys = new Map(cached.flatMap((entry) => {
+      const profile = managedCliKeyProfiles[entry.provider]
+      return profile && profile.group === entry.group ? [[entry.provider, entry] as const] : []
+    }))
     const failed: ManagedCliKeyFailure[] = []
     let fetchedFromServer = false
 
@@ -142,7 +149,7 @@ async function resolveManagedCliKeys(
       }
     }
 
-    let storageWarning: string | undefined = cacheReadWarning
+    let storageWarning: string | undefined
     if (keyStore && fetchedFromServer) {
       try {
         assertSameAuthenticatedUser(accountService, userId)

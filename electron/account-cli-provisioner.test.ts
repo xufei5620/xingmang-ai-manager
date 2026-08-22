@@ -109,7 +109,7 @@ describe('syncManagedCliKeySummary', () => {
     )
   })
 
-  it('continues after a damaged local cache and surfaces a rebuild warning', async () => {
+  it('continues after a damaged local cache and rebuilds it without a false warning', async () => {
     const store: ManagedCliKeyStoreLike = {
       read: vi.fn(async () => { throw new Error('本地托管 API Key 配置已损坏或无法解密') }),
       save: vi.fn(async () => undefined),
@@ -124,7 +124,7 @@ describe('syncManagedCliKeySummary', () => {
 
     expect(summary.ready.map((entry) => entry.provider)).toEqual(providerIds)
     expect(summary.failed).toEqual([])
-    expect(summary.storageWarning).toContain('配置已损坏')
+    expect(summary.storageWarning).toBeUndefined()
     expect(store.save).toHaveBeenCalledTimes(1)
   })
 
@@ -145,6 +145,37 @@ describe('syncManagedCliKeySummary', () => {
     expect(summary.ready.every((entry) => !('key' in entry))).toBe(true)
     for (const entry of keys) expect(serialized).not.toContain(entry.key)
     expect(provisionCliKey).not.toHaveBeenCalled()
+  })
+
+  it('re-provisions cached keys whose group belongs to the previous production mapping', async () => {
+    const legacyGroups: Record<ProviderId, string> = {
+      claude: 'Claude-MAX(不限制客户端)-5m',
+      codex: 'codex-pro',
+      grok: 'grok',
+      gemini: 'Gemini',
+    }
+    let cached = providerIds.map((provider) => ({
+      ...managedKey(provider),
+      group: legacyGroups[provider],
+      key: `sk-legacy-${provider}-secret-123456`,
+    }))
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => cached.map((entry) => ({ ...entry }))),
+      save: vi.fn(async (_userId: number, keys: readonly StoredManagedCliKey[]) => {
+        cached = keys.map((entry) => ({ ...entry }))
+      }),
+      remove: vi.fn(async () => undefined),
+    }
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const entry = keyForGroup(input.group ?? '')
+      return { id: providerIds.indexOf(entry.provider) + 10, name: entry.name ?? entry.name, key: entry.key }
+    })
+
+    const summary = await syncManagedCliKeySummary(loggedInAccountService(provisionCliKey), store)
+
+    expect(summary.failed).toEqual([])
+    expect(provisionCliKey).toHaveBeenCalledTimes(providerIds.length)
+    expect(cached.map((entry) => entry.group)).toEqual(providerIds.map((provider) => managedCliKeyProfiles[provider].group))
   })
 
   it('isolates in-flight synchronization by user and rejects results from an account that switched away', async () => {

@@ -57,5 +57,9 @@ describe('generation composer fields', () => {
     const edges = [{ source: 'text', target: 'image', sourceHandle: 'out:text' }]
     expect(composeNodePromptFromGraph('image', nodes, edges)).toBe('角色三视图')
     expect(commitGenerationPrompts(nodes, edges)[1]?.data.prompt).toBe('角色三视图')
+    expect(composeNodePromptFromGraph('image', [
+      { id: 'text', data: { prompt: '角色三视图' } },
+      { id: 'image', data: { prompt: '角色三视图\n夜景' } },
+    ], edges)).toBe('角色三视图\n夜景')
   })
 })

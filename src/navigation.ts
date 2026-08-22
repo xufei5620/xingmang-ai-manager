@@ -1,5 +1,6 @@
 import {
   ArchiveRestore,
+  BookOpen,
   Blocks,
   Bot,
   Gauge,
@@ -86,6 +87,7 @@ export const navigationItems: readonly NavigationItem[] = [
   { id: 'health', label: '健康诊断', icon: HeartPulse, group: 'more' },
   { id: 'maintenance', label: '安装维护', icon: Wrench, group: 'more' },
   { id: 'feedback', label: '反馈与诊断', icon: MessageSquareWarning, group: 'more' },
+  { id: 'tutorial', label: '教程文档', icon: BookOpen, group: 'more' },
   { id: 'updates', label: '检查更新', icon: RefreshCw, group: 'more' },
   { id: 'settings', label: '设置', icon: Settings, group: 'more' },
 ]

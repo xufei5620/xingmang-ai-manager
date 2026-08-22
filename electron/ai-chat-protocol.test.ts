@@ -65,7 +65,7 @@ describe('AI model capabilities', () => {
   })
 
   it('keeps only production-verified models in the image group and puts GPT Image 2 first', () => {
-    expect(selectAiChatModelsForGroup('生图分组', [
+    expect(selectAiChatModelsForGroup('图片模型-中转/订阅', [
       'gemini-3.1-flash-image',
       'gpt-image-1',
       'gpt-image-1.5',
@@ -79,6 +79,10 @@ describe('AI model capabilities', () => {
       'gpt-image-1',
       'jimeng_high_aes_general_v21_L',
     ])
+    expect(selectAiChatModelsForGroup('生图分组', [
+      'gemini-3.1-flash-image',
+      'gpt-image-2',
+    ])).toEqual(['gpt-image-2', 'gemini-3.1-flash-image'])
   })
 
   it('retains verified video models for the image group only when the server returns them', () => {
@@ -264,15 +268,15 @@ describe('image generation protocol', () => {
     })).toMatchObject({ extra_fields: { width: 1024, height: 1024 } })
   })
 
-  it('rejects unavailable, chat, oversized prompt, and invalid Jimeng requests', () => {
+  it('rejects unavailable, chat, and invalid Jimeng requests while keeping image prompts unbounded here', () => {
     expect(() => buildImageGenerationRequest({ model: 'gpt-image-1.5', prompt: 'cat' }))
       .toThrowError(expect.objectContaining({ code: 'model-unavailable' }))
     expect(() => buildImageGenerationRequest({ model: 'gpt-4o', prompt: 'cat' }))
       .toThrowError(expect.objectContaining({ code: 'model-not-image' }))
-    expect(() => buildImageGenerationRequest({
+    expect(buildImageGenerationRequest({
       model: 'gpt-image-2',
       prompt: 'x'.repeat(AI_CHAT_LIMITS.promptLength + 1),
-    })).toThrowError(expect.objectContaining({ code: 'input-limit-exceeded' }))
+    })).toMatchObject({ prompt: 'x'.repeat(AI_CHAT_LIMITS.promptLength + 1) })
     expect(() => buildImageGenerationRequest({
       model: 'jimeng_high_aes_general_v21_L',
       prompt: 'cat',
