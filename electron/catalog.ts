@@ -55,10 +55,10 @@ export interface ManagedCliKeyProfile {
 // providerIds so the main-process provisioning code and renderer UI cannot
 // drift onto different group names or provider coverage.
 export const managedCliKeyProfiles: Record<ProviderId, ManagedCliKeyProfile> = {
-  claude: { group: 'Claude-MAX(不限制客户端)-5m', keyName: 'xingmang-desktop-claude' },
-  codex: { group: 'codex-pro', keyName: 'xingmang-desktop-codex' },
-  grok: { group: 'grok', keyName: 'xingmang-desktop-grok' },
-  gemini: { group: 'Gemini', keyName: 'xingmang-desktop-gemini' },
+  claude: { group: 'Claude-MAX订阅', keyName: 'xingmang-desktop-claude' },
+  codex: { group: 'GPT-中转/订阅', keyName: 'xingmang-desktop-codex' },
+  grok: { group: 'Grok-中转/订阅', keyName: 'xingmang-desktop-grok' },
+  gemini: { group: 'Gemini-中转/订阅', keyName: 'xingmang-desktop-gemini' },
 }
 
 // 老板拍板(2026-08-10):中转与账号后端统一到 new-api 生产实例

@@ -65,7 +65,7 @@ describe('canvasInspectorParameterRows', () => {
     expect(rows).toEqual([
       { label: '提示词', value: '一只猫' },
       { label: '模型', value: 'GPT Image 2(推荐)' },
-      { label: '画质', value: '低' },
+      { label: '画质', value: '标准' },
       { label: '清晰度', value: '2K' },
       { label: '尺寸', value: '16:9 · 1280x720' },
     ])

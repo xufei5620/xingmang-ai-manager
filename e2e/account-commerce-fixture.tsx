@@ -421,6 +421,7 @@ function SidebarFixture() {
         activePage="overview"
         collapsed={collapsed}
         theme={theme}
+        appVersion="0.1.21"
         updateState={null}
         relaySite={sidebarRelaySite}
         moreExpanded={moreExpanded}
@@ -442,8 +443,6 @@ function SidebarFixture() {
         onConfigureCliKey={() => undefined}
         onRefreshBalance={() => undefined}
         onOpenAccountCenter={() => undefined}
-        onOpenTutorialDocs={() => undefined}
-        onOpenSupport={() => undefined}
         onPasteKey={() => undefined}
         onOpenKeysPage={() => undefined}
       />

@@ -351,7 +351,7 @@ export function CodexOnboarding({
           message: warnings.length ? `Key 同步完成，但有警告：${warnings.join('；')}` : '账号专属 Key 已加密保存',
         })
         if (!codexOfficial) {
-          reportManagedProgress({ id: 'authorize-codex', status: 'active', message: '正在写入 codex-pro Key 与默认模型' })
+          reportManagedProgress({ id: 'authorize-codex', status: 'active', message: '正在写入 GPT-中转/订阅 Key 与默认模型' })
         }
       }
       const nextConfig = mode === 'managed' && !codexOfficial
@@ -538,7 +538,7 @@ export function CodexOnboarding({
                     </div>
                     <div>
                       <strong>{busy ? '正在自动配置账号授权' : error ? '自动配置未完成' : '账号授权已就绪'}</strong>
-                      <span>使用本地保存的 codex-pro 专属 Key，无需手动填写。</span>
+                      <span>使用本地保存的 GPT-中转/订阅专属 Key，无需手动填写。</span>
                     </div>
                   </div>
                 ) : (

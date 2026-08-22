@@ -34,7 +34,7 @@ export interface ManagedBootstrapProgressUpdate {
 
 const stepDefinitions: ReadonlyArray<Omit<ManagedBootstrapStep, 'status' | 'message'>> = [
   { id: 'sync-keys', label: '同步专属 Key', detail: '创建并加密缓存账号分组 Key' },
-  { id: 'authorize-codex', label: '写入 Codex 授权', detail: '配置 codex-pro Key 与默认模型' },
+  { id: 'authorize-codex', label: '写入 Codex 授权', detail: '配置 GPT-中转/订阅 Key 与默认模型' },
   { id: 'inspect-environment', label: '检测本机环境', detail: '核对 Node.js、npm 与 Codex 组件' },
   { id: 'prepare-node', label: '准备 Node.js', detail: '安装或验证 Node.js 和 npm' },
   { id: 'prepare-codex-cli', label: '准备 Codex CLI', detail: '安装并验证 @openai/codex' },

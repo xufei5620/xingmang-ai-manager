@@ -1780,10 +1780,66 @@ input:focus-visible {
 
 .sidebar-service-links {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
   gap: var(--space-5);
   padding-top: var(--space-6);
   border-top: 1px solid var(--border-subtle-2);
+}
+
+.floating-support-wrap {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 35;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.floating-support-button {
+  position: relative;
+  display: grid;
+  width: 52px;
+  height: 52px;
+  place-items: center;
+  color: #fff;
+  background: linear-gradient(145deg, #2d9bb2, #236f95);
+  border: 1px solid rgba(255, 255, 255, 0.52);
+  border-radius: 50%;
+  box-shadow: 0 10px 26px rgba(29, 104, 135, 0.28), 0 0 0 5px rgba(45, 155, 178, 0.1);
+  cursor: pointer;
+  transition: transform var(--duration-150) var(--ease-emphasized), box-shadow var(--duration-150) var(--ease-standard);
+}
+
+.floating-support-button::after {
+  position: absolute;
+  right: 0;
+  bottom: -19px;
+  color: var(--text-muted);
+  content: '客服';
+  font-size: var(--text-2xs);
+  font-weight: var(--font-weight-semibold-plus);
+  opacity: 0;
+  transform: translateY(-3px);
+  transition: opacity var(--duration-150) var(--ease-standard), transform var(--duration-150) var(--ease-standard);
+}
+
+.floating-support-button:hover,
+.floating-support-button:focus-visible {
+  transform: translateY(-3px);
+  box-shadow: 0 14px 30px rgba(29, 104, 135, 0.36), 0 0 0 6px rgba(45, 155, 178, 0.14);
+}
+
+.floating-support-button:hover::after,
+.floating-support-button:focus-visible::after {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.floating-support-button.is-open {
+  transform: translateY(-1px);
+  box-shadow: 0 12px 28px rgba(29, 104, 135, 0.34), 0 0 0 6px rgba(45, 155, 178, 0.14);
 }
 
 .sidebar-service-button {
@@ -7470,6 +7526,149 @@ button:disabled {
   padding: var(--space-24);
 }
 
+.support-dialog-backdrop {
+  display: contents;
+}
+
+.support-dialog {
+  width: min(330px, calc(100vw - 28px));
+  max-height: min(620px, calc(100vh - 108px));
+  overflow: hidden;
+  color: var(--text-primary);
+  background: var(--surface-adaptive);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-lg);
+  animation: support-popover-in 160ms var(--ease-emphasized);
+  transform-origin: bottom right;
+}
+
+@keyframes support-popover-in {
+  from { opacity: 0; transform: translateY(7px) scale(0.97); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.support-dialog::before {
+  display: block;
+  height: 4px;
+  background: linear-gradient(90deg, #2d9bb2, #6cc9ba);
+  content: '';
+}
+
+.support-dialog-head {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) 34px;
+  align-items: center;
+  gap: var(--space-12);
+  padding: 12px 15px;
+  border-bottom: 1px solid var(--border-default);
+}
+
+.support-dialog-head h2,
+.support-dialog-head small {
+  display: block;
+  margin: 0;
+}
+
+.support-dialog-head h2 {
+  color: var(--text-primary);
+  font-size: var(--text-lg);
+}
+
+.support-dialog-head small,
+.support-dialog-hint {
+  color: var(--text-muted);
+}
+
+.support-dialog-body::before {
+  color: var(--color-accent-text);
+  content: '星芒 AI 客服';
+  font-size: var(--text-sm);
+  font-weight: var(--font-weight-semibold-plus);
+}
+
+.support-dialog-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  color: var(--color-accent-text);
+  background: var(--surface-adaptive-hover);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-8);
+}
+
+.support-dialog-body {
+  display: grid;
+  justify-items: center;
+  gap: var(--space-8);
+  padding: 12px 14px 13px;
+  text-align: center;
+}
+
+.support-qr-panel {
+  display: grid;
+  width: 188px;
+  height: 188px;
+  place-items: center;
+  background: #fff;
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-8);
+}
+
+.support-qr-image {
+  display: block;
+  width: 176px;
+  height: 176px;
+  image-rendering: pixelated;
+}
+
+.support-qr-loading,
+.support-qr-error {
+  display: grid;
+  place-items: center;
+  gap: var(--space-8);
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  color: #59656c;
+}
+
+.support-dialog-hint {
+  max-width: 280px;
+  margin: 0;
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
+.support-dialog-url {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.support-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--space-8);
+  padding: 10px 14px 12px;
+  border-top: 1px solid var(--border-default);
+}
+
+@media (max-width: 640px) {
+  .floating-support-wrap {
+    right: 16px;
+    bottom: 16px;
+  }
+
+  .support-dialog {
+    width: min(330px, calc(100vw - 28px));
+  }
+}
+
 .legal-document-dialog {
   display: flex;
   flex-direction: column;
@@ -8660,11 +8859,43 @@ button:disabled {
 :root[data-theme="dark"] .skill-card,
 :root[data-theme="dark"] .plugin-card,
 :root[data-theme="dark"] .extension-dialog,
-:root[data-theme="dark"] .extension-confirm-dialog {
+:root[data-theme="dark"] .extension-confirm-dialog,
+:root[data-theme="dark"] .support-dialog {
   color: #d8dddf;
   background: var(--dark-surface-panel-2);
   border-color: #383f43;
   box-shadow: 0 16px 42px rgba(0, 0, 0, 0.22);
+}
+
+:root[data-theme="dark"] .support-dialog-head,
+:root[data-theme="dark"] .support-dialog-actions {
+  border-color: #363d40;
+}
+
+:root[data-theme="dark"] .support-dialog-head h2 {
+  color: var(--dark-text-strong-2);
+}
+
+:root[data-theme="dark"] .support-dialog-head small,
+:root[data-theme="dark"] .support-dialog-hint,
+:root[data-theme="dark"] .support-dialog-url {
+  color: var(--dark-text-muted);
+}
+
+:root[data-theme="dark"] .support-dialog-icon {
+  color: var(--dark-color-accent-icon);
+  background: var(--dark-surface-info-soft);
+  border-color: #345158;
+}
+
+:root[data-theme="dark"] .floating-support-button {
+  color: #e6fbff;
+  background: linear-gradient(145deg, #267e91, #1e586f);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35), 0 0 0 5px rgba(87, 188, 207, 0.1);
+}
+
+:root[data-theme="dark"] .floating-support-button::after {
+  color: #aebdc2;
 }
 
 :root[data-theme="dark"] .management-search,

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { CircleDot, X } from 'lucide-react'
+import { CircleDot, Headset, X } from 'lucide-react'
 import { AppFrame } from './components/AppFrame'
 import { LoginDialog } from './components/account/LoginDialog'
 import { RegisterDialog } from './components/account/RegisterDialog'
@@ -40,6 +40,7 @@ import {
 } from './app-shared'
 import { providers, type ConfigTabId } from './provider-meta'
 import { errorMessage, userFacingErrorMessage } from './error-message'
+import packageInfo from '../package.json'
 import { CodexLaunchDialog } from './components/config/CodexLaunchDialog'
 import { ConfigDialog } from './components/config/ConfigDialog'
 import { Dashboard } from './components/dashboard/Dashboard'
@@ -48,6 +49,7 @@ import { ErrorBoundary } from './components/ErrorBoundary'
 import { CodexOnboarding } from './components/onboarding/CodexOnboarding'
 import { NodeInstallGuide } from './components/onboarding/NodeInstallGuide'
 import { Sidebar } from './components/Sidebar'
+import { SupportDialog } from './components/SupportDialog'
 import { WelcomePage } from './components/welcome/WelcomePage'
 import { StartupSplash } from './components/StartupSplash'
 import { Toast, type ToastMessage } from './components/Toast'
@@ -171,6 +173,8 @@ function App() {
   const [accountSession, setAccountSession] = useState<AccountSessionState | null>(null)
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
   const [accountDialog, setAccountDialog] = useState<'login' | 'register' | 'forgot-password' | null>(null)
+  const [supportDialogOpen, setSupportDialogOpen] = useState(false)
+  const supportWrapRef = useRef<HTMLDivElement>(null)
   const [onboardingAutoStart, setOnboardingAutoStart] = useState(true)
   const [accountBusy, setAccountBusy] = useState(false)
   // Set only by a real successful account:reset-password call (handleForgot-
@@ -195,6 +199,16 @@ function App() {
   // 初始值已就位——useState 的 initial 只读一次,晚到的预填不会显示。
   const [rememberedLogin, setRememberedLogin] = useState<RememberedAccountLogin | null>(null)
   const [rememberedLoginReady, setRememberedLoginReady] = useState(false)
+  useEffect(() => {
+    if (!supportDialogOpen) return undefined
+    const closeOnOutsidePointer = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && supportWrapRef.current?.contains(target)) return
+      setSupportDialogOpen(false)
+    }
+    document.addEventListener('pointerdown', closeOnOutsidePointer)
+    return () => document.removeEventListener('pointerdown', closeOnOutsidePointer)
+  }, [supportDialogOpen])
   useEffect(() => {
     if (accountDialog !== 'login') {
       setRememberedLogin(null)
@@ -1215,7 +1229,7 @@ function App() {
     }
 
     // Account-backed sites have a zero-click post-login bootstrap. The managed
-    // onboarding path reuses the cached codex-pro key, installs missing Node.js
+    // onboarding path reuses the cached GPT-中转/订阅 key, installs missing Node.js
     // and Codex components, verifies the resulting config, then enters the
     // dashboard automatically. The old dashboard-first path opened a second
     // confirmation dialog and left installation as a separate manual task.
@@ -2020,6 +2034,7 @@ function App() {
         activePage={activePage}
         collapsed={sidebarCollapsed}
         theme={theme}
+        appVersion={packageInfo.version}
         updateState={updateState}
         relaySite={activeRelaySite}
         moreExpanded={systemNavigationExpanded}
@@ -2040,17 +2055,34 @@ function App() {
         onConfigureCliKey={() => void handleConfigureCliKey()}
         onRefreshBalance={() => void handleRefreshBalance()}
         onOpenAccountCenter={() => { setAccountCenterSection('overview'); setAppView('account-center') }}
-        onOpenTutorialDocs={() => {
-          setActivePage('tutorial')
-        }}
-        onOpenSupport={() => {
-          void window.xingmang.openExternal(supportServiceUrl).catch((error: unknown) => {
-            setToast({ type: 'error', message: errorMessage(error) })
-          })
-        }}
         onPasteKey={handleOpenPasteKeyDialog}
         onOpenKeysPage={() => { setAccountCenterSection('keys'); setAppView('account-center') }}
       />
+
+      <div ref={supportWrapRef} className="floating-support-wrap">
+        {supportDialogOpen && (
+          <SupportDialog
+            url={supportServiceUrl}
+            onClose={() => setSupportDialogOpen(false)}
+            onOpen={() => {
+              setSupportDialogOpen(false)
+              void window.xingmang.openExternal(supportServiceUrl).catch((error: unknown) => {
+                setToast({ type: 'error', message: errorMessage(error) })
+              })
+            }}
+          />
+        )}
+        <button
+          type="button"
+          className={`floating-support-button${supportDialogOpen ? ' is-open' : ''}`}
+          aria-label="客服"
+          aria-expanded={supportDialogOpen}
+          title="客服"
+          onClick={() => setSupportDialogOpen((current) => !current)}
+        >
+          <Headset size={21} aria-hidden="true" />
+        </button>
+      </div>
 
       <main className="main-content">
         <ErrorBoundary resetKey={activePage} onReturnOverview={() => setActivePage('overview')} notify={setToast}>
@@ -2242,9 +2274,7 @@ function App() {
             onNavigate={setActivePage}
             onOpenAccountCenter={() => { setAccountCenterSection('overview'); setAppView('account-center') }}
             onOpenSupport={() => {
-              void window.xingmang.openExternal(supportServiceUrl).catch((error: unknown) => {
-                setToast({ type: 'error', message: errorMessage(error) })
-              })
+              setSupportDialogOpen(true)
             }}
           />
         ) : (

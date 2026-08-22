@@ -135,6 +135,7 @@ import { promptPresetMime } from './library/prompt-presets'
 import { cachedNodeIdsForPreflight } from './runtime/pinned-reuse'
 import { QuickInsert, type QuickInsertCommand } from './components/QuickInsert'
 import { TemplateCatalog } from './components/TemplateCatalog'
+import { clipPromptEditorValue } from './components/prompt-mentions'
 import { findAvailableCanvasPosition } from './editor/node-placement'
 import { applyCanvasTheme, subscribeCanvasTheme, type CanvasTheme } from './theme/canvas-theme'
 import {
@@ -154,7 +155,6 @@ import {
   type CanvasUiPreferences,
 } from './persistence/canvas-ui-preferences'
 import { canvasAutosaveErrorMessage, canvasAutosaveGraphSignature, canvasAutosaveSignature } from './persistence/canvas-autosave'
-import { commitGenerationPrompts } from './nodes/generation-composer'
 
 // 画布装配层:@xyflow/react 的 Node/Edge 与领域模型互相映射,引擎与
 // 持久化只见领域模型。M0 执行走 mock 执行器(不出网);M1 把 executors
@@ -334,11 +334,17 @@ function editorNodeToCanvasNode(node: EditorNodeRecord): CanvasNode {
   const raw = node.data
   const result = raw.result as AssetRef | undefined
   const data: WorkflowNodeData = {
-    prompt: typeof raw.prompt === 'string' ? raw.prompt : '',
+    // Keep loaded projects within the editor's 10,000-character limit. Older
+    // projects may contain repeated upstream text from the previous
+    // run-commit behavior; the upstream service remains the final authority.
+    prompt: typeof raw.prompt === 'string' ? clipPromptEditorValue(raw.prompt).value : '',
     model: typeof raw.model === 'string' ? raw.model : '',
     status: result?.assetId ? 'succeeded' : 'idle',
     ...(typeof raw.quality === 'string' ? { quality: raw.quality } : {}),
     ...(typeof raw.size === 'string' ? { size: raw.size } : {}),
+    ...(raw.imageResolution === '1K' || raw.imageResolution === '2K' || raw.imageResolution === '4K'
+      ? { imageResolution: raw.imageResolution }
+      : {}),
     ...(typeof raw.seconds === 'string' ? { seconds: raw.seconds } : {}),
     ...(result ? { result } : {}),
     ...(raw.settings && typeof raw.settings === 'object' && !Array.isArray(raw.settings)
@@ -1150,19 +1156,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return false
     }
     try {
-      const committed = commitGenerationPrompts(nodes, edges)
-      if (committed !== nodes) setNodes(committed)
-      const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
+      const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
       const scope: CanvasRunScope = { kind, nodeId }
       const preflight = buildCanvasRunPreflight({
         graph,
         scope,
-        cachedNodeIds: cachedNodeIdsForPreflight(committed, scope),
+        cachedNodeIds: cachedNodeIdsForPreflight(nodes, scope),
         imageGroup: imageGroup ?? undefined,
         videoGroup: videoGroup ?? undefined,
         imageModels,
         videoModels,
-        nodeBlockReasons: dramaPreflightBlockReasons(committed, edges),
+        nodeBlockReasons: dramaPreflightBlockReasons(nodes, edges),
       })
       setRunPreflight(preflight)
       if (!preflight.canStart) {
@@ -1185,9 +1189,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return
     }
     if (running || preparingMedia || resumingTaskIdsRef.current.size > 0) return
-    const committed = commitGenerationPrompts(nodes, edges)
-    if (committed !== nodes) setNodes(committed)
-    const target = committed.find((entry) => entry.id === nodeId)
+    const target = nodes.find((entry) => entry.id === nodeId)
     if (!target || target.disabled || target.type === 'unknown') return
     const inputs: NodeInputs = {}
     for (const edge of edges) {
@@ -2660,18 +2662,16 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     const pending = pendingCanvasRun
     if (!pending) return
     try {
-      const committed = commitGenerationPrompts(nodes, edges)
-      if (committed !== nodes) setNodes(committed)
-      const currentGraph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
+      const currentGraph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
       const currentPreflight = buildCanvasRunPreflight({
         graph: currentGraph,
         scope: pending.scope,
-        cachedNodeIds: cachedNodeIdsForPreflight(committed, pending.scope),
+        cachedNodeIds: cachedNodeIdsForPreflight(nodes, pending.scope),
         imageGroup: imageGroup ?? undefined,
         videoGroup: videoGroup ?? undefined,
         imageModels,
         videoModels,
-        nodeBlockReasons: dramaPreflightBlockReasons(committed, edges),
+        nodeBlockReasons: dramaPreflightBlockReasons(nodes, edges),
       })
       if (!sameCanvasRunGraphSnapshot(pending.graph, currentGraph)) {
         setRunPreflight(currentPreflight)
@@ -2713,19 +2713,17 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     setBanner(null)
     if (window.xingmangCanvasHost) {
       try {
-        const committed = commitGenerationPrompts(nodes, edges)
-        if (committed !== nodes) setNodes(committed)
-        const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
+        const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
         const scope = currentRunScope()
         const preflight = buildCanvasRunPreflight({
           graph,
           scope,
-          cachedNodeIds: cachedNodeIdsForPreflight(committed, scope),
+          cachedNodeIds: cachedNodeIdsForPreflight(nodes, scope),
           imageGroup: imageGroup ?? undefined,
           videoGroup: videoGroup ?? undefined,
           imageModels,
           videoModels,
-          nodeBlockReasons: dramaPreflightBlockReasons(committed, edges),
+          nodeBlockReasons: dramaPreflightBlockReasons(nodes, edges),
         })
         setRunPreflight(preflight)
         if (!preflight.canStart) {

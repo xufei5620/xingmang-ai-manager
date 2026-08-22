@@ -79,6 +79,9 @@ export function composeNodePromptFromGraph(
     .map((edge) => nodes.find((node) => node.id === edge.source)?.data.prompt?.trim())
     .filter((value): value is string => Boolean(value))
     .join('\n')
+  // Keep the helper safe for callers that intentionally persist composed
+  // prompts. A second pass must not prepend the same upstream text again.
+  if (upstream && (local === upstream || local.startsWith(`${upstream}\n`))) return local
   return composeGenerationPrompt(local, upstream || undefined)
 }
 

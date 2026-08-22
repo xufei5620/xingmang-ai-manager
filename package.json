@@ -1,6 +1,6 @@
 {
   "name": "xingmang-ai-manager",
-  "version": "0.1.21",
+  "version": "0.1.22",
   "private": true,
   "description": "星芒AI管理工具",
   "author": "神风",
@@ -9,6 +9,7 @@
     "@iarna/toml": "^2.2.5",
     "builder-util-runtime": "^9.7.0",
     "electron-updater": "^6.8.9",
+    "qrcode": "^1.5.4",
     "yaml": "^2.9.0"
   },
   "scripts": {
@@ -52,6 +53,7 @@
     "@playwright/test": "^1.62.0",
     "@types/iarna__toml": "^2.0.5",
     "@types/node": "^22.10.5",
+    "@types/qrcode": "^1.5.5",
     "@types/react": "^18.3.18",
     "@types/react-dom": "^18.3.5",
     "@vitejs/plugin-react": "^6.0.4",

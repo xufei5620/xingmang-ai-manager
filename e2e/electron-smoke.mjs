@@ -668,7 +668,7 @@ try {
   result.firstToolCard = await page.locator('.cli-card').first().getByRole('heading').innerText()
   result.secondToolCard = await page.locator('.cli-card').nth(1).getByRole('heading').innerText()
   result.apiConfigNavHidden = await page.getByText('API 配置', { exact: true }).count() === 0
-  result.officialWebsiteVisible = await page.getByRole('button', { name: /官方网站/ }).isVisible()
+  result.officialWebsiteVisible = await page.getByRole('button', { name: /官方网站/ }).count() > 0
   result.officialWebsiteAtBottom = await page.evaluate(() => {
     const sidebar = document.querySelector('.sidebar')
     const website = document.querySelector('.sidebar-bottom .sidebar-service-button[title^="官方网站"]')
@@ -677,9 +677,8 @@ try {
   })
   result.sidebarStatusHidden = await page.locator('.sidebar-status').count() === 0
   result.nativeConfigFooterHidden = await page.getByText('本机原生配置', { exact: true }).count() === 0
-  result.officialWebsiteDomainVisible = await page.getByRole('button', { name: /官方网站/ }).evaluate((button) => (
-    button.getAttribute('title')?.includes('solov.cc') === true
-  ))
+  result.officialWebsiteDomainVisible = false
+  result.supportButtonVisible = await page.getByRole('button', { name: '客服' }).isVisible()
   result.tutorialDocsVisible = await page.getByRole('button', { name: /教程文档/ }).isVisible()
   result.tutorialDocsLabelVisible = await page.getByText('教程文档', { exact: true }).isVisible()
   result.cardModelCount = await page.locator('.configured-model').count()
@@ -862,9 +861,10 @@ try {
     || result.firstToolCard !== 'Codex 桌面端'
     || result.secondToolCard !== 'Codex CLI'
     || !result.apiConfigNavHidden
-    || !result.officialWebsiteVisible
-    || !result.officialWebsiteAtBottom
-    || !result.officialWebsiteDomainVisible
+    || result.officialWebsiteVisible
+    || result.officialWebsiteAtBottom
+    || result.officialWebsiteDomainVisible
+    || !result.supportButtonVisible
     || !result.tutorialDocsVisible
     || !result.tutorialDocsLabelVisible
     || !result.sidebarStatusHidden

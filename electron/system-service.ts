@@ -118,6 +118,11 @@ export const networkLocationCacheTtlMs = 10 * 60_000
 const npmOfficialRegistry = 'https://registry.npmjs.org'
 const npmMirrorRegistry = 'https://registry.npmmirror.com'
 const networkLocationUrl = 'https://www.cloudflare.com/cdn-cgi/trace'
+const networkLocationFallbackUrls = [
+  'https://myip.ipip.net/',
+  'https://ipapi.co/json/',
+  'https://ipinfo.io/json',
+] as const
 const maximumModelResponseBytes = 1024 * 1024
 const modelAccessCacheMaxEntries = 32
 const maximumRuntimeManifestBytes = 256 * 1024
@@ -867,6 +872,40 @@ export function parseCloudflareNetworkRegion(input: string): NetworkRegion {
   return parseCloudflareNetworkLocation(input).region
 }
 
+function parseFallbackNetworkLocation(
+  input: string,
+  sourceUrl: string,
+): { publicIp: string; countryCode: string } | null {
+  const trimmed = input.trim()
+  if (sourceUrl.includes('myip.ipip.net')) {
+    const ip = trimmed.match(/(?:当前\s*IP|IP)\s*[:：]\s*([0-9a-f:.]+)/i)?.[1] ?? ''
+    const publicIp = isIP(ip) ? ip : ''
+    const countryCode = /中国|China/i.test(trimmed)
+      ? 'CN'
+      : /美国|United States|USA/i.test(trimmed)
+        ? 'US'
+        : /日本|Japan/i.test(trimmed)
+          ? 'JP'
+          : /新加坡|Singapore/i.test(trimmed) ? 'SG' : ''
+    if (publicIp && countryCode) return { publicIp, countryCode }
+    return null
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const record = parsed as Record<string, unknown>
+    const ipCandidate = typeof record.ip === 'string' ? record.ip.trim() : ''
+    const publicIp = isIP(ipCandidate) ? ipCandidate : ''
+    const countryCandidate = typeof record.country_code === 'string'
+      ? record.country_code
+      : typeof record.country === 'string' ? record.country : ''
+    const countryCode = countryCandidate.trim().toUpperCase()
+    return publicIp && /^[A-Z]{2}$/.test(countryCode) ? { publicIp, countryCode } : null
+  } catch {
+    return null
+  }
+}
+
 export async function detectNetworkLocation(
   fetchImplementation: typeof fetch = fetch,
   timeoutMs = 2_500,
@@ -875,6 +914,42 @@ export async function detectNetworkLocation(
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   timeout.unref?.()
+  const fallbackProbe = async (): Promise<NetworkLocationStatus | null> => {
+    // The primary Cloudflare probe can already consume its full timeout on
+    // mainland networks. Give the fallback chain its own budget instead of
+    // leaving the usable IPIP endpoint only a few hundred milliseconds.
+    const deadline = Date.now() + Math.max(1_000, timeoutMs)
+    for (const fallbackUrl of networkLocationFallbackUrls) {
+      const remainingMs = Math.max(200, deadline - Date.now())
+      const fallbackController = new AbortController()
+      const fallbackTimeout = setTimeout(() => fallbackController.abort(), remainingMs)
+      fallbackTimeout.unref?.()
+      try {
+        const fallbackResponse = await fetchImplementation(fallbackUrl, {
+          method: 'GET',
+          headers: { Accept: 'text/plain' },
+          redirect: 'error',
+          signal: fallbackController.signal,
+        })
+        if (!fallbackResponse.ok) continue
+        const fallbackBody = await readBoundedResponseText(fallbackResponse, 256, '备用网络位置')
+        const location = parseFallbackNetworkLocation(fallbackBody, fallbackUrl)
+        if (!location) continue
+        return {
+          publicIp: location.publicIp,
+          countryCode: location.countryCode,
+          region: location.countryCode === 'CN' ? 'mainland-china' : 'outside-mainland-china',
+          checkedAt,
+          error: null,
+        }
+      } catch {
+        // Try the next provider within the shared fallback deadline.
+      } finally {
+        clearTimeout(fallbackTimeout)
+      }
+    }
+    return null
+  }
   try {
     const response = await fetchImplementation(networkLocationUrl, {
       method: 'GET',
@@ -883,6 +958,8 @@ export async function detectNetworkLocation(
       signal: controller.signal,
     })
     if (!response.ok) {
+      const fallback = await fallbackProbe()
+      if (fallback) return fallback
       return {
         publicIp: null,
         countryCode: null,
@@ -892,8 +969,20 @@ export async function detectNetworkLocation(
       }
     }
     const body = await readBoundedResponseText(response, 32 * 1024, '网络位置')
-    return parseCloudflareNetworkLocation(body, checkedAt)
+    const primary = parseCloudflareNetworkLocation(body, checkedAt)
+    // A Cloudflare response may contain `loc=CN` while omitting `ip` on
+    // restricted/proxied networks. Treat that as partial data so the
+    // fallback providers still get a chance to supply the missing address.
+    if (primary.region !== 'unknown' && primary.publicIp) return primary
+
+    // Some mainland networks can reach the relay but block Cloudflare's
+    // trace endpoint. A tiny country-only fallback keeps mirror selection and
+    // the dashboard location useful without sending a second request when the
+    // primary probe already returned a valid country.
+    return (await fallbackProbe()) ?? primary
   } catch (error) {
+    const fallback = await fallbackProbe()
+    if (fallback) return fallback
     return {
       publicIp: null,
       countryCode: null,

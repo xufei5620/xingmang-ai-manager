@@ -136,9 +136,9 @@ export function imageModelPreset(id: string): ImageModelPreset {
 
 /** 画质档位与费用/耗时提示(实测矩阵的口径,给 UI 直接展示)。 */
 export const imageQualityOptions = [
-  { value: 'low', label: '低' },
-  { value: 'medium', label: '中' },
-  { value: 'high', label: '高' },
+  { value: 'low', label: '标准' },
+  { value: 'medium', label: '高' },
+  { value: 'high', label: '极高' },
 ] as const
 
 const imageRatioBySize: Readonly<Record<string, string>> = {

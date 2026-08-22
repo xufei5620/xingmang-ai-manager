@@ -70,7 +70,7 @@ export function networkLocationLabel(network: SystemSnapshot['network']): string
   } catch {
     // Keep the country code when Windows reports a non-standard region value.
   }
-  return network.publicIp ? `${countryName} · ${network.publicIp}` : countryName
+  return network.publicIp ? `${countryName} · ${network.publicIp}` : `${countryName} · IP 未知`
 }
 
 export function updateFailureLabel(error: string | null | undefined): string {

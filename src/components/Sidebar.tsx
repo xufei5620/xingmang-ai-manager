@@ -1,12 +1,9 @@
 import {
-  BookOpen,
   ArrowUp,
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
   CircleHelp,
-  Globe2,
-  LifeBuoy,
   LoaderCircle,
   Moon,
   RotateCw,
@@ -26,6 +23,7 @@ interface SidebarProps {
   activePage: PageId
   collapsed: boolean
   theme: 'light' | 'dark'
+  appVersion: string
   updateState: UpdateSnapshot | null
   relaySite: RelaySite
   /** Whether the low-frequency system-management group is expanded for this session. */
@@ -43,8 +41,6 @@ interface SidebarProps {
   /** 刷新余额 -- passed straight through to AccountArea. */
   onRefreshBalance: () => void
   onOpenAccountCenter: () => void
-  onOpenTutorialDocs: () => void
-  onOpenSupport: () => void
   /** Opens the 粘贴 Key dialog (W3b) -- passed straight through to AccountArea. */
   onPasteKey: () => void
   /** openExternal(relaySite.keysPageUrl) -- passed straight through to AccountArea. */
@@ -76,6 +72,7 @@ export function Sidebar({
   activePage,
   collapsed,
   theme,
+  appVersion,
   updateState,
   relaySite,
   moreExpanded,
@@ -91,8 +88,6 @@ export function Sidebar({
   onConfigureCliKey,
   onRefreshBalance,
   onOpenAccountCenter,
-  onOpenTutorialDocs,
-  onOpenSupport,
   onPasteKey,
   onOpenKeysPage,
 }: SidebarProps) {
@@ -236,7 +231,7 @@ export function Sidebar({
         <img src={theme === 'dark' ? logoWhiteUrl : logoUrl} className="brand-logo" alt="星芒AI" />
         <div>
           <div className="brand-name"><span>星芒</span>AI</div>
-          <div className="brand-subtitle">AI 管理工具箱</div>
+          <div className="brand-subtitle">v{appVersion}</div>
         </div>
         {showUpdate && (
           <button
@@ -304,38 +299,6 @@ export function Sidebar({
           onPasteKey={onPasteKey}
           onOpenKeysPage={onOpenKeysPage}
         />
-        <div className="sidebar-service-links" aria-label="帮助与服务">
-          <button
-            className={`sidebar-service-button tutorial-docs-button${activePage === 'tutorial' ? ' active' : ''}`}
-            type="button"
-            title="教程文档"
-            data-sidebar-tooltip="教程文档"
-            onClick={onOpenTutorialDocs}
-          >
-            <BookOpen size={16} />
-            <span>教程</span>
-          </button>
-          <button
-            className="sidebar-service-button"
-            type="button"
-            title="联系售后"
-            data-sidebar-tooltip="联系售后"
-            onClick={onOpenSupport}
-          >
-            <LifeBuoy size={16} />
-            <span>售后</span>
-          </button>
-          <button
-            className="sidebar-service-button sidebar-official-button"
-            type="button"
-            title={`官方网站 · ${relaySite.websiteUrl.replace(/^https:\/\//, '')}`}
-            data-sidebar-tooltip="官方网站"
-            onClick={() => void window.xingmang.openExternal(relaySite.websiteUrl)}
-          >
-            <Globe2 size={16} />
-            <span>官网</span>
-          </button>
-        </div>
         <div className="sidebar-controls">
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           <button
