@@ -55,6 +55,36 @@ async function waitForConfigModelState(page, dialog, timeout = 15_000) {
   return dialog.getByLabel('使用模型').evaluate((select) => !select.closest('.field')?.textContent?.includes('正在查询可用模型'))
 }
 
+async function readDashboardWindowMetrics(application, page) {
+  try {
+    return await application.evaluate(({ BrowserWindow, screen }) => {
+      const browserWindow = BrowserWindow.getAllWindows()[0]
+      if (!browserWindow) return null
+      const bounds = browserWindow.getBounds()
+      const workArea = screen.getDisplayMatching(bounds).workAreaSize
+      return {
+        bounds,
+        expected: {
+          width: Math.min(1590, workArea.width),
+          height: Math.min(875, workArea.height),
+        },
+      }
+    })
+  } catch {
+    // On Windows runners the main-process evaluation can race the onboarding
+    // window handoff and have its result promise collected. The renderer is
+    // already the visible dashboard, so its outer bounds are an equivalent
+    // fallback for this layout-only assertion.
+    return page.evaluate(() => ({
+      bounds: { width: window.outerWidth, height: window.outerHeight },
+      expected: {
+        width: Math.min(1590, window.screen.availWidth),
+        height: Math.min(875, window.screen.availHeight),
+      },
+    }))
+  }
+}
+
 async function inspectManagementPageTerminalState(page, pageRoot, id, timeout = 60_000) {
   let settled = true
   try {
@@ -245,19 +275,7 @@ try {
     await appShell.waitFor({ state: 'visible', timeout: 60_000 })
   }
   await page.waitForFunction(() => !document.body.textContent?.includes('检测中...'), null, { timeout: 60_000 })
-  const windowMetrics = await application.evaluate(({ BrowserWindow, screen }) => {
-    const browserWindow = BrowserWindow.getAllWindows()[0]
-    if (!browserWindow) return null
-    const bounds = browserWindow.getBounds()
-    const workArea = screen.getDisplayMatching(bounds).workAreaSize
-    return {
-      bounds,
-      expected: {
-        width: Math.min(1590, workArea.width),
-        height: Math.min(875, workArea.height),
-      },
-    }
-  })
+  const windowMetrics = await readDashboardWindowMetrics(application, page)
   const platformCapabilities = await page.evaluate(() => window.xingmang.getPlatformCapabilities())
 
   const result = {
