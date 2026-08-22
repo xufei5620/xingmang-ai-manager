@@ -414,6 +414,21 @@ describe('canvas command history', () => {
     expect(history.present.mediaGroups).toEqual({ image: '生图分组', video: 'grok' })
   })
 
+  it('records a default model change as one undoable document command', () => {
+    const original = {
+      ...createCanvasDocument(),
+      mediaGroups: { image: '生图分组', imageModel: 'gpt-image-2' },
+    }
+    let history = applyCanvasCommand(createCanvasHistory(original), {
+      type: 'set-media-groups',
+      mediaGroups: { image: '生图分组', imageModel: 'gemini-3.1-flash-image' },
+    })
+
+    expect(history.present.mediaGroups.imageModel).toBe('gemini-3.1-flash-image')
+    history = undoCanvasHistory(history)
+    expect(history.present.mediaGroups.imageModel).toBe('gpt-image-2')
+  })
+
   it('bounds history to fifty entries', () => {
     let history = createCanvasHistory(createCanvasDocument())
     for (let index = 0; index < 60; index += 1) {

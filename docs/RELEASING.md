@@ -17,11 +17,11 @@ CI 对生产依赖中的任意漏洞和完整依赖树中的 critical 漏洞执�
 - 在 `package.json` 提升版本号，版本必须高于已发布版本。
 - 更新根目录 `release-notes.md`，内容会在打包时写入更新清单并显示在客户端更新页面。
 - 使用专用 Windows 发布机，系统时间正确，依赖锁文件未被临时改写。
-- `https://updates.shenfengwl.fun/xingmang-manager/latest.yml` 必须返回静态 YAML 或 404。返回 `text/html`/官网 SPA 属于发布阻断故障。
+- 更新清单必须由对应版本的静态 R2 目录提供：`0.1.2` 及更早版本检查 `https://updates.shenfengwl.fun/xingmang-manager/latest.yml`，`0.1.3+` 检查 `https://updatesnew.shenfengwl.fun/xingmang-manager/latest.yml`。两者返回 `text/html`/官网 SPA 都属于发布阻断故障。
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
 - 正式发布必须使用 Authenticode 签名；没有证书、固定发布者或干净 Windows 验收机时，发布预检会直接失败。
 - 所有 Windows 包的 `app-update.yml` 都写入预期发布者，防止 `electron-updater` 因缺少 `publisherName` 跳过验证。客户端使用受保护系统目录中的 PowerShell 严格核对下载文件的 `Valid` 状态、返回路径和发布者 DN/CN；PowerShell 缺失、命令失败、输出无法解析或任一字段不匹配均拒绝更新。
-- 普通 `npm run build` 在未设置 `XINGMANG_RELEASE=1` 时可生成仅供本机调试的未签名安装包。正式发布脚本会设置发布模式并拒绝 `XINGMANG_ALLOW_UNSIGNED_RELEASE=1`，发布模式下构建配置始终强制签名。
+- 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留自动更新但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
 - 正式发布前配置证书路径和固定发布者，例如：
 
 ```powershell
@@ -34,7 +34,7 @@ $env:XINGMANG_SIGNING_PUBLISHER = '绍兴星芒文化传媒有限责任公司'
 
 ```powershell
 # 可选；不设置时使用正式默认地址
-$env:XINGMANG_UPDATE_URL = 'https://updates.shenfengwl.fun/xingmang-manager/'
+$env:XINGMANG_UPDATE_URL = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
 ```
 
 ## 2. 构建与本地门禁
@@ -94,7 +94,7 @@ npm run release:build
 
 ### 还没拿到 CA 证书时：用自签名证书先验证更新链路
 
-本项目把"能更新"和"已签名"绑死了（`electron-builder.config.cjs` 的 `extraMetadata.xingmangLocalBuild = !publicReleaseMode`）：未签名的包在设计上就拒绝更新，所以没有"不签名但能点更新"的模式，这是承重墙不是流程。
+默认本地构建仍把"能更新"和"已签名发布"隔离；只有显式的 `XINGMANG_UNSIGNED_RELEASE=1` 测试/发布模式才会把 `extraMetadata.xingmangLocalBuild` 关闭，从而允许未签名包检查和安装更新。
 
 在真证书到手之前，可以用**自己生成的自签名证书**把整条链路真跑一遍——签名、写 `publisherName`、更新器启用、客户端下载后校验签名，全部真实执行，只是这张证书只有你自己的机器认。真证书到手后换掉 Secret 即可，代码一个字不用改。
 
@@ -117,7 +117,7 @@ Export-PfxCertificate -Cert $cert -FilePath "$HOME\xingmang-test-signing.pfx" -P
 
 **2. 配置 Secrets**：把剪贴板里的 base64 填进 `WIN_CSC_LINK_BASE64`，密码填 `WIN_CSC_KEY_PASSWORD`，发布者填 `XINGMANG_SIGNING_PUBLISHER`。
 
-**3. 触发构建**：Actions → `release-build` → Run workflow，勾上 `test_signing`，并在 `update_url` 填一个**与正式源不同的测试路径**，例如 `https://updates.shenfengwl.fun/xingmang-manager/beta/`。这一项是强制的：自签名产物一旦进了正式更新源，老客户的机器不认这张证书会拒绝更新（失败方向是安全的），新装用户则会看到未知发布者警告。
+  **3. 触发构建**：Actions → `release-build` → Run workflow，勾上 `test_signing`，并在 `update_url` 填一个**与正式源不同的测试路径**，例如 `https://updatesnew.shenfengwl.fun/xingmang-manager/beta/`。这一项是强制的：自签名产物一旦进了正式更新源，老客户的机器不认这张证书会拒绝更新（失败方向是安全的），新装用户则会看到未知发布者警告。
 
 **4. 在测试机上验证更新链路**：把三件套传到那个 beta 路径 → 在虚拟机装上这一版 → 提升 `package.json` 版本号再跑一次构建 → 传新的三件套（顺序仍是先传包与 blockmap、最后覆盖 `latest.yml`）→ 在已装的旧版本里点「检查更新」，应能发现、下载、重启安装成功。
 
@@ -127,11 +127,11 @@ Export-PfxCertificate -Cert $cert -FilePath "$HOME\xingmang-test-signing.pfx" -P
 
 ## 3. 静态更新目录
 
-当前静态源使用 Cloudflare R2：
+当前静态源使用 Cloudflare R2，按版本分为两个更新桶：
 
 ```text
-Bucket: xingmang-updates
-Custom domain: updates.shenfengwl.fun
+0.1.2 及更早：Bucket xingmang-updates，Custom domain updates.shenfengwl.fun
+0.1.3+：Bucket xingmang-updates-new，Custom domain updatesnew.shenfengwl.fun
 Object prefix: xingmang-manager/
 ```
 

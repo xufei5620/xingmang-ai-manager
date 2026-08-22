@@ -1,3 +1,4 @@
+import fs from 'node:fs'
 import path from 'node:path'
 import { isProviderId, managedCliKeyProfiles, type ProviderId } from './catalog'
 import type { SafeStorageLike } from './account-session-store'
@@ -28,6 +29,7 @@ export interface PersistedManagedCliKeyAccount {
 
 export interface PersistedManagedCliKeys {
   version: 2
+  revision?: number
   accounts: PersistedManagedCliKeyAccount[]
 }
 
@@ -66,6 +68,9 @@ function isLegacyPersistedManagedCliKeys(value: unknown): value is LegacyPersist
 
 export function isPersistedManagedCliKeys(value: unknown): value is PersistedManagedCliKeys {
   if (!isRecord(value) || value.version !== CURRENT_VERSION) return false
+  if (value.revision !== undefined && (
+    typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0
+  )) return false
   if (!Array.isArray(value.accounts) || value.accounts.length > MAX_CACHED_ACCOUNTS) return false
   if (!value.accounts.every(isPersistedManagedCliKeyAccount)) return false
   return new Set(value.accounts.map((entry) => entry.userId)).size === value.accounts.length
@@ -98,6 +103,7 @@ export function decodePersistedManagedCliKeys(
 
 export class ManagedCliKeyStore {
   private writeQueue: Promise<void> = Promise.resolve()
+  private revision = 0
 
   constructor(
     private readonly filePath: string,
@@ -111,10 +117,24 @@ export class ManagedCliKeyStore {
     return record?.accounts.find((entry) => entry.userId === userId)?.keys.map((entry) => ({ ...entry })) ?? []
   }
 
-  save(userId: number, keys: readonly StoredManagedCliKey[]): Promise<void> {
+  captureRevision(): number {
+    return this.revision
+  }
+
+  save(
+    userId: number,
+    keys: readonly StoredManagedCliKey[],
+    expectedRevision?: number,
+  ): Promise<boolean> {
     return this.enqueue(async () => {
       this.assertEncryptionAvailable()
-      const existing = await this.readRecord()
+      let existing: PersistedManagedCliKeys | null = null
+      try {
+        existing = await this.readRecord()
+      } catch {
+        await this.quarantineCorruptRecord()
+      }
+      if (expectedRevision !== undefined && expectedRevision !== this.revision) return false
       const account: PersistedManagedCliKeyAccount = {
         userId,
         updatedAt: new Date().toISOString(),
@@ -126,9 +146,12 @@ export class ManagedCliKeyStore {
       ].slice(0, MAX_CACHED_ACCOUNTS)
       const record: PersistedManagedCliKeys = {
         version: CURRENT_VERSION,
+        revision: this.revision + 1,
         accounts,
       }
       await this.writeRecord(record)
+      this.revision = record.revision ?? this.revision + 1
+      return true
     })
   }
 
@@ -140,6 +163,7 @@ export class ManagedCliKeyStore {
       if (!record || !account?.keys.some((entry) => entry.id === keyId)) return
       const updated: PersistedManagedCliKeys = {
         version: CURRENT_VERSION,
+        revision: this.revision + 1,
         accounts: record.accounts.map((entry) => entry.userId === userId
           ? {
               ...entry,
@@ -149,6 +173,7 @@ export class ManagedCliKeyStore {
           : entry),
       }
       await this.writeRecord(updated)
+      this.revision = updated.revision ?? this.revision + 1
     })
   }
 
@@ -157,7 +182,17 @@ export class ManagedCliKeyStore {
     if (content === null) return null
     const record = decodePersistedManagedCliKeys(content, this.storage)
     if (!record) throw new Error('本地托管 API Key 配置已损坏或无法解密')
+    this.revision = Math.max(this.revision, record.revision ?? 0)
     return record
+  }
+
+  private async quarantineCorruptRecord(): Promise<void> {
+    try {
+      const quarantine = `${this.filePath}.corrupt-${Date.now()}`
+      await fs.promises.rename(this.filePath, quarantine)
+    } catch {
+      // A missing or locked cache is still recoverable on the next save.
+    }
   }
 
   private assertEncryptionAvailable(): void {
@@ -176,7 +211,7 @@ export class ManagedCliKeyStore {
     )
   }
 
-  private enqueue(operation: () => Promise<void>): Promise<void> {
+  private enqueue<T>(operation: () => Promise<T>): Promise<T> {
     const next = this.writeQueue.then(operation, operation)
     this.writeQueue = next.then(() => undefined, () => undefined)
     return next

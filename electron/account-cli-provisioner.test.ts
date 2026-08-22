@@ -109,6 +109,25 @@ describe('syncManagedCliKeySummary', () => {
     )
   })
 
+  it('continues after a damaged local cache and surfaces a rebuild warning', async () => {
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => { throw new Error('本地托管 API Key 配置已损坏或无法解密') }),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const entry = keyForGroup(input.group ?? '')
+      return { id: providerIds.indexOf(entry.provider) + 1, name: entry.name, key: entry.key }
+    })
+
+    const summary = await syncManagedCliKeySummary(loggedInAccountService(provisionCliKey), store)
+
+    expect(summary.ready.map((entry) => entry.provider)).toEqual(providerIds)
+    expect(summary.failed).toEqual([])
+    expect(summary.storageWarning).toContain('配置已损坏')
+    expect(store.save).toHaveBeenCalledTimes(1)
+  })
+
   it('returns only non-sensitive status fields and never includes plaintext keys', async () => {
     const keys = providerIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {

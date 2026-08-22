@@ -9,6 +9,7 @@ import { isDetectionFailed } from './app-shared'
 import { codexRuntimeSetupMessage, nodeRuntimeSupported } from './onboarding-runtime'
 
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
+export const CODEX_SETUP_STATUS_TIMEOUT_MS = 45_000
 
 export type OnboardingSetupAction =
   | 'idle'
@@ -76,6 +77,26 @@ export interface CodexAutomaticSetupOptions {
   detectionRetries?: number
   retryDelayMs?: number
   wait?: (delayMs: number) => Promise<void>
+  statusTimeoutMs?: number
+  /** Respect a user's explicit Codex Desktop uninstall choice. */
+  skipDesktopInstall?: boolean
+}
+
+async function getCodexSetupStatusWithTimeout(
+  api: CodexSetupApi,
+  timeoutMs = CODEX_SETUP_STATUS_TIMEOUT_MS,
+): Promise<CodexSetupStatus> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  try {
+    return await Promise.race([
+      api.getCodexSetupStatus(),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('Codex Desktop 安装已完成，但环境复核超时；请点击“重新检测”继续')), timeoutMs)
+      }),
+    ])
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
 }
 
 /**
@@ -147,13 +168,15 @@ export async function prepareCodexEnvironment(
   api: CodexSetupApi,
   callbacks: CodexSetupCallbacks,
   capabilities?: PlatformCapabilities,
+  statusTimeoutMs = CODEX_SETUP_STATUS_TIMEOUT_MS,
+  skipDesktopInstall = false,
 ): Promise<CodexSetupResult> {
   let phase: OnboardingSetupPhase = 'environment'
   let status: CodexSetupStatus | null = null
   callbacks.onAction('scanning')
 
   try {
-    status = await api.getCodexSetupStatus()
+    status = await getCodexSetupStatusWithTimeout(api, statusTimeoutMs)
     callbacks.onStatus(status)
     const detectionFailureMessage = buildCodexDetectionFailureMessage(status)
     if (detectionFailureMessage) {
@@ -171,7 +194,7 @@ export async function prepareCodexEnvironment(
       callbacks.onAction('installing-cli')
       callbacks.onLog('正在安装 @openai/codex@latest', 'replace')
       await api.installCli('codex')
-      status = await api.getCodexSetupStatus()
+      status = await getCodexSetupStatusWithTimeout(api, statusTimeoutMs)
       callbacks.onStatus(status)
     }
 
@@ -179,7 +202,7 @@ export async function prepareCodexEnvironment(
       throw new Error('Codex CLI 安装完成后仍未检测到命令，请重新检测环境')
     }
 
-    if (!status.desktop.installed && capabilities?.codexDesktop.install === 'external') {
+    if (!status.desktop.installed && (skipDesktopInstall || capabilities?.codexDesktop.install === 'external')) {
       callbacks.onAction('idle')
       return { outcome: 'ready', status }
     }
@@ -190,7 +213,8 @@ export async function prepareCodexEnvironment(
       callbacks.onLog('正在准备 Codex 桌面端最新版', 'append')
       try {
         await api.installCodexDesktop()
-        status = await api.getCodexSetupStatus()
+        callbacks.onLog('Codex Desktop 安装命令已完成，正在确认安装结果', 'append')
+        status = await getCodexSetupStatusWithTimeout(api, statusTimeoutMs)
         callbacks.onStatus(status)
         if (!status.desktop.installed) {
           throw new Error('Codex 桌面端安装完成后仍未检测到应用，请使用微软商店安装或稍后重试')
@@ -250,14 +274,15 @@ export async function prepareCodexEnvironmentAutomatically(
 ): Promise<CodexAutomaticSetupResult> {
   const detectionRetries = Math.max(0, Math.floor(options.detectionRetries ?? 2))
   const retryDelayMs = Math.max(0, Math.floor(options.retryDelayMs ?? 750))
+  const statusTimeoutMs = Math.max(1_000, Math.floor(options.statusTimeoutMs ?? CODEX_SETUP_STATUS_TIMEOUT_MS))
   const wait = options.wait ?? ((delayMs: number) => new Promise<void>((resolve) => {
     setTimeout(resolve, delayMs)
   }))
-  let setup = await prepareCodexEnvironment(api, callbacks, capabilities)
+  let setup = await prepareCodexEnvironment(api, callbacks, capabilities, statusTimeoutMs, options.skipDesktopInstall)
   for (let attempt = 0; setup.outcome === 'detection-failed' && attempt < detectionRetries; attempt += 1) {
     callbacks.onLog(`环境检测暂时失败，正在自动重试（${attempt + 1}/${detectionRetries}）`, 'append')
     await wait(retryDelayMs)
-    setup = await prepareCodexEnvironment(api, callbacks, capabilities)
+    setup = await prepareCodexEnvironment(api, callbacks, capabilities, statusTimeoutMs, options.skipDesktopInstall)
   }
   if (setup.outcome !== 'runtime-required' || capabilities?.nodeRuntimeInstall !== 'managed') {
     return setup

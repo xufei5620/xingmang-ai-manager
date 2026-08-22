@@ -7,6 +7,7 @@ import type {
   TemplateVariable,
 } from '../template-types'
 import { builtinNodeRegistry } from '../../domain/builtin-node-definitions'
+import { defaultCharacterSheetPrompt } from '../../library/character-sheet-prompt'
 
 type ImageOperation = 'image-generate' | 'image-edit'
 
@@ -177,8 +178,35 @@ const industryColor: Record<CanvasTemplateIndustry, string> = {
 
 const complete = (subject: string) => `${subject}；主体清晰，构图完整，光影自然，保持参考图中的关键身份与结构特征。`
 
+const dramaScriptParse: CanvasTemplate = {
+  id: 'xingmang-drama-script-parse',
+  version: 1,
+  name: '剧本落资产',
+  description: '粘贴剧本并解析成四表，确认后再落成资产与分镜。不含出图和视频。',
+  category: 'image',
+  industry: 'story',
+  deliverable: '剧本解析入口',
+  tags: ['漫剧', '剧本', '解析'],
+  thumbnail: { kind: 'color', value: industryColor.story },
+  requiredNodeTypes: ['drama-script', 'drama-parse'],
+  workflow: {
+    nodes: [
+      node('script', 'drama-script', 0, 0, { prompt: '' }),
+      node('parse', 'drama-parse', 420, 0, {}),
+    ],
+    edges: [edge('script-parse', 'script', 'out:text', 'parse', 'in:text')],
+  },
+  variables: [
+    { id: 'script', label: '剧本', type: 'text', required: true, target: { nodeId: 'script', path: 'prompt' } },
+  ],
+  requirements: [],
+  featured: true,
+  provenance: { kind: 'xingmang-original' },
+}
+
 export const industryCanvasTemplates: readonly CanvasTemplate[] = [
-  createBranchTemplate({ id: 'xingmang-drama-character-sheet', name: '角色设定卡', description: '生成四张可复用的角色定妆候选。', industry: 'story', deliverable: '角色定妆候选', tags: ['漫剧', '角色', '定妆'], operation: 'image-generate', branches: 1, variants: 4, promptDefaults: [complete('全身角色设定卡，纯色背景，正面立绘')], sizes: ['1024x1536'], featured: true }),
+  dramaScriptParse,
+  createBranchTemplate({ id: 'xingmang-drama-character-sheet', name: '角色设定卡', description: '生成四张上下分栏多视图角色资产图：头顶三视图 + 无头站姿三视图。', industry: 'story', deliverable: '角色多视图资产', tags: ['漫剧', '角色', '定妆', '多视图'], operation: 'image-generate', branches: 1, variants: 4, promptDefaults: [defaultCharacterSheetPrompt], sizes: ['1536x1152'], featured: true }),
   createBranchTemplate({ id: 'xingmang-drama-shot-frame', name: '分镜一致性出图', description: '结合角色与场景参考生成四张分镜候选。', industry: 'story', deliverable: '竖屏分镜候选', tags: ['漫剧', '分镜', '一致性'], operation: 'image-edit', branches: 1, variants: 4, promptDefaults: [complete('竖屏剧情分镜，明确景别、动作和光影')], assetLabel: '角色参考图', secondAssetLabel: '场景参考图', sizes: ['1024x1536'] }),
   createDirectVideoTemplate({ id: 'xingmang-drama-shot-video', name: '镜头图生视频', description: '把单张分镜变成 8 秒竖屏动态镜头。', industry: 'story', deliverable: '8 秒竖屏镜头', tags: ['漫剧', '图生视频'], seconds: '8', size: '720x1280', prompt: '保持人物身份与画面结构，轻微推近，动作自然，镜头稳定。' }),
   createBranchTemplate({ id: 'xingmang-drama-episode-6', name: '漫剧单集六镜骨架', description: '六条镜头生产线，共 24 个图片请求和 6 个视频请求。', industry: 'story', deliverable: '六镜漫剧素材骨架', tags: ['漫剧', '六镜', '生产'], operation: 'image-edit', branches: 6, variants: 4, promptDefaults: Array.from({ length: 6 }, (_, index) => complete(`第 ${index + 1} 镜剧情画面与运镜`)), assetLabel: '角色定妆图', sizes: Array(6).fill('1024x1536'), videoSeconds: '6', videoSize: '720x1280', disclaimer: 'Gallery 只汇总候选；每镜第一个候选作为当前视频节点输入。' }),

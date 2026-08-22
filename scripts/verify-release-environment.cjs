@@ -6,7 +6,7 @@ const {
 const packageVersion = require('../package.json').version
 
 async function main() {
-  const { updateUrl, signing } = validateReleaseEnvironment()
+  const { updateUrl, signing } = validateReleaseEnvironment(process.env, packageVersion)
   const feed = await verifyRemoteFeed({
     baseUrl: updateUrl,
     allowMissing: true,

@@ -4,9 +4,9 @@ const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const {
-  DEFAULT_UPDATE_URL,
   normalizeUpdateBaseUrl,
   resolveEmptyReleaseOutputDirectory,
+  resolveUpdateUrlForVersion,
 } = require('./update-release-utils.cjs')
 const { verifyFreeMacSigningIdentity } = require('./verify-macos-free-signing.cjs')
 const { verifyMacosFreeArtifacts } = require('./verify-macos-free-artifacts.cjs')
@@ -125,7 +125,7 @@ function resolveFreeMacBuildOptions(options = {}) {
     }
   }
   const expectedUpdateUrl = normalizeUpdateBaseUrl(
-    environment.XINGMANG_UPDATE_URL?.trim() || DEFAULT_UPDATE_URL,
+    environment.XINGMANG_UPDATE_URL?.trim() || resolveUpdateUrlForVersion(packageVersion),
   )
   const outputRequest = options.outputDirectory ?? environment.XINGMANG_OUTPUT_DIR ?? `release-free-${packageVersion}`
   const outputDirectory = resolveEmptyReleaseOutputDirectory(projectRoot, packageVersion, outputRequest)

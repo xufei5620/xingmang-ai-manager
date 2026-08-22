@@ -30,7 +30,7 @@ import { AudioPreview, SafeImage, ViewportVideo, isLocalCanvasAssetUrl } from '.
 import { PromptEditor } from '../components/PromptEditor'
 import { promptMentionMime } from '../components/prompt-mentions'
 import { buildCanvasUpstreamReferences, type UpstreamMediaReference } from '../components/upstream-references'
-import { finiteMediaDurationSeconds, mediaAssetAspectRatio, mediaAssetDurationSeconds, mediaAssetSizeLabel, mediaClipDurationChipLabel, mediaHoverTitle, requestedClipDurationSeconds, requestedSizeLabel } from '../library/media-assets'
+import { clipDurationForMediaChip, finiteMediaDurationSeconds, mediaAssetAspectRatio, mediaAssetDurationSeconds, mediaAssetSizeLabel, mediaClipDurationChipLabel, mediaHoverTitle, requestedSizeLabel } from '../library/media-assets'
 import { createNodeRendererRegistry } from './node-renderer-registry'
 import { composerFieldLabel, composerPromptPlaceholder, composerToolbarFields } from './generation-composer'
 import { isMediaResultKind, mediaBoundChipKind, mediaBoundChipLabel, usesMediaBoundLayout } from './media-bound'
@@ -153,6 +153,7 @@ interface NodeChangeHandlers {
   onPreviewAsset(asset: AssetRef): void
   onDisconnectIncoming(edgeId: string): void
   onMediaMetadata(nodeId: string, assetId: string, width: number, height: number, durationSeconds?: number): void
+  onDramaAction(nodeId: string, action: 'compile-sheet' | 'place-image' | 'compile-shot' | 'toggle-lock'): void
   /**
    * Whether a port would accept the connection currently being dragged. Lives
    * here rather than in the port component because only App holds the graph.
@@ -184,6 +185,7 @@ let handlers: NodeChangeHandlers = {
   onPreviewAsset: () => undefined,
   onDisconnectIncoming: () => undefined,
   onMediaMetadata: () => undefined,
+  onDramaAction: () => undefined,
   isPortCompatible: () => true,
 }
 
@@ -260,7 +262,7 @@ function MediaBoundPreview({
   const KindIcon = mediaKindIcon[expectedAssetKind]
   const sizeLabel = mediaAssetSizeLabel(asset) ?? requestedSizeLabel(requestedSize)
   const clipLabel = (expectedAssetKind === 'video' || expectedAssetKind === 'audio')
-    ? mediaClipDurationChipLabel(mediaAssetDurationSeconds(asset) ?? requestedClipDurationSeconds(requestedSeconds))
+    ? mediaClipDurationChipLabel(clipDurationForMediaChip(mediaAssetDurationSeconds(asset), requestedSeconds, hasAsset))
     : null
   const elapsedLabel = isMediaResultKind(kind) ? generationElapsedChipLabel(durationMs) : null
   const previewTitle = mediaHoverTitle([sizeLabel, pending ? undefined : '双击放大预览'])
@@ -360,7 +362,7 @@ function MediaBoundPreview({
 }
 
 function supportsPrompt(kind: NodeKind): boolean {
-  return ['text', 'prompt', 'image', 'video', 'image-generate', 'image-edit', 'video-generate'].includes(kind)
+  return ['text', 'prompt', 'image', 'video', 'image-generate', 'image-edit', 'video-generate', 'drama-script'].includes(kind)
 }
 
 function supportsModel(kind: NodeKind): boolean {
@@ -844,6 +846,51 @@ function NodeSettings({ id, data, kind }: { id: string; data: WorkflowNodeData; 
   if (kind === 'unknown') {
     return <p className="wf-error">{data.errorMessage || '当前版本无法识别这个节点'}</p>
   }
+  if (kind === 'drama-bible') {
+    return (
+      <div className="wf-drama-fields nodrag">
+        <input className="wf-model" aria-label="风格" value={textSetting(data, 'stylePrompt', data.prompt || '3D漫剧写实厚涂风。')} onChange={(event) => handlers.onSettingsChange(id, { stylePrompt: event.target.value })} />
+        <input className="wf-model" aria-label="世界观" placeholder="一句话世界观" value={textSetting(data, 'worldTone')} onChange={(event) => handlers.onSettingsChange(id, { worldTone: event.target.value })} />
+        <p className="wf-result-note">把文字口连到分镜。改这里会影响后面每条分镜的画风。</p>
+      </div>
+    )
+  }
+  if (kind === 'drama-parse') {
+    return <p className="wf-result-note">左边先接「剧本」。点「运行此节点」后弹出四表，确认才会铺角色和分镜，不会自动出图。</p>
+  }
+  if (kind === 'drama-character' || kind === 'drama-scene' || kind === 'drama-prop') {
+    const locked = data.settings?.locked === true
+    const preview = data.result?.localUrl
+    return (
+      <div className="wf-drama-asset nodrag">
+        {preview ? <img className="wf-drama-thumb" src={preview} alt="" /> : <div className="wf-drama-thumb is-empty">待定妆</div>}
+        <input className="wf-model" aria-label="名称" value={textSetting(data, 'name')} onChange={(event) => handlers.onSettingsChange(id, { name: event.target.value })} />
+        <textarea className="wf-note" aria-label="外貌或形态" rows={3} value={textSetting(data, 'appearance')} placeholder={kind === 'drama-scene' ? '环境与色调' : kind === 'drama-prop' ? '形态命门' : '脸发服一句'} onChange={(event) => handlers.onSettingsChange(id, { appearance: event.target.value })} />
+        <label className="wf-video-toggle">
+          <input type="checkbox" checked={locked} onChange={() => handlers.onDramaAction(id, 'toggle-lock')} />
+          <span>{locked ? '已封板' : '未封板'}</span>
+        </label>
+        <div className="wf-drama-actions">
+          <button type="button" onClick={() => handlers.onDramaAction(id, 'compile-sheet')}>生成定妆提示词</button>
+          <button type="button" onClick={() => handlers.onDramaAction(id, 'place-image')}>在右侧添加出图</button>
+        </div>
+        <p className="wf-result-note">{preview ? (locked ? '已封板，下游分镜可以出图。' : '把定妆图拖回这张卡，再勾选封板。') : '1. 写外貌 2. 生成提示词 3. 添加出图并运行 4. 把图拖回来 5. 封板'}</p>
+      </div>
+    )
+  }
+  if (kind === 'drama-shot') {
+    const gate = textSetting(data, 'gate', 'blocked')
+    return (
+      <div className="wf-drama-shot nodrag">
+        <p className={`wf-drama-gate is-${gate}`}>{gate === 'blocked' ? '未封板' : gate === 'stale' ? '需重编译' : '可出图'}</p>
+        <input className="wf-model" aria-label="镜号" value={textSetting(data, 'shotId')} onChange={(event) => handlers.onSettingsChange(id, { shotId: event.target.value })} />
+        <input className="wf-model" aria-label="景别" value={textSetting(data, 'framing')} placeholder="景别" onChange={(event) => handlers.onSettingsChange(id, { framing: event.target.value })} />
+        <textarea className="wf-note" aria-label="动作" rows={3} value={textSetting(data, 'action')} placeholder="只写谁在哪做什么，外貌写在角色资产上" onChange={(event) => handlers.onSettingsChange(id, { action: event.target.value })} />
+        <button type="button" onClick={() => handlers.onDramaAction(id, 'compile-shot')}>生成分镜提示词</button>
+        <p className="wf-result-note">{gate === 'blocked' ? '先把圣经和角色/场景连进来，资产勾选封板后才会变绿。' : '提示词生成后，再在右侧添加图像生成节点并运行。'}</p>
+      </div>
+    )
+  }
   return null
 }
 
@@ -873,7 +920,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
       ? imageModels.some((preset) => preset.id === selectedModel)
       : !videoOperation || videoModels.some((preset) => preset.id === selectedModel)
   )
-  const canRunNode = !disabled && ['image', 'video', 'image-generate', 'image-edit', 'video-generate', 'frame-extract'].includes(kind)
+  const canRunNode = !disabled && ['image', 'video', 'image-generate', 'image-edit', 'video-generate', 'frame-extract', 'drama-parse'].includes(kind)
   const nodeRunning = data.status === 'running' || data.status === 'queued'
   const selectedCandidate = data.candidates?.find((candidate) => candidate.candidateId === data.selectedCandidateId)
     ?? data.candidates?.find((candidate) => candidate.candidateId === data.adoptedCandidateId)
@@ -1043,7 +1090,7 @@ function NodeShell({ id, data, kind, selected }: { id: string; data: WorkflowNod
         <PromptEditor
           label={`${definition.title}提示词`}
           value={data.prompt}
-          placeholder={kind === 'text' || kind === 'prompt' ? '输入提示词或指令' : '补充这个节点的提示词'}
+          placeholder={kind === 'drama-script' ? '在这里粘贴整场剧本，然后运行右侧的「剧本解析」' : kind === 'text' || kind === 'prompt' ? '输入提示词或指令' : '补充这个节点的提示词'}
           references={upstreamReferences}
           onChange={(prompt) => handlers.onPromptChange(id, prompt)}
           onCommit={(prompt) => handlers.onPromptCommit(id, prompt)}

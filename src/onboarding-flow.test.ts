@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import type { AppConfigSummary, CodexSetupStatus, ToolStatus } from './types'
 import {
+  CODEX_SETUP_STATUS_TIMEOUT_MS,
   authorizeCodex,
   authorizeManagedCodex,
   buildCodexDetectionFailureMessage,
@@ -465,5 +466,47 @@ describe('prepareCodexEnvironmentAutomatically', () => {
       platformCapabilitiesFor('darwin', 'arm64'),
     )).resolves.toMatchObject({ outcome: 'runtime-required' })
     expect(api.installNodeRuntime).not.toHaveBeenCalled()
+  })
+
+  it('does not reinstall Codex Desktop after an explicit uninstall preference', async () => {
+    const status = setupStatus({ desktop: false })
+    const api = {
+      getCodexSetupStatus: vi.fn().mockResolvedValue(status),
+      installNodeRuntime: vi.fn(),
+      installCli: vi.fn(),
+      installCodexDesktop: vi.fn(),
+    }
+
+    await expect(prepareCodexEnvironmentAutomatically(
+      api,
+      callbacks().value,
+      platformCapabilitiesFor('win32', 'x64'),
+      { skipDesktopInstall: true },
+    )).resolves.toEqual({ outcome: 'ready', status })
+    expect(api.installCodexDesktop).not.toHaveBeenCalled()
+  })
+})
+
+describe('Codex Desktop post-install verification timeout', () => {
+  it('returns a retryable recovery result instead of waiting forever after install completes', async () => {
+    vi.useFakeTimers()
+    try {
+      const beforeInstall = setupStatus({ desktop: false })
+      const api = {
+        getCodexSetupStatus: vi.fn()
+          .mockResolvedValueOnce(beforeInstall)
+          .mockImplementationOnce(() => new Promise<CodexSetupStatus>(() => undefined)),
+        installCli: vi.fn(),
+        installCodexDesktop: vi.fn().mockResolvedValue(undefined),
+      }
+      const pending = prepareCodexEnvironment(api, callbacks().value, platformCapabilitiesFor('win32', 'x64'), 1_000)
+      await vi.advanceTimersByTimeAsync(1_000)
+      await expect(pending).resolves.toMatchObject({
+        outcome: 'desktop-recovery',
+        error: expect.objectContaining({ message: expect.stringContaining('环境复核超时') }),
+      })
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

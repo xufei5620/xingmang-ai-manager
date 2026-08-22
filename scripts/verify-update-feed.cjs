@@ -1,7 +1,8 @@
 const {
-  DEFAULT_UPDATE_URL,
+  resolveUpdateUrlForVersion,
   verifyRemoteFeed,
 } = require('./update-release-utils.cjs')
+const packageVersion = require('../package.json').version
 
 async function main() {
   const rawArgs = process.argv.slice(2)
@@ -11,7 +12,9 @@ async function main() {
   const platform = platformArgument?.slice('--platform='.length) || 'all'
   const allowLocalHttp = args.has('--allow-local')
   const verifyAssets = !args.has('--metadata-only')
-  const baseUrl = explicitUrl || process.env.XINGMANG_UPDATE_URL || DEFAULT_UPDATE_URL
+  const baseUrl = explicitUrl
+    || process.env.XINGMANG_UPDATE_URL
+    || resolveUpdateUrlForVersion(packageVersion)
   const result = await verifyRemoteFeed({ baseUrl, allowLocalHttp, verifyAssets, platform })
   if (platform === 'windows') {
     const scope = verifyAssets ? 'Windows 元数据与引用文件、blockmap' : 'Windows 元数据'

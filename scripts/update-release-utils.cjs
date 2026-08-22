@@ -4,7 +4,12 @@ const { createHash } = require('node:crypto')
 const { gunzipSync } = require('node:zlib')
 const YAML = require('yaml')
 
-const DEFAULT_UPDATE_URL = 'https://updates.shenfengwl.fun/xingmang-manager/'
+const LEGACY_UPDATE_URL = 'https://updates.shenfengwl.fun/xingmang-manager/'
+const NEW_UPDATE_URL = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
+const UPDATE_MIGRATION_VERSION = '0.1.3'
+// Keep the old export name for callers that intentionally validate the legacy
+// feed or build fixtures for pre-migration packages.
+const DEFAULT_UPDATE_URL = LEGACY_UPDATE_URL
 const MAX_METADATA_BYTES = 1024 * 1024
 const MAX_ARTIFACT_BYTES = 1024 * 1024 * 1024
 const MAX_BLOCKMAP_BYTES = 16 * 1024 * 1024
@@ -178,6 +183,19 @@ function compareReleaseVersions(left, right) {
     return leftPart < rightPart ? -1 : 1
   }
   return 0
+}
+
+/**
+ * Resolve the feed that gets embedded into a package at build time.
+ *
+ * The updater URL is part of app-update.yml, so changing this at runtime would
+ * strand already-installed clients or silently move them between buckets.
+ * Versions before 0.1.3 stay on the legacy bucket; 0.1.3 and newer use the
+ * new R2 route. Explicit XINGMANG_UPDATE_URL overrides this resolver.
+ */
+function resolveUpdateUrlForVersion(version) {
+  const comparison = compareReleaseVersions(version, UPDATE_MIGRATION_VERSION)
+  return comparison >= 0 ? NEW_UPDATE_URL : LEGACY_UPDATE_URL
 }
 
 function assertRemoteReleaseIsOlder(remoteVersion, localVersion) {
@@ -698,8 +716,11 @@ async function verifyRemoteFeed({
   return { baseUrl: normalizedBaseUrl, ...windows, mac }
 }
 
-function validateReleaseEnvironment(env = process.env) {
-  const updateUrl = normalizeUpdateBaseUrl(env.XINGMANG_UPDATE_URL?.trim() || DEFAULT_UPDATE_URL)
+function validateReleaseEnvironment(env = process.env, packageVersion = null) {
+  const defaultUrl = packageVersion
+    ? resolveUpdateUrlForVersion(packageVersion)
+    : DEFAULT_UPDATE_URL
+  const updateUrl = normalizeUpdateBaseUrl(env.XINGMANG_UPDATE_URL?.trim() || defaultUrl)
   const releaseMode = env.XINGMANG_RELEASE === '1'
   const allowUnsigned = env.XINGMANG_ALLOW_UNSIGNED_RELEASE === '1'
   const certificate = env.WIN_CSC_LINK?.trim() || env.CSC_LINK?.trim() || null
@@ -782,6 +803,9 @@ function resolveEmptyReleaseOutputDirectory(rootDirectory, version, configuredPa
 
 module.exports = {
   DEFAULT_UPDATE_URL,
+  LEGACY_UPDATE_URL,
+  NEW_UPDATE_URL,
+  UPDATE_MIGRATION_VERSION,
   MAX_ARTIFACT_BYTES,
   MAX_BLOCKMAP_BYTES,
   MAX_METADATA_BYTES,
@@ -793,6 +817,7 @@ module.exports = {
   parseLatestMetadata,
   safeRelativeArtifactPath,
   resolveEmptyReleaseOutputDirectory,
+  resolveUpdateUrlForVersion,
   sha512File,
   validateLocalRelease,
   validateReleaseEnvironment,

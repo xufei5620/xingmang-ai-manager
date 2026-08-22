@@ -1,11 +1,12 @@
 const {
-  DEFAULT_UPDATE_URL,
+  resolveUpdateUrlForVersion,
   normalizeUpdateBaseUrl,
 } = require('./scripts/update-release-utils.cjs')
 const path = require('node:path')
+const packageVersion = require('./package.json').version
 
 function resolveUpdateUrl() {
-  const rawUrl = process.env.XINGMANG_UPDATE_URL?.trim() || DEFAULT_UPDATE_URL
+  const rawUrl = process.env.XINGMANG_UPDATE_URL?.trim() || resolveUpdateUrlForVersion(packageVersion)
   const allowsLocalHttp = process.env.XINGMANG_UPDATE_DEV === '1'
   return normalizeUpdateBaseUrl(rawUrl, { allowLocalHttp: allowsLocalHttp })
 }
@@ -14,10 +15,15 @@ const outputDirectory = process.env.XINGMANG_OUTPUT_DIR?.trim() || 'release'
 const localBuildMode = process.env.XINGMANG_LOCAL_BUILD === '1'
 const releaseMode = !localBuildMode && process.env.XINGMANG_RELEASE === '1'
 const freeMacReleaseMode = !localBuildMode && process.env.XINGMANG_MAC_FREE_RELEASE === '1'
+const unsignedReleaseMode = !localBuildMode && process.env.XINGMANG_UNSIGNED_RELEASE === '1'
 if (releaseMode && freeMacReleaseMode) {
   throw new Error('XINGMANG_RELEASE=1 与 XINGMANG_MAC_FREE_RELEASE=1 不能同时启用')
 }
+if (unsignedReleaseMode && (releaseMode || freeMacReleaseMode)) {
+  throw new Error('XINGMANG_UNSIGNED_RELEASE=1 不能与签名发布模式同时启用')
+}
 const publicReleaseMode = releaseMode || freeMacReleaseMode
+const updateEnabledMode = publicReleaseMode || unsignedReleaseMode
 if (publicReleaseMode && process.env.XINGMANG_UPDATE_DEV === '1') {
   throw new Error('公开发布模式不能启用 XINGMANG_UPDATE_DEV=1')
 }
@@ -79,7 +85,9 @@ module.exports = {
   // The main process uses this integrity-protected package metadata to keep
   // unpacked/ad-hoc artifacts away from the production update channel.
   extraMetadata: {
-    xingmangLocalBuild: !publicReleaseMode,
+    // Unsigned test releases intentionally keep the updater enabled, while
+    // ordinary local builds remain isolated from every production feed.
+    xingmangLocalBuild: !updateEnabledMode,
   },
   files: [
     'dist/**/*',

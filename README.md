@@ -57,9 +57,10 @@ npm run build:mac:dir
 
 打包版本使用 `electron-updater` 的 generic provider。默认更新目录：
 
-```text
-https://updates.shenfengwl.fun/xingmang-manager/
-```
+更新源按客户端版本分桶：
+
+- `0.1.2` 及更早版本：`https://updates.shenfengwl.fun/xingmang-manager/`
+- `0.1.3` 及更新版本：`https://updatesnew.shenfengwl.fun/xingmang-manager/`（R2 桶 `xingmang-updates-new`）
 
 正式发布必须通过单独的 fail-fast 流程，普通 `npm run build` 只能作为本地调试打包，不能对外发布：
 
@@ -69,9 +70,11 @@ npm run release:build
 
 `release:build` 使用 `electron-builder --publish never`，只在本机生成并校验候选产物，不会上传文件或修改线上 `latest.yml`。构建完成不等于获得发布授权；上传安装程序、上传 `.blockmap`、替换 `latest.yml` 或操作 Cloudflare R2，必须由产品所有者针对当前版本明确下达发布指令，不能从“打包”“继续”或一次历史授权中推断。
 
+本项目当前按产品要求允许不签名更新测试：使用 `XINGMANG_UNSIGNED_RELEASE=1` 或 `npm run release:build:unsigned` 会保留自动更新，但不写入发布者签名校验。该模式只能在确认更新桶和网络链路可信时使用，普通 `npm run build` 仍保持本地构建隔离，不会自动更新。
+
 正式发布默认写入 `release-<package version>`。脚本会在执行任何发布步骤前确认目标目录不存在或为空；若目录含有旧产物会直接停止且不会删除文件，可通过 `XINGMANG_OUTPUT_DIR` 指向项目目录内另一个空目录。随后检查 HTTPS 更新目录没有被官网 SPA 接管，再执行类型检查、全部测试、编译、签名打包和本地产物校验。发布流程明确关闭证书自动发现，并确认安装程序状态为 `Valid` 且发布者匹配 `XINGMANG_SIGNING_PUBLISHER`；`latest.yml` 不合法、文件摘要不匹配、`.blockmap` 缺失、签名缺失或发布者不匹配都会终止发布。没有证书时只能完成源码、类型、测试和编译验证，不能生成正式发布包。
 
-服务器必须把 `/xingmang-manager/` 配置为真实静态目录。若 `latest.yml` 返回官网 HTML，`release:preflight` 会按设计失败；在修复静态路由前不得发布。上传时先上传安装程序和 `.blockmap`，确认完成后最后原子替换 `latest.yml`，避免客户端读到尚未就绪的新版本。部署后执行：
+服务器必须把对应版本的 `/xingmang-manager/` 配置为真实静态目录。`0.1.3+` 的 R2 目录位于 `updatesnew.shenfengwl.fun`，旧版本目录仍保留在 `updates.shenfengwl.fun`。若 `latest.yml` 返回官网 HTML，`release:preflight` 会按设计失败；在修复静态路由前不得发布。上传时先上传安装程序和 `.blockmap`，确认完成后最后原子替换 `latest.yml`，避免客户端读到尚未就绪的新版本。部署后执行：
 
 ```powershell
 npm run update:verify-feed -- --platform=windows

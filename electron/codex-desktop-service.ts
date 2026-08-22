@@ -1423,7 +1423,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       })
       return { action, previousVersion, installedVersion: installedPackage.version }
     } finally {
-      await fs.promises.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
+      // Add-AppxPackage can keep a handle to the MSIX briefly after it has
+      // completed. Waiting for Defender/WindowsApps to release that handle
+      // blocks the IPC promise even though installation already succeeded.
+      // Reclaim the temporary payload in the background so the onboarding
+      // flow can advance immediately; a later launch will clean any residue.
+      void fs.promises.rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined)
     }
   }
 

@@ -29,9 +29,8 @@
   --port-image: #65c592;
   --port-video: #e58b6e;
   --port-audio: #d49ce8;
-  /* Chrome that sits on filled accent or over media keeps the same values in
-     both themes, because the surface underneath is dark either way. This is
-     the existing --surface-media convention. */
+  /* Filled media letterboxing stays dark in both themes. Empty “待生成”
+     placeholders must not inherit this; they use --surface-3. */
   --text-on-accent: #ffffff;
   --divider-on-accent: rgba(255, 255, 255, 0.2);
   --media-overlay-bg: rgba(10, 13, 17, 0.85);

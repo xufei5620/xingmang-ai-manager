@@ -280,6 +280,30 @@ describe('updater service', () => {
     expect(client.listenerCount('error')).toBe(0)
   })
 
+  it('retries a proxy connection failure through the updater session in direct mode', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+    const retryWithoutProxy = vi.fn(async () => {
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        client.emit('update-not-available', updateInfo('1.0.0'))
+      })
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({
+      phase: 'not-available',
+      availableVersion: null,
+      error: null,
+    })
+    expect(retryWithoutProxy).toHaveBeenCalledOnce()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
   it('reports an actionable error when latest.yml is routed to the website SPA', async () => {
     const client = new FakeUpdater()
     client.checkForUpdates.mockRejectedValueOnce(new Error(

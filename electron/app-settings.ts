@@ -4,6 +4,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { relaySites } from './relay-sites'
+import { providerIds, type ProviderId } from './catalog'
 import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
@@ -46,6 +47,14 @@ export interface AppSettings {
    * absent so a newer version's policy string can never fail the read.
    */
   mirrorPolicy?: PinnedMirrorPolicy
+  /**
+   * Providers the user explicitly switched back to their native subscription.
+   * This is intentionally durable: an absent relay key is not enough to tell
+   * "user chose official" apart from "managed provisioning has not run yet".
+   */
+  officialProviders?: ProviderId[]
+  /** User explicitly uninstalled Codex Desktop and does not want auto-reinstall. */
+  codexDesktopInstallDisabled?: boolean
 }
 
 /**
@@ -75,6 +84,8 @@ export interface AppSettingsUpdate {
   sidebarMoreExpanded?: boolean
   relaySiteId?: string
   mirrorPolicy?: MirrorPolicy
+  officialProviders?: ProviderId[]
+  codexDesktopInstallDisabled?: boolean
 }
 
 interface LegacyAppSettings {
@@ -128,6 +139,16 @@ function parseMirrorPolicy(value: unknown): PinnedMirrorPolicy | undefined {
   return value === 'mirror-first' || value === 'official-first' ? value : undefined
 }
 
+function parseOfficialProviders(value: unknown): ProviderId[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const seen = new Set<ProviderId>()
+  for (const entry of value) {
+    if (typeof entry !== 'string' || !providerIds.includes(entry as ProviderId)) continue
+    seen.add(entry as ProviderId)
+  }
+  return providerIds.filter((provider) => seen.has(provider))
+}
+
 function requireWorkspace(value: unknown): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new Error('settings.workspace 必须是非空字符串')
@@ -155,6 +176,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   // site id, and calling the parser twice invites the two results drifting.
   const relaySiteId = parseRelaySiteId(value.relaySiteId)
   const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
+  const officialProviders = parseOfficialProviders(value.officialProviders)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
@@ -169,6 +191,8 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(optionalBoolean(value.sidebarMoreExpanded, false) ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
+    ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
+    ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
   }
 }
 
@@ -272,6 +296,12 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const mirrorPolicy = update.mirrorPolicy === 'auto'
     ? undefined
     : update.mirrorPolicy ?? base.mirrorPolicy
+  const officialProviders = update.officialProviders === undefined
+    ? base.officialProviders
+    : parseOfficialProviders(update.officialProviders) ?? []
+  const codexDesktopInstallDisabled = update.codexDesktopInstallDisabled === undefined
+    ? base.codexDesktopInstallDisabled
+    : update.codexDesktopInstallDisabled
   return {
     version: 2,
     workspace: update.workspace ?? base.workspace,
@@ -281,6 +311,8 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(sidebarMoreExpanded ? { sidebarMoreExpanded: true as const } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
+    ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
+    ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
   }
 }
 
@@ -302,6 +334,33 @@ export function updateAppSettings(
   })
 }
 
+/**
+ * Serializes a single official-account preference update against the latest
+ * on-disk settings. Keeping this as a dedicated queued operation avoids two
+ * concurrent provider switches reading the same stale array and losing each
+ * other's marker.
+ */
+export function setOfficialProvider(
+  filePath: string,
+  provider: ProviderId,
+  official: boolean,
+  hooks: AppSettingsWriteHooks = {},
+  homeDirectory = os.homedir(),
+): Promise<AppSettings> {
+  return enqueueSettingsOperation(filePath, async () => {
+    const current = readAppSettings(filePath, homeDirectory)
+    const providers = new Set(current.officialProviders ?? [])
+    if (official) providers.add(provider)
+    else providers.delete(provider)
+    const merged = mergeAppSettings(current, {
+      version: 2,
+      officialProviders: providerIds.filter((entry) => providers.has(entry)),
+    })
+    await performAtomicSettingsWrite(filePath, merged, hooks)
+    return merged
+  })
+}
+
 export class AppSettingsStore {
   constructor(
     private readonly filePath: string,
@@ -318,5 +377,9 @@ export class AppSettingsStore {
 
   update(update: AppSettingsUpdate, hooks: AppSettingsWriteHooks = {}): Promise<AppSettings> {
     return updateAppSettings(this.filePath, update, hooks, this.homeDirectory)
+  }
+
+  setOfficialProvider(provider: ProviderId, official: boolean, hooks: AppSettingsWriteHooks = {}): Promise<AppSettings> {
+    return setOfficialProvider(this.filePath, provider, official, hooks, this.homeDirectory)
   }
 }

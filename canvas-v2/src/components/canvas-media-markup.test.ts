@@ -15,6 +15,7 @@ describe('canvas media input and candidate wiring', () => {
     expect(workflowNodes).toContain('wf-media-readouts')
     expect(workflowNodes).toContain('generationElapsedChipLabel')
     expect(workflowNodes).toContain('mediaClipDurationChipLabel')
+    expect(workflowNodes).toContain('clipDurationForMediaChip')
     expect(workflowNodes).not.toContain("generationDurationLabel(durationMs, cached)")
     expect(workflowNodes).toContain('aria-label={running ? \'正在生成\' : \'重新生成\'}')
     expect(workflowNodes).toContain('handlers.onPromptChange(id, prompt)')
@@ -63,6 +64,11 @@ describe('canvas media input and candidate wiring', () => {
     const styles = source('../styles.css')
     expect(styles).toContain('.wf-media-chips svg { margin: 0; }')
     expect(styles).toContain('.wf-drop-target.has-asset:hover .wf-media-size')
+    expect(styles).toContain('.wf-node.wf-media-bound:has(.is-pending)')
+    expect(styles).toContain('.wf-node .wf-prompt-editor textarea')
+    expect(styles).toContain('background: transparent;')
+    expect(source('NodeLibrary.tsx')).toContain('promptPresetMime')
+    expect(source('../App.tsx')).toContain('promptPresetMime')
   })
 
   it('keeps canvas video surfaces draggable and plays from an overlay button', () => {

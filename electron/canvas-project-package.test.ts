@@ -133,7 +133,7 @@ describe('canvas project package', () => {
     const audioId = 'C'.repeat(43)
     const videoId = 'D'.repeat(43)
     const content = JSON.stringify({
-      schemaVersion: 2, name: '媒体项目', mediaGroups: { image: '生图分组', video: 'grok' },
+      schemaVersion: 2, name: '媒体项目', mediaGroups: { image: '生图分组', video: 'grok', text: '对话分组', imageModel: 'gpt-image-2', videoModel: 'grok-imagine-video', textModel: 'gpt-5.4' },
       nodes: [
         { id: 'audio', kind: 'audio-input', definitionVersion: 1, position: { x: 0, y: 0 }, data: { prompt: '', model: '', result: { kind: 'audio', assetId: audioId, localUrl: `xingmang-asset://audio/${audioId}`, mimeType: 'audio/wav' } } },
         { id: 'video', kind: 'video-input', definitionVersion: 1, position: { x: 300, y: 0 }, data: { prompt: '', model: '', seconds: '5', result: { kind: 'video', assetId: videoId, localUrl: `xingmang-asset://video/${videoId}`, mimeType: 'video/mp4' } } },
@@ -142,7 +142,24 @@ describe('canvas project package', () => {
     })
     const parsed = parseCanvasProjectWorkflow(content)
     expect(parsed.assetIds).toEqual([])
-    expect(parsed.workflow).toMatchObject({ mediaGroups: { image: '生图分组', video: 'grok' } })
+    expect(parsed.workflow).toMatchObject({
+      mediaGroups: {
+        image: '生图分组', video: 'grok', text: '对话分组',
+        imageModel: 'gpt-image-2', videoModel: 'grok-imagine-video', textModel: 'gpt-5.4',
+      },
+    })
     expect(buildCanvasProjectPackage(content, [])).toContain(`xingmang-asset://audio/${audioId}`)
+  })
+
+  it('accepts drama fields persisted in the existing settings bag', () => {
+    const document = JSON.parse(workflow())
+    document.nodes[0] = {
+      id: 'char-1', kind: 'drama-character', definitionVersion: 1, position: { x: 12, y: 24 },
+      data: {
+        prompt: '定妆', model: '',
+        settings: { assetKind: 'character', name: '虞晚', elementId: 'yuwan', appearance: '红衣金饰', locked: true },
+      },
+    }
+    expect(() => parseCanvasProjectWorkflow(JSON.stringify(document))).not.toThrow()
   })
 })

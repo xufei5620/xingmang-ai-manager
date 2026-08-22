@@ -665,6 +665,9 @@ if (!hasSingleInstanceLock) {
       installEnvironmentGuard: process.platform === 'win32'
         ? (launch) => runWithTrustedWindowsProcessEnvironment(launch)
         : undefined,
+      retryWithoutProxy: async () => {
+        await autoUpdater.netSession.setProxy({ mode: 'direct' })
+      },
     })
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
@@ -1008,7 +1011,22 @@ if (!hasSingleInstanceLock) {
     })
     const canvasRuns = createCanvasRunService({
       store: canvasRunStore,
-      executors: createCanvasNodeExecutors({ imageService: canvasImageService, videoService, assets: canvasProjectAssets }),
+      executors: createCanvasNodeExecutors({
+        imageService: canvasImageService,
+        videoService,
+        assets: canvasProjectAssets,
+        completeText: {
+          completeOnce: (input) => chatService.completeOnce({
+            group: input.group,
+            model: input.model,
+            messages: [
+              { role: 'system', content: input.system },
+              { role: 'user', content: input.user },
+            ],
+            signal: input.signal,
+          }),
+        },
+      }),
     })
     canvasAccountLifecycle.bind({ imageService: canvasImageService, videoService, canvasRuns })
     const canvasController = createCanvasWindowController({

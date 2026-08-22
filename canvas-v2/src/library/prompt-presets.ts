@@ -1,3 +1,5 @@
+import { defaultCharacterSheetPrompt } from './character-sheet-prompt'
+
 export interface CanvasPromptPreset {
   id: string
   title: string
@@ -81,9 +83,9 @@ export const builtinPromptPresets: readonly CanvasPromptPreset[] = [
     tags: ['自媒体', '封面', '底图'], provenance: 'xingmang-original',
   },
   {
-    id: 'xingmang-story-character-card', title: '叙事角色定妆', description: '稳定身份特征的角色设定卡。',
-    prompt: '全身角色设定卡，纯色背景，人物正面站姿，清晰展示脸部、发型、服装、鞋履和标志性配饰，身份特征明确，比例自然，画风统一，不生成文字。',
-    tags: ['漫剧', '角色', '定妆'], provenance: 'xingmang-original',
+    id: 'xingmang-story-character-card', title: '叙事角色定妆', description: '上下分栏多视图角色资产图：头顶三视图 + 无头站姿三视图。',
+    prompt: defaultCharacterSheetPrompt,
+    tags: ['漫剧', '角色', '定妆', '多视图'], provenance: 'xingmang-original',
   },
   {
     id: 'xingmang-game-icon-anchor', title: '同风格道具图标', description: '沿用锚图的视角、材质与光影。',
@@ -91,6 +93,8 @@ export const builtinPromptPresets: readonly CanvasPromptPreset[] = [
     tags: ['游戏', '图标', '道具'], provenance: 'xingmang-original',
   },
 ]
+
+export const promptPresetMime = 'application/x-xingmang-prompt-preset'
 
 export function searchPromptPresets(query: string): readonly CanvasPromptPreset[] {
   const normalized = query.trim().toLocaleLowerCase('zh-CN')

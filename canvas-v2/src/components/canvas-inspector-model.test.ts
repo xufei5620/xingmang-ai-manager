@@ -88,6 +88,10 @@ describe('canvasInspectorParameterRows', () => {
     expect(summary('router', { settings: { strategy: 'all' } })).toEqual([{ label: '路由策略', value: '保留全部输入' }])
     expect(summary('router')).toEqual([{ label: '路由策略', value: '优先首个可用输入' }])
     expect(summary('group')).toEqual([{ label: '分组名称', value: '新建分组' }])
+    expect(summary('drama-shot', { settings: { shotId: 's01', gate: 'blocked' } })).toEqual([
+      { label: '镜号', value: 's01' },
+      { label: '闸', value: '未封板' },
+    ])
   })
 
   it('returns nothing for nodes without editable parameters', () => {

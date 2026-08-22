@@ -308,10 +308,18 @@ export function sanitizeWorkflowV2(raw: unknown): WorkflowParseResult | null {
     if (isRecord(raw.mediaGroups)) {
       const image = optionalSafeString(raw.mediaGroups.image, maximumGroupNameLength)
       const video = optionalSafeString(raw.mediaGroups.video, maximumGroupNameLength)
-      if (image !== null && video !== null && (image || video)) {
+      const text = optionalSafeString(raw.mediaGroups.text, maximumGroupNameLength)
+      const imageModel = optionalSafeString(raw.mediaGroups.imageModel, maximumModelLength)
+      const videoModel = optionalSafeString(raw.mediaGroups.videoModel, maximumModelLength)
+      const textModel = optionalSafeString(raw.mediaGroups.textModel, maximumModelLength)
+      if (image !== null && video !== null && text !== null && imageModel !== null && videoModel !== null && textModel !== null && (image || video || text)) {
         mediaGroups = {
           ...(image ? { image } : {}),
           ...(video ? { video } : {}),
+          ...(text ? { text } : {}),
+          ...(imageModel ? { imageModel } : {}),
+          ...(videoModel ? { videoModel } : {}),
+          ...(textModel ? { textModel } : {}),
         }
       } else {
         warnings.push('已忽略无效的生成分组配置')

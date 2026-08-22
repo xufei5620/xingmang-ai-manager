@@ -2,6 +2,7 @@ const assert = require('node:assert/strict')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
+const { NEW_UPDATE_URL } = require('./update-release-utils.cjs')
 
 const root = path.resolve(__dirname, '..')
 const configPath = path.join(root, 'electron-builder.config.cjs')
@@ -16,6 +17,7 @@ function loadConfig({
   signingSha1,
   keychainPath,
   updateDev = false,
+  unsignedRelease = false,
   updateUrl,
 } = {}) {
   const result = spawnSync(process.execPath, ['-e', `
@@ -43,6 +45,7 @@ function loadConfig({
       XINGMANG_MAC_CI_EPHEMERAL_SIGNING: ephemeralSigning ? '1' : '0',
       XINGMANG_MAC_SIGNING_SHA1: signingSha1 || '',
       XINGMANG_UPDATE_DEV: updateDev ? '1' : '0',
+      XINGMANG_UNSIGNED_RELEASE: unsignedRelease ? '1' : '0',
       XINGMANG_UPDATE_URL: updateUrl || '',
     },
   })
@@ -63,6 +66,17 @@ test('macOS targets produce per-architecture DMG and ZIP candidates', () => {
   assert.equal(config.mac.minimumSystemVersion, '13.0')
   assert.equal(config.mac.hardenedRuntime, true)
   assert.deepEqual(config.win.target, [{ target: 'nsis', arch: ['x64'] }])
+})
+
+test('current package builds embed the new R2 update feed by default', () => {
+  assert.equal(loadConfig().publish.url, NEW_UPDATE_URL)
+})
+
+test('explicit unsigned release mode keeps the updater enabled without forcing signing', () => {
+  const config = loadConfig({ unsignedRelease: true })
+  assert.equal(config.extraMetadata.xingmangLocalBuild, false)
+  assert.equal(config.forceCodeSigning, false)
+  assert.equal(config.publish.publisherName, undefined)
 })
 
 test('macOS local builds use only an ad-hoc identity while notarization stays release-only', () => {

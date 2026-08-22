@@ -26,6 +26,8 @@ export interface NativeConfigInspection {
   matchesRelay: boolean
   apiKey: string
   model: string
+  /** Gemini CLI's persisted auth selector; absent for other providers. */
+  authType?: string
   dataDirectory: string
   dataDirectoryExists: boolean
   files: NativeConfigFile[]
@@ -259,6 +261,12 @@ function readProviderModel(provider: ProviderId, paths: string[]): string {
   }
 }
 
+function readProviderAuthType(provider: ProviderId, paths: string[]): string | undefined {
+  return provider === 'gemini'
+    ? nestedString(readJson(paths[0]), ['security', 'auth', 'selectedType'])
+    : undefined
+}
+
 function normalizeUrl(value: string): string {
   try {
     const parsed = new URL(value.trim())
@@ -303,6 +311,7 @@ export function inspectProviderConfig(
 
   const apiKey = readProviderApiKey(provider, paths)
   const model = readProviderModel(provider, paths)
+  const authType = readProviderAuthType(provider, paths)
   const actualBaseUrl = readProviderBaseUrl(provider, paths)
   const baseUrl = siteBaseUrlsInput[provider]
   return {
@@ -313,6 +322,7 @@ export function inspectProviderConfig(
     matchesRelay: Boolean(apiKey && actualBaseUrl && normalizeUrl(actualBaseUrl) === normalizeUrl(baseUrl)),
     apiKey,
     model,
+    ...(authType !== undefined ? { authType } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
       try {
@@ -358,11 +368,9 @@ function existingCodexProvider(configPath: string): string {
   if (typeof parsed.model_provider === 'string' && parsed.model_provider.trim()) {
     return parsed.model_provider.trim()
   }
-  const providers = parsed.model_providers
-  if (providers && typeof providers === 'object' && !Array.isArray(providers)) {
-    const firstProvider = Object.keys(providers)[0]
-    if (firstProvider) return firstProvider
-  }
+  // A provider table without an explicit active selector is ambiguous. Never
+  // hijack the first user-authored entry (Azure/custom relays are common);
+  // use the stable OpenAI entry and let the merge path create it if needed.
   return 'OpenAI'
 }
 
@@ -520,7 +528,13 @@ function createMergePlans(
             parsed.model = model
             parsed.review_model = model
             parsed.model_provider = providerName
-            ensureRecord(ensureRecord(parsed, 'model_providers'), providerName).base_url = siteBaseUrls.codex
+            const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
+            providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
+              ? providerEntry.name
+              : providerName
+            providerEntry.base_url = siteBaseUrls.codex
+            providerEntry.wire_api = 'responses'
+            providerEntry.requires_openai_auth = true
             return { path: paths[0], content: tomlContent(parsed) }
           })()
         : initial(paths[0])
@@ -544,7 +558,17 @@ function createMergePlans(
     }
     case 'gemini': {
       const plans: FilePlan[] = []
-      if (!fs.existsSync(paths[0])) plans.push(initial(paths[0]))
+      if (!fs.existsSync(paths[0])) {
+        plans.push(initial(paths[0]))
+      } else {
+        const parsed = requireJson(paths[0], '现有 Gemini settings.json')
+        // Gemini CLI keeps the auth strategy in settings.json. Updating only
+        // .env after a prior OAuth login leaves the UI looking configured while
+        // the CLI continues to authenticate with Google, so merge must restore
+        // the API-key selector just like reset does.
+        ensureRecord(ensureRecord(parsed, 'security'), 'auth').selectedType = 'gemini-api-key'
+        plans.push({ path: paths[0], content: jsonContent(parsed) })
+      }
       // 读取失败必须中止保存，静默当空文件会把用户已有环境变量覆盖掉。
       const content = requireConfigText(paths[1], '现有 Gemini .env')
       if (content === null) {

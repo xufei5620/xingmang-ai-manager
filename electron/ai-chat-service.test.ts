@@ -292,4 +292,25 @@ describe('AI chat streaming service', () => {
     service.dispose()
     await service.whenIdle()
   })
+
+  it('collects a completeOnce stream without emitting to a renderer', async () => {
+    const emit = vi.fn()
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode('data: {"choices":[{"delta":{"content":"{\\"shots\\":[]}"}}]}\n\n'),
+      encoder.encode('data: [DONE]\n\n'),
+    ]))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit,
+    })
+    const text = await service.completeOnce({
+      group: 'Gemini',
+      model: 'gpt-5.4',
+      messages: [{ role: 'user', content: '解析' }],
+    })
+    expect(text).toContain('shots')
+    expect(emit).not.toHaveBeenCalled()
+    service.dispose()
+  })
 })

@@ -287,6 +287,22 @@ describe('native CLI configuration files', () => {
     expect(merged.customSetting).toEqual({ enabled: true })
   })
 
+  it('restores Gemini API-key auth mode when merging over an OAuth config', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('gemini', 'old-key', testModels.gemini, 'reset', roots, {}, providerBaseUrls)
+    const [settingsPath] = providerConfigPaths('gemini', roots)
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    ;(settings.security as Record<string, unknown>).auth = { selectedType: 'oauth-personal' }
+    fs.writeFileSync(settingsPath, `${JSON.stringify(settings, null, 2)}\n`, 'utf8')
+
+    saveProviderConfig('gemini', 'new-key', 'gemini-3.5-pro', 'merge', roots, {}, providerBaseUrls)
+
+    const merged = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(asRecord(merged.security)?.auth)?.selectedType).toBe('gemini-api-key')
+    expect(inspectProviderConfig('gemini', roots).authType).toBe('gemini-api-key')
+  })
+
   it('backs up Codex files and preserves its existing provider identifier', () => {
     const home = temporaryHome()
     const [configPath, authPath] = providerConfigPaths('codex', providerRoots(home))
@@ -341,6 +357,55 @@ describe('native CLI configuration files', () => {
     expect(mergedAuth.OPENAI_API_KEY).toBe('new-key')
     expect(mergedAuth.CUSTOM_AUTH).toBe('preserved')
     expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
+  })
+
+  it('fills the complete Codex relay provider contract during merge', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'model_provider = "OpenAI"',
+      '',
+      '[model_providers.OpenAI]',
+      'base_url = "https://legacy.example.com/v1"',
+      'custom_header = "keep"',
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'new-key', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+    const provider = asRecord(parsed?.model_providers)?.OpenAI
+    expect(provider).toMatchObject({
+      name: 'OpenAI',
+      base_url: 'https://xm.solov.cc/v1',
+      wire_api: 'responses',
+      requires_openai_auth: true,
+      custom_header: 'keep',
+    })
+  })
+
+  it('does not select a user custom provider when model_provider is absent', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      '[model_providers.azure]',
+      'name = "azure"',
+      'base_url = "https://azure.example.com"',
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, '{}\n', 'utf8')
+
+    saveProviderConfig('codex', 'new-key', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))!
+    expect(parsed.model_provider).toBe('OpenAI')
+    expect(asRecord(parsed.model_providers)?.azure).toMatchObject({ base_url: 'https://azure.example.com' })
+    expect(asRecord(parsed.model_providers)?.OpenAI).toMatchObject({ base_url: 'https://xm.solov.cc/v1' })
   })
 
   it('rolls back every Codex file at a custom external root when its hook fails', () => {
@@ -424,8 +489,10 @@ describe('native CLI configuration files', () => {
     fs.appendFileSync(envPath, 'CUSTOM_VALUE=preserved\n', 'utf8')
 
     const result = saveProviderConfig('gemini', 'new-key', 'gemini-3.5-pro', 'merge', providerRoots(home), {}, providerBaseUrls)
-    expect(result.backups).toHaveLength(1)
-    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(settingsBefore)
+    expect(result.backups).toHaveLength(2)
+    const mergedSettings = JSON.parse(fs.readFileSync(settingsPath, 'utf8')) as Record<string, unknown>
+    expect(asRecord(asRecord(mergedSettings.security)?.auth)?.selectedType).toBe('gemini-api-key')
+    expect(mergedSettings.ide).toEqual(JSON.parse(settingsBefore).ide)
     expect(fs.readFileSync(envPath, 'utf8')).toContain('GOOGLE_GEMINI_BASE_URL=https://xm.solov.cc')
     expect(fs.readFileSync(envPath, 'utf8')).toContain('GEMINI_API_KEY=new-key')
     expect(fs.readFileSync(envPath, 'utf8')).toContain('GEMINI_MODEL=gemini-3.5-pro')

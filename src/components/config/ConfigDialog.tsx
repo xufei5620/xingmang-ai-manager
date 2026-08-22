@@ -53,6 +53,7 @@ export function ConfigDialog({
   relaySite,
   accountAuthenticated,
   onConfigChange,
+  onSettingsChange,
   onClose,
   notify,
   awaitCliReady,
@@ -64,6 +65,7 @@ export function ConfigDialog({
   relaySite: RelaySite
   accountAuthenticated: boolean
   onConfigChange: (config: AppConfigSummary) => void
+  onSettingsChange: (settings: import('../../types').AppSettingsV2) => void
   onClose: () => void
   notify: (toast: { type: 'success' | 'error'; message: string }) => void
   /** Resolves once the app's first environment scan has settled; see startup-gate.ts. */
@@ -366,6 +368,7 @@ export function ConfigDialog({
           })
       const next = await window.xingmang.getConfig()
       onConfigChange(next)
+      onSettingsChange(await window.xingmang.getSettings())
       // 保存成功后回到「无未保存修改」状态，避免关闭弹窗时误弹放弃确认。
       setApiKey('')
       setAvailableModels([])
@@ -411,6 +414,7 @@ export function ConfigDialog({
     try {
       await window.xingmang.switchToOfficialAccount(activeProvider)
       onConfigChange(await window.xingmang.getConfig())
+      onSettingsChange(await window.xingmang.getSettings())
       setOfficialAccountOpen(false)
       notify({ type: 'success', message: `已切换为你自己的${accountSourceLabel ?? '官方账号'}` })
     } catch (error) {

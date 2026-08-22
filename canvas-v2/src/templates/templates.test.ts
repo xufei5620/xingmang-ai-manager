@@ -14,7 +14,7 @@ function idFactory() {
 
 describe('built-in canvas templates', () => {
   it('provides 23 Xingmang-original templates without example media', () => {
-    expect(builtinCanvasTemplates).toHaveLength(23)
+    expect(builtinCanvasTemplates).toHaveLength(24)
     expect(builtinCanvasTemplates.slice(0, 3).map((template) => template.name)).toEqual([
       '快速文生图', '参考图改图', '产品图生成短视频',
     ])
@@ -24,7 +24,7 @@ describe('built-in canvas templates', () => {
       expect(JSON.stringify(template)).not.toMatch(/https?:|data:|api[_-]?key|token|password/i)
       expect(() => validateCanvasTemplate(template)).not.toThrow()
     }
-    expect(new Set(builtinCanvasTemplates.map((template) => template.id)).size).toBe(23)
+    expect(new Set(builtinCanvasTemplates.map((template) => template.id)).size).toBe(24)
     const provenance = JSON.parse(readFileSync(new URL('../../../docs/canvas-third-party.json', import.meta.url), 'utf8')) as {
       templates: { id: string; provenance: string }[]
     }

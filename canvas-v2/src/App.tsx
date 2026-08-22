@@ -100,6 +100,9 @@ import { NodeLibrary } from './components/NodeLibrary'
 import { CanvasInspector, type CanvasInspectorNode, type CanvasInspectorTab } from './components/CanvasInspector'
 import { projectCanvasInspectorNodes } from './components/canvas-inspector-model'
 import { RunPreflight } from './components/RunPreflight'
+import { DramaParseConfirm } from './components/DramaParseConfirm'
+import type { DramaParseTables } from './library/drama-model'
+import type { DramaConfirmSelection } from './library/drama-layout'
 import { SelectionToolbar } from './components/SelectionToolbar'
 import {
   buildCanvasClipboardPayload,
@@ -117,11 +120,18 @@ import {
   projectRunRecordToNodes,
   selectNodeCandidate,
 } from './runtime/run-projection'
-import { ChevronDown, Crosshair, FolderOpen, Focus, History, Image as ImageIcon, LayoutGrid, Map as MapIcon, MoreHorizontal, PanelRight, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Undo2, Video, X } from 'lucide-react'
+import { ChevronDown, Crosshair, FolderOpen, Focus, History, Image as ImageIcon, LayoutGrid, Map as MapIcon, MessageSquareText, MoreHorizontal, PanelRight, Play, Plus, Redo2, SlidersHorizontal, Sparkles, Undo2, Video, X } from 'lucide-react'
 import { canvasNodeDocumentRecord, useCanvasDocument } from './store/use-canvas-document'
 import type { CanvasDocumentState, CanvasMediaGroups } from './store/canvas-state'
 import type { EditorNodeRecord } from './domain/node-definition'
 import { applyCatalogClipDurationToNodes, assetInputNodeKind, mediaAssetNodeDimensions, pendingMediaNodeDimensions, requestedClipDurationSeconds } from './library/media-assets'
+import { availableTextModels, mediaGroupsEqual, mediaGroupsSignature, needsPreferredMediaDefaults, preferredMediaGroups, preferredModelForNodeType, withPreferredMediaDefaults, withResolvedMediaModels, type MediaCapabilityKind } from './library/media-groups'
+import { compileAssetSheetPrompt } from './library/drama-compile'
+import { dramaPreflightBlockReasons, collectDramaShotAlerts, compileConnectedShotPrompt, markDownstreamShotsStale, resolveDramaShotGate } from './library/drama-graph'
+import { buildDramaNodesFromTables } from './library/drama-layout'
+import { parseDramaTablesJson } from './library/drama-parse'
+import { dramaAssetKindForType, isDramaAssetNodeType, readDramaAsset, readDramaBible, readDramaShot, dramaAssetSettings, dramaShotSettings } from './library/drama-settings'
+import { promptPresetMime } from './library/prompt-presets'
 import { cachedNodeIdsForPreflight } from './runtime/pinned-reuse'
 import { QuickInsert, type QuickInsertCommand } from './components/QuickInsert'
 import { TemplateCatalog } from './components/TemplateCatalog'
@@ -221,7 +231,7 @@ export function toWorkflowNode(node: CanvasNode): WorkflowNode {
 export function toCanvasRunGraph(
   nodes: readonly CanvasNode[],
   edges: readonly Edge[],
-  groups: { image: string; video: string },
+  groups: { image: string; video: string; text?: string; textModel?: string },
 ): CanvasRunGraph {
   const runnableNodes = nodes.filter(isCanvasGraphNode)
   const runnableIds = new Set(runnableNodes.map((node) => node.id))
@@ -233,9 +243,10 @@ export function toCanvasRunGraph(
       ...(node.disabled ? { disabled: true } : {}),
       data: {
         prompt: node.data.prompt,
-        model: node.data.model,
+        model: node.type === 'drama-parse' && !node.data.model && groups.textModel ? groups.textModel : node.data.model,
         ...(['image', 'image-generate', 'image-edit'].includes(node.type ?? '') ? { group: groups.image } : {}),
         ...(['video', 'video-generate'].includes(node.type ?? '') ? { group: groups.video } : {}),
+        ...(node.type === 'drama-parse' && groups.text ? { group: groups.text } : {}),
         quality: node.data.quality,
         size: node.data.size,
         imageResolution: node.data.imageResolution,
@@ -314,8 +325,9 @@ function imageOperationDefaults(
   type: string,
   imageModels: readonly string[] = [],
   videoModels: readonly string[] = [],
+  preferred: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  return operationDefaultsForTemplateNode(type, imageModels, videoModels).config
+  return operationDefaultsForTemplateNode(type, imageModels, videoModels, preferred).config
 }
 
 function editorNodeToCanvasNode(node: EditorNodeRecord): CanvasNode {
@@ -439,26 +451,39 @@ function MediaConfiguration({
   groups,
   imageGroup,
   videoGroup,
+  textGroup,
+  imageModel,
+  videoModel,
+  textModel,
   imageModels,
   videoModels,
+  textModels,
   preparing,
   onToggle,
   onClose,
-  onSelect,
+  onSelectGroup,
+  onSelectModel,
 }: {
   open: boolean
   groups: readonly CanvasGroupSummary[]
   imageGroup: string | null
   videoGroup: string | null
+  textGroup: string | null
+  imageModel: string | null
+  videoModel: string | null
+  textModel: string | null
   imageModels: readonly string[]
   videoModels: readonly string[]
-  preparing: 'image' | 'video' | 'all' | null
+  textModels: readonly string[]
+  preparing: MediaPreparationKind | null
   onToggle(): void
   onClose(): void
-  onSelect(kind: 'image' | 'video', group: string): void
+  onSelectGroup(kind: MediaCapabilityKind, group: string): void
+  onSelectModel(kind: MediaCapabilityKind, model: string): void
 }) {
   const imagePresets = availableImageModelPresets(imageModels)
   const videoPresets = availableVideoModelPresets(videoModels)
+  const textPresets = availableTextModels(textModels)
   const rootRef = useRef<HTMLDivElement>(null)
   const triggerRef = useRef<HTMLButtonElement>(null)
   const panelRef = useRef<HTMLElement>(null)
@@ -504,7 +529,7 @@ function MediaConfiguration({
         aria-haspopup="dialog"
         aria-expanded={open}
         aria-controls="canvas-media-config-panel"
-        title="分别设置生图与视频生成分组"
+        title="分别设置生图、视频与文字生成分组及默认模型"
         onClick={onToggle}
       >
         <SlidersHorizontal size={14} aria-hidden="true" />
@@ -513,56 +538,123 @@ function MediaConfiguration({
       {open && (
         <section ref={panelRef} id="canvas-media-config-panel" className="canvas-media-config-panel" role="dialog" aria-label="画布生成配置">
           <header>
-            <span><strong>生成配置</strong><small>按能力选择分组</small></span>
+            <span><strong>生成配置</strong><small>按能力选择分组和默认模型</small></span>
             <button type="button" className="canvas-icon-command" aria-label="关闭生成配置" title="关闭" onClick={closeAndRestoreFocus}><X size={14} /></button>
           </header>
-          <label className="canvas-media-config-field">
-            <span className="canvas-media-config-label"><ImageIcon size={15} aria-hidden="true" /><span><strong>生图分组</strong><small>{preparing === 'image' || preparing === 'all' ? '正在准备 API Key…' : `${imagePresets.length} 个可用模型`}</small></span></span>
-            <select autoFocus aria-label="生图分组" value={imageGroup ?? ''} disabled={preparing !== null} onChange={(event) => onSelect('image', event.target.value)}>
-              {groups.map((group) => <option key={group.name} value={group.name}>{group.name} · {group.ratio}x</option>)}
-            </select>
-            <small className={imagePresets.length ? 'canvas-media-config-models' : 'canvas-media-config-models is-empty'}>
-              {imagePresets.length ? imagePresets.map((model) => model.label).join(' · ') : '该分组当前没有可用图像模型'}
-            </small>
-          </label>
-          <label className="canvas-media-config-field">
-            <span className="canvas-media-config-label"><Video size={15} aria-hidden="true" /><span><strong>视频分组</strong><small>{preparing === 'video' || preparing === 'all' ? '正在准备 API Key…' : `${videoPresets.length} 个可用模型`}</small></span></span>
-            <select aria-label="视频分组" value={videoGroup ?? ''} disabled={preparing !== null} onChange={(event) => onSelect('video', event.target.value)}>
-              {groups.map((group) => <option key={group.name} value={group.name}>{group.name} · {group.ratio}x</option>)}
-            </select>
-            <small className={videoPresets.length ? 'canvas-media-config-models' : 'canvas-media-config-models is-empty'}>
-              {videoPresets.length ? videoPresets.map((model) => model.label).join(' · ') : '该分组当前没有可用视频模型'}
-            </small>
-          </label>
+          <MediaCapabilityField
+            kind="image"
+            title="生图分组"
+            icon={<ImageIcon size={15} aria-hidden="true" />}
+            group={imageGroup}
+            model={imageModel}
+            groups={groups}
+            models={imagePresets.map((preset) => ({ id: preset.id, label: preset.label }))}
+            preparing={preparing === 'image' || preparing === 'all'}
+            busy={preparing !== null}
+            emptyHint="该分组当前没有可用图像模型"
+            autoFocus
+            onSelectGroup={onSelectGroup}
+            onSelectModel={onSelectModel}
+          />
+          <MediaCapabilityField
+            kind="video"
+            title="视频分组"
+            icon={<Video size={15} aria-hidden="true" />}
+            group={videoGroup}
+            model={videoModel}
+            groups={groups}
+            models={videoPresets.map((preset) => ({ id: preset.id, label: preset.label }))}
+            preparing={preparing === 'video' || preparing === 'all'}
+            busy={preparing !== null}
+            emptyHint="该分组当前没有可用视频模型"
+            onSelectGroup={onSelectGroup}
+            onSelectModel={onSelectModel}
+          />
+          <MediaCapabilityField
+            kind="text"
+            title="文字分组"
+            icon={<MessageSquareText size={15} aria-hidden="true" />}
+            group={textGroup}
+            model={textModel}
+            groups={groups}
+            models={textPresets.map((id) => ({ id, label: id }))}
+            preparing={preparing === 'text' || preparing === 'all'}
+            busy={preparing !== null}
+            emptyHint="该分组当前没有可用聊天模型"
+            onSelectGroup={onSelectGroup}
+            onSelectModel={onSelectModel}
+          />
         </section>
       )}
     </div>
   )
 }
 
-type MediaPreparationKind = 'image' | 'video' | 'all'
+function MediaCapabilityField({
+  kind,
+  title,
+  icon,
+  group,
+  model,
+  groups,
+  models,
+  preparing,
+  busy,
+  emptyHint,
+  autoFocus,
+  onSelectGroup,
+  onSelectModel,
+}: {
+  kind: MediaCapabilityKind
+  title: string
+  icon: JSX.Element
+  group: string | null
+  model: string | null
+  groups: readonly CanvasGroupSummary[]
+  models: readonly { id: string; label: string }[]
+  preparing: boolean
+  busy: boolean
+  emptyHint: string
+  autoFocus?: boolean
+  onSelectGroup(kind: MediaCapabilityKind, group: string): void
+  onSelectModel(kind: MediaCapabilityKind, model: string): void
+}) {
+  const groupLabel = `${title}分组选择`
+  const modelLabel = `${title.replace('分组', '')}默认模型`
+  const selectedModel = model && models.some((entry) => entry.id === model) ? model : (models[0]?.id ?? '')
+  return (
+    <div className="canvas-media-config-field">
+      <span className="canvas-media-config-label">{icon}<span><strong>{title}</strong><small>{preparing ? '正在准备 API Key…' : `${models.length} 个可用模型`}</small></span></span>
+      <label className="canvas-media-config-control">
+        <span>分组</span>
+        <select autoFocus={autoFocus} aria-label={groupLabel} value={group ?? ''} disabled={busy} onChange={(event) => onSelectGroup(kind, event.target.value)}>
+          {!group && <option value="" disabled>请选择分组</option>}
+          {groups.map((entry) => <option key={entry.name} value={entry.name}>{entry.name} · {entry.ratio}x</option>)}
+        </select>
+      </label>
+      <label className="canvas-media-config-control">
+        <span>默认模型</span>
+        <select aria-label={modelLabel} value={selectedModel} disabled={busy || models.length === 0} onChange={(event) => onSelectModel(kind, event.target.value)}>
+          {models.length === 0 && <option value="" disabled>暂无可用模型</option>}
+          {models.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+        </select>
+      </label>
+      <small className={models.length ? 'canvas-media-config-models' : 'canvas-media-config-models is-empty'}>
+        {models.length ? `后续${kind === 'image' ? '图像' : kind === 'video' ? '视频' : '文字'}节点优先使用所选默认模型` : emptyHint}
+      </small>
+    </div>
+  )
+}
+
+type MediaPreparationKind = MediaCapabilityKind | 'all'
 
 interface PreparedMediaConfiguration {
   mediaGroups: CanvasMediaGroups
   imageModels: string[]
   videoModels: string[]
+  textModels: string[]
   keyCreatedGroups: string[]
   warnings: string[]
-}
-
-function mediaGroupsSignature(mediaGroups: CanvasMediaGroups): string {
-  return `${mediaGroups.image ?? ''}\u0000${mediaGroups.video ?? ''}`
-}
-
-function preferredMediaGroups(availableGroups: readonly CanvasGroupSummary[]): CanvasMediaGroups {
-  if (availableGroups.length === 0) return {}
-  const image = availableGroups.find((entry) => entry.name === '生图分组')?.name
-    ?? availableGroups.find((entry) => entry.name === 'openai')?.name
-    ?? availableGroups[0].name
-  const video = availableGroups.find((entry) => entry.name.toLowerCase() === 'grok')?.name
-    ?? availableGroups.find((entry) => entry.name.toLowerCase().includes('grok'))?.name
-    ?? image
-  return { image, video }
 }
 
 export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
@@ -598,6 +690,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [groups, setGroups] = useState<CanvasGroupSummary[]>([])
   const [imageModels, setImageModels] = useState<string[]>([])
   const [videoModels, setVideoModels] = useState<string[]>([])
+  const [textModels, setTextModels] = useState<string[]>([])
   const [mediaConfigOpen, setMediaConfigOpen] = useState(false)
   const [preparingMedia, setPreparingMedia] = useState<MediaPreparationKind | null>(null)
   const [assetTrayOpen, setAssetTrayOpen] = useState(false)
@@ -611,6 +704,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [inspectorTab, setInspectorTab] = useState<CanvasInspectorTab>('node')
   const [nodeInspectorOpen, setNodeInspectorOpen] = useState(false)
   const [runPreflight, setRunPreflight] = useState<CanvasRunPreflight | null>(null)
+  const [dramaParseConfirm, setDramaParseConfirm] = useState<{ nodeId: string; tables: DramaParseTables } | null>(null)
   const [pendingCanvasRun, setPendingCanvasRun] = useState<{ graph: CanvasRunGraph; scope: CanvasRunScope } | null>(null)
   const [runInspectorOpen, setRunInspectorOpen] = useState(false)
   const [resumingTaskIds, setResumingTaskIds] = useState<Set<string>>(() => new Set())
@@ -670,6 +764,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const appliedMediaSignatureRef = useRef(mediaGroupsSignature({}))
   const imageGroup = mediaGroups.image ?? null
   const videoGroup = mediaGroups.video ?? null
+  const textGroup = mediaGroups.text ?? null
 
   useEffect(() => {
     if (!window.xingmangCanvasHost) return
@@ -843,10 +938,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       if (requestRevision !== mediaPreparationRevisionRef.current) return null
       groupsRef.current = [...availableGroups]
       setGroups([...availableGroups])
-      const target = typeof targetOrResolver === 'function'
+      const requested = typeof targetOrResolver === 'function'
         ? targetOrResolver(availableGroups)
         : targetOrResolver
-      const requestedGroups = [...new Set([target.image, target.video].filter((group): group is string => Boolean(group)))]
+      const target = withPreferredMediaDefaults(requested, availableGroups)
+      const requestedGroups = [...new Set([target.image, target.video, target.text].filter((group): group is string => Boolean(group)))]
       for (const group of requestedGroups) {
         if (!availableGroups.some((entry) => entry.name === group)) throw new Error(`分组「${group}」已不存在，请重新选择`)
       }
@@ -857,10 +953,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       if (requestRevision !== mediaPreparationRevisionRef.current) return null
       const preparedImage = target.image ? preparedByGroup.get(target.image) : undefined
       const preparedVideo = target.video ? preparedByGroup.get(target.video) : undefined
+      const preparedText = target.text ? preparedByGroup.get(target.text) : undefined
+      const imageModels = [...(preparedImage?.models ?? [])]
+      const videoModels = [...(preparedVideo?.models ?? [])]
+      const textModels = [...(preparedText?.models ?? [])]
       return {
-        mediaGroups: { ...(target.image ? { image: target.image } : {}), ...(target.video ? { video: target.video } : {}) },
-        imageModels: [...(preparedImage?.models ?? [])],
-        videoModels: [...(preparedVideo?.models ?? [])],
+        mediaGroups: withResolvedMediaModels(target, imageModels, videoModels, textModels),
+        imageModels,
+        videoModels,
+        textModels,
         keyCreatedGroups: requestedGroups.filter((group) => preparedByGroup.get(group)?.keyCreated),
         warnings: [...new Set(requestedGroups
           .map((group) => preparedByGroup.get(group)?.storageWarning)
@@ -874,63 +975,79 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const applyPreparedMediaConfiguration = useCallback((prepared: PreparedMediaConfiguration) => {
     setImageModels(prepared.imageModels)
     setVideoModels(prepared.videoModels)
+    setTextModels(prepared.textModels)
     appliedMediaSignatureRef.current = mediaGroupsSignature(prepared.mediaGroups)
   }, [])
 
   useEffect(() => {
-    if (!window.xingmangCanvasHost || !activeProject || imageGroup || videoGroup) return
-    void prepareMediaConfiguration(preferredMediaGroups, 'all').then((prepared) => {
-      if (!prepared || (!prepared.mediaGroups.image && !prepared.mediaGroups.video)) return
-      applyPreparedMediaConfiguration(prepared)
-      execute({ type: 'set-media-groups', mediaGroups: prepared.mediaGroups })
-      if (prepared.warnings.length > 0) setBanner(prepared.warnings.join('；'))
-    }).catch((error) => setBanner(error instanceof Error ? error.message : String(error)))
-    return () => { mediaPreparationRevisionRef.current += 1 }
-  }, [activeProject, applyPreparedMediaConfiguration, execute, imageGroup, prepareMediaConfiguration, videoGroup])
-
-  useEffect(() => {
-    if (!window.xingmangCanvasHost) return
-    const target = { ...(imageGroup ? { image: imageGroup } : {}), ...(videoGroup ? { video: videoGroup } : {}) }
-    const signature = mediaGroupsSignature(target)
-    if (signature === appliedMediaSignatureRef.current) return
-    void prepareMediaConfiguration(target, 'all').then((prepared) => {
+    if (!window.xingmangCanvasHost || !activeProject) return
+    const current = {
+      ...(imageGroup ? { image: imageGroup } : {}),
+      ...(videoGroup ? { video: videoGroup } : {}),
+      ...(textGroup ? { text: textGroup } : {}),
+      ...(mediaGroups.imageModel ? { imageModel: mediaGroups.imageModel } : {}),
+      ...(mediaGroups.videoModel ? { videoModel: mediaGroups.videoModel } : {}),
+      ...(mediaGroups.textModel ? { textModel: mediaGroups.textModel } : {}),
+    }
+    const shouldFillDefaults = needsPreferredMediaDefaults(current)
+    const signature = mediaGroupsSignature(current)
+    if (!shouldFillDefaults && signature === appliedMediaSignatureRef.current) return
+    void prepareMediaConfiguration(current, 'all').then((prepared) => {
       if (!prepared) return
       applyPreparedMediaConfiguration(prepared)
+      if (!mediaGroupsEqual(current, prepared.mediaGroups)) {
+        execute({ type: 'set-media-groups', mediaGroups: prepared.mediaGroups })
+      }
       if (prepared.warnings.length > 0) setBanner(prepared.warnings.join('；'))
     }).catch((error) => {
       setImageModels([])
       setVideoModels([])
+      setTextModels([])
       setBanner(error instanceof Error ? error.message : String(error))
     })
-  }, [applyPreparedMediaConfiguration, imageGroup, prepareMediaConfiguration, videoGroup])
+    return () => { mediaPreparationRevisionRef.current += 1 }
+  }, [activeProject, applyPreparedMediaConfiguration, execute, imageGroup, mediaGroups.imageModel, mediaGroups.textModel, mediaGroups.videoModel, prepareMediaConfiguration, textGroup, videoGroup])
 
-  const selectMediaGroup = useCallback(async (kind: 'image' | 'video', group: string) => {
+  const selectMediaGroup = useCallback(async (kind: MediaCapabilityKind, group: string) => {
     if (!group) return
-    const otherKind = kind === 'image' ? 'video' : 'image'
-    const previousOtherGroup = mediaGroups[otherKind]
-    setBanner(`正在准备${kind === 'image' ? '生图' : '视频'}分组 API Key…`)
+    const labels: Record<MediaCapabilityKind, string> = { image: '生图', video: '视频', text: '文字' }
+    const others = (['image', 'video', 'text'] as const).filter((entry) => entry !== kind)
+    setBanner(`正在准备${labels[kind]}分组 API Key…`)
     try {
-      const prepared = await prepareMediaConfiguration((availableGroups) => ({
-        [kind]: group,
-        ...(previousOtherGroup && availableGroups.some((entry) => entry.name === previousOtherGroup)
-          ? { [otherKind]: previousOtherGroup }
-          : {}),
-      }), kind)
+      const prepared = await prepareMediaConfiguration((availableGroups) => {
+        const kept = Object.fromEntries(others.flatMap((other) => {
+          const name = mediaGroups[other]
+          return name && availableGroups.some((entry) => entry.name === name) ? [[other, name]] : []
+        })) as CanvasMediaGroups
+        return {
+          ...kept,
+          [kind]: group,
+          ...(kept.image && mediaGroups.imageModel ? { imageModel: mediaGroups.imageModel } : {}),
+          ...(kept.video && mediaGroups.videoModel ? { videoModel: mediaGroups.videoModel } : {}),
+          ...(kept.text && mediaGroups.textModel ? { textModel: mediaGroups.textModel } : {}),
+        }
+      }, kind)
       if (!prepared) return
       applyPreparedMediaConfiguration(prepared)
       execute({ type: 'set-media-groups', mediaGroups: prepared.mediaGroups })
       const created = prepared.keyCreatedGroups.includes(group)
-      const clearedInvalidGroup = previousOtherGroup && !prepared.mediaGroups[otherKind]
-      setBanner(clearedInvalidGroup
-        ? `已切换到「${group}」；原${otherKind === 'image' ? '生图' : '视频'}分组已失效并清除`
+      const cleared = others.find((other) => mediaGroups[other] && !prepared.mediaGroups[other])
+      setBanner(cleared
+        ? `已切换到「${group}」；原${labels[cleared]}分组已失效并清除`
         : created
         ? `已自动创建「${group}」分组 API Key`
-        : `${kind === 'image' ? '生图' : '视频'}已切换到「${group}」`)
+        : `${labels[kind]}已切换到「${group}」`)
       if (prepared.warnings.length > 0) setBanner(`分组已可用；${prepared.warnings.join('；')}`)
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
   }, [applyPreparedMediaConfiguration, execute, mediaGroups, prepareMediaConfiguration])
+
+  const selectMediaModel = useCallback((kind: MediaCapabilityKind, model: string) => {
+    if (!model) return
+    const key = kind === 'image' ? 'imageModel' : kind === 'video' ? 'videoModel' : 'textModel'
+    execute({ type: 'set-media-groups', mediaGroups: { ...mediaGroups, [key]: model } })
+  }, [execute, mediaGroups])
 
   // Run bookkeeping reacts to main-process events and must see the current graph
   // without making the subscription depend on it: re-subscribing on every node
@@ -1035,7 +1152,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     try {
       const committed = commitGenerationPrompts(nodes, edges)
       if (committed !== nodes) setNodes(committed)
-      const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+      const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
       const scope: CanvasRunScope = { kind, nodeId }
       const preflight = buildCanvasRunPreflight({
         graph,
@@ -1045,6 +1162,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         videoGroup: videoGroup ?? undefined,
         imageModels,
         videoModels,
+        nodeBlockReasons: dramaPreflightBlockReasons(committed, edges),
       })
       setRunPreflight(preflight)
       if (!preflight.canStart) {
@@ -1310,7 +1428,23 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         if (completed) {
           setSelectedRunId(completed.runId)
           const graph = graphRef.current
-          setNodes((current) => projectRunRecordToNodes(current, completed, graph.edges))
+          setNodes((current) => {
+            let projected = projectRunRecordToNodes(current, completed, graph.edges)
+            for (const record of completed.nodes) {
+              if (isDramaAssetNodeType(record.kind) && (record.state === 'succeeded' || record.state === 'cached')) {
+                projected = markDownstreamShotsStale(projected, graph.edges, record.nodeId) as typeof projected
+              }
+              if (record.kind !== 'drama-parse' || (record.state !== 'succeeded' && record.state !== 'cached')) continue
+              const outputText = [...record.attempts].reverse().find((attempt) => attempt.outputText)?.outputText
+              if (!outputText) continue
+              try {
+                setDramaParseConfirm({ nodeId: record.nodeId, tables: parseDramaTablesJson(outputText).tables })
+              } catch {
+                setBanner('剧本已解析，但结果无法转成四表，请重试')
+              }
+            }
+            return projected
+          })
           setDirtyNodeIds((current) => {
             const next = new Set(current)
             for (const record of completed.nodes) {
@@ -1657,7 +1791,56 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       onSecondsChange: (nodeId, seconds) => markDirtyFrom(nodeId, { seconds }),
       onSettingsChange: (nodeId, patch) => {
         const node = nodes.find((entry) => entry.id === nodeId)
+        const staleAppearance = isDramaAssetNodeType(node?.type) && typeof patch.appearance === 'string' && patch.appearance !== node?.data.settings?.appearance
         markDirtyFrom(nodeId, { settings: { ...node?.data.settings, ...patch } })
+        if (staleAppearance) {
+          setNodes((current) => markDownstreamShotsStale(current, edges, nodeId) as typeof current)
+        }
+      },
+      onDramaAction: (nodeId, action) => {
+        const node = nodes.find((entry) => entry.id === nodeId)
+        if (!node) return
+        if (action === 'toggle-lock') {
+          const locked = node.data.settings?.locked !== true
+          markDirtyFrom(nodeId, { settings: { ...node.data.settings, locked } })
+          return
+        }
+        if (action === 'compile-sheet' && isDramaAssetNodeType(node.type)) {
+          const bible = nodes.find((entry) => entry.type === 'drama-bible')
+          const asset = readDramaAsset(node.data.settings, dramaAssetKindForType(node.type), node.data.prompt)
+          const sheetPrompt = compileAssetSheetPrompt(asset, bible ? readDramaBible(bible.data.settings, bible.data.prompt) : undefined)
+          markDirtyFrom(nodeId, { prompt: sheetPrompt, settings: { ...dramaAssetSettings({ ...asset, sheetPrompt }), locked: asset.locked === true } })
+          return
+        }
+        if (action === 'place-image' && isDramaAssetNodeType(node.type)) {
+          const imageNode = createNode('image-generate', { x: node.position.x + 340, y: node.position.y }, {
+            prompt: node.data.prompt,
+            ...(node.type === 'drama-character' ? { size: '1536x1152' } : {}),
+          })
+          if (!imageNode) return
+          execute({
+            type: 'add-nodes',
+            nodes: [canvasNodeDocumentRecord(imageNode)],
+            edges: [{
+              id: nextNodeId(),
+              source: node.id,
+              sourceHandle: 'out:text',
+              target: imageNode.id,
+              targetHandle: 'in:text',
+            }],
+          })
+          return
+        }
+        if (action === 'compile-shot' && node.type === 'drama-shot') {
+          const compiled = compileConnectedShotPrompt(nodes, edges, node)
+          const resolved = resolveDramaShotGate(nodes, edges, node.id)
+          markDirtyFrom(nodeId, {
+            prompt: compiled,
+            settings: {
+              ...dramaShotSettings({ ...readDramaShot(node.data.settings, node.data.prompt), compiledImagePrompt: compiled, gate: resolved.gate }),
+            },
+          })
+        }
       },
       onSavePromptPreset: (nodeId) => void savePromptPreset(nodeId),
       onRunToNode: (nodeId) => void rerunNode(nodeId),
@@ -1723,6 +1906,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     const kind = type as NodeKind
     const definition = builtinNodeRegistry.resolve(type)
     if (!definition || kind === 'unknown') return null
+    const preferredModel = preferredModelForNodeType(type, mediaGroups)
     const node: WorkflowNode = {
       id: nextNodeId(),
       kind,
@@ -1730,7 +1914,10 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       position: position ?? { x: 120 + Math.random() * 240, y: 120 + Math.random() * 160 },
       width: definition.dimensions.width,
       height: definition.dimensions.height,
-      data: workflowNodeData(type, { ...imageOperationDefaults(type, imageModels, videoModels), ...config }),
+      data: workflowNodeData(type, {
+        ...imageOperationDefaults(type, imageModels, videoModels, preferredModel ? { model: preferredModel } : {}),
+        ...config,
+      }),
     }
     return toCanvasNode(node)
   }
@@ -2475,7 +2662,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     try {
       const committed = commitGenerationPrompts(nodes, edges)
       if (committed !== nodes) setNodes(committed)
-      const currentGraph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+      const currentGraph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
       const currentPreflight = buildCanvasRunPreflight({
         graph: currentGraph,
         scope: pending.scope,
@@ -2484,6 +2671,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         videoGroup: videoGroup ?? undefined,
         imageModels,
         videoModels,
+        nodeBlockReasons: dramaPreflightBlockReasons(committed, edges),
       })
       if (!sameCanvasRunGraphSnapshot(pending.graph, currentGraph)) {
         setRunPreflight(currentPreflight)
@@ -2527,7 +2715,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       try {
         const committed = commitGenerationPrompts(nodes, edges)
         if (committed !== nodes) setNodes(committed)
-        const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '' })
+        const graph = toCanvasRunGraph(committed, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
         const scope = currentRunScope()
         const preflight = buildCanvasRunPreflight({
           graph,
@@ -2537,6 +2725,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           videoGroup: videoGroup ?? undefined,
           imageModels,
           videoModels,
+          nodeBlockReasons: dramaPreflightBlockReasons(committed, edges),
         })
         setRunPreflight(preflight)
         if (!preflight.canStart) {
@@ -2627,6 +2816,10 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
       return {
         image: workflow.mediaGroups?.image ?? imageGroup ?? preferred.image,
         video: workflow.mediaGroups?.video ?? videoGroup ?? preferred.video,
+        text: workflow.mediaGroups?.text ?? textGroup ?? preferred.text,
+        imageModel: workflow.mediaGroups?.imageModel ?? mediaGroups.imageModel,
+        videoModel: workflow.mediaGroups?.videoModel ?? mediaGroups.videoModel,
+        textModel: workflow.mediaGroups?.textModel ?? mediaGroups.textModel,
       }
     }, 'all')
     if (!prepared) return null
@@ -2762,7 +2955,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const serverBacked = Boolean(window.xingmangCanvasHost)
   const mediaConnectionLabel = preparingMedia
     ? '正在准备生成配置…'
-    : `图片 · ${imageGroup ?? '未配置'} / 视频 · ${videoGroup ?? '未配置'}`
+    : `图片 · ${imageGroup ?? '未配置'} / 视频 · ${videoGroup ?? '未配置'} / 文字 · ${textGroup ?? '未配置'}`
   const toggleMediaConfiguration = () => {
     setMoreActionsOpen(false)
     setRunMenuOpen(false)
@@ -2945,12 +3138,18 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             groups={groups}
             imageGroup={imageGroup}
             videoGroup={videoGroup}
+            textGroup={textGroup}
+            imageModel={mediaGroups.imageModel ?? null}
+            videoModel={mediaGroups.videoModel ?? null}
+            textModel={mediaGroups.textModel ?? null}
             imageModels={imageModels}
             videoModels={videoModels}
+            textModels={textModels}
             preparing={preparingMedia}
             onToggle={toggleMediaConfiguration}
             onClose={() => setMediaConfigOpen(false)}
-            onSelect={(kind, group) => void selectMediaGroup(kind, group)}
+            onSelectGroup={(kind, group) => void selectMediaGroup(kind, group)}
+            onSelectModel={selectMediaModel}
           />
           <div ref={moreActionsRef} className="canvas-more-actions">
             <button ref={moreActionsTriggerRef} type="button" className="canvas-icon-command" title="更多操作" aria-label="更多操作" aria-haspopup="menu" aria-expanded={moreActionsOpen} onClick={() => { setMediaConfigOpen(false); setRunMenuOpen(false); setQuickInsert(null); setMoreActionsOpen((open) => !open) }}><MoreHorizontal size={16} /></button>
@@ -3080,6 +3279,11 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
             const nodeType = event.dataTransfer.getData('application/x-xingmang-node')
             if (nodeType) {
               addNode(nodeType, position)
+              return
+            }
+            const presetPrompt = event.dataTransfer.getData(promptPresetMime)
+            if (presetPrompt) {
+              addNode('prompt', position, { prompt: presetPrompt })
               return
             }
             const assetId = event.dataTransfer.getData('application/x-xingmang-asset-id')
@@ -3228,6 +3432,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           onToggleLocked={(nodeId, locked) => setInspectorNodeFlag(nodeId, 'locked', locked)}
           onToggleDisabled={(nodeId, disabled) => setInspectorNodeFlag(nodeId, 'disabled', disabled)}
           onPreview={(node) => node.previewAsset && setPreviewAsset({ ...node.previewAsset })}
+          dramaAlerts={collectDramaShotAlerts(nodes, edges)}
         >
           {inspectorTab === 'assets' && (
             <AssetTray
@@ -3281,6 +3486,25 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         onClose={() => setPreviewAsset(null)}
         onAssetMenu={(assetId) => void hostBridge().showAssetMenu(assetId)}
       />
+      {dramaParseConfirm && (
+        <DramaParseConfirm
+          tables={dramaParseConfirm.tables}
+          onCancel={() => setDramaParseConfirm(null)}
+          onConfirm={(selection: DramaConfirmSelection) => {
+            const bible = nodes.find((entry) => entry.type === 'drama-bible')
+            const laid = buildDramaNodesFromTables(dramaParseConfirm.tables, {
+              createId: nextNodeId,
+              origin: { x: 80, y: 80 },
+              includeBible: !bible,
+              bibleId: bible?.id,
+              selection,
+            })
+            execute({ type: 'add-nodes', nodes: laid.nodes, edges: laid.edges })
+            setDramaParseConfirm(null)
+            setBanner('已落成资产与分镜，未创建出图节点')
+          }}
+        />
+      )}
       {runPreflight && (
         <RunPreflight
           preflight={runPreflight}

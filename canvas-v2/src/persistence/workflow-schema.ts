@@ -59,6 +59,10 @@ export interface PersistedWorkflowV2 {
   mediaGroups?: {
     image?: string
     video?: string
+    text?: string
+    imageModel?: string
+    videoModel?: string
+    textModel?: string
   }
   nodes: PersistedWorkflowNodeV2[]
   edges: WorkflowEdge[]
@@ -147,10 +151,19 @@ function persistedMediaGroups(mediaGroups: WorkflowFile['mediaGroups']): Workflo
   if (!mediaGroups) return undefined
   const image = optionalSafeString(mediaGroups.image, maximumGroupNameLength)
   const video = optionalSafeString(mediaGroups.video, maximumGroupNameLength)
-  if (image === null || video === null || (!image && !video)) return undefined
+  const text = optionalSafeString(mediaGroups.text, maximumGroupNameLength)
+  const imageModel = optionalSafeString(mediaGroups.imageModel, maximumModelLength)
+  const videoModel = optionalSafeString(mediaGroups.videoModel, maximumModelLength)
+  const textModel = optionalSafeString(mediaGroups.textModel, maximumModelLength)
+  if (image === null || video === null || text === null || imageModel === null || videoModel === null || textModel === null) return undefined
+  if (!image && !video && !text) return undefined
   return {
     ...(image ? { image } : {}),
     ...(video ? { video } : {}),
+    ...(text ? { text } : {}),
+    ...(imageModel ? { imageModel } : {}),
+    ...(videoModel ? { videoModel } : {}),
+    ...(textModel ? { textModel } : {}),
   }
 }
 

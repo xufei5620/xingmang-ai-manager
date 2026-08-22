@@ -1,6 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import * as asar from '@electron/asar'
 import { describe, expect, it } from 'vitest'
 import {
   codexDesktopLocaleNeedsChange,
@@ -81,6 +82,40 @@ describe('Codex Desktop locale content', () => {
         menuLocale: true,
         pakLocale: true,
       },
+    })
+  })
+
+  it('detects Chinese resources stored inside a real app.asar archive', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-locale-asar-'))
+    const install = path.join(root, 'OpenAI.Codex_26.818.3698.0_x64__test')
+    const source = path.join(root, 'asar-source')
+    const archive = path.join(install, 'app', 'resources', 'app.asar')
+    fs.mkdirSync(path.join(source, 'webview', 'assets'), { recursive: true })
+    fs.mkdirSync(path.join(source, 'native-menu-locales'), { recursive: true })
+    fs.mkdirSync(path.dirname(archive), { recursive: true })
+    fs.mkdirSync(path.join(install, 'app', 'locales'), { recursive: true })
+    fs.writeFileSync(path.join(source, 'webview', 'assets', 'zh-CN-hash.js'), 'export default {}', 'utf8')
+    fs.writeFileSync(path.join(source, 'native-menu-locales', 'zh-CN.json'), '{}', 'utf8')
+    fs.writeFileSync(path.join(install, 'app', 'locales', 'zh-CN.pak'), 'pak', 'utf8')
+    await asar.createPackage(source, archive)
+
+    const codexHome = path.join(root, '.codex')
+    fs.mkdirSync(codexHome)
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), '[desktop]\nlocaleOverride = "zh-CN"\n', 'utf8')
+    const status = inspectCodexDesktopLocale({
+      codexHome,
+      installed: true,
+      version: '26.818.3698.0',
+      installDirectory: install,
+      running: false,
+      platform: 'win32',
+    })
+
+    expect(status.chineseResources).toMatchObject({
+      available: true,
+      frontendChunk: true,
+      menuLocale: true,
+      pakLocale: true,
     })
   })
 

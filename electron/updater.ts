@@ -76,9 +76,21 @@ export interface UpdaterRuntime {
   enableDevelopmentUpdates?: boolean
   startupCheckTimeoutMs?: number
   installLaunchTimeoutMs?: number
+  /** Retry a failed update request after switching only the updater session to direct mode. */
+  retryWithoutProxy?: () => Promise<void>
   now?: () => Date
   installEnvironmentGuard?: (launch: () => void) => void
   macInstallHandoff?: MacInstallHandoff
+}
+
+function isProxyConnectionFailure(error: unknown): boolean {
+  const candidate = error as { code?: unknown; message?: unknown; description?: unknown }
+  const text = [candidate?.code, candidate?.message, candidate?.description]
+    .filter((value): value is string => typeof value === 'string')
+    .join(' ')
+    .toLowerCase()
+  return text.includes('err_proxy_connection_failed')
+    || text.includes('proxy connection failed')
 }
 
 function releaseNotesText(info: UpdateInfo): string | null {
@@ -158,6 +170,7 @@ export function createUpdaterService(
   const now = runtime.now ?? (() => new Date())
   const startupCheckTimeoutMs = runtime.startupCheckTimeoutMs ?? 8_000
   const installLaunchTimeoutMs = runtime.installLaunchTimeoutMs ?? 10_000
+  const retryWithoutProxy = runtime.retryWithoutProxy
   const installEnvironmentGuard = runtime.installEnvironmentGuard ?? ((launch) => launch())
   const macInstallHandoff = platform === 'darwin' ? runtime.macInstallHandoff : undefined
   let autoInstallTimer: NodeJS.Timeout | null = null
@@ -349,7 +362,17 @@ export function createUpdaterService(
     try {
       await client.checkForUpdates()
     } catch (error) {
-      emit({ phase: 'error', error: safeError(error, platform), progress: null })
+      if (retryWithoutProxy && isProxyConnectionFailure(error)) {
+        try {
+          await retryWithoutProxy()
+          emit({ phase: 'checking', error: null, progress: null })
+          await client.checkForUpdates()
+        } catch (retryError) {
+          emit({ phase: 'error', error: safeError(retryError, platform), progress: null })
+        }
+      } else {
+        emit({ phase: 'error', error: safeError(error, platform), progress: null })
+      }
     }
     return cloneSnapshot(snapshot)
   }
@@ -362,7 +385,17 @@ export function createUpdaterService(
     try {
       await client.downloadUpdate()
     } catch (error) {
-      emit({ phase: 'error', error: safeError(error, platform), progress: null })
+      if (retryWithoutProxy && isProxyConnectionFailure(error)) {
+        try {
+          await retryWithoutProxy()
+          emit({ phase: 'downloading', error: null, progress: null })
+          await client.downloadUpdate()
+        } catch (retryError) {
+          emit({ phase: 'error', error: safeError(retryError, platform), progress: null })
+        }
+      } else {
+        emit({ phase: 'error', error: safeError(error, platform), progress: null })
+      }
     }
     return cloneSnapshot(snapshot)
   }

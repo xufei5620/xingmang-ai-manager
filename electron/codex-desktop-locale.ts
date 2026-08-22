@@ -9,6 +9,7 @@ import {
 } from './safe-local-data'
 
 const maximumCodexConfigBytes = 2 * 1024 * 1024
+const maximumAsarHeaderBytes = 8 * 1024 * 1024
 const localeOverrideKey = 'localeOverride'
 
 export type CodexDesktopLocale = 'zh-CN' | 'system'
@@ -153,6 +154,44 @@ function directoryNames(directory: string): string[] {
   }
 }
 
+/** Read only the bounded JSON index from a real Electron ASAR archive. */
+function asarMemberNames(archivePath: string): string[] {
+  try {
+    const stats = fs.statSync(archivePath)
+    if (!stats.isFile() || stats.size < 16) return []
+    const file = fs.openSync(archivePath, 'r')
+    try {
+      const prefix = Buffer.alloc(16)
+      if (fs.readSync(file, prefix, 0, prefix.length, 0) !== prefix.length) return []
+      const jsonBytes = prefix.readUInt32LE(12)
+      if (jsonBytes <= 0 || jsonBytes > maximumAsarHeaderBytes || 16 + jsonBytes > stats.size) return []
+      const json = Buffer.alloc(jsonBytes)
+      if (fs.readSync(file, json, 0, jsonBytes, 16) !== jsonBytes) return []
+      const root = JSON.parse(json.toString('utf8')) as { files?: Record<string, unknown> }
+      const names: string[] = []
+      const visit = (node: unknown, prefixPath: string) => {
+        if (!node || typeof node !== 'object' || Array.isArray(node)) return
+        const files = (node as { files?: unknown }).files
+        if (!files || typeof files !== 'object' || Array.isArray(files)) return
+        for (const [name, child] of Object.entries(files)) {
+          const member = prefixPath ? `${prefixPath}/${name}` : name
+          if (child && typeof child === 'object' && !Array.isArray(child) && 'files' in child) {
+            visit(child, member)
+          } else {
+            names.push(member)
+          }
+        }
+      }
+      visit(root, '')
+      return names
+    } finally {
+      fs.closeSync(file)
+    }
+  } catch {
+    return []
+  }
+}
+
 function detectChineseResources(installDirectory: string | null): CodexDesktopChineseResources {
   if (!installDirectory) {
     return {
@@ -165,9 +204,12 @@ function detectChineseResources(installDirectory: string | null): CodexDesktopCh
   }
   const resourceRoot = path.join(installDirectory, 'app', 'resources', 'app.asar')
   const assetsDirectory = path.join(resourceRoot, 'webview', 'assets')
+  const archiveMembers = asarMemberNames(resourceRoot)
   const frontendChunk = directoryNames(assetsDirectory).some((name) => /^zh-CN(?:[-_].*)?\.js$/i.test(name))
     || fs.existsSync(path.join(assetsDirectory, 'zh-CN.js'))
+    || archiveMembers.some((name) => /(^|\/)webview\/assets\/zh[-_]cn(?:[-_.].*)?\.js$/i.test(name))
   const menuLocale = fs.existsSync(path.join(resourceRoot, 'native-menu-locales', 'zh-CN.json'))
+    || archiveMembers.some((name) => /(^|\/)native-menu-locales\/zh[-_]cn(?:[-_.].*)?\.json$/i.test(name))
   // Electron locale packs live beside resources under app/locales in current
   // Store builds. Keep the historical ASAR location as a compatibility probe
   // for older packages and test fixtures without weakening the all-three gate.

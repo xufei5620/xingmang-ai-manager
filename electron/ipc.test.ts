@@ -3742,7 +3742,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         apiKey: plaintextKey,
         model: 'gpt-5.6-sol',
         mode: 'merge',
-      }, false)
+      }, false, expect.any(Function))
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
     })
 
@@ -3806,7 +3806,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
 
       const result = await handler(trustedEvent(), {
         providers: ['codex'],
-        preferredModels: { codex: '  gpt-5.6-sol  ' },
+        preferredModels: { codex: '  gpt-5.6-sol  ', gemini: undefined },
       })
 
       expect(result).toEqual({ configured: ['codex'], failed: [] })
@@ -3815,7 +3815,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         apiKey: 'sk-internal-codex-pro',
         model: 'gpt-5.6-sol',
         mode: 'merge',
-      }, false)
+      }, false, expect.any(Function))
       expect(JSON.stringify(result)).not.toContain('sk-internal-')
     })
 

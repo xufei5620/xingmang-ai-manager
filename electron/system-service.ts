@@ -608,8 +608,9 @@ export interface SystemService {
   saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
+    assertBeforeWrite?: () => void,
   ): Promise<ReturnType<typeof saveProviderConfig>>
-  switchToOfficialAccount(provider: ProviderId): ReturnType<typeof switchProviderToOfficialAccount>
+  switchToOfficialAccount(provider: ProviderId): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
@@ -2058,6 +2059,13 @@ export function createSystemService(
       return [id, buildCliStatus(status, latestVersions[index])]
     })) as Record<ProviderId, CliStatus>
 
+    // A Microsoft Store install is outside the app's installer IPC. Once a
+    // scan positively sees the desktop package again, treat that as the user's
+    // manual opt-in and re-enable future managed installs.
+    if (codexDesktop.installed && store.read().codexDesktopInstallDisabled) {
+      await store.update({ version: 2, codexDesktopInstallDisabled: false })
+    }
+
     return {
       checkedAt: new Date().toISOString(),
       network,
@@ -2887,8 +2895,8 @@ export function createSystemService(
   const {
     inspectCodexDesktop,
     inspectCodexDesktopUpdate,
-    installCodexDesktop,
-    uninstallCodexDesktop,
+    installCodexDesktop: installCodexDesktopOperation,
+    uninstallCodexDesktop: uninstallCodexDesktopOperation,
     launchCodexDesktop,
   } = createCodexDesktopService({
     platform,
@@ -2903,6 +2911,22 @@ export function createSystemService(
     inspectNativeProviderConfig,
     spawnDetached,
   })
+
+  async function installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult> {
+    const result = await installCodexDesktopOperation(target)
+    // A successful manual install is an explicit opt-in again. The setting is
+    // cleared only after the desktop package has been verified by the service.
+    await store.update({ version: 2, codexDesktopInstallDisabled: false })
+    return result
+  }
+
+  async function uninstallCodexDesktop(): Promise<ToolUninstallResult> {
+    const result = await uninstallCodexDesktopOperation()
+    if (result.outcome === 'uninstalled') {
+      await store.update({ version: 2, codexDesktopInstallDisabled: true })
+    }
+    return result
+  }
 
   async function launchProviderOperation(provider: ProviderId, workspace: string): Promise<void> {
     const nativeConfig = inspectNativeProviderConfig(provider)
@@ -3143,7 +3167,11 @@ export function createSystemService(
     return inspectNativeProviderConfig(provider).apiKey
   }
 
-  async function saveConfig(payload: ConfigSavePayload, previewOnboarding: boolean) {
+  async function saveConfig(
+    payload: ConfigSavePayload,
+    previewOnboarding: boolean,
+    assertBeforeWrite?: () => void,
+  ) {
     const model = payload.model.trim()
     // An empty key is an explicit renderer sentinel: reuse the key already held by the main process.
     const apiKey = payload.apiKey.trim() || inspectNativeProviderConfig(payload.provider).apiKey
@@ -3153,11 +3181,12 @@ export function createSystemService(
       throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
     }
     if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
+    assertBeforeWrite?.()
     // Read fresh at write time (not captured at service-construction time) so
     // a settings change takes effect on the very next save without requiring
     // a service restart.
     const activeSite = resolveRelaySite(store.read().relaySiteId)
-    return saveProviderConfig(
+    const result = saveProviderConfig(
       payload.provider,
       apiKey,
       payload.model,
@@ -3166,13 +3195,21 @@ export function createSystemService(
       {},
       activeSite.providerBaseUrls,
     )
+    // A successful Star-mang write is the explicit way back from an official
+    // account. Clear the durable opt-out only after the files have committed.
+    await store.setOfficialProvider(payload.provider, false)
+    return result
   }
 
-  function switchToOfficialAccount(provider: ProviderId) {
+  async function switchToOfficialAccount(provider: ProviderId) {
     // 与 saveConfig 同样在写入时现读站点:切换判定要拿当前站点的中转地址去
     // 比对,站点刚改过也不用重启服务。
     const activeSite = resolveRelaySite(store.read().relaySiteId)
-    return switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls)
+    const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls)
+    // Persist the user's explicit choice so startup/onboarding can distinguish
+    // it from an unconfigured CLI and leave the native subscription untouched.
+    await store.setOfficialProvider(provider, true)
+    return result
   }
 
   return {

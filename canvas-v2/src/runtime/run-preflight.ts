@@ -7,6 +7,7 @@ const assetInputKinds = new Set(['image-input', 'video-input', 'audio-input'])
 
 export type CanvasPreflightSeverity = 'info' | 'warning' | 'blocking'
 export type CanvasPreflightAction = 'execute' | 'cached' | 'skip' | 'blocked'
+export type CanvasPreflightReasonCode = 'disabled' | 'upstream-skip' | 'missing-group' | 'unavailable-model' | 'missing-asset' | 'drama-gate'
 
 export interface CanvasRunPreflightInput {
   graph: CanvasRunGraph
@@ -16,6 +17,7 @@ export interface CanvasRunPreflightInput {
   videoGroup?: string
   imageModels: readonly string[]
   videoModels: readonly string[]
+  nodeBlockReasons?: Readonly<Record<string, string>>
 }
 
 export interface CanvasRunPreflightItem {
@@ -26,7 +28,7 @@ export interface CanvasRunPreflightItem {
   group?: string
   model?: string
   reason?: string
-  reasonCode?: 'disabled' | 'upstream-skip' | 'missing-group' | 'unavailable-model' | 'missing-asset'
+  reasonCode?: CanvasPreflightReasonCode
 }
 
 export interface CanvasRunPreflight {
@@ -166,6 +168,10 @@ export function buildCanvasRunPreflight(input: CanvasRunPreflightInput): CanvasR
       action = 'blocked'
       reason = '缺少已保存的本地素材'
       reasonCode = 'missing-asset'
+    } else if (input.nodeBlockReasons?.[node.id]) {
+      action = 'blocked'
+      reason = input.nodeBlockReasons[node.id]
+      reasonCode = 'drama-gate'
     }
     const item: CanvasRunPreflightItem = {
       nodeId: node.id,

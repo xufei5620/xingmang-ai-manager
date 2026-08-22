@@ -161,6 +161,7 @@ export function parseCanvasVideoTaskId(value: unknown): string {
 const canvasNodeKinds = new Set<CanvasRunNodeKind>([
   'text', 'image', 'video', 'prompt', 'image-input', 'video-input', 'audio-input', 'image-generate', 'image-edit',
   'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note',
+  'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot',
 ])
 
 function optionalCanvasString(value: unknown, label: string, maximum: number): string | undefined {

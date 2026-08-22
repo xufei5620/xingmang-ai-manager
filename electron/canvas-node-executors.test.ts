@@ -506,4 +506,23 @@ describe('createCanvasNodeExecutors', () => {
     })
     expect(result?.assets?.map((asset) => asset.assetId)).toEqual(images.map((asset) => asset.assetId))
   })
+
+  it('parses drama tables through injected chat completion and retries once', async () => {
+    const { danyinTwoShotFixture } = await import('./drama-parse')
+    const completeOnce = vi.fn()
+      .mockRejectedValueOnce(new Error('剧本解析返回的 JSON 无法读取'))
+      .mockResolvedValueOnce(JSON.stringify(danyinTwoShotFixture))
+    const executors = createCanvasNodeExecutors({
+      imageService: { generate: vi.fn(), cancel: vi.fn(() => ({ canceled: false, mayStillComplete: false })) },
+      completeText: { completeOnce },
+    })
+    const result = await executors['drama-parse']!({
+      runId: 'run', graphRevision: 'revision', attemptId: 'attempt', ownerId: 9, userId: 7,
+      node: { id: 'parse', kind: 'drama-parse', definitionVersion: 1, data: { prompt: '', model: 'gemini-3.7-flash', group: 'Gemini' } },
+      inputs: { text: '虞晚斜倚锦榻' },
+      signal: new AbortController().signal,
+    })
+    expect(completeOnce).toHaveBeenCalledTimes(2)
+    expect(JSON.parse(result.outputText ?? '').shots[0].shotId).toBe('s01')
+  })
 })

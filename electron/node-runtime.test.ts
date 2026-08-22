@@ -160,12 +160,28 @@ describe('Node.js installer routing and process plans', () => {
     })
     const brokerScript = buildNodeRuntimeUacBrokerScript(plan.msi)
     expect(brokerScript).toContain('-Verb RunAs -Wait -PassThru')
-    expect(brokerScript).toContain("'\"C:\\Temp\\Node package ''quoted''; calc.exe.msi\"'")
-    expect(brokerScript).toContain("'\"ADDLOCAL=ALL\"'")
+    expect(brokerScript).toContain("$argumentLine = '/i \"C:\\Temp\\Node package ''quoted''; calc.exe.msi\" /qn /norestart ADDLOCAL=ALL'")
+    expect(brokerScript).toContain("$ProgressPreference = 'SilentlyContinue'")
 
     const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false, testMachinePaths)
     expect(sameUserPlan.signature.trustedOnly).toBe(false)
     expect(sameUserPlan.msi.trustedOnly).toBe(false)
+  })
+
+  it('binds UAC MSI execution to a digest and rechecks the signature in the broker', () => {
+    const hash = 'a'.repeat(64)
+    const plan = buildNodeRuntimeInstallPlan(
+      'D:\\ProgramData\\XingMangAI\\InstallerCache\\node.msi',
+      'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+      false,
+      testMachinePaths,
+      hash,
+    )
+    expect(plan.msi.integritySha256).toBe(hash)
+    const script = buildNodeRuntimeUacBrokerScript(plan.msi)
+    expect(script).toContain('Get-FileHash')
+    expect(script).toContain('Get-AuthenticodeSignature')
+    expect(script).toContain('OpenJS Foundation')
   })
 
   it.runIf(process.platform === 'win32')('isolates signature checks to the real Windows PowerShell module directory', () => {

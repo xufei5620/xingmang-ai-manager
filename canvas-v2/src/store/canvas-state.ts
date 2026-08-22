@@ -9,6 +9,10 @@ export interface CanvasViewport {
 export interface CanvasMediaGroups {
   image?: string
   video?: string
+  text?: string
+  imageModel?: string
+  videoModel?: string
+  textModel?: string
 }
 
 export interface CanvasDocumentState {
