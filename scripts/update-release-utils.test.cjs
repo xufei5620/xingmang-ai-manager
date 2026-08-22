@@ -10,6 +10,9 @@ const { test } = require('node:test')
 const YAML = require('yaml')
 const {
   DEFAULT_UPDATE_URL,
+  LEGACY_UPDATE_URL,
+  NEW_UPDATE_URL,
+  UPDATE_MIGRATION_VERSION,
   MAX_ARTIFACT_BYTES,
   MAX_BLOCKMAP_BYTES,
   MAX_METADATA_BYTES,
@@ -18,6 +21,7 @@ const {
   normalizeUpdateBaseUrl,
   parseLatestMetadata,
   resolveEmptyReleaseOutputDirectory,
+  resolveUpdateUrlForVersion,
   validateLocalRelease,
   validateReleaseEnvironment,
   verifyRemoteFeed,
@@ -297,6 +301,21 @@ test('validates local release configuration without requiring signing secrets', 
       expectedPublisher: null,
     },
   })
+})
+
+test('keeps legacy clients on the old bucket and sends 0.1.3+ builds to the new R2 feed', () => {
+  assert.equal(UPDATE_MIGRATION_VERSION, '0.1.3')
+  assert.equal(resolveUpdateUrlForVersion('0.1.2'), LEGACY_UPDATE_URL)
+  assert.equal(resolveUpdateUrlForVersion('0.1.3-beta.1'), LEGACY_UPDATE_URL)
+  assert.equal(resolveUpdateUrlForVersion('0.1.3'), NEW_UPDATE_URL)
+  assert.equal(resolveUpdateUrlForVersion('0.1.13'), NEW_UPDATE_URL)
+  assert.equal(resolveUpdateUrlForVersion('0.1.3+build.1'), NEW_UPDATE_URL)
+  assert.equal(validateReleaseEnvironment({}, '0.1.2').updateUrl, LEGACY_UPDATE_URL)
+  assert.equal(validateReleaseEnvironment({}, '0.1.3').updateUrl, NEW_UPDATE_URL)
+  assert.equal(validateReleaseEnvironment({
+    XINGMANG_UPDATE_URL: 'https://updates.example.test/beta',
+  }, '0.1.13').updateUrl, 'https://updates.example.test/beta/')
+  assert.throws(() => resolveUpdateUrlForVersion('not-a-version'), { code: 'RELEASE_VERSION_INVALID' })
 })
 
 test('fails formal release preflight without a certificate and fixed publisher', () => {

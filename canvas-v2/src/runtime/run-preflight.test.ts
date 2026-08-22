@@ -76,6 +76,30 @@ describe('canvas run preflight', () => {
     })).toMatchObject({ canStart: false, risk: 'blocking', blockedCount: 3 })
   })
 
+  it('blocks image generation when a drama shot gate is closed', () => {
+    const result = buildCanvasRunPreflight({
+      graph: {
+        nodes: [
+          { id: 'shot', kind: 'drama-shot', definitionVersion: 1, data: { prompt: 'compiled', model: '' } },
+          { id: 'image', kind: 'image-generate', definitionVersion: 1, data: { prompt: 'out', model: 'gpt-image-2', group: '生图分组' } },
+        ],
+        edges: [{ id: 'e', source: 'shot', sourceHandle: 'out:text', target: 'image', targetHandle: 'in:text' }],
+      },
+      scope: { kind: 'all' },
+      imageGroup: '生图分组',
+      videoGroup: 'grok',
+      imageModels: ['gpt-image-2'],
+      videoModels: ['grok-imagine-video'],
+      nodeBlockReasons: { image: '请先封板角色「虞晚」的定妆图' },
+    })
+    expect(result.canStart).toBe(false)
+    expect(result.items.find((item) => item.nodeId === 'image')).toMatchObject({
+      action: 'blocked',
+      reasonCode: 'drama-gate',
+      reason: '请先封板角色「虞晚」的定妆图',
+    })
+  })
+
   it('rejects an empty or unknown scope deterministically', () => {
     expect(() => selectCanvasRunNodeIdsForPreflight(graph(), { kind: 'selection', nodeIds: [] })).toThrow('运行范围不能为空')
     expect(() => selectCanvasRunNodeIdsForPreflight(graph(), { kind: 'to-node', nodeId: 'missing' })).toThrow('不存在')

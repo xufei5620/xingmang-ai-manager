@@ -165,6 +165,19 @@ describe('ManagedCliKeyStore', () => {
     await expect(store.read(42)).rejects.toThrow('本地托管 API Key 配置已损坏或无法解密')
   })
 
+  it('quarantines a corrupted cache and rebuilds it on the next save', async () => {
+    const filePath = temporaryFilePath()
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(filePath, 'broken encrypted payload', 'utf8')
+    const store = new ManagedCliKeyStore(filePath, fakeSafeStorage())
+
+    await expect(store.save(42, [managedKey('codex')])).resolves.toBe(true)
+
+    expect(fs.existsSync(filePath)).toBe(true)
+    expect(fs.readdirSync(path.dirname(filePath)).some((name) => name.startsWith('managed-cli-keys.dat.corrupt-'))).toBe(true)
+    await expect(store.read(42)).resolves.toEqual([managedKey('codex')])
+  })
+
   it('removes a key only from the matching user record', async () => {
     const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
     const keys = providerIds.map((provider) => managedKey(provider))

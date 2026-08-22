@@ -11,6 +11,7 @@ import {
   pendingMediaNodeDimensions,
   requestedSizeLabel,
   applyCatalogClipDurationToNodes,
+  clipDurationForMediaChip,
   mediaAssetDurationSeconds,
   mediaClipDurationChipLabel,
   mediaDurationLabel,
@@ -123,6 +124,9 @@ describe('canvas media asset projection', () => {
     expect(mediaAssetDurationSeconds({ kind: 'image' })).toBeUndefined()
     expect(requestedClipDurationSeconds('5')).toBe(5)
     expect(requestedClipDurationSeconds('16')).toBeUndefined()
+    expect(clipDurationForMediaChip(undefined, '5', false)).toBeUndefined()
+    expect(clipDurationForMediaChip(undefined, '5', true)).toBe(5)
+    expect(clipDurationForMediaChip(8.4, '5', true)).toBe(8.4)
   })
 
   it('fills missing clip duration from the asset catalog without overwriting measured values', () => {

@@ -148,6 +148,7 @@ export function codexDesktopLaunchDecision(
 export function codexSetupReadyForDashboard(
   status: CodexSetupStatus,
   platform: PlatformCapabilities,
+  codexDesktopInstallDisabled = false,
 ): boolean {
   return !isDetectionFailed(status.runtime.node)
     && !isDetectionFailed(status.runtime.npm)
@@ -156,7 +157,11 @@ export function codexSetupReadyForDashboard(
     && nodeRuntimeSupported(status.runtime)
     && status.runtime.npm.installed
     && status.cli.installed
-    && (status.desktop.installed || platform.codexDesktop.install === 'external')
+    && (
+      status.desktop.installed
+      || platform.codexDesktop.install === 'external'
+      || codexDesktopInstallDisabled
+    )
 }
 
 /**

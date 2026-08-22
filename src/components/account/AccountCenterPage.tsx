@@ -552,6 +552,10 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
 
   const copyAccountKey = async (key: AccountKey) => {
     if (copyingKeyId !== null) return
+    if (key.status !== 1) {
+      notify?.({ type: 'error', message: '该 API Key 已失效或已撤销，请先创建新的 Key' })
+      return
+    }
     setCopyingKeyId(key.id)
     try {
       await window.xingmang.copyAccountKey(key.id)
@@ -577,6 +581,10 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
   }
 
   const toggleAccountKeyReveal = async (key: AccountKey) => {
+    if (key.status !== 1) {
+      notify?.({ type: 'error', message: '该 API Key 已失效或已撤销，不能显示明文' })
+      return
+    }
     if (revealedKeyId === key.id) {
       hideRevealedAccountKey()
       return

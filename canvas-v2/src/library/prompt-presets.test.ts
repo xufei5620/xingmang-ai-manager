@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { builtinPromptPresets, searchPromptPresets } from './prompt-presets'
+import { builtinPromptPresets, promptPresetMime, searchPromptPresets } from './prompt-presets'
 
 describe('prompt preset library', () => {
   it('keeps unique first-party presets with usable content', () => {
@@ -15,6 +15,11 @@ describe('prompt preset library', () => {
   it('searches titles, descriptions and tags without mutating the catalog', () => {
     expect(searchPromptPresets('人像').map((preset) => preset.id)).toContain('xingmang-portrait-editorial')
     expect(searchPromptPresets('合成').map((preset) => preset.id)).toContain('xingmang-background-replace')
+    expect(searchPromptPresets('多视图').map((preset) => preset.id)).toContain('xingmang-story-character-card')
     expect(searchPromptPresets('')).toBe(builtinPromptPresets)
+  })
+
+  it('uses a dedicated drag mime so presets can land on the canvas', () => {
+    expect(promptPresetMime).toBe('application/x-xingmang-prompt-preset')
   })
 })

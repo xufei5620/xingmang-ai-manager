@@ -113,8 +113,12 @@ export async function configureManagedCliKeysForInstalledClis(
  * trip -- see ProvisioningConfirmDialog.tsx, which seeds its selection state
  * from this function's result.
  */
-export function buildProvisioningTargets(snapshot: SystemSnapshot): ProviderId[] {
-  return providerIds.filter((id) => snapshot.clis[id].installed)
+export function buildProvisioningTargets(
+  snapshot: SystemSnapshot,
+  excludedProviders: readonly ProviderId[] = [],
+): ProviderId[] {
+  const excluded = new Set(excludedProviders)
+  return providerIds.filter((id) => !excluded.has(id) && snapshot.clis[id].installed)
 }
 
 /**
@@ -126,12 +130,18 @@ export function buildProvisioningTargets(snapshot: SystemSnapshot): ProviderId[]
 export function validateProvisionedCliConfigs(
   targets: readonly ProviderId[],
   config: AppConfigSummary,
+  excludedProviders: readonly ProviderId[] = [],
 ): Array<{ provider: ProviderId; message: string }> {
+  const excluded = new Set(excludedProviders)
   return targets.flatMap((provider) => {
+    if (excluded.has(provider)) return []
     const summary = config.providers[provider]
     if (!summary?.hasApiKey) return [{ provider, message: '配置文件未检测到 API Key' }]
     if (!summary.matchesRelay) return [{ provider, message: 'Base URL 未指向当前星芒站点' }]
     if (!summary.model.trim()) return [{ provider, message: '默认模型未写入配置' }]
+    if (provider === 'gemini' && 'authType' in summary && summary.authType !== 'gemini-api-key') {
+      return [{ provider, message: 'Gemini 未切换到 API Key 模式' }]
+    }
     return []
   })
 }
@@ -145,8 +155,13 @@ export function validateProvisionedCliConfigs(
 export function managedCliConfigsReadyForDashboard(
   snapshot: SystemSnapshot,
   config: AppConfigSummary,
+  excludedProviders: readonly ProviderId[] = [],
 ): boolean {
-  return validateProvisionedCliConfigs(buildProvisioningTargets(snapshot), config).length === 0
+  return validateProvisionedCliConfigs(
+    buildProvisioningTargets(snapshot, excludedProviders),
+    config,
+    excludedProviders,
+  ).length === 0
 }
 
 export type CliProvisioningGate = 'requires-login' | 'requires-install' | 'ready'
@@ -171,9 +186,10 @@ export type CliProvisioningGate = 'requires-login' | 'requires-install' | 'ready
 export function resolveCliProvisioningGate(
   authenticated: boolean,
   snapshot: SystemSnapshot,
+  excludedProviders: readonly ProviderId[] = [],
 ): CliProvisioningGate {
   if (!authenticated) return 'requires-login'
-  return buildProvisioningTargets(snapshot).length === 0 ? 'requires-install' : 'ready'
+  return buildProvisioningTargets(snapshot, excludedProviders).length === 0 ? 'requires-install' : 'ready'
 }
 
 /**

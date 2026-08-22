@@ -6,6 +6,7 @@ import {
   defaultAppSettings,
   mergeAppSettings,
   readAppSettings,
+  setOfficialProvider,
   updateAppSettings,
   writeAppSettings,
   type AppSettings,
@@ -98,6 +99,27 @@ describe('application settings persistence', () => {
     await writeAppSettings(filePath, settings({ relaySiteId: 'solov' }))
 
     expect(readAppSettings(filePath).relaySiteId).toBe('solov')
+  })
+
+  it('round-trips official provider markers and clears one without touching others', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ officialProviders: ['codex', 'gemini'] }))
+
+    await setOfficialProvider(filePath, 'codex', false)
+
+    expect(readAppSettings(filePath).officialProviders).toEqual(['gemini'])
+  })
+
+  it('serializes concurrent official provider updates against the latest settings', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+
+    await Promise.all([
+      setOfficialProvider(filePath, 'codex', true),
+      setOfficialProvider(filePath, 'gemini', true),
+    ])
+
+    expect(readAppSettings(filePath).officialProviders).toEqual(['codex', 'gemini'])
   })
 
   it('leaves relaySiteId absent when never set, matching pre-W2 behavior', () => {

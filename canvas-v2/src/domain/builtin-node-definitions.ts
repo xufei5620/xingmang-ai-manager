@@ -103,6 +103,46 @@ export const builtinNodeDefinitions: readonly NodeDefinition[] = [
     ports: [], dimensions: { width: 260, height: 140 }, defaultData: { originalType: '', message: '节点类型未安装' },
     executable: false, structural: true,
   }),
+  mediaDefinition({
+    type: 'drama-bible', version: 1, title: '漫剧圣经', description: '全项目共用的画风，会注入每条分镜', category: 'drama',
+    ports: [textOutput], dimensions: { width: 280, height: 220 },
+    defaultData: { prompt: '3D漫剧写实厚涂风。', stylePrompt: '3D漫剧写实厚涂风。', aspectRatio: '16:9' },
+    executable: true, structural: false, executorKind: 'prompt', capabilities: [{ media: 'text', operation: 'input' }],
+  }),
+  mediaDefinition({
+    type: 'drama-script', version: 1, title: '剧本', description: '先贴剧本，再连到右侧「剧本解析」并运行', category: 'drama',
+    ports: [textOutput], dimensions: { width: 320, height: 280 }, defaultData: { prompt: '' },
+    executable: true, structural: false, executorKind: 'prompt', capabilities: [{ media: 'text', operation: 'input' }],
+  }),
+  mediaDefinition({
+    type: 'drama-parse', version: 1, title: '剧本解析', description: '运行后弹出四表，确认才落成资产和分镜', category: 'drama',
+    ports: [textInput, textOutput], dimensions: { width: 280, height: 180 }, defaultData: { prompt: '', model: '' },
+    executable: true, structural: false, executorKind: 'prompt', capabilities: [{ media: 'text', operation: 'input' }],
+  }),
+  mediaDefinition({
+    type: 'drama-character', version: 1, title: '角色资产', description: '写外貌 → 出定妆图 → 勾选封板后才能出分镜', category: 'drama',
+    ports: [textInput, imageInputs, imageOutput, textOutput], dimensions: { width: 280, height: 320 },
+    defaultData: { name: '角色', elementId: '', appearance: '', assetKind: 'character', locked: false },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'input' }],
+  }),
+  mediaDefinition({
+    type: 'drama-scene', version: 1, title: '场景资产', description: '写环境 → 出底板 → 勾选封板', category: 'drama',
+    ports: [textInput, imageInputs, imageOutput, textOutput], dimensions: { width: 280, height: 300 },
+    defaultData: { name: '场景', elementId: '', appearance: '', assetKind: 'scene', locked: false },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'input' }],
+  }),
+  mediaDefinition({
+    type: 'drama-prop', version: 1, title: '道具资产', description: '写形态 → 出设定图 → 勾选封板', category: 'drama',
+    ports: [textInput, imageInputs, imageOutput, textOutput], dimensions: { width: 280, height: 280 },
+    defaultData: { name: '道具', elementId: '', appearance: '', assetKind: 'prop', locked: false },
+    executable: true, structural: false, executorKind: 'transform', capabilities: [{ media: 'image', operation: 'input' }],
+  }),
+  mediaDefinition({
+    type: 'drama-shot', version: 1, title: '分镜', description: '只写动作；外貌来自已封板资产，自己不出图', category: 'drama',
+    ports: [textInput, imageInputs, textOutput, imageOutput], dimensions: { width: 300, height: 280 },
+    defaultData: { shotId: '', action: '', framing: '中景', gate: 'blocked' },
+    executable: true, structural: false, executorKind: 'prompt', capabilities: [{ media: 'text', operation: 'input' }],
+  }),
   // Legacy aliases keep the current App and execution engine operational.
   mediaDefinition({
     type: 'text', version: 1, title: '文本', description: '旧版提示词节点', category: 'input',

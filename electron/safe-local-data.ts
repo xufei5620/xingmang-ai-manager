@@ -256,16 +256,26 @@ export async function writeAtomicSafeUtf8File(
   filePath: string,
   content: string,
   label: string,
+  options: SafeAtomicWriteOptions = {},
 ): Promise<void> {
-  return writeAtomicSafeFile(filePath, content, 'utf8', label)
+  return writeAtomicSafeFile(filePath, content, 'utf8', label, options)
 }
 
 export async function writeAtomicSafeBinaryFile(
   filePath: string,
   content: Buffer,
   label: string,
+  options: SafeAtomicWriteOptions = {},
 ): Promise<void> {
-  return writeAtomicSafeFile(filePath, content, null, label)
+  return writeAtomicSafeFile(filePath, content, null, label, options)
+}
+
+export interface SafeAtomicWriteOptions {
+  /**
+   * Compatibility escape hatch for callers that explicitly accept a
+   * non-atomic replacement. Disabled by default for configuration/state data.
+   */
+  allowNonAtomicFallback?: boolean
 }
 
 function isTransientReplaceError(error: unknown): boolean {
@@ -284,7 +294,12 @@ function delayReplaceRetry(attempt: number): Promise<void> {
  * indexer often hold the destination for a few milliseconds, which surfaces
  * as EPERM and used to abort canvas autosave mid-keystroke.
  */
-async function replaceSafeDataFile(temporaryPath: string, filePath: string, label: string): Promise<void> {
+async function replaceSafeDataFile(
+  temporaryPath: string,
+  filePath: string,
+  label: string,
+  options: SafeAtomicWriteOptions,
+): Promise<void> {
   let lastError: unknown
   for (let attempt = 0; attempt < 5; attempt += 1) {
     try {
@@ -296,9 +311,17 @@ async function replaceSafeDataFile(temporaryPath: string, filePath: string, labe
       if (attempt < 4) await delayReplaceRetry(attempt)
     }
   }
-  if (assertSafeDataFile(filePath, label)) {
+  if (options.allowNonAtomicFallback && assertSafeDataFile(filePath, label)) {
     try {
+      const before = fs.lstatSync(filePath, { bigint: true })
+      if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) {
+        throw new Error(`${label}替换前文件身份发生变化`)
+      }
       await fs.promises.copyFile(temporaryPath, filePath)
+      const after = fs.lstatSync(filePath, { bigint: true })
+      if (!sameFileIdentity(before, after) || after.isSymbolicLink() || after.nlink !== 1n) {
+        throw new Error(`${label}非原子回退期间文件身份发生变化`)
+      }
       return
     } catch (error) {
       lastError = error
@@ -316,6 +339,7 @@ async function writeAtomicSafeFile(
   content: string | Buffer,
   encoding: BufferEncoding | null,
   label: string,
+  options: SafeAtomicWriteOptions,
 ): Promise<void> {
   const directory = path.dirname(path.resolve(filePath))
   assertNoReparseComponents(directory, label)
@@ -333,7 +357,7 @@ async function writeAtomicSafeFile(
     await handle.close()
     handle = null
     assertSafeDataFile(filePath, label)
-    await replaceSafeDataFile(temporaryPath, filePath, label)
+    await replaceSafeDataFile(temporaryPath, filePath, label, options)
   } finally {
     await handle?.close().catch(() => undefined)
     await removeSafeDataFile(temporaryPath, `${label}临时文件`).catch(() => undefined)

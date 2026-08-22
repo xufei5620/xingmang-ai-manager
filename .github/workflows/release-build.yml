@@ -75,7 +75,7 @@ jobs:
           # (失败方向是安全的),新装用户则会看到未知发布者警告。所以强制
           # 要求它指向一个独立的测试路径,而不是靠人记得别传错地方。
           if (-not '${{ inputs.update_url }}'.Trim()) {
-            Write-Error "自签名构建必须显式指定 update_url(例如 https://updates.shenfengwl.fun/xingmang-manager/beta/),不能使用正式更新源"
+            Write-Error "自签名构建必须显式指定 update_url(例如 https://updatesnew.shenfengwl.fun/xingmang-manager/beta/),不能使用正式更新源"
             exit 1
           }
           Write-Host "::warning::本次为自签名测试构建,产物只可用于自己的测试机,绝不可发给客户"

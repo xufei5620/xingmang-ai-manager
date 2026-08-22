@@ -87,6 +87,14 @@ describe('codexSetupReadyForDashboard', () => {
     )).toBe(true)
   })
 
+  it('respects a persisted user choice to keep Codex Desktop uninstalled', () => {
+    expect(codexSetupReadyForDashboard(
+      resumableSetupStatus({ desktop: false }),
+      windows,
+      true,
+    )).toBe(true)
+  })
+
   it('never fast-paths a status that contains a failed probe', () => {
     const status = resumableSetupStatus()
     status.cli.detectionFailed = true

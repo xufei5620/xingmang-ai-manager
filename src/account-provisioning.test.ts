@@ -110,6 +110,11 @@ describe('buildProvisioningTargets', () => {
     const snapshot = snapshotWithInstalled(providerIds)
     expect(buildProvisioningTargets(snapshot)).toEqual(providerIds)
   })
+
+  it('does not target providers explicitly switched to official accounts', () => {
+    const snapshot = snapshotWithInstalled(['claude', 'codex'])
+    expect(buildProvisioningTargets(snapshot, ['codex'])).toEqual(['claude'])
+  })
 })
 
 describe('validateProvisionedCliConfigs', () => {
@@ -142,6 +147,27 @@ describe('validateProvisionedCliConfigs', () => {
       { provider: 'codex', message: 'Base URL 未指向当前星芒站点' },
       { provider: 'gemini', message: '默认模型未写入配置' },
     ])
+  })
+
+  it('accepts an explicitly official provider without a relay key', () => {
+    const config = {
+      providers: {
+        codex: { ...validProvider, hasApiKey: false, matchesRelay: false, model: '' },
+      },
+    } as unknown as import('./types').AppConfigSummary
+    expect(validateProvisionedCliConfigs(['codex'], config, ['codex'])).toEqual([])
+  })
+
+  it('rejects Gemini when its persisted auth selector is still OAuth', () => {
+    const config = {
+      providers: {
+        gemini: { ...validProvider, authType: 'oauth-personal' },
+      },
+    } as unknown as import('./types').AppConfigSummary
+    expect(validateProvisionedCliConfigs(['gemini'], config)).toEqual([{
+      provider: 'gemini',
+      message: 'Gemini 未切换到 API Key 模式',
+    }])
   })
 })
 

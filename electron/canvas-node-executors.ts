@@ -6,6 +6,20 @@ import type {
   CanvasNodeExecutors,
 } from './canvas-run-engine'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
+import { parseDramaTablesJson } from './drama-parse'
+import { dramaParseSystemPrompt } from './drama-parse-prompt'
+
+export interface CanvasTextCompletionInput {
+  group: string
+  model: string
+  system: string
+  user: string
+  signal: AbortSignal
+}
+
+export interface CanvasTextCompletionService {
+  completeOnce(input: CanvasTextCompletionInput): Promise<string>
+}
 
 export interface CanvasImageOperationService {
   generate(senderId: number, input: AiImageGenerationInput, progress?: AiOperationProgressObserver): ReturnType<AiImageService['generate']>
@@ -95,8 +109,10 @@ export function createCanvasNodeExecutors(options: {
   imageService: CanvasImageOperationService
   videoService?: CanvasVideoOperationService
   assets?: CanvasOwnedAssetService
+  completeText?: CanvasTextCompletionService
   imageGroup?: string
   videoGroup?: string
+  textGroup?: string
 }): CanvasNodeExecutors {
   const text: CanvasNodeExecutors['text'] = async ({ node }) => ({ outputText: node.data.prompt })
   const image: CanvasNodeExecutors['image'] = async ({ ownerId, userId, projectId, attemptId, node, inputs, signal, reportStage }) => {
@@ -277,11 +293,56 @@ export function createCanvasNodeExecutors(options: {
   const unsupported: CanvasNodeExecutors['image-edit'] = async () => {
     throw new Error('该节点能力尚未接入，当前不会提交付费请求')
   }
+  const dramaParse: CanvasNodeExecutors['drama-parse'] = async ({ node, inputs, signal }) => {
+    const script = [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim()
+    if (!script) throw new Error('请先连接或粘贴剧本文本')
+    if (!options.completeText) throw new Error('剧本解析服务未就绪')
+    const group = node.data.group || options.textGroup || ''
+    if (!group) throw new Error('请先在「生成配置」中选择文字分组')
+    const model = node.data.model.trim()
+    if (!model) throw new Error('请选择文字模型')
+    async function parseOnce(): Promise<string> {
+      const raw = await options.completeText!.completeOnce({
+        group,
+        model,
+        system: dramaParseSystemPrompt,
+        user: script,
+        signal,
+      })
+      return JSON.stringify(parseDramaTablesJson(raw).tables)
+    }
+    try {
+      return { outputText: await parseOnce(), group, model }
+    } catch (error) {
+      if (signal.aborted) throw error
+      try {
+        return { outputText: await parseOnce(), group, model }
+      } catch (retryError) {
+        const detail = retryError instanceof Error ? retryError.message : String(retryError)
+        throw new Error(detail.includes('剧本') ? detail : `剧本解析失败：${detail.slice(0, 300)}`)
+      }
+    }
+  }
+  const dramaText: CanvasNodeExecutors['drama-bible'] = async ({ node, inputs }) => ({
+    outputText: [inputs.text, node.data.prompt].filter((part) => part && part.trim()).join('\n').trim(),
+  })
+  const dramaAsset: CanvasNodeExecutors['drama-character'] = async ({ userId, node, inputs }) => {
+    const images = inputs.images ?? (inputs.image ? [inputs.image] : [])
+    if (images.length > 0) return { assets: images.map((asset) => structuredClone(asset)), outputText: node.data.prompt }
+    const assetId = node.data.adoptedAssetId
+    if (assetId && options.assets) {
+      const owned = await options.assets.readOwned(userId, assetId)
+      return { assets: [{ kind: 'image', ...owned.asset }], outputText: node.data.prompt }
+    }
+    return { outputText: node.data.prompt }
+  }
   return {
     text, prompt: text, image: imageOrEdit, 'image-generate': imageOrEdit,
     video, 'video-generate': video, 'image-edit': imageEdit,
     'frame-extract': unsupported, 'video-input': videoInput,
     'image-input': imageInput, 'audio-input': audioInput, router: passThrough, gallery: passThrough, output: passThrough,
     group: passThrough, note: text,
+    'drama-bible': dramaText, 'drama-script': dramaText, 'drama-parse': dramaParse, 'drama-shot': dramaText,
+    'drama-character': dramaAsset, 'drama-scene': dramaAsset, 'drama-prop': dramaAsset,
   }
 }

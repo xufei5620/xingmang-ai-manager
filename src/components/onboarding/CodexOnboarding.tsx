@@ -65,6 +65,11 @@ export function CodexOnboarding({
   onComplete,
   onCancel,
   authorizationMode,
+  codexOfficial,
+  codexDesktopInstallDisabled,
+  onLogout,
+  onSwitchToManual,
+  autoStart,
   desktopInstallProgress,
   platform,
 }: {
@@ -84,6 +89,13 @@ export function CodexOnboarding({
    */
   onCancel?: () => void
   authorizationMode: 'managed' | 'manual'
+  /** The user explicitly chose the native Codex subscription; keep it intact. */
+  codexOfficial: boolean
+  codexDesktopInstallDisabled: boolean
+  onLogout?: () => void
+  onSwitchToManual?: () => void
+  /** Settings replay opens a preview state; the user must explicitly start. */
+  autoStart: boolean
   desktopInstallProgress: CodexDesktopInstallProgress | null
   platform: PlatformCapabilities
 }) {
@@ -95,12 +107,14 @@ export function CodexOnboarding({
   const [action, setAction] = useState<SetupAction>('idle')
   const [logs, setLogs] = useState<string[]>([])
   const [error, setError] = useState('')
+  const [managedWarning, setManagedWarning] = useState('')
   const [finishing, setFinishing] = useState(false)
   const [nodeGuideOpen, setNodeGuideOpen] = useState(false)
   const [nodeInstallProgress, setNodeInstallProgress] = useState<NodeRuntimeInstallProgress | null>(null)
   const [desktopInstallRecovery, setDesktopInstallRecovery] = useState(false)
   const [managedProgress, setManagedProgress] = useState(createManagedBootstrapProgress)
-  const [managedFlowLocked, setManagedFlowLocked] = useState(authorizationMode === 'managed')
+  const [managedFlowLocked, setManagedFlowLocked] = useState(authorizationMode === 'managed' && autoStart)
+  const [flowStarted, setFlowStarted] = useState(autoStart)
   const managedStepRef = useRef<ManagedBootstrapStepId>('sync-keys')
   const initializationBusyRef = useRef(false)
   const autoInitializationStartedRef = useRef(false)
@@ -232,7 +246,12 @@ export function CodexOnboarding({
     if (authorizationMode === 'managed') setManagedFlowLocked(true)
     setError('')
     setDesktopInstallRecovery(false)
-    applySetupResult(await prepareCodexEnvironmentAutomatically(window.xingmang, setupCallbacks, platform))
+    applySetupResult(await prepareCodexEnvironmentAutomatically(
+      window.xingmang,
+      setupCallbacks,
+      platform,
+      { skipDesktopInstall: codexDesktopInstallDisabled },
+    ))
   }
 
   const openDesktopStore = async () => {
@@ -307,7 +326,9 @@ export function CodexOnboarding({
   const startInitialization = async (mode: 'managed' | 'manual') => {
     if (initializationBusyRef.current) return
     initializationBusyRef.current = true
+    setFlowStarted(true)
     setError('')
+    setManagedWarning('')
     setAction('scanning')
     if (mode === 'managed') {
       setManagedProgress(createManagedBootstrapProgress())
@@ -317,18 +338,33 @@ export function CodexOnboarding({
       if (mode === 'managed') {
         reportManagedProgress({ id: 'sync-keys', status: 'active', message: '正在创建或同步账号专属分组 Key' })
         const synchronized = await window.xingmang.syncManagedCliKeys()
-        if (synchronized.failed.length > 0) {
-          throw new Error(synchronized.failed.map((entry) => entry.message).join('；'))
+        const codexFailure = synchronized.failed.find((entry) => entry.provider === 'codex')
+        if (codexFailure && !codexOfficial) throw new Error(codexFailure.message)
+        const warnings = synchronized.failed
+          .filter((entry) => entry.provider !== 'codex' || codexOfficial)
+          .map((entry) => `${entry.provider}：${entry.message}`)
+        if (synchronized.storageWarning) warnings.push(synchronized.storageWarning)
+        if (warnings.length) setManagedWarning(warnings.join('；'))
+        reportManagedProgress({
+          id: 'sync-keys',
+          status: 'completed',
+          message: warnings.length ? `Key 同步完成，但有警告：${warnings.join('；')}` : '账号专属 Key 已加密保存',
+        })
+        if (!codexOfficial) {
+          reportManagedProgress({ id: 'authorize-codex', status: 'active', message: '正在写入 codex-pro Key 与默认模型' })
         }
-        if (synchronized.storageWarning) throw new Error(synchronized.storageWarning)
-        reportManagedProgress({ id: 'sync-keys', status: 'completed', message: '账号专属 Key 已加密保存' })
-        reportManagedProgress({ id: 'authorize-codex', status: 'active', message: '正在写入 codex-pro Key 与默认模型' })
       }
-      const nextConfig = mode === 'managed'
+      const nextConfig = mode === 'managed' && !codexOfficial
         ? await authorizeManagedCodex(window.xingmang)
+        : mode === 'managed'
+          ? await window.xingmang.getConfig()
         : await authorizeCodex(apiKey, window.xingmang)
       if (mode === 'managed') {
-        reportManagedProgress({ id: 'authorize-codex', status: 'completed', message: 'Codex 授权配置已写入' })
+        reportManagedProgress({
+          id: 'authorize-codex',
+          status: 'completed',
+          message: codexOfficial ? '保留 Codex 官方账号配置' : 'Codex 授权配置已写入',
+        })
       }
       onConfigChange(nextConfig)
       setStage('setup')
@@ -346,10 +382,10 @@ export function CodexOnboarding({
   }
 
   useEffect(() => {
-    if (authorizationMode !== 'managed' || autoInitializationStartedRef.current) return
+    if (!autoStart || authorizationMode !== 'managed' || autoInitializationStartedRef.current) return
     autoInitializationStartedRef.current = true
     void startInitialization('managed')
-  }, [authorizationMode])
+  }, [autoStart, authorizationMode])
 
   const enterDashboard = async () => {
     if (completionBusyRef.current) return
@@ -374,11 +410,12 @@ export function CodexOnboarding({
     if (
       authorizationMode !== 'managed'
       || stage !== 'ready'
+      || !flowStarted
       || autoCompletionStartedRef.current
     ) return
     autoCompletionStartedRef.current = true
     void enterDashboard()
-  }, [authorizationMode, stage])
+  }, [authorizationMode, flowStarted, stage])
 
   const installedCount = status
     ? [status.runtime.node, status.runtime.npm, status.cli, status.desktop]
@@ -431,7 +468,7 @@ export function CodexOnboarding({
         </div>
 
         <div className="onboarding-rail-bottom">
-          {existingCodex?.exists && onCancel && (
+          {onCancel && (!flowLocked && (existingCodex?.exists || Boolean(error))) && (
             <button
               type="button"
               className="sidebar-control-button"
@@ -470,6 +507,20 @@ export function CodexOnboarding({
 
               {authorizationMode === 'managed' && (
                 <ManagedBootstrapPanel progress={managedProgress} locked={flowLocked} />
+              )}
+
+              {authorizationMode === 'managed' && managedWarning && (
+                <div className="onboarding-notice" role="status">
+                  <AlertCircle size={17} />
+                  <span>{managedWarning}</span>
+                </div>
+              )}
+
+              {!flowStarted && (
+                <div className="onboarding-notice" role="status">
+                  <AlertCircle size={17} />
+                  <span>已打开初始化预览。点击下方“开始初始化”后才会写入配置或安装环境。</span>
+                </div>
               )}
 
               {existingCodex?.exists && (
@@ -634,6 +685,26 @@ export function CodexOnboarding({
               )}
 
               {error && <div className="onboarding-error"><AlertCircle size={16} />{error}</div>}
+
+              {authorizationMode === 'managed' && error && !flowLocked && (
+                <div className="onboarding-recovery-actions" role="group" aria-label="初始化恢复操作">
+                  {onSwitchToManual && (
+                    <button type="button" className="secondary-button" onClick={onSwitchToManual}>
+                      <ArrowLeft size={16} /> 使用授权码配置
+                    </button>
+                  )}
+                  {onLogout && (
+                    <button type="button" className="secondary-button" onClick={onLogout}>
+                      <ArrowLeft size={16} /> 退出登录
+                    </button>
+                  )}
+                  {onCancel && (
+                    <button type="button" className="secondary-button" onClick={onCancel}>
+                      <ArrowLeft size={16} /> 返回工作台
+                    </button>
+                  )}
+                </div>
+              )}
 
               {desktopInstallRecovery && (
                 <div className="setup-recovery" role="group" aria-label="Codex 桌面端安装选项">

@@ -212,5 +212,7 @@ export function createMockExecutors(delayMs = 600): Record<NodeKind, NodeExecuto
     'frame-extract': unsupported, router: unsupported, gallery: unsupported, output: unsupported,
     group: unsupported, note: unsupported,
     unknown: unsupported,
+    'drama-bible': text, 'drama-script': text, 'drama-parse': text, 'drama-shot': text,
+    'drama-character': unsupported, 'drama-scene': unsupported, 'drama-prop': unsupported,
   }
 }

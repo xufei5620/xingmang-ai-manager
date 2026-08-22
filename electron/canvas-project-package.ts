@@ -168,9 +168,12 @@ export function parseCanvasProjectWorkflow(content: string): { workflow: Record<
   }
   if (raw.mediaGroups !== undefined) {
     if (!isRecord(raw.mediaGroups)) throw new Error('画布项目生成分组格式错误')
-    assertAllowedKeys(raw.mediaGroups, ['image', 'video'], '画布项目生成分组')
-    for (const group of [raw.mediaGroups.image, raw.mediaGroups.video]) {
+    assertAllowedKeys(raw.mediaGroups, ['image', 'video', 'text', 'imageModel', 'videoModel', 'textModel'], '画布项目生成分组')
+    for (const group of [raw.mediaGroups.image, raw.mediaGroups.video, raw.mediaGroups.text]) {
       if (group !== undefined && !safeString(group, 128)) throw new Error('画布项目生成分组格式错误')
+    }
+    for (const model of [raw.mediaGroups.imageModel, raw.mediaGroups.videoModel, raw.mediaGroups.textModel]) {
+      if (model !== undefined && !safeString(model, 512)) throw new Error('画布项目默认模型格式错误')
     }
   }
   const assetIds = new Set<string>()

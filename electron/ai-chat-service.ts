@@ -97,8 +97,17 @@ export interface AiChatServiceClock {
   clearTimeout(handle: unknown): void
 }
 
+export interface CompleteAiChatOnceInput {
+  group: string
+  model: string
+  messages: readonly AiChatMessage[]
+  parameters?: AiChatParameters
+  signal?: AbortSignal
+}
+
 export interface AiChatService {
   start(input: StartAiChatStreamInput): StartAiChatStreamResult
+  completeOnce(input: CompleteAiChatOnceInput): Promise<string>
   cancel(senderId: number, requestId: string): boolean
   cancelSender(senderId: number): number
   cancelUser(userId: number): number
@@ -654,6 +663,94 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     }
   }
 
+  async function completeOnce(input: CompleteAiChatOnceInput): Promise<string> {
+    if (disposed) throw new Error('AI聊天服务已停止')
+    const body = buildChatCompletionsRequest({
+      model: input.model,
+      messages: input.messages,
+      stream: true,
+      parameters: { temperature: 0, ...(input.parameters ?? {}) },
+    })
+    let credential: Awaited<ReturnType<ChatCredentialCoordinator['resolveCredential']>>
+    try {
+      credential = await options.credentialCoordinator.resolveCredential(input.group)
+    } catch {
+      throw new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
+    }
+    const controller = new AbortController()
+    const onAbort = () => controller.abort()
+    input.signal?.addEventListener('abort', onAbort, { once: true })
+    const totalTimer = clock.setTimeout(() => controller.abort(), limits.totalTimeoutMs)
+    try {
+      const response = await fetchImpl(endpoint, {
+        method: 'POST',
+        headers: {
+          Accept: 'text/event-stream',
+          Authorization: `Bearer ${credential.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        redirect: 'manual',
+        signal: controller.signal,
+      })
+      if (!responseOriginIsTrusted(response, baseUrl.origin) || REDIRECT_STATUSES.has(response.status)) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
+      }
+      if (!response.ok) {
+        await discardBoundedErrorBody(response, limits.errorBytes)
+        throw safeHttpFailure(response.status)
+      }
+      const contentType = response.headers.get('content-type')?.toLowerCase() ?? ''
+      if (!contentType.includes('text/event-stream') || !response.body) {
+        await response.body?.cancel().catch(() => undefined)
+        throw new StreamFailure('invalid-stream-response', SAFE_ERROR_MESSAGES['invalid-stream-response'])
+      }
+      const parser = new BoundedSseParser(limits.eventBytes)
+      const reader = response.body.getReader()
+      let text = ''
+      let receivedBytes = 0
+      let outputBytes = 0
+      try {
+        for (;;) {
+          const chunk = await reader.read()
+          const frames = chunk.done ? parser.finish() : parser.push(chunk.value ?? new Uint8Array())
+          if (!chunk.done) {
+            receivedBytes += chunk.value?.byteLength ?? 0
+            if (receivedBytes > limits.responseBytes) {
+              throw new StreamFailure('response-limit-exceeded', SAFE_ERROR_MESSAGES['response-limit-exceeded'])
+            }
+          }
+          for (const data of frames) {
+            if (data.trim() === '[DONE]') return text
+            const delta = parsedDelta(data)
+            const added = byteLength(delta.content)
+            if (added > limits.fragmentBytes) {
+              throw new StreamFailure('fragment-limit-exceeded', SAFE_ERROR_MESSAGES['fragment-limit-exceeded'])
+            }
+            if (outputBytes + added > limits.outputBytes) {
+              throw new StreamFailure('output-limit-exceeded', SAFE_ERROR_MESSAGES['output-limit-exceeded'])
+            }
+            outputBytes += added
+            text += delta.content
+          }
+          if (chunk.done) break
+        }
+      } finally {
+        reader.releaseLock()
+      }
+      if (!text.trim()) throw new StreamFailure('stream-closed', SAFE_ERROR_MESSAGES['stream-closed'])
+      return text
+    } catch (error) {
+      if (error instanceof StreamFailure) throw new Error(error.message)
+      if (input.signal?.aborted || controller.signal.aborted) throw new Error('已取消')
+      throw new Error(SAFE_ERROR_MESSAGES['network-error'])
+    } finally {
+      clock.clearTimeout(totalTimer)
+      input.signal?.removeEventListener('abort', onAbort)
+    }
+  }
+
   function start(input: StartAiChatStreamInput): StartAiChatStreamResult {
     if (disposed) throw new Error('AI聊天服务已停止')
     const senderId = requireSenderId(input.senderId)
@@ -759,6 +856,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
 
   return {
     start,
+    completeOnce,
     cancel,
     cancelSender,
     cancelUser,

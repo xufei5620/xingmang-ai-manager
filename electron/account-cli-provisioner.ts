@@ -28,8 +28,9 @@ export interface ManagedCliConfigurationOutcome {
 
 export interface ManagedCliKeyStoreLike {
   read(userId: number): Promise<StoredManagedCliKey[]>
-  save(userId: number, keys: readonly StoredManagedCliKey[]): Promise<void>
+  save(userId: number, keys: readonly StoredManagedCliKey[], expectedRevision?: number): Promise<void | boolean>
   remove(userId: number, keyId: number): Promise<void>
+  captureRevision?: () => number
 }
 
 interface ResolvedManagedCliKeys {
@@ -70,6 +71,14 @@ function rethrowAccountSessionChange(error: unknown): void {
   if (error instanceof AccountSessionChangedError) throw error
 }
 
+function isCredentialFailure(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+  if (/(?:服务返回|返回)\s*401\b/i.test(message)) return true
+  const credential = '(?:API\\s*Key|key|token|密钥|令牌)'
+  const invalid = '(?:无效|失效|过期|不存在|已撤销|invalid|expired|revoked)'
+  return new RegExp(`${credential}.{0,24}${invalid}|${invalid}.{0,24}${credential}`, 'i').test(message)
+}
+
 async function resolveManagedCliKeys(
   accountService: ManagedKeyAccountService,
   userId: number,
@@ -86,7 +95,20 @@ async function resolveManagedCliKeys(
 
   const operation = (async (): Promise<ResolvedManagedCliKeys> => {
     assertSameAuthenticatedUser(accountService, userId)
-    const cached = keyStore ? await keyStore.read(userId) : []
+    let cached: StoredManagedCliKey[] = []
+    let cacheReadWarning: string | undefined
+    if (keyStore) {
+      try {
+        cached = await keyStore.read(userId)
+      } catch (error) {
+        // A damaged ciphertext or unavailable OS keychain must not trap a new
+        // machine in onboarding. Keep the read API explicit for callers that
+        // need to distinguish corruption, but let provisioning rebuild the
+        // cache through save() (which quarantines a damaged record).
+        cacheReadWarning = error instanceof Error ? error.message : '本地 API Key 缓存读取失败'
+      }
+    }
+    const cacheRevision = keyStore?.captureRevision?.()
     assertSameAuthenticatedUser(accountService, userId)
     const keys = new Map(cached.map((entry) => [entry.provider, entry]))
     const failed: ManagedCliKeyFailure[] = []
@@ -120,15 +142,19 @@ async function resolveManagedCliKeys(
       }
     }
 
-    let storageWarning: string | undefined
+    let storageWarning: string | undefined = cacheReadWarning
     if (keyStore && fetchedFromServer) {
       try {
         assertSameAuthenticatedUser(accountService, userId)
-        await keyStore.save(userId, providerIds.flatMap((provider) => {
+        const cachedKeys = providerIds.flatMap((provider) => {
           const entry = keys.get(provider)
           return entry ? [entry] : []
-        }))
+        })
+        const saved = cacheRevision === undefined
+          ? await keyStore.save(userId, cachedKeys)
+          : await keyStore.save(userId, cachedKeys, cacheRevision)
         assertSameAuthenticatedUser(accountService, userId)
+        if (saved === false) storageWarning = '本地 API Key 缓存已被其他操作更新，本次保留新缓存'
       } catch (error) {
         rethrowAccountSessionChange(error)
         storageWarning = error instanceof Error ? error.message : '本地 API Key 保存失败'
@@ -177,6 +203,7 @@ export async function configureManagedClis(
   previewOnboarding: boolean,
   keyStore?: ManagedCliKeyStoreLike,
 ): Promise<ManagedCliConfigurationOutcome> {
+  if (providers.length === 0) return { configured: [], failed: [] }
   const userId = authenticatedUserId(accountService)
   const synchronized = await resolveManagedCliKeys(accountService, userId, keyStore)
   assertSameAuthenticatedUser(accountService, userId)
@@ -185,21 +212,52 @@ export async function configureManagedClis(
   const outcome: ManagedCliConfigurationOutcome = { configured: [], failed: [] }
 
   for (const provider of providers) {
-    const managedKey = keys.get(provider)
+    let managedKey = keys.get(provider)
     if (!managedKey) {
       outcome.failed.push({ provider, message: syncFailures.get(provider) ?? '对应分组 Key 未就绪' })
       continue
     }
     try {
       assertSameAuthenticatedUser(accountService, userId)
-      const models = await systemService.fetchAvailableModels(managedKey.key)
+      let models: string[]
+      try {
+        models = await systemService.fetchAvailableModels(managedKey.key, { bypassCache: true })
+      } catch (error) {
+        if (!isCredentialFailure(error)) throw error
+        if (keyStore) await keyStore.remove(userId, managedKey.id)
+        assertSameAuthenticatedUser(accountService, userId)
+        const profile = managedCliKeyProfiles[provider]
+        const replacement = await accountService.provisionCliKey({ name: profile.keyName, group: profile.group })
+        assertSameAuthenticatedUser(accountService, userId)
+        managedKey = {
+          id: replacement.id,
+          provider,
+          group: profile.group,
+          name: replacement.name,
+          key: replacement.key,
+        }
+        keys.set(provider, managedKey)
+        if (keyStore) {
+          const replacementRevision = keyStore.captureRevision?.()
+          if (replacementRevision === undefined) {
+            await keyStore.save(userId, [...keys.values()])
+          } else {
+            await keyStore.save(userId, [...keys.values()], replacementRevision)
+          }
+        }
+        models = await systemService.fetchAvailableModels(managedKey.key, { bypassCache: true })
+      }
       assertSameAuthenticatedUser(accountService, userId)
       if (models.length === 0) throw new Error('当前分组未返回可用模型')
       const preferred = preferredModels[provider]
       const model = preferred && models.includes(preferred) ? preferred : models[0]
       const payload: ConfigSavePayload = { provider, apiKey: managedKey.key, model, mode: 'merge' }
       assertSameAuthenticatedUser(accountService, userId)
-      await systemService.saveConfig(payload, previewOnboarding)
+      await systemService.saveConfig(
+        payload,
+        previewOnboarding,
+        () => assertSameAuthenticatedUser(accountService, userId),
+      )
       assertSameAuthenticatedUser(accountService, userId)
       outcome.configured.push(provider)
     } catch (error) {

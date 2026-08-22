@@ -3,7 +3,7 @@ import { Box, Check, ChevronLeft, ChevronRight, FileStack, Film, Image, Library,
 import { builtinNodeRegistry, hiddenLibraryNodeTypes } from '../domain/builtin-node-definitions'
 import type { NodeCategory } from '../domain/node-definition'
 import type { CanvasAssetPage, CanvasPromptPreset } from '../host'
-import { searchPromptPresets } from '../library/prompt-presets'
+import { promptPresetMime, searchPromptPresets } from '../library/prompt-presets'
 import { builtinCanvasTemplates } from '../templates/builtin-templates'
 import { SafeImage, VideoCoverImage, ViewportVideo, isLocalCanvasAssetUrl } from './MediaPreview'
 import { mediaAssetAspectRatio } from '../library/media-assets'
@@ -32,8 +32,9 @@ const libraryViews: ReadonlyArray<{ id: LibraryView; label: string; icon: typeof
   { id: 'assets', label: '素材', icon: Image },
 ]
 
-const categoryOrder: readonly NodeCategory[] = ['input', 'generation', 'transform', 'flow', 'output', 'structural']
+const categoryOrder: readonly NodeCategory[] = ['drama', 'input', 'generation', 'transform', 'flow', 'output', 'structural']
 const categoryLabel: Record<NodeCategory, string> = {
+  drama: '漫剧',
   input: '输入',
   generation: '生成',
   transform: '处理',
@@ -132,7 +133,15 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
                     <textarea value={editingPreset.prompt} maxLength={8_000} aria-label="预设内容" onChange={(event) => setEditingPreset((current) => current ? { ...current, prompt: event.target.value } : current)} />
                     <span><button type="submit" title="保存预设" aria-label="保存预设"><Check size={13} /></button><button type="button" title="取消编辑" aria-label="取消编辑" onClick={() => setEditingPreset(null)}><X size={13} /></button></span>
                   </form>
-                : <div key={preset.id} className="prompt-preset-row user-prompt-preset-row">
+                : <div
+                    key={preset.id}
+                    className="prompt-preset-row user-prompt-preset-row"
+                    draggable
+                    onDragStart={(event) => {
+                      event.dataTransfer.setData(promptPresetMime, preset.prompt)
+                      event.dataTransfer.effectAllowed = 'copy'
+                    }}
+                  >
                     <button type="button" onClick={() => onAddPrompt(preset.prompt)}><span><strong>{preset.name}</strong><small>{preset.tags.join(' · ') || preset.prompt}</small></span></button>
                     {onUpdatePromptPreset && <button type="button" title="编辑预设" aria-label={`编辑预设 ${preset.name}`} onClick={() => setEditingPreset({ id: preset.id, name: preset.name, prompt: preset.prompt })}><Pencil size={12} /></button>}
                     <button type="button" className="prompt-preset-delete" title="删除预设" aria-label={`删除预设 ${preset.name}`} onClick={() => onDeletePromptPreset(preset.id)}>×</button>
@@ -141,7 +150,17 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
           </>}
           <div className="node-library-section-title">星芒提示词预设</div>
           {promptPresets.map((preset) => (
-            <button key={preset.id} type="button" className="prompt-preset-row" onClick={() => onAddPrompt(preset.prompt)}>
+            <button
+              key={preset.id}
+              type="button"
+              className="prompt-preset-row"
+              onClick={() => onAddPrompt(preset.prompt)}
+              draggable
+              onDragStart={(event) => {
+                event.dataTransfer.setData(promptPresetMime, preset.prompt)
+                event.dataTransfer.effectAllowed = 'copy'
+              }}
+            >
               <span><strong>{preset.title}</strong><small>{preset.description}</small></span>
               <Plus size={14} aria-hidden="true" />
             </button>
@@ -202,6 +221,12 @@ export function NodeLibrary({ onAdd, onAddPrompt, onAddAsset, onDeletePromptPres
           return (
             <section key={category}>
               <div className="node-library-section-title">{categoryLabel[category]}</div>
+              {category === 'drama' && (
+                <button type="button" className="template-row" onClick={() => onLoadTemplate('xingmang-drama-script-parse')}>
+                  <span className="template-swatch" style={{ backgroundColor: '#8B5CF6' }} />
+                  <span><strong>从剧本开始</strong><small>粘贴剧本 → 解析四表 → 确认后自动铺角色、场景、分镜</small></span>
+                </button>
+              )}
               <div className="node-library-grid">
                 {entries.map((definition) => (
                   <button

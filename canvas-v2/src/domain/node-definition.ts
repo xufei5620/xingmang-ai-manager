@@ -1,6 +1,6 @@
 import type { PortKind, WorkflowNodeData } from '../model'
 
-export type NodeCategory = 'input' | 'generation' | 'transform' | 'flow' | 'output' | 'structural'
+export type NodeCategory = 'input' | 'generation' | 'transform' | 'flow' | 'output' | 'structural' | 'drama'
 export type PortDirection = 'input' | 'output'
 export type PortCardinality = 'one' | 'many'
 export type NodeExecutorKind = 'prompt' | 'image' | 'video' | 'transform' | 'flow' | 'output'

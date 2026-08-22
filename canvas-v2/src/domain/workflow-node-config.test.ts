@@ -18,4 +18,19 @@ describe('operationDefaultsForTemplateNode', () => {
   it('returns a structured unavailable result when no compatible edit model exists', () => {
     expect(operationDefaultsForTemplateNode('image-edit', ['jimeng_high_aes_general_v21_L'], [], {}).available).toBe(false)
   })
+
+  it('prefers the configured default model when it is still available', () => {
+    expect(operationDefaultsForTemplateNode(
+      'image-generate',
+      ['gpt-image-2', 'gemini-3.1-flash-image'],
+      [],
+      { model: 'gemini-3.1-flash-image' },
+    ).config.model).toBe('gemini-3.1-flash-image')
+    expect(operationDefaultsForTemplateNode(
+      'video-generate',
+      [],
+      ['grok-imagine-video', 'minimax-h3-mini'],
+      { model: 'minimax-h3-mini' },
+    ).config.model).toBe('minimax-h3-mini')
+  })
 })

@@ -99,6 +99,17 @@ export function canvasInspectorParameterRows(node: Pick<CanvasInspectorNode, 'ki
   if (node.kind === 'group') {
     rows.push({ label: '分组名称', value: typeof node.settings.title === 'string' && node.settings.title ? node.settings.title : '新建分组' })
   }
+  if (node.kind === 'drama-bible') {
+    rows.push({ label: '风格', value: typeof node.settings.stylePrompt === 'string' && node.settings.stylePrompt ? node.settings.stylePrompt : (node.prompt.trim() || '未填写') })
+  }
+  if (node.kind === 'drama-character' || node.kind === 'drama-scene' || node.kind === 'drama-prop') {
+    rows.push({ label: '名称', value: typeof node.settings.name === 'string' && node.settings.name ? node.settings.name : '未命名' })
+    rows.push({ label: '封板', value: node.settings.locked === true ? '已封板' : '未封板' })
+  }
+  if (node.kind === 'drama-shot') {
+    rows.push({ label: '镜号', value: typeof node.settings.shotId === 'string' && node.settings.shotId ? node.settings.shotId : '未编号' })
+    rows.push({ label: '闸', value: node.settings.gate === 'ready' ? '可出图' : node.settings.gate === 'stale' ? '需重编译' : '未封板' })
+  }
   return rows
 }
 

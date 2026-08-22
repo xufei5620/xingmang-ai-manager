@@ -74,14 +74,15 @@ describe('safe local data files', () => {
     expect(fs.readFileSync(filePath, 'utf8')).toBe('second')
   })
 
-  it('overwrites in place when rename stays locked', async () => {
+  it('refuses a non-atomic in-place overwrite when rename stays locked', async () => {
     const filePath = path.join(temporaryDirectory(), 'report.txt')
     await writeAtomicSafeUtf8File(filePath, 'first', '测试导出')
     vi.spyOn(fs.promises, 'rename').mockRejectedValue(
       Object.assign(new Error('EPERM: operation not permitted, rename'), { code: 'EPERM' }),
     )
-    await writeAtomicSafeUtf8File(filePath, 'second', '测试导出')
-    expect(fs.readFileSync(filePath, 'utf8')).toBe('second')
+    await expect(writeAtomicSafeUtf8File(filePath, 'second', '测试导出'))
+      .rejects.toThrow('写入被系统占用')
+    expect(fs.readFileSync(filePath, 'utf8')).toBe('first')
   })
 
   it('refuses to overwrite a hard-linked export target', async () => {

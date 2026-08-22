@@ -70,8 +70,8 @@ export type CanvasNodeExecutors = Record<'text' | 'image' | 'video', CanvasNodeE
   & Partial<Record<Exclude<CanvasRunNodeKind, 'text' | 'image' | 'video'>, CanvasNodeExecutor>>
 
 function fallbackExecutorKind(kind: CanvasRunNodeKind): 'text' | 'image' | 'video' {
-  if (kind === 'prompt' || kind === 'note') return 'text'
-  if (kind === 'image-generate' || kind === 'image-edit') return 'image'
+  if (kind === 'prompt' || kind === 'note' || kind === 'drama-bible' || kind === 'drama-script' || kind === 'drama-parse' || kind === 'drama-shot') return 'text'
+  if (kind === 'image-generate' || kind === 'image-edit' || kind === 'drama-character' || kind === 'drama-scene' || kind === 'drama-prop') return 'image'
   return 'video'
 }
 
@@ -290,6 +290,7 @@ function usesRemoteGeneration(kind: CanvasRunNodeKind): boolean {
     || kind === 'image-generate'
     || kind === 'image-edit'
     || kind === 'video-generate'
+    || kind === 'drama-parse'
 }
 
 export function canvasRunExclusiveNodeIds(graph: CanvasRunGraph, scope: CanvasRunScope): string[] {

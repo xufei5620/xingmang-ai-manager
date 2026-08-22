@@ -8,6 +8,7 @@ describe('node registry', () => {
     expect(types).toEqual(expect.arrayContaining([
       'prompt', 'image-input', 'video-input', 'image-generate', 'image-edit',
       'video-generate', 'frame-extract', 'router', 'gallery', 'output', 'group', 'note', 'unknown',
+      'drama-bible', 'drama-script', 'drama-parse', 'drama-character', 'drama-scene', 'drama-prop', 'drama-shot',
     ]))
   })
 

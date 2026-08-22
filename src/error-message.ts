@@ -16,3 +16,15 @@ export function errorMessage(error: unknown): string {
   while (IPC_PREFIX.test(message)) message = message.replace(IPC_PREFIX, '')
   return message
 }
+
+/** Renderer-facing errors should not expose absolute home/config paths. */
+export function userFacingErrorMessage(error: unknown): string {
+  const message = errorMessage(error)
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .trim()
+  return message
+    .replace(/[A-Za-z]:\\(?:[^\s;；，。！？]+\\?)+/g, '本地配置文件')
+    .replace(/(?:\\\\|\/Users\/|\/home\/)[^\s;；，。！？]+/g, '本地配置文件')
+    .slice(0, 1_000)
+    || '未知错误'
+}

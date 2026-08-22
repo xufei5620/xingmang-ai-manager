@@ -15,7 +15,7 @@ import {
   syncManagedCliKeySummary,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
-import { relaySites } from './relay-sites'
+import { relaySites, resolveRelaySite } from './relay-sites'
 import type {
   AddMarketplaceInput,
   AddMcpInput,
@@ -226,6 +226,12 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     || value.mirrorPolicy === 'official-first'
     ? value.mirrorPolicy
     : undefined
+  const officialProviders = value.officialProviders === undefined
+    ? undefined
+    : Array.isArray(value.officialProviders)
+      ? value.officialProviders.filter((entry) => typeof entry === 'string' && isProviderId(entry)) as AppSettingsUpdate['officialProviders']
+      : undefined
+  const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
   return {
     version: 2,
     ...(workspace !== undefined ? { workspace } : {}),
@@ -235,6 +241,8 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(sidebarMoreExpanded !== undefined ? { sidebarMoreExpanded } : {}),
     ...(relaySiteId !== undefined ? { relaySiteId } : {}),
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
+    ...(officialProviders !== undefined ? { officialProviders } : {}),
+    ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
   }
 }
 
@@ -806,6 +814,10 @@ function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliCon
   const preferredModels: AccountManagedCliConfigurationInput['preferredModels'] = {}
   for (const [provider, model] of Object.entries(value.preferredModels ?? {})) {
     if (!isProviderId(provider)) throw new Error('CLI 首选模型包含未知类型')
+    // Renderer state may contain an optional provider slot with an undefined
+    // model. Treat that as absent; null and other non-string values remain
+    // malformed input and are rejected below.
+    if (model === undefined) continue
     preferredModels[provider] = requiredString(model, 'CLI 首选模型', 512)
   }
   return { providers, preferredModels }
@@ -1766,6 +1778,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ))
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)
+    if (resolveRelaySite(service.readStoredConfig().relaySiteId).accountBackend === 'manual-key') {
+      throw new Error('当前站点不支持账号托管 Key，请使用粘贴 Key 配置')
+    }
     return configureManagedClis(
       accountService,
       service,
@@ -1867,7 +1882,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       apiKey,
       model: parsed.model,
       mode: parsed.mode,
-    }, options.previewOnboarding)
+    }, options.previewOnboarding, () => assertAccountSessionUser(userId))
     assertAccountSessionUser(userId)
     return result
   })

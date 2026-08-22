@@ -98,6 +98,16 @@ export function requestedClipDurationSeconds(seconds: string | undefined): numbe
   return Number(seconds)
 }
 
+/** 待生成没有成片，不能把「打算生成几秒」写成播放时长。 */
+export function clipDurationForMediaChip(
+  assetDuration: number | undefined,
+  requestedSeconds: string | undefined,
+  hasAsset: boolean,
+): number | undefined {
+  if (assetDuration !== undefined) return assetDuration
+  return hasAsset ? requestedClipDurationSeconds(requestedSeconds) : undefined
+}
+
 export function applyCatalogClipDurationToNodes<T extends { data: { result?: AssetRef } }>(
   nodes: readonly T[],
   assets: readonly { assetId: string; durationSeconds?: number }[],

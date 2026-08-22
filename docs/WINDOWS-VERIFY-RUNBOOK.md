@@ -105,7 +105,7 @@
 前面三节走的都是**测试包**。要验"应用内检测更新 → 下载 → 安装"这条链路,必须用**正式签名包**,流程见 `docs/RELEASING.md`。缺的两样东西都在你手上:
 
 - **代码签名证书**(`.p12` 文件 + 密码)
-- **更新服务器的上传权限**(`updates.shenfengwl.fun/xingmang-manager/`)
+- **更新服务器的上传权限**：`0.1.2` 及更早使用 `updates.shenfengwl.fun/xingmang-manager/`，`0.1.3+` 使用 `updatesnew.shenfengwl.fun/xingmang-manager/`
 
 发布顺序有个坑,记牢:**先上传安装包和 `.blockmap`,最后才覆盖 `latest.yml`**。反了的话,用户会在文件还没传完时就被告知有新版本,下载必然失败。
 

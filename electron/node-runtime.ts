@@ -10,6 +10,7 @@ import {
   type RunCommandOptions,
 } from './command-runner'
 import { createTrustedTemporaryDirectory } from './trusted-temp'
+import { isRegisteredTrustedManagedWindowsPath } from './managed-path-trust'
 import {
   isTrustedWindowsMachinePath,
   pathWithinWindowsRoot,
@@ -85,6 +86,8 @@ export interface NodeRuntimeProcessPlan {
   trustedOnly?: boolean
   /** Runs the fixed system installer through a UAC broker. */
   elevation?: 'uac'
+  /** Expected MSI digest rechecked inside the elevated broker immediately before install. */
+  integritySha256?: string
 }
 
 export interface NodeRuntimeInstallPlan {
@@ -159,8 +162,6 @@ const windowsRestartStatusScript = [
   "$windowsUpdate = 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired'",
   "if (Test-Path -LiteralPath $componentServicing) { [void]$reasons.Add('Windows 组件更新待重启') }",
   "if (Test-Path -LiteralPath $windowsUpdate) { [void]$reasons.Add('Windows Update 待重启') }",
-  "$sessionManager = Get-ItemProperty -LiteralPath 'HKLM:\\SYSTEM\\CurrentControlSet\\Control\\Session Manager' -ErrorAction SilentlyContinue",
-  "if ($null -ne $sessionManager.PendingFileRenameOperations) { [void]$reasons.Add('安装文件替换待重启') }",
   '[pscustomobject]@{ required = ($reasons.Count -gt 0); reasons = @($reasons) } | ConvertTo-Json -Compress',
 ].join('; ')
 
@@ -631,7 +632,11 @@ export function buildNodeRuntimeInstallPlan(
   powershellExecutable = windowsPowerShellExecutable(),
   trustedOnly = true,
   machinePaths?: WindowsMachinePaths,
+  integritySha256?: string,
 ): NodeRuntimeInstallPlan {
+  if (integritySha256 !== undefined && !/^[a-f0-9]{64}$/i.test(integritySha256)) {
+    throw new Error('Node.js 安装包 SHA-256 格式无效')
+  }
   const roots = machinePaths ?? (process.platform === 'win32' ? resolveWindowsMachinePaths() : undefined)
   const signatureEnv = {
     ...trustedCommandEnvironment(process.env, roots, roots ? 'win32' : process.platform),
@@ -663,6 +668,7 @@ export function buildNodeRuntimeInstallPlan(
       env: signatureEnv,
       trustedPaths: [msiPath],
       elevation: 'uac',
+      ...(integritySha256 ? { integritySha256: integritySha256.toLowerCase() } : {}),
       ...(!trustedOnly ? { trustedOnly: false } : {}),
     },
   }
@@ -709,18 +715,33 @@ function verifiedNodeRuntimeWingetPlan(executable: string): NodeRuntimeProcessPl
 
 /** Quotes one value for the Windows command line assembled by Start-Process. */
 function windowsProcessArgument(value: string): string {
+  if (!/[\s"]/.test(value)) return value
   const escaped = value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/g, '$1$1')
   return `"${escaped}"`
 }
 
 export function buildNodeRuntimeUacBrokerScript(plan: NodeRuntimeProcessPlan): string {
   if (plan.elevation !== 'uac') throw new Error('未配置 UAC 安装计划')
-  const argumentsList = plan.argv
-    .map((argument) => powerShellLiteral(windowsProcessArgument(argument)))
-    .join(', ')
+  const argumentLine = plan.argv.map(windowsProcessArgument).join(' ')
+  const integrityCheck = plan.integritySha256
+    ? [
+        `$expectedHash = ${powerShellLiteral(plan.integritySha256.toUpperCase())}`,
+        `$actualHash = (Get-FileHash -LiteralPath ${powerShellLiteral(plan.argv[1])} -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()`,
+        'if ($actualHash -ne $expectedHash) { exit 1603 }',
+        "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+        `$signature = Get-AuthenticodeSignature -LiteralPath ${powerShellLiteral(plan.argv[1])} -ErrorAction Stop`,
+        '$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { \'\' }',
+        '$commonName = [regex]::Match([string]$subject, \'(?:^|,)\\s*CN=([^,]+)\', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase).Groups[1].Value.Trim()',
+        "if ([string]$signature.Status -ne 'Valid' -or ($commonName -ne 'OpenJS Foundation' -and $commonName -ne 'Node.js Foundation')) { exit 1603 }",
+      ].join('; ')
+    : ''
   return [
     "$ErrorActionPreference = 'Stop'",
-    `$process = Start-Process -FilePath ${powerShellLiteral(plan.executable)} -ArgumentList @(${argumentsList}) -Verb RunAs -Wait -PassThru`,
+    "$ProgressPreference = 'SilentlyContinue'",
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    integrityCheck,
+    `$argumentLine = ${powerShellLiteral(argumentLine)}`,
+    `$process = Start-Process -FilePath ${powerShellLiteral(plan.executable)} -ArgumentList $argumentLine -Verb RunAs -Wait -PassThru`,
     'if ($null -eq $process) { exit 1602 }',
     'exit $process.ExitCode',
   ].join('; ')
@@ -728,6 +749,7 @@ export function buildNodeRuntimeUacBrokerScript(plan: NodeRuntimeProcessPlan): s
 
 async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult> {
   if (process.platform !== 'win32') throw new Error('UAC 安装仅支持 Windows')
+  if (plan.integritySha256 === undefined) throw new Error('UAC 安装计划缺少 MSI 完整性校验值')
   const machinePaths = resolveWindowsMachinePaths()
   const powershell = resolveWindowsPowerShellExecutable({ machinePaths })
   return runCommand({
@@ -1023,10 +1045,15 @@ async function installFromSource(
     percent: null,
   })
   if (download.sha256 !== expectedSha256) throw new Error('Node.js 安装包 SHA-256 校验失败')
+  if (process.platform === 'win32' && !isRegisteredTrustedManagedWindowsPath(temporaryDirectory)) {
+    throw new Error('Node.js 安装包暂存目录未通过受保护路径校验，已阻止 UAC 安装')
+  }
   const plan = buildNodeRuntimeInstallPlan(
     msiPath,
     resolveWindowsPowerShellExecutable(),
     options.temporaryDirectoryMode !== 'same-user',
+    undefined,
+    expectedSha256,
   )
   const verifyMsiBeforeInstall = async () => {
     const stat = await fs.promises.stat(msiPath)
@@ -1072,13 +1099,6 @@ export async function installNodeRuntime(
   const architecture = normalizeNodeRuntimeArchitecture(options.architecture ?? process.arch)
   const dependencies: NodeRuntimeInstallerDependencies = {
     ...defaultDependencies,
-    ...(options.temporaryDirectoryMode === 'same-user'
-      ? {
-          createTemporaryDirectory: () => fs.promises.mkdtemp(
-            path.join(os.tmpdir(), 'xingmang-node-runtime-'),
-          ),
-        }
-      : {}),
     ...options.dependencies,
   }
   throwIfAborted(options.signal)

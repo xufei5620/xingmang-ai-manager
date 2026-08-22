@@ -10,6 +10,8 @@ export type NodeKind =
   | 'image-generate' | 'image-edit' | 'video-generate'
   | 'frame-extract' | 'router' | 'gallery' | 'output'
   | 'group' | 'note' | 'unknown'
+  | 'drama-bible' | 'drama-script' | 'drama-parse'
+  | 'drama-character' | 'drama-scene' | 'drama-prop' | 'drama-shot'
 
 export type NodeStatus = 'idle' | 'queued' | 'running' | 'succeeded' | 'failed'
 export type NodeRunStage =
@@ -127,6 +129,10 @@ export interface WorkflowFile {
   mediaGroups?: {
     image?: string
     video?: string
+    text?: string
+    imageModel?: string
+    videoModel?: string
+    textModel?: string
   }
   nodes: WorkflowNode[]
   edges: WorkflowEdge[]
@@ -151,6 +157,13 @@ export const nodeOutputKind: Record<NodeKind, PortKind> = {
   group: 'text',
   note: 'text',
   unknown: 'text',
+  'drama-bible': 'text',
+  'drama-script': 'text',
+  'drama-parse': 'text',
+  'drama-character': 'image',
+  'drama-scene': 'image',
+  'drama-prop': 'image',
+  'drama-shot': 'text',
 }
 
 /**
@@ -178,6 +191,13 @@ export const nodeInputKinds: Record<NodeKind, readonly PortKind[]> = {
   group: [],
   note: [],
   unknown: [],
+  'drama-bible': [],
+  'drama-script': [],
+  'drama-parse': ['text'],
+  'drama-character': ['text', 'image'],
+  'drama-scene': ['text', 'image'],
+  'drama-prop': ['text', 'image'],
+  'drama-shot': ['text', 'image'],
 }
 
 export function createEmptyWorkflow(name = '未命名工作流'): WorkflowFile {

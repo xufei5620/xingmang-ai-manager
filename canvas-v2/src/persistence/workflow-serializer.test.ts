@@ -197,6 +197,28 @@ describe('workflow schema v2 parser', () => {
     expect(serialized).not.toContain('C:\\\\private')
   })
 
+  it('round-trips drama settings without adding new node data keys', () => {
+    const workflow = parseWorkflowFile(JSON.stringify(v2Document({
+      nodes: [{
+        id: 'char-1', kind: 'drama-character', definitionVersion: 1,
+        position: { x: 40, y: 80 },
+        data: {
+          prompt: '定妆', model: '',
+          settings: {
+            assetKind: 'character', name: '虞晚', elementId: 'yuwan',
+            appearance: '红衣金饰', locked: true, sheetPrompt: '一张角色设定图',
+          },
+        },
+      }],
+      edges: [],
+    })))
+    expect(workflow?.nodes[0]).toMatchObject({
+      kind: 'drama-character',
+      data: { settings: { name: '虞晚', elementId: 'yuwan', locked: true } },
+    })
+    expect(serializeWorkflow(workflow as WorkflowFile)).toContain('虞晚')
+  })
+
   it('migrates legacy single-image handles to the multi-image ports', () => {
     const source = {
       id: 'asset', kind: 'image-input', definitionVersion: 1,
@@ -314,6 +336,28 @@ describe('workflow schema v2 serializer', () => {
 
     expect(serialized).not.toMatch(/api[_-]?key/i)
     expect(parseWorkflowFile(serialized)?.mediaGroups).toEqual({ image: '生图分组', video: 'grok' })
+  })
+
+  it('round-trips default models and the text generation group', () => {
+    const workflow = parseWorkflowFile(JSON.stringify(v2Document({
+      mediaGroups: {
+        image: '生图分组',
+        video: 'grok',
+        text: '对话分组',
+        imageModel: 'gpt-image-2',
+        videoModel: 'grok-imagine-video',
+        textModel: 'gpt-5.4',
+      },
+    })))
+
+    expect(parseWorkflowFile(serializeWorkflow(workflow as WorkflowFile))?.mediaGroups).toEqual({
+      image: '生图分组',
+      video: 'grok',
+      text: '对话分组',
+      imageModel: 'gpt-image-2',
+      videoModel: 'grok-imagine-video',
+      textModel: 'gpt-5.4',
+    })
   })
 
   it('round-trips a bounded node-level group override', () => {

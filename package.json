@@ -1,6 +1,6 @@
 {
   "name": "xingmang-ai-manager",
-  "version": "0.1.13",
+  "version": "0.1.21",
   "private": true,
   "description": "星芒AI管理工具",
   "author": "神风",
@@ -36,6 +36,7 @@
     "release:preflight": "node scripts/verify-release-environment.cjs",
     "release:verify": "node scripts/verify-release-artifacts.cjs",
     "release:build": "node scripts/run-release-build.cjs",
+    "release:build:unsigned": "npm run compile && cross-env XINGMANG_UNSIGNED_RELEASE=1 XINGMANG_LOCAL_BUILD=0 electron-builder --config electron-builder.config.cjs --win --x64 --publish never",
     "audit:official": "npm audit --registry=https://registry.npmjs.org/",
     "audit:ci": "node scripts/audit-development-dependencies.cjs",
     "audit:production": "npm audit --omit=dev --registry=https://registry.npmjs.org/",
