@@ -42,6 +42,7 @@ function verifyAuthenticode(filePath, expectedPublisher = null, options = {}) {
   }
   const script = [
     '$ErrorActionPreference = "Stop"',
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
     'Import-Module -Name $env:XINGMANG_SECURITY_MODULE -Force -ErrorAction Stop',
     '$signature = Microsoft.PowerShell.Security\\Get-AuthenticodeSignature -LiteralPath $env:XINGMANG_SIGNATURE_TARGET -ErrorAction Stop',
     'if ($null -eq $signature) { throw "Get-AuthenticodeSignature did not return a result" }',
