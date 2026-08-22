@@ -132,13 +132,23 @@ await fs.rm(testHomeDir, { recursive: true, force: true })
 // 本身,不是账号流程,所以预置成「Key 直连」站点(manual-key,无账号后端)——
 // 这是产品里真实存在的一种配置,不需要伪造任何登录态或凭据。
 // 账号站点的登录门本身另有 src/App.test.tsx 的用例覆盖。
+// 该夹具只验证工作台和主界面交互，不需要安装 Microsoft Store 里的 Codex
+// Desktop；显式记录用户的“不安装”选择，让启动 readiness gate 可以进入工作台。
 // workspace 不能省:parseSettingsValue 的 requireWorkspace 缺字段就抛错,
 // 整份设置会被判无效而回落默认值,relaySiteId 一并丢失(本测试初次修复时
 // 就踩了这个坑——表现为界面仍停在欢迎页,像是站点没生效)。
 await fs.mkdir(testUserDataDir, { recursive: true })
 await fs.writeFile(
   path.join(testUserDataDir, 'settings.json'),
-  `${JSON.stringify({ version: 2, workspace: testHomeDir, relaySiteId: 'sub2api' }, null, 2)}\n`,
+  `${JSON.stringify({
+    version: 2,
+    workspace: testHomeDir,
+    relaySiteId: 'sub2api',
+    codexDesktopInstallDisabled: true,
+    // The host machine may expose unrelated globally installed CLIs. Keep
+    // this dashboard fixture focused on the fake Codex config it creates.
+    officialProviders: ['claude', 'gemini', 'grok'],
+  }, null, 2)}\n`,
   'utf8',
 )
 await fs.mkdir(path.join(testCodexHomeDir, 'packages'), { recursive: true })
@@ -489,7 +499,7 @@ try {
   // toggle itself is a .nav-item, so 8 top-level items are visible before
   // anyone expands anything (docs/PROPOSAL-nav-onboarding.md: "✓≤8").
   const topLevelNavLabels = ['工具概览', 'AI聊天', '会话管理', '无限画布', 'MCP 管理', 'Skills 管理', '插件市场', '更多']
-  const moreGroupPageIds = new Set(['backups', 'health', 'maintenance', 'feedback', 'updates', 'settings'])
+  const moreGroupPageIds = new Set(['backups', 'health', 'maintenance', 'feedback', 'tutorial', 'updates', 'settings'])
   const sidebarNavigationItems = page.locator('.main-nav .nav-item')
   result.navigationItemCount = await sidebarNavigationItems.count()
   result.navigationItemsFullyVisible = await sidebarNavigationItems.evaluateAll((items) => (
@@ -514,6 +524,13 @@ try {
     // "更多" was already expanded above (it stays expanded across navigation
     // — Sidebar's onNavigate never touches moreExpanded), so every page's
     // button, grouped or not, is reachable through the same container.
+    if (moreGroupPageIds.has(id)) {
+      const moreItem = page.locator(`.main-nav .nav-item[data-navigation-id="${id}"]`)
+      if (!await moreItem.isVisible().catch(() => false)) {
+        await moreToggle.click()
+        await moreItem.waitFor({ state: 'visible', timeout: 10_000 })
+      }
+    }
     await page.locator(`.main-nav .nav-item[data-navigation-id="${id}"]`).click()
     const pageRoot = page.locator(`.main-content [data-page-id="${id}"]`)
     await pageRoot.waitFor({ state: 'visible', timeout: 10_000 })
@@ -679,6 +696,10 @@ try {
   result.nativeConfigFooterHidden = await page.getByText('本机原生配置', { exact: true }).count() === 0
   result.officialWebsiteDomainVisible = false
   result.supportButtonVisible = await page.getByRole('button', { name: '客服' }).isVisible()
+  if (!await page.getByRole('button', { name: /教程文档/ }).isVisible().catch(() => false)) {
+    await moreToggle.click()
+    await page.locator('#sidebar-more-items').waitFor({ state: 'visible' })
+  }
   result.tutorialDocsVisible = await page.getByRole('button', { name: /教程文档/ }).isVisible()
   result.tutorialDocsLabelVisible = await page.getByText('教程文档', { exact: true }).isVisible()
   result.cardModelCount = await page.locator('.configured-model').count()
