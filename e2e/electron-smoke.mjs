@@ -348,8 +348,14 @@ try {
   await page.screenshot({ path: path.join(artifactDir, 'toast-position-dark.png') })
   await page.evaluate(() => document.querySelector('#smoke-toast')?.remove())
   await page.screenshot({ path: path.join(artifactDir, 'dashboard-dark.png') })
-  await page.locator('.cli-card').first().getByRole('button', { name: '配置' }).click()
-  const darkConfigDialog = page.getByRole('dialog', { name: 'Codex 桌面端 配置' })
+  // The desktop card is rendered first, but it may be uninstalled in CI and
+  // therefore has no configuration action. Target the CLI card by its title
+  // so this check remains independent of the optional desktop package.
+  const codexCliCard = page.locator('.cli-card').filter({
+    has: page.getByRole('heading', { name: 'Codex CLI', exact: true }),
+  })
+  await codexCliCard.getByRole('button', { name: '配置' }).click()
+  const darkConfigDialog = page.getByRole('dialog', { name: 'Codex CLI 配置' })
   await darkConfigDialog.waitFor({ state: 'visible' })
   result.darkConfigModelStateSettled = await waitForConfigModelState(page, darkConfigDialog)
   result.darkConfigDialogApplied = await darkConfigDialog.evaluate((dialog) => (
@@ -760,13 +766,13 @@ try {
     await codexLaunchDialog.getByRole('button', { name: '取消', exact: true }).last().click()
   }
 
-  await page.locator('.cli-card').first().getByRole('button', { name: '配置' }).click()
-  const lightConfigDialog = page.getByRole('dialog', { name: 'Codex 桌面端 配置' })
+  await codexCliCard.getByRole('button', { name: '配置' }).click()
+  const lightConfigDialog = page.getByRole('dialog', { name: 'Codex CLI 配置' })
   await lightConfigDialog.waitFor({ state: 'visible' })
   result.lightConfigModelStateSettled = await waitForConfigModelState(page, lightConfigDialog)
   await page.screenshot({ path: path.join(artifactDir, 'api-config.png') })
-  result.configDialogVisible = await page.getByRole('dialog', { name: 'Codex 桌面端 配置' }).isVisible()
-  result.configVisible = await page.getByRole('heading', { name: 'Codex 桌面端 配置' }).isVisible()
+  result.configDialogVisible = await page.getByRole('dialog', { name: 'Codex CLI 配置' }).isVisible()
+  result.configVisible = await page.getByRole('heading', { name: 'Codex CLI 配置' }).isVisible()
   result.configTabsHidden = await page.getByRole('tab').count() === 0
   result.configBrandIconVisible = await page.locator('.config-dialog .provider-icon img').isVisible()
   result.saveAndLaunchHidden = await page.getByRole('button', { name: '保存并启动' }).count() === 0
