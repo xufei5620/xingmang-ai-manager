@@ -43,7 +43,7 @@ export function platformWindowOptions(
     titleBarOverlay: {
       color: palette.titleBar,
       symbolColor: palette.symbol,
-      height: 38,
+      height: 44,
     },
     icon: windowsIcon,
   }
@@ -59,7 +59,7 @@ export function applyWindowTheme(
   target.setTitleBarOverlay({
     color: palette.titleBar,
     symbolColor: palette.symbol,
-    height: 38,
+    height: 44,
   })
 }
 

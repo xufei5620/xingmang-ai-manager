@@ -28,7 +28,7 @@ describe('platform window presentation', () => {
       titleBarOverlay: {
         color: '#202426',
         symbolColor: '#eef1f2',
-        height: 38,
+        height: 44,
       },
       icon: '/app/windows-icon.png',
     })

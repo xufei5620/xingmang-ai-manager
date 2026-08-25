@@ -10252,3 +10252,412 @@ button:disabled {
     grid-template-columns: 1fr;
   }
 }
+
+/* ==========================================================================
+   2026 cross-platform visual system
+   A quiet, native-feeling desktop layer shared by Windows and macOS. These
+   semantic overrides deliberately sit after legacy page styles so every
+   existing feature benefits without changing its business implementation.
+   ========================================================================== */
+
+:root {
+  --xm-canvas: #f4f6f8;
+  --xm-surface: #ffffff;
+  --xm-ink: #17202a;
+  --xm-muted: #68727f;
+  --xm-line: #dfe4ea;
+  --xm-brand: #176b87;
+  --xm-brand-hover: #105a73;
+  --xm-brand-soft: #e4f1f5;
+  --xm-danger: #b7444d;
+  --xm-titlebar-height: 44px;
+  --xm-sidebar-width: 236px;
+  --xm-control-height: 36px;
+  --xm-radius-control: 8px;
+  --xm-radius-panel: 12px;
+  --xm-shadow-float: 0 18px 48px rgba(23, 32, 42, 0.16), 0 2px 10px rgba(23, 32, 42, 0.08);
+  --surface-page: var(--xm-canvas);
+  --surface-panel: var(--xm-surface);
+  --surface-faint: #f8f9fb;
+  --surface-subtle: #eef2f5;
+  --surface-hover: #e9edf1;
+  --surface-accent-soft: var(--xm-brand-soft);
+  --border-subtle: var(--xm-line);
+  --border-subtle-2: var(--xm-line);
+  --border-panel: var(--xm-line);
+  --border-control: #cfd6de;
+  --text-primary: var(--xm-ink);
+  --text-secondary: var(--xm-muted);
+  --text-muted: var(--xm-muted);
+  --color-accent: var(--xm-brand);
+  --color-accent-hover: var(--xm-brand-hover);
+  --color-accent-icon: var(--xm-brand);
+  --color-accent-text: var(--xm-brand-hover);
+  --color-nav-active: var(--xm-brand-hover);
+  --color-focus-ring: var(--xm-brand);
+  --radius-7: var(--xm-radius-control);
+  --radius-8: var(--xm-radius-control);
+  --radius-10: var(--xm-radius-panel);
+  --shadow-md: 0 1px 2px rgba(23, 32, 42, 0.04);
+  --shadow-lg: var(--xm-shadow-float);
+  --duration-150: 160ms;
+  --ease-standard: cubic-bezier(.2, 0, 0, 1);
+}
+
+:root[data-theme="dark"] {
+  --xm-canvas: #11171c;
+  --xm-surface: #192127;
+  --xm-ink: #edf2f5;
+  --xm-muted: #9daab3;
+  --xm-line: #2c373e;
+  --xm-brand: #62b5ce;
+  --xm-brand-hover: #83c7da;
+  --xm-brand-soft: #1d3943;
+  --xm-danger: #ef9299;
+  --surface-page: var(--xm-canvas);
+  --surface-panel: var(--xm-surface);
+  --surface-faint: #151d22;
+  --surface-subtle: #222c32;
+  --surface-hover: #253139;
+  --surface-accent-soft: var(--xm-brand-soft);
+  --border-subtle: var(--xm-line);
+  --border-subtle-2: var(--xm-line);
+  --border-panel: var(--xm-line);
+  --border-control: #3c4951;
+  --text-primary: var(--xm-ink);
+  --text-secondary: var(--xm-muted);
+  --text-muted: var(--xm-muted);
+  --color-accent: var(--xm-brand);
+  --color-accent-hover: var(--xm-brand-hover);
+  --color-accent-icon: var(--xm-brand);
+  --color-accent-text: var(--xm-brand-hover);
+  --color-nav-active: var(--xm-brand-hover);
+  --color-focus-ring: var(--xm-brand);
+}
+
+body {
+  color: var(--text-primary);
+  background: var(--surface-page);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+.desktop-frame {
+  grid-template-rows: var(--xm-titlebar-height) minmax(0, 1fr);
+  background: var(--surface-page);
+}
+
+.window-titlebar {
+  justify-content: space-between;
+  height: var(--xm-titlebar-height);
+  padding: 0 146px 0 14px;
+  color: var(--text-muted);
+  background: color-mix(in srgb, var(--surface-panel) 94%, var(--surface-page));
+  border-color: var(--border-subtle);
+  font-size: 12px;
+  font-weight: 550;
+}
+
+.window-titlebar-brand,
+.window-titlebar-context {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.window-titlebar-brand img {
+  width: 19px;
+  height: 19px;
+}
+
+.window-titlebar-context {
+  gap: 7px;
+  font-size: 11px;
+  font-weight: 500;
+}
+
+.window-titlebar-status {
+  width: 6px;
+  height: 6px;
+  background: var(--color-success);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-success) 12%, transparent);
+}
+
+.desktop-frame[data-platform-family="macos"] .window-titlebar {
+  padding-left: 78px;
+  padding-right: 18px;
+}
+
+.desktop-frame[data-platform-family="macos"] {
+  --xm-control-height: 34px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", sans-serif;
+}
+
+.desktop-frame[data-platform-family="windows"] {
+  font-family: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI", sans-serif;
+}
+
+.app-shell {
+  --sidebar-width: var(--xm-sidebar-width);
+  grid-template-columns: var(--xm-sidebar-width) minmax(0, 1fr);
+  background: var(--surface-page);
+  transition: grid-template-columns 220ms var(--ease-standard);
+}
+
+.sidebar {
+  padding: 12px 10px 10px;
+  background: var(--surface-faint);
+  border-color: var(--border-subtle);
+}
+
+.brand-block {
+  min-height: 58px;
+  padding: 3px 8px 14px;
+}
+
+.brand-logo {
+  width: 34px;
+  height: 34px;
+}
+
+.brand-name {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+}
+
+.brand-name span {
+  color: inherit;
+}
+
+.brand-subtitle {
+  color: var(--text-muted);
+  font-size: 10px;
+}
+
+.main-nav {
+  gap: 2px;
+  padding-right: 0;
+  border-bottom: 0;
+}
+
+.nav-group + .nav-group {
+  margin-top: 14px;
+}
+
+.nav-group-label {
+  padding: 6px 10px 5px;
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: .06em;
+}
+
+.nav-item {
+  flex-basis: var(--xm-control-height);
+  height: var(--xm-control-height);
+  gap: 10px;
+  padding: 0 10px;
+  color: var(--text-secondary);
+  border: 1px solid transparent;
+  border-radius: var(--xm-radius-control);
+  transition: color 140ms var(--ease-standard), background-color 140ms var(--ease-standard), border-color 140ms var(--ease-standard), transform 140ms var(--ease-standard);
+}
+
+.nav-item:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+}
+
+.nav-item:active {
+  transform: scale(.985);
+}
+
+.nav-item.active {
+  color: var(--color-nav-active);
+  background: var(--surface-accent-soft);
+  border-color: color-mix(in srgb, var(--color-accent) 18%, transparent);
+  box-shadow: none;
+  font-weight: 600;
+}
+
+.nav-label {
+  font-size: 12px;
+}
+
+.nav-more-items {
+  padding: 4px;
+  background: var(--surface-subtle);
+  border: 1px solid var(--border-subtle);
+  border-radius: 10px;
+}
+
+.nav-more-popover {
+  padding: 8px;
+  background: var(--surface-panel);
+  border-color: var(--border-panel);
+  border-radius: var(--xm-radius-panel);
+  box-shadow: var(--xm-shadow-float);
+}
+
+.sidebar-bottom {
+  gap: 8px;
+}
+
+.sidebar-controls {
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.sidebar-control-button {
+  height: var(--xm-control-height);
+  border-radius: var(--xm-radius-control);
+}
+
+.sidebar-control-button:hover {
+  color: var(--text-primary);
+  background: var(--surface-hover);
+  border-color: transparent;
+}
+
+.main-content {
+  background: var(--surface-page);
+  scrollbar-color: color-mix(in srgb, var(--text-muted) 38%, transparent) transparent;
+  scrollbar-width: thin;
+}
+
+.page {
+  width: min(100%, 1320px);
+  padding: 26px 32px 40px;
+}
+
+.page-header {
+  min-height: 54px;
+  margin-bottom: 18px;
+}
+
+.page-header h1 {
+  font-size: 22px;
+  font-weight: 680;
+  letter-spacing: -.025em;
+}
+
+.eyebrow {
+  margin-bottom: 4px;
+  color: var(--color-accent-text);
+  font-size: 10px;
+  font-weight: 680;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+
+.management-panel,
+.workspace-empty,
+.dashboard-card,
+.settings-card,
+.session-card,
+.plugin-card,
+.skill-card,
+.mcp-card {
+  background: var(--surface-panel);
+  border-color: var(--border-panel);
+  border-radius: var(--xm-radius-panel);
+  box-shadow: var(--shadow-md);
+}
+
+.management-panel {
+  padding: 22px;
+}
+
+button,
+input,
+select,
+textarea {
+  font-family: inherit;
+}
+
+button:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--color-focus-ring) 70%, transparent);
+  outline-offset: 2px;
+}
+
+.primary-button {
+  min-height: var(--xm-control-height);
+  background: var(--color-accent);
+  border-radius: var(--xm-radius-control);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--xm-ink) 18%, transparent);
+}
+
+.primary-button:hover {
+  background: var(--color-accent-hover);
+}
+
+.secondary-button,
+.icon-button,
+input,
+select,
+textarea {
+  border-radius: var(--xm-radius-control);
+}
+
+.dialog-panel,
+.modal-panel,
+.account-popover {
+  background: var(--surface-panel);
+  border-color: var(--border-panel);
+  border-radius: 14px;
+  box-shadow: var(--xm-shadow-float);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--text-muted) 30%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--text-muted) 52%, transparent);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+}
+
+@media (max-width: 900px) {
+  :root { --xm-sidebar-width: 216px; }
+  .page { padding: 20px 22px 32px; }
+  .window-titlebar-context { display: none; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    scroll-behavior: auto !important;
+    animation-duration: .01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .01ms !important;
+  }
+}
+
+@media (forced-colors: active) {
+  .nav-item.active,
+  .primary-button {
+    border: 1px solid CanvasText;
+  }
+}
