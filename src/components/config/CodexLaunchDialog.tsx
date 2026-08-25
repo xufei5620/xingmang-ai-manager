@@ -1,15 +1,23 @@
 import { useEffect } from 'react'
-import { AppWindow, ChevronRight, RotateCcw, X } from 'lucide-react'
+import { AppWindow, RotateCcw, X } from 'lucide-react'
 import { DialogBackdrop } from '../Dialog'
+import {
+  codexDesktopLaunchDialogCopy,
+  type ProviderAccountSource,
+} from '../../account-source'
 import type { CodexDesktopLaunchMode } from '../../types'
 
 export function CodexLaunchDialog({
+  accountSource,
   onSelect,
   onCancel,
 }: {
+  accountSource: ProviderAccountSource
   onSelect: (mode: CodexDesktopLaunchMode) => void
   onCancel: () => void
 }) {
+  const copy = codexDesktopLaunchDialogCopy(accountSource)
+
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === 'Escape') onCancel()
@@ -20,13 +28,18 @@ export function CodexLaunchDialog({
 
   return (
     <DialogBackdrop className="save-mode-backdrop" onDismiss={onCancel}>
-      <section className="save-mode-dialog" role="alertdialog" aria-modal="true" aria-labelledby="codex-launch-title">
+      <section
+        className="save-mode-dialog codex-launch-dialog"
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="codex-launch-title"
+      >
         <header className="save-mode-head">
           <div>
             <div className="save-mode-icon"><AppWindow size={20} /></div>
             <div>
-              <h3 id="codex-launch-title">Codex 桌面端已运行</h3>
-              <p>修改了配置请选择重启 Codex，若无修改直接打开即可。</p>
+              <h3 id="codex-launch-title">{copy.title}</h3>
+              <p>{copy.subtitle}</p>
             </div>
           </div>
           <button className="icon-button" type="button" title="取消" onClick={onCancel}>
@@ -34,22 +47,26 @@ export function CodexLaunchDialog({
           </button>
         </header>
 
-        <div className="save-mode-options">
-          <button type="button" className="save-mode-option" onClick={() => onSelect('open')}>
-            <span className="save-option-icon"><AppWindow size={19} /></span>
-            <span>
-              <strong>直接打开</strong>
-              <small>未修改配置，保留当前进程并唤起窗口</small>
+        <div className="codex-launch-options">
+          <button type="button" className="codex-launch-option" onClick={() => onSelect('open')}>
+            <span className="codex-launch-option-icon"><AppWindow size={20} /></span>
+            <span className="codex-launch-option-copy">
+              <strong>打开窗口</strong>
+              <small>{copy.openHint}</small>
             </span>
-            <ChevronRight size={18} />
+            <span className="codex-launch-option-action">打开</span>
           </button>
-          <button type="button" className="save-mode-option reset-option" onClick={() => onSelect('restart')}>
-            <span className="save-option-icon"><RotateCcw size={19} /></span>
-            <span>
+          <button
+            type="button"
+            className="codex-launch-option restart-option"
+            onClick={() => onSelect('restart')}
+          >
+            <span className="codex-launch-option-icon"><RotateCcw size={20} /></span>
+            <span className="codex-launch-option-copy">
               <strong>重启 Codex</strong>
-              <small>退出当前进程，重新加载刚保存的配置</small>
+              <small>{copy.restartHint}</small>
             </span>
-            <ChevronRight size={18} />
+            <span className="codex-launch-option-action">重启</span>
           </button>
         </div>
 

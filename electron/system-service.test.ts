@@ -13,7 +13,7 @@ import {
   type runCommand as productionRunCommand,
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
-import { providerConfigPaths } from './config-files'
+import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, providerConfigPaths } from './config-files'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
@@ -93,6 +93,7 @@ function createService() {
 async function createDarwinService(options: {
   workspace?: string
   configured?: boolean
+  accountMode?: 'relay' | 'official' | 'unknown'
   codexHome?: string
   macosCodexAppDetector?: () => Promise<MacosCodexAppInspection>
 } = {}) {
@@ -122,13 +123,14 @@ async function createDarwinService(options: {
     outputBytes: 0,
     durationMs: 1,
   }))
+  const accountMode = options.accountMode ?? (options.configured === false ? 'unknown' : 'relay')
   const inspectConfig = vi.fn(() => ({
     baseUrl: 'https://xm.solov.cc/v1',
-    actualBaseUrl: options.configured === false ? 'https://example.invalid' : 'https://xm.solov.cc/v1',
+    actualBaseUrl: accountMode === 'relay' ? 'https://xm.solov.cc/v1' : 'https://example.invalid',
     exists: true,
-    hasApiKey: true,
-    matchesRelay: options.configured !== false,
-    apiKey: 'sk-test-key',
+    hasApiKey: accountMode !== 'official',
+    matchesRelay: accountMode === 'relay',
+    apiKey: accountMode === 'official' ? '' : 'sk-test-key',
     model: 'gpt-5.6-sol',
     dataDirectory: path.join(directory, '.codex'),
     dataDirectoryExists: true,
@@ -315,6 +317,48 @@ describe('createSystemService', () => {
     expect(providerCommandEnvironment('grok', { HOME: userHome }, codexEnv).CODEX_HOME).toBeUndefined()
   })
 
+  it('refreshes official ChatGPT usage through the injected fetch and skips Xingmang keys', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-usage-refresh-'))
+    temporaryDirectories.push(root)
+    const usage = {
+      planLabel: 'Pro 5x',
+      renewsAt: '2026-09-22T11:32:00.000Z',
+      resetCredits: 1,
+      windows: [],
+      checkedAt: '2026-08-24T00:00:00.000Z',
+    }
+    const fetchUsage = vi.fn(async () => usage)
+    let hasApiKey = false
+    const inspect = vi.fn((provider: Parameters<typeof providerConfigRoot>[0]) => ({
+      baseUrl: providerBaseUrls[provider],
+      actualBaseUrl: providerBaseUrls[provider],
+      exists: true,
+      apiKey: hasApiKey ? 'sk-xingmang' : '',
+      hasApiKey,
+      matchesRelay: hasApiKey,
+      model: 'gpt-5.3-codex-spark',
+      officialAccountPlan: 'Pro 5x',
+      officialAccountRenewsAt: '2026-09-22T11:32:00.000Z',
+      dataDirectory: root,
+      dataDirectoryExists: true,
+      files: [],
+      updatedAt: '2026-08-24T00:00:00.000Z',
+    }))
+    const service = createSystemService(
+      new AppSettingsStore(path.join(root, 'settings.json'), root),
+      { inspectProviderConfig: inspect, fetchOfficialChatGptUsage: fetchUsage },
+    )
+
+    expect(await service.refreshOfficialChatGptUsage()).toEqual(usage)
+    expect(await service.refreshOfficialChatGptUsage()).toEqual(usage)
+    expect(fetchUsage).toHaveBeenCalledTimes(2)
+
+    hasApiKey = true
+    fetchUsage.mockClear()
+    expect(await service.refreshOfficialChatGptUsage()).toBeNull()
+    expect(fetchUsage).not.toHaveBeenCalled()
+  })
+
   it('delegates settings reads and merged durable updates to AppSettingsStore', async () => {
     const service = createService()
     const initial = service.readStoredConfig()
@@ -370,10 +414,14 @@ describe('createSystemService', () => {
       mode: 'reset',
     }, false)
 
-    expect(result.files).toEqual(providerConfigPaths('codex', {
-      userHome,
-      codexHome,
-    }))
+    const configSnapshots = codexConfigSnapshotPaths({ userHome, codexHome })
+    const authSnapshots = codexAuthSnapshotPaths({ userHome, codexHome })
+    expect(result.files).toEqual([
+      configSnapshots.relay,
+      configSnapshots.active,
+      authSnapshots.apikey,
+      authSnapshots.active,
+    ])
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
   })
 
@@ -2308,8 +2356,25 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('Codex 当前不是星芒 AI 配置')
+    })).rejects.toThrow('ChatGPT 账号')
     expect(resolveCli).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('lets a ChatGPT official account pass the desktop launch readiness check', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-workspace-'))
+    temporaryDirectories.push(directory)
+    const missingWorkspace = path.join(directory, 'missing')
+    const { service, resolveCli, execute } = await createDarwinService({
+      workspace: missingWorkspace,
+      accountMode: 'official',
+    })
+
+    await expect(service.launchCodexDesktop('open', {
+      isDestroyed: () => false,
+      send: vi.fn(),
+    })).rejects.toThrow('工作目录不存在，请重新选择')
+    expect(resolveCli).toHaveBeenCalled()
     expect(execute).not.toHaveBeenCalled()
   })
 

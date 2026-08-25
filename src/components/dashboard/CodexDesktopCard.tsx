@@ -8,12 +8,22 @@ import type {
   PlatformCapabilities,
 } from '../../types'
 import { StatusMark } from '../StatusMark'
+import { OfficialChatGptMeter } from './OfficialChatGptMeter'
+import { codexDesktopUpdateDetail, codexDesktopUpdateKind } from '../../codex-desktop-update'
+import type { OfficialChatGptAccount } from '../../types'
 
 export function CodexDesktopCard({
   platform,
   status,
   configured,
   configExists,
+  officialLoggedIn,
+  officialAccountEmail,
+  officialAccountPlan,
+  officialAccountRenewsAt,
+  officialUsage,
+  usageRefreshing,
+  onRefreshUsage,
   model,
   scanning,
   launchPhase,
@@ -28,6 +38,13 @@ export function CodexDesktopCard({
   status: DesktopAppStatus
   configured: boolean
   configExists: boolean
+  officialLoggedIn?: boolean
+  officialAccountEmail?: string | null
+  officialAccountPlan?: string | null
+  officialAccountRenewsAt?: string | null
+  officialUsage?: OfficialChatGptAccount | null
+  usageRefreshing?: boolean
+  onRefreshUsage?: () => void
   model: string
   scanning: boolean
   launchPhase: 'idle' | 'closing' | 'opening'
@@ -45,8 +62,7 @@ export function CodexDesktopCard({
   // all; a confirmed install with an incomplete version read still gets the
   // normal launch/configure actions, with the gap surfaced via updateError.
   const failed = isDetectionFailed(status) && !status.installed
-  const mirrorSyncing = status.updateState === 'available'
-    && status.mirrorUpdateAvailable === false
+  const updateKind = codexDesktopUpdateKind(status)
   const presentation = platformPresentation(platform)
   return (
     <article className="cli-card desktop-card">
@@ -90,12 +106,16 @@ export function CodexDesktopCard({
         </span>
       </div>
       <div className="config-state">
-        <span className={configured ? 'config-dot configured' : 'config-dot'} />
+        <span className={configured || officialLoggedIn ? 'config-dot configured' : 'config-dot'} />
         {configured
           ? '与 Codex CLI 共用星芒配置'
-          : configExists ? '共用配置需要重新配置' : '共用配置文件未创建'}
+          : officialLoggedIn
+            ? officialAccountEmail
+              ? `共用 ChatGPT 账号已登录 · ${officialAccountEmail}`
+              : '共用 ChatGPT 账号已登录'
+            : configExists ? '共用配置需要重新配置' : '共用配置文件未创建'}
       </div>
-      {status.installed && presentation.showWindowsPackages && (
+      {status.installed && presentation.showWindowsPackages && (updateKind === 'installable' || updateKind === 'unknown') && (
         <div
           className="config-model"
           title={status.updateError ?? [
@@ -104,20 +124,25 @@ export function CodexDesktopCard({
             status.latestVersion ? `官方最新包版本 ${status.latestVersion}` : null,
           ].filter(Boolean).join('；')}
         >
-          <span className={`config-dot ${status.updateState === 'latest' ? 'configured' : ''}`} />
+          <span className="config-dot" />
           <code>{status.version ?? '版本未知'}</code>
-          <span>
-            {status.updateState === 'available'
-              ? `可更新至 ${status.latestVersion}${mirrorSyncing ? ' · 国内镜像同步中' : ''}`
-              : status.updateState === 'latest' ? '已检查，当前最新' : status.updateError ?? '更新状态未知'}
-          </span>
+          <span>{codexDesktopUpdateDetail(status)}</span>
         </div>
       )}
-      {configured && model && (
+      {(configured || officialLoggedIn) && model && (
         <div className="config-model configured-model" title={model}>
           <span className="config-dot configured" />
           <code>{model}</code>
         </div>
+      )}
+      {officialLoggedIn && (
+        <OfficialChatGptMeter
+          planLabel={officialAccountPlan}
+          renewsAt={officialAccountRenewsAt}
+          usage={officialUsage}
+          refreshing={usageRefreshing}
+          onRefresh={onRefreshUsage}
+        />
       )}
       {installing && installProgress && (
         <div className={`desktop-install-progress phase-${installProgress.phase}`} role="status" aria-live="polite">
@@ -141,10 +166,10 @@ export function CodexDesktopCard({
           </button>
         ) : (
           <>
-            {status.updateState === 'available' && (
+            {updateKind === 'installable' && (
               <button className="secondary-button grow update-button" onClick={onInstall} disabled={busy} title={`安装 Codex Desktop ${status.latestVersion}`}>
                 {installing ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-                {installing ? '更新中' : mirrorSyncing ? '查看更新' : '安装最新版'}
+                {installing ? '更新中' : '安装最新版'}
               </button>
             )}
             <button className="secondary-button grow" onClick={onConfigure} disabled={busy}>

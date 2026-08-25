@@ -26,7 +26,11 @@ import {
   type WindowsProcessEntry,
 } from './codex-desktop'
 import { commandEnvironment, trustedCommandEnvironment, windowsSystemExecutable, type runCommand } from './command-runner'
-import type { NativeConfigInspection } from './config-files'
+import {
+  canLaunchManagedProvider,
+  managedProviderLaunchBlockedMessage,
+  type NativeConfigInspection,
+} from './config-files'
 import type { InstallationQueue } from './installation-queue'
 import type { inspectMacosCodexApp, MacosCodexAppInspection } from './macos-codex-app'
 import { describeProbeFailure } from './probe-failure'
@@ -1533,8 +1537,8 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error('macOS 不支持重启 Codex，请使用打开操作唤起现有应用')
     }
     const nativeConfig = inspectNativeProviderConfig('codex')
-    if (!nativeConfig.hasApiKey || !nativeConfig.matchesRelay) {
-      throw new Error('Codex 当前不是星芒 AI 配置，请先保存星芒 AI 配置')
+    if (!canLaunchManagedProvider(nativeConfig, 'codex')) {
+      throw new Error(managedProviderLaunchBlockedMessage('codex'))
     }
     if (platform === 'darwin') {
       const command = await resolveVerifiedCliCommand(

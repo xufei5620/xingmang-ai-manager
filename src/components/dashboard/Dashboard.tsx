@@ -23,7 +23,13 @@ import type {
 import { RuntimeCell } from '../RuntimeCell'
 import { StatusMark } from '../StatusMark'
 import { CodexDesktopCard } from './CodexDesktopCard'
+import { OfficialChatGptMeter } from './OfficialChatGptMeter'
 import { NextStepsCard, type NextStepsNudgeState } from './NextStepsCard'
+import {
+  canRefreshOfficialChatGptUsage,
+  providerConfigReadiness,
+  providerConfigReadinessLabel,
+} from '../../account-source'
 
 export function Dashboard({
   platform,
@@ -44,6 +50,8 @@ export function Dashboard({
   installedToolCount,
   nextStepsNudge,
   onScan,
+  officialUsageRefreshing,
+  onRefreshOfficialUsage,
   onInstallNode,
   onInstallPython,
   onOpenNodeGuide,
@@ -78,6 +86,8 @@ export function Dashboard({
   installedToolCount: number
   nextStepsNudge: NextStepsNudgeState
   onScan: () => void
+  officialUsageRefreshing?: boolean
+  onRefreshOfficialUsage?: () => void
   onInstallNode: () => void
   onInstallPython: () => void
   onOpenNodeGuide: () => void
@@ -96,6 +106,9 @@ export function Dashboard({
   onNextStepsExploreMcp: () => void
 }) {
   const presentation = platformPresentation(platform)
+  const officialUsageRefresh = canRefreshOfficialChatGptUsage(config?.providers.codex)
+    ? onRefreshOfficialUsage
+    : undefined
   return (
     <div className="page dashboard-page">
       <header className="page-header">
@@ -201,6 +214,13 @@ export function Dashboard({
             status={snapshot.desktopApps.codex}
             configured={Boolean(config?.providers.codex.hasApiKey && config.providers.codex.matchesRelay)}
             configExists={Boolean(config?.providers.codex.exists)}
+            officialLoggedIn={providerConfigReadiness(config?.providers.codex) === 'official'}
+            officialAccountEmail={config?.providers.codex.officialAccountEmail ?? null}
+            officialAccountPlan={config?.providers.codex.officialAccountPlan ?? null}
+            officialAccountRenewsAt={config?.providers.codex.officialAccountRenewsAt ?? null}
+            officialUsage={snapshot.officialChatGpt}
+            usageRefreshing={officialUsageRefreshing}
+            onRefreshUsage={officialUsageRefresh}
             model={config?.providers.codex.model ?? ''}
             scanning={scanning}
             launchPhase={codexLaunchPhase}
@@ -218,6 +238,8 @@ export function Dashboard({
             const isInstalling = installing.has(provider)
             const providerConfig = config?.providers[provider]
             const isConfigured = Boolean(providerConfig?.hasApiKey && providerConfig.matchesRelay)
+            const readiness = providerConfigReadiness(providerConfig)
+            const officialEmail = providerConfig?.officialAccountEmail
             return (
               <article className="cli-card" key={provider}>
                 <div className="cli-card-top">
@@ -255,16 +277,24 @@ export function Dashboard({
                   </span>
                 </div>
                 <div className="config-state">
-                  <span className={isConfigured ? 'config-dot configured' : 'config-dot'} />
-                  {providerConfig?.exists
-                    ? isConfigured ? '星芒 AI 已配置' : '需要重新配置'
-                    : '配置文件未创建'}
+                  <span className={isConfigured || readiness === 'official' ? 'config-dot configured' : 'config-dot'} />
+                  {providerConfigReadinessLabel(providerConfig, provider, 'dashboard')}
+                  {readiness === 'official' && officialEmail ? ` · ${officialEmail}` : ''}
                 </div>
-                {isConfigured && providerConfig?.model && (
+                {(isConfigured || readiness === 'official') && providerConfig?.model && (
                   <div className="config-model configured-model" title={providerConfig.model}>
                     <span className="config-dot configured" />
                     <code>{providerConfig.model}</code>
                   </div>
+                )}
+                {provider === 'codex' && readiness === 'official' && (
+                  <OfficialChatGptMeter
+                    planLabel={providerConfig?.officialAccountPlan}
+                    renewsAt={providerConfig?.officialAccountRenewsAt}
+                    usage={snapshot.officialChatGpt}
+                    refreshing={officialUsageRefreshing}
+                    onRefresh={officialUsageRefresh}
+                  />
                 )}
                 <div className="cli-actions">
                   {failed ? (

@@ -6,15 +6,59 @@ import {
   formatAccountUsageDate,
   formatKeyQuotaUsd,
   formatUsageCostUsd,
+  parseInviteAffCode,
+  validateInviteCode,
 } from './account-center'
 
 describe('buildAccountInviteLink', () => {
-  it('builds an xm.solov.cc register link carrying the affCode as the aff query parameter', () => {
-    expect(buildAccountInviteLink('ABC123')).toBe('https://xm.solov.cc/register?aff=ABC123')
+  it('builds a dl.solov.cc sign-up link carrying the affCode as the aff query parameter', () => {
+    expect(buildAccountInviteLink('ABC123')).toBe('https://dl.solov.cc/sign-up?aff=ABC123')
   })
 
   it('percent-encodes an affCode containing URL-unsafe characters', () => {
-    expect(buildAccountInviteLink('a b&c')).toBe('https://xm.solov.cc/register?aff=a%20b%26c')
+    expect(buildAccountInviteLink('a b&c')).toBe('https://dl.solov.cc/sign-up?aff=a%20b%26c')
+  })
+})
+
+describe('parseInviteAffCode', () => {
+  it('returns an empty string for a blank value', () => {
+    expect(parseInviteAffCode('')).toBe('')
+    expect(parseInviteAffCode('   ')).toBe('')
+  })
+
+  it('keeps a bare aff code', () => {
+    expect(parseInviteAffCode('  6B4j  ')).toBe('6B4j')
+  })
+
+  it('extracts aff from the official sign-up and register invite URLs', () => {
+    expect(parseInviteAffCode('https://dl.solov.cc/sign-up?aff=6B4j')).toBe('6B4j')
+    expect(parseInviteAffCode('https://xm.solov.cc/sign-up?aff=6B4j')).toBe('6B4j')
+    expect(parseInviteAffCode('https://xm.solov.cc/register?aff=ABC123')).toBe('ABC123')
+  })
+
+  it('extracts aff from a query-only paste', () => {
+    expect(parseInviteAffCode('aff=6B4j')).toBe('6B4j')
+  })
+})
+
+describe('validateInviteCode', () => {
+  it('treats a blank invite as optional', () => {
+    expect(validateInviteCode('')).toBeNull()
+    expect(validateInviteCode('   ')).toBeNull()
+  })
+
+  it('accepts a bare code or a complete invite URL', () => {
+    expect(validateInviteCode('6B4j')).toBeNull()
+    expect(validateInviteCode('https://dl.solov.cc/sign-up?aff=6B4j')).toBeNull()
+    expect(validateInviteCode('https://xm.solov.cc/sign-up?aff=6B4j')).toBeNull()
+  })
+
+  it('rejects a link that does not carry an aff parameter', () => {
+    expect(validateInviteCode('https://xm.solov.cc/sign-up')).toBe('请粘贴完整邀请链接，或只填邀请码')
+  })
+
+  it('rejects an over-long code', () => {
+    expect(validateInviteCode('a'.repeat(33))).toBe('邀请码不能超过 32 位')
   })
 })
 

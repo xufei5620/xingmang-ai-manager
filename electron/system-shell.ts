@@ -130,10 +130,11 @@ function launchWindowsShell(plan: WindowsShellLaunchPlan): Promise<void> {
 }
 
 /**
- * On Windows, hand URL/file association resolution to the interactive Explorer
- * shell instead of invoking ShellExecute from the elevated Electron process.
- * Explorer forwards the target through the existing medium-integrity desktop
- * shell, so the browser or folder window does not inherit this app's token.
+ * On Windows, hand HTTPS/file association resolution to the interactive
+ * Explorer shell instead of invoking ShellExecute from the elevated Electron
+ * process. Microsoft Store URIs are the exception: Explorer can report a
+ * successful spawn without activating the Store protocol, so the already
+ * allowlisted URI must use ShellExecute directly.
  */
 export function createExternalShellLauncher(
   options: ExternalShellLauncherOptions = {},
@@ -153,6 +154,14 @@ export function createExternalShellLauncher(
   }
 
   const launch = options.launchWindowsPlan ?? launchWindowsShell
+  const openExternal = async (url: string) => {
+    const target = validatedTarget('url', url)
+    if (new URL(target).protocol === 'ms-windows-store:') {
+      await fallback.openExternal(target)
+      return
+    }
+    await open('url', target)
+  }
   const open = async (kind: 'url' | 'path', target: string) => {
     const machinePaths = options.machinePaths ?? resolveWindowsMachinePaths()
     const explorerExecutable = resolveWindowsExplorerExecutable({
@@ -171,7 +180,7 @@ export function createExternalShellLauncher(
     await launch(plan)
   }
   return {
-    openExternal: (url) => open('url', url),
+    openExternal,
     openPath: (targetPath) => open('path', targetPath),
   }
 }

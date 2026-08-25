@@ -30,13 +30,21 @@ import {
   type CodexDesktopInstallResult,
 } from './codex-desktop-service'
 import {
+  canLaunchManagedProvider,
   inspectProviderConfig,
+  managedProviderLaunchBlockedMessage,
+  readCodexAuthTokens,
   saveProviderConfig,
   switchProviderToOfficialAccount,
   toNativeConfigSummary,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
 } from './config-files'
+import {
+  fetchOfficialChatGptUsage,
+  type OfficialChatGptAccount,
+  type OfficialChatGptWindow,
+} from './official-account-usage'
 import { parseModelIds } from './models'
 import { describeProbeFailure } from './probe-failure'
 import {
@@ -233,6 +241,8 @@ export function buildDarwinCliLaunchPlan(
   return { executable: command.executable, argv: [...command.argv], workspace, env }
 }
 
+export type { OfficialChatGptAccount, OfficialChatGptWindow }
+
 export interface SystemSnapshot {
   checkedAt: string
   network: NetworkLocationStatus
@@ -245,6 +255,7 @@ export interface SystemSnapshot {
   desktopApps: {
     codex: DesktopAppStatus
   }
+  officialChatGpt?: OfficialChatGptAccount | null
 }
 
 export interface CodexDesktopLaunchResult {
@@ -617,6 +628,7 @@ export interface SystemService {
   ): Promise<ReturnType<typeof saveProviderConfig>>
   switchToOfficialAccount(provider: ProviderId): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
+  refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
   restartWindows(): Promise<void>
@@ -1655,6 +1667,8 @@ export interface SystemServiceOptions {
   installNodeRuntime?: typeof installNodeRuntimeLts
   /** Test seam for Windows-only operations exercised on non-Windows CI runners. */
   resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
+  /** Test seam so scanSystem never talks to chatgpt.com under vitest. */
+  fetchOfficialChatGptUsage?: typeof fetchOfficialChatGptUsage
 }
 
 export function providerCommandEnvironment(
@@ -1706,6 +1720,9 @@ export function createSystemService(
   const grokLatestInFlight = new Map<string, Promise<LatestVersionProbe>>()
   const modelAccessCache = new Map<string, { expiresAt: number; models: string[] }>()
   let networkLocationCache: { expiresAt: number; value: NetworkLocationStatus } | null = null
+  let officialChatGptCache: { expiresAt: number; value: OfficialChatGptAccount | null } | null = null
+  const inspectOfficialUsage = serviceOptions.fetchOfficialChatGptUsage
+    ?? (process.env.VITEST ? async () => null : fetchOfficialChatGptUsage)
 
   function createInstallTemporaryDirectory(
     label: string,
@@ -2097,19 +2114,45 @@ export function createSystemService(
     return buildCliStatus(status, latest)
   }
 
+  async function inspectOfficialChatGptAccount(forceRefresh: boolean): Promise<OfficialChatGptAccount | null> {
+    if (forceRefresh) officialChatGptCache = null
+    if (officialChatGptCache && officialChatGptCache.expiresAt > Date.now()) {
+      return officialChatGptCache.value
+    }
+    const inspection = inspectNativeProviderConfig('codex')
+    if (inspection.hasApiKey) {
+      officialChatGptCache = { expiresAt: Date.now() + 45_000, value: null }
+      return null
+    }
+    const value = await inspectOfficialUsage(readCodexAuthTokens(providerRoots), {
+      fallback: {
+        planLabel: inspection.officialAccountPlan,
+        renewsAt: inspection.officialAccountRenewsAt,
+      },
+    })
+    officialChatGptCache = { expiresAt: Date.now() + 45_000, value }
+    return value
+  }
+
+  async function refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null> {
+    return inspectOfficialChatGptAccount(true)
+  }
+
   async function scanSystem(forceRefresh = false): Promise<SystemSnapshot> {
     if (forceRefresh) {
       npmLatestCacheGeneration += 1
       npmLatestCache.clear()
       grokLatestInFlight.clear()
       networkLocationCache = null
+      officialChatGptCache = null
     }
-    const [nodeResult, npmResult, pythonResult, codexDesktopResult, networkResult] = await Promise.allSettled([
+    const [nodeResult, npmResult, pythonResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
       inspectNode(),
       inspectTool('npm'),
       inspectPython(),
       inspectCodexDesktopUpdate(forceRefresh),
       inspectNetworkLocation(),
+      inspectOfficialChatGptAccount(forceRefresh),
     ])
     // 单个探测异常不再丢弃整份快照；失败项降级为可区分的「检测失败」状态
     const node = buildToolStatusFromSettled(nodeResult)
@@ -2161,6 +2204,7 @@ export function createSystemService(
       runtime: { node, npm, python },
       clis,
       desktopApps: { codex: codexDesktop },
+      officialChatGpt: officialChatGptResult.status === 'fulfilled' ? officialChatGptResult.value : null,
     }
   }
 
@@ -3019,8 +3063,8 @@ export function createSystemService(
 
   async function launchProviderOperation(provider: ProviderId, workspace: string): Promise<void> {
     const nativeConfig = inspectNativeProviderConfig(provider)
-    if (!nativeConfig.hasApiKey || !nativeConfig.matchesRelay) {
-      throw new Error('当前 CLI 不是星芒 AI 配置，请先保存星芒 AI 配置')
+    if (!canLaunchManagedProvider(nativeConfig, provider)) {
+      throw new Error(managedProviderLaunchBlockedMessage(provider))
     }
     if (!fs.existsSync(workspace) || !fs.statSync(workspace).isDirectory()) {
       throw new Error('工作目录不存在，请重新选择')
@@ -3237,6 +3281,10 @@ export function createSystemService(
         hasApiKey: false,
         matchesRelay: false,
         apiKeyPreview: null,
+        officialAccountEmail: null,
+        officialAccountPlan: null,
+        officialAccountRenewsAt: null,
+        codexAuthMode: null,
         model: '',
         updatedAt: null,
         files: result.providers.codex.files.map((file) => ({ ...file, exists: false })),
@@ -3310,6 +3358,7 @@ export function createSystemService(
     saveConfig,
     switchToOfficialAccount,
     scanSystem,
+    refreshOfficialChatGptUsage,
     inspectCodexSetupStatus,
     installNodeRuntime,
     restartWindows,

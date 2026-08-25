@@ -227,6 +227,18 @@ describe('validateRegisterForm', () => {
     const errors = validateRegisterForm({ ...validValues, username: 'a'.repeat(21) })
     expect(errors).toEqual({ username: '用户名不能超过 20 位' })
   })
+
+  it('accepts a missing invite code and a complete invite URL', () => {
+    expect(validateRegisterForm(validValues).inviteCode).toBeUndefined()
+    expect(validateRegisterForm({ ...validValues, inviteCode: 'https://dl.solov.cc/sign-up?aff=6B4j' }).inviteCode).toBeUndefined()
+    expect(validateRegisterForm({ ...validValues, inviteCode: 'https://xm.solov.cc/sign-up?aff=6B4j' }).inviteCode).toBeUndefined()
+  })
+
+  it('reports an invite URL that is missing the aff parameter', () => {
+    expect(validateRegisterForm({ ...validValues, inviteCode: 'https://xm.solov.cc/sign-up' })).toEqual({
+      inviteCode: '请粘贴完整邀请链接，或只填邀请码',
+    })
+  })
 })
 
 describe('validateOriginalPassword', () => {

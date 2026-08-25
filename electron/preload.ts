@@ -13,6 +13,7 @@ import type {
 const ipcInvokeChannels = {
   getPlatformCapabilities: 'platform:get-capabilities',
   scanSystem: 'system:scan',
+  refreshOfficialChatGptUsage: 'system:refresh-official-chatgpt',
   getCodexReadiness: 'startup:codex-readiness',
   getConfig: 'config:get',
   revealApiKey: 'config:reveal-api-key',
@@ -182,6 +183,7 @@ function subscribe<Method extends keyof XingmangEventContract>(
 const xingmangApi: XingmangApi = {
   getPlatformCapabilities: () => invoke('getPlatformCapabilities'),
   scanSystem: (forceRefresh) => invoke('scanSystem', forceRefresh),
+  refreshOfficialChatGptUsage: () => invoke('refreshOfficialChatGptUsage'),
   getCodexReadiness: () => invoke('getCodexReadiness'),
   getConfig: () => invoke('getConfig'),
   revealApiKey: (provider) => invoke('revealApiKey', provider),

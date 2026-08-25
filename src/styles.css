@@ -1804,10 +1804,10 @@ input:focus-visible {
   height: 52px;
   place-items: center;
   color: #fff;
-  background: linear-gradient(145deg, #2d9bb2, #236f95);
+  background: var(--color-success-strong);
   border: 1px solid rgba(255, 255, 255, 0.52);
   border-radius: 50%;
-  box-shadow: 0 10px 26px rgba(29, 104, 135, 0.28), 0 0 0 5px rgba(45, 155, 178, 0.1);
+  box-shadow: 0 10px 26px rgba(16, 94, 67, 0.28), 0 0 0 5px rgba(43, 155, 115, 0.12);
   cursor: pointer;
   transition: transform var(--duration-150) var(--ease-emphasized), box-shadow var(--duration-150) var(--ease-standard);
 }
@@ -1828,7 +1828,8 @@ input:focus-visible {
 .floating-support-button:hover,
 .floating-support-button:focus-visible {
   transform: translateY(-3px);
-  box-shadow: 0 14px 30px rgba(29, 104, 135, 0.36), 0 0 0 6px rgba(45, 155, 178, 0.14);
+  background: var(--color-success-strong-hover);
+  box-shadow: 0 14px 30px rgba(16, 94, 67, 0.36), 0 0 0 6px rgba(43, 155, 115, 0.16);
 }
 
 .floating-support-button:hover::after,
@@ -1839,7 +1840,8 @@ input:focus-visible {
 
 .floating-support-button.is-open {
   transform: translateY(-1px);
-  box-shadow: 0 12px 28px rgba(29, 104, 135, 0.34), 0 0 0 6px rgba(45, 155, 178, 0.14);
+  background: var(--color-success-strong-hover);
+  box-shadow: 0 12px 28px rgba(16, 94, 67, 0.34), 0 0 0 6px rgba(43, 155, 115, 0.16);
 }
 
 .sidebar-service-button {
@@ -4811,6 +4813,7 @@ button:disabled {
 .cli-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
   gap: 10px 12px;
   margin-top: var(--space-6);
 }
@@ -4819,7 +4822,6 @@ button:disabled {
   display: flex;
   flex-direction: column;
   min-width: 0;
-  height: 170px;
   min-height: 170px;
   padding: var(--space-12);
   background: var(--surface-panel);
@@ -4996,6 +4998,144 @@ button:disabled {
 
 .config-dot.configured {
   background: var(--color-success-accent);
+}
+
+.official-chatgpt-meter {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+  margin-top: var(--space-8);
+}
+
+.official-chatgpt-badges {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+
+.official-chatgpt-badge {
+  max-width: 100%;
+  overflow: hidden;
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: #7d6a4a;
+  background: #f4ead8;
+  font-size: 11px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.official-chatgpt-badge.plan {
+  color: #8d6b1f;
+  background: #f7efd2;
+}
+
+.official-chatgpt-refresh {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  border: 0;
+  border-radius: 999px;
+  padding: 1px 8px;
+  color: #5d6b78;
+  background: #eef2f5;
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.45;
+  cursor: pointer;
+}
+
+.official-chatgpt-refresh:disabled {
+  cursor: wait;
+  opacity: 0.72;
+}
+
+.official-chatgpt-windows {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.official-chatgpt-window {
+  display: grid;
+  grid-template-columns: minmax(52px, 78px) minmax(28px, 1fr) 32px minmax(48px, auto);
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  color: #657181;
+  font-size: 11px;
+}
+
+.official-chatgpt-window-name,
+.official-chatgpt-window-reset {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.official-chatgpt-window strong {
+  color: #3f4b57;
+  font-weight: 650;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.official-chatgpt-window-reset {
+  color: #7a8490;
+}
+
+.official-chatgpt-bar {
+  height: 5px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #e6eaee;
+}
+
+.official-chatgpt-bar > i {
+  display: block;
+  height: 100%;
+  background: #36a589;
+}
+
+.official-chatgpt-bar.caution > i {
+  background: #d39b2f;
+}
+
+.official-chatgpt-bar.low > i {
+  background: #d36a6f;
+}
+
+:root[data-theme="dark"] .official-chatgpt-badge {
+  color: #e0c48a;
+  background: #3a3324;
+}
+
+:root[data-theme="dark"] .official-chatgpt-badge.plan {
+  color: #f0d48a;
+  background: #4a3d1f;
+}
+
+:root[data-theme="dark"] .official-chatgpt-refresh {
+  color: #c5cdd3;
+  background: #32373a;
+}
+
+:root[data-theme="dark"] .official-chatgpt-window,
+:root[data-theme="dark"] .official-chatgpt-window-reset {
+  color: #9aa4ab;
+}
+
+:root[data-theme="dark"] .official-chatgpt-window strong {
+  color: #e8eef1;
+}
+
+:root[data-theme="dark"] .official-chatgpt-bar {
+  background: #32373a;
 }
 
 .cli-actions {
@@ -5239,11 +5379,114 @@ button:disabled {
   line-height: 1.9;
 }
 
+.codex-launch-dialog {
+  width: min(680px, calc(100vw - 56px));
+}
+
+.codex-launch-options {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-12);
+  padding: 18px 0;
+}
+
+.codex-launch-option {
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: start;
+  gap: var(--space-12);
+  min-width: 0;
+  min-height: 168px;
+  padding: var(--space-16);
+  color: #45505d;
+  background: #f9fbfc;
+  border: 1px solid #dfe5ea;
+  border-radius: var(--radius-7);
+  cursor: pointer;
+  text-align: left;
+  transition: background-color var(--duration-140) var(--ease-standard), border-color var(--duration-140) var(--ease-standard), box-shadow var(--duration-140) var(--ease-standard);
+}
+
+.codex-launch-option:hover {
+  background: #f3f8fa;
+  border-color: #aacbd7;
+  box-shadow: 0 8px 24px rgba(31, 73, 89, 0.08);
+}
+
+.codex-launch-option:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+}
+
+.codex-launch-option-icon {
+  display: grid;
+  place-items: center;
+  width: 42px;
+  height: 42px;
+  color: #246f9b;
+  background: #edf6fb;
+  border-radius: var(--radius-7);
+}
+
+.codex-launch-option.restart-option .codex-launch-option-icon {
+  color: #197a62;
+  background: var(--surface-success-soft);
+}
+
+.codex-launch-option-copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: var(--space-7);
+}
+
+.codex-launch-option-copy strong {
+  color: #303843;
+  font-size: var(--text-md);
+}
+
+.codex-launch-option-copy small {
+  min-height: 40px;
+  color: #7c8792;
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.codex-launch-option-action {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: center;
+  align-self: end;
+  min-height: 32px;
+  padding: 0 10px;
+  color: var(--color-white);
+  background: #258b68;
+  border-radius: var(--radius-5);
+  font-size: var(--text-xs);
+  font-weight: var(--font-weight-bold);
+}
+
+.codex-launch-option.restart-option .codex-launch-option-action {
+  background: #1f7a8a;
+}
+
+@media (max-width: 680px) {
+  .codex-launch-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .codex-launch-option {
+    min-height: 142px;
+  }
+}
+
 /* 账号来源(星芒中转 / 自己的官方订阅)——配置弹窗里的切换区。 */
 .account-source {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--space-18);
   margin-top: var(--space-14);
   padding: 14px 16px;
@@ -5269,9 +5512,47 @@ button:disabled {
   line-height: 1.7;
 }
 
+.account-source-email {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
 .account-source-current {
   color: var(--text-primary);
   font-weight: 600;
+}
+
+.account-source-switch {
+  display: inline-flex;
+  flex-shrink: 0;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface-muted, #e8edf1);
+}
+
+.account-source-switch button {
+  border: 0;
+  border-radius: 999px;
+  padding: 5px 12px;
+  color: var(--text-secondary);
+  background: transparent;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
+}
+
+.account-source-switch button[aria-pressed="true"] {
+  color: var(--text-primary);
+  background: var(--surface-card, #fff);
+  font-weight: 650;
+  box-shadow: 0 1px 2px rgba(20, 28, 36, 0.08);
+}
+
+.account-source-switch button:disabled {
+  cursor: wait;
+  opacity: 0.7;
 }
 
 .install-source-dialog {
@@ -6161,6 +6442,16 @@ button:disabled {
   color: var(--dark-text-secondary);
 }
 
+:root[data-theme="dark"] .account-source-switch {
+  background: #2a2f32;
+}
+
+:root[data-theme="dark"] .account-source-switch button[aria-pressed="true"] {
+  color: #e8eef1;
+  background: #3a4044;
+  box-shadow: none;
+}
+
 :root[data-theme="dark"] .sidebar,
 :root[data-theme="dark"] .environment-section,
 :root[data-theme="dark"] .cli-card,
@@ -6551,12 +6842,14 @@ button:disabled {
   border-color: #52727a;
 }
 
+:root[data-theme="dark"] .codex-launch-option,
 :root[data-theme="dark"] .install-source-option {
   color: #c9d0d3;
   background: var(--dark-surface-input);
   border-color: #3f4649;
 }
 
+:root[data-theme="dark"] .codex-launch-option:hover,
 :root[data-theme="dark"] .install-source-option:hover {
   background: #31373a;
   border-color: #52727a;
@@ -6585,9 +6878,23 @@ button:disabled {
   background: #203b32;
 }
 
-:root[data-theme="dark"] .store-source-option .install-source-option-icon {
+:root[data-theme="dark"] .store-source-option .install-source-option-icon,
+:root[data-theme="dark"] .codex-launch-option-icon {
   color: #73b8d8;
   background: #20343d;
+}
+
+:root[data-theme="dark"] .codex-launch-option.restart-option .codex-launch-option-icon {
+  color: #66c4a1;
+  background: #203b32;
+}
+
+:root[data-theme="dark"] .codex-launch-option-copy strong {
+  color: var(--dark-text-strong);
+}
+
+:root[data-theme="dark"] .codex-launch-option-copy small {
+  color: var(--dark-text-secondary);
 }
 
 :root[data-theme="dark"] .install-source-badge {
@@ -8889,9 +9196,9 @@ button:disabled {
 }
 
 :root[data-theme="dark"] .floating-support-button {
-  color: #e6fbff;
-  background: linear-gradient(145deg, #267e91, #1e586f);
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35), 0 0 0 5px rgba(87, 188, 207, 0.1);
+  color: var(--color-white);
+  background: var(--color-success-strong);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35), 0 0 0 5px rgba(43, 155, 115, 0.14);
 }
 
 :root[data-theme="dark"] .floating-support-button::after {

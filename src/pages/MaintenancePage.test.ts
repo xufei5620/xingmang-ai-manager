@@ -224,7 +224,7 @@ describe('Codex Desktop maintenance action', () => {
     })
   })
 
-  it('shows mirror synchronization instead of claiming the domestic package is ready', () => {
+  it('does not nag for a Store-current install when only the official feed is ahead', () => {
     expect(codexDesktopMaintenanceControl(
       platformCapabilitiesFor('win32', 'x64'),
       desktopStatus({
@@ -236,10 +236,10 @@ describe('Codex Desktop maintenance action', () => {
       }),
       false,
     )).toMatchObject({
-      action: 'update',
-      label: '查看更新',
-      statusClass: 'is-warn',
-      statusLabel: '镜像同步中',
+      action: 'check',
+      label: '检查更新',
+      statusClass: 'is-pass',
+      statusLabel: '已是可安装最新版',
     })
   })
 })

@@ -4,11 +4,22 @@ import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import * as TOML from '@iarna/toml'
 import {
+  buildCodexApiKeyAuth,
+  canLaunchManagedProvider,
+  classifyCodexAuthProfile,
+  classifyCodexConfigProfile,
+  codexApiKeyAuthSnapshotName,
+  codexAuthSnapshotPaths,
+  codexChatGptAuthSnapshotName,
+  codexConfigSnapshotPaths,
+  defaultCodexRelayProvider,
   inspectProviderConfig,
+  managedProviderLaunchBlockedMessage,
   providerAccountMode,
   providerConfigPaths,
   providerSupportsOfficialAccount,
   saveProviderConfig,
+  snapshotCodexChatGptAuth,
   switchProviderToOfficialAccount,
   toNativeConfigSummary,
 } from './config-files'
@@ -82,7 +93,7 @@ describe('native CLI configuration files', () => {
     const rewritten = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     // The unreadable file cannot say which provider it used, so reset falls
     // back to the same default it uses when no config exists at all.
-    expect(rewritten.model_provider).toBe('OpenAI')
+    expect(rewritten.model_provider).toBe(defaultCodexRelayProvider)
     expect(rewritten.model).toBe('gpt-5.6-sol')
 
     // The broken original must still be recoverable by hand.
@@ -116,6 +127,32 @@ describe('native CLI configuration files', () => {
     saveProviderConfig('codex', 'sk-key', 'gpt-5.6-sol', 'reset', roots, {}, providerBaseUrls)
 
     expect(TOML.parse(fs.readFileSync(configPath, 'utf8')).model_provider).toBe('solov')
+  })
+
+  it('uses XingmangAI as the Codex model provider when the user has no config yet', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+
+    saveProviderConfig('codex', 'sk-first', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))!
+    expect(parsed.model_provider).toBe('XingmangAI')
+    expect(parsed.model_context_window).toBe(1000000)
+    expect(parsed.model_auto_compact_token_limit).toBe(900000)
+    expect(asRecord(parsed.model_providers)?.XingmangAI).toMatchObject({
+      name: 'XingmangAI',
+      base_url: 'https://xm.solov.cc/v1',
+      wire_api: 'responses',
+      requires_openai_auth: true,
+    })
+    expect(asRecord(parsed.model_providers)?.OpenAI).toBeUndefined()
+
+    const mergeHome = temporaryHome()
+    const mergeRoots = providerRoots(mergeHome)
+    const [mergeConfigPath] = providerConfigPaths('codex', mergeRoots)
+    saveProviderConfig('codex', 'sk-merge-first', testModels.codex, 'merge', mergeRoots, {}, providerBaseUrls)
+    expect(asRecord(TOML.parse(fs.readFileSync(mergeConfigPath, 'utf8')))?.model_provider).toBe(defaultCodexRelayProvider)
   })
 
   it('reads and writes Codex at codexHome while every other provider stays at userHome', () => {
@@ -338,24 +375,22 @@ describe('native CLI configuration files', () => {
     const config = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     config.custom_setting = 'preserved'
     const modelProviders = config.model_providers as Record<string, unknown>
-    ;(modelProviders.OpenAI as Record<string, unknown>).custom_header = 'preserved'
-    ;(modelProviders.OpenAI as Record<string, unknown>).base_url = 'https://legacy.example.com'
+    ;(modelProviders.XingmangAI as Record<string, unknown>).custom_header = 'preserved'
     fs.writeFileSync(configPath, TOML.stringify(config), 'utf8')
     const auth = JSON.parse(fs.readFileSync(authPath, 'utf8'))
     auth.CUSTOM_AUTH = 'preserved'
     fs.writeFileSync(authPath, `${JSON.stringify(auth, null, 2)}\n`, 'utf8')
 
     const result = saveProviderConfig('codex', 'new-key', 'gpt-5.6-sol', 'merge', roots, {}, providerBaseUrls)
-    expect(result.backups).toHaveLength(2)
     const mergedConfig = TOML.parse(fs.readFileSync(configPath, 'utf8'))
     const mergedAuth = JSON.parse(fs.readFileSync(authPath, 'utf8'))
     expect(mergedConfig.model).toBe('gpt-5.6-sol')
     expect(mergedConfig.review_model).toBe('gpt-5.6-sol')
     expect(mergedConfig.custom_setting).toBe('preserved')
-    expect(asRecord(asRecord(mergedConfig.model_providers)?.OpenAI)?.custom_header).toBe('preserved')
-    expect(asRecord(asRecord(mergedConfig.model_providers)?.OpenAI)?.base_url).toBe('https://xm.solov.cc/v1')
-    expect(mergedAuth.OPENAI_API_KEY).toBe('new-key')
-    expect(mergedAuth.CUSTOM_AUTH).toBe('preserved')
+    expect(asRecord(asRecord(mergedConfig.model_providers)?.XingmangAI)?.custom_header).toBe('preserved')
+    expect(asRecord(asRecord(mergedConfig.model_providers)?.XingmangAI)?.base_url).toBe('https://xm.solov.cc/v1')
+    expect(mergedAuth).toEqual({ OPENAI_API_KEY: 'new-key' })
+    expect(result.backups.length).toBeGreaterThanOrEqual(2)
     expect(fs.existsSync(path.join(userHome, '.codex'))).toBe(false)
   })
 
@@ -679,6 +714,50 @@ describe('native CLI configuration files', () => {
     expect('apiKey' in summary).toBe(false)
   })
 
+  it('surfaces the ChatGPT email from Codex JWTs without sending the tokens across', () => {
+    const home = temporaryHome()
+    const [, authPath] = providerConfigPaths('codex', providerRoots(home))
+    const jwt = (payload: Record<string, unknown>) => {
+      const header = Buffer.from(JSON.stringify({ alg: 'none', typ: 'JWT' })).toString('base64url')
+      const body = Buffer.from(JSON.stringify(payload)).toString('base64url')
+      return `${header}.${body}.sig`
+    }
+    const idToken = jwt({
+      email: 'ivy@example.com',
+      'https://api.openai.com/auth': {
+        chatgpt_plan_type: 'prolite',
+        chatgpt_subscription_active_until: '2026-09-22T11:32:00.000Z',
+      },
+    })
+    const accessToken = jwt({ 'https://api.openai.com/profile': { email: 'ivy@example.com' } })
+    fs.mkdirSync(path.dirname(authPath), { recursive: true })
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      OPENAI_API_KEY: null,
+      tokens: {
+        id_token: idToken,
+        access_token: accessToken,
+        refresh_token: 'rt.not-a-jwt',
+        account_id: 'account-uuid',
+      },
+    }), 'utf8')
+
+    const inspection = inspectProviderConfig('codex', providerRoots(home))
+    const summary = toNativeConfigSummary(inspection)
+    expect(inspection.officialAccountEmail).toBe('ivy@example.com')
+    expect(inspection.codexAuthMode).toBe('chatgpt')
+    expect(summary.officialAccountEmail).toBe('ivy@example.com')
+    expect(summary.codexAuthMode).toBe('chatgpt')
+    expect(summary.officialAccountPlan).toBe('Pro 5x')
+    expect(summary.officialAccountRenewsAt).toBe('2026-09-22T11:32:00.000Z')
+    const serialized = JSON.stringify(summary)
+    expect(serialized).not.toContain(idToken)
+    expect(serialized).not.toContain(accessToken)
+    expect(serialized).not.toContain('rt.not-a-jwt')
+    expect(inspection.hasApiKey).toBe(false)
+    expect(providerAccountMode(inspection)).toBe('official')
+  })
+
   it('rejects a provider directory junction before creating or replacing files', () => {
     const home = temporaryHome()
     const outside = temporaryHome()
@@ -756,8 +835,137 @@ describe('switching a provider back to the official subscription account', () =>
     const [, authPath] = providerConfigPaths('codex', providerRoots(home))
     const auth = JSON.parse(fs.readFileSync(authPath, 'utf8')) as Record<string, unknown>
     expect(auth.OPENAI_API_KEY).toBeUndefined()
+    expect(auth.auth_mode).toBe('chatgpt')
     expect(auth.tokens).toEqual(chatGptTokens())
     expect(auth.last_refresh).toBe('2026-08-12T00:00:00Z')
+    expect(Object.keys(auth)).toEqual(['auth_mode', 'tokens', 'last_refresh'])
+  })
+
+  it('stores the ChatGPT auth.json aside and writes a key-only file when switching to Xingmang', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath, authPath] = providerConfigPaths('codex', roots)
+    const snapshots = codexAuthSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'model = "gpt-5.3-codex-spark"',
+      'model_provider = "OpenAI"',
+      '',
+      '[model_providers.OpenAI]',
+      'name = "OpenAI"',
+      'base_url = "https://api.openai.com/v1"',
+      '',
+    ].join('\n'), 'utf8')
+    fs.writeFileSync(authPath, JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: chatGptTokens(),
+      last_refresh: '2026-08-12T00:00:00Z',
+    }, null, 2))
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(authPath, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-relay' })
+    expect(JSON.parse(fs.readFileSync(snapshots.chatgpt, 'utf8'))).toEqual({
+      auth_mode: 'chatgpt',
+      tokens: chatGptTokens(),
+      last_refresh: '2026-08-12T00:00:00Z',
+    })
+    expect(JSON.parse(fs.readFileSync(snapshots.apikey, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-relay' })
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).codexAuthMode).toBe('apikey')
+    expect(path.basename(snapshots.chatgpt)).toBe(codexChatGptAuthSnapshotName)
+    expect(path.basename(snapshots.apikey)).toBe(codexApiKeyAuthSnapshotName)
+  })
+
+  it('restores the stored ChatGPT auth.json when switching back from Xingmang', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const snapshots = codexAuthSnapshotPaths(roots)
+    fs.mkdirSync(path.dirname(snapshots.active), { recursive: true })
+    fs.writeFileSync(snapshots.chatgpt, JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: chatGptTokens(),
+      last_refresh: '2026-08-12T00:00:00Z',
+    }, null, 2))
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+    expect(JSON.parse(fs.readFileSync(snapshots.active, 'utf8'))).toEqual({
+      auth_mode: 'chatgpt',
+      tokens: chatGptTokens(),
+      last_refresh: '2026-08-12T00:00:00Z',
+    })
+    expect(JSON.parse(fs.readFileSync(snapshots.apikey, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-relay' })
+  })
+
+  it('stores the official config.toml aside and restores it when switching back', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    const configs = codexConfigSnapshotPaths(roots)
+    const officialConfig = [
+      'model = "gpt-5.3-codex-spark"',
+      'model_provider = "OpenAI"',
+      'windows_wsl_setup_acknowledged = true',
+      '',
+      '[projects."E:\\\\work\\\\demo"]',
+      'trust_level = "trusted"',
+      '',
+      '[model_providers.OpenAI]',
+      'name = "OpenAI"',
+      'base_url = "https://api.openai.com/v1"',
+      '',
+    ].join('\n')
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, officialConfig, 'utf8')
+    fs.writeFileSync(configs.active.replace('config.toml', 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: chatGptTokens(),
+    }, null, 2))
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+
+    const liveAfterRelay = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))
+    expect(liveAfterRelay?.model).toBe(testModels.codex)
+    expect(asRecord(asRecord(liveAfterRelay?.model_providers)?.OpenAI)?.base_url).toBe('https://xm.solov.cc/v1')
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).toContain('gpt-5.3-codex-spark')
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).toContain('E:\\\\work\\\\demo')
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).toContain('https://api.openai.com/v1')
+    expect(classifyCodexConfigProfile(liveAfterRelay, providerBaseUrls.codex)).toBe('relay')
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+
+    const restored = fs.readFileSync(configPath, 'utf8')
+    expect(restored).toContain('gpt-5.3-codex-spark')
+    expect(restored).toContain('E:\\\\work\\\\demo')
+    expect(restored).toContain('https://api.openai.com/v1')
+    expect(restored).not.toContain('https://xm.solov.cc/v1')
+    expect(classifyCodexConfigProfile(
+      asRecord(TOML.parse(restored)),
+      providerBaseUrls.codex,
+    )).toBe('official')
+  })
+
+  it('classifies the two Codex auth.json shapes without mixing them', () => {
+    expect(classifyCodexAuthProfile(buildCodexApiKeyAuth('sk-relay'))).toBe('apikey')
+    expect(classifyCodexAuthProfile({
+      auth_mode: 'chatgpt',
+      tokens: chatGptTokens(),
+    })).toBe('chatgpt')
+    expect(classifyCodexAuthProfile({
+      OPENAI_API_KEY: 'sk-relay',
+      tokens: chatGptTokens(),
+    })).toBe('mixed')
+    expect(snapshotCodexChatGptAuth({
+      OPENAI_API_KEY: 'sk-relay',
+      auth_mode: 'chatgpt',
+      tokens: chatGptTokens(),
+      last_refresh: '2026-08-12T00:00:00Z',
+    })).toEqual({
+      auth_mode: 'chatgpt',
+      tokens: chatGptTokens(),
+      last_refresh: '2026-08-12T00:00:00Z',
+    })
   })
 
   it('removes the relay provider table and model overrides so Codex falls back to its built-in openai provider', () => {
@@ -856,9 +1064,15 @@ describe('switching a provider back to the official subscription account', () =>
     seedCodexRelayConfigWithChatGptLogin(home)
 
     const result = switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
+    const snapshots = codexAuthSnapshotPaths(providerRoots(home))
 
-    expect(result.files).toHaveLength(2)
-    expect(result.backups).toHaveLength(2)
+    expect(result.files).toEqual(expect.arrayContaining([
+      providerConfigPaths('codex', providerRoots(home))[0],
+      snapshots.active,
+      snapshots.chatgpt,
+      snapshots.apikey,
+    ]))
+    expect(result.backups.length).toBeGreaterThanOrEqual(2)
     for (const backup of result.backups) expect(fs.existsSync(backup)).toBe(true)
   })
 
@@ -880,5 +1094,13 @@ describe('switching a provider back to the official subscription account', () =>
 
     switchProviderToOfficialAccount('codex', providerRoots(home), {}, providerBaseUrls)
     expect(providerAccountMode(inspectProviderConfig('codex', providerRoots(home), providerBaseUrls))).toBe('official')
+  })
+
+  it('lets official ChatGPT launch Codex and still refuses a third-party URL', () => {
+    expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false }, 'codex')).toBe(true)
+    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: true }, 'codex')).toBe(true)
+    expect(canLaunchManagedProvider({ hasApiKey: true, matchesRelay: false }, 'codex')).toBe(false)
+    expect(canLaunchManagedProvider({ hasApiKey: false, matchesRelay: false }, 'grok')).toBe(false)
+    expect(managedProviderLaunchBlockedMessage('codex')).toContain('ChatGPT 账号')
   })
 })

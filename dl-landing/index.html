@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="注册星芒 AI 账号，下载 Windows 与 macOS 客户端。">
+  <title>星芒 AI · 注册并下载</title>
+  <link rel="icon" href="/logo.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="sky" aria-hidden="true"></div>
+
+  <header class="top">
+    <a class="brand" href="/" aria-label="星芒 AI">
+      <img class="brand-logo" src="/logo.png" alt="">
+      <span class="brand-name">星芒<span>AI</span></span>
+    </a>
+  </header>
+
+  <main class="shell">
+    <section class="story">
+      <p class="eyebrow">一个账号 · 装好即用</p>
+      <h1>注册星芒账号<br>下载桌面客户端</h1>
+      <p class="lead">不用先装 Node，也不用手改配置。Claude Code、Codex、Gemini、Grok 四家 CLI，图形化装好、统一管理。</p>
+      <ul class="points">
+        <li>
+          <strong>邮箱注册</strong>
+          <span>使用 QQ 邮箱注册，约 1 分钟完成</span>
+        </li>
+        <li>
+          <strong>三端安装包</strong>
+          <span>Windows、Apple Silicon、Intel Mac</span>
+        </li>
+        <li>
+          <strong>国内直连</strong>
+          <span>装好即可使用，无需额外工具</span>
+        </li>
+      </ul>
+    </section>
+
+    <section class="panel" aria-live="polite">
+      <form id="register-view" class="card" novalidate>
+        <div class="card-head">
+          <img class="card-logo" src="/logo.png" alt="">
+          <div>
+            <h2>创建账号</h2>
+            <p id="invite-hint" class="invite-hint" hidden>已从邀请链接带入邀请码，注册后即可下载</p>
+            <p class="invite-hint fallback">注册成功后即可下载客户端</p>
+          </div>
+        </div>
+
+        <label class="field">
+          <span>用户名</span>
+          <input id="username" name="username" type="text" maxlength="20" autocomplete="username" placeholder="不超过 20 位">
+          <em class="error" data-error="username" hidden></em>
+        </label>
+
+        <label class="field">
+          <span>密码</span>
+          <span class="password-wrap">
+            <input id="password" name="password" type="password" maxlength="20" autocomplete="new-password" placeholder="8–20 位">
+            <button type="button" class="ghost-icon" data-toggle-password="password" aria-label="显示密码"></button>
+          </span>
+          <em class="error" data-error="password" hidden></em>
+        </label>
+
+        <label class="field">
+          <span>确认密码</span>
+          <span class="password-wrap">
+            <input id="confirm-password" name="confirmPassword" type="password" maxlength="20" autocomplete="new-password" placeholder="再输入一次">
+            <button type="button" class="ghost-icon" data-toggle-password="confirm-password" aria-label="显示密码"></button>
+          </span>
+          <em class="error" data-error="confirmPassword" hidden></em>
+        </label>
+
+        <label class="field">
+          <span>邮箱</span>
+          <input id="email" name="email" type="email" autocomplete="email" placeholder="xxx@qq.com 只支持QQ邮箱注册">
+          <em class="error" data-error="email" hidden></em>
+        </label>
+
+        <div id="verification-row" class="field verification" hidden>
+          <span>验证码</span>
+          <div class="code-row">
+            <input id="verification-code" name="verificationCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="邮箱验证码">
+            <button type="button" class="secondary" id="send-code">获取验证码</button>
+          </div>
+          <em class="error" data-error="verificationCode" hidden></em>
+        </div>
+
+        <label class="field">
+          <span>邀请码 <small id="invite-optional">选填</small></span>
+          <input id="invite-code" name="inviteCode" type="text" maxlength="128" autocomplete="off" placeholder="邀请码或完整邀请链接">
+          <small id="invite-locked-hint" class="field-note" hidden>已从邀请链接带入，不可修改</small>
+          <em class="error" data-error="inviteCode" hidden></em>
+        </label>
+
+        <label class="agree">
+          <input id="agreement" type="checkbox">
+          <span>
+            我已阅读并同意
+            <button type="button" class="legal-link" data-legal="user-agreement">用户协议</button>
+            和
+            <button type="button" class="legal-link" data-legal="privacy-policy">隐私政策</button>
+          </span>
+        </label>
+        <em class="error" data-error="agreement" hidden></em>
+
+        <p id="form-alert" class="alert" hidden></p>
+        <button type="submit" class="primary" id="submit">注册并下载</button>
+      </form>
+
+      <div id="success-view" class="card success-card" hidden>
+        <img class="card-logo success-logo" src="/logo.png" alt="">
+        <h2>注册成功，下载客户端</h2>
+        <p class="success-copy">选择你的系统。安装后用刚才的账号登录即可。</p>
+        <p class="version" id="release-version"></p>
+        <div class="downloads" id="downloads"></div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    <span>星芒 AI</span>
+    <button type="button" class="legal-link" data-legal="user-agreement">用户协议</button>
+    <button type="button" class="legal-link" data-legal="privacy-policy">隐私政策</button>
+  </footer>
+
+  <div id="legal-backdrop" class="legal-backdrop" hidden>
+    <section class="legal-dialog" role="dialog" aria-modal="true" aria-labelledby="legal-title">
+      <header>
+        <div>
+          <h2 id="legal-title">用户协议</h2>
+          <p>星芒 AI 服务条款</p>
+        </div>
+        <button type="button" class="legal-close" id="legal-close" aria-label="关闭">关闭</button>
+      </header>
+      <div id="legal-body" class="legal-body"></div>
+    </section>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

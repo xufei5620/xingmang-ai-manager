@@ -67,6 +67,7 @@ function serviceStub(): SystemService {
     saveConfig: vi.fn(async (): Promise<NativeConfigSaveResult> => ({ backups: [], files: [] })),
     switchToOfficialAccount: vi.fn((): NativeConfigSaveResult => ({ backups: [], files: [] })),
     scanSystem: vi.fn() as never,
+    refreshOfficialChatGptUsage: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,
     restartWindows: vi.fn() as never,
@@ -557,6 +558,24 @@ describe('registerIpcHandlers', () => {
     })
     expect(service.scanSystem).toHaveBeenCalledWith(true)
     await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('更新检查参数格式错误')
+  })
+
+  it('refreshes official ChatGPT usage without a full system scan', async () => {
+    const service = serviceStub()
+    vi.mocked(service.refreshOfficialChatGptUsage).mockResolvedValueOnce({
+      planLabel: 'Pro 5x',
+      renewsAt: '2026-09-22T11:32:00.000Z',
+      resetCredits: 1,
+      windows: [],
+      checkedAt: '2026-08-24T00:00:00.000Z',
+    })
+    register(service)
+
+    await expect(
+      electronMocks.handlers.get('system:refresh-official-chatgpt')!(trustedEvent()),
+    ).resolves.toMatchObject({ planLabel: 'Pro 5x', resetCredits: 1 })
+    expect(service.refreshOfficialChatGptUsage).toHaveBeenCalledOnce()
+    expect(service.scanSystem).not.toHaveBeenCalled()
   })
 
   it('projects a system scan result only through the main-process registration option', async () => {
