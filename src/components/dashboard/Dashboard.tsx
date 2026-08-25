@@ -1,11 +1,13 @@
 import {
   BookOpen,
+  CheckCircle2,
   Download,
   FolderOpen,
   Globe2,
   LoaderCircle,
   RefreshCw,
   Settings2,
+  Wrench,
 } from 'lucide-react'
 import { isDetectionFailed, networkLocationLabel, shortVersion, updateFailureLabel } from '../../app-shared'
 import { platformPresentation } from '../../platform-presentation'
@@ -96,32 +98,64 @@ export function Dashboard({
   onNextStepsExploreMcp: () => void
 }) {
   const presentation = platformPresentation(platform)
+  const configuredToolCount = config
+    ? dashboardProviderIds.filter((provider) => {
+        const providerConfig = config.providers[provider]
+        return providerConfig.hasApiKey && providerConfig.matchesRelay
+      }).length
+    : 0
+  const environmentMessage = runtimeReady
+    ? installedToolCount > 0
+      ? '工作区已就绪，可以开始使用 AI 工具'
+      : '基础环境已就绪，安装一个 AI 工具即可开始'
+    : '需要补全本机运行环境'
+
   return (
     <div className="page dashboard-page">
-      <header className="page-header">
+      <header className="page-header dashboard-header">
         <div>
-          <div className="eyebrow">SYSTEM OVERVIEW</div>
+          <div className="eyebrow">工作台</div>
           <h1>工具概览</h1>
+          <p>管理本机环境、AI 工具与星芒配置。</p>
         </div>
         <div className="header-actions">
           {installedCliCount < 4 && (
             <button className="secondary-button" disabled={!runtimeReady || installing.size > 0} onClick={onInstallAll}>
               <Download size={16} />
-              安装全部缺失项
+              安装缺失工具
             </button>
           )}
-          <div
-            className={`network-location${snapshot.network.region === 'unknown' ? ' unknown' : ''}`}
-            title={snapshot.network.error ?? networkLocationLabel(snapshot.network)}
-          >
-            <Globe2 size={14} />
-            <span>{networkLocationLabel(snapshot.network)}</span>
-          </div>
           <button className="icon-button" title="重新检测" aria-label="重新检测" onClick={onScan} disabled={scanning}>
             <RefreshCw size={18} className={scanning ? 'spin' : ''} />
           </button>
         </div>
       </header>
+
+      <section className={`dashboard-command-center${runtimeReady ? ' is-ready' : ' needs-attention'}`} aria-label="工作区状态">
+        <div className="dashboard-command-status">
+          <span className="dashboard-command-icon" aria-hidden="true">
+            {runtimeReady ? <CheckCircle2 size={20} /> : <Wrench size={20} />}
+          </span>
+          <div>
+            <strong>{runtimeReady ? '工作区状态良好' : '工作区需要处理'}</strong>
+            <span>{environmentMessage}</span>
+          </div>
+        </div>
+        <dl className="dashboard-command-metrics">
+          <div>
+            <dt>本机工具</dt>
+            <dd>{installedToolCount}<span>/5</span></dd>
+          </div>
+          <div>
+            <dt>已配置</dt>
+            <dd>{configuredToolCount}</dd>
+          </div>
+          <div className="dashboard-network-metric" title={snapshot.network.error ?? networkLocationLabel(snapshot.network)}>
+            <dt><Globe2 size={13} /> 网络位置</dt>
+            <dd>{networkLocationLabel(snapshot.network)}</dd>
+          </div>
+        </dl>
+      </section>
 
       <NextStepsCard
         snapshot={snapshot}

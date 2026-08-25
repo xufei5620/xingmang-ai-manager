@@ -1,14 +1,14 @@
 :root {
   color-scheme: dark;
   font-synthesis: none;
-  --canvas-bg: #0e1013;
-  --canvas-grid: rgba(205, 214, 227, 0.18);
-  --canvas-edge: #8b93ad;
-  --surface-1: #15181d;
-  --surface-2: #1b1f25;
-  --surface-3: #20252d;
-  --surface-hover: #282e37;
-  --surface-input: #111419;
+  --canvas-bg: #11171c;
+  --canvas-grid: rgba(157, 170, 179, 0.16);
+  --canvas-edge: #748995;
+  --surface-1: #192127;
+  --surface-2: #1d262c;
+  --surface-3: #222c32;
+  --surface-hover: #29353c;
+  --surface-input: #151d22;
   --surface-media: #0b0d10;
   --surface-floating: rgba(27, 31, 37, 0.96);
   --surface-floating-strong: rgba(27, 31, 37, 0.985);
@@ -18,9 +18,9 @@
   --text-primary: #f2f4f7;
   --text-secondary: #adb5c0;
   --text-muted: #858e9a;
-  --accent: #3fa4ad;
-  --accent-hover: #62bbc2;
-  --accent-soft: rgba(63, 164, 173, 0.16);
+  --accent: #62b5ce;
+  --accent-hover: #83c7da;
+  --accent-soft: rgba(98, 181, 206, 0.15);
   --success: #58c58a;
   --warning: #e2ad4f;
   --danger: #ef7777;
@@ -52,9 +52,9 @@
   --shadow-modal: 0 20px 60px rgba(0, 0, 0, 0.48);
   --shadow-lightbox: 0 20px 70px rgba(0, 0, 0, 0.55);
   --shadow-floating: 0 12px 30px rgba(0, 0, 0, 0.32);
-  --radius-chip: 4px;
-  --radius-control: 6px;
-  --radius-panel: 8px;
+  --radius-chip: 6px;
+  --radius-control: 8px;
+  --radius-panel: 12px;
   --radius-round: 999px;
 
   /* Run states are kept separate from success/warning/danger so queued and
@@ -133,13 +133,13 @@
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --canvas-bg: #eef1f3;
-  --canvas-grid: rgba(50, 65, 74, 0.2);
-  --canvas-edge: #7d84a3;
+  --canvas-bg: #f4f6f8;
+  --canvas-grid: rgba(104, 114, 127, 0.16);
+  --canvas-edge: #738a96;
   --surface-1: #ffffff;
-  --surface-2: #f7f9fa;
-  --surface-3: #edf1f3;
-  --surface-hover: #e6ecef;
+  --surface-2: #f8f9fb;
+  --surface-3: #eef2f5;
+  --surface-hover: #e9edf1;
   --surface-input: #ffffff;
   --surface-media: #0b0d10;
   --surface-floating: rgba(255, 255, 255, 0.96);
@@ -150,9 +150,9 @@
   --text-primary: #20252b;
   --text-secondary: #58636d;
   --text-muted: #77838e;
-  --accent: #167d86;
-  --accent-hover: #126b73;
-  --accent-soft: rgba(22, 125, 134, 0.13);
+  --accent: #176b87;
+  --accent-hover: #105a73;
+  --accent-soft: rgba(23, 107, 135, 0.12);
   --success: #2b8f6d;
   --warning: #94621b;
   --danger: #b94750;
