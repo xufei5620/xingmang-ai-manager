@@ -2192,7 +2192,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       email,
       verification_code: verificationCode,
     }
-    if (input.affCode) body.aff_code = input.affCode
+    const affCode = input.affCode?.trim()
+    if (affCode) body.aff_code = affCode
     const raw = await performRequest(ctx, registerPath, { method: 'POST', body }, '账号注册')
     unwrapEnvelope(raw, '账号注册', [password, verificationCode])
   }

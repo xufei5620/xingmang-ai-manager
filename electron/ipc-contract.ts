@@ -65,6 +65,8 @@ import type {
   CodexSetupStatus as MainCodexSetupStatus,
   ConfigSavePayload,
   DesktopAppStatus as MainDesktopAppStatus,
+  OfficialChatGptAccount as MainOfficialChatGptAccount,
+  OfficialChatGptWindow as MainOfficialChatGptWindow,
   SystemSnapshot as MainSystemSnapshot,
   ToolStatus as MainToolStatus,
   ToolUninstallResult as MainToolUninstallResult,
@@ -176,6 +178,8 @@ export type CodexDesktopLocale = MainCodexDesktopLocale
 export type CodexDesktopLocaleStatus = MainCodexDesktopLocaleStatus
 export type CodexDesktopLocaleResult = MainCodexDesktopLocaleResult
 export type SystemSnapshot = MainSystemSnapshot
+export type OfficialChatGptAccount = MainOfficialChatGptAccount
+export type OfficialChatGptWindow = MainOfficialChatGptWindow
 export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
 export type AppSettingsV2 = AppSettings
@@ -431,6 +435,11 @@ export interface XingmangInvokeContract {
     PlatformCapabilities
   >
   scanSystem: IpcInvokeDefinition<'system:scan', [forceRefresh?: boolean], SystemSnapshot>
+  refreshOfficialChatGptUsage: IpcInvokeDefinition<
+    'system:refresh-official-chatgpt',
+    [],
+    OfficialChatGptAccount | null
+  >
   getCodexReadiness: IpcInvokeDefinition<'startup:codex-readiness', [], CodexReadinessStatus>
   getConfig: IpcInvokeDefinition<'config:get', [], AppConfigSummary>
   revealApiKey: IpcInvokeDefinition<'config:reveal-api-key', [provider: ProviderId], string>
@@ -757,6 +766,7 @@ export type XingmangApi = {
 export const ipcInvokeChannels = {
   getPlatformCapabilities: 'platform:get-capabilities',
   scanSystem: 'system:scan',
+  refreshOfficialChatGptUsage: 'system:refresh-official-chatgpt',
   getCodexReadiness: 'startup:codex-readiness',
   getConfig: 'config:get',
   revealApiKey: 'config:reveal-api-key',

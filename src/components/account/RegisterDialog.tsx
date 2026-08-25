@@ -3,6 +3,7 @@ import { Eye, EyeOff, UserPlus, X } from 'lucide-react'
 import { dialogAriaProps, DialogBackdrop } from '../Dialog'
 import type { LegalDocumentKind } from '../../types'
 import { LegalDocumentDialog } from './LegalDocumentDialog'
+import { parseInviteAffCode } from './account-center'
 import { validateEmail, validateRegisterForm, type AccountFieldErrors } from './validation'
 
 // Server-side throttle is 2 sends per 30s per IP (see
@@ -12,15 +13,18 @@ const VERIFICATION_CODE_COOLDOWN_SECONDS = 60
 
 /**
  * Register form. Field order mirrors xm.solov.cc's own registration page:
- * username, password, confirm password, email, verification code, terms
- * agreement, then the submit button -- collecting a real username instead
+ * username, password, confirm password, email, verification code, optional
+ * invite code (or web invite URL), terms agreement, then the submit button
+ * -- collecting a real username instead
  * of defaulting it to the email address, which is what caused the
  * "Username already exists" failures this dialog was refactored to fix
  * (new-api enforces uniqueness on username independently of email; see
  * electron/new-api-client.ts's NewApiRegisterInput comment). Submitting
  * calls the parent's onSubmit with the validated {username, email, password,
- * verificationCode}; the parent (App.tsx) makes the real
- * window.xingmang.registerAccount call.
+ * verificationCode, affCode}; the parent (App.tsx) makes the real
+ * window.xingmang.registerAccount call. Invites accept either the bare
+ * aff code or a full `?aff=` link from dl.solov.cc (older xm.solov.cc
+ * posters still parse).
  *
  * "获取验证码" calls the parent's onRequestVerificationCode(email), which
  * wraps the real window.xingmang.sendVerificationCode IPC call and owns the
@@ -44,7 +48,13 @@ export function RegisterDialog({
 }: {
   onClose: () => void
   onSwitchToLogin: () => void
-  onSubmit: (values: { username: string; email: string; password: string; verificationCode: string }) => void
+  onSubmit: (values: {
+    username: string
+    email: string
+    password: string
+    verificationCode: string
+    affCode?: string
+  }) => void
   onRequestVerificationCode: (email: string) => Promise<void>
   isSubmitting?: boolean
 }) {
@@ -53,6 +63,7 @@ export function RegisterDialog({
   const [confirmPassword, setConfirmPassword] = useState('')
   const [email, setEmail] = useState('')
   const [verificationCode, setVerificationCode] = useState('')
+  const [inviteCode, setInviteCode] = useState('')
   const [agreedToTerms, setAgreedToTerms] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<AccountFieldErrors>({})
@@ -105,10 +116,25 @@ export function RegisterDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault()
     if (isSubmitting) return
-    const nextErrors = validateRegisterForm({ username, email, password, confirmPassword, verificationCode, agreedToTerms })
+    const nextErrors = validateRegisterForm({
+      username,
+      email,
+      password,
+      confirmPassword,
+      verificationCode,
+      agreedToTerms,
+      inviteCode,
+    })
     setErrors(nextErrors)
     if (Object.values(nextErrors).some(Boolean)) return
-    onSubmit({ username: username.trim(), email: email.trim(), password, verificationCode: verificationCode.trim() })
+    const affCode = parseInviteAffCode(inviteCode)
+    onSubmit({
+      username: username.trim(),
+      email: email.trim(),
+      password,
+      verificationCode: verificationCode.trim(),
+      ...(affCode ? { affCode } : {}),
+    })
   }
 
   if (legalKind) {
@@ -221,6 +247,17 @@ export function RegisterDialog({
               </button>
             </div>
             {errors.verificationCode && <small className="field-error" role="alert">{errors.verificationCode}</small>}
+          </label>
+
+          <label className="field extension-field">
+            <span>邀请码（选填）</span>
+            <input
+              value={inviteCode}
+              onChange={(event) => { setInviteCode(event.target.value); clearError('inviteCode') }}
+              placeholder="邀请码，或粘贴邀请链接"
+              autoComplete="off"
+            />
+            {errors.inviteCode && <small className="field-error" role="alert">{errors.inviteCode}</small>}
           </label>
 
           <label className="account-agreement">

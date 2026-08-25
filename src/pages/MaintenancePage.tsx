@@ -116,7 +116,7 @@ const providerLabels: Record<ProviderId, string> = {
 export function updateStateLabel(status: MaintenanceVersionStatus): string {
   if (status.detectionFailed) return '检测失败'
   if (!status.installed) return '未安装'
-  if (status.updateState === 'available' && status.mirrorUpdateAvailable === false) return '镜像同步中'
+  if (status.updateState === 'available' && status.mirrorUpdateAvailable === false) return '已是可安装最新版'
   if (status.updateState === 'available') return '可更新'
   if (status.updateState === 'latest') return '已是最新'
   if (status.updateCheck === 'failed') return '检测失败'
@@ -125,6 +125,7 @@ export function updateStateLabel(status: MaintenanceVersionStatus): string {
 
 function updateStateClass(status: MaintenanceVersionStatus): string {
   if (status.updateState === 'latest') return 'is-pass'
+  if (status.updateState === 'available' && status.mirrorUpdateAvailable === false) return 'is-pass'
   if (status.updateState === 'available') return 'is-warn'
   return 'is-warn'
 }
@@ -132,6 +133,7 @@ function updateStateClass(status: MaintenanceVersionStatus): string {
 export function cliMaintenanceAction(status: MaintenanceVersionStatus): 'install' | 'update' | 'check' {
   if (status.detectionFailed) return 'check'
   if (!status.installed) return 'install'
+  if (status.updateState === 'available' && status.mirrorUpdateAvailable === false) return 'check'
   return status.updateState === 'available' ? 'update' : 'check'
 }
 
@@ -185,7 +187,7 @@ export function codexDesktopMaintenanceControl(
     label: action === 'install'
       ? '一键安装'
       : action === 'update'
-        ? status.mirrorUpdateAvailable === false ? '查看更新' : '安装最新版'
+        ? '安装最新版'
         : '检查更新',
     statusClass: updateStateClass(status),
     statusLabel: updateStateLabel(status),

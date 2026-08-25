@@ -72,6 +72,13 @@ import { SessionsPage } from './pages/SessionsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { createScanRequestTracker, runCoordinatedScan } from './scan-coordinator'
 import { createLatestRequestTracker } from './latest-request'
+import {
+  canLaunchManagedProvider,
+  canRefreshOfficialChatGptUsage,
+  managedProviderLaunchBlockedMessage,
+  officialChatGptUsageRefreshMs,
+  providerAccountSource,
+} from './account-source'
 import { createStartupGate } from './startup-gate'
 import { shouldBlockStartupForUpdate, shouldCheckUpdatesOnStartup } from './startup-settings'
 import {
@@ -144,6 +151,7 @@ function App() {
   const [snapshot, setSnapshot] = useState<SystemSnapshot>(EmptyStatus)
   const [config, setConfig] = useState<AppConfigSummary | null>(null)
   const [scanning, setScanning] = useState(true)
+  const [officialUsageRefreshing, setOfficialUsageRefreshing] = useState(false)
   const [installing, setInstalling] = useState<Set<ProviderId>>(new Set())
   const [installLog, setInstallLog] = useState<string[]>([])
   const [logOpen, setLogOpen] = useState(false)
@@ -274,12 +282,15 @@ function App() {
   // 盖回 running:false——按钮退回"打开"，用户以为没启动成功而重复点。任何
   // 更权威的写入（启动结果/状态事件/全量扫描）提交前都先作废在途探测。
   const desktopStatusTracker = useRef(createLatestRequestTracker<'codex-desktop'>()).current
+  const officialUsageTracker = useRef(createLatestRequestTracker<'official-chatgpt'>()).current
   // Codex CLI resolution (mcp/plugins/model list) races ahead of the first
   // environment scan if fired the instant the dashboard becomes navigable;
   // see startup-gate.ts. Settled once, in `scan`, below.
   const cliReadyGate = useRef(createStartupGate()).current
   const snapshotRef = useRef(snapshot)
   snapshotRef.current = snapshot
+  const configRef = useRef(config)
+  configRef.current = config
   // state 更新在同一帧内不可见，双击防重入必须用 ref 同步短路。
   const cliLaunchingRef = useRef(false)
   const codexLaunchRequestRef = useRef(false)
@@ -554,6 +565,36 @@ function App() {
       cliReadyGate.settle()
     }
   }, [scanTracker, cliReadyGate, desktopStatusTracker])
+
+  const refreshOfficialUsage = useCallback(async (notify = false) => {
+    if (!canRefreshOfficialChatGptUsage(configRef.current?.providers.codex)) return
+    const requestId = officialUsageTracker.begin('official-chatgpt')
+    setOfficialUsageRefreshing(true)
+    try {
+      const next = await window.xingmang.refreshOfficialChatGptUsage()
+      if (!officialUsageTracker.isCurrent('official-chatgpt', requestId)) return
+      setSnapshot((current) => ({ ...current, officialChatGpt: next }))
+      if (notify) setToast({ type: 'success', message: '额度已刷新' })
+    } catch (error) {
+      if (!officialUsageTracker.isCurrent('official-chatgpt', requestId)) return
+      if (notify) {
+        setToast({ type: 'error', message: `额度刷新失败：${errorMessage(error)}` })
+      }
+    } finally {
+      if (officialUsageTracker.isCurrent('official-chatgpt', requestId)) {
+        setOfficialUsageRefreshing(false)
+      }
+    }
+  }, [officialUsageTracker])
+
+  const officialCodexAccount = canRefreshOfficialChatGptUsage(config?.providers.codex)
+  useEffect(() => {
+    if (!officialCodexAccount) return
+    const timer = window.setInterval(() => {
+      void refreshOfficialUsage(false)
+    }, officialChatGptUsageRefreshMs)
+    return () => window.clearInterval(timer)
+  }, [officialCodexAccount, refreshOfficialUsage])
 
   const maintenanceApi = useMemo(() => ({
     scan: async (forceRefresh = false) => {
@@ -1300,6 +1341,7 @@ function App() {
     email: string
     password: string
     verificationCode: string
+    affCode?: string
   }) => {
     if (accountBusyRef.current) return
     accountBusyRef.current = true
@@ -1310,6 +1352,7 @@ function App() {
         email: values.email,
         password: values.password,
         verificationCode: values.verificationCode,
+        ...(values.affCode ? { affCode: values.affCode } : {}),
       })
     } catch (error) {
       setToast({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
@@ -1650,12 +1693,12 @@ function App() {
       const latest = await window.xingmang.getConfig()
       setConfig(latest)
       const providerConfig = latest.providers[provider]
-      if (!providerConfig.hasApiKey || !providerConfig.matchesRelay) {
+      if (!canLaunchManagedProvider(providerConfig, provider)) {
         setActiveConfigTab(provider)
         setConfigOpen(true)
         setToast({
           type: 'error',
-          message: `${providers[provider].name} 尚未配置星芒 AI，请先完成配置`,
+          message: managedProviderLaunchBlockedMessage(provider),
         })
         return
       }
@@ -1743,10 +1786,10 @@ function App() {
       const latest = await window.xingmang.getConfig()
       setConfig(latest)
       const codexConfig = latest.providers.codex
-      if (!codexConfig.hasApiKey || !codexConfig.matchesRelay) {
+      if (!canLaunchManagedProvider(codexConfig, 'codex')) {
         setActiveConfigTab('codexDesktop')
         setConfigOpen(true)
-        setToast({ type: 'error', message: 'Codex 尚未配置星芒 AI，请先完成配置' })
+        setToast({ type: 'error', message: managedProviderLaunchBlockedMessage('codex') })
         return
       }
 
@@ -2106,6 +2149,8 @@ function App() {
             installedToolCount={installedToolCount}
             nextStepsNudge={{ triedLaunch: nextStepsTriedLaunch, exploredMcp: nextStepsExploredMcp }}
             onScan={() => void scan(true)}
+            officialUsageRefreshing={officialUsageRefreshing}
+            onRefreshOfficialUsage={() => void refreshOfficialUsage(true)}
             onInstallNode={() => void installNodeRuntime()}
             onInstallPython={() => {
               if (platformCapabilities.pythonRuntimeInstall === 'managed') {
@@ -2301,6 +2346,7 @@ function App() {
 
       {codexLaunchDialogOpen && (
         <CodexLaunchDialog
+          accountSource={providerAccountSource(config?.providers.codex)}
           onSelect={(mode) => void performCodexDesktopLaunch(mode)}
           onCancel={() => setCodexLaunchDialogOpen(false)}
         />

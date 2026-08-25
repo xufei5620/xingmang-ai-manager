@@ -139,6 +139,15 @@ export function codexDesktopLaunchDecision(
   return running && platform.platform !== 'macos' ? 'choose' : 'open'
 }
 
+/** 账号来源切换后必须让桌面端重新读 auth.json / config.toml。macOS 不能杀进程。 */
+export function codexDesktopReloadAfterAccountSwitch(
+  platform: PlatformCapabilities,
+  desktop: Pick<DesktopAppStatus, 'installed'> | null | undefined,
+): 'restart' | 'open' | null {
+  if (!desktop?.installed) return null
+  return platform.platform === 'macos' ? 'open' : 'restart'
+}
+
 /**
  * The persisted CLI config alone is not a completed first-run checkpoint.
  * Startup may happen after the app was closed between config write, runtime
@@ -248,6 +257,7 @@ export function EmptyStatus(): SystemSnapshot {
         running: false,
       },
     },
+    officialChatGpt: null,
   }
 }
 

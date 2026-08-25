@@ -1356,6 +1356,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     return snapshot
   })
+  registerTrustedHandler('system:refresh-official-chatgpt', () => (
+    service.refreshOfficialChatGptUsage()
+  ))
   registerTrustedHandler('startup:codex-readiness', () => (
     service.inspectCodexReadiness(options.previewOnboarding)
   ))

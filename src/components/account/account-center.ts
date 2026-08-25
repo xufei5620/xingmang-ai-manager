@@ -13,38 +13,55 @@
 // toFixed(2) would round almost every row down to a misleading "$0.00"
 // that reads as broken rather than merely small.
 
-import { relaySites } from '../../types'
 import { computeBalanceUsd, formatBalanceUsd } from './account-stub'
 
-// Derived from the site registry's solov entry rather than duplicated as a
-// literal (T2 precedent, W3): relaySites is a zero-Node-dependency value
-// re-exported all the way from electron/relay-sites.ts through
-// ipc-contract.ts/types.ts (I6), so the renderer can read it directly
-// without a new IPC round trip. solov is guaranteed to declare
-// accountBaseUrl -- it is the one relay-sites.ts entry with
-// accountBackend: 'new-api' -- but the field is typed optional on RelaySite
-// (a manual-key site has none), so the `?? ` fallback below exists purely
-// to stay type-safe; it is unreachable in practice.
-const solovAccountBaseUrl = relaySites.find((site) => site.id === 'solov')?.accountBaseUrl
-  ?? 'https://xm.solov.cc'
-const inviteBaseUrl = `${solovAccountBaseUrl}/register`
+// Invite shares go to the download landing, not the account site.
+// accountBaseUrl stays https://xm.solov.cc for login / balance / Key write;
+// do not derive this prefix from it (docs/DL-LANDING-PLAN.md §8).
+const inviteBaseUrl = 'https://dl.solov.cc/sign-up'
 
 /**
  * Builds a shareable invite link from the current user's own affCode.
- * Mirrors QuantumNous/new-api's own web frontend exactly: sign-up-form.tsx
- * reads the referral code from a plain `aff` query parameter via
- * `new URLSearchParams(window.location.search).get('aff')` and later sends
- * it back as `aff_code` on registration -- confirmed by reading that file
- * directly at the upstream `main` branch and the exact v1.0.0-rc.22 /
- * v1.0.0-rc.24 tags (byte-identical across all three, the latter two
- * bracketing xm.solov.cc's own pinned version). `/register` is used as the
- * link target rather than `/sign-up` only because it reads more clearly as
- * an invite destination -- the two are equivalent, since
- * web/src/routes/(auth)/register.tsx 302-redirects to `/sign-up` while
- * preserving the full query string.
+ * The landing page reads `aff` the same way new-api's sign-up-form.tsx does
+ * (`URLSearchParams.get('aff')` → register body `aff_code`). Old posters
+ * that still point at xm.solov.cc /register or /sign-up keep working because
+ * parseInviteAffCode extracts the query, not the host.
  */
 export function buildAccountInviteLink(affCode: string): string {
   return `${inviteBaseUrl}?aff=${encodeURIComponent(affCode)}`
+}
+
+// model.User.AffCode is `varchar(32)` (model/user.go). new-api generates a
+// 4-char code by default, but the column is the real ceiling.
+const MAX_AFF_CODE_LENGTH = 32
+
+function looksLikeInviteLink(value: string): boolean {
+  return /^https?:\/\//i.test(value)
+    || value.includes('aff=')
+    || /\/(sign-up|register)\b/i.test(value)
+}
+
+/**
+ * Accepts either a bare aff code (`6B4j`) or a web invite URL
+ * (`https://dl.solov.cc/sign-up?aff=6B4j`, and the older
+ * `https://xm.solov.cc/sign-up?aff=` / `/register?aff=` posters). Empty
+ * input is allowed: invite is optional at registration.
+ */
+export function parseInviteAffCode(raw: string): string {
+  const trimmed = raw.trim()
+  if (!trimmed) return ''
+  if (!looksLikeInviteLink(trimmed)) return trimmed
+  const query = trimmed.includes('?') ? trimmed.slice(trimmed.indexOf('?') + 1) : trimmed
+  return new URLSearchParams(query).get('aff')?.trim() ?? ''
+}
+
+export function validateInviteCode(value: string): string | null {
+  const trimmed = value.trim()
+  if (!trimmed) return null
+  const parsed = parseInviteAffCode(trimmed)
+  if (looksLikeInviteLink(trimmed) && !parsed) return '请粘贴完整邀请链接，或只填邀请码'
+  if (parsed.length > MAX_AFF_CODE_LENGTH) return `邀请码不能超过 ${MAX_AFF_CODE_LENGTH} 位`
+  return null
 }
 
 // model.Log's Type constants (model/log.go), confirmed identical at the

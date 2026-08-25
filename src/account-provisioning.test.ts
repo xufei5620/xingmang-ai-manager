@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   buildProvisioningTargets,
   configureManagedCliKeysForInstalledClis,
+  sanitizePreferredModels,
   filterProvisioningTargets,
   managedCliConfigsReadyForDashboard,
   resolveCliProvisioningGate,
@@ -41,6 +42,18 @@ describe('configureManagedCliKeysForInstalledClis', () => {
     expect(api.configureManagedCliKeys).toHaveBeenCalledWith({
       providers: ['claude', 'codex'],
       preferredModels: { claude: 'claude-op-9' },
+    })
+  })
+
+  it('drops a blank preferred model so switching from ChatGPT does not fail IPC validation', async () => {
+    const api: ManagedCliProvisioningApi = {
+      configureManagedCliKeys: vi.fn(async () => ({ configured: ['codex'] as ProviderId[], failed: [] })),
+    }
+    expect(sanitizePreferredModels({ codex: '', claude: '   ', grok: 'grok-4' })).toEqual({ grok: 'grok-4' })
+    await configureManagedCliKeysForInstalledClis(['codex'], { codex: '' }, api)
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({
+      providers: ['codex'],
+      preferredModels: {},
     })
   })
 })

@@ -95,13 +95,27 @@ export async function writeCliKeyForInstalledClis(
  * key and write it to that provider's config. The result contains provider
  * ids and failures only; no plaintext key crosses IPC.
  */
+export function sanitizePreferredModels(
+  preferredModels: Partial<Record<ProviderId, string>>,
+): Partial<Record<ProviderId, string>> {
+  const sanitized: Partial<Record<ProviderId, string>> = {}
+  for (const provider of providerIds) {
+    const model = preferredModels[provider]
+    if (typeof model === 'string' && model.trim()) sanitized[provider] = model.trim()
+  }
+  return sanitized
+}
+
 export async function configureManagedCliKeysForInstalledClis(
   installedProviders: readonly ProviderId[],
   preferredModels: Partial<Record<ProviderId, string>>,
   api: ManagedCliProvisioningApi,
 ): Promise<CliKeyProvisioningOutcome> {
   if (installedProviders.length === 0) return { configured: [], failed: [] }
-  return api.configureManagedCliKeys({ providers: [...installedProviders], preferredModels })
+  return api.configureManagedCliKeys({
+    providers: [...installedProviders],
+    preferredModels: sanitizePreferredModels(preferredModels),
+  })
 }
 
 /**

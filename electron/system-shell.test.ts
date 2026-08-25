@@ -55,7 +55,7 @@ describe('system shell launcher', () => {
     expect(plan.env.NODE_OPTIONS).toBeUndefined()
   })
 
-  it('routes Windows URLs and directories through Explorer without Electron shell', async () => {
+  it('routes Windows HTTPS URLs and directories through Explorer', async () => {
     const plans: WindowsShellLaunchPlan[] = []
     const fallbackShell = {
       openExternal: vi.fn(async () => undefined),
@@ -70,15 +70,37 @@ describe('system shell launcher', () => {
       launchWindowsPlan: async (plan) => { plans.push(plan) },
     })
 
-    await launcher.openExternal('ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS')
+    await launcher.openExternal('https://xm.solov.cc')
     await launcher.openPath('D:\\ProgramData\\XingMangAI\\logs')
 
     expect(plans.map((plan) => plan.argv)).toEqual([
-      ['ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS'],
+      ['https://xm.solov.cc'],
       ['D:\\ProgramData\\XingMangAI\\logs'],
     ])
     expect(fallbackShell.openExternal).not.toHaveBeenCalled()
     expect(fallbackShell.openPath).not.toHaveBeenCalled()
+  })
+
+  it('uses ShellExecute for a Microsoft Store URI because Explorer does not guarantee protocol activation', async () => {
+    const plans: WindowsShellLaunchPlan[] = []
+    const fallbackShell = {
+      openExternal: vi.fn(async () => undefined),
+      openPath: vi.fn(async () => ''),
+    }
+    const launcher = createExternalShellLauncher({
+      platform: 'win32',
+      machinePaths,
+      isFile: () => true,
+      realPath: (candidate) => candidate,
+      fallbackShell,
+      launchWindowsPlan: async (plan) => { plans.push(plan) },
+    })
+    const storeUri = 'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS'
+
+    await launcher.openExternal(storeUri)
+
+    expect(fallbackShell.openExternal).toHaveBeenCalledWith(storeUri)
+    expect(plans).toEqual([])
   })
 
   it('keeps Electron shell fallback behavior on non-Windows systems', async () => {

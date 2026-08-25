@@ -16,7 +16,7 @@ import {
   Terminal,
   X,
 } from 'lucide-react'
-import { maskedApiKey } from '../../app-shared'
+import { codexDesktopReloadAfterAccountSwitch, maskedApiKey } from '../../app-shared'
 import { resolveConfigModelDetectionSource } from '../../config-model-detection'
 import { errorMessage } from '../../error-message'
 import { localPathForDisplay } from '../../local-path-display'
@@ -39,10 +39,15 @@ import { accountKeyStatusLabel } from '../account/account-center'
 import { DiscardConfigChangesDialog } from './DiscardConfigChangesDialog'
 import { OfficialAccountDialog } from './OfficialAccountDialog'
 import { SaveModeDialog } from './SaveModeDialog'
+import { configureManagedCliKeysForInstalledClis } from '../../account-provisioning'
 import {
+  accountSourceSwitchAction,
+  codexRelayStillUsesChatGptAuth,
   officialAccountLabel,
   providerAccountSource,
   providerAccountSourceLabel,
+  providerConfigReadiness,
+  providerConfigReadinessLabel,
 } from '../../account-source'
 
 export function ConfigDialog({
@@ -96,7 +101,7 @@ export function ConfigDialog({
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
   const [keyEditorOpen, setKeyEditorOpen] = useState(false)
   const [keyEditorBusy, setKeyEditorBusy] = useState(false)
-  const [officialAccountOpen, setOfficialAccountOpen] = useState(false)
+  const [accountSwitchTarget, setAccountSwitchTarget] = useState<'official' | 'relay' | null>(null)
   const [switchingAccount, setSwitchingAccount] = useState(false)
   const accountKeyRequestId = useRef(0)
   const accountGroupRequestId = useRef(0)
@@ -132,7 +137,8 @@ export function ConfigDialog({
     if (keySource === 'none' && summary?.hasApiKey) setKeySource('configured')
   }, [keySource, summary?.hasApiKey])
 
-  const configured = Boolean(summary?.hasApiKey && summary.matchesRelay)
+  const readiness = providerConfigReadiness(summary)
+  const readinessReady = readiness === 'relay' || readiness === 'official'
   const selectedAccountKeyId = keySource.startsWith('account:')
     ? Number(keySource.slice('account:'.length))
     : null
@@ -405,18 +411,91 @@ export function ConfigDialog({
     }
   }
 
-  // 账号来源:星芒中转 ⇄ 用户自己的官方订阅。切回星芒不另做入口 ——
-  // 就是上面那条既有的保存链路(填 Key + 检测模型 + 保存配置)。
   const accountSourceLabel = officialAccountLabel(activeProvider)
   const accountSource = providerAccountSource(summary)
-  const switchToOfficialAccount = async () => {
+  const relayStillOnChatGpt = codexRelayStillUsesChatGptAuth(summary)
+  const requestAccountSourceSwitch = (target: 'official' | 'relay') => {
+    const action = accountSourceSwitchAction(accountSource, target, {
+      codexAuthMode: summary?.codexAuthMode,
+    })
+    if (action === 'noop' || action === 'blocked') return
+    if (action === 'switch-relay' && !accountAuthenticated && !keyAvailable) {
+      notify({ type: 'error', message: '请先登录星芒账号，或在上方填写 API Key 后再切换' })
+      return
+    }
+    if (action === 'switch-relay' && !accountAuthenticated && !modelVerified) {
+      notify({ type: 'error', message: '请先检测当前 API Key，并选择该 Key 可用的模型' })
+      return
+    }
+    setAccountSwitchTarget(target)
+  }
+  const confirmAccountSourceSwitch = async () => {
+    if (!accountSwitchTarget) return
     setSwitchingAccount(true)
     try {
-      await window.xingmang.switchToOfficialAccount(activeProvider)
+      const switchedToOfficial = accountSwitchTarget === 'official'
+      if (switchedToOfficial) {
+        await window.xingmang.switchToOfficialAccount(activeProvider)
+      } else if (accountAuthenticated) {
+        const outcome = await configureManagedCliKeysForInstalledClis(
+          [activeProvider],
+          { [activeProvider]: model || summary?.model },
+          window.xingmang,
+        )
+        const failure = outcome.failed[0]
+        if (failure) throw new Error(failure.message)
+        if (!outcome.configured.includes(activeProvider)) throw new Error('未能写入星芒配置')
+      } else {
+        const latestConfig = await window.xingmang.getConfig()
+        const mode = latestConfig.providers[activeProvider].exists ? 'merge' : 'reset'
+        if (selectedAccountKeyId === null) {
+          await window.xingmang.saveConfig({
+            provider: activeProvider,
+            apiKey: keySource === 'manual' ? apiKey : '',
+            model,
+            mode,
+          })
+        } else {
+          await window.xingmang.saveConfigWithAccountKey({
+            provider: activeProvider,
+            keyId: selectedAccountKeyId,
+            model,
+            mode,
+          })
+        }
+      }
       onConfigChange(await window.xingmang.getConfig())
       onSettingsChange(await window.xingmang.getSettings())
-      setOfficialAccountOpen(false)
-      notify({ type: 'success', message: `已切换为你自己的${accountSourceLabel ?? '官方账号'}` })
+      setAccountSwitchTarget(null)
+      setKeySource('configured')
+      setApiKey('')
+      setApiKeyEdited(false)
+      setAvailableModels([])
+      setValidatedKeySource(null)
+      const switchedMessage = switchedToOfficial
+        ? `已切换为你自己的${accountSourceLabel ?? '官方账号'}`
+        : '已切换为星芒中转'
+      const reloadMode = activeProvider === 'codex'
+        ? codexDesktopReloadAfterAccountSwitch(platform, snapshot.desktopApps.codex)
+        : null
+      if (!reloadMode) {
+        notify({ type: 'success', message: switchedMessage })
+        return
+      }
+      try {
+        const result = await window.xingmang.launchCodexDesktop(reloadMode)
+        notify({
+          type: 'success',
+          message: result.restarted
+            ? `${switchedMessage}，Codex 桌面端已重启`
+            : `${switchedMessage}，Codex 桌面端已打开`,
+        })
+      } catch (error) {
+        notify({
+          type: 'error',
+          message: `${switchedMessage}，但未能重启 Codex 桌面端：${errorMessage(error)}`,
+        })
+      }
     } catch (error) {
       notify({ type: 'error', message: errorMessage(error) })
     } finally {
@@ -444,9 +523,9 @@ export function ConfigDialog({
           </div>
           </div>
           <div className="config-dialog-head-actions">
-            <div className={configured ? 'readiness ready' : 'readiness blocked'}>
+            <div className={readinessReady ? 'readiness ready' : 'readiness blocked'}>
               <span />
-              {configured ? '星芒 AI 已配置' : summary?.exists ? '需要重新配置' : '尚未创建配置'}
+              {providerConfigReadinessLabel(summary, activeProvider)}
             </div>
             <button className="icon-button" type="button" title="关闭配置" aria-label="关闭配置" onClick={requestClose}>
               <X size={18} />
@@ -642,20 +721,32 @@ export function ConfigDialog({
               <strong>
                 账号来源：<span className="account-source-current">{providerAccountSourceLabel(accountSource, activeProvider)}</span>
               </strong>
+              {accountSource === 'official' && summary?.officialAccountEmail && (
+                <p className="account-source-email">当前登录：{summary.officialAccountEmail}</p>
+              )}
               <p>
-                {accountSource === 'relay'
-                  ? `也可以切回你自己的${accountSourceLabel}，用你自己的订阅额度；你的登录状态不受影响，随时能切回星芒。`
-                  : accountSource === 'unknown'
-                    ? '当前指向的不是星芒中转地址，为避免改坏你自己的配置，这里不提供一键切换。'
-                    : `当前用的是你自己的${accountSourceLabel}。想用星芒额度，在上方填好 Key 并保存配置即可切回。`}
+                {accountSource === 'unknown'
+                  ? '当前指向的不是星芒中转地址，为避免改坏你自己的配置，这里不提供一键切换。'
+                  : relayStillOnChatGpt
+                    ? '星芒地址已写入，但 Codex 仍按 ChatGPT 登录。再点一次「星芒中转」会改成 API Key，登录不会删。'
+                    : `可在${accountSourceLabel}和星芒中转之间切换。官方登录不受影响，随时能切回来。`}
               </p>
             </div>
-            {accountSource === 'relay' && (
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setOfficialAccountOpen(true)}
-              >切换为我的{accountSourceLabel}</button>
+            {accountSource !== 'unknown' && (
+              <div className="account-source-switch" role="group" aria-label="切换账号来源">
+                <button
+                  type="button"
+                  aria-pressed={accountSource === 'official'}
+                  disabled={switchingAccount}
+                  onClick={() => requestAccountSourceSwitch('official')}
+                >{accountSourceLabel}</button>
+                <button
+                  type="button"
+                  aria-pressed={accountSource === 'relay'}
+                  disabled={switchingAccount}
+                  onClick={() => requestAccountSourceSwitch('relay')}
+                >星芒中转</button>
+              </div>
             )}
           </div>
         )}
@@ -685,13 +776,14 @@ export function ConfigDialog({
           onCancel={() => setDiscardChangesOpen(false)}
         />
       )}
-      {officialAccountOpen && accountSourceLabel && (
+      {accountSwitchTarget && accountSourceLabel && (
         <OfficialAccountDialog
           provider={activeProvider}
           label={accountSourceLabel}
+          mode={accountSwitchTarget}
           busy={switchingAccount}
-          onConfirm={() => void switchToOfficialAccount()}
-          onCancel={() => setOfficialAccountOpen(false)}
+          onConfirm={() => void confirmAccountSourceSwitch()}
+          onCancel={() => { if (!switchingAccount) setAccountSwitchTarget(null) }}
         />
       )}
       {keyEditorOpen && (

@@ -1,3 +1,5 @@
+import { validateInviteCode } from './account-center'
+
 // Client-side validation for the login/register dialogs. The real account
 // system (xm.solov.cc / new-api) does its own authoritative validation
 // server-side; these checks exist to give immediate, Chinese-language
@@ -29,6 +31,7 @@ export interface AccountFieldErrors {
   agreement?: string
   token?: string
   originalPassword?: string
+  inviteCode?: string
 }
 
 // LoginDialog's single identifier field: new-api's Login handler matches it
@@ -114,6 +117,7 @@ export function validateRegisterForm(values: {
   confirmPassword: string
   verificationCode: string
   agreedToTerms: boolean
+  inviteCode?: string
 }): AccountFieldErrors {
   const errors: AccountFieldErrors = {}
   const usernameError = validateUsername(values.username)
@@ -126,6 +130,8 @@ export function validateRegisterForm(values: {
   if (confirmPasswordError) errors.confirmPassword = confirmPasswordError
   const codeError = validateVerificationCode(values.verificationCode)
   if (codeError) errors.verificationCode = codeError
+  const inviteError = validateInviteCode(values.inviteCode ?? '')
+  if (inviteError) errors.inviteCode = inviteError
   const agreementError = validateAgreement(values.agreedToTerms)
   if (agreementError) errors.agreement = agreementError
   return errors

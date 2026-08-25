@@ -632,8 +632,6 @@ try {
           ? desktopAction === '安装最新版'
           : result.maintenanceDesktopAction.state === '未安装'
             ? desktopAction === '一键安装'
-            : result.maintenanceDesktopAction.state === '镜像同步中'
-              ? desktopAction === '查看更新'
             : desktopAction === '检查更新'
       const availableUninstallButton = pageRoot.locator(
         '.maintenance-cli-section .maintenance-uninstall-button:not(.maintenance-help-button):not([disabled])',
@@ -725,11 +723,12 @@ try {
   result.codexDesktopPackageVersionVisible = platformCapabilities.platform !== 'windows'
     || codexDesktopCardText.includes('未安装')
     || /\b\d+(?:\.\d+){3}\b/.test(codexDesktopCardText)
+    || !codexDesktopCardText.includes('可更新至')
   result.codexDesktopAppVersionHidden = !codexDesktopCardText.includes('26.721.31836')
   result.codexDesktopUpdateAvailable = codexDesktopCardText.includes('可更新至')
   result.codexDesktopUpdateActionCorrect = !result.codexDesktopUpdateAvailable
     || await page.locator('.desktop-card').getByRole('button', {
-      name: codexDesktopCardText.includes('国内镜像同步中') ? '查看更新' : '安装最新版',
+      name: '安装最新版',
       exact: true,
     }).isVisible()
   result.codexDesktopLegacyUpdateHidden = await page.locator('.desktop-card').getByRole('button', { name: '打开更新', exact: true }).count() === 0
@@ -758,6 +757,12 @@ try {
     const state = card.querySelector('.config-state')?.textContent?.trim()
     return state === '星芒 AI 已配置' || state === '与 Codex CLI 共用星芒配置'
   }).length)
+  result.configuredToolCardsHaveModel = await page.locator('.cli-card').evaluateAll((cards) => cards
+    .filter((card) => {
+      const state = card.querySelector('.config-state')?.textContent?.trim()
+      return state === '星芒 AI 已配置' || state === '与 Codex CLI 共用星芒配置'
+    })
+    .every((card) => Boolean(card.querySelector('.configured-model'))))
   result.cardModelLabelsHidden = await page.locator('.configured-model').getByText('使用模型', { exact: true }).count() === 0
   result.providerBrandIconCount = await page.locator('.cli-card .provider-icon img').count()
   result.providerBrandIconsLoaded = await page.locator('.cli-card .provider-icon img').evaluateAll(
@@ -780,6 +785,37 @@ try {
         : bounds.top >= 0 && bounds.bottom <= window.innerHeight
     })
   ), compactViewport)
+  result.toolCardContentsContained = await page.locator('.cli-card').evaluateAll((cards) => (
+    cards.every((card) => {
+      const cardBounds = card.getBoundingClientRect()
+      return [...card.children].every((child) => {
+        const childBounds = child.getBoundingClientRect()
+        return childBounds.left >= cardBounds.left - 1
+          && childBounds.right <= cardBounds.right + 1
+          && childBounds.top >= cardBounds.top - 1
+          && childBounds.bottom <= cardBounds.bottom + 1
+      })
+    })
+  ))
+  result.toolCardAutoHeightRespondsToStatusCopy = await page.locator('.desktop-card').evaluate((card) => {
+    const actions = card.querySelector('.cli-actions')
+    if (!actions) return false
+    const probe = document.createElement('div')
+    probe.className = 'config-model'
+    const dot = document.createElement('span')
+    dot.className = 'config-dot'
+    const status = document.createElement('span')
+    status.textContent = '国内镜像：查询超时；镜像备用源：查询超时；OpenAI 官方源：查询超时'
+    probe.append(dot, status)
+    const heightBefore = card.getBoundingClientRect().height
+    card.insertBefore(probe, actions)
+    const cardBounds = card.getBoundingClientRect()
+    const actionsBounds = actions.getBoundingClientRect()
+    const expanded = cardBounds.height > heightBefore
+    const contained = actionsBounds.bottom <= cardBounds.bottom + 1
+    probe.remove()
+    return expanded && contained
+  })
   const shouldCheckCodexLaunchDialog = platformCapabilities.platform === 'windows'
     && result.codexDesktopWindowState === '窗口已打开'
   result.codexLaunchDialogChecked = !shouldCheckCodexLaunchDialog
@@ -944,13 +980,15 @@ try {
     || !result.tutorialDocsLabelVisible
     || !result.sidebarStatusHidden
     || !result.nativeConfigFooterHidden
-    || result.cardModelCount !== result.configuredToolCardCount
+    || !result.configuredToolCardsHaveModel
     || !result.cardModelLabelsHidden
     || result.providerBrandIconCount !== 5
     || !result.providerBrandIconsLoaded
     || result.toolPrimaryActionCount !== 5
     || !result.lightGreenLaunchButtonsApplied
     || !result.allToolCardsFullyVisible
+    || !result.toolCardContentsContained
+    || !result.toolCardAutoHeightRespondsToStatusCopy
     || !result.codexLaunchDialogChecked
     || !result.configDialogVisible
     || !result.configVisible

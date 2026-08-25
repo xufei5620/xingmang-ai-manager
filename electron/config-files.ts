@@ -9,6 +9,7 @@ import {
   providerConfigRoot,
   type ProviderConfigRoots,
 } from './codex-home'
+import { identityFromCodexAuthTokens } from './official-account-identity'
 import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
@@ -28,6 +29,17 @@ export interface NativeConfigInspection {
   model: string
   /** Gemini CLI's persisted auth selector; absent for other providers. */
   authType?: string
+  /** ChatGPT login email from Codex auth.json JWTs. Never the tokens themselves. */
+  officialAccountEmail?: string | null
+  /** ChatGPT plan label from the same JWTs, e.g. Pro 5x. */
+  officialAccountPlan?: string | null
+  /** ISO timestamp when the ChatGPT subscription is next active-until / renews. */
+  officialAccountRenewsAt?: string | null
+  /**
+   * Codex auth.json `auth_mode`. Codex prefers this over the mere presence of
+   * OPENAI_API_KEY, so a Xingmang key with chatgpt mode still uses ChatGPT.
+   */
+  codexAuthMode?: 'apikey' | 'chatgpt' | null
   dataDirectory: string
   dataDirectoryExists: boolean
   files: NativeConfigFile[]
@@ -267,6 +279,329 @@ function readProviderAuthType(provider: ProviderId, paths: string[]): string | u
     : undefined
 }
 
+function readOfficialAccountIdentity(provider: ProviderId, paths: string[]) {
+  if (provider !== 'codex') {
+    return { email: null, planLabel: null, renewsAt: null }
+  }
+  const parsed = readJson(paths[1])
+  return parsed
+    ? identityFromCodexAuthTokens(parsed.tokens)
+    : { email: null, planLabel: null, renewsAt: null }
+}
+
+export const codexChatGptAuthSnapshotName = 'xingmang-auth-chatgpt.json'
+export const codexApiKeyAuthSnapshotName = 'xingmang-auth-apikey.json'
+export const codexChatGptConfigSnapshotName = 'xingmang-config-chatgpt.toml'
+export const codexRelayConfigSnapshotName = 'xingmang-config-relay.toml'
+
+export function codexAuthSnapshotPaths(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): { active: string, chatgpt: string, apikey: string } {
+  const root = providerConfigRoot('codex', normalizeProviderConfigRoots(rootsInput))
+  return {
+    active: path.join(root, 'auth.json'),
+    chatgpt: path.join(root, codexChatGptAuthSnapshotName),
+    apikey: path.join(root, codexApiKeyAuthSnapshotName),
+  }
+}
+
+export function codexConfigSnapshotPaths(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): { active: string, chatgpt: string, relay: string } {
+  const root = providerConfigRoot('codex', normalizeProviderConfigRoots(rootsInput))
+  return {
+    active: path.join(root, 'config.toml'),
+    chatgpt: path.join(root, codexChatGptConfigSnapshotName),
+    relay: path.join(root, codexRelayConfigSnapshotName),
+  }
+}
+
+export function classifyCodexConfigProfile(
+  parsed: Record<string, unknown> | null,
+  siteBaseUrl: string,
+): 'relay' | 'official' | 'empty' {
+  if (!parsed || Object.keys(parsed).length === 0) return 'empty'
+  const providerName = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  const providers = parsed.model_providers
+  const entry = providerName && isJsonRecord(providers) ? providers[providerName] : null
+  const baseUrl = isJsonRecord(entry) && typeof entry.base_url === 'string' ? entry.base_url : ''
+  if (baseUrl && normalizeUrl(baseUrl) === normalizeUrl(siteBaseUrl)) return 'relay'
+  return 'official'
+}
+
+function cloneTomlRecord(parsed: Record<string, unknown>): Record<string, unknown> {
+  return TOML.parse(TOML.stringify(parsed as Parameters<typeof TOML.stringify>[0]))
+}
+
+function withTrailingNewline(content: string): string {
+  return content.endsWith('\n') ? content : `${content}\n`
+}
+
+function stripCodexRelayFromConfig(
+  parsed: Record<string, unknown>,
+  siteBaseUrl: string,
+): void {
+  const providerName = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
+  const providers = parsed.model_providers
+  if (providerName && isJsonRecord(providers)) {
+    const entry = providers[providerName]
+    const entryBaseUrl = isJsonRecord(entry) && typeof entry.base_url === 'string' ? entry.base_url : ''
+    if (entryBaseUrl && normalizeUrl(entryBaseUrl) === normalizeUrl(siteBaseUrl)) {
+      delete providers[providerName]
+    }
+    if (Object.keys(providers).length === 0) delete parsed.model_providers
+  }
+  delete parsed.model_provider
+  delete parsed.model
+  delete parsed.review_model
+}
+
+function applyCodexRelayConfig(
+  parsed: Record<string, unknown>,
+  model: string,
+  providerName: string,
+  siteBaseUrl: string,
+): void {
+  parsed.model = model
+  parsed.review_model = model
+  parsed.model_provider = providerName
+  const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
+  providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
+    ? providerEntry.name
+    : providerName
+  providerEntry.base_url = siteBaseUrl
+  providerEntry.wire_api = 'responses'
+  providerEntry.requires_openai_auth = true
+}
+
+function buildCodexRelayConfigTemplate(
+  model: string,
+  providerName: string,
+  siteBaseUrl: string,
+): string {
+  const providerKey = tomlTableKey(providerName)
+  return [
+    `model_provider = ${tomlString(providerName)}`,
+    `model = ${tomlString(model)}`,
+    `review_model = ${tomlString(model)}`,
+    'model_reasoning_effort = "xhigh"',
+    'disable_response_storage = true',
+    'network_access = "enabled"',
+    'windows_wsl_setup_acknowledged = true',
+    'model_context_window = 1000000',
+    'model_auto_compact_token_limit = 900000',
+    '',
+    `[model_providers.${providerKey}]`,
+    `name = ${tomlString(providerName)}`,
+    `base_url = ${tomlString(siteBaseUrl)}`,
+    'wire_api = "responses"',
+    'requires_openai_auth = true',
+    '',
+    '[features]',
+    'goals = true',
+    '',
+  ].join('\n')
+}
+
+function snapshotOfficialCodexConfigText(
+  currentText: string,
+  currentParsed: Record<string, unknown>,
+  siteBaseUrl: string,
+): string {
+  if (classifyCodexConfigProfile(currentParsed, siteBaseUrl) === 'official') {
+    return withTrailingNewline(currentText)
+  }
+  const cleaned = cloneTomlRecord(currentParsed)
+  stripCodexRelayFromConfig(cleaned, siteBaseUrl)
+  return tomlContent(cleaned)
+}
+
+function readStoredCodexConfig(filePath: string, label: string): string | null {
+  if (!fs.existsSync(filePath)) return null
+  const text = requireConfigText(filePath, label)
+  if (!text || !text.trim()) return null
+  try {
+    TOML.parse(text)
+  } catch {
+    throw new Error(`${label} 无法解析，未执行修改`)
+  }
+  return withTrailingNewline(text)
+}
+
+function createCodexRelayConfigPlans(
+  model: string,
+  roots: ProviderConfigRoots,
+  siteBaseUrls: Record<ProviderId, string>,
+  mode: NativeConfigSaveMode,
+): FilePlan[] {
+  const paths = codexConfigSnapshotPaths(roots)
+  const plans: FilePlan[] = []
+  const currentText = fs.existsSync(paths.active)
+    ? requireConfigText(paths.active, '现有 Codex config.toml')
+    : null
+  let currentParsed: Record<string, unknown> | null = null
+  if (currentText) {
+    try {
+      currentParsed = TOML.parse(currentText)
+    } catch (error) {
+      if (mode !== 'reset') {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new Error(`现有 Codex config.toml 无法解析，未执行修改：${detail}`)
+      }
+    }
+  }
+  const currentKind = classifyCodexConfigProfile(currentParsed, siteBaseUrls.codex)
+  if (currentText && currentParsed && (currentKind === 'official' || !fs.existsSync(paths.chatgpt))) {
+    plans.push({
+      path: paths.chatgpt,
+      content: snapshotOfficialCodexConfigText(currentText, currentParsed, siteBaseUrls.codex),
+    })
+  }
+
+  const storedRelay = currentKind === 'official' ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
+  let nextContent: string
+  if (mode === 'reset') {
+    nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+  } else if (storedRelay) {
+    const stored = TOML.parse(storedRelay)
+    applyCodexRelayConfig(stored, model, existingCodexProvider(paths.relay), siteBaseUrls.codex)
+    nextContent = tomlContent(stored)
+  } else if (currentParsed) {
+    applyCodexRelayConfig(currentParsed, model, existingCodexProvider(paths.active), siteBaseUrls.codex)
+    nextContent = tomlContent(currentParsed)
+  } else {
+    nextContent = buildCodexRelayConfigTemplate(model, defaultCodexRelayProvider, siteBaseUrls.codex)
+  }
+
+  plans.push({ path: paths.relay, content: nextContent })
+  plans.push({ path: paths.active, content: nextContent })
+  return plans
+}
+
+function createCodexOfficialConfigPlans(
+  roots: ProviderConfigRoots,
+  siteBaseUrls: Record<ProviderId, string>,
+): FilePlan[] {
+  const paths = codexConfigSnapshotPaths(roots)
+  const plans: FilePlan[] = []
+  const currentText = fs.existsSync(paths.active)
+    ? requireConfigText(paths.active, '现有 Codex config.toml')
+    : null
+  if (!currentText) return plans
+  const currentParsed = requireToml(paths.active, '现有 Codex config.toml')
+  if (classifyCodexConfigProfile(currentParsed, siteBaseUrls.codex) === 'relay') {
+    plans.push({ path: paths.relay, content: withTrailingNewline(currentText) })
+  }
+  const storedChatgpt = readStoredCodexConfig(paths.chatgpt, '已保存的 ChatGPT Codex 配置')
+  if (storedChatgpt) {
+    plans.push({ path: paths.active, content: storedChatgpt })
+    return plans
+  }
+  const cleaned = cloneTomlRecord(currentParsed)
+  stripCodexRelayFromConfig(cleaned, siteBaseUrls.codex)
+  plans.push({ path: paths.active, content: tomlContent(cleaned) })
+  return plans
+}
+
+function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+export function classifyCodexAuthProfile(value: unknown): 'apikey' | 'chatgpt' | 'mixed' | 'empty' {
+  if (!isJsonRecord(value)) return 'empty'
+  const hasKey = typeof value.OPENAI_API_KEY === 'string' && value.OPENAI_API_KEY.trim().length > 0
+  const tokens = value.tokens
+  const hasTokens = isJsonRecord(tokens)
+    && typeof tokens.id_token === 'string'
+    && tokens.id_token.length > 0
+    && typeof tokens.access_token === 'string'
+    && tokens.access_token.length > 0
+  if (hasKey && hasTokens) return 'mixed'
+  if (hasKey) return 'apikey'
+  if (hasTokens) return 'chatgpt'
+  return 'empty'
+}
+
+/** 星芒中转用的 auth.json：只有 OPENAI_API_KEY，不带 ChatGPT tokens。 */
+export function buildCodexApiKeyAuth(apiKey: string): { OPENAI_API_KEY: string } {
+  return { OPENAI_API_KEY: apiKey }
+}
+
+/**
+ * 抽出可整份换回的 ChatGPT 登录。tokens 原样保留，不掺 OPENAI_API_KEY。
+ * 缺登录态则返回 null，避免用空对象盖掉已经存好的快照。
+ */
+export function snapshotCodexChatGptAuth(value: unknown): Record<string, unknown> | null {
+  if (!isJsonRecord(value) || !isJsonRecord(value.tokens)) return null
+  const tokens = value.tokens
+  if (typeof tokens.id_token !== 'string' || !tokens.id_token) return null
+  if (typeof tokens.access_token !== 'string' || !tokens.access_token) return null
+  const snapshot: Record<string, unknown> = {
+    auth_mode: 'chatgpt',
+    tokens,
+  }
+  if (typeof value.last_refresh === 'string' && value.last_refresh) {
+    snapshot.last_refresh = value.last_refresh
+  }
+  return snapshot
+}
+
+function createCodexRelayAuthPlans(apiKey: string, roots: ProviderConfigRoots): FilePlan[] {
+  const paths = codexAuthSnapshotPaths(roots)
+  const plans: FilePlan[] = []
+  if (fs.existsSync(paths.active)) {
+    const current = requireJson(paths.active, '现有 Codex auth.json')
+    const chatgpt = snapshotCodexChatGptAuth(current)
+    if (chatgpt) plans.push({ path: paths.chatgpt, content: jsonContent(chatgpt) })
+  }
+  const apikeyAuth = buildCodexApiKeyAuth(apiKey)
+  plans.push({ path: paths.apikey, content: jsonContent(apikeyAuth) })
+  plans.push({ path: paths.active, content: jsonContent(apikeyAuth) })
+  return plans
+}
+
+function createCodexOfficialAuthPlans(roots: ProviderConfigRoots): FilePlan[] {
+  const paths = codexAuthSnapshotPaths(roots)
+  const current = fs.existsSync(paths.active) ? requireJson(paths.active, '现有 Codex auth.json') : null
+  const plans: FilePlan[] = []
+  const currentKey = typeof current?.OPENAI_API_KEY === 'string' ? current.OPENAI_API_KEY.trim() : ''
+  if (currentKey) {
+    plans.push({ path: paths.apikey, content: jsonContent(buildCodexApiKeyAuth(currentKey)) })
+  }
+  const chatgptFromCurrent = snapshotCodexChatGptAuth(current)
+  if (chatgptFromCurrent) {
+    plans.push({ path: paths.chatgpt, content: jsonContent(chatgptFromCurrent) })
+  }
+  const chatgptToRestore = chatgptFromCurrent ?? snapshotCodexChatGptAuth(readJson(paths.chatgpt))
+  if (chatgptToRestore) {
+    plans.push({ path: paths.active, content: jsonContent(chatgptToRestore) })
+    return plans
+  }
+  if (current) {
+    delete current.OPENAI_API_KEY
+    delete current.auth_mode
+    plans.push({ path: paths.active, content: jsonContent(current) })
+  }
+  return plans
+}
+
+function readCodexAuthMode(paths: string[]): 'apikey' | 'chatgpt' | null {
+  const parsed = readJson(paths[1])
+  const kind = classifyCodexAuthProfile(parsed)
+  if (kind === 'apikey' || kind === 'chatgpt') return kind
+  if (kind !== 'mixed') return null
+  const mode = nestedString(parsed, ['auth_mode']).trim().toLowerCase()
+  if (mode === 'apikey' || mode === 'chatgpt') return mode
+  return 'chatgpt'
+}
+
+export function readCodexAuthTokens(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): unknown | null {
+  const parsed = readJson(providerConfigPaths('codex', rootsInput)[1])
+  return parsed?.tokens ?? null
+}
+
 function normalizeUrl(value: string): string {
   try {
     const parsed = new URL(value.trim())
@@ -313,6 +648,7 @@ export function inspectProviderConfig(
   const model = readProviderModel(provider, paths)
   const authType = readProviderAuthType(provider, paths)
   const actualBaseUrl = readProviderBaseUrl(provider, paths)
+  const officialAccount = readOfficialAccountIdentity(provider, paths)
   const baseUrl = siteBaseUrlsInput[provider]
   return {
     baseUrl,
@@ -323,6 +659,10 @@ export function inspectProviderConfig(
     apiKey,
     model,
     ...(authType !== undefined ? { authType } : {}),
+    officialAccountEmail: officialAccount.email,
+    officialAccountPlan: officialAccount.planLabel,
+    officialAccountRenewsAt: officialAccount.renewsAt,
+    ...(provider === 'codex' ? { codexAuthMode: readCodexAuthMode(paths) } : {}),
     dataDirectory,
     dataDirectoryExists: (() => {
       try {
@@ -345,9 +685,12 @@ function tomlTableKey(value: string): string {
   return /^[A-Za-z0-9_-]+$/.test(value) ? value : tomlString(value)
 }
 
+/** Codex config.toml 里星芒中转用的 model_provider 名。从没配过 Codex 时写这个，不占用官方 OpenAI 表。 */
+export const defaultCodexRelayProvider = 'XingmangAI'
+
 function existingCodexProvider(configPath: string): string {
   const content = requireConfigText(configPath, '现有 Codex config.toml')
-  if (content === null) return 'OpenAI'
+  if (content === null) return defaultCodexRelayProvider
   let parsed: Record<string, unknown>
   try {
     parsed = TOML.parse(content)
@@ -362,7 +705,7 @@ function existingCodexProvider(configPath: string): string {
     // requireToml below and still fails loudly, so a broken config is never
     // silently rewritten unless the user explicitly asked for a reset. The
     // overwrite itself is preceded by a timestamped .bak in executeFilePlans.
-    return 'OpenAI'
+    return defaultCodexRelayProvider
   }
 
   if (typeof parsed.model_provider === 'string' && parsed.model_provider.trim()) {
@@ -415,38 +758,11 @@ function createPlans(
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
-    case 'codex': {
-      const providerName = existingCodexProvider(paths[0])
-      const providerKey = tomlTableKey(providerName)
+    case 'codex':
       return [
-        {
-          path: paths[0],
-          content: [
-            `model_provider = ${tomlString(providerName)}`,
-            `model = ${tomlString(model)}`,
-            `review_model = ${tomlString(model)}`,
-            'model_reasoning_effort = "xhigh"',
-            'disable_response_storage = true',
-            'network_access = "enabled"',
-            'windows_wsl_setup_acknowledged = true',
-            '',
-            `[model_providers.${providerKey}]`,
-            `name = ${tomlString(providerName)}`,
-            `base_url = ${tomlString(siteBaseUrls.codex)}`,
-            'wire_api = "responses"',
-            'requires_openai_auth = true',
-            '',
-            '[features]',
-            'goals = true',
-            '',
-          ].join('\n'),
-        },
-        {
-          path: paths[1],
-          content: jsonContent({ OPENAI_API_KEY: apiKey }),
-        },
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'reset'),
+        ...createCodexRelayAuthPlans(apiKey, roots),
       ]
-    }
     case 'claude':
       return [{
         path: paths[0],
@@ -520,33 +836,11 @@ function createMergePlans(
   }
 
   switch (provider) {
-    case 'codex': {
-      const configPlan = fs.existsSync(paths[0])
-        ? (() => {
-            const parsed = requireToml(paths[0], '现有 Codex config.toml')
-            const providerName = existingCodexProvider(paths[0])
-            parsed.model = model
-            parsed.review_model = model
-            parsed.model_provider = providerName
-            const providerEntry = ensureRecord(ensureRecord(parsed, 'model_providers'), providerName)
-            providerEntry.name = typeof providerEntry.name === 'string' && providerEntry.name.trim()
-              ? providerEntry.name
-              : providerName
-            providerEntry.base_url = siteBaseUrls.codex
-            providerEntry.wire_api = 'responses'
-            providerEntry.requires_openai_auth = true
-            return { path: paths[0], content: tomlContent(parsed) }
-          })()
-        : initial(paths[0])
-      const authPlan = fs.existsSync(paths[1])
-        ? (() => {
-            const parsed = requireJson(paths[1], '现有 Codex auth.json')
-            parsed.OPENAI_API_KEY = apiKey
-            return { path: paths[1], content: jsonContent(parsed) }
-          })()
-        : initial(paths[1])
-      return [configPlan, authPlan]
-    }
+    case 'codex':
+      return [
+        ...createCodexRelayConfigPlans(model, roots, siteBaseUrls, 'merge'),
+        ...createCodexRelayAuthPlans(apiKey, roots),
+      ]
     case 'claude': {
       if (!fs.existsSync(paths[0])) return [initial(paths[0])]
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
@@ -948,15 +1242,11 @@ export function saveProviderConfig(
 // 账号来源切换:星芒中转 ⇄ 用户自己的官方订阅
 //
 // 产品背景(2026-08-12 老板决策):不做本机双路由常驻服务,改为"一键切回
-// 自己的订阅账号"。因此这里的语义被刻意收窄成**只收回星芒写进去的那几个
-// 键**,官方登录凭据一个字节都不碰:
-//   - Codex 的 ChatGPT 登录在同一个 auth.json 的 `tokens` 字段里,只删
-//     `OPENAI_API_KEY`,其余原样保留 —— 切回来不用重新登录,这是本功能
-//     成立的前提。
-//   - Claude 的订阅登录在 ~/.claude/.credentials.json(或 macOS 钥匙串),
-//     本模块从不触碰;只从 settings.json 的 env 里摘掉两个中转变量。
-//   - Gemini 的 Google 登录在 CLI 自己的 oauth 缓存里;只改
-//     security.auth.selectedType 并摘掉 .env 里的三个变量。
+// 自己的订阅账号"。Codex 的两种 auth.json 不能混写:
+//   - 星芒中转 = 只有 OPENAI_API_KEY
+//   - ChatGPT 账号 = auth_mode + tokens + last_refresh
+// 切换前把当前这份存到 xingmang-auth-*.json / xingmang-config-*.toml,
+// 切回来整份换上,tokens 不进渲染进程。Claude / Gemini 仍只收回我们写进去的键。
 // 双向都走同一套两阶段提交 + .bak(I9),切回星芒 = 现有 saveProviderConfig。
 // ---------------------------------------------------------------------------
 
@@ -966,10 +1256,38 @@ export type ProviderAccountMode = 'relay' | 'official' | 'unknown'
  * 当前这个 CLI 在用谁的账号。`unknown` = 配了 Key 但 base URL 不是星芒
  * (用户自己接了别家中转),此时切换会拒绝执行,免得把别人的配置抹掉。
  */
-export function providerAccountMode(inspection: NativeConfigInspection): ProviderAccountMode {
+export function providerAccountMode(
+  inspection: Pick<NativeConfigInspection, 'hasApiKey' | 'matchesRelay'>,
+): ProviderAccountMode {
   if (inspection.matchesRelay) return 'relay'
   if (!inspection.hasApiKey) return 'official'
   return 'unknown'
+}
+
+/**
+ * 星芒中转和官方订阅都能启动；自定义第三方地址不行。
+ * Grok 没有官方登录，没配星芒 Key 时也拦下。
+ */
+export function canLaunchManagedProvider(
+  inspection: Pick<NativeConfigInspection, 'hasApiKey' | 'matchesRelay'>,
+  provider: ProviderId,
+): boolean {
+  const mode = providerAccountMode(inspection)
+  if (mode === 'relay') return true
+  return mode === 'official' && providerSupportsOfficialAccount(provider)
+}
+
+export function managedProviderLaunchBlockedMessage(provider: ProviderId): string {
+  switch (provider) {
+    case 'codex':
+      return 'Codex 当前用的是自定义接口，请先切到星芒中转或 ChatGPT 账号'
+    case 'claude':
+      return 'Claude 当前用的是自定义接口，请先切到星芒中转或 Claude 账号'
+    case 'gemini':
+      return 'Gemini 当前用的是自定义接口，请先切到星芒中转或 Google 账号'
+    case 'grok':
+      return 'Grok CLI 尚未配置星芒 AI，请先完成配置'
+  }
 }
 
 /** Grok(xAI CLI)只有 API Key 一种认证方式,没有可切回的官方订阅。 */
@@ -996,41 +1314,11 @@ function createOfficialAccountPlans(
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
-    case 'codex': {
-      const plans: FilePlan[] = []
-      if (fs.existsSync(paths[0])) {
-        const parsed = requireToml(paths[0], '现有 Codex config.toml')
-        const providerName = typeof parsed.model_provider === 'string' ? parsed.model_provider.trim() : ''
-        const providers = parsed.model_providers
-        if (providerName && providers && typeof providers === 'object' && !Array.isArray(providers)) {
-          const table = providers as Record<string, unknown>
-          const entry = table[providerName]
-          const entryBaseUrl = entry && typeof entry === 'object' && !Array.isArray(entry)
-            ? (entry as Record<string, unknown>).base_url
-            : undefined
-          // 只摘掉确实指向星芒的那一条:用户自建的 provider 表原样留下。
-          if (typeof entryBaseUrl === 'string' && normalizeUrl(entryBaseUrl) === normalizeUrl(siteBaseUrls.codex)) {
-            delete table[providerName]
-          }
-          if (Object.keys(table).length === 0) delete parsed.model_providers
-        }
-        // 删掉 model_provider,Codex 回落到内置的 openai(即 ChatGPT 登录)。
-        delete parsed.model_provider
-        // 中转的模型名未必存在于官方目录,留着会让 Codex 启动即报错;
-        // 删掉即回落官方默认模型,切回星芒时 saveProviderConfig 会重新写。
-        delete parsed.model
-        delete parsed.review_model
-        plans.push({ path: paths[0], content: tomlContent(parsed) })
-      }
-      if (fs.existsSync(paths[1])) {
-        const parsed = requireJson(paths[1], '现有 Codex auth.json')
-        // 关键:只删这一个键。`tokens` / `last_refresh` 是 ChatGPT 订阅登录
-        // 的凭据,删了用户就要重新走浏览器登录 —— 本功能的意义就没了。
-        delete parsed.OPENAI_API_KEY
-        plans.push({ path: paths[1], content: jsonContent(parsed) })
-      }
-      return plans
-    }
+    case 'codex':
+      return [
+        ...createCodexOfficialConfigPlans(roots, siteBaseUrls),
+        ...createCodexOfficialAuthPlans(roots),
+      ]
     case 'claude': {
       if (!fs.existsSync(paths[0])) return []
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
