@@ -495,14 +495,14 @@ try {
     },
     {
       id: 'skills',
-      label: 'Skills 管理',
-      heading: 'Skills 管理',
+      label: '技能管理',
+      heading: '技能管理',
       keyControl: (root) => root.getByRole('group', { name: 'Skill 范围' }),
     },
     {
       id: 'plugins',
       label: '插件市场',
-      heading: 'Plugins / 市场',
+      heading: '插件市场',
       keyControl: (root) => root.getByRole('tablist', { name: 'Plugin 视图' }),
     },
     {
@@ -548,7 +548,7 @@ try {
   // fresh profile has no persisted app-settings sidebarMoreExpanded). The
   // toggle itself is a .nav-item, so 8 top-level items are visible before
   // anyone expands anything (docs/PROPOSAL-nav-onboarding.md: "✓≤8").
-  const topLevelNavLabels = ['工具概览', 'AI聊天', '会话管理', '无限画布', 'MCP 管理', 'Skills 管理', '插件市场', '更多']
+  const topLevelNavLabels = ['工具概览', 'AI聊天', '会话管理', '无限画布', 'MCP 管理', '技能管理', '插件市场', '更多']
   const moreGroupPageIds = new Set(['backups', 'health', 'maintenance', 'feedback', 'tutorial', 'updates', 'settings'])
   const sidebarNavigationItems = page.locator('.main-nav .nav-item')
   result.navigationItemCount = await sidebarNavigationItems.count()

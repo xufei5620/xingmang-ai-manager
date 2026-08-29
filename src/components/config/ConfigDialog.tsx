@@ -44,6 +44,7 @@ import {
   accountSourceSwitchAction,
   codexRelayStillUsesChatGptAuth,
   officialAccountLabel,
+  officialCodexSignedIn,
   providerAccountSource,
   providerAccountSourceLabel,
   providerConfigReadiness,
@@ -138,7 +139,8 @@ export function ConfigDialog({
   }, [keySource, summary?.hasApiKey])
 
   const readiness = providerConfigReadiness(summary)
-  const readinessReady = readiness === 'relay' || readiness === 'official'
+  const readinessReady = readiness === 'relay'
+    || (readiness === 'official' && (activeProvider !== 'codex' || officialCodexSignedIn(summary)))
   const selectedAccountKeyId = keySource.startsWith('account:')
     ? Number(keySource.slice('account:'.length))
     : null
