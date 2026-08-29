@@ -590,6 +590,9 @@ function App() {
   const officialCodexAccount = canRefreshOfficialChatGptUsage(config?.providers.codex)
   useEffect(() => {
     if (!officialCodexAccount) return
+    // Switching relay → ChatGPT only reloads config. The hourly timer would
+    // leave the previous scan's empty quota on screen until the next tick.
+    void refreshOfficialUsage(false)
     const timer = window.setInterval(() => {
       void refreshOfficialUsage(false)
     }, officialChatGptUsageRefreshMs)

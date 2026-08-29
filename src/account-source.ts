@@ -130,11 +130,25 @@ export function codexDesktopLaunchDialogCopy(source: ProviderAccountSource): {
   }
 }
 
-/** ChatGPT 额度刷新只对 Codex 官方订阅开放，缺配置或星芒 Key 都不出按钮。 */
-export function canRefreshOfficialChatGptUsage(
-  summary: Pick<ProviderConfigSummary, 'exists' | 'hasApiKey' | 'matchesRelay'> | null | undefined,
+/** 配置文件里写死的模型名。空字符串表示官方 ChatGPT 把选择权留在 Codex 窗口。 */
+export function providerModelLabel(model: string | null | undefined): string | null {
+  const trimmed = typeof model === 'string' ? model.trim() : ''
+  return trimmed || null
+}
+
+export const officialCodexModelHint = '模型在 Codex 窗口里选择'
+
+export function officialCodexSignedIn(
+  summary: Pick<ProviderConfigSummary, 'exists' | 'hasApiKey' | 'matchesRelay' | 'codexAuthMode'> | null | undefined,
 ): boolean {
-  return providerConfigReadiness(summary) === 'official'
+  return summary?.codexAuthMode === 'chatgpt'
+}
+
+/** ChatGPT 额度刷新只对 Codex 官方订阅开放，缺配置、未登录或星芒 Key 都不出按钮。 */
+export function canRefreshOfficialChatGptUsage(
+  summary: Pick<ProviderConfigSummary, 'exists' | 'hasApiKey' | 'matchesRelay' | 'codexAuthMode'> | null | undefined,
+): boolean {
+  return providerConfigReadiness(summary) === 'official' && officialCodexSignedIn(summary)
 }
 
 export const officialChatGptUsageRefreshMs = 60 * 60 * 1000
@@ -149,7 +163,7 @@ export function providerConfigReadiness(
 }
 
 export function providerConfigReadinessLabel(
-  summary: Pick<ProviderConfigSummary, 'exists' | 'hasApiKey' | 'matchesRelay'> | null | undefined,
+  summary: Pick<ProviderConfigSummary, 'exists' | 'hasApiKey' | 'matchesRelay' | 'codexAuthMode'> | null | undefined,
   provider: ProviderId,
   wording: 'dialog' | 'dashboard' | 'desktop' = 'dialog',
 ): string {
@@ -162,6 +176,9 @@ export function providerConfigReadinessLabel(
     return wording === 'desktop' ? '与 Codex CLI 共用星芒配置' : '星芒 AI 已配置'
   }
   if (readiness === 'official') {
+    if (provider === 'codex' && !officialCodexSignedIn(summary)) {
+      return wording === 'desktop' ? '共用 ChatGPT 账号未登录' : 'ChatGPT 账号未登录'
+    }
     return wording === 'desktop'
       ? `共用 ${official ?? '官方账号'}已登录`
       : `${official ?? '官方账号'}已登录`

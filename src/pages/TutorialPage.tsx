@@ -166,7 +166,7 @@ export function TutorialPage({
     <div className="tutorial-page">
       <header className="page-header tutorial-header">
         <div>
-          <div className="eyebrow">GUIDE &amp; SUPPORT</div>
+          <div className="eyebrow">帮助</div>
           <h1>使用教程</h1>
           <p>与当前版本同步的离线指南</p>
         </div>

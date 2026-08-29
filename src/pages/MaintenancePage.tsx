@@ -856,7 +856,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     <div className="page workspace-page operations-page" data-page-id="maintenance">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">MAINTENANCE</div>
+          <div className="eyebrow">系统</div>
           <h1>安装维护</h1>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="维护工具栏">

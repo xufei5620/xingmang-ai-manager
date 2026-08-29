@@ -1,6 +1,6 @@
 {
-  "version": "0.1.22",
-  "win": "/files/latest/XingMang-AI-Manager-0.1.22-Setup.exe",
-  "macArm64": "/files/latest/XingMang-AI-Manager-0.1.22-arm64.dmg",
-  "macX64": "/files/latest/XingMang-AI-Manager-0.1.22-x64.dmg"
+  "version": "0.1.23",
+  "win": "/files/latest/XingMang-AI-Manager-0.1.23-Setup.exe",
+  "macArm64": "/files/latest/XingMang-AI-Manager-0.1.23-arm64.dmg",
+  "macX64": "/files/latest/XingMang-AI-Manager-0.1.23-x64.dmg"
 }
