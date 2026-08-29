@@ -9,7 +9,6 @@ import type {
 } from '../../types'
 import { StatusMark } from '../StatusMark'
 import { OfficialChatGptMeter } from './OfficialChatGptMeter'
-import { officialCodexModelHint, providerModelLabel } from '../../account-source'
 import { codexDesktopUpdateDetail, codexDesktopUpdateKind } from '../../codex-desktop-update'
 import type { OfficialChatGptAccount } from '../../types'
 
@@ -19,7 +18,6 @@ export function CodexDesktopCard({
   configured,
   configExists,
   officialLoggedIn,
-  officialMode,
   officialAccountEmail,
   officialAccountPlan,
   officialAccountRenewsAt,
@@ -41,7 +39,6 @@ export function CodexDesktopCard({
   configured: boolean
   configExists: boolean
   officialLoggedIn?: boolean
-  officialMode?: boolean
   officialAccountEmail?: string | null
   officialAccountPlan?: string | null
   officialAccountRenewsAt?: string | null
@@ -67,7 +64,6 @@ export function CodexDesktopCard({
   const failed = isDetectionFailed(status) && !status.installed
   const updateKind = codexDesktopUpdateKind(status)
   const presentation = platformPresentation(platform)
-  const modelName = providerModelLabel(model)
   return (
     <article className="cli-card desktop-card">
       <div className="cli-card-top">
@@ -117,9 +113,7 @@ export function CodexDesktopCard({
             ? officialAccountEmail
               ? `共用 ChatGPT 账号已登录 · ${officialAccountEmail}`
               : '共用 ChatGPT 账号已登录'
-            : officialMode
-              ? '共用 ChatGPT 账号未登录'
-              : configExists ? '共用配置需要重新配置' : '共用配置文件未创建'}
+            : configExists ? '共用配置需要重新配置' : '共用配置文件未创建'}
       </div>
       {status.installed && presentation.showWindowsPackages && (updateKind === 'installable' || updateKind === 'unknown') && (
         <div
@@ -135,16 +129,12 @@ export function CodexDesktopCard({
           <span>{codexDesktopUpdateDetail(status)}</span>
         </div>
       )}
-      {modelName ? (
-        <div className="config-model configured-model" title={modelName}>
+      {(configured || officialLoggedIn) && model && (
+        <div className="config-model configured-model" title={model}>
           <span className="config-dot configured" />
-          <code>{modelName}</code>
+          <code>{model}</code>
         </div>
-      ) : officialLoggedIn ? (
-        <div className="config-model" title="官方登录不会把模型写进 config.toml，切换模型请在 Codex 窗口里操作">
-          {officialCodexModelHint}
-        </div>
-      ) : null}
+      )}
       {officialLoggedIn && (
         <OfficialChatGptMeter
           planLabel={officialAccountPlan}

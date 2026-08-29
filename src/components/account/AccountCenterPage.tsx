@@ -952,7 +952,7 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
           <div className="account-center-title">
             <span className="account-center-title-icon"><BadgeDollarSign size={20} /></span>
             <div>
-              <div className="eyebrow">账号</div>
+              <div className="eyebrow">XINGMANG ACCOUNT</div>
               <h1>星芒 AI 账户</h1>
             </div>
           </div>

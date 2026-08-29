@@ -141,7 +141,7 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
     <div className="page workspace-page operations-page" data-page-id="settings">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
+          <div className="eyebrow">PREFERENCES</div>
           <h1>设置</h1>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="设置工具栏">

@@ -2,19 +2,19 @@ import { Inbox, RefreshCw, Sparkles } from 'lucide-react'
 import { navigationItem, type PageId } from '../navigation'
 
 const pageEyebrows: Record<Exclude<PageId, 'overview'>, string> = {
-  chat: '工作台',
-  sessions: '工作台',
-  canvas: '工作台',
-  mcp: '扩展',
-  skills: '扩展',
-  plugins: '扩展',
-  backups: '系统',
-  health: '系统',
-  maintenance: '系统',
-  feedback: '系统',
-  updates: '系统',
-  settings: '系统',
-  tutorial: '帮助',
+  chat: 'AI CHAT',
+  sessions: 'SESSIONS',
+  canvas: 'CANVAS',
+  mcp: 'MODEL CONTEXT PROTOCOL',
+  skills: 'SKILLS',
+  plugins: 'EXTENSIONS',
+  backups: 'CONFIGURATION',
+  health: 'DIAGNOSTICS',
+  maintenance: 'MAINTENANCE',
+  feedback: 'FEEDBACK & DIAGNOSTICS',
+  updates: 'UPDATES',
+  settings: 'PREFERENCES',
+  tutorial: 'GUIDE & SUPPORT',
 }
 
 export function PlaceholderPage({ pageId }: { pageId: Exclude<PageId, 'overview'> }) {

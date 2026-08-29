@@ -43,7 +43,7 @@ export function UpdatePage({ state, busy, onCheck, onDownload, onInstall }: Upda
     <div className="page workspace-page update-page" data-page-id="updates">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
+          <div className="eyebrow">UPDATES</div>
           <h1>检查更新</h1>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="更新工具栏">

@@ -334,8 +334,8 @@ export function SkillsPage({
   return (
     <div className="page workspace-page management-page" data-page-id="skills">
       <header className="page-header workspace-page-header">
-        <div><div className="eyebrow">扩展</div><h1>技能管理</h1></div>
-        <div className="header-actions page-toolbar" role="toolbar" aria-label="技能工具栏">
+        <div><div className="eyebrow">SKILLS</div><h1>Skills 管理</h1></div>
+        <div className="header-actions page-toolbar" role="toolbar" aria-label="Skills 工具栏">
           <ProviderTabs
             value={provider}
             onChange={(next) => { setProvider(next); setQuery(''); setScope('all'); setActionError(null) }}

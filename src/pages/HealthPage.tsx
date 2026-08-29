@@ -97,7 +97,7 @@ export function HealthPage({ api, initialReport = null }: HealthPageProps) {
     <div className="page workspace-page operations-page" data-page-id="health">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
+          <div className="eyebrow">DIAGNOSTICS</div>
           <h1>健康诊断</h1>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="诊断工具栏">

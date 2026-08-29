@@ -363,8 +363,8 @@ export function PluginsPage({
   return (
     <div className="page workspace-page management-page" data-page-id="plugins">
       <header className="page-header workspace-page-header">
-        <div><div className="eyebrow">扩展</div><h1>插件市场</h1></div>
-        <div className="header-actions page-toolbar" role="toolbar" aria-label="插件工具栏">
+        <div><div className="eyebrow">EXTENSIONS</div><h1>Plugins / 市场</h1></div>
+        <div className="header-actions page-toolbar" role="toolbar" aria-label="Plugins 工具栏">
           <button className="icon-button" type="button" title="刷新" disabled={activeLoading || busyKey !== null}
             onClick={() => void perform(
               'refresh',
@@ -404,7 +404,7 @@ export function PluginsPage({
         </div>
         <label className="management-search">
           <Search size={16} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === 'marketplaces' ? '搜索市场' : '搜索插件'} aria-label="搜索插件" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={tab === 'marketplaces' ? '搜索市场' : '搜索 Plugin'} aria-label="搜索 Plugins" />
         </label>
       </section>
 

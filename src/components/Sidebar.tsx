@@ -63,7 +63,7 @@ export function ThemeToggle({
       onClick={onToggle}
     >
       {theme === 'light' ? <Moon size={17} /> : <Sun size={17} />}
-      <span>{nextThemeName}</span>
+      <span>{nextThemeName}模式</span>
     </button>
   )
 }
@@ -199,7 +199,7 @@ export function Sidebar({
       >
         <Icon size={18} />
         <span className="nav-label">{item.label}</span>
-        {item.placeholder && <span className="nav-item-soon">即将</span>}
+        {item.placeholder && <span className="nav-item-soon">soon</span>}
         {item.hint && (
           <span className="nav-item-hint" title={item.hint} aria-hidden="true">
             <CircleHelp size={12} />

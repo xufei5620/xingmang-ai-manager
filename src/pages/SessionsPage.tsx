@@ -242,7 +242,7 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
     <div className="page workspace-page sessions-page" data-page-id="sessions">
       <header className="page-header workspace-page-header sessions-page-header">
         <div>
-          <div className="eyebrow">工作台</div>
+          <div className="eyebrow">AI SESSIONS</div>
           <h1>会话管理</h1>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="会话工具栏">
@@ -387,7 +387,7 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
           <section className="config-dialog session-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="session-detail-title">
             <header className="session-detail-header">
               <div>
-                <div className="eyebrow">会话详情</div>
+                <div className="eyebrow">SESSION DETAIL</div>
                 <h2 id="session-detail-title">{detail.session.title}</h2>
                 <code>{detail.session.nativeId}</code>
               </div>

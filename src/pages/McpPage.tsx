@@ -426,7 +426,7 @@ export function McpPage({
   return (
     <div className="page workspace-page management-page" data-page-id="mcp">
       <header className="page-header workspace-page-header">
-        <div><div className="eyebrow">扩展</div><h1>MCP 管理</h1></div>
+        <div><div className="eyebrow">MODEL CONTEXT PROTOCOL</div><h1>MCP 管理</h1></div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="MCP 工具栏">
           <ProviderTabs
             value={provider}

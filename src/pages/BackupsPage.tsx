@@ -174,7 +174,7 @@ export function BackupsPage({ api }: BackupsPageProps) {
     <div className="page workspace-page operations-page" data-page-id="backups">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
+          <div className="eyebrow">CONFIGURATION</div>
           <h1>配置备份</h1>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="备份工具栏">
