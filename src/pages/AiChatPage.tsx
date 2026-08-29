@@ -571,7 +571,7 @@ export function AiChatPage({ api, userId, notify }: AiChatPageProps) {
     <main className="page ai-chat-page" data-page-id="ai-chat">
       <header className="page-header ai-chat-page-header">
         <div>
-          <div className="eyebrow">WORKBENCH</div>
+          <div className="eyebrow">工作台</div>
           <h1>AI聊天</h1>
         </div>
         <div className="ai-chat-header-actions">

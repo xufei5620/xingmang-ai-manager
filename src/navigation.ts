@@ -71,7 +71,7 @@ export const navigationItems: readonly NavigationItem[] = [
   },
   {
     id: 'skills',
-    label: 'Skills 管理',
+    label: '技能管理',
     icon: WandSparkles,
     group: 'extensions',
     hint: '可复用的技能包，把常用流程固化，让 AI 一步到位',

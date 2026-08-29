@@ -27,8 +27,11 @@ import { OfficialChatGptMeter } from './OfficialChatGptMeter'
 import { NextStepsCard, type NextStepsNudgeState } from './NextStepsCard'
 import {
   canRefreshOfficialChatGptUsage,
+  officialCodexModelHint,
+  officialCodexSignedIn,
   providerConfigReadiness,
   providerConfigReadinessLabel,
+  providerModelLabel,
 } from '../../account-source'
 
 export function Dashboard({
@@ -113,7 +116,7 @@ export function Dashboard({
     <div className="page dashboard-page">
       <header className="page-header">
         <div>
-          <div className="eyebrow">SYSTEM OVERVIEW</div>
+          <div className="eyebrow">工作台</div>
           <h1>工具概览</h1>
         </div>
         <div className="header-actions">
@@ -214,7 +217,8 @@ export function Dashboard({
             status={snapshot.desktopApps.codex}
             configured={Boolean(config?.providers.codex.hasApiKey && config.providers.codex.matchesRelay)}
             configExists={Boolean(config?.providers.codex.exists)}
-            officialLoggedIn={providerConfigReadiness(config?.providers.codex) === 'official'}
+            officialLoggedIn={officialCodexSignedIn(config?.providers.codex)}
+            officialMode={providerConfigReadiness(config?.providers.codex) === 'official'}
             officialAccountEmail={config?.providers.codex.officialAccountEmail ?? null}
             officialAccountPlan={config?.providers.codex.officialAccountPlan ?? null}
             officialAccountRenewsAt={config?.providers.codex.officialAccountRenewsAt ?? null}
@@ -239,7 +243,9 @@ export function Dashboard({
             const providerConfig = config?.providers[provider]
             const isConfigured = Boolean(providerConfig?.hasApiKey && providerConfig.matchesRelay)
             const readiness = providerConfigReadiness(providerConfig)
+            const officialReady = readiness === 'official' && (provider !== 'codex' || officialCodexSignedIn(providerConfig))
             const officialEmail = providerConfig?.officialAccountEmail
+            const modelName = providerModelLabel(providerConfig?.model)
             return (
               <article className="cli-card" key={provider}>
                 <div className="cli-card-top">
@@ -277,17 +283,21 @@ export function Dashboard({
                   </span>
                 </div>
                 <div className="config-state">
-                  <span className={isConfigured || readiness === 'official' ? 'config-dot configured' : 'config-dot'} />
+                  <span className={isConfigured || officialReady ? 'config-dot configured' : 'config-dot'} />
                   {providerConfigReadinessLabel(providerConfig, provider, 'dashboard')}
-                  {readiness === 'official' && officialEmail ? ` · ${officialEmail}` : ''}
+                  {officialReady && officialEmail ? ` · ${officialEmail}` : ''}
                 </div>
-                {(isConfigured || readiness === 'official') && providerConfig?.model && (
-                  <div className="config-model configured-model" title={providerConfig.model}>
+                {modelName ? (
+                  <div className="config-model configured-model" title={modelName}>
                     <span className="config-dot configured" />
-                    <code>{providerConfig.model}</code>
+                    <code>{modelName}</code>
                   </div>
-                )}
-                {provider === 'codex' && readiness === 'official' && (
+                ) : provider === 'codex' && officialReady ? (
+                  <div className="config-model" title="官方登录不会把模型写进 config.toml，切换模型请在 Codex 窗口里操作">
+                    {officialCodexModelHint}
+                  </div>
+                ) : null}
+                {provider === 'codex' && officialReady && (
                   <OfficialChatGptMeter
                     planLabel={providerConfig?.officialAccountPlan}
                     renewsAt={providerConfig?.officialAccountRenewsAt}

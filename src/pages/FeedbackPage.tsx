@@ -205,7 +205,7 @@ export function FeedbackPage({ api, notify }: FeedbackPageProps) {
     <div className="page workspace-page operations-page feedback-page" data-page-id="feedback">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">FEEDBACK & DIAGNOSTICS</div>
+          <div className="eyebrow">系统</div>
           <h1>反馈与诊断</h1>
         </div>
         <div className="header-actions page-toolbar feedback-actions" role="toolbar" aria-label="反馈工具栏">
