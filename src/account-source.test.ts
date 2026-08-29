@@ -10,6 +10,9 @@ import {
   officialAccountLabel,
   officialAccountLoginHint,
   officialChatGptUsageRefreshMs,
+  officialCodexModelHint,
+  officialCodexSignedIn,
+  providerModelLabel,
   providerAccountSource,
   providerAccountSourceLabel,
   providerConfigReadiness,
@@ -92,11 +95,17 @@ describe('providerAccountSourceLabel', () => {
 
 describe('providerConfigReadiness', () => {
   it('does not call an official ChatGPT login “needs reconfiguration”', () => {
-    const official = { exists: true, hasApiKey: false, matchesRelay: false }
-    expect(providerConfigReadiness(official)).toBe('official')
-    expect(providerConfigReadinessLabel(official, 'codex')).toBe('ChatGPT 账号已登录')
-    expect(providerConfigReadinessLabel(official, 'codex', 'dashboard')).toBe('ChatGPT 账号已登录')
-    expect(providerConfigReadinessLabel(official, 'codex', 'desktop')).toBe('共用 ChatGPT 账号已登录')
+    const unsigned = { exists: true, hasApiKey: false, matchesRelay: false }
+    const signedIn = { ...unsigned, codexAuthMode: 'chatgpt' as const }
+    expect(providerConfigReadiness(unsigned)).toBe('official')
+    expect(officialCodexSignedIn(unsigned)).toBe(false)
+    expect(providerConfigReadinessLabel(unsigned, 'codex')).toBe('ChatGPT 账号未登录')
+    expect(providerConfigReadinessLabel(unsigned, 'codex', 'dashboard')).toBe('ChatGPT 账号未登录')
+    expect(providerConfigReadinessLabel(unsigned, 'codex', 'desktop')).toBe('共用 ChatGPT 账号未登录')
+    expect(officialCodexSignedIn(signedIn)).toBe(true)
+    expect(providerConfigReadinessLabel(signedIn, 'codex')).toBe('ChatGPT 账号已登录')
+    expect(providerConfigReadinessLabel(signedIn, 'codex', 'dashboard')).toBe('ChatGPT 账号已登录')
+    expect(providerConfigReadinessLabel(signedIn, 'codex', 'desktop')).toBe('共用 ChatGPT 账号已登录')
   })
 
   it('keeps the Xingmang and third-party labels', () => {
@@ -132,9 +141,19 @@ describe('codexDesktopLaunchDialogCopy', () => {
   })
 })
 
+describe('providerModelLabel', () => {
+  it('keeps a configured model and leaves official ChatGPT unset as a hint, not a fake name', () => {
+    expect(providerModelLabel('gpt-5.3-codex-spark')).toBe('gpt-5.3-codex-spark')
+    expect(providerModelLabel('  ')).toBeNull()
+    expect(providerModelLabel(undefined)).toBeNull()
+    expect(officialCodexModelHint).toBe('模型在 Codex 窗口里选择')
+  })
+})
+
 describe('canRefreshOfficialChatGptUsage', () => {
   it('is only available for a ChatGPT official Codex account', () => {
-    expect(canRefreshOfficialChatGptUsage({ exists: true, hasApiKey: false, matchesRelay: false })).toBe(true)
+    expect(canRefreshOfficialChatGptUsage({ exists: true, hasApiKey: false, matchesRelay: false })).toBe(false)
+    expect(canRefreshOfficialChatGptUsage({ exists: true, hasApiKey: false, matchesRelay: false, codexAuthMode: 'chatgpt' })).toBe(true)
     expect(canRefreshOfficialChatGptUsage({ exists: true, hasApiKey: true, matchesRelay: true })).toBe(false)
     expect(canRefreshOfficialChatGptUsage({ exists: true, hasApiKey: true, matchesRelay: false })).toBe(false)
     expect(canRefreshOfficialChatGptUsage({ exists: false, hasApiKey: false, matchesRelay: false })).toBe(false)
