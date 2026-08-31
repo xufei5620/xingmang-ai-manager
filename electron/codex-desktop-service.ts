@@ -12,7 +12,9 @@ import {
   parseCodexDesktopMirrorManifest,
   parseCodexDesktopPackageMetadata,
   parseCodexDesktopPackagePath,
+  parseCodexDesktopPackageProbeJson,
   parseCodexDesktopPackagesJson,
+  type CodexDesktopPackageProbeSource,
   parseCodexDesktopUpdateManifest,
   parseStartAppsJson,
   parseWindowsProcessesJson,
@@ -110,6 +112,14 @@ export interface CodexDesktopLaunchPlan {
   cwd: string
   env: NodeJS.ProcessEnv
   windowsHide: boolean
+}
+
+export interface CodexDesktopPackageProbe {
+  value: CodexDesktopPackageEntry | null
+  error: string | null
+  source?: CodexDesktopPackageProbeSource
+  /** False means the probe could not establish that the package is absent. */
+  confirmedAbsent?: boolean
 }
 
 /** Launches the AppsFolder URI through the canonical SystemRoot Explorer. */
@@ -847,20 +857,36 @@ export async function listCodexDesktopProcesses(): Promise<WindowsProcessEntry[]
   }
 }
 
-export async function inspectCodexDesktopPackage(): Promise<{
-  value: CodexDesktopPackageEntry | null
-  error: string | null
-}> {
-  const script = [
+export function buildCodexDesktopPackageProbeScript(): string {
+  return [
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    // The packaged app is registered per user. The manager itself runs
-    // elevated, so the current-user query can be empty even though the
-    // Store package is installed for another Windows account. Prefer the
-    // current user, then fall back to the read-only all-users view.
-    "$packages = @(Get-AppxPackage -Name 'OpenAI.Codex*' | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation)",
-    "if ($packages.Count -eq 0) { $packages = @(Get-AppxPackage -AllUsers -Name 'OpenAI.Codex*' | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation) }",
-    '$packages | ConvertTo-Json -Compress',
+    '$ErrorActionPreference = "Stop"',
+    '$currentPackages = @()',
+    '$currentError = $null',
+    'try { $currentPackages = @(Get-AppxPackage -Name \'OpenAI.Codex*\' -ErrorAction Stop | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation) } catch { $currentError = $_.Exception.Message }',
+    '$packages = $currentPackages',
+    '$source = $null',
+    'if ($currentPackages.Count -gt 0) { $source = \'current-user\' }',
+    '$allUsersError = $null',
+    'if ($currentPackages.Count -eq 0) {',
+    '  try {',
+    '    $packages = @(Get-AppxPackage -AllUsers -Name \'OpenAI.Codex*\' -ErrorAction Stop | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation)',
+    '    if ($packages.Count -gt 0) { $source = \'all-users\' }',
+    '  } catch { $allUsersError = $_.Exception.Message }',
+    '}',
+    '$confirmedAbsent = $packages.Count -eq 0 -and $null -eq $currentError -and $null -eq $allUsersError',
+    '$errorMessage = $null',
+    'if ($null -ne $allUsersError) {',
+    '  $errorMessage = \'当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。请使用安装 Codex Desktop 的 Windows 账户启动星芒 AI 管理工具。\'',
+    '} elseif ($null -ne $currentError -and $packages.Count -eq 0) {',
+    '  $errorMessage = \'无法读取 Codex Desktop 的 Windows Appx 安装信息，请使用安装该应用的 Windows 账户启动星芒 AI 管理工具后重试。\'',
+    '}',
+    '[pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage } | ConvertTo-Json -Compress',
   ].join('; ')
+}
+
+export async function inspectCodexDesktopPackage(): Promise<CodexDesktopPackageProbe> {
+  const script = buildCodexDesktopPackageProbeScript()
 
   try {
     const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
@@ -875,13 +901,15 @@ export async function inspectCodexDesktopPackage(): Promise<{
       timeout: 8_000,
       maxBuffer: 1024 * 1024,
     })
-    return {
-      value: selectCodexDesktopPackage(parseCodexDesktopPackagesJson(stdout)),
-      error: null,
-    }
+    return parseCodexDesktopPackageProbeJson(stdout)
   } catch (error) {
     const message = error instanceof Error ? error.message.trim().slice(0, 240) : ''
-    return { value: null, error: message || '无法读取 Windows Appx 包信息' }
+    return {
+      value: null,
+      error: message || '无法读取 Windows Appx 包信息',
+      source: null,
+      confirmedAbsent: false,
+    }
   }
 }
 
@@ -1040,7 +1068,7 @@ export interface CodexDesktopInstallResult {
 export interface CodexDesktopWindowsProbes {
   match: StartAppEntry | null
   processes: WindowsProcessEntry[]
-  packageProbe: { value: CodexDesktopPackageEntry | null; error: string | null }
+  packageProbe: CodexDesktopPackageProbe
   mirrorProbe: DesktopMirrorVersionProbe
   detectionFailed: boolean
   detectionError: string | null
@@ -1057,13 +1085,19 @@ export interface CodexDesktopWindowsProbes {
 export function buildCodexDesktopWindowsProbes(
   matchResult: PromiseSettledResult<StartAppEntry | null>,
   processesResult: PromiseSettledResult<WindowsProcessEntry[]>,
-  packageResult: PromiseSettledResult<{ value: CodexDesktopPackageEntry | null; error: string | null }>,
+  packageResult: PromiseSettledResult<CodexDesktopPackageProbe>,
   mirrorResult: PromiseSettledResult<DesktopMirrorVersionProbe>,
   checkedAt: string = new Date().toISOString(),
 ): CodexDesktopWindowsProbes {
+  const packageProbeError = packageResult.status === 'fulfilled' ? packageResult.value.error : null
   const installDetectionFailures = [matchResult, processesResult, packageResult]
     .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
     .map((result) => describeProbeFailure(result.reason))
+  const hasIndependentInstallEvidence = (matchResult.status === 'fulfilled' && matchResult.value !== null)
+    || (processesResult.status === 'fulfilled' && processesResult.value.some((entry) => (
+      parseCodexDesktopPackagePath(entry.executablePath) !== null
+    )))
+  if (packageProbeError && !hasIndependentInstallEvidence) installDetectionFailures.push(packageProbeError)
   return {
     match: matchResult.status === 'fulfilled' ? matchResult.value : null,
     processes: processesResult.status === 'fulfilled' ? processesResult.value : [],

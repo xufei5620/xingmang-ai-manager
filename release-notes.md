@@ -1,3 +1,8 @@
+0.1.25
+
+- 修复 Windows 上 Codex Desktop Appx 检测因 `Get-AppxPackage -AllUsers` 权限不足而误报初始化失败的问题。
+- 当前用户已安装 Codex 时直接复用本用户安装信息，不再触发跨用户查询；无法确认时显示明确的账户提示，避免重复安装。
+
 0.1.24
 
 - 修复 macOS 上 Claude Code 原生入口被错误交给 Node 执行的问题，按平台识别并直接启动 Mach-O/ELF CLI。

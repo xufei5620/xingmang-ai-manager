@@ -6,6 +6,7 @@ import {
   parseCodexDesktopAppManifest,
   parseCodexDesktopPackageMetadata,
   parseCodexDesktopPackagePath,
+  parseCodexDesktopPackageProbeJson,
   parseCodexDesktopMirrorManifest,
   parseCodexDesktopPackagesJson,
   parseCodexDesktopUpdateManifest,
@@ -153,6 +154,62 @@ describe('Codex desktop app discovery', () => {
       { Name: 'OpenAI.Codex', Version: 'not-a-version', PackageFullName: 'bad', PackageFamilyName: 'bad' },
     ]))).toEqual([])
     expect(parseCodexDesktopPackagesJson('<html>not json</html>')).toEqual([])
+  })
+
+  it('parses a structured current-user Appx probe without requiring all-users access', () => {
+    const result = parseCodexDesktopPackageProbeJson(JSON.stringify({
+      packages: [{
+        Name: 'OpenAI.Codex',
+        Version: '26.825.6671.0',
+        PackageFullName: 'OpenAI.Codex_26.825.6671.0_x64__publisher',
+        PackageFamilyName: 'OpenAI.Codex_publisher',
+        InstallLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.825.6671.0_x64__publisher',
+      }],
+      source: 'current-user',
+      confirmedAbsent: false,
+      error: null,
+    }))
+
+    expect(result).toEqual({
+      value: {
+        name: 'OpenAI.Codex',
+        version: '26.825.6671.0',
+        packageFullName: 'OpenAI.Codex_26.825.6671.0_x64__publisher',
+        packageFamilyName: 'OpenAI.Codex_publisher',
+        installLocation: 'C:\\Program Files\\WindowsApps\\OpenAI.Codex_26.825.6671.0_x64__publisher',
+      },
+      error: null,
+      source: 'current-user',
+      confirmedAbsent: false,
+    })
+  })
+
+  it('keeps a denied all-users probe inconclusive instead of confirming absence', () => {
+    expect(parseCodexDesktopPackageProbeJson(JSON.stringify({
+      packages: [],
+      source: null,
+      confirmedAbsent: false,
+      error: '当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。',
+    }))).toEqual({
+      value: null,
+      error: '当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。',
+      source: null,
+      confirmedAbsent: false,
+    })
+  })
+
+  it('accepts an authoritative empty all-users result as confirmed absence', () => {
+    expect(parseCodexDesktopPackageProbeJson(JSON.stringify({
+      packages: [],
+      source: null,
+      confirmedAbsent: true,
+      error: null,
+    }))).toEqual({
+      value: null,
+      error: null,
+      source: null,
+      confirmedAbsent: true,
+    })
   })
 
   it('strictly validates the official Windows update manifest identity', () => {
