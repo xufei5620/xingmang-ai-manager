@@ -5,6 +5,7 @@ import {
   codexChineseRuntimeScript,
   filterCodexDesktopCdpTargets,
   injectCodexDesktopChineseLocale,
+  parseCodexDesktopActivationProcessId,
   validateCodexDesktopAppUserModelId,
   validateCodexDesktopCdpPort,
   validateCodexDesktopCdpTarget,
@@ -22,6 +23,14 @@ function target(overrides: Partial<CodexDesktopCdpTarget> = {}): CodexDesktopCdp
 }
 
 describe('Codex Desktop CDP trust boundary', () => {
+  it('parses the trusted AppX activation process id without accepting invalid output', () => {
+    expect(parseCodexDesktopActivationProcessId(' 18420\r\n')).toBe(18420)
+    expect(parseCodexDesktopActivationProcessId('')).toBeNull()
+    expect(parseCodexDesktopActivationProcessId('0')).toBeNull()
+    expect(parseCodexDesktopActivationProcessId('not-a-pid')).toBeNull()
+    expect(parseCodexDesktopActivationProcessId('18420 extra')).toBeNull()
+  })
+
   it('validates the loopback port and produces explicit Chromium arguments', () => {
     expect(validateCodexDesktopCdpPort(9222)).toBe(9222)
     expect(buildCodexDesktopCdpArguments(9222)).toBe(

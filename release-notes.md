@@ -1,3 +1,8 @@
+0.1.26
+
+- 改进 Windows Codex Desktop 启动探测：兼容 AppX 激活后 WMI 进程信息延迟，减少已启动却误报失败的情况。
+- 针对 Windows AppModel `0xC0EA0001`、内置 Administrator 和 UAC 环境输出可操作的故障提示，明确引导 Store 重置与普通账户处理方式。
+
 0.1.25
 
 - 修复 Windows 上 Codex Desktop Appx 检测因 `Get-AppxPackage -AllUsers` 权限不足而误报初始化失败的问题。
