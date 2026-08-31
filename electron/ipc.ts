@@ -983,6 +983,8 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'cli:launch': 'CLI 终端启动',
   'desktop:codex-status': 'Codex 桌面端运行状态检测',
   'desktop:codex-locale-status': 'Codex Desktop 中文资源检测',
+  'desktop:codex-permissions-status': 'Codex Desktop 工作区权限检测',
+  'desktop:trust-workspace': 'Codex Desktop 工作区信任设置',
   'desktop:set-codex-locale': 'Codex Desktop 语言设置',
   'desktop:launch-codex': 'Codex 桌面端启动',
   'models:list': '可用模型读取',
@@ -1077,6 +1079,7 @@ const quietIpcSuccessChannels = new Set([
   'setup:codex-status',
   'desktop:codex-status',
   'desktop:codex-locale-status',
+  'desktop:codex-permissions-status',
   'window:set-mode',
   'window:set-theme',
   'update:get-state',
@@ -1472,6 +1475,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('desktop:codex-status', () => service.inspectCodexDesktop())
   registerTrustedHandler('desktop:codex-locale-status', () => service.inspectCodexDesktopLocale())
+  registerTrustedHandler('desktop:codex-permissions-status', () => service.inspectCodexWorkspacePermissions())
+  registerTrustedHandler('desktop:trust-workspace', (event) => (
+    service.trustCodexWorkspace(event.sender)
+  ))
   registerTrustedHandler('desktop:set-codex-locale', (event, locale: unknown) => (
     service.setCodexDesktopLocale(parseCodexDesktopLocale(locale), event.sender)
   ))

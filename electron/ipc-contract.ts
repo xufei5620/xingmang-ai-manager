@@ -43,6 +43,8 @@ import type {
   ProviderSessionSummary,
 } from './provider-sessions'
 import type {
+  CodexWorkspacePermissionStatus as MainCodexWorkspacePermissionStatus,
+  CodexWorkspacePermissionWriteResult as MainCodexWorkspacePermissionWriteResult,
   NativeConfigSummary,
   NativeConfigSaveMode,
   NativeConfigSaveResult,
@@ -202,6 +204,8 @@ export type CodexSetupStatus = MainCodexSetupStatus
 export type CodexReadinessStatus = MainCodexReadinessStatus
 export type ProviderConfigSummary = NativeConfigSummary
 export type ConfigSaveResult = NativeConfigSaveResult
+export type CodexWorkspacePermissionStatus = MainCodexWorkspacePermissionStatus
+export type CodexWorkspacePermissionWriteResult = MainCodexWorkspacePermissionWriteResult
 export type AppConfigSummary = MainAppConfigSummary
 export type RuntimeLogSnapshot = MainRuntimeLogSnapshot
 export type RuntimeLogEntry = MainRuntimeLogEntry
@@ -474,6 +478,16 @@ export interface XingmangInvokeContract {
     'desktop:codex-locale-status',
     [],
     CodexDesktopLocaleStatus
+  >
+  inspectCodexWorkspacePermissions: IpcInvokeDefinition<
+    'desktop:codex-permissions-status',
+    [],
+    MainCodexWorkspacePermissionStatus
+  >
+  trustCodexWorkspace: IpcInvokeDefinition<
+    'desktop:trust-workspace',
+    [],
+    MainCodexWorkspacePermissionWriteResult & { restarted: boolean }
   >
   setCodexDesktopLocale: IpcInvokeDefinition<
     'desktop:set-codex-locale',
@@ -787,6 +801,8 @@ export const ipcInvokeChannels = {
   launchCli: 'cli:launch',
   getCodexDesktopStatus: 'desktop:codex-status',
   inspectCodexDesktopLocale: 'desktop:codex-locale-status',
+  inspectCodexWorkspacePermissions: 'desktop:codex-permissions-status',
+  trustCodexWorkspace: 'desktop:trust-workspace',
   setCodexDesktopLocale: 'desktop:set-codex-locale',
   launchCodexDesktop: 'desktop:launch-codex',
   listModels: 'models:list',

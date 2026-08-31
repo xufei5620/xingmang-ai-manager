@@ -6,6 +6,7 @@ const MAX_PASSWORD_LENGTH = 20
 const MAX_USERNAME_LENGTH = 20
 const MAX_AFF_CODE_LENGTH = 32
 const VERIFICATION_CODE_COOLDOWN_SECONDS = 60
+const DOWNLOAD_GUIDE_URL = 'https://s4621e8xzb.feishu.cn/wiki/WpBUwh4PhiAs2skvWfmcnM5vnDb?from=from_copylink'
 const legalFiles = {
   'user-agreement': { title: '用户协议', path: '/legal/user-agreement.md' },
   'privacy-policy': { title: '隐私政策', path: '/legal/privacy-policy.md' }
@@ -309,10 +310,10 @@ function resolveSubmitAffCode(rawInvite) {
 
 function renderDownloads(latest, downloadsNode = els.downloads, releaseNode = els.releaseVersion) {
   const items = [
-    { href: latest.win, title: 'Windows', detail: '64 位安装包 · .exe', icon: 'windows' },
-    { href: latest.macArm64, title: 'macOS Apple Silicon', detail: 'M 系列芯片 · .dmg', icon: 'mac' },
-    { href: latest.macX64, title: 'macOS Intel', detail: 'Intel 芯片 · .dmg', icon: 'mac' }
-  ].filter((item) => item.href)
+    { title: 'Windows', detail: '64 位安装包 · .exe', icon: 'windows' },
+    { title: 'macOS Apple Silicon', detail: 'M 系列芯片 · .dmg', icon: 'mac' },
+    { title: 'macOS Intel', detail: 'Intel 芯片 · .dmg', icon: 'mac' }
+  ]
   const icons = {
     windows: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M1 2.4 7.1 1.5v6.1H1zm7.2-.9L15 0v7.6H8.2zM1 8.6h6.1V15L1 14zm7.2 0H15V16l-6.8-1z"/></svg>',
     mac: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M11.6 8.6c0-2 1.6-2.9 1.7-3-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7s-1.6-.7-2.7-.7c-1.4 0-2.7.8-3.4 2.1-1.5 2.6-.4 6.4 1 8.5.7 1 1.5 2.2 2.6 2.1 1 0 1.4-.7 2.7-.7s1.6.7 2.7.7 1.8-1 2.5-2c.8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3.8zM10 2.8c.6-.7 1-1.7.9-2.8-.9.1-1.9.6-2.5 1.3-.6.6-1.1 1.6-1 2.6 1 .1 1.9-.5 2.6-1.1z"/></svg>'
@@ -320,7 +321,7 @@ function renderDownloads(latest, downloadsNode = els.downloads, releaseNode = el
   downloadsNode.replaceChildren(...items.map((item) => {
     const link = document.createElement('a')
     link.className = 'download'
-    link.href = item.href
+    link.href = DOWNLOAD_GUIDE_URL
     link.innerHTML = `<span class="download-icon" aria-hidden="true">${icons[item.icon]}</span><span><strong>${item.title}</strong><small>${item.detail}</small></span><b>下载</b>`
     return link
   }))

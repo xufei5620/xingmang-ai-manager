@@ -481,10 +481,16 @@ input {
 
 .mac-guide-steps li {
   display: grid;
-  grid-template-columns: 26px 1fr;
+  grid-template-columns: 26px minmax(0, 1fr);
   column-gap: 9px;
   align-items: start;
   counter-increment: mac-step;
+}
+
+.mac-guide-steps li > strong,
+.mac-guide-steps li > span {
+  grid-column: 2;
+  min-width: 0;
 }
 
 .mac-guide-steps li::before {

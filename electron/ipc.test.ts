@@ -81,6 +81,8 @@ function serviceStub(): SystemService {
     launchProvider: vi.fn() as never,
     inspectCodexDesktop: vi.fn() as never,
     inspectCodexDesktopLocale: vi.fn() as never,
+    inspectCodexWorkspacePermissions: vi.fn() as never,
+    trustCodexWorkspace: vi.fn() as never,
     setCodexDesktopLocale: vi.fn() as never,
     launchCodexDesktop: vi.fn() as never,
     fetchAvailableModels: vi.fn() as never,
@@ -2107,6 +2109,55 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       for (const value of ['ZH-CN', 'en-US', null, 1, undefined]) {
         expect(() => electronMocks.handlers.get('desktop:set-codex-locale')!(event, value)).toThrow('语言选项')
       }
+    })
+  })
+
+  describe('Codex Desktop workspace permission handlers', () => {
+    it('returns permission diagnostics without exposing config contents', async () => {
+      const { service } = register()
+      const expected = {
+        configPath: 'C:\\Users\\tester\\.codex\\config.toml',
+        workspace: 'C:\\workspace',
+        configExists: true,
+        trustLevel: 'untrusted',
+        approvalPolicy: 'unless-trusted',
+        permissionProfile: null,
+        sandboxMode: 'workspace-write',
+        control: 'restricted',
+        error: null,
+      } as const
+      vi.mocked(service.inspectCodexWorkspacePermissions).mockReturnValueOnce(expected)
+
+      expect(electronMocks.handlers.get('desktop:codex-permissions-status')!(trustedEvent()))
+        .toEqual(expected)
+      expect(service.inspectCodexWorkspacePermissions).toHaveBeenCalledOnce()
+    })
+
+    it('passes the renderer sender to the explicit trust operation', async () => {
+      const { service } = register()
+      vi.mocked(service.trustCodexWorkspace).mockResolvedValueOnce({
+        backups: [],
+        files: [],
+        changed: true,
+        restarted: false,
+        status: {
+          configPath: 'C:\\Users\\tester\\.codex\\config.toml',
+          workspace: 'C:\\workspace',
+          configExists: true,
+          trustLevel: 'trusted',
+          approvalPolicy: 'on-request',
+          permissionProfile: null,
+          sandboxMode: 'workspace-write',
+          control: 'available',
+          error: null,
+        },
+      })
+      const event = trustedEvent()
+      await expect(electronMocks.handlers.get('desktop:trust-workspace')!(event)).resolves.toMatchObject({
+        changed: true,
+        status: { trustLevel: 'trusted' },
+      })
+      expect(service.trustCodexWorkspace).toHaveBeenCalledWith(event.sender)
     })
   })
 
