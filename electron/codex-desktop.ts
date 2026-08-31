@@ -11,6 +11,8 @@ export interface CodexDesktopPackageEntry {
   installLocation: string
 }
 
+export type CodexDesktopPackageProbeSource = 'current-user' | 'all-users' | null
+
 /**
  * Reconstructs the package identity from a running Store app executable.
  * Process paths remain readable when an elevated process cannot enumerate a
@@ -167,6 +169,64 @@ export function parseCodexDesktopPackagesJson(output: string): CodexDesktopPacka
       .filter((entry): entry is CodexDesktopPackageEntry => entry !== null)
   } catch {
     return []
+  }
+}
+
+/**
+ * Parses the structured result emitted by the Windows Appx probe. The probe
+ * deliberately reports whether an empty result is authoritative: a regular
+ * user may enumerate its own packages but is not allowed to use
+ * `Get-AppxPackage -AllUsers` to inspect another account.
+ */
+export function parseCodexDesktopPackageProbeJson(output: string): {
+  value: CodexDesktopPackageEntry | null
+  error: string | null
+  source: CodexDesktopPackageProbeSource
+  confirmedAbsent: boolean
+} {
+  const trimmed = output.trim().replace(/^\uFEFF/, '')
+  if (!trimmed) {
+    return {
+      value: null,
+      error: 'Windows Appx 探测没有返回结果',
+      source: null,
+      confirmedAbsent: false,
+    }
+  }
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('not an object')
+    const record = parsed as Record<string, unknown>
+    if (!Object.prototype.hasOwnProperty.call(record, 'packages')) throw new Error('missing packages')
+    if (!record.packages || typeof record.packages !== 'object') throw new Error('invalid packages')
+
+    const source = record.source === 'current-user' || record.source === 'all-users'
+      ? record.source
+      : null
+    const confirmedAbsent = record.confirmedAbsent === true
+    const error = typeof record.error === 'string' && record.error.trim()
+      ? record.error.trim().slice(0, 2_000)
+      : null
+    const packageJson = JSON.stringify(record.packages)
+    const packages = packageJson ? parseCodexDesktopPackagesJson(packageJson) : []
+    const rawPackages = Array.isArray(record.packages) ? record.packages : [record.packages]
+    if (rawPackages.length > 0 && packages.length === 0) throw new Error('invalid package entries')
+    if (packages.length > 0 && source === null) throw new Error('missing package source')
+    if (packages.length === 0 && !confirmedAbsent && !error) throw new Error('inconclusive probe')
+    return {
+      value: selectCodexDesktopPackage(packages),
+      error,
+      source,
+      confirmedAbsent,
+    }
+  } catch {
+    return {
+      value: null,
+      error: 'Windows Appx 探测返回数据格式无效',
+      source: null,
+      confirmedAbsent: false,
+    }
   }
 }
 

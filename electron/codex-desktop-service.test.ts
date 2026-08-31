@@ -12,6 +12,7 @@ import {
   buildCodexDesktopManifestSources,
   buildCodexDesktopPreviousManifestSources,
   buildCodexDesktopPackageSources,
+  buildCodexDesktopPackageProbeScript,
   buildCodexDesktopWindowsProbes,
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
@@ -862,6 +863,59 @@ describe('buildCodexDesktopWindowsProbes', () => {
     expect(result.detectionFailed).toBe(true)
     expect(result.detectionError).toBe('Get-StartApps 超时；Get-AppxPackage 拒绝访问')
     expect(result.packageProbe).toEqual({ value: null, error: 'Get-AppxPackage 拒绝访问' })
+  })
+
+  it('treats a fulfilled but inconclusive Appx probe as a detection failure', () => {
+    const result = buildCodexDesktopWindowsProbes(
+      { status: 'fulfilled', value: null },
+      { status: 'fulfilled', value: [] },
+      {
+        status: 'fulfilled',
+        value: {
+          value: null,
+          error: '当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。',
+          source: null,
+          confirmedAbsent: false,
+        },
+      },
+      { status: 'fulfilled', value: mirrorProbe },
+    )
+
+    expect(result.detectionFailed).toBe(true)
+    expect(result.detectionError).toBe('当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。')
+  })
+
+  it('does not let an Appx permission warning hide independent process evidence', () => {
+    const result = buildCodexDesktopWindowsProbes(
+      { status: 'fulfilled', value: null },
+      { status: 'fulfilled', value: processes },
+      {
+        status: 'fulfilled',
+        value: {
+          value: null,
+          error: '当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。',
+          source: null,
+          confirmedAbsent: false,
+        },
+      },
+      { status: 'fulfilled', value: mirrorProbe },
+    )
+
+    expect(result.detectionFailed).toBe(false)
+    expect(result.detectionError).toBeNull()
+  })
+})
+
+describe('Codex Desktop Appx probe script', () => {
+  it('checks the current user first and isolates the restricted all-users fallback', () => {
+    const script = buildCodexDesktopPackageProbeScript()
+    const currentProbe = script.indexOf("Get-AppxPackage -Name 'OpenAI.Codex*'")
+    const allUsersProbe = script.indexOf("Get-AppxPackage -AllUsers -Name 'OpenAI.Codex*'")
+
+    expect(currentProbe).toBeGreaterThanOrEqual(0)
+    expect(allUsersProbe).toBeGreaterThan(currentProbe)
+    expect(script).toContain('$allUsersError = $null')
+    expect(script).toContain('$confirmedAbsent = $packages.Count -eq 0 -and $null -eq $currentError -and $null -eq $allUsersError')
   })
 })
 
