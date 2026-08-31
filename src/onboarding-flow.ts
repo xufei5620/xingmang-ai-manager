@@ -1,12 +1,10 @@
 import type {
   AppConfigSummary,
   CodexSetupStatus,
-  NodeRuntimeInstallResult,
   PlatformCapabilities,
   ProviderId,
 } from './types'
 import { isDetectionFailed } from './app-shared'
-import { codexRuntimeSetupMessage, nodeRuntimeSupported } from './onboarding-runtime'
 
 export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
 export const CODEX_SETUP_STATUS_TIMEOUT_MS = 45_000
@@ -14,11 +12,9 @@ export const CODEX_SETUP_STATUS_TIMEOUT_MS = 45_000
 export type OnboardingSetupAction =
   | 'idle'
   | 'scanning'
-  | 'installing-node'
-  | 'installing-cli'
   | 'installing-desktop'
 
-export type OnboardingSetupPhase = 'environment' | 'cli' | 'desktop'
+export type OnboardingSetupPhase = 'environment' | 'desktop'
 
 export interface CodexAuthorizationApi {
   listModels(apiKey: string): Promise<string[]>
@@ -44,12 +40,13 @@ export interface ManagedCodexAuthorizationApi {
 
 export interface CodexSetupApi {
   getCodexSetupStatus(): Promise<CodexSetupStatus>
-  installCli(provider: 'codex'): Promise<unknown>
   installCodexDesktop(): Promise<unknown>
-}
-
-export interface CodexNodeInstallApi extends CodexSetupApi {
-  installNodeRuntime(): Promise<NodeRuntimeInstallResult>
+  /**
+   * Applies the official local zh-CN resources after the desktop package is
+   * ready. This is optional so the pure setup flow remains usable by older
+   * embedders and by tests that only model installation.
+   */
+  setCodexDesktopLocale?(locale: 'zh-CN'): Promise<unknown>
 }
 
 export interface CodexSetupCallbacks {
@@ -60,18 +57,11 @@ export interface CodexSetupCallbacks {
 
 export type CodexSetupResult =
   | { outcome: 'ready'; status: CodexSetupStatus }
-  | { outcome: 'runtime-required'; status: CodexSetupStatus; message: string }
   | { outcome: 'detection-failed'; status: CodexSetupStatus; message: string }
   | { outcome: 'desktop-recovery'; status: CodexSetupStatus; error: unknown }
   | { outcome: 'failed'; phase: OnboardingSetupPhase; status: CodexSetupStatus | null; error: unknown }
 
-export type CodexNodeInstallResult =
-  | { outcome: 'setup'; setup: CodexSetupResult }
-  | { outcome: 'node-failed'; status: CodexSetupStatus | null; error: unknown }
-
-export type CodexAutomaticSetupResult =
-  | CodexSetupResult
-  | { outcome: 'node-failed'; status: CodexSetupStatus | null; error: unknown }
+export type CodexAutomaticSetupResult = CodexSetupResult
 
 export interface CodexAutomaticSetupOptions {
   detectionRetries?: number
@@ -100,24 +90,39 @@ async function getCodexSetupStatusWithTimeout(
 }
 
 /**
- * A probe that threw must not be reinterpreted as "confirmed missing" this
- * far downstream either: left unchecked, `prepareCodexEnvironment` would
- * read a detection failure as "not installed" and either show a misleading
- * "please install" prompt or — worse — silently kick off `installCli`/
- * `installCodexDesktop` on top of a tool that may already be working.
- * Checked once, right after the status fetch, so it wins over every
- * installed/not-installed branch below rather than needing to be threaded
- * through each of them individually.
+ * Codex Desktop ships its Chinese resources, but newer builds only load the
+ * web locale after the `enable_i18n` Statsig gate is enabled. Apply the
+ * persisted locale as the final step of first-run setup so a fresh account
+ * does not need to open a hidden maintenance screen or a browser setting.
+ * Locale application is deliberately best-effort: a package without the
+ * official resources must not block the rest of onboarding.
+ */
+async function applyCodexDesktopChineseLocale(
+  api: CodexSetupApi,
+  status: CodexSetupStatus,
+  callbacks: CodexSetupCallbacks,
+): Promise<void> {
+  if (!status.desktop.installed || !api.setCodexDesktopLocale) return
+  callbacks.onLog('正在应用 Codex Desktop 简体中文界面', 'append')
+  try {
+    await api.setCodexDesktopLocale('zh-CN')
+    callbacks.onLog('Codex Desktop 简体中文界面已准备完成', 'append')
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    callbacks.onLog(`简体中文界面暂未应用：${detail || '本地资源不可用'}；不影响继续使用`, 'append')
+  }
+}
+
+/**
+ * Node.js, npm and Codex CLI are optional during onboarding, so only the
+ * desktop-app probe can block its installer. A failed desktop probe must not
+ * be reinterpreted as "confirmed missing" or the flow could reinstall over an
+ * existing Appx registration whose metadata was temporarily unreadable.
  */
 export function buildCodexDetectionFailureMessage(status: CodexSetupStatus): string | null {
-  const failedLabels = [
-    isDetectionFailed(status.runtime.node) ? 'Node.js' : null,
-    isDetectionFailed(status.runtime.npm) ? 'npm' : null,
-    isDetectionFailed(status.cli) ? 'Codex CLI' : null,
-    isDetectionFailed(status.desktop) ? 'Codex 桌面端' : null,
-  ].filter((label): label is string => label !== null)
-  if (failedLabels.length === 0) return null
-  return `${failedLabels.join('、')}暂时无法确认状态，请重试检测`
+  return isDetectionFailed(status.desktop)
+    ? 'Codex 桌面端暂时无法确认状态，请重试检测'
+    : null
 }
 
 export async function authorizeCodex(
@@ -183,25 +188,6 @@ export async function prepareCodexEnvironment(
       callbacks.onAction('idle')
       return { outcome: 'detection-failed', status, message: detectionFailureMessage }
     }
-    const runtimeError = codexRuntimeSetupMessage(status.runtime)
-    if (runtimeError) {
-      callbacks.onAction('idle')
-      return { outcome: 'runtime-required', status, message: runtimeError }
-    }
-
-    if (!status.cli.installed) {
-      phase = 'cli'
-      callbacks.onAction('installing-cli')
-      callbacks.onLog('正在安装 @openai/codex@latest', 'replace')
-      await api.installCli('codex')
-      status = await getCodexSetupStatusWithTimeout(api, statusTimeoutMs)
-      callbacks.onStatus(status)
-    }
-
-    if (!status.cli.installed) {
-      throw new Error('Codex CLI 安装完成后仍未检测到命令，请重新检测环境')
-    }
-
     if (!status.desktop.installed && (skipDesktopInstall || capabilities?.codexDesktop.install === 'external')) {
       callbacks.onAction('idle')
       return { outcome: 'ready', status }
@@ -225,6 +211,8 @@ export async function prepareCodexEnvironment(
       }
     }
 
+    await applyCodexDesktopChineseLocale(api, status, callbacks)
+
     callbacks.onAction('idle')
     return { outcome: 'ready', status }
   } catch (error) {
@@ -233,41 +221,13 @@ export async function prepareCodexEnvironment(
   }
 }
 
-export async function installNodeAndPrepareCodexEnvironment(
-  api: CodexNodeInstallApi,
-  callbacks: CodexSetupCallbacks,
-  capabilities?: PlatformCapabilities,
-): Promise<CodexNodeInstallResult> {
-  let status: CodexSetupStatus | null = null
-  callbacks.onAction('installing-node')
-  callbacks.onLog('正在准备 Node.js LTS 安装', 'replace')
-
-  try {
-    await api.installNodeRuntime()
-    status = await api.getCodexSetupStatus()
-    callbacks.onStatus(status)
-    if (!nodeRuntimeSupported(status.runtime) || !status.runtime.npm.installed) {
-      throw new Error('安装已完成，但程序仍未识别到受支持的 Node.js 或 npm，请重启星芒AI管理工具后重新检测')
-    }
-    callbacks.onAction('idle')
-    return {
-      outcome: 'setup',
-      setup: await prepareCodexEnvironment(api, callbacks, capabilities),
-    }
-  } catch (error) {
-    callbacks.onAction('idle')
-    return { outcome: 'node-failed', status, error }
-  }
-}
-
 /**
- * Runs the complete managed first-run chain. A confirmed missing or outdated
- * runtime is repaired automatically on platforms where the app owns Node.js
- * installation. Detection failures remain retry-only because they are not
- * evidence that an existing runtime is absent.
+ * Runs the desktop-only managed first-run chain. Node.js, npm and Codex CLI
+ * remain available from maintenance, but their state cannot trigger an
+ * install or block onboarding. Desktop detection failures remain retry-only.
  */
 export async function prepareCodexEnvironmentAutomatically(
-  api: CodexNodeInstallApi,
+  api: CodexSetupApi,
   callbacks: CodexSetupCallbacks,
   capabilities?: PlatformCapabilities,
   options: CodexAutomaticSetupOptions = {},
@@ -280,14 +240,9 @@ export async function prepareCodexEnvironmentAutomatically(
   }))
   let setup = await prepareCodexEnvironment(api, callbacks, capabilities, statusTimeoutMs, options.skipDesktopInstall)
   for (let attempt = 0; setup.outcome === 'detection-failed' && attempt < detectionRetries; attempt += 1) {
-    callbacks.onLog(`环境检测暂时失败，正在自动重试（${attempt + 1}/${detectionRetries}）`, 'append')
+    callbacks.onLog(`Codex Desktop 检测暂时失败，正在自动重试（${attempt + 1}/${detectionRetries}）`, 'append')
     await wait(retryDelayMs)
     setup = await prepareCodexEnvironment(api, callbacks, capabilities, statusTimeoutMs, options.skipDesktopInstall)
   }
-  if (setup.outcome !== 'runtime-required' || capabilities?.nodeRuntimeInstall !== 'managed') {
-    return setup
-  }
-
-  const nodeResult = await installNodeAndPrepareCodexEnvironment(api, callbacks, capabilities)
-  return nodeResult.outcome === 'setup' ? nodeResult.setup : nodeResult
+  return setup
 }

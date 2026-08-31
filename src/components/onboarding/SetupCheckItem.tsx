@@ -7,11 +7,13 @@ export function SetupCheckItem({
   detail,
   status,
   loading,
+  optional = false,
 }: {
   label: string
   detail: string
   status: ToolStatus | null
   loading: boolean
+  optional?: boolean
 }) {
   const ready = Boolean(status?.installed && !status.tooOld && status.versionStatus !== 'unknown')
   // A detection failure must render distinctly from "not yet installed" —
@@ -31,7 +33,7 @@ export function SetupCheckItem({
         <strong>{label}</strong>
         <span title={detail}>{detail}</span>
       </div>
-      <small>{ready ? '已就绪' : loading ? '处理中' : failed ? '检测失败' : status?.tooOld ? '需升级' : status ? '待安装' : '等待检测'}</small>
+      <small>{ready ? '已就绪' : loading ? '处理中' : failed ? '检测失败' : status?.tooOld ? '需升级' : optional ? '可选' : status ? '待安装' : '等待检测'}</small>
     </div>
   )
 }

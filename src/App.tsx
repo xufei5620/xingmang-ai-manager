@@ -1221,7 +1221,8 @@ function App() {
     const warnings = [...initialWarnings]
 
     // Re-login should reuse a verified bootstrap instead of replaying the
-    // entire ten-step flow. This is deliberately the same durable gate used
+    // entire managed initialization flow. This is deliberately the same
+    // durable gate used
     // at process startup, including official-provider opt-outs and drift
     // validation, so a newly installed or edited CLI still re-enters repair.
     try {
@@ -1273,10 +1274,10 @@ function App() {
     }
 
     // Account-backed sites have a zero-click post-login bootstrap. The managed
-    // onboarding path reuses the cached GPT-中转/订阅 key, installs missing Node.js
-    // and Codex components, verifies the resulting config, then enters the
-    // dashboard automatically. The old dashboard-first path opened a second
-    // confirmation dialog and left installation as a separate manual task.
+    // onboarding path reuses the cached GPT-中转/订阅 key, prepares Codex
+    // Desktop, verifies the resulting config, then enters the dashboard
+    // automatically. Node.js, npm and Codex CLI stay optional and can be
+    // installed later from maintenance when the user needs them.
     setOnboardingAutoStart(true)
     setAppView('onboarding')
     // The managed progress panel becomes the source of truth immediately
@@ -1829,9 +1830,6 @@ function App() {
     try {
       scanResult = await scan(true)
       if (!scanResult.snapshot) throw new Error('环境最终检测失败，正在等待下一次自动重试')
-      if (!scanResult.snapshot.clis.codex.installed || isDetectionFailed(scanResult.snapshot.clis.codex)) {
-        throw new Error('Codex CLI 安装后验证未通过，正在等待下一次自动重试')
-      }
     } catch (error) {
       return failStep('scan-installed-clis', error)
     }

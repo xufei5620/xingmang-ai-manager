@@ -4,18 +4,18 @@ import { createManagedBootstrapProgress, updateManagedBootstrapProgress } from '
 import { ManagedBootstrapPanel } from './ManagedBootstrapPanel'
 
 describe('ManagedBootstrapPanel', () => {
-  it('renders the ten-step progress and explicit interaction lock', () => {
+  it('renders the eight-step progress and explicit interaction lock', () => {
     const progress = updateManagedBootstrapProgress(createManagedBootstrapProgress(), {
-      id: 'prepare-node',
+      id: 'prepare-codex-desktop',
       status: 'active',
-      message: '正在安装 Node.js',
+      message: '正在安装 Codex Desktop',
     })
     const markup = renderToStaticMarkup(<ManagedBootstrapPanel progress={progress} locked />)
 
-    expect(markup.match(/managed-bootstrap-step status-/g)).toHaveLength(10)
-    expect(markup).toContain('正在安装 Node.js')
+    expect(markup.match(/managed-bootstrap-step status-/g)).toHaveLength(8)
+    expect(markup).toContain('正在安装 Codex Desktop')
     expect(markup).toContain('自动流程运行期间已锁定返回、重试和重复提交操作')
-    expect(markup).toContain('value="30"')
+    expect(markup).toContain('value="38"')
   })
 
   it('shows a failed step without the running lock notice', () => {

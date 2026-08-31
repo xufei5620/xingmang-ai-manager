@@ -5,7 +5,6 @@ import type {
   PlatformCapabilities,
   SystemSnapshot,
 } from './types'
-import { nodeRuntimeSupported } from './onboarding-runtime'
 
 // 'account-center' is a top-level overlay, not a Sidebar/PageId destination
 // (see AccountCenterPage.tsx) -- entered from AccountArea's identity row,
@@ -149,23 +148,18 @@ export function codexDesktopReloadAfterAccountSwitch(
 }
 
 /**
- * The persisted CLI config alone is not a completed first-run checkpoint.
- * Startup may happen after the app was closed between config write, runtime
- * installation, CLI installation, and desktop installation. Rechecking the
- * durable machine state makes the bootstrap naturally resumable.
+ * The persisted account/config checkpoint alone is not enough to skip the
+ * first-run screen. Startup may happen after the app was closed while the
+ * desktop installer was still registering the AppX package. Node.js, npm and
+ * the CLI are deliberately optional, so only the desktop probe participates
+ * in the dashboard fast path; their state is handled later from maintenance.
  */
 export function codexSetupReadyForDashboard(
   status: CodexSetupStatus,
   platform: PlatformCapabilities,
   codexDesktopInstallDisabled = false,
 ): boolean {
-  return !isDetectionFailed(status.runtime.node)
-    && !isDetectionFailed(status.runtime.npm)
-    && !isDetectionFailed(status.cli)
-    && !isDetectionFailed(status.desktop)
-    && nodeRuntimeSupported(status.runtime)
-    && status.runtime.npm.installed
-    && status.cli.installed
+  return !isDetectionFailed(status.desktop)
     && (
       status.desktop.installed
       || platform.codexDesktop.install === 'external'

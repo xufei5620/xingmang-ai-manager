@@ -35,6 +35,11 @@ import type { InstallationQueue } from './installation-queue'
 import type { inspectMacosCodexApp, MacosCodexAppInspection } from './macos-codex-app'
 import { describeProbeFailure } from './probe-failure'
 import { resolveWindowsExplorerExecutable } from './system-shell'
+import {
+  activateCodexDesktopWithCdp as activateCodexDesktopWithCdpDefault,
+  getAvailableLoopbackPort as getAvailableLoopbackPortDefault,
+  injectCodexDesktopChineseLocale as injectCodexDesktopChineseLocaleDefault,
+} from './codex-desktop-cdp'
 import type {
   CodexDesktopLaunchMode,
   CodexDesktopLaunchResult,
@@ -54,9 +59,22 @@ const execFileAsync = promisify(execFile)
 const codexDesktopUpdateManifestUrl = 'https://persistent.oaistatic.com/codex-app-prod/windows-store-update.json'
 const codexDesktopMirrorManifestUrl = 'https://codexapp.agentsmirror.com/latest/manifest'
 const codexDesktopMirrorFallbackManifestUrl = 'https://codexapp-r2.agentsmirror.com/latest/manifest'
+// The historical route is intentionally separate from the normal probe. It
+// is only consulted for a first install after the current mirror candidates
+// have failed; an installed desktop app never falls back to an older build.
+const codexDesktopMirrorPreviousManifestUrl = 'https://codexapp.agentsmirror.com/previous/manifest'
+const codexDesktopMirrorFallbackPreviousManifestUrl = 'https://codexapp-r2.agentsmirror.com/previous/manifest'
 const codexDesktopMirrorPackageUrls = {
   x64: 'https://codexapp.agentsmirror.com/latest/win-x64',
   arm64: 'https://codexapp.agentsmirror.com/latest/win-arm64',
+} as const
+const codexDesktopMirrorPreviousPackageUrls = {
+  x64: 'https://codexapp.agentsmirror.com/previous/win-x64',
+  arm64: 'https://codexapp.agentsmirror.com/previous/win-arm64',
+} as const
+const codexDesktopMirrorFallbackPreviousPackageUrls = {
+  x64: 'https://codexapp-r2.agentsmirror.com/previous/win-x64',
+  arm64: 'https://codexapp-r2.agentsmirror.com/previous/win-arm64',
 } as const
 const codexDesktopMirrorFallbackPackageUrls = {
   x64: 'https://codexapp-r2.agentsmirror.com/latest/win-x64',
@@ -84,6 +102,7 @@ const minimumCodexDesktopPackageBytes = 10 * 1024 * 1024
 const maximumCodexDesktopPackageBytes = 1_500 * 1024 * 1024
 const maximumCodexDesktopManifestBytes = 1024 * 1024
 const maximumCodexDesktopAppManifestBytes = 512 * 1024
+const codexDesktopManifestRefreshParameter = 'xm_refresh'
 
 export interface CodexDesktopLaunchPlan {
   executable: string
@@ -132,7 +151,7 @@ export interface CodexDesktopDownloadResult {
 }
 
 export interface CodexDesktopManifestSource extends CodexDesktopPackageSource {
-  kind: 'official' | 'mirror'
+  kind: 'official' | 'mirror' | 'mirror-previous'
 }
 
 export interface CodexDesktopManifestCandidate {
@@ -153,14 +172,14 @@ function validateCodexDesktopMirrorObjectStorageUrl(parsed: URL, original: URL):
 
   let expectedContentType: string
   let expectedFileName: string
-  if (original.pathname === '/latest/manifest') {
+  if (/^\/(?:latest|previous)\/manifest$/.test(original.pathname)) {
     expectedContentType = 'application/json'
     expectedFileName = 'release-manifest.json'
   } else {
-    const packageMatch = original.pathname.match(/^\/latest\/win-(x64|arm64)$/)
+    const packageMatch = original.pathname.match(/^\/(latest|previous)\/win-(x64|arm64)$/)
     if (!packageMatch) return false
     expectedContentType = 'application/vnd.ms-appx'
-    expectedFileName = `Codex-Windows-${packageMatch[1]}.msix`
+    expectedFileName = `Codex-Windows-${packageMatch[2]}.msix`
   }
 
   const entries = [...parsed.searchParams.entries()]
@@ -199,7 +218,17 @@ export function validateCodexDesktopResourceUrl(value: string, originalUrl: stri
   const allowedHosts = codexDesktopMirrorHosts.has(original.hostname)
     ? codexDesktopMirrorHosts
     : new Set([original.hostname])
-  const staticResource = !parsed.search
+  const originalRefresh = original.searchParams.get(codexDesktopManifestRefreshParameter)
+  const trustedOriginalRefresh = /^\/(?:latest|previous)\/manifest$/.test(original.pathname)
+    && codexDesktopMirrorHosts.has(original.hostname)
+    && original.searchParams.size === 1
+    && /^\d+-\d+$/.test(originalRefresh ?? '')
+  if (original.search && !trustedOriginalRefresh) {
+    throw new Error('Codex Desktop 下载地址包含不受信任的查询参数')
+  }
+  const staticQuery = !parsed.search
+    || (trustedOriginalRefresh && parsed.search === original.search)
+  const staticResource = staticQuery
     && allowedHosts.has(parsed.hostname)
     && parsed.pathname === original.pathname
   const signedMirrorObject = codexDesktopMirrorHosts.has(original.hostname)
@@ -265,23 +294,44 @@ export function buildCodexDesktopManifestSources(
   ]
 }
 
+/**
+ * Historical candidates are intentionally excluded from normal status checks.
+ * The mirror service can publish a schema-compatible `/previous` route
+ * without making every startup probe pay the extra network cost.
+ */
+export function buildCodexDesktopPreviousManifestSources(): CodexDesktopManifestSource[] {
+  return [
+    { kind: 'mirror-previous', label: '国内镜像上一版本', url: codexDesktopMirrorPreviousManifestUrl },
+    { kind: 'mirror-previous', label: '镜像备用源上一版本', url: codexDesktopMirrorFallbackPreviousManifestUrl },
+  ]
+}
+
 function packageSourceForManifest(
   source: CodexDesktopManifestSource,
   architecture: 'x64' | 'arm64',
   resolvedManifestUrl: string,
 ): CodexDesktopPackageSource | null {
   const resolved = new URL(resolvedManifestUrl)
-  if (
-    resolved.hostname === new URL(codexDesktopMirrorFallbackManifestUrl).hostname
-    && resolved.pathname === '/latest/manifest'
-  ) {
-    return { label: '镜像备用源', url: codexDesktopMirrorFallbackPackageUrls[architecture] }
+  const sourcePath = new URL(source.url).pathname
+  const route = (
+    resolved.pathname.match(/^\/(latest|previous)\/manifest$/)
+      ?? sourcePath.match(/^\/(latest|previous)\/manifest$/)
+  )?.[1] as 'latest' | 'previous' | undefined
+  if (!route) return null
+  const packageUrls = route === 'previous'
+    ? { primary: codexDesktopMirrorPreviousPackageUrls, fallback: codexDesktopMirrorFallbackPreviousPackageUrls }
+    : { primary: codexDesktopMirrorPackageUrls, fallback: codexDesktopMirrorFallbackPackageUrls }
+  if (resolved.hostname === new URL(codexDesktopMirrorFallbackManifestUrl).hostname) {
+    return {
+      label: route === 'previous' ? '镜像备用源上一版本' : '镜像备用源',
+      url: packageUrls.fallback[architecture],
+    }
   }
-  if (
-    resolved.hostname === new URL(codexDesktopMirrorManifestUrl).hostname
-    && resolved.pathname === '/latest/manifest'
-  ) {
-    return { label: '国内镜像', url: codexDesktopMirrorPackageUrls[architecture] }
+  if (resolved.hostname === new URL(codexDesktopMirrorManifestUrl).hostname) {
+    return {
+      label: route === 'previous' ? '国内镜像上一版本' : '国内镜像',
+      url: packageUrls.primary[architecture],
+    }
   }
 
   // The primary route can redirect to a signed object-store URL. That object
@@ -294,6 +344,12 @@ function packageSourceForManifest(
     }
     if (source.url === codexDesktopMirrorFallbackManifestUrl) {
       return { label: source.label, url: codexDesktopMirrorFallbackPackageUrls[architecture] }
+    }
+    if (source.url === codexDesktopMirrorPreviousManifestUrl) {
+      return { label: source.label, url: codexDesktopMirrorPreviousPackageUrls[architecture] }
+    }
+    if (source.url === codexDesktopMirrorFallbackPreviousManifestUrl) {
+      return { label: source.label, url: codexDesktopMirrorFallbackPreviousPackageUrls[architecture] }
     }
   }
   return null
@@ -336,15 +392,29 @@ export async function fetchCodexDesktopManifestCandidate(
   source: CodexDesktopManifestSource,
   architecture: 'x64' | 'arm64',
   fetchImplementation: typeof fetch,
+  options: { retryAttempt?: number } = {},
 ): Promise<CodexDesktopManifestCandidate> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), 8_000)
   try {
-    const response = await fetchTrustedCodexDesktopResource(source.url, {
-      headers: {
-        Accept: 'application/json',
-        'Cache-Control': 'no-cache',
-      },
+    const requestUrl = options.retryAttempt === undefined
+      || (source.kind !== 'mirror' && source.kind !== 'mirror-previous')
+      ? source.url
+      : (() => {
+          const refreshed = new URL(source.url)
+          refreshed.searchParams.set(
+            codexDesktopManifestRefreshParameter,
+            `${Date.now()}-${options.retryAttempt}`,
+          )
+          return refreshed.href
+        })()
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'Cache-Control': 'no-cache, no-store, max-age=0',
+      Pragma: 'no-cache',
+    }
+    const response = await fetchTrustedCodexDesktopResource(requestUrl, {
+      headers,
       signal: controller.signal,
     }, fetchImplementation)
     if (!response.ok) throw new Error(`返回 HTTP ${response.status}`)
@@ -400,18 +470,56 @@ async function probeCodexDesktopManifests(
   fetchImplementation: typeof fetch = fetch,
   sources: CodexDesktopManifestSource[] = buildCodexDesktopManifestSources(),
 ): Promise<CodexDesktopManifestProbeResult> {
+  const candidates: CodexDesktopManifestCandidate[] = []
+  const errorsBySource = new Map<number, string>()
+  const allIndexes = sources.map((_source, index) => index)
+
+  const collect = (
+    results: PromiseSettledResult<CodexDesktopManifestCandidate>[],
+    indexes: number[],
+  ): void => {
+    results.forEach((result, resultIndex) => {
+      const index = indexes[resultIndex]
+      errorsBySource.delete(index)
+      if (result.status === 'fulfilled') {
+        candidates.push(result.value)
+        return
+      }
+      const detail = result.reason instanceof Error ? result.reason.message : String(result.reason)
+      errorsBySource.set(index, `${sources[index].label}：${detail || '查询失败'}`)
+    })
+  }
+
   const results = await Promise.allSettled(
     sources.map((source) => fetchCodexDesktopManifestCandidate(source, architecture, fetchImplementation)),
   )
-  const candidates: CodexDesktopManifestCandidate[] = []
+  collect(results, allIndexes)
+
+  // A mirror can be briefly inconsistent while its manifest and package are
+  // being published. Retry only when no valid source of that kind exists, so
+  // a healthy mirror is never delayed by an unrelated stale route.
+  const availableKinds = new Set(candidates.map((candidate) => candidate.source.kind))
+  const retryIndexes = allIndexes.filter((index) => (
+    results[index].status === 'rejected'
+    && !availableKinds.has(sources[index].kind)
+  ))
+  if (retryIndexes.length) {
+    await delay(900)
+    const retries = await Promise.allSettled(
+      retryIndexes.map((index) => fetchCodexDesktopManifestCandidate(
+        sources[index],
+        architecture,
+        fetchImplementation,
+        { retryAttempt: 1 },
+      )),
+    )
+    collect(retries, retryIndexes)
+  }
+
   const errors: string[] = []
-  results.forEach((result, index) => {
-    if (result.status === 'fulfilled') {
-      candidates.push(result.value)
-      return
-    }
-    const detail = result.reason instanceof Error ? result.reason.message : String(result.reason)
-    errors.push(`${sources[index].label}：${detail || '查询失败'}`)
+  allIndexes.forEach((index) => {
+    const error = errorsBySource.get(index)
+    if (error) errors.push(error)
   })
   return { candidates, errors }
 }
@@ -427,6 +535,22 @@ export async function fetchCodexDesktopMirrorRelease(
     throw new Error(`国内镜像清单读取失败：${result.errors.join('；') || '没有可用镜像'}`)
   }
   return selected.release
+}
+
+/**
+ * Reads the opt-in historical route used only by first-install recovery.
+ * Returning all valid candidates lets the normal downloader keep its
+ * manifest-bound source fallback and validation behavior.
+ */
+export async function fetchCodexDesktopPreviousManifestCandidates(
+  architecture: 'x64' | 'arm64',
+  fetchImplementation: typeof fetch = fetch,
+): Promise<CodexDesktopManifestProbeResult> {
+  return probeCodexDesktopManifests(
+    architecture,
+    fetchImplementation,
+    buildCodexDesktopPreviousManifestSources(),
+  )
 }
 
 export async function downloadCodexDesktopPackage(
@@ -1008,6 +1132,20 @@ export function desktopUpdateFields(
 }
 
 /**
+ * A fallback that can install an older build is safe only when all local
+ * discovery paths agree that Codex Desktop is absent. A start-menu entry or a
+ * running packaged process is enough to block it when Appx enumeration could
+ * not return version metadata.
+ */
+export function canAttemptCodexDesktopFirstInstallFallback(
+  installedPackage: CodexDesktopPackageEntry | null,
+  startApp: StartAppEntry | null,
+  processes: WindowsProcessEntry[],
+): boolean {
+  return installedPackage === null && startApp === null && processes.length === 0
+}
+
+/**
  * Maps the injected macOS detector's settled result onto DesktopAppStatus.
  * inspectMacosCodexApp is itself designed to never throw and to already
  * distinguish "confirmed absent" from "could not confirm" via `detectionFailed`
@@ -1059,6 +1197,15 @@ export interface CodexDesktopServiceOptions {
     args: string[],
     options: { cwd: string; env: NodeJS.ProcessEnv; windowsHide?: boolean },
   ) => Promise<void>
+  /** Optional seams used by tests; production uses the constrained CDP module. */
+  activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
+  getAvailableLoopbackPort?: typeof getAvailableLoopbackPortDefault
+  injectCodexDesktopChineseLocale?: typeof injectCodexDesktopChineseLocaleDefault
+}
+
+export interface CodexDesktopLaunchOptions {
+  /** Enables the short-lived loopback CDP locale patch for a Chinese restart. */
+  injectChinese?: boolean
 }
 
 export interface CodexDesktopService {
@@ -1069,6 +1216,7 @@ export interface CodexDesktopService {
   launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
+    launchOptions?: CodexDesktopLaunchOptions,
   ): Promise<CodexDesktopLaunchResult>
 }
 
@@ -1093,80 +1241,101 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     store,
     inspectNativeProviderConfig,
     spawnDetached,
+    activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
+    getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
+    injectCodexDesktopChineseLocale = injectCodexDesktopChineseLocaleDefault,
   } = options
   let codexDesktopInstalling = false
   let codexDesktopManifestCache: {
     expiresAt: number
     value: DesktopManifestProbeBundle
   } | null = null
+  let codexDesktopManifestProbePromise: Promise<DesktopManifestProbeBundle> | null = null
+  let codexDesktopManifestGeneration = 0
 
   function invalidateCodexDesktopManifestCache(): void {
     codexDesktopManifestCache = null
+    codexDesktopManifestGeneration += 1
+    codexDesktopManifestProbePromise = null
   }
 
   async function inspectCodexDesktopManifestBundle(): Promise<DesktopManifestProbeBundle> {
     if (codexDesktopManifestCache && codexDesktopManifestCache.expiresAt > Date.now()) {
       return codexDesktopManifestCache.value
     }
+    if (codexDesktopManifestProbePromise) return codexDesktopManifestProbePromise
 
-    const checkedAt = new Date().toISOString()
-    if (process.arch !== 'x64' && process.arch !== 'arm64') {
-      const error = `Codex Desktop 更新源不支持当前处理器架构 ${process.arch}`
-      const value: DesktopManifestProbeBundle = {
-        latest: {
-          status: 'failed',
-          version: null,
-          source: 'official-manifest',
-          checkedAt,
-          error,
-        },
-        mirror: { version: null, checkedAt, error },
-        mirrorCandidate: null,
-        mirrorCandidates: [],
-      }
-      codexDesktopManifestCache = {
-        expiresAt: Date.now() + codexDesktopLatestFailureCacheTtlMs,
-        value,
-      }
-      return value
-    }
-
-    const result = await probeCodexDesktopManifests(process.arch)
-    const latestCandidate = selectLatestCodexDesktopManifestCandidate(result.candidates)
-    const mirrorCandidates = rankCodexDesktopMirrorCandidates(result.candidates)
-    const mirrorCandidate = mirrorCandidates[0] ?? null
-    const mirrorErrors = result.errors.filter((error) => !error.startsWith('OpenAI 官方源：'))
-    const value: DesktopManifestProbeBundle = {
-      latest: latestCandidate
-        ? {
-            status: 'checked',
-            version: latestCandidate.version,
-            source: 'official-manifest',
-            checkedAt,
-            error: null,
-          }
-        : {
+    const generation = codexDesktopManifestGeneration
+    const pending = (async (): Promise<DesktopManifestProbeBundle> => {
+      const checkedAt = new Date().toISOString()
+      if (process.arch !== 'x64' && process.arch !== 'arm64') {
+        const error = `Codex Desktop 更新源不支持当前处理器架构 ${process.arch}`
+        const value: DesktopManifestProbeBundle = {
+          latest: {
             status: 'failed',
             version: null,
             source: 'official-manifest',
             checkedAt,
-            error: result.errors.join('；') || 'Codex Desktop 版本查询失败',
+            error,
           },
-      mirror: mirrorCandidate
-        ? { version: mirrorCandidate.version, checkedAt, error: null }
-        : {
-            version: null,
-            checkedAt,
-            error: mirrorErrors.join('；') || '国内镜像版本查询失败',
-      },
-      mirrorCandidate,
-      mirrorCandidates,
+          mirror: { version: null, checkedAt, error },
+          mirrorCandidate: null,
+          mirrorCandidates: [],
+        }
+        if (generation === codexDesktopManifestGeneration) {
+          codexDesktopManifestCache = {
+            expiresAt: Date.now() + codexDesktopLatestFailureCacheTtlMs,
+            value,
+          }
+        }
+        return value
+      }
+
+      const result = await probeCodexDesktopManifests(process.arch)
+      const latestCandidate = selectLatestCodexDesktopManifestCandidate(result.candidates)
+      const mirrorCandidates = rankCodexDesktopMirrorCandidates(result.candidates)
+      const mirrorCandidate = mirrorCandidates[0] ?? null
+      const mirrorErrors = result.errors.filter((error) => !error.startsWith('OpenAI 官方源：'))
+      const value: DesktopManifestProbeBundle = {
+        latest: latestCandidate
+          ? {
+              status: 'checked',
+              version: latestCandidate.version,
+              source: 'official-manifest',
+              checkedAt,
+              error: null,
+            }
+          : {
+              status: 'failed',
+              version: null,
+              source: 'official-manifest',
+              checkedAt,
+              error: result.errors.join('；') || 'Codex Desktop 版本查询失败',
+            },
+        mirror: mirrorCandidate
+          ? { version: mirrorCandidate.version, checkedAt, error: null }
+          : {
+              version: null,
+              checkedAt,
+              error: mirrorErrors.join('；') || '国内镜像版本查询失败',
+        },
+        mirrorCandidate,
+        mirrorCandidates,
+      }
+      if (generation === codexDesktopManifestGeneration) {
+        const ttl = result.errors.length === 0
+          ? codexDesktopLatestCacheTtlMs
+          : codexDesktopLatestFailureCacheTtlMs
+        codexDesktopManifestCache = { expiresAt: Date.now() + ttl, value }
+      }
+      return value
+    })()
+    codexDesktopManifestProbePromise = pending
+    try {
+      return await pending
+    } finally {
+      if (codexDesktopManifestProbePromise === pending) codexDesktopManifestProbePromise = null
     }
-    const ttl = result.errors.length === 0
-      ? codexDesktopLatestCacheTtlMs
-      : codexDesktopLatestFailureCacheTtlMs
-    codexDesktopManifestCache = { expiresAt: Date.now() + ttl, value }
-    return value
   }
 
   async function inspectCodexDesktopLatestVersion(): Promise<DesktopLatestVersionProbe> {
@@ -1300,19 +1469,56 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       : null
     if (!architecture) throw new Error(`Codex 桌面端不支持当前处理器架构 ${process.arch}`)
 
-    const currentProbe = await inspectCodexDesktopPackage()
+    const [currentProbe, startApp, runningProcesses] = await Promise.all([
+      inspectCodexDesktopPackage(),
+      findCodexDesktopStartApp(),
+      listCodexDesktopProcesses(),
+    ])
     if (currentProbe.error) throw new Error(currentProbe.error)
     const currentPackage = currentProbe.value
+    const firstInstall = canAttemptCodexDesktopFirstInstallFallback(currentPackage, startApp, runningProcesses)
+    if (!firstInstall && !currentPackage) {
+      throw new Error('已检测到 Codex Desktop，但无法读取已安装版本，请先重新检测环境')
+    }
     const previousVersion = currentPackage?.version ?? null
     invalidateCodexDesktopManifestCache()
     const manifestBundle = await inspectCodexDesktopManifestBundle()
     const mirrorCandidates = manifestBundle.mirrorCandidates
     const mirrorCandidate = mirrorCandidates[0] ?? null
     const newestRelease = mirrorCandidate?.release ?? null
+    let previousCandidatesLoaded = false
+    let installCandidates: CodexDesktopManifestCandidate[]
     if (!newestRelease) {
-      throw new Error(manifestBundle.mirror.error ?? '国内镜像暂时没有可安装的 Codex Desktop 版本')
+      if (!firstInstall) {
+        throw new Error(manifestBundle.mirror.error ?? '国内镜像暂时没有可安装的 Codex Desktop 版本')
+      }
+      const previousProbe = await fetchCodexDesktopPreviousManifestCandidates(architecture)
+      installCandidates = previousProbe.candidates
+      previousCandidatesLoaded = true
+      if (!installCandidates.length) {
+        const detail = previousProbe.errors.join('；') || '没有可验证的上一版本清单'
+        throw new Error(`当前镜像暂时不可用，上一版本也无法获取（${detail}），请使用微软商店完成首次安装`)
+      }
+      sendCodexDesktopInstallProgress(target, {
+        phase: 'downloading',
+        percent: 0,
+        message: '当前镜像不可用，正在尝试 Codex Desktop 上一版本（0%）',
+      })
+    } else {
+      if (firstInstall) {
+        installCandidates = mirrorCandidates
+      } else {
+        // `firstInstall === false` is derived from this same value, but keep
+        // the explicit guard so future refactors cannot pass null to the
+        // version comparator.
+        if (!previousVersion) throw new Error('无法读取已安装的 Codex Desktop 版本')
+        installCandidates = mirrorCandidates.filter((candidate) => {
+          const comparison = compareWindowsPackageVersions(previousVersion, candidate.version)
+          return comparison !== null && comparison < 0
+        })
+      }
     }
-    if (previousVersion) {
+    if (previousVersion && newestRelease) {
       const comparison = compareWindowsPackageVersions(previousVersion, newestRelease.version)
       if (comparison === null) {
         throw new Error(`无法比较已安装版本 ${previousVersion} 与镜像版本 ${newestRelease.version}`)
@@ -1341,16 +1547,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
 
-    const installCandidates = previousVersion
-      ? mirrorCandidates.filter((candidate) => {
-          const comparison = compareWindowsPackageVersions(previousVersion, candidate.version)
-          return comparison !== null && comparison < 0
-        })
-      : mirrorCandidates
     const temporaryDirectory = await createInstallTemporaryDirectory('codex-desktop')
     const packagePath = path.join(temporaryDirectory, `ChatGPT-${architecture}.msix`)
     try {
-      const selected = await downloadCodexDesktopPackageFromCandidates(installCandidates, packagePath, {
+      const downloadWithProgress = (
+        candidates: CodexDesktopManifestCandidate[],
+      ): Promise<CodexDesktopCandidateDownloadResult> => downloadCodexDesktopPackageFromCandidates(candidates, packagePath, {
         onAttempt: (candidate, attemptIndex, previousFailure) => {
           const release = candidate.release
           const source = candidate.packageSource
@@ -1397,6 +1599,34 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
           }
         },
       })
+      let selected: CodexDesktopCandidateDownloadResult
+      try {
+        selected = await downloadWithProgress(installCandidates)
+      } catch (error) {
+        if (!firstInstall) throw error
+        if (previousCandidatesLoaded) {
+          const detail = error instanceof Error ? error.message : String(error)
+          throw new Error(`上一版本安装包下载或校验失败（${detail}），请使用微软商店完成首次安装`)
+        }
+        sendCodexDesktopInstallProgress(target, {
+          phase: 'downloading',
+          percent: 0,
+          message: '当前版本镜像下载失败，正在尝试 Codex Desktop 上一版本（0%）',
+        })
+        const previousProbe = await fetchCodexDesktopPreviousManifestCandidates(architecture)
+        if (!previousProbe.candidates.length) {
+          const detail = previousProbe.errors.join('；') || '没有可验证的上一版本清单'
+          const currentDetail = error instanceof Error ? error.message : String(error)
+          throw new Error(`当前版本和上一版本均无法获取（当前版本：${currentDetail}；上一版本：${detail}），请使用微软商店完成首次安装`)
+        }
+        try {
+          selected = await downloadWithProgress(previousProbe.candidates)
+        } catch (previousError) {
+          const currentDetail = error instanceof Error ? error.message : String(error)
+          const previousDetail = previousError instanceof Error ? previousError.message : String(previousError)
+          throw new Error(`当前版本和上一版本均安装失败（当前版本：${currentDetail}；上一版本：${previousDetail}），请使用微软商店完成首次安装`)
+        }
+      }
       const release = selected.candidate.release
       if (!release) throw new Error('镜像候选缺少安装元数据')
 
@@ -1531,6 +1761,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
   async function launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
+    launchOptions: CodexDesktopLaunchOptions = {},
   ): Promise<CodexDesktopLaunchResult> {
     if (codexDesktopInstalling) throw new Error('Codex 桌面端正在安装、更新或卸载中，请稍后再试')
     if (platform === 'darwin' && mode === 'restart') {
@@ -1575,6 +1806,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (!desktopApp.installed || !desktopApp.path) {
       throw new Error('未检测到 Codex 桌面端，请先安装后重新检测')
     }
+    const desktopAppPath = desktopApp.path
 
     const existingProcesses = await listCodexDesktopProcesses()
     const restarted = mode === 'restart' && existingProcesses.length > 0
@@ -1594,21 +1826,70 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       sendCodexDesktopStatus(target, 'stopped', { ...desktopApp, running: false })
     }
 
-    try {
-      const launchPlan = buildCodexDesktopLaunchPlan(desktopApp.path)
+    const launchWithExplorer = async (): Promise<void> => {
+      const launchPlan = buildCodexDesktopLaunchPlan(desktopAppPath)
       await spawnDetached(launchPlan.executable, launchPlan.args, {
         cwd: launchPlan.cwd,
         env: launchPlan.env,
         windowsHide: launchPlan.windowsHide,
       })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      throw new Error(`无法发送 Codex 桌面端启动请求：${message}`)
+    }
+    let cdpPort: number | null = null
+    const shouldInjectChinese = Boolean(launchOptions.injectChinese)
+      && (mode === 'restart' || existingProcesses.length === 0)
+    if (shouldInjectChinese) {
+      try {
+        cdpPort = await getAvailableLoopbackPort()
+        await activateCodexDesktopWithCdp(desktopAppPath, cdpPort)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        // AppX activation arguments are not stable across Windows builds. The
+        // existing Explorer path remains the safe fallback and still benefits
+        // from the persisted config.toml locale override.
+        console.warn(`[codex-locale] CDP 增强启动不可用，回退 Explorer：${message}`)
+        cdpPort = null
+        try {
+          await launchWithExplorer()
+        } catch (fallbackError) {
+          const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
+          throw new Error(`无法发送 Codex 桌面端启动请求：${fallbackMessage}`)
+        }
+      }
+    } else {
+      try {
+        await launchWithExplorer()
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`无法发送 Codex 桌面端启动请求：${message}`)
+      }
     }
 
-    const startedProcesses = await waitForCodexDesktopState(true, 10_000)
+    let startedProcesses = await waitForCodexDesktopState(true, 10_000)
+    if (!startedProcesses.length && cdpPort !== null) {
+      // COM activation can be unavailable for a per-user Store registration
+      // while Explorer still knows how to activate the package. Retry through
+      // the original path before reporting a launch failure.
+      cdpPort = null
+      try {
+        await launchWithExplorer()
+        startedProcesses = await waitForCodexDesktopState(true, 10_000)
+      } catch {
+        // The common error below includes the same actionable launch context.
+      }
+    }
     if (!startedProcesses.length) {
       throw new Error('已发送 Codex 桌面端启动请求，但未检测到窗口进程')
+    }
+    if (cdpPort !== null) {
+      try {
+        const injection = await injectCodexDesktopChineseLocale(cdpPort)
+        console.info(`[codex-locale] 已注入 Codex Desktop 中文运行时补丁（${injection.injectedTargets} 个页面）`)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        // A failed enhancement must not leave a successfully launched client
+        // looking broken. config.toml remains authoritative for future builds.
+        console.warn(`[codex-locale] 中文运行时补丁未生效，保留已启动客户端：${message}`)
+      }
     }
     const runningStatus = { ...desktopApp, running: true }
     sendCodexDesktopStatus(target, 'running', runningStatus)

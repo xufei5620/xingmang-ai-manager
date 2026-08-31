@@ -5,9 +5,9 @@ import {
 } from './managed-bootstrap-progress'
 
 describe('managed bootstrap progress', () => {
-  it('starts with ten pending steps and no active action', () => {
+  it('starts with eight pending steps and no active action', () => {
     const progress = createManagedBootstrapProgress()
-    expect(progress.steps).toHaveLength(10)
+    expect(progress.steps).toHaveLength(8)
     expect(progress.steps.every((step) => step.status === 'pending')).toBe(true)
     expect(progress.percent).toBe(0)
     expect(progress.activeStep).toBeNull()
@@ -16,17 +16,17 @@ describe('managed bootstrap progress', () => {
   it('completes earlier steps when the flow advances and exposes the current action', () => {
     let progress = createManagedBootstrapProgress()
     progress = updateManagedBootstrapProgress(progress, {
-      id: 'prepare-codex-cli',
+      id: 'prepare-codex-desktop',
       status: 'active',
-      message: '正在安装 Codex CLI',
+      message: '正在安装 Codex Desktop',
     })
-    expect(progress.steps.slice(0, 4).every((step) => step.status === 'completed')).toBe(true)
+    expect(progress.steps.slice(0, 3).every((step) => step.status === 'completed')).toBe(true)
     expect(progress.activeStep).toMatchObject({
-      id: 'prepare-codex-cli',
+      id: 'prepare-codex-desktop',
       status: 'active',
-      message: '正在安装 Codex CLI',
+      message: '正在安装 Codex Desktop',
     })
-    expect(progress.percent).toBe(40)
+    expect(progress.percent).toBe(38)
   })
 
   it('keeps a failed step visible without marking later work complete', () => {

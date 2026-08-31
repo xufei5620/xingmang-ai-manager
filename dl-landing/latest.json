@@ -1,6 +1,6 @@
 {
-  "version": "0.1.23",
-  "win": "/files/latest/XingMang-AI-Manager-0.1.23-Setup.exe",
-  "macArm64": "/files/latest/XingMang-AI-Manager-0.1.23-arm64.dmg",
-  "macX64": "/files/latest/XingMang-AI-Manager-0.1.23-x64.dmg"
+  "version": "0.1.24",
+  "win": "https://updatesnew.shenfengwl.fun/xingmang-manager/XingMang-AI-Manager-0.1.24-Setup.exe",
+  "macArm64": "https://updatesnew.shenfengwl.fun/xingmang-manager/XingMang-AI-Manager-0.1.24-arm64.dmg",
+  "macX64": "https://updatesnew.shenfengwl.fun/xingmang-manager/XingMang-AI-Manager-0.1.24-x64.dmg"
 }

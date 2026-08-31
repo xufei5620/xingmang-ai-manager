@@ -7,7 +7,6 @@ import {
   authorizeManagedCodex,
   buildCodexDetectionFailureMessage,
   DEFAULT_CODEX_MODEL,
-  installNodeAndPrepareCodexEnvironment,
   prepareCodexEnvironment,
   prepareCodexEnvironmentAutomatically,
   type CodexSetupApi,
@@ -170,33 +169,40 @@ describe('authorizeManagedCodex', () => {
 })
 
 describe('buildCodexDetectionFailureMessage', () => {
-  it('returns null when every probe concluded normally, including a confirmed "not installed"', () => {
+  it('returns null when the desktop probe concluded normally, even if optional tools are missing', () => {
     expect(buildCodexDetectionFailureMessage(setupStatus())).toBeNull()
-    expect(buildCodexDetectionFailureMessage(setupStatus({ cli: false }))).toBeNull()
+    expect(buildCodexDetectionFailureMessage(setupStatus({ node: false, npm: false, cli: false }))).toBeNull()
   })
 
-  it('names the single field whose detection failed', () => {
-    const status: CodexSetupStatus = { ...setupStatus(), cli: failedTool() }
-    expect(buildCodexDetectionFailureMessage(status)).toBe('Codex CLI暂时无法确认状态，请重试检测')
+  it('only reports a failed desktop probe', () => {
+    const base = setupStatus()
+    const status: CodexSetupStatus = {
+      ...base,
+      desktop: { ...base.desktop, installed: false, detectionFailed: true, detectionError: '桌面端探测超时' },
+    }
+    expect(buildCodexDetectionFailureMessage(status)).toBe('Codex 桌面端暂时无法确认状态，请重试检测')
   })
 
-  it('joins multiple failed fields in a fixed, readable order', () => {
+  it('ignores optional runtime and CLI probe failures', () => {
     const base = setupStatus()
     const status: CodexSetupStatus = {
       ...base,
       runtime: { ...base.runtime, node: failedTool() },
-      desktop: { ...base.desktop, installed: false, detectionFailed: true, detectionError: '桌面端探测超时' },
+      cli: failedTool(),
     }
-    expect(buildCodexDetectionFailureMessage(status)).toBe('Node.js、Codex 桌面端暂时无法确认状态，请重试检测')
+    expect(buildCodexDetectionFailureMessage(status)).toBeNull()
   })
 })
 
 describe('prepareCodexEnvironment', () => {
   it('returns a detection-failed outcome and never triggers an automatic install when a probe could not confirm status', async () => {
-    const status: CodexSetupStatus = { ...setupStatus(), cli: failedTool() }
+    const base = setupStatus()
+    const status: CodexSetupStatus = {
+      ...base,
+      desktop: { ...base.desktop, installed: false, detectionFailed: true, detectionError: '桌面端探测超时' },
+    }
     const api: CodexSetupApi = {
       getCodexSetupStatus: vi.fn().mockResolvedValue(status),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn(),
     }
     const listener = callbacks()
@@ -206,82 +212,75 @@ describe('prepareCodexEnvironment', () => {
     expect(result).toEqual({
       outcome: 'detection-failed',
       status,
-      message: 'Codex CLI暂时无法确认状态，请重试检测',
+      message: 'Codex 桌面端暂时无法确认状态，请重试检测',
     })
-    expect(api.installCli).not.toHaveBeenCalled()
     expect(api.installCodexDesktop).not.toHaveBeenCalled()
     expect(listener.value.onAction).toHaveBeenLastCalledWith('idle')
   })
 
-  it('reports a detection failure ahead of the runtime-required outcome it would otherwise produce', async () => {
-    const base = setupStatus({ node: false, npm: false })
-    const status: CodexSetupStatus = { ...base, runtime: { ...base.runtime, node: failedTool() } }
+  it('continues when Node.js, npm and Codex CLI are missing because they are optional', async () => {
+    const status = setupStatus({ node: false, npm: false, cli: false })
     const api: CodexSetupApi = {
       getCodexSetupStatus: vi.fn().mockResolvedValue(status),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn(),
     }
     const listener = callbacks()
 
-    await expect(prepareCodexEnvironment(api, listener.value)).resolves.toMatchObject({
-      outcome: 'detection-failed',
-    })
+    await expect(prepareCodexEnvironment(api, listener.value)).resolves.toEqual({ outcome: 'ready', status })
+    expect(api.installCodexDesktop).not.toHaveBeenCalled()
   })
 
-  it('stops at the environment step when Node.js or npm is missing', async () => {
-    const missingRuntime = setupStatus({ node: false, npm: false })
+  it('applies the bundled Chinese locale after Codex Desktop is ready', async () => {
+    const status = setupStatus({ node: false, npm: false, cli: false })
     const api: CodexSetupApi = {
-      getCodexSetupStatus: vi.fn().mockResolvedValue(missingRuntime),
-      installCli: vi.fn(),
+      getCodexSetupStatus: vi.fn().mockResolvedValue(status),
       installCodexDesktop: vi.fn(),
+      setCodexDesktopLocale: vi.fn().mockResolvedValue({ effectiveLocale: 'zh-CN' }),
     }
     const listener = callbacks()
 
-    await expect(prepareCodexEnvironment(api, listener.value)).resolves.toMatchObject({
-      outcome: 'runtime-required',
-      status: missingRuntime,
-    })
-    expect(api.installCli).not.toHaveBeenCalled()
-    expect(listener.value.onAction).toHaveBeenLastCalledWith('idle')
+    await expect(prepareCodexEnvironment(api, listener.value)).resolves.toEqual({ outcome: 'ready', status })
+    expect(api.setCodexDesktopLocale).toHaveBeenCalledWith('zh-CN')
+    expect(listener.value.onLog).toHaveBeenCalledWith('正在应用 Codex Desktop 简体中文界面', 'append')
+    expect(listener.value.onLog).toHaveBeenCalledWith('Codex Desktop 简体中文界面已准备完成', 'append')
   })
 
-  it('installs a missing CLI, rechecks it and reaches the ready state', async () => {
-    const before = setupStatus({ cli: false })
-    const ready = setupStatus()
+  it('keeps onboarding usable when the local Chinese resources cannot be applied', async () => {
+    const status = setupStatus({ node: false, npm: false, cli: false })
+    const api: CodexSetupApi = {
+      getCodexSetupStatus: vi.fn().mockResolvedValue(status),
+      installCodexDesktop: vi.fn(),
+      setCodexDesktopLocale: vi.fn().mockRejectedValue(new Error('没有本地中文资源')),
+    }
+    const listener = callbacks()
+
+    await expect(prepareCodexEnvironment(api, listener.value)).resolves.toEqual({ outcome: 'ready', status })
+    expect(listener.value.onLog).toHaveBeenCalledWith(
+      '简体中文界面暂未应用：没有本地中文资源；不影响继续使用',
+      'append',
+    )
+  })
+
+  it('installs a missing desktop app and rechecks it without installing optional tools', async () => {
+    const before = setupStatus({ node: false, npm: false, cli: false, desktop: false })
+    const ready = setupStatus({ node: false, npm: false, cli: false })
     const api: CodexSetupApi = {
       getCodexSetupStatus: vi.fn().mockResolvedValueOnce(before).mockResolvedValueOnce(ready),
-      installCli: vi.fn().mockResolvedValue(undefined),
-      installCodexDesktop: vi.fn(),
+      installCodexDesktop: vi.fn().mockResolvedValue(undefined),
     }
     const listener = callbacks()
 
     await expect(prepareCodexEnvironment(api, listener.value)).resolves.toEqual({ outcome: 'ready', status: ready })
-    expect(api.installCli).toHaveBeenCalledWith('codex')
-    expect(listener.value.onLog).toHaveBeenCalledWith('正在安装 @openai/codex@latest', 'replace')
+    expect(api.installCodexDesktop).toHaveBeenCalledOnce()
+    expect(listener.value.onLog).toHaveBeenCalledWith('正在准备 Codex 桌面端最新版', 'append')
     expect(listener.value.onAction).toHaveBeenLastCalledWith('idle')
   })
 
-  it('returns a retryable failure when CLI installation finishes without a detectable command', async () => {
-    const missingCli = setupStatus({ cli: false })
-    const api: CodexSetupApi = {
-      getCodexSetupStatus: vi.fn().mockResolvedValue(missingCli),
-      installCli: vi.fn().mockResolvedValue(undefined),
-      installCodexDesktop: vi.fn(),
-    }
-    const listener = callbacks()
-
-    const result = await prepareCodexEnvironment(api, listener.value)
-    expect(result).toMatchObject({ outcome: 'failed', phase: 'cli', status: missingCli })
-    expect((result as { error: Error }).error.message).toContain('仍未检测到命令')
-    expect(listener.value.onAction).toHaveBeenLastCalledWith('idle')
-  })
-
-  it('keeps a completed CLI usable when optional desktop installation fails', async () => {
+  it('shows desktop recovery when optional desktop installation fails', async () => {
     const cliReady = setupStatus({ desktop: false })
     const desktopError = new Error('微软商店连接失败')
     const api: CodexSetupApi = {
       getCodexSetupStatus: vi.fn().mockResolvedValue(cliReady),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn().mockRejectedValue(desktopError),
     }
     const listener = callbacks()
@@ -298,7 +297,6 @@ describe('prepareCodexEnvironment', () => {
     const cliReady = setupStatus({ desktop: false })
     const api: CodexSetupApi = {
       getCodexSetupStatus: vi.fn().mockResolvedValue(cliReady),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn(),
     }
     const listener = callbacks()
@@ -315,7 +313,6 @@ describe('prepareCodexEnvironment', () => {
     const desktopMissing = setupStatus({ desktop: false })
     const api: CodexSetupApi = {
       getCodexSetupStatus: vi.fn().mockResolvedValue(desktopMissing),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn().mockResolvedValue(undefined),
     }
     const listener = callbacks()
@@ -327,75 +324,14 @@ describe('prepareCodexEnvironment', () => {
   })
 })
 
-describe('installNodeAndPrepareCodexEnvironment', () => {
-  it('returns to an idle retry state when automatic Node.js installation fails', async () => {
-    const installError = new Error('MSI 安装失败')
-    const api = {
-      getCodexSetupStatus: vi.fn(),
-      installNodeRuntime: vi.fn().mockRejectedValue(installError),
-      installCli: vi.fn(),
-      installCodexDesktop: vi.fn(),
-    }
-    const listener = callbacks()
-
-    await expect(installNodeAndPrepareCodexEnvironment(api, listener.value)).resolves.toEqual({
-      outcome: 'node-failed',
-      status: null,
-      error: installError,
-    })
-    expect(listener.value.onAction).toHaveBeenLastCalledWith('idle')
-  })
-
-  it('rechecks PATH-visible runtimes before continuing the rest of setup', async () => {
-    const ready = setupStatus()
-    const api = {
-      getCodexSetupStatus: vi.fn().mockResolvedValue(ready),
-      installNodeRuntime: vi.fn().mockResolvedValue({
-        installed: true,
-        method: 'winget' as const,
-        source: 'winget',
-        version: null,
-        architecture: 'x64' as const,
-        pathRefreshRequired: true,
-        systemRestartRequired: false,
-      }),
-      installCli: vi.fn(),
-      installCodexDesktop: vi.fn(),
-    }
-    const listener = callbacks()
-
-    await expect(installNodeAndPrepareCodexEnvironment(api, listener.value)).resolves.toEqual({
-      outcome: 'setup',
-      setup: { outcome: 'ready', status: ready },
-    })
-    expect(api.getCodexSetupStatus).toHaveBeenCalledTimes(2)
-  })
-})
-
 describe('prepareCodexEnvironmentAutomatically', () => {
-  it('installs a confirmed missing Windows runtime and continues through CLI and desktop setup', async () => {
-    const missingRuntime = setupStatus({ node: false, npm: false, cli: false, desktop: false })
-    const runtimeReady = setupStatus({ cli: false, desktop: false })
-    const cliReady = setupStatus({ desktop: false })
-    const ready = setupStatus()
+  it('installs only the desktop app and leaves optional runtime and CLI installation to maintenance', async () => {
+    const missingDesktop = setupStatus({ node: false, npm: false, cli: false, desktop: false })
+    const ready = setupStatus({ node: false, npm: false, cli: false })
     const api = {
       getCodexSetupStatus: vi.fn()
-        .mockResolvedValueOnce(missingRuntime)
-        .mockResolvedValueOnce(runtimeReady)
-        .mockResolvedValueOnce(runtimeReady)
-        .mockResolvedValueOnce(cliReady)
+        .mockResolvedValueOnce(missingDesktop)
         .mockResolvedValueOnce(ready),
-      installNodeRuntime: vi.fn().mockResolvedValue({
-        installed: true,
-        action: 'installed' as const,
-        method: 'msi' as const,
-        source: 'npmmirror' as const,
-        version: 'v22.17.0',
-        architecture: 'x64' as const,
-        pathRefreshRequired: true,
-        systemRestartRequired: false,
-      }),
-      installCli: vi.fn().mockResolvedValue(undefined),
       installCodexDesktop: vi.fn().mockResolvedValue(undefined),
     }
     const listener = callbacks()
@@ -405,18 +341,17 @@ describe('prepareCodexEnvironmentAutomatically', () => {
       listener.value,
       platformCapabilitiesFor('win32', 'x64'),
     )).resolves.toEqual({ outcome: 'ready', status: ready })
-    expect(api.installNodeRuntime).toHaveBeenCalledOnce()
-    expect(api.installCli).toHaveBeenCalledWith('codex')
     expect(api.installCodexDesktop).toHaveBeenCalledOnce()
   })
 
   it('never installs over a detection failure', async () => {
-    const base = setupStatus({ node: false, npm: false })
-    const status: CodexSetupStatus = { ...base, runtime: { ...base.runtime, node: failedTool() } }
+    const base = setupStatus({ node: false, npm: false, cli: false })
+    const status: CodexSetupStatus = {
+      ...base,
+      desktop: { ...base.desktop, installed: false, detectionFailed: true, detectionError: '桌面端探测超时' },
+    }
     const api = {
       getCodexSetupStatus: vi.fn().mockResolvedValue(status),
-      installNodeRuntime: vi.fn(),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn(),
     }
 
@@ -426,18 +361,20 @@ describe('prepareCodexEnvironmentAutomatically', () => {
       platformCapabilitiesFor('win32', 'x64'),
       { wait: async () => undefined },
     )).resolves.toMatchObject({ outcome: 'detection-failed' })
-    expect(api.installNodeRuntime).not.toHaveBeenCalled()
+    expect(api.installCodexDesktop).not.toHaveBeenCalled()
     expect(api.getCodexSetupStatus).toHaveBeenCalledTimes(3)
   })
 
   it('recovers automatically when a transient detection failure clears', async () => {
-    const failed = { ...setupStatus(), cli: failedTool() }
+    const base = setupStatus()
+    const failed = {
+      ...base,
+      desktop: { ...base.desktop, installed: false, detectionFailed: true, detectionError: '桌面端探测超时' },
+    }
     const ready = setupStatus()
     const wait = vi.fn(async () => undefined)
     const api = {
       getCodexSetupStatus: vi.fn().mockResolvedValueOnce(failed).mockResolvedValueOnce(ready),
-      installNodeRuntime: vi.fn(),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn(),
     }
 
@@ -448,15 +385,12 @@ describe('prepareCodexEnvironmentAutomatically', () => {
       { wait },
     )).resolves.toEqual({ outcome: 'ready', status: ready })
     expect(wait).toHaveBeenCalledWith(750)
-    expect(api.installNodeRuntime).not.toHaveBeenCalled()
   })
 
-  it('keeps external-platform runtime installation manual', async () => {
+  it('does not call the managed desktop installer when macOS owns installation', async () => {
     const missingRuntime = setupStatus({ node: false, npm: false })
     const api = {
       getCodexSetupStatus: vi.fn().mockResolvedValue(missingRuntime),
-      installNodeRuntime: vi.fn(),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn(),
     }
 
@@ -464,16 +398,14 @@ describe('prepareCodexEnvironmentAutomatically', () => {
       api,
       callbacks().value,
       platformCapabilitiesFor('darwin', 'arm64'),
-    )).resolves.toMatchObject({ outcome: 'runtime-required' })
-    expect(api.installNodeRuntime).not.toHaveBeenCalled()
+    )).resolves.toEqual({ outcome: 'ready', status: missingRuntime })
+    expect(api.installCodexDesktop).not.toHaveBeenCalled()
   })
 
   it('does not reinstall Codex Desktop after an explicit uninstall preference', async () => {
     const status = setupStatus({ desktop: false })
     const api = {
       getCodexSetupStatus: vi.fn().mockResolvedValue(status),
-      installNodeRuntime: vi.fn(),
-      installCli: vi.fn(),
       installCodexDesktop: vi.fn(),
     }
 
@@ -496,7 +428,6 @@ describe('Codex Desktop post-install verification timeout', () => {
         getCodexSetupStatus: vi.fn()
           .mockResolvedValueOnce(beforeInstall)
           .mockImplementationOnce(() => new Promise<CodexSetupStatus>(() => undefined)),
-        installCli: vi.fn(),
         installCodexDesktop: vi.fn().mockResolvedValue(undefined),
       }
       const pending = prepareCodexEnvironment(api, callbacks().value, platformCapabilitiesFor('win32', 'x64'), 1_000)

@@ -2,8 +2,6 @@ export type ManagedBootstrapStepId =
   | 'sync-keys'
   | 'authorize-codex'
   | 'inspect-environment'
-  | 'prepare-node'
-  | 'prepare-codex-cli'
   | 'prepare-codex-desktop'
   | 'scan-installed-clis'
   | 'configure-installed-clis'
@@ -35,12 +33,10 @@ export interface ManagedBootstrapProgressUpdate {
 const stepDefinitions: ReadonlyArray<Omit<ManagedBootstrapStep, 'status' | 'message'>> = [
   { id: 'sync-keys', label: '同步专属 Key', detail: '创建并加密缓存账号分组 Key' },
   { id: 'authorize-codex', label: '写入 Codex 授权', detail: '配置 GPT-中转/订阅 Key 与默认模型' },
-  { id: 'inspect-environment', label: '检测本机环境', detail: '核对 Node.js、npm 与 Codex 组件' },
-  { id: 'prepare-node', label: '准备 Node.js', detail: '安装或验证 Node.js 和 npm' },
-  { id: 'prepare-codex-cli', label: '准备 Codex CLI', detail: '安装并验证 @openai/codex' },
+  { id: 'inspect-environment', label: '检测桌面端', detail: '确认 Codex Desktop 当前状态' },
   { id: 'prepare-codex-desktop', label: '准备桌面端', detail: '安装或验证 Codex Desktop' },
   { id: 'scan-installed-clis', label: '扫描 AI 工具', detail: '发现已安装的四类 CLI' },
-  { id: 'configure-installed-clis', label: '配置全部 CLI', detail: '写入各自分组 Key 和模型' },
+  { id: 'configure-installed-clis', label: '配置已安装 CLI', detail: '仅为已安装工具写入分组 Key 和模型' },
   { id: 'verify-config', label: '读后验证', detail: '复核 Key、Relay 与模型' },
   { id: 'enter-dashboard', label: '进入工作台', detail: '保存完成状态并载入工作台' },
 ]

@@ -3,15 +3,12 @@ import {
   AlertCircle,
   ArrowLeft,
   ArrowRight,
-  BookOpen,
   CheckCircle2,
   CircleDot,
-  Download,
   Eye,
   EyeOff,
   ExternalLink,
   LoaderCircle,
-  MonitorDown,
   RefreshCw,
   ShieldCheck,
   Store,
@@ -32,24 +29,20 @@ import {
   authorizeCodex,
   authorizeManagedCodex,
   DEFAULT_CODEX_MODEL,
-  installNodeAndPrepareCodexEnvironment,
   prepareCodexEnvironmentAutomatically,
   type CodexAutomaticSetupResult,
   type OnboardingSetupAction,
 } from '../../onboarding-flow'
-import { nodeRuntimeSupported } from '../../onboarding-runtime'
 import { CODEX_DESKTOP_STORE_URI } from '../../pages/MaintenancePage'
-import { performNodeRuntimeAction, platformPresentation } from '../../platform-presentation'
+import { platformPresentation } from '../../platform-presentation'
 import type {
   AppConfigSummary,
   CodexDesktopInstallProgress,
   CodexSetupStatus,
   InstallProgress,
-  NodeRuntimeInstallProgress,
   PlatformCapabilities,
   RelaySite,
 } from '../../types'
-import { NodeInstallGuide } from './NodeInstallGuide'
 import { ManagedBootstrapPanel } from './ManagedBootstrapPanel'
 import { OnboardingStep } from './OnboardingStep'
 import { SetupCheckItem } from './SetupCheckItem'
@@ -109,8 +102,6 @@ export function CodexOnboarding({
   const [error, setError] = useState('')
   const [managedWarning, setManagedWarning] = useState('')
   const [finishing, setFinishing] = useState(false)
-  const [nodeGuideOpen, setNodeGuideOpen] = useState(false)
-  const [nodeInstallProgress, setNodeInstallProgress] = useState<NodeRuntimeInstallProgress | null>(null)
   const [desktopInstallRecovery, setDesktopInstallRecovery] = useState(false)
   const [managedProgress, setManagedProgress] = useState(createManagedBootstrapProgress)
   const [managedFlowLocked, setManagedFlowLocked] = useState(authorizationMode === 'managed' && autoStart)
@@ -129,13 +120,6 @@ export function CodexOnboarding({
   }, [])
 
   useEffect(() => {
-    return window.xingmang.onNodeRuntimeInstallProgress((progress) => {
-      setNodeInstallProgress(progress)
-      setLogs((current) => [...current.slice(-20), progress.message])
-    })
-  }, [])
-
-  useEffect(() => {
     if (!desktopInstallProgress) return
     setLogs((current) => [...current.slice(-20), desktopInstallProgress.message])
   }, [desktopInstallProgress])
@@ -150,11 +134,7 @@ export function CodexOnboarding({
       setAction(nextAction)
       if (authorizationMode !== 'managed') return
       if (nextAction === 'scanning' && ['sync-keys', 'authorize-codex', 'inspect-environment'].includes(managedStepRef.current)) {
-        reportManagedProgress({ id: 'inspect-environment', status: 'active', message: '正在检测本机运行环境' })
-      } else if (nextAction === 'installing-node') {
-        reportManagedProgress({ id: 'prepare-node', status: 'active', message: '正在安装并验证 Node.js 和 npm' })
-      } else if (nextAction === 'installing-cli') {
-        reportManagedProgress({ id: 'prepare-codex-cli', status: 'active', message: '正在安装并验证 Codex CLI' })
+        reportManagedProgress({ id: 'inspect-environment', status: 'active', message: '正在检测 Codex Desktop' })
       } else if (nextAction === 'installing-desktop') {
         reportManagedProgress({ id: 'prepare-codex-desktop', status: 'active', message: '正在安装并验证 Codex Desktop' })
       }
@@ -162,15 +142,12 @@ export function CodexOnboarding({
     onStatus: (nextStatus: CodexSetupStatus) => {
       setStatus(nextStatus)
       if (authorizationMode !== 'managed') return
-      const runtimeReady = nodeRuntimeSupported(nextStatus.runtime) && nextStatus.runtime.npm.installed
-      reportManagedProgress({ id: 'inspect-environment', status: 'completed', message: '本机环境检测完成' })
-      if (runtimeReady) {
-        reportManagedProgress({ id: 'prepare-node', status: 'completed', message: 'Node.js 和 npm 已就绪' })
+      if (isDetectionFailed(nextStatus.desktop)) {
+        reportManagedProgress({ id: 'inspect-environment', status: 'failed', message: 'Codex Desktop 暂时无法确认状态' })
+      } else {
+        reportManagedProgress({ id: 'inspect-environment', status: 'completed', message: 'Codex Desktop 状态检测完成' })
       }
-      if (runtimeReady && nextStatus.cli.installed) {
-        reportManagedProgress({ id: 'prepare-codex-cli', status: 'completed', message: 'Codex CLI 已就绪' })
-      }
-      if (runtimeReady && nextStatus.cli.installed
+      if (!isDetectionFailed(nextStatus.desktop)
         && (nextStatus.desktop.installed || platform.codexDesktop.install === 'external')) {
         reportManagedProgress({
           id: 'prepare-codex-desktop',
@@ -185,29 +162,11 @@ export function CodexOnboarding({
   }
 
   const applySetupResult = (result: CodexAutomaticSetupResult) => {
-    if (result.outcome === 'node-failed') {
-      if (authorizationMode === 'managed') {
-        reportManagedProgress({ id: 'prepare-node', status: 'failed', message: errorMessage(result.error) })
-        setManagedFlowLocked(false)
-      }
-      setError(errorMessage(result.error))
-      setNodeGuideOpen(true)
-      return
-    }
     if (result.outcome === 'ready') {
       if (authorizationMode === 'managed') {
-        reportManagedProgress({ id: 'prepare-codex-desktop', status: 'completed', message: 'Codex 运行环境准备完成' })
+        reportManagedProgress({ id: 'prepare-codex-desktop', status: 'completed', message: 'Codex Desktop 准备完成' })
       }
       setStage('ready')
-      return
-    }
-    if (result.outcome === 'runtime-required') {
-      if (authorizationMode === 'managed') {
-        reportManagedProgress({ id: 'prepare-node', status: 'failed', message: result.message })
-        setManagedFlowLocked(false)
-      }
-      setError(result.message)
-      setNodeGuideOpen(true)
       return
     }
     if (result.outcome === 'detection-failed') {
@@ -235,7 +194,7 @@ export function CodexOnboarding({
     if (authorizationMode === 'managed') {
       const failedStep: ManagedBootstrapStepId = result.phase === 'environment'
         ? 'inspect-environment'
-        : result.phase === 'cli' ? 'prepare-codex-cli' : 'prepare-codex-desktop'
+        : 'prepare-codex-desktop'
       reportManagedProgress({ id: failedStep, status: 'failed', message: errorMessage(result.error) })
       setManagedFlowLocked(false)
     }
@@ -292,35 +251,6 @@ export function CodexOnboarding({
         setManagedFlowLocked(false)
       }
     }
-  }
-
-  const installNodeAndContinue = async () => {
-    if (action !== 'idle') return
-    if (authorizationMode === 'managed') setManagedFlowLocked(true)
-    if (platform.nodeRuntimeInstall === 'external') {
-      try {
-        await performNodeRuntimeAction(platform, window.xingmang)
-        setError('请从 Node.js 官网完成安装，然后返回重新检测。')
-      } catch (installError) {
-        setError(errorMessage(installError))
-      }
-      if (authorizationMode === 'managed') setManagedFlowLocked(false)
-      return
-    }
-    setError('')
-    setNodeInstallProgress({
-      phase: 'checking',
-      source: null,
-      percent: null,
-      message: '正在准备 Node.js LTS 安装',
-    })
-    const result = await installNodeAndPrepareCodexEnvironment(window.xingmang, setupCallbacks, platform)
-    if (result.outcome === 'node-failed') {
-      applySetupResult(result)
-      return
-    }
-    setNodeGuideOpen(false)
-    applySetupResult(result.setup)
   }
 
   const startInitialization = async (mode: 'managed' | 'manual') => {
@@ -417,20 +347,12 @@ export function CodexOnboarding({
     void enterDashboard()
   }, [authorizationMode, flowStarted, stage])
 
-  const installedCount = status
-    ? [status.runtime.node, status.runtime.npm, status.cli, status.desktop]
-        .filter((item) => item.installed).length
-    : 0
+  const installedCount = status?.desktop.installed ? 1 : 0
   const busy = action !== 'idle'
   const flowLocked = authorizationMode === 'managed' && managedFlowLocked
   // A detection failure must not be steered toward "install this", since the
   // tool it names may already be present — only a retry can tell.
-  const anyDetectionFailed = Boolean(status && [
-    status.runtime.node,
-    status.runtime.npm,
-    status.cli,
-    status.desktop,
-  ].some((item) => isDetectionFailed(item)))
+  const anyDetectionFailed = Boolean(status && isDetectionFailed(status.desktop))
 
   return (
     <div className="onboarding-shell">
@@ -453,8 +375,8 @@ export function CodexOnboarding({
           />
           <OnboardingStep
             index={2}
-            label="环境安装"
-            detail="安装运行组件"
+            label="桌面端初始化"
+            detail="安装或验证 Codex Desktop"
             active={stage === 'setup'}
             complete={stage === 'ready'}
           />
@@ -500,8 +422,8 @@ export function CodexOnboarding({
                   <span>CODEX QUICK SETUP</span>
                   <h1>初始化 Codex 配置</h1>
                   <p>{authorizationMode === 'managed'
-                    ? '已登录星芒账号，正在自动完成配置与运行环境准备。'
-                    : '验证授权码后，自动完成配置与运行环境准备。'}</p>
+                    ? '已登录星芒账号，正在自动完成配置与 Codex Desktop 初始化。'
+                    : '验证授权码后，自动完成配置与 Codex Desktop 初始化。'}</p>
                 </div>
               </div>
 
@@ -606,7 +528,7 @@ export function CodexOnboarding({
                 >
                   {busy
                     ? <LoaderCircle size={18} className="spin" />
-                    : authorizationMode === 'managed' ? <RefreshCw size={18} /> : <MonitorDown size={18} />}
+                    : <RefreshCw size={18} />}
                   {busy
                     ? authorizationMode === 'managed' ? '正在读取本地 Key 并写入配置' : '正在验证并写入配置'
                     : authorizationMode === 'managed' && error ? '重新初始化' : '开始初始化'}
@@ -622,12 +544,12 @@ export function CodexOnboarding({
                 </div>
                 <div>
                   <span>{stage === 'ready' ? 'SETUP COMPLETE' : 'ENVIRONMENT SETUP'}</span>
-                  <h1>{stage === 'ready' ? (status?.desktop.installed ? 'Codex 已准备就绪' : 'Codex CLI 已准备就绪') : '正在准备 Codex 环境'}</h1>
+                  <h1>{stage === 'ready' ? 'Codex Desktop 已准备就绪' : '正在准备 Codex Desktop'}</h1>
                   <p>{stage === 'ready'
                     ? status?.desktop.installed
-                      ? '配置与运行环境均已完成，可以进入工具概览。'
-                      : '桌面端尚未安装，可以先进入工具概览，稍后继续安装。'
-                    : '正在依次检测并安装 Codex 所需组件。'}</p>
+                      ? '配置已完成，Codex Desktop 可以使用。'
+                      : '桌面端尚未安装，正在准备安装。'
+                    : '只安装或验证 Codex Desktop，并自动应用本地简体中文界面；Node.js、npm 和 Codex CLI 可稍后按需安装。'}</p>
                 </div>
               </div>
 
@@ -638,33 +560,28 @@ export function CodexOnboarding({
               {authorizationMode === 'manual' && (
                 <>
                   <div className="setup-progress-row">
-                    <span>初始化进度</span>
-                    <strong>{installedCount}/4</strong>
+                    <span>Codex Desktop 初始化进度</span>
+                    <strong>{installedCount}/1</strong>
                   </div>
-                  <div className="setup-progress"><span style={{ width: `${installedCount * 25}%` }} /></div>
+                  <div className="setup-progress"><span style={{ width: `${installedCount * 100}%` }} /></div>
 
                   <div className="setup-check-list">
-                    <SetupCheckItem label="Node.js" detail={status?.runtime.node.version ?? 'Codex CLI 前置环境'} status={status?.runtime.node ?? null} loading={(action === 'scanning' && !status) || action === 'installing-node'} />
-                    <SetupCheckItem label="npm" detail={status?.runtime.npm.version ?? 'Node.js 包管理器'} status={status?.runtime.npm ?? null} loading={(action === 'scanning' && !status) || action === 'installing-node'} />
-                    <SetupCheckItem label="Codex CLI" detail={status?.cli.version ?? '@openai/codex'} status={status?.cli ?? null} loading={action === 'installing-cli'} />
                     <SetupCheckItem
                       label="Codex 桌面端"
-                      detail={action === 'installing-desktop' ? codexDesktopInstallLabel(desktopInstallProgress) : status?.desktop.installed ? platformPresentation(platform).codexDesktopClient : platform.isMac ? '可通过 Codex CLI 打开' : '等待安装最新版'}
+                      detail={action === 'installing-desktop' ? codexDesktopInstallLabel(desktopInstallProgress) : status?.desktop.installed ? platformPresentation(platform).codexDesktopClient : platform.isMac ? '由 Codex Desktop 官方安装器管理' : '等待安装最新版'}
                       status={status?.desktop ?? null}
                       loading={action === 'installing-desktop'}
                     />
                   </div>
-                </>
-              )}
-
-              {nodeInstallProgress && action === 'installing-node' && (
-                <div className={`node-runtime-progress phase-${nodeInstallProgress.phase}`} role="status" aria-live="polite">
-                  <div>
-                    <span>{nodeInstallProgress.message}</span>
-                    {nodeInstallProgress.percent !== null && <strong>{Math.round(nodeInstallProgress.percent)}%</strong>}
+                  <div className="setup-optional-note" role="note">
+                    Node.js、npm 和 Codex CLI 为可选组件，不影响 Codex Desktop 初始化。需要使用命令行工具时，可稍后在“系统管理 → 环境维护”中单独安装。
                   </div>
-                  <progress max="100" value={nodeInstallProgress.percent ?? undefined} />
-                </div>
+                  <div className="setup-check-list setup-check-list-optional">
+                    <SetupCheckItem label="Node.js（可选）" detail={status?.runtime.node.version ?? '未安装不影响桌面端'} status={status?.runtime.node ?? null} loading={action === 'scanning' && !status} optional />
+                    <SetupCheckItem label="npm（可选）" detail={status?.runtime.npm.version ?? '未安装不影响桌面端'} status={status?.runtime.npm ?? null} loading={action === 'scanning' && !status} optional />
+                    <SetupCheckItem label="Codex CLI（可选）" detail={status?.cli.version ?? '未安装不影响桌面端'} status={status?.cli ?? null} loading={action === 'scanning' && !status} optional />
+                  </div>
+                </>
               )}
 
               {desktopInstallProgress && action === 'installing-desktop' && (
@@ -740,19 +657,6 @@ export function CodexOnboarding({
                   <button type="button" className="secondary-button" disabled={flowLocked || busy} onClick={() => void runSetup()}>
                     <RefreshCw size={16} className={action === 'scanning' ? 'spin' : ''} /> 重新检测
                   </button>
-                ) : !status || !nodeRuntimeSupported(status.runtime) || !status.runtime.npm.installed ? (
-                  <>
-                    <button type="button" className="primary-button" disabled={flowLocked || busy} onClick={() => void installNodeAndContinue()}>
-                      {action === 'installing-node' ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}
-                      {action === 'installing-node' ? '正在安装 Node.js' : platformPresentation(platform).nodeActionLabel}
-                    </button>
-                    <button type="button" className="secondary-button" disabled={flowLocked || busy} onClick={() => setNodeGuideOpen(true)}>
-                      <BookOpen size={16} /> 安装教程
-                    </button>
-                    <button type="button" className="secondary-button" disabled={flowLocked || busy} onClick={() => void runSetup()}>
-                      <RefreshCw size={16} className={action === 'scanning' ? 'spin' : ''} /> 重新检测
-                    </button>
-                  </>
                 ) : error && !desktopInstallRecovery ? (
                   <button type="button" className="secondary-button" disabled={flowLocked} onClick={() => void runSetup()}>
                     <RefreshCw size={16} /> 重试安装
@@ -765,20 +669,6 @@ export function CodexOnboarding({
           )}
         </div>
       </main>
-      {nodeGuideOpen && (
-        <NodeInstallGuide
-          runtime={status?.runtime ?? null}
-          platform={platform}
-          busy={busy || flowLocked}
-          installProgress={nodeInstallProgress}
-          onClose={() => setNodeGuideOpen(false)}
-          onInstall={() => void installNodeAndContinue()}
-          onRecheck={() => {
-            setNodeGuideOpen(false)
-            void runSetup()
-          }}
-        />
-      )}
     </div>
   )
 }

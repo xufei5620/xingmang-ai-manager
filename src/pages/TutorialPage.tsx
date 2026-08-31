@@ -47,7 +47,7 @@ const TUTORIAL_SECTIONS: readonly TutorialSection[] = [
     destinationLabel: '打开工具概览',
     steps: [
       { title: '1. 登录星芒账号', body: '启动后使用邮箱或用户名登录。可选“记住密码”和“自动登录”；会话与凭据由系统安全存储保护。' },
-      { title: '2. 等待首次检测', body: '工具箱会检测 Node.js、npm、四个 CLI 与 Codex 桌面端。“检测失败”不等于“未安装”，先使用重新检测或健康诊断。' },
+      { title: '2. 等待首次检测', body: '工具箱会检测 Node.js、npm、四个 CLI 与 Codex 桌面端；首次初始化只准备 Codex Desktop，其余组件按需安装。“检测失败”不等于“未安装”，先使用重新检测或健康诊断。' },
       { title: '3. 配置星芒 Key', body: '登录后工具箱会为已安装的 CLI 准备对应分组 Key。已经存在的 Key 会复用，不会每次启动都重复创建。' },
     ],
   },

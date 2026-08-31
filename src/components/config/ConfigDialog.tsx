@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  AlertCircle,
   AppWindow,
+  CheckCircle2,
   ChevronRight,
   Eye,
   EyeOff,
@@ -8,6 +10,7 @@ import {
   FileCheck2,
   FileWarning,
   FolderOpen,
+  Languages,
   LoaderCircle,
   Plus,
   RefreshCw,
@@ -28,6 +31,7 @@ import type {
   AccountUsableGroup,
   AppConfigSummary,
   ConfigSaveMode,
+  CodexDesktopLocaleStatus,
   PlatformCapabilities,
   RelaySite,
   SystemSnapshot,
@@ -104,8 +108,12 @@ export function ConfigDialog({
   const [keyEditorBusy, setKeyEditorBusy] = useState(false)
   const [accountSwitchTarget, setAccountSwitchTarget] = useState<'official' | 'relay' | null>(null)
   const [switchingAccount, setSwitchingAccount] = useState(false)
+  const [codexLocaleStatus, setCodexLocaleStatus] = useState<CodexDesktopLocaleStatus | null>(null)
+  const [codexLocaleLoading, setCodexLocaleLoading] = useState(false)
+  const [codexLocaleSwitching, setCodexLocaleSwitching] = useState(false)
   const accountKeyRequestId = useRef(0)
   const accountGroupRequestId = useRef(0)
+  const codexLocaleRequestId = useRef(0)
 
   // 只跟随标签页重置：config 引用会被后台扫描等操作频繁刷新，
   // 若一并作为依赖会清空用户正在输入的 API Key 和已检测的模型列表。
@@ -236,6 +244,39 @@ export function ConfigDialog({
       accountGroupRequestId.current += 1
     }
   }, [accountAuthenticated, loadAccountKeyGroups, loadAccountKeys])
+
+  useEffect(() => {
+    if (activeTab !== 'codexDesktop') {
+      codexLocaleRequestId.current += 1
+      setCodexLocaleStatus(null)
+      setCodexLocaleLoading(false)
+      setCodexLocaleSwitching(false)
+      return undefined
+    }
+    const inspectLocale = window.xingmang.inspectCodexDesktopLocale
+    if (typeof inspectLocale !== 'function') {
+      setCodexLocaleStatus(null)
+      setCodexLocaleLoading(false)
+      return undefined
+    }
+    const requestId = ++codexLocaleRequestId.current
+    let active = true
+    setCodexLocaleLoading(true)
+    void inspectLocale()
+      .then((next) => {
+        if (active && codexLocaleRequestId.current === requestId) setCodexLocaleStatus(next)
+      })
+      .catch(() => {
+        if (active && codexLocaleRequestId.current === requestId) setCodexLocaleStatus(null)
+      })
+      .finally(() => {
+        if (active && codexLocaleRequestId.current === requestId) setCodexLocaleLoading(false)
+      })
+    return () => {
+      active = false
+      if (codexLocaleRequestId.current === requestId) codexLocaleRequestId.current += 1
+    }
+  }, [activeTab])
 
   const selectKeySource = (source: typeof keySource) => {
     setKeySource(source)
@@ -505,6 +546,65 @@ export function ConfigDialog({
     }
   }
 
+  const switchCodexDesktopToChinese = async () => {
+    if (codexLocaleSwitching || codexLocaleLoading) return
+    const setLocale = window.xingmang.setCodexDesktopLocale
+    if (typeof setLocale !== 'function') {
+      notify({ type: 'error', message: '当前版本不支持 Codex 中文界面切换，请更新星芒 AI 管理工具' })
+      return
+    }
+    setCodexLocaleSwitching(true)
+    try {
+      const result = await setLocale('zh-CN')
+      setCodexLocaleStatus(result)
+      notify({
+        type: 'success',
+        message: result.restarted
+          ? 'Codex Desktop 已切换为简体中文并完成重启'
+          : 'Codex Desktop 已切换为简体中文',
+      })
+    } catch (error) {
+      notify({ type: 'error', message: `切换 Codex 中文界面失败：${errorMessage(error)}` })
+      try {
+        const next = await window.xingmang.inspectCodexDesktopLocale()
+        setCodexLocaleStatus(next)
+      } catch {
+        // 保留原状态；错误提示已经向用户说明了切换失败。
+      }
+    } finally {
+      setCodexLocaleSwitching(false)
+    }
+  }
+
+  const codexLocaleIsChinese = codexLocaleStatus?.effectiveLocale === 'zh-CN'
+  const codexLocaleStatusLabel = codexLocaleLoading
+    ? '正在识别界面语言'
+    : !codexLocaleStatus
+      ? '暂时无法识别'
+      : codexLocaleStatus.error
+        ? '识别失败'
+        : !codexLocaleStatus.installed
+          ? '桌面端未安装'
+          : codexLocaleIsChinese
+            ? '已识别为简体中文'
+            : codexLocaleStatus.configuredLocale
+              ? `当前为 ${codexLocaleStatus.configuredLocale}`
+              : '跟随系统语言，尚未指定中文'
+  const codexLocaleStatusTone = codexLocaleLoading
+    ? 'loading'
+    : codexLocaleIsChinese
+      ? 'success'
+      : codexLocaleStatus?.error || !codexLocaleStatus?.installed
+        ? 'warning'
+        : 'neutral'
+  const canSwitchCodexLocale = Boolean(
+    codexLocaleStatus
+      && codexLocaleStatus.installed
+      && codexLocaleStatus.chineseResources.available
+      && !codexLocaleIsChinese
+      && !codexLocaleStatus.error,
+  )
+
   return (
     <DialogBackdrop className="config-modal-backdrop" onDismiss={requestClose}>
       <section className="config-dialog" role="dialog" aria-modal="true" aria-labelledby="config-dialog-title">
@@ -748,6 +848,36 @@ export function ConfigDialog({
                   disabled={switchingAccount}
                   onClick={() => requestAccountSourceSwitch('relay')}
                 >星芒中转</button>
+              </div>
+            )}
+            {activeTab === 'codexDesktop' && (
+              <div className="codex-locale-row">
+                <div className="codex-locale-copy">
+                  <strong><Languages size={15} /> 中文界面状态</strong>
+                  <p>
+                    <span
+                      className={`codex-locale-status ${codexLocaleStatusTone}`}
+                      role="status"
+                      aria-live="polite"
+                    >
+                      {codexLocaleIsChinese ? <CheckCircle2 size={14} /> : <AlertCircle size={14} />}
+                      {codexLocaleStatusLabel}
+                    </span>
+                    {codexLocaleStatus?.chineseResources.available === false && !codexLocaleStatus.error
+                      ? '；当前安装包没有完整的本地中文资源'
+                      : '；中文设置会保存到 Codex 配置中'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button codex-locale-action"
+                  disabled={!canSwitchCodexLocale || codexLocaleSwitching}
+                  title={codexLocaleStatus?.chineseResources.available === false ? '当前安装包没有完整的本地中文资源' : undefined}
+                  onClick={() => void switchCodexDesktopToChinese()}
+                >
+                  {codexLocaleSwitching ? <LoaderCircle size={15} className="spin" /> : <Languages size={15} />}
+                  {codexLocaleSwitching ? '切换中' : codexLocaleIsChinese ? '已是中文' : '切换为中文'}
+                </button>
               </div>
             )}
           </div>

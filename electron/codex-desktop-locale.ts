@@ -48,6 +48,21 @@ export interface CodexDesktopLocaleResult extends CodexDesktopLocaleStatus {
   restarted: boolean
 }
 
+/**
+ * Existing installs from before the locale flow have no override in
+ * config.toml. They can safely inherit the application's Chinese default only
+ * when all local official resources are present and the config probe itself is
+ * healthy. An explicit locale (including `system`) is never overwritten.
+ */
+export function shouldAutoConfigureCodexDesktopChineseLocale(
+  status: Pick<CodexDesktopLocaleStatus, 'installed' | 'configuredLocale' | 'error' | 'chineseResources'>,
+): boolean {
+  return status.installed
+    && status.configuredLocale === null
+    && status.error === null
+    && status.chineseResources.available
+}
+
 export function codexDesktopLocaleNeedsChange(
   configuredLocale: string | null,
   target: CodexDesktopLocale,
