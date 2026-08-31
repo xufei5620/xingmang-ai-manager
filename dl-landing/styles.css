@@ -357,6 +357,14 @@ input {
   text-align: center;
 }
 
+.download-card {
+  margin-bottom: 18px;
+}
+
+.download-card .card-head {
+  margin-bottom: 0;
+}
+
 .success-logo {
   margin: 0 auto 14px;
 }
@@ -412,6 +420,125 @@ input {
 .download b {
   color: var(--accent);
   font-size: 13px;
+}
+
+.download-note {
+  margin: 2px 0 0;
+  color: var(--faint);
+  font-size: 13px;
+}
+
+.mac-guide {
+  margin-top: 22px;
+  padding: 18px;
+  border: 1px solid rgba(245, 190, 74, 0.28);
+  border-radius: 16px;
+  background: rgba(245, 190, 74, 0.06);
+}
+
+.mac-guide-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.mac-guide-icon {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  border-radius: 10px;
+  color: #f7c965;
+  background: rgba(245, 190, 74, 0.14);
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.mac-guide h3 {
+  margin: 1px 0 4px;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.mac-guide-head p,
+.mac-guide-note,
+.mac-guide-fallback p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+.mac-guide-steps {
+  display: grid;
+  gap: 10px;
+  margin: 17px 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: mac-step;
+}
+
+.mac-guide-steps li {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  column-gap: 9px;
+  align-items: start;
+  counter-increment: mac-step;
+}
+
+.mac-guide-steps li::before {
+  content: counter(mac-step);
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(245, 190, 74, 0.32);
+  border-radius: 8px;
+  color: #f7c965;
+  background: rgba(245, 190, 74, 0.1);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.mac-guide-steps strong,
+.mac-guide-steps span {
+  display: block;
+}
+
+.mac-guide-steps strong {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.mac-guide-steps span {
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.mac-guide-fallback {
+  margin-top: 16px;
+  padding-top: 13px;
+  border-top: 1px solid rgba(245, 190, 74, 0.18);
+}
+
+.mac-guide-fallback summary {
+  cursor: pointer;
+  color: #f7c965;
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.mac-guide-fallback p {
+  margin-top: 8px;
+}
+
+.mac-guide-note {
+  margin-top: 14px;
+  color: var(--faint);
 }
 
 .foot {

@@ -84,6 +84,7 @@ import { managedNativeProviderRoot, managedNpmPrefix } from './managed-cli-paths
 import {
   codexDesktopLocaleNeedsChange,
   inspectCodexDesktopLocale as inspectCodexDesktopLocaleStatus,
+  shouldAutoConfigureCodexDesktopChineseLocale,
   writeCodexDesktopLocale,
   type CodexDesktopLocale,
   type CodexDesktopLocaleResult,
@@ -649,6 +650,7 @@ export interface SystemService {
   launchCodexDesktop(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
+    launchOptions?: { injectChinese?: boolean },
   ): Promise<CodexDesktopLaunchResult>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
 }
@@ -3030,7 +3032,7 @@ export function createSystemService(
     inspectCodexDesktopUpdate,
     installCodexDesktop: installCodexDesktopOperation,
     uninstallCodexDesktop: uninstallCodexDesktopOperation,
-    launchCodexDesktop,
+    launchCodexDesktop: launchCodexDesktopOperation,
   } = createCodexDesktopService({
     platform,
     windowsExecutionMode,
@@ -3059,6 +3061,43 @@ export function createSystemService(
       await store.update({ version: 2, codexDesktopInstallDisabled: true })
     }
     return result
+  }
+
+  /**
+   * A persisted zh-CN override must also affect a later ordinary “打开”
+   * action, not only the click that originally changed the setting. Resolve
+   * that flag at the last possible moment so a fresh process restart keeps the
+   * local CDP enhancement without changing the system-language path.
+   */
+  async function launchCodexDesktop(
+    mode: CodexDesktopLaunchMode,
+    target: RendererMessageTarget,
+    launchOptions: { injectChinese?: boolean } = {},
+  ): Promise<CodexDesktopLaunchResult> {
+    let injectChinese = launchOptions.injectChinese
+    if (injectChinese === undefined && platform === 'win32') {
+      try {
+        const locale = await inspectCodexDesktopLocale()
+        if (locale.configuredLocale === 'zh-CN') {
+          injectChinese = true
+        } else if (shouldAutoConfigureCodexDesktopChineseLocale(locale)) {
+          // Existing installations created before the locale flow was added
+          // have no override at all. Persist the app's Chinese default before
+          // launching so both the normal path and the CDP fallback agree.
+          // `writeCodexDesktopLocale` re-validates the safe path and TOML, so a
+          // malformed or redirected config can never be silently overwritten.
+          await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, 'zh-CN')
+          injectChinese = true
+        } else {
+          injectChinese = false
+        }
+      } catch {
+        // The normal launch remains available if a locale probe is temporarily
+        // unavailable; config.toml will still be honored by Codex itself.
+        injectChinese = false
+      }
+    }
+    return launchCodexDesktopOperation(mode, target, { ...launchOptions, injectChinese })
   }
 
   async function launchProviderOperation(provider: ProviderId, workspace: string): Promise<void> {
@@ -3172,7 +3211,7 @@ export function createSystemService(
     await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale)
     let restarted = false
     if (before.running) {
-      await launchCodexDesktop('restart', target)
+      await launchCodexDesktop('restart', target, { injectChinese: locale === 'zh-CN' })
       restarted = true
     }
     const after = await inspectCodexDesktopLocale()

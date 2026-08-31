@@ -1028,6 +1028,17 @@ body {
   border-radius: var(--radius-7);
 }
 
+.setup-optional-note {
+  margin: var(--space-11) 0 var(--space-7);
+  color: var(--text-muted);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.setup-check-list-optional {
+  opacity: 0.86;
+}
+
 .setup-check-item {
   display: grid;
   grid-template-columns: 34px minmax(0, 1fr) auto;
@@ -5644,6 +5655,76 @@ button:disabled {
   opacity: 0.7;
 }
 
+.codex-locale-row {
+  display: flex;
+  flex: 1 0 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-16);
+  margin-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
+.codex-locale-copy {
+  min-width: 0;
+}
+
+.codex-locale-copy strong {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--text-primary);
+  font-size: var(--text-sm);
+}
+
+.codex-locale-copy p {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  margin: 4px 0 0;
+  color: var(--text-secondary);
+  font-size: var(--text-xs);
+  line-height: 1.6;
+}
+
+.codex-locale-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-weight: var(--font-weight-bold);
+}
+
+.codex-locale-status.success {
+  color: var(--color-success-strong);
+}
+
+.codex-locale-status.warning {
+  color: var(--color-caution-strong);
+}
+
+.codex-locale-status.loading,
+.codex-locale-status.neutral {
+  color: var(--text-secondary);
+}
+
+.codex-locale-action {
+  flex: 0 0 auto;
+  min-width: 112px;
+}
+
+@media (max-width: 600px) {
+  .codex-locale-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .codex-locale-action {
+    width: 100%;
+  }
+}
+
 .install-source-dialog {
   width: min(720px, calc(100vw - 56px));
 }
@@ -6539,6 +6620,22 @@ button:disabled {
   color: #e8eef1;
   background: #3a4044;
   box-shadow: none;
+}
+
+:root[data-theme="dark"] .codex-locale-row {
+  border-color: var(--dark-border-panel);
+}
+
+:root[data-theme="dark"] .codex-locale-copy p {
+  color: var(--dark-text-secondary);
+}
+
+:root[data-theme="dark"] .codex-locale-status.success {
+  color: #70d0a7;
+}
+
+:root[data-theme="dark"] .codex-locale-status.warning {
+  color: #e7b66f;
 }
 
 :root[data-theme="dark"] .sidebar,

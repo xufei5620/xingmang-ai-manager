@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest'
 import {
   codexDesktopLocaleNeedsChange,
   inspectCodexDesktopLocale,
+  shouldAutoConfigureCodexDesktopChineseLocale,
   readCodexDesktopLocale,
   updateCodexDesktopLocaleContent,
   writeCodexDesktopLocale,
@@ -30,6 +31,34 @@ function makeInstall(root: string, resources: { frontend?: boolean; menu?: boole
 }
 
 describe('Codex Desktop locale content', () => {
+  it('only auto-configures an existing healthy install with bundled Chinese resources', () => {
+    const resources = { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Codex' }
+    expect(shouldAutoConfigureCodexDesktopChineseLocale({
+      installed: true,
+      configuredLocale: null,
+      error: null,
+      chineseResources: resources,
+    })).toBe(true)
+    expect(shouldAutoConfigureCodexDesktopChineseLocale({
+      installed: true,
+      configuredLocale: 'system',
+      error: null,
+      chineseResources: resources,
+    })).toBe(false)
+    expect(shouldAutoConfigureCodexDesktopChineseLocale({
+      installed: true,
+      configuredLocale: null,
+      error: '配置不可读',
+      chineseResources: resources,
+    })).toBe(false)
+    expect(shouldAutoConfigureCodexDesktopChineseLocale({
+      installed: true,
+      configuredLocale: null,
+      error: null,
+      chineseResources: { ...resources, available: false },
+    })).toBe(false)
+  })
+
   it('treats selecting the active locale as an idempotent no-op', () => {
     expect(codexDesktopLocaleNeedsChange('zh-CN', 'zh-CN')).toBe(false)
     expect(codexDesktopLocaleNeedsChange(null, 'system')).toBe(false)

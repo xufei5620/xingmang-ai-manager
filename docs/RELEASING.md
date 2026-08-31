@@ -179,6 +179,19 @@ https://codexapp.agentsmirror.com/latest/win-x64
 https://codexapp.agentsmirror.com/latest/win-arm64
 ```
 
+首次安装恢复还会按需尝试上一版本，只有本机未检测到 `OpenAI.Codex` Appx 包时才会请求以下历史路由：
+
+```text
+https://codexapp.agentsmirror.com/previous/manifest
+https://codexapp-r2.agentsmirror.com/previous/manifest
+https://codexapp.agentsmirror.com/previous/win-x64
+https://codexapp-r2.agentsmirror.com/previous/win-x64
+https://codexapp.agentsmirror.com/previous/win-arm64
+https://codexapp-r2.agentsmirror.com/previous/win-arm64
+```
+
+`previous/manifest` 必须返回与 `latest/manifest` 相同的 schema（包含版本、架构、Content-Length 和 SHA-256），不存在或不完整时客户端会跳过旧版并提示使用微软商店。已安装用户的更新流程不会请求这些历史路由，也不会降级安装。
+
 镜像必须原样同步 OpenAI 官方文件，不能改写清单或重新打包 MSIX。服务端应为清单返回 `application/json`，为 MSIX 返回 `application/vnd.ms-appx` 或 `application/octet-stream`，不存在的文件必须返回 404，不能回退到官网 HTML。客户端会校验产品身份 `OpenAI.Codex`、版本、架构、Publisher 和 `AppxSignature.p7x`，Windows 安装器还会执行系统签名验证。
 
 镜像和官方清单查询失败时，客户端会分别保留具体错误用于诊断；下载地址固定在源码和测试中，避免运行环境把管理员安装流程重定向到未知主机。

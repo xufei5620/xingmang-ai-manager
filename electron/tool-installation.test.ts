@@ -924,6 +924,61 @@ describe('CLI installation resolution', () => {
     })
   })
 
+  it('executes the native Claude package bin directly on macOS despite its .exe suffix', async () => {
+    const directory = temporaryDirectory()
+    const prefix = path.join(directory, 'Cli', 'npm')
+    const binDirectory = path.join(prefix, 'bin')
+    const commandPath = write(path.join(binDirectory, 'claude'), '#!/bin/sh\n')
+    const packageRoot = path.join(prefix, 'lib', 'node_modules', '@anthropic-ai', 'claude-code')
+    write(path.join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@anthropic-ai/claude-code',
+      version: '2.1.251',
+      bin: { claude: 'bin/claude.exe' },
+    }))
+    const nativeBin = path.join(packageRoot, 'bin', 'claude.exe')
+    fs.mkdirSync(path.dirname(nativeBin), { recursive: true })
+    fs.writeFileSync(nativeBin, Buffer.from([0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0]), { mode: 0o700 })
+
+    const command = await resolveCliCommand('claude', {
+      HOME: directory,
+      PATH: binDirectory,
+    }, 'same-user', { platform: 'darwin' })
+
+    expect(command).toEqual({
+      executable: fs.realpathSync(nativeBin),
+      argv: [],
+    })
+    expect(command.executable).not.toBe(process.execPath)
+    expect(command.argv).not.toContain(fs.realpathSync(nativeBin))
+    expect(commandPath).toBeTruthy()
+  })
+
+  it('uses Claude Code cli-wrapper.cjs when the native optional dependency is missing', async () => {
+    const directory = temporaryDirectory()
+    const prefix = path.join(directory, 'Cli', 'npm')
+    const binDirectory = path.join(prefix, 'bin')
+    write(path.join(binDirectory, 'claude'), '#!/bin/sh\n')
+    write(path.join(binDirectory, 'node'), '#!/bin/sh\n')
+    const packageRoot = path.join(prefix, 'lib', 'node_modules', '@anthropic-ai', 'claude-code')
+    write(path.join(packageRoot, 'package.json'), JSON.stringify({
+      name: '@anthropic-ai/claude-code',
+      version: '2.1.251',
+      bin: { claude: 'bin/claude.exe' },
+    }))
+    write(path.join(packageRoot, 'bin', 'claude.exe'), 'echo "native binary not installed"\n')
+    const fallback = write(path.join(packageRoot, 'cli-wrapper.cjs'), '#!/usr/bin/env node\n')
+
+    const command = await resolveCliCommand('claude', {
+      HOME: directory,
+      PATH: binDirectory,
+    }, 'same-user', { platform: 'darwin' })
+
+    expect(command).toEqual({
+      executable: fs.realpathSync(path.join(binDirectory, 'node')),
+      argv: [fs.realpathSync(fallback)],
+    })
+  })
+
   it('normalizes a verified npm shim to node plus the package bin', async () => {
     const directory = temporaryDirectory()
     const prefix = path.join(directory, 'hermes', 'node')

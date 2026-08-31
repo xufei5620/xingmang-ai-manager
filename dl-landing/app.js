@@ -23,6 +23,7 @@ const accountErrorPatterns = [
 const els = {
   registerView: document.getElementById('register-view'),
   successView: document.getElementById('success-view'),
+  downloadView: document.getElementById('download-view'),
   inviteHint: document.getElementById('invite-hint'),
   fallbackHint: document.querySelector('.invite-hint.fallback'),
   username: document.getElementById('username'),
@@ -38,6 +39,8 @@ const els = {
   agreement: document.getElementById('agreement'),
   submit: document.getElementById('submit'),
   formAlert: document.getElementById('form-alert'),
+  publicDownloads: document.getElementById('public-downloads'),
+  publicReleaseVersion: document.getElementById('public-release-version'),
   downloads: document.getElementById('downloads'),
   releaseVersion: document.getElementById('release-version'),
   legalBackdrop: document.getElementById('legal-backdrop'),
@@ -304,35 +307,41 @@ function resolveSubmitAffCode(rawInvite) {
   return parseInviteAffCode(rawInvite)
 }
 
-function renderDownloads(latest) {
+function renderDownloads(latest, downloadsNode = els.downloads, releaseNode = els.releaseVersion) {
   const items = [
     { href: latest.win, title: 'Windows', detail: '64 位安装包 · .exe', icon: 'windows' },
     { href: latest.macArm64, title: 'macOS Apple Silicon', detail: 'M 系列芯片 · .dmg', icon: 'mac' },
     { href: latest.macX64, title: 'macOS Intel', detail: 'Intel 芯片 · .dmg', icon: 'mac' }
-  ]
+  ].filter((item) => item.href)
   const icons = {
     windows: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M1 2.4 7.1 1.5v6.1H1zm7.2-.9L15 0v7.6H8.2zM1 8.6h6.1V15L1 14zm7.2 0H15V16l-6.8-1z"/></svg>',
     mac: '<svg viewBox="0 0 16 16" width="16" height="16" aria-hidden="true"><path fill="currentColor" d="M11.6 8.6c0-2 1.6-2.9 1.7-3-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7s-1.6-.7-2.7-.7c-1.4 0-2.7.8-3.4 2.1-1.5 2.6-.4 6.4 1 8.5.7 1 1.5 2.2 2.6 2.1 1 0 1.4-.7 2.7-.7s1.6.7 2.7.7 1.8-1 2.5-2c.8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3.8zM10 2.8c.6-.7 1-1.7.9-2.8-.9.1-1.9.6-2.5 1.3-.6.6-1.1 1.6-1 2.6 1 .1 1.9-.5 2.6-1.1z"/></svg>'
   }
-  els.downloads.replaceChildren(...items.map((item) => {
+  downloadsNode.replaceChildren(...items.map((item) => {
     const link = document.createElement('a')
     link.className = 'download'
     link.href = item.href
     link.innerHTML = `<span class="download-icon" aria-hidden="true">${icons[item.icon]}</span><span><strong>${item.title}</strong><small>${item.detail}</small></span><b>下载</b>`
     return link
   }))
-  els.releaseVersion.textContent = latest.version ? `当前版本 ${latest.version}` : ''
+  if (!latest.macArm64 || !latest.macX64) {
+    const note = document.createElement('p')
+    note.className = 'download-note'
+    note.textContent = 'macOS 安装包正在准备中，完成后会自动出现在这里。'
+    downloadsNode.append(note)
+  }
+  releaseNode.textContent = latest.version ? `当前版本 ${latest.version}` : ''
 }
 
 async function loadLatest() {
   if (state.latest) return state.latest
-  const response = await fetch('/latest.json', { headers: { Accept: 'application/json' } })
+  const response = await fetch('/latest.json', { headers: { Accept: 'application/json' }, cache: 'no-store' })
   const latest = await readJson(response)
-  if (!response.ok || !latest.win || !latest.macArm64 || !latest.macX64) {
+  if (!response.ok || !latest.win) {
     throw new Error('清单不完整')
   }
   state.latest = latest
-  return latest
+  return state.latest
 }
 
 async function showSuccess() {
@@ -340,9 +349,17 @@ async function showSuccess() {
   els.successView.hidden = false
   els.releaseVersion.textContent = '正在读取安装包…'
   try {
-    renderDownloads(await loadLatest())
+    renderDownloads(await loadLatest(), els.downloads, els.releaseVersion)
   } catch {
     els.releaseVersion.textContent = '安装包清单稍后提供'
+  }
+}
+
+async function loadPublicDownloads() {
+  try {
+    renderDownloads(await loadLatest(), els.publicDownloads, els.publicReleaseVersion)
+  } catch {
+    els.publicReleaseVersion.textContent = '安装包清单稍后提供'
   }
 }
 
@@ -502,10 +519,22 @@ function isLocalSuccessPreview() {
   return new URLSearchParams(window.location.search).get('preview') === 'success'
 }
 
+function isPublicDownloadRoute() {
+  const pathname = window.location.pathname.replace(/\/+$/, '') || '/'
+  if (pathname === '/download') return true
+  return new URLSearchParams(window.location.search).get('download') === '1'
+}
+
 async function boot() {
   bindEvents()
   const invite = resolveAffFromVisit()
   applyInviteField(invite.affCode, invite.source)
+  if (isPublicDownloadRoute()) {
+    els.registerView.hidden = true
+    els.downloadView.hidden = false
+    await loadPublicDownloads()
+    return
+  }
   try {
     const status = await apiGet('/api/status')
     state.emailVerification = status.email_verification === true

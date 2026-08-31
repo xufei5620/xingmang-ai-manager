@@ -72,11 +72,11 @@ describe('isDetectionFailed', () => {
 describe('codexSetupReadyForDashboard', () => {
   const windows = platformCapabilitiesFor('win32', 'x64')
 
-  it('requires every durable Windows bootstrap step before using the dashboard fast path', () => {
+  it('requires only a healthy desktop probe before using the dashboard fast path', () => {
     expect(codexSetupReadyForDashboard(resumableSetupStatus(), windows)).toBe(true)
-    expect(codexSetupReadyForDashboard(resumableSetupStatus({ node: false }), windows)).toBe(false)
-    expect(codexSetupReadyForDashboard(resumableSetupStatus({ npm: false }), windows)).toBe(false)
-    expect(codexSetupReadyForDashboard(resumableSetupStatus({ cli: false }), windows)).toBe(false)
+    expect(codexSetupReadyForDashboard(resumableSetupStatus({ node: false }), windows)).toBe(true)
+    expect(codexSetupReadyForDashboard(resumableSetupStatus({ npm: false }), windows)).toBe(true)
+    expect(codexSetupReadyForDashboard(resumableSetupStatus({ cli: false }), windows)).toBe(true)
     expect(codexSetupReadyForDashboard(resumableSetupStatus({ desktop: false }), windows)).toBe(false)
   })
 
@@ -97,9 +97,17 @@ describe('codexSetupReadyForDashboard', () => {
 
   it('never fast-paths a status that contains a failed probe', () => {
     const status = resumableSetupStatus()
-    status.cli.detectionFailed = true
-    status.cli.detectionError = '命令探测超时'
+    status.desktop.detectionFailed = true
+    status.desktop.detectionError = '桌面端探测超时'
     expect(codexSetupReadyForDashboard(status, windows)).toBe(false)
+  })
+
+  it('ignores optional runtime and CLI probe failures', () => {
+    const status = resumableSetupStatus()
+    status.runtime.node.detectionFailed = true
+    status.runtime.npm.detectionFailed = true
+    status.cli.detectionFailed = true
+    expect(codexSetupReadyForDashboard(status, windows)).toBe(true)
   })
 })
 

@@ -40,6 +40,39 @@
     </section>
 
     <section class="panel" aria-live="polite">
+      <section id="download-view" class="card download-card" hidden>
+        <div class="card-head">
+          <img class="card-logo" src="/logo.png" alt="">
+          <div>
+            <h2>下载客户端</h2>
+            <p class="invite-hint">无需注册即可下载，安装后登录星芒 AI 账号。</p>
+          </div>
+        </div>
+        <p class="version" id="public-release-version">正在读取安装包…</p>
+        <div class="downloads" id="public-downloads"></div>
+
+        <section class="mac-guide" aria-labelledby="mac-guide-title">
+          <div class="mac-guide-head">
+            <span class="mac-guide-icon" aria-hidden="true">⌘</span>
+            <div>
+              <h3 id="mac-guide-title">macOS 首次打开教程</h3>
+              <p>如果看到“无法验证”提示，这是 macOS Gatekeeper 对未使用 Apple 公证的应用进行的首次拦截。</p>
+            </div>
+          </div>
+          <ol class="mac-guide-steps">
+            <li><strong>先完成安装</strong><span>打开 DMG 文件，把“星芒 AI 管理工具.app”拖到“应用程序”文件夹。</span></li>
+            <li><strong>不要点“移到废纸篓”</strong><span>首次弹窗出现时点击“完成”，然后关闭 DMG 窗口。</span></li>
+            <li><strong>从应用程序打开</strong><span>打开 Finder → 应用程序，找到“星芒 AI 管理工具”，右键或按住 Control 点击它，选择“打开”。</span></li>
+            <li><strong>确认一次</strong><span>再次出现提示时点击“打开”，之后就可以正常启动。</span></li>
+          </ol>
+          <details class="mac-guide-fallback">
+            <summary>仍然打不开？查看系统设置处理方式</summary>
+            <p>打开“系统设置” → “隐私与安全性”，向下找到安全提示，点击“仍要打开”，再确认一次。</p>
+          </details>
+          <p class="mac-guide-note">提示：Apple Silicon 请选择 Apple Silicon 版本；Intel Mac 请选择 Intel 版本。</p>
+        </section>
+      </section>
+
       <form id="register-view" class="card" novalidate>
         <div class="card-head">
           <img class="card-logo" src="/logo.png" alt="">
@@ -140,6 +173,6 @@
     </section>
   </div>
 
-  <script src="/app.js"></script>
+  <script src="/app.js?v=0.1.24-json"></script>
 </body>
 </html>

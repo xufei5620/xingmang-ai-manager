@@ -242,6 +242,52 @@ function isFile(filePath: string): boolean {
   }
 }
 
+/**
+ * Claude Code keeps the cross-platform npm bin name `claude.exe`, even on
+ * macOS and Linux. Its postinstall replaces that placeholder with the native
+ * Mach-O/ELF binary. Do not infer the interpreter from the suffix alone.
+ */
+function isPosixNativeExecutable(filePath: string): boolean {
+  let handle: number | null = null
+  try {
+    handle = fs.openSync(filePath, 'r')
+    const header = Buffer.alloc(4)
+    const bytesRead = fs.readSync(handle, header, 0, header.length, 0)
+    if (bytesRead < header.length) return false
+    const magic = header.readUInt32BE(0)
+    return [
+      // Mach-O thin and universal binaries.
+      0xfeedface,
+      0xcefaedfe,
+      0xfeedfacf,
+      0xcffaedfe,
+      0xcafebabe,
+      0xbebafeca,
+      0xcafebabf,
+      0xbfbafeca,
+      // ELF binaries used by the Linux Claude packages.
+      0x7f454c46,
+    ].includes(magic)
+  } catch {
+    return false
+  } finally {
+    if (handle !== null) fs.closeSync(handle)
+  }
+}
+
+function verifiedPackageFile(packageRoot: string, relativePath: string): string | null {
+  if (!relativePath || relativePath.includes('\0')) return null
+  try {
+    const realRoot = fs.realpathSync(packageRoot)
+    const realFile = fs.realpathSync(path.join(realRoot, relativePath))
+    const relative = path.relative(realRoot, realFile)
+    if (relative.startsWith('..') || path.isAbsolute(relative) || !isFile(realFile)) return null
+    return realFile
+  } catch {
+    return null
+  }
+}
+
 function commandCandidates(
   command: string,
   env: NodeJS.ProcessEnv,
@@ -604,6 +650,24 @@ export async function resolveCliCommand(
           ? await stageVerifiedNativeCli(provider, bin, env)
           : bin
         return { executable, argv: [] }
+      }
+      // @anthropic-ai/claude-code deliberately keeps `.exe` in its npm bin
+      // field on every platform. After postinstall that file is a native
+      // Mach-O/ELF executable, so passing it to Node produces
+      // ERR_UNKNOWN_FILE_EXTENSION on macOS/Linux. If the native optional
+      // dependency was not installed, use the package's documented CJS
+      // fallback instead of attempting to load the placeholder as JavaScript.
+      if (platform !== 'win32' && path.extname(bin).toLowerCase() === '.exe') {
+        if (isPosixNativeExecutable(bin)) return { executable: bin, argv: [] }
+        const fallback = verifiedPackageFile(installation.packageRoot, 'cli-wrapper.cjs')
+        if (fallback) {
+          const node = await findExecutable('node', {
+            env,
+            additionalPaths: [path.dirname(installation.commandPath)],
+          })
+          if (node) return { executable: node, argv: [fallback] }
+        }
+        throw new Error(`${cliCatalog[provider].name} 的原生程序未安装，请重新安装并保留可选依赖`)
       }
       const node = await findExecutable('node', {
         env,

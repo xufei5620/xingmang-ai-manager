@@ -10,14 +10,17 @@ import {
   buildCodexDesktopDarwinStatus,
   buildCodexDesktopLaunchPlan,
   buildCodexDesktopManifestSources,
+  buildCodexDesktopPreviousManifestSources,
   buildCodexDesktopPackageSources,
   buildCodexDesktopWindowsProbes,
   buildDesktopUpdateStatus,
+  canAttemptCodexDesktopFirstInstallFallback,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
   fetchCodexDesktopManifestCandidate,
   fetchCodexDesktopMirrorRelease,
+  fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
   validateCodexDesktopResourceUrl,
   type CodexDesktopManifestCandidate,
@@ -133,6 +136,24 @@ describe('Codex Desktop launch trust', () => {
 })
 
 describe('Codex Desktop update state', () => {
+  it('allows historical fallback only when every local install probe is empty', () => {
+    expect(canAttemptCodexDesktopFirstInstallFallback(null, null, [])).toBe(true)
+    expect(canAttemptCodexDesktopFirstInstallFallback(null, { name: 'Codex', appId: 'OpenAI.Codex!App' }, [])).toBe(false)
+    expect(canAttemptCodexDesktopFirstInstallFallback(null, null, [{
+      processId: 1,
+      parentProcessId: 0,
+      name: 'Codex.exe',
+      executablePath: 'C:\\WindowsApps\\OpenAI.Codex_1.0.0.0_x64__abc\\Codex.exe',
+    }])).toBe(false)
+    expect(canAttemptCodexDesktopFirstInstallFallback({
+      name: 'OpenAI.Codex',
+      version: '1.0.0.0',
+      packageFullName: 'OpenAI.Codex_1.0.0.0_x64__abc',
+      packageFamilyName: 'OpenAI.Codex_abc',
+      installLocation: 'C:\\WindowsApps\\OpenAI.Codex_1.0.0.0_x64__abc',
+    }, null, [])).toBe(false)
+  })
+
   it('only enables the domestic mirror when its package is newer', () => {
     expect(desktopMirrorUpdateAvailable(null, '26.721.3996.0')).toBe(true)
     expect(desktopMirrorUpdateAvailable('26.715.8383.0', '26.721.3996.0')).toBe(true)
@@ -190,6 +211,22 @@ describe('Codex Desktop update state', () => {
     ])
     expect(buildCodexDesktopManifestSources().map((source) => source.kind).sort())
       .toEqual(['mirror', 'mirror', 'official'])
+  })
+
+  it('keeps the historical manifest routes out of the normal status sources', () => {
+    expect(buildCodexDesktopPreviousManifestSources()).toEqual([
+      {
+        kind: 'mirror-previous',
+        label: '国内镜像上一版本',
+        url: 'https://codexapp.agentsmirror.com/previous/manifest',
+      },
+      {
+        kind: 'mirror-previous',
+        label: '镜像备用源上一版本',
+        url: 'https://codexapp-r2.agentsmirror.com/previous/manifest',
+      },
+    ])
+    expect(buildCodexDesktopManifestSources().some((source) => source.kind === 'mirror-previous')).toBe(false)
   })
 
   it('selects the newer R2 release when the domestic route returns a stale valid manifest', async () => {
@@ -275,6 +312,104 @@ describe('Codex Desktop update state', () => {
       storageUrl,
       expect.objectContaining({ redirect: 'manual' }),
     )
+  })
+
+  it('retries mirror manifests when both routes return a transient invalid response', async () => {
+    const attempts = new Map<string, number>()
+    const fetchMock = vi.fn(async (value: string | URL | Request, init?: RequestInit) => {
+      const url = String(value)
+      const parsed = new URL(url)
+      const sourceUrl = `${parsed.origin}${parsed.pathname}`
+      const count = (attempts.get(sourceUrl) ?? 0) + 1
+      attempts.set(sourceUrl, count)
+      const response = count === 1
+        ? new Response('{"schemaVersion":5}', { headers: { 'Content-Type': 'application/json' } })
+        : new Response(JSON.stringify(testMirrorManifest()), { headers: { 'Content-Type': 'application/json' } })
+      Object.defineProperty(response, 'url', { value: url })
+      if (count === 2) {
+        expect(init?.headers).toMatchObject({
+          'Cache-Control': 'no-cache, no-store, max-age=0',
+          Pragma: 'no-cache',
+        })
+        expect(parsed.searchParams.get('xm_refresh')).toMatch(/^\d+-1$/)
+      }
+      return response
+    })
+
+    await expect(fetchCodexDesktopMirrorRelease('x64', fetchMock)).resolves.toMatchObject({
+      version: '26.721.4979.0',
+      architecture: 'x64',
+    })
+    expect([...attempts.values()]).toEqual([2, 2])
+    expect(fetchMock).toHaveBeenCalledTimes(4)
+  })
+
+  it('accepts only the bounded mirror-manifest refresh query', () => {
+    const base = 'https://codexapp.agentsmirror.com/latest/manifest'
+    const refreshed = `${base}?xm_refresh=1788088800000-1`
+
+    expect(validateCodexDesktopResourceUrl(refreshed, refreshed).href).toBe(refreshed)
+    expect(() => validateCodexDesktopResourceUrl(`${base}?other=value`, `${base}?other=value`))
+      .toThrow('不受信任的查询参数')
+    expect(() => validateCodexDesktopResourceUrl(
+      'https://codexapp.agentsmirror.com/latest/win-x64?xm_refresh=1788088800000-1',
+      'https://codexapp.agentsmirror.com/latest/win-x64?xm_refresh=1788088800000-1',
+    )).toThrow('不受信任的查询参数')
+  })
+
+  it('accepts the fixed historical package route and rejects route escapes', () => {
+    const previous = 'https://codexapp.agentsmirror.com/previous/win-x64'
+    expect(validateCodexDesktopResourceUrl(previous, previous).href).toBe(previous)
+    expect(() => validateCodexDesktopResourceUrl(
+      'https://codexapp.agentsmirror.com/latest/win-x64',
+      previous,
+    )).toThrow('不受信任的重定向')
+    expect(() => validateCodexDesktopResourceUrl(
+      'https://codexapp.agentsmirror.com/previous/win-x64?version=old',
+      previous,
+    )).toThrow('不受信任的重定向')
+  })
+
+  it('parses historical mirror candidates using the same package metadata checks', async () => {
+    const previousManifestUrl = 'https://codexapp.agentsmirror.com/previous/manifest'
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const url = String(value)
+      if (url === previousManifestUrl || url.startsWith(`${previousManifestUrl}?xm_refresh=`)) {
+        const response = new Response(JSON.stringify(testMirrorManifest('26.721.4979.0')), {
+          headers: { 'Content-Type': 'application/json' },
+        })
+        Object.defineProperty(response, 'url', { value: url })
+        return response
+      }
+      if (url === 'https://codexapp-r2.agentsmirror.com/previous/manifest'
+        || url.startsWith('https://codexapp-r2.agentsmirror.com/previous/manifest?xm_refresh=')) {
+        throw new Error('备用历史源不可用')
+      }
+      throw new Error(`unexpected URL ${url}`)
+    })
+
+    const result = await fetchCodexDesktopPreviousManifestCandidates('x64', fetchMock)
+    expect(result.errors).toEqual(['镜像备用源上一版本：备用历史源不可用'])
+    expect(result.candidates).toHaveLength(1)
+    expect(result.candidates[0].packageSource).toEqual({
+      label: '国内镜像上一版本',
+      url: 'https://codexapp.agentsmirror.com/previous/win-x64',
+    })
+  })
+
+  it('reports one final error per mirror after retry recovery is exhausted', async () => {
+    const fetchMock = vi.fn(async (value: string | URL | Request) => {
+      const response = new Response('{"schemaVersion":5}', {
+        headers: { 'Content-Type': 'application/json' },
+      })
+      Object.defineProperty(response, 'url', { value: String(value) })
+      return response
+    })
+
+    await expect(fetchCodexDesktopMirrorRelease('x64', fetchMock)).rejects.toThrow(
+      '国内镜像：schema、产品 ID、包身份、版本、架构、文件大小或 SHA-256 校验失败；镜像备用源：schema、产品 ID、包身份、版本、架构、文件大小或 SHA-256 校验失败',
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(4)
   })
 
   it('binds a primary manifest redirected to R2 to the R2 package route', async () => {
