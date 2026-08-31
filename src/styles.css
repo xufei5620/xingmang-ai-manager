@@ -5666,6 +5666,17 @@ button:disabled {
   border-top: 1px solid var(--border-subtle);
 }
 
+.codex-permission-row {
+  display: flex;
+  flex: 1 0 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-16);
+  margin-top: 2px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border-subtle);
+}
+
 .codex-locale-copy {
   min-width: 0;
 }
@@ -5716,6 +5727,11 @@ button:disabled {
 
 @media (max-width: 600px) {
   .codex-locale-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .codex-permission-row {
     align-items: stretch;
     flex-direction: column;
   }
@@ -6623,6 +6639,10 @@ button:disabled {
 }
 
 :root[data-theme="dark"] .codex-locale-row {
+  border-color: var(--dark-border-panel);
+}
+
+:root[data-theme="dark"] .codex-permission-row {
   border-color: var(--dark-border-panel);
 }
 

@@ -31,12 +31,17 @@ import {
 } from './codex-desktop-service'
 import {
   canLaunchManagedProvider,
+  ensureCodexPermissionDefaults,
+  inspectCodexWorkspacePermissions,
   inspectProviderConfig,
   managedProviderLaunchBlockedMessage,
   readCodexAuthTokens,
   saveProviderConfig,
   switchProviderToOfficialAccount,
+  trustCodexWorkspace,
   toNativeConfigSummary,
+  type CodexWorkspacePermissionStatus,
+  type CodexWorkspacePermissionWriteResult,
   type NativeConfigSaveMode,
   type NativeConfigSummary,
 } from './config-files'
@@ -643,6 +648,8 @@ export interface SystemService {
   launchProvider(provider: ProviderId, workspace: string): Promise<void>
   inspectCodexDesktop(): Promise<DesktopAppStatus>
   inspectCodexDesktopLocale(): Promise<CodexDesktopLocaleStatus>
+  inspectCodexWorkspacePermissions(): CodexWorkspacePermissionStatus
+  trustCodexWorkspace(target: RendererMessageTarget): Promise<CodexWorkspacePermissionWriteResult & { restarted: boolean }>
   setCodexDesktopLocale(
     locale: CodexDesktopLocale,
     target: RendererMessageTarget,
@@ -3074,6 +3081,19 @@ export function createSystemService(
     target: RendererMessageTarget,
     launchOptions: { injectChinese?: boolean } = {},
   ): Promise<CodexDesktopLaunchResult> {
+    // Configs created before the permission picker was introduced often omit
+    // both legacy fields. Add only missing defaults so a mirror-installed
+    // Desktop gets the same interactive baseline as a local installation.
+    try {
+      // Only normalize configs managed by Xingmang. An official/custom Codex
+      // profile is user-owned and must remain byte-for-byte untouched here.
+      if (inspectNativeProviderConfig('codex').matchesRelay) {
+        ensureCodexPermissionDefaults(providerRoots)
+      }
+    } catch {
+      // The launch path remains available; malformed configs are reported by
+      // Codex itself and by the dedicated permission inspection below.
+    }
     let injectChinese = launchOptions.injectChinese
     if (injectChinese === undefined && platform === 'win32') {
       try {
@@ -3192,6 +3212,51 @@ export function createSystemService(
       running: desktop.running,
       platform,
     })
+  }
+
+  function inspectCodexWorkspacePermissionsForService(): CodexWorkspacePermissionStatus {
+    const workspace = store.read().workspace
+    try {
+      return inspectCodexWorkspacePermissions(providerRoots, workspace)
+    } catch (error) {
+      return {
+        configPath: path.join(providerRoots.codexHome, 'config.toml'),
+        workspace,
+        configExists: false,
+        trustLevel: 'unknown',
+        approvalPolicy: null,
+        permissionProfile: null,
+        sandboxMode: null,
+        control: 'unknown',
+        error: error instanceof Error ? error.message : 'Codex 权限配置读取失败',
+      }
+    }
+  }
+
+  async function trustCodexWorkspaceForService(
+    target: RendererMessageTarget,
+  ): Promise<CodexWorkspacePermissionWriteResult & { restarted: boolean }> {
+    const workspace = store.read().workspace
+    if (!path.isAbsolute(workspace)) throw new Error('Codex 工作目录不是绝对路径')
+    try {
+      if (!fs.statSync(workspace).isDirectory()) throw new Error('工作目录不是文件夹')
+    } catch {
+      throw new Error('Codex 工作目录不存在，请重新选择')
+    }
+    const result = trustCodexWorkspace(providerRoots, workspace)
+    let restarted = false
+    if (result.changed) {
+      const desktop = await inspectCodexDesktop()
+      if (desktop.running) {
+        await launchCodexDesktop('restart', target)
+        restarted = true
+      }
+    }
+    return {
+      ...result,
+      restarted,
+      status: inspectCodexWorkspacePermissionsForService(),
+    }
   }
 
   async function setCodexDesktopLocale(
@@ -3411,6 +3476,8 @@ export function createSystemService(
     launchProvider,
     inspectCodexDesktop,
     inspectCodexDesktopLocale,
+    inspectCodexWorkspacePermissions: inspectCodexWorkspacePermissionsForService,
+    trustCodexWorkspace: trustCodexWorkspaceForService,
     setCodexDesktopLocale,
     launchCodexDesktop,
     fetchAvailableModels,

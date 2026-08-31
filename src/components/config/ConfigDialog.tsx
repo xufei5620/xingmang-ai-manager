@@ -31,6 +31,7 @@ import type {
   AccountUsableGroup,
   AppConfigSummary,
   ConfigSaveMode,
+  CodexWorkspacePermissionStatus,
   CodexDesktopLocaleStatus,
   PlatformCapabilities,
   RelaySite,
@@ -111,9 +112,13 @@ export function ConfigDialog({
   const [codexLocaleStatus, setCodexLocaleStatus] = useState<CodexDesktopLocaleStatus | null>(null)
   const [codexLocaleLoading, setCodexLocaleLoading] = useState(false)
   const [codexLocaleSwitching, setCodexLocaleSwitching] = useState(false)
+  const [codexPermissionStatus, setCodexPermissionStatus] = useState<CodexWorkspacePermissionStatus | null>(null)
+  const [codexPermissionLoading, setCodexPermissionLoading] = useState(false)
+  const [codexPermissionUpdating, setCodexPermissionUpdating] = useState(false)
   const accountKeyRequestId = useRef(0)
   const accountGroupRequestId = useRef(0)
   const codexLocaleRequestId = useRef(0)
+  const codexPermissionRequestId = useRef(0)
 
   // 只跟随标签页重置：config 引用会被后台扫描等操作频繁刷新，
   // 若一并作为依赖会清空用户正在输入的 API Key 和已检测的模型列表。
@@ -275,6 +280,39 @@ export function ConfigDialog({
     return () => {
       active = false
       if (codexLocaleRequestId.current === requestId) codexLocaleRequestId.current += 1
+    }
+  }, [activeTab])
+
+  useEffect(() => {
+    if (activeTab !== 'codexDesktop') {
+      codexPermissionRequestId.current += 1
+      setCodexPermissionStatus(null)
+      setCodexPermissionLoading(false)
+      setCodexPermissionUpdating(false)
+      return undefined
+    }
+    const inspectPermissions = window.xingmang.inspectCodexWorkspacePermissions
+    if (typeof inspectPermissions !== 'function') {
+      setCodexPermissionStatus(null)
+      setCodexPermissionLoading(false)
+      return undefined
+    }
+    const requestId = ++codexPermissionRequestId.current
+    let active = true
+    setCodexPermissionLoading(true)
+    void inspectPermissions()
+      .then((next) => {
+        if (active && codexPermissionRequestId.current === requestId) setCodexPermissionStatus(next)
+      })
+      .catch(() => {
+        if (active && codexPermissionRequestId.current === requestId) setCodexPermissionStatus(null)
+      })
+      .finally(() => {
+        if (active && codexPermissionRequestId.current === requestId) setCodexPermissionLoading(false)
+      })
+    return () => {
+      active = false
+      if (codexPermissionRequestId.current === requestId) codexPermissionRequestId.current += 1
     }
   }, [activeTab])
 
@@ -573,6 +611,30 @@ export function ConfigDialog({
       }
     } finally {
       setCodexLocaleSwitching(false)
+    }
+  }
+
+  const trustCodexWorkspace = async () => {
+    if (codexPermissionUpdating) return
+    const trustWorkspace = window.xingmang.trustCodexWorkspace
+    if (typeof trustWorkspace !== 'function') {
+      notify({ type: 'error', message: '当前版本不支持工作区权限修复，请更新星芒 AI 管理工具' })
+      return
+    }
+    setCodexPermissionUpdating(true)
+    try {
+      const result = await trustWorkspace()
+      setCodexPermissionStatus(result.status)
+      notify({
+        type: 'success',
+        message: result.restarted
+          ? '已信任当前工作目录，Codex Desktop 已重启，请求批准已恢复'
+          : '已信任当前工作目录，请重新打开 Codex Desktop 使权限设置生效',
+      })
+    } catch (error) {
+      notify({ type: 'error', message: `修复 Codex 工作区权限失败：${errorMessage(error)}` })
+    } finally {
+      setCodexPermissionUpdating(false)
     }
   }
 
@@ -877,6 +939,43 @@ export function ConfigDialog({
                 >
                   {codexLocaleSwitching ? <LoaderCircle size={15} className="spin" /> : <Languages size={15} />}
                   {codexLocaleSwitching ? '切换中' : codexLocaleIsChinese ? '已是中文' : '切换为中文'}
+                </button>
+              </div>
+            )}
+            {activeTab === 'codexDesktop' && (
+              <div className="codex-permission-row">
+                <div className="codex-locale-copy">
+                  <strong><ShieldCheck size={15} /> 工作区权限</strong>
+                  <p>
+                    <span
+                      className={`codex-locale-status ${codexPermissionStatus?.control === 'available' ? 'success' : codexPermissionStatus?.error ? 'warning' : 'neutral'}`}
+                      role="status"
+                      aria-live="polite"
+                    >
+                      {codexPermissionLoading
+                        ? <><LoaderCircle size={14} className="spin" />正在检测</>
+                        : codexPermissionStatus?.error
+                          ? <><AlertCircle size={14} />检测失败</>
+                          : codexPermissionStatus?.control === 'restricted'
+                            ? <><AlertCircle size={14} />当前权限受限</>
+                            : codexPermissionStatus?.trustLevel === 'trusted'
+                              ? <><CheckCircle2 size={14} />工作区已信任</>
+                              : <><AlertCircle size={14} />尚未信任当前工作区</>}
+                    </span>
+                    {codexPermissionStatus?.approvalPolicy === 'never'
+                      ? '；配置中的 approval_policy=never 会禁用审批请求'
+                      : '；信任后 Codex 才能在此工作目录使用请求批准'}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  className="secondary-button codex-locale-action"
+                  disabled={codexPermissionLoading || codexPermissionUpdating || codexPermissionStatus?.trustLevel === 'trusted' || Boolean(codexPermissionStatus?.error)}
+                  title={codexPermissionStatus?.approvalPolicy === 'never' ? '请在 Codex Desktop 设置中将审批策略改回可请求批准' : undefined}
+                  onClick={() => void trustCodexWorkspace()}
+                >
+                  {codexPermissionUpdating ? <LoaderCircle size={15} className="spin" /> : <ShieldCheck size={15} />}
+                  {codexPermissionUpdating ? '修复中' : codexPermissionStatus?.trustLevel === 'trusted' ? '已信任' : '信任此工作区'}
                 </button>
               </div>
             )}

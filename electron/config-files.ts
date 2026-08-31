@@ -68,6 +68,27 @@ export interface NativeConfigSaveResult {
   files: string[]
 }
 
+export type CodexWorkspaceTrustLevel = 'trusted' | 'untrusted' | 'unknown'
+export type CodexWorkspacePermissionControl = 'available' | 'restricted' | 'unknown'
+
+/** Renderer-safe view of the Codex permission inputs that affect the Desktop picker. */
+export interface CodexWorkspacePermissionStatus {
+  configPath: string
+  workspace: string
+  configExists: boolean
+  trustLevel: CodexWorkspaceTrustLevel
+  approvalPolicy: string | null
+  permissionProfile: string | null
+  sandboxMode: string | null
+  control: CodexWorkspacePermissionControl
+  error: string | null
+}
+
+export interface CodexWorkspacePermissionWriteResult extends NativeConfigSaveResult {
+  changed: boolean
+  status: CodexWorkspacePermissionStatus
+}
+
 export type NativeConfigSaveMode = 'merge' | 'reset'
 
 export interface NativeConfigWriteHooks {
@@ -372,6 +393,10 @@ function applyCodexRelayConfig(
   providerEntry.base_url = siteBaseUrl
   providerEntry.wire_api = 'responses'
   providerEntry.requires_openai_auth = true
+  // Keep the Desktop permission picker interactive on fresh mirror installs.
+  // Never override an explicit user policy such as `never`.
+  if (parsed.approval_policy === undefined) parsed.approval_policy = 'on-request'
+  if (parsed.sandbox_mode === undefined) parsed.sandbox_mode = 'workspace-write'
 }
 
 function buildCodexRelayConfigTemplate(
@@ -385,6 +410,8 @@ function buildCodexRelayConfigTemplate(
     `model = ${tomlString(model)}`,
     `review_model = ${tomlString(model)}`,
     'model_reasoning_effort = "xhigh"',
+    'approval_policy = "on-request"',
+    'sandbox_mode = "workspace-write"',
     'disable_response_storage = true',
     'network_access = "enabled"',
     'windows_wsl_setup_acknowledged = true',
@@ -723,6 +750,149 @@ function jsonContent(value: unknown): string {
 
 function tomlContent(value: Record<string, unknown>): string {
   return TOML.stringify(value as Parameters<typeof TOML.stringify>[0])
+}
+
+function normalizeCodexWorkspaceKey(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  const windowsPath = /^[A-Za-z]:[\\/]/.test(trimmed) || trimmed.startsWith('\\\\')
+  const normalized = windowsPath
+    ? trimmed.replace(/\//g, '\\')
+    : path.posix.normalize(trimmed.replace(/\\/g, '/'))
+  if (windowsPath) {
+    const isDriveRoot = /^[A-Za-z]:\\$/.test(normalized)
+    return isDriveRoot ? normalized.toLowerCase() : normalized.replace(/[\\]+$/, '').toLowerCase()
+  }
+  return normalized === '/' ? normalized : normalized.replace(/\/+$/, '')
+}
+
+function codexWorkspaceProjectEntry(
+  parsed: Record<string, unknown>,
+  workspace: string,
+): { key: string; entry: Record<string, unknown> } | null {
+  const projects = parsed.projects
+  if (!isJsonRecord(projects)) return null
+  const wanted = normalizeCodexWorkspaceKey(workspace)
+  const key = Object.keys(projects).find((candidate) => normalizeCodexWorkspaceKey(candidate) === wanted)
+  if (!key) return null
+  const entry = projects[key]
+  return isJsonRecord(entry) ? { key, entry } : null
+}
+
+function codexPermissionControl(
+  trustLevel: CodexWorkspaceTrustLevel,
+  approvalPolicy: string | null,
+): CodexWorkspacePermissionControl {
+  const policy = approvalPolicy?.trim().toLowerCase() ?? ''
+  if (policy === 'never') return 'restricted'
+  if (policy === 'unless-trusted' && trustLevel !== 'trusted') return 'restricted'
+  if (trustLevel === 'untrusted' && !policy) return 'restricted'
+  // Codex defaults to an unless-trusted policy when no explicit policy exists;
+  // an absent project entry therefore behaves as restricted as well.
+  if (trustLevel === 'unknown' && !policy) return 'restricted'
+  return 'available'
+}
+
+export function inspectCodexWorkspacePermissionsText(
+  content: string | null,
+  workspace: string,
+  configPath = 'config.toml',
+): CodexWorkspacePermissionStatus {
+  const base = {
+    configPath,
+    workspace,
+    configExists: Boolean(content),
+    trustLevel: 'unknown' as CodexWorkspaceTrustLevel,
+    approvalPolicy: null as string | null,
+    permissionProfile: null as string | null,
+    sandboxMode: null as string | null,
+    control: 'unknown' as CodexWorkspacePermissionControl,
+    error: null as string | null,
+  }
+  if (!content?.trim()) return base
+
+  let parsed: Record<string, unknown>
+  try {
+    parsed = TOML.parse(content)
+  } catch {
+    return { ...base, error: 'Codex config.toml 无法解析' }
+  }
+  const project = codexWorkspaceProjectEntry(parsed, workspace)
+  const rawTrust = project?.entry.trust_level
+  const trustLevel = rawTrust === 'trusted' || rawTrust === 'untrusted' ? rawTrust : 'unknown'
+  const approvalPolicy = typeof parsed.approval_policy === 'string'
+    ? parsed.approval_policy.trim() || null
+    : null
+  const permissionProfile = typeof parsed.permission_profile === 'string'
+    ? parsed.permission_profile.trim() || null
+    : typeof parsed.default_permissions === 'string'
+      ? parsed.default_permissions.trim() || null
+      : null
+  const sandboxMode = typeof parsed.sandbox_mode === 'string'
+    ? parsed.sandbox_mode.trim() || null
+    : null
+  return {
+    ...base,
+    trustLevel,
+    approvalPolicy,
+    permissionProfile,
+    sandboxMode,
+    control: codexPermissionControl(trustLevel, approvalPolicy),
+  }
+}
+
+export function trustCodexWorkspaceInConfigText(
+  content: string | null,
+  workspace: string,
+): { content: string; changed: boolean } {
+  const trimmedWorkspace = workspace.trim()
+  if (!trimmedWorkspace) throw new Error('Codex 工作目录不能为空')
+  let parsed: Record<string, unknown> = {}
+  if (content?.trim()) {
+    try {
+      parsed = TOML.parse(content)
+    } catch {
+      throw new Error('Codex config.toml 无法解析，未执行修改')
+    }
+  }
+  const projects = ensureRecord(parsed, 'projects')
+  const existing = codexWorkspaceProjectEntry(parsed, trimmedWorkspace)
+  const key = existing?.key ?? trimmedWorkspace
+  const entry = existing?.entry ?? ensureRecord(projects, key)
+  let changed = entry.trust_level !== 'trusted'
+  entry.trust_level = 'trusted'
+  // These are the least-privileged defaults that make the Desktop picker
+  // actionable. An explicit user policy (including `never`) is preserved.
+  if (parsed.approval_policy === undefined) {
+    parsed.approval_policy = 'on-request'
+    changed = true
+  }
+  if (parsed.sandbox_mode === undefined) {
+    parsed.sandbox_mode = 'workspace-write'
+    changed = true
+  }
+  return { content: tomlContent(parsed), changed }
+}
+
+export function ensureCodexPermissionDefaultsInConfigText(
+  content: string,
+): { content: string; changed: boolean } {
+  let parsed: Record<string, unknown>
+  try {
+    parsed = TOML.parse(content)
+  } catch {
+    throw new Error('Codex config.toml 无法解析，未执行修改')
+  }
+  let changed = false
+  if (parsed.approval_policy === undefined) {
+    parsed.approval_policy = 'on-request'
+    changed = true
+  }
+  if (parsed.sandbox_mode === undefined) {
+    parsed.sandbox_mode = 'workspace-write'
+    changed = true
+  }
+  return { content: changed ? tomlContent(parsed) : withTrailingNewline(content), changed }
 }
 
 function updateEnvContent(content: string, updates: Record<string, string>): string {
@@ -1236,6 +1406,69 @@ export function saveProviderConfig(
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
   ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
   return executeFilePlans(plans, hooks, providerRoot)
+}
+
+export function inspectCodexWorkspacePermissions(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  workspace: string,
+): CodexWorkspacePermissionStatus {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const configPath = codexConfigSnapshotPaths(roots).active
+  const providerRoot = path.dirname(configPath)
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  const content = fs.existsSync(configPath)
+    ? requireConfigText(configPath, '现有 Codex config.toml')
+    : null
+  return inspectCodexWorkspacePermissionsText(content, workspace, configPath)
+}
+
+export function trustCodexWorkspace(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+  workspace: string,
+): CodexWorkspacePermissionWriteResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const configPath = codexConfigSnapshotPaths(roots).active
+  const providerRoot = path.dirname(configPath)
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  const current = fs.existsSync(configPath)
+    ? requireConfigText(configPath, '现有 Codex config.toml')
+    : null
+  const next = trustCodexWorkspaceInConfigText(current, workspace)
+  if (!next.changed) {
+    return {
+      backups: [],
+      files: [],
+      changed: false,
+      status: inspectCodexWorkspacePermissionsText(current, workspace, configPath),
+    }
+  }
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  const saved = executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot)
+  return {
+    ...saved,
+    changed: true,
+    status: inspectCodexWorkspacePermissionsText(next.content, workspace, configPath),
+  }
+}
+
+/** Adds safe, interactive defaults to an existing Codex config without touching credentials. */
+export function ensureCodexPermissionDefaults(
+  rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
+): NativeConfigSaveResult & { changed: boolean } {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const configPath = codexConfigSnapshotPaths(roots).active
+  const providerRoot = path.dirname(configPath)
+  assertSafeConfigPath(configPath, providerRoot, 'file')
+  if (!fs.existsSync(configPath)) return { backups: [], files: [], changed: false }
+  const current = requireConfigText(configPath, '现有 Codex config.toml')
+  if (current === null) return { backups: [], files: [], changed: false }
+  const next = ensureCodexPermissionDefaultsInConfigText(current)
+  if (!next.changed) return { backups: [], files: [], changed: false }
+  assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')
+  ensureSafeDataDirectory(providerRoot, 'Provider 配置根目录')
+  const saved = executeFilePlans([{ path: configPath, content: next.content }], {}, providerRoot)
+  return { ...saved, changed: true }
 }
 
 // ---------------------------------------------------------------------------

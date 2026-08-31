@@ -13,7 +13,9 @@ import {
   codexChatGptAuthSnapshotName,
   codexConfigSnapshotPaths,
   defaultCodexRelayProvider,
+  ensureCodexPermissionDefaultsInConfigText,
   inspectProviderConfig,
+  inspectCodexWorkspacePermissionsText,
   managedProviderLaunchBlockedMessage,
   providerAccountMode,
   providerConfigPaths,
@@ -21,6 +23,8 @@ import {
   saveProviderConfig,
   snapshotCodexChatGptAuth,
   switchProviderToOfficialAccount,
+  trustCodexWorkspace,
+  trustCodexWorkspaceInConfigText,
   toNativeConfigSummary,
 } from './config-files'
 import { providerBaseUrls, type ProviderId } from './catalog'
@@ -78,6 +82,80 @@ afterEach(() => {
 })
 
 describe('native CLI configuration files', () => {
+  it('diagnoses the Codex permission picker from trust and approval settings', () => {
+    const config = [
+      'approval_policy = "unless-trusted"',
+      'sandbox_mode = "workspace-write"',
+      '',
+      '[projects."C:\\\\Users\\\\tester\\\\project"]',
+      'trust_level = "untrusted"',
+      '',
+    ].join('\n')
+    const status = inspectCodexWorkspacePermissionsText(config, 'c:/users/TESTER/project')
+    expect(status.trustLevel).toBe('untrusted')
+    expect(status.approvalPolicy).toBe('unless-trusted')
+    expect(status.sandboxMode).toBe('workspace-write')
+    expect(status.control).toBe('restricted')
+
+    const trusted = inspectCodexWorkspacePermissionsText(
+      config.replace('trust_level = "untrusted"', 'trust_level = "trusted"'),
+      'C:\\Users\\tester\\project',
+    )
+    expect(trusted.control).toBe('available')
+  })
+
+  it('trusts only the selected Codex workspace and adds safe missing defaults', () => {
+    const result = trustCodexWorkspaceInConfigText(
+      '[projects."D:\\\\Work"]\ntrust_level = "untrusted"\n',
+      'd:/work',
+    )
+    expect(result.changed).toBe(true)
+    const parsed = TOML.parse(result.content) as Record<string, unknown>
+    expect(parsed.approval_policy).toBe('on-request')
+    expect(parsed.sandbox_mode).toBe('workspace-write')
+    expect(asRecord(asRecord(parsed.projects)?.['D:\\Work'])?.trust_level).toBe('trusted')
+    expect(result.content).not.toContain('D:\\Other')
+  })
+
+  it('does not override an explicit never approval policy', () => {
+    const result = trustCodexWorkspaceInConfigText(
+      'approval_policy = "never"\n',
+      'C:\\Work',
+    )
+    const parsed = TOML.parse(result.content) as Record<string, unknown>
+    expect(parsed.approval_policy).toBe('never')
+    expect(parsed.sandbox_mode).toBe('workspace-write')
+    expect(inspectCodexWorkspacePermissionsText(result.content, 'C:\\Work').control).toBe('restricted')
+  })
+
+  it('adds permission defaults without rewriting an already complete config', () => {
+    const missing = ensureCodexPermissionDefaultsInConfigText('model = "gpt-5"\n')
+    expect(missing.changed).toBe(true)
+    expect(TOML.parse(missing.content)).toMatchObject({
+      approval_policy: 'on-request',
+      sandbox_mode: 'workspace-write',
+    })
+    const complete = ensureCodexPermissionDefaultsInConfigText(missing.content)
+    expect(complete.changed).toBe(false)
+    expect(complete.content).toBe(missing.content)
+  })
+
+  it('writes a trusted workspace transaction with a recoverable backup', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, 'approval_policy = "unless-trusted"\n', 'utf8')
+
+    const result = trustCodexWorkspace(roots, path.join(home, 'project'))
+    expect(result.changed).toBe(true)
+    expect(result.status.trustLevel).toBe('trusted')
+    expect(result.status.control).toBe('available')
+    expect(result.backups).toHaveLength(1)
+    expect(fs.readFileSync(configPath, 'utf8')).toContain('trust_level = "trusted"')
+    expect(fs.existsSync(result.backups[0])).toBe(true)
+  })
+
   it('resets a Codex config.toml that can no longer be parsed', () => {
     const userHome = temporaryHome()
     const roots = providerRoots(userHome)
@@ -140,6 +218,8 @@ describe('native CLI configuration files', () => {
     expect(parsed.model_provider).toBe('XingmangAI')
     expect(parsed.model_context_window).toBe(1000000)
     expect(parsed.model_auto_compact_token_limit).toBe(900000)
+    expect(parsed.approval_policy).toBe('on-request')
+    expect(parsed.sandbox_mode).toBe('workspace-write')
     expect(asRecord(parsed.model_providers)?.XingmangAI).toMatchObject({
       name: 'XingmangAI',
       base_url: 'https://xm.solov.cc/v1',

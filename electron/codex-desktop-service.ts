@@ -946,11 +946,15 @@ export function buildCodexDesktopPackageProbeScript(): string {
     '    if ($packages.Count -gt 0) { $source = \'all-users\' }',
     '  } catch { $allUsersError = $_.Exception.Message }',
     '}',
-    '$confirmedAbsent = $packages.Count -eq 0 -and $null -eq $currentError -and $null -eq $allUsersError',
+    // A normal user is allowed to inspect its own AppX registration, but
+    // Get-AppxPackage -AllUsers is commonly denied without elevation. The
+    // current-user result is authoritative for this installation: if it
+    // completed and returned no Codex package, this account needs a first
+    // install even when the optional all-users fallback was rejected.
+    '$currentProbeSucceeded = $null -eq $currentError',
+    '$confirmedAbsent = $currentProbeSucceeded -and $currentPackages.Count -eq 0',
     '$errorMessage = $null',
-    'if ($null -ne $allUsersError) {',
-    '  $errorMessage = \'当前用户未检测到 Codex Desktop，系统拒绝读取其他用户的安装信息。请使用安装 Codex Desktop 的 Windows 账户启动星芒 AI 管理工具。\'',
-    '} elseif ($null -ne $currentError -and $packages.Count -eq 0) {',
+    'if ($null -ne $currentError -and $packages.Count -eq 0) {',
     '  $errorMessage = \'无法读取 Codex Desktop 的 Windows Appx 安装信息，请使用安装该应用的 Windows 账户启动星芒 AI 管理工具后重试。\'',
     '}',
     '[pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage } | ConvertTo-Json -Compress',

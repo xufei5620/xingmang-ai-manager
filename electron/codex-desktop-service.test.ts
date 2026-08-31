@@ -944,7 +944,7 @@ describe('buildCodexDesktopWindowsProbes', () => {
 })
 
 describe('Codex Desktop Appx probe script', () => {
-  it('checks the current user first and isolates the restricted all-users fallback', () => {
+  it('uses the current-user result as authoritative when the all-users fallback is restricted', () => {
     const script = buildCodexDesktopPackageProbeScript()
     const currentProbe = script.indexOf("Get-AppxPackage -Name 'OpenAI.Codex*'")
     const allUsersProbe = script.indexOf("Get-AppxPackage -AllUsers -Name 'OpenAI.Codex*'")
@@ -952,7 +952,9 @@ describe('Codex Desktop Appx probe script', () => {
     expect(currentProbe).toBeGreaterThanOrEqual(0)
     expect(allUsersProbe).toBeGreaterThan(currentProbe)
     expect(script).toContain('$allUsersError = $null')
-    expect(script).toContain('$confirmedAbsent = $packages.Count -eq 0 -and $null -eq $currentError -and $null -eq $allUsersError')
+    expect(script).toContain('$currentProbeSucceeded = $null -eq $currentError')
+    expect(script).toContain('$confirmedAbsent = $currentProbeSucceeded -and $currentPackages.Count -eq 0')
+    expect(script).not.toContain('系统拒绝读取其他用户的安装信息')
   })
 })
 
