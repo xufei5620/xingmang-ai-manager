@@ -307,6 +307,7 @@ function encodePowerShellCommand(script: string): string {
 
 const appActivationScript = String.raw`$ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 Add-Type -TypeDefinition @'
 using System;
 using System.Runtime.InteropServices;
@@ -331,18 +332,25 @@ public static class XingMangCodexAppActivation {
   }
 }
 '@
-[XingMangCodexAppActivation]::Activate($env:XINGMANG_CODEX_APP_ID, $env:XINGMANG_CODEX_ARGS) | Out-Null`
+[XingMangCodexAppActivation]::Activate($env:XINGMANG_CODEX_APP_ID, $env:XINGMANG_CODEX_ARGS)`
+
+export function parseCodexDesktopActivationProcessId(output: string): number | null {
+  const normalized = output.trim()
+  if (!/^\d+$/.test(normalized)) return null
+  const processId = Number(normalized)
+  return Number.isInteger(processId) && processId > 0 ? processId : null
+}
 
 export async function activateCodexDesktopWithCdp(
   appUserModelId: string,
   port: number,
   baseEnv: NodeJS.ProcessEnv = process.env,
-): Promise<void> {
+): Promise<number | null> {
   if (process.platform !== 'win32') throw new Error('Codex Desktop CDP 激活仅支持 Windows')
   const appId = validateCodexDesktopAppUserModelId(appUserModelId)
   const args = buildCodexDesktopCdpArguments(port)
   try {
-    await execFileAsync(resolveWindowsPowerShellExecutable(), [
+    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
       '-NoLogo',
       '-NoProfile',
       '-NonInteractive',
@@ -358,6 +366,7 @@ export async function activateCodexDesktopWithCdp(
       timeout: 10_000,
       maxBuffer: 256 * 1024,
     })
+    return parseCodexDesktopActivationProcessId(stdout)
   } catch (error) {
     const failure = error as { stderr?: unknown; message?: unknown }
     const stderr = typeof failure.stderr === 'string' ? failure.stderr.trim() : ''

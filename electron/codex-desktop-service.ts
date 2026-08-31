@@ -105,6 +105,11 @@ const maximumCodexDesktopPackageBytes = 1_500 * 1024 * 1024
 const maximumCodexDesktopManifestBytes = 1024 * 1024
 const maximumCodexDesktopAppManifestBytes = 512 * 1024
 const codexDesktopManifestRefreshParameter = 'xm_refresh'
+// First-run AppX startup can spend several seconds registering WebView and
+// scanning the package. Keep the fast path responsive, but give the fallback
+// enough time to observe a healthy process on a cold machine.
+const codexDesktopLaunchInitialWaitMs = 12_000
+const codexDesktopLaunchFallbackWaitMs = 33_000
 
 export interface CodexDesktopLaunchPlan {
   executable: string
@@ -112,6 +117,73 @@ export interface CodexDesktopLaunchPlan {
   cwd: string
   env: NodeJS.ProcessEnv
   windowsHide: boolean
+}
+
+export interface CodexDesktopWindowsLaunchContext {
+  userSid: string | null
+  isBuiltInAdministrator: boolean
+  uacEnabled: boolean | null
+  filterAdministratorToken: boolean | null
+}
+
+const emptyCodexDesktopWindowsLaunchContext: CodexDesktopWindowsLaunchContext = {
+  userSid: null,
+  isBuiltInAdministrator: false,
+  uacEnabled: null,
+  filterAdministratorToken: null,
+}
+
+/**
+ * Parses the small JSON probe used after AppX activation fails. Keep this
+ * parser tolerant because PowerShell may add a trailing newline or warning
+ * text when a policy value is unavailable.
+ */
+export function parseCodexDesktopWindowsLaunchContext(
+  output: string,
+): CodexDesktopWindowsLaunchContext {
+  const lines = output.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean)
+  const jsonLine = [...lines].reverse().find((line) => line.startsWith('{') && line.endsWith('}'))
+  if (!jsonLine) return { ...emptyCodexDesktopWindowsLaunchContext }
+  try {
+    const value = JSON.parse(jsonLine) as Record<string, unknown>
+    const userSid = typeof value.sid === 'string' && /^S-1-\d+(?:-\d+)+$/.test(value.sid)
+      ? value.sid
+      : null
+    const parseBoolean = (candidate: unknown): boolean | null => {
+      if (candidate === true || candidate === 1 || candidate === '1') return true
+      if (candidate === false || candidate === 0 || candidate === '0') return false
+      return null
+    }
+    return {
+      userSid,
+      isBuiltInAdministrator: userSid?.endsWith('-500') ?? false,
+      uacEnabled: parseBoolean(value.uacEnabled),
+      filterAdministratorToken: parseBoolean(value.filterAdministratorToken),
+    }
+  } catch {
+    return { ...emptyCodexDesktopWindowsLaunchContext }
+  }
+}
+
+export function describeCodexDesktopLaunchFailure(
+  context: CodexDesktopWindowsLaunchContext,
+): string {
+  const hints: string[] = []
+  if (context.isBuiltInAdministrator) {
+    hints.push('当前 Windows 账户是内置 Administrator（SID 以 -500 结尾）')
+  }
+  if (context.uacEnabled === false) hints.push('UAC 已关闭')
+  if (hints.length) {
+    return [
+      'Windows 无法创建 Codex Desktop 进程（AppModel 常见错误 0xC0EA0001）',
+      `${hints.join('，')}。`,
+      '请先运行 wsreset.exe，再使用普通 Windows 账户重新安装或启动 Codex Desktop。',
+    ].join('；')
+  }
+  return [
+    'Windows 已接受 Codex Desktop 启动请求，但 AppModel 没有创建进程。',
+    '这通常与 Microsoft Store 授权、AppX 状态或 UAC 策略有关，请先运行 wsreset.exe 后重试；如果仍失败，请使用反馈与诊断中的启动日志。',
+  ].join('')
 }
 
 export interface CodexDesktopPackageProbe {
@@ -988,6 +1060,55 @@ export async function verifyInstalledCodexDesktop(
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function isProcessAlive(processId: number): boolean {
+  try {
+    process.kill(processId, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function waitForProcessId(processId: number, timeoutMs: number): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (isProcessAlive(processId)) return true
+    await delay(250)
+  }
+  return isProcessAlive(processId)
+}
+
+async function inspectCodexDesktopWindowsLaunchContext(): Promise<CodexDesktopWindowsLaunchContext> {
+  if (process.platform !== 'win32') return { ...emptyCodexDesktopWindowsLaunchContext }
+  const script = [
+    '$ErrorActionPreference = "SilentlyContinue"',
+    '$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()',
+    '$policy = Get-ItemProperty -LiteralPath "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\System"',
+    '$uacEnabled = $null',
+    '$filterAdministratorToken = $null',
+    'if ($null -ne $policy.EnableLUA) { $uacEnabled = [int]$policy.EnableLUA }',
+    'if ($null -ne $policy.FilterAdministratorToken) { $filterAdministratorToken = [int]$policy.FilterAdministratorToken }',
+    '[pscustomobject]@{ sid = [string]$identity.User.Value; uacEnabled = $uacEnabled; filterAdministratorToken = $filterAdministratorToken } | ConvertTo-Json -Compress',
+  ].join('; ')
+  try {
+    const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      script,
+    ], {
+      env: trustedCommandEnvironment(),
+      windowsHide: true,
+      timeout: 3_000,
+      maxBuffer: 64 * 1024,
+    })
+    return parseCodexDesktopWindowsLaunchContext(stdout)
+  } catch {
+    return { ...emptyCodexDesktopWindowsLaunchContext }
+  }
 }
 
 export async function waitForCodexDesktopState(
@@ -1869,12 +1990,13 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       })
     }
     let cdpPort: number | null = null
+    let activationProcessId: number | null = null
     const shouldInjectChinese = Boolean(launchOptions.injectChinese)
       && (mode === 'restart' || existingProcesses.length === 0)
     if (shouldInjectChinese) {
       try {
         cdpPort = await getAvailableLoopbackPort()
-        await activateCodexDesktopWithCdp(desktopAppPath, cdpPort)
+        activationProcessId = await activateCodexDesktopWithCdp(desktopAppPath, cdpPort)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         // AppX activation arguments are not stable across Windows builds. The
@@ -1898,7 +2020,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
 
-    let startedProcesses = await waitForCodexDesktopState(true, 10_000)
+    let startedProcesses = await waitForCodexDesktopState(
+      true,
+      cdpPort !== null ? codexDesktopLaunchInitialWaitMs : codexDesktopLaunchFallbackWaitMs,
+    )
     if (!startedProcesses.length && cdpPort !== null) {
       // COM activation can be unavailable for a per-user Store registration
       // while Explorer still knows how to activate the package. Retry through
@@ -1906,13 +2031,30 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       cdpPort = null
       try {
         await launchWithExplorer()
-        startedProcesses = await waitForCodexDesktopState(true, 10_000)
+        startedProcesses = await waitForCodexDesktopState(true, codexDesktopLaunchFallbackWaitMs)
       } catch {
         // The common error below includes the same actionable launch context.
       }
     }
+    // AppX activation returns the application PID even when WMI is slow or
+    // temporarily unable to expose the packaged executable path. Treat a
+    // still-alive activation PID as a successful launch; later status scans
+    // can recover the full package metadata once Windows finishes indexing.
+    if (!startedProcesses.length && activationProcessId !== null) {
+      if (await waitForProcessId(activationProcessId, 2_000)) {
+        startedProcesses = [{
+          processId: activationProcessId,
+          parentProcessId: 0,
+          name: 'Codex.exe',
+          executablePath: desktopApp.installDirectory
+            ? path.join(desktopApp.installDirectory, 'app', 'ChatGPT.exe')
+            : '',
+        }]
+      }
+    }
     if (!startedProcesses.length) {
-      throw new Error('已发送 Codex 桌面端启动请求，但未检测到窗口进程')
+      const launchContext = await inspectCodexDesktopWindowsLaunchContext()
+      throw new Error(describeCodexDesktopLaunchFailure(launchContext))
     }
     if (cdpPort !== null) {
       try {

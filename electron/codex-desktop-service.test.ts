@@ -16,6 +16,7 @@ import {
   buildCodexDesktopWindowsProbes,
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
+  describeCodexDesktopLaunchFailure,
   desktopMirrorUpdateAvailable,
   downloadCodexDesktopPackage,
   downloadCodexDesktopPackageFromCandidates,
@@ -23,6 +24,7 @@ import {
   fetchCodexDesktopMirrorRelease,
   fetchCodexDesktopPreviousManifestCandidates,
   inspectCodexDesktopPackageFile,
+  parseCodexDesktopWindowsLaunchContext,
   validateCodexDesktopResourceUrl,
   type CodexDesktopManifestCandidate,
   type CodexDesktopWindowsProbes,
@@ -105,6 +107,41 @@ function createTestMsix(manifest: string): string {
   fs.renameSync(zipPath, packagePath)
   return packagePath
 }
+
+describe('Codex Desktop AppModel launch diagnostics', () => {
+  it('recognizes the built-in Administrator SID and numeric UAC values', () => {
+    expect(parseCodexDesktopWindowsLaunchContext(
+      '{"sid":"S-1-5-21-2548096332-2102100343-2330258446-500","uacEnabled":0,"filterAdministratorToken":0}\n',
+    )).toEqual({
+      userSid: 'S-1-5-21-2548096332-2102100343-2330258446-500',
+      isBuiltInAdministrator: true,
+      uacEnabled: false,
+      filterAdministratorToken: false,
+    })
+  })
+
+  it('degrades malformed PowerShell output without exposing arbitrary text', () => {
+    expect(parseCodexDesktopWindowsLaunchContext('warning\nnot-json\n')).toEqual({
+      userSid: null,
+      isBuiltInAdministrator: false,
+      uacEnabled: null,
+      filterAdministratorToken: null,
+    })
+  })
+
+  it('gives built-in Administrator users actionable AppModel guidance', () => {
+    const message = describeCodexDesktopLaunchFailure({
+      userSid: 'S-1-5-21-1-2-3-500',
+      isBuiltInAdministrator: true,
+      uacEnabled: false,
+      filterAdministratorToken: false,
+    })
+    expect(message).toContain('0xC0EA0001')
+    expect(message).toContain('内置 Administrator')
+    expect(message).toContain('wsreset.exe')
+    expect(message).toContain('普通 Windows 账户')
+  })
+})
 
 afterEach(() => {
   vi.restoreAllMocks()
