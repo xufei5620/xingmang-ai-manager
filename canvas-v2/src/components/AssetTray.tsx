@@ -588,6 +588,7 @@ export function AssetTray({ page, query, loading, onQueryChange, onRefresh, onIm
               <div className="asset-tray-item-detail-head">
                 <strong title={name}>{name}</strong>
                 {!available && <span className="asset-unavailable-badge">不可用</span>}
+                <button type="button" title="放大预览" aria-label={`放大预览：${name}`} disabled={!available} onClick={() => setPreviewAsset(asset)}><Eye size={12} /></button>
                 {onRename && <button type="button" title="重命名" aria-label={`重命名素材：${name}`} onClick={() => beginRename(asset)}><Pencil size={12} /></button>}
                 {onUpdateMetadata && <button type="button" title="编辑标签" aria-label={`编辑素材标签：${name}`} onClick={() => { setTaggingAsset(asset); setTagDraft((asset.tags ?? []).join(', ')); setTagError(null) }}><Tags size={12} /></button>}
                 {onInspectReferences && <button type="button" title="检查引用与删除保护" aria-label={`检查素材引用：${name}`} onClick={() => void inspectReferences(asset)}><ShieldCheck size={12} /></button>}

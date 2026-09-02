@@ -38,6 +38,7 @@ import type { inspectMacosCodexApp, MacosCodexAppInspection } from './macos-code
 import { describeProbeFailure } from './probe-failure'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import {
+  activateCodexDesktop as activateCodexDesktopDefault,
   activateCodexDesktopWithCdp as activateCodexDesktopWithCdpDefault,
   getAvailableLoopbackPort as getAvailableLoopbackPortDefault,
   injectCodexDesktopChineseLocale as injectCodexDesktopChineseLocaleDefault,
@@ -55,6 +56,7 @@ import type {
 import type { resolveCliCommand } from './tool-installation'
 import { resolveWindowsPowerShellExecutable, type WindowsCliExecutionMode } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
+import { repairCodexDesktopGlobalState } from './codex-desktop-state'
 
 const execFileAsync = promisify(execFile)
 
@@ -210,6 +212,48 @@ export function buildCodexDesktopLaunchPlan(
     cwd: machinePaths.systemRoot,
     env: trustedCommandEnvironment(baseEnv, machinePaths),
     windowsHide: false,
+  }
+}
+
+/**
+ * Builds the official Codex Desktop deep link used by `codex app <path>` on
+ * Windows. Opening only `shell:AppsFolder\...` starts the app without a
+ * workspace, which leaves the Desktop permission picker disabled because the
+ * conversation has no project context.
+ */
+export function buildCodexDesktopWorkspaceUrl(workspace: string): string {
+  // Keep the path byte-for-byte as selected. Windows permits a trailing space
+  // in a directory name when it is addressed through the extended path form;
+  // trimming here would silently open a different workspace.
+  const normalized = workspace
+  if (
+    !normalized.trim()
+    || normalized.includes('\0')
+    || normalized.length > 32_767
+    || !path.win32.isAbsolute(normalized)
+  ) {
+    throw new Error('Codex Desktop 工作目录无效')
+  }
+  const url = new URL('codex://threads/new')
+  url.searchParams.set('path', normalized)
+  return url.href
+}
+
+/**
+ * Builds the legacy Explorer plan for callers that only need to inspect the
+ * encoded URL. Runtime launches must use AppModel activation directly; passing
+ * this plan to Explorer can open the workspace folder when codex:// is not
+ * registered by the installed package.
+ */
+export function buildCodexDesktopWorkspaceLaunchPlan(
+  appUserModelId: string,
+  workspace: string,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): CodexDesktopLaunchPlan {
+  const plan = buildCodexDesktopLaunchPlan(appUserModelId, baseEnv)
+  return {
+    ...plan,
+    args: [buildCodexDesktopWorkspaceUrl(workspace)],
   }
 }
 
@@ -901,14 +945,31 @@ export async function findCodexDesktopStartApp(): Promise<StartAppEntry | null> 
   }
 }
 
+export function buildCodexDesktopProcessProbeScript(): string {
+  return [
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    String.raw`$items = @(Get-CimInstance Win32_Process | ForEach-Object {
+      $path = [string]$_.ExecutablePath
+      # WMI can omit ExecutablePath for a normal user. The packaged app's
+      # command line still carries the immutable WindowsApps path, so recover
+      # only a strictly quoted Codex executable rather than trusting a name.
+      if (-not $path -and @('ChatGPT.exe', 'Codex.exe') -contains ([string]$_.Name)) {
+        $commandLine = [string]$_.CommandLine
+        $candidate = [regex]::Match($commandLine, '(?i)"(?<path>[^"]*\\WindowsApps\\OpenAI.Codex(?:Beta)?_[^"]+\\[^"]+.exe)"')
+        if ($candidate.Success) { $path = $candidate.Groups['path'].Value }
+      }
+      if ($path -match '(?i)\\WindowsApps\\OpenAI.Codex(?:Beta)?_\d+(?:\.\d+){3}_(?:x64|arm64|neutral)__[A-Za-z0-9.]+\\') {
+        [pscustomobject]@{ ProcessId = $_.ProcessId; ParentProcessId = $_.ParentProcessId; Name = $_.Name; ExecutablePath = $path }
+      }
+    })`,
+    '$items | ConvertTo-Json -Compress',
+  ].join('; ')
+}
+
 export async function listCodexDesktopProcesses(): Promise<WindowsProcessEntry[]> {
   if (process.platform !== 'win32') return []
 
-  const script = [
-    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    "$items = @(Get-CimInstance Win32_Process | Where-Object { ([string]$_.ExecutablePath) -like '*\\WindowsApps\\OpenAI.Codex_*' -or ([string]$_.ExecutablePath) -like '*\\WindowsApps\\OpenAI.CodexBeta_*' } | Select-Object ProcessId, ParentProcessId, Name, ExecutablePath)",
-    '$items | ConvertTo-Json -Compress',
-  ].join('; ')
+  const script = buildCodexDesktopProcessProbeScript()
 
   try {
     const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
@@ -936,25 +997,17 @@ export function buildCodexDesktopPackageProbeScript(): string {
     '$currentPackages = @()',
     '$currentError = $null',
     'try { $currentPackages = @(Get-AppxPackage -Name \'OpenAI.Codex*\' -ErrorAction Stop | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation) } catch { $currentError = $_.Exception.Message }',
+    // AppX registration is per user. An all-users query can report a package
+    // registered for a different account, and normal users are often denied
+    // that query altogether. Treat the current account as the only source of
+    // truth so a package owned by another account cannot block first install
+    // or produce an unlaunchable AppsFolder id.
     '$packages = $currentPackages',
-    '$source = $null',
-    'if ($currentPackages.Count -gt 0) { $source = \'current-user\' }',
-    '$allUsersError = $null',
-    'if ($currentPackages.Count -eq 0) {',
-    '  try {',
-    '    $packages = @(Get-AppxPackage -AllUsers -Name \'OpenAI.Codex*\' -ErrorAction Stop | Select-Object Name, Version, PackageFullName, PackageFamilyName, InstallLocation)',
-    '    if ($packages.Count -gt 0) { $source = \'all-users\' }',
-    '  } catch { $allUsersError = $_.Exception.Message }',
-    '}',
-    // A normal user is allowed to inspect its own AppX registration, but
-    // Get-AppxPackage -AllUsers is commonly denied without elevation. The
-    // current-user result is authoritative for this installation: if it
-    // completed and returned no Codex package, this account needs a first
-    // install even when the optional all-users fallback was rejected.
+    '$source = if ($currentPackages.Count -gt 0) { \'current-user\' } else { $null }',
     '$currentProbeSucceeded = $null -eq $currentError',
     '$confirmedAbsent = $currentProbeSucceeded -and $currentPackages.Count -eq 0',
     '$errorMessage = $null',
-    'if ($null -ne $currentError -and $packages.Count -eq 0) {',
+    'if ($null -ne $currentError) {',
     '  $errorMessage = \'无法读取 Codex Desktop 的 Windows Appx 安装信息，请使用安装该应用的 Windows 账户启动星芒 AI 管理工具后重试。\'',
     '}',
     '[pscustomobject]@{ packages = $packages; source = $source; confirmedAbsent = $confirmedAbsent; error = $errorMessage } | ConvertTo-Json -Compress',
@@ -1300,8 +1353,15 @@ export function canAttemptCodexDesktopFirstInstallFallback(
   installedPackage: CodexDesktopPackageEntry | null,
   startApp: StartAppEntry | null,
   processes: WindowsProcessEntry[],
+  currentPackageProbeConfirmedAbsent = false,
 ): boolean {
-  return installedPackage === null && startApp === null && processes.length === 0
+  // Get-StartApps can retain a stale entry for a package that was removed or
+  // registered for a different account. Once the current-user AppX probe has
+  // completed successfully with no package, that entry is not installation
+  // evidence and must not block the first-install path.
+  return installedPackage === null
+    && (startApp === null || currentPackageProbeConfirmedAbsent)
+    && processes.length === 0
 }
 
 /**
@@ -1357,6 +1417,7 @@ export interface CodexDesktopServiceOptions {
     options: { cwd: string; env: NodeJS.ProcessEnv; windowsHide?: boolean },
   ) => Promise<void>
   /** Optional seams used by tests; production uses the constrained CDP module. */
+  activateCodexDesktop?: typeof activateCodexDesktopDefault
   activateCodexDesktopWithCdp?: typeof activateCodexDesktopWithCdpDefault
   getAvailableLoopbackPort?: typeof getAvailableLoopbackPortDefault
   injectCodexDesktopChineseLocale?: typeof injectCodexDesktopChineseLocaleDefault
@@ -1365,6 +1426,11 @@ export interface CodexDesktopServiceOptions {
 export interface CodexDesktopLaunchOptions {
   /** Enables the short-lived loopback CDP locale patch for a Chinese restart. */
   injectChinese?: boolean
+  /**
+   * Repairs the legacy Desktop permission-mode visibility atom after all
+   * running processes have been closed and before the next launch.
+   */
+  repairPermissionModeVisibility?: boolean
 }
 
 export interface CodexDesktopService {
@@ -1400,6 +1466,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     store,
     inspectNativeProviderConfig,
     spawnDetached,
+    activateCodexDesktop = activateCodexDesktopDefault,
     activateCodexDesktopWithCdp = activateCodexDesktopWithCdpDefault,
     getAvailableLoopbackPort = getAvailableLoopbackPortDefault,
     injectCodexDesktopChineseLocale = injectCodexDesktopChineseLocaleDefault,
@@ -1552,8 +1619,14 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     // A running packaged app is conclusive evidence even when AppX
     // enumeration is scoped to another user. Prefer registered metadata, but
     // recover the same identity from WindowsApps' immutable path as fallback.
-    const installedPackage = packageProbe.value ?? processPackage
-    if (!match && !installedPackage) {
+    const processPackageAllowed = packageProbe.confirmedAbsent !== true
+    const installedPackage = packageProbe.value ?? (processPackageAllowed ? processPackage : null)
+    // A successful current-user AppX probe with no package is authoritative.
+    // Windows may keep a stale StartApps registration after uninstalling the
+    // package or when another account owns it; treating that entry as a valid
+    // install creates an AppsFolder id that AppModel accepts but cannot run.
+    const staleStartApp = packageProbe.confirmedAbsent === true
+    if ((!match || staleStartApp) && !installedPackage) {
       return {
         installed: false,
         version: null,
@@ -1635,7 +1708,12 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     ])
     if (currentProbe.error) throw new Error(currentProbe.error)
     const currentPackage = currentProbe.value
-    const firstInstall = canAttemptCodexDesktopFirstInstallFallback(currentPackage, startApp, runningProcesses)
+    const firstInstall = canAttemptCodexDesktopFirstInstallFallback(
+      currentPackage,
+      startApp,
+      runningProcesses,
+      currentProbe.confirmedAbsent === true,
+    )
     if (!firstInstall && !currentPackage) {
       throw new Error('已检测到 Codex Desktop，但无法读取已安装版本，请先重新检测环境')
     }
@@ -1966,9 +2044,28 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error('未检测到 Codex 桌面端，请先安装后重新检测')
     }
     const desktopAppPath = desktopApp.path
+    const workspace = store.read().workspace
+    let workspaceUrl: string | null = null
+    try {
+      if (fs.statSync(workspace).isDirectory()) workspaceUrl = buildCodexDesktopWorkspaceUrl(workspace)
+    } catch {
+      // Keep the legacy AppsFolder fallback available when the user has not
+      // selected a workspace yet. The next launch can use the deep link once
+      // the workspace is configured.
+    }
 
     const existingProcesses = await listCodexDesktopProcesses()
     const restarted = mode === 'restart' && existingProcesses.length > 0
+    const repairPermissionState = async (): Promise<void> => {
+      if (!launchOptions.repairPermissionModeVisibility || !codexEnv.CODEX_HOME) return
+      try {
+        const result = await repairCodexDesktopGlobalState(codexEnv.CODEX_HOME)
+        if (result.changed) console.info('[codex-launch] 已迁移旧版权限选择器状态')
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        throw new Error(`Codex Desktop 权限选择器状态修复失败：${message.slice(0, 500)}`)
+      }
+    }
     if (mode === 'restart') {
       try {
         await terminateCodexDesktopProcesses(existingProcesses)
@@ -1982,9 +2079,17 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         const message = error instanceof Error ? error.message : String(error)
         throw new Error(`Codex 桌面端重启失败：${message}`)
       }
+      await repairPermissionState()
       sendCodexDesktopStatus(target, 'stopped', { ...desktopApp, running: false })
     }
 
+    // An open action normally leaves an already-running Desktop untouched.
+    // The caller only enables this path when the process probe confirmed that
+    // no process is alive, so the state file cannot be overwritten from the
+    // Desktop's in-memory legacy value while we migrate it.
+    if (mode !== 'restart') await repairPermissionState()
+
+    let activationProcessId: number | null = null
     const launchWithExplorer = async (): Promise<void> => {
       const launchPlan = buildCodexDesktopLaunchPlan(desktopAppPath)
       await spawnDetached(launchPlan.executable, launchPlan.args, {
@@ -1993,23 +2098,61 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         windowsHide: launchPlan.windowsHide,
       })
     }
-    let cdpPort: number | null = null
-    let activationProcessId: number | null = null
-    const shouldInjectChinese = Boolean(launchOptions.injectChinese)
-      && (mode === 'restart' || existingProcesses.length === 0)
-    if (shouldInjectChinese) {
+    let workspaceLaunchDelivered = false
+    const launchWithWorkspace = async (): Promise<void> => {
+      if (!workspaceUrl) {
+        await launchWithExplorer()
+        return
+      }
+      // Do not pass codex:// to explorer.exe. If the mirror-installed package
+      // has not registered the protocol handler, Explorer treats the query's
+      // path as a normal folder and opens Documents instead of Codex. The
+      // AppModel activation manager delivers the same URL directly to the
+      // packaged app without exposing a shell window.
+      const pid = await activateCodexDesktop(desktopAppPath, workspaceUrl)
+      if (pid !== null) activationProcessId = pid
+      workspaceLaunchDelivered = true
+    }
+    const launchFresh = async (): Promise<void> => {
       try {
-        cdpPort = await getAvailableLoopbackPort()
-        activationProcessId = await activateCodexDesktopWithCdp(desktopAppPath, cdpPort)
+        await launchWithWorkspace()
+      } catch (error) {
+        if (!workspaceUrl) throw error
+        const message = error instanceof Error ? error.message : String(error)
+        // Damaged or older Store registrations may reject arguments through
+        // the AppModel activation manager even though plain AppsFolder
+        // activation works. Do not retry the URL through Explorer: that is
+        // precisely the path which can open the workspace as a folder.
+        console.warn(`[codex-launch] 工作区参数激活不可用，回退 AppsFolder：${message}`)
+        await launchWithExplorer()
+      }
+    }
+    let cdpPort: number | null = null
+    let activatedViaAppModel = false
+    const needsFreshActivation = mode === 'restart' || existingProcesses.length === 0
+    const shouldInjectChinese = Boolean(launchOptions.injectChinese)
+      && needsFreshActivation
+    if (needsFreshActivation) {
+      try {
+        if (shouldInjectChinese) {
+          cdpPort = await getAvailableLoopbackPort()
+          activationProcessId = await activateCodexDesktopWithCdp(desktopAppPath, cdpPort)
+          // CDP activation starts a fresh Electron process. The official
+          // deep link then attaches the configured workspace to that process.
+          await launchFresh()
+        } else {
+          await launchFresh()
+        }
+        activatedViaAppModel = shouldInjectChinese
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
-        // AppX activation arguments are not stable across Windows builds. The
-        // existing Explorer path remains the safe fallback and still benefits
-        // from the persisted config.toml locale override.
-        console.warn(`[codex-locale] CDP 增强启动不可用，回退 Explorer：${message}`)
+        // CDP activation may be unavailable on a damaged Store registration
+        // or an older Windows build. The ordinary AppModel/AppsFolder route
+        // remains the safe fallback and never exposes a folder window.
+        console.warn(`[codex-launch] 增强启动不可用，回退普通启动：${message}`)
         cdpPort = null
         try {
-          await launchWithExplorer()
+          await launchFresh()
         } catch (fallbackError) {
           const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError)
           throw new Error(`无法发送 Codex 桌面端启动请求：${fallbackMessage}`)
@@ -2017,7 +2160,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     } else {
       try {
-        await launchWithExplorer()
+        await launchFresh()
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         throw new Error(`无法发送 Codex 桌面端启动请求：${message}`)
@@ -2026,12 +2169,29 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
 
     let startedProcesses = await waitForCodexDesktopState(
       true,
-      cdpPort !== null ? codexDesktopLaunchInitialWaitMs : codexDesktopLaunchFallbackWaitMs,
+      activatedViaAppModel || workspaceLaunchDelivered
+        ? codexDesktopLaunchInitialWaitMs
+        : codexDesktopLaunchFallbackWaitMs,
     )
-    if (!startedProcesses.length && cdpPort !== null) {
+
+    const processFromActivationPid = async (): Promise<WindowsProcessEntry[]> => {
+      if (activationProcessId === null || !await waitForProcessId(activationProcessId, 2_000)) return []
+      return [{
+        processId: activationProcessId,
+        parentProcessId: 0,
+        name: 'ChatGPT.exe',
+        executablePath: desktopApp.installDirectory
+          ? path.join(desktopApp.installDirectory, 'app', 'ChatGPT.exe')
+          : '',
+      }]
+    }
+    if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
+
+    if (!startedProcesses.length && workspaceLaunchDelivered) {
       // COM activation can be unavailable for a per-user Store registration
-      // while Explorer still knows how to activate the package. Retry through
-      // the original path before reporting a launch failure.
+      // while Explorer still knows how to activate the package. Retry only
+      // the plain AppsFolder route; sending codex:// to Explorer can open the
+      // selected workspace as a File Explorer window.
       cdpPort = null
       try {
         await launchWithExplorer()
@@ -2041,21 +2201,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
     // AppX activation returns the application PID even when WMI is slow or
-    // temporarily unable to expose the packaged executable path. Treat a
-    // still-alive activation PID as a successful launch; later status scans
-    // can recover the full package metadata once Windows finishes indexing.
-    if (!startedProcesses.length && activationProcessId !== null) {
-      if (await waitForProcessId(activationProcessId, 2_000)) {
-        startedProcesses = [{
-          processId: activationProcessId,
-          parentProcessId: 0,
-          name: 'Codex.exe',
-          executablePath: desktopApp.installDirectory
-            ? path.join(desktopApp.installDirectory, 'app', 'ChatGPT.exe')
-            : '',
-        }]
-      }
-    }
+    // temporarily unable to expose the packaged executable path. The first
+    // PID check normally settles this; repeat after Explorer only in case the
+    // process was still crossing the AppModel boundary at the first check.
+    if (!startedProcesses.length) startedProcesses = await processFromActivationPid()
     if (!startedProcesses.length) {
       const launchContext = await inspectCodexDesktopWindowsLaunchContext()
       throw new Error(describeCodexDesktopLaunchFailure(launchContext))

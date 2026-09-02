@@ -10,6 +10,8 @@ import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
 import { supportServiceUrl } from './relay-sites'
+import { managedCliKeyProfiles, providerIds } from './catalog'
+import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
 const electronMocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: unknown[]) => unknown>(),
@@ -171,7 +173,7 @@ function trustedEvent(url = 'http://localhost:5173/', senderId = 101) {
 }
 
 type ChatIpcOverrides = Partial<Pick<Parameters<typeof registerIpcHandlers>[0],
-  'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets'>>
+  'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill'>>
 
 function updaterStub(): UpdaterService {
   const state = {
@@ -464,6 +466,58 @@ describe('registerIpcHandlers', () => {
     expect(imageService.cancelAll).toHaveBeenCalledOnce()
     expect(paymentWindow.destroy).toHaveBeenCalledOnce()
     expect(accountService.logout).toHaveBeenCalledOnce()
+  })
+
+  it('installs the bundled 星芒AI skill on key sync without returning the image key', async () => {
+    const userHome = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-ai-skill-ipc-'))
+    const accountService = accountServiceStub()
+    vi.mocked(accountService.getSessionState).mockReturnValue({
+      authenticated: true,
+      account: { userId: 9 },
+    } as never)
+    vi.mocked(accountService.listUsableGroups).mockResolvedValue([
+      { name: '图片模型-中转/订阅', description: '', ratio: 1 },
+    ])
+    vi.mocked(accountService.provisionCliKey).mockImplementation(async (input) => ({
+      id: 7,
+      name: input?.name ?? 'key',
+      key: 'sk-ipc-must-not-return-this-secret-key',
+    }))
+    const cached = providerIds.map((provider, index) => ({
+      id: index + 1,
+      provider,
+      group: managedCliKeyProfiles[provider].group,
+      name: managedCliKeyProfiles[provider].keyName,
+      key: `sk-cached-${provider}-not-for-ipc`,
+    }))
+    register(
+      serviceStub(),
+      'C:\\app-data\\logs',
+      undefined,
+      accountService,
+      undefined,
+      {
+        read: vi.fn(async () => cached),
+        save: vi.fn(),
+        remove: vi.fn(),
+        captureRevision: vi.fn(() => 1),
+      },
+      {
+        xingmangAiSkill: {
+          bundledRoot: resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..')),
+          userHome,
+        },
+      },
+    )
+
+    try {
+      const summary = await electronMocks.handlers.get('account:sync-managed-cli-keys')!(trustedEvent())
+      expect(JSON.stringify(summary)).not.toContain('sk-ipc-must-not-return-this-secret-key')
+      const configPath = path.join(userHome, '.agents', 'skills', '星芒AI', 'config.json')
+      expect(fs.readFileSync(configPath, 'utf8')).toContain('sk-ipc-must-not-return-this-secret-key')
+    } finally {
+      fs.rmSync(userHome, { recursive: true, force: true })
+    }
   })
 
   it('persists a selected workspace and updates the repository context', async () => {

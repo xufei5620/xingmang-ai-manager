@@ -75,6 +75,7 @@ import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
+import { clearXingmangAiSkillSecrets, syncXingmangAiSkill } from './xingmang-ai-skill'
 import type {
   AccountKeyCliConfigurationInput,
   AccountKeyCreateInput,
@@ -155,6 +156,13 @@ export interface IpcRegistrationOptions {
   imageService?: AiImageService
   aiAssets?: AiAssetStore
   transformSystemSnapshot?: (snapshot: SystemSnapshot) => SystemSnapshot
+  // Bundled 星芒AI skill: login copies the template into user skill roots and
+  // writes the image-group key into config.json. Optional so existing IPC
+  // tests keep the previous "CLI keys only" sync behavior.
+  xingmangAiSkill?: {
+    bundledRoot: string
+    userHome: string
+  }
 }
 
 type TrustedIpcHandler = (event: IpcMainInvokeEvent, ...args: unknown[]) => unknown
@@ -1719,11 +1727,22 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:login', (_event, input: unknown) => (
     accountService.login(parseAccountLoginInput(input))
   ))
-  registerTrustedHandler('account:logout', () => {
+  registerTrustedHandler('account:logout', async () => {
     options.chatService?.cancelAll()
     options.imageService?.cancelAll()
     options.paymentWindow.destroy()
-    return accountService.logout()
+    const result = await accountService.logout()
+    if (options.xingmangAiSkill) {
+      await clearXingmangAiSkillSecrets(options.xingmangAiSkill.userHome).catch((error) => {
+        options.runtimeLog.log(
+          'warn',
+          'account',
+          'xingmang-ai-skill.clear',
+          error instanceof Error ? error.message : '星芒AI Skill 配置清理失败',
+        )
+      })
+    }
+    return result
   })
   const accountSessionReady = options.accountSessionReady ?? Promise.resolve()
   registerTrustedHandler('account:get-session', async () => {
@@ -1783,9 +1802,24 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:purchase-subscription-balance', (_event, planId: unknown) => (
     accountService.purchaseSubscriptionWithBalance(parsePositiveSafeInteger(planId, '订阅方案 ID'))
   ))
-  registerTrustedHandler('account:sync-managed-cli-keys', () => (
-    syncManagedCliKeySummary(accountService, options.managedCliKeys)
-  ))
+  registerTrustedHandler('account:sync-managed-cli-keys', async () => {
+    const summary = await syncManagedCliKeySummary(accountService, options.managedCliKeys)
+    if (options.xingmangAiSkill) {
+      await syncXingmangAiSkill({
+        accountService,
+        bundledRoot: options.xingmangAiSkill.bundledRoot,
+        userHome: options.xingmangAiSkill.userHome,
+      }).catch((error) => {
+        options.runtimeLog.log(
+          'warn',
+          'account',
+          'xingmang-ai-skill.sync',
+          error instanceof Error ? error.message : '星芒AI Skill 同步失败',
+        )
+      })
+    }
+    return summary
+  })
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)
     if (resolveRelaySite(service.readStoredConfig().relaySiteId).accountBackend === 'manual-key') {

@@ -95,7 +95,17 @@ module.exports = {
     // Generated canvas-v2 build (scripts/copy-canvas-assets.mjs).
     'dist-canvas/**/*',
     'assets/**/*',
+    // Default-installed 星芒AI skill template. Contains no API keys; the
+    // main process copies it to the user skill roots and writes config.json.
+    'bundled-skills/xingmang-ai/**/*',
     'package.json',
+  ],
+  extraResources: [
+    {
+      from: 'bundled-skills/xingmang-ai',
+      to: 'bundled-skills/xingmang-ai',
+      filter: ['**/*'],
+    },
   ],
   publish: {
     provider: 'generic',

@@ -13,6 +13,9 @@ import {
   buildCodexDesktopPreviousManifestSources,
   buildCodexDesktopPackageSources,
   buildCodexDesktopPackageProbeScript,
+  buildCodexDesktopProcessProbeScript,
+  buildCodexDesktopWorkspaceLaunchPlan,
+  buildCodexDesktopWorkspaceUrl,
   buildCodexDesktopWindowsProbes,
   buildDesktopUpdateStatus,
   canAttemptCodexDesktopFirstInstallFallback,
@@ -153,6 +156,31 @@ afterEach(() => {
 })
 
 describe('Codex Desktop launch trust', () => {
+  it('encodes a Windows workspace in the official Desktop deep link', () => {
+    expect(buildCodexDesktopWorkspaceUrl('C:\\Users\\tester\\My Project')).toBe(
+      'codex://threads/new?path=C%3A%5CUsers%5Ctester%5CMy+Project',
+    )
+    expect(() => buildCodexDesktopWorkspaceUrl('')).toThrow('工作目录无效')
+    expect(() => buildCodexDesktopWorkspaceUrl('relative\\project')).toThrow('工作目录无效')
+    expect(() => buildCodexDesktopWorkspaceUrl(`C:\\${'x'.repeat(32_767)}`)).toThrow('工作目录无效')
+  })
+
+  it('keeps workspace launch on the trusted Explorer path', () => {
+    const plan = buildCodexDesktopWorkspaceLaunchPlan(
+      'OpenAI.Codex_123!App',
+      'C:\\Users\\tester\\My Project',
+      {
+        ...process.env,
+        PATH: 'C:\\Users\\tester\\AppData\\Roaming\\npm',
+      },
+    )
+
+    expect(path.win32.isAbsolute(plan.executable)).toBe(true)
+    expect(plan.executable.toLowerCase()).toMatch(/\\windows\\explorer\.exe$/)
+    expect(plan.args).toEqual(['codex://threads/new?path=C%3A%5CUsers%5Ctester%5CMy+Project'])
+    expect(plan.env.PATH).not.toContain('C:\\Users\\tester')
+  })
+
   it.runIf(process.platform === 'win32')('uses the canonical SystemRoot Explorer and drops user runtime injection variables', () => {
     const plan = buildCodexDesktopLaunchPlan(
       'OpenAI.Codex_123!App',
@@ -177,6 +205,12 @@ describe('Codex Desktop update state', () => {
   it('allows historical fallback only when every local install probe is empty', () => {
     expect(canAttemptCodexDesktopFirstInstallFallback(null, null, [])).toBe(true)
     expect(canAttemptCodexDesktopFirstInstallFallback(null, { name: 'Codex', appId: 'OpenAI.Codex!App' }, [])).toBe(false)
+    expect(canAttemptCodexDesktopFirstInstallFallback(
+      null,
+      { name: '残留入口', appId: 'OpenAI.Codex_2p2nqsd0c76g0!App' },
+      [],
+      true,
+    )).toBe(true)
     expect(canAttemptCodexDesktopFirstInstallFallback(null, null, [{
       processId: 1,
       parentProcessId: 0,
@@ -944,17 +978,35 @@ describe('buildCodexDesktopWindowsProbes', () => {
 })
 
 describe('Codex Desktop Appx probe script', () => {
-  it('uses the current-user result as authoritative when the all-users fallback is restricted', () => {
+  it('uses only the current-user result so another account cannot block first install', () => {
     const script = buildCodexDesktopPackageProbeScript()
     const currentProbe = script.indexOf("Get-AppxPackage -Name 'OpenAI.Codex*'")
-    const allUsersProbe = script.indexOf("Get-AppxPackage -AllUsers -Name 'OpenAI.Codex*'")
 
     expect(currentProbe).toBeGreaterThanOrEqual(0)
-    expect(allUsersProbe).toBeGreaterThan(currentProbe)
-    expect(script).toContain('$allUsersError = $null')
+    expect(script).not.toContain("Get-AppxPackage -AllUsers -Name 'OpenAI.Codex*'")
+    expect(script).toContain('$packages = $currentPackages')
+    expect(script).toContain("$source = if ($currentPackages.Count -gt 0) { 'current-user' } else { $null }")
     expect(script).toContain('$currentProbeSucceeded = $null -eq $currentError')
     expect(script).toContain('$confirmedAbsent = $currentProbeSucceeded -and $currentPackages.Count -eq 0')
-    expect(script).not.toContain('系统拒绝读取其他用户的安装信息')
+  })
+
+  it('recovers a packaged process path from its command line when WMI omits ExecutablePath', () => {
+    const script = buildCodexDesktopProcessProbeScript()
+    expect(script).toContain('$_.CommandLine')
+    expect(script).toContain("@('ChatGPT.exe', 'Codex.exe')")
+    expect(script).toContain('WindowsApps\\\\OpenAI.Codex')
+    expect(script).toContain('ExecutablePath = $path')
+  })
+
+  it.runIf(process.platform === 'win32')('executes the process probe on Windows and emits bounded JSON', () => {
+    const output = execFileSync(windowsPowerShellExecutable(), [
+      '-NoLogo',
+      '-NoProfile',
+      '-NonInteractive',
+      '-Command',
+      buildCodexDesktopProcessProbeScript(),
+    ], { encoding: 'utf8', windowsHide: true, maxBuffer: 1024 * 1024 })
+    if (output.trim()) expect(() => JSON.parse(output)).not.toThrow()
   })
 })
 

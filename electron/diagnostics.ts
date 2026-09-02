@@ -500,10 +500,11 @@ async function defaultInspectCodexDesktop(signal: AbortSignal): Promise<Diagnost
   if (process.platform !== 'win32') return { installed: false, version: null, path: null, running: false }
   const script = [
     '$app=@(Get-StartApps | Where-Object { $_.AppID -like "OpenAI.Codex*!App" } | Select-Object -First 1 Name,AppID)',
-    // An elevated manager may have no Start Menu registration in its own
-    // profile. AppX metadata is machine-readable and is the authoritative
-    // fallback for packages installed for another user.
-    'if ($app.Count -eq 0) { $pkg=@(Get-AppxPackage -Name "OpenAI.Codex*" | Sort-Object Name | Select-Object -First 1 PackageFamilyName,Version); if ($pkg.Count -eq 0) { $pkg=@(Get-AppxPackage -AllUsers -Name "OpenAI.Codex*" | Sort-Object Name | Select-Object -First 1 PackageFamilyName,Version) }; if ($pkg.Count -gt 0) { $app=@([pscustomobject]@{Name="Codex Desktop $($pkg[0].Version)";AppID="$($pkg[0].PackageFamilyName)!App"}) } }',
+    // AppX registration is per user. Do not fall back to Get-AppxPackage
+    // -AllUsers: a normal account is commonly denied that query, and an
+    // elevated manager could otherwise report another user's package as
+    // launchable from the current profile.
+    'if ($app.Count -eq 0) { $pkg=@(Get-AppxPackage -Name "OpenAI.Codex*" | Sort-Object Name | Select-Object -First 1 PackageFamilyName,Version); if ($pkg.Count -gt 0) { $app=@([pscustomobject]@{Name="Codex Desktop $($pkg[0].Version)";AppID="$($pkg[0].PackageFamilyName)!App"}) } }',
     '$running=@(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -like "Codex*" }).Count -gt 0',
     '[pscustomobject]@{Name=$app.Name;AppID=$app.AppID;Running=$running}|ConvertTo-Json -Compress',
   ].join(';')

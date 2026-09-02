@@ -753,6 +753,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }, [])
   const clipboardRef = useRef<CanvasClipboardPayload | null>(null)
   const reactFlow = useReactFlow<CanvasNode, Edge>()
+  const pendingCreatedNodeFocusRef = useRef<string | null>(null)
   const overviewViewportRef = useRef<Viewport | null>(null)
   const altDragSessionRef = useRef<{
     nodeIds: string[]
@@ -1925,9 +1926,39 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }
 
   const addNode = (type: string, position?: XYPosition, config: Record<string, unknown> = {}) => {
-    const node = createNode(type, position, config)
+    const definition = builtinNodeRegistry.resolve(type)
+    if (!definition) return
+    const bounds = document.querySelector('.canvas-flow')?.getBoundingClientRect()
+    const preferredCenter = bounds
+      ? reactFlow.screenToFlowPosition({ x: bounds.left + bounds.width / 2, y: bounds.top + bounds.height / 2 })
+      : { x: 420, y: 300 }
+    const resolvedPosition = position ?? findAvailableCanvasPosition(nodes, preferredCenter, definition.dimensions)
+    const node = createNode(type, resolvedPosition, config)
     if (!node) return
     execute({ type: 'add-nodes', nodes: [canvasNodeDocumentRecord(node)] })
+    if (!position) {
+      pendingCreatedNodeFocusRef.current = node.id
+      let attempts = 0
+      const focusWhenReady = () => {
+        if (pendingCreatedNodeFocusRef.current !== node.id) return
+        const renderedNode = reactFlow.getNode(node.id)
+        if ((!renderedNode || !renderedNode.measured?.width || !renderedNode.measured.height) && attempts < 30) {
+          attempts += 1
+          window.requestAnimationFrame(focusWhenReady)
+          return
+        }
+        pendingCreatedNodeFocusRef.current = null
+        const width = renderedNode?.measured?.width ?? node.width ?? definition.dimensions.width
+        const height = renderedNode?.measured?.height ?? node.height ?? definition.dimensions.height
+        setNodes((current) => current.map((entry) => ({ ...entry, selected: entry.id === node.id })))
+        void reactFlow.setCenter(
+          node.position.x + width / 2,
+          node.position.y + height / 2,
+          { zoom: Math.min(reactFlow.getViewport().zoom, 1), duration: 180 },
+        )
+      }
+      window.requestAnimationFrame(focusWhenReady)
+    }
   }
 
   const addConnectedNode = (

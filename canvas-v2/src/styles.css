@@ -63,10 +63,8 @@ button:disabled {
 .canvas-project-center-head > span { display: grid; gap: var(--space-4); }
 .canvas-project-center-head strong { font-size: var(--text-xl); font-weight: 650; }
 .canvas-project-center-head small { color: var(--text-muted); font-size: var(--text-sm); }
-.canvas-project-center-head form { display: flex; min-width: min(420px, 48vw); gap: var(--space-8); }
-.canvas-project-center-head input { min-width: 0; flex: 1; min-height: 36px; padding: var(--space-6) var(--space-10); color: var(--text-primary); background: var(--surface-input); border: 1px solid var(--border-strong); border-radius: var(--radius-control); }
-.canvas-project-center-head button { display: inline-flex; min-height: 36px; align-items: center; gap: var(--space-6); padding: var(--space-6) var(--space-12); color: var(--text-on-accent); background: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius-control); }
-.canvas-project-center-head button:disabled { cursor: default; opacity: 0.46; }
+.canvas-project-center-head .canvas-project-create { display: inline-flex; flex: 0 0 auto; min-height: 36px; align-items: center; gap: var(--space-6); padding: var(--space-6) var(--space-12); color: var(--text-on-accent); background: var(--accent); border: 1px solid var(--accent); border-radius: var(--radius-control); }
+.canvas-project-center-head .canvas-project-create:disabled { cursor: default; opacity: 0.46; }
 
 .canvas-project-center-tabs { display: flex; max-width: 1120px; gap: var(--space-4); margin: 0 auto var(--space-12); }
 .canvas-project-center-tabs button { display: inline-flex; height: 30px; align-items: center; gap: var(--space-6); padding: 0 var(--space-10); color: var(--text-muted); background: transparent; border: 0; border-radius: var(--radius-control); font-size: var(--text-xs); }
@@ -472,7 +470,7 @@ button:disabled {
 @media (max-width: 720px) {
   .canvas-project-center { padding: var(--space-20) var(--space-12); }
   .canvas-project-center-head { align-items: stretch; flex-direction: column; }
-  .canvas-project-center-head form { min-width: 0; }
+  .canvas-project-center-head .canvas-project-create { align-self: start; }
 }
 
 .canvas-navigation-tools {
@@ -1128,6 +1126,7 @@ button:disabled {
    sheds the least essential actions; rename, enlarge and the overflow menu
    remain on the detail panel, the double click and the context menu. */
 .asset-tray-grid.is-density-cozy .asset-tray-item-tools .is-optional-rename,
+.asset-tray-grid.is-density-cozy .asset-tray-item-tools .is-optional-preview,
 .asset-tray-grid.is-density-compact .asset-tray-item-tools .is-optional-rename,
 .asset-tray-grid.is-density-compact .asset-tray-item-tools .is-optional-menu,
 .asset-tray-grid.is-density-compact .asset-tray-item-tools .is-optional-preview { display: none; }
