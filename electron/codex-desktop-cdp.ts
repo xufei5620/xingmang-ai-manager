@@ -346,9 +346,31 @@ export async function activateCodexDesktopWithCdp(
   port: number,
   baseEnv: NodeJS.ProcessEnv = process.env,
 ): Promise<number | null> {
-  if (process.platform !== 'win32') throw new Error('Codex Desktop CDP 激活仅支持 Windows')
+  try {
+    return await activateCodexDesktop(appUserModelId, buildCodexDesktopCdpArguments(port), baseEnv)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new Error(`Codex Desktop 中文增强启动失败：${message.slice(0, 500)}`)
+  }
+}
+
+/**
+ * Activates the registered AppX application through the Windows activation
+ * manager and returns the PID reported by AppModel.  Unlike the CDP variant,
+ * this path does not add browser/debugging flags; it is used for ordinary
+ * launches where we still need a reliable PID even if WMI temporarily hides
+ * the packaged executable path.
+ */
+export async function activateCodexDesktop(
+  appUserModelId: string,
+  argumentsValue = '',
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): Promise<number | null> {
+  if (process.platform !== 'win32') throw new Error('Codex Desktop AppX 激活仅支持 Windows')
   const appId = validateCodexDesktopAppUserModelId(appUserModelId)
-  const args = buildCodexDesktopCdpArguments(port)
+  if (argumentsValue.includes('\0') || argumentsValue.length > 2_048) {
+    throw new Error('Codex Desktop 激活参数无效')
+  }
   try {
     const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
       '-NoLogo',
@@ -360,7 +382,7 @@ export async function activateCodexDesktopWithCdp(
       env: {
         ...trustedCommandEnvironment(baseEnv),
         XINGMANG_CODEX_APP_ID: appId,
-        XINGMANG_CODEX_ARGS: args,
+        XINGMANG_CODEX_ARGS: argumentsValue,
       },
       windowsHide: true,
       timeout: 10_000,
@@ -371,7 +393,7 @@ export async function activateCodexDesktopWithCdp(
     const failure = error as { stderr?: unknown; message?: unknown }
     const stderr = typeof failure.stderr === 'string' ? failure.stderr.trim() : ''
     const message = stderr || (typeof failure.message === 'string' ? failure.message.trim() : '')
-    throw new Error(`Codex Desktop 中文增强启动失败：${(message || 'Windows AppX 激活失败').slice(0, 500)}`)
+    throw new Error(`Codex Desktop AppX 激活失败：${(message || 'Windows AppX 激活失败').slice(0, 500)}`)
   }
 }
 

@@ -499,7 +499,8 @@ export function isImageModel(model: string): boolean {
   return resolveAiModelCapability(model).kind === 'image'
 }
 
-const IMAGE_GROUP_NAMES = new Set(['图片模型-中转/订阅', '生图分组'])
+export const IMAGE_SKILL_GROUP_NAMES = ['图片模型-中转/订阅', '生图分组'] as const
+const IMAGE_GROUP_NAMES = new Set<string>(IMAGE_SKILL_GROUP_NAMES)
 const IMAGE_GROUP_MODEL_ORDER = [
   'gpt-image-2',
   'gemini-3.1-flash-image',

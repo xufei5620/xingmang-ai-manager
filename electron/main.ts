@@ -68,6 +68,10 @@ import {
   type DiagnosticsReport,
 } from './diagnostics'
 import { registerIpcHandlers, type AppWindowMode } from './ipc'
+import {
+  installXingmangAiSkillFiles,
+  resolveXingmangAiBundledSkillRoot,
+} from './xingmang-ai-skill'
 import { ipcEventChannels } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
@@ -1075,6 +1079,18 @@ if (!hasSingleInstanceLock) {
     // persist it durably -- same normalize-on-startup write as before the
     // field-wise-merge change, routed through the same serialized queue.
     await systemService.updateStoredConfig({ version: 2 })
+    const bundledXingmangAiSkillRoot = resolveXingmangAiBundledSkillRoot(app.getAppPath(), {
+      packaged: app.isPackaged,
+      resourcesPath: process.resourcesPath,
+    })
+    void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir()).catch((error) => {
+      runtimeLog.log(
+        'warn',
+        'account',
+        'xingmang-ai-skill.install',
+        error instanceof Error ? error.message : '星芒AI Skill 默认安装失败',
+      )
+    })
     const unregisterIpcHandlers = registerIpcHandlers({
       systemService,
       accountService,
@@ -1115,6 +1131,10 @@ if (!hasSingleInstanceLock) {
         canvasController.setTheme(theme)
       },
       openCanvasWindow: () => canvasController.open(),
+      xingmangAiSkill: {
+        bundledRoot: bundledXingmangAiSkillRoot,
+        userHome: os.homedir(),
+      },
       ...(manualUninstallVisualFixtureEnabled
         ? {
             transformSystemSnapshot: (snapshot: SystemSnapshot) => (

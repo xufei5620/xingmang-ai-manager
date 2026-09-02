@@ -95,6 +95,10 @@ import {
   type CodexDesktopLocaleResult,
   type CodexDesktopLocaleStatus,
 } from './codex-desktop-locale'
+import {
+  inspectCodexDesktopGlobalState,
+  type CodexDesktopGlobalStateStatus,
+} from './codex-desktop-state'
 import { fetchGrokStableVersion } from './grok-update'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
@@ -3094,6 +3098,21 @@ export function createSystemService(
       // The launch path remains available; malformed configs are reported by
       // Codex itself and by the dedicated permission inspection below.
     }
+    let effectiveLaunchMode = mode
+    let repairPermissionModeVisibility = false
+    if (platform === 'win32') {
+      const globalState: CodexDesktopGlobalStateStatus = inspectCodexDesktopGlobalState(providerRoots.codexHome)
+      if (globalState.needsRepair) {
+        repairPermissionModeVisibility = true
+        // The Desktop keeps the legacy value in memory and writes it back on
+        // exit. Force a full restart before migration when an open action
+        // finds a running instance; otherwise the repair would be lost.
+        if (mode === 'open') {
+          const desktop = await inspectCodexDesktop()
+          if (desktop.running) effectiveLaunchMode = 'restart'
+        }
+      }
+    }
     let injectChinese = launchOptions.injectChinese
     if (injectChinese === undefined && platform === 'win32') {
       try {
@@ -3117,7 +3136,11 @@ export function createSystemService(
         injectChinese = false
       }
     }
-    return launchCodexDesktopOperation(mode, target, { ...launchOptions, injectChinese })
+    return launchCodexDesktopOperation(effectiveLaunchMode, target, {
+      ...launchOptions,
+      injectChinese,
+      repairPermissionModeVisibility,
+    })
   }
 
   async function launchProviderOperation(provider: ProviderId, workspace: string): Promise<void> {

@@ -3,7 +3,6 @@ import {
   ChevronRight,
   ChevronsLeft,
   ChevronsRight,
-  CircleHelp,
   LoaderCircle,
   Moon,
   RotateCw,
@@ -130,13 +129,15 @@ export function Sidebar({
   }, [collapsed])
 
   useLayoutEffect(() => {
-    if (!collapsed || !moreExpanded) return
+    if (!moreExpanded) return
     const updatePosition = () => {
       const anchor = moreToggleRef.current?.getBoundingClientRect()
       if (!anchor) return
+      const sidebar = moreToggleRef.current?.closest('.sidebar')?.getBoundingClientRect()
+      const popoverHeight = morePopoverRef.current?.getBoundingClientRect().height ?? 228
       setMorePopoverPosition({
-        top: Math.max(12, Math.min(anchor.top - 8, window.innerHeight - 228)),
-        left: anchor.right + 8,
+        top: Math.max(12, Math.min(anchor.top - 8, window.innerHeight - popoverHeight - 12)),
+        left: (sidebar?.right ?? anchor.right) + 8,
       })
     }
     updatePosition()
@@ -149,7 +150,7 @@ export function Sidebar({
   }, [collapsed, moreExpanded])
 
   useEffect(() => {
-    if (!collapsed || !moreExpanded) return
+    if (!moreExpanded) return
     const dismiss = (event: PointerEvent) => {
       const target = event.target as Node
       if (moreToggleRef.current?.contains(target) || morePopoverRef.current?.contains(target)) return
@@ -166,7 +167,7 @@ export function Sidebar({
       document.removeEventListener('pointerdown', dismiss)
       document.removeEventListener('keydown', dismissOnEscape)
     }
-  }, [collapsed, moreExpanded, onToggleMoreExpanded])
+  }, [moreExpanded, onToggleMoreExpanded])
 
   const updatePhase = updateState?.phase
   const showUpdate = updatePhase === 'available'
@@ -200,16 +201,12 @@ export function Sidebar({
         <Icon size={18} />
         <span className="nav-label">{item.label}</span>
         {item.placeholder && <span className="nav-item-soon">即将</span>}
-        {item.hint && (
-          <span className="nav-item-hint" title={item.hint} aria-hidden="true">
-            <CircleHelp size={12} />
-          </span>
-        )}
       </button>
     )
   }
   const systemItems = navigationItems.filter((item) => item.group === 'more')
-  const collapsedSystemMenu = collapsed && moreExpanded ? createPortal(
+  const systemActive = systemItems.some((item) => item.id === activePage)
+  const systemMenu = moreExpanded ? createPortal(
     <div
       ref={morePopoverRef}
       className="nav-more-popover"
@@ -265,7 +262,7 @@ export function Sidebar({
           <button
             ref={moreToggleRef}
             type="button"
-            className={`nav-item nav-more-toggle${moreExpanded ? ' expanded' : ''}`}
+            className={`nav-item nav-more-toggle${moreExpanded ? ' expanded' : ''}${systemActive ? ' active' : ''}`}
             aria-expanded={moreExpanded}
             aria-controls="sidebar-more-items"
             aria-label="系统管理"
@@ -277,11 +274,6 @@ export function Sidebar({
             <span className="nav-label">系统管理</span>
             <ChevronRight size={14} className="nav-more-chevron" />
           </button>
-          {moreExpanded && !collapsed && (
-            <div className="nav-more-items" id="sidebar-more-items">
-              {systemItems.map((item) => renderItem(item))}
-            </div>
-          )}
         </div>
       </nav>
 
@@ -316,7 +308,7 @@ export function Sidebar({
         </div>
       </div>
     </aside>
-    {collapsedSystemMenu}
+    {systemMenu}
     </>
   )
 }

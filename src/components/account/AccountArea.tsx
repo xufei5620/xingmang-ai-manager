@@ -39,7 +39,8 @@ function isNestedButtonEvent(event: { target: EventTarget | null }): boolean {
  * fire onOpenAccountCenter instead of the button's own action. The row-wide
  * "cursor:pointer already applied to .account-area for both states" hover
  * affordance existed before W4a; W2.5's onConfigureCliKey button just got
- * there first. The refresh button reloads the balance, while the configure
+ * there first. The refresh button sits left of 充值 so it stays visible
+ * with the amount, while the configure
  * button re-triggers the same
  * offerCliProvisioning gate the 下一步 task card's "一键配置" action uses
  * (App.tsx's handleConfigureCliKey) -- this is the "关了还能再来" entry point
@@ -159,15 +160,6 @@ export function AccountArea({
         <span className="account-actions" aria-label="账户快捷操作">
           <button
             type="button"
-            className="account-refresh-button"
-            aria-label="刷新余额"
-            title="刷新余额"
-            onClick={(event) => { event.stopPropagation(); onRefreshBalance() }}
-          >
-            <RefreshCw size={14} aria-hidden="true" />
-          </button>
-          <button
-            type="button"
             className="account-configure-button"
             aria-label="配置星芒 Key 到已装 CLI"
             title="配置星芒 Key"
@@ -191,6 +183,15 @@ export function AccountArea({
             余额
           </span>
           <strong className="account-balance-value">{balanceText}</strong>
+          <button
+            type="button"
+            className="account-refresh-button"
+            aria-label="刷新余额"
+            title="刷新余额"
+            onClick={(event) => { event.stopPropagation(); onRefreshBalance() }}
+          >
+            <RefreshCw size={14} aria-hidden="true" />
+          </button>
           <button
             type="button"
             className={isLowBalance ? 'account-recharge-button low-balance' : 'account-recharge-button'}

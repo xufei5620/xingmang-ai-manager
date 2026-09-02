@@ -1219,6 +1219,17 @@ function App() {
 
   const finishAuthenticatedEntry = async (successMessage: string, initialWarnings: string[] = []) => {
     const warnings = [...initialWarnings]
+    try {
+      const synchronized = await window.xingmang.syncManagedCliKeys()
+      if (synchronized.storageWarning) {
+        warnings.push(`API Key 本地加密保存失败：${synchronized.storageWarning}`)
+      }
+      if (synchronized.failed.length > 0) {
+        warnings.push(`${synchronized.failed.length} 个专属 Key 未完成初始化`)
+      }
+    } catch (error) {
+      warnings.push(`API Key 本地配置读取失败：${resolveAccountErrorMessage(errorMessage(error))}`)
+    }
 
     // Re-login should reuse a verified bootstrap instead of replaying the
     // entire managed initialization flow. This is deliberately the same

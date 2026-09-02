@@ -36,8 +36,11 @@ function ProjectPreview({ project }: { project: CanvasStoredProjectSummary }) {
 }
 
 export function ProjectCenter({ projects, loading, error, onCreate, onOpen, onRename, onDuplicate, onSetArchived }: ProjectCenterProps) {
-  const [name, setName] = useState('')
   const [view, setView] = useState<'recent' | 'archived'>('recent')
+  const [creating, setCreating] = useState(false)
+  const [createName, setCreateName] = useState('')
+  const [createError, setCreateError] = useState<string | null>(null)
+  const [createSaving, setCreateSaving] = useState(false)
   const [action, setAction] = useState<{ project: CanvasStoredProjectSummary; kind: ProjectAction } | null>(null)
   const [actionName, setActionName] = useState('')
   const [actionError, setActionError] = useState<string | null>(null)
@@ -46,7 +49,39 @@ export function ProjectCenter({ projects, loading, error, onCreate, onOpen, onRe
   const archivedProjects = useMemo(() => projects.filter((project) => project.archivedAt).sort((left, right) => Date.parse(right.archivedAt!) - Date.parse(left.archivedAt!)), [projects])
   const visibleProjects = view === 'recent' ? activeProjects : archivedProjects
 
+  const beginCreate = () => {
+    if (loading || createSaving || actionSaving) return
+    setAction(null)
+    setCreating(true)
+    setCreateName('')
+    setCreateError(null)
+  }
+
+  const submitCreate = async (event: FormEvent) => {
+    event.preventDefault()
+    if (createSaving) return
+    const nextName = createName.trim()
+    if (!nextName) {
+      setCreateError('请先输入项目名称')
+      return
+    }
+    setCreateSaving(true)
+    setCreateError(null)
+    try {
+      const created = await onCreate(nextName)
+      if (created) {
+        setCreating(false)
+        setCreateName('')
+      }
+    } catch (createFailure) {
+      setCreateError(createFailure instanceof Error ? createFailure.message : String(createFailure))
+    } finally {
+      setCreateSaving(false)
+    }
+  }
+
   const beginAction = (project: CanvasStoredProjectSummary, kind: ProjectAction) => {
+    setCreating(false)
     setAction({ project, kind })
     setActionName(kind === 'duplicate' ? `${project.name} 副本` : project.name)
     setActionError(null)
@@ -80,10 +115,9 @@ export function ProjectCenter({ projects, loading, error, onCreate, onOpen, onRe
     <main className="canvas-project-center">
       <section className="canvas-project-center-head">
         <span><strong>星芒画布项目</strong><small>每个项目使用独立工作文件夹，节点、布局和生成素材会自动保存</small></span>
-        <form onSubmit={(event) => { event.preventDefault(); const value = name.trim(); if (value) void onCreate(value).then((created) => { if (created) setName('') }) }}>
-          <input value={name} maxLength={128} placeholder="新项目名称" aria-label="新项目名称" onChange={(event) => setName(event.target.value)} />
-          <button type="submit" disabled={loading || !name.trim()}><Plus size={15} />新建项目</button>
-        </form>
+        <button type="button" className="canvas-project-create" disabled={loading || createSaving} onClick={beginCreate}>
+          <Plus size={15} />新建项目
+        </button>
       </section>
       <section className="canvas-project-center-tabs" aria-label="项目视图">
         <button type="button" className={view === 'recent' ? 'is-active' : ''} onClick={() => setView('recent')}>最近项目 <span>{activeProjects.length}</span></button>
@@ -96,7 +130,7 @@ export function ProjectCenter({ projects, loading, error, onCreate, onOpen, onRe
           <div className="canvas-project-empty">
             {view === 'recent' ? <FolderOpen size={30} /> : <Archive size={30} />}
             <strong>{view === 'recent' ? '还没有画布项目' : '没有已归档项目'}</strong>
-            <span>{view === 'recent' ? '输入名称创建第一个项目，节点和内容会自动保存。' : '归档项目会保留工作流与本地素材，可随时恢复。'}</span>
+            <span>{view === 'recent' ? '点击右上角「新建项目」，输入名称后再选择工作文件夹。' : '归档项目会保留工作流与本地素材，可随时恢复。'}</span>
           </div>
         )}
         {visibleProjects.map((project) => {
@@ -127,6 +161,29 @@ export function ProjectCenter({ projects, loading, error, onCreate, onOpen, onRe
           )
         })}
       </section>
+      {creating && (
+        <div className="canvas-project-dialog-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget && !createSaving) setCreating(false)
+        }}>
+          <form className="canvas-project-dialog" role="dialog" aria-modal="true" aria-label="新建项目" onSubmit={(event) => void submitCreate(event)}>
+            <header>
+              <span>
+                <Plus size={16} />
+                <strong>新建项目</strong>
+              </span>
+              <button type="button" title="关闭" aria-label="关闭新建项目" disabled={createSaving} onClick={() => setCreating(false)}><X size={16} /></button>
+            </header>
+            <label><span>项目名称</span><input autoFocus value={createName} maxLength={128} aria-label="项目名称" onChange={(event) => setCreateName(event.target.value)} /></label>
+            {createError && <p className="canvas-project-dialog-error" role="alert">{createError}</p>}
+            <footer>
+              <button type="button" disabled={createSaving} onClick={() => setCreating(false)}>取消</button>
+              <button type="submit" className="is-primary" disabled={createSaving || !createName.trim()}>
+                {createSaving ? '处理中…' : '选择文件夹并创建'}
+              </button>
+            </footer>
+          </form>
+        </div>
+      )}
       {action && (
         <div className="canvas-project-dialog-backdrop" role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget && !actionSaving) setAction(null)
