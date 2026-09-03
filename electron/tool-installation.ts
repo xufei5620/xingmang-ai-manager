@@ -56,6 +56,12 @@ export interface ResolveCliInstallationOptions {
 
 export interface ResolveCliCommandOptions {
   arch?: NodeJS.Architecture
+  /** Test seam for an already selected, trusted command entry point. */
+  executablePath?: string | null
+  /** Optional discovery seams used by isolated platform tests. */
+  npmExecutable?: string | null
+  npmGlobalRoot?: string | null
+  queryNpmRoot?: ResolveCliInstallationOptions['queryNpmRoot']
   platform?: NodeJS.Platform
   runCommand?: (
     spec: { executable: string; argv: readonly string[] },
@@ -578,7 +584,14 @@ export async function resolveCliCommand(
 ): Promise<ResolvedCliCommand> {
   const env = commandEnvironment(envInput)
   const platform = options.platform ?? process.platform
-  const installation = await resolveCliInstallation(provider, { env, platform })
+  const installation = await resolveCliInstallation(provider, {
+    env,
+    platform,
+    ...(options.executablePath !== undefined ? { executablePath: options.executablePath } : {}),
+    ...(options.npmExecutable !== undefined ? { npmExecutable: options.npmExecutable } : {}),
+    ...(options.npmGlobalRoot !== undefined ? { npmGlobalRoot: options.npmGlobalRoot } : {}),
+    ...(options.queryNpmRoot !== undefined ? { queryNpmRoot: options.queryNpmRoot } : {}),
+  })
   if (!installation) throw new Error(`未检测到 ${cliCatalog[provider].name}`)
   const runDarwinVerificationCommand = options.runCommand
     ?? ((spec) => runDarwinNativeVerificationCommand(spec, envInput, platform))

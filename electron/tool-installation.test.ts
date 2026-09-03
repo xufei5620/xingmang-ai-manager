@@ -942,7 +942,7 @@ describe('CLI installation resolution', () => {
     const command = await resolveCliCommand('claude', {
       HOME: directory,
       PATH: binDirectory,
-    }, 'same-user', { platform: 'darwin' })
+    }, 'same-user', { platform: 'darwin', executablePath: commandPath })
 
     expect(command).toEqual({
       executable: fs.realpathSync(nativeBin),
@@ -971,10 +971,10 @@ describe('CLI installation resolution', () => {
     const command = await resolveCliCommand('claude', {
       HOME: directory,
       PATH: binDirectory,
-    }, 'same-user', { platform: 'darwin' })
+    }, 'same-user', { platform: 'darwin', executablePath: path.join(binDirectory, 'claude') })
 
     expect(command).toEqual({
-      executable: fs.realpathSync(path.join(binDirectory, 'node')),
+      executable: path.resolve(path.join(binDirectory, 'node')),
       argv: [fs.realpathSync(fallback)],
     })
   })

@@ -165,7 +165,7 @@ describe('Codex Desktop launch trust', () => {
     expect(() => buildCodexDesktopWorkspaceUrl(`C:\\${'x'.repeat(32_767)}`)).toThrow('工作目录无效')
   })
 
-  it('keeps workspace launch on the trusted Explorer path', () => {
+  it.runIf(process.platform === 'win32')('keeps workspace launch on the trusted Explorer path', () => {
     const plan = buildCodexDesktopWorkspaceLaunchPlan(
       'OpenAI.Codex_123!App',
       'C:\\Users\\tester\\My Project',
