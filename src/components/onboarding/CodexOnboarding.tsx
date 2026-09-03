@@ -274,6 +274,7 @@ export function CodexOnboarding({
           .filter((entry) => entry.provider !== 'codex' || codexOfficial)
           .map((entry) => `${entry.provider}：${entry.message}`)
         if (synchronized.storageWarning) warnings.push(synchronized.storageWarning)
+        if (synchronized.imageSkillWarning) warnings.push(synchronized.imageSkillWarning)
         if (warnings.length) setManagedWarning(warnings.join('；'))
         reportManagedProgress({
           id: 'sync-keys',

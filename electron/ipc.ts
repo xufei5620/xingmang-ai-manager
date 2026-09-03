@@ -1804,21 +1804,25 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ))
   registerTrustedHandler('account:sync-managed-cli-keys', async () => {
     const summary = await syncManagedCliKeySummary(accountService, options.managedCliKeys)
-    if (options.xingmangAiSkill) {
-      await syncXingmangAiSkill({
+    if (!options.xingmangAiSkill) return summary
+    try {
+      const skill = await syncXingmangAiSkill({
         accountService,
         bundledRoot: options.xingmangAiSkill.bundledRoot,
         userHome: options.xingmangAiSkill.userHome,
-      }).catch((error) => {
-        options.runtimeLog.log(
-          'warn',
-          'account',
-          'xingmang-ai-skill.sync',
-          error instanceof Error ? error.message : '星芒AI Skill 同步失败',
-        )
       })
+      for (const warning of skill.directoryWarnings ?? []) {
+        options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)
+      }
+      if (skill.ready) return summary
+      const imageSkillWarning = skill.reason || '星芒AI 生图 Key 未完成初始化'
+      options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', imageSkillWarning)
+      return { ...summary, imageSkillWarning }
+    } catch (error) {
+      const imageSkillWarning = error instanceof Error ? error.message : '星芒AI Skill 同步失败'
+      options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', imageSkillWarning)
+      return { ...summary, imageSkillWarning }
     }
-    return summary
   })
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)

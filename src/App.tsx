@@ -379,6 +379,8 @@ function App() {
                 setToast({ type: 'error', message: `API Key 本地加密保存失败：${synchronized.storageWarning}` })
               } else if (synchronized.failed.length > 0) {
                 setToast({ type: 'error', message: `${synchronized.failed.length} 个专属 Key 未完成初始化` })
+              } else if (synchronized.imageSkillWarning) {
+                setToast({ type: 'error', message: synchronized.imageSkillWarning })
               }
             })
             .catch((error) => {
@@ -1227,6 +1229,7 @@ function App() {
       if (synchronized.failed.length > 0) {
         warnings.push(`${synchronized.failed.length} 个专属 Key 未完成初始化`)
       }
+      if (synchronized.imageSkillWarning) warnings.push(synchronized.imageSkillWarning)
     } catch (error) {
       warnings.push(`API Key 本地配置读取失败：${resolveAccountErrorMessage(errorMessage(error))}`)
     }

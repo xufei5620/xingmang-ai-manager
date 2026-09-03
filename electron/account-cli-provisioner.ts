@@ -19,6 +19,7 @@ export interface ManagedCliKeySyncSummary {
   ready: ManagedCliKeyStatus[]
   failed: ManagedCliKeyFailure[]
   storageWarning?: string
+  imageSkillWarning?: string
 }
 
 export interface ManagedCliConfigurationOutcome {
