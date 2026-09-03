@@ -36,14 +36,19 @@ async function readSkillConfig(skillRoot) {
     fail('config.json 损坏。请重新登录星芒AI管理工具，让它重写配置。')
   }
   if (!parsed || typeof parsed !== 'object') fail('config.json 格式错误')
-  const apiKey = typeof parsed.apiKey === 'string' ? parsed.apiKey.trim() : ''
   const baseUrl = typeof parsed.baseUrl === 'string' && parsed.baseUrl.trim()
     ? parsed.baseUrl.trim()
     : DEFAULT_BASE_URL
-  if (!apiKey) {
-    fail('config.json 里还没有 API Key。请先登录星芒AI管理工具，工具会自动创建「图片模型-中转/订阅」分组的 Key。')
+  const keys = []
+  const codexApiKey = typeof parsed.codexApiKey === 'string' ? parsed.codexApiKey.trim() : ''
+  const apiKey = typeof parsed.apiKey === 'string' ? parsed.apiKey.trim() : ''
+  if (codexApiKey.startsWith('sk-')) keys.push({ source: 'codex', apiKey: codexApiKey })
+  if (apiKey.startsWith('sk-') && apiKey !== codexApiKey) keys.push({ source: 'image', apiKey })
+  else if (apiKey.startsWith('sk-') && keys.length === 0) keys.push({ source: 'image', apiKey })
+  if (keys.length === 0) {
+    fail('config.json 里还没有 API Key。请先登录星芒AI管理工具，工具会写入 Codex Key，并在可用时补上生图分组 Key。')
   }
-  return { apiKey, baseUrl }
+  return { keys, baseUrl }
 }
 
 function parseArgs(argv) {
@@ -103,6 +108,7 @@ function printUsage() {
     '  --image     参考图路径',
     '',
     'Key 从本技能目录的 config.json 读取，由星芒AI管理工具登录后写入。',
+    '先用软件签发的 Codex Key，失败再改用生图分组 Key。',
     '不要把 Key 打进日志。',
     '',
   ].join('\n'))
@@ -216,6 +222,18 @@ async function readResponseLimited(response) {
   return Buffer.concat(chunks)
 }
 
+class GenerateError extends Error {
+  constructor(message, retryable = false) {
+    super(message)
+    this.retryable = retryable
+  }
+}
+
+function abortableFailure(error, timeoutMessage, fallbackMessage) {
+  if (error && error.name === 'AbortError') throw new GenerateError(timeoutMessage)
+  throw new GenerateError(error instanceof Error ? error.message : fallbackMessage)
+}
+
 async function postJson(origin, pathname, apiKey, body) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
@@ -232,12 +250,11 @@ async function postJson(origin, pathname, apiKey, body) {
       body: JSON.stringify(body),
     })
   } catch (error) {
-    if (error && error.name === 'AbortError') fail('请求超时（300 秒）')
-    fail(error instanceof Error ? error.message : '请求失败')
+    abortableFailure(error, '请求超时（300 秒）', '请求失败')
   } finally {
     clearTimeout(timer)
   }
-  if (response.status >= 300 && response.status < 400) fail('上游返回了重定向，已拒绝')
+  if (response.status >= 300 && response.status < 400) throw new GenerateError('上游返回了重定向，已拒绝')
   const bytes = await readResponseLimited(response)
   return { status: response.status, bytes, contentType: response.headers.get('content-type') || '' }
 }
@@ -264,12 +281,11 @@ async function postMultipart(origin, pathname, apiKey, fields, filePath) {
       body: form,
     })
   } catch (error) {
-    if (error && error.name === 'AbortError') fail('请求超时（300 秒）')
-    fail(error instanceof Error ? error.message : '请求失败')
+    abortableFailure(error, '请求超时（300 秒）', '请求失败')
   } finally {
     clearTimeout(timer)
   }
-  if (response.status >= 300 && response.status < 400) fail('上游返回了重定向，已拒绝')
+  if (response.status >= 300 && response.status < 400) throw new GenerateError('上游返回了重定向，已拒绝')
   const bytes = await readResponseLimited(response)
   return { status: response.status, bytes }
 }
@@ -277,10 +293,11 @@ async function postMultipart(origin, pathname, apiKey, fields, filePath) {
 function parseJsonObject(bytes) {
   try {
     const parsed = JSON.parse(bytes.toString('utf8'))
-    if (!parsed || typeof parsed !== 'object') fail('上游返回了无法解析的 JSON')
+    if (!parsed || typeof parsed !== 'object') throw new GenerateError('上游返回了无法解析的 JSON')
     return parsed
-  } catch {
-    fail('上游返回了无法解析的 JSON')
+  } catch (error) {
+    if (error instanceof GenerateError) throw error
+    throw new GenerateError('上游返回了无法解析的 JSON')
   }
 }
 
@@ -302,7 +319,7 @@ function extractImagePayload(payload) {
   const message = typeof payload.error === 'string'
     ? payload.error
     : payload.error?.message || payload.message || '上游没有返回图片'
-  fail(redactUpstream(message))
+  throw new GenerateError(redactUpstream(message))
 }
 
 async function downloadImage(url) {
@@ -310,9 +327,9 @@ async function downloadImage(url) {
   try {
     parsed = new URL(url)
   } catch {
-    fail('上游返回了无效图片地址')
+    throw new GenerateError('上游返回了无效图片地址')
   }
-  if (parsed.protocol !== 'https:') fail('图片地址必须是 https')
+  if (parsed.protocol !== 'https:') throw new GenerateError('图片地址必须是 https')
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), DEFAULT_TIMEOUT_MS)
@@ -320,12 +337,11 @@ async function downloadImage(url) {
   try {
     response = await fetch(parsed.href, { method: 'GET', redirect: 'follow', signal: controller.signal })
   } catch (error) {
-    if (error && error.name === 'AbortError') fail('下载图片超时')
-    fail(error instanceof Error ? error.message : '下载图片失败')
+    abortableFailure(error, '下载图片超时', '下载图片失败')
   } finally {
     clearTimeout(timer)
   }
-  if (!response.ok) fail(`下载图片失败：HTTP ${response.status}`)
+  if (!response.ok) throw new GenerateError(`下载图片失败：HTTP ${response.status}`)
   return readResponseLimited(response)
 }
 
@@ -368,7 +384,6 @@ async function main() {
   if (!options.prompt.trim()) fail('缺少 --prompt')
   if (!options.out.trim()) fail('缺少 --out')
   const config = await readSkillConfig(skillRootFromScript())
-  const apiKey = config.apiKey
   const baseUrl = config.baseUrl
   if (options.edit && !options.image) fail('图生图需要 --image')
   if (options.edit && isGeminiImage(options.model)) fail('gemini-3.1-flash-image 不支持图生图')
@@ -379,36 +394,57 @@ async function main() {
     fail('gpt-image-2 的宽高必须是 16 的倍数')
   }
 
-  let result
-  if (options.edit) {
-    const fields = {
-      model: options.model,
-      prompt: options.prompt,
-    }
-    if (!isJimeng(options.model)) fields.size = size.text
-    if (isGptImage(options.model)) fields.quality = options.quality
-    result = await postMultipart(origin, '/v1/images/edits', apiKey, fields, options.image)
-  } else {
-    const pathname = isGeminiImage(options.model) ? '/v1/chat/completions' : '/v1/images/generations'
-    result = await postJson(origin, pathname, apiKey, buildGenerationBody(options, size))
-  }
-
-  if (result.status < 200 || result.status >= 300) {
-    const payload = (() => {
-      try {
-        return JSON.parse(result.bytes.toString('utf8'))
-      } catch {
-        return null
+  async function generateWithKey(apiKey) {
+    let result
+    if (options.edit) {
+      const fields = {
+        model: options.model,
+        prompt: options.prompt,
       }
-    })()
-    const message = payload?.error?.message || payload?.message || `HTTP ${result.status}`
-    fail(redactUpstream(message))
+      if (!isJimeng(options.model)) fields.size = size.text
+      if (isGptImage(options.model)) fields.quality = options.quality
+      result = await postMultipart(origin, '/v1/images/edits', apiKey, fields, options.image)
+    } else {
+      const pathname = isGeminiImage(options.model) ? '/v1/chat/completions' : '/v1/images/generations'
+      result = await postJson(origin, pathname, apiKey, buildGenerationBody(options, size))
+    }
+
+    if (result.status < 200 || result.status >= 300) {
+      const payload = (() => {
+        try {
+          return JSON.parse(result.bytes.toString('utf8'))
+        } catch {
+          return null
+        }
+      })()
+      const message = payload?.error?.message || payload?.message || `HTTP ${result.status}`
+      throw new GenerateError(
+        redactUpstream(message),
+        [401, 403, 429, 503].includes(result.status),
+      )
+    }
+
+    const payload = extractImagePayload(parseJsonObject(result.bytes))
+    return payload.kind === 'b64'
+      ? Buffer.from(payload.value, 'base64')
+      : await downloadImage(payload.value)
   }
 
-  const payload = extractImagePayload(parseJsonObject(result.bytes))
-  const bytes = payload.kind === 'b64'
-    ? Buffer.from(payload.value, 'base64')
-    : await downloadImage(payload.value)
+  let bytes
+  let lastError
+  for (let index = 0; index < config.keys.length; index += 1) {
+    const entry = config.keys[index]
+    try {
+      bytes = await generateWithKey(entry.apiKey)
+      break
+    } catch (error) {
+      lastError = error instanceof Error ? error : new GenerateError('生成失败')
+      const retryable = error instanceof GenerateError && error.retryable
+      const hasFallback = index < config.keys.length - 1
+      if (!retryable || !hasFallback) fail(lastError.message)
+      process.stderr.write('Codex Key 未能出图，已改用生图分组 Key。\n')
+    }
+  }
 
   const outputPath = path.resolve(options.out)
   const finalPath = path.extname(outputPath)

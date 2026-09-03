@@ -5,10 +5,10 @@
 ## 鉴权与分组
 
 - Header：`Authorization: Bearer sk-...`
-- 令牌必须属于 `图片模型-中转/订阅`（或旧名 `生图分组`）
-- 编程分组 Key 调生图模型会 503
+- 生产网关固定 `https://xm.solov.cc`，不要改成第三方生图站
+- 脚本先用 `config.json` 的 Codex Key（`GPT-中转/订阅`），失败再改用 `图片模型-中转/订阅`（或旧名 `生图分组`）
 - 不要走 `/pg/chat/completions`
-- Key 只存在本技能 `config.json`，由星芒AI管理工具写入
+- Key 只存在本技能 `config.json`，由星芒AI管理工具写入；不要读环境变量或 CLI 配置
 
 ## 文生图 `POST /v1/images/generations`
 
