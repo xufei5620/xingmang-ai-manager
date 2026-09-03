@@ -1692,13 +1692,19 @@ export function parseAccountKey(payload: unknown): NewApiAccountKey | null {
 export function parseUsableGroups(payload: unknown): NewApiUsableGroup[] {
   if (!isRecord(payload)) throw new Error('可用分组响应格式异常')
   return Object.entries(payload).flatMap(([name, raw]) => {
-    if (!name.trim() || !isRecord(raw)) return []
+    if (!name.trim()) return []
+    if (typeof raw === 'string') {
+      return [{ name, description: raw.trim() || name, ratio: 1 }]
+    }
+    if (typeof raw === 'number' && Number.isFinite(raw)) {
+      return [{ name, description: name, ratio: raw }]
+    }
+    if (!isRecord(raw)) return []
     const ratio = raw.ratio
-    if (typeof ratio !== 'number' && typeof ratio !== 'string') return []
     return [{
       name,
       description: asString(raw.desc, name),
-      ratio,
+      ratio: typeof ratio === 'number' || typeof ratio === 'string' ? ratio : 1,
     }]
   }).sort((left, right) => {
     if (left.name === 'default') return -1

@@ -61,6 +61,11 @@ async function readInstalledConfig(userHome: string, rootIndex = 0): Promise<str
   return readFile(path.join(directory, XINGMANG_AI_CONFIG_FILE), 'utf8')
 }
 
+async function seedOptionalToolHomes(userHome: string): Promise<void> {
+  await mkdir(path.join(userHome, '.claude'), { recursive: true })
+  await mkdir(path.join(userHome, '.grok'), { recursive: true })
+}
+
 describe('xingmang-ai-skill', () => {
   it('prefers the current image group name over the legacy alias', () => {
     expect(selectImageSkillGroup([
@@ -75,6 +80,17 @@ describe('xingmang-ai-skill', () => {
 
   it('returns null when the account cannot use any image group', () => {
     expect(selectImageSkillGroup([{ name: 'GPT-中转/订阅' }])).toBeNull()
+  })
+
+  it('accepts the openai alias used by older image groups', () => {
+    expect(selectImageSkillGroup([{ name: 'openai' }])).toBe('openai')
+  })
+
+  it('matches a renamed 图片中转 group without treating video groups as image groups', () => {
+    expect(selectImageSkillGroup([
+      { name: '视频模型-中转/订阅' },
+      { name: '图片模型中转' },
+    ])).toBe('图片模型中转')
   })
 
   it('omits apiKey from the renderer-safe config view', () => {
@@ -111,12 +127,34 @@ describe('xingmang-ai-skill', () => {
 
   it('installs skill files on first launch without a login or config.json', async () => {
     const userHome = await temporaryHome()
-    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toBe(3)
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({
+      installed: 1,
+      warnings: [],
+    })
+    expect(resolveXingmangAiSkillDirectories(userHome)).toEqual([
+      path.join(userHome, '.agents', 'skills', XINGMANG_AI_SKILL_DIRECTORY),
+    ])
+    await expect(readFile(
+      path.join(userHome, '.agents', 'skills', XINGMANG_AI_SKILL_DIRECTORY, 'SKILL.md'),
+      'utf8',
+    )).resolves.toContain('name: 星芒AI')
+    await expect(readFile(
+      path.join(userHome, '.agents', 'skills', XINGMANG_AI_SKILL_DIRECTORY, XINGMANG_AI_CONFIG_FILE),
+      'utf8',
+    )).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(path.join(userHome, '.claude'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(path.join(userHome, '.grok'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('also copies the skill into Claude and Grok homes that already exist', async () => {
+    const userHome = await temporaryHome()
+    await seedOptionalToolHomes(userHome)
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({
+      installed: 3,
+      warnings: [],
+    })
     for (const directory of resolveXingmangAiSkillDirectories(userHome)) {
       expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: 星芒AI')
-      await expect(readFile(path.join(directory, XINGMANG_AI_CONFIG_FILE), 'utf8')).rejects.toMatchObject({
-        code: 'ENOENT',
-      })
     }
   })
 
@@ -125,7 +163,10 @@ describe('xingmang-ai-skill', () => {
     await installXingmangAiSkillFiles(bundledRoot, userHome)
     const directory = resolveXingmangAiSkillDirectories(userHome)[0]
     await writeFile(path.join(directory, 'SKILL.md'), '---\nname: user-kept\n---\n', 'utf8')
-    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toBe(0)
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({
+      installed: 0,
+      warnings: [],
+    })
     expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: user-kept')
   })
 
@@ -134,7 +175,10 @@ describe('xingmang-ai-skill', () => {
     const directory = resolveXingmangAiSkillDirectories(userHome)[0]
     await mkdir(path.join(directory, 'scripts'), { recursive: true })
     await writeFile(path.join(directory, 'SKILL.md'), '---\nname: partial\n---\n', 'utf8')
-    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toBe(3)
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({
+      installed: 1,
+      warnings: [],
+    })
     expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: partial')
     expect(await readFile(path.join(directory, 'references.md'), 'utf8')).toContain('星芒中转')
   })
@@ -160,6 +204,7 @@ describe('xingmang-ai-skill', () => {
 
   it('provisions a missing image-group key and writes it into every user skill config', async () => {
     const userHome = await temporaryHome()
+    await seedOptionalToolHomes(userHome)
     const { accountService, provisionCliKey } = loggedInAccount()
 
     const result = await syncXingmangAiSkill({
@@ -172,6 +217,7 @@ describe('xingmang-ai-skill', () => {
       ready: true,
       group: '图片模型-中转/订阅',
       installed: 3,
+      configured: 3,
     })
     expect(provisionCliKey).toHaveBeenCalledWith({
       name: XINGMANG_AI_SKILL_KEY_NAME,
@@ -202,7 +248,7 @@ describe('xingmang-ai-skill', () => {
       userHome,
     })).resolves.toEqual({
       ready: false,
-      installed: 3,
+      installed: 1,
       reason: '当前账号没有可用的图片模型分组',
     })
     expect(provisionCliKey).not.toHaveBeenCalled()
@@ -221,12 +267,60 @@ describe('xingmang-ai-skill', () => {
     })
   })
 
+  it('skips Claude and Grok skill homes that were never created', async () => {
+    const userHome = await temporaryHome()
+    const { accountService, provisionCliKey } = loggedInAccount()
+
+    const result = await syncXingmangAiSkill({
+      accountService,
+      bundledRoot,
+      userHome,
+    })
+
+    expect(result).toEqual({
+      ready: true,
+      group: '图片模型-中转/订阅',
+      installed: 1,
+      configured: 1,
+    })
+    expect(provisionCliKey).toHaveBeenCalled()
+    expect(parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome))).apiKey)
+      .toBe('sk-test-image-group-secret-12345678')
+    await expect(readFile(path.join(userHome, '.claude'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(readFile(path.join(userHome, '.grok'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('still writes the agents config when a leftover Claude path is not a directory', async () => {
+    const userHome = await temporaryHome()
+    await writeFile(path.join(userHome, '.claude'), 'not-a-directory', 'utf8')
+    const { accountService, provisionCliKey } = loggedInAccount()
+
+    const result = await syncXingmangAiSkill({
+      accountService,
+      bundledRoot,
+      userHome,
+    })
+
+    expect(result.ready).toBe(true)
+    expect(result.configured).toBe(1)
+    expect(result.directoryWarnings ?? []).toEqual([])
+    expect(provisionCliKey).toHaveBeenCalledWith({
+      name: XINGMANG_AI_SKILL_KEY_NAME,
+      group: '图片模型-中转/订阅',
+    })
+    const agentsConfig = parseXingmangAiSkillConfig(JSON.parse(await readFile(
+      path.join(userHome, '.agents', 'skills', XINGMANG_AI_SKILL_DIRECTORY, XINGMANG_AI_CONFIG_FILE),
+      'utf8',
+    )))
+    expect(agentsConfig.apiKey).toBe('sk-test-image-group-secret-12345678')
+  })
+
   it('strips the written key on logout without removing the skill files', async () => {
     const userHome = await temporaryHome()
     const { accountService } = loggedInAccount()
     await syncXingmangAiSkill({ accountService, bundledRoot, userHome })
 
-    expect(await clearXingmangAiSkillSecrets(userHome)).toBe(3)
+    expect(await clearXingmangAiSkillSecrets(userHome)).toBe(1)
     const parsed = parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome)))
     expect(parsed.apiKey).toBeUndefined()
     expect(parsed.group).toBe('图片模型-中转/订阅')

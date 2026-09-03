@@ -13,14 +13,20 @@ export const XINGMANG_AI_SKILL_KEY_NAME = 'xingmang-ai'
 export const XINGMANG_AI_DEFAULT_BASE_URL = 'https://xm.solov.cc'
 export const XINGMANG_AI_CONFIG_FILE = 'config.json'
 
-// Codex/Gemini share ~/.agents/skills. Claude and Grok only see their own
-// home roots, so the same managed skill is installed there too. Do not also
-// write ~/.codex/skills or ~/.gemini/skills: those tabs already pick up
-// ~/.agents and a second copy would show as a duplicate card.
-export const XINGMANG_AI_USER_SKILL_ROOTS = [
-  ['.agents', 'skills'],
+// Always install into ~/.agents/skills (Codex Desktop / Codex CLI / Gemini).
+// Claude and Grok only see their own homes, so copy there too — but only if
+// that tool home already exists. Creating ~/.claude or ~/.grok for a machine
+// that never installed those CLIs is pointless and has aborted the whole
+// sync with EPERM. Do not also write ~/.codex/skills or ~/.gemini/skills:
+// those tabs already pick up ~/.agents and a second copy would duplicate.
+export const XINGMANG_AI_SHARED_SKILL_ROOT = ['.agents', 'skills'] as const
+export const XINGMANG_AI_OPTIONAL_SKILL_ROOTS = [
   ['.claude', 'skills'],
   ['.grok', 'skills'],
+] as const
+export const XINGMANG_AI_USER_SKILL_ROOTS = [
+  XINGMANG_AI_SHARED_SKILL_ROOT,
+  ...XINGMANG_AI_OPTIONAL_SKILL_ROOTS,
 ] as const
 
 export const XINGMANG_AI_BUNDLED_FILES = [
@@ -37,11 +43,18 @@ export interface XingmangAiSkillConfig {
   apiKey?: string
 }
 
+export interface XingmangAiSkillInstallResult {
+  installed: number
+  warnings: string[]
+}
+
 export interface XingmangAiSkillSyncResult {
   ready: boolean
   group?: string
   installed: number
+  configured?: number
   reason?: string
+  directoryWarnings?: string[]
 }
 
 type SkillAccountService = Pick<RelayBackendClient, 'getSessionState' | 'listUsableGroups' | 'provisionCliKey'>
@@ -74,15 +87,64 @@ export function resolveXingmangAiBundledSkillRoot(
 
 export function resolveXingmangAiSkillDirectories(userHome: string): string[] {
   const home = path.resolve(userHome)
-  return XINGMANG_AI_USER_SKILL_ROOTS.map((segments) => (
-    path.join(home, ...segments, XINGMANG_AI_SKILL_DIRECTORY)
-  ))
+  const directories = [path.join(home, ...XINGMANG_AI_SHARED_SKILL_ROOT, XINGMANG_AI_SKILL_DIRECTORY)]
+  for (const segments of XINGMANG_AI_OPTIONAL_SKILL_ROOTS) {
+    if (!isExistingDirectory(path.join(home, segments[0]))) continue
+    directories.push(path.join(home, ...segments, XINGMANG_AI_SKILL_DIRECTORY))
+  }
+  return directories
 }
 
+function isExistingDirectory(directory: string): boolean {
+  try {
+    const stats = fs.lstatSync(directory)
+    return stats.isDirectory() && !stats.isSymbolicLink()
+  } catch {
+    return false
+  }
+}
+
+function discoverExistingXingmangAiSkillDirectories(userHome: string): string[] {
+  const known = new Set(resolveXingmangAiSkillDirectories(userHome).map((directory) => path.resolve(directory)))
+  const extras: string[] = []
+  for (const segments of [['.codex', 'skills'], ['.gemini', 'skills']] as const) {
+    const directory = path.join(path.resolve(userHome), ...segments, XINGMANG_AI_SKILL_DIRECTORY)
+    if (known.has(directory)) continue
+    if (bundledSkillFileExists(path.join(directory, 'SKILL.md'))) extras.push(directory)
+  }
+  return extras
+}
+
+function skillDirectoriesForConfig(userHome: string): string[] {
+  return [...resolveXingmangAiSkillDirectories(userHome), ...discoverExistingXingmangAiSkillDirectories(userHome)]
+    .filter((directory) => (
+      bundledSkillFileExists(path.join(directory, 'SKILL.md'))
+      || bundledSkillFileExists(path.join(directory, XINGMANG_AI_CONFIG_FILE))
+    ))
+}
+
+function directoryFailureMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+const IMAGE_SKILL_GROUP_NAME_PATTERNS = [
+  /图片.*中转/i,
+  /生图/,
+]
+const LEGACY_IMAGE_SKILL_GROUP_ALIASES = ['openai'] as const
+
 export function selectImageSkillGroup(groups: readonly { name: string }[]): string | null {
-  const names = new Set(groups.map((entry) => entry.name.trim()).filter(Boolean))
+  const names = groups.map((entry) => entry.name.trim()).filter(Boolean)
+  const exact = new Set(names)
   for (const candidate of IMAGE_SKILL_GROUP_NAMES) {
-    if (names.has(candidate)) return candidate
+    if (exact.has(candidate)) return candidate
+  }
+  for (const candidate of LEGACY_IMAGE_SKILL_GROUP_ALIASES) {
+    if (exact.has(candidate)) return candidate
+  }
+  for (const name of names) {
+    if (/视频/.test(name)) continue
+    if (IMAGE_SKILL_GROUP_NAME_PATTERNS.some((pattern) => pattern.test(name))) return name
   }
   return null
 }
@@ -184,14 +246,21 @@ function bundledSkillFileExists(filePath: string): boolean {
 export async function installXingmangAiSkillFiles(
   bundledRoot: string,
   userHome: string,
-): Promise<number> {
+): Promise<XingmangAiSkillInstallResult> {
   const root = path.resolve(bundledRoot)
   assertBundledXingmangAiSkill(root)
   let installed = 0
+  const warnings: string[] = []
   for (const directory of resolveXingmangAiSkillDirectories(userHome)) {
-    if (await installBundledSkill(root, directory)) installed += 1
+    try {
+      if (await installBundledSkill(root, directory)) installed += 1
+    } catch (error) {
+      // One blocked home root must not abort the others. Customer machines
+      // have shown EPERM on ~/.claude while ~/.agents already had the files.
+      warnings.push(directoryFailureMessage(error))
+    }
   }
-  return installed
+  return { installed, warnings }
 }
 
 async function installBundledSkill(bundledRoot: string, targetDirectory: string): Promise<boolean> {
@@ -223,12 +292,17 @@ export async function syncXingmangAiSkill(
 ): Promise<XingmangAiSkillSyncResult> {
   authenticatedUserId(options.accountService)
   const bundledRoot = path.resolve(options.bundledRoot)
-  const installed = await installXingmangAiSkillFiles(bundledRoot, options.userHome)
+  const { installed, warnings } = await installXingmangAiSkillFiles(bundledRoot, options.userHome)
 
   const groups = await options.accountService.listUsableGroups()
   const group = selectImageSkillGroup(groups)
   if (!group) {
-    return { ready: false, installed, reason: '当前账号没有可用的图片模型分组' }
+    return {
+      ready: false,
+      installed,
+      reason: '当前账号没有可用的图片模型分组',
+      ...(warnings.length ? { directoryWarnings: warnings } : {}),
+    }
   }
 
   const provisioned = await options.accountService.provisionCliKey({
@@ -243,16 +317,37 @@ export async function syncXingmangAiSkill(
     apiKey: provisioned.key,
   }
 
-  const directories = resolveXingmangAiSkillDirectories(options.userHome)
-  for (const directory of directories) {
-    await writeSkillConfig(directory, config)
+  let configured = 0
+  for (const directory of skillDirectoriesForConfig(options.userHome)) {
+    try {
+      await writeSkillConfig(directory, config)
+      configured += 1
+    } catch (error) {
+      warnings.push(directoryFailureMessage(error))
+    }
   }
-  return { ready: true, group, installed }
+  if (configured === 0) {
+    return {
+      ready: false,
+      group,
+      installed,
+      configured,
+      reason: warnings[0] || '星芒AI Skill 配置未能写入本机',
+      ...(warnings.length ? { directoryWarnings: warnings } : {}),
+    }
+  }
+  return {
+    ready: true,
+    group,
+    installed,
+    configured,
+    ...(warnings.length ? { directoryWarnings: warnings } : {}),
+  }
 }
 
 export async function clearXingmangAiSkillSecrets(userHome: string): Promise<number> {
   let cleared = 0
-  for (const directory of resolveXingmangAiSkillDirectories(userHome)) {
+  for (const directory of skillDirectoriesForConfig(userHome)) {
     const filePath = path.join(directory, XINGMANG_AI_CONFIG_FILE)
     const raw = await readSafeUtf8File(filePath, '星芒AI Skill 配置', 16 * 1024)
     if (!raw) continue
@@ -265,11 +360,15 @@ export async function clearXingmangAiSkillSecrets(userHome: string): Promise<num
         group: IMAGE_SKILL_GROUP_NAMES[0],
       }
     }
-    await writeSkillConfig(directory, {
-      baseUrl: existing.baseUrl,
-      group: existing.group,
-    })
-    cleared += 1
+    try {
+      await writeSkillConfig(directory, {
+        baseUrl: existing.baseUrl,
+        group: existing.group,
+      })
+      cleared += 1
+    } catch {
+      // Logout must still succeed if a secondary skill root is blocked.
+    }
   }
   return cleared
 }

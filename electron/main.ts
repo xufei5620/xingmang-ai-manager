@@ -1083,7 +1083,11 @@ if (!hasSingleInstanceLock) {
       packaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
     })
-    void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir()).catch((error) => {
+    void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir()).then((result) => {
+      for (const warning of result.warnings) {
+        runtimeLog.log('warn', 'account', 'xingmang-ai-skill.install', warning)
+      }
+    }).catch((error) => {
       runtimeLog.log(
         'warn',
         'account',
