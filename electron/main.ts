@@ -1083,7 +1083,9 @@ if (!hasSingleInstanceLock) {
       packaged: app.isPackaged,
       resourcesPath: process.resourcesPath,
     })
-    void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir()).then((result) => {
+    void installXingmangAiSkillFiles(bundledXingmangAiSkillRoot, os.homedir(), {
+      officialCodex: (systemService.readStoredConfig().officialProviders ?? []).includes('codex'),
+    }).then((result) => {
       for (const warning of result.warnings) {
         runtimeLog.log('warn', 'account', 'xingmang-ai-skill.install', warning)
       }

@@ -1810,6 +1810,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         accountService,
         bundledRoot: options.xingmangAiSkill.bundledRoot,
         userHome: options.xingmangAiSkill.userHome,
+        officialCodex: (service.readStoredConfig().officialProviders ?? []).includes('codex'),
       })
       for (const warning of skill.directoryWarnings ?? []) {
         options.runtimeLog.log('warn', 'account', 'xingmang-ai-skill.sync', warning)

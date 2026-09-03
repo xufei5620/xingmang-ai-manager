@@ -116,6 +116,7 @@ import {
 import { inspectMacosCodexApp, type MacosCodexAppInfo } from './macos-codex-app'
 import { uninstallVerifiedNativeCliFiles } from './native-cli-uninstall'
 import { sameLocalPathIdentity } from './path-identity'
+import { syncXingmangAiSkillCodexAvailability } from './xingmang-ai-skill'
 import {
   cleanupDownloadedGrokBinary,
   downloadLatestGrokBinary,
@@ -3462,6 +3463,7 @@ export function createSystemService(
     // A successful Star-mang write is the explicit way back from an official
     // account. Clear the durable opt-out only after the files have committed.
     await store.setOfficialProvider(payload.provider, false)
+    if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
     return result
   }
 
@@ -3473,7 +3475,21 @@ export function createSystemService(
     // Persist the user's explicit choice so startup/onboarding can distinguish
     // it from an unconfigured CLI and leave the native subscription untouched.
     await store.setOfficialProvider(provider, true)
+    if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(true)
     return result
+  }
+
+  async function applyXingmangAiSkillForCodexAccount(official: boolean): Promise<void> {
+    try {
+      await syncXingmangAiSkillCodexAvailability({
+        userHome: providerRoots.userHome,
+        officialCodex: official,
+        configPath: path.join(providerRoots.codexHome, 'config.toml'),
+      })
+    } catch {
+      // Account switch already committed. Skill toggle is best-effort so a
+      // locked or unreadable config.toml cannot roll back the user's choice.
+    }
   }
 
   return {

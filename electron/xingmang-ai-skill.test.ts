@@ -1,14 +1,19 @@
+import { createHash } from 'node:crypto'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import * as TOML from '@iarna/toml'
 import { IMAGE_SKILL_GROUP_NAMES } from './ai-chat-protocol'
+import { managedCliKeyProfiles } from './catalog'
 import type { RelayBackendClient } from './relay-backend'
 import {
   XINGMANG_AI_CONFIG_FILE,
+  XINGMANG_AI_MANAGED_MANIFEST_FILE,
   XINGMANG_AI_DEFAULT_BASE_URL,
   XINGMANG_AI_SKILL_DIRECTORY,
   XINGMANG_AI_SKILL_KEY_NAME,
+  applyXingmangAiSkillEnabledFlag,
   assertBundledXingmangAiSkill,
   buildXingmangAiSkillConfig,
   clearXingmangAiSkillSecrets,
@@ -16,9 +21,11 @@ import {
   publicXingmangAiSkillConfig,
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
+  resolveXingmangAiCodexSkillPath,
   resolveXingmangAiSkillDirectories,
   selectImageSkillGroup,
   syncXingmangAiSkill,
+  syncXingmangAiSkillCodexAvailability,
 } from './xingmang-ai-skill'
 
 const bundledRoot = resolveXingmangAiBundledSkillRoot(path.resolve(__dirname, '..'))
@@ -38,11 +45,16 @@ function loggedInAccount(options: {
   groups?: Array<{ name: string }>
   provision?: ReturnType<typeof vi.fn>
 } = {}) {
-  const provisionCliKey = options.provision ?? vi.fn(async (input: { name?: string; group?: string } = {}) => ({
-    id: 42,
-    name: input.name ?? 'generated',
-    key: 'sk-test-image-group-secret-12345678',
-  }))
+  const provisionCliKey = options.provision ?? vi.fn(async (input: { name?: string; group?: string } = {}) => {
+    const image = input.name === XINGMANG_AI_SKILL_KEY_NAME
+      || input.group === IMAGE_SKILL_GROUP_NAMES[0]
+      || input.group === '生图分组'
+    return {
+      id: image ? 42 : 7,
+      name: input.name ?? 'generated',
+      key: image ? 'sk-test-image-group-secret-12345678' : 'sk-test-codex-group-secret-12345678',
+    }
+  })
   return {
     accountService: {
       getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 9 } })),
@@ -93,19 +105,22 @@ describe('xingmang-ai-skill', () => {
     ])).toBe('图片模型中转')
   })
 
-  it('omits apiKey from the renderer-safe config view', () => {
+  it('omits both API keys from the renderer-safe config view', () => {
     const config = parseXingmangAiSkillConfig({
       baseUrl: XINGMANG_AI_DEFAULT_BASE_URL,
       group: IMAGE_SKILL_GROUP_NAMES[0],
       keyId: 3,
       keyName: XINGMANG_AI_SKILL_KEY_NAME,
       apiKey: 'sk-test-image-group-secret-12345678',
+      codexGroup: managedCliKeyProfiles.codex.group,
+      codexApiKey: 'sk-test-codex-group-secret-12345678',
     })
     expect(publicXingmangAiSkillConfig(config)).toEqual({
       baseUrl: XINGMANG_AI_DEFAULT_BASE_URL,
       group: IMAGE_SKILL_GROUP_NAMES[0],
       keyId: 3,
       keyName: XINGMANG_AI_SKILL_KEY_NAME,
+      codexGroup: managedCliKeyProfiles.codex.group,
     })
     expect(JSON.stringify(publicXingmangAiSkillConfig(config))).not.toContain('sk-')
   })
@@ -158,16 +173,45 @@ describe('xingmang-ai-skill', () => {
     }
   })
 
-  it('skips directories that already have the skill files', async () => {
+  it('skips directories whose bundled files already match the template', async () => {
     const userHome = await temporaryHome()
     await installXingmangAiSkillFiles(bundledRoot, userHome)
-    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
-    await writeFile(path.join(directory, 'SKILL.md'), '---\nname: user-kept\n---\n', 'utf8')
     await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({
       installed: 0,
       warnings: [],
     })
-    expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: user-kept')
+  })
+
+  it('keeps a user-edited skill file and still writes missing official files', async () => {
+    const userHome = await temporaryHome()
+    await installXingmangAiSkillFiles(bundledRoot, userHome)
+    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
+    const customized = `${await readFile(path.join(directory, 'SKILL.md'), 'utf8')}\n用户自定义说明\n`
+    await writeFile(path.join(directory, 'SKILL.md'), customized, 'utf8')
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({
+      installed: 0,
+      warnings: [],
+    })
+    expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toBe(customized)
+  })
+
+  it('refreshes an official skill file that still matches the last managed copy', async () => {
+    const userHome = await temporaryHome()
+    await installXingmangAiSkillFiles(bundledRoot, userHome)
+    const directory = resolveXingmangAiSkillDirectories(userHome)[0]
+    const stale = '// previous-official\n'
+    await writeFile(path.join(directory, 'scripts', 'generate.mjs'), stale, 'utf8')
+    const manifest = JSON.parse(await readFile(path.join(directory, XINGMANG_AI_MANAGED_MANIFEST_FILE), 'utf8')) as {
+      version: 1
+      files: Record<string, string>
+    }
+    manifest.files['scripts/generate.mjs'] = createHash('sha256').update(stale, 'utf8').digest('hex')
+    await writeFile(path.join(directory, XINGMANG_AI_MANAGED_MANIFEST_FILE), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome)).resolves.toEqual({
+      installed: 1,
+      warnings: [],
+    })
+    expect(await readFile(path.join(directory, 'scripts', 'generate.mjs'), 'utf8')).toContain('codexApiKey')
   })
 
   it('only fills missing files when a previous install is incomplete', async () => {
@@ -220,6 +264,10 @@ describe('xingmang-ai-skill', () => {
       configured: 3,
     })
     expect(provisionCliKey).toHaveBeenCalledWith({
+      name: managedCliKeyProfiles.codex.keyName,
+      group: managedCliKeyProfiles.codex.group,
+    })
+    expect(provisionCliKey).toHaveBeenCalledWith({
       name: XINGMANG_AI_SKILL_KEY_NAME,
       group: '图片模型-中转/订阅',
     })
@@ -230,16 +278,18 @@ describe('xingmang-ai-skill', () => {
         'utf8',
       )))
       expect(parsed.apiKey).toBe('sk-test-image-group-secret-12345678')
+      expect(parsed.codexApiKey).toBe('sk-test-codex-group-secret-12345678')
       expect(parsed.group).toBe('图片模型-中转/订阅')
+      expect(parsed.codexGroup).toBe(managedCliKeyProfiles.codex.group)
       expect(await readFile(path.join(directory, 'SKILL.md'), 'utf8')).toContain('name: 星芒AI')
       expect(path.basename(directory)).toBe(XINGMANG_AI_SKILL_DIRECTORY)
     }
   })
 
-  it('does not mint a key when the account has no image group', async () => {
+  it('still writes the Codex key when the account has no image group', async () => {
     const userHome = await temporaryHome()
     const { accountService, provisionCliKey } = loggedInAccount({
-      groups: [{ name: 'GPT-中转/订阅' }],
+      groups: [{ name: managedCliKeyProfiles.codex.group }],
     })
 
     await expect(syncXingmangAiSkill({
@@ -247,11 +297,22 @@ describe('xingmang-ai-skill', () => {
       bundledRoot,
       userHome,
     })).resolves.toEqual({
-      ready: false,
+      ready: true,
+      group: managedCliKeyProfiles.codex.group,
       installed: 1,
-      reason: '当前账号没有可用的图片模型分组',
+      configured: 1,
     })
-    expect(provisionCliKey).not.toHaveBeenCalled()
+    expect(provisionCliKey).toHaveBeenCalledWith({
+      name: managedCliKeyProfiles.codex.keyName,
+      group: managedCliKeyProfiles.codex.group,
+    })
+    expect(provisionCliKey).not.toHaveBeenCalledWith({
+      name: XINGMANG_AI_SKILL_KEY_NAME,
+      group: expect.anything(),
+    })
+    const parsed = parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome)))
+    expect(parsed.codexApiKey).toBe('sk-test-codex-group-secret-12345678')
+    expect(parsed.apiKey).toBeUndefined()
   })
 
   it('reuses provisionCliKey so an existing usable group key is not created twice', async () => {
@@ -323,8 +384,11 @@ describe('xingmang-ai-skill', () => {
     expect(await clearXingmangAiSkillSecrets(userHome)).toBe(1)
     const parsed = parseXingmangAiSkillConfig(JSON.parse(await readInstalledConfig(userHome)))
     expect(parsed.apiKey).toBeUndefined()
+    expect(parsed.codexApiKey).toBeUndefined()
     expect(parsed.group).toBe('图片模型-中转/订阅')
+    expect(parsed.codexGroup).toBe(managedCliKeyProfiles.codex.group)
     expect(JSON.stringify(parsed)).not.toContain('sk-test-image-group-secret-12345678')
+    expect(JSON.stringify(parsed)).not.toContain('sk-test-codex-group-secret-12345678')
     expect(await readFile(
       path.join(resolveXingmangAiSkillDirectories(userHome)[0], 'SKILL.md'),
       'utf8',
@@ -361,5 +425,80 @@ describe('xingmang-ai-skill', () => {
       baseUrl: XINGMANG_AI_DEFAULT_BASE_URL,
       group: IMAGE_SKILL_GROUP_NAMES[0],
     })
+  })
+
+  it('disables the Codex skill for a ChatGPT account and turns it back on for Xingmang', async () => {
+    const userHome = await temporaryHome()
+    const skillPath = resolveXingmangAiCodexSkillPath(userHome)
+    const configPath = path.join(userHome, '.codex', 'config.toml')
+    await mkdir(path.dirname(configPath), { recursive: true })
+    await writeFile(configPath, 'model = "gpt-5.4"\n[features]\ngoals = true\n', 'utf8')
+
+    await expect(syncXingmangAiSkillCodexAvailability({
+      userHome,
+      officialCodex: true,
+      configPath,
+    })).resolves.toEqual({ changed: true, enabled: false })
+    expect(TOML.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+      model: 'gpt-5.4',
+      features: { goals: true },
+      skills: { config: [{ path: skillPath, enabled: false }] },
+    })
+
+    await expect(syncXingmangAiSkillCodexAvailability({
+      userHome,
+      officialCodex: false,
+      configPath,
+    })).resolves.toEqual({ changed: true, enabled: true })
+    expect(TOML.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+      skills: { config: [{ path: skillPath, enabled: true }] },
+    })
+
+    await expect(syncXingmangAiSkillCodexAvailability({
+      userHome,
+      officialCodex: false,
+      configPath,
+    })).resolves.toEqual({ changed: false, enabled: true })
+  })
+
+  it('does not invent a Codex config.toml just to keep the skill enabled', async () => {
+    const userHome = await temporaryHome()
+    await expect(syncXingmangAiSkillCodexAvailability({
+      userHome,
+      officialCodex: false,
+    })).resolves.toEqual({ changed: false, enabled: true })
+    await expect(readFile(path.join(userHome, '.codex', 'config.toml'), 'utf8')).rejects.toMatchObject({
+      code: 'ENOENT',
+    })
+  })
+
+  it('creates a Codex skills.config entry when ChatGPT is already selected at install', async () => {
+    const userHome = await temporaryHome()
+    const configPath = path.join(userHome, '.codex', 'config.toml')
+    await expect(installXingmangAiSkillFiles(bundledRoot, userHome, {
+      officialCodex: true,
+      codexHome: path.dirname(configPath),
+    })).resolves.toEqual({
+      installed: 1,
+      warnings: [],
+    })
+    expect(TOML.parse(await readFile(configPath, 'utf8'))).toMatchObject({
+      skills: { config: [{ path: resolveXingmangAiCodexSkillPath(userHome), enabled: false }] },
+    })
+  })
+
+  it('does not rewrite an unrelated skills.config entry', () => {
+    const skillPath = path.resolve('agents', '星芒AI', 'SKILL.md')
+    const otherPath = path.resolve('agents', 'other', 'SKILL.md')
+    const config = {
+      skills: {
+        config: [{ path: otherPath, enabled: true }],
+      },
+    }
+    expect(applyXingmangAiSkillEnabledFlag(config, skillPath, false)).toBe(true)
+    expect(config.skills.config).toEqual([
+      { path: otherPath, enabled: true },
+      { path: skillPath, enabled: false },
+    ])
   })
 })
