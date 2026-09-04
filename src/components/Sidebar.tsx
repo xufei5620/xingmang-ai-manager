@@ -14,7 +14,7 @@ import { createPortal } from 'react-dom'
 import logoUrl from '../../assets/icon.png'
 import logoWhiteUrl from '../../assets/icon-white.png'
 import { navigationItems, type NavigationGroup, type PageId } from '../navigation'
-import type { RelaySite, UpdateSnapshot } from '../types'
+import type { UpdateSnapshot } from '../types'
 import { AccountArea } from './account/AccountArea'
 import type { AccountAreaStatus, AccountSnapshot } from './account/account-stub'
 
@@ -24,7 +24,6 @@ interface SidebarProps {
   theme: 'light' | 'dark'
   appVersion: string
   updateState: UpdateSnapshot | null
-  relaySite: RelaySite
   /** Whether the low-frequency system-management group is expanded for this session. */
   moreExpanded: boolean
   accountStatus: AccountAreaStatus
@@ -40,10 +39,6 @@ interface SidebarProps {
   /** 刷新余额 -- passed straight through to AccountArea. */
   onRefreshBalance: () => void
   onOpenAccountCenter: () => void
-  /** Opens the 粘贴 Key dialog (W3b) -- passed straight through to AccountArea. */
-  onPasteKey: () => void
-  /** openExternal(relaySite.keysPageUrl) -- passed straight through to AccountArea. */
-  onOpenKeysPage: () => void
 }
 
 export function ThemeToggle({
@@ -73,7 +68,6 @@ export function Sidebar({
   theme,
   appVersion,
   updateState,
-  relaySite,
   moreExpanded,
   accountStatus,
   accountSnapshot,
@@ -87,13 +81,36 @@ export function Sidebar({
   onConfigureCliKey,
   onRefreshBalance,
   onOpenAccountCenter,
-  onPasteKey,
-  onOpenKeysPage,
 }: SidebarProps) {
   const navigationRef = useRef<HTMLElement>(null)
   const moreToggleRef = useRef<HTMLButtonElement>(null)
   const morePopoverRef = useRef<HTMLDivElement>(null)
+  const moreExpandedRef = useRef(moreExpanded)
+  const moreInteractionRef = useRef(0)
   const [morePopoverPosition, setMorePopoverPosition] = useState({ top: 0, left: 80 })
+
+  useEffect(() => {
+    moreExpandedRef.current = moreExpanded
+  }, [moreExpanded])
+
+  const toggleMoreMenu = () => {
+    moreInteractionRef.current += 1
+    onToggleMoreExpanded()
+  }
+
+  // App derives the expanded state from the active page as well as from the
+  // toggle. Navigating to a Portal item can therefore reopen the menu in the
+  // same commit. Close on the next task, after that derived-state effect has
+  // settled, and guard against an intervening outside-click close.
+  const closeMoreAfterNavigation = () => {
+    const interaction = moreInteractionRef.current
+    window.setTimeout(() => {
+      if (interaction !== moreInteractionRef.current) return
+      if (!moreExpandedRef.current) return
+      moreExpandedRef.current = false
+      toggleMoreMenu()
+    }, 0)
+  }
 
   useLayoutEffect(() => {
     const navigation = navigationRef.current
@@ -154,11 +171,11 @@ export function Sidebar({
     const dismiss = (event: PointerEvent) => {
       const target = event.target as Node
       if (moreToggleRef.current?.contains(target) || morePopoverRef.current?.contains(target)) return
-      onToggleMoreExpanded()
+      toggleMoreMenu()
     }
     const dismissOnEscape = (event: KeyboardEvent) => {
       if (event.key !== 'Escape') return
-      onToggleMoreExpanded()
+      toggleMoreMenu()
       moreToggleRef.current?.focus({ preventScroll: true })
     }
     document.addEventListener('pointerdown', dismiss)
@@ -179,8 +196,8 @@ export function Sidebar({
       ? '正在下载主程序更新'
       : `发现主程序新版本 ${updateState?.availableVersion ?? ''}`.trim()
   const groupLabels: Record<Exclude<NavigationGroup, 'more'>, string> = {
-    use: '工作台',
-    extensions: '扩展能力',
+    use: '日常',
+    extensions: '加能力',
   }
   const renderItem = (item: (typeof navigationItems)[number], onSelected?: () => void) => {
     const Icon = item.icon
@@ -212,11 +229,11 @@ export function Sidebar({
       className="nav-more-popover"
       id="sidebar-more-items"
       role="menu"
-      aria-label="系统管理"
+      aria-label="更多"
       style={morePopoverPosition}
     >
-      <header><Settings2 size={16} /><strong>系统管理</strong></header>
-      <div>{systemItems.map((item) => renderItem(item, onToggleMoreExpanded))}</div>
+      <header><Settings2 size={16} /><strong>更多</strong></header>
+      <div>{systemItems.map((item) => renderItem(item, closeMoreAfterNavigation))}</div>
     </div>,
     document.body,
   ) : null
@@ -258,20 +275,20 @@ export function Sidebar({
           </div>
         ))}
         <div className="nav-group nav-group-more">
-          <div className="nav-group-label">系统</div>
           <button
             ref={moreToggleRef}
             type="button"
             className={`nav-item nav-more-toggle${moreExpanded ? ' expanded' : ''}${systemActive ? ' active' : ''}`}
             aria-expanded={moreExpanded}
             aria-controls="sidebar-more-items"
-            aria-label="系统管理"
-            title={collapsed ? '系统管理' : undefined}
-            data-sidebar-tooltip="系统管理"
-            onClick={onToggleMoreExpanded}
+            aria-label="更多"
+            data-navigation-id="more"
+            title={collapsed ? '更多' : undefined}
+            data-sidebar-tooltip="更多"
+            onClick={toggleMoreMenu}
           >
             <Settings2 size={18} />
-            <span className="nav-label">系统管理</span>
+            <span className="nav-label">更多</span>
             <ChevronRight size={14} className="nav-more-chevron" />
           </button>
         </div>
@@ -281,15 +298,12 @@ export function Sidebar({
         <AccountArea
           status={accountStatus}
           snapshot={accountSnapshot}
-          relaySite={relaySite}
           onLogin={onAccountLogin}
           onLogout={onAccountLogout}
           onRecharge={onRecharge}
           onConfigureCliKey={onConfigureCliKey}
           onRefreshBalance={onRefreshBalance}
           onOpenAccountCenter={onOpenAccountCenter}
-          onPasteKey={onPasteKey}
-          onOpenKeysPage={onOpenKeysPage}
         />
         <div className="sidebar-controls">
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />

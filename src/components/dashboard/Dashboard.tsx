@@ -66,7 +66,6 @@ export function Dashboard({
   onLaunch,
   onLaunchCodexDesktop,
   onNextStepsConfigureFirstCli,
-  manualKeySite,
   onNextStepsTryLaunch,
   onNextStepsGoMaintenance,
   onNextStepsExploreMcp,
@@ -102,8 +101,6 @@ export function Dashboard({
   onLaunch: (provider: ProviderId) => void
   onLaunchCodexDesktop: () => void
   onNextStepsConfigureFirstCli: () => void
-  /** True on a manual-key site -- forwarded to NextStepsCard so its 配置 step copy matches the 粘贴 Key action. */
-  manualKeySite: boolean
   onNextStepsTryLaunch: (provider: ProviderId | null) => void
   onNextStepsGoMaintenance: () => void
   onNextStepsExploreMcp: () => void
@@ -113,17 +110,17 @@ export function Dashboard({
     ? onRefreshOfficialUsage
     : undefined
   return (
-    <div className="page dashboard-page">
+    <div className="page dashboard-page" data-page-id="overview">
       <header className="page-header">
         <div>
-          <div className="eyebrow">工作台</div>
-          <h1>工具概览</h1>
+          <h1>首页</h1>
+          <p className="page-lead">先装环境，再装工具，装好就能打开。</p>
         </div>
         <div className="header-actions">
           {installedCliCount < 4 && (
             <button className="secondary-button" disabled={!runtimeReady || installing.size > 0} onClick={onInstallAll}>
               <Download size={16} />
-              安装全部缺失项
+              一键装好还缺的
             </button>
           )}
           <div
@@ -147,14 +144,13 @@ export function Dashboard({
         onTryLaunch={onNextStepsTryLaunch}
         onGoMaintenance={onNextStepsGoMaintenance}
         onExploreMcp={onNextStepsExploreMcp}
-        manualKeySite={manualKeySite}
       />
 
-      <section className="environment-section">
+      <section className="environment-section" data-dashboard-section="runtime" aria-labelledby="dashboard-runtime-heading">
         <div className="section-heading">
           <div>
-            <h2>本机环境</h2>
-            <span>最后检测 {snapshot.checkedAt ? new Date(snapshot.checkedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--'}</span>
+            <h2 id="dashboard-runtime-heading">运行环境</h2>
+            <span>上次检查 {snapshot.checkedAt ? new Date(snapshot.checkedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '--:--:--'}</span>
           </div>
           <div className="environment-heading-actions">
             {!runtimeReady && (
@@ -164,7 +160,7 @@ export function Dashboard({
             )}
             <div className={runtimeReady ? 'readiness ready' : 'readiness blocked'}>
               <span />
-              {runtimeReady ? '可安装 CLI' : nodeRuntimeInstalling ? '正在安装 Node.js' : '需补全前置环境'}
+              {runtimeReady ? '可以装工具了' : nodeRuntimeInstalling ? '正在安装 Node.js' : '还要先装运行环境'}
             </div>
           </div>
         </div>
@@ -204,10 +200,10 @@ export function Dashboard({
         )}
       </section>
 
-      <section className="cli-section">
+      <section className="cli-section" data-dashboard-section="tools" aria-labelledby="dashboard-tools-heading">
         <div className="section-heading">
           <div>
-            <h2>AI 工具</h2>
+            <h2 id="dashboard-tools-heading">你的工具</h2>
             <span>{installedToolCount}/5 个已安装</span>
           </div>
         </div>
@@ -246,8 +242,15 @@ export function Dashboard({
             const officialReady = readiness === 'official' && (provider !== 'codex' || officialCodexSignedIn(providerConfig))
             const officialEmail = providerConfig?.officialAccountEmail
             const modelName = providerModelLabel(providerConfig?.model)
+            const configStateLabel = providerConfigReadinessLabel(providerConfig, provider, 'dashboard')
+            const configStateDetail = officialReady && officialEmail ? ` · ${officialEmail}` : ''
             return (
-              <article className="cli-card" key={provider}>
+              <article
+                className="cli-card"
+                key={provider}
+                data-provider-id={provider}
+                data-install-state={isInstalling ? 'installing' : failed ? 'failed' : status.installed ? 'installed' : 'missing'}
+              >
                 <div className="cli-card-top">
                   <div className="provider-icon" style={{ color: meta.color, backgroundColor: meta.tint }}>
                     <img src={meta.icon} alt="" aria-hidden="true" />
@@ -282,10 +285,9 @@ export function Dashboard({
                                 : status.installed ? shortVersion(status.version) : '未安装'}
                   </span>
                 </div>
-                <div className="config-state">
+                <div className="config-state" title={`${configStateLabel}${configStateDetail}`}>
                   <span className={isConfigured || officialReady ? 'config-dot configured' : 'config-dot'} />
-                  {providerConfigReadinessLabel(providerConfig, provider, 'dashboard')}
-                  {officialReady && officialEmail ? ` · ${officialEmail}` : ''}
+                  {configStateLabel}{configStateDetail}
                 </div>
                 {modelName ? (
                   <div className="config-model configured-model" title={modelName}>
@@ -310,7 +312,7 @@ export function Dashboard({
                   {failed ? (
                     <button className="secondary-button full" disabled={scanning} onClick={onScan}>
                       <RefreshCw size={16} className={scanning ? 'spin' : ''} />
-                      {scanning ? '正在重新检测' : '检测失败，点击重试'}
+                      {scanning ? '正在重新检测' : '检测失败，点这里重试'}
                     </button>
                   ) : !status.installed ? (
                     <button className="primary-button full" disabled={!runtimeReady || isInstalling || scanning} onClick={() => onInstall(provider)}>

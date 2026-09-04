@@ -96,8 +96,8 @@ export function LoginDialog({
           <div>
             <span className="extension-dialog-icon"><LogIn size={19} /></span>
             <div>
-              <h2 id="login-dialog-title">登录星芒账号</h2>
-              <small>登录后可查看余额与充值</small>
+              <h2 id="login-dialog-title">登录</h2>
+              <small>登录后就能用软件里的功能</small>
             </div>
           </div>
           <button className="icon-button compact" type="button" title="关闭" onClick={onClose}>

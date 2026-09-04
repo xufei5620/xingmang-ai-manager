@@ -50,8 +50,8 @@ describe('AccountCenterPage', () => {
       <AccountCenterPage onClose={vi.fn()} onLogout={vi.fn()} />,
     )
 
-    expect(markup).toContain('星芒 AI 账户')
-    for (const label of ['概览', '数据看板', 'API 密钥', '使用日志', '任务日志', '钱包', '个人资料']) {
+    expect(markup).toContain('我的账号')
+    for (const label of ['概览', '用量', '密钥', '明细', '任务', '钱包', '资料']) {
       expect(markup).toContain(label)
     }
     for (const legacyPrimaryLabel of ['账单与权益', '开发者', '设置']) {

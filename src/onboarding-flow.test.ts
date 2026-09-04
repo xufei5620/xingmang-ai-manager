@@ -3,7 +3,6 @@ import { platformCapabilitiesFor } from '../electron/platform-capabilities'
 import type { AppConfigSummary, CodexSetupStatus, ToolStatus } from './types'
 import {
   CODEX_SETUP_STATUS_TIMEOUT_MS,
-  authorizeCodex,
   authorizeManagedCodex,
   buildCodexDetectionFailureMessage,
   DEFAULT_CODEX_MODEL,
@@ -72,61 +71,6 @@ function callbacks() {
     } satisfies CodexSetupCallbacks,
   }
 }
-
-describe('authorizeCodex', () => {
-  const config = { workspace: 'C:\\work', providers: {} } as AppConfigSummary
-
-  it('rejects an empty authorization code before making any API request', async () => {
-    const api = {
-      listModels: vi.fn(),
-      saveConfig: vi.fn(),
-      getConfig: vi.fn(),
-    }
-
-    await expect(authorizeCodex('   ', api)).rejects.toThrow('请填写安装授权码')
-    expect(api.listModels).not.toHaveBeenCalled()
-  })
-
-  it('rejects an invalid key result without changing native configuration', async () => {
-    const api = {
-      listModels: vi.fn().mockResolvedValue([]),
-      saveConfig: vi.fn(),
-      getConfig: vi.fn(),
-    }
-
-    await expect(authorizeCodex('bad-key', api)).rejects.toThrow('没有返回可用模型')
-    expect(api.saveConfig).not.toHaveBeenCalled()
-    expect(api.getConfig).not.toHaveBeenCalled()
-  })
-
-  it('requires the onboarding default model before saving', async () => {
-    const api = {
-      listModels: vi.fn().mockResolvedValue(['gpt-5.6-terra']),
-      saveConfig: vi.fn(),
-      getConfig: vi.fn(),
-    }
-
-    await expect(authorizeCodex('sk-valid', api)).rejects.toThrow(DEFAULT_CODEX_MODEL)
-    expect(api.saveConfig).not.toHaveBeenCalled()
-  })
-
-  it('trims a validated key, resets Codex configuration and returns the refreshed summary', async () => {
-    const api = {
-      listModels: vi.fn().mockResolvedValue([DEFAULT_CODEX_MODEL]),
-      saveConfig: vi.fn().mockResolvedValue(undefined),
-      getConfig: vi.fn().mockResolvedValue(config),
-    }
-
-    await expect(authorizeCodex('  sk-valid  ', api)).resolves.toBe(config)
-    expect(api.listModels).toHaveBeenCalledWith('sk-valid')
-    expect(api.saveConfig).toHaveBeenCalledWith({
-      provider: 'codex',
-      apiKey: 'sk-valid',
-      model: DEFAULT_CODEX_MODEL,
-      mode: 'reset',
-    })
-  })
-})
 
 describe('authorizeManagedCodex', () => {
   const config = { workspace: 'C:\\work', providers: {} } as AppConfigSummary

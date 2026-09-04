@@ -2836,7 +2836,16 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   describe('parseAccountDashboardQuery (account:get-dashboard)', () => {
     it('forwards a valid time range', async () => {
       const { accountService } = register()
-      const data = { startTimestamp: 1_700_000_000, endTimestamp: 1_700_086_400, records: [] }
+      const data = {
+        startTimestamp: 1_700_000_000,
+        endTimestamp: 1_700_086_400,
+        buckets: [],
+        models: [],
+        quota: 0,
+        count: 0,
+        tokens: 0,
+        discardedCount: 0,
+      }
       vi.mocked(accountService.getDashboard).mockResolvedValue(data)
       const handler = electronMocks.handlers.get('account:get-dashboard')!
       await expect(handler(trustedEvent(), {

@@ -21,32 +21,34 @@
 :root {
   --color-white: #ffffff;                     /* pure white — text/icons on colored fills */
   --surface-panel: var(--color-white);        /* card/dialog/input panel background */
-  --surface-page: #f3f4f6;                    /* app shell / titlebar / splash background */
-  --surface-subtle: #eef0f3;                  /* table head, search bar fill */
-  --surface-hover: #eceef1;                   /* icon/secondary button hover fill */
+  --surface-page: #f4f5f7;                    /* app shell / titlebar / splash background */
+  --surface-subtle: #f0f1f3;                  /* table head, search bar fill */
+  --surface-hover: #eceeef;                   /* icon/secondary button hover fill */
   --surface-faint: #fafafa;                   /* very light fill (log list, empty states) */
-  --surface-accent-soft: #e7f3f2;             /* active nav item / info icon background */
-  --surface-info-soft: #e8f3f3;               /* info icon chip background */
+  --surface-accent-soft: #eceeef;             /* active nav item / quiet selected pill */
+  --surface-info-soft: #f0f1f3;               /* info icon chip background */
   --surface-success-soft: #e9f7f2;            /* success badge/icon background */
   --surface-warning-soft: #fff7e6;            /* warning badge/icon background */
   --surface-caution-soft: #fff6df;            /* pending/optional badge background */
   --surface-danger-soft: #fff1f2;             /* danger badge/icon background */
-  --border-subtle: #e6e8ec;                   /* most common hairline divider */
-  --border-subtle-2: #e4e6ea;                 /* hairline divider (onboarding defaults strip) */
-  --border-control: #d5d9df;                  /* input/button control border */
-  --border-control-2: #dde1e6;                /* table/search control border */
-  --border-panel: #e5e7eb;                    /* card/panel border */
-  --border-panel-2: #e5e7eb;                  /* session pagination/detail border */
-  --border-dialog: #e2e5ea;                   /* modal dialog border */
+  --border-subtle: #ebecef;                   /* most common hairline divider */
+  --border-subtle-2: #eceeef;                 /* hairline divider (onboarding defaults strip) */
+  --border-control: #e4e6ea;                  /* input/button control border */
+  --border-control-2: #e6e8ec;                /* table/search control border */
+  --border-panel: #ebecef;                    /* card/panel border */
+  --border-panel-2: #ebecef;                  /* session pagination/detail border */
+  --border-dialog: #eceeef;                   /* modal dialog border */
   --tooltip-border: #41484c;                  /* always-dark collapsed-sidebar tooltip border */
-  --color-accent: #0f766e;                    /* primary button / brand accent teal */
-  --color-accent-hover: #0c625c;              /* primary button hover */
-  --color-accent-icon: #0f766e;               /* accent icon color */
-  --color-accent-text: #0f766e;               /* accent link/icon text */
-  --color-focus-ring: #14b8a6;                /* focus-visible outline color */
-  --color-brand-purple: #0f766e;              /* brand wordmark "星芒" */
-  --color-brand-blue: #115e59;                /* brand wordmark "AI" */
-  --color-nav-active: #0f766e;                /* active nav item text */
+  --color-ink: #171717;                       /* primary fill — matches the quiet studio chrome */
+  --color-ink-hover: #2a2a2a;
+  --color-accent: #171717;                    /* primary button / selected chrome */
+  --color-accent-hover: #2a2a2a;              /* primary button hover */
+  --color-accent-icon: #404040;               /* accent icon color */
+  --color-accent-text: #171717;               /* accent link/icon text */
+  --color-focus-ring: #171717;                /* focus-visible outline color */
+  --color-brand-purple: #171717;              /* brand wordmark "星芒" */
+  --color-brand-blue: #171717;                /* brand wordmark "AI" */
+  --color-nav-active: #171717;                /* active nav item text */
   --color-info-strong: #0f766e;               /* info accent (progress/heading icon) */
   --color-success-strong: #2b9b73;            /* success strong (launch button, theme-independent) */
   --color-success-strong-hover: #258563;      /* success strong hover */
@@ -87,6 +89,17 @@
   --dark-color-success-icon: #7bd1b0;         /* dark success icon/text */
   --dark-color-danger-text: #ef9a9f;          /* dark danger button/text */
   --dark-color-danger-icon: #ef8b92;          /* dark danger icon (feedback/crash family) */
+
+  /* Provider marks use semantic tokens so their inline styles stay legible
+     when the application switches themes. */
+  --provider-claude: #9a4d2b;
+  --provider-claude-soft: #fff1e9;
+  --provider-codex: #087b68;
+  --provider-codex-soft: #edfaf7;
+  --provider-grok: #323640;
+  --provider-grok-soft: #f2f3f5;
+  --provider-gemini: #4a579f;
+  --provider-gemini-soft: #eff1ff;
 }
 
 
@@ -129,6 +142,8 @@
   --radius-8: 8px;
   --radius-10: 10px;
   --radius-12: 12px;
+  --radius-14: 14px;
+  --radius-16: 16px;
   --radius-full: 999px;
 }
 
@@ -176,10 +191,10 @@
 
 /* Layer 1 — shadow scale */
 :root {
-  --shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.05);
-  --shadow-md: 0 1px 2px rgba(17, 24, 39, 0.04), 0 8px 24px rgba(17, 24, 39, 0.05);
-  --shadow-lg: 0 16px 48px rgba(17, 24, 39, 0.16);
-  --shadow-xl: 0 24px 64px rgba(17, 24, 39, 0.22);
+  --shadow-sm: 0 1px 2px rgba(17, 24, 39, 0.04);
+  --shadow-md: 0 1px 2px rgba(17, 24, 39, 0.03), 0 10px 28px rgba(17, 24, 39, 0.04);
+  --shadow-lg: 0 18px 48px rgba(17, 24, 39, 0.12);
+  --shadow-xl: 0 24px 64px rgba(17, 24, 39, 0.16);
 }
 
 
@@ -213,7 +228,11 @@
 /* Layer 2 — semantic aliases (dark redefinitions) */
 :root[data-theme="dark"] {
   --text-primary: var(--dark-text-strong);
-  --text-muted: var(--dark-text-muted);
+  /* Layer-1 --text-strong / --text-secondary stay light-only primitives.
+     New UI that uses them must flip here, or headings go near-black on charcoal. */
+  --text-strong: var(--dark-text-strong);
+  --text-secondary: #c5ccd1;
+  --text-muted: #b8c0c5;
   --border-default: var(--dark-border-strong);
   --border-strong: var(--dark-border-panel-2);
   --color-success: var(--dark-color-success-icon);
@@ -234,6 +253,15 @@
   --border-control-adaptive: var(--dark-border-input);
   --border-control-focus: #4d9db8;
   --text-placeholder: var(--dark-text-muted);
+
+  --provider-claude: #e6a27e;
+  --provider-claude-soft: #392823;
+  --provider-codex: #79d2be;
+  --provider-codex-soft: #203b35;
+  --provider-grok: #c5ccd3;
+  --provider-grok-soft: #2b3034;
+  --provider-gemini: #aab5ee;
+  --provider-gemini-soft: #2c3048;
 }
 
 
@@ -248,6 +276,50 @@ body {
   height: 100%;
   margin: 0;
   overflow: hidden;
+}
+
+.development-preview {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  min-width: 680px;
+  min-height: 500px;
+  overflow: hidden;
+}
+
+.development-preview-notice {
+  position: fixed;
+  top: 58px;
+  left: 50%;
+  z-index: 1300;
+  max-width: min(420px, calc(100vw - 40px));
+  padding: 9px 12px;
+  color: var(--text-secondary);
+  background: var(--surface-adaptive);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-8);
+  box-shadow: var(--shadow-lg);
+  font-size: var(--text-xs);
+  transform: translateX(-50%);
+}
+
+.development-preview-theme {
+  position: fixed;
+  top: 12px;
+  right: 16px;
+  z-index: 1301;
+  min-height: 34px;
+  padding: 0 12px;
+  color: var(--text-primary);
+  background: var(--surface-adaptive);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-7);
+  cursor: pointer;
+  font-size: var(--text-xs);
+}
+
+.development-preview-theme:hover {
+  background: var(--surface-adaptive-hover);
 }
 
 #root {
@@ -275,10 +347,10 @@ body {
   align-items: center;
   gap: var(--space-8);
   min-width: 0;
-  padding: 0 150px 0 12px;
+  padding: 0 150px 0 16px;
   color: var(--text-secondary);
-  background: var(--surface-panel);
-  border-bottom: 1px solid var(--border-subtle);
+  background: var(--surface-page);
+  border-bottom: 1px solid transparent;
   font-size: var(--text-sm);
   font-weight: var(--font-weight-medium);
   user-select: none;
@@ -1458,9 +1530,9 @@ input:focus-visible {
 }
 
 .app-shell {
-  --sidebar-width: 208px;
+  --sidebar-width: 188px;
   display: grid;
-  grid-template-columns: 208px minmax(0, 1fr);
+  grid-template-columns: 188px minmax(0, 1fr);
   width: 100%;
   height: 100%;
   background: var(--surface-page);
@@ -1473,9 +1545,9 @@ input:focus-visible {
   min-height: 0;
   min-width: 0;
   height: 100%;
-  padding: 14px 12px 12px;
-  background: var(--surface-panel);
-  border-right: 1px solid var(--border-subtle);
+  padding: 14px 8px 12px;
+  background: #f7f8f9;
+  border-right: 1px solid transparent;
   overflow: hidden;
 }
 
@@ -1484,9 +1556,9 @@ input:focus-visible {
   display: flex;
   align-items: center;
   gap: var(--space-8);
-  min-height: 48px;
+  min-height: 44px;
   padding: 0 4px 12px;
-  border-bottom: 1px solid var(--border-subtle-2);
+  border-bottom: 0;
 }
 
 .brand-update-button {
@@ -1589,19 +1661,19 @@ input:focus-visible {
 
 .brand-name {
   color: var(--text-strong);
-  font-size: var(--text-2xl);
-  font-weight: var(--font-weight-bold);
+  font-size: var(--text-xl);
+  font-weight: var(--font-weight-semibold);
   line-height: 1.1;
 }
 
 .brand-name span {
-  color: var(--color-accent);
+  color: var(--color-ink);
 }
 
 .brand-subtitle {
   margin-top: var(--space-2);
   color: var(--text-muted);
-  font-size: var(--text-xs);
+  font-size: var(--text-2xs);
 }
 
 .main-nav {
@@ -1611,8 +1683,8 @@ input:focus-visible {
   gap: 0;
   min-height: 0;
   margin-bottom: var(--space-6);
-  padding: var(--space-6) 0 var(--space-8);
-  border-bottom: 1px solid var(--border-subtle-2);
+  padding: var(--space-4) 0 var(--space-8);
+  border-bottom: 0;
   overflow-y: auto;
   scrollbar-width: none;
 }
@@ -1620,18 +1692,19 @@ input:focus-visible {
 .nav-group,
 .utility-nav {
   display: grid;
-  gap: var(--space-3);
+  gap: var(--space-2);
 }
 
 .nav-group + .nav-group {
-  margin-top: var(--space-9);
+  margin-top: var(--space-16);
 }
 
 .nav-group-label {
-  padding: 4px 10px 5px;
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-  font-weight: var(--font-weight-semibold);
+  padding: 2px 8px 6px;
+  color: #9aa0a6;
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  letter-spacing: 0;
 }
 
 .main-nav::-webkit-scrollbar {
@@ -1641,14 +1714,14 @@ input:focus-visible {
 .nav-item {
   display: flex;
   align-items: center;
-  gap: var(--space-9);
+  gap: var(--space-8);
   width: 100%;
-  flex: 0 0 36px;
-  height: 36px;
-  padding: 0 10px;
-  color: var(--text-secondary);
+  flex: 0 0 38px;
+  height: 38px;
+  padding: 0 8px;
+  color: #5c636a;
   background: transparent;
-  border-radius: var(--radius-6);
+  border-radius: var(--radius-10);
   cursor: pointer;
   text-align: left;
   transition: background-color 160ms ease, color 160ms ease;
@@ -1656,19 +1729,19 @@ input:focus-visible {
 
 .nav-item:hover {
   color: var(--text-primary);
-  background: var(--surface-hover);
+  background: #eceeef;
 }
 
 .nav-item.active {
-  color: var(--color-nav-active);
-  background: var(--surface-accent-soft);
-  font-weight: var(--font-weight-semibold);
+  color: var(--color-ink);
+  background: #e8e9eb;
+  font-weight: var(--font-weight-medium);
 }
 
 .nav-label {
   min-width: 0;
   overflow: hidden;
-  font-size: var(--text-sm);
+  font-size: 13px;
   line-height: 1.25;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1768,14 +1841,14 @@ input:focus-visible {
 .floating-support-button {
   position: relative;
   display: grid;
-  width: 52px;
-  height: 52px;
+  width: 46px;
+  height: 46px;
   place-items: center;
   color: #fff;
   background: var(--color-success-strong);
-  border: 1px solid rgba(255, 255, 255, 0.52);
+  border: 1px solid transparent;
   border-radius: 50%;
-  box-shadow: 0 10px 26px rgba(16, 94, 67, 0.28), 0 0 0 5px rgba(43, 155, 115, 0.12);
+  box-shadow: 0 10px 24px rgba(43, 155, 115, 0.22);
   cursor: pointer;
   transition: transform var(--duration-150) var(--ease-emphasized), box-shadow var(--duration-150) var(--ease-standard);
 }
@@ -1795,9 +1868,9 @@ input:focus-visible {
 
 .floating-support-button:hover,
 .floating-support-button:focus-visible {
-  transform: translateY(-3px);
+  transform: translateY(-2px);
   background: var(--color-success-strong-hover);
-  box-shadow: 0 14px 30px rgba(16, 94, 67, 0.36), 0 0 0 6px rgba(43, 155, 115, 0.16);
+  box-shadow: 0 14px 28px rgba(43, 155, 115, 0.28);
 }
 
 .floating-support-button:hover::after,
@@ -1809,7 +1882,7 @@ input:focus-visible {
 .floating-support-button.is-open {
   transform: translateY(-1px);
   background: var(--color-success-strong-hover);
-  box-shadow: 0 12px 28px rgba(16, 94, 67, 0.34), 0 0 0 6px rgba(43, 155, 115, 0.16);
+  box-shadow: 0 10px 24px rgba(43, 155, 115, 0.22);
 }
 
 .sidebar-service-button {
@@ -2296,20 +2369,6 @@ input:focus-visible {
   font-weight: var(--font-weight-semibold-plus);
 }
 
-/* W3b manual-key entry (relay-sites.ts accountBackend: 'manual-key') --
-   sits where .account-recharge-button normally would, but as plain
-   explanatory text rather than a button: the actionable link lives inside
-   it via .inline-link (already used by RuntimeCell.tsx for the same
-   "text sentence with one clickable word" shape). */
-.account-manual-key-hint {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: 0 var(--space-4);
-  color: var(--text-muted);
-  font-size: var(--text-xs);
-}
-
 .account-balance .account-refresh-button {
   flex: 0 0 22px;
   width: 22px;
@@ -2358,12 +2417,12 @@ input:focus-visible {
    Account center (个人中心, W4a) — top-level overlay entered from the
    .account-area identity row above, exited via its own "返回工作台" button
    (App.tsx's 'account-center' appView, a sibling of 'welcome'/'onboarding').
-   Every color here is a Layer 2 semantic token (auto-flips with
-   [data-theme="dark"], see the token block near the top of this file), so
-   this section needs no separate dark-mode rules of its own. Structure
-   otherwise reuses .page-header/.segmented-control/.field/.input-with-
-   action/.icon-button/.primary-button/.secondary-button/.workspace-empty/
-   .session-error verbatim.
+   Text/surface tokens are Layer 2 and flip with [data-theme="dark"].
+   --color-nav-active / --color-accent-text stay Layer-1 ink, so selected
+   chips and payment emphasis still need a scoped dark block below.
+   Structure otherwise reuses .page-header/.segmented-control/.field/.input-
+   with-action/.icon-button/.primary-button/.secondary-button/.workspace-
+   empty/.session-error verbatim.
    ========================================================================== */
 
 .account-center {
@@ -2398,8 +2457,12 @@ input:focus-visible {
 .account-center-title {
   display: flex;
   min-width: 0;
-  align-items: center;
+  align-items: flex-start;
   gap: 11px;
+}
+
+.account-center-title .page-lead {
+  margin-top: 4px;
 }
 
 .account-center-title-icon {
@@ -2420,7 +2483,7 @@ input:focus-visible {
 
 .account-center-title h1 {
   margin: 1px 0 0;
-  color: var(--text-strong);
+  color: var(--text-primary);
   font-size: var(--text-4xl);
   line-height: 1.2;
 }
@@ -2526,7 +2589,7 @@ input:focus-visible {
 
 .account-center-workspace { display: flex; min-width: 0; min-height: 0; flex-direction: column; }
 .account-center-section-header { display: flex; flex: 0 0 auto; justify-content: space-between; gap: 12px; padding: 1px 0 13px; }
-.account-center-section-header h2 { margin: 0; font-size: var(--text-3xl); }
+.account-center-section-header h2 { margin: 0; color: var(--text-primary); font-size: var(--text-3xl); }
 .account-center-section-header p { margin: 4px 0 0; color: var(--text-muted); font-size: var(--text-sm); }
 
 .account-center-subtabs {
@@ -2873,6 +2936,7 @@ input:focus-visible {
 .account-task-inline-error,
 .account-dashboard-inline-error { display: flex; align-items: center; justify-content: space-between; gap: 9px; padding: 7px 10px; color: var(--color-danger); background: var(--surface-danger-adaptive); border-top: 1px solid color-mix(in srgb, var(--color-danger) 25%, var(--border-default)); font-size: var(--text-xs); }
 .account-dashboard-inline-error { border: 1px solid color-mix(in srgb, var(--color-danger) 25%, var(--border-default)); border-radius: var(--radius-6); }
+.account-dashboard-discarded { margin: 8px 0 0; padding: 7px 10px; color: var(--color-warning); background: var(--surface-warning-adaptive); border: 1px solid color-mix(in srgb, var(--color-warning) 24%, var(--border-default)); border-radius: var(--radius-6); font-size: var(--text-xs); }
 .account-usage-inline-error button,
 .account-task-inline-error button,
 .account-dashboard-inline-error button { display: inline-flex; align-items: center; gap: 4px; color: inherit; background: transparent; border: 0; font-size: var(--text-xs); font-weight: var(--font-weight-bold); }
@@ -3110,7 +3174,8 @@ input:focus-visible {
 .account-center-keys {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  height: auto;
+  min-height: 0;
   background: var(--surface-adaptive);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-8);
@@ -3121,13 +3186,13 @@ input:focus-visible {
 .account-center-keys-row {
   display: grid;
   grid-template-columns:
-    minmax(140px, 1.2fr)
-    minmax(180px, 1.35fr)
+    minmax(200px, 1.45fr)
+    minmax(180px, 1.25fr)
     minmax(140px, 1.1fr)
     56px 68px 78px 78px 112px 112px 74px;
   align-items: center;
   column-gap: var(--space-12);
-  min-width: 1180px;
+  min-width: 1234px;
 }
 
 .account-center-keys-toolbar {
@@ -3150,7 +3215,7 @@ input:focus-visible {
 }
 
 .account-center-keys-table {
-  flex: 1 1 auto;
+  flex: 0 1 auto;
   min-height: 0;
   overflow: auto;
 }
@@ -3170,7 +3235,7 @@ input:focus-visible {
 }
 
 .account-center-keys-body {
-  min-height: calc(100% - 34px);
+  min-height: 0;
 }
 
 .account-center-keys-row {
@@ -3194,6 +3259,19 @@ input:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Names are identifiers users need to distinguish. Let long names occupy a
+   second line instead of hiding the suffix behind an ellipsis; the row grows
+   with its content while the other columns retain their compact one-line
+   treatment. */
+.account-center-keys-row > strong {
+  min-width: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .account-center-keys-row button {
@@ -3520,6 +3598,84 @@ input:focus-visible {
 .account-session-footer { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border-default); }
 .account-session-footer span { color: var(--text-muted); font-size: var(--text-2xs); }
 
+/* Dark account center: Layer-1 ink accents stay #171717, and card labels
+   need more than the global muted token to stay readable on charcoal. */
+:root[data-theme="dark"] .account-center-title h1,
+:root[data-theme="dark"] .account-center-section-header h2,
+:root[data-theme="dark"] .account-center-identity strong,
+:root[data-theme="dark"] .account-center-balance-summary strong,
+:root[data-theme="dark"] .account-center-stat-value,
+:root[data-theme="dark"] .account-center-info-item strong {
+  color: #f2f4f5;
+}
+
+:root[data-theme="dark"] .account-center-title .page-lead,
+:root[data-theme="dark"] .account-center-section-header p,
+:root[data-theme="dark"] .account-center-nav-label,
+:root[data-theme="dark"] .account-center-identity span,
+:root[data-theme="dark"] .account-center-balance-summary span,
+:root[data-theme="dark"] .account-center-stat-label,
+:root[data-theme="dark"] .account-center-info-item span,
+:root[data-theme="dark"] .account-usage-heading > strong,
+:root[data-theme="dark"] .account-task-heading > strong,
+:root[data-theme="dark"] .account-usage-filter-grid label > span,
+:root[data-theme="dark"] .account-task-filter-grid label > span,
+:root[data-theme="dark"] .account-usage-stats span,
+:root[data-theme="dark"] .account-usage-stats small,
+:root[data-theme="dark"] .account-dashboard-stats article > div > span,
+:root[data-theme="dark"] .account-dashboard-stats small,
+:root[data-theme="dark"] .account-task-table-head,
+:root[data-theme="dark"] .account-usage-table-head,
+:root[data-theme="dark"] .account-center-usage-head,
+:root[data-theme="dark"] .account-center-keys-head,
+:root[data-theme="dark"] .account-center-pagination,
+:root[data-theme="dark"] .account-center-invite-stat,
+:root[data-theme="dark"] .account-center-topup p,
+:root[data-theme="dark"] .account-commerce-form header p,
+:root[data-theme="dark"] .account-active-subscriptions header p,
+:root[data-theme="dark"] .account-security-section-title p,
+:root[data-theme="dark"] .account-affiliate-transfer header p,
+:root[data-theme="dark"] .account-redeem p,
+:root[data-theme="dark"] .account-orders-toolbar,
+:root[data-theme="dark"] .account-orders-head,
+:root[data-theme="dark"] .account-profile-identity span,
+:root[data-theme="dark"] .account-profile-readonly span,
+:root[data-theme="dark"] .account-session-main span,
+:root[data-theme="dark"] .account-session-main small,
+:root[data-theme="dark"] .account-session-footer span,
+:root[data-theme="dark"] .account-payment-summary > div > span,
+:root[data-theme="dark"] .account-payment-total small,
+:root[data-theme="dark"] .account-payment-confirm-summary span,
+:root[data-theme="dark"] .account-plan p,
+:root[data-theme="dark"] .account-plan dt,
+:root[data-theme="dark"] .account-plan-price span,
+:root[data-theme="dark"] .account-affiliate-stats span,
+:root[data-theme="dark"] .account-billing-preference > span {
+  color: #c8d0d4;
+}
+
+:root[data-theme="dark"] .account-center-nav-group button:not(.active),
+:root[data-theme="dark"] .account-center-subtabs button:not(.active),
+:root[data-theme="dark"] .account-usage-advanced-toggle,
+:root[data-theme="dark"] .account-amount-options button,
+:root[data-theme="dark"] .account-payment-methods legend,
+:root[data-theme="dark"] .account-key-copy {
+  color: #d5dce0;
+}
+
+:root[data-theme="dark"] .account-center-subtabs button.active,
+:root[data-theme="dark"] .account-usage-detail-link,
+:root[data-theme="dark"] .account-task-detail-link,
+:root[data-theme="dark"] .account-task-detail-dialog header span,
+:root[data-theme="dark"] .account-amount-options button:hover,
+:root[data-theme="dark"] .account-amount-options button.active,
+:root[data-theme="dark"] .account-payment-methods em,
+:root[data-theme="dark"] .account-payment-total strong,
+:root[data-theme="dark"] .account-payment-confirm-summary > div:last-child strong,
+:root[data-theme="dark"] .account-group-summary strong {
+  color: #f2f4f5;
+}
+
 @media (max-width: 1180px) {
   .account-center-inner { padding: 16px; }
   .account-center-layout { grid-template-columns: 190px minmax(0, 1fr); gap: 14px; }
@@ -3601,9 +3757,9 @@ input:focus-visible {
 }
 
 .sidebar-control-button:hover {
-  color: var(--color-accent-text);
-  background: var(--surface-accent-soft);
-  border-color: color-mix(in srgb, var(--color-accent) 22%, var(--border-subtle));
+  color: var(--color-ink);
+  background: #eceeef;
+  border-color: transparent;
 }
 
 .sidebar-control-button svg {
@@ -3638,15 +3794,16 @@ input:focus-visible {
   width: min(100%, 1200px);
   min-height: 100%;
   margin: 0 auto;
-  padding: 22px 32px 32px;
+  padding: 28px 36px 36px;
 }
 
 .page-header {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
-  min-height: 48px;
-  margin-bottom: 16px;
+  gap: 16px;
+  min-height: 44px;
+  margin-bottom: 20px;
 }
 
 .eyebrow {
@@ -3659,9 +3816,29 @@ input:focus-visible {
 .page-header h1 {
   margin: 0;
   color: var(--text-strong);
-  font-size: var(--text-4xl);
-  font-weight: var(--font-weight-semibold-plus);
-  line-height: 1.2;
+  font-size: 20px;
+  font-weight: var(--font-weight-semibold);
+  line-height: 1.25;
+}
+
+.page-lead {
+  margin: 6px 0 0;
+  max-width: 36em;
+  color: var(--text-muted);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.page-header .header-actions,
+.page-header .page-toolbar,
+.page-header .ai-chat-header-actions,
+.page-header .feedback-actions {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.page-header .eyebrow {
+  display: none;
 }
 
 .workspace-page {
@@ -4379,11 +4556,11 @@ input:focus-visible {
   justify-content: center;
   gap: var(--space-7);
   height: 36px;
-  padding: 0 14px;
-  border-radius: var(--radius-8);
+  padding: 0 16px;
+  border-radius: var(--radius-10);
   cursor: pointer;
   font-size: var(--text-base);
-  font-weight: var(--font-weight-semibold);
+  font-weight: var(--font-weight-medium);
   white-space: nowrap;
   transition: background-color var(--duration-150) var(--ease-standard), border-color var(--duration-150) var(--ease-standard), transform var(--duration-150) var(--ease-standard);
 }
@@ -4412,12 +4589,12 @@ input:focus-visible {
 
 .primary-button {
   color: var(--color-white);
-  background: var(--color-accent);
+  background: var(--color-ink);
   box-shadow: none;
 }
 
 .primary-button:hover {
-  background: var(--color-accent-hover);
+  background: var(--color-ink-hover);
 }
 
 .primary-button.launch-button {
@@ -4430,9 +4607,9 @@ input:focus-visible {
 }
 
 .secondary-button {
-  color: var(--text-secondary);
+  color: #3f454c;
   background: var(--surface-panel);
-  border: 1px solid var(--border-control);
+  border: 1px solid #e6e8ec;
 }
 
 .danger-button {
@@ -4476,7 +4653,7 @@ button:disabled {
   padding: var(--space-16) var(--space-18) var(--space-8);
   background: var(--surface-adaptive);
   border: 1px solid var(--border-default);
-  border-radius: var(--radius-12);
+  border-radius: var(--radius-16);
   box-shadow: var(--shadow-md);
 }
 
@@ -4807,11 +4984,11 @@ button:disabled {
   flex-direction: column;
   min-width: 0;
   min-height: 170px;
-  padding: 16px;
+  padding: 18px;
   background: var(--surface-panel);
   border: 1px solid var(--border-panel);
-  border-radius: var(--radius-12);
-  box-shadow: var(--shadow-md);
+  border-radius: var(--radius-16);
+  box-shadow: none;
 }
 
 .desktop-card .provider-icon {
@@ -5160,7 +5337,7 @@ button:disabled {
   padding: 10px 12px;
   background: var(--surface-panel);
   border: 1px solid var(--border-panel);
-  border-radius: var(--radius-12);
+  border-radius: var(--radius-14);
 }
 
 .dashboard-page .cli-grid {
@@ -5270,11 +5447,11 @@ button:disabled {
 .config-dialog {
   width: min(960px, calc(100vw - 68px));
   max-height: calc(100vh - 68px);
-  padding: var(--space-24);
+  padding: 28px;
   overflow: auto;
   background: var(--surface-panel);
   border: 1px solid var(--border-dialog);
-  border-radius: var(--radius-12);
+  border-radius: var(--radius-16);
   box-shadow: var(--shadow-lg);
 }
 
@@ -5312,10 +5489,10 @@ button:disabled {
 
 .save-mode-dialog {
   width: min(560px, calc(100vw - 56px));
-  padding: var(--space-22);
+  padding: 24px;
   background: var(--surface-panel);
   border: 1px solid var(--border-dialog);
-  border-radius: var(--radius-12);
+  border-radius: var(--radius-16);
   box-shadow: var(--shadow-lg);
 }
 
@@ -5955,14 +6132,14 @@ button:disabled {
 .field input,
 .field select {
   width: 100%;
-  height: 41px;
+  height: 40px;
   padding: 0 12px;
   color: var(--text-primary);
-  background: var(--surface-control);
-  border: 1px solid var(--border-control-adaptive);
-  border-radius: var(--radius-8);
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+  background: #f5f6f7;
+  border: 1px solid #e8eaed;
+  border-radius: var(--radius-10);
+  font-family: var(--font-sans);
+  font-size: 13px;
   transition: border-color var(--duration-150) var(--ease-standard), background-color var(--duration-150) var(--ease-standard), box-shadow var(--duration-150) var(--ease-standard);
 }
 
@@ -5974,9 +6151,9 @@ button:disabled {
 
 .field input:focus,
 .field select:focus {
-  background: var(--surface-control-focus);
-  border-color: var(--border-control-focus);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--border-control-focus) 18%, transparent);
+  background: var(--color-white);
+  border-color: #cfd3d8;
+  box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.06);
   outline: 0;
 }
 
@@ -6295,8 +6472,8 @@ button:disabled {
 
 @media (max-width: 1060px) {
   .app-shell {
-    --sidebar-width: 208px;
-    grid-template-columns: 208px minmax(0, 1fr);
+    --sidebar-width: 176px;
+    grid-template-columns: 176px minmax(0, 1fr);
   }
 
   .page {
@@ -6425,8 +6602,7 @@ button:disabled {
 .sidebar-collapsed .account-recharge-button,
 .sidebar-collapsed .account-logout-button,
 .sidebar-collapsed .account-refresh-button,
-.sidebar-collapsed .account-configure-button,
-.sidebar-collapsed .account-manual-key-hint {
+.sidebar-collapsed .account-configure-button {
   display: none;
 }
 
@@ -6517,6 +6693,8 @@ button:disabled {
 :root[data-theme="dark"] .onboarding-heading h1,
 :root[data-theme="dark"] .setup-progress-row strong,
 :root[data-theme="dark"] .page-header h1,
+:root[data-theme="dark"] .account-center-title h1,
+:root[data-theme="dark"] .account-center-section-header h2,
 :root[data-theme="dark"] .section-heading h2,
 :root[data-theme="dark"] .runtime-name,
 :root[data-theme="dark"] .cli-identity h3,
@@ -6531,6 +6709,7 @@ button:disabled {
 :root[data-theme="dark"] .setup-progress-row,
 :root[data-theme="dark"] .setup-working,
 :root[data-theme="dark"] .brand-subtitle,
+:root[data-theme="dark"] .page-lead,
 :root[data-theme="dark"] .eyebrow,
 :root[data-theme="dark"] .section-heading > div > span,
 :root[data-theme="dark"] .runtime-version,
@@ -6648,8 +6827,8 @@ button:disabled {
 }
 
 :root[data-theme="dark"] .sidebar {
-  background: #171a1c;
-  border-right-color: var(--dark-border-strong);
+  background: #16191b;
+  border-right-color: transparent;
 }
 
 :root[data-theme="dark"] .sidebar-controls {
@@ -6661,9 +6840,9 @@ button:disabled {
 }
 
 :root[data-theme="dark"] .sidebar-control-button:hover {
-  color: #8ed5e5;
-  background: #283438;
-  border-color: #395158;
+  color: #e8eaeb;
+  background: #2a2e31;
+  border-color: transparent;
 }
 
 :root[data-theme="dark"] .brand-name {
@@ -6700,8 +6879,8 @@ button:disabled {
 }
 
 :root[data-theme="dark"] .nav-item.active {
-  color: #9ee4e8;
-  background: #1d3438;
+  color: #f3f4f5;
+  background: #2a2e31;
 }
 
 :root[data-theme="dark"] .workspace-empty {
@@ -6794,9 +6973,19 @@ button:disabled {
   border-color: var(--dark-border-danger);
 }
 
+:root[data-theme="dark"] .primary-button {
+  color: #111315;
+  background: #ececec;
+}
+
+:root[data-theme="dark"] .primary-button:hover {
+  background: #ffffff;
+}
+
 :root[data-theme="dark"] .primary-button.launch-button {
+  color: var(--color-white);
   background: var(--color-success-strong);
-  box-shadow: 0 3px 10px rgba(16, 94, 67, 0.24);
+  box-shadow: none;
 }
 
 :root[data-theme="dark"] .primary-button.launch-button:hover {
@@ -6823,10 +7012,6 @@ button:disabled {
 :root[data-theme="dark"] .setup-check-icon {
   color: #a7b0b5;
   background: var(--dark-surface-raised);
-}
-
-:root[data-theme="dark"] .provider-icon {
-  background-color: var(--dark-surface-raised) !important;
 }
 
 :root[data-theme="dark"] .readiness {
@@ -7955,9 +8140,6 @@ button:disabled {
   gap: var(--space-12);
 }
 
-/* --color-accent-text/-hover read fine unmodified on the dark panel
-   background (same treatment as .welcome-nav-login:hover), so no dark
-   override is needed here. */
 .account-dialog-switch {
   margin: var(--space-4) 0 0;
   color: var(--text-muted);
@@ -7977,6 +8159,16 @@ button:disabled {
 .account-dialog-switch button:hover {
   color: var(--color-accent-hover);
   text-decoration: underline;
+}
+
+:root[data-theme="dark"] .account-dialog-switch button,
+:root[data-theme="dark"] .account-inline-link {
+  color: #f0d48a;
+}
+
+:root[data-theme="dark"] .account-dialog-switch button:hover,
+:root[data-theme="dark"] .account-inline-link:hover {
+  color: #ffe7b0;
 }
 
 /* RegisterDialog's terms-agreement row. Reads fine unmodified in dark mode:
@@ -8034,7 +8226,7 @@ button:disabled {
 .support-dialog::before {
   display: block;
   height: 4px;
-  background: linear-gradient(90deg, #2d9bb2, #6cc9ba);
+  background: var(--color-info-strong);
   content: '';
 }
 
@@ -8075,9 +8267,9 @@ button:disabled {
   width: 36px;
   height: 36px;
   place-items: center;
-  color: var(--color-accent-text);
-  background: var(--surface-adaptive-hover);
-  border: 1px solid var(--border-default);
+  color: var(--color-info-strong);
+  background: #e7f4f0;
+  border: 1px solid #c9e8dc;
   border-radius: var(--radius-8);
 }
 
@@ -8325,6 +8517,14 @@ button:disabled {
 .account-inline-link:hover {
   color: var(--color-accent-hover);
   text-decoration: underline;
+}
+
+:root[data-theme="dark"] .account-inline-link {
+  color: #f0d48a;
+}
+
+:root[data-theme="dark"] .account-inline-link:hover {
+  color: #ffe7b0;
 }
 
 /* ProvisioningConfirmDialog's per-CLI checkbox rows: plain .operation-row
@@ -9584,6 +9784,127 @@ button:disabled {
   box-shadow: inset 0 0 0 1px #2c4d41;
 }
 
+/* Dashboard and rail polish -------------------------------------------------
+   Keep the desktop layout dense at full width, then turn the runtime strip
+   into independent cells as the content column narrows. This prevents the
+   action links from competing with long version strings in compact windows. */
+.dashboard-page .section-heading > div:first-child {
+  min-width: 0;
+}
+
+.dashboard-page .section-heading h2 {
+  letter-spacing: 0;
+}
+
+.dashboard-page .next-steps-card,
+.dashboard-page .cli-card,
+.dashboard-page .runtime-cell {
+  border-radius: var(--radius-8);
+}
+
+.dashboard-page .config-state {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dashboard-page .runtime-action {
+  min-width: 0;
+}
+
+.dashboard-page .runtime-action .inline-link {
+  max-width: 72px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.nav-item.active {
+  box-shadow: inset 3px 0 0 var(--color-ink);
+}
+
+.sidebar-bottom {
+  padding-top: var(--space-6);
+  border-top: 1px solid var(--border-subtle-2);
+}
+
+@media (max-width: 1000px) {
+  .dashboard-page .runtime-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-8);
+  }
+
+  .dashboard-page .runtime-cell {
+    border: 1px solid var(--border-panel);
+    border-radius: var(--radius-10);
+  }
+}
+
+@media (max-width: 700px) {
+  .dashboard-page .runtime-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dashboard-page .page-header {
+    flex-direction: column;
+  }
+
+  .dashboard-page .header-actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .dashboard-page .header-actions > .secondary-button {
+    flex: 1 1 auto;
+  }
+}
+
+.sidebar-collapsed .account-area {
+  grid-template-columns: 28px;
+  width: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  height: 40px;
+  margin-right: auto;
+  margin-left: auto;
+  padding: 4px;
+  border-radius: var(--radius-10);
+}
+
+/* Let the account/service tooltip escape the 72px rail. The navigation owns
+   its horizontal clipping, so widening the aside overflow does not move the
+   icon column or introduce a second scrollbar. */
+.sidebar-collapsed .sidebar {
+  overflow: visible;
+}
+
+:root[data-theme="dark"] .nav-item.active {
+  box-shadow: inset 3px 0 0 #8bd3bd;
+}
+
+:root[data-theme="dark"] .sidebar-bottom {
+  border-top-color: var(--dark-border-2);
+}
+
+:root[data-theme="dark"] .dashboard-page .runtime-cell {
+  border-color: var(--dark-border-panel-2);
+}
+
+/* Primary install/delete actions should remain low-emission in dark mode;
+   launch keeps its semantic green treatment above. */
+:root[data-theme="dark"] .primary-button:not(.launch-button) {
+  color: #e7edef;
+  background: #394346;
+  border: 1px solid #566267;
+}
+
+:root[data-theme="dark"] .primary-button:not(.launch-button):hover {
+  color: #f3f6f7;
+  background: #465257;
+  border-color: #6b797f;
+}
+
 /* Keep dense pages usable when the sidebar leaves a narrow content column. */
 @media (max-width: 980px) {
   .session-stats {
@@ -10077,12 +10398,9 @@ button:disabled {
 /* ==========================================================================
    Welcome page (W2) — first-run marketing/onboarding gate, shown only when
    no provider has ever been configured with a valid 星芒 relay key (see
-   shouldShowWelcome in app-shared.ts). Built entirely from W1 tokens; the
-   handful of soft accent washes that have no adaptive alias yet are derived
-   with color-mix() from --color-accent/--color-warning instead of new hex,
-   and the couple of surfaces/text tones W1's 10 aliases don't cover fall
-   back to the pre-W1 "flat primitive + explicit dark selector" pattern
-   already used throughout this file (see the two grouped dark blocks below).
+   shouldShowWelcome in app-shared.ts). Built entirely from W1 tokens with
+   flat surfaces and explicit dark selectors so the page remains readable
+   without decorative glow layers.
    Reference: docs/mockups/welcome-draft.html (structure/copy, not colors —
    that sketch is explicitly non-final visual).
    ========================================================================== */
@@ -10095,6 +10413,14 @@ button:disabled {
   background: var(--surface-page);
 }
 
+.welcome-aurora {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  display: none;
+}
+
 /* --surface-page is a flat light-only primitive (its every other consumer —
    .desktop-frame, .app-shell, .startup-splash — is always fully covered
    edge-to-edge by opaque children, so the raw value never actually shows
@@ -10102,20 +10428,15 @@ button:disabled {
    where the page background itself is visible, so it needs an explicit
    dark value the way .onboarding-shell's own --onboarding-bg already does. */
 :root[data-theme="dark"] .welcome-page {
-  background: var(--dark-surface-deep);
+  background: #0c0e10;
 }
 
-/* Faint two-tone atmosphere glow, purely decorative — kept subtle enough
-   that clipping it at the page edge (no scroll, ever) never looks cut off. */
 .welcome-page::before {
   content: '';
   position: absolute;
   inset: 0;
   z-index: 0;
   pointer-events: none;
-  background:
-    radial-gradient(60% 55% at 82% 6%, color-mix(in srgb, var(--color-warning) 14%, transparent), transparent 70%),
-    radial-gradient(70% 60% at 12% 96%, color-mix(in srgb, var(--color-accent) 12%, transparent), transparent 72%);
 }
 
 .welcome-content {
@@ -10131,7 +10452,6 @@ button:disabled {
   display: flex;
   flex: none;
   align-items: center;
-  justify-content: space-between;
   padding: var(--space-20) var(--space-34) 0;
 }
 
@@ -10150,25 +10470,19 @@ button:disabled {
 }
 
 .welcome-brand-name {
-  color: var(--text-strong);
+  color: var(--text-primary);
 }
 
 .welcome-brand-name span {
-  color: var(--color-accent);
+  color: var(--color-warning);
 }
 
-.welcome-nav-login {
-  font-family: inherit;
-  font-size: var(--text-lg);
-  color: var(--text-muted);
-  background: transparent;
-  border: 0;
-  cursor: pointer;
-  transition: color var(--duration-150) var(--ease-standard);
+:root[data-theme="dark"] .welcome-brand-name {
+  color: #f4f6f7;
 }
 
-.welcome-nav-login:hover {
-  color: var(--color-accent);
+:root[data-theme="dark"] .welcome-brand-name span {
+  color: #e5bd72;
 }
 
 .welcome-hero {
@@ -10191,11 +10505,11 @@ button:disabled {
   gap: var(--space-8);
   font-size: var(--text-base);
   font-weight: var(--font-weight-semibold);
-  color: var(--color-accent);
+  color: var(--color-warning);
   padding: var(--space-6) var(--space-13) var(--space-6) var(--space-11);
   border-radius: var(--radius-full);
-  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 28%, transparent);
 }
 
 .welcome-eyebrow::before {
@@ -10209,11 +10523,15 @@ button:disabled {
      scale tops out at --text-6xl for dense toolbox chrome); this is
      the one deliberately new, page-scoped literal in the whole section. */
   margin: var(--space-14) 0 0;
-  font-size: 32px;
+  font-size: 34px;
   font-weight: var(--font-weight-bold-plus);
-  line-height: 1.16;
-  letter-spacing: -0.01em;
+  line-height: 1.14;
+  letter-spacing: 0;
   color: var(--text-primary);
+}
+
+:root[data-theme="dark"] .welcome-title {
+  color: #f2f4f5;
 }
 
 .welcome-sub {
@@ -10227,7 +10545,7 @@ button:disabled {
 .welcome-cta-row {
   display: flex;
   align-items: center;
-  gap: var(--space-20);
+  gap: var(--space-12);
   flex-wrap: wrap;
   margin-top: var(--space-22);
 }
@@ -10243,8 +10561,8 @@ button:disabled {
   padding: var(--space-14) var(--space-24);
   border: 0;
   border-radius: var(--radius-10);
-  background: linear-gradient(160deg, var(--color-accent), var(--color-accent-hover));
-  box-shadow: var(--shadow-md), 0 0 0 6px color-mix(in srgb, var(--color-warning) 16%, transparent);
+  background: var(--color-accent);
+  box-shadow: var(--shadow-md);
   cursor: pointer;
   transition: transform var(--duration-150) var(--ease-emphasized);
 }
@@ -10262,34 +10580,26 @@ button:disabled {
   transform: translateX(4px);
 }
 
-.welcome-cta-alt {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.welcome-cta-ghost {
-  align-self: flex-start;
+.welcome-cta-login {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 88px;
   font-family: inherit;
-  font-size: var(--text-lg);
-  font-weight: var(--font-weight-medium);
-  color: var(--text-secondary);
-  background: transparent;
-  border: 0;
-  border-bottom: 1px dashed var(--text-muted);
-  padding: 0 0 var(--space-2);
+  font-size: var(--text-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  padding: var(--space-14) var(--space-22);
+  border: 1px solid var(--border-control);
+  border-radius: var(--radius-10);
+  background: var(--surface-panel);
   cursor: pointer;
-  transition: color var(--duration-150) var(--ease-standard), border-color var(--duration-150) var(--ease-standard);
+  transition: transform var(--duration-150) var(--ease-emphasized), border-color var(--duration-150) var(--ease-standard);
 }
 
-.welcome-cta-ghost:hover {
-  color: var(--color-accent);
+.welcome-cta-login:hover {
+  transform: translateY(-2px);
   border-color: var(--color-accent);
-}
-
-.welcome-cta-note {
-  font-size: var(--text-base);
-  color: var(--text-muted);
 }
 
 .welcome-chips {
@@ -10301,142 +10611,12 @@ button:disabled {
 
 .welcome-chip {
   font-size: var(--text-base);
-  letter-spacing: 0.01em;
+  letter-spacing: 0;
   color: var(--text-muted);
   padding: var(--space-6) var(--space-12);
   border-radius: var(--radius-8);
   background: var(--surface-subtle);
   border: 1px solid var(--border-default);
-}
-
-.welcome-assure {
-  position: relative;
-  align-self: flex-start;
-  margin-top: var(--space-18);
-}
-
-.welcome-assure-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-10);
-  font-family: inherit;
-  font-size: var(--text-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-accent);
-  padding: var(--space-9) var(--space-15);
-  border-radius: var(--radius-10);
-  background: color-mix(in srgb, var(--color-accent) 10%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
-  cursor: pointer;
-  transition: border-color var(--duration-150) var(--ease-standard);
-}
-
-.welcome-assure-toggle:hover {
-  border-color: var(--color-accent);
-}
-
-.welcome-assure-toggle-label::before {
-  content: '✦';
-  margin-right: var(--space-7);
-  color: var(--color-warning);
-}
-
-.welcome-assure-chev {
-  color: var(--text-muted);
-  transition: transform var(--duration-150) var(--ease-standard);
-}
-
-.welcome-assure:hover .welcome-assure-chev,
-.welcome-assure.open .welcome-assure-chev {
-  transform: rotate(180deg);
-}
-
-/* Absolute + opacity/visibility, never display:none — an overlay that
-   never participates in layout is what keeps the expanded state from
-   pushing content down and producing the scrollbar the single-screen
-   constraint forbids. */
-.welcome-assure-panel {
-  position: absolute;
-  top: calc(100% + var(--space-11));
-  left: 0;
-  z-index: 8;
-  width: 560px;
-  max-width: 64vw;
-  padding: var(--space-17) var(--space-18) var(--space-15);
-  background: var(--surface-panel);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
-  border-radius: var(--radius-10);
-  box-shadow: var(--shadow-lg);
-  opacity: 0;
-  visibility: hidden;
-  transform: translateY(6px);
-  transition: opacity var(--duration-150) var(--ease-standard), transform var(--duration-150) var(--ease-standard), visibility var(--duration-150);
-}
-
-.welcome-assure:hover .welcome-assure-panel,
-.welcome-assure:focus-within .welcome-assure-panel,
-.welcome-assure.open .welcome-assure-panel {
-  opacity: 1;
-  visibility: visible;
-  transform: none;
-}
-
-.welcome-assure-title {
-  margin: 0 0 var(--space-12);
-  font-size: var(--text-md);
-  font-weight: var(--font-weight-bold);
-  color: var(--text-primary);
-}
-
-.welcome-assure-title::before {
-  content: '✦ ';
-  color: var(--color-warning);
-}
-
-.welcome-assure-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: var(--space-12);
-}
-
-.welcome-assure-card {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-4);
-  padding: var(--space-12) var(--space-13);
-  border-radius: var(--radius-10);
-  background: var(--surface-subtle);
-  border: 1px solid var(--border-default);
-}
-
-.welcome-assure-tag {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
-  letter-spacing: 0.03em;
-  color: var(--color-accent);
-}
-
-.welcome-assure-card strong {
-  font-size: var(--text-lg);
-  color: var(--text-primary);
-}
-
-.welcome-assure-desc {
-  font-size: var(--text-base);
-  line-height: 1.5;
-  color: var(--text-secondary);
-}
-
-.welcome-assure-note {
-  margin: var(--space-12) 0 0;
-  font-size: var(--text-sm);
-  line-height: 1.55;
-  color: var(--text-muted);
-}
-
-.welcome-assure-note strong {
-  color: var(--text-secondary);
-  font-weight: var(--font-weight-semibold);
 }
 
 .welcome-hero-visual {
@@ -10448,7 +10628,7 @@ button:disabled {
 
 .welcome-constellation {
   position: relative;
-  width: min(280px, 26vw);
+  width: min(320px, 34vw);
   aspect-ratio: 1 / 1;
 }
 
@@ -10458,6 +10638,8 @@ button:disabled {
   width: 100%;
   height: 100%;
   overflow: visible;
+  transform-origin: center;
+  animation: welcome-orbit 42s linear infinite;
 }
 
 .welcome-ring {
@@ -10483,15 +10665,13 @@ button:disabled {
   z-index: 2;
   display: grid;
   place-items: center;
-  gap: 1px;
-  width: 92px;
-  height: 92px;
-  text-align: center;
+  width: 72px;
+  height: 72px;
   color: var(--color-warning);
   background: var(--surface-panel);
-  border: 1px solid color-mix(in srgb, var(--color-accent) 26%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-warning) 42%, transparent);
   border-radius: 50%;
-  box-shadow: var(--shadow-md), 0 0 0 9px color-mix(in srgb, var(--color-warning) 14%, transparent);
+  box-shadow: var(--shadow-md);
   transform: translate(-50%, -50%);
 }
 
@@ -10617,45 +10797,38 @@ button:disabled {
   display: flex;
   align-items: center;
   gap: var(--space-12);
+  padding: 0;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  text-align: left;
+}
+
+.welcome-cs:hover .welcome-cs-copy strong {
+  color: var(--color-warning);
 }
 
 .welcome-cs-qr {
   position: relative;
   display: grid;
   place-items: center;
-  gap: var(--space-2);
-  width: 48px;
-  height: 48px;
+  width: 72px;
+  height: 72px;
   flex: none;
+  overflow: hidden;
   color: var(--text-faint);
-  /* A real QR code needs a white quiet zone to stay scannable, so this box
-     intentionally stays white in both themes — same reasoning as the
-     mockup's own always-white .qr treatment. */
   background: var(--color-white);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-8);
   box-shadow: var(--shadow-sm);
 }
 
-.welcome-cs-qr-todo {
-  position: absolute;
-  top: -8px;
-  right: -8px;
-  font-size: var(--text-2xs);
-  font-weight: var(--font-weight-bold);
-  letter-spacing: 0.03em;
-  /* --color-warning already flips light/dark on its own; only its paired
-     soft background (no adaptive alias exists for it) needs an explicit
-     dark override below. */
-  color: var(--color-warning);
-  background: var(--surface-caution-soft);
-  border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
-  border-radius: var(--radius-5);
-  padding: 1px var(--space-5);
-}
-
-:root[data-theme="dark"] .welcome-cs-qr-todo {
-  background: var(--dark-surface-caution-soft);
+.welcome-cs-qr-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
 }
 
 .welcome-cs-copy {
@@ -10676,22 +10849,39 @@ button:disabled {
   color: var(--text-muted);
 }
 
-.welcome-cs-note {
-  color: var(--text-muted);
+@keyframes welcome-orbit {
+  to { transform: rotate(360deg); }
 }
 
-/* Layer 2 only aliases the strong/muted text tiers; the mid "ink-2" tier
-   (body copy that must outrank chip/meta text but isn't a heading) has no
-   adaptive alias yet, so it takes the same flat-primitive-plus-explicit-
-   dark-selector treatment the rest of this file already uses. */
 :root[data-theme="dark"] .welcome-sub,
-:root[data-theme="dark"] .welcome-cta-ghost,
-:root[data-theme="dark"] .welcome-assure-desc,
-:root[data-theme="dark"] .welcome-assure-note strong,
 :root[data-theme="dark"] .welcome-card p,
+:root[data-theme="dark"] .welcome-card h3,
 :root[data-theme="dark"] .welcome-cs-copy strong,
-:root[data-theme="dark"] .welcome-foot-left code {
-  color: var(--dark-text-secondary);
+:root[data-theme="dark"] .welcome-foot-left,
+:root[data-theme="dark"] .welcome-foot-left code,
+:root[data-theme="dark"] .welcome-constell-cap {
+  color: #d5dce0;
+}
+
+:root[data-theme="dark"] .welcome-cta-primary {
+  color: #f7f0df;
+  background: #715b2f;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+}
+
+:root[data-theme="dark"] .welcome-cta-primary:hover {
+  background: #846c39;
+}
+
+:root[data-theme="dark"] .welcome-cta-login {
+  color: #f4f6f7;
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.18);
+}
+
+:root[data-theme="dark"] .welcome-cta-login:hover {
+  border-color: #e5bd72;
+  background: rgba(229, 189, 114, 0.08);
 }
 
 /* --surface-panel is a flat (non-flipping) primitive equal to pure white,
@@ -10700,7 +10890,6 @@ button:disabled {
    (a Layer 2 alias that flips on its own) or a color-mix() accent tint that
    reads fine unmodified in both themes, so border-color is deliberately not
    repeated here. */
-:root[data-theme="dark"] .welcome-assure-panel,
 :root[data-theme="dark"] .welcome-star-core,
 :root[data-theme="dark"] .welcome-node,
 :root[data-theme="dark"] .welcome-card {
@@ -10709,8 +10898,7 @@ button:disabled {
 
 /* Pill/badge-shaped surfaces pair with --dark-surface-3 instead — the
    primitive this file already labels "dark pill/badge background". */
-:root[data-theme="dark"] .welcome-chip,
-:root[data-theme="dark"] .welcome-assure-card {
+:root[data-theme="dark"] .welcome-chip {
   background: var(--dark-surface-3);
 }
 
@@ -10718,7 +10906,108 @@ button:disabled {
   color: var(--dark-text-muted);
 }
 
-@media (max-width: 1080px), (max-height: 760px) {
+@media (max-width: 1400px), (max-height: 800px) {
+  .welcome-nav,
+  .welcome-hero,
+  .welcome-cards3,
+  .welcome-foot {
+    padding-left: 22px;
+    padding-right: 22px;
+  }
+
+  .welcome-nav {
+    padding-top: 12px;
+  }
+
+  .welcome-hero {
+    gap: 18px;
+    padding-top: 10px;
+    padding-bottom: 4px;
+  }
+
+  .welcome-title {
+    margin-top: 10px;
+    font-size: 26px;
+  }
+
+  .welcome-sub {
+    margin-top: 10px;
+    font-size: 13px;
+    line-height: 1.55;
+  }
+
+  .welcome-cta-row {
+    margin-top: 14px;
+    gap: 10px;
+  }
+
+  .welcome-cta-primary,
+  .welcome-cta-login {
+    padding: 10px 16px;
+    font-size: 14px;
+  }
+
+  .welcome-chips {
+    margin-top: 10px;
+  }
+
+  .welcome-chip {
+    font-size: 12px;
+    padding: 4px 8px;
+  }
+
+  .welcome-constellation {
+    width: min(210px, 28vw);
+  }
+
+  .welcome-star-core {
+    width: 58px;
+    height: 58px;
+  }
+
+  .welcome-node {
+    font-size: 12px;
+    padding: 5px 8px;
+  }
+
+  .welcome-cards3 {
+    gap: 10px;
+    padding-top: 0;
+    padding-bottom: 8px;
+  }
+
+  .welcome-card {
+    padding: 12px 13px;
+  }
+
+  .welcome-card-icon {
+    width: 32px;
+    height: 32px;
+    margin-bottom: 8px;
+  }
+
+  .welcome-card h3 {
+    font-size: 15px;
+  }
+
+  .welcome-card p {
+    font-size: 12px;
+    line-height: 1.5;
+  }
+
+  .welcome-foot {
+    padding-top: 8px;
+    padding-bottom: 8px;
+    gap: 12px;
+  }
+
+  .welcome-cs-qr {
+    width: 56px;
+    height: 56px;
+  }
+}
+
+@media (max-width: 1080px) {
   .welcome-page {
     overflow: auto;
   }
@@ -10733,5 +11022,19 @@ button:disabled {
 
   .welcome-cards3 {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-height: 700px) {
+  .welcome-card p {
+    display: none;
+  }
+
+  .welcome-card-icon {
+    display: none;
+  }
+
+  .welcome-card {
+    padding: 10px 12px;
   }
 }

@@ -45,6 +45,8 @@ describe('CodexDesktopCard update presentation', () => {
     expect(markup).not.toContain('查看更新')
     expect(markup).not.toContain('>安装最新版<')
     expect(markup).not.toContain('国内镜像同步中')
+    expect(markup).toContain('data-provider-id="codex-desktop"')
+    expect(markup).toContain('data-install-state="installed"')
   })
 
   it('shows the shared Codex model and plan when ChatGPT is logged in without a Xingmang key', () => {

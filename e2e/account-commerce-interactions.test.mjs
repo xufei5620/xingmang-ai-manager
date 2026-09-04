@@ -166,7 +166,7 @@ test('profile save remains retryable after failure and reloads the accepted disp
     assert.equal(await page.getByRole('button', { name: '保存资料' }).isEnabled(), true)
 
     await page.getByRole('button', { name: '保存资料' }).click()
-    await page.getByTestId('toast').filter({ hasText: '个人资料已更新' }).waitFor()
+    await page.getByTestId('toast').filter({ hasText: '资料已更新' }).waitFor()
     assert.equal(await input.inputValue(), '新的显示名称')
     const state = await page.evaluate(() => window.accountCommerceHarness)
     assert.equal(state.profileUpdateCalls, 2)
@@ -229,7 +229,7 @@ test('local tutorial searches, recovers empty results, navigates internally, and
     await search.fill('管理员 镜像')
     await page.getByRole('heading', { name: '自动安装与更新' }).waitFor()
     assert.equal(await page.getByText('1 个主题', { exact: true }).count(), 1)
-    await page.getByRole('button', { name: '打开安装维护' }).click()
+    await page.getByRole('button', { name: '打开安装卸载' }).click()
     assert.equal(await page.evaluate(() => window.accountCommerceHarness.navigationTarget), 'maintenance')
 
     await search.fill('充值')
@@ -241,9 +241,9 @@ test('local tutorial searches, recovers empty results, navigates internally, and
     await page.getByRole('heading', { name: '没找到相关教程' }).waitFor()
     await page.getByRole('button', { name: '清除搜索' }).click()
     await page.getByRole('heading', { name: '首次使用' }).waitFor()
-    await page.getByRole('navigation', { name: '教程目录' }).getByRole('button', { name: '故障排查' }).click()
-    await page.getByRole('heading', { name: '故障排查' }).waitFor()
-    await page.getByRole('button', { name: '打开健康诊断' }).click()
+    await page.getByRole('navigation', { name: '教程目录' }).getByRole('button', { name: '出问题怎么办' }).click()
+    await page.getByRole('heading', { name: '出问题怎么办' }).waitFor()
+    await page.getByRole('button', { name: '打开检查' }).click()
     assert.equal(await page.evaluate(() => window.accountCommerceHarness.navigationTarget), 'health')
 
     await page.getByRole('button', { name: '联系售后' }).click()
@@ -258,11 +258,11 @@ test('local tutorial searches, recovers empty results, navigates internally, and
 test('usage logs support filters, advanced search, pagination, reset and keyboard-dismissed details', async () => {
   await withFixture(async (page, baseUrl) => {
     await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=usage&theme=dark`)
-    await page.getByRole('heading', { name: '使用日志', exact: true }).waitFor()
+    await page.locator('[data-account-tab="usage"]').waitFor()
     assert.equal(await page.getByText('日志明细', { exact: true }).count(), 0)
     assert.equal((await page.locator('.account-usage-heading').innerText()).trim(), '43 条记录')
-    const activeUsageNav = page.getByRole('button', { name: '使用日志', exact: true })
-    const inactiveDashboardNav = page.getByRole('button', { name: '数据看板', exact: true })
+    const activeUsageNav = page.locator('[data-account-tab="usage"]')
+    const inactiveDashboardNav = page.locator('[data-account-tab="dashboard"]')
     await inactiveDashboardNav.hover()
     assert.equal(await activeUsageNav.getAttribute('aria-current'), 'page')
     assert.equal(await inactiveDashboardNav.getAttribute('aria-current'), null)
@@ -308,7 +308,7 @@ test('usage logs support filters, advanced search, pagination, reset and keyboar
 test('task logs support status filters, pagination and details', async () => {
   await withFixture(async (page, baseUrl) => {
     await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=tasks`)
-    await page.getByRole('heading', { name: '任务日志', exact: true }).waitFor()
+    await page.locator('[data-account-tab="tasks"]').waitFor()
     assert.equal((await page.locator('.account-task-heading').innerText()).trim(), '22 条记录')
     const firstTaskRow = page.locator('.account-task-table-row').first()
     assert.match(await firstTaskRow.innerText(), /Sora/)
@@ -342,7 +342,7 @@ test('legacy account deep links map into New API primary navigation and the corr
     await page.locator('.account-center-recharge-button').click()
     assert.equal(await page.getByRole('tab', { name: '充值 / 订阅' }).getAttribute('aria-selected'), 'true')
     await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=security`)
-    assert.equal(await page.getByRole('button', { name: '个人资料', exact: true }).getAttribute('aria-current'), 'page')
+    assert.equal(await page.locator('[data-account-tab="profile"]').getAttribute('aria-current'), 'page')
     assert.equal(await page.getByRole('tab', { name: '安全与设备' }).getAttribute('aria-selected'), 'true')
   })
 })
@@ -391,12 +391,12 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
     assert.deepEqual(expanded.serviceRows, [])
     assert.equal(await page.locator('.sidebar-service-button').count(), 0)
     assert.equal(await page.locator('.sidebar-official-button').count(), 0)
-    assert.equal(expanded.systemLabel, '系统管理')
+    assert.equal(expanded.systemLabel, '更多')
     assert.equal(await page.locator('.nav-more-toggle').getAttribute('aria-expanded'), 'false')
     assert.equal(await page.locator('.nav-more-items').count(), 0)
     await sidebar.screenshot({ path: 'test-results/sidebar-expanded-dark.png' })
 
-    await page.getByRole('button', { name: '系统管理' }).click()
+    await page.getByRole('button', { name: '更多' }).click()
     assert.equal(await page.locator('.nav-more-toggle').getAttribute('aria-expanded'), 'true')
     const popover = page.locator('.nav-more-popover')
     await popover.waitFor()
@@ -415,7 +415,7 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
 
     await page.getByRole('button', { name: '收起侧边栏' }).click()
     await page.locator('.sidebar-collapsed').waitFor()
-    await page.getByRole('button', { name: '系统管理' }).click()
+    await page.getByRole('button', { name: '更多' }).click()
     await popover.waitFor()
     assert.equal(await popover.locator('.nav-item').count(), 7)
     const popoverRect = await popover.boundingBox()
@@ -424,7 +424,7 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
     assert.ok(popoverRect.x + popoverRect.width <= 960)
     await page.keyboard.press('Escape')
     await popover.waitFor({ state: 'detached' })
-    await page.getByRole('button', { name: '系统管理' }).click()
+    await page.getByRole('button', { name: '更多' }).click()
     await popover.waitFor()
     const collapsed = await page.evaluate(() => {
       const sidebar = document.querySelector('.sidebar')
@@ -578,18 +578,18 @@ test('visual fixture renders every account section and tutorial in both themes',
   await withFixture(async (page, baseUrl) => {
     const sections = [
       ['overview', '概览', '$4.00'],
-      ['dashboard', '数据看板', 'gpt-5.6-sol'],
+      ['dashboard', '用量', 'gpt-5.6-sol'],
       ['subscriptions', '钱包', '星芒专业版'],
       ['topup', '钱包', '支付宝'],
       ['orders', '钱包', 'XM-ORDER-20260815'],
       ['redeem', '钱包', null],
-      ['usage', '使用日志', 'gpt-5.4'],
-      ['tasks', '任务日志', 'sora-2'],
-      ['keys', 'API 密钥', 'Codex-Pro 主密钥'],
+      ['usage', '明细', 'gpt-5.4'],
+      ['tasks', '任务', 'sora-2'],
+      ['keys', '密钥', 'Codex-Pro 主密钥'],
       ['invite', '钱包', 'FIXTURE'],
-      ['profile', '个人资料', '显示名称'],
-      ['security', '个人资料', '10.0.0.2'],
-      ['tutorial', '使用教程', '首次使用'],
+      ['profile', '资料', '显示名称'],
+      ['security', '资料', '10.0.0.2'],
+      ['tutorial', '教程', '首次使用'],
     ]
 
     for (const theme of ['light', 'dark']) {

@@ -56,7 +56,7 @@ export function OfficialAccountDialog({
               </>
             ) : (
               <>
-                <li>优先使用已登录星芒账号签发的 Key，明文不会进到界面</li>
+                <li>优先用已登录账号签发的 Key，界面上看不到明文</li>
                 <li>Codex 的 ChatGPT 登录和 config.toml 会各存一份，auth.json 只留下星芒 API Key</li>
                 <li>未登录时需要你在上方填好星芒 API Key 并选好模型</li>
                 <li>切回去时整份换回 ChatGPT 的 auth.json 和 config.toml</li>

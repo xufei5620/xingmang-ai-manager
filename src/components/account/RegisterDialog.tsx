@@ -152,8 +152,8 @@ export function RegisterDialog({
           <div>
             <span className="extension-dialog-icon"><UserPlus size={19} /></span>
             <div>
-              <h2 id="register-dialog-title">注册星芒账号</h2>
-              <small>邮箱验证 · 约 1 分钟</small>
+              <h2 id="register-dialog-title">注册</h2>
+              <small>用邮箱验证，大约 1 分钟</small>
             </div>
           </div>
           <button className="icon-button compact" type="button" title="关闭" onClick={onClose}>

@@ -141,13 +141,13 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
     <div className="page workspace-page operations-page" data-page-id="settings">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
           <h1>设置</h1>
+          <p className="page-lead">改主题、工作目录和启动项。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="设置工具栏">
           <button className="primary-button" type="button" onClick={save} disabled={!dirty || saving}>
             {saving ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}
-            {saving ? '保存中' : '保存设置'}
+            {saving ? '保存中' : '保存'}
           </button>
         </div>
       </header>
@@ -158,17 +158,17 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
         <div className="section-heading">
           <div>
             <h2 id="appearance-title">外观</h2>
-            <span>主窗口和标题栏使用同一套主题</span>
+            <span>窗口用深色还是浅色</span>
           </div>
         </div>
         <div className="setting-theme-control" role="group" aria-label="主题">
           <button className={`setting-theme-option ${draft.theme === 'dark' ? 'is-active' : ''}`} type="button" onClick={() => selectTheme('dark')} disabled={saving} aria-pressed={draft.theme === 'dark'}>
             <Moon size={18} />
-            <span><strong>深色</strong><small>默认外观</small></span>
+            <span><strong>深色</strong><small>暗一点，晚上更好看</small></span>
           </button>
           <button className={`setting-theme-option ${draft.theme === 'light' ? 'is-active' : ''}`} type="button" onClick={() => selectTheme('light')} disabled={saving} aria-pressed={draft.theme === 'light'}>
             <Sun size={18} />
-            <span><strong>浅色</strong><small>明亮外观</small></span>
+            <span><strong>浅色</strong><small>亮一点，白天更好看</small></span>
           </button>
         </div>
       </section>
@@ -176,22 +176,22 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
       <section className="environment-section settings-section" aria-labelledby="startup-title">
         <div className="section-heading">
           <div>
-            <h2 id="startup-title">启动与安全</h2>
-            <span>v2 本机设置</span>
+            <h2 id="startup-title">开机时做什么</h2>
+            <span>打开软件时自动做这些事</span>
           </div>
         </div>
         <div className="operations-list">
           <SettingSwitch
             checked={draft.checkUpdatesOnStartup}
-            title="启动时检查主程序更新"
-            description="发现新版本后显示下载进度并自动完成更新"
+            title="开机检查更新"
+            description="有新版本就提示下载"
             disabled={saving}
             onChange={(checked) => update('checkUpdatesOnStartup', checked)}
           />
           <SettingSwitch
             checked={draft.runDiagnosticsOnStartup}
-            title="启动时运行健康诊断"
-            description="读取本机环境与配置摘要，不修改系统状态"
+            title="开机做一次检查"
+            description="只看环境，不改你的电脑"
             disabled={saving}
             onChange={(checked) => update('runDiagnosticsOnStartup', checked)}
           />
@@ -201,14 +201,14 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
       <section className="environment-section settings-section settings-storage" aria-labelledby="storage-title">
         <div className="section-heading">
           <div>
-            <h2 id="storage-title">本机设置</h2>
-            <span>设置版本 {draft.version}</span>
+            <h2 id="storage-title">打开工具时的文件夹</h2>
+            <span>命令行工具默认进这个目录</span>
           </div>
         </div>
         <div className="operation-row">
           <div className="operation-status-icon"><Settings size={17} /></div>
           <div className="operation-row-copy">
-            <strong>CLI 默认工作目录</strong>
+            <strong>默认文件夹</strong>
             <p>{draft.workspace}</p>
           </div>
         </div>
@@ -217,15 +217,15 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
       <section className="environment-section settings-section" aria-labelledby="relay-site-title">
         <div className="section-heading">
           <div>
-            <h2 id="relay-site-title">服务站点</h2>
-            <span>CLI 配置写入哪个中转站点</span>
+            <h2 id="relay-site-title">连哪台服务器</h2>
+            <span>一般不用改，用默认就行</span>
           </div>
         </div>
         <div className="operation-row settings-relay-site-row">
           <div className="operation-status-icon"><Globe2 size={17} /></div>
           <div className="operation-row-copy">
-            <strong>中转站点</strong>
-            <p>切换后，新保存的 CLI 配置将指向该站点；已配置的 CLI 需重新保存一次配置生效</p>
+            <strong>服务站点</strong>
+            <p>换站点后，已装好的工具要再保存一次配置才会生效</p>
           </div>
           <select
             className="settings-relay-site-select"
@@ -244,15 +244,15 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
       <section className="environment-section settings-section" aria-labelledby="mirror-policy-title">
         <div className="section-heading">
           <div>
-            <h2 id="mirror-policy-title">下载源策略</h2>
-            <span>安装 CLI 与 Node.js 时优先使用哪个下载源</span>
+            <h2 id="mirror-policy-title">从哪里下载</h2>
+            <span>装工具慢或失败时再改这里</span>
           </div>
         </div>
         <div className="operation-row settings-relay-site-row">
           <div className="operation-status-icon"><Globe2 size={17} /></div>
           <div className="operation-row-copy">
-            <strong>镜像策略</strong>
-            <p>自动会探测网络区域后选择；下载失败或很慢时，可强制固定顺序（两个源始终都会尝试，只影响先后）</p>
+            <strong>下载顺序</strong>
+            <p>自动会按网络选；两个源都会试，这里只改谁先谁后</p>
           </div>
           <select
             className="settings-relay-site-select"
@@ -265,8 +265,8 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
             aria-label="镜像策略"
           >
             <option value="auto">自动（推荐）</option>
-            <option value="mirror-first">强制国内镜像优先</option>
-            <option value="official-first">强制官方源优先</option>
+            <option value="mirror-first">国内源优先</option>
+            <option value="official-first">官方源优先</option>
           </select>
         </div>
       </section>
@@ -275,18 +275,18 @@ export function SettingsPage({ value, onSave, onThemePreview, onReplayOnboarding
         <div className="section-heading">
           <div>
             <h2 id="onboarding-title">新手引导</h2>
-            <span>随时重新走一遍工具选择与授权配置</span>
+            <span>想再看一遍安装步骤，点这里</span>
           </div>
         </div>
         <div className="operation-row">
           <div className="operation-status-icon"><Compass size={17} /></div>
           <div className="operation-row-copy">
-            <strong>重新查看新手引导</strong>
-            <p>重新走一遍工具选择、授权码填写与环境安装的引导流程</p>
+            <strong>再走一遍新手引导</strong>
+            <p>从选工具、填授权到装环境，重新带你过一遍</p>
           </div>
           <button className="secondary-button" type="button" onClick={onReplayOnboarding}>
             <Compass size={15} />
-            重新查看
+            再走一遍
           </button>
         </div>
       </section>

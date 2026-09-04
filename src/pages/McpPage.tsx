@@ -154,7 +154,7 @@ function AddMcpDialog({
         <header className="extension-dialog-head">
           <div>
             <span className="extension-dialog-icon"><Cable size={19} /></span>
-            <div><h2 id="add-mcp-title">添加 MCP 服务</h2><small>{managementProviderLabels[provider]} CLI</small></div>
+            <div><h2 id="add-mcp-title">添加连接</h2><small>{managementProviderLabels[provider]}</small></div>
           </div>
           <button className="icon-button compact" type="button" title="关闭" onClick={onCancel} disabled={busy}>
             <X size={17} />
@@ -426,7 +426,10 @@ export function McpPage({
   return (
     <div className="page workspace-page management-page" data-page-id="mcp">
       <header className="page-header workspace-page-header">
-        <div><div className="eyebrow">扩展</div><h1>MCP 管理</h1></div>
+        <div>
+          <h1>外接工具</h1>
+          <p className="page-lead">让 AI 连接数据库、浏览器等。</p>
+        </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="MCP 工具栏">
           <ProviderTabs
             value={provider}
@@ -439,7 +442,7 @@ export function McpPage({
             <RefreshCw size={18} className={selectedLoading || busyKey === 'refresh' ? 'spin' : ''} />
           </button>
           <button className="primary-button" type="button" onClick={() => setAddOpen(true)} disabled={!selectedReady || busyKey !== null}>
-            <Plus size={17} /> 添加 MCP
+            <Plus size={17} /> 添加连接
           </button>
         </div>
       </header>
@@ -467,7 +470,7 @@ export function McpPage({
 
       <section className="extension-list" aria-busy={selectedLoading}>
         {selectedLoading && selectedCount === 0 ? (
-          <div className="workspace-empty"><LoaderCircle className="spin" size={24} /><h2>正在读取 MCP 配置</h2></div>
+          <div className="workspace-empty"><LoaderCircle className="spin" size={24} /><h2>正在读取外接工具</h2></div>
         ) : provider === 'codex' ? filteredCodex.length ? filteredCodex.map((server) => {
           const authReady = ['authenticated', 'logged_in'].includes(server.authStatus.toLowerCase())
           const updateItem = codexUpdateByName.get(server.name.toLowerCase())
@@ -508,7 +511,7 @@ export function McpPage({
             </article>
           )
         }) : (
-          <div className="workspace-empty"><Cable size={24} /><h2>{query ? '没有匹配的 MCP 服务' : '尚未配置 MCP 服务'}</h2></div>
+          <div className="workspace-empty"><Cable size={24} /><h2>{query ? '没有找到这个连接' : '还没有外接工具'}</h2></div>
         ) : filteredProvider.length ? filteredProvider.map((item) => (
           <article className="extension-row" key={item.id}>
             <div className={`extension-row-icon ${item.description.startsWith('http') ? 'http' : 'stdio'}`}>
@@ -548,7 +551,7 @@ export function McpPage({
             </div>
           </article>
         )) : (
-          <div className="workspace-empty"><Cable size={24} /><h2>{query ? '没有匹配的 MCP 服务' : '尚未配置 MCP 服务'}</h2></div>
+          <div className="workspace-empty"><Cable size={24} /><h2>{query ? '没有找到这个连接' : '还没有外接工具'}</h2></div>
         )}
       </section>
 

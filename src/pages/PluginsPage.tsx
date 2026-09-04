@@ -363,7 +363,10 @@ export function PluginsPage({
   return (
     <div className="page workspace-page management-page" data-page-id="plugins">
       <header className="page-header workspace-page-header">
-        <div><div className="eyebrow">扩展</div><h1>插件市场</h1></div>
+        <div>
+          <h1>插件</h1>
+          <p className="page-lead">给命令行工具加功能。</p>
+        </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="插件工具栏">
           <button className="icon-button" type="button" title="刷新" disabled={activeLoading || busyKey !== null}
             onClick={() => void perform(
@@ -546,7 +549,7 @@ export function PluginsPage({
       ) : tab === 'marketplaces' ? (
         <section className="extension-list" aria-busy={loading}>
           {loading && !marketplaces.length ? (
-            <div className="workspace-empty"><LoaderCircle className="spin" size={24} /><h2>正在读取 Plugin 市场</h2></div>
+            <div className="workspace-empty"><LoaderCircle className="spin" size={24} /><h2>正在读取插件来源</h2></div>
           ) : visibleMarketplaces.length ? visibleMarketplaces.map((marketplace) => (
             <article className="extension-row" key={marketplace.name}>
               <div className="extension-row-icon marketplace"><Store size={19} /></div>
@@ -569,13 +572,13 @@ export function PluginsPage({
               </div>
             </article>
           )) : (
-            <div className="workspace-empty"><Store size={24} /><h2>{query ? '没有匹配的市场' : '尚未配置 Plugin 市场'}</h2></div>
+            <div className="workspace-empty"><Store size={24} /><h2>{query ? '没有找到这个来源' : '还没有插件来源'}</h2></div>
           )}
         </section>
       ) : (
         <section className="extension-grid" aria-busy={loading}>
           {loading && !plugins.length ? (
-            <div className="workspace-empty extension-grid-empty"><LoaderCircle className="spin" size={24} /><h2>正在读取 Plugins</h2></div>
+            <div className="workspace-empty extension-grid-empty"><LoaderCircle className="spin" size={24} /><h2>正在读取插件</h2></div>
           ) : visiblePlugins.length ? visiblePlugins.map((plugin) => {
             const unifiedPlugin = providerPluginsById.get(plugin.pluginId)
             const currentVersion = unifiedPlugin?.currentVersion ?? (plugin.version || null)
@@ -656,7 +659,7 @@ export function PluginsPage({
           }) : (
             <div className="workspace-empty extension-grid-empty">
               <PackageOpen size={24} />
-              <h2>{query ? '没有匹配的 Plugin' : tab === 'installed' ? '尚未安装 Plugin' : '没有可安装的 Plugin'}</h2>
+              <h2>{query ? '没有找到这个插件' : tab === 'installed' ? '还没有插件' : '没有可安装的插件'}</h2>
             </div>
           )}
         </section>

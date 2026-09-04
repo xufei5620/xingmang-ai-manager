@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import { DevelopmentPreview } from './components/DevelopmentPreview'
 import './styles.css'
 import { rendererErrorDeduper, reportRendererError } from './renderer-error-report'
 
@@ -26,8 +27,11 @@ window.addEventListener('unhandledrejection', (event) => {
   )
 })
 
-ReactDOM.createRoot(document.getElementById('root')!).render(
+const hasElectronBridge = typeof window !== 'undefined' && typeof window.xingmang !== 'undefined'
+const root = ReactDOM.createRoot(document.getElementById('root')!)
+
+root.render(
   <React.StrictMode>
-    <App />
+    {import.meta.env.DEV && !hasElectronBridge ? <DevelopmentPreview /> : <App />}
   </React.StrictMode>,
 )

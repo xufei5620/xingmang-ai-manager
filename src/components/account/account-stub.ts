@@ -4,22 +4,7 @@
 // states (signed out / signed in / low balance) can be reviewed and iterated on
 // before any production account ever touches this screen.
 
-import type { RelaySite } from '../../types'
-
 export type AccountAreaStatus = 'guest' | 'active' | 'low-balance'
-
-/**
- * True when the active relay site has no login/register/个人中心 UI of its
- * own (W3b, sub2api-style sites) -- AccountArea.tsx branches on this before
- * even looking at `status`/`snapshot` below: a manual-key site always shows
- * the 粘贴 Key entry point instead of the guest/active/low-balance states,
- * regardless of whatever new-api session this app happens to still be
- * holding from a previous site (see AccountArea.tsx's own comment on why
- * that session is deliberately left alone rather than logged out).
- */
-export function shouldShowManualKeyEntry(accountBackend: RelaySite['accountBackend']): boolean {
-  return accountBackend === 'manual-key'
-}
 
 export interface AccountSnapshot {
   loggedIn: boolean

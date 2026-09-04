@@ -76,16 +76,16 @@ try {
     welcomeVisible: await page.locator('.welcome-page').isVisible(),
     dashboardBlocked: await page.locator('.app-shell').count() === 0,
     onboardingHidden: await page.locator('.onboarding-shell').count() === 0,
-    welcomeHeading: await page.getByRole('heading', { name: /装好即用的\s*AI 编程工具箱/ }).innerText(),
+    welcomeHeading: await page.getByRole('heading', { name: /装好就能用的\s*AI 编程工具/ }).innerText(),
     constellationLabels: (await page.locator('.welcome-node').allInnerTexts()).map((text) => text.trim()),
-    registerVisible: await page.getByRole('button', { name: '免费注册，领试用额度', exact: true }).isVisible(),
-    loginVisible: await page.getByRole('button', { name: '已有账号？登录', exact: true }).isVisible(),
-    manualCodeVisible: await page.getByRole('button', { name: '我有授权码', exact: true }).isVisible(),
+    registerVisible: await page.getByRole('button', { name: '免费注册', exact: true }).isVisible(),
+    loginVisible: await page.locator('.welcome-cta-login').isVisible(),
+    legacyCredentialUiVisible: await page.locator('#onboarding-api-key, .welcome-cta-ghost').count() > 0,
     loginDialogReachable: false,
   }
 
-  await page.getByRole('button', { name: '已有账号？登录', exact: true }).click()
-  const loginDialog = page.getByRole('dialog', { name: '登录星芒账号' })
+  await page.locator('.welcome-cta-login').click()
+  const loginDialog = page.getByRole('dialog', { name: '登录' })
   await loginDialog.waitFor({ state: 'visible' })
   result.loginDialogReachable = await loginDialog.getByLabel('用户名或邮箱').isVisible()
     && await loginDialog.getByRole('textbox', { name: '密码', exact: true }).isVisible()
@@ -107,11 +107,11 @@ try {
     || !result.welcomeVisible
     || !result.dashboardBlocked
     || !result.onboardingHidden
-    || result.welcomeHeading.replace(/\s+/g, '') !== '装好即用的AI编程工具箱'
+    || result.welcomeHeading.replace(/\s+/g, '') !== '装好就能用的AI编程工具'
     || JSON.stringify(result.constellationLabels) !== JSON.stringify(expectedConstellationLabels)
     || !result.registerVisible
     || !result.loginVisible
-    || !result.manualCodeVisible
+    || result.legacyCredentialUiVisible
     || !result.loginDialogReachable
   ) {
     throw new Error(JSON.stringify(result))

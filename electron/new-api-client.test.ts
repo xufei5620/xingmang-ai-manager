@@ -1832,11 +1832,19 @@ describe('getDashboard', () => {
     expect(Object.fromEntries(requestUrl.searchParams)).toEqual({
       start_timestamp: '1754780000', end_timestamp: '1754790000',
     })
-    expect(dashboard.records).toEqual([{
-      createdAt: 1_754_784_000, modelName: 'gpt-5.6-sol', tokenUsed: 3_200, count: 4, quota: 5_000,
+    expect(dashboard.buckets).toEqual([{
+      timestamp: 1_754_784_000,
+      quota: 5_000,
+      count: 4,
+      tokens: 3_200,
+      models: { 'gpt-5.6-sol': { quota: 5_000, count: 4, tokens: 3_200 } },
     }])
-    expect(dashboard.records[0]).not.toHaveProperty('user_id')
-    expect(dashboard.records[0]).not.toHaveProperty('username')
+    expect(dashboard.models).toEqual([{
+      model: 'gpt-5.6-sol', quota: 5_000, count: 4, tokens: 3_200,
+    }])
+    expect(dashboard).toMatchObject({ quota: 5_000, count: 4, tokens: 3_200, discardedCount: 0 })
+    expect(JSON.stringify(dashboard)).not.toContain('user_id')
+    expect(JSON.stringify(dashboard)).not.toContain('username')
   })
 
   it('drops malformed rows, clamps negative metrics and caps response rows', () => {
@@ -1844,9 +1852,21 @@ describe('getDashboard', () => {
       createdAt: 10, modelName: '未知模型', tokenUsed: 0, count: 3, quota: 4,
     })
     expect(parseAccountDashboardRecord({ created_at: 0 })).toBeNull()
-    const query = { startTimestamp: 1, endTimestamp: 2 }
-    const data = parseAccountDashboardData(Array.from({ length: 20_005 }, (_, index) => ({ created_at: index + 1 })), query)
-    expect(data.records).toHaveLength(20_000)
+    const data = parseAccountDashboardData(Array.from({ length: 20_005 }, (_, index) => ({ created_at: (index + 1) * 86_400 })), { startTimestamp: 1, endTimestamp: 30 * 86_400 })
+    expect(data.discardedCount).toBe(5)
+    expect(data.buckets).toHaveLength(20_000)
+    expect(data.models).toHaveLength(1)
+  })
+
+  it('aggregates rows into hourly or daily buckets and keeps deterministic totals', () => {
+    const data = parseAccountDashboardData([
+      { created_at: 3_601, model_name: 'b', token_used: 2, count: 1, quota: 4 },
+      { created_at: 3_650, model_name: 'a', token_used: 3, count: 2, quota: 6 },
+      { created_at: 86_401, model_name: 'b', token_used: 5, count: 1, quota: 3 },
+    ], { startTimestamp: 0, endTimestamp: 24 * 60 * 60 })
+    expect(data.buckets.map((bucket) => bucket.timestamp)).toEqual([3_600, 86_400])
+    expect(data.models.map((model) => model.model)).toEqual(['b', 'a'])
+    expect(data).toMatchObject({ quota: 13, count: 4, tokens: 10, discardedCount: 0 })
   })
 
   it('requires an authenticated account session', async () => {

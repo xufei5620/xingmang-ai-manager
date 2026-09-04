@@ -5,10 +5,9 @@ import { LoginDialog } from './components/account/LoginDialog'
 import { RegisterDialog } from './components/account/RegisterDialog'
 import { ForgotPasswordDialog } from './components/account/ForgotPasswordDialog'
 import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
-import { PasteKeyDialog } from './components/account/PasteKeyDialog'
 import { AccountCenterPage, type AccountCenterTab } from './components/account/AccountCenterPage'
 import { resolveAccountErrorMessage } from './components/account/account-errors'
-import { resolveAccountAreaStatus, shouldShowManualKeyEntry } from './components/account/account-stub'
+import { resolveAccountAreaStatus } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
 import {
   buildProvisioningTargets,
@@ -16,7 +15,6 @@ import {
   managedCliConfigsReadyForDashboard,
   resolveCliProvisioningGate,
   validateProvisionedCliConfigs,
-  writeCliKeyForInstalledClis,
 } from './account-provisioning'
 import {
   codexDesktopInstallActive,
@@ -24,6 +22,8 @@ import {
   codexSetupReadyForDashboard,
   commitStartupPlatformCapabilities,
   EmptyStatus,
+  canEnterManagedOnboarding,
+  initialDashboardPreview,
   initialOnboardingPreview,
   initialSidebarCollapsed,
   initialTheme,
@@ -146,6 +146,7 @@ function App() {
   // false in every packaged build — see initialOnboardingPreview in
   // app-shared.ts. Read by the startup gate below to bypass the welcome page.
   const [previewOnboarding] = useState<boolean>(() => initialOnboardingPreview(window.location.search))
+  const [previewDashboard] = useState<boolean>(() => initialDashboardPreview(window.location.search))
   const [activeConfigTab, setActiveConfigTab] = useState<ConfigTabId>('codexDesktop')
   const [configOpen, setConfigOpen] = useState(false)
   const [snapshot, setSnapshot] = useState<SystemSnapshot>(EmptyStatus)
@@ -248,11 +249,6 @@ function App() {
   const [provisioningTargets, setProvisioningTargets] = useState<ProviderId[] | null>(null)
   const [provisioningRetryTargets, setProvisioningRetryTargets] = useState<ProviderId[] | null>(null)
   const [provisioningBusy, setProvisioningBusy] = useState(false)
-  // 粘贴 Key 弹窗（W3b，manual-key 站点的写 Key 入口）：与 provisioningTargets
-  // 同构，但候选列表来自侧边栏账号区的手动触发，而不是登录/注册成功后的
-  // 静默 offer——见 handleOpenPasteKeyDialog。null = 弹窗不显示。
-  const [pasteKeyTargets, setPasteKeyTargets] = useState<ProviderId[] | null>(null)
-  const [pasteKeyBusy, setPasteKeyBusy] = useState(false)
   const [toast, setToast] = useState<ToastMessage | null>(null)
   const [updateState, setUpdateState] = useState<UpdateSnapshot | null>(null)
   const [updateBusy, setUpdateBusy] = useState(false)
@@ -296,7 +292,6 @@ function App() {
   const codexLaunchRequestRef = useRef(false)
   const accountBusyRef = useRef(false)
   const provisioningBusyRef = useRef(false)
-  const pasteKeyBusyRef = useRef(false)
   const persistedSettings = useMemo(() => settings, [
     settings.version,
     settings.workspace,
@@ -530,7 +525,7 @@ function App() {
       if (configResult.status === 'fulfilled') setConfig(configResult.value)
       if (snapshotResult.status === 'fulfilled') setSnapshot(snapshotResult.value)
       if (configResult.status === 'rejected' || snapshotResult.status === 'rejected') {
-        setToast({ type: 'error', message: '配置已恢复，但工具概览刷新失败，请手动重新检测' })
+        setToast({ type: 'error', message: '配置已恢复，但首页刷新失败，请再点一次检测' })
       }
       return result
     },
@@ -768,24 +763,32 @@ function App() {
         if (!active) return
         if (startupAccountSession) setAccountSession(startupAccountSession)
         const authenticated = startupAccountSession?.authenticated ?? false
-        const manualKeySite = shouldShowManualKeyEntry(
-          resolveRelaySite(startupSettings?.relaySiteId).accountBackend,
-        )
+        // The dashboard preview is only injected by an unpackaged Electron
+        // smoke run. Keep it after settings/session hydration so the test
+        // exercises the same renderer startup path without fabricating a
+        // production account session.
+        if (previewDashboard) {
+          await loadConfig()
+          if (!active) return
+          setScanning(false)
+          setAppView('dashboard')
+          void scan()
+          return
+        }
         const officialProviders = startupSettings?.officialProviders ?? []
-        const managedBootstrapCheckpointReady = manualKeySite
-          || Boolean(
-            startupAccountSession?.account
-            && (
-              managedBootstrapCompleted(startupAccountSession.account.userId)
-              || officialProviders.includes('codex')
-            ),
-          )
+        const managedBootstrapCheckpointReady = Boolean(
+          startupAccountSession?.account
+          && (
+            managedBootstrapCompleted(startupAccountSession.account.userId)
+            || officialProviders.includes('codex')
+          ),
+        )
         let durableCodexSetupReady = false
-        let managedCliConfigsReady = manualKeySite
+        let managedCliConfigsReady = false
         let startupScanCompleted = false
         if (
-          (manualKeySite || managedBootstrapCheckpointReady)
-          && (authenticated || manualKeySite)
+          managedBootstrapCheckpointReady
+          && authenticated
         ) {
           const startupScan = await scan()
           if (!active) return
@@ -839,7 +842,7 @@ function App() {
         await loadConfig()
         if (!active) return
         setScanning(false)
-        setAppView(resolveInitialAppView(authenticated, previewOnboarding, manualKeySite))
+        setAppView(resolveInitialAppView(authenticated, previewOnboarding))
       } catch (error) {
         if (!active) return
         setToast({ type: 'error', message: errorMessage(error) })
@@ -1013,28 +1016,12 @@ function App() {
   // 账号路径在主进程为每个 provider 使用其专属分组 Key，并直接写入对应 CLI；
   // renderer 只收到 provider 级摘要，明文不跨 IPC。`selected` 由确认弹窗给出。
   //
-  // `suppliedKey` 是 W3b 加的第二条路径：manual-key 站点没有账号服务可签发
-  // Key，PasteKeyDialog 把用户粘贴的值直接交过来，写入逻辑与账号签发的 Key
-  // 完全复用 writeCliKeyForInstalledClis（config:save 两阶段提交）。
-  const runCliProvisioning = async (selected: readonly ProviderId[], suppliedKey?: string) => {
-    const effectiveSelected = suppliedKey
-      ? [...selected]
-      : selected.filter((provider) => !settings.officialProviders?.includes(provider))
+  const runCliProvisioning = async (selected: readonly ProviderId[]) => {
+    const effectiveSelected = selected.filter((provider) => !settings.officialProviders?.includes(provider))
     if (effectiveSelected.length === 0) return
     const preferredModels = preferredModelsFromConfig(config)
-    const keyLabel = suppliedKey ? '粘贴的 Key' : '星芒 Key'
-    // handleConfigureCliKey 只在点击入口挡了一次 manual-key 站点，但登录成功
-    // 后的自动 offer 路径要先 await scan()（秒~十秒级且无模态遮挡），用户在
-    // 这个窗口里切到 manual-key 站点再确认弹窗，就会向账号站签发 Key 写进
-    // 当前站点配置——跨站点凭据混线。真正签发前在这里再复查一次。
-    if (!suppliedKey && shouldShowManualKeyEntry(activeRelaySite.accountBackend)) {
-      setToast({ type: 'error', message: '当前站点不支持账号签发 Key，请使用「粘贴 Key」配置' })
-      return
-    }
     try {
-      const outcome = suppliedKey
-        ? await writeCliKeyForInstalledClis(suppliedKey, effectiveSelected, preferredModels, window.xingmang)
-        : await configureManagedCliKeysForInstalledClis(effectiveSelected, preferredModels, window.xingmang)
+      const outcome = await configureManagedCliKeysForInstalledClis(effectiveSelected, preferredModels, window.xingmang)
       // 写入已经落盘成功，这里只是刷新配置摘要。刷新失败不能落进外层 catch
       // 把结论反转成"写入失败"——那与磁盘上的事实完全相反。
       let refreshFailed = false
@@ -1049,27 +1036,27 @@ function App() {
       if (outcome.configured.length > 0 && outcome.failed.length === 0) {
         setProvisioningRetryTargets(null)
         setToast(refreshFailed
-          ? { type: 'error', message: `已把${keyLabel}配置到 ${outcome.configured.length} 个 CLI，但状态刷新失败；请到概览页重新检测` }
-          : { type: 'success', message: `已把${keyLabel}配置到 ${outcome.configured.length} 个 CLI` })
+          ? { type: 'error', message: `已把星芒 Key 配置到 ${outcome.configured.length} 个 CLI，但状态刷新失败；请到概览页重新检测` }
+          : { type: 'success', message: `已把星芒 Key 配置到 ${outcome.configured.length} 个 CLI` })
       } else if (outcome.configured.length > 0) {
         const failedNames = outcome.failed.map((entry) => providers[entry.provider].name).join('、')
         const failureDetails = outcome.failed
           .map((entry) => `${providers[entry.provider].name}：${userFacingErrorMessage(entry.message)}`)
           .join('；')
-        if (!suppliedKey) setProvisioningRetryTargets(outcome.failed.map((entry) => entry.provider))
+        setProvisioningRetryTargets(outcome.failed.map((entry) => entry.provider))
         setToast({
           type: 'error',
           message: `已配置 ${outcome.configured.length} 个 CLI；${failedNames} 配置失败：${failureDetails}`,
         })
       } else if (outcome.failed.length > 0) {
-        if (!suppliedKey) setProvisioningRetryTargets(outcome.failed.map((entry) => entry.provider))
+        setProvisioningRetryTargets(outcome.failed.map((entry) => entry.provider))
         const failureDetails = outcome.failed
           .map((entry) => `${providers[entry.provider].name}：${userFacingErrorMessage(entry.message)}`)
           .join('；')
-        setToast({ type: 'error', message: `${keyLabel}未能配置到所选 CLI：${failureDetails}` })
+        setToast({ type: 'error', message: `星芒 Key 未能配置到所选 CLI：${failureDetails}` })
       }
     } catch (error) {
-      setToast({ type: 'error', message: `${keyLabel}${suppliedKey ? '写入' : '签发'}失败：${userFacingErrorMessage(error)}` })
+      setToast({ type: 'error', message: `星芒 Key 签发失败：${userFacingErrorMessage(error)}` })
     }
   }
 
@@ -1102,7 +1089,7 @@ function App() {
     setProvisioningTargets(null)
   }
 
-  // 下一步任务卡的"一键配置"与账号区的手动入口共用这一个触发口（W2.5,
+  // 下一步任务卡的"一键配置"与账号区共用这一个触发口（W2.5,
   // docs/ACCOUNT-PLAN.md）——两处都不能直接调用 offerCliProvisioning：未登录
   // 时它会对着一个不存在的会话签发 Key，必然失败；已登录但零已装 CLI 时它
   // 又会静默什么都不做，用户点了按钮却什么反应都没有。resolveCliProvisioning-
@@ -1110,14 +1097,6 @@ function App() {
   // 来，好分别给出可执行的引导，而不是复用 handleAccountLoginSubmit 那条
   // 登录成功后的静默 offer 路径。
   const handleConfigureCliKey = async () => {
-    // manual-key 站点没有账号登录/签发能力，「一键配置」必须导向粘贴 Key，
-    // 否则会走到 offerCliProvisioning 的账号签发路径：未登录时弹出该站点根本
-    // 用不到的星芒登录框，已登录（切站前在账号站登录过、未登出）时更糟——向
-    // 账号站签发 Key 再写进当前 manual-key 站点的 CLI 配置，构成跨站点凭据混线。
-    if (shouldShowManualKeyEntry(activeRelaySite.accountBackend)) {
-      handleOpenPasteKeyDialog()
-      return
-    }
     const gate = resolveCliProvisioningGate(
       Boolean(accountSession?.authenticated),
       snapshotRef.current,
@@ -1125,7 +1104,7 @@ function App() {
     )
     if (gate === 'requires-login') {
       setAccountDialog('login')
-      setToast({ type: 'error', message: '请先登录星芒账号，再一键配置 Key' })
+      setToast({ type: 'error', message: '请先登录，再配 Key' })
       return
     }
     if (gate === 'requires-install') {
@@ -1144,48 +1123,6 @@ function App() {
       return
     }
     offerCliProvisioning()
-  }
-
-  // 粘贴 Key 弹窗的打开入口（W3b，AccountArea 的 manual-key 分支按钮）。不需要
-  // resolveCliProvisioningGate 的登录检查——manual-key 站点本来就没有账号
-  // 登录态；唯一的前置条件是至少装了一个 CLI，否则弹窗打开了也没有勾选对象。
-  const handleOpenPasteKeyDialog = async () => {
-    let targets = buildProvisioningTargets(snapshotRef.current, settings.officialProviders)
-    if (targets.length === 0 && scanning) {
-      // 启动路径先进工作台再扫描，首扫落地前 snapshot 还是全未安装的占位。
-      // 这是 manual-key 站点唯一的配 Key 入口，直接报"未安装"是谎报——等
-      // 扫描结果（scan 经 T6 协调器合并并发调用），与账号路径把
-      // scanResult.snapshot 显式传给 offerCliProvisioning 是同一种处理。
-      const scanResult = await scan()
-      targets = buildProvisioningTargets(
-        scanResult.snapshot ?? snapshotRef.current,
-        settings.officialProviders,
-      )
-    }
-    if (targets.length === 0) {
-      setToast({ type: 'error', message: '请先安装一个 AI 工具，再粘贴 Key' })
-      return
-    }
-    setPasteKeyTargets(targets)
-  }
-
-  // T6：与 confirmCliProvisioning 同一模式的双击/重复 submit 防重入。
-  const confirmPasteKeyProvisioning = async (key: string, selected: ProviderId[]) => {
-    if (pasteKeyBusyRef.current) return
-    pasteKeyBusyRef.current = true
-    setPasteKeyBusy(true)
-    try {
-      await runCliProvisioning(selected, key)
-    } finally {
-      pasteKeyBusyRef.current = false
-      setPasteKeyBusy(false)
-      setPasteKeyTargets(null)
-    }
-  }
-
-  const cancelPasteKeyProvisioning = () => {
-    if (pasteKeyBusyRef.current) return
-    setPasteKeyTargets(null)
   }
 
   const handleRequestVerificationCode = async (email: string) => {
@@ -1486,10 +1423,6 @@ function App() {
     if (await handleAccountLogout()) setAppView('welcome')
   }
 
-  const switchManagedOnboardingToManual = async () => {
-    if (await handleAccountLogout()) setAppView('onboarding')
-  }
-
   const installNodeRuntime = async () => {
     if (nodeRuntimeInstalling) return
     if (platformCapabilities.nodeRuntimeInstall === 'external') {
@@ -1600,11 +1533,7 @@ function App() {
       await window.xingmang.installCli(provider)
       let provisioningNotice = ''
       let provisioningError = ''
-      if (
-        accountSession?.authenticated
-        && !shouldShowManualKeyEntry(activeRelaySite.accountBackend)
-        && !settings.officialProviders?.includes(provider)
-      ) {
+      if (accountSession?.authenticated && !settings.officialProviders?.includes(provider)) {
         try {
           const outcome = await configureManagedCliKeysForInstalledClis(
             [provider],
@@ -1831,6 +1760,11 @@ function App() {
   }
 
   const finishOnboarding = async (onProgress?: (update: ManagedBootstrapProgressUpdate) => void) => {
+    if (!canEnterManagedOnboarding(Boolean(accountSession?.authenticated), previewOnboarding)) {
+      setAppView('welcome')
+      setAccountDialog('login')
+      throw new Error('请先登录星芒账号，再初始化 Codex')
+    }
     setInstallLog([])
     setLogOpen(false)
     const failStep = (id: ManagedBootstrapStepId, error: unknown): never => {
@@ -1850,7 +1784,7 @@ function App() {
     onProgress?.({ id: 'scan-installed-clis', status: 'completed', message: '本机 AI CLI 扫描完成' })
     const latestSnapshot = scanResult.snapshot
 
-    if (accountSession?.authenticated && !shouldShowManualKeyEntry(activeRelaySite.accountBackend)) {
+    if (accountSession?.authenticated) {
       const targets = buildProvisioningTargets(latestSnapshot, settings.officialProviders)
       const preferredModels = preferredModelsFromConfig(scanResult.config, config)
       onProgress?.({
@@ -1879,7 +1813,7 @@ function App() {
           const warnings = nonFatalFailures
             .map((entry) => `${providers[entry.provider].name}：${userFacingErrorMessage(entry.message)}`)
             .join('；')
-          setToast({ type: 'error', message: `部分 CLI 暂未配置，已进入工作台：${warnings}` })
+          setToast({ type: 'error', message: `部分工具还没配好，已进入首页：${warnings}` })
           onProgress?.({ id: 'configure-installed-clis', status: 'completed', message: `配置完成，部分 CLI 有警告：${warnings}` })
         }
       } catch (error) {
@@ -1912,8 +1846,8 @@ function App() {
       if (userId) markManagedBootstrapCompleted(userId)
     }
 
-    onProgress?.({ id: 'enter-dashboard', status: 'active', message: '正在载入工作台' })
-    onProgress?.({ id: 'enter-dashboard', status: 'completed', message: '工作台已准备完成' })
+    onProgress?.({ id: 'enter-dashboard', status: 'active', message: '正在打开首页' })
+    onProgress?.({ id: 'enter-dashboard', status: 'completed', message: '首页已准备好' })
     if (onProgress) {
       await new Promise<void>((resolve) => window.setTimeout(resolve, 220))
     }
@@ -1949,7 +1883,11 @@ function App() {
           theme={theme}
           onRegister={() => setAccountDialog('register')}
           onLogin={() => setAccountDialog('login')}
-          onHaveCode={() => setAppView('onboarding')}
+          onOpenSupport={() => {
+            void window.xingmang.openExternal(supportServiceUrl).catch((error: unknown) => {
+              setToast({ type: 'error', message: errorMessage(error) })
+            })
+          }}
         />
         {accountDialog === 'login' && rememberedLoginReady && (
           <LoginDialog
@@ -2017,11 +1955,6 @@ function App() {
       <AppFrame theme={theme} platform={platformCapabilities}>
       <CodexOnboarding
         initialConfig={config}
-        relaySite={activeRelaySite}
-        authorizationMode={accountSession?.authenticated
-          && !shouldShowManualKeyEntry(activeRelaySite.accountBackend)
-          ? 'managed'
-          : 'manual'}
         codexOfficial={settings.officialProviders?.includes('codex') ?? false}
         codexDesktopInstallDisabled={settings.codexDesktopInstallDisabled === true}
         theme={theme}
@@ -2034,14 +1967,9 @@ function App() {
         onConfigChange={setConfig}
         onComplete={finishOnboarding}
         onLogout={() => void leaveManagedOnboardingToWelcome()}
-        onSwitchToManual={() => void switchManagedOnboardingToManual()}
         autoStart={onboardingAutoStart}
         onCancel={() => {
-          // 登录先行(老板拍板 2026-08-10):账号站点未登录时,「返回工作
-          // 台」回欢迎页——否则「已有授权码→返回工作台」两次点击就零凭据
-          // 绕过了登录门(复查发现)。
-          const loginRequired = !shouldShowManualKeyEntry(activeRelaySite.accountBackend)
-            && !(accountSession?.authenticated ?? false)
+          const loginRequired = !(accountSession?.authenticated ?? false)
           if (loginRequired) {
             setAppView('welcome')
             return
@@ -2094,7 +2022,6 @@ function App() {
         theme={theme}
         appVersion={packageInfo.version}
         updateState={updateState}
-        relaySite={activeRelaySite}
         moreExpanded={systemNavigationExpanded}
         onNavigate={handleNavigate}
         onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
@@ -2113,8 +2040,6 @@ function App() {
         onConfigureCliKey={() => void handleConfigureCliKey()}
         onRefreshBalance={() => void handleRefreshBalance()}
         onOpenAccountCenter={() => { setAccountCenterSection('overview'); setAppView('account-center') }}
-        onPasteKey={handleOpenPasteKeyDialog}
-        onOpenKeysPage={() => { setAccountCenterSection('keys'); setAppView('account-center') }}
       />
 
       <div ref={supportWrapRef} className="floating-support-wrap">
@@ -2183,7 +2108,6 @@ function App() {
             onLaunch={(provider) => void launch(provider)}
             onLaunchCodexDesktop={() => void requestCodexDesktopLaunch()}
             onNextStepsConfigureFirstCli={() => void handleConfigureCliKey()}
-            manualKeySite={shouldShowManualKeyEntry(activeRelaySite.accountBackend)}
             onNextStepsTryLaunch={handleNextStepsTryLaunch}
             onNextStepsGoMaintenance={() => setActivePage('maintenance')}
             onNextStepsExploreMcp={handleNextStepsExploreMcp}
@@ -2325,6 +2249,11 @@ function App() {
               setSettings((current) => current.theme === next ? current : { ...current, theme: next })
             }}
             onReplayOnboarding={() => {
+              if (!canEnterManagedOnboarding(Boolean(accountSession?.authenticated), previewOnboarding)) {
+                setAccountDialog('login')
+                setToast({ type: 'error', message: '请先登录星芒账号，再初始化 Codex' })
+                return
+              }
               setOnboardingAutoStart(false)
               setAppView('onboarding')
             }}
@@ -2465,21 +2394,6 @@ function App() {
             void confirmCliProvisioning(selected)
           }}
           onSkip={() => setProvisioningRetryTargets(null)}
-        />
-      )}
-
-      {pasteKeyTargets && (
-        <PasteKeyDialog
-          targets={pasteKeyTargets}
-          keysPageUrl={activeRelaySite.keysPageUrl}
-          busy={pasteKeyBusy}
-          onConfirm={(key, selected) => void confirmPasteKeyProvisioning(key, selected)}
-          onOpenKeysPage={(url) => {
-            void window.xingmang.openExternal(url).catch((error: unknown) => {
-              setToast({ type: 'error', message: errorMessage(error) })
-            })
-          }}
-          onCancel={cancelPasteKeyProvisioning}
         />
       )}
 

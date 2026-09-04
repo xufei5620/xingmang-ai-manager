@@ -80,8 +80,8 @@ try {
     if (!loginUsername || !loginPassword) {
       throw new Error('复制的登录会话未能恢复，真实登录验收需要 XINGMANG_E2E_USERNAME / XINGMANG_E2E_PASSWORD')
     }
-    await page.getByRole('button', { name: '已有账号？登录', exact: true }).click()
-    const loginDialog = page.getByRole('dialog', { name: '登录星芒账号' })
+    await page.locator('.welcome-cta-login').click()
+    const loginDialog = page.getByRole('dialog', { name: '登录' })
     await loginDialog.waitFor({ state: 'visible' })
     await loginDialog.getByLabel('用户名或邮箱').fill(loginUsername)
     await loginDialog.getByLabel('密码', { exact: true }).fill(loginPassword)
@@ -108,7 +108,7 @@ try {
   // No user-flow click is allowed after login submit. Everything below only
   // observes whether the managed onboarding reaches the verified dashboard.
   await page.locator('.dashboard-page').waitFor({ state: 'visible', timeout: 180_000 })
-  await page.getByRole('heading', { name: '工具概览', exact: true }).waitFor({ state: 'visible' })
+  await page.locator('.dashboard-page').getByRole('heading', { name: '首页', exact: true }).waitFor({ state: 'visible' })
 
   const result = await page.evaluate(async () => {
     const [session, setup, config, snapshot] = await Promise.all([

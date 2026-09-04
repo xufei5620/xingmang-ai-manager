@@ -32,13 +32,13 @@ export interface ManagedBootstrapProgressUpdate {
 
 const stepDefinitions: ReadonlyArray<Omit<ManagedBootstrapStep, 'status' | 'message'>> = [
   { id: 'sync-keys', label: '同步专属 Key', detail: '创建并加密缓存账号分组 Key' },
-  { id: 'authorize-codex', label: '写入 Codex 授权', detail: '配置 GPT-中转/订阅 Key 与默认模型' },
+  { id: 'authorize-codex', label: '配置 Codex', detail: '写入 GPT-中转/订阅 Key 与默认模型' },
   { id: 'inspect-environment', label: '检测桌面端', detail: '确认 Codex Desktop 当前状态' },
   { id: 'prepare-codex-desktop', label: '准备桌面端', detail: '安装或验证 Codex Desktop' },
   { id: 'scan-installed-clis', label: '扫描 AI 工具', detail: '发现已安装的四类 CLI' },
   { id: 'configure-installed-clis', label: '配置已安装 CLI', detail: '仅为已安装工具写入分组 Key 和模型' },
   { id: 'verify-config', label: '读后验证', detail: '复核 Key、Relay 与模型' },
-  { id: 'enter-dashboard', label: '进入工作台', detail: '保存完成状态并载入工作台' },
+  { id: 'enter-dashboard', label: '进入首页', detail: '保存完成状态并打开首页' },
 ]
 
 function deriveProgress(steps: ManagedBootstrapStep[]): ManagedBootstrapProgress {
