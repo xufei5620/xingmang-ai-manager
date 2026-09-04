@@ -27,10 +27,15 @@ describe('relay site registry', () => {
     expect(resolveRelaySite('sub2api').id).toBe('sub2api')
   })
 
-  it('gives sub2api a manual-key account backend with no accountBaseUrl', () => {
+  it('keeps the legacy sub2api id on the unified account backend', () => {
     const site = resolveRelaySite('sub2api')
-    expect(site.accountBackend).toBe('manual-key')
-    expect(site.accountBaseUrl).toBeUndefined()
+    expect(site.accountBackend).toBe('new-api')
+    expect(site.accountBaseUrl).toBe('https://xm.solov.cc')
+  })
+
+  it('requires every registered site to use the account login backend', () => {
+    expect(relaySites.every((site) => site.accountBackend === 'new-api')).toBe(true)
+    expect(relaySites.every((site) => typeof site.accountBaseUrl === 'string')).toBe(true)
   })
 
   it('defaults to the solov site id', () => {
@@ -97,16 +102,17 @@ describe('relay site registry', () => {
       expect(relaySiteExternalUrls(relaySites)).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc/keys'])
     })
 
-    it('returns only marketing and keys pages for a manual-key site', () => {
-      const manualKeySite = {
-        id: 'manual-example',
-        label: 'Manual example',
+    it('returns only marketing and keys pages for an account-backed site', () => {
+      const accountSite = {
+        id: 'account-example',
+        label: 'Account example',
         providerBaseUrls,
         websiteUrl: 'https://example.invalid',
         keysPageUrl: 'https://example.invalid/keys',
-        accountBackend: 'manual-key' as const,
+        accountBackend: 'new-api' as const,
+        accountBaseUrl: 'https://example.invalid',
       }
-      expect(relaySiteExternalUrls([manualKeySite])).toEqual([
+      expect(relaySiteExternalUrls([accountSite])).toEqual([
         'https://example.invalid',
         'https://example.invalid/keys',
       ])

@@ -167,9 +167,8 @@ await fs.rm(testUserDataDir, { recursive: true, force: true })
 await fs.rm(testHomeDir, { recursive: true, force: true })
 // 登录先行(2026-08-11)之后,账号站点在未登录时进的是欢迎页而不是工作台,
 // 于是这个只验主界面的冒烟测试永远等不到 .app-shell。本测试要断言的是工作台
-// 本身,不是账号流程,所以预置成「Key 直连」站点(manual-key,无账号后端)——
-// 这是产品里真实存在的一种配置,不需要伪造任何登录态或凭据。
-// 账号站点的登录门本身另有 src/App.test.tsx 的用例覆盖。
+// 本身,不是账号流程,所以预置成账号站点并使用本地测试配置。
+// 账号登录门本身另有 src/App.test.tsx 的用例覆盖。
 // 该夹具只验证工作台和主界面交互，不需要安装 Microsoft Store 里的 Codex
 // Desktop；显式记录用户的“不安装”选择，让启动 readiness gate 可以进入工作台。
 // workspace 不能省:parseSettingsValue 的 requireWorkspace 缺字段就抛错,
@@ -253,6 +252,7 @@ const application = await electron.launch({
     npm_config_prefix: testNpmPrefix,
     XINGMANG_CODEX_HOME_OVERRIDE: testCodexHomeDir,
     XINGMANG_DISABLE_SINGLE_INSTANCE: '1',
+    XINGMANG_DASHBOARD_PREVIEW: '1',
   },
 })
 const page = await application.firstWindow()
@@ -272,8 +272,8 @@ try {
     appShell.waitFor({ state: 'visible', timeout: 60_000 }),
     onboardingShell.waitFor({ state: 'visible', timeout: 60_000 }),
   ])
-  // A manual-key fixture with a valid existing Codex config may still open
-  // the resumable onboarding shell when the runner has no Store Desktop.
+  // A configured fixture may still open the resumable onboarding shell when
+  // the runner has no Store Desktop.
   // This smoke test owns no installation flow; return to the workbench and
   // keep exercising the dashboard contract.
   if (await onboardingShell.isVisible().catch(() => false)) {
@@ -437,11 +437,11 @@ try {
   await globalUpdateButton.click()
   const updatePageFromIndicator = page.locator('.main-content [data-page-id="updates"]')
   await updatePageFromIndicator.waitFor({ state: 'visible' })
-  result.globalUpdateIndicatorNavigates = await updatePageFromIndicator.getByRole('heading', { name: '检查更新', exact: true }).isVisible()
+  result.globalUpdateIndicatorNavigates = await updatePageFromIndicator.getByRole('heading', { name: '更新', exact: true }).isVisible()
     && await updatePageFromIndicator.getByText('0.2.0', { exact: true }).isVisible()
   result.updateReleaseNotesVisible = await updatePageFromIndicator.getByLabel('更新日志').getByText('冒烟测试更新', { exact: true }).isVisible()
   await page.screenshot({ path: path.join(artifactDir, 'global-update-indicator.png') })
-  await page.locator('.main-nav').getByRole('button', { name: '工具概览', exact: true }).click()
+  await page.locator('.main-nav .nav-item[data-navigation-id="overview"]').click()
   const collapseButton = page.getByRole('button', { name: '收起侧边栏' })
   result.sidebarCollapseVisible = await collapseButton.isVisible()
   await collapseButton.click()
@@ -454,7 +454,7 @@ try {
   result.sidebarCollapsedPersisted = await page.evaluate(() => (
     window.localStorage.getItem('xingmang-sidebar-collapsed') === 'true'
   ))
-  const collapsedOverview = page.locator('.sidebar-collapsed .nav-item[data-sidebar-tooltip="工具概览"]')
+  const collapsedOverview = page.locator('.sidebar-collapsed .nav-item[data-navigation-id="overview"]')
   await application.evaluate(({ BrowserWindow }) => {
     const window = BrowserWindow.getAllWindows()[0]
     window?.show()
@@ -463,76 +463,76 @@ try {
   await page.bringToFront()
   await collapsedOverview.hover({ force: true })
   await page.waitForFunction(() => {
-    const item = document.querySelector('.sidebar-collapsed .nav-item[data-sidebar-tooltip="工具概览"]')
+    const item = document.querySelector('.sidebar-collapsed .nav-item[data-navigation-id="overview"]')
     if (!item || !item.matches(':hover')) return false
     const tooltip = getComputedStyle(item, '::after')
     return Number.parseFloat(tooltip.opacity) > 0.9
       && tooltip.visibility === 'visible'
-      && tooltip.content.includes('工具概览')
+      && tooltip.content.includes('首页')
   })
   result.sidebarTooltipVisible = await collapsedOverview.evaluate((item) => {
     const tooltip = getComputedStyle(item, '::after')
     return Number.parseFloat(tooltip.opacity) > 0.9
       && tooltip.visibility === 'visible'
-      && tooltip.content.includes('工具概览')
+      && tooltip.content.includes('首页')
   })
   await page.screenshot({ path: path.join(artifactDir, 'sidebar-collapsed-dark.png') })
   await page.getByRole('button', { name: '展开侧边栏' }).click()
   await page.waitForFunction(() => !document.querySelector('.app-shell')?.classList.contains('sidebar-collapsed'))
-  result.sidebarExpandedAgain = await page.getByText('工具概览', { exact: true }).first().isVisible()
+  result.sidebarExpandedAgain = await page.getByText('首页', { exact: true }).first().isVisible()
   const navigationPages = [
     {
       id: 'sessions',
-      label: '会话管理',
-      heading: '会话管理',
+      label: '记录',
+      heading: '记录',
       keyControl: (root) => root.getByRole('textbox', { name: '搜索会话' }),
     },
     {
       id: 'mcp',
-      label: 'MCP 管理',
-      heading: 'MCP 管理',
+      label: '外接工具',
+      heading: '外接工具',
       keyControl: (root) => root.getByRole('textbox', { name: '搜索 MCP' }),
     },
     {
       id: 'skills',
-      label: '技能管理',
-      heading: '技能管理',
+      label: '技能',
+      heading: '技能',
       keyControl: (root) => root.getByRole('group', { name: 'Skill 范围' }),
     },
     {
       id: 'plugins',
-      label: '插件市场',
-      heading: '插件市场',
+      label: '插件',
+      heading: '插件',
       keyControl: (root) => root.getByRole('tablist', { name: 'Plugin 视图' }),
     },
     {
       id: 'backups',
-      label: '配置备份',
-      heading: '配置备份',
+      label: '备份',
+      heading: '备份',
       keyControl: (root) => root.getByRole('combobox', { name: '选择 AI 工具' }),
     },
     {
       id: 'health',
-      label: '健康诊断',
-      heading: '健康诊断',
-      keyControl: (root) => root.getByRole('button', { name: /^(运行诊断|诊断中)$/ }),
+      label: '检查',
+      heading: '检查',
+      keyControl: (root) => root.getByRole('button', { name: /^(开始检查|检查中)$/ }),
     },
     {
       id: 'maintenance',
-      label: '安装维护',
-      heading: '安装维护',
+      label: '安装卸载',
+      heading: '安装卸载',
       keyControl: (root) => root.locator('.maintenance-cli-section .maintenance-row .secondary-button').first(),
     },
     {
       id: 'feedback',
-      label: '反馈与诊断',
-      heading: '反馈与诊断',
+      label: '反馈',
+      heading: '反馈',
       keyControl: (root) => root.getByRole('textbox', { name: '搜索运行日志' }),
     },
     {
       id: 'updates',
-      label: '检查更新',
-      heading: '检查更新',
+      label: '更新',
+      heading: '更新',
       keyControl: (root) => root.getByRole('button', { name: '检查更新', exact: true }),
     },
     {
@@ -548,7 +548,7 @@ try {
   // fresh profile has no persisted app-settings sidebarMoreExpanded). The
   // toggle itself is a .nav-item, so 8 top-level items are visible before
   // anyone expands anything (docs/PROPOSAL-nav-onboarding.md: "✓≤8").
-  const topLevelNavLabels = ['工具概览', 'AI聊天', '会话管理', '无限画布', 'MCP 管理', '技能管理', '插件市场', '更多']
+  const topLevelNavLabels = ['首页', '聊天', '记录', '画布', '外接工具', '技能', '插件', '更多']
   const moreGroupPageIds = new Set(['backups', 'health', 'maintenance', 'feedback', 'tutorial', 'updates', 'settings'])
   const sidebarNavigationItems = page.locator('.main-nav .nav-item')
   result.navigationItemCount = await sidebarNavigationItems.count()
@@ -574,14 +574,15 @@ try {
     // "更多" was already expanded above (it stays expanded across navigation
     // — Sidebar's onNavigate never touches moreExpanded), so every page's
     // button, grouped or not, is reachable through the same container.
+    const navItemSelector = moreGroupPageIds.has(id) ? '.nav-more-popover' : '.main-nav'
     if (moreGroupPageIds.has(id)) {
-      const moreItem = page.locator(`.main-nav .nav-item[data-navigation-id="${id}"]`)
+      const moreItem = page.locator(`${navItemSelector} .nav-item[data-navigation-id="${id}"]`)
       if (!await moreItem.isVisible().catch(() => false)) {
         await moreToggle.click()
         await moreItem.waitFor({ state: 'visible', timeout: 10_000 })
       }
     }
-    await page.locator(`.main-nav .nav-item[data-navigation-id="${id}"]`).click()
+    await page.locator(`${navItemSelector} .nav-item[data-navigation-id="${id}"]`).click()
     const pageRoot = page.locator(`.main-content [data-page-id="${id}"]`)
     await pageRoot.waitFor({ state: 'visible', timeout: 10_000 })
     if (id === 'mcp' || id === 'plugins') {
@@ -680,7 +681,11 @@ try {
       rootVisible: await pageRoot.isVisible(),
       headingVisible: await pageRoot.getByRole('heading', { name: heading, exact: true }).isVisible(),
       keyControlVisible: await keyControl(pageRoot).isVisible(),
-      activeStateCorrect: await page.locator('.sidebar .nav-item[aria-current="page"]').innerText() === label,
+      // More-group items live in a transient portal and close after selection;
+      // their stable active indication is the highlighted "更多" toggle.
+      activeStateCorrect: moreGroupPageIds.has(id)
+        ? await moreToggle.evaluate((button) => button.classList.contains('active'))
+        : await page.locator('.main-nav .nav-item[aria-current="page"]').innerText() === label,
       providerTabCount: multiProviderPageIds.has(id)
         ? await pageRoot.locator('.provider-tabs [role="tab"]').count()
         : null,
@@ -698,12 +703,12 @@ try {
     await page.waitForTimeout(120)
     await page.screenshot({ path: path.join(artifactDir, `${id}-page-dark.png`) })
   }
-  await page.locator('.main-nav').getByRole('button', { name: '工具概览', exact: true }).click()
+  await page.locator('.main-nav .nav-item[data-navigation-id="overview"]').click()
   const overviewPage = page.locator('.main-content .dashboard-page')
   result.overviewRestoredAfterNavigation = await overviewPage.isVisible()
-    && await overviewPage.getByRole('heading', { name: '工具概览', exact: true }).isVisible()
-    && await overviewPage.getByRole('heading', { name: '本机环境', exact: true }).isVisible()
-    && await page.locator('.main-nav .nav-item[aria-current="page"]').innerText() === '工具概览'
+    && await overviewPage.getByRole('heading', { name: '首页', exact: true }).isVisible()
+    && await overviewPage.getByRole('heading', { name: '运行环境', exact: true }).isVisible()
+    && await page.locator('.main-nav .nav-item[aria-current="page"]').innerText() === '首页'
   await themeToggle.click()
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
   result.lightThemeRestored = await page.evaluate(() => (
@@ -746,12 +751,13 @@ try {
   result.nativeConfigFooterHidden = await page.getByText('本机原生配置', { exact: true }).count() === 0
   result.officialWebsiteDomainVisible = false
   result.supportButtonVisible = await page.getByRole('button', { name: '客服' }).isVisible()
-  if (!await page.getByRole('button', { name: /教程文档/ }).isVisible().catch(() => false)) {
-    await moreToggle.click()
-    await page.locator('#sidebar-more-items').waitFor({ state: 'visible' })
+  const tutorialNavItem = page.locator('.nav-more-popover .nav-item[data-navigation-id="tutorial"]')
+  if (!await tutorialNavItem.isVisible().catch(() => false)) {
+    if (await moreToggle.getAttribute('aria-expanded') !== 'true') await moreToggle.click()
+    await tutorialNavItem.waitFor({ state: 'visible' })
   }
-  result.tutorialDocsVisible = await page.getByRole('button', { name: /教程文档/ }).isVisible()
-  result.tutorialDocsLabelVisible = await page.getByText('教程文档', { exact: true }).isVisible()
+  result.tutorialDocsVisible = await tutorialNavItem.isVisible()
+  result.tutorialDocsLabelVisible = await tutorialNavItem.getByText('教程', { exact: true }).isVisible()
   result.cardModelCount = await page.locator('.configured-model').count()
   result.configuredToolCardCount = await page.locator('.cli-card').evaluateAll((cards) => cards.filter((card) => {
     const state = card.querySelector('.config-state')?.textContent?.trim()
@@ -817,22 +823,27 @@ try {
     return expanded && contained
   })
   const shouldCheckCodexLaunchDialog = platformCapabilities.platform === 'windows'
-    && result.codexDesktopWindowState === '窗口已打开'
+    && await page.locator('.desktop-card .version-pill').filter({ hasText: '窗口已打开' }).count() > 0
   result.codexLaunchDialogChecked = !shouldCheckCodexLaunchDialog
   if (shouldCheckCodexLaunchDialog) {
     await page.locator('.desktop-card').getByRole('button', { name: '打开', exact: true }).click()
-    const codexLaunchDialog = page.getByRole('alertdialog', { name: 'Codex 桌面端已运行' })
-    await codexLaunchDialog.waitFor({ state: 'visible' })
-    result.codexLaunchDialogVisible = await codexLaunchDialog.isVisible()
-    result.codexLaunchHintVisible = await codexLaunchDialog.getByText('修改了配置请选择重启 Codex，若无修改直接打开即可。', { exact: true }).isVisible()
-    result.codexDirectOpenVisible = await codexLaunchDialog.getByRole('button', { name: /^直接打开 / }).isVisible()
-    result.codexRestartVisible = await codexLaunchDialog.getByRole('button', { name: /^重启 Codex / }).isVisible()
-    result.codexLaunchDialogChecked = result.codexLaunchDialogVisible
-      && result.codexLaunchHintVisible
-      && result.codexDirectOpenVisible
-      && result.codexRestartVisible
-    await page.screenshot({ path: path.join(artifactDir, 'codex-launch-dialog.png') })
-    await codexLaunchDialog.getByRole('button', { name: '取消', exact: true }).last().click()
+    const codexLaunchDialog = page.locator('.codex-launch-dialog')
+    const dialogShown = await codexLaunchDialog.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true).catch(() => false)
+    if (dialogShown) {
+      result.codexLaunchDialogVisible = true
+      result.codexLaunchHintVisible = await codexLaunchDialog.getByText(/打开|重启/).count() >= 2
+      result.codexDirectOpenVisible = await codexLaunchDialog.getByRole('button', { name: /打开窗口/ }).isVisible()
+      result.codexRestartVisible = await codexLaunchDialog.getByRole('button', { name: /重启 Codex/ }).isVisible()
+      result.codexLaunchDialogChecked = result.codexLaunchHintVisible
+        && result.codexDirectOpenVisible
+        && result.codexRestartVisible
+      await page.screenshot({ path: path.join(artifactDir, 'codex-launch-dialog.png') })
+      await codexLaunchDialog.getByRole('button', { name: '取消', exact: true }).last().click()
+      await codexLaunchDialog.waitFor({ state: 'hidden', timeout: 5_000 }).catch(async () => {
+        await page.keyboard.press('Escape')
+        await codexLaunchDialog.waitFor({ state: 'hidden', timeout: 5_000 })
+      })
+    }
   }
 
   await codexCliCard.getByRole('button', { name: '配置' }).click()

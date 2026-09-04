@@ -15,7 +15,7 @@ import {
   syncManagedCliKeySummary,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
-import { relaySites, resolveRelaySite } from './relay-sites'
+import { relaySites } from './relay-sites'
 import type {
   AddMarketplaceInput,
   AddMcpInput,
@@ -1827,9 +1827,6 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('account:configure-managed-clis', (_event, input: unknown) => {
     const parsed = parseManagedCliConfigurationInput(input)
-    if (resolveRelaySite(service.readStoredConfig().relaySiteId).accountBackend === 'manual-key') {
-      throw new Error('当前站点不支持账号托管 Key，请使用粘贴 Key 配置')
-    }
     return configureManagedClis(
       accountService,
       service,

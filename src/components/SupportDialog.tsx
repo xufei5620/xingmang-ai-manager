@@ -1,7 +1,16 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import { ExternalLink, Headset, LoaderCircle, X } from 'lucide-react'
 import QRCode from 'qrcode'
-import { dialogAriaProps } from './Dialog'
+import { dialogAriaProps, dialogKeyboardDecision } from './Dialog'
+
+const SUPPORT_DIALOG_FOCUSABLE_SELECTOR = [
+  'a[href]',
+  'button:not([disabled])',
+  'input:not([disabled])',
+  'select:not([disabled])',
+  'textarea:not([disabled])',
+  '[tabindex]:not([tabindex="-1"])',
+].join(',')
 
 export function SupportDialog({
   url,
@@ -12,8 +21,10 @@ export function SupportDialog({
   onClose: () => void
   onOpen: () => void
 }) {
+  const dialogRef = useRef<HTMLElement>(null)
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [qrError, setQrError] = useState<string | null>(null)
+  const [qrAttempt, setQrAttempt] = useState(0)
 
   useEffect(() => {
     let active = true
@@ -30,18 +41,52 @@ export function SupportDialog({
       if (active) setQrError('二维码生成失败，请使用下方按钮直接联系售后')
     })
     return () => { active = false }
-  }, [url])
+  }, [url, qrAttempt])
 
   useEffect(() => {
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const focusTimer = window.setTimeout(() => {
+      const first = dialogRef.current?.querySelector<HTMLElement>(SUPPORT_DIALOG_FOCUSABLE_SELECTOR)
+      first?.focus()
+    }, 0)
+    const dismissFromOutside = (event: PointerEvent) => {
+      const target = event.target
+      if (target instanceof Node && dialogRef.current?.contains(target)) return
+      onClose()
     }
-    window.addEventListener('keydown', closeOnEscape)
-    return () => window.removeEventListener('keydown', closeOnEscape)
+    document.addEventListener('pointerdown', dismissFromOutside)
+    return () => {
+      window.clearTimeout(focusTimer)
+      document.removeEventListener('pointerdown', dismissFromOutside)
+      previous?.focus({ preventScroll: true })
+    }
   }, [onClose])
 
+  const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
+    const focusable = [...event.currentTarget.querySelectorAll<HTMLElement>(SUPPORT_DIALOG_FOCUSABLE_SELECTOR)]
+    const decision = dialogKeyboardDecision({
+      key: event.key,
+      shiftKey: event.shiftKey,
+      activeIndex: focusable.indexOf(document.activeElement as HTMLElement),
+      focusableCount: focusable.length,
+    })
+    if (!decision.handled) return
+    event.stopPropagation()
+    if (decision.preventDefault) event.preventDefault()
+    if (decision.dismiss) {
+      onClose()
+      return
+    }
+    if (decision.focusIndex !== null) focusable[decision.focusIndex]?.focus()
+  }
+
   return (
-      <section className="support-dialog" {...dialogAriaProps('support-dialog-title')}>
+      <section
+        ref={dialogRef}
+        className="support-dialog"
+        {...dialogAriaProps('support-dialog-title')}
+        onKeyDown={handleKeyDown}
+      >
         <header className="support-dialog-head">
           <span className="support-dialog-icon"><Headset size={19} /></span>
           <div>
@@ -58,7 +103,12 @@ export function SupportDialog({
             {qrDataUrl ? (
               <img src={qrDataUrl} alt="售后服务二维码" className="support-qr-image" />
             ) : qrError ? (
-              <div className="support-qr-error" role="alert">{qrError}</div>
+              <div className="support-qr-error" role="alert">
+                <span>{qrError}</span>
+                <button type="button" className="secondary-button" onClick={() => setQrAttempt((attempt) => attempt + 1)}>
+                  重试
+                </button>
+              </div>
             ) : (
               <div className="support-qr-loading" role="status">
                 <LoaderCircle className="spin" size={24} />

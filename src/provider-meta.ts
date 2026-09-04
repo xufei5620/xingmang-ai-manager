@@ -23,8 +23,8 @@ export const providers: Record<ProviderId, ProviderMeta> = {
     company: 'Anthropic',
     command: 'claude',
     packageName: '@anthropic-ai/claude-code',
-    color: '#b35b34',
-    tint: '#fff5ef',
+    color: 'var(--provider-claude)',
+    tint: 'var(--provider-claude-soft)',
     icon: claudeCodeIconUrl,
   },
   codex: {
@@ -32,8 +32,8 @@ export const providers: Record<ProviderId, ProviderMeta> = {
     company: 'OpenAI',
     command: 'codex',
     packageName: '@openai/codex',
-    color: '#087b68',
-    tint: '#edfaf7',
+    color: 'var(--provider-codex)',
+    tint: 'var(--provider-codex-soft)',
     icon: chatGptIconUrl,
   },
   grok: {
@@ -41,8 +41,8 @@ export const providers: Record<ProviderId, ProviderMeta> = {
     company: 'xAI',
     command: 'grok',
     packageName: '@xai-official/grok',
-    color: '#323640',
-    tint: '#f2f3f5',
+    color: 'var(--provider-grok)',
+    tint: 'var(--provider-grok-soft)',
     icon: grokIconUrl,
   },
   gemini: {
@@ -50,8 +50,8 @@ export const providers: Record<ProviderId, ProviderMeta> = {
     company: 'Google',
     command: 'gemini',
     packageName: '@google/gemini-cli',
-    color: '#5969c7',
-    tint: '#f1f3ff',
+    color: 'var(--provider-gemini)',
+    tint: 'var(--provider-gemini-soft)',
     icon: geminiCliIconUrl,
   },
 }
@@ -61,8 +61,8 @@ export const codexDesktopMeta: ProviderMeta = {
   company: 'OpenAI · Windows',
   command: 'Codex App',
   packageName: '',
-  color: '#087b68',
-  tint: '#edfaf7',
+  color: 'var(--provider-codex)',
+  tint: 'var(--provider-codex-soft)',
   icon: chatGptIconUrl,
 }
 

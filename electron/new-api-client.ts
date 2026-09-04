@@ -16,8 +16,8 @@ import { relaySites } from './relay-sites'
 // Derived from the site registry's solov entry (T2 precedent, W3) rather
 // than a duplicated literal: solov is guaranteed to declare accountBaseUrl
 // -- it is the one relay-sites.ts entry with accountBackend: 'new-api' --
-// but the field is typed optional on RelaySite (a manual-key site like
-// sub2api has none), so the `?? ` fallback below exists purely to stay
+// but the field is typed optional on RelaySite for persisted-config
+// compatibility, so the `?? ` fallback below exists purely to stay
 // type-safe; it is unreachable in practice.
 export const defaultBaseUrl = relaySites.find((site) => site.id === 'solov')?.accountBaseUrl
   ?? 'https://xm.solov.cc'
@@ -508,8 +508,9 @@ export interface NewApiAccountDashboardQuery {
   endTimestamp: number
 }
 
-// Customer-facing whitelist for GET /api/data/self. The upstream row also
-// contains user identity fields; only chart dimensions and metrics cross IPC.
+// Parsed row is kept as an internal intermediate so malformed upstream rows
+// can be discarded before they reach the aggregate. It is exported only for
+// parser tests; NewApiAccountDashboardData never exposes this shape.
 export interface NewApiAccountDashboardRecord {
   createdAt: number
   modelName: string
@@ -518,10 +519,34 @@ export interface NewApiAccountDashboardRecord {
   quota: number
 }
 
+export interface NewApiAccountDashboardMetric {
+  quota: number
+  count: number
+  tokens: number
+}
+
+export interface NewApiAccountDashboardBucket extends NewApiAccountDashboardMetric {
+  timestamp: number
+  models: Record<string, NewApiAccountDashboardMetric>
+}
+
+export interface NewApiAccountDashboardModelTotal extends NewApiAccountDashboardMetric {
+  model: string
+}
+
+// Customer-facing aggregate for GET /api/data/self. The upstream row also
+// contains user identity fields; only bounded chart dimensions and metrics
+// cross IPC. Keeping aggregation here prevents the renderer from retaining a
+// large raw response and makes the IPC payload deterministic.
 export interface NewApiAccountDashboardData {
   startTimestamp: number
   endTimestamp: number
-  records: NewApiAccountDashboardRecord[]
+  buckets: NewApiAccountDashboardBucket[]
+  models: NewApiAccountDashboardModelTotal[]
+  quota: number
+  count: number
+  tokens: number
+  discardedCount: number
 }
 
 export interface NewApiAccountTaskQuery {
@@ -1590,14 +1615,70 @@ export function parseAccountDashboardData(
   payload: unknown,
   query: NewApiAccountDashboardQuery,
 ): NewApiAccountDashboardData {
-  const records: NewApiAccountDashboardRecord[] = []
-  if (Array.isArray(payload)) {
-    for (const entry of payload.slice(0, 20_000)) {
-      const record = parseAccountDashboardRecord(entry)
-      if (record) records.push(record)
+  const entries = Array.isArray(payload) ? payload : []
+  const maxRows = 20_000
+  const discardedCount = Math.max(0, entries.length - maxRows)
+  const bucketSeconds = Math.max(0, query.endTimestamp - query.startTimestamp) <= 24 * 60 * 60
+    ? 60 * 60
+    : 24 * 60 * 60
+  const buckets = new Map<number, NewApiAccountDashboardBucket>()
+  const modelTotals = new Map<string, NewApiAccountDashboardModelTotal>()
+  let quota = 0
+  let count = 0
+  let tokens = 0
+
+  // Bound the number of rows before parsing and aggregating. The response has
+  // already been bounded by performRequest's byte limit, but this guard keeps
+  // a permissive upstream from expanding renderer-facing state without limit.
+  for (const entry of entries.slice(0, maxRows)) {
+    const record = parseAccountDashboardRecord(entry)
+    if (!record) continue
+    const timestamp = Math.floor(record.createdAt / bucketSeconds) * bucketSeconds
+    const bucket = buckets.get(timestamp) ?? {
+      timestamp,
+      quota: 0,
+      count: 0,
+      tokens: 0,
+      models: {},
     }
+    const bucketModel = bucket.models[record.modelName] ?? { quota: 0, count: 0, tokens: 0 }
+    bucketModel.quota += record.quota
+    bucketModel.count += record.count
+    bucketModel.tokens += record.tokenUsed
+    bucket.models[record.modelName] = bucketModel
+    bucket.quota += record.quota
+    bucket.count += record.count
+    bucket.tokens += record.tokenUsed
+    buckets.set(timestamp, bucket)
+
+    const model = modelTotals.get(record.modelName) ?? {
+      model: record.modelName,
+      quota: 0,
+      count: 0,
+      tokens: 0,
+    }
+    model.quota += record.quota
+    model.count += record.count
+    model.tokens += record.tokenUsed
+    modelTotals.set(record.modelName, model)
+    quota += record.quota
+    count += record.count
+    tokens += record.tokenUsed
   }
-  return { ...query, records }
+
+  return {
+    ...query,
+    buckets: [...buckets.values()].sort((left, right) => left.timestamp - right.timestamp),
+    models: [...modelTotals.values()].sort((left, right) => (
+      right.quota - left.quota
+      || right.count - left.count
+      || left.model.localeCompare(right.model)
+    )),
+    quota,
+    count,
+    tokens,
+    discardedCount,
+  }
 }
 
 export function parseAccountTaskRecord(payload: unknown): NewApiAccountTaskRecord | null {

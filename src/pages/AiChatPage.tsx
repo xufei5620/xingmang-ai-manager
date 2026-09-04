@@ -61,14 +61,29 @@ import {
   type AiChatState,
 } from '../ai-chat-state'
 import { errorMessage } from '../error-message'
-import type {
-  AiChatAsset,
-  AiChatGroupSummary,
-  AiChatParametersInput,
-  AiChatStreamEvent,
-  XingmangApi,
+import { DEFAULT_CODEX_MODEL } from '../onboarding-flow'
+import {
+  managedCliKeyProfiles,
+  type AiChatAsset,
+  type AiChatGroupSummary,
+  type AiChatParametersInput,
+  type AiChatStreamEvent,
+  type XingmangApi,
 } from '../types'
 import './AiChatPage.css'
+
+export const DEFAULT_AI_CHAT_GROUP = managedCliKeyProfiles.codex.group
+export const DEFAULT_AI_CHAT_MODEL = DEFAULT_CODEX_MODEL
+
+export function resolveAiChatDefaultGroup(
+  groups: readonly Pick<AiChatGroupSummary, 'name'>[],
+  remembered = '',
+): string {
+  const preferred = groups.find((group) => group.name === DEFAULT_AI_CHAT_GROUP)
+  if (preferred) return preferred.name
+  if (remembered && groups.some((group) => group.name === remembered)) return remembered
+  return groups[0]?.name ?? ''
+}
 
 export type AiChatPageApi = Pick<XingmangApi,
   | 'listAiChatGroups'
@@ -360,6 +375,7 @@ export function AiChatPage({ api, userId, notify }: AiChatPageProps) {
       const next = completeAiChatGroupPreparation(stateRef.current, token, {
         group: result.group,
         models: result.models,
+        preferredModel: DEFAULT_AI_CHAT_MODEL,
       })
       if (next === stateRef.current) return
       commit(next)
@@ -386,8 +402,7 @@ export function AiChatPage({ api, userId, notify }: AiChatPageProps) {
     void api.listAiChatGroups().then((nextGroups) => {
       if (!active) return
       setGroups(nextGroups)
-      const remembered = stateRef.current.group
-      const target = nextGroups.some((group) => group.name === remembered) ? remembered : nextGroups[0]?.name
+      const target = resolveAiChatDefaultGroup(nextGroups, stateRef.current.group)
       if (target) void prepareGroup(target)
     }).catch((error) => {
       if (active) setGroupsError(errorMessage(error))
@@ -571,8 +586,8 @@ export function AiChatPage({ api, userId, notify }: AiChatPageProps) {
     <main className="page ai-chat-page" data-page-id="ai-chat">
       <header className="page-header ai-chat-page-header">
         <div>
-          <div className="eyebrow">工作台</div>
-          <h1>AI聊天</h1>
+          <h1>聊天</h1>
+          <p className="page-lead">在软件里直接问 AI。</p>
         </div>
         <div className="ai-chat-header-actions">
           <button className="secondary-button square" type="button" title="参数设置" aria-label="参数设置" aria-pressed={settingsOpen} onClick={() => setSettingsOpen((open) => !open)}>
@@ -585,7 +600,7 @@ export function AiChatPage({ api, userId, notify }: AiChatPageProps) {
             aria-label="清空对话"
             disabled={!state.messages.length}
             onClick={() => {
-              if (window.confirm('确定清空当前账号的 AI聊天历史吗？')) commit(clearAiChatMessages(stateRef.current))
+              if (window.confirm('确定清空当前账号的聊天记录吗？')) commit(clearAiChatMessages(stateRef.current))
             }}
           >
             <Trash2 size={17} />
@@ -624,7 +639,7 @@ export function AiChatPage({ api, userId, notify }: AiChatPageProps) {
       {groupBusy && (
         <div className="ai-chat-notice is-loading" role="status">
           <LoaderCircle size={16} className="spin" />
-          <span>正在检查「{state.groupPreparation.targetGroup}」分组密钥；如果尚未创建，将自动创建并加密保存。</span>
+          <span>正在准备「{state.groupPreparation.targetGroup}」的密钥，没有就会自动创建。</span>
         </div>
       )}
       {(groupsError || state.groupPreparation.error) && (

@@ -85,18 +85,18 @@ interface AccountCenterTabDefinition {
 }
 
 const TAB_GROUPS: ReadonlyArray<{ id: AccountCenterTabGroup; label: string }> = [
-  { id: 'general', label: '常规' },
-  { id: 'personal', label: '个人' },
+  { id: 'general', label: '常用' },
+  { id: 'personal', label: '账户' },
 ]
 
 const TABS: readonly AccountCenterTabDefinition[] = [
-  { id: 'overview', label: '概览', description: '余额、累计用量与账户信息', icon: BadgeDollarSign, group: 'general' },
-  { id: 'dashboard', label: '数据看板', description: '账户用量、吞吐与最近任务汇总', icon: BarChart3, group: 'general' },
-  { id: 'keys', label: 'API 密钥', description: '密钥、分组、倍率与额度管理', icon: KeyRound, group: 'general' },
-  { id: 'usage', label: '使用日志', description: '筛选模型调用、Token、缓存与费用明细', icon: Activity, group: 'general' },
-  { id: 'tasks', label: '任务日志', description: '查看异步图片、视频和音频任务状态', icon: ListChecks, group: 'general' },
-  { id: 'wallet', label: '钱包', description: '订阅、充值、订单、兑换与邀请返利', icon: Wallet, group: 'personal' },
-  { id: 'profile', label: '个人资料', description: '账户资料、密码与登录设备', icon: UserRound, group: 'personal' },
+  { id: 'overview', label: '概览', description: '余额和账户信息', icon: BadgeDollarSign, group: 'general' },
+  { id: 'dashboard', label: '用量', description: '最近用了多少', icon: BarChart3, group: 'general' },
+  { id: 'keys', label: '密钥', description: '给工具用的 Key', icon: KeyRound, group: 'general' },
+  { id: 'usage', label: '明细', description: '每次调用花了多少', icon: Activity, group: 'general' },
+  { id: 'tasks', label: '任务', description: '图片、视频生成进度', icon: ListChecks, group: 'general' },
+  { id: 'wallet', label: '钱包', description: '充值、订单和兑换', icon: Wallet, group: 'personal' },
+  { id: 'profile', label: '资料', description: '改资料、密码和已登录设备', icon: UserRound, group: 'personal' },
 ]
 
 const commerceTabs: readonly AccountCommerceTab[] = ['subscriptions', 'topup', 'orders', 'redeem', 'invite']
@@ -507,7 +507,7 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
     try {
       await window.xingmang.updateAccountDisplayName({ displayName: nextDisplayName })
       await loadProfile()
-      notify?.({ type: 'success', message: '个人资料已更新' })
+      notify?.({ type: 'success', message: '资料已更新' })
     } catch (error) {
       notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
     } finally {
@@ -720,7 +720,7 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
         </div>
         <div className="account-center-keys-table">
           <div className="account-center-keys-head" aria-hidden="true">
-            <span>名称</span><span>API 密钥</span><span>分组</span><span>倍率</span><span>状态</span><span>额度</span><span>已用</span><span>创建时间</span><span>过期时间</span><span className="account-center-keys-actions">操作</span>
+            <span>名称</span><span>密钥</span><span>分组</span><span>倍率</span><span>状态</span><span>额度</span><span>已用</span><span>创建时间</span><span>过期时间</span><span className="account-center-keys-actions">操作</span>
           </div>
           <div className="account-center-keys-body" aria-busy={keysLoading}>
             {keys.keys.map((key) => {
@@ -804,8 +804,8 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
   }
 
   const renderPersonalProfileTab = () => {
-    if (profileLoading && !profile) return <section className="workspace-empty"><div className="workspace-empty-icon"><LoaderCircle size={24} className="spin" /></div><h2>正在读取个人资料</h2></section>
-    if (!profile) return <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>个人资料读取失败</strong><span>{profileError ?? '请稍后重试'}</span></div><button type="button" className="secondary-button" onClick={() => void loadProfile()}>重试</button></div>
+    if (profileLoading && !profile) return <section className="workspace-empty"><div className="workspace-empty-icon"><LoaderCircle size={24} className="spin" /></div><h2>正在读取资料</h2></section>
+    if (!profile) return <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>资料读取失败</strong><span>{profileError ?? '请稍后重试'}</span></div><button type="button" className="secondary-button" onClick={() => void loadProfile()}>重试</button></div>
     return (
       <div className="account-profile-settings">
         <section className="account-profile-identity">
@@ -946,20 +946,20 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
   )
 
   return (
-    <div className="account-center">
+    <div className="account-center" data-page-id="account-center">
       <div className="account-center-inner">
         <header className="account-center-topbar">
           <div className="account-center-title">
             <span className="account-center-title-icon"><BadgeDollarSign size={20} /></span>
             <div>
-              <div className="eyebrow">账号</div>
-              <h1>星芒 AI 账户</h1>
+              <h1>我的账号</h1>
+              <p className="page-lead">看余额、充值、改密码。</p>
             </div>
           </div>
           <div className="header-actions page-toolbar">
             <button type="button" className="secondary-button" onClick={onClose}>
               <ArrowLeft size={15} />
-              <span>工作台</span>
+              <span>返回首页</span>
             </button>
             <button type="button" className="icon-button" title="登出星芒账号" aria-label="登出星芒账号" onClick={onLogout}>
               <LogOut size={17} />
@@ -986,6 +986,7 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
                     <button
                       key={id}
                       type="button"
+                      data-account-tab={id}
                       aria-current={primaryTab === id ? 'page' : undefined}
                       className={primaryTab === id ? 'active' : ''}
                       onClick={() => setPrimaryTab(id)}
@@ -1032,14 +1033,14 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
                   ['redeem', '兑换'],
                   ['invite', '邀请返利'],
                 ] as const).map(([id, label]) => (
-                  <button key={id} type="button" role="tab" aria-selected={walletTab === id} className={walletTab === id ? 'active' : ''} onClick={() => setWalletTab(id)}>{label}</button>
+                  <button key={id} type="button" role="tab" data-account-subtab={id} aria-selected={walletTab === id} className={walletTab === id ? 'active' : ''} onClick={() => setWalletTab(id)}>{label}</button>
                 ))}
               </div>
             )}
             {primaryTab === 'profile' && (
-              <div className="account-center-subtabs" role="tablist" aria-label="个人资料分区">
-                <button type="button" role="tab" aria-selected={profileTab === 'profile'} className={profileTab === 'profile' ? 'active' : ''} onClick={() => setProfileTab('profile')}>基本资料</button>
-                <button type="button" role="tab" aria-selected={profileTab === 'security'} className={profileTab === 'security' ? 'active' : ''} onClick={() => setProfileTab('security')}>安全与设备</button>
+              <div className="account-center-subtabs" role="tablist" aria-label="资料分区">
+                <button type="button" role="tab" data-account-subtab="profile" aria-selected={profileTab === 'profile'} className={profileTab === 'profile' ? 'active' : ''} onClick={() => setProfileTab('profile')}>基本资料</button>
+                <button type="button" role="tab" data-account-subtab="security" aria-selected={profileTab === 'security'} className={profileTab === 'security' ? 'active' : ''} onClick={() => setProfileTab('security')}>安全与设备</button>
               </div>
             )}
             <div className="account-center-body" role="tabpanel">

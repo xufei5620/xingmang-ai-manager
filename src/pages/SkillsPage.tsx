@@ -334,7 +334,10 @@ export function SkillsPage({
   return (
     <div className="page workspace-page management-page" data-page-id="skills">
       <header className="page-header workspace-page-header">
-        <div><div className="eyebrow">扩展</div><h1>技能管理</h1></div>
+        <div>
+          <h1>技能</h1>
+          <p className="page-lead">给 AI 加上常用能力。</p>
+        </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="技能工具栏">
           <ProviderTabs
             value={provider}
@@ -349,7 +352,7 @@ export function SkillsPage({
           </button>
           {supportsInstall && (
             <button className="primary-button" type="button" onClick={() => setImportOpen(true)} disabled={!selectedReady || busyKey !== null}>
-              <FolderInput size={17} /> {provider === 'codex' ? '导入 Skill' : '安装 Skill'}
+              <FolderInput size={17} /> {provider === 'codex' ? '导入技能' : '安装技能'}
             </button>
           )}
         </div>
@@ -379,7 +382,7 @@ export function SkillsPage({
 
       <section className="extension-grid" aria-busy={selectedLoading}>
         {selectedLoading && selectedCount === 0 ? (
-          <div className="workspace-empty extension-grid-empty"><LoaderCircle className="spin" size={24} /><h2>正在扫描 Skills</h2></div>
+          <div className="workspace-empty extension-grid-empty"><LoaderCircle className="spin" size={24} /><h2>正在查找技能</h2></div>
         ) : provider === 'codex' ? filteredCodex.length ? filteredCodex.map((skill) => {
           const updateItem = codexUpdatesByPath.get(skill.path.toLowerCase())
             ?? codexUpdatesByName.get(skill.name.toLowerCase())
@@ -427,7 +430,7 @@ export function SkillsPage({
         }) : (
           <div className="workspace-empty extension-grid-empty">
             <WandSparkles size={24} />
-            <h2>{query || scope !== 'all' ? '没有匹配的 Skill' : '尚未发现 Skill'}</h2>
+            <h2>{query || scope !== 'all' ? '没有找到这个技能' : '还没有技能'}</h2>
           </div>
         ) : filteredProvider.length ? filteredProvider.map((item) => {
           const canToggle = (item.enabled && item.operations.disable) || (!item.enabled && item.operations.enable)
@@ -486,7 +489,7 @@ export function SkillsPage({
         }) : (
           <div className="workspace-empty extension-grid-empty">
             <WandSparkles size={24} />
-            <h2>{query ? '没有匹配的 Skill' : '尚未发现 Skill'}</h2>
+            <h2>{query ? '没有找到这个技能' : '还没有技能'}</h2>
           </div>
         )}
       </section>

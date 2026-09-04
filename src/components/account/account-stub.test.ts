@@ -5,7 +5,6 @@ import {
   LOW_BALANCE_THRESHOLD_USD,
   resolveAccountAreaStatus,
   resolveAccountSnapshotFromSearch,
-  shouldShowManualKeyEntry,
   type AccountSnapshot,
 } from './account-stub'
 
@@ -84,15 +83,5 @@ describe('resolveAccountSnapshotFromSearch', () => {
     const result = resolveAccountSnapshotFromSearch('?accountState=low-balance')
     expect(result.loggedIn).toBe(true)
     expect(resolveAccountAreaStatus(result)).toBe('low-balance')
-  })
-})
-
-describe('shouldShowManualKeyEntry', () => {
-  it('is true for a manual-key site (sub2api today)', () => {
-    expect(shouldShowManualKeyEntry('manual-key')).toBe(true)
-  })
-
-  it('is false for a new-api backed site (solov today)', () => {
-    expect(shouldShowManualKeyEntry('new-api')).toBe(false)
   })
 })

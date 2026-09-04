@@ -856,8 +856,8 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     <div className="page workspace-page operations-page" data-page-id="maintenance">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
-          <h1>安装维护</h1>
+          <h1>安装卸载</h1>
+          <p className="page-lead">安装、卸载或升级工具。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="维护工具栏">
           <button className="icon-button" type="button" title="检查更新" aria-label="检查更新" onClick={() => void refresh(true)} disabled={loading || busy}>
@@ -894,8 +894,8 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
       <section className="environment-section maintenance-runtime-section" aria-labelledby="maintenance-runtime-title">
         <div className="section-heading">
           <div>
-            <h2 id="maintenance-runtime-title">前置环境</h2>
-            <span>安装 CLI 前先复用本机已有的 Node.js 与 npm</span>
+            <h2 id="maintenance-runtime-title">运行环境</h2>
+            <span>装工具前先把 Node.js 和 npm 准备好</span>
           </div>
           <span className={`operation-state ${runtimeReady ? 'is-pass' : 'is-warn'}`}>
             {runtimeDetectionFailed ? '检测失败' : runtimeReady ? '环境可用' : '需要处理'}
@@ -960,7 +960,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
       <section className="environment-section maintenance-cli-section" aria-labelledby="maintenance-cli-title">
         <div className="section-heading">
           <div>
-            <h2 id="maintenance-cli-title">AI CLI</h2>
+            <h2 id="maintenance-cli-title">你的工具</h2>
             <span>{snapshot?.checkedAt ? `最后检测 ${new Date(snapshot.checkedAt).toLocaleString()}` : '等待本机检测'}</span>
           </div>
         </div>

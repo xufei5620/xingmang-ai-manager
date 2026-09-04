@@ -205,8 +205,8 @@ export function FeedbackPage({ api, notify }: FeedbackPageProps) {
     <div className="page workspace-page operations-page feedback-page" data-page-id="feedback">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
-          <h1>反馈与诊断</h1>
+          <h1>反馈</h1>
+          <p className="page-lead">出问题发给我们。</p>
         </div>
         <div className="header-actions page-toolbar feedback-actions" role="toolbar" aria-label="反馈工具栏">
           <button className="icon-button" type="button" title="刷新日志" aria-label="刷新日志" onClick={() => void refresh()} disabled={loading || busy !== null}>
@@ -222,14 +222,14 @@ export function FeedbackPage({ api, notify }: FeedbackPageProps) {
             if (result) notify?.({ type: 'success', message: `诊断报告已导出：${result.outputPath}` })
           })}>
             {busy === 'export' ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
-            导出 TXT
+            导出文件
           </button>
           <button className="primary-button" type="button" disabled={busy !== null} onClick={() => void perform('copy', async () => {
             const result = await api.copyFeedbackReport()
             notify?.({ type: 'success', message: `已复制脱敏反馈文本，共 ${result.entries} 条日志` })
           })}>
             {busy === 'copy' ? <LoaderCircle className="spin" size={16} /> : <ClipboardCopy size={16} />}
-            复制反馈
+            复制给客服
           </button>
         </div>
       </header>

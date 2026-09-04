@@ -101,7 +101,7 @@ export function KeyEditorDialog({
     onSubmit({ name: trimmedName, group, remainQuota, unlimitedQuota, expiredTime })
   }
 
-  const title = mode === 'create' ? '创建 API 密钥' : '更新 API 密钥'
+  const title = mode === 'create' ? '新建密钥' : '改密钥'
   return (
     <DialogBackdrop className="config-modal-backdrop extension-backdrop" onDismiss={onClose}>
       <form

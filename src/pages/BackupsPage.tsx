@@ -174,8 +174,8 @@ export function BackupsPage({ api }: BackupsPageProps) {
     <div className="page workspace-page operations-page" data-page-id="backups">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
-          <h1>配置备份</h1>
+          <h1>备份</h1>
+          <p className="page-lead">保存和恢复本机配置。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="备份工具栏">
           <button className="icon-button" type="button" title="刷新" aria-label="刷新" onClick={refresh} disabled={loading || busy !== null}>
@@ -190,8 +190,8 @@ export function BackupsPage({ api }: BackupsPageProps) {
       <section className="environment-section backup-create" aria-labelledby="backup-create-title">
         <div className="section-heading">
           <div>
-            <h2 id="backup-create-title">创建手工备份</h2>
-            <span>仅备份星芒管理的本机 AI 工具配置文件</span>
+            <h2 id="backup-create-title">马上备份</h2>
+            <span>只备份本软件管的配置，不碰你的项目文件</span>
           </div>
           <div className="config-actions">
             <select value={provider} onChange={(event) => setProvider(event.target.value as ProviderId)} disabled={busy !== null} aria-label="选择 AI 工具">
@@ -199,7 +199,7 @@ export function BackupsPage({ api }: BackupsPageProps) {
             </select>
             <button className="primary-button" type="button" onClick={create} disabled={busy !== null || loading}>
               {busy === 'create' ? <LoaderCircle className="spin" size={16} /> : <Plus size={16} />}
-              创建备份
+              备份这个工具
             </button>
           </div>
         </div>
@@ -208,7 +208,7 @@ export function BackupsPage({ api }: BackupsPageProps) {
       <section className="environment-section backup-list-section" aria-labelledby="backup-list-title">
         <div className="section-heading">
           <div>
-            <h2 id="backup-list-title">备份记录</h2>
+            <h2 id="backup-list-title">以前的备份</h2>
             <span>{loading ? '正在读取' : `共 ${backups.length} 个快照`}</span>
           </div>
         </div>
@@ -246,7 +246,7 @@ export function BackupsPage({ api }: BackupsPageProps) {
             ))}
           </div>
         ) : (
-          <div className="operation-empty"><ArchiveRestore size={20} />还没有配置备份</div>
+          <div className="operation-empty"><ArchiveRestore size={20} />还没有备份</div>
         )}
       </section>
 

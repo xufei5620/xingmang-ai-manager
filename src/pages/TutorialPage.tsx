@@ -40,99 +40,99 @@ const TUTORIAL_SECTIONS: readonly TutorialSection[] = [
   {
     id: 'start',
     title: '首次使用',
-    summary: '从登录到完成第一个 AI 工具配置。',
+    summary: '登录，装好第一个工具，就能开始用。',
     keywords: '欢迎 注册 登录 记住密码 自动登录 余额',
     icon: Download,
     destination: 'overview',
-    destinationLabel: '打开工具概览',
+    destinationLabel: '打开首页',
     steps: [
-      { title: '1. 登录星芒账号', body: '启动后使用邮箱或用户名登录。可选“记住密码”和“自动登录”；会话与凭据由系统安全存储保护。' },
-      { title: '2. 等待首次检测', body: '工具箱会检测 Node.js、npm、四个 CLI 与 Codex 桌面端；首次初始化只准备 Codex Desktop，其余组件按需安装。“检测失败”不等于“未安装”，先使用重新检测或健康诊断。' },
-      { title: '3. 配置星芒 Key', body: '登录后工具箱会为已安装的 CLI 准备对应分组 Key。已经存在的 Key 会复用，不会每次启动都重复创建。' },
+      { title: '1. 登录星芒账号', body: '启动后用邮箱或用户名登录。可以勾选“记住密码”和“自动登录”。' },
+      { title: '2. 等它检查本机', body: '软件会检查 Node.js、四个命令行工具和 Codex 桌面端。第一次主要准备桌面端，其他按需再装。“检测失败”不等于没装好，先点重新检测或去「检查」。' },
+      { title: '3. 配上星芒 Key', body: '登录后，已装好的工具会自动拿到对应 Key。已经有的会复用，不会每次都新建。' },
     ],
   },
   {
     id: 'install',
     title: '自动安装与更新',
-    summary: '复用现有环境，只安装缺失项。',
+    summary: '有的会复用，缺的才装。',
     keywords: 'node npm claude codex gemini grok 安装 更新 PATH 权限 管理员 镜像',
     icon: Wrench,
     destination: 'maintenance',
-    destinationLabel: '打开安装维护',
+    destinationLabel: '打开安装卸载',
     steps: [
-      { title: '一键准备', body: '工具概览中的安装操作会先复检本机环境。Node.js 20 或更高版本且 npm 可用时，不会重复下载 Node.js。' },
-      { title: '单独安装或更新', body: '在“安装维护”中可单独处理 Claude Code、Codex CLI、Gemini CLI、Grok CLI 和 Codex 桌面端。进度与错误会在当前页显示。' },
-      { title: '安装后仍未识别', body: '先点击“重新检测”。若终端中可运行而软件内不可用，打开健康诊断查看命令路径、npm 入口与权限模式，然后将诊断包提供给售后。' },
+      { title: '一键准备', body: '首页点安装时，会先再检查一遍本机。Node.js 20 以上且 npm 能用，就不会重复下载。' },
+      { title: '单独安装或更新', body: '在「安装卸载」里可以单独处理 Claude、Codex、Gemini、Grok 和 Codex 桌面端。进度和报错都在这一页。' },
+      { title: '装好了软件还不认', body: '先点“重新检测”。终端里能用、软件里不行，就去「检查」看路径和权限，再把报告发给我们。' },
     ],
   },
   {
     id: 'account',
     title: '账户、充值与 Key',
-    summary: '在客户端内查看余额、用量、订单和 API Key。',
+    summary: '看余额、充值、订单和密钥。',
     keywords: '账户 充值 支付 支付宝 订单 兑换码 订阅 邀请 余额 key apikey 分组 倍率',
     icon: Wallet,
     destination: 'account-center',
     destinationLabel: '打开个人中心',
     steps: [
-      { title: '余额与用量', body: '主界面左下角显示当前余额。进入个人中心可按记录查看模型、token 和费用。' },
-      { title: '充值与订阅', body: '支付方式、最低金额、折扣和订阅方案由星芒服务器返回。下单后在受控支付窗口完成付款，订单到账后余额自动刷新。' },
-      { title: 'API Key 管理', body: '可新建、编辑、切换分组、查看倍率、复制或短时显示完整 Key。撤销 Key 会让所有使用它的 CLI 和画布请求立即失效。' },
+      { title: '余额与用量', body: '左下角就能看到余额。点进去能看每次调用花了多少。' },
+      { title: '充值与订阅', body: '付款方式和最低金额由服务器决定。下单后在弹出的窗口里付钱，到账后余额会自己刷新。' },
+      { title: '管理密钥', body: '可以新建、改分组、复制或短暂显示完整 Key。撤销后，用这把 Key 的工具会立刻连不上。' },
     ],
   },
   {
     id: 'cli-config',
-    title: 'CLI 配置与模型',
-    summary: '选择账户 Key、分组和模型，再写入本地 CLI。',
+    title: '工具配置与模型',
+    summary: '选好 Key、分组和模型，再写进本地工具。',
     keywords: 'base url 模型 检测 配置 claude codex gemini grok key 分组',
     icon: KeyRound,
     destination: 'overview',
-    destinationLabel: '返回工具概览',
+    destinationLabel: '返回首页',
     steps: [
-      { title: '选择账户 Key', body: '已登录时，配置对话框可从账户内已有 Key 选择。所需分组没有 Key 时，工具箱会先提示并自动创建。' },
-      { title: '检测与切换模型', body: '模型列表使用所选 Key 从星芒 API 读取。切换 Key 或分组后重新检测，不会沿用旧 Key 的模型结果。' },
-      { title: '保存范围', body: '“只更新 Key/模型”保留其他原生配置；“重置为星芒初始配置”会覆盖对应工具的相关项。保存前会创建可恢复备份。' },
+      { title: '选择账户 Key', body: '已登录时，配置窗口可以从账户里已有的 Key 里选。这个分组还没有 Key，软件会先提示并自动创建。' },
+      { title: '检测与切换模型', body: '模型列表用当前这把 Key 去拉。换了 Key 或分组要重新检测，不会沿用上一把的结果。' },
+      { title: '保存范围', body: '“只更新 Key/模型”会留下其他原有设置；“重置为星芒初始配置”会覆盖这个工具相关项。保存前会自动备份。' },
     ],
   },
   {
     id: 'chat-canvas',
-    title: 'AI 聊天与无限画布',
-    summary: '使用同一账户分组进行对话、生图、图像编辑和视频工作流。',
+    title: '聊天与画布',
+    summary: '同一个账号，既能聊天生图，也能拼工作流。',
     keywords: 'ai 聊天 游乐场 无限画布 项目 节点 生图 视频 音频 素材 保存',
     icon: Bot,
     destination: 'chat',
-    destinationLabel: '打开 AI 聊天',
+    destinationLabel: '打开聊天',
     steps: [
-      { title: 'AI 聊天', body: '选择分组、Key 和模型后开始对话。生成的图片会保存到本地 output 目录，可在素材菜单中定位。' },
-      { title: '画布项目', body: '首次进入无限画布时新建或选择项目工作文件夹。节点、连线、布局、上游参考和已采纳结果会自动保存。' },
-      { title: '本地素材', body: '图片、视频和音频可从文件夹拖入或从素材面板选择。同一项目中相同内容会按指纹复用，避免素材列表重复。' },
+      { title: '聊天', body: '选好分组和模型就能问。生成的图片会存到本机，可在素材菜单里找到。' },
+      { title: '画布项目', body: '第一次打开画布时，选一个项目文件夹。节点、连线和结果会自动保存。' },
+      { title: '本地素材', body: '图片、视频、音频可以从文件夹拖进来。同一项目里相同内容不会重复占地方。' },
     ],
   },
   {
     id: 'backup',
     title: '备份、更新与安全',
-    summary: '恢复配置、保持工具箱更新，并了解本地数据边界。',
+    summary: '配错了能恢复，软件也能升级。',
     keywords: '备份 恢复 更新 安全 隐私 账号 密码 令牌 诊断',
     icon: ShieldCheck,
     destination: 'backups',
-    destinationLabel: '打开配置备份',
+    destinationLabel: '打开备份',
     steps: [
-      { title: '配置备份', body: '重要配置写入前会自动备份。在“配置备份”中预览内容后再恢复，恢复前还会保留当前版本。' },
-      { title: '主程序更新', body: '打包版会定期检查新版本。下载后校验摘要与签名，通过后才会安装；开发版禁止替换自身。' },
-      { title: '账号与本地数据', body: '账号令牌与记住的密码使用操作系统安全存储加密。API Key 只在明确复制、显示或写入 CLI 配置时解密。' },
+      { title: '备份', body: '改重要配置前会自动备份。在「备份」里先预览再恢复，恢复前还会再留一份当前版本。' },
+      { title: '软件更新', body: '安装包会定期检查新版本。下载后校验通过才会安装。开发版不会自己替换自己。' },
+      { title: '账号与本地数据', body: '登录状态和记住的密码由系统加密保存。密钥只在你复制、显示或写入工具配置时才会解密。' },
     ],
   },
   {
     id: 'troubleshooting',
-    title: '故障排查',
-    summary: '先重新检测，再使用健康诊断和售后诊断包。',
+    title: '出问题怎么办',
+    summary: '先重新检测，再去做检查，还不行把报告发给我们。',
     keywords: '失败 卡住 报错 网络 代理 权限 诊断 日志 售后',
     icon: CircleHelp,
     destination: 'health',
-    destinationLabel: '打开健康诊断',
+    destinationLabel: '打开检查',
     steps: [
-      { title: '检测失败', body: '不要立即重装。先重新检测，确认实际命令路径与版本；刚安装的环境可能需要重启工具箱以读取新 PATH。' },
-      { title: '网络与代理', body: '先在健康诊断中测试星芒 API 和安装源。工具箱不锁定某一个代理网段；未开代理时仍使用系统正常网络。' },
-      { title: '联系售后', body: '在“反馈与诊断”中生成诊断包，请先检查脱敏预览，再通过本页下方的企业微信入口联系售后。' },
+      { title: '检测失败', body: '先别重装。点重新检测，看实际路径和版本。刚装好的环境，可能要重启软件才能认到。' },
+      { title: '网络与代理', body: '先去「检查」测一下星芒接口和下载源。没开代理就走系统网络。' },
+      { title: '联系售后', body: '去「反馈」复制或导出报告，确认没有敏感信息，再通过企业微信发给我们。' },
     ],
   },
 ]
@@ -166,9 +166,8 @@ export function TutorialPage({
     <div className="tutorial-page">
       <header className="page-header tutorial-header">
         <div>
-          <div className="eyebrow">帮助</div>
-          <h1>使用教程</h1>
-          <p>与当前版本同步的离线指南</p>
+          <h1>教程</h1>
+          <p className="page-lead">一步步教你怎么用。</p>
         </div>
         <button type="button" className="secondary-button" onClick={onOpenSupport}>
           <LifeBuoy size={16} />
@@ -258,7 +257,7 @@ export function TutorialPage({
       <footer className="tutorial-support-band">
         <div>
           <LifeBuoy size={20} />
-          <span><strong>需要人工帮助？</strong>联系星芒 AI 企业微信售后</span>
+          <span><strong>还是不会？</strong>加企业微信，我们帮你看</span>
         </div>
         <button type="button" className="secondary-button" onClick={onOpenSupport}>
           打开售后会话 <ExternalLink size={14} />

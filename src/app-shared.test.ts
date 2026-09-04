@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  canEnterManagedOnboarding,
   codexSetupReadyForDashboard,
+  initialDashboardPreview,
   initialOnboardingPreview,
   managedBootstrapCompleted,
   markManagedBootstrapCompleted,
@@ -173,10 +175,16 @@ describe('resolveInitialAppView', () => {
     expect(resolveInitialAppView(true, true)).toBe('onboarding')
   })
 
-  it('skips the welcome page on a manual-key site, which has no account to welcome the user into', () => {
-    // A manual-key site offers no register/login for the welcome page to
-    // lead to, so the login-first rule cannot apply there.
-    expect(resolveInitialAppView(false, false, true)).toBe('onboarding')
+})
+
+describe('canEnterManagedOnboarding', () => {
+  it('requires an authenticated account in production', () => {
+    expect(canEnterManagedOnboarding(false, false)).toBe(false)
+    expect(canEnterManagedOnboarding(true, false)).toBe(true)
+  })
+
+  it('allows only the unpackaged onboarding preview to bypass the account gate', () => {
+    expect(canEnterManagedOnboarding(false, true)).toBe(true)
   })
 })
 
@@ -196,5 +204,13 @@ describe('initialOnboardingPreview', () => {
 
   it('is true for the exact ?onboardingPreview=1 main.ts appends in dev preview mode', () => {
     expect(initialOnboardingPreview('?onboardingPreview=1')).toBe(true)
+  })
+})
+
+describe('initialDashboardPreview', () => {
+  it('only accepts the exact development preview marker', () => {
+    expect(initialDashboardPreview('')).toBe(false)
+    expect(initialDashboardPreview('?dashboardPreview=true')).toBe(false)
+    expect(initialDashboardPreview('?dashboardPreview=1')).toBe(true)
   })
 })

@@ -48,12 +48,12 @@ try {
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
     ),
     headingVisible: await page.getByRole('heading', { name: '初始化 Codex 配置' }).isVisible(),
-    apiKeyVisible: await page.getByLabel('安装授权码').isVisible(),
-    keyLinkVisible: await page.getByRole('button', { name: /没有授权码？前往获取/ }).isVisible(),
+    managedAuthorizationVisible: await page.locator('.onboarding-managed-authorization').isVisible(),
+    legacyCredentialUiVisible: await page.locator('#onboarding-api-key, .welcome-cta-ghost').count() > 0,
     defaultModelVisible: await page.getByText('gpt-5.6-sol', { exact: true }).isVisible(),
     stepCount: await page.locator('.onboarding-step').count(),
     startButtonVisible: await startButton.isVisible(),
-    startButtonDisabledWithoutKey: await startButton.isDisabled(),
+    startButtonEnabledForManagedFlow: !(await startButton.isDisabled()),
     dashboardHidden: await page.locator('.app-shell').count() === 0,
     themeToggleVisible: await themeToggle.isVisible(),
     defaultThemeDark: await page.locator('html').getAttribute('data-theme') === 'dark',
@@ -94,12 +94,12 @@ try {
     || Math.abs((result.windowMetrics?.bounds.width ?? 0) - (result.windowMetrics?.expected.width ?? 0)) > 4
     || Math.abs((result.windowMetrics?.bounds.height ?? 0) - (result.windowMetrics?.expected.height ?? 0)) > 4
     || !result.headingVisible
-    || !result.apiKeyVisible
-    || !result.keyLinkVisible
+    || !result.managedAuthorizationVisible
+    || result.legacyCredentialUiVisible
     || !result.defaultModelVisible
     || result.stepCount !== 3
     || !result.startButtonVisible
-    || !result.startButtonDisabledWithoutKey
+    || !result.startButtonEnabledForManagedFlow
     || !result.dashboardHidden
     || !result.themeToggleVisible
     || !result.defaultThemeDark

@@ -69,7 +69,11 @@ export function CodexDesktopCard({
   const presentation = platformPresentation(platform)
   const modelName = providerModelLabel(model)
   return (
-    <article className="cli-card desktop-card">
+    <article
+      className="cli-card desktop-card"
+      data-provider-id="codex-desktop"
+      data-install-state={installing ? 'installing' : failed ? 'failed' : status.installed ? 'installed' : 'missing'}
+    >
       <div className="cli-card-top">
         <div className="provider-icon" style={{ color: providers.codex.color, backgroundColor: providers.codex.tint }}>
           <img src={providers.codex.icon} alt="" aria-hidden="true" />

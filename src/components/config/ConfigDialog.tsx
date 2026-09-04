@@ -501,7 +501,7 @@ export function ConfigDialog({
     })
     if (action === 'noop' || action === 'blocked') return
     if (action === 'switch-relay' && !accountAuthenticated && !keyAvailable) {
-      notify({ type: 'error', message: '请先登录星芒账号，或在上方填写 API Key 后再切换' })
+      notify({ type: 'error', message: '请先登录，或先在上方填好 Key' })
       return
     }
     if (action === 'switch-relay' && !accountAuthenticated && !modelVerified) {

@@ -242,8 +242,8 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
     <div className="page workspace-page sessions-page" data-page-id="sessions">
       <header className="page-header workspace-page-header sessions-page-header">
         <div>
-          <div className="eyebrow">工作台</div>
-          <h1>会话管理</h1>
+          <h1>记录</h1>
+          <p className="page-lead">查看以前的对话。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="会话工具栏">
           <ProviderTabs value={provider} onChange={selectProvider} disabled={loading} unavailable={unavailableProviders} label="选择会话来源" />
@@ -373,8 +373,8 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
       ) : result && !error ? (
         <section className="workspace-empty sessions-empty">
           <div className="workspace-empty-icon"><Inbox size={24} /></div>
-          <h2>{capability && (!capability.available || !capability.readable) ? `无法读取 ${managementProviderLabels[provider]} 会话` : '没有匹配的会话'}</h2>
-          <p>{capability && (!capability.available || !capability.readable) ? capability.reason : '调整搜索词后重试'}</p>
+          <h2>{capability && (!capability.available || !capability.readable) ? `读不了 ${managementProviderLabels[provider]} 的记录` : '没有找到对话'}</h2>
+          <p>{capability && (!capability.available || !capability.readable) ? capability.reason : '换个词再搜'}</p>
         </section>
       ) : null}
 
@@ -387,7 +387,6 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
           <section className="config-dialog session-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="session-detail-title">
             <header className="session-detail-header">
               <div>
-                <div className="eyebrow">会话详情</div>
                 <h2 id="session-detail-title">{detail.session.title}</h2>
                 <code>{detail.session.nativeId}</code>
               </div>

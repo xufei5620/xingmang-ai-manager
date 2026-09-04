@@ -1,6 +1,5 @@
 import { AlertTriangle, KeyRound, LogOut, RefreshCw, UserRound } from 'lucide-react'
-import { formatBalanceUsd, shouldShowManualKeyEntry, type AccountAreaStatus, type AccountSnapshot } from './account-stub'
-import type { RelaySite } from '../../types'
+import { formatBalanceUsd, type AccountAreaStatus, type AccountSnapshot } from './account-stub'
 
 /**
  * True when a click/keydown on the identity row actually originated inside
@@ -19,61 +18,28 @@ function isNestedButtonEvent(event: { target: EventTarget | null }): boolean {
 }
 
 /**
- * Sidebar-bottom account block. Three states driven by `status`/`snapshot`
- * (see account-stub.ts) — guest is the pre-existing W1 button, unchanged;
- * active/low-balance render an identity row (now with a small "配置星芒 Key"
- * button alongside the logout icon in its corner -- W2/W2.5,
- * docs/ACCOUNT-PLAN.md) plus a compact recharge button in the balance row.
- * The identity wrapper remains a div so all shortcut controls stay valid.
- * buttons nest fine: unlike the guest state, the identity wrapper here is a
- * plain `<div>`, not a `<button>` -- kept that way even now that it is
- * clickable (W4a) specifically so it can still contain real `<button>`
- * children; a `<button>` cannot nest `<button>`s (the DOM would silently
- * hoist them out, breaking layout), so this div gets manual role="button" +
- * tabIndex + keydown handling instead. Both nested buttons still
- * stopPropagation their own onClick (harmless now, kept as belt-and-
- * suspenders), but the actual guard is isNestedButtonEvent() above, applied
- * to both onClick and onKeyDown -- stopPropagation alone never covered
- * keydown (the buttons have no keydown handler of their own), so
- * Tab-focusing either button and pressing Enter/Space used to bubble up and
- * fire onOpenAccountCenter instead of the button's own action. The row-wide
- * "cursor:pointer already applied to .account-area for both states" hover
- * affordance existed before W4a; W2.5's onConfigureCliKey button just got
- * there first. The refresh button sits left of 充值 so it stays visible
- * with the amount, while the configure
- * button re-triggers the same
- * offerCliProvisioning gate the 下一步 task card's "一键配置" action uses
- * (App.tsx's handleConfigureCliKey) -- this is the "关了还能再来" entry point
- * for a user who dismissed the write-Key confirm dialog. Collapsed-sidebar
- * handling (avatar + tooltip only) is generic CSS already covering
- * `.account-area`/`.account-recharge-button`/`.account-logout-button`/
- * `.account-refresh-button`/`.account-configure-button`/
- * `[data-sidebar-tooltip]` — see styles.css.
+ * Sidebar-bottom account block. The account area has one canonical path for
+ * every relay: register/login, then the active or low-balance identity row.
+ * Manual-key entry is intentionally not rendered here; keeping one account
+ * surface avoids a second credential flow being exposed from the shell.
  *
- * W3b adds a fourth, site-driven branch ahead of all three above:
- * shouldShowManualKeyEntry(relaySite.accountBackend) short-circuits to a
- * "粘贴 Key" entry point for a manual-key site (sub2api today), regardless
- * of `status`/`snapshot`. This deliberately does not log the user out of
- * whatever new-api session they may still be holding from the solov site --
- * App.tsx never calls account:logout on a site switch (least surprise: the
- * identity/balance UI reappears unchanged the moment the user switches back).
+ * The identity wrapper remains a div so it can contain real button children;
+ * a button cannot legally contain the logout/configure/recharge controls.
+ * The wrapper therefore provides the same keyboard semantics with
+ * role="button" and a guarded keydown handler.
  */
 export function AccountArea({
   status,
   snapshot,
-  relaySite,
   onLogin,
   onLogout,
   onRecharge,
   onConfigureCliKey,
   onRefreshBalance,
   onOpenAccountCenter,
-  onPasteKey,
-  onOpenKeysPage,
 }: {
   status: AccountAreaStatus
   snapshot: AccountSnapshot
-  relaySite: RelaySite
   onLogin: () => void
   onLogout: () => void
   onRecharge: () => void
@@ -82,46 +48,19 @@ export function AccountArea({
   onRefreshBalance: () => void
   /** Identity row entry point into the 个人中心 overlay (W4a, App.tsx's 'account-center' appView). */
   onOpenAccountCenter: () => void
-  /** Opens the 粘贴 Key dialog (W3b) -- only reachable on a manual-key site. */
-  onPasteKey: () => void
-  /** openExternal(relaySite.keysPageUrl) -- already I12 allowlisted (relaySiteExternalUrls). */
-  onOpenKeysPage: () => void
 }) {
-  if (shouldShowManualKeyEntry(relaySite.accountBackend)) {
-    return (
-      <>
-        <button
-          type="button"
-          className="account-area"
-          data-sidebar-tooltip="粘贴 Key"
-          onClick={onPasteKey}
-        >
-          <span className="account-avatar" aria-hidden="true"><KeyRound size={18} /></span>
-          <span className="account-copy">
-            <strong>粘贴 Key</strong>
-            <small>{relaySite.label} 不提供账号登录，点击粘贴 Key</small>
-          </span>
-        </button>
-        <p className="account-manual-key-hint">
-          还没有 Key？
-          <button type="button" className="inline-link" onClick={onOpenKeysPage}>去获取 Key</button>
-        </p>
-      </>
-    )
-  }
-
   if (status === 'guest') {
     return (
       <button
         type="button"
         className="account-area"
-        data-sidebar-tooltip="登录 / 注册"
+        data-sidebar-tooltip="登录"
         onClick={onLogin}
       >
         <span className="account-avatar" aria-hidden="true"><UserRound size={18} /></span>
         <span className="account-copy">
-          <strong>登录 / 注册</strong>
-          <small>登录后查看余额与充值</small>
+          <strong>登录</strong>
+          <small>登录后就能用</small>
         </span>
       </button>
     )
@@ -182,7 +121,15 @@ export function AccountArea({
             {isLowBalance && <AlertTriangle size={11} aria-hidden="true" />}
             余额
           </span>
-          <strong className="account-balance-value">{balanceText}</strong>
+          <strong
+            className="account-balance-value"
+            title={`完整余额：${balanceText}`}
+            aria-label={`完整余额：${balanceText}`}
+            data-full-balance={balanceText}
+            style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+          >
+            {balanceText}
+          </strong>
           <button
             type="button"
             className="account-refresh-button"

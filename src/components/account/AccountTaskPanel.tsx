@@ -224,7 +224,7 @@ export function AccountTaskPanel({ quotaPerUnit }: { quotaPerUnit: number | unde
       <header className="account-task-heading">
         <strong>{taskPage?.total.toLocaleString('zh-CN') ?? '—'} 条记录</strong>
       </header>
-      <section className="account-task-filter-panel" aria-label="任务日志筛选">
+      <section className="account-task-filter-panel" aria-label="任务筛选">
         <div className="account-task-filter-grid">
           <label><span>开始时间</span><input type="datetime-local" value={draft.startAt} onChange={(event) => setDraft((current) => ({ ...current, startAt: event.target.value }))} /></label>
           <label><span>结束时间</span><input type="datetime-local" value={draft.endAt} onChange={(event) => setDraft((current) => ({ ...current, endAt: event.target.value }))} /></label>
@@ -240,7 +240,7 @@ export function AccountTaskPanel({ quotaPerUnit }: { quotaPerUnit: number | unde
       </section>
 
       {failure && !taskPage ? (
-        <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>任务日志读取失败</strong><span>{failure}</span></div><button type="button" className="secondary-button" onClick={() => void load()}>重试</button></div>
+        <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>任务读取失败</strong><span>{failure}</span></div><button type="button" className="secondary-button" onClick={() => void load()}>重试</button></div>
       ) : (
         <section className="account-task-table-shell" aria-busy={loading}>
           <div className="account-task-table-scroll">
@@ -261,7 +261,7 @@ export function AccountTaskPanel({ quotaPerUnit }: { quotaPerUnit: number | unde
               {!loading && taskPage?.tasks.length === 0 && <div className="account-task-empty"><Inbox size={22} /><strong>没有符合条件的任务</strong><span>异步图片、视频和音频任务会显示在这里。</span></div>}
             </div>
           </div>
-          {loading && <div className="account-task-loading"><LoaderCircle size={18} className="spin" />正在读取任务日志…</div>}
+          {loading && <div className="account-task-loading"><LoaderCircle size={18} className="spin" />正在读取任务…</div>}
           {failure && taskPage && <div className="account-task-inline-error" role="alert"><span>{failure}</span><button type="button" onClick={() => void load()}><RefreshCw size={14} />重试</button></div>}
           <footer className="account-task-pagination">
             <div className="account-task-page-size"><span>每页</span><select aria-label="每页任务数量" value={pageSize} disabled={loading} onChange={(event) => { setPageSize(Number(event.target.value)); setPage(1) }}>{PAGE_SIZES.map((size) => <option key={size} value={size}>{size}</option>)}</select><span>条，共 {taskPage?.total ?? 0} 条</span></div>

@@ -1,22 +1,6 @@
 import { Inbox, RefreshCw, Sparkles } from 'lucide-react'
 import { navigationItem, type PageId } from '../navigation'
 
-const pageEyebrows: Record<Exclude<PageId, 'overview'>, string> = {
-  chat: '工作台',
-  sessions: '工作台',
-  canvas: '工作台',
-  mcp: '扩展',
-  skills: '扩展',
-  plugins: '扩展',
-  backups: '系统',
-  health: '系统',
-  maintenance: '系统',
-  feedback: '系统',
-  updates: '系统',
-  settings: '系统',
-  tutorial: '帮助',
-}
-
 export function PlaceholderPage({ pageId }: { pageId: Exclude<PageId, 'overview'> }) {
   const item = navigationItem(pageId)
   const Icon = item.icon
@@ -29,8 +13,8 @@ export function PlaceholderPage({ pageId }: { pageId: Exclude<PageId, 'overview'
     <div className="page workspace-page" data-page-id={pageId}>
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">{pageEyebrows[pageId]}</div>
           <h1>{item.label}</h1>
+          {item.hint ? <p className="page-lead">{item.hint}。</p> : null}
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label={`${item.label}工具栏`}>
           <button className="icon-button" type="button" title="刷新" aria-label="刷新" disabled>
@@ -48,8 +32,8 @@ export function PlaceholderPage({ pageId }: { pageId: Exclude<PageId, 'overview'
           </>
         ) : (
           <>
-            <h2 id={`${pageId}-empty-title`}>暂无可显示内容</h2>
-            <p><Inbox size={15} /> 等待本机数据</p>
+            <h2 id={`${pageId}-empty-title`}>这里还没有内容</h2>
+            <p><Inbox size={15} /> 等本机数据出来就会显示</p>
           </>
         )}
       </section>

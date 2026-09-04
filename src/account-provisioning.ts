@@ -1,27 +1,7 @@
 // Core CLI configuration value chain. Account-managed keys are provisioned
 // and written entirely in Electron's main process, so their plaintext never
-// enters renderer memory. The manual paste path remains renderer-driven
-// because the user explicitly supplies that key in a renderer form.
-import { errorMessage } from './error-message'
+// enters renderer memory.
 import { providerIds, type AppConfigSummary, type ProviderId, type SystemSnapshot } from './types'
-
-/**
- * The subset of the write chain that both provisioning paths share: mint (or
- * already hold) a key, validate it by listing its models, then write it into
- * each installed CLI's config. Split out from CliKeyProvisioningApi below so
- * writeCliKeyForInstalledClis (the 粘贴 Key path, W3b) can take exactly the
- * capability it needs without also requiring provisionCliKey -- a pasted key
- * never goes through the account service's own minting call.
- */
-export interface CliKeyWriteApi {
-  listModels(apiKey: string): Promise<string[]>
-  saveConfig(payload: {
-    provider: ProviderId
-    apiKey: string
-    model: string
-    mode: 'merge'
-  }): Promise<unknown>
-}
 
 export interface ManagedCliProvisioningApi {
   configureManagedCliKeys(input: {
@@ -38,56 +18,6 @@ export interface CliKeyProvisioningFailure {
 export interface CliKeyProvisioningOutcome {
   configured: ProviderId[]
   failed: CliKeyProvisioningFailure[]
-}
-
-/**
- * Writes an already-known key into every already-installed CLI's config via
- * the existing config-files.ts write path (config:save / saveProviderConfig
- * -- no new on-disk write logic). Shared by both provisioning paths:
- * The 粘贴 Key flow (PasteKeyDialog.tsx, W3b) hands it whatever the user
- * typed. Account-managed keys no longer use this renderer path.
- *
- * `preferredModels` lets the caller reuse each provider's currently
- * configured model (from AppConfigSummary) when it is still valid for this
- * key; otherwise the first model the relay reports is used. This mirrors
- * onboarding-flow.ts's authorizeCodex(), which always re-lists models for a
- * key rather than trusting a remembered one.
- */
-export async function writeCliKeyForInstalledClis(
-  key: string,
-  installedProviders: readonly ProviderId[],
-  preferredModels: Partial<Record<ProviderId, string>>,
-  api: CliKeyWriteApi,
-): Promise<CliKeyProvisioningOutcome> {
-  if (installedProviders.length === 0) return { configured: [], failed: [] }
-
-  let models: string[]
-  try {
-    models = await api.listModels(key)
-  } catch (error) {
-    const message = errorMessage(error)
-    return { configured: [], failed: installedProviders.map((provider) => ({ provider, message })) }
-  }
-  if (models.length === 0) {
-    return {
-      configured: [],
-      failed: installedProviders.map((provider) => ({ provider, message: '当前 Key 未返回可用模型' })),
-    }
-  }
-
-  const configured: ProviderId[] = []
-  const failed: CliKeyProvisioningFailure[] = []
-  for (const provider of installedProviders) {
-    const preferred = preferredModels[provider]
-    const model = preferred && models.includes(preferred) ? preferred : models[0]
-    try {
-      await api.saveConfig({ provider, apiKey: key, model, mode: 'merge' })
-      configured.push(provider)
-    } catch (error) {
-      failed.push({ provider, message: errorMessage(error) })
-    }
-  }
-  return { configured, failed }
 }
 
 /**

@@ -366,7 +366,10 @@ function createWindow(
   const stored = systemService.readStoredConfig()
   const codexConfig = systemService.inspectCodexReadiness(false)
   const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
-  const initialMode: AppWindowMode = previewOnboarding
+  const previewDashboard = !app.isPackaged && process.env.XINGMANG_DASHBOARD_PREVIEW === '1'
+  const initialMode: AppWindowMode = previewDashboard
+    ? 'dashboard'
+    : previewOnboarding
     || !codexConfig.hasApiKey
     || !codexConfig.matchesRelay
     ? 'onboarding'
@@ -431,6 +434,7 @@ function createWindow(
     const url = new URL(devServerUrl)
     url.searchParams.set('theme', stored.theme)
     if (previewOnboarding) url.searchParams.set('onboardingPreview', '1')
+    if (previewDashboard) url.searchParams.set('dashboardPreview', '1')
     void window.loadURL(url.toString()).catch((error) => {
       runtimeLog.exception('renderer', 'page.load.failed', error)
     })
@@ -438,6 +442,7 @@ function createWindow(
     const applicationUrl = new URL('index.html', packagedApplicationBaseUrl)
     applicationUrl.searchParams.set('theme', stored.theme)
     if (previewOnboarding) applicationUrl.searchParams.set('onboardingPreview', '1')
+    if (previewDashboard) applicationUrl.searchParams.set('dashboardPreview', '1')
     void window.loadURL(applicationUrl.href).catch((error) => {
       runtimeLog.exception('renderer', 'page.load.failed', error)
     })

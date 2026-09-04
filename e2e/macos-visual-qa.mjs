@@ -240,7 +240,7 @@ try {
     }, scenario)
     await page.waitForTimeout(300)
     await selectTheme(scenario.theme)
-    await page.locator('.main-nav').getByRole('button', { name: '工具概览', exact: true }).click()
+    await page.locator('.main-nav .nav-item[data-navigation-id="overview"]').click()
     await page.locator('.dashboard-page').waitFor({ state: 'visible', timeout: 10_000 })
     await page.waitForFunction(() => document.querySelectorAll('.cli-card').length === 5, null, { timeout: 60_000 })
 

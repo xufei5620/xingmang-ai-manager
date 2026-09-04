@@ -16,17 +16,6 @@ export type OnboardingSetupAction =
 
 export type OnboardingSetupPhase = 'environment' | 'desktop'
 
-export interface CodexAuthorizationApi {
-  listModels(apiKey: string): Promise<string[]>
-  saveConfig(payload: {
-    provider: 'codex'
-    apiKey: string
-    model: string
-    mode: 'reset'
-  }): Promise<unknown>
-  getConfig(): Promise<AppConfigSummary>
-}
-
 export interface ManagedCodexAuthorizationApi {
   configureManagedCliKeys(input: {
     providers: ProviderId[]
@@ -123,30 +112,6 @@ export function buildCodexDetectionFailureMessage(status: CodexSetupStatus): str
   return isDetectionFailed(status.desktop)
     ? 'Codex 桌面端暂时无法确认状态，请重试检测'
     : null
-}
-
-export async function authorizeCodex(
-  rawApiKey: string,
-  api: CodexAuthorizationApi,
-): Promise<AppConfigSummary> {
-  const apiKey = rawApiKey.trim()
-  if (!apiKey) throw new Error('请填写安装授权码')
-
-  const models = await api.listModels(apiKey)
-  if (!Array.isArray(models) || models.length === 0) {
-    throw new Error('当前 API Key 没有返回可用模型')
-  }
-  if (!models.includes(DEFAULT_CODEX_MODEL)) {
-    throw new Error(`当前授权码不支持默认模型 ${DEFAULT_CODEX_MODEL}`)
-  }
-
-  await api.saveConfig({
-    provider: 'codex',
-    apiKey,
-    model: DEFAULT_CODEX_MODEL,
-    mode: 'reset',
-  })
-  return api.getConfig()
 }
 
 /**

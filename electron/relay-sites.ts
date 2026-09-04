@@ -9,10 +9,7 @@
 // (relay-backend.ts), which is the *account* backend (login/balance/key
 // management) a site delegates to -- accountBackend/accountBaseUrl below
 // name which one, but the actual account API calls still go through
-// new-api-client.ts today. A site can in principle have CLI base URLs
-// without any account backend at all (accountBackend: 'manual-key' is the
-// W3 placeholder for a sub2api-style site where users paste in their own
-// key rather than logging in through this app).
+// new-api-client.ts today.
 import { providerBaseUrls, type ProviderId } from './catalog'
 
 export interface RelaySite {
@@ -27,7 +24,7 @@ export interface RelaySite {
   /** Page a user is sent to in order to obtain/manage an API key. */
   keysPageUrl: string
   /** Which account backend (if any) this site's login/balance/key-management UI talks to. */
-  accountBackend: 'new-api' | 'manual-key'
+  accountBackend: 'new-api'
   /** Only present when accountBackend is 'new-api' -- the new-api-client.ts origin for this site. */
   accountBaseUrl?: string
 }
@@ -42,9 +39,9 @@ export interface RelaySite {
 // main-process copy).
 //
 // solov and sub2api deliberately share the same relay domain and the same
-// providerBaseUrls object (by reference, not a copy) -- per the boss's
-// reconciliation, they are the same relay with two different account models
-// bolted on, not two different relays. Since 2026-08-10 that shared relay
+// providerBaseUrls object (by reference, not a copy) -- they are aliases for
+// the same account-backed relay, retained so existing settings continue to
+// resolve. Since 2026-08-10 that shared relay
 // domain is xm.solov.cc (the new-api instance itself), unifying CLI traffic
 // with the account backend. catalog.ts remains the single source of truth
 // for the fixed per-CLI relay URLs either way (T2's rank-table precedent:
@@ -66,11 +63,12 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   },
   {
     id: 'sub2api',
-    label: '星芒AI（Key 直连）',
+    label: '星芒AI（账号登录）',
     providerBaseUrls,
     websiteUrl: 'https://xm.solov.cc',
     keysPageUrl: 'https://xm.solov.cc/keys',
-    accountBackend: 'manual-key',
+    accountBackend: 'new-api',
+    accountBaseUrl: 'https://xm.solov.cc',
   },
 ]
 

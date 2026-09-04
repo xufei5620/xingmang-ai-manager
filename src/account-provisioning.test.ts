@@ -7,8 +7,6 @@ import {
   managedCliConfigsReadyForDashboard,
   resolveCliProvisioningGate,
   validateProvisionedCliConfigs,
-  writeCliKeyForInstalledClis,
-  type CliKeyWriteApi,
   type ManagedCliProvisioningApi,
 } from './account-provisioning'
 import { EmptyStatus } from './app-shared'
@@ -55,57 +53,6 @@ describe('configureManagedCliKeysForInstalledClis', () => {
       providers: ['codex'],
       preferredModels: {},
     })
-  })
-})
-
-// Manual-key sites still use the renderer path because the user explicitly
-// enters the key there. Account-managed keys use the main-process path above.
-describe('writeCliKeyForInstalledClis', () => {
-  function fakeWriteApi(overrides: Partial<CliKeyWriteApi> = {}): CliKeyWriteApi {
-    return {
-      listModels: vi.fn(async () => ['gpt-5.6-sol', 'claude-op-9']),
-      saveConfig: vi.fn(async () => ({ backups: [], files: [] })),
-      ...overrides,
-    }
-  }
-
-  it('does nothing when no CLI is installed, without validating the key at all', async () => {
-    const api = fakeWriteApi()
-
-    const outcome = await writeCliKeyForInstalledClis('sk-pasted-plaintext-key', [], {}, api)
-
-    expect(outcome).toEqual({ configured: [], failed: [] })
-    expect(api.listModels).not.toHaveBeenCalled()
-    expect(api.saveConfig).not.toHaveBeenCalled()
-  })
-
-  it('writes the supplied key into every selected CLI, never minting one', async () => {
-    const api = fakeWriteApi()
-
-    const outcome = await writeCliKeyForInstalledClis('sk-pasted-plaintext-key', ['claude', 'grok'], {}, api)
-
-    expect(outcome).toEqual({ configured: ['claude', 'grok'], failed: [] })
-    expect(api.listModels).toHaveBeenCalledWith('sk-pasted-plaintext-key')
-    for (const call of vi.mocked(api.saveConfig).mock.calls) {
-      expect(call[0].apiKey).toBe('sk-pasted-plaintext-key')
-    }
-  })
-
-  it('marks every target failed, without calling saveConfig, when the pasted key fails validation', async () => {
-    const api = fakeWriteApi({ listModels: vi.fn(async () => { throw new Error('Key 无效或已过期') }) })
-
-    const outcome = await writeCliKeyForInstalledClis('sk-bad-key', ['claude'], {}, api)
-
-    expect(outcome).toEqual({ configured: [], failed: [{ provider: 'claude', message: 'Key 无效或已过期' }] })
-    expect(api.saveConfig).not.toHaveBeenCalled()
-  })
-
-  it('never includes the supplied key anywhere in the returned outcome (I3)', async () => {
-    const api = fakeWriteApi()
-
-    const outcome = await writeCliKeyForInstalledClis('sk-pasted-plaintext-key', ['claude'], {}, api)
-
-    expect(JSON.stringify(outcome)).not.toContain('sk-pasted-plaintext-key')
   })
 })
 

@@ -36,8 +36,8 @@ describe('navigation grouping', () => {
     }
   })
 
-  it('labels the plugin marketplace item unambiguously', () => {
-    expect(navigationItems.find((item) => item.id === 'plugins')?.label).toBe('插件市场')
+  it('labels the plugin item in beginner language', () => {
+    expect(navigationItems.find((item) => item.id === 'plugins')?.label).toBe('插件')
   })
 
   it('does not mark any item as a placeholder', () => {

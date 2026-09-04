@@ -175,28 +175,32 @@ export function codexSetupReadyForDashboard(
  * 为用户自动签发 API Key。An authenticated 星芒 account routes to
  * onboarding/dashboard as before -- W2 (docs/ACCOUNT-PLAN.md) persists
  * login across restarts specifically so a signed-in user is never made to
- * sit through the welcome page again. A manual-key site has no account
- * backend to log into, so it keeps the pre-account behavior. Preview mode
- * still wins outright.
+ * sit through the welcome page again. Preview mode still wins outright.
  *
  * App.tsx's initialize() also consults this gate's inputs before its
  * codexReady fast path: dashboard is only entered directly when the login
- * requirement is already satisfied (authenticated or manual-key site).
+ * requirement is already satisfied for an authenticated account.
  */
 export function resolveInitialAppView(
   accountAuthenticated: boolean,
   previewOnboarding: boolean,
-  // True when the active relay site has no account backend of its own
-  // (relay-sites.ts's accountBackend: 'manual-key'). The welcome page's whole
-  // value proposition is "注册/登录星芒账号", which such a site does not
-  // offer -- routing straight to onboarding avoids stranding the user on a
-  // sign-up screen they cannot act on.
-  manualKeySite = false,
 ): 'welcome' | 'onboarding' {
   if (previewOnboarding) return 'onboarding'
   if (accountAuthenticated) return 'onboarding'
-  if (manualKeySite) return 'onboarding'
   return 'welcome'
+}
+
+/**
+ * The managed onboarding flow writes account-owned configuration and therefore
+ * must never be entered by a signed-out production session. The preview flag
+ * is intentionally the only exception: it is injected by an unpackaged
+ * Electron smoke run and cannot be enabled by a packaged build.
+ */
+export function canEnterManagedOnboarding(
+  accountAuthenticated: boolean,
+  previewOnboarding: boolean,
+): boolean {
+  return accountAuthenticated || previewOnboarding
 }
 
 /**
@@ -209,6 +213,15 @@ export function resolveInitialAppView(
  */
 export function initialOnboardingPreview(search: string): boolean {
   return new URLSearchParams(search).get('onboardingPreview') === '1'
+}
+
+/**
+ * Dev-only dashboard preview used by the Electron shell smoke test. It is
+ * never appended by packaged builds and does not change the login-first gate
+ * for real users.
+ */
+export function initialDashboardPreview(search: string): boolean {
+  return new URLSearchParams(search).get('dashboardPreview') === '1'
 }
 
 export async function commitStartupPlatformCapabilities(

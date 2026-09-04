@@ -12,7 +12,7 @@ import {
   RefreshCw,
   Zap,
 } from 'lucide-react'
-import type { AccountBalance, AccountDashboardData, AccountDashboardRecord } from '../../types'
+import type { AccountBalance, AccountDashboardData } from '../../types'
 import { errorMessage } from '../../error-message'
 import { formatUsageCostUsd } from './account-center'
 
@@ -20,21 +20,7 @@ type DashboardRange = '24h' | '7d' | '30d'
 type ConsumptionView = 'bar' | 'area'
 type AnalysisView = 'trend' | 'share' | 'rank'
 
-interface ChartBucket {
-  timestamp: number
-  label: string
-  quota: number
-  count: number
-  tokens: number
-  models: Record<string, { quota: number; count: number; tokens: number }>
-}
-
-interface ModelTotal {
-  model: string
-  quota: number
-  count: number
-  tokens: number
-}
+type ChartBucket = AccountDashboardData['buckets'][number]
 
 const ranges: Array<{ value: DashboardRange; label: string; seconds: number }> = [
   { value: '24h', label: '24 小时', seconds: 24 * 60 * 60 },
@@ -63,46 +49,6 @@ function bucketLabel(timestamp: number, range: DashboardRange): string {
     : date.toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' })
 }
 
-function aggregateDashboard(records: AccountDashboardRecord[], range: DashboardRange) {
-  const bucketSeconds = range === '24h' ? 3_600 : 86_400
-  const bucketMap = new Map<number, ChartBucket>()
-  const modelMap = new Map<string, ModelTotal>()
-  let quota = 0
-  let count = 0
-  let tokens = 0
-
-  records.forEach((record) => {
-    const timestamp = Math.floor(record.createdAt / bucketSeconds) * bucketSeconds
-    const bucket = bucketMap.get(timestamp) ?? {
-      timestamp, label: bucketLabel(timestamp, range), quota: 0, count: 0, tokens: 0, models: {},
-    }
-    const model = bucket.models[record.modelName] ?? { quota: 0, count: 0, tokens: 0 }
-    model.quota += record.quota
-    model.count += record.count
-    model.tokens += record.tokenUsed
-    bucket.models[record.modelName] = model
-    bucket.quota += record.quota
-    bucket.count += record.count
-    bucket.tokens += record.tokenUsed
-    bucketMap.set(timestamp, bucket)
-
-    const total = modelMap.get(record.modelName) ?? { model: record.modelName, quota: 0, count: 0, tokens: 0 }
-    total.quota += record.quota
-    total.count += record.count
-    total.tokens += record.tokenUsed
-    modelMap.set(record.modelName, total)
-    quota += record.quota
-    count += record.count
-    tokens += record.tokenUsed
-  })
-
-  return {
-    buckets: [...bucketMap.values()].sort((left, right) => left.timestamp - right.timestamp),
-    models: [...modelMap.values()].sort((left, right) => right.quota - left.quota),
-    quota, count, tokens,
-  }
-}
-
 function axisIndexes(length: number): Set<number> {
   if (length <= 6) return new Set(Array.from({ length }, (_, index) => index))
   const result = new Set<number>([0, length - 1])
@@ -115,12 +61,14 @@ function DashboardChart({
   models,
   metric,
   kind,
+  range,
   quotaPerUnit,
 }: {
   buckets: ChartBucket[]
   models: string[]
   metric: 'quota' | 'count'
   kind: ConsumptionView
+  range: DashboardRange
   quotaPerUnit: number | undefined
 }) {
   const width = 960
@@ -169,7 +117,7 @@ function DashboardChart({
           </>
         )}
         {buckets.map((bucket, index) => labels.has(index) ? (
-          <text key={bucket.timestamp} x={x(index)} y={height - 16} textAnchor="middle" className="account-dashboard-axis-label">{bucket.label}</text>
+          <text key={bucket.timestamp} x={x(index)} y={height - 16} textAnchor="middle" className="account-dashboard-axis-label">{bucketLabel(bucket.timestamp, range)}</text>
         ) : null)}
       </svg>
     </div>
@@ -207,7 +155,27 @@ export function AccountDashboardPanel({ balance }: { balance: AccountBalance | n
   }, [range])
 
   useEffect(() => { void load() }, [load])
-  const summary = useMemo(() => aggregateDashboard(dashboard?.records ?? [], range), [dashboard, range])
+  const summary = useMemo(() => {
+    const fallback: AccountDashboardData = {
+      startTimestamp: 0,
+      endTimestamp: 0,
+      buckets: [],
+      models: [],
+      quota: 0,
+      count: 0,
+      tokens: 0,
+      discardedCount: 0,
+    }
+    if (!dashboard) return fallback
+    // Keep an unexpected/mixed-version IPC response from taking down the
+    // account center while the main process and renderer are being updated.
+    return {
+      ...fallback,
+      ...dashboard,
+      buckets: Array.isArray(dashboard.buckets) ? dashboard.buckets : [],
+      models: Array.isArray(dashboard.models) ? dashboard.models : [],
+    }
+  }, [dashboard])
   const minutes = Math.max(1, ((dashboard?.endTimestamp ?? 0) - (dashboard?.startTimestamp ?? 0)) / 60)
   const visibleModels = summary.models.slice(0, 6).map((item) => item.model)
   const stats = [
@@ -219,7 +187,7 @@ export function AccountDashboardPanel({ balance }: { balance: AccountBalance | n
   ]
 
   if (loading && !dashboard) return <section className="workspace-empty" aria-live="polite"><div className="workspace-empty-icon"><LoaderCircle size={24} className="spin" /></div><h2>正在汇总模型调用数据</h2></section>
-  if (failure && !dashboard) return <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>数据看板读取失败</strong><span>{failure}</span></div><button type="button" className="secondary-button" onClick={() => void load()}>重试</button></div>
+  if (failure && !dashboard) return <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>用量读取失败</strong><span>{failure}</span></div><button type="button" className="secondary-button" onClick={() => void load()}>重试</button></div>
 
   return (
     <div className="account-dashboard-panel">
@@ -227,9 +195,15 @@ export function AccountDashboardPanel({ balance }: { balance: AccountBalance | n
         <div><span>模型调用分析</span><strong>消费、Token 与请求趋势</strong></div>
         <div className="account-dashboard-range" role="group" aria-label="看板时间范围">
           {ranges.map((item) => <button type="button" key={item.value} className={range === item.value ? 'active' : ''} aria-pressed={range === item.value} onClick={() => setRange(item.value)}>{item.label}</button>)}
-          <button type="button" className="account-dashboard-refresh" title="刷新数据看板" aria-label="刷新数据看板" disabled={loading} onClick={() => void load()}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button>
+          <button type="button" className="account-dashboard-refresh" title="刷新用量" aria-label="刷新用量" disabled={loading} onClick={() => void load()}><RefreshCw size={15} className={loading ? 'spin' : ''} /></button>
         </div>
       </header>
+
+      {summary.discardedCount > 0 && (
+        <div className="account-dashboard-discarded" role="status">
+          已忽略 {summary.discardedCount.toLocaleString('zh-CN')} 条超出看板上限的记录
+        </div>
+      )}
 
       <section className="account-dashboard-stats" aria-label="模型调用统计">
         {stats.map(({ label, value, detail, icon: Icon }, index) => (
@@ -245,13 +219,13 @@ export function AccountDashboardPanel({ balance }: { balance: AccountBalance | n
         <>
           <section className="account-dashboard-chart-card">
             <header><div><span className="account-dashboard-chart-icon"><Coins size={16} /></span><strong>消费分布</strong><small>总计 {formatUsageCostUsd(summary.quota, balance?.quotaPerUnit)}</small></div><div className="account-dashboard-segmented"><button type="button" className={consumptionView === 'bar' ? 'active' : ''} onClick={() => setConsumptionView('bar')}><BarChart3 size={14} />柱状图</button><button type="button" className={consumptionView === 'area' ? 'active' : ''} onClick={() => setConsumptionView('area')}><LineChart size={14} />面积图</button></div></header>
-            <DashboardChart buckets={summary.buckets} models={visibleModels} metric="quota" kind={consumptionView} quotaPerUnit={balance?.quotaPerUnit} />
+            <DashboardChart buckets={summary.buckets} models={visibleModels} metric="quota" kind={consumptionView} range={range} quotaPerUnit={balance?.quotaPerUnit} />
             <div className="account-dashboard-legend">{summary.models.slice(0, 6).map((item, index) => <span key={item.model}><i className={`series-${index % 6}`} />{item.model}</span>)}</div>
           </section>
 
           <section className="account-dashboard-chart-card">
             <header><div><span className="account-dashboard-chart-icon analysis"><Activity size={16} /></span><strong>模型调用分析</strong><small>总计 {summary.count.toLocaleString('zh-CN')} 次</small></div><div className="account-dashboard-segmented"><button type="button" className={analysisView === 'trend' ? 'active' : ''} onClick={() => setAnalysisView('trend')}>调用趋势</button><button type="button" className={analysisView === 'share' ? 'active' : ''} onClick={() => setAnalysisView('share')}>调用占比</button><button type="button" className={analysisView === 'rank' ? 'active' : ''} onClick={() => setAnalysisView('rank')}>调用排行</button></div></header>
-            {analysisView === 'trend' ? <DashboardChart buckets={summary.buckets} models={visibleModels} metric="count" kind="area" quotaPerUnit={balance?.quotaPerUnit} /> : (
+            {analysisView === 'trend' ? <DashboardChart buckets={summary.buckets} models={visibleModels} metric="count" kind="area" range={range} quotaPerUnit={balance?.quotaPerUnit} /> : (
               <div className={`account-dashboard-model-list ${analysisView}`}>
                 {summary.models.slice(0, 10).map((item, index) => {
                   const share = summary.count > 0 ? item.count / summary.count * 100 : 0

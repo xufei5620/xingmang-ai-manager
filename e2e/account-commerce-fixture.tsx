@@ -10,7 +10,6 @@ import type {
   AccountProfileDetail,
   XingmangApi,
 } from '../src/types'
-import type { RelaySite } from '../src/types'
 import type { ToastMessage } from '../src/components/Toast'
 import '../src/styles.css'
 
@@ -329,16 +328,30 @@ const api = {
   },
   async getAccountDashboard(input: { startTimestamp: number; endTimestamp: number }) {
     const hour = 60 * 60
+    const sol = { quota: 204_000, count: 308, tokens: 597_000 }
+    const terra = { quota: 59_000, count: 97, tokens: 190_000 }
+    const grok = { quota: 8_000, count: 12, tokens: 24_000 }
     return {
       ...input,
-      records: [
-        { createdAt: input.endTimestamp - 5 * hour, modelName: 'gpt-5.6-sol', tokenUsed: 188_000, count: 96, quota: 62_000 },
-        { createdAt: input.endTimestamp - 4 * hour, modelName: 'gpt-5.6-sol', tokenUsed: 246_000, count: 128, quota: 85_000 },
-        { createdAt: input.endTimestamp - 4 * hour, modelName: 'gpt-5.6-terra', tokenUsed: 72_000, count: 36, quota: 21_000 },
-        { createdAt: input.endTimestamp - 3 * hour, modelName: 'gpt-5.6-sol', tokenUsed: 163_000, count: 84, quota: 57_000 },
-        { createdAt: input.endTimestamp - 2 * hour, modelName: 'gpt-5.6-terra', tokenUsed: 118_000, count: 61, quota: 38_000 },
-        { createdAt: input.endTimestamp - hour, modelName: 'grok-4.6', tokenUsed: 24_000, count: 12, quota: 8_000 },
+      buckets: [
+        { timestamp: input.endTimestamp - 5 * hour, ...{ quota: 62_000, count: 96, tokens: 188_000 }, models: { 'gpt-5.6-sol': { quota: 62_000, count: 96, tokens: 188_000 } } },
+        { timestamp: input.endTimestamp - 4 * hour, quota: 106_000, count: 164, tokens: 318_000, models: {
+          'gpt-5.6-sol': { quota: 85_000, count: 128, tokens: 246_000 },
+          'gpt-5.6-terra': { quota: 21_000, count: 36, tokens: 72_000 },
+        } },
+        { timestamp: input.endTimestamp - 3 * hour, ...{ quota: 57_000, count: 84, tokens: 163_000 }, models: { 'gpt-5.6-sol': { quota: 57_000, count: 84, tokens: 163_000 } } },
+        { timestamp: input.endTimestamp - 2 * hour, ...{ quota: 38_000, count: 61, tokens: 118_000 }, models: { 'gpt-5.6-terra': { quota: 38_000, count: 61, tokens: 118_000 } } },
+        { timestamp: input.endTimestamp - hour, ...grok, models: { 'grok-4.6': grok } },
       ],
+      models: [
+        { model: 'gpt-5.6-sol', ...sol },
+        { model: 'gpt-5.6-terra', ...terra },
+        { model: 'grok-4.6', ...grok },
+      ],
+      quota: 271_000,
+      count: 417,
+      tokens: 811_000,
+      discardedCount: 0,
     }
   },
   async getAccountTasks(input?: { page?: number; pageSize?: number }) {
@@ -397,21 +410,6 @@ const balance: AccountBalance = {
   displayAmount: 4,
 }
 
-const sidebarRelaySite: RelaySite = {
-  id: 'fixture',
-  label: '星芒AI',
-  providerBaseUrls: {
-    codex: 'https://xm.solov.cc/v1',
-    claude: 'https://xm.solov.cc',
-    gemini: 'https://xm.solov.cc',
-    grok: 'https://xm.solov.cc/v1',
-  },
-  websiteUrl: 'https://xm.solov.cc',
-  keysPageUrl: 'https://xm.solov.cc/keys',
-  accountBackend: 'new-api',
-  accountBaseUrl: 'https://xm.solov.cc',
-}
-
 function SidebarFixture() {
   const [collapsed, setCollapsed] = useState(search.get('collapsed') === 'true')
   const [moreExpanded, setMoreExpanded] = useState(search.get('more') === 'true')
@@ -423,7 +421,6 @@ function SidebarFixture() {
         theme={theme}
         appVersion="0.1.21"
         updateState={null}
-        relaySite={sidebarRelaySite}
         moreExpanded={moreExpanded}
         accountStatus="active"
         accountSnapshot={{
@@ -443,8 +440,6 @@ function SidebarFixture() {
         onConfigureCliKey={() => undefined}
         onRefreshBalance={() => undefined}
         onOpenAccountCenter={() => undefined}
-        onPasteKey={() => undefined}
-        onOpenKeysPage={() => undefined}
       />
       <main className="main-content" aria-label="侧栏验收内容" />
     </div>

@@ -97,17 +97,17 @@ export function HealthPage({ api, initialReport = null }: HealthPageProps) {
     <div className="page workspace-page operations-page" data-page-id="health">
       <header className="page-header workspace-page-header">
         <div>
-          <div className="eyebrow">系统</div>
-          <h1>健康诊断</h1>
+          <h1>检查</h1>
+          <p className="page-lead">看本机环境正不正常。</p>
         </div>
-        <div className="header-actions page-toolbar" role="toolbar" aria-label="诊断工具栏">
+        <div className="header-actions page-toolbar" role="toolbar" aria-label="检查工具栏">
           <button className="secondary-button" type="button" onClick={exportLatest} disabled={!report || running || exporting}>
             {exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />}
-            导出脱敏报告
+            导出报告
           </button>
           <button className="primary-button" type="button" onClick={run} disabled={running || exporting}>
             {running ? <LoaderCircle className="spin" size={16} /> : <Play size={16} />}
-            {running ? '诊断中' : '运行诊断'}
+            {running ? '检查中' : '开始检查'}
           </button>
         </div>
       </header>
@@ -119,7 +119,7 @@ export function HealthPage({ api, initialReport = null }: HealthPageProps) {
           <section className="environment-section operations-summary" aria-label="诊断摘要">
             <div className="section-heading">
               <div>
-                <h2>诊断摘要</h2>
+                <h2>检查结果</h2>
                 <span>{new Date(report.generatedAt).toLocaleString()} · {report.durationMs}ms</span>
               </div>
             </div>
@@ -139,8 +139,8 @@ export function HealthPage({ api, initialReport = null }: HealthPageProps) {
           <section className="environment-section health-results" aria-labelledby="health-results-title">
             <div className="section-heading">
               <div>
-                <h2 id="health-results-title">检查结果</h2>
-                <span>每项检查独立超时，异常项不会阻塞其他结果</span>
+                <h2 id="health-results-title">逐项结果</h2>
+                <span>一项出错不会挡住其他项</span>
               </div>
             </div>
             <div className="operations-list" role="list">
@@ -170,8 +170,8 @@ export function HealthPage({ api, initialReport = null }: HealthPageProps) {
       ) : (
         <section className="workspace-empty" aria-labelledby="health-empty-title">
           <div className="workspace-empty-icon"><HeartPulse size={24} /></div>
-          <h2 id="health-empty-title">尚未运行诊断</h2>
-          <p>运行后将显示环境、配置、网络和权限状态</p>
+          <h2 id="health-empty-title">还没检查过</h2>
+          <p>点「开始检查」，看环境、配置和网络正不正常</p>
         </section>
       )}
     </div>

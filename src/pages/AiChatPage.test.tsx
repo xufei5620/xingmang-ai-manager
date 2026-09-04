@@ -2,9 +2,12 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import {
   AiChatPage,
+  DEFAULT_AI_CHAT_GROUP,
+  DEFAULT_AI_CHAT_MODEL,
   buildAiChatRequestMessages,
   formatAiChatElapsed,
   imageSizeOptions,
+  resolveAiChatDefaultGroup,
   resolveAiChatDisplayMode,
   type AiChatPageApi,
 } from './AiChatPage'
@@ -37,6 +40,22 @@ function message(overrides: Partial<AiChatMessage>): AiChatMessage {
 }
 
 describe('AI聊天页面纯逻辑', () => {
+  it('prefers the Codex relay group and model when entering chat', () => {
+    expect(DEFAULT_AI_CHAT_GROUP).toBe('GPT-中转/订阅')
+    expect(DEFAULT_AI_CHAT_MODEL).toBe('gpt-5.6-sol')
+    expect(resolveAiChatDefaultGroup([
+      { name: 'Claude-MAX订阅' },
+      { name: 'GPT-中转/订阅' },
+      { name: '生图分组' },
+    ], '生图分组')).toBe('GPT-中转/订阅')
+    expect(resolveAiChatDefaultGroup([
+      { name: 'Claude-MAX订阅' },
+      { name: '生图分组' },
+    ], '生图分组')).toBe('生图分组')
+    expect(resolveAiChatDefaultGroup([{ name: 'Claude-MAX订阅' }])).toBe('Claude-MAX订阅')
+    expect(resolveAiChatDefaultGroup([])).toBe('')
+  })
+
   it('detects chat and image modes without sending image models to chat completions', () => {
     expect(resolveAiChatDisplayMode('gpt-5.6-sol')).toBe('chat')
     expect(resolveAiChatDisplayMode('gpt-image-2')).toBe('image')
@@ -67,7 +86,7 @@ describe('AI聊天页面纯逻辑', () => {
 describe('AI聊天页面结构', () => {
   it('renders the operational workspace first, with group/model controls and a disabled composer', () => {
     const markup = renderToStaticMarkup(<AiChatPage api={api()} userId={7} notify={vi.fn()} />)
-    expect(markup).toContain('AI聊天')
+    expect(markup).toContain('聊天')
     expect(markup).toContain('分组')
     expect(markup).toContain('模型')
     expect(markup).toContain('开始一段新对话')

@@ -8,7 +8,7 @@ describe('TutorialPage', () => {
       <TutorialPage onNavigate={vi.fn()} onOpenSupport={vi.fn()} onOpenAccountCenter={vi.fn()} />,
     )
 
-    expect(markup).toContain('使用教程')
+    expect(markup).toContain('教程')
     expect(markup).toContain('联系售后')
     expect(markup).toContain('首次使用')
     expect(markup).not.toContain('feishu')
