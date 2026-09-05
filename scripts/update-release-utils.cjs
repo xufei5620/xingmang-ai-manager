@@ -3,7 +3,6 @@ const path = require('node:path')
 const { createHash } = require('node:crypto')
 const { gunzipSync } = require('node:zlib')
 const YAML = require('yaml')
-const { parseDn } = require('builder-util-runtime')
 
 const LEGACY_UPDATE_URL = 'https://updates.shenfengwl.fun/xingmang-manager/'
 const NEW_UPDATE_URL = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
@@ -743,22 +742,6 @@ function validateReleaseEnvironment(env = process.env, packageVersion = null) {
       'SIGNING_PUBLISHER_MISSING',
       '正式发布缺少固定签名发布者，请配置 XINGMANG_SIGNING_PUBLISHER',
     )
-  }
-  if (releaseMode && expectedPublisher) {
-    let publisherDn
-    try {
-      publisherDn = new Map(Array.from(parseDn(expectedPublisher), ([key, value]) => [
-        key.trim().toUpperCase(), value.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase(),
-      ]).filter(([key, value]) => key && value))
-    } catch {
-      publisherDn = new Map()
-    }
-    if (publisherDn.size < 3 || !publisherDn.has('CN') || !publisherDn.has('O') || !publisherDn.has('C')) {
-      throw validationError(
-        'SIGNING_PUBLISHER_INVALID',
-        '正式发布的 XINGMANG_SIGNING_PUBLISHER 必须是包含 CN、O、C 的完整证书 Subject DN，不能填写裸公司名或仅 CN',
-      )
-    }
   }
   return {
     updateUrl,

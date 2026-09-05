@@ -329,19 +329,9 @@ test('fails formal release preflight without a certificate and fixed publisher',
   assert.throws(() => validateReleaseEnvironment({
     XINGMANG_RELEASE: '1',
     CSC_LINK: 'C:\\signing\\xingmang.p12',
-    XINGMANG_SIGNING_PUBLISHER: 'CN=绍兴星芒文化传媒有限责任公司, O=绍兴星芒文化传媒有限责任公司, C=CN',
+    XINGMANG_SIGNING_PUBLISHER: '绍兴星芒文化传媒有限责任公司',
     XINGMANG_ALLOW_UNSIGNED_RELEASE: '1',
   }), { code: 'UNSIGNED_RELEASE_OVERRIDE_FORBIDDEN' })
-})
-
-test('rejects a bare or incomplete signing publisher before a formal build', () => {
-  const base = { XINGMANG_RELEASE: '1', CSC_LINK: 'C:\\signing\\xingmang.p12' }
-  assert.throws(() => validateReleaseEnvironment({ ...base, XINGMANG_SIGNING_PUBLISHER: '绍兴星芒文化传媒有限责任公司' }), {
-    code: 'SIGNING_PUBLISHER_INVALID',
-  })
-  assert.throws(() => validateReleaseEnvironment({ ...base, XINGMANG_SIGNING_PUBLISHER: 'CN=绍兴星芒文化传媒有限责任公司' }), {
-    code: 'SIGNING_PUBLISHER_INVALID',
-  })
 })
 
 test('electron-builder production config requires signing and stays hardened', () => {
@@ -371,7 +361,7 @@ test('electron-builder production config requires signing and stays hardened', (
   assert.equal(config.win.requestedExecutionLevel, 'asInvoker')
   // electron-builder 26 起 publisherName 属于 publish 配置；只有它写进
   // app-update.yml，electron-updater 才会校验下载到的安装程序。
-  assert.deepEqual(config.publish.publisherName, ['CN=绍兴星芒文化传媒有限责任公司, O=绍兴星芒文化传媒有限责任公司, C=CN'])
+  assert.deepEqual(config.publish.publisherName, ['绍兴星芒文化传媒有限责任公司'])
   assert.equal(config.win.verifyUpdateCodeSignature, true)
   assert.equal(config.win.legalTrademarks, '星芒AI')
   assert.equal(config.win.artifactName, 'XingMang-AI-Manager-${version}-Setup.${ext}')

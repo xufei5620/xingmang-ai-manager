@@ -62,11 +62,7 @@ if (ephemeralMacSigningMode) {
   }
 }
 const signingPublisher = process.env.XINGMANG_SIGNING_PUBLISHER?.trim() || undefined
-// Keep a complete subject DN as the local fallback. Formal release preflight
-// still requires XINGMANG_SIGNING_PUBLISHER explicitly; a bare company name
-// is rejected by both runtime and artifact signature verifiers.
-const updatePublisher = signingPublisher
-  || 'CN=绍兴星芒文化传媒有限责任公司, O=绍兴星芒文化传媒有限责任公司, C=CN'
+const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责任公司'
 
 module.exports = {
   appId: 'com.xingmang.ai.manager',

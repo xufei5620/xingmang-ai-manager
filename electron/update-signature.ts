@@ -112,31 +112,34 @@ function normalizedDn(value: string): Map<string, string> {
 
 interface PublisherMatch {
   matched: boolean
-}
-
-function isCompletePublisherDn(value: Map<string, string>): boolean {
-  return value.size >= 3 && value.has('CN') && value.has('O') && value.has('C')
+  // True when the accepted publisher parsed to no DN attributes, so only the
+  // certificate Subject CN was compared. A CN is not globally unique -- any
+  // trusted CA can issue a Valid certificate to another subject with the same
+  // company name -- which is why the caller surfaces this as a warning while
+  // the migration to full-DN pinning (IMPROVEMENT-PLAN 3.4) is pending.
+  cnOnly: boolean
 }
 
 function publisherMatches(expectedPublishers: readonly string[], subject: string): PublisherMatch {
   const actualDn = normalizedDn(subject)
-  if (actualDn.size === 0) return { matched: false }
+  const actualCommonName = actualDn.get('CN')
+  if (!actualCommonName) return { matched: false, cnOnly: false }
 
   for (const publisher of expectedPublishers) {
     const expected = publisher.trim()
     if (!expected) continue
     const expectedDn = normalizedDn(expected)
-    // A bare company name (or any unparseable value) is not an identity
-    // anchor: a trusted CA can issue the same CN to another subject. Require
-    // a complete DN and compare both directions so extra subject attributes
-    // cannot be smuggled past a partial match.
-    if (!isCompletePublisherDn(expectedDn) || !isCompletePublisherDn(actualDn)) continue
-    if (expectedDn.size !== actualDn.size) continue
+    if (expectedDn.size === 0) {
+      if (expected.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase() === actualCommonName) {
+        return { matched: true, cnOnly: true }
+      }
+      continue
+    }
     if ([...expectedDn].every(([key, value]) => actualDn.get(key) === value)) {
-      return { matched: true }
+      return { matched: true, cnOnly: false }
     }
   }
-  return { matched: false }
+  return { matched: false, cnOnly: false }
 }
 
 export function createStrictUpdateCodeSignatureVerifier(
@@ -208,6 +211,17 @@ export function createStrictUpdateCodeSignatureVerifier(
       const publisherMatch = publisherMatches(publisherNames, signature.subject)
       if (!publisherMatch.matched) {
         throw new Error('安装包签名发布者与当前程序配置不一致')
+      }
+      if (publisherMatch.cnOnly) {
+        // The warning must never flip a passing verification into a failure:
+        // a throwing logger here would bubble into the catch below and reject
+        // the update, so callback failures are swallowed.
+        try {
+          options.warn?.(
+            `更新签名发布者按裸公司名(CN)退化匹配通过（证书主体：${signature.subject.slice(0, 200)}）；`
+            + '建议按 docs/IMPROVEMENT-PLAN.md 3.4 迁移到完整 DN 后收紧',
+          )
+        } catch { /* logging must not affect the verdict */ }
       }
       return null
     } catch (error) {

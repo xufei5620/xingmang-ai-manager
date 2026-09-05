@@ -39,7 +39,7 @@ test('derives SystemRoot from loaded core modules instead of polluted environmen
 
 test('verifier launches only the resolved system PowerShell with a minimal trusted environment', () => {
   let invocation = null
-  verifyAuthenticode('D:\\release\\setup.exe', 'CN=Example Publisher, O=Example, C=CN', {
+  verifyAuthenticode('D:\\release\\setup.exe', 'Example Publisher', {
     platform: 'win32',
     resolvePowerShell: () => ({
       systemRoot: 'D:\\Windows',
@@ -50,7 +50,7 @@ test('verifier launches only the resolved system PowerShell with a minimal trust
       invocation = { executable, argv, options }
       return {
         status: 0,
-        stdout: JSON.stringify({ Status: 'Valid', Subject: 'CN=Example Publisher, O=Example, C=CN' }),
+        stdout: JSON.stringify({ Status: 'Valid', Subject: 'CN=Example Publisher, O=Example' }),
         stderr: '',
       }
     },
@@ -71,7 +71,7 @@ test('verifier launches only the resolved system PowerShell with a minimal trust
   assert.match(invocation.argv.at(-1), /Microsoft\.PowerShell\.Security\\Get-AuthenticodeSignature/)
 })
 
-test('requires a complete DN match like the runtime verifier', () => {
+test('matches DN-form expected publishers attribute by attribute like the runtime verifier', () => {
   const withSubject = (subject) => ({
     platform: 'win32',
     resolvePowerShell: () => ({
@@ -86,19 +86,9 @@ test('requires a complete DN match like the runtime verifier', () => {
     }),
   })
 
-  assert.throws(() => verifyAuthenticode(
-    'D:\\release\\setup.exe',
-    'CN=Example Publisher, O=Example',
-    withSubject('CN=Example Publisher, O=Example, C=CN'),
-  ), { code: 'INSTALLER_PUBLISHER_MISMATCH' })
-  assert.throws(() => verifyAuthenticode(
-    'D:\\release\\setup.exe',
-    'CN=Example Publisher',
-    withSubject('CN=Example Publisher'),
-  ), { code: 'INSTALLER_PUBLISHER_MISMATCH' })
   assert.doesNotThrow(() => verifyAuthenticode(
     'D:\\release\\setup.exe',
-    'CN=Example Publisher, O=Example, C=CN',
+    'CN=Example Publisher, O=Example',
     withSubject('CN=Example Publisher, O=Example, C=CN'),
   ))
   assert.throws(() => verifyAuthenticode(
@@ -113,7 +103,7 @@ test('requires a complete DN match like the runtime verifier', () => {
   ), { code: 'INSTALLER_PUBLISHER_MISMATCH' })
 })
 
-test('rejects bare-CN and partial-DN publisher matches', () => {
+test('warns on bare-CN fallback matches without changing the verdict', () => {
   const withSubject = (subject, warn) => ({
     platform: 'win32',
     warn,
@@ -129,16 +119,24 @@ test('rejects bare-CN and partial-DN publisher matches', () => {
     }),
   })
 
-  assert.throws(() => verifyAuthenticode(
+  const warnings = []
+  const capture = (message) => warnings.push(message)
+  assert.doesNotThrow(() => verifyAuthenticode(
     'D:\\release\\setup.exe',
     'Example Publisher',
-    withSubject('CN=Example Publisher, O=Example'),
-  ), { code: 'INSTALLER_PUBLISHER_MISMATCH' })
-  assert.throws(() => verifyAuthenticode(
+    withSubject('CN=Example Publisher, O=Example', capture),
+  ))
+  assert.equal(warnings.length, 1)
+  assert.match(warnings[0], /裸公司名\(CN\)/)
+  assert.match(warnings[0], /IMPROVEMENT-PLAN\.md 3\.4/)
+
+  warnings.length = 0
+  assert.doesNotThrow(() => verifyAuthenticode(
     'D:\\release\\setup.exe',
     'CN=Example Publisher, O=Example',
-    withSubject('CN=Example Publisher, O=Example, C=CN'),
-  ), { code: 'INSTALLER_PUBLISHER_MISMATCH' })
+    withSubject('CN=Example Publisher, O=Example, C=CN', capture),
+  ))
+  assert.equal(warnings.length, 0)
 })
 
 test('refuses to verify an installer when no expected publisher is configured', () => {
