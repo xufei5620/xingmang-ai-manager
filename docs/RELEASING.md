@@ -1,6 +1,22 @@
 # 星芒AI管理工具发布手册
 
-本手册只描述 Windows 正式发布。调试阶段不需要生成安装包；准备发布时必须使用 `npm run release:build`，不能把未经发布门禁校验的普通 `npm run build` 产物对外分发。`release:build` 只生成和验证本地候选产物；上传文件、修改 Cloudflare R2 或切换线上 `latest.yml` 必须获得产品所有者针对当前版本的明确发布授权，不能把构建请求、继续开发或历史授权解释为本次发布许可。
+## 当前 Windows 发布策略
+
+产品所有者已明确（2026-09-05）：当前和后续 Windows 对外发布固定使用无签名模式，不需要代码签名证书或 `XINGMANG_SIGNING_PUBLISHER`，不得在审计或维护中重新引入这些发布前置要求。
+
+使用现有无签名发布入口：
+
+```powershell
+npm run release:build:unsigned
+```
+
+此入口构建安装包但不上传，保留客户端自动更新；`forceCodeSigning=false`，更新配置不写入 `publisherName`。普通 `npm run build` 仍是关闭自动更新的本地调试构建。
+
+发布前仍需提升版本号、更新 `release-notes.md` 并完成类型检查、测试、编译和安装包验证。上传文件、修改 Cloudflare R2 或切换线上 `latest.yml` 必须获得产品所有者针对当前版本的明确发布授权，不能把构建、合并 PR 或历史授权解释为本次发布许可。
+
+## 历史签名流程（停用）
+
+以下为历史签名方案归档。`release:build`、`release:preflight`、`release:verify` 和 `release-build.yml` 是旧签名专用入口，不用于当前及后续 Windows 无签名发布；下文的证书、发布者和 DN/CN 要求不适用于本项目的无签名发布流程。
 
 ## 1. 发布前置条件
 

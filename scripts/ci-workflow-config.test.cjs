@@ -52,6 +52,22 @@ test('browser-backed tests install Chromium first on every job that runs npm tes
   }
 })
 
+test('the Windows job enables unprivileged symlink creation before security tests', () => {
+  const steps = workflow.jobs.test.steps
+  const enableStepIndex = steps.findIndex((step) => (
+    step.name === 'Enable Windows Developer Mode for symlink security tests'
+  ))
+  const testStepIndex = steps.findIndex((step) => step.run === 'npm run test:windows')
+
+  assert.notEqual(enableStepIndex, -1, 'Windows CI must enable Developer Mode')
+  assert.notEqual(testStepIndex, -1, 'Windows CI must run the Windows test suite')
+  assert.ok(enableStepIndex < testStepIndex, 'Developer Mode must be enabled before tests')
+
+  const enableStep = steps[enableStepIndex]
+  assert.equal(enableStep.shell, 'pwsh')
+  assert.match(String(enableStep.run), /AllowDevelopmentWithoutDevLicense/)
+})
+
 test('the Windows suite serializes filesystem-heavy files with a bounded test timeout', () => {
   const command = packageJson.scripts['test:windows']
 

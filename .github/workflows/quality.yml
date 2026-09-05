@@ -37,6 +37,12 @@ jobs:
           cache: npm
       - run: npm ci --registry=https://registry.npmjs.org/
       - run: npx --no-install playwright install chromium
+      - name: Enable Windows Developer Mode for symlink security tests
+        shell: pwsh
+        run: |
+          $unlockKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
+          New-Item -Path $unlockKey -Force | Out-Null
+          New-ItemProperty -Path $unlockKey -Name AllowDevelopmentWithoutDevLicense -PropertyType DWord -Value 1 -Force | Out-Null
       - run: npm run typecheck
       - run: npm run test:canvas
       - run: npm run test:windows
