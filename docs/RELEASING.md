@@ -20,15 +20,17 @@ CI 对生产依赖中的任意漏洞和完整依赖树中的 critical 漏洞执�
 - 更新清单必须由对应版本的静态 R2 目录提供：`0.1.2` 及更早版本检查 `https://updates.shenfengwl.fun/xingmang-manager/latest.yml`，`0.1.3+` 检查 `https://updatesnew.shenfengwl.fun/xingmang-manager/latest.yml`。两者返回 `text/html`/官网 SPA 都属于发布阻断故障。
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
 - 正式发布必须使用 Authenticode 签名；没有证书、固定发布者或干净 Windows 验收机时，发布预检会直接失败。
-- 所有 Windows 包的 `app-update.yml` 都写入预期发布者，防止 `electron-updater` 因缺少 `publisherName` 跳过验证。客户端使用受保护系统目录中的 PowerShell 严格核对下载文件的 `Valid` 状态、返回路径和发布者 DN/CN；PowerShell 缺失、命令失败、输出无法解析或任一字段不匹配均拒绝更新。
+- 正式签名 Windows 包的 `app-update.yml` 写入预期发布者。客户端使用受保护系统目录中的 PowerShell 严格核对下载文件的 `Valid` 状态、返回路径和完整发布者 DN（至少包含 CN、O、C，属性集合和值均须匹配）；PowerShell 缺失、命令失败、输出无法解析或任一字段不匹配均拒绝更新。
 - 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留自动更新但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
 - 正式发布前配置证书路径和固定发布者，例如：
 
 ```powershell
 $env:WIN_CSC_LINK = 'C:\secrets\xingmang-signing.p12'
 $env:CSC_KEY_PASSWORD = '<证书密码>'
-$env:XINGMANG_SIGNING_PUBLISHER = '绍兴星芒文化传媒有限责任公司'
+$env:XINGMANG_SIGNING_PUBLISHER = 'CN=绍兴星芒文化传媒有限责任公司, O=绍兴星芒文化传媒有限责任公司, C=CN'
 ```
+
+以上 DN 仅为格式示例。必须使用实际签名证书的完整 `Subject`，包括证书现有的 `S`、`L`、序列号等其他属性，不能只复制示例中的三个属性。本次校验收紧以沿用现有签名证书和 CN 为前提；证书轮换需要另行验证旧客户端的升级兼容性。
 
 更新地址可按需通过环境变量覆盖：
 
@@ -75,7 +77,7 @@ npm run release:build
 |---|---|
 | `WIN_CSC_LINK_BASE64` | 代码签名证书 `.p12` 的 **base64 文本**（electron-builder 直接接受 base64，证书不落盘） |
 | `WIN_CSC_KEY_PASSWORD` | 该证书的密码 |
-| `XINGMANG_SIGNING_PUBLISHER` | 固定发布者名，例如 `绍兴星芒文化传媒有限责任公司` |
+| `XINGMANG_SIGNING_PUBLISHER` | 固定签名主体完整 DN，例如 `CN=绍兴星芒文化传媒有限责任公司, O=绍兴星芒文化传媒有限责任公司, C=CN`；禁止填写裸公司名 |
 
 把 `.p12` 转成 base64（在你自己的机器上做，不要在任何共享环境里做）：
 
@@ -103,7 +105,7 @@ npm run release:build
 ```powershell
 $cert = New-SelfSignedCertificate `
   -Type CodeSigningCert `
-  -Subject 'CN=绍兴星芒文化传媒有限责任公司' `
+  -Subject 'CN=绍兴星芒文化传媒有限责任公司, O=绍兴星芒文化传媒有限责任公司, C=CN' `
   -CertStoreLocation Cert:\CurrentUser\My `
   -NotAfter (Get-Date).AddYears(2) `
   -KeyExportPolicy Exportable
@@ -113,7 +115,7 @@ Export-PfxCertificate -Cert $cert -FilePath "$HOME\xingmang-test-signing.pfx" -P
 [Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\xingmang-test-signing.pfx")) | Set-Clipboard
 ```
 
-`Subject` 里的 CN **必须**与 `XINGMANG_SIGNING_PUBLISHER` 完全一致，否则产物校验会因发布者不匹配而失败。
+`Subject` 的完整 DN（至少包含 CN、O、C）**必须**与 `XINGMANG_SIGNING_PUBLISHER` 完全一致；禁止使用裸公司名或只填写 CN，否则产物校验会因发布者不匹配而失败。
 
 **2. 配置 Secrets**：把剪贴板里的 base64 填进 `WIN_CSC_LINK_BASE64`，密码填 `WIN_CSC_KEY_PASSWORD`，发布者填 `XINGMANG_SIGNING_PUBLISHER`。
 

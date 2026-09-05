@@ -20,16 +20,18 @@ function normalizedDn(value) {
   return result
 }
 
+function isCompletePublisherDn(value) {
+  return value.size >= 3 && value.has('CN') && value.has('O') && value.has('C')
+}
+
 function publisherMatches(expectedPublisher, subject) {
   const actualDn = normalizedDn(subject)
-  const actualCommonName = actualDn.get('CN')
-  if (!actualCommonName) return false
+  if (actualDn.size === 0) return false
   const expected = expectedPublisher.trim()
   if (!expected) return false
   const expectedDn = normalizedDn(expected)
-  if (expectedDn.size === 0) {
-    return expected.normalize('NFKC').replace(/\s+/g, ' ').trim().toLowerCase() === actualCommonName
-  }
+  if (!isCompletePublisherDn(expectedDn) || !isCompletePublisherDn(actualDn)) return false
+  if (expectedDn.size !== actualDn.size) return false
   return [...expectedDn].every(([key, value]) => actualDn.get(key) === value)
 }
 
@@ -108,14 +110,6 @@ function verifyAuthenticode(filePath, expectedPublisher = null, options = {}) {
     throw Object.assign(new Error(`安装程序签名发布者不匹配：期望 ${expectedPublisher}，实际 ${subject || 'Unknown'}`), {
       code: 'INSTALLER_PUBLISHER_MISMATCH',
     })
-  }
-  if (normalizedDn(String(expectedPublisher).trim()).size === 0) {
-    // Mirrors electron/update-signature.ts (IMPROVEMENT-PLAN 3.4): a bare
-    // company name pins only the certificate CN, which is not globally
-    // unique. The verdict stays unchanged; the release log just makes the
-    // weaker comparison visible until the full-DN migration lands.
-    const warn = options.warn || console.warn
-    warn(`警告：签名发布者按裸公司名(CN)退化匹配通过（证书主体：${subject}）；建议按 docs/IMPROVEMENT-PLAN.md 3.4 迁移到完整 DN 后收紧`)
   }
 }
 

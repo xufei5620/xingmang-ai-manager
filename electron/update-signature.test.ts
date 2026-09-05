@@ -40,10 +40,10 @@ function verifierWithResult(stdout: string, stderr = '', extra: Partial<StrictUp
 }
 
 describe('strict Windows update signature verifier', () => {
-  it('uses the trusted absolute PowerShell path and accepts matching CN or DN publishers', async () => {
+  it('uses the trusted absolute PowerShell path and accepts only a complete matching DN', async () => {
     const { command, verifier } = verifierWithResult(signatureOutput())
 
-    await expect(verifier(['绍兴星芒文化传媒有限责任公司'], installer)).resolves.toBeNull()
+    await expect(verifier(['绍兴星芒文化传媒有限责任公司'], installer)).resolves.toContain('签名发布者与当前程序配置不一致')
     await expect(verifier([
       'C=cn, O=绍兴星芒文化传媒有限责任公司, CN=绍兴星芒文化传媒有限责任公司',
     ], installer.toLowerCase())).resolves.toBeNull()
@@ -82,32 +82,34 @@ describe('strict Windows update signature verifier', () => {
     expect(result).toContain(expected)
   })
 
-  it('warns when the match relies on the bare-CN fallback and stays silent for DN matches', async () => {
+  it('rejects bare-CN publishers and stays silent for DN matches', async () => {
     const warn = vi.fn()
     const { verifier } = verifierWithResult(signatureOutput(), '', { warn })
 
-    await expect(verifier(['绍兴星芒文化传媒有限责任公司'], installer)).resolves.toBeNull()
-    expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0][0]).toContain('裸公司名(CN)')
-    expect(warn.mock.calls[0][0]).toContain('IMPROVEMENT-PLAN.md 3.4')
+    await expect(verifier(['绍兴星芒文化传媒有限责任公司'], installer)).resolves.toContain('签名发布者与当前程序配置不一致')
+    expect(warn).not.toHaveBeenCalled()
 
-    warn.mockClear()
     await expect(verifier([
       'C=cn, O=绍兴星芒文化传媒有限责任公司, CN=绍兴星芒文化传媒有限责任公司',
     ], installer)).resolves.toBeNull()
     expect(warn).not.toHaveBeenCalled()
 
-    warn.mockClear()
     await expect(verifier(['另一家公司'], installer)).resolves.toContain('签名发布者与当前程序配置不一致')
     expect(warn).not.toHaveBeenCalled()
   })
 
-  it('keeps the passing verdict when the warning callback throws', async () => {
-    const warn = vi.fn(() => { throw new Error('log sink unavailable') })
-    const { verifier } = verifierWithResult(signatureOutput(), '', { warn })
+  it('rejects a DN that only partially matches the certificate subject', async () => {
+    const { verifier } = verifierWithResult(signatureOutput())
+    await expect(verifier([
+      'CN=绍兴星芒文化传媒有限责任公司',
+    ], installer)).resolves.toContain('签名发布者与当前程序配置不一致')
 
-    await expect(verifier(['绍兴星芒文化传媒有限责任公司'], installer)).resolves.toBeNull()
-    expect(warn).toHaveBeenCalledTimes(1)
+    const cnOnly = verifierWithResult(signatureOutput({
+      Subject: 'CN=绍兴星芒文化传媒有限责任公司',
+    })).verifier
+    await expect(cnOnly([
+      'CN=绍兴星芒文化传媒有限责任公司',
+    ], installer)).resolves.toContain('签名发布者与当前程序配置不一致')
   })
 
   it('rejects publisher mismatch and empty publisher configuration', async () => {
@@ -166,6 +168,8 @@ describe('strict Windows update signature verifier', () => {
       buildTrustedEnvironment: () => ({ PATH: 'C:\\Windows\\System32' }),
     })
     expect(typeof updater.verifyUpdateCodeSignature).toBe('function')
-    await expect(updater.verifyUpdateCodeSignature(['绍兴星芒文化传媒有限责任公司'], installer)).resolves.toBeNull()
+    await expect(updater.verifyUpdateCodeSignature([
+      'C=cn, O=绍兴星芒文化传媒有限责任公司, CN=绍兴星芒文化传媒有限责任公司',
+    ], installer)).resolves.toBeNull()
   })
 })
