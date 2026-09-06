@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { navigationItems } from './navigation'
 
 describe('navigation grouping', () => {
-  it('assigns use, extensions and more destinations (nav IA scheme A)', () => {
+  it('keeps help and settings reachable outside the more menu', () => {
     expect(navigationItems.map(({ id, group }) => [id, group])).toEqual([
       ['overview', 'use'],
       ['chat', 'use'],
@@ -12,12 +12,12 @@ describe('navigation grouping', () => {
       ['skills', 'extensions'],
       ['plugins', 'extensions'],
       ['backups', 'more'],
-      ['health', 'more'],
+      ['health', 'support'],
       ['maintenance', 'more'],
       ['feedback', 'more'],
-      ['tutorial', 'more'],
+      ['tutorial', 'support'],
       ['updates', 'more'],
-      ['settings', 'more'],
+      ['settings', 'support'],
     ])
   })
 

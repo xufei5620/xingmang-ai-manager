@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   Download,
+  Eye,
   LoaderCircle,
   PackageOpen,
   Plus,
@@ -16,6 +17,10 @@ import { errorMessage } from '../error-message'
 import { ProviderTabs } from '../components/ProviderTabs'
 import { createProviderExtensionRequestCoordinator } from '../provider-extension-coordinator'
 import type { ExtensionMutation, ExtensionSnapshot, ProviderId } from '../types'
+import { Button } from '../components/ui'
+import { useNavigationState } from '../components/shell/NavigationState'
+import { ResourceDetails, type ResourceDetailsValue } from './ResourceDetails'
+import '../styles/management-v3.css'
 
 export interface PluginView {
   pluginId: string
@@ -201,17 +206,18 @@ export function PluginsPage({
   onUpgradeMarketplace,
   onRemoveMarketplace,
 }: PluginsPageProps) {
-  const [tab, setTab] = useState<PluginTab>('installed')
-  const [query, setQuery] = useState('')
+  const [tab, setTab] = useNavigationState<PluginTab>('plugins.tab', 'installed')
+  const [query, setQuery] = useNavigationState('plugins.query', '')
+  const [details, setDetails] = useState<ResourceDetailsValue | null>(null)
   const [addMarketplaceOpen, setAddMarketplaceOpen] = useState(false)
   const [confirmTarget, setConfirmTarget] = useState<ConfirmTarget | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [provider, setProvider] = useState<ProviderId>('codex')
+  const [provider, setProvider] = useNavigationState<ProviderId>('plugins.provider', 'codex')
   const [providerSnapshot, setProviderSnapshot] = useState<ExtensionSnapshot | null>(null)
   const [providerLoading, setProviderLoading] = useState(false)
   const [providerError, setProviderError] = useState<string | null>(null)
-  const providerRequests = useRef(createProviderExtensionRequestCoordinator('codex')).current
+  const providerRequests = useRef(createProviderExtensionRequestCoordinator(provider)).current
   const busyRef = useRef<string | null>(null)
   const codexSelected = provider === 'codex'
 
@@ -282,7 +288,7 @@ export function PluginsPage({
   }
 
   useEffect(() => {
-    void loadProvider('codex').catch(() => undefined)
+    void loadProvider(provider).catch(() => undefined)
     return () => { providerRequests.invalidate() }
   }, [])
 
@@ -361,11 +367,10 @@ export function PluginsPage({
   ].filter((entry): entry is string => Boolean(entry)))]
 
   return (
-    <div className="page workspace-page management-page" data-page-id="plugins">
+    <div className="page workspace-page management-page management-v3" data-page-id="plugins">
       <header className="page-header workspace-page-header">
         <div>
           <h1>插件</h1>
-          <p className="page-lead">给命令行工具加功能。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="插件工具栏">
           <button className="icon-button" type="button" title="刷新" disabled={activeLoading || busyKey !== null}
@@ -392,15 +397,20 @@ export function PluginsPage({
           disabled={busyKey !== null || confirmTarget !== null}
           label="选择 Plugin 工具"
         />
-        <div className="segmented-control" role="tablist" aria-label="Plugin 视图">
-          <button type="button" role="tab" aria-selected={tab === 'installed'} className={tab === 'installed' ? 'active' : ''} onClick={() => setTab('installed')}>
+        <div className="segmented-control" role="tablist" aria-label="Plugin 视图" onKeyDown={(event) => {
+          const tabs = [...event.currentTarget.querySelectorAll<HTMLButtonElement>('[role="tab"]')]
+          const current = tabs.indexOf(document.activeElement as HTMLButtonElement)
+          const next = event.key === 'Home' ? 0 : event.key === 'End' ? tabs.length - 1 : event.key === 'ArrowRight' ? (current + 1) % tabs.length : event.key === 'ArrowLeft' ? (current - 1 + tabs.length) % tabs.length : null
+          if (next !== null) { event.preventDefault(); tabs[next]?.focus() }
+        }}>
+          <button type="button" role="tab" id="plugins-tab-installed" aria-controls="plugins-list-view" tabIndex={tab === 'installed' ? 0 : -1} aria-selected={tab === 'installed'} className={tab === 'installed' ? 'active' : ''} onClick={() => setTab('installed')}>
             已安装 <span>{installedCount}</span>
           </button>
-          <button type="button" role="tab" aria-selected={tab === 'available'} className={tab === 'available' ? 'active' : ''} onClick={() => setTab('available')}>
+          <button type="button" role="tab" id="plugins-tab-available" aria-controls="plugins-list-view" tabIndex={tab === 'available' ? 0 : -1} aria-selected={tab === 'available'} className={tab === 'available' ? 'active' : ''} onClick={() => setTab('available')}>
             可安装 <span>{availableCount}</span>
           </button>
           {codexSelected && (
-            <button type="button" role="tab" aria-selected={tab === 'marketplaces'} className={tab === 'marketplaces' ? 'active' : ''} onClick={() => setTab('marketplaces')}>
+            <button type="button" role="tab" id="plugins-tab-marketplaces" aria-controls="plugins-list-view" tabIndex={tab === 'marketplaces' ? 0 : -1} aria-selected={tab === 'marketplaces'} className={tab === 'marketplaces' ? 'active' : ''} onClick={() => setTab('marketplaces')}>
               市场 <span>{marketplaces.length}</span>
             </button>
           )}
@@ -412,9 +422,10 @@ export function PluginsPage({
       </section>
 
       {visibleErrors.map((message) => (
-        <div className="management-error" role="alert" key={message}>{message}</div>
+        <div className="management-error" role="alert" key={message}><span>{message}</span><Button size="sm" disabled={activeLoading || busyKey !== null} onClick={() => void perform('refresh', async () => { if (codexSelected) await onRefresh(); await loadProvider(provider) }).catch(() => undefined)}>重试</Button></div>
       ))}
 
+      <div id="plugins-list-view" role="tabpanel" aria-labelledby={`plugins-tab-${tab}`} tabIndex={0}>
       {!codexSelected ? (
         <section className="extension-grid" aria-busy={providerLoading}>
           {providerLoading && !providerSnapshot ? (
@@ -454,6 +465,7 @@ export function PluginsPage({
                       <input
                         type="checkbox"
                         checked={plugin.enabled}
+                        aria-label={`${plugin.enabled ? '停用' : '启用'} ${plugin.name}`}
                         disabled={busyKey !== null || !canToggle}
                         onChange={(event) => void perform(
                           `provider:${event.target.checked ? 'enable' : 'disable'}:${plugin.id}`,
@@ -478,6 +490,9 @@ export function PluginsPage({
                   </span>
                 </div>
                 <footer className="plugin-card-footer">
+                  <button className="icon-button compact" type="button" title="查看详情" aria-label={`查看 ${plugin.name}`} onClick={() => setDetails({ title: plugin.name, fields: [
+                    ['工具', plugin.provider], ['说明', plugin.description], ['来源', plugin.source.locator ?? sourceLabels[plugin.source.kind]], ['范围', plugin.scope ?? '未提供'], ['版本', plugin.currentVersion ?? '未知'], ['更新', `${updateLabels[plugin.update.state]}：${plugin.update.reason}`],
+                  ] })}><Eye size={16} /></button>
                   {plugin.installed ? (
                     <>
                       <span className={plugin.enabled ? 'extension-state enabled' : 'extension-state'}>
@@ -596,7 +611,7 @@ export function PluginsPage({
                 </div>
                 {plugin.installed && (
                   <label className="switch-control" title={plugin.enabled ? '停用' : '启用'}>
-                    <input type="checkbox" checked={plugin.enabled} disabled={busyKey !== null}
+                    <input type="checkbox" checked={plugin.enabled} disabled={busyKey !== null} aria-label={`${plugin.enabled ? '停用' : '启用'} ${plugin.name}`}
                       onChange={(event) => void perform(
                         `toggle:${plugin.pluginId}`,
                         () => refreshCodexAfter(() => onToggle(plugin.pluginId, event.target.checked)),
@@ -618,6 +633,9 @@ export function PluginsPage({
                 <span>{plugin.authPolicy || 'DEFAULT'}</span>
               </div>
               <footer className="plugin-card-footer">
+                <button className="icon-button compact" type="button" title="查看详情" aria-label={`查看 ${plugin.name}`} onClick={() => setDetails({ title: plugin.name, fields: [
+                  ['工具', 'Codex'], ['标识', plugin.pluginId], ['市场', plugin.marketplaceName], ['来源', plugin.sourcePath ?? '未提供'], ['版本', currentVersion || '未知'], ['安装策略', plugin.installPolicy], ['认证策略', plugin.authPolicy], ['更新', `${updateLabels[updateState]}：${updateReason}`],
+                ] })}><Eye size={16} /></button>
                 {plugin.installed ? (
                   <>
                     <span className={plugin.enabled ? 'extension-state enabled' : 'extension-state'}>
@@ -665,6 +683,9 @@ export function PluginsPage({
         </section>
       )}
 
+      </div>
+      <ResourceDetails value={details} onClose={() => setDetails(null)} />
+      {query && <Button variant="ghost" size="sm" onClick={() => setQuery('')}>清除筛选</Button>}
       {addMarketplaceOpen && (
         <AddMarketplaceDialog
           busy={busyKey === 'add-marketplace'}

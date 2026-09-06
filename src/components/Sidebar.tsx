@@ -8,11 +8,14 @@ import {
   RotateCw,
   Settings2,
   Sun,
+  UsersRound,
 } from 'lucide-react'
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import logoUrl from '../../assets/icon.png'
-import logoWhiteUrl from '../../assets/icon-white.png'
+import logoUrl from '../../assets/brand/v3/symbol-micro32-standard.svg'
+import logoWhiteUrl from '../../assets/brand/v3/symbol-micro32-dark.svg'
+import wordmarkUrl from '../../assets/brand/v3/wordmark-standard.svg'
+import wordmarkWhiteUrl from '../../assets/brand/v3/wordmark-dark.svg'
 import { navigationItems, type NavigationGroup, type PageId } from '../navigation'
 import type { UpdateSnapshot } from '../types'
 import { AccountArea } from './account/AccountArea'
@@ -20,6 +23,7 @@ import type { AccountAreaStatus, AccountSnapshot } from './account/account-stub'
 
 interface SidebarProps {
   activePage: PageId
+  accountActive?: boolean
   collapsed: boolean
   theme: 'light' | 'dark'
   appVersion: string
@@ -39,6 +43,7 @@ interface SidebarProps {
   /** 刷新余额 -- passed straight through to AccountArea. */
   onRefreshBalance: () => void
   onOpenAccountCenter: () => void
+  onSwitchAccount?: () => void
 }
 
 export function ThemeToggle({
@@ -64,6 +69,7 @@ export function ThemeToggle({
 
 export function Sidebar({
   activePage,
+  accountActive = false,
   collapsed,
   theme,
   appVersion,
@@ -81,6 +87,7 @@ export function Sidebar({
   onConfigureCliKey,
   onRefreshBalance,
   onOpenAccountCenter,
+  onSwitchAccount,
 }: SidebarProps) {
   const navigationRef = useRef<HTMLElement>(null)
   const moreToggleRef = useRef<HTMLButtonElement>(null)
@@ -198,6 +205,7 @@ export function Sidebar({
   const groupLabels: Record<Exclude<NavigationGroup, 'more'>, string> = {
     use: '日常',
     extensions: '加能力',
+    support: '帮助与维护',
   }
   const renderItem = (item: (typeof navigationItems)[number], onSelected?: () => void) => {
     const Icon = item.icon
@@ -205,17 +213,17 @@ export function Sidebar({
       <button
         key={item.id}
         type="button"
-        className={`nav-item${activePage === item.id ? ' active' : ''}${item.id === 'overview' ? ' static-nav-item' : ''}`}
+        className={`nav-item${!accountActive && activePage === item.id ? ' active' : ''}${item.id === 'overview' ? ' static-nav-item' : ''}`}
         data-navigation-id={item.id}
         data-sidebar-tooltip={item.label}
         title={item.hint ?? (collapsed ? item.label : undefined)}
-        aria-current={activePage === item.id ? 'page' : undefined}
+        aria-current={!accountActive && activePage === item.id ? 'page' : undefined}
         // item.hint 本身挂在 aria-hidden 的图标上，屏幕阅读器读不到；这里在
         // 按钮上补一份可达的 aria-label，让 label 仍是主信息、hint 是补充说明。
         aria-label={item.hint ? `${item.label}：${item.hint}` : undefined}
         onClick={() => { onNavigate(item.id); onSelected?.() }}
       >
-        <Icon size={18} />
+        <Icon size={20} aria-hidden="true" />
         <span className="nav-label">{item.label}</span>
         {item.placeholder && <span className="nav-item-soon">即将</span>}
       </button>
@@ -243,8 +251,8 @@ export function Sidebar({
     <aside className="sidebar">
       <div className="brand-block">
         <img src={theme === 'dark' ? logoWhiteUrl : logoUrl} className="brand-logo" alt="星芒AI" />
-        <div>
-          <div className="brand-name"><span>星芒</span>AI</div>
+        <div className="brand-wordmark-wrap">
+          <img className="brand-wordmark" src={theme === 'dark' ? wordmarkWhiteUrl : wordmarkUrl} alt="星芒AI" />
           <div className="brand-subtitle">v{appVersion}</div>
         </div>
         {showUpdate && (
@@ -305,6 +313,9 @@ export function Sidebar({
           onRefreshBalance={onRefreshBalance}
           onOpenAccountCenter={onOpenAccountCenter}
         />
+        {onSwitchAccount && <button type="button" className="account-switch-entry" aria-label="切换账号" title="切换账号" data-sidebar-tooltip="切换账号" onClick={onSwitchAccount}>
+          <UsersRound size={17} aria-hidden="true" /><span>切换账号</span>
+        </button>}
         <div className="sidebar-controls">
           <ThemeToggle theme={theme} onToggle={onToggleTheme} />
           <button

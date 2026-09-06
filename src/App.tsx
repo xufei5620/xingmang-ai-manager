@@ -6,6 +6,7 @@ import { RegisterDialog } from './components/account/RegisterDialog'
 import { ForgotPasswordDialog } from './components/account/ForgotPasswordDialog'
 import { ProvisioningConfirmDialog } from './components/account/ProvisioningConfirmDialog'
 import { AccountCenterPage, type AccountCenterTab } from './components/account/AccountCenterPage'
+import { AccountSwitcher } from './components/account/AccountSwitcher'
 import { resolveAccountErrorMessage } from './components/account/account-errors'
 import { resolveAccountAreaStatus } from './components/account/account-stub'
 import { resolveAccountSnapshot } from './components/account/account-session'
@@ -46,10 +47,16 @@ import { ConfigDialog } from './components/config/ConfigDialog'
 import { Dashboard } from './components/dashboard/Dashboard'
 import { PythonInstallConfirmDialog } from './components/dashboard/PythonInstallConfirmDialog'
 import { ErrorBoundary } from './components/ErrorBoundary'
-import { CodexOnboarding } from './components/onboarding/CodexOnboarding'
+import { DialogBackdrop } from './components/Dialog'
+import { StartGuide, type GuideRoute } from './components/onboarding/StartGuide'
+import { guideReadiness } from './components/onboarding/start-guide-state'
+import { readStartChoice, rememberStartChoice } from './onboarding-choice'
 import { NodeInstallGuide } from './components/onboarding/NodeInstallGuide'
 import { Sidebar } from './components/Sidebar'
 import { SupportDialog } from './components/SupportDialog'
+import { ShellStatusbar, ShellTopbar, updateNotice } from './components/shell/AppChrome'
+import { NavigationStateProvider, PageViewport } from './components/shell/NavigationState'
+import { formatBalanceUsd } from './components/account/account-stub'
 import { WelcomePage } from './components/welcome/WelcomePage'
 import { StartupSplash } from './components/StartupSplash'
 import { Toast, type ToastMessage } from './components/Toast'
@@ -69,7 +76,7 @@ import {
 import { McpPage, type McpCreateRequest } from './pages/McpPage'
 import { PluginsPage, type MarketplaceCreateRequest } from './pages/PluginsPage'
 import { SessionsPage } from './pages/SessionsPage'
-import { SettingsPage } from './pages/SettingsPage'
+import { SettingsPage, type SettingsSectionId } from './pages/SettingsPage'
 import { createScanRequestTracker, runCoordinatedScan } from './scan-coordinator'
 import { createLatestRequestTracker } from './latest-request'
 import {
@@ -99,6 +106,7 @@ import {
   type AccountSessionState,
   type AppConfigSummary,
   type AppSettingsV2,
+  type AppSettingsV2Update,
   type CodexDesktopLaunchMode,
   type CodexDesktopInstallProgress,
   type CodexDesktopStatusEvent,
@@ -106,6 +114,7 @@ import {
   type NodeRuntimeInstallProgress,
   type PythonRuntimeInstallProgress,
   type DiagnosticsReport,
+  type ExternalDeepLink,
   type McpServer,
   type PluginCatalog,
   type PlatformCapabilities,
@@ -134,6 +143,8 @@ function App() {
   const [theme, setTheme] = useState<ThemeMode>(initialTheme)
   const [sidebarCollapsed, setSidebarCollapsed] = useState(initialSidebarCollapsed)
   const [activePage, setActivePage] = useState<PageId>('overview')
+  const [settingsSection, setSettingsSection] = useState<SettingsSectionId | undefined>()
+  const [returnToHealth, setReturnToHealth] = useState(false)
   const [systemNavigationExpanded, setSystemNavigationExpanded] = useState(false)
   const [platformCapabilities, setPlatformCapabilities] = useState<PlatformCapabilities>(() => {
     document.documentElement.dataset.platform = failClosedPlatformCapabilities.platform
@@ -182,9 +193,19 @@ function App() {
   const [accountSession, setAccountSession] = useState<AccountSessionState | null>(null)
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
   const [accountDialog, setAccountDialog] = useState<'login' | 'register' | 'forgot-password' | null>(null)
+  const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false)
+  const [welcomeGuideOpen, setWelcomeGuideOpen] = useState(false)
+  const [hasSavedAccounts, setHasSavedAccounts] = useState(false)
+  useEffect(() => {
+    if (appView !== 'welcome') return
+    let active = true
+    void window.xingmang.listSavedAccounts?.().then((accounts) => {
+      if (active) setHasSavedAccounts(accounts.length > 0)
+    }).catch(() => {})
+    return () => { active = false }
+  }, [appView])
   const [supportDialogOpen, setSupportDialogOpen] = useState(false)
   const supportWrapRef = useRef<HTMLDivElement>(null)
-  const [onboardingAutoStart, setOnboardingAutoStart] = useState(true)
   const [accountBusy, setAccountBusy] = useState(false)
   // Set only by a real successful account:reset-password call (handleForgot-
   // PasswordSubmit below), never from mere form input -- same non-negotiable
@@ -202,6 +223,10 @@ function App() {
   // user closes without submitting can never leak a fake prefill into a
   // later, unrelated login.
   const [accountLoginPrefill, setAccountLoginPrefill] = useState('')
+  const [accountInvitePrefill, setAccountInvitePrefill] = useState('')
+  const [pendingDeepLink, setPendingDeepLink] = useState<ExternalDeepLink | null>(null)
+  const [paymentAfterLogin, setPaymentAfterLogin] = useState<Extract<ExternalDeepLink, { kind: 'pay' }> | null>(null)
+  const [paymentReturn, setPaymentReturn] = useState<{ sequence: number; order: string | null; userId: number } | undefined>()
   // 「记住密码」凭据(account:get-remembered-login,主进程 safeStorage 加密
   // 落盘)。只在登录弹窗打开期间驻留内存:弹窗一关立即清空,不让明文密码
   // 常驻渲染进程(I3 的精神)。ready 门控弹窗渲染,保证 LoginDialog 挂载时
@@ -259,6 +284,26 @@ function App() {
     checkUpdatesOnStartup: true,
     runDiagnosticsOnStartup: false,
   })
+  const [trayAvailable, setTrayAvailable] = useState(false)
+  const [desktopNotificationsSupported, setDesktopNotificationsSupported] = useState<boolean | undefined>()
+  useEffect(() => {
+    let current = true
+    void window.xingmang.getWindowCapabilities?.().then((capabilities) => {
+      if (current) {
+        setTrayAvailable(capabilities.tray)
+        setDesktopNotificationsSupported(capabilities.notifications)
+      }
+    }).catch(() => {})
+    return () => { current = false }
+  }, [appView])
+
+  useEffect(() => window.xingmang.onWindowCloseRequest?.(({ requestId }) => {
+    const blockingTask = installing.size > 0 || nodeRuntimeInstalling || pythonRuntimeInstalling
+      || codexDesktopInstalling || provisioningBusy || accountBusy
+      || Boolean(document.querySelector('.settings-v3-feedback.saving'))
+    const unsavedChanges = Boolean(document.querySelector('[data-dialog-layer], dialog[open], [data-unsaved="true"]'))
+    void window.xingmang.replyWindowClose(requestId, { blockingTask, unsavedChanges }).catch(() => {})
+  }), [installing, nodeRuntimeInstalling, pythonRuntimeInstalling, codexDesktopInstalling, provisioningBusy, accountBusy])
   const [repositoryContext, setRepositoryContext] = useState<RepositoryContext>({ repositoryRoot: null })
   const [healthReport, setHealthReport] = useState<DiagnosticsReport | null>(null)
   const [startupDiagnosticsAttempted, setStartupDiagnosticsAttempted] = useState(false)
@@ -310,6 +355,11 @@ function App() {
     // merge (①栏11) leaves it untouched by the page's saves.
     settings.relaySiteId,
     settings.mirrorPolicy,
+    settings.uiSkin,
+    settings.reducedMotion,
+    settings.uiScale,
+    settings.closeBehavior,
+    settings.desktopNotifications,
   ])
   // W3b adds the first site-switcher UI (SettingsPage's 服务站点 dropdown),
   // writing into settings.relaySiteId through the page's own normal save
@@ -326,9 +376,70 @@ function App() {
   )
 
   useEffect(() => {
-    const unsubscribe = window.xingmang.onNavigate(setActivePage)
+    const unsubscribe = window.xingmang.onNavigate((page) => {
+      if (page === 'topup') {
+        if (!accountSession?.authenticated) { setAccountDialog('login'); return }
+        setAccountCenterSection('topup')
+        setAppView('account-center')
+        return
+      }
+      setAppView('dashboard')
+      setActivePage(page)
+    })
+    return unsubscribe
+  }, [accountSession?.authenticated])
+
+  useEffect(() => {
+    const receive = () => {
+      void window.xingmang.takeExternalDeepLink?.().then((link) => {
+        if (link) setPendingDeepLink(link)
+      }).catch(() => setToast({ type: 'error', message: '链接读取失败，请从工具箱内打开对应页面。' }))
+    }
+    const unsubscribe = window.xingmang.onExternalDeepLink?.(receive)
+    receive()
     return unsubscribe
   }, [])
+
+  useEffect(() => {
+    if (!pendingDeepLink || appView === 'loading' || accountBusy || accountDialog || configOpen || accountSwitcherOpen || provisioningTargets) return
+    const link = pendingDeepLink
+    setPendingDeepLink(null)
+    if (link.kind === 'invalid') {
+      setToast({ type: 'error', message: link.message })
+    } else if (link.kind === 'invite') {
+      setAccountInvitePrefill(link.code)
+      if (accountSession?.authenticated) setToast({ type: 'info', message: '邀请码已保留，可在退出登录后注册新账号时使用。' })
+      else setAccountDialog('register')
+    } else if (!accountSession?.authenticated) {
+      setPaymentAfterLogin(link)
+      setAccountDialog('login')
+    } else {
+      setAccountCenterSection('orders')
+      setPaymentReturn((current) => ({ sequence: (current?.sequence ?? 0) + 1, order: link.order, userId: accountSession.account!.userId }))
+      setAppView('account-center')
+    }
+  }, [pendingDeepLink, appView, accountBusy, accountDialog, configOpen, accountSwitcherOpen, provisioningTargets, accountSession?.authenticated])
+
+  useEffect(() => {
+    if (!paymentAfterLogin || !accountSession?.authenticated || accountBusy || accountDialog || appView === 'loading') return
+    setPendingDeepLink(paymentAfterLogin)
+    setPaymentAfterLogin(null)
+  }, [paymentAfterLogin, accountSession?.authenticated, accountBusy, accountDialog, appView])
+
+  useEffect(() => {
+    document.documentElement.dataset.os = platformCapabilities.platform === 'windows' ? 'win' : platformCapabilities.platform === 'macos' ? 'mac' : 'linux'
+  }, [platformCapabilities.platform])
+
+  useEffect(() => {
+    document.documentElement.dataset.skin = settings.uiSkin ?? (theme === 'dark' ? 'obsidian' : 'dawn')
+    const media = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const applyMotion = () => {
+      document.documentElement.dataset.reducedMotion = String(settings.reducedMotion ?? media.matches)
+    }
+    applyMotion()
+    media.addEventListener('change', applyMotion)
+    return () => media.removeEventListener('change', applyMotion)
+  }, [theme, settings.uiSkin, settings.reducedMotion])
 
   useEffect(() => () => {
     scanTracker.invalidate()
@@ -683,6 +794,23 @@ function App() {
     }
   }, [])
 
+  const settingsPatchSequence = useRef(0)
+  const settingsPatchOwners = useRef(new Map<keyof AppSettingsV2, number>())
+  const saveSettingsPatch = useCallback(async (update: AppSettingsV2Update) => {
+    const request = ++settingsPatchSequence.current
+    const fields = (Object.keys(update) as Array<keyof AppSettingsV2>).filter((field) => field !== 'version')
+    for (const field of fields) settingsPatchOwners.current.set(field, request)
+    const saved = await window.xingmang.saveSettings(update)
+    const currentFields = fields.filter((field) => settingsPatchOwners.current.get(field) === request)
+    const accepted = Object.fromEntries(currentFields.map((field) => [field, saved[field]]))
+    setSettings((current) => ({ ...current, ...accepted }))
+    if (currentFields.includes('theme')) setTheme(saved.theme)
+    if (currentFields.includes('workspace')) {
+      try { setRepositoryContext(await window.xingmang.getRepositoryContext()) }
+      catch (cause) { setToast({ type: 'error', message: `设置已保存，工作目录刷新失败：${errorMessage(cause)}` }) }
+    }
+  }, [])
+
   const toggleSidebarMoreExpanded = useCallback(() => {
     setSystemNavigationExpanded((current) => !current)
   }, [])
@@ -771,6 +899,17 @@ function App() {
           await loadConfig()
           if (!active) return
           setScanning(false)
+          setAppView('dashboard')
+          void scan()
+          return
+        }
+        if (authenticated && startupAccountSession?.account && readStartChoice(
+          window.localStorage,
+          resolveRelaySite(startupSettings?.relaySiteId).id,
+          startupAccountSession.account.userId,
+        )) {
+          await loadConfig()
+          if (!active) return
           setAppView('dashboard')
           void scan()
           return
@@ -1001,6 +1140,48 @@ function App() {
     }
   }
 
+  const switchSavedAccount = async (id: string, selected: ProviderId[]) => {
+    if (accountBusyRef.current) throw new Error('账号操作正在进行，请稍后重试')
+    accountBusyRef.current = true
+    setAccountBusy(true)
+    try {
+      const next = await window.xingmang.switchSavedAccount(id)
+      if (!next.authenticated || !next.account) throw new Error('目标账号未能恢复登录')
+      setAccountSwitcherOpen(false)
+      setAccountSession(next)
+      setAccountBalance(null)
+      pageDataTracker.invalidateAll()
+      officialUsageTracker.invalidateAll()
+      setProvisioningRetryTargets(null)
+      setProvisioningTargets(null)
+      setAppView('dashboard')
+      setActivePage('overview')
+      const warnings: string[] = []
+      try {
+        const latest = await window.xingmang.getConfig()
+        const latestSettings = await window.xingmang.getSettings()
+        const requested = [...new Set(selected)].filter((provider) => (
+          providerIds.includes(provider)
+          && (snapshotRef.current.clis[provider].installed || provider === 'codex' && snapshotRef.current.desktopApps.codex.installed)
+          && latest.providers[provider].matchesRelay
+          && !latestSettings.officialProviders?.includes(provider)
+        ))
+        if (requested.length !== selected.length) warnings.push('部分工具的来源或安装状态已变化，原配置已保留')
+        if (requested.length) {
+          const result = await configureManagedCliKeysForInstalledClis(requested, preferredModelsFromConfig(latest), window.xingmang)
+          warnings.push(...result.failed.map((entry) => `${providers[entry.provider].name}：${userFacingErrorMessage(entry.message)}`))
+        }
+        setConfig(await window.xingmang.getConfig())
+      } catch (cause) { warnings.push(`工具配置同步未完成：${errorMessage(cause)}`) }
+      try { setAccountBalance(await window.xingmang.getAccountBalance()) }
+      catch { warnings.push('余额暂未获取') }
+      setToast(warnings.length
+        ? { type: 'error', message: `已切换到 ${next.account.username}；${warnings.join('；')}` }
+        : { type: 'success', message: `已切换到 ${next.account.username}` })
+      void scan()
+    } finally { accountBusyRef.current = false; setAccountBusy(false) }
+  }
+
   const refreshAccountSession = async (): Promise<AccountProfile | null> => {
     const session = await window.xingmang.getAccountSession()
     setAccountSession(session)
@@ -1171,6 +1352,16 @@ function App() {
       warnings.push(`API Key 本地配置读取失败：${resolveAccountErrorMessage(errorMessage(error))}`)
     }
 
+    const activeSession = await window.xingmang.getAccountSession()
+    if (activeSession.authenticated && activeSession.account && readStartChoice(
+      window.localStorage, activeRelaySite.id, activeSession.account.userId,
+    )) {
+      setAppView('dashboard')
+      void scan()
+      setToast(warnings.length ? { type: 'error', message: warnings.join('；') } : { type: 'success', message: successMessage })
+      return
+    }
+
     // Re-login should reuse a verified bootstrap instead of replaying the
     // entire managed initialization flow. This is deliberately the same
     // durable gate used
@@ -1224,12 +1415,8 @@ function App() {
       warnings.push(`现有配置复核失败：${errorMessage(error)}`)
     }
 
-    // Account-backed sites have a zero-click post-login bootstrap. The managed
-    // onboarding path reuses the cached GPT-中转/订阅 key, prepares Codex
-    // Desktop, verifies the resulting config, then enters the dashboard
-    // automatically. Node.js, npm and Codex CLI stay optional and can be
-    // installed later from maintenance when the user needs them.
-    setOnboardingAutoStart(true)
+    // Preparation is selected explicitly; login alone must not install a tool
+    // or overwrite an existing provider's configuration.
     setAppView('onboarding')
     // The managed progress panel becomes the source of truth immediately
     // after login. A success toast repeated the same status and covered the
@@ -1282,7 +1469,6 @@ function App() {
       await finishAuthenticatedEntry(`欢迎回来，${loginResult.account.username}`, warnings)
     } catch (error) {
       setAccountDialog(null)
-    setOnboardingAutoStart(true)
     setAppView('onboarding')
       setToast({ type: 'error', message: `登录成功，但账号初始化失败：${resolveAccountErrorMessage(errorMessage(error))}` })
     } finally {
@@ -1342,7 +1528,6 @@ function App() {
       await finishAuthenticatedEntry(`欢迎，${loginResult.account.username}，账号已创建`, warnings)
     } catch (error) {
       setAccountDialog(null)
-      setOnboardingAutoStart(true)
       setAppView('onboarding')
       setToast({ type: 'error', message: `注册并登录成功，但账号初始化失败：${resolveAccountErrorMessage(errorMessage(error))}` })
     } finally {
@@ -1701,7 +1886,58 @@ function App() {
       })
       return
     }
+    setAppView('dashboard')
     setActivePage(pageId)
+  }
+
+  const installGuideTool = async (route: GuideRoute) => {
+    if (route === 'chat') return
+    if (route === 'codexDesktop') {
+      if (platformCapabilities.codexDesktop.install === 'external') {
+        await window.xingmang.openExternal('https://chatgpt.com/download/')
+        return
+      }
+      setCodexDesktopInstalling(true)
+      try { await window.xingmang.installCodexDesktop() }
+      finally { setCodexDesktopInstalling(false) }
+      return
+    }
+    if (platformCapabilities.cliInstall[route] === 'external') {
+      const result = await performCliInstallAction(route, platformCapabilities, window.xingmang)
+      if (result.kind === 'external') setToast({ type: 'success', message: result.guidance })
+      return
+    }
+    setInstalling((current) => new Set(current).add(route))
+    try { await window.xingmang.installCli(route) }
+    finally { setInstalling((current) => { const next = new Set(current); next.delete(route); return next }) }
+  }
+
+  const prepareGuideRuntime = async () => {
+    if (platformCapabilities.nodeRuntimeInstall === 'external') {
+      await window.xingmang.openExternal('https://nodejs.org/')
+      return
+    }
+    setNodeRuntimeInstalling(true)
+    try { await window.xingmang.installNodeRuntime() }
+    finally { setNodeRuntimeInstalling(false) }
+  }
+
+  const completeStartGuide = async (route: GuideRoute) => {
+    const owner = await window.xingmang.getAccountSession()
+    if (!owner.authenticated || !owner.account) throw new Error('请先登录星芒账号')
+    const latest = await window.xingmang.getConfig()
+    setConfig(latest)
+    const readiness = guideReadiness(route, platformCapabilities, snapshotRef.current, latest)
+    if (!readiness.prepared || !readiness.connected) throw new Error('工具或连接状态已变化，请重新检测')
+    if (route === 'codexDesktop') await window.xingmang.launchCodexDesktop('open')
+    else if (route !== 'chat') await window.xingmang.launchCli(route, latest.workspace)
+    const current = await window.xingmang.getAccountSession()
+    if (!current.authenticated || current.account?.userId !== owner.account.userId) return
+    const remembered = rememberStartChoice(window.localStorage, activeRelaySite.id, owner.account.userId, route)
+    setAppView('dashboard')
+    setActivePage(route === 'chat' ? 'chat' : 'overview')
+    if (!remembered) setToast({ type: 'error', message: '工具已准备完成，但本机未能保存引导偏好' })
+    void scan()
   }
 
   const performCodexDesktopLaunch = async (mode: CodexDesktopLaunchMode) => {
@@ -1868,6 +2104,29 @@ function App() {
     }
   }
 
+  const trayLaunchRef = useRef<(route: ProviderId | 'codexDesktop') => void>(() => {})
+  trayLaunchRef.current = (route) => {
+    if (!accountSession?.authenticated) { setAccountDialog('login'); return }
+    if (route === 'codexDesktop') void requestCodexDesktopLaunch()
+    else if (providerIds.includes(route)) void launch(route)
+  }
+  useEffect(() => window.xingmang.onLaunchTool?.((route) => trayLaunchRef.current(route)), [])
+
+  const renderAccountSwitcher = () => accountSwitcherOpen ? <AccountSwitcher
+    activeUserId={accountSession?.account?.userId ?? null}
+    accountsOrigin={new URL(activeRelaySite.accountBaseUrl!).origin}
+    loadAccounts={() => window.xingmang.listSavedAccounts()}
+    onSwitch={switchSavedAccount}
+    onRemove={(id) => window.xingmang.removeSavedAccount(id)}
+    onClose={() => setAccountSwitcherOpen(false)}
+    onAddAccount={() => { setAccountSwitcherOpen(false); setAccountDialog('login') }}
+    syncTools={providerIds.filter((provider) => snapshot.clis[provider].installed || provider === 'codex' && snapshot.desktopApps.codex.installed).map((id) => ({
+      id, label: id === 'codex' ? 'Codex 桌面端 / CLI' : providers[id].name,
+      source: providerAccountSource(config?.providers[id]) === 'relay' ? '星芒密钥' : providerAccountSource(config?.providers[id]) === 'official' ? '官方账号' : '第三方配置',
+      allowed: config?.providers[id].matchesRelay === true && !settings.officialProviders?.includes(id),
+    }))}
+  /> : null
+
   if (appView === 'loading') {
     return (
       <AppFrame theme={theme} platform={platformCapabilities}>
@@ -1881,14 +2140,31 @@ function App() {
       <AppFrame theme={theme} platform={platformCapabilities}>
         <WelcomePage
           theme={theme}
+          reducedMotion={settings.reducedMotion}
+          onReducedMotionChange={(reducedMotion) => {
+            void saveSettingsPatch({ version: 2, reducedMotion }).catch((cause) => setToast({ type: 'error', message: errorMessage(cause) }))
+          }}
           onRegister={() => setAccountDialog('register')}
           onLogin={() => setAccountDialog('login')}
+          onOpenGuide={() => setWelcomeGuideOpen(true)}
+          onOpenSavedAccounts={hasSavedAccounts ? () => setAccountSwitcherOpen(true) : undefined}
           onOpenSupport={() => {
             void window.xingmang.openExternal(supportServiceUrl).catch((error: unknown) => {
               setToast({ type: 'error', message: errorMessage(error) })
             })
           }}
         />
+        {renderAccountSwitcher()}
+        {welcomeGuideOpen && <DialogBackdrop className="shell-overlay" onDismiss={() => setWelcomeGuideOpen(false)}>
+          <section className="shell-panel welcome-tutorial" role="dialog" aria-modal="true" aria-label="使用步骤">
+            <header className="shell-panel-head"><h2>使用步骤</h2><button className="shell-icon-button" type="button" aria-label="关闭使用步骤" onClick={() => setWelcomeGuideOpen(false)}><X size={18} /></button></header>
+            <TutorialPage
+              onNavigate={() => { setWelcomeGuideOpen(false); setAccountDialog('login') }}
+              onOpenAccountCenter={() => { setWelcomeGuideOpen(false); setAccountDialog('login') }}
+              onOpenSupport={() => { void window.xingmang.openExternal(supportServiceUrl).catch((cause) => setToast({ type: 'error', message: errorMessage(cause) })) }}
+            />
+          </section>
+        </DialogBackdrop>}
         {accountDialog === 'login' && rememberedLoginReady && (
           <LoginDialog
             onClose={() => setAccountDialog(null)}
@@ -1903,6 +2179,7 @@ function App() {
         )}
         {accountDialog === 'register' && (
           <RegisterDialog
+            initialInviteCode={accountInvitePrefill}
             onClose={() => setAccountDialog(null)}
             onSwitchToLogin={() => setAccountDialog('login')}
             onSubmit={(values) => void handleAccountRegisterSubmit(values)}
@@ -1953,21 +2230,24 @@ function App() {
   if (appView === 'onboarding') {
     return (
       <AppFrame theme={theme} platform={platformCapabilities}>
-      <CodexOnboarding
-        initialConfig={config}
-        codexOfficial={settings.officialProviders?.includes('codex') ?? false}
-        codexDesktopInstallDisabled={settings.codexDesktopInstallDisabled === true}
-        theme={theme}
-        onToggleTheme={() => {
-          const next = theme === 'light' ? 'dark' : 'light'
-          setTheme(next)
-          // 设置页的 draft 以 settings 为基准，主题双通道必须同步，否则保存设置会把主题回退。
-          setSettings((current) => current.theme === next ? current : { ...current, theme: next })
+      <StartGuide
+        platform={platformCapabilities}
+        snapshot={snapshot}
+        config={config}
+        scanning={scanning}
+        busy={installing.size > 0 || nodeRuntimeInstalling || codexDesktopInstalling}
+        onScan={async () => {
+          const result = await scan(true)
+          if (!result.snapshot || !result.config) throw new Error('检测未完成，请重试')
         }}
-        onConfigChange={setConfig}
-        onComplete={finishOnboarding}
-        onLogout={() => void leaveManagedOnboardingToWelcome()}
-        autoStart={onboardingAutoStart}
+        onInstall={installGuideTool}
+        onPrepareRuntime={prepareGuideRuntime}
+        onConfigure={(route) => {
+          if (route === 'chat') return
+          setActiveConfigTab(route)
+          setConfigOpen(true)
+        }}
+        onComplete={completeStartGuide}
         onCancel={() => {
           const loginRequired = !(accountSession?.authenticated ?? false)
           if (loginRequired) {
@@ -1979,9 +2259,24 @@ function App() {
           // 与模型检测将永久挂起(settle 唯一调用点在 scan 的 finally)。
           void scan()
         }}
-        desktopInstallProgress={codexDesktopInstallProgress}
-        platform={platformCapabilities}
+        cancelLabel={accountSession?.authenticated ? '返回工作台' : '返回登录'}
+        progress={codexDesktopInstalling && codexDesktopInstallProgress
+          ? { label: codexDesktopInstallProgress.message }
+          : nodeRuntimeInstalling && nodeRuntimeInstallProgress ? { label: nodeRuntimeInstallProgress.message } : undefined}
       />
+      {configOpen && <ConfigDialog
+        platform={platformCapabilities}
+        activeTab={activeConfigTab}
+        config={config}
+        snapshot={snapshot}
+        relaySite={activeRelaySite}
+        accountAuthenticated={Boolean(accountSession?.authenticated)}
+        onConfigChange={setConfig}
+        onSettingsChange={setSettings}
+        onClose={() => setConfigOpen(false)}
+        notify={setToast}
+        awaitCliReady={cliReadyGate.ready}
+      />}
       {toast && (
         <Toast
           toast={toast}
@@ -1993,31 +2288,13 @@ function App() {
     )
   }
 
-  if (appView === 'account-center') {
-    return (
-      <AppFrame theme={theme} platform={platformCapabilities}>
-        <AccountCenterPage
-          onClose={() => setAppView('dashboard')}
-          onLogout={() => void handleAccountLogout()}
-          notify={setToast}
-          initialSection={accountCenterSection}
-        />
-        {toast && (
-          <Toast
-            toast={toast}
-            onDismiss={() => setToast(null)}
-            onCopy={toast.type === 'error' ? copyToastMessage : undefined}
-          />
-        )}
-      </AppFrame>
-    )
-  }
-
   return (
     <AppFrame theme={theme} platform={platformCapabilities}>
+    <NavigationStateProvider scope={`${activeRelaySite.id}:${accountSession?.account?.userId ?? 'guest'}`}>
     <div className={`app-shell${sidebarCollapsed ? ' sidebar-collapsed' : ''}`}>
       <Sidebar
         activePage={activePage}
+        accountActive={appView === 'account-center'}
         collapsed={sidebarCollapsed}
         theme={theme}
         appVersion={packageInfo.version}
@@ -2040,6 +2317,7 @@ function App() {
         onConfigureCliKey={() => void handleConfigureCliKey()}
         onRefreshBalance={() => void handleRefreshBalance()}
         onOpenAccountCenter={() => { setAccountCenterSection('overview'); setAppView('account-center') }}
+        onSwitchAccount={() => setAccountSwitcherOpen(true)}
       />
 
       <div ref={supportWrapRef} className="floating-support-wrap">
@@ -2067,10 +2345,43 @@ function App() {
         </button>
       </div>
 
-      <main className="main-content">
-        <ErrorBoundary resetKey={activePage} onReturnOverview={() => setActivePage('overview')} notify={setToast}>
-        {activePage === 'overview' ? (
+      <div className="shell-workspace">
+      <ShellTopbar
+        platform={platformCapabilities.platform}
+        loadAnnouncement={accountSession?.authenticated ? () => window.xingmang.getAccountNotice() : undefined}
+        noticeScope={`${activeRelaySite.id}:${accountSession?.account?.userId ?? 'guest'}`}
+        onOpenExternal={(url) => {
+          void window.xingmang.openExternal(url).catch((cause) => setToast({ type: 'error', message: errorMessage(cause) }))
+        }}
+        notices={[updateNotice(updateState)].filter((notice): notice is NonNullable<typeof notice> => notice !== null)}
+        onNavigate={handleNavigate}
+        onHelp={() => setSupportDialogOpen(true)}
+      />
+      <PageViewport viewKey={`${appView}:${activePage}`}>
+        {returnToHealth && activePage !== 'health' && appView === 'dashboard' && <div className="shell-return-bar">
+          <button className="secondary-button" type="button" onClick={() => { setReturnToHealth(false); handleNavigate('health') }}>返回检查</button>
+        </div>}
+        <ErrorBoundary resetKey={`${appView}:${activePage}`} onReturnOverview={() => handleNavigate('overview')} notify={setToast}>
+        {appView === 'account-center' ? (
+          <AccountCenterPage
+            paymentReturn={paymentReturn?.userId === accountSession?.account?.userId ? paymentReturn : undefined}
+            onClose={() => setAppView('dashboard')}
+            onLogout={() => void handleAccountLogout()}
+            notify={setToast}
+            initialSection={accountCenterSection}
+          />
+        ) : activePage === 'overview' ? (
           <Dashboard
+            accountSummary={accountSession?.authenticated ? {
+              label: accountSnapshot.nickname,
+              balanceLabel: accountBalance ? formatBalanceUsd(accountBalance.quota, accountBalance.quotaPerUnit) : '暂未获取',
+            } : undefined}
+            onOpenAccount={() => {
+              if (!accountSession?.authenticated) { setAccountDialog('login'); return }
+              setAccountCenterSection('overview')
+              setAppView('account-center')
+            }}
+            onOpenHistory={() => handleNavigate('sessions')}
             platform={platformCapabilities}
             snapshot={snapshot}
             config={config}
@@ -2226,7 +2537,17 @@ function App() {
         ) : activePage === 'backups' ? (
           <BackupsPage api={backupsApi} />
         ) : activePage === 'health' ? (
-          <HealthPage api={healthApi} initialReport={healthReport} />
+          <HealthPage api={healthApi} initialReport={healthReport} onResolve={(item) => {
+            const provider = providerIds.find((id) => item.code === `PROVIDER_${id.toUpperCase()}`)
+            if (provider) { openConfig(provider); return }
+            setReturnToHealth(true)
+            if (item.code === 'XINGMANG_NETWORK' || item.code === 'PROXY_ENVIRONMENT' || item.code === 'CLASH_VERGE_TUN') {
+              setSettingsSection('network')
+              handleNavigate('settings')
+            } else if (item.code.startsWith('RUNTIME_') || item.code.startsWith('CLI_') || item.code === 'CODEX_DESKTOP') {
+              handleNavigate('maintenance')
+            } else handleNavigate('feedback')
+          }} />
         ) : activePage === 'maintenance' ? (
           <MaintenancePage api={maintenanceApi} platform={platformCapabilities} />
         ) : activePage === 'feedback' ? (
@@ -2238,15 +2559,37 @@ function App() {
             onCheck={() => void runUpdateAction(() => window.xingmang.checkForUpdates())}
             onDownload={() => void runUpdateAction(() => window.xingmang.downloadUpdate())}
             onInstall={() => void runUpdateAction(() => window.xingmang.installUpdate())}
+            onRetryDownload={() => void runUpdateAction(async () => {
+              const checked = await window.xingmang.checkForUpdates()
+              return checked.phase === 'available' ? window.xingmang.downloadUpdate() : checked
+            })}
           />
         ) : activePage === 'settings' ? (
           <SettingsPage
             value={persistedSettings}
             onSave={saveSettings}
+            onSavePatch={saveSettingsPatch}
+            appVersion={packageInfo.version}
+            trayAvailable={trayAvailable}
+            desktopNotificationsSupported={desktopNotificationsSupported}
+            initialSection={settingsSection}
+            onChooseWorkspace={() => window.xingmang.chooseWorkspace()}
             onThemePreview={(next) => {
-              setTheme(next)
-              // 设置页的 draft 以 settings 为基准，主题双通道必须同步，否则保存设置会把主题回退。
-              setSettings((current) => current.theme === next ? current : { ...current, theme: next })
+              document.documentElement.dataset.theme = next
+              document.documentElement.style.colorScheme = next
+              document.documentElement.dataset.skin = settings.uiSkin ?? (next === 'dark' ? 'obsidian' : 'dawn')
+            }}
+            onAppearancePreview={(appearance) => {
+              if ('uiSkin' in appearance) document.documentElement.dataset.skin = appearance.uiSkin
+                ?? (document.documentElement.dataset.theme === 'dark' ? 'obsidian' : 'dawn')
+              if ('reducedMotion' in appearance) document.documentElement.dataset.reducedMotion = String(appearance.reducedMotion === true)
+            }}
+            onNavigate={(target) => {
+              if (target === 'account') {
+                if (!accountSession?.authenticated) { setAccountDialog('login'); return }
+                setAccountCenterSection('overview')
+                setAppView('account-center')
+              } else handleNavigate(target === 'update' ? 'updates' : target)
             }}
             onReplayOnboarding={() => {
               if (!canEnterManagedOnboarding(Boolean(accountSession?.authenticated), previewOnboarding)) {
@@ -2254,7 +2597,6 @@ function App() {
                 setToast({ type: 'error', message: '请先登录星芒账号，再初始化 Codex' })
                 return
               }
-              setOnboardingAutoStart(false)
               setAppView('onboarding')
             }}
           />
@@ -2270,8 +2612,23 @@ function App() {
           <PlaceholderPage pageId={activePage} />
         )}
         </ErrorBoundary>
-      </main>
+      </PageViewport>
+      <ShellStatusbar
+        environment={scanning ? '正在检查环境' : snapshot.runtime.node.installed ? `Node ${snapshot.runtime.node.version ?? '已安装'}` : 'Node 未安装'}
+        account={accountSession?.authenticated ? accountSnapshot.nickname || '已登录' : '未登录'}
+        balance={accountBalance ? formatBalanceUsd(accountBalance.quota, accountBalance.quotaPerUnit) : null}
+        version={packageInfo.version}
+        update={updateState}
+        onNavigate={handleNavigate}
+        onAccount={() => {
+          if (!accountSession?.authenticated) { setAccountDialog('login'); return }
+          setAccountCenterSection('overview')
+          setAppView('account-center')
+        }}
+      />
+      </div>
 
+      {renderAccountSwitcher()}
       {configOpen && (
         <ConfigDialog
           platform={platformCapabilities}
@@ -2358,6 +2715,7 @@ function App() {
 
       {accountDialog === 'register' && (
         <RegisterDialog
+          initialInviteCode={accountInvitePrefill}
           onClose={() => setAccountDialog(null)}
           onSwitchToLogin={() => setAccountDialog('login')}
           onSubmit={(values) => void handleAccountRegisterSubmit(values)}
@@ -2415,6 +2773,7 @@ function App() {
         />
       )}
     </div>
+    </NavigationStateProvider>
     </AppFrame>
   )
 }

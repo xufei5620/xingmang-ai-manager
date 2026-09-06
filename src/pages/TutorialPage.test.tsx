@@ -13,6 +13,8 @@ describe('TutorialPage', () => {
     expect(markup).toContain('首次使用')
     expect(markup).not.toContain('feishu')
     expect(markup).not.toContain('s4621e8xzb')
+    expect(markup).not.toContain('第一次主要准备桌面端')
+    expect(markup).not.toContain('已装好的工具会自动拿到对应 Key')
   })
 
   it('finds topics by Chinese terms and tool identifiers', () => {

@@ -1,12 +1,16 @@
-import { CheckCircle2, Download, FileText, RefreshCw, RotateCw, ShieldCheck } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { AlertCircle, CheckCircle2, Download, FileText, RefreshCw, RotateCw, ShieldCheck } from 'lucide-react'
 import type { UpdateSnapshot } from '../types'
+import { errorMessage } from '../error-message'
+import './maintenance-v3.css'
 
 interface UpdatePageProps {
   state: UpdateSnapshot | null
   busy: boolean
-  onCheck: () => void
-  onDownload: () => void
-  onInstall: () => void
+  onCheck: () => void | Promise<void>
+  onDownload: () => void | Promise<void>
+  onInstall: () => void | Promise<void>
+  onRetryDownload?: () => void | Promise<void>
 }
 
 function formatBytes(value: number): string {
@@ -28,28 +32,44 @@ const phaseLabels: Record<UpdateSnapshot['phase'], string> = {
   error: '更新失败',
 }
 
-export function UpdatePage({ state, busy, onCheck, onDownload, onInstall }: UpdatePageProps) {
+export function UpdatePage({ state, busy, onCheck, onDownload, onInstall, onRetryDownload }: UpdatePageProps) {
+  const [pending, setPending] = useState(false)
+  const [actionError, setActionError] = useState<string | null>(null)
+  const pendingRef = useRef(false)
+  const mounted = useRef(true)
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
   const phase = state?.phase ?? 'idle'
-  const canCheck = !busy
+  const locked = busy || pending
+  const canCheck = !locked
+    && !state?.development
     && phase !== 'disabled'
     && phase !== 'checking'
     && phase !== 'downloading'
     && !(phase === 'downloaded' && !state?.error)
-  const canDownload = !busy && phase === 'available'
-  const canInstall = !busy && phase === 'downloaded' && !state?.development
-  const showReleaseNotes = phase === 'available' || phase === 'downloading' || phase === 'downloaded'
+  const canRetryDownload = Boolean(onRetryDownload && state?.availableVersion && (phase === 'error' || phase === 'cancelled') && !state.development)
+  const canDownload = !locked && !state?.development && (phase === 'available' || canRetryDownload)
+  const canInstall = !locked && phase === 'downloaded' && !state?.development
+  const showReleaseNotes = Boolean(state?.availableVersion && ['available', 'downloading', 'downloaded', 'cancelled', 'error'].includes(phase))
+  const progressPercent = state?.progress && Number.isFinite(state.progress.percent) ? Math.min(100, Math.max(0, state.progress.percent)) : undefined
+  const invoke = async (operation: () => void | Promise<void>) => {
+    if (pendingRef.current || busy) return
+    pendingRef.current = true
+    setPending(true)
+    setActionError(null)
+    try { await operation() } catch (failure) { if (mounted.current) setActionError(errorMessage(failure)) }
+    finally { pendingRef.current = false; if (mounted.current) setPending(false) }
+  }
 
   return (
-    <div className="page workspace-page update-page" data-page-id="updates">
+    <div className="page workspace-page update-page maintenance-v3 update-v3" data-page-id="updates">
       <header className="page-header workspace-page-header">
         <div>
           <h1>更新</h1>
-          <p className="page-lead">升级本软件。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="更新工具栏">
-          <button className="secondary-button" type="button" disabled={!canCheck} onClick={onCheck}>
+          <button className="secondary-button" type="button" disabled={!canCheck} onClick={() => void invoke(onCheck)}>
             <RefreshCw size={16} className={phase === 'checking' ? 'spin' : ''} />
-            检查更新
+            {phase === 'error' || phase === 'cancelled' ? '重新检查更新' : '检查更新'}
           </button>
         </div>
       </header>
@@ -58,7 +78,7 @@ export function UpdatePage({ state, busy, onCheck, onDownload, onInstall }: Upda
         <div className="management-panel-heading">
           <span className={`status-dot ${phase === 'error' ? 'error' : ''}`} />
           <div>
-            <h2>{phaseLabels[phase]}</h2>
+            <h2>{phase === 'downloaded' && state?.error ? '安装未完成' : phaseLabels[phase]}</h2>
             <p>
               当前版本 {state?.currentVersion ?? '-'}
               {phase === 'disabled' && ' · 免费分发包会启用自动更新，需同步发布完整更新文件'}
@@ -74,14 +94,14 @@ export function UpdatePage({ state, busy, onCheck, onDownload, onInstall }: Upda
           </div>
         )}
 
-        {state?.progress && (
+        {phase === 'downloading' && (
           <div className="update-progress" aria-label="更新下载进度">
-            <div><span>下载进度</span><strong>{state.progress.percent.toFixed(1)}%</strong></div>
-            <progress max="100" value={state.progress.percent} />
-            <small>
+            <div><span>下载进度</span><strong>{progressPercent === undefined ? '正在准备下载' : `${progressPercent.toFixed(1)}%`}</strong></div>
+            <progress max="100" value={progressPercent} />
+            {state?.progress && <small>
               {formatBytes(state.progress.transferred)} / {formatBytes(state.progress.total)}
               {' · '}{formatBytes(state.progress.bytesPerSecond)}/s
-            </small>
+            </small>}
           </div>
         )}
 
@@ -98,15 +118,15 @@ export function UpdatePage({ state, busy, onCheck, onDownload, onInstall }: Upda
           </div>
         )}
 
-        {state?.error && <div className="inline-error">{state.error.message}</div>}
+        {(actionError || state?.error) && <div className="inline-error" role="alert"><AlertCircle size={16} aria-hidden="true" />{actionError ?? state?.error?.message}</div>}
 
         <div className="management-actions">
-          <button type="button" className="secondary-button" disabled={!canDownload} onClick={onDownload}>
-            <Download size={16} /> 下载更新
+          <button type="button" className="secondary-button" disabled={!canDownload} onClick={() => void invoke(canRetryDownload && onRetryDownload ? onRetryDownload : onDownload)}>
+            <Download size={16} /> {canRetryDownload ? '重新下载' : '下载更新'}
           </button>
-          <button type="button" className="primary-button" disabled={!canInstall} onClick={onInstall}>
+          <button type="button" className="primary-button" disabled={!canInstall} onClick={() => void invoke(onInstall)}>
             {phase === 'downloaded' ? <RotateCw size={16} /> : <CheckCircle2 size={16} />}
-            重启并安装
+            {phase === 'downloaded' && state?.error ? '重试安装' : '重启并安装'}
           </button>
         </div>
       </section>

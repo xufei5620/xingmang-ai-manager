@@ -67,6 +67,7 @@ const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责�
 module.exports = {
   appId: 'com.xingmang.ai.manager',
   productName: '星芒AI管理工具',
+  protocols: [{ name: '星芒AI管理工具', schemes: ['xingmang'] }],
   copyright: 'Copyright © 2026 绍兴星芒文化传媒有限责任公司',
   asar: true,
   electronFuses: {
@@ -152,7 +153,7 @@ module.exports = {
     // only reached while electron-updater performs its own signature check.
     verifyUpdateCodeSignature: true,
     target: [{ target: 'nsis', arch: ['x64'] }],
-    icon: 'assets/windows-icon.png',
+    icon: 'assets/brand/v3/favicon.ico',
     legalTrademarks: '星芒AI',
     artifactName: 'XingMang-AI-Manager-${version}-Setup.${ext}',
   },

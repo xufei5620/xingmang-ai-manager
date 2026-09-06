@@ -36,17 +36,27 @@ vi.mock('electron', () => ({
       on: vi.fn(),
     }
     electronMocks.latestWebContents = webContents
+    const events = new Map<string, (...args: unknown[]) => void>()
+    let destroyed = false
     const browserWindow = {
       webContents,
       once: vi.fn(),
-      on: vi.fn(),
+      on: vi.fn((name: string, listener: (...args: unknown[]) => void) => events.set(name, listener)),
       loadURL: vi.fn(async () => undefined),
       setBackgroundColor: vi.fn(),
       center: vi.fn(),
       show: vi.fn(),
       focus: vi.fn(),
-      isDestroyed: vi.fn(() => false),
+      isDestroyed: vi.fn(() => destroyed),
       isMinimized: vi.fn(() => false),
+      close: vi.fn(() => {
+        const event = { preventDefault: vi.fn() }
+        events.get('close')?.(event)
+        if (event.preventDefault.mock.calls.length) return
+        destroyed = true
+        events.get('closed')?.()
+      }),
+      destroy: vi.fn(() => { destroyed = true; events.get('closed')?.() }),
     }
     electronMocks.latestBrowserWindow = browserWindow
     return browserWindow
@@ -285,6 +295,8 @@ describe('createCanvasWindowController', () => {
     createCanvasWindowController(controllerOptions())
 
     expect([...electronMocks.handlers.keys()].sort()).toEqual([
+      canvasHostChannels.finishClose,
+      canvasHostChannels.cancelCloseTasks,
       canvasHostCancelRequestChannel,
       canvasHostCopyAssetChannel,
       canvasHostCreateProjectChannel,
@@ -338,7 +350,7 @@ describe('createCanvasWindowController', () => {
   })
 
   it('defines the dark canvas color used before the renderer becomes visible', () => {
-    expect(canvasWindowBackgroundColor).toBe('#111315')
+    expect(canvasWindowBackgroundColor).toBe('#0b0c10')
   })
 
   it('opens with the stored dark theme in both the native background and renderer URL', async () => {
@@ -1142,5 +1154,129 @@ describe('createCanvasWindowController', () => {
     })) {
       expect(electronMocks.removeHandler).toHaveBeenCalledWith(channel)
     }
+  })
+})
+
+describe('canvas close confirmation', () => {
+  function latestRequestId(): string {
+    const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
+    return [...send.mock.calls].reverse().find(([channel]) => channel === canvasHostChannels.closeRequested)![1].requestId
+  }
+
+  it('resolves an unopened canvas without asking a renderer', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    expect(await controller.requestClose()).toBe(true)
+  })
+
+  it('shares repeated close requests and waits for the current renderer acknowledgement', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const first = controller.requestClose()
+    expect(controller.requestClose()).toBe(first)
+    expect(electronMocks.latestBrowserWindow!.close).not.toHaveBeenCalled()
+    const handler = electronMocks.handlers.get(canvasHostChannels.finishClose)!
+    expect(handler(trustedEvent(), latestRequestId(), true)).toBe(true)
+    expect(await first).toBe(true)
+    expect(electronMocks.latestBrowserWindow!.close).toHaveBeenCalledOnce()
+  })
+
+  it('retains the same window when the renderer cancels or reports a save failure', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const closing = controller.requestClose()
+    const requestId = latestRequestId()
+    electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), requestId, false)
+    expect(await closing).toBe(false)
+    expect(electronMocks.latestBrowserWindow!.close).not.toHaveBeenCalled()
+    expect(electronMocks.latestWebContents!.send).toHaveBeenCalledWith(canvasHostChannels.closeCancelled, { requestId })
+  })
+
+  it('does not resolve success until the native window actually emits closed', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    ;(window.close as ReturnType<typeof vi.fn>).mockImplementation(() => {})
+    const closing = controller.requestClose()
+    let resolved = false
+    void closing.then(() => { resolved = true })
+    electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestRequestId(), true)
+    await Promise.resolve()
+    expect(resolved).toBe(false)
+    const on = window.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'closed')![1]()
+    expect(await closing).toBe(true)
+  })
+
+  it('routes the native X button through confirmation instead of destroying the renderer', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    ;(window.close as () => void)()
+    expect((window.isDestroyed as () => boolean)()).toBe(false)
+    const closing = controller.requestClose()
+    electronMocks.handlers.get(canvasHostChannels.finishClose)!(trustedEvent(), latestRequestId(), true)
+    expect(await closing).toBe(true)
+    expect((window.isDestroyed as () => boolean)()).toBe(true)
+  })
+
+  it('fails closed on timeout and rejects expired acknowledgements during a newer request', async () => {
+    vi.useFakeTimers()
+    try {
+      const controller = createCanvasWindowController(controllerOptions({ closeRequestTimeoutMs: 100 }))
+      await controller.open()
+      const first = controller.requestClose()
+      const expiredId = latestRequestId()
+      await vi.advanceTimersByTimeAsync(100)
+      expect(await first).toBe(false)
+      const next = controller.requestClose()
+      const nextId = latestRequestId()
+      expect(nextId).not.toBe(expiredId)
+      const handler = electronMocks.handlers.get(canvasHostChannels.finishClose)!
+      expect(handler(trustedEvent(), expiredId, true)).toBe(false)
+      expect(electronMocks.latestBrowserWindow!.close).not.toHaveBeenCalled()
+      handler(trustedEvent(), nextId, false)
+      expect(await next).toBe(false)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('rejects another window and permits task cancellation only for the active close nonce', async () => {
+    const options = controllerOptions()
+    const controller = createCanvasWindowController(options)
+    await controller.open()
+    const closing = controller.requestClose()
+    const requestId = latestRequestId()
+    const finish = electronMocks.handlers.get(canvasHostChannels.finishClose)!
+    const cancelTasks = electronMocks.handlers.get(canvasHostChannels.cancelCloseTasks)!
+    expect(() => finish(foreignEvent(), requestId, true)).toThrow('非画布页面')
+    expect(() => cancelTasks(foreignEvent(), requestId)).toThrow('非画布页面')
+    expect(cancelTasks(trustedEvent(), 'expired')).toBe(false)
+    expect(options.canvasRuns.cancelOwner).not.toHaveBeenCalled()
+    expect(cancelTasks(trustedEvent(), requestId)).toBe(true)
+    expect(options.canvasRuns.cancelOwner).toHaveBeenCalledExactlyOnceWith(41)
+    expect(options.imageService.cancelSender).toHaveBeenCalledExactlyOnceWith(41)
+    expect(options.videoService.cancelSender).toHaveBeenCalledExactlyOnceWith(41)
+    finish(trustedEvent(), requestId, false)
+    expect(await closing).toBe(false)
+    expect(cancelTasks(trustedEvent(), requestId)).toBe(false)
+  })
+
+  it('invalidates the pending handshake when the renderer crashes', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const closing = controller.requestClose()
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'render-process-gone')![1]({}, { reason: 'crashed', exitCode: 1 })
+    expect(await closing).toBe(false)
+    expect(electronMocks.latestBrowserWindow!.close).not.toHaveBeenCalled()
+  })
+
+  it('sends only display preferences through initial URL and appearance events', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    controller.setAppearance({ theme: 'light', uiSkin: 'mist', reducedMotion: true })
+    await controller.open()
+    expect(electronMocks.latestBrowserWindow!.loadURL).toHaveBeenCalledWith('xingmang-canvas://app/?theme=light&skin=mist&reducedMotion=1')
+    expect(electronMocks.browserWindowOptions).toEqual([expect.objectContaining({ backgroundColor: '#f0f6f5' })])
+    controller.setAppearance({ theme: 'dark' })
+    expect(electronMocks.latestWebContents!.send).toHaveBeenCalledWith(canvasHostChannels.appearanceChanged, { theme: 'dark', reducedMotion: false })
   })
 })

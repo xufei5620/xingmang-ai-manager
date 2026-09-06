@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
   ArchiveRestore,
@@ -8,13 +8,16 @@ import {
   Plus,
   RefreshCw,
   RotateCcw,
+  Search,
   ShieldCheck,
   Trash2,
-  X,
 } from 'lucide-react'
 import { errorMessage } from '../error-message'
 import { managementProviderIds } from '../provider-registry'
 import type { ProviderId } from '../types'
+import { Banner, Button, Drawer } from '../components/ui'
+import { useNavigationState } from '../components/shell/NavigationState'
+import '../styles/management-v3.css'
 
 export type BackupReason = 'manual' | 'pre-save' | 'pre-restore'
 
@@ -75,8 +78,12 @@ function fileSize(bytes: number): string {
 
 export function BackupsPage({ api }: BackupsPageProps) {
   const [backups, setBackups] = useState<BackupSummary[]>([])
-  const [provider, setProvider] = useState<ProviderId>('codex')
+  const [provider, setProvider] = useNavigationState<ProviderId>('backups.provider', 'codex')
+  const [query, setQuery] = useNavigationState('backups.query', '')
+  const [filterProvider, setFilterProvider] = useNavigationState<ProviderId | 'all'>('backups.filterProvider', 'all')
   const [preview, setPreview] = useState<BackupPreview | null>(null)
+  const [previewId, setPreviewId] = useState<string | null>(null)
+  const [previewError, setPreviewError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -84,23 +91,40 @@ export function BackupsPage({ api }: BackupsPageProps) {
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null)
   // React 18 对离散事件同步 flush，双击的第二次 click 已能看到确认态，需要最短间隔挡住击穿。
   const armedAt = useRef(0)
+  const listRequest = useRef(0)
+  const previewRequest = useRef(0)
+  const previewTrigger = useRef<HTMLElement | null>(null)
+  const mounted = useRef(true)
 
-  const refresh = async () => {
+  const refresh = useCallback(async () => {
+    const requestId = ++listRequest.current
     setLoading(true)
     setError(null)
     try {
-      setBackups(await api.list())
+      const next = await api.list()
+      if (requestId !== listRequest.current) return
+      setBackups(next)
       setConfirmDeleteId(null)
     } catch (cause) {
-      setError(errorMessage(cause))
+      if (requestId === listRequest.current) setError(errorMessage(cause))
     } finally {
-      setLoading(false)
+      if (requestId === listRequest.current) setLoading(false)
     }
-  }
+  }, [api])
 
   useEffect(() => {
+    mounted.current = true
     void refresh()
-  }, [api])
+    return () => { mounted.current = false; listRequest.current += 1; previewRequest.current += 1 }
+  }, [refresh])
+
+  const closePreview = () => {
+    previewRequest.current += 1
+    setPreviewId(null)
+    setPreview(null)
+    setPreviewError(null)
+    if (busy?.startsWith('inspect:')) setBusy(null)
+  }
 
   const create = async () => {
     setBusy('create')
@@ -118,14 +142,20 @@ export function BackupsPage({ api }: BackupsPageProps) {
   }
 
   const inspect = async (id: string) => {
+    if (!previewId && document.activeElement instanceof HTMLElement) previewTrigger.current = document.activeElement
+    const requestId = ++previewRequest.current
+    setPreviewId(id)
+    setPreview(null)
+    setPreviewError(null)
     setBusy(`inspect:${id}`)
     setError(null)
     try {
-      setPreview(await api.inspect(id))
+      const next = await api.inspect(id)
+      if (requestId === previewRequest.current) setPreview(next)
     } catch (cause) {
-      setError(errorMessage(cause))
+      if (requestId === previewRequest.current) setPreviewError(errorMessage(cause))
     } finally {
-      setBusy(null)
+      if (requestId === previewRequest.current) setBusy(null)
     }
   }
 
@@ -133,18 +163,24 @@ export function BackupsPage({ api }: BackupsPageProps) {
     if (!preview?.valid) return
     setBusy(`restore:${preview.id}`)
     setError(null)
+    setPreviewError(null)
     setNotice(null)
     try {
       const result = await api.restore(preview.id)
-      setPreview(null)
+      if (!mounted.current) return
+      closePreview()
       setNotice(`恢复完成，当前配置已保存为 ${result.preRestoreBackupId}`)
       await refresh()
     } catch (cause) {
-      setError(errorMessage(cause))
+      if (mounted.current) setPreviewError(errorMessage(cause))
     } finally {
-      setBusy(null)
+      if (mounted.current) setBusy(null)
     }
   }
+
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const filteredBackups = backups.filter((backup) => (filterProvider === 'all' || backup.provider === filterProvider)
+    && (!normalizedQuery || [backup.id, backup.provider ? providerLabels[backup.provider] : '', backup.reason ? reasonLabels[backup.reason] : ''].some((value) => value.toLocaleLowerCase().includes(normalizedQuery))))
 
   const remove = async (id: string) => {
     // 二次确认：第一次点击只切换为「确认删除」，再次点击才真正删除。
@@ -171,11 +207,10 @@ export function BackupsPage({ api }: BackupsPageProps) {
   }
 
   return (
-    <div className="page workspace-page operations-page" data-page-id="backups">
+    <div className="page workspace-page operations-page management-v3" data-page-id="backups">
       <header className="page-header workspace-page-header">
         <div>
           <h1>备份</h1>
-          <p className="page-lead">保存和恢复本机配置。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="备份工具栏">
           <button className="icon-button" type="button" title="刷新" aria-label="刷新" onClick={refresh} disabled={loading || busy !== null}>
@@ -184,7 +219,7 @@ export function BackupsPage({ api }: BackupsPageProps) {
         </div>
       </header>
 
-      {error && <div className="operation-error" role="alert"><AlertCircle size={16} />{error}</div>}
+      {error && <Banner title="备份操作未完成" tone="bad" live="assertive" actions={<Button size="sm" onClick={() => void refresh()} disabled={loading}>重试</Button>}>{error}</Banner>}
       {notice && <div className="operation-notice" role="status"><CheckCircle2 size={16} />{notice}</div>}
 
       <section className="environment-section backup-create" aria-labelledby="backup-create-title">
@@ -212,11 +247,17 @@ export function BackupsPage({ api }: BackupsPageProps) {
             <span>{loading ? '正在读取' : `共 ${backups.length} 个快照`}</span>
           </div>
         </div>
+        <div className="management-toolbar">
+          <label className="management-search"><Search size={16} aria-hidden="true" /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索备份" aria-label="搜索备份" /></label>
+          <select aria-label="筛选备份工具" value={filterProvider} onChange={(event) => setFilterProvider(event.target.value as ProviderId | 'all')}>
+            <option value="all">全部工具</option>{managementProviderIds.map((id) => <option key={id} value={id}>{providerLabels[id]}</option>)}
+          </select>
+        </div>
         {loading ? (
           <div className="operation-loading"><LoaderCircle className="spin" size={18} />正在读取备份清单</div>
-        ) : backups.length ? (
+        ) : filteredBackups.length ? (
           <div className="operations-list" role="list">
-            {backups.map((backup) => (
+            {filteredBackups.map((backup) => (
               <article className={`operation-row backup-row ${backup.valid ? '' : 'is-error'}`} key={backup.id} role="listitem">
                 <div className="operation-status-icon">
                   {backup.valid ? <ShieldCheck size={17} /> : <AlertCircle size={17} />}
@@ -229,6 +270,7 @@ export function BackupsPage({ api }: BackupsPageProps) {
                   <p>{backup.createdAt ? new Date(backup.createdAt).toLocaleString() : backup.error}</p>
                   <span className="operation-meta">{backup.existingFileCount}/{backup.fileCount} 个文件 · {fileSize(backup.totalSize)}</span>
                 </div>
+                <div className="backup-row-actions">
                 <button className="secondary-button" type="button" onClick={() => inspect(backup.id)} disabled={!backup.valid || busy !== null}>
                   {busy === `inspect:${backup.id}` ? <LoaderCircle className="spin" size={15} /> : <Eye size={15} />}
                   预览恢复
@@ -242,25 +284,28 @@ export function BackupsPage({ api }: BackupsPageProps) {
                   {busy === `delete:${backup.id}` ? <LoaderCircle className="spin" size={15} /> : <Trash2 size={15} />}
                   {confirmDeleteId === backup.id ? '确认删除' : '删除'}
                 </button>
+                {confirmDeleteId === backup.id && <Button size="sm" disabled={busy !== null} onClick={() => setConfirmDeleteId(null)}>取消</Button>}
+                </div>
               </article>
             ))}
           </div>
-        ) : (
-          <div className="operation-empty"><ArchiveRestore size={20} />还没有备份</div>
-        )}
+        ) : !error ? (
+          <div className="operation-empty"><ArchiveRestore size={20} />{query || filterProvider !== 'all' ? '没有匹配的备份' : '还没有备份'}
+            {(query || filterProvider !== 'all') && <Button onClick={() => { setQuery(''); setFilterProvider('all') }}>清除筛选</Button>}
+          </div>
+        ) : null}
       </section>
 
-      {preview && (
-        <section className="environment-section restore-preview" aria-labelledby="restore-preview-title">
-          <div className="section-heading">
-            <div>
-              <h2 id="restore-preview-title">恢复预览 · {preview.provider && providerLabels[preview.provider]}</h2>
-              <span>恢复前会先备份当前配置，并重新校验清单、路径和 SHA-256</span>
-            </div>
-            <button className="icon-button" type="button" title="关闭预览" aria-label="关闭预览" onClick={() => setPreview(null)} disabled={busy !== null}>
-              <X size={17} />
-            </button>
-          </div>
+      <Drawer open={previewId !== null} title={`恢复预览${preview?.provider ? ` · ${providerLabels[preview.provider]}` : ''}`} subtitle={previewId}
+        onClose={closePreview} closeLabel="关闭预览" busy={Boolean(busy?.startsWith('restore:'))} testId="backup-preview-drawer" returnFocus={previewTrigger}
+        footer={preview && <>
+          <Button onClick={closePreview} disabled={busy !== null}>取消</Button>
+          <Button variant="danger" icon={RotateCcw} onClick={() => void restore()} disabled={!preview.valid || Boolean(busy)} loading={busy === `restore:${preview.id}`}>确认恢复</Button>
+        </>}>
+        {busy?.startsWith('inspect:') && <div className="operation-loading" role="status"><LoaderCircle className="spin" size={18} />正在读取备份详情</div>}
+        {previewError && <Banner title="备份操作未完成" tone="bad" live="assertive" actions={!preview && previewId ? <Button size="sm" onClick={() => void inspect(previewId)}>重试</Button> : undefined}>{previewError}</Banner>}
+        {preview && <section className="restore-preview">
+          <Banner title="当前配置会先备份" tone="info">恢复时会重新校验清单、路径和文件完整性。</Banner>
           <div className="operations-list" role="list">
             {preview.files.map((file) => (
               <div className="operation-row backup-file-row" key={file.targetRelativePath} role="listitem">
@@ -271,15 +316,8 @@ export function BackupsPage({ api }: BackupsPageProps) {
               </div>
             ))}
           </div>
-          <div className="config-actions restore-actions">
-            <button className="secondary-button" type="button" onClick={() => setPreview(null)} disabled={busy !== null}>取消</button>
-            <button className="danger-button" type="button" onClick={restore} disabled={!preview.valid || busy !== null}>
-              {busy === `restore:${preview.id}` ? <LoaderCircle className="spin" size={16} /> : <RotateCcw size={16} />}
-              确认恢复
-            </button>
-          </div>
-        </section>
-      )}
+        </section>}
+      </Drawer>
     </div>
   )
 }

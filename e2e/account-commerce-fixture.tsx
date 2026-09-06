@@ -12,8 +12,10 @@ import type {
 } from '../src/types'
 import type { ToastMessage } from '../src/components/Toast'
 import '../src/styles.css'
+import '../src/styles/ui-tokens.css'
+import '../src/styles/ui-layout.css'
 
-type Scenario = 'orders-retry' | 'redeem-retry' | 'profile-retry' | 'security' | 'tutorial' | 'visual' | 'sidebar'
+type Scenario = 'orders-retry' | 'redeem-retry' | 'profile-retry' | 'devices-retry' | 'security' | 'tutorial' | 'visual' | 'sidebar'
 type VisualSection = AccountCenterTab | 'tutorial'
 
 interface HarnessState {
@@ -53,6 +55,8 @@ const visualSections = new Set<VisualSection>([
   'overview',
   'dashboard',
   'subscriptions',
+  'recharge',
+  'wallet',
   'topup',
   'orders',
   'redeem',
@@ -62,6 +66,7 @@ const visualSections = new Set<VisualSection>([
   'invite',
   'profile',
   'security',
+  'devices',
   'tutorial',
 ])
 const requestedSection = search.get('section') as VisualSection | null
@@ -201,6 +206,9 @@ const api = {
   },
   async getAccountLoginSessions() {
     window.accountCommerceHarness.sessionListCalls += 1
+    if (scenario === 'devices-retry' && window.accountCommerceHarness.sessionListCalls === 1) {
+      throw new Error('设备服务暂时不可用')
+    }
     return sessionFixtures.filter((entry) => !window.accountCommerceHarness.revokedSessionIds.includes(entry.sid))
   },
   async revokeAccountLoginSession(sid: string) {
@@ -430,7 +438,7 @@ function SidebarFixture() {
           quotaPerUnit: 500_000,
           usdExchangeRate: 7.3,
         }}
-        onNavigate={() => undefined}
+        onNavigate={(pageId) => { window.accountCommerceHarness.navigationTarget = pageId }}
         onToggleCollapsed={() => setCollapsed((current) => !current)}
         onToggleTheme={() => undefined}
         onToggleMoreExpanded={() => setMoreExpanded((current) => !current)}
@@ -485,7 +493,7 @@ function Fixture() {
             ? visualSection as AccountCenterTab
             : scenario === 'profile-retry'
               ? 'profile'
-              : 'security'}
+              : scenario === 'devices-retry' ? 'devices' : 'security'}
           onClose={() => undefined}
           onLogout={() => { window.accountCommerceHarness.logoutCalls += 1 }}
           notify={setToast}

@@ -28,6 +28,8 @@ function styleSheet(): string {
 
 function themeSheet(): string {
   return readSource('theme.css')
+    + fs.readFileSync(path.join(import.meta.dirname, '..', '..', '..', 'src', 'styles', 'ui-tokens.css'), 'utf8')
+    + readSource('theme/brand-appearance.css')
 }
 
 function declaredProperties(...sources: string[]): Set<string> {

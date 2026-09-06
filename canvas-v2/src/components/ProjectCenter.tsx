@@ -1,4 +1,4 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useEffect, useMemo, useState, type FormEvent } from 'react'
 import { Archive, ArchiveRestore, Copy, FolderOpen, HardDrive, Music2, Pencil, Plus, TriangleAlert, X } from 'lucide-react'
 import type { CanvasStoredProjectSummary } from '../host'
 import { SafeImage, ViewportVideo } from './MediaPreview'
@@ -14,6 +14,7 @@ interface ProjectCenterProps {
   onRename(projectId: string, name: string): Promise<boolean>
   onDuplicate(projectId: string, name: string): Promise<boolean>
   onSetArchived(projectId: string, archived: boolean): Promise<boolean>
+  onDraftChange?(dirty: boolean): void
 }
 
 function recentTimestamp(project: CanvasStoredProjectSummary): number {
@@ -35,7 +36,7 @@ function ProjectPreview({ project }: { project: CanvasStoredProjectSummary }) {
   return <span className="canvas-project-preview-empty"><Music2 size={24} /><small>音频项目</small></span>
 }
 
-export function ProjectCenter({ projects, loading, error, onCreate, onOpen, onRename, onDuplicate, onSetArchived }: ProjectCenterProps) {
+export function ProjectCenter({ projects, loading, error, onCreate, onOpen, onRename, onDuplicate, onSetArchived, onDraftChange }: ProjectCenterProps) {
   const [view, setView] = useState<'recent' | 'archived'>('recent')
   const [creating, setCreating] = useState(false)
   const [createName, setCreateName] = useState('')
@@ -45,6 +46,8 @@ export function ProjectCenter({ projects, loading, error, onCreate, onOpen, onRe
   const [actionName, setActionName] = useState('')
   const [actionError, setActionError] = useState<string | null>(null)
   const [actionSaving, setActionSaving] = useState(false)
+  const hasDraft = (creating && createName.trim().length > 0) || action !== null
+  useEffect(() => { onDraftChange?.(hasDraft); return () => onDraftChange?.(false) }, [hasDraft, onDraftChange])
   const activeProjects = useMemo(() => projects.filter((project) => !project.archivedAt).sort((left, right) => recentTimestamp(right) - recentTimestamp(left)), [projects])
   const archivedProjects = useMemo(() => projects.filter((project) => project.archivedAt).sort((left, right) => Date.parse(right.archivedAt!) - Date.parse(left.archivedAt!)), [projects])
   const visibleProjects = view === 'recent' ? activeProjects : archivedProjects

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react'
+import { useMemo, type ReactNode } from 'react'
 import {
   ArchiveRestore,
   Bot,
@@ -17,6 +17,8 @@ import {
   type LucideIcon,
 } from 'lucide-react'
 import type { PageId } from '../navigation'
+import { useNavigationState } from '../components/shell/NavigationState'
+import './maintenance-v3.css'
 
 interface TutorialStep {
   title: string
@@ -47,8 +49,8 @@ const TUTORIAL_SECTIONS: readonly TutorialSection[] = [
     destinationLabel: '打开首页',
     steps: [
       { title: '1. 登录星芒账号', body: '启动后用邮箱或用户名登录。可以勾选“记住密码”和“自动登录”。' },
-      { title: '2. 等它检查本机', body: '软件会检查 Node.js、四个命令行工具和 Codex 桌面端。第一次主要准备桌面端，其他按需再装。“检测失败”不等于没装好，先点重新检测或去「检查」。' },
-      { title: '3. 配上星芒 Key', body: '登录后，已装好的工具会自动拿到对应 Key。已经有的会复用，不会每次都新建。' },
+      { title: '2. 选择一种开始方式', body: '从 Claude Code、Codex CLI、Codex 桌面端、Gemini CLI、Grok CLI 或直接聊天中选择。桌面端与聊天不要求 Node.js。检测失败时先重新检测，不要重复安装。' },
+      { title: '3. 确认账号来源', body: '准备完成后检查星芒密钥或官方账号来源。已有第三方配置会保留，只有明确保存后才写入新的工具配置。' },
     ],
   },
   {
@@ -132,7 +134,7 @@ const TUTORIAL_SECTIONS: readonly TutorialSection[] = [
     steps: [
       { title: '检测失败', body: '先别重装。点重新检测，看实际路径和版本。刚装好的环境，可能要重启软件才能认到。' },
       { title: '网络与代理', body: '先去「检查」测一下星芒接口和下载源。没开代理就走系统网络。' },
-      { title: '联系售后', body: '去「反馈」复制或导出报告，确认没有敏感信息，再通过企业微信发给我们。' },
+      { title: '联系售后', body: '在「反馈」先预览脱敏报告，再复制或导出当前这份报告。报告不会自动发送，通过企业微信发送前请再次确认内容。' },
     ],
   },
 ]
@@ -157,17 +159,16 @@ export function TutorialPage({
   onOpenSupport: () => void
   onOpenAccountCenter: () => void
 }) {
-  const [query, setQuery] = useState('')
-  const [activeSectionId, setActiveSectionId] = useState(TUTORIAL_SECTIONS[0].id)
+  const [query, setQuery] = useNavigationState('tutorial.query', '')
+  const [activeSectionId, setActiveSectionId] = useNavigationState('tutorial.section', TUTORIAL_SECTIONS[0].id)
   const sections = useMemo(() => filterTutorialSections(query), [query])
   const activeSection = sections.find((section) => section.id === activeSectionId) ?? sections[0]
 
   return (
-    <div className="tutorial-page">
+    <div className="page tutorial-page maintenance-v3 tutorial-v3" data-page-id="tutorial">
       <header className="page-header tutorial-header">
         <div>
           <h1>教程</h1>
-          <p className="page-lead">一步步教你怎么用。</p>
         </div>
         <button type="button" className="secondary-button" onClick={onOpenSupport}>
           <LifeBuoy size={16} />

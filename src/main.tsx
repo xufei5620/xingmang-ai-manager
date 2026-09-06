@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client'
 import App from './App'
 import { DevelopmentPreview } from './components/DevelopmentPreview'
 import './styles.css'
+import './styles/ui-tokens.css'
+import './styles/ui-layout.css'
 import { rendererErrorDeduper, reportRendererError } from './renderer-error-report'
 
 window.addEventListener('error', (event) => {

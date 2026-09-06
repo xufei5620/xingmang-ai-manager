@@ -18,7 +18,7 @@ import {
   type Viewport,
   type XYPosition,
 } from '@xyflow/react'
-import { flushSync } from 'react-dom'
+import { createPortal, flushSync } from 'react-dom'
 import '@xyflow/react/dist/style.css'
 import {
   createEmptyWorkflow,
@@ -112,6 +112,8 @@ import {
 import { groupCanvasNodes, ungroupCanvasNode } from './editor/grouping'
 import { RunInspector } from './components/RunInspector'
 import { ProjectCenter } from './components/ProjectCenter'
+import { CanvasCloseDialog } from './components/CanvasCloseDialog'
+import { createCanvasCloseGuard, type CanvasCloseChoice, type CanvasClosePhase } from './persistence/canvas-close'
 import { parseXingCanvasProject, serializeXingCanvasProject } from './persistence/project-package'
 import {
   autoFixedDownstreamNodeIds,
@@ -137,7 +139,7 @@ import { QuickInsert, type QuickInsertCommand } from './components/QuickInsert'
 import { TemplateCatalog } from './components/TemplateCatalog'
 import { clipPromptEditorValue } from './components/prompt-mentions'
 import { findAvailableCanvasPosition } from './editor/node-placement'
-import { applyCanvasTheme, subscribeCanvasTheme, type CanvasTheme } from './theme/canvas-theme'
+import { applyCanvasAppearance, initialCanvasAppearance, subscribeCanvasTheme, type CanvasTheme } from './theme/canvas-theme'
 import {
   buildCanvasRunPreflight,
   canvasMediaConfigurationErrors,
@@ -682,6 +684,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   } = documentController
   const [running, setRunning] = useState(false)
   const [theme, setTheme] = useState<CanvasTheme>(initialTheme)
+  const appearanceRef = useRef({ ...initialCanvasAppearance(window.location.search), theme: initialTheme })
+  const [closePhase, setClosePhase] = useState<CanvasClosePhase | null>(null)
+  const closeBusyRef = useRef(false)
+  const closeRequestRef = useRef<string | null>(null)
+  const closeChoiceRef = useRef<((choice: CanvasCloseChoice) => void) | null>(null)
+  const closeGuardRef = useRef<ReturnType<typeof createCanvasCloseGuard> | null>(null)
+  const projectCenterDraftRef = useRef(false)
+  const rememberProjectCenterDraft = useCallback((dirty: boolean) => { projectCenterDraftRef.current = dirty }, [])
+  const autosaveTimerRef = useRef<number | null>(null)
   const [projects, setProjects] = useState<CanvasStoredProjectSummary[]>([])
   const [projectLoading, setProjectLoading] = useState(Boolean(window.xingmangCanvasHost))
   const [activeProject, setActiveProject] = useState<CanvasStoredProjectSummary | null>(null)
@@ -779,10 +790,23 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     void hostBridge().listProjects().then(setProjects).catch((error) => setBanner(error instanceof Error ? error.message : String(error))).finally(() => setProjectLoading(false))
   }, [])
 
-  useEffect(() => subscribeCanvasTheme(window.xingmangCanvasHost, (nextTheme) => {
-    applyCanvasTheme(nextTheme)
-    setTheme(nextTheme)
-  }), [])
+  useEffect(() => {
+    applyCanvasAppearance(appearanceRef.current)
+    const host = window.xingmangCanvasHost
+    const unsubscribeTheme = subscribeCanvasTheme(host, (nextTheme) => {
+      appearanceRef.current = { ...appearanceRef.current, theme: nextTheme }
+      applyCanvasAppearance(appearanceRef.current)
+      setTheme(nextTheme)
+    })
+    const unsubscribeAppearance = typeof host?.onAppearanceChange === 'function'
+      ? host.onAppearanceChange((appearance) => {
+        appearanceRef.current = appearance
+        applyCanvasAppearance(appearance)
+        setTheme(appearance.theme)
+      })
+      : () => {}
+    return () => { unsubscribeTheme(); unsubscribeAppearance() }
+  }, [])
 
   const applyProjectUiPreferences = useCallback((next: CanvasUiPreferences) => {
     setUiPreferences(next)
@@ -2922,7 +2946,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (runPreflight) return
+      if (runPreflight || closeBusyRef.current) return
       const shortcut = resolveCanvasShortcut(event)
       if (!shortcut) return
       if (shortcut === 'undo') { event.preventDefault(); undo() }
@@ -3039,7 +3063,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   }, [runMenuOpen])
 
   useEffect(() => {
-    if (!window.xingmangCanvasHost || !activeProject) return
+    if (!window.xingmangCanvasHost || !activeProject || closeBusyRef.current) return
     const parts = {
       mediaGroups: { ...mediaGroups },
       nodes: nodes.map(toWorkflowNode),
@@ -3059,6 +3083,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     autoSaveRevisionRef.current = revision
     const showProgress = graphSignature !== lastAutosaveGraphSignatureRef.current
     const timeout = window.setTimeout(() => {
+      autosaveTimerRef.current = null
+      if (closeBusyRef.current) return
       if (showProgress) setAutoSaveState('saving')
       const content = serializeWorkflow(workflowSnapshot())
       void queueProjectSave(activeProject, content, revision)
@@ -3073,19 +3099,76 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
           setBanner(canvasAutosaveErrorMessage(error))
         })
     }, 800)
-    return () => window.clearTimeout(timeout)
-  }, [activeProject?.id, nodes, edges, mediaGroups, queueProjectSave])
+    autosaveTimerRef.current = timeout
+    return () => {
+      window.clearTimeout(timeout)
+      if (autosaveTimerRef.current === timeout) autosaveTimerRef.current = null
+    }
+  }, [activeProject?.id, nodes, edges, mediaGroups, queueProjectSave, closePhase])
 
-  useEffect(() => {
-    if (!window.xingmangCanvasHost || !activeProject) return
-    const flush = () => {
+  const closeOperationsRef = useRef<{ hasPendingWork(): boolean; saveLatest(): Promise<void> }>({
+    hasPendingWork: () => false,
+    saveLatest: async () => {},
+  })
+  closeOperationsRef.current = {
+    hasPendingWork: () => running || Boolean(preparingMedia) || resumingTaskIdsRef.current.size > 0 || projectLoading || runsLoading,
+    saveLatest: async () => {
+      if (!activeProject) { await projectSaveChainRef.current; return }
       const revision = autoSaveRevisionRef.current + 1
       autoSaveRevisionRef.current = revision
-      void queueProjectSave(activeProject, serializeWorkflow(workflowSnapshot()), revision).catch(() => undefined)
-    }
-    window.addEventListener('beforeunload', flush)
-    return () => window.removeEventListener('beforeunload', flush)
-  }, [activeProject, nodes, edges, viewport, mediaGroups, queueProjectSave])
+      setAutoSaveState('saving')
+      try {
+        await queueProjectSave(activeProject, serializeWorkflow(workflowSnapshot()), revision)
+      } catch (error) {
+        setAutoSaveState('failed')
+        throw error
+      }
+    },
+  }
+  useEffect(() => {
+    const host = window.xingmangCanvasHost
+    if (typeof host?.onCloseRequested !== 'function' || typeof host.finishClose !== 'function') return
+    const guard = createCanvasCloseGuard({
+      hasPendingWork: () => closeOperationsRef.current.hasPendingWork(),
+      hasPendingDraft: () => projectCenterDraftRef.current,
+      chooseAction: () => new Promise((resolve) => { closeChoiceRef.current = resolve }),
+      dismissChoice: () => { closeChoiceRef.current?.('cancel'); closeChoiceRef.current = null },
+      stopPendingWork: async (requestId) => {
+        const accepted = await host.cancelCloseTasks(requestId)
+        if (accepted) abortRef.current?.abort()
+        return accepted
+      },
+      saveLatest: () => closeOperationsRef.current.saveLatest(),
+      finishClose: (requestId, allowed) => host.finishClose(requestId, allowed),
+      onPhase: (phase) => {
+        closeBusyRef.current = phase !== null
+        if (phase && autosaveTimerRef.current !== null) {
+          window.clearTimeout(autosaveTimerRef.current)
+          autosaveTimerRef.current = null
+        }
+        if (!phase) closeRequestRef.current = null
+        setClosePhase(phase)
+      },
+      onError: (error) => setBanner(`未关闭画布：${error instanceof Error ? error.message : String(error)}`),
+    })
+    closeGuardRef.current = guard
+    const unsubscribeRequest = host.onCloseRequested(({ requestId }) => {
+      const request = guard.request(requestId)
+      closeRequestRef.current = requestId
+      void request
+    })
+    const unsubscribeCancel = host.onCloseCancelled(({ requestId }) => guard.cancel(requestId))
+    return () => { unsubscribeRequest(); unsubscribeCancel(); guard.dispose(); closeGuardRef.current = null }
+  }, [])
+
+  const closeDialog = closePhase ? createPortal(<CanvasCloseDialog phase={closePhase}
+    onChoose={(choice) => { closeChoiceRef.current?.(choice); closeChoiceRef.current = null }}
+    onCancel={() => {
+      const requestId = closeRequestRef.current
+      if (!requestId) return
+      closeGuardRef.current?.cancel(requestId)
+      void hostBridge().finishClose(requestId, false).catch((error) => setBanner(error instanceof Error ? error.message : String(error)))
+    }} />, document.body) : null
 
   const selectedInspectorNodes: CanvasInspectorNode[] = useMemo(
     () => projectCanvasInspectorNodes(nodes, edges),
@@ -3094,6 +3177,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
 
   if (window.xingmangCanvasHost && !activeProject) {
     return (
+      <>{closeDialog}
       <ProjectCenter
         projects={projects}
         loading={projectLoading}
@@ -3103,12 +3187,15 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         onRename={renameStoredProject}
         onDuplicate={duplicateStoredProject}
         onSetArchived={setStoredProjectArchived}
+        onDraftChange={rememberProjectCenterDraft}
       />
+      </>
     )
   }
 
   return (
     <div className="canvas-app">
+      {closeDialog}
       <header className="canvas-toolbar canvas-toolbar-editor">
         <div className="canvas-brand">
           <button type="button" className="canvas-project-back" title="保存并返回项目中心" onClick={() => void returnToProjectCenter()}><FolderOpen size={15} /></button>

@@ -120,6 +120,18 @@ function DashboardChart({
           <text key={bucket.timestamp} x={x(index)} y={height - 16} textAnchor="middle" className="account-dashboard-axis-label">{bucketLabel(bucket.timestamp, range)}</text>
         ) : null)}
       </svg>
+      <details className="account-dashboard-data">
+        <summary>{metric === 'quota' ? '消费明细数据' : '调用明细数据'}</summary>
+        <table>
+          <caption>{metric === 'quota' ? '各时段消费额度' : '各时段调用次数'}</caption>
+          <thead><tr><th scope="col">时间</th><th scope="col">合计</th>{models.map((model) => <th scope="col" key={model}>{model}</th>)}</tr></thead>
+          <tbody>{buckets.map((bucket) => <tr key={bucket.timestamp}>
+            <th scope="row">{new Date(bucket.timestamp * 1000).toLocaleString('zh-CN', { hour12: false })}</th>
+            <td>{formatChartMetric(bucket[metric], metric, quotaPerUnit)}</td>
+            {models.map((model) => <td key={model}>{formatChartMetric(bucket.models[model]?.[metric] ?? 0, metric, quotaPerUnit)}</td>)}
+          </tr>)}</tbody>
+        </table>
+      </details>
     </div>
   )
 }

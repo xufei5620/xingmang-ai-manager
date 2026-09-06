@@ -1,0 +1,148 @@
+:root[data-theme] .account-center-v3 {
+  color: var(--text);
+  background: var(--bg);
+  font-size: var(--font-body);
+}
+
+:root[data-theme] .account-center-v3 .account-center-inner { padding: 24px 32px; }
+:root[data-theme] .main-content .account-center.account-center-v3 { height: 100%; min-height: 0; padding: 0; }
+:root[data-theme] .main-content .account-center-v3 .account-center-inner { padding: 24px 32px; }
+:root[data-theme] .account-center-v3 .account-center-topbar { min-height: 56px; padding-bottom: 16px; border-bottom: 0; }
+:root[data-theme] .account-center-v3 .account-center-title { align-items: center; gap: 10px; }
+:root[data-theme] .account-center-v3 .account-center-back-button { display: grid; place-items: center; width: 32px; height: 32px; flex: 0 0 32px; padding: 0; color: var(--text-2); background: transparent; border: 1px solid var(--line-2); border-radius: 8px; cursor: pointer; }
+:root[data-theme] .account-center-v3 .account-center-back-button:hover { color: var(--text); background: var(--panel-hover); }
+:root[data-theme] .account-center-v3 .account-center-back-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+:root[data-theme] .account-center-v3 .account-center-title h1 { margin: 0; font-size: var(--font-h1); color: var(--text); }
+:root[data-theme] .account-center-v3 .account-center-title .page-lead { margin: 4px 0 0; font-size: 12.5px; }
+:root[data-theme] .account-center-v3 .account-center-title-icon { width: 32px; height: 32px; color: var(--accent); background: transparent; }
+:root[data-theme] .account-center-v3 .account-center-layout { display: flex; flex-direction: column; min-width: 0; min-height: 0; gap: 0; padding-top: 0; }
+:root[data-theme] .account-center-v3 .account-center-header-identity { display: flex; align-items: center; gap: 10px; min-width: 0; }
+:root[data-theme] .account-center-v3 .account-center-header-identity > div { display: grid; min-width: 0; gap: 2px; }
+:root[data-theme] .account-center-v3 .account-center-header-identity strong { color: var(--text); font-size: 13px; }
+:root[data-theme] .account-center-v3 .account-center-header-identity span { color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+:root[data-theme] .account-center-v3 .account-center-identity > .account-center-avatar,
+:root[data-theme] .account-center-v3 .account-profile-identity > .account-profile-avatar { color: var(--accent-fg); background: var(--accent); }
+:root[data-theme] .account-center-v3 .account-center-balance-summary { flex-shrink: 0; gap: 3px; margin: 0; padding: 0; border: 0; }
+:root[data-theme] .account-center-v3 .account-center-balance-summary > span { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .account-center-v3 .account-center-balance-summary strong { color: var(--text); font: 600 18px/1.2 var(--mono); }
+:root[data-theme] .account-center-v3 .account-center-recharge-button { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-height: var(--control-xs); padding: 2px 8px; border-radius: 6px; color: var(--accent-fg); background: var(--accent); border: 1px solid var(--accent); font-size: 12px; }
+:root[data-theme] .account-center-v3 .account-center-recharge-button:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+
+:root[data-theme] .account-center-v3 .account-center-navigation { display: block; max-height: none; min-height: 40px; flex-shrink: 0; padding: 0; border: 0; }
+:root[data-theme] .account-center-v3 .account-center-navigation nav { display: flex; align-items: stretch; gap: 0; min-height: 44px; overflow-x: auto; overflow-y: hidden; padding: 0; border-bottom: 1px solid var(--line-2); scrollbar-width: thin; }
+:root[data-theme] .account-center-v3 .account-center-navigation button { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; min-height: 42px; padding: 12px 13px; background: transparent; color: var(--text-2); border: 0; border-bottom: 2px solid transparent; border-radius: 0; font: 400 14px/1.3 var(--font); white-space: nowrap; }
+:root[data-theme] .account-center-v3 .account-center-navigation button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+:root[data-theme] .account-center-v3 .account-center-navigation button:hover { color: var(--text); background: var(--panel-hover); }
+:root[data-theme] .account-center-v3 .account-center-navigation button:focus-visible,
+:root[data-theme] .account-center-v3 .account-center-subtabs button:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+:root[data-theme] .account-center-v3 .account-center-workspace:focus-visible,
+:root[data-theme] .account-center-v3 .account-center-body:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+:root[data-theme] .account-center-v3 .account-center-workspace { flex: 1 1 auto; min-width: 0; min-height: 0; padding-top: 18px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+:root[data-theme] .account-center-v3 .account-center-section-header { min-height: 0; padding: 0 0 14px; }
+:root[data-theme] .account-center-v3 .account-center-section-header h2 { color: var(--text); font-size: var(--font-h2); font-weight: 600; }
+:root[data-theme] .account-center-v3 .account-center-subtabs { align-self: flex-start; max-width: 100%; min-height: 36px; margin: 0 0 16px; padding: 3px; background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 8px; }
+:root[data-theme] .account-center-v3 .account-center-subtabs button { min-height: 28px; padding: 4px 12px; color: var(--text-2); background: transparent; border: 0; border-radius: 5px; font-size: 13px; }
+:root[data-theme] .account-center-v3 .account-center-subtabs button.active { color: var(--accent); background: var(--panel-solid); font-weight: 600; }
+:root[data-theme] .account-center-v3 .account-center-body { overflow-y: auto; overflow-x: hidden; padding-bottom: 8px; scrollbar-gutter: stable; }
+:root[data-theme] .account-center-v3 .account-center-body > [hidden] { display: none; }
+
+:root[data-theme] .account-center-v3 .account-center-panel { gap: 24px; }
+:root[data-theme] .account-center-v3 .account-overview-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 340px); align-items: start; gap: 24px; }
+:root[data-theme] .account-center-v3 .account-overview-side { display: grid; gap: 16px; min-width: 0; }
+:root[data-theme] .account-center-v3 .account-overview-card { min-width: 0; padding: 16px; border: 1px solid var(--line-2); border-radius: var(--radius-card); background: var(--panel-solid); }
+:root[data-theme] .account-center-v3 .account-overview-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+:root[data-theme] .account-center-v3 .account-overview-card h3 { margin: 0; color: var(--text); font-size: 13px; font-weight: 600; }
+:root[data-theme] .account-center-v3 .account-overview-card header span { color: var(--text-2); font-size: 11px; }
+:root[data-theme] .account-center-v3 .account-overview-balance { display: block; margin-top: 20px; color: var(--text); font: 600 25px/1.3 var(--mono); }
+:root[data-theme] .account-center-v3 .account-overview-card p { margin: 8px 0 0; color: var(--text-2); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
+:root[data-theme] .account-center-v3 .account-overview-card-actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+:root[data-theme] .account-center-v3 .account-saved-account-row { display: flex; align-items: center; gap: 10px; min-width: 0; margin-top: 18px; }
+:root[data-theme] .account-center-v3 .account-saved-avatar { display: grid; place-items: center; width: 36px; height: 36px; flex: 0 0 36px; border-radius: 11px; color: var(--accent-fg); background: var(--accent); font-weight: 600; }
+:root[data-theme] .account-center-v3 .account-saved-account-row > div { display: grid; min-width: 0; gap: 3px; }
+:root[data-theme] .account-center-v3 .account-saved-account-row strong { color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
+:root[data-theme] .account-center-v3 .account-saved-account-row span { color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+:root[data-theme] .account-center-v3 .account-saved-accounts > .ui-button { margin-top: 14px; }
+:root[data-theme] .account-center-v3 .account-center-stats { gap: 0; border-block: 1px solid var(--line); }
+:root[data-theme] .account-center-v3 .account-center-stat { padding: 20px 16px; background: transparent; border: 0; border-radius: 0; }
+:root[data-theme] .account-center-v3 .account-center-stat + .account-center-stat { border-left: 1px solid var(--line); }
+:root[data-theme] .account-center-v3 .account-center-stat-label { color: var(--text-2); font-size: 12.5px; font-weight: 400; }
+:root[data-theme] .account-center-v3 .account-center-stat-value { color: var(--text); font: 600 25px/1.3 var(--mono); }
+:root[data-theme] .account-center-v3 .account-center-info-grid { padding: 0 16px; gap: 20px 24px; background: transparent; border: 0; border-radius: 0; }
+:root[data-theme] .account-center-v3 .account-center-info-item span { color: var(--text-2); font-size: 12.5px; }
+:root[data-theme] .account-center-v3 .account-center-info-item strong { color: var(--text); font-size: 14px; white-space: normal; overflow-wrap: anywhere; }
+:root[data-theme] .account-center-v3 .account-overview-actions { display: flex; gap: 10px; flex-wrap: wrap; padding: 0 16px; }
+:root[data-theme] .account-center-v3 .account-profile-settings,
+:root[data-theme] .account-center-v3 .account-center-security,
+:root[data-theme] .account-center-v3 .account-login-sessions,
+:root[data-theme] .account-center-v3 .account-commerce-form,
+:root[data-theme] .account-center-v3 .account-payment-summary,
+:root[data-theme] .account-center-v3 .account-active-subscriptions,
+:root[data-theme] .account-center-v3 .account-redeem,
+:root[data-theme] .account-center-v3 .account-affiliate-transfer { background: transparent; border: 0; border-radius: 0; box-shadow: none; }
+:root[data-theme] .account-center-v3 .account-profile-settings { max-width: 720px; padding: 0 0 16px; }
+:root[data-theme] .account-center-v3 .account-profile-readonly > div { padding: 8px 0; background: transparent; border-radius: 0; }
+:root[data-theme] .account-center-v3 .account-profile-readonly span,
+:root[data-theme] .account-center-v3 .account-profile-identity span { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .account-center-v3 .account-profile-readonly strong { font-size: 14px; white-space: normal; overflow-wrap: anywhere; }
+:root[data-theme] .account-center-v3 .account-profile-settings form > .ui-button { justify-self: start; }
+:root[data-theme] .account-center-v3 .account-center-security { max-width: 560px; padding: 0 0 16px; }
+:root[data-theme] .account-center-v3 .account-center-security form { display: grid; gap: 16px; }
+:root[data-theme] .account-center-v3 .account-center-security form > .ui-button { justify-self: start; }
+:root[data-theme] .account-center-v3 .account-login-sessions { width: 100%; padding: 0; }
+:root[data-theme] .account-center-v3 .account-session-list { gap: 0; }
+:root[data-theme] .account-center-v3 .account-session-list article { padding: 14px 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+:root[data-theme] .account-center-v3 .account-session-main strong { font-size: 14px; }
+:root[data-theme] .account-center-v3 .account-session-main span,
+:root[data-theme] .account-center-v3 .account-session-main small { color: var(--text-2); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+:root[data-theme] .account-center-v3 .account-session-footer { flex-wrap: wrap; margin-top: 8px; padding-top: 12px; border-top: 0; }
+:root[data-theme] .account-center-v3 .account-session-footer > span { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .account-center-v3 .account-security-section-title p { color: var(--text-2); font-size: 12.5px; }
+:root[data-theme] .account-center-v3 .account-commerce-topup { gap: 24px; }
+:root[data-theme] .account-center-v3 .account-payment-summary { border-left: 1px solid var(--line-2); }
+:root[data-theme] .account-center-v3 .account-active-subscriptions { padding: 0 0 20px; border-bottom: 1px solid var(--line-2); }
+:root[data-theme] .account-center-v3 .account-plan { border-radius: 8px; }
+:root[data-theme] .account-center-v3 .account-center-keys-table { border-radius: 0; }
+:root[data-theme] .account-center-v3 .account-usage-filter-panel,
+:root[data-theme] .account-center-v3 .account-task-filter-panel { padding: 0 0 16px; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+:root[data-theme] .account-center-v3 .account-usage-filter-grid label > span,
+:root[data-theme] .account-center-v3 .account-task-filter-grid label > span { color: var(--text-2); font-size: 12px; font-weight: 500; }
+:root[data-theme] .account-center-v3 .account-usage-filter-grid input,
+:root[data-theme] .account-center-v3 .account-usage-filter-grid select,
+:root[data-theme] .account-center-v3 .account-task-filter-grid input,
+:root[data-theme] .account-center-v3 .account-task-filter-grid select { height: var(--control-md); border-radius: var(--radius-input); font-size: 14px; }
+:root[data-theme] .account-center-v3 .account-usage-table-head,
+:root[data-theme] .account-center-v3 .account-task-table-head { min-height: 36px; font-size: 12px; color: var(--text-2); }
+:root[data-theme] .account-center-v3 .account-usage-table-row,
+:root[data-theme] .account-center-v3 .account-task-table-row { min-height: 56px; }
+:root[data-theme] .account-center-v3 .account-usage-table-row strong,
+:root[data-theme] .account-center-v3 .account-task-table-row strong { font-size: 13px; }
+:root[data-theme] .account-center-v3 .account-usage-table-row small,
+:root[data-theme] .account-center-v3 .account-task-table-row small,
+:root[data-theme] .account-center-v3 .account-usage-page-size,
+:root[data-theme] .account-center-v3 .account-task-page-size { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .account-center-v3 .account-usage-page-buttons button,
+:root[data-theme] .account-center-v3 .account-task-page-buttons button { min-width: 32px; height: 32px; font-size: 12px; }
+
+@media (max-width: 1100px) {
+  :root[data-theme] .account-center-v3 .account-center-inner { padding: 20px 24px; }
+  :root[data-theme] .main-content .account-center-v3 .account-center-inner { padding: 20px 24px; }
+  :root[data-theme] .account-center-v3 .account-center-navigation button { padding-inline: 9px; font-size: 13px; }
+}
+
+@media (max-width: 760px) {
+  :root[data-theme] .account-center-v3 .account-center-inner { padding: 16px; }
+  :root[data-theme] .main-content .account-center-v3 .account-center-inner { padding: 16px; }
+  :root[data-theme] .account-center-v3 .account-center-topbar { gap: 8px; }
+  :root[data-theme] .account-center-v3 .account-center-title-icon { display: none; }
+  :root[data-theme] .account-center-v3 .account-center-identity-strip { gap: 12px; }
+  :root[data-theme] .account-center-v3 .account-center-identity { max-width: 60%; }
+  :root[data-theme] .account-center-v3 .account-profile-readonly { grid-template-columns: minmax(0, 1fr); }
+  :root[data-theme] .account-center-v3 .account-overview-grid { grid-template-columns: minmax(0, 1fr); }
+  :root[data-theme] .account-center-v3 .account-commerce-topup { grid-template-columns: minmax(0, 1fr); }
+  :root[data-theme] .account-center-v3 .account-payment-summary { padding: 16px 0; border-left: 0; border-top: 1px solid var(--line-2); }
+}
+.account-dashboard-data { margin: 0 16px 12px; color: var(--text-secondary); }
+.account-dashboard-data summary { cursor: pointer; padding: 8px 0; }
+.account-dashboard-data table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.account-dashboard-data th, .account-dashboard-data td { padding: 8px; border-bottom: 1px solid var(--border-default); text-align: start; white-space: nowrap; }
+.account-dashboard-data caption { text-align: start; padding: 8px; }

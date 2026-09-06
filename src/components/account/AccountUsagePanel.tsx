@@ -17,6 +17,7 @@ import {
 import type { AccountUsagePage, AccountUsageQuery, AccountUsageRecord } from '../../types'
 import { errorMessage } from '../../error-message'
 import { DialogBackdrop } from '../Dialog'
+import { DateRange } from '../ui/DateRange'
 import {
   accountUsageTypeLabel,
   formatAccountUsageDate,
@@ -260,8 +261,7 @@ export function AccountUsagePanel({ quotaPerUnit }: { quotaPerUnit: number | und
       </header>
       <section className="account-usage-filter-panel" aria-label="明细筛选">
         <div className="account-usage-filter-grid">
-          <label><span>开始时间</span><input type="datetime-local" value={draft.startAt} onChange={(event) => setDraft((current) => ({ ...current, startAt: event.target.value }))} /></label>
-          <label><span>结束时间</span><input type="datetime-local" value={draft.endAt} onChange={(event) => setDraft((current) => ({ ...current, endAt: event.target.value }))} /></label>
+          <DateRange label="明细时间范围" precision="datetime" startLabel="开始时间" endLabel="结束时间" value={{ start: draft.startAt, end: draft.endAt }} onChange={({ start, end }) => setDraft((current) => ({ ...current, startAt: start, endAt: end }))} />
           <label><span>模型名称</span><input value={draft.modelName} maxLength={128} placeholder="例如 gpt-5" onChange={(event) => setDraft((current) => ({ ...current, modelName: event.target.value }))} /></label>
           <label><span>分组</span><input value={draft.group} maxLength={128} placeholder="全部分组" onChange={(event) => setDraft((current) => ({ ...current, group: event.target.value }))} /></label>
           <label><span>日志类型</span><select value={draft.type} onChange={(event) => setDraft((current) => ({ ...current, type: event.target.value }))}><option value="">全部类型</option>{[0, 1, 2, 3, 4, 5, 6, 7].map((type) => <option value={type} key={type}>{accountUsageTypeLabel(type)}</option>)}</select></label>
@@ -294,21 +294,21 @@ export function AccountUsagePanel({ quotaPerUnit }: { quotaPerUnit: number | und
         <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>明细读取失败</strong><span>{failure}</span></div><button type="button" className="secondary-button" onClick={() => void load()}>重试</button></div>
       ) : (
         <section className="account-usage-table-shell" aria-busy={loading}>
-          <div className="account-usage-table-scroll">
-            <div className="account-usage-table-head" aria-hidden="true"><span>时间 / 类型</span><span>模型 / API Key</span><span>Token / 缓存</span><span>性能</span><span>费用</span><span>详情</span></div>
-            <div className="account-usage-table-body">
+          <div className="account-usage-table-scroll" role="table" aria-label="调用明细" aria-colcount={6}>
+            <div className="account-usage-table-head" role="row"><span role="columnheader">时间 / 类型</span><span role="columnheader">模型 / API Key</span><span role="columnheader">Token / 缓存</span><span role="columnheader">性能</span><span role="columnheader">费用</span><span role="columnheader">详情</span></div>
+            <div className="account-usage-table-body" role="rowgroup">
               {(usage?.records ?? []).map((record) => (
-                <button type="button" className="account-usage-table-row" key={record.id} onClick={() => setSelected(record)}>
-                  <span><strong>{formatAccountUsageDate(record.createdAt)}</strong><small>{accountUsageTypeLabel(record.type)}</small></span>
-                  <span className="account-usage-model-cell"><strong title={record.modelName || '未知模型'}>{record.modelName || '未知模型'}</strong><small title={`${record.tokenName || '未命名令牌'} · ${record.group || '默认分组'}`}>{record.tokenName || '未命名令牌'} · {record.group || '默认分组'}</small></span>
-                  <span><strong>{compactNumber(record.promptTokens)} → {compactNumber(record.completionTokens)}</strong><small>缓存命中 {compactNumber(record.details.cacheTokens)}</small></span>
-                  <span><strong>{streamLabel(record)} · {tokensPerSecond(record)}</strong><small>{durationLabel(record.useTimeSeconds)} · 首字 {millisecondsLabel(record.details.firstResponseTimeMs)}</small></span>
-                  <span><strong>{formatUsageCostUsd(record.quota, quotaPerUnit)}</strong><small>{record.details.billingMode || '—'}</small></span>
-                  <span className="account-usage-detail-link">查看<ChevronRight size={14} /></span>
-                </button>
+                <div role="row" className="account-usage-table-row" key={record.id} onClick={() => setSelected(record)}>
+                  <span role="cell"><strong>{formatAccountUsageDate(record.createdAt)}</strong><small>{accountUsageTypeLabel(record.type)}</small></span>
+                  <span role="cell" className="account-usage-model-cell"><strong title={record.modelName || '未知模型'}>{record.modelName || '未知模型'}</strong><small title={`${record.tokenName || '未命名令牌'} · ${record.group || '默认分组'}`}>{record.tokenName || '未命名令牌'} · {record.group || '默认分组'}</small></span>
+                  <span role="cell"><strong>{compactNumber(record.promptTokens)} → {compactNumber(record.completionTokens)}</strong><small>缓存命中 {compactNumber(record.details.cacheTokens)}</small></span>
+                  <span role="cell"><strong>{streamLabel(record)} · {tokensPerSecond(record)}</strong><small>{durationLabel(record.useTimeSeconds)} · 首字 {millisecondsLabel(record.details.firstResponseTimeMs)}</small></span>
+                  <span role="cell"><strong>{formatUsageCostUsd(record.quota, quotaPerUnit)}</strong><small>{record.details.billingMode || '—'}</small></span>
+                  <span role="cell" className="account-usage-detail-link"><button type="button" className="ui-table-detail-action" aria-label={`查看调用 ${record.id}`} onClick={() => setSelected(record)}>查看<ChevronRight size={14} aria-hidden="true" /></button></span>
+                </div>
               ))}
               {!loading && usage?.records.length === 0 && (
-                <div className="account-usage-empty"><Inbox size={22} /><strong>没有符合条件的日志</strong><span>调整筛选条件后重新搜索。</span></div>
+                <div role="row"><div role="cell" aria-colspan={6} className="account-usage-empty"><Inbox size={22} /><strong>没有符合条件的日志</strong><span>调整筛选条件后重新搜索。</span></div></div>
               )}
             </div>
           </div>

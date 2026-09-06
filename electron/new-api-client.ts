@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
@@ -804,6 +804,8 @@ export interface NewApiClientService extends RelayBackendClient {
   // onSessionChange push hook -- e.g. to do an initial write without having
   // to thread the callback through every call site.
   getPersistableSession(): NewApiPersistableSession | null
+  /** Main-process-only ownership intent revision, including pending login/switch attempts. */
+  getSessionRevision(): number
   // Re-establishes a session from a persisted {userId, cookies} pair captured
   // by a previous run (electron/account-session-store.ts), by spending the
   // refresh cookie for a fresh access_token and then re-fetching the profile
@@ -818,6 +820,8 @@ export interface NewApiClientService extends RelayBackendClient {
   // 不报错卡启动 -- "failed" and "expired" are handled differently on purpose).
   // No-ops (returns true) if a session already exists.
   restoreSession(persisted: NewApiPersistableSession): Promise<boolean>
+  /** Validates a saved target before replacing the active account. Failure preserves it. */
+  switchSession(persisted: NewApiPersistableSession): Promise<boolean>
 }
 
 // Thrown when the server responds 401 on an authenticated call. Kept
@@ -827,6 +831,13 @@ export class NewApiAuthenticationError extends Error {
   constructor(message: string) {
     super(message)
     this.name = 'NewApiAuthenticationError'
+  }
+}
+
+export class NewApiSessionChangedError extends Error {
+  constructor() {
+    super('账号已切换，本次请求结果已丢弃，请重试')
+    this.name = 'NewApiSessionChangedError'
   }
 }
 
@@ -926,7 +937,7 @@ function sanitizeUpstreamMessage(value: string, secrets: readonly string[]): str
 // expired session instead of a client bug (docs/RECON-new-api.md 坑2).
 // Building both from the same session object makes that class of bug
 // impossible rather than merely tested-against.
-function authHeaders(session: InternalSession): Record<string, string> {
+function buildAuthHeaders(session: InternalSession): Record<string, string> {
   return {
     Authorization: `Bearer ${session.accessToken}`,
     'New-Api-User': String(session.userId),
@@ -2073,13 +2084,22 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   const legalDocumentCache = new Map<NewApiLegalDocumentKind, { expiresAt: number; value: NewApiLegalDocument }>()
 
   let session: InternalSession | null = null
+  let ownerGeneration = 0
+  let authAttemptGeneration = 0
+  const sessionOwners = new WeakMap<InternalSession, number>()
+  let refreshInFlight: { current: InternalSession; promise: Promise<InternalSession> } | null = null
 
   // Every reassignment of `session` funnels through here so onSessionChange
   // (the one hook a host app needs for on-disk persistence) can never be
   // forgotten at a new call site -- see its doc comment in
   // NewApiClientOptions for why that matters.
-  const setSession = (next: InternalSession | null): void => {
+  const setSession = (next: InternalSession | null, replaceOwner = true): void => {
+    if (replaceOwner) {
+      ownerGeneration += 1
+      authAttemptGeneration += 1
+    }
     session = next
+    if (next) sessionOwners.set(next, ownerGeneration)
     options.onSessionChange?.(
       next ? { userId: next.userId, cookies: [...next.cookies] } : null,
     )
@@ -2088,6 +2108,24 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   const requireSession = (): InternalSession => {
     if (!session) throw new Error('请先登录星芒账号')
     return session
+  }
+
+  const assertCurrentOwner = (current: InternalSession): void => {
+    if (!session || sessionOwners.get(current) !== ownerGeneration) throw new NewApiSessionChangedError()
+  }
+
+  const authHeaders = (current: InternalSession): Record<string, string> => {
+    assertCurrentOwner(current)
+    return buildAuthHeaders(current)
+  }
+
+  const assertAuthAttempt = (attempt: number, owner: number): void => {
+    if (attempt !== authAttemptGeneration || owner !== ownerGeneration) throw new NewApiSessionChangedError()
+  }
+
+  const assertResultOwner = (current: InternalSession, allowSessionClear: boolean): void => {
+    if (allowSessionClear && session === null && ownerGeneration === (sessionOwners.get(current) ?? -2) + 1) return
+    assertCurrentOwner(current)
   }
 
   // Shared by refreshAccessToken, restoreSession, and withSession's own
@@ -2117,6 +2155,29 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     }
   }
 
+  // Token rotation keeps the same owner. One refresh is shared by concurrent
+  // requests, and an older response can never replace a newer credential.
+  const refreshCurrentSession = async (current: InternalSession): Promise<InternalSession> => {
+    assertCurrentOwner(current)
+    if (session !== current) return requireSession()
+    if (refreshInFlight?.current === current) return refreshInFlight.promise
+    const promise = (async () => {
+      try {
+        const refreshed = await performRefresh(current)
+        assertCurrentOwner(current)
+        if (session === current) setSession(refreshed, false)
+        return requireSession()
+      } catch (error) {
+        assertCurrentOwner(current)
+        if (session !== current) return requireSession()
+        throw error
+      }
+    })()
+    refreshInFlight = { current, promise }
+    try { return await promise }
+    finally { if (refreshInFlight?.promise === promise) refreshInFlight = null }
+  }
+
   // Runs at most one silent refresh-and-retry after a 401 (docs/RECON-new-api.md
   // section D: "401 时凭 refresh cookie 静默续期"). Bounded to exactly one
   // attempt by construction -- this function does not call itself, and the
@@ -2130,36 +2191,52 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     failedSession: InternalSession,
     run: (current: InternalSession) => Promise<T>,
     originalError: NewApiAuthenticationError,
+    allowSessionClear: boolean,
   ): Promise<T> => {
     let refreshed: InternalSession
     try {
-      refreshed = await performRefresh(failedSession)
+      refreshed = await refreshCurrentSession(failedSession)
     } catch {
-      setSession(null)
+      assertCurrentOwner(failedSession)
+      if (session === failedSession) setSession(null)
       throw originalError
     }
-    setSession(refreshed)
     try {
-      return await run(refreshed)
+      const result = await run(refreshed)
+      assertResultOwner(refreshed, allowSessionClear && isRecord(result) && result.current === true)
+      return result
     } catch (retryError) {
-      if (retryError instanceof NewApiAuthenticationError) setSession(null)
+      assertCurrentOwner(refreshed)
+      if (retryError instanceof NewApiAuthenticationError && session === refreshed) setSession(null)
       throw retryError
     }
   }
 
-  const withSession = async <T>(run: (current: InternalSession) => Promise<T>): Promise<T> => {
+  const withSession = async <T>(run: (current: InternalSession) => Promise<T>, allowSessionClear = false): Promise<T> => {
     const current = requireSession()
     try {
-      return await run(current)
+      const result = await run(current)
+      assertResultOwner(current, allowSessionClear && isRecord(result) && result.current === true)
+      return result
     } catch (error) {
+      assertCurrentOwner(current)
       if (!(error instanceof NewApiAuthenticationError)) throw error
-      return await retryAfterSilentRefresh(current, run, error)
+      return await retryAfterSilentRefresh(current, run, error, allowSessionClear)
     }
   }
 
   const getStatus = async (): Promise<NewApiAccountStatus> => {
     const raw = await performRequest(ctx, statusPath, { method: 'GET' }, '账号服务状态查询')
     return parseAccountStatus(unwrapEnvelope(raw, '账号服务状态查询', []))
+  }
+
+  const getNotice = async (): Promise<{ id: string; text: string } | null> => {
+    const raw = await performRequest(ctx, '/api/notice', { method: 'GET' }, '公告读取')
+    const data = unwrapEnvelope(raw, '公告读取', [])
+    if (data === null || data === undefined || data === '') return null
+    if (typeof data !== 'string' || data.length > 64_000) throw new Error('公告内容格式无效或超出上限')
+    const text = data.trim()
+    return text ? { id: createHash('sha256').update(`${origin}\n${text}`).digest('hex'), text } : null
   }
 
   const getLegalDocument = async (kind: NewApiLegalDocumentKind): Promise<NewApiLegalDocument> => {
@@ -2289,9 +2366,14 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     const username = input.username.trim()
     const password = input.password
     if (!username || !password) throw new Error('请输入用户名和密码')
+    const attempt = ++authAttemptGeneration
+    const owner = ownerGeneration
     const body: Record<string, unknown> = { username, password }
     if (input.turnstileToken) body.turnstile = input.turnstileToken
-    const raw = await performRequest(ctx, loginPath, { method: 'POST', body }, '账号登录')
+    let raw: NewApiRawResponse
+    try { raw = await performRequest(ctx, loginPath, { method: 'POST', body }, '账号登录') }
+    catch (error) { assertAuthAttempt(attempt, owner); throw error }
+    assertAuthAttempt(attempt, owner)
     const data = parseLoginResponseData(unwrapEnvelope(raw, '账号登录', [password]))
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
@@ -2828,7 +2910,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       // same session does not spuriously 401 against the now-superseded old
       // access token -- see parseChangePasswordResponseData's own comment
       // for why skipping this on a malformed/missing bundle is still safe.
-      if (bundle) setSession({ ...current, accessToken: bundle.accessToken })
+      assertCurrentOwner(current)
+      if (bundle && session === current) setSession({ ...current, accessToken: bundle.accessToken }, false)
       return { changed: true }
     })
   )
@@ -2861,9 +2944,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
         throw new Error('登录设备撤销响应格式异常')
       }
       const result = { revokedSid, current: data.current }
+      assertCurrentOwner(current)
       if (result.current) setSession(null)
       return result
-    })
+    }, true)
   )
 
   const revokeOtherLoginSessions = (): Promise<NewApiRevokeOtherLoginSessionsResult> => (
@@ -2992,9 +3076,10 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   const refreshAccessToken = async (): Promise<void> => {
     const current = requireSession()
     try {
-      setSession(await performRefresh(current))
+      await refreshCurrentSession(current)
     } catch (error) {
-      if (error instanceof NewApiAuthenticationError) setSession(null)
+      assertCurrentOwner(current)
+      if (error instanceof NewApiAuthenticationError && session === current) setSession(null)
       throw error
     }
   }
@@ -3012,11 +3097,15 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     { userId, username: '', group: null, role: null, quota: null, usedQuota: null }
   )
 
-  const restoreSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
-    if (session) return true
-    if (!Number.isInteger(persisted.userId) || persisted.userId <= 0 || persisted.cookies.length === 0) {
+  const switchSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
+    if (!isRecord(persisted) || !Number.isSafeInteger(persisted.userId) || persisted.userId <= 0
+      || !Array.isArray(persisted.cookies) || persisted.cookies.length === 0 || persisted.cookies.length > 16
+      || !persisted.cookies.every((cookie) => typeof cookie === 'string' && cookie.length > 0 && cookie.length <= 4096 && !/[\r\n\u0000]/.test(cookie))
+      || Buffer.byteLength(persisted.cookies.join('; '), 'utf8') > 16 * 1024) {
       return false
     }
+    const attempt = ++authAttemptGeneration
+    const owner = ownerGeneration
     const seed: InternalSession = {
       accessToken: '',
       userId: persisted.userId,
@@ -3026,7 +3115,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     let refreshed: InternalSession
     try {
       refreshed = await performRefresh(seed)
+      assertAuthAttempt(attempt, owner)
     } catch (error) {
+      assertAuthAttempt(attempt, owner)
       if (error instanceof NewApiAuthenticationError) return false
       throw error
     }
@@ -3035,11 +3126,13 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       const selfRaw = await performRequest(
         ctx,
         selfPath,
-        { method: 'GET', headers: authHeaders(refreshed) },
+        { method: 'GET', headers: buildAuthHeaders(refreshed) },
         '登录状态恢复',
       )
-      profile = parseAccountProfile(unwrapEnvelope(selfRaw, '登录状态恢复', [refreshed.accessToken]))
+      assertAuthAttempt(attempt, owner)
+      profile = parseAccountProfile(unwrapEnvelope(selfRaw, '登录状态恢复', [refreshed.accessToken, ...cookieValueSecrets(refreshed.cookies)]))
     } catch (error) {
+      assertAuthAttempt(attempt, owner)
       if (error instanceof NewApiAuthenticationError) return false
       throw error
     }
@@ -3048,14 +3141,20 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     // a different user would mean the persisted userId no longer matches
     // reality -- treat that the same as an invalid credential rather than
     // silently logging the caller in as the wrong account.
-    if (profile.userId !== persisted.userId) return false
+    if (profile.userId !== seed.userId) return false
     setSession({ ...refreshed, profile })
     return true
+  }
+
+  const restoreSession = async (persisted: NewApiPersistableSession): Promise<boolean> => {
+    if (session) return true
+    return switchSession(persisted)
   }
 
   return {
     capabilities: newApiCapabilities,
     getStatus,
+    getNotice,
     getLegalDocument,
     sendEmailVerification,
     sendPasswordResetEmail,
@@ -3096,6 +3195,8 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     findExistingCliKey,
     refreshAccessToken,
     getPersistableSession,
+    getSessionRevision: () => authAttemptGeneration,
     restoreSession,
+    switchSession,
   }
 }

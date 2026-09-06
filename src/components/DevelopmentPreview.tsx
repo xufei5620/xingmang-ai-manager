@@ -15,6 +15,7 @@ export function DevelopmentPreview() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme
+    document.documentElement.dataset.skin = theme === 'dark' ? 'obsidian' : 'dawn'
     document.documentElement.style.colorScheme = theme
     try {
       window.localStorage.setItem('xingmang-theme-v2', theme)

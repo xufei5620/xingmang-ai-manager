@@ -47,7 +47,20 @@ export const canvasHostChannels = {
   setProjectArchived: 'canvas-host:set-project-archived',
   runEvent: 'canvas-host:run-event',
   themeChanged: 'canvas-host:theme-changed',
+  appearanceChanged: 'canvas-host:appearance-changed',
+  closeRequested: 'canvas-host:close-requested',
+  closeCancelled: 'canvas-host:close-cancelled',
+  finishClose: 'canvas-host:finish-close',
+  cancelCloseTasks: 'canvas-host:cancel-close-tasks',
 } as const
+
+export interface CanvasAppearance {
+  theme: 'light' | 'dark'
+  uiSkin?: 'dawn' | 'obsidian' | 'mist' | 'aurora'
+  reducedMotion?: boolean
+}
+
+export interface CanvasCloseRequest { requestId: string }
 
 export interface CanvasGroupSummary {
   name: string

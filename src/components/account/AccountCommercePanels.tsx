@@ -19,6 +19,7 @@ import {
   TicketCheck,
   Users,
   Wallet,
+  X,
 } from 'lucide-react'
 import type {
   AccountBalance,
@@ -169,12 +170,14 @@ export function AccountCommercePanels({
   balance,
   onRefreshAccount,
   notify,
+  paymentReturn,
 }: {
   activeTab: AccountCommerceTab | null
   profile: AccountProfileDetail | null
   balance: AccountBalance | null
   onRefreshAccount: () => Promise<void>
   notify?: (toast: ToastMessage) => void
+  paymentReturn?: { sequence: number; order: string | null }
 }) {
   const mounted = useRef(true)
   const topupRequest = useRef(0)
@@ -196,6 +199,11 @@ export function AccountCommercePanels({
     message: string
   } | null>(null)
   const [ordersPageNumber, setOrdersPageNumber] = useState(1)
+  const [orderKeyword, setOrderKeyword] = useState(paymentReturn?.order ?? '')
+  useEffect(() => {
+    setOrderKeyword(paymentReturn?.order ?? '')
+    setOrdersPageNumber(1)
+  }, [paymentReturn])
   const [orders, setOrders] = useState<AccountTopupOrdersPage | null>(null)
   const [ordersLoading, setOrdersLoading] = useState(false)
   const [ordersError, setOrdersError] = useState<string | null>(null)
@@ -285,9 +293,9 @@ export function AccountCommercePanels({
     if (!quiet) setOrdersLoading(true)
     setOrdersError(null)
     try {
-      const next = await window.xingmang.getAccountTopupOrders({ page, pageSize: ORDER_PAGE_SIZE })
+      const next = await window.xingmang.getAccountTopupOrders({ page, pageSize: ORDER_PAGE_SIZE, ...(!quiet && orderKeyword ? { keyword: orderKeyword } : {}) })
       if (!mounted.current || requestId !== ordersRequest.current) return null
-      setOrders(next)
+      if (!quiet || !orderKeyword) setOrders(next)
       return next
     } catch (error) {
       if (mounted.current && requestId === ordersRequest.current && !quiet) setOrdersError(errorMessage(error))
@@ -295,7 +303,7 @@ export function AccountCommercePanels({
     } finally {
       if (mounted.current && requestId === ordersRequest.current && !quiet) setOrdersLoading(false)
     }
-  }, [ordersPageNumber])
+  }, [ordersPageNumber, orderKeyword])
 
   const loadSubscriptions = useCallback(async () => {
     const requestId = ++subscriptionsRequest.current
@@ -322,7 +330,7 @@ export function AccountCommercePanels({
 
   useEffect(() => {
     if (activeTab === 'orders') void loadOrders(ordersPageNumber)
-  }, [activeTab, ordersPageNumber, loadOrders])
+  }, [activeTab, ordersPageNumber, loadOrders, paymentReturn?.sequence])
 
   useEffect(() => {
     if (activeTab === 'subscriptions' && !plans && !subscriptionsLoading) void loadSubscriptions()
@@ -699,8 +707,9 @@ export function AccountCommercePanels({
         ? (
             <section className="workspace-empty">
               <div className="workspace-empty-icon"><Inbox size={24} /></div>
-              <h2>暂无充值订单</h2>
-              <p>在客户端发起充值后，订单状态会显示在这里。</p>
+              <h2>{orderKeyword ? '未找到对应订单' : '暂无充值订单'}</h2>
+              <p>{orderKeyword ? '请确认当前登录账号，也可查看全部订单。' : '在客户端发起充值后，订单状态会显示在这里。'}</p>
+              <button type="button" className="secondary-button" disabled={ordersLoading} onClick={() => void loadOrders(ordersPageNumber)}><RefreshCw size={15} />刷新</button>
             </section>
           )
         : (
@@ -709,16 +718,16 @@ export function AccountCommercePanels({
                 <span>共 {orders.total} 条订单</span>
                 <button type="button" className="secondary-button" disabled={ordersLoading} onClick={() => void loadOrders(ordersPageNumber)}><RefreshCw size={15} />刷新</button>
               </div>
-              <div className="account-orders-table">
-                <div className="account-orders-head" aria-hidden="true"><span>订单号</span><span>创建时间</span><span>充值金额</span><span>实付</span><span>支付方式</span><span>状态</span></div>
+              <div className="account-orders-table" role="table" aria-label="我的订单" aria-colcount={6}>
+                <div className="account-orders-head" role="row"><span role="columnheader">订单号</span><span role="columnheader">创建时间</span><span role="columnheader">充值金额</span><span role="columnheader">实付</span><span role="columnheader">支付方式</span><span role="columnheader">状态</span></div>
                 {orders.orders.map((order) => (
-                  <div className="account-orders-row" key={order.id}>
-                    <code title={order.tradeNo}>{order.tradeNo}</code>
-                    <span>{formatAccountUsageDate(order.createdAt)}</span>
-                    <span>{amountLabel(order.amount)}</span>
-                    <strong>{amountLabel(order.money)}</strong>
-                    <span>{order.paymentMethod || order.paymentProvider || '—'}</span>
-                    <span className={`account-order-status is-${order.status}`}>{orderStatusLabel(order.status)}</span>
+                  <div className="account-orders-row" key={order.id} role="row">
+                    <code role="cell" title={order.tradeNo}>{order.tradeNo}</code>
+                    <span role="cell">{formatAccountUsageDate(order.createdAt)}</span>
+                    <span role="cell">{amountLabel(order.amount)}</span>
+                    <strong role="cell">{amountLabel(order.money)}</strong>
+                    <span role="cell">{order.paymentMethod || order.paymentProvider || '—'}</span>
+                    <span role="cell" className={`account-order-status is-${order.status}`}>{orderStatusLabel(order.status)}</span>
                   </div>
                 ))}
               </div>
@@ -842,7 +851,10 @@ export function AccountCommercePanels({
   return (
     <>
       {activeTab === 'topup' && topupPanel}
-      {activeTab === 'orders' && ordersPanel}
+      {activeTab === 'orders' && <>
+        {orderKeyword && <div className="account-orders-toolbar" role="status"><span>订单：{orderKeyword}</span><button type="button" className="icon-button compact" aria-label="查看全部订单" title="查看全部订单" onClick={() => { setOrderKeyword(''); setOrdersPageNumber(1) }}><X size={16} /></button></div>}
+        {ordersPanel}
+      </>}
       {activeTab === 'subscriptions' && subscriptionsPanel}
       {activeTab === 'redeem' && redeemPanel}
       {activeTab === 'invite' && invitePanel}

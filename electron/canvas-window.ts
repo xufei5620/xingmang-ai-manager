@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { randomUUID } from 'node:crypto'
 import {
   app,
   BrowserWindow,
@@ -27,7 +28,7 @@ import type { SystemService } from './system-service'
 import type { AppTheme } from './app-settings'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
-import { canvasHostChannels } from './canvas-contract'
+import { canvasHostChannels, type CanvasAppearance } from './canvas-contract'
 import {
   parseCanvasAssetQuery,
   parseCanvasAssetId,
@@ -118,6 +119,7 @@ export const canvasHostDuplicateProjectChannel = canvasHostChannels.duplicatePro
 export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProjectArchived
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
 export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
+export const canvasHostAppearanceChangedChannel = canvasHostChannels.appearanceChanged
 
 const maximumSavedFileBytes = 20 * 1024 * 1024
 const maximumPickedFileBytes = 20 * 1024 * 1024
@@ -147,6 +149,7 @@ export interface CanvasWindowControllerOptions {
   projects?: CanvasProjectStore
   projectAssets?: CanvasProjectAssetManager
   externalShell?: ExternalShellLauncher
+  closeRequestTimeoutMs?: number
 }
 
 export interface CanvasWindowController {
@@ -154,6 +157,9 @@ export interface CanvasWindowController {
   open(): Promise<void>
   /** Applies the global application theme without exposing the settings record to the canvas renderer. */
   setTheme(theme: AppTheme): void
+  setAppearance(appearance: CanvasAppearance): void
+  /** Resolves only after renderer confirmation and the native closed event. */
+  requestClose(): Promise<boolean>
   /** Closes the canvas window if one is open; a no-op otherwise. */
   closeIfOpen(): void
   /** Removes every IPC handler this controller registered. */
@@ -164,11 +170,19 @@ function senderUrlOf(event: IpcMainInvokeEvent): string {
   return event.senderFrame?.url ?? event.sender.getURL()
 }
 
-export const canvasWindowBackgroundColor = '#111315'
-export const canvasWindowLightBackgroundColor = '#eef1f3'
+export const canvasWindowBackgroundColor = '#0b0c10'
+export const canvasWindowLightBackgroundColor = '#faf7ee'
 
 export function canvasWindowBackgroundForTheme(theme: AppTheme): string {
   return theme === 'light' ? canvasWindowLightBackgroundColor : canvasWindowBackgroundColor
+}
+
+export function canvasWindowBackgroundForAppearance(appearance: CanvasAppearance): string {
+  const colors = {
+    light: { dawn: '#faf7ee', obsidian: '#f7f3e9', mist: '#f0f6f5', aurora: '#f3f1fb' },
+    dark: { dawn: '#0c172b', obsidian: '#0b0c10', mist: '#0c1a1e', aurora: '#120f22' },
+  }
+  return colors[appearance.theme][appearance.uiSkin ?? (appearance.theme === 'light' ? 'dawn' : 'obsidian')]
 }
 
 /**
@@ -191,10 +205,58 @@ export function createCanvasWindowController(
   const handleChannels: string[] = []
   let canvasWindow: BrowserWindow | null = null
   let pendingOpen: Promise<void> | null = null
-  let currentTheme: AppTheme = options.systemService.readStoredConfig().theme
+  const storedSettings = options.systemService.readStoredConfig()
+  let currentTheme: AppTheme = storedSettings.theme
+  let currentAppearance: CanvasAppearance = {
+    theme: currentTheme,
+    ...(storedSettings.uiSkin ? { uiSkin: storedSettings.uiSkin } : {}),
+    reducedMotion: storedSettings.reducedMotion === true,
+  }
+  let disposed = false
+  let pendingClose: {
+    window: BrowserWindow; requestId: string; authorized: boolean
+    promise: Promise<boolean>; resolve(result: boolean): void; timer: ReturnType<typeof setTimeout>
+  } | null = null
   const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
   const generationAdmission = new CanvasGenerationAdmission()
+
+  function finishPendingClose(result: boolean, reason?: string): void {
+    const pending = pendingClose
+    if (!pending) return
+    pendingClose = null
+    clearTimeout(pending.timer)
+    if (!result && !disposed && !pending.window.isDestroyed()) {
+      try {
+        pending.window.webContents.send(canvasHostChannels.closeCancelled, { requestId: pending.requestId })
+        pending.window.show()
+        pending.window.focus()
+      } catch { /* A crashed renderer must not turn a failed close into success. */ }
+    }
+    if (reason) options.runtimeLog.log('warn', 'canvas', 'close.not-completed', reason)
+    pending.resolve(result)
+  }
+
+  function requestClose(): Promise<boolean> {
+    if (pendingClose) return pendingClose.promise
+    if (!canvasWindow || canvasWindow.isDestroyed()) return Promise.resolve(true)
+    if (disposed) return Promise.resolve(false)
+    const window = canvasWindow
+    const requestId = randomUUID()
+    let resolve!: (result: boolean) => void
+    const promise = new Promise<boolean>((done) => { resolve = done })
+    const requestedTimeout = options.closeRequestTimeoutMs ?? 60_000
+    const timeout = Number.isFinite(requestedTimeout) ? Math.max(100, Math.min(requestedTimeout, 120_000)) : 60_000
+    const timer = setTimeout(() => finishPendingClose(false, '画布关闭确认超时，已保留窗口'), timeout)
+    pendingClose = { window, requestId, promise, resolve, timer, authorized: false }
+    try {
+      window.show()
+      window.webContents.send(canvasHostChannels.closeRequested, { requestId })
+    } catch (error) {
+      finishPendingClose(false, error instanceof Error ? error.message : '画布关闭请求发送失败')
+    }
+    return promise
+  }
 
   function activeProjectId(ownerId: number, userId: number): string | undefined {
     if (!options.projects) return undefined
@@ -256,6 +318,29 @@ export function createCanvasWindowController(
       return handler(event, ...args)
     })
   }
+
+  registerCanvasHandler(canvasHostChannels.finishClose, (event, requestIdInput, allowed) => {
+    const requestId = requiredCanvasString(requestIdInput, '画布关闭请求标识', 64)
+    if (typeof allowed !== 'boolean') throw new Error('画布关闭回执格式错误')
+    const pending = pendingClose
+    if (!pending || pending.requestId !== requestId || pending.window.webContents !== event.sender || pending.authorized) return false
+    if (!allowed) { finishPendingClose(false); return true }
+    pending.authorized = true
+    try { pending.window.close() } catch (error) {
+      finishPendingClose(false, error instanceof Error ? error.message : '画布窗口未能关闭')
+      return false
+    }
+    return true
+  })
+
+  registerCanvasHandler(canvasHostChannels.cancelCloseTasks, (event, requestIdInput) => {
+    const requestId = requiredCanvasString(requestIdInput, '画布关闭请求标识', 64)
+    if (!pendingClose || pendingClose.requestId !== requestId || pendingClose.window.webContents !== event.sender || pendingClose.authorized) return false
+    options.imageService.cancelSender(event.sender.id)
+    options.videoService.cancelSender(event.sender.id)
+    options.canvasRuns.cancelOwner(event.sender.id)
+    return true
+  })
 
   registerCanvasHandler(canvasHostSaveFileChannel, async (event, suggestedNameInput, contentInput) => {
     const suggestedName = requiredCanvasString(suggestedNameInput, '保存文件名', 256)
@@ -848,7 +933,7 @@ export function createCanvasWindowController(
       height: 860,
       minWidth: 960,
       minHeight: 620,
-      backgroundColor: canvasWindowBackgroundForTheme(currentTheme),
+      backgroundColor: canvasWindowBackgroundForAppearance(currentAppearance),
       show: false,
       title: '无限画布 - 星芒AI管理工具',
       webPreferences: {
@@ -870,7 +955,13 @@ export function createCanvasWindowController(
       window.center()
       window.show()
     })
+    window.on('close', (event) => {
+      if (disposed || (pendingClose?.window === window && pendingClose.authorized)) return
+      event.preventDefault()
+      void requestClose()
+    })
     window.on('closed', () => {
+      if (pendingClose?.window === window) finishPendingClose(pendingClose.authorized)
       options.imageService.cancelSender(senderId)
       options.videoService.cancelSender(senderId)
       options.canvasRuns.cancelOwner(senderId)
@@ -899,10 +990,14 @@ export function createCanvasWindowController(
       }
     })
     window.webContents.on('render-process-gone', (_event, details) => {
+      if (pendingClose?.window === window) finishPendingClose(false, '画布渲染进程已退出，无法确认项目保存')
       options.runtimeLog.log('error', 'canvas', 'process.gone', '画布渲染进程异常退出', {
         reason: details.reason,
         exitCode: details.exitCode,
       })
+    })
+    window.webContents.on('did-start-loading', () => {
+      if (pendingClose?.window === window) finishPendingClose(false, '画布页面已重新加载，请重新确认关闭')
     })
 
     // Load the bare protocol root (pathname '/'), not '/index.html'. The canvas
@@ -911,11 +1006,14 @@ export function createCanvasWindowController(
     // index.html for '/', letting the app boot on its home route.
     const canvasUrl = new URL(canvasPackagedBaseUrl)
     canvasUrl.searchParams.set('theme', currentTheme)
+    if (currentAppearance.uiSkin) canvasUrl.searchParams.set('skin', currentAppearance.uiSkin)
+    if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
     await window.loadURL(canvasUrl.href)
   }
 
   return {
     async open() {
+      if (disposed) throw new Error('画布宿主已关闭')
       if (canvasWindow && !canvasWindow.isDestroyed()) {
         if (canvasWindow.isMinimized()) canvasWindow.restore()
         canvasWindow.show()
@@ -931,15 +1029,26 @@ export function createCanvasWindowController(
     },
     setTheme(theme) {
       currentTheme = theme
+      currentAppearance = { ...currentAppearance, theme }
       if (!canvasWindow || canvasWindow.isDestroyed()) return
-      canvasWindow.setBackgroundColor(canvasWindowBackgroundForTheme(theme))
+      canvasWindow.setBackgroundColor(canvasWindowBackgroundForAppearance(currentAppearance))
       canvasWindow.webContents.send(canvasHostThemeChangedChannel, theme)
     },
+    setAppearance(appearance) {
+      currentTheme = appearance.theme
+      currentAppearance = { theme: appearance.theme, ...(appearance.uiSkin ? { uiSkin: appearance.uiSkin } : {}), reducedMotion: appearance.reducedMotion === true }
+      if (!canvasWindow || canvasWindow.isDestroyed()) return
+      canvasWindow.setBackgroundColor(canvasWindowBackgroundForAppearance(currentAppearance))
+      canvasWindow.webContents.send(canvasHostAppearanceChangedChannel, currentAppearance)
+    },
+    requestClose,
     closeIfOpen() {
-      if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.close()
+      void requestClose()
     },
     dispose() {
-      if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.close()
+      disposed = true
+      finishPendingClose(false)
+      if (canvasWindow && !canvasWindow.isDestroyed()) canvasWindow.destroy()
       canvasWindow = null
       for (const channel of handleChannels) ipcMain.removeHandler(channel)
       unsubscribeRunEvents()

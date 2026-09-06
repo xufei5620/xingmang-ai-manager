@@ -1,0 +1,41 @@
+.ui-drawer {
+  position: fixed;
+  inset: var(--drawer-top-inset, 46px) 0 var(--statusbar-height, 30px) auto;
+  width: min(var(--drawer-width, 420px), calc(100vw - 16px));
+  max-width: none;
+  height: calc(100dvh - var(--drawer-top-inset, 46px) - var(--statusbar-height, 30px));
+  max-height: none;
+  padding: 0;
+  margin: 0;
+  color: var(--text);
+  background: var(--panel-solid);
+  border: 0;
+  border-left: 1px solid var(--line-2);
+  border-radius: 0;
+  box-shadow: var(--shadow);
+  font: var(--font-body)/var(--line-body) var(--font);
+  overflow: hidden;
+}
+.desktop-frame .ui-drawer { --drawer-top-inset: calc(var(--titlebar-height, 36px) + var(--topbar-height, 46px)); }
+.ui-drawer[open] { display: flex; flex-direction: column; }
+.ui-drawer::backdrop { background: var(--overlay); }
+.ui-drawer-header { display: flex; align-items: flex-start; justify-content: space-between; flex: 0 0 auto; gap: 12px; padding: 18px 16px; border-bottom: 1px solid var(--line-2); }
+.ui-drawer-header > div { min-width: 0; }
+.ui-drawer-header h2 { margin: 0; color: var(--text); font-size: 15px; font-weight: 600; line-height: 1.5; overflow-wrap: anywhere; }
+.ui-drawer-header h2:focus { outline: none; }
+.ui-drawer-subtitle { margin-top: 6px; color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+.ui-drawer-body { flex: 1 1 auto; min-height: 0; min-width: 0; padding: 16px; overflow: auto; overscroll-behavior: contain; }
+.ui-drawer-footer { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; flex: 0 0 auto; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--line-2); }
+.ui-drawer .session-message-list { max-height: none; overflow: visible; padding: 0; }
+.ui-drawer .session-detail-meta { padding: 0 0 16px; flex-wrap: wrap; }
+:root[data-theme] .ui-drawer .session-message { margin-bottom: 16px; padding: 0 0 16px; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+:root[data-theme] .ui-drawer .session-message header strong { color: var(--text-2); font-size: 12px; }
+.ui-drawer .session-message pre { white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word; color: var(--text); background: transparent; font: 13px/1.6 var(--font); }
+.ui-drawer .backup-file-row { padding: 12px 0; }
+.ui-drawer .backup-file-row strong { display: block; font: 12px/1.5 var(--mono); overflow-wrap: anywhere; }
+.ui-drawer .backup-file-row p { white-space: normal; overflow-wrap: anywhere; color: var(--text-2); }
+.ui-drawer .ui-detail-fields { display: grid; gap: 16px; margin: 0; }
+.ui-detail-fields > div { min-width: 0; }
+.ui-detail-fields dt { margin: 0 0 4px; color: var(--text-2); font-size: 12px; }
+.ui-detail-fields dd { margin: 0; color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
+.ui-detail-fields dd code { font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }

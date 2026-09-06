@@ -1,0 +1,56 @@
+:root[data-theme] .maintenance-v3 { min-width: 0; }
+:root[data-theme] .page.maintenance-v3 .primary-button { color: var(--accent-fg); background: var(--accent); border-color: var(--accent); }
+:root[data-theme] .page.maintenance-v3 .primary-button:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
+:root[data-theme] .maintenance-v3 .environment-section,
+:root[data-theme] .maintenance-v3 .management-panel { padding: 0; margin: 0 0 24px; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+:root[data-theme] .maintenance-v3 .section-heading,
+:root[data-theme] .maintenance-v3 .management-panel-heading { padding: 0 0 16px; border-bottom: 1px solid var(--line); }
+:root[data-theme] .maintenance-v3 .section-heading h2,
+:root[data-theme] .maintenance-v3 .management-panel-heading h2 { font-size: 15px; color: var(--text); }
+:root[data-theme] .maintenance-v3 .runtime-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; padding: 16px 0; margin: 0; border: 0; border-radius: 0; background: transparent; }
+:root[data-theme] .maintenance-v3 .runtime-cell { padding: 0; border: 0; border-radius: 0; background: transparent; }
+:root[data-theme] .maintenance-v3 .runtime-icon { background: transparent; color: var(--text-2); }
+:root[data-theme] .maintenance-v3 .runtime-name { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .maintenance-v3 .runtime-version { color: var(--text); font-size: 20px; font-variant-numeric: tabular-nums; }
+:root[data-theme] .maintenance-v3 .operation-row { border-radius: 0; border: 0; border-bottom: 1px solid var(--line); background: transparent; box-shadow: none; }
+:root[data-theme] .health-v3 .health-row { grid-template-columns: 24px minmax(0, 1fr) auto; align-items: start; padding: 16px 0; gap: 12px; }
+.health-row-actions { display: flex; align-items: center; gap: 12px; }
+.health-detail-disclosure { margin-top: 8px; }
+.health-detail-disclosure summary { width: fit-content; cursor: pointer; color: var(--text-2); font-size: 12px; }
+.health-detail-disclosure .operation-details { margin-top: 12px; }
+:root[data-theme] .health-v3 .health-row-actions .secondary-button { min-height: 32px; font-size: 12px; }
+:root[data-theme] .maintenance-v3 .operation-row-copy p { overflow-wrap: anywhere; color: var(--text-2); }
+:root[data-theme] .maintenance-v3 .operation-row-title strong { font-size: 14px; }
+:root[data-theme] .maintenance-v3 .operation-row-copy p { font-size: 13px; }
+:root[data-theme] .feedback-v3 .feedback-log-path { max-width: 44%; color: var(--text-2); overflow-wrap: anywhere; white-space: normal; }
+:root[data-theme] .feedback-v3 .feedback-log-row { padding: 14px 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+:root[data-theme] .feedback-v3 .feedback-log-copy strong,
+:root[data-theme] .feedback-v3 .feedback-log-copy code { overflow-wrap: anywhere; white-space: normal; }
+:root[data-theme] .feedback-v3 .feedback-log-copy strong { font-size: 14px; }
+.feedback-report-preview { margin-bottom: 24px; padding: 20px 0; border-block: 1px solid var(--line); }
+.feedback-report-preview-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 12px; }
+.feedback-report-preview h2 { margin: 0; font-size: 15px; }
+.feedback-report-preview-heading span { color: var(--text-2); font-size: 12px; }
+.feedback-report-preview textarea { display: block; width: 100%; height: 250px; max-height: 360px; padding: 12px; resize: vertical; border: 1px solid var(--line-2); border-radius: 6px; color: var(--text); background: var(--panel-solid); font: 12px/1.7 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.feedback-preview-unavailable { margin-bottom: 20px; }
+:root[data-theme] .update-v3 .update-status-panel { max-width: 860px; }
+:root[data-theme] .update-v3 .update-release-notes { padding: 20px 0; border: 0; border-block: 1px solid var(--line); border-radius: 0; background: transparent; }
+:root[data-theme] .update-v3 .update-release-notes pre { max-height: none; margin: 16px 0 0; background: transparent; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text-2); }
+:root[data-theme] .update-v3 .inline-error { display: flex; align-items: flex-start; gap: 8px; margin-top: 16px; }
+.update-v3 .inline-error svg { flex: 0 0 16px; }
+:root[data-theme] .tutorial-v3 .tutorial-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 24px; }
+:root[data-theme] .tutorial-v3 .tutorial-toc { padding: 0 16px 0 0; background: transparent; border: 0; border-right: 1px solid var(--line); border-radius: 0; }
+:root[data-theme] .tutorial-v3 .tutorial-toc button { min-height: 36px; font-size: 14px; }
+:root[data-theme] .tutorial-v3 .tutorial-article { min-width: 0; padding: 0; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+:root[data-theme] .tutorial-v3 .tutorial-steps section { padding: 20px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+:root[data-theme] .tutorial-v3 .tutorial-steps h3 { color: var(--text); }
+:root[data-theme] .tutorial-v3 .tutorial-steps p { color: var(--text-2); font-size: 14px; line-height: 1.75; }
+:root[data-theme] .tutorial-v3 .tutorial-support-band { padding: 20px 0 0; border: 0; border-top: 1px solid var(--line); border-radius: 0; background: transparent; }
+@media (max-width: 720px) {
+  :root[data-theme] .maintenance-v3 .runtime-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  :root[data-theme] .health-v3 .health-row { grid-template-columns: 24px minmax(0, 1fr); }
+  .health-row-actions { grid-column: 2; }
+  :root[data-theme] .tutorial-v3 .tutorial-layout { grid-template-columns: minmax(0, 1fr); }
+  :root[data-theme] .tutorial-v3 .tutorial-toc { display: flex; overflow: auto; border-right: 0; border-bottom: 1px solid var(--line); padding: 0 0 12px; }
+  :root[data-theme] .tutorial-v3 .tutorial-toc button { flex: 0 0 auto; }
+}

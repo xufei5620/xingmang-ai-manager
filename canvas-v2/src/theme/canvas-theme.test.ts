@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { CanvasHostBridge } from '../host'
-import { applyCanvasTheme, initialCanvasTheme, subscribeCanvasTheme } from './canvas-theme'
+import { applyCanvasAppearance, applyCanvasTheme, initialCanvasAppearance, initialCanvasTheme, subscribeCanvasTheme } from './canvas-theme'
 
 describe('canvas theme', () => {
   it('accepts only the two host themes and defaults to dark', () => {
@@ -33,5 +33,20 @@ describe('canvas theme', () => {
     expect(onThemeChange).toHaveBeenCalledWith(listener)
     expect(subscribeCanvasTheme(undefined, listener)).toEqual(expect.any(Function))
     expect(subscribeCanvasTheme({} as Pick<CanvasHostBridge, 'onThemeChange'>, listener)).toEqual(expect.any(Function))
+  })
+
+  it('limits initial appearance to known display fields and does not infer success from arbitrary query values', () => {
+    expect(initialCanvasAppearance('?theme=light&skin=mist&reducedMotion=1&apiKey=hidden')).toEqual({ theme: 'light', uiSkin: 'mist', reducedMotion: true })
+    expect(initialCanvasAppearance('?theme=dark&skin=unknown&reducedMotion=yes')).toEqual({ theme: 'dark', reducedMotion: false })
+  })
+
+  it('applies and clears explicit skin and motion choices without changing workflow data', () => {
+    const target = { documentElement: { dataset: {} as Record<string, string | undefined>, style: { colorScheme: '' } }, querySelector: () => null }
+    applyCanvasAppearance({ theme: 'light', uiSkin: 'aurora', reducedMotion: true }, target)
+    expect(target.documentElement.dataset).toEqual({ theme: 'light', skin: 'aurora', reducedMotion: 'true' })
+    applyCanvasAppearance({ theme: 'dark' }, target)
+    expect(target.documentElement.dataset).toEqual({ theme: 'dark', skin: 'obsidian', reducedMotion: 'false' })
+    applyCanvasAppearance({ theme: 'light' }, target)
+    expect(target.documentElement.dataset.skin).toBe('dawn')
   })
 })

@@ -4,6 +4,21 @@ import path from 'node:path'
 
 const npmProviders = ['claude', 'codex', 'gemini']
 
+function readableActionButtons(buttons) {
+  const luminance = (color) => {
+    const rgb = color.match(/[\d.]+/g)?.slice(0, 3).map(Number)
+    if (!rgb || rgb.length !== 3) return null
+    const channels = rgb.map((value) => { const channel = value / 255; return channel <= 0.04045 ? channel / 12.92 : ((channel + 0.055) / 1.055) ** 2.4 })
+    return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722
+  }
+  return buttons.length > 0 && buttons.every((button) => {
+    const style = getComputedStyle(button)
+    const foreground = luminance(style.color)
+    const background = luminance(style.backgroundColor)
+    return foreground !== null && background !== null && (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05) >= 4.5
+  })
+}
+
 function nonEmptyText(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
@@ -60,7 +75,7 @@ async function waitForConfigModelState(page, dialog, timeout = 15_000) {
   } catch {
     return false
   }
-  return dialog.getByLabel('使用模型').evaluate((select) => !select.closest('.field')?.textContent?.includes('正在查询可用模型'))
+  return dialog.getByRole('combobox', { name: '使用模型', exact: true }).evaluate((select) => !select.closest('.field')?.textContent?.includes('正在查询可用模型'))
 }
 
 async function readDashboardWindowMetrics(application, page) {
@@ -73,8 +88,8 @@ async function readDashboardWindowMetrics(application, page) {
       return {
         bounds,
         expected: {
-          width: Math.min(1590, workArea.width),
-          height: Math.min(875, workArea.height),
+          width: workArea.width < 1280 || workArea.height < 720 ? workArea.width : Math.max(960, Math.min(1440, Math.round(workArea.width * 0.8))),
+          height: workArea.width < 1280 || workArea.height < 720 ? workArea.height : Math.max(560, Math.min(900, Math.round(workArea.height * 0.85))),
         },
       }
     })
@@ -86,8 +101,8 @@ async function readDashboardWindowMetrics(application, page) {
     return page.evaluate(() => ({
       bounds: { width: window.outerWidth, height: window.outerHeight },
       expected: {
-        width: Math.min(1590, window.screen.availWidth),
-        height: Math.min(875, window.screen.availHeight),
+        width: window.screen.availWidth < 1280 || window.screen.availHeight < 720 ? window.screen.availWidth : Math.max(960, Math.min(1440, Math.round(window.screen.availWidth * 0.8))),
+        height: window.screen.availWidth < 1280 || window.screen.availHeight < 720 ? window.screen.availHeight : Math.max(560, Math.min(900, Math.round(window.screen.availHeight * 0.85))),
       },
     }))
   }
@@ -336,12 +351,7 @@ try {
   result.darkTitleBarApplied = await page.locator('.window-titlebar').evaluate((titlebar) => (
     getComputedStyle(titlebar).backgroundColor !== 'rgb(255, 255, 255)'
   ))
-  result.darkGreenLaunchButtonsApplied = await page.locator('.cli-card .launch-button').evaluateAll((buttons) => (
-    buttons.every((button) => {
-      const color = getComputedStyle(button).backgroundColor.match(/\d+/g)?.map(Number) ?? []
-      return color.length >= 3 && color[1] > color[0] && color[1] > color[2]
-    })
-  ))
+  result.darkLaunchButtonsReadable = await page.locator('.cli-card .launch-button').evaluateAll(readableActionButtons)
   const networkLocation = page.locator('.network-location')
   result.networkLocationVisible = await networkLocation.isVisible()
   result.networkLocationText = (await networkLocation.innerText()).trim()
@@ -542,14 +552,10 @@ try {
       keyControl: (root) => root.getByRole('group', { name: '主题' }),
     },
   ]
-  // Sidebar IA (navigation.ts / Sidebar.tsx, nav scheme A #67 W1): 'use'
-  // (工具概览/AI聊天/会话管理/无限画布) and 'extensions' (MCP/Skills/插件市场) render
-  // inline; the other six pages live behind "更多", collapsed by default (a
-  // fresh profile has no persisted app-settings sidebarMoreExpanded). The
-  // toggle itself is a .nav-item, so 8 top-level items are visible before
-  // anyone expands anything (docs/PROPOSAL-nav-onboarding.md: "✓≤8").
-  const topLevelNavLabels = ['首页', '聊天', '记录', '画布', '外接工具', '技能', '插件', '更多']
-  const moreGroupPageIds = new Set(['backups', 'health', 'maintenance', 'feedback', 'tutorial', 'updates', 'settings'])
+  // V3 keeps help, health and settings visible; four maintenance destinations
+  // remain behind More. The rail scrolls independently on compact windows.
+  const topLevelNavLabels = ['首页', '聊天', '记录', '画布', '外接工具', '技能', '插件', '检查', '教程', '设置', '更多']
+  const moreGroupPageIds = new Set(['backups', 'maintenance', 'feedback', 'updates'])
   const sidebarNavigationItems = page.locator('.main-nav .nav-item')
   result.navigationItemCount = await sidebarNavigationItems.count()
   result.navigationItemsFullyVisible = await sidebarNavigationItems.evaluateAll((items) => (
@@ -571,9 +577,7 @@ try {
   result.navigationPageChecks = []
   const multiProviderPageIds = new Set(['sessions', 'mcp', 'skills', 'plugins'])
   for (const { id, label, heading, keyControl } of navigationPages) {
-    // "更多" was already expanded above (it stays expanded across navigation
-    // — Sidebar's onNavigate never touches moreExpanded), so every page's
-    // button, grouped or not, is reachable through the same container.
+    // More closes after selecting a destination; reopen it for the next one.
     const navItemSelector = moreGroupPageIds.has(id) ? '.nav-more-popover' : '.main-nav'
     if (moreGroupPageIds.has(id)) {
       const moreItem = page.locator(`${navItemSelector} .nav-item[data-navigation-id="${id}"]`)
@@ -723,8 +727,9 @@ try {
   await page.screenshot({ path: path.join(artifactDir, 'dashboard.png') })
   result.toolCardCount = await page.locator('.cli-card').count()
   result.codexDesktopVisible = await page.getByRole('heading', { name: 'Codex 桌面端' }).isVisible()
-  result.codexDesktopWindowState = await page.locator('.desktop-card .version-pill').innerText()
-  const codexDesktopCardText = await page.locator('.desktop-card').innerText()
+  const desktopRow = page.locator('.dashboard-tool-entry[data-provider-id="codex-desktop"]')
+  result.codexDesktopWindowState = (await desktopRow.locator('.dashboard-tool-state').innerText()).trim()
+  const codexDesktopCardText = await desktopRow.innerText()
   result.codexDesktopPackageVersionVisible = platformCapabilities.platform !== 'windows'
     || codexDesktopCardText.includes('未安装')
     || /\b\d+(?:\.\d+){3}\b/.test(codexDesktopCardText)
@@ -732,11 +737,11 @@ try {
   result.codexDesktopAppVersionHidden = !codexDesktopCardText.includes('26.721.31836')
   result.codexDesktopUpdateAvailable = codexDesktopCardText.includes('可更新至')
   result.codexDesktopUpdateActionCorrect = !result.codexDesktopUpdateAvailable
-    || await page.locator('.desktop-card').getByRole('button', {
-      name: '安装最新版',
+    || await desktopRow.getByRole('button', {
+      name: '安装 Codex 桌面端最新版',
       exact: true,
     }).isVisible()
-  result.codexDesktopLegacyUpdateHidden = await page.locator('.desktop-card').getByRole('button', { name: '打开更新', exact: true }).count() === 0
+  result.codexDesktopLegacyUpdateHidden = await desktopRow.getByRole('button', { name: '打开更新', exact: true }).count() === 0
   result.firstToolCard = await page.locator('.cli-card').first().getByRole('heading').innerText()
   result.secondToolCard = await page.locator('.cli-card').nth(1).getByRole('heading').innerText()
   result.apiConfigNavHidden = await page.getByText('API 配置', { exact: true }).count() === 0
@@ -751,46 +756,35 @@ try {
   result.nativeConfigFooterHidden = await page.getByText('本机原生配置', { exact: true }).count() === 0
   result.officialWebsiteDomainVisible = false
   result.supportButtonVisible = await page.getByRole('button', { name: '客服' }).isVisible()
-  const tutorialNavItem = page.locator('.nav-more-popover .nav-item[data-navigation-id="tutorial"]')
-  if (!await tutorialNavItem.isVisible().catch(() => false)) {
-    if (await moreToggle.getAttribute('aria-expanded') !== 'true') await moreToggle.click()
-    await tutorialNavItem.waitFor({ state: 'visible' })
-  }
+  const tutorialNavItem = page.locator('.main-nav .nav-item[data-navigation-id="tutorial"]')
   result.tutorialDocsVisible = await tutorialNavItem.isVisible()
   result.tutorialDocsLabelVisible = await tutorialNavItem.getByText('教程', { exact: true }).isVisible()
-  result.cardModelCount = await page.locator('.configured-model').count()
+  result.cardModelCount = await page.locator('.config-model code').count()
   result.configuredToolCardCount = await page.locator('.cli-card').evaluateAll((cards) => cards.filter((card) => {
-    const state = card.querySelector('.config-state')?.textContent?.trim()
-    return state === '星芒 AI 已配置' || state === '与 Codex CLI 共用星芒配置'
+    const state = card.querySelector('.dashboard-tool-source')?.textContent?.trim()
+    return state === '星芒中转'
   }).length)
   result.configuredToolCardsHaveModel = await page.locator('.cli-card').evaluateAll((cards) => cards
     .filter((card) => {
-      const state = card.querySelector('.config-state')?.textContent?.trim()
-      return state === '星芒 AI 已配置' || state === '与 Codex CLI 共用星芒配置'
+      const state = card.querySelector('.dashboard-tool-source')?.textContent?.trim()
+      return state === '星芒中转'
     })
-    .every((card) => Boolean(card.querySelector('.configured-model'))))
-  result.cardModelLabelsHidden = await page.locator('.configured-model').getByText('使用模型', { exact: true }).count() === 0
+    .every((card) => Boolean(card.querySelector('.config-model code'))))
+  result.cardModelLabelsHidden = await page.locator('.config-model').getByText('使用模型', { exact: true }).count() === 0
   result.providerBrandIconCount = await page.locator('.cli-card .provider-icon img').count()
   result.providerBrandIconsLoaded = await page.locator('.cli-card .provider-icon img').evaluateAll(
     (icons) => icons.every((icon) => icon instanceof HTMLImageElement && icon.complete && icon.naturalWidth > 0),
   )
   result.launchButtonCount = await page.locator('.cli-card .launch-button').count()
   result.toolPrimaryActionCount = await page.locator('.cli-card .primary-button').count()
-  result.lightGreenLaunchButtonsApplied = await page.locator('.cli-card .launch-button').evaluateAll((buttons) => (
-    buttons.every((button) => {
-      const color = getComputedStyle(button).backgroundColor.match(/\d+/g)?.map(Number) ?? []
-      return color.length >= 3 && color[1] > color[0] && color[1] > color[2]
-    })
-  ))
-  const compactViewport = (windowMetrics?.expected.width ?? 1590) < 1200
-  result.allToolCardsFullyVisible = await page.locator('.cli-card').evaluateAll((cards, compact) => (
+  result.lightLaunchButtonsReadable = await page.locator('.cli-card .launch-button').evaluateAll(readableActionButtons)
+  result.allToolCardsFullyVisible = await page.locator('.cli-card').evaluateAll((cards) => (
     cards.every((card) => {
       const bounds = card.getBoundingClientRect()
-      return compact
-        ? bounds.left >= 0 && bounds.right <= window.innerWidth
-        : bounds.top >= 0 && bounds.bottom <= window.innerHeight
+      const table = card.closest('.dashboard-tool-table')
+      return bounds.left >= 0 && Boolean(table) && table.scrollWidth >= bounds.width
     })
-  ), compactViewport)
+  ))
   result.toolCardContentsContained = await page.locator('.cli-card').evaluateAll((cards) => (
     cards.every((card) => {
       const cardBounds = card.getBoundingClientRect()
@@ -803,9 +797,9 @@ try {
       })
     })
   ))
-  result.toolCardAutoHeightRespondsToStatusCopy = await page.locator('.desktop-card').evaluate((card) => {
-    const actions = card.querySelector('.cli-actions')
-    if (!actions) return false
+  result.toolCardAutoHeightRespondsToStatusCopy = await desktopRow.evaluate((card) => {
+    const details = card.querySelector('.dashboard-tool-details')
+    if (!details) return false
     const probe = document.createElement('div')
     probe.className = 'config-model'
     const dot = document.createElement('span')
@@ -814,19 +808,19 @@ try {
     status.textContent = '国内镜像：查询超时；镜像备用源：查询超时；OpenAI 官方源：查询超时'
     probe.append(dot, status)
     const heightBefore = card.getBoundingClientRect().height
-    card.insertBefore(probe, actions)
+    details.append(probe)
     const cardBounds = card.getBoundingClientRect()
-    const actionsBounds = actions.getBoundingClientRect()
+    const actionsBounds = details.getBoundingClientRect()
     const expanded = cardBounds.height > heightBefore
     const contained = actionsBounds.bottom <= cardBounds.bottom + 1
     probe.remove()
     return expanded && contained
   })
   const shouldCheckCodexLaunchDialog = platformCapabilities.platform === 'windows'
-    && await page.locator('.desktop-card .version-pill').filter({ hasText: '窗口已打开' }).count() > 0
+    && await desktopRow.locator('.dashboard-tool-state').filter({ hasText: '窗口已打开' }).count() > 0
   result.codexLaunchDialogChecked = !shouldCheckCodexLaunchDialog
   if (shouldCheckCodexLaunchDialog) {
-    await page.locator('.desktop-card').getByRole('button', { name: '打开', exact: true }).click()
+    await desktopRow.getByRole('button', { name: '打开', exact: true }).click()
     const codexLaunchDialog = page.locator('.codex-launch-dialog')
     const dialogShown = await codexLaunchDialog.waitFor({ state: 'visible', timeout: 5_000 }).then(() => true).catch(() => false)
     if (dialogShown) {
@@ -860,8 +854,8 @@ try {
   result.apiKeyInputType = await page.getByLabel('API Key').getAttribute('type')
   result.apiKeyMasked = /^.{5}•{8,}.{1,4}$/.test(maskedApiKey)
   result.keyGenerationLinkVisible = await page.getByRole('button', { name: /没有 Key？前往生成/ }).isVisible()
-  result.modelSelectorVisible = await page.getByLabel('使用模型').isVisible()
-  result.configuredModel = await page.getByLabel('使用模型').inputValue()
+  result.modelSelectorVisible = await page.getByRole('combobox', { name: '使用模型', exact: true }).isVisible()
+  result.configuredModel = await page.getByRole('combobox', { name: '使用模型', exact: true }).inputValue()
   result.detectModelsButtonVisible = await page.getByRole('button', { name: '检测模型' }).isVisible()
   result.workspaceHidden = await page.getByLabel('工作目录').count() === 0
   const saveConfigButton = page.getByRole('button', { name: '保存配置', exact: true })
@@ -936,7 +930,7 @@ try {
     || !result.defaultThemeDark
     || !result.darkThemeApplied
     || !result.darkTitleBarApplied
-    || !result.darkGreenLaunchButtonsApplied
+    || !result.darkLaunchButtonsReadable
     || !result.networkLocationVisible
     || !result.networkLocationFormatValid
     || !result.toastClearsWindowControls
@@ -996,7 +990,7 @@ try {
     || result.providerBrandIconCount !== 5
     || !result.providerBrandIconsLoaded
     || result.toolPrimaryActionCount !== 5
-    || !result.lightGreenLaunchButtonsApplied
+    || !result.lightLaunchButtonsReadable
     || !result.allToolCardsFullyVisible
     || !result.toolCardContentsContained
     || !result.toolCardAutoHeightRespondsToStatusCopy

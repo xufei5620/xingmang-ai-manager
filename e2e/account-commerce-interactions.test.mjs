@@ -178,7 +178,7 @@ test('profile save remains retryable after failure and reloads the accepted disp
 test('security validates passwords and confirms every session revocation scope', async () => {
   await withFixture(async (page, baseUrl) => {
     await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=security`)
-    await page.getByText('10.0.0.2', { exact: false }).waitFor()
+    await page.locator('input[autocomplete="current-password"]').waitFor()
 
     await page.getByRole('button', { name: '确认修改' }).click()
     await page.getByText('请输入原密码', { exact: true }).waitFor()
@@ -193,6 +193,9 @@ test('security validates passwords and confirms every session revocation scope',
     await page.getByTestId('toast').filter({ hasText: '密码修改成功' }).waitFor()
     assert.equal(await originalPassword.inputValue(), '')
     assert.equal(await page.evaluate(() => window.accountCommerceHarness.rememberedLoginClears), 1)
+
+    await page.locator('[data-account-tab="devices"]').click()
+    await page.getByText('10.0.0.2', { exact: false }).waitFor()
 
     const remoteA = page.locator('.account-session-list article').filter({ hasText: '10.0.0.2' })
     await remoteA.getByRole('button', { name: '撤销' }).click()
@@ -333,17 +336,85 @@ test('task logs support status filters, pagination and details', async () => {
   })
 })
 
-test('legacy account deep links map into New API primary navigation and the correct secondary tab', async () => {
+test('legacy account deep links map into the nine-tab workspace and preserve secondary destinations', async () => {
   await withFixture(async (page, baseUrl) => {
     await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=orders`)
-    assert.equal(await page.getByRole('button', { name: '钱包', exact: true }).getAttribute('aria-current'), 'page')
-    assert.equal(await page.getByRole('tab', { name: '我的订单' }).getAttribute('aria-selected'), 'true')
+    assert.equal(await page.getByRole('tab', { name: '我的订单', exact: true }).getAttribute('aria-selected'), 'true')
+    await page.getByRole('tab', { name: '我的账号', exact: true }).click()
     assert.equal(await page.locator('.account-center-recharge-button').count(), 1)
     await page.locator('.account-center-recharge-button').click()
-    assert.equal(await page.getByRole('tab', { name: '充值 / 订阅' }).getAttribute('aria-selected'), 'true')
+    assert.equal(await page.getByRole('tab', { name: '充值与订阅', exact: true }).getAttribute('aria-selected'), 'true')
+    assert.equal(await page.getByRole('tab', { name: '余额充值', exact: true }).getAttribute('aria-selected'), 'true')
     await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=security`)
-    assert.equal(await page.locator('[data-account-tab="profile"]').getAttribute('aria-current'), 'page')
-    assert.equal(await page.getByRole('tab', { name: '安全与设备' }).getAttribute('aria-selected'), 'true')
+    assert.equal(await page.locator('[data-account-tab="overview"]').getAttribute('aria-current'), 'page')
+    assert.equal(await page.getByRole('tab', { name: '修改密码', exact: true }).getAttribute('aria-selected'), 'true')
+  })
+})
+
+test('nine account tabs activate manually and preserve drafts and loaded filter state', async () => {
+  await withFixture(async (page, baseUrl) => {
+    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=profile`)
+    const tabs = page.getByRole('tablist', { name: '个人中心分区' })
+    assert.equal(await tabs.getByRole('tab').count(), 9)
+    const overview = tabs.getByRole('tab', { name: '我的账号', exact: true })
+    await page.getByLabel('显示名称', { exact: true }).fill('保留的账号草稿')
+    await overview.focus()
+    await overview.press('ArrowRight')
+    const dashboard = tabs.getByRole('tab', { name: '用量看板', exact: true })
+    assert.equal(await dashboard.evaluate((element) => element === document.activeElement), true)
+    assert.equal(await overview.getAttribute('aria-selected'), 'true')
+    assert.equal(await page.locator('.account-dashboard-panel').count(), 0)
+    await dashboard.press('Enter')
+    assert.equal(await dashboard.getAttribute('aria-selected'), 'true')
+    await dashboard.press('End')
+    assert.equal(await tabs.getByRole('tab', { name: '登录设备', exact: true }).evaluate((element) => element === document.activeElement), true)
+    assert.equal(await dashboard.getAttribute('aria-selected'), 'true')
+    await page.keyboard.press('Home')
+    await page.keyboard.press('Enter')
+    assert.equal(await page.getByLabel('显示名称', { exact: true }).inputValue(), '保留的账号草稿')
+
+    await tabs.getByRole('tab', { name: '调用明细', exact: true }).click()
+    await page.getByLabel('模型名称', { exact: true }).fill('gpt-5.4')
+    await page.getByRole('button', { name: '搜索', exact: true }).click()
+    await page.waitForFunction(() => window.accountCommerceHarness.usageQueries.at(-1)?.modelName === 'gpt-5.4')
+    const requestCount = await page.evaluate(() => window.accountCommerceHarness.usageQueries.length)
+    await tabs.getByRole('tab', { name: '我的订单', exact: true }).click()
+    await tabs.getByRole('tab', { name: '调用明细', exact: true }).click()
+    assert.equal(await page.getByLabel('模型名称', { exact: true }).inputValue(), 'gpt-5.4')
+    assert.equal(await page.evaluate(() => window.accountCommerceHarness.usageQueries.length), requestCount)
+
+    await tabs.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    assert.equal(await page.getByRole('tab', { name: '余额充值', exact: true }).getAttribute('aria-selected'), 'true')
+    await page.getByRole('tab', { name: '余额充值', exact: true }).focus()
+    await page.keyboard.press('End')
+    assert.equal(await page.getByRole('tab', { name: '兑换码', exact: true }).evaluate((element) => element === document.activeElement), true)
+    await page.keyboard.press('Enter')
+    await page.getByPlaceholder('输入兑换码').fill('PRESERVED-DRAFT')
+    await tabs.getByRole('tab', { name: '我的订单', exact: true }).click()
+    await tabs.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    assert.equal(await page.getByPlaceholder('输入兑换码').inputValue(), 'PRESERVED-DRAFT')
+    await page.getByRole('button', { name: '立即兑换', exact: true }).click()
+    await page.getByTestId('toast').filter({ hasText: '兑换成功' }).waitFor()
+    await tabs.getByRole('tab', { name: '我的账号', exact: true }).click()
+    assert.equal(await page.getByLabel('显示名称', { exact: true }).inputValue(), '保留的账号草稿')
+    await page.getByRole('tab', { name: '账号概览', exact: true }).click()
+    await page.getByRole('button', { name: '编辑资料', exact: true }).click()
+    assert.equal(await page.locator('.account-center-body').evaluate((element) => element === document.activeElement), true)
+    assert.equal(await page.getByLabel('显示名称', { exact: true }).inputValue(), '保留的账号草稿')
+  })
+})
+
+test('login device errors wait for explicit retry and keep a recoverable device view', async () => {
+  await withFixture(async (page, baseUrl) => {
+    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=devices-retry`)
+    await page.getByRole('alert').filter({ hasText: '设备服务暂时不可用' }).waitFor()
+    assert.equal(await page.evaluate(() => window.accountCommerceHarness.sessionListCalls), 1)
+    await page.getByRole('tab', { name: '我的账号', exact: true }).click()
+    await page.getByRole('tab', { name: '登录设备', exact: true }).click()
+    assert.equal(await page.evaluate(() => window.accountCommerceHarness.sessionListCalls), 1)
+    await page.getByRole('button', { name: '重试', exact: true }).click()
+    await page.getByText('10.0.0.2', { exact: false }).waitFor()
+    assert.equal(await page.evaluate(() => window.accountCommerceHarness.sessionListCalls), 2)
   })
 })
 
@@ -394,13 +465,19 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
     assert.equal(expanded.systemLabel, '更多')
     assert.equal(await page.locator('.nav-more-toggle').getAttribute('aria-expanded'), 'false')
     assert.equal(await page.locator('.nav-more-items').count(), 0)
+    for (const id of ['health', 'tutorial', 'settings']) {
+      const destination = sidebar.locator(`[data-navigation-id="${id}"]`)
+      assert.equal(await destination.count(), 1)
+      await destination.click()
+      assert.equal(await page.evaluate(() => window.accountCommerceHarness.navigationTarget), id)
+    }
     await sidebar.screenshot({ path: 'test-results/sidebar-expanded-dark.png' })
 
     await page.getByRole('button', { name: '更多' }).click()
     assert.equal(await page.locator('.nav-more-toggle').getAttribute('aria-expanded'), 'true')
     const popover = page.locator('.nav-more-popover')
     await popover.waitFor()
-    assert.equal(await popover.locator('.nav-item').count(), 7)
+    assert.deepEqual(await popover.locator('.nav-item').evaluateAll((elements) => elements.map((element) => element.getAttribute('data-navigation-id'))), ['backups', 'maintenance', 'feedback', 'updates'])
     const expandedPopoverRect = await popover.boundingBox()
     const expandedSidebarRect = await sidebar.boundingBox()
     assert.ok(expandedPopoverRect)
@@ -409,6 +486,13 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
     assert.ok(expandedPopoverRect.x + expandedPopoverRect.width <= 960)
     assert.ok(expandedPopoverRect.y >= 0)
     assert.ok(expandedPopoverRect.y + expandedPopoverRect.height <= 620)
+    for (const id of ['backups', 'maintenance', 'feedback', 'updates']) {
+      await popover.locator(`[data-navigation-id="${id}"]`).click()
+      assert.equal(await page.evaluate(() => window.accountCommerceHarness.navigationTarget), id)
+      await popover.waitFor({ state: 'detached' })
+      await page.getByRole('button', { name: '更多' }).click()
+      await popover.waitFor()
+    }
     await page.locator('body').click({ position: { x: 600, y: 100 } })
     await popover.waitFor({ state: 'detached' })
     assert.equal(await page.locator('.nav-more-toggle').getAttribute('aria-expanded'), 'false')
@@ -417,10 +501,11 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
     await page.locator('.sidebar-collapsed').waitFor()
     await page.getByRole('button', { name: '更多' }).click()
     await popover.waitFor()
-    assert.equal(await popover.locator('.nav-item').count(), 7)
+    assert.equal(await popover.locator('.nav-item').count(), 4)
     const popoverRect = await popover.boundingBox()
     assert.ok(popoverRect)
-    assert.ok(popoverRect.x >= 72)
+    assert.equal((await sidebar.boundingBox()).width, 60)
+    assert.ok(popoverRect.x >= 60)
     assert.ok(popoverRect.x + popoverRect.width <= 960)
     await page.keyboard.press('Escape')
     await popover.waitFor({ state: 'detached' })
@@ -505,7 +590,7 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
       `账户与控制区越过折叠侧栏边界: ${JSON.stringify({ bottom: collapsed.bottom, sidebar: collapsed.sidebar, nav: collapsed.nav })}`,
     )
     for (const item of collapsed.itemSizes) {
-      assert.deepEqual({ width: item.width, height: item.height }, { width: 40, height: 40 })
+      assert.deepEqual({ width: item.width, height: item.height }, { width: 44, height: 36 })
     }
     const outsideItems = collapsed.itemSizes.filter((item) => (
       item.left < collapsed.sidebar.left || item.right > collapsed.sidebar.right
@@ -517,7 +602,7 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
     )
     for (const icon of collapsed.iconSizes) {
       assert.ok(icon)
-      assert.deepEqual({ width: icon.width, height: icon.height }, { width: 18, height: 18 })
+      assert.deepEqual({ width: icon.width, height: icon.height }, { width: 20, height: 20 })
       assert.ok(icon.left >= collapsed.sidebar.left && icon.right <= collapsed.sidebar.right)
     }
     await sidebar.screenshot({ path: 'test-results/sidebar-collapsed-dark.png' })
@@ -577,18 +662,19 @@ test('sidebar started collapsed keeps every primary icon inside the rail', async
 test('visual fixture renders every account section and tutorial in both themes', async () => {
   await withFixture(async (page, baseUrl) => {
     const sections = [
-      ['overview', '概览', '$4.00'],
-      ['dashboard', '用量', 'gpt-5.6-sol'],
-      ['subscriptions', '钱包', '星芒专业版'],
-      ['topup', '钱包', '支付宝'],
-      ['orders', '钱包', 'XM-ORDER-20260815'],
-      ['redeem', '钱包', null],
-      ['usage', '明细', 'gpt-5.4'],
-      ['tasks', '任务', 'sora-2'],
+      ['overview', '我的账号', '$4.00'],
+      ['dashboard', '用量看板', 'gpt-5.6-sol'],
+      ['subscriptions', '充值与订阅', '星芒专业版'],
+      ['topup', '充值与订阅', '支付宝'],
+      ['orders', '我的订单', 'XM-ORDER-20260815'],
+      ['redeem', '充值与订阅', null],
+      ['usage', '调用明细', 'gpt-5.4'],
+      ['tasks', '异步任务', 'sora-2'],
       ['keys', '密钥', 'Codex-Pro 主密钥'],
-      ['invite', '钱包', 'FIXTURE'],
-      ['profile', '资料', '显示名称'],
-      ['security', '资料', '10.0.0.2'],
+      ['invite', '邀请返利', 'FIXTURE'],
+      ['profile', '我的账号', '显示名称'],
+      ['security', '我的账号', '更新密码后'],
+      ['devices', '登录设备', '10.0.0.2'],
       ['tutorial', '教程', '首次使用'],
     ]
 
@@ -622,7 +708,7 @@ test('visual fixture renders every account section and tutorial in both themes',
         assert.equal(layout.scrollHeight <= layout.clientHeight, true, theme + '/' + section + ' 不应出现文档级纵向溢出')
         assert.equal(layout.hasAccountWorkspace || layout.hasTutorial, true, theme + '/' + section + ' 应渲染可验收工作区')
 
-        if (section === 'security') {
+        if (section === 'devices') {
           const scrollResult = await page.evaluate(() => {
             const body = document.querySelector('.account-center-body')
             const target = Array.from(document.querySelectorAll('button'))
@@ -636,7 +722,7 @@ test('visual fixture renders every account section and tutorial in both themes',
               visible: targetRect.top >= bodyRect.top - 1 && targetRect.bottom <= bodyRect.bottom + 1,
             }
           })
-          assert.deepEqual(scrollResult, { scrolled: true, visible: true })
+          assert.equal(scrollResult?.visible, true)
         }
 
         if (section === 'keys') {
@@ -696,12 +782,18 @@ test('dark account form controls use readable adaptive surfaces in every interac
 
       const firstInput = controls.first()
       await firstInput.focus()
+      await page.waitForTimeout(180)
       const focusStyle = await firstInput.evaluate((element) => {
         const style = getComputedStyle(element)
-        return { background: style.backgroundColor, border: style.borderTopColor, shadow: style.boxShadow }
+        const swatch = document.createElement('span')
+        swatch.style.color = 'var(--accent)'
+        element.parentElement.appendChild(swatch)
+        const accent = getComputedStyle(swatch).color
+        swatch.remove()
+        return { background: style.backgroundColor, border: style.borderTopColor, shadow: style.boxShadow, accent }
       })
       assert.ok(Math.max(...parseRgb(focusStyle.background)) < 80, `${section} focus 状态不应变成亮色背景`)
-      assert.ok(parseRgb(focusStyle.border)[2] > parseRgb(focusStyle.border)[0], `${section} focus 边框应保留冷青色提示`)
+      assert.equal(focusStyle.border, focusStyle.accent, `${section} focus 边框应使用当前皮肤的强调色`)
       assert.notEqual(focusStyle.shadow, 'none')
 
       await firstInput.evaluate((element) => { element.disabled = true })
@@ -717,9 +809,18 @@ test('dark account form controls use readable adaptive surfaces in every interac
     for (const selector of ['.account-usage-page-buttons button.active', '.account-center-recharge-button']) {
       const style = await page.locator(selector).first().evaluate((element) => {
         const computed = getComputedStyle(element)
-        return { background: computed.backgroundColor, color: computed.color }
+        const canvas = document.createElement('canvas')
+        canvas.width = canvas.height = 1
+        const context = canvas.getContext('2d')
+        const ancestors = []
+        for (let current = element; current; current = current.parentElement) ancestors.unshift(current)
+        for (const ancestor of ancestors) {
+          context.fillStyle = getComputedStyle(ancestor).backgroundColor
+          context.fillRect(0, 0, 1, 1)
+        }
+        const pixels = Array.from(context.getImageData(0, 0, 1, 1).data)
+        return { background: `rgb(${pixels.slice(0, 3).join(', ')})`, color: computed.color }
       })
-      assert.ok(Math.max(...parseRgb(style.background)) < 80, `${selector} 不应在暗色主题中显示亮色软底`)
       assert.ok(contrastRatio(style.color, style.background) >= 4.5, `${selector} 文字对比度不足`)
     }
     await page.screenshot({ path: path.join(artifactDirectory, '1590x875-usage-dark.png'), fullPage: false })

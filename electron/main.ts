@@ -34,7 +34,14 @@ import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
 import { AccountSessionStore, restoreAccountSessionOnStartup } from './account-session-store'
+import { SavedAccountsStore, savedAccountId } from './saved-accounts'
 import { AppSettingsStore, type AppTheme } from './app-settings'
+import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
+import { createWindowLifecycle } from './window-lifecycle'
+import { createApplicationTray, type ApplicationTrayController } from './application-tray'
+import { createWindowCloseQuery } from './window-close-query'
+import { createExternalDeepLinkInbox } from './external-deep-links'
+import { createDesktopNotificationController } from './desktop-notifications'
 import { ConfigBackupStore } from './backups'
 import { providerIds } from './catalog'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
@@ -72,7 +79,7 @@ import {
   installXingmangAiSkillFiles,
   resolveXingmangAiBundledSkillRoot,
 } from './xingmang-ai-skill'
-import { ipcEventChannels } from './ipc-contract'
+import { ipcEventChannels, type AccountBalance } from './ipc-contract'
 import {
   shouldUseManualUninstallVisualFixture,
   withManualUninstallVisualFixture,
@@ -134,15 +141,8 @@ const canvasExternalUrlAllowlist = [
   'https://github.com/basketikun/infinite-canvas',
 ] as const
 
-const appWindowSizes: Record<AppWindowMode, { width: number; height: number }> = {
-  onboarding: { width: 720, height: 520 },
-  dashboard: { width: 1590, height: 875 },
-}
-
-const appWindowMinimumSizes: Record<AppWindowMode, { width: number; height: number }> = {
-  onboarding: { width: 680, height: 500 },
-  dashboard: { width: 980, height: 680 },
-}
+const windowPreferenceAppliers = new WeakMap<WebContents, () => void>()
+const windowPreferenceFlushers = new WeakMap<WebContents, () => Promise<void>>()
 
 const updateCheckIntervalMs = 3 * 60 * 60 * 1_000
 const packagedApplicationBaseUrl = 'xingmang://app/'
@@ -338,24 +338,18 @@ function windowForContents(contents: WebContents): BrowserWindow {
   return target
 }
 
-function setWindowMode(contents: WebContents, mode: AppWindowMode): void {
+function setWindowMode(contents: WebContents, _mode: AppWindowMode): void {
   const target = windowForContents(contents)
   const workArea = screen.getDisplayMatching(target.getBounds()).workAreaSize
-  const requested = appWindowSizes[mode]
-  const minimum = appWindowMinimumSizes[mode]
-  target.setMinimumSize(minimum.width, minimum.height)
-  target.setSize(
-    Math.min(requested.width, workArea.width),
-    Math.min(requested.height, workArea.height),
-    true,
-  )
-  target.center()
+  target.setMinimumSize(Math.min(960, workArea.width), Math.min(560, workArea.height))
+  windowPreferenceAppliers.get(contents)?.()
 }
 
 function setWindowTheme(contents: WebContents, theme: AppTheme): void {
   const target = windowForContents(contents)
   const palette = windowThemePalette(theme)
   applyWindowTheme(target, palette, process.platform)
+  windowPreferenceAppliers.get(contents)?.()
 }
 
 function createWindow(
@@ -364,26 +358,15 @@ function createWindow(
   runtimeLog: RuntimeLogStore,
 ): BrowserWindow {
   const stored = systemService.readStoredConfig()
-  const codexConfig = systemService.inspectCodexReadiness(false)
   const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
   const previewDashboard = !app.isPackaged && process.env.XINGMANG_DASHBOARD_PREVIEW === '1'
-  const initialMode: AppWindowMode = previewDashboard
-    ? 'dashboard'
-    : previewOnboarding
-    || !codexConfig.hasApiKey
-    || !codexConfig.matchesRelay
-    ? 'onboarding'
-    : 'dashboard'
-  const requested = appWindowSizes[initialMode]
-  const minimum = appWindowMinimumSizes[initialMode]
-  const workArea = screen.getPrimaryDisplay().workAreaSize
+  const placement = resolveWindowPlacement(stored.windowState, screen.getAllDisplays(), screen.getPrimaryDisplay().id)
   const palette = windowThemePalette(stored.theme)
-  const windowsIcon = path.join(app.getAppPath(), 'assets', 'windows-icon.png')
+  const windowsIcon = path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'favicon.ico')
   const window = new BrowserWindow({
-    width: Math.min(requested.width, workArea.width),
-    height: Math.min(requested.height, workArea.height),
-    minWidth: minimum.width,
-    minHeight: minimum.height,
+    ...placement.bounds,
+    minWidth: placement.minimumSize.width,
+    minHeight: placement.minimumSize.height,
     show: false,
     backgroundColor: palette.background,
     ...platformWindowOptions(process.platform, palette, windowsIcon),
@@ -402,9 +385,39 @@ function createWindow(
   })
 
   window.once('ready-to-show', () => {
-    window.center()
+    if (placement.maximized) window.maximize()
     window.show()
   })
+  const applyPreferences = () => {
+    if (window.isDestroyed() || window.webContents.isDestroyed()) return
+    const current = systemService.readStoredConfig()
+    const zoom = calculateUiZoom(window.getContentBounds().width, current.uiScale)
+    if (Math.abs(window.webContents.getZoomFactor() - zoom) > 0.0001) window.webContents.setZoomFactor(zoom)
+    if (process.platform !== 'darwin') window.setTitleBarOverlay({ height: Math.round(36 * zoom) })
+  }
+  windowPreferenceAppliers.set(window.webContents, applyPreferences)
+  let boundsTimer: ReturnType<typeof setTimeout> | undefined
+  const saveWindowState = async () => {
+    if (window.isDestroyed() || window.isMinimized() || window.isFullScreen()) return
+    const windowState = { bounds: window.getNormalBounds(), maximized: window.isMaximized() }
+    await systemService.updateStoredConfig({ version: 2, windowState })
+  }
+  windowPreferenceFlushers.set(window.webContents, async () => {
+    if (boundsTimer) clearTimeout(boundsTimer)
+    await saveWindowState()
+  })
+  const scheduleWindowSave = () => {
+    if (boundsTimer) clearTimeout(boundsTimer)
+    boundsTimer = setTimeout(() => {
+      void saveWindowState().catch((cause) => runtimeLog.exception('window', 'preferences.save.failed', cause))
+    }, 250)
+  }
+  window.on('resize', () => { applyPreferences(); scheduleWindowSave() })
+  window.on('move', scheduleWindowSave)
+  window.on('maximize', scheduleWindowSave)
+  window.on('unmaximize', scheduleWindowSave)
+  window.once('closed', () => { if (boundsTimer) clearTimeout(boundsTimer) })
+  window.webContents.on('did-finish-load', applyPreferences)
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
   window.webContents.on('will-navigate', (event, targetUrl) => {
     if (!isAllowedAppNavigationUrl(targetUrl, urlPolicy)) event.preventDefault()
@@ -514,14 +527,22 @@ if (!hasSingleInstanceLock) {
   app.quit()
 } else {
   let focusWhenWindowIsReady = false
+  const deepLinkInbox = createExternalDeepLinkInbox()
+  let receiveDeepLink = (raw: string) => { deepLinkInbox.accept(raw) }
+  for (const argument of process.argv) receiveDeepLink(argument)
+  app.on('open-url', (event, url) => { event.preventDefault(); receiveDeepLink(url) })
   if (!singleInstanceDisabledForDevelopment) {
-    app.on('second-instance', () => {
+    app.on('second-instance', (_event, argv) => {
+      for (const argument of argv) receiveDeepLink(argument)
       if (!focusExistingWindow()) focusWhenWindowIsReady = true
     })
   }
 
   void app.whenReady().then(async () => {
+    // Installers register the scheme; development must not take over installed links.
+    if (app.isPackaged) app.setAsDefaultProtocolClient('xingmang')
     if (process.platform === 'win32') {
+      app.setAppUserModelId('com.xingmang.ai.manager')
       Menu.setApplicationMenu(null)
     } else if (process.platform === 'darwin') {
       const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => {
@@ -683,6 +704,26 @@ if (!hasSingleInstanceLock) {
       localBuild,
     })
     let periodicUpdateTimer: NodeJS.Timeout | null = null
+    let applicationTray: ApplicationTrayController | null = null
+    let latestTraySystem: SystemSnapshot | null = null
+    let latestTrayBalance: AccountBalance | null = null
+    let closeQuery: ReturnType<typeof createWindowCloseQuery> | null = null
+    let managedMainWindow: BrowserWindow | null = null
+    const desktopNotifications = createDesktopNotificationController({
+      readEnabled: () => systemService.readStoredConfig().desktopNotifications === true,
+      focusMainWindow: () => {
+        if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+        if (managedMainWindow.isMinimized()) managedMainWindow.restore()
+        managedMainWindow.show()
+        managedMainWindow.focus()
+      },
+      onOpenUpdates: () => {
+        if (managedMainWindow && !managedMainWindow.isDestroyed()) managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'updates')
+      },
+      onError: (error) => runtimeLog.exception('window', 'notification.failed', error),
+      iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'favicon.ico'),
+    })
+    const unsubscribeDesktopNotifications = updaterService.subscribe((state) => desktopNotifications.handleUpdate(state))
     const urlPolicy = applicationUrlPolicy()
     registerApplicationProtocol(urlPolicy)
     const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
@@ -706,6 +747,9 @@ if (!hasSingleInstanceLock) {
       path.join(managerDataDirectory, 'account-session.dat'),
       safeStorage,
     )
+    const savedAccounts = new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat'), safeStorage)
+    const savedAccountsOrigin = new URL(resolveRelaySite(storedSettings.relaySiteId).accountBaseUrl!).origin
+    let persistedActiveUserId: number | null = null
     const accountCredentialStore = new AccountCredentialStore(
       path.join(managerDataDirectory, 'account-credentials.dat'),
       safeStorage,
@@ -738,14 +782,25 @@ if (!hasSingleInstanceLock) {
     })
     const accountService: RelayBackendClient = createNewApiClient({
       onSessionChange: (persistable) => {
+        const previousUserId = persistedActiveUserId
+        persistedActiveUserId = persistable?.userId ?? null
         canvasAccountLifecycle.update(persistable?.userId ?? null)
+        latestTrayBalance = null
+        applicationTray?.updateSnapshot()
         if (persistable) {
+          const profile = accountService.getSessionState().account
+          if (profile) void savedAccounts.upsert({ ...persistable, origin: savedAccountsOrigin, username: profile.username }).catch((cause) => {
+            runtimeLog.exception('account', 'saved-account.persist.failed', cause)
+          })
           void accountSessionStore.save(persistable).catch((error) => {
             runtimeLog.log('warn', 'account', 'session.persist.failed', '登录状态持久化失败', {
               reason: error instanceof Error ? error.message : String(error),
             })
           })
         } else {
+          if (previousUserId !== null) void savedAccounts.remove(savedAccountId(savedAccountsOrigin, previousUserId)).catch((cause) => {
+            runtimeLog.exception('account', 'saved-account.remove.failed', cause)
+          })
           void accountSessionStore.clear().catch((error) => {
             runtimeLog.log('warn', 'account', 'session.clear.failed', '登录状态清除失败', {
               reason: error instanceof Error ? error.message : String(error),
@@ -1103,6 +1158,7 @@ if (!hasSingleInstanceLock) {
       )
     })
     const unregisterIpcHandlers = registerIpcHandlers({
+      savedAccounts,
       systemService,
       accountService,
       paymentWindow,
@@ -1135,11 +1191,21 @@ if (!hasSingleInstanceLock) {
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.send('update:state-changed', snapshot)
         }
+        applicationTray?.updateSnapshot()
       },
+      getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported }),
+      onSettingsChanged: () => { desktopNotifications.refresh() },
+      takeExternalDeepLink: (sender) => managedMainWindow?.webContents === sender ? deepLinkInbox.take() : null,
+      replyWindowClose: (sender, requestId, report) => (
+        managedMainWindow?.webContents === sender ? closeQuery?.reply(requestId, report) ?? false : false
+      ),
+      onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
+      onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
       setWindowMode,
       setWindowTheme: (contents, theme) => {
         setWindowTheme(contents, theme)
-        canvasController.setTheme(theme)
+        const appearance = systemService.readStoredConfig()
+        canvasController.setAppearance({ theme, uiSkin: appearance.uiSkin, reducedMotion: appearance.reducedMotion })
       },
       openCanvasWindow: () => canvasController.open(),
       xingmangAiSkill: {
@@ -1159,6 +1225,8 @@ if (!hasSingleInstanceLock) {
       process.off('uncaughtExceptionMonitor', onUncaughtException)
       process.off('unhandledRejection', onUnhandledRejection)
       if (periodicUpdateTimer) clearInterval(periodicUpdateTimer)
+      unsubscribeDesktopNotifications()
+      desktopNotifications.dispose()
       unregisterIpcHandlers()
       chatService.dispose()
       imageService.cancelAll()
@@ -1171,6 +1239,82 @@ if (!hasSingleInstanceLock) {
       updaterService.dispose()
     })
     const mainWindow = createWindow(systemService, urlPolicy, runtimeLog)
+    managedMainWindow = mainWindow
+    closeQuery = createWindowCloseQuery((requestId) => mainWindow.webContents.send(ipcEventChannels.onWindowCloseRequest, { requestId }))
+    const showMainWindow = () => {
+      if (mainWindow.isDestroyed()) return
+      if (mainWindow.isMinimized()) mainWindow.restore()
+      mainWindow.show()
+      mainWindow.focus()
+    }
+    receiveDeepLink = (raw) => {
+      if (!deepLinkInbox.accept(raw)) return
+      showMainWindow()
+      mainWindow.webContents.send(ipcEventChannels.onExternalDeepLink, undefined)
+    }
+    const lifecycle = createWindowLifecycle({
+      readPreference: () => systemService.readStoredConfig().closeBehavior ?? 'ask',
+      trayAvailable: () => applicationTray?.available ?? false,
+      requestCloseDecision: async () => {
+        const trayReady = applicationTray?.available ?? false
+        const result = await dialog.showMessageBox(mainWindow, {
+          type: 'question', title: '关闭星芒AI管理工具', message: '关闭窗口后如何处理？',
+          detail: trayReady ? '缩到托盘会保留正在执行的任务。' : '系统托盘不可用，返回可继续使用当前窗口。',
+          buttons: trayReady ? ['缩到托盘', '退出程序', '返回'] : ['退出程序', '返回'],
+          defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
+        })
+        return trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
+      },
+      prepareToQuit: async () => {
+        const report = await closeQuery!.request()
+        if (report.blockingTask) {
+          await dialog.showMessageBox(mainWindow, { type: 'info', title: '任务尚未完成', message: '请等待安装或保存任务完成后退出', buttons: ['继续使用'] })
+          return false
+        }
+        if (report.unsavedChanges || chatService.activeCount() > 0) {
+          const result = await dialog.showMessageBox(mainWindow, {
+            type: 'warning', title: '退出前确认', message: '退出将关闭当前编辑面板并停止等待中的请求',
+            detail: '未保存的输入可能丢失。已提交的付费请求可能仍在服务端继续处理。',
+            buttons: ['返回', '退出'], defaultId: 0, cancelId: 0,
+          })
+          if (result.response !== 1) return false
+        }
+        return canvasController.requestClose()
+      },
+      flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
+      show: showMainWindow,
+      hide: () => mainWindow.hide(),
+      quit: () => app.quit(),
+      onError: (cause) => {
+        runtimeLog.exception('window', 'close.failed', cause)
+        void dialog.showMessageBox(mainWindow, { type: 'error', title: '暂时无法退出', message: '退出检查或保存未完成，窗口已保留。请稍后重试。' })
+      },
+    })
+    lifecycle.attach(mainWindow, app)
+    const trayAssets = path.join(app.getAppPath(), 'assets', 'brand', 'v3')
+    applicationTray = createApplicationTray({
+      iconPath: path.join(trayAssets, 'tray-16.png'), icon2xPath: path.join(trayAssets, 'tray-32.png'),
+      templateIconPath: path.join(trayAssets, 'trayTemplate-16.png'), templateIcon2xPath: path.join(trayAssets, 'trayTemplate-32.png'),
+      getSnapshot: () => {
+        const state = accountService.getSessionState()
+        return {
+          accountLabel: state.account?.username ?? null,
+          balanceUsd: latestTrayBalance && latestTrayBalance.quotaPerUnit > 0 ? latestTrayBalance.quota / latestTrayBalance.quotaPerUnit : null,
+          installedTools: [
+            ...(latestTraySystem?.desktopApps.codex.installed ? [{ id: 'codexDesktop', label: 'Codex 桌面端' }] : []),
+            ...providerIds.filter((id) => latestTraySystem?.clis[id].installed).map((id) => ({ id, label: id === 'claude' ? 'Claude Code' : id === 'codex' ? 'Codex CLI' : id === 'gemini' ? 'Gemini CLI' : 'Grok CLI' })),
+          ],
+          updateAvailable: updaterService.getState().phase === 'available',
+          updateVersion: updaterService.getState().availableVersion,
+        }
+      },
+      onOpen: showMainWindow,
+      onNavigate: (target) => mainWindow.webContents.send(ipcEventChannels.onNavigate, target),
+      onLaunchTool: (id) => { showMainWindow(); mainWindow.webContents.send(ipcEventChannels.onLaunchTool, id) },
+      onQuit: () => lifecycle.requestQuit(),
+      onError: (cause) => runtimeLog.exception('window', 'tray.failed', cause),
+    })
+    app.once('will-quit', () => { lifecycle.dispose(); closeQuery?.dispose(); applicationTray?.dispose() })
     // The canvas window is a secondary, opt-in surface -- it must not
     // outlive the main window (which would otherwise leave the app running
     // in the background with no way back to the dashboard on Windows/Linux,
@@ -1197,7 +1341,7 @@ if (!hasSingleInstanceLock) {
       periodicUpdateTimer.unref()
     }
     app.on('activate', () => {
-      if (BrowserWindow.getAllWindows().length === 0) createWindow(systemService, urlPolicy, runtimeLog)
+      showMainWindow()
     })
   }).catch((error) => {
     const message = startupFailureMessage(error, process.platform)
