@@ -22,7 +22,7 @@ describe('provider-registry order arrays', () => {
   })
 
   it('keeps the existing overview-page display order unchanged', () => {
-    expect(dashboardProviderIds).toEqual(['codex', 'claude', 'grok', 'gemini'])
+    expect(dashboardProviderIds).toEqual(['claude', 'codex', 'gemini', 'grok'])
   })
 
   it('keeps the existing management-page display order unchanged', () => {

@@ -9,6 +9,35 @@ const FOCUSABLE_SELECTOR = [
   '[tabindex]:not([tabindex="-1"])',
 ].join(',')
 
+const inertOwners = new Map<HTMLElement, { count: number; original: boolean }>()
+
+function isolateDialog(backdrop: HTMLElement): () => void {
+  const siblings = new Set<HTMLElement>()
+  let branch: HTMLElement | null = backdrop
+  while (branch?.parentElement) {
+    const parent: HTMLElement = branch.parentElement
+    for (const sibling of parent.children) {
+      if (sibling !== branch && sibling instanceof HTMLElement) siblings.add(sibling)
+    }
+    if (parent === document.body) break
+    branch = parent
+  }
+  for (const sibling of siblings) {
+    const ownership = inertOwners.get(sibling) ?? { count: 0, original: sibling.inert }
+    ownership.count += 1
+    inertOwners.set(sibling, ownership)
+    sibling.inert = true
+  }
+  return () => {
+    for (const sibling of siblings) {
+      const ownership = inertOwners.get(sibling)
+      if (!ownership) continue
+      ownership.count -= 1
+      if (ownership.count === 0) { sibling.inert = ownership.original; inertOwners.delete(sibling) }
+    }
+  }
+}
+
 export interface DialogKeyboardDecision {
   handled: boolean
   dismiss: boolean
@@ -75,24 +104,48 @@ export function DialogBackdrop({
   onDismiss: () => void
 }) {
   const backdropRef = useRef<HTMLDivElement>(null)
+  const dismissRef = useRef(onDismiss)
+  dismissRef.current = onDismiss
 
   useEffect(() => {
     const backdrop = backdropRef.current
     if (!backdrop) return undefined
     const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    const releaseInert = isolateDialog(backdrop)
     const focusFirst = () => {
-      const first = backdrop.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
+      if ([...document.querySelectorAll('[data-dialog-layer]')].at(-1) !== backdrop) return
+      const first = backdrop.querySelector<HTMLElement>('[data-initial-focus], [data-autofocus], input:not([disabled]), textarea:not([disabled]), select:not([disabled])')
+        ?? backdrop.querySelector<HTMLElement>(FOCUSABLE_SELECTOR)
       first?.focus()
     }
     const focusTimer = window.setTimeout(focusFirst, 0)
+    const keepFocusInside = (event: FocusEvent) => {
+      if ([...document.querySelectorAll('[data-dialog-layer]')].at(-1) !== backdrop) return
+      if (event.target instanceof Node && !backdrop.contains(event.target)) focusFirst()
+    }
+    const escapeBeforeFocus = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing || [...document.querySelectorAll('[data-dialog-layer]')].at(-1) !== backdrop) return
+      if (event.target instanceof Node && backdrop.contains(event.target)) return
+      if (event.target instanceof Element && event.target.closest('dialog[open]')) return
+      event.preventDefault()
+      event.stopPropagation()
+      dismissRef.current()
+    }
+    document.addEventListener('focusin', keepFocusInside)
+    document.addEventListener('keydown', escapeBeforeFocus, true)
     return () => {
       window.clearTimeout(focusTimer)
-      previous?.focus()
+      document.removeEventListener('focusin', keepFocusInside)
+      document.removeEventListener('keydown', escapeBeforeFocus, true)
+      releaseInert()
+      if (previous?.isConnected) previous.focus({ preventScroll: true })
     }
   }, [])
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if ([...document.querySelectorAll('[data-dialog-layer]')].at(-1) !== event.currentTarget) return
     const focusable = [...(event.currentTarget.querySelectorAll<HTMLElement>(FOCUSABLE_SELECTOR))]
+      .filter((element) => element.getClientRects().length > 0 && !element.closest('[inert]'))
     const decision = dialogKeyboardDecision({
       key: event.key,
       shiftKey: event.shiftKey,
@@ -115,7 +168,7 @@ export function DialogBackdrop({
   }
 
   return (
-    <div ref={backdropRef} className={className} onMouseDown={dismissFromBackdrop} onKeyDown={handleKeyDown}>
+    <div ref={backdropRef} className={className} data-dialog-layer onMouseDown={dismissFromBackdrop} onKeyDown={handleKeyDown}>
       {children}
     </div>
   )

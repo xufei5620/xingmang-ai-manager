@@ -18,9 +18,6 @@
   --text-primary: #f2f4f7;
   --text-secondary: #adb5c0;
   --text-muted: #858e9a;
-  --accent: #3fa4ad;
-  --accent-hover: #62bbc2;
-  --accent-soft: rgba(63, 164, 173, 0.16);
   --success: #58c58a;
   --warning: #e2ad4f;
   --danger: #ef7777;
@@ -150,9 +147,6 @@
   --text-primary: #20252b;
   --text-secondary: #58636d;
   --text-muted: #77838e;
-  --accent: #167d86;
-  --accent-hover: #126b73;
-  --accent-soft: rgba(22, 125, 134, 0.13);
   --success: #2b8f6d;
   --warning: #94621b;
   --danger: #b94750;

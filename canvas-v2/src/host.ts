@@ -335,6 +335,12 @@ export interface CanvasStoredProjectSummary {
   archivedAt?: string
 }
 
+export interface CanvasAppearance {
+  theme: 'light' | 'dark'
+  uiSkin?: 'dawn' | 'obsidian' | 'mist' | 'aurora'
+  reducedMotion?: boolean
+}
+
 export interface CanvasHostBridge {
   saveFile(suggestedName: string, content: string): Promise<{ savedPath: string } | null>
   pickFile(): Promise<{ name: string; content: string } | null>
@@ -412,6 +418,11 @@ export interface CanvasHostBridge {
   setProjectArchived(projectId: string, archived: boolean): Promise<CanvasStoredProjectSummary>
   onRunEvent(listener: (event: CanvasRunEvent) => void): () => void
   onThemeChange(listener: (theme: 'light' | 'dark') => void): () => void
+  onAppearanceChange(listener: (appearance: CanvasAppearance) => void): () => void
+  onCloseRequested(listener: (request: { requestId: string }) => void): () => void
+  onCloseCancelled(listener: (request: { requestId: string }) => void): () => void
+  finishClose(requestId: string, allowed: boolean): Promise<boolean>
+  cancelCloseTasks(requestId: string): Promise<boolean>
 }
 
 declare global {
@@ -496,5 +507,10 @@ export function hostBridge(): CanvasHostBridge {
     async setProjectArchived() { return unavailable() },
     onRunEvent() { return () => undefined },
     onThemeChange() { return () => undefined },
+    onAppearanceChange() { return () => undefined },
+    onCloseRequested() { return () => undefined },
+    onCloseCancelled() { return () => undefined },
+    async finishClose() { return false },
+    async cancelCloseTasks() { return false },
   }
 }

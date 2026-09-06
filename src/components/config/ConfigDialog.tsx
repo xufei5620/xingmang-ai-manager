@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Combobox } from '../ui/Combobox'
 import {
   AlertCircle,
   AppWindow,
@@ -801,7 +802,7 @@ export function ConfigDialog({
 
           <div className="field full-field">
             <div className="field-label-row">
-              <label htmlFor="model-select">使用模型</label>
+              <span aria-hidden="true">使用模型</span>
               <span className="model-count">
                 {modelsLoading
                   ? '正在查询可用模型'
@@ -811,15 +812,16 @@ export function ConfigDialog({
               </span>
             </div>
             <div className="model-picker">
-              <select
+              <Combobox
                 id="model-select"
+                label="使用模型"
                 value={model}
-                onChange={(event) => setModel(event.target.value)}
+                onChange={setModel}
                 disabled={modelsLoading || modelOptions.length === 0}
-              >
-                {modelOptions.length === 0 && <option value="">请先检测可用模型</option>}
-                {modelOptions.map((modelId) => <option value={modelId} key={modelId}>{modelId}</option>)}
-              </select>
+                loading={modelsLoading}
+                placeholder="请先检测可用模型"
+                options={modelOptions.map((modelId) => ({ value: modelId, label: modelId }))}
+              />
               <button
                 type="button"
                 className="secondary-button detect-models-button"

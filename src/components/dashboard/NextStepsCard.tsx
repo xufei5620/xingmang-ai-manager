@@ -1,5 +1,6 @@
 import type { LucideIcon } from 'lucide-react'
-import { Blocks, CheckCircle2, Circle, FolderOpen, KeyRound, Sparkles, Wrench } from 'lucide-react'
+import { Blocks, CheckCircle2, ChevronDown, Circle, FolderOpen, KeyRound, Sparkles, Wrench } from 'lucide-react'
+import { officialAccountLabel, officialCodexSignedIn, providerConfigReadiness } from '../../account-source'
 import { dashboardProviderIds } from '../../provider-registry'
 import { providerIds, type AppConfigSummary, type ProviderId, type SystemSnapshot } from '../../types'
 
@@ -27,22 +28,14 @@ export interface NextStepStatus {
 }
 
 export interface NextStepsSummary {
-  /** false once every *derivable* milestone is met — the two nudges never gate this. */
+  /** Optional exploration steps never block completing the first tool setup. */
   visible: boolean
   steps: NextStepStatus[]
 }
 
 /**
- * Re-derives all five milestones from SystemSnapshot/AppConfigSummary (plus
- * the caller's session-only nudge memory) on every call — this card carries
- * zero persisted state of its own. Mirrors the derivation table in
- * docs/PROPOSAL-nav-onboarding.md 方案 B 第 3 节.
- *
- * `installedCliCount`/`installedToolCount` intentionally use the same
- * formula App.tsx already computes for its own same-named locals (a CLI
- * counts once `snapshot.clis[id].installed`; the Codex desktop app is a
- * separate, additive unit) so the two stay in lockstep by construction
- * instead of drifting apart as two independently-maintained formulas.
+ * Derive readiness from an installed tool and its own source configuration.
+ * A second tool and MCP are optional; official accounts and Desktop count.
  */
 export function computeNextSteps(
   snapshot: SystemSnapshot,
@@ -51,14 +44,14 @@ export function computeNextSteps(
 ): NextStepsSummary {
   const installedCliCount = providerIds.filter((id) => snapshot.clis[id].installed).length
   const installedToolCount = installedCliCount + Number(snapshot.desktopApps.codex.installed)
-  const installedFirstCli = installedCliCount >= 1
+  const installedFirstCli = installedToolCount >= 1
   const configuredFirstCli = config
-    ? Object.values(config.providers).some((provider) => provider.hasApiKey && provider.matchesRelay)
+    ? providerIds.some((id) => (snapshot.clis[id].installed || (id === 'codex' && snapshot.desktopApps.codex.installed)) && providerReady(config, id))
     : false
   const installedSecondTool = installedToolCount >= 2
 
   return {
-    visible: !(installedFirstCli && configuredFirstCli && installedSecondTool),
+    visible: !(installedFirstCli && configuredFirstCli),
     steps: [
       { id: 'install-first-cli', done: installedFirstCli },
       { id: 'configure-first-cli', done: configuredFirstCli },
@@ -69,9 +62,17 @@ export function computeNextSteps(
   }
 }
 
+function providerReady(config: AppConfigSummary, provider: ProviderId): boolean {
+  const summary = config.providers[provider]
+  const readiness = providerConfigReadiness(summary)
+  if (readiness === 'relay') return true
+  return readiness === 'official' && officialAccountLabel(provider) !== null
+    && (provider !== 'codex' || officialCodexSignedIn(summary))
+}
+
 /**
- * First installed-and-configured provider, in the same left-to-right order
- * the CLI cards render below (see provider-registry.ts), or null if none
+ * First installed-and-configured provider, in the same order
+ * the CLI rows render (see provider-registry.ts), or null if none
  * qualify yet. Lets the "一键启动" nudge reuse the existing per-card launch
  * path without the caller having to pick a provider itself.
  */
@@ -81,8 +82,7 @@ export function resolveLaunchableProvider(
 ): ProviderId | null {
   if (!config) return null
   return dashboardProviderIds.find((id) => {
-    const providerConfig = config.providers[id]
-    return snapshot.clis[id].installed && providerConfig.hasApiKey && providerConfig.matchesRelay
+    return snapshot.clis[id].installed && providerReady(config, id)
   }) ?? null
 }
 
@@ -122,39 +122,35 @@ export function NextStepsCard({
   const copy: Record<NextStepId, NextStepCopy> = {
     'install-first-cli': {
       title: '先装一个工具',
-      hint: '下面点「一键安装」就行',
     },
     'configure-first-cli': {
-      title: '再配上账号',
-      hint: '登录后，Key 会自动写进已装的工具',
-      action: { label: '去登录', icon: KeyRound, onClick: onConfigureFirstCli },
+      title: '连接账号或保留官方来源',
+      action: { label: '连接账号', icon: KeyRound, onClick: onConfigureFirstCli },
     },
     'try-launch': {
       title: '打开试试看',
-      hint: '配好就能直接用',
       action: { label: '打开', icon: FolderOpen, onClick: () => onTryLaunch(launchTarget) },
     },
     'install-second-tool': {
-      title: '再装一个备用',
-      hint: '多一个工具，卡住时能换',
+      title: '其他工具（可选）',
       action: { label: '去安装卸载', icon: Wrench, onClick: onGoMaintenance },
     },
     'explore-mcp': {
       title: '需要时再加外接工具',
-      hint: '让 AI 连上数据库、浏览器这些',
       action: { label: '去外接工具', icon: Blocks, onClick: onExploreMcp },
     },
   }
 
   return (
-    <section className="next-steps-card" aria-labelledby="next-steps-title">
-      <div className="next-steps-heading">
+    <details className="next-steps-card" aria-labelledby="next-steps-title">
+      <summary className="next-steps-heading">
         <div className="next-steps-heading-icon"><Sparkles size={16} /></div>
         <div>
-          <h2 id="next-steps-title">按这个顺序来</h2>
-          <span>装好、配好、打开就能用 · {doneCount}/{summary.steps.length}</span>
+          <h2 id="next-steps-title">工具准备</h2>
+          <span>{doneCount}/{summary.steps.length} 项已完成，扩展步骤可选</span>
         </div>
-      </div>
+        <ChevronDown size={16} aria-hidden="true" />
+      </summary>
       <ul className="next-steps-list">
         {summary.steps.map((step) => {
           const meta = copy[step.id]
@@ -178,6 +174,6 @@ export function NextStepsCard({
           )
         })}
       </ul>
-    </section>
+    </details>
   )
 }

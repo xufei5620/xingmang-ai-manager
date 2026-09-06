@@ -45,6 +45,7 @@ export function RegisterDialog({
   onSubmit,
   onRequestVerificationCode,
   isSubmitting = false,
+  initialInviteCode = '',
 }: {
   onClose: () => void
   onSwitchToLogin: () => void
@@ -57,13 +58,14 @@ export function RegisterDialog({
   }) => void
   onRequestVerificationCode: (email: string) => Promise<void>
   isSubmitting?: boolean
+  initialInviteCode?: string
 }) {
   const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   const [email, setEmail] = useState('')
   const [verificationCode, setVerificationCode] = useState('')
-  const [inviteCode, setInviteCode] = useState('')
+  const [inviteCode, setInviteCode] = useState(initialInviteCode)
   const [agreedToTerms, setAgreedToTerms] = useState(false)
   const [showPassword, setShowPassword] = useState(false)
   const [errors, setErrors] = useState<AccountFieldErrors>({})
@@ -236,6 +238,8 @@ export function RegisterDialog({
                 placeholder="6 位验证码"
                 autoComplete="one-time-code"
                 inputMode="numeric"
+                aria-invalid={Boolean(errors.verificationCode)}
+                aria-describedby={errors.verificationCode ? 'register-verification-error' : undefined}
               />
               <button
                 type="button"
@@ -246,7 +250,7 @@ export function RegisterDialog({
                 {codeCooldown > 0 ? `${codeCooldown} 秒后重试` : '获取验证码'}
               </button>
             </div>
-            {errors.verificationCode && <small className="field-error" role="alert">{errors.verificationCode}</small>}
+            {errors.verificationCode && <small id="register-verification-error" className="field-error" role="alert">{errors.verificationCode}</small>}
           </label>
 
           <label className="field extension-field">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useRef, useState, type FormEvent, type KeyboardEvent } from 'react'
 import {
   Activity,
   ArrowLeft,
@@ -19,9 +19,11 @@ import {
   Pencil,
   Plus,
   RefreshCw,
+  ReceiptText,
   Save,
   ShieldCheck,
   Trash2,
+  UsersRound,
   UserRound,
   Wallet,
   type LucideIcon,
@@ -52,6 +54,8 @@ import {
 } from './account-center'
 import { hasAccountFieldErrors, validateChangePasswordForm, type AccountFieldErrors } from './validation'
 import type { ToastMessage } from '../Toast'
+import { Button, Input, Password } from '../ui'
+import './account-center-v3.css'
 
 const KEYS_PAGE_SIZE = 8
 const KEY_REVEAL_DURATION_MS = 30_000
@@ -62,53 +66,52 @@ export type AccountCenterPrimaryTab =
   | 'keys'
   | 'usage'
   | 'tasks'
-  | 'wallet'
-  | 'profile'
+  | 'recharge'
+  | 'orders'
+  | 'invite'
+  | 'devices'
 
 export type AccountCenterTab =
   | AccountCenterPrimaryTab
   | 'subscriptions'
   | 'topup'
-  | 'orders'
   | 'redeem'
-  | 'invite'
+  | 'wallet'
+  | 'profile'
   | 'security'
-
-type AccountCenterTabGroup = 'general' | 'personal'
 
 interface AccountCenterTabDefinition {
   id: AccountCenterPrimaryTab
   label: string
   description: string
   icon: LucideIcon
-  group: AccountCenterTabGroup
 }
 
-const TAB_GROUPS: ReadonlyArray<{ id: AccountCenterTabGroup; label: string }> = [
-  { id: 'general', label: '常用' },
-  { id: 'personal', label: '账户' },
+export const ACCOUNT_CENTER_TABS: readonly AccountCenterTabDefinition[] = [
+  { id: 'overview', label: '我的账号', description: '身份、余额与账号安全', icon: UserRound },
+  { id: 'dashboard', label: '用量看板', description: '消费趋势与模型用量', icon: BarChart3 },
+  { id: 'keys', label: '密钥', description: '工具连接与调用凭据', icon: KeyRound },
+  { id: 'usage', label: '调用明细', description: '逐次调用与费用', icon: Activity },
+  { id: 'tasks', label: '异步任务', description: '图片、视频生成结果与进度', icon: ListChecks },
+  { id: 'recharge', label: '充值与订阅', description: '余额充值、订阅与兑换', icon: Wallet },
+  { id: 'orders', label: '我的订单', description: '订单记录与支付状态', icon: ReceiptText },
+  { id: 'invite', label: '邀请返利', description: '邀请记录与奖励', icon: UsersRound },
+  { id: 'devices', label: '登录设备', description: '当前设备与其他活跃会话', icon: MonitorSmartphone },
 ]
 
-const TABS: readonly AccountCenterTabDefinition[] = [
-  { id: 'overview', label: '概览', description: '余额和账户信息', icon: BadgeDollarSign, group: 'general' },
-  { id: 'dashboard', label: '用量', description: '最近用了多少', icon: BarChart3, group: 'general' },
-  { id: 'keys', label: '密钥', description: '给工具用的 Key', icon: KeyRound, group: 'general' },
-  { id: 'usage', label: '明细', description: '每次调用花了多少', icon: Activity, group: 'general' },
-  { id: 'tasks', label: '任务', description: '图片、视频生成进度', icon: ListChecks, group: 'general' },
-  { id: 'wallet', label: '钱包', description: '充值、订单和兑换', icon: Wallet, group: 'personal' },
-  { id: 'profile', label: '资料', description: '改资料、密码和已登录设备', icon: UserRound, group: 'personal' },
-]
+const commerceTabs: readonly AccountCommerceTab[] = ['subscriptions', 'topup', 'redeem']
+const rechargeTabs = [['topup', '余额充值'], ['subscriptions', '订阅套餐'], ['redeem', '兑换码']] as const
+const profileTabs = [['summary', '账号概览'], ['profile', '基本资料'], ['security', '修改密码']] as const
+type ProfileTab = typeof profileTabs[number][0]
 
-const commerceTabs: readonly AccountCommerceTab[] = ['subscriptions', 'topup', 'orders', 'redeem', 'invite']
-
-function primaryTabFor(section: AccountCenterTab): AccountCenterPrimaryTab {
-  if (commerceTabs.includes(section as AccountCommerceTab)) return 'wallet'
-  if (section === 'security') return 'profile'
+export function primaryTabFor(section: AccountCenterTab): AccountCenterPrimaryTab {
+  if (section === 'wallet' || section === 'subscriptions' || section === 'topup' || section === 'redeem') return 'recharge'
+  if (section === 'security' || section === 'profile') return 'overview'
   return section as AccountCenterPrimaryTab
 }
 
-function commerceTabFor(section: AccountCenterTab): AccountCommerceTab {
-  return commerceTabs.includes(section as AccountCommerceTab) ? section as AccountCommerceTab : 'subscriptions'
+export function commerceTabFor(section: AccountCenterTab): AccountCommerceTab {
+  return commerceTabs.includes(section as AccountCommerceTab) ? section as AccountCommerceTab : section === 'wallet' ? 'subscriptions' : 'topup'
 }
 
 /**
@@ -155,12 +158,14 @@ function RevokeKeyDialog({ target, busy, onConfirm, onCancel }: {
 }
 
 export interface AccountCenterPageProps {
-  /** "返回工作台" — the page's only exit besides logging out. */
+  /** Return to the caller's workspace context. */
   onClose: () => void
   /** Reuses App.tsx's existing handleAccountLogout; this component owns no session state of its own. */
   onLogout: () => void
   notify?: (toast: ToastMessage) => void
   initialSection?: AccountCenterTab
+  onSwitchAccount?: () => void
+  paymentReturn?: { sequence: number; order: string | null }
 }
 
 function compactCount(value: number): string {
@@ -255,10 +260,11 @@ export function AccountKeySecretCell({
   )
 }
 
-export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 'overview' }: AccountCenterPageProps) {
+export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 'overview', paymentReturn, onSwitchAccount }: AccountCenterPageProps) {
   const [primaryTab, setPrimaryTab] = useState<AccountCenterPrimaryTab>(() => primaryTabFor(initialSection))
   const [walletTab, setWalletTab] = useState<AccountCommerceTab>(() => commerceTabFor(initialSection))
-  const [profileTab, setProfileTab] = useState<'profile' | 'security'>(() => initialSection === 'security' ? 'security' : 'profile')
+  const [profileTab, setProfileTab] = useState<ProfileTab>(() => initialSection === 'security' ? 'security' : initialSection === 'profile' ? 'profile' : 'summary')
+  const [visitedTabs, setVisitedTabs] = useState(() => new Set<AccountCenterPrimaryTab>([primaryTabFor(initialSection)]))
   const [profile, setProfile] = useState<AccountProfileDetail | null>(null)
   const [balance, setBalance] = useState<AccountBalance | null>(null)
   const [profileLoading, setProfileLoading] = useState(true)
@@ -282,10 +288,10 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
   const [originalPassword, setOriginalPassword] = useState('')
   const [newPassword, setNewPassword] = useState('')
   const [confirmNewPassword, setConfirmNewPassword] = useState('')
-  const [showPasswordFields, setShowPasswordFields] = useState(false)
   const [passwordErrors, setPasswordErrors] = useState<AccountFieldErrors>({})
   const [passwordSubmitting, setPasswordSubmitting] = useState(false)
   const [displayName, setDisplayName] = useState('')
+  const confirmedDisplayName = useRef<string | null>(null)
   const [profileSubmitting, setProfileSubmitting] = useState(false)
   const [loginSessions, setLoginSessions] = useState<AccountLoginSession[] | null>(null)
   const [loginSessionsLoading, setLoginSessionsLoading] = useState(false)
@@ -296,23 +302,50 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
   // T6: profile/keys are async page data that can outlive a tab
   // switch or a fast double-open; keyed by a fixed string per data kind, same
   // pattern App.tsx already uses for mcp/skills/plugins via pageDataTracker.
-  const requestTracker = useRef(createLatestRequestTracker<'profile' | 'keys' | 'groups'>()).current
+  const requestTracker = useRef(createLatestRequestTracker<'profile' | 'keys' | 'groups' | 'sessions'>()).current
   const copyResetTimer = useRef<number | null>(null)
   const revealedKeySecret = useRef<string | null>(null)
   const revealHideTimer = useRef<number | null>(null)
   const revealRequestId = useRef(0)
   const componentMounted = useRef(true)
   const currentTab = useRef(primaryTab)
-  const activeTabDefinition = TABS.find((item) => item.id === primaryTab) ?? TABS[0]
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const focusContentOnChange = useRef(false)
+  const tabRefs = useRef(new Map<string, HTMLButtonElement>())
+  const scrollPositions = useRef(new Map<string, number>())
+  const activeTabDefinition = ACCOUNT_CENTER_TABS.find((item) => item.id === primaryTab) ?? ACCOUNT_CENTER_TABS[0]
+  const contentKey = primaryTab === 'overview' ? `overview-${profileTab}` : primaryTab === 'recharge' ? `recharge-${walletTab}` : primaryTab
   currentTab.current = primaryTab
 
   useEffect(() => {
+    if (bodyRef.current) bodyRef.current.scrollTop = scrollPositions.current.get(contentKey) ?? 0
+    if (focusContentOnChange.current) {
+      focusContentOnChange.current = false
+      bodyRef.current?.focus({ preventScroll: true })
+    }
+  }, [contentKey])
+
+  useEffect(() => {
+    setVisitedTabs((current) => current.has(primaryTab) ? current : new Set([...current, primaryTab]))
+  }, [primaryTab])
+
+  const navigateTabs = (event: KeyboardEvent<HTMLButtonElement>, ids: readonly string[], current: string) => {
+    const index = ids.indexOf(current)
+    const nextIndex = event.key === 'Home' ? 0 : event.key === 'End' ? ids.length - 1
+      : event.key === 'ArrowRight' ? (index + 1) % ids.length : event.key === 'ArrowLeft' ? (index - 1 + ids.length) % ids.length : null
+    if (nextIndex === null) return
+    event.preventDefault()
+    tabRefs.current.get(ids[nextIndex])?.focus()
+  }
+
+  useEffect(() => {
     setPrimaryTab(primaryTabFor(initialSection))
-    if (commerceTabs.includes(initialSection as AccountCommerceTab)) setWalletTab(initialSection as AccountCommerceTab)
+    if (primaryTabFor(initialSection) === 'recharge') setWalletTab(commerceTabFor(initialSection))
     if (initialSection === 'profile' || initialSection === 'security') setProfileTab(initialSection)
+    else if (initialSection === 'overview') setProfileTab('summary')
   }, [initialSection])
 
-  const loadProfile = useCallback(async () => {
+  const loadProfile = useCallback(async (preserveDraft = true) => {
     const requestId = requestTracker.begin('profile')
     setProfileLoading(true)
     setProfileError(null)
@@ -330,7 +363,10 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
       if (!requestTracker.isCurrent('profile', requestId)) return
       setProfile(nextProfile)
       setBalance(nextBalance)
-      setDisplayName(nextProfile.displayName ?? '')
+      const previousDisplayName = confirmedDisplayName.current
+      const nextDisplayName = nextProfile.displayName ?? ''
+      setDisplayName((current) => !preserveDraft || previousDisplayName === null || current === previousDisplayName ? nextDisplayName : current)
+      confirmedDisplayName.current = nextDisplayName
     } catch (error) {
       if (requestTracker.isCurrent('profile', requestId)) setProfileError(errorMessage(error))
     } finally {
@@ -339,18 +375,19 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
   }, [requestTracker])
 
   const loadLoginSessions = useCallback(async () => {
+    const requestId = requestTracker.begin('sessions')
     setLoginSessionsLoading(true)
     setLoginSessionsError(null)
     try {
       const next = await window.xingmang.getAccountLoginSessions()
-      if (!componentMounted.current) return
+      if (!requestTracker.isCurrent('sessions', requestId)) return
       setLoginSessions(next)
     } catch (error) {
-      if (componentMounted.current) setLoginSessionsError(resolveAccountErrorMessage(errorMessage(error)))
+      if (requestTracker.isCurrent('sessions', requestId)) setLoginSessionsError(resolveAccountErrorMessage(errorMessage(error)))
     } finally {
-      if (componentMounted.current) setLoginSessionsLoading(false)
+      if (requestTracker.isCurrent('sessions', requestId)) setLoginSessionsLoading(false)
     }
-  }, [])
+  }, [requestTracker])
 
   useEffect(() => { void loadProfile() }, [loadProfile])
 
@@ -397,8 +434,8 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
   }, [primaryTab, loadKeyGroups, keyGroups.length, keyGroupsLoading, keyGroupsError])
 
   useEffect(() => {
-    if (primaryTab === 'profile' && profileTab === 'security' && loginSessions === null && !loginSessionsLoading) void loadLoginSessions()
-  }, [primaryTab, profileTab, loginSessions, loginSessionsLoading, loadLoginSessions])
+    if (primaryTab === 'devices' && loginSessions === null && !loginSessionsLoading && !loginSessionsError) void loadLoginSessions()
+  }, [primaryTab, loginSessions, loginSessionsLoading, loginSessionsError, loadLoginSessions])
 
   useEffect(() => {
     if (primaryTab === 'keys') return
@@ -471,7 +508,11 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
     if (passwordSubmitting) return
     const nextErrors = validateChangePasswordForm({ originalPassword, newPassword, confirmNewPassword })
     setPasswordErrors(nextErrors)
-    if (hasAccountFieldErrors(nextErrors)) return
+    if (hasAccountFieldErrors(nextErrors)) {
+      const firstError = nextErrors.originalPassword ? 'account-original-password' : nextErrors.password ? 'account-new-password' : 'account-confirm-password'
+      document.getElementById(firstError)?.focus()
+      return
+    }
     setPasswordSubmitting(true)
     try {
       // The main process adopts the fresh session token this call returns
@@ -506,7 +547,7 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
     setProfileSubmitting(true)
     try {
       await window.xingmang.updateAccountDisplayName({ displayName: nextDisplayName })
-      await loadProfile()
+      await loadProfile(false)
       notify?.({ type: 'success', message: '资料已更新' })
     } catch (error) {
       notify?.({ type: 'error', message: resolveAccountErrorMessage(errorMessage(error)) })
@@ -675,9 +716,36 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
             <strong>{compactCount(profile.affCount)} 人</strong>
           </div>
         </div>
+        <div className="account-overview-actions">
+          <Button icon={Pencil} size="sm" onClick={() => { focusContentOnChange.current = true; setProfileTab('profile') }}>编辑资料</Button>
+          <Button icon={ShieldCheck} size="sm" onClick={() => { focusContentOnChange.current = true; setProfileTab('security') }}>修改密码</Button>
+          <Button icon={MonitorSmartphone} size="sm" onClick={() => { focusContentOnChange.current = true; setPrimaryTab('devices') }}>管理登录设备</Button>
+        </div>
       </div>
     )
   }
+
+  const renderOverviewSide = () => (
+    <aside className="account-overview-side">
+      <section className="account-overview-card account-balance-card" aria-labelledby="account-balance-title">
+        <header><h3 id="account-balance-title">账户余额（美元）</h3><span>星芒按量消费</span></header>
+        <strong className="account-overview-balance">{balance ? formatBalanceUsd(balance.quota, balance.quotaPerUnit) : '—'}</strong>
+        <p>每次调用的费用以实际记录为准。</p>
+        <div className="account-overview-card-actions">
+          <Button size="sm" icon={BarChart3} onClick={() => setPrimaryTab('dashboard')}>看用量</Button>
+        </div>
+      </section>
+      <section className="account-overview-card account-saved-accounts" aria-labelledby="saved-accounts-title">
+        <header><h3 id="saved-accounts-title">已保存的账号</h3><span>当前账号</span></header>
+        <div className="account-saved-account-row">
+          <span className="account-saved-avatar" aria-hidden="true">{(profile?.displayName || profile?.username || '星').slice(0, 1)}</span>
+          <div><strong>{profile?.displayName || profile?.username || '星芒用户'}</strong><span>{profile?.email || '未绑定邮箱'}</span></div>
+        </div>
+        {onSwitchAccount && <Button size="sm" icon={UsersRound} onClick={onSwitchAccount}>切换账号</Button>}
+        <p>各账号的余额、订单、Key 和聊天记录分别保存。</p>
+      </section>
+    </aside>
+  )
 
   const renderKeysTab = () => {
     if (keysLoading && !keys) {
@@ -718,17 +786,18 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
             <Plus size={15} aria-hidden="true" /> 添加 Key
           </button>
         </div>
-        <div className="account-center-keys-table">
-          <div className="account-center-keys-head" aria-hidden="true">
-            <span>名称</span><span>密钥</span><span>分组</span><span>倍率</span><span>状态</span><span>额度</span><span>已用</span><span>创建时间</span><span>过期时间</span><span className="account-center-keys-actions">操作</span>
+        <div className="account-center-keys-table" role="table" aria-label="API 密钥" aria-colcount={10}>
+          <div className="account-center-keys-head" role="row">
+            <span role="columnheader">名称</span><span role="columnheader">密钥</span><span role="columnheader">分组</span><span role="columnheader">倍率</span><span role="columnheader">状态</span><span role="columnheader">额度</span><span role="columnheader">已用</span><span role="columnheader">创建时间</span><span role="columnheader">过期时间</span><span role="columnheader" className="account-center-keys-actions">操作</span>
           </div>
-          <div className="account-center-keys-body" aria-busy={keysLoading}>
+          <div className="account-center-keys-body" role="rowgroup" aria-busy={keysLoading}>
             {keys.keys.map((key) => {
               const group = keyGroups.find((entry) => entry.name === key.group)
               const keyIsRevealed = revealedKeyId === key.id && revealedKeySecret.current !== null
               return (
-                <div className="account-center-keys-row" key={key.id}>
-                  <strong title={key.name}>{key.name}</strong>
+                <div className="account-center-keys-row" key={key.id} role="row">
+                  <strong role="cell" title={key.name}>{key.name}</strong>
+                  <div className="ui-table-cell" role="cell">
                   <AccountKeySecretCell
                     keyName={key.name}
                     maskedKey={key.maskedKey}
@@ -741,14 +810,15 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
                     onCopy={() => void copyAccountKey(key)}
                     onToggleReveal={() => void toggleAccountKeyReveal(key)}
                   />
-                  <span title={group?.description || key.group || '默认分组'}>{key.group || '默认分组'}</span>
-                  <span>{group ? `${String(group.ratio)}x` : '—'}</span>
-                  <span>{accountKeyStatusLabel(key.status)}</span>
-                  <span>{key.unlimitedQuota ? '无限' : formatKeyQuotaUsd(key.remainQuota, balance?.quotaPerUnit)}</span>
-                  <span>{formatKeyQuotaUsd(key.usedQuota, balance?.quotaPerUnit)}</span>
-                  <span>{formatAccountUsageDate(key.createdAt)}</span>
-                  <span>{key.expiredAt ? formatAccountUsageDate(key.expiredAt) : '永不过期'}</span>
-                  <span className="account-center-keys-actions">
+                  </div>
+                  <span role="cell" title={group?.description || key.group || '默认分组'}>{key.group || '默认分组'}</span>
+                  <span role="cell">{group ? `${String(group.ratio)}x` : '—'}</span>
+                  <span role="cell">{accountKeyStatusLabel(key.status)}</span>
+                  <span role="cell">{key.unlimitedQuota ? '无限' : formatKeyQuotaUsd(key.remainQuota, balance?.quotaPerUnit)}</span>
+                  <span role="cell">{formatKeyQuotaUsd(key.usedQuota, balance?.quotaPerUnit)}</span>
+                  <span role="cell">{formatAccountUsageDate(key.createdAt)}</span>
+                  <span role="cell">{key.expiredAt ? formatAccountUsageDate(key.expiredAt) : '永不过期'}</span>
+                  <span role="cell" className="account-center-keys-actions">
                     <button
                       className="icon-button compact"
                       type="button"
@@ -813,95 +883,40 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
           <div><strong>{profile.displayName || profile.username}</strong><span>用户 ID：{profile.userId}</span></div>
         </section>
         <form onSubmit={(event) => void submitProfile(event)}>
-          <label className="field extension-field"><span>显示名称</span><input value={displayName} maxLength={20} placeholder="在软件内显示的名称" onChange={(event) => setDisplayName(event.target.value)} /><small className="field-hint">最多 20 个字符，不会修改登录用户名。</small></label>
+          <Input label="显示名称" value={displayName} maxLength={20} placeholder="在软件内显示的名称" onChange={(event) => setDisplayName(event.target.value)} hint="最多 20 个字符，不会修改登录用户名。" disabled={profileSubmitting} />
           <div className="account-profile-readonly">
             <div><span>用户名</span><strong>{profile.username}</strong></div>
             <div><span>邮箱</span><strong>{profile.email || '未绑定邮箱'}</strong></div>
             <div><span>账户分组</span><strong>{profile.group || '默认分组'}</strong></div>
           </div>
-          <button type="submit" className="primary-button" disabled={profileSubmitting || displayName.trim() === (profile.displayName ?? '')}>
-            {profileSubmitting ? <LoaderCircle className="spin" size={16} /> : <Save size={16} />}
-            {profileSubmitting ? '正在保存…' : '保存资料'}
-          </button>
+          <Button type="submit" variant="primary" icon={Save} loading={profileSubmitting} disabled={displayName.trim() === (profile.displayName ?? '')}>保存资料</Button>
         </form>
       </div>
     )
   }
 
   const renderSecurityTab = () => (
-    <div className="account-security-layout">
       <section className="account-center-security">
         <header className="account-security-section-title"><ShieldCheck size={18} /><div><h3>修改密码</h3><p>更新密码后，其他浏览器和设备会话将失效。</p></div></header>
         <form onSubmit={(event) => void submitChangePassword(event)}>
-        <label className="field extension-field">
-          <span>原密码</span>
-          <div className="input-with-action">
-            <input
-              type={showPasswordFields ? 'text' : 'password'}
-              value={originalPassword}
-              onChange={(event) => { setOriginalPassword(event.target.value); clearPasswordError('originalPassword') }}
-              autoComplete="current-password"
-            />
-            <button
-              type="button"
-              title={showPasswordFields ? '隐藏密码' : '显示密码'}
-              onClick={() => setShowPasswordFields((current) => !current)}
-            >
-              {showPasswordFields ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
-          {passwordErrors.originalPassword && <small className="field-error" role="alert">{passwordErrors.originalPassword}</small>}
-        </label>
-
-        <label className="field extension-field">
-          <span>新密码</span>
-          <div className="input-with-action">
-            <input
-              type={showPasswordFields ? 'text' : 'password'}
-              value={newPassword}
-              onChange={(event) => { setNewPassword(event.target.value); clearPasswordError('password') }}
-              placeholder="8-20 位"
-              autoComplete="new-password"
-            />
-            <button
-              type="button"
-              title={showPasswordFields ? '隐藏密码' : '显示密码'}
-              onClick={() => setShowPasswordFields((current) => !current)}
-            >
-              {showPasswordFields ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
-          {passwordErrors.password && <small className="field-error" role="alert">{passwordErrors.password}</small>}
-        </label>
-
-        <label className="field extension-field">
-          <span>确认新密码</span>
-          <div className="input-with-action">
-            <input
-              type={showPasswordFields ? 'text' : 'password'}
-              value={confirmNewPassword}
-              onChange={(event) => { setConfirmNewPassword(event.target.value); clearPasswordError('confirmPassword') }}
-              placeholder="再次输入新密码"
-              autoComplete="new-password"
-            />
-            <button
-              type="button"
-              title={showPasswordFields ? '隐藏密码' : '显示密码'}
-              onClick={() => setShowPasswordFields((current) => !current)}
-            >
-              {showPasswordFields ? <EyeOff size={16} /> : <Eye size={16} />}
-            </button>
-          </div>
-          {passwordErrors.confirmPassword && <small className="field-error" role="alert">{passwordErrors.confirmPassword}</small>}
-        </label>
+        <Password id="account-original-password" label="原密码" value={originalPassword} autoComplete="current-password"
+          onChange={(event) => { setOriginalPassword(event.target.value); clearPasswordError('originalPassword') }}
+          error={passwordErrors.originalPassword} disabled={passwordSubmitting} showLabel="显示原密码" hideLabel="隐藏原密码" />
+        <Password id="account-new-password" label="新密码" value={newPassword} autoComplete="new-password" placeholder="8-20 位"
+          onChange={(event) => { setNewPassword(event.target.value); clearPasswordError('password') }}
+          error={passwordErrors.password} disabled={passwordSubmitting} showLabel="显示新密码" hideLabel="隐藏新密码" />
+        <Password id="account-confirm-password" label="确认新密码" value={confirmNewPassword} autoComplete="new-password" placeholder="再次输入新密码"
+          onChange={(event) => { setConfirmNewPassword(event.target.value); clearPasswordError('confirmPassword') }}
+          error={passwordErrors.confirmPassword} disabled={passwordSubmitting} showLabel="显示确认密码" hideLabel="隐藏确认密码" />
 
         <p className="field-hint">修改成功后本设备无需重新登录；其他已登录设备与浏览器会话将被登出。</p>
 
-        <button type="submit" className="primary-button" disabled={passwordSubmitting}>
-          {passwordSubmitting ? '提交中…' : '确认修改'}
-        </button>
+        <Button type="submit" variant="primary" icon={ShieldCheck} loading={passwordSubmitting}>确认修改</Button>
         </form>
       </section>
+  )
+
+  const renderDevicesTab = () => (
       <section className="account-login-sessions">
         <header className="account-security-section-title">
           <MonitorSmartphone size={18} />
@@ -910,9 +925,10 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
             <RefreshCw size={15} className={loginSessionsLoading ? 'spin' : undefined} />
           </button>
         </header>
-        {loginSessionsError && !loginSessions ? (
+        {loginSessionsError && (
           <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>设备列表读取失败</strong><span>{loginSessionsError}</span></div><button type="button" className="secondary-button" onClick={() => void loadLoginSessions()}>重试</button></div>
-        ) : loginSessionsLoading && !loginSessions ? (
+        )}
+        {loginSessionsLoading && !loginSessions ? (
           <div className="account-sessions-loading"><LoaderCircle size={18} className="spin" />正在读取登录设备…</div>
         ) : (
           <>
@@ -942,25 +958,26 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
           </>
         )}
       </section>
-    </div>
   )
 
   return (
-    <div className="account-center" data-page-id="account-center">
+    <div className="account-center account-center-v3" data-page-id="account-center">
       <div className="account-center-inner">
         <header className="account-center-topbar">
           <div className="account-center-title">
+            <button type="button" className="account-center-back-button" aria-label="返回首页" title="返回首页" onClick={onClose}><ArrowLeft size={16} aria-hidden="true" /></button>
             <span className="account-center-title-icon"><BadgeDollarSign size={20} /></span>
             <div>
-              <h1>我的账号</h1>
-              <p className="page-lead">看余额、充值、改密码。</p>
+              <h1>个人中心</h1>
+              <p className="page-lead">余额、Key、用量与订单都在这里。</p>
             </div>
           </div>
+          <div className="account-center-header-identity">
+            <span className="account-center-avatar" aria-hidden="true">{(profile?.displayName || profile?.username || '星').slice(0, 1)}</span>
+            <div><strong>{profile?.displayName || profile?.username || '星芒用户'}</strong><span>{profile?.email || (profileLoading ? '正在读取账户…' : '未绑定邮箱')}</span></div>
+          </div>
           <div className="header-actions page-toolbar">
-            <button type="button" className="secondary-button" onClick={onClose}>
-              <ArrowLeft size={15} />
-              <span>返回首页</span>
-            </button>
+            <button type="button" className="account-center-recharge-button" onClick={() => { setPrimaryTab('recharge'); setWalletTab('topup') }}><Wallet size={15} aria-hidden="true" />充值</button>
             <button type="button" className="icon-button" title="登出星芒账号" aria-label="登出星芒账号" onClick={onLogout}>
               <LogOut size={17} />
             </button>
@@ -968,96 +985,67 @@ export function AccountCenterPage({ onClose, onLogout, notify, initialSection = 
         </header>
 
         <div className="account-center-layout">
-          <aside className="account-center-navigation">
-            <div className="account-center-identity">
-              <span className="account-center-avatar" aria-hidden="true">
-                {(profile?.displayName || profile?.username || '星').trim().slice(0, 1).toLocaleUpperCase('zh-CN')}
-              </span>
-              <div>
-                <strong>{profile?.displayName || profile?.username || '星芒用户'}</strong>
-                <span>{profile?.email || (profileLoading ? '正在读取账户…' : '未绑定邮箱')}</span>
-              </div>
-            </div>
-            <nav aria-label="个人中心分区">
-              {TAB_GROUPS.map((group) => (
-                <div className="account-center-nav-group" key={group.id}>
-                  <div className="account-center-nav-label">{group.label}</div>
-                  {TABS.filter((item) => item.group === group.id).map(({ id, label, icon: Icon }) => (
-                    <button
-                      key={id}
-                      type="button"
-                      data-account-tab={id}
-                      aria-current={primaryTab === id ? 'page' : undefined}
-                      className={primaryTab === id ? 'active' : ''}
-                      onClick={() => setPrimaryTab(id)}
-                    >
-                      <Icon size={16} aria-hidden="true" />
-                      <span>{label}</span>
-                      <ChevronRight size={14} className="account-center-nav-chevron" />
-                    </button>
-                  ))}
-                </div>
+          <div className="account-center-navigation">
+            <nav aria-label="个人中心分区" role="tablist" aria-orientation="horizontal">
+              {ACCOUNT_CENTER_TABS.map(({ id, label }) => (
+                <button key={id} type="button" role="tab" id={`account-tab-${id}`} data-account-tab={id}
+                  ref={(element) => { if (element) tabRefs.current.set(id, element); else tabRefs.current.delete(id) }}
+                  aria-controls="account-center-panel" aria-selected={primaryTab === id}
+                  aria-current={primaryTab === id ? 'page' : undefined} tabIndex={primaryTab === id ? 0 : -1}
+                  className={primaryTab === id ? 'active' : ''}
+                  onClick={() => setPrimaryTab(id)} onKeyDown={(event) => navigateTabs(event, ACCOUNT_CENTER_TABS.map((item) => item.id), id)}>
+                  <span>{label}</span>
+                </button>
               ))}
             </nav>
-            <div className="account-center-balance-summary">
-              <span>可用余额</span>
-              <div>
-                <strong>{balance ? formatBalanceUsd(balance.quota, balance.quotaPerUnit) : '—'}</strong>
-                <button
-                  type="button"
-                  className="account-center-recharge-button"
-                  onClick={() => {
-                    setPrimaryTab('wallet')
-                    setWalletTab('topup')
-                  }}
-                >
-                  充值
-                </button>
-              </div>
-            </div>
-          </aside>
+          </div>
 
-          <section className="account-center-workspace" aria-labelledby={`account-center-${primaryTab}-title`}>
+          <section className="account-center-workspace" role="tabpanel" id="account-center-panel" aria-labelledby={`account-tab-${primaryTab}`} tabIndex={0}>
             <header className="account-center-section-header">
               <div>
                 <h2 id={`account-center-${primaryTab}-title`}>{activeTabDefinition.label}</h2>
-                <p>{activeTabDefinition.description}</p>
               </div>
             </header>
-            {primaryTab === 'wallet' && (
-              <div className="account-center-subtabs" role="tablist" aria-label="钱包分区">
-                {([
-                  ['subscriptions', '我的订阅'],
-                  ['topup', '充值 / 订阅'],
-                  ['orders', '我的订单'],
-                  ['redeem', '兑换'],
-                  ['invite', '邀请返利'],
-                ] as const).map(([id, label]) => (
-                  <button key={id} type="button" role="tab" data-account-subtab={id} aria-selected={walletTab === id} className={walletTab === id ? 'active' : ''} onClick={() => setWalletTab(id)}>{label}</button>
+            {primaryTab === 'recharge' && (
+              <div className="account-center-subtabs" role="tablist" aria-label="充值与订阅分区">
+                {rechargeTabs.map(([id, label]) => (
+                  <button key={id} type="button" role="tab" id={`account-subtab-${id}`} data-account-subtab={id}
+                    ref={(element) => { if (element) tabRefs.current.set(id, element); else tabRefs.current.delete(id) }}
+                    aria-controls={`account-content-${contentKey}`} aria-selected={walletTab === id} tabIndex={walletTab === id ? 0 : -1}
+                    className={walletTab === id ? 'active' : ''} onClick={() => setWalletTab(id)}
+                    onKeyDown={(event) => navigateTabs(event, rechargeTabs.map(([value]) => value), id)}>{label}</button>
                 ))}
               </div>
             )}
-            {primaryTab === 'profile' && (
-              <div className="account-center-subtabs" role="tablist" aria-label="资料分区">
-                <button type="button" role="tab" data-account-subtab="profile" aria-selected={profileTab === 'profile'} className={profileTab === 'profile' ? 'active' : ''} onClick={() => setProfileTab('profile')}>基本资料</button>
-                <button type="button" role="tab" data-account-subtab="security" aria-selected={profileTab === 'security'} className={profileTab === 'security' ? 'active' : ''} onClick={() => setProfileTab('security')}>安全与设备</button>
+            {primaryTab === 'overview' && (
+              <div className="account-center-subtabs" role="tablist" aria-label="我的账号分区">
+                {profileTabs.map(([id, label]) => <button key={id} type="button" role="tab" id={`account-subtab-${id}`} data-account-subtab={id}
+                  ref={(element) => { if (element) tabRefs.current.set(id, element); else tabRefs.current.delete(id) }}
+                  aria-controls={`account-content-${contentKey}`} aria-selected={profileTab === id} tabIndex={profileTab === id ? 0 : -1}
+                  className={profileTab === id ? 'active' : ''} onClick={() => setProfileTab(id)}
+                  onKeyDown={(event) => navigateTabs(event, profileTabs.map(([value]) => value), id)}>{label}</button>)}
               </div>
             )}
-            <div className="account-center-body" role="tabpanel">
-              {primaryTab === 'overview' && renderProfileTab()}
-              {primaryTab === 'dashboard' && <AccountDashboardPanel balance={balance} />}
+            <div className="account-center-body" ref={bodyRef} id={`account-content-${contentKey}`}
+              role={primaryTab === 'overview' || primaryTab === 'recharge' ? 'tabpanel' : undefined}
+              aria-labelledby={primaryTab === 'overview' ? `account-subtab-${profileTab}` : primaryTab === 'recharge' ? `account-subtab-${walletTab}` : undefined}
+              tabIndex={0} onScroll={(event) => scrollPositions.current.set(contentKey, event.currentTarget.scrollTop)}>
+              {primaryTab === 'overview' && profileTab === 'summary' && <div className="account-overview-grid"><div>{renderProfileTab()}</div>{renderOverviewSide()}</div>}
+              {(primaryTab === 'dashboard' || visitedTabs.has('dashboard')) && <div hidden={primaryTab !== 'dashboard'}><AccountDashboardPanel balance={balance} /></div>}
               <AccountCommercePanels
-                activeTab={primaryTab === 'wallet' ? walletTab : null}
+                paymentReturn={paymentReturn}
+                activeTab={primaryTab === 'recharge' ? walletTab : primaryTab === 'orders' || primaryTab === 'invite' ? primaryTab : null}
                 profile={profile}
                 balance={balance}
                 onRefreshAccount={loadProfile}
                 notify={notify}
               />
-              {primaryTab === 'usage' && <AccountUsagePanel quotaPerUnit={balance?.quotaPerUnit} />}
-              {primaryTab === 'tasks' && <AccountTaskPanel quotaPerUnit={balance?.quotaPerUnit} />}
+              {(primaryTab === 'usage' || visitedTabs.has('usage')) && <div hidden={primaryTab !== 'usage'}><AccountUsagePanel quotaPerUnit={balance?.quotaPerUnit} /></div>}
+              {(primaryTab === 'tasks' || visitedTabs.has('tasks')) && <div hidden={primaryTab !== 'tasks'}><AccountTaskPanel quotaPerUnit={balance?.quotaPerUnit} /></div>}
               {primaryTab === 'keys' && renderKeysTab()}
-              {primaryTab === 'profile' && profileTab === 'profile' && renderPersonalProfileTab()}
-              {primaryTab === 'profile' && profileTab === 'security' && renderSecurityTab()}
+              {primaryTab === 'overview' && profileTab === 'profile' && renderPersonalProfileTab()}
+              {primaryTab === 'overview' && profileTab === 'security' && renderSecurityTab()}
+              {primaryTab === 'devices' && renderDevicesTab()}
             </div>
           </section>
         </div>

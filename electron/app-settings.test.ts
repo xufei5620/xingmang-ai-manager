@@ -356,3 +356,91 @@ describe('field-wise settings updates (①栏11)', () => {
     expect(mergeAppSettings(base, { version: 2, workspace: 'D:\\Elsewhere' }).workspace).toBe('D:\\Elsewhere')
   })
 })
+
+describe('UI and window preferences', () => {
+  const windowState = { bounds: { x: -1500, y: 40, width: 1280, height: 820 }, maximized: true }
+
+  it('keeps desktop notifications opt-in and clears a saved opt-in with an explicit false', async () => {
+    const filePath = temporarySettingsPath()
+    expect(readAppSettings(filePath)).not.toHaveProperty('desktopNotifications')
+    await writeAppSettings(filePath, settings({ desktopNotifications: true, windowState }))
+    expect(readAppSettings(filePath).desktopNotifications).toBe(true)
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath).desktopNotifications).toBe(true)
+    await updateAppSettings(filePath, { version: 2, desktopNotifications: false })
+    expect(readAppSettings(filePath)).not.toHaveProperty('desktopNotifications')
+    expect(readAppSettings(filePath).windowState).toEqual(windowState)
+  })
+
+  it('rejects malformed persisted notification preferences without discarding other settings', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings({ uiSkin: 'mist' }), desktopNotifications: 'enabled' }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'mist' }))
+  })
+
+  it('round-trips appearance, relative scale, closing preference and normal window bounds', async () => {
+    const filePath = temporarySettingsPath()
+    const next = settings({
+      uiSkin: 'mist', reducedMotion: true, uiScale: '110', closeBehavior: 'tray', windowState,
+    })
+    await writeAppSettings(filePath, next)
+    expect(readAppSettings(filePath)).toEqual(next)
+  })
+
+  it('keeps old v2 records valid without pinning new defaults', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings())
+    const result = readAppSettings(filePath)
+    expect(result).not.toHaveProperty('uiSkin')
+    expect(result).not.toHaveProperty('uiScale')
+    expect(result).not.toHaveProperty('closeBehavior')
+    expect(result).not.toHaveProperty('windowState')
+  })
+
+  it('drops malformed optional UI fields without losing workspace or legacy preferences', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      ...settings({ workspace: 'D:\\Keep', officialProviders: ['claude'] }),
+      uiSkin: 'unknown-skin', reducedMotion: 'true', uiScale: 110, closeBehavior: 'hide',
+      windowState: { bounds: { x: 0, y: 0, width: -1, height: 820 }, maximized: true },
+    }), 'utf8')
+    expect(readAppSettings(filePath)).toEqual(settings({ workspace: 'D:\\Keep', officialProviders: ['claude'] }))
+  })
+
+  it('preserves preferences during unrelated writes and clears them only through explicit reset markers', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({
+      uiSkin: 'aurora', reducedMotion: true, uiScale: '100', closeBehavior: 'quit', windowState,
+    }))
+    await updateAppSettings(filePath, { version: 2, theme: 'light' })
+    expect(readAppSettings(filePath)).toMatchObject({ uiSkin: 'aurora', reducedMotion: true, uiScale: '100', closeBehavior: 'quit', windowState })
+
+    const reset = await updateAppSettings(filePath, {
+      version: 2, uiSkin: 'auto', reducedMotion: false, uiScale: 'auto', closeBehavior: 'ask', windowState: null,
+    })
+    expect(reset).toEqual(settings({ theme: 'light' }))
+    expect(readAppSettings(filePath)).toEqual(reset)
+  })
+
+  it('serializes window movement and appearance changes without reverting either writer', async () => {
+    const filePath = temporarySettingsPath()
+    await writeAppSettings(filePath, settings({ uiSkin: 'dawn' }))
+    await Promise.all([
+      updateAppSettings(filePath, { version: 2, windowState }),
+      updateAppSettings(filePath, { version: 2, uiSkin: 'obsidian', reducedMotion: true }),
+      updateAppSettings(filePath, { version: 2, uiScale: '90' }),
+    ])
+    expect(readAppSettings(filePath)).toEqual(settings({ uiSkin: 'obsidian', reducedMotion: true, uiScale: '90', windowState }))
+  })
+
+  it('retains confirmed preferences and the valid backup if an appearance update cannot be replaced', async () => {
+    const filePath = temporarySettingsPath()
+    const previous = settings({ uiSkin: 'mist', windowState })
+    await writeAppSettings(filePath, previous)
+    await expect(updateAppSettings(filePath, { version: 2, uiSkin: 'aurora' }, {
+      beforeReplace: () => { throw new Error('appearance write failed') },
+    })).rejects.toThrow('appearance write failed')
+    expect(readAppSettings(filePath)).toEqual(previous)
+    expect(readAppSettings(`${filePath}.bak`)).toEqual(previous)
+  })
+})

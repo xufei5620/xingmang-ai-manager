@@ -67,14 +67,14 @@ describe('computeNextSteps', () => {
     expect(summary.visible).toBe(true)
   })
 
-  it('已配置但只装了一个: first CLI installed and configured, but only one tool total — still visible', () => {
+  it('hides after the first configured tool without requiring a second tool', () => {
     const snapshot = buildSnapshot(['codex'])
     const config = buildConfig(['codex'])
     const summary = computeNextSteps(snapshot, config, noNudge)
     expect(summary.steps[0]).toEqual({ id: 'install-first-cli', done: true })
     expect(summary.steps[1]).toEqual({ id: 'configure-first-cli', done: true })
     expect(summary.steps[3]).toEqual({ id: 'install-second-tool', done: false })
-    expect(summary.visible).toBe(true)
+    expect(summary.visible).toBe(false)
   })
 
   it('disappears once every derivable milestone is met, regardless of nudge state', () => {
@@ -98,8 +98,7 @@ describe('computeNextSteps', () => {
     const summary = computeNextSteps(buildSnapshot(), null, { triedLaunch: true, exploredMcp: false })
     expect(summary.steps[2]).toEqual({ id: 'try-launch', done: true })
     expect(summary.steps[4]).toEqual({ id: 'explore-mcp', done: false })
-    // Nudge completion alone must never hide the card — only the three
-    // derivable milestones (installed / configured / second tool) do.
+    // Nudge completion alone must never hide missing tool preparation.
     expect(summary.visible).toBe(true)
   })
 
@@ -115,6 +114,32 @@ describe('computeNextSteps', () => {
     const summary = computeNextSteps(snapshot, { workspace: '', providers }, noNudge)
     expect(summary.steps[1]).toEqual({ id: 'configure-first-cli', done: false })
   })
+
+  it('accepts a configured desktop app without requiring a CLI or Node runtime', () => {
+    const summary = computeNextSteps(buildSnapshot([], true), buildConfig(['codex']), noNudge)
+    expect(summary.steps[0].done).toBe(true)
+    expect(summary.steps[1].done).toBe(true)
+    expect(summary.visible).toBe(false)
+  })
+
+  it('keeps the official ChatGPT account ready without asking for a relay key', () => {
+    const config = buildConfig()
+    config.providers.codex = buildProviderConfig({ exists: true, codexAuthMode: 'chatgpt' })
+    expect(computeNextSteps(buildSnapshot([], true), config, noNudge).visible).toBe(false)
+    expect(resolveLaunchableProvider(buildSnapshot(['codex']), config)).toBe('codex')
+  })
+
+  it('does not count configuration belonging only to an uninstalled tool', () => {
+    const summary = computeNextSteps(buildSnapshot(['claude']), buildConfig(['codex']), noNudge)
+    expect(summary.steps[1].done).toBe(false)
+    expect(summary.visible).toBe(true)
+  })
+
+  it('does not treat Grok without an API key as an official account', () => {
+    const config = buildConfig()
+    config.providers.grok = buildProviderConfig({ exists: true })
+    expect(computeNextSteps(buildSnapshot(['grok']), config, noNudge).steps[1].done).toBe(false)
+  })
 })
 
 describe('resolveLaunchableProvider', () => {
@@ -128,10 +153,10 @@ describe('resolveLaunchableProvider', () => {
     expect(resolveLaunchableProvider(snapshot, config)).toBeNull()
   })
 
-  it('prefers codex first when multiple providers qualify, matching the CLI grid order', () => {
+  it('prefers Claude first when multiple providers qualify, matching the prototype grid order', () => {
     const snapshot = buildSnapshot(['codex', 'claude'])
     const config = buildConfig(['codex', 'claude'])
-    expect(resolveLaunchableProvider(snapshot, config)).toBe('codex')
+    expect(resolveLaunchableProvider(snapshot, config)).toBe('claude')
   })
 
   it('falls through to the next qualifying provider in display order when codex does not qualify', () => {

@@ -1,0 +1,35 @@
+.account-switcher-backdrop { position: fixed; inset: 0; z-index: 120; display: grid; place-items: center; padding: 20px; background: var(--overlay); }
+.account-switcher { display: flex; flex-direction: column; width: min(560px, 100%); max-height: calc(100dvh - 40px); min-width: 0; border: 1px solid var(--line-2); border-radius: 8px; background: var(--panel-solid); color: var(--text); box-shadow: var(--shadow); }
+.account-switcher-header { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex: 0 0 auto; padding: 20px 24px 16px; border-bottom: 1px solid var(--line); }
+.account-switcher-header > div { min-width: 0; }
+.account-switcher-header h2 { margin: 0; font-size: 18px; line-height: 1.4; }
+.account-switcher-header h2:focus { outline: none; }
+.account-switcher-header p { margin: 4px 0 0; color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+.account-switcher-body { min-height: 0; overflow: auto; padding: 16px 24px; }
+.account-switcher-list-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.account-switcher h3 { margin: 0; font-size: 14px; }
+.account-switcher-list { margin: 0; padding: 0; list-style: none; }
+.account-switcher-row { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 14px 0; border-bottom: 1px solid var(--line); }
+.account-switcher-identity { flex: 1; min-width: 0; }
+.account-switcher-identity strong { display: block; font-size: 14px; overflow-wrap: anywhere; }
+.account-switcher-identity > span { display: block; margin-top: 4px; color: var(--text-2); font-size: 12px; overflow-wrap: anywhere; }
+.account-switcher-row-actions { display: flex; align-items: center; justify-content: flex-end; gap: 6px; flex: 0 0 auto; }
+.account-switcher-sync { padding-top: 20px; }
+.account-switcher-sync > p { margin: 6px 0 16px; color: var(--text-2); font-size: 12px; line-height: 1.6; }
+.account-switcher-sync-list { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.account-switcher-sync-list .ui-field-hint { font-size: 12px; }
+.account-switcher-body > .ui-banner, .account-switcher-body > div[tabindex="-1"] { margin-top: 16px; }
+.account-switcher-body > div[tabindex="-1"]:focus { outline: 2px solid var(--bad); outline-offset: 3px; }
+.account-switcher-footer { display: flex; align-items: center; justify-content: space-between; gap: 16px; flex: 0 0 auto; padding: 16px 24px 20px; border-top: 1px solid var(--line); }
+.account-switcher-removal-identity { display: flex; align-items: center; gap: 12px; margin-bottom: 20px; }
+.account-switcher-removal-identity > div { min-width: 0; }
+.account-switcher-removal-identity strong, .account-switcher-removal-identity span { display: block; overflow-wrap: anywhere; }
+.account-switcher-removal-identity > div > span { color: var(--text-2); margin-top: 6px; font-size: 12px; }
+@media (max-width: 520px) {
+  .account-switcher-backdrop { padding: 12px; }
+  .account-switcher { max-height: calc(100dvh - 24px); }
+  .account-switcher-header, .account-switcher-body, .account-switcher-footer { padding-left: 16px; padding-right: 16px; }
+  .account-switcher-sync-list { grid-template-columns: minmax(0, 1fr); }
+  .account-switcher-row { flex-wrap: wrap; }
+  .account-switcher-row-actions { margin-left: auto; }
+}

@@ -59,8 +59,8 @@ try {
     return {
       bounds,
       expected: {
-        width: Math.min(1590, workArea.width),
-        height: Math.min(875, workArea.height),
+        width: workArea.width < 1280 || workArea.height < 720 ? workArea.width : Math.max(960, Math.min(1440, Math.round(workArea.width * 0.8))),
+        height: workArea.width < 1280 || workArea.height < 720 ? workArea.height : Math.max(560, Math.min(900, Math.round(workArea.height * 0.85))),
       },
     }
   })
@@ -91,7 +91,13 @@ try {
     && await loginDialog.getByRole('textbox', { name: '密码', exact: true }).isVisible()
   await loginDialog.getByTitle('关闭').click()
 
-  await page.screenshot({ path: path.join(artifactDir, 'welcome-ci.png') })
+  // Chromium's CSS viewport screenshot can crop an Electron window after
+  // setZoomFactor. Capture the native content area for the actual layout.
+  const windowScreenshot = await application.evaluate(async ({ BrowserWindow }) => {
+    const window = BrowserWindow.getAllWindows()[0]
+    return (await window.capturePage()).toPNG().toString('base64')
+  })
+  await fs.writeFile(path.join(artifactDir, 'welcome-ci.png'), Buffer.from(windowScreenshot, 'base64'))
   await fs.writeFile(
     path.join(artifactDir, 'welcome-ci-smoke-result.json'),
     `${JSON.stringify(result, null, 2)}\n`,

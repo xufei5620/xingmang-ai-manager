@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   AlertCircle,
+  ArrowRight,
   CheckCircle2,
   Download,
   HeartPulse,
@@ -10,6 +11,7 @@ import {
   TriangleAlert,
 } from 'lucide-react'
 import { errorMessage } from '../error-message'
+import './maintenance-v3.css'
 
 export type HealthCheckState = 'pass' | 'warn' | 'fail' | 'error'
 
@@ -38,6 +40,7 @@ export interface HealthPageApi {
 export interface HealthPageProps {
   api: HealthPageApi
   initialReport?: HealthReport | null
+  onResolve?: (item: HealthCheckItem) => void
 }
 
 const stateLabels: Record<HealthCheckState, string> = {
@@ -54,51 +57,61 @@ function StateIcon({ state }: { state: HealthCheckState }) {
   return <AlertCircle size={17} />
 }
 
-export function HealthPage({ api, initialReport = null }: HealthPageProps) {
+export function HealthPage({ api, initialReport = null, onResolve }: HealthPageProps) {
   const [report, setReport] = useState<HealthReport | null>(initialReport)
   const [running, setRunning] = useState(false)
   const [exporting, setExporting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const localReport = useRef<HealthReport | null>(initialReport)
+  const initialReportRef = useRef<HealthReport | null>(initialReport)
+  const pendingRef = useRef(false)
+  const mounted = useRef(true)
+
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false } }, [])
 
   useEffect(() => {
-    if (running || initialReport === localReport.current) return
-    localReport.current = initialReport
+    if (initialReport === initialReportRef.current) return
+    initialReportRef.current = initialReport
+    if (pendingRef.current) return
     setReport(initialReport)
-  }, [initialReport, running])
+  }, [initialReport])
 
   const run = async () => {
+    if (pendingRef.current) return
+    pendingRef.current = true
     setRunning(true)
     setError(null)
     try {
       const next = await api.run()
-      localReport.current = next
-      setReport(next)
+      if (mounted.current) setReport(next)
     } catch (cause) {
-      setError(errorMessage(cause))
+      if (mounted.current) setError(errorMessage(cause))
     } finally {
-      setRunning(false)
+      pendingRef.current = false
+      if (mounted.current) setRunning(false)
     }
   }
 
   const exportLatest = async () => {
+    if (pendingRef.current || !report) return
+    pendingRef.current = true
     setExporting(true)
     setError(null)
     try {
       await api.exportLatest()
     } catch (cause) {
-      setError(errorMessage(cause))
+      if (mounted.current) setError(errorMessage(cause))
     } finally {
-      setExporting(false)
+      pendingRef.current = false
+      if (mounted.current) setExporting(false)
     }
   }
 
   return (
-    <div className="page workspace-page operations-page" data-page-id="health">
+    <div className="page workspace-page operations-page maintenance-v3 health-v3" data-page-id="health">
       <header className="page-header workspace-page-header">
         <div>
           <h1>检查</h1>
-          <p className="page-lead">看本机环境正不正常。</p>
+          <p className="page-lead">环境 · 配置 · 网络</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="检查工具栏">
           <button className="secondary-button" type="button" onClick={exportLatest} disabled={!report || running || exporting}>
@@ -140,7 +153,7 @@ export function HealthPage({ api, initialReport = null }: HealthPageProps) {
             <div className="section-heading">
               <div>
                 <h2 id="health-results-title">逐项结果</h2>
-                <span>一项出错不会挡住其他项</span>
+                <span>{report.items.length} 项检查</span>
               </div>
             </div>
             <div className="operations-list" role="list">
@@ -153,25 +166,31 @@ export function HealthPage({ api, initialReport = null }: HealthPageProps) {
                       <span className={`operation-state is-${item.state}`}>{stateLabels[item.state]}</span>
                     </div>
                     <p>{item.summary}</p>
-                    {item.details && Object.keys(item.details).length > 0 && (
+                    {item.details && Object.keys(item.details).length > 0 && <details className="health-detail-disclosure"><summary>检查详情</summary>
                       <dl className="operation-details">
                         {Object.entries(item.details).map(([name, value]) => (
                           <div key={name}><dt>{name}</dt><dd>{String(value ?? '-')}</dd></div>
                         ))}
                       </dl>
-                    )}
+                    </details>}
                   </div>
-                  <span className="operation-duration">{item.durationMs}ms</span>
+                  <div className="health-row-actions"><span className="operation-duration">{item.durationMs}ms</span>
+                    {item.state !== 'pass' && onResolve && <button type="button" className="secondary-button" disabled={running || exporting} onClick={() => {
+                      if (pendingRef.current) return
+                      try { onResolve(item) } catch (cause) { setError(errorMessage(cause)) }
+                    }}>去处理<ArrowRight size={14} aria-hidden="true" /></button>}
+                  </div>
                 </article>
               ))}
             </div>
           </section>
         </>
+      ) : running ? (
+        <section className="workspace-empty" role="status"><LoaderCircle className="spin" size={24} aria-hidden="true" /><h2>正在检查本机状态</h2></section>
       ) : (
         <section className="workspace-empty" aria-labelledby="health-empty-title">
           <div className="workspace-empty-icon"><HeartPulse size={24} /></div>
           <h2 id="health-empty-title">还没检查过</h2>
-          <p>点「开始检查」，看环境、配置和网络正不正常</p>
         </section>
       )}
     </div>

@@ -14,11 +14,13 @@ import {
   MessageSquareText,
   RefreshCw,
   Search,
-  X,
   Zap,
 } from 'lucide-react'
 import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { DialogBackdrop } from '../components/Dialog'
+import { Banner, Button, Drawer } from '../components/ui'
+import { useNavigationState } from '../components/shell/NavigationState'
+import '../styles/management-v3.css'
 import { ProviderTabs, managementProviderLabels } from '../components/ProviderTabs'
 import { errorMessage } from '../error-message'
 import { managementProviderIds } from '../provider-registry'
@@ -74,21 +76,39 @@ function roleLabel(role: string, provider: MultiProviderSessionProvider): string
 }
 
 export function SessionsPage({ api, notify }: SessionsPageProps) {
-  const [provider, setProvider] = useState<MultiProviderSessionProvider>('codex')
+  const [provider, setProvider] = useNavigationState<MultiProviderSessionProvider>('sessions.provider', 'codex')
   const [result, setResult] = useState<MultiProviderSessionPage | null>(null)
   const [overview, setOverview] = useState<MultiProviderSessionPage | null>(null)
-  const [searchInput, setSearchInput] = useState('')
-  const [search, setSearch] = useState('')
-  const [page, setPage] = useState(1)
+  const [searchInput, setSearchInput] = useNavigationState('sessions.searchInput', '')
+  const [search, setSearch] = useNavigationState('sessions.search', '')
+  const [page, setPage] = useNavigationState('sessions.page', 1)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [busySessionId, setBusySessionId] = useState('')
   const [detail, setDetail] = useState<MultiProviderSessionDetail | null>(null)
+  const [detailId, setDetailId] = useState('')
+  const [detailError, setDetailError] = useState('')
+  const [mutationError, setMutationError] = useState('')
+  const [exportNotice, setExportNotice] = useState('')
   const [detailLoading, setDetailLoading] = useState(false)
   const [pendingArchive, setPendingArchive] = useState<MultiProviderSessionSummary | null>(null)
   const loadRequestRef = useRef(0)
   const overviewRequestRef = useRef(0)
   const detailRequestRef = useRef(0)
+  const detailTrigger = useRef<HTMLElement | null>(null)
+
+  const closeDetail = () => {
+    detailRequestRef.current += 1
+    setDetailId('')
+    setDetail(null)
+    setDetailLoading(false)
+    setDetailError('')
+    setMutationError('')
+    setExportNotice('')
+    setPendingArchive(null)
+  }
+
+  useEffect(() => () => { detailRequestRef.current += 1 }, [])
 
   const load = useCallback(async () => {
     const requestId = ++loadRequestRef.current
@@ -132,6 +152,7 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
     setPage(1)
     setResult(null)
     setDetail(null)
+    setDetailId('')
     setDetailLoading(false)
   }
 
@@ -151,16 +172,19 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
   }
 
   const openDetail = async (sessionId: string) => {
+    if (!detailId && document.activeElement instanceof HTMLElement) detailTrigger.current = document.activeElement
     const requestId = ++detailRequestRef.current
+    setDetailId(sessionId)
+    setDetail(null)
     setDetailLoading(true)
-    setError('')
+    setDetailError('')
     try {
       const next = await api.getProviderSessionDetail(sessionId)
       if (requestId === detailRequestRef.current) setDetail(next)
     } catch (detailError) {
       if (requestId !== detailRequestRef.current) return
       const message = errorMessage(detailError)
-      setError(message)
+      setDetailError(message)
       notify?.({ type: 'error', message })
     } finally {
       if (requestId === detailRequestRef.current) setDetailLoading(false)
@@ -169,14 +193,20 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
 
   const exportSession = async (sessionId: string) => {
     setBusySessionId(sessionId)
+    setMutationError('')
+    setExportNotice('')
     try {
       const exported = await api.exportProviderSession(sessionId)
       if (exported) {
         const incomplete = exported.truncated ? '；源记录不完整，已在文件中标记' : ''
-        notify?.({ type: 'success', message: `已导出 ${exported.messages} 条消息：${exported.outputPath}${incomplete}` })
+        const message = `已导出 ${exported.messages} 条消息：${exported.outputPath}${incomplete}`
+        setExportNotice(message)
+        notify?.({ type: 'success', message })
       }
     } catch (exportError) {
-      notify?.({ type: 'error', message: errorMessage(exportError) })
+      const message = errorMessage(exportError)
+      setMutationError(message)
+      notify?.({ type: 'error', message })
     } finally {
       setBusySessionId('')
     }
@@ -185,17 +215,20 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
   const performArchiveStateChange = async (session: MultiProviderSessionSummary) => {
     const action = session.archived ? '恢复' : '归档'
     setBusySessionId(session.id)
+    setMutationError('')
     try {
       if (session.archived) await api.restoreSession(session.nativeId)
       else await api.archiveSession(session.nativeId)
       notify?.({ type: 'success', message: `会话已${action}` })
-      setDetail(null)
+      closeDetail()
+      setPendingArchive(null)
       await load()
     } catch (mutationError) {
-      notify?.({ type: 'error', message: errorMessage(mutationError) })
+      const message = errorMessage(mutationError)
+      setMutationError(message)
+      notify?.({ type: 'error', message })
     } finally {
       setBusySessionId('')
-      setPendingArchive(null)
     }
   }
 
@@ -209,16 +242,14 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
       return
     }
     if (!session.archived) {
+      setMutationError('')
       setPendingArchive(session)
       return
     }
     await performArchiveStateChange(session)
   }
 
-  const stats = useMemo(() => overview?.stats ?? result?.stats ?? {
-    total: 0,
-    byProvider: { codex: 0, claude: 0, gemini: 0, grok: 0 },
-  }, [overview, result])
+  const stats = useMemo(() => overview?.stats ?? result?.stats, [overview, result])
   const capabilities = useMemo(() => {
     if (!overview) return result?.capabilities
     if (!result) return overview.capabilities
@@ -239,11 +270,10 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
   }
 
   return (
-    <div className="page workspace-page sessions-page" data-page-id="sessions">
+    <div className="page workspace-page sessions-page management-v3" data-page-id="sessions">
       <header className="page-header workspace-page-header sessions-page-header">
         <div>
           <h1>记录</h1>
-          <p className="page-lead">查看以前的对话。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="会话工具栏">
           <ProviderTabs value={provider} onChange={selectProvider} disabled={loading} unavailable={unavailableProviders} label="选择会话来源" />
@@ -254,11 +284,11 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
       </header>
 
       <section className="session-stats" aria-label="会话统计">
-        <div className="session-stat"><MessageSquareText size={17} /><span><strong>{compactNumber(stats.total)}</strong><small>全部会话</small></span></div>
-        <div className="session-stat"><Clock3 size={17} /><span><strong>{compactNumber(stats.byProvider.codex)}</strong><small>Codex</small></span></div>
-        <div className="session-stat"><Archive size={17} /><span><strong>{compactNumber(stats.byProvider.claude)}</strong><small>Claude</small></span></div>
-        <div className="session-stat"><FolderKanban size={17} /><span><strong>{compactNumber(stats.byProvider.gemini)}</strong><small>Gemini</small></span></div>
-        <div className="session-stat"><Zap size={17} /><span><strong>{compactNumber(stats.byProvider.grok)}</strong><small>Grok</small></span></div>
+        <div className="session-stat"><MessageSquareText size={17} /><span><strong>{stats ? compactNumber(stats.total) : '—'}</strong><small>全部会话</small></span></div>
+        <div className="session-stat"><Clock3 size={17} /><span><strong>{stats ? compactNumber(stats.byProvider.codex) : '—'}</strong><small>Codex</small></span></div>
+        <div className="session-stat"><Archive size={17} /><span><strong>{stats ? compactNumber(stats.byProvider.claude) : '—'}</strong><small>Claude</small></span></div>
+        <div className="session-stat"><FolderKanban size={17} /><span><strong>{stats ? compactNumber(stats.byProvider.gemini) : '—'}</strong><small>Gemini</small></span></div>
+        <div className="session-stat"><Zap size={17} /><span><strong>{stats ? compactNumber(stats.byProvider.grok) : '—'}</strong><small>Grok</small></span></div>
       </section>
 
       <section className="sessions-toolbar" aria-label="会话筛选">
@@ -374,24 +404,29 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
         <section className="workspace-empty sessions-empty">
           <div className="workspace-empty-icon"><Inbox size={24} /></div>
           <h2>{capability && (!capability.available || !capability.readable) ? `读不了 ${managementProviderLabels[provider]} 的记录` : '没有找到对话'}</h2>
-          <p>{capability && (!capability.available || !capability.readable) ? capability.reason : '换个词再搜'}</p>
+          <p>{capability && (!capability.available || !capability.readable) ? capability.reason : search ? '没有匹配当前条件的会话。' : '使用该工具开始对话后，记录会显示在这里。'}</p>
+          {search && <Button onClick={() => { setSearchInput(''); setSearch(''); setPage(1) }}>清除筛选</Button>}
         </section>
       ) : null}
 
-      {detailLoading && (
-        <div className="session-detail-loading" role="status"><LoaderCircle size={18} className="spin" />正在读取会话详情</div>
-      )}
-
-      {detail && (
-        <DialogBackdrop className="config-modal-backdrop session-detail-backdrop" onDismiss={() => setDetail(null)}>
-          <section className="config-dialog session-detail-dialog" role="dialog" aria-modal="true" aria-labelledby="session-detail-title">
-            <header className="session-detail-header">
-              <div>
-                <h2 id="session-detail-title">{detail.session.title}</h2>
-                <code>{detail.session.nativeId}</code>
-              </div>
-              <button className="icon-button" type="button" title="关闭" aria-label="关闭会话详情" onClick={() => setDetail(null)}><X size={18} /></button>
-            </header>
+      <Drawer open={Boolean(detailId)} title={detail?.session.title ?? result?.items.find((session) => session.id === detailId)?.title ?? '会话详情'}
+        subtitle={detail?.session.nativeId} closeLabel="关闭会话详情" onClose={closeDetail} busy={actionBusy} testId="session-detail-drawer" returnFocus={detailTrigger}
+        footer={pendingArchive ? <>
+          <Button disabled={actionBusy} onClick={() => setPendingArchive(null)}>取消归档</Button>
+          <Button variant="danger" icon={Archive} loading={actionBusy} onClick={() => void performArchiveStateChange(pendingArchive)}>确认归档</Button>
+        </> : detail && <>
+          <Button icon={Download} disabled={actionBusy || !detailCapability?.operations.exportMarkdown} onClick={() => void exportSession(detail.session.id)}>导出 Markdown</Button>
+          {detail.session.provider === 'codex' && !detail.session.readonly && detail.session.detailAvailable
+            && (detail.session.archived ? detailCapability?.operations.restore : detailCapability?.operations.archive)
+            ? <Button icon={detail.session.archived ? ArchiveRestore : Archive} disabled={actionBusy} onClick={() => void changeArchiveState(detail.session)}>{detail.session.archived ? '恢复会话' : '归档会话'}</Button>
+            : <Button icon={LockKeyhole} disabled title={detailCapability?.reason}>只读会话</Button>}
+        </>}>
+          {detailLoading && <div className="operation-loading" role="status"><LoaderCircle size={18} className="spin" />正在读取会话详情</div>}
+          {detailError && <Banner title="会话详情读取失败" tone="bad" actions={<Button size="sm" onClick={() => void openDetail(detailId)}>重试</Button>}>{detailError}</Banner>}
+          {mutationError && !pendingArchive && <Banner title="操作未完成" tone="bad" live="assertive">{mutationError}</Banner>}
+          {exportNotice && <Banner title="导出完成" tone="ok" live="polite">{exportNotice}</Banner>}
+          {pendingArchive && <Banner title={`归档“${pendingArchive.title}”？`} tone="warn">操作前会备份本机会话数据库，归档后仍可恢复。{mutationError && <p role="alert">{mutationError}</p>}</Banner>}
+          {detail && <>
             <div className="session-detail-meta">
               <span>{detail.messageStats.total} 条消息</span>
               <span>{managementProviderLabels[detail.session.provider]}</span>
@@ -414,29 +449,10 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
                 </article>
               ))}
             </div>
-            <footer className="session-detail-actions">
-              <button className="secondary-button" type="button" disabled={actionBusy || !detailCapability?.operations.exportMarkdown} onClick={() => void exportSession(detail.session.id)}>
-                {busySessionId === detail.session.id ? <LoaderCircle size={16} className="spin" /> : <Download size={16} />}导出 Markdown
-              </button>
-              {detail.session.provider === 'codex'
-                && !detail.session.readonly
-                && detail.session.detailAvailable
-                && (detail.session.archived ? detailCapability?.operations.restore : detailCapability?.operations.archive) ? (
-                  <button className="secondary-button" type="button" disabled={actionBusy} onClick={() => void changeArchiveState(detail.session)}>
-                    {detail.session.archived ? <ArchiveRestore size={16} /> : <Archive size={16} />}
-                    {detail.session.archived ? '恢复会话' : '归档会话'}
-                  </button>
-                ) : (
-                  <button className="secondary-button" type="button" disabled title={detailCapability?.reason}>
-                    <LockKeyhole size={16} />只读会话
-                  </button>
-                )}
-            </footer>
-          </section>
-        </DialogBackdrop>
-      )}
+          </>}
+      </Drawer>
 
-      {pendingArchive && (
+      {pendingArchive && !detailId && (
         <DialogBackdrop
           className="config-modal-backdrop extension-backdrop"
           onDismiss={actionBusy ? () => undefined : () => setPendingArchive(null)}
@@ -445,6 +461,7 @@ export function SessionsPage({ api, notify }: SessionsPageProps) {
             <span className="extension-confirm-icon danger"><Archive size={20} /></span>
             <h2 id="archive-session-title">归档“{pendingArchive.title}”？</h2>
             <p>操作前会自动备份本机会话数据库，之后仍可在已归档会话中恢复。</p>
+            {mutationError && <div className="operation-error" role="alert">{mutationError}</div>}
             <div className="extension-dialog-actions">
               <button className="secondary-button" type="button" onClick={() => setPendingArchive(null)} disabled={actionBusy}>取消</button>
               <button className="danger-button" type="button" onClick={() => void performArchiveStateChange(pendingArchive)} disabled={actionBusy}>

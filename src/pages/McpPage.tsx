@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   Cable,
+  Eye,
   Globe2,
   KeyRound,
   LoaderCircle,
@@ -24,6 +25,10 @@ import {
 import { createLatestRequestTracker } from '../latest-request'
 import { managementProviderIds } from '../provider-registry'
 import type { ExtensionSnapshot, ProviderId } from '../types'
+import { Button } from '../components/ui'
+import { useNavigationState } from '../components/shell/NavigationState'
+import { ResourceDetails, type ResourceDetailsValue } from './ResourceDetails'
+import '../styles/management-v3.css'
 
 type ProviderExtensionItem = ExtensionSnapshot['items'][number]
 
@@ -299,11 +304,12 @@ export function McpPage({
   onLogin,
   onLogout,
 }: McpPageProps) {
-  const [provider, setProvider] = useState<ProviderId>('codex')
+  const [provider, setProvider] = useNavigationState<ProviderId>('mcp.provider', 'codex')
   const [providerSnapshots, setProviderSnapshots] = useState<Partial<Record<ProviderId, ExtensionSnapshot>>>({})
   const [providerErrors, setProviderErrors] = useState<Partial<Record<ProviderId, string>>>({})
   const [loadingProviders, setLoadingProviders] = useState<Partial<Record<ProviderId, boolean>>>({})
-  const [query, setQuery] = useState('')
+  const [query, setQuery] = useNavigationState('mcp.query', '')
+  const [details, setDetails] = useState<ResourceDetailsValue | null>(null)
   const [addOpen, setAddOpen] = useState(false)
   const [removeTarget, setRemoveTarget] = useState<{ name: string; item?: ProviderExtensionItem } | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
@@ -424,11 +430,10 @@ export function McpPage({
     : () => loadProvider(provider)
 
   return (
-    <div className="page workspace-page management-page" data-page-id="mcp">
+    <div className="page workspace-page management-page management-v3" data-page-id="mcp">
       <header className="page-header workspace-page-header">
         <div>
           <h1>外接工具</h1>
-          <p className="page-lead">让 AI 连接数据库、浏览器等。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="MCP 工具栏">
           <ProviderTabs
@@ -458,7 +463,7 @@ export function McpPage({
         </div>
       </section>
 
-      {(selectedError || actionError) && <div className="management-error" role="alert">{actionError ?? selectedError}</div>}
+      {(selectedError || actionError) && <div className="management-error" role="alert"><span>{actionError ?? selectedError}</span><Button size="sm" disabled={selectedLoading || busyKey !== null} onClick={() => void perform('refresh', refresh).catch(() => undefined)}>重试</Button></div>}
       {snapshot?.capabilities.mcp.list === false && (
         <div className="management-error" role="status">{snapshot.capabilities.mcp.reason ?? 'MCP 列表不可用'}</div>
       )}
@@ -496,6 +501,11 @@ export function McpPage({
                 </div>
               </div>
               <div className="extension-row-actions">
+                <button className="icon-button compact" type="button" title="查看详情" aria-label={`查看 ${server.name}`} onClick={() => setDetails({ title: server.name, fields: [
+                  ['工具', managementProviderLabels[provider]], ['传输方式', server.transportType], ['启动信息', transportSummary(server)], ['来源', originLabel(server.origin)],
+                  ['状态', server.enabled ? '已启用' : server.disabledReason || '已停用'], ['工作目录', server.cwd ?? '未指定'], ['环境变量名称', [...server.envNames, ...server.inheritedEnvNames].join('、') || '无'],
+                  ['请求头名称', [...server.httpHeaderNames, ...server.inheritedHttpHeaderNames].join('、') || '无'], ['认证状态', server.authStatus],
+                ] })}><Eye size={16} /></button>
                 {server.transportType === 'http' && (
                   <button className="secondary-button square" type="button" title={authReady ? '退出登录' : 'OAuth 登录'} disabled={busyKey !== null}
                     onClick={() => void perform(`auth:${server.name}`, authReady ? () => onLogout(server.name) : () => onLogin(server.name)).catch(() => undefined)}>
@@ -511,7 +521,7 @@ export function McpPage({
             </article>
           )
         }) : (
-          <div className="workspace-empty"><Cable size={24} /><h2>{query ? '没有找到这个连接' : '还没有外接工具'}</h2></div>
+          <div className="workspace-empty"><Cable size={24} /><h2>{selectedError ? '连接列表暂不可用' : query ? '没有找到这个连接' : '还没有外接工具'}</h2>{query && <Button onClick={() => setQuery('')}>清除筛选</Button>}</div>
         ) : filteredProvider.length ? filteredProvider.map((item) => (
           <article className="extension-row" key={item.id}>
             <div className={`extension-row-icon ${item.description.startsWith('http') ? 'http' : 'stdio'}`}>
@@ -531,6 +541,10 @@ export function McpPage({
               </div>
             </div>
             <div className="extension-row-actions">
+              <button className="icon-button compact" type="button" title="查看详情" aria-label={`查看 ${item.name}`} onClick={() => setDetails({ title: item.name, fields: [
+                ['工具', managementProviderLabels[item.provider]], ['启动信息', item.description], ['来源', item.source.locator ?? sourceLabel(item)], ['范围', item.scope ?? '未提供'],
+                ['状态', item.enabled ? '已启用' : '已停用'], ['更新', `${updateLabel(item)}：${item.update.reason}`],
+              ] })}><Eye size={16} /></button>
               {item.update.state === 'update-available' && item.operations.update && (
                 <button className="secondary-button square" type="button" title="更新" disabled={busyKey !== null}
                   onClick={() => void perform(`update:${item.id}`, () => mutate(item, 'update')).catch(() => undefined)}>
@@ -551,10 +565,11 @@ export function McpPage({
             </div>
           </article>
         )) : (
-          <div className="workspace-empty"><Cable size={24} /><h2>{query ? '没有找到这个连接' : '还没有外接工具'}</h2></div>
+          <div className="workspace-empty"><Cable size={24} /><h2>{selectedError ? '连接列表暂不可用' : query ? '没有找到这个连接' : '还没有外接工具'}</h2>{query && <Button onClick={() => setQuery('')}>清除筛选</Button>}</div>
         )}
       </section>
 
+      <ResourceDetails value={details} onClose={() => setDetails(null)} />
       {addOpen && (
         <AddMcpDialog
           provider={provider}

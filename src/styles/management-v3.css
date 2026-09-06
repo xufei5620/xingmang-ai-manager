@@ -1,0 +1,84 @@
+:root[data-theme] .management-v3 { color: var(--text); font-size: var(--font-body); }
+:root[data-theme] .management-v3 .workspace-page-header { align-items: center; gap: 16px; margin-bottom: 20px; }
+:root[data-theme] .management-v3 .management-toolbar { gap: 12px; padding: 0 0 16px; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+:root[data-theme] .management-v3 .management-search,
+:root[data-theme] .management-v3 .sessions-search { height: var(--control-md); min-height: var(--control-md); border: 1px solid var(--line-3); border-radius: var(--radius-input); background: var(--panel-solid); }
+:root[data-theme] .management-v3 .management-search input,
+:root[data-theme] .management-v3 .sessions-search input { font-size: 14px; color: var(--text); background: transparent; }
+:root[data-theme] .management-v3 .management-toolbar > select { height: 36px; max-width: 100%; padding: 0 10px; border: 1px solid var(--line-3); border-radius: 8px; color: var(--text); background: var(--panel-solid); font-size: 14px; }
+:root[data-theme] .management-v3 .management-counts { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .management-v3 .management-error { display: flex; align-items: center; justify-content: space-between; gap: 12px; color: var(--bad); background: var(--bad-soft); border-color: color-mix(in srgb, var(--bad) 30%, transparent); }
+:root[data-theme] .management-v3 .environment-section { padding: 16px 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+:root[data-theme] .management-v3 .section-heading h2 { font-size: 15px; color: var(--text); }
+:root[data-theme] .management-v3 .section-heading span { font-size: 12px; color: var(--text-2); }
+:root[data-theme] .management-v3 .extension-list,
+:root[data-theme] .management-v3 .extension-grid { display: block; margin-top: 16px; padding: 0; border: 0; background: transparent; border-radius: 0; }
+:root[data-theme] .management-v3 .extension-row { min-height: 78px; gap: 12px; padding: 16px 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; }
+:root[data-theme] .management-v3 .extension-row-title { row-gap: 6px; flex-wrap: wrap; }
+:root[data-theme] .management-v3 .extension-row-title strong { font-size: 14px; }
+:root[data-theme] .management-v3 .extension-row-subtitle { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .management-v3 .extension-row-meta { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .management-v3 .extension-row-actions { flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+:root[data-theme] .management-v3 .extension-row-icon { width: 36px; height: 36px; border-radius: 8px; color: var(--accent); background: var(--accent-soft); }
+:root[data-theme] .management-v3 .skill-card,
+:root[data-theme] .management-v3 .plugin-card { display: grid; grid-template-columns: 36px minmax(0, 1fr) auto; align-items: start; column-gap: 12px; row-gap: 5px; min-width: 0; min-height: 0; padding: 16px 0; background: transparent; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; box-shadow: none; }
+:root[data-theme] .management-v3 .skill-card-head,
+:root[data-theme] .management-v3 .plugin-card-head { display: contents; }
+:root[data-theme] .management-v3 .skill-card-head > .extension-row-icon,
+:root[data-theme] .management-v3 .plugin-card-head > .extension-row-icon { grid-column: 1; grid-row: 1 / span 2; }
+:root[data-theme] .management-v3 .skill-card-head > div,
+:root[data-theme] .management-v3 .plugin-card-head > div { grid-column: 2; grid-row: 1; min-width: 0; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+:root[data-theme] .management-v3 .skill-card-head strong,
+:root[data-theme] .management-v3 .plugin-card-head strong { width: auto; min-width: 0; color: var(--text); font-size: 14px; overflow-wrap: anywhere; }
+:root[data-theme] .management-v3 .plugin-card-head small { flex-basis: 100%; color: var(--text-2); font-size: 12px; white-space: normal; overflow-wrap: anywhere; }
+:root[data-theme] .management-v3 .skill-card-head .switch-control,
+:root[data-theme] .management-v3 .plugin-card-head .switch-control { grid-column: 3; grid-row: 1; justify-self: end; }
+:root[data-theme] .management-v3 .skill-description,
+:root[data-theme] .management-v3 .skill-path,
+:root[data-theme] .management-v3 .skill-card > .extension-row-meta,
+:root[data-theme] .management-v3 .plugin-card-meta { grid-column: 2; min-width: 0; margin: 0; padding: 0; color: var(--text-2); font-size: 12px; }
+:root[data-theme] .management-v3 .skill-description { font-size: 13px; line-height: 1.6; min-height: 0; max-height: none; }
+:root[data-theme] .management-v3 .skill-path { font-family: var(--mono); }
+:root[data-theme] .management-v3 .skill-card-footer,
+:root[data-theme] .management-v3 .plugin-card-footer { grid-column: 3; grid-row: 2 / span 3; display: flex; flex-direction: row; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 0; padding: 0; border: 0; background: transparent; }
+:root[data-theme] .management-v3 .extension-detail-action { display: inline-flex; align-items: center; gap: 4px; }
+:root[data-theme] .management-v3 .switch-control { display: grid; place-items: center; width: 44px; height: 36px; }
+:root[data-theme] .management-v3 .switch-control input { inset: 0; z-index: 1; width: 44px; height: 36px; margin: 0; pointer-events: auto; cursor: pointer; }
+:root[data-theme] .management-v3 .switch-control input:disabled { cursor: not-allowed; }
+:root[data-theme] .management-v3 .switch-control > span { width: 38px; height: 22px; padding: 3px; background: var(--panel-2); border: 1px solid var(--line-3); border-radius: 999px; pointer-events: none; }
+:root[data-theme] .management-v3 .switch-control > span::before { width: 14px; height: 14px; flex-shrink: 0; background: var(--text-2); box-shadow: none; }
+:root[data-theme] .management-v3 .switch-control input:checked + span { background: var(--accent); border-color: var(--accent); }
+:root[data-theme] .management-v3 .switch-control input:checked + span::before { background: var(--accent-fg); }
+:root[data-theme] .management-v3 .switch-control input:focus-visible + span { outline-color: var(--accent); }
+:root[data-theme] .management-v3 .extension-state,
+:root[data-theme] .management-v3 .readonly-label { font-size: 12px; }
+:root[data-theme] .management-v3 .extension-badge { min-height: 22px; padding: 2px 7px; font-size: 11.5px; }
+:root[data-theme] .management-v3 .session-stats { margin-bottom: 20px; padding: 16px 0; background: transparent; border-block: 1px solid var(--line); border-inline: 0; border-radius: 0; }
+:root[data-theme] .management-v3 .session-stat { padding: 0 12px; background: transparent; border: 0; border-radius: 0; }
+:root[data-theme] .management-v3 .session-stat small { font-size: 12px; color: var(--text-2); }
+:root[data-theme] .management-v3 .sessions-list { overflow-x: auto; border: 0; border-block: 1px solid var(--line); border-radius: 0; }
+:root[data-theme] .management-v3 .sessions-table-head,
+:root[data-theme] .management-v3 .session-row { min-width: 700px; grid-template-columns: minmax(210px, 1.3fr) minmax(130px, 1fr) 142px 150px; }
+:root[data-theme] .management-v3 .session-row { min-height: 68px; background: transparent; border-radius: 0; }
+:root[data-theme] .management-v3 .session-title-line strong { font-size: 14px; }
+:root[data-theme] .management-v3 .session-model strong { font-size: 13px; }
+:root[data-theme] .management-v3 .session-main code,
+:root[data-theme] .management-v3 .session-model small,
+:root[data-theme] .management-v3 .session-time { color: var(--text-2); font-size: 12px; }
+:root[data-theme] .management-v3 .session-actions,
+:root[data-theme] .management-v3 .sessions-table-head > :last-child { position: sticky; right: 0; padding-left: 8px; background: var(--bg); }
+:root[data-theme] .management-v3 .sessions-pagination { min-width: 700px; }
+:root[data-theme] .management-v3 .operations-list { border: 0; border-radius: 0; }
+:root[data-theme] .management-v3 .backup-row { min-height: 78px; padding: 14px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+:root[data-theme] .management-v3 .backup-row-actions { display: flex; align-items: center; gap: 8px; }
+:root[data-theme] .management-v3 .backup-create .config-actions { padding: 0; margin: 0; border: 0; }
+:root[data-theme] .management-v3 .operation-row-title strong { font-size: 14px; }
+:root[data-theme] .management-v3 .operation-meta,
+:root[data-theme] .management-v3 .operation-row-copy p { font-size: 12px; color: var(--text-2); }
+
+@media (max-width: 900px) {
+  :root[data-theme] .management-v3 .workspace-page-header { align-items: flex-start; flex-wrap: wrap; }
+  :root[data-theme] .management-v3 .page-toolbar { flex-wrap: wrap; }
+  :root[data-theme] .management-v3 .session-stats { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  :root[data-theme] .management-v3 .backup-create .section-heading { align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+}

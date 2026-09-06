@@ -109,6 +109,48 @@ describe('RuntimeLogStore', () => {
     expect((await store.snapshot()).entries).toEqual([])
   })
 
+  it('re-sanitizes legacy on-disk entries before either UI snapshots or feedback exports', async () => {
+    const store = createStore()
+    fs.writeFileSync(store.filePath, `${JSON.stringify({
+      id: 'legacy-entry', timestamp: '2026-09-07T00:00:00.000Z', level: 'error', source: 'legacy', event: 'old-client',
+      message: 'Authorization: Bearer legacy-private-value',
+      detail: { apiKey: 'legacy-private-key', nested: { refresh_token: 'legacy-cookie' } },
+      legacyPassword: 'legacy-extra-field-secret',
+    })}\n`, 'utf8')
+    const serialized = JSON.stringify(await store.snapshot())
+    const report = await store.captureFeedbackReport()
+    for (const secret of ['legacy-private-value', 'legacy-private-key', 'legacy-cookie', 'legacy-extra-field-secret']) {
+      expect(serialized).not.toContain(secret)
+      expect(report.text).not.toContain(secret)
+    }
+    expect(report.entries).toBe(1)
+    expect(report.text).toContain('[REDACTED]')
+  })
+
+  it('bounds nested or self-referential Error metadata instead of overflowing the stack', async () => {
+    const store = createStore()
+    const error = Object.assign(new Error('retry failed'), { credential: 'private-error-credential' }) as Error & { self?: Error }
+    error.self = error
+    expect(() => store.exception('main', 'cyclic-error', error)).not.toThrow()
+    const report = await store.captureFeedbackReport()
+    expect(report.text).toContain('retry failed')
+    expect(report.text).toContain('[TRUNCATED]')
+    expect(report.text).not.toContain('private-error-credential')
+  })
+
+  it('captures report text and its count together, independently of later appends or clears', async () => {
+    const store = createStore()
+    store.log('info', 'fixture', 'first', 'first fixed entry')
+    const capture = await store.captureFeedbackReport()
+    store.log('info', 'fixture', 'second', 'later appended entry')
+    await store.clear()
+    expect(capture.entries).toBe(1)
+    expect(capture.text).toContain('日志条数: 1')
+    expect(capture.text).toContain('first fixed entry')
+    expect(capture.text).not.toContain('later appended entry')
+    expect((await store.snapshot()).total).toBe(0)
+  })
+
   it('keeps structured command metadata needed to diagnose process failures', async () => {
     const store = createStore()
     const error = Object.assign(new Error('Failed to start command: npm'), {

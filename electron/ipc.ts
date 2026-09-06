@@ -7,7 +7,12 @@ import {
   type OpenDialogOptions,
   type WebContents,
 } from 'electron'
+import { randomUUID } from 'node:crypto'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
+import { parseWindowState } from './window-preferences'
+import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
+import type { ExternalDeepLink } from './external-deep-links'
+import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
 import { cliCatalog, isProviderId } from './catalog'
 import {
@@ -15,7 +20,7 @@ import {
   syncManagedCliKeySummary,
   type ManagedCliKeyStoreLike,
 } from './account-cli-provisioner'
-import { relaySites } from './relay-sites'
+import { relaySites, resolveRelaySite } from './relay-sites'
 import type {
   AddMarketplaceInput,
   AddMcpInput,
@@ -125,6 +130,7 @@ export interface IpcRegistrationOptions {
   // any host that never attempts a restore see the pre-existing synchronous
   // behavior unchanged.
   accountSessionReady?: Promise<void>
+  savedAccounts?: Pick<SavedAccountsStore, 'list' | 'getSession' | 'remove'>
   urlPolicy: ApplicationUrlPolicy
   previewOnboarding: boolean
   externalUrlAllowlist: readonly string[]
@@ -133,6 +139,12 @@ export interface IpcRegistrationOptions {
   broadcastUpdate(snapshot: UpdateSnapshot): void
   setWindowMode(target: WebContents, mode: AppWindowMode): void
   setWindowTheme(target: WebContents, theme: AppTheme): void
+  getWindowCapabilities?(): { tray: boolean; notifications: boolean }
+  takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
+  onSettingsChanged?(): void
+  replyWindowClose?(target: WebContents, requestId: string, report: WindowCloseReport): boolean
+  onSystemSnapshot?(snapshot: SystemSnapshot): void
+  onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
   // Opens (or focuses, if already open) the isolated canvas window. Kept as
   // a plain callback -- not a CanvasWindowController -- so this module never
   // has to depend on canvas-window.ts's full surface just to delegate one
@@ -240,6 +252,13 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
       ? value.officialProviders.filter((entry) => typeof entry === 'string' && isProviderId(entry)) as AppSettingsUpdate['officialProviders']
       : undefined
   const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
+  if (value.uiSkin !== undefined && (typeof value.uiSkin !== 'string' || !['auto', 'dawn', 'obsidian', 'mist', 'aurora'].includes(value.uiSkin))) throw new Error('皮肤格式错误')
+  if (value.uiScale !== undefined && (typeof value.uiScale !== 'string' || !['auto', '90', '100', '110'].includes(value.uiScale))) throw new Error('界面缩放格式错误')
+  if (value.closeBehavior !== undefined && (typeof value.closeBehavior !== 'string' || !['ask', 'tray', 'quit'].includes(value.closeBehavior))) throw new Error('关闭偏好格式错误')
+  const reducedMotion = optionalBoolean(value.reducedMotion, '减少动画设置')
+  const desktopNotifications = optionalBoolean(value.desktopNotifications, '系统通知设置')
+  const windowState = value.windowState === null ? null : parseWindowState(value.windowState)
+  if (value.windowState !== undefined && windowState === undefined) throw new Error('窗口位置格式错误')
   return {
     version: 2,
     ...(workspace !== undefined ? { workspace } : {}),
@@ -251,6 +270,12 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders !== undefined ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
+    ...(value.uiSkin !== undefined ? { uiSkin: value.uiSkin as AppSettingsUpdate['uiSkin'] } : {}),
+    ...(value.uiScale !== undefined ? { uiScale: value.uiScale as AppSettingsUpdate['uiScale'] } : {}),
+    ...(value.closeBehavior !== undefined ? { closeBehavior: value.closeBehavior as AppSettingsUpdate['closeBehavior'] } : {}),
+    ...(reducedMotion !== undefined ? { reducedMotion } : {}),
+    ...(desktopNotifications !== undefined ? { desktopNotifications } : {}),
+    ...(windowState !== undefined ? { windowState } : {}),
   }
 }
 
@@ -1319,6 +1344,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     const scanned = await service.scanSystem(forceRefresh === true)
     const snapshot = options.transformSystemSnapshot?.(scanned) ?? scanned
+    options.onSystemSnapshot?.(snapshot)
     options.runtimeLog.log('info', 'system', 'scan.completed', '本机环境与 AI 工具检测完成', {
       runtime: Object.fromEntries(Object.entries(snapshot.runtime).map(([id, status]) => [id, {
         installed: status.installed,
@@ -1511,9 +1537,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('window:set-theme', async (event, theme: unknown) => {
     if (theme !== 'light' && theme !== 'dark') throw new Error('未知的主题')
-    options.setWindowTheme(event.sender, theme)
     await service.updateStoredConfig({ version: 2, theme })
+    options.setWindowTheme(event.sender, theme)
   })
+  registerTrustedHandler('window:get-capabilities', () => options.getWindowCapabilities?.() ?? { tray: false, notifications: false })
+  registerTrustedHandler('navigation:take-deep-link', (event) => options.takeExternalDeepLink?.(event.sender) ?? null)
+  registerTrustedHandler('window:close-report', (event, requestId: unknown, report: unknown) => (
+    options.replyWindowClose?.(event.sender, requiredString(requestId, '退出请求标识', 64), parseWindowCloseReport(report)) ?? false
+  ))
   registerTrustedHandler('external:open', async (_event, url: unknown) => {
     if (
       typeof url !== 'string'
@@ -1576,6 +1607,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.extensionService.setRepositoryContext(next.workspace)
     options.providerExtensionService.setRepositoryRoot(next.workspace)
     options.setWindowTheme(event.sender, next.theme)
+    options.onSettingsChanged?.()
     return next
   })
   registerTrustedHandler('diagnostics:run', () => options.diagnosticsService.run())
@@ -1599,7 +1631,27 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     return options.runtimeLog.snapshot(limit as number | undefined)
   })
-  registerTrustedHandler('runtime-logs:copy-feedback', async () => {
+  const feedbackPreviews = new Map<number, { id: string; text: string; entries: number; expiresAt: number }>()
+  const getFeedbackPreview = (senderId: number, id: unknown) => {
+    const reportId = requiredString(id, '反馈报告标识', 64)
+    const preview = feedbackPreviews.get(senderId)
+    if (!preview || preview.id !== reportId || preview.expiresAt < Date.now()) throw new Error('报告预览已过期，请重新生成')
+    return preview
+  }
+  registerTrustedHandler('runtime-logs:preview-feedback', async (event) => {
+    const report = await options.runtimeLog.captureFeedbackReport()
+    if (report.text.length > 2_000_000) throw new Error('反馈报告过大，请减少日志后重试')
+    const preview = { id: randomUUID(), ...report, expiresAt: Date.now() + 30 * 60 * 1_000 }
+    feedbackPreviews.set(event.sender.id, preview)
+    if (feedbackPreviews.size > 8) feedbackPreviews.delete(feedbackPreviews.keys().next().value!)
+    return { id: preview.id, text: preview.text, entries: preview.entries }
+  })
+  registerTrustedHandler('runtime-logs:copy-feedback', async (event, reportId?: unknown) => {
+    if (reportId !== undefined) {
+      const report = getFeedbackPreview(event.sender.id, reportId)
+      clipboard.writeText(report.text)
+      return { entries: report.entries }
+    }
     const [report, snapshot] = await Promise.all([
       options.runtimeLog.feedbackReport(),
       options.runtimeLog.snapshot(),
@@ -1607,7 +1659,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     clipboard.writeText(report)
     return { entries: snapshot.total }
   })
-  registerTrustedHandler('runtime-logs:export-feedback', async () => {
+  registerTrustedHandler('runtime-logs:export-feedback', async (event, reportId?: unknown) => {
+    const captured = reportId !== undefined ? getFeedbackPreview(event.sender.id, reportId).text : undefined
     const result = await dialog.showSaveDialog({
       title: '导出反馈与诊断',
       defaultPath: `xingmang-feedback-${new Date().toISOString().slice(0, 10)}.txt`,
@@ -1616,7 +1669,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (result.canceled || !result.filePath) return null
     await writeAtomicSafeUtf8File(
       result.filePath,
-      await options.runtimeLog.feedbackReport(),
+      captured ?? await options.runtimeLog.feedbackReport(),
       '反馈报告导出文件',
     )
     return { outputPath: result.filePath }
@@ -1721,6 +1774,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     options.providerExtensionService.mutate(parseProviderExtensionMutation(input))
   ))
   registerTrustedHandler('account:get-status', () => accountService.getStatus())
+  registerTrustedHandler('account:get-notice', () => accountService.getNotice?.() ?? null)
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown) => (
     accountService.getLegalDocument(parseLegalDocumentKind(kind))
   ))
@@ -1752,7 +1806,60 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     await accountSessionReady.catch(() => undefined)
     return accountService.getSessionState()
   })
-  registerTrustedHandler('account:get-balance', () => accountService.getBalance())
+  const accountOrigin = () => new URL(resolveRelaySite(service.readStoredConfig().relaySiteId).accountBaseUrl!).origin
+  registerTrustedHandler('account:list-saved', async () => {
+    await accountSessionReady.catch(() => undefined)
+    const accounts = await options.savedAccounts?.list() ?? []
+    return accounts.filter((account) => account.origin === accountOrigin()).map(({ id, origin, userId, username, updatedAt }) => ({ id, origin, userId, username, updatedAt }))
+  })
+  let switchingSavedAccount: Promise<ReturnType<RelayBackendClient['getSessionState']>> | null = null
+  let switchingSavedAccountId: string | null = null
+  registerTrustedHandler('account:switch-saved', (_event, idInput: unknown) => {
+    const id = requiredString(idInput, '已保存账号标识', 64)
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('已保存账号标识无效')
+    if (switchingSavedAccount) {
+      if (switchingSavedAccountId === id) return switchingSavedAccount
+      throw new Error('正在切换账号，请稍后重试')
+    }
+    switchingSavedAccountId = id
+    switchingSavedAccount = (async () => {
+      await accountSessionReady.catch(() => undefined)
+      const previous = accountService.getSessionState()
+      const previousRevision = accountService.getSessionRevision?.()
+      const previousOrigin = accountOrigin()
+      if (previous.authenticated && previous.account && savedAccountId(previousOrigin, previous.account.userId) === id) return previous
+      if (!options.savedAccounts || !accountService.switchSession) throw new Error('当前账号服务不支持本机账号切换')
+      const candidate = await options.savedAccounts.getSession(id, previousOrigin)
+      const current = accountService.getSessionState()
+      if (accountOrigin() !== previousOrigin || (previousRevision !== undefined
+        ? accountService.getSessionRevision?.() !== previousRevision
+        : current.authenticated !== previous.authenticated || current.account !== previous.account)) {
+        throw new Error('账号已切换，本次切换请求已失效，请重试')
+      }
+      if (!candidate) throw new Error('账号记录已不存在，请重新登录')
+      if (!await accountService.switchSession(candidate)) throw new Error('目标账号登录已过期，当前账号已保留，请重新登录目标账号')
+      if (previous.authenticated && previous.account) {
+        options.chatService?.cancelUser(previous.account.userId)
+        options.imageService?.cancelUser(previous.account.userId)
+      }
+      options.paymentWindow.destroy()
+      return accountService.getSessionState()
+    })().finally(() => { switchingSavedAccount = null; switchingSavedAccountId = null })
+    return switchingSavedAccount
+  })
+  registerTrustedHandler('account:remove-saved', async (_event, idInput: unknown) => {
+    const id = requiredString(idInput, '已保存账号标识', 64)
+    if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('已保存账号标识无效')
+    const current = accountService.getSessionState()
+    if (current.account && savedAccountId(accountOrigin(), current.account.userId) === id) throw new Error('请先退出当前账号，再移除本机记录')
+    if (switchingSavedAccountId === id) throw new Error('正在切换此账号，请稍后重试')
+    await options.savedAccounts?.remove(id)
+  })
+  registerTrustedHandler('account:get-balance', async () => {
+    const balance = await accountService.getBalance()
+    options.onAccountBalance?.(balance)
+    return balance
+  })
   registerTrustedHandler('account:get-topup-info', () => accountService.getTopupInfo())
   registerTrustedHandler('account:quote-topup', (_event, input: unknown) => (
     accountService.quoteTopupAmount(parseAccountTopupAmountInput(input))
@@ -2048,6 +2155,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
 
   return () => {
+    feedbackPreviews.clear()
     unsubscribeUpdates()
     options.chatService?.dispose()
     options.imageService?.cancelAll()

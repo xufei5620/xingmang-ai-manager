@@ -41,6 +41,7 @@ describe('CodexDesktopCard update presentation', () => {
     )
 
     expect(markup).not.toContain('26.803.5235.0')
+    expect(markup).toContain('26.803.5235')
     expect(markup).not.toContain('已是可安装最新版')
     expect(markup).not.toContain('查看更新')
     expect(markup).not.toContain('>安装最新版<')

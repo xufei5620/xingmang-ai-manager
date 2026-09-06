@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from 'react'
 import {
   FolderInput,
+  Eye,
   GitBranch,
   LoaderCircle,
   Power,
@@ -21,6 +22,10 @@ import { createLatestRequestTracker } from '../latest-request'
 import { platformPresentation } from '../platform-presentation'
 import { managementProviderIds } from '../provider-registry'
 import type { ExtensionSnapshot, PlatformCapabilities, ProviderId } from '../types'
+import { Button } from '../components/ui'
+import { useNavigationState } from '../components/shell/NavigationState'
+import { ResourceDetails, type ResourceDetailsValue } from './ResourceDetails'
+import '../styles/management-v3.css'
 
 type ProviderExtensionItem = ExtensionSnapshot['items'][number]
 type ProviderSkillImportRequest = {
@@ -198,12 +203,13 @@ export function SkillsPage({
   onToggle,
   onUninstall,
 }: SkillsPageProps) {
-  const [provider, setProvider] = useState<ProviderId>('codex')
+  const [provider, setProvider] = useNavigationState<ProviderId>('skills.provider', 'codex')
   const [providerSnapshots, setProviderSnapshots] = useState<Partial<Record<ProviderId, ExtensionSnapshot>>>({})
   const [providerErrors, setProviderErrors] = useState<Partial<Record<ProviderId, string>>>({})
   const [loadingProviders, setLoadingProviders] = useState<Partial<Record<ProviderId, boolean>>>({})
-  const [query, setQuery] = useState('')
-  const [scope, setScope] = useState<'all' | SkillView['scope']>('all')
+  const [query, setQuery] = useNavigationState('skills.query', '')
+  const [scope, setScope] = useNavigationState<'all' | SkillView['scope']>('skills.scope', 'all')
+  const [details, setDetails] = useState<ResourceDetailsValue | null>(null)
   const [importOpen, setImportOpen] = useState(false)
   const [uninstallTarget, setUninstallTarget] = useState<{ name: string; skill?: SkillView; item?: ProviderExtensionItem } | null>(null)
   const [busyKey, setBusyKey] = useState<string | null>(null)
@@ -332,11 +338,10 @@ export function SkillsPage({
     : () => loadProvider(provider)
 
   return (
-    <div className="page workspace-page management-page" data-page-id="skills">
+    <div className="page workspace-page management-page management-v3" data-page-id="skills">
       <header className="page-header workspace-page-header">
         <div>
           <h1>技能</h1>
-          <p className="page-lead">给 AI 加上常用能力。</p>
         </div>
         <div className="header-actions page-toolbar" role="toolbar" aria-label="技能工具栏">
           <ProviderTabs
@@ -375,7 +380,7 @@ export function SkillsPage({
         <div className="management-counts"><span>{selectedEnabled} 已启用</span><span>{selectedCount} 个 Skill</span></div>
       </section>
 
-      {(selectedError || actionError) && <div className="management-error" role="alert">{actionError ?? selectedError}</div>}
+      {(selectedError || actionError) && <div className="management-error" role="alert"><span>{actionError ?? selectedError}</span><Button size="sm" disabled={selectedLoading || busyKey !== null} onClick={() => void perform('refresh', refresh).catch(() => undefined)}>重试</Button></div>}
       {snapshot?.capabilities.skill.list === false && (
         <div className="management-error" role="status">{snapshot.capabilities.skill.reason ?? 'Skill 列表不可用'}</div>
       )}
@@ -399,6 +404,7 @@ export function SkillsPage({
                 <input
                   type="checkbox"
                   checked={skill.enabled}
+                  aria-label={`${skill.enabled ? '停用' : '启用'} ${skill.name}`}
                   disabled={!skill.managed || busyKey !== null}
                   onChange={(event) => void perform(`toggle:${skill.id}`, async () => {
                     await onToggle(skill.path, event.target.checked)
@@ -417,6 +423,9 @@ export function SkillsPage({
               </div>
             )}
             <footer className="skill-card-footer">
+              <button className="icon-button compact" type="button" title="查看详情" aria-label={`查看 ${skill.name}`} onClick={() => setDetails({ title: skill.name, fields: [
+                ['工具', managementProviderLabels[provider]], ['说明', skill.description], ['范围', scopeLabel(skill.scope)], ['路径', skill.path], ['来源', skill.source], ['权限', skill.managed ? '可管理' : '系统技能，只读'],
+              ] })}><Eye size={16} /></button>
               <span className={skill.enabled ? 'extension-state enabled' : 'extension-state'}>
                 <i className={`status-dot ${skill.enabled ? 'configured' : ''}`} /> {skill.enabled ? '已启用' : '已停用'}
               </span>
@@ -430,7 +439,8 @@ export function SkillsPage({
         }) : (
           <div className="workspace-empty extension-grid-empty">
             <WandSparkles size={24} />
-            <h2>{query || scope !== 'all' ? '没有找到这个技能' : '还没有技能'}</h2>
+            <h2>{selectedError ? '技能列表暂不可用' : query || scope !== 'all' ? '没有找到这个技能' : '还没有技能'}</h2>
+            {(query || scope !== 'all') && <Button onClick={() => { setQuery(''); setScope('all') }}>清除筛选</Button>}
           </div>
         ) : filteredProvider.length ? filteredProvider.map((item) => {
           const canToggle = (item.enabled && item.operations.disable) || (!item.enabled && item.operations.enable)
@@ -452,6 +462,7 @@ export function SkillsPage({
                     <input
                       type="checkbox"
                       checked={item.enabled}
+                      aria-label={`${item.enabled ? '停用' : '启用'} ${item.name}`}
                       disabled={busyKey !== null}
                       onChange={() => void perform(`toggle:${item.id}`, () => mutate(item, item.enabled ? 'disable' : 'enable')).catch(() => undefined)}
                     />
@@ -466,6 +477,9 @@ export function SkillsPage({
                 {item.latestVersion && <span>远端 {item.latestVersion}</span>}
               </div>
               <footer className="skill-card-footer">
+                <button className="icon-button compact" type="button" title="查看详情" aria-label={`查看 ${item.name}`} onClick={() => setDetails({ title: item.name, fields: [
+                  ['工具', managementProviderLabels[item.provider]], ['说明', item.description], ['范围', itemScope ?? '未提供'], ['来源', source], ['状态', item.enabled ? '已启用' : '已停用'], ['更新', `${providerUpdateLabel(item)}：${item.update.reason}`],
+                ] })}><Eye size={16} /></button>
                 <span className={item.enabled ? 'extension-state enabled' : 'extension-state'}>
                   <i className={`status-dot ${item.enabled ? 'configured' : ''}`} /> {item.enabled ? '已启用' : '已停用'}
                 </span>
@@ -489,11 +503,13 @@ export function SkillsPage({
         }) : (
           <div className="workspace-empty extension-grid-empty">
             <WandSparkles size={24} />
-            <h2>{query ? '没有找到这个技能' : '还没有技能'}</h2>
+            <h2>{selectedError ? '技能列表暂不可用' : query ? '没有找到这个技能' : '还没有技能'}</h2>
+            {query && <Button onClick={() => setQuery('')}>清除筛选</Button>}
           </div>
         )}
       </section>
 
+      <ResourceDetails value={details} onClose={() => setDetails(null)} />
       {importOpen && (
         <ImportSkillDialog
           provider={provider}

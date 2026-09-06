@@ -9,7 +9,9 @@ import type { NativeConfigSaveResult } from './config-files'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
-import { supportServiceUrl } from './relay-sites'
+import { resolveRelaySite, supportServiceUrl } from './relay-sites'
+import { savedAccountId } from './saved-accounts'
+import { createWindowCloseQuery } from './window-close-query'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
@@ -155,7 +157,9 @@ function accountServiceStub(): NewApiClientService {
     findExistingCliKey: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
     getPersistableSession: vi.fn(() => null),
+    getSessionRevision: vi.fn(() => 0),
     restoreSession: vi.fn(async () => false),
+    switchSession: vi.fn(async () => false),
   }
 }
 
@@ -173,7 +177,7 @@ function trustedEvent(url = 'http://localhost:5173/', senderId = 101) {
 }
 
 type ChatIpcOverrides = Partial<Pick<Parameters<typeof registerIpcHandlers>[0],
-  'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill'>>
+  'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'replyWindowClose' | 'takeExternalDeepLink'>>
 
 function updaterStub(): UpdaterService {
   const state = {
@@ -273,6 +277,7 @@ function register(
       entries: [],
     })),
     feedbackReport: vi.fn(async () => 'sanitized report\n'),
+    captureFeedbackReport: vi.fn(async () => ({ text: 'sanitized report\n', entries: 0 })),
     clear: vi.fn(async () => undefined),
   }
   const paymentWindow = paymentWindowStub()
@@ -340,6 +345,7 @@ beforeEach(() => {
   electronMocks.handle.mockClear()
   electronMocks.removeHandler.mockClear()
   electronMocks.showOpenDialog.mockReset()
+  electronMocks.showSaveDialog.mockReset()
   electronMocks.showMessageBox.mockReset()
   electronMocks.showMessageBox.mockResolvedValue({ response: 0 })
   electronMocks.openExternal.mockReset()
@@ -360,6 +366,227 @@ describe('registerIpcHandlers', () => {
     dispose()
 
     expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel)).toEqual(expectedChannels)
+  })
+
+  describe('saved-account switch isolation', () => {
+    const origin = new URL(resolveRelaySite(undefined).accountBaseUrl!).origin
+    const accountA = { authenticated: true, account: { userId: 1, username: 'account-a', group: null, role: 1, quota: 100, usedQuota: 0 } }
+    const accountB = { authenticated: true, account: { userId: 2, username: 'account-b', group: null, role: 1, quota: 200, usedQuota: 0 } }
+    const id = savedAccountId(origin, 2)
+    const setup = () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue(accountA)
+      const savedAccounts = { list: vi.fn(async () => []), getSession: vi.fn(async () => ({ userId: 2, cookies: ['refresh_token=saved-private-cookie'] })), remove: vi.fn(async () => undefined) }
+      const chatService = { cancelUser: vi.fn(() => 1), cancelAll: vi.fn(() => 2), dispose: vi.fn() }
+      const imageService = { cancelUser: vi.fn(() => 1), cancelAll: vi.fn(() => 2) }
+      const registered = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { savedAccounts, chatService, imageService } as never)
+      return { ...registered, savedAccounts, chatService, imageService, handler: electronMocks.handlers.get('account:switch-saved')! }
+    }
+
+    it.each(['invalid-session', 'network-failure', 'encrypted-index-failure'] as const)('does not cancel A or close its payment window when switching fails: %s', async (failure) => {
+      const h = setup()
+      if (failure === 'network-failure') vi.mocked(h.accountService.switchSession).mockRejectedValueOnce(new Error('请求超时'))
+      if (failure === 'encrypted-index-failure') h.savedAccounts.getSession.mockRejectedValueOnce(new Error('系统加密服务不可用'))
+      await expect(h.handler(trustedEvent(), id)).rejects.toThrow()
+      expect(h.accountService.getSessionState()).toEqual(accountA)
+      expect(h.chatService.cancelUser).not.toHaveBeenCalled()
+      expect(h.chatService.cancelAll).not.toHaveBeenCalled()
+      expect(h.imageService.cancelUser).not.toHaveBeenCalled()
+      expect(h.imageService.cancelAll).not.toHaveBeenCalled()
+      expect(h.paymentWindow.destroy).not.toHaveBeenCalled()
+      expect(h.accountService.logout).not.toHaveBeenCalled()
+    })
+
+    it('deduplicates a pending target and cancels only A after B has been verified', async () => {
+      const h = setup()
+      let accept!: (value: boolean) => void
+      vi.mocked(h.accountService.switchSession).mockImplementationOnce(() => new Promise<boolean>((resolve) => { accept = resolve }))
+      const first = h.handler(trustedEvent(), id)
+      const duplicate = h.handler(trustedEvent(), id)
+      await vi.waitFor(() => expect(h.accountService.switchSession).toHaveBeenCalledOnce())
+      expect(h.chatService.cancelUser).not.toHaveBeenCalled()
+      expect(h.paymentWindow.destroy).not.toHaveBeenCalled()
+      expect(() => h.handler(trustedEvent(), savedAccountId(origin, 3))).toThrow('正在切换账号')
+      vi.mocked(h.accountService.getSessionState).mockReturnValue(accountB)
+      accept(true)
+      await expect(first).resolves.toEqual(accountB)
+      await expect(duplicate).resolves.toEqual(accountB)
+      expect(h.savedAccounts.getSession).toHaveBeenCalledWith(id, origin)
+      expect(h.chatService.cancelUser).toHaveBeenCalledExactlyOnceWith(1)
+      expect(h.imageService.cancelUser).toHaveBeenCalledExactlyOnceWith(1)
+      expect(h.chatService.cancelAll).not.toHaveBeenCalled()
+      expect(h.imageService.cancelAll).not.toHaveBeenCalled()
+      expect(h.paymentWindow.destroy).toHaveBeenCalledOnce()
+      expect(h.accountService.logout).not.toHaveBeenCalled()
+      expect(JSON.stringify(await duplicate)).not.toContain('saved-private-cookie')
+    })
+
+    it('switching to the current account is a no-op and cannot cancel its tasks', async () => {
+      const h = setup()
+      await expect(h.handler(trustedEvent(), savedAccountId(origin, 1))).resolves.toEqual(accountA)
+      expect(h.savedAccounts.getSession).not.toHaveBeenCalled()
+      expect(h.accountService.switchSession).not.toHaveBeenCalled()
+      expect(h.chatService.cancelUser).not.toHaveBeenCalled()
+      expect(h.chatService.cancelAll).not.toHaveBeenCalled()
+      expect(h.imageService.cancelUser).not.toHaveBeenCalled()
+      expect(h.paymentWindow.destroy).not.toHaveBeenCalled()
+    })
+
+    it.each(['logout', 'different-account', 'same-account-reauthentication', 'pending-login'] as const)('does not proceed after the session changes during saved credential read: %s', async (transition) => {
+      const h = setup()
+      let resolveCandidate!: (session: { userId: number; cookies: string[] }) => void
+      h.savedAccounts.getSession.mockImplementationOnce(() => new Promise((resolve) => { resolveCandidate = resolve }))
+      const rejected = expect(h.handler(trustedEvent(), id)).rejects.toThrow('账号已切换')
+      await vi.waitFor(() => expect(h.savedAccounts.getSession).toHaveBeenCalledOnce())
+      vi.mocked(h.accountService.getSessionRevision).mockReturnValue(1)
+      if (transition === 'logout') vi.mocked(h.accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
+      if (transition === 'different-account') vi.mocked(h.accountService.getSessionState).mockReturnValue(accountB)
+      // Reauthentication may expose the same user ID, and pending login may
+      // leave the same public profile. Only the internal revision distinguishes them.
+      resolveCandidate({ userId: 2, cookies: ['refresh_token=private-candidate'] })
+      await rejected
+      expect(h.accountService.switchSession).not.toHaveBeenCalled()
+      expect(h.chatService.cancelUser).not.toHaveBeenCalled()
+      expect(h.imageService.cancelUser).not.toHaveBeenCalled()
+      expect(h.paymentWindow.destroy).not.toHaveBeenCalled()
+    })
+
+    it('rejects an invalid ID or untrusted sender before touching a saved credential', () => {
+      const h = setup()
+      expect(() => h.handler(trustedEvent(), '../account-session.dat')).toThrow('账号标识无效')
+      expect(() => h.handler(trustedEvent('https://attacker.example/'), id)).toThrow('非应用页面')
+      expect(h.savedAccounts.getSession).not.toHaveBeenCalled()
+      expect(h.accountService.switchSession).not.toHaveBeenCalled()
+      expect(h.chatService.cancelUser).not.toHaveBeenCalled()
+    })
+
+    it('never exposes credential fields while listing or permits removing the active identity', async () => {
+      const h = setup()
+      h.savedAccounts.list.mockResolvedValueOnce([
+        { id: savedAccountId(origin, 1), origin, userId: 1, username: 'A', updatedAt: '2026-09-07T00:00:00.000Z', cookies: ['must-not-leak'] },
+        { id: 'different-site', origin: 'https://other.example.com', userId: 1, username: 'Other', updatedAt: '2026-09-07T00:00:00.000Z' },
+      ] as never)
+      const listed = await electronMocks.handlers.get('account:list-saved')!(trustedEvent())
+      expect(listed).toEqual([{ id: savedAccountId(origin, 1), origin, userId: 1, username: 'A', updatedAt: '2026-09-07T00:00:00.000Z' }])
+      expect(JSON.stringify(listed)).not.toContain('must-not-leak')
+      await expect(electronMocks.handlers.get('account:remove-saved')!(trustedEvent(), savedAccountId(origin, 1))).rejects.toThrow('当前账号')
+      expect(h.savedAccounts.remove).not.toHaveBeenCalled()
+    })
+  })
+
+  describe('window close nonce and sender forwarding', () => {
+    it('preserves WebContents ownership, validates display state and rejects stale nonces', async () => {
+      const owner = trustedEvent()
+      const send = vi.fn()
+      const query = createWindowCloseQuery(send)
+      const replyWindowClose: NonNullable<Parameters<typeof registerIpcHandlers>[0]['replyWindowClose']> = vi.fn((sender, requestId, report) => sender === (owner.sender as unknown) ? query.reply(requestId, report) : false)
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { replyWindowClose })
+      const handler = electronMocks.handlers.get('window:close-report')!
+      const pending = query.request()
+      void pending.catch(() => undefined)
+      const nonce = send.mock.calls[0][0]
+      try {
+        expect(handler(trustedEvent(), nonce, { blockingTask: false, unsavedChanges: false })).toBe(false)
+        expect(handler(owner, 'stale-nonce', { blockingTask: false, unsavedChanges: false })).toBe(false)
+        expect(() => handler(owner, nonce, { blockingTask: 'false', unsavedChanges: false })).toThrow('格式错误')
+        expect(() => handler(trustedEvent('https://attacker.example/'), nonce, { blockingTask: false, unsavedChanges: false })).toThrow('非应用页面')
+        expect(handler(owner, nonce, { blockingTask: true, unsavedChanges: false, token: 'discard-me' })).toBe(true)
+        await expect(pending).resolves.toEqual({ blockingTask: true, unsavedChanges: false })
+        expect(replyWindowClose).toHaveBeenLastCalledWith(owner.sender, nonce, { blockingTask: true, unsavedChanges: false })
+        expect(handler(owner, nonce, { blockingTask: false, unsavedChanges: false })).toBe(false)
+        const next = query.request()
+        void next.catch(() => undefined)
+        expect(send.mock.calls[1][0]).not.toBe(nonce)
+        expect(handler(owner, nonce, { blockingTask: false, unsavedChanges: false })).toBe(false)
+        expect(handler(owner, send.mock.calls[1][0], { blockingTask: false, unsavedChanges: true })).toBe(true)
+        await expect(next).resolves.toEqual({ blockingTask: false, unsavedChanges: true })
+      } finally { query.dispose() }
+    })
+
+    it('returns null for unavailable deep links and delegates the exact sender when supported', () => {
+      register()
+      expect(electronMocks.handlers.get('navigation:take-deep-link')!(trustedEvent())).toBeNull()
+      const takeExternalDeepLink = vi.fn(() => ({ kind: 'invite' as const, code: 'fixture-code' }))
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { takeExternalDeepLink })
+      const owner = trustedEvent()
+      const handler = electronMocks.handlers.get('navigation:take-deep-link')!
+      expect(handler(owner)).toEqual({ kind: 'invite', code: 'fixture-code' })
+      expect(takeExternalDeepLink).toHaveBeenCalledExactlyOnceWith(owner.sender)
+      expect(() => handler(trustedEvent('https://attacker.example/'))).toThrow('非应用页面')
+      expect(takeExternalDeepLink).toHaveBeenCalledOnce()
+    })
+  })
+
+  describe('feedback preview snapshot contracts', () => {
+    it('copies and exports exactly the previewed text and count despite later log changes', async () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-feedback-ipc-'))
+      try {
+        const { runtimeLog } = register()
+        runtimeLog.captureFeedbackReport.mockResolvedValueOnce({ text: 'preview snapshot A\n', entries: 7 })
+        const owner = trustedEvent()
+        const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string; text: string; entries: number }
+        runtimeLog.feedbackReport.mockResolvedValue('newer unpreviewed snapshot B\n')
+        await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).resolves.toEqual({ entries: 7 })
+        expect(electronMocks.writeText).toHaveBeenCalledExactlyOnceWith(preview.text)
+        const outputPath = path.join(directory, 'report.txt')
+        electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: false, filePath: outputPath })
+        await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, preview.id)).resolves.toEqual({ outputPath })
+        expect(fs.readFileSync(outputPath, 'utf8')).toBe(preview.text)
+        expect(runtimeLog.feedbackReport).not.toHaveBeenCalled()
+        expect(runtimeLog.snapshot).not.toHaveBeenCalled()
+        expect(runtimeLog.captureFeedbackReport).toHaveBeenCalledOnce()
+      } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+    })
+
+    it('isolates previews by sender and rejects an expired or superseded report before any output', async () => {
+      const clock = vi.spyOn(Date, 'now').mockReturnValue(100_000)
+      try {
+        register()
+        const owner = trustedEvent()
+        const getPreview = electronMocks.handlers.get('runtime-logs:preview-feedback')!
+        const copy = electronMocks.handlers.get('runtime-logs:copy-feedback')!
+        const first = await getPreview(owner) as { id: string }
+        await expect(copy(trustedEvent(undefined, 102), first.id)).rejects.toThrow('已过期')
+        const current = await getPreview(owner) as { id: string }
+        await expect(copy(owner, first.id)).rejects.toThrow('已过期')
+        clock.mockReturnValue(100_000 + 30 * 60 * 1_000 + 1)
+        await expect(copy(owner, current.id)).rejects.toThrow('已过期')
+        await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, current.id)).rejects.toThrow('已过期')
+        expect(electronMocks.writeText).not.toHaveBeenCalled()
+        expect(electronMocks.showSaveDialog).not.toHaveBeenCalled()
+      } finally { clock.mockRestore() }
+    })
+
+    it('retains the chosen snapshot across the save dialog while a new preview is generated', async () => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-feedback-ipc-'))
+      try {
+        const { runtimeLog } = register()
+        runtimeLog.captureFeedbackReport.mockResolvedValueOnce({ text: 'chosen preview A\n', entries: 1 }).mockResolvedValueOnce({ text: 'later preview B\n', entries: 2 })
+        const owner = trustedEvent()
+        const first = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string }
+        let choosePath!: (value: unknown) => void
+        electronMocks.showSaveDialog.mockImplementationOnce(() => new Promise((resolve) => { choosePath = resolve }))
+        const exporting = electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, first.id)
+        await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner)
+        const outputPath = path.join(directory, 'report.txt')
+        choosePath({ canceled: false, filePath: outputPath })
+        await expect(exporting).resolves.toEqual({ outputPath })
+        expect(fs.readFileSync(outputPath, 'utf8')).toBe('chosen preview A\n')
+      } finally { fs.rmSync(directory, { recursive: true, force: true }) }
+    })
+
+    it('allows clipboard retry and save cancellation without changing the preview', async () => {
+      const { runtimeLog } = register()
+      const owner = trustedEvent()
+      const preview = await electronMocks.handlers.get('runtime-logs:preview-feedback')!(owner) as { id: string; text: string }
+      electronMocks.writeText.mockImplementationOnce(() => { throw new Error('Clipboard unavailable') })
+      await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).rejects.toThrow('Clipboard unavailable')
+      await expect(electronMocks.handlers.get('runtime-logs:copy-feedback')!(owner, preview.id)).resolves.toEqual({ entries: 0 })
+      electronMocks.showSaveDialog.mockResolvedValueOnce({ canceled: true })
+      await expect(electronMocks.handlers.get('runtime-logs:export-feedback')!(owner, preview.id)).resolves.toBeNull()
+      expect(electronMocks.writeText).toHaveBeenLastCalledWith(preview.text)
+      expect(runtimeLog.captureFeedbackReport).toHaveBeenCalledOnce()
+    })
   })
 
   it('binds chat requests and cancellation to the trusted sender without exposing credentials', async () => {
@@ -1258,6 +1485,27 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseSettingsUpdate (settings:save)', () => {
+    it('persists appearance updates without replacing unrelated settings', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      const patch = { version: 2, uiSkin: 'mist', reducedMotion: true, uiScale: '90', closeBehavior: 'tray' }
+      await expect(handler(trustedEvent(), patch)).resolves.toMatchObject({
+        workspace: 'C:\\workspace', uiSkin: 'mist', reducedMotion: true, uiScale: '90', closeBehavior: 'tray',
+      })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(patch)
+    })
+
+    it.each([
+      { uiSkin: ['mist'] }, { uiSkin: 'unknown' }, { uiScale: 90 }, { uiScale: '500' },
+      { closeBehavior: 'hide-anywhere' }, { reducedMotion: 'true' },
+      { windowState: { bounds: { x: 0, y: 0, width: -1, height: 600 }, maximized: false } },
+    ])('rejects malformed appearance and window updates before persistence: %j', async (fields) => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+      await expect(handler(trustedEvent(), { version: 2, ...fields })).rejects.toThrow()
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
     it('accepts a fully valid settings payload and trims the workspace', async () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!

@@ -13,9 +13,9 @@
 // buildCanvasTokenDependencies (the canvas auto-key flow), and main.ts's
 // startup session restore (via account-session-store.ts's
 // restoreAccountSessionOnStartup) -- not new-api-client.ts's full surface.
-// Three NewApiClientService methods are intentionally excluded because
+// Two NewApiClientService methods are intentionally excluded because
 // nothing outside new-api-client.ts (and its own tests) calls them today:
-// isAuthenticated(), refreshAccessToken(), getPersistableSession(). Add a
+// isAuthenticated(), refreshAccessToken(). Add a
 // method here only once a real consumer needs it, per CLAUDE.md's own
 // guidance against speculative surface.
 //
@@ -125,6 +125,7 @@ export interface RelayBackendClient {
 
   /** ipc.ts: account:get-status */
   getStatus(): Promise<NewApiAccountStatus>
+  getNotice?(): Promise<{ id: string; text: string } | null>
   /** ipc.ts: account:get-legal-document */
   getLegalDocument(kind: NewApiLegalDocumentKind): Promise<NewApiLegalDocument>
   /** ipc.ts: account:send-email-verification */
@@ -201,4 +202,9 @@ export interface RelayBackendClient {
   findExistingCliKey(namePrefix: string): Promise<NewApiCliKeyResult | null>
   /** main.ts's startup flow, via account-session-store.ts's restoreAccountSessionOnStartup */
   restoreSession(persisted: NewApiPersistableSession): Promise<boolean>
+  /** Main-process-only saved-account switching; credentials must never cross IPC. */
+  switchSession?(persisted: NewApiPersistableSession): Promise<boolean>
+  getPersistableSession?(): NewApiPersistableSession | null
+  /** Changes when a login, logout or switch is requested; token refresh keeps it stable. */
+  getSessionRevision?(): number
 }

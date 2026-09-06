@@ -46,7 +46,22 @@ const channels = {
   setProjectArchived: 'canvas-host:set-project-archived',
   runEvent: 'canvas-host:run-event',
   themeChanged: 'canvas-host:theme-changed',
+  appearanceChanged: 'canvas-host:appearance-changed',
+  closeRequested: 'canvas-host:close-requested',
+  closeCancelled: 'canvas-host:close-cancelled',
+  finishClose: 'canvas-host:finish-close',
+  cancelCloseTasks: 'canvas-host:cancel-close-tasks',
 } as const
+
+function subscribeCloseRequest(channel: string, listener: (request: { requestId: string }) => void) {
+  const wrapped = (_event: unknown, payload: unknown) => {
+    if (!payload || typeof payload !== 'object') return
+    const requestId = (payload as { requestId?: unknown }).requestId
+    if (typeof requestId === 'string' && /^[a-f0-9-]{36}$/i.test(requestId)) listener({ requestId })
+  }
+  ipcRenderer.on(channel, wrapped)
+  return () => ipcRenderer.removeListener(channel, wrapped)
+}
 
 contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   saveFile: (suggestedName: string, content: string) => (
@@ -96,6 +111,21 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   renameProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.renameProject, projectId, name),
   duplicateProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.duplicateProject, projectId, name),
   setProjectArchived: (projectId: string, archived: boolean) => ipcRenderer.invoke(channels.setProjectArchived, projectId, archived),
+  finishClose: (requestId: string, allowed: boolean) => ipcRenderer.invoke(channels.finishClose, requestId, allowed),
+  cancelCloseTasks: (requestId: string) => ipcRenderer.invoke(channels.cancelCloseTasks, requestId),
+  onCloseRequested: (listener: (request: { requestId: string }) => void) => subscribeCloseRequest(channels.closeRequested, listener),
+  onCloseCancelled: (listener: (request: { requestId: string }) => void) => subscribeCloseRequest(channels.closeCancelled, listener),
+  onAppearanceChange: (listener: (appearance: { theme: 'light' | 'dark'; uiSkin?: 'dawn' | 'obsidian' | 'mist' | 'aurora'; reducedMotion?: boolean }) => void) => {
+    const wrapped = (_event: unknown, payload: unknown) => {
+      if (!payload || typeof payload !== 'object') return
+      const value = payload as Record<string, unknown>
+      if (value.theme !== 'light' && value.theme !== 'dark') return
+      const uiSkin = value.uiSkin === 'dawn' || value.uiSkin === 'obsidian' || value.uiSkin === 'mist' || value.uiSkin === 'aurora' ? value.uiSkin : undefined
+      listener({ theme: value.theme, ...(uiSkin ? { uiSkin } : {}), reducedMotion: value.reducedMotion === true })
+    }
+    ipcRenderer.on(channels.appearanceChanged, wrapped)
+    return () => ipcRenderer.removeListener(channels.appearanceChanged, wrapped)
+  },
   onRunEvent: (listener: (event: unknown) => void) => {
     const wrapped = (_event: unknown, payload: unknown) => listener(payload)
     ipcRenderer.on(channels.runEvent, wrapped)

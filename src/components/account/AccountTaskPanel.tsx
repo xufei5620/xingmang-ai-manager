@@ -243,22 +243,22 @@ export function AccountTaskPanel({ quotaPerUnit }: { quotaPerUnit: number | unde
         <div className="session-error" role="alert"><FileWarning size={18} /><div><strong>任务读取失败</strong><span>{failure}</span></div><button type="button" className="secondary-button" onClick={() => void load()}>重试</button></div>
       ) : (
         <section className="account-task-table-shell" aria-busy={loading}>
-          <div className="account-task-table-scroll">
-            <div className="account-task-table-head" aria-hidden="true"><span>提交时间 / 状态</span><span>平台 / 动作</span><span>模型</span><span>分组</span><span>费用</span><span>进度 / 耗时</span><span>结果</span><span>详情</span></div>
-            <div className="account-task-table-body">
+          <div className="account-task-table-scroll" role="table" aria-label="异步任务" aria-colcount={8}>
+            <div className="account-task-table-head" role="row"><span role="columnheader">提交时间 / 状态</span><span role="columnheader">平台 / 动作</span><span role="columnheader">模型</span><span role="columnheader">分组</span><span role="columnheader">费用</span><span role="columnheader">进度 / 耗时</span><span role="columnheader">结果</span><span role="columnheader">详情</span></div>
+            <div className="account-task-table-body" role="rowgroup">
               {(taskPage?.tasks ?? []).map((record) => (
-                <button type="button" className="account-task-table-row" key={record.id} onClick={() => setSelected(record)}>
-                  <span><strong>{formatAccountUsageDate(record.submitAt)}</strong><small className={`account-task-status ${taskStatusTone(record.status)}`}>{accountTaskStatusLabel(record.status)}</small></span>
-                  <span><strong title={record.platform}>{accountTaskPlatformLabel(record.platform)}</strong><small>{record.action || '—'}</small></span>
-                  <span><strong title={record.originModelName || '未知模型'}>{record.originModelName || '未知模型'}</strong><small title={record.upstreamModelName || undefined}>{record.upstreamModelName && record.upstreamModelName !== record.originModelName ? record.upstreamModelName : '—'}</small></span>
-                  <span><strong title={record.group || '默认分组'}>{record.group || '默认分组'}</strong><small>{record.taskId || '—'}</small></span>
-                  <span><strong>{formatUsageCostUsd(record.quota, quotaPerUnit)}</strong><small>{record.quota.toLocaleString('zh-CN')} quota</small></span>
-                  <span><strong>{record.progress || '—'}</strong><small>{taskDuration(record)}</small></span>
-                  <span><strong>{record.resultUrl ? '可查看' : record.failReason ? '失败' : '—'}</strong><small>{record.failReason || '—'}</small></span>
-                  <span className="account-task-detail-link">查看<ChevronRight size={14} /></span>
-                </button>
+                <div role="row" className="account-task-table-row" key={record.id} onClick={() => setSelected(record)}>
+                  <span role="cell"><strong>{formatAccountUsageDate(record.submitAt)}</strong><small className={`account-task-status ${taskStatusTone(record.status)}`}>{accountTaskStatusLabel(record.status)}</small></span>
+                  <span role="cell"><strong title={record.platform}>{accountTaskPlatformLabel(record.platform)}</strong><small>{record.action || '—'}</small></span>
+                  <span role="cell"><strong title={record.originModelName || '未知模型'}>{record.originModelName || '未知模型'}</strong><small title={record.upstreamModelName || undefined}>{record.upstreamModelName && record.upstreamModelName !== record.originModelName ? record.upstreamModelName : '—'}</small></span>
+                  <span role="cell"><strong title={record.group || '默认分组'}>{record.group || '默认分组'}</strong><small>{record.taskId || '—'}</small></span>
+                  <span role="cell"><strong>{formatUsageCostUsd(record.quota, quotaPerUnit)}</strong><small>{record.quota.toLocaleString('zh-CN')} quota</small></span>
+                  <span role="cell"><strong>{record.progress || '—'}</strong><small>{taskDuration(record)}</small></span>
+                  <span role="cell"><strong>{record.resultUrl ? '可查看' : record.failReason ? '失败' : '—'}</strong><small>{record.failReason || '—'}</small></span>
+                  <span role="cell" className="account-task-detail-link"><button type="button" className="ui-table-detail-action" aria-label={`查看任务 ${record.taskId || record.id}`} onClick={() => setSelected(record)}>查看<ChevronRight size={14} aria-hidden="true" /></button></span>
+                </div>
               ))}
-              {!loading && taskPage?.tasks.length === 0 && <div className="account-task-empty"><Inbox size={22} /><strong>没有符合条件的任务</strong><span>异步图片、视频和音频任务会显示在这里。</span></div>}
+              {!loading && taskPage?.tasks.length === 0 && <div role="row"><div role="cell" aria-colspan={8} className="account-task-empty"><Inbox size={22} /><strong>没有符合条件的任务</strong><span>异步图片、视频和音频任务会显示在这里。</span></div></div>}
             </div>
           </div>
           {loading && <div className="account-task-loading"><LoaderCircle size={18} className="spin" />正在读取任务…</div>}

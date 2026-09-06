@@ -1,7 +1,7 @@
 import type { ReactNode } from 'react'
 import type { PlatformCapabilities } from '../types'
-import logoUrl from '../../assets/icon.png'
-import logoWhiteUrl from '../../assets/icon-white.png'
+import logoUrl from '../../assets/brand/v3/symbol-micro32-standard.svg'
+import logoWhiteUrl from '../../assets/brand/v3/symbol-micro32-dark.svg'
 
 export function AppFrame({ children, theme, platform }: {
   children: ReactNode

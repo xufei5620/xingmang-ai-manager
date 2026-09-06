@@ -1,4 +1,4 @@
-import type { CanvasHostBridge } from '../host'
+import type { CanvasAppearance, CanvasHostBridge } from '../host'
 
 export type CanvasTheme = 'light' | 'dark'
 
@@ -22,6 +22,19 @@ export function applyCanvasTheme(
   target.documentElement.dataset.theme = theme
   target.documentElement.style.colorScheme = theme
   target.querySelector('meta[name="color-scheme"]')?.setAttribute('content', theme)
+}
+
+export function initialCanvasAppearance(search = ''): CanvasAppearance {
+  const params = new URLSearchParams(search)
+  const skin = params.get('skin')
+  const uiSkin = skin === 'dawn' || skin === 'obsidian' || skin === 'mist' || skin === 'aurora' ? skin : undefined
+  return { theme: initialCanvasTheme(search), ...(uiSkin ? { uiSkin } : {}), reducedMotion: params.get('reducedMotion') === '1' }
+}
+
+export function applyCanvasAppearance(appearance: CanvasAppearance, target: CanvasThemeDocument = document): void {
+  applyCanvasTheme(appearance.theme, target)
+  target.documentElement.dataset.skin = appearance.uiSkin ?? (appearance.theme === 'light' ? 'dawn' : 'obsidian')
+  target.documentElement.dataset.reducedMotion = String(appearance.reducedMotion === true)
 }
 
 export function subscribeCanvasTheme(

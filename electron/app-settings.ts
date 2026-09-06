@@ -5,6 +5,7 @@ import path from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { relaySites } from './relay-sites'
 import { providerIds, type ProviderId } from './catalog'
+import { parseWindowState, type AppCloseBehavior, type AppUiScale, type AppWindowState } from './window-preferences'
 import {
   assertSafeDataFile,
   ensureSafeDataDirectory,
@@ -13,6 +14,8 @@ import {
 } from './safe-local-data'
 
 export type AppTheme = 'light' | 'dark'
+export type AppUiSkin = 'dawn' | 'obsidian' | 'mist' | 'aurora'
+export type { AppCloseBehavior, AppUiScale, AppWindowState } from './window-preferences'
 
 /**
  * Which download-source order the installers use (IMPROVEMENT-PLAN 2.4).
@@ -55,6 +58,16 @@ export interface AppSettings {
   officialProviders?: ProviderId[]
   /** User explicitly uninstalled Codex Desktop and does not want auto-reinstall. */
   codexDesktopInstallDisabled?: boolean
+  /** Absent follows the theme: dawn for light, obsidian for dark. */
+  uiSkin?: AppUiSkin
+  reducedMotion?: boolean
+  /** System desktop notifications are opt-in; absent = disabled. */
+  desktopNotifications?: boolean
+  /** Absent = automatic. A pinned percentage multiplies the automatic zoom. */
+  uiScale?: Exclude<AppUiScale, 'auto'>
+  /** Absent = ask. The host must keep a visible entry when no tray exists. */
+  closeBehavior?: Exclude<AppCloseBehavior, 'ask'>
+  windowState?: AppWindowState
 }
 
 /**
@@ -86,6 +99,13 @@ export interface AppSettingsUpdate {
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
+  uiSkin?: AppUiSkin | 'auto'
+  reducedMotion?: boolean
+  desktopNotifications?: boolean
+  uiScale?: AppUiScale
+  closeBehavior?: AppCloseBehavior
+  /** null explicitly resets saved placement; absence preserves it. */
+  windowState?: AppWindowState | null
 }
 
 interface LegacyAppSettings {
@@ -139,6 +159,18 @@ function parseMirrorPolicy(value: unknown): PinnedMirrorPolicy | undefined {
   return value === 'mirror-first' || value === 'official-first' ? value : undefined
 }
 
+function parseUiSkin(value: unknown): AppUiSkin | undefined {
+  return value === 'dawn' || value === 'obsidian' || value === 'mist' || value === 'aurora' ? value : undefined
+}
+
+function parseUiScale(value: unknown): AppSettings['uiScale'] {
+  return value === '90' || value === '100' || value === '110' ? value : undefined
+}
+
+function parseCloseBehavior(value: unknown): AppSettings['closeBehavior'] {
+  return value === 'tray' || value === 'quit' ? value : undefined
+}
+
 function parseOfficialProviders(value: unknown): ProviderId[] | undefined {
   if (!Array.isArray(value)) return undefined
   const seen = new Set<ProviderId>()
@@ -177,6 +209,10 @@ function parseSettingsValue(value: unknown): AppSettings {
   const relaySiteId = parseRelaySiteId(value.relaySiteId)
   const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
   const officialProviders = parseOfficialProviders(value.officialProviders)
+  const uiSkin = parseUiSkin(value.uiSkin)
+  const uiScale = parseUiScale(value.uiScale)
+  const closeBehavior = parseCloseBehavior(value.closeBehavior)
+  const windowState = parseWindowState(value.windowState)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
@@ -193,6 +229,12 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(uiSkin !== undefined ? { uiSkin } : {}),
+    ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
+    ...(optionalBoolean(value.desktopNotifications, false) ? { desktopNotifications: true as const } : {}),
+    ...(uiScale !== undefined ? { uiScale } : {}),
+    ...(closeBehavior !== undefined ? { closeBehavior } : {}),
+    ...(windowState !== undefined ? { windowState } : {}),
   }
 }
 
@@ -302,6 +344,12 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const codexDesktopInstallDisabled = update.codexDesktopInstallDisabled === undefined
     ? base.codexDesktopInstallDisabled
     : update.codexDesktopInstallDisabled
+  const uiSkin = update.uiSkin === 'auto' ? undefined : parseUiSkin(update.uiSkin) ?? base.uiSkin
+  const reducedMotion = update.reducedMotion ?? base.reducedMotion
+  const desktopNotifications = update.desktopNotifications ?? base.desktopNotifications
+  const uiScale = update.uiScale === 'auto' ? undefined : parseUiScale(update.uiScale) ?? base.uiScale
+  const closeBehavior = update.closeBehavior === 'ask' ? undefined : parseCloseBehavior(update.closeBehavior) ?? base.closeBehavior
+  const windowState = update.windowState === null ? undefined : parseWindowState(update.windowState) ?? base.windowState
   return {
     version: 2,
     workspace: update.workspace ?? base.workspace,
@@ -313,6 +361,12 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(uiSkin !== undefined ? { uiSkin } : {}),
+    ...(reducedMotion ? { reducedMotion: true as const } : {}),
+    ...(desktopNotifications ? { desktopNotifications: true as const } : {}),
+    ...(uiScale !== undefined ? { uiScale } : {}),
+    ...(closeBehavior !== undefined ? { closeBehavior } : {}),
+    ...(windowState !== undefined ? { windowState } : {}),
   }
 }
 

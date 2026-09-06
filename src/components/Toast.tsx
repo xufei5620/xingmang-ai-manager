@@ -15,7 +15,7 @@ export function Toast({
   onCopy?: () => void
 }) {
   return (
-    <div className={`toast ${toast.type}`} role="alert">
+    <div className={`toast ${toast.type}`} role={toast.type === 'error' ? 'alert' : 'status'}>
       {toast.type === 'success'
         ? <Check size={17} />
         : toast.type === 'info'

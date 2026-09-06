@@ -3,11 +3,14 @@ import { createRoot } from 'react-dom/client'
 import { ReactFlowProvider } from '@xyflow/react'
 import { App } from './App'
 import './theme.css'
+import '../../src/styles/ui-tokens.css'
+import './theme/brand-appearance.css'
 import './styles.css'
-import { applyCanvasTheme, initialCanvasTheme } from './theme/canvas-theme'
+import { applyCanvasAppearance, initialCanvasAppearance } from './theme/canvas-theme'
 
-const initialTheme = initialCanvasTheme(window.location.search)
-applyCanvasTheme(initialTheme)
+const initialAppearance = initialCanvasAppearance(window.location.search)
+const initialTheme = initialAppearance.theme
+applyCanvasAppearance(initialAppearance)
 
 const container = document.getElementById('root')
 if (container) {

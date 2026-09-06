@@ -1,4 +1,7 @@
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
+import type { WindowCloseReport } from './window-close-query'
+import type { ExternalDeepLink } from './external-deep-links'
+import type { SavedAccountSummary } from './saved-accounts'
 import type {
   ConfigBackupPreview as StoredConfigBackupPreview,
   ConfigBackupReason,
@@ -158,6 +161,9 @@ export type ConfigSaveMode = NativeConfigSaveMode
 export type CodexDesktopLaunchMode = MainCodexDesktopLaunchMode
 export type AppWindowMode = 'onboarding' | 'dashboard'
 export type AppTheme = StoredAppTheme
+export interface WindowCapabilities { tray: boolean; notifications: boolean }
+export type { ExternalDeepLink } from './external-deep-links'
+export interface FeedbackReportPreview { id: string; text: string; entries: number }
 export type UpdatePhase = MainUpdatePhase
 export type UpdateSnapshot = MainUpdateSnapshot
 export type SessionArchiveFilter = CodexSessionArchiveFilter
@@ -186,6 +192,7 @@ export type CodexDesktopLaunchResult = MainCodexDesktopLaunchResult
 export type ToolUninstallResult = MainToolUninstallResult
 export type AppSettingsV2 = AppSettings
 export type AppSettingsV2Update = AppSettingsUpdate
+export type SavedAccount = SavedAccountSummary
 export type RepositoryContext = CodexRepositoryContext
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
@@ -295,7 +302,7 @@ export interface AccountKeyCliConfigurationInput {
 }
 export type AccountChangePasswordInput = NewApiChangePasswordInput
 export type AccountChangePasswordResult = NewApiChangePasswordResult
-export type RendererNavigationTarget = 'settings'
+export type RendererNavigationTarget = 'settings' | 'updates' | 'topup'
 
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
@@ -501,6 +508,9 @@ export interface XingmangInvokeContract {
   >
   setWindowMode: IpcInvokeDefinition<'window:set-mode', [mode: AppWindowMode], void>
   setWindowTheme: IpcInvokeDefinition<'window:set-theme', [theme: AppTheme], void>
+  getWindowCapabilities: IpcInvokeDefinition<'window:get-capabilities', [], WindowCapabilities>
+  takeExternalDeepLink: IpcInvokeDefinition<'navigation:take-deep-link', [], ExternalDeepLink | null>
+  replyWindowClose: IpcInvokeDefinition<'window:close-report', [requestId: string, report: WindowCloseReport], boolean>
   openExternal: IpcInvokeDefinition<'external:open', [url: string], boolean>
   getUpdateState: IpcInvokeDefinition<'update:get-state', [], UpdateSnapshot>
   runStartupUpdate: IpcInvokeDefinition<'update:startup', [], UpdateSnapshot>
@@ -544,8 +554,9 @@ export interface XingmangInvokeContract {
   runDiagnostics: IpcInvokeDefinition<'diagnostics:run', [], DiagnosticsReport>
   exportDiagnostics: IpcInvokeDefinition<'diagnostics:export', [], { outputPath: string } | null>
   getRuntimeLogs: IpcInvokeDefinition<'runtime-logs:list', [limit?: number], RuntimeLogSnapshot>
-  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [], { entries: number }>
-  exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [], { outputPath: string } | null>
+  getFeedbackReport: IpcInvokeDefinition<'runtime-logs:preview-feedback', [], FeedbackReportPreview>
+  copyFeedbackReport: IpcInvokeDefinition<'runtime-logs:copy-feedback', [reportId?: string], { entries: number }>
+  exportFeedbackReport: IpcInvokeDefinition<'runtime-logs:export-feedback', [reportId?: string], { outputPath: string } | null>
   openRuntimeLogDirectory: IpcInvokeDefinition<'runtime-logs:open-directory', [], boolean>
   clearRuntimeLogs: IpcInvokeDefinition<'runtime-logs:clear', [], void>
   reportRendererError: IpcInvokeDefinition<'runtime-logs:renderer-error', [payload: RendererErrorPayload], void>
@@ -602,10 +613,14 @@ export interface XingmangInvokeContract {
     ProviderExtensionsSnapshot
   >
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [], AccountStatus>
+  getAccountNotice: IpcInvokeDefinition<'account:get-notice', [], { id: string; text: string } | null>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
   getAccountSession: IpcInvokeDefinition<'account:get-session', [], AccountSessionState>
+  listSavedAccounts: IpcInvokeDefinition<'account:list-saved', [], SavedAccount[]>
+  switchSavedAccount: IpcInvokeDefinition<'account:switch-saved', [id: string], AccountSessionState>
+  removeSavedAccount: IpcInvokeDefinition<'account:remove-saved', [id: string], void>
   getAccountBalance: IpcInvokeDefinition<'account:get-balance', [], AccountBalance>
   getAccountTopupInfo: IpcInvokeDefinition<'account:get-topup-info', [], AccountTopupInfo>
   quoteAccountTopupAmount: IpcInvokeDefinition<
@@ -742,6 +757,9 @@ export interface XingmangInvokeContract {
 
 export interface XingmangEventContract {
   onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
+  onWindowCloseRequest: IpcEventDefinition<'window:close-request', { requestId: string }>
+  onExternalDeepLink: IpcEventDefinition<'navigation:deep-link-pending', undefined>
+  onLaunchTool: IpcEventDefinition<'window:launch-tool', ProviderId | 'codexDesktop'>
   onNodeRuntimeInstallProgress: IpcEventDefinition<
     'runtime:node-install-progress',
     NodeRuntimeInstallProgress
@@ -809,6 +827,9 @@ export const ipcInvokeChannels = {
   listConfiguredModels: 'models:list-configured',
   setWindowMode: 'window:set-mode',
   setWindowTheme: 'window:set-theme',
+  getWindowCapabilities: 'window:get-capabilities',
+  takeExternalDeepLink: 'navigation:take-deep-link',
+  replyWindowClose: 'window:close-report',
   openExternal: 'external:open',
   getUpdateState: 'update:get-state',
   runStartupUpdate: 'update:startup',
@@ -828,6 +849,7 @@ export const ipcInvokeChannels = {
   runDiagnostics: 'diagnostics:run',
   exportDiagnostics: 'diagnostics:export',
   getRuntimeLogs: 'runtime-logs:list',
+  getFeedbackReport: 'runtime-logs:preview-feedback',
   copyFeedbackReport: 'runtime-logs:copy-feedback',
   exportFeedbackReport: 'runtime-logs:export-feedback',
   openRuntimeLogDirectory: 'runtime-logs:open-directory',
@@ -858,10 +880,14 @@ export const ipcInvokeChannels = {
   listAllProviderExtensions: 'extensions:list-all',
   mutateProviderExtension: 'extensions:mutate',
   getAccountStatus: 'account:get-status',
+  getAccountNotice: 'account:get-notice',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   logoutAccount: 'account:logout',
   getAccountSession: 'account:get-session',
+  listSavedAccounts: 'account:list-saved',
+  switchSavedAccount: 'account:switch-saved',
+  removeSavedAccount: 'account:remove-saved',
   getAccountBalance: 'account:get-balance',
   getAccountTopupInfo: 'account:get-topup-info',
   quoteAccountTopupAmount: 'account:quote-topup',
@@ -916,6 +942,9 @@ export const ipcInvokeChannels = {
 
 export const ipcEventChannels = {
   onNavigate: 'navigation:open-page',
+  onWindowCloseRequest: 'window:close-request',
+  onExternalDeepLink: 'navigation:deep-link-pending',
+  onLaunchTool: 'window:launch-tool',
   onNodeRuntimeInstallProgress: 'runtime:node-install-progress',
   onPythonRuntimeInstallProgress: 'runtime:python-install-progress',
   onInstallProgress: 'cli:install-progress',

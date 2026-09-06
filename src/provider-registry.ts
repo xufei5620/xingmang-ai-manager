@@ -18,10 +18,10 @@ function buildProviderOrder(rank: Record<ProviderId, number>): readonly Provider
 
 // 概览页（Dashboard）卡片顺序：Codex 最先展示，其后 Claude / Grok / Gemini。
 export const dashboardProviderIds: readonly ProviderId[] = buildProviderOrder({
-  codex: 0,
-  claude: 1,
-  grok: 2,
-  gemini: 3,
+  claude: 0,
+  codex: 1,
+  gemini: 2,
+  grok: 3,
 })
 
 // 管理类页面共用顺序：安装维护 / 配置备份 / MCP / Skills / ProviderTabs（含由它派生的会话页）。

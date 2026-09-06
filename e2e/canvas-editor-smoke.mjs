@@ -505,7 +505,7 @@ try {
   await droppedVideo.evaluate((video) => video.pause())
 
   const beforeContextCreate = await page.locator('.react-flow__node').count()
-  const panePoint = await findEmptyPanePoint(page)
+  const panePoint = await findEmptyPanePoint(page, true)
   await page.mouse.click(panePoint.x, panePoint.y, { button: 'right' })
   const contextQuickInsert = page.getByRole('dialog', { name: '快速创建' })
   await contextQuickInsert.waitFor({ state: 'visible' })
@@ -1373,7 +1373,7 @@ try {
         const light = red * 0.2126 + green * 0.7152 + blue * 0.0722
         luminance += light
         if (light > 235) veryLight += 1
-        if (Math.abs(red - 14) + Math.abs(green - 16) + Math.abs(blue - 19) > 18) changedFromCanvas += 1
+        if (Math.abs(red - 11) + Math.abs(green - 12) + Math.abs(blue - 16) > 18) changedFromCanvas += 1
         if (offset % 64 === 0) buckets.add(`${red >> 4}:${green >> 4}:${blue >> 4}`)
       }
       return {
@@ -1400,8 +1400,8 @@ try {
     assert.deepEqual(layout.brightNodeShells, [], `${viewport.name}: 节点外层出现亮色背景`)
     assert.equal(layout.overlap, 0, `${viewport.name}: 节点库与画布重叠`)
     assert.ok(layout.nodeCount >= 2, `${viewport.name}: 模板节点未渲染`)
-    assert.equal(layout.rootBackground, 'rgb(14, 16, 19)')
-    assert.equal(layout.bodyBackground, 'rgb(14, 16, 19)')
+    assert.equal(layout.rootBackground, 'rgb(11, 12, 16)')
+    assert.equal(layout.bodyBackground, 'rgb(11, 12, 16)')
     const screenshotScaleX = pixels.width / layout.innerWidth
     const screenshotScaleY = pixels.height / layout.innerHeight
     assert.ok(Math.abs(screenshotScaleX - screenshotScaleY) < 0.02, `${viewport.name}: 截图横纵缩放比例不一致`)
@@ -1746,18 +1746,28 @@ async function assertSelectionHugsMedia(page, node, label) {
   assert.equal(await node.locator('.wf-resize-handle').count() > 0, true, `${label}素材选中后缺少缩放手柄`)
 }
 
-async function findEmptyPanePoint(page) {
-  return page.evaluate(() => {
+async function findEmptyPanePoint(page, avoidSnapAxes = false) {
+  return page.evaluate((avoidSnapAxes) => {
     const pane = document.querySelector('.react-flow__pane')
     if (!(pane instanceof HTMLElement || pane instanceof SVGElement)) throw new Error('找不到画布空白层')
     const bounds = pane.getBoundingClientRect()
+    const flowBounds = document.querySelector('.react-flow').getBoundingClientRect()
+    const transform = new DOMMatrixReadOnly(getComputedStyle(document.querySelector('.react-flow__viewport')).transform)
+    const occupiedAxes = avoidSnapAxes ? [...document.querySelectorAll('.react-flow__node')].flatMap((element) => {
+      const match = /translate\((-?[\d.]+)px/.exec(element.style.transform)
+      if (!match) return []
+      const x = Number(match[1])
+      return [x, x + element.offsetWidth / 2, x + element.offsetWidth]
+    }) : []
     for (let y = bounds.top + 72; y < bounds.bottom - 72; y += 36) {
       for (let x = bounds.right - 72; x > bounds.left + 72; x -= 36) {
+        const canvasX = (x - flowBounds.left - transform.e) / transform.a
+        if (occupiedAxes.some((axis) => Math.abs(axis - canvasX) <= 12)) continue
         if (document.elementFromPoint(x, y) === pane) return { x, y }
       }
     }
     throw new Error('画布内没有可用空白位置')
-  })
+  }, avoidSnapAxes)
 }
 
 /** The canvas coordinate React Flow renders the node at, which is the document's. */

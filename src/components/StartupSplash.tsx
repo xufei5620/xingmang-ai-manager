@@ -1,6 +1,6 @@
 import { LoaderCircle } from 'lucide-react'
-import logoUrl from '../../assets/icon.png'
-import logoWhiteUrl from '../../assets/icon-white.png'
+import logoUrl from '../../assets/brand/v3/symbol-standard.svg'
+import logoWhiteUrl from '../../assets/brand/v3/symbol-dark.svg'
 import type { StartupStage, ThemeMode } from '../app-shared'
 import type { UpdateSnapshot } from '../types'
 

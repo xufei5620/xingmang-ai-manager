@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { AccountCenterPage, AccountKeySecretCell } from './AccountCenterPage'
+import { ACCOUNT_CENTER_TABS, AccountCenterPage, AccountKeySecretCell, commerceTabFor, primaryTabFor } from './AccountCenterPage'
 import {
   effectiveTopupMinimum,
   parseIntegerTopupAmount,
@@ -51,7 +51,7 @@ describe('AccountCenterPage', () => {
     )
 
     expect(markup).toContain('我的账号')
-    for (const label of ['概览', '用量', '密钥', '明细', '任务', '钱包', '资料']) {
+    for (const label of ['我的账号', '用量看板', '密钥', '调用明细', '异步任务', '充值与订阅', '我的订单', '邀请返利', '登录设备']) {
       expect(markup).toContain(label)
     }
     for (const legacyPrimaryLabel of ['账单与权益', '开发者', '设置']) {
@@ -59,6 +59,30 @@ describe('AccountCenterPage', () => {
     }
     expect(markup).not.toContain('xm.solov.cc/wallet')
     expect(markup).not.toContain('feishu')
+  })
+
+  it('registers nine complete tabs with a manual activation contract', () => {
+    expect(ACCOUNT_CENTER_TABS.map((tab) => tab.id)).toEqual(['overview', 'dashboard', 'keys', 'usage', 'tasks', 'recharge', 'orders', 'invite', 'devices'])
+    const markup = renderToStaticMarkup(<AccountCenterPage initialSection="orders" onClose={vi.fn()} onLogout={vi.fn()} />)
+    expect(markup).toContain('id="account-tab-orders"')
+    expect(markup).toContain('aria-labelledby="account-tab-orders"')
+    expect(markup).toContain('aria-controls="account-center-panel"')
+    expect(markup).toContain('aria-orientation="horizontal"')
+    expect(markup.match(/data-account-tab=/g)).toHaveLength(9)
+  })
+
+  it('preserves legacy profile and commerce deep-link destinations', () => {
+    expect(primaryTabFor('profile')).toBe('overview')
+    expect(primaryTabFor('security')).toBe('overview')
+    expect(primaryTabFor('wallet')).toBe('recharge')
+    expect(primaryTabFor('subscriptions')).toBe('recharge')
+    expect(primaryTabFor('redeem')).toBe('recharge')
+    expect(primaryTabFor('orders')).toBe('orders')
+    expect(primaryTabFor('invite')).toBe('invite')
+    expect(primaryTabFor('devices')).toBe('devices')
+    expect(commerceTabFor('wallet')).toBe('subscriptions')
+    expect(commerceTabFor('recharge')).toBe('topup')
+    expect(commerceTabFor('redeem')).toBe('redeem')
   })
 
   it('keeps the top-up amount aligned with the New API int64 contract', () => {

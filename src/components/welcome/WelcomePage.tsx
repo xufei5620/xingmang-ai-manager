@@ -1,12 +1,18 @@
 import { useEffect, useState } from 'react'
-import { ArrowRight, LoaderCircle, PackageCheck, Sparkles, Target } from 'lucide-react'
+import { ArrowRight, BookOpen, CircleHelp, LoaderCircle, PackageCheck, Sparkles, Target } from 'lucide-react'
 import QRCode from 'qrcode'
-import logoUrl from '../../../assets/icon.png'
-import logoWhiteUrl from '../../../assets/icon-white.png'
+import logoUrl from '../../../assets/brand/v3/micro32-standard.svg'
+import logoWhiteUrl from '../../../assets/brand/v3/micro32-dark.svg'
+import logoCoreUrl from '../../../assets/brand/v3/symbol-standard.svg'
+import logoCoreWhiteUrl from '../../../assets/brand/v3/symbol-dark.svg'
+import wordmarkUrl from '../../../assets/brand/v3/wordmark-standard.svg'
+import wordmarkWhiteUrl from '../../../assets/brand/v3/wordmark-dark.svg'
 import type { ThemeMode } from '../../app-shared'
 import { providers } from '../../provider-meta'
 import { supportServiceUrl, type LegalDocumentKind, type ProviderId } from '../../types'
 import { LegalDocumentDialog } from '../account/LegalDocumentDialog'
+import { WelcomeStarfield } from './WelcomeStarfield'
+import './welcome-v3.css'
 
 interface ConstellationNode {
   id: ProviderId
@@ -14,13 +20,7 @@ interface ConstellationNode {
   position: 'top' | 'right' | 'bottom' | 'left'
 }
 
-// Node order/labels mirror the finalized mockup (docs/mockups/welcome-draft.html)
-// verbatim; only the dot color is sourced live from provider-meta.ts instead of
-// being copied as a literal hex, so it can never drift from the real brand color.
-//
-// 星图是固定的四方位（上/右/下/左）视觉布局，故意不从 provider-registry 派生
-// provider 集合：新增第 5 个 provider 时这四个方位本就要重新设计，派生反而会
-// 在布局撑不下时静默错位，硬编码在这里是有意为之。
+// The four positions are the two-orbit composition from the supplied design.
 const constellationNodes: ConstellationNode[] = [
   { id: 'claude', label: 'Claude Code', position: 'top' },
   { id: 'codex', label: 'Codex', position: 'right' },
@@ -32,17 +32,17 @@ const heroCards = [
   {
     Icon: PackageCheck,
     title: '不用敲命令',
-    body: '环境、工具、配置点几下就好。装失败会自动撤回，不会留下半成品。',
+    body: '检测环境、安装工具、连接账号，在这里逐步完成。',
   },
   {
     Icon: Target,
-    title: '用的就是原厂模型',
-    body: '请求转到各家官方接口，不会偷偷换成更小的模型。用量随时能对账。',
+    title: '保留你的使用方式',
+    body: '星芒中转和已有官方账号按需选择，已有配置由你决定。',
   },
   {
     Icon: Sparkles,
     title: '一个账号就够',
-    body: '注册后自动准备四把 Key，额度共用，不用到处申请再一个个填。',
+    body: '统一管理工具密钥与星芒用量，准备结果逐项确认。',
   },
 ]
 
@@ -51,16 +51,48 @@ export function WelcomePage({
   onRegister,
   onLogin,
   onOpenSupport,
+  onOpenGuide,
+  onOpenSavedAccounts,
+  reducedMotion = false,
+  onReducedMotionChange,
 }: {
   theme: ThemeMode
   onRegister: () => void
   onLogin: () => void
   onOpenSupport: () => void
+  onOpenGuide?: () => void
+  onOpenSavedAccounts?: () => void
+  reducedMotion?: boolean
+  onReducedMotionChange?: (reduced: boolean) => void
 }) {
   const [legalKind, setLegalKind] = useState<LegalDocumentKind | null>(null)
   const [qrDataUrl, setQrDataUrl] = useState<string | null>(null)
   const [qrError, setQrError] = useState(false)
   const [qrAttempt, setQrAttempt] = useState(0)
+  const [localReducedMotion, setLocalReducedMotion] = useState(false)
+  const [systemReducedMotion, setSystemReducedMotion] = useState(false)
+  const [hidden, setHidden] = useState(false)
+  const [globalReducedMotion, setGlobalReducedMotion] = useState(false)
+  const motionReduced = reducedMotion || localReducedMotion || systemReducedMotion || globalReducedMotion
+
+  useEffect(() => {
+    const preference = window.matchMedia('(prefers-reduced-motion: reduce)')
+    const readPreference = () => setSystemReducedMotion(preference.matches)
+    const readVisibility = () => setHidden(document.hidden)
+    const readGlobalMotion = () => setGlobalReducedMotion(['true', '1'].includes(document.documentElement.dataset.reducedMotion ?? ''))
+    const observer = new MutationObserver(readGlobalMotion)
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['data-reduced-motion'] })
+    preference.addEventListener('change', readPreference)
+    document.addEventListener('visibilitychange', readVisibility)
+    readPreference()
+    readVisibility()
+    readGlobalMotion()
+    return () => {
+      observer.disconnect()
+      preference.removeEventListener('change', readPreference)
+      document.removeEventListener('visibilitychange', readVisibility)
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -91,118 +123,113 @@ export function WelcomePage({
   }
 
   return (
-    <div className="welcome-page">
-      <div className="welcome-aurora" aria-hidden="true" />
+    <div className="welcome-page welcome-v3" data-motion-paused={motionReduced || hidden ? 'true' : 'false'}>
+      <WelcomeStarfield theme={theme} paused={motionReduced || hidden} />
       <div className="welcome-content">
         <header className="welcome-nav">
-          <div className="welcome-brand">
-            <img src={theme === 'dark' ? logoWhiteUrl : logoUrl} className="welcome-brand-logo" alt="星芒AI" />
-            <span className="welcome-brand-name"><span>星芒</span>AI</span>
+          <span className="welcome-nav-spacer" aria-hidden="true" />
+          <div className="welcome-nav-actions">
+            <label className="welcome-motion-toggle">
+              <input type="checkbox" checked={motionReduced} disabled={systemReducedMotion} onChange={(event) => {
+                if (onReducedMotionChange) onReducedMotionChange(event.target.checked)
+                else setLocalReducedMotion(event.target.checked)
+              }} />
+              减少动画
+            </label>
+            <button type="button" className="icon-button" onClick={onOpenSupport} aria-label="帮助与客服" title="帮助与客服">
+              <CircleHelp size={18} aria-hidden="true" />
+            </button>
           </div>
         </header>
 
         <div className="welcome-hero">
           <div className="welcome-hero-copy">
-            <span className="welcome-eyebrow">一个账号，四家工具都能用</span>
-            <h1 className="welcome-title">装好就能用的<br />AI 编程工具</h1>
+            <div className="welcome-hero-brandline" aria-label="星芒 AI">
+              <img src={theme === 'dark' ? logoWhiteUrl : logoUrl} className="welcome-hero-brand-symbol" alt="星芒" />
+              <img src={theme === 'dark' ? wordmarkWhiteUrl : wordmarkUrl} className="welcome-hero-brand-wordmark" alt="星芒 AI" />
+            </div>
+            <h1 className="welcome-title">装好就能用的<br /><em>AI 编程工具</em></h1>
             <p className="welcome-sub">
-              不用敲命令。登录后按提示安装，就能打开 Claude、Codex、Gemini、Grok。
+              一个账号，四家工具。环境、安装、Key 全都由这里帮你配好——不用敲命令，不用改配置文件。
             </p>
 
             <div className="welcome-cta-row">
-              <button type="button" className="welcome-cta-primary" onClick={onRegister}>
-                免费注册
+              <button type="button" className="welcome-cta-login" onClick={onLogin}>
+                已有账号，登录
                 <span className="welcome-cta-arrow" aria-hidden="true"><ArrowRight size={16} /></span>
               </button>
-              <button type="button" className="welcome-cta-login" onClick={onLogin}>
-                登录
+              <button type="button" className="welcome-cta-primary" onClick={onRegister}>
+                免费注册
               </button>
+              {onOpenSavedAccounts && <button type="button" className="welcome-guide-link" onClick={onOpenSavedAccounts}>已保存账号</button>}
             </div>
 
             <div className="welcome-chips">
-              <span className="welcome-chip">邮箱注册，大约 1 分钟</span>
-              <span className="welcome-chip">国内能直接用</span>
-              <span className="welcome-chip">用多少扣多少</span>
+              {constellationNodes.map((node) => <span className="welcome-chip" data-brand={node.id} key={node.id}>
+                <img src={providers[node.id].icon} alt="" aria-hidden="true" />{providers[node.id].name}
+              </span>)}
             </div>
-
+            {onOpenGuide && <button type="button" className="welcome-guide-link" onClick={onOpenGuide}>
+              <BookOpen size={16} aria-hidden="true" />先看看使用步骤
+            </button>}
           </div>
 
-          <div className="welcome-hero-visual">
-            <div className="welcome-constellation">
-              <svg viewBox="0 0 400 400" aria-hidden="true">
-                <circle className="welcome-ring welcome-ring-inner" cx="200" cy="200" r="96" />
-                <circle className="welcome-ring welcome-ring-outer" cx="200" cy="200" r="150" />
-                <line className="welcome-spoke" x1="200" y1="200" x2="200" y2="60" />
-                <line className="welcome-spoke" x1="200" y1="200" x2="340" y2="200" />
-                <line className="welcome-spoke" x1="200" y1="200" x2="200" y2="340" />
-                <line className="welcome-spoke" x1="200" y1="200" x2="60" y2="200" />
-                <line className="welcome-ray" x1="200" y1="200" x2="296" y2="104" />
-                <line className="welcome-ray" x1="200" y1="200" x2="296" y2="296" />
-                <line className="welcome-ray" x1="200" y1="200" x2="104" y2="296" />
-                <line className="welcome-ray" x1="200" y1="200" x2="104" y2="104" />
-              </svg>
-              <div className="welcome-star-core" aria-hidden="true">
-                <Sparkles size={28} />
+          <div className="welcome-hero-visual" aria-label="工具箱工作台预览">
+            <div className="welcome-orbit-scene welcome-constellation" aria-hidden="true">
+              <div className="welcome-orbit-glow" />
+              <div className="welcome-orbit-ring welcome-orbit-ring-one">
+                <span className="welcome-orbit-satellite welcome-orbit-satellite-top"><img src={providers.claude.icon} alt="" />Claude Code</span>
+                <span className="welcome-orbit-satellite welcome-orbit-satellite-bottom"><img src={providers.codex.icon} alt="" />Codex CLI</span>
               </div>
-              {constellationNodes.map((node) => (
-                <div className={`welcome-node welcome-node-${node.position}`} key={node.id}>
-                  <i style={{ background: providers[node.id].color }} aria-hidden="true" />
-                  {node.label}
+              <div className="welcome-orbit-ring welcome-orbit-ring-two">
+                <span className="welcome-orbit-satellite welcome-orbit-satellite-right"><img src={providers.gemini.icon} alt="" />Gemini CLI</span>
+                <span className="welcome-orbit-satellite welcome-orbit-satellite-left"><img src={providers.grok.icon} alt="" />Grok CLI</span>
+              </div>
+              <div className="welcome-orbit-core"><img src={theme === 'dark' ? logoCoreWhiteUrl : logoCoreUrl} alt="" /></div>
+            </div>
+            <div className="welcome-preview-workbench" aria-hidden="true">
+              <div className="welcome-preview-rail"><img src={theme === 'dark' ? logoWhiteUrl : logoUrl} alt="" />{[0, 1, 2, 3, 4].map((item) => <i className={item === 0 ? 'is-active' : ''} key={item} />)}</div>
+              <div className="welcome-preview-main">
+                <div className="welcome-preview-heading"><strong>工具箱</strong><span>工作台预览</span></div>
+                <div className="welcome-preview-tools">
+                  {constellationNodes.map((node, index) => <div className="welcome-preview-tool" key={node.id}><span className="welcome-preview-tool-icon"><img src={providers[node.id].icon} alt="" /></span><span><strong>{node.label}</strong><small>{index < 2 ? '已安装 · 可配置' : '可选工具'}</small></span><b>{index < 2 ? '打开' : '查看'}</b></div>)}
                 </div>
-              ))}
+                <div className="welcome-preview-row"><span>最近记录</span><strong>在这里继续你的工作</strong></div>
+              </div>
             </div>
-            <p className="welcome-constell-cap">一个账号，四家工具共用余额</p>
           </div>
         </div>
 
+        <div className="welcome-bottom">
         <div className="welcome-cards3">
-          {heroCards.map((card) => (
-            <div className="welcome-card" key={card.title}>
-              <div className="welcome-card-icon"><card.Icon size={20} aria-hidden="true" /></div>
-              <h3>{card.title}</h3>
-              <p>{card.body}</p>
-            </div>
+            {heroCards.map((card) => (
+              <div className="welcome-card" key={card.title}>
+                <div className="welcome-card-icon"><card.Icon size={20} aria-hidden="true" /></div>
+                <h3>{card.title}</h3>
+                <p>{card.body}</p>
+              </div>
           ))}
-        </div>
-
-        <footer className="welcome-foot">
-          <div className="welcome-foot-left">
-            <span>{`© ${new Date().getFullYear()} 星芒 AI`}</span>
-            <span className="welcome-foot-dot">·</span>
-            <button
-              type="button"
-              className="account-inline-link"
-              onClick={() => setLegalKind('user-agreement')}
-            >用户协议</button>
-            <span className="welcome-foot-dot">·</span>
-            <button
-              type="button"
-              className="account-inline-link"
-              onClick={() => setLegalKind('privacy-policy')}
-            >隐私政策</button>
-            <span className="welcome-foot-dot">·</span>
-            <span>账号后台 <code>xm.solov.cc</code></span>
-          </div>
           <button
             type="button"
-            className="welcome-cs"
+            className="welcome-card welcome-support-card"
             onClick={handleSupportClick}
             title={qrError ? '二维码暂不可用，直接打开客服' : '扫码添加客服'}
             aria-label={qrError ? '二维码暂不可用，直接打开客服' : '扫码添加客服'}
           >
             <span className="welcome-cs-qr">
-              {qrDataUrl
-                ? <img src={qrDataUrl} alt="" className="welcome-cs-qr-image" />
-                : qrError
-                  ? <span className="welcome-cs-qr-error" role="img" aria-label="二维码生成失败">!</span>
-                  : <LoaderCircle size={18} className="spin" aria-hidden="true" />}
+              {qrDataUrl ? <img src={qrDataUrl} alt="" className="welcome-cs-qr-image" /> : qrError ? <span className="welcome-cs-qr-error" role="img" aria-label="二维码生成失败">!</span> : <LoaderCircle size={18} className="spin" aria-hidden="true" />}
             </span>
-            <span className="welcome-cs-copy" aria-live="polite">
-              <strong>{qrError ? '直接联系客服' : '扫码加客服'}</strong>
-              <span>{qrError ? '二维码暂不可用，点此打开客服' : '企业微信，点这里也能打开'}</span>
-            </span>
+            <span className="welcome-cs-copy"><strong>{qrError ? '直接联系客服' : '扫码加客服'}</strong><span>{qrError ? '二维码暂不可用，点此打开客服' : '企业微信，点这里也能打开'}</span></span>
           </button>
+        </div>
+        <footer className="welcome-foot">
+          <div className="welcome-foot-left">
+            <span>{`© ${new Date().getFullYear()} 星芒 AI`}</span><span className="welcome-foot-dot">·</span>
+            <button type="button" className="account-inline-link" onClick={() => setLegalKind('user-agreement')}>用户协议</button><span className="welcome-foot-dot">·</span>
+            <button type="button" className="account-inline-link" onClick={() => setLegalKind('privacy-policy')}>隐私政策</button><span className="welcome-foot-dot">·</span><span>账号后台 <code>xm.solov.cc</code></span>
+          </div>
         </footer>
+        </div>
       </div>
     </div>
   )

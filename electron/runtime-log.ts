@@ -67,6 +67,7 @@ function sanitizeValue(value: unknown, depth = 0, key = ''): unknown {
   }
   if (typeof value === 'string') return safeText(value)
   if (typeof value === 'bigint') return value.toString()
+  if (depth >= MAX_DETAIL_DEPTH) return '[TRUNCATED]'
   if (value instanceof Error) {
     const metadata = Object.fromEntries(
       Object.entries(value)
@@ -80,7 +81,6 @@ function sanitizeValue(value: unknown, depth = 0, key = ''): unknown {
       stack: value.stack ? safeText(value.stack) : null,
     }
   }
-  if (depth >= MAX_DETAIL_DEPTH) return '[TRUNCATED]'
   if (Array.isArray(value)) {
     return value.slice(0, MAX_DETAIL_ITEMS).map((entry) => sanitizeValue(entry, depth + 1))
   }
@@ -254,7 +254,15 @@ export class RuntimeLogStore {
             if (!line.trim()) continue
             try {
               const value = JSON.parse(line) as unknown
-              if (validEntry(value)) entries.push(value)
+              if (validEntry(value)) entries.push({
+                level: value.level,
+                id: safeText(value.id),
+                timestamp: safeText(value.timestamp),
+                source: safeText(value.source).slice(0, 80),
+                event: safeText(value.event).slice(0, 120),
+                message: safeText(value.message),
+                detail: sanitizeDetail(value.detail),
+              })
             } catch {
               // A partial final line must not make the rest of the log unreadable.
             }
@@ -312,7 +320,7 @@ export class RuntimeLogStore {
     })
   }
 
-  async feedbackReport(limit = 600): Promise<string> {
+  async captureFeedbackReport(limit = 600): Promise<{ text: string; entries: number }> {
     const snapshot = await this.snapshot(limit)
     const home = os.homedir()
     const scrubHome = (value: string) => redactHomeDirectory(value, home)
@@ -335,6 +343,10 @@ export class RuntimeLogStore {
         `[${entry.timestamp}] [${entry.level.toUpperCase()}] [${entry.source}/${entry.event}] ${entry.message}${detail}`,
       ))
     }
-    return `${lines.join('\n')}\n`
+    return { text: `${lines.join('\n')}\n`, entries: snapshot.total }
+  }
+
+  async feedbackReport(limit = 600): Promise<string> {
+    return (await this.captureFeedbackReport(limit)).text
   }
 }
