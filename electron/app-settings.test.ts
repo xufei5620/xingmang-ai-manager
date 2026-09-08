@@ -40,7 +40,8 @@ describe('application settings persistence', () => {
     expect(readAppSettings(filePath, 'D:\\Workspace')).toEqual({
       version: 2,
       workspace: 'D:\\Workspace',
-      theme: 'dark',
+      theme: 'light',
+      uiSkin: 'mist',
       checkUpdatesOnStartup: true,
       runDiagnosticsOnStartup: false,
     })
@@ -59,6 +60,7 @@ describe('application settings persistence', () => {
       version: 2,
       workspace: 'D:\\Legacy',
       theme: 'light',
+      uiSkin: 'mist',
       checkUpdatesOnStartup: true,
       runDiagnosticsOnStartup: true,
     })
@@ -387,11 +389,11 @@ describe('UI and window preferences', () => {
     expect(readAppSettings(filePath)).toEqual(next)
   })
 
-  it('keeps old v2 records valid without pinning new defaults', async () => {
+  it('migrates old v2 records to the first-run light and mist appearance', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())
     const result = readAppSettings(filePath)
-    expect(result).not.toHaveProperty('uiSkin')
+    expect(result).toMatchObject({ theme: 'light', uiSkin: 'mist' })
     expect(result).not.toHaveProperty('uiScale')
     expect(result).not.toHaveProperty('closeBehavior')
     expect(result).not.toHaveProperty('windowState')

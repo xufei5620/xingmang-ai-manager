@@ -170,9 +170,9 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     return handle
   }
 
-  function cancel(runId: string, ownerId: number): boolean {
+  function cancel(runId: string, ownerId: number, userId?: number): boolean {
     const run = active.get(runId)
-    if (!run || run.ownerId !== ownerId || run.controller.signal.aborted) return false
+    if (!run || run.ownerId !== ownerId || (userId !== undefined && run.userId !== userId) || run.controller.signal.aborted) return false
     run.controller.abort(new Error('用户取消画布运行'))
     return true
   }

@@ -341,6 +341,11 @@ export interface CanvasAppearance {
   reducedMotion?: boolean
 }
 
+export interface CanvasAccountChange {
+  userId: number | null
+  previousUserId: number | null
+}
+
 export interface CanvasHostBridge {
   saveFile(suggestedName: string, content: string): Promise<{ savedPath: string } | null>
   pickFile(): Promise<{ name: string; content: string } | null>
@@ -416,6 +421,7 @@ export interface CanvasHostBridge {
   renameProject(projectId: string, name: string): Promise<CanvasStoredProjectSummary>
   duplicateProject(projectId: string, name: string): Promise<{ project: CanvasStoredProjectSummary; content: string } | null>
   setProjectArchived(projectId: string, archived: boolean): Promise<CanvasStoredProjectSummary>
+  onAccountChange(listener: (change: CanvasAccountChange) => void): () => void
   onRunEvent(listener: (event: CanvasRunEvent) => void): () => void
   onThemeChange(listener: (theme: 'light' | 'dark') => void): () => void
   onAppearanceChange(listener: (appearance: CanvasAppearance) => void): () => void
@@ -505,6 +511,7 @@ export function hostBridge(): CanvasHostBridge {
     async renameProject() { return unavailable() },
     async duplicateProject() { return unavailable() },
     async setProjectArchived() { return unavailable() },
+    onAccountChange() { return () => undefined },
     onRunEvent() { return () => undefined },
     onThemeChange() { return () => undefined },
     onAppearanceChange() { return () => undefined },

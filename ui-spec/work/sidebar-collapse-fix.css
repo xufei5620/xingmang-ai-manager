@@ -1,0 +1,64 @@
+/* Compact sidebar: keep the account actions inside the 60px rail.
+   The desktop account row needs 36 + 9 + 22 = 67px, so stack its
+   avatar and existing account-switch action when the rail is compact. */
+.window.collapsed .brand {
+  min-width: 0;
+  padding-inline: 0;
+  flex-shrink: 0;
+}
+.window.collapsed .brand .logo,
+.window.collapsed .brand .logo img {
+  max-width: 100%;
+}
+.window.collapsed .sidebar-foot {
+  flex-shrink: 0;
+}
+.window.collapsed .account .top {
+  width: 100%;
+  flex-direction: column;
+  gap: 2px;
+}
+.window.collapsed .account .bal {
+  width: 100%;
+  justify-content: center;
+}
+.window.collapsed .account .bal .btn {
+  display: flex;
+}
+.window[data-os="mac"].collapsed .lights {
+  left: 8px;
+  gap: 4px;
+}
+
+/* Match the existing automatic compact mode as well as manual collapse.
+   Preserve the no-sidebar titlebar and all navigation/more/tooltip rules. */
+@container (max-width: 1100px) {
+  .window:not(.no-sidebar) .brand {
+    min-width: 0;
+    padding-inline: 0;
+    flex-shrink: 0;
+  }
+  .window:not(.no-sidebar) .brand .logo,
+  .window:not(.no-sidebar) .brand .logo img {
+    max-width: 100%;
+  }
+  .window:not(.no-sidebar) .sidebar-foot {
+    flex-shrink: 0;
+  }
+  .window:not(.no-sidebar) .account .top {
+    width: 100%;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .window:not(.no-sidebar) .account .bal {
+    width: 100%;
+    justify-content: center;
+  }
+  .window:not(.no-sidebar) .account .bal .btn {
+    display: flex;
+  }
+  .window[data-os="mac"]:not(.no-sidebar) .lights {
+    left: 8px;
+    gap: 4px;
+  }
+}

@@ -46,6 +46,7 @@ export const canvasHostChannels = {
   duplicateProject: 'canvas-host:duplicate-project',
   setProjectArchived: 'canvas-host:set-project-archived',
   runEvent: 'canvas-host:run-event',
+  accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
   appearanceChanged: 'canvas-host:appearance-changed',
   closeRequested: 'canvas-host:close-requested',
@@ -58,6 +59,16 @@ export interface CanvasAppearance {
   theme: 'light' | 'dark'
   uiSkin?: 'dawn' | 'obsidian' | 'mist' | 'aurora'
   reducedMotion?: boolean
+}
+
+/**
+ * Emitted when the main application session changes while the canvas window
+ * is still open. The renderer uses this as a lifecycle boundary and drops all
+ * account-owned in-memory state before accepting data for the new session.
+ */
+export interface CanvasAccountChange {
+  userId: number | null
+  previousUserId: number | null
 }
 
 export interface CanvasCloseRequest { requestId: string }

@@ -1,0 +1,49 @@
+/* Platform presentation only; the existing 216px / 60px layout and compact-account fix are retained. */
+.xm-platform-controls { display:inline-flex; align-items:center; flex-wrap:wrap; gap:10px; }
+.xm-platform-controls > label { display:inline-flex; align-items:center; gap:6px; }
+.xm-platform-controls > label[hidden], .xm-platform-details[hidden] { display:none; }
+.proto-bar .xm-platform-controls select { min-height:30px; max-width:244px; background:#24262D; color:#EDEEF2; }
+.proto-bar .pbtn:disabled { opacity:.55; cursor:not-allowed; }
+.xm-platform-controls .pbtn:focus-visible { outline:2px solid #D4A355; outline-offset:2px; }
+.xm-platform-details { position:absolute; left:24px; top:calc(100% + 8px); width:min(620px,calc(100vw - 48px)); max-height:min(650px,calc(100vh - 200px)); overflow:auto; padding:18px 20px; border:1px solid #4B4F59; border-radius:12px; background:#202228; color:#D9DCE3; box-shadow:0 16px 48px #0008; font-size:13px; line-height:1.6; z-index:60; }
+.xm-platform-details > strong { display:block; color:#fff; font-size:15px; }
+.xm-platform-details dl { display:grid; grid-template-columns:86px minmax(0,1fr); gap:10px 14px; margin:14px 0; }
+.xm-platform-details dt { color:#B7BBC6; }
+.xm-platform-details dd { margin:0; overflow-wrap:anywhere; }
+.xm-platform-details code { color:#F0D3A4; font-size:12px; }
+.xm-platform-details kbd { color:#EDEEF2; background:#2C3039; border-color:#555B68; }
+.xm-platform-disclaimer { margin:8px 0 14px; color:#DFC293; }
+.xm-platform-sources { margin:12px 0 0; padding-top:10px; border-top:1px solid #3D414B; color:#ADB3C1; }
+.xm-platform-sources a { color:#F1CF98; text-underline-offset:3px; }
+
+/* Native-looking shells are scenario illustrations, not pixel-exact OS screenshots. */
+.winbox[data-platform-frame="win-legacy"], .window[data-platform-frame="win-legacy"] { border-radius:0; corner-shape:round; }
+.winbox[data-platform-frame="win-modern"], .window[data-platform-frame="win-modern"] { border-radius:8px; corner-shape:round; }
+.winbox[data-platform-frame="mac-classic"], .window[data-platform-frame="mac-classic"] { border-radius:12px; corner-shape:round; }
+.winbox[data-platform-frame="mac-current"], .window[data-platform-frame="mac-current"] { border-radius:18px; corner-shape:round; }
+.winbox[data-platform-frame="linux-csd"], .window[data-platform-frame="linux-csd"] { border-radius:10px; corner-shape:round; }
+.winbox[data-platform-frame="linux-legacy"], .window[data-platform-frame="linux-legacy"] { border-radius:3px; corner-shape:round; }
+.window[data-platform-frame="win-legacy"] .titlebar, .window[data-platform-frame="linux-legacy"] .titlebar { backdrop-filter:none; background:var(--rail); }
+.window[data-platform-frame="linux-legacy"] .titlebar .win-controls span { border-radius:3px; }
+body[data-platform-os="win"] .osnotify { border-radius:6px; }
+body[data-platform-os="mac"] .osnotify { border-radius:14px; }
+body[data-platform-os="linux"] .osnotify { border-radius:8px; }
+
+/* Lucide UI icons only. Vendor/tool marks never receive these classes. */
+.window .xm-ui-icon { width:16px; height:16px; flex:none; stroke-width:1.75; }
+.window .nav { min-height:0; overflow-y:auto; overflow-x:hidden; overscroll-behavior:contain; }
+.window .nav a { min-height:36px; height:36px; flex-shrink:0; font-size:14px; line-height:20px; gap:10px; padding-block:8px; }
+.window .nav a > .xm-ui-icon { width:20px; height:20px; }
+.window .nav a > .xm-ui-icon.ext, .window .nav .more-toggle > .xm-ui-icon.chev { width:16px; height:16px; }
+.window .nav .more-list { flex-shrink:0; }
+.window .nav .sep { flex-shrink:0; }
+.window .btn > .xm-ui-icon, .window .kf-btn > .xm-ui-icon { width:18px; height:18px; }
+.window .field .xm-ui-icon, .window .input-wrap .xm-ui-icon, .window .cmd-trigger > .xm-ui-icon { width:16px; height:16px; }
+.window .field .btn > .xm-ui-icon { width:18px; height:18px; }
+.window .brand .collapse .xm-ui-icon { width:18px; height:18px; }
+.window .update-row > .xm-ui-icon { width:18px; height:18px; }
+.window.collapsed .nav a { min-height:36px; height:36px; padding-block:8px; }
+@container (max-width:1100px) {
+  .window:not(.no-sidebar) .nav a { min-height:36px; height:36px; padding-block:8px; }
+}
+@media (prefers-reduced-motion:reduce) { .xm-platform-controls *, .xm-platform-details * { scroll-behavior:auto; } }

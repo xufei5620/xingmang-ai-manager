@@ -9,6 +9,11 @@ const packageJson = require(path.join(root, 'package.json'))
 const workflow = YAML.parse(
   fs.readFileSync(path.join(root, '.github', 'workflows', 'quality.yml'), 'utf8'),
 )
+const viteConfigSource = fs.readFileSync(path.join(root, 'vite.config.ts'), 'utf8')
+const platformEntrySource = fs.readFileSync(
+  path.join(root, 'electron', 'platform', 'entry.ts'),
+  'utf8',
+)
 
 const darwinOnlyTests = [
   'scripts/create-macos-free-signing-certificate.test.cjs',
@@ -23,6 +28,26 @@ function runSteps(jobName) {
     .map((step) => step.run)
     .filter((command) => typeof command === 'string')
 }
+
+test('renderer v2 is the default and legacy remains an explicit rollback mode', () => {
+  const scripts = packageJson.scripts
+
+  assert.match(scripts.dev, /XINGMANG_RENDERER=v2\s+npm run dev:runtime/)
+  assert.match(scripts['dev:legacy'], /XINGMANG_RENDERER=legacy\s+npm run dev:runtime/)
+  assert.match(scripts.compile, /XINGMANG_RENDERER=v2\s+npm run compile:runtime/)
+  assert.match(scripts['compile:legacy'], /XINGMANG_RENDERER=legacy\s+npm run compile:runtime/)
+  for (const name of ['build', 'build:win:ci', 'build:mac:dir', 'build:mac:ci', 'release:build:unsigned']) {
+    assert.match(scripts[name], /npm run compile/, `${name} must use the default v2 compile`)
+    assert.doesNotMatch(scripts[name], /compile:legacy/, `${name} must not package the rollback renderer`)
+  }
+
+  assert.match(viteConfigSource, /requestedRenderer === 'legacy' \? 'legacy' : 'v2'/)
+  assert.match(viteConfigSource, /Unsupported XINGMANG_RENDERER value/)
+  assert.match(viteConfigSource, /fileName: 'renderer-v2\.flag'/)
+  assert.match(platformEntrySource, /requestedRenderer !== 'legacy'/)
+  assert.match(platformEntrySource, /Boolean\(process\.env\.VITE_DEV_SERVER_URL\)/)
+  assert.match(platformEntrySource, /usesDevServer \? requestedRenderer !== 'legacy' : builtWithV2/)
+})
 
 test('the common test suite excludes Darwin filesystem and signing fixtures', () => {
   const commonTestCommand = packageJson.scripts.test
@@ -66,6 +91,23 @@ test('the Windows job enables unprivileged symlink creation before security test
   const enableStep = steps[enableStepIndex]
   assert.equal(enableStep.shell, 'pwsh')
   assert.match(String(enableStep.run), /AllowDevelopmentWithoutDevLicense/)
+})
+
+test('the Windows required job tests and compiles the default renderer v2', () => {
+  const steps = workflow.jobs.test.steps
+  const commands = runSteps('test')
+  const browserInstallIndex = commands.indexOf('npx --no-install playwright install chromium')
+  const v2TestIndex = commands.indexOf('npm run test:v2')
+  const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
+  const compileIndex = steps.findIndex((step) => step.run === 'npm run compile')
+  const flagCheckIndex = steps.findIndex((step) => step.name === 'Verify the default compile selected renderer v2')
+
+  assert.notEqual(v2TestIndex, -1, 'Windows CI must run the renderer v2 suite')
+  assert.ok(browserInstallIndex < v2TestIndex, 'Chromium must be installed before renderer v2 browser tests')
+  assert.ok(v2TestIndex < dirtyCheckIndex, 'renderer v2 tests must run before the dirty-tree guard')
+  assert.ok(dirtyCheckIndex < compileIndex, 'the default compile must run after tests')
+  assert.ok(compileIndex < flagCheckIndex, 'the default compile must be checked for its v2 marker')
+  assert.match(String(steps[flagCheckIndex].run), /dist\/renderer-v2\.flag/)
 })
 
 test('the Windows suite serializes filesystem-heavy files with a bounded test timeout', () => {

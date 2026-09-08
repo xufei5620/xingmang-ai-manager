@@ -554,7 +554,7 @@ function parseAccountEmailInput(value: unknown): string {
 
 function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
   if (!isRecord(value)) throw new Error('注册信息格式错误')
-  const email = requiredString(value.email, '邮箱地址', 254)
+  const email = parseAccountEmailInput(value.email)
   // Required, not defaulted from email: new-api enforces uniqueness on
   // username independently of email (see NewApiRegisterInput's own comment
   // in new-api-client.ts), and RegisterDialog.tsx now collects a real
@@ -565,7 +565,10 @@ function parseAccountRegisterInput(value: unknown): NewApiRegisterInput {
   if (typeof value.password !== 'string' || !value.password || value.password.length > 256) {
     throw new Error('密码格式错误')
   }
-  const verificationCode = requiredString(value.verificationCode, '邮箱验证码', 32)
+  // The account status endpoint can disable email verification. In that mode
+  // the renderer intentionally hides the field and sends an empty value; do
+  // not reject an otherwise valid registration before the service sees it.
+  const verificationCode = optionalString(value.verificationCode, '邮箱验证码', 32) ?? ''
   return {
     email,
     password: value.password,

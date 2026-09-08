@@ -11,27 +11,6 @@ const testUserDataDir = path.join(testRoot, 'user-data')
 await fs.mkdir(artifactDir, { recursive: true })
 await fs.rm(testRoot, { recursive: true, force: true })
 await fs.mkdir(testCodexHomeDir, { recursive: true })
-await fs.writeFile(
-  path.join(testCodexHomeDir, 'config.toml'),
-  [
-    'model_provider = "solov"',
-    'model = "gpt-5.6-sol"',
-    'review_model = "gpt-5.6-sol"',
-    '',
-    '[model_providers.solov]',
-    'name = "solov"',
-    'base_url = "https://xm.solov.cc/v1"',
-    'wire_api = "responses"',
-    'requires_openai_auth = true',
-    '',
-  ].join('\n'),
-  'utf8',
-)
-await fs.writeFile(
-  path.join(testCodexHomeDir, 'auth.json'),
-  `${JSON.stringify({ OPENAI_API_KEY: 'ci-smoke-placeholder-key' }, null, 2)}\n`,
-  'utf8',
-)
 
 const application = await electron.launch({
   args: ['.', `--user-data-dir=${testUserDataDir}`],
@@ -49,7 +28,7 @@ page.on('pageerror', (error) => pageErrors.push(error.message))
 
 try {
   await page.waitForLoadState('domcontentloaded')
-  await page.locator('.welcome-page').waitFor({ state: 'visible', timeout: 60_000 })
+  await page.getByTestId('welcome-page').waitFor({ state: 'visible', timeout: 60_000 })
 
   const windowMetrics = await application.evaluate(({ BrowserWindow, screen }) => {
     const browserWindow = BrowserWindow.getAllWindows()[0]
@@ -65,7 +44,7 @@ try {
     }
   })
 
-  const expectedConstellationLabels = ['Claude Code', 'Codex', 'Gemini', 'Grok']
+  const expectedConstellationLabels = ['Claude Code', 'Codex CLI', 'Gemini CLI', 'Grok CLI']
   const result = {
     title: await page.title(),
     pageErrors,
@@ -73,23 +52,23 @@ try {
     horizontalOverflow: await page.evaluate(
       () => document.documentElement.scrollWidth > document.documentElement.clientWidth,
     ),
-    welcomeVisible: await page.locator('.welcome-page').isVisible(),
-    dashboardBlocked: await page.locator('.app-shell').count() === 0,
-    onboardingHidden: await page.locator('.onboarding-shell').count() === 0,
+    welcomeVisible: await page.getByTestId('welcome-page').isVisible(),
+    dashboardBlocked: await page.getByTestId('shell-topbar').count() === 0,
+    onboardingHidden: await page.getByTestId('start-guide').count() === 0,
     welcomeHeading: await page.getByRole('heading', { name: /装好就能用的\s*AI 编程工具/ }).innerText(),
-    constellationLabels: (await page.locator('.welcome-node').allInnerTexts()).map((text) => text.trim()),
-    registerVisible: await page.getByRole('button', { name: '免费注册', exact: true }).isVisible(),
-    loginVisible: await page.locator('.welcome-cta-login').isVisible(),
+    constellationLabels: (await page.locator('.auth-orbit-satellite').allInnerTexts()).map((text) => text.trim()),
+    registerVisible: await page.getByTestId('welcome-register').isVisible(),
+    loginVisible: await page.getByTestId('welcome-login').isVisible(),
     legacyCredentialUiVisible: await page.locator('#onboarding-api-key, .welcome-cta-ghost').count() > 0,
     loginDialogReachable: false,
   }
 
-  await page.locator('.welcome-cta-login').click()
-  const loginDialog = page.getByRole('dialog', { name: '登录' })
+  await page.getByTestId('welcome-login').click()
+  const loginDialog = page.getByTestId('login-dialog')
   await loginDialog.waitFor({ state: 'visible' })
-  result.loginDialogReachable = await loginDialog.getByLabel('用户名或邮箱').isVisible()
-    && await loginDialog.getByRole('textbox', { name: '密码', exact: true }).isVisible()
-  await loginDialog.getByTitle('关闭').click()
+  result.loginDialogReachable = await loginDialog.getByTestId('login-account').isVisible()
+    && await loginDialog.getByTestId('login-password').isVisible()
+  await loginDialog.getByTestId('login-cancel').click()
 
   // Chromium's CSS viewport screenshot can crop an Electron window after
   // setZoomFactor. Capture the native content area for the actual layout.

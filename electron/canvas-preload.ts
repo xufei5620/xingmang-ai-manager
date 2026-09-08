@@ -45,6 +45,7 @@ const channels = {
   duplicateProject: 'canvas-host:duplicate-project',
   setProjectArchived: 'canvas-host:set-project-archived',
   runEvent: 'canvas-host:run-event',
+  accountChanged: 'canvas-host:account-changed',
   themeChanged: 'canvas-host:theme-changed',
   appearanceChanged: 'canvas-host:appearance-changed',
   closeRequested: 'canvas-host:close-requested',
@@ -61,6 +62,27 @@ function subscribeCloseRequest(channel: string, listener: (request: { requestId:
   }
   ipcRenderer.on(channel, wrapped)
   return () => ipcRenderer.removeListener(channel, wrapped)
+}
+
+function subscribeAccountChange(listener: (change: { userId: number | null; previousUserId: number | null }) => void) {
+  const wrapped = (_event: unknown, payload: unknown) => {
+    if (!payload || typeof payload !== 'object') return
+    const value = payload as Record<string, unknown>
+    const userId = value.userId === null
+      ? null
+      : typeof value.userId === 'number' && Number.isSafeInteger(value.userId) && value.userId > 0
+        ? value.userId
+        : undefined
+    const previousUserId = value.previousUserId === null
+      ? null
+      : typeof value.previousUserId === 'number' && Number.isSafeInteger(value.previousUserId) && value.previousUserId > 0
+        ? value.previousUserId
+        : undefined
+    if (userId === undefined || previousUserId === undefined) return
+    listener({ userId, previousUserId })
+  }
+  ipcRenderer.on(channels.accountChanged, wrapped)
+  return () => ipcRenderer.removeListener(channels.accountChanged, wrapped)
 }
 
 contextBridge.exposeInMainWorld('xingmangCanvasHost', {
@@ -111,6 +133,7 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   renameProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.renameProject, projectId, name),
   duplicateProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.duplicateProject, projectId, name),
   setProjectArchived: (projectId: string, archived: boolean) => ipcRenderer.invoke(channels.setProjectArchived, projectId, archived),
+  onAccountChange: (listener: (change: { userId: number | null; previousUserId: number | null }) => void) => subscribeAccountChange(listener),
   finishClose: (requestId: string, allowed: boolean) => ipcRenderer.invoke(channels.finishClose, requestId, allowed),
   cancelCloseTasks: (requestId: string) => ipcRenderer.invoke(channels.cancelCloseTasks, requestId),
   onCloseRequested: (listener: (request: { requestId: string }) => void) => subscribeCloseRequest(channels.closeRequested, listener),

@@ -1,0 +1,24 @@
+/* Keep the original compact single-column tray; theme tokens belong to this external host. */
+#trayHost{font-family:var(--font);color:var(--text)}
+#trayHost .tray-stage{right:24px;bottom:24px;max-width:calc(100vw - 48px)}
+#trayHost .tray-menu{width:272px;max-width:calc(100vw - 48px);max-height:calc(100vh - 96px);overflow-y:auto;overscroll-behavior:contain;background:var(--panel-solid);color:var(--text);border-color:var(--line-2);box-shadow:var(--shadow);font-size:13px;line-height:20px;padding:6px;border-radius:10px}
+#trayHost .tray-menu .h{padding:7px 10px 10px;min-height:50px;gap:8px}
+#trayHost .tray-menu .h>strong{font-size:14px;white-space:nowrap}
+#trayHost .tray-balance{margin-left:auto;display:flex;flex-direction:column;align-items:flex-end;min-width:0;line-height:17px}
+#trayHost .tray-balance>span{font-family:var(--font);font-size:11px;color:var(--text-2)}
+#trayHost .tray-balance>strong{font-family:var(--mono);font-size:13px;max-width:108px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text)}
+#trayHost .tray-login{margin-left:auto;border:0;border-radius:4px;padding:4px;background:transparent;color:var(--text-2);font:inherit;font-size:12px;white-space:nowrap;cursor:pointer}
+#trayHost .tray-login:hover{color:var(--text);background:var(--panel-2)}
+#trayHost .tray-menu .i{width:100%;height:32px;min-height:32px;padding:6px 10px;display:flex;align-items:center;gap:9px;border:0;border-radius:6px;background:transparent;color:var(--text);font:inherit;text-align:left}
+#trayHost .tray-menu .i:hover{background:var(--panel-2)}
+#trayHost .tray-menu .i:focus-visible,#trayHost .tray-login:focus-visible{outline:2px solid var(--accent);outline-offset:-2px;background:var(--panel-2)}
+#trayHost .tray-menu .i>svg,#trayHost .tray-menu .i .ico svg{width:16px;height:16px;flex:none;stroke-width:1.75}
+#trayHost .tray-menu .i>svg{color:var(--text-2)}
+#trayHost .tray-menu .i .ico.xs{width:16px;height:16px;background:transparent;border:0;box-shadow:none;flex:none}
+#trayHost .tray-label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+#trayHost .tray-menu .i kbd{margin-left:auto;flex:none;padding:0;border:0;background:transparent;color:var(--text-2);font-size:11px}
+#trayHost .tray-menu hr{border-top-color:var(--line);margin:5px 0}
+#trayHost .taskbar{max-width:100%;flex-shrink:0}
+#trayHost .taskbar .tico{padding:0;border:0;color:#C9CED5}
+#trayHost .taskbar .tico>svg{width:14px;height:14px}
+#trayHost .taskbar button.tico{cursor:pointer}

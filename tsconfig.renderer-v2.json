@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "paths": {}, "types": ["vite/client"] },
+  "include": ["src/renderer-v2", "e2e/renderer-v2*.tsx", "e2e/v2*.tsx"],
+  "exclude": []
+}

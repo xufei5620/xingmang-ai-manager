@@ -1,4 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type UIEvent } from 'react'
+import { flushSync } from 'react-dom'
 import { Film, Image as ImageIcon, Music2 } from 'lucide-react'
 import { isCanvasImagePreviewUrl } from './MediaPreview'
 import {
@@ -184,12 +185,13 @@ export function PromptEditor({ label, value, placeholder, references, rows = 3, 
     syncPromptHighlight(textareaRef.current, highlightRef.current)
   }, [draft])
 
-  const emit = (nextValue: string, caret: number | null) => {
+  const emit = (nextValue: string, caret: number | null, sync = false) => {
     const slotted = ensureMentionThumbSlots(nextValue, caret, references)
     const clipped = clipPromptEditorValue(slotted.value, slotted.caret)
     draftRef.current = clipped.value
     setDraft(clipped.value)
-    onChange(clipped.value)
+    if (sync) flushSync(() => onChange(clipped.value))
+    else onChange(clipped.value)
     setMentionQuery(clipped.caret === null ? null : mentionQueryAt(clipped.value, clipped.caret))
     setActiveIndex(0)
   }
@@ -199,7 +201,10 @@ export function PromptEditor({ label, value, placeholder, references, rows = 3, 
   const insertReference = (reference: UpstreamMediaReference | undefined) => {
     if (!reference || !mentionQuery) return
     const inserted = insertUpstreamMention(draftRef.current, reference.mention, mentionQuery)
-    emit(inserted.value, inserted.caret)
+    // A menu selection is a discrete edit. Flush the controlled parent update
+    // before the key event returns so the textarea cannot briefly re-render
+    // with the pre-selection query (for example just "@").
+    emit(inserted.value, inserted.caret, true)
     window.requestAnimationFrame(() => {
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(inserted.caret, inserted.caret)
@@ -215,7 +220,9 @@ export function PromptEditor({ label, value, placeholder, references, rows = 3, 
     const textarea = textareaRef.current
     const index = textarea ? textareaCaretIndexFromPoint(textarea, clientX, clientY) : draftRef.current.length
     const inserted = insertMentionAt(draftRef.current, mention, index)
-    emit(inserted.value, inserted.caret)
+    // Drag-and-drop is another discrete insertion; keep the controlled value
+    // in lockstep before the browser dispatches the next pointer event.
+    emit(inserted.value, inserted.caret, true)
     window.requestAnimationFrame(() => {
       textareaRef.current?.focus()
       textareaRef.current?.setSelectionRange(inserted.caret, inserted.caret)

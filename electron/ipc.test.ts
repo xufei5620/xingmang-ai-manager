@@ -1520,6 +1520,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         version: 2,
         workspace: 'D:\\workspace',
         theme: 'light',
+        uiSkin: 'mist',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
       })
@@ -1540,6 +1541,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         version: 2,
         workspace: 'C:\\workspace',
         theme: 'dark',
+        uiSkin: 'mist',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
         sidebarMoreExpanded: true,
@@ -2826,12 +2828,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(() => handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: 'x'.repeat(257), verificationCode: '1' })).toThrow('密码格式错误')
     })
 
-    it('rejects a missing or blank verification code', () => {
+    it('allows a missing or blank verification code when the server has disabled email verification', async () => {
       register()
       const handler = electronMocks.handlers.get('account:register')!
 
-      expect(() => handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: 'x'.repeat(10) })).toThrow('邮箱验证码格式错误')
-      expect(() => handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: 'x'.repeat(10), verificationCode: '  ' })).toThrow('邮箱验证码格式错误')
+      await expect(handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: 'x'.repeat(10) })).resolves.toBeUndefined()
+      await expect(handler(trustedEvent(), { username: 'user', email: 'a@b.com', password: 'x'.repeat(10), verificationCode: '' })).resolves.toBeUndefined()
     })
 
     it('never reaches the account service -- and never the real production client -- when validation fails', () => {

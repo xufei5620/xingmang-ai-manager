@@ -1,0 +1,166 @@
+/* ============================================================
+   99-skin · 多皮肤主题（整氛围方案）+ 欢迎页星轨视觉
+   每套皮肤同时定义暗/亮两个模式的【中性色 + 强调色 + 环境光晕】，
+   即“换皮肤 = 换整个界面气质”，不只是换按钮颜色。
+   晨曦金 = 现行默认（v3.0.4 规范值），不覆盖任何变量。
+   ============================================================ */
+
+/* ---------- 极夜黑金 · 近纯黑中性 + 香槟金 ---------- */
+[data-theme="dark"][data-skin="obsidian"] {
+  --win:#08090C; --rail:#060708; --bg:#0B0C10;
+  --panel:rgba(255,255,255,.045); --panel-solid:#15171C; --panel-hover:rgba(255,255,255,.07); --panel-2:rgba(255,255,255,.075);
+  --line:rgba(255,255,255,.09); --line-2:rgba(255,255,255,.16); --line-3:rgba(255,255,255,.27);
+  --text:#F2F3F5; --text-2:#A9AFBB; --text-3:#8D94A0; --kbd-bg:rgba(255,255,255,.08);
+  --accent:#E0BE7C; --accent-2:#EDD39B; --accent-fg:#141210; --accent-glow:rgba(224,190,124,.30); --accent-soft:rgba(224,190,124,.15); --info:#9FB2C8;
+  --overlay:rgba(2,3,5,.66); --btn-2-bg:rgba(255,255,255,.06); --btn-2-hover:rgba(255,255,255,.11);
+  --glow-top:radial-gradient(900px 380px at 12% -8%, rgba(224,190,124,.12), transparent 60%), radial-gradient(700px 300px at 90% 0%, rgba(120,126,138,.22), transparent 60%);
+  --tile-ring:inset 0 0 0 1px rgba(255,255,255,.08), inset 0 1px 0 rgba(255,255,255,.05);
+  --card-grad:linear-gradient(180deg, rgba(255,255,255,.05), rgba(255,255,255,.02));
+}
+[data-theme="light"][data-skin="obsidian"] {
+  --win:#F1EDE2; --rail:#EDE8DB; --bg:#F7F3E9;
+  --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#FBF8F0; --panel-2:#F0EBDD;
+  --line:rgba(52,42,20,.09); --line-2:rgba(52,42,20,.15); --line-3:rgba(52,42,20,.26);
+  --text:#221E14; --text-2:#5C5340; --text-3:#7A705B; --kbd-bg:#EDE7D8;
+  --accent:#96702C; --accent-2:#B99041; --accent-fg:#FFFFFF; --accent-glow:rgba(150,112,44,.22); --accent-soft:rgba(150,112,44,.12); --info:#6A5B38;
+  --overlay:rgba(52,42,20,.42); --btn-2-bg:#FFFFFF; --btn-2-hover:#F2EDDF;
+  --glow-top:radial-gradient(900px 380px at 12% -8%, rgba(185,144,65,.14), transparent 60%), radial-gradient(700px 300px at 90% 0%, rgba(200,190,160,.3), transparent 60%);
+  --tile-ring:inset 0 0 0 1px rgba(52,42,20,.06), 0 1px 2px rgba(52,42,20,.06);
+  --card-grad:#FFFFFF;
+}
+
+/* ---------- 雾青 · 深石板青 / 冷白 + 青碧 ---------- */
+[data-theme="dark"][data-skin="mist"] {
+  --win:#0A1518; --rail:#071013; --bg:#0C1A1E;
+  --panel:rgba(150,220,210,.05); --panel-solid:#12262B; --panel-hover:rgba(150,220,210,.08); --panel-2:rgba(150,220,210,.08);
+  --line:rgba(150,220,210,.10); --line-2:rgba(150,220,210,.17); --line-3:rgba(150,220,210,.28);
+  --text:#EAF3F1; --text-2:#9FB8B4; --text-3:#84A09C; --kbd-bg:rgba(150,220,210,.09);
+  --accent:#43C6B8; --accent-2:#7BDDD0; --accent-fg:#06201C; --accent-glow:rgba(67,198,184,.30); --accent-soft:rgba(67,198,184,.15); --info:#8FD8CE;
+  --overlay:rgba(3,10,12,.64); --btn-2-bg:rgba(150,220,210,.07); --btn-2-hover:rgba(150,220,210,.12);
+  --glow-top:radial-gradient(900px 380px at 12% -8%, rgba(67,198,184,.12), transparent 60%), radial-gradient(700px 300px at 90% 0%, rgba(20,70,74,.4), transparent 60%);
+  --tile-ring:inset 0 0 0 1px rgba(150,220,210,.10), inset 0 1px 0 rgba(255,255,255,.05);
+  --card-grad:linear-gradient(180deg, rgba(150,220,210,.05), rgba(150,220,210,.02));
+}
+[data-theme="light"][data-skin="mist"] {
+  --win:#EAF2F1; --rail:#E6EFEE; --bg:#F0F6F5;
+  --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#F6FBFA; --panel-2:#E7F0EE;
+  --line:rgba(12,58,54,.09); --line-2:rgba(12,58,54,.15); --line-3:rgba(12,58,54,.26);
+  --text:#0F2A2E; --text-2:#3F5E5C; --text-3:#5E7A77; --kbd-bg:#E4EEEC;
+  --accent:#0F7A72; --accent-2:#159A8E; --accent-fg:#FFFFFF; --accent-glow:rgba(15,122,114,.22); --accent-soft:rgba(15,122,114,.12); --info:#177F78;
+  --overlay:rgba(12,58,54,.4); --btn-2-bg:#FFFFFF; --btn-2-hover:#ECF4F2;
+  --glow-top:radial-gradient(900px 380px at 12% -8%, rgba(67,198,184,.15), transparent 60%), radial-gradient(700px 300px at 90% 0%, rgba(180,215,212,.35), transparent 60%);
+  --tile-ring:inset 0 0 0 1px rgba(12,58,54,.06), 0 1px 2px rgba(12,58,54,.06);
+  --card-grad:#FFFFFF;
+}
+
+/* ---------- 极光紫 · 紫夜 / 薰衣草白 + 紫罗兰 ---------- */
+[data-theme="dark"][data-skin="aurora"] {
+  --win:#0D0B1A; --rail:#090716; --bg:#120F22;
+  --panel:rgba(180,170,255,.05); --panel-solid:#1B1733; --panel-hover:rgba(180,170,255,.08); --panel-2:rgba(180,170,255,.08);
+  --line:rgba(180,170,255,.10); --line-2:rgba(180,170,255,.17); --line-3:rgba(180,170,255,.28);
+  --text:#F0EEFB; --text-2:#B3ADE0; --text-3:#9891C6; --kbd-bg:rgba(180,170,255,.09);
+  --accent:#9B8CF7; --accent-2:#C0B6FB; --accent-fg:#17122E; --accent-glow:rgba(155,140,247,.32); --accent-soft:rgba(155,140,247,.16); --info:#B3A9F2;
+  --overlay:rgba(6,4,16,.64); --btn-2-bg:rgba(180,170,255,.07); --btn-2-hover:rgba(180,170,255,.12);
+  --glow-top:radial-gradient(900px 380px at 12% -8%, rgba(155,140,247,.13), transparent 60%), radial-gradient(700px 300px at 90% 0%, rgba(61,58,143,.35), transparent 60%);
+  --tile-ring:inset 0 0 0 1px rgba(180,170,255,.10), inset 0 1px 0 rgba(255,255,255,.05);
+  --card-grad:linear-gradient(180deg, rgba(180,170,255,.05), rgba(180,170,255,.02));
+}
+[data-theme="light"][data-skin="aurora"] {
+  --win:#ECE9F7; --rail:#E8E4F5; --bg:#F3F1FB;
+  --panel:#FFFFFF; --panel-solid:#FFFFFF; --panel-hover:#F8F6FE; --panel-2:#ECE8F8;
+  --line:rgba(48,36,110,.09); --line-2:rgba(48,36,110,.15); --line-3:rgba(48,36,110,.26);
+  --text:#1D1836; --text-2:#4E466E; --text-3:#6B6288; --kbd-bg:#EAE6F6;
+  --accent:#6A5AE0; --accent-2:#8B7CF0; --accent-fg:#FFFFFF; --accent-glow:rgba(106,90,224,.22); --accent-soft:rgba(106,90,224,.12); --info:#6356C9;
+  --overlay:rgba(48,36,110,.42); --btn-2-bg:#FFFFFF; --btn-2-hover:#F0EDFA;
+  --glow-top:radial-gradient(900px 380px at 12% -8%, rgba(155,140,247,.16), transparent 60%), radial-gradient(700px 300px at 90% 0%, rgba(190,184,235,.35), transparent 60%);
+  --tile-ring:inset 0 0 0 1px rgba(48,36,110,.06), 0 1px 2px rgba(48,36,110,.06);
+  --card-grad:#FFFFFF;
+}
+
+/* 高对比模式优先级压过皮肤的中性线色（皮肤只提供基调，可读性让位） */
+[data-theme="dark"].hc[data-skin] {
+  --line:rgba(220,228,240,.35); --line-2:rgba(220,228,240,.55); --line-3:rgba(220,228,240,.65);
+  --text-2:#C7D3E6; --text-3:#B0BFD4;
+}
+[data-theme="light"].hc[data-skin] {
+  --line:rgba(20,26,40,.35); --line-2:rgba(20,26,40,.55); --line-3:rgba(20,26,40,.65);
+  --text-2:#23324A; --text-3:#3E4D65;
+}
+
+/* 欢迎页主标题渐变跟随皮肤（默认晨曦金保持原品牌渐变不变） */
+[data-skin="obsidian"] .welcome h1 em,
+[data-skin="mist"] .welcome h1 em,
+[data-skin="aurora"] .welcome h1 em {
+  background: linear-gradient(90deg, var(--accent), var(--accent-2) 45%, var(--info));
+  -webkit-background-clip: text; background-clip: text;
+}
+
+/* ---------- 设置里的皮肤选择器 ---------- */
+.skin-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.skin-chip { display: flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px 0 8px; border-radius: 99px; border: 1px solid var(--line-2); background: var(--panel-2); color: var(--text-2); font: inherit; font-size: var(--font-small); cursor: pointer; transition: border-color .15s, box-shadow .15s, color .15s; }
+.skin-chip:hover { border-color: var(--line-3); color: var(--text); }
+.skin-chip.on { border-color: var(--accent); color: var(--text); box-shadow: 0 0 0 3px var(--accent-soft); font-weight: 500; }
+.skin-chip .dot { width: 18px; height: 18px; border-radius: 50%; flex: none; box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 6px rgba(0,0,0,.25); }
+.skin-chip .dot.dawn { background: linear-gradient(135deg, #E6BF7A, #0B1F3B); }
+.skin-chip .dot.obsidian { background: linear-gradient(135deg, #EDD39B, #101114); }
+.skin-chip .dot.mist { background: linear-gradient(135deg, #7BDDD0, #0C1A1E); }
+.skin-chip .dot.aurora { background: linear-gradient(135deg, #C0B6FB, #120F22); }
+
+/* ---------- 欢迎页 · 星轨场景（无框融入版） ----------
+   星空铺满整个欢迎页背景，星轨悬浮其上，与品牌主视觉
+   （星光金方案丙：星空 + 地平线光晕 + 星之光束）一致 */
+
+/* 全幅星空画布：垫在欢迎页所有内容之下 */
+.welcome .sky { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.welcome .hero, .welcome .foot { position: relative; z-index: 1; }
+
+/* 工作台主区域星空：同一画布层，更稀疏更淡（参数在 JS 侧区分）。
+   只把静态布局的栏位抬到画布之上；notice/toast 等绝对定位浮层不动 */
+.main > canvas.sky { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
+.main > #content, .main > .topbar, .main > .ticker, .main > .alertbar, .main > .statusbar { position: relative; z-index: 1; }
+
+/* 星轨场景：去边框、去底板、去阴影，直接浮在星空上 */
+.orbit-preview .glow { position: absolute; inset: -10%; background: radial-gradient(46% 42% at 50% 46%, var(--accent-glow), transparent 70%); filter: blur(10px); pointer-events: none; }
+[data-theme="light"] .orbit-preview .glow { background: radial-gradient(46% 42% at 50% 46%, var(--accent-soft), transparent 70%); filter: blur(16px); }
+.orbit-scene { position: relative; height: 460px; background: transparent; border: 0; box-shadow: none; overflow: visible; }
+
+/* 星之光束：自核心向上的柔光柱，呼应品牌主视觉的升起星光 */
+.orbit-beam { position: absolute; left: 50%; top: 46%; transform: translate(-50%, -100%); width: 4px; height: 170px; background: linear-gradient(to top, var(--accent-glow), transparent 85%); filter: blur(2px); border-radius: 4px; pointer-events: none; animation: beamPulse 3.6s ease-in-out infinite; }
+@keyframes beamPulse { 0%, 100% { opacity: .7; } 50% { opacity: 1; } }
+
+/* 中心星芒：不做实体圆球，星芒图形即星体本身，光晕在背后呼吸 */
+.orbit-core { position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%); width: 150px; height: 150px; border-radius: 50%; display: grid; place-items: center; background: radial-gradient(circle, var(--accent-glow) 0%, transparent 68%); animation: corePulse 3.6s ease-in-out infinite; pointer-events: none; }
+.orbit-core svg { width: 118px; height: auto; display: block; }
+.orbit-core img { height: 56px; display: block; filter: drop-shadow(0 0 14px var(--accent-glow)); }
+/* 亮色模式：光晕改用品牌金（不论皮肤），象牙白底上星芒依然发光 */
+[data-theme="light"] .orbit-core { background: radial-gradient(circle, rgba(212, 163, 85, .45) 0%, transparent 68%); }
+[data-theme="light"] .orbit-core img { filter: drop-shadow(0 0 12px rgba(212, 163, 85, .5)); }
+@keyframes corePulse { 0%, 100% { opacity: .75; transform: translate(-50%, -50%) scale(1); } 50% { opacity: 1; transform: translate(-50%, -50%) scale(1.08); } }
+
+/* 轨道环：细线圆环，环体随角度变量旋转，虚线流转可见 */
+@property --spin { syntax: '<angle>'; initial-value: 0deg; inherits: true; }
+.orbit-ring { position: absolute; left: 50%; top: 46%; transform: translate(-50%, -50%) rotate(var(--spin)); border: 1px dashed var(--line-2); border-radius: 50%; pointer-events: none; --spin: 0deg; }
+.orbit-ring.r1 { width: 220px; height: 220px; --r: 110px; animation: spinProp 18s linear infinite; }
+.orbit-ring.r2 { width: 340px; height: 340px; --r: 170px; animation: spinPropR 32s linear infinite; }
+@keyframes spinProp { to { --spin: 360deg; } }
+@keyframes spinPropR { to { --spin: -360deg; } }
+
+/* 卫星：官方应用图标 + 名称胶囊。环体旋转提供公转角度（--spin），
+   卫星自身只需在环坐标系内定位（--a），内容再抵消总视觉角度保持水平 */
+.sat { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%) rotate(var(--a)) translateY(calc(var(--r) * -1)) rotate(calc((var(--a) + var(--spin)) * -1)); display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 12px 0 8px; border-radius: 99px; background: color-mix(in srgb, var(--panel-solid) 84%, transparent); border: 1px solid var(--line-2); color: var(--text-2); font-size: 12px; font-weight: 500; white-space: nowrap; backdrop-filter: blur(6px); box-shadow: 0 4px 14px rgba(2,6,14,.4); pointer-events: auto; }
+.sat .ico { width: 18px; height: 18px; border-radius: 5px; display: grid; place-items: center; flex: none; overflow: hidden; }
+.sat .ico svg { width: 14px; height: 14px; }
+.sat.ok { color: var(--text); border-color: var(--accent-soft); box-shadow: 0 4px 14px rgba(2,6,14,.4), 0 0 12px var(--accent-soft); }
+
+/* 底部状态行：扫描线 + 数据，给画面“在运行”的感觉 */
+.orbit-hud { position: absolute; left: 14px; right: 14px; bottom: 12px; display: flex; align-items: center; gap: 10px; font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+.orbit-hud .scan { flex: 1; height: 3px; border-radius: 2px; background: var(--panel-2); overflow: hidden; position: relative; }
+.orbit-hud .scan i { position: absolute; top: 0; bottom: 0; width: 34%; border-radius: 2px; background: linear-gradient(90deg, transparent, var(--accent), transparent); animation: scanMove 2.8s ease-in-out infinite; }
+@keyframes scanMove { 0% { left: -34%; } 100% { left: 100%; } }
+.orbit-hud b { color: var(--accent-2); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+/* 减少动画：星轨静止、光晕定稿、扫描线停在一格，画面仍然成立 */
+@media (prefers-reduced-motion: reduce) {
+  .orbit-core, .orbit-ring.r1, .orbit-ring.r2, .orbit-hud .scan i, .orbit-beam { animation: none; }
+}
+.window.hc .orbit-core, [data-reduce-motion="1"] .orbit-core { animation: none; }

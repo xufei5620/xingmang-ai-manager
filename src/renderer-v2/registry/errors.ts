@@ -1,0 +1,18 @@
+export const errors = {
+  sessionExpired: { title: '登录已过期', body: '工具里已写入的 Key 还能用，余额和用量不再更新', actions: ['重新登录'] },
+  keyInvalid: { title: 'Key 失效', body: '工具打不开对话，需要换一把 Key', actions: ['一键修复'] },
+  noBalance: { title: '余额已用完', body: '所有请求会被拒绝，充值到账后立即恢复', actions: ['马上充值'] },
+  tooManyRequests: { title: '请求太频繁', body: '稍等几秒再试', actions: ['重试'] },
+  server: { title: '星芒服务器暂时出错', body: '已装好的工具照常能用', actions: ['重试', '看状态'] },
+  timeout: { title: '连不上星芒服务器', body: '已装好的工具照常能用', actions: ['重试', '检查网络'] },
+  installBlocked: { title: '安装被杀毒软件拦住了', body: '请检查隔离记录，并关闭正在使用这个工具的窗口。', actions: ['复制路径', '重试'] },
+  downloadTimeout: { title: '下载超时', body: '下载没有完成，已安装的工具不受影响。', actions: ['换官方源重试'] },
+  permission: { title: '需要管理员权限', body: '当前账户不能写入安装目录。', actions: ['以管理员身份重试'] },
+  updateIntegrity: { title: '更新没有装上', body: '当前版本不受影响。', actions: ['重新下载', '看日志'] },
+  paymentClosed: { title: '支付窗口已手动关闭', body: '订单没有取消。', actions: ['看订单'] },
+  paymentTimeout: { title: '订单已超时', body: '查询订单状态后可重新支付。', actions: ['重新支付'] },
+  backupIntegrity: { title: '备份文件校验失败', body: '未做任何改动。', actions: ['换一份', '找客服'] },
+  unsafeStorage: { title: '这台电脑无法安全保存密码', body: '只保留本次登录。', actions: ['知道了'] },
+  noTray: { title: '关闭窗口会直接退出', body: '', actions: ['安装扩展'] },
+  unknown: { title: '操作没有成功', body: '已自动撤回，不会留下半成品', actions: ['重试', '查看日志', '找客服'] },
+} as const;

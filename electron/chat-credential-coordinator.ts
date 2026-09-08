@@ -49,18 +49,27 @@ function requiredGroup(value: string): string {
   return group
 }
 
-function authenticatedUserId(accountService: Pick<RelayBackendClient, 'getSessionState'>): number {
+type ChatAccountService = Pick<RelayBackendClient, 'getSessionState' | 'getSessionRevision'>
+
+function sessionRevision(accountService: Pick<RelayBackendClient, 'getSessionRevision'>): number {
+  const revision = accountService.getSessionRevision?.() ?? 0
+  return Number.isSafeInteger(revision) && revision >= 0 ? revision : 0
+}
+
+function authenticatedSession(accountService: ChatAccountService): { userId: number; revision: number } {
   const session = accountService.getSessionState()
   const userId = session.account?.userId
   if (!session.authenticated || !userId) throw new Error('请先登录星芒账号')
-  return userId
+  return { userId, revision: sessionRevision(accountService) }
 }
 
-function assertSameUser(
-  accountService: Pick<RelayBackendClient, 'getSessionState'>,
+function assertSameSession(
+  accountService: ChatAccountService,
   expectedUserId: number,
+  expectedRevision: number,
 ): void {
-  if (authenticatedUserId(accountService) !== expectedUserId) throw new ChatAccountChangedError()
+  const current = authenticatedSession(accountService)
+  if (current.userId !== expectedUserId || current.revision !== expectedRevision) throw new ChatAccountChangedError()
 }
 
 function isCredentialFailure(error: unknown): boolean {
@@ -75,35 +84,35 @@ const inFlightByService = new WeakMap<object, Map<string, Promise<ResolvedChatCr
 
 export function createChatCredentialCoordinator(options: {
   accountService: Pick<RelayBackendClient,
-    'getSessionState' | 'listUsableGroups' | 'provisionCliKey'>
+    'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'getSessionRevision'>
   modelService: ChatModelServiceLike
   keyStore: ChatKeyStoreLike
 }): ChatCredentialCoordinator {
   const { accountService, modelService, keyStore } = options
 
   async function listGroups(): ReturnType<RelayBackendClient['listUsableGroups']> {
-    authenticatedUserId(accountService)
+    authenticatedSession(accountService)
     const groups = await accountService.listUsableGroups()
     return groups.filter((entry) => requiredGroup(entry.name) === entry.name)
   }
 
-  async function resolveOperation(userId: number, group: string): Promise<ResolvedChatCredential> {
-    assertSameUser(accountService, userId)
+  async function resolveOperation(userId: number, revision: number, group: string): Promise<ResolvedChatCredential> {
+    assertSameSession(accountService, userId, revision)
     const usableGroups = await accountService.listUsableGroups()
-    assertSameUser(accountService, userId)
+    assertSameSession(accountService, userId, revision)
     if (!usableGroups.some((entry) => entry.name === group)) {
       throw new Error(`当前账号不可使用分组「${group}」`)
     }
 
     const cached = (await keyStore.read(userId)).find((entry) => entry.group === group)
-    assertSameUser(accountService, userId)
+    assertSameSession(accountService, userId, revision)
     if (cached) {
       try {
         const models = selectAiChatModelsForGroup(
           group,
           await modelService.fetchAvailableModels(cached.key, { bypassCache: true }),
         )
-        assertSameUser(accountService, userId)
+        assertSameSession(accountService, userId, revision)
         return {
           userId,
           group,
@@ -119,7 +128,7 @@ export function createChatCredentialCoordinator(options: {
         // normal provision flow below reuses another usable key or creates a
         // replacement, and the new secret is encrypted back into the store.
         await keyStore.remove(userId, group)
-        assertSameUser(accountService, userId)
+        assertSameSession(accountService, userId, revision)
       }
     }
 
@@ -129,12 +138,12 @@ export function createChatCredentialCoordinator(options: {
         name: buildCliKeyName('xingmang-chat'),
         group,
       })
-      assertSameUser(accountService, userId)
+      assertSameSession(accountService, userId, revision)
       const models = selectAiChatModelsForGroup(
         group,
         await modelService.fetchAvailableModels(provisioned.key, { bypassCache: true }),
       )
-      assertSameUser(accountService, userId)
+      assertSameSession(accountService, userId, revision)
 
       let storageWarning: string | undefined
       try {
@@ -145,7 +154,7 @@ export function createChatCredentialCoordinator(options: {
           keyName: provisioned.name,
           key: provisioned.key,
         }, expectedRevision)
-        assertSameUser(accountService, userId)
+        assertSameSession(accountService, userId, revision)
         if (!saved) continue
       } catch (error) {
         if (error instanceof ChatAccountChangedError) throw error
@@ -168,17 +177,17 @@ export function createChatCredentialCoordinator(options: {
 
   function resolveCredential(groupInput: string): Promise<ResolvedChatCredential> {
     const group = requiredGroup(groupInput)
-    const userId = authenticatedUserId(accountService)
+    const { userId, revision } = authenticatedSession(accountService)
     const serviceKey = accountService as object
     let inFlight = inFlightByService.get(serviceKey)
     if (!inFlight) {
       inFlight = new Map()
       inFlightByService.set(serviceKey, inFlight)
     }
-    const operationKey = `${userId}:${group}`
+    const operationKey = `${userId}:${revision}:${group}`
     const existing = inFlight.get(operationKey)
     if (existing) return existing
-    const operation = resolveOperation(userId, group)
+    const operation = resolveOperation(userId, revision, group)
     const tracked = operation.finally(() => {
       const current = inFlightByService.get(serviceKey)
       if (current?.get(operationKey) !== tracked) return

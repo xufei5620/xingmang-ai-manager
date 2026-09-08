@@ -1,4 +1,6 @@
-const EMAIL_PATTERN = /^[^\s@]+@qq\.com$/i
+// The account service accepts any syntactically valid mailbox. Keep this
+// client-side check permissive enough for common providers and custom domains.
+const EMAIL_PATTERN = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 const AFF_COOKIE_NAME = 'xingmang_aff'
 const AFF_COOKIE_DAYS = 180
 const MIN_PASSWORD_LENGTH = 8
@@ -122,7 +124,7 @@ function validateUsername(value) {
 function validateEmail(value) {
   const trimmed = value.trim()
   if (!trimmed) return '请输入邮箱地址'
-  if (!EMAIL_PATTERN.test(trimmed)) return '请使用 QQ 邮箱注册，例如 xxx@qq.com'
+  if (!EMAIL_PATTERN.test(trimmed)) return '请输入正确的邮箱地址，例如 name@example.com'
   return null
 }
 

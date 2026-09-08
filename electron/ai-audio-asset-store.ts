@@ -1,7 +1,7 @@
 import path from 'node:path'
 import fs from 'node:fs'
 import { randomBytes as nodeRandomBytes } from 'node:crypto'
-import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
+import { assertNoReparseComponents, ensureSafeDataDirectory, removeSafeDataFile } from './safe-local-data'
 import { sameLocalPathIdentity } from './path-identity'
 import { scopedLocalAssetId } from './content-addressed-asset'
 import { inspectIsoBmffMediaMetadata, inspectWaveDurationSeconds } from './media-container-metadata'
@@ -267,6 +267,12 @@ export class AiAudioAssetStore {
       }
     }
     throw new Error('AI 音频资产不存在或无权访问')
+  }
+
+  async removeOwned(userId: number, assetId: string): Promise<void> {
+    const filePath = await this.resolveOwnedFilePath(userId, assetId)
+    await readBoundedAudio(filePath, this.maximumAudioBytes)
+    await removeSafeDataFile(filePath, FILE_LABEL)
   }
 
   async listOwnedIndex(userId: number): Promise<AiAssetIndexEntry[]> {

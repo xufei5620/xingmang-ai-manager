@@ -9,7 +9,10 @@ import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
-  connectionTimeoutMs: 15_000,
+  // `fetch` resolves after response headers arrive. Reasoning models and a
+  // queued relay can legitimately take longer than 15 seconds to produce that
+  // first response, while the total request remains bounded below.
+  connectionTimeoutMs: 60_000,
   idleTimeoutMs: 45_000,
   totalTimeoutMs: 300_000,
   batchIntervalMs: 50,
@@ -28,6 +31,7 @@ export type AiChatStreamLimits = {
 
 export type AiChatStreamErrorCode =
   | 'credential-error'
+  | 'model-unavailable'
   | 'connection-timeout'
   | 'idle-timeout'
   | 'total-timeout'
@@ -72,6 +76,9 @@ export type AiChatStreamEvent =
 export type AiChatStreamLogEntry = {
   requestId: string
   status: 'complete' | 'error' | 'canceled' | 'sender-gone'
+  phase: 'credential' | 'response-headers' | 'response-stream'
+  errorCode?: AiChatStreamErrorCode
+  httpStatus?: number
   durationMs: number
   receivedBytes: number
   outputBytes: number
@@ -149,6 +156,8 @@ type ActiveRequest = {
   pendingContent: string
   pendingReasoning: string
   completed: boolean
+  phase: AiChatStreamLogEntry['phase']
+  responseStatus: number | null
   connectionTimer: unknown | null
   idleTimer: unknown | null
   totalTimer: unknown | null
@@ -170,13 +179,14 @@ const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 
 const SAFE_ERROR_MESSAGES: Record<AiChatStreamErrorCode, string> = {
   'credential-error': '无法准备所选分组，请检查登录状态和 API Key',
-  'connection-timeout': '连接 AI 服务超时，请检查网络后重试',
+  'model-unavailable': '当前模型不在所选分组的可用列表中，请刷新后重新选择',
+  'connection-timeout': 'AI 服务响应较慢，本次等待已超时，请重试',
   'idle-timeout': 'AI 服务长时间没有返回内容，已停止等待',
   'total-timeout': '本次对话超过最长处理时间，已停止等待',
   'network-error': '无法连接 AI 服务，请检查网络后重试',
   'upstream-http-error': 'AI 服务暂时无法完成请求',
   'invalid-stream-response': 'AI 服务返回了无法识别的数据',
-  'stream-closed': 'AI 服务连接提前关闭，请重试',
+  'stream-closed': 'AI 服务提前结束了本次响应，请重试',
   'response-limit-exceeded': 'AI 服务返回的数据超过安全上限',
   'event-limit-exceeded': 'AI 服务单个事件超过安全上限',
   'fragment-limit-exceeded': 'AI 服务单次输出超过安全上限',
@@ -366,8 +376,8 @@ class BoundedSseParser {
   }
 }
 
-function parsedDelta(data: string): { content: string; reasoning: string } {
-  if (byteLength(data) === 0) return { content: '', reasoning: '' }
+function parsedDelta(data: string): { content: string; reasoning: string; finished: boolean } {
+  if (byteLength(data) === 0) return { content: '', reasoning: '', finished: false }
   let payload: unknown
   try {
     payload = JSON.parse(data) as unknown
@@ -382,17 +392,37 @@ function parsedDelta(data: string): { content: string; reasoning: string } {
     throw new StreamFailure('upstream-http-error', SAFE_ERROR_MESSAGES['upstream-http-error'])
   }
   const choices = record.choices
-  if (!Array.isArray(choices) || choices.length === 0) return { content: '', reasoning: '' }
+  if (!Array.isArray(choices) || choices.length === 0) return { content: '', reasoning: '', finished: false }
   const first = choices[0]
-  if (!first || typeof first !== 'object' || Array.isArray(first)) return { content: '', reasoning: '' }
-  const delta = (first as Record<string, unknown>).delta
-  if (!delta || typeof delta !== 'object' || Array.isArray(delta)) return { content: '', reasoning: '' }
-  const fields = delta as Record<string, unknown>
+  if (!first || typeof first !== 'object' || Array.isArray(first)) return { content: '', reasoning: '', finished: false }
+  const choice = first as Record<string, unknown>
+  const finishReason = choice.finish_reason
+  const finished = typeof finishReason === 'string' && Boolean(finishReason.trim())
+  const delta = choice.delta
+  const hasDelta = Boolean(delta && typeof delta === 'object' && !Array.isArray(delta))
+  const fields = hasDelta
+    ? delta as Record<string, unknown>
+    : {}
+  const message = choice.message
+  const completedFields = message && typeof message === 'object' && !Array.isArray(message)
+    ? message as Record<string, unknown>
+    : {}
   return {
-    content: typeof fields.content === 'string' ? fields.content : '',
+    content: typeof fields.content === 'string'
+      ? fields.content
+      : typeof fields.refusal === 'string'
+        ? fields.refusal
+        : !hasDelta && typeof completedFields.content === 'string'
+          ? completedFields.content
+          : (!hasDelta && typeof completedFields.refusal === 'string' ? completedFields.refusal : ''),
     reasoning: typeof fields.reasoning_content === 'string'
       ? fields.reasoning_content
-      : (typeof fields.reasoning === 'string' ? fields.reasoning : ''),
+      : typeof fields.reasoning === 'string'
+        ? fields.reasoning
+        : !hasDelta && typeof completedFields.reasoning_content === 'string'
+          ? completedFields.reasoning_content
+          : (!hasDelta && typeof completedFields.reasoning === 'string' ? completedFields.reasoning : ''),
+    finished,
   }
 }
 
@@ -425,11 +455,14 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     idleWaiters.clear()
   }
 
-  function writeLog(request: ActiveRequest, status: TerminalStatus): void {
+  function writeLog(request: ActiveRequest, status: TerminalStatus, errorCode?: AiChatStreamErrorCode): void {
     try {
       options.log?.({
         requestId: request.requestId,
         status,
+        phase: request.phase,
+        ...(errorCode ? { errorCode } : {}),
+        ...(request.responseStatus === null ? {} : { httpStatus: request.responseStatus }),
         durationMs: Math.max(0, clock.now() - request.startedAt),
         receivedBytes: request.receivedBytes,
         outputBytes: request.outputBytes,
@@ -446,14 +479,14 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     }
   }
 
-  function removeRequest(request: ActiveRequest, status: TerminalStatus): void {
+  function removeRequest(request: ActiveRequest, status: TerminalStatus, errorCode?: AiChatStreamErrorCode): void {
     if (request.completed) return
     request.completed = true
     clearAllTimers(request)
     request.pendingContent = ''
     request.pendingReasoning = ''
     if (active.get(request.key) === request) active.delete(request.key)
-    writeLog(request, status)
+    writeLog(request, status, errorCode)
     notifyIdle()
   }
 
@@ -524,7 +557,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       terminateForMissingSender(request)
       return
     }
-    removeRequest(request, 'error')
+    removeRequest(request, 'error', failure.code)
     request.controller.abort()
     void request.reader?.cancel().catch(() => undefined)
   }
@@ -562,7 +595,9 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     }
     const delta = parsedDelta(data)
     appendDelta(request, delta.content, delta.reasoning)
-    return false
+    if (!delta.finished) return false
+    complete(request)
+    return true
   }
 
   async function run(request: ActiveRequest): Promise<void> {
@@ -575,6 +610,10 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       }
       if (request.completed) return
       request.userId = credential.userId
+      if (!credential.models.includes(request.body.model)) {
+        throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
+      }
+      request.phase = 'response-headers'
       request.connectionTimer = clock.setTimeout(() => {
         request.connectionTimer = null
         fail(request, new StreamFailure('connection-timeout', SAFE_ERROR_MESSAGES['connection-timeout']))
@@ -590,6 +629,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(request.body),
+          credentials: 'omit',
           redirect: 'manual',
           signal: request.controller.signal,
         })
@@ -598,6 +638,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('network-error', SAFE_ERROR_MESSAGES['network-error'])
       }
       clearTimer(request, 'connectionTimer')
+      request.responseStatus = response.status
       if (request.completed) {
         await response.body?.cancel().catch(() => undefined)
         return
@@ -616,6 +657,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
         throw new StreamFailure('invalid-stream-response', SAFE_ERROR_MESSAGES['invalid-stream-response'])
       }
 
+      request.phase = 'response-stream'
       resetIdleTimer(request)
       const parser = new BoundedSseParser(limits.eventBytes)
       const reader = response.body.getReader()
@@ -677,6 +719,9 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     } catch {
       throw new StreamFailure('credential-error', SAFE_ERROR_MESSAGES['credential-error'])
     }
+    if (!credential.models.includes(body.model)) {
+      throw new StreamFailure('model-unavailable', SAFE_ERROR_MESSAGES['model-unavailable'])
+    }
     const controller = new AbortController()
     const onAbort = () => controller.abort()
     input.signal?.addEventListener('abort', onAbort, { once: true })
@@ -690,6 +735,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(body),
+        credentials: 'omit',
         redirect: 'manual',
         signal: controller.signal,
       })
@@ -784,6 +830,8 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       pendingContent: '',
       pendingReasoning: '',
       completed: false,
+      phase: 'credential',
+      responseStatus: null,
       connectionTimer: null,
       idleTimer: null,
       totalTimer: null,
