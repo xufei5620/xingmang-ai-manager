@@ -1,0 +1,13 @@
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--text); background: var(--bg); font: var(--font-body) / var(--line-body) var(--font); }
+.xm-gallery { width: 1280px; padding: 28px 32px; }
+.xm-gallery-section { padding: 20px 0; border-bottom: 1px solid var(--line); }
+.xm-gallery-section > h2 { font-size: var(--font-h2); margin: 0 0 16px; }
+.xm-gallery-result { display: block; height: 24px; color: var(--ok); }
+.xm-gallery-inline { display: flex; align-items: center; gap: 8px; margin: 12px 0; }
+.xm-gallery-button-matrix { display: grid; gap: 8px; margin-bottom: 12px; }
+.xm-gallery-button-matrix > div { display: flex; align-items: center; gap: 8px; }
+.xm-gallery-form { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 16px; }
+.xm-gallery-form > .xm-btn { justify-self: start; }
+.xm-gallery-draft { display: block; width: 100%; background: var(--panel-2); color: var(--text); padding: 8px; border: 1px solid var(--line-2); border-radius: var(--radius-input); margin: 6px 0 16px; font: inherit; }
+.xm-gallery .xm-progress, .xm-gallery .xm-skeleton { margin: 16px 0; }

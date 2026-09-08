@@ -12,10 +12,12 @@ function setup(overrides: {
   storeFailure?: Error
 } = {}) {
   let userId = overrides.userId ?? 7
+  let sessionRevision = 0
   let cached = overrides.cached ?? []
   let revision = 0
   const accountService = {
     getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })),
+    getSessionRevision: vi.fn(() => sessionRevision),
     listUsableGroups: vi.fn(async () => [
       { name: 'codex-pro', description: '', ratio: 1 },
       { name: '生图分组', description: '', ratio: 2 },
@@ -54,7 +56,7 @@ function setup(overrides: {
     store,
     modelService,
     invalidate: () => { revision += 1 },
-    switchUser: (next: number) => { userId = next },
+    switchUser: (next: number) => { userId = next; sessionRevision += 1 },
   }
 }
 
@@ -129,6 +131,26 @@ describe('chat credential coordinator', () => {
     release()
     await expect(result).rejects.toThrow('账号已切换')
     expect(context.store.upsert).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse an in-flight credential after leaving and returning to the same account', async () => {
+    const context = setup()
+    let releaseOld: () => void = () => undefined
+    const oldModels = new Promise<void>((resolve) => { releaseOld = resolve })
+    vi.mocked(context.modelService.fetchAvailableModels).mockImplementationOnce(async () => {
+      await oldModels
+      return ['gpt-5.4']
+    })
+
+    const oldRequest = context.coordinator.prepareGroup('codex-pro')
+    await vi.waitFor(() => expect(context.modelService.fetchAvailableModels).toHaveBeenCalledTimes(1))
+    context.switchUser(9)
+    context.switchUser(7)
+    const newRequest = context.coordinator.prepareGroup('codex-pro')
+    expect(newRequest).not.toBe(oldRequest)
+    await expect(newRequest).resolves.toMatchObject({ group: 'codex-pro' })
+    releaseOld()
+    await expect(oldRequest).rejects.toThrow('账号已切换')
   })
 
   it('returns a storage warning after remote success without provisioning again', async () => {

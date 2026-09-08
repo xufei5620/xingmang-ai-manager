@@ -1683,6 +1683,8 @@ export interface SystemServiceOptions {
   resolveWindowsMachinePaths?: typeof resolveWindowsMachinePaths
   /** Test seam so scanSystem never talks to chatgpt.com under vitest. */
   fetchOfficialChatGptUsage?: typeof fetchOfficialChatGptUsage
+  /** Relay traffic uses Electron's proxy-aware network stack in the desktop host. */
+  relayFetch?: typeof fetch
 }
 
 export function providerCommandEnvironment(
@@ -3346,8 +3348,9 @@ export function createSystemService(
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), 12_000)
     try {
-      const response = await fetch(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
+      const response = await (serviceOptions.relayFetch ?? fetch)(`${relayApiProbeBaseUrl(activeSite)}/v1/models`, {
         headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` },
+        credentials: 'omit',
         redirect: 'error',
         signal: controller.signal,
       })

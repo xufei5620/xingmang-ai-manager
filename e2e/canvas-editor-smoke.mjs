@@ -524,6 +524,7 @@ try {
   await page.waitForTimeout(360)
   // The duplicate lands 32px off its original and stays selected, so it is the
   // one on top and the one the pointer will grab.
+  assert.equal(await page.locator('.react-flow__node-note.selected').count(), 1, '复制便签后新副本没有保持选中')
   const draggedNoteId = await page.locator('.react-flow__node-note.selected').first().getAttribute('data-id')
   const noteIds = await page.locator('.react-flow__node-note').evaluateAll((elements) => elements.map((element) => element.getAttribute('data-id')))
   const anchorNoteId = noteIds.find((id) => id !== draggedNoteId)
@@ -1167,7 +1168,8 @@ try {
   const secondMention = await mentionMenu.getByRole('option').nth(1).locator('small').textContent()
   await videoPrompt.press('ArrowDown')
   await videoPrompt.press('Enter')
-  assert.ok(secondMention && (await videoPrompt.inputValue()).includes(secondMention), '@ 菜单没有把键盘选中的素材插入提示词')
+  const insertedMentionValue = await videoPrompt.inputValue()
+  assert.ok(secondMention && insertedMentionValue.includes(secondMention), `@ 菜单没有把键盘选中的素材插入提示词: expected=${secondMention}; actual=${insertedMentionValue}`)
   await mentionMenu.waitFor({ state: 'detached' })
 
   const beforeAutoConnectNodes = await page.locator('.react-flow__node').count()

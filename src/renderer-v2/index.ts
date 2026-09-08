@@ -1,0 +1,5 @@
+export { default as RendererV2App } from './App'
+export { Shell } from './features/shell/Shell'
+export * from './ui'
+export * from './registry/pages'
+export * from './registry/icons'

@@ -605,10 +605,10 @@ export function createAiVideoService(options: {
     )
   }
 
-  function cancel(senderId: number, requestIdInput: string): AiVideoCancelResult {
+  function cancel(senderId: number, requestIdInput: string, expectedUserId?: number): AiVideoCancelResult {
     const requestId = requiredIdentifier(requestIdInput, '视频请求标识', 160)
     const operation = active.get(requestKey(senderId, requestId))
-    if (!operation || operation.controller.signal.aborted) return { canceled: false, mayStillComplete: false }
+    if (!operation || (expectedUserId !== undefined && operation.userId !== expectedUserId) || operation.controller.signal.aborted) return { canceled: false, mayStillComplete: false }
     void cancelRemoteTask(operation).catch(() => undefined)
     operation.controller.abort(new Error('用户停止等待视频生成'))
     return { canceled: true, mayStillComplete: operation.dispatched }

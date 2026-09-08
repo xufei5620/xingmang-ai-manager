@@ -118,6 +118,7 @@ export const canvasHostRenameProjectChannel = canvasHostChannels.renameProject
 export const canvasHostDuplicateProjectChannel = canvasHostChannels.duplicateProject
 export const canvasHostSetProjectArchivedChannel = canvasHostChannels.setProjectArchived
 export const canvasHostRunEventChannel = canvasHostChannels.runEvent
+export const canvasHostAccountChangedChannel = canvasHostChannels.accountChanged
 export const canvasHostThemeChangedChannel = canvasHostChannels.themeChanged
 export const canvasHostAppearanceChangedChannel = canvasHostChannels.appearanceChanged
 
@@ -158,6 +159,8 @@ export interface CanvasWindowController {
   /** Applies the global application theme without exposing the settings record to the canvas renderer. */
   setTheme(theme: AppTheme): void
   setAppearance(appearance: CanvasAppearance): void
+  /** Invalidates renderer-owned account state when the main session changes. */
+  setAccountUser(userId: number | null): void
   /** Resolves only after renderer confirmation and the native closed event. */
   requestClose(): Promise<boolean>
   /** Closes the canvas window if one is open; a no-op otherwise. */
@@ -212,7 +215,15 @@ export function createCanvasWindowController(
     ...(storedSettings.uiSkin ? { uiSkin: storedSettings.uiSkin } : {}),
     reducedMotion: storedSettings.reducedMotion === true,
   }
+  let currentAccountUserId: number | null | undefined
   let disposed = false
+  // A renderer without its host preload, a failed main-frame load, or a gone
+  // renderer process cannot answer the close handshake. Keep this separate
+  // from `disposed`: disposal is an intentional app shutdown, while this flag
+  // is a recoverable renderer failure that must fail-open on app quit.
+  let rendererUnavailable = false
+  let rendererReady = true
+  let rendererReadinessGeneration = 0
   let pendingClose: {
     window: BrowserWindow; requestId: string; authorized: boolean
     promise: Promise<boolean>; resolve(result: boolean): void; timer: ReturnType<typeof setTimeout>
@@ -220,6 +231,51 @@ export function createCanvasWindowController(
   const pendingProjects = new Map<number, { previewId: string; userId: number; parsed: ParsedCanvasProjectPackage }>()
   const activeProjects = new Map<number, { userId: number; projectId: string }>()
   const generationAdmission = new CanvasGenerationAdmission()
+
+  function assertCanvasAccountId(userId: number | null): number | null {
+    if (userId !== null && (!Number.isSafeInteger(userId) || userId <= 0)) {
+      throw new Error('画布账号标识格式错误')
+    }
+    return userId
+  }
+
+  function setAccountUser(userIdInput: number | null): void {
+    const userId = assertCanvasAccountId(userIdInput)
+    if (currentAccountUserId === userId) return
+    const previousUserId = currentAccountUserId ?? null
+    currentAccountUserId = userId
+    const window = canvasWindow
+    if (!window || window.isDestroyed()) return
+    const senderId = window.webContents.id
+    // Account transitions are a hard ownership boundary. Cancel and release
+    // every operation tied to this renderer before it is allowed to load the
+    // next account's projects, groups, assets, or run history.
+    try { options.imageService.cancelSender(senderId) } catch { /* best effort */ }
+    try { options.videoService.cancelSender(senderId) } catch { /* best effort */ }
+    try { options.canvasRuns.cancelOwner(senderId) } catch { /* best effort */ }
+    generationAdmission.releaseOwner(senderId)
+    pendingProjects.delete(senderId)
+    activeProjects.delete(senderId)
+    if (pendingClose?.window === window) finishPendingClose(false, '星芒账号已切换，已取消画布关闭确认')
+    try {
+      window.webContents.send(canvasHostAccountChangedChannel, { userId, previousUserId })
+    } catch (error) {
+      options.runtimeLog.log('warn', 'canvas', 'account-change.notify-failed', '画布账号变更通知发送失败', {
+        reason: error instanceof Error ? error.message : String(error),
+      })
+    }
+  }
+
+  function markRendererUnavailable(reason: string, error?: unknown, details: Record<string, unknown> = {}): void {
+    rendererUnavailable = true
+    options.runtimeLog.log('error', 'canvas', 'preload.failed', '画布宿主 preload 加载失败', {
+      ...details,
+      reason: error instanceof Error ? error.message : (error ? String(error) : reason),
+    })
+    if (pendingClose?.window === canvasWindow) {
+      finishPendingClose(false, '画布宿主 preload 加载失败，无法确认项目保存')
+    }
+  }
 
   function finishPendingClose(result: boolean, reason?: string): void {
     const pending = pendingClose
@@ -242,6 +298,17 @@ export function createCanvasWindowController(
     if (!canvasWindow || canvasWindow.isDestroyed()) return Promise.resolve(true)
     if (disposed) return Promise.resolve(false)
     const window = canvasWindow
+    if (rendererUnavailable || !rendererReady || window.webContents.isDestroyed()) {
+      // There is no renderer capable of saving or acknowledging state. The
+      // caller is already closing the application, so waiting for the normal
+      // handshake would turn a broken canvas into a 60-second quit hang.
+      try { window.destroy() } catch (error) {
+        options.runtimeLog.log('warn', 'canvas', 'close.unavailable-destroy-failed', '失效画布窗口无法销毁', {
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+      return Promise.resolve(true)
+    }
     const requestId = randomUUID()
     let resolve!: (result: boolean) => void
     const promise = new Promise<boolean>((done) => { resolve = done })
@@ -392,13 +459,18 @@ export function createCanvasWindowController(
   })
 
   registerCanvasHandler(canvasHostListGroupsChannel, async () => {
+    const userId = authenticatedCanvasUserId()
     const groups = await options.chatCredentials.listGroups()
+    assertCanvasUserUnchanged(userId)
     return groups.map(({ name, description, ratio }) => ({ name, description, ratio }))
   })
 
-  registerCanvasHandler(canvasHostListProjectsChannel, () => {
+  registerCanvasHandler(canvasHostListProjectsChannel, async () => {
     if (!options.projects) throw new Error('项目自动保存能力不可用')
-    return options.projects.list(authenticatedCanvasUserId())
+    const userId = authenticatedCanvasUserId()
+    const projects = await options.projects.list(userId)
+    assertCanvasUserUnchanged(userId)
+    return projects
   })
 
   registerCanvasHandler(canvasHostCreateProjectChannel, async (event, nameInput) => {
@@ -490,9 +562,12 @@ export function createCanvasWindowController(
     return updated
   })
 
-  registerCanvasHandler(canvasHostPrepareGroupChannel, (_event, groupInput) => (
-    options.chatCredentials.prepareGroup(requiredCanvasString(groupInput, '画布生图分组', 128))
-  ))
+  registerCanvasHandler(canvasHostPrepareGroupChannel, async (_event, groupInput) => {
+    const userId = authenticatedCanvasUserId()
+    const prepared = await options.chatCredentials.prepareGroup(requiredCanvasString(groupInput, '画布生图分组', 128))
+    assertCanvasUserUnchanged(userId)
+    return prepared
+  })
 
   registerCanvasHandler(canvasHostGenerateImageChannel, (event, input) => {
     const userId = authenticatedCanvasUserId()
@@ -536,15 +611,20 @@ export function createCanvasWindowController(
   })
 
   registerCanvasHandler(canvasHostCancelRequestChannel, (event, requestIdInput) => {
+    const userId = authenticatedCanvasUserId()
     const requestId = requiredCanvasString(requestIdInput, '画布生成请求标识', 160)
-    const image = options.imageService.cancel(event.sender.id, requestId)
-    const video = options.videoService.cancel(event.sender.id, requestId)
+    const image = options.imageService.cancel(event.sender.id, requestId, userId)
+    const video = options.videoService.cancel(event.sender.id, requestId, userId)
+    assertCanvasUserUnchanged(userId)
     return image.canceled ? image : video
   })
 
-  registerCanvasHandler(canvasHostListPromptPresetsChannel, () => (
-    options.promptPresets.list(authenticatedCanvasUserId())
-  ))
+  registerCanvasHandler(canvasHostListPromptPresetsChannel, async () => {
+    const userId = authenticatedCanvasUserId()
+    const presets = await options.promptPresets.list(userId)
+    assertCanvasUserUnchanged(userId)
+    return presets
+  })
 
   registerCanvasHandler(canvasHostCreatePromptPresetChannel, async (_event, input) => {
     const userId = authenticatedCanvasUserId()
@@ -752,6 +832,11 @@ export function createCanvasWindowController(
       : kind === 'video'
         ? await videoStore!.storeLocalFile(userId, filePath)
         : await imageStore.storeLocalFile(userId, filePath)
+    const removeImported = kind === 'audio'
+      ? (assetId: string) => audioStore!.removeOwned(userId, assetId)
+      : kind === 'video'
+        ? (assetId: string) => videoStore!.removeOwned(userId, assetId)
+        : (assetId: string) => imageStore.removeOwned(userId, assetId)
     try {
       assertCanvasUserUnchanged(userId)
       await (context?.media ?? options.mediaAssets).setSource(userId, asset.assetId, 'imported').catch((error) => {
@@ -763,7 +848,7 @@ export function createCanvasWindowController(
       assertCanvasUserUnchanged(userId)
       return kind === 'image' ? asset : { ...asset, mediaType: kind }
     } catch (error) {
-      if (kind === 'image') await imageStore.removeOwned(userId, asset.assetId).catch(() => undefined)
+      await removeImported(asset.assetId).catch(() => undefined)
       throw error
     }
   }
@@ -807,13 +892,24 @@ export function createCanvasWindowController(
       graph,
       scope,
     })
+    try {
+      assertCanvasUserUnchanged(userId)
+    } catch (error) {
+      // A run admitted just before the account transition must not remain
+      // ownerable by the old renderer while its response is being rejected.
+      handle.cancel()
+      throw error
+    }
     void handle.promise.catch((error) => options.runtimeLog.exception('canvas', 'run.failed', error))
     return { runId: handle.runId, graphRevision: handle.graphRevision }
   })
 
-  registerCanvasHandler(canvasHostCancelRunChannel, (event, runIdInput) => (
-    options.canvasRuns.cancel(requiredCanvasString(runIdInput, '画布运行标识', 256), event.sender.id)
-  ))
+  registerCanvasHandler(canvasHostCancelRunChannel, (event, runIdInput) => {
+    const userId = authenticatedCanvasUserId()
+    const result = options.canvasRuns.cancel(requiredCanvasString(runIdInput, '画布运行标识', 256), event.sender.id, userId)
+    assertCanvasUserUnchanged(userId)
+    return result
+  })
 
   registerCanvasHandler(canvasHostListRunsChannel, async (event) => {
     const userId = authenticatedCanvasUserId()
@@ -927,6 +1023,9 @@ export function createCanvasWindowController(
 
   async function createWindow(): Promise<void> {
     assertCanvasDistPresent()
+    rendererUnavailable = false
+    rendererReady = true
+    rendererReadinessGeneration += 1
 
     const window = new BrowserWindow({
       width: 1360,
@@ -950,13 +1049,17 @@ export function createCanvasWindowController(
     })
     canvasWindow = window
     const senderId = window.webContents.id
+    let preloadCheckGeneration = 0
 
     window.once('ready-to-show', () => {
       window.center()
       window.show()
     })
     window.on('close', (event) => {
-      if (disposed || (pendingClose?.window === window && pendingClose.authorized)) return
+      // There is no bridge available to verify/save state after a preload
+      // failure. Let Electron close the isolated window instead of trapping
+      // the user behind a timeout and an unusable browser-demo surface.
+      if (disposed || rendererUnavailable || !rendererReady || (pendingClose?.window === window && pendingClose.authorized)) return
       event.preventDefault()
       void requestClose()
     })
@@ -989,7 +1092,59 @@ export function createCanvasWindowController(
         void externalShell.openExternal(targetUrl)
       }
     })
+    // Electron emits this when the sandboxed preload cannot be read or
+    // executes before exposing the host bridge. Without an explicit record the
+    // canvas silently falls back to its browser demo bridge: group lists are
+    // empty and a native close request waits until its 60s timeout. Keep the
+    // failure visible in the runtime log so the startup prebuild/path issue is
+    // diagnosable from the packaged log alone.
+    window.webContents.on('preload-error', (_event, preloadPath, error) => {
+      markRendererUnavailable(`preload: ${preloadPath}`, error, { preloadPath })
+    })
+    window.webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+      if (!isMainFrame) return
+      rendererReady = false
+      markRendererUnavailable(
+        `main-frame load failed: ${validatedURL} (${errorCode})`,
+        new Error(errorDescription || `画布主页面加载失败（${errorCode}）`),
+      )
+    })
+    window.webContents.on('did-finish-load', () => {
+      // A missing bridge can also result from a preload that was skipped by
+      // the runtime rather than throwing. Check the isolated page after its
+      // own scripts have loaded so that this path is observable and closable.
+      const generation = preloadCheckGeneration
+      void window.webContents.executeJavaScript('Boolean(window.xingmangCanvasHost)', true)
+        .then((available) => {
+          if (available || window.isDestroyed() || generation !== preloadCheckGeneration) return
+          markRendererUnavailable('画布页面未发现宿主桥接', new Error('画布页面未发现宿主桥接'))
+        })
+        .catch((error) => {
+          if (!window.isDestroyed() && generation === preloadCheckGeneration) {
+            markRendererUnavailable('画布宿主桥接检查失败', error)
+          }
+        })
+      const readinessGeneration = ++rendererReadinessGeneration
+      const probeRendererReady = (attempt = 0): void => {
+        if (window.isDestroyed() || readinessGeneration !== rendererReadinessGeneration || generation !== preloadCheckGeneration) return
+        void window.webContents.executeJavaScript(
+          'document.documentElement?.dataset.canvasReady === "true"',
+          true,
+        ).then((ready) => {
+          if (window.isDestroyed() || readinessGeneration !== rendererReadinessGeneration || generation !== preloadCheckGeneration) return
+          if (ready) {
+            rendererReady = true
+            return
+          }
+          if (attempt < 200) setTimeout(() => probeRendererReady(attempt + 1), 25)
+        }).catch(() => undefined)
+      }
+      rendererReady = false
+      probeRendererReady()
+    })
     window.webContents.on('render-process-gone', (_event, details) => {
+      rendererReady = false
+      rendererUnavailable = true
       if (pendingClose?.window === window) finishPendingClose(false, '画布渲染进程已退出，无法确认项目保存')
       options.runtimeLog.log('error', 'canvas', 'process.gone', '画布渲染进程异常退出', {
         reason: details.reason,
@@ -997,6 +1152,13 @@ export function createCanvasWindowController(
       })
     })
     window.webContents.on('did-start-loading', () => {
+      // A full navigation gets a fresh preload. Do not let a failed previous
+      // attempt permanently disable the close guard after a later successful
+      // reload.
+      preloadCheckGeneration += 1
+      rendererReadinessGeneration += 1
+      rendererReady = false
+      rendererUnavailable = false
       if (pendingClose?.window === window) finishPendingClose(false, '画布页面已重新加载，请重新确认关闭')
     })
 
@@ -1008,7 +1170,14 @@ export function createCanvasWindowController(
     canvasUrl.searchParams.set('theme', currentTheme)
     if (currentAppearance.uiSkin) canvasUrl.searchParams.set('skin', currentAppearance.uiSkin)
     if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
-    await window.loadURL(canvasUrl.href)
+    try {
+      await window.loadURL(canvasUrl.href)
+    } catch (error) {
+      rendererReady = false
+      markRendererUnavailable('画布主页面加载失败', error)
+      try { window.destroy() } catch { /* the rejected load is already terminal */ }
+      throw error
+    }
   }
 
   return {
@@ -1041,6 +1210,7 @@ export function createCanvasWindowController(
       canvasWindow.setBackgroundColor(canvasWindowBackgroundForAppearance(currentAppearance))
       canvasWindow.webContents.send(canvasHostAppearanceChangedChannel, currentAppearance)
     },
+    setAccountUser,
     requestClose,
     closeIfOpen() {
       void requestClose()

@@ -4,11 +4,13 @@ import { redactCommandText } from './command-runner'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import { relaySites } from './relay-sites'
 
-// xm.solov.cc runs QuantumNous/new-api (rc.22, custom branch). Every endpoint
-// wraps its payload as { success, message, data } -- confirmed for the CLI
+// xm.solov.cc runs QuantumNous/new-api (rc.22, custom branch). Most endpoints
+// wrap their payload as { success, message, data } -- confirmed for the CLI
 // token endpoints by docs/RECON-new-api.md section C.1 ("响应只有 success，
 // 不返回 id/key") and assumed uniformly for the rest per that project's own
-// convention. Treat unexpected shapes as a hard error rather than guessing.
+// convention. The public /api/notice endpoint is a documented legacy
+// exception and is validated by unwrapPublicNotice below. Treat all other
+// unexpected shapes as a hard error rather than guessing.
 
 // Exported so other main-process modules that need this exact host (the
 // canvas window's host bridge injects it as the canvas app's own relay
@@ -23,6 +25,12 @@ export const defaultBaseUrl = relaySites.find((site) => site.id === 'solov')?.ac
   ?? 'https://xm.solov.cc'
 const defaultTimeoutMs = 10_000
 const defaultMaxResponseBytes = 512 * 1024
+// The relay's public notice is authored as a self-contained rich document.
+// It currently includes inline CSS and a few embedded raster assets, so it is
+// materially larger than ordinary JSON API responses. Keep this allowance
+// separate from the 512 KB cap used by authenticated/business endpoints.
+const noticeMaxResponseBytes = 4 * 1024 * 1024
+const noticeMaxContentLength = 4 * 1024 * 1024
 const redirectStatuses = new Set([301, 302, 303, 307, 308])
 
 const statusPath = '/api/status'
@@ -158,7 +166,8 @@ export interface NewApiLoginInput {
 export interface NewApiRegisterInput {
   email: string
   password: string
-  verificationCode: string
+  /** Present when the service reports email verification is enabled. */
+  verificationCode?: string
   username: string
   affCode?: string
 }
@@ -871,6 +880,7 @@ interface PerformRequestInit {
   method: 'GET' | 'POST' | 'PUT' | 'DELETE'
   headers?: Record<string, string>
   body?: unknown
+  maxResponseBytes?: number
 }
 
 interface NewApiRawResponse {
@@ -963,6 +973,9 @@ async function performRequest(
         ...init.headers,
       },
       body: init.body !== undefined ? JSON.stringify(init.body) : undefined,
+      // The client owns its refresh cookie explicitly. Never mix it with the
+      // Electron session cookie jar when the host supplies net.fetch.
+      credentials: 'omit',
       // Manual redirects, then reject outright below. None of these endpoints
       // ever legitimately redirect; silently following one could repoint an
       // authenticated request (bearing the session token) at another host.
@@ -978,7 +991,11 @@ async function performRequest(
     if (redirectStatuses.has(response.status)) {
       throw new Error(`${label}请求被重定向，已拒绝`)
     }
-    const bodyText = await readBoundedResponseText(response, ctx.maxResponseBytes, label)
+    const bodyText = await readBoundedResponseText(
+      response,
+      init.maxResponseBytes ?? ctx.maxResponseBytes,
+      label,
+    )
     let payload: unknown = null
     if (bodyText) {
       try {
@@ -1010,6 +1027,33 @@ function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly
   }
   if (!raw.ok || envelope.success !== true) {
     throw new Error(detail || `${label}失败，服务返回 HTTP ${raw.status}`)
+  }
+  return envelope.data
+}
+
+/**
+ * `/api/notice` is a public, legacy endpoint on the relay. Unlike the newer
+ * API handlers it currently returns `{ data: ... }` without a `success`
+ * boolean. Keep that compatibility local to this endpoint so a permissive
+ * shape cannot weaken validation for account, billing, or key calls.
+ */
+function unwrapPublicNotice(raw: NewApiRawResponse): unknown {
+  const envelope = isRecord(raw.payload) ? raw.payload : null
+  const serverMessage = envelope && typeof envelope.message === 'string' ? envelope.message : ''
+  const detail = sanitizeUpstreamMessage(serverMessage, [])
+  if (raw.status === 401) throw new NewApiAuthenticationError(detail || '公告读取未授权')
+  if (!raw.ok) throw new Error(detail || `公告读取失败，服务返回 HTTP ${raw.status}`)
+  if (!envelope || !Object.prototype.hasOwnProperty.call(envelope, 'data')) {
+    throw new Error('公告读取返回的不是有效数据')
+  }
+  const hasSuccessFlag = Object.prototype.hasOwnProperty.call(envelope, 'success')
+  if (hasSuccessFlag && envelope.success !== true) throw new Error(detail || '公告读取失败')
+  // Some older deployments omit `success` but still use `message: error` for
+  // an HTTP-200 failure. Accept an omitted flag only when the message is empty
+  // or the conventional success marker; otherwise do not turn an error body
+  // into a visible announcement.
+  if (!hasSuccessFlag && serverMessage && serverMessage.toLowerCase() !== 'success') {
+    throw new Error(detail && detail.toLowerCase() !== 'error' ? detail : '公告读取失败')
   }
   return envelope.data
 }
@@ -2231,10 +2275,15 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   }
 
   const getNotice = async (): Promise<{ id: string; text: string } | null> => {
-    const raw = await performRequest(ctx, '/api/notice', { method: 'GET' }, '公告读取')
-    const data = unwrapEnvelope(raw, '公告读取', [])
+    const raw = await performRequest(
+      ctx,
+      '/api/notice',
+      { method: 'GET', maxResponseBytes: noticeMaxResponseBytes },
+      '公告读取',
+    )
+    const data = unwrapPublicNotice(raw)
     if (data === null || data === undefined || data === '') return null
-    if (typeof data !== 'string' || data.length > 64_000) throw new Error('公告内容格式无效或超出上限')
+    if (typeof data !== 'string' || data.length > noticeMaxContentLength) throw new Error('公告内容格式无效或超出上限')
     const text = data.trim()
     return text ? { id: createHash('sha256').update(`${origin}\n${text}`).digest('hex'), text } : null
   }
@@ -2344,22 +2393,21 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   const register = async (input: NewApiRegisterInput): Promise<void> => {
     const email = input.email.trim()
     const password = input.password
-    const verificationCode = input.verificationCode.trim()
+    const verificationCode = input.verificationCode?.trim() ?? ''
     const username = input.username.trim()
     if (!email) throw new Error('请输入邮箱地址')
     if (!password) throw new Error('请输入密码')
-    if (!verificationCode) throw new Error('请输入邮箱验证码')
     if (!username) throw new Error('请输入用户名')
     const body: Record<string, unknown> = {
       username,
       password,
       email,
-      verification_code: verificationCode,
     }
+    if (verificationCode) body.verification_code = verificationCode
     const affCode = input.affCode?.trim()
     if (affCode) body.aff_code = affCode
     const raw = await performRequest(ctx, registerPath, { method: 'POST', body }, '账号注册')
-    unwrapEnvelope(raw, '账号注册', [password, verificationCode])
+    unwrapEnvelope(raw, '账号注册', [password, ...(verificationCode ? [verificationCode] : [])])
   }
 
   const login = async (input: NewApiLoginInput): Promise<NewApiLoginResult> => {

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  AI_CHAT_STREAM_LIMITS,
   createAiChatService,
   type AiChatStreamEvent,
   type AiChatStreamLogEntry,
@@ -102,6 +103,56 @@ describe('AI chat streaming service', () => {
     expect(String(fetchImpl.mock.calls[0][0])).toBe('https://xm.solov.cc/v1/chat/completions')
     expect(JSON.parse(String(init?.body))).toMatchObject({ model: 'gpt-5.4', stream: true })
     expect(JSON.parse(String(init?.body))).toHaveProperty('messages')
+    expect(init?.credentials).toBe('omit')
+  })
+
+  it('allows a slow first response and accepts finish_reason without a trailing DONE frame', async () => {
+    expect(AI_CHAT_STREAM_LIMITS.connectionTimeoutMs).toBe(60_000)
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>(async () => sseResponse([
+      encoder.encode([
+        'data: {"choices":[{"message":{"refusal":"这个请求无法处理"},"finish_reason":"stop"}]}\n\n',
+      ].join('')),
+    ]))
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(events).toEqual([
+      expect.objectContaining({ type: 'delta', content: '这个请求无法处理' }),
+      expect.objectContaining({ type: 'complete' }),
+    ])
+  })
+
+  it('rejects a model outside the resolved group before sending a paid request', async () => {
+    const events: AiChatStreamEvent[] = []
+    const fetchImpl = vi.fn<TestFetch>()
+    const coordinator = credentialCoordinator()
+    coordinator.resolveCredential = vi.fn(async (group: string) => ({
+      userId: 7,
+      group,
+      models: ['another-model'],
+      keyCreated: false,
+      apiKey: 'sk-never-sent',
+      keyId: 3,
+      keyName: 'chat-key',
+    }))
+    const service = createAiChatService({
+      credentialCoordinator: coordinator,
+      fetchImpl,
+      emit: (_senderId, event) => events.push(event),
+    })
+
+    service.start(startInput())
+    await service.whenIdle()
+
+    expect(fetchImpl).not.toHaveBeenCalled()
+    expect(events).toEqual([expect.objectContaining({ type: 'error', code: 'model-unavailable' })])
   })
 
   it('coalesces nearby chunks on the configured batching interval', async () => {
@@ -267,6 +318,9 @@ describe('AI chat streaming service', () => {
     expect(logs[0]).toEqual(expect.objectContaining({
       requestId: 'request-1',
       status: 'error',
+      phase: 'response-headers',
+      errorCode: 'upstream-http-error',
+      httpStatus: 403,
       receivedBytes: 0,
       outputBytes: 0,
     }))
@@ -311,6 +365,24 @@ describe('AI chat streaming service', () => {
     })
     expect(text).toContain('shots')
     expect(emit).not.toHaveBeenCalled()
+    expect(fetchImpl.mock.calls[0][1]?.credentials).toBe('omit')
+    service.dispose()
+  })
+
+  it('rejects an unavailable completeOnce model before sending a request', async () => {
+    const fetchImpl = vi.fn<TestFetch>()
+    const service = createAiChatService({
+      credentialCoordinator: credentialCoordinator(),
+      fetchImpl,
+      emit: vi.fn(),
+    })
+
+    await expect(service.completeOnce({
+      group: 'Gemini',
+      model: 'gpt-5.5',
+      messages: [{ role: 'user', content: '解析' }],
+    })).rejects.toThrow('当前模型不在所选分组')
+    expect(fetchImpl).not.toHaveBeenCalled()
     service.dispose()
   })
 })

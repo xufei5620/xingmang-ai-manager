@@ -1,0 +1,19 @@
+{
+  "passed": 13,
+  "checks": [
+    "shared config save retains other tool draft",
+    "shared current model displayed in Desktop",
+    "cleared manual key is not silently restored",
+    "uninstall CLI preserves Desktop shared config",
+    "official menu has no relay key claim",
+    "chat uses subscription-only quota and logs owner usage",
+    "balance-only refusal keeps draft and subscription",
+    "timeout preserves draft with recovery",
+    "retry charges only once",
+    "switch prevents old chat charge to either account",
+    "logout retains written tool configuration",
+    "tool menu stays inside scaled window",
+    "no page errors"
+  ],
+  "errors": []
+}

@@ -69,6 +69,7 @@ import {
   type DesktopAppStatus,
   type LatestVersionProbe,
   type NetworkLocationStatus,
+  type SystemServiceOptions,
   type ToolStatus,
 } from './system-service'
 
@@ -84,10 +85,10 @@ const testMachinePaths: WindowsMachinePaths = {
   programData: 'D:\\ProgramData',
 }
 
-function createService() {
+function createService(options: SystemServiceOptions = {}) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-system-service-'))
   temporaryDirectories.push(directory)
-  return createSystemService(new AppSettingsStore(path.join(directory, 'settings.json'), directory))
+  return createSystemService(new AppSettingsStore(path.join(directory, 'settings.json'), directory), options)
 }
 
 async function createDarwinService(options: {
@@ -549,11 +550,10 @@ describe('createSystemService', () => {
   })
 
   it('validates an API key by returning model ids from the relay response', async () => {
-    const service = createService()
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       data: [{ id: 'gpt-5.6-sol' }, { id: 'gpt-5.6-terra' }],
     }), { status: 200 }))
-    vi.stubGlobal('fetch', fetchMock)
+    const service = createService({ relayFetch: fetchMock as typeof fetch })
 
     await expect(service.fetchAvailableModels('  sk-test-value  ')).resolves.toEqual([
       'gpt-5.6-sol',
@@ -563,6 +563,7 @@ describe('createSystemService', () => {
       'https://xm.solov.cc/v1/models',
       expect.objectContaining({
         headers: expect.objectContaining({ Authorization: 'Bearer sk-test-value' }),
+        credentials: 'omit',
         redirect: 'error',
       }),
     )

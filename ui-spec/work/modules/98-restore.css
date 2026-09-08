@@ -1,0 +1,8 @@
+/* v3.0.2 restore: welcome / guide routes / balance urgency / payment icons / greeting / dialog focus */
+.xm-welcome .brandline img{height:128px}.xm-welcome .brandline{margin:0 0 12px -14px}
+.xm-welcome h1{font-size:42px;line-height:1.12;letter-spacing:-.03em}.xm-welcome h1 em{font-style:normal;background:linear-gradient(90deg,var(--xm-gold),#F0D29A 45%,var(--xm-sky));-webkit-background-clip:text;background-clip:text;color:transparent}
+.xm-welcome .brands span .ico.xs{width:18px;height:18px}.xm-welcome .support{padding:10px 14px 10px 10px;display:flex;gap:12px;align-items:center;min-width:300px}.xm-welcome .support strong{display:block;font-size:13px;font-weight:600}.xm-welcome .support .muted{font-size:12px}
+.xm-guide-choices.three{grid-template-columns:repeat(3,minmax(0,1fr))}
+.xm-guide-sub{display:flex;flex-direction:column;gap:8px;margin:12px 0 4px}.xm-guide-sub .st{display:grid;grid-template-columns:22px 1fr auto;gap:12px;align-items:center;padding:10px 12px;border:1px solid var(--line);border-radius:10px;font-size:13px}.xm-guide-sub .st .m{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:11px;font-weight:700;border:1.5px solid var(--line-2);color:var(--text-3)}.xm-guide-sub .st.done .m{background:var(--ok);border-color:var(--ok);color:#fff}.xm-guide-sub .st.now .m{border-color:var(--accent);color:var(--accent)}.xm-guide-sub .st .d{font-size:12px;color:var(--text-3);font-family:var(--mono)}
+.acct .bal-meter{margin-bottom:8px}
+.xm-guide-choices.three .xm-guide-choice{min-height:96px}.xm-guide-choice[aria-pressed="false"]:hover{border-color:var(--line-3)}

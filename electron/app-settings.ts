@@ -126,7 +126,10 @@ export function defaultAppSettings(homeDirectory = os.homedir()): AppSettings {
   return {
     version: 2,
     workspace: homeDirectory,
-    theme: 'dark',
+    // New installs and first update reads start in the readable light
+    // presentation. An explicit skin/theme choice is preserved once stored.
+    theme: 'light',
+    uiSkin: 'mist',
     checkUpdatesOnStartup: true,
     runDiagnosticsOnStartup: false,
   }
@@ -141,7 +144,7 @@ function optionalBoolean(value: unknown, fallback: boolean): boolean {
 }
 
 function parseTheme(value: unknown): AppTheme {
-  return value === 'light' || value === 'dark' ? value : 'dark'
+  return value === 'light' || value === 'dark' ? value : 'light'
 }
 
 // A stale/unknown id (a downgrade after a site was removed upstream, or a
@@ -192,9 +195,10 @@ function migrateV1(value: LegacyAppSettings): AppSettings {
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
-    theme: parseTheme(value.theme),
+    theme: 'light',
     checkUpdatesOnStartup: true,
     runDiagnosticsOnStartup: optionalBoolean(value.scanOnStartup, false),
+    uiSkin: 'mist',
   }
 }
 
@@ -210,13 +214,19 @@ function parseSettingsValue(value: unknown): AppSettings {
   const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
   const officialProviders = parseOfficialProviders(value.officialProviders)
   const uiSkin = parseUiSkin(value.uiSkin)
+  // The v3.1.1 renderer is the first release with the product-selected first-run
+  // appearance. Older settings files have no uiSkin field, so their stored
+  // dark value was the old default rather than an explicit personal choice.
+  // Promote those records once they are read; a later explicit choice is
+  // persisted with uiSkin and remains untouched.
+  const firstAppearance = uiSkin === undefined
   const uiScale = parseUiScale(value.uiScale)
   const closeBehavior = parseCloseBehavior(value.closeBehavior)
   const windowState = parseWindowState(value.windowState)
   return {
     version: 2,
     workspace: requireWorkspace(value.workspace),
-    theme: parseTheme(value.theme),
+    theme: firstAppearance ? 'light' : parseTheme(value.theme),
     checkUpdatesOnStartup: optionalBoolean(value.checkUpdatesOnStartup, true),
     runDiagnosticsOnStartup: optionalBoolean(
       value.runDiagnosticsOnStartup,
@@ -229,7 +239,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
-    ...(uiSkin !== undefined ? { uiSkin } : {}),
+    uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(optionalBoolean(value.desktopNotifications, false) ? { desktopNotifications: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),
@@ -344,7 +354,9 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const codexDesktopInstallDisabled = update.codexDesktopInstallDisabled === undefined
     ? base.codexDesktopInstallDisabled
     : update.codexDesktopInstallDisabled
-  const uiSkin = update.uiSkin === 'auto' ? undefined : parseUiSkin(update.uiSkin) ?? base.uiSkin
+  const uiSkin = update.uiSkin === 'auto'
+    ? 'mist' as const
+    : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
   const reducedMotion = update.reducedMotion ?? base.reducedMotion
   const desktopNotifications = update.desktopNotifications ?? base.desktopNotifications
   const uiScale = update.uiScale === 'auto' ? undefined : parseUiScale(update.uiScale) ?? base.uiScale
@@ -361,7 +373,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
-    ...(uiSkin !== undefined ? { uiSkin } : {}),
+    uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications ? { desktopNotifications: true as const } : {}),
     ...(uiScale !== undefined ? { uiScale } : {}),

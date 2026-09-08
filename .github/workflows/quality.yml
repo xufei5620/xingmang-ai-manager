@@ -46,6 +46,7 @@ jobs:
       - run: npm run typecheck
       - run: npm run test:canvas
       - run: npm run test:windows
+      - run: npm run test:v2
       - name: Fail if the test run left files in the working tree
         shell: bash
         run: |
@@ -55,6 +56,12 @@ jobs:
             exit 1
           fi
       - run: npm run compile
+      - name: Verify the default compile selected renderer v2
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath 'dist/renderer-v2.flag' -PathType Leaf)) {
+            throw 'npm run compile did not produce dist/renderer-v2.flag'
+          }
       - name: Run isolated signed-out startup smoke test
         run: node e2e/electron-ci-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs

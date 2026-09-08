@@ -1,0 +1,38 @@
+/* Account module: preserve the existing shell and component vocabulary. */
+.xm-account .page-head .avatar{width:36px;height:36px;display:grid;place-items:center;border-radius:11px;background:var(--xm-navy);color:var(--xm-gold);border:1px solid var(--line-2);font-weight:600;flex:none}
+.xm-account .lrow>.main-col:only-child{grid-column:1/-1;min-width:0;width:100%}
+.xm-account .lrow>.main-col>.title{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.xm-account .lrow>.main-col>.desc{white-space:normal;overflow:visible;line-height:1.7;font-size:12.5px}
+.xm-account .table-wrap { overflow:auto; }
+.xm-account .toolbar { flex-wrap:wrap; }
+.xm-account .hint { line-height:1.65; }
+.xm-account .xm-heading{display:flex;align-items:center;gap:12px}
+.xm-account .tabs{display:flex;flex-wrap:wrap;height:auto;min-height:44px;gap:0}
+.xm-account .tabs a{padding:12px 13px;min-height:42px;white-space:nowrap}
+.xm-account .xm-profile{grid-template-columns:minmax(0,1fr) minmax(280px,340px);align-items:start}
+.xm-account .xm-profile-avatar{display:flex;align-items:center;gap:16px;margin-bottom:24px}
+.xm-account .xm-profile-avatar p{margin:4px 0 8px}
+.xm-account .xm-actions{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.xm-account .xm-metrics{margin:16px 0}
+.xm-account .xm-metrics .stat{min-height:105px;display:flex;flex-direction:column;justify-content:center;gap:5px}
+.xm-account .xm-metrics small{font-size:11px;color:var(--text-2);line-height:1.5}
+.xm-account .xm-subline,.xm-subline{display:block;font-size:11px;color:var(--text-2);font-weight:400;line-height:1.6;margin-top:3px}
+.xm-account .xm-state{text-align:center;min-height:230px;padding:50px 24px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px}
+.xm-account .xm-state h3{font-size:15px;margin:0}.xm-account .xm-state p{margin:0;color:var(--text-2);font-size:12px;line-height:1.7;max-width:440px}
+.xm-account .xm-state>svg{width:24px;height:24px;color:var(--accent)}
+.xm-account .xm-trend{width:100%;height:220px;display:block}.xm-account .xm-trend text{fill:var(--text-2);font-size:11px}.xm-account .xm-axis{stroke:var(--line-2)}.xm-account .xm-gridline{stroke:var(--line-2);stroke-dasharray:4 5;opacity:.6}
+.xm-account details{font-size:12px;color:var(--text-2);margin-top:10px}.xm-account summary{cursor:pointer;min-height:28px}
+.xm-account .xm-chart-values{display:grid;grid-template-columns:repeat(2,1fr);gap:8px}.xm-account .xm-chart-values span{display:flex;justify-content:space-between;gap:8px}
+.xm-account .xm-model-row{margin-bottom:18px}.xm-account .xm-model-row:last-child{margin-bottom:0}.xm-account .xm-model-row>div:first-child{display:flex;justify-content:space-between;gap:12px;font-size:12px;margin-bottom:7px}.xm-account .xm-model-row>div:first-child span{min-width:0;overflow-wrap:anywhere}.xm-account .xm-model-row b{white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:500}.xm-account .xm-model-row small{display:block;margin-top:5px;color:var(--text-2);font-size:11px}
+.xm-account .xm-bar{height:7px;background:var(--panel-hover,var(--line-2));border-radius:3px;overflow:hidden}.xm-account .xm-bar i{display:block;height:100%;background:var(--accent);min-width:1px}
+.xm-account .xm-gap{margin-top:16px}.xm-account .xm-inline-stats{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}.xm-account .xm-inline-stats span{font-size:12px;color:var(--text-2)}.xm-account .xm-inline-stats b{display:block;font-size:14px;color:var(--text);margin-top:8px}
+.xm-account .xm-key-cell{max-width:210px;overflow-wrap:anywhere}.xm-account .xm-row-actions{min-width:145px}.xm-account .xm-row-actions button{margin:2px;min-height:28px}
+.xm-account .xm-pagination{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-top:1px solid var(--line-2);font-size:12px;color:var(--text-2);gap:12px}
+.xm-account .xm-filter{align-items:flex-end;gap:10px}.xm-account .xm-filter label{display:flex;flex-direction:column;gap:6px;font-size:11px;color:var(--text-2)}.xm-account .xm-filter .input{width:150px}.xm-account .xm-filter h2{margin:0}
+.xm-account .xm-commerce{align-items:start;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}
+.xm-account .xm-amounts{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0}.xm-account .xm-amounts .chipbtn{min-height:36px;min-width:58px;justify-content:center}.xm-account .xm-amounts .chipbtn.on{color:var(--accent-2,var(--accent));border-color:var(--accent);background:var(--accent-soft)}
+.xm-pay-options{display:flex;flex-direction:column;gap:8px}.xm-pay-options .pay-opt{width:100%;text-align:left;font:inherit;color:var(--text);min-height:60px;background:transparent}.xm-pay-options .pay-opt>span:nth-child(2){display:flex;flex-direction:column;gap:4px}.xm-pay-options .pay-opt small{font-size:11px;color:var(--text-2)}.xm-pay-options .pay-opt .radio{margin-left:auto}
+.xm-form-error{margin:12px 0;color:var(--bad);font-size:12px;line-height:1.6}.xm-price{font-size:20px}.xm-order-status{margin-bottom:18px}.xm-task-result{text-align:center;margin:18px 0}.xm-task-result>span{display:block;color:var(--ok);margin-bottom:10px}.xm-task-result p{color:var(--text-2);font-size:12px}.xm-video-placeholder{display:flex;gap:10px;align-items:center;justify-content:center;background:var(--panel-2);border:1px solid var(--line-2);border-radius:8px;min-height:140px;color:var(--text-2);font-size:12px}
+.xm-account .table th,.xm-account .table td{vertical-align:middle}.xm-account .card .card-head h2{font-size:13px}.xm-account .card .card-head .right{font-size:11px}.xm-account .col{min-width:0}.xm-account .setting{gap:14px}.xm-account .setting .l{min-width:0}.xm-account .setting .r{flex-shrink:0}.xm-account .setting .l span{line-height:1.7}.xm-account button:disabled{cursor:not-allowed}
+@media(max-width:1000px){.xm-account .xm-profile,.xm-account .xm-commerce{grid-template-columns:minmax(0,1fr)}.xm-account .grid2{grid-template-columns:minmax(0,1fr)}.xm-account .xm-filter .input{width:135px}.xm-account .page-head .actions{max-width:35%}.xm-account .page-head .actions small{overflow-wrap:anywhere}.xm-account .tabs a{padding:10px}}
+@media(max-width:650px){.xm-account .grid3{grid-template-columns:1fr}.xm-account .xm-filter label{flex:1 1 40%}.xm-account .xm-filter .input{width:100%}.xm-account .xm-pagination{align-items:flex-start;flex-direction:column}}

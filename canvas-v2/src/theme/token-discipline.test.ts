@@ -41,6 +41,14 @@ function declaredProperties(...sources: string[]): Set<string> {
 }
 
 describe('canvas token discipline', () => {
+  it('loads shared semantic tokens before the canvas dense scale', () => {
+    const entry = readSource('main.tsx')
+    const sharedTokens = entry.indexOf("import '../../src/styles/ui-tokens.css'")
+    const canvasTheme = entry.indexOf("import './theme.css'")
+    expect(sharedTokens).toBeGreaterThanOrEqual(0)
+    expect(canvasTheme).toBeGreaterThan(sharedTokens)
+  })
+
   it('keeps literal colors out of the business stylesheet', () => {
     const offenders = styleSheet()
       .split(/\r?\n/)

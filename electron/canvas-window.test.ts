@@ -32,6 +32,7 @@ vi.mock('electron', () => ({
       getURL: () => mainFrame.url,
       isDestroyed: () => false,
       send: vi.fn(),
+      executeJavaScript: vi.fn(async () => true),
       setWindowOpenHandler: vi.fn(),
       on: vi.fn(),
     }
@@ -127,6 +128,7 @@ import {
   canvasHostPurgeAssetChannel,
   canvasHostRenameProjectChannel,
   canvasHostRunEventChannel,
+  canvasHostAccountChangedChannel,
   canvasHostSaveFileChannel,
   canvasHostSaveAssetChannel,
   canvasHostSaveProjectChannel,
@@ -591,6 +593,85 @@ describe('createCanvasWindowController', () => {
       .rejects.toThrow('归档状态无效')
   })
 
+  it('invalidates the canvas owner state and notifies the renderer on account changes', async () => {
+    const projectId = '11111111-1111-4111-8111-111111111111'
+    const summary = {
+      id: projectId, name: '账号项目', createdAt: '2026-08-14T00:00:00.000Z', updatedAt: '2026-08-14T00:00:00.000Z',
+      lastOpenedAt: '2026-08-14T00:00:00.000Z', nodeCount: 0, assetCount: 0,
+      workspaceName: 'account-project', workspaceConfigured: true, workspaceStatus: 'ready' as const,
+    }
+    let userId = 7
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })),
+    }
+    const projects = {
+      list: vi.fn(async () => [summary]),
+      open: vi.fn(async () => ({ project: summary, content: JSON.stringify({ schemaVersion: 2, name: summary.name, nodes: [], edges: [] }) })),
+    }
+    const imageService = { ...controllerOptions().imageService, cancelSender: vi.fn(() => 0) }
+    const videoService = { ...controllerOptions().videoService, cancelSender: vi.fn(() => 0) }
+    const canvasRuns = { ...controllerOptions().canvasRuns, cancelOwner: vi.fn(() => 0) }
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: accountService as never,
+      projects: projects as never,
+      imageService: imageService as never,
+      videoService: videoService as never,
+      canvasRuns: canvasRuns as never,
+    }))
+    await controller.open()
+    const send = electronMocks.latestWebContents!.send as ReturnType<typeof vi.fn>
+    send.mockClear()
+    controller.setAccountUser(7)
+    expect(send).toHaveBeenCalledWith(canvasHostAccountChangedChannel, { userId: 7, previousUserId: null })
+    send.mockClear()
+    controller.setAccountUser(7)
+    expect(send).not.toHaveBeenCalled()
+
+    await electronMocks.handlers.get(canvasHostOpenProjectChannel)!(trustedEvent(), projectId)
+    userId = 9
+    controller.setAccountUser(9)
+    expect(imageService.cancelSender).toHaveBeenCalledWith(41)
+    expect(videoService.cancelSender).toHaveBeenCalledWith(41)
+    expect(canvasRuns.cancelOwner).toHaveBeenCalledWith(41)
+    expect(send).toHaveBeenCalledWith(canvasHostAccountChangedChannel, { userId: 9, previousUserId: 7 })
+
+    // Returning to the old account must still require a fresh project open;
+    // the sender-scoped active project is deliberately discarded on switch.
+    userId = 7
+    controller.setAccountUser(7)
+    await expect(electronMocks.handlers.get(canvasHostListRunsChannel)!(trustedEvent())).rejects.toThrow('请先选择或新建')
+  })
+
+  it('binds cancel requests and runs to the currently authenticated canvas account', async () => {
+    let userId = 7
+    const accountService = { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })) }
+    const canvasRuns = { ...controllerOptions().canvasRuns, cancel: vi.fn(() => true) }
+    const imageCancel = vi.fn(() => ({ canceled: true, mayStillComplete: false }))
+    const videoCancel = vi.fn(() => ({ canceled: false, mayStillComplete: false }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: accountService as never,
+      canvasRuns: canvasRuns as never,
+      imageService: { ...controllerOptions().imageService, cancel: imageCancel } as never,
+      videoService: { ...controllerOptions().videoService, cancel: videoCancel } as never,
+    }))
+    await controller.open()
+    const cancelRequest = electronMocks.handlers.get(canvasHostCancelRequestChannel)!
+    const cancelRun = electronMocks.handlers.get(canvasHostCancelRunChannel)!
+
+    expect(cancelRequest(trustedEvent(), 'request-1')).toMatchObject({ canceled: true })
+    expect(imageCancel).toHaveBeenCalledWith(41, 'request-1', 7)
+    userId = 9
+    imageCancel.mockReturnValue({ canceled: false, mayStillComplete: false })
+    expect(cancelRequest(trustedEvent(), 'request-1')).toMatchObject({ canceled: false })
+    expect(imageCancel).toHaveBeenCalledWith(41, 'request-1', 9)
+    expect(cancelRun(trustedEvent(), 'run-1')).toBe(true)
+    expect(canvasRuns.cancel).toHaveBeenCalledWith('run-1', 41, 9)
+
+    userId = 7
+    expect(cancelRun(trustedEvent(), 'run-1')).toBe(true)
+    expect(canvasRuns.cancel).toHaveBeenCalledWith('run-1', 41, 7)
+  })
+
   it('combines current workflow, saved project and run candidate references without deleting assets', async () => {
     const assetId = 'A'.repeat(43)
     const projectId = '11111111-1111-4111-8111-111111111111'
@@ -722,6 +803,28 @@ describe('createCanvasWindowController', () => {
       .resolves.toEqual({ ...imported, mediaType: 'video' })
     expect(videoAssets.storeLocalFile).toHaveBeenCalledWith(7, videoPath)
     expect(aiAssets.storeLocalFile).not.toHaveBeenCalled()
+  })
+
+  it('rolls back a video asset when the account changes during local import', async () => {
+    const directory = temporaryDirectory()
+    const videoPath = path.join(directory, 'account-switch.mp4')
+    fs.writeFileSync(videoPath, Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(16)]))
+    const imported = { assetId: 'W'.repeat(43), localUrl: `xingmang-asset://video/${'W'.repeat(43)}`, mimeType: 'video/mp4', fileName: 'account-switch.mp4' }
+    let userId = 7
+    const removeOwned = vi.fn(async () => undefined)
+    const videoAssets = {
+      storeLocalFile: vi.fn(async () => { userId = 9; return imported }),
+      removeOwned,
+    }
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })) } as never,
+      videoAssets: videoAssets as never,
+    }))
+    await controller.open()
+
+    await expect(electronMocks.handlers.get(canvasHostImportAssetFileChannel)!(trustedEvent(), videoPath))
+      .rejects.toThrow('账号已切换')
+    expect(removeOwned).toHaveBeenCalledWith(7, imported.assetId)
   })
 
   it('rejects a hard-linked dragged file before any asset store can read it', async () => {
@@ -941,6 +1044,36 @@ describe('createCanvasWindowController', () => {
     expect(mediaAssets.rename).toHaveBeenCalledWith(7, 'a'.repeat(43), '产品主视觉')
     expect(mediaAssets.updateMetadata).toHaveBeenCalledWith(7, 'a'.repeat(43), { favorite: true, tags: ['产品'] })
     expect(mediaAssets.markUsed).toHaveBeenCalledWith(7, 'a'.repeat(43))
+  })
+
+  it('rejects group reads and preparation that finish after an account switch', async () => {
+    let userId = 7
+    let releaseGroups!: (value: Array<{ name: string; description: string; ratio: number }>) => void
+    let releasePrepared!: (value: { group: string; models: string[]; keyCreated: boolean }) => void
+    const listGroups = vi.fn(() => new Promise<Array<{ name: string; description: string; ratio: number }>>((resolve) => { releaseGroups = resolve }))
+    const prepareGroup = vi.fn(() => new Promise<{ group: string; models: string[]; keyCreated: boolean }>((resolve) => { releasePrepared = resolve }))
+    const controller = createCanvasWindowController(controllerOptions({
+      accountService: { getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })) } as never,
+      chatCredentials: { listGroups, prepareGroup, resolveCredential: vi.fn() },
+    }))
+    await controller.open()
+    controller.setAccountUser(7)
+
+    const groupsPending = electronMocks.handlers.get(canvasHostListGroupsChannel)!(trustedEvent())
+    await vi.waitFor(() => expect(listGroups).toHaveBeenCalledTimes(1))
+    userId = 9
+    controller.setAccountUser(9)
+    releaseGroups([{ name: '旧账号分组', description: '', ratio: 1 }])
+    await expect(groupsPending).rejects.toThrow('账号已切换')
+
+    userId = 7
+    controller.setAccountUser(7)
+    const preparedPending = electronMocks.handlers.get(canvasHostPrepareGroupChannel)!(trustedEvent(), '旧账号分组')
+    await vi.waitFor(() => expect(prepareGroup).toHaveBeenCalledTimes(1))
+    userId = 9
+    controller.setAccountUser(9)
+    releasePrepared({ group: '旧账号分组', models: ['gpt-image-2'], keyCreated: false })
+    await expect(preparedPending).rejects.toThrow('账号已切换')
   })
 
   it('holds every asset channel to the same identifier shape', async () => {
@@ -1168,6 +1301,17 @@ describe('canvas close confirmation', () => {
     expect(await controller.requestClose()).toBe(true)
   })
 
+  it('fails open when the canvas closes before the React close guard is ready', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'did-start-loading')![1]()
+
+    expect(await controller.requestClose()).toBe(true)
+    expect(window.destroy).toHaveBeenCalledOnce()
+  })
+
   it('shares repeated close requests and waits for the current renderer acknowledgement', async () => {
     const controller = createCanvasWindowController(controllerOptions())
     await controller.open()
@@ -1268,6 +1412,87 @@ describe('canvas close confirmation', () => {
     on.mock.calls.find(([event]) => event === 'render-process-gone')![1]({}, { reason: 'crashed', exitCode: 1 })
     expect(await closing).toBe(false)
     expect(electronMocks.latestBrowserWindow!.close).not.toHaveBeenCalled()
+  })
+
+  it('records a preload failure and invalidates an in-flight close handshake', async () => {
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const closing = controller.requestClose()
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'preload-error')![1]({}, '/tmp/canvas-preload.js', new Error('module not found'))
+    expect(await closing).toBe(false)
+    expect(runtimeLog.log).toHaveBeenCalledWith(
+      'error',
+      'canvas',
+      'preload.failed',
+      '画布宿主 preload 加载失败',
+      expect.objectContaining({ preloadPath: '/tmp/canvas-preload.js', reason: 'module not found' }),
+    )
+  })
+
+  it('allows the native close after a preload failure instead of trapping the window', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'preload-error')![1]({}, '/tmp/canvas-preload.js', new Error('module not found'))
+    ;(window.close as () => void)()
+    expect((window.isDestroyed as () => boolean)()).toBe(true)
+    controller.dispose()
+  })
+
+  it('fails open when the app quit path requests a close after preload failure', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'preload-error')![1]({}, '/tmp/canvas-preload.js', new Error('module not found'))
+
+    expect(await controller.requestClose()).toBe(true)
+    expect(window.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('fails open when the renderer process is gone before the app quit path', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'render-process-gone')![1]({}, { reason: 'crashed', exitCode: 1 })
+
+    expect(await controller.requestClose()).toBe(true)
+    expect(window.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('marks a main-frame load failure as unavailable for later close requests', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const window = electronMocks.latestBrowserWindow!
+    const on = electronMocks.latestWebContents!.on as ReturnType<typeof vi.fn>
+    on.mock.calls.find(([event]) => event === 'did-fail-load')![1]({}, -105, 'NAME_NOT_RESOLVED', 'xingmang-canvas://app/', true)
+
+    expect(await controller.requestClose()).toBe(true)
+    expect(window.destroy).toHaveBeenCalledOnce()
+  })
+
+  it('detects a missing bridge after page load even when preload-error is not emitted', async () => {
+    const runtimeLog = { log: vi.fn(), exception: vi.fn() }
+    const controller = createCanvasWindowController(controllerOptions({ runtimeLog: runtimeLog as never }))
+    await controller.open()
+    const webContents = electronMocks.latestWebContents!
+    ;(webContents.executeJavaScript as ReturnType<typeof vi.fn>).mockResolvedValueOnce(false)
+    const on = webContents.on as ReturnType<typeof vi.fn>
+    const finishLoad = on.mock.calls.find(([event]) => event === 'did-finish-load')![1] as () => void
+    finishLoad()
+    await Promise.resolve()
+    expect(runtimeLog.log).toHaveBeenCalledWith(
+      'error',
+      'canvas',
+      'preload.failed',
+      '画布宿主 preload 加载失败',
+      expect.objectContaining({ reason: '画布页面未发现宿主桥接' }),
+    )
+    controller.dispose()
   })
 
   it('sends only display preferences through initial URL and appearance events', async () => {

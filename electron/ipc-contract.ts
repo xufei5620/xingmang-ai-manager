@@ -1,5 +1,6 @@
 import type { AppSettings, AppSettingsUpdate, AppTheme as StoredAppTheme } from './app-settings'
 import type { WindowCloseReport } from './window-close-query'
+import type { AiChatStreamErrorCode as MainAiChatStreamErrorCode } from './ai-chat-service'
 import type { ExternalDeepLink } from './external-deep-links'
 import type { SavedAccountSummary } from './saved-accounts'
 import type {
@@ -372,12 +373,14 @@ export interface AiChatAsset {
   revisedPrompt?: string
 }
 
+export type AiChatErrorCode = MainAiChatStreamErrorCode
+
 export type AiChatStreamEvent =
   | { requestId: string; type: 'content'; content: string }
   | { requestId: string; type: 'reasoning'; content: string }
   | { requestId: string; type: 'complete' }
   | { requestId: string; type: 'canceled'; mayStillComplete?: boolean }
-  | { requestId: string; type: 'error'; message: string }
+  | { requestId: string; type: 'error'; code?: AiChatErrorCode; message: string }
 
 export interface AiChatCancelResult {
   canceled: boolean

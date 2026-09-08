@@ -446,10 +446,10 @@ export function createAiImageService(options: {
     return { canceled: result.canceled, mayStillComplete: result.canceled && operation.dispatched }
   }
 
-  function cancel(senderId: number, requestIdInput: string): AiImageCancelResult {
+  function cancel(senderId: number, requestIdInput: string, expectedUserId?: number): AiImageCancelResult {
     const requestId = requiredRequestId(requestIdInput)
     const operation = active.get(requestKey(senderId, requestId))
-    if (!operation) return { canceled: false, mayStillComplete: false }
+    if (!operation || (expectedUserId !== undefined && operation.userId !== expectedUserId)) return { canceled: false, mayStillComplete: false }
     return cancelOperation(operation, 'user', '用户停止生图')
   }
 

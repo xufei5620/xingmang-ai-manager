@@ -1,0 +1,25 @@
+/* Shared novice-facing hierarchy. Shell geometry remains unchanged. */
+.window{font-size:var(--font-body);line-height:var(--line-body)}
+.window .btn{height:var(--control-md);min-height:var(--control-md);font-size:var(--font-body)}
+.window .btn.sm{height:var(--control-sm);min-height:var(--control-sm);font-size:13px}
+.window .btn.xs{height:var(--control-xs);min-height:var(--control-xs);font-size:12.5px}
+.window .btn.icon:not(.sm):not(.xs){width:var(--control-md);min-width:var(--control-md)}
+.window .btn.icon.sm{width:var(--control-sm);min-width:var(--control-sm)}
+.window .btn.icon.xs{width:var(--control-xs);min-width:var(--control-xs)}
+.window .input:not(textarea){min-height:var(--control-md);height:var(--control-md);font-size:var(--font-body)}
+.window .topbar .btn{min-height:32px;height:32px;font-size:13px}
+.window .statusbar .btn{min-height:24px;height:24px;font-size:11.5px;padding-top:0;padding-bottom:0}
+.window .card-head h2{font-size:var(--font-h2)}
+.xm-help-copy {font-size:14px;line-height:1.8;color:var(--text-2);white-space:pre-line}
+.xm-loading {padding:32px;max-width:640px;margin:auto;color:var(--text-2)}
+.xm-loading strong {display:block;color:var(--text);font-size:15px;margin-top:12px}
+.xm-loading .spin {display:inline-flex}
+.xm-skeleton {height:16px;margin:12px 0;border-radius:5px;background:var(--panel-2)}
+.xm-skeleton:nth-last-child(2) {width:83%}.xm-skeleton:last-child {width:65%}
+.xm-note {display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:10px;background:var(--panel-2);color:var(--text-2);line-height:1.65}
+.xm-note p{margin:0}.xm-note strong{color:var(--text)}
+.xm-inline-actions {display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.xm-field-help{font-size:12.5px;line-height:1.6;color:var(--text-2);margin:5px 0 0}
+.xm-number{font-variant-numeric:tabular-nums;font-family:var(--mono)}
+.window [data-motion="reduced"],.window[data-motion="reduced"] *{scroll-behavior:auto!important;animation:none!important;transition:none!important}
+@media(prefers-reduced-motion:reduce){.window *{scroll-behavior:auto!important}}

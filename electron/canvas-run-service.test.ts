@@ -100,6 +100,33 @@ describe('createCanvasRunService', () => {
     await expect(second.promise).resolves.toMatchObject({ status: 'succeeded' })
   })
 
+  it('requires the current account when cancelling a run owned by a shared canvas sender', async () => {
+    const graph = workflow()
+    const store = memoryStore()
+    let release: (() => void) | undefined
+    const service = createCanvasRunService({
+      store,
+      randomUUID: () => 'run-user-bound',
+      executors: {
+        text: () => new Promise((resolve) => { release = () => resolve({ outputText: 'done' }) }),
+        image: async () => ({ assets: [] }),
+        video: async () => ({ assets: [] }),
+      },
+    })
+    const handle = await service.start({
+      userId: 7,
+      ownerId: 10,
+      graphRevision: computeCanvasGraphRevision(graph),
+      graph,
+      scope: { kind: 'all' },
+    })
+    await vi.waitFor(() => expect(release).toBeDefined())
+    expect(service.cancel(handle.runId, 10, 8)).toBe(false)
+    expect(service.cancel(handle.runId, 10, 7)).toBe(true)
+    release?.()
+    await expect(handle.promise).resolves.toMatchObject({ status: 'cancelled' })
+  })
+
   it('lets sibling generate nodes run together and only locks the overlapping ones', async () => {
     const graph: CanvasRunGraph = {
       nodes: [

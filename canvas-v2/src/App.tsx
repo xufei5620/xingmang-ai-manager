@@ -598,6 +598,36 @@ function MediaConfiguration({
   )
 }
 
+/**
+ * An account switch is a renderer lifecycle boundary. Keeping this boundary
+ * above the large workspace component guarantees that every account-owned
+ * ref and React state (groups, projects, assets, runs, drafts and in-flight
+ * projections) is discarded together, including future state added to the
+ * workspace without a second reset hook.
+ */
+export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
+  const [accountEpoch, setAccountEpoch] = useState(0)
+  const [accountChangeNotice, setAccountChangeNotice] = useState<string | null>(null)
+
+  useEffect(() => {
+    document.documentElement.dataset.canvasReady = 'true'
+    return () => { delete document.documentElement.dataset.canvasReady }
+  }, [])
+
+  useEffect(() => {
+    const host = window.xingmangCanvasHost
+    if (typeof host?.onAccountChange !== 'function') return
+    return host.onAccountChange(({ userId }) => {
+      setAccountChangeNotice(userId === null
+        ? '星芒账号已退出，画布状态已清空。'
+        : '星芒账号已切换，画布已重新加载；未保存编辑未保留。')
+      setAccountEpoch((value) => value + 1)
+    })
+  }, [])
+
+  return <CanvasWorkspace key={accountEpoch} initialTheme={initialTheme} accountChangeNotice={accountChangeNotice} />
+}
+
 function MediaCapabilityField({
   kind,
   title,
@@ -665,7 +695,13 @@ interface PreparedMediaConfiguration {
   warnings: string[]
 }
 
-export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
+function CanvasWorkspace({
+  initialTheme = 'dark',
+  accountChangeNotice,
+}: {
+  initialTheme?: CanvasTheme
+  accountChangeNotice?: string | null
+}) {
   const documentController = useCanvasDocument(editorNodeToCanvasNode)
   const {
     nodes,
@@ -703,7 +739,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const lastAutosaveGraphSignatureRef = useRef<string | null>(null)
   const projectHydrationRef = useRef(false)
   const projectSaveChainRef = useRef<Promise<void>>(Promise.resolve())
-  const [banner, setBanner] = useState<string | null>(null)
+  const [banner, setBanner] = useState<string | null>(accountChangeNotice ?? null)
   const [groups, setGroups] = useState<CanvasGroupSummary[]>([])
   const [imageModels, setImageModels] = useState<string[]>([])
   const [videoModels, setVideoModels] = useState<string[]>([])
@@ -2347,7 +2383,14 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
         ...(node.unknownKind ? { unknownKind: node.unknownKind } : {}),
       }))
     execute({ type: 'add-nodes', nodes: pastedNodes.map(canvasNodeDocumentRecord), edges: pasted.edges })
-  }, [execute])
+    // Selection is a renderer concern and is intentionally omitted from the
+    // persisted node record. Restore it after the history command so paste and
+    // duplicate leave the newly created nodes selected, matching the clipboard
+    // contract and preventing the old overlapping node from being grabbed by
+    // the next pointer gesture.
+    const pastedIds = new Set(pastedNodes.map((node) => node.id))
+    setNodes((current) => current.map((node) => ({ ...node, selected: pastedIds.has(node.id) })))
+  }, [execute, setNodes])
 
   const groupSelection = useCallback(() => {
     const selected = new Set(nodes.filter((node) => node.selected && node.type !== 'group').map((node) => node.id))

@@ -611,7 +611,7 @@ describe('getStatus', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1)
     const [url, init] = fetchImpl.mock.calls[0]
     expect(String(url)).toBe(`${testBaseUrl}/api/status`)
-    expect(init).toMatchObject({ method: 'GET', redirect: 'manual' })
+    expect(init).toMatchObject({ method: 'GET', credentials: 'omit', redirect: 'manual' })
     expect((init?.headers as Record<string, string>).Authorization).toBeUndefined()
   })
 
@@ -887,7 +887,7 @@ describe('register', () => {
     expect(body.aff_code).toBe('promo-1')
   })
 
-  it('rejects empty username, email, password, or verification code before making a network call', async () => {
+  it('rejects empty username, email, or password before making a network call', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
 
@@ -909,13 +909,26 @@ describe('register', () => {
       password: '',
       verificationCode: '123456',
     })).rejects.toThrow('请输入密码')
-    await expect(client.register({
-      username: 'user',
-      email: 'a@example.com',
-      password: 'correct horse battery staple',
-      verificationCode: '  ',
-    })).rejects.toThrow('请输入邮箱验证码')
     expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
+  it('omits the verification field when the service has disabled email verification', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(registerAckResponse())
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+
+    await client.register({
+      username: 'no-email-check',
+      email: 'person@163.com',
+      password: 'correct horse battery staple',
+      verificationCode: '',
+    })
+
+    const body = JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body))
+    expect(body).toEqual({
+      username: 'no-email-check',
+      password: 'correct horse battery staple',
+      email: 'person@163.com',
+    })
   })
 
   it('resolves to undefined on success without assuming an undocumented response shape', async () => {

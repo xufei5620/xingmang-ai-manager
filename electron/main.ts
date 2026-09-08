@@ -19,7 +19,7 @@ import {
 import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
 import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
-import { createAiChatService } from './ai-chat-service'
+import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
 import { AiVideoAssetStore } from './ai-video-asset-store'
 import { AiAudioAssetStore } from './ai-audio-asset-store'
@@ -104,6 +104,7 @@ import {
   platformWindowOptions,
   startupFailureMessage,
 } from './window-presentation'
+import { installMainWindowFrameNavigationGuard } from './platform/frame-navigation'
 
 guardProcessOutputStreams()
 
@@ -419,6 +420,7 @@ function createWindow(
   window.once('closed', () => { if (boundsTimer) clearTimeout(boundsTimer) })
   window.webContents.on('did-finish-load', applyPreferences)
   window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }))
+  installMainWindowFrameNavigationGuard(window.webContents)
   window.webContents.on('will-navigate', (event, targetUrl) => {
     if (!isAllowedAppNavigationUrl(targetUrl, urlPolicy)) event.preventDefault()
   })
@@ -606,6 +608,10 @@ if (!hasSingleInstanceLock) {
     process.on('unhandledRejection', onUnhandledRejection)
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
+    const relayFetch: typeof fetch = (input, init) => net.fetch(
+      input instanceof URL ? input.href : input,
+      init,
+    )
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
     const windowsCliExecutionMode = await resolveWindowsCliExecutionMode({
@@ -617,6 +623,7 @@ if (!hasSingleInstanceLock) {
     const systemService = createSystemService(settingsStore, {
       windowsExecutionMode: windowsCliExecutionMode,
       ...rootedOptions.system,
+      relayFetch,
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
@@ -775,16 +782,19 @@ if (!hasSingleInstanceLock) {
     // Typed as the backend-agnostic RelayBackendClient (relay-backend.ts) --
     // both consumers wired below (registerIpcHandlers, createCanvasWindowController)
     // depend on that interface, not on new-api-client.ts's concrete type.
+    let notifyCanvasAccountChanged: ((userId: number | null) => void) | null = null
     const canvasAccountLifecycle = createCanvasAccountLifecycle({
       onInitializationError: (_userId, error) => {
         runtimeLog.exception('canvas', 'runtime.initialize.failed', error)
       },
     })
     const accountService: RelayBackendClient = createNewApiClient({
+      fetchImpl: relayFetch,
       onSessionChange: (persistable) => {
         const previousUserId = persistedActiveUserId
         persistedActiveUserId = persistable?.userId ?? null
         canvasAccountLifecycle.update(persistable?.userId ?? null)
+        notifyCanvasAccountChanged?.(persistable?.userId ?? null)
         latestTrayBalance = null
         applicationTray?.updateSnapshot()
         if (persistable) {
@@ -1001,6 +1011,7 @@ if (!hasSingleInstanceLock) {
     registerAiAssetProtocol(canvasProjectAssets, accountService, assetThumbnails)
     const chatService = createAiChatService({
       credentialCoordinator: chatCredentials,
+      fetchImpl: relayFetch,
       emit: (senderId, event) => {
         const sender = BrowserWindow.getAllWindows()
           .map((window) => window.webContents)
@@ -1022,6 +1033,7 @@ if (!hasSingleInstanceLock) {
         if (event.type === 'error') sender.send(ipcEventChannels.onAiChatStream, {
           requestId: event.requestId,
           type: 'error',
+          code: event.code,
           message: event.message,
         })
         else sender.send(ipcEventChannels.onAiChatStream, {
@@ -1036,6 +1048,10 @@ if (!hasSingleInstanceLock) {
         `AI聊天流已${entry.status === 'complete' ? '完成' : '结束'}`,
         entry,
       ),
+    })
+    runtimeLog.log('info', 'chat', 'network.ready', 'AI聊天网络栈已就绪', {
+      transport: 'electron-net',
+      responseHeaderTimeoutMs: AI_CHAT_STREAM_LIMITS.connectionTimeoutMs,
     })
     const imageService = createAiImageService({
       baseUrl: 'https://xm.solov.cc',
@@ -1112,6 +1128,11 @@ if (!hasSingleInstanceLock) {
       projects: canvasProjects,
       projectAssets: canvasProjectAssets,
     })
+    notifyCanvasAccountChanged = (userId) => canvasController.setAccountUser(userId)
+    // Session restoration may have completed before the controller was
+    // constructed. Seed its ownership record so the first real account
+    // transition is delivered to an already-open canvas window exactly once.
+    canvasController.setAccountUser(accountService.getSessionState().account?.userId ?? null)
     const paymentWindow = createPaymentWindowController({
       onBlockedNavigation: (targetUrl) => {
         let origin = 'invalid-url'
@@ -1240,7 +1261,82 @@ if (!hasSingleInstanceLock) {
     })
     const mainWindow = createWindow(systemService, urlPolicy, runtimeLog)
     managedMainWindow = mainWindow
-    closeQuery = createWindowCloseQuery((requestId) => mainWindow.webContents.send(ipcEventChannels.onWindowCloseRequest, { requestId }))
+    // The close report is answered by a renderer listener installed after
+    // React mounts. A native close can arrive earlier (or after a renderer
+    // crash), in which case waiting for the normal 15-second query timeout
+    // makes the window look impossible to close. Keep the handshake disabled
+    // until a healthy page has finished loading; closeQuery then returns an
+    // empty report immediately for the startup/crash states.
+    let mainRendererReady = false
+    let mainRendererPreloadFailed = false
+    let rendererReadinessGeneration = 0
+    let rendererReadinessTimer: ReturnType<typeof setTimeout> | undefined
+    const clearRendererReadinessTimer = () => {
+      if (rendererReadinessTimer) clearTimeout(rendererReadinessTimer)
+      rendererReadinessTimer = undefined
+    }
+    const resetRendererReadiness = (preloadFailed = false) => {
+      mainRendererReady = false
+      mainRendererPreloadFailed = preloadFailed
+      rendererReadinessGeneration += 1
+      clearRendererReadinessTimer()
+      // A reload or crash can happen after a close request was sent but
+      // before the reply. Resolve that in-flight query immediately too.
+      closeQuery?.rendererUnavailable()
+    }
+    const probeRendererReadiness = (generation: number, deadline: number, confirmations = 0) => {
+      if (
+        generation !== rendererReadinessGeneration
+        || mainRendererPreloadFailed
+        || mainWindow.isDestroyed()
+        || mainWindow.webContents.isDestroyed()
+      ) return
+      // did-finish-load fires before React's close listener necessarily has
+      // been installed. Probe the trusted bridge and mounted root instead of
+      // guessing with a fixed sleep; this works for both the v2 renderer and
+      // the retained legacy rollback renderer. The stable follow-up probe
+      // below closes the remaining effect-registration window.
+      void mainWindow.webContents.executeJavaScript(
+        'Boolean(document.querySelector("#root")?.firstElementChild && typeof window.xingmang?.onWindowCloseRequest === "function")',
+        true,
+      ).then((mounted) => {
+        if (generation !== rendererReadinessGeneration || mainRendererPreloadFailed || mainWindow.isDestroyed()) return
+        if (mounted && confirmations < 1) {
+          // React's root can acquire a child just before its useEffect
+          // subscriptions run. Require one stable follow-up probe so the
+          // close event cannot land in that narrow interval.
+          rendererReadinessTimer = setTimeout(() => probeRendererReadiness(generation, deadline, confirmations + 1), 50)
+          return
+        }
+        if (mounted) {
+          mainRendererReady = true
+          return
+        }
+        if (Date.now() >= deadline) return
+        rendererReadinessTimer = setTimeout(() => probeRendererReadiness(generation, deadline), 25)
+      }).catch(() => {
+        // A navigation or renderer crash invalidates this generation. Leave
+        // the flag false so closeQuery fails open immediately for this load.
+      })
+    }
+    mainWindow.webContents.on('did-start-loading', () => resetRendererReadiness())
+    mainWindow.webContents.on('preload-error', () => resetRendererReadiness(true))
+    mainWindow.webContents.on('did-finish-load', () => {
+      if (mainRendererPreloadFailed) return
+      const generation = ++rendererReadinessGeneration
+      clearRendererReadinessTimer()
+      probeRendererReadiness(generation, Date.now() + 5_000)
+    })
+    mainWindow.webContents.on('render-process-gone', () => resetRendererReadiness())
+    mainWindow.once('closed', () => {
+      resetRendererReadiness()
+      clearRendererReadinessTimer()
+    })
+    closeQuery = createWindowCloseQuery(
+      (requestId) => mainWindow.webContents.send(ipcEventChannels.onWindowCloseRequest, { requestId }),
+      15_000,
+      { isRendererReady: () => mainRendererReady && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed() },
+    )
     const showMainWindow = () => {
       if (mainWindow.isDestroyed()) return
       if (mainWindow.isMinimized()) mainWindow.restore()

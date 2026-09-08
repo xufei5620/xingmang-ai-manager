@@ -4,6 +4,19 @@
 
 ---
 
+## 0. UI v3.1.1 实施约束
+
+当前界面重建依据为 `ui-spec/`。开始界面工作前依次读取 `ui-spec/HANDOFF.md`、`ui-spec/给验收人的一页纸.md`、`ui-spec/24-old-to-new-map.md`、`ui-spec/11-handoff-phases.md`。最终视觉与交互以 `ui-spec/prototype/星芒AI管理工具-可交互原型.html` 为准；历史文档或预览不替代当前原型。
+
+- 新界面只放 `src/renderer-v2/`，从零实现，不能复制或导入旧 `src/` 的页面、组件、样式和外壳。旧界面只用于核对功能，并保留一个回滚版本。
+- 页面只读 `renderer-v2/registry`；组件遵守 `ui-spec/20-component-api.md`，颜色、字体、版式遵守 token 与当前原型。原型未覆盖的旧功能使用最近的现有模板并记录差异。
+- 新界面使用 React 19；旧回滚界面的 React 18 依赖在 `tooling/legacy-renderer/` 隔离。安装、Key、账号、支付、原 IPC、画布引擎保持原实现，平台新增只在 `electron/platform/` 与明确接入点。
+- 固定 1280 逻辑宽，按 DIP 用 `setZoomFactor` 整体缩放；不添加响应式断点。保留所有旧 `data-testid`，新增采用 `page-component-action`。
+- 先完成整个本地界面和验证。用户明确验收并允许前，禁止 commit、push、PR、合并与发布；文档中的分阶段 PR 要求不能覆盖这个决定。
+- 自动化测试只用本地 mock/隔离临时数据，不请求生产服务、不执行真实付费生成。Windows 无签名发布设置保持不变。
+
+实施状态与真实验证范围见 `docs/UI-V3.1.1-V2-REBUILD.md`。截图对照由仓库脚本生成并留在本地，不纳入源码 PR；不能把截图生成或 mock 通过写成原生平台、后台能力或产品验收通过。
+
 ## 1. 这是什么项目
 
 **星芒AI管理工具** — 面向 Windows 的 Electron 桌面客户端（Mac 适配进行中），是 AI API 中转服务商（`xm.solov.cc`）发给付费客户的配套软件。
@@ -22,7 +35,7 @@
 
 ## 2. 技术栈与规模
 
-Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 账号后端 `xm.solov.cc`（new-api 生产实例，实测 v1.0.0-rc.24，端点事实见 `docs/RECON-new-api.md`）。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。
+Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没有后端**；线上资产 = 静态更新目录 + 账号后端 `xm.solov.cc`（new-api 生产实例，实测 v1.0.0-rc.24，端点事实见 `docs/RECON-new-api.md`）。⚠️ **自动化测试绝不对生产实例发真实请求，一律 mock**。
 
 **Windows 与 macOS 双平台**（macOS 支持已于 `ca592df` 合并）。
 
@@ -38,9 +51,12 @@ Electron 43 + React 18 + TypeScript 5.7 + Vite 8 + vitest。**桌面端自身没
 ```bash
 npm run typecheck   # 三连检：渲染 tsconfig + 主进程 tsconfig + electron 测试 tsconfig
 npm test            # vitest（electron+src）+ node --test（scripts/e2e）。Linux 实测 ~12s；Windows 实测 ~13s，Defender 实时扫描介入时可拖到 60~90s
+npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 会执行
 npm run test:windows    # Windows 备用：关文件级并行 + 30s 超时，专治 Defender 引发的超时失败
-npm run compile     # 构建仓库内 canvas-v2，再清理 + vite build + tsc + 压缩
-npm run dev         # 开发模式。predev 会先构建/复制 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
+npm run compile     # 默认构建 renderer-v2 与对应 canvas token，再清理 + vite build + tsc + 压缩
+npm run compile:legacy  # 显式构建 React 18 旧回滚界面
+npm run dev         # 默认启动 renderer-v2；内部先构建 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
+npm run dev:legacy  # 显式启动 React 18 旧回滚界面
 npm start           # 直接跑已编译产物（需先 compile），免 dev server
 npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ```
