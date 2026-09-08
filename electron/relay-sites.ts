@@ -110,6 +110,25 @@ export function resolveRelaySite(id: string | null | undefined): RelaySite {
 }
 
 /**
+ * Resolves an explicit site selection without a default-site fallback.
+ * Use this for future account-routing boundaries, not settings recovery:
+ * a missing, malformed or unavailable site must never send credentials to
+ * a different account backend. IDs are exact, case-sensitive identifiers;
+ * URLs, labels and whitespace-padded values are not accepted as aliases.
+ *
+ * Registry membership is not authorization. IPC callers must still
+ * validate the sender and bind the site to a main-process-owned active
+ * identity before accessing credentials or starting account work.
+ */
+export function requireRelaySite(id: unknown): RelaySite {
+  const site = typeof id === 'string'
+    ? relaySites.find((candidate) => candidate.id === id)
+    : undefined
+  if (!site) throw new Error('未知中转站点')
+  return site
+}
+
+/**
  * External URLs a relay site's own UI buttons open: the marketing site and
  * the keys page. Recharge is handled inside the desktop account center.
  * main.ts folds this into its `externalUrlAllowlist` (I12, href full
