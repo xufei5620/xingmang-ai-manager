@@ -16,7 +16,7 @@ before(async () => {
   server = await createServer({ root, configFile: false, server: { host: '127.0.0.1', port: 0 }, esbuild: { jsx: 'automatic' } })
   await server.listen()
   base = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({ headless: true })
+  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 })
 after(async () => { await browser?.close(); await server?.close() })
 async function open(query = '') {

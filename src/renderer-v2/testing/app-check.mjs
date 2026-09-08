@@ -13,7 +13,7 @@ before(async () => {
   server = await createServer({ root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error', server: { host: '127.0.0.1', port: 0 } })
   await server.listen()
   origin = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch()
+  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 })
 after(async () => { await browser?.close(); await server?.close() })
 async function open(query = '') {

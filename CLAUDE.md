@@ -6,6 +6,8 @@
 
 ## 0. UI v3.1.1 实施约束
 
+> **状态（2026-09-08）**：v3.1.1 重建已随 PR #117 合并进 `main`（0.1.32），`src/renderer-v2/` 是默认构建，旧 `src/` 只在 `dev:legacy` / `compile:legacy` 下构建。下列约束继续适用于后续界面工作；其中「禁止 commit、push、PR」一条针对的是重建验收期，该期已随合并结束，后续按 §7 常规流程，重大界面变更仍先汇报。本轮复查结论见 `docs/PROJECT-REVIEW-2026-09-08.md`。
+
 当前界面重建依据为 `ui-spec/`。开始界面工作前依次读取 `ui-spec/HANDOFF.md`、`ui-spec/给验收人的一页纸.md`、`ui-spec/24-old-to-new-map.md`、`ui-spec/11-handoff-phases.md`。最终视觉与交互以 `ui-spec/prototype/星芒AI管理工具-可交互原型.html` 为准；历史文档或预览不替代当前原型。
 
 - 新界面只放 `src/renderer-v2/`，从零实现，不能复制或导入旧 `src/` 的页面、组件、样式和外壳。旧界面只用于核对功能，并保留一个回滚版本。
@@ -41,17 +43,22 @@ Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7
 
 | | 源码 | 测试 |
 |---|---|---|
-| `electron/`（主进程，全部特权操作） | 86 个模块 | 81 个 |
-| `src/`（渲染进程，纯 UI） | 71 个文件 | 33 个 |
+| `electron/`（主进程，全部特权操作；含 `platform/` 15 个 v2 平台模块） | 136 个模块 | 122 个 |
+| `src/`（旧 React 18 渲染进程，只读回滚版本） | 111 个文件 | 54 个 |
+| `src/renderer-v2/`（当前 React 19 界面） | 105 个文件 | 14 个 vitest + 4 个 Playwright 检查脚本（另 2 个在 `e2e/`） |
+| `canvas-v2/src/`（画布源码） | — | 73 个 |
 
-**1669 个 vitest 用例**（125 个文件；该数字是历史基线，合并新测试后以 CI 输出为准），`npm test` 还串带 scripts/e2e 下的 node --test 套件。IPC：**108 个主窗口 invoke 通道**（另有 43 个画布宿主通道：41 invoke + 2 push，在 108 之外，见 I4 例外）。
+**约 3165 个 vitest 用例**（263 个文件；Linux 2026-09-08 实测 2973 通过 / 192 平台门控跳过 / 0 失败，`npm run test:canvas` 另有 498 个；数字随合并漂移，以 CI 输出为准），`npm test` 还串带 scripts/e2e 下的 node --test 套件。IPC：**140 个主窗口 invoke 通道 + 12 个主进程推送通道**（`ipc-contract.ts` 的 `ipcInvokeChannels` / `ipcEventChannels`）；另有 49 个画布宿主通道（43 invoke + 6 push）与 9 个 `xingmang-platform:*` 平台通道，都在 140 之外，见 I4。
 
-**常用命令**（耗时都很短，应作为每次改动的硬门槛）：
+**常用命令**（每次改动的硬门槛；全量已不再是"十几秒"级）：
 
 ```bash
-npm run typecheck   # 三连检：渲染 tsconfig + 主进程 tsconfig + electron 测试 tsconfig
-npm test            # vitest（electron+src）+ node --test（scripts/e2e）。Linux 实测 ~12s；Windows 实测 ~13s，Defender 实时扫描介入时可拖到 60~90s
-npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 会执行
+npm run typecheck   # 四连检：旧渲染 tsconfig + 主进程 tsconfig + electron 测试 tsconfig + renderer-v2 tsconfig
+npm test            # vitest（electron+src，含 renderer-v2 project，已固定 --no-file-parallelism --testTimeout=30000）+ node --test（scripts/e2e/test:ui）。Linux 2026-09-08 实测 vitest ~2 分钟 + node 套件 ~2 分钟；Windows 以 CI 为准，Defender 实时扫描会再拖慢
+npm run test:v2     # renderer-v2 / platform 单测 + test:v2:browser（86 组 Playwright 业务检查）；Windows required CI 会执行
+npm run test:v2:browser  # 只跑 86 组浏览器检查（容器里需 XINGMANG_E2E_CHROMIUM，见下）
+npm run test:canvas # canvas-v2 的 498 个 vitest 用例（CI 单独一步）
+npm run check:v2    # 旧 data-testid 清单对照
 npm run test:windows    # Windows 备用：关文件级并行 + 30s 超时，专治 Defender 引发的超时失败
 npm run compile     # 默认构建 renderer-v2 与对应 canvas token，再清理 + vite build + tsc + 压缩
 npm run compile:legacy  # 显式构建 React 18 旧回滚界面
@@ -73,7 +80,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 
 遇到超时类失败先用 `npm run test:windows` 复核；符号链接类失败开启 Windows 开发者模式即可消除。基线与上表不符请到 **#40** 报告。
 
-> 云端/CI 容器提示：e2e 里 2 个 Playwright 布局用例要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，指个可用的 executablePath 复跑即绿（vitest 与 scripts 套件不受影响）。
+> 云端/CI 容器提示：所有 Playwright 套件（`e2e/*.test.mjs`、`test:ui` 的 62 组、`test:v2:browser` 的 86 组）都要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归。全部启动点都读 `XINGMANG_E2E_CHROMIUM`，容器里 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium npm test` / `npm run test:v2:browser` 即绿；CI 先 `playwright install chromium`，不设该变量（vitest 与 scripts 套件不受影响）。
 
 > 改动前先跑一遍记下失败数，改动后对比，**不要引入新失败**。
 
@@ -95,10 +102,25 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ### `electron/` 主进程
 
 **进程入口与 IPC 边界**
-- `main.ts` (669) — 生命周期、`BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true`）、`xingmang://` 与 `xingmang-canvas://` 协议注册、外链白名单、装配服务
-- `ipc-contract.ts` (522) — **唯一的跨进程类型真相源**。`as const satisfies` 强制通道表与接口对齐
-- `preload.ts` (231) — sandbox 桥接层。因 `sandbox:true` 无法 require 本地模块，**手工复制了一份通道表**
-- `ipc.ts` — 108 个处理器注册与参数校验
+- `platform/entry.ts` — **package.json 的 `main`**。先按 `dist/renderer-v2.flag`（打包）或 `XINGMANG_RENDERER`（dev server）决定是否装 v2 平台层，再 `require('../main')`
+- `main.ts` (1458) — 生命周期、`BrowserWindow` 安全策略（`sandbox:true` / `contextIsolation:true`）、`xingmang://` 与 `xingmang-canvas://` 协议注册、外链白名单、装配服务；v3.1.1 起还装配窗口位置恢复、关闭询问、托盘、系统通知、深链接与已保存账号
+- `ipc-contract.ts` (961) — **唯一的跨进程类型真相源**。`as const satisfies` 强制通道表与接口对齐
+- `preload.ts` (351) — sandbox 桥接层。因 `sandbox:true` 无法 require 本地模块，**手工复制了一份通道表**
+- `ipc.ts` — 140 个处理器注册与参数校验
+
+**v2 平台层（`electron/platform/`，2026-09 随 v3.1.1 加入，只在 v2 渲染下启用）**
+- `install-system-api.ts` — 在主窗口所在的**默认 session** 上 `registerPreloadScript({type:'frame'})` 注入 `platform/preload.js`（暴露 `window.xingmangPlatform`），并构造 `PlatformSystemService`
+- `ipc.ts` — 直接 `ipcMain.handle` 9 个 `xingmang-platform:*` 通道，`assertPlatformOwner` 只放行主窗口主帧 + 可信 URL；**没有**走 `registerTrustedHandler`（见 I4 现状）
+- `system-service.ts` / `settings-store.ts` — 主题偏好、高对比、开机自启、通知/隐私偏好落 `platform-settings.json`（`safe-local-data` 原子写）；只读的 Electron session 代理探测
+- `notifications.ts` / `zoom.ts` / `renderer-v2.ts` / `frame-navigation.ts` — 分类通知去重、1280 DIP 缩放算法、F11 全屏 + `fs.watchFile` 轮询 settings.json 重算缩放、主窗口子帧导航只放行 `about:blank` / `about:srcdoc`（公告 iframe 依赖）
+- ⚠️ **与主进程既有能力重叠，且已出现分叉**：缩放（`window-preferences.ts` 的 `calculateUiZoom` 下限 0.8，`platform/zoom.ts` 下限 0.7，两者同时挂在主窗口 `resize` / `did-finish-load` 上，ui-spec 03 §1 规定 0.7）、主题落盘（`settings.json.theme` 与 `platform-settings.json.themePreference`）、系统通知（`desktop-notifications.ts` 与 `platform/notifications.ts`）。改这三项前先决定只保留哪一份，不要再各改一处
+
+**窗口与桌面集成（v3.1.1 新增）**
+- `window-preferences.ts` — 窗口位置/尺寸恢复（多显示器可见面积最大者）、`calculateUiZoom`、关闭偏好解析
+- `window-lifecycle.ts` — 关闭 → 询问/缩托盘/退出 的状态机；`before-quit` 与窗口 `close` 统一走它
+- `window-close-query.ts` — 向渲染层询问阻塞任务与未保存状态；渲染未就绪/崩溃时 fail-open，不让原生窗口卡 15 秒
+- `external-deep-links.ts` — `xingmang://pay?order=` 与 `xingmang://invite?code=` 白名单解析，其余一律 `invalid`，只入队不导航；打包态才 `setAsDefaultProtocolClient`
+- `application-tray.ts` / `desktop-notifications.ts` — 托盘菜单与更新类系统通知
 
 **命令执行与安全边界**（这里是本项目真正的复杂度所在）
 - `command-runner.ts` (1120) — **全仓最关键模块**。`runCommand` 硬编码 `shell:false`；`trustedCommandEnvironment` 剥离 60+ 可注入环境变量并重建机器级 PATH；`findExecutable` 不调用 `where`/`which`/shell
@@ -109,7 +131,7 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `managed-path-trust.ts` / `system-shell.ts`
 
 **CLI 安装与运行时**
-- `system-service.ts` (2901) — **最大模块**。前 1520 行是纯函数库（可直接单测），`createSystemService` 从 1521 行起是闭包工厂
+- `system-service.ts` (3527) — **最大模块**。前 1697 行是纯函数库（可直接单测），`createSystemService` 从 1698 行起是闭包工厂
 - `tool-installation.ts` (628) / `node-runtime.ts` (1026) / `grok-installer.ts` (662) / `grok-update.ts` (161)
 - `managed-cli.ts` / `managed-cli-paths.ts` / `native-cli-uninstall.ts` / `trusted-native-cli.ts`
 
@@ -122,17 +144,18 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `codex-desktop-service.ts` (1427) — 桌面端探测、镜像下载、包校验与关停的服务层（从 system-service.ts 拆出）
 
 **账号与计费（新增）**
-- `new-api-client.ts` (1465) — **唯一对账号后端出网的模块**，I10 的参考实现：`performRequest` 超时 + 体积上限 + `redirect:'manual'` 且拒绝 3xx 且校验响应 origin（三重）+ 强制 https 拒内嵌凭据；上游文案 `redactCommandText` 脱敏 + 剥控制字符 + 截 300 字
+- `new-api-client.ts` (3250) — **唯一对账号后端出网的模块**，I10 的参考实现：`performRequest` 超时 + 体积上限 + `redirect:'manual'` 且拒绝 3xx 且校验响应 origin（三重）+ 强制 https 拒内嵌凭据 + `credentials:'omit'`（主进程注入的是 Electron `net.fetch`，不能混入 session cookie 罐）；上游文案 `redactCommandText` 脱敏 + 剥控制字符 + 截 300 字。v3.1.1 起：`/api/notice` 公告单独 4 MB 上限（其余端点仍 512 KB，`unwrapPublicNotice` 的宽松信封只限该端点）；session 所有权代际（`ownerGeneration` / `authAttemptGeneration`）保证旧请求的结果不能覆盖新账号
 - `account-session-store.ts` (201) — 登录 session 用 `safeStorage`（Windows 底层 DPAPI）加密落盘；损坏/解密失败静默降级为未登录，永不抛错
+- `saved-accounts.ts` (151) — 本机多账号切换：最多 16 个账号的 refresh cookie 用 `safeStorage` 加密落 `saved-accounts.dat`；IPC 只回 `id/origin/userId/username/updatedAt`，切换在主进程内 `switchSession` 完成，**凭据不过 IPC**（I3）
 - `probe-failure.ts` (14) — 探测失败的可区分状态
 
 **无限画布 + AI 工作区（全项目唯一运行第三方前端代码的地方）**
 
 > 架构在 PR #85（2026-08-12）统一：**画布再也拿不到 API Key**。此前的做法是把 relay Key 注入画布 localStorage、由画布自己出网（`canvas-auth.ts` / `canvas-ai-config.ts` / `canvas-v2` 内的 relay 客户端），这三者已删除。现在全部 AI 调用都在主进程完成，画布只能经 `canvas-host:*` 通道请求。**改画布相关代码前先理解这条边界**：它是 I15 的兑现方式——被投毒的画布连 Key 都摸不到，因为它从来没有过。
 
-- `canvas-window.ts` — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 **43 个** `canvas-host:*` 宿主通道（41 invoke + 2 push，I4 的例外，见下）
+- `canvas-window.ts` — 独立 `BrowserWindow`，加固与主窗口同级（`sandbox`/`contextIsolation`/`nodeIntegration:false`/`webviewTag:false`/`navigateOnDragDrop:false`），拦 `will-navigate` 与 `setWindowOpenHandler`；注册 **49 个** `canvas-host:*` 宿主通道（43 invoke + 6 push，I4 的例外，见下）
 - `canvas-protocol.ts` (62) — `xingmang-canvas://` 解析。穿越/根包含检查**全部委托**主窗口同款 `resolvePackagedApplicationFile`，SPA 回退用字面量 `'index.html'` 重走同一函数，**绝不手工拼路径**；与主窗口不共享 rendererRoot
-- `canvas-preload.ts` — 宿主桥暴露 41 个 invoke 能力并接收 2 个主进程推送，拿不到 `window.xingmang`。通道名与 `canvas-contract.ts` 是有意重复的字面量（I7），由测试钉死
+- `canvas-preload.ts` — 宿主桥暴露 43 个 invoke 能力并接收 6 个主进程推送，拿不到 `window.xingmang`。通道名与 `canvas-contract.ts` 是有意重复的字面量（I7），由测试钉死
 - `canvas-contract.ts` — 宿主通道名的单一真相源（主进程侧）
 - `canvas-request-parser.ts` / `canvas-run-contract.ts` / `canvas-run-engine.ts` / `canvas-node-executors.ts` — 入参白名单校验、运行契约、DAG 运行引擎与节点执行器（**都在主进程**）
 - `canvas-account-lifecycle.ts` / `canvas-fingerprint.ts` — 账号切换隔离与画布指纹
@@ -151,12 +174,25 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 - `catalog.ts`（provider 单一定义源）/ `versions.ts` / `installation-queue.ts` / `path-identity.ts`（跨平台路径身份比对）
 - `safe-local-data.ts` / `bounded-file.ts` / `bounded-directory.ts` / `bounded-response.ts`
 
-### `src/` 渲染进程
+### `src/renderer-v2/` 当前渲染进程（React 19，默认构建）
+
+- `main.tsx` / `App.tsx` (412) — 入口与全局状态（账号、设置、页面、引导、聊天 scope、账号级 Key 引导）；`bridge.ts` 取 `window.xingmang`，`platform-api.ts` 取 `window.xingmangPlatform`（可缺席）
+- `registry/`（pages / tools / business / icons / shell / status）— 页面与工具清单的唯一来源，页面只读 registry
+- `ui/` — 40 余个组件目录 + `core/fields/floating/modal/feedback/brand/shared.tsx`；`gallery.html` 是组件检阅页
+- `features/`：`auth/`（欢迎、登录/注册/找回、开始引导、星轨）/ `tools/`（工具箱、配置弹窗、`account-bootstrap.ts` 登录后自动写 Key 的计划与复核、`source-marker.ts` 手填 Key 来源标记）/ `chat/`（`useChatController.ts`、`storage.ts` 聊天记录 localStorage 4 MB 上限）/ `shell/`（外壳、`Announcement.tsx` 873 行：公告 HTML 自研净化 → `srcdoc` iframe `sandbox="allow-same-origin"` 无脚本 + meta CSP，非原生信封走 Markdown）/ `app/`
+- `pages-account.tsx` (2282) / `pages-maintenance.tsx` (2013) / `pages-management.tsx` (1380) — 三个大页面文件，是 v2 里最先需要拆分的地方
+- `local-avatar.ts` / `LocalAvatar.tsx` / `SavedAccounts.tsx` / `account-switch-sync.ts` — 本机头像（localStorage，按 origin+userId）、已保存账号切换与切换后的可选 CLI 同步
+- **边界由工具钉死**：Vite `generateBundle` 守卫禁止 v2 bundle 含旧 `src/` 模块；对主进程只 `import type` `ipc-contract` / `platform/contract`，值导入只有零依赖的 `relay-sites`。渲染层无 `fetch`、无 `innerHTML`、无 Key/token 落 localStorage（2026-09-08 复查 0 处）
+- 风格提醒：`ui/*.tsx` 里约 280 行带分号、10 个箭头函数导出，与 §6 约定不一致——新代码不要延续，也不要专门刷格式
+
+### `src/` 旧渲染进程（React 18，只读回滚版本）
+
+> 只在 `npm run dev:legacy` / `compile:legacy` 下构建，vitest `legacy` project 仍跑它的测试。**不要再往这里加功能**；核对旧行为时读它即可。
 
 - `main.tsx` — 挂载 React + 全局错误上报
-- `App.tsx` (2009) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但账号体系与 AI 聊天又把它喂大了：App() 本体 56 处 `useState`，页面切换仍是一条长三元链。**#30 未完结，且在持续恶化**
+- `App.tsx` (2781) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但账号体系与 AI 聊天又把它喂大了：App() 本体 56 处 `useState`，页面切换仍是一条长三元链。**#30 未完结，且在持续恶化**
 - `app-shared.ts` / `provider-meta.ts` / `navigation.ts` / `provider-registry.ts` — 共享底座：纯工具函数与空快照 / provider 视觉元数据 / 侧边栏页面清单 / **provider 身份与两种展示顺序的单一来源**（rank 表派生，见 T2）
-- `styles.css` (8413) — **另一个巨型枢纽文件**
+- `styles.css` (11040) — **另一个巨型枢纽文件**
 - `components/` — 通用件 `AppFrame` / `Sidebar` / `Toast` / `Dialog` / `ProviderTabs` / `RuntimeCell` / `StatusMark` / `StartupSplash` / `ErrorBoundary`；从 App.tsx 搬出的 `onboarding/`（含 `NodeInstallGuide`）、`config/`（`ConfigDialog` 等 4 件）、`dashboard/`（`Dashboard` / `CodexDesktopCard` / `NextStepsCard`）
 - `components/account/`（16 件）— 账号体系全部 UI：`AccountCenterPage`(712，个人中心) / 登录 / 注册 / 找回密码 / 写 Key 确认弹窗 / `AccountArea`(侧边栏账号区)，纯逻辑拆在 `account-center.ts` / `account-errors.ts`(错误中文化) / `validation.ts`
 - `components/welcome/WelcomePage.tsx` — 欢迎页（`startup-gate.ts` 决定老用户直进工作台）
@@ -179,11 +215,12 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 *注*：交互式终端启动走 `interactiveTerminalEnvironment`，它的净化基底**由调用方传入**——`trusted-only` 传 `trustedCommandEnvironment`，same-user 传 `commandEnvironment`（缺省值，未跨越完整性边界，无需收窄 PATH）。颜色层叠在基底之上，**不要把整个函数换成 `trustedCommandEnvironment`**，那会连 `TERM`/`FORCE_COLOR` 一起剥掉，终端变无色。
 
 **I3. API Key 明文永不随普通查询跨 IPC。**
-`toNativeConfigSummary` 解构剥离 `apiKey`；明文仅走 `config:reveal-api-key`。**账号凭据同理**：`accessToken` / refresh cookie 在 IPC 契约里 0 处返回给渲染层（渲染层只拿登录态快照），加密落盘走 `account-session-store.ts`。
+`toNativeConfigSummary` 解构剥离 `apiKey`；明文仅走 `config:reveal-api-key`。**账号凭据同理**：`accessToken` / refresh cookie 在 IPC 契约里 0 处返回给渲染层（渲染层只拿登录态快照），加密落盘走 `account-session-store.ts`；多账号的 cookie 同样只在主进程（`saved-accounts.ts`），`account:list-saved` 只回摘要，`account:switch-saved` 只收 64 位十六进制 id。
 *违反后果*：用户一次"导出反馈"就把付费 Key 发到客服群。
 
 **I4. 所有 `ipcMain.handle` 必须经 `registerTrustedHandler`。**
-它统一做 sender URL 校验、结构化日志、dispose 注册。**唯一例外**：43 个 `canvas-host:*` 通道由 `canvas-window.ts` 的 `registerCanvasHandler` 注册——它做的是**更窄**的校验（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender），主窗口调这些通道会被拒。新通道不许效仿，除非同样只服务一个隔离窗口。
+它统一做 sender URL 校验、结构化日志、dispose 注册。**设计上的唯一例外**：49 个 `canvas-host:*` 通道由 `canvas-window.ts` 的 `registerCanvasHandler` 注册——它做的是**更窄**的校验（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender），主窗口调这些通道会被拒。新通道不许效仿，除非同样只服务一个隔离窗口。
+*现状（2026-09-08 复查）*：v3.1.1 又带来第二条路径——`electron/platform/ipc.ts` 直接 `ipcMain.handle` 9 个 `xingmang-platform:*` 通道，自带 `assertPlatformOwner`（sender 必须是主窗口、主帧、可信 URL，参数个数与类型逐个校验），但**没有** `registerTrustedHandler` 的结构化日志与统一 dispose，也不在 `ipcInvokeChannels` 表内（T1 的顺序测试管不到它）。待决定是并回 `registerTrustedHandler` 还是正式登记为例外；在此之前**不要再长出第三条**。
 
 **I5. IPC 入参一律视为敌意输入，必须显式校验。**
 渲染进程虽是自家代码，但 XSS/依赖投毒后就是攻击面。`parseSessionId` 的 UUID 正则同时防路径穿越。
@@ -222,7 +259,8 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 **I15. 画布是运行第三方前端代码的隔离区，凭据永不下放，能力只减不增。**
 画布窗口与主窗口**不共享 rendererRoot**、协议解析必须委托 `resolvePackagedApplicationFile`，且 `xingmang-canvas://` 的 CSP 必须由主进程响应头强制注入。**API Key 只在主进程按账号与分组解析，绝不进入渲染进程**（`chat-credential-coordinator.ts`）——这是 2026-08-12 架构统一的核心：画布发的是"请求"，不是"带着 Key 的请求"。给画布加任何新能力前先回答：**画布被供应链投毒后，这个能力能干什么？** 文件读写必须走原生对话框（用户选路径）+ `bounded-*`/原子写，外链必须过白名单，入参必须过 `canvas-request-parser.ts` 的字段白名单。唯一的文件路径例外是 OS 拖放：路径只能由隔离 preload 的 `webUtils.getPathForFile(File)` 取得，主进程仍须执行绝对路径、reparse、单链接普通文件校验，最终资产 store 再以 open + fstat 复核。
 *违反后果*：画布上游一次投毒 = 拿到你给它的一切；今天它既摸不到主进程 IPC，也拿不到 Key。
-*当前状态*：宿主桥共 43 个通道（41 invoke + 2 push），已完成通道级投毒审计。`importAssetFile` 的 OS 拖放路径属于上述明确例外；不得新增第二个由 renderer 提供绝对路径的通道。
+*当前状态*：宿主桥共 49 个通道（43 invoke + 6 push），已完成通道级投毒审计。`importAssetFile` 的 OS 拖放路径属于上述明确例外；不得新增第二个由 renderer 提供绝对路径的通道。
+*2026-09-08 复查发现的缝隙*：画布窗口没有独立 `partition`，与主窗口共用默认 session，而 `electron/platform/install-system-api.ts` 是在默认 session 上 `registerPreloadScript({type:'frame'})`，因此**画布主帧里也会出现 `window.xingmangPlatform`**（Electron 43 下已用最小脚本复现）。9 个通道全部会被 `assertPlatformOwner` 拒绝，暂无实际能力泄漏，但违反"能力只减不增"的字面要求；修法二选一：画布窗口改用独立 partition，或平台 preload 只在 `location` 属于主窗口 URL 时暴露。支付窗口已有随机 partition，不受影响。
 
 ---
 
@@ -238,8 +276,8 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 
 历史包袱：这里曾有 5 处编译器沉默点（各页面自写 provider 联合类型/字面量数组），已随 #32 全部收口进 registry。**新的展示顺序数组只能定义在 registry 里，不要在页面里写字面量**。遗留手工点：概览页 `Dashboard.tsx:164` 的「N/5 个已安装」分母仍是硬编码。
 
-**T3. 改 `system-service.ts` → 先确认改的是 2901 行里的哪一半。**
-前 1520 行是纯函数（全部 export、测试直接调用）；`createSystemService`（1521 行起）之后是闭包（内部函数不导出）。**新逻辑优先写成顶层纯函数**再在闭包里调用，否则无法单测。这是最容易撞车的文件。
+**T3. 改 `system-service.ts` → 先确认改的是 3527 行里的哪一半。**
+前 1697 行是纯函数（全部 export、测试直接调用）；`createSystemService`（1698 行起）之后是闭包（内部函数不导出）。**新逻辑优先写成顶层纯函数**再在闭包里调用，否则无法单测。这是最容易撞车的文件。
 
 **T4. 动 `trustedCommandEnvironment` → 只能加禁止项，不能加放行项。**
 三张表是白名单式收紧，每条对应一个具体攻击。放行任何变量前，先在测试里写出"该变量为什么安全"。
@@ -274,8 +312,8 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 **T6. 渲染进程加异步数据加载 → 必须用竞态守卫。**
 三个现成工具：`scan-coordinator.ts`（扫描）、`latest-request.ts`（按 key 的页面数据）、`provider-extension-coordinator.ts`（切 provider）。直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。
 
-**T7. 给 `src/` 加组件测试 → 当前没有 DOM 环境。**
-仓库**没有 `vitest.config.ts`**，环境是默认的 `node`。src 下 25 个测试文件全部只测纯函数，没有一处 render。加 jsdom 是需要先与其他 agent 对齐的基础设施改动，**不要顺手做**。
+**T7. 给渲染层加组件测试 → vitest 里仍然没有 DOM 环境。**
+仓库现在有 `vitest.config.ts`（三个 project：`legacy` = `src/`+`electron/`，`renderer-v2`，`canvas`；legacy project 把 react 别名到 `tooling/legacy-renderer` 的 React 18），环境仍是 `node`，没有 jsdom / testing-library。renderer-v2 的组件断言用 `react-dom/server` SSR（`ui/components.test.tsx`），真实 DOM 交互全部放在 Playwright 浏览器检查（`test:v2:browser`、`test:ui`、`e2e/`）。加 jsdom 仍是需要先与其他 agent 对齐的基础设施改动，**不要顺手做**；新的浏览器检查脚本启动 Chromium 时必须带 `executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined`。
 
 **T8. electron 测试已纳入 typecheck（第三条 tsc），但 `tsconfig.electron.json` 的测试 exclude 千万别删。**
 `npm run typecheck` 跑三段：根 tsconfig（src）、`tsconfig.electron.json`（主进程**产物**配置，仍 exclude 测试）、`tsconfig.electron.test.json`（纳入全部 electron 测试，自带 `noEmit: true`）。**基础配置的 exclude 是 dist-electron 不含测试产物的承重墙**——`npm run compile` 用的就是它，删掉 exclude = 测试代码进发布包。测试配置的 `rootDir: "."` 专为孤儿测试 `electron/onboarding-runtime.test.ts`（测的是 `src/onboarding-runtime.ts`）的跨目录 import 而设。

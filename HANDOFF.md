@@ -1,5 +1,7 @@
 # 滚动报告(无人值守自主轮询)
 
+> ⚠️ **时效提示（2026-09-08）**：下文止于 2026-08-10 的账号/画布批次，其中的"当前工作分支"`claude/xingmang-site-naming-batches-xwms7a`、`local/integration` 与 W1-W3 记录都已成历史；此后 `main` 又合并了 Codex 桌面端修复（0.1.25-0.1.31）与 v3.1.1 界面重建（#116/#117，0.1.32，renderer-v2 成为默认构建）。当前实态以 `CLAUDE.md`、`docs/UI-V3.1.1-V2-REBUILD.md` 与 `docs/PROJECT-REVIEW-2026-09-08.md` 为准。
+>
 > 本文件 = 云端 agent 的滚动交接报告,**每完成一波就更新并随代码推送**。
 > 接手协议:任何新会话 `git checkout local/integration` + 读本文件顶部三栏即可无损继续。
 > 与 CLAUDE.md 或代码冲突时,以代码为准。上一版 HANDOFF(2026-08-10 静态交接稿)已由本报告取代。
