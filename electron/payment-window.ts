@@ -77,7 +77,7 @@ export function validatePaymentQrCode(input: PaymentQrCodeInput): PaymentQrCodeI
   }
   let parsed: URL
   try { parsed = new URL(input.code) } catch { throw new Error('二维码内容格式异常') }
-  if (!((parsed.protocol === 'https:' && !parsed.username && !parsed.password) || parsed.protocol === 'weixin:')) {
+  if (!((parsed.protocol === 'https:' || parsed.protocol === 'weixin:') && !parsed.username && !parsed.password)) {
     throw new Error('二维码仅允许 HTTPS 或 weixin 地址')
   }
   if (typeof input.amount !== 'number' || !Number.isFinite(input.amount) || input.amount <= 0 || input.amount > paymentQrLimits.amount) {
