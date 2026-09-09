@@ -95,6 +95,16 @@ describe('Sub2API RelayBackend adapter', () => {
     expect(await f.client.getProfile()).toMatchObject({ affCode: 'invite7', affCount: 2, affQuota: 1.2 })
     expect(JSON.stringify(usage)).not.toContain('do-not-return')
   })
+  it('creates a Sub2API recharge order and supports QR-only providers', async () => {
+    const f = fixture()
+    f.state.override = ({ url, init, body }) => {
+      if (url.pathname.endsWith('/payment/checkout-info')) return json({ payment_enabled: true, balance_recharge_multiplier: 1.5, recharge_fee_rate: 2, methods: { alipay: { display_name: '支付宝', single_min: 1 } }, global_min: 1 })
+      if (url.pathname.endsWith('/payment/orders') && init.method === 'POST') return json({ amount: 15, pay_amount: 10.2, qr_code: 'weixin://wxpay/bizpayurl?pr=test', out_trade_no: 'trade-qr', expires_at: '2026-09-10T01:00:00Z', currency: 'CNY', received_amount: body.amount })
+    }
+    await f.client.login(loginInput)
+    await expect(f.client.quoteTopupAmount({ amount: 10 })).resolves.toEqual({ amount: 10, payableAmount: 10.2 })
+    await expect(f.client.createTopupPayment({ amount: 10, paymentMethod: 'alipay' })).resolves.toMatchObject({ kind: 'qrcode', code: 'weixin://wxpay/bizpayurl?pr=test', tradeNo: 'trade-qr', amount: 10.2 })
+  })
   it('implements public settings and exposes the supported account-center blocks', async () => {
     const f = fixture()
     expect(await f.client.getStatus()).toMatchObject({ systemName: '星芒 API', quotaPerUnit: 1, quotaDisplayType: 'USD',

@@ -83,8 +83,8 @@ function parseUsage(payload: unknown): NewApiAccountUsagePage {
   const s = record(p.stats); return { page: num(p.page, 1), pageSize: num(p.page_size, 20), total: num(p.total, records.length), records, stats: { quota: num(s.total_actual_cost ?? s.total_cost), rpm: num(s.rpm), tpm: num(s.tpm) } }
 }
 function parseTopupInfo(payload: unknown): NewApiTopupInfo {
-  const p = record(payload); const methods = record(p.methods); const paymentMethods = Object.entries(methods).map(([type, value]) => { const x = record(value); return { name: str(x.display_name, type), type, provider: 'epay' as const, color: null, icon: null, minTopup: num(x.single_min) } })
-  return { onlineTopupEnabled: Boolean(p.payment_enabled ?? paymentMethods.length), stripeTopupEnabled: paymentMethods.some((m) => m.type === 'stripe'), creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: false, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null, paymentMethods, minTopup: num(p.global_min ?? p.min_amount), amountOptions: [], discounts: {}, topupLink: null }
+  const p = record(payload); const methods = record(p.methods); const paymentMethods = Object.entries(methods).filter(([, value]) => record(value).available !== false).map(([type, value]) => { const x = record(value); return { name: str(x.display_name, type), type, provider: 'epay' as const, color: null, icon: null, minTopup: num(x.single_min) } })
+  return { onlineTopupEnabled: Boolean(p.payment_enabled ?? paymentMethods.length), stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: false, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null, paymentMethods, minTopup: num(p.global_min ?? p.min_amount), amountOptions: [], discounts: {}, topupLink: null }
 }
 function parseOrders(payload: unknown): NewApiTopupOrdersPage {
   const p = record(payload); const items = Array.isArray(p.items) ? p.items : []; const orders: NewApiTopupOrder[] = items.slice(0, 100).map((v) => { const x = record(v); const raw = str(x.status).toUpperCase(); const status = raw === 'COMPLETED' ? 'success' : raw === 'FAILED' || raw === 'CANCELLED' ? 'failed' : raw === 'EXPIRED' ? 'expired' : ['PENDING', 'PAID', 'RECHARGING'].includes(raw) ? 'pending' : 'unknown'; return { id: num(x.id), amount: num(x.amount), money: num(x.pay_amount ?? x.amount), tradeNo: str(x.out_trade_no), paymentMethod: str(x.payment_type), paymentProvider: str(x.payment_type), createdAt: iso(x.created_at), completedAt: iso(x.completed_at) || null, status } })
@@ -363,7 +363,29 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       return reveal(scope, matches.sort((a, b) => Number(b.id) - Number(a.id))[0])
     },
     getTopupInfo: async () => parseTopupInfo(await call(capture(), (saved, abort) => native.getPaymentCheckoutInfo(saved, abort))),
-    quoteTopupAmount: unsupported, createTopupPayment: unsupported,
+    quoteTopupAmount: async (input) => {
+      if (!Number.isSafeInteger(input.amount) || input.amount <= 0) throw new RealmAccountError('INVALID')
+      const raw = record(await call(capture(), (saved, abort) => native.getPaymentCheckoutInfo(saved, abort)))
+      const feeRate = num(raw.recharge_fee_rate)
+      const payableAmount = Math.ceil(input.amount * (1 + Math.max(0, feeRate) / 100) * 100) / 100
+      return { amount: input.amount, payableAmount }
+    },
+    createTopupPayment: async (input) => {
+      if (!Number.isSafeInteger(input.amount) || input.amount <= 0 || typeof input.paymentMethod !== 'string' || !input.paymentMethod.trim()) throw new RealmAccountError('INVALID')
+      const checkout = record(await call(capture(), (saved, abort) => native.getPaymentCheckoutInfo(saved, abort)))
+      const multiplier = num(checkout.balance_recharge_multiplier, 1)
+      const orderAmount = Math.round(input.amount * Math.max(0, multiplier) * 100) / 100
+      if (!Number.isFinite(orderAmount) || orderAmount <= 0) throw new Error('充值金额超出当前配置')
+      const payload = record(await call(capture(), (saved, abort) => native.createPaymentOrder(saved, { amount: orderAmount, payment_type: input.paymentMethod.trim(), order_type: 'balance', is_mobile: false }, abort), true))
+      const tradeNo = str(payload.out_trade_no) || null
+      const expiresAt = iso(payload.expires_at) || null
+      const payUrl = str(payload.pay_url)
+      if (payUrl) return { kind: 'url', url: payUrl, tradeNo, expiresAt }
+      const qrCode = str(payload.qr_code)
+      if (qrCode) return { kind: 'qrcode', code: qrCode, tradeNo, expiresAt,
+        amount: num(payload.pay_amount ?? payload.amount, input.amount), currency: str(payload.currency, 'CNY') }
+      throw new Error('Sub2API 未返回支付地址，请检查支付渠道配置')
+    },
     listTopupOrders: async (input = {}) => parseOrders(await call(capture(), (saved, abort) => native.listPaymentOrders(saved, { page: input.page, page_size: input.pageSize, keyword: input.keyword }, abort))),
     redeemTopupCode: unsupported, transferAffiliateQuota: async (_input: NewApiAffiliateTransferInput) => {
       const scope = capture()

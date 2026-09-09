@@ -77,6 +77,7 @@ export interface Sub2ApiAccountClient extends RealmSessionBackend {
   getTasks(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   getPaymentConfig(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   getPaymentCheckoutInfo(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
+  createPaymentOrder(saved: RealmSavedAccount, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   listPaymentOrders(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   listSubscriptionPlans(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   getSubscriptions(saved: RealmSavedAccount, path: 'active' | 'all' | 'progress' | 'summary', signal: AbortSignal): Promise<unknown>
@@ -580,6 +581,10 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
     getTasks: async () => { throw new RealmAccountError('UNSUPPORTED') },
     getPaymentConfig: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/payment/config', signal),
     getPaymentCheckoutInfo: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/payment/checkout-info', signal),
+    createPaymentOrder: async (saved: RealmSavedAccount, input: Record<string, unknown>, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      return request('/payment/orders', 'POST', input, session.credential.accessToken, signal)
+    },
     listPaymentOrders: async (saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal) => authedRequest(saved, `/payment/orders/my${queryString(query)}`, signal),
     listSubscriptionPlans: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/payment/plans', signal),
     getSubscriptions: async (saved: RealmSavedAccount, path: 'active' | 'all' | 'progress' | 'summary', signal: AbortSignal) => {

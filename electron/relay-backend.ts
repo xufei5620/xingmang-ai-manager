@@ -80,6 +80,23 @@ import type {
   NewApiUsableGroup,
 } from './new-api-client'
 
+/** Checkout payload returned by a relay top-up endpoint. Forms are the
+ * legacy new-api POST flow; URL/QR payloads are handled by the main process
+ * payment window and never exposed to the renderer. */
+export type RelayTopupCheckout = NewApiPaymentForm | {
+  kind: 'url'
+  url: string
+  tradeNo: string | null
+  expiresAt: string | null
+} | {
+  kind: 'qrcode'
+  code: string
+  tradeNo: string | null
+  expiresAt: string | null
+  amount: number
+  currency: string
+}
+
 // Coarse, UI-facing flags -- granularity matches "which block of the account
 // UI does the renderer need to show or hide for this backend", not a
 // per-method feature matrix. new-api supports everything this app uses
@@ -153,7 +170,7 @@ export interface RelayBackendClient {
   /** ipc.ts: account:quote-topup */
   quoteTopupAmount(input: NewApiTopupAmountInput): Promise<NewApiTopupAmountQuote>
   /** ipc.ts: account:create-topup-payment */
-  createTopupPayment(input: NewApiTopupPaymentInput): Promise<NewApiPaymentForm>
+  createTopupPayment(input: NewApiTopupPaymentInput): Promise<RelayTopupCheckout>
   /** ipc.ts: account:list-topup-orders */
   listTopupOrders(input?: NewApiTopupOrdersQuery): Promise<NewApiTopupOrdersPage>
   /** ipc.ts: account:redeem-topup-code */

@@ -3,9 +3,11 @@ import {
   type BrowserWindowConstructorOptions,
 } from 'electron'
 import { randomUUID } from 'node:crypto'
+import QRCode from 'qrcode'
 import type { NewApiPaymentForm, NewApiPaymentFormField } from './new-api-client'
 
 const accountOrigin = 'https://xm.solov.cc'
+const paymentCallbackOrigin = 'https://api.solov.cc'
 const paymentWindowTitle = '安全支付 - 星芒AI'
 const paymentWindowMonitorIntervalMs = 1_000
 const paymentWindowMaxLifetimeMs = 10 * 60_000
@@ -47,9 +49,50 @@ export interface PaymentWindowControllerOptions {
 export interface PaymentWindowController {
   open(form: NewApiPaymentForm, parent?: BrowserWindow): Promise<void>
   openUrl(url: string, parent?: BrowserWindow, tradeNo?: string | null): Promise<void>
+  openQrCode(input: PaymentQrCodeInput, parent?: BrowserWindow): Promise<void>
   close(): void
   destroy(): void
   isOpen(): boolean
+}
+
+export interface PaymentQrCodeInput {
+  code: string
+  tradeNo: string | null
+  expiresAt: string | null
+  amount: number
+  currency: string
+}
+
+export const paymentQrLimits = Object.freeze({
+  codeLength: 4_096,
+  currencyLength: 8,
+  expiresAtLength: 64,
+  amount: 1_000_000,
+})
+
+export function validatePaymentQrCode(input: PaymentQrCodeInput): PaymentQrCodeInput {
+  if (!input || typeof input !== 'object') throw new Error('二维码支付信息格式异常')
+  if (typeof input.code !== 'string' || input.code.length === 0 || input.code.length > paymentQrLimits.codeLength) {
+    throw new Error('二维码内容格式异常')
+  }
+  let parsed: URL
+  try { parsed = new URL(input.code) } catch { throw new Error('二维码内容格式异常') }
+  if (!((parsed.protocol === 'https:' && !parsed.username && !parsed.password) || parsed.protocol === 'weixin:')) {
+    throw new Error('二维码仅允许 HTTPS 或 weixin 地址')
+  }
+  if (typeof input.amount !== 'number' || !Number.isFinite(input.amount) || input.amount <= 0 || input.amount > paymentQrLimits.amount) {
+    throw new Error('二维码金额格式异常')
+  }
+  if (typeof input.currency !== 'string' || !/^[A-Za-z]{1,8}$/u.test(input.currency) || input.currency.length > paymentQrLimits.currencyLength) {
+    throw new Error('二维码币种格式异常')
+  }
+  if (input.tradeNo !== null && (typeof input.tradeNo !== 'string' || input.tradeNo.length > paymentFormLimits.tradeNoLength)) throw new Error('支付订单号格式异常')
+  if (input.expiresAt !== null && (typeof input.expiresAt !== 'string' || input.expiresAt.length > paymentQrLimits.expiresAtLength || Number.isNaN(Date.parse(input.expiresAt)))) throw new Error('二维码到期时间格式异常')
+  return Object.freeze({ ...input, code: parsed.href, currency: input.currency.toUpperCase() })
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/gu, (character) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[character]!)
 }
 
 const terminalPaymentPatterns: ReadonlyArray<readonly [PaymentWindowTerminalStatus, RegExp]> = [
@@ -188,7 +231,7 @@ export function isAllowedPaymentNavigationUrl(
     return parsed.protocol === 'https:'
       && parsed.username === ''
       && parsed.password === ''
-      && allowedOrigins.has(parsed.origin)
+      && (allowedOrigins.has(parsed.origin) || parsed.origin === paymentCallbackOrigin)
   } catch {
     return false
   }
@@ -361,6 +404,17 @@ export function createPaymentWindowController(
     async openUrl(url, parent, tradeNo = null) {
       const validated = validatePaymentUrl(url)
       await openTarget(validated.url, validated.allowedOrigins, parent, undefined, tradeNo)
+    },
+    async openQrCode(input, parent) {
+      const validated = validatePaymentQrCode(input)
+      const image = await QRCode.toDataURL(validated.code, {
+        errorCorrectionLevel: 'M', margin: 2, width: 360,
+      })
+      // Static, script-free document. The QR payload is encoded into the
+      // image only; the window never navigates to weixin:// or any QR URL.
+      const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>安全支付 - 星芒AI</title><style>body{font-family:system-ui,sans-serif;background:#f5f6f7;color:#152b33;display:flex;justify-content:center;margin:0;padding:32px}main{background:#fff;padding:24px 32px;border-radius:12px;text-align:center;box-shadow:0 2px 12px #0002}img{width:360px;height:360px;image-rendering:auto}p{margin:10px 0;color:#456}strong{color:#152b33}</style></head><body><main><h2>扫码支付</h2><img alt="支付二维码" src="${escapeHtml(image)}"><p>金额：<strong>${escapeHtml(validated.amount.toFixed(2))} ${escapeHtml(validated.currency)}</strong></p>${validated.tradeNo ? `<p>订单号：${escapeHtml(validated.tradeNo)}</p>` : ''}${validated.expiresAt ? `<p>有效期至：${escapeHtml(validated.expiresAt)}</p>` : ''}</main></body></html>`
+      const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
+      await openTarget(dataUrl, new Set([accountOrigin]), parent, undefined, validated.tradeNo)
     },
     close() {
       if (paymentWindow && !paymentWindow.isDestroyed()) closeSilently(paymentWindow)

@@ -97,7 +97,7 @@ import type { DiagnosticsReport } from './diagnostics'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { platformCapabilitiesFor } from './platform-capabilities'
-import { validatePaymentForm, type PaymentWindowController } from './payment-window'
+import { validatePaymentForm, validatePaymentQrCode, validatePaymentUrl, type PaymentWindowController } from './payment-window'
 
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
@@ -125,7 +125,7 @@ export interface IpcRegistrationOptions {
   // The server-owned payment form stays in the main process. IPC receives
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
-  paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'destroy'>
+  paymentWindow: Pick<PaymentWindowController, 'open' | 'openUrl' | 'destroy'> & Partial<Pick<PaymentWindowController, 'openQrCode'>>
   // Resolves once main.ts's startup session-restore attempt (see
   // account-session-store.ts's restoreAccountSessionOnStartup) has settled,
   // success or failure -- awaited by account:get-session so the renderer's
@@ -1920,12 +1920,29 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:create-topup-payment', (event, input: unknown) => {
     const parsed = parseAccountTopupPaymentInput(input)
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
-    return accountService.createTopupPayment(parsed).then(async (form) => {
+    return accountService.createTopupPayment(parsed).then(async (checkout) => {
       // Validate the service result before handing it to the window and before
       // exposing the order number. This keeps the IPC result a strict,
       // renderer-safe DTO even if a backend adapter returns malformed data.
-      const validated = validatePaymentForm(form)
-      await options.paymentWindow.open(form, parent)
+      if (checkout && typeof checkout === 'object' && 'kind' in checkout) {
+        if (checkout.kind === 'url') {
+          const validated = validatePaymentUrl(checkout.url)
+          if (typeof checkout.tradeNo !== 'string' && checkout.tradeNo !== null) throw new Error('支付订单号格式异常')
+          if (checkout.tradeNo && checkout.tradeNo.length > 255) throw new Error('支付订单号格式异常')
+          if (checkout.expiresAt !== null && (typeof checkout.expiresAt !== 'string' || checkout.expiresAt.length > 64 || Number.isNaN(Date.parse(checkout.expiresAt)))) throw new Error('支付到期时间格式异常')
+          await options.paymentWindow.openUrl(validated.url, parent, checkout.tradeNo)
+          return { opened: true as const, tradeNo: checkout.tradeNo }
+        }
+        if (checkout.kind === 'qrcode') {
+          const validated = validatePaymentQrCode(checkout)
+          if (!options.paymentWindow.openQrCode) throw new Error('当前版本不支持二维码支付')
+          await options.paymentWindow.openQrCode(validated, parent)
+          return { opened: true as const, tradeNo: validated.tradeNo }
+        }
+        throw new Error('支付结果类型不支持')
+      }
+      const validated = validatePaymentForm(checkout)
+      await options.paymentWindow.open(checkout, parent)
       return { opened: true as const, tradeNo: validated.tradeNo }
     })
   })
