@@ -40,7 +40,7 @@ interface ResolvedManagedCliKeys {
   storageWarning?: string
 }
 
-type ManagedKeyAccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey'>
+type ManagedKeyAccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey' | 'getSessionRevision'>
 
 class AccountSessionChangedError extends Error {
   constructor() {
@@ -49,21 +49,30 @@ class AccountSessionChangedError extends Error {
   }
 }
 
-const inFlightResolutions = new WeakMap<object, Map<number, Promise<ResolvedManagedCliKeys>>>()
+const inFlightResolutions = new WeakMap<object, Map<string, Promise<ResolvedManagedCliKeys>>>()
 
-function authenticatedUserId(accountService: ManagedKeyAccountService): number {
+interface AccountSessionCapture {
+  readonly userId: number
+  readonly revision: number | null
+}
+
+function authenticatedSession(accountService: ManagedKeyAccountService): AccountSessionCapture {
   const session = accountService.getSessionState()
   const userId = session.account?.userId
   if (!session.authenticated || !userId) throw new Error('请先登录星芒账号')
-  return userId
+  const revision = accountService.getSessionRevision?.()
+  if (revision !== undefined && (!Number.isSafeInteger(revision) || revision < 0)) throw new AccountSessionChangedError()
+  return { userId, revision: revision ?? null }
 }
 
 function assertSameAuthenticatedUser(
   accountService: ManagedKeyAccountService,
-  expectedUserId: number,
+  expected: AccountSessionCapture,
 ): void {
   const session = accountService.getSessionState()
-  if (!session.authenticated || session.account?.userId !== expectedUserId) {
+  const revision = accountService.getSessionRevision?.()
+  if (!session.authenticated || session.account?.userId !== expected.userId
+    || (expected.revision !== null && revision !== expected.revision)) {
     throw new AccountSessionChangedError()
   }
 }
@@ -82,12 +91,14 @@ function isCredentialFailure(error: unknown): boolean {
 
 async function resolveManagedCliKeys(
   accountService: ManagedKeyAccountService,
-  userId: number,
+  capture: AccountSessionCapture,
   keyStore?: ManagedCliKeyStoreLike,
 ): Promise<ResolvedManagedCliKeys> {
   const serviceKey = accountService as object
+  const userId = capture.userId
+  const resolutionKey = `${userId}:${capture.revision ?? 'legacy'}`
   let serviceResolutions = inFlightResolutions.get(serviceKey)
-  const existing = serviceResolutions?.get(userId)
+  const existing = serviceResolutions?.get(resolutionKey)
   if (existing) return existing
   if (!serviceResolutions) {
     serviceResolutions = new Map()
@@ -95,7 +106,7 @@ async function resolveManagedCliKeys(
   }
 
   const operation = (async (): Promise<ResolvedManagedCliKeys> => {
-    assertSameAuthenticatedUser(accountService, userId)
+    assertSameAuthenticatedUser(accountService, capture)
     let cached: StoredManagedCliKey[] = []
     if (keyStore) {
       try {
@@ -111,7 +122,7 @@ async function resolveManagedCliKeys(
       }
     }
     const cacheRevision = keyStore?.captureRevision?.()
-    assertSameAuthenticatedUser(accountService, userId)
+    assertSameAuthenticatedUser(accountService, capture)
     // A group rename on the account backend must invalidate the old local
     // entry. Otherwise a cached secret from the previous production config
     // would bypass provisioning and keep writing requests to a stale group.
@@ -126,12 +137,12 @@ async function resolveManagedCliKeys(
       if (keys.has(provider)) continue
       const profile = managedCliKeyProfiles[provider]
       try {
-        assertSameAuthenticatedUser(accountService, userId)
+        assertSameAuthenticatedUser(accountService, capture)
         const result = await accountService.provisionCliKey({
           name: profile.keyName,
           group: profile.group,
         })
-        assertSameAuthenticatedUser(accountService, userId)
+        assertSameAuthenticatedUser(accountService, capture)
         keys.set(provider, {
           id: result.id,
           provider,
@@ -153,7 +164,7 @@ async function resolveManagedCliKeys(
     let storageWarning: string | undefined
     if (keyStore && fetchedFromServer) {
       try {
-        assertSameAuthenticatedUser(accountService, userId)
+        assertSameAuthenticatedUser(accountService, capture)
         const cachedKeys = providerIds.flatMap((provider) => {
           const entry = keys.get(provider)
           return entry ? [entry] : []
@@ -161,7 +172,7 @@ async function resolveManagedCliKeys(
         const saved = cacheRevision === undefined
           ? await keyStore.save(userId, cachedKeys)
           : await keyStore.save(userId, cachedKeys, cacheRevision)
-        assertSameAuthenticatedUser(accountService, userId)
+        assertSameAuthenticatedUser(accountService, capture)
         if (saved === false) storageWarning = '本地 API Key 缓存已被其他操作更新，本次保留新缓存'
       } catch (error) {
         rethrowAccountSessionChange(error)
@@ -169,7 +180,7 @@ async function resolveManagedCliKeys(
       }
     }
 
-    assertSameAuthenticatedUser(accountService, userId)
+    assertSameAuthenticatedUser(accountService, capture)
     return {
       keys: providerIds.flatMap((provider) => {
         const entry = keys.get(provider)
@@ -181,11 +192,11 @@ async function resolveManagedCliKeys(
   })()
   const trackedOperation = operation.finally(() => {
     const current = inFlightResolutions.get(serviceKey)
-    if (current?.get(userId) !== trackedOperation) return
-    current.delete(userId)
+    if (current?.get(resolutionKey) !== trackedOperation) return
+    current.delete(resolutionKey)
     if (current.size === 0) inFlightResolutions.delete(serviceKey)
   })
-  serviceResolutions.set(userId, trackedOperation)
+  serviceResolutions.set(resolutionKey, trackedOperation)
   return trackedOperation
 }
 
@@ -193,9 +204,9 @@ export async function syncManagedCliKeySummary(
   accountService: ManagedKeyAccountService,
   keyStore?: ManagedCliKeyStoreLike,
 ): Promise<ManagedCliKeySyncSummary> {
-  const userId = authenticatedUserId(accountService)
-  const result = await resolveManagedCliKeys(accountService, userId, keyStore)
-  assertSameAuthenticatedUser(accountService, userId)
+  const capture = authenticatedSession(accountService)
+  const result = await resolveManagedCliKeys(accountService, capture, keyStore)
+  assertSameAuthenticatedUser(accountService, capture)
   return {
     ready: result.keys.map(({ provider, group, name }) => ({ provider, group, name })),
     failed: result.failed,
@@ -212,9 +223,10 @@ export async function configureManagedClis(
   keyStore?: ManagedCliKeyStoreLike,
 ): Promise<ManagedCliConfigurationOutcome> {
   if (providers.length === 0) return { configured: [], failed: [] }
-  const userId = authenticatedUserId(accountService)
-  const synchronized = await resolveManagedCliKeys(accountService, userId, keyStore)
-  assertSameAuthenticatedUser(accountService, userId)
+  const capture = authenticatedSession(accountService)
+  const userId = capture.userId
+  const synchronized = await resolveManagedCliKeys(accountService, capture, keyStore)
+  assertSameAuthenticatedUser(accountService, capture)
   const keys = new Map(synchronized.keys.map((entry) => [entry.provider, entry]))
   const syncFailures = new Map(synchronized.failed.map((entry) => [entry.provider, entry.message]))
   const outcome: ManagedCliConfigurationOutcome = { configured: [], failed: [] }
@@ -226,17 +238,17 @@ export async function configureManagedClis(
       continue
     }
     try {
-      assertSameAuthenticatedUser(accountService, userId)
+      assertSameAuthenticatedUser(accountService, capture)
       let models: string[]
       try {
         models = await systemService.fetchAvailableModels(managedKey.key, { bypassCache: true })
       } catch (error) {
         if (!isCredentialFailure(error)) throw error
         if (keyStore) await keyStore.remove(userId, managedKey.id)
-        assertSameAuthenticatedUser(accountService, userId)
+        assertSameAuthenticatedUser(accountService, capture)
         const profile = managedCliKeyProfiles[provider]
         const replacement = await accountService.provisionCliKey({ name: profile.keyName, group: profile.group })
-        assertSameAuthenticatedUser(accountService, userId)
+        assertSameAuthenticatedUser(accountService, capture)
         managedKey = {
           id: replacement.id,
           provider,
@@ -255,18 +267,18 @@ export async function configureManagedClis(
         }
         models = await systemService.fetchAvailableModels(managedKey.key, { bypassCache: true })
       }
-      assertSameAuthenticatedUser(accountService, userId)
+      assertSameAuthenticatedUser(accountService, capture)
       if (models.length === 0) throw new Error('当前分组未返回可用模型')
       const preferred = preferredModels[provider]
       const model = preferred && models.includes(preferred) ? preferred : models[0]
       const payload: ConfigSavePayload = { provider, apiKey: managedKey.key, model, mode: 'merge' }
-      assertSameAuthenticatedUser(accountService, userId)
+      assertSameAuthenticatedUser(accountService, capture)
       await systemService.saveConfig(
         payload,
         previewOnboarding,
-        () => assertSameAuthenticatedUser(accountService, userId),
+        () => assertSameAuthenticatedUser(accountService, capture),
       )
-      assertSameAuthenticatedUser(accountService, userId)
+      assertSameAuthenticatedUser(accountService, capture)
       outcome.configured.push(provider)
     } catch (error) {
       rethrowAccountSessionChange(error)

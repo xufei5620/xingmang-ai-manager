@@ -26,6 +26,76 @@ export interface Sub2ApiAccountClient extends RealmSessionBackend {
   revokeKey(saved: RealmSavedAccount, id: string, signal: AbortSignal): Promise<void>
 }
 
+export interface Sub2ApiSessionExecutor {
+  /** The latest credential, including any rotated refresh token. */
+  session(): RealmSavedAccount
+  /** Refreshes at most once concurrently and publishes the rotated credential. */
+  refresh(signal: AbortSignal): Promise<RealmSavedAccount>
+  /**
+   * Runs an operation and, when explicitly enabled, retries one GET-like
+   * operation after a definitive unauthorized response. The returned session
+   * must be persisted by the caller when it differs from the input session.
+   */
+  executeWithRefresh<T>(
+    operation: (saved: RealmSavedAccount, signal: AbortSignal) => Promise<T>,
+    signal: AbortSignal,
+    options?: { retryOnUnauthorized?: boolean },
+  ): Promise<{ value: T; session: RealmSavedAccount }>
+}
+
+/**
+ * Small main-process seam for sub2api token rotation. It deliberately knows
+ * only how to restore a session; business methods remain separate so writes
+ * can opt out of retrying an ambiguous request.
+ */
+export function createSub2ApiSessionExecutor(
+  initial: RealmSavedAccount,
+  client: Pick<Sub2ApiAccountClient, 'restore'>,
+): Sub2ApiSessionExecutor {
+  let current = parseRealmSavedAccount(initial)
+  if (current.realmId !== 'api-account' || current.credential.kind !== 'sub2api') {
+    throw new RealmAccountError('INVALID')
+  }
+  let refreshInFlight: Promise<RealmSavedAccount> | null = null
+
+  async function refresh(signal: AbortSignal): Promise<RealmSavedAccount> {
+    if (refreshInFlight) return refreshInFlight
+    const base = current
+    const pending = (async () => {
+      const candidate = parseRealmSavedAccount(await client.restore(base, signal))
+      if (candidate.realmId !== 'api-account' || candidate.credential.kind !== 'sub2api'
+        || candidate.userId !== base.userId) throw new RealmAccountError('PROTOCOL')
+      current = candidate
+      return candidate
+    })()
+    refreshInFlight = pending
+    try { return await pending } finally {
+      if (refreshInFlight === pending) refreshInFlight = null
+    }
+  }
+
+  async function executeWithRefresh<T>(
+    operation: (saved: RealmSavedAccount, signal: AbortSignal) => Promise<T>,
+    signal: AbortSignal,
+    options: { retryOnUnauthorized?: boolean } = {},
+  ): Promise<{ value: T; session: RealmSavedAccount }> {
+    const retry = options.retryOnUnauthorized === true
+    const attempt = current
+    try {
+      return { value: await operation(attempt, signal), session: current }
+    } catch (error) {
+      if (!retry || !(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') throw error
+      // Another request may already have rotated the token while this one was
+      // in flight. Adopt that result without issuing a second refresh.
+      const refreshed = current === attempt ? await refresh(signal) : current
+      const value = await operation(refreshed, signal)
+      return { value, session: current }
+    }
+  }
+
+  return Object.freeze({ session: () => current, refresh, executeWithRefresh })
+}
+
 function protocol(): never { throw new RealmAccountError('PROTOCOL') }
 
 function wireId(value: unknown): string {

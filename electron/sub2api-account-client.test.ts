@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'vitest'
-import { createSub2ApiAccountClient, type Sub2ApiAccountClientOptions } from './sub2api-account-client'
+import { createSub2ApiAccountClient, createSub2ApiSessionExecutor, type Sub2ApiAccountClientOptions } from './sub2api-account-client'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 
 const secret = 'private-access-token'
@@ -149,5 +149,53 @@ describe('sub2api user-account adapter', () => {
     const example = fixture([]); const controller = new AbortController(); controller.abort()
     await assert.rejects(example.client.authenticate(input, controller.signal), hasCode('ABORTED'))
     assert.equal(example.calls.length, 0)
+  })
+})
+
+describe('sub2api session executor', () => {
+  it('serializes concurrent refreshes and returns the rotated credential', async () => {
+    const first = saved()
+    const rotated = parseRealmSavedAccount({ ...first, credential: {
+      kind: 'sub2api', accessToken: 'rotated-access-token', refreshToken: 'rotated-refresh-token', expiresAt: 2000000,
+    } })
+    let restoreCalls = 0
+    let release!: () => void
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const executor = createSub2ApiSessionExecutor(first, {
+      restore: async () => { restoreCalls += 1; await gate; return rotated },
+    })
+    let attempts = 0
+    const operation = async (session: RealmSavedAccount) => {
+      attempts += 1
+      if (session.credential.kind === 'sub2api' && session.credential.accessToken === secret) {
+        throw new RealmAccountError('UNAUTHORIZED')
+      }
+      return 'ok'
+    }
+    const one = executor.executeWithRefresh(operation, signal(), { retryOnUnauthorized: true })
+    const two = executor.executeWithRefresh(operation, signal(), { retryOnUnauthorized: true })
+    await Promise.resolve()
+    assert.equal(restoreCalls, 1)
+    release()
+    const [a, b] = await Promise.all([one, two])
+    assert.equal(a.value, 'ok'); assert.equal(b.value, 'ok')
+    assert.equal(a.session.credential.kind, 'sub2api')
+    assert.equal(a.session.credential.accessToken, 'rotated-access-token')
+    const latest = executor.session()
+    assert.equal(latest.credential.kind, 'sub2api')
+    if (latest.credential.kind === 'sub2api') assert.equal(latest.credential.refreshToken, 'rotated-refresh-token')
+    assert.equal(attempts, 4)
+  })
+
+  it('does not retry writes when retry is disabled', async () => {
+    const executor = createSub2ApiSessionExecutor(saved(), { restore: async () => {
+      throw new Error('refresh must not run')
+    } })
+    let calls = 0
+    await assert.rejects(executor.executeWithRefresh(async () => {
+      calls += 1
+      throw new RealmAccountError('UNAUTHORIZED')
+    }, signal()), hasCode('UNAUTHORIZED'))
+    assert.equal(calls, 1)
   })
 })

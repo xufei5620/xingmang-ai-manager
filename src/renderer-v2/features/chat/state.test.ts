@@ -108,8 +108,11 @@ describe('v2 chat persistence ownership', () => {
     const storage = memoryStorage(); const messages: ChatMessage[] = [{ id: 'old-message', role: 'user', content: 'old question', reasoning: '', status: 'complete', createdAt: 0 }]
     const raw = JSON.stringify({ version: 1, userId: '7', data: { group: 'group-a', model: 'gpt-test', messages } })
     storage.setItem('xingmang-ai-chat:v1:7', raw)
-    expect(importLegacyHistory(storage, 'site:7', 7)?.conversations[0].messages[0].content).toBe('old question')
-    expect(importLegacyHistory(storage, 'site:8', 7)).toBeNull()
+    for (const scope of ['xm-account:7', 'solov:7', 'sub2api:7']) {
+      expect(importLegacyHistory(storage, scope, 7)?.conversations[0].messages[0].content).toBe('old question')
+    }
+    expect(importLegacyHistory(storage, 'solov-api:7', 7)).toBeNull()
+    expect(importLegacyHistory(storage, 'xm-account:8', 7)).toBeNull()
     expect(storage.getItem('xingmang-ai-chat:v1:7')).toBe(raw)
   })
 })

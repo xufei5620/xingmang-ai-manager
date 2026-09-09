@@ -64,7 +64,12 @@ export function writeWorkspace(storage: ChatStorage, state: ChatWorkspace): void
 }
 
 export function importLegacyHistory(storage: ChatStorage, scope: string, userId: number): ChatWorkspace | null {
-  if (!new RegExp(`(?:^|[:/])${userId}$`).test(scope)) return null
+  // The v1 key had no site component. It can therefore only be imported for
+  // the original xm account realm (including its historical sub2api alias).
+  // A same-number account on api.solov must start with an empty workspace;
+  // importing by userId alone would cross the realm boundary.
+  const legacyOwner = /^(xm-account|solov|sub2api):([1-9][0-9]*)$/.exec(scope)
+  if (!legacyOwner || Number(legacyOwner[2]) !== userId) return null
   const raw = storage.getItem(`xingmang-ai-chat:v1:${encodeURIComponent(String(userId))}`)
   if (!raw || new TextEncoder().encode(raw).byteLength > MAX_BYTES) return null
   try {
