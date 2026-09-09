@@ -73,16 +73,35 @@ function fixture(options: { onCredentialRotation?: (saved: RealmSavedAccount) =>
 }
 
 describe('Sub2API RelayBackend adapter', () => {
-  it('implements public settings and explicitly disables registration and unsupported account blocks', async () => {
+  it('maps account-center reads from native endpoints without exposing credentials', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => {
+      const path = url.pathname
+      if (path.endsWith('/usage')) return json({ page: 2, page_size: 10, total: 12, items: [{ id: 9, created_at: '2026-09-08T01:00:00Z', model: 'gpt-5.6-sol', input_tokens: 10, output_tokens: 20, actual_cost: 0.12, stream: true, api_key: { name: 'Codex', key: 'do-not-return' }, group: { name: 'Codex_pro' } }] })
+      if (path.endsWith('/payment/checkout-info')) return json({ methods: { alipay: { display_name: '支付宝', single_min: 5 } }, global_min: 5 })
+      if (path.endsWith('/payment/orders/my')) return json({ page: 1, page_size: 10, total: 1, items: [{ id: 3, amount: 10, pay_amount: 70, out_trade_no: 'trade-3', payment_type: 'alipay', status: 'COMPLETED', created_at: '2026-09-08T00:00:00Z' }] })
+      if (path.endsWith('/payment/plans')) return json([{ id: 4, group_id: 1, name: '月度订阅', description: '套餐', price: 20, validity_days: 30, validity_unit: 'day', group_name: 'Codex_pro' }])
+      if (path.endsWith('/subscriptions')) return json([{ id: 5, group_id: 1, status: 'active', starts_at: '2026-09-01T00:00:00Z', expires_at: '2026-10-01T00:00:00Z', monthly_usage_usd: 2.5 }])
+      if (path.endsWith('/user/aff')) return json({ aff_code: 'invite7', aff_count: 2, aff_quota: 1.2, aff_history_quota: 3.4 })
+    }
+    await f.client.login(loginInput)
+    const usage = await f.client.getUsage({ page: 2, pageSize: 10, modelName: 'gpt-5.6-sol' })
+    expect(usage).toMatchObject({ page: 2, total: 12, records: [{ quota: 0.12, modelName: 'gpt-5.6-sol', group: 'Codex_pro' }] })
+    expect(await f.client.getTopupInfo()).toMatchObject({ minTopup: 5, paymentMethods: [{ type: 'alipay', name: '支付宝' }] })
+    expect(await f.client.listTopupOrders()).toMatchObject({ orders: [{ tradeNo: 'trade-3', money: 70, status: 'success' }] })
+    expect(await f.client.listSubscriptionPlans()).toMatchObject([{ title: '月度订阅', durationValue: 30 }])
+    expect(await f.client.getSubscriptionSelf()).toMatchObject({ activeSubscriptions: [{ id: 5, amountUsed: 2.5 }] })
+    expect(await f.client.getProfile()).toMatchObject({ affCode: 'invite7', affCount: 2, affQuota: 1.2 })
+    expect(JSON.stringify(usage)).not.toContain('do-not-return')
+  })
+  it('implements public settings and exposes the supported account-center blocks', async () => {
     const f = fixture()
     expect(await f.client.getStatus()).toMatchObject({ systemName: '星芒 API', quotaPerUnit: 1, quotaDisplayType: 'USD',
       registerEnabled: false, passwordRegisterEnabled: false })
-    expect(f.client.capabilities).toMatchObject({ supportsRegistration: false, supportsBilling: false,
-      supportsUsage: false, supportsSubscriptions: false, supportsSessionManagement: false,
+    expect(f.client.capabilities).toMatchObject({ supportsRegistration: false, supportsBilling: true,
+      supportsUsage: true, supportsSubscriptions: true, supportsSessionManagement: false,
       supportsKeyManagement: true, supportsAccountSession: true, supportsAutoKeyProvision: true })
     await expect(f.client.register({ username: 'user', password: 'test-password', email: 'same@example.test' })).rejects.toThrow('暂不支持')
-    await expect(f.client.getTopupInfo()).rejects.toThrow('暂不支持')
-    await expect(f.client.getUsage()).rejects.toThrow('暂不支持')
     await expect(f.client.listLoginSessions()).rejects.toThrow('暂不支持')
     await expect(f.client.restoreSession({ userId: 7, username: 'x', cookies: ['private'] } as never)).rejects.toThrow('暂不支持')
     expect(f.calls).toHaveLength(1)

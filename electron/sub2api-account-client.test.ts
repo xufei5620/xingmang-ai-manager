@@ -66,6 +66,33 @@ describe('sub2api user-account adapter', () => {
     assert.equal(new Headers(example.calls[0].init.headers).get('authorization'), `Bearer ${secret}`)
     assert.equal(new Headers(example.calls[0].init.headers).get('new-api-user'), null)
   })
+  it('loads account-center endpoints with native pagination and filter names', async () => {
+    const page = { items: [], total: 0, page: 2, page_size: 12, pages: 1 }
+    const example = fixture([response(page), response({ total_actual_cost: 3 }), response({ enabled: true }),
+      response({ methods: {} }), response(page), response([]), response([]), response({ aff_code: 'JOIN' }), response({ transferred_quota: 1, balance: 2 })])
+    assert.deepEqual(await example.client.getUsage(saved(), { page: 2, pageSize: 12, groupId: 3, nativeCompactionV2: true }, signal()), page)
+    await example.client.getDashboard(saved(), {}, signal())
+    await example.client.getPaymentConfig(saved(), signal())
+    await example.client.getPaymentCheckoutInfo(saved(), signal())
+    await example.client.listPaymentOrders(saved(), { page: 2, pageSize: 12 }, signal())
+    await example.client.listSubscriptionPlans(saved(), signal())
+    await example.client.getSubscriptions(saved(), 'active', signal())
+    await example.client.getAffiliate(saved(), signal())
+    await example.client.transferAffiliate(saved(), signal())
+    assert.deepEqual(example.calls.map(({ url }) => new URL(url).pathname), [
+      '/api/v1/usage', '/api/v1/usage/dashboard/stats', '/api/v1/payment/config', '/api/v1/payment/checkout-info',
+      '/api/v1/payment/orders/my', '/api/v1/payment/plans', '/api/v1/subscriptions/active', '/api/v1/user/aff', '/api/v1/user/aff/transfer',
+    ])
+    assert.equal(new URL(example.calls[0].url).search, '?page=2&page_size=12&group_id=3&native_compaction_v2=true')
+    assert.equal(new URL(example.calls[4].url).search, '?page=2&page_size=12')
+    for (const { init } of example.calls) assert.equal(new Headers(init.headers).get('authorization'), `Bearer ${secret}`)
+    assert.equal(example.calls.at(-1)?.init.method, 'POST')
+  })
+  it('does not substitute usage logs for unsupported task records', async () => {
+    const example = fixture([])
+    await assert.rejects(example.client.getTasks(saved(), {}, signal()), hasCode('UNSUPPORTED'))
+    assert.equal(example.calls.length, 0)
+  })
   it('strips full key values and retains numeric group ids in list summaries', async () => {
     const example = fixture([response({ items: [key], total: 1 })])
     const page = await example.client.listKeys(saved(), 1, 20, signal())

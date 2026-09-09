@@ -70,6 +70,17 @@ export interface Sub2ApiAccountClient extends RealmSessionBackend {
   getProfile(saved: RealmSavedAccount, signal: AbortSignal): Promise<Sub2ApiProfile>
   updateProfile(saved: RealmSavedAccount, input: { username?: string; avatarUrl?: string | null; balanceNotifyEnabled?: boolean; balanceNotifyThreshold?: number | null }, signal: AbortSignal): Promise<Sub2ApiProfile>
   changePassword(saved: RealmSavedAccount, input: { oldPassword: string; newPassword: string }, signal: AbortSignal): Promise<void>
+  /** Native Sub2API account-center endpoints. Payloads are validated/mapped by the relay adapter. */
+  getUsage(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  getDashboard(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  getTasks(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  getPaymentConfig(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
+  getPaymentCheckoutInfo(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
+  listPaymentOrders(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  listSubscriptionPlans(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
+  getSubscriptions(saved: RealmSavedAccount, path: 'active' | 'all' | 'progress' | 'summary', signal: AbortSignal): Promise<unknown>
+  getAffiliate(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
+  transferAffiliate(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
 }
 
 export interface Sub2ApiKeyCreateInput {
@@ -383,6 +394,29 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
     return user
   }
 
+  function queryString(query: Record<string, unknown>): string {
+    const params = new URLSearchParams()
+    // Relay methods use camelCase while the native wire API uses snake_case.
+    const wireKeys: Record<string, string> = {
+      pageSize: 'page_size', apiKeyId: 'api_key_id', groupId: 'group_id',
+      requestType: 'request_type', nativeCompactionV2: 'native_compaction_v2',
+      billingType: 'billing_type', billingMode: 'billing_mode',
+      startDate: 'start_date', endDate: 'end_date', sortBy: 'sort_by',
+      sortOrder: 'sort_order', modelSource: 'model_source',
+    }
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined || value === null || value === '') continue
+      params.set(wireKeys[key] ?? key, typeof value === 'boolean' ? value ? 'true' : 'false' : String(value))
+    }
+    const encoded = params.toString()
+    return encoded ? `?${encoded}` : ''
+  }
+
+  async function authedRequest(saved: RealmSavedAccount, route: string, signal: AbortSignal): Promise<unknown> {
+    const session = apiSession(saved)
+    return request(route, 'GET', undefined, session.credential.accessToken, signal)
+  }
+
   return Object.freeze({
     realmId: 'api-account',
     getPublicSettings: async (signal: AbortSignal) => {
@@ -535,6 +569,25 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       if (!isRealmRecord(input) || typeof input.oldPassword !== 'string' || !input.oldPassword || input.oldPassword.length > 4096
         || typeof input.newPassword !== 'string' || input.newPassword.length < 6 || input.newPassword.length > 4096) throw new RealmAccountError('INVALID')
       await request('/user/password', 'PUT', { old_password: input.oldPassword, new_password: input.newPassword }, session.credential.accessToken, signal)
+    },
+    getUsage: async (saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal) => authedRequest(saved, `/usage${queryString(query)}`, signal),
+    getDashboard: async (saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal) => authedRequest(saved, `/usage/dashboard/stats${queryString(query)}`, signal),
+    // Sub2API has no media/task queue equivalent to new-api's /api/task/self.
+    // Do not alias this to /usage: that would make the task tab display usage
+    // rows with an incompatible schema.
+    getTasks: async () => { throw new RealmAccountError('UNSUPPORTED') },
+    getPaymentConfig: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/payment/config', signal),
+    getPaymentCheckoutInfo: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/payment/checkout-info', signal),
+    listPaymentOrders: async (saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal) => authedRequest(saved, `/payment/orders/my${queryString(query)}`, signal),
+    listSubscriptionPlans: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/payment/plans', signal),
+    getSubscriptions: async (saved: RealmSavedAccount, path: 'active' | 'all' | 'progress' | 'summary', signal: AbortSignal) => {
+      const route = path === 'all' ? '/subscriptions' : path === 'active' ? '/subscriptions/active' : `/subscriptions/${path}`
+      return authedRequest(saved, route, signal)
+    },
+    getAffiliate: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/user/aff', signal),
+    transferAffiliate: async (saved: RealmSavedAccount, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      return request('/user/aff/transfer', 'POST', {}, session.credential.accessToken, signal)
     },
   })
 }
