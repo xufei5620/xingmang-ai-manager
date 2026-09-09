@@ -35,7 +35,8 @@ export interface TurnPlan { conversation: Conversation; requestId: string; assis
 // silently pick whichever entry happened to arrive first.
 // 与账号登录后自动创建的 Codex Key 分组保持一致。这里使用协议约定的
 // 稳定名称，避免 catalog 中 CLI 配置的历史别名改变聊天初始分组。
-export const DEFAULT_CHAT_GROUP = 'Codex_pro'
+export const DEFAULT_CHAT_GROUP = 'GPT-中转/订阅'
+export const SUB2API_CHAT_GROUP = 'Codex_pro'
 export const DEFAULT_CHAT_MODEL = 'gpt-5.6-sol'
 export const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
 
@@ -43,9 +44,10 @@ export function createId(): string { return crypto.randomUUID() }
 export function defaultChatSettings(): ChatSettings { return { mode: 'text', group: '', model: '', systemPrompt: '', parameters: {}, size: '1024x1024', quality: 'low', imageResolution: '1K' } }
 export function createConversation(settings = defaultChatSettings(), id = createId()): Conversation { const now = Date.now(); return { id, title: '新对话', createdAt: now, updatedAt: now, draft: '', settings: { ...settings, parameters: { ...settings.parameters } }, messages: [] } }
 export function createWorkspace(owner: string): ChatWorkspace { return { version: 2, owner, activeId: null, conversations: [], draftConversation: createConversation() } }
-export function resolveChatGroup(groups: readonly Pick<AiChatGroupSummary, 'name'>[], remembered = ''): string {
+export function resolveChatGroup(groups: readonly Pick<AiChatGroupSummary, 'name'>[], remembered = '', siteId: 'solov' | 'solov-api' = 'solov'): string {
   if (remembered && groups.some((group) => group.name === remembered)) return remembered
-  return groups.find((group) => group.name === DEFAULT_CHAT_GROUP)?.name ?? groups[0]?.name ?? ''
+  const preferred = siteId === 'solov-api' ? SUB2API_CHAT_GROUP : DEFAULT_CHAT_GROUP
+  return groups.find((group) => group.name === preferred)?.name ?? groups[0]?.name ?? ''
 }
 export function resolveChatModel(models: readonly string[], remembered = '', preferred = DEFAULT_CHAT_MODEL): string {
   if (remembered && models.includes(remembered)) return remembered

@@ -24,6 +24,7 @@ import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
+import { accountOrigin, accountScope, accountSiteId, accountSupports, type AccountSiteId } from './account-context'
 
 type AccountTab = typeof accountTabs[number]['value']
 interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; work(): Promise<void> }
@@ -83,9 +84,10 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
   const suppressRestoredBootstrap = useRef(new Set<string>())
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
   const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || guide || workspaceEntered))
-  const scope = `${settings?.relaySiteId ?? 'solov'}:${session.account?.userId ?? 'guest'}`
-  const relaySite = resolveRelaySite(settings?.relaySiteId)
-  const avatarIdentity = session.account ? { origin: new URL(relaySite.accountBaseUrl ?? relaySite.websiteUrl).origin, userId: session.account.userId } : undefined
+  const scope = accountScope(session)
+  const siteId = accountSiteId(session)
+  const relaySite = resolveRelaySite(siteId)
+  const avatarIdentity = session.account ? { origin: accountOrigin(session), userId: session.account.userId } : undefined
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; accountEpoch.current++ } }, [])
   useEffect(() => {
     let current = true
@@ -105,9 +107,9 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
     })
     return () => { current = false }
   }, [app, bootAttempt])
-  const runAccountBootstrap = useCallback(async (userId: number, mode: AccountBootstrapMode = 'restore', force = false, onlyProviders?: readonly ProviderId[]) => {
+  const runAccountBootstrap = useCallback(async (userId: number, mode: AccountBootstrapMode = 'restore', force = false, onlyProviders?: readonly ProviderId[], accountSite: AccountSiteId = siteId) => {
     if (!settings || !Number.isSafeInteger(userId) || userId < 1) return
-    const bootstrapScope = `${settings.relaySiteId ?? 'solov'}:${userId}`
+    const bootstrapScope = accountScope({ siteId: accountSite, account: { userId } as AccountSessionState['account'] })
     const attemptKey = `${bootstrapScope}:${mode}:${onlyProviders?.join(',') ?? 'all'}`
     const existing = bootstrapInFlight.current?.scope === bootstrapScope ? bootstrapInFlight.current.promise : null
     if (!force && bootstrapAttempts.current.has(attemptKey)) return existing ?? undefined
@@ -142,10 +144,10 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
     try { await promise } finally {
       if (bootstrapInFlight.current?.promise === promise) bootstrapInFlight.current = null
     }
-  }, [native, settings, toolbox.refresh])
+  }, [native, settings, toolbox.refresh, siteId])
   useEffect(() => {
-    if (boot === 'ready' && session.authenticated && session.account) {
-      const restoredScope = `${settings?.relaySiteId ?? 'solov'}:${session.account.userId}`
+    if (boot === 'ready' && !auth && session.authenticated && session.account) {
+      const restoredScope = accountScope(session)
       if (!suppressRestoredBootstrap.current.delete(restoredScope)) void runAccountBootstrap(session.account.userId, 'restore')
     }
     if (!session.authenticated) {
@@ -153,7 +155,7 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
       bootstrapInFlight.current = null
       setAccountBootstrap(null)
     }
-  }, [boot, runAccountBootstrap, session.account?.userId, session.authenticated, settings?.relaySiteId])
+  }, [boot, runAccountBootstrap, session.account?.userId, session.authenticated, siteId, auth])
   useEffect(() => {
     if (boot !== 'ready' || !session.authenticated || !settings?.runDiagnosticsOnStartup || diagnosticsStarted.current) return
     diagnosticsStarted.current = true
@@ -190,7 +192,7 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
     void app.balance().then((value) => { if (mounted.current && id === accountEpoch.current) setBalance(value) }).catch((cause) => {
       if (mounted.current && id === accountEpoch.current) setOperationError(cause instanceof Error ? cause.message : '余额暂时没有读到')
     })
-  }, [app, session.authenticated, session.account?.userId])
+  }, [app, session.authenticated, scope])
   const reloadAccount = useCallback(async () => {
     const id = ++accountEpoch.current
     const next = await app.session()
@@ -201,6 +203,19 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
       catch { if (id === accountEpoch.current) setBalance(null) }
     } else { setBalance(null); setGuide(false); setPage('home'); setWorkspaceEntered(false) }
   }, [app])
+  useEffect(() => native.onAccountSessionChanged?.((next) => {
+    const id = ++accountEpoch.current
+    bootstrapEpoch.current++
+    bootstrapInFlight.current = null
+    setSession(next); setBalance(null); setUnread(false); setConfigTool(null); setPaymentReturn(undefined)
+    if (!next.authenticated) {
+      setGuide(false); setPage('home'); setWorkspaceEntered(false)
+      if (session.authenticated) toast.show('当前登录已结束，请重新登录。', 'warn')
+    }
+    else void app.balance().then((value) => {
+      if (mounted.current && id === accountEpoch.current) setBalance(value)
+    }).catch(() => undefined)
+  }), [native, app, session.authenticated, toast])
   const perform = useCallback(async (label: string, work: () => Promise<unknown>) => {
     setOperationError('')
     try { await work() }
@@ -353,21 +368,21 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
-        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, identity: avatarIdentity, displayName: session.account?.username, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}` }} platform={os}
+        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: siteId === 'solov', identity: avatarIdentity, displayName: session.account?.username, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}` }} platform={os}
           tourOpen={tourOpen} onTourClose={() => setTourOpen(false)}
           environment={toolbox.snapshot?.system.runtime.node.version ? `Node ${toolbox.snapshot.system.runtime.node.version}` : '命令行环境可选'} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length : undefined}
           network={toolbox.snapshot?.system.network}
-          banner={session.authenticated && <AnnouncementCenter scope={scope} read={app.announcement} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} />}
+          banner={session.authenticated && siteId === 'solov' && <AnnouncementCenter scope={scope} read={app.announcement} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} />}
           notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? '更新没有完成' : update.phase === 'downloaded' ? '更新已下载' : update.phase === 'downloading' ? '正在下载更新' : `新版本 ${update.availableVersion} 可以安装`}
             body={update.error?.message ?? '查看更新内容和安装状态。'} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)} actions={<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>} />}
-          adapter={{ navigate, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', 'recharge'),
+          adapter={{ navigate, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'),
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen(true), openNotifications: () => navigate('updates'),
             logout: () => setConfirmation({ title: '退出星芒账号？', body: '已写入工具的配置会保留。', label: '退出登录', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
             {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} /></div>}
-            {page === 'home' ? <Home api={toolsApi} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
+            {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               onScan={() => void toolbox.refresh(true).catch(() => undefined)} onInstall={(id) => void perform('安装工具', () => install(id))} onLaunch={requestLaunch} onConfigure={setConfigTool} onUninstall={requestUninstall}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />
               : null}
@@ -378,18 +393,18 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
           </div>
         </AppFrame>}
     {auth && <AuthFlow api={authApi} initialMode={auth} initialInviteCode={inviteCode} onClose={() => setAuth(null)} onHelp={() => setHelp(true)} onAuthenticated={(result, options) => {
-      const authenticatedScope = `${settings?.relaySiteId ?? 'solov'}:${result.account.userId}`
+      const authenticatedScope = accountScope(result)
       suppressRestoredBootstrap.current.add(authenticatedScope)
-      setAuth(null); setSession({ authenticated: true, account: result.account }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
-      void runAccountBootstrap(result.account.userId, 'login', true)
+      setAuth(null); setSession({ ...result, authenticated: true }); setGuide(!readLocalPreference(`xingmang-v2-guide:${authenticatedScope}`))
+      void runAccountBootstrap(result.account.userId, 'login', true, undefined, accountSiteId(result))
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
     }} />}
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}
-    {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(`${settings?.relaySiteId ?? 'solov'}:${result.userId}`); setAccountBootstrap(null); if (!result?.failed.length) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={() => { setSwitcher(false); setAuth('login') }} /></Dialog>}
+    {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: result.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov', account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result?.failed.length) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={() => { setSwitcher(false); setAuth('login') }} /></Dialog>}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated}
       onClose={() => setConfigTool(null)} onSaved={() => toolbox.refresh(true)} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)} />}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
-      <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p><Button onClick={() => void perform('打开客服', () => app.openExternal(supportServiceUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
+      <div className="v2-support">{siteId === 'solov' && qr && <img src={qr} alt="微信客服二维码" />}<h3>{siteId === 'solov' ? '微信扫码找客服' : '账号帮助'}</h3><p>{siteId === 'solov' ? '装不上、付了没到账，都可以问。' : '请在官方网站查看帮助与账号服务。'}</p><Button onClick={() => void perform('打开帮助', () => app.openExternal(siteId === 'solov' ? supportServiceUrl : relaySite.websiteUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
     {operationError && <Dialog open title="操作没有完成" onClose={() => setOperationError('')} footer={<Button onClick={() => setOperationError('')}>返回</Button>}><p role="alert">{operationError}</p></Dialog>}
     {restartDialog && <Dialog open title="Codex 已在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>

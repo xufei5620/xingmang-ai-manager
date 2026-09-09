@@ -73,6 +73,118 @@ test('account exposes the exact nine tabs and keeps server orders and keys visib
   }
 })
 
+test('key editor re-reads available groups every time a new or existing key is opened', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByText('Test key').waitFor()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A']))
+    await page.getByTestId('account-key-add').click()
+    const group = page.getByTestId('account-key-group')
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
+    await page.getByRole('dialog', { name: '新建密钥', exact: true }).getByRole('button', { name: '取消', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-B']))
+    await page.getByTestId('account-key-add').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-B')
+    assert.equal(await group.locator('option[value="group-A"]').count(), 0)
+    const beforeOpen = await page.evaluate(() => {
+      window.keyGroupsHarness.setGroups(['group-B', 'group-D'])
+      // Move only the fixture clock beyond the focus/pointer coalescing window.
+      const previousNow = Date.now
+      Date.now = () => previousNow() + 1000
+      return window.keyGroupsHarness.requests
+    })
+    await group.click()
+    await page.keyboard.press('Escape')
+    await page.waitForFunction((before) => window.keyGroupsHarness.requests > before, beforeOpen)
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="account-key-group"] option[value="group-D"]')))
+    await page.getByRole('dialog', { name: '新建密钥', exact: true }).getByRole('button', { name: '取消', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['default', 'group-C']))
+    await page.locator('.xm-list-row').filter({ has: page.getByText('Test key') }).locator('button[aria-haspopup="menu"]').click()
+    await page.getByRole('menuitem', { name: '编辑密钥', exact: true }).click()
+    await page.getByRole('dialog', { name: '编辑密钥', exact: true }).waitFor()
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="account-key-group"] option[value="group-C"]')))
+    assert.equal(await group.inputValue(), 'default')
+    assert.equal(await page.getByLabel('名称', { exact: true }).inputValue(), 'Test key')
+  } finally { await page.close() }
+})
+
+test('refreshing key groups preserves the draft and requires a new choice when the selected group disappears', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByText('Test key').waitFor()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A', 'group-B']))
+    await page.getByTestId('account-key-add').click()
+    const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
+    const group = page.getByTestId('account-key-group')
+    await group.selectOption('group-B')
+    await dialog.getByLabel('名称', { exact: true }).fill('draft key')
+    await dialog.getByLabel('可用额度（USD）', { exact: true }).fill('12.34')
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-B', 'group-C']))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="account-key-group"] option[value="group-C"]')))
+    assert.equal(await group.inputValue(), 'group-B')
+    assert.equal(await dialog.getByLabel('名称', { exact: true }).inputValue(), 'draft key')
+    assert.equal(await dialog.getByLabel('可用额度（USD）', { exact: true }).inputValue(), '12.34')
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-C']))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="account-key-groups-refresh"]')?.disabled)
+    const save = dialog.getByRole('button', { name: '保存密钥', exact: true })
+    assert.equal(await save.isDisabled(), true)
+    assert.notEqual(await group.inputValue(), 'group-C')
+    assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 0)
+    await group.selectOption('group-C')
+    await save.click()
+    await page.getByText('密钥已保存', { exact: true }).waitFor()
+    const created = (await calls(page)).find((call) => call.name === 'create-key').args
+    assert.deepEqual({ name: created.name, group: created.group, remainQuota: created.remainQuota }, { name: 'draft key', group: 'group-C', remainQuota: 1234 })
+  } finally { await page.close() }
+})
+
+test('pending or failed key group requests block saves and can be retried without clearing inputs', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByText('Test key').waitFor()
+    await page.evaluate(() => { window.keyGroupsHarness.setGroups(['group-A']); window.keyGroupsHarness.deferNext() })
+    await page.getByTestId('account-key-add').click()
+    const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
+    const save = dialog.getByRole('button', { name: '保存密钥', exact: true })
+    await dialog.getByLabel('名称', { exact: true }).fill('keep pending draft')
+    await dialog.getByLabel('可用额度（USD）', { exact: true }).fill('3.25')
+    assert.equal(await save.isDisabled(), true)
+    assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 0)
+    await page.evaluate(() => window.keyGroupsHarness.release())
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
+    await page.evaluate(() => window.keyGroupsHarness.failNext())
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).waitFor()
+    assert.equal(await save.isDisabled(), true)
+    assert.equal(await dialog.getByLabel('名称', { exact: true }).inputValue(), 'keep pending draft')
+    assert.equal(await dialog.getByLabel('可用额度（USD）', { exact: true }).inputValue(), '3.25')
+    assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 0)
+    await page.getByTestId('account-key-groups-refresh').click()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="account-key-groups-refresh"]')?.disabled)
+    await save.click()
+    await page.getByText('密钥已保存', { exact: true }).waitFor()
+    assert.equal((await calls(page)).filter((call) => call.name === 'create-key').length, 1)
+    await page.evaluate(() => { window.keyGroupsHarness.setGroups(['outdated-group']); window.keyGroupsHarness.deferNext() })
+    await page.getByTestId('account-key-add').click()
+    assert.equal(await save.isDisabled(), true)
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['fresh-group']))
+    await page.getByTestId('account-key-add').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'fresh-group')
+    await page.evaluate(async () => {
+      window.keyGroupsHarness.release()
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+    assert.equal(await page.getByTestId('account-key-group').inputValue(), 'fresh-group')
+    assert.equal(await page.getByTestId('account-key-group').locator('option[value="outdated-group"]').count(), 0)
+  } finally { await page.close() }
+})
+
 test('settings failure restores the persisted control and never announces success', async () => {
   const page = await fixture('page=settings&fail=settings')
   try {
@@ -508,7 +620,7 @@ test('a previously observed account task sends one scoped completion notificatio
     )
     assert.equal(notifications.length, 1)
     assert.equal(notifications[0].args.kind, 'task')
-    assert.match(notifications[0].args.eventKey, /^7:44:/)
+    assert.match(notifications[0].args.eventKey, /^https:\/\/xm\.solov\.cc:7:44:/)
   } finally {
     await page.close()
   }

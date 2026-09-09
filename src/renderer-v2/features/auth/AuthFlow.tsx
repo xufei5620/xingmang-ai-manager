@@ -62,8 +62,8 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   }, [mode, recoveryStep, legal, busy, identifier])
   useEffect(() => {
     let active = true
-    setStatusError('')
-    void api.getStatus().then((value) => { if (active) setStatus(value) }, (reason: unknown) => { if (active) setStatusError(authErrorMessage(reason, '读取注册设置')) })
+    setStatusError(''); setStatus(null)
+    void api.getStatus().then((value) => { if (active) setStatus(value) }, (reason: unknown) => { if (active) setStatusError(authErrorMessage(reason, '读取账号设置')) })
     return () => { active = false }
   }, [api, statusRevision])
   useEffect(() => {
@@ -94,13 +94,12 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   const submitLogin = () => {
     if (!identifier.trim() || !password) { setError('请输入账号和密码'); return }
     if (!agreed) { setError('请先同意用户协议和隐私政策'); return }
-    if (status?.turnstileCheckEnabled) { setError('服务端需要安全验证，请在浏览器完成登录'); return }
     const login = { username: identifier.trim(), password }
     void run('登录', async (current) => {
       const result = await api.login(login)
       if (!current()) return
       let rememberError: string | undefined
-      try { await api.setRemembered(remember ? { identifier: login.username, password: login.password } : null) }
+      try { await api.setRemembered(remember ? { identifier: login.username, password: login.password } : null, result.siteId) }
       catch { rememberError = '已登录，但记住密码的设置没有保存成功' }
       if (current()) { setPassword(''); onAuthenticated(result, { rememberError }) }
     })
@@ -126,7 +125,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       await api.register({ email: draft.email.trim(), username: draft.username.trim(), password: draft.password, verificationCode: draft.code.trim(), affCode: parseInviteCode(draft.invite) || undefined })
       if (!current()) return
       let result: AccountLoginResult
-      try { result = await api.login({ username: draft.username.trim(), password: draft.password }) }
+      try { result = await api.login({ username: draft.username.trim(), password: draft.password, siteId: 'solov' }) }
       catch (reason) {
         if (current()) {
           setMode('login'); setIdentifier(draft.username.trim()); setPassword(''); setAgreed(draft.agreed); loginTouched.current = true
@@ -208,7 +207,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       </>}
       {message && <p className="auth-message" role="status" data-testid="auth-message">{message}</p>}
       {error && <p className="auth-error" role="alert" data-testid="auth-error">{error}</p>}
-      {status?.turnstileCheckEnabled && onHelp && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
+      {mode === 'register' && status?.turnstileCheckEnabled && onHelp && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
     </div>
   </Dialog>
 }

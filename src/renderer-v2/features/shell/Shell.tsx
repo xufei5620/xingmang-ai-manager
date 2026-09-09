@@ -11,7 +11,7 @@ import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
 import { networkLocationLabel } from './network'
 
-interface AccountView { signedIn: boolean; displayName?: string; email?: string; balance?: string; identity?: AvatarIdentity }
+interface AccountView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; balance?: string; identity?: AvatarIdentity }
 interface Adapter {
   navigate?(page: PageId): void
   openAccount?(): void
@@ -137,13 +137,13 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
           <div className="v2-account-top"><button type="button" aria-label={account.signedIn ? `打开个人中心 ${account.displayName}` : '登录'} title={account.displayName ?? '登录'} onClick={adapter.openAccount}>
             <LocalAvatar identity={account.identity ?? null} name={account.displayName ?? '未登录'} />{!collapsed && <span className="v2-account-who"><strong>{account.displayName ?? '未登录'}</strong><small>{account.email ?? (account.signedIn ? '星芒账号' : '登录后自动配 Key')}</small></span>}
           </button><Button variant="ghost" size="xs" icon={ChevronDown} aria-label="切换账号" title="切换账号" onClick={adapter.switchAccount} /></div>
-          <div className="v2-account-balance">{!collapsed && <><small>余额</small><strong>{account.balance ?? '暂未读到'}</strong></>}<Button size="sm" variant="balance" icon={Zap} aria-label="充值" title="充值" onClick={adapter.topUp}>{collapsed ? undefined : '充值'}</Button></div>
+          <div className="v2-account-balance">{!collapsed && <><small>余额</small><strong>{account.balance ?? '暂未读到'}</strong></>}{account.supportsBilling !== false && <Button size="sm" variant="balance" icon={Zap} aria-label="充值" title="充值" onClick={adapter.topUp}>{collapsed ? undefined : '充值'}</Button>}</div>
         </section>
       </aside>
       <div className="v2-workspace">
         <Starfield quiet paused={false} />
         <header className="v2-topbar" data-testid="shell-topbar"><button type="button" className="v2-command-trigger" onClick={() => { setCommand(true); setQuery(''); setSelection(0) }}><Search size={16} /><span>搜索、打开、跳转…</span><kbd>{platform === 'mac' ? '⌘K' : 'Ctrl K'}</kbd></button>
-          <div className="v2-topbar-actions"><Button size="sm" icon={Bell} onClick={adapter.openAnnouncements} testId="announcement-open">公告{unread && <span className="v2-unread" />}</Button><Button size="sm" icon={CircleHelp} onClick={adapter.openHelp}>帮助与客服</Button></div>
+          <div className="v2-topbar-actions">{account.supportsAnnouncements !== false && <Button size="sm" icon={Bell} onClick={adapter.openAnnouncements} testId="announcement-open">公告{unread && <span className="v2-unread" />}</Button>}<Button size="sm" icon={CircleHelp} onClick={adapter.openHelp}>帮助与客服</Button></div>
         </header>
         {banner}
         <main ref={viewport} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>

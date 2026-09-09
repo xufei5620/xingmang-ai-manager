@@ -2,7 +2,8 @@ import {
   accountRealms, captureRealmLogin, isRealmRecord, parseRealmSavedAccount, requireRealmUserId,
   RealmAccountError, type RealmCredential, type RealmLoginInput, type RealmSavedAccount, type RealmSessionBackend,
 } from './realm-account'
-import { managedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
+import { sub2ApiManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
+import { summarizeKeySecret } from './key-secret-summary'
 
 export interface Sub2ApiAccountClientOptions {
   /** Required injection; no default production fetch and no renderer-provided base URL. */
@@ -17,6 +18,14 @@ export interface Sub2ApiKeySummary {
   readonly name: string
   readonly groupId: string | null
   readonly status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'
+  readonly quota?: number
+  readonly quotaUsed?: number
+  readonly createdAt?: string
+  readonly expiresAt?: string | null
+  readonly lastUsedAt?: string | null
+  readonly maskedKey?: string
+  /** Main-only exact matching; strip before renderer DTO mapping. */
+  readonly keyFingerprint?: string
 }
 
 export interface Sub2ApiGroupSummary {
@@ -24,6 +33,7 @@ export interface Sub2ApiGroupSummary {
   readonly name: string
   readonly platform: string
   readonly status: string
+  readonly rateMultiplier?: number
 }
 
 export interface Sub2ApiProfile {
@@ -47,14 +57,35 @@ export interface Sub2ApiManagedCliKey {
 }
 
 export interface Sub2ApiAccountClient extends RealmSessionBackend {
+  getPublicSettings(signal: AbortSignal): Promise<{ siteName: string; turnstileEnabled: boolean }>
+  restore(saved: RealmSavedAccount, signal: AbortSignal, onRotation?: (saved: RealmSavedAccount) => void | Promise<void>): Promise<RealmSavedAccount>
   getBalance(saved: RealmSavedAccount, signal: AbortSignal): Promise<{ amount: string; unit: 'sub2api-balance' }>
   listKeys(saved: RealmSavedAccount, page: number, pageSize: number, signal: AbortSignal): Promise<{ items: Sub2ApiKeySummary[]; total: number }>
   revealKey(saved: RealmSavedAccount, id: string, signal: AbortSignal): Promise<string>
-  createKey(saved: RealmSavedAccount, input: { name: string; groupId: string | null }, signal: AbortSignal): Promise<Sub2ApiKeySummary>
+  getKey(saved: RealmSavedAccount, id: string, signal: AbortSignal): Promise<Sub2ApiKeySummary>
+  createKey(saved: RealmSavedAccount, input: Sub2ApiKeyCreateInput, signal: AbortSignal): Promise<Sub2ApiKeySummary>
+  updateKey(saved: RealmSavedAccount, id: string, input: Sub2ApiKeyUpdateInput, signal: AbortSignal): Promise<Sub2ApiKeySummary>
   revokeKey(saved: RealmSavedAccount, id: string, signal: AbortSignal): Promise<void>
   listGroups(saved: RealmSavedAccount, signal: AbortSignal): Promise<Sub2ApiGroupSummary[]>
   getProfile(saved: RealmSavedAccount, signal: AbortSignal): Promise<Sub2ApiProfile>
   updateProfile(saved: RealmSavedAccount, input: { username?: string; avatarUrl?: string | null; balanceNotifyEnabled?: boolean; balanceNotifyThreshold?: number | null }, signal: AbortSignal): Promise<Sub2ApiProfile>
+  changePassword(saved: RealmSavedAccount, input: { oldPassword: string; newPassword: string }, signal: AbortSignal): Promise<void>
+}
+
+export interface Sub2ApiKeyCreateInput {
+  name: string
+  groupId: string | null
+  /** Native USD, zero means unlimited. */
+  quota?: number
+  expiresInDays?: number
+}
+
+export interface Sub2ApiKeyUpdateInput {
+  name: string
+  groupId: string | null
+  quota: number
+  /** ISO timestamp, or empty string to clear expiry. */
+  expiresAt: string
 }
 
 /**
@@ -70,13 +101,23 @@ export async function provisionSub2ApiManagedCliKeys(
   signal: AbortSignal,
 ): Promise<Sub2ApiManagedCliKey[]> {
   const groups = await client.listGroups(saved, signal)
-  const keys = await client.listKeys(saved, 1, 100, signal)
+  const keys: Sub2ApiKeySummary[] = []
+  for (let page = 1; ; page += 1) {
+    if (page > 1000) throw new RealmAccountError('PROTOCOL')
+    const batch = await client.listKeys(saved, page, 100, signal)
+    const seen = new Set(keys.map((key) => key.id))
+    if (batch.items.some((key) => seen.has(key.id))) throw new RealmAccountError('PROTOCOL')
+    keys.push(...batch.items)
+    if (keys.length >= batch.total) break
+    if (!batch.items.length) throw new RealmAccountError('PROTOCOL')
+  }
   const result: Sub2ApiManagedCliKey[] = []
   for (const provider of providerIds) {
-    const profile = managedCliKeyProfiles[provider]
-    const group = groups.find((entry) => entry.name === profile.group)
-    if (!group) throw new RealmAccountError('UNSUPPORTED')
-    const existing = keys.items.find((entry) => entry.name === profile.keyName && entry.groupId === group.id && entry.status === 'active')
+    const profile = sub2ApiManagedCliKeyProfiles[provider]
+    const matches = groups.filter((entry) => entry.name === profile.group && entry.status === 'active')
+    if (matches.length !== 1) throw new RealmAccountError('UNSUPPORTED')
+    const group = matches[0]
+    const existing = keys.find((entry) => entry.name === profile.keyName && entry.groupId === group.id && entry.status === 'active')
     const summary = existing ?? await client.createKey(saved, { name: profile.keyName, groupId: group.id }, signal)
     const key = await client.revealKey(saved, summary.id, signal)
     result.push(Object.freeze({ provider, group: profile.group, id: summary.id, name: summary.name, key }))
@@ -109,6 +150,7 @@ export interface Sub2ApiSessionExecutor {
 export function createSub2ApiSessionExecutor(
   initial: RealmSavedAccount,
   client: Pick<Sub2ApiAccountClient, 'restore'>,
+  options: { onSessionChange?: (saved: RealmSavedAccount) => void | Promise<void> } = {},
 ): Sub2ApiSessionExecutor {
   let current = parseRealmSavedAccount(initial)
   if (current.realmId !== 'api-account' || current.credential.kind !== 'sub2api') {
@@ -116,15 +158,21 @@ export function createSub2ApiSessionExecutor(
   }
   let refreshInFlight: Promise<RealmSavedAccount> | null = null
 
+  async function publish(candidate: RealmSavedAccount, base: RealmSavedAccount): Promise<RealmSavedAccount> {
+    const parsed = parseRealmSavedAccount(candidate)
+    if (parsed.realmId !== 'api-account' || parsed.credential.kind !== 'sub2api'
+      || parsed.userId !== base.userId) throw new RealmAccountError('PROTOCOL')
+    current = parsed
+    await options.onSessionChange?.(current)
+    return current
+  }
+
   async function refresh(signal: AbortSignal): Promise<RealmSavedAccount> {
     if (refreshInFlight) return refreshInFlight
     const base = current
     const pending = (async () => {
-      const candidate = parseRealmSavedAccount(await client.restore(base, signal))
-      if (candidate.realmId !== 'api-account' || candidate.credential.kind !== 'sub2api'
-        || candidate.userId !== base.userId) throw new RealmAccountError('PROTOCOL')
-      current = candidate
-      return candidate
+      const candidate = await client.restore(base, signal, async (rotated) => { await publish(rotated, base) })
+      return publish(candidate, base)
     })()
     refreshInFlight = pending
     try { return await pending } finally {
@@ -138,6 +186,8 @@ export function createSub2ApiSessionExecutor(
     options: { retryOnUnauthorized?: boolean } = {},
   ): Promise<{ value: T; session: RealmSavedAccount }> {
     const retry = options.retryOnUnauthorized === true
+    // Also wait for durable rotation publication, not only the HTTP refresh.
+    if (refreshInFlight) await refreshInFlight
     const attempt = current
     try {
       return { value: await operation(attempt, signal), session: current }
@@ -145,7 +195,7 @@ export function createSub2ApiSessionExecutor(
       if (!retry || !(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED') throw error
       // Another request may already have rotated the token while this one was
       // in flight. Adopt that result without issuing a second refresh.
-      const refreshed = current === attempt ? await refresh(signal) : current
+      const refreshed = refreshInFlight ? await refreshInFlight : current === attempt ? await refresh(signal) : current
       const value = await operation(refreshed, signal)
       return { value, session: current }
     }
@@ -197,16 +247,34 @@ function groupSummary(value: unknown): Sub2ApiGroupSummary {
     || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 256
     || typeof value.platform !== 'string' || !value.platform.trim() || value.platform.length > 64
     || typeof value.status !== 'string' || !value.status.trim()) protocol()
-  return Object.freeze({ id: String(value.id), name: value.name.trim(), platform: value.platform.trim(), status: value.status.trim() })
+  if (value.rate_multiplier !== undefined && (typeof value.rate_multiplier !== 'number' || !Number.isFinite(value.rate_multiplier) || value.rate_multiplier < 0)) protocol()
+  return Object.freeze({ id: String(value.id), name: value.name.trim(), platform: value.platform.trim(), status: value.status.trim(),
+    ...(value.rate_multiplier === undefined ? {} : { rateMultiplier: value.rate_multiplier as number }) })
+}
+
+function optionalKeyDate(value: unknown): string | null {
+  if (value === null) return null
+  if (typeof value !== 'string' || !Number.isFinite(Date.parse(value))) protocol()
+  return new Date(value).toISOString()
 }
 
 function keySummary(value: unknown, userId: string): Sub2ApiKeySummary {
   if (!isRealmRecord(value) || wireId(value.user_id) !== userId || typeof value.name !== 'string'
     || value.name.length > 256 || /[\u0000-\u001f\u007f]/.test(value.name)
     || !['active', 'inactive', 'quota_exhausted', 'expired'].includes(String(value.status))) protocol()
+  for (const field of ['quota', 'quota_used']) {
+    const amount = value[field]
+    if (amount !== undefined && (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0 || amount > Number.MAX_SAFE_INTEGER)) protocol()
+  }
   return Object.freeze({ id: wireId(value.id), name: value.name,
+    ...summarizeKeySecret(value.key),
     groupId: value.group_id === null ? null : wireId(value.group_id),
-    status: value.status as Sub2ApiKeySummary['status'] })
+    status: value.status as Sub2ApiKeySummary['status'],
+    ...(value.quota === undefined ? {} : { quota: value.quota as number }),
+    ...(value.quota_used === undefined ? {} : { quotaUsed: value.quota_used as number }),
+    ...(value.created_at === undefined ? {} : { createdAt: optionalKeyDate(value.created_at) ?? '' }),
+    ...(value.expires_at === undefined ? {} : { expiresAt: optionalKeyDate(value.expires_at) }),
+    ...(value.last_used_at === undefined ? {} : { lastUsedAt: optionalKeyDate(value.last_used_at) }) })
 }
 
 /**
@@ -317,18 +385,33 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
 
   return Object.freeze({
     realmId: 'api-account',
+    getPublicSettings: async (signal: AbortSignal) => {
+      const data = await request('/settings/public', 'GET', undefined, null, signal)
+      if (!isRealmRecord(data) || typeof data.site_name !== 'string' || !data.site_name.trim() || data.site_name.length > 256
+        || typeof data.turnstile_enabled !== 'boolean') protocol()
+      return { siteName: data.site_name.trim(), turnstileEnabled: data.turnstile_enabled }
+    },
     authenticate: async (input: RealmLoginInput, signal: AbortSignal) => {
       const captured = captureRealmLogin(input)
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(captured.identifier)) throw new RealmAccountError('INVALID')
-      const data = await request('/auth/login', 'POST', { email: captured.identifier, password: captured.password,
-        ...(captured.turnstileToken === undefined ? {} : { turnstile_token: captured.turnstileToken }) }, null, signal)
+      let data: unknown
+      try {
+        data = await request('/auth/login', 'POST', { email: captured.identifier, password: captured.password,
+          ...(captured.turnstileToken === undefined ? {} : { turnstile_token: captured.turnstileToken }) }, null, signal)
+      } catch (error) {
+        // AuthService.Login returns HTTP 401 for INVALID_CREDENTIALS. Scope
+        // this type to the password POST; /me, profile and refresh 401s must
+        // never make automatic routing try another account backend.
+        if (error instanceof RealmAccountError && error.code === 'UNAUTHORIZED') throw new RealmAccountError('LOGIN_REJECTED')
+        throw error
+      }
       if (!isRealmRecord(data)) protocol()
       if (data.requires_2fa === true) throw new RealmAccountError('TWO_FACTOR_REQUIRED')
       const user = parseUser(data.user)
       return parseRealmSavedAccount({ version: 2, realmId: 'api-account', origin,
         userId: user.userId, username: user.username, credential: tokens(data) })
     },
-    restore: async (saved: RealmSavedAccount, signal: AbortSignal) => {
+    restore: async (saved: RealmSavedAccount, signal: AbortSignal, onRotation?: (saved: RealmSavedAccount) => void | Promise<void>) => {
       const original = apiSession(saved)
       let candidate: RealmSavedAccount = original
       try {
@@ -338,6 +421,9 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
         if (!(error instanceof RealmAccountError) || error.code !== 'UNAUTHORIZED' || !original.credential.refreshToken) throw error
         const refreshed = await request('/auth/refresh', 'POST', { refresh_token: original.credential.refreshToken }, null, signal)
         candidate = parseRealmSavedAccount({ ...original, credential: tokens(refreshed) })
+        // Refresh tokens rotate on the server before /me is retried. Publish
+        // the replacement even if subsequent identity verification times out.
+        await onRotation?.(candidate)
         const user = await me(candidate, signal)
         candidate = parseRealmSavedAccount({ ...candidate, username: user.username })
       }
@@ -365,15 +451,40 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
         || /[\s*\u0000-\u001f\u007f]/.test(data.key)) protocol()
       return data.key
     },
-    createKey: async (saved: RealmSavedAccount, input: { name: string; groupId: string | null }, signal: AbortSignal) => {
+    getKey: async (saved: RealmSavedAccount, id: string, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      const summary = keySummary(await request(`/keys/${requireRealmUserId(id)}`, 'GET', undefined, session.credential.accessToken, signal), session.userId)
+      if (summary.id !== id) protocol()
+      return summary
+    },
+    createKey: async (saved: RealmSavedAccount, input: Sub2ApiKeyCreateInput, signal: AbortSignal) => {
       const session = apiSession(saved)
       if (!isRealmRecord(input) || typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100
         || /[\u0000-\u001f\u007f]/.test(input.name)) throw new RealmAccountError('INVALID')
       const groupId = input.groupId === null ? null : Number(requireRealmUserId(input.groupId))
+      if (input.quota !== undefined && (typeof input.quota !== 'number' || !Number.isFinite(input.quota) || input.quota < 0 || input.quota > Number.MAX_SAFE_INTEGER)) throw new RealmAccountError('INVALID')
+      if (input.expiresInDays !== undefined && (!Number.isSafeInteger(input.expiresInDays) || input.expiresInDays <= 0 || input.expiresInDays > 365000)) throw new RealmAccountError('INVALID')
       // No write retry: an ambiguous network outcome must not mint a second paid-account key.
-      const data = await request('/keys', 'POST', { name: input.name.trim(), group_id: groupId }, session.credential.accessToken, signal)
+      const data = await request('/keys', 'POST', { name: input.name.trim(), group_id: groupId,
+        ...(input.quota === undefined ? {} : { quota: input.quota }),
+        ...(input.expiresInDays === undefined ? {} : { expires_in_days: input.expiresInDays }) }, session.credential.accessToken, signal)
       const summary = keySummary(data, session.userId)
       if (summary.groupId !== input.groupId) protocol()
+      return summary
+    },
+    updateKey: async (saved: RealmSavedAccount, id: string, input: Sub2ApiKeyUpdateInput, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      if (!isRealmRecord(input) || typeof input.name !== 'string' || !input.name.trim() || input.name.length > 100
+        || /[\u0000-\u001f\u007f]/.test(input.name) || typeof input.quota !== 'number' || !Number.isFinite(input.quota)
+        || input.quota < 0 || input.quota > Number.MAX_SAFE_INTEGER || typeof input.expiresAt !== 'string'
+        || (input.expiresAt !== '' && !Number.isFinite(Date.parse(input.expiresAt)))) throw new RealmAccountError('INVALID')
+      // The server treats a null group as "unchanged" on update, so clearing
+      // a bound group cannot be represented faithfully by this endpoint.
+      if (input.groupId === null) throw new RealmAccountError('UNSUPPORTED')
+      const data = await request(`/keys/${requireRealmUserId(id)}`, 'PUT', { name: input.name.trim(),
+        group_id: Number(requireRealmUserId(input.groupId)), quota: input.quota, expires_at: input.expiresAt }, session.credential.accessToken, signal)
+      const summary = keySummary(data, session.userId)
+      if (summary.id !== id || summary.groupId !== input.groupId) protocol()
       return summary
     },
     revokeKey: async (saved: RealmSavedAccount, id: string, signal: AbortSignal) => {
@@ -418,6 +529,12 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       const profile = parseProfile(await request('/user', 'PUT', body, session.credential.accessToken, signal))
       if (profile.userId !== session.userId) protocol()
       return profile
+    },
+    changePassword: async (saved: RealmSavedAccount, input: { oldPassword: string; newPassword: string }, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      if (!isRealmRecord(input) || typeof input.oldPassword !== 'string' || !input.oldPassword || input.oldPassword.length > 4096
+        || typeof input.newPassword !== 'string' || input.newPassword.length < 6 || input.newPassword.length > 4096) throw new RealmAccountError('INVALID')
+      await request('/user/password', 'PUT', { old_password: input.oldPassword, new_password: input.newPassword }, session.credential.accessToken, signal)
     },
   })
 }

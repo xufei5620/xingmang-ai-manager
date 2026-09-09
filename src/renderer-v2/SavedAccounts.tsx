@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
 import { MoreHorizontal, Plus, Trash2 } from 'lucide-react'
-import { resolveRelaySite } from '../../electron/ipc-contract'
 import { Button, Dialog, Input, ListRow, Menu, Notice, Pill } from './ui'
 import {
   ListState,
@@ -19,16 +18,7 @@ import {
   type AccountSwitchSyncResult,
 } from './account-switch-sync'
 import { tools } from './registry/tools'
-
-/** Make the account realm explicit when two providers share the same email. */
-function accountBackendLabel(origin: string): string {
-  try {
-    const hostname = new URL(origin).hostname.toLowerCase()
-    return hostname === 'api.solov.cc' ? 'sub2api' : 'new-api'
-  } catch {
-    return '未知服务'
-  }
-}
+import { accountOrigin } from './account-context'
 
 export function SavedAccounts({
   api,
@@ -40,16 +30,14 @@ export function SavedAccounts({
   onLogin?: () => void
 }) {
   const load = useCallback(async () => {
-    const [accounts, session, settings] = await Promise.all([
+    const [accounts, session] = await Promise.all([
       api.listSavedAccounts(),
       api.getAccountSession(),
-      api.getSettings(),
     ])
-    const site = resolveRelaySite(settings.relaySiteId)
     return {
       accounts,
       session,
-      origin: new URL(site.accountBaseUrl ?? site.websiteUrl).origin,
+      origin: accountOrigin(session),
     }
   }, [api])
   const resource = useResource(load)
@@ -116,20 +104,17 @@ export function SavedAccounts({
             resource.data?.session.authenticated &&
             account.userId === resource.data.session.account?.userId &&
             sameAccountOrigin(account.origin, resource.data.origin)
-          const sameOrigin =
-            resource.data &&
-            sameAccountOrigin(account.origin, resource.data.origin)
           return (
             <ListRow
               key={account.id}
               title={account.username}
-              desc={`${accountBackendLabel(account.origin)} · ${account.origin}`}
+              desc={`账户尾号 ${account.id.slice(-6)}`}
               badge={current && <Pill tone="ok">当前账号</Pill>}
               actions={
                 <>
                   <Button
                     size="sm"
-                    disabled={current || !sameOrigin || Boolean(operation.busy)}
+                    disabled={current || Boolean(operation.busy)}
                     loading={operation.busy === account.id}
                     onClick={() =>
                       void operation.execute(

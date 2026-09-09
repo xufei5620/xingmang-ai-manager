@@ -14,6 +14,8 @@ export interface HomeProps {
   loading: boolean
   error: string
   account: AccountProfile | null
+  supportsUsage?: boolean
+  supportsBilling?: boolean
   balance: AccountBalance | null
   jobs: Record<string, ToolJob>
   onScan(): void
@@ -45,9 +47,9 @@ export function Home(props: HomeProps) {
   useEffect(() => {
     let current = true
     setUsage(null); setUsageError('')
-    if (account) void props.api.balanceUsage().then((value) => { if (current) setUsage(value) }).catch(() => { if (current) setUsageError('用量暂未读到') })
+    if (account && props.supportsUsage !== false) void props.api.balanceUsage().then((value) => { if (current) setUsage(value) }).catch(() => { if (current) setUsageError('用量暂未读到') })
     return () => { current = false }
-  }, [account?.userId, props.api])
+  }, [account?.userId, props.api, props.supportsUsage])
   async function refreshOfficial() {
     if (officialLock.current) return
     officialLock.current = true; setOfficialBusy(true); setOfficialError('')
@@ -120,7 +122,7 @@ export function Home(props: HomeProps) {
       {(props.bootstrap.result.failed.length > 0 || props.bootstrap.result.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
-    {dollars !== null && dollars < 5 && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
+    {props.supportsBilling !== false && dollars !== null && dollars < 5 && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
     <div className="v2-home-grid">
       <div className="v2-home-main">
         {!ready && !loading && <Card title="开始使用" meta="第 1 步，共 4 步" padding="none" testId="home-setup">
@@ -154,8 +156,8 @@ export function Home(props: HomeProps) {
         <Card title="账户余额" padding="none" actions={<Pill tone={ready ? 'ok' : 'neutral'}>{ready ? `${installed.filter((tool) => tool.configured).length} 个工具已连接` : '等待连接'}</Pill>}>
           <div className={`v2-balance-body tone-${tier}`}><div><strong>{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small></div>
             <div className="v2-balance-usage">{monthUsed !== null && dollars !== null && <Progress tone={tier === 'neutral' ? 'neutral' : tier} value={monthUsed + dollars > 0 ? monthUsed / (monthUsed + dollars) * 100 : 0} label={`本月已用 $${monthUsed.toFixed(2)}`} />}
-              <p>{usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? '最近 7 天暂无用量' : account ? '正在读取用量' : '登录后查看用量')}</p></div>
-            <div className="v2-balance-actions"><Button variant="balance" size="sm" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')}>充值</Button><Button variant="ghost" size="sm" onClick={() => props.onNavigate('account', 'dashboard')}>用量看板</Button></div>
+              <p>{props.supportsUsage === false ? '请在官方网站查看消费记录。' : usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? '最近 7 天暂无用量' : account ? '正在读取用量' : '登录后查看用量')}</p></div>
+            <div className="v2-balance-actions">{props.supportsBilling !== false && <Button variant="balance" size="sm" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')}>充值</Button>}{props.supportsUsage !== false && <Button variant="ghost" size="sm" onClick={() => props.onNavigate('account', 'dashboard')}>用量看板</Button>}</div>
           </div>
         </Card>
         <Card title="可以试试" padding="none" testId="home-suggestions"><ListRow icon={Plug} title="给 AI 连上浏览器和数据库" actions={<Button variant="ghost" size="xs" icon={ArrowRight} aria-label="查看外接工具" title="查看外接工具" onClick={() => props.onNavigate('mcp')} />} />

@@ -243,7 +243,7 @@ test('account header matches the return-and-identity layout and moves refresh in
   try {
     await page.goto(`${origin}/e2e/v2-business-fixture.html?page=account`)
     await page
-      .getByText('余额、Key、用量与订单都在这里。', { exact: true })
+      .getByText('管理你的星芒账号、余额与 Key。', { exact: true })
       .waitFor()
     const avatar = page.getByTestId('account-profile-avatar')
     assert.equal(await avatar.innerText(), '本')

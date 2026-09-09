@@ -36,9 +36,9 @@ test('group options show canonical names and native menus inherit the active the
     const group = page.getByTestId('chat-group')
     assert.deepEqual(await group.locator('option').evaluateAll((options) => options.map((option) => ({ value: option.value, label: option.textContent }))), [
       { value: 'default', label: 'default' },
-      { value: 'Codex_pro', label: 'Codex_pro' },
+      { value: 'GPT-中转/订阅', label: 'GPT-中转/订阅' },
     ])
-    await page.waitForFunction(() => document.querySelector('[data-testid=chat-group]')?.value === 'Codex_pro')
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-group]')?.value === 'GPT-中转/订阅')
     assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话', exact: true }).getAttribute('aria-pressed'), 'true', '首次进入聊天应默认文本对话')
     const styles = await group.evaluate((select) => {
       const option = select.options[0]
@@ -262,6 +262,139 @@ test('group fetch failure can be retried without clearing the user draft', async
   } finally { await page.close() }
 })
 
+test('opening the group menu refreshes metadata once without preparing keys or resetting the current draft/model', async () => {
+  const page = await open('preferredGroup=1')
+  try {
+    await ready(page)
+    await page.getByTestId('chat-model').selectOption('other-model')
+    await page.getByTestId('chat-composer-input').fill('keep this unsent draft')
+    const before = (await calls(page, 'groups')).length
+    const prepared = (await calls(page, 'prepare')).length
+    await page.evaluate(() => {
+      window.chatHarness.setGroups(['default', 'GPT-中转/订阅', 'new-live-group'])
+      window.chatHarness.deferGroupList()
+      const select = document.querySelector('[data-testid="chat-group"]')
+      select.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
+      select.focus()
+      select.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }))
+    })
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'groups').length > count, before)
+    assert.equal((await calls(page, 'groups')).length, before + 1)
+    assert.equal(await page.getByTestId('chat-group').isDisabled(), false, 'background refresh must leave an open native menu enabled')
+    await page.evaluate(() => window.chatHarness.releaseGroupList())
+    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'new-live-group'))
+    assert.equal(await page.getByTestId('chat-group').inputValue(), 'GPT-中转/订阅')
+    assert.equal(await page.getByTestId('chat-model').inputValue(), 'other-model')
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'keep this unsent draft')
+    assert.equal((await calls(page, 'prepare')).length, prepared)
+    assert.equal((await calls(page, 'start')).length + (await calls(page, 'image')).length, 0)
+    await page.getByTestId('chat-group-prepare').click()
+    await page.waitForFunction((count) => window.chatHarness.calls.filter((entry) => entry.method === 'prepare').length > count, prepared)
+    assert.equal((await calls(page, 'prepare')).length, prepared + 1)
+    assert.equal(await page.getByTestId('chat-model').inputValue(), 'other-model')
+  } finally { await page.close() }
+})
+
+test('removing the selected group preserves selection/history and prevents send and retry until the user selects an available group', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'saved question')
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    await page.getByTestId('chat-composer-input').fill('draft after revoked group')
+    const prepared = (await calls(page, 'prepare')).length
+    await page.evaluate(() => { window.chatHarness.setGroups(['group-b']); window.dispatchEvent(new Event('focus')) })
+    await page.getByTestId('chat-group-unavailable').waitFor()
+    assert.equal(await page.getByTestId('chat-group').inputValue(), 'group-a')
+    assert.equal(await page.getByTestId('chat-group').locator('option:checked').textContent(), 'group-a（不可用）')
+    assert.equal(await page.getByTestId('chat-model').inputValue(), 'gpt-test')
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    assert.equal(await page.getByRole('button', { name: '重新生成', exact: true }).isDisabled(), true)
+    await page.getByTestId('chat-composer-input').press('Enter')
+    assert.equal((await calls(page, 'start')).length, 1)
+    assert.equal((await calls(page, 'prepare')).length, prepared)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft after revoked group')
+    assert.equal(await page.locator('.chat-message[data-role="user"]').getByText('saved question', { exact: true }).count(), 1)
+    await page.getByTestId('chat-group').selectOption('group-b')
+    await ready(page)
+    assert.equal(await page.getByTestId('chat-group-unavailable').count(), 0)
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), false)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft after revoked group')
+  } finally { await page.close() }
+})
+
+test('focus, reactivation and visible foreground polling refresh groups without repeating preparation', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await page.clock.install()
+    await page.evaluate(() => Object.defineProperty(document, 'hasFocus', { configurable: true, value: () => true }))
+    await page.getByTestId('chat-composer-input').fill('persistent draft')
+    const prepared = (await calls(page, 'prepare')).length
+    await page.evaluate(() => { window.chatHarness.setGroups(['group-a', 'focus-group']); window.dispatchEvent(new Event('focus')) })
+    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'focus-group'))
+    await page.evaluate(() => window.chatHarness.setActive(false))
+    await page.waitForFunction(() => document.querySelector('[data-testid="page-chat"]').hidden)
+    const inactive = (await calls(page, 'groups')).length
+    await page.clock.fastForward(31000)
+    assert.equal((await calls(page, 'groups')).length, inactive)
+    await page.evaluate(() => { window.chatHarness.setGroups(['group-a', 'reactivated-group']); window.chatHarness.setActive(true) })
+    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'reactivated-group'))
+    await page.evaluate(() => window.chatHarness.setGroups(['group-a', 'polled-group']))
+    await page.clock.fastForward(31000)
+    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'polled-group'))
+    await page.evaluate(() => { Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'hidden' }); document.dispatchEvent(new Event('visibilitychange')) })
+    const hidden = (await calls(page, 'groups')).length
+    await page.clock.fastForward(31000)
+    assert.equal((await calls(page, 'groups')).length, hidden)
+    await page.evaluate(() => {
+      window.chatHarness.setGroups(['group-a', 'visible-group'])
+      Object.defineProperty(document, 'visibilityState', { configurable: true, value: 'visible' })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'visible-group'))
+    assert.equal((await calls(page, 'prepare')).length, prepared)
+    assert.equal((await calls(page, 'start')).length + (await calls(page, 'image')).length, 0)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'persistent draft')
+  } finally { await page.close() }
+})
+
+test('a background list failure retains existing options and model while exposing an explicit retry', async () => {
+  const page = await open()
+  try {
+    await ready(page)
+    await page.getByTestId('chat-composer-input').fill('offline draft')
+    const prepared = (await calls(page, 'prepare')).length
+    await page.evaluate(() => { window.chatHarness.failGroupList(); window.dispatchEvent(new Event('focus')) })
+    await page.getByTestId('chat-groups-retry').waitFor()
+    assert.equal(await page.getByTestId('chat-group').inputValue(), 'group-a')
+    assert.equal(await page.getByTestId('chat-model').inputValue(), 'gpt-test')
+    assert.equal(await page.getByTestId('chat-group').isDisabled(), false)
+    await page.evaluate(() => { window.chatHarness.resetGroupFailure(); window.chatHarness.setGroups(['group-a', 'recovered-group']) })
+    await page.getByTestId('chat-groups-retry').click()
+    await page.waitForFunction(() => [...document.querySelector('[data-testid="chat-group"]').options].some((option) => option.value === 'recovered-group'))
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'offline draft')
+    assert.equal((await calls(page, 'prepare')).length, prepared)
+  } finally { await page.close() }
+})
+
+test('new groups after an empty initial list require an explicit choice before preparing a key', async () => {
+  const page = await open('emptyGroups=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-group"]')?.textContent === '暂无可用分组')
+    await page.getByTestId('chat-composer-input').fill('draft before access granted')
+    await page.evaluate(() => { window.chatHarness.setGroups(['group-a']); window.dispatchEvent(new Event('focus')) })
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-group"]')?.options.length === 2)
+    assert.equal(await page.getByTestId('chat-group').inputValue(), '')
+    assert.equal(await page.getByTestId('chat-group').locator('option:checked').textContent(), '请选择分组')
+    assert.equal((await calls(page, 'prepare')).length, 0)
+    assert.equal(await page.getByTestId('chat-send').isDisabled(), true)
+    await page.getByTestId('chat-group').selectOption('group-a')
+    await ready(page)
+    assert.equal((await calls(page, 'prepare')).length, 1)
+    assert.equal(await page.getByTestId('chat-composer-input').inputValue(), 'draft before access granted')
+  } finally { await page.close() }
+})
+
 test('hidden chat keeps its request and drafts while exposing native close protection flags', async () => {
   const page = await open()
   try {
@@ -320,4 +453,14 @@ test('default, empty and failed chat surfaces fit the fixed desktop content fram
       await page.screenshot({ path: path.join(output, `chat-${theme}-${os}-${mode}.png`) })
     } finally { await page.close() }
   }
+})
+
+
+test('Sub2API opens with its Codex_pro group and gpt-5.6-sol model', async () => {
+  const page = await open('sub2api=1&preferredGroup=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="chat-group"]')?.value === 'Codex_pro')
+    await ready(page)
+    assert.equal(await page.getByTestId('chat-model').inputValue(), 'gpt-5.6-sol')
+  } finally { await page.close() }
 })

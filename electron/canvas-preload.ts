@@ -64,7 +64,7 @@ function subscribeCloseRequest(channel: string, listener: (request: { requestId:
   return () => ipcRenderer.removeListener(channel, wrapped)
 }
 
-function subscribeAccountChange(listener: (change: { userId: number | null; previousUserId: number | null }) => void) {
+function subscribeAccountChange(listener: (change: { userId: number | null; previousUserId: number | null; siteId?: 'solov' | 'solov-api' }) => void) {
   const wrapped = (_event: unknown, payload: unknown) => {
     if (!payload || typeof payload !== 'object') return
     const value = payload as Record<string, unknown>
@@ -79,7 +79,9 @@ function subscribeAccountChange(listener: (change: { userId: number | null; prev
         ? value.previousUserId
         : undefined
     if (userId === undefined || previousUserId === undefined) return
-    listener({ userId, previousUserId })
+    const siteId = value.siteId
+    if (siteId !== undefined && siteId !== 'solov' && siteId !== 'solov-api') return
+    listener({ userId, previousUserId, ...(siteId === undefined ? {} : { siteId }) })
   }
   ipcRenderer.on(channels.accountChanged, wrapped)
   return () => ipcRenderer.removeListener(channels.accountChanged, wrapped)
@@ -133,7 +135,7 @@ contextBridge.exposeInMainWorld('xingmangCanvasHost', {
   renameProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.renameProject, projectId, name),
   duplicateProject: (projectId: string, name: string) => ipcRenderer.invoke(channels.duplicateProject, projectId, name),
   setProjectArchived: (projectId: string, archived: boolean) => ipcRenderer.invoke(channels.setProjectArchived, projectId, archived),
-  onAccountChange: (listener: (change: { userId: number | null; previousUserId: number | null }) => void) => subscribeAccountChange(listener),
+  onAccountChange: (listener: (change: { userId: number | null; previousUserId: number | null; siteId?: 'solov' | 'solov-api' }) => void) => subscribeAccountChange(listener),
   finishClose: (requestId: string, allowed: boolean) => ipcRenderer.invoke(channels.finishClose, requestId, allowed),
   cancelCloseTasks: (requestId: string) => ipcRenderer.invoke(channels.cancelCloseTasks, requestId),
   onCloseRequested: (listener: (request: { requestId: string }) => void) => subscribeCloseRequest(channels.closeRequested, listener),

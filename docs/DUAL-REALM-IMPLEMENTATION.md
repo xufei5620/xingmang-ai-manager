@@ -1,5 +1,7 @@
 # 双账号域实施记录：PR #118 · Wave 3
 
+> 接续更新：main/IPC、账号选择 UI、RelayBackend adapter 与 vault 已在本地接通，最新范围和验证边界见 [双站桌面接线](./DUAL-REALM-DESKTOP-INTEGRATION.md)。下文保留为 Wave 3 历史记录。
+
 状态：**可测试的主进程核心模块已完成；应用端到端接线未完成；仍为 Draft，禁止据此发布。**
 
 基线：`ff09c073cc56d11d10227b59245865e3d2e6c8de`。

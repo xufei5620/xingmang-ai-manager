@@ -60,6 +60,8 @@ import {
 import { tools } from './registry/tools'
 import type { V2Bridge } from './types'
 import { SavedAccounts } from './SavedAccounts'
+import { accountOrigin, accountSiteId, accountSupports, visibleAccountTab, accountKeyQuota, type AccountSiteId } from './account-context'
+import type { AccountSessionState } from '../../electron/ipc-contract'
 import { AccountFilters, accountTimeRange } from './AccountFilters'
 import { platformApi } from './platform-api'
 import {
@@ -305,21 +307,23 @@ export function AccountPage({
   const load = useCallback(async () => {
     const session = await api.getAccountSession()
     if (!session.authenticated) return null
-    const [profile, balance, settings] = await Promise.all([
+    const [profile, balance] = await Promise.all([
       api.getAccountProfile(),
       api.getAccountBalance(),
-      api.getSettings(),
     ])
-    const site = resolveRelaySite(settings.relaySiteId)
+    const site = resolveRelaySite(accountSiteId(session))
     return {
       profile,
       balance,
-      origin: new URL(site.accountBaseUrl ?? site.websiteUrl).origin,
+      session,
+      origin: accountOrigin(session),
       inviteBaseUrl: site.websiteUrl,
       providerBaseUrls: site.providerBaseUrls,
     }
   }, [api])
   const resource = useResource(load)
+  const availableTabs = accountTabs.filter((item) => resource.data && visibleAccountTab(item.value, resource.data.session))
+  const activeTab = availableTabs.some((item) => item.value === tab) ? tab : 'overview'
   const changed = () => {
     void resource.reload()
     onAccountChanged?.()
@@ -342,7 +346,7 @@ export function AccountPage({
         />
         <PageHead
           title="个人中心"
-          lead="余额、Key、用量与订单都在这里。"
+          lead="管理你的星芒账号、余额与 Key。"
           actions={
             <Menu
               label="账号操作"
@@ -405,10 +409,10 @@ export function AccountPage({
       ) : (
         <>
           <Tabs
-            items={[...accountTabs]}
-            value={tab}
+            items={availableTabs}
+            value={activeTab}
             onChange={(value) => {
-              if (accountTabs.some((item) => item.value === value))
+              if (availableTabs.some((item) => item.value === value))
                 setTab(value as AccountTab)
             }}
             testId="account-tabs"
@@ -418,7 +422,7 @@ export function AccountPage({
             <p role="status">正在读取账号…</p>
           ) : (
             resource.data &&
-            visited.map((panel) => {
+            [...new Set([...visited, activeTab])].filter((panel) => visibleAccountTab(panel, resource.data!.session)).map((panel) => {
               const account = resource.data
               if (!account) return null
               return (
@@ -426,7 +430,7 @@ export function AccountPage({
                   className="v2-business-account-panel"
                   role="tabpanel"
                   key={`${account.origin}:${account.profile.userId}-${panel}`}
-                  hidden={panel !== tab}
+                  hidden={panel !== activeTab}
                 >
                   {panel === 'overview' && (
                     <AccountOverview
@@ -440,6 +444,7 @@ export function AccountPage({
                         origin: account.origin,
                         userId: account.profile.userId,
                       }}
+                      session={account.session}
                     />
                   )}
                   {panel === 'dashboard' && (
@@ -450,6 +455,7 @@ export function AccountPage({
                       api={api}
                       balance={account.balance}
                       providerBaseUrls={account.providerBaseUrls}
+                      siteId={accountSiteId(account.session)}
                     />
                   )}
                   {panel === 'usage' && (
@@ -459,7 +465,7 @@ export function AccountPage({
                     <AccountTasks
                       api={api}
                       balance={account.balance}
-                      accountScope={String(account.profile.userId)}
+                      accountScope={`${account.origin}:${account.profile.userId}`}
                     />
                   )}
                   {panel === 'recharge' && (
@@ -501,6 +507,7 @@ function AccountOverview({
   navigateTab,
   onLogin,
   identity,
+  session,
 }: {
   api: V2Bridge
   profile: Profile
@@ -509,6 +516,7 @@ function AccountOverview({
   navigateTab: (tab: AccountTab) => void
   onLogin?: () => void
   identity: AvatarIdentity
+  session: AccountSessionState
 }) {
   const [name, setName] = useState(profile.displayName ?? '')
   const profileNameRef = useRef(profile.displayName ?? '')
@@ -518,8 +526,8 @@ function AccountOverview({
   const [confirmPassword, setConfirm] = useState('')
   const operation = useOperation()
   const accountsLoad = useCallback(
-    async () => ({ devices: await api.getAccountLoginSessions() }),
-    [api],
+    async () => ({ devices: accountSupports(session, 'supportsSessionManagement') ? await api.getAccountLoginSessions() : [] }),
+    [api, session],
   )
   const accounts = useResource(accountsLoad)
   const [logout, setLogout] = useState(false)
@@ -589,6 +597,7 @@ function AccountOverview({
                 variant="primary"
                 icon={Pencil}
                 loading={operation.busy === 'profile'}
+                disabled={!accountSupports(session, 'supportsProfileUpdate')}
                 onClick={() =>
                   void operation.execute(
                     'profile',
@@ -618,23 +627,23 @@ function AccountOverview({
             >
               {dollars(balance.displayAmount)}
             </strong>
-            <p>用于星芒账号的按量消费。每次调用的费用可在明细里查看。</p>
+            <p>{accountSupports(session, 'supportsUsage') ? '用于星芒账号的按量消费。每次调用的费用可在明细里查看。' : '这是当前账号的可用余额，消费记录可在官方网站查看。'}</p>
             <div className="v2-business-control">
-              <Button
+              {accountSupports(session, 'supportsBilling') && <Button
                 variant="balance"
                 size="sm"
                 icon={Zap}
                 onClick={() => navigateTab('recharge')}
               >
                 充值
-              </Button>
-              <Button
+              </Button>}
+              {accountSupports(session, 'supportsUsage') && <Button
                 size="sm"
                 icon={RefreshCw}
                 onClick={() => navigateTab('dashboard')}
               >
                 看用量
-              </Button>
+              </Button>}
             </div>
           </Card>
           <Card title="已保存的账号" padding="none">
@@ -646,18 +655,18 @@ function AccountOverview({
           </Card>
           <Card title="登录与设备">
             <p>
-              {accounts.data
+              {!accountSupports(session, 'supportsSessionManagement') ? '当前账号暂不提供登录设备管理。' : accounts.data
                 ? `${accounts.data.devices.length} 台已登录设备`
                 : '正在读取登录设备…'}
             </p>
             <div className="v2-business-control">
-              <Button
+              {accountSupports(session, 'supportsSessionManagement') && <Button
                 size="sm"
                 icon={Users}
                 onClick={() => navigateTab('devices')}
               >
                 管理设备
-              </Button>
+              </Button>}
               <Button
                 size="sm"
                 variant="ghost"
@@ -731,10 +740,12 @@ function AccountOverview({
                 void operation.execute(
                   'password',
                   async () => {
-                    if (password.length < 8)
-                      throw new Error('新密码至少需要 8 个字符。')
-                    if (password.length > 20)
-                      throw new Error('新密码不能超过 20 个字符。')
+                    const minimum = accountSiteId(session) === 'solov-api' ? 6 : 8
+                    const maximum = accountSiteId(session) === 'solov-api' ? 256 : 20
+                    if (password.length < minimum)
+                      throw new Error(`新密码至少需要 ${minimum} 个字符。`)
+                    if (password.length > maximum)
+                      throw new Error(`新密码不能超过 ${maximum} 个字符。`)
                     if (password !== confirmPassword)
                       throw new Error('两次填写的新密码不一致。')
                     await api.changeAccountPassword({
@@ -757,6 +768,7 @@ function AccountOverview({
         }
       >
         <ResultNotice error={operation.error} />
+        {accountSiteId(session) === 'solov-api' && <p>修改密码后当前登录会失效，请使用新密码重新登录。</p>}
         <Input
           label="当前密码"
           password
@@ -786,17 +798,18 @@ function AccountKeys({
   api,
   balance,
   providerBaseUrls,
+  siteId,
 }: {
   api: V2Bridge
   balance: Balance
   providerBaseUrls: Record<Provider, string>
+  siteId: AccountSiteId
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
   const load = useCallback(
     async () => ({
       page: await api.getAccountKeys({ page, pageSize: 20 }),
-      groups: await api.getAccountUsableGroups(),
     }),
     [api, page],
   )
@@ -805,6 +818,12 @@ function AccountKeys({
   const [editing, setEditing] = useState<AccountKey | 'new' | null>(null)
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
+  const [groups, setGroups] = useState<Awaited<ReturnType<V2Bridge['getAccountUsableGroups']>>>([])
+  const [groupsLoading, setGroupsLoading] = useState(false)
+  const [groupsError, setGroupsError] = useState('')
+  const groupsRequest = useRef(0)
+  const groupsPending = useRef<{ request: number; promise: Promise<void> } | null>(null)
+  const groupsRequestedAt = useRef(0)
   const [quota, setQuota] = useState('10')
   const [unlimited, setUnlimited] = useState(false)
   const [expires, setExpires] = useState('')
@@ -815,10 +834,60 @@ function AccountKeys({
   const [model, setModel] = useState('')
   const [provider, setProvider] = useState<Provider>('claude')
   const modelRequest = useRef(0)
+  useEffect(() => () => { groupsRequest.current++ }, [api, siteId])
+  const refreshGroups = (force = false): Promise<void> => {
+    if (operation.busy === 'save-key') return Promise.resolve()
+    if (groupsPending.current?.request === groupsRequest.current) return groupsPending.current.promise
+    // Pointer and focus are two events from one opening gesture. Share their
+    // request instead of issuing two authenticated requests to the server.
+    if (!force && Date.now() - groupsRequestedAt.current < 500) return Promise.resolve()
+    groupsRequestedAt.current = Date.now()
+    const request = ++groupsRequest.current
+    setGroupsLoading(true)
+    setGroupsError('')
+    const promise = (async () => {
+      try {
+        const latest = await api.getAccountUsableGroups()
+        if (groupsRequest.current !== request) return
+        setGroups(latest)
+        // Keep a user's selection during refresh. If it was removed, require
+        // another explicit choice instead of silently changing the billed group.
+        setGroup((selected) => selected || latest[0]?.name || '')
+      } catch {
+        if (groupsRequest.current === request) setGroupsError('分组读取失败，请刷新后重试。')
+      } finally {
+        if (groupsRequest.current === request) setGroupsLoading(false)
+        if (groupsPending.current?.request === request) groupsPending.current = null
+      }
+    })()
+    groupsPending.current = { request, promise }
+    return promise
+  }
+  const refreshGroupsRef = useRef(refreshGroups)
+  refreshGroupsRef.current = refreshGroups
+  useEffect(() => {
+    if (!editing) return
+    const refreshVisible = () => {
+      if (document.visibilityState === 'visible') void refreshGroupsRef.current()
+    }
+    window.addEventListener('focus', refreshVisible)
+    document.addEventListener('visibilitychange', refreshVisible)
+    const interval = window.setInterval(refreshVisible, 30_000)
+    return () => {
+      window.removeEventListener('focus', refreshVisible)
+      document.removeEventListener('visibilitychange', refreshVisible)
+      window.clearInterval(interval)
+    }
+  }, [editing])
+  const closeEditor = () => {
+    groupsRequest.current++
+    setEditing(null)
+  }
   const edit = (key: AccountKey | 'new') => {
     setEditing(key)
     setName(key === 'new' ? '' : key.name)
-    setGroup(key === 'new' ? (resource.data?.groups[0]?.name ?? '') : key.group)
+    setGroup(key === 'new' ? '' : key.group)
+    setGroups([])
     setUnlimited(key !== 'new' && key.unlimitedQuota)
     setQuota(
       key === 'new' ? '10' : String(key.remainQuota / balance.quotaPerUnit),
@@ -827,17 +896,18 @@ function AccountKeys({
       key === 'new' ? '' : toDateTimeLocalValue(key.expiredAt),
     )
     operation.clear()
+    void refreshGroups(true)
   }
+  const selectedGroupAvailable = groups.some((entry) => entry.name === group)
   const save = () =>
     void operation.execute(
       'save-key',
       async () => {
         const amount = Number(quota)
+        if (groupsLoading || groupsError || groupsPending.current?.request === groupsRequest.current) throw new Error('请先获取最新的可用分组。')
         if (!name.trim()) throw new Error('请填写密钥名称。')
-        if (!group.trim())
+        if (!group.trim() || !selectedGroupAvailable)
           throw new Error('当前没有可用分组，暂时无法保存密钥。')
-        if (!unlimited && (!Number.isFinite(amount) || amount < 0))
-          throw new Error('请填写有效额度。')
         const expiredTime = expires
           ? Math.floor(new Date(expires).getTime() / 1000)
           : -1
@@ -849,14 +919,14 @@ function AccountKeys({
         const input = {
           name: name.trim(),
           group,
-          remainQuota: Math.round(amount * balance.quotaPerUnit),
+          remainQuota: accountKeyQuota(amount, balance.quotaPerUnit, siteId, unlimited),
           unlimitedQuota: unlimited,
           expiredTime,
         }
         if (editing && editing !== 'new')
           await api.updateAccountKey({ ...input, id: editing.id })
         else await api.createAccountKey(input)
-        setEditing(null)
+        closeEditor()
         await resource.reload()
       },
       '密钥已保存',
@@ -1010,14 +1080,16 @@ function AccountKeys({
       <Dialog
         open={Boolean(editing)}
         title={editing === 'new' ? '新建密钥' : '编辑密钥'}
-        onClose={() => setEditing(null)}
+        onClose={closeEditor}
+        busy={operation.busy === 'save-key'}
         footer={
           <>
-            <Button onClick={() => setEditing(null)}>取消</Button>
+            <Button onClick={closeEditor} disabled={operation.busy === 'save-key'}>取消</Button>
             <Button
               variant="primary"
               icon={KeyRound}
               loading={operation.busy === 'save-key'}
+              disabled={groupsLoading || Boolean(groupsError) || !selectedGroupAvailable}
               onClick={save}
             >
               保存密钥
@@ -1026,6 +1098,7 @@ function AccountKeys({
         }
       >
         <ResultNotice error={operation.error} />
+        <ResultNotice error={groupsError} />
         <Input
           label="名称"
           value={name}
@@ -1033,16 +1106,35 @@ function AccountKeys({
           onChange={(event) => setName(event.target.value)}
         />
         <Select
+          label="分组"
+          testId="account-key-group"
           aria-label="密钥分组"
+          disabled={!groups.length || operation.busy === 'save-key'}
+          aria-busy={groupsLoading}
+          onFocus={() => void refreshGroups()}
+          onPointerDown={() => void refreshGroups()}
+          onKeyDown={(event) => {
+            if (['ArrowDown', 'ArrowUp', 'Enter', ' ', 'F4'].includes(event.key)) void refreshGroups()
+          }}
           options={
-            resource.data?.groups.map((value) => ({
-              value: value.name,
-              label: value.name,
-            })) ?? []
+            [
+              ...(!group ? [{ value: '', label: groupsLoading ? '正在读取分组…' : '暂无可用分组', disabled: true }]
+                : !selectedGroupAvailable ? [{ value: group, label: `${group}（${groupsLoading ? '确认中' : '已不可用'}）`, disabled: true }] : []),
+              ...groups.map((value) => ({
+                value: value.name,
+                label: value.name,
+              })),
+            ]
           }
           value={group}
           onChange={(event) => setGroup(event.target.value)}
         />
+        <Button variant="ghost" size="sm" icon={RefreshCw} testId="account-key-groups-refresh"
+          loading={groupsLoading} disabled={groupsLoading || operation.busy === 'save-key'} onClick={() => void refreshGroups(true)}>
+          刷新分组
+        </Button>
+        {groupsLoading && <p role="status">正在获取最新分组…</p>}
+        {!groupsLoading && !groupsError && group && !selectedGroupAvailable && <p role="alert">原分组已不可用，请重新选择；已填写的内容仍保留。</p>}
         <Switch label="不限额度" checked={unlimited} onChange={setUnlimited} />
         {!unlimited && (
           <Input

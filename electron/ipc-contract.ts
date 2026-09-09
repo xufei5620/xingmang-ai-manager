@@ -224,7 +224,8 @@ export type PythonRuntimeInstallResult = MainPythonRuntimeInstallResult
 export type PlatformCapabilities = MainPlatformCapabilities
 export type AccountStatus = NewApiAccountStatus
 export type AccountProfile = NewApiAccountProfile
-export type AccountLoginInput = NewApiLoginInput
+export type AccountSiteId = 'solov' | 'solov-api'
+export type AccountLoginInput = NewApiLoginInput & { siteId?: AccountSiteId }
 
 /**
  * The "记住密码" credential the login dialog can ask the main process to
@@ -237,9 +238,14 @@ export interface RememberedAccountLogin {
   identifier: string
   password: string
 }
-export type AccountLoginResult = NewApiLoginResult
+export type AccountLoginResult = NewApiLoginResult & AccountContextMetadata
 export type AccountRegisterInput = NewApiRegisterInput
-export type AccountSessionState = NewApiSessionState
+export interface AccountContextMetadata {
+  siteId?: AccountSiteId
+  realmId?: 'xm-account' | 'api-account'
+  capabilities?: import('./relay-backend').RelayBackendCapabilities
+}
+export type AccountSessionState = NewApiSessionState & AccountContextMetadata
 export type AccountBalance = NewApiBalance
 export type AccountTopupInfo = NewApiTopupInfo
 export type AccountTopupAmountInput = NewApiTopupAmountInput
@@ -294,6 +300,12 @@ export type AccountKeysQuery = NewApiAccountKeysQuery
 export type AccountKeysPage = NewApiAccountKeysPage
 export type AccountKeyCreateInput = NewApiAccountKeyCreateInput
 export type AccountKeyUpdateInput = NewApiAccountKeyUpdateInput
+
+/** Current local configuration and the explicitly requested automatic group; contains no full keys. */
+export interface AccountKeyOptions {
+  current: { preview: string | null; keyId: number | null; name: string | null; group: string | null }
+  automatic: { name: string; group: string }
+}
 
 export interface AccountKeyCliConfigurationInput {
   provider: ProviderId
@@ -615,9 +627,9 @@ export interface XingmangInvokeContract {
     [input: ProviderExtensionMutation],
     ProviderExtensionsSnapshot
   >
-  getAccountStatus: IpcInvokeDefinition<'account:get-status', [], AccountStatus>
+  getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
   getAccountNotice: IpcInvokeDefinition<'account:get-notice', [], { id: string; text: string } | null>
-  getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind], LegalDocument>
+  getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
   getAccountSession: IpcInvokeDefinition<'account:get-session', [], AccountSessionState>
@@ -744,8 +756,8 @@ export interface XingmangInvokeContract {
     AccountRevokeOtherLoginSessionsResult
   >
   openCanvasWindow: IpcInvokeDefinition<'canvas:open', [], void>
-  getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [], RememberedAccountLogin | null>
-  setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null], void>
+  getRememberedAccountLogin: IpcInvokeDefinition<'account:get-remembered-login', [siteId?: AccountSiteId], RememberedAccountLogin | null>
+  setRememberedAccountLogin: IpcInvokeDefinition<'account:set-remembered-login', [input: RememberedAccountLogin | null, siteId?: AccountSiteId], void>
   createAccountKey: IpcInvokeDefinition<'account:create-key', [input: AccountKeyCreateInput], void>
   updateAccountKey: IpcInvokeDefinition<'account:update-key', [input: AccountKeyUpdateInput], void>
   listAiChatGroups: IpcInvokeDefinition<'chat:list-groups', [], AiChatGroupSummary[]>
@@ -756,9 +768,11 @@ export interface XingmangInvokeContract {
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
+  getAccountKeyOptions: IpcInvokeDefinition<'account:get-key-options', [provider: ProviderId], AccountKeyOptions>
 }
 
 export interface XingmangEventContract {
+  onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
   onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
   onWindowCloseRequest: IpcEventDefinition<'window:close-request', { requestId: string }>
   onExternalDeepLink: IpcEventDefinition<'navigation:deep-link-pending', undefined>
@@ -939,11 +953,13 @@ export const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  getAccountKeyOptions: 'account:get-key-options',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
 
 export const ipcEventChannels = {
+  onAccountSessionChanged: 'account:session-changed',
   onNavigate: 'navigation:open-page',
   onWindowCloseRequest: 'window:close-request',
   onExternalDeepLink: 'navigation:deep-link-pending',

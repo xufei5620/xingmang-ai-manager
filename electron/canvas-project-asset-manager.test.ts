@@ -42,6 +42,20 @@ afterEach(() => {
 })
 
 describe('CanvasProjectAssetManager', () => {
+  it('isolates equal user IDs even when both realms select the same project workspace', async () => {
+    const workspace = temporaryRoot('xingmang-dual-workspace-')
+    const projectId = '22222222-2222-2222-2222-222222222222'
+    const projects = { list: vi.fn(async () => []), getUsableWorkspaceDirectory: vi.fn(async () => workspace) }
+    const xm = new CanvasProjectAssetManager({ projects, global: context(temporaryRoot('xm-global-')), create: context })
+    const api = new CanvasProjectAssetManager({ projects, realmId: 'api-account', global: context(temporaryRoot('api-global-')), create: context })
+    const oldAsset = await xm.storeBase64(7, png, { projectId })
+    await expect((await api.forProject(7, projectId)).images.readOwned(7, oldAsset.assetId)).rejects.toThrow()
+    const newAsset = await api.storeBase64(7, png, { projectId })
+    const oldPath = await (await xm.forProject(7, projectId)).images.resolveOwnedFilePath(7, oldAsset.assetId)
+    const newPath = await (await api.forProject(7, projectId)).images.resolveOwnedFilePath(7, newAsset.assetId)
+    expect(newPath).not.toBe(oldPath)
+    expect(newPath).toContain(path.join('assets', 'realms', 'api-account'))
+  })
   it('resolves a file path for assets that live in a project workspace, not just the global root', async () => {
     // Thumbnail derivation needs a real path. Resolving it against the global
     // store alone left every project-workspace asset without a thumbnail, and

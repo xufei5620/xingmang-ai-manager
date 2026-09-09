@@ -13,7 +13,7 @@ import {
   type runCommand as productionRunCommand,
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
-import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, providerConfigPaths } from './config-files'
+import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, providerConfigPaths, saveProviderConfig } from './config-files'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
@@ -567,6 +567,30 @@ describe('createSystemService', () => {
         redirect: 'error',
       }),
     )
+  })
+
+  it('rejects reusing a configured key from a different realm before any network request', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-realm-config-'))
+    temporaryDirectories.push(root)
+    const providerRoots = { userHome: root, codexHome: path.join(root, '.codex') }
+    saveProviderConfig('codex', 'sk-xm-only', 'fixture-model', 'reset', providerRoots, {}, providerBaseUrls)
+    const relayFetch = vi.fn<typeof fetch>()
+    const service = createService({ providerRoots, getRelaySiteId: () => 'solov-api', relayFetch })
+    await expect(service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false))
+      .rejects.toThrow('已保存的 Key 属于其他站点')
+    expect(relayFetch).not.toHaveBeenCalled()
+  })
+
+  it('rejects a site change between model validation and CLI config commit', async () => {
+    let siteId = 'solov'
+    const relayFetch = vi.fn<typeof fetch>(async () => {
+      siteId = 'solov-api'
+      return Response.json({ data: [{ id: 'fixture-model' }] })
+    })
+    const service = createService({ getRelaySiteId: () => siteId, relayFetch })
+    await expect(service.saveConfig({ provider: 'codex', apiKey: 'sk-xm-only', model: 'fixture-model', mode: 'merge' }, false))
+      .rejects.toThrow('账号站点已变化')
+    expect(relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
   })
 
   it('bypasses the model cache when credentials are being revalidated', async () => {

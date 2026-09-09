@@ -1,4 +1,5 @@
 import { strict as assert } from 'node:assert'
+import { createHash } from 'node:crypto'
 import { describe, it } from 'vitest'
 import { createSub2ApiAccountClient, createSub2ApiSessionExecutor, provisionSub2ApiManagedCliKeys, type Sub2ApiAccountClientOptions } from './sub2api-account-client'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
@@ -41,6 +42,19 @@ describe('sub2api user-account adapter', () => {
     await assert.rejects(example.client.authenticate({ ...input, identifier: 'not-an-email' }, signal()), hasCode('INVALID'))
     assert.equal(example.calls.length, 0)
   })
+  it('classifies only the login POST 401 as rejected credentials', async () => {
+    const example = fixture([new Response('', { status: 401 }), new Response('', { status: 401 })])
+    await assert.rejects(example.client.authenticate(input, signal()), hasCode('LOGIN_REJECTED'))
+    await assert.rejects(example.client.getProfile(saved(), signal()), hasCode('UNAUTHORIZED'))
+  })
+  for (const reply of [Response.json({ code: 401, reason: 'INVALID_CREDENTIALS' }),
+    Response.json({ code: 400, reason: 'TURNSTILE_VERIFICATION_FAILED' }, { status: 400 }),
+    new Response('', { status: 503 })]) {
+    it(`does not infer rejected credentials from a non-401 failure (${reply.status})`, async () => {
+      await assert.rejects(fixture([reply]).client.authenticate(input, signal()), (error: unknown) =>
+        error instanceof RealmAccountError && error.code !== 'LOGIN_REJECTED')
+    })
+  }
   it('rejects 2FA challenges without persisting or exposing their temporary token', async () => {
     const example = fixture([response({ requires_2fa: true, temp_token: 'very-private-temporary-token' })])
     await assert.rejects(example.client.authenticate(input, signal()), (error: unknown) => hasCode('TWO_FACTOR_REQUIRED')(error)
@@ -55,9 +69,31 @@ describe('sub2api user-account adapter', () => {
   it('strips full key values and retains numeric group ids in list summaries', async () => {
     const example = fixture([response({ items: [key], total: 1 })])
     const page = await example.client.listKeys(saved(), 1, 20, signal())
-    assert.deepEqual(page, { items: [{ id: '4', name: 'CLI', groupId: '3', status: 'active' }], total: 1 })
+    assert.deepEqual(page, { items: [{ id: '4', name: 'CLI', groupId: '3', status: 'active', maskedKey: 'sk-••••••••alue',
+      keyFingerprint: createHash('sha256').update(key.key).digest('hex') }], total: 1 })
     assert.ok(!JSON.stringify(page).includes('sk-private'))
   })
+  for (const [wireKey, display, hasFingerprint] of [
+    ['sk-long-secret-ABCD', 'sk-••••••••ABCD', true],
+    ['custom-long-secret-WXYZ', '••••••••WXYZ', true],
+    ['sk-abcd', '••••••••', true],
+    ['tiny', '••••••••', true],
+    ['sk-head********tail', 'sk-••••••••tail', false],
+    ['head********ZZ', '••••••••ZZ', false],
+    ['sk-********', 'sk-••••••••', false],
+    ['********tail', '••••••••tail', false],
+    ['sk-********TOO-LONG-SUFFIX', 'sk-••••••••', false],
+    [undefined, '••••••••', false],
+  ] as const) {
+    it(`derives only an observed bounded key summary ${display}`, async () => {
+      const example = fixture([response({ items: [{ ...key, key: wireKey }], total: 1 })])
+      const entry = (await example.client.listKeys(saved(), 1, 20, signal())).items[0]
+      assert.equal(entry.maskedKey, display)
+      assert.equal(typeof entry.keyFingerprint === 'string', hasFingerprint)
+      assert.equal(Object.hasOwn(entry, 'key'), false)
+      if (wireKey) assert.ok(!JSON.stringify(entry).includes(wireKey))
+    })
+  }
   it('reveals a key only through the explicit operation', async () => {
     assert.equal(await fixture([response(key)]).client.revealKey(saved(), '4', signal()), 'sk-private-value')
   })

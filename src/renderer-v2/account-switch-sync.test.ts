@@ -97,6 +97,21 @@ function setup() {
 }
 
 describe('saved account explicit CLI key sync', () => {
+  for (const change of ['none', 'key', 'auth', 'timestamp'] as const) it(`preserves explicit cross-platform sync only for unchanged relay config (${change})`, async () => {
+    const h = setup()
+    const oldConfig = { ...h.context.configs.claude, baseUrl: 'https://xm.solov.cc', actualBaseUrl: 'https://xm.solov.cc', apiKeyPreview: 'sk-ab••••1234', updatedAt: '2026-09-09T00:00:00Z' }
+    h.context.configs.claude = oldConfig
+    h.fresh.configs.claude = { ...oldConfig, baseUrl: 'https://api.solov.cc', matchesRelay: false,
+      ...(change === 'key' ? { apiKeyPreview: 'sk-cd••••5678' } : {}),
+      ...(change === 'auth' ? { codexAuthMode: 'chatgpt' as const } : {}),
+      ...(change === 'timestamp' ? { updatedAt: '2026-09-09T00:01:00Z' } : {}) }
+    const active = { authenticated: true, siteId: 'solov-api' as const, account: { userId: 8 } as Awaited<ReturnType<AccountSwitchBridge['getAccountSession']>>['account'] }
+    h.api.switchSavedAccount.mockResolvedValue(active)
+    h.api.getAccountSession.mockResolvedValue(active)
+    const result = await switchAccountWithOptionalSync(h.api, { ...h.target, origin: 'https://api.solov.cc' }, ['claude'], h.context, h.context.origin)
+    expect(result.configured).toEqual(change === 'none' ? ['claude'] : [])
+    expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(change === 'none' ? 1 : 0)
+  })
   it('defaults to no CLI writes and rejects another account origin before switching', async () => {
     const h = setup()
     const result = await switchAccountWithOptionalSync(
@@ -118,7 +133,7 @@ describe('saved account explicit CLI key sync', () => {
         null,
         h.context.origin,
       ),
-    ).rejects.toThrow('其他站点')
+    ).rejects.toThrow('账号记录暂时无法使用')
     expect(h.api.switchSavedAccount).toHaveBeenCalledTimes(1)
   })
   it('offers only installed, detected, relay-key tools and excludes native official auth modes', () => {
@@ -264,8 +279,17 @@ describe('saved account explicit CLI key sync', () => {
     expect(result.failed).toEqual([
       {
         provider: 'claude',
-        message: '账号或服务站点已变化，已停止同步工具密钥。',
+        message: '账号状态已变化，已停止同步工具密钥。',
       },
     ])
+  })
+  it('stops writes if the same user id becomes active in the other platform after reading tool state', async () => {
+    const h = setup()
+    const account = { userId: 8 } as Awaited<ReturnType<AccountSwitchBridge['getAccountSession']>>['account']
+    h.api.getAccountSession.mockResolvedValueOnce({ authenticated: true, account, siteId: 'solov' })
+      .mockResolvedValueOnce({ authenticated: true, account, siteId: 'solov-api' })
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude'], h.context, h.context.origin)
+    expect(h.api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(result.failed[0].message).toBe('账号状态已变化，已停止同步工具密钥。')
   })
 })

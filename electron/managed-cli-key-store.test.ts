@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
-import { managedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
+import { managedCliKeyProfiles, sub2ApiManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import {
   ManagedCliKeyStore,
   decodePersistedManagedCliKeys,
@@ -203,5 +203,20 @@ describe('ManagedCliKeyStore', () => {
 
     expect(fs.existsSync(filePath)).toBe(false)
     await expect(store.read(42)).rejects.toThrow('系统安全存储不可用，无法持久化托管 API Key')
+  })
+})
+
+
+describe('managed key realm validation', () => {
+  it('persists Sub2API groups only in the explicitly selected realm store', async () => {
+    const file = temporaryFilePath()
+    const cipher = fakeSafeStorage()
+    const apiKeys = providerIds.map((provider) => ({ ...managedKey(provider), group: sub2ApiManagedCliKeyProfiles[provider].group }))
+    const api = new ManagedCliKeyStore(file, cipher, 'solov-api')
+    await expect(api.save(7, apiKeys)).resolves.toBe(true)
+    expect(await new ManagedCliKeyStore(file, cipher, 'solov-api').read(7)).toEqual(apiKeys)
+    await expect(new ManagedCliKeyStore(file, cipher).read(7)).rejects.toThrow('已损坏或无法解密')
+    await expect(api.save(7, providerIds.map((provider) => managedKey(provider)))).rejects.toThrow('格式错误')
+    expect(await api.read(7)).toEqual(apiKeys)
   })
 })

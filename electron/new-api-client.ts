@@ -91,8 +91,7 @@ export interface NewApiClientOptions {
   // Fired synchronously every time the in-memory session is established,
   // rotated, or cleared -- login, logout, a silent 401 refresh-and-retry, and
   // restoreSession() all funnel through the same setSession() choke point, so
-  // this is the *only* hook a host app needs to keep an on-disk encrypted
-  // copy (see electron/account-session-store.ts) in sync, regardless of which
+  // this keeps the active on-disk encrypted copy in sync, regardless of which
   // caller (the main window's account:* handlers, or the canvas window's own
   // token provisioning -- both can share one client instance) triggered the
   // change. Receives null on logout or a failed silent-refresh-and-retry.
@@ -100,6 +99,10 @@ export interface NewApiClientOptions {
   // never fail the account operation that triggered it (I13/I8 territory
   // belongs to the host app, not this network client).
   onSessionChange?: (persistable: NewApiPersistableSession | null) => void
+  // Main process only. Await durable updates to an already-saved account
+  // after refresh rotates its cookie, including restore candidates whose
+  // subsequent /self validation can fail. This must never activate a user.
+  onCredentialRotation?: (persistable: NewApiPersistableSession) => void | Promise<void>
 }
 
 export interface NewApiAccountStatus {
@@ -843,10 +846,25 @@ export class NewApiAuthenticationError extends Error {
   }
 }
 
+/** Only emitted by the password login endpoint after a definitive rejection. */
+export class NewApiLoginRejectedError extends NewApiAuthenticationError {
+  constructor() {
+    super('账号或密码错误，请检查后重试')
+    this.name = 'NewApiLoginRejectedError'
+  }
+}
+
 export class NewApiSessionChangedError extends Error {
   constructor() {
     super('账号已切换，本次请求结果已丢弃，请重试')
     this.name = 'NewApiSessionChangedError'
+  }
+}
+
+class NewApiCredentialPersistenceError extends Error {
+  constructor() {
+    super('登录凭据已更新，但安全存储保存失败，请重试')
+    this.name = 'NewApiCredentialPersistenceError'
   }
 }
 
@@ -1029,6 +1047,28 @@ function unwrapEnvelope(raw: NewApiRawResponse, label: string, secrets: readonly
     throw new Error(detail || `${label}失败，服务返回 HTTP ${raw.status}`)
   }
   return envelope.data
+}
+
+// Verified against new-api controller/user.go Login, common/gin.go
+// ApiErrorI18n and i18n/locales/{zh-CN,en,zh-TW}.yaml (rc.24 and the supplied
+// new-api-main source). Config, database and captcha failures ALSO return
+// HTTP 200 + success:false; they must never authorize another login attempt.
+const loginRejectionMessages = new Set([
+  'user.username_or_password_error',
+  '用户名或密码错误，或用户已被封禁',
+  'Username or password is incorrect, or user has been banned',
+  '使用者名或密碼錯誤，或使用者已被封禁',
+])
+
+function unwrapLoginEnvelope(raw: NewApiRawResponse, secrets: readonly string[]): unknown {
+  const envelope = isRecord(raw.payload) ? raw.payload : null
+  if (raw.status === 401 || (raw.ok && envelope?.success === false
+    && typeof envelope.message === 'string' && loginRejectionMessages.has(envelope.message))) {
+    throw new NewApiLoginRejectedError()
+  }
+  const data = unwrapEnvelope(raw, '账号登录', secrets)
+  if (isRecord(data) && data.require_2fa === true) throw new Error('此账号需要双重验证，请先完成验证')
+  return data
 }
 
 /**
@@ -2134,7 +2174,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   let refreshInFlight: { current: InternalSession; promise: Promise<InternalSession> } | null = null
 
   // Every reassignment of `session` funnels through here so onSessionChange
-  // (the one hook a host app needs for on-disk persistence) can never be
+  // (the active-session notification hook) can never be
   // forgotten at a new call site -- see its doc comment in
   // NewApiClientOptions for why that matters.
   const setSession = (next: InternalSession | null, replaceOwner = true): void => {
@@ -2199,6 +2239,15 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     }
   }
 
+  const persistRotation = async (refreshed: InternalSession): Promise<void> => {
+    try {
+      await options.onCredentialRotation?.({ userId: refreshed.userId, cookies: [...refreshed.cookies] })
+    } catch {
+      // Callback errors may include storage contents. Never surface them.
+      throw new NewApiCredentialPersistenceError()
+    }
+  }
+
   // Token rotation keeps the same owner. One refresh is shared by concurrent
   // requests, and an older response can never replace a newer credential.
   const refreshCurrentSession = async (current: InternalSession): Promise<InternalSession> => {
@@ -2209,10 +2258,20 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
       try {
         const refreshed = await performRefresh(current)
         assertCurrentOwner(current)
+        if (session !== current) return requireSession()
+        try { await persistRotation(refreshed) } catch (error) {
+          assertCurrentOwner(current)
+          // The server has consumed the old cookie. Keep the replacement in
+          // memory even when the OS could not save it, without changing owner.
+          if (session === current) setSession(refreshed, false)
+          throw error
+        }
+        assertCurrentOwner(current)
         if (session === current) setSession(refreshed, false)
         return requireSession()
       } catch (error) {
         assertCurrentOwner(current)
+        if (error instanceof NewApiCredentialPersistenceError) throw error
         if (session !== current) return requireSession()
         throw error
       }
@@ -2240,8 +2299,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     let refreshed: InternalSession
     try {
       refreshed = await refreshCurrentSession(failedSession)
-    } catch {
+    } catch (error) {
       assertCurrentOwner(failedSession)
+      if (error instanceof NewApiCredentialPersistenceError) throw error
       if (session === failedSession) setSession(null)
       throw originalError
     }
@@ -2422,7 +2482,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     try { raw = await performRequest(ctx, loginPath, { method: 'POST', body }, '账号登录') }
     catch (error) { assertAuthAttempt(attempt, owner); throw error }
     assertAuthAttempt(attempt, owner)
-    const data = parseLoginResponseData(unwrapEnvelope(raw, '账号登录', [password]))
+    const data = parseLoginResponseData(unwrapLoginEnvelope(raw, [password, ...(input.turnstileToken ? [input.turnstileToken] : [])]))
     const cookies = extractSessionCookies(raw.headers)
     setSession({ accessToken: data.accessToken, userId: data.account.userId, cookies, profile: data.account })
     // Strip accessToken before it ever leaves the main process (I3/I13).
@@ -3163,6 +3223,11 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
     let refreshed: InternalSession
     try {
       refreshed = await performRefresh(seed)
+      assertAuthAttempt(attempt, owner)
+      // The seed came from a validated main-process cookie envelope. The
+      // refresh response belongs to that cookie, but is not an active login
+      // until /self confirms its user below. Save rotation without promotion.
+      await persistRotation(refreshed)
       assertAuthAttempt(attempt, owner)
     } catch (error) {
       assertAuthAttempt(attempt, owner)

@@ -174,7 +174,7 @@ describe('syncManagedCliKeySummary', () => {
     const summary = await syncManagedCliKeySummary(loggedInAccountService(provisionCliKey), store)
 
     expect(summary.failed).toEqual([])
-    expect(provisionCliKey).toHaveBeenCalledTimes(3)
+    expect(provisionCliKey).toHaveBeenCalledTimes(providerIds.length)
     expect(cached.map((entry) => entry.group)).toEqual(providerIds.map((provider) => managedCliKeyProfiles[provider].group))
   })
 

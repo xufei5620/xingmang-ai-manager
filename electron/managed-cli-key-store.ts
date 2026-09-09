@@ -1,6 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
-import { isProviderId, managedCliKeyProfiles, type ProviderId } from './catalog'
+import { isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import type { SafeStorageLike } from './account-session-store'
 import {
   ensureSafeDataDirectory,
@@ -41,12 +41,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
 }
 
-function isStoredManagedCliKey(value: unknown): value is StoredManagedCliKey {
+function isStoredManagedCliKey(value: unknown, siteId: 'solov' | 'solov-api'): value is StoredManagedCliKey {
   if (!isRecord(value) || !isProviderId(value.provider)) return false
   return typeof value.id === 'number'
     && Number.isInteger(value.id)
     && value.id > 0
-    && value.group === managedCliKeyProfiles[value.provider].group
+    && value.group === resolveManagedCliKeyProfiles(siteId)[value.provider].group
     && typeof value.name === 'string'
     && value.name.length > 0
     && value.name.length <= 50
@@ -54,25 +54,25 @@ function isStoredManagedCliKey(value: unknown): value is StoredManagedCliKey {
     && /^sk-\S{8,509}$/.test(value.key)
 }
 
-function isPersistedManagedCliKeyAccount(value: unknown): value is PersistedManagedCliKeyAccount {
+function isPersistedManagedCliKeyAccount(value: unknown, siteId: 'solov' | 'solov-api'): value is PersistedManagedCliKeyAccount {
   if (!isRecord(value)) return false
   if (typeof value.userId !== 'number' || !Number.isInteger(value.userId) || value.userId <= 0) return false
   if (typeof value.updatedAt !== 'string' || Number.isNaN(Date.parse(value.updatedAt))) return false
-  if (!Array.isArray(value.keys) || value.keys.length > 4 || !value.keys.every(isStoredManagedCliKey)) return false
+  if (!Array.isArray(value.keys) || value.keys.length > 4 || !value.keys.every((entry) => isStoredManagedCliKey(entry, siteId))) return false
   return new Set(value.keys.map((entry) => entry.provider)).size === value.keys.length
 }
 
 function isLegacyPersistedManagedCliKeys(value: unknown): value is LegacyPersistedManagedCliKeys {
-  return isRecord(value) && value.version === 1 && isPersistedManagedCliKeyAccount(value)
+  return isRecord(value) && value.version === 1 && isPersistedManagedCliKeyAccount(value, 'solov')
 }
 
-export function isPersistedManagedCliKeys(value: unknown): value is PersistedManagedCliKeys {
+export function isPersistedManagedCliKeys(value: unknown, siteId: 'solov' | 'solov-api' = 'solov'): value is PersistedManagedCliKeys {
   if (!isRecord(value) || value.version !== CURRENT_VERSION) return false
   if (value.revision !== undefined && (
     typeof value.revision !== 'number' || !Number.isSafeInteger(value.revision) || value.revision < 0
   )) return false
   if (!Array.isArray(value.accounts) || value.accounts.length > MAX_CACHED_ACCOUNTS) return false
-  if (!value.accounts.every(isPersistedManagedCliKeyAccount)) return false
+  if (!value.accounts.every((entry) => isPersistedManagedCliKeyAccount(entry, siteId))) return false
   return new Set(value.accounts.map((entry) => entry.userId)).size === value.accounts.length
 }
 
@@ -86,12 +86,13 @@ export function encodePersistedManagedCliKeys(
 export function decodePersistedManagedCliKeys(
   content: string,
   storage: Pick<SafeStorageLike, 'decryptString'>,
+  siteId: 'solov' | 'solov-api' = 'solov',
 ): PersistedManagedCliKeys | null {
   try {
     const plainText = storage.decryptString(Buffer.from(content, 'base64'))
     const parsed = JSON.parse(plainText) as unknown
-    if (isPersistedManagedCliKeys(parsed)) return parsed
-    if (isLegacyPersistedManagedCliKeys(parsed)) {
+    if (isPersistedManagedCliKeys(parsed, siteId)) return parsed
+    if (siteId === 'solov' && isLegacyPersistedManagedCliKeys(parsed)) {
       const { userId, updatedAt, keys } = parsed
       return { version: CURRENT_VERSION, accounts: [{ userId, updatedAt, keys }] }
     }
@@ -108,6 +109,7 @@ export class ManagedCliKeyStore {
   constructor(
     private readonly filePath: string,
     private readonly storage: SafeStorageLike,
+    private readonly siteId: 'solov' | 'solov-api' = 'solov',
   ) {}
 
   async read(userId: number): Promise<StoredManagedCliKey[]> {
@@ -180,7 +182,7 @@ export class ManagedCliKeyStore {
   private async readRecord(): Promise<PersistedManagedCliKeys | null> {
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES)
     if (content === null) return null
-    const record = decodePersistedManagedCliKeys(content, this.storage)
+    const record = decodePersistedManagedCliKeys(content, this.storage, this.siteId)
     if (!record) throw new Error('本地托管 API Key 配置已损坏或无法解密')
     this.revision = Math.max(this.revision, record.revision ?? 0)
     return record
@@ -202,7 +204,7 @@ export class ManagedCliKeyStore {
   }
 
   private async writeRecord(record: PersistedManagedCliKeys): Promise<void> {
-    if (!isPersistedManagedCliKeys(record)) throw new Error('托管 CLI API Key 格式错误')
+    if (!isPersistedManagedCliKeys(record, this.siteId)) throw new Error('托管 CLI API Key 格式错误')
     ensureSafeDataDirectory(path.dirname(this.filePath), FILE_LABEL)
     await writeAtomicSafeUtf8File(
       this.filePath,

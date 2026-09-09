@@ -122,6 +122,10 @@ export interface RelayBackendCapabilities {
  */
 export interface RelayBackendClient {
   readonly capabilities: RelayBackendCapabilities
+  /** Main-process routing authority; legacy clients default to xm. */
+  getActiveSiteId?(): 'solov' | 'solov-api'
+  /** Main-only exact lookup. The input secret must never be sent to an account endpoint or returned in a DTO. */
+  identifyKey?(secret: string): Promise<{ id: number; name: string; group: string } | null>
 
   /** ipc.ts: account:get-status */
   getStatus(): Promise<NewApiAccountStatus>

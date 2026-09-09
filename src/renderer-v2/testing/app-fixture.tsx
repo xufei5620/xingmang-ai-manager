@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client'
 import { ipcEventChannels, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type MultiProviderSessionPage, type ProviderId, type SystemSnapshot, type XingmangApi } from '../../../electron/ipc-contract'
 import RendererV2App from '../App'
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
+import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import '../styles/tokens.css'
 import '../styles/components.css'
 import '../styles/shell.css'
@@ -23,10 +24,21 @@ const nativeFixtureNotice = `<div class="${nativeFixtureScope}" data-xm-native="
 let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate') }
 const account = { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
+const sub2ApiMetadata = { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: { supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: false, supportsBilling: false, supportsSubscriptions: false, supportsProfileUpdate: true, supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true } }
+if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
+// Settings deliberately retain the historical site: active session owns routing.
+settings.relaySiteId = 'solov'
 const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', installDirectory: 'C:\\Fixture', latestVersion: '1.2.3', updateAvailable: false,
   uninstall: { available: true, reason: null, manualCommand: null, delegated: false } }
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
 const config: AppConfigSummary = { workspace: settings.workspace, providers: { claude: { ...configValue }, codex: { ...configValue }, gemini: { ...configValue }, grok: { ...configValue } } }
+if (query.has('keyOptions')) {
+  config.providers.codex.apiKeyPreview = 'sk-co••••1234'
+  config.providers.claude.apiKeyPreview = 'sk-cl••••5678'
+}
+const selectedKeyIds = new Map<ProviderId, number>()
+const keyMetadataReads = new Map<ProviderId, number>()
+const pendingKeyMetadata = new Map<ProviderId, () => void>()
 if ((query.get('guest') === '1' && !query.has('existing')) || query.has('missingConfig')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
 if (query.has('official')) { config.providers.codex.hasApiKey = false; config.providers.codex.codexAuthMode = 'chatgpt' }
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
@@ -55,11 +67,11 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; releaseKeyMetadata(provider: ProviderId): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
@@ -72,7 +84,7 @@ const methods = {
   saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion }; return settings },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => session,
-  getAccountBalance: async () => balance,
+  getAccountBalance: async () => session.siteId === 'solov-api' ? { ...balance, quota: 12.4, quotaPerUnit: 1 } : balance,
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
   getWindowCapabilities: async () => ({ tray: true, notifications: true }),
   getUpdateState: async () => ({ phase: query.has('startupUpdate') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
@@ -100,7 +112,7 @@ const methods = {
   getAccountStatus: async () => ({ systemName: 'Fixture', version: '1', setupComplete: true, quotaPerUnit: 500000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: false }),
   getRememberedAccountLogin: async () => null,
   setRememberedAccountLogin: async () => {},
-  loginAccount: async () => { session = { authenticated: true, account }; return { account, accessExpiresAt: null } },
+  loginAccount: async (input) => { const resolvedSite = input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov'); session = { authenticated: true, account, ...(resolvedSite === 'solov-api' ? sub2ApiMetadata : { siteId: 'solov' as const }) }; return { ...session, account, accessExpiresAt: null } },
   registerAccount: async () => {},
   logoutAccount: async () => { session = { authenticated: false, account: null } },
   listProviderSessions: async () => ({ items: [], page: 1, pageSize: 3, total: 0, pages: 1, stats: { total: 0, byProvider: { claude: 0, codex: 0, gemini: 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
@@ -109,8 +121,42 @@ const methods = {
   getCodexDesktopStatus: async () => structuredClone(system.desktopApps.codex),
   installCli: async (provider) => { system.clis[provider] = { ...system.clis[provider], installed: true, version: '2.0.0' } },
   installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
-  getAccountKeys: async () => ({ keys: [], total: 0, page: 1, pageSize: 100 }),
-  listConfiguredModels: async () => ['fixture-model'],
+  getAccountKeys: async () => ({ keys: query.has('keyOptions') ? [
+    { id: 201, name: 'coding-key', group: 'Codex_pro', maskedKey: 'sk-se••••9012', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
+    { id: 202, name: 'custom-key', group: 'Custom group', maskedKey: 'sk-ot••••1234', status: 1, remainQuota: 10, usedQuota: 0, unlimitedQuota: true, createdAt: '', accessedAt: null, expiredAt: null },
+  ] : [], total: query.has('keyOptions') ? 2 : 0, page: 1, pageSize: 100 }),
+  getAccountKeyOptions: async (provider: ProviderId) => {
+    const reads = (keyMetadataReads.get(provider) ?? 0) + 1
+    keyMetadataReads.set(provider, reads)
+    if (query.get('keyMetadataFail') === provider) throw new Error('当前密钥信息暂时没有读到')
+    if (query.get('keyMetadataPending') === provider && reads === 1) await new Promise<void>((resolve) => pendingKeyMetadata.set(provider, resolve))
+    const automatic = resolveManagedCliKeyProfiles(session.siteId)[provider]
+    const keyId = selectedKeyIds.get(provider)
+    const stored = config.providers[provider]
+    return { current: { preview: stored.hasApiKey ? stored.apiKeyPreview : null, keyId: keyId ?? null,
+      name: keyId === 201 ? 'coding-key' : keyId === 202 ? 'custom-key' : null,
+      group: keyId === 201 ? 'Codex_pro' : keyId === 202 ? 'Custom group' : null },
+      automatic: { name: automatic.keyName, group: automatic.group } }
+  },
+  listAccountKeyModels: async (id: number) => id === 201 ? ['gpt-5.6-sol'] : ['fixture-model', 'fixture-other'],
+  saveConfigWithAccountKey: async (input) => {
+    selectedKeyIds.set(input.provider, input.keyId)
+    config.providers[input.provider] = { ...config.providers[input.provider], model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }
+    return { backups: [], files: [] }
+  },
+  switchToOfficialAccount: async (provider: ProviderId) => {
+    config.providers[provider] = { ...config.providers[provider], hasApiKey: false,
+      ...(provider === 'codex' ? { codexAuthMode: 'chatgpt' as const } : {}) }
+    return { backups: [], files: [] }
+  },
+  getAccountUsableGroups: async () => [{ name: session.siteId === 'solov-api' ? 'Codex_pro' : 'GPT-中转/订阅', description: 'Codex', ratio: 1 }],
+  createAccountKey: async () => undefined,
+  changeAccountPassword: async () => {
+    session = { ...session, authenticated: false, account: null }
+    window.v2Test.emit('onAccountSessionChanged', session)
+    return { changed: true as const }
+  },
+  listConfiguredModels: async (provider: ProviderId) => [config.providers[provider].model || 'fixture-model'],
   listModels: async () => ['fixture-model', 'fixture-other'],
   syncManagedCliKeys: async () => {
     const result = { ready: (['claude', 'codex', 'grok', 'gemini'] as ProviderId[]).map((provider) => ({ provider, group: `${provider}-group`, name: `${provider}-key` })), failed: [] }
@@ -126,6 +172,11 @@ const methods = {
         continue
       }
       config.providers[provider] = { ...config.providers[provider], exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
+      if (query.has('autoFallback') && provider === 'codex') {
+        config.providers[provider].model = 'gpt-5.6-sol'
+        config.providers[provider].apiKeyPreview = 'sk-se••••9012'
+        selectedKeyIds.set(provider, 201)
+      }
       configured.push(provider)
     }
     return { configured, failed }
@@ -152,10 +203,10 @@ const methods = {
   getLegalDocument: async (kind) => ({ kind, markdown: '# 本地协议\n\n测试内容。', fetchedAt: '2026-09-07T00:00:00Z' }),
   getAccountProfile: async () => ({ ...account, displayName: account.username, email: 'fixture@example.com', requestCount: 0, affCode: 'test', affCount: 0, affQuota: 0, affHistoryQuota: 0 }),
   getAccountLoginSessions: async () => [],
-  listSavedAccounts: async () => query.has('savedAccount') ? [{ id: 'saved-18', origin: 'https://xm.solov.cc', userId: 18, username: 'saved-user', updatedAt: '2026-09-07T00:00:00Z' }] : [],
+  listSavedAccounts: async () => query.has('crossSite') ? [{ id: 'saved-aa0017', origin: 'https://api.solov.cc', userId: 17, username: 'fixture-user', updatedAt: '2026-09-07T00:00:00Z' }] : query.has('savedAccount') ? [{ id: 'saved-18', origin: 'https://xm.solov.cc', userId: 18, username: 'saved-user', updatedAt: '2026-09-07T00:00:00Z' }] : [],
   switchSavedAccount: async () => {
-    const nextAccount = { ...account, userId: 18, username: 'saved-user' }
-    session = { authenticated: true, account: nextAccount }
+    const nextAccount = query.has('crossSite') ? account : { ...account, userId: 18, username: 'saved-user' }
+    session = { authenticated: true, account: nextAccount, ...(query.has('crossSite') ? sub2ApiMetadata : {}) }
     if (query.has('savedAccount')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
     return session
   },

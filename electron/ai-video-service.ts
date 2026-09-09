@@ -673,14 +673,21 @@ export function createAiVideoService(options: {
     }
   }
 
+  const pendingWork = new Set<Promise<unknown>>()
+  function track<T>(operation: Promise<T>): Promise<T> {
+    pendingWork.add(operation)
+    void operation.then(() => pendingWork.delete(operation), () => pendingWork.delete(operation))
+    return operation
+  }
   return {
-    generate,
+    generate: (...args: Parameters<typeof generate>) => track(generate(...args)),
     cancel,
     cancelSender: (senderId: number) => cancelMatching((operation) => operation.senderId === senderId),
     cancelUser: (userId: number) => cancelMatching((operation) => operation.userId === userId),
     cancelAll: () => cancelMatching(() => true),
-    resumeUser,
-    resumeVideoTask,
+    resumeUser: (...args: Parameters<typeof resumeUser>) => track(resumeUser(...args)),
+    resumeVideoTask: (...args: Parameters<typeof resumeVideoTask>) => track(resumeVideoTask(...args)),
+    whenIdle: async () => { while (pendingWork.size) await Promise.allSettled([...pendingWork]) },
   }
 }
 

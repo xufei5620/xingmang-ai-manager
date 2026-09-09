@@ -545,3 +545,208 @@ test('chat retains its task across navigation and reports work to native close p
     await clean(page)
   } finally { await page.close() }
 })
+
+
+test('Sub2API session drives account panels while old relay settings stay on NewAPI', async () => {
+  const page = await open('sub2api=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    assert.equal(await page.getByRole('button', { name: '充值', exact: true }).count(), 0)
+    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('account-display').waitFor()
+    const labels = await page.getByTestId('account-tabs').getByRole('tab').allTextContents()
+    assert.deepEqual(labels, ['我的账号', '密钥'])
+    assert.doesNotMatch(await page.getByTestId('page-account').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
+    const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(methods.includes('getAccountProfile'), true)
+    for (const method of ['getAccountUsage', 'getAccountNotice', 'getAccountLoginSessions', 'getAccountTopupInfo', 'getAccountSubscriptionSelf', 'getLegalDocument']) assert.equal(methods.includes(method), false, method)
+    await page.screenshot({ path: path.join(artifacts, 'account-sub2api.png') })
+    await clean(page)
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
+    await page.getByTestId('welcome-login').waitFor()
+    assert.equal(await page.getByTestId('account-display').count(), 0)
+  } finally { await page.close() }
+})
+
+
+test('a saved account with the same id switches platform without reusing NewAPI panels', async () => {
+  const page = await open('crossSite=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    const list = page.getByTestId('saved-accounts-list')
+    await list.getByText('账户尾号 aa0017', { exact: true }).waitFor()
+    assert.doesNotMatch(await list.innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
+    await list.getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('dialog', { name: '切换账号', exact: true }).waitFor({ state: 'hidden' })
+    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('account-display').waitFor()
+    assert.deepEqual(await page.getByTestId('account-tabs').getByRole('tab').allTextContents(), ['我的账号', '密钥'])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+
+test('Sub2API keeps fractional key limits and changing its password returns to login', async () => {
+  const page = await open('sub2api=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('account-display').waitFor()
+    await page.getByTestId('account-tabs').getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByTestId('account-key-add').click()
+    await page.getByLabel('名称', { exact: true }).fill('quarter-dollar')
+    await page.getByLabel('可用额度（USD）', { exact: true }).fill('0.25')
+    await page.getByRole('button', { name: '保存密钥', exact: true }).click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'createAccountKey'))
+    const created = await page.evaluate(() => window.v2Test.calls.find((entry) => entry.method === 'createAccountKey').args[0])
+    assert.equal(created.remainQuota, 0.25)
+    assert.equal(created.unlimitedQuota, false)
+    await page.getByTestId('account-tabs').getByRole('tab', { name: '我的账号', exact: true }).click()
+    await page.getByRole('button', { name: '修改密码', exact: true }).click()
+    await page.getByLabel('当前密码', { exact: true }).fill('old-test-password')
+    await page.getByLabel('新密码', { exact: true }).fill('long-new-test-password-for-sub2api')
+    await page.getByLabel('确认新密码', { exact: true }).fill('long-new-test-password-for-sub2api')
+    await page.getByRole('button', { name: '确认修改', exact: true }).click()
+    await page.getByTestId('welcome-login').waitFor()
+    await page.getByText('当前登录已结束，请重新登录。', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('account-display').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+
+test('automatic login uses returned account ownership without exposing a platform choice', async () => {
+  const page = await open('guest=1&sub2api=1')
+  try {
+    await page.getByTestId('welcome-login').click()
+    assert.equal(await page.getByTestId('login-site').count(), 0)
+    await page.getByTestId('login-account').fill('same@example.test')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('start-guide').waitFor()
+    await page.getByTestId('guide-pause').click()
+    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('account-display').waitFor()
+    assert.deepEqual(await page.getByTestId('account-tabs').getByRole('tab').allTextContents(), ['我的账号', '密钥'])
+    assert.doesNotMatch(await page.locator('.v2-root').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+
+async function openToolConfiguration(page, provider = 'codex') {
+  await page.getByTestId(`tool-row-${provider}`).getByRole('button', { name: '更多操作' }).click()
+  await page.getByRole('menuitem', { name: '配置', exact: true }).click()
+  await page.getByTestId('tool-key-select').waitFor()
+}
+
+test('configuration keeps the current local key by default and saves through the reuse sentinel', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    const select = page.getByTestId('tool-key-select')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.textContent.includes('GPT-中转/订阅'))
+    assert.equal(await select.inputValue(), 'current')
+    assert.match(await select.locator('option:checked').innerText(), /保持当前.*sk-co••••1234/)
+    assert.match(await page.getByTestId('tool-key-summary').innerText(), /分组未确认/)
+    assert.doesNotMatch(await page.getByTestId('tool-key-summary').innerText(), /Custom group/)
+    await page.getByTestId('tool-detect-models').click()
+    await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
+    await page.getByTestId('tool-save-config').click()
+    const confirmation = page.getByRole('dialog', { name: '保存这份配置？' })
+    assert.match(await page.getByTestId('tool-save-summary').innerText(), /密钥：名称未确认[\s\S]*分组：分组未确认[\s\S]*sk-co••••1234[\s\S]*fixture-model/)
+    await confirmation.getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    const actions = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(actions.find((entry) => entry.method === 'saveConfig').args[0], { provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' })
+    assert.equal(actions.some((entry) => ['configureManagedCliKeys', 'saveConfigWithAccountKey', 'revealApiKey', 'listAccountKeyModels'].includes(entry.method)), false)
+    assert.deepEqual(actions.find((entry) => entry.method === 'listConfiguredModels').args, ['codex'])
+    assert.equal(await page.evaluate(() => localStorage.getItem(`xingmang-v2:provider-source:v1:${encodeURIComponent('https://xm.solov.cc')}:codex`)), null)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('selected account key shows its group and survives delayed metadata plus tool tab changes', async () => {
+  const page = await open('keyOptions=1&keyMetadataPending=codex')
+  try {
+    await openToolConfiguration(page)
+    const select = page.getByTestId('tool-key-select')
+    await select.selectOption('202')
+    assert.equal(await select.locator('option[value="202"]').innerText(), 'custom-key · Custom group · sk-ot••••1234')
+    await page.evaluate(() => window.v2Test.releaseKeyMetadata('codex'))
+    await page.getByRole('tab', { name: 'Claude Code', exact: true }).click()
+    assert.equal(await select.inputValue(), 'current')
+    assert.match(await page.getByTestId('tool-key-summary').innerText(), /sk-cl••••5678/)
+    await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
+    assert.equal(await select.inputValue(), '202')
+    await page.getByTestId('tool-detect-models').click()
+    await page.getByLabel('默认模型').selectOption('fixture-other')
+    await page.getByTestId('tool-save-config').click()
+    assert.match(await page.getByTestId('tool-save-summary').innerText(), /custom-key[\s\S]*Custom group[\s\S]*sk-ot••••1234[\s\S]*fixture-other/)
+    await page.getByRole('dialog', { name: '保存这份配置？' }).getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('custom-key'))
+    assert.equal(await select.inputValue(), 'current')
+    const actions = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(actions.find((entry) => entry.method === 'listAccountKeyModels').args, [202])
+    assert.deepEqual(actions.find((entry) => entry.method === 'saveConfigWithAccountKey').args[0], { provider: 'codex', keyId: 202, model: 'fixture-other', mode: 'merge' })
+    assert.equal(actions.some((entry) => entry.method === 'configureManagedCliKeys'), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('explicit automatic key configuration shows the right group and adopts the actual saved model', async () => {
+  const page = await open('keyOptions=1&sub2api=1&autoFallback=1')
+  try {
+    await openToolConfiguration(page)
+    const select = page.getByTestId('tool-key-select')
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.textContent.includes('Codex_pro'))
+    assert.equal(await select.inputValue(), 'current')
+    assert.match(await select.locator('option[value="automatic"]').innerText(), /自动准备\/复用.*Codex_pro.*xingmang-desktop-codex/)
+    await select.selectOption('automatic')
+    assert.equal(await page.getByTestId('tool-detect-models').isDisabled(), true)
+    const before = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(before.includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
+    await page.getByTestId('tool-save-config').click()
+    assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
+    await page.getByRole('dialog', { name: '保存这份配置？' }).getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"]')?.value === 'current' && document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('coding-key'))
+    assert.equal(await page.getByLabel('默认模型').inputValue(), 'gpt-5.6-sol')
+    assert.match(await page.getByTestId('tool-key-summary').innerText(), /coding-key.*Codex_pro.*sk-se••••9012/)
+    assert.equal(await page.getByTestId('tool-detect-models').isDisabled(), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('failed metadata on a different provider does not receive a delayed previous-provider response', async () => {
+  const page = await open('keyOptions=1&keyMetadataPending=codex&keyMetadataFail=claude')
+  try {
+    await openToolConfiguration(page)
+    await page.getByRole('tab', { name: 'Claude Code', exact: true }).click()
+    await page.getByRole('alert').filter({ hasText: '当前密钥信息暂时没有读到' }).waitFor()
+    await page.evaluate(async () => { window.v2Test.releaseKeyMetadata('codex'); await new Promise((resolve) => requestAnimationFrame(resolve)) })
+    assert.equal(await page.getByTestId('tool-key-select').inputValue(), 'current')
+    assert.match(await page.getByTestId('tool-key-summary').innerText(), /sk-cl••••5678/)
+    assert.doesNotMatch(await page.getByTestId('tool-key-summary').innerText(), /sk-co••••1234|Codex_pro/)
+    assert.equal(await page.getByTestId('tool-key-select').locator('option[value="automatic"]').isDisabled(), true)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('official source saving does not prepare or replace an account key', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByRole('button', { name: 'ChatGPT 账号', exact: true }).click()
+    await page.getByTestId('tool-save-config').click()
+    assert.match(await page.getByTestId('tool-save-summary').innerText(), /来源：ChatGPT 账号/)
+    await page.getByRole('dialog', { name: '保存这份配置？' }).getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    const actions = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(actions.find((entry) => entry.method === 'switchToOfficialAccount').args, ['codex'])
+    assert.equal(actions.some((entry) => ['saveConfig', 'configureManagedCliKeys', 'saveConfigWithAccountKey'].includes(entry.method)), false)
+    await clean(page)
+  } finally { await page.close() }
+})

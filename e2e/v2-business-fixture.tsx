@@ -12,6 +12,13 @@ import type { AccountPaymentWindowTerminalEvent } from '../electron/ipc-contract
 declare global {
   interface Window {
     emitPaymentWindowTerminal: (event: AccountPaymentWindowTerminalEvent) => void
+    keyGroupsHarness: {
+      requests: number
+      setGroups(names: string[]): void
+      deferNext(): void
+      failNext(): void
+      release(): void
+    }
   }
 }
 
@@ -27,6 +34,16 @@ const calls: Array<{ name: string; args: unknown }> = []
 const record = (name: string, args?: unknown) => {
   calls.push({ name, args })
   document.documentElement.dataset.calls = JSON.stringify(calls)
+}
+let keyGroups = [{ name: 'default', description: '默认分组', ratio: 1 }]
+let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
+let releaseKeyGroups: (() => void) | null = null
+window.keyGroupsHarness = {
+  requests: 0,
+  setGroups(names) { keyGroups = names.map((name) => ({ name, description: name, ratio: 1 })) },
+  deferNext() { nextKeyGroupsRequest = 'deferred' },
+  failNext() { nextKeyGroupsRequest = 'failed' },
+  release() { releaseKeyGroups?.(); releaseKeyGroups = null },
 }
 let paymentWindowTerminalListener:
   | ((event: AccountPaymentWindowTerminalEvent) => void)
@@ -274,9 +291,15 @@ const apiMethods = {
     total: empty ? 0 : 1,
     keys: empty ? [] : [key],
   }),
-  getAccountUsableGroups: async () => [
-    { name: 'default', description: '默认分组', ratio: 1 },
-  ],
+  getAccountUsableGroups: async () => {
+    window.keyGroupsHarness.requests++
+    const groups = keyGroups.map((group) => ({ ...group }))
+    const state = nextKeyGroupsRequest
+    nextKeyGroupsRequest = 'ready'
+    if (state === 'failed') throw new Error('分组读取暂时失败，请重试')
+    if (state === 'deferred') await new Promise<void>((resolve) => { releaseKeyGroups = resolve })
+    return groups
+  },
   getAccountDashboard: async () => ({
     startTimestamp: 1,
     endTimestamp: 2,

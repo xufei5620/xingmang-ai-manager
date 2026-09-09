@@ -76,6 +76,8 @@ import {
   type NewApiSubscriptionPaymentInput,
 } from './new-api-client'
 import type { RelayBackendClient } from './relay-backend'
+import { normalizeRealmLoginIdentifier } from './realm-account-vault'
+import { resolveAccountKeyOptions } from './account-key-options'
 import type { AiAssetStore } from './ai-asset-store'
 import type { AiChatService } from './ai-chat-service'
 import type { AiImageService } from './ai-image-service'
@@ -100,6 +102,9 @@ import { validatePaymentForm, type PaymentWindowController } from './payment-win
 export type AppWindowMode = 'onboarding' | 'dashboard'
 
 export interface IpcRegistrationOptions {
+  realmAccounts?: import('./realm-account-service').RealmAccountService
+  accountWork?: import('./account-work-gate').AccountWorkGate
+  accountCredentialsForSite?: (siteId: 'solov' | 'solov-api') => NonNullable<IpcRegistrationOptions['accountCredentials']>
   systemService: SystemService
   sessionsService: CodexSessionsService
   providerSessionsService: ProviderSessionsService
@@ -162,6 +167,7 @@ export interface IpcRegistrationOptions {
   managedCliKeys?: ManagedCliKeyStoreLike
   chatKeyStore?: {
     removeByKeyId(userId: number, keyId: number): Promise<void>
+    read?(userId: number): Promise<import('./chat-key-store').StoredChatKey[]>
   }
   chatCredentials?: ChatCredentialCoordinator
   chatService?: AiChatService
@@ -506,6 +512,11 @@ function parseRendererError(value: unknown): { message: string; stack?: string; 
     stack: optionalString(value.stack, '错误堆栈', 16_384),
     context: optionalString(value.context, '错误上下文', 256),
   }
+}
+
+function parseAccountSiteId(value: unknown): 'solov' | 'solov-api' {
+  if (value !== 'solov' && value !== 'solov-api') throw new Error('账号站点无效')
+  return value
 }
 
 function parseAccountLoginInput(value: unknown): NewApiLoginInput {
@@ -861,14 +872,15 @@ function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliCon
 
 // account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
 // 名称上限(rc.24 controller/token.go);expiredTime -1 = 永不过期哨兵。
-function parseAccountKeyCreateInput(value: unknown): AccountKeyCreateInput {
+function parseAccountKeyCreateInput(value: unknown, sub2Api = false): AccountKeyCreateInput {
   if (!isRecord(value)) throw new Error('Key 信息格式错误')
-  const name = requiredString(value.name, 'Key 名称', 50)
+  const name = requiredString(value.name, 'Key 名称', sub2Api ? 100 : 50)
   if (typeof value.unlimitedQuota !== 'boolean') throw new Error('额度类型格式错误')
   if (
     typeof value.remainQuota !== 'number'
-    || !Number.isInteger(value.remainQuota)
+    || !(sub2Api ? Number.isFinite(value.remainQuota) : Number.isInteger(value.remainQuota))
     || value.remainQuota < 0
+    || (sub2Api && !value.unlimitedQuota && value.remainQuota === 0)
     || value.remainQuota > Number.MAX_SAFE_INTEGER
   ) {
     throw new Error('额度格式错误')
@@ -889,10 +901,10 @@ function parseAccountKeyCreateInput(value: unknown): AccountKeyCreateInput {
   }
 }
 
-function parseAccountKeyUpdateInput(value: unknown): AccountKeyUpdateInput {
+function parseAccountKeyUpdateInput(value: unknown, sub2Api = false): AccountKeyUpdateInput {
   if (!isRecord(value)) throw new Error('Key 信息格式错误')
   return {
-    ...parseAccountKeyCreateInput(value),
+    ...parseAccountKeyCreateInput(value, sub2Api),
     id: parseAccountRevokeKeyId(value.id),
   }
 }
@@ -925,7 +937,9 @@ function parseAccountKeyCliConfigurationInput(value: unknown): AccountKeyCliConf
 const MIN_ACCOUNT_PASSWORD_LENGTH = 8
 const MAX_ACCOUNT_PASSWORD_LENGTH = 20
 
-function parseAccountChangePasswordInput(value: unknown): NewApiChangePasswordInput {
+function parseAccountChangePasswordInput(value: unknown, sub2Api = false): NewApiChangePasswordInput {
+  const minimum = sub2Api ? 6 : MIN_ACCOUNT_PASSWORD_LENGTH
+  const maximum = sub2Api ? 256 : MAX_ACCOUNT_PASSWORD_LENGTH
   if (!isRecord(value)) throw new Error('修改密码信息格式错误')
   if (
     typeof value.originalPassword !== 'string'
@@ -937,10 +951,10 @@ function parseAccountChangePasswordInput(value: unknown): NewApiChangePasswordIn
   const newPassword = value.newPassword
   if (
     typeof newPassword !== 'string'
-    || newPassword.length < MIN_ACCOUNT_PASSWORD_LENGTH
-    || newPassword.length > MAX_ACCOUNT_PASSWORD_LENGTH
+    || newPassword.length < minimum
+    || newPassword.length > maximum
   ) {
-    throw new Error(`新密码长度需为 ${MIN_ACCOUNT_PASSWORD_LENGTH} 到 ${MAX_ACCOUNT_PASSWORD_LENGTH} 位`)
+    throw new Error(`新密码长度需为 ${minimum} 到 ${maximum} 位`)
   }
   return { originalPassword: value.originalPassword, newPassword }
 }
@@ -1107,6 +1121,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
 }
 
 const quietIpcSuccessChannels = new Set([
+  'account:get-key-options',
   'system:scan',
   'startup:codex-readiness',
   'config:get',
@@ -1296,7 +1311,18 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         throw new Error('已拒绝来自非应用页面的操作请求')
       }
       try {
-        const result = handler(event, ...args)
+        const publicAccountChannels = new Set(['account:login', 'account:logout', 'account:get-session',
+          'account:switch-saved', 'account:remove-saved', 'account:list-saved', 'account:get-status',
+          'account:get-legal-document', 'account:get-remembered-login', 'account:set-remembered-login',
+          'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password'])
+        const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
+          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'cli:launch' || channel === 'desktop:launch-codex')
+          && !publicAccountChannels.has(channel)
+        const invoke = () => scoped && options.accountWork
+          ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
+        // Bootstrap requests config and session concurrently. The first
+        // config read must not turn an in-progress restore into a failed boot.
+        const result = scoped && options.realmAccounts ? accountSessionReady.then(invoke) : invoke()
         if (isPromiseLike(result)) {
           return Promise.resolve(result).then((value) => {
             recordSuccess(value)
@@ -1407,9 +1433,15 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     return service.revealApiKey(provider, options.previewOnboarding)
   })
-  registerTrustedHandler('config:save', (_event, payload: unknown) => (
-    service.saveConfig(parseConfigSavePayload(payload), options.previewOnboarding)
-  ))
+  registerTrustedHandler('config:save', (_event, payload: unknown) => {
+    const revision = accountService.getSessionRevision?.()
+    const check = () => {
+      if (revision !== undefined && accountService.getSessionRevision?.() !== revision) throw new Error('账号已变化，请重新配置')
+    }
+    const parsed = parseConfigSavePayload(payload)
+    return options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
+      : service.saveConfig(parsed, options.previewOnboarding)
+  })
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     return service.switchToOfficialAccount(provider)
@@ -1530,6 +1562,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   })
   registerTrustedHandler('models:list-configured', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    if (options.realmAccounts && !service.getConfig(options.previewOnboarding).providers[provider].matchesRelay) {
+      throw new Error('已保存的 Key 属于其他站点，请使用当前账号重新配置')
+    }
     const apiKey = service.revealApiKey(provider, options.previewOnboarding)
     if (!apiKey) throw new Error('未读取到已保存的 API Key')
     return service.fetchAvailableModels(apiKey)
@@ -1776,19 +1811,31 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('extensions:mutate', (_event, input: unknown) => (
     options.providerExtensionService.mutate(parseProviderExtensionMutation(input))
   ))
-  registerTrustedHandler('account:get-status', () => accountService.getStatus())
+  registerTrustedHandler('account:get-status', (_event, siteId: unknown) => (
+    options.realmAccounts && siteId !== undefined
+      ? options.realmAccounts.getPublicClient(parseAccountSiteId(siteId)).getStatus()
+      : accountService.getStatus()
+  ))
   registerTrustedHandler('account:get-notice', () => accountService.getNotice?.() ?? null)
-  registerTrustedHandler('account:get-legal-document', (_event, kind: unknown) => (
-    accountService.getLegalDocument(parseLegalDocumentKind(kind))
+  registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
+    (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined
+      ? options.realmAccounts.getSiteId() : parseAccountSiteId(siteId)) : accountService).getLegalDocument(parseLegalDocumentKind(kind))
   ))
-  registerTrustedHandler('account:login', (_event, input: unknown) => (
-    accountService.login(parseAccountLoginInput(input))
-  ))
+  registerTrustedHandler('account:login', async (_event, input: unknown) => {
+    const parsed = parseAccountLoginInput(input)
+    const siteId = isRecord(input) && input.siteId !== undefined ? parseAccountSiteId(input.siteId) : undefined
+    if (!options.realmAccounts) {
+      if (siteId !== undefined && siteId !== 'solov') throw new Error('当前账号服务不支持此站点')
+      return accountService.login(parsed)
+    }
+    await accountSessionReady
+    return options.realmAccounts.login({ ...parsed, siteId })
+  })
   registerTrustedHandler('account:logout', async () => {
     options.chatService?.cancelAll()
     options.imageService?.cancelAll()
     options.paymentWindow.destroy()
-    const result = await accountService.logout()
+    const result = await (options.realmAccounts ? options.realmAccounts.logout() : accountService.logout())
     if (options.xingmangAiSkill) {
       await clearXingmangAiSkillSecrets(options.xingmangAiSkill.userHome).catch((error) => {
         options.runtimeLog.log(
@@ -1812,6 +1859,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   const accountOrigin = () => new URL(resolveRelaySite(service.readStoredConfig().relaySiteId).accountBaseUrl!).origin
   registerTrustedHandler('account:list-saved', async () => {
     await accountSessionReady.catch(() => undefined)
+    if (options.realmAccounts) return options.realmAccounts.listSavedAccounts()
     const accounts = await options.savedAccounts?.list() ?? []
     return accounts.filter((account) => account.origin === accountOrigin()).map(({ id, origin, userId, username, updatedAt }) => ({ id, origin, userId, username, updatedAt }))
   })
@@ -1820,6 +1868,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:switch-saved', (_event, idInput: unknown) => {
     const id = requiredString(idInput, '已保存账号标识', 64)
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('已保存账号标识无效')
+    if (options.realmAccounts) return accountSessionReady.then(() => options.realmAccounts!.switchSavedAccount(id))
     if (switchingSavedAccount) {
       if (switchingSavedAccountId === id) return switchingSavedAccount
       throw new Error('正在切换账号，请稍后重试')
@@ -1853,6 +1902,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:remove-saved', async (_event, idInput: unknown) => {
     const id = requiredString(idInput, '已保存账号标识', 64)
     if (!/^[a-f0-9]{64}$/.test(id)) throw new Error('已保存账号标识无效')
+    if (options.realmAccounts) { await options.realmAccounts.removeSavedAccount(id); return }
     const current = accountService.getSessionState()
     if (current.account && savedAccountId(accountOrigin(), current.account.userId) === id) throw new Error('请先退出当前账号，再移除本机记录')
     if (switchingSavedAccountId === id) throw new Error('正在切换此账号，请稍后重试')
@@ -1914,7 +1964,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ))
   registerTrustedHandler('account:sync-managed-cli-keys', async () => {
     const summary = await syncManagedCliKeySummary(accountService, options.managedCliKeys)
-    if (!options.xingmangAiSkill) return summary
+    if (!options.xingmangAiSkill || accountService.getActiveSiteId?.() === 'solov-api') return summary
     try {
       const skill = await syncXingmangAiSkill({
         accountService,
@@ -2043,7 +2093,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return result
   })
   registerTrustedHandler('account:change-password', (_event, input: unknown) => (
-    accountService.changePassword(parseAccountChangePasswordInput(input))
+    accountService.changePassword(parseAccountChangePasswordInput(input, accountService.getActiveSiteId?.() === 'solov-api'))
   ))
   registerTrustedHandler('account:list-login-sessions', () => accountService.listLoginSessions())
   registerTrustedHandler('account:revoke-login-session', async (_event, sid: unknown) => {
@@ -2061,26 +2111,35 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     accountService.revokeOtherLoginSessions()
   ))
   registerTrustedHandler('canvas:open', () => options.openCanvasWindow())
-  registerTrustedHandler('account:get-remembered-login', async () => {
-    const remembered = await options.accountCredentials?.read() ?? null
+  registerTrustedHandler('account:get-remembered-login', async (_event, siteInput: unknown) => {
+    const explicitSite = siteInput === undefined ? undefined : parseAccountSiteId(siteInput)
+    if (options.realmAccounts) await accountSessionReady
+    const hint = !explicitSite && options.realmAccounts ? await options.realmAccounts.latestLoginHint() : null
+    const siteId = explicitSite ?? (hint ? (hint.realmId === 'api-account' ? 'solov-api' : 'solov')
+      : options.realmAccounts?.getSiteId() ?? 'solov')
+    const store = options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+    const remembered = await store?.read() ?? null
+    if (remembered && hint && normalizeRealmLoginIdentifier(remembered.identifier) !== hint.identifier) return null
     // Re-shape to exactly the contract DTO -- the persisted record carries a
     // version field that has no business crossing IPC.
     return remembered ? { identifier: remembered.identifier, password: remembered.password } : null
   })
-  registerTrustedHandler('account:set-remembered-login', async (_event, input: unknown) => {
+  registerTrustedHandler('account:set-remembered-login', async (_event, input: unknown, siteInput: unknown) => {
+    const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
     const parsed = parseRememberedAccountLogin(input)
-    if (!options.accountCredentials) return
+    const store = options.accountCredentialsForSite?.(siteId) ?? (siteId === 'solov' ? options.accountCredentials : undefined)
+    if (!store) return
     if (parsed) {
-      await options.accountCredentials.save(parsed.identifier, parsed.password)
+      await store.save(parsed.identifier, parsed.password)
     } else {
-      await options.accountCredentials.clear()
+      await store.clear()
     }
   })
   registerTrustedHandler('account:create-key', (_event, input: unknown) => (
-    accountService.createKey(parseAccountKeyCreateInput(input))
+    accountService.createKey(parseAccountKeyCreateInput(input, accountService.getActiveSiteId?.() === 'solov-api'))
   ))
   registerTrustedHandler('account:update-key', async (_event, input: unknown) => {
-    const parsed = parseAccountKeyUpdateInput(input)
+    const parsed = parseAccountKeyUpdateInput(input, accountService.getActiveSiteId?.() === 'solov-api')
     const userId = accountService.getSessionState().account?.userId
     await accountService.updateKey(parsed)
     if (userId) await invalidateAccountKeyCaches(userId, parsed.id)
@@ -2155,6 +2214,14 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
       },
     )
+  })
+
+  registerTrustedHandler('account:get-key-options', (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    return resolveAccountKeyOptions({ provider, systemService: service, accountService,
+      managedCliKeys: options.managedCliKeys,
+      chatKeyStore: options.chatKeyStore?.read ? { read: (userId) => options.chatKeyStore!.read!(userId) } : undefined,
+      previewOnboarding: options.previewOnboarding })
   })
 
   return () => {

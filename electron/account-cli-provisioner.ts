@@ -1,4 +1,4 @@
-import { managedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
+import { resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import type { RelayBackendClient } from './relay-backend'
 import type { ConfigSavePayload, SystemService } from './system-service'
@@ -40,7 +40,7 @@ interface ResolvedManagedCliKeys {
   storageWarning?: string
 }
 
-type ManagedKeyAccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey' | 'getSessionRevision'>
+type ManagedKeyAccountService = Pick<RelayBackendClient, 'getSessionState' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId'>
 
 class AccountSessionChangedError extends Error {
   constructor() {
@@ -127,7 +127,7 @@ async function resolveManagedCliKeys(
     // entry. Otherwise a cached secret from the previous production config
     // would bypass provisioning and keep writing requests to a stale group.
     const keys = new Map(cached.flatMap((entry) => {
-      const profile = managedCliKeyProfiles[entry.provider]
+      const profile = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())[entry.provider]
       return profile && profile.group === entry.group ? [[entry.provider, entry] as const] : []
     }))
     const failed: ManagedCliKeyFailure[] = []
@@ -135,7 +135,7 @@ async function resolveManagedCliKeys(
 
     for (const provider of providerIds) {
       if (keys.has(provider)) continue
-      const profile = managedCliKeyProfiles[provider]
+      const profile = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())[provider]
       try {
         assertSameAuthenticatedUser(accountService, capture)
         const result = await accountService.provisionCliKey({
@@ -246,7 +246,7 @@ export async function configureManagedClis(
         if (!isCredentialFailure(error)) throw error
         if (keyStore) await keyStore.remove(userId, managedKey.id)
         assertSameAuthenticatedUser(accountService, capture)
-        const profile = managedCliKeyProfiles[provider]
+        const profile = resolveManagedCliKeyProfiles(accountService.getActiveSiteId?.())[provider]
         const replacement = await accountService.provisionCliKey({ name: profile.keyName, group: profile.group })
         assertSameAuthenticatedUser(accountService, capture)
         managedKey = {

@@ -55,10 +55,21 @@ export interface ManagedCliKeyProfile {
 // providerIds so the main-process provisioning code and renderer UI cannot
 // drift onto different group names or provider coverage.
 export const managedCliKeyProfiles: Record<ProviderId, ManagedCliKeyProfile> = {
+  claude: { group: 'Claude-MAX订阅', keyName: 'xingmang-desktop-claude' },
+  codex: { group: 'GPT-中转/订阅', keyName: 'xingmang-desktop-codex' },
+  grok: { group: 'Grok-中转/订阅', keyName: 'xingmang-desktop-grok' },
+  gemini: { group: 'Gemini-中转/订阅', keyName: 'xingmang-desktop-gemini' },
+}
+
+export const sub2ApiManagedCliKeyProfiles: Record<ProviderId, ManagedCliKeyProfile> = {
   claude: { group: 'Claude-MAX(不限客户端)', keyName: 'xingmang-desktop-claude' },
   codex: { group: 'Codex_pro', keyName: 'xingmang-desktop-codex' },
   grok: { group: 'grok-heavy', keyName: 'xingmang-desktop-grok' },
   gemini: { group: 'Gemini', keyName: 'xingmang-desktop-gemini' },
+}
+
+export function resolveManagedCliKeyProfiles(siteId?: string): Record<ProviderId, ManagedCliKeyProfile> {
+  return siteId === 'solov-api' ? sub2ApiManagedCliKeyProfiles : managedCliKeyProfiles
 }
 
 // 老板拍板(2026-08-10):中转与账号后端统一到 new-api 生产实例

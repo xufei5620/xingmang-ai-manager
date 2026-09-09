@@ -43,13 +43,14 @@ export interface RealmSessionBackend {
 }
 
 export type RealmErrorCode = 'INVALID' | 'UNSUPPORTED' | 'DISABLED' | 'BUSY' | 'STALE' | 'SIGNED_OUT'
-  | 'STORAGE' | 'NETWORK' | 'TIMEOUT' | 'ABORTED' | 'UNAUTHORIZED' | 'TWO_FACTOR_REQUIRED' | 'PROTOCOL'
+  | 'STORAGE' | 'NETWORK' | 'TIMEOUT' | 'ABORTED' | 'UNAUTHORIZED' | 'LOGIN_REJECTED' | 'TWO_FACTOR_REQUIRED' | 'PROTOCOL'
 
 const messages: Record<RealmErrorCode, string> = {
   INVALID: '账号参数无效', UNSUPPORTED: '当前站点暂不支持此功能', DISABLED: '该站点尚未启用',
   BUSY: '账号切换正在进行，请稍后重试', STALE: '账号上下文已变化，请重试', SIGNED_OUT: '请先登录账号',
   STORAGE: '账号安全存储不可用，原记录未修改', NETWORK: '账号服务请求失败，请重试',
   TIMEOUT: '账号服务请求超时', ABORTED: '操作已取消', UNAUTHORIZED: '登录已失效，请重新登录',
+  LOGIN_REJECTED: '账号或密码错误，请检查后重试',
   TWO_FACTOR_REQUIRED: '此账号需要双重验证，请先在站点完成验证', PROTOCOL: '账号服务响应格式不兼容',
 }
 

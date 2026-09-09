@@ -8,12 +8,13 @@ import { importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
 interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: number; cancelRequested?: boolean; failureDuringCancel?: unknown }
 
-export function useChatController(api: ChatApi, scope: string) {
+export function useChatController(api: ChatApi, scope: string, active = true) {
   const [initial] = useState(() => readWorkspace(window.localStorage, scope))
   const [state, setState] = useState(initial.state)
   const [groups, setGroups] = useState<AiChatGroupSummary[]>([])
   const [groupLoading, setGroupLoading] = useState(false)
   const [groupError, setGroupError] = useState('')
+  const [groupsLoaded, setGroupsLoaded] = useState(false)
   const [preparations, setPreparations] = useState<Record<string, GroupPreparation>>({})
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -24,6 +25,10 @@ export function useChatController(api: ChatApi, scope: string) {
   const requests = useRef(new Map<string, PendingRequest>())
   const prepareAttempts = useRef(new Map<string, number>())
   const groupAttempt = useRef(0)
+  const groupsRef = useRef<AiChatGroupSummary[]>([])
+  const groupsInitialized = useRef(false)
+  const groupFlight = useRef<{ epoch: number; promise: Promise<boolean> } | null>(null)
+  const interactionTimer = useRef<number | undefined>(undefined)
   const initialLoad = useRef(!initial.exists)
   const persist = useRef(!initial.warning)
   const commit = (change: (current: ChatWorkspace) => ChatWorkspace) => {
@@ -32,7 +37,7 @@ export function useChatController(api: ChatApi, scope: string) {
     setState(next)
   }
   const prepareGroup = async (group: string) => {
-    if (!group) return
+    if (!group || !groupsRef.current.some((item) => item.name === group)) return
     const owner = epoch.current
     const attempt = (prepareAttempts.current.get(group) ?? 0) + 1
     prepareAttempts.current.set(group, attempt)
@@ -55,20 +60,51 @@ export function useChatController(api: ChatApi, scope: string) {
       if (alive.current && owner === epoch.current && prepareAttempts.current.get(group) === attempt) setPreparations((current) => ({ ...current, [group]: { phase: 'error', models: [], error: chatErrorMessage(reason) } }))
     }
   }
-  const refreshGroups = async () => {
+  const refreshGroups = (): Promise<boolean> => {
+    if (groupFlight.current?.epoch === epoch.current) return groupFlight.current.promise
     const owner = epoch.current, attempt = ++groupAttempt.current
     setGroupLoading(true); setGroupError('')
-    try {
-      const result = await api.listGroups()
-      if (!alive.current || owner !== epoch.current || attempt !== groupAttempt.current) return
-      setGroups(result)
-      const conversation = activeConversation(stateRef.current)
-      const hasConversationChoice = stateRef.current.activeId !== null || Boolean(conversation.draft.trim() || conversation.settings.model)
-      const selected = resolveChatGroup(result, hasConversationChoice ? conversation.settings.group : '')
-      if (selected !== conversation.settings.group) commit((current) => changeConversation(current, conversation.id, (item) => ({ ...item, settings: { ...item.settings, group: selected, model: '' } })))
-      if (selected) void prepareGroup(selected)
-    } catch (reason) { if (alive.current && owner === epoch.current && attempt === groupAttempt.current) setGroupError(chatErrorMessage(reason)) }
-    finally { if (alive.current && owner === epoch.current && attempt === groupAttempt.current) setGroupLoading(false) }
+    const promise = Promise.resolve().then(async () => {
+      try {
+        const result = await api.listGroups()
+        if (!alive.current || owner !== epoch.current || attempt !== groupAttempt.current) return false
+        groupsRef.current = result
+        setGroups(result); setGroupsLoaded(true)
+        // Background refresh is metadata-only. It must not reset a user's
+        // model/draft, mint keys, or silently replace a revoked group.
+        if (!groupsInitialized.current) {
+          groupsInitialized.current = true
+          const conversation = activeConversation(stateRef.current)
+          const remembered = initial.exists || stateRef.current.activeId !== null || Boolean(conversation.settings.model)
+          const selected = remembered && conversation.settings.group ? conversation.settings.group
+            : resolveChatGroup(result, '', /^(api-account|solov-api):/.test(scope) ? 'solov-api' : 'solov')
+          if (selected !== conversation.settings.group) commit((current) => changeConversation(current, conversation.id, (item) => ({ ...item, settings: { ...item.settings, group: selected, model: '' } })))
+          if (selected) void prepareGroup(selected)
+        }
+        return true
+      } catch (reason) {
+        if (alive.current && owner === epoch.current && attempt === groupAttempt.current) setGroupError(chatErrorMessage(reason))
+        return false
+      } finally {
+        if (alive.current && owner === epoch.current && attempt === groupAttempt.current) setGroupLoading(false)
+        if (groupFlight.current?.promise === promise) groupFlight.current = null
+      }
+    })
+    groupFlight.current = { epoch: owner, promise }
+    return promise
+  }
+  const refreshGroupsAndModels = async () => {
+    const group = activeConversation(stateRef.current).settings.group
+    if (await refreshGroups() && alive.current && activeConversation(stateRef.current).settings.group === group) await prepareGroup(group)
+  }
+  const refreshActions = useRef({ refreshGroups })
+  refreshActions.current = { refreshGroups }
+  const refreshOnInteraction = () => {
+    if (interactionTimer.current !== undefined) return
+    interactionTimer.current = window.setTimeout(() => {
+      interactionTimer.current = undefined
+      if (alive.current) void refreshActions.current.refreshGroups()
+    }, 0)
   }
   useEffect(() => {
     alive.current = true
@@ -89,10 +125,28 @@ export function useChatController(api: ChatApi, scope: string) {
     }, () => undefined)
     return () => {
       alive.current = false; epoch.current++; groupAttempt.current++; unsubscribe()
+      window.clearTimeout(interactionTimer.current); interactionTimer.current = undefined
       for (const requestId of requests.current.keys()) void api.cancel(requestId).catch(() => undefined)
       requests.current.clear()
     }
   }, [api, scope])
+  useEffect(() => {
+    if (!active) return
+    const refreshVisible = () => {
+      if (document.visibilityState === 'visible') void refreshActions.current.refreshGroups()
+    }
+    refreshVisible()
+    window.addEventListener('focus', refreshVisible)
+    document.addEventListener('visibilitychange', refreshVisible)
+    const timer = window.setInterval(() => {
+      if (document.visibilityState === 'visible' && document.hasFocus()) void refreshActions.current.refreshGroups()
+    }, 30000)
+    return () => {
+      window.clearInterval(timer)
+      window.removeEventListener('focus', refreshVisible)
+      document.removeEventListener('visibilitychange', refreshVisible)
+    }
+  }, [active])
   useEffect(() => {
     if (!persist.current) return
     const timer = window.setTimeout(() => {
@@ -107,7 +161,10 @@ export function useChatController(api: ChatApi, scope: string) {
   const conversation = activeConversation(state)
   const updateActive = (change: (conversation: Conversation) => Conversation) => { const id = activeConversation(stateRef.current).id; commit((current) => changeConversation(current, id, change)) }
   const changeSettings = (patch: Partial<ChatSettings>) => updateActive((item) => ({ ...item, settings: { ...item.settings, ...patch } }))
-  const selectGroup = (group: string) => { changeSettings({ group, model: '' }); void prepareGroup(group) }
+  const selectGroup = (group: string) => {
+    if (group === activeConversation(stateRef.current).settings.group || !groupsRef.current.some((item) => item.name === group)) return
+    changeSettings({ group, model: '' }); void prepareGroup(group)
+  }
   const selectModel = (model: string) => updateActive((item) => ({ ...item, settings: normalizeModel({ ...item.settings, model }) }))
   const selectMode = (mode: ChatMode) => {
     const current = activeConversation(stateRef.current)
@@ -139,6 +196,7 @@ export function useChatController(api: ChatApi, scope: string) {
     if (requests.current.size >= 4) { setError('已有 4 个对话正在处理，请等待一个完成后再试'); return }
     try {
       const plan = planTurn(current, { prompt: options.prompt ?? current.draft, requestId: createId(), assistantId: createId(), userMessageId: createId(), ...options })
+      if (!groupsRef.current.some((group) => group.name === plan.settings.group)) { setError('所选分组已不可用，请选择可用分组后再发送'); return }
       const prepared = preparations[plan.settings.group]
       if (prepared?.phase !== 'ready' || !prepared.models.includes(plan.settings.model)) { setError('所选分组或模型尚未准备，请重新准备后再试'); return }
       const textInput = { requestId: plan.requestId, group: plan.settings.group, model: plan.settings.model, messages: plan.messages, parameters: plan.settings.parameters }
@@ -213,7 +271,7 @@ export function useChatController(api: ChatApi, scope: string) {
   }
   const clearConversation = () => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => ({ ...item, messages: [], title: '新对话' })) }
   const deleteFrom = (id: string) => { if (!isGenerating(activeConversation(stateRef.current))) updateActive((item) => { const index = item.messages.findIndex((message) => message.id === id); return index < 0 ? item : { ...item, messages: item.messages.slice(0, index) } }) }
-  return { state, conversation, groups, groupLoading, groupError, preparations, error, notice, storageError, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, prepareGroup, newConversation, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
+  return { state, conversation, groups, groupsLoaded, groupLoading, groupError, preparations, error, notice, storageError, setError, setNotice, changeSettings, selectGroup, selectModel, selectMode, refreshGroups, refreshGroupsAndModels, refreshOnInteraction, prepareGroup, newConversation, openConversation, removeConversation, clearConversation, deleteFrom, send, stop, setDraft: (draft: string) => updateActive((item) => ({ ...item, draft })), updateConversation: updateActive }
 }
 
 function normalizeModel(settings: ChatSettings): ChatSettings {

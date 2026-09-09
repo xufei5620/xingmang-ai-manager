@@ -1,4 +1,5 @@
-import { resolveRelaySite } from '../../electron/ipc-contract'
+import { accountOrigin } from './account-context'
+import { resolveRelaySite } from '../../electron/relay-sites'
 import { tools } from './registry/tools'
 import { errorMessage } from './business-common'
 import {
@@ -25,6 +26,7 @@ export type AccountSwitchBridge = Pick<
   }>
 }
 export interface AccountSyncContext {
+  userId?: number
   configs: Record<
     Provider,
     Pick<
@@ -35,11 +37,36 @@ export interface AccountSyncContext {
       | 'model'
       | 'codexAuthMode'
       | 'authType'
-    >
+    > & Partial<Pick<Config, 'actualBaseUrl' | 'apiKeyPreview' | 'updatedAt' | 'officialAccountEmail'>>
   >
   clis: Record<Provider, { installed: boolean; detectionFailed?: boolean }>
   officialProviders: readonly Provider[]
   origin: string
+}
+function unchangedPreviousRelay(
+  previous: AccountSyncContext,
+  current: AccountSyncContext,
+  provider: Provider,
+): boolean {
+  if (sameAccountOrigin(previous.origin, current.origin)) return false
+  if (!['https://xm.solov.cc', 'https://api.solov.cc'].includes(previous.origin)) return false
+  const before = previous.configs[provider]
+  const after = current.configs[provider]
+  const oldSite = resolveRelaySite(previous.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov')
+  const newSite = resolveRelaySite(current.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov')
+  const sameUrl = (left: string | undefined, right: string) => left?.replace(/\/$/, '') === right.replace(/\/$/, '')
+  if (!current.clis[provider].installed || current.clis[provider].detectionFailed || current.officialProviders.includes(provider)
+    || after.codexAuthMode === 'chatgpt' || after.authType === 'oauth-personal') return false
+  // Only selected, previously known relay configs qualify. The new site's
+  // expected URL changes; the actual on-disk address must still be the old
+  // provider's exact route, with no observable edits to its credentials/auth.
+  if (!before.hasApiKey || !before.matchesRelay || !after.hasApiKey
+    || !sameUrl(before.actualBaseUrl, oldSite.providerBaseUrls[provider])
+    || !sameUrl(after.actualBaseUrl, oldSite.providerBaseUrls[provider])
+    || !sameUrl(after.baseUrl, newSite.providerBaseUrls[provider])
+    || !before.apiKeyPreview || !before.updatedAt) return false
+  return (['actualBaseUrl', 'apiKeyPreview', 'updatedAt', 'model', 'authType', 'codexAuthMode', 'officialAccountEmail'] as const)
+    .every((field) => before[field] === after[field])
 }
 export interface AccountSyncCandidate {
   provider: Provider
@@ -119,20 +146,21 @@ export function accountSyncCandidates(
     })
 }
 export async function readAccountSyncContext(
-  api: Pick<AccountSwitchBridge, 'getConfig' | 'scanSystem' | 'getSettings'>,
+  api: Pick<AccountSwitchBridge, 'getConfig' | 'scanSystem' | 'getSettings' | 'getAccountSession'>,
   refresh = false,
 ): Promise<AccountSyncContext> {
-  const [config, system, settings] = await Promise.all([
+  const [config, system, settings, session] = await Promise.all([
     api.getConfig(),
     api.scanSystem(refresh),
     api.getSettings(),
+    api.getAccountSession(),
   ])
-  const site = resolveRelaySite(settings.relaySiteId)
   return {
+    userId: session.account?.userId,
     configs: config.providers,
     clis: system.clis,
     officialProviders: settings.officialProviders ?? [],
-    origin: new URL(site.accountBaseUrl ?? site.websiteUrl).origin,
+    origin: accountOrigin(session),
   }
 }
 
@@ -144,8 +172,8 @@ export async function switchAccountWithOptionalSync(
   activeOrigin: string,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): Promise<AccountSwitchSyncResult> {
-  if (!sameAccountOrigin(target.origin, activeOrigin))
-    throw new Error('这个账号属于其他站点，请先切换对应的服务站点。')
+  if (!['https://xm.solov.cc', 'https://api.solov.cc'].includes(target.origin))
+    throw new Error('这个账号记录暂时无法使用，请重新登录。')
   const requested = [...new Set(selected)]
   if (requested.length && !context)
     throw new Error('工具状态尚未读取，请重新检测后再选择同步。')
@@ -154,13 +182,15 @@ export async function switchAccountWithOptionalSync(
     context &&
     !sameAccountOrigin(context.origin, activeOrigin)
   )
-    throw new Error('服务站点已变化，请重新检测工具后再选择同步。')
+    throw new Error('当前账号已变化，请重新检测工具后再选择同步。')
   const original = context ? accountSyncCandidates(context, storage) : []
+  const originalContext = context ? { ...context, configs: Object.fromEntries(Object.entries(context.configs).map(([provider, config]) => [provider, { ...config }])) as AccountSyncContext['configs'] } : null
+  const manualBefore = new Map(original.map((item) => [item.provider, context ? readManualSourceMarker(storage, context.configs[item.provider].baseUrl, item.provider) : false]))
   const approved = requested.filter((id) =>
     original.some((item) => item.provider === id && item.eligible),
   )
   const session = await api.switchSavedAccount(target.id)
-  if (!session.authenticated || session.account?.userId !== target.userId)
+  if (!session.authenticated || session.account?.userId !== target.userId || !sameAccountOrigin(accountOrigin(session), target.origin))
     throw new Error('账号切换结果需要确认，工具配置尚未修改。')
   const result: AccountSwitchSyncResult = {
     accountId: target.id,
@@ -179,12 +209,16 @@ export async function switchAccountWithOptionalSync(
     if (
       !active.authenticated ||
       active.account?.userId !== target.userId ||
+      !sameAccountOrigin(accountOrigin(active), target.origin) ||
+      fresh.userId !== target.userId ||
       !sameAccountOrigin(fresh.origin, target.origin)
     )
-      throw new Error('账号或服务站点已变化，已停止同步工具密钥。')
+      throw new Error('账号状态已变化，已停止同步工具密钥。')
     const candidates = accountSyncCandidates(fresh, storage)
     const allowed = approved.filter((id) =>
-      candidates.some((item) => item.provider === id && item.eligible),
+      candidates.some((item) => item.provider === id && item.eligible)
+      || Boolean(originalContext && unchangedPreviousRelay(originalContext, fresh, id)
+        && manualBefore.get(id) === readManualSourceMarker(storage, originalContext.configs[id].baseUrl, id)),
     )
     for (const provider of approved.filter((id) => !allowed.includes(id)))
       result.skipped.push({

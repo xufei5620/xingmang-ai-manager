@@ -151,11 +151,13 @@ const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  getAccountKeyOptions: 'account:get-key-options',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
 }
 
 const ipcEventChannels = {
+  onAccountSessionChanged: 'account:session-changed',
   onNavigate: 'navigation:open-page',
   onWindowCloseRequest: 'window:close-request',
   onExternalDeepLink: 'navigation:deep-link-pending',
@@ -277,9 +279,9 @@ const xingmangApi: XingmangApi = {
   listProviderExtensions: (provider) => invoke('listProviderExtensions', provider),
   listAllProviderExtensions: () => invoke('listAllProviderExtensions'),
   mutateProviderExtension: (input) => invoke('mutateProviderExtension', input),
-  getAccountStatus: () => invoke('getAccountStatus'),
+  getAccountStatus: (siteId) => siteId === undefined ? invoke('getAccountStatus') : invoke('getAccountStatus', siteId),
   getAccountNotice: () => invoke('getAccountNotice'),
-  getLegalDocument: (kind) => invoke('getLegalDocument', kind),
+  getLegalDocument: (kind, siteId) => siteId === undefined ? invoke('getLegalDocument', kind) : invoke('getLegalDocument', kind, siteId),
   loginAccount: (input) => invoke('loginAccount', input),
   logoutAccount: () => invoke('logoutAccount'),
   getAccountSession: () => invoke('getAccountSession'),
@@ -322,8 +324,8 @@ const xingmangApi: XingmangApi = {
   revokeAccountLoginSession: (sid) => invoke('revokeAccountLoginSession', sid),
   revokeOtherAccountLoginSessions: () => invoke('revokeOtherAccountLoginSessions'),
   openCanvasWindow: () => invoke('openCanvasWindow'),
-  getRememberedAccountLogin: () => invoke('getRememberedAccountLogin'),
-  setRememberedAccountLogin: (input) => invoke('setRememberedAccountLogin', input),
+  getRememberedAccountLogin: (siteId) => siteId === undefined ? invoke('getRememberedAccountLogin') : invoke('getRememberedAccountLogin', siteId),
+  setRememberedAccountLogin: (input, siteId) => siteId === undefined ? invoke('setRememberedAccountLogin', input) : invoke('setRememberedAccountLogin', input, siteId),
   createAccountKey: (input) => invoke('createAccountKey', input),
   updateAccountKey: (input) => invoke('updateAccountKey', input),
   listAiChatGroups: () => invoke('listAiChatGroups'),
@@ -334,6 +336,8 @@ const xingmangApi: XingmangApi = {
   copyAiChatAsset: (assetId) => invoke('copyAiChatAsset', assetId),
   saveAiChatAsset: (assetId) => invoke('saveAiChatAsset', assetId),
   showAiChatAssetMenu: (assetId) => invoke('showAiChatAssetMenu', assetId),
+  getAccountKeyOptions: (provider) => invoke('getAccountKeyOptions', provider),
+  onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onNavigate: (listener) => subscribe('onNavigate', listener),
   onWindowCloseRequest: (listener) => subscribe('onWindowCloseRequest', listener),
   onExternalDeepLink: (listener) => subscribe('onExternalDeepLink', listener),

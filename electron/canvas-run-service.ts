@@ -227,6 +227,7 @@ export function createCanvasRunService(options: CanvasRunServiceOptions) {
     cancelOwner,
     cancelUser,
     shutdown,
+    whenIdle: async () => { await Promise.allSettled([...active.values()].map((run) => run.handle.promise)) },
     subscribe,
     descendants: canvasRunDescendants,
   }

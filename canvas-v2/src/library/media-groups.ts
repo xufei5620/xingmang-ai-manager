@@ -4,6 +4,15 @@ import { availableImageModelPresets, availableVideoModelPresets, defaultImageMod
 export type MediaCapabilityKind = 'image' | 'video' | 'text'
 
 export const defaultCanvasMediaPreferences = {
+  image: '图片模型-中转/订阅',
+  video: '视频模型-中转/订阅',
+  text: 'Gemini-中转/订阅',
+  imageModel: defaultImageModel,
+  videoModel: 'minimax-h3-base',
+  textModel: 'gemini-3.7-flash',
+} as const
+
+export const sub2ApiCanvasMediaPreferences = {
   // 画布默认跟随账号自动创建的分组。视频能力尚未上线，保持空值，
   // 避免首次打开时误准备一个并不存在的视频分组。
   image: 'GPT-image2',
@@ -95,35 +104,37 @@ export function withResolvedMediaModels(
   }
 }
 
-export function preferredMediaGroups(availableGroups: readonly { name: string }[]): CanvasMediaGroups {
+export function preferredMediaGroups(availableGroups: readonly { name: string }[], siteId: 'solov' | 'solov-api' = 'solov'): CanvasMediaGroups {
   if (availableGroups.length === 0) return {}
-  const image = pickPreferredGroup(availableGroups, defaultCanvasMediaPreferences.image, ['生图分组', '图片模型-中转/订阅', 'openai', /图片.*中转/i])
+  const defaults = siteId === 'solov-api' ? sub2ApiCanvasMediaPreferences : defaultCanvasMediaPreferences
+  const image = pickPreferredGroup(availableGroups, defaults.image, siteId === 'solov-api' ? [] : ['生图分组', '图片模型-中转/订阅', 'openai', /图片.*中转/i], siteId !== 'solov-api')
   // 视频模型暂未上线。不要把图片分组当作视频分组，否则首次打开画布
   // 会为视频节点准备错误的 API Key。
-  const video = defaultCanvasMediaPreferences.video
-    ? pickPreferredGroup(availableGroups, defaultCanvasMediaPreferences.video, ['视频分组', '视频模型-中转/订阅', 'grok', /视频.*中转/i, /grok/i])
+  const video = defaults.video
+    ? pickPreferredGroup(availableGroups, defaults.video, ['视频分组', '视频模型-中转/订阅', 'grok', /视频.*中转/i, /grok/i])
     : undefined
   const text = pickPreferredGroup(
     availableGroups,
-    defaultCanvasMediaPreferences.text,
-    ['Gemini', /gemini/i, /chat|文字|对话|文本/i],
+    defaults.text,
+    siteId === 'solov-api' ? [] : ['Gemini', /gemini/i, /chat|文字|对话|文本/i],
     false,
   )
   return {
     ...(image ? { image } : {}),
     ...(video ? { video } : {}),
     ...(text ? { text } : {}),
-    imageModel: defaultCanvasMediaPreferences.imageModel,
-    videoModel: defaultCanvasMediaPreferences.videoModel,
-    textModel: defaultCanvasMediaPreferences.textModel,
+    imageModel: defaults.imageModel,
+    videoModel: defaults.videoModel,
+    textModel: defaults.textModel,
   }
 }
 
 export function withPreferredMediaDefaults(
   current: CanvasMediaGroups,
   availableGroups: readonly { name: string }[],
+  siteId: 'solov' | 'solov-api' = 'solov',
 ): CanvasMediaGroups {
-  const preferred = preferredMediaGroups(availableGroups)
+  const preferred = preferredMediaGroups(availableGroups, siteId)
   const availableNames = new Set(availableGroups.map((entry) => entry.name))
   const resolveGroup = (kind: MediaCapabilityKind, value: string | undefined, fallback: string | undefined) => {
     if (value && availableNames.has(value)) return value

@@ -11,7 +11,7 @@ function memoryStorage() { const values = new Map<string, string>(); return { va
 describe('v2 chat request transitions', () => {
   it('starts a fresh workspace in text mode and chooses the screenshot defaults when available', () => {
     expect(defaultChatSettings()).toMatchObject({ mode: 'text', group: '', model: '' })
-    expect(DEFAULT_CHAT_GROUP).toBe('Codex_pro')
+    expect(DEFAULT_CHAT_GROUP).toBe('GPT-中转/订阅')
     expect(DEFAULT_CHAT_MODEL).toBe('gpt-5.6-sol')
     expect(resolveChatGroup([{ name: 'default' }, { name: DEFAULT_CHAT_GROUP }])).toBe(DEFAULT_CHAT_GROUP)
     expect(resolveChatModel(['gpt-5.6-terra', DEFAULT_CHAT_MODEL])).toBe(DEFAULT_CHAT_MODEL)
@@ -19,11 +19,17 @@ describe('v2 chat request transitions', () => {
     expect(resolveChatModel(['gpt-image-1', DEFAULT_IMAGE_MODEL], '', DEFAULT_IMAGE_MODEL)).toBe(DEFAULT_IMAGE_MODEL)
   })
 
+  it('selects Sub2API Codex_pro independently of NewAPI groups', () => {
+    const groups = [{ name: 'GPT-中转/订阅' }, { name: 'Codex_pro' }]
+    expect(resolveChatGroup(groups, '', 'solov-api')).toBe('Codex_pro')
+    expect(resolveChatGroup(groups, '', 'solov')).toBe('GPT-中转/订阅')
+  })
+
   it('prefers the managed GPT group for a new conversation and preserves a valid remembered group', () => {
-    const groups = [{ name: 'default' }, { name: 'Codex_pro' }, { name: '图片模型-中转/订阅' }]
-    expect(resolveChatGroup(groups)).toBe('Codex_pro')
+    const groups = [{ name: 'default' }, { name: 'GPT-中转/订阅' }, { name: '图片模型-中转/订阅' }]
+    expect(resolveChatGroup(groups)).toBe('GPT-中转/订阅')
     expect(resolveChatGroup(groups, '图片模型-中转/订阅')).toBe('图片模型-中转/订阅')
-    expect(resolveChatGroup(groups, '已下线分组')).toBe('Codex_pro')
+    expect(resolveChatGroup(groups, '已下线分组')).toBe('GPT-中转/订阅')
     expect(resolveChatGroup([{ name: 'default' }])).toBe('default')
     expect(resolveChatGroup([])).toBe('')
   })
@@ -86,6 +92,35 @@ describe('v2 chat request transitions', () => {
 })
 
 describe('v2 chat persistence ownership', () => {
+  for (const alias of ['solov', 'sub2api']) it(`migrates the ${alias} alias only into the same xm realm and preserves its source`, () => {
+    const storage = memoryStorage()
+    const old = saveConversation(createWorkspace(`${alias}:7`), readyConversation())
+    old.conversations[0].draft = 'previous draft'
+    writeWorkspace(storage, old)
+    const source = storage.getItem(historyKey(`${alias}:7`))
+    expect(readWorkspace(storage, 'api-account:7').exists).toBe(false)
+    expect(readWorkspace(storage, 'xm-account:8').exists).toBe(false)
+    const migrated = readWorkspace(storage, 'xm-account:7')
+    expect(migrated.warning).toBeUndefined()
+    expect(migrated.state.owner).toBe('xm-account:7')
+    expect(migrated.state.conversations[0].draft).toBe('previous draft')
+    expect(storage.getItem(historyKey(`${alias}:7`))).toBe(source)
+    expect(JSON.parse(storage.getItem(historyKey('xm-account:7'))!).owner).toBe('xm-account:7')
+    writeWorkspace(storage, createWorkspace('xm-account:7'))
+    expect(readWorkspace(storage, 'xm-account:7').state.conversations).toHaveLength(0)
+  })
+  it('does not relabel a mismatched old owner or hide readable history after a migration write failure', () => {
+    const storage = memoryStorage()
+    storage.setItem(historyKey('solov:7'), JSON.stringify(createWorkspace('solov:8')))
+    expect(readWorkspace(storage, 'xm-account:7').warning).toBeTruthy()
+    expect(storage.getItem(historyKey('xm-account:7'))).toBeNull()
+    writeWorkspace(storage, saveConversation(createWorkspace('solov:7'), readyConversation()))
+    const blocked = { getItem: storage.getItem, setItem: () => { throw new Error('storage full') } }
+    const migrated = readWorkspace(blocked, 'xm-account:7')
+    expect(migrated.warning).toContain('迁移未保存')
+    expect(migrated.state.conversations).toHaveLength(1)
+    expect(storage.getItem(historyKey('xm-account:7'))).toBeNull()
+  })
   it('rejects a different owner and retains the original storage value', () => {
     const storage = memoryStorage(); const raw = JSON.stringify({ version: 2, owner: 'owner:8', conversations: [] })
     storage.setItem(historyKey('owner:7'), raw)

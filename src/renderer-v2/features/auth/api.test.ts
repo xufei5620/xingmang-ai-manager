@@ -2,6 +2,18 @@ import { describe, expect, it, vi } from 'vitest'
 import { createAuthApi, type AuthBridge } from './api'
 
 describe('v2 auth IPC adapter', () => {
+  it('loads the last remembered account automatically and keeps registration documents on the default service', async () => {
+    const bridge = { getAccountStatus: vi.fn(), getRememberedAccountLogin: vi.fn(), setRememberedAccountLogin: vi.fn(), getLegalDocument: vi.fn() }
+    const api = createAuthApi(bridge as unknown as AuthBridge)
+    await api.getStatus()
+    await api.getRemembered()
+    await api.setRemembered(null, 'solov-api')
+    await api.getLegal('privacy-policy')
+    expect(bridge.getAccountStatus).toHaveBeenCalledWith('solov')
+    expect(bridge.getRememberedAccountLogin).toHaveBeenCalledWith()
+    expect(bridge.setRememberedAccountLogin).toHaveBeenCalledWith(null, 'solov-api')
+    expect(bridge.getLegalDocument).toHaveBeenCalledWith('privacy-policy', 'solov')
+  })
   it('forwards credentials only to the explicit login channel and does not touch CLI configuration', async () => {
     const bridge = { loginAccount: vi.fn().mockResolvedValue({ account: { userId: 7, username: 'member' }, accessExpiresAt: null }), registerAccount: vi.fn().mockResolvedValue(undefined), configureManagedCliKeys: vi.fn() }
     const api = createAuthApi(bridge as unknown as AuthBridge)

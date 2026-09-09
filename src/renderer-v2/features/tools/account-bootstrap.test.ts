@@ -229,4 +229,15 @@ describe('account managed Key bootstrap', () => {
     await expect(bootstrapAccountTools(api, 17)).rejects.toThrow('账号已变化')
     expect(configure).not.toHaveBeenCalled()
   })
+  it('rejects the same numeric user id when its platform changes during Key preparation', async () => {
+    let reads = 0
+    const configure = vi.fn()
+    const api = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, siteId: ++reads === 1 ? 'solov' : 'solov-api', account: { userId: 17 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      configureManagedCliKeys: configure,
+    } as unknown as AccountBootstrapBridge
+    await expect(bootstrapAccountTools(api, 17)).rejects.toThrow('账号已变化')
+    expect(configure).not.toHaveBeenCalled()
+  })
 })
