@@ -1,12 +1,12 @@
 const ASSET_ID_PATTERN = /^[A-Za-z0-9_-]{43}$/
 
 /**
- * Bump when the derived image itself changes shape — a different edge length,
- * encoder or cropping rule. The version is part of the URL, so a bump
- * invalidates every cached thumbnail in one step even though the responses are
- * served as immutable.
+ * Bump for representation or ownership/cache-policy changes. v2 stops reuse
+ * of the old, publicly cacheable v1 responses after an account transition.
+ * The protocol now rechecks identity and serves no-store; the disk thumbnail
+ * store still avoids decoding the same owned asset on every request.
  */
-export const assetThumbnailVersion = 'v1'
+export const assetThumbnailVersion = 'v2'
 
 /**
  * 320 CSS pixels covers the largest tile at the densest supported display

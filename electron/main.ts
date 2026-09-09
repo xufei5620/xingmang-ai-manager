@@ -27,9 +27,9 @@ import { AiAssetMetadataStore } from './ai-asset-metadata-store'
 import { AiVideoTaskStore } from './ai-video-task-store'
 import { createAiVideoService } from './ai-video-service'
 import { createAiMediaAssetService } from './ai-media-asset-service'
-import { assetThumbnailMaxEdge, assetThumbnailSize, assetThumbnailVersion, parseAssetThumbnailPath } from './asset-thumbnail'
+import { assetThumbnailMaxEdge, assetThumbnailSize } from './asset-thumbnail'
 import { AssetThumbnailStore } from './asset-thumbnail-store'
-import { createAssetThumbnailService, type AssetThumbnailRenderer, type AssetThumbnailService } from './asset-thumbnail-service'
+import { createAssetThumbnailService, type AssetThumbnailRenderer } from './asset-thumbnail-service'
 import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
@@ -53,12 +53,13 @@ import { createCanvasRunService } from './canvas-run-service'
 import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { CanvasProjectStore } from './canvas-project-store'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
-import { parseSingleByteRange } from './byte-range'
+import { createAiAssetProtocolHandler } from './ai-asset-protocol'
 import { resolveCodexHomeContext } from './codex-home'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
+import { createBackendRegistry } from './backend-registry'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
@@ -261,76 +262,6 @@ function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
       }
     },
   }
-}
-
-function registerAiAssetProtocol(
-  assets: Pick<CanvasProjectAssetManager, 'readOwned'>,
-  accountService: Pick<RelayBackendClient, 'getSessionState'>,
-  thumbnails: Pick<AssetThumbnailService, 'resolve'>,
-): void {
-  protocol.handle('xingmang-asset', async (request) => {
-    try {
-      const url = new URL(request.url)
-      if (!['image', 'video', 'audio', 'thumb'].includes(url.hostname) || url.username || url.password || url.search || url.hash) {
-        return new Response(null, { status: 404 })
-      }
-      const sessionStateForThumbnail = accountService.getSessionState()
-      if (url.hostname === 'thumb') {
-        const parsed = parseAssetThumbnailPath(url.pathname)
-        if (!parsed || parsed.version !== assetThumbnailVersion) return new Response(null, { status: 404 })
-        const owner = sessionStateForThumbnail.authenticated ? sessionStateForThumbnail.account?.userId : undefined
-        if (!owner) return new Response(null, { status: 401 })
-        const derived = await thumbnails.resolve(owner, parsed.assetId, parsed.mediaKind)
-        if (!derived) return new Response(null, { status: 404 })
-        return new Response(derived.bytes, {
-          status: 200,
-          headers: {
-            'Access-Control-Allow-Origin': '*',
-            // Asset identifiers are content addressed and the pipeline version
-            // is part of the path, so a response can never go stale in place.
-            'Cache-Control': 'public, max-age=31536000, immutable',
-            'Content-Length': String(derived.bytes.byteLength),
-            'Content-Type': derived.mimeType,
-            'X-Content-Type-Options': 'nosniff',
-          },
-        })
-      }
-      const assetId = decodeURIComponent(url.pathname.replace(/^\//, ''))
-      const sessionState = accountService.getSessionState()
-      const userId = sessionState.authenticated ? sessionState.account?.userId : undefined
-      if (!userId) return new Response(null, { status: 401 })
-      const owned = await assets.readOwned(userId, assetId, url.hostname as 'image' | 'video' | 'audio')
-      const range = request.headers.get('range')
-      let body = owned.bytes
-      let status = 200
-      const headers: Record<string, string> = {
-        'Access-Control-Allow-Origin': '*',
-        'Accept-Ranges': 'bytes',
-        'Cache-Control': 'no-store',
-        'Content-Type': owned.asset.mimeType,
-        'X-Content-Type-Options': 'nosniff',
-      }
-      if (range) {
-        const parsedRange = parseSingleByteRange(range, body.byteLength)
-        if (!parsedRange) {
-          return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${body.byteLength}` } })
-        }
-        const { start, end } = parsedRange
-        status = 206
-        body = body.subarray(start, end + 1)
-        headers['Content-Range'] = `bytes ${start}-${end}/${owned.bytes.byteLength}`
-      }
-      headers['Content-Length'] = String(body.byteLength)
-      return new Response(body, {
-        status,
-        headers: {
-          ...headers,
-        },
-      })
-    } catch {
-      return new Response(null, { status: 404 })
-    }
-  })
 }
 
 function windowForContents(contents: WebContents): BrowserWindow {
@@ -755,7 +686,7 @@ if (!hasSingleInstanceLock) {
       safeStorage,
     )
     const savedAccounts = new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat'), safeStorage)
-    const savedAccountsOrigin = new URL(resolveRelaySite(storedSettings.relaySiteId).accountBaseUrl!).origin
+    const startupSiteId = resolveRelaySite(storedSettings.relaySiteId).id
     let persistedActiveUserId: number | null = null
     const accountCredentialStore = new AccountCredentialStore(
       path.join(managerDataDirectory, 'account-credentials.dat'),
@@ -788,7 +719,8 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('canvas', 'runtime.initialize.failed', error)
       },
     })
-    const accountService: RelayBackendClient = createNewApiClient({
+    const accountRuntimes = createBackendRegistry((definition) => createNewApiClient({
+      baseUrl: definition.accountOrigin,
       fetchImpl: relayFetch,
       onSessionChange: (persistable) => {
         const previousUserId = persistedActiveUserId
@@ -818,7 +750,10 @@ if (!hasSingleInstanceLock) {
           })
         }
       },
-    })
+    }))
+    const siteRuntime = accountRuntimes.get(startupSiteId)
+    const accountService: RelayBackendClient = siteRuntime.accountService
+    const savedAccountsOrigin = siteRuntime.definition.accountOrigin
     // Fire-and-forget: never blocks window creation (see this promise's own
     // consumer, ipc.ts's account:get-session handler, for why that race is
     // still handled correctly without blocking startup on a slow network).
@@ -1008,8 +943,13 @@ if (!hasSingleInstanceLock) {
         { assetId, reason },
       ),
     })
-    registerAiAssetProtocol(canvasProjectAssets, accountService, assetThumbnails)
+    protocol.handle('xingmang-asset', createAiAssetProtocolHandler({
+      assets: canvasProjectAssets,
+      identities: siteRuntime.identities,
+      thumbnails: assetThumbnails,
+    }))
     const chatService = createAiChatService({
+      baseUrl: siteRuntime.definition.aiBaseUrl,
       credentialCoordinator: chatCredentials,
       fetchImpl: relayFetch,
       emit: (senderId, event) => {
@@ -1054,12 +994,12 @@ if (!hasSingleInstanceLock) {
       responseHeaderTimeoutMs: AI_CHAT_STREAM_LIMITS.connectionTimeoutMs,
     })
     const imageService = createAiImageService({
-      baseUrl: 'https://xm.solov.cc',
+      baseUrl: siteRuntime.definition.aiBaseUrl,
       credentials: chatCredentials,
       assets: assetStore,
     })
     const canvasImageService = createAiImageService({
-      baseUrl: 'https://xm.solov.cc',
+      baseUrl: siteRuntime.definition.aiBaseUrl,
       credentials: chatCredentials,
       assets: {
         prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
@@ -1072,7 +1012,7 @@ if (!hasSingleInstanceLock) {
       rootDirectory: path.join(managerDataDirectory, 'canvas-video-tasks'),
     })
     const videoService = createAiVideoService({
-      baseUrl: 'https://xm.solov.cc',
+      baseUrl: siteRuntime.definition.aiBaseUrl,
       credentials: chatCredentials,
       tasks: videoTasks,
       assets: {
