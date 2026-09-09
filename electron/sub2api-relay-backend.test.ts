@@ -78,6 +78,7 @@ describe('Sub2API RelayBackend adapter', () => {
     f.state.override = ({ url }) => {
       const path = url.pathname
       if (path.endsWith('/usage')) return json({ page: 2, page_size: 10, total: 12, items: [{ id: 9, created_at: '2026-09-08T01:00:00Z', model: 'gpt-5.6-sol', input_tokens: 10, output_tokens: 20, actual_cost: 0.12, stream: true, api_key: { name: 'Codex', key: 'do-not-return' }, group: { name: 'Codex_pro' } }] })
+      if (path.endsWith('/usage/stats')) return json({ total_actual_cost: 0.12, rpm: 1, tpm: 30 })
       if (path.endsWith('/payment/checkout-info')) return json({ methods: { alipay: { display_name: '支付宝', single_min: 5 } }, global_min: 5 })
       if (path.endsWith('/payment/orders/my')) return json({ page: 1, page_size: 10, total: 1, items: [{ id: 3, amount: 10, pay_amount: 70, out_trade_no: 'trade-3', payment_type: 'alipay', status: 'COMPLETED', created_at: '2026-09-08T00:00:00Z' }] })
       if (path.endsWith('/payment/plans')) return json([{ id: 4, group_id: 1, name: '月度订阅', description: '套餐', price: 20, validity_days: 30, validity_unit: 'day', group_name: 'Codex_pro' }])

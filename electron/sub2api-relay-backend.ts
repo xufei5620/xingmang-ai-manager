@@ -366,13 +366,30 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
     quoteTopupAmount: unsupported, createTopupPayment: unsupported,
     listTopupOrders: async (input = {}) => parseOrders(await call(capture(), (saved, abort) => native.listPaymentOrders(saved, { page: input.page, page_size: input.pageSize, keyword: input.keyword }, abort))),
     redeemTopupCode: unsupported, transferAffiliateQuota: async (_input: NewApiAffiliateTransferInput) => {
-      await call(capture(), (saved, abort) => native.transferAffiliate(saved, abort), true)
+      const scope = capture()
+      const detail = record(await call(scope, (saved, abort) => native.getAffiliate(saved, abort)))
+      const available = num(detail.aff_quota)
+      if (!Number.isFinite(_input.quota) || Math.abs(_input.quota - available) > 1e-9) {
+        throw new Error('Sub2API 只支持一次性转入全部可用返利，请使用当前可转余额')
+      }
+      await call(scope, (saved, abort) => native.transferAffiliate(saved, abort), true)
     },
     listSubscriptionPlans: async () => parsePlans(await call(capture(), (saved, abort) => native.listSubscriptionPlans(saved, abort))),
     getSubscriptionSelf: async () => parseSubscriptionSelf(await call(capture(), (saved, abort) => native.getSubscriptions(saved, 'all', abort))),
     updateSubscriptionPreference: unsupported,
     createSubscriptionPayment: unsupported, purchaseSubscriptionWithBalance: unsupported,
-    getUsage: async (input = {}) => parseUsage(await call(capture(), (saved, abort) => native.getUsage(saved, { page: input.page, page_size: input.pageSize, model: input.modelName, start_date: input.startTimestamp ? new Date(input.startTimestamp * 1000).toISOString().slice(0, 10) : undefined, end_date: input.endTimestamp ? new Date(input.endTimestamp * 1000).toISOString().slice(0, 10) : undefined }, abort))),
+    getUsage: async (input = {}) => {
+      const scope = capture()
+      const query = { page: input.page, page_size: input.pageSize, model: input.modelName, start_date: input.startTimestamp ? new Date(input.startTimestamp * 1000).toISOString().slice(0, 10) : undefined, end_date: input.endTimestamp ? new Date(input.endTimestamp * 1000).toISOString().slice(0, 10) : undefined }
+      const [rows, stats] = await Promise.all([
+        call(scope, (saved, abort) => native.getUsage(saved, query, abort)),
+        call(scope, (saved, abort) => native.getUsageStats(saved, query, abort)),
+      ])
+      const page = parseUsage(rows)
+      const s = record(stats)
+      page.stats = { quota: num(s.total_actual_cost), rpm: num(s.rpm), tpm: num(s.tpm) }
+      return page
+    },
     getDashboard: async (input) => {
       const payload = record(await call(capture(), (saved, abort) => native.getDashboard(saved, { start_date: new Date(input.startTimestamp * 1000).toISOString().slice(0, 10), end_date: new Date(input.endTimestamp * 1000).toISOString().slice(0, 10) }, abort)))
       return { startTimestamp: input.startTimestamp, endTimestamp: input.endTimestamp, buckets: [], models: [], quota: num(payload.total_actual_cost ?? payload.total_cost), count: num(payload.total_requests), tokens: num(payload.total_tokens), discardedCount: 0 } as NewApiAccountDashboardData

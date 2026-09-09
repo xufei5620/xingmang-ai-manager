@@ -72,6 +72,7 @@ export interface Sub2ApiAccountClient extends RealmSessionBackend {
   changePassword(saved: RealmSavedAccount, input: { oldPassword: string; newPassword: string }, signal: AbortSignal): Promise<void>
   /** Native Sub2API account-center endpoints. Payloads are validated/mapped by the relay adapter. */
   getUsage(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  getUsageStats(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   getDashboard(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   getTasks(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   getPaymentConfig(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
@@ -571,6 +572,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       await request('/user/password', 'PUT', { old_password: input.oldPassword, new_password: input.newPassword }, session.credential.accessToken, signal)
     },
     getUsage: async (saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal) => authedRequest(saved, `/usage${queryString(query)}`, signal),
+    getUsageStats: async (saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal) => authedRequest(saved, `/usage/stats${queryString(query)}`, signal),
     getDashboard: async (saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal) => authedRequest(saved, `/usage/dashboard/stats${queryString(query)}`, signal),
     // Sub2API has no media/task queue equivalent to new-api's /api/task/self.
     // Do not alias this to /usage: that would make the task tab display usage
