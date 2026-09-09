@@ -20,6 +20,16 @@ import {
 } from './account-switch-sync'
 import { tools } from './registry/tools'
 
+/** Make the account realm explicit when two providers share the same email. */
+function accountBackendLabel(origin: string): string {
+  try {
+    const hostname = new URL(origin).hostname.toLowerCase()
+    return hostname === 'api.solov.cc' ? 'sub2api' : 'new-api'
+  } catch {
+    return '未知服务'
+  }
+}
+
 export function SavedAccounts({
   api,
   onAccountChanged,
@@ -113,7 +123,7 @@ export function SavedAccounts({
             <ListRow
               key={account.id}
               title={account.username}
-              desc={account.origin}
+              desc={`${accountBackendLabel(account.origin)} · ${account.origin}`}
               badge={current && <Pill tone="ok">当前账号</Pill>}
               actions={
                 <>

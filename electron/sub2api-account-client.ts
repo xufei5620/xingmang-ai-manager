@@ -2,6 +2,7 @@ import {
   accountRealms, captureRealmLogin, isRealmRecord, parseRealmSavedAccount, requireRealmUserId,
   RealmAccountError, type RealmCredential, type RealmLoginInput, type RealmSavedAccount, type RealmSessionBackend,
 } from './realm-account'
+import { managedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 
 export interface Sub2ApiAccountClientOptions {
   /** Required injection; no default production fetch and no renderer-provided base URL. */
@@ -18,12 +19,69 @@ export interface Sub2ApiKeySummary {
   readonly status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'
 }
 
+export interface Sub2ApiGroupSummary {
+  readonly id: string
+  readonly name: string
+  readonly platform: string
+  readonly status: string
+}
+
+export interface Sub2ApiProfile {
+  readonly userId: string
+  readonly email: string
+  readonly username: string
+  readonly balance: number
+  readonly status: string
+  readonly role: string | null
+  readonly avatarUrl: string | null
+  readonly balanceNotifyEnabled: boolean | null
+  readonly balanceNotifyThreshold: number | null
+}
+
+export interface Sub2ApiManagedCliKey {
+  readonly provider: ProviderId
+  readonly group: string
+  readonly id: string
+  readonly name: string
+  readonly key: string
+}
+
 export interface Sub2ApiAccountClient extends RealmSessionBackend {
   getBalance(saved: RealmSavedAccount, signal: AbortSignal): Promise<{ amount: string; unit: 'sub2api-balance' }>
   listKeys(saved: RealmSavedAccount, page: number, pageSize: number, signal: AbortSignal): Promise<{ items: Sub2ApiKeySummary[]; total: number }>
   revealKey(saved: RealmSavedAccount, id: string, signal: AbortSignal): Promise<string>
   createKey(saved: RealmSavedAccount, input: { name: string; groupId: string | null }, signal: AbortSignal): Promise<Sub2ApiKeySummary>
   revokeKey(saved: RealmSavedAccount, id: string, signal: AbortSignal): Promise<void>
+  listGroups(saved: RealmSavedAccount, signal: AbortSignal): Promise<Sub2ApiGroupSummary[]>
+  getProfile(saved: RealmSavedAccount, signal: AbortSignal): Promise<Sub2ApiProfile>
+  updateProfile(saved: RealmSavedAccount, input: { username?: string; avatarUrl?: string | null; balanceNotifyEnabled?: boolean; balanceNotifyThreshold?: number | null }, signal: AbortSignal): Promise<Sub2ApiProfile>
+}
+
+/**
+ * Ensure the four desktop keys exist in the user's visible Sub2API groups.
+ * Existing keys are reused by exact name/group; a newly created key is
+ * revealed once because the create endpoint intentionally returns no secret.
+ * The caller must persist the returned encrypted cache and must never retry
+ * this operation after an ambiguous POST result.
+ */
+export async function provisionSub2ApiManagedCliKeys(
+  client: Pick<Sub2ApiAccountClient, 'listGroups' | 'listKeys' | 'createKey' | 'revealKey'>,
+  saved: RealmSavedAccount,
+  signal: AbortSignal,
+): Promise<Sub2ApiManagedCliKey[]> {
+  const groups = await client.listGroups(saved, signal)
+  const keys = await client.listKeys(saved, 1, 100, signal)
+  const result: Sub2ApiManagedCliKey[] = []
+  for (const provider of providerIds) {
+    const profile = managedCliKeyProfiles[provider]
+    const group = groups.find((entry) => entry.name === profile.group)
+    if (!group) throw new RealmAccountError('UNSUPPORTED')
+    const existing = keys.items.find((entry) => entry.name === profile.keyName && entry.groupId === group.id && entry.status === 'active')
+    const summary = existing ?? await client.createKey(saved, { name: profile.keyName, groupId: group.id }, signal)
+    const key = await client.revealKey(saved, summary.id, signal)
+    result.push(Object.freeze({ provider, group: profile.group, id: summary.id, name: summary.name, key }))
+  }
+  return result
 }
 
 export interface Sub2ApiSessionExecutor {
@@ -109,14 +167,37 @@ function apiSession(value: RealmSavedAccount): RealmSavedAccount & { credential:
   return { ...saved, credential: saved.credential }
 }
 
-function parseUser(value: unknown): { userId: string; username: string; balance: number } {
+function parseUser(value: unknown): { userId: string; username: string; balance: number; email: string } {
   if (!isRealmRecord(value) || value.status !== 'active') protocol()
   const userId = wireId(value.id)
   const username = typeof value.username === 'string' && value.username.trim() ? value.username : value.email
-  if (typeof username !== 'string' || !username.trim() || username.length > 256
+  if ((value.email !== undefined && (typeof value.email !== 'string' || value.email.length > 320))
+    || typeof username !== 'string' || !username.trim() || username.length > 256
     || /[\u0000-\u001f\u007f]/.test(username) || typeof value.balance !== 'number'
     || !Number.isFinite(value.balance) || Math.abs(value.balance) > Number.MAX_SAFE_INTEGER) protocol()
-  return { userId, username: username.trim(), balance: value.balance }
+  return { userId, username: username.trim(), balance: value.balance,
+    email: typeof value.email === 'string' ? value.email.trim() : '' }
+}
+
+function parseProfile(value: unknown): Sub2ApiProfile {
+  const user = parseUser(value)
+  if (!user.email) protocol()
+  const role = value && isRealmRecord(value) && typeof value.role === 'string' ? value.role : null
+  const avatarUrl = value && isRealmRecord(value) && typeof value.avatar_url === 'string' ? value.avatar_url : null
+  const notify = value && isRealmRecord(value) && typeof value.balance_notify_enabled === 'boolean' ? value.balance_notify_enabled : null
+  const threshold = value && isRealmRecord(value) && typeof value.balance_notify_threshold === 'number' && Number.isFinite(value.balance_notify_threshold)
+    ? value.balance_notify_threshold : null
+  return Object.freeze({ userId: user.userId, email: user.email, username: user.username, balance: user.balance,
+    status: String(value && isRealmRecord(value) ? value.status : 'active'), role, avatarUrl,
+    balanceNotifyEnabled: notify, balanceNotifyThreshold: threshold })
+}
+
+function groupSummary(value: unknown): Sub2ApiGroupSummary {
+  if (!isRealmRecord(value) || typeof value.id !== 'number' || !Number.isSafeInteger(value.id) || value.id <= 0
+    || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 256
+    || typeof value.platform !== 'string' || !value.platform.trim() || value.platform.length > 64
+    || typeof value.status !== 'string' || !value.status.trim()) protocol()
+  return Object.freeze({ id: String(value.id), name: value.name.trim(), platform: value.platform.trim(), status: value.status.trim() })
 }
 
 function keySummary(value: unknown, userId: string): Sub2ApiKeySummary {
@@ -129,9 +210,8 @@ function keySummary(value: unknown, userId: string): Sub2ApiKeySummary {
 }
 
 /**
- * Ordinary user endpoints verified against Wei-Shaw/sub2api@270eac6.
- * Uses neutral DTOs, not fabricated NewApiQuota/cookie/group-name mappings.
- * This client is not yet registered in the shipping xm-only SiteRuntime.
+ * Ordinary user endpoints verified against the bundled Wei-Shaw/sub2api source.
+ * Uses native DTOs, not fabricated NewApi quota/cookie/group-name mappings.
  */
 export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions): Sub2ApiAccountClient {
   const origin = accountRealms['api-account'].origin
@@ -141,7 +221,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
   if (typeof options.fetchImpl !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000
     || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 4 * 1024 * 1024) throw new RealmAccountError('INVALID')
 
-  async function request(route: string, method: 'GET' | 'POST' | 'DELETE', body: unknown, token: string | null, signal: AbortSignal): Promise<unknown> {
+  async function request(route: string, method: 'GET' | 'POST' | 'PUT' | 'DELETE', body: unknown, token: string | null, signal: AbortSignal): Promise<unknown> {
     if (signal.aborted) throw new RealmAccountError('ABORTED')
     const url = new URL(`/api/v1${route}`, origin)
     if (url.origin !== origin || url.username || url.password || url.hash) throw new RealmAccountError('INVALID')
@@ -299,6 +379,45 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
     revokeKey: async (saved: RealmSavedAccount, id: string, signal: AbortSignal) => {
       const session = apiSession(saved)
       await request(`/keys/${requireRealmUserId(id)}`, 'DELETE', undefined, session.credential.accessToken, signal)
+    },
+    listGroups: async (saved: RealmSavedAccount, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      const data = await request('/groups/available', 'GET', undefined, session.credential.accessToken, signal)
+      if (!Array.isArray(data)) protocol()
+      const groups = data.map(groupSummary)
+      if (new Set(groups.map((group) => group.id)).size !== groups.length) protocol()
+      return groups
+    },
+    getProfile: async (saved: RealmSavedAccount, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      const profile = parseProfile(await request('/user/profile', 'GET', undefined, session.credential.accessToken, signal))
+      if (profile.userId !== session.userId) protocol()
+      return profile
+    },
+    updateProfile: async (saved: RealmSavedAccount, input: { username?: string; avatarUrl?: string | null; balanceNotifyEnabled?: boolean; balanceNotifyThreshold?: number | null }, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      if (!isRealmRecord(input) || Object.keys(input).length === 0) throw new RealmAccountError('INVALID')
+      const body: Record<string, unknown> = {}
+      if (input.username !== undefined) {
+        if (typeof input.username !== 'string' || !input.username.trim() || input.username.length > 256 || /[\u0000-\u001f\u007f]/.test(input.username)) throw new RealmAccountError('INVALID')
+        body.username = input.username.trim()
+      }
+      if (input.avatarUrl !== undefined) {
+        if (input.avatarUrl !== null && (typeof input.avatarUrl !== 'string' || input.avatarUrl.length > 2048 || /[\u0000-\u001f\u007f]/.test(input.avatarUrl))) throw new RealmAccountError('INVALID')
+        body.avatar_url = input.avatarUrl
+      }
+      if (input.balanceNotifyEnabled !== undefined) {
+        if (typeof input.balanceNotifyEnabled !== 'boolean') throw new RealmAccountError('INVALID')
+        body.balance_notify_enabled = input.balanceNotifyEnabled
+      }
+      if (input.balanceNotifyThreshold !== undefined) {
+        if (input.balanceNotifyThreshold !== null && (typeof input.balanceNotifyThreshold !== 'number' || !Number.isFinite(input.balanceNotifyThreshold) || input.balanceNotifyThreshold < 0)) throw new RealmAccountError('INVALID')
+        body.balance_notify_threshold = input.balanceNotifyThreshold
+      }
+      if (Object.keys(body).length === 0) throw new RealmAccountError('INVALID')
+      const profile = parseProfile(await request('/user', 'PUT', body, session.credential.accessToken, signal))
+      if (profile.userId !== session.userId) protocol()
+      return profile
     },
   })
 }

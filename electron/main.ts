@@ -719,7 +719,15 @@ if (!hasSingleInstanceLock) {
         runtimeLog.exception('canvas', 'runtime.initialize.failed', error)
       },
     })
-    const accountRuntimes = createBackendRegistry((definition) => createNewApiClient({
+    const accountRuntimes = createBackendRegistry((definition) => {
+      // Keep the account backend selection explicit. The Sub2API adapter has
+      // a different token/DTO contract and must never be emulated by sending
+      // new-api cookies to api.solov.cc. Until its RelayBackendClient adapter
+      // is installed, fail closed at construction time.
+      if (definition.backend === 'sub2api') {
+        throw new Error('Sub2API 账号运行时尚未接入桌面账户中心')
+      }
+      return createNewApiClient({
       baseUrl: definition.accountOrigin,
       fetchImpl: relayFetch,
       onSessionChange: (persistable) => {
@@ -750,8 +758,19 @@ if (!hasSingleInstanceLock) {
           })
         }
       },
-    }))
-    const siteRuntime = accountRuntimes.get(startupSiteId)
+      })
+    })
+    let siteRuntime
+    try {
+      siteRuntime = accountRuntimes.get(startupSiteId)
+    } catch (error) {
+      // A persisted Sub2API selection may come from a newer build. Keep the
+      // desktop usable while the adapter is unavailable, and never point a
+      // new-api client at the Sub2API origin by accident.
+      if (startupSiteId !== 'solov-api') throw error
+      runtimeLog.log('warn', 'account', 'backend.unavailable', 'Sub2API 账户后端暂未接入，已回退到星芒账号后端')
+      siteRuntime = accountRuntimes.get('solov')
+    }
     const accountService: RelayBackendClient = siteRuntime.accountService
     const savedAccountsOrigin = siteRuntime.definition.accountOrigin
     // Fire-and-forget: never blocks window creation (see this promise's own

@@ -1,6 +1,6 @@
 import { strict as assert } from 'node:assert'
 import { describe, it } from 'vitest'
-import { createSub2ApiAccountClient, createSub2ApiSessionExecutor, type Sub2ApiAccountClientOptions } from './sub2api-account-client'
+import { createSub2ApiAccountClient, createSub2ApiSessionExecutor, provisionSub2ApiManagedCliKeys, type Sub2ApiAccountClientOptions } from './sub2api-account-client'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 
 const secret = 'private-access-token'
@@ -65,6 +65,63 @@ describe('sub2api user-account adapter', () => {
     const example = fixture([response(key)])
     await example.client.createKey(saved(), { name: 'CLI', groupId: '3' }, signal())
     assert.deepEqual(JSON.parse(String(example.calls[0].init.body)), { name: 'CLI', group_id: 3 })
+  })
+  it('lists user-visible groups from the native groups endpoint', async () => {
+    const example = fixture([response([
+      { id: 11, name: 'Codex_pro', platform: 'openai', status: 'active', description: 'hidden fields ignored' },
+      { id: 12, name: 'Claude-MAX(不限客户端)', platform: 'anthropic', status: 'active' },
+    ])])
+    assert.deepEqual(await example.client.listGroups(saved(), signal()), [
+      { id: '11', name: 'Codex_pro', platform: 'openai', status: 'active' },
+      { id: '12', name: 'Claude-MAX(不限客户端)', platform: 'anthropic', status: 'active' },
+    ])
+    assert.equal(new URL(example.calls[0].url).pathname, '/api/v1/groups/available')
+  })
+  it('reads and updates the native user profile', async () => {
+    const profile = { ...user, email: 'user@example.test', role: 'user', avatar_url: 'https://img.example/avatar.png',
+      balance_notify_enabled: true, balance_notify_threshold: 2.5 }
+    const example = fixture([response(profile), response({ ...profile, username: 'renamed' })])
+    assert.deepEqual(await example.client.getProfile(saved(), signal()), {
+      userId: '7', email: profile.email, username: profile.username, balance: profile.balance, status: 'active', role: 'user',
+      avatarUrl: profile.avatar_url, balanceNotifyEnabled: true, balanceNotifyThreshold: 2.5,
+    })
+    assert.equal(new URL(example.calls[0].url).pathname, '/api/v1/user/profile')
+    const updated = await example.client.updateProfile(saved(), { username: 'renamed', avatarUrl: null, balanceNotifyEnabled: false }, signal())
+    assert.equal(updated.username, 'renamed')
+    assert.deepEqual(JSON.parse(String(example.calls[1].init.body)), { username: 'renamed', avatar_url: null, balance_notify_enabled: false })
+    assert.equal(new URL(example.calls[1].url).pathname, '/api/v1/user')
+    assert.equal(example.calls[1].init.method, 'PUT')
+  })
+
+  it('creates and reveals the four requested managed groups without duplicate active keys', async () => {
+    const groups = [
+      { id: '1', name: 'Codex_pro', platform: 'openai', status: 'active' },
+      { id: '2', name: 'Claude-MAX(不限客户端)', platform: 'anthropic', status: 'active' },
+      { id: '3', name: 'Gemini', platform: 'gemini', status: 'active' },
+      { id: '4', name: 'grok-heavy', platform: 'grok', status: 'active' },
+    ]
+    const created: Array<{ name: string; groupId: string | null }> = []
+    const managed = await provisionSub2ApiManagedCliKeys({
+      listGroups: async () => groups,
+      listKeys: async () => ({ items: [], total: 0 }),
+      createKey: async (_saved, input) => {
+        created.push(input)
+        return { id: String(created.length), name: input.name, groupId: input.groupId, status: 'active' }
+      },
+      revealKey: async (_saved, id) => `sk-managed-${id}`,
+    }, saved(), signal())
+    assert.deepEqual(created, [
+      { name: 'xingmang-desktop-claude', groupId: '2' },
+      { name: 'xingmang-desktop-codex', groupId: '1' },
+      { name: 'xingmang-desktop-grok', groupId: '4' },
+      { name: 'xingmang-desktop-gemini', groupId: '3' },
+    ])
+    assert.deepEqual(managed.map(({ provider, group, key }) => ({ provider, group, key })), [
+      { provider: 'claude', group: 'Claude-MAX(不限客户端)', key: 'sk-managed-1' },
+      { provider: 'codex', group: 'Codex_pro', key: 'sk-managed-2' },
+      { provider: 'grok', group: 'grok-heavy', key: 'sk-managed-3' },
+      { provider: 'gemini', group: 'Gemini', key: 'sk-managed-4' },
+    ])
   })
   it('does not automatically retry a possibly committed write', async () => {
     const example = fixture([new Error('private transport detail')])

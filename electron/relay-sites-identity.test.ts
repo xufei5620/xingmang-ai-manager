@@ -81,6 +81,8 @@ describe('explicit relay site identity', () => {
     expect(relaySiteExternalUrls(relaySites)).toEqual([
       'https://xm.solov.cc',
       'https://xm.solov.cc/keys',
+      'https://api.solov.cc',
+      'https://api.solov.cc/keys',
     ])
   })
 })

@@ -43,7 +43,7 @@ describe('xm-only site runtime', () => {
     assert.equal(definition.aiBaseUrl, 'https://xm.solov.cc')
   })
 
-  for (const value of [undefined, null, '', ' solov', 'solov ', 'SOLOV', 'solov-api', 'api.solov.cc', 1, {}, ['solov']]) {
+  for (const value of [undefined, null, '', ' solov', 'solov ', 'SOLOV', 'api.solov.cc', 1, {}, ['solov']]) {
     it(`does not default an invalid explicit selection: ${JSON.stringify(value)}`, () => {
       assert.throws(() => requireXmSiteRuntimeDefinition(value), /未知中转站点/)
     })
@@ -53,7 +53,7 @@ describe('xm-only site runtime', () => {
     const mutable = relaySites as unknown as RelaySite[]
     const extra = { ...requireRelaySite('solov'), id: 'solov-api' }
     mutable.push(extra)
-    try { assert.throws(() => requireXmSiteRuntimeDefinition('solov-api'), /尚未启用/) } finally { mutable.pop() }
+    try { assert.throws(() => requireXmSiteRuntimeDefinition('solov-api'), /未知中转站点/) } finally { mutable.pop() }
   })
 
   for (const value of [undefined, '', ' http://xm.solov.cc', 'http://xm.solov.cc', 'https://user:secret@xm.solov.cc', 'https://xm.solov.cc/api', 'https://xm.solov.cc?token=fixture', 'https://xm.solov.cc#fragment', 'not-a-url']) {

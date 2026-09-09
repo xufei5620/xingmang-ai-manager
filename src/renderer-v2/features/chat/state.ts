@@ -1,4 +1,3 @@
-import { managedCliKeyProfiles } from '../../../../electron/catalog'
 import type { AiChatAsset, AiChatErrorCode, AiChatGroupSummary, AiChatMessageInput, AiChatParametersInput, AiChatStreamEvent } from '../../../../electron/ipc-contract'
 import { chatLimits } from './api'
 
@@ -34,7 +33,9 @@ export interface TurnPlan { conversation: Conversation; requestId: string; assis
 // Keep the first chat surface aligned with the account-side Codex defaults.
 // The server may return models in a different order, so the renderer must not
 // silently pick whichever entry happened to arrive first.
-export const DEFAULT_CHAT_GROUP = managedCliKeyProfiles.codex.group
+// 与账号登录后自动创建的 Codex Key 分组保持一致。这里使用协议约定的
+// 稳定名称，避免 catalog 中 CLI 配置的历史别名改变聊天初始分组。
+export const DEFAULT_CHAT_GROUP = 'Codex_pro'
 export const DEFAULT_CHAT_MODEL = 'gpt-5.6-sol'
 export const DEFAULT_IMAGE_MODEL = 'gpt-image-2'
 

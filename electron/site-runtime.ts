@@ -8,9 +8,9 @@ import {
 
 /** Fixed routing for the xm-only rollout, not a user-editable server profile. */
 export interface SiteRuntimeDefinition {
-  readonly siteId: 'solov'
-  readonly realmId: 'xm-account'
-  readonly backend: 'new-api'
+  readonly siteId: 'solov' | 'solov-api'
+  readonly realmId: 'xm-account' | 'api-account'
+  readonly backend: 'new-api' | 'sub2api'
   readonly accountOrigin: string
   readonly aiBaseUrl: string
   readonly providerBaseUrls: Readonly<Record<ProviderId, string>>
@@ -48,34 +48,41 @@ function validatedUrl(value: unknown, requireOrigin: boolean): URL {
  * ownership is canonicalized, since both historical ids denote xm today.
  * This deliberately rejects every other site, even if added to relaySites.
  */
-export function requireXmSiteRuntimeDefinition(siteId: unknown): SiteRuntimeDefinition {
+export function requireSiteRuntimeDefinition(siteId: unknown): SiteRuntimeDefinition {
   const selected = requireRelaySite(siteId)
-  if (selected.id !== 'solov' && selected.id !== 'sub2api') {
-    throw new Error('该站点账号后端尚未启用')
+  if (selected.id === 'sub2api') {
+    const primary = requireRelaySite('solov')
+    const primaryOrigin = validatedUrl(primary.accountBaseUrl, true).origin
+    if (validatedUrl(selected.accountBaseUrl, true).origin !== primaryOrigin
+      || providerIds.some((provider) => selected.providerBaseUrls[provider] !== primary.providerBaseUrls[provider])) {
+      const sameOrigin = validatedUrl(selected.accountBaseUrl, true).origin === primaryOrigin
+      throw new Error(sameOrigin ? '站点账号与 AI 路由配置不一致' : '历史站点别名与账号域不一致')
+    }
+    return requireSiteRuntimeDefinition('solov')
   }
-  const primary = requireRelaySite('solov')
-  if (primary.accountBackend !== 'new-api' || selected.accountBackend !== 'new-api') {
-    throw new Error('该站点账号后端尚未启用')
-  }
-  const accountOrigin = validatedUrl(primary.accountBaseUrl, true).origin
-  if (validatedUrl(selected.accountBaseUrl, true).origin !== accountOrigin) {
-    throw new Error('历史站点别名与账号域不一致')
-  }
-  const providerBaseUrls = { ...primary.providerBaseUrls }
+  const accountOrigin = validatedUrl(selected.accountBaseUrl, true).origin
+  const providerBaseUrls = { ...selected.providerBaseUrls }
   for (const provider of providerIds) {
     const url = validatedUrl(providerBaseUrls[provider], provider === 'claude')
-    if (url.origin !== accountOrigin || selected.providerBaseUrls[provider] !== providerBaseUrls[provider]) {
-      throw new Error('站点账号与 AI 路由配置不一致')
-    }
+    if (url.origin !== accountOrigin) throw new Error('站点账号与 AI 路由配置不一致')
   }
   return Object.freeze({
-    siteId: 'solov',
-    realmId: 'xm-account',
-    backend: 'new-api',
+    siteId: selected.accountBackend === 'sub2api' ? 'solov-api' : 'solov',
+    realmId: selected.accountBackend === 'sub2api' ? 'api-account' : 'xm-account',
+    backend: selected.accountBackend,
     accountOrigin,
     aiBaseUrl: providerBaseUrls.claude,
     providerBaseUrls: Object.freeze(providerBaseUrls),
   })
+}
+/** Backwards-compatible guard for callers that intentionally require xm. */
+export function requireXmSiteRuntimeDefinition(siteId: unknown): SiteRuntimeDefinition {
+  if (siteId === 'solov-api') {
+    throw new Error('未知中转站点')
+  }
+  const definition = requireSiteRuntimeDefinition(siteId)
+  if (definition.backend !== 'new-api') throw new Error('该站点账号后端尚未启用')
+  return definition
 }
 
 /** Main-process assembly only. The client itself must stay mutable for login/refresh. */

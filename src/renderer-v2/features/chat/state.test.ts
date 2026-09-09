@@ -11,7 +11,7 @@ function memoryStorage() { const values = new Map<string, string>(); return { va
 describe('v2 chat request transitions', () => {
   it('starts a fresh workspace in text mode and chooses the screenshot defaults when available', () => {
     expect(defaultChatSettings()).toMatchObject({ mode: 'text', group: '', model: '' })
-    expect(DEFAULT_CHAT_GROUP).toBe('GPT-中转/订阅')
+    expect(DEFAULT_CHAT_GROUP).toBe('Codex_pro')
     expect(DEFAULT_CHAT_MODEL).toBe('gpt-5.6-sol')
     expect(resolveChatGroup([{ name: 'default' }, { name: DEFAULT_CHAT_GROUP }])).toBe(DEFAULT_CHAT_GROUP)
     expect(resolveChatModel(['gpt-5.6-terra', DEFAULT_CHAT_MODEL])).toBe(DEFAULT_CHAT_MODEL)
@@ -20,10 +20,10 @@ describe('v2 chat request transitions', () => {
   })
 
   it('prefers the managed GPT group for a new conversation and preserves a valid remembered group', () => {
-    const groups = [{ name: 'default' }, { name: 'GPT-中转/订阅' }, { name: '图片模型-中转/订阅' }]
-    expect(resolveChatGroup(groups)).toBe('GPT-中转/订阅')
+    const groups = [{ name: 'default' }, { name: 'Codex_pro' }, { name: '图片模型-中转/订阅' }]
+    expect(resolveChatGroup(groups)).toBe('Codex_pro')
     expect(resolveChatGroup(groups, '图片模型-中转/订阅')).toBe('图片模型-中转/订阅')
-    expect(resolveChatGroup(groups, '已下线分组')).toBe('GPT-中转/订阅')
+    expect(resolveChatGroup(groups, '已下线分组')).toBe('Codex_pro')
     expect(resolveChatGroup([{ name: 'default' }])).toBe('default')
     expect(resolveChatGroup([])).toBe('')
   })

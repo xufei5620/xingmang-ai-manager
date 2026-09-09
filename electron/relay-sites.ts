@@ -24,8 +24,8 @@ export interface RelaySite {
   /** Page a user is sent to in order to obtain/manage an API key. */
   keysPageUrl: string
   /** Which account backend (if any) this site's login/balance/key-management UI talks to. */
-  accountBackend: 'new-api'
-  /** Only present when accountBackend is 'new-api' -- the new-api-client.ts origin for this site. */
+  accountBackend: 'new-api' | 'sub2api'
+  /** Account API origin for this site. */
   accountBaseUrl?: string
 }
 
@@ -69,6 +69,20 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
     keysPageUrl: 'https://xm.solov.cc/keys',
     accountBackend: 'new-api',
     accountBaseUrl: 'https://xm.solov.cc',
+  },
+  {
+    id: 'solov-api',
+    label: '星芒AI（Sub2API 账号）',
+    providerBaseUrls: {
+      claude: 'https://api.solov.cc',
+      codex: 'https://api.solov.cc/v1',
+      grok: 'https://api.solov.cc/v1',
+      gemini: 'https://api.solov.cc',
+    },
+    websiteUrl: 'https://api.solov.cc',
+    keysPageUrl: 'https://api.solov.cc/keys',
+    accountBackend: 'sub2api',
+    accountBaseUrl: 'https://api.solov.cc',
   },
 ]
 

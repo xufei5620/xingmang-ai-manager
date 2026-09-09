@@ -25,10 +25,10 @@ const bridge: ChatBridge = {
     record('groups')
     if (failedGroupList) throw new Error('network error')
     return query.has('preferredGroup')
-      ? [{ name: 'default', description: '用户分组', ratio: 1 }, { name: 'GPT-中转/订阅', description: 'gpt-image-1 / 1.5 / 2（官方按 token 计费）', ratio: 1 }]
+      ? [{ name: 'default', description: '用户分组', ratio: 1 }, { name: 'Codex_pro', description: 'gpt-image-1 / 1.5 / 2（官方按 token 计费）', ratio: 1 }]
       : [{ name: 'group-a', description: '文本与图片以及一段不应进入选项标题的超长能力说明', ratio: 1 }, { name: 'group-b', description: '另一分组', ratio: 1 }]
   },
-  prepareAiChatGroup: async (group) => { record('prepare', group); if (query.has('deferPreparation') && group === 'group-a') return new Promise<AiChatPreparedGroup>((resolve) => { preparations.push({ group, resolve }) }); const models = query.has('preferredGroup') && group === 'GPT-中转/订阅' ? ['other-model', 'gpt-5.6-sol'] : group === 'group-a' ? ['gpt-test', 'gpt-image-2', 'gpt-image-1.5', 'gemini-3.1-flash-image'] : ['other-model', 'grok-imagine-image']; return { group, models, keyCreated: false } },
+  prepareAiChatGroup: async (group) => { record('prepare', group); if (query.has('deferPreparation') && group === 'group-a') return new Promise<AiChatPreparedGroup>((resolve) => { preparations.push({ group, resolve }) }); const models = query.has('preferredGroup') && group === 'Codex_pro' ? ['other-model', 'gpt-5.6-sol'] : group === 'group-a' ? ['gpt-test', 'gpt-image-2', 'gpt-image-1.5', 'gemini-3.1-flash-image'] : ['other-model', 'grok-imagine-image']; return { group, models, keyCreated: false } },
   startAiChat: async (input) => { record('start', input); return { accepted: true, requestId: input.requestId } },
   generateAiImage: async (input) => { record('image', input); return new Promise<AiChatAsset[]>((resolve, reject) => { images.set(input.requestId, { resolve, reject }) }) },
   cancelAiChat: async (requestId) => { record('cancel', requestId); if (query.has('cancelReject')) { images.get(requestId)?.reject(new Error('request canceled')); await Promise.resolve() } return { canceled: true, mayStillComplete: images.has(requestId) } },

@@ -36,9 +36,9 @@ test('group options show canonical names and native menus inherit the active the
     const group = page.getByTestId('chat-group')
     assert.deepEqual(await group.locator('option').evaluateAll((options) => options.map((option) => ({ value: option.value, label: option.textContent }))), [
       { value: 'default', label: 'default' },
-      { value: 'GPT-中转/订阅', label: 'GPT-中转/订阅' },
+      { value: 'Codex_pro', label: 'Codex_pro' },
     ])
-    await page.waitForFunction(() => document.querySelector('[data-testid=chat-group]')?.value === 'GPT-中转/订阅')
+    await page.waitForFunction(() => document.querySelector('[data-testid=chat-group]')?.value === 'Codex_pro')
     assert.equal(await page.getByTestId('chat-mode').getByRole('button', { name: '文本对话', exact: true }).getAttribute('aria-pressed'), 'true', '首次进入聊天应默认文本对话')
     const styles = await group.evaluate((select) => {
       const option = select.options[0]

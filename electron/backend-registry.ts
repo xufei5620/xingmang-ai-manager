@@ -1,9 +1,14 @@
 import type { AccountIdentitySource } from './active-identity'
-import { createSiteRuntime, requireXmSiteRuntimeDefinition, type SiteRuntime, type SiteRuntimeDefinition } from './site-runtime'
+import { createSiteRuntime, requireSiteRuntimeDefinition, type SiteRuntime, type SiteRuntimeDefinition } from './site-runtime'
 import { providerIds } from './catalog'
 
 export interface BackendRegistry<T extends AccountIdentitySource> {
   get(siteId: unknown): SiteRuntime<T>
+}
+
+export interface BackendRegistryOptions {
+  /** Explicit opt-in while a backend adapter is under staged rollout. */
+  allowSub2Api?: boolean
 }
 
 function definitionKey(definition: SiteRuntimeDefinition): string {
@@ -25,6 +30,7 @@ function definitionKey(definition: SiteRuntimeDefinition): string {
  */
 export function createBackendRegistry<T extends AccountIdentitySource>(
   createClient: (definition: SiteRuntimeDefinition) => T,
+  options: BackendRegistryOptions = {},
 ): BackendRegistry<T> {
   let runtime: SiteRuntime<T> | undefined
   let key: string | undefined
@@ -33,7 +39,13 @@ export function createBackendRegistry<T extends AccountIdentitySource>(
   function get(siteId: unknown): SiteRuntime<T> {
     // Validate EVERY selection before inspecting the cache: otherwise an
     // unknown site might receive an already authenticated xm client.
-    const definition = requireXmSiteRuntimeDefinition(siteId)
+    if (siteId === 'solov-api' && options.allowSub2Api !== true) {
+      throw new Error('未知中转站点')
+    }
+    const definition = requireSiteRuntimeDefinition(siteId)
+    if (definition.backend === 'sub2api' && options.allowSub2Api !== true) {
+      throw new Error('该站点账号后端尚未启用')
+    }
     const requestedKey = definitionKey(definition)
     if (runtime) {
       if (key !== requestedKey) throw new Error('站点配置已变化，请重启应用')

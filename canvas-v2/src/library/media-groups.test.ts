@@ -40,8 +40,9 @@ describe('media group defaults', () => {
     expect(preferredModelForNodeType('drama-parse', groups)).toBe('gpt-5.4')
   })
 
-  it('defaults to the production image, video, and Gemini groups', () => {
+  it('defaults to the account-provisioned image and Gemini groups while leaving video empty', () => {
     expect(preferredMediaGroups([
+      { name: 'GPT-image2' },
       { name: '图片模型-中转/订阅' },
       { name: '视频模型-中转/订阅' },
       { name: 'Gemini-中转/订阅' },
@@ -52,9 +53,8 @@ describe('media group defaults', () => {
       { name: '对话分组' },
       { name: 'Gemini' },
     ])).toEqual({
-      image: '图片模型-中转/订阅',
-      video: '视频模型-中转/订阅',
-      text: 'Gemini-中转/订阅',
+      image: 'GPT-image2',
+      text: 'Gemini',
       imageModel: defaultCanvasMediaPreferences.imageModel,
       videoModel: defaultCanvasMediaPreferences.videoModel,
       textModel: defaultCanvasMediaPreferences.textModel,
@@ -66,7 +66,7 @@ describe('media group defaults', () => {
       { name: '生图分组' },
       { name: 'grok' },
       { name: '对话分组' },
-    ])).toMatchObject({ image: '生图分组', video: 'grok', text: '对话分组' })
+    ])).toMatchObject({ image: '生图分组', text: '对话分组' })
   })
 
   it('does not pretend an image group is a text group', () => {
@@ -109,7 +109,6 @@ describe('media group defaults', () => {
       ],
     )).toMatchObject({
       image: '图片模型-中转/订阅',
-      video: '视频模型-中转/订阅',
       text: 'Gemini-中转/订阅',
     })
   })
