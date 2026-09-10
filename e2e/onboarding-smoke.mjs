@@ -70,8 +70,12 @@ try {
   const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth)
   assert.equal(overflow, false)
   assert.deepEqual(pageErrors, [])
-  assert.ok(result.bounds.x >= result.workArea.x && result.bounds.y >= result.workArea.y)
-  assert.ok(result.bounds.width <= result.workArea.width && result.bounds.height <= result.workArea.height)
+  // Windows may report the outer non-client shadow a few pixels outside the
+  // work area even while the content is fully visible. Keep the geometry
+  // invariant strict with a small OS decoration tolerance.
+  const windowFrameTolerance = 16
+  assert.ok(result.bounds.x >= result.workArea.x - windowFrameTolerance && result.bounds.y >= result.workArea.y - windowFrameTolerance)
+  assert.ok(result.bounds.width <= result.workArea.width + windowFrameTolerance && result.bounds.height <= result.workArea.height + windowFrameTolerance)
   await fs.writeFile(path.join(artifactDir, 'onboarding-smoke-result.json'), JSON.stringify({
     ...result, pageErrors, horizontalOverflow: overflow, explicitSelection: true,
     directChatWithoutNode: true, loginBoundaryPreserved: true, persistedLightTheme: true,
