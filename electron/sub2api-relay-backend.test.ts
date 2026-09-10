@@ -84,6 +84,7 @@ describe('Sub2API RelayBackend adapter', () => {
       if (path.endsWith('/payment/plans')) return json([{ id: 4, group_id: 1, name: '月度订阅', description: '套餐', price: 20, validity_days: 30, validity_unit: 'day', group_name: 'Codex_pro' }])
       if (path.endsWith('/subscriptions')) return json([{ id: 5, group_id: 1, status: 'active', starts_at: '2026-09-01T00:00:00Z', expires_at: '2026-10-01T00:00:00Z', monthly_usage_usd: 2.5 }])
       if (path.endsWith('/user/aff')) return json({ aff_code: 'invite7', aff_count: 2, aff_quota: 1.2, aff_history_quota: 3.4 })
+      if (path.endsWith('/announcements')) return json([{ id: 12, title: '系统公告', content: '充值后额度会自动到账。' }])
       if (path.endsWith('/redeem')) return json({ type: 'balance', value: 7.5, new_balance: 107.75 })
     }
     await f.client.login(loginInput)
@@ -94,6 +95,7 @@ describe('Sub2API RelayBackend adapter', () => {
     expect(await f.client.listSubscriptionPlans()).toMatchObject([{ title: '月度订阅', durationValue: 30 }])
     expect(await f.client.getSubscriptionSelf()).toMatchObject({ activeSubscriptions: [{ id: 5, amountUsed: 2.5 }] })
     expect(await f.client.getProfile()).toMatchObject({ affCode: 'invite7', affCount: 2, affQuota: 1.2 })
+    await expect(f.client.getNotice?.()).resolves.toEqual({ id: '12', text: '# 系统公告\n\n充值后额度会自动到账。' })
     await expect(f.client.redeemTopupCode('CARD-7')).resolves.toEqual({ quotaAdded: 7.5 })
     expect(JSON.stringify(usage)).not.toContain('do-not-return')
   })

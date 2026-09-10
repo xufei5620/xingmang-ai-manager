@@ -239,7 +239,16 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
         quotaDisplayType: 'USD', usdExchangeRate: 1, registerEnabled: false, passwordRegisterEnabled: false,
         emailVerificationEnabled: false, turnstileCheckEnabled: settings.turnstileEnabled }
     },
-    getNotice: async () => null,
+    getNotice: async () => {
+      const entries = await call(capture(), (saved, abort) => native.listAnnouncements(saved, abort))
+      const list = Array.isArray(entries) ? entries : []
+      const item = list.find((value) => { const x = record(value); return str(x.title).trim() || str(x.content).trim() })
+      if (!item) return null
+      const x = record(item); const title = str(x.title).trim(); const content = str(x.content).trim()
+      if ((!title && !content) || (title.length > 256) || content.length > 2_000_000) throw new RealmAccountError('PROTOCOL')
+      const id = typeof x.id === 'number' && Number.isSafeInteger(x.id) ? String(x.id) : str(x.id)
+      return { id: id || `sub2api-${Date.now()}`, text: `${title ? `# ${title}\n\n` : ''}${content}` }
+    },
     getLegalDocument: unsupported, sendEmailVerification: unsupported, sendPasswordResetEmail: unsupported,
     resetPassword: unsupported, register: unsupported,
     login: async (input) => {

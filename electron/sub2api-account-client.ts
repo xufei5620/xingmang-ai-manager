@@ -83,6 +83,7 @@ export interface Sub2ApiAccountClient extends RealmSessionBackend {
   listSubscriptionPlans(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   getSubscriptions(saved: RealmSavedAccount, path: 'active' | 'all' | 'progress' | 'summary', signal: AbortSignal): Promise<unknown>
   getAffiliate(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
+  listAnnouncements(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   transferAffiliate(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
 }
 
@@ -598,6 +599,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       return authedRequest(saved, route, signal)
     },
     getAffiliate: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/user/aff', signal),
+    listAnnouncements: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/announcements', signal),
     transferAffiliate: async (saved: RealmSavedAccount, signal: AbortSignal) => {
       const session = apiSession(saved)
       return request('/user/aff/transfer', 'POST', {}, session.credential.accessToken, signal)
