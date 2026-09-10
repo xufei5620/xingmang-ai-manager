@@ -344,6 +344,7 @@ export interface CanvasAppearance {
 export interface CanvasAccountChange {
   userId: number | null
   previousUserId: number | null
+  siteId?: 'solov' | 'solov-api'
 }
 
 export interface CanvasHostBridge {

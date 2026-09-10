@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { createNewApiClient, NewApiSessionChangedError, type NewApiFetch } from './new-api-client'
+import { createNewApiClient, NewApiSessionChangedError, type NewApiClientOptions, type NewApiFetch } from './new-api-client'
 
 function response(data: unknown, options: { status?: number; success?: boolean; cookies?: string[]; message?: string } = {}): Response {
   const result = new Response(JSON.stringify({ success: options.success ?? true, message: options.message ?? '', data }), { status: options.status ?? 200, headers: { 'Content-Type': 'application/json' } })
@@ -16,7 +16,7 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 type Handler = (pathname: string, init: RequestInit) => Response | Promise<Response> | undefined
-function harness(timeoutMs = 1000) {
+function harness(timeoutMs = 1000, options: Pick<NewApiClientOptions, 'onCredentialRotation'> = {}) {
   let handler: Handler | undefined
   const fetchImpl = vi.fn<NewApiFetch>(async (url, init = {}) => {
     const pathname = new URL(url).pathname
@@ -30,13 +30,53 @@ function harness(timeoutMs = 1000) {
     throw new Error(`Unexpected fixture request: ${pathname}`)
   })
   const onSessionChange = vi.fn()
-  const client = createNewApiClient({ baseUrl: 'https://accounts.test.internal', timeoutMs, fetchImpl, onSessionChange })
-  return { client, fetchImpl, onSessionChange, setHandler: (next: Handler) => { handler = next }, login: (id: number) => client.login({ username: String(id), password: 'fixture-password' }) }
+  const onCredentialRotation = vi.fn(options.onCredentialRotation)
+  const client = createNewApiClient({ baseUrl: 'https://accounts.test.internal', timeoutMs, fetchImpl, onSessionChange, onCredentialRotation })
+  return { client, fetchImpl, onSessionChange, onCredentialRotation, setHandler: (next: Handler) => { handler = next }, login: (id: number) => client.login({ username: String(id), password: 'fixture-password' }) }
 }
 const target = (userId: number) => ({ userId, cookies: [`refresh_token=cookie-${userId}`] })
 const userHeader = (init: RequestInit) => (init.headers as Record<string, string>)['New-Api-User']
 
 describe('saved session switching', () => {
+  it('persists candidate cookies before /self fails while retaining the active account', async () => {
+    const h = harness()
+    await h.login(1)
+    const before = h.client.getSessionState()
+    h.setHandler((pathname) => {
+      if (pathname === '/api/user/auth/refresh') return response({ access_token: 'candidate-token' }, { cookies: ['refresh_token=cookie-2-rotated'] })
+      if (pathname === '/api/user/self') return response(null, { status: 503, success: false })
+    })
+    await expect(h.client.switchSession(target(2))).rejects.toThrow()
+    expect(h.onCredentialRotation).toHaveBeenCalledExactlyOnceWith({ userId: 2, cookies: ['refresh_token=cookie-2-rotated'] })
+    expect(h.client.getSessionState()).toEqual(before)
+    expect(h.client.getPersistableSession()).toEqual(target(1))
+    expect(h.onSessionChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists startup rotation without authenticating if the following profile request fails', async () => {
+    const h = harness()
+    h.setHandler((pathname) => {
+      if (pathname === '/api/user/auth/refresh') return response({ access_token: 'candidate-token' }, { cookies: ['refresh_token=cookie-1-rotated'] })
+      if (pathname === '/api/user/self') return response(null, { status: 503, success: false })
+    })
+    await expect(h.client.restoreSession(target(1))).rejects.toThrow()
+    expect(h.onCredentialRotation).toHaveBeenCalledExactlyOnceWith({ userId: 1, cookies: ['refresh_token=cookie-1-rotated'] })
+    expect(h.client.getSessionState().authenticated).toBe(false)
+    expect(h.onSessionChange).not.toHaveBeenCalled()
+  })
+
+  it('awaits candidate cookie persistence before querying the restored profile', async () => {
+    const saved = deferred<void>()
+    const started = deferred<void>()
+    const h = harness(1000, { onCredentialRotation: async () => { started.resolve(); await saved.promise } })
+    const restoring = h.client.restoreSession(target(1))
+    await started.promise
+    expect(h.fetchImpl.mock.calls.some(([url]) => new URL(url).pathname === '/api/user/self')).toBe(false)
+    expect(h.client.getSessionState().authenticated).toBe(false)
+    saved.resolve()
+    await expect(restoring).resolves.toBe(true)
+  })
+
   it('exposes a main-process revision for ownership intents but keeps token refresh in the same revision', async () => {
     const h = harness()
     const before = h.client.getSessionRevision()
@@ -138,6 +178,46 @@ describe('saved session switching', () => {
 })
 
 describe('session ownership of asynchronous responses', () => {
+  it('retains rotated cookies after a silent-refresh business retry fails', async () => {
+    const h = harness()
+    await h.login(1)
+    let selfCalls = 0
+    h.setHandler((pathname) => {
+      if (pathname === '/api/user/auth/refresh') return response({ access_token: 'rotated-token' }, { cookies: ['refresh_token=cookie-1-rotated'] })
+      if (pathname === '/api/user/self') return response(null, { status: ++selfCalls === 1 ? 401 : 503, success: false })
+    })
+    await expect(h.client.getBalance()).rejects.toThrow()
+    expect(h.onCredentialRotation).toHaveBeenCalledExactlyOnceWith({ userId: 1, cookies: ['refresh_token=cookie-1-rotated'] })
+    expect(h.client.getPersistableSession()).toEqual({ userId: 1, cookies: ['refresh_token=cookie-1-rotated'] })
+    expect(h.client.getSessionState().authenticated).toBe(true)
+  })
+
+  it('keeps new cookies in memory on persistence failure without exposing callback secrets', async () => {
+    const h = harness(1000, { onCredentialRotation: async () => { throw new Error('private-cookie-in-error') } })
+    await h.login(1)
+    h.setHandler((pathname) => {
+      if (pathname === '/api/user/auth/refresh') return response({ access_token: 'rotated-token' }, { cookies: ['refresh_token=cookie-1-rotated'] })
+      if (pathname === '/api/user/self') return response(null, { status: 401, success: false })
+    })
+    await expect(h.client.getBalance()).rejects.toThrow('安全存储保存失败')
+    expect(h.client.getPersistableSession()).toEqual({ userId: 1, cookies: ['refresh_token=cookie-1-rotated'] })
+    expect(h.client.getSessionState().authenticated).toBe(true)
+    expect(h.onSessionChange.mock.calls.some(([value]) => value === null)).toBe(false)
+  })
+
+  it('never publishes stale rotation over a newer login to the same account', async () => {
+    const h = harness()
+    await h.login(1)
+    const refresh = deferred<Response>()
+    h.setHandler((pathname) => pathname === '/api/user/auth/refresh' ? refresh.promise : undefined)
+    const rejected = expect(h.client.refreshAccessToken()).rejects.toBeInstanceOf(NewApiSessionChangedError)
+    await h.login(1)
+    refresh.resolve(response({ access_token: 'old-rotation' }, { cookies: ['refresh_token=stale-rotated-cookie'] }))
+    await rejected
+    expect(h.onCredentialRotation).not.toHaveBeenCalled()
+    expect(h.client.getPersistableSession()).toEqual(target(1))
+  })
+
   it.each([true, false])('rejects a stale successful/401 response after switching without refreshing or clearing the new owner: success=%s', async (success) => {
     const h = harness()
     await h.login(1)

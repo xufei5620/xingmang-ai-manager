@@ -128,6 +128,7 @@ import type { CanvasDocumentState, CanvasMediaGroups } from './store/canvas-stat
 import type { EditorNodeRecord } from './domain/node-definition'
 import { applyCatalogClipDurationToNodes, assetInputNodeKind, mediaAssetNodeDimensions, pendingMediaNodeDimensions, requestedClipDurationSeconds } from './library/media-assets'
 import { availableTextModels, mediaGroupsEqual, mediaGroupsSignature, needsPreferredMediaDefaults, preferredMediaGroups, preferredModelForNodeType, withPreferredMediaDefaults, withResolvedMediaModels, type MediaCapabilityKind } from './library/media-groups'
+import { createCanvasGroupCatalog, groupDropdownKeyOpens, missingCanvasRunGroups } from './library/group-catalog'
 import { compileAssetSheetPrompt } from './library/drama-compile'
 import { dramaPreflightBlockReasons, collectDramaShotAlerts, compileConnectedShotPrompt, markDownstreamShotsStale, resolveDramaShotGate } from './library/drama-graph'
 import { buildDramaNodesFromTables } from './library/drama-layout'
@@ -467,6 +468,10 @@ function MediaConfiguration({
   videoModels,
   textModels,
   preparing,
+  refreshingGroups,
+  groupsError,
+  groupsLoaded,
+  onRefreshGroups,
   onToggle,
   onClose,
   onSelectGroup,
@@ -484,6 +489,10 @@ function MediaConfiguration({
   videoModels: readonly string[]
   textModels: readonly string[]
   preparing: MediaPreparationKind | null
+  refreshingGroups: boolean
+  groupsError: string | null
+  groupsLoaded: boolean
+  onRefreshGroups(force?: boolean): void
   onToggle(): void
   onClose(): void
   onSelectGroup(kind: MediaCapabilityKind, group: string): void
@@ -549,6 +558,11 @@ function MediaConfiguration({
             <span><strong>生成配置</strong><small>按能力选择分组和默认模型</small></span>
             <button type="button" className="canvas-icon-command" aria-label="关闭生成配置" title="关闭" onClick={closeAndRestoreFocus}><X size={14} /></button>
           </header>
+          <div aria-live="polite">
+            {refreshingGroups && <small role="status">正在刷新分组…</small>}
+            {groupsError && <small role="alert">分组刷新失败，已保留原列表。{groupsError}</small>}
+            {groupsError && <button type="button" onClick={() => onRefreshGroups(true)} disabled={refreshingGroups}>重试刷新分组</button>}
+          </div>
           <MediaCapabilityField
             kind="image"
             title="生图分组"
@@ -556,6 +570,8 @@ function MediaConfiguration({
             group={imageGroup}
             model={imageModel}
             groups={groups}
+            groupsLoaded={groupsLoaded}
+            onRefreshGroups={onRefreshGroups}
             models={imagePresets.map((preset) => ({ id: preset.id, label: preset.label }))}
             preparing={preparing === 'image' || preparing === 'all'}
             busy={preparing !== null}
@@ -571,6 +587,8 @@ function MediaConfiguration({
             group={videoGroup}
             model={videoModel}
             groups={groups}
+            groupsLoaded={groupsLoaded}
+            onRefreshGroups={onRefreshGroups}
             models={videoPresets.map((preset) => ({ id: preset.id, label: preset.label }))}
             preparing={preparing === 'video' || preparing === 'all'}
             busy={preparing !== null}
@@ -585,6 +603,8 @@ function MediaConfiguration({
             group={textGroup}
             model={textModel}
             groups={groups}
+            groupsLoaded={groupsLoaded}
+            onRefreshGroups={onRefreshGroups}
             models={textPresets.map((id) => ({ id, label: id }))}
             preparing={preparing === 'text' || preparing === 'all'}
             busy={preparing !== null}
@@ -607,6 +627,7 @@ function MediaConfiguration({
  */
 export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   const [accountEpoch, setAccountEpoch] = useState(0)
+  const [siteId, setSiteId] = useState<'solov' | 'solov-api'>(() => new URLSearchParams(window.location.search).get('siteId') === 'solov-api' ? 'solov-api' : 'solov')
   const [accountChangeNotice, setAccountChangeNotice] = useState<string | null>(null)
 
   useEffect(() => {
@@ -617,7 +638,8 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
   useEffect(() => {
     const host = window.xingmangCanvasHost
     if (typeof host?.onAccountChange !== 'function') return
-    return host.onAccountChange(({ userId }) => {
+    return host.onAccountChange(({ userId, siteId: nextSiteId }) => {
+      if (nextSiteId === 'solov' || nextSiteId === 'solov-api') setSiteId(nextSiteId)
       setAccountChangeNotice(userId === null
         ? '星芒账号已退出，画布状态已清空。'
         : '星芒账号已切换，画布已重新加载；未保存编辑未保留。')
@@ -625,7 +647,7 @@ export function App({ initialTheme = 'dark' }: { initialTheme?: CanvasTheme }) {
     })
   }, [])
 
-  return <CanvasWorkspace key={accountEpoch} initialTheme={initialTheme} accountChangeNotice={accountChangeNotice} />
+  return <CanvasWorkspace key={`${siteId}:${accountEpoch}`} initialTheme={initialTheme} siteId={siteId} accountChangeNotice={accountChangeNotice} />
 }
 
 function MediaCapabilityField({
@@ -635,6 +657,8 @@ function MediaCapabilityField({
   group,
   model,
   groups,
+  groupsLoaded,
+  onRefreshGroups,
   models,
   preparing,
   busy,
@@ -649,6 +673,8 @@ function MediaCapabilityField({
   group: string | null
   model: string | null
   groups: readonly CanvasGroupSummary[]
+  groupsLoaded: boolean
+  onRefreshGroups(force?: boolean): void
   models: readonly { id: string; label: string }[]
   preparing: boolean
   busy: boolean
@@ -660,23 +686,29 @@ function MediaCapabilityField({
   const groupLabel = `${title}分组选择`
   const modelLabel = `${title.replace('分组', '')}默认模型`
   const selectedModel = model && models.some((entry) => entry.id === model) ? model : (models[0]?.id ?? '')
+  const unavailable = Boolean(group && groupsLoaded && !groups.some((entry) => entry.name === group))
   return (
     <div className="canvas-media-config-field">
       <span className="canvas-media-config-label">{icon}<span><strong>{title}</strong><small>{preparing ? '正在准备 API Key…' : `${models.length} 个可用模型`}</small></span></span>
       <label className="canvas-media-config-control">
         <span>分组</span>
-        <select autoFocus={autoFocus} aria-label={groupLabel} value={group ?? ''} disabled={busy} onChange={(event) => onSelectGroup(kind, event.target.value)}>
+        <select autoFocus={autoFocus} aria-label={groupLabel} aria-invalid={unavailable} value={group ?? ''} disabled={busy}
+          onPointerDown={() => onRefreshGroups()} onFocus={() => onRefreshGroups()}
+          onKeyDown={(event) => { if (groupDropdownKeyOpens(event.key)) onRefreshGroups() }}
+          onChange={(event) => onSelectGroup(kind, event.target.value)}>
           {!group && <option value="" disabled>请选择分组</option>}
+          {unavailable && <option value={group!} disabled>{group} · 不可用</option>}
           {groups.map((entry) => <option key={entry.name} value={entry.name}>{entry.name} · {entry.ratio}x</option>)}
         </select>
       </label>
       <label className="canvas-media-config-control">
         <span>默认模型</span>
-        <select aria-label={modelLabel} value={selectedModel} disabled={busy || models.length === 0} onChange={(event) => onSelectModel(kind, event.target.value)}>
+        <select aria-label={modelLabel} value={selectedModel} disabled={busy || unavailable || models.length === 0} onChange={(event) => onSelectModel(kind, event.target.value)}>
           {models.length === 0 && <option value="" disabled>暂无可用模型</option>}
           {models.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
         </select>
       </label>
+      {unavailable && <small role="alert">当前分组已不可用，请重新选择后再生成。</small>}
       <small className={models.length ? 'canvas-media-config-models' : 'canvas-media-config-models is-empty'}>
         {models.length ? `后续${kind === 'image' ? '图像' : kind === 'video' ? '视频' : '文字'}节点优先使用所选默认模型` : emptyHint}
       </small>
@@ -698,9 +730,11 @@ interface PreparedMediaConfiguration {
 function CanvasWorkspace({
   initialTheme = 'dark',
   accountChangeNotice,
+  siteId,
 }: {
   initialTheme?: CanvasTheme
   accountChangeNotice?: string | null
+  siteId: 'solov' | 'solov-api'
 }) {
   const documentController = useCanvasDocument(editorNodeToCanvasNode)
   const {
@@ -741,6 +775,9 @@ function CanvasWorkspace({
   const projectSaveChainRef = useRef<Promise<void>>(Promise.resolve())
   const [banner, setBanner] = useState<string | null>(accountChangeNotice ?? null)
   const [groups, setGroups] = useState<CanvasGroupSummary[]>([])
+  const [groupsLoaded, setGroupsLoaded] = useState(false)
+  const [refreshingGroups, setRefreshingGroups] = useState(false)
+  const [groupsError, setGroupsError] = useState<string | null>(null)
   const [imageModels, setImageModels] = useState<string[]>([])
   const [videoModels, setVideoModels] = useState<string[]>([])
   const [textModels, setTextModels] = useState<string[]>([])
@@ -814,11 +851,58 @@ function CanvasWorkspace({
   const moreActionsTriggerRef = useRef<HTMLButtonElement>(null)
   const runMenuTriggerRef = useRef<HTMLButtonElement>(null)
   const groupsRef = useRef<CanvasGroupSummary[]>([])
+  const groupsLoadedRef = useRef(false)
+  const mediaModelsRef = useRef({ image: imageModels, video: videoModels, text: textModels })
+  mediaModelsRef.current = { image: imageModels, video: videoModels, text: textModels }
+  const groupCatalogRef = useRef<ReturnType<typeof createCanvasGroupCatalog<CanvasGroupSummary>> | null>(null)
   const mediaPreparationRevisionRef = useRef(0)
   const appliedMediaSignatureRef = useRef(mediaGroupsSignature({}))
   const imageGroup = mediaGroups.image ?? null
   const videoGroup = mediaGroups.video ?? null
   const textGroup = mediaGroups.text ?? null
+  const readGroupCatalog = useCallback((force = false) => {
+    if (!groupCatalogRef.current) groupCatalogRef.current = createCanvasGroupCatalog<CanvasGroupSummary>({
+      load: () => hostBridge().listGroups(),
+      changed: (snapshot) => {
+        setRefreshingGroups(snapshot.refreshing)
+        setGroupsError(snapshot.error)
+        if (snapshot.groups !== null) {
+          groupsRef.current = [...snapshot.groups]
+          groupsLoadedRef.current = true
+          setGroups([...snapshot.groups])
+          setGroupsLoaded(true)
+        }
+      },
+    })
+    return groupCatalogRef.current.refresh(force)
+  }, [])
+  const refreshGroups = useCallback((force = false) => { void readGroupCatalog(force).catch(() => undefined) }, [readGroupCatalog])
+  useEffect(() => () => { groupCatalogRef.current?.dispose(); groupCatalogRef.current = null }, [])
+  useEffect(() => {
+    if (!window.xingmangCanvasHost) return
+    const refreshVisible = () => { if (document.visibilityState === 'visible') refreshGroups() }
+    window.addEventListener('focus', refreshVisible)
+    document.addEventListener('visibilitychange', refreshVisible)
+    return () => {
+      window.removeEventListener('focus', refreshVisible)
+      document.removeEventListener('visibilitychange', refreshVisible)
+    }
+  }, [refreshGroups])
+  useEffect(() => {
+    if (!mediaConfigOpen || !window.xingmangCanvasHost) return
+    refreshGroups()
+    const interval = window.setInterval(() => {
+      if (document.visibilityState === 'visible') refreshGroups()
+    }, 30000)
+    return () => window.clearInterval(interval)
+  }, [mediaConfigOpen, refreshGroups])
+  const rejectUnavailableGroups = useCallback((graph: CanvasRunGraph, scope: CanvasRunScope) => {
+    const missing = groupsLoadedRef.current ? missingCanvasRunGroups(graph, scope, groupsRef.current) : []
+    if (!missing.length) return false
+    setBanner(`分组「${missing.join('」、「')}」已不可用，请在生成配置中重新选择`)
+    setMediaConfigOpen(true)
+    return true
+  }, [])
 
   useEffect(() => {
     if (!window.xingmangCanvasHost) return
@@ -999,17 +1083,16 @@ function CanvasWorkspace({
     mediaPreparationRevisionRef.current = requestRevision
     setPreparingMedia(preparationKind)
     try {
-      const availableGroups = groupsRef.current.length > 0
+      const availableGroups = groupsLoadedRef.current
         ? groupsRef.current
-        : await hostBridge().listGroups()
+        : await readGroupCatalog()
       if (requestRevision !== mediaPreparationRevisionRef.current) return null
-      groupsRef.current = [...availableGroups]
-      setGroups([...availableGroups])
       const requested = typeof targetOrResolver === 'function'
         ? targetOrResolver(availableGroups)
         : targetOrResolver
-      const target = withPreferredMediaDefaults(requested, availableGroups)
-      const requestedGroups = [...new Set([target.image, target.video, target.text].filter((group): group is string => Boolean(group)))]
+      const target = preparationKind === 'all' ? withPreferredMediaDefaults(requested, availableGroups, siteId) : requested
+      const requestedGroups = [...new Set((preparationKind === 'all' ? [target.image, target.video, target.text] : [target[preparationKind]])
+        .filter((group): group is string => Boolean(group)))]
       for (const group of requestedGroups) {
         if (!availableGroups.some((entry) => entry.name === group)) throw new Error(`分组「${group}」已不存在，请重新选择`)
       }
@@ -1021,11 +1104,13 @@ function CanvasWorkspace({
       const preparedImage = target.image ? preparedByGroup.get(target.image) : undefined
       const preparedVideo = target.video ? preparedByGroup.get(target.video) : undefined
       const preparedText = target.text ? preparedByGroup.get(target.text) : undefined
-      const imageModels = [...(preparedImage?.models ?? [])]
-      const videoModels = [...(preparedVideo?.models ?? [])]
-      const textModels = [...(preparedText?.models ?? [])]
+      const imageModels = [...(preparedImage?.models ?? (preparationKind !== 'all' ? mediaModelsRef.current.image : []))]
+      const videoModels = [...(preparedVideo?.models ?? (preparationKind !== 'all' ? mediaModelsRef.current.video : []))]
+      const textModels = [...(preparedText?.models ?? (preparationKind !== 'all' ? mediaModelsRef.current.text : []))]
+      const resolved = withResolvedMediaModels(target, imageModels, videoModels, textModels)
+      const modelField = preparationKind === 'image' ? 'imageModel' : preparationKind === 'video' ? 'videoModel' : 'textModel'
       return {
-        mediaGroups: withResolvedMediaModels(target, imageModels, videoModels, textModels),
+        mediaGroups: preparationKind === 'all' ? resolved : { ...target, [modelField]: resolved[modelField] },
         imageModels,
         videoModels,
         textModels,
@@ -1037,7 +1122,7 @@ function CanvasWorkspace({
     } finally {
       if (requestRevision === mediaPreparationRevisionRef.current) setPreparingMedia(null)
     }
-  }, [])
+  }, [siteId, readGroupCatalog])
 
   const applyPreparedMediaConfiguration = useCallback((prepared: PreparedMediaConfiguration) => {
     setImageModels(prepared.imageModels)
@@ -1078,30 +1163,16 @@ function CanvasWorkspace({
   const selectMediaGroup = useCallback(async (kind: MediaCapabilityKind, group: string) => {
     if (!group) return
     const labels: Record<MediaCapabilityKind, string> = { image: '生图', video: '视频', text: '文字' }
-    const others = (['image', 'video', 'text'] as const).filter((entry) => entry !== kind)
     setBanner(`正在准备${labels[kind]}分组 API Key…`)
     try {
-      const prepared = await prepareMediaConfiguration((availableGroups) => {
-        const kept = Object.fromEntries(others.flatMap((other) => {
-          const name = mediaGroups[other]
-          return name && availableGroups.some((entry) => entry.name === name) ? [[other, name]] : []
-        })) as CanvasMediaGroups
-        return {
-          ...kept,
-          [kind]: group,
-          ...(kept.image && mediaGroups.imageModel ? { imageModel: mediaGroups.imageModel } : {}),
-          ...(kept.video && mediaGroups.videoModel ? { videoModel: mediaGroups.videoModel } : {}),
-          ...(kept.text && mediaGroups.textModel ? { textModel: mediaGroups.textModel } : {}),
-        }
-      }, kind)
+      // Repair one unavailable selection at a time without erasing another
+      // capability's saved group/model or preparing its key again.
+      const prepared = await prepareMediaConfiguration({ ...mediaGroups, [kind]: group }, kind)
       if (!prepared) return
       applyPreparedMediaConfiguration(prepared)
       execute({ type: 'set-media-groups', mediaGroups: prepared.mediaGroups })
       const created = prepared.keyCreatedGroups.includes(group)
-      const cleared = others.find((other) => mediaGroups[other] && !prepared.mediaGroups[other])
-      setBanner(cleared
-        ? `已切换到「${group}」；原${labels[cleared]}分组已失效并清除`
-        : created
+      setBanner(created
         ? `已自动创建「${group}」分组 API Key`
         : `${labels[kind]}已切换到「${group}」`)
       if (prepared.warnings.length > 0) setBanner(`分组已可用；${prepared.warnings.join('；')}`)
@@ -1219,6 +1290,7 @@ function CanvasWorkspace({
     try {
       const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
       const scope: CanvasRunScope = { kind, nodeId }
+      if (rejectUnavailableGroups(graph, scope)) return false
       const preflight = buildCanvasRunPreflight({
         graph,
         scope,
@@ -1241,7 +1313,7 @@ function CanvasWorkspace({
       setBanner(error instanceof Error ? error.message : String(error))
       return false
     }
-  }, [preparingMedia, nodes, edges, imageGroup, videoGroup, imageModels, videoModels])
+  }, [preparingMedia, nodes, edges, imageGroup, videoGroup, imageModels, videoModels, rejectUnavailableGroups])
 
   // 浏览器预览保留轻量单节点执行；桌面端始终经主进程预检和运行服务。
   const rerunNode = useCallback(async (nodeId: string) => {
@@ -2761,6 +2833,7 @@ function CanvasWorkspace({
     if (!pending) return
     try {
       const currentGraph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
+      if (rejectUnavailableGroups(currentGraph, pending.scope)) { setPendingCanvasRun(null); setRunPreflight(null); return }
       const currentPreflight = buildCanvasRunPreflight({
         graph: currentGraph,
         scope: pending.scope,
@@ -2797,7 +2870,7 @@ function CanvasWorkspace({
     } catch (error) {
       setBanner(error instanceof Error ? error.message : String(error))
     }
-  }, [edges, imageGroup, imageModels, nodes, openInspectorTab, pendingCanvasRun, refreshRuns, rememberActiveRun, videoGroup, videoModels])
+  }, [edges, imageGroup, imageModels, nodes, openInspectorTab, pendingCanvasRun, refreshRuns, rememberActiveRun, videoGroup, videoModels, rejectUnavailableGroups])
 
   const run = async () => {
     if (preparingMedia) {
@@ -2813,6 +2886,7 @@ function CanvasWorkspace({
       try {
         const graph = toCanvasRunGraph(nodes, edges, { image: imageGroup ?? '', video: videoGroup ?? '', text: textGroup ?? '', textModel: mediaGroups.textModel })
         const scope = currentRunScope()
+        if (rejectUnavailableGroups(graph, scope)) return
         const preflight = buildCanvasRunPreflight({
           graph,
           scope,
@@ -2908,7 +2982,7 @@ function CanvasWorkspace({
   } | null> => {
     setBanner('正在准备项目生成配置…')
     const prepared = await prepareMediaConfiguration((availableGroups) => {
-      const preferred = preferredMediaGroups(availableGroups)
+      const preferred = preferredMediaGroups(availableGroups, siteId)
       return {
         image: workflow.mediaGroups?.image ?? imageGroup ?? preferred.image,
         video: workflow.mediaGroups?.video ?? videoGroup ?? preferred.video,
@@ -3305,6 +3379,10 @@ function CanvasWorkspace({
             videoModels={videoModels}
             textModels={textModels}
             preparing={preparingMedia}
+            refreshingGroups={refreshingGroups}
+            groupsError={groupsError}
+            groupsLoaded={groupsLoaded}
+            onRefreshGroups={refreshGroups}
             onToggle={toggleMediaConfiguration}
             onClose={() => setMediaConfigOpen(false)}
             onSelectGroup={(kind, group) => void selectMediaGroup(kind, group)}

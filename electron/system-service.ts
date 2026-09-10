@@ -1664,6 +1664,8 @@ export function buildCliToolStatusFromSettled(
 }
 
 export interface SystemServiceOptions {
+  /** The active account owns model lookup and CLI routing, independently of saved UI preferences. */
+  getRelaySiteId?: () => string
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
   platform?: NodeJS.Platform
@@ -1712,7 +1714,7 @@ export function createSystemService(
     (serviceOptions.inspectProviderConfig ?? inspectProviderConfig)(
       provider,
       providerRoots,
-      resolveRelaySite(store.read().relaySiteId).providerBaseUrls,
+      resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).providerBaseUrls,
     )
   const providerEnvironment = (provider: ProviderId): NodeJS.ProcessEnv =>
     providerCommandEnvironment(provider, process.env, codexEnv)
@@ -3336,7 +3338,7 @@ export function createSystemService(
     // different relay site within the 2-minute TTL (site switcher), and a
     // model list fetched from the previous site must not validate a model
     // that then gets written into a config aimed at the new site.
-    const activeSite = resolveRelaySite(store.read().relaySiteId)
+    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
     const cacheKey = `${activeSite.id}:${modelAccessCacheKey(apiKey)}`
     const cached = options.bypassCache ? undefined : modelAccessCache.get(cacheKey)
     if (cached) {
@@ -3441,8 +3443,11 @@ export function createSystemService(
     assertBeforeWrite?: () => void,
   ) {
     const model = payload.model.trim()
+    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
     // An empty key is an explicit renderer sentinel: reuse the key already held by the main process.
-    const apiKey = payload.apiKey.trim() || inspectNativeProviderConfig(payload.provider).apiKey
+    const configured = payload.apiKey.trim() ? null : inspectNativeProviderConfig(payload.provider)
+    if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他站点，请使用当前账号重新配置')
+    const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
     if (!apiKey) throw new Error('请先填写 API Key')
     const availableModels = await fetchAvailableModels(apiKey)
     if (!availableModels.includes(model)) {
@@ -3450,10 +3455,9 @@ export function createSystemService(
     }
     if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
     assertBeforeWrite?.()
-    // Read fresh at write time (not captured at service-construction time) so
-    // a settings change takes effect on the very next save without requiring
-    // a service restart.
-    const activeSite = resolveRelaySite(store.read().relaySiteId)
+    if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) {
+      throw new Error('账号站点已变化，请重新配置')
+    }
     const result = saveProviderConfig(
       payload.provider,
       apiKey,
@@ -3473,7 +3477,7 @@ export function createSystemService(
   async function switchToOfficialAccount(provider: ProviderId) {
     // 与 saveConfig 同样在写入时现读站点:切换判定要拿当前站点的中转地址去
     // 比对,站点刚改过也不用重启服务。
-    const activeSite = resolveRelaySite(store.read().relaySiteId)
+    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
     const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls)
     // Persist the user's explicit choice so startup/onboarding can distinguish
     // it from an unconfigured CLI and leave the native subscription untouched.
@@ -3496,7 +3500,7 @@ export function createSystemService(
   }
 
   return {
-    readStoredConfig: () => store.read(),
+    readStoredConfig: () => ({ ...store.read(), ...(serviceOptions.getRelaySiteId ? { relaySiteId: serviceOptions.getRelaySiteId() } : {}) }),
     updateStoredConfig: (update) => store.update(update),
     inspectCodexReadiness,
     getConfig: buildConfigSummary,

@@ -7,6 +7,7 @@ import {
   findCliKeyIdByName,
   findNewestCliKeyIdByNamePrefix,
   NewApiAuthenticationError,
+  NewApiLoginRejectedError,
   parseAccountKey,
   parseAccountKeysPage,
   parseAccountProfile,
@@ -671,6 +672,53 @@ describe('login', () => {
     expect(message).toContain('[REDACTED]')
     expect(message).not.toContain(password)
     expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it.each([
+    ['user.username_or_password_error', 200],
+    ['用户名或密码错误，或用户已被封禁', 200],
+    ['Username or password is incorrect, or user has been banned', 200],
+    ['使用者名或密碼錯誤，或使用者已被封禁', 200],
+    ['untrusted server response containing private-password', 401],
+  ] as const)('classifies only verified login rejection %s (HTTP %s)', async (message, status) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse(message, status))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(NewApiLoginRejectedError)
+    expect(error).toMatchObject({ message: '账号或密码错误，请检查后重试' })
+    expect(String(error)).not.toContain('private-password')
+    expect(client.isAuthenticated()).toBe(false)
+  })
+
+  it.each([
+    ['管理员关闭了密码登录', 200], ['数据库出错，请联系管理员', 200],
+    ['Turnstile token 为空', 200], ['Turnstile 校验失败，请刷新重试！', 200],
+    ['invalid login', 200], ['用户名或密码错误，或用户已被封禁', 503],
+    ['用户名或密码错误，或用户已被封禁', 429],
+  ] as const)('does not classify configuration, captcha, unknown or transport failure as rejected credentials: %s/%s', async (message, status) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(failureResponse(message, status))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(NewApiLoginRejectedError)
+  })
+
+  it('keeps a 2FA challenge distinct from credential rejection and hides its flow token', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockResolvedValue(jsonResponse({ success: true,
+      data: { require_2fa: true, flow_token: 'private-flow-token' } }))
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).not.toBeInstanceOf(NewApiLoginRejectedError)
+    expect(error).toMatchObject({ message: '此账号需要双重验证，请先完成验证' })
+    expect(String(error)).not.toContain('private-flow-token')
+  })
+
+  it.each([new Error('network disconnected'), new DOMException('request aborted', 'AbortError')])('does not classify a network failure as rejected credentials', async (failure) => {
+    const fetchImpl = vi.fn<NewApiFetch>().mockRejectedValue(failure)
+    const client = createNewApiClient({ baseUrl: testBaseUrl, fetchImpl })
+    const error = await client.login({ username: 'tester', password: 'private-password' }).catch((reason: unknown) => reason)
+    expect(error).toBeInstanceOf(Error)
+    expect(error).not.toBeInstanceOf(NewApiLoginRejectedError)
   })
 
   it('rejects a response with no access_token', async () => {

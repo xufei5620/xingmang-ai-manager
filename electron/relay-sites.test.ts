@@ -15,12 +15,14 @@ describe('relay site registry', () => {
   it('pins the customer support destination to the exact enterprise WeChat link', () => {
     expect(supportServiceUrl).toBe('https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4')
   })
-  it('ships the solov and sub2api sites, both reusing catalog providerBaseUrls by reference', () => {
-    expect(relaySites).toHaveLength(2)
-    expect(relaySites.map((site) => site.id)).toEqual(['solov', 'sub2api'])
-    for (const site of relaySites) {
+  it('keeps both legacy aliases and routes the explicit api site to its own origin', () => {
+    expect(relaySites).toHaveLength(3)
+    expect(relaySites.map((site) => site.id)).toEqual(['solov', 'sub2api', 'solov-api'])
+    for (const site of relaySites.filter((site) => site.id !== 'solov-api')) {
       expect(site.providerBaseUrls).toBe(providerBaseUrls)
     }
+    expect(resolveRelaySite('solov-api').providerBaseUrls).toEqual({ claude: 'https://api.solov.cc',
+      codex: 'https://api.solov.cc/v1', gemini: 'https://api.solov.cc', grok: 'https://api.solov.cc/v1' })
   })
 
   it('resolves the sub2api site', () => {
@@ -34,7 +36,7 @@ describe('relay site registry', () => {
   })
 
   it('requires every registered site to use the account login backend', () => {
-    expect(relaySites.every((site) => site.accountBackend === 'new-api')).toBe(true)
+    expect(relaySites.map((site) => site.accountBackend)).toEqual(['new-api', 'new-api', 'sub2api'])
     expect(relaySites.every((site) => typeof site.accountBaseUrl === 'string')).toBe(true)
   })
 
@@ -99,7 +101,7 @@ describe('relay site registry', () => {
       // the dedup in relaySiteExternalUrls is what keeps it that way.
       // Updated 2026-08-10: 官网/取 Key 页移到账号域 xm.solov.cc(老板拍板;
       // 同日中转也统一切到 xm,见 catalog.ts),api.solov.cc 全面退出。
-      expect(relaySiteExternalUrls(relaySites)).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc/keys'])
+      expect(relaySiteExternalUrls(relaySites)).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc/keys', 'https://api.solov.cc', 'https://api.solov.cc/keys'])
     })
 
     it('returns only marketing and keys pages for an account-backed site', () => {
@@ -131,7 +133,7 @@ describe('relay site registry', () => {
       // marketing URL), which keeps probes correct if they ever split again.
       for (const site of relaySites) {
         expect(relayApiProbeBaseUrl(site)).toBe(site.providerBaseUrls.claude)
-        expect(relayApiProbeBaseUrl(site)).toBe('https://xm.solov.cc')
+        expect(relayApiProbeBaseUrl(site)).toBe(site.id === 'solov-api' ? 'https://api.solov.cc' : 'https://xm.solov.cc')
       }
     })
   })

@@ -128,6 +128,7 @@ const maximumTitleLength = 200
 const maximumBodyLength = 2_000
 
 export interface CanvasWindowControllerOptions {
+  accountWork?: import('./account-work-gate').AccountWorkGate
   /** Absolute path to the packaged infinite-canvas dist/ directory. */
   canvasDistRoot: string
   externalUrlAllowlist: readonly string[]
@@ -258,7 +259,8 @@ export function createCanvasWindowController(
     activeProjects.delete(senderId)
     if (pendingClose?.window === window) finishPendingClose(false, '星芒账号已切换，已取消画布关闭确认')
     try {
-      window.webContents.send(canvasHostAccountChangedChannel, { userId, previousUserId })
+      window.webContents.send(canvasHostAccountChangedChannel, { userId, previousUserId,
+        ...(options.accountService.getActiveSiteId ? { siteId: options.accountService.getActiveSiteId() } : {}) })
     } catch (error) {
       options.runtimeLog.log('warn', 'canvas', 'account-change.notify-failed', '画布账号变更通知发送失败', {
         reason: error instanceof Error ? error.message : String(error),
@@ -382,7 +384,8 @@ export function createCanvasWindowController(
     handleChannels.push(channel)
     ipcMain.handle(channel, (event, ...args) => {
       assertTrustedCanvasSender(event)
-      return handler(event, ...args)
+      const operation = () => handler(event, ...args)
+      return options.accountWork ? options.accountWork.run(operation) : operation()
     })
   }
 
@@ -1168,6 +1171,7 @@ export function createCanvasWindowController(
     // index.html for '/', letting the app boot on its home route.
     const canvasUrl = new URL(canvasPackagedBaseUrl)
     canvasUrl.searchParams.set('theme', currentTheme)
+    if (options.accountService.getActiveSiteId) canvasUrl.searchParams.set('siteId', options.accountService.getActiveSiteId())
     if (currentAppearance.uiSkin) canvasUrl.searchParams.set('skin', currentAppearance.uiSkin)
     if (currentAppearance.reducedMotion) canvasUrl.searchParams.set('reducedMotion', '1')
     try {

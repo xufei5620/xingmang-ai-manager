@@ -38,11 +38,16 @@
   color: var(--text-3);
 }
 .v2-business-suggestions {
-  display: flex;
-  align-items: center;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  margin: 12px 0;
+  margin: 8px 0 16px;
   color: var(--text-3);
+}
+.v2-business-suggestions-label {
+  margin-top: 14px;
+  color: var(--text-2);
+  font-size: 13px;
 }
 .v2-business-suggestions .xm-btn {
   border-style: dashed;
@@ -145,6 +150,8 @@
   font: 600 28px var(--mono);
   color: var(--text);
 }
+.v2-business-stat-grid .xm-card-body { display: grid; gap: 4px; align-content: start; }
+.v2-business-stat-grid .xm-card-body small { display: block; color: var(--text-3); line-height: 1.5; }
 .v2-business-recharge-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -383,6 +390,9 @@
   font-size: 12px;
   border-bottom: 1px solid var(--line);
 }
+.v2-business-help { color: var(--text-3); line-height: 1.6; }
+.v2-business-table-row { display: grid; grid-template-columns: 1fr 240px 200px; gap: 12px; padding: 11px 16px; border-bottom: 1px solid var(--line); }
+.v2-business-table-row:last-child { border-bottom: 0; }
 .v2-business-chart {
   display: flex;
   align-items: flex-end;

@@ -484,7 +484,7 @@ export function createAiImageService(options: {
     return queue.shutdown(new Error('操作队列已关闭'))
   }
 
-  return { generate, edit, cancel, cancelSender, cancelUser, cancelAll, shutdown }
+  return { generate, edit, cancel, cancelSender, cancelUser, cancelAll, shutdown, whenIdle: () => queue.whenIdle() }
 }
 
 export type AiImageService = ReturnType<typeof createAiImageService>

@@ -9,6 +9,8 @@ import { _electron as electron } from '@playwright/test'
 import { createServer, resolveConfig } from 'vite'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+// Mirror the public dev command for both the in-process Vite fixture and Electron.
+process.env.XINGMANG_RENDERER = 'v2'
 
 function listen(server, options) {
   return new Promise((resolve, reject) => {
@@ -26,26 +28,36 @@ function close(server) {
   })
 }
 
-test('the configured macOS development origin renders the real Electron app', {
-  skip: process.platform !== 'darwin',
-  timeout: 30_000,
-}, async () => {
+async function configuredDevelopmentOrigin() {
   const packageJson = JSON.parse(await fs.readFile(path.join(projectRoot, 'package.json'), 'utf8'))
-  const configuredUrl = packageJson.scripts.dev.match(/VITE_DEV_SERVER_URL=(https?:\/\/[^\s"]+)/)?.[1]
-  assert.ok(configuredUrl, 'dev script must provide VITE_DEV_SERVER_URL')
+  assert.match(packageJson.scripts.dev, /cross-env XINGMANG_RENDERER=v2 npm run dev:runtime/)
+  const runtimeScript = packageJson.scripts['dev:runtime']
+  const configuredUrl = runtimeScript.match(/VITE_DEV_SERVER_URL=(https?:\/\/[^\s"]+)/)?.[1]
+  assert.ok(configuredUrl, 'dev:runtime script must provide VITE_DEV_SERVER_URL')
   const configuredOrigin = new URL(configuredUrl)
   const viteConfig = await resolveConfig({ root: projectRoot, logLevel: 'silent' }, 'serve')
   assert.equal(configuredOrigin.hostname, '127.0.0.1')
   assert.equal(configuredOrigin.hostname, viteConfig.server.host)
   assert.equal(Number(configuredOrigin.port), viteConfig.server.port)
   assert.equal(viteConfig.server.strictPort, true)
-  const devScript = packageJson.scripts.dev
-  const waitOnIndex = devScript.indexOf('wait-on')
-  const configuredEndpointIndex = devScript.indexOf(`tcp:${configuredOrigin.host}`, waitOnIndex)
+  const waitOnIndex = runtimeScript.indexOf('wait-on')
+  const configuredEndpointIndex = runtimeScript.indexOf(`tcp:${configuredOrigin.host}`, waitOnIndex)
   assert.ok(
     waitOnIndex >= 0 && configuredEndpointIndex > waitOnIndex,
     'dev script must wait on the same origin that Electron loads',
   )
+  return configuredOrigin
+}
+
+test('the default development command and Vite use the same origin', async () => {
+  await configuredDevelopmentOrigin()
+})
+
+test('the configured macOS development origin renders the real Electron app', {
+  skip: process.platform !== 'darwin',
+  timeout: 30_000,
+}, async () => {
+  const configuredOrigin = await configuredDevelopmentOrigin()
 
   const stateRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-dev-origin-test-'))
   const homeDirectory = path.join(stateRoot, 'home')
@@ -86,13 +98,16 @@ test('the configured macOS development origin renders the real Electron app', {
 
     await page.waitForLoadState('domcontentloaded', { timeout: 5_000 })
     try {
-      await page.locator('.desktop-frame').waitFor({ state: 'visible', timeout: 5_000 })
+      await page.getByTestId('welcome-page').waitFor({ state: 'visible', timeout: 5_000 })
     } catch {
       assert.fail(JSON.stringify(failedRequests))
     }
     assert.equal(new URL(page.url()).origin, devUrl.origin)
-    const rootChildren = await page.locator('#root').evaluate((element) => element.childElementCount)
-    assert.equal(rootChildren, 1)
+    // ToastProvider renders a sibling live region; raw root child count is
+    // not a boot invariant. Verify the app surface and preload bridge instead.
+    assert.equal(await page.locator('#root').getByTestId('welcome-page').count(), 1)
+    assert.equal(await page.getByTestId('welcome-login').isVisible(), true)
+    assert.equal(await page.evaluate(() => typeof window.xingmang?.getAccountSession), 'function')
   } finally {
     try {
       await application?.close()

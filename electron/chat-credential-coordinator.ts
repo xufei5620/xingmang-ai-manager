@@ -84,7 +84,7 @@ const inFlightByService = new WeakMap<object, Map<string, Promise<ResolvedChatCr
 
 export function createChatCredentialCoordinator(options: {
   accountService: Pick<RelayBackendClient,
-    'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'getSessionRevision'>
+    'getSessionState' | 'listUsableGroups' | 'provisionCliKey' | 'getSessionRevision' | 'getActiveSiteId'>
   modelService: ChatModelServiceLike
   keyStore: ChatKeyStoreLike
 }): ChatCredentialCoordinator {
@@ -135,7 +135,9 @@ export function createChatCredentialCoordinator(options: {
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const expectedRevision = keyStore.captureRevision()
       const provisioned = await accountService.provisionCliKey({
-        name: buildCliKeyName('xingmang-chat'),
+        // Sub2API reuses exact name + group. Stable names also recover a key
+        // when model probing or local persistence failed after its creation.
+        name: accountService.getActiveSiteId?.() === 'solov-api' ? 'xingmang-chat' : buildCliKeyName('xingmang-chat'),
         group,
       })
       assertSameSession(accountService, userId, revision)

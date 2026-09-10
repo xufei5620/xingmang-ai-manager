@@ -27,14 +27,14 @@ import { AiAssetMetadataStore } from './ai-asset-metadata-store'
 import { AiVideoTaskStore } from './ai-video-task-store'
 import { createAiVideoService } from './ai-video-service'
 import { createAiMediaAssetService } from './ai-media-asset-service'
-import { assetThumbnailMaxEdge, assetThumbnailSize, assetThumbnailVersion, parseAssetThumbnailPath } from './asset-thumbnail'
+import { assetThumbnailMaxEdge, assetThumbnailSize } from './asset-thumbnail'
 import { AssetThumbnailStore } from './asset-thumbnail-store'
-import { createAssetThumbnailService, type AssetThumbnailRenderer, type AssetThumbnailService } from './asset-thumbnail-service'
+import { createAssetThumbnailService, type AssetThumbnailRenderer } from './asset-thumbnail-service'
 import { createChatCredentialCoordinator } from './chat-credential-coordinator'
 import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
-import { AccountSessionStore, restoreAccountSessionOnStartup } from './account-session-store'
-import { SavedAccountsStore, savedAccountId } from './saved-accounts'
+import { AccountSessionStore } from './account-session-store'
+import { SavedAccountsStore } from './saved-accounts'
 import { AppSettingsStore, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
@@ -46,19 +46,27 @@ import { ConfigBackupStore } from './backups'
 import { providerIds } from './catalog'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
-import { createCanvasAccountLifecycle } from './canvas-account-lifecycle'
 import { CanvasRunStore } from './canvas-run-store'
 import { createCanvasNodeExecutors } from './canvas-node-executors'
 import { createCanvasRunService } from './canvas-run-service'
 import { CanvasPromptPresetStore } from './canvas-prompt-preset-store'
 import { CanvasProjectStore } from './canvas-project-store'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
-import { parseSingleByteRange } from './byte-range'
+import { createAiAssetProtocolHandler } from './ai-asset-protocol'
 import { resolveCodexHomeContext } from './codex-home'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
+import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
+import { createFileRealmAccountVault } from './realm-account-vault-file'
+import { parseRealmSavedAccount, type RealmSavedAccount } from './realm-account'
+import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
+import { requireSiteRuntimeDefinition } from './site-runtime'
+import { createActiveIdentityReader } from './active-identity'
+import { resolveRealmDataRoots } from './realm-data-roots'
+import { createRealmServiceDispatch } from './realm-service-dispatch'
+import { createAccountWorkGate } from './account-work-gate'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
@@ -69,6 +77,7 @@ import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createPaymentWindowController } from './payment-window'
+import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   createDiagnosticsExport,
   runDiagnostics,
@@ -261,76 +270,6 @@ function createNativeThumbnailRenderer(): AssetThumbnailRenderer {
       }
     },
   }
-}
-
-function registerAiAssetProtocol(
-  assets: Pick<CanvasProjectAssetManager, 'readOwned'>,
-  accountService: Pick<RelayBackendClient, 'getSessionState'>,
-  thumbnails: Pick<AssetThumbnailService, 'resolve'>,
-): void {
-  protocol.handle('xingmang-asset', async (request) => {
-    try {
-      const url = new URL(request.url)
-      if (!['image', 'video', 'audio', 'thumb'].includes(url.hostname) || url.username || url.password || url.search || url.hash) {
-        return new Response(null, { status: 404 })
-      }
-      const sessionStateForThumbnail = accountService.getSessionState()
-      if (url.hostname === 'thumb') {
-        const parsed = parseAssetThumbnailPath(url.pathname)
-        if (!parsed || parsed.version !== assetThumbnailVersion) return new Response(null, { status: 404 })
-        const owner = sessionStateForThumbnail.authenticated ? sessionStateForThumbnail.account?.userId : undefined
-        if (!owner) return new Response(null, { status: 401 })
-        const derived = await thumbnails.resolve(owner, parsed.assetId, parsed.mediaKind)
-        if (!derived) return new Response(null, { status: 404 })
-        return new Response(derived.bytes, {
-          status: 200,
-          headers: {
-            'Access-Control-Allow-Origin': '*',
-            // Asset identifiers are content addressed and the pipeline version
-            // is part of the path, so a response can never go stale in place.
-            'Cache-Control': 'public, max-age=31536000, immutable',
-            'Content-Length': String(derived.bytes.byteLength),
-            'Content-Type': derived.mimeType,
-            'X-Content-Type-Options': 'nosniff',
-          },
-        })
-      }
-      const assetId = decodeURIComponent(url.pathname.replace(/^\//, ''))
-      const sessionState = accountService.getSessionState()
-      const userId = sessionState.authenticated ? sessionState.account?.userId : undefined
-      if (!userId) return new Response(null, { status: 401 })
-      const owned = await assets.readOwned(userId, assetId, url.hostname as 'image' | 'video' | 'audio')
-      const range = request.headers.get('range')
-      let body = owned.bytes
-      let status = 200
-      const headers: Record<string, string> = {
-        'Access-Control-Allow-Origin': '*',
-        'Accept-Ranges': 'bytes',
-        'Cache-Control': 'no-store',
-        'Content-Type': owned.asset.mimeType,
-        'X-Content-Type-Options': 'nosniff',
-      }
-      if (range) {
-        const parsedRange = parseSingleByteRange(range, body.byteLength)
-        if (!parsedRange) {
-          return new Response(null, { status: 416, headers: { 'Content-Range': `bytes */${body.byteLength}` } })
-        }
-        const { start, end } = parsedRange
-        status = 206
-        body = body.subarray(start, end + 1)
-        headers['Content-Range'] = `bytes ${start}-${end}/${owned.bytes.byteLength}`
-      }
-      headers['Content-Length'] = String(body.byteLength)
-      return new Response(body, {
-        status,
-        headers: {
-          ...headers,
-        },
-      })
-    } catch {
-      return new Response(null, { status: 404 })
-    }
-  })
 }
 
 function windowForContents(contents: WebContents): BrowserWindow {
@@ -620,7 +559,9 @@ if (!hasSingleInstanceLock) {
     runtimeLog.log('info', 'security', 'cli.execution-mode', 'CLI 扩展执行边界已确定', {
       mode: windowsCliExecutionMode,
     })
+    let readAccountSiteId: () => string = () => 'solov'
     const systemService = createSystemService(settingsStore, {
+      getRelaySiteId: () => readAccountSiteId(),
       windowsExecutionMode: windowsCliExecutionMode,
       ...rootedOptions.system,
       relayFetch,
@@ -735,194 +676,112 @@ if (!hasSingleInstanceLock) {
     registerApplicationProtocol(urlPolicy)
     const previewOnboarding = !app.isPackaged && process.env.XINGMANG_ONBOARDING_PREVIEW === '1'
 
-    // W2 login persistence (docs/ACCOUNT-PLAN.md): safeStorage wraps the OS
-    // credential store (DPAPI on Windows, Keychain on macOS). When it is
-    // unavailable, this deliberately does *not* fall back to writing the
-    // refresh cookie in plaintext -- persistence is simply skipped for this
-    // run, same as "safeStorage 不可用...不明文落盘兜底" requires. Logged once
-    // here rather than on every save so a headless/CI-like environment
-    // doesn't spam the log on each login.
+    // Both realms commit accounts through the OS-backed encrypted vault.
+    // Unavailable encryption rejects login without changing existing files.
     if (!safeStorage.isEncryptionAvailable()) {
       runtimeLog.log(
         'warn',
         'account',
         'session.persist.unavailable',
-        '系统未提供安全加密存储，登录状态本次不会持久化，下次启动需重新登录',
+        '系统未提供安全加密存储，请恢复系统凭据服务后登录；已有账号文件将保留',
       )
     }
-    const accountSessionStore = new AccountSessionStore(
-      path.join(managerDataDirectory, 'account-session.dat'),
-      safeStorage,
-    )
+    const accountSessionStore = new AccountSessionStore(path.join(managerDataDirectory, 'account-session.dat'), safeStorage)
     const savedAccounts = new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat'), safeStorage)
-    const savedAccountsOrigin = new URL(resolveRelaySite(storedSettings.relaySiteId).accountBaseUrl!).origin
-    let persistedActiveUserId: number | null = null
-    const accountCredentialStore = new AccountCredentialStore(
-      path.join(managerDataDirectory, 'account-credentials.dat'),
-      safeStorage,
-    )
-    const managedCliKeyStore = new ManagedCliKeyStore(
-      path.join(managerDataDirectory, 'managed-cli-keys.dat'),
-      safeStorage,
-    )
-    const chatKeyStore = new ChatKeyStore(
-      path.join(managerDataDirectory, 'chat-group-keys.dat'),
-      safeStorage,
-    )
-    // Constructed explicitly (rather than left to registerIpcHandlers' own
-    // internal default) so the canvas window controller below can share this
-    // exact instance -- it is the one place that knows whether the user is
-    // actually logged in, and a second, independent createNewApiClient()
-    // would always report "logged out" regardless of what the user did
-    // through the main app's own account:* handlers. onSessionChange is the
-    // single choke point (see new-api-client.ts) that keeps the encrypted
-    // file in sync with login/logout/silent-refresh from *either* consumer of
-    // this shared instance -- a disk failure here only ever gets logged, it
-    // must never surface as a failure of whatever account action triggered it.
-    // Typed as the backend-agnostic RelayBackendClient (relay-backend.ts) --
-    // both consumers wired below (registerIpcHandlers, createCanvasWindowController)
-    // depend on that interface, not on new-api-client.ts's concrete type.
-    let notifyCanvasAccountChanged: ((userId: number | null) => void) | null = null
-    const canvasAccountLifecycle = createCanvasAccountLifecycle({
-      onInitializationError: (_userId, error) => {
-        runtimeLog.exception('canvas', 'runtime.initialize.failed', error)
+    const vault = createFileRealmAccountVault(managerDataDirectory, safeStorage)
+    let publishedAccountIdentity = ''
+    const accounts = createRealmAccountService({
+      vault,
+      createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
+        if (siteId === 'solov-api') return createSub2ApiRelayBackend({ fetchImpl: relayFetch, onSessionChange,
+          onCredentialRotation: (saved) => vault.updateSession(saved) })
+        let client: ReturnType<typeof createNewApiClient>
+        function saved(): RealmSavedAccount | null {
+          const persisted = client.getPersistableSession()
+          const profile = client.getSessionState().account
+          return persisted && profile ? parseRealmSavedAccount({ version: 2, realmId: 'xm-account',
+            origin: 'https://xm.solov.cc', userId: String(persisted.userId), username: profile.username,
+            credential: { kind: 'new-api', cookies: persisted.cookies } }) : null
+        }
+        client = createNewApiClient({ baseUrl: 'https://xm.solov.cc', fetchImpl: relayFetch,
+          onCredentialRotation: async (persisted) => {
+            const revision = client.getSessionRevision()
+            const owner = { realmId: 'xm-account' as const, userId: String(persisted.userId) }
+            const existing = await vault.get(owner)
+            if (client.getSessionRevision() !== revision) throw new Error('账号会话已变更')
+            if (existing) await vault.updateSession(parseRealmSavedAccount({ ...existing,
+              credential: { kind: 'new-api', cookies: persisted.cookies } }))
+          },
+          onSessionChange: () => onSessionChange(saved()) })
+        return { client, getSavedAccount: saved, restore: async (record) => {
+          if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') throw new Error('账号凭据与站点不一致')
+          return client.restoreSession({ userId: Number(record.userId), cookies: [...record.credential.cookies] })
+        } }
       },
-    })
-    const accountService: RelayBackendClient = createNewApiClient({
-      fetchImpl: relayFetch,
-      onSessionChange: (persistable) => {
-        const previousUserId = persistedActiveUserId
-        persistedActiveUserId = persistable?.userId ?? null
-        canvasAccountLifecycle.update(persistable?.userId ?? null)
-        notifyCanvasAccountChanged?.(persistable?.userId ?? null)
+      legacy: { list: () => savedAccounts.list(), getSession: (id, origin) => savedAccounts.getSession(id, origin),
+        readActive: () => accountSessionStore.read() },
+      quiesce: async () => {
+        const previous = businesses.get(accounts.getSiteId())
+        previous?.chatService.cancelAll()
+        previous?.imageService.cancelAll()
+        previous?.canvasImageService.cancelAll()
+        previous?.videoService.cancelAll()
+        previous?.canvasRuns.shutdown()
+        paymentWindow.destroy()
+        await Promise.all([accountWork.whenIdle(), ...(previous ? [previous.chatService.whenIdle(),
+          previous.imageService.whenIdle(), previous.canvasImageService.whenIdle(), previous.videoService.whenIdle(),
+          previous.canvasRuns.whenIdle()] : [])])
+      },
+      onChanged: (siteId, state) => {
+        const identity = `${siteId}:${state.account?.userId ?? 'guest'}:${accounts.client.getSessionRevision!()}`
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
+        }
+        if (publishedAccountIdentity === identity) return
+        publishedAccountIdentity = identity
+        for (const business of businesses.values()) {
+          business.chatService.cancelAll()
+          business.imageService.cancelAll()
+          business.canvasImageService.cancelAll()
+          business.videoService.cancelAll()
+          business.canvasRuns.shutdown()
+        }
         latestTrayBalance = null
         applicationTray?.updateSnapshot()
-        if (persistable) {
-          const profile = accountService.getSessionState().account
-          if (profile) void savedAccounts.upsert({ ...persistable, origin: savedAccountsOrigin, username: profile.username }).catch((cause) => {
-            runtimeLog.exception('account', 'saved-account.persist.failed', cause)
-          })
-          void accountSessionStore.save(persistable).catch((error) => {
-            runtimeLog.log('warn', 'account', 'session.persist.failed', '登录状态持久化失败', {
-              reason: error instanceof Error ? error.message : String(error),
-            })
-          })
-        } else {
-          if (previousUserId !== null) void savedAccounts.remove(savedAccountId(savedAccountsOrigin, previousUserId)).catch((cause) => {
-            runtimeLog.exception('account', 'saved-account.remove.failed', cause)
-          })
-          void accountSessionStore.clear().catch((error) => {
-            runtimeLog.log('warn', 'account', 'session.clear.failed', '登录状态清除失败', {
-              reason: error instanceof Error ? error.message : String(error),
-            })
-          })
+        canvasController.setAccountUser(null)
+        canvasController.setAccountUser(state.account?.userId ?? null)
+        if (state.authenticated && state.account) {
+          const current = businesses.get(siteId)!
+          const userId = state.account.userId
+          void accountWork.run(async () => {
+            await current.canvasRuns.initializeUser(userId)
+            await current.canvasRuns.reconcileAssets(userId)
+          }).catch((error) => runtimeLog.exception('canvas', 'runtime.initialize.failed', error))
+          if (siteId === 'solov') void current.videoService.resumeUser(userId).catch((error) => runtimeLog.exception('canvas', 'video.resume.failed', error))
         }
       },
     })
-    // Fire-and-forget: never blocks window creation (see this promise's own
-    // consumer, ipc.ts's account:get-session handler, for why that race is
-    // still handled correctly without blocking startup on a slow network).
-    const accountSessionReady = restoreAccountSessionOnStartup({
-      accountService,
-      store: accountSessionStore,
-      runtimeLog,
-    })
-    const chatCredentials = createChatCredentialCoordinator({
-      accountService,
-      modelService: systemService,
-      keyStore: chatKeyStore,
-    })
-    const aiOutputRoot = resolveAiOutputRoot({
-      isPackaged: app.isPackaged,
-      projectRoot: path.join(__dirname, '..'),
-      execPath: process.execPath,
-    })
-    const assetStore = new AiAssetStore({
-      outputRoot: aiOutputRoot,
-      trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
-      nativeOperations: {
-        copyImage: (bytes) => {
-          const image = nativeImage.createFromBuffer(bytes)
-          if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
-          clipboard.writeImage(image)
-        },
-        selectSavePath: async (suggestedFileName) => {
-          const result = await dialog.showSaveDialog({
-            title: '图片另存为',
-            defaultPath: suggestedFileName,
-            filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
-          })
-          return result.canceled ? null : result.filePath ?? null
-        },
-        revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-        showContextMenu: (items) => {
-          const menu = Menu.buildFromTemplate(items.map((item) => ({
-            id: item.id,
-            label: item.label,
-            click: () => {
-              void item.run().catch((error) => {
-                dialog.showErrorBox(
-                  '图片操作失败',
-                  error instanceof Error ? error.message : '无法完成图片操作',
-                )
-              })
-            },
-          })))
-          menu.popup()
-        },
-      },
-    })
-    // Keep the image output location visible from the moment the app starts.
-    // The write path is checked again by AiAssetStore for every asset.
-    try {
-      assetStore.ensureOutputDirectory()
-    } catch (error) {
-      runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 图片 output 目录初始化失败', {
-        reason: error instanceof Error ? error.message : String(error),
+    readAccountSiteId = () => accounts.getSiteId()
+    const accountService = accounts.client
+    const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
+    function createBusiness(siteId: RealmAccountSiteId) {
+      const definition = requireSiteRuntimeDefinition(siteId)
+      const roots = resolveRealmDataRoots(managerDataDirectory, definition.realmId)
+      const accountService = createRealmServiceDispatch(() => {
+        if (accounts.getSiteId() !== siteId) throw new Error('账号上下文已变化，请重试')
+        return accounts.client
       })
-    }
-    const videoAssets = new AiVideoAssetStore({
-      outputRoot: aiOutputRoot,
-      nativeOperations: {
-        selectSavePath: async (suggestedFileName) => {
-          const result = await dialog.showSaveDialog({
-            title: '视频另存为', defaultPath: suggestedFileName,
-            filters: [{ name: '视频', extensions: ['mp4'] }],
-          })
-          return result.canceled ? null : result.filePath ?? null
-        },
-        revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-        showContextMenu: (items) => {
-          Menu.buildFromTemplate(items.map((item) => ({
-            id: item.id, label: item.label,
-            click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) },
-          }))).popup()
-        },
-      },
-    })
-    const audioAssets = new AiAudioAssetStore({
-      outputRoot: aiOutputRoot,
-      nativeOperations: {
-        selectSavePath: async (suggestedFileName) => {
-          const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
-          return result.canceled ? null : result.filePath ?? null
-        },
-        revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-        showContextMenu: (items) => {
-          Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('音频操作失败', error instanceof Error ? error.message : '无法完成音频操作')) } }))).popup()
-        },
-      },
-    })
-    const assetMetadata = new AiAssetMetadataStore({ outputRoot: aiOutputRoot })
-    // Permanent deletion hands the file to the OS recycle bin rather than
-    // unlinking it. The bytes are the user's artwork; the last recoverable copy
-    // should not depend on this program being right.
-    const trashItem = (filePath: string) => shell.trashItem(filePath)
-    const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata, trashItem })
-    const canvasProjects = new CanvasProjectStore(path.join(managerDataDirectory, 'canvas-projects'))
-    const createProjectAssetContext = (outputRoot: string) => {
-      const images = new AiAssetStore({
-        outputRoot,
+      const accountCredentialStore = new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat'), safeStorage)
+      const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId)
+      const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage)
+      const chatCredentials = createChatCredentialCoordinator({ accountService, modelService: systemService, keyStore: chatKeyStore })
+      const aiOutputRoot = roots.assetOutputDirectory(resolveAiOutputRoot({
+        isPackaged: app.isPackaged,
+        projectRoot: path.join(__dirname, '..'),
+        execPath: process.execPath,
+      }))
+      const assetStore = new AiAssetStore({
+        outputRoot: aiOutputRoot,
         trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
         nativeOperations: {
           copyImage: (bytes) => {
@@ -932,8 +791,46 @@ if (!hasSingleInstanceLock) {
           },
           selectSavePath: async (suggestedFileName) => {
             const result = await dialog.showSaveDialog({
-              title: '图片另存为', defaultPath: suggestedFileName,
+              title: '图片另存为',
+              defaultPath: suggestedFileName,
               filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
+            })
+            return result.canceled ? null : result.filePath ?? null
+          },
+          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+          showContextMenu: (items) => {
+            const menu = Menu.buildFromTemplate(items.map((item) => ({
+              id: item.id,
+              label: item.label,
+              click: () => {
+                void item.run().catch((error) => {
+                  dialog.showErrorBox(
+                    '图片操作失败',
+                    error instanceof Error ? error.message : '无法完成图片操作',
+                  )
+                })
+              },
+            })))
+            menu.popup()
+          },
+        },
+      })
+      // Keep the image output location visible from the moment the app starts.
+      // The write path is checked again by AiAssetStore for every asset.
+      try {
+        assetStore.ensureOutputDirectory()
+      } catch (error) {
+        runtimeLog.log('warn', 'ai-chat', 'asset.output-directory.unavailable', 'AI 图片 output 目录初始化失败', {
+          reason: error instanceof Error ? error.message : String(error),
+        })
+      }
+      const videoAssets = new AiVideoAssetStore({
+        outputRoot: aiOutputRoot,
+        nativeOperations: {
+          selectSavePath: async (suggestedFileName) => {
+            const result = await dialog.showSaveDialog({
+              title: '视频另存为', defaultPath: suggestedFileName,
+              filters: [{ name: '视频', extensions: ['mp4'] }],
             })
             return result.canceled ? null : result.filePath ?? null
           },
@@ -941,26 +838,13 @@ if (!hasSingleInstanceLock) {
           showContextMenu: (items) => {
             Menu.buildFromTemplate(items.map((item) => ({
               id: item.id, label: item.label,
-              click: () => { void item.run().catch((error) => dialog.showErrorBox('图片操作失败', error instanceof Error ? error.message : '无法完成图片操作')) },
+              click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) },
             }))).popup()
           },
         },
       })
-      const videos = new AiVideoAssetStore({
-        outputRoot,
-        nativeOperations: {
-          selectSavePath: async (suggestedFileName) => {
-            const result = await dialog.showSaveDialog({ title: '视频另存为', defaultPath: suggestedFileName, filters: [{ name: '视频', extensions: ['mp4'] }] })
-            return result.canceled ? null : result.filePath ?? null
-          },
-          revealInFolder: (filePath) => shell.showItemInFolder(filePath),
-          showContextMenu: (items) => {
-            Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) } }))).popup()
-          },
-        },
-      })
-      const audios = new AiAudioAssetStore({
-        outputRoot,
+      const audioAssets = new AiAudioAssetStore({
+        outputRoot: aiOutputRoot,
         nativeOperations: {
           selectSavePath: async (suggestedFileName) => {
             const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
@@ -972,144 +856,250 @@ if (!hasSingleInstanceLock) {
           },
         },
       })
-      return createCanvasProjectAssetContext(images, videos, audios, new AiAssetMetadataStore({ outputRoot }), trashItem)
-    }
-    const canvasProjectAssets = new CanvasProjectAssetManager({
-      projects: canvasProjects,
-      global: createCanvasProjectAssetContext(assetStore, videoAssets, audioAssets, assetMetadata, trashItem),
-      create: createProjectAssetContext,
-      onMetadataError: (error, context) => runtimeLog.log(
-        'warn',
-        'canvas',
-        'asset.source.persist.failed',
-        '生成素材已保存，但来源信息保存失败',
-        { ...context, reason: error instanceof Error ? error.message : String(error) },
-      ),
-    })
-    const assetThumbnails = createAssetThumbnailService({
-      store: new AssetThumbnailStore({ cacheRoot: path.join(managerDataDirectory, 'asset-thumbnails') }),
-      renderer: createNativeThumbnailRenderer(),
-      sources: {
-        // Must resolve through the project asset manager, not the global store.
-        // Canvas projects keep their media under the project workspace, so
-        // deriving from `output/` alone left every project asset without a
-        // thumbnail and the tray showed a placeholder for all of them.
-        readImage: async (userId, assetId) => {
-          const owned = await canvasProjectAssets.readOwned(userId, assetId, 'image')
-          return { bytes: owned.bytes, mimeType: owned.asset.mimeType }
+      const assetMetadata = new AiAssetMetadataStore({ outputRoot: aiOutputRoot })
+      // Permanent deletion hands the file to the OS recycle bin rather than
+      // unlinking it. The bytes are the user's artwork; the last recoverable copy
+      // should not depend on this program being right.
+      const trashItem = (filePath: string) => shell.trashItem(filePath)
+      const mediaAssets = createAiMediaAssetService({ images: assetStore, videos: videoAssets, audios: audioAssets, metadata: assetMetadata, trashItem })
+      const canvasProjects = new CanvasProjectStore(roots.canvasProjectsDirectory)
+      const createProjectAssetContext = (outputRoot: string) => {
+        const images = new AiAssetStore({
+          outputRoot,
+          trustedProxyFetchImpl: (input, init) => net.fetch(input, init),
+          nativeOperations: {
+            copyImage: (bytes) => {
+              const image = nativeImage.createFromBuffer(bytes)
+              if (image.isEmpty()) throw new Error('图片内容无效，无法复制')
+              clipboard.writeImage(image)
+            },
+            selectSavePath: async (suggestedFileName) => {
+              const result = await dialog.showSaveDialog({
+                title: '图片另存为', defaultPath: suggestedFileName,
+                filters: [{ name: '图片', extensions: ['png', 'jpg', 'webp'] }],
+              })
+              return result.canceled ? null : result.filePath ?? null
+            },
+            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+            showContextMenu: (items) => {
+              Menu.buildFromTemplate(items.map((item) => ({
+                id: item.id, label: item.label,
+                click: () => { void item.run().catch((error) => dialog.showErrorBox('图片操作失败', error instanceof Error ? error.message : '无法完成图片操作')) },
+              }))).popup()
+            },
+          },
+        })
+        const videos = new AiVideoAssetStore({
+          outputRoot,
+          nativeOperations: {
+            selectSavePath: async (suggestedFileName) => {
+              const result = await dialog.showSaveDialog({ title: '视频另存为', defaultPath: suggestedFileName, filters: [{ name: '视频', extensions: ['mp4'] }] })
+              return result.canceled ? null : result.filePath ?? null
+            },
+            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+            showContextMenu: (items) => {
+              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('视频操作失败', error instanceof Error ? error.message : '无法完成视频操作')) } }))).popup()
+            },
+          },
+        })
+        const audios = new AiAudioAssetStore({
+          outputRoot,
+          nativeOperations: {
+            selectSavePath: async (suggestedFileName) => {
+              const result = await dialog.showSaveDialog({ title: '音频另存为', defaultPath: suggestedFileName, filters: [{ name: '音频', extensions: ['mp3', 'wav', 'ogg', 'm4a'] }] })
+              return result.canceled ? null : result.filePath ?? null
+            },
+            revealInFolder: (filePath) => shell.showItemInFolder(filePath),
+            showContextMenu: (items) => {
+              Menu.buildFromTemplate(items.map((item) => ({ id: item.id, label: item.label, click: () => { void item.run().catch((error) => dialog.showErrorBox('音频操作失败', error instanceof Error ? error.message : '无法完成音频操作')) } }))).popup()
+            },
+          },
+        })
+        return createCanvasProjectAssetContext(images, videos, audios, new AiAssetMetadataStore({ outputRoot }), trashItem)
+      }
+      const canvasProjectAssets = new CanvasProjectAssetManager({
+        realmId: definition.realmId,
+        projects: canvasProjects,
+        global: createCanvasProjectAssetContext(assetStore, videoAssets, audioAssets, assetMetadata, trashItem),
+        create: createProjectAssetContext,
+        onMetadataError: (error, context) => runtimeLog.log(
+          'warn',
+          'canvas',
+          'asset.source.persist.failed',
+          '生成素材已保存，但来源信息保存失败',
+          { ...context, reason: error instanceof Error ? error.message : String(error) },
+        ),
+      })
+      const assetThumbnails = createAssetThumbnailService({
+        store: new AssetThumbnailStore({ cacheRoot: roots.assetThumbnailsDirectory }),
+        renderer: createNativeThumbnailRenderer(),
+        sources: {
+          // Must resolve through the project asset manager, not the global store.
+          // Canvas projects keep their media under the project workspace, so
+          // deriving from `output/` alone left every project asset without a
+          // thumbnail and the tray showed a placeholder for all of them.
+          readImage: async (userId, assetId) => {
+            const owned = await canvasProjectAssets.readOwned(userId, assetId, 'image')
+            return { bytes: owned.bytes, mimeType: owned.asset.mimeType }
+          },
+          resolveVideoPath: (userId, assetId) => canvasProjectAssets.resolveOwnedFilePath(userId, assetId, 'video'),
         },
-        resolveVideoPath: (userId, assetId) => canvasProjectAssets.resolveOwnedFilePath(userId, assetId, 'video'),
-      },
-      onFailure: (assetId, reason) => runtimeLog.log(
-        'warn',
-        'canvas',
-        'asset.thumbnail.failed',
-        '素材缩略图生成失败，已回退到占位图',
-        { assetId, reason },
-      ),
-    })
-    registerAiAssetProtocol(canvasProjectAssets, accountService, assetThumbnails)
-    const chatService = createAiChatService({
-      credentialCoordinator: chatCredentials,
-      fetchImpl: relayFetch,
-      emit: (senderId, event) => {
-        const sender = BrowserWindow.getAllWindows()
-          .map((window) => window.webContents)
-          .find((contents) => contents.id === senderId && !contents.isDestroyed())
-        if (!sender) throw new Error('AI聊天窗口已关闭')
-        if (event.type === 'delta') {
-          if (event.content) sender.send(ipcEventChannels.onAiChatStream, {
-            requestId: event.requestId,
-            type: 'content',
-            content: event.content,
-          })
-          if (event.reasoning) sender.send(ipcEventChannels.onAiChatStream, {
-            requestId: event.requestId,
-            type: 'reasoning',
-            content: event.reasoning,
-          })
-          return
-        }
-        if (event.type === 'error') sender.send(ipcEventChannels.onAiChatStream, {
-          requestId: event.requestId,
-          type: 'error',
-          code: event.code,
-          message: event.message,
-        })
-        else sender.send(ipcEventChannels.onAiChatStream, {
-          requestId: event.requestId,
-          type: event.type,
-        })
-      },
-      log: (entry) => runtimeLog.log(
-        entry.status === 'error' ? 'warn' : 'debug',
-        'chat',
-        `stream.${entry.status}`,
-        `AI聊天流已${entry.status === 'complete' ? '完成' : '结束'}`,
-        entry,
-      ),
-    })
-    runtimeLog.log('info', 'chat', 'network.ready', 'AI聊天网络栈已就绪', {
-      transport: 'electron-net',
-      responseHeaderTimeoutMs: AI_CHAT_STREAM_LIMITS.connectionTimeoutMs,
-    })
-    const imageService = createAiImageService({
-      baseUrl: 'https://xm.solov.cc',
-      credentials: chatCredentials,
-      assets: assetStore,
-    })
-    const canvasImageService = createAiImageService({
-      baseUrl: 'https://xm.solov.cc',
-      credentials: chatCredentials,
-      assets: {
-        prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
-        storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
-        storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
-        readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
-      },
-    })
-    const videoTasks = new AiVideoTaskStore({
-      rootDirectory: path.join(managerDataDirectory, 'canvas-video-tasks'),
-    })
-    const videoService = createAiVideoService({
-      baseUrl: 'https://xm.solov.cc',
-      credentials: chatCredentials,
-      tasks: videoTasks,
-      assets: {
-        prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
-        storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
-        readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
-        readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
-      },
-    })
-    const canvasRunStore = new CanvasRunStore({
-      rootDirectory: path.join(managerDataDirectory, 'canvas-runtime'),
-      assets: canvasProjectAssets,
-    })
-    const canvasPromptPresets = new CanvasPromptPresetStore({
-      rootDirectory: path.join(managerDataDirectory, 'canvas-content'),
-    })
-    const canvasRuns = createCanvasRunService({
-      store: canvasRunStore,
-      executors: createCanvasNodeExecutors({
-        imageService: canvasImageService,
-        videoService,
+        onFailure: (assetId, reason) => runtimeLog.log(
+          'warn',
+          'canvas',
+          'asset.thumbnail.failed',
+          '素材缩略图生成失败，已回退到占位图',
+          { assetId, reason },
+        ),
+      })
+      const assetProtocol = createAiAssetProtocolHandler({
         assets: canvasProjectAssets,
-        completeText: {
-          completeOnce: (input) => chatService.completeOnce({
-            group: input.group,
-            model: input.model,
-            messages: [
-              { role: 'system', content: input.system },
-              { role: 'user', content: input.user },
-            ],
-            signal: input.signal,
-          }),
+        identities: createActiveIdentityReader(definition, { getSessionState: () => accountService.getSessionState(),
+          getSessionRevision: () => accountService.getSessionRevision!() }),
+        thumbnails: assetThumbnails,
+      })
+      const chatService = createAiChatService({
+        baseUrl: definition.aiBaseUrl,
+        credentialCoordinator: chatCredentials,
+        fetchImpl: relayFetch,
+        emit: (senderId, event) => {
+          const sender = BrowserWindow.getAllWindows()
+            .map((window) => window.webContents)
+            .find((contents) => contents.id === senderId && !contents.isDestroyed())
+          if (!sender) throw new Error('AI聊天窗口已关闭')
+          if (event.type === 'delta') {
+            if (event.content) sender.send(ipcEventChannels.onAiChatStream, {
+              requestId: event.requestId,
+              type: 'content',
+              content: event.content,
+            })
+            if (event.reasoning) sender.send(ipcEventChannels.onAiChatStream, {
+              requestId: event.requestId,
+              type: 'reasoning',
+              content: event.reasoning,
+            })
+            return
+          }
+          if (event.type === 'error') sender.send(ipcEventChannels.onAiChatStream, {
+            requestId: event.requestId,
+            type: 'error',
+            code: event.code,
+            message: event.message,
+          })
+          else sender.send(ipcEventChannels.onAiChatStream, {
+            requestId: event.requestId,
+            type: event.type,
+          })
         },
-      }),
+        log: (entry) => runtimeLog.log(
+          entry.status === 'error' ? 'warn' : 'debug',
+          'chat',
+          `stream.${entry.status}`,
+          `AI聊天流已${entry.status === 'complete' ? '完成' : '结束'}`,
+          entry,
+        ),
+      })
+      runtimeLog.log('info', 'chat', 'network.ready', 'AI聊天网络栈已就绪', {
+        transport: 'electron-net',
+        responseHeaderTimeoutMs: AI_CHAT_STREAM_LIMITS.connectionTimeoutMs,
+      })
+      const imageService = createAiImageService({
+        fetchImpl: relayFetch,
+        baseUrl: definition.aiBaseUrl,
+        credentials: chatCredentials,
+        assets: assetStore,
+      })
+      const canvasImageService = createAiImageService({
+        fetchImpl: relayFetch,
+        baseUrl: definition.aiBaseUrl,
+        credentials: chatCredentials,
+        assets: {
+          prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+          storeBase64: (userId, value, metadata) => canvasProjectAssets.storeBase64(userId, value, metadata),
+          storeRemoteUrl: (userId, url, metadata) => canvasProjectAssets.storeRemoteUrl(userId, url, metadata),
+          readOwned: (userId, assetId, projectId) => canvasProjectAssets.readImageOwned(userId, assetId, projectId),
+        },
+      })
+      const videoTasks = new AiVideoTaskStore({
+        rootDirectory: roots.canvasVideoTasksDirectory,
+      })
+      const videoService = createAiVideoService({
+        fetchImpl: relayFetch,
+        baseUrl: definition.aiBaseUrl,
+        credentials: chatCredentials,
+        tasks: videoTasks,
+        assets: {
+          prepareProject: (userId, projectId) => canvasProjectAssets.prepareProject(userId, projectId),
+          storeMp4: (userId, bytes, metadata) => canvasProjectAssets.storeMp4(userId, bytes, metadata),
+          readImageDataUri: (userId, assetId, projectId) => canvasProjectAssets.readImageDataUri(userId, assetId, projectId),
+          readOwned: (userId, assetId, kind, projectId) => canvasProjectAssets.readMediaOwned(userId, assetId, kind, projectId),
+        },
+      })
+      if (siteId === 'solov-api') {
+        videoService.generate = async () => { throw new Error('当前站点暂未上线视频模型') }
+        videoService.resumeVideoTask = async () => { throw new Error('当前站点暂未上线视频模型') }
+      }
+      const canvasRunStore = new CanvasRunStore({
+        rootDirectory: roots.canvasRuntimeDirectory,
+        assets: canvasProjectAssets,
+      })
+      const canvasPromptPresets = new CanvasPromptPresetStore({
+        rootDirectory: path.join(roots.rootDirectory, 'canvas-content'),
+      })
+      const canvasRuns = createCanvasRunService({
+        store: canvasRunStore,
+        executors: createCanvasNodeExecutors({
+          imageService: canvasImageService,
+          videoService,
+          assets: canvasProjectAssets,
+          completeText: {
+            completeOnce: (input) => chatService.completeOnce({
+              group: input.group,
+              model: input.model,
+              messages: [
+                { role: 'system', content: input.system },
+                { role: 'user', content: input.user },
+              ],
+              signal: input.signal,
+            }),
+          },
+        }),
+      })
+      return { accountCredentialStore, managedCliKeyStore, chatKeyStore, chatCredentials, assetStore, videoAssets,
+        audioAssets, mediaAssets, canvasPromptPresets, canvasProjects, canvasProjectAssets,
+        chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol }
+    }
+    const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
+    businesses.set('solov', createBusiness('solov'))
+    businesses.set('solov-api', createBusiness('solov-api'))
+    const currentBusiness = () => businesses.get(accounts.getSiteId())!
+    const accountCredentialStore = createRealmServiceDispatch(() => currentBusiness().accountCredentialStore)
+    const managedCliKeyStore = createRealmServiceDispatch(() => currentBusiness().managedCliKeyStore)
+    const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
+    const chatCredentials = createRealmServiceDispatch(() => currentBusiness().chatCredentials)
+    const assetStore = createRealmServiceDispatch(() => currentBusiness().assetStore)
+    const videoAssets = createRealmServiceDispatch(() => currentBusiness().videoAssets)
+    const audioAssets = createRealmServiceDispatch(() => currentBusiness().audioAssets)
+    const mediaAssets = createRealmServiceDispatch(() => currentBusiness().mediaAssets)
+    const canvasPromptPresets = createRealmServiceDispatch(() => currentBusiness().canvasPromptPresets)
+    const canvasProjects = createRealmServiceDispatch(() => currentBusiness().canvasProjects)
+    const canvasProjectAssets = createRealmServiceDispatch(() => currentBusiness().canvasProjectAssets)
+    const chatService = createRealmServiceDispatch(() => currentBusiness().chatService)
+    const imageService = createRealmServiceDispatch(() => currentBusiness().imageService)
+    const canvasImageService = createRealmServiceDispatch(() => currentBusiness().canvasImageService)
+    const videoService = createRealmServiceDispatch(() => currentBusiness().videoService)
+    const canvasRuns = createRealmServiceDispatch(() => currentBusiness().canvasRuns)
+    // Run subscriptions outlive a selected realm, so listen to both fixed stores.
+    canvasRuns.subscribe = (listener) => {
+      const remove = [...businesses.values()].map((business) => business.canvasRuns.subscribe(listener))
+      return () => remove.forEach((unsubscribe) => unsubscribe())
+    }
+    protocol.handle('xingmang-asset', async (request) => {
+      try { return await accountWork.run(() => currentBusiness().assetProtocol(request)) }
+      catch { return new Response(null, { status: 401, headers: { 'Cache-Control': 'no-store' } }) }
     })
-    canvasAccountLifecycle.bind({ imageService: canvasImageService, videoService, canvasRuns })
     const canvasController = createCanvasWindowController({
+      accountWork,
       canvasDistRoot: canvasDistRoot(),
       externalUrlAllowlist: canvasExternalUrlAllowlist,
       systemService,
@@ -1128,12 +1118,16 @@ if (!hasSingleInstanceLock) {
       projects: canvasProjects,
       projectAssets: canvasProjectAssets,
     })
-    notifyCanvasAccountChanged = (userId) => canvasController.setAccountUser(userId)
     // Session restoration may have completed before the controller was
     // constructed. Seed its ownership record so the first real account
     // transition is delivered to an already-open canvas window exactly once.
     canvasController.setAccountUser(accountService.getSessionState().account?.userId ?? null)
     const paymentWindow = createPaymentWindowController({
+      createOrderStatusReader: (tradeNo) => createPaymentOrderStatusReader({
+        client: accountService,
+        getSiteId: accounts.getSiteId,
+        assertReady: accounts.assertReady,
+      }, tradeNo),
       onBlockedNavigation: (targetUrl) => {
         let origin = 'invalid-url'
         try {
@@ -1178,7 +1172,13 @@ if (!hasSingleInstanceLock) {
         error instanceof Error ? error.message : '星芒AI Skill 默认安装失败',
       )
     })
+    const accountSessionReady = accounts.restoreActive().then(() => undefined).catch((error) => {
+      runtimeLog.exception('account', 'session.restore.failed', error)
+    })
     const unregisterIpcHandlers = registerIpcHandlers({
+      realmAccounts: accounts,
+      accountWork,
+      accountCredentialsForSite: (siteId) => businesses.get(siteId)!.accountCredentialStore,
       savedAccounts,
       systemService,
       accountService,
@@ -1249,11 +1249,13 @@ if (!hasSingleInstanceLock) {
       unsubscribeDesktopNotifications()
       desktopNotifications.dispose()
       unregisterIpcHandlers()
-      chatService.dispose()
-      imageService.cancelAll()
-      canvasImageService.cancelAll()
-      videoService.cancelAll()
-      canvasRuns.shutdown()
+      for (const business of businesses.values()) {
+        business.chatService.dispose()
+        business.imageService.cancelAll()
+        business.canvasImageService.cancelAll()
+        business.videoService.cancelAll()
+        business.canvasRuns.shutdown()
+      }
       protocol.unhandle('xingmang-asset')
       paymentWindow.destroy()
       canvasController.dispose()

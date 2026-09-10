@@ -22,12 +22,12 @@ const calls: Array<{ method: string; input?: unknown }> = []
 function record(method: string, input?: unknown) { calls.push({ method, input }); document.documentElement.dataset.calls = JSON.stringify(calls) }
 const pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>()
 function waitForRelease(method: string): Promise<void> { return query.getAll('pending').includes(method) ? new Promise<void>((resolve, reject) => pending.set(method, { resolve, reject })) : Promise.resolve() }
-const status: AccountStatus = { systemName: 'Test fixture', version: '1', setupComplete: true, quotaPerUnit: 1, quotaDisplayType: 'USD', usdExchangeRate: 1, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: false }
+const status: AccountStatus = { systemName: 'Test fixture', version: '1', setupComplete: true, quotaPerUnit: 1, quotaDisplayType: 'USD', usdExchangeRate: 1, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: query.has('turnstile') }
 const api: AuthApi = {
   getStatus: async () => status,
-  getRemembered: async () => null,
-  setRemembered: async (input) => { record('remember', input) },
-  login: async (input) => { record('login', input); if (query.has('fail')) throw new Error('invalid password'); return { account: { userId: 7, username: input.username, quota: 0, usedQuota: 0, group: 'default', role: 1 }, accessExpiresAt: null } },
+  getRemembered: async () => query.has('remembered') ? { identifier: 'same@example.test', password: 'remembered-password' } : null,
+  setRemembered: async (input, siteId) => { document.documentElement.dataset.savedSite = siteId ?? '';  record('remember', input) },
+  login: async (input) => { record('login', input); if (query.has('fail')) throw new Error('invalid password'); return { account: { userId: 7, username: input.username, quota: 0, usedQuota: 0, group: 'default', role: 1 }, accessExpiresAt: null, siteId: input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov') } },
   register: async (input) => { record('register', input); await waitForRelease('register') },
   sendVerification: async (input) => { record('verification', input) },
   sendReset: async (input) => { record('send-reset', input); await waitForRelease('send-reset') },

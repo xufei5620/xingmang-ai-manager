@@ -12,6 +12,13 @@ import type { AccountPaymentWindowTerminalEvent } from '../electron/ipc-contract
 declare global {
   interface Window {
     emitPaymentWindowTerminal: (event: AccountPaymentWindowTerminalEvent) => void
+    keyGroupsHarness: {
+      requests: number
+      setGroups(names: string[]): void
+      deferNext(): void
+      failNext(): void
+      release(): void
+    }
   }
 }
 
@@ -28,10 +35,24 @@ const record = (name: string, args?: unknown) => {
   calls.push({ name, args })
   document.documentElement.dataset.calls = JSON.stringify(calls)
 }
-let paymentWindowTerminalListener:
-  | ((event: AccountPaymentWindowTerminalEvent) => void)
-  | null = null
-window.emitPaymentWindowTerminal = (event) => paymentWindowTerminalListener?.(event)
+let keyGroups = [{ name: 'default', description: '默认分组', ratio: 1 }]
+let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
+let releaseKeyGroups: (() => void) | null = null
+window.keyGroupsHarness = {
+  requests: 0,
+  setGroups(names) { keyGroups = names.map((name) => ({ name, description: name, ratio: 1 })) },
+  deferNext() { nextKeyGroupsRequest = 'deferred' },
+  failNext() { nextKeyGroupsRequest = 'failed' },
+  release() { releaseKeyGroups?.(); releaseKeyGroups = null },
+}
+const paymentWindowTerminalListeners = new Set<(event: AccountPaymentWindowTerminalEvent) => void>()
+window.emitPaymentWindowTerminal = (event) => {
+  if (event.status === 'success' && event.tradeNo === 'XM-VISUAL-TOPUP') {
+    balance.quota = 1400
+    balance.displayAmount = 14
+  }
+  paymentWindowTerminalListeners.forEach((listener) => listener(event))
+}
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
 document.documentElement.dataset.skin =
   query.get('skin') ?? (query.get('theme') === 'dark' ? 'obsidian' : 'dawn')
@@ -205,8 +226,8 @@ const apiMethods = {
       usedQuota: 100,
     },
   }),
-  getAccountProfile: async () => ({ ...profile, userId: activeUserId }),
-  getAccountBalance: async () => balance,
+  getAccountProfile: async () => { record('get-profile'); return { ...profile, userId: activeUserId } },
+  getAccountBalance: async () => { record('get-balance'); return { ...balance } },
   listSavedAccounts: async () => [
     {
       id: 'saved-test',
@@ -274,9 +295,15 @@ const apiMethods = {
     total: empty ? 0 : 1,
     keys: empty ? [] : [key],
   }),
-  getAccountUsableGroups: async () => [
-    { name: 'default', description: '默认分组', ratio: 1 },
-  ],
+  getAccountUsableGroups: async () => {
+    window.keyGroupsHarness.requests++
+    const groups = keyGroups.map((group) => ({ ...group }))
+    const state = nextKeyGroupsRequest
+    nextKeyGroupsRequest = 'ready'
+    if (state === 'failed') throw new Error('分组读取暂时失败，请重试')
+    if (state === 'deferred') await new Promise<void>((resolve) => { releaseKeyGroups = resolve })
+    return groups
+  },
   getAccountDashboard: async () => ({
     startTimestamp: 1,
     endTimestamp: 2,
@@ -395,9 +422,16 @@ const apiMethods = {
     input: Parameters<V2Bridge['createAccountTopupPayment']>[0],
   ) => {
     record('create-topup-payment', input)
+    if (query.has('fastPayment')) window.emitPaymentWindowTerminal({ status: 'success', tradeNo: 'XM-VISUAL-TOPUP' })
     return { opened: true as const, tradeNo: 'XM-VISUAL-TOPUP' }
   },
   closeAccountPaymentWindow: async () => undefined,
+  redeemAccountTopupCode: async (code: string) => {
+    record('redeem-code', code)
+    const type = query.get('redemptionType')
+    if (type === 'subscription' || type === 'concurrency') return { type, quotaAdded: 0 }
+    return { quotaAdded: 5 }
+  },
   getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') ? [{
     id: 1,
     title: '外部订阅',
@@ -433,11 +467,11 @@ const apiMethods = {
     record('purchase-subscription-balance', planId)
     return { purchased: true as const }
   },
-  getAccountSubscriptionSelf: async () => ({
+  getAccountSubscriptionSelf: async () => { record('get-subscriptions'); return {
     billingPreference: 'subscription_first' as const,
     activeSubscriptions: [],
     allSubscriptions: [],
-  }),
+  } },
   getAccountLoginSessions: async () => [
     {
       sid: 'device-1',
@@ -655,10 +689,8 @@ const apiMethods = {
   },
   onUpdateState: () => () => undefined,
   onAccountPaymentWindowTerminal: (listener: (event: AccountPaymentWindowTerminalEvent) => void) => {
-    paymentWindowTerminalListener = listener
-    return () => {
-      if (paymentWindowTerminalListener === listener) paymentWindowTerminalListener = null
-    }
+    paymentWindowTerminalListeners.add(listener)
+    return () => { paymentWindowTerminalListeners.delete(listener) }
   },
   runDiagnostics: async () => ({
     version: 1 as const,

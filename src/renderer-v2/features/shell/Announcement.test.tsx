@@ -20,6 +20,10 @@ describe('renderer-v2 announcement error mapping', () => {
   })
 
   it('keeps ordinary failures distinguishable and retryable', () => {
+    expect(formatAnnouncementError(new Error("Error invoking remote method 'account:get-notice': RealmAccountError: 账号服务暂时无法连接"))).toEqual({
+      responseTooLarge: false,
+      message: '账号服务暂时无法连接',
+    })
     expect(formatAnnouncementError(new Error("Error invoking remote method 'account:get-notice': Error: 网络暂时不可用"))).toEqual({
       responseTooLarge: false,
       message: '网络暂时不可用',

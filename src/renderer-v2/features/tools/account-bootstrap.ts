@@ -1,3 +1,4 @@
+import { accountSiteId, type AccountSiteId } from '../../account-context'
 import {
   providerIds,
   type AppConfigSummary,
@@ -165,7 +166,7 @@ export function configurationFailure(
 ): string | null {
   const current = config.providers[provider]
   if (!current.hasApiKey) return '配置文件未检测到 API Key'
-  if (!current.matchesRelay) return '服务地址未指向当前星芒站点'
+  if (!current.matchesRelay) return '服务地址尚未与当前账号匹配'
   if (!current.model.trim()) return '默认模型尚未写入'
   if (provider === 'gemini' && current.authType !== 'gemini-api-key') return 'Gemini 尚未切换到 API Key 模式'
   return connectionReady(current, provider, storage) ? null : '工具连接尚未完成'
@@ -180,11 +181,13 @@ export function shouldShowAccountBootstrap(config: AppConfigSummary): boolean {
 async function assertAccount(
   api: Pick<AccountBootstrapBridge, 'getAccountSession'>,
   expectedUserId: number,
+  expectedSiteId?: AccountSiteId,
 ) {
   const session = await api.getAccountSession()
-  if (!session.authenticated || session.account?.userId !== expectedUserId) {
+  if (!session.authenticated || session.account?.userId !== expectedUserId || (expectedSiteId !== undefined && accountSiteId(session) !== expectedSiteId)) {
     throw new Error('星芒账号已变化，已停止本次 Key 配置')
   }
+  return accountSiteId(session)
 }
 
 export async function bootstrapAccountTools(
@@ -195,7 +198,7 @@ export async function bootstrapAccountTools(
   onlyProviders?: readonly ProviderId[],
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): Promise<AccountBootstrapResult> {
-  await assertAccount(api, expectedUserId)
+  const expectedSiteId = await assertAccount(api, expectedUserId)
   onProgress({ phase: 'syncing', label: '正在同步账号专属 Key', percent: 15 })
 
   let synchronized: Awaited<ReturnType<AccountBootstrapBridge['syncManagedCliKeys']>> | null = null
@@ -206,14 +209,14 @@ export async function bootstrapAccountTools(
     syncError = error instanceof Error ? error.message : '账号专属 Key 没有同步完成'
   }
 
-  await assertAccount(api, expectedUserId)
+  await assertAccount(api, expectedUserId, expectedSiteId)
   onProgress({ phase: 'inspecting', label: '正在检查已安装工具和连接来源', percent: 40 })
   const [system, config, settings] = await Promise.all([
     api.scanSystem(true),
     api.getConfig(),
     api.getSettings(),
   ])
-  await assertAccount(api, expectedUserId)
+  await assertAccount(api, expectedUserId, expectedSiteId)
   const planned = accountBootstrapPlan(system, config, settings, mode, storage)
   const permitted = onlyProviders ? new Set(onlyProviders) : null
   const plan = permitted
@@ -236,10 +239,10 @@ export async function bootstrapAccountTools(
     })
   }
 
-  await assertAccount(api, expectedUserId)
+  await assertAccount(api, expectedUserId, expectedSiteId)
   onProgress({ phase: 'verifying', label: '正在复核 Key、服务地址和模型', percent: 88 })
   const verified = await api.getConfig()
-  await assertAccount(api, expectedUserId)
+  await assertAccount(api, expectedUserId, expectedSiteId)
 
   const configured: ProviderId[] = []
   const failed: Array<{ provider: ProviderId; message: string }> = []

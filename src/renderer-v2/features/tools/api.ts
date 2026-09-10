@@ -1,5 +1,6 @@
 import type { CodexDesktopLaunchMode, XingmangApi } from '../../../../electron/ipc-contract'
 import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
+import { readAllAccountKeys } from './key-selection'
 
 export function createToolsApi(bridge: XingmangApi) {
   return {
@@ -16,7 +17,8 @@ export function createToolsApi(bridge: XingmangApi) {
     chooseWorkspace: () => bridge.chooseWorkspace(),
     recent: () => bridge.listProviderSessions({ page: 1, pageSize: 3 }),
     readConfig: () => bridge.getConfig(),
-    readKeys: () => bridge.getAccountKeys({ page: 1, pageSize: 100 }),
+    readKeys: () => readAllAccountKeys((query) => bridge.getAccountKeys(query)),
+    readKeyOptions: (tool: ToolId) => bridge.getAccountKeyOptions(providerFor(tool)),
     keyModels: (id: number) => bridge.listAccountKeyModels(id),
     configuredModels: (tool: ToolId) => bridge.listConfiguredModels(providerFor(tool)),
     manualModels: (key: string) => bridge.listModels(key),

@@ -19,5 +19,6 @@ export function createAppApi(bridge: XingmangApi) {
     openCanvas: () => bridge.openCanvasWindow(),
     openExternal: (url: string) => bridge.openExternal(url),
     announcement: () => bridge.getAccountNotice(),
+    markAnnouncementRead: (id: string, entryId: string) => bridge.markAccountNoticeRead(id, entryId),
   }
 }

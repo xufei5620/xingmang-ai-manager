@@ -255,6 +255,33 @@ describe('syncManagedCliKeySummary', () => {
     expect(provisionCliKey).toHaveBeenCalledTimes(1)
     expect(store.save).not.toHaveBeenCalled()
   })
+
+  it('rejects an ABA session when the same user logs in again', async () => {
+    let revision = 1
+    let releaseProvision: () => void = () => undefined
+    const blocked = new Promise<void>((resolve) => { releaseProvision = resolve })
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => []),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    const accountService = {
+      getSessionState: vi.fn(() => ({ authenticated: true, account: { userId: 73 } })),
+      getSessionRevision: vi.fn(() => revision),
+      provisionCliKey: vi.fn(async (input: { group?: string } = {}) => {
+        await blocked
+        const entry = keyForGroup(input.group ?? '')
+        return { id: 1, name: entry.name, key: entry.key }
+      }),
+    } as unknown as AccountService
+
+    const pending = syncManagedCliKeySummary(accountService, store)
+    revision = 2
+    releaseProvision()
+
+    await expect(pending).rejects.toThrow('账号已切换')
+    expect(store.save).not.toHaveBeenCalled()
+  })
 })
 
 describe('configureManagedClis', () => {

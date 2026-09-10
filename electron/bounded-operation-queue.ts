@@ -50,6 +50,7 @@ export class BoundedOperationQueue {
   private readonly entries = new Set<QueueEntry<unknown>>()
   private activeCount = 0
   private closed = false
+  private readonly idleWaiters = new Set<() => void>()
 
   constructor(options: BoundedOperationQueueOptions) {
     this.maxActive = positiveInteger(options.maxActive, '最大并发数')
@@ -103,6 +104,17 @@ export class BoundedOperationQueue {
     return { active: this.activeCount, queued: this.pending.length, closed: this.closed }
   }
 
+  whenIdle(): Promise<void> {
+    if (this.entries.size === 0) return Promise.resolve()
+    return new Promise((resolve) => this.idleWaiters.add(resolve))
+  }
+
+  private notifyIdle(): void {
+    if (this.entries.size) return
+    for (const resolve of this.idleWaiters) resolve()
+    this.idleWaiters.clear()
+  }
+
   private cancelEntry<T>(entry: QueueEntry<T>, reason: Error): BoundedOperationCancelResult {
     if (entry.state === 'settled' || entry.controller.signal.aborted) {
       return { canceled: false, started: entry.state !== 'queued' }
@@ -114,6 +126,7 @@ export class BoundedOperationQueue {
       this.entries.delete(entry as QueueEntry<unknown>)
       entry.controller.abort(reason)
       entry.reject(reason)
+      this.notifyIdle()
       return { canceled: true, started: false }
     }
     entry.controller.abort(reason)
@@ -141,6 +154,7 @@ export class BoundedOperationQueue {
         this.activeCount -= 1
         this.entries.delete(entry as QueueEntry<unknown>)
         this.startNext()
+        this.notifyIdle()
       })
   }
 

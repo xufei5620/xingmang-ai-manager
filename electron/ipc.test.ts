@@ -12,6 +12,7 @@ import { providerSessionProviders } from './provider-sessions'
 import { resolveRelaySite, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
 import { createWindowCloseQuery } from './window-close-query'
+import { createAccountWorkGate } from './account-work-gate'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
@@ -177,7 +178,7 @@ function trustedEvent(url = 'http://localhost:5173/', senderId = 101) {
 }
 
 type ChatIpcOverrides = Partial<Pick<Parameters<typeof registerIpcHandlers>[0],
-  'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'replyWindowClose' | 'takeExternalDeepLink'>>
+  'accountCredentialsForSite' | 'realmAccounts' | 'accountWork' | 'accountSessionReady' | 'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'replyWindowClose' | 'takeExternalDeepLink'>>
 
 function updaterStub(): UpdaterService {
   const state = {
@@ -366,6 +367,21 @@ describe('registerIpcHandlers', () => {
     dispose()
 
     expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel)).toEqual(expectedChannels)
+  })
+
+  it('marks one fetched announcement read only through trusted account IPC with valid IDs', async () => {
+    const accountService = accountServiceStub()
+    accountService.markNoticeRead = vi.fn(async () => undefined)
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+    const handler = electronMocks.handlers.get('account:mark-notice-read')!
+    expect(() => handler(trustedEvent('https://attacker.example/'), 'notice-hash', '7')).toThrow('非应用页面')
+    for (const id of [null, {}, '', 'x'.repeat(129)]) expect(() => handler(trustedEvent(), id, '7')).toThrow()
+    for (const entryId of [undefined, null, {}, 7, '', '0', '-1', '01', '1.5', ' 7 ', '7/read', '9007199254740992']) {
+      expect(() => handler(trustedEvent(), 'notice-hash', entryId)).toThrow('公告条目 ID 格式错误')
+    }
+    expect(accountService.markNoticeRead).not.toHaveBeenCalled()
+    await expect(handler(trustedEvent(), 'notice-hash', '7')).resolves.toBeUndefined()
+    expect(accountService.markNoticeRead).toHaveBeenCalledWith('notice-hash', '7')
   })
 
   describe('saved-account switch isolation', () => {
@@ -1000,6 +1016,89 @@ describe('registerIpcHandlers', () => {
     expect(serialized).toContain('apiKeyPreview')
     expect(serialized).not.toContain('sk-known-secret-value')
     expect(serialized).not.toMatch(/"apiKey"\s*:/)
+  })
+
+  it('returns the actual current key group separately from the automatic group without any secret', async () => {
+    const secret = 'sk-configured-chat-secret-wxyz'
+    const account = Object.assign(accountServiceStub(), {
+      getActiveSiteId: () => 'solov-api' as const,
+      identifyKey: vi.fn(async () => ({ id: 42, name: 'existing-chat-key', group: 'custom-current-group' })),
+    })
+    vi.mocked(account.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 7 } } as never)
+    const service = serviceStub()
+    vi.mocked(service.revealApiKey).mockReturnValue(secret)
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { claude: { hasApiKey: true, matchesRelay: true,
+      apiKeyPreview: 'sk-co••••••••wxyz' } } } as never)
+    const { runtimeLog } = register(service, undefined, undefined, account)
+    const handler = electronMocks.handlers.get('account:get-key-options')!
+    const result = await handler(trustedEvent(), 'claude')
+    expect(result).toEqual({ current: { preview: 'sk-co••••••••wxyz', keyId: 42, name: 'existing-chat-key', group: 'custom-current-group' },
+      automatic: { name: 'xingmang-desktop-claude', group: 'Claude-MAX(不限客户端)' } })
+    expect(account.identifyKey).toHaveBeenCalledWith(secret)
+    expect(JSON.stringify(result)).not.toContain(secret)
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(secret)
+    expect(() => handler(trustedEvent('https://evil.invalid'), 'claude')).toThrow('非应用页面')
+    expect(() => handler(trustedEvent(), '../claude')).toThrow('未知的 CLI')
+  })
+
+  it('waits for vault startup restore before a concurrent bootstrap config read', async () => {
+    let ready!: () => void
+    let busy = true
+    const restored = new Promise<void>((resolve) => { ready = resolve })
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { if (busy) throw new Error('switching') } })
+    const service = serviceStub()
+    register(service, undefined, undefined, undefined, undefined, undefined, {
+      realmAccounts: {} as never, accountWork, accountSessionReady: restored,
+    })
+    const result = electronMocks.handlers.get('config:get')!(trustedEvent())
+    await Promise.resolve()
+    expect(service.getConfig).not.toHaveBeenCalled()
+    busy = false
+    ready()
+    await expect(result).resolves.toMatchObject({ providers: {} })
+  })
+
+  it('leaves a platform-free login undecided for main-process automatic discovery', async () => {
+    const login = vi.fn(async () => ({ account: { userId: 7 }, siteId: 'solov-api' }))
+    register(undefined, undefined, undefined, undefined, undefined, undefined, { realmAccounts: { login } as never })
+    const handler = electronMocks.handlers.get('account:login')!
+    await handler(trustedEvent(), { username: 'user@example.test', password: 'fixture-password' })
+    expect(login).toHaveBeenCalledWith(expect.objectContaining({ username: 'user@example.test', siteId: undefined }))
+    await handler(trustedEvent(), { username: 'registered-user', password: 'fixture-password', siteId: 'solov' })
+    expect(login).toHaveBeenLastCalledWith(expect.objectContaining({ siteId: 'solov' }))
+  })
+
+  it('reads remembered credentials only from the last successful identity without exposing its backend', async () => {
+    const wrong = { read: vi.fn(async () => ({ identifier: 'unrelated@example.test', password: 'wrong-secret' })), save: vi.fn(), clear: vi.fn() }
+    const right = { read: vi.fn(async () => ({ identifier: 'USER@example.test', password: 'right-secret' })), save: vi.fn(), clear: vi.fn() }
+    register(undefined, undefined, undefined, undefined, undefined, undefined, {
+      realmAccounts: { latestLoginHint: async () => ({ identifier: 'user@example.test', realmId: 'api-account' }) } as never,
+      accountCredentialsForSite: (site) => site === 'solov-api' ? right : wrong,
+    })
+    const read = electronMocks.handlers.get('account:get-remembered-login')!
+    await expect(read(trustedEvent())).resolves.toEqual({ identifier: 'USER@example.test', password: 'right-secret' })
+    expect(wrong.read).not.toHaveBeenCalled()
+    right.read.mockResolvedValue({ identifier: 'another@example.test', password: 'do-not-prefill' })
+    await expect(read(trustedEvent())).resolves.toBeNull()
+  })
+
+  it('never sends a saved key from another site to the current model endpoint', async () => {
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { matchesRelay: false } } } as never)
+    register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never })
+    await expect(electronMocks.handlers.get('models:list-configured')!(trustedEvent(), 'codex')).rejects.toThrow('其他站点')
+    expect(service.revealApiKey).not.toHaveBeenCalled()
+    expect(service.fetchAvailableModels).not.toHaveBeenCalled()
+  })
+
+  it('preserves fractional Sub2API dollar limits and rejects a zero finite limit', async () => {
+    const account = Object.assign(accountServiceStub(), { getActiveSiteId: () => 'solov-api' as const })
+    register(undefined, undefined, undefined, account)
+    const input = { name: 'small-limit', group: 'Codex_pro', remainQuota: 0.25, unlimitedQuota: false, expiredTime: -1 }
+    const create = electronMocks.handlers.get('account:create-key')!
+    await create(trustedEvent(), input)
+    expect(account.createKey).toHaveBeenCalledWith(input)
+    expect(() => create(trustedEvent(), { ...input, remainQuota: 0 })).toThrow('额度格式错误')
   })
 
   it('reveals the API key only through the dedicated trusted channel', () => {

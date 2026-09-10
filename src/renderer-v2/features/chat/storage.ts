@@ -41,11 +41,7 @@ function readConversation(value: unknown): Conversation | null {
   const messages = conversation.messages.slice(-101).map(readMessage).filter((item): item is ChatMessage => Boolean(item))
   return { id: text(conversation.id, 160), title: text(conversation.title, 80) || '新对话', createdAt: timestamp(conversation.createdAt), updatedAt: timestamp(conversation.updatedAt), draft: text(conversation.draft), settings: readSettings(conversation.settings), messages }
 }
-export function readWorkspace(storage: ChatStorage, scope: string): { state: ChatWorkspace; warning?: string; exists: boolean } {
-  const empty = () => ({ state: createWorkspace(scope), exists: false })
-  try {
-    const raw = storage.getItem(historyKey(scope))
-    if (!raw) return empty()
+function parseWorkspace(raw: string, scope: string): ChatWorkspace {
     if (new TextEncoder().encode(raw).byteLength > MAX_BYTES) throw new Error('too large')
     const parsed = object(JSON.parse(raw))
     if (!parsed || parsed.version !== 2 || parsed.owner !== scope || !Array.isArray(parsed.conversations)) throw new Error('invalid owner or version')
@@ -53,7 +49,36 @@ export function readWorkspace(storage: ChatStorage, scope: string): { state: Cha
     const seen = new Set<string>()
     const unique = conversations.filter((conversation) => { if (seen.has(conversation.id)) return false; seen.add(conversation.id); return true })
     const activeId = typeof parsed.activeId === 'string' && unique.some((item) => item.id === parsed.activeId) ? parsed.activeId : null
-    return { state: { version: 2, owner: scope, conversations: unique, activeId, draftConversation: readConversation(parsed.draftConversation) ?? createConversation() }, exists: true }
+    return { version: 2, owner: scope, conversations: unique, activeId, draftConversation: readConversation(parsed.draftConversation) ?? createConversation() }
+}
+export function readWorkspace(storage: ChatStorage, scope: string): { state: ChatWorkspace; warning?: string; exists: boolean } {
+  const empty = () => ({ state: createWorkspace(scope), exists: false })
+  try {
+    const raw = storage.getItem(historyKey(scope))
+    if (raw !== null) return { state: parseWorkspace(raw, scope), exists: true }
+    // The old site names both referred to xm. Migrate only into its canonical
+    // realm, only when the destination is absent, and validate each source's
+    // original owner before assigning the new one. Source records stay intact.
+    const xm = /^xm-account:([1-9][0-9]*)$/.exec(scope)
+    if (xm && Number.isSafeInteger(Number(xm[1]))) {
+      const candidates: ChatWorkspace[] = []
+      for (const alias of ['solov', 'sub2api']) {
+        const oldScope = `${alias}:${xm[1]}`
+        const previous = storage.getItem(historyKey(oldScope))
+        if (previous !== null) candidates.push(parseWorkspace(previous, oldScope))
+      }
+      const modifiedAt = (workspace: ChatWorkspace) => Math.max(workspace.draftConversation.updatedAt, ...workspace.conversations.map((item) => item.updatedAt))
+      // Both aliases could have been used over time. Prefer the latest saved
+      // conversation state; deterministic source order resolves equal dates.
+      candidates.sort((left, right) => modifiedAt(right) - modifiedAt(left))
+      if (candidates[0]) {
+        const state = { ...candidates[0], owner: scope }
+        try { writeWorkspace(storage, state) }
+        catch { return { state, exists: true, warning: '之前的聊天记录已载入，但本机迁移未保存，原始数据已保留' } }
+        return { state, exists: true }
+      }
+    }
+    return empty()
   } catch { return { ...empty(), exists: true, warning: '本地聊天记录暂时无法读取，原始数据已保留' } }
 }
 export function writeWorkspace(storage: ChatStorage, state: ChatWorkspace): void {
@@ -64,7 +89,12 @@ export function writeWorkspace(storage: ChatStorage, state: ChatWorkspace): void
 }
 
 export function importLegacyHistory(storage: ChatStorage, scope: string, userId: number): ChatWorkspace | null {
-  if (!new RegExp(`(?:^|[:/])${userId}$`).test(scope)) return null
+  // The v1 key had no site component. It can therefore only be imported for
+  // the original xm account realm (including its historical sub2api alias).
+  // A same-number account on api.solov must start with an empty workspace;
+  // importing by userId alone would cross the realm boundary.
+  const legacyOwner = /^(xm-account|solov|sub2api):([1-9][0-9]*)$/.exec(scope)
+  if (!legacyOwner || Number(legacyOwner[2]) !== userId) return null
   const raw = storage.getItem(`xingmang-ai-chat:v1:${encodeURIComponent(String(userId))}`)
   if (!raw || new TextEncoder().encode(raw).byteLength > MAX_BYTES) return null
   try {

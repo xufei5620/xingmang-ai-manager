@@ -256,7 +256,7 @@ test('registration authenticates through a separate login request before reporti
     await page.getByTestId('register-submit').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
     assert.deepEqual((await calls(page)).map((item) => item.method), ['register', 'login', 'authenticated'])
-    assert.deepEqual((await calls(page)).find((item) => item.method === 'login').input, { username: 'fixture-member', password: 'fixture-password' })
+    assert.deepEqual((await calls(page)).find((item) => item.method === 'login').input, { username: 'fixture-member', password: 'fixture-password', siteId: 'solov' })
   } finally { await page.close() }
 })
 
@@ -332,4 +332,23 @@ test('auth and guide default surfaces fit the fixed desktop frame in both themes
       await page.screenshot({ path: path.join(output, `${scenario}-${theme}.png`) })
     } finally { await page.close() }
   }
+})
+
+
+test('unified login restores remembered credentials and lets the main process identify the account', async () => {
+  const page = await open('remembered=1&sub2api=1&turnstile=1')
+  try {
+    await page.waitForFunction(() => document.querySelector('[data-testid="login-password"]')?.value === 'remembered-password')
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'same@example.test')
+    assert.equal(await page.getByTestId('login-site').count(), 0)
+    assert.equal(await page.getByTestId('login-site-hint').count(), 0)
+    assert.doesNotMatch(await page.getByTestId('login-dialog').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    const login = (await calls(page)).find((entry) => entry.method === 'login').input
+    assert.deepEqual(login, { username: 'same@example.test', password: 'remembered-password' })
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.savedSite), 'solov-api')
+    await page.screenshot({ path: path.join(output, 'login-unified.png') })
+  } finally { await page.close() }
 })

@@ -67,6 +67,7 @@ export interface CanvasAppearance {
  * account-owned in-memory state before accepting data for the new session.
  */
 export interface CanvasAccountChange {
+  siteId?: 'solov' | 'solov-api'
   userId: number | null
   previousUserId: number | null
 }

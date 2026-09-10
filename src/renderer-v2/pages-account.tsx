@@ -60,6 +60,8 @@ import {
 import { tools } from './registry/tools'
 import type { V2Bridge } from './types'
 import { SavedAccounts } from './SavedAccounts'
+import { accountOrigin, accountSiteId, accountSupports, visibleAccountTab, accountKeyQuota, type AccountSiteId } from './account-context'
+import type { AccountSessionState } from '../../electron/ipc-contract'
 import { AccountFilters, accountTimeRange } from './AccountFilters'
 import { platformApi } from './platform-api'
 import {
@@ -146,7 +148,10 @@ export function buildSubscriptionPaymentInput(
 
 export function paymentTerminalPresentation(
   status: AccountPaymentWindowTerminalEvent['status'],
-): { tone: 'neutral' | 'warn' | 'bad'; title: string; body: string } {
+): { tone: 'neutral' | 'warn' | 'bad' | 'ok'; title: string; body: string } {
+  if (status === 'success') return {
+    tone: 'ok', title: '充值成功', body: '服务端已确认到账，支付窗口已关闭，正在刷新账户余额。',
+  }
   if (status === 'expired') {
     return {
       tone: 'warn',
@@ -305,21 +310,23 @@ export function AccountPage({
   const load = useCallback(async () => {
     const session = await api.getAccountSession()
     if (!session.authenticated) return null
-    const [profile, balance, settings] = await Promise.all([
+    const [profile, balance] = await Promise.all([
       api.getAccountProfile(),
       api.getAccountBalance(),
-      api.getSettings(),
     ])
-    const site = resolveRelaySite(settings.relaySiteId)
+    const site = resolveRelaySite(accountSiteId(session))
     return {
       profile,
       balance,
-      origin: new URL(site.accountBaseUrl ?? site.websiteUrl).origin,
+      session,
+      origin: accountOrigin(session),
       inviteBaseUrl: site.websiteUrl,
       providerBaseUrls: site.providerBaseUrls,
     }
   }, [api])
   const resource = useResource(load)
+  const availableTabs = accountTabs.filter((item) => resource.data && visibleAccountTab(item.value, resource.data.session))
+  const activeTab = availableTabs.some((item) => item.value === tab) ? tab : 'overview'
   const changed = () => {
     void resource.reload()
     onAccountChanged?.()
@@ -342,7 +349,7 @@ export function AccountPage({
         />
         <PageHead
           title="个人中心"
-          lead="余额、Key、用量与订单都在这里。"
+          lead="管理你的星芒账号、余额与 Key。"
           actions={
             <Menu
               label="账号操作"
@@ -405,10 +412,10 @@ export function AccountPage({
       ) : (
         <>
           <Tabs
-            items={[...accountTabs]}
-            value={tab}
+            items={availableTabs}
+            value={activeTab}
             onChange={(value) => {
-              if (accountTabs.some((item) => item.value === value))
+              if (availableTabs.some((item) => item.value === value))
                 setTab(value as AccountTab)
             }}
             testId="account-tabs"
@@ -418,7 +425,7 @@ export function AccountPage({
             <p role="status">正在读取账号…</p>
           ) : (
             resource.data &&
-            visited.map((panel) => {
+            [...new Set([...visited, activeTab])].filter((panel) => visibleAccountTab(panel, resource.data!.session)).map((panel) => {
               const account = resource.data
               if (!account) return null
               return (
@@ -426,7 +433,7 @@ export function AccountPage({
                   className="v2-business-account-panel"
                   role="tabpanel"
                   key={`${account.origin}:${account.profile.userId}-${panel}`}
-                  hidden={panel !== tab}
+                  hidden={panel !== activeTab}
                 >
                   {panel === 'overview' && (
                     <AccountOverview
@@ -440,6 +447,7 @@ export function AccountPage({
                         origin: account.origin,
                         userId: account.profile.userId,
                       }}
+                      session={account.session}
                     />
                   )}
                   {panel === 'dashboard' && (
@@ -450,6 +458,7 @@ export function AccountPage({
                       api={api}
                       balance={account.balance}
                       providerBaseUrls={account.providerBaseUrls}
+                      siteId={accountSiteId(account.session)}
                     />
                   )}
                   {panel === 'usage' && (
@@ -459,7 +468,7 @@ export function AccountPage({
                     <AccountTasks
                       api={api}
                       balance={account.balance}
-                      accountScope={String(account.profile.userId)}
+                      accountScope={`${account.origin}:${account.profile.userId}`}
                     />
                   )}
                   {panel === 'recharge' && (
@@ -501,6 +510,7 @@ function AccountOverview({
   navigateTab,
   onLogin,
   identity,
+  session,
 }: {
   api: V2Bridge
   profile: Profile
@@ -509,6 +519,7 @@ function AccountOverview({
   navigateTab: (tab: AccountTab) => void
   onLogin?: () => void
   identity: AvatarIdentity
+  session: AccountSessionState
 }) {
   const [name, setName] = useState(profile.displayName ?? '')
   const profileNameRef = useRef(profile.displayName ?? '')
@@ -518,8 +529,8 @@ function AccountOverview({
   const [confirmPassword, setConfirm] = useState('')
   const operation = useOperation()
   const accountsLoad = useCallback(
-    async () => ({ devices: await api.getAccountLoginSessions() }),
-    [api],
+    async () => ({ devices: accountSupports(session, 'supportsSessionManagement') ? await api.getAccountLoginSessions() : [] }),
+    [api, session],
   )
   const accounts = useResource(accountsLoad)
   const [logout, setLogout] = useState(false)
@@ -589,6 +600,7 @@ function AccountOverview({
                 variant="primary"
                 icon={Pencil}
                 loading={operation.busy === 'profile'}
+                disabled={!accountSupports(session, 'supportsProfileUpdate')}
                 onClick={() =>
                   void operation.execute(
                     'profile',
@@ -618,23 +630,23 @@ function AccountOverview({
             >
               {dollars(balance.displayAmount)}
             </strong>
-            <p>用于星芒账号的按量消费。每次调用的费用可在明细里查看。</p>
+            <p>{accountSupports(session, 'supportsUsage') ? '用于星芒账号的按量消费。每次调用的费用可在明细里查看。' : '这是当前账号的可用余额，消费记录可在官方网站查看。'}</p>
             <div className="v2-business-control">
-              <Button
+              {accountSupports(session, 'supportsBilling') && <Button
                 variant="balance"
                 size="sm"
                 icon={Zap}
                 onClick={() => navigateTab('recharge')}
               >
                 充值
-              </Button>
-              <Button
+              </Button>}
+              {accountSupports(session, 'supportsUsage') && <Button
                 size="sm"
                 icon={RefreshCw}
                 onClick={() => navigateTab('dashboard')}
               >
                 看用量
-              </Button>
+              </Button>}
             </div>
           </Card>
           <Card title="已保存的账号" padding="none">
@@ -646,18 +658,18 @@ function AccountOverview({
           </Card>
           <Card title="登录与设备">
             <p>
-              {accounts.data
+              {!accountSupports(session, 'supportsSessionManagement') ? '当前账号暂不提供登录设备管理。' : accounts.data
                 ? `${accounts.data.devices.length} 台已登录设备`
                 : '正在读取登录设备…'}
             </p>
             <div className="v2-business-control">
-              <Button
+              {accountSupports(session, 'supportsSessionManagement') && <Button
                 size="sm"
                 icon={Users}
                 onClick={() => navigateTab('devices')}
               >
                 管理设备
-              </Button>
+              </Button>}
               <Button
                 size="sm"
                 variant="ghost"
@@ -731,10 +743,12 @@ function AccountOverview({
                 void operation.execute(
                   'password',
                   async () => {
-                    if (password.length < 8)
-                      throw new Error('新密码至少需要 8 个字符。')
-                    if (password.length > 20)
-                      throw new Error('新密码不能超过 20 个字符。')
+                    const minimum = accountSiteId(session) === 'solov-api' ? 6 : 8
+                    const maximum = accountSiteId(session) === 'solov-api' ? 256 : 20
+                    if (password.length < minimum)
+                      throw new Error(`新密码至少需要 ${minimum} 个字符。`)
+                    if (password.length > maximum)
+                      throw new Error(`新密码不能超过 ${maximum} 个字符。`)
                     if (password !== confirmPassword)
                       throw new Error('两次填写的新密码不一致。')
                     await api.changeAccountPassword({
@@ -757,6 +771,7 @@ function AccountOverview({
         }
       >
         <ResultNotice error={operation.error} />
+        {accountSiteId(session) === 'solov-api' && <p>修改密码后当前登录会失效，请使用新密码重新登录。</p>}
         <Input
           label="当前密码"
           password
@@ -786,17 +801,18 @@ function AccountKeys({
   api,
   balance,
   providerBaseUrls,
+  siteId,
 }: {
   api: V2Bridge
   balance: Balance
   providerBaseUrls: Record<Provider, string>
+  siteId: AccountSiteId
 }) {
   const [page, setPage] = useState(1)
   const [query, setQuery] = useState('')
   const load = useCallback(
     async () => ({
       page: await api.getAccountKeys({ page, pageSize: 20 }),
-      groups: await api.getAccountUsableGroups(),
     }),
     [api, page],
   )
@@ -805,6 +821,12 @@ function AccountKeys({
   const [editing, setEditing] = useState<AccountKey | 'new' | null>(null)
   const [name, setName] = useState('')
   const [group, setGroup] = useState('')
+  const [groups, setGroups] = useState<Awaited<ReturnType<V2Bridge['getAccountUsableGroups']>>>([])
+  const [groupsLoading, setGroupsLoading] = useState(false)
+  const [groupsError, setGroupsError] = useState('')
+  const groupsRequest = useRef(0)
+  const groupsPending = useRef<{ request: number; promise: Promise<void> } | null>(null)
+  const groupsRequestedAt = useRef(0)
   const [quota, setQuota] = useState('10')
   const [unlimited, setUnlimited] = useState(false)
   const [expires, setExpires] = useState('')
@@ -815,10 +837,60 @@ function AccountKeys({
   const [model, setModel] = useState('')
   const [provider, setProvider] = useState<Provider>('claude')
   const modelRequest = useRef(0)
+  useEffect(() => () => { groupsRequest.current++ }, [api, siteId])
+  const refreshGroups = (force = false): Promise<void> => {
+    if (operation.busy === 'save-key') return Promise.resolve()
+    if (groupsPending.current?.request === groupsRequest.current) return groupsPending.current.promise
+    // Pointer and focus are two events from one opening gesture. Share their
+    // request instead of issuing two authenticated requests to the server.
+    if (!force && Date.now() - groupsRequestedAt.current < 500) return Promise.resolve()
+    groupsRequestedAt.current = Date.now()
+    const request = ++groupsRequest.current
+    setGroupsLoading(true)
+    setGroupsError('')
+    const promise = (async () => {
+      try {
+        const latest = await api.getAccountUsableGroups()
+        if (groupsRequest.current !== request) return
+        setGroups(latest)
+        // Keep a user's selection during refresh. If it was removed, require
+        // another explicit choice instead of silently changing the billed group.
+        setGroup((selected) => selected || latest[0]?.name || '')
+      } catch {
+        if (groupsRequest.current === request) setGroupsError('分组读取失败，请刷新后重试。')
+      } finally {
+        if (groupsRequest.current === request) setGroupsLoading(false)
+        if (groupsPending.current?.request === request) groupsPending.current = null
+      }
+    })()
+    groupsPending.current = { request, promise }
+    return promise
+  }
+  const refreshGroupsRef = useRef(refreshGroups)
+  refreshGroupsRef.current = refreshGroups
+  useEffect(() => {
+    if (!editing) return
+    const refreshVisible = () => {
+      if (document.visibilityState === 'visible') void refreshGroupsRef.current()
+    }
+    window.addEventListener('focus', refreshVisible)
+    document.addEventListener('visibilitychange', refreshVisible)
+    const interval = window.setInterval(refreshVisible, 30_000)
+    return () => {
+      window.removeEventListener('focus', refreshVisible)
+      document.removeEventListener('visibilitychange', refreshVisible)
+      window.clearInterval(interval)
+    }
+  }, [editing])
+  const closeEditor = () => {
+    groupsRequest.current++
+    setEditing(null)
+  }
   const edit = (key: AccountKey | 'new') => {
     setEditing(key)
     setName(key === 'new' ? '' : key.name)
-    setGroup(key === 'new' ? (resource.data?.groups[0]?.name ?? '') : key.group)
+    setGroup(key === 'new' ? '' : key.group)
+    setGroups([])
     setUnlimited(key !== 'new' && key.unlimitedQuota)
     setQuota(
       key === 'new' ? '10' : String(key.remainQuota / balance.quotaPerUnit),
@@ -827,17 +899,18 @@ function AccountKeys({
       key === 'new' ? '' : toDateTimeLocalValue(key.expiredAt),
     )
     operation.clear()
+    void refreshGroups(true)
   }
+  const selectedGroupAvailable = groups.some((entry) => entry.name === group)
   const save = () =>
     void operation.execute(
       'save-key',
       async () => {
         const amount = Number(quota)
+        if (groupsLoading || groupsError || groupsPending.current?.request === groupsRequest.current) throw new Error('请先获取最新的可用分组。')
         if (!name.trim()) throw new Error('请填写密钥名称。')
-        if (!group.trim())
+        if (!group.trim() || !selectedGroupAvailable)
           throw new Error('当前没有可用分组，暂时无法保存密钥。')
-        if (!unlimited && (!Number.isFinite(amount) || amount < 0))
-          throw new Error('请填写有效额度。')
         const expiredTime = expires
           ? Math.floor(new Date(expires).getTime() / 1000)
           : -1
@@ -849,14 +922,14 @@ function AccountKeys({
         const input = {
           name: name.trim(),
           group,
-          remainQuota: Math.round(amount * balance.quotaPerUnit),
+          remainQuota: accountKeyQuota(amount, balance.quotaPerUnit, siteId, unlimited),
           unlimitedQuota: unlimited,
           expiredTime,
         }
         if (editing && editing !== 'new')
           await api.updateAccountKey({ ...input, id: editing.id })
         else await api.createAccountKey(input)
-        setEditing(null)
+        closeEditor()
         await resource.reload()
       },
       '密钥已保存',
@@ -1010,14 +1083,16 @@ function AccountKeys({
       <Dialog
         open={Boolean(editing)}
         title={editing === 'new' ? '新建密钥' : '编辑密钥'}
-        onClose={() => setEditing(null)}
+        onClose={closeEditor}
+        busy={operation.busy === 'save-key'}
         footer={
           <>
-            <Button onClick={() => setEditing(null)}>取消</Button>
+            <Button onClick={closeEditor} disabled={operation.busy === 'save-key'}>取消</Button>
             <Button
               variant="primary"
               icon={KeyRound}
               loading={operation.busy === 'save-key'}
+              disabled={groupsLoading || Boolean(groupsError) || !selectedGroupAvailable}
               onClick={save}
             >
               保存密钥
@@ -1026,6 +1101,7 @@ function AccountKeys({
         }
       >
         <ResultNotice error={operation.error} />
+        <ResultNotice error={groupsError} />
         <Input
           label="名称"
           value={name}
@@ -1033,16 +1109,35 @@ function AccountKeys({
           onChange={(event) => setName(event.target.value)}
         />
         <Select
+          label="分组"
+          testId="account-key-group"
           aria-label="密钥分组"
+          disabled={!groups.length || operation.busy === 'save-key'}
+          aria-busy={groupsLoading}
+          onFocus={() => void refreshGroups()}
+          onPointerDown={() => void refreshGroups()}
+          onKeyDown={(event) => {
+            if (['ArrowDown', 'ArrowUp', 'Enter', ' ', 'F4'].includes(event.key)) void refreshGroups()
+          }}
           options={
-            resource.data?.groups.map((value) => ({
-              value: value.name,
-              label: value.name,
-            })) ?? []
+            [
+              ...(!group ? [{ value: '', label: groupsLoading ? '正在读取分组…' : '暂无可用分组', disabled: true }]
+                : !selectedGroupAvailable ? [{ value: group, label: `${group}（${groupsLoading ? '确认中' : '已不可用'}）`, disabled: true }] : []),
+              ...groups.map((value) => ({
+                value: value.name,
+                label: value.name,
+              })),
+            ]
           }
           value={group}
           onChange={(event) => setGroup(event.target.value)}
         />
+        <Button variant="ghost" size="sm" icon={RefreshCw} testId="account-key-groups-refresh"
+          loading={groupsLoading} disabled={groupsLoading || operation.busy === 'save-key'} onClick={() => void refreshGroups(true)}>
+          刷新分组
+        </Button>
+        {groupsLoading && <p role="status">正在获取最新分组…</p>}
+        {!groupsLoading && !groupsError && group && !selectedGroupAvailable && <p role="alert">原分组已不可用，请重新选择；已填写的内容仍保留。</p>}
         <Switch label="不限额度" checked={unlimited} onChange={setUnlimited} />
         {!unlimited && (
           <Input
@@ -1570,6 +1665,9 @@ function AccountOrders({
     [api, page, keyword],
   )
   const resource = useResource(load)
+  useEffect(() => api.onAccountPaymentWindowTerminal((event) => {
+    if (event.status === 'success') void resource.reload()
+  }), [api, resource.reload])
   useEffect(() => {
     if (!paymentReturn) return
     const order = paymentReturn.order ?? ''
@@ -1665,6 +1763,7 @@ function AccountRecharge({
   const [purchase, setPurchase] = useState<Plan | null>(null)
   const [purchaseMethod, setPurchaseMethod] = useState('balance')
   const [redeemOpen, setRedeemOpen] = useState(false)
+  const [redemptionMessage, setRedemptionMessage] = useState('')
   const [payment, setPayment] = useState<{
     tradeNo: string | null
     kind: 'topup' | 'subscription'
@@ -1673,9 +1772,26 @@ function AccountRecharge({
   const [paymentTerminal, setPaymentTerminal] =
     useState<AccountPaymentWindowTerminalEvent | null>(null)
   const paymentRef = useRef(payment)
-  useEffect(() => {
-    paymentRef.current = payment
-  }, [payment])
+  const openingPayment = useRef<AccountPaymentWindowTerminalEvent[] | null>(null)
+  const acceptPaymentTerminal = useCallback((event: AccountPaymentWindowTerminalEvent) => {
+    const current = paymentRef.current
+    if (!current) return
+    if (event.status === 'success' && (!event.tradeNo || event.tradeNo !== current.tradeNo)) return
+    if (event.tradeNo && current.tradeNo && event.tradeNo !== current.tradeNo) return
+    paymentRef.current = null
+    setPayment(null)
+    setPaymentTerminal(event)
+    changed()
+    void resource.reload()
+  }, [changed, resource.reload])
+  function paymentOpened(result: NonNullable<typeof payment>) {
+    const buffered = openingPayment.current ?? []
+    openingPayment.current = null
+    paymentRef.current = result
+    setPaymentTerminal(null)
+    setPayment(result)
+    for (const event of buffered) acceptPaymentTerminal(event)
+  }
   useEffect(() => {
     const available = resource.data?.info.paymentMethods ?? []
     setMethod((current) =>
@@ -1687,20 +1803,13 @@ function AccountRecharge({
   useEffect(
     () =>
       api.onAccountPaymentWindowTerminal((event) => {
-        const current = paymentRef.current
-        if (!current) return
-        if (
-          event.tradeNo &&
-          current.tradeNo &&
-          event.tradeNo !== current.tradeNo
-        )
+        if (openingPayment.current) {
+          if (openingPayment.current.length < 8) openingPayment.current.push(event)
           return
-        setPayment(null)
-        setPaymentTerminal(event)
-        changed()
-        void resource.reload()
+        }
+        acceptPaymentTerminal(event)
       }),
-    [api, resource.reload],
+    [api, acceptPaymentTerminal],
   )
   const methods = resource.data?.info.paymentMethods ?? []
   const paymentMethod =
@@ -1724,15 +1833,17 @@ function AccountRecharge({
     void operation.execute(
       'payment',
       async () => {
-        const result = await api.createAccountTopupPayment({
-          amount: quote.amount,
-          paymentMethod: paymentMethod.type,
-        })
-        setPaymentTerminal(null)
-        setPayment({ ...result, kind: 'topup', expiresAt: null })
+        openingPayment.current = []
+        try {
+          const result = await api.createAccountTopupPayment({
+            amount: quote.amount,
+            paymentMethod: paymentMethod.type,
+          })
+          paymentOpened({ ...result, kind: 'topup', expiresAt: null })
+        } finally { openingPayment.current = null }
         setQuote(null)
       },
-      '支付窗口已打开，到账状态请查询订单',
+      '',
     )
   }
   const purchasePlan = () => {
@@ -1746,11 +1857,13 @@ function AccountRecharge({
           const payMethod = methods.find((item) => item.type === purchaseMethod)
           if (!payMethod || payMethod.provider === 'waffo')
             throw new Error('该支付渠道暂不支持订阅。')
-          const result = await api.createAccountSubscriptionPayment(
-            buildSubscriptionPaymentInput(purchase.id, payMethod),
-          )
-          setPaymentTerminal(null)
-          setPayment({ ...result, kind: 'subscription' })
+          openingPayment.current = []
+          try {
+            const result = await api.createAccountSubscriptionPayment(
+              buildSubscriptionPaymentInput(purchase.id, payMethod),
+            )
+            paymentOpened({ ...result, kind: 'subscription' })
+          } finally { openingPayment.current = null }
         }
         setPurchase(null)
         await resource.reload()
@@ -1765,15 +1878,21 @@ function AccountRecharge({
     <>
       <ResultNotice
         error={resource.error || operation.error}
-        message={operation.message}
+        message={payment || paymentTerminal ? '' : operation.message === '兑换码已兑换' ? redemptionMessage : operation.message}
       />
       <div className="v2-business-recharge-grid">
         <Card
           title="充值到账户余额"
           meta={`当前余额 ${dollars(balance.displayAmount)}`}
         >
+          <div className="v2-business-suggestions-label">快捷金额</div>
+          <div className="v2-business-suggestions">
+            {(resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]).map((value) => (
+              <Button size="sm" key={value} onClick={() => { setAmount(String(value)); setQuote(null) }}>{value}</Button>
+            ))}
+          </div>
           <Input
-            label="充值数量"
+            label="自定义金额"
             type="number"
             min={topupMinimum}
             step="1"
@@ -1784,17 +1903,6 @@ function AccountRecharge({
               setQuote(null)
             }}
           />
-          <div className="v2-business-suggestions">
-            {resource.data?.info.amountOptions.map((value) => (
-              <Button
-                size="sm"
-                key={value}
-                onClick={() => setAmount(String(value))}
-              >
-                {value}
-              </Button>
-            ))}
-          </div>
           <PaymentOptions
             methods={methods}
             value={paymentMethod?.type ?? ''}
@@ -1812,11 +1920,12 @@ function AccountRecharge({
           <Button
             variant="balance"
             icon={CreditCard}
-            disabled={!paymentMethod || resource.loading}
+            disabled={!paymentMethod || resource.loading || Boolean(payment)}
             loading={operation.busy === 'quote'}
             onClick={quoteTopup}
+            testId="account-recharge-submit"
           >
-            查看报价
+            充值
           </Button>
           {!methods.length && !resource.loading && (
             <Notice
@@ -1842,7 +1951,7 @@ function AccountRecharge({
           >
             兑换
           </Button>
-          <p>兑换成功后，余额会自动更新。</p>
+          <p>兑换成功后，余额和权益会自动更新。</p>
         </Card>
       </div>
       {(payment || paymentTerminal) && (
@@ -1851,7 +1960,7 @@ function AccountRecharge({
           title={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status).title : '等待支付结果'}
           body={paymentTerminal
             ? `${paymentTerminalPresentation(paymentTerminal.status).body}${paymentTerminal.tradeNo ? ` 订单 ${paymentTerminal.tradeNo}。` : ''}`
-            : `${payment?.kind === 'subscription' ? '订阅订单' : '订单'} ${payment?.tradeNo || '待生成'}。关闭支付窗口不会取消订单。`}
+            : `${payment?.kind === 'subscription' ? '订阅订单' : '订单'} ${payment?.tradeNo || '待生成'}。到账后将自动关闭支付窗口并刷新余额。`}
           actions={
             <>
               <Button
@@ -1872,6 +1981,7 @@ function AccountRecharge({
                       'close-payment',
                       async () => {
                         await api.closeAccountPaymentWindow()
+                        paymentRef.current = null
                         setPayment(null)
                       },
                       '',
@@ -2016,12 +2126,15 @@ function AccountRecharge({
                 void operation.execute(
                   'redeem',
                   async () => {
-                    await api.redeemAccountTopupCode(code.trim())
+                    const result = await api.redeemAccountTopupCode(code.trim())
+                    setRedemptionMessage(result.type === 'subscription' ? '订阅兑换成功'
+                      : result.type === 'concurrency' ? '并发额度兑换成功' : '余额兑换成功')
                     setCode('')
                     setRedeemOpen(false)
                     changed()
+                    await resource.reload()
                   },
-                  '充值码已兑换，余额已刷新',
+                  '兑换码已兑换',
                 )
               }
             >
@@ -2030,7 +2143,7 @@ function AccountRecharge({
           </>
         }
       >
-        <p>兑换成功后会增加当前账号的可用余额。</p>
+        <p>兑换成功后，相应余额或权益会应用到当前账号。</p>
         <ResultNotice error={operation.error} />
       </Dialog>
       <Dialog
@@ -2097,6 +2210,10 @@ function AccountInvite({
     <>
       <ResultNotice {...operation} />
       <div className="v2-business-stat-grid">
+        <Card title="我的返利比例">
+          <strong className="v2-business-amount">{profile.affRebateRatePercent ?? 0}%</strong>
+          <small>被邀请用户每次充值后可获得的返利比例</small>
+        </Card>
         <Card title="已邀请">
           <strong className="v2-business-amount">{profile.affCount} 人</strong>
         </Card>
@@ -2112,6 +2229,7 @@ function AccountInvite({
         </Card>
       </div>
       <Card title="邀请链接">
+        <p className="v2-business-help">分享邀请码或邀请链接。好友注册并充值后，返利会计入可转额度，可随时转入账户余额。</p>
         <Input label="分享邀请链接" readOnly value={invite} />
         <Button
           icon={Copy}
@@ -2133,6 +2251,9 @@ function AccountInvite({
         >
           转入账户余额
         </Button>
+      </Card>
+      <Card title="已邀请用户">
+        {profile.invitees?.length ? <div className="v2-business-table"><div className="v2-business-table-row v2-business-table-head"><span>邮箱</span><span>用户名</span><span>累计返利</span></div>{profile.invitees.map((item) => <div className="v2-business-table-row" key={item.userId}><span>{item.email}</span><span>{item.username || '-'}</span><span>{quotaMoney(item.totalRebate, balance)}</span></div>)}</div> : <p>暂时还没有已邀请用户。</p>}
       </Card>
       <Dialog
         open={transfer}

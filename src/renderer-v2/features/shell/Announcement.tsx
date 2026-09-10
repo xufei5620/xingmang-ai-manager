@@ -1,14 +1,16 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { Bell, Check, ExternalLink } from 'lucide-react'
+import { ArrowLeft, Bell, Check, ChevronRight, ExternalLink } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
+import type { RelayNotice } from '../../../../electron/relay-backend'
 
-interface Announcement { id: string; text: string }
+type Announcement = RelayNotice
 interface Props {
   scope: string
   read(): Promise<Announcement | null>
+  markRemoteRead?(id: string, entryId: string): Promise<void>
   open: boolean
   onClose(): void
   onOpen(): void
@@ -830,7 +832,7 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
   // Chromium/Electron wraps rejected IPC calls with the channel name. That
   // implementation detail is useful in logs but confusing and noisy in the
   // product surface, so remove only the known wrapper and keep the payload.
-  const message = raw.replace(/^Error invoking remote method '[^']+':\s*Error:\s*/i, '').trim()
+  const message = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error|RealmAccountError):\s*/i, '').trim()
   const responseTooLarge = message.includes('公告读取响应超过') && message.includes('安全上限')
   return responseTooLarge
     ? {
@@ -840,34 +842,126 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
     : { responseTooLarge: false, message: message || '公告读取失败' }
 }
 
-export function AnnouncementCenter({ scope, read, open, onClose, onOpen, onUnread, openExternal, noticeUrl }: Props) {
+export function AnnouncementCenter({ scope, read, markRemoteRead, open, onClose, onOpen, onUnread, openExternal, noticeUrl }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
   const [loading, setLoading] = useState(true)
   const [attempt, setAttempt] = useState(0)
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [readErrors, setReadErrors] = useState<Record<string, string>>({})
+  const [markingIds, setMarkingIds] = useState<string[]>([])
+  const revision = useRef(0)
+  const pendingReads = useRef(new Set<string>())
+  const rows = useRef(new Map<string, HTMLButtonElement>())
+  const detailHeading = useRef<HTMLHeadingElement>(null)
+  const returnToRow = useRef<string | null>(null)
   const [readId, setReadId] = useState(() => readLocalPreference(`xingmang-v2-notice:${scope}`))
   useEffect(() => {
+    setSelectedId(null)
+    returnToRow.current = null
+    if (open) setAttempt((value) => value + 1)
+  }, [open])
+  useEffect(() => {
     let current = true
-    setAnnouncement(null); setError(null); setLoading(true)
+    revision.current += 1
+    setAnnouncement(null); setError(null); setLoading(true); setSelectedId(null)
+    setReadErrors({}); setMarkingIds([])
+    returnToRow.current = null
     setReadId(readLocalPreference(`xingmang-v2-notice:${scope}`))
     void read().then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
-    return () => { current = false }
+    return () => { current = false; revision.current += 1 }
   }, [scope, read, attempt])
-  const unread = Boolean(announcement && announcement.id !== readId)
+  useLayoutEffect(() => {
+    if (selectedId) detailHeading.current?.focus()
+    else if (returnToRow.current) {
+      rows.current.get(returnToRow.current)?.focus()
+      returnToRow.current = null
+    }
+  }, [selectedId])
+  const entries = announcement?.entries
+  const selected = entries?.find((entry) => entry.id === selectedId)
+  const unread = Boolean(announcement && (entries ? entries.some((entry) => !entry.read) : announcement.id !== readId))
   useEffect(() => { onUnread(unread) }, [unread, onUnread])
-  function markRead() {
-    if (!announcement) return
-    if (!writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)) setError({ responseTooLarge: false, message: '本机没有保存已读状态，下次打开时可能再次提醒。' })
+
+  async function markEntryRead(entry: NonNullable<Announcement['entries']>[number]) {
+    if (!announcement || entry.read) return
+    const capturedRevision = revision.current
+    const key = `${capturedRevision}:${entry.id}`
+    if (pendingReads.current.has(key)) return
+    pendingReads.current.add(key)
+    setMarkingIds((current) => [...current, entry.id])
+    setReadErrors((current) => ({ ...current, [entry.id]: '' }))
+    try {
+      if (!markRemoteRead) throw new Error('公告已读状态暂时无法保存，请稍后重试。')
+      await markRemoteRead(announcement.id, entry.id)
+      if (revision.current !== capturedRevision) return
+      setAnnouncement((current) => current?.id === announcement.id ? {
+        ...current, entries: current.entries?.map((item) => item.id === entry.id ? { ...item, read: true } : item),
+      } : current)
+    } catch (cause) {
+      if (revision.current === capturedRevision) setReadErrors((current) => ({ ...current, [entry.id]: formatAnnouncementError(cause).message }))
+    } finally {
+      pendingReads.current.delete(key)
+      if (revision.current === capturedRevision) setMarkingIds((current) => current.filter((id) => id !== entry.id))
+    }
+  }
+  function openEntry(entry: NonNullable<Announcement['entries']>[number]) {
+    setSelectedId(entry.id)
+    void markEntryRead(entry)
+  }
+  function backToList() {
+    returnToRow.current = selectedId
+    setSelectedId(null)
+  }
+  function markLegacyRead(closeAfter = false) {
+    if (!announcement || entries) return
+    if (!writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)) {
+      setError({ responseTooLarge: false, message: '本机没有保存已读状态，下次打开时可能再次提醒。' })
+      return
+    }
     setReadId(announcement.id)
+    setError(null)
+    if (closeAfter) onClose()
   }
   const openNoticeSite = () => {
     if (!noticeUrl) return
     void openExternal(noticeUrl).catch((cause) => setError(formatAnnouncementError(cause)))
   }
+  const preview = entries?.find((entry) => !entry.read)?.title ?? announcement?.text ?? ''
   return <>
-    {unread && announcement && <div className="v2-announcement-banner"><Bell size={15} /><strong>公告</strong><span>{announcementTextPreview(announcement.text) || '有一条新公告'}</span><Button size="xs" variant="ghost" onClick={onOpen}>查看</Button><Button size="xs" variant="ghost" icon={Check} aria-label="标为已读" onClick={markRead} /></div>}
-    {open && <Dialog open title="公告" width={640} onClose={onClose} icon={Bell} footer={<><Button onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>{announcement && <Button variant="primary" onClick={() => { markRead(); onClose() }}>标为已读</Button>}</>}>
-      {loading ? <p role="status">正在读取公告</p> : error ? <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div> : announcement ? <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} openExternal={openExternal} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} /> : <p>暂无公告</p>}
+    {!open && error && announcement && <p className="v2-announcement-error" role="alert">{error.message}</p>}
+    {unread && announcement && <div className="v2-announcement-banner">
+      <Bell size={15} /><strong>公告</strong><span>{announcementTextPreview(preview) || '有一条新公告'}</span>
+      <Button size="xs" variant="ghost" onClick={onOpen}>查看</Button>
+      {!entries && <Button size="xs" variant="ghost" icon={Check} aria-label="标为已读" onClick={() => markLegacyRead()} />}
+    </div>}
+    {open && <Dialog open title="公告" width={640} onClose={onClose} icon={Bell} footer={selected
+      ? <Button icon={ArrowLeft} onClick={backToList}>返回列表</Button>
+      : <><Button onClick={() => setAttempt((value) => value + 1)}>重新读取</Button>{announcement && !entries && <Button variant="primary" onClick={() => markLegacyRead(true)}>标为已读</Button>}</>}>
+      {error && <div className="v2-announcement-error" role="alert"><p>{error.message}</p>{error.responseTooLarge && noticeUrl && <Button size="sm" icon={ExternalLink} onClick={openNoticeSite} testId="announcement-open-site">打开官网查看完整公告</Button>}</div>}
+      {loading ? <p role="status">正在读取公告</p> : announcement ? entries ? selected ? (
+        <article className="v2-announcement-entry" data-testid="announcement-detail" key={selected.id}>
+          <h2 tabIndex={-1} ref={detailHeading}>{selected.title}</h2>
+          {markingIds.includes(selected.id) && <p className="v2-announcement-read-status" role="status">正在保存已读状态…</p>}
+          {readErrors[selected.id] && <div className="v2-announcement-error" role="alert">
+            <p>已读状态保存失败：{readErrors[selected.id]}</p>
+            <Button size="sm" onClick={() => void markEntryRead(selected)}>重试保存已读</Button>
+          </div>}
+          <AnnouncementContent text={selected.text} noticeUrl={noticeUrl} openExternal={openExternal} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} />
+        </article>
+      ) : (
+        <ul className="v2-announcement-list" data-testid="announcement-list" aria-label="公告列表">
+          {entries.map((entry) => <li key={entry.id}>
+            <button type="button" className="v2-announcement-row" data-testid={`announcement-item-${entry.id}`}
+              ref={(element) => { if (element) rows.current.set(entry.id, element); else rows.current.delete(entry.id) }}
+              onClick={() => openEntry(entry)} title={entry.title}>
+              <span className="v2-announcement-title">{entry.title}</span>
+              <span className={`v2-announcement-read-state${entry.read ? '' : ' is-unread'}`}>{entry.read ? '已读' : '未读'}</span>
+              <ChevronRight size={16} aria-hidden="true" />
+            </button>
+          </li>)}
+        </ul>
+      ) : <AnnouncementContent text={announcement.text} noticeUrl={noticeUrl} openExternal={openExternal} onError={(cause) => setError(formatAnnouncementError(cause))} onClose={onClose} /> : !error && <p>暂无公告</p>}
     </Dialog>}
   </>
 }

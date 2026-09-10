@@ -17,6 +17,8 @@ export interface CanvasProjectAssetContext {
 }
 
 export interface CanvasProjectAssetManagerOptions {
+  /** Separate foreign-realm media even if a user explicitly selects the same workspace. */
+  realmId?: 'xm-account' | 'api-account'
   projects: Pick<CanvasProjectStore, 'list' | 'getUsableWorkspaceDirectory'>
   global: CanvasProjectAssetContext
   create(outputRoot: string): CanvasProjectAssetContext
@@ -42,6 +44,7 @@ function locationKey(userId: number, kind: 'image' | 'video' | 'audio', assetId:
 }
 
 export class CanvasProjectAssetManager {
+  private readonly realmId: 'xm-account' | 'api-account'
   private readonly projects: CanvasProjectAssetManagerOptions['projects']
   private readonly global: CanvasProjectAssetContext
   private readonly createContext: CanvasProjectAssetManagerOptions['create']
@@ -50,6 +53,7 @@ export class CanvasProjectAssetManager {
   private readonly locations = new Map<string, string | null>()
 
   constructor(options: CanvasProjectAssetManagerOptions) {
+    this.realmId = options.realmId ?? 'xm-account'
     this.projects = options.projects
     this.global = options.global
     this.createContext = options.create
@@ -64,7 +68,9 @@ export class CanvasProjectAssetManager {
     if (existing) return existing
     const pending = this.projects.getUsableWorkspaceDirectory(userId, projectId).then((workspaceDirectory) => {
       if (!workspaceDirectory) return this.global
-      const context = this.createContext(path.join(workspaceDirectory, 'assets'))
+      const context = this.createContext(this.realmId === 'api-account'
+        ? path.join(workspaceDirectory, 'assets', 'realms', 'api-account')
+        : path.join(workspaceDirectory, 'assets'))
       context.images.ensureOutputDirectory()
       return context
     }).catch((error) => {

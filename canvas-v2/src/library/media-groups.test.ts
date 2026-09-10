@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   availableTextModels,
   defaultCanvasMediaPreferences,
+  sub2ApiCanvasMediaPreferences,
   mediaGroupsEqual,
   mediaGroupsSignature,
   pickAvailableModel,
@@ -40,8 +41,9 @@ describe('media group defaults', () => {
     expect(preferredModelForNodeType('drama-parse', groups)).toBe('gpt-5.4')
   })
 
-  it('defaults to the production image, video, and Gemini groups', () => {
+  it('uses the existing NewAPI defaults on the legacy site', () => {
     expect(preferredMediaGroups([
+      { name: 'GPT-image2' },
       { name: '图片模型-中转/订阅' },
       { name: '视频模型-中转/订阅' },
       { name: 'Gemini-中转/订阅' },
@@ -61,12 +63,19 @@ describe('media group defaults', () => {
     })
   })
 
+  it('selects exact Sub2API defaults and never initializes a video group', () => {
+    const groups = [{ name: 'GPT-image2' }, { name: 'Gemini' }, { name: '视频模型-中转/订阅' }]
+    expect(preferredMediaGroups(groups, 'solov-api')).toEqual({ image: 'GPT-image2', text: 'Gemini', imageModel: 'gpt-image-2', textModel: 'gemini-3.7-flash', videoModel: '' })
+    expect(sub2ApiCanvasMediaPreferences.video).toBe('')
+    expect(preferredMediaGroups([{ name: '其他组' }], 'solov-api').image).toBeUndefined()
+  })
+
   it('falls back to nearby groups when the preferred names are missing', () => {
     expect(preferredMediaGroups([
       { name: '生图分组' },
       { name: 'grok' },
       { name: '对话分组' },
-    ])).toMatchObject({ image: '生图分组', video: 'grok', text: '对话分组' })
+    ])).toMatchObject({ image: '生图分组', text: '对话分组' })
   })
 
   it('does not pretend an image group is a text group', () => {
@@ -109,7 +118,6 @@ describe('media group defaults', () => {
       ],
     )).toMatchObject({
       image: '图片模型-中转/订阅',
-      video: '视频模型-中转/订阅',
       text: 'Gemini-中转/订阅',
     })
   })

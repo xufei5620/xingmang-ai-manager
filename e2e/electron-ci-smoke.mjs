@@ -34,12 +34,21 @@ try {
     const browserWindow = BrowserWindow.getAllWindows()[0]
     if (!browserWindow) return null
     const bounds = browserWindow.getBounds()
+    const contentBounds = browserWindow.getContentBounds()
+    const maximized = browserWindow.isMaximized()
     const workArea = screen.getDisplayMatching(bounds).workAreaSize
+    const expectedMaximized = workArea.width < 1280 || workArea.height < 720
     return {
       bounds,
+      contentBounds,
+      maximized,
+      expectedMaximized,
+      // Windows maximized outer bounds include invisible resize borders.
+      // The content area is the visible workspace in that state.
+      measured: expectedMaximized ? contentBounds : bounds,
       expected: {
-        width: workArea.width < 1280 || workArea.height < 720 ? workArea.width : Math.max(960, Math.min(1440, Math.round(workArea.width * 0.8))),
-        height: workArea.width < 1280 || workArea.height < 720 ? workArea.height : Math.max(560, Math.min(900, Math.round(workArea.height * 0.85))),
+        width: expectedMaximized ? workArea.width : Math.max(960, Math.min(1440, Math.round(workArea.width * 0.8))),
+        height: expectedMaximized ? workArea.height : Math.max(560, Math.min(900, Math.round(workArea.height * 0.85))),
       },
     }
   })
@@ -87,8 +96,10 @@ try {
     result.title !== '星芒AI管理工具'
     || pageErrors.length > 0
     || result.horizontalOverflow
-    || Math.abs((result.windowMetrics?.bounds.width ?? 0) - (result.windowMetrics?.expected.width ?? 0)) > 4
-    || Math.abs((result.windowMetrics?.bounds.height ?? 0) - (result.windowMetrics?.expected.height ?? 0)) > 4
+    || !result.windowMetrics
+    || result.windowMetrics.maximized !== result.windowMetrics.expectedMaximized
+    || Math.abs(result.windowMetrics.measured.width - result.windowMetrics.expected.width) > 4
+    || Math.abs(result.windowMetrics.measured.height - result.windowMetrics.expected.height) > 4
     || !result.welcomeVisible
     || !result.dashboardBlocked
     || !result.onboardingHidden

@@ -80,6 +80,30 @@ import type {
   NewApiUsableGroup,
 } from './new-api-client'
 
+export interface RelayNotice {
+  id: string
+  text: string
+  /** Multiple user-visible notices with server-owned read state. */
+  entries?: Array<{ id: string; title: string; text: string; read: boolean }>
+}
+
+/** Checkout payload returned by a relay top-up endpoint. Forms are the
+ * legacy new-api POST flow; URL/QR payloads are handled by the main process
+ * payment window and never exposed to the renderer. */
+export type RelayTopupCheckout = NewApiPaymentForm | {
+  kind: 'url'
+  url: string
+  tradeNo: string | null
+  expiresAt: string | null
+} | {
+  kind: 'qrcode'
+  code: string
+  tradeNo: string | null
+  expiresAt: string | null
+  amount: number
+  currency: string
+}
+
 // Coarse, UI-facing flags -- granularity matches "which block of the account
 // UI does the renderer need to show or hide for this backend", not a
 // per-method feature matrix. new-api supports everything this app uses
@@ -122,10 +146,16 @@ export interface RelayBackendCapabilities {
  */
 export interface RelayBackendClient {
   readonly capabilities: RelayBackendCapabilities
+  /** Main-process routing authority; legacy clients default to xm. */
+  getActiveSiteId?(): 'solov' | 'solov-api'
+  /** Main-only exact lookup. The input secret must never be sent to an account endpoint or returned in a DTO. */
+  identifyKey?(secret: string): Promise<{ id: number; name: string; group: string } | null>
 
   /** ipc.ts: account:get-status */
   getStatus(): Promise<NewApiAccountStatus>
-  getNotice?(): Promise<{ id: string; text: string } | null>
+  getNotice?(): Promise<RelayNotice | null>
+  /** Mark one entry from the last fetched notice snapshot read in the active account. */
+  markNoticeRead?(id: string, entryId: string): Promise<void>
   /** ipc.ts: account:get-legal-document */
   getLegalDocument(kind: NewApiLegalDocumentKind): Promise<NewApiLegalDocument>
   /** ipc.ts: account:send-email-verification */
@@ -149,9 +179,11 @@ export interface RelayBackendClient {
   /** ipc.ts: account:quote-topup */
   quoteTopupAmount(input: NewApiTopupAmountInput): Promise<NewApiTopupAmountQuote>
   /** ipc.ts: account:create-topup-payment */
-  createTopupPayment(input: NewApiTopupPaymentInput): Promise<NewApiPaymentForm>
+  createTopupPayment(input: NewApiTopupPaymentInput): Promise<RelayTopupCheckout>
   /** ipc.ts: account:list-topup-orders */
   listTopupOrders(input?: NewApiTopupOrdersQuery): Promise<NewApiTopupOrdersPage>
+  /** Main-only verification of an existing order, never a create/payment operation. */
+  getTopupOrderStatus?(tradeNo: string): Promise<'pending' | 'success' | 'failed' | 'expired' | 'unknown'>
   /** ipc.ts: account:redeem-topup-code */
   redeemTopupCode(code: string): Promise<NewApiRedemptionResult>
   /** ipc.ts: account:transfer-affiliate-quota */

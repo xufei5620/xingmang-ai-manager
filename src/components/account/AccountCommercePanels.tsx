@@ -243,6 +243,12 @@ export function AccountCommercePanels({
     if (matchesTopup) {
       pendingPaymentRef.current = null
       setPendingPayment(null)
+      if (event.status === 'success') {
+        setPaymentResult({ status: 'success', message: '服务端已确认到账，支付窗口已关闭' })
+        void onRefreshAccount().catch(() => undefined)
+        notify?.({ type: 'success', message: '充值成功，正在刷新余额' })
+        return
+      }
       const message = event.status === 'expired'
         ? '支付已超时，支付窗口已自动关闭，请重新下单'
         : event.status === 'closed'
@@ -259,6 +265,11 @@ export function AccountCommercePanels({
     if (matchesSubscription) {
       pendingSubscriptionPaymentRef.current = null
       setPendingSubscriptionPayment(null)
+      if (event.status === 'success') {
+        void onRefreshAccount().catch(() => undefined)
+        notify?.({ type: 'success', message: '订阅支付已完成，请刷新订阅' })
+        return
+      }
       const message = event.status === 'expired'
         ? '订阅支付已超时，支付窗口已自动关闭'
         : event.status === 'closed'
@@ -266,7 +277,7 @@ export function AccountCommercePanels({
           : '订阅支付未完成，请重试'
       notify?.({ type: event.status === 'closed' ? 'info' : 'error', message })
     }
-  }), [notify])
+  }), [notify, onRefreshAccount])
 
   const loadTopupInfo = useCallback(async () => {
     const requestId = ++topupRequest.current
@@ -433,10 +444,13 @@ export function AccountCommercePanels({
     try {
       const result = await window.xingmang.redeemAccountTopupCode(code)
       setRedeemCode('')
-      await onRefreshAccount()
+      // A refresh failure must not turn a committed redemption into a retry.
+      await Promise.allSettled([onRefreshAccount(), loadSubscriptions()])
       notify?.({
         type: 'success',
-        message: balance ? `兑换成功，已增加 ${formatBalanceUsd(result.quotaAdded, balance.quotaPerUnit)}` : '兑换成功',
+        message: result.type === 'subscription' ? '订阅兑换成功'
+          : result.type === 'concurrency' ? '并发额度兑换成功'
+            : balance && result.quotaAdded >= 0 ? `兑换成功，已增加 ${formatBalanceUsd(result.quotaAdded, balance.quotaPerUnit)}` : '余额兑换成功',
       })
     } catch (error) {
       notify?.({ type: 'error', message: errorMessage(error) })
@@ -829,14 +843,20 @@ export function AccountCommercePanels({
     : (
         <div className="account-affiliate">
           <div className="account-affiliate-stats">
+            <div><span>返利比例</span><strong>{profile.affRebateRatePercent ?? 0}%</strong></div>
             <div><span>已邀请</span><strong>{profile.affCount} 人</strong></div>
             <div><span>可转入奖励</span><strong>{balance ? formatBalanceUsd(profile.affQuota, balance.quotaPerUnit) : profile.affQuota}</strong></div>
             <div><span>历史邀请奖励</span><strong>{balance ? formatBalanceUsd(profile.affHistoryQuota, balance.quotaPerUnit) : profile.affHistoryQuota}</strong></div>
           </div>
           <section className="account-affiliate-share">
             <h3>邀请好友</h3>
+            <p>分享邀请码或邀请链接。好友注册并充值后，你将获得对应比例的返利额度，可随时转入账户余额。</p>
             <label className="field"><span>邀请码</span><div className="input-with-action"><input readOnly value={profile.affCode} onFocus={(event) => event.currentTarget.select()} /><button type="button" title="复制邀请码" onClick={() => void copyInvite('code', profile.affCode as string)}>{copiedInvite === 'code' ? <Check size={16} /> : <ClipboardCopy size={16} />}</button></div></label>
             <label className="field"><span>邀请链接</span><div className="input-with-action"><input readOnly value={inviteLink} onFocus={(event) => event.currentTarget.select()} /><button type="button" title="复制邀请链接" onClick={() => void copyInvite('link', inviteLink)}>{copiedInvite === 'link' ? <Check size={16} /> : <ClipboardCopy size={16} />}</button></div></label>
+          </section>
+          <section className="account-affiliate-invitees">
+            <h3>已邀请用户</h3>
+            {(profile.invitees?.length ?? 0) > 0 ? <div className="account-affiliate-invitee-list">{(profile.invitees ?? []).map((invitee) => <div key={invitee.userId}><span>{invitee.email}</span><span>{invitee.username || '-'}</span><strong>{balance ? formatBalanceUsd(invitee.totalRebate, balance.quotaPerUnit) : invitee.totalRebate}</strong></div>)}</div> : <p>暂时还没有已邀请用户。</p>}
           </section>
           <section className="account-affiliate-transfer">
             <header><Send size={18} /><div><h3>奖励转入余额</h3><p>转入后可直接用于 API 消费或余额订阅。</p></div></header>
