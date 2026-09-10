@@ -150,6 +150,8 @@
   font: 600 28px var(--mono);
   color: var(--text);
 }
+.v2-business-stat-grid .xm-card-body { display: grid; gap: 4px; align-content: start; }
+.v2-business-stat-grid .xm-card-body small { display: block; color: var(--text-3); line-height: 1.5; }
 .v2-business-recharge-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
