@@ -103,8 +103,11 @@ test('the configured macOS development origin renders the real Electron app', {
       assert.fail(JSON.stringify(failedRequests))
     }
     assert.equal(new URL(page.url()).origin, devUrl.origin)
-    const rootChildren = await page.locator('#root').evaluate((element) => element.childElementCount)
-    assert.equal(rootChildren, 1)
+    // ToastProvider renders a sibling live region; raw root child count is
+    // not a boot invariant. Verify the app surface and preload bridge instead.
+    assert.equal(await page.locator('#root').getByTestId('welcome-page').count(), 1)
+    assert.equal(await page.getByTestId('welcome-login').isVisible(), true)
+    assert.equal(await page.evaluate(() => typeof window.xingmang?.getAccountSession), 'function')
   } finally {
     try {
       await application?.close()
