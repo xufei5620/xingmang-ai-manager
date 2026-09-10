@@ -4,6 +4,9 @@ import { resolveRealmDataRoot, resolveRealmDataRoots } from './realm-data-roots'
 
 describe('realm data roots', () => {
   const manager = path.join('C:', 'Users', 'tester', 'AppData', 'Roaming', 'xingmang')
+  // Resolve the joined path: bare "D:" is drive-relative on Windows and
+  // resolves against the runner's D: working directory, unlike "D:\\xingmang".
+  const legacyOutput = path.resolve(path.join('D:', 'xingmang', 'output'))
 
   it('keeps xm paths compatible with the existing layout', () => {
     const roots = resolveRealmDataRoots(manager, 'xm-account')
@@ -11,7 +14,7 @@ describe('realm data roots', () => {
     expect(roots.chatKeysFile).toBe(path.join(path.resolve(manager), 'chat-group-keys.dat'))
     expect(roots.canvasProjectsDirectory).toBe(path.join(path.resolve(manager), 'canvas-projects'))
     expect(roots.accountDirectory(7)).toBe(path.join(path.resolve(manager), 'user-7'))
-    expect(roots.assetOutputDirectory(path.join('D:', 'xingmang', 'output'))).toBe(path.resolve('D:', 'xingmang', 'output'))
+    expect(roots.assetOutputDirectory(legacyOutput)).toBe(legacyOutput)
   })
 
   it('puts api data under a fixed independent directory', () => {
@@ -21,7 +24,7 @@ describe('realm data roots', () => {
     expect(api.rootDirectory).not.toBe(xm.rootDirectory)
     expect(api.accountDirectory(7)).not.toBe(xm.accountDirectory(7))
     expect(api.chatKeysFile).toContain(path.join('realms', 'api-account'))
-    expect(api.assetOutputDirectory(path.join('D:', 'xingmang', 'output'))).toBe(path.join(path.resolve('D:', 'xingmang', 'output'), 'realms', 'api-account'))
+    expect(api.assetOutputDirectory(legacyOutput)).toBe(path.join(legacyOutput, 'realms', 'api-account'))
   })
 
   it('rejects invalid realms and user IDs', () => {

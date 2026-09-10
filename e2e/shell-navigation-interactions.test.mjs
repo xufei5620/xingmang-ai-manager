@@ -101,7 +101,17 @@ test('navigation restores filters and delayed content scroll, while account chan
     await page.evaluate(() => window.shellHarness.releaseRows())
     await page.locator('[data-ready="true"]').waitFor()
     await page.getByLabel('页面筛选').fill('保留筛选')
-    await page.locator('main').evaluate((main) => { main.scrollTop = 900 })
+    await page.locator('main').evaluate((main) => new Promise((resolve, reject) => {
+      // scrollTop changes synchronously; the browser delivers scroll on a later frame.
+      // Let navigation remember this position before replacing the page content.
+      const timeout = setTimeout(() => {
+        main.removeEventListener('scroll', onScroll)
+        reject(new Error('Browser did not dispatch the scroll event'))
+      }, 5000)
+      const onScroll = () => { clearTimeout(timeout); resolve() }
+      main.addEventListener('scroll', onScroll, { once: true })
+      main.scrollTop = 900
+    }))
     await page.waitForFunction(() => document.querySelector('main').scrollTop === 900)
     await page.evaluate(() => window.shellHarness.navigate('skills'))
     await page.locator('[data-view-key="skills"]').waitFor()
