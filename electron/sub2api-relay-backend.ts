@@ -72,6 +72,7 @@ function keyName(value: string): string {
 function record(value: unknown): Record<string, any> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {} }
 function num(value: unknown, fallback = 0): number { return typeof value === 'number' && Number.isFinite(value) ? value : fallback }
 function str(value: unknown, fallback = ''): string { return typeof value === 'string' ? value : fallback }
+function maskedEmail(value: unknown): string { const email = str(value); const at = email.indexOf('@'); if (at <= 1) return email ? '***' : ''; const local = email.slice(0, at); return `${local.slice(0, 1)}***${local.slice(-1)}${email.slice(at)}` }
 function iso(value: unknown): string { const d = typeof value === 'string' ? Date.parse(value) : NaN; return Number.isFinite(d) ? new Date(d).toISOString() : '' }
 function parseUsage(payload: unknown): NewApiAccountUsagePage {
   const p = record(payload); const items = Array.isArray(p.items) ? p.items : []
@@ -269,7 +270,7 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       const detail = detailProfile(profile)
       let affiliate: Record<string, any> = {}
       try { affiliate = record(await call(scope, (saved, abort) => native.getAffiliate(saved, abort))) } catch { /* affiliate module may be disabled */ }
-      const invitees = Array.isArray(affiliate.invitees) ? affiliate.invitees.slice(0, 100).map((entry) => { const item = record(entry); return { userId: num(item.user_id), email: str(item.email), username: str(item.username), createdAt: iso(item.created_at) || null, totalRebate: num(item.total_rebate) } }) : []
+      const invitees = Array.isArray(affiliate.invitees) ? affiliate.invitees.slice(0, 100).map((entry) => { const item = record(entry); return { userId: num(item.user_id), email: maskedEmail(item.email), username: str(item.username), createdAt: iso(item.created_at) || null, totalRebate: num(item.total_rebate) } }) : []
       return { ...detail, affCode: str(affiliate.aff_code) || null, affCount: num(affiliate.aff_count), affQuota: num(affiliate.aff_quota), affHistoryQuota: num(affiliate.aff_history_quota), affRebateRatePercent: num(affiliate.effective_rebate_rate_percent), invitees }
     },
     updateDisplayName: async (input) => {
