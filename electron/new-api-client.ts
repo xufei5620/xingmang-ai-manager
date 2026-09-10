@@ -1375,8 +1375,8 @@ export function parseAccountProfileDetail(payload: unknown): NewApiAccountProfil
     affCount: asOptionalFiniteNumber(data.aff_count) ?? 0,
     affQuota: asOptionalFiniteNumber(data.aff_quota) ?? 0,
     affHistoryQuota: asOptionalFiniteNumber(data.aff_history_quota) ?? 0,
-    affRebateRatePercent: asOptionalFiniteNumber(data.effective_rebate_rate_percent) ?? 0,
-    invitees: [],
+    ...(asOptionalFiniteNumber(data.effective_rebate_rate_percent) === null ? {} : { affRebateRatePercent: asOptionalFiniteNumber(data.effective_rebate_rate_percent)! }),
+    ...(Array.isArray(data.invitees) ? { invitees: [] } : {}),
   }
 }
 
