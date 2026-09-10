@@ -547,6 +547,179 @@ test('chat retains its task across navigation and reports work to native close p
 })
 
 
+test('Sub2API announcements list titles and automatically mark only the opened detail as read', async () => {
+  const page = await open('sub2api=1')
+  try {
+    const button = page.getByTestId('announcement-open')
+    await button.locator('.v2-unread').waitFor()
+    await button.click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    const list = dialog.getByTestId('announcement-list')
+    await list.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    assert.equal(await dialog.getByTestId('announcement-detail').count(), 0)
+    assert.equal(await dialog.getByText('系统升级完成', { exact: true }).count(), 0)
+    assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead')), [])
+    await page.screenshot({ path: path.join(artifacts, 'sub2api-announcements.png') })
+
+    await list.getByTestId('announcement-item-12').click()
+    const detail = dialog.getByTestId('announcement-detail')
+    await detail.getByRole('heading', { name: '服务通知', level: 2, exact: true }).waitFor()
+    assert.equal(await detail.locator('strong').innerText(), '系统升级完成')
+    assert.equal(await dialog.getByText('套餐详情已更新', { exact: true }).count(), 0)
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead'))
+    await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
+    await list.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    assert.equal(await button.locator('.v2-unread').count(), 1)
+
+    await list.getByTestId('announcement-item-12').click()
+    await detail.getByRole('heading', { name: '服务通知', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
+    await list.getByTestId('announcement-item-8').click()
+    await detail.getByRole('heading', { name: '套餐更新', level: 2, exact: true }).waitFor()
+    await detail.getByText('套餐详情已更新', { exact: true }).waitFor()
+    assert.equal(await dialog.locator('script').count(), 0)
+    assert.equal(await page.evaluate(() => window.nativeXss), undefined)
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    const writes = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead'))
+    assert.deepEqual(writes.map((call) => call.args), [['sub2api-notices', '12'], ['sub2api-notices', '8']])
+    await page.screenshot({ path: path.join(artifacts, 'sub2api-announcement-detail.png') })
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    await button.click()
+    await list.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
+    await list.getByRole('button', { name: '套餐更新 已读', exact: true }).waitFor()
+    assert.equal(await detail.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('Sub2API detail stays readable when marking fails and retry only marks that announcement', async () => {
+  const page = await open('sub2api=1')
+  try {
+    const button = page.getByTestId('announcement-open')
+    await button.click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    await page.evaluate(() => { window.v2Test.fail = 'markAccountNoticeRead' })
+    await dialog.getByTestId('announcement-item-12').click()
+    await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+    await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
+    assert.equal(await button.locator('.v2-unread').count(), 1)
+    await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
+    await dialog.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
+    await dialog.getByTestId('announcement-item-12').click()
+    await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await dialog.getByRole('button', { name: '重试保存已读', exact: true }).click()
+    await dialog.getByRole('alert').waitFor({ state: 'hidden' })
+    await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
+    await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    assert.equal(await button.locator('.v2-unread').count(), 1)
+    const writes = await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead'))
+    assert.deepEqual(writes.map((call) => call.args), Array.from({ length: 3 }, () => ['sub2api-notices', '12']))
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('Sub2API pending read updates stay attached to their own announcement after switching details', async () => {
+  const page = await open('sub2api=1&noticeMarkPending=1')
+  try {
+    const button = page.getByTestId('announcement-open')
+    await button.click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    await dialog.getByTestId('announcement-item-12').click()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead' && call.args[1] === '12'))
+    await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
+    await dialog.getByTestId('announcement-item-8').click()
+    const detail = dialog.getByTestId('announcement-detail')
+    await detail.getByRole('heading', { name: '套餐更新', exact: true }).waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead' && call.args[1] === '8'))
+    await page.evaluate(() => window.v2Test.releaseNoticeMark('12'))
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await detail.getByRole('heading', { name: '套餐更新', exact: true }).isVisible(), true)
+    assert.equal(await button.locator('.v2-unread').count(), 1)
+    await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
+    await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '套餐更新 未读', exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseNoticeMark('8'))
+    await dialog.getByRole('button', { name: '套餐更新 已读', exact: true }).waitFor()
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead').map((call) => call.args)), [['sub2api-notices', '12'], ['sub2api-notices', '8']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('Sub2API long announcement titles stay on one line and reveal their full title in details', async () => {
+  for (const theme of ['light', 'dark']) {
+    const page = await open(`sub2api=1&noticeLongTitle=1&theme=${theme}`)
+    try {
+      await page.setViewportSize({ width: 1100, height: 820 })
+      await page.getByTestId('announcement-open').click()
+      const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+      const title = dialog.getByTestId('announcement-item-12').locator('.v2-announcement-title')
+      await title.waitFor()
+      const fullTitle = await title.innerText()
+      const geometry = await title.evaluate((element) => {
+        const style = getComputedStyle(element)
+        const row = element.closest('button').getBoundingClientRect()
+        const list = element.closest('[data-testid="announcement-list"]')
+        return { whiteSpace: style.whiteSpace, textOverflow: style.textOverflow, overflow: style.overflow, truncated: element.scrollWidth > element.clientWidth,
+          rowContained: row.right <= list.getBoundingClientRect().right, listOverflows: list.scrollWidth > list.clientWidth }
+      })
+      assert.deepEqual(geometry, { whiteSpace: 'nowrap', textOverflow: 'ellipsis', overflow: 'hidden', truncated: true, rowContained: true, listOverflows: false })
+      await page.screenshot({ path: path.join(artifacts, `sub2api-announcements-long-title-${theme}.png`) })
+      await dialog.getByTestId('announcement-item-12').click()
+      await dialog.getByTestId('announcement-detail').getByRole('heading', { name: fullTitle, level: 2, exact: true }).waitFor()
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
+test('legacy announcements keep their content view and local mark-read action', async () => {
+  const page = await open()
+  try {
+    const button = page.getByTestId('announcement-open')
+    await button.locator('.v2-unread').waitFor()
+    await button.click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    await dialog.getByText('本地测试公告', { exact: true }).waitFor()
+    assert.equal(await dialog.getByTestId('announcement-list').count(), 0)
+    await dialog.getByRole('button', { name: '标为已读', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await button.locator('.v2-unread').waitFor({ state: 'hidden' })
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead')), [])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('Sub2API announcements keep server-read and empty states and recover from read errors', async () => {
+  for (const query of ['sub2api=1&noticesRead=1', 'sub2api=1&noticeEmpty=1']) {
+    const page = await open(query)
+    try {
+      await page.getByTestId('announcement-open').click()
+      const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+      await dialog.getByText(query.includes('noticeEmpty') ? '暂无公告' : '服务通知', { exact: true }).waitFor()
+      assert.equal(await page.locator('.v2-unread').count(), 0)
+      if (query.includes('noticesRead')) {
+        await dialog.getByRole('button', { name: '服务通知 已读', exact: true }).click()
+        await dialog.getByTestId('announcement-detail').getByText('系统升级完成', { exact: true }).waitFor()
+        await dialog.getByRole('button', { name: '返回列表', exact: true }).click()
+      }
+      assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'markAccountNoticeRead')), [])
+      await page.evaluate(() => { window.v2Test.fail = 'getAccountNotice' })
+      await dialog.getByRole('button', { name: '重新读取' }).click()
+      await dialog.getByRole('alert').getByText('本地测试操作失败').waitFor()
+      await page.evaluate(() => { window.v2Test.fail = '' })
+      await dialog.getByRole('button', { name: '重新读取' }).click()
+      await dialog.getByText(query.includes('noticeEmpty') ? '暂无公告' : '服务通知', { exact: true }).waitFor()
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
 test('Sub2API session drives account panels while old relay settings stay on NewAPI', async () => {
   const page = await open('sub2api=1')
   try {
@@ -559,12 +732,66 @@ test('Sub2API session drives account panels while old relay settings stay on New
     assert.doesNotMatch(await page.getByTestId('page-account').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
     const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
     assert.equal(methods.includes('getAccountProfile'), true)
-    for (const method of ['getAccountUsage', 'getAccountNotice', 'getAccountLoginSessions', 'getAccountTopupInfo', 'getAccountSubscriptionSelf', 'getLegalDocument']) assert.equal(methods.includes(method), false, method)
+    assert.equal(methods.includes('getAccountNotice'), true)
+    for (const method of ['getAccountUsage', 'getAccountLoginSessions', 'getAccountTopupInfo', 'getAccountSubscriptionSelf', 'getLegalDocument']) assert.equal(methods.includes(method), false, method)
     await page.screenshot({ path: path.join(artifacts, 'account-sub2api.png') })
     await clean(page)
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
     await page.getByTestId('welcome-login').waitFor()
     assert.equal(await page.getByTestId('account-display').count(), 0)
+  } finally { await page.close() }
+})
+
+test('an obsolete balance rejection stays silent before the session-change event arrives', async () => {
+  const page = await open('sub2api=1&balancePending=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
+    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': Error: 账号上下文已变化，请重试"))
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
+    await page.getByTestId('welcome-login').waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('late balance results and failures cannot escape an expired or switched account', async () => {
+  for (const action of ['expire', 'switch']) for (const result of ['resolve', 'reject']) {
+    const page = await open('sub2api=1&balancePending=1')
+    try {
+      await page.getByTestId('tool-row-codex').waitFor()
+      await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
+      await page.evaluate((action) => window.v2Test.emit('onAccountSessionChanged', action === 'expire'
+        ? { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }
+        : { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 24.8, usedQuota: 0 }, siteId: 'solov-api', realmId: 'api-account' }), action)
+      if (action === 'expire') await page.getByTestId('welcome-login').waitFor()
+      else await page.locator('.v2-sidebar').getByText('$24.80', { exact: true }).waitFor()
+      await page.evaluate((result) => window.v2Test.releaseBalance(result === 'reject'
+        ? "Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接" : undefined), result)
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+      assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+      if (action === 'expire') assert.equal(await page.getByTestId('welcome-login').isVisible(), true)
+      else assert.equal(await page.locator('.v2-sidebar').getByText('$24.80', { exact: true }).isVisible(), true)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
+test('a current-account balance failure remains readable and disappears on logout', async () => {
+  const page = await open('sub2api=1&balancePending=1')
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
+    await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接"))
+    const dialog = page.getByRole('dialog', { name: '操作没有完成' })
+    await dialog.getByText('余额暂时没有读到，请检查网络后重试。', { exact: true }).waitFor()
+    assert.doesNotMatch(await dialog.innerText(), /account:get-balance|Error invoking|RealmAccountError/)
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
+    await page.getByTestId('welcome-login').waitFor()
+    assert.equal(await dialog.count(), 0)
+    await clean(page)
   } finally { await page.close() }
 })
 
@@ -582,6 +809,10 @@ test('a saved account with the same id switches platform without reusing NewAPI 
     await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
     await page.getByTestId('account-display').waitFor()
     assert.deepEqual(await page.getByTestId('account-tabs').getByRole('tab').allTextContents(), ['我的账号', '密钥'])
+    await page.getByTestId('announcement-open').click()
+    const notice = page.getByRole('dialog', { name: '公告', exact: true })
+    await notice.getByRole('button', { name: '服务通知 未读', exact: true }).waitFor()
+    assert.equal(await notice.getByText('本地测试公告', { exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

@@ -93,6 +93,78 @@ describe('sub2api user-account adapter', () => {
     await assert.rejects(example.client.getTasks(saved(), {}, signal()), hasCode('UNSUPPORTED'))
     assert.equal(example.calls.length, 0)
   })
+  it('verifies one owned order through the authenticated reconciliation endpoint and strips unrelated fields', async () => {
+    const example = fixture([response({ id: 31, user_id: 7, out_trade_no: 'sub2_trade-31', status: 'COMPLETED',
+      access_token: secret, provider_config: { api_key: 'provider-secret' }, user: { email: user.email } })])
+    assert.deepEqual(await example.client.verifyPaymentOrder(saved(), 'sub2_trade-31', signal()), {
+      id: '31', userId: '7', tradeNo: 'sub2_trade-31', status: 'COMPLETED',
+    })
+    assert.equal(example.calls[0].url, 'https://api.solov.cc/api/v1/payment/orders/verify')
+    assert.equal(example.calls[0].init.method, 'POST')
+    assert.equal(new Headers(example.calls[0].init.headers).get('authorization'), `Bearer ${secret}`)
+    assert.deepEqual(JSON.parse(String(example.calls[0].init.body)), { out_trade_no: 'sub2_trade-31' })
+    assert.equal(example.calls[0].init.credentials, 'omit')
+    assert.equal(example.calls[0].init.redirect, 'manual')
+  })
+  it('rejects malformed order identifiers before sending reconciliation requests', async () => {
+    const example = fixture([])
+    for (const tradeNo of ['', ' leading-space', 'trailing-space ', 'a/b', '订单', 'a'.repeat(65), 31, null, {}]) {
+      await assert.rejects(example.client.verifyPaymentOrder(saved(), tradeNo as string, signal()), hasCode('INVALID'))
+    }
+    assert.equal(example.calls.length, 0)
+  })
+  it('requires exact order and user identity in reconciliation responses', async () => {
+    const valid = { id: 31, user_id: 7, out_trade_no: 'sub2_trade-31', status: 'COMPLETED' }
+    for (const patch of [{ id: '31' }, { user_id: 8 }, { user_id: '7' }, { user_id: undefined },
+      { out_trade_no: 'sub2_trade-32' }, { out_trade_no: ' sub2_trade-31' }, { status: true }, { status: '' }]) {
+      const example = fixture([response({ ...valid, ...patch })])
+      await assert.rejects(example.client.verifyPaymentOrder(saved(), 'sub2_trade-31', signal()), hasCode('PROTOCOL'))
+    }
+  })
+  it('loads user announcements with bearer authentication and acknowledges without a body', async () => {
+    const example = fixture([response([{ id: 42, title: '公告', content: '内容', read_at: null }]), response({ message: 'ok' })])
+    assert.deepEqual(await example.client.listAnnouncements(saved(), signal()), [
+      { id: '42', title: '公告', content: '内容', readAt: null, updatedAt: null },
+    ])
+    await example.client.markAnnouncementRead(saved(), '42', signal())
+    assert.deepEqual(example.calls.map(({ url }) => url), [
+      'https://api.solov.cc/api/v1/announcements', 'https://api.solov.cc/api/v1/announcements/42/read',
+    ])
+    for (const { init } of example.calls) {
+      assert.equal(new Headers(init.headers).get('authorization'), `Bearer ${secret}`)
+      assert.equal(init.credentials, 'omit')
+      assert.equal(init.redirect, 'manual')
+      assert.equal(init.body, undefined)
+    }
+    assert.equal(example.calls[1].init.method, 'POST')
+    assert.equal(new Headers(example.calls[1].init.headers).get('content-type'), null)
+  })
+
+  it('uses the larger rich-notice limit only for announcements', async () => {
+    const content = '<img src="data:image/png;base64,' + 'A'.repeat(2_600_000) + '">'
+    const example = fixture([response([{ id: 42, title: '公告', content }]), response({ ...user, unused: content })])
+    assert.equal((await example.client.listAnnouncements(saved(), signal()))[0].content, content)
+    await assert.rejects(example.client.getBalance(saved(), signal()), hasCode('PROTOCOL'))
+  })
+
+  it('rejects oversized notices with a readable limit error and respects injected limits', async () => {
+    const example = fixture([response([{ id: 42, title: '公告', content: 'x'.repeat(2048) }])], { maxResponseBytes: 1024 })
+    await assert.rejects(example.client.listAnnouncements(saved(), signal()), /公告读取响应超过 1 KB 安全上限/)
+    const declared = new Response('', { headers: { 'content-type': 'application/json', 'content-length': String(4 * 1024 * 1024 + 1) } })
+    await assert.rejects(fixture([declared]).client.listAnnouncements(saved(), signal()), /公告读取响应超过 4096 KB 安全上限/)
+  })
+  it('rejects unsafe announcement ids before issuing a write', async () => {
+    const example = fixture([])
+    for (const id of ['0', '-1', '1/../2', '01', '1.5', String(Number.MAX_SAFE_INTEGER + 1), '']) {
+      await assert.rejects(example.client.markAnnouncementRead(saved(), id, signal()), hasCode('INVALID'))
+    }
+    assert.equal(example.calls.length, 0)
+  })
+  it('does not retry an unauthorized native announcement acknowledgement', async () => {
+    const example = fixture([new Response('', { status: 401 })])
+    await assert.rejects(example.client.markAnnouncementRead(saved(), '42', signal()), hasCode('UNAUTHORIZED'))
+    assert.equal(example.calls.length, 1)
+  })
   it('strips full key values and retains numeric group ids in list summaries', async () => {
     const example = fixture([response({ items: [key], total: 1 })])
     const page = await example.client.listKeys(saved(), 1, 20, signal())

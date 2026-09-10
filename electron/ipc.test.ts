@@ -369,6 +369,21 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel)).toEqual(expectedChannels)
   })
 
+  it('marks one fetched announcement read only through trusted account IPC with valid IDs', async () => {
+    const accountService = accountServiceStub()
+    accountService.markNoticeRead = vi.fn(async () => undefined)
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+    const handler = electronMocks.handlers.get('account:mark-notice-read')!
+    expect(() => handler(trustedEvent('https://attacker.example/'), 'notice-hash', '7')).toThrow('非应用页面')
+    for (const id of [null, {}, '', 'x'.repeat(129)]) expect(() => handler(trustedEvent(), id, '7')).toThrow()
+    for (const entryId of [undefined, null, {}, 7, '', '0', '-1', '01', '1.5', ' 7 ', '7/read', '9007199254740992']) {
+      expect(() => handler(trustedEvent(), 'notice-hash', entryId)).toThrow('公告条目 ID 格式错误')
+    }
+    expect(accountService.markNoticeRead).not.toHaveBeenCalled()
+    await expect(handler(trustedEvent(), 'notice-hash', '7')).resolves.toBeUndefined()
+    expect(accountService.markNoticeRead).toHaveBeenCalledWith('notice-hash', '7')
+  })
+
   describe('saved-account switch isolation', () => {
     const origin = new URL(resolveRelaySite(undefined).accountBaseUrl!).origin
     const accountA = { authenticated: true, account: { userId: 1, username: 'account-a', group: null, role: 1, quota: 100, usedQuota: 0 } }

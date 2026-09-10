@@ -1,8 +1,10 @@
 {
   "name": "xingmang-ai-manager",
-  "version": "0.1.32",
+  "version": "0.2.1",
   "private": true,
-  "workspaces": ["tooling/legacy-renderer"],
+  "workspaces": [
+    "tooling/legacy-renderer"
+  ],
   "description": "星芒AI管理工具",
   "author": "神风",
   "main": "dist-electron/platform/entry.js",
@@ -85,7 +87,7 @@
     "simple-icons": "16.30.0",
     "typescript": "~5.7.2",
     "vite": "^8.1.5",
-    "vitest": "^4.1.10",
+    "vitest": "^4.1.11",
     "wait-on": "^8.0.2"
   }
 }

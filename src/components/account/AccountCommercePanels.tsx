@@ -243,6 +243,12 @@ export function AccountCommercePanels({
     if (matchesTopup) {
       pendingPaymentRef.current = null
       setPendingPayment(null)
+      if (event.status === 'success') {
+        setPaymentResult({ status: 'success', message: '服务端已确认到账，支付窗口已关闭' })
+        void onRefreshAccount().catch(() => undefined)
+        notify?.({ type: 'success', message: '充值成功，正在刷新余额' })
+        return
+      }
       const message = event.status === 'expired'
         ? '支付已超时，支付窗口已自动关闭，请重新下单'
         : event.status === 'closed'
@@ -259,6 +265,11 @@ export function AccountCommercePanels({
     if (matchesSubscription) {
       pendingSubscriptionPaymentRef.current = null
       setPendingSubscriptionPayment(null)
+      if (event.status === 'success') {
+        void onRefreshAccount().catch(() => undefined)
+        notify?.({ type: 'success', message: '订阅支付已完成，请刷新订阅' })
+        return
+      }
       const message = event.status === 'expired'
         ? '订阅支付已超时，支付窗口已自动关闭'
         : event.status === 'closed'
@@ -266,7 +277,7 @@ export function AccountCommercePanels({
           : '订阅支付未完成，请重试'
       notify?.({ type: event.status === 'closed' ? 'info' : 'error', message })
     }
-  }), [notify])
+  }), [notify, onRefreshAccount])
 
   const loadTopupInfo = useCallback(async () => {
     const requestId = ++topupRequest.current
@@ -433,10 +444,13 @@ export function AccountCommercePanels({
     try {
       const result = await window.xingmang.redeemAccountTopupCode(code)
       setRedeemCode('')
-      await onRefreshAccount()
+      // A refresh failure must not turn a committed redemption into a retry.
+      await Promise.allSettled([onRefreshAccount(), loadSubscriptions()])
       notify?.({
         type: 'success',
-        message: balance ? `兑换成功，已增加 ${formatBalanceUsd(result.quotaAdded, balance.quotaPerUnit)}` : '兑换成功',
+        message: result.type === 'subscription' ? '订阅兑换成功'
+          : result.type === 'concurrency' ? '并发额度兑换成功'
+            : balance && result.quotaAdded >= 0 ? `兑换成功，已增加 ${formatBalanceUsd(result.quotaAdded, balance.quotaPerUnit)}` : '余额兑换成功',
       })
     } catch (error) {
       notify?.({ type: 'error', message: errorMessage(error) })

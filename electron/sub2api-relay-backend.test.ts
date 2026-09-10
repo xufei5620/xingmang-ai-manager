@@ -18,6 +18,9 @@ const keyRecord = (id: number, extra: Record<string, unknown> = {}) => ({ id, us
 type Key = ReturnType<typeof keyRecord>
 const json = (data: unknown) => Response.json({ code: 0, data })
 const unauthorized = () => new Response('', { status: 401 })
+const noticeRecord = (id = 7, extra: Record<string, unknown> = {}) => ({
+  id, title: `公告 ${id}`, content: `内容 ${id}`, updated_at: '2026-09-09T00:00:00Z', ...extra,
+})
 function saved(id = 7): RealmSavedAccount {
   return parseRealmSavedAccount({ version: 2, realmId: 'api-account', origin: 'https://api.solov.cc',
     userId: String(id), username: `user-${id}`, credential: { kind: 'sub2api', accessToken: `access-${id}`,
@@ -72,6 +75,237 @@ function fixture(options: { onCredentialRotation?: (saved: RealmSavedAccount) =>
   return { ...backend, state, calls, onSessionChange, onCredentialRotation }
 }
 
+describe('Sub2API announcement sessions', () => {
+  it('requires a logged-in user before loading notices', async () => {
+    const f = fixture()
+    await expect(f.client.getNotice!()).rejects.toMatchObject({ code: 'SIGNED_OUT' })
+    expect(f.calls).toHaveLength(0)
+  })
+
+  it('acknowledges only the selected unread announcement from the displayed snapshot', async () => {
+    const f = fixture()
+    let announcements = [noticeRecord(7), noticeRecord(8, { read_at: '2026-09-09T01:00:00Z' }), noticeRecord(9)]
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json(announcements)
+      : /\/announcements\/\d+\/read$/.test(url.pathname) ? json({ message: 'ok' }) : undefined
+    await f.client.login(loginInput)
+    const first = (await f.client.getNotice!())!
+    await expect(f.client.markNoticeRead!('7', '7')).rejects.toMatchObject({ code: 'INVALID' })
+    await expect(f.client.markNoticeRead!(`sub2api-${'0'.repeat(64)}`, '7')).rejects.toMatchObject({ code: 'STALE' })
+    await f.client.markNoticeRead!(first.id, '7')
+    await f.client.markNoticeRead!(first.id, '7')
+    await f.client.markNoticeRead!(first.id, '8')
+    expect(f.calls.filter(({ init, url }) => init.method === 'POST' && url.pathname.includes('/announcements/'))
+      .map(({ url, token, init }) => ({ path: url.pathname, token, body: init.body }))).toEqual([
+      { path: '/api/v1/announcements/7/read', token: 'access-7', body: undefined },
+    ])
+    await f.client.markNoticeRead!(first.id, '9')
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/read')).map(({ url }) => url.pathname))
+      .toEqual(['/api/v1/announcements/7/read', '/api/v1/announcements/9/read'])
+    // The next server response remains authoritative, even after a successful POST.
+    expect((await f.client.getNotice!())?.entries?.map(({ read }) => read)).toEqual([false, true, false])
+    announcements = announcements.map((item) => ({ ...item, read_at: '2026-09-10T00:00:00Z' }))
+    const readNotice = (await f.client.getNotice!())!
+    expect(readNotice.id).toBe(first.id)
+    expect(readNotice.entries?.every(({ read }) => read)).toBe(true)
+    const before = f.calls.length
+    await f.client.markNoticeRead!(readNotice.id, '9')
+    expect(f.calls).toHaveLength(before)
+  })
+
+  it('rejects missing, malformed and unlisted entry IDs without marking any announcement read', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json([noticeRecord(7), noticeRecord(8)]) : undefined
+    await f.client.login(loginInput)
+    const notice = (await f.client.getNotice!())!
+    for (const entryId of [undefined, null, {}, 7, '', '0', '-1', '01', '1.5', ' 7 ', '7/read', '9007199254740992', '9']) {
+      await expect(f.client.markNoticeRead!(notice.id, entryId as string)).rejects.toMatchObject({ code: 'INVALID' })
+    }
+    expect(f.calls.some(({ url }) => url.pathname.endsWith('/read'))).toBe(false)
+  })
+
+  it('keeps the selected announcement unread after a failed write so it can be retried', async () => {
+    const f = fixture()
+    let failed = true
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json([noticeRecord(7), noticeRecord(8)])
+      : url.pathname.endsWith('/read') ? failed ? new Response('', { status: 503 }) : json({ message: 'ok' }) : undefined
+    await f.client.login(loginInput)
+    const notice = (await f.client.getNotice!())!
+    await expect(f.client.markNoticeRead!(notice.id, '7')).rejects.toThrow()
+    failed = false
+    await expect(f.client.markNoticeRead!(notice.id, '7')).resolves.toBeUndefined()
+    await expect(f.client.markNoticeRead!(notice.id, '7')).resolves.toBeUndefined()
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/read')).map(({ url }) => url.pathname))
+      .toEqual(['/api/v1/announcements/7/read', '/api/v1/announcements/7/read'])
+    expect(f.client.getSessionState().authenticated).toBe(true)
+  })
+
+  it('invalidates a displayed snapshot after a newer publication is fetched', async () => {
+    const f = fixture()
+    let content = '第一版'
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json([noticeRecord(7, { content })]) : undefined
+    await f.client.login(loginInput)
+    const first = (await f.client.getNotice!())!
+    content = '第二版'
+    expect((await f.client.getNotice!())?.id).not.toBe(first.id)
+    await expect(f.client.markNoticeRead!(first.id, '7')).rejects.toMatchObject({ code: 'STALE' })
+    expect(f.calls.some(({ url }) => url.pathname.endsWith('/read'))).toBe(false)
+  })
+
+  it('clears announcement snapshots across logout and same-user login', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json([noticeRecord()]) : undefined
+    await f.client.login(loginInput)
+    const notice = (await f.client.getNotice!())!
+    f.client.logout()
+    await f.client.login(loginInput)
+    await expect(f.client.markNoticeRead!(notice.id, '7')).rejects.toMatchObject({ code: 'STALE' })
+    expect(f.calls.some(({ url }) => url.pathname.endsWith('/read'))).toBe(false)
+  })
+
+  it('returns null for an empty list but rejects malformed lists instead of hiding protocol errors', async () => {
+    for (const payload of [[], null, {}, [{ id: '7', title: '公告', content: '内容' }]]) {
+      const f = fixture()
+      f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json(payload) : undefined
+      await f.client.login(loginInput)
+      if (Array.isArray(payload) && !payload.length) await expect(f.client.getNotice!()).resolves.toBeNull()
+      else await expect(f.client.getNotice!()).rejects.toMatchObject({ code: 'PROTOCOL' })
+      expect(f.client.getSessionState().authenticated).toBe(true)
+      expect(f.onSessionChange).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('keeps the login and concurrent balance request when a notice response is rejected', async () => {
+    const f = fixture()
+    let release!: (response: Response) => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { started = resolve })
+    f.state.override = ({ url }) => url.pathname.endsWith('/auth/me') ? new Promise<Response>((resolve) => { release = resolve; started() })
+      : url.pathname.endsWith('/announcements') ? json({ unexpected: 'shape' }) : undefined
+    await f.client.login(loginInput)
+    const revision = f.client.getSessionRevision!()
+    const balance = f.client.getBalance()
+    await gate
+    await expect(f.client.getNotice!()).rejects.toMatchObject({ code: 'PROTOCOL' })
+    release(json(user()))
+    await expect(balance).resolves.toMatchObject({ displayAmount: 100.25 })
+    expect(f.client.getSessionRevision!()).toBe(revision)
+    expect(f.getSavedAccount()?.userId).toBe('7')
+  })
+
+  it('does not sign out on a rejected usage response or an oversized announcement', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/usage') ? Response.json({ invalid: true })
+      : url.pathname.endsWith('/usage/stats') ? json({ total_actual_cost: 0 })
+        : url.pathname.endsWith('/announcements') ? new Response('', { headers: { 'content-type': 'application/json', 'content-length': '4194305' } }) : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.getUsage()).rejects.toMatchObject({ code: 'PROTOCOL' })
+    await expect(f.client.getNotice!()).rejects.toThrow('公告读取响应超过 4096 KB')
+    await expect(f.client.getBalance()).resolves.toMatchObject({ displayAmount: 100.25 })
+    expect(f.onSessionChange).toHaveBeenCalledTimes(1)
+  })
+
+  it('refreshes a 401 list request once and retries with the rotated bearer token', async () => {
+    const f = fixture()
+    f.state.override = ({ url, token }) => url.pathname.endsWith('/announcements')
+      ? token === 'rotated-7' ? json([noticeRecord()]) : unauthorized() : undefined
+    await f.client.login(loginInput)
+    f.state.expired = true
+    await expect(f.client.getNotice!()).resolves.toMatchObject({ entries: [{ id: '7', read: false }] })
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/announcements')).map(({ token }) => token)).toEqual(['access-7', 'rotated-7'])
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/auth/refresh'))).toHaveLength(1)
+  })
+
+  it('refreshes credentials after an acknowledgement 401 without replaying the write', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json([noticeRecord()])
+      : url.pathname.endsWith('/read') ? unauthorized() : undefined
+    await f.client.login(loginInput)
+    const notice = (await f.client.getNotice!())!
+    f.state.expired = true
+    await expect(f.client.markNoticeRead!(notice.id, '7')).rejects.toMatchObject({ code: 'UNAUTHORIZED' })
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/read'))).toHaveLength(1)
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/auth/refresh'))).toHaveLength(1)
+    expect(f.getSavedAccount()?.credential).toMatchObject({ accessToken: 'rotated-7' })
+  })
+
+  it.each([7, 8])('discards an old notice response after switching to user %s', async (nextUser) => {
+    const f = fixture()
+    let release!: (response: Response) => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { started = resolve })
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? new Promise<Response>((resolve) => {
+      release = resolve; started()
+    }) : undefined
+    await f.client.login(loginInput)
+    const pending = expect(f.client.getNotice!()).rejects.toMatchObject({ code: 'STALE' })
+    await gate
+    f.client.logout()
+    f.state.loginId = nextUser
+    await f.client.login(loginInput)
+    release(json([noticeRecord()]))
+    await pending
+    expect(f.client.getSessionState().account?.userId).toBe(nextUser)
+  })
+
+  it('discards a pending acknowledgement after an account switch', async () => {
+    const f = fixture()
+    let release!: (response: Response) => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { started = resolve })
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json([noticeRecord(7), noticeRecord(8)])
+      : url.pathname.endsWith('/read') ? new Promise<Response>((resolve) => { release = resolve; started() }) : undefined
+    await f.client.login(loginInput)
+    const notice = (await f.client.getNotice!())!
+    const pending = expect(f.client.markNoticeRead!(notice.id, '7')).rejects.toMatchObject({ code: 'STALE' })
+    await gate
+    f.state.loginId = 8
+    await f.client.login(loginInput)
+    release(json({ message: 'ok' }))
+    await pending
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/read')).map(({ url, token }) => [url.pathname, token]))
+      .toEqual([['/api/v1/announcements/7/read', 'access-7']])
+    expect(f.client.getSessionState().account?.userId).toBe(8)
+  })
+
+  it('does not apply a late acknowledgement to a replacement snapshot', async () => {
+    const f = fixture()
+    let release!: (response: Response) => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { started = resolve })
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json([noticeRecord(7), noticeRecord(8)])
+      : url.pathname.endsWith('/read') ? new Promise<Response>((resolve) => { release = resolve; started() }) : undefined
+    await f.client.login(loginInput)
+    const first = (await f.client.getNotice!())!
+    const pending = expect(f.client.markNoticeRead!(first.id, '7')).rejects.toMatchObject({ code: 'STALE' })
+    await gate
+    const latest = (await f.client.getNotice!())!
+    release(json({ message: 'ok' }))
+    await pending
+    f.state.override = ({ url }) => url.pathname.endsWith('/read') ? json({ message: 'ok' }) : undefined
+    await f.client.markNoticeRead!(latest.id, '7')
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/read')).map(({ url }) => url.pathname))
+      .toEqual(['/api/v1/announcements/7/read', '/api/v1/announcements/7/read'])
+  })
+
+  it('does not replace a newer announcement snapshot with an older concurrent response', async () => {
+    const f = fixture()
+    let release!: (response: Response) => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { started = resolve })
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? new Promise<Response>((resolve) => {
+      release = resolve; started()
+    }) : undefined
+    await f.client.login(loginInput)
+    const old = expect(f.client.getNotice!()).rejects.toMatchObject({ code: 'STALE' })
+    await gate
+    f.state.override = ({ url }) => url.pathname.endsWith('/announcements') ? json([noticeRecord(9, { read_at: '2026-09-10T00:00:00Z' })]) : undefined
+    const latest = (await f.client.getNotice!())!
+    release(json([noticeRecord(7)]))
+    await old
+    await expect(f.client.markNoticeRead!(latest.id, '9')).resolves.toBeUndefined()
+  })
+})
+
 describe('Sub2API RelayBackend adapter', () => {
   it('maps account-center reads from native endpoints without exposing credentials', async () => {
     const f = fixture()
@@ -95,9 +329,37 @@ describe('Sub2API RelayBackend adapter', () => {
     expect(await f.client.listSubscriptionPlans()).toMatchObject([{ title: '月度订阅', durationValue: 30 }])
     expect(await f.client.getSubscriptionSelf()).toMatchObject({ activeSubscriptions: [{ id: 5, amountUsed: 2.5 }] })
     expect(await f.client.getProfile()).toMatchObject({ affCode: 'invite7', affCount: 2, affQuota: 1.2 })
-    await expect(f.client.getNotice?.()).resolves.toEqual({ id: '12', text: '# 系统公告\n\n充值后额度会自动到账。' })
-    await expect(f.client.redeemTopupCode('CARD-7')).resolves.toEqual({ quotaAdded: 7.5 })
+    await expect(f.client.getNotice?.()).resolves.toEqual({ id: expect.stringMatching(/^sub2api-[a-f0-9]{64}$/),
+      text: '系统公告\n\n充值后额度会自动到账。', entries: [{ id: '12', title: '系统公告', text: '充值后额度会自动到账。', read: false }] })
+    await expect(f.client.redeemTopupCode('CARD-7')).resolves.toEqual({ type: 'balance', quotaAdded: 7.5 })
     expect(JSON.stringify(usage)).not.toContain('do-not-return')
+  })
+  it.each([
+    ['subscription', 0, 0],
+    ['concurrency', 5, 0],
+    ['balance', -2.5, -2.5],
+  ] as const)('accepts committed %s redemptions without replaying the code or exposing native fields', async (type, value, quotaAdded) => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/redeem') ? json({
+      id: 42, code: 'PRIVATE-CARD', type, value, status: 'used', used_by: 7,
+      validity_days: 30, user: { access_token: 'private-token' },
+    }) : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.redeemTopupCode('PRIVATE-CARD')).resolves.toEqual({ type, quotaAdded })
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/redeem'))).toHaveLength(1)
+    expect(f.client.getSessionState().authenticated).toBe(true)
+  })
+  it.each([
+    { type: 'balance', amount: 10 },
+    { type: 'subscription', value: '30' },
+    { type: 'unknown-balance', value: 10 },
+  ])('rejects malformed redemption receipts without retrying or clearing the session: %j', async (receipt) => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/redeem') ? json(receipt) : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.redeemTopupCode('CARD')).rejects.toMatchObject({ code: 'PROTOCOL' })
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/redeem'))).toHaveLength(1)
+    expect(f.client.getSessionState().authenticated).toBe(true)
   })
   it('creates a Sub2API recharge order and supports QR-only providers', async () => {
     const f = fixture()
@@ -108,6 +370,98 @@ describe('Sub2API RelayBackend adapter', () => {
     await f.client.login(loginInput)
     await expect(f.client.quoteTopupAmount({ amount: 10 })).resolves.toEqual({ amount: 10, payableAmount: 10.2 })
     await expect(f.client.createTopupPayment({ amount: 10, paymentMethod: 'alipay' })).resolves.toMatchObject({ kind: 'qrcode', code: 'weixin://wxpay/bizpayurl?pr=test', tradeNo: 'trade-qr', amount: 10.2 })
+    expect(f.calls.filter(({ url, init }) => url.pathname.endsWith('/payment/orders') && init.method === 'POST').map(({ body }) => body))
+      .toEqual([{ amount: 10, payment_type: 'alipay', order_type: 'balance', is_mobile: false }])
+  })
+  it.each([
+    ['PENDING', 'pending'], ['PAID', 'pending'], ['RECHARGING', 'pending'], ['COMPLETED', 'success'],
+    ['FAILED', 'failed'], ['CANCELLED', 'failed'], ['EXPIRED', 'expired'], ['REFUNDED', 'unknown'],
+    ['REFUND_REQUESTED', 'unknown'], ['REFUNDING', 'unknown'], ['PARTIALLY_REFUNDED', 'unknown'], ['NEW_STATUS', 'unknown'],
+  ])('reconciles %s without declaring fulfillment until COMPLETED', async (status, expected) => {
+    const f = fixture()
+    const order = { id: 31, user_id: 7, out_trade_no: 'sub2_trade-31', status }
+    f.state.override = ({ url }) => url.pathname.endsWith('/payment/orders/verify') ? json(order)
+      : url.pathname.endsWith('/payment/orders/my') ? json({ items: [order] }) : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).resolves.toBe(expected)
+    expect((await f.client.listTopupOrders()).orders[0].status).toBe(expected)
+    const verification = f.calls.find(({ url }) => url.pathname.endsWith('/payment/orders/verify'))!
+    expect(verification.init.method).toBe('POST')
+    expect(verification.body).toEqual({ out_trade_no: 'sub2_trade-31' })
+    expect(f.calls.some(({ url }) => url.pathname === '/api/v1/payment/orders')).toBe(false)
+  })
+  it('retries an authenticated order lookup once after refreshing a 401 response', async () => {
+    const f = fixture()
+    f.state.override = ({ url, token }) => url.pathname.endsWith('/payment/orders/verify')
+      ? token === 'access-7' ? unauthorized() : json({ id: 31, user_id: 7, out_trade_no: 'sub2_trade-31', status: 'COMPLETED' }) : undefined
+    await f.client.login(loginInput)
+    f.state.expired = true
+    await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).resolves.toBe('success')
+    expect(f.calls.filter(({ url }) => url.pathname.endsWith('/payment/orders/verify')).map(({ token }) => token))
+      .toEqual(['access-7', 'rotated-7'])
+    expect(f.client.getSessionState().authenticated).toBe(true)
+  })
+  it('keeps the session and permits another poll after a transient reconciliation failure', async () => {
+    const f = fixture()
+    let unavailable = true
+    f.state.override = ({ url }) => url.pathname.endsWith('/payment/orders/verify')
+      ? unavailable ? new Response('', { status: 503 }) : json({ id: 31, user_id: 7, out_trade_no: 'sub2_trade-31', status: 'COMPLETED' }) : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).rejects.toMatchObject({ code: 'NETWORK' })
+    expect(f.client.getSessionState().authenticated).toBe(true)
+    unavailable = false
+    await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).resolves.toBe('success')
+  })
+  it('does not accept a completed order belonging to another account', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/payment/orders/verify')
+      ? json({ id: 31, user_id: 8, out_trade_no: 'sub2_trade-31', status: 'COMPLETED' }) : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).rejects.toMatchObject({ code: 'PROTOCOL' })
+    expect(f.getSavedAccount()).toBeNull()
+  })
+  it('rejects a mismatched order response without signing the account out', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/payment/orders/verify')
+      ? json({ id: 32, user_id: 7, out_trade_no: 'sub2_trade-32', status: 'COMPLETED' }) : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.getTopupOrderStatus!('sub2_trade-31')).rejects.toMatchObject({ code: 'PROTOCOL' })
+    expect(f.client.getSessionState().authenticated).toBe(true)
+  })
+  it.each(['COMPLETED', '401'])('discards a late %s verification response after changing accounts', async (result) => {
+    const f = fixture()
+    let release!: (response: Response) => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { started = resolve })
+    f.state.override = ({ url }) => url.pathname.endsWith('/payment/orders/verify')
+      ? new Promise<Response>((resolve) => { release = resolve; started() }) : undefined
+    await f.client.login(loginInput)
+    const pending = expect(f.client.getTopupOrderStatus!('sub2_trade-31')).rejects.toMatchObject({ code: 'STALE' })
+    await gate
+    f.state.loginId = 8
+    await f.client.login(loginInput)
+    release(result === '401' ? unauthorized() : json({ id: 31, user_id: 7, out_trade_no: 'sub2_trade-31', status: result }))
+    await pending
+    expect(f.getSavedAccount()?.userId).toBe('8')
+    expect(f.calls.some(({ url }) => url.pathname.endsWith('/auth/refresh'))).toBe(false)
+  })
+  it('keeps a new recharge write in its captured account and drops the checkout after account change', async () => {
+    const f = fixture()
+    let release!: (response: Response) => void
+    let started!: () => void
+    const gate = new Promise<void>((resolve) => { started = resolve })
+    f.state.override = ({ url }) => url.pathname === '/api/v1/payment/orders'
+      ? new Promise<Response>((resolve) => { release = resolve; started() }) : undefined
+    await f.client.login(loginInput)
+    const pending = expect(f.client.createTopupPayment({ amount: 10, paymentMethod: 'alipay' })).rejects.toMatchObject({ code: 'STALE' })
+    await gate
+    f.state.loginId = 8
+    await f.client.login(loginInput)
+    release(json({ out_trade_no: 'sub2_trade-31', pay_url: 'https://pay.example.test/order' }))
+    await pending
+    expect(f.getSavedAccount()?.userId).toBe('8')
+    expect(f.calls.filter(({ url }) => url.pathname === '/api/v1/payment/orders').map(({ token, body }) => ({ token, body })))
+      .toEqual([{ token: 'access-7', body: { amount: 10, payment_type: 'alipay', order_type: 'balance', is_mobile: false } }])
   })
   it('implements public settings and exposes the supported account-center blocks', async () => {
     const f = fixture()
@@ -255,6 +609,25 @@ describe('Sub2API RelayBackend adapter', () => {
     f.state.expired = true
     f.state.override = ({ url, token }) => url.pathname.endsWith('/auth/me') && token.startsWith('rotated-') ? json(user(8)) : undefined
     await expect(f.client.getProfile()).rejects.toThrow('响应格式不兼容')
+    expect(f.getSavedAccount()).toBeNull()
+  })
+
+  it.each(['/auth/me', '/user/profile', '/keys'])('still revokes sessions if %s returns another account identity', async (route) => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.override = ({ url }) => url.pathname === `/api/v1${route}`
+      ? json(route === '/keys' ? { items: [keyRecord(1, { user_id: 8 })], total: 1 } : user(8)) : undefined
+    const operation = route === '/auth/me' ? f.client.getBalance() : route === '/keys' ? f.client.listKeys() : f.client.getProfile()
+    await expect(operation).rejects.toMatchObject({ code: 'PROTOCOL' })
+    expect(f.getSavedAccount()).toBeNull()
+  })
+
+  it('revokes the session if rotated credential data is malformed', async () => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.expired = true
+    f.state.override = ({ url }) => url.pathname.endsWith('/auth/refresh') ? json({ ...auth(), access_token: '' }) : undefined
+    await expect(f.client.getBalance()).rejects.toMatchObject({ code: 'PROTOCOL' })
     expect(f.getSavedAccount()).toBeNull()
   })
 

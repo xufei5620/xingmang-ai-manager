@@ -1817,6 +1817,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       : accountService.getStatus()
   ))
   registerTrustedHandler('account:get-notice', () => accountService.getNotice?.() ?? null)
+  registerTrustedHandler('account:mark-notice-read', (_event, id: unknown, entryId: unknown) => {
+    const noticeId = requiredString(id, '公告 ID', 128)
+    if (typeof entryId !== 'string' || !/^[1-9]\d{0,15}$/.test(entryId) || !Number.isSafeInteger(Number(entryId))) {
+      throw new Error('公告条目 ID 格式错误')
+    }
+    return accountService.markNoticeRead?.(noticeId, entryId)
+  })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
     (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined
       ? options.realmAccounts.getSiteId() : parseAccountSiteId(siteId)) : accountService).getLegalDocument(parseLegalDocumentKind(kind))
@@ -1920,7 +1927,9 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:create-topup-payment', (event, input: unknown) => {
     const parsed = parseAccountTopupPaymentInput(input)
     const parent = BrowserWindow.fromWebContents(event.sender) ?? undefined
+    const revision = accountService.getSessionRevision?.()
     return accountService.createTopupPayment(parsed).then(async (checkout) => {
+      if (accountService.getSessionRevision?.() !== revision) throw new Error('账号上下文已变化，请重试')
       // Validate the service result before handing it to the window and before
       // exposing the order number. This keeps the IPC result a strict,
       // renderer-safe DTO even if a backend adapter returns malformed data.

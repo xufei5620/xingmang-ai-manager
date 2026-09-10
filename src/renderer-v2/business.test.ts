@@ -78,6 +78,7 @@ describe('v2 business boundaries', () => {
   })
 
   it('turns payment window terminal events into an actionable non-pending state', () => {
+    expect(paymentTerminalPresentation('success')).toMatchObject({ tone: 'ok', title: '充值成功' })
     expect(paymentTerminalPresentation('closed')).toMatchObject({
       tone: 'neutral',
       title: '支付窗口已关闭',

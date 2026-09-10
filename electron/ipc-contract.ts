@@ -256,7 +256,7 @@ export interface AccountTopupPaymentResult {
   tradeNo: string | null
 }
 export interface AccountPaymentWindowTerminalEvent {
-  status: 'expired' | 'failed' | 'closed'
+  status: 'success' | 'expired' | 'failed' | 'closed'
   tradeNo: string | null
 }
 export type AccountTopupOrdersQuery = NewApiTopupOrdersQuery
@@ -628,7 +628,8 @@ export interface XingmangInvokeContract {
     ProviderExtensionsSnapshot
   >
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
-  getAccountNotice: IpcInvokeDefinition<'account:get-notice', [], { id: string; text: string } | null>
+  getAccountNotice: IpcInvokeDefinition<'account:get-notice', [], import('./relay-backend').RelayNotice | null>
+  markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
@@ -898,6 +899,7 @@ export const ipcInvokeChannels = {
   mutateProviderExtension: 'extensions:mutate',
   getAccountStatus: 'account:get-status',
   getAccountNotice: 'account:get-notice',
+  markAccountNoticeRead: 'account:mark-notice-read',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   logoutAccount: 'account:logout',

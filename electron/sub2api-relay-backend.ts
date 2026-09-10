@@ -9,9 +9,11 @@ import type {
 } from './new-api-client'
 import { sub2ApiManagedCliKeyProfiles } from './catalog'
 import { summarizeKeySecret } from './key-secret-summary'
+import { sub2ApiAnnouncementNotice } from './sub2api-announcements'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import {
   createSub2ApiAccountClient, createSub2ApiSessionExecutor,
+  Sub2ApiIdentityError,
   type Sub2ApiAccountClientOptions, type Sub2ApiGroupSummary, type Sub2ApiKeySummary,
   type Sub2ApiProfile, type Sub2ApiSessionExecutor,
 } from './sub2api-account-client'
@@ -40,6 +42,8 @@ interface Session {
   saved: RealmSavedAccount
   account: NewApiAccountProfile
   executor: Sub2ApiSessionExecutor
+  noticeSnapshot: { id: string; ids: Set<string>; unreadIds: Set<string>; revision: number } | null
+  noticeRequest: number
 }
 interface Scope { entry: Session; revision: number }
 
@@ -89,11 +93,20 @@ function parseTopupInfo(payload: unknown): NewApiTopupInfo {
   const amountOptions = rawOptions.length ? rawOptions.slice(0, 12) : [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
   return { onlineTopupEnabled: Boolean(p.payment_enabled ?? paymentMethods.length), stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null, paymentMethods, minTopup: num(p.global_min ?? p.min_amount), amountOptions, discounts: {}, topupLink: null }
 }
+function orderStatus(value: unknown): NewApiTopupOrder['status'] {
+  const raw = str(value).toUpperCase()
+  // The provider may have accepted payment before balance fulfillment finishes.
+  if (raw === 'COMPLETED') return 'success'
+  if (raw === 'PENDING' || raw === 'PAID' || raw === 'RECHARGING') return 'pending'
+  if (raw === 'FAILED' || raw === 'CANCELLED') return 'failed'
+  if (raw === 'EXPIRED') return 'expired'
+  return 'unknown'
+}
 function parseOrders(payload: unknown): NewApiTopupOrdersPage {
-  const p = record(payload); const items = Array.isArray(p.items) ? p.items : []; const orders: NewApiTopupOrder[] = items.slice(0, 100).map((v) => { const x = record(v); const raw = str(x.status).toUpperCase(); const status = raw === 'COMPLETED' || raw === 'PAID' || raw === 'RECHARGING' ? 'success' : raw === 'FAILED' || raw === 'CANCELLED' ? 'failed' : raw === 'EXPIRED' ? 'expired' : raw === 'PENDING' ? 'pending' : 'unknown'; return { id: num(x.id), amount: num(x.amount), money: num(x.pay_amount ?? x.amount), tradeNo: str(x.out_trade_no), paymentMethod: str(x.payment_type), paymentProvider: str(x.payment_type), createdAt: iso(x.created_at), completedAt: iso(x.completed_at) || null, status } })
+  const p = record(payload); const items = Array.isArray(p.items) ? p.items : []; const orders: NewApiTopupOrder[] = items.slice(0, 100).map((v) => { const x = record(v); const status = orderStatus(x.status); return { id: num(x.id), amount: num(x.amount), money: num(x.pay_amount ?? x.amount), tradeNo: str(x.out_trade_no), paymentMethod: str(x.payment_type), paymentProvider: str(x.payment_type), createdAt: iso(x.created_at), completedAt: iso(x.completed_at) || null, status } })
   return { page: num(p.page, 1), pageSize: num(p.page_size, 10), total: num(p.total, orders.length), orders }
 }
-function parsePlans(payload: unknown): NewApiSubscriptionPlan[] { return (Array.isArray(payload) ? payload : []).slice(0, 100).map((v) => { const x = record(v); const rawUnit = str(x.validity_unit, 'day').toLowerCase(); const durationUnit = rawUnit.startsWith('year') ? 'year' : rawUnit.startsWith('month') ? 'month' : rawUnit.startsWith('hour') ? 'hour' : 'day'; return { id: num(x.id), title: str(x.name, '订阅套餐'), subtitle: str(x.description), priceAmount: num(x.price), currency: str(x.currency, 'USD'), durationUnit: durationUnit as any, durationValue: num(x.validity_days), customSeconds: 0, allowBalancePay: false, allowWalletOverflow: false, maxPurchasePerUser: 0, totalAmount: num(x.monthly_limit_usd ?? x.weekly_limit_usd ?? x.daily_limit_usd), upgradeGroup: str(x.group_name), downgradeGroup: '', quotaResetPeriod: x.monthly_limit_usd != null ? 'monthly' : x.weekly_limit_usd != null ? 'weekly' : x.daily_limit_usd != null ? 'daily' : 'never', quotaResetCustomSeconds: 0, stripePriceId: null, creemProductId: null, waffoPancakeProductId: null } }) }
+function parsePlans(payload: unknown): NewApiSubscriptionPlan[] { return (Array.isArray(payload) ? payload : []).slice(0, 100).map((v) => { const x = record(v); const rawUnit = str(x.validity_unit, 'day').toLowerCase(); const durationUnit = rawUnit.startsWith('year') ? 'year' : rawUnit.startsWith('month') ? 'month' : rawUnit.startsWith('hour') ? 'hour' : 'day'; return { id: num(x.id), title: str(x.name, '订阅套餐'), subtitle: str(x.description), priceAmount: num(x.price), currency: str(x.currency, 'USD'), durationUnit, durationValue: num(x.validity_days), customSeconds: 0, allowBalancePay: false, allowWalletOverflow: false, maxPurchasePerUser: 0, totalAmount: num(x.monthly_limit_usd ?? x.weekly_limit_usd ?? x.daily_limit_usd), upgradeGroup: str(x.group_name), downgradeGroup: '', quotaResetPeriod: x.monthly_limit_usd != null ? 'monthly' : x.weekly_limit_usd != null ? 'weekly' : x.daily_limit_usd != null ? 'daily' : 'never', quotaResetCustomSeconds: 0, stripePriceId: null, creemProductId: null, waffoPancakeProductId: null } }) }
 function parseSubscriptionSelf(payload: unknown): NewApiSubscriptionSelf { const list = Array.isArray(payload) ? payload : []; const all: NewApiSubscription[] = list.slice(0, 200).map((v) => { const x = record(v); return { id: num(x.id), planId: num(x.group_id), status: str(x.status), source: 'sub2api', amountTotal: num(x.monthly_usage_usd), amountUsed: num(x.monthly_usage_usd), startedAt: iso(x.starts_at), endsAt: iso(x.expires_at), nextResetAt: null } }); return { billingPreference: 'subscription_first', activeSubscriptions: all.filter((s) => s.status === 'active'), allSubscriptions: all } }
 
 /** Complete RelayBackendClient implementation for the explicitly selected api realm. */
@@ -120,7 +133,7 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
     changed()
   }
   function install(saved: RealmSavedAccount, profile: Sub2ApiProfile): void {
-    const entry: Session = { saved, account: accountProfile(profile), executor: undefined! }
+    const entry: Session = { saved, account: accountProfile(profile), executor: undefined!, noticeSnapshot: null, noticeRequest: 0 }
     let refreshRevision = revision
     function assertRotationOwner(): void {
       if (active !== entry || revision !== refreshRevision) throw new RealmAccountError('STALE')
@@ -128,9 +141,17 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
     const refreshBackend = { restore: async (...args: Parameters<typeof native.restore>) => {
       refreshRevision = revision
       assertRotationOwner()
-      const restored = await native.restore(...args)
-      assertRotationOwner()
-      return restored
+      try {
+        const restored = await native.restore(...args)
+        assertRotationOwner()
+        return restored
+      } catch (error) {
+        assertRotationOwner()
+        // Refresh validates newly issued credentials. A malformed refresh
+        // cannot leave an unverified credential active, unlike a content error.
+        if (error instanceof RealmAccountError && error.code === 'PROTOCOL') throw new Sub2ApiIdentityError()
+        throw error
+      }
     } }
     entry.executor = createSub2ApiSessionExecutor(saved, refreshBackend, { onSessionChange: async (rotated) => {
       assertRotationOwner()
@@ -158,7 +179,9 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       return result.value
     } catch (error) {
       assertCurrent(scope)
-      if (error instanceof RealmAccountError && error.code === 'PROTOCOL') clear(scope)
+      // Announcement, usage and other business DTO/size failures only fail
+      // their request. Revoke a session only for identity or auth failures.
+      if (error instanceof Sub2ApiIdentityError) clear(scope)
       if (error instanceof RealmAccountError && error.code === 'UNAUTHORIZED') {
         if (write) {
           // A definitive 401 can refresh the next operation, but the write
@@ -240,14 +263,27 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
         emailVerificationEnabled: false, turnstileCheckEnabled: settings.turnstileEnabled }
     },
     getNotice: async () => {
-      const entries = await call(capture(), (saved, abort) => native.listAnnouncements(saved, abort))
-      const list = Array.isArray(entries) ? entries : []
-      const item = list.find((value) => { const x = record(value); return str(x.title).trim() || str(x.content).trim() })
-      if (!item) return null
-      const x = record(item); const title = str(x.title).trim(); const content = str(x.content).trim()
-      if ((!title && !content) || (title.length > 256) || content.length > 2_000_000) throw new RealmAccountError('PROTOCOL')
-      const id = typeof x.id === 'number' && Number.isSafeInteger(x.id) ? String(x.id) : str(x.id)
-      return { id: id || `sub2api-${Date.now()}`, text: `${title ? `# ${title}\n\n` : ''}${content}` }
+      const scope = capture()
+      const request = ++scope.entry.noticeRequest
+      scope.entry.noticeSnapshot = null
+      const entries = await call(scope, (saved, abort) => native.listAnnouncements(saved, abort))
+      if (request !== scope.entry.noticeRequest) throw new RealmAccountError('STALE')
+      const notice = sub2ApiAnnouncementNotice(entries)
+      scope.entry.noticeSnapshot = notice ? { id: notice.id, ids: new Set(entries.map((entry) => entry.id)),
+        unreadIds: new Set(entries.filter((entry) => entry.readAt === null).map((entry) => entry.id)), revision: scope.revision } : null
+      return notice
+    },
+    markNoticeRead: async (id, entryId) => {
+      if (typeof id !== 'string' || !/^sub2api-[a-f0-9]{64}$/.test(id)
+        || typeof entryId !== 'string' || !/^[1-9]\d{0,15}$/.test(entryId) || !Number.isSafeInteger(Number(entryId))) throw new RealmAccountError('INVALID')
+      const scope = capture()
+      const snapshot = scope.entry.noticeSnapshot
+      if (!snapshot || snapshot.id !== id || snapshot.revision !== scope.revision) throw new RealmAccountError('STALE')
+      if (!snapshot.ids.has(entryId)) throw new RealmAccountError('INVALID')
+      if (!snapshot.unreadIds.has(entryId)) return
+      await call(scope, (saved, abort) => native.markAnnouncementRead(saved, entryId, abort), true)
+      if (scope.entry.noticeSnapshot !== snapshot) throw new RealmAccountError('STALE')
+      snapshot.unreadIds.delete(entryId)
     },
     getLegalDocument: unsupported, sendEmailVerification: unsupported, sendPasswordResetEmail: unsupported,
     resetPassword: unsupported, register: unsupported,
@@ -385,28 +421,36 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
     },
     createTopupPayment: async (input) => {
       if (!Number.isSafeInteger(input.amount) || input.amount <= 0 || typeof input.paymentMethod !== 'string' || !input.paymentMethod.trim()) throw new RealmAccountError('INVALID')
-      const checkout = record(await call(capture(), (saved, abort) => native.getPaymentCheckoutInfo(saved, abort)))
-      const multiplier = num(checkout.balance_recharge_multiplier, 1)
-      const orderAmount = Math.round(input.amount * Math.max(0, multiplier) * 100) / 100
-      if (!Number.isFinite(orderAmount) || orderAmount <= 0) throw new Error('充值金额超出当前配置')
-      const payload = record(await call(capture(), (saved, abort) => native.createPaymentOrder(saved, { amount: orderAmount, payment_type: input.paymentMethod.trim(), order_type: 'balance', is_mobile: false }, abort), true))
+      const scope = capture()
+      const amount = input.amount
+      const paymentMethod = input.paymentMethod.trim()
+      // Sub2API applies its balance multiplier and fee when creating the order.
+      // Send the user's amount unchanged and keep this write in the captured account.
+      const payload = record(await call(scope, (saved, abort) => native.createPaymentOrder(saved, { amount, payment_type: paymentMethod, order_type: 'balance', is_mobile: false }, abort), true))
       const tradeNo = str(payload.out_trade_no) || null
       const expiresAt = iso(payload.expires_at) || null
       const payUrl = str(payload.pay_url)
       if (payUrl) return { kind: 'url', url: payUrl, tradeNo, expiresAt }
       const qrCode = str(payload.qr_code)
       if (qrCode) return { kind: 'qrcode', code: qrCode, tradeNo, expiresAt,
-        amount: num(payload.pay_amount ?? payload.amount, input.amount), currency: str(payload.currency, 'CNY') }
+        amount: num(payload.pay_amount ?? payload.amount, amount), currency: str(payload.currency, 'CNY') }
       throw new Error('Sub2API 未返回支付地址，请检查支付渠道配置')
     },
     listTopupOrders: async (input = {}) => parseOrders(await call(capture(), (saved, abort) => native.listPaymentOrders(saved, { page: input.page, page_size: input.pageSize, keyword: input.keyword }, abort))),
+    getTopupOrderStatus: async (tradeNo) => {
+      const scope = capture()
+      // Idempotent reconciliation can be retried after an authenticated 401 refresh.
+      const order = await call(scope, (saved, abort) => native.verifyPaymentOrder(saved, tradeNo, abort))
+      return orderStatus(order.status)
+    },
     redeemTopupCode: async (code) => {
       const value = record(await call(capture(), (saved, abort) => native.redeemCode(saved, code, abort), true))
-      const kind = str(value.type).toLowerCase()
-      if (kind && !kind.includes('balance')) throw new Error('该兑换码不是余额充值码')
-      const quotaAdded = num(value.value ?? value.amount ?? value.bonus_amount, NaN)
-      if (!Number.isFinite(quotaAdded) || quotaAdded < 0) throw new RealmAccountError('PROTOCOL')
-      return { quotaAdded }
+      const type = value.type
+      if (type !== 'balance' && type !== 'subscription' && type !== 'concurrency') throw new RealmAccountError('PROTOCOL')
+      if (typeof value.value !== 'number' || !Number.isFinite(value.value)) throw new RealmAccountError('PROTOCOL')
+      // The native endpoint has already committed the redemption, including
+      // subscription/concurrency changes and signed balance adjustments.
+      return { type, quotaAdded: type === 'balance' ? value.value : 0 }
     }, transferAffiliateQuota: async (_input: NewApiAffiliateTransferInput) => {
       const scope = capture()
       const detail = record(await call(scope, (saved, abort) => native.getAffiliate(saved, abort)))

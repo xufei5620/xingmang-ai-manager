@@ -45,10 +45,14 @@ window.keyGroupsHarness = {
   failNext() { nextKeyGroupsRequest = 'failed' },
   release() { releaseKeyGroups?.(); releaseKeyGroups = null },
 }
-let paymentWindowTerminalListener:
-  | ((event: AccountPaymentWindowTerminalEvent) => void)
-  | null = null
-window.emitPaymentWindowTerminal = (event) => paymentWindowTerminalListener?.(event)
+const paymentWindowTerminalListeners = new Set<(event: AccountPaymentWindowTerminalEvent) => void>()
+window.emitPaymentWindowTerminal = (event) => {
+  if (event.status === 'success' && event.tradeNo === 'XM-VISUAL-TOPUP') {
+    balance.quota = 1400
+    balance.displayAmount = 14
+  }
+  paymentWindowTerminalListeners.forEach((listener) => listener(event))
+}
 document.documentElement.dataset.theme = query.get('theme') ?? 'light'
 document.documentElement.dataset.skin =
   query.get('skin') ?? (query.get('theme') === 'dark' ? 'obsidian' : 'dawn')
@@ -222,8 +226,8 @@ const apiMethods = {
       usedQuota: 100,
     },
   }),
-  getAccountProfile: async () => ({ ...profile, userId: activeUserId }),
-  getAccountBalance: async () => balance,
+  getAccountProfile: async () => { record('get-profile'); return { ...profile, userId: activeUserId } },
+  getAccountBalance: async () => { record('get-balance'); return { ...balance } },
   listSavedAccounts: async () => [
     {
       id: 'saved-test',
@@ -418,9 +422,16 @@ const apiMethods = {
     input: Parameters<V2Bridge['createAccountTopupPayment']>[0],
   ) => {
     record('create-topup-payment', input)
+    if (query.has('fastPayment')) window.emitPaymentWindowTerminal({ status: 'success', tradeNo: 'XM-VISUAL-TOPUP' })
     return { opened: true as const, tradeNo: 'XM-VISUAL-TOPUP' }
   },
   closeAccountPaymentWindow: async () => undefined,
+  redeemAccountTopupCode: async (code: string) => {
+    record('redeem-code', code)
+    const type = query.get('redemptionType')
+    if (type === 'subscription' || type === 'concurrency') return { type, quotaAdded: 0 }
+    return { quotaAdded: 5 }
+  },
   getAccountSubscriptionPlans: async () => query.has('subscriptionExternal') ? [{
     id: 1,
     title: '外部订阅',
@@ -456,11 +467,11 @@ const apiMethods = {
     record('purchase-subscription-balance', planId)
     return { purchased: true as const }
   },
-  getAccountSubscriptionSelf: async () => ({
+  getAccountSubscriptionSelf: async () => { record('get-subscriptions'); return {
     billingPreference: 'subscription_first' as const,
     activeSubscriptions: [],
     allSubscriptions: [],
-  }),
+  } },
   getAccountLoginSessions: async () => [
     {
       sid: 'device-1',
@@ -678,10 +689,8 @@ const apiMethods = {
   },
   onUpdateState: () => () => undefined,
   onAccountPaymentWindowTerminal: (listener: (event: AccountPaymentWindowTerminalEvent) => void) => {
-    paymentWindowTerminalListener = listener
-    return () => {
-      if (paymentWindowTerminalListener === listener) paymentWindowTerminalListener = null
-    }
+    paymentWindowTerminalListeners.add(listener)
+    return () => { paymentWindowTerminalListeners.delete(listener) }
   },
   runDiagnostics: async () => ({
     version: 1 as const,

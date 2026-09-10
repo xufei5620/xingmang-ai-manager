@@ -5,15 +5,18 @@ import {
 import { randomUUID } from 'node:crypto'
 import QRCode from 'qrcode'
 import type { NewApiPaymentForm, NewApiPaymentFormField } from './new-api-client'
+import type { PaymentOrderStatusReader } from './payment-status-reader'
+import { RealmAccountError } from './realm-account'
 
 const accountOrigin = 'https://xm.solov.cc'
 const paymentCallbackOrigin = 'https://api.solov.cc'
 const paymentWindowTitle = '安全支付 - 星芒AI'
 const paymentWindowMonitorIntervalMs = 1_000
+const paymentOrderMonitorIntervalMs = 3_000
 const paymentWindowMaxLifetimeMs = 10 * 60_000
 const paymentPageSnapshotLimit = 8_192
 
-export type PaymentWindowTerminalStatus = 'expired' | 'failed' | 'closed'
+export type PaymentWindowTerminalStatus = 'success' | 'expired' | 'failed' | 'closed'
 
 export interface PaymentWindowTerminalEvent {
   status: PaymentWindowTerminalStatus
@@ -44,6 +47,7 @@ export interface PaymentWindowControllerOptions {
   createWindow?: (options: BrowserWindowConstructorOptions) => BrowserWindow
   onBlockedNavigation?: (url: string) => void
   onTerminalState?: (event: PaymentWindowTerminalEvent) => void
+  createOrderStatusReader?: (tradeNo: string) => PaymentOrderStatusReader | undefined
 }
 
 export interface PaymentWindowController {
@@ -243,11 +247,17 @@ export function createPaymentWindowController(
   const createWindow = options.createWindow ?? ((windowOptions) => new BrowserWindow(windowOptions))
   let paymentWindow: BrowserWindow | null = null
   let monitorTimer: NodeJS.Timeout | null = null
+  let orderMonitorTimer: NodeJS.Timeout | null = null
+  let monitorGeneration = 0
+  let openRequestGeneration = 0
   const silentClosures = new WeakSet<BrowserWindow>()
 
   function stopMonitoring(): void {
     if (monitorTimer) clearInterval(monitorTimer)
+    if (orderMonitorTimer) clearInterval(orderMonitorTimer)
     monitorTimer = null
+    orderMonitorTimer = null
+    monitorGeneration += 1
   }
 
   function release(window: BrowserWindow): void {
@@ -274,10 +284,12 @@ export function createPaymentWindowController(
     parent?: BrowserWindow,
     loadOptions?: Electron.LoadURLOptions,
     tradeNo: string | null = null,
+    expiresAt: string | null = null,
   ): Promise<void> {
     stopMonitoring()
     if (paymentWindow && !paymentWindow.isDestroyed()) destroySilently(paymentWindow)
-
+    const orderStatusReader = tradeNo ? options.createOrderStatusReader?.(tradeNo) : undefined
+    const generation = monitorGeneration
     const window = createWindow({
       parent,
       modal: Boolean(parent),
@@ -304,6 +316,7 @@ export function createPaymentWindowController(
       },
     })
     paymentWindow = window
+    const isCurrent = () => !window.isDestroyed() && paymentWindow === window && monitorGeneration === generation
 
     window.webContents.session.setPermissionRequestHandler((_contents, _permission, callback) => callback(false))
     window.webContents.session.setPermissionCheckHandler(() => false)
@@ -340,13 +353,15 @@ export function createPaymentWindowController(
 
     try {
       await window.loadURL(targetUrl, loadOptions)
-      if (window.isDestroyed() || paymentWindow !== window) return
+      if (!isCurrent()) return
 
       const openedAt = Date.now()
+      const deadline = Math.min(openedAt + paymentWindowMaxLifetimeMs, expiresAt ? Date.parse(expiresAt) : Infinity)
       let inspectionInFlight = false
+      let orderQueryInFlight = false
       let terminalDetectionArmed = false
       const finish = (status: PaymentWindowTerminalStatus) => {
-        if (window.isDestroyed() || paymentWindow !== window) return
+        if (!isCurrent()) return
         stopMonitoring()
         // BrowserWindow.close() can be cancelled by a third-party beforeunload
         // handler. Destroy first so the UI never reports a window still open.
@@ -355,11 +370,12 @@ export function createPaymentWindowController(
         options.onTerminalState?.({ status, tradeNo })
       }
       const inspect = async () => {
-        if (inspectionInFlight || window.isDestroyed() || paymentWindow !== window) return
-        if (Date.now() - openedAt >= paymentWindowMaxLifetimeMs) {
+        if (!isCurrent()) return
+        if (Date.now() >= deadline) {
           finish('expired')
           return
         }
+        if (inspectionInFlight) return
         inspectionInFlight = true
         try {
           const snapshot = await window.webContents.executeJavaScript(`(() => {
@@ -367,6 +383,7 @@ export function createPaymentWindowController(
             const body = typeof document.body?.innerText === 'string' ? document.body.innerText : '';
             return (title + '\\n' + body).slice(0, ${paymentPageSnapshotLimit});
           })()`, true)
+          if (!isCurrent()) return
           if (!terminalDetectionArmed) {
             terminalDetectionArmed = isPaymentWindowReady(snapshot)
             if (!terminalDetectionArmed) return
@@ -379,11 +396,36 @@ export function createPaymentWindowController(
           inspectionInFlight = false
         }
       }
+      const inspectOrder = async () => {
+        if (!isCurrent() || orderQueryInFlight || !orderStatusReader) return
+        orderQueryInFlight = true
+        try {
+          const status = await orderStatusReader()
+          if (!isCurrent()) return
+          // A provider page cannot establish payment success. Only the
+          // authenticated account backend may report that this order settled.
+          if (status === 'success' || status === 'failed' || status === 'expired') finish(status)
+        } catch (error) {
+          if (!isCurrent()) return
+          if (error instanceof RealmAccountError && error.code === 'STALE') {
+            destroySilently(window)
+            release(window)
+          }
+          // A transient account/network error leaves the next bounded tick
+          // free to retry; it must never be translated into payment success.
+        } finally {
+          orderQueryInFlight = false
+        }
+      }
       monitorTimer = setInterval(() => void inspect(), paymentWindowMonitorIntervalMs)
       monitorTimer.unref?.()
+      if (orderStatusReader) {
+        orderMonitorTimer = setInterval(() => void inspectOrder(), paymentOrderMonitorIntervalMs)
+        orderMonitorTimer.unref?.()
+      }
       void inspect()
     } catch (error) {
-      stopMonitoring()
+      if (isCurrent()) stopMonitoring()
       if (!window.isDestroyed()) destroySilently(window)
       release(window)
       throw new Error('支付页面打开失败，请稍后重试', { cause: error })
@@ -392,6 +434,7 @@ export function createPaymentWindowController(
 
   return {
     async open(form, parent) {
+      openRequestGeneration += 1
       const validated = validatePaymentForm(form)
       await openTarget(validated.action, validated.allowedOrigins, parent, {
           extraHeaders: 'Content-Type: application/x-www-form-urlencoded\r\nCache-Control: no-store\r\n',
@@ -402,24 +445,30 @@ export function createPaymentWindowController(
       }, validated.tradeNo)
     },
     async openUrl(url, parent, tradeNo = null) {
+      openRequestGeneration += 1
       const validated = validatePaymentUrl(url)
       await openTarget(validated.url, validated.allowedOrigins, parent, undefined, tradeNo)
     },
     async openQrCode(input, parent) {
+      const requestGeneration = ++openRequestGeneration
       const validated = validatePaymentQrCode(input)
       const image = await QRCode.toDataURL(validated.code, {
         errorCorrectionLevel: 'M', margin: 2, width: 360,
       })
+      if (requestGeneration !== openRequestGeneration) return
       // Static, script-free document. The QR payload is encoded into the
       // image only; the window never navigates to weixin:// or any QR URL.
       const html = `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'"><title>安全支付 - 星芒AI</title><style>body{font-family:system-ui,sans-serif;background:#f5f6f7;color:#152b33;display:flex;justify-content:center;margin:0;padding:32px}main{background:#fff;padding:24px 32px;border-radius:12px;text-align:center;box-shadow:0 2px 12px #0002}img{width:360px;height:360px;image-rendering:auto}p{margin:10px 0;color:#456}strong{color:#152b33}</style></head><body><main><h2>扫码支付</h2><img alt="支付二维码" src="${escapeHtml(image)}"><p>金额：<strong>${escapeHtml(validated.amount.toFixed(2))} ${escapeHtml(validated.currency)}</strong></p>${validated.tradeNo ? `<p>订单号：${escapeHtml(validated.tradeNo)}</p>` : ''}${validated.expiresAt ? `<p>有效期至：${escapeHtml(validated.expiresAt)}</p>` : ''}</main></body></html>`
       const dataUrl = `data:text/html;charset=utf-8,${encodeURIComponent(html)}`
-      await openTarget(dataUrl, new Set([accountOrigin]), parent, undefined, validated.tradeNo)
+      await openTarget(dataUrl, new Set([accountOrigin]), parent, undefined, validated.tradeNo, validated.expiresAt)
     },
     close() {
+      openRequestGeneration += 1
+      stopMonitoring()
       if (paymentWindow && !paymentWindow.isDestroyed()) closeSilently(paymentWindow)
     },
     destroy() {
+      openRequestGeneration += 1
       const window = paymentWindow
       if (window && !window.isDestroyed()) destroySilently(window)
       if (window) release(window)

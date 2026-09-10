@@ -4,6 +4,7 @@ import {
 } from './realm-account'
 import { sub2ApiManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
 import { summarizeKeySecret } from './key-secret-summary'
+import { parseSub2ApiAnnouncements, type Sub2ApiAnnouncement } from './sub2api-announcements'
 
 export interface Sub2ApiAccountClientOptions {
   /** Required injection; no default production fetch and no renderer-provided base URL. */
@@ -11,6 +12,18 @@ export interface Sub2ApiAccountClientOptions {
   timeoutMs?: number
   maxResponseBytes?: number
   now?: () => number
+}
+
+/** The response crosses account identity boundaries, or rotated credentials cannot be verified. */
+export class Sub2ApiIdentityError extends RealmAccountError {
+  constructor() { super('PROTOCOL') }
+}
+
+class Sub2ApiAnnouncementSizeError extends RealmAccountError {
+  constructor(limit: number) {
+    super('PROTOCOL')
+    this.message = `公告读取响应超过 ${Math.floor(limit / 1024)} KB 安全上限`
+  }
 }
 
 export interface Sub2ApiKeySummary {
@@ -56,6 +69,13 @@ export interface Sub2ApiManagedCliKey {
   readonly key: string
 }
 
+export interface Sub2ApiPaymentOrderState {
+  readonly id: string
+  readonly userId: string
+  readonly tradeNo: string
+  readonly status: string
+}
+
 export interface Sub2ApiAccountClient extends RealmSessionBackend {
   getPublicSettings(signal: AbortSignal): Promise<{ siteName: string; turnstileEnabled: boolean }>
   restore(saved: RealmSavedAccount, signal: AbortSignal, onRotation?: (saved: RealmSavedAccount) => void | Promise<void>): Promise<RealmSavedAccount>
@@ -78,12 +98,15 @@ export interface Sub2ApiAccountClient extends RealmSessionBackend {
   getPaymentConfig(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   getPaymentCheckoutInfo(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   createPaymentOrder(saved: RealmSavedAccount, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  /** Reconcile an existing, owned order with its provider; never creates or cancels an order. */
+  verifyPaymentOrder(saved: RealmSavedAccount, tradeNo: string, signal: AbortSignal): Promise<Sub2ApiPaymentOrderState>
   redeemCode(saved: RealmSavedAccount, code: string, signal: AbortSignal): Promise<unknown>
   listPaymentOrders(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   listSubscriptionPlans(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   getSubscriptions(saved: RealmSavedAccount, path: 'active' | 'all' | 'progress' | 'summary', signal: AbortSignal): Promise<unknown>
   getAffiliate(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
-  listAnnouncements(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
+  listAnnouncements(saved: RealmSavedAccount, signal: AbortSignal): Promise<Sub2ApiAnnouncement[]>
+  markAnnouncementRead(saved: RealmSavedAccount, id: string, signal: AbortSignal): Promise<void>
   transferAffiliate(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
 }
 
@@ -274,7 +297,9 @@ function optionalKeyDate(value: unknown): string | null {
 }
 
 function keySummary(value: unknown, userId: string): Sub2ApiKeySummary {
-  if (!isRealmRecord(value) || wireId(value.user_id) !== userId || typeof value.name !== 'string'
+  if (!isRealmRecord(value)) protocol()
+  if (wireId(value.user_id) !== userId) throw new Sub2ApiIdentityError()
+  if (typeof value.name !== 'string'
     || value.name.length > 256 || /[\u0000-\u001f\u007f]/.test(value.name)
     || !['active', 'inactive', 'quota_exhausted', 'expired'].includes(String(value.status))) protocol()
   for (const field of ['quota', 'quota_used']) {
@@ -304,7 +329,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
   if (typeof options.fetchImpl !== 'function' || !Number.isSafeInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 120000
     || !Number.isSafeInteger(maxBytes) || maxBytes < 1 || maxBytes > 4 * 1024 * 1024) throw new RealmAccountError('INVALID')
 
-  async function request(route: string, method: 'GET' | 'POST' | 'PUT' | 'DELETE', body: unknown, token: string | null, signal: AbortSignal): Promise<unknown> {
+  async function request(route: string, method: 'GET' | 'POST' | 'PUT' | 'DELETE', body: unknown, token: string | null, signal: AbortSignal, responseLimit = maxBytes): Promise<unknown> {
     if (signal.aborted) throw new RealmAccountError('ABORTED')
     const url = new URL(`/api/v1${route}`, origin)
     if (url.origin !== origin || url.username || url.password || url.hash) throw new RealmAccountError('INVALID')
@@ -341,7 +366,12 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
         if (!response.ok) throw new RealmAccountError('NETWORK')
         if (!/^application\/json(?:\s*;|$)/i.test(response.headers.get('content-type') ?? '') || !reader) protocol()
         const declaredLength = response.headers.get('content-length')
-        if (declaredLength !== null && (!/^\d+$/.test(declaredLength) || Number(declaredLength) > maxBytes)) protocol()
+        if (declaredLength !== null && !/^\d+$/.test(declaredLength)) protocol()
+        function tooLarge(): never {
+          if (route === '/announcements') throw new Sub2ApiAnnouncementSizeError(responseLimit)
+          return protocol()
+        }
+        if (declaredLength !== null && Number(declaredLength) > responseLimit) tooLarge()
         const chunks: Uint8Array[] = []
         let length = 0
         let chunkCount = 0
@@ -352,7 +382,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
           length += next.value.byteLength
           chunkCount += 1
           if (chunkCount > 65536) protocol()
-          if (length > maxBytes) protocol()
+          if (length > responseLimit) tooLarge()
           chunks.push(next.value)
         }
         const bytes = new Uint8Array(length)
@@ -394,7 +424,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
   async function me(saved: RealmSavedAccount, signal: AbortSignal) {
     const session = apiSession(saved)
     const user = parseUser(await request('/auth/me', 'GET', undefined, session.credential.accessToken, signal))
-    if (user.userId !== session.userId) protocol()
+    if (user.userId !== session.userId) throw new Sub2ApiIdentityError()
     return user
   }
 
@@ -540,7 +570,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
     getProfile: async (saved: RealmSavedAccount, signal: AbortSignal) => {
       const session = apiSession(saved)
       const profile = parseProfile(await request('/user/profile', 'GET', undefined, session.credential.accessToken, signal))
-      if (profile.userId !== session.userId) protocol()
+      if (profile.userId !== session.userId) throw new Sub2ApiIdentityError()
       return profile
     },
     updateProfile: async (saved: RealmSavedAccount, input: { username?: string; avatarUrl?: string | null; balanceNotifyEnabled?: boolean; balanceNotifyThreshold?: number | null }, signal: AbortSignal) => {
@@ -565,7 +595,7 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       }
       if (Object.keys(body).length === 0) throw new RealmAccountError('INVALID')
       const profile = parseProfile(await request('/user', 'PUT', body, session.credential.accessToken, signal))
-      if (profile.userId !== session.userId) protocol()
+      if (profile.userId !== session.userId) throw new Sub2ApiIdentityError()
       return profile
     },
     changePassword: async (saved: RealmSavedAccount, input: { oldPassword: string; newPassword: string }, signal: AbortSignal) => {
@@ -587,6 +617,18 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       const session = apiSession(saved)
       return request('/payment/orders', 'POST', input, session.credential.accessToken, signal)
     },
+    verifyPaymentOrder: async (saved: RealmSavedAccount, tradeNo: string, signal: AbortSignal) => {
+      if (typeof tradeNo !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(tradeNo)) throw new RealmAccountError('INVALID')
+      const session = apiSession(saved)
+      const data = await request('/payment/orders/verify', 'POST', { out_trade_no: tradeNo }, session.credential.accessToken, signal)
+      if (!isRealmRecord(data)) protocol()
+      const id = wireId(data.id)
+      const userId = wireId(data.user_id)
+      if (userId !== session.userId) throw new Sub2ApiIdentityError()
+      if (data.out_trade_no !== tradeNo || typeof data.status !== 'string' || !data.status || data.status.length > 64) protocol()
+      // Provider metadata and nested user/token fields are not part of this DTO.
+      return { id, userId, tradeNo, status: data.status }
+    },
     redeemCode: async (saved: RealmSavedAccount, code: string, signal: AbortSignal) => {
       if (typeof code !== 'string' || !code.trim() || code.length > 256) throw new RealmAccountError('INVALID')
       const session = apiSession(saved)
@@ -599,7 +641,18 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
       return authedRequest(saved, route, signal)
     },
     getAffiliate: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/user/aff', signal),
-    listAnnouncements: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/announcements', signal),
+    listAnnouncements: async (saved: RealmSavedAccount, signal: AbortSignal) => {
+      const session = apiSession(saved)
+      // Like new-api rich notices, Sub2API content can contain inline images.
+      // Keep this allowance separate from ordinary authenticated responses.
+      return parseSub2ApiAnnouncements(await request('/announcements', 'GET', undefined,
+        session.credential.accessToken, signal, options.maxResponseBytes ?? 4 * 1024 * 1024))
+    },
+    markAnnouncementRead: async (saved: RealmSavedAccount, id: string, signal: AbortSignal) => {
+      if (typeof id !== 'string' || !/^[1-9]\d*$/.test(id) || !Number.isSafeInteger(Number(id))) throw new RealmAccountError('INVALID')
+      const session = apiSession(saved)
+      await request(`/announcements/${id}/read`, 'POST', undefined, session.credential.accessToken, signal)
+    },
     transferAffiliate: async (saved: RealmSavedAccount, signal: AbortSignal) => {
       const session = apiSession(saved)
       return request('/user/aff/transfer', 'POST', {}, session.credential.accessToken, signal)

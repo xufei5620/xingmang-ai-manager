@@ -148,7 +148,10 @@ export function buildSubscriptionPaymentInput(
 
 export function paymentTerminalPresentation(
   status: AccountPaymentWindowTerminalEvent['status'],
-): { tone: 'neutral' | 'warn' | 'bad'; title: string; body: string } {
+): { tone: 'neutral' | 'warn' | 'bad' | 'ok'; title: string; body: string } {
+  if (status === 'success') return {
+    tone: 'ok', title: '充值成功', body: '服务端已确认到账，支付窗口已关闭，正在刷新账户余额。',
+  }
   if (status === 'expired') {
     return {
       tone: 'warn',
@@ -1662,6 +1665,9 @@ function AccountOrders({
     [api, page, keyword],
   )
   const resource = useResource(load)
+  useEffect(() => api.onAccountPaymentWindowTerminal((event) => {
+    if (event.status === 'success') void resource.reload()
+  }), [api, resource.reload])
   useEffect(() => {
     if (!paymentReturn) return
     const order = paymentReturn.order ?? ''
@@ -1757,6 +1763,7 @@ function AccountRecharge({
   const [purchase, setPurchase] = useState<Plan | null>(null)
   const [purchaseMethod, setPurchaseMethod] = useState('balance')
   const [redeemOpen, setRedeemOpen] = useState(false)
+  const [redemptionMessage, setRedemptionMessage] = useState('')
   const [payment, setPayment] = useState<{
     tradeNo: string | null
     kind: 'topup' | 'subscription'
@@ -1765,9 +1772,26 @@ function AccountRecharge({
   const [paymentTerminal, setPaymentTerminal] =
     useState<AccountPaymentWindowTerminalEvent | null>(null)
   const paymentRef = useRef(payment)
-  useEffect(() => {
-    paymentRef.current = payment
-  }, [payment])
+  const openingPayment = useRef<AccountPaymentWindowTerminalEvent[] | null>(null)
+  const acceptPaymentTerminal = useCallback((event: AccountPaymentWindowTerminalEvent) => {
+    const current = paymentRef.current
+    if (!current) return
+    if (event.status === 'success' && (!event.tradeNo || event.tradeNo !== current.tradeNo)) return
+    if (event.tradeNo && current.tradeNo && event.tradeNo !== current.tradeNo) return
+    paymentRef.current = null
+    setPayment(null)
+    setPaymentTerminal(event)
+    changed()
+    void resource.reload()
+  }, [changed, resource.reload])
+  function paymentOpened(result: NonNullable<typeof payment>) {
+    const buffered = openingPayment.current ?? []
+    openingPayment.current = null
+    paymentRef.current = result
+    setPaymentTerminal(null)
+    setPayment(result)
+    for (const event of buffered) acceptPaymentTerminal(event)
+  }
   useEffect(() => {
     const available = resource.data?.info.paymentMethods ?? []
     setMethod((current) =>
@@ -1779,20 +1803,13 @@ function AccountRecharge({
   useEffect(
     () =>
       api.onAccountPaymentWindowTerminal((event) => {
-        const current = paymentRef.current
-        if (!current) return
-        if (
-          event.tradeNo &&
-          current.tradeNo &&
-          event.tradeNo !== current.tradeNo
-        )
+        if (openingPayment.current) {
+          if (openingPayment.current.length < 8) openingPayment.current.push(event)
           return
-        setPayment(null)
-        setPaymentTerminal(event)
-        changed()
-        void resource.reload()
+        }
+        acceptPaymentTerminal(event)
       }),
-    [api, resource.reload],
+    [api, acceptPaymentTerminal],
   )
   const methods = resource.data?.info.paymentMethods ?? []
   const paymentMethod =
@@ -1816,15 +1833,17 @@ function AccountRecharge({
     void operation.execute(
       'payment',
       async () => {
-        const result = await api.createAccountTopupPayment({
-          amount: quote.amount,
-          paymentMethod: paymentMethod.type,
-        })
-        setPaymentTerminal(null)
-        setPayment({ ...result, kind: 'topup', expiresAt: null })
+        openingPayment.current = []
+        try {
+          const result = await api.createAccountTopupPayment({
+            amount: quote.amount,
+            paymentMethod: paymentMethod.type,
+          })
+          paymentOpened({ ...result, kind: 'topup', expiresAt: null })
+        } finally { openingPayment.current = null }
         setQuote(null)
       },
-      '支付窗口已打开，到账状态请查询订单',
+      '',
     )
   }
   const purchasePlan = () => {
@@ -1838,11 +1857,13 @@ function AccountRecharge({
           const payMethod = methods.find((item) => item.type === purchaseMethod)
           if (!payMethod || payMethod.provider === 'waffo')
             throw new Error('该支付渠道暂不支持订阅。')
-          const result = await api.createAccountSubscriptionPayment(
-            buildSubscriptionPaymentInput(purchase.id, payMethod),
-          )
-          setPaymentTerminal(null)
-          setPayment({ ...result, kind: 'subscription' })
+          openingPayment.current = []
+          try {
+            const result = await api.createAccountSubscriptionPayment(
+              buildSubscriptionPaymentInput(purchase.id, payMethod),
+            )
+            paymentOpened({ ...result, kind: 'subscription' })
+          } finally { openingPayment.current = null }
         }
         setPurchase(null)
         await resource.reload()
@@ -1857,7 +1878,7 @@ function AccountRecharge({
     <>
       <ResultNotice
         error={resource.error || operation.error}
-        message={operation.message}
+        message={payment || paymentTerminal ? '' : operation.message === '兑换码已兑换' ? redemptionMessage : operation.message}
       />
       <div className="v2-business-recharge-grid">
         <Card
@@ -1899,11 +1920,12 @@ function AccountRecharge({
           <Button
             variant="balance"
             icon={CreditCard}
-            disabled={!paymentMethod || resource.loading}
+            disabled={!paymentMethod || resource.loading || Boolean(payment)}
             loading={operation.busy === 'quote'}
             onClick={quoteTopup}
+            testId="account-recharge-submit"
           >
-            查看报价
+            充值
           </Button>
           {!methods.length && !resource.loading && (
             <Notice
@@ -1929,7 +1951,7 @@ function AccountRecharge({
           >
             兑换
           </Button>
-          <p>兑换成功后，余额会自动更新。</p>
+          <p>兑换成功后，余额和权益会自动更新。</p>
         </Card>
       </div>
       {(payment || paymentTerminal) && (
@@ -1938,7 +1960,7 @@ function AccountRecharge({
           title={paymentTerminal ? paymentTerminalPresentation(paymentTerminal.status).title : '等待支付结果'}
           body={paymentTerminal
             ? `${paymentTerminalPresentation(paymentTerminal.status).body}${paymentTerminal.tradeNo ? ` 订单 ${paymentTerminal.tradeNo}。` : ''}`
-            : `${payment?.kind === 'subscription' ? '订阅订单' : '订单'} ${payment?.tradeNo || '待生成'}。关闭支付窗口不会取消订单。`}
+            : `${payment?.kind === 'subscription' ? '订阅订单' : '订单'} ${payment?.tradeNo || '待生成'}。到账后将自动关闭支付窗口并刷新余额。`}
           actions={
             <>
               <Button
@@ -1959,6 +1981,7 @@ function AccountRecharge({
                       'close-payment',
                       async () => {
                         await api.closeAccountPaymentWindow()
+                        paymentRef.current = null
                         setPayment(null)
                       },
                       '',
@@ -2103,12 +2126,15 @@ function AccountRecharge({
                 void operation.execute(
                   'redeem',
                   async () => {
-                    await api.redeemAccountTopupCode(code.trim())
+                    const result = await api.redeemAccountTopupCode(code.trim())
+                    setRedemptionMessage(result.type === 'subscription' ? '订阅兑换成功'
+                      : result.type === 'concurrency' ? '并发额度兑换成功' : '余额兑换成功')
                     setCode('')
                     setRedeemOpen(false)
                     changed()
+                    await resource.reload()
                   },
-                  '充值码已兑换，余额已刷新',
+                  '兑换码已兑换',
                 )
               }
             >
@@ -2117,7 +2143,7 @@ function AccountRecharge({
           </>
         }
       >
-        <p>兑换成功后会增加当前账号的可用余额。</p>
+        <p>兑换成功后，相应余额或权益会应用到当前账号。</p>
         <ResultNotice error={operation.error} />
       </Dialog>
       <Dialog

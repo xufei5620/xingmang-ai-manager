@@ -330,6 +330,7 @@ export interface NewApiTopupOrdersPage {
 
 export interface NewApiRedemptionResult {
   quotaAdded: number
+  type?: 'balance' | 'subscription' | 'concurrency'
 }
 
 export interface NewApiAffiliateTransferInput {

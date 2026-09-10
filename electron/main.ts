@@ -77,6 +77,7 @@ import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
 import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createPaymentWindowController } from './payment-window'
+import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
   createDiagnosticsExport,
   runDiagnostics,
@@ -1122,6 +1123,11 @@ if (!hasSingleInstanceLock) {
     // transition is delivered to an already-open canvas window exactly once.
     canvasController.setAccountUser(accountService.getSessionState().account?.userId ?? null)
     const paymentWindow = createPaymentWindowController({
+      createOrderStatusReader: (tradeNo) => createPaymentOrderStatusReader({
+        client: accountService,
+        getSiteId: accounts.getSiteId,
+        assertReady: accounts.assertReady,
+      }, tradeNo),
       onBlockedNavigation: (targetUrl) => {
         let origin = 'invalid-url'
         try {

@@ -10,6 +10,8 @@ import '../styles/shell.css'
 import '../app.css'
 
 const query = new URLSearchParams(location.search)
+const noticesRead = new Set<string>(query.has('noticesRead') ? ['12', '8'] : [])
+const pendingNoticeMarks = new Map<string, () => void>()
 const nativeFixtureScope = 'xm-native-12345678fixture'
 const nativeFixturePng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
 const nativeFixtureLogo = `data:image/svg+xml;base64,${btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 176 69"><path fill="currentColor" d="M0 0h176v69H0z"/></svg>')}`
@@ -67,11 +69,13 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; releaseKeyMetadata(provider: ProviderId): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; releaseBalance(error?: string): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) } }
+let releaseBalance: (error?: string) => void = () => undefined
+let balanceReads = 0
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, releaseBalance(error) { releaseBalance(error) }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
@@ -84,7 +88,14 @@ const methods = {
   saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion }; return settings },
   getPlatformCapabilities: async () => capabilities,
   getAccountSession: async () => session,
-  getAccountBalance: async () => session.siteId === 'solov-api' ? { ...balance, quota: 12.4, quotaPerUnit: 1 } : balance,
+  getAccountBalance: async () => {
+    const value = session.siteId === 'solov-api' ? { ...balance, quota: 12.4, quotaPerUnit: 1 } : { ...balance }
+    if (session.account?.userId === 18) { value.displayAmount = 24.8; value.quota = 24.8 * value.quotaPerUnit }
+    if (query.has('balancePending') && ++balanceReads === 1) await new Promise<void>((resolve, reject) => {
+      releaseBalance = (error) => error ? reject(new Error(error)) : resolve()
+    })
+    return value
+  },
   getAccountUsage: async () => ({ page: 1, pageSize: 1, total: 0, records: [], stats: { quota: 1_000_000, rpm: 0, tpm: 0 } }),
   getWindowCapabilities: async () => ({ tray: true, notifications: true }),
   getUpdateState: async () => ({ phase: query.has('startupUpdate') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
@@ -107,7 +118,17 @@ const methods = {
     if (query.has('noticeOversized')) throw new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限")
     if (query.has('noticeNative')) return { id: 'native-notice', text: nativeFixtureNotice }
     if (query.has('noticeMarkdown')) return { id: 'markdown-notice', text: '# 服务公告\n\n- 第一项\n- 第二项\n\n**重点提醒**：请查看 [官方说明](https://xm.solov.cc/help)。' }
+    if (session.siteId === 'solov-api') return query.has('noticeEmpty') ? null : {
+      id: 'sub2api-notices', text: '服务通知\n\n套餐更新', entries: [
+        { id: '12', title: query.has('noticeLongTitle') ? '服务通知：模型与套餐更新说明 / Service announcement: updated models and subscriptions, pricing details and account usage policies' : '服务通知', text: '**系统升级完成**，请重新读取分组。', read: noticesRead.has('12') },
+        { id: '8', title: '套餐更新', text: '<p>套餐详情已更新</p><script>window.nativeXss=true</script>', read: noticesRead.has('8') },
+      ],
+    }
     return { id: 'local-notice', text: '本地测试公告' }
+  },
+  markAccountNoticeRead: async (_snapshotId: string, entryId: string) => {
+    if (query.has('noticeMarkPending')) await new Promise<void>((resolve) => pendingNoticeMarks.set(entryId, resolve))
+    noticesRead.add(entryId)
   },
   getAccountStatus: async () => ({ systemName: 'Fixture', version: '1', setupComplete: true, quotaPerUnit: 500000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: false }),
   getRememberedAccountLogin: async () => null,

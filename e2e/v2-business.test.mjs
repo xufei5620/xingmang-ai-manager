@@ -73,6 +73,28 @@ test('account exposes the exact nine tabs and keeps server orders and keys visib
   }
 })
 
+test('redeeming subscription and concurrency codes reports the committed result and refreshes account data once', async () => {
+  for (const [type, message] of [['subscription', '订阅兑换成功'], ['concurrency', '并发额度兑换成功'], ['balance', '余额兑换成功']]) {
+    const page = await fixture(`page=account&redemptionType=${type}`)
+    try {
+      await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+      await page.getByLabel('充值码', { exact: true }).fill('MOCK-CARD')
+      await page.getByRole('button', { name: '兑换', exact: true }).click()
+      const before = await calls(page)
+      await page.getByRole('dialog', { name: '确认兑换到当前账号？' }).getByRole('button', { name: '确认兑换', exact: true }).click()
+      await page.getByText(message, { exact: true }).waitFor()
+      await page.waitForFunction((previous) => {
+        const current = JSON.parse(document.documentElement.dataset.calls || '[]')
+        return ['get-profile', 'get-balance', 'get-subscriptions'].every((name) =>
+          current.filter((call) => call.name === name).length > previous.filter((call) => call.name === name).length)
+      }, before)
+      assert.equal((await calls(page)).filter((call) => call.name === 'redeem-code').length, 1)
+      assert.equal(await page.getByLabel('充值码', { exact: true }).inputValue(), '')
+      assert.equal(await page.getByRole('dialog', { name: '确认兑换到当前账号？' }).count(), 0)
+    } finally { await page.close() }
+  }
+})
+
 test('key editor re-reads available groups every time a new or existing key is opened', async () => {
   const page = await fixture('page=account')
   try {
@@ -382,15 +404,47 @@ test('changing the recharge channel invalidates the previous quote', async () =>
   try {
     await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
     await page.getByRole('radio', { name: 'Stripe', exact: true }).check()
-    await page.getByRole('button', { name: '查看报价', exact: true }).click()
+    await page.getByTestId('account-recharge-submit').click()
     const quote = page.getByRole('dialog', { name: '确认充值报价' })
     await quote.waitFor()
     await quote.getByRole('button', { name: '取消', exact: true }).click()
     await page.getByRole('radio', { name: '支付宝', exact: true }).check()
     assert.equal(await page.getByRole('dialog', { name: '确认充值报价' }).count(), 0)
-    assert.equal(await page.getByLabel('充值数量').inputValue(), '20')
+    assert.equal(await page.getByLabel('自定义金额').inputValue(), '20')
   } finally {
     await page.close()
+  }
+})
+
+test('confirmed topup completion refreshes balance and cached orders and clears waiting state', async () => {
+  for (const fast of [false, true]) {
+    const page = await fixture(`page=account${fast ? '&fastPayment=1' : ''}`)
+    try {
+      await page.getByRole('tab', { name: '我的订单', exact: true }).click()
+      await page.getByText('TEST-ORDER').waitFor()
+      const ordersBefore = (await calls(page)).filter((call) => call.name === 'query-orders').length
+      await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+      await page.getByTestId('account-recharge-submit').click()
+      await page.getByRole('dialog', { name: '确认充值报价' }).getByRole('button', { name: '打开支付窗口' }).click()
+      if (!fast) {
+        await page.getByText('等待支付结果', { exact: true }).waitFor()
+        // An unrelated order or a result without correlation must not finish this payment.
+        await page.evaluate(() => {
+          window.emitPaymentWindowTerminal({ status: 'success', tradeNo: 'OTHER-ORDER' })
+          window.emitPaymentWindowTerminal({ status: 'success', tradeNo: null })
+        })
+        assert.equal(await page.getByText('等待支付结果', { exact: true }).isVisible(), true)
+        await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'success', tradeNo: 'XM-VISUAL-TOPUP' }))
+      }
+      await page.getByText('充值成功', { exact: true }).waitFor()
+      await page.getByText('当前余额 $14.00', { exact: true }).waitFor()
+      assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
+      assert.equal(await page.getByRole('button', { name: '关闭支付窗口', exact: true }).count(), 0)
+      assert.equal(await page.getByText('支付窗口已打开，到账状态请查询订单', { exact: true }).count(), 0)
+      assert.ok((await calls(page)).filter((call) => call.name === 'query-orders').length > ordersBefore)
+      assert.equal((await calls(page)).filter((call) => call.name === 'create-topup-payment').length, 1)
+      if (!fast) await page.screenshot({ path: 'artifacts/renderer-v2-app/topup-confirmed.png' })
+    } finally { await page.close() }
   }
 })
 
