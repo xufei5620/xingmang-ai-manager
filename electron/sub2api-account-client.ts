@@ -78,6 +78,7 @@ export interface Sub2ApiAccountClient extends RealmSessionBackend {
   getPaymentConfig(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   getPaymentCheckoutInfo(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   createPaymentOrder(saved: RealmSavedAccount, input: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
+  redeemCode(saved: RealmSavedAccount, code: string, signal: AbortSignal): Promise<unknown>
   listPaymentOrders(saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal): Promise<unknown>
   listSubscriptionPlans(saved: RealmSavedAccount, signal: AbortSignal): Promise<unknown>
   getSubscriptions(saved: RealmSavedAccount, path: 'active' | 'all' | 'progress' | 'summary', signal: AbortSignal): Promise<unknown>
@@ -584,6 +585,11 @@ export function createSub2ApiAccountClient(options: Sub2ApiAccountClientOptions)
     createPaymentOrder: async (saved: RealmSavedAccount, input: Record<string, unknown>, signal: AbortSignal) => {
       const session = apiSession(saved)
       return request('/payment/orders', 'POST', input, session.credential.accessToken, signal)
+    },
+    redeemCode: async (saved: RealmSavedAccount, code: string, signal: AbortSignal) => {
+      if (typeof code !== 'string' || !code.trim() || code.length > 256) throw new RealmAccountError('INVALID')
+      const session = apiSession(saved)
+      return request('/redeem', 'POST', { code: code.trim() }, session.credential.accessToken, signal)
     },
     listPaymentOrders: async (saved: RealmSavedAccount, query: Record<string, unknown>, signal: AbortSignal) => authedRequest(saved, `/payment/orders/my${queryString(query)}`, signal),
     listSubscriptionPlans: async (saved: RealmSavedAccount, signal: AbortSignal) => authedRequest(saved, '/payment/plans', signal),

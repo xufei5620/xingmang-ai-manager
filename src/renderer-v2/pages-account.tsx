@@ -1864,8 +1864,14 @@ function AccountRecharge({
           title="充值到账户余额"
           meta={`当前余额 ${dollars(balance.displayAmount)}`}
         >
+          <div className="v2-business-suggestions-label">快捷金额</div>
+          <div className="v2-business-suggestions">
+            {(resource.data?.info.amountOptions ?? [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]).map((value) => (
+              <Button size="sm" key={value} onClick={() => { setAmount(String(value)); setQuote(null) }}>{value}</Button>
+            ))}
+          </div>
           <Input
-            label="充值数量"
+            label="自定义金额"
             type="number"
             min={topupMinimum}
             step="1"
@@ -1876,17 +1882,6 @@ function AccountRecharge({
               setQuote(null)
             }}
           />
-          <div className="v2-business-suggestions">
-            {resource.data?.info.amountOptions.map((value) => (
-              <Button
-                size="sm"
-                key={value}
-                onClick={() => setAmount(String(value))}
-              >
-                {value}
-              </Button>
-            ))}
-          </div>
           <PaymentOptions
             methods={methods}
             value={paymentMethod?.type ?? ''}
@@ -2189,6 +2184,10 @@ function AccountInvite({
     <>
       <ResultNotice {...operation} />
       <div className="v2-business-stat-grid">
+        <Card title="我的返利比例">
+          <strong className="v2-business-amount">{profile.affRebateRatePercent ?? 0}%</strong>
+          <small>被邀请用户每次充值后可获得的返利比例</small>
+        </Card>
         <Card title="已邀请">
           <strong className="v2-business-amount">{profile.affCount} 人</strong>
         </Card>
@@ -2204,6 +2203,7 @@ function AccountInvite({
         </Card>
       </div>
       <Card title="邀请链接">
+        <p className="v2-business-help">分享邀请码或邀请链接。好友注册并充值后，返利会计入可转额度，可随时转入账户余额。</p>
         <Input label="分享邀请链接" readOnly value={invite} />
         <Button
           icon={Copy}
@@ -2225,6 +2225,9 @@ function AccountInvite({
         >
           转入账户余额
         </Button>
+      </Card>
+      <Card title="已邀请用户">
+        {profile.invitees?.length ? <div className="v2-business-table"><div className="v2-business-table-row v2-business-table-head"><span>邮箱</span><span>用户名</span><span>累计返利</span></div>{profile.invitees.map((item) => <div className="v2-business-table-row" key={item.userId}><span>{item.email}</span><span>{item.username || '-'}</span><span>{quotaMoney(item.totalRebate, balance)}</span></div>)}</div> : <p>暂时还没有已邀请用户。</p>}
       </Card>
       <Dialog
         open={transfer}

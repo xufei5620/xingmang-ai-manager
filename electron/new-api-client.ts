@@ -245,6 +245,10 @@ export interface NewApiAccountProfileDetail {
   affQuota: number
   /** Lifetime referral quota earned by this account. */
   affHistoryQuota: number
+  /** Effective referral rebate rate, in percent. */
+  affRebateRatePercent?: number
+  /** Referred users visible to the account owner. */
+  invitees?: Array<{ userId: number; email: string; username: string; createdAt: string | null; totalRebate: number }>
 }
 
 export interface NewApiTopupPaymentMethod {
@@ -1371,6 +1375,8 @@ export function parseAccountProfileDetail(payload: unknown): NewApiAccountProfil
     affCount: asOptionalFiniteNumber(data.aff_count) ?? 0,
     affQuota: asOptionalFiniteNumber(data.aff_quota) ?? 0,
     affHistoryQuota: asOptionalFiniteNumber(data.aff_history_quota) ?? 0,
+    affRebateRatePercent: asOptionalFiniteNumber(data.effective_rebate_rate_percent) ?? 0,
+    invitees: [],
   }
 }
 

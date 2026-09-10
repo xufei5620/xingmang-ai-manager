@@ -56,7 +56,7 @@ function detailProfile(profile: Sub2ApiProfile): NewApiAccountProfileDetail {
   // are disabled by capabilities and must not present these placeholders.
   return { userId: Number(profile.userId), username: profile.username, displayName: profile.username,
     email: profile.email, group: null, quota: profile.balance, usedQuota: 0, requestCount: 0,
-    affCode: null, affCount: 0, affQuota: 0, affHistoryQuota: 0 }
+    affCode: null, affCount: 0, affQuota: 0, affHistoryQuota: 0, affRebateRatePercent: 0, invitees: [] }
 }
 
 async function unsupported(): Promise<never> { throw new RealmAccountError('UNSUPPORTED') }
@@ -84,7 +84,9 @@ function parseUsage(payload: unknown): NewApiAccountUsagePage {
 }
 function parseTopupInfo(payload: unknown): NewApiTopupInfo {
   const p = record(payload); const methods = record(p.methods); const paymentMethods = Object.entries(methods).filter(([, value]) => record(value).available !== false).map(([type, value]) => { const x = record(value); return { name: str(x.display_name, type), type, provider: 'epay' as const, color: null, icon: null, minTopup: num(x.single_min) } })
-  return { onlineTopupEnabled: Boolean(p.payment_enabled ?? paymentMethods.length), stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: false, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null, paymentMethods, minTopup: num(p.global_min ?? p.min_amount), amountOptions: [], discounts: {}, topupLink: null }
+  const rawOptions = Array.isArray(p.amount_options) ? p.amount_options.filter((v): v is number => typeof v === 'number' && Number.isFinite(v) && v > 0) : []
+  const amountOptions = rawOptions.length ? rawOptions.slice(0, 12) : [10, 20, 50, 100, 200, 500, 1000, 2000, 5000]
+  return { onlineTopupEnabled: Boolean(p.payment_enabled ?? paymentMethods.length), stripeTopupEnabled: false, creemTopupEnabled: false, waffoPancakeTopupEnabled: false, redemptionEnabled: true, paymentComplianceConfirmed: true, paymentComplianceTermsVersion: null, paymentMethods, minTopup: num(p.global_min ?? p.min_amount), amountOptions, discounts: {}, topupLink: null }
 }
 function parseOrders(payload: unknown): NewApiTopupOrdersPage {
   const p = record(payload); const items = Array.isArray(p.items) ? p.items : []; const orders: NewApiTopupOrder[] = items.slice(0, 100).map((v) => { const x = record(v); const raw = str(x.status).toUpperCase(); const status = raw === 'COMPLETED' || raw === 'PAID' || raw === 'RECHARGING' ? 'success' : raw === 'FAILED' || raw === 'CANCELLED' ? 'failed' : raw === 'EXPIRED' ? 'expired' : raw === 'PENDING' ? 'pending' : 'unknown'; return { id: num(x.id), amount: num(x.amount), money: num(x.pay_amount ?? x.amount), tradeNo: str(x.out_trade_no), paymentMethod: str(x.payment_type), paymentProvider: str(x.payment_type), createdAt: iso(x.created_at), completedAt: iso(x.completed_at) || null, status } })
@@ -267,7 +269,8 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       const detail = detailProfile(profile)
       let affiliate: Record<string, any> = {}
       try { affiliate = record(await call(scope, (saved, abort) => native.getAffiliate(saved, abort))) } catch { /* affiliate module may be disabled */ }
-      return { ...detail, affCode: str(affiliate.aff_code) || null, affCount: num(affiliate.aff_count), affQuota: num(affiliate.aff_quota), affHistoryQuota: num(affiliate.aff_history_quota) }
+      const invitees = Array.isArray(affiliate.invitees) ? affiliate.invitees.slice(0, 100).map((entry) => { const item = record(entry); return { userId: num(item.user_id), email: str(item.email), username: str(item.username), createdAt: iso(item.created_at) || null, totalRebate: num(item.total_rebate) } }) : []
+      return { ...detail, affCode: str(affiliate.aff_code) || null, affCount: num(affiliate.aff_count), affQuota: num(affiliate.aff_quota), affHistoryQuota: num(affiliate.aff_history_quota), affRebateRatePercent: num(affiliate.effective_rebate_rate_percent), invitees }
     },
     updateDisplayName: async (input) => {
       const scope = capture()
@@ -387,7 +390,14 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       throw new Error('Sub2API 未返回支付地址，请检查支付渠道配置')
     },
     listTopupOrders: async (input = {}) => parseOrders(await call(capture(), (saved, abort) => native.listPaymentOrders(saved, { page: input.page, page_size: input.pageSize, keyword: input.keyword }, abort))),
-    redeemTopupCode: unsupported, transferAffiliateQuota: async (_input: NewApiAffiliateTransferInput) => {
+    redeemTopupCode: async (code) => {
+      const value = record(await call(capture(), (saved, abort) => native.redeemCode(saved, code, abort), true))
+      const kind = str(value.type).toLowerCase()
+      if (kind && !kind.includes('balance')) throw new Error('该兑换码不是余额充值码')
+      const quotaAdded = num(value.value ?? value.amount ?? value.bonus_amount, NaN)
+      if (!Number.isFinite(quotaAdded) || quotaAdded < 0) throw new RealmAccountError('PROTOCOL')
+      return { quotaAdded }
+    }, transferAffiliateQuota: async (_input: NewApiAffiliateTransferInput) => {
       const scope = capture()
       const detail = record(await call(scope, (saved, abort) => native.getAffiliate(saved, abort)))
       const available = num(detail.aff_quota)

@@ -829,14 +829,20 @@ export function AccountCommercePanels({
     : (
         <div className="account-affiliate">
           <div className="account-affiliate-stats">
+            <div><span>返利比例</span><strong>{profile.affRebateRatePercent ?? 0}%</strong></div>
             <div><span>已邀请</span><strong>{profile.affCount} 人</strong></div>
             <div><span>可转入奖励</span><strong>{balance ? formatBalanceUsd(profile.affQuota, balance.quotaPerUnit) : profile.affQuota}</strong></div>
             <div><span>历史邀请奖励</span><strong>{balance ? formatBalanceUsd(profile.affHistoryQuota, balance.quotaPerUnit) : profile.affHistoryQuota}</strong></div>
           </div>
           <section className="account-affiliate-share">
             <h3>邀请好友</h3>
+            <p>分享邀请码或邀请链接。好友注册并充值后，你将获得对应比例的返利额度，可随时转入账户余额。</p>
             <label className="field"><span>邀请码</span><div className="input-with-action"><input readOnly value={profile.affCode} onFocus={(event) => event.currentTarget.select()} /><button type="button" title="复制邀请码" onClick={() => void copyInvite('code', profile.affCode as string)}>{copiedInvite === 'code' ? <Check size={16} /> : <ClipboardCopy size={16} />}</button></div></label>
             <label className="field"><span>邀请链接</span><div className="input-with-action"><input readOnly value={inviteLink} onFocus={(event) => event.currentTarget.select()} /><button type="button" title="复制邀请链接" onClick={() => void copyInvite('link', inviteLink)}>{copiedInvite === 'link' ? <Check size={16} /> : <ClipboardCopy size={16} />}</button></div></label>
+          </section>
+          <section className="account-affiliate-invitees">
+            <h3>已邀请用户</h3>
+            {(profile.invitees?.length ?? 0) > 0 ? <div className="account-affiliate-invitee-list">{(profile.invitees ?? []).map((invitee) => <div key={invitee.userId}><span>{invitee.email}</span><span>{invitee.username || '-'}</span><strong>{balance ? formatBalanceUsd(invitee.totalRebate, balance.quotaPerUnit) : invitee.totalRebate}</strong></div>)}</div> : <p>暂时还没有已邀请用户。</p>}
           </section>
           <section className="account-affiliate-transfer">
             <header><Send size={18} /><div><h3>奖励转入余额</h3><p>转入后可直接用于 API 消费或余额订阅。</p></div></header>

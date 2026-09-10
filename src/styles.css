@@ -3401,6 +3401,11 @@ input:focus-visible {
   border: 1px solid var(--border-default);
   border-radius: var(--radius-8);
 }
+.account-affiliate-invitees { padding: 16px; border-top: 1px solid var(--border-default); }
+.account-affiliate-invitees h3 { margin: 0 0 10px; color: var(--text-primary); font-size: var(--text-md); }
+.account-affiliate-invitee-list { display: grid; gap: 8px; }
+.account-affiliate-invitee-list > div { display: grid; grid-template-columns: 1.2fr 1fr auto; gap: 12px; padding: 9px 0; border-bottom: 1px solid var(--border-default); color: var(--text-secondary); font-size: var(--text-sm); }
+.account-affiliate-invitee-list strong { color: var(--accent); }
 
 .account-commerce-form { padding: 18px; }
 .account-commerce-form > header,
