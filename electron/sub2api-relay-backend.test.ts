@@ -307,6 +307,84 @@ describe('Sub2API announcement sessions', () => {
 })
 
 describe('Sub2API RelayBackend adapter', () => {
+  it('preserves user usage costs and token breakdown without exposing administrator fields', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/usage') ? json({ items: [{
+      id: 42, created_at: '2026-09-08T01:00:00Z', model: 'claude-opus', request_id: 'request-42',
+      input_tokens: 600, output_tokens: 300, cache_read_tokens: 1200, cache_creation_tokens: 500,
+      cache_creation_5m_tokens: 200, cache_creation_1h_tokens: 300,
+      input_cost: 0.006, output_cost: 0.009, cache_read_cost: 0.0012, cache_creation_cost: 0.008,
+      total_cost: 0.0242, actual_cost: 0.0121, rate_multiplier: 0.5, billing_type: 1,
+      billing_mode: 'token', long_context_billing_applied: true, service_tier: 'priority',
+      reasoning_effort: 'max', duration_ms: 16321, first_token_ms: 4778, stream: true,
+      api_key: { name: 'desktop-claude', key: 'private-key-value' }, group: { name: 'Claude-MAX(不限客户端)' },
+      user: { email: 'private-owner-value' }, account_id: 444, account: { name: 'private-account-value' },
+      account_rate_multiplier: 9, account_stats_cost: 99, channel_id: 555,
+      upstream_request_id: 'private-upstream-request', upstream_model: 'private-upstream-model',
+      upstream_reasoning_effort: 'private-upstream-effort', billing_tier: 'private-admin-tier',
+    }] }) : url.pathname.endsWith('/usage/stats') ? json({ total_actual_cost: 0.0121 }) : undefined
+    await f.client.login(loginInput)
+    const usage = await f.client.getUsage()
+    expect(usage.records).toHaveLength(1)
+    const row = usage.records[0]
+    expect(row).toMatchObject({
+      quota: 0.0121, tokenName: 'desktop-claude', group: 'Claude-MAX(不限客户端)', requestId: 'request-42',
+      promptTokens: 600, completionTokens: 300, isStream: true, useTimeSeconds: 16.321,
+      upstreamRequestId: '',
+      details: {
+        cacheTokens: 1200, cacheCreationTokens: 500, cacheCreationTokens5m: 200, cacheCreationTokens1h: 300,
+        firstResponseTimeMs: 4778, reasoningEffort: 'max', groupRatio: 0.5,
+        billingMode: 'token', billingType: 'subscription', longContextBillingApplied: true, serviceTier: 'priority',
+        costs: { input: 0.006, output: 0.009, cacheRead: 0.0012, cacheCreation: 0.008,
+          total: 0.0242, actual: 0.0121, imageInput: null, imageOutput: null },
+        modelPrice: null, modelRatio: null, matchedTier: '', upstreamModelName: '',
+      },
+    })
+    expect(row.details.unitPrices).toBeUndefined()
+    expect(row.details.pricingTiers).toBeUndefined()
+    expect(JSON.stringify(usage)).not.toContain('private-')
+    for (const field of ['account_id', 'account_rate_multiplier', 'account_stats_cost', 'channel_id', 'user']) {
+      expect(row).not.toHaveProperty(field)
+      expect(row.details).not.toHaveProperty(field)
+    }
+  })
+
+  it('keeps native image token and cost fields without deriving or duplicating image charges', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/usage') ? json({ items: [{
+      id: 43, input_tokens: 1400, output_tokens: 2000, image_input_tokens: 1000, image_output_tokens: 1800,
+      input_cost: 0.014, output_cost: 0.04, image_input_cost: 0.01, image_output_cost: 0.036,
+      total_cost: 0.1, actual_cost: 0.05, image_count: 2, image_size: '1024x1536', billing_mode: 'image',
+      rate_multiplier: 0.5, billing_type: 0, long_context_billing_applied: false,
+    }] }) : url.pathname.endsWith('/usage/stats') ? json({}) : undefined
+    await f.client.login(loginInput)
+    const [row] = (await f.client.getUsage()).records
+    expect(row).toMatchObject({ promptTokens: 1400, completionTokens: 2000, quota: 0.05,
+      details: { imageInputTokens: 1000, imageOutputTokens: 1800, imageCount: 2, imageSize: '1024x1536',
+        billingMode: 'image', billingType: 'balance', longContextBillingApplied: false,
+        costs: { input: 0.014, output: 0.04, imageInput: 0.01, imageOutput: 0.036, total: 0.1, actual: 0.05 } } })
+    expect(row.details.unitPrices).toBeUndefined()
+  })
+
+  it('distinguishes valid zero charges from unavailable historical costs and multipliers', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/usage') ? json({ items: [
+      { id: 1, input_cost: 0, output_cost: 0, cache_read_cost: 0, cache_creation_cost: 0,
+        total_cost: 0.5, actual_cost: 0, rate_multiplier: 0, first_token_ms: 0, billing_type: 0 },
+      { id: 2, total_cost: 0.75 },
+      { id: 3, input_cost: '0', output_cost: -1, cache_read_cost: true, cache_creation_cost: {},
+        actual_cost: '0', rate_multiplier: -1, first_token_ms: '0', long_context_billing_applied: 'false', billing_type: '0' },
+    ] }) : url.pathname.endsWith('/usage/stats') ? json({}) : undefined
+    await f.client.login(loginInput)
+    const rows = (await f.client.getUsage()).records
+    expect(rows[0]).toMatchObject({ quota: 0, details: { groupRatio: 0, firstResponseTimeMs: 0,
+      costs: { input: 0, output: 0, cacheRead: 0, cacheCreation: 0, total: 0.5, actual: 0 } } })
+    expect(rows[1]).toMatchObject({ quota: 0.75, details: { groupRatio: null, firstResponseTimeMs: null,
+      costs: { input: null, output: null, cacheRead: null, cacheCreation: null, total: 0.75, actual: null } } })
+    expect(rows[2]).toMatchObject({ details: { groupRatio: null, firstResponseTimeMs: null, billingType: null,
+      longContextBillingApplied: null, costs: { input: null, output: null, cacheRead: null, cacheCreation: null, total: null, actual: null } } })
+  })
+
   it('maps account-center reads from native endpoints without exposing credentials', async () => {
     const f = fixture()
     f.state.override = ({ url }) => {

@@ -221,6 +221,7 @@ export async function configureManagedClis(
   preferredModels: Partial<Record<ProviderId, string>>,
   previewOnboarding: boolean,
   keyStore?: ManagedCliKeyStoreLike,
+  mode: ConfigSavePayload['mode'] = 'merge',
 ): Promise<ManagedCliConfigurationOutcome> {
   if (providers.length === 0) return { configured: [], failed: [] }
   const capture = authenticatedSession(accountService)
@@ -271,7 +272,7 @@ export async function configureManagedClis(
       if (models.length === 0) throw new Error('当前分组未返回可用模型')
       const preferred = preferredModels[provider]
       const model = preferred && models.includes(preferred) ? preferred : models[0]
-      const payload: ConfigSavePayload = { provider, apiKey: managedKey.key, model, mode: 'merge' }
+      const payload: ConfigSavePayload = { provider, apiKey: managedKey.key, model, mode }
       assertSameAuthenticatedUser(accountService, capture)
       await systemService.saveConfig(
         payload,

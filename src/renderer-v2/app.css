@@ -18,6 +18,9 @@
 .v2-balance-body { padding: 20px 16px 16px; }
 .v2-balance-body strong { font: 500 28px var(--mono); }
 .v2-balance-body small { margin-left: 6px; color: var(--text-3); font-size: var(--font-micro); }
+.v2-balance-body > div:first-child { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.v2-balance-body > div:first-child > .xm-btn { margin-left: auto; }
+.v2-balance-error { color: var(--warn); font-size: var(--font-small); }
 .v2-balance-body.tone-ok strong { color: var(--ok); }
 .v2-balance-body.tone-warn strong { color: var(--warn); }
 .v2-balance-body.tone-bad strong { color: var(--bad); }
@@ -45,6 +48,12 @@
 .v2-config-controls { min-width: 0; margin: 0; padding: 0; border: 0; }
 .v2-config-field > .xm-btn { justify-self: start; }
 .v2-config-field > strong { font-size: var(--font-small); }
+.v2-save-options { display: grid; gap: 12px; padding-bottom: 8px; }
+.v2-save-options > .xm-btn { width: 100%; height: auto; min-height: 72px; padding: 14px 16px; justify-content: flex-start; text-align: left; white-space: normal; }
+.v2-save-options > .xm-btn > span { display: grid; min-width: 0; gap: 6px; overflow-wrap: anywhere; }
+.v2-save-options strong { font-size: var(--font-body); line-height: 1.5; }
+.v2-save-options small { font-size: var(--font-small); font-weight: 400; line-height: 1.6; }
+.v2-save-profile-note { margin: 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.6; }
 .v2-inline-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .v2-code-preview { background: var(--panel-2); padding: 10px 12px; border-radius: var(--radius-input); }
 .v2-code-preview > div { display: flex; align-items: start; gap: 10px; font: var(--font-small-compact)/1.7 var(--mono); }

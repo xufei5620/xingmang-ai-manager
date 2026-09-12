@@ -637,7 +637,7 @@ export interface SystemService {
     previewOnboarding: boolean,
     assertBeforeWrite?: () => void,
   ): Promise<ReturnType<typeof saveProviderConfig>>
-  switchToOfficialAccount(provider: ProviderId): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
+  switchToOfficialAccount(provider: ProviderId, mode?: ConfigSavePayload['mode']): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
@@ -3051,11 +3051,9 @@ export function createSystemService(
     launchCodexDesktop: launchCodexDesktopOperation,
   } = createCodexDesktopService({
     platform,
-    windowsExecutionMode,
     installationQueue,
     createInstallTemporaryDirectory,
     detectMacosCodexApp,
-    resolveVerifiedCliCommand,
     executeCommand,
     codexEnv,
     store,
@@ -3474,11 +3472,11 @@ export function createSystemService(
     return result
   }
 
-  async function switchToOfficialAccount(provider: ProviderId) {
+  async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
     // 与 saveConfig 同样在写入时现读站点:切换判定要拿当前站点的中转地址去
     // 比对,站点刚改过也不用重启服务。
     const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-    const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls)
+    const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls, mode)
     // Persist the user's explicit choice so startup/onboarding can distinguish
     // it from an unconfigured CLI and leave the native subscription untouched.
     await store.setOfficialProvider(provider, true)

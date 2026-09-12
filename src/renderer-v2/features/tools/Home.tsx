@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, ArrowUpRight, BookOpen, Download, FolderOpen, History, MessageSquare, Plug, RefreshCw, Zap } from 'lucide-react'
 import type { AccountBalance, AccountProfile, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
+import { useSharedAccountBalance } from '../app/balance-context'
+import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, PageHead, Pill, Progress, ToolRow } from '../../ui'
 import { balanceTier, canUninstallTool, greeting, presentTools, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
 import type { ToolsApi } from './api'
@@ -32,6 +34,8 @@ export interface HomeProps {
 
 export function Home(props: HomeProps) {
   const { snapshot, account, balance, jobs, loading, error } = props
+  const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
+  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error })
   const [recent, setRecent] = useState<MultiProviderSessionPage | null>(null)
   const [recentError, setRecentError] = useState('')
   const [recentAttempt, setRecentAttempt] = useState(0)
@@ -154,7 +158,8 @@ export function Home(props: HomeProps) {
             {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')}>装 Python（可选环境）</Button>}</div>
         </Card>
         <Card title="账户余额" padding="none" actions={<Pill tone={ready ? 'ok' : 'neutral'}>{ready ? `${installed.filter((tool) => tool.configured).length} 个工具已连接` : '等待连接'}</Pill>}>
-          <div className={`v2-balance-body tone-${tier}`}><div><strong>{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small></div>
+          <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>
+            {balanceState.error && <p className="v2-balance-error" role="status" title={balanceState.error}>更新失败，{balance ? '显示上次余额' : '请重试'}</p>}
             <div className="v2-balance-usage">{monthUsed !== null && dollars !== null && <Progress tone={tier === 'neutral' ? 'neutral' : tier} value={monthUsed + dollars > 0 ? monthUsed / (monthUsed + dollars) * 100 : 0} label={`本月已用 $${monthUsed.toFixed(2)}`} />}
               <p>{props.supportsUsage === false ? '请在官方网站查看消费记录。' : usageError || (remainingDays !== null ? `按最近 7 天用量约还能用 ${remainingDays} 天${remainingDays < 7 ? '，建议提前充值' : ''}。` : usage ? '最近 7 天暂无用量' : account ? '正在读取用量' : '登录后查看用量')}</p></div>
             <div className="v2-balance-actions">{props.supportsBilling !== false && <Button variant="balance" size="sm" icon={Zap} onClick={() => props.onNavigate('account', 'recharge')}>充值</Button>}{props.supportsUsage !== false && <Button variant="ghost" size="sm" onClick={() => props.onNavigate('account', 'dashboard')}>用量看板</Button>}</div>

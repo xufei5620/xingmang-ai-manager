@@ -6,6 +6,7 @@ import {
   type ChatCompletionsRequestBody,
 } from './ai-chat-protocol'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
+import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 
 export const AI_CHAT_STREAM_LIMITS = {
   requestIdLength: 160,
@@ -134,6 +135,7 @@ export type AiChatServiceOptions = {
   clock?: AiChatServiceClock
   log?: (entry: AiChatStreamLogEntry) => void
   limits?: Partial<AiChatStreamLimits>
+  onRequestStarted?: AiOperationStartedObserver
 }
 
 type ResolvedLimits = AiChatStreamLimits
@@ -162,6 +164,7 @@ type ActiveRequest = {
   idleTimer: unknown | null
   totalTimer: unknown | null
   batchTimer: unknown | null
+  onSettled(): void
 }
 
 class StreamFailure extends Error {
@@ -487,6 +490,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
     request.pendingReasoning = ''
     if (active.get(request.key) === request) active.delete(request.key)
     writeLog(request, status, errorCode)
+    request.onSettled()
     notifyIdle()
   }
 
@@ -706,6 +710,15 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
   }
 
   async function completeOnce(input: CompleteAiChatOnceInput): Promise<string> {
+    const onSettled = observeAiOperation(options.onRequestStarted)
+    try {
+      return await completeOnceRequest(input)
+    } finally {
+      onSettled()
+    }
+  }
+
+  async function completeOnceRequest(input: CompleteAiChatOnceInput): Promise<string> {
     if (disposed) throw new Error('AI聊天服务已停止')
     const body = buildChatCompletionsRequest({
       model: input.model,
@@ -836,6 +849,7 @@ export function createAiChatService(options: AiChatServiceOptions): AiChatServic
       idleTimer: null,
       totalTimer: null,
       batchTimer: null,
+      onSettled: observeAiOperation(options.onRequestStarted),
     }
     active.set(key, request)
     request.totalTimer = clock.setTimeout(() => {

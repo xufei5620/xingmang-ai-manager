@@ -867,7 +867,10 @@ function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliCon
     if (model === undefined) continue
     preferredModels[provider] = requiredString(model, 'CLI 首选模型', 512)
   }
-  return { providers, preferredModels }
+  if (value.mode !== undefined && value.mode !== 'merge' && value.mode !== 'reset') {
+    throw new Error('未知的配置写入模式')
+  }
+  return { providers, preferredModels, ...(value.mode === undefined ? {} : { mode: value.mode }) }
 }
 
 // account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
@@ -1442,9 +1445,10 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     return options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
   })
-  registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown) => {
+  registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
-    return service.switchToOfficialAccount(provider)
+    if (mode !== undefined && mode !== 'merge' && mode !== 'reset') throw new Error('未知的配置写入模式')
+    return mode === undefined ? service.switchToOfficialAccount(provider) : service.switchToOfficialAccount(provider, mode)
   })
   registerTrustedHandler('workspace:choose', async (event) => {
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
@@ -2020,6 +2024,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       parsed.preferredModels,
       options.previewOnboarding,
       options.managedCliKeys,
+      parsed.mode,
     )
   })
   registerTrustedHandler('account:register', (_event, input: unknown) => (

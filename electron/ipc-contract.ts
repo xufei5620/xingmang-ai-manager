@@ -247,6 +247,9 @@ export interface AccountContextMetadata {
 }
 export type AccountSessionState = NewApiSessionState & AccountContextMetadata
 export type AccountBalance = NewApiBalance
+export interface AccountUsageChangedEvent {
+  scope: string
+}
 export type AccountTopupInfo = NewApiTopupInfo
 export type AccountTopupAmountInput = NewApiTopupAmountInput
 export type AccountTopupAmountQuote = NewApiTopupAmountQuote
@@ -320,6 +323,7 @@ export type RendererNavigationTarget = 'settings' | 'updates' | 'topup'
 export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
   preferredModels: Partial<Record<ProviderId, string>>
+  mode?: ConfigSavePayload['mode']
 }
 
 export interface RendererErrorPayload {
@@ -471,13 +475,13 @@ export interface XingmangInvokeContract {
   revealApiKey: IpcInvokeDefinition<'config:reveal-api-key', [provider: ProviderId], string>
   saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload], ConfigSaveResult>
   /**
-   * 把某个 CLI 切回用户自己的官方订阅账号(只收回星芒写进去的键,官方登录
-   * 凭据一个字节不碰,见 config-files.ts 的 switchProviderToOfficialAccount)。
+   * 切回官方订阅账号；merge 恢复对应来源配置，reset 重建初始配置。
+   * 两种方式均保留官方登录凭据和历史会话。省略 mode 沿用 merge。
    * 切回星芒走既有的 config:save,不另开通道。
    */
   switchToOfficialAccount: IpcInvokeDefinition<
     'config:switch-to-official-account',
-    [provider: ProviderId],
+    [provider: ProviderId, mode?: ConfigSavePayload['mode']],
     ConfigSaveResult
   >
   listModels: IpcInvokeDefinition<'models:list', [apiKey: string], string[]>
@@ -774,6 +778,7 @@ export interface XingmangInvokeContract {
 
 export interface XingmangEventContract {
   onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
+  onAccountUsageChanged: IpcEventDefinition<'account:usage-changed', AccountUsageChangedEvent>
   onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
   onWindowCloseRequest: IpcEventDefinition<'window:close-request', { requestId: string }>
   onExternalDeepLink: IpcEventDefinition<'navigation:deep-link-pending', undefined>
@@ -962,6 +967,7 @@ export const ipcInvokeChannels = {
 
 export const ipcEventChannels = {
   onAccountSessionChanged: 'account:session-changed',
+  onAccountUsageChanged: 'account:usage-changed',
   onNavigate: 'navigation:open-page',
   onWindowCloseRequest: 'window:close-request',
   onExternalDeepLink: 'navigation:deep-link-pending',

@@ -159,6 +159,7 @@ const ipcInvokeChannels = {
 
 const ipcEventChannels = {
   onAccountSessionChanged: 'account:session-changed',
+  onAccountUsageChanged: 'account:usage-changed',
   onNavigate: 'navigation:open-page',
   onWindowCloseRequest: 'window:close-request',
   onExternalDeepLink: 'navigation:deep-link-pending',
@@ -204,7 +205,9 @@ const xingmangApi: XingmangApi = {
   getConfig: () => invoke('getConfig'),
   revealApiKey: (provider) => invoke('revealApiKey', provider),
   saveConfig: (payload) => invoke('saveConfig', payload),
-  switchToOfficialAccount: (provider) => invoke('switchToOfficialAccount', provider),
+  switchToOfficialAccount: (provider, mode) => mode === undefined
+    ? invoke('switchToOfficialAccount', provider)
+    : invoke('switchToOfficialAccount', provider, mode),
   listModels: (apiKey) => invoke('listModels', apiKey),
   listConfiguredModels: (provider) => invoke('listConfiguredModels', provider),
   chooseWorkspace: () => invoke('chooseWorkspace'),
@@ -340,6 +343,7 @@ const xingmangApi: XingmangApi = {
   showAiChatAssetMenu: (assetId) => invoke('showAiChatAssetMenu', assetId),
   getAccountKeyOptions: (provider) => invoke('getAccountKeyOptions', provider),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
+  onAccountUsageChanged: (listener) => subscribe('onAccountUsageChanged', listener),
   onNavigate: (listener) => subscribe('onNavigate', listener),
   onWindowCloseRequest: (listener) => subscribe('onWindowCloseRequest', listener),
   onExternalDeepLink: (listener) => subscribe('onExternalDeepLink', listener),

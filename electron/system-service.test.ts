@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import * as TOML from '@iarna/toml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
 import { providerBaseUrls } from './catalog'
@@ -102,7 +103,7 @@ async function createDarwinService(options: {
   temporaryDirectories.push(directory)
   const workspace = options.workspace ?? directory
   const codexHome = options.codexHome ?? path.join(directory, 'selected-codex-home')
-  const codexEnv = { ...process.env, HOME: directory, CODEX_HOME: codexHome }
+  const codexEnv: NodeJS.ProcessEnv = { ...process.env, HOME: directory, CODEX_HOME: codexHome }
   const store = new AppSettingsStore(path.join(directory, 'settings.json'), directory)
   await store.write({ ...defaultAppSettings(directory), workspace })
   const resolvedCommand = {
@@ -139,7 +140,8 @@ async function createDarwinService(options: {
     updatedAt: '2026-08-03T00:00:00.000Z',
   }))
   const macosCodexAppDetector = options.macosCodexAppDetector
-    ?? vi.fn(async () => ({ app: null, detectionFailed: false, detectionError: null }))
+    ?? vi.fn(async () => ({ app: { path: '/Applications/Codex.app', version: '26.727.51351', running: true }, detectionFailed: false, detectionError: null }))
+  const findExecutable = vi.fn(async () => null)
   const service = createSystemService(store, {
     platform: 'darwin',
     providerRoots: { userHome: directory, codexHome },
@@ -148,6 +150,7 @@ async function createDarwinService(options: {
     resolveCliCommand: resolveCli,
     runCommand: execute,
     macosCodexAppDetector,
+    findExecutable,
   })
   return {
     service,
@@ -156,6 +159,7 @@ async function createDarwinService(options: {
     resolvedCommand,
     resolveCli,
     execute,
+    findExecutable,
     release: resolvedCommand.release,
   }
 }
@@ -424,6 +428,38 @@ describe('createSystemService', () => {
       authSnapshots.active,
     ])
     expect(fs.existsSync(fallbackCodexHome)).toBe(false)
+  })
+
+  it('passes official reset through to the selected Codex root and persists its account source', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-reset-'))
+    temporaryDirectories.push(root)
+    const roots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'selected-codex') }
+    const store = new AppSettingsStore(path.join(root, 'settings.json'), root)
+    const service = createSystemService(store, { providerRoots: roots })
+    saveProviderConfig('codex', 'sk-relay', 'gpt-5.6-sol', 'reset', roots, {}, providerBaseUrls)
+    const auth = codexAuthSnapshotPaths(roots)
+    const configs = codexConfigSnapshotPaths(roots)
+    const login = { auth_mode: 'chatgpt', tokens: { id_token: 'fixture-id', access_token: 'fixture-access' } }
+    fs.writeFileSync(auth.chatgpt, JSON.stringify(login), 'utf8')
+    fs.writeFileSync(configs.chatgpt, 'custom_setting = "old-official"\n', 'utf8')
+
+    const result = await service.switchToOfficialAccount('codex', 'reset')
+
+    const active = TOML.parse(fs.readFileSync(configs.active, 'utf8'))
+    expect(active.custom_setting).toBeUndefined()
+    expect(active.model_provider).toBeUndefined()
+    expect(active.approval_policy).toBe('on-request')
+    expect(active.skills).toMatchObject({ config: [expect.objectContaining({ enabled: false })] })
+    expect(TOML.parse(fs.readFileSync(configs.chatgpt, 'utf8')).custom_setting).toBeUndefined()
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(login)
+    expect(store.read().officialProviders).toContain('codex')
+    expect(result.backups.length).toBeGreaterThan(0)
+    expect(fs.existsSync(path.join(roots.userHome, '.codex'))).toBe(false)
+
+    fs.appendFileSync(configs.active, '\n[custom_after_switch]\nenabled = true\n')
+    await service.switchToOfficialAccount('codex', 'reset')
+    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8')).custom_after_switch).toBeUndefined()
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(login)
   })
 
   it('uses codexEnv for Codex CLI discovery, resolution, and version inspection', async () => {
@@ -2129,7 +2165,9 @@ describe('Darwin CLI launch planning', () => {
 
 describe('Darwin Codex Desktop integration', () => {
   it('reports externally managed updates without claiming an AppX or MSIX version', async () => {
-    const { service } = await createDarwinService()
+    const { service } = await createDarwinService({
+      macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),
+    })
 
     await expect(service.inspectCodexDesktop()).resolves.toMatchObject({
       installed: false,
@@ -2375,7 +2413,7 @@ describe('Darwin Codex Desktop integration', () => {
     await expect(service.uninstallCodexDesktop()).rejects.toThrow('由 Codex App 管理')
   })
 
-  it('preserves the XingMang Codex readiness check before resolving or running the CLI', async () => {
+  it('preserves the XingMang Codex readiness check before opening the desktop app', async () => {
     const { service, resolveCli, execute } = await createDarwinService({ configured: false })
 
     await expect(service.launchCodexDesktop('open', {
@@ -2399,7 +2437,7 @@ describe('Darwin Codex Desktop integration', () => {
       isDestroyed: () => false,
       send: vi.fn(),
     })).rejects.toThrow('工作目录不存在，请重新选择')
-    expect(resolveCli).toHaveBeenCalled()
+    expect(resolveCli).not.toHaveBeenCalled()
     expect(execute).not.toHaveBeenCalled()
   })
 
@@ -2414,65 +2452,72 @@ describe('Darwin Codex Desktop integration', () => {
       send: vi.fn(),
     })).rejects.toThrow('工作目录不存在，请重新选择')
     expect(execute).not.toHaveBeenCalled()
-    expect(release).toHaveBeenCalledOnce()
+    expect(release).not.toHaveBeenCalled()
   })
 
-  it('opens Codex on Darwin with the verified CLI and stored workspace as literal argv', async () => {
-    const { service, workspace, resolvedCommand, resolveCli, execute, release } = await createDarwinService()
+  it('opens the verified Darwin desktop app without CLI, Node, or npm installed', async () => {
+    const { service, workspace, codexEnv, resolveCli, execute, findExecutable, release } = await createDarwinService()
+    resolveCli.mockRejectedValue(new Error('未检测到 Codex CLI'))
+    const target = { isDestroyed: () => false, send: vi.fn() }
 
-    const result = await service.launchCodexDesktop('open', {
-      isDestroyed: () => false,
-      send: vi.fn(),
-    })
+    const result = await service.launchCodexDesktop('open', target)
 
-    expect(resolveCli).toHaveBeenCalledWith('codex', expect.any(Object), 'trusted-only', {
-      darwinStagingRetention: 'ephemeral',
-    })
+    const workspaceUrl = new URL('codex://threads/new')
+    workspaceUrl.searchParams.set('path', workspace)
     expect(execute).toHaveBeenCalledWith({
-      executable: resolvedCommand.executable,
-      argv: [...resolvedCommand.argv, 'app', workspace],
-    }, expect.objectContaining({ cwd: workspace }))
-    expect(release).toHaveBeenCalledOnce()
+      executable: '/usr/bin/open',
+      argv: ['-a', '/Applications/Codex.app', '--env', `CODEX_HOME=${codexEnv.CODEX_HOME}`, workspaceUrl.href],
+    }, expect.objectContaining({ cwd: workspace, timeoutMs: 10_000, maxOutputBytes: 64 * 1024 }))
+    expect(resolveCli).not.toHaveBeenCalled()
+    expect(findExecutable).not.toHaveBeenCalled()
+    expect(release).not.toHaveBeenCalled()
     expect(result).toMatchObject({
       restarted: false,
       status: {
-        version: null,
-        appVersion: null,
+        installed: true,
+        version: '26.727.51351',
+        appVersion: '26.727.51351',
+        running: true,
         updateCheck: 'skipped',
       },
     })
+    expect(target.send).toHaveBeenCalledWith('desktop:codex-status-changed', { phase: 'running', status: result.status })
   })
 
-  it('uses codexEnv for Darwin Codex Desktop command resolution and launch', async () => {
+  it('passes the selected CODEX_HOME through LaunchServices with a sanitized environment', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-codex-env-'))
     temporaryDirectories.push(root)
     const codexHome = path.join(root, 'selected-codex-home')
     const { service, codexEnv, resolveCli, execute } = await createDarwinService({ codexHome })
+    codexEnv.NODE_OPTIONS = '--require=/tmp/unwanted-hook.js'
+    codexEnv.BROWSER = '/tmp/unwanted-browser'
 
     await service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
     })
 
-    expect(resolveCli.mock.calls[0]?.[1]).toMatchObject({ CODEX_HOME: codexHome })
+    expect(resolveCli).not.toHaveBeenCalled()
+    expect(execute.mock.calls[0]?.[0].argv).toContain(`CODEX_HOME=${codexHome}`)
     expect(execute.mock.calls[0]?.[1]).toMatchObject({
       env: expect.objectContaining({
         HOME: codexEnv.HOME,
         CODEX_HOME: codexHome,
       }),
     })
+    expect(execute.mock.calls[0]?.[1]?.env?.NODE_OPTIONS).toBeUndefined()
+    expect(execute.mock.calls[0]?.[1]?.env?.BROWSER).toBeUndefined()
   })
 
-  it('releases the verified Darwin CLI when opening Codex fails', async () => {
+  it('propagates LaunchServices failures without running a CLI or reporting a running app', async () => {
     const { service, execute, release } = await createDarwinService()
-    execute.mockRejectedValueOnce(new Error('codex app failed'))
+    execute.mockRejectedValueOnce(new Error('macOS 打开应用失败'))
+    const target = { isDestroyed: () => false, send: vi.fn() }
 
-    await expect(service.launchCodexDesktop('open', {
-      isDestroyed: () => false,
-      send: vi.fn(),
-    })).rejects.toThrow('codex app failed')
+    await expect(service.launchCodexDesktop('open', target)).rejects.toThrow('macOS 打开应用失败')
 
-    expect(release).toHaveBeenCalledOnce()
+    expect(release).not.toHaveBeenCalled()
+    expect(target.send).not.toHaveBeenCalled()
   })
 
   it('fails closed for Darwin Codex restart without resolving or running a command', async () => {
@@ -2486,15 +2531,26 @@ describe('Darwin Codex Desktop integration', () => {
     expect(execute).not.toHaveBeenCalled()
   })
 
-  it('rejects a bare Codex command instead of resolving it through PATH', async () => {
-    const fixture = await createDarwinService()
-    fixture.resolveCli.mockResolvedValueOnce({ executable: 'codex', argv: [] })
+  it('rejects an unbound app name instead of letting LaunchServices select an arbitrary bundle', async () => {
+    const fixture = await createDarwinService({
+      macosCodexAppDetector: async () => ({ app: { path: 'Codex.app', version: null, running: false }, detectionFailed: false, detectionError: null }),
+    })
 
     await expect(fixture.service.launchCodexDesktop('open', {
       isDestroyed: () => false,
       send: vi.fn(),
-    })).rejects.toThrow('未解析为绝对路径')
+    })).rejects.toThrow('路径')
     expect(fixture.execute).not.toHaveBeenCalled()
+  })
+
+  it.each([false, true])('refuses to open an app when detection cannot provide a verified bundle (failed=%s)', async (failed) => {
+    const fixture = await createDarwinService({
+      macosCodexAppDetector: async () => ({ app: null, detectionFailed: failed, detectionError: failed ? 'codesign timed out' : null }),
+    })
+    await expect(fixture.service.launchCodexDesktop('open', { isDestroyed: () => false, send: vi.fn() }))
+      .rejects.toThrow(failed ? '检测未完成' : '未检测到 Codex 桌面端')
+    expect(fixture.execute).not.toHaveBeenCalled()
+    expect(fixture.resolveCli).not.toHaveBeenCalled()
   })
 })
 

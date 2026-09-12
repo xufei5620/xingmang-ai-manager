@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandErrorCode } from './command-runner'
 import {
+  buildMacosCodexAppLaunchPlan,
   commandTimeoutMs,
   deepVerificationTimeoutMs,
   inspectMacosCodexApp,
@@ -67,6 +68,67 @@ afterEach(() => {
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
+})
+
+describe('buildMacosCodexAppLaunchPlan', () => {
+  it('opens the verified application with a workspace deep link and no CLI dependency', () => {
+    const workspace = path.resolve(os.tmpdir(), 'project')
+    const plan = buildMacosCodexAppLaunchPlan('/Applications/Codex.app', workspace)
+
+    expect(plan).toEqual({
+      executable: '/usr/bin/open',
+      argv: ['-a', '/Applications/Codex.app', expect.any(String)],
+    })
+    const url = new URL(plan.argv[2])
+    expect(url.protocol).toBe('codex:')
+    expect(url.hostname).toBe('threads')
+    expect(url.pathname).toBe('/new')
+    expect(url.searchParams.get('path')).toBe(workspace)
+    expect([...url.searchParams.keys()]).toEqual(['path'])
+  })
+
+  it('keeps special characters literal and forwards the selected CODEX_HOME through LaunchServices', () => {
+    const appPath = "/Users/tester/Apps & Tools/Codex's Copy.app"
+    const workspace = path.resolve(os.tmpdir(), "Project's $value; & #hash 中文  ")
+    const codexHome = path.resolve(os.tmpdir(), "Codex's $config & 中文")
+    const plan = buildMacosCodexAppLaunchPlan(appPath, workspace, codexHome)
+
+    expect(plan.executable).toBe('/usr/bin/open')
+    expect(plan.argv.slice(0, 4)).toEqual(['-a', appPath, '--env', `CODEX_HOME=${codexHome}`])
+    expect(plan.argv).toHaveLength(5)
+    const url = new URL(plan.argv[4])
+    expect(url.searchParams.get('path')).toBe(workspace)
+    expect(url.hash).toBe('')
+  })
+
+  it.each([
+    '',
+    'Codex.app',
+    '-a Codex.app',
+    'C:\\Applications\\Codex.app',
+    '/Applications/Codex',
+    '/Applications/Codex.app/Contents/MacOS/ChatGPT',
+    '/Applications/Codex\0.app',
+    `/${'x'.repeat(32_768)}.app`,
+  ])('rejects invalid macOS application path %#', (appPath) => {
+    expect(() => buildMacosCodexAppLaunchPlan(appPath, os.tmpdir())).toThrow('应用路径无效')
+  })
+
+  it.each(['', 'relative/project', path.resolve(os.tmpdir(), 'project\0path'), path.resolve(os.tmpdir(), 'x'.repeat(32_768))])(
+    'rejects invalid workspace path %#',
+    (workspace) => {
+      expect(() => buildMacosCodexAppLaunchPlan('/Applications/Codex.app', workspace))
+        .toThrow('工作目录无效')
+    },
+  )
+
+  it.each(['', 'relative/config', path.resolve(os.tmpdir(), 'config\0path'), path.resolve(os.tmpdir(), 'x'.repeat(32_768))])(
+    'rejects invalid explicit Codex home %#',
+    (codexHome) => {
+      expect(() => buildMacosCodexAppLaunchPlan('/Applications/Codex.app', os.tmpdir(), codexHome))
+        .toThrow('配置目录无效')
+    },
+  )
 })
 
 // Pure string/array logic with no filesystem or process involvement, so unlike

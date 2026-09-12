@@ -80,11 +80,46 @@ function maskedEmail(value: unknown): string { const email = str(value); const a
 function iso(value: unknown): string { const d = typeof value === 'string' ? Date.parse(value) : NaN; return Number.isFinite(d) ? new Date(d).toISOString() : '' }
 function parseUsage(payload: unknown): NewApiAccountUsagePage {
   const p = record(payload); const items = Array.isArray(p.items) ? p.items : []
-  const records: NewApiAccountUsageRecord[] = items.slice(0, 100).map((v) => { const x = record(v); return {
-    id: num(x.id), createdAt: iso(x.created_at), type: 2, modelName: str(x.model), promptTokens: num(x.input_tokens), completionTokens: num(x.output_tokens), quota: num(x.actual_cost ?? x.total_cost), isStream: Boolean(x.stream), tokenName: str(x.api_key?.name), group: str(x.group?.name), useTimeSeconds: num(x.duration_ms) / 1000, content: '', requestId: str(x.request_id), upstreamRequestId: '', details: {
-      cacheTokens: num(x.cache_read_tokens), cacheCreationTokens: num(x.cache_creation_tokens), cacheCreationTokens5m: num(x.cache_creation_5m_tokens), cacheCreationTokens1h: num(x.cache_creation_1h_tokens), firstResponseTimeMs: x.first_token_ms == null ? null : num(x.first_token_ms), reasoningEffort: str(x.reasoning_effort), modelRatio: null, completionRatio: null, modelPrice: null, groupRatio: num(x.rate_multiplier, 1), userGroupRatio: null, cacheRatio: null, cacheCreationRatio: null, cacheCreationRatio5m: null, cacheCreationRatio1h: null, billingMode: str(x.billing_mode), matchedTier: '', upstreamModelName: '', streamStatus: null,
-    },
-  } })
+  const amount = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
+  const count = (value: unknown): number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
+  const label = (value: unknown, limit = 256): string => str(value).slice(0, limit)
+  const records: NewApiAccountUsageRecord[] = items.slice(0, 100).map((value) => {
+    const x = record(value)
+    const totalCost = amount(x.total_cost)
+    const actualCost = amount(x.actual_cost)
+    return {
+      id: count(x.id), createdAt: iso(x.created_at), type: 2, modelName: label(x.model),
+      promptTokens: count(x.input_tokens), completionTokens: count(x.output_tokens),
+      quota: actualCost ?? totalCost ?? 0, isStream: x.stream === true,
+      tokenName: label(record(x.api_key).name), group: label(record(x.group).name),
+      useTimeSeconds: (amount(x.duration_ms) ?? 0) / 1000,
+      content: '', requestId: label(x.request_id, 512), upstreamRequestId: '',
+      details: {
+        cacheTokens: count(x.cache_read_tokens), cacheCreationTokens: count(x.cache_creation_tokens),
+        cacheCreationTokens5m: count(x.cache_creation_5m_tokens), cacheCreationTokens1h: count(x.cache_creation_1h_tokens),
+        firstResponseTimeMs: amount(x.first_token_ms), reasoningEffort: label(x.reasoning_effort, 32),
+        modelRatio: null, completionRatio: null, modelPrice: null, groupRatio: amount(x.rate_multiplier),
+        userGroupRatio: null, cacheRatio: null, cacheCreationRatio: null, cacheCreationRatio5m: null,
+        cacheCreationRatio1h: null, billingMode: label(x.billing_mode, 64), matchedTier: '',
+        upstreamModelName: '', streamStatus: null,
+        // Native user UsageLog costs are USD amounts, not token unit prices.
+        // Keep standard cost separate from the amount billed to this user;
+        // historical/missing fields must not be presented as free usage.
+        costs: {
+          input: amount(x.input_cost), output: amount(x.output_cost), cacheRead: amount(x.cache_read_cost),
+          cacheCreation: amount(x.cache_creation_cost), total: totalCost, actual: actualCost,
+          imageInput: amount(x.image_input_cost), imageOutput: amount(x.image_output_cost),
+        },
+        billingType: x.billing_type === 0 ? 'balance' : x.billing_type === 1 ? 'subscription' : null,
+        longContextBillingApplied: typeof x.long_context_billing_applied === 'boolean' ? x.long_context_billing_applied : null,
+        serviceTier: label(x.service_tier, 64), imageInputTokens: count(x.image_input_tokens),
+        imageOutputTokens: count(x.image_output_tokens), imageCount: count(x.image_count), imageSize: label(x.image_size, 64),
+        // Do not copy the source object: API key secrets, internal accounts,
+        // upstream models and billing tiers belong to admin-only DTO fields.
+        // The user API has no unit-price/tier snapshot; do not infer one.
+      },
+    }
+  })
   const s = record(p.stats); return { page: num(p.page, 1), pageSize: num(p.page_size, 20), total: num(p.total, records.length), records, stats: { quota: num(s.total_actual_cost ?? s.total_cost), rpm: num(s.rpm), tpm: num(s.tpm) } }
 }
 function parseTopupInfo(payload: unknown): NewApiTopupInfo {

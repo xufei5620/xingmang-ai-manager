@@ -67,6 +67,7 @@ import { createActiveIdentityReader } from './active-identity'
 import { resolveRealmDataRoots } from './realm-data-roots'
 import { createRealmServiceDispatch } from './realm-service-dispatch'
 import { createAccountWorkGate } from './account-work-gate'
+import { createAccountUsageTracker } from './account-usage-tracker'
 import type { RelayBackendClient } from './relay-backend'
 import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
@@ -771,6 +772,18 @@ if (!hasSingleInstanceLock) {
         if (accounts.getSiteId() !== siteId) throw new Error('账号上下文已变化，请重试')
         return accounts.client
       })
+      const onAiRequestStarted = createAccountUsageTracker({
+        identities: createActiveIdentityReader(definition, {
+          getSessionState: () => accountService.getSessionState(),
+          getSessionRevision: () => accountService.getSessionRevision!(),
+        }),
+        assertReady: accounts.assertReady,
+        emit: (event) => {
+          if (!managedMainWindow || managedMainWindow.isDestroyed()) return
+          if (managedMainWindow.webContents.isDestroyed()) return
+          managedMainWindow.webContents.send(ipcEventChannels.onAccountUsageChanged, event)
+        },
+      })
       const accountCredentialStore = new AccountCredentialStore(path.join(roots.rootDirectory, 'account-credentials.dat'), safeStorage)
       const managedCliKeyStore = new ManagedCliKeyStore(roots.managedCliKeysFile, safeStorage, siteId)
       const chatKeyStore = new ChatKeyStore(roots.chatKeysFile, safeStorage)
@@ -959,6 +972,7 @@ if (!hasSingleInstanceLock) {
         thumbnails: assetThumbnails,
       })
       const chatService = createAiChatService({
+        onRequestStarted: onAiRequestStarted,
         baseUrl: definition.aiBaseUrl,
         credentialCoordinator: chatCredentials,
         fetchImpl: relayFetch,
@@ -1004,12 +1018,14 @@ if (!hasSingleInstanceLock) {
         responseHeaderTimeoutMs: AI_CHAT_STREAM_LIMITS.connectionTimeoutMs,
       })
       const imageService = createAiImageService({
+        onRequestStarted: onAiRequestStarted,
         fetchImpl: relayFetch,
         baseUrl: definition.aiBaseUrl,
         credentials: chatCredentials,
         assets: assetStore,
       })
       const canvasImageService = createAiImageService({
+        onRequestStarted: onAiRequestStarted,
         fetchImpl: relayFetch,
         baseUrl: definition.aiBaseUrl,
         credentials: chatCredentials,

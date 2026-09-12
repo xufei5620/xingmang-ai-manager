@@ -285,6 +285,42 @@ describe('syncManagedCliKeySummary', () => {
 })
 
 describe('configureManagedClis', () => {
+  it.each(['cached', 'provisioned'] as const)('resets the selected config in one write with a %s managed key', async (source) => {
+    const keys = providerIds.map((provider) => managedKey(provider))
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => source === 'cached' ? keys : []),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    const provisionCliKey = vi.fn(async (input: { name?: string; group?: string } = {}) => {
+      const entry = keyForGroup(input.group ?? '')
+      return { id: entry.id, name: entry.name, key: entry.key }
+    })
+    const fetchAvailableModels = vi.fn(async () => ['codex-primary', 'codex-preferred'])
+    const saveConfig = vi.fn(async () => ({ provider: 'codex' }))
+
+    const result = await configureManagedClis(
+      loggedInAccountService(provisionCliKey),
+      { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+      ['codex'],
+      { codex: 'codex-preferred' },
+      false,
+      store,
+      'reset',
+    )
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(provisionCliKey).toHaveBeenCalledTimes(source === 'cached' ? 0 : providerIds.length)
+    expect(fetchAvailableModels).toHaveBeenCalledWith(managedKey('codex').key, { bypassCache: true })
+    expect(saveConfig).toHaveBeenCalledTimes(1)
+    expect(saveConfig).toHaveBeenCalledWith({
+      provider: 'codex',
+      apiKey: managedKey('codex').key,
+      model: 'codex-preferred',
+      mode: 'reset',
+    }, false, expect.any(Function))
+  })
+
   it('uses an independent key, model lookup, and config payload for each provider', async () => {
     const keys = providerIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {

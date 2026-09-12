@@ -27,14 +27,14 @@ import {
   type StartAppEntry,
   type WindowsProcessEntry,
 } from './codex-desktop'
-import { commandEnvironment, trustedCommandEnvironment, windowsSystemExecutable, type runCommand } from './command-runner'
+import { trustedCommandEnvironment, windowsSystemExecutable, type runCommand } from './command-runner'
 import {
   canLaunchManagedProvider,
   managedProviderLaunchBlockedMessage,
   type NativeConfigInspection,
 } from './config-files'
 import type { InstallationQueue } from './installation-queue'
-import type { inspectMacosCodexApp, MacosCodexAppInspection } from './macos-codex-app'
+import { buildMacosCodexAppLaunchPlan, type inspectMacosCodexApp, type MacosCodexAppInspection } from './macos-codex-app'
 import { describeProbeFailure } from './probe-failure'
 import { resolveWindowsExplorerExecutable } from './system-shell'
 import {
@@ -53,8 +53,7 @@ import type {
   UpdateSource,
   VersionUpdateStatus,
 } from './system-service'
-import type { resolveCliCommand } from './tool-installation'
-import { resolveWindowsPowerShellExecutable, type WindowsCliExecutionMode } from './windows-elevation'
+import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { repairCodexDesktopGlobalState } from './codex-desktop-state'
 
@@ -1399,14 +1398,12 @@ export function buildCodexDesktopDarwinStatus(
 
 export interface CodexDesktopServiceOptions {
   platform: NodeJS.Platform
-  windowsExecutionMode: WindowsCliExecutionMode
   installationQueue: InstallationQueue
   createInstallTemporaryDirectory: (
     label: string,
     options?: { baseDirectory?: string },
   ) => Promise<string>
   detectMacosCodexApp: typeof inspectMacosCodexApp
-  resolveVerifiedCliCommand: typeof resolveCliCommand
   executeCommand: typeof runCommand
   codexEnv: NodeJS.ProcessEnv
   store: AppSettingsStore
@@ -1448,19 +1445,17 @@ export interface CodexDesktopService {
 /**
  * Owns the two version-probe caches and the install/uninstall/launch busy
  * lock that the 12 Codex Desktop orchestration functions below share. All
- * dependencies on the host `createSystemService` closure (the CLI-launch
- * trust boundary, the settings store, the shared installation queue) are
+ * dependencies on the host `createSystemService` closure (the desktop-app
+ * verifier, the settings store, the shared installation queue) are
  * passed in explicitly rather than recreated here, so this factory has no
  * defaults of its own to keep in sync with `SystemServiceOptions`.
  */
 export function createCodexDesktopService(options: CodexDesktopServiceOptions): CodexDesktopService {
   const {
     platform,
-    windowsExecutionMode,
     installationQueue,
     createInstallTemporaryDirectory,
     detectMacosCodexApp,
-    resolveVerifiedCliCommand,
     executeCommand,
     codexEnv,
     store,
@@ -2009,33 +2004,30 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       throw new Error(managedProviderLaunchBlockedMessage('codex'))
     }
     if (platform === 'darwin') {
-      const command = await resolveVerifiedCliCommand(
-        'codex',
-        codexEnv,
-        windowsExecutionMode,
-        { darwinStagingRetention: 'ephemeral' },
-      )
-      try {
-        if (!path.isAbsolute(command.executable)) {
-          throw new Error('Codex CLI 命令未解析为绝对路径，已阻止启动')
-        }
-        const workspace = store.read().workspace
-        try {
-          if (!fs.statSync(workspace).isDirectory()) throw new Error('not a directory')
-        } catch {
-          throw new Error('工作目录不存在，请重新选择')
-        }
-        await executeCommand({
-          executable: command.executable,
-          argv: [...command.argv, 'app', workspace],
-        }, {
-          cwd: workspace,
-          env: commandEnvironment(codexEnv),
-        })
-        return { restarted: false, status: await inspectCodexDesktop() }
-      } finally {
-        await command.release?.()
+      // Desktop ships its own runtime. Requiring `codex app` here blocks a
+      // valid app installation whenever the separate CLI/Node is absent.
+      // Reuse the bundle/architecture/OpenAI-signature verifier and bind
+      // LaunchServices to that exact app, rather than a PATH or bundle alias.
+      const desktopApp = await inspectCodexDesktop()
+      if (desktopApp.detectionFailed) throw new Error('Codex 桌面端检测未完成，请重新检测后再试')
+      if (!desktopApp.installed || !desktopApp.path) {
+        throw new Error('未检测到 Codex 桌面端，请先安装 Codex App 后重新检测')
       }
+      const workspace = store.read().workspace
+      try {
+        if (!fs.statSync(workspace).isDirectory()) throw new Error('not a directory')
+      } catch {
+        throw new Error('工作目录不存在，请重新选择')
+      }
+      await executeCommand(buildMacosCodexAppLaunchPlan(desktopApp.path, workspace, codexEnv.CODEX_HOME), {
+        cwd: workspace,
+        env: trustedCommandEnvironment(codexEnv),
+        timeoutMs: 10_000,
+        maxOutputBytes: 64 * 1024,
+      })
+      const status = await inspectCodexDesktop()
+      if (status.running) sendCodexDesktopStatus(target, 'running', status)
+      return { restarted: false, status }
     }
     if (platform !== 'win32') throw new Error('Codex 桌面端启动目前仅支持 Windows')
 

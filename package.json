@@ -1,6 +1,6 @@
 {
   "name": "xingmang-ai-manager",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "workspaces": [
     "tooling/legacy-renderer"
@@ -23,7 +23,7 @@
     "compile:legacy": "cross-env XINGMANG_RENDERER=legacy npm run compile:runtime",
     "check:v2": "node e2e/renderer-v2-testid-inventory.cjs",
     "test:v2": "cross-env XINGMANG_RENDERER=v2 vitest run src/renderer-v2 electron/platform --no-file-parallelism --testTimeout=30000 && npm run test:v2:browser",
-    "test:v2:browser": "node --test --test-concurrency=1 src/renderer-v2/ui/browser-check.mjs src/renderer-v2/features/auth/browser-check.mjs src/renderer-v2/features/chat/browser-check.mjs e2e/v2-business.test.mjs e2e/v2-local-avatar.test.mjs src/renderer-v2/testing/app-check.mjs",
+    "test:v2:browser": "node --test --test-concurrency=1 src/renderer-v2/ui/browser-check.mjs src/renderer-v2/features/auth/browser-check.mjs src/renderer-v2/features/chat/browser-check.mjs src/renderer-v2/features/shell/newapi-announcements.browser-check.mjs e2e/v2-business.test.mjs e2e/v2-local-avatar.test.mjs src/renderer-v2/testing/app-check.mjs",
     "canvas:prepare": "tsc -p canvas-v2/tsconfig.json --noEmit && vite build canvas-v2 --config canvas-v2/vite.config.ts && node scripts/copy-canvas-assets.mjs",
     "test:canvas": "vitest run canvas-v2/src",
     "test:canvas:visual": "node e2e/canvas-editor-smoke.mjs",

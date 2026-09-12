@@ -12,6 +12,14 @@ npm run dev
 
 从终端运行的 `npm run dev` 会继承当前 shell 的 `PATH`；从 Finder、Dock 或 Spotlight 启动的 `.app` 不会读取 `.zshrc`、`.zprofile` 等交互式 shell 配置。请把 Node.js 和 AI CLI 安装到系统或常见可执行目录，或在应用的诊断页面确认工具已被发现。macOS 运行时会检查 `/opt/homebrew/bin`、`/usr/local/bin`、`/usr/bin`、`/bin`、`/usr/sbin`、`/sbin` 与常见用户可执行目录，而不会执行用户 shell 配置文件。
 
+## Codex 桌面端启动
+
+已安装 Codex App 时，“打开桌面端”直接通过系统 `/usr/bin/open -a <已验证的应用路径>` 唤起应用，不要求额外安装 Codex CLI、Node.js 或 npm。启动前沿用 bundle ID、OpenAI 签名与架构检查；未找到应用和检测未完成分别提示。
+
+工作目录使用官方 `codex://threads/new?path=...` 深链接传递，并用 `--env CODEX_HOME=...` 把选定配置目录交给新启动的应用。所有参数通过 argv 数组传递，中文、空格、引号和 URL 特殊字符不会作为命令解释。已有应用进程保持运行；`--env` 不会修改其启动时的环境，切换配置目录后需由用户退出并重新打开 Codex。
+
+2026-09-12 修复了旧版本无条件执行 `codex app`，导致桌面端已安装却报“未检测到 Codex CLI”的问题。Windows 本地的 macOS 分支/启动计划回归通过，真实 LaunchServices 与 Mac 窗口行为仍需 macOS 实机验证。
+
 ## Grok CLI 安装与更新
 
 macOS 上由应用管理的 Grok 安装和更新要求系统已经安装可用的 Node.js/npm 运行时；Node.js 的安装仍由用户在应用外部完成。应用只使用官方包 `@xai-official/grok`，不得替换为名称相近的未作用域包。
