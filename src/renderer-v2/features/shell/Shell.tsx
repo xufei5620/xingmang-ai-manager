@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
-import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, Globe, Menu as MenuIcon, PanelLeft, Search, UserRound, Zap } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Bell, ChevronDown, CircleHelp, Globe, Menu as MenuIcon, PanelLeft, RefreshCw, Search, UserRound, Zap } from 'lucide-react'
 import { Button, Coachmark, Dialog, Input, Logo, Tooltip } from '../../ui'
 import { moreNavigation, shellNavigation, shellTour } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
@@ -10,13 +10,15 @@ import type { AvatarIdentity } from '../../local-avatar'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
 import { networkLocationLabel } from './network'
+import { balanceStatusText, type BalanceStatusView } from './balance-status'
 
-interface AccountView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; balance?: string; identity?: AvatarIdentity }
+interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; balance?: string; identity?: AvatarIdentity }
 interface Adapter {
   navigate?(page: PageId): void
   openAccount?(): void
   switchAccount?(): void
   topUp?(): void
+  refreshBalance?(): void
   logout?(): void
   openHelp?(): void
   openAnnouncements?(): void
@@ -60,6 +62,11 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   const navigateRef = useRef(adapter.navigate)
   navigateRef.current = adapter.navigate
   const results = pageRegistry.filter((page) => `${page.label} ${page.id}`.toLowerCase().includes(query.toLowerCase().trim()))
+  const balanceStatus = balanceStatusText(account)
+  const balanceTitle = `${account.balance ?? '暂未读到'}；${balanceStatus}`
+  const balanceRefresh = account.signedIn && adapter.refreshBalance
+    ? <Button size="xs" variant="ghost" icon={RefreshCw} aria-label="刷新余额" title={`刷新余额；${balanceStatus}`} loading={account.balanceLoading} onClick={adapter.refreshBalance} testId="sidebar-balance-refresh" />
+    : null
   useEffect(() => {
     function keydown(event: KeyboardEvent) {
       if (event.isComposing || event.altKey || document.querySelector('dialog[open]')) return
@@ -137,7 +144,14 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
           <div className="v2-account-top"><button type="button" aria-label={account.signedIn ? `打开个人中心 ${account.displayName}` : '登录'} title={account.displayName ?? '登录'} onClick={adapter.openAccount}>
             <LocalAvatar identity={account.identity ?? null} name={account.displayName ?? '未登录'} />{!collapsed && <span className="v2-account-who"><strong>{account.displayName ?? '未登录'}</strong><small>{account.email ?? (account.signedIn ? '星芒账号' : '登录后自动配 Key')}</small></span>}
           </button><Button variant="ghost" size="xs" icon={ChevronDown} aria-label="切换账号" title="切换账号" onClick={adapter.switchAccount} /></div>
-          <div className="v2-account-balance">{!collapsed && <><small>余额</small><strong>{account.balance ?? '暂未读到'}</strong></>}{account.supportsBilling !== false && <Button size="sm" variant="balance" icon={Zap} aria-label="充值" title="充值" onClick={adapter.topUp}>{collapsed ? undefined : '充值'}</Button>}</div>
+          <div className="v2-account-balance">
+            {!collapsed ? <div className="v2-account-balance-summary" title={balanceTitle}>
+              <div className="v2-account-balance-label"><small>余额</small>{balanceRefresh}</div>
+              <strong>{account.balance ?? '暂未读到'}</strong>
+            </div> : balanceRefresh}
+            {account.supportsBilling !== false && <Button size="sm" variant="balance" icon={Zap} aria-label="充值" title="充值" onClick={adapter.topUp}>{collapsed ? undefined : '充值'}</Button>}
+            {!collapsed && account.signedIn && account.balanceError && !account.balanceLoading && <small className="v2-balance-error" role="status" title={balanceStatus}>更新失败</small>}
+          </div>
         </section>
       </aside>
       <div className="v2-workspace">
@@ -149,7 +163,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         <main ref={viewport} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>
         <footer className="v2-statusbar" data-testid="shell-statusbar"><button type="button" onClick={adapter.openHealth}><i className="v2-dot" />{environment ?? '环境待检测'}</button>
           <span className="v2-network-location network-location" data-testid="shell-network-location" title={network?.error ?? networkLocationLabel(network)}><Globe size={14} aria-hidden="true" />{networkLocationLabel(network)}</span><button type="button" onClick={adapter.openAccount}><i className="v2-dot" />{account.signedIn ? `已登录 ${account.displayName}` : '未登录'}</button>
-          {(balance || account.balance) && <button type="button" onClick={adapter.topUp}>余额 {balance ?? account.balance}</button>}{installedCount !== undefined && <span>{installedCount} 个工具已装</span>}
+          {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">更新失败</span>}</button>}{installedCount !== undefined && <span>{installedCount} 个工具已装</span>}
           <button type="button" className="v2-status-version" onClick={adapter.openUpdates}>{version ? `v${version}` : '版本读取中'}</button>
         </footer>
         {notification && <div className="v2-notification">{notification}</div>}

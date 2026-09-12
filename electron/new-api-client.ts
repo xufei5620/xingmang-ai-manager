@@ -3,6 +3,9 @@ import { readBoundedResponseText } from './bounded-response'
 import { redactCommandText } from './command-runner'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import { relaySites } from './relay-sites'
+import { parseNewApiUsagePricing } from './usage-pricing-parser'
+import type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
+export type { NewApiAccountUsagePricingTier, NewApiAccountUsageUnitPrices } from './usage-pricing-parser'
 
 // xm.solov.cc runs QuantumNous/new-api (rc.22, custom branch). Most endpoints
 // wrap their payload as { success, message, data } -- confirmed for the CLI
@@ -480,6 +483,27 @@ export interface NewApiAccountUsageDetails {
   matchedTier: string
   upstreamModelName: string
   streamStatus: NewApiAccountUsageStreamStatus | null
+  /** USD per million tokens, before group/user ratios; absent when unavailable. */
+  unitPrices?: NewApiAccountUsageUnitPrices
+  pricingTiers?: NewApiAccountUsagePricingTier[]
+  /** Server-reported cost components in USD, not token unit prices. */
+  costs?: {
+    input: number | null
+    output: number | null
+    cacheRead: number | null
+    cacheCreation: number | null
+    total: number | null
+    actual: number | null
+    imageInput?: number | null
+    imageOutput?: number | null
+  }
+  billingType?: 'balance' | 'subscription' | null
+  longContextBillingApplied?: boolean | null
+  serviceTier?: string
+  imageInputTokens?: number
+  imageOutputTokens?: number
+  imageCount?: number
+  imageSize?: string
 }
 
 // One row of GET /api/log/self's `items` array. This remains an explicit
@@ -1631,6 +1655,7 @@ export function parseAccountUsageDetails(value: unknown): NewApiAccountUsageDeta
     matchedTier: boundedUsageString(other.matched_tier, 128),
     upstreamModelName: boundedUsageString(other.upstream_model_name, 128),
     streamStatus: parseAccountUsageStreamStatus(other.stream_status),
+    ...parseNewApiUsagePricing(other),
   }
 }
 

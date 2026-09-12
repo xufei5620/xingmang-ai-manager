@@ -485,7 +485,8 @@ function createCodexRelayConfigPlans(
     })
   }
 
-  const storedRelay = currentKind === 'official' ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
+  const storedRelay = mode === 'merge' && currentKind === 'official'
+    ? readStoredCodexConfig(paths.relay, '已保存的星芒 Codex 配置') : null
   let nextContent: string
   if (mode === 'reset') {
     nextContent = buildCodexRelayConfigTemplate(model, existingCodexProvider(paths.active), siteBaseUrls.codex)
@@ -508,17 +509,26 @@ function createCodexRelayConfigPlans(
 function createCodexOfficialConfigPlans(
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
+  mode: NativeConfigSaveMode,
 ): FilePlan[] {
   const paths = codexConfigSnapshotPaths(roots)
   const plans: FilePlan[] = []
   const currentText = fs.existsSync(paths.active)
     ? requireConfigText(paths.active, '现有 Codex config.toml')
     : null
-  if (!currentText) return plans
-  const currentParsed = requireToml(paths.active, '现有 Codex config.toml')
-  if (classifyCodexConfigProfile(currentParsed, siteBaseUrls.codex) === 'relay') {
+  const currentParsed = currentText ? requireToml(paths.active, '现有 Codex config.toml') : null
+  if (currentText && classifyCodexConfigProfile(currentParsed, siteBaseUrls.codex) === 'relay') {
     plans.push({ path: paths.relay, content: withTrailingNewline(currentText) })
   }
+  if (mode === 'reset') {
+    // Reset only the selected account source. Replacing its snapshot too keeps
+    // an old official customization from returning after a relay round trip.
+    const initial = 'approval_policy = "on-request"\nsandbox_mode = "workspace-write"\n'
+    plans.push({ path: paths.chatgpt, content: initial })
+    plans.push({ path: paths.active, content: initial })
+    return plans
+  }
+  if (!currentParsed) return plans
   const storedChatgpt = readStoredCodexConfig(paths.chatgpt, '已保存的 ChatGPT Codex 配置')
   if (storedChatgpt) {
     plans.push({ path: paths.active, content: storedChatgpt })
@@ -1537,22 +1547,24 @@ function officialAccountUnsupported(provider: ProviderId): never {
 }
 
 /**
- * 构造"切回官方订阅"的文件计划。只对**已存在**的文件出计划:文件不存在
- * 意味着本来就没有中转配置可收回,凭空创建反而会写出一份用户没要过的配置。
+ * merge 只处理已存在的配置；显式 reset 可以建立当前账号来源的初始配置。
+ * 官方登录和历史数据均独立保留，不属于重置范围。
  */
 function createOfficialAccountPlans(
   provider: ProviderId,
   roots: ProviderConfigRoots,
   siteBaseUrls: Record<ProviderId, string>,
+  mode: NativeConfigSaveMode,
 ): FilePlan[] {
   const paths = providerConfigPaths(provider, roots)
   switch (provider) {
     case 'codex':
       return [
-        ...createCodexOfficialConfigPlans(roots, siteBaseUrls),
+        ...createCodexOfficialConfigPlans(roots, siteBaseUrls, mode),
         ...createCodexOfficialAuthPlans(roots),
       ]
     case 'claude': {
+      if (mode === 'reset') return [{ path: paths[0], content: jsonContent({}) }]
       if (!fs.existsSync(paths[0])) return []
       const parsed = requireJson(paths[0], '现有 Claude settings.json')
       const env = parsed.env
@@ -1566,6 +1578,12 @@ function createOfficialAccountPlans(
       return [{ path: paths[0], content: jsonContent(parsed) }]
     }
     case 'gemini': {
+      if (mode === 'reset') {
+        return [
+          { path: paths[0], content: jsonContent({ security: { auth: { selectedType: 'oauth-personal' } } }) },
+          ...(fs.existsSync(paths[1]) ? [{ path: paths[1], content: '' }] : []),
+        ]
+      }
       const plans: FilePlan[] = []
       if (fs.existsSync(paths[0])) {
         const parsed = requireJson(paths[0], '现有 Gemini settings.json')
@@ -1591,14 +1609,14 @@ function createOfficialAccountPlans(
  * 把某个 CLI 切回用户自己的官方订阅账号。返回值与 saveProviderConfig 同形,
  * 调用方拿到的是同一套备份/写入清单。
  *
- * 前置校验故意严格:当前不是星芒中转就直接拒绝,而不是"尽力而为地删几个
- * 键"——后者在用户自接第三方中转时会把别人的配置改坏。
+ * 第三方中转配置保持拒绝；显式 reset 也允许重建已经处于官方来源的配置。
  */
 export function switchProviderToOfficialAccount(
   provider: ProviderId,
   rootsInput: ProviderConfigRoots = defaultProviderConfigRoots(),
   hooks: NativeConfigWriteHooks = {},
   siteBaseUrlsInput: Record<ProviderId, string> = providerBaseUrls,
+  saveMode: NativeConfigSaveMode = 'merge',
 ): NativeConfigSaveResult {
   if (!providerSupportsOfficialAccount(provider)) officialAccountUnsupported(provider)
 
@@ -1608,12 +1626,12 @@ export function switchProviderToOfficialAccount(
   for (const filePath of configuredPaths) assertSafeConfigPath(filePath, providerRoot, 'file')
 
   const mode = providerAccountMode(inspectProviderConfig(provider, roots, siteBaseUrlsInput))
-  if (mode === 'official') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
+  if (mode === 'official' && saveMode !== 'reset') throw new Error('当前已经在使用你自己的官方订阅账号，无需切换')
   if (mode === 'unknown') {
     throw new Error('当前配置不是星芒中转（可能是你自己填的第三方地址），为避免改坏配置已取消切换')
   }
 
-  const plans = createOfficialAccountPlans(provider, roots, siteBaseUrlsInput)
+  const plans = createOfficialAccountPlans(provider, roots, siteBaseUrlsInput, saveMode)
   if (plans.length === 0) throw new Error('没有找到可切换的配置文件')
 
   assertNoReparseComponents(path.dirname(providerRoot), 'Provider 配置根目录')

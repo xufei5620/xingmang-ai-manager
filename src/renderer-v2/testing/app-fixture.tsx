@@ -23,6 +23,14 @@ const nativeFixtureNotice = `<div class="${nativeFixtureScope}" data-xm-native="
   <div data-xm-state="en-light" lang="en" hidden><h1>English light</h1></div>
   <div data-xm-state="en-dark" lang="en" hidden><h1>English dark</h1></div>
 </div>`
+const collectionFixture = `<div class="xm-newapi-collection-fixture1234" data-newapi-collection="v1">
+  <header class="collection-header"><h1>星芒 AI 公告合集</h1><p>3 条公告</p></header>
+  ${['图片模型上线', '旧模型下架通知', '发票中心上线'].map((title, index) => `<details class="collection-entry" id="collection-${index}" ${index === 0 ? 'open' : ''}>
+    <summary class="collection-summary"><span class="collection-meta"><span>最新</span><time>2026-09-09</time></span><span class="collection-entry-title">${title}</span></summary>
+    <div class="collection-body">${nativeFixtureNotice.replaceAll('亮色公告', `${title}亮色详情`).replaceAll('暗色公告', `${title}暗色详情`)}</div>
+  </details>`).join('')}
+</div>`
+let noticeOverride: { id: string; text: string } | null = null
 let settings: AppSettingsV2 = { version: 2, workspace: 'C:\\Fixture', theme: query.get('theme') === 'dark' ? 'dark' : 'light', runDiagnosticsOnStartup: query.has('diagnostics'), checkUpdatesOnStartup: query.has('startupUpdate') }
 const account = { userId: 17, username: 'fixture-user', group: 'default', role: 1, quota: 6_200_000, usedQuota: 0 }
 let session: AccountSessionState = { authenticated: query.get('guest') !== '1', account: query.get('guest') === '1' ? null : account }
@@ -55,6 +63,11 @@ const system: SystemSnapshot = { checkedAt: '2026-09-07T01:00:00Z',
   clis: { claude: { ...status }, codex: { ...status }, gemini: { ...status, installed: query.has('allInstalled') }, grok: { ...status, installed: query.has('allInstalled') } },
   desktopApps: { codex: { ...status, appVersion: '1.2.3', mirrorVersion: null, mirrorUpdateAvailable: false, mirrorError: null, running: query.has('running') } },
 }
+if (query.has('desktopOnly')) {
+  system.runtime.node = { ...system.runtime.node, installed: false, version: null, path: null }
+  system.runtime.npm = { ...system.runtime.npm, installed: false, version: null, path: null }
+  for (const provider of Object.keys(system.clis) as ProviderId[]) system.clis[provider] = { ...system.clis[provider], installed: false, version: null, path: null }
+}
 if (query.has('detectionFailed')) {
   system.clis.claude = { ...system.clis.claude, detectionFailed: true, detectionError: '本地探针暂时不可用' }
 }
@@ -69,13 +82,15 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; releaseBalance(error?: string): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: { id: string; text: string }): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, releaseBalance(error) { releaseBalance(error) }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) } }
+let nextBalanceHeld = false
+let balanceOverride: number | null = null
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
@@ -91,7 +106,9 @@ const methods = {
   getAccountBalance: async () => {
     const value = session.siteId === 'solov-api' ? { ...balance, quota: 12.4, quotaPerUnit: 1 } : { ...balance }
     if (session.account?.userId === 18) { value.displayAmount = 24.8; value.quota = 24.8 * value.quotaPerUnit }
-    if (query.has('balancePending') && ++balanceReads === 1) await new Promise<void>((resolve, reject) => {
+    if (balanceOverride !== null) { value.displayAmount = balanceOverride; value.quota = balanceOverride * value.quotaPerUnit }
+    if (nextBalanceHeld || (query.has('balancePending') && ++balanceReads === 1)) await new Promise<void>((resolve, reject) => {
+      nextBalanceHeld = false
       releaseBalance = (error) => error ? reject(new Error(error)) : resolve()
     })
     return value
@@ -115,6 +132,8 @@ const methods = {
   },
   takeExternalDeepLink: async () => null,
   getAccountNotice: async () => {
+    if (noticeOverride) return noticeOverride
+    if (query.has('noticeCollection')) return { id: 'newapi-collection-fixture', text: collectionFixture }
     if (query.has('noticeOversized')) throw new Error("Error invoking remote method 'account:get-notice': Error: 公告读取响应超过 512 KB 安全上限")
     if (query.has('noticeNative')) return { id: 'native-notice', text: nativeFixtureNotice }
     if (query.has('noticeMarkdown')) return { id: 'markdown-notice', text: '# 服务公告\n\n- 第一项\n- 第二项\n\n**重点提醒**：请查看 [官方说明](https://xm.solov.cc/help)。' }

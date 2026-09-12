@@ -11,6 +11,7 @@ import {
 } from './bounded-operation-queue'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiOperationProgressObserver } from './ai-operation-progress'
+import { observeAiOperation, type AiOperationStartedObserver } from './ai-operation-lifecycle'
 
 const DEFAULT_TIMEOUT_MS = 320_000
 const DEFAULT_MAX_ACTIVE = 2
@@ -220,6 +221,7 @@ export function createAiImageService(options: {
   timeoutMs?: number
   maxActive?: number
   maxQueued?: number
+  onRequestStarted?: AiOperationStartedObserver
 }) {
   const baseUrl = new URL(options.baseUrl)
   if (baseUrl.protocol !== 'https:' || baseUrl.username || baseUrl.password) {
@@ -334,6 +336,7 @@ export function createAiImageService(options: {
       }
     })
     operation.handle = handle
+    const onSettled = observeAiOperation(options.onRequestStarted)
     active.set(key, operation)
     try {
       return await handle.promise
@@ -354,6 +357,7 @@ export function createAiImageService(options: {
       throw error
     } finally {
       if (active.get(key) === operation) active.delete(key)
+      onSettled()
     }
   }
 

@@ -989,6 +989,23 @@ describe('registerIpcHandlers', () => {
     expect(() => handler(trustedEvent(), { provider: 'unknown' })).toThrow('未知的 CLI 类型')
   })
 
+  it('validates and forwards the official save mode while accepting legacy calls', async () => {
+    const { service } = register()
+    const handler = electronMocks.handlers.get('config:switch-to-official-account')!
+
+    await handler(trustedEvent(), 'codex')
+    expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex')
+    await handler(trustedEvent(), 'codex', 'merge')
+    expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'merge')
+    await handler(trustedEvent(), 'codex', 'reset')
+    expect(service.switchToOfficialAccount).toHaveBeenLastCalledWith('codex', 'reset')
+    expect(() => handler(trustedEvent(), 'unknown', 'reset')).toThrow('未知的 CLI 类型')
+    for (const mode of ['erase-all', null, 1, {}]) {
+      expect(() => handler(trustedEvent(), 'codex', mode)).toThrow('未知的配置写入模式')
+    }
+    expect(service.switchToOfficialAccount).toHaveBeenCalledTimes(3)
+  })
+
   it('returns only an API key preview through config:get', () => {
     const service = serviceStub()
     vi.mocked(service.getConfig).mockReturnValue({
@@ -4263,7 +4280,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseManagedCliConfigurationInput (account:configure-managed-clis)', () => {
-    it('accepts a unique provider list and trims a valid preferred model', async () => {
+    it.each([undefined, 'merge', 'reset'] as const)('accepts a unique provider list with %s mode and trims a valid preferred model', async (mode) => {
       const service = serviceStub()
       const accountService = accountServiceStub()
       vi.mocked(accountService.getSessionState).mockReturnValue({
@@ -4289,6 +4306,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const result = await handler(trustedEvent(), {
         providers: ['codex'],
         preferredModels: { codex: '  gpt-5.6-sol  ', gemini: undefined },
+        ...(mode === undefined ? {} : { mode }),
       })
 
       expect(result).toEqual({ configured: ['codex'], failed: [] })
@@ -4296,9 +4314,22 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         provider: 'codex',
         apiKey: 'sk-internal-GPT-中转/订阅',
         model: 'gpt-5.6-sol',
-        mode: 'merge',
+        mode: mode ?? 'merge',
       }, false, expect.any(Function))
       expect(JSON.stringify(result)).not.toContain('sk-internal-')
+    })
+
+    it('rejects unknown save modes before provisioning or writing config', () => {
+      const service = serviceStub()
+      const accountService = accountServiceStub()
+      register(service, 'C:\\app-data\\logs', undefined, accountService)
+      const handler = electronMocks.handlers.get('account:configure-managed-clis')!
+      for (const mode of ['erase-all', null, 1, {}]) {
+        expect(() => handler(trustedEvent(), { providers: ['codex'], preferredModels: {}, mode }))
+          .toThrow('未知的配置写入模式')
+      }
+      expect(accountService.provisionCliKey).not.toHaveBeenCalled()
+      expect(service.saveConfig).not.toHaveBeenCalled()
     })
 
     it('rejects duplicate providers before provisioning or writing config', () => {

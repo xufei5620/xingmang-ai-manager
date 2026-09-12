@@ -5,8 +5,9 @@ import { ArrowLeft, Bell, Check, ChevronRight, ExternalLink } from 'lucide-react
 import { Button, Dialog } from '../../ui'
 import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 import type { RelayNotice } from '../../../../electron/relay-backend'
+import { markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLocalAnnouncementIds, rememberLocalAnnouncementIds } from './newapi-announcements'
 
-type Announcement = RelayNotice
+type Announcement = RelayNotice & { localEntries?: boolean }
 interface Props {
   scope: string
   read(): Promise<Announcement | null>
@@ -868,7 +869,15 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, open, onClose,
     setReadErrors({}); setMarkingIds([])
     returnToRow.current = null
     setReadId(readLocalPreference(`xingmang-v2-notice:${scope}`))
-    void read().then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
+    void read().then(async (value): Promise<Announcement | null> => {
+      if (!current || !value || value.entries) return value
+      const collection = await parseNewApiAnnouncementCollection(value.text)
+      if (!current || !collection) return value
+      const readIds = new Set(readLocalAnnouncementIds(scope))
+      const previouslyRead = readLocalPreference(`xingmang-v2-notice:${scope}`) === value.id
+      if (previouslyRead) rememberLocalAnnouncementIds(scope, collection.map((entry) => entry.id))
+      return { ...value, localEntries: true, entries: collection.map((entry) => ({ ...entry, read: previouslyRead || readIds.has(entry.id) })) }
+    }).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
     return () => { current = false; revision.current += 1 }
   }, [scope, read, attempt])
   useLayoutEffect(() => {
@@ -892,8 +901,12 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, open, onClose,
     setMarkingIds((current) => [...current, entry.id])
     setReadErrors((current) => ({ ...current, [entry.id]: '' }))
     try {
-      if (!markRemoteRead) throw new Error('公告已读状态暂时无法保存，请稍后重试。')
-      await markRemoteRead(announcement.id, entry.id)
+      if (announcement.localEntries) {
+        if (!markLocalAnnouncementRead(scope, entry.id)) throw new Error('本机没有保存已读状态，下次打开时可能再次提醒。')
+      } else {
+        if (!markRemoteRead) throw new Error('公告已读状态暂时无法保存，请稍后重试。')
+        await markRemoteRead(announcement.id, entry.id)
+      }
       if (revision.current !== capturedRevision) return
       setAnnouncement((current) => current?.id === announcement.id ? {
         ...current, entries: current.entries?.map((item) => item.id === entry.id ? { ...item, read: true } : item),

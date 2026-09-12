@@ -70,6 +70,9 @@ import {
 } from '../../electron/ipc-contract'
 import { LocalAvatar, LocalAvatarDialog } from './LocalAvatar'
 import type { AvatarIdentity } from './local-avatar'
+import { useSharedAccountBalance } from './features/app/balance-context'
+import { balanceStatusText } from './features/shell/balance-status'
+import { UsageDetails } from './features/account/UsageDetails'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -298,6 +301,7 @@ export function AccountPage({
   onBack?: () => void
 }) {
   const [tab, setTab] = useState<AccountTab>(initialTab ?? 'overview')
+  const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
   const [visited, setVisited] = useState<AccountTab[]>([
     initialTab ?? 'overview',
   ])
@@ -312,7 +316,11 @@ export function AccountPage({
     if (!session.authenticated) return null
     const [profile, balance] = await Promise.all([
       api.getAccountProfile(),
-      api.getAccountBalance(),
+      balanceStore ? balanceStore.refresh('foreground').then(() => {
+        const state = balanceStore.getSnapshot()
+        if (!state.balance) throw new Error(state.error || '余额暂时没有读到，请稍后重试。')
+        return state.balance
+      }) : api.getAccountBalance(),
     ])
     const site = resolveRelaySite(accountSiteId(session))
     return {
@@ -323,11 +331,17 @@ export function AccountPage({
       inviteBaseUrl: site.websiteUrl,
       providerBaseUrls: site.providerBaseUrls,
     }
-  }, [api])
+  }, [api, balanceStore])
   const resource = useResource(load)
   const availableTabs = accountTabs.filter((item) => resource.data && visibleAccountTab(item.value, resource.data.session))
   const activeTab = availableTabs.some((item) => item.value === tab) ? tab : 'overview'
   const changed = () => {
+    void balanceStore?.refresh('mutation')
+    void resource.reload()
+    onAccountChanged?.()
+  }
+  const refreshAccount = () => {
+    void balanceStore?.refresh('manual')
     void resource.reload()
     onAccountChanged?.()
   }
@@ -390,8 +404,8 @@ export function AccountPage({
                 {
                   label: '刷新账号资料',
                   icon: RefreshCw,
-                  disabled: resource.loading,
-                  onSelect: () => void resource.reload(),
+                  disabled: resource.loading || balanceState.loading,
+                  onSelect: refreshAccount,
                 },
               ]}
             />
@@ -426,8 +440,8 @@ export function AccountPage({
           ) : (
             resource.data &&
             [...new Set([...visited, activeTab])].filter((panel) => visibleAccountTab(panel, resource.data!.session)).map((panel) => {
-              const account = resource.data
-              if (!account) return null
+              if (!resource.data) return null
+              const account = { ...resource.data, balance: balanceStore && balanceState.balance ? balanceState.balance : resource.data.balance }
               return (
                 <div
                   className="v2-business-account-panel"
@@ -476,6 +490,7 @@ export function AccountPage({
                       api={api}
                       balance={account.balance}
                       changed={changed}
+                      refresh={refreshAccount}
                     />
                   )}
                   {panel === 'orders' && (
@@ -521,6 +536,8 @@ function AccountOverview({
   identity: AvatarIdentity
   session: AccountSessionState
 }) {
+  const { store: balanceStore, snapshot: balanceState } = useSharedAccountBalance()
+  const balanceHint = balanceStatusText({ balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error })
   const [name, setName] = useState(profile.displayName ?? '')
   const profileNameRef = useRef(profile.displayName ?? '')
   const [passwordOpen, setPasswordOpen] = useState(false)
@@ -627,11 +644,14 @@ function AccountOverview({
             <strong
               className="v2-business-amount"
               data-testid="account-balance"
+              title={balanceHint}
             >
               {dollars(balance.displayAmount)}
             </strong>
+            {balanceState.error && <p role="status" className="v2-balance-error" title={balanceState.error}>更新失败，显示上次余额</p>}
             <p>{accountSupports(session, 'supportsUsage') ? '用于星芒账号的按量消费。每次调用的费用可在明细里查看。' : '这是当前账号的可用余额，消费记录可在官方网站查看。'}</p>
             <div className="v2-business-control">
+              {balanceStore && <Button size="sm" icon={RefreshCw} loading={balanceState.loading} title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="account-balance-refresh">刷新余额</Button>}
               {accountSupports(session, 'supportsBilling') && <Button
                 variant="balance"
                 size="sm"
@@ -1359,32 +1379,7 @@ function AccountUsage({ api, balance }: { api: V2Bridge; balance: Balance }) {
         total={resource.data?.total ?? 0}
         onChange={setPage}
       />
-      <Drawer
-        open={Boolean(selected)}
-        title="调用详情"
-        onClose={() => setSelected(null)}
-      >
-        {selected && (
-          <dl className="v2-business-kv">
-            <dt>模型</dt>
-            <dd>{selected.modelName}</dd>
-            <dt>请求编号</dt>
-            <dd>{selected.requestId || '未提供'}</dd>
-            <dt>上游请求</dt>
-            <dd>{selected.upstreamRequestId || '未提供'}</dd>
-            <dt>耗时</dt>
-            <dd>{selected.useTimeSeconds} 秒</dd>
-            <dt>首字响应</dt>
-            <dd>{selected.details.firstResponseTimeMs ?? '未提供'} ms</dd>
-            <dt>缓存读取</dt>
-            <dd>{selected.details.cacheTokens}</dd>
-            <dt>缓存写入</dt>
-            <dd>{selected.details.cacheCreationTokens}</dd>
-            <dt>说明</dt>
-            <dd>{selected.content || '无'}</dd>
-          </dl>
-        )}
-      </Drawer>
+      {selected && <UsageDetails record={selected} balance={balance} onClose={() => setSelected(null)} />}
     </>
   )
 }
@@ -1739,10 +1734,12 @@ function AccountRecharge({
   api,
   balance,
   changed,
+  refresh,
 }: {
   api: V2Bridge
   balance: Balance
   changed: () => void
+  refresh: () => void
 }) {
   const load = useCallback(async () => {
     const [info, plans, subscriptions] = await Promise.all([
@@ -1967,7 +1964,7 @@ function AccountRecharge({
                 size="sm"
                 icon={RefreshCw}
                 onClick={() => {
-                  changed()
+                  refresh()
                   void resource.reload()
                 }}
               >

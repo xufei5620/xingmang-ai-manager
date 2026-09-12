@@ -446,6 +446,27 @@ describe('native CLI configuration files', () => {
     expect(JSON.parse(fs.readFileSync(authPath, 'utf8')).OPENAI_API_KEY).toBe('new-key')
   })
 
+  it('backs up and replaces a broken stored relay config only when reset was explicitly selected', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.mkdirSync(roots.codexHome, { recursive: true })
+    const official = 'model = "official-model"\ncustom_setting = "keep-official"\n'
+    const brokenRelay = '[broken-relay\n'
+    fs.writeFileSync(configs.active, official, 'utf8')
+    fs.writeFileSync(configs.relay, brokenRelay, 'utf8')
+
+    expect(() => saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls))
+      .toThrow('已保存的星芒 Codex 配置 无法解析')
+    expect(fs.readFileSync(configs.active, 'utf8')).toBe(official)
+    const result = saveProviderConfig('codex', 'sk-relay', testModels.codex, 'reset', roots, {}, providerBaseUrls)
+
+    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8')).model).toBe(testModels.codex)
+    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8')).custom_setting).toBeUndefined()
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).toBe(official)
+    expect(fs.readFileSync(result.backups.find((file) => file.startsWith(`${configs.relay}.bak.`))!, 'utf8')).toBe(brokenRelay)
+  })
+
   it('merges Codex credentials at a custom external root while preserving provider settings', () => {
     const userHome = temporaryHome()
     const codexHome = path.join(temporaryHome(), 'custom-codex')
@@ -1024,6 +1045,118 @@ describe('switching a provider back to the official subscription account', () =>
       asRecord(TOML.parse(restored)),
       providerBaseUrls.codex,
     )).toBe('official')
+  })
+
+  it('resets the official Codex profile without losing saved login, relay customizations, or history', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    seedCodexRelayConfigWithChatGptLogin(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    const auth = codexAuthSnapshotPaths(roots)
+    const sessions = path.join(roots.codexHome, 'sessions', 'existing.jsonl')
+    const database = path.join(roots.codexHome, 'state_5.sqlite')
+    fs.mkdirSync(path.dirname(sessions), { recursive: true })
+    fs.writeFileSync(sessions, 'existing conversation\n', 'utf8')
+    fs.writeFileSync(database, 'existing state database', 'utf8')
+    fs.appendFileSync(configs.active, '\n[custom_relay]\nenabled = true\n')
+    const relayBefore = fs.readFileSync(configs.active, 'utf8')
+    const officialBefore = 'model = "official-custom-model"\n[custom_official]\nenabled = true\n'
+    fs.writeFileSync(configs.chatgpt, officialBefore, 'utf8')
+    const login = { auth_mode: 'chatgpt', tokens: chatGptTokens(), last_refresh: '2026-08-12T00:00:00Z' }
+    fs.writeFileSync(auth.chatgpt, JSON.stringify(login), 'utf8')
+    fs.writeFileSync(auth.active, JSON.stringify({ OPENAI_API_KEY: 'sk-relay' }), 'utf8')
+
+    const result = switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+    const initial = TOML.parse(fs.readFileSync(configs.active, 'utf8'))
+    expect(initial).toEqual({ approval_policy: 'on-request', sandbox_mode: 'workspace-write' })
+    expect(TOML.parse(fs.readFileSync(configs.chatgpt, 'utf8'))).toEqual(initial)
+    expect(fs.readFileSync(configs.relay, 'utf8')).toBe(relayBefore)
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(login)
+    expect(JSON.parse(fs.readFileSync(auth.apikey, 'utf8'))).toEqual({ OPENAI_API_KEY: 'sk-relay' })
+    expect(fs.readFileSync(result.backups.find((file) => file.startsWith(`${configs.chatgpt}.bak.`))!, 'utf8')).toBe(officialBefore)
+    expect(fs.readFileSync(result.backups.find((file) => file.startsWith(`${configs.active}.bak.`))!, 'utf8')).toBe(relayBefore)
+    expect(fs.readFileSync(sessions, 'utf8')).toBe('existing conversation\n')
+    expect(fs.readFileSync(database, 'utf8')).toBe('existing state database')
+    expect(result.files).not.toContain(sessions)
+    expect(result.files).not.toContain(database)
+
+    saveProviderConfig('codex', 'sk-relay', testModels.codex, 'merge', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8')).custom_relay).toEqual({ enabled: true })
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8'))).toEqual(initial)
+    expect(JSON.parse(fs.readFileSync(auth.active, 'utf8'))).toEqual(login)
+  })
+
+  it('allows an explicit official reset after switching and retains the active login', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    seedCodexRelayConfigWithChatGptLogin(home)
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls)
+    const configs = codexConfigSnapshotPaths(roots)
+    const auth = codexAuthSnapshotPaths(roots)
+    const loginBefore = fs.readFileSync(auth.active, 'utf8')
+    fs.appendFileSync(configs.active, '\n[custom_official]\nenabled = true\n')
+
+    switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')
+
+    expect(TOML.parse(fs.readFileSync(configs.active, 'utf8')).custom_official).toBeUndefined()
+    expect(fs.readFileSync(auth.active, 'utf8')).toBe(loginBefore)
+  })
+
+  it('rolls back the official reset and its snapshot if a later auth file cannot commit', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    seedCodexRelayConfigWithChatGptLogin(home)
+    const configs = codexConfigSnapshotPaths(roots)
+    fs.writeFileSync(configs.chatgpt, 'model = "custom-official"\n', 'utf8')
+    const activeBefore = fs.readFileSync(configs.active, 'utf8')
+    const storedBefore = fs.readFileSync(configs.chatgpt, 'utf8')
+
+    expect(() => switchProviderToOfficialAccount('codex', roots, {
+      beforeReplace(file) { if (file === codexAuthSnapshotPaths(roots).active) throw new Error('fixture failure') },
+    }, providerBaseUrls, 'reset')).toThrow('fixture failure')
+
+    expect(fs.readFileSync(configs.active, 'utf8')).toBe(activeBefore)
+    expect(fs.readFileSync(configs.chatgpt, 'utf8')).toBe(storedBefore)
+    expect(inspectProviderConfig('codex', roots, providerBaseUrls).matchesRelay).toBe(true)
+  })
+
+  it.each(['claude', 'gemini'] as const)('resets %s custom settings while keeping OAuth credentials and history', (provider) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig(provider, 'sk-relay', testModels[provider], 'reset', roots, {}, providerBaseUrls)
+    const paths = providerConfigPaths(provider, roots)
+    const config = JSON.parse(fs.readFileSync(paths[0], 'utf8'))
+    config.custom_setting = 'remove-on-reset'
+    fs.writeFileSync(paths[0], JSON.stringify(config), 'utf8')
+    const credentialPath = path.join(path.dirname(paths[0]), provider === 'claude' ? '.credentials.json' : 'oauth_creds.json')
+    const historyPath = path.join(path.dirname(paths[0]), 'history.jsonl')
+    fs.writeFileSync(credentialPath, '{"oauth":"keep"}\n', 'utf8')
+    fs.writeFileSync(historyPath, 'existing history\n', 'utf8')
+    if (provider === 'gemini') fs.appendFileSync(paths[1], 'CUSTOM_ENV=remove-on-reset\n')
+
+    const result = switchProviderToOfficialAccount(provider, roots, {}, providerBaseUrls, 'reset')
+
+    expect(JSON.parse(fs.readFileSync(paths[0], 'utf8'))).toEqual(provider === 'claude'
+      ? {} : { security: { auth: { selectedType: 'oauth-personal' } } })
+    if (provider === 'gemini') expect(fs.readFileSync(paths[1], 'utf8')).toBe('')
+    expect(fs.readFileSync(credentialPath, 'utf8')).toBe('{"oauth":"keep"}\n')
+    expect(fs.readFileSync(historyPath, 'utf8')).toBe('existing history\n')
+    expect(result.backups.length).toBe(paths.length)
+    expect(result.files).not.toContain(credentialPath)
+    expect(result.files).not.toContain(historyPath)
+  })
+
+  it('keeps the third-party protection for explicit official resets', () => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    saveProviderConfig('codex', 'sk-custom', testModels.codex, 'reset', roots, {}, {
+      ...providerBaseUrls, codex: 'https://custom.invalid/v1',
+    })
+    const before = directoryFileSnapshot(roots.codexHome)
+    expect(() => switchProviderToOfficialAccount('codex', roots, {}, providerBaseUrls, 'reset')).toThrow('不是星芒中转')
+    expect(directoryFileSnapshot(roots.codexHome)).toEqual(before)
   })
 
   it('classifies the two Codex auth.json shapes without mixing them', () => {

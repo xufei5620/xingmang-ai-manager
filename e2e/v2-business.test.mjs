@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
+import fs from 'node:fs/promises'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
@@ -41,6 +42,75 @@ const calls = (page) =>
   page.evaluate(() =>
     JSON.parse(document.documentElement.dataset.calls || '[]'),
   )
+
+async function openUsageDetails(page) {
+  await page.getByRole('tab', { name: '调用明细', exact: true }).click()
+  await page.getByRole('button', { name: '详情', exact: true }).click()
+  const dialog = page.getByTestId('usage-detail-dialog')
+  await dialog.waitFor()
+  return dialog
+}
+
+test('usage details include request metadata, token counts, exact billed cost and the matched dynamic price tier', async () => {
+  await fs.mkdir(path.resolve('artifacts/usage-details'), { recursive: true })
+  for (const theme of ['light', 'dark']) {
+    const page = await fixture(`page=account&usageDetail=tiered&theme=${theme}`)
+    try {
+      const dialog = await openUsageDetails(page)
+      assert.equal(await dialog.locator('.xm-dialog-body').evaluate((element) => element.scrollTop), 0)
+      const info = dialog.locator('section[aria-label="调用信息"]')
+      assert.match(await info.innerText(), /xingmang-desktop-codex[\s\S]*GPT-中转\/订阅[\s\S]*16 秒[\s\S]*4,778 ms[\s\S]*xhigh/)
+      assert.match(await dialog.locator('section[aria-label="Token 明细"]').innerText(), /输入 Token\s*368,531[\s\S]*输出 Token\s*311[\s\S]*缓存读取\s*368,000/)
+      const billing = dialog.locator('section[aria-label="计费详情"]')
+      for (const expected of ['动态计费', 'long', '$25/M', '$75/M', '$2/M', '1.0000x', '$0.7726']) assert.ok((await billing.innerText()).includes(expected), expected)
+      const table = dialog.getByRole('table')
+      assert.equal(await table.locator('tbody tr').count(), 2)
+      assert.equal(await table.locator('.is-matched').count(), 1)
+      assert.match(await table.locator('.is-matched').innerText(), /long[\s\S]*已命中[\s\S]*\$25\.0000[\s\S]*\$75\.0000[\s\S]*\$2\.0000/)
+      assert.match(await table.locator('tbody tr').first().innerText(), /short[\s\S]*272,000[\s\S]*\$10\.0000/)
+      await dialog.screenshot({ path: path.resolve(`artifacts/usage-details/tiered-${theme}-top.png`) })
+      await table.scrollIntoViewIfNeeded()
+      await dialog.screenshot({ path: path.resolve(`artifacts/usage-details/tiered-${theme}-pricing.png`) })
+      assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false)
+      assert.equal(await dialog.evaluate((element) => element.scrollWidth > element.clientWidth), false)
+      await dialog.getByRole('button', { name: '关闭', exact: true }).last().click()
+      assert.equal(await page.getByRole('button', { name: '详情', exact: true }).evaluate((element) => document.activeElement === element), true)
+    } finally { await page.close() }
+  }
+})
+
+test('usage details retain ordinary cache prices and distinguish missing prices from confirmed zero charges', async () => {
+  for (const kind of ['legacy', 'missing', 'unknown-tier', 'sub2', 'sub2-missing', 'stream-error']) {
+    const page = await fixture(`page=account&usageDetail=${kind}`)
+    try {
+      const dialog = await openUsageDetails(page)
+      const billing = dialog.locator('section[aria-label="计费详情"]')
+      const text = await dialog.innerText()
+      if (kind === 'legacy') {
+        assert.match(await billing.innerText(), /按 Token 计费[\s\S]*\$3\/M[\s\S]*\$15\/M[\s\S]*\$0\.3\/M[\s\S]*用户专属倍率\s*0\.5000x/)
+        assert.match(text, /缓存写入（5 分钟）\s*1,000[\s\S]*缓存写入（1 小时）\s*500/)
+        assert.equal(await dialog.getByRole('table').count(), 0)
+      } else if (kind === 'missing' || kind === 'unknown-tier') {
+        assert.doesNotMatch(await billing.innerText(), /\$25\/M|\$75\/M/)
+        assert.match(await billing.innerText(), /\$0\.7726/)
+        assert.match(text, /请以服务端记录的总费用为准/)
+        assert.equal(await dialog.locator('.is-matched').count(), 0)
+        if (kind === 'missing') assert.doesNotMatch(text, /未提供 ms/)
+      } else if (kind === 'sub2') {
+        assert.match(await billing.innerText(), /订阅额度[\s\S]*0\.5000x[\s\S]*已触发[\s\S]*\$0\.013275[\s\S]*\$0\.023325[\s\S]*\$0\.7360[\s\S]*\$0\.0000[\s\S]*\$0\.7726[\s\S]*\$0\.3863/)
+        assert.equal(await dialog.getByRole('table').count(), 0)
+        assert.doesNotMatch(await billing.innerText(), /\/M/)
+      } else if (kind === 'sub2-missing') {
+        assert.match(await billing.innerText(), /总费用\s*未提供/)
+        assert.doesNotMatch(await billing.innerText(), /\$0\.0000|\$0\.7726/)
+      } else {
+        assert.match(text, /流式响应详情[\s\S]*upstream_error[\s\S]*连接中断[\s\S]*请稍后重试/)
+        assert.equal(await dialog.locator('script').count(), 0)
+        assert.equal(await page.evaluate(() => window.usageXss), undefined)
+      }
+    } finally { await page.close() }
+  }
+})
 
 test('account exposes the exact nine tabs and keeps server orders and keys visible', async () => {
   const page = await fixture('page=account')

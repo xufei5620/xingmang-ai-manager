@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import QRCode from 'qrcode'
-import type { AccountBalance, AccountSessionState, AppSettingsV2, ExternalDeepLink, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import type { AccountSessionState, AppSettingsV2, ExternalDeepLink, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
 import { resolveRelaySite, supportServiceUrl } from '../../electron/relay-sites'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createAppApi } from './features/app/api'
@@ -26,6 +26,7 @@ import { readLocalPreference, writeLocalPreference } from './features/app/prefer
 import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { accountOrigin, accountScope, accountSiteId, accountSupports, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
+import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
 
 type AccountTab = typeof accountTabs[number]['value']
 interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; work(): Promise<void> }
@@ -47,7 +48,6 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
   const [settings, setSettings] = useState<AppSettingsV2 | null>(null)
   const [platform, setPlatform] = useState<PlatformCapabilities | null>(null)
   const [session, setSession] = useState<AccountSessionState>({ authenticated: false, account: null })
-  const [balance, setBalance] = useState<AccountBalance | null>(null)
   const [update, setUpdate] = useState<UpdateSnapshot | null>(null)
   const [page, setPage] = useState<PageId>('home')
   const [chatScope, setChatScope] = useState<string | null>(null)
@@ -87,6 +87,9 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
   const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || guide || workspaceEntered))
   const scope = accountScope(session)
+  const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
+  const balance = balanceState.balance
+  useLayoutEffect(() => { accountEpoch.current++; setAccountReadError(null) }, [scope, session.authenticated])
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const avatarIdentity = session.account ? { origin: accountOrigin(session), userId: session.account.userId } : undefined
@@ -187,24 +190,6 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
     void QRCode.toDataURL(supportServiceUrl, { width: 192, margin: 1, errorCorrectionLevel: 'M' }).then((value) => { if (current) setQr(value) }).catch(() => undefined)
     return () => { current = false }
   }, [])
-  const refreshBalance = useCallback(async (id: number, requestScope: string) => {
-    try {
-      const value = await app.balance()
-      if (mounted.current && id === accountEpoch.current) { setBalance(value); setAccountReadError(null) }
-    } catch (cause) {
-      if (!mounted.current || id !== accountEpoch.current) return
-      setBalance(null)
-      const message = formatAccountReadError(cause, 'balance')
-      if (message) setAccountReadError({ scope: requestScope, message })
-    }
-  }, [app])
-  useEffect(() => {
-    const id = ++accountEpoch.current
-    setBalance(null); setAccountReadError(null)
-    if (!session.authenticated) return
-    void refreshBalance(id, scope)
-    return () => { if (id === accountEpoch.current) accountEpoch.current++ }
-  }, [refreshBalance, session.authenticated, scope])
   const reloadAccount = useCallback(async () => {
     const id = ++accountEpoch.current
     let next: AccountSessionState
@@ -217,20 +202,22 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
     }
     if (!mounted.current || id !== accountEpoch.current) return
     setSession(next); setConfigTool(null); setAccountReadError(null)
-    if (next.authenticated) await refreshBalance(id, accountScope(next))
-    else { setBalance(null); setGuide(false); setPage('home'); setWorkspaceEntered(false) }
-  }, [app, refreshBalance, scope])
+    balanceStore.setScope(next.authenticated ? accountScope(next) : null)
+    if (next.authenticated) await balanceStore.refresh('foreground')
+    else { setGuide(false); setPage('home'); setWorkspaceEntered(false) }
+  }, [app, balanceStore, scope])
   useEffect(() => native.onAccountSessionChanged?.((next) => {
-    const id = ++accountEpoch.current
+    accountEpoch.current++
     bootstrapEpoch.current++
     bootstrapInFlight.current = null
-    setSession(next); setBalance(null); setAccountReadError(null); setUnread(false); setConfigTool(null); setPaymentReturn(undefined)
+    setSession(next); setAccountReadError(null); setUnread(false); setConfigTool(null); setPaymentReturn(undefined)
+    balanceStore.setScope(next.authenticated ? accountScope(next) : null)
     if (!next.authenticated) {
       setGuide(false); setPage('home'); setWorkspaceEntered(false)
       if (session.authenticated) toast.show('当前登录已结束，请重新登录。', 'warn')
     }
-    else void refreshBalance(id, accountScope(next))
-  }), [native, refreshBalance, session.authenticated, toast])
+    else void balanceStore.refresh('foreground')
+  }), [native, balanceStore, session.authenticated, toast])
   const perform = useCallback(async (label: string, work: () => Promise<unknown>) => {
     setOperationError('')
     try { await work() }
@@ -376,14 +363,14 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
   // away and back.
   const renderedChatScope = page === 'chat' ? scope : chatScope
   if (boot !== 'ready') return <Splash phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={() => setBootAttempt((value) => value + 1)} />
-  return <BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
+  return <AccountBalanceContext.Provider value={balanceStore}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : undefined} resumeKey={scope}
       onDetect={() => toolbox.refresh(true)} onInstall={install} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { setConfigTool(id) }} onLogin={() => setAuth('login')}
       onLaunch={async (id) => id === 'chat' ? true : launch(id)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
         reducedMotion={settings?.reducedMotion} supportQrUrl={qr} onReducedMotionChange={(reducedMotion) => void perform('保存外观', async () => setSettings(await app.savePreferences({ version: 2, reducedMotion })))} />
-        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: session.account?.username, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}` }} platform={os}
+        : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: session.account?.username, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error }} platform={os}
           tourOpen={tourOpen} onTourClose={() => setTourOpen(false)}
           environment={toolbox.snapshot?.system.runtime.node.version ? `Node ${toolbox.snapshot.system.runtime.node.version}` : '命令行环境可选'} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length : undefined}
@@ -391,7 +378,7 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
           banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} markRemoteRead={app.markAnnouncementRead} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} />}
           notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? '更新没有完成' : update.phase === 'downloaded' ? '更新已下载' : update.phase === 'downloading' ? '正在下载更新' : `新版本 ${update.availableVersion} 可以安装`}
             body={update.error?.message ?? '查看更新内容和安装状态。'} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)} actions={<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>} />}
-          adapter={{ navigate, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'),
+          adapter={{ navigate, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen(true), openNotifications: () => navigate('updates'),
             logout: () => setConfirmation({ title: '退出星芒账号？', body: '已写入工具的配置会保留。', label: '退出登录', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
@@ -433,7 +420,7 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
       confirmationLock.current = true; setConfirmBusy(true)
       void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError(cause instanceof Error ? cause.message : '操作没有完成')).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
     }} />}
-  </BalanceTierProvider>
+  </BalanceTierProvider></AccountBalanceContext.Provider>
 }
 
 export default function RendererV2App({ api }: { api?: XingmangApi }) {

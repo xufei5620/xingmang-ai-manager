@@ -16,8 +16,12 @@ before(async () => {
   browser = await chromium.launch()
 })
 after(async () => { await browser?.close(); await server?.close() })
-async function open(query = '') {
+async function open(query = '', clock = false) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
+  if (clock) {
+    await page.clock.install({ time: new Date('2026-09-12T04:00:00Z') })
+    await page.clock.pauseAt(new Date('2026-09-12T04:00:01Z'))
+  }
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
   await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
   return page
@@ -117,6 +121,23 @@ test('launch and config actions use the original typed desktop and CLI endpoints
     await dialog.waitFor()
     await dialog.getByRole('button', { name: '检测模型', exact: true }).click()
     await dialog.getByLabel('默认模型').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('macOS opens an installed desktop app when Codex CLI and Node are missing', async () => {
+  const page = await open('os=mac&desktopOnly=1')
+  try {
+    const button = page.getByTestId('tool-codexDesktop-primary')
+    await button.waitFor()
+    assert.equal(await button.innerText(), '打开')
+    assert.equal(await button.isEnabled(), true)
+    await button.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'launchCodexDesktop'))
+    const calls = await page.evaluate(() => window.v2Test.calls)
+    assert.deepEqual(calls.filter((entry) => entry.method === 'launchCodexDesktop').map((entry) => entry.args), [['open']])
+    assert.equal(calls.some((entry) => ['launchCli', 'installCli', 'installNodeRuntime', 'chooseWorkspace'].includes(entry.method)), false)
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -479,7 +500,7 @@ test('configuration migration shares Codex drafts and failed saves retain the se
     await page.evaluate(() => { window.v2Test.fail = 'saveConfig' })
     await page.getByTestId('tool-save-config').click()
     const confirmation = page.getByRole('dialog', { name: '保存这份配置？' })
-    await confirmation.getByRole('button', { name: '保存配置', exact: true }).click()
+    await confirmation.getByTestId('tool-save-merge').click()
     await confirmation.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
     await confirmation.getByRole('button', { name: '取消', exact: true }).click()
     assert.equal(await page.getByLabel('星芒访问密钥').inputValue(), 'local-fixture-secret')
@@ -497,7 +518,7 @@ test('a manual relay key saved over a third-party config survives the next login
     await page.getByRole('button', { name: '检测模型', exact: true }).click()
     await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
     await page.getByTestId('tool-save-config').click()
-    await page.getByRole('dialog', { name: '保存这份配置？' }).getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByTestId('tool-save-merge').click()
     await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
 
     const marker = await page.evaluate(() => localStorage.getItem(
@@ -546,6 +567,108 @@ test('chat retains its task across navigation and reports work to native close p
   } finally { await page.close() }
 })
 
+
+test('NewAPI collection shows titles and keeps each opened notice read locally across reloads', async () => {
+  const page = await open('noticeCollection=1')
+  try {
+    await page.getByTestId('announcement-open').click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    const list = dialog.getByTestId('announcement-list')
+    await list.waitFor()
+    assert.deepEqual(await list.locator('.v2-announcement-title').allTextContents(), ['图片模型上线', '旧模型下架通知', '发票中心上线'])
+    assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读', '未读'])
+    assert.equal(await page.getByTestId('announcement-native-frame').count(), 0)
+    assert.equal(await dialog.getByRole('button', { name: '标为已读', exact: true }).count(), 0)
+    await dialog.screenshot({ path: path.join(artifacts, 'newapi-announcements-list.png') })
+    const first = list.getByRole('button', { name: '图片模型上线 未读' })
+    const firstId = await first.getAttribute('data-testid')
+    await first.click()
+    const frame = page.frameLocator('[data-testid="announcement-native-frame"]')
+    await frame.getByRole('heading', { name: '图片模型上线亮色详情' }).waitFor()
+    assert.equal(await frame.getByRole('heading', { name: /旧模型|发票中心/ }).count(), 0)
+    assert.equal(await page.getByTestId('announcement-native-frame').getAttribute('sandbox'), 'allow-same-origin')
+    assert.equal(await frame.locator('script, form, .remote').count(), 0)
+    assert.equal(await page.evaluate(() => window.nativeXss), undefined)
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['已读', '未读', '未读'])
+    assert.equal(await page.getByTestId(firstId).evaluate((element) => element === document.activeElement), true)
+    await page.reload()
+    await page.getByTestId('announcement-open').click()
+    await list.waitFor()
+    assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['已读', '未读', '未读'])
+    await list.getByRole('button', { name: '旧模型下架通知 未读' }).click()
+    await frame.getByRole('heading', { name: '旧模型下架通知亮色详情' }).waitFor()
+    await page.evaluate(() => { document.documentElement.dataset.theme = 'dark' })
+    await frame.getByRole('heading', { name: '旧模型下架通知暗色详情' }).waitFor()
+    assert.equal(await frame.getByRole('heading', { name: '旧模型下架通知亮色详情' }).count(), 0)
+    await dialog.screenshot({ path: path.join(artifacts, 'newapi-announcement-detail-dark.png') })
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    await list.getByRole('button', { name: '发票中心上线 未读' }).click()
+    await frame.getByRole('heading', { name: '发票中心上线暗色详情' }).waitFor()
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['已读', '已读', '已读'])
+    assert.equal(await page.locator('.v2-announcement-banner').count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('NewAPI read states survive collection updates and stay isolated between accounts', async () => {
+  const page = await open('noticeCollection=1')
+  const makeNotice = (firstBody) => ({ id: `collection-${firstBody}`, text: `<div data-newapi-collection="v1">
+    <details class="collection-entry"><summary class="collection-summary"><span class="collection-entry-title">第一条</span></summary><div class="collection-body"><p>${firstBody}</p></div></details>
+    <details class="collection-entry"><summary class="collection-summary"><span class="collection-entry-title">第二条</span></summary><div class="collection-body"><p>保持原内容</p></div></details>
+  </div>` })
+  try {
+    await page.getByTestId('tool-row-codex').waitFor()
+    await page.evaluate((notice) => window.v2Test.setNotice(notice), makeNotice('原内容'))
+    await page.getByTestId('announcement-open').click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    const list = dialog.getByTestId('announcement-list')
+    await list.getByRole('button', { name: '第一条 未读' }).click()
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    await list.getByRole('button', { name: '第二条 未读' }).click()
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    await page.evaluate((notice) => window.v2Test.setNotice(notice), makeNotice('更新后的内容'))
+    await dialog.getByRole('button', { name: '重新读取' }).click()
+    await list.getByRole('button', { name: '第一条 未读' }).waitFor()
+    assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '已读'])
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, siteId: 'solov', account: { userId: 18, username: 'other-user', group: 'default', role: 1, quota: 1, usedQuota: 0 } }))
+    await page.getByTestId('announcement-open').click()
+    await list.waitFor()
+    assert.deepEqual(await list.locator('.v2-announcement-read-state').allTextContents(), ['未读', '未读'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('NewAPI local read failures preserve details and can be retried without a remote write', async () => {
+  const page = await open('noticeCollection=1')
+  try {
+    await page.getByTestId('announcement-open').click()
+    const dialog = page.getByRole('dialog', { name: '公告', exact: true })
+    await dialog.getByTestId('announcement-list').waitFor()
+    await page.evaluate(() => {
+      const original = Storage.prototype.setItem
+      window.restoreNoticeStorage = () => { Storage.prototype.setItem = original }
+      Storage.prototype.setItem = function (key, value) {
+        if (key.startsWith('xingmang-v2-notice-entries:')) throw new Error('fixture storage unavailable')
+        return original.call(this, key, value)
+      }
+    })
+    await dialog.getByRole('button', { name: '图片模型上线 未读' }).click()
+    await dialog.getByRole('alert').filter({ hasText: '本机没有保存已读状态' }).waitFor()
+    await page.frameLocator('[data-testid="announcement-native-frame"]').getByRole('heading', { name: '图片模型上线亮色详情' }).waitFor()
+    await page.evaluate(() => window.restoreNoticeStorage())
+    await dialog.getByRole('button', { name: '重试保存已读' }).click()
+    await dialog.getByRole('alert').waitFor({ state: 'hidden' })
+    await dialog.getByRole('button', { name: '返回列表' }).click()
+    assert.deepEqual(await dialog.locator('.v2-announcement-read-state').allTextContents(), ['已读', '未读', '未读'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((call) => call.method === 'markAccountNoticeRead')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
 
 test('Sub2API announcements list titles and automatically mark only the opened detail as read', async () => {
   const page = await open('sub2api=1')
@@ -779,22 +902,151 @@ test('late balance results and failures cannot escape an expired or switched acc
   }
 })
 
-test('a current-account balance failure remains readable and disappears on logout', async () => {
+test('a current-account balance failure stays inline and disappears on logout', async () => {
   const page = await open('sub2api=1&balancePending=1')
   try {
     await page.getByTestId('tool-row-codex').waitFor()
     await page.waitForFunction(() => window.v2Test.calls.some((call) => call.method === 'getAccountBalance'))
     await page.evaluate(() => window.v2Test.releaseBalance("Error invoking remote method 'account:get-balance': RealmAccountError: 账号服务暂时无法连接"))
-    const dialog = page.getByRole('dialog', { name: '操作没有完成' })
-    await dialog.getByText('余额暂时没有读到，请检查网络后重试。', { exact: true }).waitFor()
-    assert.doesNotMatch(await dialog.innerText(), /account:get-balance|Error invoking|RealmAccountError/)
+    const sidebar = page.getByTestId('account-entry')
+    await sidebar.getByText('更新失败', { exact: true }).waitFor()
+    assert.match(await page.getByTestId('sidebar-balance-refresh').getAttribute('title'), /余额暂时没有读到，请检查网络后重试/)
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: false, account: null, siteId: 'solov-api', realmId: 'api-account' }))
     await page.getByTestId('welcome-login').waitFor()
-    assert.equal(await dialog.count(), 0)
+    assert.equal(await page.getByText('更新失败', { exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
 
+
+test('visible balances poll every 30 seconds, pause while hidden, and refresh when returning after five seconds', async () => {
+  const page = await open('sub2api=1', true)
+  const reads = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length)
+  const visibility = (value) => page.evaluate((state) => {
+    Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state })
+    document.dispatchEvent(new Event('visibilitychange'))
+  }, value)
+  try {
+    await page.getByTestId('home-balance').getByText('$12.40', { exact: true }).waitFor()
+    assert.equal(await reads(), 1)
+    await page.clock.fastForward(29_999)
+    assert.equal(await reads(), 1)
+    await page.evaluate(() => window.v2Test.setBalance(11.25))
+    await page.clock.fastForward(1)
+    await page.getByTestId('home-balance').getByText('$11.25', { exact: true }).waitFor()
+    assert.equal(await reads(), 2)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    assert.equal(await reads(), 2)
+    await page.clock.fastForward(5_000)
+    await page.evaluate(() => window.dispatchEvent(new Event('focus')))
+    await page.waitForFunction(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length === 3)
+    await visibility('hidden')
+    await page.clock.fastForward(120_000)
+    assert.equal(await reads(), 3)
+    await page.evaluate(() => window.v2Test.setBalance(9.5))
+    await visibility('visible')
+    await page.getByTestId('home-balance').getByText('$9.50', { exact: true }).waitFor()
+    assert.equal(await reads(), 4)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('consumption completion refreshes after two seconds and merges notifications only for the active account', async () => {
+  const page = await open('sub2api=1', true)
+  const reads = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length)
+  try {
+    await page.getByTestId('home-balance').getByText('$12.40', { exact: true }).waitFor()
+    await page.evaluate(() => {
+      window.v2Test.setBalance(10)
+      window.v2Test.emit('onAccountUsageChanged', { scope: 'xm-account:17' })
+      window.v2Test.emit('onAccountUsageChanged', { scope: 'api-account:18' })
+    })
+    await page.clock.fastForward(2_000)
+    assert.equal(await reads(), 1)
+    await page.evaluate(() => window.v2Test.emit('onAccountUsageChanged', { scope: 'api-account:17' }))
+    await page.clock.fastForward(1_000)
+    await page.evaluate(() => window.v2Test.emit('onAccountUsageChanged', { scope: 'api-account:17' }))
+    await page.clock.fastForward(1_999)
+    assert.equal(await reads(), 1)
+    await page.clock.fastForward(1)
+    await page.getByTestId('home-balance').getByText('$10.00', { exact: true }).waitFor()
+    assert.equal(await reads(), 2)
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'hidden' })
+      document.dispatchEvent(new Event('visibilitychange'))
+      window.v2Test.setBalance(8)
+      window.v2Test.emit('onAccountUsageChanged', { scope: 'api-account:17' })
+    })
+    await page.clock.fastForward(2_000)
+    assert.equal(await reads(), 2)
+    await page.evaluate(() => {
+      Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => 'visible' })
+      document.dispatchEvent(new Event('visibilitychange'))
+    })
+    await page.getByTestId('home-balance').getByText('$8.00', { exact: true }).waitFor()
+    assert.equal(await reads(), 3)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('manual balance refresh is shared by the sidebar, footer, home and personal center', async () => {
+  const page = await open('sub2api=1')
+  const reads = () => page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'getAccountBalance').length)
+  try {
+    await page.getByTestId('home-balance').getByText('$12.40', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '打开个人中心 fixture-user' }).click()
+    await page.getByTestId('account-balance').waitFor()
+    assert.equal(await reads(), 1)
+    await page.evaluate(() => { window.v2Test.setBalance(20.25); window.v2Test.holdNextBalance() })
+    const before = await reads()
+    await page.getByTestId('sidebar-balance-refresh').click()
+    assert.equal(await page.getByTestId('sidebar-balance-refresh').isDisabled(), true)
+    assert.equal(await page.getByTestId('account-balance-refresh').isDisabled(), true)
+    assert.equal(await page.getByTestId('account-balance').innerText(), '$12.40')
+    await page.evaluate(() => window.v2Test.releaseBalance())
+    await page.getByTestId('account-balance').getByText('$20.25', { exact: true }).waitFor()
+    assert.equal(await reads(), before + 1)
+    assert.match(await page.getByTestId('statusbar-balance').innerText(), /20\.25/)
+    assert.match(await page.getByTestId('sidebar-balance-refresh').getAttribute('title'), /最后更新于/)
+    await page.evaluate(() => window.v2Test.setBalance(23.5))
+    await page.getByTestId('account-identity-menu').click()
+    await page.getByRole('menuitem', { name: '刷新账号资料' }).click()
+    await page.getByTestId('account-balance').getByText('$23.50', { exact: true }).waitFor()
+    assert.match(await page.getByTestId('statusbar-balance').innerText(), /23\.50/)
+    assert.equal(await reads(), before + 2)
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('home-balance').getByText('$23.50', { exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('failed refresh keeps the last balance and timestamp without a blocking dialog and recovers on retry', async () => {
+  for (const theme of ['light', 'dark']) {
+    const page = await open(`sub2api=1&theme=${theme}`)
+    try {
+      await page.getByTestId('home-balance').getByText('$12.40', { exact: true }).waitFor()
+      const originalTitle = await page.getByTestId('sidebar-balance-refresh').getAttribute('title')
+      await page.evaluate(() => { window.v2Test.fail = 'getAccountBalance' })
+      await page.getByTestId('sidebar-balance-refresh').click()
+      await page.getByTestId('account-entry').getByText('更新失败', { exact: true }).waitFor()
+      assert.equal(await page.getByTestId('home-balance').innerText(), '$12.40')
+      assert.match(await page.getByTestId('statusbar-balance').innerText(), /12\.40/)
+      const timestamp = originalTitle.match(/最后更新于 \d{2}:\d{2}:\d{2}/)?.[0]
+      assert.ok(timestamp)
+      assert.ok((await page.getByTestId('sidebar-balance-refresh').getAttribute('title')).includes(timestamp))
+      assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+      const overflow = await page.getByTestId('account-entry').evaluate((element) => element.scrollWidth > element.clientWidth)
+      assert.equal(overflow, false)
+      await page.screenshot({ path: path.join(artifacts, `balance-refresh-${theme}.png`) })
+      await page.evaluate(() => { window.v2Test.fail = ''; window.v2Test.setBalance(14) })
+      await page.getByTestId('home-balance-refresh').click()
+      await page.getByTestId('home-balance').getByText('$14.00', { exact: true }).waitFor()
+      assert.equal(await page.getByTestId('account-entry').getByText('更新失败', { exact: true }).count(), 0)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
 
 test('a saved account with the same id switches platform without reusing NewAPI panels', async () => {
   const page = await open('crossSite=1')
@@ -870,7 +1122,7 @@ test('automatic login uses returned account ownership without exposing a platfor
 async function openToolConfiguration(page, provider = 'codex') {
   await page.getByTestId(`tool-row-${provider}`).getByRole('button', { name: '更多操作' }).click()
   await page.getByRole('menuitem', { name: '配置', exact: true }).click()
-  await page.getByTestId('tool-key-select').waitFor()
+  await page.getByTestId('config-dialog').waitFor()
 }
 
 test('configuration keeps the current local key by default and saves through the reuse sentinel', async () => {
@@ -888,7 +1140,7 @@ test('configuration keeps the current local key by default and saves through the
     await page.getByTestId('tool-save-config').click()
     const confirmation = page.getByRole('dialog', { name: '保存这份配置？' })
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /密钥：名称未确认[\s\S]*分组：分组未确认[\s\S]*sk-co••••1234[\s\S]*fixture-model/)
-    await confirmation.getByRole('button', { name: '保存配置', exact: true }).click()
+    await confirmation.getByTestId('tool-save-merge').click()
     await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
     const actions = await page.evaluate(() => window.v2Test.calls)
     assert.deepEqual(actions.find((entry) => entry.method === 'saveConfig').args[0], { provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' })
@@ -916,7 +1168,7 @@ test('selected account key shows its group and survives delayed metadata plus to
     await page.getByLabel('默认模型').selectOption('fixture-other')
     await page.getByTestId('tool-save-config').click()
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /custom-key[\s\S]*Custom group[\s\S]*sk-ot••••1234[\s\S]*fixture-other/)
-    await page.getByRole('dialog', { name: '保存这份配置？' }).getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByTestId('tool-save-merge').click()
     await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('custom-key'))
     assert.equal(await select.inputValue(), 'current')
@@ -942,7 +1194,7 @@ test('explicit automatic key configuration shows the right group and adopts the 
     assert.equal(before.includes('listConfiguredModels') || before.includes('configureManagedCliKeys'), false)
     await page.getByTestId('tool-save-config').click()
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
-    await page.getByRole('dialog', { name: '保存这份配置？' }).getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByTestId('tool-save-merge').click()
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"]')?.value === 'current' && document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('coding-key'))
     assert.equal(await page.getByLabel('默认模型').inputValue(), 'gpt-5.6-sol')
     assert.match(await page.getByTestId('tool-key-summary').innerText(), /coding-key.*Codex_pro.*sk-se••••9012/)
@@ -973,11 +1225,110 @@ test('official source saving does not prepare or replace an account key', async 
     await page.getByRole('button', { name: 'ChatGPT 账号', exact: true }).click()
     await page.getByTestId('tool-save-config').click()
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /来源：ChatGPT 账号/)
-    await page.getByRole('dialog', { name: '保存这份配置？' }).getByRole('button', { name: '保存配置', exact: true }).click()
+    await page.getByTestId('tool-save-merge').click()
     await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
     const actions = await page.evaluate(() => window.v2Test.calls)
-    assert.deepEqual(actions.find((entry) => entry.method === 'switchToOfficialAccount').args, ['codex'])
+    assert.deepEqual(actions.find((entry) => entry.method === 'switchToOfficialAccount').args, ['codex', 'merge'])
     assert.equal(actions.some((entry) => ['saveConfig', 'configureManagedCliKeys', 'saveConfigWithAccountKey'].includes(entry.method)), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('save choices show both actions without writing and preserve focus and drafts when canceled', async () => {
+  for (const theme of ['light', 'dark']) {
+    const page = await open(`keyOptions=1&theme=${theme}`)
+    try {
+      await page.emulateMedia({ reducedMotion: 'reduce' })
+      await openToolConfiguration(page)
+      await page.getByRole('button', { name: 'ChatGPT 账号', exact: true }).click()
+      assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'switchToOfficialAccount')), false)
+      await page.getByRole('button', { name: '使用星芒账号', exact: true }).click()
+      await page.getByTestId('tool-key-select').selectOption('202')
+      await page.getByTestId('tool-save-config').click()
+      const dialog = page.getByRole('dialog', { name: '保存这份配置？' })
+      assert.match(await page.getByTestId('tool-save-merge').innerText(), /仅更新账号来源、密钥和模型\s*其他自定义设置会保留/)
+      assert.match(await page.getByTestId('tool-save-reset').innerText(), /重置为初始状态/)
+      assert.equal(await dialog.getByRole('button', { name: '取消', exact: true }).evaluate((element) => element === document.activeElement), true)
+      assert.equal(await dialog.evaluate((element) => {
+        const bounds = element.getBoundingClientRect()
+        return element.scrollWidth > element.clientWidth || [...element.querySelectorAll('.v2-save-options button')].some((button) => {
+          const rect = button.getBoundingClientRect()
+          return button.scrollWidth > button.clientWidth || rect.left < bounds.left || rect.right > bounds.right || rect.height < 44
+        })
+      }), false)
+      await dialog.screenshot({ path: path.join(artifacts, `config-save-choices-${theme}.png`) })
+      await page.getByTestId('tool-save-reset').click()
+      const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
+      await reset.getByRole('button', { name: '返回选择' }).click()
+      await dialog.waitFor()
+      await page.keyboard.press('Escape')
+      await dialog.waitFor({ state: 'hidden' })
+      assert.equal(await page.getByTestId('tool-save-config').evaluate((element) => element === document.activeElement), true)
+      assert.equal(await page.getByTestId('tool-key-select').inputValue(), '202')
+      assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => ['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(entry.method))), false)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
+for (const source of ['current', 'selected', 'automatic', 'manual', 'official', 'alreadyOfficial']) test(`reset configuration uses the selected ${source} source only after confirmation`, async () => {
+  const page = await open(`keyOptions=1&sub2api=1${source === 'alreadyOfficial' ? '&official=1' : ''}`)
+  try {
+    await openToolConfiguration(page)
+    if (source === 'selected') await page.getByTestId('tool-key-select').selectOption('202')
+    if (source === 'automatic') {
+      await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"] option[value="automatic"]')?.textContent.includes('Codex_pro'))
+      await page.getByTestId('tool-key-select').selectOption('automatic')
+    }
+    if (source === 'official') await page.getByRole('button', { name: 'ChatGPT 账号', exact: true }).click()
+    if (source === 'manual') {
+      await page.getByRole('button', { name: '自己填写密钥', exact: true }).click()
+      await page.getByLabel('星芒访问密钥').fill('local-fixture-secret')
+      await page.getByTestId('tool-detect-models').click()
+      await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
+    }
+    await page.getByTestId('tool-save-config').click()
+    await page.getByTestId('tool-save-reset').click()
+    const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
+    await reset.waitFor()
+    const writes = () => page.evaluate(() => window.v2Test.calls.filter((entry) => ['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(entry.method)))
+    assert.deepEqual(await writes(), [])
+    await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
+    await page.getByText('配置已重置为初始状态。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    const actions = await writes()
+    assert.equal(actions.length, 1)
+    if (source === 'official' || source === 'alreadyOfficial') {
+      assert.deepEqual(actions[0], { method: 'switchToOfficialAccount', args: ['codex', 'reset'] })
+    } else if (source === 'automatic') {
+      assert.deepEqual(actions[0], { method: 'configureManagedCliKeys', args: [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset' }] })
+    } else if (source === 'selected') {
+      assert.deepEqual(actions[0], { method: 'saveConfigWithAccountKey', args: [{ provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' }] })
+    } else {
+      assert.deepEqual(actions[0], { method: 'saveConfig', args: [{ provider: 'codex', apiKey: source === 'manual' ? 'local-fixture-secret' : '', model: 'fixture-model', mode: 'reset' }] })
+    }
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('failed reset retains the selected key and retries reset without silently merging', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByTestId('tool-key-select').selectOption('202')
+    await page.getByTestId('tool-save-config').click()
+    await page.getByTestId('tool-save-reset').click()
+    const reset = page.getByRole('dialog', { name: '重置为初始状态？' })
+    await page.evaluate(() => { window.v2Test.fail = 'saveConfigWithAccountKey' })
+    await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
+    await reset.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
+    assert.match(await reset.getByTestId('tool-save-summary').innerText(), /custom-key[\s\S]*Custom group/)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
+    await page.getByText('配置已重置为初始状态。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').map((entry) => entry.args[0])), [
+      { provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' },
+      { provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' },
+    ])
     await clean(page)
   } finally { await page.close() }
 })

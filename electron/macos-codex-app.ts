@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { CommandRunnerError, runCommand, trustedCommandEnvironment } from './command-runner'
+import { CommandRunnerError, runCommand, trustedCommandEnvironment, type CommandSpec } from './command-runner'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
 import { describeProbeFailure } from './probe-failure'
 
@@ -106,6 +106,47 @@ export interface MacosCodexAppInspectionOptions {
     executable: string,
     argv: readonly string[],
   ) => Promise<string>
+}
+
+/**
+ * Opens an already verified bundle through LaunchServices, using the same
+ * workspace deep link as the official `codex app` command. The caller must
+ * obtain appPath from inspectMacosCodexApp before executing this plan.
+ */
+export function buildMacosCodexAppLaunchPlan(
+  appPath: string,
+  workspace: string,
+  codexHome?: string,
+): CommandSpec {
+  if (
+    !path.posix.isAbsolute(appPath)
+    || path.posix.extname(appPath) !== '.app'
+    || appPath.includes('\0')
+    || appPath.length > 32_767
+  ) {
+    throw new Error('Codex 桌面端应用路径无效，请重新检测')
+  }
+  if (
+    !path.isAbsolute(workspace)
+    || workspace.includes('\0')
+    || workspace.length > 32_767
+  ) {
+    throw new Error('Codex Desktop 工作目录无效')
+  }
+  if (
+    codexHome !== undefined
+    && (!path.isAbsolute(codexHome) || codexHome.includes('\0') || codexHome.length > 32_767)
+  ) {
+    throw new Error('Codex 配置目录无效')
+  }
+  const url = new URL('codex://threads/new')
+  url.searchParams.set('path', workspace)
+  const argv = ['-a', appPath]
+  // LaunchServices starts the application outside open's process tree. Pass
+  // the selected config root explicitly rather than relying on inheritance.
+  if (codexHome !== undefined) argv.push('--env', `CODEX_HOME=${codexHome}`)
+  argv.push(url.href)
+  return { executable: '/usr/bin/open', argv }
 }
 
 type SystemCommandRunner = NonNullable<MacosCodexAppInspectionOptions['runSystemCommand']>

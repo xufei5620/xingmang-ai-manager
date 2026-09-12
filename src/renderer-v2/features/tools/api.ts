@@ -25,10 +25,10 @@ export function createToolsApi(bridge: XingmangApi) {
     reveal: (tool: ToolId) => bridge.revealApiKey(providerFor(tool)),
     saveManual: (input: Parameters<XingmangApi['saveConfig']>[0]) => bridge.saveConfig(input),
     saveAccountKey: (input: Parameters<XingmangApi['saveConfigWithAccountKey']>[0]) => bridge.saveConfigWithAccountKey(input),
-    configureManaged: (tool: ToolId, model?: string) => bridge.configureManagedCliKeys({
-      providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {},
+    configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' = 'merge') => bridge.configureManagedCliKeys({
+      providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode,
     }),
-    official: (tool: ToolId) => bridge.switchToOfficialAccount(providerFor(tool)),
+    official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
     getLocale: () => bridge.inspectCodexDesktopLocale(),
     setLocale: () => bridge.setCodexDesktopLocale('zh-CN'),
     getPermissions: () => bridge.inspectCodexWorkspacePermissions(),

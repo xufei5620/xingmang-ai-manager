@@ -8,6 +8,7 @@ import type {
   XingmangPlatformApi,
 } from '../electron/platform/contract'
 import type { AccountPaymentWindowTerminalEvent } from '../electron/ipc-contract'
+import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 
 declare global {
   interface Window {
@@ -346,8 +347,8 @@ const apiMethods = {
   getAccountUsage: async () => ({
     page: 1,
     pageSize: 20,
-    total: 0,
-    records: [],
+    total: query.has('usageDetail') ? 1 : 0,
+    records: query.has('usageDetail') ? [usageDetailFixture(query.get('usageDetail') || 'tiered')] : [],
     stats: { quota: 0, rpm: 0, tpm: 0 },
   }),
   getAccountTopupOrders: async (

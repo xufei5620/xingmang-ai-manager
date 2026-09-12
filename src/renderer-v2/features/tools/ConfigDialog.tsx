@@ -37,7 +37,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
   const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState('')
   const [message, setMessage] = useState('')
-  const [confirmation, setConfirmation] = useState<'merge' | 'reset' | null>(null)
+  const [confirmation, setConfirmation] = useState<'choose' | 'reset' | null>(null)
   const [exitAction, setExitAction] = useState<(() => void) | null>(null)
   const [localeText, setLocaleText] = useState('')
   const request = useRef(0)
@@ -45,6 +45,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
   const locked = useRef(false)
   const metadataRequest = useRef(0)
   const lastKeyRefresh = useRef(0)
+  const saveCancel = useRef<HTMLButtonElement>(null)
   const provider = providerFor(tab)
   const native = config.providers[provider]
   const definition = tools.find((item) => item.id === tab)!
@@ -130,7 +131,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
     catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : `${label}没有成功`) }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
-  function requestSave(mode: 'merge' | 'reset') {
+  function requestSave() {
     if (draft.source === 'unknown') return
     if (draft.source === 'account' && !signedIn && !usingCurrentKey) { onLogin(); return }
     if (draft.source === 'account') {
@@ -139,21 +140,20 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
       if (!usingCurrentKey && !usingAutomaticKey && (!selectedKey || selectedKey.status !== 1)) { setError('所选密钥已不可用，请重新选择。'); return }
       if (!usingCurrentKey && !usingAutomaticKey && (keysLoading || keyError)) { setError('请先获取最新的账号密钥列表。'); return }
       if (!usingAutomaticKey && !draft.model) { setError('请选择默认模型。'); return }
-      if (mode === 'reset' && usingAutomaticKey) { setError('自动配置保留其他设置。如需重置，请先选择当前密钥或账号中的密钥。'); return }
     }
     if (draft.source === 'manual' && (!draft.secret || draft.validatedSecret !== draft.secret || !models.includes(draft.model))) {
       setError('请先检测这把密钥的可用模型，再选择模型保存。'); return
     }
-    setConfirmation(mode)
+    setError('')
+    setConfirmation('choose')
   }
-  function save() {
-    const mode = confirmation
-    if (!mode) return
+  function save(mode: 'merge' | 'reset') {
+    if (!confirmation) return
     void run('保存配置', async () => {
       const provider = providerFor(tab)
       let markerWarning = ''
       if (draft.source === 'official') {
-        await api.official(tab)
+        await api.official(tab, mode)
         writeManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else if (draft.source === 'manual') {
@@ -172,7 +172,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
         writeManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else if (usingAutomaticKey) {
-        const result = await api.configureManaged(tab, draft.model || undefined)
+        const result = await api.configureManaged(tab, draft.model || undefined, mode)
         if (result.failed.length) throw new Error(result.failed.map((item) => item.message).join('；'))
         if (!result.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
         writeManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
@@ -182,7 +182,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
       setWarning(markerWarning)
       setDrafts((current) => ({ ...current, [provider]: { ...draft, keyId: draft.source === 'account' ? CURRENT_KEY : draft.keyId, secret: '', validatedSecret: '', dirty: false } }))
       setConfirmation(null)
-      setMessage('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。')
+      setMessage(mode === 'reset' ? '配置已重置为初始状态。Codex 桌面端运行中时，可关闭此面板后选择重新打开。' : '配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。')
       try {
         await onSaved()
         const savedConfig = await api.readConfig()
@@ -216,10 +216,11 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
   const automaticLabel = metadata
     ? `自动准备/复用 · ${metadata.automatic.group} · ${metadata.automatic.name}`
     : metadataErrors[provider] ? '自动配置 · 分组读取失败' : '自动配置 · 正在读取专属分组'
+  const saveSummary = <div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>
   return <>
     <Dialog open title={`${definition.name} 配置`} subtitle="选好账号后，保存并打开工具即可开始。" icon={Settings} width={640}
       onClose={onClose} busy={Boolean(busy)} dirty={Object.values(drafts).some((entry) => entry?.dirty)} testId="config-dialog"
-      footer={<><Button variant="ghost" onClick={() => requestExit(onClose)} disabled={Boolean(busy)}>取消</Button><Button variant="primary" icon={Save} loading={Boolean(busy)} disabled={draft.source === 'unknown'} onClick={() => requestSave('merge')} testId="tool-save-config">保存配置</Button></>}>
+      footer={<><Button variant="ghost" onClick={() => requestExit(onClose)} disabled={Boolean(busy)}>取消</Button><Button variant="primary" icon={Save} loading={Boolean(busy)} disabled={draft.source === 'unknown'} onClick={requestSave} testId="tool-save-config">保存配置</Button></>}>
       <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
       <Tabs label="选择要配置的工具" items={tools.filter((entry) => isToolId(entry.id)).map((entry) => ({ value: entry.id, label: entry.name, disabled: Boolean(busy) }))}
         value={tab} onChange={(value) => { if (isToolId(value)) setTab(value) }} />
@@ -252,11 +253,21 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
         <Button size="sm" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setLocaleText(`工作目录：${result.workspace}，信任状态：${result.trustLevel}`) })}>查看文件夹权限</Button>
         <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { await api.trustWorkspace(); if (active.current) setLocaleText('文件夹信任已保存') })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
       <details><summary>查看配置文件与保存方式</summary><div className="v2-code-preview">{native.files.map((file) => <div key={file.path}><code>{file.path}</code><span>{file.exists ? '已存在' : '尚未创建'}</span></div>)}</div>
-        <p>保存前会创建备份。默认保留其他设置，也可以选择重新建立初始配置。</p><Button variant="danger" size="sm" onClick={() => requestSave('reset')} disabled={draft.source === 'unknown' || draft.source === 'official'}>备份并重置配置</Button></details>
+        <p>点击“保存配置”后，可选择保留自定义设置或重置为初始状态。修改已有配置前会创建备份。</p></details>
       </fieldset>
       {error && <p className="v2-callout is-bad" role="alert">{error}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}{message && <p className="v2-callout is-ok" role="status">{message}</p>}
     </Dialog>
-    {confirmation && <Confirm title={confirmation === 'reset' ? '使用初始配置？' : '保存这份配置？'} body={<>{confirmation === 'reset' ? '将先备份当前配置，再替换为初始配置。历史会话会保留。' : '仅更新账号来源、密钥和模型，其他自定义设置会保留。'}<div data-testid="tool-save-summary">{draft.source === 'official' ? <p>来源：{officialName}</p> : <><p>密钥：{keyDescription.name}</p><p>分组：{keyDescription.group}</p><p>预览：{keyDescription.preview}</p><p>模型：{draft.model || '使用该分组默认模型'}</p></>}</div>{error && <p role="alert" className="v2-callout is-bad">{error}</p>}</>} okLabel={confirmation === 'reset' ? '备份并重置' : '保存配置'} danger={confirmation === 'reset'} loading={Boolean(busy)} onClose={() => setConfirmation(null)} onOk={save} />}
+    {confirmation === 'choose' && <Dialog open title="保存这份配置？" onClose={() => setConfirmation(null)} busy={Boolean(busy)} initialFocus={saveCancel}
+      footer={<Button ref={saveCancel} disabled={Boolean(busy)} onClick={() => setConfirmation(null)}>取消</Button>}>
+      {saveSummary}
+      {provider === 'codex' && <p className="v2-save-profile-note">星芒与 ChatGPT 各自保留一份配置；切换来源时，优先恢复该来源上次保存的自定义设置。</p>}
+      <div className="v2-save-options">
+        <Button variant="primary" disabled={Boolean(busy)} loading={busy === '保存配置'} onClick={() => save('merge')} testId="tool-save-merge"><strong>仅更新账号来源、密钥和模型</strong><small>其他自定义设置会保留。</small></Button>
+        <Button variant="danger" disabled={Boolean(busy)} onClick={() => { setError(''); setConfirmation('reset') }} testId="tool-save-reset"><strong>重置为初始状态</strong><small>先备份，再按所选账号来源重建配置。历史会话会保留。</small></Button>
+      </div>
+      {error && <p role="alert" className="v2-callout is-bad">{error}</p>}
+    </Dialog>}
+    {confirmation === 'reset' && <Confirm title="重置为初始状态？" body={<><p>将先备份当前配置，再按所选账号来源重建配置。{provider === 'codex' ? '该来源' : '当前工具'}的自定义设置（如权限、MCP 和推理参数）会重置，历史会话和官方登录凭据会保留。</p>{saveSummary}{error && <p role="alert" className="v2-callout is-bad">{error}</p>}</>} okLabel="备份并重置" cancelLabel="返回选择" danger loading={Boolean(busy)} onClose={() => { setError(''); setConfirmation('choose') }} onOk={() => save('reset')} />}
     {exitAction && <Confirm title="要放弃未保存的修改吗？" body="关闭后，这次修改不会保存。" okLabel="放弃修改" cancelLabel="继续编辑" danger onClose={() => setExitAction(null)} onOk={() => { const action = exitAction; setExitAction(null); action() }} />}
   </>
 }
