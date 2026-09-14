@@ -113,6 +113,85 @@ describe('createAiVideoService', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(3)
   })
 
+  it('prefers the completed TOS URL and never sends the API key to it', async () => {
+    const signedUrl = 'https://storage.example.com/videos/video_signed.mp4?X-Amz-Signature=test'
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_signed', status: 'queued' })
+      if (url === signedUrl) return mp4Response()
+      return jsonResponse({ id: 'video_signed', status: 'completed', url: signedUrl, content_type: 'video/mp4' })
+    }) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+
+    await expect(service.generate(41, {
+      requestId: 'signed-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).resolves.toMatchObject({ taskId: 'video_signed' })
+    const signedCall = vi.mocked(fetchImpl).mock.calls.find(([input]) => String(input) === signedUrl)
+    expect(signedCall?.[1]?.headers).not.toHaveProperty('Authorization')
+    expect(signedCall?.[1]?.redirect).toBe('error')
+    expect(assets.storeMp4).toHaveBeenCalled()
+  })
+
+  it('falls back to the authenticated content endpoint for an expired or unsafe URL', async () => {
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_fallback', status: 'queued' })
+      if (url.endsWith('/content')) return mp4Response()
+      return jsonResponse({
+        id: 'video_fallback', status: 'completed',
+        url: 'http://127.0.0.1/private.mp4', url_expires_at: '2000-01-01T00:00:00Z',
+      })
+    }) as unknown as typeof fetch
+    const { service } = setup(fetchImpl)
+
+    await expect(service.generate(41, {
+      requestId: 'unsafe-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).resolves.toMatchObject({ taskId: 'video_fallback' })
+    const contentCall = vi.mocked(fetchImpl).mock.calls.find(([input]) => String(input).endsWith('/content'))
+    expect(contentCall?.[1]?.headers).toMatchObject({ Authorization: 'Bearer sk-secret-never-return' })
+    expect(vi.mocked(fetchImpl).mock.calls.some(([input]) => String(input).includes('127.0.0.1'))).toBe(false)
+  })
+
+  it('follows a bounded HTTPS content redirect without forwarding the API key', async () => {
+    const contentUrl = 'https://xm.solov.cc/v1/videos/video_redirect/content'
+    const storageUrl = 'https://storage.example.com/videos/video_redirect.mp4?sig=test'
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_redirect', status: 'queued' })
+      if (url === contentUrl) return new Response(null, { status: 302, headers: { Location: storageUrl } })
+      if (url === storageUrl) return mp4Response()
+      return jsonResponse({ id: 'video_redirect', status: 'completed' })
+    }) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+
+    await expect(service.generate(41, {
+      requestId: 'redirect-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).resolves.toMatchObject({ taskId: 'video_redirect' })
+    const contentCall = vi.mocked(fetchImpl).mock.calls.find(([input]) => String(input) === contentUrl)
+    const storageCall = vi.mocked(fetchImpl).mock.calls.find(([input]) => String(input) === storageUrl)
+    expect(contentCall?.[1]?.redirect).toBe('manual')
+    expect(contentCall?.[1]?.headers).toMatchObject({ Authorization: 'Bearer sk-secret-never-return' })
+    expect(storageCall?.[1]?.headers).not.toHaveProperty('Authorization')
+    expect(assets.storeMp4).toHaveBeenCalled()
+  })
+
+  it('checks the completed download size and sha256 metadata', async () => {
+    const bytes = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from('ftypisom'), Buffer.alloc(16)])
+    const digest = (await import('node:crypto')).createHash('sha256').update(bytes).digest('hex')
+    const signedUrl = 'https://storage.example.com/videos/video-integrity.mp4?sig=test'
+    const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
+      const url = String(input)
+      if (init?.method === 'POST') return jsonResponse({ id: 'video_integrity', status: 'queued' })
+      if (url === signedUrl) return new Response(bytes, { headers: { 'Content-Type': 'video/mp4' } })
+      return jsonResponse({ id: 'video_integrity', status: 'completed', url: signedUrl, size_bytes: bytes.length, sha256: digest })
+    }) as unknown as typeof fetch
+    const { service, assets } = setup(fetchImpl)
+    await expect(service.generate(41, {
+      requestId: 'integrity-download', group: 'grok', model: 'grok-imagine-video', prompt: '海浪', seconds: '5',
+    })).resolves.toMatchObject({ taskId: 'video_integrity' })
+    expect(assets.storeMp4).toHaveBeenCalledWith(7, bytes, expect.any(Object))
+  })
+
   it('persists canvas correlation alongside a newly submitted task', async () => {
     const fetchImpl = vi.fn(async (input: URL | RequestInfo, init?: RequestInit) => {
       if (init?.method === 'POST') return jsonResponse({ id: 'video_correlated', status: 'queued' })
@@ -192,7 +271,8 @@ describe('createAiVideoService', () => {
     const { service, assets } = setup(fetchImpl)
     const projectId = '11111111-1111-4111-8111-111111111111'
     const images = ['a'.repeat(43), 'b'.repeat(43)]
-    const videos = ['v'.repeat(43)]
+    // MiniMax H3 no longer accepts reference videos; image/audio multipart remains supported.
+    const videos: string[] = []
     const audios = ['m'.repeat(43)]
 
     await service.generate(41, {
@@ -204,7 +284,6 @@ describe('createAiVideoService', () => {
     expect(assets.readOwned.mock.calls).toEqual([
       [7, images[0], 'image', projectId],
       [7, images[1], 'image', projectId],
-      [7, videos[0], 'video', projectId],
       [7, audios[0], 'audio', projectId],
     ])
     const postInit = vi.mocked(fetchImpl).mock.calls[0][1]
@@ -216,7 +295,7 @@ describe('createAiVideoService', () => {
     expect(form.get('seconds')).toBe('10')
     expect(form.get('prompt_optimization')).toBe('false')
     expect(form.getAll('images')).toHaveLength(2)
-    expect(form.getAll('videos')).toHaveLength(1)
+    expect(form.getAll('videos')).toHaveLength(0)
     expect(form.getAll('audios')).toHaveLength(1)
     expect(form.getAll('images').every((entry) => entry instanceof File && entry.type === 'image/png')).toBe(true)
   })

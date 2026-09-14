@@ -72,6 +72,7 @@ function serviceStub(): SystemService {
     saveConfig: vi.fn(async (): Promise<NativeConfigSaveResult> => ({ backups: [], files: [] })),
     switchToOfficialAccount: vi.fn((): NativeConfigSaveResult => ({ backups: [], files: [] })),
     scanSystem: vi.fn() as never,
+    refreshNetworkLocation: vi.fn() as never,
     refreshOfficialChatGptUsage: vi.fn() as never,
     inspectCodexSetupStatus: vi.fn() as never,
     installNodeRuntime: vi.fn() as never,
@@ -178,7 +179,7 @@ function trustedEvent(url = 'http://localhost:5173/', senderId = 101) {
 }
 
 type ChatIpcOverrides = Partial<Pick<Parameters<typeof registerIpcHandlers>[0],
-  'accountCredentialsForSite' | 'realmAccounts' | 'accountWork' | 'accountSessionReady' | 'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'replyWindowClose' | 'takeExternalDeepLink'>>
+  'accountCredentialsForSite' | 'realmAccounts' | 'accountWork' | 'accountSessionReady' | 'announcementReads' | 'acceleration' | 'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'replyWindowClose' | 'takeExternalDeepLink'>>
 
 function updaterStub(): UpdaterService {
   const state = {
@@ -369,6 +370,30 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.removeHandler.mock.calls.map(([channel]) => channel)).toEqual(expectedChannels)
   })
 
+  it('routes global acceleration through trusted IPC and rejects unknown modes', async () => {
+    const state = { scope: 'xm-account:7', phase: 'unavailable' as const, mode: 'system-proxy' as const,
+      totalSeconds: 3600, remainingSeconds: null, sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null }
+    const acceleration = {
+      getAccelerationState: vi.fn(async () => state),
+      startAcceleration: vi.fn(async () => state),
+      stopAcceleration: vi.fn(async () => state),
+    }
+    register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { acceleration })
+    const start = electronMocks.handlers.get('acceleration:start')!
+    const read = electronMocks.handlers.get('acceleration:get-state')!
+    const stop = electronMocks.handlers.get('acceleration:stop')!
+    expect(() => start(trustedEvent('https://attacker.example'), 'xm-account:7', 'tun')).toThrow('非应用页面')
+    expect(() => start(trustedEvent(), 'xm-account:7', 'global')).toThrow('加速模式无效')
+    expect(() => read(trustedEvent(), {})).toThrow()
+    expect(() => stop(trustedEvent(), '')).toThrow()
+    expect(acceleration.startAcceleration).not.toHaveBeenCalled()
+    await expect(read(trustedEvent(), 'xm-account:7')).resolves.toEqual(state)
+    await start(trustedEvent(), 'xm-account:7', 'tun')
+    await stop(trustedEvent(), 'xm-account:7')
+    expect(acceleration.startAcceleration).toHaveBeenCalledWith('xm-account:7', 'tun')
+    expect(acceleration.stopAcceleration).toHaveBeenCalledWith('xm-account:7')
+  })
+
   it('marks one fetched announcement read only through trusted account IPC with valid IDs', async () => {
     const accountService = accountServiceStub()
     accountService.markNoticeRead = vi.fn(async () => undefined)
@@ -382,6 +407,61 @@ describe('registerIpcHandlers', () => {
     expect(accountService.markNoticeRead).not.toHaveBeenCalled()
     await expect(handler(trustedEvent(), 'notice-hash', '7')).resolves.toBeUndefined()
     expect(accountService.markNoticeRead).toHaveBeenCalledWith('notice-hash', '7')
+  })
+
+  describe('local announcement read persistence', () => {
+    const marker = `newapi-${'a'.repeat(64)}`
+    const authenticated = { authenticated: true, account: { userId: 7, username: 'notice-reader', group: null, role: 1, quota: 100, usedQuota: 0 } }
+    const setup = (announcementReads = { sync: vi.fn(async (_scope: string, ids: string[]) => ids) }) => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue(authenticated)
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService, undefined, undefined, { announcementReads })
+      return { accountService, announcementReads, handler: electronMocks.handlers.get('account:sync-local-notice-reads')! }
+    }
+
+    it('requires a trusted sender and validates every entry before touching the store', async () => {
+      const f = setup()
+      expect(() => f.handler(trustedEvent('https://attacker.example/'), 'xm-account:7', [marker])).toThrow('非应用页面')
+      for (const scope of ['xm-account:0', 'xm-account:07', 'xm-account:../7', 'api-account:7', null]) {
+        await expect(f.handler(trustedEvent(), scope, [marker])).rejects.toThrow('账号标识')
+      }
+      for (const ids of [null, {}, [7], ['invalid'], new Array(1), Array(201).fill(marker)]) {
+        await expect(f.handler(trustedEvent(), 'xm-account:7', ids)).rejects.toThrow('条目标识')
+      }
+      expect(f.announcementReads.sync).not.toHaveBeenCalled()
+      await expect(f.handler(trustedEvent(), 'xm-account:7', [marker])).resolves.toEqual([marker])
+      expect(f.announcementReads.sync).toHaveBeenCalledWith('xm-account:7', [marker])
+    })
+
+    it('rejects cross-account, logged-out and Sub2API contexts even with the same numeric user ID', async () => {
+      const f = setup()
+      await expect(f.handler(trustedEvent(), 'xm-account:8', [])).rejects.toThrow('账号上下文已变化')
+      vi.mocked(f.accountService.getSessionState).mockReturnValue({ authenticated: false, account: null })
+      await expect(f.handler(trustedEvent(), 'xm-account:7', [])).rejects.toThrow('账号上下文已变化')
+      for (const metadata of [{ siteId: 'solov-api' }, { realmId: 'api-account' }]) {
+        vi.mocked(f.accountService.getSessionState).mockReturnValue({ ...authenticated, ...metadata })
+        await expect(f.handler(trustedEvent(), 'xm-account:7', [])).rejects.toThrow('账号上下文已变化')
+      }
+      expect(f.announcementReads.sync).not.toHaveBeenCalled()
+    })
+
+    it.each(['different-account', 'logout-login', 'different-realm'] as const)('does not return a stale read list after an awaited session change: %s', async (change) => {
+      let complete!: (ids: string[]) => void
+      const f = setup({ sync: vi.fn(() => new Promise<string[]>((resolve) => { complete = resolve })) })
+      const pending = f.handler(trustedEvent(), 'xm-account:7', [marker])
+      if (change === 'different-account') vi.mocked(f.accountService.getSessionState).mockReturnValue({ ...authenticated, account: { ...authenticated.account, userId: 8 } })
+      else if (change === 'different-realm') vi.mocked(f.accountService.getSessionState).mockReturnValue({ ...authenticated, ...{ realmId: 'api-account' } })
+      else vi.mocked(f.accountService.getSessionRevision).mockReturnValue(1)
+      complete([marker])
+      await expect(pending).rejects.toThrow('账号上下文已变化')
+    })
+
+    it('reports unavailable persistence instead of pretending a marker was saved', async () => {
+      const accountService = accountServiceStub()
+      vi.mocked(accountService.getSessionState).mockReturnValue(authenticated)
+      register(serviceStub(), 'C:\\app-data\\logs', undefined, accountService)
+      await expect(electronMocks.handlers.get('account:sync-local-notice-reads')!(trustedEvent(), 'xm-account:7', [marker])).rejects.toThrow('保存服务暂不可用')
+    })
   })
 
   describe('saved-account switch isolation', () => {
@@ -857,6 +937,23 @@ describe('registerIpcHandlers', () => {
     })
     expect(service.scanSystem).toHaveBeenCalledWith(true)
     await expect(handler(trustedEvent(), 'yes')).rejects.toThrow('更新检查参数格式错误')
+  })
+
+  it('refreshes only the network location through trusted IPC', async () => {
+    const service = serviceStub()
+    const location = {
+      publicIp: '203.0.113.9', countryCode: 'JP', region: 'outside-mainland-china' as const,
+      checkedAt: '2026-09-14T00:00:00.000Z', error: null,
+    }
+    vi.mocked(service.refreshNetworkLocation).mockResolvedValue(location)
+    register(service)
+    const handler = electronMocks.handlers.get('system:refresh-network-location')!
+    await expect(handler(trustedEvent())).resolves.toEqual(location)
+    expect(service.refreshNetworkLocation).toHaveBeenCalledWith()
+    expect(service.scanSystem).not.toHaveBeenCalled()
+    expect(service.refreshOfficialChatGptUsage).not.toHaveBeenCalled()
+    expect(() => handler(trustedEvent('https://untrusted.example/'))).toThrow()
+    expect(service.refreshNetworkLocation).toHaveBeenCalledOnce()
   })
 
   it('refreshes official ChatGPT usage without a full system scan', async () => {

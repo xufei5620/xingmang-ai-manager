@@ -6,6 +6,8 @@ import {
   type MiniMaxVideoMode,
   type MiniMaxVideoResolution,
 } from './ai-chat-protocol'
+import { createHash } from 'node:crypto'
+import { isIP } from 'node:net'
 import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import type { AiStoredVideoAsset } from './ai-video-asset-store'
 import { AI_VIDEO_TASK_VERSION, normalizeAiVideoTaskPrompt } from './ai-video-task-store'
@@ -195,6 +197,38 @@ async function readBoundedBytes(response: Response, maximumBytes: number, label:
   return Buffer.concat(chunks, received)
 }
 
+interface VideoDownloadDescriptor {
+  url?: string
+  urlExpiresAt?: unknown
+  contentType?: string
+  sizeBytes?: number
+  sha256?: string
+}
+
+function parseExpiry(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // API timestamps are seconds; accept milliseconds as well for compatibility.
+    return value < 10_000_000_000 ? value * 1_000 : value
+  }
+  if (typeof value !== 'string' || value.trim() === '') return undefined
+  const numeric = Number(value)
+  if (Number.isFinite(numeric)) return numeric < 10_000_000_000 ? numeric * 1_000 : numeric
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function validDownloadUrl(value: unknown): URL | undefined {
+  if (typeof value !== 'string' || value.length > 8_192) return undefined
+  let url: URL
+  try { url = new URL(value) } catch { return undefined }
+  if (url.protocol !== 'https:' || url.username || url.password || url.hash || !url.hostname) return undefined
+  // Signed object URLs may be on a separate TOS host, but local/private targets are never valid.
+  const host = url.hostname.toLowerCase()
+  const ipHost = host.startsWith('[') && host.endsWith(']') ? host.slice(1, -1) : host
+  if (isIP(ipHost) !== 0 || host === 'localhost' || host.endsWith('.localhost')) return undefined
+  return url
+}
+
 async function responseJson(response: Response): Promise<Record<string, unknown>> {
   const bytes = await readBoundedBytes(response, MAXIMUM_JSON_BYTES, '视频接口响应')
   let payload: unknown
@@ -336,16 +370,25 @@ export function createAiVideoService(options: {
     return form
   }
 
-  async function fetchWithTimeout(url: URL, init: RequestInit, operationSignal: AbortSignal): Promise<Response> {
+  async function fetchWithTimeout(url: URL, init: RequestInit, operationSignal: AbortSignal, allowContentRedirect = false, redirectDepth = 0): Promise<Response> {
     const controller = new AbortController()
     const onAbort = () => controller.abort(operationSignal.reason)
     operationSignal.addEventListener('abort', onAbort, { once: true })
     const timer = setTimeout(() => controller.abort(new Error('视频接口请求超时')), requestTimeoutMs)
     try {
-      const response = await fetchImpl(url, { ...init, redirect: 'error', signal: controller.signal })
+      const response = await fetchImpl(url, { ...init, redirect: allowContentRedirect ? 'manual' : 'error', signal: controller.signal })
+      if (allowContentRedirect && response.status >= 300 && response.status < 400) {
+        if (redirectDepth >= 3) throw new Error('视频下载重定向次数超过安全上限')
+        const location = response.headers.get('location')
+        const redirectUrl = validDownloadUrl(location ? new URL(location, url).href : undefined)
+        if (!redirectUrl) throw new Error('视频下载重定向地址不可信')
+        const headers = new Headers(init.headers)
+        headers.delete('Authorization')
+        return await fetchWithTimeout(redirectUrl, { ...init, headers }, operationSignal, true, redirectDepth + 1)
+      }
       if (response.url) {
         const finalUrl = new URL(response.url)
-        if (finalUrl.origin !== baseUrl.origin) throw new Error('视频接口响应来源不可信')
+        if (finalUrl.origin !== url.origin) throw new Error('视频接口响应来源不可信')
       }
       return response
     } finally {
@@ -378,7 +421,7 @@ export function createAiVideoService(options: {
     apiKey: string,
     signal: AbortSignal,
     progress?: AiOperationProgressObserver,
-  ): Promise<void> {
+  ): Promise<Record<string, unknown>> {
     const startedAt = Date.now()
     let interval = pollIntervalMs
     for (;;) {
@@ -388,7 +431,7 @@ export function createAiVideoService(options: {
       const status = typeof payload.status === 'string' ? payload.status.toLowerCase() : ''
       const update = miniMaxProgress(payload)
       if (update) await progress?.onProgress?.(update)
-      if (status === 'completed') return
+      if (status === 'completed') return payload
       if (status === 'failed' || status === 'cancelled') {
         const message = safeUpstreamMessage(
           payload.error && typeof payload.error === 'object' ? (payload.error as Record<string, unknown>).message : undefined,
@@ -406,14 +449,25 @@ export function createAiVideoService(options: {
     task: StoredAiVideoTask,
     apiKey: string,
     signal: AbortSignal,
+    descriptor: VideoDownloadDescriptor = {},
     progress?: AiOperationProgressObserver,
   ): Promise<GeneratedAiVideoAsset> {
     await progress?.onStage('downloading')
-    const response = await fetchWithTimeout(
-      new URL(`${AI_CHAT_ENDPOINTS.videos}/${encodeURIComponent(task.taskId)}/content`, baseUrl),
-      { method: 'GET', headers: { Accept: 'video/mp4', Authorization: `Bearer ${apiKey}` } },
-      signal,
-    )
+    const expiry = parseExpiry(descriptor.urlExpiresAt)
+    const signedUrl = validDownloadUrl(descriptor.url)
+    const expiryProvided = descriptor.urlExpiresAt !== undefined && descriptor.urlExpiresAt !== null
+    const urlUsable = Boolean(signedUrl && (!expiryProvided || (expiry !== undefined && expiry > now().getTime())))
+    const downloadUrl = urlUsable && signedUrl
+      ? signedUrl
+      : new URL(`${AI_CHAT_ENDPOINTS.videos}/${encodeURIComponent(task.taskId)}/content`, baseUrl)
+    const response = await fetchWithTimeout(downloadUrl, {
+      method: 'GET',
+      headers: {
+        Accept: 'video/mp4',
+        // TOS signed URLs authenticate via their query string. Never leak the API key there.
+        ...(urlUsable ? {} : { Authorization: `Bearer ${apiKey}` }),
+      },
+    }, signal, downloadUrl.origin === baseUrl.origin && !urlUsable)
     if (!response.ok) {
       const payload = await responseJson(response).catch(() => ({}))
       throw videoRequestFailure(response.status, errorDetail(payload), response.headers.get('retry-after'))
@@ -423,6 +477,21 @@ export function createAiVideoService(options: {
       throw new Error('视频下载响应类型不受支持')
     }
     const bytes = await readBoundedBytes(response, MAXIMUM_VIDEO_BYTES, '视频文件')
+    if (descriptor.contentType) {
+      const expectedType = descriptor.contentType.split(';', 1)[0].trim().toLowerCase()
+      if (expectedType !== 'video/mp4' && expectedType !== 'application/octet-stream') throw new Error('视频文件类型不受支持')
+      if (contentType && contentType !== expectedType) throw new Error('视频下载响应类型与任务不匹配')
+    }
+    if (descriptor.sizeBytes !== undefined
+      && (!Number.isSafeInteger(descriptor.sizeBytes) || descriptor.sizeBytes < 1 || bytes.byteLength !== descriptor.sizeBytes)) {
+      throw new Error('视频文件大小校验失败')
+    }
+    if (descriptor.sha256 !== undefined) {
+      if (!/^[a-f0-9]{64}$/i.test(descriptor.sha256)
+        || createHash('sha256').update(bytes).digest('hex').toLowerCase() !== descriptor.sha256.toLowerCase()) {
+        throw new Error('视频文件完整性校验失败')
+      }
+    }
     await progress?.onStage('saving')
     const asset = await options.assets.storeMp4(
       task.userId,
@@ -441,8 +510,14 @@ export function createAiVideoService(options: {
     const credential = await options.credentials.resolveCredential(task.group)
     if (credential.userId !== task.userId) throw new Error('登录账号已变化，已停止视频任务查询')
     await options.assets.prepareProject?.(task.userId, task.projectId)
-    await pollTask(task, credential.apiKey, signal)
-    return downloadTask(task, credential.apiKey, signal)
+    const completed = await pollTask(task, credential.apiKey, signal)
+    return downloadTask(task, credential.apiKey, signal, {
+      url: typeof completed.url === 'string' ? completed.url : undefined,
+      urlExpiresAt: completed.url_expires_at ?? completed.asset_expires_at,
+      contentType: typeof completed.content_type === 'string' ? completed.content_type : undefined,
+      sizeBytes: typeof completed.size_bytes === 'number' ? completed.size_bytes : undefined,
+      sha256: typeof completed.sha256 === 'string' ? completed.sha256 : undefined,
+    })
   }
 
   async function generate(
@@ -577,8 +652,14 @@ export function createAiVideoService(options: {
         throw new Error(`视频任务已创建但本地恢复记录保存失败（任务 ${task.taskId}），请勿重复提交`)
       }
       await progress?.onStage('processing')
-      await pollTask(task, credential.apiKey, operation.controller.signal, progress)
-      return await downloadTask(task, credential.apiKey, operation.controller.signal, progress)
+      const completed = await pollTask(task, credential.apiKey, operation.controller.signal, progress)
+      return await downloadTask(task, credential.apiKey, operation.controller.signal, {
+        url: typeof completed.url === 'string' ? completed.url : undefined,
+        urlExpiresAt: completed.url_expires_at ?? completed.asset_expires_at,
+        contentType: typeof completed.content_type === 'string' ? completed.content_type : undefined,
+        sizeBytes: typeof completed.size_bytes === 'number' ? completed.size_bytes : undefined,
+        sha256: typeof completed.sha256 === 'string' ? completed.sha256 : undefined,
+      }, progress)
     } catch (error) {
       if (operation.controller.signal.aborted) {
         if (operation.taskId) throw new Error('已停止等待；服务端可能仍在生成视频，下次启动会继续查询')

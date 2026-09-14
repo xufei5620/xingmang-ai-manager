@@ -1,10 +1,11 @@
-import { Archive, BookOpen, Clock, Flag, Home, Infinity as InfinityIcon, MessageSquare, Package, Plug, RefreshCw, Settings, Sparkles, User, Wrench, Zap, type LucideIcon } from 'lucide-react'
+import { Archive, BookOpen, Clock, Flag, Globe2, Home, Infinity as InfinityIcon, MessageSquare, Package, Plug, RefreshCw, Settings, Sparkles, User, Wrench, Zap, type LucideIcon } from 'lucide-react'
 
 export const pages = [
   { id: 'home', label: '首页', icon: 'home', group: 'daily', template: 'T5', testId: 'page-home' },
   { id: 'chat', label: '聊天', icon: 'message-square', group: 'daily', template: '专用', testId: 'page-chat' },
   { id: 'sessions', label: '记录', icon: 'clock', group: 'daily', template: 'T3', testId: 'page-sessions' },
   { id: 'canvas', label: '画布 ↗', icon: 'infinity', group: 'daily', template: '独立窗口', testId: 'nav-canvas' },
+  { id: 'acceleration', label: '全球加速', icon: 'globe-2', group: 'daily', template: 'T5', testId: 'page-acceleration' },
   { id: 'mcp', label: '外接工具', icon: 'plug', group: 'extend', template: 'T1', testId: 'page-mcp' },
   { id: 'skills', label: '技能', icon: 'sparkles', group: 'extend', template: 'T1', testId: 'page-skills' },
   { id: 'plugins', label: '插件', icon: 'package', group: 'extend', template: 'T1', testId: 'page-plugins' },
@@ -20,5 +21,5 @@ export const pages = [
 export type PageId = typeof pages[number]['id'];
 export type PageGroup = 'daily' | 'extend' | 'maintain' | 'account'
 export interface PageDefinition { id: PageId; label: string; icon: LucideIcon; group: PageGroup; testId: string; external?: boolean }
-const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
+const pageIcons: Record<PageId, LucideIcon> = { home: Home, chat: MessageSquare, sessions: Clock, canvas: InfinityIcon, acceleration: Globe2, mcp: Plug, skills: Sparkles, plugins: Package, tutorial: BookOpen, health: Zap, maintenance: Wrench, backups: Archive, feedback: Flag, updates: RefreshCw, settings: Settings, account: User }
 export const pageRegistry: readonly PageDefinition[] = pages.map((page) => ({ id: page.id, label: page.label.replace(' ↗', ''), icon: pageIcons[page.id], group: page.group as PageGroup, testId: page.testId, external: page.id === 'canvas' }))

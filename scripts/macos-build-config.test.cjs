@@ -61,7 +61,7 @@ test('macOS targets produce per-architecture DMG and ZIP candidates', () => {
     { target: 'zip', arch: ['arm64', 'x64'] },
   ])
   assert.equal(config.mac.artifactName, 'XingMang-AI-Manager-${version}-${arch}.${ext}')
-  assert.equal(config.mac.icon, 'assets/icon.icns')
+  assert.equal(config.mac.icon, 'assets/brand/v3/app-icon.icns')
   assert.equal(config.mac.category, 'public.app-category.developer-tools')
   assert.equal(config.mac.minimumSystemVersion, '13.0')
   assert.equal(config.mac.hardenedRuntime, true)

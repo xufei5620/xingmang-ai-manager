@@ -2124,6 +2124,11 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     const needsFreshActivation = mode === 'restart' || existingProcesses.length === 0
     const shouldInjectChinese = Boolean(launchOptions.injectChinese)
       && needsFreshActivation
+    let chineseLocale: CodexDesktopLaunchResult['chineseLocale'] = launchOptions.injectChinese
+      ? needsFreshActivation
+        ? { status: 'failed', message: 'Codex 已打开，但中文增强启动未完成。请在配置中再次启用中文界面。' }
+        : { status: 'restart-required', message: '中文设置已保存；当前 Codex 已在运行，请在配置中启用中文界面以重启并应用。' }
+      : undefined
     if (needsFreshActivation) {
       try {
         if (shouldInjectChinese) {
@@ -2204,17 +2209,19 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (cdpPort !== null) {
       try {
         const injection = await injectCodexDesktopChineseLocale(cdpPort)
+        chineseLocale = { status: 'verified' }
         console.info(`[codex-locale] 已注入 Codex Desktop 中文运行时补丁（${injection.injectedTargets} 个页面）`)
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
         // A failed enhancement must not leave a successfully launched client
         // looking broken. config.toml remains authoritative for future builds.
         console.warn(`[codex-locale] 中文运行时补丁未生效，保留已启动客户端：${message}`)
+        chineseLocale = { status: 'failed', message: `Codex 已打开，但未确认中文界面生效：${message.slice(0, 300)}。可再次启用中文界面重试。` }
       }
     }
     const runningStatus = { ...desktopApp, running: true }
     sendCodexDesktopStatus(target, 'running', runningStatus)
-    return { restarted, status: runningStatus }
+    return { restarted, status: runningStatus, ...(chineseLocale ? { chineseLocale } : {}) }
   }
 
   return {

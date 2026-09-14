@@ -117,7 +117,7 @@ describe('canvas host executors', () => {
     expect(host.generateVideo).not.toHaveBeenCalled()
   })
 
-  it('auto-selects Ref2VA and forwards every owned media asset', async () => {
+  it('auto-selects Ref2VA and forwards every supported owned media asset', async () => {
     const host = hostMocks()
     const executors = createHostExecutors({ imageGroup: '生图分组', videoGroup: 'video', host })
     const node = workflowNode('video-generate', {
@@ -126,7 +126,6 @@ describe('canvas host executors', () => {
     })
     await executors['video-generate'](node, {
       images: [{ kind: 'image', assetId: 'a'.repeat(43) }, { kind: 'image', assetId: 'b'.repeat(43) }],
-      videos: [{ kind: 'video', assetId: 'v'.repeat(43) }],
       audios: [{ kind: 'audio', assetId: 'm'.repeat(43) }],
     }, new AbortController().signal)
 
@@ -134,7 +133,6 @@ describe('canvas host executors', () => {
       model: 'minimax-h3-fast', seconds: '8', mode: 'ref2va', resolution: '480p', aspectRatio: '4:5',
       promptOptimization: true,
       imageAssetIds: ['a'.repeat(43), 'b'.repeat(43)],
-      videoAssetIds: ['v'.repeat(43)],
       audioAssetIds: ['m'.repeat(43)],
     }))
   })

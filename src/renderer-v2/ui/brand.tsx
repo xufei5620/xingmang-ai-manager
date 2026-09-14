@@ -4,6 +4,12 @@ import ClaudeIcon from '@lobehub/icons/es/Claude/components/Color';
 import OpenAIIcon from '@lobehub/icons/es/OpenAI/components/Mono';
 import GeminiIcon from '@lobehub/icons/es/Gemini/components/Color';
 import GrokIcon from '@lobehub/icons/es/Grok/components/Mono';
+import DeepSeekIcon from '@lobehub/icons/es/DeepSeek/components/Color';
+import QwenIcon from '@lobehub/icons/es/Qwen/components/Color';
+import ChatGLMIcon from '@lobehub/icons/es/ChatGLM/components/Color';
+import MoonshotIcon from '@lobehub/icons/es/Moonshot/components/Mono';
+import MiniMaxIcon from '@lobehub/icons/es/Minimax/components/Color';
+import ZhipuIcon from '@lobehub/icons/es/Zhipu/components/Color';
 import { siAlipay, siNodedotjs, siNpm, siPython, siStripe, siWechat } from 'simple-icons';
 import microLight from '../../../assets/brand/v3/micro32-standard.svg';
 import microDark from '../../../assets/brand/v3/micro32-dark.svg';
@@ -17,9 +23,9 @@ import { tools } from '../registry/tools';
 import { useUiText, type BaseProps } from './shared';
 
 export type ToolId = string;
-const brandComponents = { Claude: ClaudeIcon, OpenAI: OpenAIIcon, Gemini: GeminiIcon, Grok: GrokIcon } as const;
+const brandComponents = { Claude: ClaudeIcon, OpenAI: OpenAIIcon, Gemini: GeminiIcon, Grok: GrokIcon, DeepSeek: DeepSeekIcon, Qwen: QwenIcon, ChatGLM: ChatGLMIcon, Moonshot: MoonshotIcon, MiniMax: MiniMaxIcon, Zhipu: ZhipuIcon } as const;
 const environmentBrands = { node: siNodedotjs, npm: siNpm, python: siPython, stripe: siStripe, alipay: siAlipay, wechat: siWechat } as const;
-const modelBrand = (model: string) => /^claude/i.test(model) ? 'Claude' : /^(gpt|o[134]|chatgpt|codex)/i.test(model) ? 'OpenAI' : /^gemini/i.test(model) ? 'Gemini' : /^grok/i.test(model) ? 'Grok' : '';
+const modelBrand = (model: string) => /^claude/i.test(model) ? 'Claude' : /^(gpt|o[134]|chatgpt|codex)/i.test(model) ? 'OpenAI' : /^gemini/i.test(model) ? 'Gemini' : /^grok/i.test(model) ? 'Grok' : /^deepseek/i.test(model) ? 'DeepSeek' : /^qwen/i.test(model) ? 'Qwen' : /^(chatglm|glm)/i.test(model) ? 'ChatGLM' : /^(kimi|moonshot)/i.test(model) ? 'Moonshot' : /^minimax/i.test(model) ? 'MiniMax' : /^(zhipu|智谱)/i.test(model) ? 'Zhipu' : '';
 export function BrandIcon({ tool, model, size = 24, variant = 'inline', testId }: BaseProps & { tool?: ToolId; model?: string; size?: number; variant?: 'tile' | 'inline' | 'xs' }) {
   const t = useUiText();
   const definition = tools.find(item => item.id === tool || item.name === tool);

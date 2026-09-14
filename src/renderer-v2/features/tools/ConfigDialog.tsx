@@ -1,12 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { Eye, FolderOpen, KeyRound, RefreshCw, Save, Settings } from 'lucide-react'
 import type { AccountKey, AppConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
+import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
 import { BrandIcon, Button, Confirm, Dialog, Input, Pill, Segment, Select, Tabs } from '../../ui'
 import { tools } from '../../registry/tools'
 import { isToolId, providerFor, sourceFor, type ToolId } from './model'
 import { getSourceMarkerStorage, writeManualSourceMarker } from './source-marker'
 import type { ToolsApi } from './api'
 import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
+import { describeChineseLocale, describeChineseLocaleResult } from './locale-status'
 
 type SourceChoice = 'account' | 'official' | 'manual' | 'unknown'
 interface ConfigDraft { source: SourceChoice; keyId: string; secret: string; model: string; validatedSecret: string; dirty: boolean }
@@ -16,13 +18,14 @@ interface ConfigDialogProps {
   config: AppConfigSummary
   signedIn: boolean
   onClose(): void
-  onSaved(): Promise<void>
+  onRefresh(): Promise<void>
+  onSaved(warning?: string): void
   onLogin(): void
   onKeys(): void
   onHelp(): void
 }
 
-export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, onLogin, onKeys, onHelp }: ConfigDialogProps) {
+export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, onSaved, onLogin, onKeys, onHelp }: ConfigDialogProps) {
   const [tab, setTab] = useState<ToolId>(tool)
   const [drafts, setDrafts] = useState<Partial<Record<ProviderId, ConfigDraft>>>({})
   const [keys, setKeys] = useState<AccountKey[]>([])
@@ -36,7 +39,6 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
   const [error, setError] = useState('')
   const [warning, setWarning] = useState('')
   const [busy, setBusy] = useState('')
-  const [message, setMessage] = useState('')
   const [confirmation, setConfirmation] = useState<'choose' | 'reset' | null>(null)
   const [exitAction, setExitAction] = useState<(() => void) | null>(null)
   const [localeText, setLocaleText] = useState('')
@@ -53,7 +55,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
   const currentSource = sourceFor(native, provider, sourceStorage)
   const draft: ConfigDraft = drafts[provider] ?? {
     source: currentSource === 'missing' ? 'account' : currentSource,
-    keyId: initialKeyChoice(native), secret: '', model: native.model, validatedSecret: '', dirty: false,
+    keyId: initialKeyChoice(native), secret: '', model: native.model || defaultCliModels[provider], validatedSecret: '', dirty: false,
   }
   const selectedKey = keys.find((key) => String(key.id) === draft.keyId && key.status === 1)
   const metadata = keyMetadata[provider] ?? null
@@ -74,7 +76,6 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
     setDrafts((current) => ({ ...current, [providerFor(tab)]: { ...draft, ...patch, dirty: true } }))
     setError('')
     setWarning('')
-    setMessage('')
   }
   useEffect(() => { active.current = true; return () => { active.current = false; request.current++; metadataRequest.current++ } }, [])
   useEffect(() => {
@@ -106,7 +107,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
     setModels([])
     setError('')
   }, [tab, draft.source, draft.keyId])
-  useEffect(() => { setWarning(''); setMessage('') }, [tab])
+  useEffect(() => { setWarning('') }, [tab])
   async function detectModels() {
     if (locked.current) return
     if (draft.source === 'account' && usingAutomaticKey) { setError('自动配置会准备或复用专属密钥。请先保存配置，再检测模型。'); return }
@@ -119,8 +120,9 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
         : usingCurrentKey ? await api.configuredModels(tab) : await api.keyModels(selectedKey!.id)
       if (!active.current || id !== request.current) return
       setModels(result)
-      if (draft.source === 'manual') change({ validatedSecret: draft.secret, model: result.includes(draft.model) ? draft.model : result[0] ?? '' })
-      else if (!draft.model && result[0]) change({ model: result[0] })
+      const suggested = resolveDefaultCliModel(provider, result, draft.model) ?? ''
+      if (draft.source === 'manual') change({ validatedSecret: draft.secret, model: suggested })
+      else if (!draft.model || (!native.model && !result.includes(draft.model))) change({ model: suggested })
     } catch (cause) { if (active.current && id === request.current) setError(cause instanceof Error ? cause.message : '模型检测未完成') }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
@@ -179,25 +181,9 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
       }
       else throw new Error('请选择要保存的密钥。')
       if (!active.current) return
-      setWarning(markerWarning)
-      setDrafts((current) => ({ ...current, [provider]: { ...draft, keyId: draft.source === 'account' ? CURRENT_KEY : draft.keyId, secret: '', validatedSecret: '', dirty: false } }))
-      setConfirmation(null)
-      setMessage(mode === 'reset' ? '配置已重置为初始状态。Codex 桌面端运行中时，可关闭此面板后选择重新打开。' : '配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。')
-      try {
-        await onSaved()
-        const savedConfig = await api.readConfig()
-        const savedNative = savedConfig.providers[provider]
-        if (active.current) {
-          const savedSource = sourceFor(savedNative, provider, sourceStorage)
-          setDrafts((current) => ({ ...current, [provider]: { ...draft, source: savedSource === 'missing' ? 'account' : savedSource,
-            keyId: savedNative.hasApiKey ? CURRENT_KEY : AUTOMATIC_KEY, model: savedNative.model, secret: '', validatedSecret: '', dirty: false } }))
-        }
-        if (signedIn) {
-          const latest = await api.readKeyOptions(tab)
-          if (active.current) setKeyMetadata((current) => ({ ...current, [provider]: latest }))
-        }
-      }
-      catch { if (active.current) setError('配置已保存，但最新状态没有读到。关闭后重新检测即可，无需重复保存。') }
+      // The host has committed the write. Close through the owner so feedback
+      // survives this dialog's unmount; a later refresh cannot undo that save.
+      onSaved(markerWarning || undefined)
     })
   }
   const officialName = providerFor(tab) === 'codex' ? 'ChatGPT 账号' : providerFor(tab) === 'claude' ? 'Claude 账号' : 'Google 账号'
@@ -247,15 +233,15 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onSaved, on
             {draft.source === 'account' && usingAutomaticKey && <p>先保存以准备专属密钥，再检测模型。保存前不会使用当前密钥进行检测。</p>}</div>
         </>}
       </>}
-      <div className="v2-config-field"><Input label="打开工具时进入的文件夹" readOnly value={config.workspace} /><Button size="sm" icon={FolderOpen} onClick={() => void run('选择文件夹', async () => { if (await api.chooseWorkspace()) await onSaved() })}>选择文件夹</Button></div>
-      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary><div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(!value.installed ? 'Codex 桌面端尚未安装' : !value.chineseResources.available ? '当前安装版本缺少中文资源，请更新桌面端后重试。' : `当前界面语言：${value.effectiveLocale === 'zh-CN' ? '简体中文' : value.effectiveLocale}${value.needsRestart ? '，重启后生效' : ''}`) })}>检查中文界面</Button>
-        <Button size="sm" onClick={() => void run('启用中文界面', async () => { const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) setLocaleText(result.needsRestart ? '中文界面设置已保存，重启 Codex 后生效' : '中文界面设置已完成') })}>启用中文界面</Button>
+      <div className="v2-config-field"><Input label="打开工具时进入的文件夹" readOnly value={config.workspace} /><Button size="sm" icon={FolderOpen} onClick={() => void run('选择文件夹', async () => { if (await api.chooseWorkspace()) await onRefresh() })}>选择文件夹</Button></div>
+      {tab === 'codexDesktop' && <details><summary>界面语言与文件夹权限</summary><p>已设置中文但仍显示英文时，可再次点击启用。运行中的 Codex 会重新打开，请先保存手头的工作。</p><div className="v2-inline-actions"><Button size="sm" onClick={() => void run('检查中文界面', async () => { const value = await api.getLocale(); if (value.error) throw new Error(value.error); if (active.current) setLocaleText(describeChineseLocale(value)) })}>检查中文界面</Button>
+        <Button size="sm" onClick={() => void run('启用中文界面', async () => { setLocaleText(''); const result = await api.setLocale(); if (result.error) throw new Error(result.error); if (active.current) { if (result.warning) setWarning(result.warning); else setLocaleText(describeChineseLocaleResult(result)) } })}>启用中文界面</Button>
         <Button size="sm" onClick={() => void run('查看文件夹权限', async () => { const result = await api.getPermissions(); if (active.current) setLocaleText(`工作目录：${result.workspace}，信任状态：${result.trustLevel}`) })}>查看文件夹权限</Button>
         <Button size="sm" onClick={() => void run('信任当前文件夹', async () => { await api.trustWorkspace(); if (active.current) setLocaleText('文件夹信任已保存') })}>信任当前文件夹</Button></div>{localeText && <p role="status">{localeText}</p>}</details>}
       <details><summary>查看配置文件与保存方式</summary><div className="v2-code-preview">{native.files.map((file) => <div key={file.path}><code>{file.path}</code><span>{file.exists ? '已存在' : '尚未创建'}</span></div>)}</div>
         <p>点击“保存配置”后，可选择保留自定义设置或重置为初始状态。修改已有配置前会创建备份。</p></details>
       </fieldset>
-      {error && <p className="v2-callout is-bad" role="alert">{error}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}{message && <p className="v2-callout is-ok" role="status">{message}</p>}
+      {error && <p className="v2-callout is-bad" role="alert">{error}</p>}{warning && <p className="v2-callout is-warn" role="status">{warning}</p>}
     </Dialog>
     {confirmation === 'choose' && <Dialog open title="保存这份配置？" onClose={() => setConfirmation(null)} busy={Boolean(busy)} initialFocus={saveCancel}
       footer={<Button ref={saveCancel} disabled={Boolean(busy)} onClick={() => setConfirmation(null)}>取消</Button>}>

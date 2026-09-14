@@ -31,6 +31,7 @@ import {
 } from './codex-desktop-service'
 import {
   canLaunchManagedProvider,
+  geminiCliCompatibleModel,
   ensureCodexPermissionDefaults,
   inspectCodexWorkspacePermissions,
   inspectProviderConfig,
@@ -100,6 +101,7 @@ import {
   type CodexDesktopGlobalStateStatus,
 } from './codex-desktop-state'
 import { fetchGrokStableVersion } from './grok-update'
+import { createNetworkLocationCache, reloadNetworkProxyConfiguration } from './network-location-cache'
 import { readBoundedUtf8File } from './bounded-file'
 import { readBoundedResponseText } from './bounded-response'
 import { launchMacosTerminal, type MacosTerminalLaunchPlan } from './macos-platform'
@@ -272,6 +274,8 @@ export interface SystemSnapshot {
 export interface CodexDesktopLaunchResult {
   restarted: boolean
   status: DesktopAppStatus
+  /** Runtime confirmation is separate from successfully opening the app. */
+  chineseLocale?: { status: 'verified' | 'failed' | 'restart-required'; message?: string }
 }
 
 export type ToolUninstallResult =
@@ -639,6 +643,7 @@ export interface SystemService {
   ): Promise<ReturnType<typeof saveProviderConfig>>
   switchToOfficialAccount(provider: ProviderId, mode?: ConfigSavePayload['mode']): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
+  refreshNetworkLocation(): Promise<SystemSnapshot['network']>
   refreshOfficialChatGptUsage(): Promise<OfficialChatGptAccount | null>
   inspectCodexSetupStatus(): Promise<CodexSetupStatus>
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
@@ -954,6 +959,8 @@ export async function detectNetworkLocation(
         const fallbackResponse = await fetchImplementation(fallbackUrl, {
           method: 'GET',
           headers: { Accept: 'text/plain' },
+          cache: 'no-store',
+          credentials: 'omit',
           redirect: 'error',
           signal: fallbackController.signal,
         })
@@ -980,6 +987,8 @@ export async function detectNetworkLocation(
     const response = await fetchImplementation(networkLocationUrl, {
       method: 'GET',
       headers: { Accept: 'text/plain' },
+      cache: 'no-store',
+      credentials: 'omit',
       redirect: 'error',
       signal: controller.signal,
     })
@@ -1687,6 +1696,10 @@ export interface SystemServiceOptions {
   fetchOfficialChatGptUsage?: typeof fetchOfficialChatGptUsage
   /** Relay traffic uses Electron's proxy-aware network stack in the desktop host. */
   relayFetch?: typeof fetch
+  /** Location must use the desktop session's actual route, independently of relay traffic. */
+  networkLocationFetch?: typeof fetch
+  /** Re-read Chromium's proxy configuration before an explicit location refresh. */
+  reloadNetworkProxyConfig?: () => Promise<void>
 }
 
 export function providerCommandEnvironment(
@@ -1694,7 +1707,21 @@ export function providerCommandEnvironment(
   processEnv: NodeJS.ProcessEnv,
   codexEnv: NodeJS.ProcessEnv,
 ): NodeJS.ProcessEnv {
-  return commandEnvironment(provider === 'codex' ? codexEnv : processEnv)
+  const environment = commandEnvironment(provider === 'codex' ? codexEnv : processEnv)
+  if (provider === 'gemini') {
+    // Gemini CLI loads the managed ~/.gemini/.env only when a variable is not
+    // already present. A shell-level stale gateway/key/model would otherwise
+    // override the account configuration just written by the manager and send
+    // requests to another relay (or select a model that is not in the group).
+    const managedGeminiVariables = new Set([
+      'GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL',
+      'GOOGLE_GENAI_API_VERSION', 'GOOGLE_GEMINI_API_KEY',
+    ])
+    for (const key of Object.keys(environment)) {
+      if (managedGeminiVariables.has(key.toUpperCase())) delete environment[key]
+    }
+  }
+  return environment
 }
 
 export function createSystemService(
@@ -1737,7 +1764,15 @@ export function createSystemService(
   let npmLatestCacheGeneration = 0
   const grokLatestInFlight = new Map<string, Promise<LatestVersionProbe>>()
   const modelAccessCache = new Map<string, { expiresAt: number; models: string[] }>()
-  let networkLocationCache: { expiresAt: number; value: NetworkLocationStatus } | null = null
+  const networkLocationCache = createNetworkLocationCache({
+    ttlMs: networkLocationCacheTtlMs,
+    probe: async (forceRefresh) => {
+      if (forceRefresh && serviceOptions.reloadNetworkProxyConfig) {
+        await reloadNetworkProxyConfiguration(serviceOptions.reloadNetworkProxyConfig)
+      }
+      return detectNetworkLocation(serviceOptions.networkLocationFetch ?? fetch)
+    },
+  })
   let officialChatGptCache: { expiresAt: number; value: OfficialChatGptAccount | null } | null = null
   const inspectOfficialUsage = serviceOptions.fetchOfficialChatGptUsage
     ?? (process.env.VITEST ? async () => null : fetchOfficialChatGptUsage)
@@ -1760,18 +1795,12 @@ export function createSystemService(
     return fs.promises.mkdtemp(path.join(os.tmpdir(), `xingmang-${safeLabel}-`))
   }
 
-  async function inspectNetworkLocation(): Promise<NetworkLocationStatus> {
-    if (networkLocationCache && networkLocationCache.expiresAt > Date.now()) {
-      return networkLocationCache.value
-    }
-    const value = await detectNetworkLocation()
-    // A failed probe used to be retried every minute, costing another 2.5s
-    // timeout each time on precisely the networks that are already slow. Now
-    // that an unknown region routes to the mirror first — the safe default for
-    // this product — there is nothing to regain by re-probing sooner. A manual
-    // rescan still clears this cache outright via forceRefresh.
-    networkLocationCache = { expiresAt: Date.now() + networkLocationCacheTtlMs, value }
-    return value
+  function inspectNetworkLocation(forceRefresh = false): Promise<NetworkLocationStatus> {
+    return networkLocationCache.read(forceRefresh)
+  }
+
+  function refreshNetworkLocation(): Promise<SystemSnapshot['network']> {
+    return inspectNetworkLocation(true)
   }
 
   async function inspectNetworkRegion(): Promise<NetworkRegion> {
@@ -2161,7 +2190,6 @@ export function createSystemService(
       npmLatestCacheGeneration += 1
       npmLatestCache.clear()
       grokLatestInFlight.clear()
-      networkLocationCache = null
       officialChatGptCache = null
     }
     const [nodeResult, npmResult, pythonResult, codexDesktopResult, networkResult, officialChatGptResult] = await Promise.allSettled([
@@ -2169,7 +2197,7 @@ export function createSystemService(
       inspectTool('npm'),
       inspectPython(),
       inspectCodexDesktopUpdate(forceRefresh),
-      inspectNetworkLocation(),
+      inspectNetworkLocation(forceRefresh),
       inspectOfficialChatGptAccount(forceRefresh),
     ])
     // 单个探测异常不再丢弃整份快照；失败项降级为可区分的「检测失败」状态
@@ -3157,6 +3185,15 @@ export function createSystemService(
 
     const definition = cliCatalog[provider]
     const providerEnv = providerEnvironment(provider)
+    if (provider === 'gemini') {
+      // Gemini CLI 0.59 may skip ~/.gemini/.env for an untrusted workspace,
+      // and it never overwrites conflicting parent-process variables. Pass the
+      // exact inspected managed values for this launch so the selected account
+      // cannot silently fall back to another endpoint or model.
+      if (nativeConfig.apiKey) providerEnv.GEMINI_API_KEY = nativeConfig.apiKey
+      if (nativeConfig.baseUrl) providerEnv.GOOGLE_GEMINI_BASE_URL = nativeConfig.baseUrl
+      if (nativeConfig.model) providerEnv.GEMINI_MODEL = geminiCliCompatibleModel(nativeConfig.model)
+    }
     const npmTool = await inspectTool('npm')
     const npmGlobalRoot = await resolveNpmGlobalRoot(npmTool.path, commandEnvironment())
     const { installation } = await inspectCliTool(provider, npmTool.path, npmGlobalRoot)
@@ -3296,20 +3333,29 @@ export function createSystemService(
     if (locale === 'zh-CN' && !before.chineseResources.available) {
       throw new Error('当前 Codex Desktop 安装包没有本地简体中文资源，请先通过镜像更新 Codex Desktop')
     }
-    if (!codexDesktopLocaleNeedsChange(before.configuredLocale, locale)) {
-      return { ...before, needsRestart: false, restarted: false }
-    }
-    await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale)
-    let restarted = false
-    if (before.running) {
-      await launchCodexDesktop('restart', target, { injectChinese: locale === 'zh-CN' })
-      restarted = true
+    const changed = codexDesktopLocaleNeedsChange(before.configuredLocale, locale)
+    if (changed) await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale)
+    let launchResult: CodexDesktopLaunchResult | undefined
+    // A saved zh-CN preference is not proof that a previous runtime patch
+    // worked. Explicitly enabling Chinese is also the retry path.
+    if (before.running && platform === 'win32' && (changed || locale === 'zh-CN')) {
+      launchResult = await launchCodexDesktop('restart', target, { injectChinese: locale === 'zh-CN' })
     }
     const after = await inspectCodexDesktopLocale()
-    if (locale === 'zh-CN' && after.configuredLocale !== 'zh-CN') {
-      throw new Error('语言设置已写入，但 Codex Desktop 重启后没有读取到简体中文配置')
+    if (codexDesktopLocaleNeedsChange(after.configuredLocale, locale)) {
+      throw new Error('语言设置保存后未通过回读检查，请重新尝试')
     }
-    return { ...after, restarted }
+    const runtimeVerified = locale === 'zh-CN' && launchResult?.chineseLocale?.status === 'verified'
+    const warning = locale === 'zh-CN' && launchResult && !runtimeVerified
+      ? launchResult.chineseLocale?.message || '中文设置已保存，但本次未确认中文界面生效。请再次启用中文界面以重试。'
+      : undefined
+    return {
+      ...after,
+      restarted: launchResult?.restarted ?? false,
+      runtimeVerified,
+      needsRestart: locale === 'zh-CN' ? !runtimeVerified : changed && !launchResult,
+      ...(warning ? { warning } : {}),
+    }
   }
 
   async function fetchAvailableModels(
@@ -3506,6 +3552,7 @@ export function createSystemService(
     saveConfig,
     switchToOfficialAccount,
     scanSystem,
+    refreshNetworkLocation,
     refreshOfficialChatGptUsage,
     inspectCodexSetupStatus,
     installNodeRuntime,

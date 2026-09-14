@@ -1,7 +1,7 @@
 import type { PageId } from './pages'
 
 export const shellNavigation: ReadonlyArray<readonly PageId[]> = [
-  ['home', 'chat', 'sessions', 'canvas'],
+  ['home', 'chat', 'sessions', 'canvas', 'acceleration'],
   ['mcp', 'skills', 'plugins'],
   ['tutorial', 'health'],
 ]

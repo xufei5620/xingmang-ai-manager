@@ -5,7 +5,6 @@ import {
   CODEX_SETUP_STATUS_TIMEOUT_MS,
   authorizeManagedCodex,
   buildCodexDetectionFailureMessage,
-  DEFAULT_CODEX_MODEL,
   prepareCodexEnvironment,
   prepareCodexEnvironmentAutomatically,
   type CodexSetupApi,
@@ -84,7 +83,7 @@ describe('authorizeManagedCodex', () => {
     await expect(authorizeManagedCodex(api)).resolves.toBe(config)
     expect(api.configureManagedCliKeys).toHaveBeenCalledWith({
       providers: ['codex'],
-      preferredModels: { codex: DEFAULT_CODEX_MODEL },
+      preferredModels: { codex: 'gpt-6-astra' },
     })
     expect(api.getConfig).toHaveBeenCalledTimes(1)
   })

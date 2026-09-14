@@ -5,8 +5,9 @@ import type {
   ProviderId,
 } from './types'
 import { isDetectionFailed } from './app-shared'
+import { DEFAULT_CODEX_MODEL } from '../electron/cli-model-defaults'
 
-export const DEFAULT_CODEX_MODEL = 'gpt-5.6-sol'
+export { DEFAULT_CODEX_MODEL }
 export const CODEX_SETUP_STATUS_TIMEOUT_MS = 45_000
 
 export type OnboardingSetupAction =

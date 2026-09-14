@@ -55,7 +55,7 @@ test('login preserves drafts through legal documents and only authenticates afte
 test('registration preserves its completed result when the following real login attempt fails', async () => {
   const page = await open('scenario=register&fail=1')
   try {
-    assert.equal(await page.getByTestId('register-email').getAttribute('placeholder'), 'name@example.com')
+    assert.equal(await page.getByTestId('register-email').getAttribute('placeholder'), '输入您的qq邮箱')
     await page.getByTestId('register-email').fill('person@163.com')
     await page.getByTestId('register-send-code').click()
     await page.getByTestId('register-send-code').filter({ hasText: '秒后重发' }).waitFor()

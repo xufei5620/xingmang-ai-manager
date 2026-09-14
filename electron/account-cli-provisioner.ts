@@ -1,4 +1,5 @@
 import { resolveManagedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
+import { resolveDefaultCliModel } from './cli-model-defaults'
 import type { StoredManagedCliKey } from './managed-cli-key-store'
 import type { RelayBackendClient } from './relay-backend'
 import type { ConfigSavePayload, SystemService } from './system-service'
@@ -270,8 +271,8 @@ export async function configureManagedClis(
       }
       assertSameAuthenticatedUser(accountService, capture)
       if (models.length === 0) throw new Error('当前分组未返回可用模型')
-      const preferred = preferredModels[provider]
-      const model = preferred && models.includes(preferred) ? preferred : models[0]
+      const model = resolveDefaultCliModel(provider, models, preferredModels[provider])
+      if (!model) throw new Error('当前分组未返回可用于交互的默认模型，请选择其他分组或手动配置模型')
       const payload: ConfigSavePayload = { provider, apiKey: managedKey.key, model, mode }
       assertSameAuthenticatedUser(accountService, capture)
       await systemService.saveConfig(

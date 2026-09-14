@@ -1,6 +1,7 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
 import { Button, Input, Pill, Progress, Segment, Switch, Tabs } from './components';
+import { BrandIcon } from './brand';
 
 describe('renderer-v2 component contract', () => {
   it('透传 testId 并支持语义按钮状态', () => {
@@ -18,5 +19,12 @@ describe('renderer-v2 component contract', () => {
     const html = renderToStaticMarkup(<><Pill tone="ok" dot>已配好</Pill><Progress testId="progress" value={160} /></>);
     expect(html).toContain('已配好');
     expect(html).toContain('width:100%');
+  });
+  it('resolves icons for provider models returned by the relay', () => {
+    for (const model of ['deepseek-v4-flash', 'qwen3-max', 'glm-5', 'kimi-k2', 'minimax-m2']) {
+      const html = renderToStaticMarkup(<BrandIcon model={model} />);
+      expect(html, model).not.toContain('circle-help');
+      expect(html, model).not.toContain('其他工具');
+    }
   });
 });

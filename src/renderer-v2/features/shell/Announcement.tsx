@@ -3,15 +3,16 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowLeft, Bell, Check, ChevronRight, ExternalLink } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
-import { readLocalPreference, writeLocalPreference } from '../app/preferences'
+import { writeLocalPreference } from '../app/preferences'
 import type { RelayNotice } from '../../../../electron/relay-backend'
-import { markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLocalAnnouncementIds, rememberLocalAnnouncementIds } from './newapi-announcements'
+import { legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, rememberLocalAnnouncementIds } from './newapi-announcements'
 
 type Announcement = RelayNotice & { localEntries?: boolean }
 interface Props {
   scope: string
   read(): Promise<Announcement | null>
   markRemoteRead?(id: string, entryId: string): Promise<void>
+  syncLocalReads?(scope: string, ids: string[]): Promise<string[]>
   open: boolean
   onClose(): void
   onOpen(): void
@@ -843,7 +844,7 @@ export function formatAnnouncementError(cause: unknown): AnnouncementError {
     : { responseTooLarge: false, message: message || '公告读取失败' }
 }
 
-export function AnnouncementCenter({ scope, read, markRemoteRead, open, onClose, onOpen, onUnread, openExternal, noticeUrl }: Props) {
+export function AnnouncementCenter({ scope, read, markRemoteRead, syncLocalReads, open, onClose, onOpen, onUnread, openExternal, noticeUrl }: Props) {
   const [announcement, setAnnouncement] = useState<Announcement | null>(null)
   const [error, setError] = useState<AnnouncementError | null>(null)
   const [loading, setLoading] = useState(true)
@@ -856,7 +857,7 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, open, onClose,
   const rows = useRef(new Map<string, HTMLButtonElement>())
   const detailHeading = useRef<HTMLHeadingElement>(null)
   const returnToRow = useRef<string | null>(null)
-  const [readId, setReadId] = useState(() => readLocalPreference(`xingmang-v2-notice:${scope}`))
+  const [readId, setReadId] = useState(() => readLegacyAnnouncementId(scope))
   useEffect(() => {
     setSelectedId(null)
     returnToRow.current = null
@@ -868,18 +869,28 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, open, onClose,
     setAnnouncement(null); setError(null); setLoading(true); setSelectedId(null)
     setReadErrors({}); setMarkingIds([])
     returnToRow.current = null
-    setReadId(readLocalPreference(`xingmang-v2-notice:${scope}`))
+    setReadId(readLegacyAnnouncementId(scope))
     void read().then(async (value): Promise<Announcement | null> => {
       if (!current || !value || value.entries) return value
       const collection = await parseNewApiAnnouncementCollection(value.text)
-      if (!current || !collection) return value
-      const readIds = new Set(readLocalAnnouncementIds(scope))
-      const previouslyRead = readLocalPreference(`xingmang-v2-notice:${scope}`) === value.id
-      if (previouslyRead) rememberLocalAnnouncementIds(scope, collection.map((entry) => entry.id))
-      return { ...value, localEntries: true, entries: collection.map((entry) => ({ ...entry, read: previouslyRead || readIds.has(entry.id) })) }
+      if (!current) return value
+      const previouslyRead = readLegacyAnnouncementId(scope) === value.id
+      if (!collection) {
+        if (syncLocalReads) {
+          const id = await legacyAnnouncementReadId(value.id)
+          if (!current) return value
+          const ids = await syncLocalReads(scope, previouslyRead ? [id] : [])
+          if (current) setReadId(ids.includes(id) ? value.id : null)
+        }
+        return value
+      }
+      const migrated = [...new Set([...readLocalAnnouncementIds(scope), ...(previouslyRead ? collection.map((entry) => entry.id) : [])])].slice(-200)
+      const readIds = new Set(syncLocalReads ? await syncLocalReads(scope, migrated) : migrated)
+      if (previouslyRead && current) rememberLocalAnnouncementIds(scope, collection.map((entry) => entry.id))
+      return { ...value, localEntries: true, entries: collection.map((entry) => ({ ...entry, read: readIds.has(entry.id) })) }
     }).then((value) => { if (current) setAnnouncement(value) }).catch((cause) => { if (current) setError(formatAnnouncementError(cause)) }).finally(() => { if (current) setLoading(false) })
     return () => { current = false; revision.current += 1 }
-  }, [scope, read, attempt])
+  }, [scope, read, syncLocalReads, attempt])
   useLayoutEffect(() => {
     if (selectedId) detailHeading.current?.focus()
     else if (returnToRow.current) {
@@ -902,7 +913,11 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, open, onClose,
     setReadErrors((current) => ({ ...current, [entry.id]: '' }))
     try {
       if (announcement.localEntries) {
-        if (!markLocalAnnouncementRead(scope, entry.id)) throw new Error('本机没有保存已读状态，下次打开时可能再次提醒。')
+        if (syncLocalReads) {
+          await syncLocalReads(scope, [entry.id])
+          // Keep a best-effort cache for older builds; only the host's durable write confirms success.
+          markLocalAnnouncementRead(scope, entry.id)
+        } else if (!markLocalAnnouncementRead(scope, entry.id)) throw new Error('本机没有保存已读状态，下次打开时可能再次提醒。')
       } else {
         if (!markRemoteRead) throw new Error('公告已读状态暂时无法保存，请稍后重试。')
         await markRemoteRead(announcement.id, entry.id)
@@ -926,12 +941,23 @@ export function AnnouncementCenter({ scope, read, markRemoteRead, open, onClose,
     returnToRow.current = selectedId
     setSelectedId(null)
   }
-  function markLegacyRead(closeAfter = false) {
+  async function markLegacyRead(closeAfter = false) {
     if (!announcement || entries) return
-    if (!writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)) {
-      setError({ responseTooLarge: false, message: '本机没有保存已读状态，下次打开时可能再次提醒。' })
+    const capturedRevision = revision.current
+    try {
+      if (syncLocalReads) {
+        const id = await legacyAnnouncementReadId(announcement.id)
+        if (revision.current !== capturedRevision) return
+        await syncLocalReads(scope, [id])
+        writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)
+      } else if (!writeLocalPreference(`xingmang-v2-notice:${scope}`, announcement.id)) {
+        throw new Error('本机没有保存已读状态，下次打开时可能再次提醒。')
+      }
+    } catch (cause) {
+      if (revision.current === capturedRevision) setError(formatAnnouncementError(cause))
       return
     }
+    if (revision.current !== capturedRevision) return
     setReadId(announcement.id)
     setError(null)
     if (closeAfter) onClose()

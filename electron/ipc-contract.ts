@@ -465,6 +465,7 @@ export interface XingmangInvokeContract {
     PlatformCapabilities
   >
   scanSystem: IpcInvokeDefinition<'system:scan', [forceRefresh?: boolean], SystemSnapshot>
+  refreshNetworkLocation: IpcInvokeDefinition<'system:refresh-network-location', [], SystemSnapshot['network']>
   refreshOfficialChatGptUsage: IpcInvokeDefinition<
     'system:refresh-official-chatgpt',
     [],
@@ -634,6 +635,12 @@ export interface XingmangInvokeContract {
   getAccountStatus: IpcInvokeDefinition<'account:get-status', [siteId?: AccountSiteId], AccountStatus>
   getAccountNotice: IpcInvokeDefinition<'account:get-notice', [], import('./relay-backend').RelayNotice | null>
   markAccountNoticeRead: IpcInvokeDefinition<'account:mark-notice-read', [id: string, entryId: string], void>
+  syncLocalNoticeReads: IpcInvokeDefinition<'account:sync-local-notice-reads', [scope: string, ids: string[]], string[]>
+  getAccelerationState: IpcInvokeDefinition<'acceleration:get-state', [scope: string], import('./acceleration-contract').AccelerationState>
+  listAccelerationLines: IpcInvokeDefinition<'acceleration:list-lines', [scope: string], import('./acceleration-contract').AccelerationLine[]>
+  pingAccelerationLine: IpcInvokeDefinition<'acceleration:ping-line', [scope: string, lineId: string], import('./acceleration-contract').AccelerationLine>
+  startAcceleration: IpcInvokeDefinition<'acceleration:start', [scope: string, mode: import('./acceleration-contract').AccelerationMode, lineId?: string], import('./acceleration-contract').AccelerationState>
+  stopAcceleration: IpcInvokeDefinition<'acceleration:stop', [scope: string], import('./acceleration-contract').AccelerationState>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
@@ -821,6 +828,7 @@ export type XingmangApi = {
 export const ipcInvokeChannels = {
   getPlatformCapabilities: 'platform:get-capabilities',
   scanSystem: 'system:scan',
+  refreshNetworkLocation: 'system:refresh-network-location',
   refreshOfficialChatGptUsage: 'system:refresh-official-chatgpt',
   getCodexReadiness: 'startup:codex-readiness',
   getConfig: 'config:get',
@@ -905,6 +913,12 @@ export const ipcInvokeChannels = {
   getAccountStatus: 'account:get-status',
   getAccountNotice: 'account:get-notice',
   markAccountNoticeRead: 'account:mark-notice-read',
+  syncLocalNoticeReads: 'account:sync-local-notice-reads',
+  getAccelerationState: 'acceleration:get-state',
+  listAccelerationLines: 'acceleration:list-lines',
+  pingAccelerationLine: 'acceleration:ping-line',
+  startAcceleration: 'acceleration:start',
+  stopAcceleration: 'acceleration:stop',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   logoutAccount: 'account:logout',

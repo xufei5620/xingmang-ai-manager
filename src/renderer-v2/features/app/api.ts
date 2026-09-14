@@ -20,5 +20,6 @@ export function createAppApi(bridge: XingmangApi) {
     openExternal: (url: string) => bridge.openExternal(url),
     announcement: () => bridge.getAccountNotice(),
     markAnnouncementRead: (id: string, entryId: string) => bridge.markAccountNoticeRead(id, entryId),
+    syncLocalNoticeReads: (scope: string, ids: string[]) => bridge.syncLocalNoticeReads(scope, ids),
   }
 }

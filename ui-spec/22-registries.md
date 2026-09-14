@@ -10,6 +10,7 @@
 | chat | 聊天 | message-square | daily | 专用 | 跳转 | page-chat |
 | sessions | 记录 | clock | daily | T3 | 跳转 | page-sessions |
 | canvas | 画布 ↗ | infinity | daily | 独立窗口 | 跳转 | nav-canvas |
+| acceleration | 全球加速 | globe-2 | daily | T5 | 跳转 | page-acceleration |
 | mcp | 外接工具 | plug | extend | T1 | 跳转 | page-mcp |
 | skills | 技能 | sparkles | extend | T1 | 跳转 | page-skills |
 | plugins | 插件 | package | extend | T1 | 跳转 | page-plugins |

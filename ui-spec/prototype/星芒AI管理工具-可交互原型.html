@@ -1157,6 +1157,102 @@ body[data-platform-os="linux"] .osnotify { border-radius:8px; }
 }
 .window.hc .orbit-core, [data-reduce-motion="1"] .orbit-core { animation: none; }
 
+.acceleration-page {
+  --acceleration-stage: var(--xm-navy);
+  --acceleration-stage-text: var(--xm-ivory);
+  --acceleration-stage-muted: color-mix(in srgb, var(--xm-sky) 76%, var(--xm-ivory));
+  --acceleration-stage-line: color-mix(in srgb, var(--xm-sky) 19%, transparent);
+  --acceleration-stage-inset: color-mix(in srgb, var(--xm-sky) 5%, transparent);
+  display: grid; gap: var(--space-4); min-width: 0; color: var(--text);
+}
+.acceleration-heading { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); }
+.acceleration-heading-title { display: flex; align-items: center; gap: var(--space-3); }
+.acceleration-heading h1 { margin: 0; font-size: var(--font-h1); line-height: var(--line-heading); letter-spacing: -.4px; }
+.acceleration-heading p { margin: var(--space-2) 0 0; color: var(--text-2); font-size: var(--font-body); }
+.acceleration-preview { padding: 3px 7px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text-2); font-size: var(--font-small-compact); }
+.acceleration-workbench { display: grid; grid-template-columns: minmax(0, 1.37fr) minmax(0, 1fr); min-height: 444px; border: 1px solid var(--line-2); border-radius: var(--radius-dialog); background: var(--panel-solid); overflow: hidden; box-shadow: var(--tile-ring); }
+.acceleration-stage { position: relative; display: flex; flex-direction: column; min-width: 0; padding: var(--space-6) var(--space-7) var(--space-4); isolation: isolate; color: var(--acceleration-stage-text); background: radial-gradient(ellipse at 50% 40%, color-mix(in srgb, var(--xm-slate) 27%, transparent), transparent 68%), var(--acceleration-stage); }
+.acceleration-stage::before { position: absolute; inset: 0; z-index: -1; background-image: radial-gradient(circle, var(--acceleration-stage-line) .65px, transparent .75px); background-size: 20px 20px; opacity: .35; content: ''; }
+.acceleration-stage-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-2); }
+.acceleration-eyebrow { display: inline-flex; align-items: center; gap: var(--space-2); color: var(--xm-gold); font: 500 var(--font-micro) var(--mono); letter-spacing: 1.4px; }
+.acceleration-stage-scope { display: inline-flex; align-items: center; gap: 6px; color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); }
+.acceleration-stage-title { margin-top: var(--space-6); }
+.acceleration-stage-title h2 { margin: 0; color: var(--acceleration-stage-text); font-size: var(--font-h1); font-weight: 600; letter-spacing: .4px; }
+.acceleration-stage-title p { margin: var(--space-2) 0 0; color: var(--acceleration-stage-muted); font-size: var(--font-small); }
+.acceleration-orb { position: relative; flex: 1; min-height: 222px; margin: -16px -20px -13px; }
+.acceleration-globe { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.acceleration-globe-route { animation: acceleration-route-flow 9s linear infinite; animation-play-state: paused; }
+.acceleration-page[data-phase="active"] .acceleration-globe-route { animation-play-state: running; }
+.acceleration-page[data-motion="paused"] .acceleration-globe-route { animation-play-state: paused; }
+.acceleration-route-info { position: relative; display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3) var(--space-4); border: 1px solid var(--acceleration-stage-line); border-radius: var(--radius-button); background: var(--acceleration-stage-inset); }
+.acceleration-route-icon { display: grid; place-items: center; width: 34px; height: 34px; border: 1px solid var(--acceleration-stage-line); border-radius: var(--radius-input); color: var(--xm-gold); }
+.acceleration-route-name { display: grid; gap: var(--space-1); flex: 1; min-width: 0; }
+.acceleration-route-name > span, .acceleration-route-latency > span { color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); }
+.acceleration-route-name strong { display: flex; gap: var(--space-2); align-items: baseline; font-size: var(--font-body); font-weight: 500; overflow-wrap: anywhere; }
+.acceleration-route-name strong small { color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); font-weight: 400; }
+.acceleration-route-latency { display: grid; gap: var(--space-1); flex: none; text-align: right; }
+.acceleration-route-latency strong { font: 500 var(--font-h2) var(--mono); }
+.acceleration-route-latency small { font-size: var(--font-small-compact); font-weight: 400; }
+.acceleration-stage-bottom { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); margin-top: var(--space-3); color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); }
+.acceleration-stage-bottom > span:first-child { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.acceleration-stage-bottom > span:last-child { text-align: right; }
+.acceleration-stage-bottom > .xm-btn { height: var(--control-xs); color: var(--acceleration-stage-muted); font-size: var(--font-small-compact); }
+.acceleration-stage-bottom > .xm-btn:hover { color: var(--acceleration-stage-text); background: var(--acceleration-stage-inset); }
+.acceleration-status-dot { display: inline-block; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.acceleration-page[data-phase="active"] .acceleration-stage-bottom > span:first-child { color: var(--xm-sky); }
+.acceleration-console { display: flex; flex-direction: column; min-width: 0; padding: var(--space-6) var(--space-6) var(--space-4); background: linear-gradient(150deg, var(--accent-soft), transparent 52%), var(--panel-solid); }
+.acceleration-console-top { display: flex; justify-content: space-between; align-items: center; gap: var(--space-3); }
+.acceleration-console-top > span:first-child { display: inline-flex; align-items: center; gap: 6px; color: var(--text-2); font-size: var(--font-small); }
+.acceleration-quota-badge { padding: 3px 9px; border: 1px solid var(--line-2); border-radius: var(--radius-input); color: var(--text-2); background: var(--panel); font-size: var(--font-small-compact); }
+.acceleration-quota { position: relative; display: grid; place-items: center; min-height: 188px; flex: 1; margin: 2px 0; }
+.acceleration-quota-ring { position: absolute; width: 206px; height: 206px; fill: none; }
+.acceleration-quota-track { stroke: var(--line); stroke-width: 3; }
+.acceleration-quota-ticks { stroke: var(--line-2); stroke-width: 1; stroke-dasharray: 1 8; }
+.acceleration-quota-progress { stroke: var(--accent); stroke-width: 3; stroke-linecap: round; transition: stroke-dasharray var(--duration-progress) linear; }
+.acceleration-quota-label { position: relative; display: grid; justify-items: center; gap: var(--space-2); }
+.acceleration-quota-label > span { color: var(--text-2); font-size: var(--font-small); }
+.acceleration-quota-label strong { color: var(--text); font: 500 calc(var(--font-display) - 6px)/var(--line-display) var(--mono); letter-spacing: -1.5px; font-variant-numeric: tabular-nums; }
+.acceleration-quota-label small { display: inline-flex; align-items: center; gap: 5px; color: var(--text-3); font-size: var(--font-small-compact); }
+.acceleration-page[data-phase="active"] .acceleration-quota-label small { color: var(--ok); }
+.acceleration-primary-action > .xm-btn { width: 100%; min-height: 46px; height: auto; border-radius: var(--radius-button); font-size: var(--font-body); }
+.acceleration-quota-note { min-height: 34px; margin: var(--space-2) 0 0; text-align: center; color: var(--text-2); font-size: var(--font-small-compact); line-height: var(--line-body); }
+.acceleration-mode { display: flex; justify-content: space-between; align-items: center; gap: var(--space-4); margin-top: var(--space-3); padding-top: var(--space-3); border-top: 1px solid var(--line); }
+.acceleration-mode > div:first-child { flex: 1; min-width: 0; }
+.acceleration-mode strong { font-size: var(--font-small); font-weight: 600; }
+.acceleration-mode p { margin: var(--space-1) 0 0; color: var(--text-3); font-size: var(--font-small-compact); line-height: var(--line-body); }
+.acceleration-mode .xm-switch-wrap { flex: none; }
+.acceleration-details { display: grid; grid-template-columns: .94fr .94fr 1.35fr; border: 1px solid var(--line); border-radius: var(--radius-card); background: var(--panel); }
+.acceleration-details > div { display: flex; position: relative; flex-wrap: wrap; align-items: center; gap: var(--space-1) var(--space-3); min-width: 0; padding: var(--space-3) var(--space-5); }
+.acceleration-details > div + div { border-left: 1px solid var(--line); }
+.acceleration-detail-icon { display: grid; place-items: center; flex: none; width: 30px; height: 30px; color: var(--text-2); }
+.acceleration-details > div > div { display: grid; gap: var(--space-1); min-width: 0; }
+.acceleration-details > div > div > span { color: var(--text-3); font-size: var(--font-small-compact); }
+.acceleration-details strong { font: 500 var(--font-body) var(--mono); font-variant-numeric: tabular-nums; }
+.acceleration-details > div:last-child strong { font: 500 var(--font-body) var(--font); }
+.acceleration-details > div > small { display: inline-flex; align-items: center; gap: 5px; flex: 1 1 100%; padding-left: 42px; color: var(--text-3); font-size: var(--font-small-compact); }
+.acceleration-error { display: flex; align-items: center; gap: var(--space-2); padding: var(--space-2) var(--space-3); border: 1px solid color-mix(in srgb, var(--bad) 25%, var(--line)); border-radius: var(--radius-input); background: var(--bad-soft); color: var(--bad); font-size: var(--font-small); }
+.acceleration-error > svg { flex: none; }
+.acceleration-error > span { flex: 1; overflow-wrap: anywhere; }
+@keyframes acceleration-route-flow { to { stroke-dashoffset: -90; } }
+@media (prefers-reduced-motion: reduce) { .acceleration-page *, .acceleration-page *::before, .acceleration-page *::after { animation: none !important; transition: none !important; } }
+.statusbar .acceleration-network-position { height: 24px; padding: 0; border: 0; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+.statusbar .acceleration-network-position:disabled { cursor: default; }
+.statusbar .acceleration-network-position:hover:not(:disabled) { color: var(--text); }
+
+.acceleration-line-picker { position: relative; margin-top: var(--space-2); }
+.acceleration-line-list { display: grid; gap: 2px; position: absolute; z-index: 3; left: 0; right: 0; bottom: calc(100% + 4px); max-height: 220px; overflow: auto; padding: 8px; border: 1px solid var(--line-2); border-radius: var(--radius-input); background: var(--panel-solid); box-shadow: var(--shadow-float); }
+.acceleration-line-list-head { display: flex; align-items: center; justify-content: space-between; padding: 0 6px 5px; color: var(--text-3); font-size: var(--font-small-compact); }
+.acceleration-line-option { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 2px 5px; border-radius: var(--radius-input); }
+.acceleration-line-option.is-selected { background: var(--accent-soft); }
+.acceleration-line-option > button:first-child { display: flex; align-items: baseline; gap: 7px; flex: 1; min-width: 0; padding: 5px 2px; border: 0; background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.acceleration-line-option strong { font-size: var(--font-small); font-weight: 600; }
+.acceleration-line-option small, .acceleration-line-option > span { color: var(--text-3); font-size: var(--font-small-compact); white-space: nowrap; }
+.acceleration-line-option .xm-btn { min-width: 44px; }
+.acceleration-line-option > button:first-child:disabled { cursor: default; }
+.acceleration-line-auto > button:first-child { flex-direction: column; gap: var(--space-1); }
+.acceleration-line-auto > svg { flex: none; color: var(--accent); }
+.acceleration-line-error { padding: 5px; color: var(--bad); font-size: var(--font-small-compact); }
+
 </style>
 </head>
 <body>
@@ -2154,7 +2250,7 @@ const A = {
   menuRun(i) { const it = S.menu.items[i]; pendingFocus = S.menu.returnFocus; S.menu = null; render(); if (it && it.run) it.run(); },
   /* 登录 / 注册 / 引导 */
   login() { const f = S.form, owner = topDialog(), session = S; if (f.busy) return; if (!f.acc || !f.pw) { f.err = '请输入账号和密码'; render(); return; } if (!f.agree) { f.err = '请先勾选同意用户协议和隐私政策'; render(); return; } if ((f.fails || 0) >= 2 && !f.verified) { f.err = '请先完成安全验证'; render(); return; } if (f.pw === 'wrong') { f.fails = (f.fails || 0) + 1; f.verified = false; f.err = `账号或密码不对${f.fails >= 5 ? '，已连续错 5 次，账号锁定 15 分钟' : '，还可以试 ' + (5 - f.fails) + ' 次'}`; render(); return; } f.err = ''; f.busy = true; render();
-    later(() => { if (S !== session || !S.dialogs.includes(owner)) return; const adding = f.addAccount, nested = S.dialogs.indexOf(owner) > 0; S.dialogs.splice(S.dialogs.indexOf(owner)); S.form = topDialog()?.form || S.pageForm || {}; pendingFocus = owner.returnFocus; if (S.sim === 'expired') { S.sim = ''; S.view = 'app'; render(); A.toast('已重新登录'); return; } S.user = { name: f.acc.includes('@') ? f.acc.split('@')[0] : f.acc, display: '徐飞', avatar: false, email: f.acc.includes('@') ? f.acc : f.acc + '@example.com', balance: 12.4, usedMonth: 20.32, invite: 'XM-7K2Q', reward: 6.5 }; if (!S.keys.length) S.keys = freshState(true).keys; if (!S.devices.length) S.devices = freshState(true).devices; if (!S.orders.length) S.orders = freshState(true).orders; if (!S.usage.length) S.usage = freshState(true).usage; const known = Boolean(S.accounts.find((a) => a.name === S.user.name)); if (!known) S.accounts.push({ ...S.user }); log('info', '账号登录成功', S.user.name); if (nested) { Object.assign(S, owner.origin); render(); A.toast('已登录，可继续填写配置'); return; } if (adding) { S.view = 'app'; render(); A.toast(`已添加账号 ${S.user.display}`); return; } const allConfigured = TOOL_ORDER.every((id) => !S.tools[id].installed || S.tools[id].configured); if (known && allConfigured && envReady()) { S.view = 'app'; S.page = 'home'; render(); A.toast(`欢迎回来，${S.user.display}。Key 已同步`); return; } A.startOnboard(); }, 900); },
+    later(() => { if (S !== session || !S.dialogs.includes(owner)) return; const adding = f.addAccount, nested = S.dialogs.indexOf(owner) > 0; S.dialogs.splice(S.dialogs.indexOf(owner)); S.form = topDialog()?.form || S.pageForm || {}; pendingFocus = owner.returnFocus; if (S.sim === 'expired') { S.sim = ''; S.view = 'app'; render(); A.toast('已重新登录'); return; } S.user = { name: f.acc.includes('@') ? f.acc.split('@')[0] : f.acc, display: '徐飞', avatar: false, email: f.acc.includes('@') ? f.acc : f.acc + '@qq.com', balance: 12.4, usedMonth: 20.32, invite: 'XM-7K2Q', reward: 6.5 }; if (!S.keys.length) S.keys = freshState(true).keys; if (!S.devices.length) S.devices = freshState(true).devices; if (!S.orders.length) S.orders = freshState(true).orders; if (!S.usage.length) S.usage = freshState(true).usage; const known = Boolean(S.accounts.find((a) => a.name === S.user.name)); if (!known) S.accounts.push({ ...S.user }); log('info', '账号登录成功', S.user.name); if (nested) { Object.assign(S, owner.origin); render(); A.toast('已登录，可继续填写配置'); return; } if (adding) { S.view = 'app'; render(); A.toast(`已添加账号 ${S.user.display}`); return; } const allConfigured = TOOL_ORDER.every((id) => !S.tools[id].installed || S.tools[id].configured); if (known && allConfigured && envReady()) { S.view = 'app'; S.page = 'home'; render(); A.toast(`欢迎回来，${S.user.display}。Key 已同步`); return; } A.startOnboard(); }, 900); },
   register() { const f = S.form, owner = topDialog(), session = S; if (f.busy) return; const err = !f.sent ? '请先获取验证码' : !/^\d{6}$/.test(f.code || '') ? '验证码是 6 位数字' : !(f.user && f.user.length >= 3) ? '用户名至少 3 位' : f.user === 'admin' ? '用户名已被占用' : !(f.pw && f.pw.length >= 8) ? '密码至少 8 位' : f.pw !== f.pw2 ? '两次密码不一致' : !f.agree ? '请先勾选同意用户协议和隐私政策' : ''; if (err) { f.err = err; render(); return; } f.err = ''; f.busy = true; render(); later(() => { if (S !== session || !S.dialogs.includes(owner)) return; const email = f.email; S.dialogs.splice(S.dialogs.indexOf(owner)); S.form = topDialog()?.form || S.pageForm || {}; A.toast('注册成功，已为你准备 4 把 Key，请登录'); A.dialog('login'); S.form.acc = email; topDialog().initial = formFingerprint(S.form); render(); }, 900); },
   startOnboard() { const steps = [{ label: '检测本机环境', doing: '扫描中', done: envReady() ? `Node ${S.env.node}` : '缺 Node.js，首页会引导安装', result: envReady() ? 'ok' : 'warn' }, { label: '准备账号专属 Key', doing: '创建或同步中', done: '4 把已就绪', result: 'ok' }, { label: '把 Key 写进已装好的工具', doing: '写入中', done: installedCount() ? `${installedCount()} 个工具` : '还没装工具，先跳过', result: installedCount() ? 'ok' : 'skip' }]; S.onboard = { steps, at: 0, failed: false }; S.view = 'onboard'; render();
     const tick = () => { S.onboard.at += 1; if (S.onboard.at === steps.length) { TOOL_ORDER.forEach((id) => { if (S.tools[id].installed && S.tools[id].source === 'account') { S.tools[id].configured = true; S.tools[id].key = id === 'claude' ? 'k1' : 'k2'; } }); } render(); if (S.onboard.at < steps.length) later(tick, 1100); }; later(tick, 1100); },
@@ -3061,9 +3157,6 @@ function initProto() {
   };
   if (typeof XM !== 'undefined') XM.extensions = { files: allowedFiles, state: ext, builtinState, archiveReason, scenario: A.ext30Scenario };
 })();
-
-
-
 
 /* Tool configuration and lifecycle: offline UI behavior, never native commands. */
 (() => {
@@ -4153,6 +4246,105 @@ function startStarfield() {
   }
   draw(0);
 }
+
+/* Global acceleration prototype: illustrative connection only, never changes the network. */
+const accelerationPrototypeTrialSeconds = 20 * 60;
+const accelerationPrototypeLines = [
+  { id: 'preview-jp', name: '日本线路 1', region: 'JP' },
+  { id: 'preview-sg', name: '新加坡线路 2', region: 'SG' },
+  { id: 'preview-us', name: '美国线路 3', region: 'US' }
+];
+function accelerationPrototypeState() {
+  return S.acceleration ?? (S.acceleration = { remaining: accelerationPrototypeTrialSeconds, started: null, tun: false, session: 0 });
+}
+function accelerationPrototypeClock() {
+  const state = accelerationPrototypeState();
+  const elapsed = state.started === null ? 0 : Math.max(0, (performance.now() - state.started) / 1000);
+  const remaining = Math.max(0, state.remaining - elapsed);
+  return { remaining, session: state.session + Math.min(elapsed, state.remaining) };
+}
+function accelerationPrototypeTime(value) {
+  value = Math.max(0, Math.floor(value));
+  return [Math.floor(value / 3600), Math.floor(value % 3600 / 60), value % 60].map(n => String(n).padStart(2, '0')).join(':');
+}
+A.accelerationToggle = function () {
+  const state = accelerationPrototypeState(), clock = accelerationPrototypeClock();
+  if (state.started !== null) {
+    state.remaining = clock.remaining; state.session = clock.session; state.started = null;
+  } else if (state.remaining > 0) { state.started = performance.now(); state.session = 0; }
+  A.accelerationRefreshNetwork();
+};
+A.accelerationRefreshNetwork = function () {
+  const sequence = (S.accelerationNetwork?.sequence ?? 0) + 1;
+  S.accelerationNetwork = { sequence, busy: true, text: '正在检测网络位置…' };
+  render();
+  setTimeout(() => {
+    if (S.accelerationNetwork.sequence !== sequence) return;
+    S.accelerationNetwork = { sequence, busy: false, text: accelerationPrototypeState().started === null ? '中国 · 198.51.100.18' : '新加坡 · 203.0.113.24' };
+    render();
+  }, 350);
+};
+XM.afterRender(() => {
+  const previous = document.querySelector('.statusbar > .it:nth-child(2)');
+  if (!previous) return;
+  const state = S.accelerationNetwork;
+  const button = document.createElement('button');
+  button.className = 'it acceleration-network-position';
+  button.dataset.testid = 'shell-network-location';
+  button.type = 'button';
+  button.disabled = Boolean(state?.busy);
+  button.setAttribute('aria-label', '刷新网络位置');
+  button.setAttribute('aria-busy', String(Boolean(state?.busy)));
+  button.title = '演示网络位置；点击刷新';
+  button.innerHTML = `${ic('globe')}<span aria-live="polite">${state?.text ?? '网络位置未知'}</span>`;
+  button.onclick = A.accelerationRefreshNetwork;
+  previous.replaceWith(button);
+});
+A.accelerationTun = function () { const state = accelerationPrototypeState(); if (state.started === null) { state.tun = !state.tun; render(); } };
+A.accelerationSelectLine = function (id) {
+  const state = accelerationPrototypeState();
+  if (state.started !== null) return;
+  state.selectedLineId = accelerationPrototypeLines.some(line => line.id === id) ? id : null;
+  render();
+};
+A.accelerationOpenLines = function () {
+  const state = accelerationPrototypeState();
+  if (state.started !== null) return;
+  state.linesOpen = !state.linesOpen;
+  render();
+};
+function accelerationPrototypeLinePicker() {
+  const state = accelerationPrototypeState();
+  if (state.started !== null) return '';
+  const rows = [{ id: null, name: '智能分配', region: '连接时自动测速，选择最快可用线路' }, ...accelerationPrototypeLines];
+  return `<div class="acceleration-line-picker"><button class="btn btn-ghost" onclick="A.accelerationOpenLines()" aria-expanded="${Boolean(state.linesOpen)}">${state.linesOpen ? '收起线路' : '选择加速线路'}</button>${state.linesOpen ? `<div class="acceleration-line-list" role="listbox" aria-label="加速线路选择"><div class="acceleration-line-list-head">${accelerationPrototypeLines.length} 条演示线路</div>${rows.map(line => `<div class="acceleration-line-option${line.id === null ? ' acceleration-line-auto' : ''}${(state.selectedLineId ?? null) === line.id ? ' is-selected' : ''}" role="option" aria-selected="${(state.selectedLineId ?? null) === line.id}" ${line.id === null ? 'data-testid="acceleration-line-auto"' : ''}><button type="button" onclick="A.accelerationSelectLine(${line.id === null ? 'null' : `'${line.id}'`})"><strong>${line.name}</strong><small>${line.region}</small></button></div>`).join('')}</div>` : ''}</div>`;
+}
+function accelerationPrototypeHtml() {
+  const state = accelerationPrototypeState(), clock = accelerationPrototypeClock(), active = state.started !== null;
+  const globe = `<svg viewBox="0 0 440 260" aria-hidden="true"><defs><radialGradient id="acc-p-glow"><stop stop-color="var(--xm-slate)" stop-opacity=".8"/><stop offset="1" stop-color="var(--xm-navy)"/></radialGradient></defs><g transform="translate(220 130)"><circle r="109" fill="url(#acc-p-glow)" stroke="var(--xm-sky)" stroke-opacity=".24"/>${[30,58,86].map(r=>`<ellipse rx="${r}" ry="109" fill="none" stroke="var(--xm-sky)" stroke-opacity=".2"/>`).join('')}${[-70,-35,0,35,70].map(y=>`<ellipse cy="${y}" rx="${Math.sqrt(109*109-y*y)}" ry="15" fill="none" stroke="var(--xm-sky)" stroke-opacity=".2"/>`).join('')}<ellipse rx="156" ry="51" transform="rotate(-25)" fill="none" stroke="var(--xm-gold)" stroke-opacity=".75"/><circle cx="138" cy="-64" r="4" fill="var(--xm-gold)"/><circle cx="-95" cy="58" r="3" fill="var(--xm-sky)"/></g></svg>`;
+  return `<section class="page acceleration-page" data-phase="${active ? 'active' : 'idle'}">
+    <header class="acceleration-heading"><div><div class="acceleration-heading-title"><h1>全球加速</h1><span class="acceleration-preview">交互预览</span></div><p>连接全球网络，让 AI 工作更顺畅。</p></div></header>
+    <div class="acceleration-workbench">
+      <section class="acceleration-stage"><div class="acceleration-stage-top"><span class="acceleration-eyebrow">GLOBAL CONNECT</span><span class="acceleration-stage-scope">${state.tun ? '全局接管' : '系统代理'}</span></div><div class="acceleration-stage-title"><h2>让灵感，自由连接。</h2><p>从这里出发，连接你的 AI 工作世界。</p></div><div class="acceleration-orb">${globe}</div><div class="acceleration-route-info"><div class="acceleration-route-name"><span>加速线路</span><strong data-testid="acceleration-line-current">${accelerationPrototypeLines.find(line => line.id === state.selectedLineId)?.name ?? '智能分配'}</strong></div><div class="acceleration-route-latency"><span>连接延迟</span><strong>—</strong></div></div>${accelerationPrototypeLinePicker()}<div class="acceleration-stage-bottom"><span>${active ? '演示连接已开启' : '准备就绪'}</span><span>演示数据 · 未连接实际节点</span></div></section>
+      <section class="acceleration-console"><div class="acceleration-console-top"><span>免费体验</span><span class="acceleration-quota-badge">20 分钟</span></div><div class="acceleration-quota"><svg class="acceleration-quota-ring" viewBox="0 0 220 220" aria-hidden="true"><circle class="acceleration-quota-track" cx="110" cy="110" r="96"/><circle class="acceleration-quota-progress" cx="110" cy="110" r="96" pathLength="100" stroke-dasharray="${clock.remaining / accelerationPrototypeTrialSeconds * 100} 100" transform="rotate(-90 110 110)"/></svg><div class="acceleration-quota-label"><span>剩余免费时长</span><strong id="acceleration-proto-remaining">${accelerationPrototypeTime(clock.remaining)}</strong><small>${active ? '正在计时' : '未计时'}</small></div></div><button class="btn btn-primary" style="width:100%;min-height:46px" onclick="A.accelerationToggle()" ${clock.remaining <= 0 ? 'disabled' : ''}>${active ? '停止加速' : clock.remaining > 0 ? '开始加速' : '免费体验已用完'}</button><p class="acceleration-quota-note">连接成功才计时，随时停止，剩余下次继续</p><div class="acceleration-mode"><div><strong>TUN 模式</strong><p>${active ? '停止加速后可切换模式' : state.tun ? '接管全电脑网络，覆盖不走系统代理的应用' : '当前使用系统代理，开启后覆盖更多应用'}</p></div><button class="btn btn-secondary sm" role="switch" aria-label="TUN 模式" aria-checked="${state.tun}" onclick="A.accelerationTun()" ${active ? 'disabled' : ''}>${state.tun ? '开' : '关'}</button></div></section>
+    </div><div class="acceleration-details"><div><div><span>本次连接</span><strong id="acceleration-proto-session">${accelerationPrototypeTime(clock.session)}</strong></div><small>按连接时长计时</small></div><div><div><span>累计使用</span><strong id="acceleration-proto-used">${accelerationPrototypeTime(accelerationPrototypeTrialSeconds-clock.remaining)}</strong></div><small>停止后不扣时</small></div><div><div><span>免费额度规则</span><strong>随用随停，保留剩余</strong></div><small>每账号累计 20 分钟，不每日重置</small></div></div>
+  </section>`;
+}
+sidebarHtml = (function (previous) { return function () {
+  const item = `<a class="${S.page === 'acceleration' ? 'active' : ''}" onclick="A.go('acceleration')" data-testid="nav-acceleration">${ic('globe')}<span class="lbl">全球加速</span></a>`;
+  return previous().replace('<div class="sep"></div>', item + '<div class="sep"></div>');
+}; })(sidebarHtml);
+mainHtml = (function (previous) { return function () { return S.view === 'app' && S.page === 'acceleration' ? accelerationPrototypeHtml() : previous(); }; })(mainHtml);
+setInterval(() => {
+  if (!S.acceleration || S.acceleration.started === null) return;
+  const clock = accelerationPrototypeClock();
+  if (clock.remaining <= 0) { S.acceleration.remaining = 0; S.acceleration.session = clock.session; S.acceleration.started = null; A.accelerationRefreshNetwork(); return; }
+  const remaining = document.getElementById('acceleration-proto-remaining'), session = document.getElementById('acceleration-proto-session'), used = document.getElementById('acceleration-proto-used');
+  if (remaining) remaining.textContent = accelerationPrototypeTime(clock.remaining);
+  if (session) session.textContent = accelerationPrototypeTime(clock.session);
+  if (used) used.textContent = accelerationPrototypeTime(accelerationPrototypeTrialSeconds-clock.remaining);
+}, 1000);
+setTimeout(() => { if (location.hash === '#acceleration') { S.view = 'app'; S.page = 'acceleration'; render(); } }, 0);
 
 initProto();
 if (location.hash === '#welcome' && typeof A.guideScene === 'function') A.guideScene('welcome'); else render();

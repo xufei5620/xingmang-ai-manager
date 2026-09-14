@@ -19,13 +19,18 @@ const cdpDiscoveryDeadlineMs = 20_000
  * already-installed official Chinese resources visible to the running
  * Chromium page when the client has not yet applied its locale flags.
  */
-export const codexChineseRuntimeScript = String.raw`(() => {
+const codexChineseRuntimeSource = String.raw`((documentHook) => {
   const configId = "72216192";
-  const state = globalThis.__xingmangCodexChineseLocaleState || {
+  const previousState = globalThis.__xingmangCodexChineseLocaleState;
+  if (previousState && previousState.runtimeVersion === 3) return JSON.stringify(previousState);
+  const state = {
+    runtimeVersion: 3,
     configId,
     patchedClients: 0,
     patchedConfigs: 0,
     lastPatchAt: 0,
+    localeReads: 0,
+    documentHook,
   };
   try { globalThis.__xingmangCodexChineseLocaleState = state; } catch {}
 
@@ -40,18 +45,23 @@ export const codexChineseRuntimeScript = String.raw`(() => {
   defineNavigator("language", locale);
   defineNavigator("languages", [locale, "zh"]);
 
+  let verifyingConfig = false;
   const forceConfig = (config) => {
     if (!config || (typeof config !== "object" && typeof config !== "function")) return config;
-    if (config.__xingmangCodexChineseConfig) return config;
+    const previousPatch = config.__xingmangCodexChineseConfigV3;
+    if (previousPatch && previousPatch.state === state && previousPatch.get === config.get && typeof config.get === "function") return config;
     let patched = false;
     if (typeof config.get === "function") {
       const originalGet = config.get;
       try {
         Object.defineProperty(config, "get", {
           configurable: true,
+          writable: true,
           value: function (key, fallback) {
-            if (key === "enable_i18n") return true;
-            if (key === "locale_source") return "SYSTEM";
+            if (key === "enable_i18n" || key === "locale_source") {
+              if (!verifyingConfig) state.localeReads += 1;
+              return key === "enable_i18n" ? true : "SYSTEM";
+            }
             // Preserve Statsig's optional arguments (exposure options,
             // defaults, and any future parameters) instead of narrowing the
             // call to the two arguments used by the current build.
@@ -65,12 +75,12 @@ export const codexChineseRuntimeScript = String.raw`(() => {
       if (config.value && typeof config.value === "object") {
         config.value.enable_i18n = true;
         config.value.locale_source = "SYSTEM";
-        patched = true;
+        patched = patched || (config.value.enable_i18n === true && config.value.locale_source === "SYSTEM");
       }
     } catch {}
     if (patched) {
       try {
-        Object.defineProperty(config, "__xingmangCodexChineseConfig", { value: true, configurable: true });
+        Object.defineProperty(config, "__xingmangCodexChineseConfigV3", { value: { state, get: config.get }, configurable: true });
       } catch {}
       state.patchedConfigs += 1;
       state.lastPatchAt = Date.now();
@@ -80,15 +90,17 @@ export const codexChineseRuntimeScript = String.raw`(() => {
 
   const patchClient = (client) => {
     if (!client || (typeof client !== "object" && typeof client !== "function")) return;
-    if (client.__xingmangCodexChineseClient) return;
     const originalDynamic = client.getDynamicConfig;
     const originalLayer = client.getLayer;
+    const previousPatch = client.__xingmangCodexChineseClientV3;
+    if (previousPatch && previousPatch.state === state && previousPatch.getDynamicConfig === originalDynamic && previousPatch.getLayer === originalLayer) return;
     if (typeof originalDynamic !== "function" && typeof originalLayer !== "function") return;
     let patched = false;
     try {
       if (typeof originalDynamic === "function") {
         Object.defineProperty(client, "getDynamicConfig", {
           configurable: true,
+          writable: true,
           value: function (key) {
             const result = originalDynamic.apply(this, arguments);
             return String(key) === configId ? forceConfig(result) : result;
@@ -99,6 +111,7 @@ export const codexChineseRuntimeScript = String.raw`(() => {
       if (typeof originalLayer === "function") {
         Object.defineProperty(client, "getLayer", {
           configurable: true,
+          writable: true,
           value: function (key) {
             const result = originalLayer.apply(this, arguments);
             return String(key) === configId ? forceConfig(result) : result;
@@ -107,7 +120,10 @@ export const codexChineseRuntimeScript = String.raw`(() => {
         patched = true;
       }
       if (patched) {
-        Object.defineProperty(client, "__xingmangCodexChineseClient", { value: true, configurable: true });
+        Object.defineProperty(client, "__xingmangCodexChineseClientV3", {
+          value: { state, getDynamicConfig: client.getDynamicConfig, getLayer: client.getLayer },
+          configurable: true,
+        });
         state.patchedClients += 1;
         state.lastPatchAt = Date.now();
       }
@@ -127,12 +143,44 @@ export const codexChineseRuntimeScript = String.raw`(() => {
       if (!client || seen.has(client)) return;
       seen.add(client);
       patchClient(client);
+      const wasVerifying = verifyingConfig;
+      verifyingConfig = true;
       try {
-        if (typeof client.getLayer === "function") forceConfig(client.getLayer(configId));
+        if (typeof client.getLayer === "function") forceConfig(client.getLayer(configId, { disableExposureLog: true }));
         if (typeof client.getDynamicConfig === "function") forceConfig(client.getDynamicConfig(configId, { disableExposureLog: true }));
-      } catch {}
+      } catch {} finally { verifyingConfig = wasVerifying; }
     });
   };
+
+  // Statsig can be published after the document hook runs. Intercept plain
+  // property assignments so a synchronous first locale read cannot beat the
+  // polling timer; leave existing getters/setters and sealed roots alone.
+  const watched = new WeakMap();
+  const watchProperty = (owner, key, onValue) => {
+    if (!owner || (typeof owner !== "object" && typeof owner !== "function")) return;
+    let keys = watched.get(owner);
+    if (!keys) { keys = new Set(); watched.set(owner, keys); }
+    if (keys.has(key)) return;
+    keys.add(key);
+    try {
+      const descriptor = Object.getOwnPropertyDescriptor(owner, key);
+      if (descriptor && (!descriptor.configurable || !descriptor.writable || descriptor.get || descriptor.set)) return;
+      let value = owner[key];
+      Object.defineProperty(owner, key, {
+        configurable: true,
+        enumerable: descriptor ? descriptor.enumerable : true,
+        get: () => value,
+        set: (next) => { value = next; try { onValue(next); } catch {} },
+      });
+      onValue(value);
+    } catch {}
+  };
+  const watchRoot = (root) => {
+    patchStatsigRoot(root);
+    watchProperty(root, "firstInstance", patchStatsigRoot);
+    watchProperty(root, "instance", patchStatsigRoot);
+  };
+  ["__STATSIG__", "statsig", "Statsig"].forEach((key) => watchProperty(globalThis, key, watchRoot));
 
   const patchStatsig = () => {
     try { patchStatsigRoot(globalThis.__STATSIG__); } catch {}
@@ -144,25 +192,12 @@ export const codexChineseRuntimeScript = String.raw`(() => {
   const startedAt = Date.now();
   const timer = setInterval(() => {
     patchStatsig();
-    if (Date.now() - startedAt >= 20_000 || (state.patchedClients > 0 && state.patchedConfigs > 0)) {
+    // Keep observing during startup: clients/config objects may be replaced
+    // after the SDK's asynchronous initialization or an account handshake.
+    if (Date.now() - startedAt >= 20_000) {
       clearInterval(timer);
     }
   }, 50);
-
-  // The config file is written by the trusted main process before launch. A
-  // single delayed reload makes the registered new-document hook take effect
-  // even when Codex initialized i18n before this page target was discoverable.
-  // It is deliberately fire-and-forget: awaiting a long page promise through
-  // CDP can be reported as “Promise was collected” by newer Chromium builds.
-  try {
-    const reloadMarker = "__xingmangCodexChineseLocaleReloadV2";
-    if (sessionStorage.getItem(reloadMarker) !== locale) {
-      sessionStorage.setItem(reloadMarker, locale);
-      setTimeout(() => {
-        if (document.readyState !== "loading") window.location.reload();
-      }, 600);
-    }
-  } catch {}
 
   return JSON.stringify({
     status: state.patchedClients > 0 && state.patchedConfigs > 0 ? "ok" : "pending",
@@ -173,7 +208,10 @@ export const codexChineseRuntimeScript = String.raw`(() => {
     patchedConfigs: state.patchedConfigs,
     lastPatchAt: state.lastPatchAt,
   });
-})();`
+})`
+
+export const codexChineseRuntimeScript = `${codexChineseRuntimeSource}(false);`
+const codexChineseNewDocumentScript = `${codexChineseRuntimeSource}(true);`
 
 export interface CodexDesktopCdpTarget {
   id: string
@@ -464,7 +502,8 @@ async function injectTarget(
   target: CodexDesktopCdpTarget,
   port: number,
   createWebSocket: (url: string) => CdpSocket,
-): Promise<{ ready: boolean }> {
+  reloadState: { attempted: boolean; previousDocument: number | null },
+): Promise<CdpInjectionSession> {
   const endpoint = validateCodexDesktopCdpTarget(target, port)
   if (!endpoint) throw new Error('Codex Desktop CDP 页面地址未通过安全校验')
   const socket = createWebSocket(endpoint)
@@ -490,103 +529,143 @@ async function injectTarget(
     socket.addEventListener('error', onError)
     socket.addEventListener('close', onClose)
   })
-  await waitForOpen
   try {
+    await waitForOpen
     let commandId = 0
     const enable = await sendCdpCommand(socket, ++commandId, 'Page.enable', {})
     if (enable.error) throw new Error('CDP Page.enable 返回错误')
     const registration = await sendCdpCommand(socket, ++commandId, 'Page.addScriptToEvaluateOnNewDocument', {
-      source: codexChineseRuntimeScript,
+      source: codexChineseNewDocumentScript,
     })
     if (registration.error) throw new Error('CDP 中文脚本注册失败')
-    const evaluation = await sendCdpCommand(socket, ++commandId, 'Runtime.evaluate', {
-      expression: codexChineseRuntimeScript,
-      awaitPromise: false,
-      returnByValue: true,
-      userGesture: true,
-      allowUnsafeEvalBlockedByCSP: true,
-    })
-    if (evaluation.error || evaluation.result?.exceptionDetails) {
-      throw new Error('CDP 中文脚本执行失败')
+    const applyRuntime = async () => {
+      const evaluation = await sendCdpCommand(socket, ++commandId, 'Runtime.evaluate', {
+        expression: codexChineseRuntimeScript,
+        awaitPromise: false,
+        returnByValue: true,
+        userGesture: true,
+        allowUnsafeEvalBlockedByCSP: true,
+      })
+      if (evaluation.error || evaluation.result?.exceptionDetails) {
+        throw new Error('CDP 中文脚本执行失败')
+      }
     }
-    const probe = await sendCdpCommand(socket, ++commandId, 'Runtime.evaluate', {
+    const inspectRuntime = async () => readRendererProbeResult(await sendCdpCommand(socket, ++commandId, 'Runtime.evaluate', {
       expression: codexRendererProbeScript,
       awaitPromise: false,
       returnByValue: true,
       userGesture: false,
       allowUnsafeEvalBlockedByCSP: true,
-    })
-    return { ready: readRendererProbeResult(probe) }
-  } finally {
+    }))
+    await applyRuntime()
+    return {
+      endpoint,
+      close: () => { try { socket.close(1000, 'done') } catch { /* best effort */ } },
+      inspect: async () => {
+        let probe = await inspectRuntime()
+        // A navigation can replace the document without changing its target
+        // id or socket endpoint. Recover a missing hook in the live context
+        // instead of repeatedly probing the same unpatched page.
+        if (!probe.patchInstalled && probe.documentIdentity !== null) {
+          await applyRuntime()
+          probe = await inspectRuntime()
+        }
+        if (reloadState.previousDocument !== null) {
+          // Page.reload can acknowledge before navigation begins. Reads in
+          // the old document, including on a reconnected socket, must never
+          // satisfy verification for the replacement document.
+          if (probe.documentIdentity === null || probe.documentIdentity === reloadState.previousDocument) {
+            return { ...probe, ready: false }
+          }
+          reloadState.previousDocument = null
+        }
+        if (probe.ready) return probe
+        // Keep the same CDP session (and its new-document hook) alive across
+        // reload. A ready renderer alone says nothing about its locale.
+        // Slow document loading must not consume the only reload attempt.
+        if (!reloadState.attempted && probe.rendererReady && probe.documentReady && probe.patchReady && probe.documentIdentity !== null) {
+          reloadState.attempted = true
+          reloadState.previousDocument = probe.documentIdentity
+          const reload = await sendCdpCommand(socket, ++commandId, 'Page.reload', { ignoreCache: false })
+          if (reload.error) throw new Error('CDP 中文配置重新加载失败')
+          // The current execution context belongs to the old document. Do
+          // not treat its successful probe as proof for the replacement
+          // document; the next bounded discovery pass must observe the hook
+          // and locale reads after navigation has settled.
+          return {
+            ...probe,
+            ready: false,
+            rendererReady: false,
+            documentReady: false,
+            patchReady: false,
+          }
+        }
+        return probe
+      },
+    }
+  } catch (error) {
     try { socket.close(1000, 'done') } catch { /* best effort */ }
+    throw error
   }
+}
+
+interface CdpRendererProbe {
+  ready: boolean
+  rendererReady: boolean
+  documentReady: boolean
+  patchReady: boolean
+  patchInstalled: boolean
+  documentIdentity: number | null
+}
+
+interface CdpInjectionSession {
+  endpoint: string
+  inspect(): Promise<CdpRendererProbe>
+  close(): void
 }
 
 const codexRendererProbeScript = String.raw`(() => {
   const text = document.body?.innerText || "";
+  const state = globalThis.__xingmangCodexChineseLocaleState;
   return JSON.stringify({
     codexRendererProbe: true,
     hasBridge: Boolean(globalThis.electronBridge && typeof globalThis.electronBridge.sendMessageFromView === "function"),
     hasAppRoot: Boolean(document.querySelector("#root")),
     textLength: text.length,
+    documentReady: document.readyState !== "loading",
+    documentIdentity: performance.timeOrigin,
+    patchInstalled: Boolean(state && state.runtimeVersion === 3),
+    patchReady: Boolean(state && state.patchedClients > 0 && state.patchedConfigs > 0),
+    localeReadObserved: Boolean(state && state.localeReads > 0),
+    navigatorLocale: navigator.language,
   });
 })();`
 
-function readRendererProbeResult(response: CdpResponse): boolean {
+function readRendererProbeResult(response: CdpResponse): CdpRendererProbe {
+  const unavailable = { ready: false, rendererReady: false, documentReady: false, patchReady: false, patchInstalled: false, documentIdentity: null }
+  if (response.error || response.result?.exceptionDetails) return unavailable
   const value = response.result?.result?.value
-  if (typeof value !== 'string') return false
+  if (typeof value !== 'string') return unavailable
   try {
     const parsed = JSON.parse(value) as Record<string, unknown>
-    return parsed.codexRendererProbe === true
+    const rendererReady = parsed.codexRendererProbe === true
       && parsed.hasBridge === true
       && (parsed.hasAppRoot === true || (typeof parsed.textLength === 'number' && parsed.textLength >= 40))
+    const patchReady = parsed.patchReady === true && parsed.navigatorLocale === 'zh-CN'
+    const documentReady = parsed.documentReady === true
+    const patchInstalled = parsed.patchInstalled === true
+    const documentIdentity = typeof parsed.documentIdentity === 'number' && Number.isFinite(parsed.documentIdentity) && parsed.documentIdentity > 0
+      ? parsed.documentIdentity : null
+    return {
+      ready: rendererReady && documentReady && patchInstalled && patchReady && documentIdentity !== null && parsed.localeReadObserved === true,
+      rendererReady,
+      documentReady,
+      patchReady,
+      patchInstalled,
+      documentIdentity,
+    }
   } catch {
-    return false
-  }
-}
-
-async function probeTarget(
-  target: CodexDesktopCdpTarget,
-  port: number,
-  createWebSocket: (url: string) => CdpSocket,
-): Promise<boolean> {
-  const endpoint = validateCodexDesktopCdpTarget(target, port)
-  if (!endpoint) return false
-  const socket = createWebSocket(endpoint)
-  const waitForOpen = new Promise<void>((resolve, reject) => {
-    if (socket.readyState === 1) {
-      resolve()
-      return
-    }
-    const timer = setTimeout(() => {
-      cleanup()
-      reject(new Error('Codex Desktop CDP WebSocket 连接超时'))
-    }, cdpCommandTimeoutMs)
-    const cleanup = () => {
-      clearTimeout(timer)
-      socket.removeEventListener('open', onOpen)
-      socket.removeEventListener('error', onError)
-      socket.removeEventListener('close', onClose)
-    }
-    const onOpen = () => { cleanup(); resolve() }
-    const onError = () => { cleanup(); reject(new Error('Codex Desktop CDP WebSocket 连接失败')) }
-    const onClose = () => { cleanup(); reject(new Error('Codex Desktop CDP WebSocket 已关闭')) }
-    socket.addEventListener('open', onOpen)
-    socket.addEventListener('error', onError)
-    socket.addEventListener('close', onClose)
-  })
-  await waitForOpen
-  try {
-    const response = await sendCdpCommand(socket, 1, 'Runtime.evaluate', {
-      expression: codexRendererProbeScript,
-      awaitPromise: false,
-      returnByValue: true,
-      userGesture: false,
-      allowUnsafeEvalBlockedByCSP: true,
-    })
-    return readRendererProbeResult(response)
-  } finally {
-    try { socket.close(1000, 'probe-done') } catch { /* best effort */ }
+    return unavailable
   }
 }
 
@@ -624,36 +703,59 @@ export async function injectCodexDesktopChineseLocale(
   const delay = dependencies.delay ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
   let lastError: unknown = null
   let injectedTargets = 0
-  const injectedTargetIds = new Set<string>()
+  const sessions = new Map<string, CdpInjectionSession>()
+  const reloadStates = new Map<string, { attempted: boolean; previousDocument: number | null }>()
+  let rendererFound = false
   const deadline = Date.now() + cdpDiscoveryDeadlineMs
-  for (let attempt = 1; attempt <= cdpDiscoveryAttempts && Date.now() < deadline; attempt += 1) {
-    try {
-      const targets = filterCodexDesktopCdpTargets(await listTargets(port, fetchImpl), port)
-      for (const target of targets) {
-        if (!injectedTargetIds.has(target.id)) {
+  try {
+    for (let attempt = 1; attempt <= cdpDiscoveryAttempts && Date.now() < deadline; attempt += 1) {
+      try {
+        const priority: Record<string, number> = { page: 0, iframe: 1, webview: 2 }
+        const targets = filterCodexDesktopCdpTargets(await listTargets(port, fetchImpl), port)
+          .sort((left, right) => priority[left.type.toLowerCase()]! - priority[right.type.toLowerCase()]!)
+        const visibleIds = new Set(targets.map((target) => target.id))
+        for (const [id, session] of sessions) {
+          if (!visibleIds.has(id)) {
+            session.close()
+            sessions.delete(id)
+          }
+        }
+        for (const target of targets) {
           try {
-            const result = await injectTarget(target, port, createWebSocket)
-            injectedTargetIds.add(target.id)
-            injectedTargets += 1
+            let session = sessions.get(target.id)
+            if (session && session.endpoint !== validateCodexDesktopCdpTarget(target, port)) {
+              session.close()
+              sessions.delete(target.id)
+              session = undefined
+            }
+            if (!session) {
+              const identity = `${target.id}:${target.webSocketDebuggerUrl}`
+              const reloadState = reloadStates.get(identity) ?? { attempted: false, previousDocument: null }
+              reloadStates.set(identity, reloadState)
+              session = await injectTarget(target, port, createWebSocket, reloadState)
+              sessions.set(target.id, session)
+              injectedTargets += 1
+            }
+            const result = await session.inspect()
+            rendererFound ||= result.rendererReady
             if (result.ready) return { injectedTargets, attempts: attempt }
           } catch (error) {
             lastError = error
-          }
-        } else {
-          try {
-            if (await probeTarget(target, port, createWebSocket)) {
-              return { injectedTargets, attempts: attempt }
-            }
-          } catch (error) {
-            lastError = error
+            // A crashed/replaced renderer needs a fresh registration. Keeping
+            // a stale target id in a set used to prevent all later retries.
+            sessions.get(target.id)?.close()
+            sessions.delete(target.id)
           }
         }
+      } catch (error) {
+        lastError = error
       }
-    } catch (error) {
-      lastError = error
+      await delay(500)
     }
-    await delay(500)
+  } finally {
+    for (const session of sessions.values()) session.close()
   }
   const detail = lastError instanceof Error ? `：${lastError.message}` : ''
+  if (rendererFound) throw new Error(`Codex Desktop 页面已启动，但未确认中文配置生效${detail}`)
   throw new Error(`Codex Desktop 启动后未找到可注入的页面${detail}`)
 }

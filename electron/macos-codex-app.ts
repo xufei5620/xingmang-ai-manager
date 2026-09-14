@@ -184,9 +184,9 @@ export async function runSystemCommand(executable: string, argv: readonly string
   return executable === '/usr/bin/codesign' ? `${result.stdout}\n${result.stderr}` : result.stdout
 }
 
-function standardCandidate(directory: string | undefined): string | null {
+function standardCandidate(directory: string | undefined, applicationName = 'Codex.app'): string | null {
   if (!directory || directory.includes('\0') || !path.isAbsolute(directory)) return null
-  return path.join(directory, 'Codex.app')
+  return path.join(directory, applicationName)
 }
 
 async function canonicalAppCandidate(candidate: string): Promise<string | null> {
@@ -347,9 +347,14 @@ export async function inspectMacosCodexApp(
   const homeDirectory = options.homeDirectory ?? os.homedir()
   const systemApplicationsDirectory = options.systemApplicationsDirectory ?? '/Applications'
   const inspectedPaths = new Set<string>()
+  // The official macOS bundle has shipped under both names. Its stable
+  // identity is CFBundleIdentifier=com.openai.codex; the filename is only a
+  // LaunchServices presentation detail and must not decide installation state.
   const standardCandidates = [
-    standardCandidate(systemApplicationsDirectory),
-    standardCandidate(homeDirectory && path.join(homeDirectory, 'Applications')),
+    standardCandidate(systemApplicationsDirectory, 'Codex.app'),
+    standardCandidate(systemApplicationsDirectory, 'ChatGPT.app'),
+    standardCandidate(homeDirectory && path.join(homeDirectory, 'Applications'), 'Codex.app'),
+    standardCandidate(homeDirectory && path.join(homeDirectory, 'Applications'), 'ChatGPT.app'),
   ]
   // Collects every execution failure seen along the way so a definitive match
   // found later still wins outright, while an inconclusive scan reports every

@@ -7,6 +7,16 @@ type NetworkLocation = SystemSnapshot['network']
 // an unfamiliar value. Keep the code as a useful, deterministic fallback.
 const regionDisplayNames = new Intl.DisplayNames(['zh-CN'], { type: 'region' })
 
+/** A slow full scan can finish after the lightweight route-change probe. */
+export function latestNetworkLocation(
+  scanned: NetworkLocation | null | undefined,
+  refreshed: NetworkLocation | null | undefined,
+): NetworkLocation | undefined {
+  if (!refreshed) return scanned ?? undefined
+  if (!scanned) return refreshed
+  return Date.parse(scanned.checkedAt) > Date.parse(refreshed.checkedAt) ? scanned : refreshed
+}
+
 export function networkLocationLabel(
   network: NetworkLocation | null | undefined,
 ): string {

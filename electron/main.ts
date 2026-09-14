@@ -18,6 +18,10 @@ import {
 } from 'electron'
 import { autoUpdater } from 'electron-updater'
 import { AccountCredentialStore } from './account-credential-store'
+import { AnnouncementReadStore } from './announcement-read-store'
+import { createAccelerationService } from './acceleration-service'
+import { createAccelerationDevelopmentHost, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { readBundledAccelerationConfig } from './acceleration-bundled-config'
 import { AiAssetStore, resolveAiOutputRoot } from './ai-asset-store'
 import { AI_CHAT_STREAM_LIMITS, createAiChatService } from './ai-chat-service'
 import { createAiImageService } from './ai-image-service'
@@ -119,6 +123,7 @@ import { installMainWindowFrameNavigationGuard } from './platform/frame-navigati
 guardProcessOutputStreams()
 
 const applicationPackage = require('../package.json') as {
+  xingmangAccelerationBundle?: unknown
   xingmangLocalBuild?: unknown
 }
 
@@ -487,6 +492,8 @@ if (!hasSingleInstanceLock) {
       app.setAppUserModelId('com.xingmang.ai.manager')
       Menu.setApplicationMenu(null)
     } else if (process.platform === 'darwin') {
+      // BrowserWindow.icon does not control the Dock, especially under electron . in development.
+      app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'))
       const template = buildMacApplicationMenuTemplate('星芒AI管理工具', (target) => {
         const window = BrowserWindow.getFocusedWindow()
           ?? BrowserWindow.getAllWindows().find((candidate) => !candidate.isDestroyed())
@@ -566,6 +573,10 @@ if (!hasSingleInstanceLock) {
       windowsExecutionMode: windowsCliExecutionMode,
       ...rootedOptions.system,
       relayFetch,
+      networkLocationFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
+      // Re-read the existing session/system proxy selection without changing
+      // the OS proxy or imposing a new Chromium proxy mode.
+      reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
@@ -670,7 +681,7 @@ if (!hasSingleInstanceLock) {
         if (managedMainWindow && !managedMainWindow.isDestroyed()) managedMainWindow.webContents.send(ipcEventChannels.onNavigate, 'updates')
       },
       onError: (error) => runtimeLog.exception('window', 'notification.failed', error),
-      iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'favicon.ico'),
+      iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
     })
     const unsubscribeDesktopNotifications = updaterService.subscribe((state) => desktopNotifications.handleUpdate(state))
     const urlPolicy = applicationUrlPolicy()
@@ -691,6 +702,7 @@ if (!hasSingleInstanceLock) {
     const savedAccounts = new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat'), safeStorage)
     const vault = createFileRealmAccountVault(managerDataDirectory, safeStorage)
     let publishedAccountIdentity = ''
+    let acceleration: ReturnType<typeof createAccelerationService> | undefined
     const accounts = createRealmAccountService({
       vault,
       createClient: (siteId, onSessionChange): RealmAccountClientHandle => {
@@ -722,6 +734,7 @@ if (!hasSingleInstanceLock) {
       legacy: { list: () => savedAccounts.list(), getSession: (id, origin) => savedAccounts.getSession(id, origin),
         readActive: () => accountSessionStore.read() },
       quiesce: async () => {
+        await acceleration?.stopAll()
         const previous = businesses.get(accounts.getSiteId())
         previous?.chatService.cancelAll()
         previous?.imageService.cancelAll()
@@ -734,6 +747,7 @@ if (!hasSingleInstanceLock) {
           previous.canvasRuns.whenIdle()] : [])])
       },
       onChanged: (siteId, state) => {
+        void acceleration?.onAccountChanged().catch((error) => runtimeLog.exception('network', 'acceleration.account-change.failed', error))
         const identity = `${siteId}:${state.account?.userId ?? 'guest'}:${accounts.client.getSessionRevision!()}`
         for (const window of BrowserWindow.getAllWindows()) {
           if (!window.isDestroyed()) window.webContents.send(ipcEventChannels.onAccountSessionChanged, state)
@@ -1139,6 +1153,7 @@ if (!hasSingleInstanceLock) {
     // transition is delivered to an already-open canvas window exactly once.
     canvasController.setAccountUser(accountService.getSessionState().account?.userId ?? null)
     const paymentWindow = createPaymentWindowController({
+      iconPath: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
       createOrderStatusReader: (tradeNo) => createPaymentOrderStatusReader({
         client: accountService,
         getSiteId: accounts.getSiteId,
@@ -1191,7 +1206,29 @@ if (!hasSingleInstanceLock) {
     const accountSessionReady = accounts.restoreActive().then(() => undefined).catch((error) => {
       runtimeLog.exception('account', 'session.restore.failed', error)
     })
+    let developmentAcceleration: ReturnType<typeof createAccelerationDevelopmentHost> | undefined
+    try {
+      const accelerationConfig = app.isPackaged
+        ? await readBundledAccelerationConfig({ isPackaged: true, platform: process.platform, resourcesPath: process.resourcesPath,
+          bundledMetadata: applicationPackage.xingmangAccelerationBundle })
+        : await readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
+      if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
+        config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
+        ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
+      })
+    } catch {
+      runtimeLog.log('warn', 'network', 'acceleration.config.invalid', '本机加速资源校验未通过')
+    }
+    acceleration = createAccelerationService({
+      backend: developmentAcceleration,
+      getAccountScope: () => {
+        const state = accountService.getSessionState()
+        if (!state.authenticated || !state.account) return null
+        return `${accounts.getSiteId() === 'solov-api' ? 'api-account' : 'xm-account'}:${state.account.userId}`
+      },
+    })
     const unregisterIpcHandlers = registerIpcHandlers({
+      acceleration,
       realmAccounts: accounts,
       accountWork,
       accountCredentialsForSite: (siteId) => businesses.get(siteId)!.accountCredentialStore,
@@ -1200,6 +1237,7 @@ if (!hasSingleInstanceLock) {
       accountService,
       paymentWindow,
       accountSessionReady,
+      announcementReads: new AnnouncementReadStore(path.join(managerDataDirectory, 'announcement-reads')),
       accountCredentials: accountCredentialStore,
       managedCliKeys: managedCliKeyStore,
       chatKeyStore,
@@ -1258,6 +1296,8 @@ if (!hasSingleInstanceLock) {
         : {}),
     })
     app.once('will-quit', () => {
+      void acceleration?.dispose().catch((error) => runtimeLog.exception('network', 'acceleration.shutdown.failed', error))
+      void developmentAcceleration?.dispose().catch(() => undefined)
       runtimeLog.log('info', 'main', 'app.stopping', '应用主进程即将退出')
       process.off('uncaughtExceptionMonitor', onUncaughtException)
       process.off('unhandledRejection', onUnhandledRejection)
@@ -1393,7 +1433,9 @@ if (!hasSingleInstanceLock) {
           })
           if (result.response !== 1) return false
         }
-        return canvasController.requestClose()
+        if (!await canvasController.requestClose()) return false
+        await acceleration?.stopAll()
+        return true
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,

@@ -50,6 +50,17 @@ export async function parseNewApiAnnouncementCollection(text: string): Promise<L
 
 function storageKey(scope: string): string { return `xingmang-v2-notice-entries:${scope}` }
 
+/** The old single-notice ID may be opaque; persist it in the same bounded hash namespace. */
+export async function legacyAnnouncementReadId(id: string): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(id))
+  return `legacy-${Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')}`
+}
+
+export function readLegacyAnnouncementId(scope: string): string | null {
+  return readLocalPreference(`xingmang-v2-notice:${scope}`)
+    ?? (scope.startsWith('xm-account:') ? readLocalPreference(`xingmang-v2-notice:${scope.replace('xm-account:', 'solov:')}`) : null)
+}
+
 export function readLocalAnnouncementIds(scope: string): string[] {
   const stored = readLocalPreference(storageKey(scope))
   if (!stored || stored.length > 20_000) return []
