@@ -278,6 +278,33 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/mdfind')).toBe(false)
   })
 
+  it('recognizes the official ChatGPT.app filename by its Codex bundle identity', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'ChatGPT.app')
+    const infoPath = createApp(app)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.825.41651\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'true\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+
+    await expect(inspectMacosCodexApp({
+      homeDirectory: path.join(root, 'home'),
+      systemApplicationsDirectory,
+      runSystemCommand,
+    })).resolves.toEqual({
+      app: { path: fs.realpathSync(app), version: '26.825.41651', running: true },
+      detectionFailed: false,
+      detectionError: null,
+    })
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/mdfind')).toBe(false)
+  })
+
   it('rejects a wrong standard bundle identity and accepts a valid Spotlight fallback', async () => {
     const root = temporaryDirectory()
     const systemApplicationsDirectory = path.join(root, 'Applications')

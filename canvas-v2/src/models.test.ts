@@ -102,8 +102,14 @@ describe('canvas media model capabilities', () => {
     expect(resolveMiniMaxVideoMode({ audioCount: 1 })).toBe('ref2va')
     expect(validateVideoModelOptions({
       model: 'minimax-h3-base', seconds: 10, mode: 'ref2va', resolution: '720p', aspectRatio: '21:9',
-      imageCount: 9, videoCount: 3, audioCount: 3,
+      imageCount: 9, audioCount: 3,
     })).toEqual([])
+    expect(validateVideoModelOptions({
+      model: 'minimax-h3-base', seconds: 10, mode: 'ref2va', imageCount: 1, videoCount: 1,
+    })).toContain('MiniMax H3 当前不支持参考视频（max_videos=0）')
+    expect(validateVideoModelOptions({
+      model: 'minimax-h3-base', seconds: 10, mode: 'fl2va', imageCount: 1,
+    })).toContain('FL2VA 需要且只能连接 2 张图片，顺序为首帧、尾帧')
     expect(validateVideoModelOptions({
       model: 'minimax-h3-fast', seconds: 5, mode: 'i2va', imageCount: 2,
     })).toContain('I2VA 需要且只能连接 1 张图片')

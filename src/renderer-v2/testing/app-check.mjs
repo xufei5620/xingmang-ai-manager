@@ -18,6 +18,13 @@ before(async () => {
 after(async () => { await browser?.close(); await server?.close() })
 async function open(query = '', clock = false) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
+  // The host outlives a renderer reload and does not share the page's localStorage.
+  const noticeReads = new Map()
+  await page.exposeFunction('fixtureNoticeStore', (scope, ids) => {
+    const next = [...new Set([...(noticeReads.get(scope) ?? []), ...ids])].slice(-200)
+    noticeReads.set(scope, next)
+    return next
+  })
   if (clock) {
     await page.clock.install({ time: new Date('2026-09-12T04:00:00Z') })
     await page.clock.pauseAt(new Date('2026-09-12T04:00:01Z'))
@@ -502,6 +509,8 @@ test('configuration migration shares Codex drafts and failed saves retain the se
     const confirmation = page.getByRole('dialog', { name: '保存这份配置？' })
     await confirmation.getByTestId('tool-save-merge').click()
     await confirmation.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
+    assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
+    assert.equal(await page.locator('.xm-toasts').getByText('配置保存成功', { exact: true }).count(), 0)
     await confirmation.getByRole('button', { name: '取消', exact: true }).click()
     assert.equal(await page.getByLabel('星芒访问密钥').inputValue(), 'local-fixture-secret')
     await clean(page)
@@ -519,14 +528,13 @@ test('a manual relay key saved over a third-party config survives the next login
     await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
     await page.getByTestId('tool-save-config').click()
     await page.getByTestId('tool-save-merge').click()
-    await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    await waitForSavedConfiguration(page)
 
     const marker = await page.evaluate(() => localStorage.getItem(
       `xingmang-v2:provider-source:v1:${encodeURIComponent('https://xm.solov.cc')}:codex`,
     ))
     assert.equal(marker, 'manual')
 
-    await page.getByTestId('config-dialog').getByRole('button', { name: '取消', exact: true }).click()
     await page.getByTestId('nav-chat').click()
     await page.getByTestId('login-account').fill('fixture-user')
     await page.getByTestId('login-password').fill('fixture-password')
@@ -643,24 +651,17 @@ test('NewAPI read states survive collection updates and stay isolated between ac
   } finally { await page.close() }
 })
 
-test('NewAPI local read failures preserve details and can be retried without a remote write', async () => {
+test('NewAPI durable read failures preserve details and can be retried without a remote write', async () => {
   const page = await open('noticeCollection=1')
   try {
     await page.getByTestId('announcement-open').click()
     const dialog = page.getByRole('dialog', { name: '公告', exact: true })
     await dialog.getByTestId('announcement-list').waitFor()
-    await page.evaluate(() => {
-      const original = Storage.prototype.setItem
-      window.restoreNoticeStorage = () => { Storage.prototype.setItem = original }
-      Storage.prototype.setItem = function (key, value) {
-        if (key.startsWith('xingmang-v2-notice-entries:')) throw new Error('fixture storage unavailable')
-        return original.call(this, key, value)
-      }
-    })
+    await page.evaluate(() => { window.v2Test.fail = 'syncLocalNoticeReads' })
     await dialog.getByRole('button', { name: '图片模型上线 未读' }).click()
-    await dialog.getByRole('alert').filter({ hasText: '本机没有保存已读状态' }).waitFor()
+    await dialog.getByRole('alert').filter({ hasText: '已读状态保存失败' }).waitFor()
     await page.frameLocator('[data-testid="announcement-native-frame"]').getByRole('heading', { name: '图片模型上线亮色详情' }).waitFor()
-    await page.evaluate(() => window.restoreNoticeStorage())
+    await page.evaluate(() => { window.v2Test.fail = '' })
     await dialog.getByRole('button', { name: '重试保存已读' }).click()
     await dialog.getByRole('alert').waitFor({ state: 'hidden' })
     await dialog.getByRole('button', { name: '返回列表' }).click()
@@ -1125,6 +1126,43 @@ async function openToolConfiguration(page, provider = 'codex') {
   await page.getByTestId('config-dialog').waitFor()
 }
 
+async function waitForSavedConfiguration(page) {
+  await page.getByTestId('config-dialog').waitFor({ state: 'hidden' })
+  await page.locator('.xm-toasts').getByRole('status').filter({ hasText: '配置保存成功' }).waitFor()
+  assert.equal(await page.getByRole('dialog', { name: /保存这份配置|重置为初始状态|放弃未保存/ }).count(), 0)
+}
+
+const defaultModelCases = [
+  { tool: 'claude', provider: 'claude', model: 'claude-opus-5' },
+  { tool: 'codex', provider: 'codex', model: 'gpt-6-astra' },
+  { tool: 'codexDesktop', provider: 'codex', model: 'gpt-6-astra' },
+  { tool: 'gemini', provider: 'gemini', model: 'gemini-3.8-flash-high' },
+  { tool: 'grok', provider: 'grok', model: 'grok-4.6' },
+]
+for (const existing of [false, true]) for (const { tool, provider, model } of defaultModelCases) {
+  test(`${tool} model detection ${existing ? 'preserves the saved model' : `defaults to ${model} before the first returned model`}`, async () => {
+    const page = await open(`guest=1&existing=1&allInstalled=1&keyOptions=1&cliDefaultModels=1${existing ? '' : '&cliMissingModels=1'}`)
+    try {
+      await openToolConfiguration(page, tool)
+      const expected = existing ? 'fixture-model' : model
+      assert.equal(await page.getByLabel('默认模型').inputValue(), expected)
+      await page.getByTestId('tool-detect-models').click()
+      await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
+      assert.equal(await page.getByLabel('默认模型').inputValue(), expected)
+      assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'listConfiguredModels').map((entry) => entry.args)), [[provider]])
+      await page.getByTestId('tool-save-config').click()
+      await page.getByTestId('tool-save-merge').click()
+      await waitForSavedConfiguration(page)
+      assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfig').map((entry) => entry.args[0])), [
+        { provider, apiKey: '', model: expected, mode: 'merge' },
+      ])
+      await openToolConfiguration(page, tool)
+      assert.equal(await page.getByLabel('默认模型').inputValue(), expected)
+      await clean(page)
+    } finally { await page.close() }
+  })
+}
+
 test('configuration keeps the current local key by default and saves through the reuse sentinel', async () => {
   const page = await open('keyOptions=1')
   try {
@@ -1141,7 +1179,7 @@ test('configuration keeps the current local key by default and saves through the
     const confirmation = page.getByRole('dialog', { name: '保存这份配置？' })
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /密钥：名称未确认[\s\S]*分组：分组未确认[\s\S]*sk-co••••1234[\s\S]*fixture-model/)
     await confirmation.getByTestId('tool-save-merge').click()
-    await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    await waitForSavedConfiguration(page)
     const actions = await page.evaluate(() => window.v2Test.calls)
     assert.deepEqual(actions.find((entry) => entry.method === 'saveConfig').args[0], { provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' })
     assert.equal(actions.some((entry) => ['configureManagedCliKeys', 'saveConfigWithAccountKey', 'revealApiKey', 'listAccountKeyModels'].includes(entry.method)), false)
@@ -1169,7 +1207,8 @@ test('selected account key shows its group and survives delayed metadata plus to
     await page.getByTestId('tool-save-config').click()
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /custom-key[\s\S]*Custom group[\s\S]*sk-ot••••1234[\s\S]*fixture-other/)
     await page.getByTestId('tool-save-merge').click()
-    await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    await waitForSavedConfiguration(page)
+    await openToolConfiguration(page)
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('custom-key'))
     assert.equal(await select.inputValue(), 'current')
     const actions = await page.evaluate(() => window.v2Test.calls)
@@ -1195,6 +1234,8 @@ test('explicit automatic key configuration shows the right group and adopts the 
     await page.getByTestId('tool-save-config').click()
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /xingmang-desktop-codex[\s\S]*Codex_pro[\s\S]*保存时准备或复用/)
     await page.getByTestId('tool-save-merge').click()
+    await waitForSavedConfiguration(page)
+    await openToolConfiguration(page)
     await page.waitForFunction(() => document.querySelector('[data-testid="tool-key-select"]')?.value === 'current' && document.querySelector('[data-testid="tool-key-summary"]')?.textContent.includes('coding-key'))
     assert.equal(await page.getByLabel('默认模型').inputValue(), 'gpt-5.6-sol')
     assert.match(await page.getByTestId('tool-key-summary').innerText(), /coding-key.*Codex_pro.*sk-se••••9012/)
@@ -1226,10 +1267,40 @@ test('official source saving does not prepare or replace an account key', async 
     await page.getByTestId('tool-save-config').click()
     assert.match(await page.getByTestId('tool-save-summary').innerText(), /来源：ChatGPT 账号/)
     await page.getByTestId('tool-save-merge').click()
-    await page.getByText('配置已保存。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    await waitForSavedConfiguration(page)
     const actions = await page.evaluate(() => window.v2Test.calls)
     assert.deepEqual(actions.find((entry) => entry.method === 'switchToOfficialAccount').args, ['codex', 'merge'])
     assert.equal(actions.some((entry) => ['saveConfig', 'configureManagedCliKeys', 'saveConfigWithAccountKey'].includes(entry.method)), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('Chinese locale can be retried after a runtime failure without mistaking the saved preference for success', async () => {
+  const page = await open('localeRetry=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByRole('tab', { name: 'Codex 桌面端', exact: true }).click()
+    await page.getByText('界面语言与文件夹权限', { exact: true }).click()
+    await page.getByRole('button', { name: '检查中文界面', exact: true }).click()
+    await page.getByText('已保存的语言设置：简体中文。如果仍显示英文，可再次启用中文界面。', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '启用中文界面', exact: true }).click()
+    await page.getByRole('status').filter({ hasText: '本次未确认中文界面生效' }).waitFor()
+    assert.equal(await page.getByText('中文界面已启用，Codex 已重新打开。', { exact: true }).count(), 0)
+    await page.getByRole('button', { name: '启用中文界面', exact: true }).click()
+    await page.getByText('中文界面已启用，Codex 已重新打开。', { exact: true }).waitFor()
+    assert.equal(await page.getByText('中文设置已保存，但本次未确认中文界面生效。请再次启用中文界面以重试。', { exact: true }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'setCodexDesktopLocale').map((call) => call.args)), [['zh-CN'], ['zh-CN']])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('ordinary desktop launch preserves the opened app and exposes a Chinese-locale warning', async () => {
+  const page = await open('localeLaunchWarning=1')
+  try {
+    await page.getByTestId('tool-codexDesktop-primary').click()
+    await page.getByText('Codex 已打开，但未确认中文界面生效，请在配置中再次启用。', { exact: true }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((call) => call.method === 'launchCodexDesktop').map((call) => call.args)), [['open']])
     await clean(page)
   } finally { await page.close() }
 })
@@ -1271,6 +1342,66 @@ test('save choices show both actions without writing and preserve focus and draf
   }
 })
 
+for (const mode of ['merge', 'reset']) test(`pending ${mode} configuration cannot close or write twice, then closes with a success toast`, async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByTestId('tool-key-select').selectOption('202')
+    await page.evaluate(() => window.v2Test.holdNextConfigSave())
+    await page.getByTestId('tool-save-config').click()
+    if (mode === 'reset') await page.getByTestId('tool-save-reset').click()
+    const confirmation = page.getByRole('dialog', { name: mode === 'merge' ? '保存这份配置？' : '重置为初始状态？' })
+    const commit = mode === 'merge' ? confirmation.getByTestId('tool-save-merge') : confirmation.getByRole('button', { name: '备份并重置', exact: true })
+    await commit.click()
+    await page.waitForFunction(() => window.v2Test.calls.some((entry) => entry.method === 'saveConfigWithAccountKey'))
+    assert.equal(await commit.isDisabled(), true)
+    assert.equal(await confirmation.locator('[data-modal-close]').isDisabled(), true)
+    assert.equal(await confirmation.getByRole('button', { name: mode === 'merge' ? '取消' : '返回选择', exact: true }).isDisabled(), true)
+    assert.equal(await page.getByTestId('config-dialog').locator('[data-modal-close]').isDisabled(), true)
+    assert.equal(await page.getByTestId('tool-save-config').isDisabled(), true)
+    await page.keyboard.press('Escape')
+    assert.equal(await confirmation.isVisible(), true)
+    assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
+    assert.equal(await page.locator('.xm-toasts').getByText('配置保存成功', { exact: true }).count(), 0)
+    await page.evaluate(() => window.v2Test.releaseConfigSave())
+    await waitForSavedConfiguration(page)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').map((entry) => entry.args[0])), [
+      { provider: 'codex', keyId: 202, model: 'fixture-model', mode },
+    ])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+for (const failedRead of ['getConfig', 'scanSystem']) test(`configuration still closes after a saved write when ${failedRead} refresh fails`, async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByTestId('tool-key-select').selectOption('202')
+    await page.evaluate((method) => { window.v2Test.fail = method }, failedRead)
+    await page.getByTestId('tool-save-config').click()
+    await page.getByTestId('tool-save-merge').click()
+    await waitForSavedConfiguration(page)
+    await page.locator('.xm-toasts').getByRole('status').filter({ hasText: '配置已保存，但最新状态没有读到。请重新检测，无需重复保存。' }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').length), 1)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('choosing a workspace refreshes the open configuration without showing a save success toast', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByRole('button', { name: '选择文件夹', exact: true }).click()
+    await page.waitForFunction(() => document.querySelector('input[readonly]')?.value === 'C:\\Selected Project' && !document.querySelector('.v2-config-controls').disabled)
+    assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
+    assert.equal(await page.locator('.xm-toasts').getByText('配置保存成功', { exact: true }).count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => ['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(entry.method))), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 for (const source of ['current', 'selected', 'automatic', 'manual', 'official', 'alreadyOfficial']) test(`reset configuration uses the selected ${source} source only after confirmation`, async () => {
   const page = await open(`keyOptions=1&sub2api=1${source === 'alreadyOfficial' ? '&official=1' : ''}`)
   try {
@@ -1294,7 +1425,7 @@ for (const source of ['current', 'selected', 'automatic', 'manual', 'official', 
     const writes = () => page.evaluate(() => window.v2Test.calls.filter((entry) => ['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(entry.method)))
     assert.deepEqual(await writes(), [])
     await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
-    await page.getByText('配置已重置为初始状态。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    await waitForSavedConfiguration(page)
     const actions = await writes()
     assert.equal(actions.length, 1)
     if (source === 'official' || source === 'alreadyOfficial') {
@@ -1321,10 +1452,12 @@ test('failed reset retains the selected key and retries reset without silently m
     await page.evaluate(() => { window.v2Test.fail = 'saveConfigWithAccountKey' })
     await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
     await reset.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
+    assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
+    assert.equal(await page.locator('.xm-toasts').getByText('配置保存成功', { exact: true }).count(), 0)
     assert.match(await reset.getByTestId('tool-save-summary').innerText(), /custom-key[\s\S]*Custom group/)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
-    await page.getByText('配置已重置为初始状态。Codex 桌面端运行中时，可关闭此面板后选择重新打开。').waitFor()
+    await waitForSavedConfiguration(page)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').map((entry) => entry.args[0])), [
       { provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' },
       { provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' },

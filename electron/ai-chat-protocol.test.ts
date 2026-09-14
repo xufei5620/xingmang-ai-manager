@@ -45,6 +45,9 @@ describe('AI model capabilities', () => {
         model, messages: [{ role: 'user', content: '海浪' }],
       })).toThrowError(expect.objectContaining({ code: 'invalid-model' }))
     }
+    expect(resolveAiModelCapability('minimax-h3-base')).toMatchObject({
+      supportsImageInput: true, supportsVideoInput: false, supportsAudioInput: true,
+    })
   })
 
   it('marks gpt-image-1.5 and its snapshots unavailable and hidden', () => {
@@ -346,7 +349,7 @@ describe('video generation protocol', () => {
     expect(buildVideoGenerationRequest({
       model: 'minimax-h3-base', prompt: '镜头缓慢推进', seconds: '10', mode: 'ref2va',
       resolution: '720p', aspectRatio: '21:9', promptOptimization: true,
-      imageCount: 2, videoCount: 1, audioCount: 1,
+      imageCount: 2, audioCount: 1,
     })).toEqual({
       model: 'minimax-h3-base', mode: 'ref2va', resolution: '720p', prompt: '镜头缓慢推进',
       seconds: '10', aspect_ratio: '21:9', prompt_optimization: true,
@@ -360,6 +363,14 @@ describe('video generation protocol', () => {
     expect(() => buildVideoGenerationRequest({
       model: 'minimax-h3-fast', prompt: 'p', seconds: '5', mode: 'ref2va', imageCount: 10,
     })).toThrowError(expect.objectContaining({ code: 'invalid-video-media' }))
+    expect(() => buildVideoGenerationRequest({
+      model: 'minimax-h3-fast', prompt: 'p', seconds: '5', mode: 'ref2va', imageCount: 1, videoCount: 1,
+    })).toThrowError(expect.objectContaining({
+      code: 'invalid-video-media', message: expect.stringContaining('does not support reference videos'),
+    }))
+    expect(() => buildVideoGenerationRequest({
+      model: 'minimax-h3-fast', prompt: 'p', seconds: '5', mode: 'fl2va', imageCount: 1,
+    })).toThrowError(expect.objectContaining({ code: 'invalid-video-media', message: expect.stringContaining('exactly two images') }))
   })
 })
 

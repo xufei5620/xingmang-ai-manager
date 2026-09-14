@@ -294,6 +294,16 @@ function readProviderModel(provider: ProviderId, paths: string[]): string {
   }
 }
 
+/**
+ * Gemini CLI 0.59 rewrites every model whose name ends in `-flash` to its
+ * built-in `gemini-3.5-flash` alias. The relay exposes the current 3.7/3.8
+ * tiers with an explicit suffix, bypassing that client-side rewrite. Always
+ * report the actual stored ID: a tier suffix must not be hidden in the UI.
+ */
+export function geminiCliCompatibleModel(model: string): string {
+  return /^(gemini-3\.[78]-flash)$/i.test(model.trim()) ? `${model.trim()}-high` : model.trim()
+}
+
 function readProviderAuthType(provider: ProviderId, paths: string[]): string | undefined {
   return provider === 'gemini'
     ? nestedString(readJson(paths[0]), ['security', 'auth', 'selectedType'])
@@ -971,7 +981,7 @@ function createPlans(
           content: [
             `GOOGLE_GEMINI_BASE_URL=${siteBaseUrls.gemini}`,
             `GEMINI_API_KEY=${apiKey}`,
-            `GEMINI_MODEL=${model}`,
+            `GEMINI_MODEL=${geminiCliCompatibleModel(model)}`,
             '',
           ].join('\n'),
         },
@@ -1053,7 +1063,7 @@ function createMergePlans(
           content: updateEnvContent(content, {
             GOOGLE_GEMINI_BASE_URL: siteBaseUrls.gemini,
             GEMINI_API_KEY: apiKey,
-            GEMINI_MODEL: model,
+            GEMINI_MODEL: geminiCliCompatibleModel(model),
           }),
         })
       }

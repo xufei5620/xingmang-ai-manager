@@ -4,6 +4,8 @@ const {
 } = require('./scripts/update-release-utils.cjs')
 const path = require('node:path')
 const packageVersion = require('./package.json').version
+const { resolveAccelerationBundleResources, verifyAccelerationBundleCore } = require('./scripts/stage-acceleration-bundle.cjs')
+const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
 
 function resolveUpdateUrl() {
   const rawUrl = process.env.XINGMANG_UPDATE_URL?.trim() || resolveUpdateUrlForVersion(packageVersion)
@@ -89,6 +91,7 @@ module.exports = {
     // Unsigned test releases intentionally keep the updater enabled, while
     // ordinary local builds remain isolated from every production feed.
     xingmangLocalBuild: !updateEnabledMode,
+    ...(accelerationBundle.metadata ? { xingmangAccelerationBundle: accelerationBundle.metadata } : {}),
   },
   files: [
     'dist/**/*',
@@ -107,7 +110,13 @@ module.exports = {
       to: 'bundled-skills/xingmang-ai',
       filter: ['**/*'],
     },
+    ...accelerationBundle.resources,
   ],
+  // Validate the binary again immediately before packaging. No private resource
+  // directory is selected by default, including CI and ordinary source builds.
+  ...(accelerationBundle.metadata ? {
+    beforePack: async () => verifyAccelerationBundleCore(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR, accelerationBundle.metadata),
+  } : {}),
   publish: {
     provider: 'generic',
     url: resolveUpdateUrl(),
@@ -131,7 +140,7 @@ module.exports = {
     category: 'public.app-category.developer-tools',
     minimumSystemVersion: '13.0',
     hardenedRuntime: true,
-    icon: 'assets/icon.icns',
+    icon: 'assets/brand/v3/app-icon.icns',
     // Local packages need an ad-hoc signature after Electron fuses are changed,
     // otherwise macOS rejects the invalidated upstream seal. This is not a
     // distributable Developer ID signature; release mode discovers that identity.

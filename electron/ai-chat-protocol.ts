@@ -464,7 +464,7 @@ export function resolveAiModelCapability(model: string): AiModelCapability {
     return {
       kind: 'video', model: normalized, provider: 'minimax-h3', available: true, hidden: false,
       source: 'preset', minimumSeconds: 5, maximumSeconds: 15,
-      supportsImageInput: true, supportsVideoInput: true, supportsAudioInput: true,
+      supportsImageInput: true, supportsVideoInput: false, supportsAudioInput: true,
     }
   }
 
@@ -804,8 +804,11 @@ export function buildVideoGenerationRequest(input: {
     if (!MINIMAX_VIDEO_ASPECT_RATIOS.has(aspectRatio)) {
       throw new AiChatProtocolError('invalid-video-aspect-ratio', 'MiniMax video aspect ratio is invalid')
     }
-    if (imageCount > 9 || videoCount > 3 || audioCount > 3 || imageCount + videoCount + audioCount > 15) {
-      throw new AiChatProtocolError('invalid-video-media', 'MiniMax video media count exceeds the API limit')
+    if (videoCount > 0) {
+      throw new AiChatProtocolError('invalid-video-media', 'MiniMax H3 does not support reference videos (max_videos=0)')
+    }
+    if (imageCount > 9 || audioCount > 3 || imageCount + audioCount > 12) {
+      throw new AiChatProtocolError('invalid-video-media', 'MiniMax H3 media count exceeds the API limit (max_media=12)')
     }
     const mediaCount = imageCount + videoCount + audioCount
     if (input.mode === 't2va' && mediaCount !== 0) {
@@ -814,8 +817,8 @@ export function buildVideoGenerationRequest(input: {
     if ((input.mode === 'i2va' || input.mode === 'l2va') && (imageCount !== 1 || videoCount !== 0 || audioCount !== 0)) {
       throw new AiChatProtocolError('invalid-video-media', `${input.mode.toUpperCase()} requires exactly one image`)
     }
-    if (input.mode === 'fl2va' && ((imageCount !== 1 && imageCount !== 2) || videoCount !== 0 || audioCount !== 0)) {
-      throw new AiChatProtocolError('invalid-video-media', 'FL2VA requires one or two images')
+    if (input.mode === 'fl2va' && (imageCount !== 2 || videoCount !== 0 || audioCount !== 0)) {
+      throw new AiChatProtocolError('invalid-video-media', 'FL2VA requires exactly two images')
     }
     if (input.mode === 'ref2va' && mediaCount === 0) {
       throw new AiChatProtocolError('invalid-video-media', 'Ref2VA requires at least one media input')

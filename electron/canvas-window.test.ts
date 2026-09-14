@@ -22,7 +22,7 @@ const electronMocks = vi.hoisted(() => ({
 }))
 
 vi.mock('electron', () => ({
-  app: { isPackaged: false },
+  app: { isPackaged: false, getAppPath: () => process.cwd() },
   BrowserWindow: Object.assign(vi.fn(function BrowserWindowMock(options: unknown) {
     electronMocks.browserWindowOptions.push(options)
     const mainFrame = { url: 'xingmang-canvas://app/index.html' }
@@ -361,7 +361,7 @@ describe('createCanvasWindowController', () => {
     await controller.open()
 
     expect(electronMocks.browserWindowOptions).toEqual([
-      expect.objectContaining({ backgroundColor: canvasWindowBackgroundColor }),
+      expect.objectContaining({ backgroundColor: canvasWindowBackgroundColor, icon: path.join(process.cwd(), 'assets', 'brand', 'v3', 'app-icon.png') }),
     ])
     expect(electronMocks.latestBrowserWindow?.loadURL).toHaveBeenCalledWith(
       'xingmang-canvas://app/?theme=dark',

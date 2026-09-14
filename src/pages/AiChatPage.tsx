@@ -61,7 +61,6 @@ import {
   type AiChatState,
 } from '../ai-chat-state'
 import { errorMessage } from '../error-message'
-import { DEFAULT_CODEX_MODEL } from '../onboarding-flow'
 import {
   managedCliKeyProfiles,
   type AiChatAsset,
@@ -73,7 +72,7 @@ import {
 import './AiChatPage.css'
 
 export const DEFAULT_AI_CHAT_GROUP = managedCliKeyProfiles.codex.group
-export const DEFAULT_AI_CHAT_MODEL = DEFAULT_CODEX_MODEL
+export const DEFAULT_AI_CHAT_MODEL = 'gpt-5.6-sol'
 
 export function resolveAiChatDefaultGroup(
   groups: readonly Pick<AiChatGroupSummary, 'name'>[],

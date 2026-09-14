@@ -1,0 +1,88 @@
+import { accelerationTrialSeconds, type AccelerationApi, type AccelerationLine, type AccelerationMode, type AccelerationState } from '../../../electron/acceleration-contract'
+
+const legacyTrialMilliseconds = 60 * 60 * 1000
+
+function readUsedMilliseconds(storage: Storage | undefined, scope: string, initialUsed: number): number {
+  let saved: string | null | undefined
+  let legacy: string | null | undefined
+  try {
+    saved = storage?.getItem(`xingmang-acceleration-preview:v2:${scope}`)
+    if (saved == null) legacy = storage?.getItem(`xingmang-acceleration-preview:${scope}`)
+  } catch { return initialUsed /* Preview remains usable when browser persistence is disabled. */ }
+  try {
+    if (saved != null) {
+      const value: unknown = JSON.parse(saved)
+      if (typeof value === 'object' && value !== null && 'version' in value && value.version === 2 && 'usedMilliseconds' in value
+        && typeof value.usedMilliseconds === 'number' && Number.isFinite(value.usedMilliseconds) && value.usedMilliseconds >= 0) {
+        return Math.max(initialUsed, value.usedMilliseconds)
+      }
+      return Math.max(initialUsed, accelerationTrialSeconds * 1000)
+    }
+    if (legacy != null) {
+      const remaining = Number(legacy)
+      if (Number.isFinite(remaining) && remaining >= 0 && remaining <= legacyTrialMilliseconds) {
+        return Math.max(initialUsed, legacyTrialMilliseconds - remaining)
+      }
+      return Math.max(initialUsed, accelerationTrialSeconds * 1000)
+    }
+  } catch { return Math.max(initialUsed, accelerationTrialSeconds * 1000) }
+  return initialUsed
+}
+
+/** Isolated interactive demo. It never opens a socket or changes the system network. */
+export function createPreviewAccelerationApi({ remainingSeconds = accelerationTrialSeconds, storage }: { remainingSeconds?: number; storage?: Storage } = {}): AccelerationApi {
+  const lines: AccelerationLine[] = [{ id: 'preview-jp', name: '日本线路 1', region: 'JP', latencyMs: 188 }, { id: 'preview-sg', name: '新加坡线路 2', region: 'SG', latencyMs: 242 }, { id: 'preview-us', name: '美国线路 3', region: 'US', latencyMs: 356 }]
+  const records = new Map<string, { remaining: number; used: number; startedAt: number | null; session: number; mode: AccelerationMode; lineId: string }>()
+  function record(scope: string) {
+    let current = records.get(scope)
+    if (!current) {
+      const initialRemaining = (Number.isFinite(remainingSeconds) ? Math.max(0, Math.min(accelerationTrialSeconds, remainingSeconds)) : 0) * 1000
+      const used = readUsedMilliseconds(storage, scope, accelerationTrialSeconds * 1000 - initialRemaining)
+      const remaining = Math.max(0, accelerationTrialSeconds * 1000 - used)
+      current = { remaining, used, startedAt: null, session: 0, mode: 'system-proxy', lineId: lines[0].id }
+      records.set(scope, current)
+    }
+    return current
+  }
+  function state(scope: string): AccelerationState {
+    const current = record(scope)
+    const elapsed = current.startedAt === null ? 0 : Math.max(0, Date.now() - current.startedAt)
+    const remaining = Math.max(0, current.remaining - elapsed)
+    const session = current.session + Math.min(elapsed, current.remaining)
+    const used = current.used + Math.min(elapsed, current.remaining)
+    if (remaining === 0 && current.startedAt !== null) {
+      current.remaining = 0; current.used = used; current.startedAt = null; current.session = session
+    }
+    try { storage?.setItem(`xingmang-acceleration-preview:v2:${scope}`, JSON.stringify({ version: 2, usedMilliseconds: used })) } catch { /* Preview only. */ }
+    return { scope, phase: remaining === 0 ? 'exhausted' : current.startedAt === null ? 'idle' : 'active',
+      mode: current.mode, totalSeconds: accelerationTrialSeconds, remainingSeconds: remaining / 1000, sessionSeconds: session / 1000,
+      connectedAt: current.startedAt === null ? null : new Date(current.startedAt).toISOString(), measuredAt: new Date().toISOString(),
+      line: current.startedAt === null ? null : lines.find(line => line.id === current.lineId) ?? lines[0], error: null }
+  }
+  return {
+    async getAccelerationState(scope) { return state(scope) },
+    async startAcceleration(scope, mode, lineId) {
+      const current = record(scope)
+      if (state(scope).remainingSeconds === 0) return state(scope)
+      if (current.startedAt === null) {
+        current.startedAt = Date.now(); current.session = 0; current.mode = mode; current.lineId = lines.find(line => line.id === lineId)?.id ?? lines[0].id
+      }
+      return state(scope)
+    },
+    async listAccelerationLines() { return lines.map(line => ({ ...line })) },
+    async pingAccelerationLine(_scope, lineId) {
+      const line = lines.find(item => item.id === lineId)
+      if (!line) throw new Error('加速线路不存在。')
+      return { ...line }
+    },
+    async stopAcceleration(scope) {
+      const latest = state(scope)
+      const current = record(scope)
+      current.used += current.remaining - (latest.remainingSeconds ?? 0) * 1000
+      current.remaining = (latest.remainingSeconds ?? 0) * 1000
+      current.session = latest.sessionSeconds * 1000
+      current.startedAt = null
+      return state(scope)
+    },
+  }
+}

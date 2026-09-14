@@ -44,6 +44,7 @@ export interface ValidatedPaymentForm {
 }
 
 export interface PaymentWindowControllerOptions {
+  iconPath?: string
   createWindow?: (options: BrowserWindowConstructorOptions) => BrowserWindow
   onBlockedNavigation?: (url: string) => void
   onTerminalState?: (event: PaymentWindowTerminalEvent) => void
@@ -301,6 +302,7 @@ export function createPaymentWindowController(
       autoHideMenuBar: true,
       backgroundColor: '#f5f6f7',
       title: paymentWindowTitle,
+      ...(options.iconPath ? { icon: options.iconPath } : {}),
       webPreferences: {
         contextIsolation: true,
         nodeIntegration: false,

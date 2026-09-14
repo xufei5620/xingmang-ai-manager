@@ -47,6 +47,13 @@ try {
 
   console.log(`ASAR 篡改拦截校验通过：生产程序以非零退出码 ${exitCode} 拒绝启动`)
 } finally {
-  if (application?.exitCode === null) application.kill()
-  await fs.rm(temporaryRoot, { recursive: true, force: true })
+  if (application?.exitCode === null) {
+    application.kill()
+    if (await waitForExit(application, 5_000) === null) {
+      throw new Error('未确认篡改测试进程退出，已保留临时目录')
+    }
+  }
+  // Windows Defender may retain the executable briefly after the integrity
+  // check terminates it. Retry bounded cleanup only after confirming exit.
+  await fs.rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 })
 }

@@ -20,6 +20,11 @@ import { pendingBusinessOperations } from './business-common'
 import { SavedAccounts } from './SavedAccounts'
 import { AnnouncementCenter } from './features/shell/Announcement'
 import { ChatPage } from './features/chat'
+import { AccelerationPage } from './features/acceleration/AccelerationPage'
+import { createAccelerationApi } from './features/acceleration/api'
+import { useAcceleration } from './features/acceleration/useAcceleration'
+import { useNetworkLocation } from './features/shell/useNetworkLocation'
+import { latestNetworkLocation } from './features/shell/network'
 import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
@@ -36,7 +41,7 @@ interface AccountBootstrapView extends AccountBootstrapProgress {
   error?: string
 }
 
-function RuntimeApp({ native }: { native: XingmangApi }) {
+function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangApi; accelerationPreview?: boolean }) {
   useReducedMotion()
   const app = useMemo(() => createAppApi(native), [native])
   const authApi = useMemo(() => createAuthApi(native), [native])
@@ -60,6 +65,7 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
   const [configTool, setConfigTool] = useState<ToolId | null>(null)
   const [help, setHelp] = useState(false)
+  const [accelerationHelp, setAccelerationHelp] = useState(false)
   const [switcher, setSwitcher] = useState(false)
   const [announcementOpen, setAnnouncementOpen] = useState(false)
   const [unread, setUnread] = useState(false)
@@ -87,6 +93,9 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
   const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || guide || workspaceEntered))
   const scope = accountScope(session)
+  const accelerationApi = useMemo(() => createAccelerationApi(native), [native])
+  const acceleration = useAcceleration(accelerationApi, session.authenticated ? scope : null)
+  const networkLocation = useNetworkLocation(native, acceleration.snapshot.state)
   const { store: balanceStore, snapshot: balanceState } = useAccountBalanceStore(native, session.authenticated ? scope : null)
   const balance = balanceState.balance
   useLayoutEffect(() => { accountEpoch.current++; setAccountReadError(null) }, [scope, session.authenticated])
@@ -265,7 +274,12 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
       if (!selectedWorkspace) return false
       workspace = selectedWorkspace
     }
-    return toolbox.run(`launch:${id}`, '正在打开工具', () => toolsApi.launch(id, workspace, mode))
+    return toolbox.run(`launch:${id}`, '正在打开工具', async () => {
+      const result = await toolsApi.launch(id, workspace, mode)
+      if (mounted.current && result?.chineseLocale && result.chineseLocale.status !== 'verified') {
+        toast.show(result.chineseLocale.message || 'Codex 已打开，中文界面尚未确认生效，请在配置中再次启用。', 'warn')
+      }
+    })
   }
   function requestLaunch(id: ToolId) {
     if (launchRequest.current) return
@@ -274,6 +288,17 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
       if (id === 'codexDesktop' && (await native.getCodexDesktopStatus()).running) setRestartDialog(true)
       else await launch(id)
     }).finally(() => { launchRequest.current = false })
+  }
+  function finishConfigSave(warning?: string) {
+    const epoch = accountEpoch.current
+    setConfigTool(null)
+    toast.show('配置保存成功', 'ok')
+    if (warning) toast.show(warning, 'warn')
+    void toolbox.refresh(true).catch(() => {
+      if (mounted.current && epoch === accountEpoch.current) {
+        toast.show('配置已保存，但最新状态没有读到。请重新检测，无需重复保存。', 'warn')
+      }
+    })
   }
   function requestUninstall(id: ToolId) {
     const definition = tools.find((tool) => tool.id === id)!
@@ -374,21 +399,26 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
           tourOpen={tourOpen} onTourClose={() => setTourOpen(false)}
           environment={toolbox.snapshot?.system.runtime.node.version ? `Node ${toolbox.snapshot.system.runtime.node.version}` : '命令行环境可选'} version={update?.currentVersion}
           unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length : undefined}
-          network={toolbox.snapshot?.system.network}
-          banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} markRemoteRead={app.markAnnouncementRead} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} />}
+          network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
+          networkRefreshing={networkLocation.snapshot.busy}
+          banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} />}
           notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? '更新没有完成' : update.phase === 'downloaded' ? '更新已下载' : update.phase === 'downloading' ? '正在下载更新' : `新版本 ${update.availableVersion} 可以安装`}
             body={update.error?.message ?? '查看更新内容和安装状态。'} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)} actions={<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>} />}
-          adapter={{ navigate, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
+          adapter={{ navigate, refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen(true), openNotifications: () => navigate('updates'),
             logout: () => setConfirmation({ title: '退出星芒账号？', body: '已写入工具的配置会保留。', label: '退出登录', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
             {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} /></div>}
+            {visitedPages.acceleration === scope && <div data-testid="page-acceleration" hidden={page !== 'acceleration'} inert={page !== 'acceleration'}>
+              <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null}
+                onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} preview={accelerationPreview} />
+            </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               onScan={() => void toolbox.refresh(true).catch(() => undefined)} onInstall={(id) => void perform('安装工具', () => install(id))} onLaunch={requestLaunch} onConfigure={setConfigTool} onUninstall={requestUninstall}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />
               : null}
-            {(Object.keys(visitedPages) as PageId[]).filter((id) => visitedPages[id] === scope || id === page).map((id) => <div key={id} hidden={page !== id} inert={page !== id}>
+            {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id} hidden={page !== id} inert={page !== id}>
               <BusinessPage api={native} page={id} accountTab={accountTab} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
                 onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={setConfigTool} />
             </div>)}
@@ -404,7 +434,13 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}
     {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: result.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov', account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result?.failed.length) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={() => { setSwitcher(false); setAuth('login') }} /></Dialog>}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated}
-      onClose={() => setConfigTool(null)} onSaved={() => toolbox.refresh(true)} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)} />}
+      onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)} />}
+    {accelerationHelp && <Dialog open title="全球加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
+      footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
+      <p>每个账号在本机累计享有 20 分钟免费体验。连接成功后才开始计时，停止后保留剩余时长，下次继续使用，不会每天重置。当前时长在本机保存，设备之间不同步。</p>
+      <p>关闭 TUN 时使用系统代理；开启 TUN 后覆盖不读取系统代理的应用。需要切换模式时，请先停止加速。</p>
+      <p>切换页面或缩到托盘不会中断连接。点击“停止加速”或退出软件会停止连接；免费时长用完后自动停止。</p>
+    </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
       <div className="v2-support">{siteId === 'solov' && qr && <img src={qr} alt="微信客服二维码" />}<h3>{siteId === 'solov' ? '微信扫码找客服' : '账号帮助'}</h3><p>{siteId === 'solov' ? '装不上、付了没到账，都可以问。' : '请在官方网站查看帮助与账号服务。'}</p><Button onClick={() => void perform('打开帮助', () => app.openExternal(siteId === 'solov' ? supportServiceUrl : relaySite.websiteUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
@@ -423,8 +459,8 @@ function RuntimeApp({ native }: { native: XingmangApi }) {
   </BalanceTierProvider></AccountBalanceContext.Provider>
 }
 
-export default function RendererV2App({ api }: { api?: XingmangApi }) {
+export default function RendererV2App({ api, accelerationPreview = false }: { api?: XingmangApi; accelerationPreview?: boolean }) {
   const native = api ?? getBridge()
   if (!native) return <Splash phase="请从桌面应用打开工具箱" error="浏览器页面未连接本机服务。" />
-  return <FailureBoundary native={native}><ToastProvider><RuntimeApp native={native} /></ToastProvider></FailureBoundary>
+  return <FailureBoundary native={native}><ToastProvider><RuntimeApp native={native} accelerationPreview={accelerationPreview} /></ToastProvider></FailureBoundary>
 }

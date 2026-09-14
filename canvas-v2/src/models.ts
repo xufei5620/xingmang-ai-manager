@@ -248,7 +248,8 @@ export const videoModelPresets: readonly VideoModelPreset[] = [
     maximumSeconds: 15,
     defaultSeconds: 5,
     supportsImage: true,
-    supportsVideo: true,
+    // Easyframe's current H3 contract disables video reference uploads.
+    supportsVideo: false,
     supportsAudio: true,
     sizes: [],
     defaultSize: '1280x736',
@@ -261,7 +262,7 @@ export const videoModelPresets: readonly VideoModelPreset[] = [
     maximumSeconds: 15,
     defaultSeconds: 5,
     supportsImage: true,
-    supportsVideo: true,
+    supportsVideo: false,
     supportsAudio: true,
     sizes: [],
     defaultSize: '1280x736',
@@ -274,7 +275,7 @@ export const videoModelPresets: readonly VideoModelPreset[] = [
     maximumSeconds: 15,
     defaultSeconds: 5,
     supportsImage: true,
-    supportsVideo: true,
+    supportsVideo: false,
     supportsAudio: true,
     sizes: [],
     defaultSize: '1280x736',
@@ -407,7 +408,11 @@ export function validateVideoModelOptions(input: {
     errors.push(`视频时长必须在 ${preset.minimumSeconds}-${preset.maximumSeconds} 秒之间`)
   }
   if (imageCount > 0 && !preset.supportsImage) errors.push(`模型「${preset.label}」不支持图片参考`)
-  if (videoCount > 0 && !preset.supportsVideo) errors.push(`模型「${preset.label}」不支持视频参考`)
+  if (videoCount > 0 && !preset.supportsVideo) {
+    errors.push(preset.provider === 'minimax-h3'
+      ? 'MiniMax H3 当前不支持参考视频（max_videos=0）'
+      : `模型「${preset.label}」不支持视频参考`)
+  }
   if (audioCount > 0 && !preset.supportsAudio) errors.push(`模型「${preset.label}」不支持音频参考`)
 
   if (preset.provider === 'grok') {
@@ -432,18 +437,17 @@ export function validateVideoModelOptions(input: {
     errors.push('MiniMax 视频比例不受支持')
   }
   if (imageCount > 9) errors.push('MiniMax 最多支持 9 张参考图')
-  if (videoCount > 3) errors.push('MiniMax 最多支持 3 个参考视频')
   if (audioCount > 3) errors.push('MiniMax 最多支持 3 个参考音频')
-  if (imageCount + videoCount + audioCount > 15) errors.push('MiniMax 单次最多支持 15 个参考素材')
+  if (imageCount + videoCount + audioCount > 12) errors.push('MiniMax 单次最多支持 12 个参考素材')
   if (mode === 't2va' && imageCount + videoCount + audioCount > 0) errors.push('T2VA 文生视频不能连接媒体素材')
   if ((mode === 'i2va' || mode === 'l2va') && (imageCount !== 1 || videoCount > 0 || audioCount > 0)) {
     errors.push(`${mode.toUpperCase()} 需要且只能连接 1 张图片`)
   }
-  if (mode === 'fl2va' && ((imageCount !== 1 && imageCount !== 2) || videoCount > 0 || audioCount > 0)) {
-    errors.push('FL2VA 需要连接 1-2 张图片，顺序为首帧、尾帧')
+  if (mode === 'fl2va' && (imageCount !== 2 || videoCount > 0 || audioCount > 0)) {
+    errors.push('FL2VA 需要且只能连接 2 张图片，顺序为首帧、尾帧')
   }
   if (mode === 'ref2va' && imageCount + videoCount + audioCount === 0) {
-    errors.push('Ref2VA 至少需要连接 1 个图片、视频或音频素材')
+    errors.push('Ref2VA 至少需要连接 1 个图片或音频素材')
   }
   if (input.size !== undefined && input.size !== '' && typeof input.size !== 'string') {
     errors.push(`模型「${preset.label}」不支持这个视频比例`)

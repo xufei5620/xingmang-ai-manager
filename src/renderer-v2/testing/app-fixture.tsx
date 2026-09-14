@@ -2,6 +2,8 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { ipcEventChannels, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type MultiProviderSessionPage, type ProviderId, type SystemSnapshot, type XingmangApi } from '../../../electron/ipc-contract'
 import RendererV2App from '../App'
+import { createPreviewAccelerationApi } from './acceleration-fixture'
+import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
 import { getSourceMarkerStorage, writeManualSourceMarker } from '../features/tools/source-marker'
 import { resolveManagedCliKeyProfiles } from '../../../electron/catalog'
 import '../styles/tokens.css'
@@ -10,7 +12,10 @@ import '../styles/shell.css'
 import '../app.css'
 
 const query = new URLSearchParams(location.search)
+const accelerationDemo = createPreviewAccelerationApi({ remainingSeconds: query.has('accelerationExhausted') ? 0 : query.has('accelerationShort') ? 3 : accelerationTrialSeconds, storage: window.localStorage })
 const noticesRead = new Set<string>(query.has('noticesRead') ? ['12', '8'] : [])
+const localNoticesRead = new Map<string, string[]>()
+declare global { interface Window { fixtureNoticeStore?: (scope: string, ids: string[]) => Promise<string[]> } }
 const pendingNoticeMarks = new Map<string, () => void>()
 const nativeFixtureScope = 'xm-native-12345678fixture'
 const nativeFixturePng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
@@ -42,6 +47,14 @@ const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', in
   uninstall: { available: true, reason: null, manualCommand: null, delegated: false } }
 const configValue = { exists: true, hasApiKey: true, matchesRelay: true, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
 const config: AppConfigSummary = { workspace: settings.workspace, providers: { claude: { ...configValue }, codex: { ...configValue }, gemini: { ...configValue }, grok: { ...configValue } } }
+if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
+const detectedModelsByProvider: Record<ProviderId, string[]> = {
+  claude: ['claude-opus-4-8', 'claude-opus-5', 'fixture-model'],
+  codex: ['codex-auto-review', 'gpt-6-astra', 'fixture-model'],
+  gemini: ['gemini-3.7-flash', 'gemini-3.8-flash-high', 'fixture-model'],
+  grok: ['grok-4', 'grok-4.6', 'fixture-model'],
+}
+const detectedModels = query.has('cliDefaultModels') ? Object.values(detectedModelsByProvider).flat() : ['fixture-model', 'fixture-other']
 if (query.has('keyOptions')) {
   config.providers.codex.apiKeyPreview = 'sk-co••••1234'
   config.providers.claude.apiKeyPreview = 'sk-cl••••5678'
@@ -82,7 +95,7 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: { id: string; text: string }): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: { id: string; text: string }): void; holdNextConfigSave(): void; releaseConfigSave(error?: string): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
@@ -90,7 +103,10 @@ let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
 let balanceOverride: number | null = null
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value } }
+let nextConfigSaveHeld = false
+let releaseConfigSave: (error?: string) => void = () => undefined
+const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'])
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
@@ -99,6 +115,26 @@ function sessionCapability(provider: ProviderId): MultiProviderSessionPage['capa
   return { provider, available: true, readable: true, readonly: true, source: 'jsonl', reason: '', operations: { list: true, detail: true, exportMarkdown: true, archive: false, restore: false } }
 }
 const methods = {
+  listAccelerationLines: async () => query.has('accelerationPreview') ? accelerationDemo.listAccelerationLines?.('xm-account:17') ?? [] : [],
+  pingAccelerationLine: async (_scope: string, lineId: string) => {
+    const line = await accelerationDemo.pingAccelerationLine?.('xm-account:17', lineId)
+    if (!line) throw new Error('加速线路不存在。')
+    return line
+  },
+  refreshNetworkLocation: async (): Promise<SystemSnapshot['network']> => {
+    if (!query.has('accelerationPreview')) return structuredClone(system.network)
+    const scope = `${session.siteId === 'solov-api' ? 'api' : 'xm'}-account:${session.account?.userId ?? 17}`
+    const connection = await accelerationDemo.getAccelerationState(scope)
+    // Documentation-only IPs; this fixture must never query the user's network.
+    return connection.phase === 'active'
+      ? { region: 'outside-mainland-china', countryCode: 'SG', publicIp: '203.0.113.24', checkedAt: new Date().toISOString(), error: null }
+      : { region: 'mainland-china', countryCode: 'CN', publicIp: '198.51.100.18', checkedAt: new Date().toISOString(), error: null }
+  },
+  getAccelerationState: async (scope: string) => query.has('accelerationPreview')
+    ? accelerationDemo.getAccelerationState(scope)
+    : { scope, phase: 'unavailable' as const, mode: 'system-proxy' as const, totalSeconds: accelerationTrialSeconds, remainingSeconds: null, sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null },
+  startAcceleration: accelerationDemo.startAcceleration,
+  stopAcceleration: accelerationDemo.stopAcceleration,
   getSettings: async () => ({ ...settings }),
   saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion }; return settings },
   getPlatformCapabilities: async () => capabilities,
@@ -149,6 +185,12 @@ const methods = {
     if (query.has('noticeMarkPending')) await new Promise<void>((resolve) => pendingNoticeMarks.set(entryId, resolve))
     noticesRead.add(entryId)
   },
+  syncLocalNoticeReads: async (scope: string, ids: string[]) => {
+    if (window.fixtureNoticeStore) return window.fixtureNoticeStore(scope, ids)
+    const next = [...new Set([...(localNoticesRead.get(scope) ?? []), ...ids])].slice(-200)
+    localNoticesRead.set(scope, next)
+    return next
+  },
   getAccountStatus: async () => ({ systemName: 'Fixture', version: '1', setupComplete: true, quotaPerUnit: 500000, quotaDisplayType: 'USD', usdExchangeRate: 7.3, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: false }),
   getRememberedAccountLogin: async () => null,
   setRememberedAccountLogin: async () => {},
@@ -157,7 +199,13 @@ const methods = {
   logoutAccount: async () => { session = { authenticated: false, account: null } },
   listProviderSessions: async () => ({ items: [], page: 1, pageSize: 3, total: 0, pages: 1, stats: { total: 0, byProvider: { claude: 0, codex: 0, gemini: 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
   launchCli: async () => query.has('launchPending') ? new Promise<void>((resolve) => { releaseLaunch = resolve }) : undefined,
-  launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex }),
+  launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
+  inspectCodexDesktopLocale: async () => ({ installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: true, error: null }),
+  setCodexDesktopLocale: async () => {
+    const failed = query.has('localeRetry') && window.v2Test.calls.filter((call) => call.method === 'setCodexDesktopLocale').length === 1
+    return { installed: true, version: 'fixture', running: true, configPath: 'C:\\Fixture\\config.toml', configuredLocale: 'zh-CN', effectiveLocale: 'zh-CN', chineseResources: { available: true, frontendChunk: true, menuLocale: true, pakLocale: true, resourceRoot: 'C:\\Fixture' }, needsRestart: failed, error: null, restarted: true, runtimeVerified: !failed,
+      ...(failed ? { warning: '中文设置已保存，但本次未确认中文界面生效。请再次启用中文界面以重试。' } : {}) }
+  },
   getCodexDesktopStatus: async () => structuredClone(system.desktopApps.codex),
   installCli: async (provider) => { system.clis[provider] = { ...system.clis[provider], installed: true, version: '2.0.0' } },
   installCodexDesktop: async () => ({ action: 'unchanged', previousVersion: '1.2.3', installedVersion: '1.2.3' }),
@@ -196,8 +244,8 @@ const methods = {
     window.v2Test.emit('onAccountSessionChanged', session)
     return { changed: true as const }
   },
-  listConfiguredModels: async (provider: ProviderId) => [config.providers[provider].model || 'fixture-model'],
-  listModels: async () => ['fixture-model', 'fixture-other'],
+  listConfiguredModels: async (provider: ProviderId) => query.has('cliDefaultModels') ? detectedModelsByProvider[provider] : [config.providers[provider].model || 'fixture-model'],
+  listModels: async () => detectedModels,
   syncManagedCliKeys: async () => {
     const result = { ready: (['claude', 'codex', 'grok', 'gemini'] as ProviderId[]).map((provider) => ({ provider, group: `${provider}-group`, name: `${provider}-key` })), failed: [] }
     if (!query.has('bootstrapPending')) return result
@@ -262,8 +310,12 @@ const api = new Proxy(methods, { get(target, name) {
     if (window.v2Test.fail === name) throw new Error('本地测试操作失败')
     const operation = Reflect.get(target, name)
     if (typeof operation !== 'function') { window.v2Test.unexpected.push(name); throw new Error(`Missing mock: ${name}`) }
+    if (nextConfigSaveHeld && configSaveMethods.has(name)) await new Promise<void>((resolve, reject) => {
+      nextConfigSaveHeld = false
+      releaseConfigSave = (error) => error ? reject(new Error(error)) : resolve()
+    })
     return Reflect.apply(operation, target, args)
   }
 } }) as unknown as XingmangApi
 window.xingmang = api
-createRoot(document.getElementById('root')!).render(<StrictMode><RendererV2App api={api} /></StrictMode>)
+createRoot(document.getElementById('root')!).render(<StrictMode><RendererV2App api={api} accelerationPreview={query.has('accelerationPreview')} /></StrictMode>)

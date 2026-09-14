@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { networkLocationLabel } from './network'
+import { latestNetworkLocation, networkLocationLabel } from './network'
 
 describe('renderer v2 network location label', () => {
+  it('preserves fresh route results against a late full scan, including a fresh unknown result', () => {
+    const scanned = { region: 'mainland-china' as const, countryCode: 'CN', publicIp: '198.51.100.18', checkedAt: '2026-09-14T00:00:00Z', error: null }
+    const refreshed = { region: 'unknown' as const, countryCode: null, publicIp: null, checkedAt: '2026-09-14T00:00:01Z', error: '检测失败' }
+    expect(latestNetworkLocation(scanned, refreshed)).toBe(refreshed)
+    const newerScan = { ...scanned, checkedAt: '2026-09-14T00:00:02Z' }
+    expect(latestNetworkLocation(newerScan, refreshed)).toBe(newerScan)
+    expect(latestNetworkLocation(scanned, null)).toBe(scanned)
+  })
   it('shows the localized country and public IP returned by the system scan', () => {
     expect(networkLocationLabel({
       region: 'mainland-china',

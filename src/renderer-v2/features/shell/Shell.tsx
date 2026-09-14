@@ -19,6 +19,7 @@ interface Adapter {
   switchAccount?(): void
   topUp?(): void
   refreshBalance?(): void
+  refreshNetwork?(): void
   logout?(): void
   openHelp?(): void
   openAnnouncements?(): void
@@ -35,8 +36,9 @@ interface ShellProps {
   environment?: string
   balance?: string
   version?: string
-  /** Network location from the read-only system scan. */
+  /** Observed network location, refreshed after a connection change. */
   network?: SystemSnapshot['network']
+  networkRefreshing?: boolean
   /** Kept for fixture compatibility; the status bar no longer presents it as a download source. */
   sourceLabel?: string
   installedCount?: number
@@ -48,7 +50,7 @@ interface ShellProps {
   children: ReactNode
 }
 
-export function Shell({ activePage, account, platform, adapter, environment, balance, version, network, installedCount, unread, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
+export function Shell({ activePage, account, platform, adapter, environment, balance, version, network, networkRefreshing = false, installedCount, unread, banner, notification, tourOpen, onTourClose, children }: ShellProps) {
   const [tourStep, setTourStep] = useState(0)
   useEffect(() => { if (tourOpen) setTourStep(0) }, [tourOpen])
   const [collapsed, setCollapsed] = useState(() => readLocalPreference('xingmang-v2-sidebar') === 'collapsed')
@@ -162,7 +164,12 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         {banner}
         <main ref={viewport} className={`v2-content${activePage === 'chat' ? ' v2-content-chat' : ''}`} data-testid="page-viewport">{children}</main>
         <footer className="v2-statusbar" data-testid="shell-statusbar"><button type="button" onClick={adapter.openHealth}><i className="v2-dot" />{environment ?? '环境待检测'}</button>
-          <span className="v2-network-location network-location" data-testid="shell-network-location" title={network?.error ?? networkLocationLabel(network)}><Globe size={14} aria-hidden="true" />{networkLocationLabel(network)}</span><button type="button" onClick={adapter.openAccount}><i className="v2-dot" />{account.signedIn ? `已登录 ${account.displayName}` : '未登录'}</button>
+          <button type="button" className="v2-network-location network-location" data-testid="shell-network-location"
+            aria-label="刷新网络位置" aria-busy={networkRefreshing} disabled={networkRefreshing || !adapter.refreshNetwork}
+            title={networkRefreshing ? '正在检测当前网络出口' : `${network?.error ?? networkLocationLabel(network)}；点击刷新网络位置`}
+            onClick={adapter.refreshNetwork}>
+            <Globe size={14} aria-hidden="true" /><span aria-live="polite">{networkRefreshing ? '正在检测网络位置…' : networkLocationLabel(network)}</span>
+          </button><button type="button" onClick={adapter.openAccount}><i className="v2-dot" />{account.signedIn ? `已登录 ${account.displayName}` : '未登录'}</button>
           {(balance || account.balance) && <button type="button" onClick={adapter.topUp} title={balanceStatus} data-testid="statusbar-balance">余额 {balance ?? account.balance}{account.balanceLoading && <RefreshCw size={12} className="xm-spin" aria-label="正在刷新余额" />}{account.balanceError && !account.balanceLoading && <span className="v2-balance-error">更新失败</span>}</button>}{installedCount !== undefined && <span>{installedCount} 个工具已装</span>}
           <button type="button" className="v2-status-version" onClick={adapter.openUpdates}>{version ? `v${version}` : '版本读取中'}</button>
         </footer>

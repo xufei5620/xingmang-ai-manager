@@ -34,7 +34,7 @@ function paymentForm(overrides: Partial<NewApiPaymentForm> = {}): NewApiPaymentF
   }
 }
 
-function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<PaymentWindowControllerOptions, 'createOrderStatusReader'> = {}) {
+function createHarness(loadError?: Error, terminalSnapshot = '', options: Pick<PaymentWindowControllerOptions, 'createOrderStatusReader' | 'iconPath'> = {}) {
   const windowEvents = new Map<string, (...args: any[]) => void>()
   const webContentsEvents = new Map<string, (...args: any[]) => void>()
   const sessionEvents = new Map<string, (...args: any[]) => void>()
@@ -237,7 +237,7 @@ describe('createPaymentWindowController', () => {
   })
 
   it('submits the form without generating executable HTML or JavaScript', async () => {
-    const harness = createHarness()
+    const harness = createHarness(undefined, '', { iconPath: '/app/assets/brand/v3/app-icon.png' })
     const parent = {} as never
 
     await harness.controller.open(paymentForm(), parent)
@@ -247,6 +247,7 @@ describe('createPaymentWindowController', () => {
       modal: true,
       show: false,
       title: '安全支付 - 星芒AI',
+      icon: '/app/assets/brand/v3/app-icon.png',
       webPreferences: expect.objectContaining({
         contextIsolation: true,
         nodeIntegration: false,

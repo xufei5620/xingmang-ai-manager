@@ -11,9 +11,10 @@ const workflow = YAML.parse(
 )
 const viteConfigSource = fs.readFileSync(path.join(root, 'vite.config.ts'), 'utf8')
 const platformEntrySource = fs.readFileSync(
-  path.join(root, 'electron', 'platform', 'entry.ts'),
+  path.join(root, 'electron', 'platform', 'desktop-entry.ts'),
   'utf8',
 )
+const entryRouterSource = fs.readFileSync(path.join(root, 'electron', 'platform', 'entry.ts'), 'utf8')
 
 const darwinOnlyTests = [
   'scripts/create-macos-free-signing-certificate.test.cjs',
@@ -44,6 +45,7 @@ test('renderer v2 is the default and legacy remains an explicit rollback mode', 
   assert.match(viteConfigSource, /requestedRenderer === 'legacy' \? 'legacy' : 'v2'/)
   assert.match(viteConfigSource, /Unsupported XINGMANG_RENDERER value/)
   assert.match(viteConfigSource, /fileName: 'renderer-v2\.flag'/)
+  assert.match(entryRouterSource, /require\('\.\/desktop-entry'\)/)
   assert.match(platformEntrySource, /requestedRenderer !== 'legacy'/)
   assert.match(platformEntrySource, /Boolean\(process\.env\.VITE_DEV_SERVER_URL\)/)
   assert.match(platformEntrySource, /usesDevServer \? requestedRenderer !== 'legacy' : builtWithV2/)

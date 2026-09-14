@@ -12,6 +12,24 @@ npm run release:build:unsigned
 
 此入口构建安装包但不上传，保留客户端自动更新；`forceCodeSigning=false`，更新配置不写入 `publisherName`。发布入口与普通 `npm run build` 都使用默认 renderer-v2 编译并生成 `dist/renderer-v2.flag`；旧界面只通过 `compile:legacy` 显式构建。普通 `npm run build` 仍是关闭自动更新的本地调试构建。
 
+### 从 0.2.3 起的私有加速资源
+
+产品所有者确认先分发本机计时版：每账号在本机累计 20 分钟，节点随本地 Windows 安装包提供，不上传 GitHub。TUN 尚未接入。源码和 CI 构建默认不含线路。
+
+先编译主进程，再将资源准备到项目外的新空目录；开发配置文件仅含 `version:1`、绝对 `corePath`、`coreSha256` 和绝对 `profilePath`。下列为占位路径：
+
+```powershell
+node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+node scripts/stage-acceleration-bundle.cjs --config 'C:\私有配置\acceleration-development.json' --output 'C:\私有发布\0.2.3\acceleration' --core-version v1.19.29 --source-ref v1.19.29 --license 'C:\许可\LICENSE-mihomo.txt'
+$env:XINGMANG_ACCELERATION_BUNDLE_DIR = 'C:\私有发布\0.2.3\acceleration'
+$env:XINGMANG_OUTPUT_DIR = 'release-0.2.3'
+npm run release:build:unsigned
+```
+
+脚本要求完整 GPL v3 许可并附对应源码地址；内核必须与运营者固定 SHA256 一致。只投影内联节点，不导入上游 Clash 的规则、订阅、控制接口、TUN 或脚本配置。打包前再次检查五文件白名单和资源哈希，哈希写入 ASAR 内 metadata。
+
+实际发布前核对包内 `resources/acceleration` 与受保护 metadata 一致，再测试 packaged helper 的开始、停止及父进程断连恢复。不能用没有节点的 CI 安装包替换本地验证过的加速版本。共享节点仍可被从包中提取，本机时间也不是跨设备服务器额度；此局限已由产品所有者接受。
+
 发布前仍需提升版本号、更新 `release-notes.md` 并完成类型检查、测试、编译和安装包验证。上传文件、修改 Cloudflare R2 或切换线上 `latest.yml` 必须获得产品所有者针对当前版本的明确发布授权，不能把构建、合并 PR 或历史授权解释为本次发布许可。
 
 ## 历史签名流程（停用）

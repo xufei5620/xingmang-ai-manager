@@ -64,6 +64,11 @@ button, input, select, textarea { font: inherit; }
 .v2-statusbar { flex: none; height: 30px; display: flex; align-items: center; gap: 12px; padding: 0 16px; border-top: 1px solid var(--line); background: var(--rail); color: var(--text-3); font-size: var(--font-micro); }
 .v2-statusbar > span, .v2-statusbar > button { display: flex; align-items: center; gap: 5px; white-space: nowrap; }
 .v2-statusbar .v2-network-location { min-width: 0; max-width: 240px; overflow: hidden; text-overflow: ellipsis; }
+.v2-network-location > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.v2-network-location > svg { flex: none; }
+.v2-statusbar .v2-network-location { height: 24px; }
+.v2-statusbar .v2-network-location:disabled { cursor: default; }
+.v2-statusbar .v2-network-location:hover:not(:disabled) { color: var(--text); }
 .v2-statusbar button { border: 0; background: transparent; padding: 0; color: inherit; cursor: pointer; }
 .v2-status-version { margin-left: auto; }
 .v2-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--text-3); flex: none; }

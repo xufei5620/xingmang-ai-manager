@@ -1,5 +1,6 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import * as TOML from '@iarna/toml'
 import {
   assertNoReparseComponents,
@@ -46,6 +47,8 @@ export interface CodexDesktopLocaleStatus {
 
 export interface CodexDesktopLocaleResult extends CodexDesktopLocaleStatus {
   restarted: boolean
+  runtimeVerified?: boolean
+  warning?: string
 }
 
 /**
@@ -67,9 +70,7 @@ export function codexDesktopLocaleNeedsChange(
   configuredLocale: string | null,
   target: CodexDesktopLocale,
 ): boolean {
-  return target === 'zh-CN'
-    ? configuredLocale !== 'zh-CN'
-    : configuredLocale !== null
+  return configuredLocale !== target
 }
 
 function normalizeLocale(value: unknown): string | null {
@@ -100,25 +101,41 @@ function quoteTomlString(value: string): string {
 
 function tableHeader(line: string): string | null {
   const match = line.match(/^\s*\[([^\[\]]+)\]\s*(?:#.*)?$/)
-  return match?.[1]?.trim() ?? null
+  if (!match) return /^\s*\[\[/.test(line) ? '__array_table__' : null
+  const name = match[1]?.trim()
+  if (name === 'desktop' || name === '"desktop"' || name === "'desktop'") return 'desktop'
+  return name ?? null
 }
 
 function replaceInlineTomlKey(line: string, value: string): string {
-  const indentation = line.match(/^\s*/)?.[0] ?? ''
-  const commentIndex = line.indexOf('#')
-  const comment = commentIndex >= 0 ? ` ${line.slice(commentIndex).trimStart()}` : ''
-  return `${indentation}${localeOverrideKey} = ${quoteTomlString(value)}${comment}`
+  // Only retain comments outside a quoted TOML value. A '#' in the old
+  // locale string is not a comment and must not leak into the new value.
+  const match = line.match(/^(\s*(?:localeOverride|"localeOverride"|'localeOverride')\s*=\s*)(?:"(?:[^"\\]|\\.)*"|'[^']*')(\s*(?:#.*)?)$/)
+  return match ? `${match[1]}${quoteTomlString(value)}${match[2]}` : `localeOverride = ${quoteTomlString(value)}`
 }
 
 /**
  * Updates only the [desktop] localeOverride line. Keeping this as a line
- * operation preserves user comments and unrelated provider settings instead
- * of reserializing the entire Codex config with a TOML library.
+ * operation preserves comments for ordinary and quoted table/key spellings.
+ * Unusual inline/dotted tables use a semantic TOML fallback. Every local edit
+ * is compared to the intended parsed object before it can be written, so a
+ * table-like line inside a multiline string cannot alter unrelated settings.
  */
 export function updateCodexDesktopLocaleContent(
   content: string,
   locale: CodexDesktopLocale,
 ): string {
+  let expected: Record<string, unknown>
+  try {
+    expected = TOML.parse(content.replace(/^\uFEFF/, '')) as Record<string, unknown>
+  } catch {
+    throw new Error('Codex config.toml 无法解析，未修改语言设置')
+  }
+  const desktop = expected.desktop
+  if (desktop !== undefined && (!desktop || typeof desktop !== 'object' || Array.isArray(desktop) || desktop instanceof Date)) {
+    throw new Error('Codex config.toml 的 desktop 不是配置表，未修改语言设置')
+  }
+  expected.desktop = { ...(desktop as Record<string, unknown> | undefined), [localeOverrideKey]: locale }
   const newline = content.includes('\r\n') ? '\r\n' : '\n'
   const hadTrailingNewline = /(?:\r\n|\n)$/.test(content)
   const lines = content.replace(/^\uFEFF/, '').split(/\r?\n/)
@@ -135,22 +152,21 @@ export function updateCodexDesktopLocaleContent(
     }
   }
 
-  const nextValue = locale === 'zh-CN' ? `localeOverride = ${quoteTomlString(locale)}` : null
+  // An explicit system selection is a persisted preference. Deleting the
+  // override would make the next automatic setup switch it back to Chinese.
+  const nextValue = `localeOverride = ${quoteTomlString(locale)}`
   if (desktopStart < 0) {
-    if (nextValue === null) return content
     const prefix = lines.length && lines[lines.length - 1]?.trim() ? ['', ''] : ['']
     lines.push(...prefix, '[desktop]', nextValue)
   } else {
     let keyIndex = -1
     for (let index = desktopStart + 1; index < desktopEnd; index += 1) {
-      if (/^\s*localeOverride\s*=/.test(lines[index] ?? '')) {
+      if (/^\s*(?:localeOverride|"localeOverride"|'localeOverride')\s*=/.test(lines[index] ?? '')) {
         keyIndex = index
         break
       }
     }
-    if (nextValue === null) {
-      if (keyIndex >= 0) lines.splice(keyIndex, 1)
-    } else if (keyIndex >= 0) {
+    if (keyIndex >= 0) {
       lines[keyIndex] = replaceInlineTomlKey(lines[keyIndex] ?? '', locale)
     } else {
       lines.splice(desktopStart + 1, 0, nextValue)
@@ -158,7 +174,14 @@ export function updateCodexDesktopLocaleContent(
   }
 
   const result = lines.join(newline)
-  return result ? `${result}${newline}` : ''
+  const candidate = result ? `${result}${newline}` : ''
+  try {
+    if (isDeepStrictEqual(TOML.parse(candidate), expected)) return candidate
+  } catch {
+    // Legal inline/dotted tables cannot always be updated one line at a time.
+  }
+  const serialized = TOML.stringify(expected as Parameters<typeof TOML.stringify>[0])
+  return newline === '\r\n' ? serialized.replace(/\r?\n/g, newline) : serialized
 }
 
 function directoryNames(directory: string): string[] {
@@ -217,26 +240,39 @@ function detectChineseResources(installDirectory: string | null): CodexDesktopCh
       resourceRoot: null,
     }
   }
-  const resourceRoot = path.join(installDirectory, 'app', 'resources', 'app.asar')
-  const assetsDirectory = path.join(resourceRoot, 'webview', 'assets')
-  const archiveMembers = asarMemberNames(resourceRoot)
-  const frontendChunk = directoryNames(assetsDirectory).some((name) => /^zh-CN(?:[-_].*)?\.js$/i.test(name))
-    || fs.existsSync(path.join(assetsDirectory, 'zh-CN.js'))
-    || archiveMembers.some((name) => /(^|\/)webview\/assets\/zh[-_]cn(?:[-_.].*)?\.js$/i.test(name))
-  const menuLocale = fs.existsSync(path.join(resourceRoot, 'native-menu-locales', 'zh-CN.json'))
-    || archiveMembers.some((name) => /(^|\/)native-menu-locales\/zh[-_]cn(?:[-_.].*)?\.json$/i.test(name))
-  // Electron locale packs live beside resources under app/locales in current
-  // Store builds. Keep the historical ASAR location as a compatibility probe
-  // for older packages and test fixtures without weakening the all-three gate.
-  const pakLocale = fs.existsSync(path.join(installDirectory, 'app', 'locales', 'zh-CN.pak'))
-    || fs.existsSync(path.join(resourceRoot, 'app', 'locales', 'zh-CN.pak'))
-  return {
-    available: frontendChunk && menuLocale && pakLocale,
-    frontendChunk,
-    menuLocale,
-    pakLocale,
-    resourceRoot,
+  // Store metadata identifies the package root, while extracted/direct
+  // installations can identify the application directory itself. Probe only
+  // known layouts inside that installation and keep each resource set intact.
+  const appDirectories = [path.join(installDirectory, 'app'), installDirectory]
+  const candidates = appDirectories.flatMap((appDirectory) => ['app.asar', 'app'].map((appName) => ({
+    resourceRoot: path.join(appDirectory, 'resources', appName),
+    pakPaths: [
+      path.join(appDirectory, 'locales', 'zh-CN.pak'),
+      path.join(appDirectory, 'resources', appName, 'app', 'locales', 'zh-CN.pak'),
+    ],
+  })))
+  candidates.push({
+    resourceRoot: path.join(installDirectory, 'Contents', 'Resources', 'app.asar'),
+    pakPaths: [
+      path.join(installDirectory, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Resources', 'zh_CN.lproj', 'locale.pak'),
+      path.join(installDirectory, 'Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Resources', 'zh_CN.lproj', 'locale.pak'),
+    ],
+  })
+  let best: CodexDesktopChineseResources | null = null
+  for (const { resourceRoot, pakPaths } of candidates) {
+    const assetsDirectory = path.join(resourceRoot, 'webview', 'assets')
+    const archiveMembers = asarMemberNames(resourceRoot)
+    const frontendChunk = directoryNames(assetsDirectory).some((name) => /^zh[-_]cn(?:[-_.].*)?\.js$/i.test(name))
+      || archiveMembers.some((name) => /(^|\/)webview\/assets\/zh[-_]cn(?:[-_.].*)?\.js$/i.test(name))
+    const menuLocale = directoryNames(path.join(resourceRoot, 'native-menu-locales')).some((name) => /^zh[-_]cn(?:[-_.].*)?\.json$/i.test(name))
+      || archiveMembers.some((name) => /(^|\/)native-menu-locales\/zh[-_]cn(?:[-_.].*)?\.json$/i.test(name))
+    const pakLocale = pakPaths.some((pakPath) => fs.existsSync(pakPath))
+    const result = { available: frontendChunk && menuLocale && pakLocale, frontendChunk, menuLocale, pakLocale, resourceRoot }
+    if (result.available) return result
+    const score = (value: CodexDesktopChineseResources) => Number(value.frontendChunk) + Number(value.menuLocale) + Number(value.pakLocale)
+    if (!best || score(result) > score(best)) best = result
   }
+  return best!
 }
 
 function configLocale(

@@ -37,6 +37,22 @@ describe('main-window sandbox preload', () => {
     expect(compiled).not.toMatch(/require\(["']\.\//)
   })
 
+  it('refreshes network location with a dedicated argument-free invocation', async () => {
+    const network = { publicIp: '203.0.113.9', countryCode: 'JP' }
+    const invoke = vi.fn(async () => network)
+    let bridge: XingmangApi | undefined
+    const compiled = ts.transpileModule(preloadSource().sourceText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
+    vm.runInNewContext(compiled, {
+      exports: {},
+      require: (name: string) => {
+        if (name !== 'electron') throw new Error('Sandbox cannot load runtime modules')
+        return { ipcRenderer: { invoke }, contextBridge: { exposeInMainWorld: (_name: string, api: XingmangApi) => { bridge = api } } }
+      },
+    })
+    await expect(bridge!.refreshNetworkLocation()).resolves.toBe(network)
+    expect(invoke.mock.calls).toEqual([['system:refresh-network-location']])
+  })
+
   it('subscribes to account usage hints without invoking privileges and removes its own listener', () => {
     const handlers = new Map<string, (_event: unknown, payload: unknown) => void>()
     let bridge: XingmangApi | undefined

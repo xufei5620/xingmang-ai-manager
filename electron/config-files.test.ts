@@ -6,6 +6,7 @@ import * as TOML from '@iarna/toml'
 import {
   buildCodexApiKeyAuth,
   canLaunchManagedProvider,
+  geminiCliCompatibleModel,
   classifyCodexAuthProfile,
   classifyCodexConfigProfile,
   codexApiKeyAuthSnapshotName,
@@ -82,6 +83,21 @@ afterEach(() => {
 })
 
 describe('native CLI configuration files', () => {
+  it('adds a relay tier suffix that avoids Gemini CLI 0.59 flash model rewriting', () => {
+    expect(geminiCliCompatibleModel('gemini-3.7-flash')).toBe('gemini-3.7-flash-high')
+    expect(geminiCliCompatibleModel('gemini-3.8-flash')).toBe('gemini-3.8-flash-high')
+    expect(geminiCliCompatibleModel('gemini-3.8-flash-medium')).toBe('gemini-3.8-flash-medium')
+    expect(geminiCliCompatibleModel('gemini-3.5-flash')).toBe('gemini-3.5-flash')
+  })
+  it('retains the exact Gemini high-tier model when saving and reading a new configuration', () => {
+    const roots = providerRoots(temporaryHome())
+    saveProviderConfig('gemini', 'sk-fixture', 'gemini-3.8-flash-high', 'reset', roots, {}, providerBaseUrls)
+    const inspection = inspectProviderConfig('gemini', roots, providerBaseUrls)
+    expect(inspection.model).toBe('gemini-3.8-flash-high')
+    expect(toNativeConfigSummary(inspection).model).toBe('gemini-3.8-flash-high')
+    saveProviderConfig('gemini', 'sk-fixture', 'gemini-3.8-flash-high', 'merge', roots, {}, providerBaseUrls)
+    expect(inspectProviderConfig('gemini', roots, providerBaseUrls).model).toBe('gemini-3.8-flash-high')
+  })
   it('diagnoses the Codex permission picker from trust and approval settings', () => {
     const config = [
       'approval_policy = "unless-trusted"',

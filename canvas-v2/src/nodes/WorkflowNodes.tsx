@@ -373,7 +373,7 @@ function multiInputHint(kind: NodeKind): string | null {
   if (kind === 'image-edit' || kind === 'image-generate' || kind === 'image') {
     return '文本、图片前置节点均可多连 · 接上参考图后自动走图像编辑，最多 4 张'
   }
-  if (kind === 'video-generate' || kind === 'video') return '文本、图片、视频、音频均可多连 · MiniMax 最多使用 9 图、3 视频、3 音频'
+  if (kind === 'video-generate' || kind === 'video') return '文本、图片、音频均可多连 · MiniMax 最多使用 9 图、3 音频，合计 12 个素材'
   return null
 }
 

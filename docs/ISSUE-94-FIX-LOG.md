@@ -10,7 +10,7 @@ Issue: https://github.com/xufei5620/xingmang-ai-manager/issues/94
 | --- | --- | --- | --- |
 | H1 | 官方账号切换后重启被静默改回星芒 | 已修复 | 持久化 `officialProviders`；启动准入、托管目标、引导和保存回切均尊重/清除标记；48 项定向测试与类型检查通过 |
 | H2 | 服务端作废托管 Key 后缓存不自愈 | 已修复 | `electron/account-cli-provisioner.ts`：bypassCache 验活，凭证失败删除并重签；29 项托管/聊天缓存测试通过 |
-| H3 | Gemini API/OAuth 模式回读门失效 | 已修复 | merge 强制写入 `security.auth.selectedType=gemini-api-key`；配置摘要回读并校验 Gemini 模式；97 项相关测试通过 |
+| H3 | Gemini API/OAuth 模式回读门失效、CLI 被父进程环境及 0.59 模型路由覆盖 | 已修复 | merge 强制写入 `security.auth.selectedType=gemini-api-key`；配置摘要回读并校验 Gemini 模式；启动 CLI 时清理旧 `GEMINI_*`/Gateway 环境并注入当前托管配置；Gemini CLI 0.59 会把 `gemini-3.7-flash` 重写成内置 `gemini-3.5-flash`，写入/启动时对 3.7/3.8 使用后缀 `-high` 绕过该规则；2026-09-14 用户指定新装默认 `gemini-3.8-flash-high`，回读完整保留实际档位，不隐藏后缀；`xm.solov.cc/v1beta/...:streamGenerateContent?alt=sse` 用测试 Key 实测 200；相关测试通过 |
 | H4 | 首次托管引导失败无手动/登出逃生路径 | 已修复 | Codex 失败才阻断；其他分组和缓存警告降级显示并继续；失败态提供返回工作台、退出登录、授权码配置入口；类型检查通过 |
 | H5 | 托管 Key 缓存损坏或 safeStorage 失效无法自愈 | 已修复 | 初始化捕获缓存读取异常并继续签发；`save()` 隔离损坏文件后重建；safeStorage 不可用保留明确警告；相关缓存/托管测试通过 |
 | H6 | Node MSI 提权安装存在用户可写暂存 TOCTOU | 已修复 | same-user 也使用受保护安装缓存；UAC broker 临执行前重新校验 SHA-256 与 Authenticode；23 项 Node runtime 测试通过 |

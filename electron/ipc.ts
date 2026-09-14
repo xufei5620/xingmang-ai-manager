@@ -14,6 +14,8 @@ import { parseWindowCloseReport, type WindowCloseReport } from './window-close-q
 import type { ExternalDeepLink } from './external-deep-links'
 import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
+import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
+import type { AccelerationApi } from './acceleration-contract'
 import { cliCatalog, isProviderId } from './catalog'
 import {
   configureManagedClis,
@@ -85,6 +87,7 @@ import type { ChatCredentialCoordinator } from './chat-credential-coordinator'
 import { clearXingmangAiSkillSecrets, syncXingmangAiSkill } from './xingmang-ai-skill'
 import type {
   AccountKeyCliConfigurationInput,
+  AccountSessionState,
   AccountKeyCreateInput,
   AccountKeyUpdateInput,
   AiChatStartInput,
@@ -122,6 +125,8 @@ export interface IpcRegistrationOptions {
   // RelayBackendClient (relay-backend.ts), not new-api-client.ts's concrete
   // type -- this module never needs to know which relay backend is active.
   accountService?: RelayBackendClient
+  announcementReads?: Pick<AnnouncementReadStore, 'sync'>
+  acceleration?: AccelerationApi
   // The server-owned payment form stays in the main process. IPC receives
   // only the user's amount/method choice and delegates the returned form to
   // this isolated window controller without serializing its signed fields.
@@ -1018,6 +1023,7 @@ function parseAiImageGenerateInput(value: unknown): AiImageGenerateInput {
 
 const ipcOperationLabels: Readonly<Record<string, string>> = {
   'system:scan': '本机环境与 AI 工具检测',
+  'system:refresh-network-location': '当前网络位置刷新',
   'startup:codex-readiness': 'Codex 启动状态检测',
   'config:get': '工具配置读取',
   'config:reveal-api-key': 'API Key 明文读取',
@@ -1126,6 +1132,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
 const quietIpcSuccessChannels = new Set([
   'account:get-key-options',
   'system:scan',
+  'system:refresh-network-location',
   'startup:codex-readiness',
   'config:get',
   'config:reveal-api-key',
@@ -1425,6 +1432,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     return snapshot
   })
+  registerTrustedHandler('system:refresh-network-location', () => service.refreshNetworkLocation())
   registerTrustedHandler('system:refresh-official-chatgpt', () => (
     service.refreshOfficialChatGptUsage()
   ))
@@ -1828,6 +1836,50 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     }
     return accountService.markNoticeRead?.(noticeId, entryId)
   })
+  registerTrustedHandler('account:sync-local-notice-reads', async (_event, scope: unknown, ids: unknown) => {
+    const input = parseLocalNoticeReadSync(scope, ids)
+    const revision = accountService.getSessionRevision?.()
+    const assertCurrentAccount = () => {
+      const state: AccountSessionState = accountService.getSessionState()
+      if (accountService.getSessionRevision?.() !== revision || !state.authenticated
+        || !Number.isSafeInteger(state.account?.userId)
+        || state.siteId === 'solov-api' || state.realmId === 'api-account'
+        || options.realmAccounts?.getSiteId() === 'solov-api'
+        || input.scope !== `xm-account:${state.account?.userId}`) {
+        throw new Error('公告账号上下文已变化，请重新打开公告')
+      }
+    }
+    assertCurrentAccount()
+    if (!options.announcementReads) throw new Error('公告已读记录保存服务暂不可用，请更新或重启软件')
+    const result = await options.announcementReads.sync(input.scope, input.ids)
+    assertCurrentAccount()
+    return result
+  })
+  const accelerationService = () => {
+    if (!options.acceleration) throw new Error('加速服务暂未准备好，请稍后再试。')
+    return options.acceleration
+  }
+  registerTrustedHandler('acceleration:get-state', (_event, scope: unknown) => (
+    accelerationService().getAccelerationState(requiredString(scope, '加速账号', 64))
+  ))
+  registerTrustedHandler('acceleration:list-lines', (_event, scope: unknown) => (
+    accelerationService().listAccelerationLines?.(requiredString(scope, '加速账号', 64)) ?? []
+  ))
+  registerTrustedHandler('acceleration:ping-line', (_event, scope: unknown, lineId: unknown) => (
+    accelerationService().pingAccelerationLine?.(requiredString(scope, '加速账号', 64), requiredString(lineId, '加速线路', 80))
+      ?? Promise.reject(new Error('线路检测服务暂未准备好，请稍后重试。'))
+  ))
+  registerTrustedHandler('acceleration:start', (_event, scope: unknown, mode: unknown, lineId: unknown) => {
+    if (mode !== 'system-proxy' && mode !== 'tun') throw new Error('加速模式无效。')
+    if (lineId !== undefined && typeof lineId !== 'string') throw new Error('加速线路参数无效。')
+    const accountScope = requiredString(scope, '加速账号', 64)
+    return lineId === undefined
+      ? accelerationService().startAcceleration(accountScope, mode)
+      : accelerationService().startAcceleration(accountScope, mode, lineId)
+  })
+  registerTrustedHandler('acceleration:stop', (_event, scope: unknown) => (
+    accelerationService().stopAcceleration(requiredString(scope, '加速账号', 64))
+  ))
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
     (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined
       ? options.realmAccounts.getSiteId() : parseAccountSiteId(siteId)) : accountService).getLegalDocument(parseLegalDocumentKind(kind))

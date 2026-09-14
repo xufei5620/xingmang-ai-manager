@@ -285,6 +285,61 @@ describe('syncManagedCliKeySummary', () => {
 })
 
 describe('configureManagedClis', () => {
+  it.each([
+    { provider: 'codex', models: ['codex-auto-review', 'gpt-5.6-sol', 'gpt-6-astra'], preferred: undefined, expected: 'gpt-6-astra' },
+    { provider: 'codex', models: ['codex-auto-review', 'gpt-5.6-sol', 'gpt-6-astra'], preferred: 'gpt-5.6-sol', expected: 'gpt-5.6-sol' },
+    { provider: 'codex', models: ['codex-auto-review', 'gpt-5.6-sol'], preferred: 'gpt-6-astra', expected: 'gpt-5.6-sol' },
+    { provider: 'claude', models: ['claude-opus-4-6', 'claude-opus-5'], preferred: undefined, expected: 'claude-opus-5' },
+    { provider: 'gemini', models: ['gemini-3.1-pro', 'gemini-3.8-flash-high'], preferred: undefined, expected: 'gemini-3.8-flash-high' },
+    { provider: 'grok', models: ['grok-4.5', 'grok-4.6'], preferred: undefined, expected: 'grok-4.6' },
+  ] satisfies Array<{ provider: ProviderId; models: string[]; preferred?: string; expected: string }>)('writes $expected from the actual $provider key model list with preference $preferred', async ({ provider, models, preferred, expected }) => {
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => providerIds.map((provider) => managedKey(provider))),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    const fetchAvailableModels = vi.fn(async () => models)
+    const saveConfig = vi.fn()
+
+    const result = await configureManagedClis(
+      loggedInAccountService(vi.fn()),
+      { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+      [provider],
+      preferred ? { [provider]: preferred } : {},
+      false,
+      store,
+    )
+
+    expect(result).toEqual({ configured: [provider], failed: [] })
+    expect(fetchAvailableModels).toHaveBeenCalledWith(managedKey(provider).key, { bypassCache: true })
+    expect(saveConfig).toHaveBeenCalledWith({
+      provider, apiKey: managedKey(provider).key, model: expected, mode: 'merge',
+    }, false, expect.any(Function))
+  })
+
+  it('reports a missing interactive default without writing an auto-review-only group to config', async () => {
+    const store: ManagedCliKeyStoreLike = {
+      read: vi.fn(async () => providerIds.map((provider) => managedKey(provider))),
+      save: vi.fn(async () => undefined),
+      remove: vi.fn(async () => undefined),
+    }
+    const saveConfig = vi.fn()
+
+    const result = await configureManagedClis(
+      loggedInAccountService(vi.fn()),
+      { fetchAvailableModels: vi.fn(async () => ['codex-auto-review']), saveConfig } as unknown as ConfigurationService,
+      ['codex'],
+      {},
+      false,
+      store,
+    )
+
+    expect(result).toEqual({ configured: [], failed: [{
+      provider: 'codex', message: '当前分组未返回可用于交互的默认模型，请选择其他分组或手动配置模型',
+    }] })
+    expect(saveConfig).not.toHaveBeenCalled()
+  })
+
   it.each(['cached', 'provisioned'] as const)('resets the selected config in one write with a %s managed key', async (source) => {
     const keys = providerIds.map((provider) => managedKey(provider))
     const store: ManagedCliKeyStoreLike = {

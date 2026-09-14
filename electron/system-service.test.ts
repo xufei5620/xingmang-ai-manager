@@ -322,6 +322,62 @@ describe('createSystemService', () => {
     expect(providerCommandEnvironment('grok', { HOME: userHome }, codexEnv).CODEX_HOME).toBeUndefined()
   })
 
+  it('removes stale Gemini gateway variables so the CLI loads the managed home env file', () => {
+    const userHome = path.join(os.tmpdir(), 'xingmang-gemini-env-home')
+    const environment = providerCommandEnvironment('gemini', {
+      HOME: userHome,
+      GEMINI_API_KEY: 'old-key',
+      GOOGLE_GEMINI_BASE_URL: 'https://old.example.test',
+      GEMINI_MODEL: 'old-model',
+      GOOGLE_GENAI_API_VERSION: 'v1alpha',
+      GOOGLE_GENAI_USE_VERTEXAI: 'false',
+      KEEP_THIS: 'yes',
+    }, { HOME: '/codex-home' })
+    expect(environment).toMatchObject({ HOME: userHome, KEEP_THIS: 'yes' })
+    for (const key of ['GEMINI_API_KEY', 'GOOGLE_GEMINI_BASE_URL', 'GEMINI_MODEL', 'GOOGLE_GENAI_API_VERSION']) {
+      expect(environment[key]).toBeUndefined()
+    }
+  })
+
+  it('refreshes only location through its proxy-aware fetch and reloads proxy configuration first', async () => {
+    const sequence: string[] = []
+    const globalFetch = vi.fn(async () => { throw new Error('Node fetch must not inspect the desktop route') })
+    vi.stubGlobal('fetch', globalFetch)
+    const inspect = vi.fn()
+    const execute = vi.fn()
+    const relayFetch = vi.fn()
+    const reload = vi.fn(async () => { sequence.push('reload') })
+    let count = 0
+    const networkFetch = vi.fn<typeof fetch>(async () => {
+      sequence.push('fetch')
+      return new Response(`ip=203.0.113.${++count}\nloc=JP\n`, { status: 200 })
+    })
+    const service = createService({
+      findExecutable: inspect, runCommand: execute, relayFetch,
+      networkLocationFetch: networkFetch, reloadNetworkProxyConfig: reload,
+    })
+    await expect(service.refreshNetworkLocation()).resolves.toMatchObject({ publicIp: '203.0.113.1', countryCode: 'JP' })
+    await expect(service.refreshNetworkLocation()).resolves.toMatchObject({ publicIp: '203.0.113.2', countryCode: 'JP' })
+    expect(sequence).toEqual(['reload', 'fetch', 'reload', 'fetch'])
+    expect(networkFetch).toHaveBeenCalledWith('https://www.cloudflare.com/cdn-cgi/trace', expect.objectContaining({
+      method: 'GET', redirect: 'error', cache: 'no-store', credentials: 'omit', signal: expect.any(AbortSignal),
+    }))
+    expect(globalFetch).not.toHaveBeenCalled()
+    expect(relayFetch).not.toHaveBeenCalled()
+    expect(inspect).not.toHaveBeenCalled()
+    expect(execute).not.toHaveBeenCalled()
+  })
+
+  it('does not probe a stale route when Chromium proxy reload fails', async () => {
+    const networkFetch = vi.fn<typeof fetch>()
+    const service = createService({
+      networkLocationFetch: networkFetch,
+      reloadNetworkProxyConfig: async () => { throw new Error('proxy service unavailable') },
+    })
+    await expect(service.refreshNetworkLocation()).rejects.toThrow('无法刷新当前网络代理配置')
+    expect(networkFetch).not.toHaveBeenCalled()
+  })
+
   it('refreshes official ChatGPT usage through the injected fetch and skips Xingmang keys', async () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-official-usage-refresh-'))
     temporaryDirectories.push(root)

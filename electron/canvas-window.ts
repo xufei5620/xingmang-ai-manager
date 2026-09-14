@@ -1038,6 +1038,7 @@ export function createCanvasWindowController(
       backgroundColor: canvasWindowBackgroundForAppearance(currentAppearance),
       show: false,
       title: '无限画布 - 星芒AI管理工具',
+      icon: path.join(app.getAppPath(), 'assets', 'brand', 'v3', 'app-icon.png'),
       webPreferences: {
         preload: path.join(__dirname, 'canvas-preload.js'),
         contextIsolation: true,
