@@ -10,6 +10,7 @@ import { copyBoundedFileExclusive, readBoundedFile } from './bounded-file'
 import { assertNoReparseComponents, assertSafeDataFile, ensureSafeDataDirectory, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 import { buildIsolatedMihomoConfig, type AccelerationClashProfile } from './acceleration-clash-config'
 import type { AccelerationLine } from './acceleration-contract'
+import { assertMacosAccelerationBinary } from './acceleration-binary'
 
 const PROBE_HOST = 'www.gstatic.com'
 const PROBE_URL = `https://${PROBE_HOST}/generate_204`
@@ -381,6 +382,7 @@ export function createMihomoRuntime(options: MihomoRuntimeOptions): MihomoRuntim
       await copyBoundedFileExclusive(options.corePath, session.executablePath, MAX_CORE_BYTES, '加速内核')
       const copiedCore = await readBoundedFile(session.executablePath, MAX_CORE_BYTES, '加速内核')
       if (createHash('sha256').update(copiedCore).digest('hex') !== options.coreSha256.toLowerCase()) throw new Error('加速内核校验失败')
+      if (process.platform === 'darwin') assertMacosAccelerationBinary(copiedCore, process.arch)
       if (process.platform !== 'win32') await fs.promises.chmod(session.executablePath, 0o700)
       await writeAtomicSafeUtf8File(session.configPath, yaml, '加速连接配置')
       assertNotAborted(abort.signal)

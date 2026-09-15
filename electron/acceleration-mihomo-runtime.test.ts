@@ -144,7 +144,10 @@ async function remainingSessions(): Promise<string[]> {
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-acceleration-runtime-'))
   corePath = path.join(root, 'source-core.exe')
-  const core = Buffer.from('test-only-not-an-executable')
+  const core = Buffer.alloc(64)
+  core.writeUInt32LE(0xfeedfacf, 0)
+  core.writeUInt32LE(process.arch === 'arm64' ? 0x0100000c : 0x01000007, 4)
+  core.writeUInt32LE(2, 12)
   await fs.writeFile(corePath, core)
   coreSha256 = createHash('sha256').update(core).digest('hex')
   settings = { acceptInvalidAuth: false, failDelays: false, holdDelays: false, wrongSelection: false, oversizedFirstDelay: false, resistStop: false, tlsStatus: 204 }
@@ -174,6 +177,16 @@ afterEach(async () => {
 })
 
 describe('createMihomoRuntime', () => {
+  it.runIf(process.platform === 'darwin')('rejects a correctly hashed core for the wrong Mac CPU before spawning', async () => {
+    const wrongCore = await fs.readFile(corePath)
+    wrongCore.writeUInt32LE(process.arch === 'arm64' ? 0x01000007 : 0x0100000c, 4)
+    await fs.writeFile(corePath, wrongCore)
+    coreSha256 = createHash('sha256').update(wrongCore).digest('hex')
+    await expect(runtime().start(profile())).rejects.toThrow('架构不一致')
+    expect(mocks.spawn).not.toHaveBeenCalled()
+    expect(await remainingSessions()).toEqual([])
+  })
+
   it('starts a verified private core, selects the fastest line and proves the proxy path before returning', async () => {
     vi.stubEnv('HTTP_PROXY', 'http://private-proxy.example')
     vi.stubEnv('MIHOMO_TEST', 'untrusted-override')
@@ -202,7 +215,7 @@ describe('createMihomoRuntime', () => {
     await value.stop()
     expect(value.isRunning()).toBe(false)
     expect(await remainingSessions()).toEqual([])
-    expect(await fs.readFile(corePath, 'utf8')).toBe('test-only-not-an-executable')
+    expect(createHash('sha256').update(await fs.readFile(corePath)).digest('hex')).toBe(coreSha256)
   })
 
   it('coalesces repeated starts and stops without creating or killing another core', async () => {

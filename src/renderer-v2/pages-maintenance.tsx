@@ -1389,12 +1389,12 @@ export function SettingsPage({
             />,
           )}
           {row(
-            '代理',
-            proxy?.note ??
-              '可查看应用窗口的系统代理路由；账号请求和工具安装使用原有链路。',
+            '网络连接',
+            proxy?.note?.replaceAll('代理路由', '连接路径').replaceAll('代理', '网络设置') ??
+              '可查看应用窗口的连接路径；账号请求和工具安装使用各自的连接设置。',
             systemApi ? (
               <div className="v2-business-control">
-                <Pill>{proxy?.summary ?? '只读'}</Pill>
+                <Pill>{proxy?.summary?.replaceAll('使用代理路由', '通过转发连接').replaceAll('代理路由', '连接路径') ?? '只读'}</Pill>
                 <Button
                   size="sm"
                   icon={RefreshCw}

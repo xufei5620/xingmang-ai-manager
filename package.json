@@ -1,6 +1,6 @@
 {
   "name": "xingmang-ai-manager",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "private": true,
   "workspaces": [
     "tooling/legacy-renderer"
@@ -17,6 +17,8 @@
   },
   "scripts": {
     "dev:v2": "npm run dev",
+    "acceleration:mac:prepare": "node scripts/build-macos-system-proxy.cjs",
+    "test:mac:proxy": "node --test scripts/macos-system-proxy.test.cjs",
     "dev:legacy": "cross-env XINGMANG_RENDERER=legacy npm run dev:runtime",
     "dev:v2:runtime": "npm run canvas:prepare && node scripts/prebuild-electron-dev.mjs && node scripts/start-renderer-v2-dev.mjs",
     "compile:v2": "npm run compile",

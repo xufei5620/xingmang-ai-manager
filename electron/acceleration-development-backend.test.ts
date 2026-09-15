@@ -199,6 +199,17 @@ describe('local development acceleration backend', () => {
     expect((await test.backend.startAcceleration(scope, 'system-proxy')).phase).toBe('active')
   })
 
+  it('preserves a safe proxy authorization explanation after rollback without exposing underlying details', async () => {
+    const test = await setup()
+    await test.backend.recover()
+    test.proxy.enable.mockRejectedValueOnce(Object.assign(new Error('private-helper-path-and-secret'), { code: 'MACOS_PROXY_AUTHORIZATION' }))
+    const result = await test.backend.startAcceleration(scope, 'system-proxy')
+    expect(result).toMatchObject({ phase: 'error', remainingSeconds: 1200, connectedAt: null })
+    expect(result.error).toContain('macOS 网络设置授权未完成')
+    expect(result.error).not.toContain('private-helper-path')
+    expect(test.runtime.isRunning()).toBe(false)
+  })
+
   it('retains a failed rollback and core until proxy restoration can be retried', async () => {
     const test = await setup()
     await test.backend.recover()

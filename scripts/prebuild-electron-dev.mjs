@@ -47,4 +47,14 @@ if (result.status !== 0) {
   )
 }
 
+if (process.platform === 'darwin') {
+  const native = spawnSync(process.execPath, [path.join(projectRoot, 'scripts', 'build-macos-system-proxy.cjs')], {
+    stdio: 'inherit', shell: false,
+  })
+  if (native.error || native.status !== 0) {
+    console.error('[prebuild-electron-dev] Mac 系统代理组件编译失败，请检查 Xcode Command Line Tools。')
+    process.exit(1)
+  }
+}
+
 process.exit(0)

@@ -5,7 +5,7 @@ export const pages = [
   { id: 'chat', label: '聊天', icon: 'message-square', group: 'daily', template: '专用', testId: 'page-chat' },
   { id: 'sessions', label: '记录', icon: 'clock', group: 'daily', template: 'T3', testId: 'page-sessions' },
   { id: 'canvas', label: '画布 ↗', icon: 'infinity', group: 'daily', template: '独立窗口', testId: 'nav-canvas' },
-  { id: 'acceleration', label: '全球加速', icon: 'globe-2', group: 'daily', template: 'T5', testId: 'page-acceleration' },
+  { id: 'acceleration', label: '游戏加速', icon: 'globe-2', group: 'daily', template: 'T5', testId: 'page-acceleration' },
   { id: 'mcp', label: '外接工具', icon: 'plug', group: 'extend', template: 'T1', testId: 'page-mcp' },
   { id: 'skills', label: '技能', icon: 'sparkles', group: 'extend', template: 'T1', testId: 'page-skills' },
   { id: 'plugins', label: '插件', icon: 'package', group: 'extend', template: 'T1', testId: 'page-plugins' },

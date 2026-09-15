@@ -1,4 +1,6 @@
-# 全球加速：界面、计时与接入边界
+# 游戏加速：界面、计时与接入边界
+
+界面名称统一为“游戏加速”。当前系统代理仅覆盖遵循系统代理设置的游戏、启动器和下载请求；退出游戏不会自动停止本软件的连接和计时。TUN 尚未接入，不宣称覆盖所有游戏流量。
 
 2026-09-14 用户最新确认：免费时长由 1 小时调整为 20 分钟，0.2.3 先发布本机计时版。Windows 安装包带私有节点，节点不上传 GitHub；每账号在本机累计 20 分钟，停止保留剩余、设备之间不同步。当前仅系统代理，TUN 尚未接入。
 
@@ -44,6 +46,14 @@ worker 在 Windows 使用 `detached: true`、隐藏窗口和独立 IPC 通道，
 - 实测使用隔离的本机测试 scope，未登录或请求任何生产账号服务，没有使用用户聊天/API 凭据。临时验证程序改为文件日志和隐藏启动，避免 GUI 进程输出管道关闭造成 EPIPE。
 
 TUN 当前明确标记为未接入并禁用开关。账号时长 API、节点端强制到期及 macOS 系统代理/TUN 仍未接入；当前发行版采用用户明确选择的本机账本方案，不能宣称跨设备服务端限额。
+
+## macOS 本地源码适配（尚未发布）
+
+在 0.2.3 源码上新增 Mac 分支，保留以上 Windows 发行记录。开发配置、worker 入口和资源读取支持 Darwin；共用节点解析器、CONNECT 探测、选线及 20 分钟账本。`native/macos-system-proxy.swift` 与 `electron/platform/macos-system-proxy.ts` 提供固定 JSON 操作和原生恢复流程；详情见 [macOS 开发说明](MACOS_DEVELOPMENT.md#本机加速开发)。
+
+Mac 资源清单采用 `version:2`、`platform:"darwin"`、`arch:"arm64"|"x64"`、`coreFile:"mihomo"`，其余节点、许可与哈希字段沿用已有方案。Windows `version:1` 和 `mihomo.exe` 保持兼容。资源准备工具新增显式平台/架构参数，运行及构建前均拒绝不匹配目标；私有目录仍位于仓库外。原生 helper 与 Mihomo 分开验证，安装包阶段的签名及最终内容验收仍需在用户另行要求打包后执行。
+
+本轮验证涵盖：Mac 资源错平台/错架构、篡改拒绝、native helper 双架构编译、代理原值/PAC 保留、外部变更、授权取消、并发实例、父管道断连、硬杀重启恢复、持久化提交成功但应用失败后的重试，以及恢复记录大小限制。测试通过不等于真实网络切换、Intel 实机或安装包验收。
 
 ## 0.2.3 私有资源发布方式
 
@@ -109,8 +119,8 @@ node scripts/probe-acceleration-nodes.cjs --config 'C:\运营配置\shared-upstr
 
 - 当前免费试用统一为每账号累计 **20 分钟（1200 秒）**，不每日重置；主进程契约、renderer 默认值、交互预览和原型一致。计时格式仍为 `HH:MM:SS`。
 - 交互预览把旧版 `xingmang-acceleration-preview:<scope>` 的一小时剩余毫秒数转为已使用时长，写入 `xingmang-acceleration-preview:v2:<scope>` 的 `{ version: 2, usedMilliseconds }`，保留旧记录。新余额为 `max(0, 20 分钟 - 已使用时长)`：旧剩余 35 分钟表示已用 25 分钟，新额度为 0；旧剩余 55 分钟表示已用 5 分钟，新剩余 15 分钟。刷新或隔天打开均不重新赠送。该存储只服务带「交互预览」标记的 mock，不能作为客户权益或正式计费依据。
-- 20 分钟调整验证：controller 与预览迁移共 23 项单测、全球加速 8 项浏览器回归通过；renderer TypeScript 检查通过，原型重新生成并完成语法检查。浏览器覆盖 20 分钟初值、暂停/续用、重开保留、旧 35 分钟余量迁移后耗尽及停止失败重试。
-- React 完整界面：`/src/renderer-v2/testing/app.html?accelerationPreview=1`，从侧栏进入全球加速；这是标注「交互预览」的 mock 环境，不改变网络。
+- 20 分钟调整验证：controller 与预览迁移共 23 项单测、游戏加速 8 项浏览器回归通过；renderer TypeScript 检查通过，原型重新生成并完成语法检查。浏览器覆盖 20 分钟初值、暂停/续用、重开保留、旧 35 分钟余量迁移后耗尽及停止失败重试。
+- React 完整界面：`/src/renderer-v2/testing/app.html?accelerationPreview=1`，从侧栏进入游戏加速；这是标注「交互预览」的 mock 环境，不改变网络。
 - 原型：`ui-spec/work/modules/99z-acceleration.js` / `.css`，通过现有构建脚本生成公开原型，`#acceleration` 直达。原型状态为纯演示，实际 renderer 使用独立有测试覆盖的 controller。
 - 历史 1 小时原型的截图：`artifacts/acceleration/idle-light.png`、`active-light.png`、`idle-dark.png`。1280×820 下页面约 620px 高，完整显示，横向无溢出；活动演示 73 秒后剩余 `00:58:47`，本次/累计 `00:01:13`。
 - 主进程服务、IPC/preload 和 controller 337 项测试通过；新增浏览器 5 项通过：暂停恢复/跨页/刷新保留、后台耗尽停止、不可用状态、启停失败重试、未登录入口。全套 `npm run test:v2` 174 项单测和 170 项浏览器测试全部通过；类型检查、编译及 `check:v2` 通过。原型渲染、启停、TUN 开关也经独立浏览器验证。测试使用隔离 mock，没有生产网络请求。

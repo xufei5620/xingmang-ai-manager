@@ -28,11 +28,39 @@ beforeEach(() => {
 describe('bundled acceleration manifest', () => {
   it.each([
     { isPackaged: false, platform: 'win32' },
-    { isPackaged: true, platform: 'darwin' },
     { isPackaged: true, platform: 'linux' },
-  ])('does not inspect bundled resources outside a packaged Windows app: %j', async (scope) => {
+  ])('does not inspect bundled resources in development or unsupported platforms: %j', async (scope) => {
     expect(await readBundledAccelerationConfig({ ...options, ...scope })).toBeNull()
     expect(mocks.read).not.toHaveBeenCalled()
+  })
+
+  it.each(['arm64', 'x64'])('loads only a matching Darwin %s executable and protected manifest', async (arch) => {
+    const core = Buffer.alloc(64)
+    core.writeUInt32LE(0xfeedfacf, 0)
+    core.writeUInt32LE(arch === 'arm64' ? 0x0100000c : 0x01000007, 4)
+    core.writeUInt32LE(2, 12)
+    const darwin = { ...manifest, version: 2, platform: 'darwin', arch, coreFile: 'mihomo', coreSha256: hash(core) }
+    mocks.read.mockResolvedValue(JSON.stringify(darwin))
+    mocks.readBinary.mockImplementation(async (file: string) => path.basename(file) === 'mihomo' ? core : contents[path.basename(file)])
+    const result = await readBundledAccelerationConfig({ ...options, platform: 'darwin', architecture: arch, bundledMetadata: darwin })
+    expect(result?.corePath).toBe(path.join(resourcesPath, 'acceleration', 'mihomo'))
+    expect(result?.coreSha256).toBe(hash(core))
+    expect(result?.profileSha256).toBe(manifest.profileSha256)
+  })
+
+  it('rejects wrong-target manifests before reading executable or profile bytes', async () => {
+    const darwin = { ...manifest, version: 2, platform: 'darwin', arch: 'x64', coreFile: 'mihomo' }
+    await expect(readBundledAccelerationConfig({ ...options, platform: 'darwin', architecture: 'arm64', bundledMetadata: darwin })).rejects.toThrow('内置加速资源无效')
+    await expect(readBundledAccelerationConfig({ ...options, platform: 'darwin', bundledMetadata: manifest })).rejects.toThrow('内置加速资源无效')
+    expect(mocks.readBinary).not.toHaveBeenCalled()
+  })
+
+  it('rejects a Windows binary whose digest was pinned as a Darwin core', async () => {
+    const core = Buffer.from('MZwrong-platform')
+    const darwin = { ...manifest, version: 2, platform: 'darwin', arch: 'arm64', coreFile: 'mihomo', coreSha256: hash(core) }
+    mocks.read.mockResolvedValue(JSON.stringify(darwin))
+    mocks.readBinary.mockImplementation(async (file: string) => path.basename(file) === 'mihomo' ? core : contents[path.basename(file)])
+    await expect(readBundledAccelerationConfig({ ...options, platform: 'darwin', architecture: 'arm64', bundledMetadata: darwin })).rejects.toThrow('内置加速资源无效')
   })
 
   it.each([undefined, null])('does not enable external resources when the installed app has no protected bundle pins', async (bundledMetadata) => {

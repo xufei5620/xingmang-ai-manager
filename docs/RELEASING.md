@@ -32,6 +32,14 @@ npm run release:build:unsigned
 
 发布前仍需提升版本号、更新 `release-notes.md` 并完成类型检查、测试、编译和安装包验证。上传文件、修改 Cloudflare R2 或切换线上 `latest.yml` 必须获得产品所有者针对当前版本的明确发布授权，不能把构建、合并 PR 或历史授权解释为本次发布许可。
 
+## macOS 0.2.4 双架构加速资源
+
+Mac 资源使用 `--platform darwin --arch arm64` 或 `--arch x64` 准备，资源清单为 version 2。每个目录只含对应架构的内核，必须使用独立目录与单架构构建命令；目标平台或架构不符会拒绝构建。两次构建后汇总两份 ZIP 清单，最后执行完整双架构验证。
+
+本次使用官方 Mihomo v1.19.29，内核与节点文件保存在仓库外。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
+
+除了 `verify-macos-free-artifacts.cjs`，发布者还须检查每个最终应用的 ASAR 资源 pins、内核/节点文件哈希、原生组件路径与架构，以及组件签名。包内 `--xingmang-acceleration-worker` 入口必须能通过 IPC 完成初始化、返回仅含显示信息的线路列表并正常退出。私有节点不得上传 GitHub；R2 发布顺序沿用先安装包和 blockmap、后 `latest-mac.yml`。
+
 ## 历史签名流程（停用）
 
 以下为历史签名方案归档。`release:build`、`release:preflight`、`release:verify` 和 `release-build.yml` 是旧签名专用入口，不用于当前及后续 Windows 无签名发布；下文的证书、发布者和 DN/CN 要求不适用于本项目的无签名发布流程。

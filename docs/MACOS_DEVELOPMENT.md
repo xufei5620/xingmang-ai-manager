@@ -8,6 +8,37 @@ npm ci
 npm run dev
 ```
 
+## 本机加速开发
+
+Mac 本地加速复用现有选线和每账号累计 20 分钟逻辑，仅接入系统代理。M 系列使用 arm64 Mihomo，Intel 使用 x64（上游命名 amd64-v1）。内核须从官方固定版本取得并核对 SHA-256；运行前会再次检查复制后的哈希、Mach-O 类型和 CPU 架构。
+
+`npm run dev` 会编译 Mac 原生代理组件，需 Xcode Command Line Tools。单独编译组件和运行隔离测试：
+
+```bash
+npm run acceleration:mac:prepare
+npm run test:mac:proxy
+```
+
+开发版在 Electron userData 下读取 `acceleration-development.json`；正式安装版不读取此开发配置。该文件只存绝对路径和校验值，节点 YAML 与内核保存在仓库外。配置结构如下，路径和指纹均为占位值：
+
+```json
+{
+  "version": 1,
+  "corePath": "/private/acceleration/mihomo",
+  "coreSha256": "替换为实际内核的64位SHA256",
+  "profilePath": "/private/acceleration/profile.yaml",
+  "profileSha256": "替换为实际配置的64位SHA256"
+}
+```
+
+原生组件通过 SystemConfiguration 管理当前网络位置的物理网络服务。只在需要修改时使用 macOS 标准系统授权；读取及无恢复记录的启动检查不要求授权。原设置先写入恢复记录，停止时先恢复并确认生效，再停止内核。其他软件改过的代理不会被旧快照覆盖；若仍指向本加速端口则保留恢复记录并报告失败。
+
+开发项目位于 Desktop/Documents 等受保护目录时，授权服务可能无法读取原生程序身份，表现为 -60008 且没有授权弹窗。组件启动前会复制到用户 Application Support 下的独立私有目录并复核哈希，避免该路径限制。每个实例使用独立副本，存活程序不会因重新编译而被覆盖；代理设置 Apply 后会有限等待系统发布生效状态。
+
+父窗口异常退出由独立 worker 清理；worker 退出由原生组件的管道断开处理；硬杀或断电后由下一次启动读取恢复记录。关闭窗口到托盘与退出应用沿用现有语义。TUN、路由和系统 DNS 不在本轮接入范围。系统代理仅覆盖遵循系统代理设置的应用。
+
+自动化原生测试编译专用 fixture 后端，使用独立临时文件模拟偏好与生效状态；生产组件没有 fixture 参数。初次适配阶段仅做源码与本地测试。0.2.4 的 PR、合并和 macOS 双架构发布已另获用户授权。
+
 ## Finder 与 PATH
 
 从终端运行的 `npm run dev` 会继承当前 shell 的 `PATH`；从 Finder、Dock 或 Spotlight 启动的 `.app` 不会读取 `.zshrc`、`.zprofile` 等交互式 shell 配置。请把 Node.js 和 AI CLI 安装到系统或常见可执行目录，或在应用的诊断页面确认工具已被发现。macOS 运行时会检查 `/opt/homebrew/bin`、`/usr/local/bin`、`/usr/bin`、`/bin`、`/usr/sbin`、`/sbin` 与常见用户可执行目录，而不会执行用户 shell 配置文件。

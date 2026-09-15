@@ -3,6 +3,8 @@ const {
   normalizeUpdateBaseUrl,
 } = require('./scripts/update-release-utils.cjs')
 const path = require('node:path')
+const { spawnSync } = require('node:child_process')
+const { Arch } = require('builder-util')
 const packageVersion = require('./package.json').version
 const { resolveAccelerationBundleResources, verifyAccelerationBundleCore } = require('./scripts/stage-acceleration-bundle.cjs')
 const accelerationBundle = resolveAccelerationBundleResources(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR)
@@ -115,7 +117,15 @@ module.exports = {
   // Validate the binary again immediately before packaging. No private resource
   // directory is selected by default, including CI and ordinary source builds.
   ...(accelerationBundle.metadata ? {
-    beforePack: async () => verifyAccelerationBundleCore(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR, accelerationBundle.metadata),
+    beforePack: async (context) => {
+      await verifyAccelerationBundleCore(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR, accelerationBundle.metadata, undefined, {
+        platform: context.electronPlatformName, arch: Arch[context.arch],
+      })
+      if (context.electronPlatformName === 'darwin') {
+        const result = spawnSync(process.execPath, [path.join(__dirname, 'scripts/build-macos-system-proxy.cjs')], { stdio: 'inherit', shell: false })
+        if (result.error || result.status !== 0) throw new Error('Mac 系统代理组件编译失败。')
+      }
+    },
   } : {}),
   publish: {
     provider: 'generic',
@@ -132,6 +142,12 @@ module.exports = {
   },
   forceCodeSigning: publicReleaseMode,
   mac: {
+    ...(accelerationBundle.metadata?.version === 2 ? {
+      extraResources: [{ from: 'dist-native', to: 'native', filter: ['macos-system-proxy-${arch}'] }],
+      // Preserve the pinned upstream Mach-O bytes. Its own signature is checked
+      // separately; the containing app seals the resource, and ASAR pins its hash.
+      signIgnore: ['[/\\\\]Resources[/\\\\]acceleration[/\\\\]mihomo$'],
+    } : {}),
     target: [
       { target: 'dmg', arch: ['arm64', 'x64'] },
       { target: 'zip', arch: ['arm64', 'x64'] },

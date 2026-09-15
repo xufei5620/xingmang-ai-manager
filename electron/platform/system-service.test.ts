@@ -157,7 +157,7 @@ describe('platform system preferences', () => {
       route: 'proxy',
     })
     expect(proxy.note).toContain('账号、AI 请求')
-    expect(proxy.note).toContain('不会更改电脑或工具的代理')
+    expect(proxy.note).toContain('不会更改电脑或工具的网络设置')
     expect(JSON.stringify(proxy)).not.toContain('localhost')
     expect(summarizeSessionProxy('DIRECT; PROXY localhost:7890').route).toBe(
       'direct',

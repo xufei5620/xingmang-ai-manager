@@ -23,13 +23,13 @@ function runEntry(argv: string[], connected: boolean, platform = 'win32') {
 }
 
 describe('packaged acceleration worker entry', () => {
-  it('loads only the fixed worker for an IPC-connected Windows helper', () => {
-    const result = runEntry(['app.exe', accelerationWorkerArgument], true)
+  it.each(['win32', 'darwin'])('loads only the fixed worker for an IPC-connected %s helper', (platform) => {
+    const result = runEntry(['app.exe', accelerationWorkerArgument], true, platform)
     expect(result.loaded).toEqual(['../acceleration-development-worker'])
     expect(result.exit).not.toHaveBeenCalled()
   })
 
-  it.each([['win32', false], ['darwin', true], ['linux', true]] as const)('rejects invalid helper invocation on %s with parent=%s without loading the desktop', (platform, connected) => {
+  it.each([['win32', false], ['darwin', false], ['linux', true]] as const)('rejects invalid helper invocation on %s with parent=%s without loading the desktop', (platform, connected) => {
     const result = runEntry(['app.exe', accelerationWorkerArgument], connected, platform)
     expect(result.loaded).toEqual([])
     expect(result.exit).toHaveBeenCalledWith(1)

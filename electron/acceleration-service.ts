@@ -16,7 +16,7 @@ interface AccelerationServiceOptions {
 const SERVICE_UNAVAILABLE = '加速线路暂未开通，请稍后再试。'
 const INVALID_RESPONSE = '加速服务返回的数据无效，请稍后重试。'
 const BACKEND_FAILURE = '加速服务暂不可用，请稍后重试。'
-const ACCOUNT_CHANGED = '账号已变更，请重新打开全球加速。'
+const ACCOUNT_CHANGED = '账号已变更，请重新打开游戏加速。'
 const phases: readonly AccelerationPhase[] = ['unavailable', 'idle', 'connecting', 'active', 'stopping', 'exhausted', 'error']
 
 function assertScope(scope: unknown): asserts scope is string {
@@ -138,7 +138,7 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
   }
 
   function assertCurrent(scope: string, expectedRevision: number): void {
-    if (disposed) throw new Error('全球加速服务已关闭。')
+    if (disposed) throw new Error('游戏加速服务已关闭。')
     if (options.getAccountScope() !== scope || expectedRevision !== revision) throw new Error(ACCOUNT_CHANGED)
   }
 
