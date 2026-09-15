@@ -305,7 +305,7 @@ describe('acceleration-service', () => {
     expect(service.dispose()).toBe(disposed)
     await disposed
     expect(backend.stopAcceleration).toHaveBeenCalledWith(scope)
-    await expect(service.getAccelerationState(scope)).rejects.toThrow('全球加速服务已关闭')
+    await expect(service.getAccelerationState(scope)).rejects.toThrow('游戏加速服务已关闭')
   })
 
   it('can retry disposal after a transport stop failure', async () => {
@@ -328,7 +328,7 @@ describe('acceleration-service', () => {
     const firstResult = expect(first).rejects.toThrow('账号已变更')
     await startEntered.promise
     const next = service.startAcceleration(scope, 'system-proxy')
-    const nextResult = expect(next).rejects.toThrow('全球加速服务已关闭')
+    const nextResult = expect(next).rejects.toThrow('游戏加速服务已关闭')
     const disposed = service.dispose()
     started.resolve(active({ mode: 'tun' }))
     await firstResult

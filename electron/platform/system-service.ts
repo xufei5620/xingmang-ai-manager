@@ -33,7 +33,7 @@ export interface PlatformSystemDependencies {
 }
 
 const proxyScopeNote =
-  '这里只查看应用窗口如何连接。账号、AI 请求和工具安装继续使用各自原有的连接方式；此处不会更改电脑或工具的代理。'
+  '这里只查看应用窗口如何连接。账号、AI 请求和工具安装继续使用各自原有的连接方式；此处不会更改电脑或工具的网络设置。'
 
 export function summarizeSessionProxy(
   value: string,
@@ -42,8 +42,8 @@ export function summarizeSessionProxy(
   if (firstRoute.toUpperCase() === 'DIRECT')
     return { route: 'direct', summary: '应用窗口当前直接连接' }
   if (/^(?:PROXY|HTTPS?|SOCKS[45]?)\s+[^\s;@]+(?::\d+)?$/i.test(firstRoute))
-    return { route: 'proxy', summary: '应用窗口当前使用代理路由' }
-  return { route: 'unknown', summary: '暂时无法确认应用窗口的代理路由' }
+    return { route: 'proxy', summary: '应用窗口当前通过转发连接' }
+  return { route: 'unknown', summary: '暂时无法确认应用窗口的连接路径' }
 }
 
 export class PlatformSystemService {

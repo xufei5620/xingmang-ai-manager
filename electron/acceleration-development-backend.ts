@@ -52,9 +52,15 @@ const totalMs = accelerationTrialSeconds * 1000
 const legacyVersion1MaximumUsedMs = 3_600_000
 const ledgerLabel = '本机免费加速时长账本'
 const ledgerFailure = '本机测试时长无法读取或保存，请检查本地数据目录后重试。'
-const startFailure = '本机加速连接失败，请检查线路和系统代理后重试。'
+const startFailure = '加速连接失败，请检查线路和网络连接后重试。'
+function connectionFailure(error: unknown): string {
+  if (error instanceof Error && 'code' in error && error.code === 'MACOS_PROXY_AUTHORIZATION') {
+    return 'macOS 网络设置授权未完成，请允许系统授权后重试。'
+  }
+  return startFailure
+}
 const stopFailure = '加速尚未完全停止，正在保留恢复状态，请再次点击停止。'
-const exitFailure = '加速内核意外退出，系统代理已恢复，请重新开始加速。'
+const exitFailure = '加速服务意外退出，原网络设置已恢复，请重新开始加速。'
 
 function assertScope(scope: string) {
   if (!/^(?:xm-account|api-account):[1-9]\d{0,15}$/.test(scope)
@@ -290,8 +296,8 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           session.phase = 'active'
           arm(totalMs - usage(scope).usedMs - elapsed(session))
           return state(scope)
-        } catch {
-          try { await stopSession(); lastErrors.set(scope, startFailure) }
+        } catch (error) {
+          try { await stopSession(); lastErrors.set(scope, connectionFailure(error)) }
           catch { arm(5000) }
           return state(scope)
         }

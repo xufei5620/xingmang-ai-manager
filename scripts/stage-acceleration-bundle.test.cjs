@@ -19,7 +19,7 @@ const sourceModules = new Map()
 // application compile or writing generated files into the working tree.
 function sourceModule(name) {
   if (sourceModules.has(name)) return sourceModules.get(name)
-  assert.ok(['safe-local-data', 'bounded-file', 'path-identity', 'acceleration-clash-config'].includes(name))
+  assert.ok(['safe-local-data', 'bounded-file', 'path-identity', 'acceleration-clash-config', 'acceleration-binary'].includes(name))
   const file = path.join(projectRoot, 'electron', `${name}.ts`)
   const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true },
@@ -33,7 +33,7 @@ function sourceModule(name) {
 }
 
 function runtime() {
-  return { safe: sourceModule('safe-local-data'), bounded: sourceModule('bounded-file'), parser: sourceModule('acceleration-clash-config') }
+  return { safe: sourceModule('safe-local-data'), bounded: sourceModule('bounded-file'), parser: sourceModule('acceleration-clash-config'), binary: sourceModule('acceleration-binary') }
 }
 
 function digest(value) {
@@ -166,4 +166,54 @@ test('argument parser rejects missing, duplicate and unknown options', () => {
   for (const invalid of [[], args.slice(0, -2), [...args, '--config', '/other.json'], [...args, '--unknown', 'x']]) {
     assert.throws(() => parseArguments(invalid))
   }
+})
+
+for (const arch of ['arm64', 'x64']) {
+  test(`stages a pinned ${arch} Mach-O core with an explicit Darwin manifest`, async (t) => {
+    const { options, dependencies, config } = fixture(t)
+    const core = Buffer.alloc(64)
+    core.writeUInt32LE(0xfeedfacf, 0)
+    core.writeUInt32LE(arch === 'arm64' ? 0x0100000c : 0x01000007, 4)
+    core.writeUInt32LE(2, 12)
+    fs.writeFileSync(config.corePath, core)
+    fs.writeFileSync(options.configPath, JSON.stringify({ ...config, coreSha256: digest(core) }))
+    const result = await stageAccelerationBundle({ ...options, platform: 'darwin', arch }, dependencies)
+    assert.equal(result.manifest.version, 2)
+    assert.equal(result.manifest.platform, 'darwin')
+    assert.equal(result.manifest.arch, arch)
+    assert.equal(result.manifest.coreFile, 'mihomo')
+    assert.equal(fs.existsSync(path.join(options.outputDirectory, 'mihomo.exe')), false)
+    assert.deepEqual(fs.readFileSync(path.join(options.outputDirectory, 'mihomo')), core)
+    const resolved = resolveAccelerationBundleResources(options.outputDirectory, projectRoot, dependencies.runtime)
+    assert.equal(resolved.metadata.arch, arch)
+    await verifyAccelerationBundleCore(options.outputDirectory, result.manifest, dependencies.runtime, { platform: 'darwin', arch })
+    await assert.rejects(verifyAccelerationBundleCore(options.outputDirectory, result.manifest, dependencies.runtime, { platform: 'darwin', arch: arch === 'arm64' ? 'x64' : 'arm64' }), /架构/)
+    await assert.rejects(verifyAccelerationBundleCore(options.outputDirectory, result.manifest, dependencies.runtime, { platform: 'win32', arch: 'x64' }), /平台/)
+  })
+}
+
+test('Darwin staging rejects Windows executables, mismatched CPU and dylibs before output creation', async (t) => {
+  const { options, dependencies, config } = fixture(t)
+  await assert.rejects(stageAccelerationBundle({ ...options, platform: 'darwin', arch: 'arm64' }, dependencies), /Mac|macOS|Mach-O/)
+  const core = Buffer.alloc(64)
+  core.writeUInt32LE(0xfeedfacf, 0)
+  core.writeUInt32LE(0x01000007, 4)
+  core.writeUInt32LE(2, 12)
+  fs.writeFileSync(config.corePath, core)
+  fs.writeFileSync(options.configPath, JSON.stringify({ ...config, coreSha256: digest(core) }))
+  await assert.rejects(stageAccelerationBundle({ ...options, platform: 'darwin', arch: 'arm64' }, dependencies), /架构/)
+  core.writeUInt32LE(6, 12)
+  fs.writeFileSync(config.corePath, core)
+  fs.writeFileSync(options.configPath, JSON.stringify({ ...config, coreSha256: digest(core) }))
+  await assert.rejects(stageAccelerationBundle({ ...options, platform: 'darwin', arch: 'x64' }, dependencies), /可执行/)
+  assert.equal(fs.existsSync(options.outputDirectory), false)
+})
+
+test('Darwin staging requires an explicit supported architecture', () => {
+  const args = ['--config', '/private/config.json', '--output', '/private/bundle', '--core-version', 'v1.19.29', '--source-ref', 'v1.19.29', '--license', '/private/LICENSE', '--platform', 'darwin']
+  assert.throws(() => parseArguments(args), /架构/)
+  assert.throws(() => parseArguments([...args, '--arch', 'ia32']), /架构/)
+  const options = parseArguments([...args, '--arch', 'arm64'])
+  assert.equal(options.platform, 'darwin')
+  assert.equal(options.arch, 'arm64')
 })

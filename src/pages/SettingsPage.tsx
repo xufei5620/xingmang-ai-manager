@@ -244,7 +244,7 @@ export function SettingsPage(props: SettingsPageProps) {
           {section === 'network' && <>
             <SettingRow title="服务站点" description="切换后需重新保存各工具配置。" feedback={feedback('relaySiteId')}><select aria-label="服务站点" aria-describedby="settings-relaySiteId-feedback" value={resolveRelaySite(draft.relaySiteId).id} onChange={(event) => commit('relaySiteId', event.target.value)}>{relaySites.map((site) => <option key={site.id} value={site.id}>{site.label}</option>)}</select></SettingRow>
             <SettingRow title="下载顺序" feedback={feedback('mirrorPolicy')}><select aria-label="镜像策略" aria-describedby="settings-mirrorPolicy-feedback" value={draft.mirrorPolicy ?? 'auto'} onChange={(event) => commit('mirrorPolicy', event.target.value === 'auto' ? undefined : event.target.value as SettingsV2['mirrorPolicy'])}><option value="auto">自动（推荐）</option><option value="mirror-first">国内源优先</option><option value="official-first">官方源优先</option></select></SettingRow>
-            <SettingRow title="代理与企业证书" description="暂不提供应用内覆盖配置。连接失败时可先查看环境检查。">{navigation('health', '检查连接')}</SettingRow>
+            <SettingRow title="网络连接与企业证书" description="暂不提供应用内覆盖配置。连接失败时可先查看环境检查。">{navigation('health', '检查连接')}</SettingRow>
           </>}
           {section === 'notifications' && <>
             <SettingRow title="更新提醒" description="启动时检查新版本。" feedback={feedback('checkUpdatesOnStartup')}>{switchControl('checkUpdatesOnStartup', '更新提醒')}</SettingRow>

@@ -16,6 +16,7 @@ function loadRuntime() {
       safe: require('../dist-electron/safe-local-data.js'),
       bounded: require('../dist-electron/bounded-file.js'),
       parser: require('../dist-electron/acceleration-clash-config.js'),
+      binary: require('../dist-electron/acceleration-binary.js'),
     }
   } catch {
     throw new Error('请先编译主进程，再准备私有加速资源。')
@@ -44,7 +45,8 @@ function assertExternalPath(value, projectRoot, label) {
 
 function parseArguments(argv) {
   const options = {}
-  const flags = new Set(['--config', '--output', '--core-version', '--source-ref', '--license'])
+  const required = ['--config', '--output', '--core-version', '--source-ref', '--license']
+  const flags = new Set([...required, '--platform', '--arch'])
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index]
     const value = argv[index + 1]
@@ -53,11 +55,25 @@ function parseArguments(argv) {
     }
     options[flag] = value
   }
-  if (flags.size !== Object.keys(options).length) throw new Error('缺少私有加速资源准备参数。')
+  if (required.some(flag => !options[flag])) throw new Error('缺少私有加速资源准备参数。')
+  const platform = options['--platform'] ?? 'win32'
+  const arch = options['--arch']
+  validateTarget(platform, arch)
   return {
     configPath: options['--config'], outputDirectory: options['--output'],
     coreVersion: options['--core-version'], sourceRef: options['--source-ref'], licensePath: options['--license'],
+    ...(platform === 'darwin' ? { platform, arch } : {}),
   }
+}
+
+function validateTarget(platform, arch) {
+  if (platform !== 'win32' && platform !== 'darwin') throw new Error('加速内核平台不受支持。')
+  if (platform === 'darwin' && arch !== 'arm64' && arch !== 'x64') throw new Error('必须明确指定 Mac 内核架构 arm64 或 x64。')
+  if (platform === 'win32' && arch !== undefined && arch !== 'x64') throw new Error('Windows 加速内核架构不受支持。')
+}
+
+function bundleFiles(manifest) {
+  return BUNDLE_FILES.map(name => name === 'mihomo.exe' ? manifest.coreFile : name)
 }
 
 function validateSourceVersion(coreVersion, sourceRef) {
@@ -83,7 +99,9 @@ function assertPlainRecord(value, label) {
 
 function validateManifest(value) {
   assertPlainRecord(value, '加速资源清单')
-  if (value.version !== 1 || value.coreFile !== 'mihomo.exe' || value.profileFile !== 'profile.yaml'
+  const mac = value.version === 2
+  if (mac) validateTarget(value.platform, value.arch)
+  if ((mac ? value.platform !== 'darwin' || value.coreFile !== 'mihomo' : value.version !== 1 || value.coreFile !== 'mihomo.exe') || value.profileFile !== 'profile.yaml'
     || value.licenseFile !== 'LICENSE-mihomo.txt' || value.noticesFile !== 'THIRD-PARTY-NOTICES.txt'
     || typeof value.coreSha256 !== 'string' || !/^[a-f\d]{64}$/.test(value.coreSha256)
     || typeof value.profileSha256 !== 'string' || !/^[a-f\d]{64}$/.test(value.profileSha256)) {
@@ -93,7 +111,7 @@ function validateManifest(value) {
   if (value.sourceUrl !== `${SOURCE_ROOT}/tree/${value.sourceRef}`) throw new Error('加速内核源码地址无效。')
   // Only these non-secret fields cross into integrity-protected app metadata.
   return {
-    version: 1, coreFile: value.coreFile, coreSha256: value.coreSha256,
+    version: mac ? 2 : 1, ...(mac ? { platform: 'darwin', arch: value.arch } : {}), coreFile: value.coreFile, coreSha256: value.coreSha256,
     profileFile: value.profileFile, profileSha256: value.profileSha256,
     coreVersion: value.coreVersion, sourceRef: value.sourceRef, sourceUrl: value.sourceUrl,
     licenseFile: value.licenseFile, noticesFile: value.noticesFile,
@@ -110,7 +128,9 @@ function assertDirectorySnapshot(directory, snapshot, safe) {
 
 async function stageAccelerationBundle(options, dependencies = {}) {
   const projectRoot = dependencies.projectRoot || PROJECT_ROOT
-  const { safe, bounded, parser } = dependencies.runtime || loadRuntime()
+  const { safe, bounded, parser, binary } = dependencies.runtime || loadRuntime()
+  const platform = options.platform ?? 'win32'
+  validateTarget(platform, options.arch)
   const configPath = assertExternalPath(options.configPath, projectRoot, '本机配置文件')
   const output = assertExternalPath(options.outputDirectory, projectRoot, '私有资源输出目录')
   const licensePath = assertAbsolutePath(options.licensePath, 'Mihomo 许可文件')
@@ -132,7 +152,8 @@ async function stageAccelerationBundle(options, dependencies = {}) {
     if (path.dirname(input) === output || input === output) throw new Error('输出目录不能覆盖输入文件。')
   }
   const core = await bounded.readBoundedFile(corePath, MAX_CORE_BYTES, '加速内核')
-  if (core.length < 2 || core[0] !== 0x4d || core[1] !== 0x5a) throw new Error('需要 Windows Mihomo 可执行文件。')
+  if (platform === 'darwin') binary.assertMacosAccelerationBinary(core, options.arch)
+  else if (core.length < 2 || core[0] !== 0x4d || core[1] !== 0x5a) throw new Error('需要 Windows Mihomo 可执行文件。')
   if (sha256(core) !== config.coreSha256.toLowerCase()) throw new Error('加速内核 SHA256 与已核对记录不一致。')
   const profileSource = await safe.readSafeUtf8File(profilePath, '加速节点配置', parser.MAX_ACCELERATION_CLASH_BYTES)
   if (!profileSource) throw new Error('未找到加速节点配置。')
@@ -143,7 +164,9 @@ async function stageAccelerationBundle(options, dependencies = {}) {
   const license = await safe.readSafeUtf8File(licensePath, 'Mihomo 许可文件', 128 * 1024)
   validateLicense(license)
   const manifest = validateManifest({
-    version: 1, coreFile: 'mihomo.exe', coreSha256: sha256(core),
+    version: platform === 'darwin' ? 2 : 1,
+    ...(platform === 'darwin' ? { platform, arch: options.arch } : {}),
+    coreFile: platform === 'darwin' ? 'mihomo' : 'mihomo.exe', coreSha256: sha256(core),
     profileFile: 'profile.yaml', profileSha256: sha256(projectedSource),
     coreVersion: options.coreVersion, sourceRef: options.sourceRef,
     sourceUrl: `${SOURCE_ROOT}/tree/${options.sourceRef}`,
@@ -162,7 +185,7 @@ async function stageAccelerationBundle(options, dependencies = {}) {
   if (fs.readdirSync(output).length) throw new Error('私有资源输出目录不再为空。')
   const snapshot = fs.lstatSync(output)
   const content = [
-    ['mihomo.exe', core], ['profile.yaml', projectedSource],
+    [manifest.coreFile, core], ['profile.yaml', projectedSource],
     ['LICENSE-mihomo.txt', license], ['THIRD-PARTY-NOTICES.txt', notices],
     // The final manifest is the commit marker for a completely staged bundle.
     ['manifest.json', `${JSON.stringify(manifest, null, 2)}\n`],
@@ -171,7 +194,7 @@ async function stageAccelerationBundle(options, dependencies = {}) {
     assertDirectorySnapshot(output, snapshot, safe)
     const target = path.join(output, name)
     if (safe.assertSafeDataFile(target, '私有加速资源')) throw new Error('私有资源输出目录出现重复文件。')
-    fs.writeFileSync(target, bytes, { flag: 'wx', mode: 0o600 })
+    fs.writeFileSync(target, bytes, { flag: 'wx', mode: platform === 'darwin' && name === manifest.coreFile ? 0o700 : 0o600 })
     if (!safe.assertSafeDataFile(target, '私有加速资源')) throw new Error('私有加速资源写入失败。')
   }
   assertDirectorySnapshot(output, snapshot, safe)
@@ -184,26 +207,31 @@ function resolveAccelerationBundleResources(directory, projectRoot = PROJECT_ROO
   const { safe } = runtime || loadRuntime()
   safe.assertNoReparseComponents(output, '私有加速资源目录')
   if (!fs.lstatSync(output).isDirectory()) throw new Error('私有加速资源必须是目录。')
+  const manifest = validateManifest(parseJson(safe.readSafeUtf8FileSync(path.join(output, 'manifest.json'), '加速资源清单', 16 * 1024), '加速资源清单'))
+  const expectedFiles = bundleFiles(manifest)
   const files = fs.readdirSync(output).sort()
-  if (JSON.stringify(files) !== JSON.stringify([...BUNDLE_FILES].sort())) throw new Error('私有加速资源目录包含缺失或非预期文件。')
-  for (const file of BUNDLE_FILES) {
+  if (JSON.stringify(files) !== JSON.stringify([...expectedFiles].sort())) throw new Error('私有加速资源目录包含缺失或非预期文件。')
+  for (const file of expectedFiles) {
     if (!safe.assertSafeDataFile(path.join(output, file), '私有加速资源')) throw new Error('私有加速资源文件缺失。')
   }
-  const manifest = validateManifest(parseJson(safe.readSafeUtf8FileSync(path.join(output, 'manifest.json'), '加速资源清单', 16 * 1024), '加速资源清单'))
   const profileSource = safe.readSafeUtf8FileSync(path.join(output, manifest.profileFile), '加速节点配置', 2 * 1024 * 1024)
   if (!profileSource || sha256(profileSource) !== manifest.profileSha256) throw new Error('加速节点配置与资源清单不一致。')
   validateLicense(safe.readSafeUtf8FileSync(path.join(output, manifest.licenseFile), 'Mihomo 许可文件', 128 * 1024))
   const size = fs.lstatSync(path.join(output, manifest.coreFile)).size
   if (size < 2 || size > MAX_CORE_BYTES) throw new Error('加速内核大小无效。')
   return {
-    resources: [{ from: output, to: 'acceleration', filter: [...BUNDLE_FILES] }],
+    resources: [{ from: output, to: 'acceleration', filter: expectedFiles }],
     metadata: manifest,
   }
 }
 
-async function verifyAccelerationBundleCore(directory, expected, runtime) {
+async function verifyAccelerationBundleCore(directory, expected, runtime, target) {
   if (!expected) return
-  const { bounded, safe } = runtime || loadRuntime()
+  const { bounded, safe, binary } = runtime || loadRuntime()
+  if (target) {
+    if ((expected.version === 2 ? expected.platform : 'win32') !== target.platform) throw new Error('加速资源与目标平台不一致。')
+    if (expected.version === 2 && expected.arch !== target.arch) throw new Error('加速资源与目标架构不一致。')
+  }
   safe.assertNoReparseComponents(directory, '私有加速资源目录')
   const resolved = resolveAccelerationBundleResources(directory, PROJECT_ROOT, runtime)
   if (JSON.stringify(resolved.metadata) !== JSON.stringify(expected)) throw new Error('私有资源清单在打包前发生变化。')
@@ -213,6 +241,7 @@ async function verifyAccelerationBundleCore(directory, expected, runtime) {
   ]) {
     const bytes = await bounded.readBoundedFile(path.join(directory, file), limit, '私有加速资源')
     if (sha256(bytes) !== digest) throw new Error('私有加速资源与已固定的校验值不一致。')
+    if (expected.version === 2 && file === expected.coreFile) binary.assertMacosAccelerationBinary(bytes, expected.arch)
   }
 }
 

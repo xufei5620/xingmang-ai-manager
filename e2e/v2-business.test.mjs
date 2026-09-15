@@ -187,7 +187,8 @@ test('key editor re-reads available groups every time a new or existing key is o
       return window.keyGroupsHarness.requests
     })
     await group.click()
-    await page.keyboard.press('Escape')
+    // Confirm the existing value: Escape can also dismiss the parent dialog on macOS.
+    await group.selectOption('group-B')
     await page.waitForFunction((before) => window.keyGroupsHarness.requests > before, beforeOpen)
     await page.waitForFunction(() => Boolean(document.querySelector('[data-testid="account-key-group"] option[value="group-D"]')))
     await page.getByRole('dialog', { name: '新建密钥', exact: true }).getByRole('button', { name: '取消', exact: true }).click()

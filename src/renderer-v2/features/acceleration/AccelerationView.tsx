@@ -60,7 +60,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const localDevelopment = state?.entitlementSource === 'local-development'
   const localDevice = state?.entitlementSource === 'local-device'
   const tunAvailable = state?.supportedModes?.includes('tun') ?? true
-  const notice = error || state?.error
+  const notice = (error || state?.error)?.replaceAll('系统代理', '网络设置').replaceAll('代理', '网络连接')
   const stopRetry = phase === 'stopping' && Boolean(notice) && !busy
   const active = phase === 'active'
   const transitioning = phase === 'connecting' || (phase === 'stopping' && !stopRetry)
@@ -81,14 +81,14 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
 
   return <section className="acceleration-page" data-testid="acceleration-page" data-phase={phase ?? 'loading'} data-motion={visible ? 'running' : 'paused'}>
     <header className="acceleration-heading">
-      <div><div className="acceleration-heading-title"><h1>全球加速</h1>{(preview || localDevelopment) && <span className="acceleration-preview">{localDevelopment ? '本机联调' : '交互预览'}</span>}</div><p>{localDevelopment ? '真实连接测试，时长仅在本机记录。' : '连接全球网络，让 AI 工作更顺畅。'}</p></div>
+      <div><div className="acceleration-heading-title"><h1>游戏加速</h1>{(preview || localDevelopment) && <span className="acceleration-preview">{localDevelopment ? '本机联调' : '交互预览'}</span>}</div><p>{localDevelopment ? '游戏加速连接测试，时长仅在本机记录。' : '选择游戏加速线路，按需连接，随时停止。'}</p></div>
       <Button variant="ghost" icon={CircleHelp} onClick={onHelp} testId="acceleration-help-open">使用帮助</Button>
     </header>
 
     <div className="acceleration-workbench">
       <section className="acceleration-stage" aria-label="网络连接状态">
-        <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GLOBAL CONNECT</span><span className="acceleration-stage-scope"><Laptop size={14} aria-hidden="true" />{effectiveMode === 'tun' ? '全局接管' : '系统代理'}</span></div>
-        <div className="acceleration-stage-title"><h2>让灵感，自由连接。</h2><p>{active ? '你的加速连接已就绪，专注于下一次创造。' : '从这里出发，连接你的 AI 工作世界。'}</p></div>
+        <div className="acceleration-stage-top"><span className="acceleration-eyebrow"><Globe2 size={15} aria-hidden="true" /> GAME CONNECT</span><span className="acceleration-stage-scope"><Laptop size={14} aria-hidden="true" />{effectiveMode === 'tun' ? '增强模式' : '标准模式'}</span></div>
+        <div className="acceleration-stage-title"><h2>连接热爱，准备开局。</h2><p>{active ? '加速连接已就绪，返回游戏继续体验。' : '从这里出发，连接你的游戏世界。'}</p></div>
         <div className="acceleration-orb"><Globe /></div>
         <div className="acceleration-route-info">
           <div className="acceleration-route-icon"><Route size={18} aria-hidden="true" /></div>
@@ -115,7 +115,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
         </div>
         <div className="acceleration-primary-action"><Button variant={active || stopRetry ? 'secondary' : 'primary'} icon={active || stopRetry ? Pause : Power} loading={signedIn && (busy || transitioning)} disabled={actionDisabled} onClick={!signedIn ? onLogin : active || stopRetry ? onStop : onStart} testId={active || stopRetry ? 'acceleration-session-stop' : 'acceleration-session-start'}>{actionLabel}</Button></div>
         <p className="acceleration-quota-note">{quotaNote}</p>
-        <div className="acceleration-mode"><div><strong>TUN 模式</strong><p>{!tunAvailable ? 'TUN 尚未接入，当前支持系统代理' : modeLocked ? '停止加速后可切换模式' : mode === 'tun' ? '接管全电脑，覆盖不走系统代理的应用' : '关闭使用系统代理，开启接管全电脑'}</p></div><Switch checked={effectiveMode === 'tun'} onChange={checked => onModeChange(checked ? 'tun' : 'system-proxy')} disabled={modeLocked} aria-label="TUN 模式" testId="acceleration-mode-toggle" /></div>
+        <div className="acceleration-mode"><div><strong>TUN 模式</strong><p>{!tunAvailable ? '暂未开放' : modeLocked ? '停止加速后可切换模式' : mode === 'tun' ? '扩展游戏与应用的连接范围' : '开启后可扩展连接范围'}</p></div><Switch checked={effectiveMode === 'tun'} onChange={checked => onModeChange(checked ? 'tun' : 'system-proxy')} disabled={modeLocked} aria-label="TUN 模式" testId="acceleration-mode-toggle" /></div>
       </section>
     </div>
 

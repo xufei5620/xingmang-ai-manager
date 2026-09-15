@@ -96,6 +96,8 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run test:mac:free-signing
+      - name: Verify macOS native network component with isolated preferences
+        run: npm run test:mac:proxy
       - run: npm run test:mac:dev-origin
       - name: Fail if the test run left files in the working tree
         # Windows path math evaluated on a POSIX host yields a backslash

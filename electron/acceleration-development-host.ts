@@ -44,7 +44,7 @@ export async function readAccelerationDevelopmentConfig(options: {
   platform: string
   dataDirectory: string
 }): Promise<AccelerationDevelopmentConfig | null> {
-  if (options.isPackaged || options.platform !== 'win32') return null
+  if (options.isPackaged || !['win32', 'darwin'].includes(options.platform)) return null
   try {
     if (!path.isAbsolute(options.dataDirectory) || options.dataDirectory.length > 4096 || /[\x00-\x1f]/.test(options.dataDirectory)) throw new Error('invalid directory')
     const source = await readSafeUtf8File(path.join(options.dataDirectory, 'acceleration-development.json'), '本机加速配置', 16 * 1024)

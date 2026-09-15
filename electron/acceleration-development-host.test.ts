@@ -55,14 +55,14 @@ describe('development acceleration manifest', () => {
     expect(mocks.fork).not.toHaveBeenCalled()
   })
 
-  it.each(['darwin', 'linux', 'unknown'])('does not enable the Windows adapter on development %s', async (platform) => {
+  it.each(['linux', 'unknown'])('does not enable an adapter on unsupported development %s', async (platform) => {
     expect(await readAccelerationDevelopmentConfig({ isPackaged: false, platform, dataDirectory })).toBeNull()
     expect(mocks.read).not.toHaveBeenCalled()
   })
 
-  it('reads only the bounded manifest and projects paths and normalized SHA-256', async () => {
+  it.each(['win32', 'darwin'])('reads only the bounded manifest and projects paths and normalized SHA-256 on %s', async (platform) => {
     mocks.read.mockResolvedValue(JSON.stringify({ ...config, coreSha256: 'AB'.repeat(32), yaml: 'private-secret' }))
-    expect(await readAccelerationDevelopmentConfig({ isPackaged: false, platform: 'win32', dataDirectory })).toEqual({ ...config, coreSha256: 'ab'.repeat(32) })
+    expect(await readAccelerationDevelopmentConfig({ isPackaged: false, platform, dataDirectory })).toEqual({ ...config, coreSha256: 'ab'.repeat(32) })
     expect(mocks.read).toHaveBeenCalledExactlyOnceWith(path.join(dataDirectory, 'acceleration-development.json'), '本机加速配置', 16 * 1024)
   })
 

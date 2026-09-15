@@ -435,11 +435,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: result.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov', account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result?.failed.length) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={() => { setSwitcher(false); setAuth('login') }} /></Dialog>}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated}
       onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)} />}
-    {accelerationHelp && <Dialog open title="全球加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
+    {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
+      <p>选择线路后点击“开始加速”，连接成功后再打开游戏或启动器。“智能分配”会自动测速并选择可用线路，也可以手动选择。</p>
+      <p>当前适用于部分游戏、启动器和下载场景，实际连接效果以应用内表现为准。TUN 模式暂未开放。</p>
       <p>每个账号在本机累计享有 20 分钟免费体验。连接成功后才开始计时，停止后保留剩余时长，下次继续使用，不会每天重置。当前时长在本机保存，设备之间不同步。</p>
-      <p>关闭 TUN 时使用系统代理；开启 TUN 后覆盖不读取系统代理的应用。需要切换模式时，请先停止加速。</p>
-      <p>切换页面或缩到托盘不会中断连接。点击“停止加速”或退出软件会停止连接；免费时长用完后自动停止。</p>
+      <p>切换页面、缩到托盘或退出游戏都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
       <div className="v2-support">{siteId === 'solov' && qr && <img src={qr} alt="微信客服二维码" />}<h3>{siteId === 'solov' ? '微信扫码找客服' : '账号帮助'}</h3><p>{siteId === 'solov' ? '装不上、付了没到账，都可以问。' : '请在官方网站查看帮助与账号服务。'}</p><Button onClick={() => void perform('打开帮助', () => app.openExternal(siteId === 'solov' ? supportServiceUrl : relaySite.websiteUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>

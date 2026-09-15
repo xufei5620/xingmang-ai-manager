@@ -3,6 +3,7 @@ import { parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource 
 import { createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { accelerationLinesFromProfile, createMihomoRuntime } from './acceleration-mihomo-runtime'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
+import { createMacosSystemProxy } from './platform/macos-system-proxy'
 import { ensureSafeDataDirectory } from './safe-local-data'
 import { readAccelerationWorkerProfile } from './acceleration-worker-profile'
 
@@ -11,6 +12,7 @@ let queue: Promise<unknown> = Promise.resolve()
 let shuttingDown = false
 let pendingProxyRecovery: (() => Promise<void>) | null = null
 let accelerationProfile: Awaited<ReturnType<typeof readAccelerationWorkerProfile>> | null = null
+let disposeProxy: (() => Promise<void>) | null = null
 
 function belongsToAnotherWorker(error: unknown): boolean {
   // restorePending checks this before any write. This worker has never acquired
@@ -25,13 +27,23 @@ function enqueue<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 async function initialize(message: Record<string, unknown>): Promise<void> {
-  if (backend || process.platform !== 'win32') throw new Error('开发加速进程初始化无效。')
+  if (backend || !['win32', 'darwin'].includes(process.platform)) throw new Error('开发加速进程初始化无效。')
   const config = parseAccelerationDevelopmentConfig(message.config)
   const entitlementSource = parseAccelerationEntitlementSource(message.entitlementSource)
   if (typeof message.dataDirectory !== 'string' || !path.isAbsolute(message.dataDirectory)) throw new Error('开发数据目录无效。')
   const directory = path.join(message.dataDirectory, 'acceleration-development')
   ensureSafeDataDirectory(directory, '本机加速数据')
-  const proxy = createWindowsSystemProxy({ journalPath: path.join(directory, 'proxy-lease.json') })
+  const journalPath = path.join(directory, 'proxy-lease.json')
+  const macProxy = process.platform === 'darwin'
+    ? createMacosSystemProxy({
+      journalPath,
+      helperPath: path.join(process.resourcesPath && !process.env.ELECTRON_RUN_AS_NODE
+        ? path.join(process.resourcesPath, 'native') : path.join(__dirname, '..', 'dist-native'),
+      `macos-system-proxy-${process.arch}`),
+    })
+    : null
+  const proxy = macProxy ?? createWindowsSystemProxy({ journalPath })
+  if (macProxy) disposeProxy = () => macProxy.dispose()
   pendingProxyRecovery = () => proxy.recover()
   try { await proxy.recover() } catch (error) {
     if (belongsToAnotherWorker(error)) pendingProxyRecovery = null
@@ -94,7 +106,11 @@ async function handle(message: unknown): Promise<unknown> {
   const request = message as Record<string, unknown>
   if (request.operation === 'init') return initialize(request)
   if (!backend || shuttingDown) throw new Error('开发加速进程未就绪。')
-  if (request.operation === 'dispose') return backend.dispose()
+  if (request.operation === 'dispose') {
+    await backend.dispose()
+    await disposeProxy?.()
+    return
+  }
   if (typeof request.scope !== 'string' || !/^(xm|api)-account:[1-9]\d{0,15}$/.test(request.scope)) throw new Error('加速账号参数无效。')
   if (request.operation === 'get') return backend.getAccelerationState(request.scope)
   if (request.operation === 'list-lines') return backend.listAccelerationLines?.(request.scope) ?? []
@@ -123,6 +139,7 @@ async function shutdown(): Promise<void> {
             if (!belongsToAnotherWorker(error)) throw error
           }
         }
+        await disposeProxy?.()
       })
       stopped = true
     } catch {
