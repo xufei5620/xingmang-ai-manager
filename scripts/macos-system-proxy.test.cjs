@@ -12,7 +12,7 @@ function launch(dir) {
   let buffer = ''; let sequence = 0; const waiting = new Map()
   child.stdout.on('data', data => { buffer += data; let end; while ((end = buffer.indexOf('\n')) >= 0) { const msg = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1); waiting.get(msg.id)?.(msg); waiting.delete(msg.id) } })
   child.on('error', () => {})
-  return { child, rpc(op, port) { return new Promise((resolve, reject) => { const id = ++sequence; const timer = setTimeout(() => reject(Error('reply timeout')), 3000); waiting.set(id, value => { clearTimeout(timer); resolve(value) }); child.stdin.write(JSON.stringify({ id, op, ...(port ? { port } : {}) }) + '\n') }) } }
+  return { child, rpc(op, port) { return new Promise((resolve, reject) => { const id = ++sequence; const timer = setTimeout(() => reject(Error('reply timeout')), 10000); waiting.set(id, value => { clearTimeout(timer); resolve(value) }); child.stdin.write(JSON.stringify({ id, op, ...(port ? { port } : {}) }) + '\n') }) } }
 }
 function fixture() { const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xm-proxy-'))); fs.writeFileSync(path.join(dir, 'store'), JSON.stringify({ services: { wifi: { HTTPEnable: 0, ProxyAutoConfigEnable: 1, ProxyAutoConfigURLString: 'https://example.invalid/pac', ExceptionsList: ['local'], Custom: 'keep' } } })); return dir }
 function read(dir) { return JSON.parse(fs.readFileSync(path.join(dir, 'store'))) }

@@ -17,7 +17,7 @@ function bootFixture(config) {
   app.setAppPath(config.projectRoot)
   app.setPath('userData', config.userData)
   app.setPath('home', config.userHome)
-  const state = { choices: [], dialogs: [], droppedCloseRequests: 0, preventedUnloads: 0, blockedQuits: 0, forceExitCalls: 0, blockQuit: false }
+  const state = { choices: [], dialogs: [], droppedCloseRequests: 0, preventedUnloads: 0, blockedQuits: 0, forceExitCalls: 0, blockQuit: false, lastActionId: 0 }
   const persist = () => fs.writeFileSync(config.evidence, JSON.stringify(state, null, 2) + '\n', 'utf8')
   globalThis.windowCloseSmoke = state
   dialog.showMessageBox = async (...args) => {
@@ -75,10 +75,6 @@ async function waitUntil(read, accepts, label, timeout = 6_000) {
   throw new Error(`${label}: ${JSON.stringify(value)}`)
 }
 
-function isClosedTransport(error) {
-  return /garbage collected|closed|Target|destroyed/i.test(error instanceof Error ? error.message : String(error))
-}
-
 async function runScenario(blockQuit) {
   const testRoot = path.join(sandbox, blockQuit ? 'blocked-quit' : 'renderer-unload')
   const userHome = path.join(testRoot, 'home')
@@ -123,10 +119,29 @@ async function runScenario(blockQuit) {
     await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'ask' }))
     const capabilities = await page.evaluate(() => window.xingmang.getWindowCapabilities())
     const visible = () => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible())
-    const chooseClose = (choice) => application.evaluate(({ BrowserWindow }, selected) => {
-      globalThis.windowCloseSmoke.choices.push(selected)
-      BrowserWindow.getAllWindows()[0].close()
-    }, choice)
+    let actionId = 0
+    const scheduleWindowAction = async (action, choice = null) => {
+      const command = { id: ++actionId, action, choice }
+      const acknowledgement = await application.evaluate(({ app, BrowserWindow }, scheduled) => {
+        // A native close can synchronously pump Electron's message loop and
+        // invalidate Playwright's inspector promise. Acknowledge first, then
+        // execute this single action outside that inspector call. Never retry
+        // a click: duplicate choices would change the lifecycle under test.
+        setTimeout(() => {
+          globalThis.windowCloseSmoke.lastActionId = scheduled.id
+          if (scheduled.action === 'activate') {
+            app.emit('activate')
+          } else {
+            if (scheduled.choice !== null) globalThis.windowCloseSmoke.choices.push(scheduled.choice)
+            BrowserWindow.getAllWindows()[0].close()
+          }
+        }, 100)
+        return { scheduled: true, id: scheduled.id }
+      }, command)
+      assert.deepEqual(acknowledgement, { scheduled: true, id: command.id })
+      return command.id
+    }
+    const chooseClose = (choice) => scheduleWindowAction('close', choice)
 
     await chooseClose('返回')
     await waitUntil(() => application.evaluate(() => globalThis.windowCloseSmoke.dialogs.length), (count) => count === 1, 'Cancel dialog missing')
@@ -134,11 +149,12 @@ async function runScenario(blockQuit) {
     if (capabilities.tray) {
       await chooseClose('缩到托盘')
       await waitUntil(visible, (shown) => shown === false, 'Unresponsive close reporting prevented tray hiding')
-      await application.evaluate(({ app }) => { app.emit('activate') })
+      await scheduleWindowAction('activate')
       await waitUntil(visible, Boolean, 'Activation did not restore the hidden main window')
     } else {
       await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'tray' }))
-      await application.evaluate(({ BrowserWindow }) => { BrowserWindow.getAllWindows()[0].close() })
+      const fallbackActionId = await scheduleWindowAction('close')
+      await waitUntil(() => application.evaluate(() => globalThis.windowCloseSmoke.lastActionId), (id) => id === fallbackActionId, 'Tray fallback close did not run')
       assert.equal(await visible(), true, 'A missing system tray must keep the main window accessible')
       await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'ask' }))
     }
@@ -149,7 +165,7 @@ async function runScenario(blockQuit) {
     await application.evaluate((_electron, shouldBlock) => { globalThis.windowCloseSmoke.blockQuit = shouldBlock }, blockQuit)
     const processIds = await application.evaluate(({ app }) => app.getAppMetrics().map((entry) => entry.pid))
     const started = Date.now()
-    await chooseClose('强制退出程序').catch((error) => { if (!isClosedTransport(error)) throw error })
+    await chooseClose('强制退出程序')
     let timeout
     const exit = await Promise.race([
       exitPromise,
