@@ -58,6 +58,7 @@ import { CanvasProjectStore } from './canvas-project-store'
 import { CanvasProjectAssetManager, createCanvasProjectAssetContext } from './canvas-project-asset-manager'
 import { createAiAssetProtocolHandler } from './ai-asset-protocol'
 import { resolveCodexHomeContext } from './codex-home'
+import { runCodexContextLimitsMigration } from './codex-config-migration'
 import { runWithTrustedWindowsProcessEnvironment } from './command-runner'
 import { CodexExtensionService } from './codex-extensions'
 import { CodexSessionsService } from './codex-sessions'
@@ -553,6 +554,19 @@ if (!hasSingleInstanceLock) {
     }
     process.on('uncaughtExceptionMonitor', onUncaughtException)
     process.on('unhandledRejection', onUnhandledRejection)
+
+    try {
+      const migration = await runCodexContextLimitsMigration(managerDataDirectory, rootedOptions.system.providerRoots)
+      if (!migration.skipped) {
+        runtimeLog.log('info', 'config', 'codex.context-limits.migrated', 'Codex 上下文限制一次性检查已完成', {
+          changedFiles: migration.files.length,
+          backups: migration.backups.length,
+        })
+      }
+    } catch (error) {
+      // A damaged or locked config must not prevent the toolbox from opening.
+      runtimeLog.exception('config', 'codex.context-limits.migration.failed', error)
+    }
 
     const settingsStore = new AppSettingsStore(path.join(managerDataDirectory, 'settings.json'))
     const relayFetch: typeof fetch = (input, init) => net.fetch(
