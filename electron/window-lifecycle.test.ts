@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createWindowLifecycle, type WindowLifecycleOptions } from './window-lifecycle'
 
 function deferred<T>() {
@@ -13,7 +13,7 @@ function fixture(overrides: Partial<WindowLifecycleOptions> = {}) {
     readPreference: vi.fn<WindowLifecycleOptions['readPreference']>(() => 'ask'),
     trayAvailable: vi.fn(() => true),
     requestCloseDecision: vi.fn<WindowLifecycleOptions['requestCloseDecision']>(async () => 'cancel'),
-    prepareToQuit: vi.fn(async () => true),
+    prepareToQuit: vi.fn(async () => {}),
     flushWindowState: vi.fn(async () => {}),
     show: vi.fn(), hide: vi.fn(), quit: vi.fn(), onError: vi.fn(),
     ...overrides,
@@ -22,6 +22,9 @@ function fixture(overrides: Partial<WindowLifecycleOptions> = {}) {
 }
 
 describe('window close coordination', () => {
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
   it('keeps the window visible when the tray preference cannot be fulfilled', async () => {
     const { options, lifecycle } = fixture({ readPreference: () => 'tray', trayAvailable: () => false })
     expect(await lifecycle.requestClose()).toBe('kept-visible')
@@ -71,20 +74,23 @@ describe('window close coordination', () => {
     expect(options.quit).not.toHaveBeenCalled()
   })
 
-  it('requires preparation and durable state before an explicit quit, regardless of the hide preference', async () => {
-    const prepare = deferred<boolean>()
+  it('runs cleanup and state persistence concurrently before quitting, regardless of the hide preference', async () => {
+    const prepare = deferred<void>()
     const flush = deferred<void>()
-    const { options, lifecycle } = fixture({ readPreference: () => 'tray', prepareToQuit: () => prepare.promise, flushWindowState: () => flush.promise })
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', prepareToQuit: vi.fn(() => prepare.promise), flushWindowState: vi.fn(() => flush.promise) })
     const result = lifecycle.requestQuit()
     expect(result).toBe(lifecycle.requestQuit())
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    expect(options.flushWindowState).toHaveBeenCalledOnce()
     expect(lifecycle.isQuitting).toBe(false)
-    prepare.resolve(true)
-    await Promise.resolve()
+    prepare.resolve()
+    await vi.advanceTimersByTimeAsync(0)
     expect(options.quit).not.toHaveBeenCalled()
     flush.resolve()
     expect(await result).toBe('quit-requested')
     expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.requestCloseDecision).not.toHaveBeenCalled()
     expect(lifecycle.isQuitting).toBe(true)
     expect(await lifecycle.requestQuit()).toBe('quit-requested')
     expect(options.quit).toHaveBeenCalledOnce()
@@ -102,27 +108,116 @@ describe('window close coordination', () => {
     expect(options.hide).not.toHaveBeenCalled()
   })
 
-  it('keeps the window and skips flushing when task preparation is cancelled', async () => {
-    const { options, lifecycle } = fixture({ prepareToQuit: async () => false })
-    expect(await lifecycle.requestQuit()).toBe('cancelled')
-    expect(options.flushWindowState).not.toHaveBeenCalled()
-    expect(options.quit).not.toHaveBeenCalled()
-    expect(options.show).toHaveBeenCalledOnce()
-    expect(lifecycle.isQuitting).toBe(false)
+  it('upgrades a pending tray flush to quit without hiding the window', async () => {
+    const flush = deferred<void>()
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', flushWindowState: () => flush.promise })
+    const close = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(lifecycle.requestQuit()).toBe(close)
+    flush.resolve()
+    expect(await close).toBe('quit-requested')
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.hide).not.toHaveBeenCalled()
   })
 
-  it.each(['prepareToQuit', 'flushWindowState', 'quit'] as const)('keeps the window recoverable when %s fails', async (field) => {
+  it.each(['prepareToQuit', 'flushWindowState'] as const)('logs a rejected %s and still quits', async (field) => {
     const failure = new Error(`${field} failed`)
+    const { options, lifecycle } = fixture({ [field]: vi.fn(async () => { throw failure }) })
+    expect(await lifecycle.requestQuit()).toBe('quit-requested')
+    expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    expect(options.flushWindowState).toHaveBeenCalledOnce()
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.show).not.toHaveBeenCalled()
+    expect(lifecycle.isQuitting).toBe(true)
+  })
+
+  it.each(['prepareToQuit', 'flushWindowState'] as const)('does not let a synchronous %s failure veto quitting or skip the other cleanup', async (field) => {
+    const failure = new Error(`${field} failed synchronously`)
     const { options, lifecycle } = fixture({ [field]: vi.fn(() => { throw failure }) })
+    expect(await lifecycle.requestQuit()).toBe('quit-requested')
+    expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(options.prepareToQuit).toHaveBeenCalledOnce()
+    expect(options.flushWindowState).toHaveBeenCalledOnce()
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it.each(['prepareToQuit', 'flushWindowState', 'both'] as const)('quits within two seconds when %s never settles', async (field) => {
+    const pending = deferred<void>()
+    const { options, lifecycle } = fixture({
+      ...(field === 'prepareToQuit' || field === 'both' ? { prepareToQuit: () => pending.promise } : {}),
+      ...(field === 'flushWindowState' || field === 'both' ? { flushWindowState: () => pending.promise } : {}),
+    })
+    const result = lifecycle.requestQuit()
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(options.quit).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await result).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledOnce()
+    expect(options.show).not.toHaveBeenCalled()
+    pending.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('still hides when saving window state rejects', async () => {
+    const failure = new Error('state persistence failed')
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', flushWindowState: async () => { throw failure } })
+    expect(await lifecycle.requestClose()).toBe('hidden')
+    expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
+    expect(options.hide).toHaveBeenCalledOnce()
+    expect(options.prepareToQuit).not.toHaveBeenCalled()
+    expect(options.quit).not.toHaveBeenCalled()
+    expect(options.show).not.toHaveBeenCalled()
+  })
+
+  it('hides within two seconds when saving window state never settles', async () => {
+    const flush = deferred<void>()
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', flushWindowState: () => flush.promise })
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(1999)
+    expect(options.hide).not.toHaveBeenCalled()
+    await vi.advanceTimersByTimeAsync(1)
+    expect(await result).toBe('hidden')
+    expect(options.hide).toHaveBeenCalledOnce()
+    expect(options.prepareToQuit).not.toHaveBeenCalled()
+    expect(options.quit).not.toHaveBeenCalled()
+    flush.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.hide).toHaveBeenCalledOnce()
+  })
+
+  it('opens a fresh decision after cancellation without running cleanup', async () => {
+    const { options, lifecycle } = fixture({
+      requestCloseDecision: vi.fn<WindowLifecycleOptions['requestCloseDecision']>().mockResolvedValueOnce('cancel').mockResolvedValueOnce('quit'),
+    })
+    expect(await lifecycle.requestClose()).toBe('cancelled')
+    expect(options.prepareToQuit).not.toHaveBeenCalled()
+    expect(options.flushWindowState).not.toHaveBeenCalled()
+    expect(options.show).toHaveBeenCalledOnce()
+    expect(await lifecycle.requestClose()).toBe('quit-requested')
+    expect(options.requestCloseDecision).toHaveBeenCalledTimes(2)
+    expect(options.quit).toHaveBeenCalledOnce()
+  })
+
+  it('keeps the window recoverable and allows retrying when the actual quit call throws', async () => {
+    const failure = new Error('quit failed')
+    const { options, lifecycle } = fixture({ quit: vi.fn().mockImplementationOnce(() => { throw failure }) })
     expect(await lifecycle.requestQuit()).toBe('failed')
     expect(options.onError).toHaveBeenCalledExactlyOnceWith(failure)
     expect(options.show).toHaveBeenCalledOnce()
     expect(lifecycle.isQuitting).toBe(false)
+    expect(await lifecycle.requestQuit()).toBe('quit-requested')
+    expect(options.quit).toHaveBeenCalledTimes(2)
+    expect(lifecycle.isQuitting).toBe(true)
   })
 
-  it('allows retrying a previously cancelled quit', async () => {
-    const { options, lifecycle } = fixture({ prepareToQuit: vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true) })
-    expect(await lifecycle.requestQuit()).toBe('cancelled')
+  it('does not let failed error reporting block forced quit', async () => {
+    const { options, lifecycle } = fixture({
+      prepareToQuit: async () => { throw new Error('cleanup failed') },
+      onError: () => { throw new Error('logging failed') },
+    })
     expect(await lifecycle.requestQuit()).toBe('quit-requested')
     expect(options.quit).toHaveBeenCalledOnce()
   })
@@ -151,15 +246,29 @@ describe('window close coordination', () => {
   })
 
   it('detaches and stops a pending close from changing a disposed host', async () => {
-    const preparation = deferred<boolean>()
+    const preparation = deferred<void>()
     const { options, lifecycle } = fixture({ prepareToQuit: () => preparation.promise })
     const request = lifecycle.requestQuit()
-    await Promise.resolve()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(options.flushWindowState).toHaveBeenCalledOnce()
     lifecycle.dispose()
-    preparation.resolve(true)
+    preparation.resolve()
     expect(await request).toBe('cancelled')
     expect(options.quit).not.toHaveBeenCalled()
-    expect(options.flushWindowState).not.toHaveBeenCalled()
+    expect(options.hide).not.toHaveBeenCalled()
     expect(await lifecycle.requestClose()).toBe('cancelled')
+  })
+
+  it('does not hide a disposed host when an outstanding state flush times out', async () => {
+    const flush = deferred<void>()
+    const { options, lifecycle } = fixture({ readPreference: () => 'tray', flushWindowState: () => flush.promise })
+    const result = lifecycle.requestClose()
+    await vi.advanceTimersByTimeAsync(0)
+    lifecycle.dispose()
+    await vi.advanceTimersByTimeAsync(2000)
+    expect(await result).toBe('cancelled')
+    expect(options.hide).not.toHaveBeenCalled()
+    expect(options.quit).not.toHaveBeenCalled()
+    expect(options.show).not.toHaveBeenCalled()
   })
 })

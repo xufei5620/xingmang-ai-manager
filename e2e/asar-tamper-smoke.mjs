@@ -20,13 +20,17 @@ async function waitForExit(child, timeoutMilliseconds) {
   ])
 }
 
-const temporaryRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-asar-tamper-'))
+const temporaryRoot = path.resolve(await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-asar-tamper-')))
 const tamperedDirectory = path.join(temporaryRoot, 'win-unpacked')
 const extractedDirectory = path.join(temporaryRoot, 'app-extracted')
 const rebuiltAsar = path.join(temporaryRoot, 'tampered.asar')
+const isolatedHome = path.join(temporaryRoot, 'home')
+const codexHome = path.join(isolatedHome, '.codex')
+const childEnvironment = { ...process.env, HOME: isolatedHome, USERPROFILE: isolatedHome, CODEX_HOME: codexHome }
 let application = null
 
 try {
+  await fs.mkdir(codexHome, { recursive: true })
   await fs.cp(sourceDirectory, tamperedDirectory, { recursive: true })
   const asarPath = path.join(tamperedDirectory, 'resources', 'app.asar')
   extractAll(asarPath, extractedDirectory)
@@ -40,6 +44,8 @@ try {
     `--user-data-dir=${path.join(temporaryRoot, 'user-data')}`,
   ], {
     stdio: 'ignore',
+    windowsHide: true,
+    env: childEnvironment,
   })
   const exitCode = await waitForExit(application, 10_000)
   if (exitCode === null) throw new Error('被篡改的 app.asar 仍然可以持续运行')
@@ -55,5 +61,8 @@ try {
   }
   // Windows Defender may retain the executable briefly after the integrity
   // check terminates it. Retry bounded cleanup only after confirming exit.
+  if (path.dirname(temporaryRoot) !== path.resolve(os.tmpdir()) || !path.basename(temporaryRoot).startsWith('xingmang-asar-tamper-')) {
+    throw new Error('拒绝清理测试临时根目录以外的路径')
+  }
   await fs.rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 })
 }

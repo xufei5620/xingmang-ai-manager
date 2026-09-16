@@ -232,8 +232,8 @@ describe('native CLI configuration files', () => {
 
     const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))!
     expect(parsed.model_provider).toBe('XingmangAI')
-    expect(parsed.model_context_window).toBe(1000000)
-    expect(parsed.model_auto_compact_token_limit).toBe(900000)
+    expect(parsed).not.toHaveProperty('model_context_window')
+    expect(parsed).not.toHaveProperty('model_auto_compact_token_limit')
     expect(parsed.approval_policy).toBe('on-request')
     expect(parsed.sandbox_mode).toBe('workspace-write')
     expect(asRecord(parsed.model_providers)?.XingmangAI).toMatchObject({
@@ -248,7 +248,10 @@ describe('native CLI configuration files', () => {
     const mergeRoots = providerRoots(mergeHome)
     const [mergeConfigPath] = providerConfigPaths('codex', mergeRoots)
     saveProviderConfig('codex', 'sk-merge-first', testModels.codex, 'merge', mergeRoots, {}, providerBaseUrls)
-    expect(asRecord(TOML.parse(fs.readFileSync(mergeConfigPath, 'utf8')))?.model_provider).toBe(defaultCodexRelayProvider)
+    const merged = asRecord(TOML.parse(fs.readFileSync(mergeConfigPath, 'utf8')))!
+    expect(merged.model_provider).toBe(defaultCodexRelayProvider)
+    expect(merged).not.toHaveProperty('model_context_window')
+    expect(merged).not.toHaveProperty('model_auto_compact_token_limit')
   })
 
   it('reads and writes Codex at codexHome while every other provider stays at userHome', () => {

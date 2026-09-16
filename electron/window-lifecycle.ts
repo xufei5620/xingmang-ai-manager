@@ -7,7 +7,7 @@ export interface WindowLifecycleOptions {
   readPreference(): AppCloseBehavior
   trayAvailable(): boolean
   requestCloseDecision(): Promise<WindowCloseDecision>
-  prepareToQuit(): Promise<boolean>
+  prepareToQuit(): Promise<void>
   flushWindowState(): Promise<void>
   show(): void
   hide(): void
@@ -51,10 +51,25 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     if (!disposed) show()
     return 'cancelled'
   }
+  const cleanup = async (action: () => Promise<void>): Promise<void> => {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    try {
+      await Promise.race([
+        Promise.resolve().then(action),
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error('关闭窗口的后台清理超时，继续执行所选操作')), 2_000)
+        }),
+      ])
+    } catch (error) {
+      reportError(error)
+    } finally {
+      if (timer) clearTimeout(timer)
+    }
+  }
   const performQuit = async (): Promise<WindowCloseResult> => {
-    if (!await options.prepareToQuit()) return cancelled()
-    if (disposed) return 'cancelled'
-    await options.flushWindowState()
+    // The user already chose to quit. Saving placement or cleaning up a
+    // background task must never veto that choice or wait on a renderer.
+    await Promise.all([cleanup(options.prepareToQuit), cleanup(options.flushWindowState)])
     if (disposed) return 'cancelled'
     // Set before app.quit(): Electron emits before-quit synchronously.
     quitting = true
@@ -69,7 +84,7 @@ export function createWindowLifecycle(options: WindowLifecycleOptions): WindowLi
     if (explicitQuit || decision === 'quit') return performQuit()
     if (decision === 'cancel') return cancelled()
     if (!options.trayAvailable()) { show(); return 'kept-visible' }
-    await options.flushWindowState()
+    await cleanup(options.flushWindowState)
     if (disposed) return 'cancelled'
     // A menu Quit arriving during the dialog or flush must not become Hide.
     if (explicitQuit) return performQuit()

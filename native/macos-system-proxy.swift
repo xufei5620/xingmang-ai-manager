@@ -168,7 +168,9 @@ final class FixtureBackend: Backend {
   func applyAndVerify(_ values: [String: [String: Any]]) throws {
     var value = try object()
     if value["failApplyOnce"] as? Bool == true { value["failApplyOnce"] = false; try writeFile(path, JSONSerialization.data(withJSONObject: value)); throw Failure.configuration }
-    try waitForApplied(timeout: 0.2) { try publishAndVerify(values) }
+    // Fixture persistence also fsyncs: use the production budget so slow CI
+    // disks cannot turn deliberately delayed publication into a false failure.
+    try waitForApplied { try publishAndVerify(values) }
   }
   func publishAndVerify(_ values: [String: [String: Any]]) throws {
     var value = try object()

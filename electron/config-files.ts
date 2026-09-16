@@ -10,7 +10,8 @@ import {
   type ProviderConfigRoots,
 } from './codex-home'
 import { identityFromCodexAuthTokens } from './official-account-identity'
-import { assertNoReparseComponents, ensureSafeDataDirectory } from './safe-local-data'
+import { removeCodexContextLimits } from './codex-context-limits'
+import { assertNoReparseComponents, ensureSafeDataDirectory, readSafeUtf8FileSync } from './safe-local-data'
 
 const MAX_NATIVE_CONFIG_BYTES = 2 * 1024 * 1024
 
@@ -425,8 +426,6 @@ function buildCodexRelayConfigTemplate(
     'disable_response_storage = true',
     'network_access = "enabled"',
     'windows_wsl_setup_acknowledged = true',
-    'model_context_window = 1000000',
-    'model_auto_compact_token_limit = 900000',
     '',
     `[model_providers.${providerKey}]`,
     `name = ${tomlString(providerName)}`,
@@ -1470,6 +1469,25 @@ export function trustCodexWorkspace(
     changed: true,
     status: inspectCodexWorkspacePermissionsText(next.content, workspace, configPath),
   }
+}
+
+/** Source snapshots must be migrated together so an account switch cannot restore old limits. */
+export function removeCodexContextLimitsFromConfigs(
+  rootsInput: ProviderConfigRoots,
+  hooks: NativeConfigWriteHooks = {},
+): NativeConfigSaveResult {
+  const roots = normalizeProviderConfigRoots(rootsInput)
+  const providerRoot = providerConfigRoot('codex', roots)
+  const plans: FilePlan[] = []
+  for (const configPath of Object.values(codexConfigSnapshotPaths(roots))) {
+    assertSafeConfigPath(configPath, providerRoot, 'file')
+    const content = readSafeUtf8FileSync(configPath, 'Codex 配置', MAX_NATIVE_CONFIG_BYTES)
+    if (content === null) continue
+    const next = removeCodexContextLimits(content)
+    if (next.changed) plans.push({ path: configPath, content: next.content })
+  }
+  if (plans.length === 0) return { backups: [], files: [] }
+  return executeFilePlans(plans, hooks, providerRoot)
 }
 
 /** Adds safe, interactive defaults to an existing Codex config without touching credentials. */
