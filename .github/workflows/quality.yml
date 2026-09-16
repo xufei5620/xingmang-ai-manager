@@ -64,6 +64,8 @@ jobs:
           }
       - name: Run isolated signed-out startup smoke test
         run: node e2e/electron-ci-smoke.mjs
+      - name: Verify tray and forced exit with isolated application state
+        run: node e2e/window-close-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
@@ -99,6 +101,8 @@ jobs:
       - name: Verify macOS native network component with isolated preferences
         run: npm run test:mac:proxy
       - run: npm run test:mac:dev-origin
+      - name: Verify tray and forced exit with isolated application state
+        run: node e2e/window-close-smoke.mjs
       - name: Fail if the test run left files in the working tree
         # Windows path math evaluated on a POSIX host yields a backslash
         # relative name, which lands as a stray directory in the repository

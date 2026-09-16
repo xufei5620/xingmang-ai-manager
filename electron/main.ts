@@ -43,7 +43,6 @@ import { AppSettingsStore, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
-import { createWindowCloseQuery } from './window-close-query'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { ConfigBackupStore } from './backups'
@@ -681,7 +680,6 @@ if (!hasSingleInstanceLock) {
     let applicationTray: ApplicationTrayController | null = null
     let latestTraySystem: SystemSnapshot | null = null
     let latestTrayBalance: AccountBalance | null = null
-    let closeQuery: ReturnType<typeof createWindowCloseQuery> | null = null
     let managedMainWindow: BrowserWindow | null = null
     const desktopNotifications = createDesktopNotificationController({
       readEnabled: () => systemService.readStoredConfig().desktopNotifications === true,
@@ -1285,9 +1283,6 @@ if (!hasSingleInstanceLock) {
       getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported }),
       onSettingsChanged: () => { desktopNotifications.refresh() },
       takeExternalDeepLink: (sender) => managedMainWindow?.webContents === sender ? deepLinkInbox.take() : null,
-      replyWindowClose: (sender, requestId, report) => (
-        managedMainWindow?.webContents === sender ? closeQuery?.reply(requestId, report) ?? false : false
-      ),
       onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
       onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
       setWindowMode,
@@ -1333,82 +1328,6 @@ if (!hasSingleInstanceLock) {
     })
     const mainWindow = createWindow(systemService, urlPolicy, runtimeLog)
     managedMainWindow = mainWindow
-    // The close report is answered by a renderer listener installed after
-    // React mounts. A native close can arrive earlier (or after a renderer
-    // crash), in which case waiting for the normal 15-second query timeout
-    // makes the window look impossible to close. Keep the handshake disabled
-    // until a healthy page has finished loading; closeQuery then returns an
-    // empty report immediately for the startup/crash states.
-    let mainRendererReady = false
-    let mainRendererPreloadFailed = false
-    let rendererReadinessGeneration = 0
-    let rendererReadinessTimer: ReturnType<typeof setTimeout> | undefined
-    const clearRendererReadinessTimer = () => {
-      if (rendererReadinessTimer) clearTimeout(rendererReadinessTimer)
-      rendererReadinessTimer = undefined
-    }
-    const resetRendererReadiness = (preloadFailed = false) => {
-      mainRendererReady = false
-      mainRendererPreloadFailed = preloadFailed
-      rendererReadinessGeneration += 1
-      clearRendererReadinessTimer()
-      // A reload or crash can happen after a close request was sent but
-      // before the reply. Resolve that in-flight query immediately too.
-      closeQuery?.rendererUnavailable()
-    }
-    const probeRendererReadiness = (generation: number, deadline: number, confirmations = 0) => {
-      if (
-        generation !== rendererReadinessGeneration
-        || mainRendererPreloadFailed
-        || mainWindow.isDestroyed()
-        || mainWindow.webContents.isDestroyed()
-      ) return
-      // did-finish-load fires before React's close listener necessarily has
-      // been installed. Probe the trusted bridge and mounted root instead of
-      // guessing with a fixed sleep; this works for both the v2 renderer and
-      // the retained legacy rollback renderer. The stable follow-up probe
-      // below closes the remaining effect-registration window.
-      void mainWindow.webContents.executeJavaScript(
-        'Boolean(document.querySelector("#root")?.firstElementChild && typeof window.xingmang?.onWindowCloseRequest === "function")',
-        true,
-      ).then((mounted) => {
-        if (generation !== rendererReadinessGeneration || mainRendererPreloadFailed || mainWindow.isDestroyed()) return
-        if (mounted && confirmations < 1) {
-          // React's root can acquire a child just before its useEffect
-          // subscriptions run. Require one stable follow-up probe so the
-          // close event cannot land in that narrow interval.
-          rendererReadinessTimer = setTimeout(() => probeRendererReadiness(generation, deadline, confirmations + 1), 50)
-          return
-        }
-        if (mounted) {
-          mainRendererReady = true
-          return
-        }
-        if (Date.now() >= deadline) return
-        rendererReadinessTimer = setTimeout(() => probeRendererReadiness(generation, deadline), 25)
-      }).catch(() => {
-        // A navigation or renderer crash invalidates this generation. Leave
-        // the flag false so closeQuery fails open immediately for this load.
-      })
-    }
-    mainWindow.webContents.on('did-start-loading', () => resetRendererReadiness())
-    mainWindow.webContents.on('preload-error', () => resetRendererReadiness(true))
-    mainWindow.webContents.on('did-finish-load', () => {
-      if (mainRendererPreloadFailed) return
-      const generation = ++rendererReadinessGeneration
-      clearRendererReadinessTimer()
-      probeRendererReadiness(generation, Date.now() + 5_000)
-    })
-    mainWindow.webContents.on('render-process-gone', () => resetRendererReadiness())
-    mainWindow.once('closed', () => {
-      resetRendererReadiness()
-      clearRendererReadinessTimer()
-    })
-    closeQuery = createWindowCloseQuery(
-      (requestId) => mainWindow.webContents.send(ipcEventChannels.onWindowCloseRequest, { requestId }),
-      15_000,
-      { isRendererReady: () => mainRendererReady && !mainWindow.isDestroyed() && !mainWindow.webContents.isDestroyed() },
-    )
     const showMainWindow = () => {
       if (mainWindow.isDestroyed()) return
       if (mainWindow.isMinimized()) mainWindow.restore()
@@ -1427,37 +1346,32 @@ if (!hasSingleInstanceLock) {
         const trayReady = applicationTray?.available ?? false
         const result = await dialog.showMessageBox(mainWindow, {
           type: 'question', title: '关闭星芒AI管理工具', message: '关闭窗口后如何处理？',
-          detail: trayReady ? '缩到托盘会保留正在执行的任务。' : '系统托盘不可用，返回可继续使用当前窗口。',
-          buttons: trayReady ? ['缩到托盘', '退出程序', '返回'] : ['退出程序', '返回'],
+          detail: trayReady ? '缩到托盘会保留正在执行的任务。强制退出不等待任务完成，未保存的输入不会保留。' : '系统托盘不可用。强制退出不等待任务完成，未保存的输入不会保留。',
+          buttons: trayReady ? ['缩到托盘', '强制退出程序', '返回'] : ['强制退出程序', '返回'],
           defaultId: trayReady ? 0 : 1, cancelId: trayReady ? 2 : 1,
         })
         return trayReady ? result.response === 0 ? 'hide' : result.response === 1 ? 'quit' : 'cancel' : result.response === 0 ? 'quit' : 'cancel'
       },
       prepareToQuit: async () => {
-        const report = await closeQuery!.request()
-        if (report.blockingTask) {
-          await dialog.showMessageBox(mainWindow, { type: 'info', title: '任务尚未完成', message: '请等待安装或保存任务完成后退出', buttons: ['继续使用'] })
-          return false
-        }
-        if (report.unsavedChanges || chatService.activeCount() > 0) {
-          const result = await dialog.showMessageBox(mainWindow, {
-            type: 'warning', title: '退出前确认', message: '退出将关闭当前编辑面板并停止等待中的请求',
-            detail: '未保存的输入可能丢失。已提交的付费请求可能仍在服务端继续处理。',
-            buttons: ['返回', '退出'], defaultId: 0, cancelId: 0,
-          })
-          if (result.response !== 1) return false
-        }
-        if (!await canvasController.requestClose()) return false
         await acceleration?.stopAll()
-        return true
       },
       flushWindowState: () => windowPreferenceFlushers.get(mainWindow.webContents)?.() ?? Promise.resolve(),
       show: showMainWindow,
       hide: () => mainWindow.hide(),
-      quit: () => app.quit(),
+      quit: () => {
+        // app.quit preserves updater and shutdown hooks. A stalled window or
+        // hook still cannot trap an explicitly requested force quit.
+        const forceExitTimer = setTimeout(() => app.exit(0), 2_000)
+        forceExitTimer.unref()
+        try { canvasController.dispose() } catch (cause) { runtimeLog.exception('canvas', 'shutdown.failed', cause) }
+        try { paymentWindow.destroy() } catch (cause) { runtimeLog.exception('payment', 'shutdown.failed', cause) }
+        for (const window of BrowserWindow.getAllWindows()) {
+          if (!window.isDestroyed()) window.webContents.on('will-prevent-unload', (event) => event.preventDefault())
+        }
+        app.quit()
+      },
       onError: (cause) => {
         runtimeLog.exception('window', 'close.failed', cause)
-        void dialog.showMessageBox(mainWindow, { type: 'error', title: '暂时无法退出', message: '退出检查或保存未完成，窗口已保留。请稍后重试。' })
       },
     })
     lifecycle.attach(mainWindow, app)
@@ -1484,14 +1398,14 @@ if (!hasSingleInstanceLock) {
       onQuit: () => lifecycle.requestQuit(),
       onError: (cause) => runtimeLog.exception('window', 'tray.failed', cause),
     })
-    app.once('will-quit', () => { lifecycle.dispose(); closeQuery?.dispose(); applicationTray?.dispose() })
+    app.once('will-quit', () => { lifecycle.dispose(); applicationTray?.dispose() })
     // The canvas window is a secondary, opt-in surface -- it must not
     // outlive the main window (which would otherwise leave the app running
     // in the background with no way back to the dashboard on Windows/Linux,
     // since window-all-closed only quits when every window is gone).
     mainWindow.on('closed', () => {
       paymentWindow.destroy()
-      canvasController.closeIfOpen()
+      canvasController.dispose()
     })
     if (focusWhenWindowIsReady) {
       mainWindow.once('ready-to-show', () => {
