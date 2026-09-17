@@ -44,12 +44,12 @@ Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7
 | `electron/`（主进程，全部特权操作） | 86 个模块 | 81 个 |
 | `src/`（渲染进程，纯 UI） | 71 个文件 | 33 个 |
 
-**1669 个 vitest 用例**（125 个文件；该数字是历史基线，合并新测试后以 CI 输出为准），`npm test` 还串带 scripts/e2e 下的 node --test 套件。IPC：**108 个主窗口 invoke 通道**（另有 43 个画布宿主通道：41 invoke + 2 push，在 108 之外，见 I4 例外）。
+**4009 个 vitest 用例通过 / 194 skipped（311 个测试文件；2026-09-17 在 `ccf1eab` 上实测，合并新测试后以 CI 输出为准）**，`npm test` 还串带 scripts/e2e 下的 node --test 套件。IPC：**108 个主窗口 invoke 通道**（另有 43 个画布宿主通道：41 invoke + 2 push，在 108 之外，见 I4 例外）。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
 ```bash
-npm run typecheck   # 三连检：渲染 tsconfig + 主进程 tsconfig + electron 测试 tsconfig
+npm run typecheck   # 四连检：根 tsconfig（src）+ 主进程 tsconfig + electron 测试 tsconfig + renderer-v2 tsconfig
 npm test            # vitest（electron+src）+ node --test（scripts/e2e）。Linux 实测 ~12s；Windows 实测 ~13s，Defender 实时扫描介入时可拖到 60~90s
 npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 会执行
 npm run test:windows    # Windows 备用：关文件级并行 + 30s 超时，专治 Defender 引发的超时失败
@@ -274,14 +274,14 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 **T6. 渲染进程加异步数据加载 → 必须用竞态守卫。**
 三个现成工具：`scan-coordinator.ts`（扫描）、`latest-request.ts`（按 key 的页面数据）、`provider-extension-coordinator.ts`（切 provider）。直接 `await` 后 `setState` 会让慢响应覆盖新数据，切 tab 时 100% 复现。
 
-**T7. 给 `src/` 加组件测试 → 当前没有 DOM 环境。**
-仓库**没有 `vitest.config.ts`**，环境是默认的 `node`。src 下 25 个测试文件全部只测纯函数，没有一处 render。加 jsdom 是需要先与其他 agent 对齐的基础设施改动，**不要顺手做**。
+**T7. 给 `src/` 加组件测试 → 用 `renderToStaticMarkup`，不要加 DOM 环境。**
+仓库**有 `vitest.config.ts`**（三个 project：`legacy` 覆盖 `src/**` 与 `electron/**`、`renderer-v2`、`canvas`，都挂了 `@vitejs/plugin-react`，legacy 另把 React 别名指向 `tooling/legacy-renderer/`）。但三个 project **都没设 `environment`，跑的仍是默认的 `node`**，依赖里也没有 jsdom / happy-dom / @testing-library。现有 23 个 `src/**/*.test.tsx` 中有 22 个走 `react-dom/server` 的 `renderToStaticMarkup`，断言渲染出的 HTML（`data-testid`、role、class），**零处 `render()`**。新组件测试照这个写法走；加 jsdom 是需要先与其他 agent 对齐的基础设施改动，**不要顺手做**。
 
 **T8. electron 测试已纳入 typecheck（第三条 tsc），但 `tsconfig.electron.json` 的测试 exclude 千万别删。**
-`npm run typecheck` 跑三段：根 tsconfig（src）、`tsconfig.electron.json`（主进程**产物**配置，仍 exclude 测试）、`tsconfig.electron.test.json`（纳入全部 electron 测试，自带 `noEmit: true`）。**基础配置的 exclude 是 dist-electron 不含测试产物的承重墙**——`npm run compile` 用的就是它，删掉 exclude = 测试代码进发布包。测试配置的 `rootDir: "."` 专为孤儿测试 `electron/onboarding-runtime.test.ts`（测的是 `src/onboarding-runtime.ts`）的跨目录 import 而设。
+`npm run typecheck` 跑四段：根 tsconfig（src）、`tsconfig.electron.json`（主进程**产物**配置，仍 exclude 测试）、`tsconfig.electron.test.json`（纳入全部 electron 测试，自带 `noEmit: true`）、`tsconfig.renderer-v2.json`。**基础配置的 exclude 是 dist-electron 不含测试产物的承重墙**——`npm run compile` 用的就是它，删掉 exclude = 测试代码进发布包。测试配置的 `rootDir: "."` 专为孤儿测试 `electron/onboarding-runtime.test.ts`（测的是 `src/onboarding-runtime.ts`）的跨目录 import 而设。
 
 **T9. 给 `electron/` 加新模块 → 会被 typecheck 最多三遍。**
-`tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。三段都串在 `npm run typecheck` 里，跑这一条即可。
+`tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。四段都串在 `npm run typecheck` 里，跑这一条即可。
 
 **T10. 改 `providerConfigPaths` 或配置格式 → 同时影响备份、恢复、诊断、启动前校验。**
 消费者：`backups.ts`、`config-files.ts`、`diagnostics.ts`、`system-service.ts`、`main.ts`（启动前校验）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
@@ -375,7 +375,7 @@ npm test
 - ❌ **不要引入 Redux / Zustand / Jotai / MobX** — `App.tsx` 的 50 个 useState 里真正跨组件共享的只有少数几个（`snapshot/config/settings/theme/toast` + 账号态），props 深度 1-2 层；其余都是 `configOpen`、`logOpen` 这类局部 UI 开关。**正确解是拆组件，不是换状态方案。** 拆完仍嫌传得烦，最多加一个 Context
 - ❌ **不要用 zod / valibot / ajv 替换 `ipc.ts` 的 15 个手写 parse 函数** — 它们产出的是能直接上屏的中文错误文案
 - ❌ **不要开 `noUncheckedIndexedAccess` / `exactOptionalPropertyTypes`** — 实测前者会新增 97 条错误，抽查全是已被前置校验保护的下标访问，**零个真 bug**。现在的 `strict: true` 已经足够
-- ❌ **不要顺手加 jsdom / 组件测试设施** — 那是需要跨 agent 对齐的基础设施改动。`e2e/` 的约 2200 行套件已经是更高性价比的替代
+- ❌ **不要顺手加 jsdom / happy-dom** — 组件测试已经有 `renderToStaticMarkup` 这条不需要 DOM 环境的路子（见 T7），换 DOM 环境是需要跨 agent 对齐的基础设施改动。`e2e/` 的约 2200 行套件已经是更高性价比的替代
 - ❌ **不要做路由级 code-splitting / React.lazy** — 总共 340KB JS 从本地磁盘加载且开了 `codeCache`，收益为负
 - ❌ **不要引入 react-window / react-virtualized** — 最长的会话列表已在 SQL 层分页到每页 ≤100
 - ❌ **不要给主进程上 bundler** — 会模糊信任链模块的边界，那是本项目的核心可审计资产
