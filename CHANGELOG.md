@@ -11,6 +11,8 @@
 
 ## Unreleased
 
+- 个人中心密钥页新增「每个工具的额度上限」：四把托管 CLI 密钥各自可单独封顶，留空表示不限额，并显示已用与上限剩余。金额与两个账号后端额度单位的换算、托管密钥识别和更新入参构造收口到 `electron/account-key-quota.ts`（原 renderer-v2 的 `accountKeyQuota` 一并移入），不新增 IPC 通道。
+
 ## 0.2.6 - 2026-09-19
 
 - 接入 WorkBuddy、Claude Desktop 和 OpenCode 的安装、配置与启动；Claude Desktop 改用原生第三方推理配置，补齐事务备份、Windows 虚拟化路径和手动配置就绪状态识别。
