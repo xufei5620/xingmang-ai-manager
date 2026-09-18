@@ -4,9 +4,11 @@ import {
   codexSetupReadyForDashboard,
   initialDashboardPreview,
   initialOnboardingPreview,
+  EmptyStatus,
   managedBootstrapCompleted,
   markManagedBootstrapCompleted,
   isDetectionFailed,
+  isUnconfirmedDetection,
   resolveInitialAppView,
   sameDesktopStatus,
 } from './app-shared'
@@ -68,6 +70,26 @@ describe('isDetectionFailed', () => {
 
   it('is true only when detectionFailed is explicitly true', () => {
     expect(isDetectionFailed({ detectionFailed: true })).toBe(true)
+  })
+})
+
+describe('isUnconfirmedDetection', () => {
+  const scanned = { ...EmptyStatus(), checkedAt: '2026-09-18T00:00:00.000Z' }
+
+  it('flags a failed scan whose fallback is the pre-scan placeholder', () => {
+    expect(isUnconfirmedDetection(null, true, EmptyStatus())).toBe(true)
+  })
+
+  it('accepts the fallback once an earlier scan reported', () => {
+    expect(isUnconfirmedDetection(null, true, scanned)).toBe(false)
+  })
+
+  it('accepts a scan that produced its own snapshot', () => {
+    expect(isUnconfirmedDetection(scanned, true, EmptyStatus())).toBe(false)
+  })
+
+  it('stays quiet for a superseded scan, whose successor still owns the outcome', () => {
+    expect(isUnconfirmedDetection(null, false, EmptyStatus())).toBe(false)
   })
 })
 

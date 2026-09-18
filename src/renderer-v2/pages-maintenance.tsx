@@ -773,9 +773,14 @@ export function MaintenancePage({
             id === 'codexDesktop'
               ? resource.data?.capability.codexDesktop.install === 'managed'
               : resource.data?.capability.cliInstall[id] === 'managed'
+          // A probe that failed says nothing about what is installed, so the
+          // row offers a rescan instead of an install that could land on top
+          // of a working tool.
+          const detectionFailed = status?.detectionFailed === true
           return (
             <ListRow
               key={id}
+              testId={'maintenance-tool-' + id}
               title={
                 <>
                   <BrandIcon tool={id} size={32} />
@@ -786,8 +791,8 @@ export function MaintenancePage({
               meta={
                 <>
                   {version || '未找到版本'}{' '}
-                  <Pill tone={status?.installed ? 'ok' : 'neutral'}>
-                    {status?.installed ? '已安装' : '未安装'}
+                  <Pill tone={detectionFailed ? 'bad' : status?.installed ? 'ok' : 'neutral'}>
+                    {detectionFailed ? '检测失败' : status?.installed ? '已安装' : '未安装'}
                   </Pill>
                 </>
               }
@@ -795,11 +800,11 @@ export function MaintenancePage({
                 <>
                   <Button
                     size="sm"
-                    icon={status?.installed ? RefreshCw : Download}
-                    disabled={!managed || Boolean(operation.busy)}
-                    onClick={() => install(id)}
+                    icon={detectionFailed || status?.installed ? RefreshCw : Download}
+                    disabled={(!managed && !detectionFailed) || Boolean(operation.busy)}
+                    onClick={() => detectionFailed ? check(id) : install(id)}
                   >
-                    {status?.installed ? '重新安装' : '安装'}
+                    {detectionFailed ? '重新检测' : status?.installed ? '重新安装' : '安装'}
                   </Button>
                   <Menu
                     anchor={<MoreHorizontal size={18} />}
