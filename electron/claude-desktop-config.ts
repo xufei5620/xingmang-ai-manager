@@ -185,7 +185,7 @@ export function createClaudeDesktopConfigService(options: ClaudeDesktopConfigOpt
     return next
   }
   function assertContext(): void {
-    try { options.assertBeforeWrite?.() } catch { throw new Error(`${label}期间账号或站点已切换，请重新保存`) }
+    try { options.assertBeforeWrite?.() } catch { throw new Error(`${label}期间账号已切换，请重新保存`) }
   }
 
   return {

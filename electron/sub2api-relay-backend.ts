@@ -518,7 +518,7 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       const qrCode = str(payload.qr_code)
       if (qrCode) return { kind: 'qrcode', code: qrCode, tradeNo, expiresAt,
         amount: num(payload.pay_amount ?? payload.amount, amount), currency: str(payload.currency, 'CNY') }
-      throw new Error('Sub2API 未返回支付地址，请检查支付渠道配置')
+      throw new Error('账号服务未返回支付地址，请稍后重试或联系客服')
     },
     listTopupOrders: async (input = {}) => parseOrders(await call(capture(), (saved, abort) => native.listPaymentOrders(saved, { page: input.page, page_size: input.pageSize, keyword: input.keyword }, abort))),
     getTopupOrderStatus: async (tradeNo) => {
@@ -540,7 +540,7 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       const detail = record(await call(scope, (saved, abort) => native.getAffiliate(saved, abort)))
       const available = num(detail.aff_quota)
       if (!Number.isFinite(_input.quota) || Math.abs(_input.quota - available) > 1e-9) {
-        throw new Error('Sub2API 只支持一次性转入全部可用返利，请使用当前可转余额')
+        throw new Error('返利只能一次性全部转入，请使用当前可转余额')
       }
       await call(scope, (saved, abort) => native.transferAffiliate(saved, abort), true)
     },

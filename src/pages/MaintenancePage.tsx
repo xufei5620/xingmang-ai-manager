@@ -113,7 +113,8 @@ const providerLabels: Record<ProviderId, string> = {
   grok: 'Grok CLI',
 }
 
-export function updateStateLabel(status: MaintenanceVersionStatus): string {
+export function updateStateLabel(status: MaintenanceVersionStatus, detectionChecked = true): string {
+  if (!detectionChecked) return '未完成检测'
   if (status.detectionFailed) return '检测失败'
   if (!status.installed) return '未安装'
   if (status.updateState === 'available' && status.mirrorUpdateAvailable === false) return '已是可安装最新版'
@@ -130,11 +131,29 @@ function updateStateClass(status: MaintenanceVersionStatus): string {
   return 'is-warn'
 }
 
-export function cliMaintenanceAction(status: MaintenanceVersionStatus): 'install' | 'update' | 'check' {
+export function cliMaintenanceAction(
+  status: MaintenanceVersionStatus,
+  detectionChecked = true,
+): 'install' | 'update' | 'check' {
+  if (!detectionChecked) return 'check'
   if (status.detectionFailed) return 'check'
   if (!status.installed) return 'install'
   if (status.updateState === 'available' && status.mirrorUpdateAvailable === false) return 'check'
   return status.updateState === 'available' ? 'update' : 'check'
+}
+
+/**
+ * An empty `checkedAt` marks a snapshot no probe ever completed on: its CLI
+ * entries are `installed: false` placeholders, not evidence of absence. Reading
+ * them as "missing" is what pre-selected all four tools for reinstall on
+ * machines whose environment merely failed to be measured, so nothing is
+ * selectable until a scan actually reports.
+ */
+export function maintenanceSelectableProviders(snapshot: MaintenanceSnapshot): ProviderId[] {
+  const detectionChecked = snapshot.checkedAt !== ''
+  return managementProviderIds.filter((provider) => (
+    cliMaintenanceAction(snapshot.clis[provider], detectionChecked) !== 'check'
+  ))
 }
 
 export type CodexDesktopMaintenanceAction = 'launch' | 'install' | 'update' | 'check'
@@ -585,9 +604,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
     try {
       const next = await api.scan(forceRefresh)
       setSnapshot(next)
-      if (selectionMode === 'auto') {
-        setSelected(new Set(managementProviderIds.filter((provider) => cliMaintenanceAction(next.clis[provider]) !== 'check')))
-      }
+      if (selectionMode === 'auto') setSelected(new Set(maintenanceSelectableProviders(next)))
     } catch (cause) {
       setError(errorMessage(cause))
     } finally {
@@ -623,11 +640,9 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
   const desktopControl = snapshot
     ? codexDesktopMaintenanceControl(platform, snapshot.codexDesktop, desktopLaunching)
     : null
-  const selectedIds = useMemo(() => managementProviderIds.filter((id) => (
-    selected.has(id)
-    && snapshot
-    && cliMaintenanceAction(snapshot.clis[id]) !== 'check'
-  )), [selected, snapshot])
+  const detectionChecked = Boolean(snapshot?.checkedAt)
+  const selectableIds = useMemo(() => (snapshot ? maintenanceSelectableProviders(snapshot) : []), [snapshot])
+  const selectedIds = useMemo(() => selectableIds.filter((id) => selected.has(id)), [selected, selectableIds])
 
   const toggle = (provider: ProviderId) => {
     setSelected((current) => {
@@ -867,7 +882,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
             className="primary-button"
             type="button"
             onClick={() => selectedIds.length ? void maintain(selectedIds) : void refresh(true)}
-            disabled={busy || loading || !snapshot}
+            disabled={busy || loading}
           >
             {batchRunning
               ? <LoaderCircle className="spin" size={16} />
@@ -885,6 +900,11 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
             <button type="button" className="secondary-button operation-error-action" onClick={() => void restartWindows()} disabled={busy || restartingWindows}>
               {restartingWindows ? <LoaderCircle size={14} className="spin" /> : <RefreshCw size={14} />}
               {restartingWindows ? '正在安排重启' : '立即重启'}
+            </button>
+          )}
+          {!snapshot && (
+            <button type="button" className="secondary-button operation-error-action" onClick={() => void refresh(true)} disabled={busy || loading}>
+              <RefreshCw size={14} className={loading ? 'spin' : undefined} />重新检测
             </button>
           )}
         </div>
@@ -972,7 +992,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
               const status = snapshot.clis[provider]
               const job = jobs[provider]
               const active = job.state === 'queued' || job.state === 'running'
-              const action = cliMaintenanceAction(status)
+              const action = cliMaintenanceAction(status, detectionChecked)
               const uninstall = cliUninstallPresentation(status, platform)
               const manualUninstall = uninstall.mode === 'manual'
               return (
@@ -989,7 +1009,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
                   <div className="operation-status-icon">
                     {active
                       ? <LoaderCircle className="spin" size={17} />
-                      : status.detectionFailed
+                      : status.detectionFailed || !detectionChecked
                         ? <AlertCircle size={17} />
                         : status.installed ? <PackageCheck size={17} /> : <Download size={17} />}
                   </div>
@@ -997,7 +1017,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
                     <div className="operation-row-title">
                       <strong>{providerLabels[provider]}</strong>
                       <span className={`operation-state ${updateStateClass(status)}`} title={status.updateError ?? undefined}>
-                        {updateStateLabel(status)}
+                        {updateStateLabel(status, detectionChecked)}
                       </span>
                     </div>
                     <p>当前 {status.version ?? '-'} · 最新 {status.latestVersion ?? '未知'}</p>
@@ -1023,7 +1043,7 @@ export function MaintenancePage({ api, platform }: MaintenancePageProps) {
                         : action === 'check' ? <RefreshCw size={15} /> : <Download size={15} />}
                       {provider === 'grok' && presentation.grokAction === 'external-guidance'
                         ? presentation.grokActionLabel
-                        : action === 'install' ? '安装' : action === 'update' ? '安装最新版' : status.detectionFailed ? '重新检测' : '检查更新'}
+                        : action === 'install' ? '安装' : action === 'update' ? '安装最新版' : status.detectionFailed || !detectionChecked ? '重新检测' : '检查更新'}
                     </button>
                     <button
                       className={`${manualUninstall ? 'secondary-button maintenance-help-button' : 'danger-button'} maintenance-uninstall-button`}
