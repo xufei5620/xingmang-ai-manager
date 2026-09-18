@@ -1,3 +1,5 @@
+import { matchAccountErrorMessage } from './account-errors'
+
 export interface RegistrationDraft { email: string; username: string; password: string; confirm: string; code: string; invite: string; agreed: boolean }
 export type RegistrationErrors = Partial<Record<keyof RegistrationDraft, string>>
 export type RecoveryCodeResult = { ok: true; token: string; source: 'code' | 'link' } | { ok: false; error: string }
@@ -59,6 +61,12 @@ export function authErrorMessage(error: unknown, action: string): string {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
   if (/账号安全存储不可用|本地账号存储/.test(message)) return '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
   if (requiresBrowserAuthentication(error)) return '此账号需要双重验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。'
+  // The precise new-api table runs before the heuristics below: those are broad
+  // enough to swallow a message whose real cause the server already named. A
+  // change-password failure saying the original password is wrong would
+  // otherwise hit /密码|password/ and come out as "账号或密码不正确".
+  const known = matchAccountErrorMessage(message)
+  if (known) return known
   if (/429|频繁|too many|rate limit/i.test(message)) return '请求太频繁，请稍等一分钟再试'
   if (/已存在|占用|already exists/i.test(message)) return '用户名或邮箱已被使用，请检查后重试'
   if (/验证码|verification code/i.test(message)) return '验证码不正确或已过期，请重新获取'

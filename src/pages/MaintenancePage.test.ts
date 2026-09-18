@@ -1,15 +1,18 @@
 import { describe, expect, it } from 'vitest'
 import { platformCapabilitiesFor } from '../../electron/platform-capabilities'
+import { providerIds } from '../../electron/catalog'
 import {
   applyManualUninstallResult,
   codexDesktopMaintenanceControl,
   cliMaintenanceAction,
   cliUninstallPresentation,
+  maintenanceSelectableProviders,
   runCodexDesktopMaintenanceAction,
   updateStateLabel,
   type MaintenanceCliStatus,
   type MaintenanceSnapshot,
 } from './MaintenancePage'
+import type { ProviderId } from '../types'
 
 function status(uninstall: MaintenanceCliStatus['uninstall']): MaintenanceCliStatus {
   return {
@@ -241,5 +244,56 @@ describe('Codex Desktop maintenance action', () => {
       statusClass: 'is-pass',
       statusLabel: '已是可安装最新版',
     })
+  })
+})
+
+function cliStatus(overrides: Partial<MaintenanceCliStatus> = {}): MaintenanceCliStatus {
+  return {
+    installed: false,
+    version: null,
+    path: null,
+    installDirectory: null,
+    latestVersion: null,
+    updateAvailable: false,
+    uninstall: { available: false, reason: null, manualCommand: null },
+    ...overrides,
+  }
+}
+
+function snapshot(checkedAt: string, clis: Partial<Record<ProviderId, MaintenanceCliStatus>> = {}): MaintenanceSnapshot {
+  const runtime = { installed: true, version: '22.11.0', path: null, installDirectory: null }
+  return {
+    checkedAt,
+    runtime: { node: runtime, npm: runtime },
+    clis: Object.fromEntries(providerIds.map((id) => [id, clis[id] ?? cliStatus()])) as Record<ProviderId, MaintenanceCliStatus>,
+    codexDesktop: { installed: false, version: null, path: null, installDirectory: null, running: false },
+  }
+}
+
+describe('maintenance selection before detection reports', () => {
+  it('selects nothing while checkedAt is empty, so a failed first scan cannot invite four reinstalls', () => {
+    expect(maintenanceSelectableProviders(snapshot(''))).toEqual([])
+  })
+
+  it('selects the CLIs a completed scan actually found missing', () => {
+    expect(maintenanceSelectableProviders(snapshot('2026-09-18T00:00:00.000Z', {
+      claude: cliStatus({ installed: true, version: '1.0.0', updateState: 'latest' }),
+    }))).toEqual(['codex', 'gemini', 'grok'])
+  })
+
+  it('leaves a CLI whose probe failed out of the selection', () => {
+    expect(maintenanceSelectableProviders(snapshot('2026-09-18T00:00:00.000Z', {
+      codex: cliStatus({ detectionFailed: true, detectionError: '本地探针暂时不可用' }),
+    }))).toEqual(['claude', 'gemini', 'grok'])
+  })
+
+  it('reports an unchecked CLI as needing a rescan rather than an install', () => {
+    expect(cliMaintenanceAction(cliStatus(), false)).toBe('check')
+    expect(updateStateLabel(cliStatus(), false)).toBe('未完成检测')
+  })
+
+  it('keeps the confirmed-scan behaviour unchanged by default', () => {
+    expect(cliMaintenanceAction(cliStatus())).toBe('install')
+    expect(updateStateLabel(cliStatus())).toBe('未安装')
   })
 })

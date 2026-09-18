@@ -42,7 +42,7 @@ beforeAll(async () => {
   if (!address || typeof address === 'string') throw new Error('Fixture port unavailable')
   origin = `http://127.0.0.1:${address.port}`
   port = await getAvailableLoopbackPort()
-  browser = await chromium.launch({ args: [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--lang=zh-CN'] })
+  browser = await chromium.launch({ args: [`--remote-debugging-port=${port}`, '--remote-debugging-address=127.0.0.1', '--lang=zh-CN'], executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 }, 30_000)
 
 afterAll(async () => {
