@@ -27,6 +27,10 @@ interface ErrorBoundaryState {
   hasError: boolean
   error: unknown
   exporting: boolean
+  // The root mount (RootShell) sits above every toast host, so `notify` is
+  // absent there and the export result would otherwise vanish. Keeping it in
+  // the boundary's own state lets the fallback report it inline instead.
+  exportNotice: ErrorBoundaryToast | null
 }
 
 // React error boundaries must be class components — there is no hook
@@ -35,7 +39,7 @@ interface ErrorBoundaryState {
 // declarations"; everything inside still follows house style (no
 // semicolons, single quotes, 2-space indent).
 export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundaryState> {
-  state: ErrorBoundaryState = { hasError: false, error: null, exporting: false }
+  state: ErrorBoundaryState = { hasError: false, error: null, exporting: false, exportNotice: null }
 
   static getDerivedStateFromError(error: unknown): Pick<ErrorBoundaryState, 'hasError' | 'error'> {
     return { hasError: true, error }
@@ -73,7 +77,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   reset = (): void => {
-    this.setState({ hasError: false, error: null })
+    this.setState({ hasError: false, error: null, exportNotice: null })
   }
 
   handleReturnOverview = (): void => {
@@ -89,18 +93,28 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     window.location.reload()
   }
 
+  notifyExport = (toast: ErrorBoundaryToast): void => {
+    if (this.props.notify) this.props.notify(toast)
+    else this.setState({ exportNotice: toast })
+  }
+
   handleExportLogs = (): void => {
-    this.setState({ exporting: true })
-    window.xingmang.exportFeedbackReport()
+    this.setState({ exporting: true, exportNotice: null })
+    // Starting the chain before touching window.xingmang matters now that the
+    // boundary also wraps the entry's dev-preview branch, which runs without
+    // the Electron bridge: reaching through an undefined bridge throws
+    // synchronously, out of reach of the .catch below.
+    Promise.resolve()
+      .then(() => window.xingmang.exportFeedbackReport())
       .then((result) => {
-        this.props.notify?.(
+        this.notifyExport(
           result
             ? { type: 'success', message: `诊断报告已导出：${result.outputPath}` }
             : { type: 'error', message: '已取消导出' },
         )
       })
       .catch((cause: unknown) => {
-        this.props.notify?.({ type: 'error', message: errorMessage(cause) })
+        this.notifyExport({ type: 'error', message: errorMessage(cause) })
       })
       .finally(() => {
         this.setState({ exporting: false })
@@ -108,7 +122,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   render(): ReactNode {
-    const { hasError, error, exporting } = this.state
+    const { hasError, error, exporting, exportNotice } = this.state
     if (!hasError) return this.props.children
 
     return (
@@ -129,6 +143,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               导出诊断日志
             </button>
           </div>
+          {exportNotice && <p className={`page-crash-notice page-crash-notice-${exportNotice.type}`} role="status">{exportNotice.message}</p>}
         </div>
       </div>
     )
