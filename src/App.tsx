@@ -29,6 +29,7 @@ import {
   initialSidebarCollapsed,
   initialTheme,
   isDetectionFailed,
+  isUnconfirmedDetection,
   managedBootstrapCompleted,
   markManagedBootstrapCompleted,
   resolveInitialAppView,
@@ -643,6 +644,7 @@ function App() {
   const scan = useCallback(async (forceRefresh = false): Promise<{
     snapshot: SystemSnapshot | null
     config: AppConfigSummary | null
+    current: boolean
   }> => {
     try {
       const result = await runCoordinatedScan<SystemSnapshot, AppConfigSummary>({
@@ -662,7 +664,7 @@ function App() {
           setToast({ type: 'error', message: errors.join('；') })
         },
       })
-      return { snapshot: result.snapshot, config: result.config }
+      return { snapshot: result.snapshot, config: result.config, current: result.current }
     } finally {
       // A scan attempt -- successful, failed, or superseded -- means the
       // environment has been probed at least once; release anything waiting
@@ -709,6 +711,9 @@ function App() {
     scan: async (forceRefresh = false) => {
       const result = await scan(forceRefresh)
       const next = result.snapshot ?? snapshotRef.current
+      if (isUnconfirmedDetection(result.snapshot, result.current, next)) {
+        throw new Error('本机环境检测失败，暂时读不到已安装的工具。请重新检测后再操作。')
+      }
       return {
         checkedAt: next.checkedAt,
         runtime: { node: next.runtime.node, npm: next.runtime.npm },
