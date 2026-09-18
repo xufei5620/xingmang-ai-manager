@@ -58,6 +58,15 @@ export interface AppSettings {
   officialProviders?: ProviderId[]
   /** User explicitly uninstalled Codex Desktop and does not want auto-reinstall. */
   codexDesktopInstallDisabled?: boolean
+  /**
+   * Consent for the Codex Desktop Chinese runtime patch (E-S3). That patch
+   * needs a loopback CDP port which stays open for the whole Codex session and
+   * accepts any local client, so consent must never be inferred from
+   * config.toml -- `localeOverride = "zh-CN"` is a value this program writes
+   * itself. Absent = no runtime patch; only the explicit "启用中文界面" action
+   * sets it, and choosing the system language clears it again.
+   */
+  codexDesktopChineseRuntimePatch?: boolean
   /** Absent follows the theme: dawn for light, obsidian for dark. */
   uiSkin?: AppUiSkin
   reducedMotion?: boolean
@@ -99,6 +108,7 @@ export interface AppSettingsUpdate {
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
+  codexDesktopChineseRuntimePatch?: boolean
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
   desktopNotifications?: boolean
@@ -239,6 +249,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(optionalBoolean(value.codexDesktopChineseRuntimePatch, false) ? { codexDesktopChineseRuntimePatch: true as const } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(optionalBoolean(value.desktopNotifications, false) ? { desktopNotifications: true as const } : {}),
@@ -354,6 +365,11 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const codexDesktopInstallDisabled = update.codexDesktopInstallDisabled === undefined
     ? base.codexDesktopInstallDisabled
     : update.codexDesktopInstallDisabled
+  // false must clear rather than keep: switching Codex Desktop back to the
+  // system language is how a user withdraws consent for the debugging port.
+  const codexDesktopChineseRuntimePatch = update.codexDesktopChineseRuntimePatch === undefined
+    ? base.codexDesktopChineseRuntimePatch
+    : update.codexDesktopChineseRuntimePatch
   const uiSkin = update.uiSkin === 'auto'
     ? 'mist' as const
     : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
@@ -373,6 +389,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(codexDesktopChineseRuntimePatch ? { codexDesktopChineseRuntimePatch: true as const } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications ? { desktopNotifications: true as const } : {}),

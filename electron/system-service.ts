@@ -3185,25 +3185,28 @@ export function createSystemService(
     }
     let injectChinese = launchOptions.injectChinese
     if (injectChinese === undefined && platform === 'win32') {
+      // The runtime patch is the only reason this app ever starts Codex with a
+      // remote debugging port, and that port then stays open -- unauthenticated
+      // on loopback -- for the whole Codex session. Consent therefore comes
+      // from the stored setting written by the explicit 「启用中文界面」 action,
+      // never from config.toml: `localeOverride = "zh-CN"` is a value this
+      // program writes by itself, so reading it as consent made the debugging
+      // port the default path for every Chinese customer (E-S3).
+      injectChinese = store.read().codexDesktopChineseRuntimePatch === true
       try {
         const locale = await inspectCodexDesktopLocale()
-        if (locale.configuredLocale === 'zh-CN') {
-          injectChinese = true
-        } else if (shouldAutoConfigureCodexDesktopChineseLocale(locale)) {
-          // Existing installations created before the locale flow was added
-          // have no override at all. Persist the app's Chinese default before
-          // launching so both the normal path and the CDP fallback agree.
+        if (shouldAutoConfigureCodexDesktopChineseLocale(locale)) {
+          // Installations created before the locale flow have no override at
+          // all. Persisting the Chinese default still costs nothing: the native
+          // menus and the packaged locale honor it without any debugging port,
+          // and only the web view's Statsig gate needs the runtime patch.
           // `writeCodexDesktopLocale` re-validates the safe path and TOML, so a
           // malformed or redirected config can never be silently overwritten.
           await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, 'zh-CN')
-          injectChinese = true
-        } else {
-          injectChinese = false
         }
       } catch {
         // The normal launch remains available if a locale probe is temporarily
         // unavailable; config.toml will still be honored by Codex itself.
-        injectChinese = false
       }
     }
     return launchCodexDesktopOperation(effectiveLaunchMode, target, {
@@ -3374,6 +3377,11 @@ export function createSystemService(
     }
     const changed = codexDesktopLocaleNeedsChange(before.configuredLocale, locale)
     if (changed) await writeCodexDesktopLocale({ codexHome: providerRoots.codexHome }, locale)
+    // This call is the explicit switch for the runtime patch, so it is also the
+    // only place that grants or withdraws consent for the debugging port. Store
+    // it before the restart: a failed restart must not leave the later ordinary
+    // 「打开」 path disagreeing with what the user just chose.
+    await store.update({ version: 2, codexDesktopChineseRuntimePatch: locale === 'zh-CN' })
     let launchResult: CodexDesktopLaunchResult | undefined
     // A saved zh-CN preference is not proof that a previous runtime patch
     // worked. Explicitly enabling Chinese is also the retry path.

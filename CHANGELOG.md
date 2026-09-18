@@ -11,6 +11,8 @@
 
 ## Unreleased
 
+- Codex 桌面端的中文运行时注入改为显式开关：只有用户点过「启用中文界面」才会在打开 Codex 时附带本机调试端口，`config.toml` 里的 `localeOverride = "zh-CN"`（本程序自动写入的默认值）不再被当作同意；配置里新增「跟随系统语言」可随时关闭（E-S3）。
+
 ## 0.2.6 - 2026-09-19
 
 - 接入 WorkBuddy、Claude Desktop 和 OpenCode 的安装、配置与启动；Claude Desktop 改用原生第三方推理配置，补齐事务备份、Windows 虚拟化路径和手动配置就绪状态识别。

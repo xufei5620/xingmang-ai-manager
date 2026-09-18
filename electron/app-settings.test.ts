@@ -357,6 +357,17 @@ describe('field-wise settings updates (①栏11)', () => {
     expect(mergeAppSettings(base, { version: 2, mirrorPolicy: 'auto' })).not.toHaveProperty('mirrorPolicy')
     expect(mergeAppSettings(base, { version: 2, workspace: 'D:\\Elsewhere' }).workspace).toBe('D:\\Elsewhere')
   })
+
+  it('keeps the Codex Desktop Chinese runtime patch opt-in and lets an explicit false withdraw it', () => {
+    const base = settings()
+
+    expect(base).not.toHaveProperty('codexDesktopChineseRuntimePatch')
+    const enabled = mergeAppSettings(base, { version: 2, codexDesktopChineseRuntimePatch: true })
+    expect(enabled.codexDesktopChineseRuntimePatch).toBe(true)
+    expect(mergeAppSettings(enabled, { version: 2 }).codexDesktopChineseRuntimePatch).toBe(true)
+    expect(mergeAppSettings(enabled, { version: 2, codexDesktopChineseRuntimePatch: false }))
+      .not.toHaveProperty('codexDesktopChineseRuntimePatch')
+  })
 })
 
 describe('UI and window preferences', () => {

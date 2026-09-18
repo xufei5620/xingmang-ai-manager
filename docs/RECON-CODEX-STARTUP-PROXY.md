@@ -44,6 +44,12 @@ localeOverride = "zh-CN"
 
 中文词条已经位于本地包，例如 `webview\assets\zh-CN-66f4921009e2.js`。代理解决的是官方配置初始化与刷新连接，不是重新下载整套翻译。
 
+### 运行时汉化与调试端口的取舍（E-S3，2026-09-18）
+
+前端 `enable_i18n` gate 只能在运行时绕过，所以 `--remote-debugging-port` 启动的 CDP 注入每次冷启动都要重来一次；而这个端口在 Codex 整个进程生命周期都开着，loopback 上没有认证（`--remote-allow-origins` 只约束带 Origin 头的握手）。因此**不能**把 `config.toml` 里的 `localeOverride = "zh-CN"` 当成用户同意开这个端口 —— 那个值是本程序自己写的默认值。
+
+现在的规则：是否带调试端口启动，只看 `settings.json` 的 `codexDesktopChineseRuntimePatch`，由用户点「启用中文界面」时写入、点「跟随系统语言」时清除；缺省不带。`localeOverride` 仍会为新装自动写成 `zh-CN`，因为原生菜单链路不需要任何端口就能吃到它。
+
 本机原生菜单链路不同：`.vite\build\main-C8LNyWut.js` 读取 `localeOverride` 后调用原生 Intl；`.vite\build\window-all-closed-BKkx4ypf.js` 从 `native-menu-locales/<locale>.json` 加载菜单，相关实现没有上述前端 gate，并监听偏好变化。因此这个版本的原生菜单可能仅靠偏好即可中文，仍需目标平台视觉验收。
 
 ## 网络范围与有效期
