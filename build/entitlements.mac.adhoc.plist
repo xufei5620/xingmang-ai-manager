@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+    <!-- Ad-hoc signatures carry no team identifier, so library validation has
+         nothing to match the bundled Electron framework against and refuses to
+         load it - the app would not start at all. This file therefore exists
+         only for the unpacked local builds signed with the ad-hoc placeholder
+         identity (npm run build:mac:dir, build:mac:ci); those are never
+         distributed. Every signed build uses build/entitlements.mac.plist,
+         which keeps library validation on. Do not point a distribution path at
+         this file. -->
+    <key>com.apple.security.cs.disable-library-validation</key>
+    <true/>
+  </dict>
+</plist>

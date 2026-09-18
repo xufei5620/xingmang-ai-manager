@@ -1,4 +1,5 @@
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
@@ -7,6 +8,15 @@ const { NEW_UPDATE_URL } = require('./update-release-utils.cjs')
 const root = path.resolve(__dirname, '..')
 const configPath = path.join(root, 'electron-builder.config.cjs')
 const packageJson = require(path.join(root, 'package.json'))
+
+const STRICT_ENTITLEMENT_KEYS = ['com.apple.security.cs.allow-jit']
+const LIBRARY_VALIDATION_ESCAPE = 'com.apple.security.cs.disable-library-validation'
+
+function entitlementKeys(relativePath) {
+  const contents = fs.readFileSync(path.join(root, relativePath), 'utf8')
+  const dictionary = contents.slice(contents.indexOf('<dict>'), contents.indexOf('</dict>'))
+  return [...dictionary.matchAll(/<key>([^<]+)<\/key>/g)].map((match) => match[1])
+}
 
 function loadConfig({
   releaseMode = false,
@@ -310,4 +320,64 @@ test('free macOS certificate creation is exposed through a focused command', () 
     packageJson.scripts['mac:free:create-certificate'],
     'node scripts/create-macos-free-signing-certificate.cjs',
   )
+})
+
+test('every signed macOS build pins entitlements that leave library validation on', () => {
+  for (const mode of [
+    { releaseMode: true },
+    { freeReleaseMode: true, signingIdentity: 'XingMang Free Update Identity' },
+    {
+      freeReleaseMode: true,
+      signingIdentity: 'XingMang CI Free Update Identity',
+      ephemeralSigning: true,
+      signingSha1: 'CD'.repeat(20),
+      keychainPath: '/private/tmp/xingmang-ci-signing.keychain-db',
+    },
+  ]) {
+    const config = loadConfig(mode)
+    assert.equal(config.mac.entitlements, 'build/entitlements.mac.plist')
+    assert.equal(config.mac.entitlementsInherit, 'build/entitlements.mac.inherit.plist')
+  }
+
+  // Without these files electron-builder silently falls back to its own
+  // template, which grants the escape hatch to every distributed build.
+  for (const file of ['build/entitlements.mac.plist', 'build/entitlements.mac.inherit.plist']) {
+    assert.deepEqual(entitlementKeys(file), STRICT_ENTITLEMENT_KEYS, file)
+  }
+})
+
+test('the library validation escape hatch stays confined to ad-hoc --dir builds', () => {
+  for (const mode of [{}, { localBuildMode: true }, { releaseMode: true, localBuildMode: true }]) {
+    const config = loadConfig(mode)
+    assert.equal(config.mac.identity, '-')
+    assert.equal(config.mac.entitlements, 'build/entitlements.mac.adhoc.plist')
+    assert.equal(config.mac.entitlementsInherit, 'build/entitlements.mac.adhoc.inherit.plist')
+  }
+
+  for (const file of ['build/entitlements.mac.adhoc.plist', 'build/entitlements.mac.adhoc.inherit.plist']) {
+    const keys = entitlementKeys(file)
+    assert.deepEqual(keys, [...STRICT_ENTITLEMENT_KEYS, LIBRARY_VALIDATION_ESCAPE], file)
+  }
+})
+
+test('every entitlements plist stays a well-formed dictionary of granted keys', () => {
+  for (const file of [
+    'build/entitlements.mac.plist',
+    'build/entitlements.mac.inherit.plist',
+    'build/entitlements.mac.adhoc.plist',
+    'build/entitlements.mac.adhoc.inherit.plist',
+  ]) {
+    const contents = fs.readFileSync(path.join(root, file), 'utf8')
+    // A double hyphen inside a comment makes the document invalid XML, and
+    // codesign then fails the whole build with an unhelpful parse error.
+    for (const [, comment] of contents.matchAll(/<!--([\s\S]*?)-->/g)) {
+      assert.ok(!comment.includes('--'), `${file} has a comment XML cannot represent`)
+    }
+    const dictionary = contents.slice(contents.indexOf('<dict>'), contents.indexOf('</dict>'))
+    const entries = [...dictionary.matchAll(/<key>([^<]+)<\/key>\s*<(\w+)\/>/g)]
+    assert.equal(entries.length, entitlementKeys(file).length, `${file} must grant every key it lists`)
+    for (const [, key, value] of entries) {
+      assert.equal(value, 'true', `${file} must grant ${key} as a boolean`)
+    }
+  }
 })
