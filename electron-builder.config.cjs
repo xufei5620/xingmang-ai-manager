@@ -67,6 +67,14 @@ if (ephemeralMacSigningMode) {
 }
 const signingPublisher = process.env.XINGMANG_SIGNING_PUBLISHER?.trim() || undefined
 const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责任公司'
+// Without an explicit selection electron-builder falls back to its bundled
+// template, which grants disable-library-validation to every build - the one
+// entitlement that takes the hardened runtime's main protection away from a
+// process holding the account token. Only genuinely ad-hoc signatures (the
+// `--dir` builds that are never distributed) keep that escape hatch, because
+// they carry no team identifier for library validation to match against.
+const adHocSigningMode = !ephemeralMacSigningMode && !freeMacReleaseMode && !releaseMode
+const macEntitlementsPrefix = adHocSigningMode ? 'build/entitlements.mac.adhoc' : 'build/entitlements.mac'
 
 module.exports = {
   appId: 'com.xingmang.ai.manager',
@@ -156,6 +164,8 @@ module.exports = {
     category: 'public.app-category.developer-tools',
     minimumSystemVersion: '13.0',
     hardenedRuntime: true,
+    entitlements: `${macEntitlementsPrefix}.plist`,
+    entitlementsInherit: `${macEntitlementsPrefix}.inherit.plist`,
     icon: 'assets/brand/v3/app-icon.icns',
     // Local packages need an ad-hoc signature after Electron fuses are changed,
     // otherwise macOS rejects the invalidated upstream seal. This is not a

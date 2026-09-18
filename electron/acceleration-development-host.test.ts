@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { accelerationBonusCode } from './acceleration-contract'
-import { createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
+import { accelerationDevelopmentDirectory, createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 
 const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn(), profile: vi.fn(), profileCleanup: vi.fn() }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), fork: mocks.fork, spawn: mocks.spawn }))
@@ -351,6 +351,54 @@ describe('development acceleration worker host', () => {
     worker.respond(2, false, { error: 'private-error-secret' })
     await result
     expect(vi.getTimerCount()).toBe(0)
+    await host.dispose()
+  })
+
+  it('recovers a proxy lease left by a crash without waiting for an account scope', async () => {
+    vi.useRealTimers()
+    // A crash while acceleration was on leaves the machine pointing at a dead
+    // local port. Signing in is impossible until the worker replays its
+    // journal, so no scoped request can ever be the thing that triggers it.
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-recover-test-'))
+    try {
+      await fs.mkdir(accelerationDevelopmentDirectory(directory))
+      const worker = new FakeWorker()
+      mocks.fork.mockReturnValue(worker)
+      const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
+      await host.recover()
+      expect(mocks.fork).toHaveBeenCalledOnce()
+      expect(worker.sent).toEqual([{ id: 1, operation: 'init', config, dataDirectory: directory }])
+      // A later scoped request must join the same worker, not start a second one.
+      const request = host.getAccelerationState('xm-account:1')
+      await flush()
+      worker.respond(2, true, { phase: 'idle' })
+      expect(await request).toEqual({ phase: 'idle' })
+      expect(mocks.fork).toHaveBeenCalledOnce()
+      await host.dispose()
+    } finally { await fs.rm(directory, { recursive: true, force: true }) }
+  })
+
+  it('reports a failed startup recovery and disconnects so the worker retries its own cleanup', async () => {
+    vi.useRealTimers()
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'xm-acceleration-recover-test-'))
+    try {
+      await fs.mkdir(accelerationDevelopmentDirectory(directory))
+      const worker = new FakeWorker()
+      worker.autoInit = false
+      mocks.fork.mockReturnValue(worker)
+      const host = createAccelerationDevelopmentHost({ config, dataDirectory: directory })
+      const recovery = host.recover()
+      while (worker.sent.length === 0) await delay(1)
+      worker.respond(1, false)
+      await expect(recovery).rejects.toThrow(/^本机加速进程初始化未完成。$/)
+      expect(worker.disconnect).toHaveBeenCalledOnce()
+    } finally { await fs.rm(directory, { recursive: true, force: true }) }
+  })
+
+  it('starts no worker on a machine that never took a proxy lease', async () => {
+    const { host } = setup()
+    await host.recover()
+    expect(mocks.fork).not.toHaveBeenCalled()
     await host.dispose()
   })
 

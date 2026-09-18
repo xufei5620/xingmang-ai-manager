@@ -12,6 +12,7 @@ import {
   parseCanvasStartRunInput,
   parseCanvasVideoGenerateInput,
   parseCanvasVideoTaskId,
+  canvasSaveFileName,
   requiredCanvasString,
   requiredCanvasText,
 } from './canvas-request-parser'
@@ -353,5 +354,52 @@ describe('canvas request parser', () => {
       graph: { nodes: [node], edges: [] },
       scope: { kind: 'dirty', nodeIds: Array.from({ length: 5_001 }, () => 'a') },
     })).toThrow('节点范围')
+  })
+
+  it('keeps an ordinary proposed save name untouched', () => {
+    expect(canvasSaveFileName('xingmang-project.xingcanvas', '保存文件名', 'fallback.txt'))
+      .toBe('xingmang-project.xingcanvas')
+    expect(canvasSaveFileName('我的 项目 v2.xingcanvas', '保存文件名', 'fallback.txt'))
+      .toBe('我的 项目 v2.xingcanvas')
+  })
+
+  it('strips the directory a poisoned canvas proposes for the save dialog', () => {
+    // The Windows per-user startup folder: anything dropped there runs at the
+    // next sign-in, so the dialog must never open pointing at it.
+    expect(canvasSaveFileName(
+      'C:\\Users\\yoyo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\update.cmd',
+      '保存文件名',
+      'fallback.txt',
+    )).toBe('update.cmd')
+    // The macOS equivalent: a LaunchAgent plist runs at the next login.
+    expect(canvasSaveFileName(
+      '/Users/yoyo/Library/LaunchAgents/com.xingmang.update.plist',
+      '保存文件名',
+      'fallback.txt',
+    )).toBe('com.xingmang.update.plist')
+    // Both separators are rejected whatever the host platform is, so a
+    // Windows-shaped proposal cannot survive whole on macOS and vice versa.
+    expect(canvasSaveFileName('..\\..\\Startup\\run.bat', '保存文件名', 'fallback.txt')).toBe('run.bat')
+    expect(canvasSaveFileName('../../LaunchAgents/run.plist', '保存文件名', 'fallback.txt')).toBe('run.plist')
+  })
+
+  it('falls back when nothing safe is left of the proposed save name', () => {
+    expect(canvasSaveFileName('..', '保存文件名', 'fallback.txt')).toBe('fallback.txt')
+    expect(canvasSaveFileName('C:\\Users\\yoyo\\Startup\\', '保存文件名', 'fallback.txt')).toBe('fallback.txt')
+    expect(canvasSaveFileName('.hidden', '保存文件名', 'fallback.txt')).toBe('hidden')
+    // Windows device names are not file names; writing to one goes to the device.
+    expect(canvasSaveFileName('NUL', '保存文件名', 'fallback.txt')).toBe('fallback.txt')
+    expect(canvasSaveFileName('com1.txt', '保存文件名', 'fallback.txt')).toBe('fallback.txt')
+  })
+
+  it('repairs characters a file name cannot carry and still rejects non-strings', () => {
+    // A drive-relative name and an NTFS alternate data stream both hide a
+    // location behind what looks like a plain name.
+    expect(canvasSaveFileName('C:evil.cmd', '保存文件名', 'fallback.txt')).toBe('C_evil.cmd')
+    expect(canvasSaveFileName('notes.txt:hidden', '保存文件名', 'fallback.txt')).toBe('notes.txt_hidden')
+    expect(canvasSaveFileName('a<b>c|d?e*f.txt', '保存文件名', 'fallback.txt')).toBe('a_b_c_d_e_f.txt')
+    expect(() => canvasSaveFileName(undefined, '保存文件名', 'fallback.txt')).toThrow('保存文件名格式错误')
+    expect(() => canvasSaveFileName('name\u0000.txt', '保存文件名', 'fallback.txt')).toThrow('保存文件名格式错误')
+    expect(() => canvasSaveFileName('n'.repeat(257), '保存文件名', 'fallback.txt')).toThrow('保存文件名格式错误')
   })
 })

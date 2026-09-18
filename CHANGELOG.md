@@ -11,6 +11,7 @@
 
 ## Unreleased
 
+- 修复非管理员（默认）启动时 Node.js 兜底 MSI 安装必然失败：暂存目录改用普通用户临时目录，提权脚本自行在 Program Files 下建立仅管理员可写的目录、复制安装包并在提权侧重新校验 SHA-256 与 Authenticode 后才交给 msiexec；补上授权取消、跨账号授权等退出码的中文提示（E-S7）。
 - 新增 CLI 已验证版本名单（`electron/cli-verified-versions.ts`）：安装与更新默认装名单里的推荐版本而不是 npm latest，已装版本落在已知不兼容区间时在首页给出中文原因与「回到推荐版本」入口，设置里新增「命令行工具总是装最新版」开关（默认关）。名单首版只维护 Claude Code，其余三个 CLI 行为不变，维护方式见 `docs/CLI-VERIFIED-VERSIONS.md`。
 
 ## 0.2.6 - 2026-09-19

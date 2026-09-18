@@ -9,6 +9,8 @@
 
 ## 本批代码
 
+> 2026-09-18 更新（D-01）：`realm-switch-coordinator.ts`、`new-api-realm-backend.ts`、`realm-capabilities.ts` 三个模块始终没有被 `main.ts` 装配，已连同其专属测试一并删除。真实的切换/登录/恢复路径是 `realm-account-service.ts`，其守卫断言在 `realm-account-service.test.ts`。下表保留当时的交付记录，读的时候请以代码为准。
+
 | 模块 | 实际实现 | 边界 |
 |---|---|---|
 | `electron/realm-account.ts` | 中立身份、固定账号域、凭据判别联合、严格解析、无凭据摘要 | 新类型不直接跨 IPC 导出；`sub2api` 旧 ID 仍为 xm |

@@ -54,6 +54,97 @@ describe('configureManagedCliKeysForInstalledClis', () => {
       preferredModels: {},
     })
   })
+
+  // 主进程只对 intent === 'explicit' 的写入放行「来源未记录」的旧配置
+  // （system-service.ts 的 ownership 守卫）。legacy 界面曾经一处都不发 intent，
+  // 于是所有老用户点任何「配置星芒 Key」入口都只会拿到那句拒写文案。
+  it('omits the intent for a background write so the ownership guard still applies', async () => {
+    const api: ManagedCliProvisioningApi = {
+      configureManagedCliKeys: vi.fn(async () => ({ configured: ['claude'] as ProviderId[], failed: [] })),
+    }
+    await configureManagedCliKeysForInstalledClis(['claude'], { claude: 'claude-op-9' }, api)
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({
+      providers: ['claude'],
+      preferredModels: { claude: 'claude-op-9' },
+    })
+  })
+
+  it('marks a user-confirmed write explicit, one provider per call as ipc.ts requires', async () => {
+    const calls: Array<{ providers: ProviderId[]; intent?: string }> = []
+    const api: ManagedCliProvisioningApi = {
+      configureManagedCliKeys: vi.fn(async (input) => {
+        calls.push({ providers: input.providers, intent: input.intent })
+        return { configured: [...input.providers], failed: [] }
+      }),
+    }
+    await expect(configureManagedCliKeysForInstalledClis(
+      ['claude', 'codex', 'grok'],
+      { claude: 'claude-op-9', grok: 'grok-4' },
+      api,
+      'explicit',
+    )).resolves.toEqual({ configured: ['claude', 'codex', 'grok'], failed: [] })
+    expect(calls).toEqual([
+      { providers: ['claude'], intent: 'explicit' },
+      { providers: ['codex'], intent: 'explicit' },
+      { providers: ['grok'], intent: 'explicit' },
+    ])
+    // ipc.ts 对 explicit 要求 providers.length === 1，多带一个就是整批被拒。
+    expect(calls.every((call) => call.providers.length === 1)).toBe(true)
+  })
+
+  it('sends only the provider own preferred model on an explicit write', async () => {
+    const api: ManagedCliProvisioningApi = {
+      configureManagedCliKeys: vi.fn(async (input) => ({ configured: [...input.providers], failed: [] })),
+    }
+    await configureManagedCliKeysForInstalledClis(['codex'], { codex: '  gpt-5  ', claude: 'claude-op-9' }, api, 'explicit')
+    expect(api.configureManagedCliKeys).toHaveBeenCalledWith({
+      providers: ['codex'],
+      preferredModels: { codex: 'gpt-5' },
+      intent: 'explicit',
+    })
+  })
+
+  it('keeps writing the remaining confirmed tools after one of them fails', async () => {
+    const api: ManagedCliProvisioningApi = {
+      configureManagedCliKeys: vi.fn(async (input) => {
+        if (input.providers[0] === 'codex') throw new Error('Codex 配置文件被占用')
+        if (input.providers[0] === 'gemini') return { configured: [], failed: [{ provider: 'gemini' as ProviderId, message: '模型不可用' }] }
+        return { configured: [...input.providers], failed: [] }
+      }),
+    }
+    await expect(configureManagedCliKeysForInstalledClis(
+      ['codex', 'claude', 'gemini'],
+      {},
+      api,
+      'explicit',
+    )).resolves.toEqual({
+      configured: ['claude'],
+      failed: [
+        { provider: 'codex', message: 'Codex 配置文件被占用' },
+        { provider: 'gemini', message: '模型不可用' },
+      ],
+    })
+    expect(api.configureManagedCliKeys).toHaveBeenCalledTimes(3)
+  })
+
+  it('reports a provider the main process neither configured nor failed instead of counting it configured', async () => {
+    const api: ManagedCliProvisioningApi = {
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+    await expect(configureManagedCliKeysForInstalledClis(['grok'], {}, api, 'explicit')).resolves.toEqual({
+      configured: [],
+      failed: [{ provider: 'grok', message: '没有收到配置完成结果，请重新检测' }],
+    })
+  })
+
+  it('does not write the same tool twice when the confirmed list repeats it', async () => {
+    const api: ManagedCliProvisioningApi = {
+      configureManagedCliKeys: vi.fn(async (input) => ({ configured: [...input.providers], failed: [] })),
+    }
+    await expect(configureManagedCliKeysForInstalledClis(['claude', 'claude'], {}, api, 'explicit'))
+      .resolves.toEqual({ configured: ['claude'], failed: [] })
+    expect(api.configureManagedCliKeys).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('buildProvisioningTargets', () => {
