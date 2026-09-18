@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { Eye, FolderOpen, KeyRound, RefreshCw, Save, Settings } from 'lucide-react'
 import type { AccountKey, AppConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
@@ -9,6 +9,7 @@ import { getSourceMarkerStorage, writeManualSourceMarker } from './source-marker
 import type { ToolsApi } from './api'
 import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
 import { describeChineseLocale, describeChineseLocaleResult } from './locale-status'
+import { codexModelChoices, codexModelFilterSaveIssue, type CodexModelFilter } from './model-filter'
 
 type SourceChoice = 'account' | 'official' | 'manual' | 'unknown'
 interface ConfigDraft { source: SourceChoice; keyId: string; secret: string; model: string; validatedSecret: string; dirty: boolean }
@@ -17,6 +18,7 @@ interface ConfigDialogProps {
   tool: ToolId
   config: AppConfigSummary
   signedIn: boolean
+  initialModelFilter?: CodexModelFilter
   onClose(): void
   onRefresh(): Promise<void>
   onSaved(warning?: string): void
@@ -25,11 +27,13 @@ interface ConfigDialogProps {
   onHelp(): void
 }
 
-export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, onSaved, onLogin, onKeys, onHelp }: ConfigDialogProps) {
+export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter = 'all', onClose, onRefresh, onSaved, onLogin, onKeys, onHelp }: ConfigDialogProps) {
   const [tab, setTab] = useState<ToolId>(tool)
   const [drafts, setDrafts] = useState<Partial<Record<ProviderId, ConfigDraft>>>({})
   const [keys, setKeys] = useState<AccountKey[]>([])
   const [models, setModels] = useState<string[]>([])
+  const [modelsDetected, setModelsDetected] = useState(false)
+  const [modelFilter, setModelFilter] = useState<CodexModelFilter>(initialModelFilter)
   const [keyError, setKeyError] = useState('')
   const [keyRevision, setKeyRevision] = useState(0)
   const [keysLoading, setKeysLoading] = useState(false)
@@ -48,6 +52,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
   const metadataRequest = useRef(0)
   const lastKeyRefresh = useRef(0)
   const saveCancel = useRef<HTMLButtonElement>(null)
+  const modelFilterStatusId = useId()
   const provider = providerFor(tab)
   const native = config.providers[provider]
   const definition = tools.find((item) => item.id === tab)!
@@ -61,6 +66,15 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
   const metadata = keyMetadata[provider] ?? null
   const usingCurrentKey = draft.keyId === CURRENT_KEY
   const usingAutomaticKey = draft.keyId === AUTOMATIC_KEY
+  const activeModelFilter = provider === 'codex' ? modelFilter : 'all'
+  const modelChoices = codexModelChoices(models, activeModelFilter, draft.model)
+  const nonGptSaveIssue = provider === 'codex' && draft.source !== 'unknown'
+    ? codexModelFilterSaveIssue({
+      filter: activeModelFilter, models, selectedModel: draft.model,
+      detected: modelsDetected && (draft.source !== 'manual' || draft.validatedSecret === draft.secret),
+      automaticKey: draft.source === 'account' && usingAutomaticKey,
+      officialSource: draft.source === 'official',
+    }) : null
   function refreshKeyOptions(force = false) {
     if (!signedIn || locked.current || keysLoading) return
     if (!force && Date.now() - lastKeyRefresh.current < 500) return
@@ -105,8 +119,9 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
   useEffect(() => {
     request.current++
     setModels([])
+    setModelsDetected(false)
     setError('')
-  }, [tab, draft.source, draft.keyId])
+  }, [tab, draft.source, draft.keyId, draft.secret])
   useEffect(() => { setWarning('') }, [tab])
   async function detectModels() {
     if (locked.current) return
@@ -114,12 +129,20 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
     if (draft.source === 'account' && !usingCurrentKey && !selectedKey) { setError('所选密钥已不可用，请重新选择。'); return }
     locked.current = true
     const id = ++request.current
+    setModelsDetected(false)
     setBusy('检测模型'); setError('')
     try {
       const result = draft.source === 'manual' ? await api.manualModels(draft.secret)
         : usingCurrentKey ? await api.configuredModels(tab) : await api.keyModels(selectedKey!.id)
       if (!active.current || id !== request.current) return
       setModels(result)
+      setModelsDetected(true)
+      // Filtering does not change the user's existing selection. In this mode
+      // they must explicitly pick a detected non-GPT model before saving.
+      if (activeModelFilter === 'non-gpt') {
+        if (draft.source === 'manual') change({ validatedSecret: draft.secret })
+        return
+      }
       const suggested = resolveDefaultCliModel(provider, result, draft.model) ?? ''
       if (draft.source === 'manual') change({ validatedSecret: draft.secret, model: suggested })
       else if (!draft.model || (!native.model && !result.includes(draft.model))) change({ model: suggested })
@@ -135,6 +158,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
   }
   function requestSave() {
     if (draft.source === 'unknown') return
+    if (nonGptSaveIssue) { setError(nonGptSaveIssue); return }
     if (draft.source === 'account' && !signedIn && !usingCurrentKey) { onLogin(); return }
     if (draft.source === 'account') {
       if (usingCurrentKey && !native.hasApiKey) { setError('当前工具没有可保留的密钥，请重新选择。'); return }
@@ -151,6 +175,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
   }
   function save(mode: 'merge' | 'reset') {
     if (!confirmation) return
+    if (nonGptSaveIssue) { setError(nonGptSaveIssue); return }
     void run('保存配置', async () => {
       const provider = providerFor(tab)
       let markerWarning = ''
@@ -160,9 +185,7 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
       }
       else if (draft.source === 'manual') {
         await api.saveManual({ provider, apiKey: draft.secret, model: draft.model, mode })
-        if (!writeManualSourceMarker(sourceStorage, native.baseUrl, provider, true)) {
-          markerWarning = '配置已保存，但本机没有记住“手动填写密钥”来源。下次登录星芒账号前，请先确认工具配置，避免密钥被自动替换。'
-        }
+        writeManualSourceMarker(sourceStorage, native.baseUrl, provider, true)
       }
       else if (usingCurrentKey) {
         // Empty is the main-process reuse sentinel. It never reveals or
@@ -206,16 +229,17 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
   return <>
     <Dialog open title={`${definition.name} 配置`} subtitle="选好账号后，保存并打开工具即可开始。" icon={Settings} width={640}
       onClose={onClose} busy={Boolean(busy)} dirty={Object.values(drafts).some((entry) => entry?.dirty)} testId="config-dialog"
-      footer={<><Button variant="ghost" onClick={() => requestExit(onClose)} disabled={Boolean(busy)}>取消</Button><Button variant="primary" icon={Save} loading={Boolean(busy)} disabled={draft.source === 'unknown'} onClick={requestSave} testId="tool-save-config">保存配置</Button></>}>
+      footer={<><Button variant="ghost" onClick={() => requestExit(onClose)} disabled={Boolean(busy)}>取消</Button><Button variant="primary" icon={Save} loading={Boolean(busy)} disabled={draft.source === 'unknown' || Boolean(nonGptSaveIssue)} aria-describedby={nonGptSaveIssue ? modelFilterStatusId : undefined} onClick={requestSave} testId="tool-save-config">保存配置</Button></>}>
       <fieldset className="v2-config-controls" disabled={Boolean(busy)}>
       <Tabs label="选择要配置的工具" items={tools.filter((entry) => isToolId(entry.id)).map((entry) => ({ value: entry.id, label: entry.name, disabled: Boolean(busy) }))}
         value={tab} onChange={(value) => { if (isToolId(value)) setTab(value) }} />
       {providerFor(tab) === 'codex' && <p className="v2-callout">Codex 桌面端与 Codex CLI 共用这份配置。模型和来源在任一入口修改后会同步。</p>}
-      {draft.source === 'unknown' ? <><p className="v2-callout is-warn">这份配置连接了其他服务。保存新来源前会备份当前配置，历史会话会保留。</p><div className="v2-inline-actions"><Button onClick={() => change({ source: 'account' })}>切换为星芒账号</Button><Button onClick={() => change({ source: 'manual' })}>填写星芒密钥</Button><Button variant="ghost" onClick={onHelp}>查看处理步骤</Button></div></> : <>
+      {draft.source === 'unknown' ? <><p className="v2-callout is-warn">{native.matchesRelay ? '这份配置的密钥来源尚未确认，已保留原配置。' : '这份配置连接了其他服务。'}保存新来源前会备份当前配置，历史会话会保留。</p><div className="v2-inline-actions"><Button onClick={() => change({ source: 'account' })}>切换为星芒账号</Button><Button onClick={() => change({ source: 'manual' })}>填写星芒密钥</Button><Button variant="ghost" onClick={onHelp}>查看处理步骤</Button></div></> : <>
         <div className="v2-config-field"><strong>用哪个账号使用 AI</strong><Segment options={sourceOptions} value={draft.source} onChange={(value) => {
           if (value === 'account' || value === 'manual' || value === 'official') change({ source: value })
         }} /></div>
-        {draft.source === 'official' ? <div className="v2-official-summary"><BrandIcon tool={tab} /><div><strong>{native.officialAccountEmail || `使用 ${officialName}`}</strong><p>{native.officialAccountPlan ?? '保存来源后，在工具中完成官方登录。'}</p></div><Pill tone={native.officialAccountEmail ? 'ok' : 'warn'}>{native.officialAccountEmail ? '已登录' : '待登录'}</Pill></div> : <>
+        {draft.source === 'official' ? <><div className="v2-official-summary"><BrandIcon tool={tab} /><div><strong>{native.officialAccountEmail || `使用 ${officialName}`}</strong><p>{native.officialAccountPlan ?? '保存来源后，在工具中完成官方登录。'}</p></div><Pill tone={native.officialAccountEmail ? 'ok' : 'warn'}>{native.officialAccountEmail ? '已登录' : '待登录'}</Pill></div>
+          {nonGptSaveIssue && <div className="v2-config-field"><p id={modelFilterStatusId} role="status" data-testid="tool-model-filter-status">{nonGptSaveIssue}</p><Button size="sm" variant="ghost" onClick={() => setModelFilter('all')}>继续配置官方模型</Button></div>}</> : <>
           {draft.source === 'account' ? <div className="v2-config-field"><Select label="访问密钥（Key）" testId="tool-key-select" value={draft.keyId} onFocus={() => refreshKeyOptions()} onPointerDown={() => refreshKeyOptions()} onKeyDown={(event) => { if (['ArrowDown', 'ArrowUp', ' ', 'Enter', 'F4'].includes(event.key)) refreshKeyOptions() }} onChange={(event) => change({ keyId: event.target.value })}
             options={[
               ...(native.hasApiKey || usingCurrentKey ? [{ value: CURRENT_KEY, label: currentKeyLabel(metadata, native.apiKeyPreview), disabled: !native.hasApiKey }] : []),
@@ -228,9 +252,13 @@ export function ConfigDialog({ api, tool, config, signedIn, onClose, onRefresh, 
             {keyError && <p role="alert">{keyError}</p>}<div className="v2-inline-actions"><Button variant="ghost" size="sm" icon={RefreshCw} testId="tool-key-refresh" loading={keysLoading || metadataLoading[provider]} onClick={() => refreshKeyOptions(true)} disabled={!signedIn}>刷新密钥</Button><Button variant="ghost" size="sm" icon={KeyRound} onClick={() => requestExit(onKeys)}>管理密钥</Button></div></div>
             : <div className="v2-config-field"><Input label="星芒访问密钥" type="password" value={draft.secret} onChange={(event) => change({ secret: event.target.value, validatedSecret: '' })} placeholder={native.apiKeyPreview ?? '粘贴你在星芒创建的密钥'} />
               {native.hasApiKey && <Button size="sm" variant="ghost" icon={Eye} onClick={() => void run('读取密钥', async () => { const secret = await api.reveal(tab); if (active.current) change({ secret, validatedSecret: '' }) })}>读取当前密钥</Button>}</div>}
-          <div className="v2-config-field"><Select label="默认模型" value={draft.model} options={[...new Set([draft.model, ...models].filter(Boolean))].map((model) => ({ value: model, label: model }))} onChange={(event) => change({ model: event.target.value })} />
+          <div className="v2-config-field">
+            {provider === 'codex' && <Segment label="Codex 模型筛选" testId="tool-codex-model-filter" options={[{ value: 'all', label: '全部模型' }, { value: 'non-gpt', label: '非 GPT 模型' }]} value={modelFilter} onChange={(value) => { if (value === 'all' || value === 'non-gpt') { setModelFilter(value); setError('') } }} />}
+            <Select label="默认模型" testId="tool-default-model" value={draft.model} options={[...(!draft.model ? [{ value: '', label: activeModelFilter === 'non-gpt' ? '请选择非 GPT 模型' : '请先检测模型', disabled: true }] : []), ...modelChoices.options]} onChange={(event) => change({ model: event.target.value })} />
             <Button size="sm" variant="secondary" icon={RefreshCw} testId="tool-detect-models" loading={busy === '检测模型'} onClick={() => void detectModels()} disabled={(draft.source === 'manual' && !draft.secret) || (draft.source === 'account' && usingAutomaticKey)}>检测模型</Button>
-            {draft.source === 'account' && usingAutomaticKey && <p>先保存以准备专属密钥，再检测模型。保存前不会使用当前密钥进行检测。</p>}</div>
+            {provider === 'codex' && <p>可选模型来自当前密钥。Codex 使用 Responses 接口，所选模型须由中转支持该接口；检测模型列表不代表已验证调用兼容性。</p>}
+            {nonGptSaveIssue && <p id={modelFilterStatusId} role="status" data-testid="tool-model-filter-status">{nonGptSaveIssue}</p>}
+            {draft.source === 'account' && usingAutomaticKey && activeModelFilter === 'all' && <p>先保存以准备专属密钥，再检测模型。保存前不会使用当前密钥进行检测。</p>}</div>
         </>}
       </>}
       <div className="v2-config-field"><Input label="打开工具时进入的文件夹" readOnly value={config.workspace} /><Button size="sm" icon={FolderOpen} onClick={() => void run('选择文件夹', async () => { if (await api.chooseWorkspace()) await onRefresh() })}>选择文件夹</Button></div>

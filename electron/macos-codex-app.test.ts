@@ -1,7 +1,7 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { CommandRunnerError, type CommandErrorCode } from './command-runner'
 import {
   buildMacosCodexAppLaunchPlan,
@@ -14,20 +14,63 @@ import {
 } from './macos-codex-app'
 
 const temporaryDirectories: string[] = []
+const fixtureExecutableModes = new Map<string, number>()
+const nativeLstat = fs.promises.lstat
+
+async function fixtureLstat(...args: Parameters<typeof nativeLstat>) {
+  const stats = await nativeLstat(...args)
+  const mode = fixtureExecutableModes.get(String(args[0]))
+  if (mode !== undefined && typeof stats.mode === 'number') stats.mode = (stats.mode & ~0o777) | mode
+  return stats
+}
+
+beforeEach(() => {
+  if (process.platform !== 'win32') return
+  // NTFS cannot represent POSIX execute bits. Supply only that metadata for
+  // explicitly registered fixture executables; every other filesystem check
+  // and all negative-mode fixtures still exercise the production detector.
+  vi.spyOn(fs.promises, 'lstat').mockImplementation(fixtureLstat as typeof nativeLstat)
+})
 
 function temporaryDirectory(): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-codex-app-'))
+  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-codex-app-')))
   temporaryDirectories.push(directory)
   return directory
 }
 
-function createApp(bundlePath: string): string {
+type FixtureArchitecture = 'arm64' | 'x86_64'
+
+function machExecutable(architectures: readonly FixtureArchitecture[] = [process.arch === 'x64' ? 'x86_64' : 'arm64']): Buffer {
+  const headers = architectures.map((architecture) => {
+    const header = Buffer.alloc(32)
+    header.writeUInt32LE(0xfeedfacf, 0)
+    header.writeUInt32LE(architecture === 'arm64' ? 0x0100000c : 0x01000007, 4)
+    header.writeUInt32LE(2, 12)
+    return header
+  })
+  if (headers.length === 1) return headers[0]
+  const tableBytes = 8 + headers.length * 20
+  const executable = Buffer.alloc(tableBytes + headers.length * 32)
+  executable.writeUInt32BE(0xcafebabe, 0)
+  executable.writeUInt32BE(headers.length, 4)
+  headers.forEach((header, index) => {
+    const entry = 8 + index * 20
+    executable.writeUInt32BE(header.readUInt32LE(4), entry)
+    executable.writeUInt32BE(tableBytes + index * 32, entry + 8)
+    executable.writeUInt32BE(32, entry + 12)
+    header.copy(executable, tableBytes + index * 32)
+  })
+  return executable
+}
+
+function createApp(bundlePath: string, executableMode = 0o755, architectures?: readonly FixtureArchitecture[]): string {
   const infoPath = path.join(bundlePath, 'Contents', 'Info.plist')
   fs.mkdirSync(path.dirname(infoPath), { recursive: true })
   fs.writeFileSync(infoPath, '<plist/>')
   const executablePath = path.join(bundlePath, 'Contents', 'MacOS', 'ChatGPT')
   fs.mkdirSync(path.dirname(executablePath), { recursive: true })
-  fs.writeFileSync(executablePath, 'test executable', { mode: 0o755 })
+  fs.writeFileSync(executablePath, machExecutable(architectures), { mode: executableMode })
+  fixtureExecutableModes.set(fs.realpathSync(executablePath), executableMode)
   return fs.realpathSync(infoPath)
 }
 
@@ -35,17 +78,15 @@ function createApp(bundlePath: string): string {
 // designated requirement. Its output is empty because no caller may read it any more.
 function officialBundleCommand(executable: string, argv: readonly string[]): string | null {
   if (executable === '/usr/bin/plutil' && argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
-  if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
   if (executable === '/usr/bin/codesign') return ''
   return null
 }
 
 /**
  * Builds the same shape `runCommand` throws for a given failure mode, so tests can
- * drive `inspectMacosCodexApp` through its two distinct error branches: a conclusive
- * EXIT_NON_ZERO rejection (codesign ran and said "no") versus every other code, which
- * means the command never produced an answer at all. See command-runner.ts for the
- * full set of codes this can carry.
+ * drive `inspectMacosCodexApp` through explicit command failure modes. A bundle
+ * claiming the Codex identity must remain unlaunchable on every failure while
+ * surfacing a detection error rather than suggesting it has not been installed.
  */
 function commandRunnerError(code: CommandErrorCode, message: string): CommandRunnerError {
   return new CommandRunnerError(message, {
@@ -65,6 +106,7 @@ function commandRunnerError(code: CommandErrorCode, message: string): CommandRun
 afterEach(() => {
   resetMacosCodexAppVerificationCache()
   vi.restoreAllMocks()
+  fixtureExecutableModes.clear()
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true })
   }
@@ -131,9 +173,8 @@ describe('buildMacosCodexAppLaunchPlan', () => {
   )
 })
 
-// Pure string/array logic with no filesystem or process involvement, so unlike
-// the rest of this file it needs no platform gate — this is the only coverage
-// of the timeout split that runs on every platform, Windows included.
+// Timeout routing is pure logic; the injected detector suite below also runs
+// on every platform without invoking macOS system commands.
 describe('resolveSystemCommandTimeoutMs', () => {
   it('gives a codesign --deep call the wide, deep-verification budget', () => {
     expect(resolveSystemCommandTimeoutMs('/usr/bin/codesign', [
@@ -145,8 +186,8 @@ describe('resolveSystemCommandTimeoutMs', () => {
     expect(resolveSystemCommandTimeoutMs('/usr/bin/plutil', [
       '-extract', 'CFBundleIdentifier', 'raw', '-o', '-', '/Applications/Codex.app/Contents/Info.plist',
     ])).toBe(commandTimeoutMs)
-    expect(resolveSystemCommandTimeoutMs('/usr/bin/lipo', [
-      '-archs', '/Applications/Codex.app/Contents/MacOS/ChatGPT',
+    expect(resolveSystemCommandTimeoutMs('/usr/sbin/sysctl', [
+      '-n', 'hw.optional.arm64',
     ])).toBe(commandTimeoutMs)
     expect(resolveSystemCommandTimeoutMs('/usr/bin/mdfind', [
       'kMDItemCFBundleIdentifier == "com.openai.codex"',
@@ -154,7 +195,7 @@ describe('resolveSystemCommandTimeoutMs', () => {
   })
 
   // Routing must key off the --deep flag itself, not just the executable name:
-  // a codesign call that omits --deep is exactly as cheap as plutil or lipo,
+  // a codesign call that omits --deep is exactly as cheap as plutil or sysctl,
   // so it must not inherit the budget meant only for the deep bundle walk.
   it('keeps a non-deep codesign call on the narrow budget, not the deep-verification one', () => {
     expect(resolveSystemCommandTimeoutMs('/usr/bin/codesign', [
@@ -163,23 +204,290 @@ describe('resolveSystemCommandTimeoutMs', () => {
   })
 })
 
-// Every case drives the bundle inspection through the injected
-// runSystemCommand, so no real macOS toolchain is involved and the darwin gate
-// cost Linux all coverage of Codex.app identification for nothing.
-//
-// Windows stays out, and not because of the file name: inspectMacosCodexApp
-// requires an executable bit (`mode & 0o111`, macos-codex-app.ts:235), and NTFS
-// reports 0o666 for every file no matter what mode writeFileSync or chmod is
-// given. The function therefore returns null for every input there, so the
-// cases expecting a rejection would pass even with the identification logic
-// deleted. Fake coverage is worse than none, so gate on whether POSIX
-// permission bits exist, which is the thing the logic actually depends on.
-describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
+// Commands are injected on every platform. Only the real macOS runner case
+// below needs Darwin; fixture execute bits are supplied on NTFS above.
+describe('inspectMacosCodexApp', () => {
+  it.each(['arm64', 'x64'] as const)('detects a universal Codex on %s without lipo or developer tools', async (architecture) => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    createApp(app, 0o755, ['arm64', 'x86_64'])
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil') return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    await expect(inspectMacosCodexApp({ architecture, homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toMatchObject({ app: { path: fs.realpathSync(app) }, detectionFailed: false, detectionError: null })
+    expect(runSystemCommand.mock.calls.some(([executable]) => /lipo|xcrun|sysctl|\/arch$/.test(executable))).toBe(false)
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(true)
+  })
+
+  it('detects native Codex from an x64 toolbox under Rosetta without Codex config files', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    const infoPath = createApp(app, 0o755, ['arm64'])
+    const homeDirectory = path.join(root, 'new-user')
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/sbin/sysctl') return '1\n'
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+
+    await expect(inspectMacosCodexApp({ architecture: 'x64', homeDirectory, systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toEqual({ app: { path: fs.realpathSync(app), version: '26.727.51351', running: false }, detectionFailed: false, detectionError: null })
+    expect(runSystemCommand).toHaveBeenCalledWith('/usr/sbin/sysctl', ['-n', 'hw.optional.arm64'])
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(true)
+    expect(fs.existsSync(homeDirectory)).toBe(false)
+  })
+
+  it.each(['invalid', 'timeout', 'non-zero'] as const)('reports an inconclusive hardware probe (%s) instead of missing Codex', async (failure) => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    createApp(path.join(systemApplicationsDirectory, 'Codex.app'), 0o755, ['arm64'])
+    createApp(path.join(systemApplicationsDirectory, 'ChatGPT.app'), 0o755, ['arm64'])
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/plutil') return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : 'ChatGPT\n'
+      if (executable === '/usr/sbin/sysctl') {
+        if (failure === 'invalid') return 'unknown\n'
+        throw commandRunnerError(failure === 'timeout' ? 'TIMED_OUT' : 'EXIT_NON_ZERO', 'sysctl failed')
+      }
+      if (executable === '/usr/bin/mdfind') return ''
+      throw new Error(`unexpected command: ${executable}`)
+    })
+
+    const result = await inspectMacosCodexApp({ architecture: 'x64', homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand })
+    expect(result).toMatchObject({ app: null, detectionFailed: true, detectionError: expect.stringContaining('无法确认 Mac 是否支持 arm64') })
+    expect(runSystemCommand.mock.calls.filter(([executable]) => executable === '/usr/sbin/sysctl')).toHaveLength(1)
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(false)
+  })
+
+  it.each([true, false])('checks Rosetta for an Intel Codex bundle from an arm64 toolbox (available: %s)', async (available) => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    createApp(app, 0o755, ['x86_64'])
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/plutil') {
+        if (argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+        if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
+        return '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/arch') {
+        if (!available) throw commandRunnerError('EXIT_NON_ZERO', 'Bad CPU type in executable')
+        return ''
+      }
+      if (executable === '/usr/bin/codesign' || executable === '/usr/bin/mdfind') return ''
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+
+    const result = await inspectMacosCodexApp({ architecture: 'arm64', homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand })
+    if (available) expect(result).toMatchObject({ app: { path: fs.realpathSync(app) }, detectionFailed: false, detectionError: null })
+    else expect(result).toMatchObject({ app: null, detectionFailed: true, detectionError: expect.stringContaining('Rosetta') })
+    expect(runSystemCommand).toHaveBeenCalledWith('/usr/bin/arch', ['-x86_64', '/usr/bin/true'])
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(available)
+  })
+
+  it('keeps a later compatible signed bundle when the hardware probe fails for an earlier candidate', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const nativeApp = path.join(systemApplicationsDirectory, 'Codex.app')
+    const compatibleApp = path.join(systemApplicationsDirectory, 'ChatGPT.app')
+    createApp(nativeApp, 0o755, ['arm64'])
+    createApp(compatibleApp, 0o755, ['x86_64'])
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/plutil') {
+        if (argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+        if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
+        return '26.727.51351\n'
+      }
+      if (executable === '/usr/sbin/sysctl') throw commandRunnerError('TIMED_OUT', 'sysctl failed')
+      if (executable === '/usr/bin/codesign') return ''
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+
+    await expect(inspectMacosCodexApp({ architecture: 'x64', homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toMatchObject({ app: { path: fs.realpathSync(compatibleApp) }, detectionFailed: false, detectionError: null })
+  })
+
+  it.each(['EACCES', 'EPERM', 'EIO'])('preserves a bundle filesystem %s failure as failed detection', async (code) => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    createApp(app)
+    const originalRealpath = fs.promises.realpath
+    vi.spyOn(fs.promises, 'realpath').mockImplementation((async (...args: Parameters<typeof originalRealpath>) => {
+      if (String(args[0]) === app) throw Object.assign(new Error(`bundle unavailable: ${code}`), { code })
+      return originalRealpath(...args)
+    }) as typeof originalRealpath)
+
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand: async () => '' }))
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: `bundle unavailable: ${code}` })
+  })
+
+  it('retains metadata permission failures instead of reporting an absent bundle', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const infoPath = createApp(path.join(systemApplicationsDirectory, 'Codex.app'))
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (...args: Parameters<typeof nativeLstat>) => {
+      if (String(args[0]) === infoPath) throw Object.assign(new Error('Info.plist access denied'), { code: 'EACCES' })
+      return process.platform === 'win32' ? fixtureLstat(...args) : nativeLstat(...args)
+    }) as typeof nativeLstat)
+
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand: async () => '' }))
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: 'Info.plist access denied' })
+  })
+
+  it.each(['system', 'user'] as const)('finds a renamed, unindexed official bundle in the %s Applications directory', async (location) => {
+    const root = temporaryDirectory()
+    const homeDirectory = path.join(root, 'home')
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(location === 'system' ? systemApplicationsDirectory : path.join(homeDirectory, 'Applications'), 'Codex Personal.app')
+    const infoPath = createApp(app)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/mdfind') return ''
+      if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      }
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    })
+
+    await expect(inspectMacosCodexApp({ homeDirectory, systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toMatchObject({ app: { path: fs.realpathSync(app) }, detectionFailed: false, detectionError: null })
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(true)
+  })
+
+  it('still checks renamed bundles when Spotlight fails', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex Renamed.app')
+    createApp(app)
+    const runSystemCommand = async (executable: string, argv: readonly string[]) => {
+      const official = officialBundleCommand(executable, argv)
+      if (official !== null) return official
+      if (executable === '/usr/bin/mdfind') throw new Error('Spotlight unavailable')
+      if (executable === '/usr/bin/plutil') return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.727.51351\n'
+      if (executable === '/usr/bin/osascript') return 'false\n'
+      throw new Error(`unexpected command: ${executable}`)
+    }
+
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toMatchObject({ app: { path: fs.realpathSync(app) }, detectionFailed: false, detectionError: null })
+  })
+
+  it('reports an incomplete scan when Applications exceeds the directory bound', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    fs.mkdirSync(systemApplicationsDirectory)
+    for (let index = 0; index < 513; index += 1) fs.writeFileSync(path.join(systemApplicationsDirectory, `item-${index}`), '')
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand: async () => '' }))
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: '应用目录条目过多，Codex 检测未能完成' })
+  })
+
+  it('stops probing unrelated applications after the discovery budget instead of claiming absence', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    createApp(path.join(systemApplicationsDirectory, 'First.app'))
+    createApp(path.join(systemApplicationsDirectory, 'Second.app'))
+    const runSystemCommand = vi.fn(async (executable: string) => {
+      if (executable === '/usr/bin/mdfind') return ''
+      if (executable === '/usr/bin/plutil') {
+        vi.setSystemTime(Date.now() + 3_000)
+        return 'com.example.unrelated\n'
+      }
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    vi.useFakeTimers()
+    try {
+      await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
+        .resolves.toEqual({ app: null, detectionFailed: true, detectionError: '应用目录扫描达到时间上限，Codex 检测未能完成' })
+      expect(runSystemCommand.mock.calls.filter(([executable]) => executable === '/usr/bin/plutil')).toHaveLength(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('ignores unreadable unrelated application metadata in the fallback directory', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Unrelated.app')
+    createApp(app)
+    const originalRealpath = fs.promises.realpath
+    vi.spyOn(fs.promises, 'realpath').mockImplementation((async (...args: Parameters<typeof originalRealpath>) => {
+      if (String(args[0]) === app) throw Object.assign(new Error('unrelated app access denied'), { code: 'EACCES' })
+      return originalRealpath(...args)
+    }) as typeof originalRealpath)
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand: async () => '' }))
+      .resolves.toEqual({ app: null, detectionFailed: false, detectionError: null })
+  })
+
+  it.each(['standard', 'spotlight', 'unrelated'] as const)('retains initial bundle identity read failures only for expected candidates (%s)', async (location) => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = location === 'spotlight'
+      ? path.join(root, 'Custom Location', 'Renamed.app')
+      : path.join(systemApplicationsDirectory, location === 'standard' ? 'Codex.app' : 'Unrelated.app')
+    createApp(app)
+    const runSystemCommand = vi.fn(async (executable: string) => {
+      if (executable === '/usr/bin/mdfind') return location === 'spotlight' ? `${app}\n` : ''
+      if (executable === '/usr/bin/plutil') throw commandRunnerError('EXIT_NON_ZERO', 'Info.plist contents unreadable')
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toEqual({ app: null, detectionFailed: location !== 'unrelated', detectionError: location === 'unrelated' ? null : 'Info.plist contents unreadable' })
+    expect(runSystemCommand.mock.calls.filter(([executable]) => executable === '/usr/bin/plutil')).toHaveLength(1)
+  })
+
+  it.each(['metadata', 'Mach-O'])('retains a %s rejection after the bundle identifies as Codex', async (failure) => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    const app = path.join(systemApplicationsDirectory, 'Codex.app')
+    createApp(app)
+    if (failure === 'Mach-O') fs.writeFileSync(path.join(app, 'Contents', 'MacOS', 'ChatGPT'), Buffer.from([0xcf, 0xfa]))
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/plutil' && argv.includes('CFBundleIdentifier')) return 'com.openai.codex\n'
+      if (failure === 'metadata' && executable === '/usr/bin/plutil') throw commandRunnerError('EXIT_NON_ZERO', 'invalid bundle metadata')
+      if (executable === '/usr/bin/plutil') return 'ChatGPT\n'
+      if (executable === '/usr/bin/mdfind') return ''
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: failure === 'metadata' ? 'invalid bundle metadata' : expect.stringContaining('Mach-O') })
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(false)
+  })
+
+  it('continues to reject a bundle whose executable has no execute bit', async () => {
+    const root = temporaryDirectory()
+    const systemApplicationsDirectory = path.join(root, 'Applications')
+    createApp(path.join(systemApplicationsDirectory, 'Codex.app'), 0o644)
+    const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/bin/plutil') return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : 'ChatGPT\n'
+      if (executable === '/usr/bin/mdfind') return ''
+      throw new Error(`unexpected command: ${executable}`)
+    })
+    await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand }))
+      .resolves.toEqual({ app: null, detectionFailed: true, detectionError: '已找到 Codex，但应用的可执行文件类型或权限无效' })
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(false)
+  })
+
   it('rejects an otherwise official bundle that cannot run on the current architecture', async () => {
     const root = temporaryDirectory()
     const systemApplicationsDirectory = path.join(root, 'Applications')
     const app = path.join(systemApplicationsDirectory, 'Codex.app')
-    const infoPath = createApp(app)
+    const infoPath = createApp(app, 0o755, ['arm64'])
     const options = {
       architecture: 'x64' as const,
       homeDirectory: path.join(root, 'home'),
@@ -190,19 +498,19 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
           if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
           return '26.727.51351\n'
         }
-        if (executable === '/usr/bin/lipo') return 'arm64\n'
+        if (executable === '/usr/sbin/sysctl') return '0\n'
         if (executable === '/usr/bin/codesign') return ''
         if (executable === '/usr/bin/mdfind') return ''
         throw new Error(`unexpected command: ${executable}`)
       },
     }
 
-    // An architecture mismatch is a conclusive "not this bundle" answer, not a
-    // failure to obtain one: the scan completed and confidently found nothing.
+    // An identified Codex with incompatible architecture must not offer the
+    // user a misleading reinstall. It also remains unavailable for launching.
     await expect(inspectMacosCodexApp(options)).resolves.toEqual({
       app: null,
-      detectionFailed: false,
-      detectionError: null,
+      detectionFailed: true,
+      detectionError: '已找到 Codex，但应用架构与此 Mac 不兼容',
     })
   })
 
@@ -221,7 +529,6 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
           if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
           return '26.727.51351\n'
         }
-        if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
         if (executable === '/usr/bin/codesign') {
           // The forged bundle carries a different team's certificate, so the pinned
           // OpenAI requirement is not satisfied and codesign exits non-zero — the
@@ -235,12 +542,12 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
       },
     }
 
-    // A real signature rejection stays conservative, exactly as before: not
-    // detectionFailed, just confidently not a match.
+    // A forged identity never becomes launchable, and the failed signature
+    // stays visible instead of appearing to be a missing installation.
     await expect(inspectMacosCodexApp(options)).resolves.toEqual({
       app: null,
-      detectionFailed: false,
-      detectionError: null,
+      detectionFailed: true,
+      detectionError: 'Command exited with code 1: codesign',
     })
   })
 
@@ -251,7 +558,7 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     const standardApp = path.join(systemApplicationsDirectory, 'Codex.app')
     const infoPath = createApp(canonicalApp)
     fs.mkdirSync(systemApplicationsDirectory, { recursive: true })
-    fs.symlinkSync(canonicalApp, standardApp)
+    fs.symlinkSync(canonicalApp, standardApp, process.platform === 'win32' ? 'junction' : 'dir')
     const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
       const official = officialBundleCommand(executable, argv)
       if (official !== null) return official
@@ -278,31 +585,37 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/mdfind')).toBe(false)
   })
 
-  it('recognizes the official ChatGPT.app filename by its Codex bundle identity', async () => {
+  it('recognizes the reported Intel ChatGPT.app Codex without config or Apple Silicon sysctl keys', async () => {
     const root = temporaryDirectory()
     const systemApplicationsDirectory = path.join(root, 'Applications')
     const app = path.join(systemApplicationsDirectory, 'ChatGPT.app')
-    const infoPath = createApp(app)
+    const homeDirectory = path.join(root, 'home')
+    const infoPath = createApp(app, 0o755, ['x86_64'])
     const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
+      if (executable === '/usr/sbin/sysctl') throw commandRunnerError('EXIT_NON_ZERO', 'sysctl: unknown oid')
       const official = officialBundleCommand(executable, argv)
       if (official !== null) return official
       if (executable === '/usr/bin/plutil' && argv.at(-1) === infoPath) {
-        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.825.41651\n'
+        return argv.includes('CFBundleIdentifier') ? 'com.openai.codex\n' : '26.915.31029\n'
       }
       if (executable === '/usr/bin/osascript') return 'true\n'
       throw new Error(`unexpected command: ${executable}`)
     })
 
     await expect(inspectMacosCodexApp({
-      homeDirectory: path.join(root, 'home'),
+      architecture: 'x64',
+      homeDirectory,
       systemApplicationsDirectory,
       runSystemCommand,
     })).resolves.toEqual({
-      app: { path: fs.realpathSync(app), version: '26.825.41651', running: true },
+      app: { path: fs.realpathSync(app), version: '26.915.31029', running: true },
       detectionFailed: false,
       detectionError: null,
     })
     expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/mdfind')).toBe(false)
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/sbin/sysctl' || executable === '/usr/bin/arch')).toBe(false)
+    expect(runSystemCommand.mock.calls.some(([executable]) => executable === '/usr/bin/codesign')).toBe(true)
+    expect(fs.existsSync(homeDirectory)).toBe(false)
   })
 
   it('rejects a wrong standard bundle identity and accepts a valid Spotlight fallback', async () => {
@@ -349,7 +662,7 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     const validApp = path.join(root, 'Search Results', 'Codex.app')
     const invalidInfo = createApp(invalidApp)
     const validInfo = createApp(validApp)
-    fs.symlinkSync(invalidApp, duplicateAlias)
+    fs.symlinkSync(invalidApp, duplicateAlias, process.platform === 'win32' ? 'junction' : 'dir')
     const runSystemCommand = vi.fn(async (executable: string, argv: readonly string[]) => {
       const official = officialBundleCommand(executable, argv)
       if (official !== null) return official
@@ -492,7 +805,6 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
         if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
         return '26.727.51351\n'
       }
-      if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
       if (executable === '/usr/bin/codesign') {
         // A timeout is not codesign telling us the signature is bad — the
         // check simply never finished.
@@ -643,7 +955,7 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
     await scan()
     // Stand in for an upgrade: the signed executable is replaced.
     const executablePath = path.join(app, 'Contents', 'MacOS', 'ChatGPT')
-    fs.writeFileSync(executablePath, 'replaced executable', { mode: 0o755 })
+    fs.writeFileSync(executablePath, Buffer.concat([machExecutable(), Buffer.from('updated resources')]), { mode: 0o755 })
     fs.utimesSync(executablePath, new Date(Date.now() + 5_000), new Date(Date.now() + 5_000))
     await scan()
 
@@ -705,7 +1017,6 @@ describe.runIf(process.platform !== 'win32')('inspectMacosCodexApp', () => {
         if (argv.includes('CFBundleExecutable')) return 'ChatGPT\n'
         return '26.727.51351\n'
       }
-      if (executable === '/usr/bin/lipo') return process.arch === 'x64' ? 'x86_64\n' : 'arm64\n'
       if (executable === '/usr/bin/codesign') {
         codesignCalls += 1
         // Transient the first time (58818d0's contract: only a pass may be

@@ -433,6 +433,8 @@ export class AppSettingsStore {
     private readonly homeDirectory = os.homedir(),
   ) {}
 
+  get dataDirectory(): string { return path.dirname(this.filePath) }
+
   read(): AppSettings {
     return readAppSettings(this.filePath, this.homeDirectory)
   }

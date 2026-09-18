@@ -223,6 +223,7 @@ export async function configureManagedClis(
   previewOnboarding: boolean,
   keyStore?: ManagedCliKeyStoreLike,
   mode: ConfigSavePayload['mode'] = 'merge',
+  intent: 'automatic' | 'explicit' = 'automatic',
 ): Promise<ManagedCliConfigurationOutcome> {
   if (providers.length === 0) return { configured: [], failed: [] }
   const capture = authenticatedSession(accountService)
@@ -279,6 +280,7 @@ export async function configureManagedClis(
         payload,
         previewOnboarding,
         () => assertSameAuthenticatedUser(accountService, capture),
+        { source: 'account', automatic: intent !== 'explicit' },
       )
       assertSameAuthenticatedUser(accountService, capture)
       outcome.configured.push(provider)

@@ -54,7 +54,9 @@ export function sourceFor(
   if (provider === 'codex' && config.codexAuthMode === 'chatgpt') return 'official'
   if (provider === 'gemini' && config.authType === 'oauth-personal') return 'official'
   if (config.hasApiKey && config.matchesRelay) {
-    return readManualSourceMarker(storage, config.baseUrl, provider) ? 'manual' : 'account'
+    if (config.configurationOwnership === 'account' || config.configurationOwnership === 'manual') return config.configurationOwnership
+    if (readManualSourceMarker(storage, config.baseUrl, provider)) return 'manual'
+    return config.configurationAccountMatched === true ? 'account' : 'unknown'
   }
   if (config.actualBaseUrl && !config.matchesRelay) return 'unknown'
   if (config.exists && !config.hasApiKey && provider !== 'grok') return 'official'
@@ -68,7 +70,7 @@ export function connectionReady(
 ): boolean {
   const source = sourceFor(config, provider, storage)
   if (source === 'official') return true
-  if ((source !== 'account' && source !== 'manual') || !config.model.trim()) return false
+  if ((source !== 'account' && source !== 'manual' && !(source === 'unknown' && config.hasApiKey && config.matchesRelay)) || !config.model.trim()) return false
   return provider !== 'gemini' || config.authType === 'gemini-api-key'
 }
 

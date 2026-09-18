@@ -314,7 +314,7 @@ describe('configureManagedClis', () => {
     expect(fetchAvailableModels).toHaveBeenCalledWith(managedKey(provider).key, { bypassCache: true })
     expect(saveConfig).toHaveBeenCalledWith({
       provider, apiKey: managedKey(provider).key, model: expected, mode: 'merge',
-    }, false, expect.any(Function))
+    }, false, expect.any(Function), { source: 'account', automatic: true })
   })
 
   it('reports a missing interactive default without writing an auto-review-only group to config', async () => {
@@ -373,7 +373,7 @@ describe('configureManagedClis', () => {
       apiKey: managedKey('codex').key,
       model: 'codex-preferred',
       mode: 'reset',
-    }, false, expect.any(Function))
+    }, false, expect.any(Function), { source: 'account', automatic: true })
   })
 
   it('uses an independent key, model lookup, and config payload for each provider', async () => {

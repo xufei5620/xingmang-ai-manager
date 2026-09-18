@@ -119,6 +119,7 @@
   A.toolScenario=(kind,id='codexDesktop')=>{if(['install','config','restart','official','locale','sync'].includes(kind))state().failNext=kind;else if(kind==='officialReady'){XM.setToolConfig(id,{source:'official',configured:true,model:null});Object.assign(official(id),{signedIn:true,email:'demo@example.com',plan:'Plus',renewal:'2026-10-06',resets:2,status:'ready',windows:[{label:'当前窗口',remaining:72,reset:'约2小时后重置'},{label:'本周额度',remaining:88,reset:'约5天后重置'}]});}else if(kind==='officialMissing'){XM.setToolConfig(id,{source:'official',configured:true,model:null});official(id).signedIn=false;}else if(kind==='unknown')XM.setToolConfig(id,{source:'unknown',configured:true});render();};
   A.toolMenu=(event,id)=>{
     const source=XM.toolSource(id),items=[{label:'账号与模型配置',icon:'gear',run:()=>A.dialog('config',{tool:id})}];
+    if(provider(id)==='codex')items.push({label:'非 GPT 模型',icon:'gear',run:()=>A.openClientPrototype('codexModels')});
     if(source==='official')items.push({label:'查看官方登录状态',icon:'user',run:()=>XM.showHelp(officialName(id),official(id).signedIn?'已登录：'+official(id).email+'。官方额度与星芒余额分别计算。':'还没有检测到官方登录，请打开工具完成登录。')});
     else if(source==='account'||source==='manual')items.push({label:'查看访问密钥',icon:'key',run:()=>source==='account'?A.openAccount('keys'):XM.showHelp('手填访问密钥','当前使用你自己填写的星芒访问密钥。需要更换时，打开账号与模型配置。')});
     else items.push({label:'查看已有配置说明',icon:'info',run:()=>A.dialog('config',{tool:id})});
@@ -136,4 +137,73 @@
   };
   A.refreshOfficialUsage=()=>{const o=official('codex');if(!o.signedIn)return A.toast('先在 Codex 中完成官方登录','warn');o.status='loading';render();XM.defer(()=>{o.status=state().failNext==='official'?'error':'ready';state().failNext=null;render();},650);};
   const oldAccountCard=accountCard;accountCard=function(){return oldAccountCard()+XM.officialMeter();};
+})();
+
+/* Client setup registry: demonstration forms only; no requests, credentials, or native writes. */
+(() => {
+  const clients={
+    codexModels:{name:'Codex 非 GPT 模型',description:'为 Codex CLI 与桌面端选择兼容模型',models:['deepseek-v3.2','qwen3-max','gpt-5.2'],hint:'Codex CLI 与桌面端共用配置。所选模型需要支持 Responses、流式输出和工具调用；出现在模型列表中不代表协议已验收。'},
+    workbuddy:{name:'WorkBuddy',description:'腾讯 WorkBuddy 自定义模型',models:['deepseek-v3.2','qwen3-max'],hint:'请选择支持 Chat Completions 与工具调用的模型；保存后在 WorkBuddy 的模型列表选择它。'},
+    claudeDesktop:{name:'Claude Desktop',description:'Claude 桌面端第三方推理网关',models:['claude-sonnet-4-6','claude-opus-4-6'],hint:'Claude Desktop 第三方推理 · Gateway。保存后请完全退出并重新打开 Claude Desktop。'},
+    opencode:{name:'OpenCode',description:'OpenCode CLI 与桌面端共享配置',models:['gpt-5.2','deepseek-v3.2','qwen3-max'],hint:'按模型实际支持的接口选择。已有 JSONC 注释、自定义设置与其他模型会保留；配置会同时供 CLI 与桌面端读取。'},
+  };
+  const sources=[['configured:codex','使用 Codex 当前的星芒密钥（示例）'],['configured:claude','使用 Claude Code 当前的星芒密钥（示例）'],['account:demo','账户密钥 · sk-••••demo（示例）'],['manual','自己填写星芒密钥']];
+  const externalIds=['workbuddy','claudeDesktop','opencode'];
+  const external=()=>XM.state('externalClients',()=>Object.fromEntries(externalIds.map(id=>[id,{installed:false,configured:false,model:'',running:false,job:null}])));
+  XM.afterRender(()=>{
+    const installed=externalIds.filter(id=>external()[id].installed).length;
+    const configured=externalIds.filter(id=>external()[id].installed&&external()[id].configured).length;
+    const footer=[...document.querySelectorAll('.statusbar .it')].find(node=>/^\d+ 个工具已装$/.test(node.textContent.trim()));
+    if(footer)footer.textContent=(TOOL_ORDER.filter(id=>S.tools[id].installed).length+installed)+' 个工具已装';
+    const account=document.querySelector('[data-testid="home-account"] .card-head .right');
+    const count=TOOL_ORDER.filter(id=>S.tools[id].installed&&S.tools[id].configured).length+configured;
+    if(account)account.innerHTML=count?pill('ok',count+' 个工具已连接'):pill('','等待连接');
+  });
+  const externalRow=id=>{
+    const t=external()[id],client=clients[id],job=t.job;
+    const ready=id==='claudeDesktop'?!t.configurationError&&(t.configurationReady??t.configured):t.configured;
+    const configure=`<button class="btn btn-${ready?'ghost':'primary'} sm" data-testid="home-client-${id}" onclick="A.openClientPrototype('${id}')">配置</button>`;
+    const primary=job?'<button class="btn btn-primary sm" disabled>安装中</button>':!t.installed?`<button class="btn btn-secondary sm" onclick="A.installClientPrototype('${id}')">安装</button>`:ready?`<button class="btn btn-primary sm" onclick="A.launchClientPrototype('${id}')">${ic('open')}打开</button>`:configure;
+    const subtitle=job?job.message:!t.installed?client.description:['v1.2.3',t.running?'运行中':null,t.model||(id==='claudeDesktop'&&ready?'自动获取模型':null)].filter(Boolean).join(' · ');
+    return `<div class="trow ${t.installed?'':'dim'}" data-testid="tool-row-${id}"><span class="ico ${id==='claudeDesktop'?'claude':''}">${id==='claudeDesktop'?'<svg><use href="#b-claude"/></svg>':ic(id==='opencode'?'panel':'pkg')}</span><div class="name"><strong>${client.name}</strong><span title="${esc(subtitle)}">${esc(subtitle)}</span></div><div class="st">${pill(job?'accent':ready?'ok':t.installed?'warn':'neutral',job?'安装中 '+job.percent+'%':ready?'已配好':t.installed?'待配置':'未安装')}${job?`<progress class="xm-tool-progress" max="100" value="${job.percent}" aria-label="安装进度（演示）"></progress>`:''}</div><div class="upd">${t.installed&&ready&&!job?configure:''}</div><div class="pri">${primary}</div><div>${t.installed&&!job?`<button class="btn btn-ghost icon sm" title="${client.name}更多操作" onclick="A.clientPrototypeMenu(event,'${id}')">${ic('dots')}</button>`:''}</div></div>`;
+  };
+  toolsGrid=function(){
+    const installed=TOOL_ORDER.filter(id=>S.tools[id].installed||S.installing[id]!=null),missing=TOOL_ORDER.filter(id=>!installed.includes(id));
+    const installedClients=externalIds.filter(id=>external()[id].installed||external()[id].job),missingClients=externalIds.filter(id=>!installedClients.includes(id));
+    const count=installed.length+installedClients.length,remaining=missing.length+missingClients.length;
+    return (count?`<div class="card tools"><div class="card-head"><h2>你的工具</h2><span>${count} 个已装</span></div>${installed.map(id=>toolRow(id,TOOL_ORDER.indexOf(id))).join('')}${installedClients.map(externalRow).join('')}</div>`:'')+(remaining?`<div class="card tools ${S.missingClosed?'closed':''}"><div class="card-head" style="cursor:pointer" onclick="S.missingClosed=!S.missingClosed;rerenderMain()"><h2>还可以装</h2><span>${remaining} 个</span>${ic('chev','chev')}</div>${missing.map(id=>toolRow(id,TOOL_ORDER.indexOf(id))).join('')}${missingClients.map(externalRow).join('')}</div>`:'');
+  };
+  A.installClientPrototype=id=>{
+    const t=external()[id];if(!t||t.job)return;
+    t.job={message:'正在下载安装包（演示）',percent:35};render();
+    XM.defer(()=>{t.job={message:'正在安装（演示）',percent:80};render();XM.defer(()=>{Object.assign(t,{installed:true,job:null});render();A.toast('演示安装完成，点击配置选择密钥和模型');},500);},600);
+  };
+  A.launchClientPrototype=id=>{external()[id].running=true;render();A.toast('演示：已打开 '+clients[id].name+'，未启动真实客户端');};
+  A.clientPrototypeMenu=(event,id)=>A.menu(event,[{label:'配置',icon:'gear',run:()=>A.openClientPrototype(id)},{label:'打开',icon:'open',run:()=>A.launchClientPrototype(id)}]);
+  A.openClientPrototype=id=>{
+    if(!clients[id])return;
+    A.dialog('xmClientPrototype',{client:id});
+    Object.assign(S.form,{source:id==='claudeDesktop'?'configured:claude':'configured:codex',manual:'',model:'',protocol:id==='workbuddy'?'chat-completions':'responses',detected:false,previewed:false});
+    topDialog().initial=formFingerprint(S.form);render();
+  };
+  A.clientPrototypeChange=(key,value)=>{
+    F.set(key,value);S.form.previewed=false;
+    if(key==='source'||key==='manual'){S.form.detected=false;S.form.model='';}
+    render();
+  };
+  A.clientPrototypeDetect=()=>{
+    const d=topDialog();if(d?.type!=='xmClientPrototype')return;
+    if(S.form.source==='manual'&&!S.form.manual.trim())return;
+    S.form.detected=true;S.form.model=clients[d.props.client].models[0];S.form.previewed=false;render();
+  };
+  A.clientPrototypePreview=()=>{
+    if(topDialog()?.type!=='xmClientPrototype'||!S.form.detected||!S.form.model)return;
+    S.form.previewed=true;const id=topDialog().props.client;if(externalIds.includes(id))Object.assign(external()[id],{configured:true,model:S.form.model,...(id==='claudeDesktop'?{configurationReady:true}:{})});render();
+  };
+  DIALOGS.xmClientPrototype=p=>{
+    const client=clients[p.client],f=S.form,source=f.source||(p.client==='claudeDesktop'?'configured:claude':'configured:codex');
+    const target={codexModels:'~/.codex/config.toml 与 ~/.codex/auth.json',workbuddy:'~/.codebuddy/models.json',opencode:'~/.config/opencode/opencode.json 或已有 opencode.jsonc',claudeDesktop:S.os==='win'?'Claude-3p/configLibrary/<id>.json（按安装方式识别目录）':'~/Library/Application Support/Claude-3p/configLibrary/<id>.json'}[p.client];
+    const body=`<div class="xm-client-form" data-testid="external-client-dialog"><div class="callout info" role="status">离线演示：模型和密钥来源均为示例。不会发送请求、读取真实密钥或保存配置。</div><div class="field"><label for="xm-client-source">密钥来源</label><select id="xm-client-source" class="input" data-testid="external-client-source" onchange="A.clientPrototypeChange('source',this.value)">${sources.map(([value,label])=>`<option value="${value}" ${source===value?'selected':''}>${label}</option>`).join('')}</select></div>${source==='manual'?`<div class="field"><label for="xm-client-secret">星芒访问密钥</label><input id="xm-client-secret" class="input mono" data-testid="external-client-secret" type="password" autocomplete="off" placeholder="仅填写演示文字" value="${esc(f.manual||'')}" oninput="A.clientPrototypeChange('manual',this.value)"><p class="xm-field-help">此原型不需要真实密钥，请勿输入真实凭据。</p></div>`:''}<div class="field"><label for="xm-client-model">使用模型</label><div class="field-row"><select id="xm-client-model" class="input" data-testid="external-client-model" ${f.detected?'':'disabled'} onchange="A.clientPrototypeChange('model',this.value)">${f.detected?client.models.map(model=>`<option value="${model}" ${f.model===model?'selected':''}>${model}</option>`).join(''):'<option>先查看示例模型</option>'}</select><button class="btn btn-secondary" data-testid="external-client-detect" ${source==='manual'&&!f.manual?.trim()?'disabled':''} onclick="A.clientPrototypeDetect()">${ic('refresh')}检测模型（演示）</button></div></div>${p.client==='opencode'?`<div class="field"><label for="xm-client-protocol">模型接口</label><select id="xm-client-protocol" class="input" data-testid="external-client-protocol" onchange="A.clientPrototypeChange('protocol',this.value)"><option value="responses" ${f.protocol==='responses'?'selected':''}>Responses（Codex / GPT）</option><option value="chat-completions" ${f.protocol==='chat-completions'?'selected':''}>Chat Completions（其他兼容模型）</option></select></div>`:''}<p class="xm-field-help">${client.hint}</p><div class="field"><label>实际配置位置</label><div class="xm-code-preview">${esc(target)}</div></div><p class="xm-field-help">正式客户端会在保存前重新校验模型权限，并备份已有配置；模型能否调用仍需在目标客户端验证。</p>${f.previewed?`<div class="callout info" role="status" data-testid="external-client-result"><strong>保存结果示意 · 尚未写入</strong><p>正式客户端将为 ${client.name} 配置 ${esc(f.model)}。本次离线预览没有创建配置或备份，也没有验证连接。</p></div>`:''}</div>`;
+    return dialogShell({title:client.name+' 配置',sub:client.description,wide:true,icon:ic('gear'),body,footer:`<button class="btn btn-ghost" onclick="A.requestDialogClose()">关闭演示</button><span class="spacer"></span><button class="btn btn-primary" data-testid="external-client-save" ${f.detected?'':'disabled'} onclick="A.clientPrototypePreview()">预览保存结果</button>`});
+  };
 })();

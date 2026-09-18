@@ -769,8 +769,8 @@ export function AccountCommercePanels({
                   <label className="account-billing-preference">
                     <span>API 扣费顺序</span>
                     <select
-                      value={subscriptionSelf.billingPreference}
-                      disabled={preferenceBusy}
+                      value={subscriptionSelf.billingPreference ?? ''}
+                      disabled={preferenceBusy || subscriptionSelf.billingPreference === null}
                       onChange={(event) => void updateBillingPreference(event.target.value as AccountSubscriptionBillingPreference)}
                     >
                       <option value="subscription_first" disabled={activeSubscriptions.length === 0}>订阅优先</option>

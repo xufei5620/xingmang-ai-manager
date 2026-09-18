@@ -7,13 +7,28 @@ import {
   relaySiteExternalUrls,
   relaySites,
   resolveRelaySite,
+  resolveSupportServiceUrl,
+  sub2ApiSupportServiceUrl,
   supportServiceUrl,
   userAgreementUrl,
 } from './relay-sites'
 
 describe('relay site registry', () => {
-  it('pins the customer support destination to the exact enterprise WeChat link', () => {
-    expect(supportServiceUrl).toBe('https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4')
+  it('pins both customer support destinations to their enterprise WeChat links', () => {
+    expect(supportServiceUrl).toBe('https://work.weixin.qq.com/kfid/kfc3ac7eece5344c034')
+    expect(sub2ApiSupportServiceUrl).toBe('https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4')
+  })
+  it('uses the default contact before login, including retained historical account metadata', () => {
+    expect(resolveSupportServiceUrl()).toBe(supportServiceUrl)
+    expect(resolveSupportServiceUrl(null)).toBe(supportServiceUrl)
+    expect(resolveSupportServiceUrl({ authenticated: false, siteId: 'solov-api', realmId: 'api-account' })).toBe(supportServiceUrl)
+  })
+  it('selects support by the authenticated account realm, preserving NewAPI aliases', () => {
+    for (const siteId of ['solov', 'sub2api', undefined]) {
+      expect(resolveSupportServiceUrl({ authenticated: true, siteId })).toBe(supportServiceUrl)
+    }
+    expect(resolveSupportServiceUrl({ authenticated: true, siteId: 'solov-api' })).toBe(sub2ApiSupportServiceUrl)
+    expect(resolveSupportServiceUrl({ authenticated: true, realmId: 'api-account' })).toBe(sub2ApiSupportServiceUrl)
   })
   it('keeps both legacy aliases and routes the explicit api site to its own origin', () => {
     expect(relaySites).toHaveLength(3)

@@ -1,6 +1,7 @@
 import { forwardRef, useId, useRef, useState, type ButtonHTMLAttributes, type ReactNode } from 'react';
 import { Archive, ChevronDown, FolderOpen, MoreHorizontal, RefreshCw } from 'lucide-react';
 import { tools } from '../registry/tools';
+import { clientConnections } from '../registry/clients';
 import { statuses } from '../registry/status';
 import { BrandIcon, Kbd, type ToolId } from './brand';
 import { Menu, type MenuItem } from './floating';
@@ -27,9 +28,9 @@ export function ListRow({ icon: Icon, title, badge, desc, descMono, meta, action
   return <div className={cx('xm-list-row', off && 'is-off')} data-testid={testId}>{Icon && <span className="xm-row-icon"><Icon size={18} aria-hidden="true" /></span>}<div className="xm-row-main"><div className="xm-row-title">{title}{badge}</div>{desc && <div className={cx('xm-row-desc', descMono && 'xm-mono')}>{desc}</div>}</div>{meta && <div className="xm-row-meta">{meta}</div>}<div className="xm-row-actions">{actions}</div></div>;
 }
 export type ToolStatus = keyof typeof statuses.tool;
-export function ToolRow({ tool, status, version, model, extraAction, primaryAction, menu, progress, testId }: BaseProps & { tool: ToolId; status: ToolStatus; version?: string; model?: string; extraAction?: ReactNode; primaryAction: ReactNode; menu?: Array<MenuItem | 'divider'>; progress?: number }) {
-  const definition = tools.find(item => item.id === tool); const [text, tone] = statuses.tool[status]; const t = useUiText();
-  const subtitle = version ? `${version.startsWith('v') ? version : 'v' + version}${model ? ' · ' + model : ''}` : definition?.vendor;
+export function ToolRow({ tool, status, version, model, detail, extraAction, primaryAction, menu, progress, testId }: BaseProps & { tool: ToolId; status: ToolStatus; version?: string; model?: string; detail?: string; extraAction?: ReactNode; primaryAction: ReactNode; menu?: Array<MenuItem | 'divider'>; progress?: number }) {
+  const definition = tools.find(item => item.id === tool) ?? clientConnections.find(item => item.id === tool); const [text, tone] = statuses.tool[status]; const t = useUiText();
+  const subtitle = detail ?? (version ? `${version.startsWith('v') ? version : 'v' + version}${model ? ' · ' + model : ''}` : definition?.vendor);
   return <div className="xm-tool-row" data-testid={testId}><BrandIcon tool={tool} size={40} variant="tile" /><div className="xm-tool-name"><strong>{definition?.name ?? tool}</strong><small title={subtitle}>{subtitle}</small></div><div className="xm-tool-status"><Pill tone={tone} dot>{text}{(status === 'installing' || status === 'updating') && typeof progress === 'number' ? ' ' + Math.round(progress) + '%' : ''}</Pill></div><div className="xm-tool-extra">{extraAction}</div><div className="xm-tool-primary">{primaryAction}</div><div className="xm-tool-menu">{menu && <Menu items={menu} label={t('more')} anchor={<Button size="sm" icon={MoreHorizontal} variant="ghost" aria-label={t('more')} />} />}</div>{typeof progress === 'number' && <div className="xm-tool-progress"><Progress value={progress} /></div>}</div>;
 }
 export function SessionRow({ tool, title, path, model, count, when, archived, onOpen, testId }: BaseProps & { tool: ToolId; title: string; path: string; model: string; count: number; when: string; archived?: boolean; onOpen: () => void }) {

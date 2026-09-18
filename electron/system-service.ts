@@ -76,6 +76,9 @@ import {
   type PythonRuntimeInstallResult,
 } from './python-runtime'
 import { InstallationQueue } from './installation-queue'
+import { ToolConfigOwnershipStore, toolConfigIdentity } from './tool-config-ownership'
+import type { StoredManagedCliKey } from './managed-cli-key-store'
+import { ExternalClientOwnershipStore } from './external-client-ownership'
 import {
   assertTrustedElevatedCliCommand,
   launchCliPowerShell,
@@ -125,6 +128,18 @@ import {
   installDownloadedGrokBinary,
   type DownloadedGrokBinary,
 } from './grok-installer'
+import {
+  saveExternalToolConfig,
+  type ExternalToolConfigOptions,
+  type ExternalToolId,
+} from './external-tool-config'
+import type { ExternalClientConfigResult, ExternalClientStatus, ExternalClientRuntimeStatus } from './external-client-contract'
+import { createExternalClientRuntime } from './external-client-runtime'
+import { inspectExternalToolConnection } from './external-tool-config'
+import { createClaudeDesktopConfigService } from './claude-desktop-config'
+import { resolveClaudeDesktopPaths } from './claude-desktop-paths'
+import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
+import { assertClaudeDesktopUnmanaged } from './claude-desktop-policy'
 
 const execFileAsync = promisify(execFile)
 const npmLatestCacheTtlMs = 10 * 60_000
@@ -634,12 +649,13 @@ export interface SystemService {
   readStoredConfig(): AppSettings
   updateStoredConfig(update: AppSettingsUpdate): Promise<AppSettings>
   inspectCodexReadiness(previewOnboarding: boolean): CodexReadinessStatus
-  getConfig(previewOnboarding: boolean): AppConfigSummary
+  getConfig(previewOnboarding: boolean, cachedKeys?: readonly StoredManagedCliKey[]): AppConfigSummary
   revealApiKey(provider: ProviderId, previewOnboarding: boolean): string
   saveConfig(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
     assertBeforeWrite?: () => void,
+    ownership?: { source: 'account'; automatic: boolean },
   ): Promise<ReturnType<typeof saveProviderConfig>>
   switchToOfficialAccount(provider: ProviderId, mode?: ConfigSavePayload['mode']): ReturnType<typeof switchProviderToOfficialAccount> | Promise<ReturnType<typeof switchProviderToOfficialAccount>>
   scanSystem(forceRefresh?: boolean): Promise<SystemSnapshot>
@@ -670,6 +686,10 @@ export interface SystemService {
     launchOptions?: { injectChinese?: boolean },
   ): Promise<CodexDesktopLaunchResult>
   fetchAvailableModels(apiKey: string, options?: { bypassCache?: boolean }): Promise<string[]>
+  configureExternalTool(tool: ExternalToolId, options: ExternalToolConfigOptions, assertBeforeWrite?: () => void): Promise<ExternalClientConfigResult>
+  scanExternalClients(): Promise<ExternalClientStatus[]>
+  installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus>
+  launchExternalClient(tool: ExternalToolId): Promise<void>
 }
 
 function firstOutputLine(stdout: string, stderr: string): string | null {
@@ -1673,8 +1693,16 @@ export function buildCliToolStatusFromSettled(
 }
 
 export interface SystemServiceOptions {
+  managerDataDirectory?: string
+  /** Native profile roots and policy reads are isolated in tests. */
+  claudeDesktopEnv?: NodeJS.ProcessEnv
+  inspectClaudeDesktopStoreVirtualization?: typeof inspectClaudeDesktopStoreVirtualization
+  assertClaudeDesktopUnmanaged?: () => Promise<void>
+  externalClientRuntime?: ReturnType<typeof createExternalClientRuntime>
   /** The active account owns model lookup and CLI routing, independently of saved UI preferences. */
   getRelaySiteId?: () => string
+  /** Stable realm + user identity; null while logged out. Never inferred from the relay URL. */
+  getExternalClientAccountId?: () => string | null
   /** Defaults to the restrictive mode so tests and non-main callers fail closed. */
   windowsExecutionMode?: WindowsCliExecutionMode
   platform?: NodeJS.Platform
@@ -1731,6 +1759,14 @@ export function createSystemService(
   const windowsExecutionMode = serviceOptions.windowsExecutionMode ?? 'trusted-only'
   const platform = serviceOptions.platform ?? process.platform
   const providerRoots = serviceOptions.providerRoots ?? defaultProviderConfigRoots()
+  const configOwnership = new ToolConfigOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'tool-config-ownership'))
+  const externalOwnership = new ExternalClientOwnershipStore(path.join(serviceOptions.managerDataDirectory ?? store.dataDirectory, 'external-client-ownership'))
+  let configWriteQueue: Promise<unknown> = Promise.resolve()
+  function serializeConfigWrite<T>(operation: () => Promise<T>): Promise<T> {
+    const next = configWriteQueue.then(operation, operation)
+    configWriteQueue = next.catch(() => undefined)
+    return next
+  }
   const codexEnv = serviceOptions.codexEnv
     ?? { ...process.env, CODEX_HOME: providerRoots.codexHome }
   // Read fresh at call time (not captured once at service construction) so a
@@ -1757,6 +1793,9 @@ export function createSystemService(
   const resolveWindowsMachinePathsForService = serviceOptions.resolveWindowsMachinePaths ?? resolveWindowsMachinePaths
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
+  const externalClientRuntime = serviceOptions.externalClientRuntime ?? createExternalClientRuntime({
+    installationQueue, platform, userHome: providerRoots.userHome, runCommand: executeCommand, windowsExecutionMode,
+  })
   let nodeRuntimeInstalling = false
   let pythonRuntimeInstalling = false
   const npmLatestCache = new Map<string, { expiresAt: number; value: LatestVersionProbe }>()
@@ -3442,12 +3481,126 @@ export function createSystemService(
     }
   }
 
-  function buildConfigSummary(previewOnboarding: boolean): AppConfigSummary {
+  let externalConfigQueue: Promise<unknown> = Promise.resolve()
+  async function claudeDesktopConfig(status: ExternalClientRuntimeStatus, assertBeforeWrite?: () => void) {
+    if (status.detectionError) throw new Error('Claude Desktop 安装位置无法确认，请重新检测')
+    const env = serviceOptions.claudeDesktopEnv ?? (providerRoots.userHome === os.homedir() ? process.env : {})
+    const installationPath = status.path ?? undefined
+    const storeVirtualization = env.CLAUDE_USER_DATA_DIR ? undefined
+      : await (serviceOptions.inspectClaudeDesktopStoreVirtualization ?? inspectClaudeDesktopStoreVirtualization)({ platform, installationPath })
+    assertBeforeWrite?.()
+    const roots = resolveClaudeDesktopPaths({ platform, userHome: providerRoots.userHome, env, installationPath, storeVirtualization })
+    return createClaudeDesktopConfigService({
+      dataDirectory: serviceOptions.managerDataDirectory ?? path.join(providerRoots.userHome, '.xingmang-ai-manager'),
+      ...roots,
+      assertBeforeWrite,
+      assertUnmanaged: serviceOptions.assertClaudeDesktopUnmanaged ?? (() => assertClaudeDesktopUnmanaged({ platform, userHome: providerRoots.userHome })),
+    })
+  }
+  async function describeExternalClient(status: ExternalClientRuntimeStatus): Promise<ExternalClientStatus> {
+    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    const baseUrl = status.tool === 'claudeDesktop' ? activeSite.providerBaseUrls.claude : activeSite.providerBaseUrls.codex
+    const belongsToCurrentAccount = (apiKey: string) => owner !== null
+      && serviceOptions.getExternalClientAccountId?.() === owner
+      && resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id === activeSite.id
+      && externalOwnership.matches(status.tool, owner, baseUrl, apiKey)
+    if (status.tool === 'claudeDesktop') {
+      try {
+        return { ...status, ...await (await claudeDesktopConfig(status)).inspectConnection(baseUrl, belongsToCurrentAccount) }
+      } catch {
+        return { ...status, configured: false, model: null, configurationSource: 'unknown',
+          configurationError: 'Claude Desktop 本地配置目录无法确认，请重新检测。' }
+      }
+    }
+    const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
+    if (xdgConfig && !path.isAbsolute(xdgConfig)) return { ...status, configured: false, model: null,
+      configurationSource: 'unknown', configurationError: 'XDG_CONFIG_HOME 必须是绝对路径。' }
+    const externalPlatform = platform === 'win32' || platform === 'darwin' ? platform : 'linux'
+    return { ...status, ...inspectExternalToolConnection(status.tool, externalPlatform, {
+      userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
+    }, baseUrl, belongsToCurrentAccount) }
+  }
+  async function scanExternalClients(): Promise<ExternalClientStatus[]> {
+    return Promise.all((await externalClientRuntime.scan()).map(describeExternalClient))
+  }
+  async function installExternalClient(tool: ExternalToolId, target: RendererMessageTarget): Promise<ExternalClientStatus> {
+    const status = await externalClientRuntime.install(tool, (event) => {
+      if (!target.isDestroyed()) {
+        try { target.send('external-clients:install-progress', event) } catch { /* Installation continues if the renderer exits. */ }
+      }
+    })
+    return describeExternalClient(status)
+  }
+  const launchExternalClient = (tool: ExternalToolId) => externalClientRuntime.launch(tool)
+  function configureExternalTool(
+    tool: ExternalToolId,
+    requested: ExternalToolConfigOptions,
+    assertBeforeWrite?: () => void,
+  ): Promise<ExternalClientConfigResult> {
+    const work = async (): Promise<ExternalClientConfigResult> => {
+      assertBeforeWrite?.()
+      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+      const apiKey = requested.apiKey?.trim() ?? ''
+      const model = requested.model?.trim() ?? ''
+      if (!model || model.length > 256 || /[\x00-\x1f\x7f]/.test(model)) throw new Error('请选择有效模型')
+      const models = await fetchAvailableModels(apiKey, { bypassCache: true })
+      const assertContext = () => {
+        assertBeforeWrite?.()
+        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号站点已变化，请重新配置')
+        if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，请重新配置')
+      }
+      assertContext()
+      if (!models.includes(model)) throw new Error('当前密钥不支持所选模型，请重新检测')
+      if (tool === 'claudeDesktop') {
+        const status = (await externalClientRuntime.scan()).find((entry) => entry.tool === tool)
+        assertContext()
+        if (!status?.installed) throw new Error('请先安装 Claude Desktop，再保存第三方推理配置')
+        const gateway = await claudeDesktopConfig(status, assertContext)
+        const input = { baseUrl: activeSite.providerBaseUrls.claude, apiKey, authScheme: 'bearer' as const, models: [model] }
+        const result = await gateway.saveGateway(input)
+        assertContext()
+        if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.claude, apiKey)
+        return { tool, model, path: result.path, files: result.files, backups: result.backups,
+          outcome: 'configured', message: result.warnings.join(' '),
+          restartRequired: result.restartRequired, connectionVerified: false }
+      }
+      const externalPlatform = platform === 'win32' || platform === 'darwin' || platform === 'linux' ? platform : 'linux'
+      const xdgConfig = providerRoots.userHome === os.homedir() ? process.env.XDG_CONFIG_HOME : undefined
+      if (xdgConfig && !path.isAbsolute(xdgConfig)) throw new Error('XDG_CONFIG_HOME 必须是绝对路径')
+      const result = await saveExternalToolConfig(tool, externalPlatform, {
+        userHome: providerRoots.userHome, configHome: xdgConfig || path.join(providerRoots.userHome, '.config'),
+      }, { apiKey, model, baseUrl: activeSite.providerBaseUrls.codex,
+        protocol: tool === 'workbuddy' ? 'chat-completions' : requested.protocol ?? 'responses',
+      }, { beforeReplace: assertContext })
+      assertContext()
+      if (owner) await externalOwnership.write(tool, owner, activeSite.providerBaseUrls.codex, apiKey)
+      return { tool, model, path: result.path, files: result.files, backups: result.backups, outcome: 'configured',
+        message: tool === 'workbuddy' ? '配置已写入 WorkBuddy 桌面端。重新进入“设置 → 模型”选择此模型；列表未刷新时请重启 WorkBuddy。未验证实际模型调用。'
+          : '全局配置与默认模型已保存。重新打开 OpenCode 后使用；项目配置或环境变量可能覆盖全局设置，未验证实际模型调用。',
+        restartRequired: tool === 'opencode', connectionVerified: false }
+    }
+    const task = externalConfigQueue.then(work, work)
+    externalConfigQueue = task.catch(() => undefined)
+    return task
+  }
+
+  function buildConfigSummary(previewOnboarding: boolean, cachedKeys: readonly StoredManagedCliKey[] = []): AppConfigSummary {
     const stored = store.read()
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
     const result = {
       workspace: stored.workspace,
       providers: Object.fromEntries(
-        providerIds.map((id) => [id, toNativeConfigSummary(inspectNativeProviderConfig(id))]),
+        providerIds.map((id) => {
+          const current = inspectNativeProviderConfig(id)
+          return [id, {
+            ...toNativeConfigSummary(current),
+            configurationOwnership: configOwnership.read(id, current, owner),
+            configurationAccountMatched: Boolean(owner) && current.hasApiKey && current.matchesRelay
+              && cachedKeys.some((entry) => entry.provider === id && entry.key === current.apiKey),
+          }]
+        }),
       ) as Record<ProviderId, NativeConfigSummary>,
     }
     if (previewOnboarding) {
@@ -3457,6 +3610,7 @@ export function createSystemService(
         exists: false,
         hasApiKey: false,
         matchesRelay: false,
+        configurationAccountMatched: false,
         apiKeyPreview: null,
         officialAccountEmail: null,
         officialAccountPlan: null,
@@ -3485,49 +3639,66 @@ export function createSystemService(
     payload: ConfigSavePayload,
     previewOnboarding: boolean,
     assertBeforeWrite?: () => void,
+    ownership?: { source: 'account'; automatic: boolean },
   ) {
-    const model = payload.model.trim()
-    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-    // An empty key is an explicit renderer sentinel: reuse the key already held by the main process.
-    const configured = payload.apiKey.trim() ? null : inspectNativeProviderConfig(payload.provider)
-    if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他站点，请使用当前账号重新配置')
-    const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
-    if (!apiKey) throw new Error('请先填写 API Key')
-    const availableModels = await fetchAvailableModels(apiKey)
-    if (!availableModels.includes(model)) {
-      throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
+    const owner = serviceOptions.getExternalClientAccountId?.() ?? null
+    const assertOwner = () => {
+      assertBeforeWrite?.()
+      if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，请重新配置')
     }
-    if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
-    assertBeforeWrite?.()
-    if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) {
-      throw new Error('账号站点已变化，请重新配置')
-    }
-    const result = saveProviderConfig(
-      payload.provider,
-      apiKey,
-      payload.model,
-      payload.mode,
-      providerRoots,
-      {},
-      activeSite.providerBaseUrls,
-    )
-    // A successful Star-mang write is the explicit way back from an official
-    // account. Clear the durable opt-out only after the files have committed.
-    await store.setOfficialProvider(payload.provider, false)
-    if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
-    return result
+    return serializeConfigWrite(async () => {
+      assertOwner()
+      if (ownership?.source === 'account' && !owner) throw new Error('请先登录账号再配置账号密钥')
+      const before = inspectNativeProviderConfig(payload.provider)
+      const previousOwnership = configOwnership.read(payload.provider, before, owner)
+      if (ownership?.automatic && previousOwnership !== 'account' && previousOwnership !== 'missing') {
+        throw new Error('已有工具配置的来源未经确认，已保留原配置；请在工具配置中明确选择账号密钥')
+      }
+      if (ownership?.automatic && store.read().officialProviders?.includes(payload.provider)) {
+        throw new Error('工具已选择官方账号，已保留原配置')
+      }
+      const model = payload.model.trim()
+      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const assertUnchanged = () => {
+        assertOwner()
+        const current = inspectNativeProviderConfig(payload.provider)
+        if (toolConfigIdentity(current) !== toolConfigIdentity(before) || current.updatedAt !== before.updatedAt || current.model !== before.model) {
+          throw new Error('工具配置在模型检测期间发生变化，已保留现有配置，请重新检测')
+        }
+        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号站点已变化，请重新配置')
+      }
+      // An empty key is an explicit renderer sentinel: reuse the main-process key.
+      const configured = payload.apiKey.trim() ? null : before
+      if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他站点，请使用当前账号重新配置')
+      const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
+      if (!apiKey) throw new Error('请先填写 API Key')
+      const availableModels = await fetchAvailableModels(apiKey)
+      if (!availableModels.includes(model)) throw new Error(`当前 API Key 不支持模型 ${model}，请重新检测并选择可用模型`)
+      if (previewOnboarding && payload.provider === 'codex') return { backups: [], files: [] }
+      assertUnchanged()
+      // Invalidate previous consent before a write, including same-key manual
+      // saves. A crash or persistence failure then leaves a protected source.
+      const source = ownership?.source ?? (payload.apiKey.trim() ? 'manual'
+        : previousOwnership === 'account' || previousOwnership === 'manual' ? previousOwnership : 'unknown')
+      await configOwnership.write(payload.provider, before, 'manual', owner)
+      assertUnchanged()
+      const result = saveProviderConfig(payload.provider, apiKey, payload.model, payload.mode, providerRoots, {}, activeSite.providerBaseUrls)
+      await configOwnership.write(payload.provider, inspectNativeProviderConfig(payload.provider), source, owner)
+      assertOwner()
+      await store.setOfficialProvider(payload.provider, false)
+      if (payload.provider === 'codex') await applyXingmangAiSkillForCodexAccount(false)
+      return result
+    })
   }
 
   async function switchToOfficialAccount(provider: ProviderId, mode: ConfigSavePayload['mode'] = 'merge') {
-    // 与 saveConfig 同样在写入时现读站点:切换判定要拿当前站点的中转地址去
-    // 比对,站点刚改过也不用重启服务。
-    const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
-    const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls, mode)
-    // Persist the user's explicit choice so startup/onboarding can distinguish
-    // it from an unconfigured CLI and leave the native subscription untouched.
-    await store.setOfficialProvider(provider, true)
-    if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(true)
-    return result
+    return serializeConfigWrite(async () => {
+      const activeSite = resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId)
+      const result = switchProviderToOfficialAccount(provider, providerRoots, {}, activeSite.providerBaseUrls, mode)
+      await store.setOfficialProvider(provider, true)
+      if (provider === 'codex') await applyXingmangAiSkillForCodexAccount(true)
+      return result
+    })
   }
 
   async function applyXingmangAiSkillForCodexAccount(official: boolean): Promise<void> {
@@ -3572,5 +3743,9 @@ export function createSystemService(
     setCodexDesktopLocale,
     launchCodexDesktop,
     fetchAvailableModels,
+    configureExternalTool,
+    scanExternalClients,
+    installExternalClient,
+    launchExternalClient,
   }
 }

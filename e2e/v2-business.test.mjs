@@ -51,6 +51,69 @@ async function openUsageDetails(page) {
   return dialog
 }
 
+test('Sub2API subscriptions show independent quotas and never offer unsupported writes or tasks', async () => {
+  const page = await fixture('page=account&sub2apiReliability=1&subscriptionExternal=1')
+  try {
+    assert.equal(await page.getByRole('tab', { name: '异步任务', exact: true }).count(), 0)
+    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.locator('.xm-row-title').filter({ hasText: '周期订阅' }).waitFor()
+    const panel = page.getByRole('tabpanel').filter({ visible: true })
+    const text = await panel.innerText()
+    assert.match(text, /日额度：\s*已用 \$1\.00 · 限额 \$5\.00 · 剩余 \$4\.00/)
+    assert.match(text, /周额度：\s*已用 \$4\.00 · 限额 \$20\.00 · 剩余 \$16\.00/)
+    assert.match(text, /月额度：\s*已用 \$12\.00 · 限额暂未提供/)
+    assert.equal(await panel.getByRole('combobox', { name: '扣费偏好' }).count(), 0)
+    assert.equal(await panel.getByRole('button', { name: '购买', exact: true }).count(), 0)
+    await panel.getByText('订阅仅供查看', { exact: true }).waitFor()
+    assert.equal((await calls(page)).some((call) => /purchase-subscription|create-subscription-payment|updateAccountSubscriptionPreference/.test(call.name)), false)
+    await fs.mkdir(path.resolve('artifacts/sub2api-reliability'), { recursive: true })
+    await page.screenshot({ path: path.resolve('artifacts/sub2api-reliability/subscriptions.png') })
+  } finally { await page.close() }
+})
+
+test('Sub2API usage submits calendar dates, IDs and timezone with unsupported filters absent', async () => {
+  const page = await fixture('page=account&sub2apiReliability=1')
+  try {
+    await page.getByRole('tab', { name: '调用明细', exact: true }).click()
+    for (const label of ['开始时间', '结束时间', '令牌名称', '分组', '请求 ID', '上游请求 ID', '日志类型']) {
+      assert.equal(await page.getByLabel(label, { exact: true }).count(), 0)
+    }
+    await page.getByLabel('开始日期', { exact: true }).fill('2026-09-08')
+    await page.getByLabel('结束日期', { exact: true }).fill('2026-09-08')
+    await page.getByLabel('Key ID', { exact: true }).fill('4')
+    await page.getByLabel('分组 ID', { exact: true }).fill('5')
+    await page.getByLabel('计费来源', { exact: true }).selectOption('0')
+    await page.getByRole('button', { name: '查询', exact: true }).click()
+    await page.waitForFunction(() => JSON.parse(document.documentElement.dataset.calls || '[]').some((call) => call.name === 'query-usage' && call.args.apiKeyId === 4))
+    const last = (await calls(page)).filter((call) => call.name === 'query-usage').at(-1).args
+    assert.equal(last.startDate, '2026-09-08')
+    assert.equal(last.endDate, '2026-09-08')
+    assert.equal(last.timezone, await page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone))
+    assert.equal(last.billingType, 0)
+    assert.equal(last.groupId, 5)
+    assert.equal('startTimestamp' in last, false)
+    await page.getByText(/包含结束日期全天/).waitFor()
+    await page.getByText('暂无调用明细', { exact: true }).waitFor()
+  } finally { await page.close() }
+})
+
+test('account views distinguish summary-only, failed reads and valid empty results', async () => {
+  for (const [query, tab, expected, absent] of [
+    ['sub2apiReliability=1', '用量看板', '仅提供累计汇总', '这个时间段还没有用量'],
+    ['fail=dashboard', '用量看板', '用量趋势读取失败', '这个时间段还没有用量'],
+    ['fail=usage', '调用明细', '调用明细读取失败', '暂无调用明细'],
+    ['sub2apiReliability=1&fail=subscriptions', '充值与订阅', '订阅读取失败', '还没有订阅'],
+  ]) {
+    const page = await fixture(`page=account&${query}`)
+    try {
+      await page.getByRole('tab', { name: tab, exact: true }).click()
+      await page.getByText(expected, { exact: true }).waitFor()
+      assert.equal(await page.getByText(absent, { exact: true }).count(), 0)
+      if (query === 'sub2apiReliability=1') assert.equal(await page.getByLabel('统计时间', { exact: true }).count(), 0)
+    } finally { await page.close() }
+  }
+})
+
 test('usage details include request metadata, token counts, exact billed cost and the matched dynamic price tier', async () => {
   await fs.mkdir(path.resolve('artifacts/usage-details'), { recursive: true })
   for (const theme of ['light', 'dark']) {
@@ -618,11 +681,11 @@ test('explicit CLI sync retains partial failure details after account refresh', 
       .getByText('Gemini CLI：Gemini 配置文件正在使用', { exact: true })
       .waitFor()
     assert.deepEqual(
-      (await calls(page)).find((call) => call.name === 'sync-config').args,
-      {
-        providers: ['claude', 'gemini'],
-        preferredModels: { claude: 'fixture-model', gemini: 'fixture-model' },
-      },
+      (await calls(page)).filter((call) => call.name === 'sync-config').map((call) => call.args),
+      [
+        { providers: ['claude'], preferredModels: { claude: 'fixture-model' }, intent: 'explicit' },
+        { providers: ['gemini'], preferredModels: { gemini: 'fixture-model' }, intent: 'explicit' },
+      ],
     )
     const entries = await calls(page)
     const index = entries.findIndex((call) => call.name === 'switch-account')

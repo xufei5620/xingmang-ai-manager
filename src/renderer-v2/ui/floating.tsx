@@ -36,7 +36,7 @@ function useFloating(open: boolean, onClose?: () => void) {
   const restore = () => anchor.current?.querySelector<HTMLButtonElement>('button')?.focus();
   return { anchor, panel, position, restore };
 }
-export type MenuItem = { label: string; icon?: Icon; danger?: boolean; disabled?: boolean; onSelect: () => void };
+export type MenuItem = { label: string; icon?: Icon; danger?: boolean; disabled?: boolean; testId?: string; onSelect: () => void };
 export function Menu({ items, anchor, testId, label }: BaseProps & { items: Array<MenuItem | 'divider'> | 'divider'; anchor: ReactNode; label?: string }) {
   const [open, setOpen] = useState(false); const id = useId(); const t = useUiText();
   const float = useFloating(open, () => setOpen(false)); const search = useRef({ text: '', at: 0 });
@@ -54,7 +54,7 @@ export function Menu({ items, anchor, testId, label }: BaseProps & { items: Arra
       event.preventDefault(); const now = Date.now(); search.current.text = now - search.current.at > 600 ? event.key : search.current.text + event.key; search.current.at = now;
       const candidate = options.find(item => item.textContent?.trim().toLocaleLowerCase().startsWith(search.current.text.toLocaleLowerCase())); candidate?.focus();
     }
-  }}>{entries.map((item, index) => item === 'divider' ? <hr role="separator" key={'divider-' + index} /> : <button className={item.danger ? 'is-danger' : undefined} disabled={item.disabled} key={index} onClick={() => { close(); item.onSelect(); }} role="menuitem" type="button">{item.icon && <item.icon size={16} aria-hidden="true" />}{item.label}</button>)}</div>}</span>;
+  }}>{entries.map((item, index) => item === 'divider' ? <hr role="separator" key={'divider-' + index} /> : <button className={item.danger ? 'is-danger' : undefined} disabled={item.disabled} data-testid={item.testId} key={index} onClick={() => { close(); item.onSelect(); }} role="menuitem" type="button">{item.icon && <item.icon size={16} aria-hidden="true" />}{item.label}</button>)}</div>}</span>;
 }
 export function Popover({ anchor, title, children, onClose, testId, label }: BaseProps & { anchor: ReactNode; title?: ReactNode; children?: ReactNode; onClose?: () => void; label?: string }) {
   const [open, setOpen] = useState(false); const id = useId(); const t = useUiText();

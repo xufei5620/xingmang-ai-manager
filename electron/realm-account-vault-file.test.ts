@@ -10,7 +10,8 @@ const directories: string[] = []
 function fixture() {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-realm-vault-'))
   directories.push(directory)
-  const key = randomBytes(32)
+  let key = randomBytes(32)
+  const onRecovered = vi.fn()
   const cipher: RealmVaultCipher = {
     isEncryptionAvailable: () => true,
     getSelectedStorageBackend: () => 'test-encrypted',
@@ -26,7 +27,8 @@ function fixture() {
       return Buffer.concat([decryptor.update(encrypted.subarray(28)), decryptor.final()]).toString('utf8')
     },
   }
-  return { directory, cipher, file: path.join(directory, 'realm-accounts-v2.dat'), vault: createFileRealmAccountVault(directory, cipher) }
+  return { directory, cipher, onRecovered, rotateKey: () => { key = randomBytes(32) },
+    file: path.join(directory, 'realm-accounts-v2.dat'), vault: createFileRealmAccountVault(directory, cipher, { onRecovered }) }
 }
 function account(api = false): RealmSavedAccount {
   return parseRealmSavedAccount({ version: 2, realmId: api ? 'api-account' : 'xm-account', userId: '7',
@@ -117,5 +119,165 @@ describe('file realm account vault', () => {
     expect(await restarted.preferredLoginSite('SAME@example.test')).toBe('solov-api')
     const document = JSON.parse(f.cipher.decryptString(Buffer.from(fs.readFileSync(f.file, 'utf8'), 'base64')))
     expect(document.loginHints).toEqual([{ identifier: 'same@example.test', realmId: 'api-account', userId: '7' }])
+  })
+
+  it('recovers a lost encryption key once, preserves exact ciphertext and never reimports legacy sessions', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const original = fs.readFileSync(f.file)
+    f.rotateKey()
+    await expect(f.vault.active()).rejects.toMatchObject({ code: 'STORAGE', stage: 'decrypt' })
+    expect(await Promise.all([f.vault.recoverUnreadable(), f.vault.recoverUnreadable()])).toEqual([true, false])
+    expect(f.onRecovered).toHaveBeenCalledTimes(1)
+    const backup = path.join(f.directory, f.onRecovered.mock.calls[0][0])
+    expect(fs.readFileSync(backup)).toEqual(original)
+    expect(await f.vault.active()).toBeNull()
+    const restarted = createFileRealmAccountVault(f.directory, f.cipher)
+    expect(await restarted.hasMigratedLegacy()).toBe(true)
+    const legacy = { origin: 'https://xm.solov.cc', userId: 7, username: 'legacy', cookies: ['old-session'] }
+    expect(await restarted.migrateLegacy([legacy], legacy)).toBe(0)
+    expect(await restarted.list()).toEqual([])
+    await restarted.activate(account(true))
+    expect(await createFileRealmAccountVault(f.directory, f.cipher).active()).toEqual(account(true))
+    expect(fs.readFileSync(backup)).toEqual(original)
+  })
+
+  it('recovers authenticated ciphertext corruption without printing or discarding the original', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const bytes = Buffer.from(fs.readFileSync(f.file, 'utf8'), 'base64')
+    bytes[15] ^= 1
+    fs.writeFileSync(f.file, bytes.toString('base64'), 'utf8')
+    const original = fs.readFileSync(f.file)
+    await expect(f.vault.recoverUnreadable()).resolves.toBe(true)
+    const backup = path.join(f.directory, f.onRecovered.mock.calls[0][0])
+    expect(fs.readFileSync(backup)).toEqual(original)
+    expect(JSON.stringify(f.onRecovered.mock.calls)).not.toMatch(/secret-cookie-test|session=/)
+  })
+
+  it('never treats an unavailable or broken cipher as a lost key', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const original = fs.readFileSync(f.file)
+    f.cipher.isEncryptionAvailable = () => false
+    await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage: 'availability' })
+    f.cipher.isEncryptionAvailable = () => true
+    f.cipher.decryptString = () => { throw new Error('native error with secret-cookie-test') }
+    const error = await f.vault.recoverUnreadable().catch((reason: unknown) => reason)
+    expect(error).toMatchObject({ code: 'STORAGE', stage: 'verify' })
+    expect(JSON.stringify(error)).not.toContain('secret-cookie-test')
+    expect(fs.readFileSync(f.file)).toEqual(original)
+    expect(fs.readdirSync(f.directory)).toEqual(['realm-accounts-v2.dat'])
+  })
+
+  it('retries old ciphertext after the probe so transient decrypt failures do not reset accounts', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const original = fs.readFileSync(f.file)
+    vi.spyOn(f.cipher, 'decryptString').mockImplementationOnce(() => { throw new Error('temporary') })
+    await expect(f.vault.recoverUnreadable()).resolves.toBe(false)
+    expect(await f.vault.active()).toEqual(account())
+    expect(fs.readFileSync(f.file)).toEqual(original)
+    expect(f.onRecovered).not.toHaveBeenCalled()
+  })
+
+  it('verifies new ciphertext before a normal write can replace the last usable account', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const original = fs.readFileSync(f.file)
+    f.cipher.encryptString = () => Buffer.from('unreadable-encrypted-output')
+    await expect(f.vault.activate(account(true))).rejects.toMatchObject({ stage: 'verify' })
+    expect(fs.readFileSync(f.file)).toEqual(original)
+    expect(await f.vault.active()).toEqual(account())
+  })
+
+  it('leaves unknown schemas and invalid envelopes intact for diagnosis', async () => {
+    const f = fixture()
+    for (const [content, stage] of [
+      ['broken-account-file', 'decode'],
+      [f.cipher.encryptString(JSON.stringify({ version: 3, accounts: [], activeId: null })).toString('base64'), 'validate'],
+    ]) {
+      fs.writeFileSync(f.file, content, 'utf8')
+      await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage })
+      expect(fs.readFileSync(f.file, 'utf8')).toBe(content)
+      expect(fs.readdirSync(f.directory)).toEqual(['realm-accounts-v2.dat'])
+    }
+  })
+
+  it('rejects unsafe hard links and read failures without backing up or changing files', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const original = fs.readFileSync(f.file)
+    const linked = path.join(f.directory, 'linked.dat')
+    fs.linkSync(f.file, linked)
+    await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage: 'read' })
+    expect(fs.readFileSync(linked)).toEqual(original)
+    fs.unlinkSync(linked)
+    const open = vi.spyOn(fs.promises, 'open').mockRejectedValue(Object.assign(new Error('denied'), { code: 'EACCES' }))
+    await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage: 'read' })
+    open.mockRestore()
+    expect(fs.readFileSync(f.file)).toEqual(original)
+    expect(fs.readdirSync(f.directory)).toEqual(['realm-accounts-v2.dat'])
+  })
+
+  it('retains the original if the backup cannot be written', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const original = fs.readFileSync(f.file)
+    f.rotateKey()
+    const open = fs.promises.open.bind(fs.promises)
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+      if (String(file).endsWith('.bak')) throw new Error('backup denied')
+      return open(file, flags, mode)
+    })
+    await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage: 'recover' })
+    expect(fs.readFileSync(f.file)).toEqual(original)
+    expect(fs.readdirSync(f.directory)).toEqual(['realm-accounts-v2.dat'])
+    expect(f.onRecovered).not.toHaveBeenCalled()
+  })
+
+  it('keeps both original and backup when replacement fails and allows retry', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const original = fs.readFileSync(f.file)
+    f.rotateKey()
+    const rename = vi.spyOn(fs.promises, 'rename').mockRejectedValue(Object.assign(new Error('locked'), { code: 'EBUSY' }))
+    await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage: 'recover' })
+    expect(fs.readFileSync(f.file)).toEqual(original)
+    const backups = fs.readdirSync(f.directory).filter((name) => name.endsWith('.bak'))
+    expect(backups).toHaveLength(1)
+    expect(fs.readFileSync(path.join(f.directory, backups[0]))).toEqual(original)
+    expect(f.onRecovered).not.toHaveBeenCalled()
+    rename.mockRestore()
+    await expect(f.vault.recoverUnreadable()).resolves.toBe(true)
+    expect(await f.vault.hasMigratedLegacy()).toBe(true)
+  })
+
+  it('does not overwrite a file replaced while the backup was being created', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    const original = fs.readFileSync(f.file)
+    f.rotateKey()
+    const changed = f.cipher.encryptString(JSON.stringify({ version: 2, activeId: null, accounts: [], legacyMigrated: true })).toString('base64')
+    const open = fs.promises.open.bind(fs.promises)
+    vi.spyOn(fs.promises, 'open').mockImplementation(async (file, flags, mode) => {
+      const handle = await open(file, flags, mode)
+      if (String(file).endsWith('.bak') && flags === 'wx') fs.writeFileSync(f.file, changed, 'utf8')
+      return handle
+    })
+    await expect(f.vault.recoverUnreadable()).rejects.toMatchObject({ stage: 'recover' })
+    expect(fs.readFileSync(f.file, 'utf8')).toBe(changed)
+    const backups = fs.readdirSync(f.directory).filter((name) => name.endsWith('.bak'))
+    expect(fs.readFileSync(path.join(f.directory, backups[0]))).toEqual(original)
+    expect(f.onRecovered).not.toHaveBeenCalled()
+  })
+
+  it('does not report failure after a committed recovery if diagnostics logging throws', async () => {
+    const f = fixture()
+    await f.vault.activate(account())
+    f.rotateKey()
+    f.onRecovered.mockImplementation(() => { throw new Error('logger unavailable') })
+    await expect(f.vault.recoverUnreadable()).resolves.toBe(true)
+    expect(await f.vault.hasMigratedLegacy()).toBe(true)
   })
 })

@@ -11,6 +11,12 @@ import type {
 } from './backups'
 import type { ProviderId as CatalogProviderId } from './catalog'
 import type {
+  ExternalToolId,
+} from './external-tool-config'
+export type { ExternalToolConfigOptions, ExternalToolConfigSaveResult, ExternalToolId } from './external-tool-config'
+import type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientStatus, ExternalClientInstallProgress } from './external-client-contract'
+export type { ExternalClientConfigRequest, ExternalClientConfigResult, ExternalClientCredential, ExternalClientStatus, ExternalClientRuntimeStatus, ExternalClientConnectionStatus, ExternalClientInstallProgress } from './external-client-contract'
+import type {
   ManagedCliConfigurationOutcome,
   ManagedCliKeySyncSummary,
 } from './account-cli-provisioner'
@@ -152,6 +158,7 @@ export {
   privacyPolicyUrl,
   relaySites,
   resolveRelaySite,
+  resolveSupportServiceUrl,
   supportServiceUrl,
   userAgreementUrl,
 } from './relay-sites'
@@ -324,6 +331,7 @@ export interface AccountManagedCliConfigurationInput {
   providers: ProviderId[]
   preferredModels: Partial<Record<ProviderId, string>>
   mode?: ConfigSavePayload['mode']
+  intent?: 'automatic' | 'explicit'
 }
 
 export interface RendererErrorPayload {
@@ -475,6 +483,14 @@ export interface XingmangInvokeContract {
   getConfig: IpcInvokeDefinition<'config:get', [], AppConfigSummary>
   revealApiKey: IpcInvokeDefinition<'config:reveal-api-key', [provider: ProviderId], string>
   saveConfig: IpcInvokeDefinition<'config:save', [payload: ConfigSavePayload], ConfigSaveResult>
+  configureExternalTool: IpcInvokeDefinition<
+    'config:configure-external-tool',
+    [tool: ExternalToolId, options: ExternalClientConfigRequest],
+    ExternalClientConfigResult
+  >
+  scanExternalClients: IpcInvokeDefinition<'external-clients:scan', [], ExternalClientStatus[]>
+  installExternalClient: IpcInvokeDefinition<'external-clients:install', [tool: ExternalToolId], ExternalClientStatus>
+  launchExternalClient: IpcInvokeDefinition<'external-clients:launch', [tool: ExternalToolId], void>
   /**
    * 切回官方订阅账号；merge 恢复对应来源配置，reset 重建初始配置。
    * 两种方式均保留官方登录凭据和历史会话。省略 mode 沿用 merge。
@@ -641,6 +657,7 @@ export interface XingmangInvokeContract {
   pingAccelerationLine: IpcInvokeDefinition<'acceleration:ping-line', [scope: string, lineId: string], import('./acceleration-contract').AccelerationLine>
   startAcceleration: IpcInvokeDefinition<'acceleration:start', [scope: string, mode: import('./acceleration-contract').AccelerationMode, lineId?: string], import('./acceleration-contract').AccelerationState>
   stopAcceleration: IpcInvokeDefinition<'acceleration:stop', [scope: string], import('./acceleration-contract').AccelerationState>
+  redeemAccelerationCode: IpcInvokeDefinition<'acceleration:redeem-code', [scope: string, code: string], import('./acceleration-contract').AccelerationRedemptionResult>
   getLegalDocument: IpcInvokeDefinition<'account:get-legal-document', [kind: LegalDocumentKind, siteId?: AccountSiteId], LegalDocument>
   loginAccount: IpcInvokeDefinition<'account:login', [input: AccountLoginInput], AccountLoginResult>
   logoutAccount: IpcInvokeDefinition<'account:logout', [], void>
@@ -709,10 +726,10 @@ export interface XingmangInvokeContract {
   >
   registerAccount: IpcInvokeDefinition<'account:register', [input: AccountRegisterInput], void>
   sendVerificationCode: IpcInvokeDefinition<'account:send-verification-code', [email: string], void>
-  sendPasswordResetCode: IpcInvokeDefinition<'account:send-reset-code', [email: string], void>
+  sendPasswordResetCode: IpcInvokeDefinition<'account:send-reset-code', [email: string, siteId?: AccountSiteId], void>
   resetPassword: IpcInvokeDefinition<
     'account:reset-password',
-    [input: AccountResetPasswordInput],
+    [input: AccountResetPasswordInput, siteId?: AccountSiteId],
     AccountResetPasswordResult
   >
   getAccountProfile: IpcInvokeDefinition<'account:get-profile', [], AccountProfileDetail>
@@ -784,6 +801,7 @@ export interface XingmangInvokeContract {
 }
 
 export interface XingmangEventContract {
+  onExternalClientInstallProgress: IpcEventDefinition<'external-clients:install-progress', ExternalClientInstallProgress>
   onAccountSessionChanged: IpcEventDefinition<'account:session-changed', AccountSessionState>
   onAccountUsageChanged: IpcEventDefinition<'account:usage-changed', AccountUsageChangedEvent>
   onNavigate: IpcEventDefinition<'navigation:open-page', RendererNavigationTarget>
@@ -834,6 +852,10 @@ export const ipcInvokeChannels = {
   getConfig: 'config:get',
   revealApiKey: 'config:reveal-api-key',
   saveConfig: 'config:save',
+  configureExternalTool: 'config:configure-external-tool',
+  scanExternalClients: 'external-clients:scan',
+  installExternalClient: 'external-clients:install',
+  launchExternalClient: 'external-clients:launch',
   switchToOfficialAccount: 'config:switch-to-official-account',
   chooseWorkspace: 'workspace:choose',
   getRepositoryContext: 'repository:get-context',
@@ -919,6 +941,7 @@ export const ipcInvokeChannels = {
   pingAccelerationLine: 'acceleration:ping-line',
   startAcceleration: 'acceleration:start',
   stopAcceleration: 'acceleration:stop',
+  redeemAccelerationCode: 'acceleration:redeem-code',
   getLegalDocument: 'account:get-legal-document',
   loginAccount: 'account:login',
   logoutAccount: 'account:logout',
@@ -980,6 +1003,7 @@ export const ipcInvokeChannels = {
 }
 
 export const ipcEventChannels = {
+  onExternalClientInstallProgress: 'external-clients:install-progress',
   onAccountSessionChanged: 'account:session-changed',
   onAccountUsageChanged: 'account:usage-changed',
   onNavigate: 'navigation:open-page',

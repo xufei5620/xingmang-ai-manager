@@ -72,6 +72,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
   const effectiveMode = (active || transitioning) && state ? state.mode : mode
   const remaining = signedIn ? state?.remainingSeconds ?? null : null
   const total = state?.totalSeconds ?? accelerationTrialSeconds
+  const totalMinutes = total / 60
   const ratio = remaining === null || total <= 0 ? 0 : Math.min(1, Math.max(0, remaining / total))
   const used = remaining === null ? null : Math.max(0, total - remaining)
   const phaseLabel = describePhase(phase, signedIn)
@@ -108,7 +109,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
       </section>
 
       <section className="acceleration-console" aria-label="免费加速额度与操作">
-        <div className="acceleration-console-top"><span><Zap size={15} aria-hidden="true" />{localDevelopment ? '本机测试额度' : '免费体验'}</span><span className="acceleration-quota-badge">20 分钟</span></div>
+        <div className="acceleration-console-top"><span><Zap size={15} aria-hidden="true" />{localDevelopment ? '本机测试额度' : '免费体验'}</span><span className="acceleration-quota-badge">{totalMinutes} 分钟</span></div>
         <div className="acceleration-quota">
           <svg className="acceleration-quota-ring" viewBox="0 0 220 220" aria-hidden="true"><circle className="acceleration-quota-track" cx="110" cy="110" r="96" /><circle className="acceleration-quota-ticks" cx="110" cy="110" r="85" /><circle className="acceleration-quota-progress" cx="110" cy="110" r="96" pathLength="100" strokeDasharray={`${ratio * 100} 100`} transform="rotate(-90 110 110)" /></svg>
           <div className="acceleration-quota-label"><span>{!signedIn ? '登录领取时长' : remaining === null ? '剩余额度待确认' : localDevelopment ? '剩余测试时长' : '剩余免费时长'}</span><strong data-testid="acceleration-quota-remaining" aria-label={`剩余${localDevelopment ? '测试' : '免费'}时长 ${formatDuration(remaining, true)}`}>{formatDuration(remaining, true)}</strong><small>{active ? <><span className="acceleration-status-dot" />正在计时</> : <><Pause size={12} aria-hidden="true" />{remaining === null ? '尚未开始计时' : exhausted ? '额度已用完' : '未计时'}</>}</small></div>
@@ -124,7 +125,7 @@ export function AccelerationView({ state, mode, busy, signedIn, error, preview, 
     <div className="acceleration-details" aria-label="加速使用信息">
       <div><span className="acceleration-detail-icon"><Timer size={19} aria-hidden="true" /></span><div><span>本次连接</span><strong data-testid="acceleration-session-duration">{formatDuration(signedIn && state ? state.sessionSeconds : null)}</strong></div><small>{active ? '已连接时长' : '连接后开始计时'}</small></div>
       <div><span className="acceleration-detail-icon"><Clock3 size={19} aria-hidden="true" /></span><div><span>累计使用</span><strong data-testid="acceleration-usage-total">{formatDuration(used)}</strong></div><small>停止后不扣时</small></div>
-      <div><span className="acceleration-detail-icon"><ShieldCheck size={19} aria-hidden="true" /></span><div><span>{localDevelopment ? '本机测试规则' : '免费额度规则'}</span><strong>随用随停，保留剩余</strong></div><small><Check size={12} aria-hidden="true" />{localDevelopment ? '本机记录 20 分钟，非服务端权益' : localDevice ? '每账号在本机累计 20 分钟，不每日重置' : '每账号累计 20 分钟，不每日重置'}</small></div>
+      <div><span className="acceleration-detail-icon"><ShieldCheck size={19} aria-hidden="true" /></span><div><span>{localDevelopment ? '本机测试规则' : '免费额度规则'}</span><strong>随用随停，保留剩余</strong></div><small><Check size={12} aria-hidden="true" />{localDevelopment ? `本机记录 ${totalMinutes} 分钟，非服务端权益` : localDevice ? `每账号在本机累计 ${totalMinutes} 分钟，不每日重置` : `每账号累计 ${totalMinutes} 分钟，不每日重置`}</small></div>
     </div>
   </section>
 }

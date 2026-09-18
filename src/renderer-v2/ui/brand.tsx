@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
-import { CircleHelp } from 'lucide-react';
+import { BriefcaseBusiness, CircleHelp } from 'lucide-react';
+import OpenCodeIcon from '@lobehub/icons/es/OpenCode/components/Mono';
 import ClaudeIcon from '@lobehub/icons/es/Claude/components/Color';
 import OpenAIIcon from '@lobehub/icons/es/OpenAI/components/Mono';
 import GeminiIcon from '@lobehub/icons/es/Gemini/components/Color';
@@ -20,6 +21,7 @@ import horizontalDark from '../../../assets/brand/v3/horizontal-dark.svg';
 import wordmarkLight from '../../../assets/brand/v3/wordmark-navy.svg';
 import wordmarkDark from '../../../assets/brand/v3/wordmark-dark.svg';
 import { tools } from '../registry/tools';
+import { clientConnections } from '../registry/clients';
 import { useUiText, type BaseProps } from './shared';
 
 export type ToolId = string;
@@ -28,9 +30,9 @@ const environmentBrands = { node: siNodedotjs, npm: siNpm, python: siPython, str
 const modelBrand = (model: string) => /^claude/i.test(model) ? 'Claude' : /^(gpt|o[134]|chatgpt|codex)/i.test(model) ? 'OpenAI' : /^gemini/i.test(model) ? 'Gemini' : /^grok/i.test(model) ? 'Grok' : /^deepseek/i.test(model) ? 'DeepSeek' : /^qwen/i.test(model) ? 'Qwen' : /^(chatglm|glm)/i.test(model) ? 'ChatGLM' : /^(kimi|moonshot)/i.test(model) ? 'Moonshot' : /^minimax/i.test(model) ? 'MiniMax' : /^(zhipu|智谱)/i.test(model) ? 'Zhipu' : '';
 export function BrandIcon({ tool, model, size = 24, variant = 'inline', testId }: BaseProps & { tool?: ToolId; model?: string; size?: number; variant?: 'tile' | 'inline' | 'xs' }) {
   const t = useUiText();
-  const definition = tools.find(item => item.id === tool || item.name === tool);
+  const definition = tools.find(item => item.id === tool || item.name === tool) ?? clientConnections.find(item => item.id === tool || item.name === tool);
   const key = definition?.brandIcon ?? modelBrand(model ?? tool ?? '');
-  const Icon = brandComponents[key as keyof typeof brandComponents];
+  const Icon = key === 'WorkBuddy' ? BriefcaseBusiness : key === 'OpenCode' ? OpenCodeIcon : brandComponents[key as keyof typeof brandComponents];
   const environment = environmentBrands[tool as keyof typeof environmentBrands];
   const imageSize = variant === 'tile' ? Math.round(size * .6) : size;
   return <span className={'xm-brand xm-brand-' + variant} style={{ width: size, height: size }} data-testid={testId}>

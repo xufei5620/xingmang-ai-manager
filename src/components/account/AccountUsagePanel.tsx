@@ -86,7 +86,8 @@ export function accountUsagePagination(currentPage: number, totalPages: number):
   return result
 }
 
-function compactNumber(value: number): string {
+function compactNumber(value: number | null): string {
+  if (value === null) return '暂未读到'
   return Math.max(0, value).toLocaleString('zh-CN')
 }
 

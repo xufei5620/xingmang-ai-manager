@@ -155,6 +155,7 @@ const nativeConfig = {
   exists: true,
   hasApiKey: true,
   matchesRelay: true,
+  configurationOwnership: 'account' as const,
   baseUrl: 'https://xm.solov.cc',
   actualBaseUrl: 'https://xm.solov.cc',
   model: 'fixture-model',
@@ -218,6 +219,13 @@ const apiMethods = {
   onCodexDesktopInstallProgress: () => () => undefined,
   getAccountSession: async () => ({
     authenticated: true,
+    ...(query.has('sub2apiReliability') ? { siteId: 'solov-api' as const, realmId: 'api-account' as const, capabilities: {
+      supportsRegistration: false, supportsPasswordReset: false, supportsKeyManagement: true, supportsUsage: true,
+      supportsBilling: true, supportsSubscriptions: true, supportsProfileUpdate: true, supportsSessionManagement: false,
+      supportsAutoKeyProvision: true, supportsAccountSession: true, supportsSubscriptionPreference: false,
+      supportsSubscriptionPayment: false, supportsSubscriptionBalancePurchase: false, supportsDashboard: true,
+      supportsDashboardTrends: false, supportsTasks: false,
+    } } : {}),
     account: {
       userId: activeUserId,
       username: profile.username,
@@ -228,7 +236,7 @@ const apiMethods = {
     },
   }),
   getAccountProfile: async () => { record('get-profile'); return { ...profile, userId: activeUserId } },
-  getAccountBalance: async () => { record('get-balance'); return { ...balance } },
+  getAccountBalance: async () => { record('get-balance'); return { ...balance, ...(query.has('sub2apiReliability') ? { quotaPerUnit: 1 } : {}) } },
   listSavedAccounts: async () => [
     {
       id: 'saved-test',
@@ -258,6 +266,9 @@ const apiMethods = {
     record('switch-account', id)
     if (fail === 'switch') throw new Error('目标账号登录已过期')
     activeUserId = 8
+    for (const config of Object.values(configs.providers)) {
+      if (config.configurationOwnership === 'account') config.configurationOwnership = 'unknown'
+    }
     if (query.has('revalidate')) configs.providers.gemini.matchesRelay = false
     return {
       authenticated: true,
@@ -275,10 +286,11 @@ const apiMethods = {
     input: Parameters<V2Bridge['configureManagedCliKeys']>[0],
   ) => {
     record('sync-config', input)
+    if (input.intent !== 'explicit' || input.providers.length !== 1) throw new Error('显式同步必须逐个工具确认')
+    const configured = input.providers.filter((id) => !query.has('partial') || id !== 'gemini')
+    for (const provider of configured) configs.providers[provider].configurationOwnership = 'account'
     return {
-      configured: input.providers.filter(
-        (id) => !query.has('partial') || id !== 'gemini',
-      ),
+      configured,
       failed:
         query.has('partial') && input.providers.includes('gemini')
           ? [
@@ -305,7 +317,9 @@ const apiMethods = {
     if (state === 'deferred') await new Promise<void>((resolve) => { releaseKeyGroups = resolve })
     return groups
   },
-  getAccountDashboard: async () => ({
+  getAccountDashboard: async () => {
+    if (fail === 'dashboard') throw new Error('用量服务暂时不可用')
+    return {
     startTimestamp: 1,
     endTimestamp: 2,
     buckets: [],
@@ -314,7 +328,8 @@ const apiMethods = {
     count: 11,
     tokens: 2000,
     discardedCount: 0,
-  }),
+    ...(query.has('sub2apiReliability') ? { coverage: 'all-time-summary' as const } : {}),
+  } },
   getAccountTasks: async () => {
     const completed = ++taskReads > 1
     return {
@@ -344,13 +359,16 @@ const apiMethods = {
         : [],
     }
   },
-  getAccountUsage: async () => ({
+  getAccountUsage: async (input: Parameters<V2Bridge['getAccountUsage']>[0]) => {
+    record('query-usage', input)
+    if (fail === 'usage') throw new Error('调用记录服务暂时不可用')
+    return {
     page: 1,
     pageSize: 20,
     total: query.has('usageDetail') ? 1 : 0,
     records: query.has('usageDetail') ? [usageDetailFixture(query.get('usageDetail') || 'tiered')] : [],
     stats: { quota: 0, rpm: 0, tpm: 0 },
-  }),
+  } },
   getAccountTopupOrders: async (
     input: Parameters<V2Bridge['getAccountTopupOrders']>[0],
   ) => {
@@ -468,7 +486,20 @@ const apiMethods = {
     record('purchase-subscription-balance', planId)
     return { purchased: true as const }
   },
-  getAccountSubscriptionSelf: async () => { record('get-subscriptions'); return {
+  getAccountSubscriptionSelf: async () => {
+    record('get-subscriptions')
+    if (fail === 'subscriptions') throw new Error('订阅服务暂时不可用')
+    if (query.has('sub2apiReliability')) return {
+      billingPreference: null, activeSubscriptions: [], allSubscriptions: [{
+        id: 4, planId: 1, groupName: '周期订阅', status: 'active', source: 'sub2api', amountTotal: null, amountUsed: null,
+        startedAt: time, endsAt: '2026-10-01T00:00:00Z', nextResetAt: null, quotaPeriods: [
+          { period: 'daily' as const, limit: 5, used: 1, limitState: 'limited' as const, windowStartedAt: null },
+          { period: 'weekly' as const, limit: 20, used: 4, limitState: 'limited' as const, windowStartedAt: null },
+          { period: 'monthly' as const, limit: null, used: 12, limitState: 'unknown' as const, windowStartedAt: null },
+        ],
+      }],
+    }
+    return {
     billingPreference: 'subscription_first' as const,
     activeSubscriptions: [],
     allSubscriptions: [],

@@ -1,6 +1,7 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
-import { ipcEventChannels, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type MultiProviderSessionPage, type ProviderId, type SystemSnapshot, type XingmangApi } from '../../../electron/ipc-contract'
+import QRCode from 'qrcode'
+import { ipcEventChannels, type AppSettingsV2, type AppConfigSummary, type AccountSessionState, type ExternalClientStatus, type ExternalToolId, type MultiProviderSessionPage, type ProviderId, type SystemSnapshot, type XingmangApi } from '../../../electron/ipc-contract'
 import RendererV2App from '../App'
 import { createPreviewAccelerationApi } from './acceleration-fixture'
 import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
@@ -15,7 +16,8 @@ const query = new URLSearchParams(location.search)
 const accelerationDemo = createPreviewAccelerationApi({ remainingSeconds: query.has('accelerationExhausted') ? 0 : query.has('accelerationShort') ? 3 : accelerationTrialSeconds, storage: window.localStorage })
 const noticesRead = new Set<string>(query.has('noticesRead') ? ['12', '8'] : [])
 const localNoticesRead = new Map<string, string[]>()
-declare global { interface Window { fixtureNoticeStore?: (scope: string, ids: string[]) => Promise<string[]> } }
+declare global { interface Window { fixtureNoticeStore?: (scope: string, ids: string[]) => Promise<string[]>; fixtureSupportQrCode: (url: string) => Promise<string> } }
+window.fixtureSupportQrCode = (url) => QRCode.toDataURL(url, { width: 192, margin: 1, errorCorrectionLevel: 'M' })
 const pendingNoticeMarks = new Map<string, () => void>()
 const nativeFixtureScope = 'xm-native-12345678fixture'
 const nativeFixturePng = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
@@ -45,7 +47,17 @@ if (query.has('sub2api')) session = { ...session, ...sub2ApiMetadata }
 settings.relaySiteId = 'solov'
 const status = { installed: true, version: '1.2.3', path: 'C:\\Fixture\\bin', installDirectory: 'C:\\Fixture', latestVersion: '1.2.3', updateAvailable: false,
   uninstall: { available: true, reason: null, manualCommand: null, delegated: false } }
-const configValue = { exists: true, hasApiKey: true, matchesRelay: true, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
+const externalStatuses: ExternalClientStatus[] = (['workbuddy', 'claudeDesktop', 'opencode'] as ExternalToolId[]).map((tool) => ({
+  tool, installed: query.has('clientModels') || query.has('externalInstalled'), version: '1.2.3', path: `C:\\Fixture\\${tool}.exe`, installDirectory: 'C:\\Fixture', running: false,
+  installSupported: query.get('externalUnsupported') !== tool, launchSupported: true, detectionError: query.get('externalDetectionError') === tool ? '客户端路径读取失败' : null,
+  installHint: query.get('externalUnsupported') === tool ? '当前平台请从官方页面手动安装' : null,
+  configured: query.get('externalReady') === tool, model: query.get('externalReady') === tool ? 'fixture-model' : null,
+  configurationSource: query.get('externalOther') === tool ? 'other' : query.get('externalReady') === tool ? 'xingmang' : 'missing',
+  ...(tool === 'claudeDesktop' ? { configurationReady: query.get('externalReady') === tool || query.get('externalLocalReady') === tool } : {}),
+  configurationError: query.get('externalConfigError') === tool ? '当前配置读取失败，可在客户端中检查' : null,
+}))
+const externalOwnerSite = session.siteId ?? 'solov'
+const configValue = { exists: true, hasApiKey: true, matchesRelay: true, configurationOwnership: 'account' as const, baseUrl: 'https://xm.solov.cc/v1', actualBaseUrl: 'https://xm.solov.cc/v1', model: 'fixture-model', apiKeyPreview: 'sk-***', dataDirectory: 'C:\\Fixture', dataDirectoryExists: true, files: [], updatedAt: null }
 const config: AppConfigSummary = { workspace: settings.workspace, providers: { claude: { ...configValue }, codex: { ...configValue }, gemini: { ...configValue }, grok: { ...configValue } } }
 if (query.has('cliMissingModels')) for (const provider of Object.values(config.providers)) provider.model = ''
 const detectedModelsByProvider: Record<ProviderId, string[]> = {
@@ -67,8 +79,19 @@ if (query.has('official')) { config.providers.codex.hasApiKey = false; config.pr
 if (query.has('unknown')) { config.providers.codex.matchesRelay = false; config.providers.codex.actualBaseUrl = 'https://other.example.test/v1' }
 if (query.has('unknownClaude')) { config.providers.claude.exists = true; config.providers.claude.hasApiKey = true; config.providers.claude.matchesRelay = false; config.providers.claude.actualBaseUrl = 'https://other.example.test' }
 if (query.has('manualClaude')) {
-  config.providers.claude = { ...configValue }
+  config.providers.claude = { ...configValue, configurationOwnership: 'manual' }
   writeManualSourceMarker(getSourceMarkerStorage(), configValue.baseUrl, 'claude', true)
+}
+if (query.has('unownedClaude')) config.providers.claude = { ...configValue, configurationOwnership: 'unknown' }
+if (query.has('lostManualMarker')) writeManualSourceMarker(getSourceMarkerStorage(), configValue.baseUrl, 'claude', false)
+const readOnlyConfigOwner = { siteId: session.siteId ?? 'solov', userId: account.userId }
+if (query.has('readOnlyAccountMatch')) {
+  for (const provider of Object.keys(config.providers) as ProviderId[]) {
+    config.providers[provider].configurationOwnership = 'unknown'
+    if (provider === 'gemini') config.providers[provider].authType = 'gemini-api-key'
+    if (query.get('matchedMissingModel') === provider) config.providers[provider].model = ''
+    if (query.get('matchedManualMarker') === provider) writeManualSourceMarker(getSourceMarkerStorage(), config.providers[provider].baseUrl, provider, true)
+  }
 }
 const system: SystemSnapshot = { checkedAt: '2026-09-07T01:00:00Z',
   network: { region: 'unknown', publicIp: null, countryCode: null, checkedAt: '2026-09-07T01:00:00Z', error: null },
@@ -84,6 +107,10 @@ if (query.has('desktopOnly')) {
 if (query.has('detectionFailed')) {
   system.clis.claude = { ...system.clis.claude, detectionFailed: true, detectionError: '本地探针暂时不可用' }
 }
+if (query.has('desktopDetectionFailed')) {
+  system.desktopApps.codex = { ...system.desktopApps.codex, installed: false, version: null, path: null, appVersion: null,
+    detectionFailed: true, detectionError: '已找到 Codex 应用，但签名验证未完成，请重新检测' }
+}
 if (query.has('uninstallUnavailable')) {
   system.clis.claude = {
     ...system.clis.claude,
@@ -95,10 +122,14 @@ if (query.has('uninstallUnavailable')) {
     },
   }
 }
-declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: { id: string; text: string }): void; holdNextConfigSave(): void; releaseConfigSave(error?: string): void } } }
+declare global { interface Window { v2Test: { calls: Array<{ method: string; args: unknown[] }>; unexpected: string[]; errors: string[]; fail: string; emit(name: string, payload: unknown): void; releaseBootstrap(): void; releaseLaunch(): void; holdNextExternalScan(): void; releaseExternalScan(): void; holdNextConfigRead(): void; releaseConfigRead(): void; setExternalStatus(tool: ExternalToolId, patch: Partial<ExternalClientStatus>): void; releaseBalance(error?: string): void; holdNextBalance(): void; setBalance(amount: number): void; releaseKeyMetadata(provider: ProviderId): void; releaseNoticeMark(id: string): void; setNotice(value: { id: string; text: string }): void; holdNextConfigSave(): void; releaseConfigSave(error?: string): void } } }
 const listeners = new Map<string, Set<(payload: unknown) => void>>()
 let releaseBootstrap: () => void = () => undefined
 let releaseLaunch: () => void = () => undefined
+let holdExternalScan = false
+let releaseExternalScan: () => void = () => undefined
+let holdConfigRead = false
+let releaseConfigRead: () => void = () => undefined
 let releaseBalance: (error?: string) => void = () => undefined
 let balanceReads = 0
 let nextBalanceHeld = false
@@ -106,7 +137,7 @@ let balanceOverride: number | null = null
 let nextConfigSaveHeld = false
 let releaseConfigSave: (error?: string) => void = () => undefined
 const configSaveMethods = new Set(['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'])
-window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) } }
+window.v2Test = { calls: [], unexpected: [], errors: [], fail: '', emit(name, payload) { if (name === 'onAccountSessionChanged') session = payload as AccountSessionState; listeners.get(name)?.forEach((listener) => listener(payload)) }, releaseBootstrap() { releaseBootstrap() }, releaseLaunch() { releaseLaunch() }, holdNextExternalScan() { holdExternalScan = true }, releaseExternalScan() { releaseExternalScan() }, holdNextConfigRead() { holdConfigRead = true }, releaseConfigRead() { releaseConfigRead() }, setExternalStatus(tool, patch) { Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, patch) }, releaseBalance(error) { releaseBalance(error) }, holdNextBalance() { nextBalanceHeld = true }, setBalance(amount) { balanceOverride = amount }, releaseKeyMetadata(provider) { pendingKeyMetadata.get(provider)?.(); pendingKeyMetadata.delete(provider) }, releaseNoticeMark(id) { pendingNoticeMarks.get(id)?.(); pendingNoticeMarks.delete(id) }, setNotice(value) { noticeOverride = value }, holdNextConfigSave() { nextConfigSaveHeld = true }, releaseConfigSave(error) { releaseConfigSave(error) } }
 window.addEventListener('error', (event) => window.v2Test.errors.push(event.message))
 window.addEventListener('unhandledrejection', (event) => window.v2Test.errors.push(String(event.reason)))
 const capabilities = { platform: query.get('os') === 'mac' ? 'macos' : 'windows', architecture: 'x64', isMac: query.get('os') === 'mac', nodeRuntimeInstall: 'managed', pythonRuntimeInstall: 'managed', cliInstall: { claude: 'managed', codex: 'managed', gemini: 'managed', grok: 'managed' }, codexDesktop: { install: 'managed', launch: true, uninstall: true, windowsStore: true } } as const
@@ -135,6 +166,10 @@ const methods = {
     : { scope, phase: 'unavailable' as const, mode: 'system-proxy' as const, totalSeconds: accelerationTrialSeconds, remainingSeconds: null, sessionSeconds: 0, measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null },
   startAcceleration: accelerationDemo.startAcceleration,
   stopAcceleration: accelerationDemo.stopAcceleration,
+  redeemAccelerationCode: async (scope: string, code: string) => {
+    if (query.has('accelerationBonusPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
+    return accelerationDemo.redeemAccelerationCode!(scope, code)
+  },
   getSettings: async () => ({ ...settings }),
   saveSettings: async (patch) => { settings = { ...settings, theme: patch.theme ?? settings.theme, reducedMotion: patch.reducedMotion ?? settings.reducedMotion }; return settings },
   getPlatformCapabilities: async () => capabilities,
@@ -158,7 +193,37 @@ const methods = {
     if (query.has('desktopEvent')) window.v2Test.emit('onCodexDesktopStatus', { status: { ...system.desktopApps.codex, appVersion: '9.9.9' } })
     return structuredClone(system)
   },
-  getConfig: async () => structuredClone(config),
+  getConfig: async () => {
+    const result = structuredClone(config)
+    if (query.has('readOnlyAccountMatch')) {
+      const matched = session.authenticated && session.account?.userId === readOnlyConfigOwner.userId && (session.siteId ?? 'solov') === readOnlyConfigOwner.siteId
+      for (const provider of Object.values(result.providers)) provider.configurationAccountMatched = matched && !query.has('matchedUnavailable')
+    }
+    if (holdConfigRead) { holdConfigRead = false; await new Promise<void>((resolve) => { releaseConfigRead = resolve }) }
+    return result
+  },
+  scanExternalClients: async () => {
+    const result = structuredClone(externalStatuses)
+    if (query.has('externalAccountOwned') && (!session.authenticated || session.account?.userId !== account.userId || (session.siteId ?? 'solov') !== externalOwnerSite)) {
+      const owned = result.find((entry) => entry.tool === query.get('externalAccountOwned'))
+      if (owned?.configured) Object.assign(owned, { configured: false, configurationSource: 'other' })
+    }
+    if (holdExternalScan) { holdExternalScan = false; await new Promise<void>((resolve) => { releaseExternalScan = resolve }) }
+    return result
+  },
+  installExternalClient: async (tool) => {
+    window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'downloading', message: '正在下载安装包', percent: 36 })
+    if (query.has('externalInstallPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
+    if (query.has('externalInstallFailure')) throw new Error('客户端安装失败，请重试')
+    const current = externalStatuses.find((entry) => entry.tool === tool)!
+    Object.assign(current, { installed: true, version: '2.0.0' })
+    window.v2Test.emit('onExternalClientInstallProgress', { tool, phase: 'completed', message: '安装完成', percent: 100 })
+    return structuredClone(current)
+  },
+  launchExternalClient: async (tool) => {
+    if (query.has('externalLaunchPending')) await new Promise<void>((resolve) => { releaseLaunch = resolve })
+    externalStatuses.find((entry) => entry.tool === tool)!.running = true
+  },
   chooseWorkspace: async () => {
     if (query.has('workspaceCancel')) return null
     const workspace = 'C:\\Selected Project'
@@ -196,7 +261,7 @@ const methods = {
   setRememberedAccountLogin: async () => {},
   loginAccount: async (input) => { const resolvedSite = input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov'); session = { authenticated: true, account, ...(resolvedSite === 'solov-api' ? sub2ApiMetadata : { siteId: 'solov' as const }) }; return { ...session, account, accessExpiresAt: null } },
   registerAccount: async () => {},
-  logoutAccount: async () => { session = { authenticated: false, account: null } },
+  logoutAccount: async () => { session = { ...session, authenticated: false, account: null } },
   listProviderSessions: async () => ({ items: [], page: 1, pageSize: 3, total: 0, pages: 1, stats: { total: 0, byProvider: { claude: 0, codex: 0, gemini: 0, grok: 0 } }, capabilities: { claude: sessionCapability('claude'), codex: sessionCapability('codex'), gemini: sessionCapability('gemini'), grok: sessionCapability('grok') } }),
   launchCli: async () => query.has('launchPending') ? new Promise<void>((resolve) => { releaseLaunch = resolve }) : undefined,
   launchCodexDesktop: async () => ({ restarted: false, status: system.desktopApps.codex, ...(query.has('localeLaunchWarning') ? { chineseLocale: { status: 'failed' as const, message: 'Codex 已打开，但未确认中文界面生效，请在配置中再次启用。' } } : {}) }),
@@ -229,7 +294,7 @@ const methods = {
   listAccountKeyModels: async (id: number) => id === 201 ? ['gpt-5.6-sol'] : ['fixture-model', 'fixture-other'],
   saveConfigWithAccountKey: async (input) => {
     selectedKeyIds.set(input.provider, input.keyId)
-    config.providers[input.provider] = { ...config.providers[input.provider], model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }
+    config.providers[input.provider] = { ...config.providers[input.provider], configurationOwnership: 'account', model: input.model, apiKeyPreview: input.keyId === 201 ? 'sk-se••••9012' : 'sk-ot••••1234' }
     return { backups: [], files: [] }
   },
   switchToOfficialAccount: async (provider: ProviderId) => {
@@ -244,7 +309,14 @@ const methods = {
     window.v2Test.emit('onAccountSessionChanged', session)
     return { changed: true as const }
   },
-  listConfiguredModels: async (provider: ProviderId) => query.has('cliDefaultModels') ? detectedModelsByProvider[provider] : [config.providers[provider].model || 'fixture-model'],
+  listConfiguredModels: async (provider: ProviderId) => query.has('clientModels') ? ['gpt-fixture', 'deepseek-fixture', 'claude-fixture'] : query.has('cliDefaultModels') ? detectedModelsByProvider[provider] : [config.providers[provider].model || 'fixture-model'],
+  configureExternalTool: async (tool, input) => {
+    if (query.has('clientSaveFailure')) throw new Error('配置保存失败，原配置已保留')
+    Object.assign(externalStatuses.find((entry) => entry.tool === tool)!, { configured: true, ...(tool === 'claudeDesktop' ? { configurationReady: true } : {}), model: input.model, configurationSource: 'xingmang', configurationError: null })
+    return { tool, model: input.model, path: tool === 'claudeDesktop' ? 'C:\\Fixture\\Claude-3p\\configLibrary\\fixture.json' : `C:\\Fixture\\${tool}\\config.json`,
+      files: [], backups: ['C:\\Fixture\\config.bak'], outcome: 'configured' as const,
+      message: '配置已保存，请重新打开客户端。', restartRequired: true, connectionVerified: false as const }
+  },
   listModels: async () => detectedModels,
   syncManagedCliKeys: async () => {
     const result = { ready: (['claude', 'codex', 'grok', 'gemini'] as ProviderId[]).map((provider) => ({ provider, group: `${provider}-group`, name: `${provider}-key` })), failed: [] }
@@ -259,7 +331,7 @@ const methods = {
         failed.push({ provider, message: 'Claude 分组暂时不可用' })
         continue
       }
-      config.providers[provider] = { ...config.providers[provider], exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
+      config.providers[provider] = { ...config.providers[provider], configurationOwnership: 'account', exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: config.providers[provider].baseUrl, model: input.preferredModels[provider] || 'fixture-model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}), ...(provider === 'codex' ? { codexAuthMode: 'apikey' as const } : {}) }
       if (query.has('autoFallback') && provider === 'codex') {
         config.providers[provider].model = 'gpt-5.6-sol'
         config.providers[provider].apiKeyPreview = 'sk-se••••9012'
@@ -273,6 +345,7 @@ const methods = {
     const current = config.providers[input.provider]
     config.providers[input.provider] = {
       ...current,
+      configurationOwnership: input.apiKey ? 'manual' : current.configurationOwnership,
       exists: true,
       hasApiKey: true,
       matchesRelay: true,
@@ -295,7 +368,7 @@ const methods = {
   switchSavedAccount: async () => {
     const nextAccount = query.has('crossSite') ? account : { ...account, userId: 18, username: 'saved-user' }
     session = { authenticated: true, account: nextAccount, ...(query.has('crossSite') ? sub2ApiMetadata : {}) }
-    if (query.has('savedAccount')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
+    if (query.has('savedAccount') && !query.has('readOnlyAccountMatch')) for (const provider of Object.values(config.providers)) { provider.exists = false; provider.hasApiKey = false; provider.matchesRelay = false; provider.actualBaseUrl = ''; provider.model = '' }
     return session
   },
   replyWindowClose: async () => true,

@@ -182,20 +182,69 @@ test('superseded runs are cancelled instead of billing a full matrix each', () =
 
 test('documentation-only changes do not build and package the app', () => {
   const triggers = workflow.on ?? workflow[true]
-
   for (const event of ['push', 'pull_request']) {
-    const ignored = triggers[event]['paths-ignore']
-    assert.ok(Array.isArray(ignored), `${event} must declare paths-ignore`)
-    assert.ok(ignored.includes('**/*.md'), `${event} must ignore markdown`)
-    assert.ok(ignored.includes('docs/**'), `${event} must ignore docs`)
-    // The workflow itself must never be ignored, or a change to CI would ship
-    // with nothing having verified it.
-    assert.equal(
-      ignored.some((pattern) => String(pattern).includes('.github')),
-      false,
-      `${event} must not ignore its own workflow directory`,
-    )
+    assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
+  for (const job of ['test', 'macos-test', 'linux-test', 'audit']) {
+    assert.equal(workflow.jobs[job].needs, 'changes')
+    assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
+  }
+})
+
+test('the required aggregate fails for incomplete checks and accepts documentation-only changes', () => {
+  const vm = require('node:vm')
+  const gate = workflow.jobs['quality-gate']
+  assert.equal(gate.if, 'always()')
+  assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'linux-test', 'audit'])
+  const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
+  const verify = (code, changeResult, results) => {
+    const jobs = { changes: { outputs: { code }, result: changeResult } }
+    for (const name of ['test', 'macos-test', 'linux-test', 'audit']) jobs[name] = { result: results[name] || 'success' }
+    assert.doesNotThrow(() => JSON.stringify(jobs))
+    let failed = false
+    try { vm.runInNewContext(source, { process: { env: { JOB_RESULTS: JSON.stringify(jobs) }, exit: () => { throw new Error('failed') } } }) } catch { failed = true }
+    return !failed
+  }
+  assert.equal(verify('true', 'success', {}), true)
+  assert.equal(verify('true', 'success', { test: 'failure' }), false)
+  assert.equal(verify('true', 'success', { audit: 'skipped' }), false)
+  assert.equal(verify('false', 'failure', {}), false)
+  assert.equal(verify('', 'success', {}), false)
+  assert.equal(verify('false', 'success', Object.fromEntries(['test', 'macos-test', 'linux-test', 'audit'].map(name => [name, 'skipped']))), true)
+})
+
+test('change classification does not skip code, workflow, or unknown revisions', () => {
+  const { requiresCodeChecks, changedFiles } = require('./ci-change-scope.cjs')
+  assert.equal(requiresCodeChecks(['README.md', 'docs/guide.md']), false)
+  assert.equal(requiresCodeChecks(['README.md', '.github/workflows/quality.yml']), true)
+  assert.equal(requiresCodeChecks(['electron/ipc.ts']), true)
+  assert.equal(changedFiles({ before: '0'.repeat(40), after: 'a'.repeat(40) }, 'push'), null)
+  assert.equal(changedFiles({ before: 'unsafe;command', after: 'a'.repeat(40) }, 'push'), null)
+  const values = changedFiles({ pull_request: { base: { sha: 'a'.repeat(40) }, head: { sha: 'b'.repeat(40) } } }, 'pull_request', (_cmd, argv) => { assert.equal(argv.at(-1), '--'); return 'docs/guide.md\0src/app.ts\0' })
+  assert.deepEqual(values, ['docs/guide.md', 'src/app.ts'])
+})
+
+test('packaged Markdown and validation data always require code checks', () => {
+  const { requiresCodeChecks } = require('./ci-change-scope.cjs')
+  for (const file of [
+    'docs/canvas-third-party.json',
+    'docs/CANVAS-THIRD-PARTY.md',
+    'bundled-skills/xingmang-ai/SKILL.md',
+    'bundled-skills/xingmang-ai/references.md',
+    'assets/brand/v3/README.md',
+    'release-notes.md',
+    '.gitattributes',
+    '.editorconfig',
+  ]) {
+    assert.equal(requiresCodeChecks(['README.md', file]), true, file)
+  }
+})
+
+test('documentation skips are limited to known documentation locations', () => {
+  const { requiresCodeChecks } = require('./ci-change-scope.cjs')
+  assert.equal(requiresCodeChecks(['README.md', 'CHANGELOG.md', 'docs/guide.md', 'docs/plans/reliability.md']), false)
+  assert.equal(requiresCodeChecks(['new-runtime/resources.md']), true)
+  assert.equal(requiresCodeChecks(['docs/new-script.cjs']), true)
 })
 
 test('the macOS release build runs on main rather than on every pull request', () => {

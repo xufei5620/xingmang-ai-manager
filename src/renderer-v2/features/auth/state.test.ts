@@ -14,6 +14,12 @@ describe('v2 auth recovery boundaries', () => {
     expect(remainingCooldown(60_000, 59_999)).toBe(1)
     expect(remainingCooldown(60_000, 80_000)).toBe(0)
   })
+  it('does not accept another account source in a recovery link', () => {
+    expect(parseRecoveryCode('https://xm.solov.cc/reset?token=valid', 'https://xm.solov.cc')).toMatchObject({ ok: true, token: 'valid' })
+    for (const url of ['https://api.solov.cc/reset?token=valid', 'http://xm.solov.cc/reset?token=valid', 'https://xm.solov.cc.evil.test/reset?token=valid']) {
+      expect(parseRecoveryCode(url, 'https://xm.solov.cc')).toEqual({ ok: false, error: '重置链接不属于所选账号来源，请使用该账号的重置邮件' })
+    }
+  })
   it('honors the actual verification capability while preserving independent username and email', () => {
     const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
     expect(validateRegistration(draft, false)).toEqual({})
@@ -53,6 +59,14 @@ describe('v2 auth recovery boundaries', () => {
   it('does not expose raw server error text to the interface', () => {
     expect(authErrorMessage(new Error('GET https://example.test 500 internal stack trace'), '登录')).toBe('登录没有成功，输入已保留，请稍后重试')
     expect(authErrorMessage(new Error('ETIMEDOUT'), '登录')).toContain('网络')
+    expect(authErrorMessage(new Error('TWO_FACTOR_REQUIRED'), '登录')).toContain('双重验证')
+    expect(authErrorMessage(new Error('此账号需要双重验证，请先完成验证'), '登录')).toContain('所选账号官网')
+  })
+  it('identifies local account storage failures without exposing details or blaming the password', () => {
+    const expected = '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
+    expect(authErrorMessage(new Error('账号安全存储不可用，原记录未修改'), '登录')).toBe(expected)
+    expect(authErrorMessage('本地账号存储恢复失败：password credential diagnostic detail', '登录')).toBe(expected)
+    expect(authErrorMessage(new Error('账号或密码不正确'), '登录')).toBe('账号或密码不正确，请检查后重试')
   })
 })
 

@@ -37,6 +37,8 @@ npm run test:mac:proxy
 
 父窗口异常退出由独立 worker 清理；worker 退出由原生组件的管道断开处理；硬杀或断电后由下一次启动读取恢复记录。关闭窗口到托盘与退出应用沿用现有语义。TUN、路由和系统 DNS 不在本轮接入范围。系统代理仅覆盖遵循系统代理设置的应用。
 
+正式版 worker 使用同一 Electron 应用的独立进程，入口会先设置 macOS `prohibited` 激活策略，避免后台清理进程持续占用第二个 Dock 图标。普通主窗口仍保持正常 Dock 图标和单实例保护；这不改变 worker 的异常退出恢复职责。
+
 自动化原生测试编译专用 fixture 后端，使用独立临时文件模拟偏好与生效状态；生产组件没有 fixture 参数。初次适配阶段仅做源码与本地测试。0.2.4 的 PR、合并和 macOS 双架构发布已另获用户授权。
 
 ## Finder 与 PATH
@@ -46,6 +48,10 @@ npm run test:mac:proxy
 ## Codex 桌面端启动
 
 已安装 Codex App 时，“打开桌面端”直接通过系统 `/usr/bin/open -a <已验证的应用路径>` 唤起应用，不要求额外安装 Codex CLI、Node.js 或 npm。启动前沿用 bundle ID、OpenAI 签名与架构检查；未找到应用和检测未完成分别提示。
+
+安装检测不依赖 `~/.codex/config.toml`、`auth.json` 或其他 `CODEX_HOME` 下的配置文件；已安装与已连接账号是独立状态。检测先检查系统和用户 Applications 的标准名称，再查询 Spotlight；未索引或改名的 Applications 内应用还会进行有界浅层查找，所有候选仍校验 `com.openai.codex` 和 OpenAI Developer ID 签名。架构信息直接从有界读取的 Mach-O 文件头取得，不调用 `lipo`，不要求客户安装 Xcode 或 Command Line Tools。Intel 版星芒在 Rosetta 下可通过硬件能力识别 ARM 版 Codex，Apple Silicon 下的 Intel 版 Codex 则需要系统 Rosetta 兼容环境。
+
+两个 Dock 图标、已安装但无法确认等客户机问题，可运行 [macOS 客户端只读诊断](MACOS-CLIENT-DIAGNOSTICS.md)，检查运行副本、安装路径、架构和签名；不需要创建或填写配置文件。
 
 工作目录使用官方 `codex://threads/new?path=...` 深链接传递，并用 `--env CODEX_HOME=...` 把选定配置目录交给新启动的应用。所有参数通过 argv 数组传递，中文、空格、引号和 URL 特殊字符不会作为命令解释。已有应用进程保持运行；`--env` 不会修改其启动时的环境，切换配置目录后需由用户退出并重新打开 Codex。
 

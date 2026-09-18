@@ -8,6 +8,7 @@ import type {
 import {
   accountBootstrapPlan,
   bootstrapAccountTools,
+  configurationFailure,
   type AccountBootstrapBridge,
 } from './account-bootstrap'
 import {
@@ -98,7 +99,7 @@ describe('account managed Key bootstrap', () => {
       getConfig: vi.fn(async () => structuredClone(current)),
       configureManagedCliKeys: vi.fn(async (input: Parameters<AccountBootstrapBridge['configureManagedCliKeys']>[0]) => {
         calls.push('configure')
-        for (const provider of input.providers) current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers[provider].baseUrl, model: 'model', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}) }
+        for (const provider of input.providers) current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers[provider].baseUrl, model: 'model', configurationOwnership: 'account', ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}) }
         return { configured: [...input.providers], failed: [] }
       }),
     }
@@ -153,6 +154,50 @@ describe('account managed Key bootstrap', () => {
     }
   })
 
+  it.each([
+    ['backend rejection with manual config', 'manual', false, '保留手动 Key，拒绝自动覆盖', '保留手动 Key，拒绝自动覆盖'],
+    ['backend rejection with unknown config', 'unknown', false, '保留来源未确认的 Key', '保留来源未确认的 Key'],
+    ['backend success with manual config', 'manual', true, null, '配置来源未确认属于星芒账号'],
+    ['backend success with unknown config', 'unknown', true, null, '配置来源未确认属于星芒账号'],
+    ['backend success without ownership', undefined, true, null, '配置来源未确认属于星芒账号'],
+    ['missing backend result with account config', 'account', false, null, '账号 Key 配置未返回成功结果'],
+    ['conflicting backend results with account config', 'account', true, '配置写入失败', '配置写入失败'],
+  ] as const)('does not report success for %s', async (_name, ownership, reportedSuccess, backendFailure, expectedMessage) => {
+    const current = config()
+    const storage = memoryStorage()
+    const manualMarker = ownership !== 'unknown' && ownership !== undefined
+    writeManualSourceMarker(storage, current.providers.claude.baseUrl, 'claude', manualMarker)
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => {
+        current.providers.claude = {
+          ...current.providers.claude,
+          exists: true,
+          hasApiKey: true,
+          matchesRelay: true,
+          actualBaseUrl: current.providers.claude.baseUrl,
+          model: 'current-model',
+          configurationOwnership: ownership,
+        }
+        return {
+          configured: reportedSuccess ? ['claude' as ProviderId] : [],
+          failed: backendFailure ? [{ provider: 'claude' as ProviderId, message: backendFailure }] : [],
+        }
+      }),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, storage)
+
+    expect(api.configureManagedCliKeys).toHaveBeenCalledOnce()
+    expect(result.configured).toEqual([])
+    expect(result.failed).toEqual([{ provider: 'claude', message: expectedMessage }])
+    expect(readManualSourceMarker(storage, current.providers.claude.baseUrl, 'claude')).toBe(manualMarker)
+  })
+
   it('preserves a stale marker when the account write does not verify', async () => {
     const current = config()
     const storage = memoryStorage()
@@ -203,7 +248,7 @@ describe('account managed Key bootstrap', () => {
 
   it('does not rewrite an already verified relay config on session restore', () => {
     const current = config()
-    current.providers.claude = { ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.claude.baseUrl, model: 'claude-model' }
+    current.providers.claude = { ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true, actualBaseUrl: current.providers.claude.baseUrl, model: 'claude-model', configurationOwnership: 'account' }
     expect(accountBootstrapPlan(system(['claude']), current, settings, 'restore')).toMatchObject({
       targets: [],
       skipped: expect.arrayContaining([
@@ -213,6 +258,70 @@ describe('account managed Key bootstrap', () => {
     expect(accountBootstrapPlan(system(['claude']), current, settings, 'login').targets).toEqual(['claude'])
     current.providers.claude.model = ''
     expect(accountBootstrapPlan(system(['claude']), current, settings, 'restore').targets).toEqual(['claude'])
+  })
+
+  it.each(['login', 'restore'] as const)('does not rewrite read-only matched keys during %s, even when their model or Gemini auth mode is incomplete', (mode) => {
+    const current = config()
+    const providers = ['claude', 'codex', 'grok', 'gemini'] as const
+    for (const provider of providers) current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true,
+      matchesRelay: true, actualBaseUrl: current.providers[provider].baseUrl, model: 'existing-model', configurationOwnership: 'unknown', configurationAccountMatched: true,
+      ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}),
+    }
+    const installed = system([...providers])
+    const readyPlan = accountBootstrapPlan(installed, current, settings, mode, null)
+    expect(readyPlan.targets).toEqual([])
+    expect(readyPlan.skipped).toEqual(providers.map((provider) => expect.objectContaining({ provider, reason: 'configured' })))
+    for (const provider of providers) {
+      expect(configurationFailure(current, provider, null)).toBe('配置来源未确认属于星芒账号')
+      current.providers[provider].model = ''
+    }
+    const incompletePlan = accountBootstrapPlan(installed, current, settings, mode, null)
+    expect(incompletePlan.targets).toEqual([])
+    expect(incompletePlan.skipped).toEqual(providers.map((provider) => expect.objectContaining({ provider, reason: 'unknown' })))
+    current.providers.gemini.model = 'existing-model'
+    current.providers.gemini.authType = ''
+    expect(accountBootstrapPlan(installed, current, settings, mode, null).targets).toEqual([])
+  })
+
+  it.each(['login', 'restore'] as const)('retains read-only matched configs without configuring when account synchronization is offline during %s', async (mode) => {
+    const current = config()
+    for (const provider of ['claude', 'codex', 'grok', 'gemini'] as const) current.providers[provider] = { ...current.providers[provider], exists: true, hasApiKey: true,
+      matchesRelay: true, actualBaseUrl: current.providers[provider].baseUrl, model: 'existing-model', configurationOwnership: 'unknown', configurationAccountMatched: true,
+      ...(provider === 'gemini' ? { authType: 'gemini-api-key' } : {}),
+    }
+    const before = structuredClone(current)
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => { throw new Error('offline') }),
+      scanSystem: vi.fn(async () => system(['claude', 'codex', 'grok', 'gemini'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => { throw new Error('must not configure') }),
+    }
+    const result = await bootstrapAccountTools(api, 17, undefined, mode, undefined, null)
+    expect(api.configureManagedCliKeys).not.toHaveBeenCalled()
+    expect(result).toMatchObject({ configured: [], failed: [], warnings: ['Key 同步阶段：offline'] })
+    expect(result.skipped.every((item) => item.reason === 'configured')).toBe(true)
+    expect(current).toEqual(before)
+  })
+
+  it('does not accept read-only key matching as verification of a reported account write', async () => {
+    const current = config()
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => {
+        current.providers.claude = { ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true,
+          actualBaseUrl: current.providers.claude.baseUrl, model: 'existing-model', configurationOwnership: 'unknown', configurationAccountMatched: true }
+        return { configured: ['claude' as ProviderId], failed: [] }
+      }),
+    }
+    const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, null)
+    expect(result.configured).toEqual([])
+    expect(result.failed).toEqual([{ provider: 'claude', message: '配置来源未确认属于星芒账号' }])
   })
 
   it('stops a stale account before writing any local configuration', async () => {

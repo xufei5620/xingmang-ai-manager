@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
-import { chromium } from '@playwright/test'
+import { chromium, expect } from '@playwright/test'
 
 let server, browser, origin
 const artifacts = path.resolve('artifacts/renderer-v2-app')
@@ -37,6 +37,371 @@ async function clean(page) {
   assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
   assert.deepEqual(await page.evaluate(() => window.v2Test.unexpected), [])
 }
+
+const defaultSupportUrl = 'https://work.weixin.qq.com/kfid/kfc3ac7eece5344c034'
+const historicalSupportUrl = 'https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4'
+
+async function checkSupportQr(page, surface, url) {
+  const expected = await page.evaluate((value) => window.fixtureSupportQrCode(value), url)
+  const image = surface.getByRole('img', { name: '微信客服二维码', exact: true })
+  await image.waitFor()
+  await expect.poll(async () => await image.getAttribute('src') === expected, { message: '客服二维码应编码当前账号对应的同一个企微地址' }).toBe(true)
+}
+
+async function checkSupportDialog(page, url) {
+  const dialog = page.getByRole('dialog', { name: '帮助与客服', exact: true })
+  await dialog.waitFor()
+  await checkSupportQr(page, dialog, url)
+  const previousCalls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length)
+  await dialog.getByRole('button', { name: '在浏览器打开', exact: true }).click()
+  await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').length > count, previousCalls)
+  const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal'))
+  assert.equal(calls.length, previousCalls + 1)
+  assert.deepEqual(calls.at(-1).args, [url])
+  return dialog
+}
+
+test('customer support uses the default QR and browser destination for signed-out sessions, including retained historical metadata', async () => {
+  for (const query of ['guest=1', 'guest=1&sub2api=1']) {
+    const page = await open(query)
+    try {
+      const welcome = page.getByTestId('welcome-support')
+      await checkSupportQr(page, welcome, defaultSupportUrl)
+      await page.getByTestId('welcome-help').click()
+      await checkSupportDialog(page, defaultSupportUrl)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
+for (const [label, query, url] of [
+  ['NewAPI', '', defaultSupportUrl],
+  ['Sub2API', 'sub2api=1', historicalSupportUrl],
+]) test(`customer support matches the QR and browser destination for signed-in ${label}`, async () => {
+  const page = await open(query)
+  try {
+    await page.getByTestId('shell-topbar').getByRole('button', { name: '帮助与客服', exact: true }).click()
+    await checkSupportDialog(page, url)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('customer support returns to the default QR and browser destination after historical account logout', async () => {
+  const page = await open('sub2api=1')
+  try {
+    await page.getByTestId('shell-topbar').getByRole('button', { name: '帮助与客服', exact: true }).click()
+    const dialog = await checkSupportDialog(page, historicalSupportUrl)
+    await dialog.locator('[data-modal-close]').click()
+    await page.getByRole('button', { name: '打开个人中心 fixture-user', exact: true }).click()
+    await page.getByRole('button', { name: '退出当前账号', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出当前账号？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
+    await page.getByTestId('welcome-support').waitFor()
+    const session = await page.evaluate(() => window.xingmang.getAccountSession())
+    assert.equal(session.authenticated, false)
+    assert.equal(session.account, null)
+    assert.equal(session.siteId, 'solov-api')
+    assert.equal(session.realmId, 'api-account')
+    await checkSupportQr(page, page.getByTestId('welcome-support'), defaultSupportUrl)
+    await page.getByTestId('welcome-help').click()
+    await checkSupportDialog(page, defaultSupportUrl)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'openExternal').map((entry) => entry.args[0])), [historicalSupportUrl, defaultSupportUrl])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('v2 home places clients in installed ToolRows and saves and opens through their native contracts', async () => {
+  for (const theme of ['light', 'dark']) {
+    const page = await open(`theme=${theme}&clientModels=1`)
+    try {
+      await page.getByTestId('tool-row-codex').waitFor()
+      assert.equal(await page.getByTestId('home-codex-models').count(), 0)
+      assert.equal(await page.getByTestId('home-client-connections').count(), 0)
+      await page.screenshot({ path: path.join(artifacts, `client-connections-${theme}.png`) })
+      for (const tool of ['workbuddy', 'claudeDesktop', 'opencode']) {
+        const row = page.getByTestId(`tool-row-${tool}`)
+        await row.waitFor()
+        assert.equal(await row.locator('xpath=ancestor::section[1]').getByRole('heading', { name: '你的工具', exact: true }).count(), 1)
+        await page.getByTestId(`home-client-${tool}`).click()
+        const dialog = page.getByTestId('external-client-dialog')
+        await dialog.waitFor()
+        await page.getByTestId('external-client-detect').click()
+        const model = tool === 'claudeDesktop' ? 'claude-fixture' : 'deepseek-fixture'
+        await page.getByTestId('external-client-model').selectOption(model)
+        if (tool === 'opencode') await page.getByTestId('external-client-protocol').selectOption('chat-completions')
+        await page.getByTestId('external-client-save').click()
+        await page.getByTestId('external-client-result').getByText('配置已保存', { exact: true }).waitFor()
+        if (tool === 'claudeDesktop') {
+          await expect(page.getByTestId('external-client-result')).toContainText('configLibrary')
+          await expect(dialog).not.toContainText('HKEY_CURRENT_USER')
+          await expect(dialog).not.toContainText('等待导入')
+          await expect(dialog).toContainText('完全退出并重新打开 Claude Desktop')
+        }
+        const call = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').at(-1))
+        assert.deepEqual(call.args, [tool, { credential: { kind: 'configured', provider: tool === 'claudeDesktop' ? 'claude' : 'codex' }, model, ...(tool === 'opencode' ? { protocol: 'chat-completions' } : {}) }])
+        await page.screenshot({ path: path.join(artifacts, `${tool}-config-${theme}.png`) })
+        await dialog.getByRole('button', { name: '完成', exact: true }).click()
+        await row.getByRole('button', { name: '打开', exact: true }).click()
+        await row.getByText(/运行中/).waitFor()
+        const opened = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').at(-1))
+        assert.deepEqual(opened.args, [tool])
+      }
+      await page.locator('.v2-statusbar').getByText('6 个工具已装', { exact: true }).waitFor()
+      await page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]').getByText('6 个工具已连接', { exact: true }).waitFor()
+      assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'revealApiKey' || entry.method === 'revealAccountKey')), false)
+      await clean(page)
+    } finally { await page.close() }
+  }
+})
+
+test('external client install shows progress and finishes at configuration without writing a key', async () => {
+  const page = await open('externalInstallPending=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.waitFor()
+    assert.equal(await row.locator('xpath=ancestor::section[1]').getByRole('heading', { name: '还可以装', exact: true }).count(), 1)
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await row.getByText('正在下载安装包', { exact: true }).waitFor()
+    assert.equal(await row.getByRole('progressbar').getAttribute('aria-valuenow'), '36')
+    assert.equal(await row.getByRole('button', { name: '安装中', exact: true }).isDisabled(), true)
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByRole('button', { name: '配置', exact: true }).waitFor()
+    assert.equal(await row.locator('xpath=ancestor::section[1]').getByRole('heading', { name: '你的工具', exact: true }).count(), 1)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool' || entry.method === 'launchExternalClient')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('external client install failures clear busy state and remain retryable', async () => {
+  const page = await open('externalInstallFailure=1')
+  try {
+    const row = page.getByTestId('tool-row-opencode')
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await page.getByRole('alert').filter({ hasText: '客户端安装失败，请重试' }).waitFor()
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+    assert.equal(await row.getByRole('button', { name: '安装', exact: true }).isEnabled(), true)
+    assert.equal(await row.getByRole('progressbar').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('external clients recognize complete manual configurations without claiming account ownership', async () => {
+  const page = await open('externalInstalled=1&externalOther=claudeDesktop&externalLocalReady=claudeDesktop&externalConfigError=workbuddy')
+  try {
+    const claude = page.getByTestId('tool-row-claudeDesktop')
+    await claude.getByText('已配好', { exact: true }).waitFor()
+    await expect(claude).toContainText('自动获取模型')
+    await expect(claude).not.toContainText('其他账号')
+    await page.screenshot({ path: path.join(artifacts, 'claude-manual-configuration-ready.png') })
+    await claude.getByRole('button', { name: '打开', exact: true }).click()
+    await claude.getByText(/运行中/).waitFor()
+    const buddy = page.getByTestId('tool-row-workbuddy')
+    await buddy.getByText('当前配置读取失败，可在客户端中检查', { exact: true }).waitFor()
+    await buddy.getByRole('button', { name: '更多操作', exact: true }).click()
+    await page.getByRole('menuitem', { name: '打开', exact: true }).click()
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'launchExternalClient').map((entry) => entry.args[0])), ['claudeDesktop', 'workbuddy'])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool')), false)
+    await page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]').getByText('3 个工具已连接', { exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('external client incomplete Claude configuration requires setup before primary launch', async () => {
+  const page = await open('externalInstalled=1&externalOther=claudeDesktop')
+  try {
+    const row = page.getByTestId('tool-row-claudeDesktop')
+    await row.getByText('还没配 Key', { exact: true }).waitFor()
+    await expect(row).toContainText('第三方推理配置待完善')
+    assert.equal(await row.getByRole('button', { name: '打开', exact: true }).count(), 0)
+    await row.getByRole('button', { name: '配置', exact: true }).click()
+    await page.getByTestId('external-client-dialog').waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('external client platform and detection failures remain distinct from missing installation', async () => {
+  const page = await open('externalUnsupported=opencode&externalDetectionError=workbuddy')
+  try {
+    const unavailable = page.getByTestId('tool-row-opencode')
+    await unavailable.getByText('当前平台请从官方页面手动安装', { exact: true }).waitFor()
+    assert.equal(await unavailable.getByRole('button', { name: '暂不支持', exact: true }).isDisabled(), true)
+    const failed = page.getByTestId('tool-row-workbuddy')
+    await failed.getByText('检测失败', { exact: true }).waitFor()
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
+    await failed.getByRole('button', { name: '重新检测', exact: true }).click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installExternalClient')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('external client scans from the previous account cannot overwrite the current account', async () => {
+  const page = await open('externalInstalled=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByRole('button', { name: '配置', exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.holdNextExternalScan())
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
+    await page.evaluate(() => {
+      window.v2Test.setExternalStatus('workbuddy', { configured: true, configurationSource: 'xingmang', model: 'new-account-model' })
+      window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } })
+    })
+    await row.getByText('v1.2.3 · new-account-model', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseExternalScan())
+    await page.waitForTimeout(100)
+    assert.equal(await row.getByRole('button', { name: '打开', exact: true }).count(), 1)
+    assert.equal(await row.getByText('v1.2.3 · new-account-model', { exact: true }).count(), 1)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('WorkBuddy loses current-account readiness when switching saved accounts on the same site', async () => {
+  const page = await open('savedAccount=1&externalInstalled=1&externalReady=workbuddy&externalAccountOwned=workbuddy')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    const balancePanel = page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]')
+    await balancePanel.getByText('4 个工具已连接', { exact: true }).waitFor()
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
+    await page.evaluate(() => window.v2Test.holdNextExternalScan())
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    await page.getByTestId('saved-accounts-list').getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('heading', { name: /saved-user/ }).waitFor()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length > count, before)
+    assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
+    await page.evaluate(() => window.v2Test.releaseExternalScan())
+    await row.getByText('已有第三方配置', { exact: true }).waitFor()
+    await row.getByText('v1.2.3 · fixture-model', { exact: true }).waitFor()
+    assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
+    await balancePanel.getByText('等待连接', { exact: true }).waitFor()
+    const session = await page.evaluate(() => window.xingmang.getAccountSession())
+    assert.equal(session.account.userId, 18)
+    assert.equal(session.siteId ?? 'solov', 'solov')
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a delayed ready WorkBuddy scan cannot restore the previous account badge after a same-site switch', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy&externalAccountOwned=workbuddy')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.holdNextExternalScan())
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, siteId: 'solov', account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
+    await row.getByText('已有第三方配置', { exact: true }).waitFor()
+    await page.evaluate(async () => {
+      window.v2Test.releaseExternalScan()
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+    assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
+    assert.equal(await row.getByText('已有第三方配置', { exact: true }).count(), 1)
+    await page.getByRole('heading', { name: '账户余额', exact: true }).locator('xpath=ancestor::section[1]').getByText('3 个工具已连接', { exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('logout retains WorkBuddy local configuration without retaining the signed-out account badge or late scan', async () => {
+  const page = await open('externalInstalled=1&externalReady=workbuddy&externalAccountOwned=workbuddy')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByText('已配好', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.holdNextExternalScan())
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
+    await page.getByRole('button', { name: '打开个人中心 fixture-user', exact: true }).click()
+    await page.getByRole('button', { name: '退出当前账号', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出当前账号？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
+    await page.getByTestId('welcome-login').waitFor()
+    assert.equal(await row.count(), 0)
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-codexDesktop').check()
+    for (let step = 0; step < 3; step++) await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-home').click()
+    await row.getByText('已有第三方配置', { exact: true }).waitFor()
+    await page.evaluate(async () => {
+      window.v2Test.releaseExternalScan()
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+    assert.equal(await row.getByText('已配好', { exact: true }).count(), 0)
+    assert.equal(await row.getByText('已有第三方配置', { exact: true }).count(), 1)
+    assert.equal(await row.getByText('v1.2.3 · fixture-model', { exact: true }).count(), 1)
+    const session = await page.evaluate(() => window.xingmang.getAccountSession())
+    assert.equal(session.authenticated, false)
+    assert.equal(session.account, null)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'configureExternalTool')), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('external client installation completion does not refresh or notify the next account', async () => {
+  const page = await open('externalInstallPending=1')
+  try {
+    const row = page.getByTestId('tool-row-workbuddy')
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await row.getByText('正在下载安装包', { exact: true }).waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
+    await page.getByRole('heading', { name: /next-user/ }).waitFor()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="home-rescan"]')?.hasAttribute('aria-busy'))
+    const count = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length)
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await row.getByRole('button', { name: '安装', exact: true }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'scanExternalClients').length), count)
+    assert.equal(await page.getByText('客户端已安装，点击“配置”选择密钥和模型。', { exact: true }).count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('client save errors retain the selected model and never show a success notice', async () => {
+  const page = await open('clientModels=1&clientSaveFailure=1&keyOptions=1')
+  try {
+    await page.getByTestId('home-client-workbuddy').click()
+    await page.getByTestId('external-client-detect').click()
+    await page.getByTestId('external-client-model').selectOption('deepseek-fixture')
+    await page.getByTestId('external-client-save').click()
+    await page.getByRole('alert').filter({ hasText: '配置保存失败，原配置已保留' }).waitFor()
+    assert.equal(await page.getByTestId('external-client-model').inputValue(), 'deepseek-fixture')
+    assert.equal(await page.getByTestId('external-client-result').count(), 0)
+    await page.getByTestId('external-client-source').selectOption('account:202')
+    assert.equal(await page.getByTestId('external-client-save').isDisabled(), true)
+    await page.getByTestId('external-client-detect').click()
+    await page.getByTestId('external-client-model').selectOption('fixture-other')
+    await page.getByTestId('external-client-save').click()
+    const call = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureExternalTool').at(-1))
+    assert.deepEqual(call.args, ['workbuddy', { credential: { kind: 'account', keyId: 202 }, model: 'fixture-other' }])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('Codex non-GPT menu requires a detected non-GPT model before saving', async () => {
+  const page = await open('clientModels=1')
+  try {
+    const row = page.getByTestId('tool-row-codex')
+    await row.waitFor()
+    assert.equal(await row.getByRole('button', { name: '非 GPT 模型', exact: true }).count(), 0)
+    await row.getByRole('button', { name: '更多操作', exact: true }).click()
+    await page.getByTestId('home-codex-models').click()
+    const dialog = page.getByTestId('config-dialog')
+    await dialog.waitFor()
+    assert.equal(await page.getByTestId('tool-save-config').isDisabled(), true)
+    await page.getByTestId('tool-detect-models').click()
+    await page.getByTestId('tool-default-model').selectOption('deepseek-fixture')
+    const choices = await page.getByTestId('tool-default-model').locator('option').allTextContents()
+    assert.equal(choices.some((label) => label === 'gpt-fixture'), false)
+    await page.getByTestId('tool-save-config').click()
+    await page.getByTestId('tool-save-merge').click()
+    await dialog.waitFor({ state: 'hidden' })
+    const call = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfig').at(-1))
+    assert.equal(call.args[0].model, 'deepseek-fixture')
+    assert.equal(call.args[0].provider, 'codex')
+    assert.equal(call.args[0].apiKey, '')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('full App preserves the fixed desktop columns and renders only the new renderer assets', async () => {
   for (const theme of ['light', 'dark']) {
     const page = await open(`theme=${theme}`)
@@ -92,7 +457,7 @@ test('full App preserves the fixed desktop columns and renders only the new rend
       assert.equal(actionGeometry.pageHeadAlign, 'flex-start')
       assert.ok(Math.abs(actionGeometry.topCenterOffset) <= 1)
       assert.equal(actionGeometry.homeTopOffset, 4)
-      assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 5)
+      assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 8)
       await page.getByRole('button', { name: '标为已读' }).click()
       await page.screenshot({ path: path.join(artifacts, `home-${theme}.png`) })
       await page.getByTestId('sidebar-collapse').click()
@@ -262,6 +627,154 @@ test('restored login preserves a marked manual relay key and displays its source
   }
 })
 
+const matchedToolIds = ['claude', 'codex', 'codexDesktop', 'grok', 'gemini']
+async function matchedToolBadges(page, label) {
+  for (const id of matchedToolIds) await page.getByTestId(`tool-row-${id}`).getByText(label, { exact: true }).waitFor()
+}
+async function settleMatchedBootstrap(page) {
+  await page.waitForFunction(() => window.v2Test.calls.filter(entry => entry.method === 'getConfig').length >= 4)
+  await page.waitForFunction(() => !document.querySelector('.v2-bootstrap-notice[data-busy="true"]') && document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') !== 'true')
+}
+async function assertNoMatchedKeyOperations(page, from = 0) {
+  const calls = await page.evaluate(start => window.v2Test.calls.slice(start).map(entry => entry.method), from)
+  assert.equal(calls.some(method => ['configureManagedCliKeys', 'saveConfig', 'saveConfigWithAccountKey', 'switchToOfficialAccount', 'revealApiKey', 'revealAccountKey', 'getAccountKeys', 'getAccountKeyOptions', 'listModels', 'listAccountKeyModels', 'listConfiguredModels'].includes(method)), false)
+}
+
+test('read-only account matches restore all five CLI tool badges without key requests or writes and keep detection read-only', async () => {
+  const page = await open('readOnlyAccountMatch=1&allInstalled=1')
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await assertNoMatchedKeyOperations(page)
+    const before = await page.evaluate(() => window.v2Test.calls.length)
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') !== 'true')
+    await matchedToolBadges(page, '已配好')
+    await assertNoMatchedKeyOperations(page, before)
+    assert.equal(await page.evaluate(start => window.v2Test.calls.slice(start).some(entry => entry.method === 'syncManagedCliKeys'), before), false)
+    const summary = await page.evaluate(() => window.xingmang.getConfig())
+    assert.ok(Object.values(summary.providers).every(provider => provider.configurationOwnership === 'unknown' && provider.configurationAccountMatched === true))
+    await page.setViewportSize({ width: 1440, height: 1100 })
+    await page.screenshot({ path: path.join(artifacts, 'readonly-account-match-five-tools.png') })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('read-only account matches respect local manual markers and preserve incomplete models without automatic repair', async () => {
+  const page = await open('readOnlyAccountMatch=1&allInstalled=1&matchedManualMarker=claude&matchedMissingModel=gemini')
+  try {
+    await page.getByTestId('tool-row-claude').getByText('已配好', { exact: true }).waitFor()
+    await page.getByTestId('tool-row-gemini').getByText('还没配 Key', { exact: true }).waitFor()
+    for (const id of ['codex', 'codexDesktop', 'grok']) await page.getByTestId(`tool-row-${id}`).getByText('已配好', { exact: true }).waitFor()
+    await settleMatchedBootstrap(page)
+    await assertNoMatchedKeyOperations(page)
+    assert.equal((await page.evaluate(() => window.xingmang.getConfig())).providers.gemini.model, '')
+    await page.getByTestId('tool-row-claude').getByRole('button', { name: '更多操作' }).click()
+    await page.getByRole('menuitem', { name: '配置', exact: true }).click()
+    assert.equal(await page.getByRole('button', { name: '自己填写密钥', exact: true }).getAttribute('aria-pressed'), 'true')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('read-only account matches remain third-party when the host cannot match an account', async () => {
+  const page = await open('readOnlyAccountMatch=1&allInstalled=1&matchedUnavailable=1')
+  try {
+    await matchedToolBadges(page, '已有第三方配置')
+    await settleMatchedBootstrap(page)
+    await assertNoMatchedKeyOperations(page)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('read-only account matches restore on fresh login without treating the match as configuration consent', async () => {
+  const page = await open('readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1')
+  try {
+    await matchedToolBadges(page, '已有第三方配置')
+    await page.getByTestId('nav-chat').click()
+    await page.getByTestId('login-account').fill('fixture-user')
+    await page.getByTestId('login-password').fill('fixture-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('start-guide').waitFor()
+    await page.getByTestId('guide-pause').click()
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await assertNoMatchedKeyOperations(page)
+    assert.equal((await page.evaluate(() => window.xingmang.getConfig())).providers.codex.configurationOwnership, 'unknown')
+    await clean(page)
+  } finally { await page.close() }
+})
+
+for (const transition of ['same-site', 'cross-site']) test(`read-only account matches reject old getConfig responses after a ${transition} account switch`, async () => {
+  const page = await open('readOnlyAccountMatch=1&allInstalled=1')
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await page.evaluate(() => window.v2Test.holdNextConfigRead())
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
+    await page.evaluate(kind => window.v2Test.emit('onAccountSessionChanged', { authenticated: true,
+      siteId: kind === 'cross-site' ? 'solov-api' : 'solov', realmId: kind === 'cross-site' ? 'api-account' : 'xm-account',
+      account: { userId: kind === 'cross-site' ? 17 : 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 },
+    }), transition)
+    await matchedToolBadges(page, '已有第三方配置')
+    await page.evaluate(async () => {
+      window.v2Test.releaseConfigRead()
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+    await matchedToolBadges(page, '已有第三方配置')
+    for (const id of matchedToolIds) assert.equal(await page.getByTestId(`tool-row-${id}`).getByText('已配好', { exact: true }).count(), 0)
+    await assertNoMatchedKeyOperations(page)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('read-only account matches do not survive logout or a late config read when local tools are reopened', async () => {
+  const page = await open('readOnlyAccountMatch=1&allInstalled=1')
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await page.evaluate(() => window.v2Test.holdNextConfigRead())
+    await page.getByTestId('home-rescan').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="home-rescan"]')?.getAttribute('aria-busy') === 'true')
+    await page.getByRole('button', { name: '打开个人中心 fixture-user', exact: true }).click()
+    await page.getByRole('button', { name: '退出当前账号', exact: true }).click()
+    await page.getByRole('dialog', { name: '退出当前账号？', exact: true }).getByRole('button', { name: '退出登录', exact: true }).click()
+    await page.getByTestId('welcome-login').waitFor()
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-codexDesktop').check()
+    for (let step = 0; step < 2; step++) await page.getByTestId('guide-next').click()
+    await page.getByText('已保留现有第三方配置。请先查看处理步骤，确认哪些设置需要保留后再决定如何连接。', { exact: true }).waitFor()
+    await page.evaluate(async () => {
+      window.v2Test.releaseConfigRead()
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))
+    })
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    const summary = await page.evaluate(() => window.xingmang.getConfig())
+    assert.ok(Object.values(summary.providers).every(provider => provider.configurationAccountMatched === false))
+    await assertNoMatchedKeyOperations(page)
+    await clean(page)
+    await page.goto(`${origin}/src/renderer-v2/testing/app.html?readOnlyAccountMatch=1&allInstalled=1&guest=1&existing=1`)
+    await matchedToolBadges(page, '已有第三方配置')
+    await assertNoMatchedKeyOperations(page)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+for (const scenario of ['manualClaude=1&lostManualMarker=1', 'unownedClaude=1']) test(`restored login preserves a native key when browser ownership is unavailable: ${scenario}`, async () => {
+  const page = await open(`missingConfig=1&allInstalled=1&${scenario}`)
+  try {
+    await page.waitForFunction(() => window.v2Test.calls.some(entry => entry.method === 'configureManagedCliKeys'))
+    const requests = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
+    assert.ok(requests.every(input => !input.providers.includes('claude')))
+    assert.ok(requests.every(input => input.intent !== 'explicit'))
+    const current = await page.evaluate(() => window.xingmang.getConfig())
+    assert.equal(current.providers.claude.apiKeyPreview, 'sk-***')
+    assert.equal(current.providers.claude.model, 'fixture-model')
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('partial Key configuration keeps successful tools and retries recoverably', async () => {
   const page = await open('guest=1&allInstalled=1&bootstrapPartial=1')
   try {
@@ -328,6 +841,32 @@ test('saved-account switching keeps CLI synchronization opt-in', async () => {
   } finally { await page.close() }
 })
 
+test('read-only account matches switch only explicitly selected CLI providers one at a time', async () => {
+  const page = await open('savedAccount=1&readOnlyAccountMatch=1&allInstalled=1')
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await page.getByRole('button', { name: '切换账号', exact: true }).click()
+    const saved = page.getByTestId('saved-accounts-list')
+    await saved.getByText('同步到工具（可选）', { exact: true }).click()
+    await page.getByTestId('account-sync-claude').check()
+    await page.getByTestId('account-sync-codex').check()
+    assert.equal(await page.getByTestId('account-sync-gemini').isChecked(), false)
+    assert.equal(await page.getByTestId('account-sync-grok').isChecked(), false)
+    await saved.getByRole('button', { name: '切换', exact: true }).click()
+    await page.getByRole('button', { name: '打开个人中心 saved-user', exact: true }).waitFor()
+    const writes = await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'configureManagedCliKeys').map(entry => entry.args[0]))
+    assert.deepEqual(writes, [
+      { providers: ['claude'], preferredModels: { claude: 'fixture-model' }, intent: 'explicit' },
+      { providers: ['codex'], preferredModels: { codex: 'fixture-model' }, intent: 'explicit' },
+    ])
+    for (const tool of ['claude', 'codex', 'codexDesktop']) await page.getByTestId(`tool-row-${tool}`).getByText('已配好', { exact: true }).waitFor()
+    for (const tool of ['gemini', 'grok']) await page.getByTestId(`tool-row-${tool}`).getByText('已有第三方配置', { exact: true }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['saveConfig', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('existing local tools remain accessible without a Xingmang account', async () => {
   const page = await open('guest=1&existing=1')
   try {
@@ -340,11 +879,44 @@ test('existing local tools remain accessible without a Xingmang account', async 
   } finally { await page.close() }
 })
 
+test('macOS guide detects an installed Codex Desktop with no config files or CLI runtime', async () => {
+  const page = await open('os=mac&guest=1&missingConfig=1&desktopOnly=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-codexDesktop').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('start-guide').getByText('已安装', { exact: true }).waitFor()
+    await expect(page.getByTestId('guide-next')).toBeEnabled()
+    assert.equal(await page.getByTestId('guide-install').count(), 0)
+    await page.getByTestId('guide-next').click()
+    await page.getByText('尚未选择连接方式', { exact: true }).waitFor()
+    await expect(page.getByTestId('guide-next')).toBeDisabled()
+    const methods = await page.evaluate(() => window.v2Test.calls.map((entry) => entry.method))
+    assert.equal(methods.some((method) => ['installCodexDesktop', 'saveConfig', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(method)), false)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('macOS guide does not report a failed Codex Desktop verification as not installed', async () => {
+  const page = await open('os=mac&guest=1&desktopDetectionFailed=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-codexDesktop').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByText('暂时无法确认工具是否已安装，请重新检测。', { exact: true }).waitFor()
+    await expect(page.getByTestId('guide-installed-rescan')).toBeEnabled()
+    await expect(page.getByTestId('guide-next')).toBeDisabled()
+    assert.equal(await page.getByText('未安装', { exact: true }).count(), 0)
+    assert.equal(await page.getByTestId('guide-install').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
 test('desktop status arriving during the initial scan preserves the full tool snapshot', async () => {
   const page = await open('desktopEvent=1')
   try {
     await page.getByTestId('tool-row-codexDesktop').getByText('v9.9.9 · fixture-model').waitFor()
-    assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 5)
+    assert.equal(await page.locator('[data-testid^="tool-row-"]').count(), 8)
     await clean(page)
   } finally { await page.close() }
 })
@@ -1100,11 +1672,11 @@ test('Sub2API keeps fractional key limits and changing its password returns to l
 })
 
 
-test('automatic login uses returned account ownership without exposing a platform choice', async () => {
+test('explicit historical login uses returned account ownership with customer account-source labels', async () => {
   const page = await open('guest=1&sub2api=1')
   try {
     await page.getByTestId('welcome-login').click()
-    assert.equal(await page.getByTestId('login-site').count(), 0)
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号', exact: true }).click()
     await page.getByTestId('login-account').fill('same@example.test')
     await page.getByTestId('login-password').fill('fixture-password')
     await page.getByTestId('auth-agree').check()
@@ -1185,6 +1757,43 @@ test('configuration keeps the current local key by default and saves through the
     assert.equal(actions.some((entry) => ['configureManagedCliKeys', 'saveConfigWithAccountKey', 'revealApiKey', 'listAccountKeyModels'].includes(entry.method)), false)
     assert.deepEqual(actions.find((entry) => entry.method === 'listConfiguredModels').args, ['codex'])
     assert.equal(await page.evaluate(() => localStorage.getItem(`xingmang-v2:provider-source:v1:${encodeURIComponent('https://xm.solov.cc')}:codex`)), null)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+for (const tool of matchedToolIds) test(`read-only account matches retain account display after keeping the current key and changing the ${tool} model`, async () => {
+  const page = await open('readOnlyAccountMatch=1&allInstalled=1&keyOptions=1&cliDefaultModels=1')
+  const provider = tool === 'codexDesktop' ? 'codex' : tool
+  const selectedModel = defaultModelCases.find(item => item.tool === tool).model
+  try {
+    await matchedToolBadges(page, '已配好')
+    await settleMatchedBootstrap(page)
+    await openToolConfiguration(page, tool)
+    assert.equal(await page.getByRole('button', { name: '使用星芒账号', exact: true }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.getByTestId('tool-key-select').inputValue(), 'current')
+    assert.equal(await page.getByLabel('星芒访问密钥', { exact: true }).count(), 0)
+    await page.getByTestId('tool-detect-models').click()
+    await page.waitForFunction(() => !document.querySelector('.v2-config-controls').disabled)
+    await page.getByLabel('默认模型').selectOption(selectedModel)
+    await page.getByTestId('tool-save-config').click()
+    await page.getByTestId('tool-save-merge').click()
+    await waitForSavedConfiguration(page)
+    await matchedToolBadges(page, '已配好')
+    await page.getByTestId(`tool-row-${tool}`).getByText(`v1.2.3 · ${selectedModel}`, { exact: true }).waitFor()
+    const summary = await page.evaluate(() => window.xingmang.getConfig())
+    assert.equal(summary.providers[provider].configurationOwnership, 'unknown')
+    assert.equal(summary.providers[provider].configurationAccountMatched, true)
+    assert.equal(summary.providers[provider].model, selectedModel)
+    assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter(entry => entry.method === 'saveConfig').map(entry => entry.args[0])), [
+      { provider, apiKey: '', model: selectedModel, mode: 'merge' },
+    ])
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some(entry => ['configureManagedCliKeys', 'saveConfigWithAccountKey', 'revealApiKey', 'revealAccountKey'].includes(entry.method))), false)
+    assert.equal(await page.evaluate(id => localStorage.getItem(`xingmang-v2:provider-source:v1:${encodeURIComponent('https://xm.solov.cc')}:${id}`), provider), null)
+    await openToolConfiguration(page, tool)
+    assert.equal(await page.getByRole('button', { name: '使用星芒账号', exact: true }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.getByTestId('tool-key-select').inputValue(), 'current')
+    assert.equal(await page.getByLabel('默认模型').inputValue(), selectedModel)
+    assert.equal(await page.getByLabel('星芒访问密钥', { exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })
@@ -1431,7 +2040,7 @@ for (const source of ['current', 'selected', 'automatic', 'manual', 'official', 
     if (source === 'official' || source === 'alreadyOfficial') {
       assert.deepEqual(actions[0], { method: 'switchToOfficialAccount', args: ['codex', 'reset'] })
     } else if (source === 'automatic') {
-      assert.deepEqual(actions[0], { method: 'configureManagedCliKeys', args: [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset' }] })
+      assert.deepEqual(actions[0], { method: 'configureManagedCliKeys', args: [{ providers: ['codex'], preferredModels: { codex: 'fixture-model' }, mode: 'reset', intent: 'explicit' }] })
     } else if (source === 'selected') {
       assert.deepEqual(actions[0], { method: 'saveConfigWithAccountKey', args: [{ provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' }] })
     } else {

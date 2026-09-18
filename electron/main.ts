@@ -80,7 +80,7 @@ import { RuntimeLogStore } from './runtime-log'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
-import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, supportServiceUrl, userAgreementUrl } from './relay-sites'
+import { privacyPolicyUrl, relaySiteExternalUrls, relaySites, resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl, userAgreementUrl } from './relay-sites'
 import { createPaymentWindowController } from './payment-window'
 import { createPaymentOrderStatusReader } from './payment-status-reader'
 import {
@@ -143,6 +143,7 @@ const externalUrlAllowlist = [
   userAgreementUrl,
   privacyPolicyUrl,
   supportServiceUrl,
+  sub2ApiSupportServiceUrl,
 ] as const
 
 // The infinite-canvas build's own two runtime-visible external destinations
@@ -554,8 +555,14 @@ if (!hasSingleInstanceLock) {
     process.on('uncaughtExceptionMonitor', onUncaughtException)
     process.on('unhandledRejection', onUnhandledRejection)
 
+    // Overlap the migration's asynchronous marker write with the Windows probe.
+    // Both operations still complete before services and the window are created.
+    const migrationPromise = runCodexContextLimitsMigration(managerDataDirectory, rootedOptions.system.providerRoots)
+    const windowsCliExecutionModePromise = resolveWindowsCliExecutionMode({
+      isPackaged: app.isPackaged,
+    })
     try {
-      const migration = await runCodexContextLimitsMigration(managerDataDirectory, rootedOptions.system.providerRoots)
+      const migration = await migrationPromise
       if (!migration.skipped) {
         runtimeLog.log('info', 'config', 'codex.context-limits.migrated', 'Codex 上下文限制一次性检查已完成', {
           changedFiles: migration.files.length,
@@ -574,15 +581,16 @@ if (!hasSingleInstanceLock) {
     )
     // Resolved before the service is built because it also decides whether an
     // unmanaged npm uninstall can run in-app.
-    const windowsCliExecutionMode = await resolveWindowsCliExecutionMode({
-      isPackaged: app.isPackaged,
-    })
+    const windowsCliExecutionMode = await windowsCliExecutionModePromise
     runtimeLog.log('info', 'security', 'cli.execution-mode', 'CLI 扩展执行边界已确定', {
       mode: windowsCliExecutionMode,
     })
     let readAccountSiteId: () => string = () => 'solov'
+    let readExternalClientAccountId: () => string | null = () => null
     const systemService = createSystemService(settingsStore, {
+      managerDataDirectory,
       getRelaySiteId: () => readAccountSiteId(),
+      getExternalClientAccountId: () => readExternalClientAccountId(),
       windowsExecutionMode: windowsCliExecutionMode,
       ...rootedOptions.system,
       relayFetch,
@@ -712,7 +720,10 @@ if (!hasSingleInstanceLock) {
     }
     const accountSessionStore = new AccountSessionStore(path.join(managerDataDirectory, 'account-session.dat'), safeStorage)
     const savedAccounts = new SavedAccountsStore(path.join(managerDataDirectory, 'saved-accounts.dat'), safeStorage)
-    const vault = createFileRealmAccountVault(managerDataDirectory, safeStorage)
+    const vault = createFileRealmAccountVault(managerDataDirectory, safeStorage, {
+      onRecovered: (backupFileName) => runtimeLog.log('warn', 'account', 'vault.recovered',
+        '本地登录记录无法解密，已保留原密文备份并重建账号存储', { reason: 'decrypt', backupFileName }),
+    })
     let publishedAccountIdentity = ''
     let acceleration: ReturnType<typeof createAccelerationService> | undefined
     const accounts = createRealmAccountService({
@@ -778,7 +789,7 @@ if (!hasSingleInstanceLock) {
         canvasController.setAccountUser(null)
         canvasController.setAccountUser(state.account?.userId ?? null)
         if (state.authenticated && state.account) {
-          const current = businesses.get(siteId)!
+          const current = ensureBusiness(siteId)
           const userId = state.account.userId
           void accountWork.run(async () => {
             await current.canvasRuns.initializeUser(userId)
@@ -790,6 +801,10 @@ if (!hasSingleInstanceLock) {
     })
     readAccountSiteId = () => accounts.getSiteId()
     const accountService = accounts.client
+    readExternalClientAccountId = () => {
+      const state = accountService.getSessionState()
+      return state.authenticated && state.account ? JSON.stringify([accounts.getSiteId(), state.account.userId]) : null
+    }
     const accountWork = createAccountWorkGate({ assertReady: accounts.assertReady, revision: () => accountService.getSessionRevision!() })
     function createBusiness(siteId: RealmAccountSiteId) {
       const definition = requireSiteRuntimeDefinition(siteId)
@@ -1112,9 +1127,28 @@ if (!hasSingleInstanceLock) {
         chatService, imageService, canvasImageService, videoService, canvasRuns, assetProtocol }
     }
     const businesses = new Map<RealmAccountSiteId, ReturnType<typeof createBusiness>>()
-    businesses.set('solov', createBusiness('solov'))
-    businesses.set('solov-api', createBusiness('solov-api'))
-    const currentBusiness = () => businesses.get(accounts.getSiteId())!
+    type CanvasRunListener = Parameters<ReturnType<typeof createCanvasRunService>['subscribe']>[0]
+    type CanvasRunUnsubscribe = ReturnType<ReturnType<typeof createCanvasRunService>['subscribe']>
+    const canvasRunSubscriptions = new Set<{
+      listener: CanvasRunListener
+      removers: Map<RealmAccountSiteId, CanvasRunUnsubscribe>
+    }>()
+    // Construct each realm on first access. The initial realm is still the
+    // account service's default until restoreActive completes below.
+    const ensureBusiness = (siteId: RealmAccountSiteId) => {
+      const existing = businesses.get(siteId)
+      if (existing) return existing
+      const created = createBusiness(siteId)
+      businesses.set(siteId, created)
+      // A renderer subscription can outlive a realm switch. Attach it to a
+      // lazily-created realm as soon as that realm becomes available.
+      for (const subscription of canvasRunSubscriptions) {
+        subscription.removers.set(siteId, created.canvasRuns.subscribe(subscription.listener))
+      }
+      return created
+    }
+    ensureBusiness(accounts.getSiteId())
+    const currentBusiness = () => ensureBusiness(accounts.getSiteId())
     const accountCredentialStore = createRealmServiceDispatch(() => currentBusiness().accountCredentialStore)
     const managedCliKeyStore = createRealmServiceDispatch(() => currentBusiness().managedCliKeyStore)
     const chatKeyStore = createRealmServiceDispatch(() => currentBusiness().chatKeyStore)
@@ -1131,10 +1165,18 @@ if (!hasSingleInstanceLock) {
     const canvasImageService = createRealmServiceDispatch(() => currentBusiness().canvasImageService)
     const videoService = createRealmServiceDispatch(() => currentBusiness().videoService)
     const canvasRuns = createRealmServiceDispatch(() => currentBusiness().canvasRuns)
-    // Run subscriptions outlive a selected realm, so listen to both fixed stores.
+    // Run subscriptions outlive a selected realm, so keep them attached to
+    // every store, including stores created lazily after the initial render.
     canvasRuns.subscribe = (listener) => {
-      const remove = [...businesses.values()].map((business) => business.canvasRuns.subscribe(listener))
-      return () => remove.forEach((unsubscribe) => unsubscribe())
+      const subscription = { listener, removers: new Map<RealmAccountSiteId, CanvasRunUnsubscribe>() }
+      for (const [siteId, business] of businesses) {
+        subscription.removers.set(siteId, business.canvasRuns.subscribe(listener))
+      }
+      canvasRunSubscriptions.add(subscription)
+      return () => {
+        if (!canvasRunSubscriptions.delete(subscription)) return
+        for (const unsubscribe of subscription.removers.values()) unsubscribe()
+      }
     }
     protocol.handle('xingmang-asset', async (request) => {
       try { return await accountWork.run(() => currentBusiness().assetProtocol(request)) }
@@ -1226,6 +1268,8 @@ if (!hasSingleInstanceLock) {
         : await readAccelerationDevelopmentConfig({ isPackaged: false, platform: process.platform, dataDirectory: managerDataDirectory })
       if (accelerationConfig) developmentAcceleration = createAccelerationDevelopmentHost({
         config: accelerationConfig, dataDirectory: managerDataDirectory, packaged: app.isPackaged,
+        onDiagnostic: (stage) => runtimeLog.log('warn', 'network', 'acceleration.stop.failed',
+          '加速停止尚未完成，将保留恢复记录并重试', { stage }),
         ...(app.isPackaged ? { entitlementSource: 'local-device' as const } : {}),
       })
     } catch {
@@ -1243,7 +1287,7 @@ if (!hasSingleInstanceLock) {
       acceleration,
       realmAccounts: accounts,
       accountWork,
-      accountCredentialsForSite: (siteId) => businesses.get(siteId)!.accountCredentialStore,
+      accountCredentialsForSite: (siteId) => ensureBusiness(siteId).accountCredentialStore,
       savedAccounts,
       systemService,
       accountService,

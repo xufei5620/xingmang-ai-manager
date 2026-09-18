@@ -11,6 +11,7 @@ import { readLocalPreference, writeLocalPreference } from '../app/preferences'
 import type { SystemSnapshot } from '../../../../electron/ipc-contract'
 import { networkLocationLabel } from './network'
 import { balanceStatusText, type BalanceStatusView } from './balance-status'
+import { accelerationBonusSeconds, isAccelerationBonusCode, type AccelerationRedemptionResult } from '../../../../electron/acceleration-contract'
 
 interface AccountView extends BalanceStatusView { signedIn: boolean; supportsBilling?: boolean; supportsAnnouncements?: boolean; displayName?: string; email?: string; balance?: string; identity?: AvatarIdentity }
 interface Adapter {
@@ -27,6 +28,7 @@ interface Adapter {
   openHealth?(): void
   openUpdates?(): void
   setSidebarCollapsed?(collapsed: boolean): void
+  redeemAccelerationCode?(code: string): Promise<AccelerationRedemptionResult | null>
 }
 interface ShellProps {
   activePage: PageId
@@ -58,12 +60,44 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
   const [command, setCommand] = useState(false)
   const [query, setQuery] = useState('')
   const [selection, setSelection] = useState(0)
+  const [bonusBusy, setBonusBusy] = useState(false)
+  const [bonusFeedback, setBonusFeedback] = useState<{ error: boolean; text: string } | null>(null)
+  const commandEpoch = useRef(0)
+  const bonusFlight = useRef<object | null>(null)
   const searchRef = useRef<HTMLInputElement>(null)
   const viewport = useRef<HTMLElement>(null)
   const scroll = useRef(new Map<PageId, number>())
   const navigateRef = useRef(adapter.navigate)
   navigateRef.current = adapter.navigate
   const results = pageRegistry.filter((page) => `${page.label} ${page.id}`.toLowerCase().includes(query.toLowerCase().trim()))
+  const bonusAction = Boolean(adapter.redeemAccelerationCode && isAccelerationBonusCode(query))
+  const resultCount = bonusAction ? 1 : results.length
+  useEffect(() => () => { commandEpoch.current++; bonusFlight.current = null }, [])
+  function openCommand() {
+    commandEpoch.current++
+    setCommand(true); setQuery(''); setSelection(0); setBonusFeedback(null)
+  }
+  function closeCommand() { commandEpoch.current++; setCommand(false) }
+  async function redeemBonus() {
+    if (bonusFlight.current || !isAccelerationBonusCode(query) || !adapter.redeemAccelerationCode) return
+    const flight = {}
+    const epoch = commandEpoch.current
+    bonusFlight.current = flight
+    setBonusBusy(true); setBonusFeedback(null)
+    try {
+      const result = await adapter.redeemAccelerationCode(query.trim().toUpperCase())
+      if (commandEpoch.current !== epoch || !result) return
+      setBonusFeedback(result.status === 'redeemed'
+        ? { error: false, text: `领取成功，已增加 ${result.addedSeconds / 60} 分钟加速时长。` }
+        : result.status === 'already-redeemed'
+          ? { error: false, text: '当前账号已在本机领取过该口令。' }
+          : { error: true, text: '口令无效，请核对后重试。' })
+    } catch (cause) {
+      if (commandEpoch.current === epoch) setBonusFeedback({ error: true, text: cause instanceof Error ? cause.message : '领取失败，请稍后重试。' })
+    } finally {
+      if (bonusFlight.current === flight) { bonusFlight.current = null; setBonusBusy(false) }
+    }
+  }
   const balanceStatus = balanceStatusText(account)
   const balanceTitle = `${account.balance ?? '暂未读到'}；${balanceStatus}`
   const balanceRefresh = account.signedIn && adapter.refreshBalance
@@ -73,7 +107,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
     function keydown(event: KeyboardEvent) {
       if (event.isComposing || event.altKey || document.querySelector('dialog[open]')) return
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'k') {
-        event.preventDefault(); setCommand(true); setQuery(''); setSelection(0)
+        event.preventDefault(); openCommand()
       }
       if (event.key === '/' && event.target instanceof Element && !event.target.closest('input, textarea, [contenteditable="true"]')) {
         const field = viewport.current?.querySelector<HTMLInputElement>('input[type="search"], input[aria-label*="搜索"]')
@@ -158,7 +192,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
       </aside>
       <div className="v2-workspace">
         <Starfield quiet paused={false} />
-        <header className="v2-topbar" data-testid="shell-topbar"><button type="button" className="v2-command-trigger" onClick={() => { setCommand(true); setQuery(''); setSelection(0) }}><Search size={16} /><span>搜索、打开、跳转…</span><kbd>{platform === 'mac' ? '⌘K' : 'Ctrl K'}</kbd></button>
+        <header className="v2-topbar" data-testid="shell-topbar"><button type="button" className="v2-command-trigger" onClick={openCommand}><Search size={16} /><span>搜索、打开、跳转…</span><kbd>{platform === 'mac' ? '⌘K' : 'Ctrl K'}</kbd></button>
           <div className="v2-topbar-actions">{account.supportsAnnouncements !== false && <Button size="sm" icon={Bell} onClick={adapter.openAnnouncements} testId="announcement-open">公告{unread && <span className="v2-unread" />}</Button>}<Button size="sm" icon={CircleHelp} onClick={adapter.openHelp}>帮助与客服</Button></div>
         </header>
         {banner}
@@ -176,15 +210,21 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
         {notification && <div className="v2-notification">{notification}</div>}
       </div>
     </div>
-    {command && <Dialog open title="搜索、打开、跳转" onClose={() => setCommand(false)} width={640} initialFocus={searchRef} testId="command-palette">
-      <Input ref={searchRef} type="search" aria-label="搜索页面" value={query} onChange={(event) => { setQuery(event.target.value); setSelection(0) }} onKeyDown={(event) => {
-        if (event.nativeEvent.isComposing) return
-        if (event.key === 'ArrowDown') { event.preventDefault(); setSelection((current) => results.length ? (current + 1) % results.length : 0) }
-        else if (event.key === 'ArrowUp') { event.preventDefault(); setSelection((current) => results.length ? (current + results.length - 1) % results.length : 0) }
-        else if (event.key === 'Enter' && results[selection]) { event.preventDefault(); adapter.navigate?.(results[selection].id); setCommand(false) }
+    {command && <Dialog open title="搜索、打开、跳转" onClose={closeCommand} width={640} initialFocus={searchRef} testId="command-palette">
+      <Input ref={searchRef} type="search" aria-label="搜索页面" value={query} onChange={(event) => { commandEpoch.current++; setQuery(event.target.value); setSelection(0); setBonusFeedback(null) }} onKeyDown={(event) => {
+        if (event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return
+        if (event.key === 'ArrowDown') { event.preventDefault(); setSelection((current) => resultCount ? (current + 1) % resultCount : 0) }
+        else if (event.key === 'ArrowUp') { event.preventDefault(); setSelection((current) => resultCount ? (current + resultCount - 1) % resultCount : 0) }
+        else if (event.key === 'Enter' && bonusAction) { event.preventDefault(); void redeemBonus() }
+        else if (event.key === 'Enter' && results[selection]) { event.preventDefault(); adapter.navigate?.(results[selection].id); closeCommand() }
       }} />
-      <div className="v2-command-results" role="listbox" aria-label="页面与操作">{results.map((item, index) => <button role="option" aria-selected={index === selection} type="button" key={item.id} onClick={() => { adapter.navigate?.(item.id); setCommand(false) }}><item.icon size={18} /><span>{item.label}</span><ArrowRight size={14} /></button>)}</div>
-      {!results.length && <p role="status">没有匹配的页面</p>}
+      <div className="v2-command-results" role="listbox" aria-label="页面与操作">{bonusAction
+        ? <button role="option" aria-selected={selection === 0} aria-busy={bonusBusy} disabled={bonusBusy} type="button" data-testid="command-acceleration-bonus" onClick={() => { void redeemBonus() }}>
+          {bonusBusy ? <RefreshCw size={18} className="xm-spin" aria-hidden="true" /> : <Zap size={18} aria-hidden="true" />}<span>{bonusBusy ? '正在领取…' : `领取 ${accelerationBonusSeconds / 60} 分钟加速时长`}</span><ArrowRight size={14} aria-hidden="true" />
+        </button>
+        : results.map((item, index) => <button role="option" aria-selected={index === selection} type="button" key={item.id} onClick={() => { adapter.navigate?.(item.id); closeCommand() }}><item.icon size={18} /><span>{item.label}</span><ArrowRight size={14} /></button>)}</div>
+      {bonusFeedback && <p role={bonusFeedback.error ? 'alert' : 'status'} data-testid="command-acceleration-feedback">{bonusFeedback.text}</p>}
+      {!resultCount && <p role="status">没有匹配的页面</p>}
     </Dialog>}
     <Coachmark open={Boolean(tourOpen && !command)} {...shellTour[tourStep]} step={tourStep + 1} count={shellTour.length} onNext={() => tourStep + 1 === shellTour.length ? onTourClose?.() : setTourStep((value) => value + 1)} onClose={() => onTourClose?.()} testId="shell-guide-tip" />
   </div>

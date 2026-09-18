@@ -71,7 +71,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
   if (!Number.isSafeInteger(prepareTimeoutMs) || prepareTimeoutMs < 1 || prepareTimeoutMs > 120000) throw new RealmAccountError('INVALID')
   const publicClients = new Map<RealmAccountSiteId, RelayBackendClient>()
   const publicMethods = new Set<keyof RelayBackendClient>([
-    'getLegalDocument', 'sendEmailVerification', 'sendPasswordResetEmail', 'resetPassword', 'register',
+    'getLegalDocument', 'sendEmailVerification', 'register',
   ])
 
   function site(value: unknown): RealmAccountSiteId {
@@ -192,12 +192,16 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     return migration
   }
 
-  async function transition<T>(operation: () => Promise<T>): Promise<T> {
+  async function transition<T>(operation: () => Promise<T>, recoverForLogin = false): Promise<T> {
     if (busy) throw new RealmAccountError('BUSY')
     advance()
     busy = true
     quiescing = true
     try {
+      // Only an explicit login without an active identity may replace an
+      // unreadable vault. Startup and account switching must preserve it.
+      if (recoverForLogin && active.saved === null && !active.client.getSessionState().authenticated
+        && await options.vault.recoverUnreadable()) migration = undefined
       await migrateLegacy()
       prepareDeadline = Date.now() + prepareTimeoutMs
       await prepare(options.quiesce)
@@ -251,7 +255,7 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
         } finally { if (active !== candidate) dispose(candidate) }
       }
       throw new RealmAccountError('LOGIN_REJECTED')
-    })
+    }, true)
   }
   async function logout(): Promise<void> {
     return transition(async () => {

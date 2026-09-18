@@ -1,4 +1,4 @@
-import type { AccelerationApi, AccelerationMode, AccelerationState } from './api'
+import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './api'
 
 export interface AccelerationSnapshot {
   state: AccelerationState | null
@@ -15,6 +15,7 @@ export interface AccelerationController {
   refresh(): Promise<void>
   start(lineId?: string): Promise<void>
   stop(): Promise<void>
+  redeem(code: string): Promise<AccelerationRedemptionResult | null>
   setMode(mode: AccelerationMode): void
   tick(): void
   dispose(): void
@@ -23,6 +24,11 @@ export interface AccelerationController {
 interface ControllerOptions {
   now?: () => number
   schedule?: (callback: () => void, delayMs: number) => () => void
+}
+
+interface MutationFlight {
+  promise: Promise<void>
+  redemption?: Promise<AccelerationRedemptionResult | null>
 }
 
 function scheduleTimeout(callback: () => void, delayMs: number) {
@@ -50,7 +56,7 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
   let revision = 0
   let expiryRequested = false
   let readFlight: { promise: Promise<void> } | null = null
-  let mutation: { promise: Promise<void> } | null = null
+  let mutation: MutationFlight | null = null
   let cancelTick: (() => void) | undefined
   let cancelPoll: (() => void) | undefined
   let cancelExpiry: (() => void) | undefined
@@ -212,6 +218,52 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
   function start(lineId?: string) { return run('start', lineId) }
   function stop() { return run('stop') }
 
+  function redeem(code: string): Promise<AccelerationRedemptionResult | null> {
+    if (disposed) return Promise.resolve(null)
+    if (!scope) return Promise.reject(new Error('请先登录星芒账号，再领取加速时长。'))
+    if (mutation) return mutation.redemption ?? Promise.reject(new Error('加速操作正在进行，请稍后再领取。'))
+    const redeemCode = api.redeemAccelerationCode
+    if (!redeemCode) return Promise.reject(new Error('加速服务暂未就绪，请稍后重试。'))
+    const requestScope = scope
+    const requestEpoch = epoch
+    const requestRevision = ++revision
+    const current = () => !disposed && epoch === requestEpoch && revision === requestRevision && scope === requestScope
+    const flight: MutationFlight = { promise: Promise.resolve() }
+    mutation = flight
+    // A read started before this mutation must not restore the pre-redemption balance.
+    readFlight = null
+    cancelPoll?.()
+    cancelPoll = undefined
+    cancelExpiry?.()
+    cancelExpiry = undefined
+    publish({ busy: true, error: null })
+    flight.redemption = Promise.resolve().then(async () => {
+      if (!current()) return null
+      try {
+        const result = await redeemCode(requestScope, code)
+        if (!current()) return null
+        accept(result.state)
+        if (result.state.remainingSeconds !== null && result.state.remainingSeconds > 0) expiryRequested = false
+        return result
+      } catch (cause) {
+        if (!current()) return null
+        publish({ error: errorMessage(cause) })
+        throw cause
+      } finally {
+        if (current() && mutation === flight) {
+          mutation = null
+          publish({ busy: false })
+          schedulePoll()
+          scheduleExpiry()
+        }
+      }
+    })
+    // Existing start/stop/refresh callers await the mutation without consuming its
+    // result or reporting its rejection; the submitter owns redemption feedback.
+    flight.promise = flight.redemption.then(() => undefined, () => undefined)
+    return flight.redemption
+  }
+
   return {
     getSnapshot: () => snapshot,
     subscribe(listener) {
@@ -241,7 +293,7 @@ export function createAccelerationController(api: AccelerationApi, { now = () =>
       schedulePoll()
       if (visible) void refresh()
     },
-    refresh, start, stop, tick,
+    refresh, start, stop, redeem, tick,
     setMode(mode) {
       if (disposed || snapshot.busy || connected(source) || source?.phase === 'connecting' || (mode !== 'system-proxy' && mode !== 'tun')) return
       publish({ mode })

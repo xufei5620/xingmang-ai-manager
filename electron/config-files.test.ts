@@ -254,6 +254,31 @@ describe('native CLI configuration files', () => {
     expect(merged).not.toHaveProperty('model_auto_compact_token_limit')
   })
 
+  it.each(['merge', 'reset'] as const)('keeps non-GPT model IDs on Responses during %s', (mode) => {
+    const home = temporaryHome()
+    const roots = providerRoots(home)
+    const [configPath] = providerConfigPaths('codex', roots)
+
+    fs.mkdirSync(path.dirname(configPath), { recursive: true })
+    fs.writeFileSync(configPath, [
+      'model_provider = "XingmangAI"',
+      '[model_providers.XingmangAI]',
+      'base_url = "https://xm.solov.cc/v1"',
+      'wire_api = "chat"',
+      '',
+    ].join('\n'), 'utf8')
+
+    saveProviderConfig('codex', 'sk-key', 'deepseek-v4-flash', mode, roots, {}, providerBaseUrls)
+
+    const parsed = asRecord(TOML.parse(fs.readFileSync(configPath, 'utf8')))!
+    expect(parsed.model).toBe('deepseek-v4-flash')
+    expect(parsed.review_model).toBe('deepseek-v4-flash')
+    expect(asRecord(parsed.model_providers)?.XingmangAI).toMatchObject({
+      base_url: 'https://xm.solov.cc/v1',
+      wire_api: 'responses',
+    })
+  })
+
   it('reads and writes Codex at codexHome while every other provider stays at userHome', () => {
     const userHome = temporaryHome()
     const codexParent = temporaryHome()

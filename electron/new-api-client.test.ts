@@ -1806,6 +1806,14 @@ describe('getUsage', () => {
     expect(statUrl.searchParams.has('upstream_request_id')).toBe(false)
   })
 
+  it('rejects Sub2API-only usage filters instead of silently widening a NewAPI query', async () => {
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    await expect(client.getUsage({ startDate: '2026-09-08', endDate: '2026-09-08', timezone: 'Asia/Shanghai' })).rejects.toThrow('不支持')
+    await expect(client.getUsage({ apiKeyId: 4 })).rejects.toThrow('不支持')
+    expect(fetchImpl).not.toHaveBeenCalled()
+  })
+
   it('parses the returned items into usage records', async () => {
     const fetchImpl = vi.fn<NewApiFetch>()
     const client = await authenticatedClient(fetchImpl)

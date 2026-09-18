@@ -11,9 +11,15 @@ npm install
 npm run dev
 ```
 
-开发窗口默认使用 `1590 x 875`，主题首次为暗色，后续读取用户设置。开发版继承启动终端的权限；Windows 正式包按当前登录用户权限运行，不再在日常启动时弹出 UAC。
+`npm run dev` 和 `npm run compile` 默认使用 v2 界面；旧界面仅通过 `npm run dev:legacy` 或 `npm run compile:legacy` 显式选择。v2 首次绘制使用亮色，随后载入用户外观设置。开发版继承启动终端的权限；Windows 正式包按当前登录用户权限运行，不再在日常启动时弹出 UAC。
 
-Windows 主程序使用 `requestedExecutionLevel: asInvoker`。四个 CLI 的控制台和 Codex 桌面端都按当前桌面用户启动；普通模式下 npm CLI 安装到用户 npm 全局目录，Grok 安装到 `%USERPROFILE%\.grok\bin`。若用户手工选择“以管理员身份运行”，程序会自动收紧外部命令边界。NSIS 安装器、主程序更新或 Node.js 系统安装仍可在实际需要时由 Windows 单独请求授权。正式发布仍必须使用 Authenticode 签名。
+首页将 **WorkBuddy、Claude Desktop、OpenCode** 与现有工具一起放在“你的工具 / 还可以装”列表中。未安装时显示“安装”，已安装未配置时显示“配置”，配置完成后显示“打开”；工具行同步显示版本、运行状态和安装进度。Codex 行的右侧更多菜单提供“非 GPT 模型”入口。配置弹窗支持选择已有工具密钥、账号密钥或手动填写密钥，检测模型后保存。
+
+旧 CLI 配置缺少来源记录时，扫描会只读比对当前账号的本机加密密钥缓存；Key、工具和服务地址一致即可正确识别账号配置。账号匹配不会授予自动改写权限，手动配置继续保留。新增账号来源记录绑定站点和用户，切账号或退出后重新判定；本机缓存缺失、不可读或不匹配时仍显示“已有第三方配置”，不据此重写 Key。
+
+登录后，在顶部“搜索、打开、跳转”输入 `XM-NEBULA-10M-7Q9K`，按 Enter 或点击“领取 10 分钟加速时长”，可增加 600 秒加速时间。忽略英文大小写与首尾空白；每个账号在本机领取一次，按账号来源隔离，重启后保留。已有用量不清零，正在加速时会延长到期时间；这是本机加速权益，不同步到其他设备。
+
+Windows 主程序使用 `requestedExecutionLevel: asInvoker`。四个 CLI 的控制台和 Codex 桌面端都按当前桌面用户启动；普通模式下 npm CLI 安装到用户 npm 全局目录，Grok 安装到 `%USERPROFILE%\.grok\bin`。若用户手工选择“以管理员身份运行”，程序会自动收紧外部命令边界。NSIS 安装器、主程序更新或 Node.js 系统安装仍可在实际需要时由 Windows 单独请求授权。Codex Desktop MSIX 如因打包服务返回 `0x80073D28`，仅本次安装请求 UAC；取消即停止，日常启动不提权。正式发布仍必须使用 Authenticode 签名。
 
 完整验证命令：
 
@@ -33,6 +39,8 @@ npm run audit:production
 ## macOS 开发与打包
 
 macOS 需要 13.0 或更高版本。开发态可运行 `npm run dev`；Finder 启动的应用不会读取交互式 shell 的 `PATH`，请将 Node.js 和 AI CLI 安装到系统或常见用户可执行目录后再启动。完整的开发、终端 PATH 和打包说明见 [macOS 开发手册](docs/MACOS_DEVELOPMENT.md)。
+
+Codex Desktop 的安装检测独立于配置文件，兼容 Apple Silicon 上的 Rosetta 场景；后台加速进程不会持续占用额外 Dock 图标。客户机检测方法见 [macOS 客户端诊断](docs/MACOS-CLIENT-DIAGNOSTICS.md)。
 
 本机可构建仅带 ad-hoc 完整性签名的 Apple Silicon 解包应用：
 
@@ -100,11 +108,36 @@ npm run dev
 
 ## 原生配置
 
-星芒 AI 固定地址（2026-08-10 起中转与账号后端统一为 new-api 实例 `xm.solov.cc`）：
+当前账号站点决定写入地址，客户端配置请求不能另行覆盖：
 
-- Codex CLI、Codex 桌面端、Grok CLI：`https://xm.solov.cc/v1`
-- Claude Code、Gemini CLI：`https://xm.solov.cc`
+| 账号站点 | Codex / Grok / OpenCode 基础地址 | Claude Code / Gemini / Claude Desktop gateway 基础地址 |
+| --- | --- | --- |
+| 星芒AI（账号登录） | `https://xm.solov.cc/v1` | `https://xm.solov.cc` |
+| 星芒AI（Sub2API 账号） | `https://api.solov.cc/v1` | `https://api.solov.cc` |
 
-设置页提供站点下拉（`electron/relay-sites.ts` 注册表）：「星芒AI（账号登录）」与「星芒AI（Key 直连）」共用同一 relay 域，仅账号模式不同；默认站点行为与历史版本一致。
+WorkBuddy 使用对应站点的 `/v1/chat/completions` 完整地址，默认写入 `~/.workbuddy/models.json`。新文件为数组，兼容保留已有 `models/availableModels` 对象结构；新模型使用 `vendor: "Custom"`。保存前重新检测所选 Key 的模型权限；模型不在授权列表、账号切换或站点变化时拒绝写入。
 
 Codex CLI 与 Codex 桌面端共用 `%USERPROFILE%\.codex` 配置。已有配置保存前会创建时间戳备份，用户可选择只更新 API Key/模型或重置为星芒初始配置。
+
+首页工具行的当前配置能力与验证范围（WorkBuddy 桌面契约于 2026-09-18 纠正，Claude 本地配置于 2026-09-19 更新）：
+
+| 入口 | 已实现 | 验证边界 |
+| --- | --- | --- |
+| Codex 非 GPT 模型 | 从所选 Key 检测模型，按名称筛选并显式选择，保存至 Codex CLI/桌面端共享配置 | 真实 CLI 0.153.4 向本地 Responses mock 发送非 GPT 模型 ID，流式、错误和应用层取消通过；工具回传成立但命令受本机策略阻断，生产上游未验收 |
+| WorkBuddy | 增量更新 `~/.workbuddy/models.json`，新建数组并兼容已有对象，保留已有模型与未知字段，事务备份和替换 | 已安装桌面版 5.5.6 源码确认配置契约；历史 lite-wb 本地 mock 结果不能作为桌面加载验收，修正后的桌面加载与生产推理仍需验证 |
+| Claude Desktop | 开启开发模式，保存并激活原生第三方推理 `configLibrary` 配置；备份已有文件，检测系统策略冲突；重启客户端生效 | 本机 Claude 2.2553.1.0 源码和官方文档核实保存契约；隔离文件、服务接线和界面测试通过，真实加载与生产推理尚未验证 |
+| OpenCode | 合并全局 JSON/JSONC 配置、选择 SDK、设置默认模型；保留注释、其他模型与配置备份 | 真实 CLI 1.18.31 在本地 mock 上通过两种协议的流式响应和工具回传；未验证星芒生产上游、桌面 UI 或其他版本 |
+
+此前客户端接入完成 468 项定向单测、另 24 项服务集成测试，以及 v2 全 App 浏览器测试 78/78。Claude 本地配置改造的最新验证范围见 [外部客户端配置](docs/EXTERNAL-CLIENT-CONFIG.md)。真实运行时证据见 [Codex 隔离报告](artifacts/codex-non-gpt-client-audit-report.md)、[OpenCode 四场景报告](artifacts/opencode-client-audit-report.md)和 [WorkBuddy 历史 lite 两场景报告及纠正](artifacts/workbuddy-client-audit-report.md)。配置保存成功不代表生产模型调用已经接通。
+
+此前 WorkBuddy 写入 `.codebuddy/models.json` 是桌面未加载配置的直接原因，原 `vendor: "OpenAI"` 和对象根格式本身并非无效。保存后重新进入 WorkBuddy 模型设置页确认，必要时自行重启客户端；工具不会自动结束会话。源码证据见 [WorkBuddy 5.5.6 桌面配置契约](artifacts/workbuddy-model-contract-2026-09-18/report.md)。
+
+Windows 外部桌面客户端的一键安装使用系统 winget 的精确包 `Tencent.WorkBuddy`、`Anthropic.Claude`、`SST.OpenCodeDesktop`，完成后重新检测安装结果。WorkBuddy 当前安装源为 x64；Claude Desktop/OpenCode 支持 x64 与 arm64。缺少受信任的 winget 时显示修复提示。macOS 当前支持检测和打开已安装的官方应用，自动安装尚未实现，需先从官网下载并放入 Applications。安装源、签名和本机检测证据见 [官方安装来源记录](artifacts/external-client-install-sources.md)；本轮未实际安装这三个客户端。
+
+使用步骤与配置细节见 [外部客户端配置](docs/EXTERNAL-CLIENT-CONFIG.md)和 [Codex 账号与模型配置](docs/CODEX-ACCOUNT-CONFIG.md)，实施记录见 [进度记录](docs/IMPLEMENTATION-PROGRESS-2026-09-17.md)。
+
+## 启动性能状态
+
+聊天、业务页和加速页改为首次访问时加载。同条件生产构建首屏 JavaScript 从 832,414 字节降至 668,193 字节，减少 **19.7%**；生产 fixture 验证首屏没有加载三个页面 chunk，导航保活与账号隔离正常，见 [首屏加载报告](artifacts/startup-audit-report.md)。
+
+启动链路还将迁移的异步收尾与 Windows 权限探测重叠，并延迟构造未使用账号域的业务实例。窗口创建仍等待权限探测与资源检查，v2 工作台仍等待账号恢复；没有同条件 Electron 冷/热启动的完整前后计时，首屏代码减少不代表整体启动耗时减少相同比例。
