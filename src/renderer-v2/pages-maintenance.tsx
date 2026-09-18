@@ -57,6 +57,7 @@ import {
   ResultNotice,
   useOperation,
   useResource,
+  userFacingErrorMessage,
 } from './business-common'
 import {
   notificationOptions,
@@ -615,7 +616,7 @@ export function UpdatesPage({
             <Notice
               tone="warn"
               title="更新没有装上"
-              body={update.error.message}
+              body={userFacingErrorMessage(update.error)}
               actions={
                 <>
                   <Button size="sm" icon={Download} onClick={download}>

@@ -9,6 +9,7 @@ import {
 } from '../../../../electron/ipc-contract'
 import { tools } from '../../registry/tools'
 import { connectionReady, sourceFor } from './model'
+import { errorMessage } from '../../business-common'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -217,7 +218,7 @@ export async function bootstrapAccountTools(
   try {
     synchronized = await api.syncManagedCliKeys()
   } catch (error) {
-    syncError = error instanceof Error ? error.message : '账号专属 Key 没有同步完成'
+    syncError = errorMessage(error, '账号专属 Key 没有同步完成')
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
