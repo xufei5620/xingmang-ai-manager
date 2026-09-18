@@ -1275,6 +1275,14 @@ if (!hasSingleInstanceLock) {
     } catch {
       runtimeLog.log('warn', 'network', 'acceleration.config.invalid', '本机加速资源校验未通过')
     }
+    // The worker restores a proxy lease left by a crash as part of its own
+    // initialization, and it only starts when a request reaches it. Every other
+    // request carries an account scope, so a machine left pointing at a dead
+    // acceleration port would never recover: the dead proxy blocks the sign-in
+    // that would have produced the first scoped request.
+    if (developmentAcceleration) void developmentAcceleration.recover().catch((error) => {
+      runtimeLog.exception('network', 'acceleration.recover.failed', error)
+    })
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
       getAccountScope: () => {
