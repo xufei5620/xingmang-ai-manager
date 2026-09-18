@@ -10,6 +10,7 @@ import {
 import { Button, Empty, Pill } from './ui'
 import { errors } from './registry/errors'
 import { presentOperationError } from './operation-error'
+import { matchAccountErrorMessage } from './features/auth/account-errors'
 
 const pendingOperations = new Map<symbol, string>()
 export const pendingBusinessOperations = () => [...pendingOperations.values()]
@@ -20,8 +21,13 @@ export function beginBusinessOperation(label: string) {
     pendingOperations.delete(id)
   }
 }
-export const errorMessage = (error: unknown) =>
-  error instanceof Error && /[\u3400-\u9fff]/.test(error.message)
+export const errorMessage = (error: unknown) => {
+  // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
+  // 精确文案。new-api 默认回英文，英文原文会被下面的兜底抹成一句“操作没有成功”；
+  // 中文原文虽然会原样透出，但也少了该怎么办的那半句。两种都让用户只能反复重试。
+  const known = error instanceof Error ? matchAccountErrorMessage(error.message) : null
+  if (known) return known
+  return error instanceof Error && /[\u3400-\u9fff]/.test(error.message)
     ? error.message
     : error instanceof Error && /401|unauthorized/i.test(error.message)
       ? `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
@@ -29,6 +35,7 @@ export const errorMessage = (error: unknown) =>
           /timeout|ENOTFOUND|ECONN|fetch/i.test(error.message)
         ? `${errors.timeout.title}，请检查网络后重试。`
         : '操作没有成功，请重试或查看反馈日志。'
+}
 export const displayDate = (value: string | number | null | undefined) => {
   if (value === null || value === undefined || value === '') return '暂未记录'
   const date = new Date(

@@ -29,7 +29,10 @@ const rules: Array<{ key: OperationErrorHint['key']; match: (message: string) =>
   { key: 'updateIntegrity', match: (message) => /更新|升级/.test(message) && /(SHA-512|完整性|校验)[^。；]{0,12}(失败|不一致|无效)/.test(message) },
   { key: 'permission', match: (message) => /EPERM|EACCES|operation not permitted|permission denied|拒绝访问|访问被拒绝|权限不足|需要管理员/i.test(message) },
   { key: 'installBlocked', match: (message) => /EBUSY|resource busy or locked|杀毒|防病毒|病毒|Defender|已被隔离|文件被占用|正在被使用/i.test(message) },
-  { key: 'server', match: (message) => /(^|\D)(500|502|503|504)(\D|$)|internal server error|bad gateway|服务器(内部)?错误|服务暂时不可用/i.test(message) },
+  // 「服务暂时不可用」is deliberately absent: features/auth/account-errors.ts
+  // already turns that server error into a finished sentence, and re-wrapping a
+  // finished sentence in a second heading reads as a bug.
+  { key: 'server', match: (message) => /(^|\D)(500|502|503|504)(\D|$)|internal server error|bad gateway|服务器(内部)?错误/i.test(message) },
   { key: 'downloadTimeout', match: (message) => downloadContext(message) && networkFailure(message) },
   { key: 'timeout', match: (message) => networkFailure(message) },
 ]

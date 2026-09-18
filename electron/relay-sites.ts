@@ -72,7 +72,7 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   },
   {
     id: 'solov-api',
-    label: '星芒AI（Sub2API 账号）',
+    label: '星芒AI（历史账号）',
     providerBaseUrls: {
       claude: 'https://api.solov.cc',
       codex: 'https://api.solov.cc/v1',
