@@ -11,10 +11,16 @@ let server, alternateServer, storeClass, root
 const browsers = new Set()
 before(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-notice-persistence-'))
-  const configuration = { root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error', server: { host: '127.0.0.1', port: 0 } }
-  server = await createServer(configuration)
+  // Concurrent origins must not replace each other's optimized dependency files.
+  const configuration = (name) => ({
+    root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error',
+    cacheDir: path.join(root, name),
+    optimizeDeps: { entries: ['src/renderer-v2/testing/app.html'] },
+    server: { host: '127.0.0.1', port: 0, fs: { allow: [path.resolve('.'), root] } },
+  })
+  server = await createServer(configuration('primary-vite-cache'))
   await server.listen()
-  alternateServer = await createServer(configuration)
+  alternateServer = await createServer(configuration('alternate-vite-cache'))
   await alternateServer.listen()
   storeClass = (await server.ssrLoadModule('/electron/announcement-read-store.ts')).AnnouncementReadStore
 })
@@ -31,11 +37,17 @@ async function open(store, { alternate = false, query = 'noticeCollection=1', be
   browsers.add(browser)
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
   const origin = `http://127.0.0.1:${(alternate ? alternateServer : server).httpServer.address().port}`
+  const loadErrors = []
+  const recordError = (message) => { if (loadErrors.length < 20) loadErrors.push(message) }
+  page.on('pageerror', (error) => recordError(error.message))
+  page.on('requestfailed', (request) => recordError(`${new URL(request.url()).pathname}: ${request.failure()?.errorText}`))
+  page.on('response', (response) => { if (response.status() >= 400) recordError(`${new URL(response.url()).pathname}: HTTP ${response.status()}`) })
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
   await page.exposeFunction('fixtureNoticeStore', sync ?? ((scope, ids) => store.sync(scope, ids)))
   if (beforeNavigate) await beforeNavigate(page)
   await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
-  await page.getByTestId('announcement-open').click()
+  try { await page.getByTestId('announcement-open').click() }
+  catch (error) { throw new Error(`Announcement fixture did not load: ${JSON.stringify(loadErrors)}`, { cause: error }) }
   const dialog = page.getByRole('dialog', { name: '公告', exact: true })
   const list = dialog.getByTestId('announcement-list')
   return { browser, page, dialog, list }
