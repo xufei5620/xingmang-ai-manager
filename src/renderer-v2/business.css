@@ -548,3 +548,4 @@
   border-radius: 50%;
   flex: none;
 }
+.v2-connection-note { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; overflow-wrap: anywhere; }

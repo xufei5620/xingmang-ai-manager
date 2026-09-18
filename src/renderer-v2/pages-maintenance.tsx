@@ -18,6 +18,7 @@ import {
   HeartPulse,
   HelpCircle,
   MoreHorizontal,
+  PlugZap,
   RefreshCw,
   Search,
   Settings,
@@ -66,6 +67,7 @@ import {
 } from './registry/business'
 import { tools } from './registry/tools'
 import { canUninstallTool } from './features/tools/model'
+import { connectionCheckView } from './features/tools/connection-check'
 import type { V2Bridge, V2Page } from './types'
 import type {
   PlatformProxyStatus,
@@ -83,6 +85,7 @@ type RuntimeLog = Awaited<
   ReturnType<V2Bridge['getRuntimeLogs']>
 >['entries'][number]
 type Provider = Parameters<V2Bridge['installCli']>[0]
+type ConnectionCheck = Awaited<ReturnType<V2Bridge['checkProviderConnection']>>
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
   openLogin?: () => void
@@ -119,6 +122,24 @@ export function HealthPage({
   const resource = useResource(load)
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
+  const [connection, setConnection] = useState<ConnectionCheck | null>(null)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
+  const [connectionBusy, setConnectionBusy] = useState(false)
+  // 自检要花账上的几个 token，所以只在用户点按钮时跑，不跟着 diagnostics:run 走。
+  const runConnectionCheck = async () => {
+    setConnectionBusy(true)
+    setConnectionError(null)
+    try {
+      setConnection(await api.checkProviderConnection('claude'))
+    } catch (error) {
+      setConnection(null)
+      setConnectionError(errorMessage(error))
+    } finally {
+      setConnectionBusy(false)
+    }
+  }
+  const connectionView = connection ? connectionCheckView(connection) : null
+  const connectionTarget = connectionView?.target ?? null
   const fix = (item: Diagnostic) => {
     const provider = item.code.replace('PROVIDER_', '').toLowerCase()
     if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig)
@@ -146,6 +167,65 @@ export function HealthPage({
         }
       />
       <ResultNotice {...operation} />
+      <Card
+        title="连接自检"
+        meta="用 Claude Code 配置里真正写着的密钥和模型发一次最小请求；上面的检查只证明网络通，这一条证明你现在能用。"
+        actions={
+          <Button
+            icon={PlugZap}
+            loading={connectionBusy}
+            onClick={() => void runConnectionCheck()}
+            testId="health-connection-run"
+          >
+            测试连接
+          </Button>
+        }
+        testId="health-connection"
+      >
+        {connectionError && (
+          <Notice
+            tone="bad"
+            title="自检没能完成"
+            body={connectionError}
+            testId="health-connection-error"
+          />
+        )}
+        {connectionView && (
+          <Notice
+            tone={connectionView.tone}
+            title={connectionView.title}
+            body={
+              <>
+                <div>{connectionView.body}</div>
+                {connectionView.endpoint && (
+                  <div className="v2-connection-note">请求地址：{connectionView.endpoint}</div>
+                )}
+                {connectionView.detail && (
+                  <div className="v2-connection-note">服务返回：{connectionView.detail}</div>
+                )}
+              </>
+            }
+            actions={
+              connectionTarget && (
+                <Button
+                  size="sm"
+                  icon={Wrench}
+                  onClick={() => navigate?.(connectionTarget)}
+                  testId="health-connection-fix"
+                >
+                  去处理
+                </Button>
+              )
+            }
+            testId="health-connection-result"
+          />
+        )}
+        {!connectionView && !connectionError && (
+          <p className="v2-connection-note" data-testid="health-connection-idle">
+            还没有测过。点「测试连接」，失败时会直接说是网络、密钥、额度、分组还是模型的问题。
+          </p>
+        )}
+      </Card>
       {resource.data && (
         <Toolbar
           left={

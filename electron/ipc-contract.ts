@@ -69,6 +69,10 @@ import type {
   DiagnosticsReport as MainDiagnosticsReport,
 } from './diagnostics'
 import type {
+  ConnectionCheckLayer as MainConnectionCheckLayer,
+  ConnectionCheckResult as MainConnectionCheckResult,
+} from './connection-check'
+import type {
   AppConfigSummary as MainAppConfigSummary,
   CliStatus as MainCliStatus,
   CodexDesktopLaunchMode as MainCodexDesktopLaunchMode,
@@ -204,6 +208,8 @@ export type SavedAccount = SavedAccountSummary
 export type RepositoryContext = CodexRepositoryContext
 export type DiagnosticState = MainDiagnosticState
 export type DiagnosticsReport = MainDiagnosticsReport
+export type ConnectionCheckLayer = MainConnectionCheckLayer
+export type ConnectionCheckResult = MainConnectionCheckResult
 export type BackupReason = ConfigBackupReason
 export type ConfigBackupSummary = StoredConfigBackupSummary
 export type ConfigBackupPreview = StoredConfigBackupPreview
@@ -797,6 +803,17 @@ export interface XingmangInvokeContract {
   copyAiChatAsset: IpcInvokeDefinition<'chat:copy-asset', [assetId: string], void>
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
+  /**
+   * 连接自检：用该工具配置文件里真正写着的 Key 和模型，向星芒服务发一次
+   * 最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的一层。
+   * diagnostics:run 的 XINGMANG_NETWORK 只发 HEAD，证明网络通不证明能用，
+   * 所以这条单独成通道、只在用户点按钮时才花那几个 token。
+   */
+  checkProviderConnection: IpcInvokeDefinition<
+    'diagnostics:check-connection',
+    [provider: ProviderId],
+    ConnectionCheckResult
+  >
   getAccountKeyOptions: IpcInvokeDefinition<'account:get-key-options', [provider: ProviderId], AccountKeyOptions>
 }
 
@@ -997,6 +1014,7 @@ export const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  checkProviderConnection: 'diagnostics:check-connection',
   getAccountKeyOptions: 'account:get-key-options',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']

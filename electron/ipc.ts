@@ -17,7 +17,7 @@ import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi } from './acceleration-contract'
-import { cliCatalog, isProviderId } from './catalog'
+import { cliCatalog, isProviderId, type ProviderId } from './catalog'
 import {
   configureManagedClis,
   syncManagedCliKeySummary,
@@ -99,6 +99,7 @@ import type {
   RememberedAccountLogin,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
+import type { ConnectionCheckResult } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { platformCapabilitiesFor } from './platform-capabilities'
@@ -116,6 +117,7 @@ export interface IpcRegistrationOptions {
   backupStore: ConfigBackupStore
   diagnosticsService: {
     run(): Promise<DiagnosticsReport>
+    checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
     exportLatest(): string
   }
   runtimeLog: RuntimeLogStore
@@ -1090,6 +1092,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'settings:get': '应用设置读取',
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
+  'diagnostics:check-connection': '连接自检',
   'diagnostics:export': '诊断报告导出',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
@@ -1304,6 +1307,14 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
   if (count !== null) detail.itemCount = count
   if (channel === 'diagnostics:run' && isRecord(result) && isRecord(result.counts)) {
     detail.counts = result.counts
+  }
+  // 站点切换对用户无感(老板拍板),界面永不显示 siteId;但客服排查一条
+  // 自检工单时必须知道当时走的是哪个后端,所以只在日志里留下它。
+  if (channel === 'diagnostics:check-connection' && isRecord(result)) {
+    detail.layer = result.layer
+    detail.ok = result.ok
+    detail.siteId = result.siteId
+    detail.status = result.status
   }
   return detail
 }
@@ -2396,6 +2407,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
       },
     )
+  })
+
+  registerTrustedHandler('diagnostics:check-connection', (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    return options.diagnosticsService.checkConnection(provider)
   })
 
   registerTrustedHandler('account:get-key-options', (_event, provider: unknown) => {
