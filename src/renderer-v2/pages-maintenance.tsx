@@ -66,6 +66,7 @@ import {
 } from './registry/business'
 import { tools } from './registry/tools'
 import { canUninstallTool } from './features/tools/model'
+import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import type { V2Bridge, V2Page } from './types'
 import type {
   PlatformProxyStatus,
@@ -543,6 +544,17 @@ export function UpdatesPage({
       async () => resource.setData(await api.downloadUpdate()),
       '',
     )
+  // A rejected package leaves the updater in the error phase, where downloadUpdate
+  // alone would fail: the retry has to re-check before it has anything to fetch.
+  const redownload = () =>
+    void operation.execute(
+      'download',
+      async () => {
+        const checked = await api.checkForUpdates()
+        resource.setData(checked.phase === 'available' ? await api.downloadUpdate() : checked)
+      },
+      '',
+    )
   const action =
     update?.phase === 'available' || update?.phase === 'cancelled' ? (
       <Button variant="primary" icon={Download} onClick={download}>
@@ -593,6 +605,13 @@ export function UpdatesPage({
             meta={update?.currentVersion ?? '暂未读到'}
           />
           <ListRow title="上次检查" meta={displayDate(update?.checkedAt)} />
+          {update?.unsignedChannel && (
+            <ListRow
+              title="更新通道"
+              meta="未签名，下载和安装都要你确认"
+              testId="updates-channel-unsigned"
+            />
+          )}
           <ListRow
             title="启动时检查"
             actions={
@@ -618,7 +637,7 @@ export function UpdatesPage({
               body={update.error.message}
               actions={
                 <>
-                  <Button size="sm" icon={Download} onClick={download}>
+                  <Button size="sm" icon={Download} onClick={redownload}>
                     重新下载
                   </Button>
                   <Button
@@ -695,6 +714,7 @@ export function MaintenancePage({
   const operation = useOperation()
   const [logs, setLogs] = useState<string[]>([])
   const [remove, setRemove] = useState<Provider | 'codexDesktop' | null>(null)
+  const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
       setLogs((previous) => [...previous.slice(-199), event.message]),
@@ -773,9 +793,14 @@ export function MaintenancePage({
             id === 'codexDesktop'
               ? resource.data?.capability.codexDesktop.install === 'managed'
               : resource.data?.capability.cliInstall[id] === 'managed'
+          // A probe that failed says nothing about what is installed, so the
+          // row offers a rescan instead of an install that could land on top
+          // of a working tool.
+          const detectionFailed = status?.detectionFailed === true
           return (
             <ListRow
               key={id}
+              testId={'maintenance-tool-' + id}
               title={
                 <>
                   <BrandIcon tool={id} size={32} />
@@ -786,8 +811,8 @@ export function MaintenancePage({
               meta={
                 <>
                   {version || '未找到版本'}{' '}
-                  <Pill tone={status?.installed ? 'ok' : 'neutral'}>
-                    {status?.installed ? '已安装' : '未安装'}
+                  <Pill tone={detectionFailed ? 'bad' : status?.installed ? 'ok' : 'neutral'}>
+                    {detectionFailed ? '检测失败' : status?.installed ? '已安装' : '未安装'}
                   </Pill>
                 </>
               }
@@ -795,11 +820,11 @@ export function MaintenancePage({
                 <>
                   <Button
                     size="sm"
-                    icon={status?.installed ? RefreshCw : Download}
-                    disabled={!managed || Boolean(operation.busy)}
-                    onClick={() => install(id)}
+                    icon={detectionFailed || status?.installed ? RefreshCw : Download}
+                    disabled={(!managed && !detectionFailed) || Boolean(operation.busy)}
+                    onClick={() => detectionFailed ? check(id) : install(id)}
                   >
-                    {status?.installed ? '重新安装' : '安装'}
+                    {detectionFailed ? '重新检测' : status?.installed ? '重新安装' : '安装'}
                   </Button>
                   <Menu
                     anchor={<MoreHorizontal size={18} />}
@@ -927,8 +952,22 @@ export function MaintenancePage({
                         remove === 'codexDesktop'
                           ? await api.uninstallCodexDesktop()
                           : await api.uninstallCli(remove)
-                      if (result.outcome === 'manual-required')
+                      if (result.outcome === 'manual-required') {
+                        // The backend text promises a copyable cleanup command,
+                        // so it has to reach a surface that can show one.
+                        setManualUninstall({
+                          name:
+                            tools.find((tool) => tool.id === remove)?.name ??
+                            remove,
+                          reason: result.manualHelp.reason,
+                          manualCommand: result.manualHelp.manualCommand,
+                        })
+                        setRemove(null)
+                        await resource.reload()
+                        // Still a failed uninstall: the page must not claim
+                        // success while files are left on disk.
                         throw new Error(result.error)
+                      }
                       if (result.outcome === 'delegated')
                         throw new Error(
                           '已打开卸载窗口，请完成卸载后重新检测。',
@@ -948,6 +987,13 @@ export function MaintenancePage({
         <p>卸载所选工具程序，保留账号与工具配置。需要时可重新安装。</p>
         <ResultNotice error={operation.error} />
       </Dialog>
+      {manualUninstall && (
+        <ManualUninstallDialog
+          state={manualUninstall}
+          platform={resource.data?.capability.platform}
+          onClose={() => setManualUninstall(null)}
+        />
+      )}
     </section>
   )
 }
