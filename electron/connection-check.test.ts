@@ -155,6 +155,16 @@ describe('buildConnectionProbe', () => {
     expect(build.outcome.summary).toContain('星芒服务')
   })
 
+  it('refuses to probe when the inspection was reconciled against a different site', () => {
+    // inspection() 用 apiSite 的地址建，却按 xmSite 判：真实调用点两边同源，
+    // 这条守的是将来接错线时不要把 Key 发去一台没核对过的主机。
+    const build = buildConnectionProbe('claude', xmSite, inspection({}, apiSite))
+    expect(build.kind).toBe('blocked')
+    if (build.kind !== 'blocked') return
+    expect(build.outcome.layer).toBe('config')
+    expect(build.outcome.summary).not.toContain('api.solov.cc')
+  })
+
   it('refuses a non-https base URL rather than sending the key over plaintext', () => {
     const build = buildConnectionProbe('claude', xmSite, inspection({
       actualBaseUrl: 'http://xm.solov.cc',

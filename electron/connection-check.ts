@@ -192,6 +192,18 @@ export function buildConnectionProbe(
       nextStep: '在首页重新写入一次配置，让工具重新指向星芒服务',
     })
   }
+  // matchesRelay 是拿 inspection.baseUrl 对账出来的，而 baseUrl 来自调用方
+  // 传给 inspectProviderConfig 的那个站点。两者不是同一个站点时，
+  // matchesRelay 为真也只说明"配置指向了另一个站点"，照发就会把付费 Key
+  // 送到一个本次没有核对过的主机。今天唯一的调用点两边同源，这条断言是
+  // 把那份耦合从注释变成代码。
+  if (inspection.baseUrl !== site.providerBaseUrls[provider]) {
+    return blocked({
+      layer: 'config',
+      summary: `${name} 的配置与当前账号不是同一套，已取消自检`,
+      nextStep: '在首页重新写入一次星芒 Key，再回来自检',
+    })
+  }
   if (!inspection.matchesRelay) {
     // 不回显 actualBaseUrl：它可能正是另一个星芒站点的域名，而站点切换对
     // 用户是无感的，说出来只会制造困惑。
