@@ -12,14 +12,17 @@ const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-window-close-'
 function bootFixture(config) {
   const fs = require('node:fs')
   const path = require('node:path')
-  const { app, dialog, net, session, shell } = require('electron')
+  const { app, BrowserWindow, dialog, net, session, shell } = require('electron')
   if (path.resolve(require('node:os').homedir()) !== path.resolve(config.userHome)) throw new Error('Home isolation failed')
   app.setAppPath(config.projectRoot)
   app.setPath('userData', config.userData)
   app.setPath('home', config.userHome)
-  const state = { choices: [], dialogs: [], droppedCloseRequests: 0, preventedUnloads: 0, blockedQuits: 0, forceExitCalls: 0, blockQuit: false, lastActionId: 0 }
-  const persist = () => fs.writeFileSync(config.evidence, JSON.stringify(state, null, 2) + '\n', 'utf8')
-  globalThis.windowCloseSmoke = state
+  const state = { choices: [], dialogs: [], droppedCloseRequests: 0, preventedUnloads: 0, blockedQuits: 0, forceExitCalls: 0, blockQuit: false, lastActionId: 0,
+    userData: app.getPath('userData'), visible: null, processIds: [] }
+  const persist = () => {
+    fs.writeFileSync(`${config.evidence}.tmp`, JSON.stringify(state, null, 2) + '\n', 'utf8')
+    fs.renameSync(`${config.evidence}.tmp`, config.evidence)
+  }
   dialog.showMessageBox = async (...args) => {
     const options = args.at(-1)
     const choice = state.choices.shift()
@@ -55,6 +58,27 @@ function bootFixture(config) {
   const exit = app.exit.bind(app)
   app.exit = (code) => { state.forceExitCalls++; persist(); exit(code) }
   app.on('will-quit', persist)
+  // Native lifecycle events can collect inspector promises even for read-only
+  // ElectronApplication.evaluate calls. Keep control outside that transport.
+  const controlTimer = setInterval(() => {
+    if (!fs.existsSync(config.command)) return
+    const scheduled = JSON.parse(fs.readFileSync(config.command, 'utf8'))
+    fs.unlinkSync(config.command)
+    if (!Number.isSafeInteger(scheduled.id) || scheduled.id <= state.lastActionId
+      || !['inspect', 'activate', 'close', 'block-quit', 'cleanup'].includes(scheduled.action)) throw new Error('Invalid smoke command')
+    state.lastActionId = scheduled.id
+    state.visible = BrowserWindow.getAllWindows()[0]?.isVisible() ?? null
+    state.processIds = app.getAppMetrics().map((entry) => entry.pid)
+    if (scheduled.action === 'block-quit') state.blockQuit = scheduled.blockQuit
+    persist()
+    if (scheduled.action === 'cleanup') { app.exit(0); return }
+    if (scheduled.action === 'activate') app.emit('activate')
+    if (scheduled.action === 'close') {
+      if (scheduled.choice !== null) state.choices.push(scheduled.choice)
+      BrowserWindow.getAllWindows()[0].close()
+    }
+  }, 25)
+  controlTimer.unref()
   require(config.entry)
 }
 
@@ -62,13 +86,7 @@ async function waitUntil(read, accepts, label, timeout = 6_000) {
   const deadline = Date.now() + timeout
   let value
   while (Date.now() < deadline) {
-    try { value = await read() } catch (error) {
-      // V8 may collect Playwright's inspector promise while a native window
-      // hides. Retry that transport failure; still require the actual state.
-      if (!/Resulting promise was garbage collected/.test(error.message)) throw error
-      await new Promise((resolve) => setTimeout(resolve, 75))
-      continue
-    }
+    value = await read()
     if (accepts(value)) return value
     await new Promise((resolve) => setTimeout(resolve, 75))
   }
@@ -81,6 +99,7 @@ async function runScenario(blockQuit) {
   const userData = path.join(testRoot, 'user-data')
   const codexHome = path.join(userHome, '.codex')
   const evidence = path.join(testRoot, 'main-process.json')
+  const commandPath = path.join(testRoot, 'command.json')
   const bootstrap = path.join(testRoot, 'bootstrap.cjs')
   await fs.mkdir(codexHome, { recursive: true })
   await fs.mkdir(userData, { recursive: true })
@@ -90,7 +109,7 @@ async function runScenario(blockQuit) {
     version: 2, workspace: userHome, theme: 'dark', checkUpdatesOnStartup: false, runDiagnosticsOnStartup: false,
   }) + '\n', 'utf8')
   await fs.writeFile(bootstrap, `(${bootFixture.toString()})(${JSON.stringify({
-    userHome, userData, projectRoot, evidence, entry: path.join(projectRoot, 'dist-electron/platform/entry.js'),
+    userHome, userData, projectRoot, evidence, command: commandPath, entry: path.join(projectRoot, 'dist-electron/platform/entry.js'),
   })})\n`, 'utf8')
   const env = {
     ...process.env,
@@ -105,6 +124,21 @@ async function runScenario(blockQuit) {
   const child = application.process()
   let exited = false
   const exitPromise = new Promise((resolve) => child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }) }))
+  const readState = async () => {
+    try { return JSON.parse(await fs.readFile(evidence, 'utf8')) }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error }
+  }
+  let actionId = 0
+  const scheduleWindowAction = async (action, choice = null, shouldBlock = false) => {
+    const command = { id: ++actionId, action, choice, blockQuit: shouldBlock }
+    const staged = `${commandPath}.tmp`
+    await fs.writeFile(staged, JSON.stringify(command), 'utf8')
+    await fs.rename(staged, commandPath)
+    // Publish each action once; only poll its acknowledgement, never replay it.
+    return waitUntil(readState, (state) => state?.lastActionId === command.id, `Smoke command ${command.id} was not acknowledged`)
+  }
+  const visible = async () => (await scheduleWindowAction('inspect')).visible
+  const chooseClose = (choice) => scheduleWindowAction('close', choice)
   try {
     const page = await application.firstWindow()
     const rendererDialogs = []
@@ -115,36 +149,11 @@ async function runScenario(blockQuit) {
       if (dialog.type() !== 'beforeunload') void dialog.dismiss().catch(() => undefined)
     })
     await page.getByTestId('welcome-page').waitFor({ timeout: 60_000 })
-    assert.equal(path.resolve(await application.evaluate(({ app }) => app.getPath('userData'))), path.resolve(userData))
+    assert.equal(path.resolve((await scheduleWindowAction('inspect')).userData), path.resolve(userData))
     await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'ask' }))
     const capabilities = await page.evaluate(() => window.xingmang.getWindowCapabilities())
-    const visible = () => application.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0]?.isVisible())
-    let actionId = 0
-    const scheduleWindowAction = async (action, choice = null) => {
-      const command = { id: ++actionId, action, choice }
-      const acknowledgement = await application.evaluate(({ app, BrowserWindow }, scheduled) => {
-        // A native close can synchronously pump Electron's message loop and
-        // invalidate Playwright's inspector promise. Acknowledge first, then
-        // execute this single action outside that inspector call. Never retry
-        // a click: duplicate choices would change the lifecycle under test.
-        setTimeout(() => {
-          globalThis.windowCloseSmoke.lastActionId = scheduled.id
-          if (scheduled.action === 'activate') {
-            app.emit('activate')
-          } else {
-            if (scheduled.choice !== null) globalThis.windowCloseSmoke.choices.push(scheduled.choice)
-            BrowserWindow.getAllWindows()[0].close()
-          }
-        }, 100)
-        return { scheduled: true, id: scheduled.id }
-      }, command)
-      assert.deepEqual(acknowledgement, { scheduled: true, id: command.id })
-      return command.id
-    }
-    const chooseClose = (choice) => scheduleWindowAction('close', choice)
-
     await chooseClose('返回')
-    await waitUntil(() => application.evaluate(() => globalThis.windowCloseSmoke.dialogs.length), (count) => count === 1, 'Cancel dialog missing')
+    await waitUntil(readState, (state) => state?.dialogs.length === 1, 'Cancel dialog missing')
     assert.equal(await visible(), true)
     if (capabilities.tray) {
       await chooseClose('缩到托盘')
@@ -153,8 +162,7 @@ async function runScenario(blockQuit) {
       await waitUntil(visible, Boolean, 'Activation did not restore the hidden main window')
     } else {
       await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'tray' }))
-      const fallbackActionId = await scheduleWindowAction('close')
-      await waitUntil(() => application.evaluate(() => globalThis.windowCloseSmoke.lastActionId), (id) => id === fallbackActionId, 'Tray fallback close did not run')
+      await scheduleWindowAction('close')
       assert.equal(await visible(), true, 'A missing system tray must keep the main window accessible')
       await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'ask' }))
     }
@@ -162,8 +170,7 @@ async function runScenario(blockQuit) {
     await page.evaluate(() => {
       window.addEventListener('beforeunload', (event) => { event.returnValue = false })
     })
-    await application.evaluate((_electron, shouldBlock) => { globalThis.windowCloseSmoke.blockQuit = shouldBlock }, blockQuit)
-    const processIds = await application.evaluate(({ app }) => app.getAppMetrics().map((entry) => entry.pid))
+    const { processIds } = await scheduleWindowAction('block-quit', null, blockQuit)
     const started = Date.now()
     await chooseClose('强制退出程序')
     let timeout
@@ -190,7 +197,7 @@ async function runScenario(blockQuit) {
       trayRestored: capabilities.tray, visibleWithoutTray: !capabilities.tray, rendererDialogs, exit, elapsedMs: Date.now() - started, ...state }
   } finally {
     if (!exited) {
-      await application.evaluate(({ app }) => app.exit(0)).catch(() => undefined)
+      await scheduleWindowAction('cleanup').catch(() => undefined)
       await application.close().catch(() => undefined)
     }
   }
