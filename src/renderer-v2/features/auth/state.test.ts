@@ -68,6 +68,18 @@ describe('v2 auth recovery boundaries', () => {
     expect(authErrorMessage('本地账号存储恢复失败：password credential diagnostic detail', '登录')).toBe(expected)
     expect(authErrorMessage(new Error('账号或密码不正确'), '登录')).toBe('账号或密码不正确，请检查后重试')
   })
+  it('keeps the reason the server gave instead of asking the user to try again later', () => {
+    expect(authErrorMessage(new Error('User has been banned'), '登录')).toBe('该账号已被封禁，请联系客服')
+    expect(authErrorMessage(new Error('New user registration has been disabled by administrator'), '注册')).toBe('当前暂未开放注册，请联系客服')
+    expect(authErrorMessage(new Error('Password login has been disabled by administrator'), '登录')).toBe('当前暂不支持密码登录，请联系客服')
+    expect(authErrorMessage(new Error('Database error, please contact the administrator'), '登录')).toBe('服务暂时不可用，请稍后重试')
+    expect(authErrorMessage(new Error('Username already exists'), '注册')).toBe('该用户名已被注册，请更换用户名，或点击“已有账号，登录”')
+    expect(authErrorMessage(new Error('Email address is already in use'), '注册')).toBe('该邮箱已被注册，请直接登录，或更换邮箱后重试')
+  })
+  it('does not send an account that never had a password back to the password field', () => {
+    expect(authErrorMessage(new Error('This account has no password set. Please use password reset or contact an administrator to reset it.'), '修改密码')).toBe('当前账号未设置密码，请先通过“找回密码”设置密码')
+    expect(authErrorMessage(new Error('Original password is incorrect'), '修改密码')).toBe('原密码错误，请重新输入')
+  })
 })
 
 describe('v2 onboarding readiness', () => {

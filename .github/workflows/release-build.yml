@@ -51,6 +51,18 @@ concurrency:
 jobs:
   windows-installer:
     runs-on: windows-latest
+    # 三个签名 secret 只在这个环境里可见(P-06)。release-build 是
+    # workflow_dispatch,GitHub 允许 dispatch 时指定任意 ref 并跑该 ref 上的
+    # workflow 文件;没有 environment 的话仓库级 secret 对任意分支可见,
+    # 任何有 write 权限的人推一个分支把证书 base64 打印出来再 dispatch,
+    # 就把签名证书和密码整个拿走了。
+    #
+    # **只加这一行还不够**:环境不存在时 GitHub 会在首次运行时自动创建一个
+    # 同名环境,而自动创建出来的环境**没有任何保护规则**,secret 仍留在仓库级
+    # 也依然对所有分支可见。必须去仓库 Settings 里建好 release 环境、配上
+    # required reviewers、把 deployment branches 限制为 main,并把三个 secret
+    # 从仓库级挪进该环境。步骤见 docs/RELEASING.md 的「CI 发布」一节。
+    environment: release
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -98,22 +110,32 @@ jobs:
             exit 1
           }
 
-      - name: Trust the signing certificate on this runner only
+      - name: Trust the self-signed certificate on this runner (test signing only)
+        # 正式构建绝不能走这一步(P-03)。
+        if: ${{ inputs.test_signing }}
         shell: pwsh
         env:
           CERTIFICATE: ${{ secrets.WIN_CSC_LINK_BASE64 }}
           CERTIFICATE_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
         run: |
-          # 发布门禁要求 Get-AuthenticodeSignature 返回 Valid。正式证书的
-          # 中间链可能不在临时 runner 的证书存储里，自签名证书更必须显式
-          # 信任。runner 是一次性虚拟机，用完即销毁，不会改变客户机器的信任。
+          # 自签名证书的根就是它自己，不在 runner 上显式信任的话，发布门禁
+          # 要求的 Get-AuthenticodeSignature = Valid 永远不可能成立，整条
+          # 测试链路根本跑不起来。runner 是一次性虚拟机，用完即销毁，不会
+          # 改变任何客户机器的信任。
+          #
+          # 为什么正式构建不能也这么做：Valid 这个结论本身就建立在链信任上，
+          # 把 .p12 导进 Cert:\LocalMachine\Root 等于先把答案写好再去考试。
+          # 中间 CA 没打进 .p12、交叉证书缺失、时间戳服务当时不可用 —— 这些
+          # 恰恰是只会在「一台干净的 Windows」上暴露的缺陷，而这台一次性
+          # runner 就是那台干净的 Windows。盖住它们的代价是 CI 全绿、客户
+          # 装出来却是「未知发布者」，或者老客户端直接拒绝更新。
           $pfxPath = Join-Path $env:RUNNER_TEMP 'test-signing.pfx'
           try {
             [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:CERTIFICATE))
             $password = ConvertTo-SecureString $env:CERTIFICATE_PASSWORD -AsPlainText -Force
             Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\LocalMachine\Root -Password $password | Out-Null
             Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\LocalMachine\TrustedPublisher -Password $password | Out-Null
-            Write-Host '签名证书已导入本 runner 的 Root 和 TrustedPublisher 存储'
+            Write-Host '自签名测试证书已导入本 runner 的 Root 和 TrustedPublisher 存储'
           } finally {
             if (Test-Path $pfxPath) { Remove-Item $pfxPath -Force }
           }
