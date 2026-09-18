@@ -27,7 +27,7 @@ Windows 主程序使用 `requestedExecutionLevel: asInvoker`。四个 CLI 的控
 npm run typecheck
 npm test
 npm run compile
-node e2e/electron-smoke.mjs
+node e2e/electron-ci-smoke.mjs
 node e2e/onboarding-smoke.mjs
 npm run audit:production
 ```

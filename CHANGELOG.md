@@ -11,6 +11,10 @@
 
 ## Unreleased
 
+- 无签名 Windows 发布入口 `npm run release:build:unsigned` 改为与签名入口共用 `scripts/run-release-build.cjs` 的同一份门禁步骤表；此前它只做 `compile + electron-builder`，前置检查、类型检查、单测、冒烟、fuse 加固、ASAR 篡改、`latest.yml`/SHA-512/blockmap 一步都不跑（审查总表 M-01）。无签名模式下只跳过 Authenticode 签名主体比对，并在日志里打印跳过原因。
+- 新增 `npm run release:verify:unsigned`：无签名模式下也能在本地校验 `latest.yml` 结构、文件大小、SHA-512 与 blockmap。
+- 删除只认 legacy `.app-shell` 选择器的 `e2e/electron-smoke.mjs`；发布门禁改跑 CI 同样在跑的 `e2e/electron-ci-smoke.mjs`，并由 `scripts/ci-workflow-config.test.cjs` 钉住「门禁跑的冒烟脚本必须也在 Windows 必需作业里跑」。
+
 ## 0.2.6 - 2026-09-19
 
 - 接入 WorkBuddy、Claude Desktop 和 OpenCode 的安装、配置与启动；Claude Desktop 改用原生第三方推理配置，补齐事务备份、Windows 虚拟化路径和手动配置就绪状态识别。

@@ -12,6 +12,21 @@ npm run release:build:unsigned
 
 此入口构建安装包但不上传，保留客户端自动更新；`forceCodeSigning=false`，更新配置不写入 `publisherName`。发布入口与普通 `npm run build` 都使用默认 renderer-v2 编译并生成 `dist/renderer-v2.flag`；旧界面只通过 `compile:legacy` 显式构建。普通 `npm run build` 仍是关闭自动更新的本地调试构建。
 
+从 2026-09-18 起，`release:build:unsigned` 与签名入口共用 `scripts/run-release-build.cjs` 的同一份步骤表（审查总表 `M-01`）。无签名模式下会照常执行：
+
+1. 发布前置检查（含「远端版本必须低于本地」）
+2. `npm run typecheck`
+3. 全部单测（Windows 上走 `test:windows`）
+4. `npm run compile`，并确认产出 `dist/renderer-v2.flag`
+5. `e2e/electron-ci-smoke.mjs` 启动冒烟
+6. `e2e/onboarding-smoke.mjs` 首启向导冒烟
+7. electron-builder 构建未签名安装程序
+8. Electron fuse 加固校验与加固后生产程序启动
+9. ASAR 篡改必须被拒
+10. `latest.yml` 结构、文件大小、逐文件 SHA-512 与 blockmap 校验
+
+无签名模式下**只跳过**第 10 步里的 Authenticode 签名主体比对，跳过原因会打印在构建日志里。只做产物校验时用 `npm run release:verify:unsigned`。
+
 ### 从 0.2.3 起的私有加速资源
 
 产品所有者确认先分发本机计时版：每账号在本机累计 20 分钟，节点随本地 Windows 安装包提供，不上传 GitHub。TUN 尚未接入。源码和 CI 构建默认不含线路。
@@ -42,7 +57,7 @@ Mac 资源使用 `--platform darwin --arch arm64` 或 `--arch x64` 准备，资�
 
 ## 历史签名流程（停用）
 
-以下为历史签名方案归档。`release:build`、`release:preflight`、`release:verify` 和 `release-build.yml` 是旧签名专用入口，不用于当前及后续 Windows 无签名发布；下文的证书、发布者和 DN/CN 要求不适用于本项目的无签名发布流程。
+以下为历史签名方案归档。`release:build` 和 `release-build.yml` 是旧签名专用入口，不用于当前及后续 Windows 无签名发布；下文的证书、发布者和 DN/CN 要求不适用于本项目的无签名发布流程。`scripts/verify-release-environment.cjs` 与 `scripts/verify-release-artifacts.cjs` 现在两种模式共用（无签名模式只跳过 Authenticode 签名主体比对），不再是签名专用。
 
 ## 1. 发布前置条件
 
