@@ -15,23 +15,25 @@ import {
 
 const temporaryDirectories: string[] = []
 const fixtureExecutableModes = new Map<string, number>()
+const nativeLstat = fs.promises.lstat
+
+async function fixtureLstat(...args: Parameters<typeof nativeLstat>) {
+  const stats = await nativeLstat(...args)
+  const mode = fixtureExecutableModes.get(String(args[0]))
+  if (mode !== undefined && typeof stats.mode === 'number') stats.mode = (stats.mode & ~0o777) | mode
+  return stats
+}
 
 beforeEach(() => {
   if (process.platform !== 'win32') return
-  const originalLstat = fs.promises.lstat
   // NTFS cannot represent POSIX execute bits. Supply only that metadata for
   // explicitly registered fixture executables; every other filesystem check
   // and all negative-mode fixtures still exercise the production detector.
-  vi.spyOn(fs.promises, 'lstat').mockImplementation((async (...args: Parameters<typeof originalLstat>) => {
-    const stats = await originalLstat(...args)
-    const mode = fixtureExecutableModes.get(String(args[0]))
-    if (mode !== undefined && typeof stats.mode === 'number') stats.mode = (stats.mode & ~0o777) | mode
-    return stats
-  }) as typeof originalLstat)
+  vi.spyOn(fs.promises, 'lstat').mockImplementation(fixtureLstat as typeof nativeLstat)
 })
 
 function temporaryDirectory(): string {
-  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-codex-app-'))
+  const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-codex-app-')))
   temporaryDirectories.push(directory)
   return directory
 }
@@ -337,11 +339,10 @@ describe('inspectMacosCodexApp', () => {
     const root = temporaryDirectory()
     const systemApplicationsDirectory = path.join(root, 'Applications')
     const infoPath = createApp(path.join(systemApplicationsDirectory, 'Codex.app'))
-    const originalLstat = fs.promises.lstat
-    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (...args: Parameters<typeof originalLstat>) => {
+    vi.spyOn(fs.promises, 'lstat').mockImplementation((async (...args: Parameters<typeof nativeLstat>) => {
       if (String(args[0]) === infoPath) throw Object.assign(new Error('Info.plist access denied'), { code: 'EACCES' })
-      return originalLstat(...args)
-    }) as typeof originalLstat)
+      return process.platform === 'win32' ? fixtureLstat(...args) : nativeLstat(...args)
+    }) as typeof nativeLstat)
 
     await expect(inspectMacosCodexApp({ homeDirectory: path.join(root, 'home'), systemApplicationsDirectory, runSystemCommand: async () => '' }))
       .resolves.toEqual({ app: null, detectionFailed: true, detectionError: 'Info.plist access denied' })

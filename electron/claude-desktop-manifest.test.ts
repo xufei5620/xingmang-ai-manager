@@ -2,7 +2,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
-import type { CommandResult, CommandSpec, RunCommandOptions } from './command-runner'
+import { runCommand, type CommandResult, type CommandSpec, type RunCommandOptions } from './command-runner'
 import { inspectClaudeDesktopStoreVirtualization } from './claude-desktop-manifest'
 
 const installationPath = 'C:\\Program Files\\WindowsApps\\Claude_2.2553.1.0_x64__pzs8sxrjxfjjc\\app\\Claude.exe'
@@ -119,11 +119,15 @@ describe('inspectClaudeDesktopStoreVirtualization', () => {
   })
 
   it.runIf(process.platform === 'win32')('reads isolated XML manifests and rejects DTDs and oversized files using PowerShell', async () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-manifest-'))
+    const directory = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-claude-manifest-')))
     const packageDirectory = path.join(directory, 'WindowsApps', 'Claude_2.2553.1.0_x64__pzs8sxrjxfjjc')
     fs.mkdirSync(packageDirectory, { recursive: true })
     const manifestPath = path.join(packageDirectory, 'AppxManifest.xml')
-    const options = { platform: 'win32' as const, osRelease: '10.0.22621', installationPath: path.join(packageDirectory, 'app', 'Claude.exe') }
+    const options = {
+      platform: 'win32' as const, osRelease: '10.0.22621', installationPath: path.join(packageDirectory, 'app', 'Claude.exe'),
+      // Hosted runners can cold-start PowerShell beyond the production probe budget.
+      execute: (spec: CommandSpec, commandOptions?: RunCommandOptions) => runCommand(spec, { ...commandOptions, timeoutMs: 60000 }),
+    }
     try {
       fs.writeFileSync(manifestPath, manifest(), 'utf8')
       expect(await inspectClaudeDesktopStoreVirtualization(options)).toEqual(allVirtualized)
@@ -137,5 +141,5 @@ describe('inspectClaudeDesktopStoreVirtualization', () => {
       fs.writeFileSync(manifestPath, ' '.repeat(1024 * 1024 + 1), 'utf8')
       await expect(inspectClaudeDesktopStoreVirtualization(options)).rejects.toThrow('清单无法安全读取')
     } finally { fs.rmSync(directory, { recursive: true, force: true }) }
-  }, 60000)
+  }, 180000)
 })
