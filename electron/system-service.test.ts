@@ -669,7 +669,7 @@ describe('createSystemService', () => {
     const relayFetch = vi.fn<typeof fetch>()
     const service = createService({ providerRoots, getRelaySiteId: () => 'solov-api', relayFetch })
     await expect(service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false))
-      .rejects.toThrow('已保存的 Key 属于其他站点')
+      .rejects.toThrow('已保存的 Key 属于其他账号')
     expect(relayFetch).not.toHaveBeenCalled()
   })
 
@@ -681,7 +681,7 @@ describe('createSystemService', () => {
     })
     const service = createService({ getRelaySiteId: () => siteId, relayFetch })
     await expect(service.saveConfig({ provider: 'codex', apiKey: 'sk-xm-only', model: 'fixture-model', mode: 'merge' }, false))
-      .rejects.toThrow('账号站点已变化')
+      .rejects.toThrow('账号已变化')
     expect(relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
   })
 

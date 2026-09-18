@@ -344,8 +344,8 @@ function App() {
     settings.theme,
     settings.checkUpdatesOnStartup,
     settings.runDiagnosticsOnStartup,
-    // relaySiteId/mirrorPolicy are AppSettings fields SettingsPage's own
-    // SettingsV2 mirrors (W3b's site dropdown, 2.4's mirror-policy dropdown)
+    // mirrorPolicy is an AppSettings field SettingsPage's own SettingsV2
+    // mirrors (2.4's mirror-policy dropdown)
     // -- every field SettingsPage reads/writes needs to be in this deps list,
     // or a save that only changes that field (every other field
     // byte-identical) would leave this memo returning the pre-save object
@@ -354,7 +354,6 @@ function App() {
     // sidebarMoreExpanded stays deliberately excluded: SettingsPage's own
     // SettingsV2 type has no field for it, and settings:save's field-wise
     // merge (①栏11) leaves it untouched by the page's saves.
-    settings.relaySiteId,
     settings.mirrorPolicy,
     settings.uiSkin,
     settings.reducedMotion,
@@ -362,11 +361,9 @@ function App() {
     settings.closeBehavior,
     settings.desktopNotifications,
   ])
-  // W3b adds the first site-switcher UI (SettingsPage's 服务站点 dropdown),
-  // writing into settings.relaySiteId through the page's own normal save
-  // path. Resolving through settings here (rather than hardcoding the
-  // default site in each consumer) is what let that land as a pure addition
-  // instead of another round of touching Sidebar/ConfigDialog/CodexOnboarding.
+  // 站点由当前登录账号决定，用户看不到也选不到（D-03 删掉了设置页那个
+  // 骗人的下拉）。这里仍从 settings.relaySiteId 解析，是为了让老配置文件
+  // 里的遗留值降级到默认站点，而不是在每个消费者里各写一次默认站点。
   const activeRelaySite = useMemo(
     () => resolveRelaySite(settings.relaySiteId),
     [settings.relaySiteId],

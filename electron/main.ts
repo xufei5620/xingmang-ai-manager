@@ -750,7 +750,7 @@ if (!hasSingleInstanceLock) {
           },
           onSessionChange: () => onSessionChange(saved()) })
         return { client, getSavedAccount: saved, restore: async (record) => {
-          if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') throw new Error('账号凭据与站点不一致')
+          if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') throw new Error('账号凭据与当前账号不匹配')
           return client.restoreSession({ userId: Number(record.userId), cookies: [...record.credential.cookies] })
         } }
       },
@@ -1093,8 +1093,8 @@ if (!hasSingleInstanceLock) {
         },
       })
       if (siteId === 'solov-api') {
-        videoService.generate = async () => { throw new Error('当前站点暂未上线视频模型') }
-        videoService.resumeVideoTask = async () => { throw new Error('当前站点暂未上线视频模型') }
+        videoService.generate = async () => { throw new Error('当前账号暂不支持视频生成') }
+        videoService.resumeVideoTask = async () => { throw new Error('当前账号暂不支持视频生成') }
       }
       const canvasRunStore = new CanvasRunStore({
         rootDirectory: roots.canvasRuntimeDirectory,
