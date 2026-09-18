@@ -82,6 +82,9 @@ jobs:
             throw 'npm run compile did not produce dist/renderer-v2.flag'
           }
       - name: Run isolated signed-out startup smoke test
+        # Same three-layer bound as the smoke below: the script budgets itself
+        # to 3 minutes, this is the backstop if it somehow outlives that.
+        timeout-minutes: 5
         run: node e2e/electron-ci-smoke.mjs
       - name: Verify tray and forced exit with isolated application state
         # The script budgets itself to 4 minutes and prints a process tree when

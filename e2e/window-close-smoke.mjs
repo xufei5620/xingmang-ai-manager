@@ -1,27 +1,22 @@
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { _electron as electron } from '@playwright/test'
+import { createSmokeRuntime } from './smoke-runtime.mjs'
 
 const projectRoot = path.resolve('.')
 const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-window-close-'))
 
-// Every wait in this smoke used to be bounded only by Playwright's own
-// defaults, and page.evaluate and ElectronApplication.close() carry no default
-// at all. A wedged Electron on Windows therefore burned the whole 35 minute job
-// and printed nothing, because the failure path itself hung inside close()
-// before the assertion could surface (#131, #133). Each step now carries its
-// own deadline, the process tree is dumped when one expires, and residual
-// Electron processes are killed before this process exits.
-const stepBudgetMs = Number(process.env.XINGMANG_SMOKE_STEP_TIMEOUT_MS ?? 60_000)
-const totalBudgetMs = Number(process.env.XINGMANG_SMOKE_TOTAL_TIMEOUT_MS ?? 240_000)
-const startedAt = Date.now()
-const residualProcessIds = new Set()
-let currentStep = 'startup'
-let evidencePath = null
+// The forced-exit path used to hide its own failures: runScenario's finally
+// awaited ElectronApplication.close(), which has no timeout, so an assertion
+// that failed earlier never surfaced and the Windows job burned its whole
+// 35 minute cap printing nothing (#131, #133).
+const { stepBudgetMs, progress, withDeadline, trackProcessIds, releaseProcessIds, attachEvidence, run } = createSmokeRuntime({
+  name: 'window-close-smoke',
+  stepBudgetMs: Number(process.env.XINGMANG_SMOKE_STEP_TIMEOUT_MS ?? 60_000),
+  totalBudgetMs: Number(process.env.XINGMANG_SMOKE_TOTAL_TIMEOUT_MS ?? 240_000),
+})
 
 // Install mocks before the real entry point so startup cannot access accounts,
 // the real user's configuration, or any production network endpoint.
@@ -98,80 +93,6 @@ function bootFixture(config) {
   require(config.entry)
 }
 
-function elapsedLabel() {
-  return `+${((Date.now() - startedAt) / 1_000).toFixed(1)}s`
-}
-
-function progress(step) {
-  currentStep = step
-  // The only output this smoke used to produce was its final JSON, so a hang
-  // left no trace of how far it got. Stream each step instead.
-  process.stderr.write(`[window-close-smoke ${elapsedLabel()}] ${step}\n`)
-}
-
-async function withDeadline(label, budgetMs, run) {
-  let expire
-  const operation = Promise.resolve().then(run)
-  // The losing side of the race stays pending. Swallow its eventual rejection
-  // so a late transport failure cannot resurface as an unhandled rejection
-  // after this smoke already reported the timeout.
-  operation.catch(() => undefined)
-  const deadline = new Promise((_, reject) => {
-    expire = setTimeout(() => reject(new Error(`${label} did not finish within ${budgetMs}ms`)), budgetMs)
-  })
-  try { return await Promise.race([operation, deadline]) }
-  finally { clearTimeout(expire) }
-}
-
-function windowsSystemExecutable(name) {
-  // Same reasoning as the main process: never resolve a Windows system binary
-  // through PATH, because the working directory would be searched first.
-  return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', name)
-}
-
-function describeProcessTree() {
-  const probe = process.platform === 'win32'
-    ? spawnSync(windowsSystemExecutable('tasklist.exe'), ['/FI', 'IMAGENAME eq electron.exe', '/FO', 'CSV', '/NH'],
-      { encoding: 'utf8', timeout: 15_000 })
-    : spawnSync('ps', ['-o', 'pid,ppid,stat,etime,comm'], { encoding: 'utf8', timeout: 15_000 })
-  return probe.stdout?.trim() || probe.stderr?.trim() || 'no process listing available'
-}
-
-function killProcessTree(pid) {
-  if (!Number.isSafeInteger(pid) || pid <= 0) return
-  if (process.platform === 'win32') {
-    spawnSync(windowsSystemExecutable('taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { timeout: 15_000 })
-    return
-  }
-  try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
-}
-
-function reportFailure(error) {
-  process.stderr.write(`[window-close-smoke ${elapsedLabel()}] failed during: ${currentStep}\n`)
-  process.stderr.write(`${error?.stack ?? String(error)}\n`)
-  if (evidencePath && existsSync(evidencePath)) {
-    try { process.stderr.write(`main process state: ${readFileSync(evidencePath, 'utf8')}`) }
-    catch (cause) { process.stderr.write(`main process state unreadable: ${cause}\n`) }
-  }
-  process.stderr.write(`surviving processes:\n${describeProcessTree()}\n`)
-}
-
-function finish(code, payload) {
-  clearTimeout(totalBudgetTimer)
-  // A surviving Electron grandchild keeps the stdio pipes it inherited from the
-  // launch open, which is enough to keep this process alive with no work left.
-  for (const pid of residualProcessIds) killProcessTree(pid)
-  process.stdout.write(payload === undefined ? '' : `${JSON.stringify(payload)}\n`, () => process.exit(code))
-  setTimeout(() => process.exit(code), 5_000).unref()
-}
-
-const totalBudgetTimer = setTimeout(() => {
-  process.stderr.write(`[window-close-smoke ${elapsedLabel()}] total budget of ${totalBudgetMs}ms expired during: ${currentStep}\n`)
-  reportFailure(new Error('Window close smoke exceeded its total budget'))
-  finish(1)
-}, totalBudgetMs)
-totalBudgetTimer.unref()
-
 // Windows runners run this behind Defender and after twenty minutes of
 // filesystem-heavy tests, so a native hide or restore is measurably slower
 // there than on macOS. The wait stays bounded; only its headroom grew.
@@ -195,7 +116,7 @@ async function runScenario(blockQuit) {
   const evidence = path.join(testRoot, 'main-process.json')
   const commandPath = path.join(testRoot, 'command.json')
   const bootstrap = path.join(testRoot, 'bootstrap.cjs')
-  evidencePath = evidence
+  attachEvidence(evidence)
   progress(`${scenario}: preparing the isolated application state`)
   await fs.mkdir(codexHome, { recursive: true })
   await fs.mkdir(userData, { recursive: true })
@@ -222,7 +143,7 @@ async function runScenario(blockQuit) {
   }))
   const child = application.process()
   const scenarioProcessIds = new Set()
-  if (child.pid) { scenarioProcessIds.add(child.pid); residualProcessIds.add(child.pid) }
+  if (child.pid) { scenarioProcessIds.add(child.pid); trackProcessIds([child.pid]) }
   let exited = false
   const exitPromise = new Promise((resolve) => child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }) }))
   const readState = async () => {
@@ -230,7 +151,8 @@ async function runScenario(blockQuit) {
     catch (error) { if (error.code === 'ENOENT') return null; throw error }
   }
   const rememberProcessIds = (pids) => {
-    for (const pid of pids ?? []) { scenarioProcessIds.add(pid); residualProcessIds.add(pid) }
+    for (const pid of pids ?? []) scenarioProcessIds.add(pid)
+    trackProcessIds(pids)
   }
   let actionId = 0
   const scheduleWindowAction = async (action, choice = null, shouldBlock = false) => {
@@ -318,10 +240,7 @@ async function runScenario(blockQuit) {
     // A forced exit orphans the GPU and utility processes on Windows, and they
     // still hold the stdio pipes the launch handed them. Leaving them alive
     // stalls the next scenario and this process on its way out.
-    for (const pid of scenarioProcessIds) {
-      killProcessTree(pid)
-      residualProcessIds.delete(pid)
-    }
+    releaseProcessIds(scenarioProcessIds)
   }
 }
 
@@ -333,11 +252,4 @@ async function main() {
   return result
 }
 
-try {
-  const result = await main()
-  progress('done')
-  finish(0, result)
-} catch (error) {
-  reportFailure(error)
-  finish(1)
-}
+await run(main)
