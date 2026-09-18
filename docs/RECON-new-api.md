@@ -46,7 +46,8 @@
 4. 余额是整数 quota，必须用当次 `/api/status` 的 `quota_per_unit` 换算，不能硬编码。
 5. 实例版本会漂移（已从 rc.22 升到 rc.24，见文首更新块）：新字段/开关以当次实测为准，不能假设与任何文档或历史快照一致。
 6. 兑换码错误/已用/过期统一同一失败文案，且受「支付合规确认」开关整体拦截。
-7. PAT 权限与登录态等同、无独立 scope——不建议长期常驻存储；后台轮询优先短期 access_token + refresh 静默续期（**已拍板并按此方案落地**：`39c9671`，`electron/account-session-store.ts` 存 session token 而非 PAT）。
+7. **单把 Key 的额度是「剩余」不是「每月上限」**：`remain_quota` 就是这把 Key 还能用掉多少，用完不会自己重置（另一个后端的 `quota` 是总额，适配层写回时会把已用量加上去，对调用方同样呈现为剩余）。个人中心的「每个工具的额度上限」按这个语义做，换算与更新入参统一收口在 `electron/account-key-quota.ts`。
+8. PAT 权限与登录态等同、无独立 scope——不建议长期常驻存储；后台轮询优先短期 access_token + refresh 静默续期（**已拍板并按此方案落地**：`39c9671`，`electron/account-session-store.ts` 存 session token 而非 PAT）。
 
 ## D. 建议鉴权流
 

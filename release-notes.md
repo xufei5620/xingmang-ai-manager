@@ -1,3 +1,7 @@
+未发布
+
+- 个人中心的密钥页新增「每个工具的额度上限」：给 Claude Code、Codex CLI、Gemini CLI、Grok CLI 各自的托管密钥单独封顶，留空表示不限额。某个工具用到上限后只停它一个，其余工具照常使用。
+
 0.2.6
 
 - 新增 WorkBuddy、Claude Desktop 和 OpenCode 的安装、配置与启动入口；Claude Desktop 使用原生第三方推理配置，支持备份恢复，并正确识别手动配置的就绪状态。
