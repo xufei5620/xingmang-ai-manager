@@ -27,6 +27,8 @@ npm run release:build:unsigned
 
 无签名模式下**只跳过**第 10 步里的 Authenticode 签名主体比对，跳过原因会打印在构建日志里。只做产物校验时用 `npm run release:verify:unsigned`。
 
+注意：无签名入口现在与签名入口一样要求输出目录不存在或为空（默认 `release-<版本号>`，可用 `XINGMANG_OUTPUT_DIR` 指定）。重跑同一版本前先把上次的产物移走或换一个新的空目录。
+
 ### 从 0.2.3 起的私有加速资源
 
 产品所有者确认先分发本机计时版：每账号在本机累计 20 分钟，节点随本地 Windows 安装包提供，不上传 GitHub。TUN 尚未接入。源码和 CI 构建默认不含线路。
