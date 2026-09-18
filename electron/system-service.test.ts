@@ -21,6 +21,7 @@ import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
 } from './tool-installation'
+import { buildCliVersionAdvice } from './cli-verified-versions'
 import {
   assertNpmPackageLocksEquivalent,
   assertNpmReleaseIntegrityMatches,
@@ -1492,6 +1493,36 @@ describe('npm registry metadata', () => {
     expect(requestedVersions).toEqual(['latest'])
   })
 
+  it('pins the npm release query to the version the verified list selected', async () => {
+    const requestedVersions: string[] = []
+    await resolveCliInstallRelease('claude', null, {
+      version: '2.1.277',
+      fetchGrokStableVersion: async () => {
+        throw new Error('must not query Grok stable metadata')
+      },
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@anthropic-ai/claude-code', version: '2.1.277', integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['2.1.277'])
+  })
+
+  it('ignores a requested version on the Darwin Grok path, which the xAI manifest owns', async () => {
+    const requestedVersions: string[] = []
+    await resolveCliInstallRelease('grok', 'darwin-official-npm', {
+      version: '0.2.100',
+      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@xai-official/grok', version: '0.2.118', integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['0.2.118'])
+  })
+
   it('requires exact package identity, semantic version and SHA-512 integrity metadata', () => {
     const valid = JSON.stringify({
       name: '@openai/codex',
@@ -2860,6 +2891,49 @@ describe('CLI latest version state', () => {
       updateCheck: 'checked',
       updateState: 'latest',
     })
+  })
+
+  it('carries the verified-version advice through to the renderer status', () => {
+    expect(buildCliStatus({
+      installed: true,
+      version: '2.1.276 (Claude Code)',
+      path: 'claude.cmd',
+      installDirectory: null,
+    }, latest('2.1.277'), buildCliVersionAdvice('claude', '2.1.276 (Claude Code)'))).toMatchObject({
+      versionAdvice: {
+        recommendedVersion: '2.1.277',
+        blockedReason: expect.stringContaining('400'),
+        onRecommended: false,
+        rollbackAvailable: true,
+      },
+    })
+  })
+
+  it('does not advertise an update the pinned list would not install', () => {
+    const installed = {
+      installed: true,
+      version: '2.1.277 (Claude Code)',
+      path: 'claude.cmd',
+      installDirectory: null,
+    }
+    expect(buildCliStatus(installed, latest('2.1.280'), buildCliVersionAdvice('claude', installed.version))).toMatchObject({
+      latestVersion: '2.1.280',
+      updateAvailable: false,
+      updateState: 'latest',
+    })
+    expect(buildCliStatus(installed, latest('2.1.280'), buildCliVersionAdvice('claude', installed.version, { alwaysLatest: true }))).toMatchObject({
+      updateAvailable: true,
+      updateState: 'available',
+    })
+  })
+
+  it('omits the advice field entirely when no list applies', () => {
+    expect(buildCliStatus({
+      installed: true,
+      version: 'codex-cli 0.146.0',
+      path: 'codex.cmd',
+      installDirectory: null,
+    }, latest('0.146.0'))).not.toHaveProperty('versionAdvice')
   })
 
   it('uses the Grok official stable feed instead of the unrelated npm package', () => {

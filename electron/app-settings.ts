@@ -58,6 +58,13 @@ export interface AppSettings {
   officialProviders?: ProviderId[]
   /** User explicitly uninstalled Codex Desktop and does not want auto-reinstall. */
   codexDesktopInstallDisabled?: boolean
+  /**
+   * 安装/更新 CLI 时跟随 npm latest,而不是 cli-verified-versions.ts 里的
+   * 推荐版本。缺省 = 装推荐版本——这是 N1 有意做的默认行为变更(上游针对
+   * 第三方 base URL 的回归反复出现过),不是「缺省 = 旧行为」的漏写。
+   * 没有名单的工具无论这个开关如何都装 latest。
+   */
+  alwaysInstallLatestCli?: boolean
   /** Absent follows the theme: dawn for light, obsidian for dark. */
   uiSkin?: AppUiSkin
   reducedMotion?: boolean
@@ -99,6 +106,7 @@ export interface AppSettingsUpdate {
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
+  alwaysInstallLatestCli?: boolean
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
   desktopNotifications?: boolean
@@ -239,6 +247,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(optionalBoolean(value.desktopNotifications, false) ? { desktopNotifications: true as const } : {}),
@@ -354,6 +363,9 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const codexDesktopInstallDisabled = update.codexDesktopInstallDisabled === undefined
     ? base.codexDesktopInstallDisabled
     : update.codexDesktopInstallDisabled
+  const alwaysInstallLatestCli = update.alwaysInstallLatestCli === undefined
+    ? base.alwaysInstallLatestCli
+    : update.alwaysInstallLatestCli
   const uiSkin = update.uiSkin === 'auto'
     ? 'mist' as const
     : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
@@ -373,6 +385,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications ? { desktopNotifications: true as const } : {}),

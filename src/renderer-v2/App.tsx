@@ -250,14 +250,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
   }, [app, perform, session.authenticated, scope])
-  async function install(id: ToolId) {
+  async function install(id: ToolId, version?: string) {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
     const management = id === 'codexDesktop' ? state.platform.codexDesktop.install : state.platform.cliInstall[id]
     if (management === 'external') { navigate('tutorial'); throw new Error('此平台需要在应用外安装，完成后回来重新检测。') }
     if (id !== 'codexDesktop' && (!state.system.runtime.node.installed || state.system.runtime.node.tooOld || !state.system.runtime.npm.installed)) throw new Error('请先准备 Node.js 运行环境，再安装命令行工具。')
     if (tools.find((tool) => tool.id === id)?.requires.includes('python') && (!state.system.runtime.python.installed || state.system.runtime.python.detectionFailed)) throw new Error('Gemini 还需要 Python 环境。请先在运行环境卡中准备 Python，再安装工具。')
-    await toolbox.run(id, '正在安装', () => toolsApi.install(id))
+    await toolbox.run(id, version ? `正在安装 ${version}` : '正在安装', () => toolsApi.install(id, version))
     if (session.authenticated && session.account) {
       await runAccountBootstrap(session.account.userId, 'login', true, [providerFor(id)])
     }
@@ -456,7 +456,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError}
-              onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id) => void perform('安装工具', () => install(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
               onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />

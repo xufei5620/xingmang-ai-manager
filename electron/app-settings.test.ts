@@ -357,6 +357,24 @@ describe('field-wise settings updates (①栏11)', () => {
     expect(mergeAppSettings(base, { version: 2, mirrorPolicy: 'auto' })).not.toHaveProperty('mirrorPolicy')
     expect(mergeAppSettings(base, { version: 2, workspace: 'D:\\Elsewhere' }).workspace).toBe('D:\\Elsewhere')
   })
+
+  it('keeps the CLI version preference absent until the user asks for latest, and clears it again', async () => {
+    const filePath = temporarySettingsPath()
+    // Absent = 装已验证名单里的推荐版本,这是 N1 有意的默认。
+    expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
+    await updateAppSettings(filePath, { version: 2, alwaysInstallLatestCli: true })
+    expect(readAppSettings(filePath).alwaysInstallLatestCli).toBe(true)
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).alwaysInstallLatestCli).toBe(true)
+    await updateAppSettings(filePath, { version: 2, alwaysInstallLatestCli: false })
+    expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
+  })
+
+  it('drops a malformed CLI version preference instead of failing the whole read', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), alwaysInstallLatestCli: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
+  })
 })
 
 describe('UI and window preferences', () => {
