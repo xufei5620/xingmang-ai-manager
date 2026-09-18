@@ -11,6 +11,7 @@
 
 ## Unreleased
 
+- 修复账号来源切换后仍读主账号服务设置：`createAuthApi.getStatus` 改为按 `siteId` 取，`AuthFlow` 的状态 effect 依赖加上 `siteId`，切到历史账号时重新拉取；`turnstileCheckEnabled` 生效后「打开帮助」入口在登录态也可见（注册仍固定主账号服务，注册开关语义不变）（D-04）。
 - 修复非管理员（默认）启动时 Node.js 兜底 MSI 安装必然失败：暂存目录改用普通用户临时目录，提权脚本自行在 Program Files 下建立仅管理员可写的目录、复制安装包并在提权侧重新校验 SHA-256 与 Authenticode 后才交给 msiexec；补上授权取消、跨账号授权等退出码的中文提示（E-S7）。
 
 ## 0.2.6 - 2026-09-19
