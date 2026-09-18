@@ -1,85 +1,58 @@
-# 滚动报告(无人值守自主轮询)
+# 交接快照
 
-> 本文件 = 云端 agent 的滚动交接报告,**每完成一波就更新并随代码推送**。
-> 接手协议:任何新会话 `git checkout local/integration` + 读本文件顶部三栏即可无损继续。
-> 与 CLAUDE.md 或代码冲突时,以代码为准。上一版 HANDOFF(2026-08-10 静态交接稿)已由本报告取代。
+> 本文件 = 会话之间的**当前状态快照**，不是流水账。**时效性文档：与 CLAUDE.md 或代码冲突时一律以代码为准。**
+> 接手方式：`git checkout main` + 读完本文件即可开工。历史流水（2026-08-10 的「滚动报告」版本）留在 git 历史里，需要时 `git log -- HANDOFF.md` 翻。
+
+**快照时间：2026-09-18** ｜ `main` = `43e09af` ｜ 发布版本 = **0.2.6**（2026-09-19）
 
 ---
 
-## ① 等老板拍板(全部跳过不猜,按下列编号答复即可)
+## ① 代码与发布现状
 
-> **轻重分级(2026-08-10)**:真正压着事的只有 **2+6(一次真机 ~15 分钟,收入链路验证)** 和 **7 的删分支命令(1 分钟)**;3/4/5/10 均不阻塞任何功能,可无限期放着,想起来再说。
+- `main` 停在 `43e09af`「升级 0.2.6，完善客户端接入与账号稳定性 (#128)」，`package.json` 与 `release-notes.md` 都是 0.2.6，三者一致。
+- 最近六次发布（均已在 main 上）：
+  - **0.2.6**（9-19）接入 WorkBuddy / Claude Desktop / OpenCode 的安装配置与启动；账号切换的配置归属与凭据隔离加固 + 会话 vault 恢复；CI 质量门禁改为按改动范围跑 Windows/macOS/Linux + 依赖审计。
+  - **0.2.5**（9-16）Codex 配置不再预设上下文窗口/压缩阈值；关窗可选缩托盘或强制退出。
+  - **0.2.4** macOS 游戏加速（M 系列 + Intel，线路选择/延迟检测，每账号本机免费 20 分钟）。
+  - **0.2.3** Windows 内置游戏加速线路；Codex 中文注入修复；默认模型换代。
+  - **0.2.2** 公告合集拆单篇 + 按账号已读；余额统一自动刷新；调用详情补全并接入 Sub2API 费用拆分。
+  - **0.2.1** 账号自动识别与多账号隔离，按工具分组签发专属 Key。
+- **双账号域（new-api + sub2api）已经在 main 上跑通**：`electron/relay-sites.ts` 有 `solov`(xm.solov.cc / new-api) 与 `solov-api`(api.solov.cc / sub2api) 两个站点条目，realm 隔离、独立 vault、`sub2api-account-client.ts` 全链都在 main。**注意**：2026-08 期间文档里「api.solov.cc 只做粘贴 Key（manual-key）」的说法已经作废，那是 W3 阶段的中间态。
+- **发版日志有两份，用途不同**：`release-notes.md` 面向用户、打包时写进更新清单并显示在客户端更新页（`docs/RELEASING.md`），覆盖 0.1.20 ~ 0.2.6；`CHANGELOG.md` 面向开发者、无程序消费者，**中间断档 0.1.13 ~ 0.2.5**（0.1.12 之后直接跳到 #128 补的 0.2.6）。发版时两份都要更新。
 
-1. ~~站点下拉命名~~ **已拍板并落地(2026-08-10)**:统一「星芒AI」,下拉两项为「星芒AI（账号登录）」(new-api / xm.solov.cc)与「星芒AI（Key 直连）」(sub2api / api.solov.cc)。
-2. **勘合遗留**:xm.solov.cc 签发的 key 在 api.solov.cc relay 上是否真能推理成功——生产验证类,agent 不碰生产,等你真机验。
-3. **客服素材**:欢迎页企业微信二维码仍是占位图(`WelcomePage.tsx` 有 TODO),等正式素材(一次静态替换 + 白名单一行)。
-4. **试用额度**数字 + new-api 后台配置;余额告警阈值 $5 是否认可。
-5. **注册方式扩展**:微信需开放平台应用、GitHub 需配 OAuth——要你去申请,代码侧不阻塞。
-6. **A 真机验证清单**(只能你走):账号后半程(重启保持登录/token 续期/收重置邮件/个人中心真实数据);Key 管理表 7 列一屏不溢出;正常环境点开画布看观感;改密码「原密码错误」文案实测。
-7. **死分支处置——已授权待执行(2026-08-10 老板「按照你的推荐来」;云端删除被 403 拦,需你或本地 agent 动手)**:删除前已逐一用 `merge-base --is-ancestor` 核实零丢失,直接删即可——`feat/macos-support`(87cb20c,已在 main 历史)、`xufei5620/claude-cloud/runbook-cleanup`(8102f0b,已在 main 历史,另有 refs/pull/36/head 兜底)、`claude/project-review-ma2wvr`(15f898f,已在 main 历史)。命令:`git push origin --delete feat/macos-support xufei5620/claude-cloud/runbook-cleanup claude/project-review-ma2wvr`,或 GitHub 分支页逐个点删。**`claude/mac-platform-so8dlw`(321f74b)保留勿删**(提交本体未被吸收,实改已由 `6cce80b` 收编)。
-8. ~~任务标签体系~~ **已拍板并收口(2026-08-10,按推荐)**:以 `env:any/windows/macos/server` 为唯一标准,`agent:*` 废弃;COLLABORATION.md 已改齐;线上 35 个 open issue 已经 GitHub API 逐个核对,**零 `agent:*` 残留**,无需再动。
-9. ~~Node 检测增强的剩余两措施~~ **已拍板不做(2026-08-10,老板授权按推荐处理)**:托管安装 + 重启提示已覆盖主要工单面,措施2(手动指定 Node 路径)要扩路径信任面、措施3(读注册表)边际收益小。IMPROVEMENT-PLAN 2.2 横幅已收口。
-10. **Grok 国内镜像(2.6/#20)——按推荐维持暂缓(2026-08-10)**:唯一前置仍是只有你能答的确认项——**对 agentsmirror 基础设施是否有控制权、能否放 Grok 二进制**;确认后即可按 Codex 桌面端同款模式接入,代码侧无阻塞。
-11. ~~设置整条覆写的窄窗口竞态~~ **已修(2026-08-10,老板授权按推荐方向 = 按字段合并)**→ `9fa42e2`:settings:save 改字段级部分更新,合并在 app-settings 串行写队列内读基底;workspace:choose / window:set-theme / 启动回写三处读-改-写一并切窄更新;IPC 通道表零变化(T1)。
+## ② 线上 PR 与 Issue
 
-## ② 从这里继续(断点)
+**Open PR 5 个（2026-09-18 对 `43e09af` 复核）**
 
-- **当前工作分支**:`claude/xingmang-site-naming-batches-xwms7a`。每波推完后继续快进 `local/integration` 跟上(纯 ff,非强推)。
-- **main 已合并(2026-08-10)**:老板「按照你的推荐来」授权,`main` 纯快进到集成线 tip(祖先关系已核实,零冲突)。红线里的「不合 main」「不删分支」由该批复**一次性消费**;此后恢复默认——main 与分支删除仍需老板逐次发话。「不发 release」等其余红线不变,发布链路未触碰。
-- **老板 2026-08-10 历轮批复均已处理**:①栏1 命名确认;9 不做;10 维持暂缓;11 已修(`9fa42e2`);7 死分支核实完毕待老板删(云端 403,见①栏7);8 标签定 `env:*` 并已线上核对收口。
-- **任务板已校准(2026-08-10)**:16 个已完成/过时 issue 逐个核实证据后关闭(15 completed + #22 not_planned),证据表在 #27 的评论里;巡检波又核实并收口 #43(见③栏);仍 open 的按类留存(需决策/暂缓/macOS defer/未完结)。下个 agent 领任务前任务板即实态。
-- **新工作流:画布 v2(节点式 AI 媒体工作流)规划已立项(2026-08-10 晚,老板令「从现在开始你开始规划无限画布这一块」)**——总规划在 `docs/CANVAS-V2-PLAN.md`:底座 @xyflow/react(多智能体横评核实无更优备选,Jaaz/ComfyUI/LiteGraph 均因许可或维护被排除)、三层架构(relay=适配层+计费,已从 rc.24 源码核实视频任务端点现成)、里程碑 M0-M3。**开工前置在老板**:xm 配渠道 + 兄弟仓落点。分工:本 agent 主攻画布,另一位人类开发者打磨桌面端细节(冲突面:styles.css/App.tsx/IPC 通道三处串行区,对方动之前应打招呼)。
-- **main 已获老板发话跟进到集成线 tip(2026-08-10 晚,「main 跟进」原话)**——这是老板第三次连续授权 main 跟进,模式稳定;后续集成线过完门槛后快进 main 可视为默认动作,重大/有风险变更仍先汇报再动。
-- **测试安装包链路已就绪(2026-08-10)**:`.github/workflows/test-build.yml`(workflow_dispatch,windows-latest 打未签名 NSIS,产物挂 Actions artifact 7 天,`--publish never` 与发布链路完全隔离;云端包不含画布,见文件头注释)。**main 为此快进到 `11f5085`**(GitHub 要求 dispatch 工作流在默认分支)——此后 main 恢复"动前需老板发话"的默认;集成线可以领先 main。首次构建 run 31399562122 验收有专门 send_later 唤醒。
-- **双后端 W1→W3 已全链闭合并通过 Opus 对抗审查**。审查七面向里主路径全部攻击失败(粘贴 Key 全链 I13/I3、写入链 I9、契约 T1 零变化、solov 回归面均给了证据),揪出的发现已全部处置:F1(manual-key 降级不完整,3 个 new-api 入口仍可达)→ `5e1f953`;F2-F5(键控制字符校验/解析错误脱敏/诊断读侧站点化/切站刷新快照)→ `ce38200`;F6(字面量 nit)按不镀金跳过。
-- ~~W3 审查遗留的画布 manual-key 缺口~~ → **已修**(`750b8dc`):manual-key 站点画布直接用已写入 CLI 的 relay key,baseUrl 按站点配对(new-api 站配账号域、manual-key 站配 relay 域 origin);巡检又揪出并修掉 new-api 分支的凭据错配(`5fd0fab`,盲用 CLI 配置 Key 配 xm 域会发错 origin 且被画布 never-clobber 钉成粘性故障——现一律走账号后端签发/复用)。
-- **⚠️ 本会话输出可靠性告警**:后期出现 inline 命令 echo 被污染(git rev-parse 返回过互相矛盾的 SHA、臆造的提交消息)。**真实状态一律以 `git log`/文件回读为准,不信任 inline echo**。验证方法:命令结果重定向到 scratchpad 文件、用 Read 工具回读。若新会话接手,`git log --oneline` 与 `git rev-parse origin/local/integration` 是可信锚点。另:**云端容器可能在轮次间被回收重建、本地工作树回退到旧提交**(2026-08-10 实际发生一次,stop-hook 据陈旧跟踪引用误报"73 个未推提交")——遇到"大量未推"告警先 `ls-remote` 对远程,远程有就只需本地 ff 对齐,勿慌着重推。
-- **老板 2026-08-10 排的全序列已全部走完**:~~批次3~~(核实早已落地:3.1=`8c6a476`、3.2/#16=`fd2633c`、3.3/#17=`2c53e6d`+`17fef1a`,零施工)→ ~~仓库整理~~(校准 9 份文档;死分支清单进①栏7;标签体系进①栏8)→ ~~巡检~~(两轮对抗巡检:收编孤儿提交 `321f74b`→`6cce80b`,3.4 告警日志=`2aa1774`,e2e 浏览器变量=`cd824b6`,确认缺陷 7 项修复=`5fd0fab`;ipc 顺序断言复核仍在 `ipc.test.ts:286`;唯一未修项进①栏11)→ ~~画布 manual-key~~(`750b8dc`+`5fd0fab`)→ ~~批次1/2~~(批次1 核实全落地零施工;批次2:2.4 与 2.2 措施1=`d8f4209`,2.5 按计划自身论证暂缓,2.2 剩余与 2.6 进①栏9/10)。
-- **接下去若无新指示**:待办面只剩①栏决策项(2/3/4/5/10)与真机验证项(①栏6);代码侧可做的是继续巡检轮次或按①栏答复施工。连续两轮无可行动项 → 心跳拉长到 3600s。
-- **W3 关键事实(已侦察定案)**:sub2api = Wei-Shaw/sub2api(Go+Vue3);用户侧 Key 页路由 **`/keys`**(frontend/src/router,requiresAuth 非管理员)→ 精确 href `https://api.solov.cc/keys` **已在白名单**(main.ts:73),零白名单改动。sub2api 站点:providerBaseUrls 复用 catalog 形状(含 grok `/v1`)、accountBackend='manual-key'、无账号登录,粘贴 Key 优先复用既有配置写入链(I9),**尽量零新增 IPC 通道**(T1)。
-- **轮询协议**:长心跳(约 30 分钟);429/额度类错误不退出循环,退避并加长间隔;接近会话硬上限 → 立即把已完成的推上去、更新本报告顶部再收尾。模型分工:Fable 只规划/拍板/综合审,实现派 Sonnet,安全审查派 Opus。
-- **红线(老板原话不可越)**:不推/不合 main、不强推、不删分支、不开 PR、不发 release、不动生产站点、不违反 CLAUDE.md 第 8 节、测试绝不触生产 xm/api.solov.cc;素材/定价/命名/删除类/真机验证类一律进上面第①栏。
-
-## ③ 本轮完成(倒序,含提交号与门槛数字)
-
-| 提交 | 内容 | 门槛 |
+| PR | 状态 | 结论 |
 |---|---|---|
-| `b666e4d` | **画布 v2 M0 骨架完成**(老板拍板开发先行、渠道后配):`canvas-v2/` 独立 package——三节点画布(@xyflow/react)+ 端口语义类型/成环校验 + 纯函数 DAG 引擎(就绪即触发/上游失败下游跳过/整图取消)+ mock 执行器全链路 + relay 客户端骨架(rc.24 钉死端点,M1 换 executors 即真跑)+ JSON 持久化。落点:暂居主仓,定仓后平移 | canvas-v2 build 绿;主仓 tc 0 错;vitest 1370/0(+6);scripts 78/0 |
-| (本提交) | **中转域统一切到 xm.solov.cc(老板拍板 2026-08-10)**:catalog.ts 四个 CLI base URL 从 api.solov.cc 换 xm(路径形状不变,grok 保 /v1);中转+账号后端从此同一 new-api 实例。老用户旧域配置会被 matchesRelay 判不匹配→登录→重新写 Key 即迁移。11 个测试文件钉值、3 个 e2e 夹具、README/CLAUDE.md 产品事实同步;relayApiProbeBaseUrl 抽象保留(今天与官网同域是巧合,探测永远跟中转走) | tc 三段 0 错;vitest 1364/0;scripts 78/0;e2e 2/2 |
-| (本提交) | **老板真机反馈三批全落地(2026-08-10 下午)**:①登录先行(账号站点未登录必到欢迎页,`resolveInitialAppView` 去 config 参、App 启动门重排)+记住密码(safeStorage `account-credential-store.ts` + 2 通道,静默日志)+登录页协议勾选+协议/隐私可点外链(xm/terms、/privacy 入白名单,**页面待老板挂**)+历史占位符 `you@qq.com`（现已由新版 v2 统一为 `name@example.com`，校验不限制服务商）;②个人中心 Key 添加/编辑(`KeyEditorDialog`,client `createKey`/`updateKey`,**updateKey 是读-改-写**——rc.24 UpdateToken 整体覆盖,已按源码逐字核实并测试钉死;+2 通道,共 90);③toast 出界修复(`--sidebar-width` 无回退值在无侧栏视图失效→左上角,加 `var(...,0px)`)+侧边栏刷新余额按钮;④官网切换 xm.solov.cc(websiteUrl/keysPageUrl;探测拆 `relayApiProbeBaseUrl` 保打中转域)+安装器开放选目录(老板拍板,取舍已告知) | tc 三段 0 错;vitest 1364/0;scripts 78/0;e2e 2/2(指定 chromium) |
-| (本提交) | **巡检波·#43 收口**:四条逐一对当前代码重验——③(external 文案错配)与④(fail-closed 名不副实)已被集成线修掉且有测试钉住,零施工;①死字段 nativeMenu/trafficLightInset(生产零读取,linux 值还错)与②死参数 assertUnchanged(唯二调用点全 no-op)按 issue 自荐的删除路线收口(真实防护在 staging 身份绑定 + assertDarwin\*SelectionUnchanged,未动)。styles.css 未触碰 | tc 0 错;vitest 1355/0;scripts 78/0;e2e 2/2(指定 chromium) |
-| `11f5085` | **ci: test-build 工作流**(打测试安装包,永不发布;main 为 dispatch 需要快进至此) | YAML 由 GitHub 解析验证;run 31399562122 排队成功 |
-| (docs 提交) | **任务板校准(「按照你的推荐来」第二轮)**:GitHub 16 个 stale issue 核实关闭(#4/#6/#10/#14/#15/#18/#19/#21/#23/#24/#31/#32/#34/#66/#67 completed,#22 not_planned),证据表发 #27;线上标签核对零 `agent:*` 残留(①栏8 收口);删分支重试仍 403(定为只能老板执行) | GitHub 侧操作,零代码改动;关闭前逐个以 main 上文件/提交为证 |
-| (docs 提交) | **仓库管理批复执行(老板「按照你的推荐来」)**:main 纯快进到集成线 tip;删 3 条死分支(逐一 ancestor 核实零丢失,mac-platform 保留);①栏8 标签定 `env:*`,COLLABORATION.md 改齐;可靠性告警补"容器回退误报未推"一条。纯文档+分支管理,零代码改动 | typecheck 0 错复核;门槛数字同 `9fa42e2` 行 |
-| `9fa42e2` | **①栏11 修复(按推荐方向 = 按字段合并)**:settings:save 改字段级部分更新,合并在 app-settings 串行写队列内读基底(读-合并-写原子化);workspace:choose / window:set-theme / 启动回写三处整条覆写一并切窄更新;mirrorPolicy 用 'auto' 作显式清除标记;对抗审查 3 发现全处置(响应采纳 theme/侧边栏内存态×2、mock 契约失真测试重写);顺修 persistedSettings memo 缺 mirrorPolicy dep(2.4 遗留)。契约通道表零变化(T1),I5 校验同强度 | tc 0 错;vitest 1355/0(+10);scripts 78/0;e2e 2/2(指定 chromium);compile 过 |
-| `d8f4209` | **批次2 收尾**:镜像策略三态开关(2.4 全链,刻意不覆盖 Codex 桌面端清单)+ Node 重启提示(2.2 措施1) | tc 0 错;vitest 1345/0(+6);compile 过 |
-| `5fd0fab` | **巡检修复 7 项**:画布 new-api 分支凭据错配、备份恢复被在途扫描回滚、invalidate 后 loading 卡死锁工具栏(App+两页面)、桌面端轮询覆盖、粘贴 Key 首扫谎报/反报、登录后签发复查站点、备份页初扫窗口 | tc 0 错;vitest 1339/0 |
-| `750b8dc` | **画布 manual-key 适配**:hasAccountBackend 依赖 + canvasBaseUrlForSite 按站点配对凭据来源,切站下次开窗生效,零新增 IPC | tc 0 错;vitest 1339/0(+5);compile 过 |
-| `cd824b6` | e2e maintenance-layout 支持 `XINGMANG_E2E_CHROMIUM`(云容器复跑即绿,CI 无感) | 带变量 2/2 绿;无变量行为不变 |
-| `2aa1774` | **3.4 零风险子项**:CN-only 退化匹配告警日志(运行时+发布门禁镜像,判定不变) | tc 0 错;vitest 1334/0(+2);scripts 7/0 |
-| `6cce80b` | **收编孤儿提交 321f74b**:macOS 渲染根 URL 策略测试 + security.ts pin path.posix + CI 脏树守卫(补进 linux job) | tc 0 错;vitest 1332/0(+4) |
-| `19397b6` | **仓库整理·文档校准**:9 份文档过期声明清理(基线全绿化/批次状态横幅/W2-W4b 落地标注等) | tc 0 错;vitest 1328/0 |
-| `51987d1` | **仓库整理·死分支盘点**入①栏7(只列不删;发现 `claude/mac-platform-so8dlw` 携带未合入实改) | 文档波 |
-| `53efd7f` | **批次3 核实闭合**:3.1=`8c6a476`/3.2=`fd2633c`/3.3=`2c53e6d`+`17fef1a` 均已在历史落地,IMPROVEMENT-PLAN 加状态标注,零代码改动 | 复核波;基线 vitest 1328/0 |
-| `a55058b` | **站点命名定稿(①栏第1项拍板落地)**:统一「星芒AI」,下拉两项「星芒AI（账号登录）」/「星芒AI（Key 直连）」 | tc 0 错;vitest 1328/0 失败 |
-| `ce38200` | **W3 审查硬化 F2-F5**:键控制字符校验(拒 NUL 防明文入日志)、配置解析错误脱敏(I13)、诊断读侧站点化(W3a 漏接点)、切站后刷新 config 快照。F6 nit 跳过 | tc 0 错;vitest 1328/0 失败 |
-| `5e1f953` | **W3 审查 F1**:补全 manual-key 站点账号入口降级(handleConfigureCliKey/欢迎页/NextStepsCard 三入口),堵住跨站点凭据混线 | tc 0 错;vitest 1328/0 失败 |
-| `7cf281b` | **W3b 收官**:设置页站点下拉、账号区 manual-key 降级(不主动登出)、PasteKeyDialog + 纯校验、写入链拆 writeCliKeyForInstalledClis 复用两路径、canvas-window origin 收口(F4 3/3)、**零新增 IPC 通道**。+24 测试 | tc 0 错;vitest 1327/0 失败(基线+24);compile 过 |
-| `731db23` | **W3a 半波检查点**(额度中断收尾):sub2api 站点条目(同域双站/label 占位待确认/白名单去重零新增)+ siteBaseUrls 转必填 + 读侧站点化(含唯一授权断言更新)+ origin 收口 2/3 处 | tc 0 错;vitest 1303/0 失败(基线+2) |
-| `3872f36` | **W2 审查修复**:F1 `settings:save` 的 parseSettings 补 relaySiteId 直通(降级不抛错,I5 白名单校验)+ 2 条打在真实 IPC 处理器上的回归测试;F2 模型缓存键加站点前缀、站点解析提到缓存查找前;F5 relaySites 收紧为非空只读元组;F6 消真值吞空串与重复求值。F3/F4 记入 W3 必做 | tc 0 错;vitest 1301/0 失败(基线+2) |
-| `55696f3` | **双后端 W2**:relay-sites.ts 站点注册表(零依赖,solov 单条目)+ AppSettings.relaySiteId(坏值降级默认)+ 8 处硬编码消费点切站点解析(配置写入/模型列表/诊断探测/白名单派生/渲染层三链接)+ 契约值 re-export(providerIds 先例)。e2e 零改动=默认行为不变的验收 | tc 0 错;vitest 1299/0 失败(基线+16);compile 过(I6 无 node 依赖入渲染包) |
-| `9a2a261` | HANDOFF 重写为滚动报告;修正 CANVAS-INTEGRATION-PLAN 过期条目;sub2api /keys 路由侦察定案 | 文档波,typecheck 0 错复核 |
-| `a5cb90e` | **双后端 W1**:RelayBackendClient 接口(17 方法各注消费点)+ 能力声明;new-api 挪到接口后,零行为变化;契约/preload 零 diff | tc 0 错;vitest 1283/0 失败(基线+5) |
-| `7793d9a` | CLAUDE.md 全面校准到集成后实态(86 通道/新模块地图/I15/T12/T13),行号逐个复核 | tc 0 错;vitest 1278/0 失败 |
-| `15f898f` | `npm run dev` 竞态修复:predev 先全量编译主进程(scripts/prebuild-electron-dev.mjs);类型错不阻断 dev 实测过 | tc 0 错;vitest 1278/0;scripts 77/77 |
+| #119 `docs: CLAUDE.md 纯搬运瘦身（412→303 行）` | open，落后 main 6 个提交 | **仍有效**。`merge-tree` 对 `43e09af` 试合仍零冲突——CLAUDE.md 自它的 base(`ec26b33`) 起在 main 上没被动过。 |
+| #118 `feat(account): 双账号域长期并存改造` | draft，落后 main 6 个提交 | **已被 main 吸收并超越**。23 个文件里 10 个与 main 逐字节相同，其余全是 main 更新（`requireXmSiteRuntimeDefinition` → `requireSiteRuntimeDefinition`、sub2api 正式启用、公告/Key profile/登录提示，0.2.6 又加了 vault 恢复）。 |
+| #84 `Add CodexDualRouter Electron handover package` | draft，落后 main 53 个提交 | **无代码价值**。只有一个 152 KB 的 zip 附件（`docs/handover/codex-dual-router/...zip`），main 上没有它，全仓也没有任何 `CodexDualRouter` 引用。关 PR 不会丢东西，分支还在。 |
+| #127 `fix(canvas): 简化生成前确认与能力预检（R2-A）` | draft，9-18 开 | 画布重构 R2-A，关联 #126。本次未评估。 |
+| #125 `docs: 增加无限画布预览与交付说明` | draft，9-17 开 | 画布预览交付说明，关联 #126。本次未评估。 |
 
-**基线备忘**(Linux 云端):typecheck 三段 0 错;vitest 0 失败(skipped 为平台门控);scripts node --test 0 失败;e2e 2 个 Playwright 用例需真浏览器——容器 Playwright 版本不符时设 `XINGMANG_E2E_CHROMIUM=/opt/pw-browsers/chromium` 即绿(2026-08-10 起 maintenance-layout 支持该变量,CI 不设变量走托管下载不受影响)。
+**Open Issue 22 个**。除 9-18 新开的 #126（画布重构 R1：简易创作与高级画布共用工程/运行/资产内核，关联 #80，PR #125 / #127 是它的产出）外，其余最后一次活动都停在 2026-08-18（#92）。任务索引 **#27** 自 2026-08-10 起没更新过，里面的「下一步」已经不反映 0.2.x 的实际进度，**领任务前先自己对一遍 main**。其余分布：8 个带 `defer:macos-release`（#16/#37/#38/#39/#41/#44/#56/#57，全是 macOS 安全边界与资源泄漏）、#92（画布行业模板包 + macOS 画布适配验证，无标签）、#40 Windows 测试基线、#30 拆 App.tsx、#80/#89 画布 v2、#28/#26 发布链路需决策，其余为 UX 与服务端。
 
----
+## ③ 分支现状（22 个远端分支，绝大多数是死的）
 
-## 背景速查(接手补课用)
+- `local/integration`：**ahead=0 / behind=41**，内容已全部在 main 上，只是没删。
+- `claude/xingmang-site-naming-batches-xwms7a`：ahead=1 / behind=41。
+- 另有 `feat/macos-support`、`xufei5620/claude-cloud/runbook-cleanup`、`claude/project-review-ma2wvr`、`claude/mac-platform-so8dlw`、`codex/*`、`peaker520/*`、`v0/*` 等历史分支。
+- ⚠️ **2026-08-10 那版 HANDOFF 里「已核实可安全删除」的分支清单不要照抄**：今天复核，其中几条对 main 仍有 ahead 提交（不是 main 的祖先），与当时的结论对不上。**要删分支必须重新逐个核实，并由仓库所有者执行。**
 
-- **双后端方向(老板已定死)**:new-api + sub2api 一等公民;RelayBackendClient 统一接口;站点数据模型 `{id,label,providerBaseUrls,accountBackend,accountBaseUrl?}`;两站点可共享同一 relay 域(api.solov.cc),只差账号模式;UI 显式站点下拉,不做按 key 自动识别;sub2api 先做"粘贴 Key"最简实现,完整 parity 以后加实现不重构。
-- **必读顺序**:CLAUDE.md(不变量 I1-I15/陷阱 T1-T13,保命)→ docs/RECON-new-api.md(改账号前)→ docs/CANVAS-INTEGRATION-PLAN.md(改画布前)。
-- **老积压全景**:见 docs/IMPROVEMENT-PLAN.md(2026-08-10 已逐批次核实并加状态横幅):批次0/1 全部落地,批次2 落地 2.1/2.3(剩 2.2/2.4/2.5/2.6,其中 2.6 依赖基础设施决策),批次3 全部落地(3.4 按设计待决策),批次4 基本落地。wrangler 漏洞已随依赖树消失。**此前"批次1/2/3 全部未动"为过期信息。**
-- 上一阶段账号体系(W2~W4b)与画布四阶段的完整记录在 git log `6482277..f4b3ef3` 与 docs/ACCOUNT-PLAN.md / CANVAS-INTEGRATION-PLAN.md。
+## ④ 已知陈账
+
+- **任务索引 #27 与 `docs/IMPROVEMENT-PLAN.md` 停在 8 月**，0.2.x 这五次发布的内容没有回写进去。
+- **`docs/` 下多份计划文档描述的是中间态**（尤其 `ACCOUNT-PLAN.md` / `CANVAS-INTEGRATION-PLAN.md` 里 2026-08-12 之前的画布与账号描述），CLAUDE.md 第 9 节已就画布文档标注「2026-08-12 起执行搬进主进程，早于该日期的描述以代码为准」。
+- **CHANGELOG 断档**：`CHANGELOG.md` 缺 0.1.13 ~ 0.2.5；其中 0.1.13 ~ 0.1.19 与 0.1.29 在两份日志里都没有条目（这两个版本确有发布提交），属历史遗留，不回补。
+- 死分支从未清理（见③）。
+
+## ⑤ 开工前必读顺序
+
+1. `docs/ROADMAP.md` — 产品定位与优先级
+2. `CLAUDE.md` — 不变量 I1-I15 / 陷阱 T1-T13，**保命的**
+3. `docs/AGENT-RUNBOOK.md` — 怎么领任务、怎么提 PR
+4. 按改动面补：改账号 → `docs/RECON-new-api.md`；改画布 → `docs/RECON-canvas.md` + `docs/CANVAS-V2-PLAN.md`；动界面 → `ui-spec/HANDOFF.md`
+
+**提交前硬门槛**：`npm run typecheck` + `npm test`（Windows 已知环境失败见 #40，对比改动前后失败数，不要引入新失败）。
