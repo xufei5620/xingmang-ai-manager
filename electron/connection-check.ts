@@ -556,9 +556,10 @@ export async function runConnectionCheck(
       detail: outcome.ok ? null : detail || null,
     })
   } catch (error) {
-    // Byte-cap and JSON guards throw with our own Chinese copy; a genuine
-    // transport failure throws the runtime's. Both land here, and neither is
-    // swallowed -- the message travels to the user as `detail`.
+    // Only transport failures reach here: the byte cap has its own catch
+    // above and a malformed body is handled as a null payload, so anything
+    // thrown at this point means no usable answer came back. It is not
+    // swallowed -- the runtime's own message travels on as `detail`.
     const outcome = classifyConnectionFailure(error)
     const raw = error instanceof Error ? error.message : String(error ?? '')
     return finish(outcome, {
