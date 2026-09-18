@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
+import { existsSync, readFileSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
@@ -6,6 +8,20 @@ import { _electron as electron } from '@playwright/test'
 
 const projectRoot = path.resolve('.')
 const sandbox = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-window-close-'))
+
+// Every wait in this smoke used to be bounded only by Playwright's own
+// defaults, and page.evaluate and ElectronApplication.close() carry no default
+// at all. A wedged Electron on Windows therefore burned the whole 35 minute job
+// and printed nothing, because the failure path itself hung inside close()
+// before the assertion could surface (#131, #133). Each step now carries its
+// own deadline, the process tree is dumped when one expires, and residual
+// Electron processes are killed before this process exits.
+const stepBudgetMs = Number(process.env.XINGMANG_SMOKE_STEP_TIMEOUT_MS ?? 60_000)
+const totalBudgetMs = Number(process.env.XINGMANG_SMOKE_TOTAL_TIMEOUT_MS ?? 240_000)
+const startedAt = Date.now()
+const residualProcessIds = new Set()
+let currentStep = 'startup'
+let evidencePath = null
 
 // Install mocks before the real entry point so startup cannot access accounts,
 // the real user's configuration, or any production network endpoint.
@@ -82,7 +98,84 @@ function bootFixture(config) {
   require(config.entry)
 }
 
-async function waitUntil(read, accepts, label, timeout = 6_000) {
+function elapsedLabel() {
+  return `+${((Date.now() - startedAt) / 1_000).toFixed(1)}s`
+}
+
+function progress(step) {
+  currentStep = step
+  // The only output this smoke used to produce was its final JSON, so a hang
+  // left no trace of how far it got. Stream each step instead.
+  process.stderr.write(`[window-close-smoke ${elapsedLabel()}] ${step}\n`)
+}
+
+async function withDeadline(label, budgetMs, run) {
+  let expire
+  const operation = Promise.resolve().then(run)
+  // The losing side of the race stays pending. Swallow its eventual rejection
+  // so a late transport failure cannot resurface as an unhandled rejection
+  // after this smoke already reported the timeout.
+  operation.catch(() => undefined)
+  const deadline = new Promise((_, reject) => {
+    expire = setTimeout(() => reject(new Error(`${label} did not finish within ${budgetMs}ms`)), budgetMs)
+  })
+  try { return await Promise.race([operation, deadline]) }
+  finally { clearTimeout(expire) }
+}
+
+function windowsSystemExecutable(name) {
+  // Same reasoning as the main process: never resolve a Windows system binary
+  // through PATH, because the working directory would be searched first.
+  return path.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', name)
+}
+
+function describeProcessTree() {
+  const probe = process.platform === 'win32'
+    ? spawnSync(windowsSystemExecutable('tasklist.exe'), ['/FI', 'IMAGENAME eq electron.exe', '/FO', 'CSV', '/NH'],
+      { encoding: 'utf8', timeout: 15_000 })
+    : spawnSync('ps', ['-o', 'pid,ppid,stat,etime,comm'], { encoding: 'utf8', timeout: 15_000 })
+  return probe.stdout?.trim() || probe.stderr?.trim() || 'no process listing available'
+}
+
+function killProcessTree(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return
+  if (process.platform === 'win32') {
+    spawnSync(windowsSystemExecutable('taskkill.exe'), ['/PID', String(pid), '/T', '/F'], { timeout: 15_000 })
+    return
+  }
+  try { process.kill(pid, 'SIGKILL') } catch { /* already gone */ }
+}
+
+function reportFailure(error) {
+  process.stderr.write(`[window-close-smoke ${elapsedLabel()}] failed during: ${currentStep}\n`)
+  process.stderr.write(`${error?.stack ?? String(error)}\n`)
+  if (evidencePath && existsSync(evidencePath)) {
+    try { process.stderr.write(`main process state: ${readFileSync(evidencePath, 'utf8')}`) }
+    catch (cause) { process.stderr.write(`main process state unreadable: ${cause}\n`) }
+  }
+  process.stderr.write(`surviving processes:\n${describeProcessTree()}\n`)
+}
+
+function finish(code, payload) {
+  clearTimeout(totalBudgetTimer)
+  // A surviving Electron grandchild keeps the stdio pipes it inherited from the
+  // launch open, which is enough to keep this process alive with no work left.
+  for (const pid of residualProcessIds) killProcessTree(pid)
+  process.stdout.write(payload === undefined ? '' : `${JSON.stringify(payload)}\n`, () => process.exit(code))
+  setTimeout(() => process.exit(code), 5_000).unref()
+}
+
+const totalBudgetTimer = setTimeout(() => {
+  process.stderr.write(`[window-close-smoke ${elapsedLabel()}] total budget of ${totalBudgetMs}ms expired during: ${currentStep}\n`)
+  reportFailure(new Error('Window close smoke exceeded its total budget'))
+  finish(1)
+}, totalBudgetMs)
+totalBudgetTimer.unref()
+
+// Windows runners run this behind Defender and after twenty minutes of
+// filesystem-heavy tests, so a native hide or restore is measurably slower
+// there than on macOS. The wait stays bounded; only its headroom grew.
+async function waitUntil(read, accepts, label, timeout = 15_000) {
   const deadline = Date.now() + timeout
   let value
   while (Date.now() < deadline) {
@@ -94,13 +187,16 @@ async function waitUntil(read, accepts, label, timeout = 6_000) {
 }
 
 async function runScenario(blockQuit) {
-  const testRoot = path.join(sandbox, blockQuit ? 'blocked-quit' : 'renderer-unload')
+  const scenario = blockQuit ? 'blocked-quit' : 'renderer-unload'
+  const testRoot = path.join(sandbox, scenario)
   const userHome = path.join(testRoot, 'home')
   const userData = path.join(testRoot, 'user-data')
   const codexHome = path.join(userHome, '.codex')
   const evidence = path.join(testRoot, 'main-process.json')
   const commandPath = path.join(testRoot, 'command.json')
   const bootstrap = path.join(testRoot, 'bootstrap.cjs')
+  evidencePath = evidence
+  progress(`${scenario}: preparing the isolated application state`)
   await fs.mkdir(codexHome, { recursive: true })
   await fs.mkdir(userData, { recursive: true })
   await fs.mkdir(path.join(testRoot, 'appdata'), { recursive: true })
@@ -120,13 +216,21 @@ async function runScenario(blockQuit) {
     XINGMANG_DASHBOARD_PREVIEW: '0', XINGMANG_ONBOARDING_PREVIEW: '0', NODE_OPTIONS: '',
   }
   delete env.ELECTRON_RUN_AS_NODE
-  const application = await electron.launch({ cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env })
+  progress(`${scenario}: launching Electron`)
+  const application = await withDeadline(`${scenario}: Electron launch`, stepBudgetMs, () => electron.launch({
+    cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env, timeout: stepBudgetMs,
+  }))
   const child = application.process()
+  const scenarioProcessIds = new Set()
+  if (child.pid) { scenarioProcessIds.add(child.pid); residualProcessIds.add(child.pid) }
   let exited = false
   const exitPromise = new Promise((resolve) => child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }) }))
   const readState = async () => {
     try { return JSON.parse(await fs.readFile(evidence, 'utf8')) }
     catch (error) { if (error.code === 'ENOENT') return null; throw error }
+  }
+  const rememberProcessIds = (pids) => {
+    for (const pid of pids ?? []) { scenarioProcessIds.add(pid); residualProcessIds.add(pid) }
   }
   let actionId = 0
   const scheduleWindowAction = async (action, choice = null, shouldBlock = false) => {
@@ -135,12 +239,19 @@ async function runScenario(blockQuit) {
     await fs.writeFile(staged, JSON.stringify(command), 'utf8')
     await fs.rename(staged, commandPath)
     // Publish each action once; only poll its acknowledgement, never replay it.
-    return waitUntil(readState, (state) => state?.lastActionId === command.id, `Smoke command ${command.id} was not acknowledged`)
+    const state = await waitUntil(readState, (entry) => entry?.lastActionId === command.id, `Smoke command ${command.id} (${action}) was not acknowledged`)
+    rememberProcessIds(state.processIds)
+    return state
   }
   const visible = async () => (await scheduleWindowAction('inspect')).visible
   const chooseClose = (choice) => scheduleWindowAction('close', choice)
+  let page
+  // page.evaluate has no default timeout, so a renderer that stops answering
+  // stalls this smoke forever. Every renderer round trip goes through here.
+  const evaluate = (label, body) => withDeadline(`${scenario}: ${label}`, stepBudgetMs, () => page.evaluate(body))
   try {
-    const page = await application.firstWindow()
+    progress(`${scenario}: waiting for the first window`)
+    page = await withDeadline(`${scenario}: first window`, stepBudgetMs, () => application.firstWindow({ timeout: stepBudgetMs }))
     const rendererDialogs = []
     // Electron resolves beforeunload through will-prevent-unload. A listener
     // prevents Playwright's automatic dismissal racing that native decision.
@@ -148,36 +259,37 @@ async function runScenario(blockQuit) {
       rendererDialogs.push(dialog.type())
       if (dialog.type() !== 'beforeunload') void dialog.dismiss().catch(() => undefined)
     })
-    await page.getByTestId('welcome-page').waitFor({ timeout: 60_000 })
+    progress(`${scenario}: waiting for the welcome page`)
+    await withDeadline(`${scenario}: welcome page`, stepBudgetMs, () => page.getByTestId('welcome-page').waitFor({ timeout: stepBudgetMs }))
     assert.equal(path.resolve((await scheduleWindowAction('inspect')).userData), path.resolve(userData))
-    await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'ask' }))
-    const capabilities = await page.evaluate(() => window.xingmang.getWindowCapabilities())
+    await evaluate('saving the ask close behaviour', () => window.xingmang.saveSettings({ version: 2, closeBehavior: 'ask' }))
+    const capabilities = await evaluate('reading the window capabilities', () => window.xingmang.getWindowCapabilities())
+    progress(`${scenario}: cancelling a close (tray available: ${capabilities.tray})`)
     await chooseClose('返回')
     await waitUntil(readState, (state) => state?.dialogs.length === 1, 'Cancel dialog missing')
     assert.equal(await visible(), true)
     if (capabilities.tray) {
+      progress(`${scenario}: hiding to the tray and restoring`)
       await chooseClose('缩到托盘')
       await waitUntil(visible, (shown) => shown === false, 'Unresponsive close reporting prevented tray hiding')
       await scheduleWindowAction('activate')
       await waitUntil(visible, Boolean, 'Activation did not restore the hidden main window')
     } else {
-      await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'tray' }))
+      progress(`${scenario}: verifying the trayless fallback`)
+      await evaluate('selecting the tray close behaviour', () => window.xingmang.saveSettings({ version: 2, closeBehavior: 'tray' }))
       await scheduleWindowAction('close')
       assert.equal(await visible(), true, 'A missing system tray must keep the main window accessible')
-      await page.evaluate(() => window.xingmang.saveSettings({ version: 2, closeBehavior: 'ask' }))
+      await evaluate('restoring the ask close behaviour', () => window.xingmang.saveSettings({ version: 2, closeBehavior: 'ask' }))
     }
 
-    await page.evaluate(() => {
+    await evaluate('installing the renderer beforeunload blocker', () => {
       window.addEventListener('beforeunload', (event) => { event.returnValue = false })
     })
     const { processIds } = await scheduleWindowAction('block-quit', null, blockQuit)
+    progress(`${scenario}: forcing the exit`)
     const started = Date.now()
     await chooseClose('强制退出程序')
-    let timeout
-    const exit = await Promise.race([
-      exitPromise,
-      new Promise((_, reject) => { timeout = setTimeout(() => reject(new Error('Forced exit timed out')), 8_000) }),
-    ]).finally(() => clearTimeout(timeout))
+    const exit = await withDeadline(`${scenario}: forced exit`, 15_000, () => exitPromise)
     assert.equal(exit.code, 0)
     const state = JSON.parse(await fs.readFile(evidence, 'utf8'))
     assert.ok(rendererDialogs.every((type) => type === 'beforeunload'))
@@ -190,21 +302,42 @@ async function runScenario(blockQuit) {
     } else {
       assert.ok(state.preventedUnloads > 0, 'The renderer beforeunload blocker was not exercised')
     }
+    progress(`${scenario}: waiting for the child processes to disappear`)
     await waitUntil(() => Promise.resolve(processIds.filter((pid) => {
       try { process.kill(pid, 0); return true } catch { return false }
     })), (pids) => pids.length === 0, 'Electron processes remained after forced exit')
-    return { scenario: path.basename(testRoot), passed: true, trayAvailable: capabilities.tray,
+    return { scenario, passed: true, trayAvailable: capabilities.tray,
       trayRestored: capabilities.tray, visibleWithoutTray: !capabilities.tray, rendererDialogs, exit, elapsedMs: Date.now() - started, ...state }
   } finally {
+    // Cleanup must never outlive the scenario it is cleaning up: an unbounded
+    // close() here is what hid the real assertion failure on Windows.
     if (!exited) {
       await scheduleWindowAction('cleanup').catch(() => undefined)
-      await application.close().catch(() => undefined)
+      await withDeadline(`${scenario}: close`, 20_000, () => application.close()).catch(() => undefined)
+    }
+    // A forced exit orphans the GPU and utility processes on Windows, and they
+    // still hold the stdio pipes the launch handed them. Leaving them alive
+    // stalls the next scenario and this process on its way out.
+    for (const pid of scenarioProcessIds) {
+      killProcessTree(pid)
+      residualProcessIds.delete(pid)
     }
   }
 }
 
-const results = []
-for (const blockQuit of [false, true]) results.push(await runScenario(blockQuit))
-const result = { passed: true, isolatedRoot: sandbox, results }
-await fs.writeFile(path.join(sandbox, 'result.json'), JSON.stringify(result, null, 2) + '\n', 'utf8')
-console.log(JSON.stringify(result))
+async function main() {
+  const results = []
+  for (const blockQuit of [false, true]) results.push(await runScenario(blockQuit))
+  const result = { passed: true, isolatedRoot: sandbox, results }
+  await fs.writeFile(path.join(sandbox, 'result.json'), JSON.stringify(result, null, 2) + '\n', 'utf8')
+  return result
+}
+
+try {
+  const result = await main()
+  progress('done')
+  finish(0, result)
+} catch (error) {
+  reportFailure(error)
+  finish(1)
+}
