@@ -11,6 +11,7 @@
 
 ## Unreleased
 
+- macOS 免费分发产物验证补上 DMG 与签名强度两处缺口：每个 `.dmg` 现在会以只读方式挂载，内部 `.app` 走与 ZIP 完全相同的签名、叶证书、`app-update.yml`、Info.plist 与 asar 校验，验证结束（含失败）一律卸载，指定要求与证书连续性断言也从两个 ZIP 扩到全部四个产物（P-08）；同时断言主可执行文件与 `Contents/Frameworks` 下每个 helper 都启用了强化运行时，且 entitlements 键集合精确等于允许清单（只有 `com.apple.security.cs.allow-jit`），签名配置被改弱不再三道关全绿（P-09）。
 - 修复非管理员（默认）启动时 Node.js 兜底 MSI 安装必然失败：暂存目录改用普通用户临时目录，提权脚本自行在 Program Files 下建立仅管理员可写的目录、复制安装包并在提权侧重新校验 SHA-256 与 Authenticode 后才交给 msiexec；补上授权取消、跨账号授权等退出码的中文提示（E-S7）。
 
 ## 0.2.6 - 2026-09-19

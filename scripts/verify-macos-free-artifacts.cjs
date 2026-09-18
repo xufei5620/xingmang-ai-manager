@@ -21,6 +21,13 @@ const MACHO_ARCHITECTURES = {
   arm64: 'arm64',
   x64: 'x86_64',
 }
+// Every signed macOS build gets build/entitlements.mac.plist for the app and
+// build/entitlements.mac.inherit.plist for the nested helpers, and both grant
+// exactly this one key. Library validation and the other hardened-runtime
+// exceptions are deliberately withheld, so the verifier asserts set equality
+// rather than a subset: a build that quietly gains an entitlement must fail
+// here, not ship.
+const ALLOWED_ENTITLEMENT_KEYS = ['com.apple.security.cs.allow-jit']
 
 function expectedFreeArtifactNames(version) {
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
@@ -338,10 +345,10 @@ function assertInside(root, candidate, label) {
   return real
 }
 
-function findExtractedApplication(directory) {
+function findExtractedApplication(directory, label = 'ZIP') {
   const entries = fs.readdirSync(directory, { withFileTypes: true })
   const applications = entries.filter((entry) => entry.name.endsWith('.app'))
-  if (applications.length !== 1) throw new Error('ZIP 必须且只能解压出一个顶层 .app')
+  if (applications.length !== 1) throw new Error(`${label} 必须且只能包含一个顶层 .app`)
   const application = path.join(directory, applications[0].name)
   const stat = fs.lstatSync(application)
   if (!stat.isDirectory() || stat.isSymbolicLink()) throw new Error('顶层 .app 不能是链接或非目录')
@@ -375,6 +382,99 @@ function safeRegularFile(appPath, relativePath, label) {
   const stat = fs.statSync(filePath)
   if (!stat.isFile() || stat.size === 0) throw new Error(`${label} 必须是非空普通文件`)
   return filePath
+}
+
+function safeBundleDirectory(appPath, relativePath, label) {
+  const directoryPath = path.resolve(appPath, relativePath)
+  if (isOutside(appPath, directoryPath)) throw new Error(`${label} 路径不安全`)
+  const segments = path.relative(appPath, directoryPath).split(path.sep)
+  let current = appPath
+  for (const segment of segments) {
+    current = path.join(current, segment)
+    const stat = fs.lstatSync(current)
+    if (stat.isSymbolicLink()) throw new Error(`${label} 不能通过符号链接访问`)
+  }
+  if (!fs.lstatSync(directoryPath).isDirectory()) throw new Error(`${label} 必须是目录`)
+  return directoryPath
+}
+
+function findNestedHelperApplications(appPath) {
+  const frameworks = safeBundleDirectory(appPath, path.join('Contents', 'Frameworks'), 'Contents/Frameworks')
+  const helpers = fs.readdirSync(frameworks, { withFileTypes: true })
+    .filter((entry) => entry.name.endsWith('.app'))
+    .map((entry) => ({
+      name: entry.name,
+      path: safeBundleDirectory(appPath, path.join('Contents', 'Frameworks', entry.name), `helper ${entry.name}`),
+    }))
+  // Electron always nests at least the renderer helper. Zero helpers means the
+  // bundle layout changed underneath this verifier, and silently checking
+  // nothing is exactly the false green this assertion exists to prevent.
+  if (helpers.length === 0) throw new Error('应用必须在 Contents/Frameworks 下包含至少一个 helper 应用')
+  return helpers
+}
+
+function assertHardenedRuntime(details, label) {
+  // Only the CodeDirectory line carries the signature flags. The neighbouring
+  // "Executable Segment ... flags=0x1" line codesign prints for some binaries
+  // has no symbolic form and must not be read as the runtime flag.
+  const flagLines = String(details || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => /^CodeDirectory\b/.test(line))
+  if (flagLines.length === 0) throw new Error(`${label} 的 codesign 输出没有 CodeDirectory 行，无法确认强化运行时`)
+  for (const line of flagLines) {
+    const match = /(?:^|\s)flags=0x[\da-fA-F]+\(([^)]*)\)/.exec(line)
+    if (!match) throw new Error(`${label} 的 codesign flags= 行无法解析：${line}`)
+    const flags = match[1].split(',').map((flag) => flag.trim()).filter(Boolean)
+    if (!flags.includes('runtime')) throw new Error(`${label} 未启用强化运行时（hardened runtime）`)
+  }
+  return flagLines.length
+}
+
+function assertAllowedEntitlements(keys, label) {
+  const allowed = [...ALLOWED_ENTITLEMENT_KEYS].sort()
+  const actual = [...keys].sort()
+  if (actual.length !== allowed.length || actual.some((key, index) => key !== allowed[index])) {
+    throw new Error(`${label} 的 entitlements 必须精确等于允许清单（${allowed.join('、')}），实际为：${actual.join('、') || '（空）'}`)
+  }
+  return actual
+}
+
+async function readEntitlementKeys(targetPath, commandRunner, label) {
+  const snapshot = stdoutText(await commandRunner(
+    '/usr/bin/codesign',
+    ['-d', '--entitlements', ':-', '--xml', targetPath],
+  ))
+  if (!snapshot.trim()) throw new Error(`${label} 没有任何 entitlements，无法确认允许清单`)
+  const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-entitlements-'))
+  try {
+    fs.chmodSync(temporaryDirectory, 0o700)
+    const snapshotPath = path.join(temporaryDirectory, 'entitlements.plist')
+    fs.writeFileSync(snapshotPath, snapshot, { mode: 0o600, flag: 'wx' })
+    let entitlements
+    try {
+      const result = await commandRunner('/usr/bin/plutil', ['-convert', 'json', '-o', '-', snapshotPath])
+      if (result?.code && result.code !== 0) throw new Error('plutil 转换失败')
+      entitlements = JSON.parse(stdoutText(result))
+    } catch {
+      throw new Error(`${label} 的 entitlements 快照必须可由 plutil 转换为 JSON`)
+    }
+    if (!entitlements || typeof entitlements !== 'object' || Array.isArray(entitlements)) {
+      throw new Error(`${label} 的 entitlements 顶层必须是对象`)
+    }
+    return Object.keys(entitlements)
+  } finally {
+    fs.rmSync(temporaryDirectory, { recursive: true, force: true })
+  }
+}
+
+async function verifySignatureHardening(targetPath, label, commandRunner, assertBundleIdentity) {
+  const details = outputText(await commandRunner('/usr/bin/codesign', ['-d', '--verbose=4', targetPath]))
+  assertBundleIdentity()
+  assertHardenedRuntime(details, label)
+  const keys = await readEntitlementKeys(targetPath, commandRunner, label)
+  assertBundleIdentity()
+  return { label, entitlementKeys: assertAllowedEntitlements(keys, label) }
 }
 
 function verifyPackagedUpdateConfig(appPath, expectedUpdateUrl) {
@@ -494,6 +594,22 @@ async function inspectPackagedApplication(
   const details = outputText(await commandRunner('/usr/bin/codesign', ['-d', '--verbose=4', appPath]))
   assertBundleIdentity()
   assertExactCodesignIdentifier(details)
+  // codesign resolves a bundle path to the signature of its main executable,
+  // so these two cover Contents/MacOS. The nested helpers carry their own
+  // signatures and their own entitlements file, and are checked separately.
+  assertHardenedRuntime(details, '主可执行文件')
+  const mainEntitlements = await readEntitlementKeys(appPath, commandRunner, '主可执行文件')
+  assertBundleIdentity()
+  assertAllowedEntitlements(mainEntitlements, '主可执行文件')
+  const helperEntitlements = []
+  for (const helper of findNestedHelperApplications(appPath)) {
+    helperEntitlements.push(await verifySignatureHardening(
+      helper.path,
+      `helper ${helper.name}`,
+      commandRunner,
+      assertBundleIdentity,
+    ))
+  }
 
   const architectures = outputText(await commandRunner('/usr/bin/lipo', ['-archs', executable]))
   assertBundleIdentity()
@@ -528,7 +644,14 @@ async function inspectPackagedApplication(
       throw new Error(`packaged package.json version 必须精确匹配预期版本 ${expectedVersion}`)
     }
     if (packagedPackage.xingmangLocalBuild !== false) throw new Error('packaged package.json 必须显式设置 xingmangLocalBuild 为 false')
-    return { architecture, certificateSha256, certificateSha1, ...requirement }
+    return {
+      architecture,
+      certificateSha256,
+      certificateSha1,
+      entitlementKeys: mainEntitlements,
+      helperEntitlements,
+      ...requirement,
+    }
   } finally {
     fs.rmSync(temporaryDirectory, { recursive: true, force: true })
   }
@@ -563,6 +686,88 @@ async function verifyZipApplication(zipPath, architecture, options) {
   }
 }
 
+function parseHdiutilMountPoints(text, mountRoot) {
+  const realRoot = fs.realpathSync(mountRoot)
+  const mountPoints = []
+  for (const line of String(text || '').split(/\r?\n/)) {
+    const columns = line.split('\t').map((column) => column.trim()).filter(Boolean)
+    const candidate = columns.at(-1)
+    if (!candidate || !path.isAbsolute(candidate)) continue
+    const resolved = path.resolve(candidate)
+    if (resolved === realRoot || isOutside(realRoot, resolved)) continue
+    if (!mountPoints.includes(resolved)) mountPoints.push(resolved)
+  }
+  return mountPoints
+}
+
+function listMountedVolumes(mountRoot) {
+  const realRoot = fs.realpathSync(mountRoot)
+  return fs.readdirSync(realRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => path.join(realRoot, entry.name))
+    .sort()
+}
+
+function resolveSingleMountPoint(mountRoot, reportedMountPoints) {
+  const mounted = listMountedVolumes(mountRoot)
+  if (mounted.length !== 1 || reportedMountPoints.length !== 1 || reportedMountPoints[0] !== mounted[0]) {
+    throw new Error('DMG 必须恰好挂载出一个位于随机挂载目录下的卷')
+  }
+  return mounted[0]
+}
+
+async function detachMountPoints(mountPoints, commandRunner) {
+  const failures = []
+  for (const mountPoint of mountPoints) {
+    try {
+      await commandRunner('/usr/bin/hdiutil', ['detach', mountPoint, '-force'])
+    } catch (error) {
+      failures.push(`${mountPoint}：${error.message}`)
+    }
+  }
+  return failures
+}
+
+async function verifyDmgApplication(dmgPath, architecture, options) {
+  const mountRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-dmg-'))
+  const env = options.env || process.env
+  const commandRunner = options.commandRunner || ((command, args) => defaultCommandRunner(command, args, {
+    env,
+    runFile: options.runFile,
+  }))
+  fs.chmodSync(mountRoot, 0o700)
+  let result
+  let inspectionError
+  try {
+    const attached = outputText(await commandRunner('/usr/bin/hdiutil', [
+      'attach', '-nobrowse', '-readonly', '-noautoopen', '-mountrandom', mountRoot, dmgPath,
+    ]))
+    const mountPoint = resolveSingleMountPoint(mountRoot, parseHdiutilMountPoints(attached, mountRoot))
+    const appPath = findExtractedApplication(mountPoint, 'DMG')
+    // The mount root itself cannot be the containment boundary: electron-builder
+    // puts a /Applications symlink next to the .app by design. Inside the bundle
+    // every link must still stay within it.
+    assertExtractedTreeSafe(appPath)
+    result = await inspectPackagedApplication(
+      appPath,
+      architecture,
+      options.expectedCertificateSha256,
+      options.expectedUpdateUrl || DEFAULT_UPDATE_URL,
+      options.expectedVersion,
+      commandRunner,
+    )
+  } catch (error) {
+    inspectionError = error
+  }
+  // Detach whatever actually mounted, not what hdiutil reported, so a failed
+  // inspection never leaves an image attached to the build machine.
+  const detachFailures = await detachMountPoints(listMountedVolumes(mountRoot), commandRunner)
+  fs.rmSync(mountRoot, { recursive: true, force: true })
+  if (inspectionError) throw inspectionError
+  if (detachFailures.length > 0) throw new Error(`DMG 卸载失败：${detachFailures.join('；')}`)
+  return result
+}
+
 async function writeSha256Manifest(outputDirectory, entries) {
   const manifestPath = path.join(outputDirectory, 'SHA256SUMS')
   const temporaryPath = path.join(outputDirectory, `.SHA256SUMS.${process.pid}.${Date.now()}.tmp`)
@@ -589,7 +794,10 @@ async function verifyMacosFreeArtifacts(options = {}) {
   assertPublicArtifactInventory(outputDirectory, publicNames)
   for (const name of publicNames) assertArtifactFile(outputDirectory, name)
 
-  const verifier = options.verifyZipApplication || verifyZipApplication
+  const verifiers = {
+    zip: options.verifyZipApplication || verifyZipApplication,
+    dmg: options.verifyDmgApplication || verifyDmgApplication,
+  }
   const commandRunner = options.commandRunner || ((command, args) => defaultCommandRunner(command, args, {
     env,
     runFile: options.runFile,
@@ -651,31 +859,44 @@ async function verifyMacosFreeArtifacts(options = {}) {
       }
     }
     assertBoundReleaseSources()
+    // The DMG is the package users install by hand, so it goes through the same
+    // packaged inspection as the update ZIP instead of only being hashed.
     for (const architecture of ARCHITECTURES) {
-      const zipName = `XingMang-AI-Manager-${version}-${architecture}.zip`
-      const privateZip = privateArtifacts.get(zipName)
-      if (!privateZip) throw new Error(`ZIP 私有副本缺失：${zipName}`)
-      const result = await verifier(privateZip.path, architecture, {
-        expectedCertificateSha256,
-        expectedUpdateUrl,
-        expectedVersion: version,
-        commandRunner,
-        env,
-      })
-      assertBoundReleaseSources()
-      if (!result || result.architecture !== architecture) throw new Error(`ZIP 应用验证没有确认预期架构：${architecture}`)
-      if (normalizeSha256(result.certificateSha256) !== expectedCertificateSha256) throw new Error('ZIP 应用叶证书 SHA-256 与预期签名证书不匹配')
-      const certificateSha1 = normalizeSha1(result.certificateSha1)
-      const requirement = parseDesignatedRequirement(result.designatedRequirement)
-      if (requirement.certificateRequirementHash !== certificateSha1) {
-        throw new Error('ZIP 应用指定要求的证书 slot 哈希必须等于提取的叶证书 SHA-1')
+      for (const kind of ['zip', 'dmg']) {
+        const artifactName = `XingMang-AI-Manager-${version}-${architecture}.${kind}`
+        const privateArtifact = privateArtifacts.get(artifactName)
+        if (!privateArtifact) throw new Error(`${kind.toUpperCase()} 私有副本缺失：${artifactName}`)
+        const result = await verifiers[kind](privateArtifact.path, architecture, {
+          expectedCertificateSha256,
+          expectedUpdateUrl,
+          expectedVersion: version,
+          commandRunner,
+          env,
+        })
+        assertBoundReleaseSources()
+        if (!result || result.architecture !== architecture) {
+          throw new Error(`${kind.toUpperCase()} 应用验证没有确认预期架构：${architecture}`)
+        }
+        if (normalizeSha256(result.certificateSha256) !== expectedCertificateSha256) {
+          throw new Error(`${kind.toUpperCase()} 应用叶证书 SHA-256 与预期签名证书不匹配：${artifactName}`)
+        }
+        const certificateSha1 = normalizeSha1(result.certificateSha1)
+        const requirement = parseDesignatedRequirement(result.designatedRequirement)
+        if (requirement.certificateRequirementHash !== certificateSha1) {
+          throw new Error(`${kind.toUpperCase()} 应用指定要求的证书 slot 哈希必须等于提取的叶证书 SHA-1：${artifactName}`)
+        }
+        results.push({ kind, artifactName, ...result, certificateSha1, ...requirement })
       }
-      results.push({ ...result, certificateSha1, ...requirement })
     }
-    if (results[0].designatedRequirement !== results[1].designatedRequirement
-      || results[0].certificateSlot !== results[1].certificateSlot
-      || results[0].certificateRequirementHash !== results[1].certificateRequirementHash) {
-      throw new Error('两个 ZIP 应用的指定要求、证书 slot 或证书哈希连续性不一致')
+    // Continuity now spans all four artifacts: a DMG signed by a different
+    // certificate than the ZIPs is exactly the split this check must catch.
+    const [reference, ...others] = results
+    for (const result of others) {
+      if (result.designatedRequirement !== reference.designatedRequirement
+        || result.certificateSlot !== reference.certificateSlot
+        || result.certificateRequirementHash !== reference.certificateRequirementHash) {
+        throw new Error(`四个产物的指定要求、证书 slot 或证书哈希连续性不一致：${result.artifactName}`)
+      }
     }
 
     const entries = publicNames
@@ -710,16 +931,21 @@ if (require.main === module) {
 }
 
 module.exports = {
+  ALLOWED_ENTITLEMENT_KEYS,
+  assertAllowedEntitlements,
   assertExactCodesignIdentifier,
   assertExactArchitecture,
+  assertHardenedRuntime,
   expectedFreeArtifactNames,
   formatSha256Manifest,
   hashArtifactFiles,
   parseDesignatedRequirement,
+  parseHdiutilMountPoints,
   parseLatestMacMetadata,
   resolveSafeOutputDirectory,
   validateZipEntryPaths,
   verifyPackagedUpdateConfig,
+  verifyDmgApplication,
   verifyMacosFreeArtifacts,
   verifyZipApplication,
 }
