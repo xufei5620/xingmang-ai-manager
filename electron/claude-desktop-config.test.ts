@@ -299,7 +299,7 @@ describe('Claude Desktop in-app third-party configuration', () => {
       assertBeforeWrite: () => { if (!active) throw new Error('sk-do-not-echo') },
       assertUnmanaged: async () => { if (++calls === guardIndex) active = false },
     })
-    await expect(f.service.saveGateway(input)).rejects.toThrow('账号或站点已切换')
+    await expect(f.service.saveGateway(input)).rejects.toThrow('账号已切换')
     expect(fs.readdirSync(f.directory)).toEqual([])
   })
 

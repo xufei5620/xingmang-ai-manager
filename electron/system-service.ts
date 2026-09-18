@@ -3604,7 +3604,7 @@ export function createSystemService(
       const models = await fetchAvailableModels(apiKey, { bypassCache: true })
       const assertContext = () => {
         assertBeforeWrite?.()
-        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号站点已变化，请重新配置')
+        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号已变化，请重新配置')
         if ((serviceOptions.getExternalClientAccountId?.() ?? null) !== owner) throw new Error('账号已变化，请重新配置')
       }
       assertContext()
@@ -3721,11 +3721,11 @@ export function createSystemService(
         if (toolConfigIdentity(current) !== toolConfigIdentity(before) || current.updatedAt !== before.updatedAt || current.model !== before.model) {
           throw new Error('工具配置在模型检测期间发生变化，已保留现有配置，请重新检测')
         }
-        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号站点已变化，请重新配置')
+        if (resolveRelaySite(serviceOptions.getRelaySiteId?.() ?? store.read().relaySiteId).id !== activeSite.id) throw new Error('账号已变化，请重新配置')
       }
       // An empty key is an explicit renderer sentinel: reuse the main-process key.
       const configured = payload.apiKey.trim() ? null : before
-      if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他站点，请使用当前账号重新配置')
+      if (configured?.hasApiKey && !configured.matchesRelay) throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
       const apiKey = payload.apiKey.trim() || configured?.apiKey || ''
       if (!apiKey) throw new Error('请先填写 API Key')
       const availableModels = await fetchAvailableModels(apiKey)

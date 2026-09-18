@@ -36,9 +36,11 @@ export interface AppSettings {
   /** Whether the sidebar's collapsible "更多" group is expanded. Absent = collapsed (pre-#67 behavior). */
   sidebarMoreExpanded?: boolean
   /**
-   * Which relay-sites.ts RelaySite the CLIs should be configured against.
-   * Absent = the default site (today's only site, so this is the entire
-   * install base's behavior pre-W2). Consumers must resolve this through
+   * Which relay-sites.ts RelaySite the CLIs were last configured against.
+   * 已不参与路由：站点由当前登录账号决定（main.ts 把 getRelaySiteId 绑到
+   * accounts.getSiteId()，readStoredConfig 会用它覆盖这个字段），这里保留
+   * 只为兼容老配置文件，不要再把它接回任何选择界面（D-03）。
+   * Absent = the default site. Consumers must resolve this through
    * resolveRelaySite(), never index relaySites directly, so an id from a
    * newer version that removed a site degrades to the default instead of
    * crashing.

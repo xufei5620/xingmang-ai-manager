@@ -535,7 +535,7 @@ function parseRendererError(value: unknown): { message: string; stack?: string; 
 }
 
 function parseAccountSiteId(value: unknown): 'solov' | 'solov-api' {
-  if (value !== 'solov' && value !== 'solov-api') throw new Error('账号站点无效')
+  if (value !== 'solov' && value !== 'solov-api') throw new Error('账号来源无效')
   return value
 }
 
@@ -1535,7 +1535,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     } else if (parsed.credential.kind === 'configured') {
       const provider = parsed.credential.provider
       const config = service.getConfig(options.previewOnboarding).providers[provider]
-      if (!config.hasApiKey || !config.matchesRelay) throw new Error('该工具没有当前星芒站点的可用密钥，请重新选择密钥来源')
+      if (!config.hasApiKey || !config.matchesRelay) throw new Error('该工具没有当前账号的可用密钥，请重新选择密钥来源')
       apiKey = service.revealApiKey(provider, options.previewOnboarding)
     } else apiKey = parsed.credential.apiKey
     assertCurrent()
@@ -1676,7 +1676,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('models:list-configured', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     if (options.realmAccounts && !service.getConfig(options.previewOnboarding).providers[provider].matchesRelay) {
-      throw new Error('已保存的 Key 属于其他站点，请使用当前账号重新配置')
+      throw new Error('已保存的 Key 属于其他账号，请使用当前账号重新配置')
     }
     const apiKey = service.revealApiKey(provider, options.previewOnboarding)
     if (!apiKey) throw new Error('未读取到已保存的 API Key')
@@ -1996,7 +1996,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parsed = parseAccountLoginInput(input)
     const siteId = isRecord(input) && input.siteId !== undefined ? parseAccountSiteId(input.siteId) : undefined
     if (!options.realmAccounts) {
-      if (siteId !== undefined && siteId !== 'solov') throw new Error('当前账号服务不支持此站点')
+      if (siteId !== undefined && siteId !== 'solov') throw new Error('当前账号服务不支持该账号来源')
       return accountService.login(parsed)
     }
     await accountSessionReady
@@ -2196,7 +2196,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   ))
   const passwordResetClient = (siteInput: unknown) => {
     const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
-    if (!options.realmAccounts && siteId !== 'solov') throw new Error('当前账号服务不支持此站点')
+    if (!options.realmAccounts && siteId !== 'solov') throw new Error('当前账号服务不支持该账号来源')
     const client = options.realmAccounts?.getPublicClient(siteId) ?? accountService
     if (client.capabilities?.supportsPasswordReset === false) throw new Error('所选账号暂不支持在客户端找回密码，请前往对应账号官网')
     return client

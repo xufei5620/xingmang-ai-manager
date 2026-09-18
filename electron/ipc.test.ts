@@ -1321,7 +1321,7 @@ describe('registerIpcHandlers', () => {
     const service = serviceStub()
     vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { matchesRelay: false } } } as never)
     register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never })
-    await expect(electronMocks.handlers.get('models:list-configured')!(trustedEvent(), 'codex')).rejects.toThrow('其他站点')
+    await expect(electronMocks.handlers.get('models:list-configured')!(trustedEvent(), 'codex')).rejects.toThrow('其他账号')
     expect(service.revealApiKey).not.toHaveBeenCalled()
     expect(service.fetchAvailableModels).not.toHaveBeenCalled()
   })
