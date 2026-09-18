@@ -6,9 +6,7 @@ name: quality
 on:
   push:
     branches: [main]
-    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.gitattributes', '.editorconfig']
   pull_request:
-    paths-ignore: ['**/*.md', 'docs/**', 'LICENSE', '.gitattributes', '.editorconfig']
 
 # Superseded runs are wasted minutes, and one run bills ~49 of them. main is
 # included: while the project is pre-release, a burst of merges would otherwise
@@ -24,7 +22,25 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      code: ${{ steps.scope.outputs.code }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - id: scope
+        run: node scripts/ci-change-scope.cjs
+
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
     timeout-minutes: 35
     steps:
@@ -83,6 +99,8 @@ jobs:
           retention-days: 7
 
   macos-test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: macos-15
     timeout-minutes: 35
     steps:
@@ -124,6 +142,8 @@ jobs:
         run: node scripts/run-macos-free-build.cjs --ci-temporary-signing
 
   linux-test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -154,6 +174,8 @@ jobs:
           fi
 
   audit:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -167,3 +189,21 @@ jobs:
       - run: npm run audit:production
       - name: Report development dependency advisories
         run: npm run audit:ci
+
+  quality-gate:
+    if: always()
+    needs: [changes, test, macos-test, linux-test, audit]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require successful checks or a verified documentation-only change
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node <<'NODE'
+          const jobs = JSON.parse(process.env.JOB_RESULTS)
+          const code = jobs.changes.outputs.code
+          if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
+          const expected = code === 'true' ? 'success' : 'skipped'
+          if (['test', 'macos-test', 'linux-test', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          NODE

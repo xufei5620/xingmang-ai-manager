@@ -138,7 +138,17 @@ export function accountBootstrapPlan(
       skipped.push({
         provider,
         reason: 'unknown',
-        message: `${nameOf(provider)} 保留已有第三方配置`,
+        message: `${nameOf(provider)} 保留来源尚未确认的已有配置`,
+      })
+      continue
+    }
+    if (source === 'account' && current.configurationOwnership !== 'account') {
+      // Matching a cached account key restores its badge, not permission to rewrite it.
+      const ready = connectionReady(current, provider, storage)
+      skipped.push({
+        provider,
+        reason: ready ? 'configured' : 'unknown',
+        message: ready ? `${nameOf(provider)} 已连接星芒账号` : `${nameOf(provider)} 保留已有账号配置，待手动补全`,
       })
       continue
     }
@@ -169,6 +179,7 @@ export function configurationFailure(
   if (!current.matchesRelay) return '服务地址尚未与当前账号匹配'
   if (!current.model.trim()) return '默认模型尚未写入'
   if (provider === 'gemini' && current.authType !== 'gemini-api-key') return 'Gemini 尚未切换到 API Key 模式'
+  if (current.configurationOwnership !== 'account' || sourceFor(current, provider, storage) !== 'account') return '配置来源未确认属于星芒账号'
   return connectionReady(current, provider, storage) ? null : '工具连接尚未完成'
 }
 
@@ -247,22 +258,25 @@ export async function bootstrapAccountTools(
   const configured: ProviderId[] = []
   const failed: Array<{ provider: ProviderId; message: string }> = []
   for (const provider of plan.targets) {
-    const problem = configurationFailure(verified, provider, storage)
-    if (!problem) {
-      configured.push(provider)
-      if (outcome.configured.includes(provider)) {
-        writeManualSourceMarker(
-          storage,
-          verified.providers[provider].baseUrl,
-          provider,
-          false,
-        )
-      }
+    const reported = outcome.failed.find((entry) => entry.provider === provider)
+    if (reported) {
+      failed.push({ provider, message: reported.message || '账号 Key 配置失败' })
+      continue
     }
-    else {
-      const reported = outcome.failed.find((entry) => entry.provider === provider)
-      failed.push({ provider, message: reported?.message || problem })
+    const problem = outcome.configured.includes(provider)
+      ? configurationFailure(verified, provider, storage)
+      : '账号 Key 配置未返回成功结果'
+    if (problem) {
+      failed.push({ provider, message: problem })
+      continue
     }
+    configured.push(provider)
+    writeManualSourceMarker(
+      storage,
+      verified.providers[provider].baseUrl,
+      provider,
+      false,
+    )
   }
 
   const readyKeys = synchronized?.ready.map((entry) => entry.provider) ?? []

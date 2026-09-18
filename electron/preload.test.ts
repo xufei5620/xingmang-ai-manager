@@ -4,6 +4,7 @@ import vm from 'node:vm'
 import ts from 'typescript'
 import { describe, expect, it, vi } from 'vitest'
 import { ipcEventChannels, ipcInvokeChannels, type XingmangApi } from './ipc-contract'
+import { accelerationBonusCode } from './acceleration-contract'
 
 function preloadSource() {
   const file = path.join(__dirname, 'preload.ts')
@@ -79,5 +80,40 @@ describe('main-window sandbox preload', () => {
     unsubscribe()
     expect(handlers.size).toBe(0)
     expect(ipcRenderer.removeListener).toHaveBeenCalledWith('account:usage-changed', expect.any(Function))
+  })
+
+  it('preserves the selected source on password recovery IPC calls', async () => {
+    const invoke = vi.fn(async () => undefined)
+    let bridge: XingmangApi | undefined
+    const compiled = ts.transpileModule(preloadSource().sourceText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
+    vm.runInNewContext(compiled, {
+      exports: {},
+      require: (name: string) => {
+        if (name !== 'electron') throw new Error('Sandbox cannot load runtime modules')
+        return { ipcRenderer: { invoke }, contextBridge: { exposeInMainWorld: (_name: string, api: XingmangApi) => { bridge = api } } }
+      },
+    })
+    await bridge!.sendPasswordResetCode('member@example.test', 'solov')
+    await bridge!.resetPassword({ email: 'member@example.test', token: 'test-code' }, 'solov-api')
+    expect(invoke.mock.calls).toEqual([
+      ['account:send-reset-code', 'member@example.test', 'solov'],
+      ['account:reset-password', { email: 'member@example.test', token: 'test-code' }, 'solov-api'],
+    ])
+  })
+
+  it('forwards the account and redemption code through the sandbox without adding a duration parameter', async () => {
+    const result = { status: 'redeemed', addedSeconds: 600 }
+    const invoke = vi.fn(async () => result)
+    let bridge: XingmangApi | undefined
+    const compiled = ts.transpileModule(preloadSource().sourceText, { compilerOptions: { module: ts.ModuleKind.CommonJS } }).outputText
+    vm.runInNewContext(compiled, {
+      exports: {},
+      require: (name: string) => {
+        if (name !== 'electron') throw new Error('Sandbox cannot load runtime modules')
+        return { ipcRenderer: { invoke }, contextBridge: { exposeInMainWorld: (_name: string, api: XingmangApi) => { bridge = api } } }
+      },
+    })
+    await expect(bridge!.redeemAccelerationCode('api-account:7', accelerationBonusCode)).resolves.toBe(result)
+    expect(invoke.mock.calls).toEqual([['acceleration:redeem-code', 'api-account:7', accelerationBonusCode]])
   })
 })

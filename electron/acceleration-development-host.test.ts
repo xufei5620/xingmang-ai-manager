@@ -4,12 +4,14 @@ import os from 'node:os'
 import { setTimeout as delay } from 'node:timers/promises'
 import { EventEmitter } from 'node:events'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { accelerationBonusCode } from './acceleration-contract'
 import { createAccelerationDevelopmentHost, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource, readAccelerationDevelopmentConfig } from './acceleration-development-host'
 
-const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn() }))
+const mocks = vi.hoisted(() => ({ fork: vi.fn(), spawn: vi.fn(), read: vi.fn(), environment: vi.fn(), profile: vi.fn(), profileCleanup: vi.fn() }))
 vi.mock('node:child_process', async (original) => ({ ...await original<typeof import('node:child_process')>(), fork: mocks.fork, spawn: mocks.spawn }))
 vi.mock('./safe-local-data', async (original) => ({ ...await original<typeof import('./safe-local-data')>(), readSafeUtf8File: mocks.read }))
 vi.mock('./command-runner', async (original) => ({ ...await original<typeof import('./command-runner')>(), trustedCommandEnvironment: mocks.environment }))
+vi.mock('./acceleration-electron-profile', () => ({ createAccelerationElectronProfile: mocks.profile }))
 
 const config = { version: 1 as const, corePath: path.resolve('private', 'mihomo.exe'), coreSha256: 'a'.repeat(64), profilePath: path.resolve('private', 'nodes.yaml') }
 const dataDirectory = path.resolve('private', 'app-data')
@@ -44,6 +46,8 @@ beforeEach(() => {
   mocks.spawn.mockReset()
   mocks.read.mockReset().mockResolvedValue(null)
   mocks.environment.mockReset().mockReturnValue({ PATH: 'trusted-path', SystemRoot: 'C:\\Windows' })
+  mocks.profileCleanup.mockReset()
+  mocks.profile.mockReset().mockReturnValue({ directory: path.resolve('worker-profile'), argument: `--user-data-dir=${path.resolve('worker-profile')}`, cleanup: mocks.profileCleanup })
 })
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks() })
 
@@ -110,7 +114,7 @@ describe('development acceleration worker host', () => {
     const second = host.stopAcceleration('xm-account:1')
     await flush()
     expect(mocks.fork).not.toHaveBeenCalled()
-    expect(mocks.spawn).toHaveBeenCalledExactlyOnceWith(process.execPath, ['--xingmang-acceleration-worker'], {
+    expect(mocks.spawn).toHaveBeenCalledExactlyOnceWith(process.execPath, ['--xingmang-acceleration-worker', `--user-data-dir=${path.resolve('worker-profile')}`], {
       detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env: { PATH: 'trusted-path', SystemRoot: 'C:\\Windows' },
     })
@@ -120,6 +124,9 @@ describe('development acceleration worker host', () => {
     await Promise.all([first, second])
     await host.dispose()
     expect(worker.disconnect).toHaveBeenCalledOnce()
+    expect(mocks.profileCleanup).not.toHaveBeenCalled()
+    worker.emit('exit', 0)
+    expect(mocks.profileCleanup).toHaveBeenCalledOnce()
     expect(vi.getTimerCount()).toBe(0)
   })
 
@@ -135,6 +142,69 @@ describe('development acceleration worker host', () => {
     await failure
     expect(worker.disconnect).toHaveBeenCalledOnce()
     expect(vi.getTimerCount()).toBe(0)
+  })
+
+  it('does not replace a failed worker until it exits and gives a retry its own Electron profile', async () => {
+    const firstWorker = new FakeWorker()
+    firstWorker.autoInit = false
+    const secondWorker = new FakeWorker()
+    mocks.spawn.mockReturnValueOnce(firstWorker).mockReturnValueOnce(secondWorker)
+    const secondCleanup = vi.fn()
+    mocks.profile.mockReturnValueOnce({ argument: '--user-data-dir=first-profile', cleanup: mocks.profileCleanup })
+      .mockReturnValueOnce({ argument: '--user-data-dir=second-profile', cleanup: secondCleanup })
+    const host = createAccelerationDevelopmentHost({ config: { ...config, profileSha256: 'b'.repeat(64) }, dataDirectory, packaged: true })
+    const initial = expect(host.getAccelerationState('xm-account:1')).rejects.toThrow('初始化未完成')
+    firstWorker.respond(1, false)
+    await initial
+    await expect(host.getAccelerationState('xm-account:1')).rejects.toThrow('初始化未完成')
+    expect(mocks.spawn).toHaveBeenCalledOnce()
+    expect(mocks.profileCleanup).not.toHaveBeenCalled()
+    firstWorker.emit('exit', 1)
+    expect(mocks.profileCleanup).toHaveBeenCalledOnce()
+    const retry = host.getAccelerationState('xm-account:1')
+    await flush()
+    firstWorker.emit('disconnect')
+    firstWorker.emit('error', new Error('late old worker error'))
+    firstWorker.emit('close')
+    secondWorker.respond(3, true, { phase: 'idle' })
+    await expect(retry).resolves.toEqual({ phase: 'idle' })
+    expect(mocks.spawn.mock.calls[1][1]).toEqual(['--xingmang-acceleration-worker', '--user-data-dir=second-profile'])
+    expect(secondCleanup).not.toHaveBeenCalled()
+    await host.dispose()
+    secondWorker.emit('exit', 0)
+    expect(secondCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('cleans an unstarted packaged profile and permits a later spawn attempt', async () => {
+    mocks.spawn.mockImplementationOnce(() => { throw new Error('private-path') })
+    const host = createAccelerationDevelopmentHost({ config: { ...config, profileSha256: 'b'.repeat(64) }, dataDirectory, packaged: true })
+    await expect(host.getAccelerationState('xm-account:1')).rejects.toThrow('进程启动失败')
+    expect(mocks.profileCleanup).toHaveBeenCalledOnce()
+    await host.dispose()
+  })
+
+  it('forwards only known cleanup stages and isolates diagnostic callback failures', async () => {
+    const worker = new FakeWorker()
+    mocks.fork.mockReturnValue(worker)
+    const onDiagnostic = vi.fn(() => { throw new Error('logging unavailable') })
+    const host = createAccelerationDevelopmentHost({ config, dataDirectory, onDiagnostic })
+    const request = host.getAccelerationState('xm-account:1')
+    await flush()
+    for (const stage of ['proxy-restore', 'core-stop', 'ledger-write']) {
+      worker.emit('message', { type: 'acceleration-diagnostic', event: 'stop.failed', stage })
+    }
+    for (const message of [
+      { type: 'acceleration-diagnostic', event: 'unknown', stage: 'proxy-restore' },
+      { type: 'acceleration-diagnostic', event: 'stop.failed', stage: 'private-secret' },
+      { type: 'acceleration-diagnostic', event: 'stop.failed', stage: 'core-stop', error: 'private-secret' },
+    ]) worker.emit('message', message)
+    expect(onDiagnostic.mock.calls).toEqual([['proxy-restore'], ['core-stop'], ['ledger-write']])
+    worker.respond(2, true, { phase: 'idle' })
+    await expect(request).resolves.toEqual({ phase: 'idle' })
+    await host.dispose()
+    worker.emit('exit', 0)
+    worker.emit('message', { type: 'acceleration-diagnostic', event: 'stop.failed', stage: 'core-stop' })
+    expect(onDiagnostic).toHaveBeenCalledTimes(3)
   })
 
   it('lazily forks a hidden Node worker with a trusted environment and sends paths without YAML content', async () => {
@@ -172,6 +242,30 @@ describe('development acceleration worker host', () => {
     expect(await second).toEqual({ phase: 'idle' })
     expect(vi.getTimerCount()).toBe(0)
     await host.dispose()
+  })
+
+  it('forwards redemption to the worker and preserves duplicate results without granting locally', async () => {
+    const { worker, host } = setup()
+    const first = host.redeemAccelerationCode!('xm-account:1', accelerationBonusCode)
+    const second = host.redeemAccelerationCode!('xm-account:1', accelerationBonusCode)
+    await flush()
+    expect(mocks.fork).toHaveBeenCalledOnce()
+    expect(worker.sent.slice(1)).toEqual([
+      { id: 2, operation: 'redeem-code', scope: 'xm-account:1', code: accelerationBonusCode },
+      { id: 3, operation: 'redeem-code', scope: 'xm-account:1', code: accelerationBonusCode },
+    ])
+    const granted = { status: 'redeemed', addedSeconds: 600, state: { scope: 'xm-account:1', totalSeconds: 1800 } }
+    const duplicate = { ...granted, status: 'already-redeemed', addedSeconds: 0 }
+    worker.respond(3, true, duplicate)
+    worker.respond(2, true, granted)
+    await expect(first).resolves.toEqual(granted)
+    await expect(second).resolves.toEqual(duplicate)
+    const failed = expect(host.redeemAccelerationCode!('xm-account:1', accelerationBonusCode)).rejects.toThrow(/^本机加速操作未完成，请重新检查线路。$/)
+    await flush()
+    worker.respond(4, false, { error: 'private-ledger-path', code: accelerationBonusCode })
+    await failed
+    await host.dispose()
+    expect(vi.getTimerCount()).toBe(0)
   })
 
   it.each(['disconnect', 'error', 'exit'])('rejects every pending request immediately on worker %s', async (event) => {

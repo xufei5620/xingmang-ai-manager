@@ -56,6 +56,7 @@ import type {
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 import { resolveWindowsMachinePaths } from './windows-machine-paths'
 import { repairCodexDesktopGlobalState } from './codex-desktop-state'
+import { addCodexDesktopPackage } from './codex-desktop-appx'
 
 const execFileAsync = promisify(execFile)
 
@@ -1067,37 +1068,6 @@ export async function inspectCodexDesktopAppVersion(
   }
 }
 
-export async function addCodexDesktopPackage(packagePath: string): Promise<void> {
-  const script = [
-    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    '$ErrorActionPreference = \'Stop\'',
-    `Add-AppxPackage -Path ${powershellLiteral(packagePath)} -ForceApplicationShutdown -ErrorAction Stop`,
-  ].join('; ')
-  try {
-    await execFileAsync(resolveWindowsPowerShellExecutable(), [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-Command',
-      script,
-    ], {
-      env: trustedCommandEnvironment(),
-      windowsHide: true,
-      timeout: 15 * 60_000,
-      maxBuffer: 4 * 1024 * 1024,
-    })
-  } catch (error) {
-    const failure = error as { stderr?: unknown; message?: unknown }
-    const stderr = Buffer.isBuffer(failure.stderr)
-      ? failure.stderr.toString('utf8')
-      : (typeof failure.stderr === 'string' ? failure.stderr : '')
-    const message = stderr.trim()
-      || (typeof failure.message === 'string' ? failure.message.trim() : '')
-      || 'Windows 未返回错误详情'
-    throw new Error(`Add-AppxPackage 安装失败：${message.slice(0, 2_000)}`)
-  }
-}
-
 export async function verifyInstalledCodexDesktop(
   expectedVersion: string,
 ): Promise<CodexDesktopPackageEntry> {
@@ -1876,7 +1846,14 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         percent: null,
         message: `正在安装 Codex Desktop ${release.version}`,
       })
-      await addCodexDesktopPackage(packagePath)
+      await addCodexDesktopPackage(packagePath, {
+        sha256Base64: release.sha256Base64,
+        contentLength: release.contentLength,
+        onElevationRequired: () => sendCodexDesktopInstallProgress(target, {
+          phase: 'installing', percent: null,
+          message: '此版本需管理员权限安装服务，请在 Windows 授权窗口中允许本次安装；取消将停止安装。',
+        }),
+      })
       const installedPackage = await verifyInstalledCodexDesktop(release.version)
       invalidateCodexDesktopManifestCache()
       const action = previousVersion ? 'updated' : 'installed'

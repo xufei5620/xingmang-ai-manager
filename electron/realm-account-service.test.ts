@@ -21,16 +21,27 @@ function saved(siteId: RealmAccountSiteId = 'solov', userId = '7', token = 'test
 }
 function vaultFixture() {
   let content: string | null = null
+  let backup: string | null = null
   let fail = false
   let available = true
   // Crypto correctness is covered by realm-account-workflow.test.ts; this
   // fixture exposes the durable document so failure atomicity is observable.
   const storage: RealmVaultStorage = {
     isEncryptionAvailable: () => available, encryptString: (text) => Buffer.from(text),
-    decryptString: (value) => Buffer.from(value).toString('utf8'), read: async () => content,
+    decryptString: (value) => {
+      const plaintext = Buffer.from(value).toString('utf8')
+      if (plaintext === 'test-unreadable-ciphertext') throw new Error('authentication tag mismatch')
+      return plaintext
+    }, read: async () => content,
     writeAtomic: async (value) => { if (fail) throw new Error('disk failure'); content = value },
+    recoverAtomic: async (expected, replacement) => {
+      if (fail || content !== expected) throw new Error('recovery failed')
+      backup = content
+      content = replacement
+    },
   }
-  return { vault: createRealmAccountVault(storage), content: () => content,
+  return { vault: createRealmAccountVault(storage), content: () => content, backup: () => backup,
+    corrupt: () => { content = Buffer.from('test-unreadable-ciphertext').toString('base64') },
     fail: (value: boolean) => { fail = value }, available: (value: boolean) => { available = value } }
 }
 const capabilities: RelayBackendCapabilities = {
@@ -52,6 +63,8 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
     const client = {
       capabilities, getSessionState: state, getBalance: () => item.balance(),
       getStatus: vi.fn(async () => ({ siteId })), register: vi.fn(async () => undefined),
+      sendPasswordResetEmail: vi.fn(async () => { if (siteId === 'solov-api') throw new RealmAccountError('UNSUPPORTED') }),
+      resetPassword: vi.fn(async () => { if (siteId === 'solov-api') throw new RealmAccountError('UNSUPPORTED'); return { newPassword: 'test-new-password' } }),
       getLegalDocument: vi.fn(async () => ({ siteId })),
       changePassword: vi.fn(async () => { emit(null); return { changed: true } }),
       revokeLoginSession: vi.fn(async () => { emit(null); return { revoked: true, current: true } }),
@@ -133,6 +146,41 @@ describe('realm account service', () => {
     expect(f.clients.map((entry) => entry.siteId)).toEqual(['solov', 'solov', 'solov-api'])
     expect(f.service.getSiteId()).toBe('solov')
   })
+  for (const siteId of ['solov', 'solov-api'] as const) it(`never falls back after explicit ${siteId} password rejection`, async () => {
+    const f = fixture()
+    await f.service.login({ ...login, siteId: siteId === 'solov' ? 'solov-api' : 'solov' })
+    const original = f.content()
+    const before = f.clients.length
+    f.authenticationPolicy(() => { throw new NewApiLoginRejectedError() })
+    await expect(f.service.login({ ...login, siteId })).rejects.toBeInstanceOf(NewApiLoginRejectedError)
+    expect(f.clients.slice(before).map((entry) => entry.siteId)).toEqual([siteId])
+    expect(f.content()).toBe(original)
+  })
+  it('keeps an existing login during an explicitly selected account 2FA challenge', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    const original = f.content()
+    f.authenticationPolicy(() => { throw new RealmAccountError('TWO_FACTOR_REQUIRED') })
+    await expect(f.service.login({ ...login, siteId: 'solov-api' })).rejects.toMatchObject({ code: 'TWO_FACTOR_REQUIRED' })
+    expect(f.content()).toBe(original)
+    expect(f.service.getSiteId()).toBe('solov')
+    expect(f.clients[1].client.logout).not.toHaveBeenCalled()
+    expect(f.clients[2].client.logout).toHaveBeenCalledOnce()
+  })
+  it('does not silently route historical account recovery to the primary account', async () => {
+    const f = fixture()
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const original = f.content()
+    const before = f.clients.length
+    await expect(f.service.client.sendPasswordResetEmail(login.username)).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    await expect(f.service.client.resetPassword({ email: login.username, token: 'test-reset' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    expect(f.clients).toHaveLength(before)
+    expect(f.content()).toBe(original)
+    await expect(f.service.getPublicClient('solov').sendPasswordResetEmail(login.username)).resolves.toBeUndefined()
+    expect(f.clients.at(-1)!.siteId).toBe('solov')
+    expect(f.service.getSiteId()).toBe('solov-api')
+    expect(f.content()).toBe(original)
+  })
   it('waits for real quiescence and rejects new business or concurrent transitions', async () => {
     const gate = deferred<void>()
     const f = fixture({ quiesce: () => gate.promise })
@@ -140,6 +188,7 @@ describe('realm account service', () => {
     expect(() => f.service.assertReady()).toThrow(RealmAccountError)
     await expect(f.service.client.getBalance()).rejects.toMatchObject({ code: 'BUSY' })
     await expect(f.service.logout()).rejects.toMatchObject({ code: 'BUSY' })
+    await expect(f.service.login({ ...login, siteId: 'solov-api' })).rejects.toMatchObject({ code: 'BUSY' })
     expect(f.clients).toHaveLength(1)
     expect(f.service.client.getSessionState().authenticated).toBe(false)
     gate.resolve()
@@ -329,6 +378,116 @@ describe('realm account service', () => {
     await expect(f.service.client.revokeLoginSession('test-current-session')).resolves.toEqual({ revoked: true, current: true })
     expect(f.service.client.getSessionState().authenticated).toBe(false)
     expect(await f.vault.active()).toBeNull()
+  })
+})
+
+describe('explicit login vault recovery', () => {
+  it('preserves an unreadable vault on startup and recovers before migration on explicit login', async () => {
+    const legacy = { list: vi.fn(async () => []), getSession: vi.fn(async () => null), readActive: vi.fn(async () => null) }
+    const f = fixture({ legacy })
+    f.corrupt()
+    const unreadable = f.content()
+    await expect(f.service.restoreActive()).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(f.content()).toBe(unreadable)
+    expect(f.backup()).toBeNull()
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+
+    await expect(f.service.login(login)).resolves.toMatchObject({ siteId: 'solov' })
+    expect(f.backup()).toBe(unreadable)
+    expect(f.content()).not.toBe(unreadable)
+    expect((await f.vault.active())?.userId).toBe('7')
+    expect(await f.vault.hasMigratedLegacy()).toBe(true)
+    expect(legacy.list).not.toHaveBeenCalled()
+    expect(legacy.readActive).not.toHaveBeenCalled()
+    expect(f.service.client.getSessionState().authenticated).toBe(true)
+  })
+  it('rechecks the persisted migration marker after recovery and never imports old sessions again', async () => {
+    const origin = 'https://xm.solov.cc'
+    const legacy = { list: vi.fn(async () => [{ id: savedAccountId(origin, 8), origin, userId: 8,
+      username: 'legacy-8', updatedAt: '' }]), getSession: vi.fn(async () => ({ userId: 8, cookies: ['old-cookie'] })),
+      readActive: vi.fn(async () => null) }
+    const f = fixture({ legacy })
+    await f.service.migrateLegacy()
+    expect(legacy.list).toHaveBeenCalledOnce()
+    f.corrupt()
+    const hasMigratedLegacy = vi.fn(() => f.vault.hasMigratedLegacy())
+    f.options.vault = { ...f.vault, hasMigratedLegacy }
+
+    await f.service.login(login)
+    expect(hasMigratedLegacy).toHaveBeenCalledOnce()
+    expect(legacy.list).toHaveBeenCalledOnce()
+    expect(await f.vault.get(saved('solov', '8'))).toBeNull()
+    const restarted = createRealmAccountService(f.options)
+    expect(await restarted.restoreActive()).toBe(true)
+    expect(legacy.list).toHaveBeenCalledOnce()
+  })
+  it('does not reset unreadable storage during reads, logout or saved-account switching', async () => {
+    const f = fixture()
+    f.corrupt()
+    const unreadable = f.content()
+    const recoverUnreadable = vi.fn(() => f.vault.recoverUnreadable())
+    f.options.vault = { ...f.vault, recoverUnreadable }
+    await expect(f.service.listSavedAccounts()).rejects.toMatchObject({ code: 'STORAGE' })
+    await expect(f.service.latestLoginHint()).rejects.toMatchObject({ code: 'STORAGE' })
+    await expect(f.service.logout()).rejects.toMatchObject({ code: 'STORAGE' })
+    await expect(f.service.switchSavedAccount(savedAccountId('https://xm.solov.cc', 7))).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(recoverUnreadable).not.toHaveBeenCalled()
+    expect(f.content()).toBe(unreadable)
+    expect(f.backup()).toBeNull()
+  })
+  it('keeps an authenticated identity and unreadable bytes intact when another login is attempted', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    f.corrupt()
+    const unreadable = f.content()
+    const recoverUnreadable = vi.fn(() => f.vault.recoverUnreadable())
+    f.options.vault = { ...f.vault, recoverUnreadable }
+    await expect(f.service.login({ ...login, siteId: 'solov-api' })).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(recoverUnreadable).not.toHaveBeenCalled()
+    expect(f.content()).toBe(unreadable)
+    expect(f.backup()).toBeNull()
+    expect(f.service.getSiteId()).toBe('solov')
+    expect(f.service.client.getSessionState().authenticated).toBe(true)
+    expect(f.clients[1].client.logout).not.toHaveBeenCalled()
+  })
+  it('refuses recovery while the active handle still owns saved credentials', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    f.clients[1].client.getSessionState = () => ({ authenticated: false, account: null })
+    f.corrupt()
+    const recoverUnreadable = vi.fn(() => f.vault.recoverUnreadable())
+    f.options.vault = { ...f.vault, recoverUnreadable }
+    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(recoverUnreadable).not.toHaveBeenCalled()
+    expect(f.backup()).toBeNull()
+  })
+  it('does not authenticate or replace the original when the backup and replacement fail', async () => {
+    const f = fixture()
+    f.corrupt()
+    const unreadable = f.content()
+    f.fail(true)
+    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'STORAGE' })
+    expect(f.content()).toBe(unreadable)
+    expect(f.backup()).toBeNull()
+    expect(f.clients).toHaveLength(1)
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+    f.fail(false)
+    await expect(f.service.login(login)).resolves.toMatchObject({ siteId: 'solov' })
+  })
+  it('holds the transition lock while recovery is pending', async () => {
+    const f = fixture()
+    f.corrupt()
+    const gate = deferred<void>()
+    const recoverUnreadable = vi.fn(async () => { await gate.promise; return f.vault.recoverUnreadable() })
+    f.options.vault = { ...f.vault, recoverUnreadable }
+    const pending = f.service.login(login)
+    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'BUSY' })
+    await expect(f.service.logout()).rejects.toMatchObject({ code: 'BUSY' })
+    expect(f.clients).toHaveLength(1)
+    expect(recoverUnreadable).toHaveBeenCalledOnce()
+    gate.resolve()
+    await expect(pending).resolves.toMatchObject({ siteId: 'solov' })
+    expect(recoverUnreadable).toHaveBeenCalledOnce()
   })
 })
 

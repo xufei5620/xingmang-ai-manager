@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { accelerationTrialSeconds } from '../../../electron/acceleration-contract'
+import { accelerationBonusCode, accelerationTrialSeconds } from '../../../electron/acceleration-contract'
 import { createPreviewAccelerationApi } from './acceleration-fixture'
 
 function memoryStorage(): Storage {
@@ -71,5 +71,19 @@ describe('acceleration preview allowance', () => {
     const storage = memoryStorage()
     storage.setItem(`xingmang-acceleration-preview:v2:${scope}`, '{broken-json')
     expect(await createPreviewAccelerationApi({ storage }).getAccelerationState(scope)).toMatchObject({ remainingSeconds: 0, phase: 'exhausted' })
+  })
+
+  it('persists one isolated preview redemption per account and keeps counting an active session', async () => {
+    const storage = memoryStorage()
+    const api = createPreviewAccelerationApi({ storage })
+    await api.startAcceleration(scope, 'system-proxy')
+    await vi.advanceTimersByTimeAsync(10_000)
+    expect(await api.redeemAccelerationCode!(scope, accelerationBonusCode)).toMatchObject({ status: 'redeemed', addedSeconds: 600, state: { totalSeconds: 1800, remainingSeconds: 1790, phase: 'active' } })
+    await vi.advanceTimersByTimeAsync(5_000)
+    expect(await api.stopAcceleration(scope)).toMatchObject({ remainingSeconds: 1785, sessionSeconds: 15 })
+    const restarted = createPreviewAccelerationApi({ storage })
+    expect(await restarted.redeemAccelerationCode!(scope, accelerationBonusCode)).toMatchObject({ status: 'already-redeemed', addedSeconds: 0, state: { remainingSeconds: 1785 } })
+    expect(await restarted.getAccelerationState('xm-account:2')).toMatchObject({ totalSeconds: 1200, remainingSeconds: 1200 })
+    expect(await restarted.redeemAccelerationCode!('xm-account:2', 'incomplete')).toMatchObject({ status: 'invalid-code', addedSeconds: 0, state: { remainingSeconds: 1200 } })
   })
 })

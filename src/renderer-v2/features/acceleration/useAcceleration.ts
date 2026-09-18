@@ -49,6 +49,7 @@ export function useAcceleration(api: AccelerationApi, scope: string | null, acti
     refresh: controller.refresh,
     start: (lineId?: string) => linesController.getSnapshot().busy ? Promise.resolve() : controller.start(lineId),
     stop: controller.stop,
+    redeem: controller.redeem,
     setMode: controller.setMode,
     lines: lineSnapshot.scope === scope ? lineSnapshot.lines : [],
     selectedLineId: lineSnapshot.scope === scope ? lineSnapshot.selectedLineId : null,

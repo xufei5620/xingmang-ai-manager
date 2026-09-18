@@ -103,3 +103,4 @@
 .v2-announcement-native-frame { display: block; width: 100%; height: min(62vh, 560px); border: 0; border-radius: var(--radius-input); background: transparent; }
 .v2-announcement-error { display: grid; gap: 12px; color: var(--text-2); line-height: 1.6; }
 .v2-announcement-error p { margin: 0; }
+.v2-client-config-path { overflow-wrap: anywhere; }

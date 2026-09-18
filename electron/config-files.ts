@@ -50,6 +50,9 @@ export interface NativeConfigInspection {
 /** Renderer-safe projection. The raw key never crosses the IPC boundary. */
 export interface NativeConfigSummary extends Omit<NativeConfigInspection, 'apiKey'> {
   apiKeyPreview: string | null
+  configurationOwnership?: 'account' | 'manual' | 'unknown' | 'missing'
+  /** Exact current-account cache match for display; never grants automatic write consent. */
+  configurationAccountMatched?: boolean
 }
 
 export function apiKeyPreview(apiKey: string): string | null {
@@ -96,7 +99,7 @@ export interface NativeConfigWriteHooks {
   beforeReplace?: (targetPath: string, index: number) => void
 }
 
-interface FilePlan {
+export interface FilePlan {
   path: string
   content: string
 }
@@ -402,6 +405,8 @@ function applyCodexRelayConfig(
     ? providerEntry.name
     : providerName
   providerEntry.base_url = siteBaseUrl
+  // Current Codex accepts only Responses, including for custom model providers.
+  // Model names alone cannot establish the relay's protocol compatibility.
   providerEntry.wire_api = 'responses'
   providerEntry.requires_openai_auth = true
   // Keep the Desktop permission picker interactive on fresh mirror installs.
@@ -1332,7 +1337,7 @@ function cleanupPreparedPlans(
   return cleanupErrors
 }
 
-function executeFilePlans(
+export function executeFilePlans(
   plans: FilePlan[],
   hooks: NativeConfigWriteHooks,
   providerRoot: string,

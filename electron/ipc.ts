@@ -8,6 +8,7 @@ import {
   type WebContents,
 } from 'electron'
 import { randomUUID } from 'node:crypto'
+import { usageDateRange } from './usage-date-range'
 import type { AppSettingsUpdate, AppTheme } from './app-settings'
 import { parseWindowState } from './window-preferences'
 import { parseWindowCloseReport, type WindowCloseReport } from './window-close-query'
@@ -44,6 +45,7 @@ import {
   type ProviderSessionListQuery,
 } from './provider-sessions'
 import type { NativeConfigSaveMode } from './config-files'
+import { isExternalToolId, parseExternalClientConfigRequest } from './external-client-contract'
 import type { CodexDesktopLocale } from './codex-desktop-locale'
 import {
   isAllowedExternalUrl,
@@ -694,6 +696,7 @@ function parseAccountDisplayNameUpdateInput(value: unknown): NewApiDisplayNameUp
 const accountUsageQueryFields = new Set([
   'page', 'pageSize', 'type', 'startTimestamp', 'endTimestamp',
   'modelName', 'tokenName', 'group', 'requestId', 'upstreamRequestId',
+  'startDate', 'endDate', 'timezone', 'apiKeyId', 'groupId', 'billingType',
 ])
 const accountUsageLogTypes = new Set([0, 1, 2, 3, 4, 5, 6, 7])
 
@@ -733,7 +736,22 @@ function parseAccountUsageQuery(value: unknown): NewApiAccountUsageQuery {
   if (typeof startTimestamp === 'number' && typeof endTimestamp === 'number' && startTimestamp > endTimestamp) {
     throw new Error('开始时间不能晚于结束时间')
   }
+  const hasDates = ['startDate', 'endDate', 'timezone'].some((key) => value[key] !== undefined)
+  if (hasDates && (startTimestamp !== undefined || endTimestamp !== undefined)) throw new Error('日期筛选不能与精确时间混用')
+  const dates = hasDates ? usageDateRange({
+    startDate: parseOptionalAccountUsageText(value.startDate, '开始日期', 10),
+    endDate: parseOptionalAccountUsageText(value.endDate, '结束日期', 10),
+    timezone: parseOptionalAccountUsageText(value.timezone, '时区', 128),
+  }) : {}
+  for (const [id, label] of [[value.apiKeyId, 'Key ID'], [value.groupId, '分组 ID']] as const) {
+    if (id !== undefined && (typeof id !== 'number' || !Number.isSafeInteger(id) || id <= 0)) throw new Error(`${label}格式错误`)
+  }
+  if (value.billingType !== undefined && value.billingType !== 0 && value.billingType !== 1) throw new Error('计费来源格式错误')
   return {
+    ...dates,
+    apiKeyId: value.apiKeyId as number | undefined,
+    groupId: value.groupId as number | undefined,
+    billingType: value.billingType as 0 | 1 | undefined,
     page: page as number | undefined,
     pageSize: pageSize as number | undefined,
     type: type as number | undefined,
@@ -875,7 +893,9 @@ function parseManagedCliConfigurationInput(value: unknown): AccountManagedCliCon
   if (value.mode !== undefined && value.mode !== 'merge' && value.mode !== 'reset') {
     throw new Error('未知的配置写入模式')
   }
-  return { providers, preferredModels, ...(value.mode === undefined ? {} : { mode: value.mode }) }
+  if (value.intent !== undefined && value.intent !== 'automatic' && value.intent !== 'explicit') throw new Error('CLI 配置意图无效')
+  if (value.intent === 'explicit' && providers.length !== 1) throw new Error('请逐个确认需要替换的工具配置')
+  return { providers, preferredModels, ...(value.mode === undefined ? {} : { mode: value.mode }), ...(value.intent === undefined ? {} : { intent: value.intent }) }
 }
 
 // account:create-key 的入参。50 是 new-api AddToken/UpdateToken 的服务端
@@ -1028,6 +1048,9 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'config:get': '工具配置读取',
   'config:reveal-api-key': 'API Key 明文读取',
   'config:save': '工具配置保存',
+  'external-clients:scan': '外部客户端检测',
+  'external-clients:install': '外部客户端安装',
+  'external-clients:launch': '外部客户端启动',
   'workspace:choose': '工作目录选择',
   'repository:get-context': '仓库上下文读取',
   'runtime:install-node': 'Node.js LTS 自动安装',
@@ -1298,6 +1321,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       const startedAt = Date.now()
       const recordSuccess = (result: unknown) => {
         if (quietIpcSuccessChannels.has(channel)) return
+        if (channel === 'acceleration:stop' && isRecord(result) && typeof result.phase === 'string'
+          && ['connecting', 'active', 'stopping', 'error'].includes(result.phase)) {
+          options.runtimeLog.log('warn', 'ipc', channel, '停止加速尚未完成，已保留恢复状态', {
+            durationMs: Date.now() - startedAt, phase: result.phase,
+          })
+          return
+        }
         options.runtimeLog.log(
           ipcSuccessLevel(channel),
           'ipc',
@@ -1326,7 +1356,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
           'account:get-legal-document', 'account:get-remembered-login', 'account:set-remembered-login',
           'account:register', 'account:send-verification-code', 'account:send-reset-code', 'account:reset-password'])
         const scoped = (channel.startsWith('account:') || channel.startsWith('chat:') || channel === 'canvas:open'
-          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'cli:launch' || channel === 'desktop:launch-codex')
+          || channel.startsWith('models:') || channel.startsWith('config:') || channel === 'external-clients:scan' || channel === 'external-clients:launch' || channel === 'cli:launch' || channel === 'desktop:launch-codex')
           && !publicAccountChannels.has(channel)
         const invoke = () => scoped && options.accountWork
           ? options.accountWork.run(() => handler(event, ...args), { checkRevision: channel !== 'account:change-password' && channel !== 'account:revoke-login-session' }) : handler(event, ...args)
@@ -1399,6 +1429,8 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       }])),
       codexDesktop: {
         installed: snapshot.desktopApps.codex.installed,
+        detectionFailed: snapshot.desktopApps.codex.detectionFailed === true,
+        detectionError: snapshot.desktopApps.codex.detectionError ?? null,
         appVersion: snapshot.desktopApps.codex.appVersion,
         version: snapshot.desktopApps.codex.version,
         mirrorVersion: snapshot.desktopApps.codex.mirrorVersion,
@@ -1439,7 +1471,26 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('startup:codex-readiness', () => (
     service.inspectCodexReadiness(options.previewOnboarding)
   ))
-  registerTrustedHandler('config:get', () => service.getConfig(options.previewOnboarding))
+  registerTrustedHandler('config:get', () => {
+    const session = accountService.getSessionState()
+    const userId = session.account?.userId
+    if (options.previewOnboarding || !session.authenticated || !userId || !options.managedCliKeys) {
+      return service.getConfig(options.previewOnboarding)
+    }
+    const activeSite = () => accountService.getActiveSiteId?.() ?? options.realmAccounts?.getSiteId() ?? 'solov'
+    const siteId = activeSite()
+    const revision = accountService.getSessionRevision?.()
+    return (async () => {
+      // Read only the current realm's existing cache. A display scan must not
+      // create keys, call a model, or establish automatic overwrite consent.
+      let keys: Awaited<ReturnType<ManagedCliKeyStoreLike['read']>> = []
+      try { keys = await options.managedCliKeys!.read(userId) } catch { /* Unknown ownership stays protected. */ }
+      const current = accountService.getSessionState()
+      if (!current.authenticated || current.account?.userId !== userId || activeSite() !== siteId
+        || accountService.getSessionRevision?.() !== revision) throw new Error('账号会话已变更，请重新检测工具配置')
+      return service.getConfig(options.previewOnboarding, keys)
+    })()
+  })
   registerTrustedHandler('config:reveal-api-key', (_event, provider: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
     return service.revealApiKey(provider, options.previewOnboarding)
@@ -1452,6 +1503,39 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
     const parsed = parseConfigSavePayload(payload)
     return options.realmAccounts ? service.saveConfig(parsed, options.previewOnboarding, check)
       : service.saveConfig(parsed, options.previewOnboarding)
+  })
+  registerTrustedHandler('config:configure-external-tool', async (_event, tool: unknown, input: unknown) => {
+    if (!isExternalToolId(tool)) {
+      throw new Error('未知的外部客户端类型')
+    }
+    const parsed = parseExternalClientConfigRequest(input)
+    const revision = accountService.getSessionRevision?.()
+    const assertCurrent = () => {
+      if (revision !== undefined && accountService.getSessionRevision?.() !== revision) throw new Error('账号已变化，请重新配置')
+    }
+    let apiKey: string
+    if (parsed.credential.kind === 'account') {
+      const userId = accountService.getSessionState().account?.userId
+      if (!userId) throw new Error('请先登录星芒账号')
+      apiKey = await revealAccountKeySecret(parsed.credential.keyId, userId)
+      assertAccountSessionUser(userId)
+    } else if (parsed.credential.kind === 'configured') {
+      const provider = parsed.credential.provider
+      const config = service.getConfig(options.previewOnboarding).providers[provider]
+      if (!config.hasApiKey || !config.matchesRelay) throw new Error('该工具没有当前星芒站点的可用密钥，请重新选择密钥来源')
+      apiKey = service.revealApiKey(provider, options.previewOnboarding)
+    } else apiKey = parsed.credential.apiKey
+    assertCurrent()
+    return service.configureExternalTool(tool, { apiKey, model: parsed.model, protocol: parsed.protocol }, assertCurrent)
+  })
+  registerTrustedHandler('external-clients:scan', () => service.scanExternalClients())
+  registerTrustedHandler('external-clients:install', (_event, tool: unknown) => {
+    if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
+    return service.installExternalClient(tool, _event.sender)
+  })
+  registerTrustedHandler('external-clients:launch', (_event, tool: unknown) => {
+    if (!isExternalToolId(tool)) throw new Error('未知的外部客户端类型')
+    return service.launchExternalClient(tool)
   })
   registerTrustedHandler('config:switch-to-official-account', (_event, provider: unknown, mode: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
@@ -1880,6 +1964,13 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('acceleration:stop', (_event, scope: unknown) => (
     accelerationService().stopAcceleration(requiredString(scope, '加速账号', 64))
   ))
+  registerTrustedHandler('acceleration:redeem-code', (_event, scope: unknown, code: unknown) => {
+    const accountScope = requiredString(scope, '加速账号', 64)
+    const promotionCode = requiredString(code, '加速口令', 64)
+    const acceleration = accelerationService()
+    if (!acceleration.redeemAccelerationCode) throw new Error('加速口令兑换暂不可用，请稍后再试。')
+    return acceleration.redeemAccelerationCode(accountScope, promotionCode)
+  })
   registerTrustedHandler('account:get-legal-document', (_event, kind: unknown, siteId: unknown) => (
     (options.realmAccounts ? options.realmAccounts.getPublicClient(siteId === undefined
       ? options.realmAccounts.getSiteId() : parseAccountSiteId(siteId)) : accountService).getLegalDocument(parseLegalDocumentKind(kind))
@@ -2077,6 +2168,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       options.previewOnboarding,
       options.managedCliKeys,
       parsed.mode,
+      parsed.intent,
     )
   })
   registerTrustedHandler('account:register', (_event, input: unknown) => (
@@ -2085,11 +2177,18 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
   registerTrustedHandler('account:send-verification-code', (_event, email: unknown) => (
     accountService.sendEmailVerification(parseAccountEmailInput(email))
   ))
-  registerTrustedHandler('account:send-reset-code', (_event, email: unknown) => (
-    accountService.sendPasswordResetEmail(parseAccountEmailInput(email))
+  const passwordResetClient = (siteInput: unknown) => {
+    const siteId = siteInput === undefined ? options.realmAccounts?.getSiteId() ?? 'solov' : parseAccountSiteId(siteInput)
+    if (!options.realmAccounts && siteId !== 'solov') throw new Error('当前账号服务不支持此站点')
+    const client = options.realmAccounts?.getPublicClient(siteId) ?? accountService
+    if (client.capabilities?.supportsPasswordReset === false) throw new Error('所选账号暂不支持在客户端找回密码，请前往对应账号官网')
+    return client
+  }
+  registerTrustedHandler('account:send-reset-code', (_event, email: unknown, siteId: unknown) => (
+    passwordResetClient(siteId).sendPasswordResetEmail(parseAccountEmailInput(email))
   ))
-  registerTrustedHandler('account:reset-password', (_event, input: unknown) => (
-    accountService.resetPassword(parseAccountPasswordResetInput(input))
+  registerTrustedHandler('account:reset-password', (_event, input: unknown, siteId: unknown) => (
+    passwordResetClient(siteId).resetPassword(parseAccountPasswordResetInput(input))
   ))
   registerTrustedHandler('account:get-profile', () => accountService.getProfile())
   registerTrustedHandler('account:update-display-name', (_event, input: unknown) => (
@@ -2171,7 +2270,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       apiKey,
       model: parsed.model,
       mode: parsed.mode,
-    }, options.previewOnboarding, () => assertAccountSessionUser(userId))
+    }, options.previewOnboarding, () => assertAccountSessionUser(userId), { source: 'account', automatic: false })
     assertAccountSessionUser(userId)
     return result
   })

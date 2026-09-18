@@ -104,13 +104,8 @@ export type RelayTopupCheckout = NewApiPaymentForm | {
   currency: string
 }
 
-// Coarse, UI-facing flags -- granularity matches "which block of the account
-// UI does the renderer need to show or hide for this backend", not a
-// per-method feature matrix. new-api supports everything this app uses
-// today, so its capabilities are all true (see new-api-client.ts's
-// createNewApiClient). A future minimal backend (e.g. one with no self-serve
-// password reset) would flip the matching flag to false rather than this
-// interface growing a new optional method just for that one gap.
+// Optional operation flags preserve legacy NewAPI sessions. Other backends
+// must explicitly opt in; a read capability never implies write support.
 export interface RelayBackendCapabilities {
   /** register() / sendEmailVerification() -- self-serve sign-up. */
   supportsRegistration: boolean
@@ -122,8 +117,14 @@ export interface RelayBackendCapabilities {
   supportsUsage: boolean
   /** Top-up configuration, quoting, checkout, orders, redemption, and referral transfer. */
   supportsBilling: boolean
-  /** Subscription plans, current subscriptions, and balance purchase. */
+  /** Read subscription plans and current subscriptions. Writes have separate flags. */
   supportsSubscriptions: boolean
+  supportsSubscriptionPreference?: boolean
+  supportsSubscriptionPayment?: boolean
+  supportsSubscriptionBalancePurchase?: boolean
+  supportsDashboard?: boolean
+  supportsDashboardTrends?: boolean
+  supportsTasks?: boolean
   /** display_name editing. */
   supportsProfileUpdate: boolean
   /** Login-session list and revocation. */

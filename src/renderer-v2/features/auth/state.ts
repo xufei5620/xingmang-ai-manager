@@ -2,11 +2,16 @@ export interface RegistrationDraft { email: string; username: string; password: 
 export type RegistrationErrors = Partial<Record<keyof RegistrationDraft, string>>
 export type RecoveryCodeResult = { ok: true; token: string; source: 'code' | 'link' } | { ok: false; error: string }
 
+export const accountSources = {
+  solov: { label: '星芒账号', website: 'https://xm.solov.cc', supportsPasswordReset: true },
+  'solov-api': { label: '历史账号', website: 'https://api.solov.cc', supportsPasswordReset: false },
+} as const
+
 export function isEmail(value: string): boolean {
   return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(value.trim())
 }
 
-export function parseRecoveryCode(value: string): RecoveryCodeResult {
+export function parseRecoveryCode(value: string, expectedOrigin?: string): RecoveryCodeResult {
   const text = value.trim()
   if (!text) return { ok: false, error: '请粘贴邮件中的重置码或完整链接' }
   if (/\s/.test(text)) return { ok: false, error: '重置码不能包含空格或换行，请重新复制' }
@@ -14,6 +19,7 @@ export function parseRecoveryCode(value: string): RecoveryCodeResult {
     let url: URL
     try { url = new URL(text) } catch { return { ok: false, error: '链接格式不完整，请重新复制邮件中的链接' } }
     if (!['https:', 'http:'].includes(url.protocol)) return { ok: false, error: '只支持邮件中的 HTTP 或 HTTPS 链接' }
+    if (expectedOrigin && url.origin !== expectedOrigin) return { ok: false, error: '重置链接不属于所选账号来源，请使用该账号的重置邮件' }
     const tokens = url.searchParams.getAll('token')
     if (tokens.length !== 1) return { ok: false, error: tokens.length ? '链接中包含多个重置码，请重新获取邮件' : '链接中没有重置码，请复制邮件中的完整链接' }
     const token = tokens[0]
@@ -51,6 +57,8 @@ export function remainingCooldown(deadline: number, now = Date.now()): number {
 
 export function authErrorMessage(error: unknown, action: string): string {
   const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  if (/账号安全存储不可用|本地账号存储/.test(message)) return '本地账号安全存储暂不可用，原有数据已保留。请完全退出软件后重试；若仍失败，请联系支持并提供诊断日志。'
+  if (requiresBrowserAuthentication(error)) return '此账号需要双重验证。客户端暂不支持该验证方式，请前往所选账号官网登录或联系官网客服。'
   if (/429|频繁|too many|rate limit/i.test(message)) return '请求太频繁，请稍等一分钟再试'
   if (/已存在|占用|already exists/i.test(message)) return '用户名或邮箱已被使用，请检查后重试'
   if (/验证码|verification code/i.test(message)) return '验证码不正确或已过期，请重新获取'
@@ -59,4 +67,9 @@ export function authErrorMessage(error: unknown, action: string): string {
   if (/timeout|timed.?out|超时|network|fetch|connect|网络/i.test(message)) return '连接星芒服务器超时，请检查网络后重试'
   if (/turnstile|人机/i.test(message)) return '服务端需要完成安全验证，请在浏览器完成后再试'
   return `${action}没有成功，输入已保留，请稍后重试`
+}
+
+export function requiresBrowserAuthentication(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  return /TWO_FACTOR_REQUIRED|双重验证|两步验证|2fa|two.factor/i.test(message)
 }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { accelerationTrialSeconds } from '../../../../electron/acceleration-contract'
-import type { AccelerationApi, AccelerationMode, AccelerationState } from './api'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationTrialSeconds } from '../../../../electron/acceleration-contract'
+import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './api'
 import { createAccelerationApi } from './api'
 import { createAccelerationController, type AccelerationController } from './controller'
 
@@ -41,6 +41,10 @@ describe('acceleration controller', () => {
         if (hostState.remainingSeconds === 0) hostState.phase = 'exhausted'
         hostAnchor = monotonic
         return hostState
+      }),
+      redeemAccelerationCode: vi.fn<NonNullable<AccelerationApi['redeemAccelerationCode']>>().mockResolvedValue({
+        status: 'redeemed', addedSeconds: accelerationBonusSeconds,
+        state: state({ totalSeconds: 1800, remainingSeconds: 1800 }),
       }),
     }
     const controller = createAccelerationController(api, { now: () => monotonic })
@@ -246,6 +250,115 @@ describe('acceleration controller', () => {
     expect(controller.getSnapshot().error).toContain('账号或时长信息无效')
   })
 
+  it('submits redemption once and uses the authoritative returned balance without an optimistic credit', async () => {
+    const { controller, api } = create()
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    const pending = deferred<AccelerationRedemptionResult>()
+    api.redeemAccelerationCode.mockReturnValueOnce(pending.promise)
+    const redemption = controller.redeem(accelerationBonusCode)
+    expect(controller.redeem(accelerationBonusCode)).toBe(redemption)
+    await Promise.resolve()
+    expect(api.redeemAccelerationCode).toHaveBeenCalledExactlyOnceWith('new-api:1', accelerationBonusCode)
+    expect(controller.getSnapshot()).toMatchObject({ busy: true, state: { remainingSeconds: 1200 } })
+    const result: AccelerationRedemptionResult = { status: 'redeemed', addedSeconds: 600, state: state({ totalSeconds: 1800, remainingSeconds: 1471, sessionSeconds: 329 }) }
+    pending.resolve(result)
+    expect(await redemption).toEqual(result)
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, state: { totalSeconds: 1800, remainingSeconds: 1471, sessionSeconds: 329 } })
+  })
+
+  it('does not let an old poll overwrite a completed redemption', async () => {
+    const { controller, api } = create()
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    const oldBalance = deferred<AccelerationState>()
+    api.getAccelerationState.mockReturnValueOnce(oldBalance.promise)
+    const oldPoll = controller.refresh()
+    await Promise.resolve()
+    await controller.redeem(accelerationBonusCode)
+    oldBalance.resolve(state())
+    await oldPoll
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, state: { remainingSeconds: 1800 } })
+  })
+
+  it('discards a redemption result after an account switch or disposal', async () => {
+    for (const action of ['switch', 'dispose']) {
+      const { controller, api } = create()
+      controller.setScope('new-api:1')
+      await controller.refresh()
+      const pending = deferred<AccelerationRedemptionResult>()
+      api.redeemAccelerationCode.mockReturnValueOnce(pending.promise)
+      const redemption = controller.redeem(accelerationBonusCode)
+      await Promise.resolve()
+      if (action === 'switch') {
+        api.getAccelerationState.mockResolvedValueOnce(state({ scope: 'sub2api:2', remainingSeconds: 411 }))
+        controller.setScope('sub2api:2')
+        await controller.refresh()
+      } else controller.dispose()
+      pending.resolve({ status: 'redeemed', addedSeconds: 600, state: state({ totalSeconds: 1800, remainingSeconds: 1800 }) })
+      expect(await redemption).toBeNull()
+      if (action === 'switch') expect(controller.getSnapshot()).toMatchObject({ state: { scope: 'sub2api:2', remainingSeconds: 411 } })
+      else expect(controller.getSnapshot().state?.remainingSeconds).toBe(1200)
+    }
+  })
+
+  it('keeps an unsuccessful redemption retryable and accepts already-redeemed without adding time again', async () => {
+    const { controller, api } = create(state({ remainingSeconds: 217 }))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    api.redeemAccelerationCode.mockRejectedValueOnce(new Error('账本写入失败'))
+    await expect(controller.redeem(accelerationBonusCode)).rejects.toThrow('账本写入失败')
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, error: '账本写入失败', state: { remainingSeconds: 217 } })
+    const result: AccelerationRedemptionResult = { status: 'already-redeemed', addedSeconds: 0, state: state({ totalSeconds: 1800, remainingSeconds: 817 }) }
+    api.redeemAccelerationCode.mockResolvedValueOnce(result)
+    expect(await controller.redeem(accelerationBonusCode)).toEqual(result)
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, error: null, state: { remainingSeconds: 817 } })
+    expect(api.redeemAccelerationCode).toHaveBeenCalledTimes(2)
+  })
+
+  it('keeps active session projection during redemption and rejects a response for another account', async () => {
+    const { controller, api } = create(state({ phase: 'active', connectedAt: 'session-a', remainingSeconds: 10 }))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    const pending = deferred<AccelerationRedemptionResult>()
+    api.redeemAccelerationCode.mockReturnValueOnce(pending.promise)
+    const redemption = controller.redeem(accelerationBonusCode)
+    await advance(3000)
+    expect(controller.getSnapshot()).toMatchObject({ busy: true, state: { remainingSeconds: 7, phase: 'active' } })
+    pending.resolve({ status: 'redeemed', addedSeconds: 600, state: state({ scope: 'other:2', totalSeconds: 1800, remainingSeconds: 1800 }) })
+    await expect(redemption).rejects.toThrow('账号或时长信息无效')
+    expect(controller.getSnapshot()).toMatchObject({ busy: false, state: { remainingSeconds: 7, phase: 'active' } })
+  })
+
+  it('requires an account and keeps redemption separate from an in-flight connection mutation', async () => {
+    const { controller, api } = create()
+    await expect(controller.redeem(accelerationBonusCode)).rejects.toThrow('请先登录')
+    expect(api.redeemAccelerationCode).not.toHaveBeenCalled()
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    const pending = deferred<AccelerationState>()
+    api.startAcceleration.mockReturnValueOnce(pending.promise)
+    const starting = controller.start()
+    await expect(controller.redeem(accelerationBonusCode)).rejects.toThrow('加速操作正在进行')
+    expect(api.redeemAccelerationCode).not.toHaveBeenCalled()
+    pending.resolve(state({ phase: 'active', connectedAt: 'session-a' }))
+    await starting
+  })
+
+  it('rearms exhaustion after redemption replenishes a session whose earlier automatic stop failed', async () => {
+    const { controller, api } = create(state({ phase: 'active', connectedAt: 'session-a', remainingSeconds: 1 }))
+    controller.setScope('new-api:1')
+    await controller.refresh()
+    api.stopAcceleration.mockRejectedValueOnce(new Error('连接尚未停止'))
+    await advance(1000)
+    expect(api.stopAcceleration).toHaveBeenCalledTimes(1)
+    api.redeemAccelerationCode.mockResolvedValueOnce({ status: 'redeemed', addedSeconds: 600,
+      state: state({ totalSeconds: 1800, remainingSeconds: 2, phase: 'active', connectedAt: 'session-a' }) })
+    await controller.redeem(accelerationBonusCode)
+    await advance(2000)
+    expect(api.stopAcceleration).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps the selected optional TUN mode during idle polling and locks it while connected', async () => {
     const { controller, api } = create()
     controller.setScope('new-api:1')
@@ -295,6 +408,7 @@ describe('acceleration controller', () => {
     await expect(api.getAccelerationState('new-api:1')).rejects.toThrow('加速服务暂未就绪')
     await expect(api.startAcceleration('new-api:1', 'tun')).rejects.toThrow('加速服务暂未就绪')
     await expect(api.stopAcceleration('new-api:1')).rejects.toThrow('加速服务暂未就绪')
+    await expect(api.redeemAccelerationCode!('new-api:1', accelerationBonusCode)).rejects.toThrow('加速服务暂未就绪')
   })
 
   it('passes only the requested account and mode through the bridge', async () => {
@@ -303,8 +417,10 @@ describe('acceleration controller', () => {
     await api.getAccelerationState('new-api:1')
     await api.startAcceleration('new-api:1', 'tun' satisfies AccelerationMode)
     await api.stopAcceleration('new-api:1')
+    await api.redeemAccelerationCode!('new-api:1', accelerationBonusCode)
     expect(bridge.getAccelerationState).toHaveBeenCalledWith('new-api:1')
     expect(bridge.startAcceleration).toHaveBeenCalledWith('new-api:1', 'tun')
     expect(bridge.stopAcceleration).toHaveBeenCalledWith('new-api:1')
+    expect(bridge.redeemAccelerationCode).toHaveBeenCalledWith('new-api:1', accelerationBonusCode)
   })
 })

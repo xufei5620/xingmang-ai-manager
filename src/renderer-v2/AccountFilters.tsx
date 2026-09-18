@@ -6,7 +6,7 @@ import { errorMessage, ResultNotice } from './business-common'
 export interface AccountFilterField {
   key: string
   label: string
-  type?: 'datetime-local'
+  type?: 'datetime-local' | 'date' | 'number'
   options?: Array<{ value: string; label: string }>
 }
 export function accountTimeRange(
@@ -36,11 +36,13 @@ export function accountTimeRange(
 export function AccountFilters({
   fields,
   onApply,
+  initialValues = {},
 }: {
   fields: AccountFilterField[]
   onApply: (values: Record<string, string>) => void
+  initialValues?: Record<string, string>
 }) {
-  const [draft, setDraft] = useState<Record<string, string>>({})
+  const [draft, setDraft] = useState<Record<string, string>>(initialValues)
   const [error, setError] = useState('')
   const apply = () => {
     setError('')
@@ -93,9 +95,9 @@ export function AccountFilters({
         <Button
           icon={RefreshCw}
           onClick={() => {
-            setDraft({})
+            setDraft(initialValues)
             setError('')
-            onApply({})
+            onApply(initialValues)
           }}
         >
           重置筛选

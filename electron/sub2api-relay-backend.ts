@@ -5,8 +5,9 @@ import type {
   NewApiTopupInfo, NewApiTopupOrdersPage, NewApiTopupOrder,
   NewApiSubscriptionPlan, NewApiSubscriptionSelf, NewApiSubscription,
   NewApiAccountUsagePage, NewApiAccountUsageRecord, NewApiAccountDashboardData,
-  NewApiAccountTaskPage, NewApiAffiliateTransferInput,
+  NewApiAccountUsageQuery, NewApiAffiliateTransferInput, SubscriptionQuotaPeriod,
 } from './new-api-client'
+import { usageDateRange } from './usage-date-range'
 import { sub2ApiManagedCliKeyProfiles } from './catalog'
 import { summarizeKeySecret } from './key-secret-summary'
 import { sub2ApiAnnouncementNotice } from './sub2api-announcements'
@@ -35,6 +36,8 @@ export const sub2ApiRelayCapabilities: Readonly<RelayBackendCapabilities> = Obje
   supportsRegistration: false, supportsPasswordReset: false,
   supportsKeyManagement: true, supportsUsage: true, supportsBilling: true,
   supportsSubscriptions: true, supportsProfileUpdate: true,
+  supportsSubscriptionPreference: false, supportsSubscriptionPayment: false, supportsSubscriptionBalancePurchase: false,
+  supportsDashboard: true, supportsDashboardTrends: false, supportsTasks: false,
   supportsSessionManagement: false, supportsAutoKeyProvision: true, supportsAccountSession: true,
 })
 
@@ -75,11 +78,15 @@ function keyName(value: string): string {
 
 function record(value: unknown): Record<string, any> { return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, any> : {} }
 function num(value: unknown, fallback = 0): number { return typeof value === 'number' && Number.isFinite(value) ? value : fallback }
+function amount(value: unknown): number | null { return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null }
+function requiredAmount(value: unknown): number { const parsed = amount(value); if (parsed === null) throw new RealmAccountError('PROTOCOL'); return parsed }
 function str(value: unknown, fallback = ''): string { return typeof value === 'string' ? value : fallback }
 function maskedEmail(value: unknown): string { const email = str(value); const at = email.indexOf('@'); if (at <= 1) return email ? '***' : ''; const local = email.slice(0, at); return `${local.slice(0, 1)}***${local.slice(-1)}${email.slice(at)}` }
 function iso(value: unknown): string { const d = typeof value === 'string' ? Date.parse(value) : NaN; return Number.isFinite(d) ? new Date(d).toISOString() : '' }
 function parseUsage(payload: unknown): NewApiAccountUsagePage {
-  const p = record(payload); const items = Array.isArray(p.items) ? p.items : []
+  const p = record(payload)
+  if (!Array.isArray(p.items)) throw new RealmAccountError('PROTOCOL')
+  const items = p.items
   const amount = (value: unknown): number | null => typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null
   const count = (value: unknown): number => typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : 0
   const label = (value: unknown, limit = 256): string => str(value).slice(0, limit)
@@ -141,8 +148,50 @@ function parseOrders(payload: unknown): NewApiTopupOrdersPage {
   const p = record(payload); const items = Array.isArray(p.items) ? p.items : []; const orders: NewApiTopupOrder[] = items.slice(0, 100).map((v) => { const x = record(v); const status = orderStatus(x.status); return { id: num(x.id), amount: num(x.amount), money: num(x.pay_amount ?? x.amount), tradeNo: str(x.out_trade_no), paymentMethod: str(x.payment_type), paymentProvider: str(x.payment_type), createdAt: iso(x.created_at), completedAt: iso(x.completed_at) || null, status } })
   return { page: num(p.page, 1), pageSize: num(p.page_size, 10), total: num(p.total, orders.length), orders }
 }
-function parsePlans(payload: unknown): NewApiSubscriptionPlan[] { return (Array.isArray(payload) ? payload : []).slice(0, 100).map((v) => { const x = record(v); const rawUnit = str(x.validity_unit, 'day').toLowerCase(); const durationUnit = rawUnit.startsWith('year') ? 'year' : rawUnit.startsWith('month') ? 'month' : rawUnit.startsWith('hour') ? 'hour' : 'day'; return { id: num(x.id), title: str(x.name, '订阅套餐'), subtitle: str(x.description), priceAmount: num(x.price), currency: str(x.currency, 'USD'), durationUnit, durationValue: num(x.validity_days), customSeconds: 0, allowBalancePay: false, allowWalletOverflow: false, maxPurchasePerUser: 0, totalAmount: num(x.monthly_limit_usd ?? x.weekly_limit_usd ?? x.daily_limit_usd), upgradeGroup: str(x.group_name), downgradeGroup: '', quotaResetPeriod: x.monthly_limit_usd != null ? 'monthly' : x.weekly_limit_usd != null ? 'weekly' : x.daily_limit_usd != null ? 'daily' : 'never', quotaResetCustomSeconds: 0, stripePriceId: null, creemProductId: null, waffoPancakeProductId: null } }) }
-function parseSubscriptionSelf(payload: unknown): NewApiSubscriptionSelf { const list = Array.isArray(payload) ? payload : []; const all: NewApiSubscription[] = list.slice(0, 200).map((v) => { const x = record(v); return { id: num(x.id), planId: num(x.group_id), status: str(x.status), source: 'sub2api', amountTotal: num(x.monthly_usage_usd), amountUsed: num(x.monthly_usage_usd), startedAt: iso(x.starts_at), endsAt: iso(x.expires_at), nextResetAt: null } }); return { billingPreference: 'subscription_first', activeSubscriptions: all.filter((s) => s.status === 'active'), allSubscriptions: all } }
+function parsePlans(payload: unknown): NewApiSubscriptionPlan[] {
+  if (!Array.isArray(payload)) throw new RealmAccountError('PROTOCOL')
+  return payload.slice(0, 100).map((value) => {
+    const x = record(value)
+    const rawUnit = str(x.validity_unit, 'day').toLowerCase()
+    const durationUnit = rawUnit.startsWith('year') ? 'year' : rawUnit.startsWith('month') ? 'month' : rawUnit.startsWith('hour') ? 'hour' : 'day'
+    return { id: num(x.id), title: str(x.name, '订阅套餐'), subtitle: str(x.description), priceAmount: num(x.price), currency: str(x.currency, 'USD'), durationUnit, durationValue: num(x.validity_days), customSeconds: 0, allowBalancePay: false, allowWalletOverflow: false, maxPurchasePerUser: 0, totalAmount: null, upgradeGroup: str(x.group_name), downgradeGroup: '', quotaResetPeriod: 'never', quotaResetCustomSeconds: 0, stripePriceId: null, creemProductId: null, waffoPancakeProductId: null }
+  })
+}
+function parseSubscriptionSelf(payload: unknown): NewApiSubscriptionSelf {
+  if (!Array.isArray(payload)) throw new RealmAccountError('PROTOCOL')
+  const all: NewApiSubscription[] = payload.slice(0, 200).map((value) => {
+    const x = record(value)
+    const group = record(x.group)
+    const quotaPeriods = (['daily', 'weekly', 'monthly'] as const).map((period): SubscriptionQuotaPeriod => {
+      const rawLimit = group[`${period}_limit_usd`]
+      const limit = amount(rawLimit)
+      return { period, limit: limit !== null && limit > 0 ? limit : null,
+        limitState: rawLimit === null || limit === 0 ? 'unlimited' : limit !== null ? 'limited' : 'unknown',
+        used: amount(x[`${period}_usage_usd`]), windowStartedAt: iso(x[`${period}_window_start`]) || null }
+    })
+    return { id: num(x.id), planId: num(x.group_id), groupName: str(group.name).slice(0, 256), status: str(x.status), source: 'sub2api',
+      amountTotal: null, amountUsed: null, quotaPeriods, startedAt: iso(x.starts_at), endsAt: iso(x.expires_at), nextResetAt: null }
+  })
+  return { billingPreference: null, activeSubscriptions: all.filter((subscription) => subscription.status === 'active'), allSubscriptions: all }
+}
+
+function usageQuery(input: NewApiAccountUsageQuery, now: number) {
+  const supported = new Set(['page', 'pageSize', 'modelName', 'startDate', 'endDate', 'timezone', 'apiKeyId', 'groupId', 'billingType'])
+  if (!input || typeof input !== 'object' || Array.isArray(input)) throw new RealmAccountError('INVALID')
+  for (const [key, value] of Object.entries(input)) {
+    if (!supported.has(key) && value !== undefined && value !== '') throw new RealmAccountError('UNSUPPORTED')
+  }
+  for (const [value, maximum] of [[input.page, Number.MAX_SAFE_INTEGER], [input.pageSize, 100], [input.apiKeyId, Number.MAX_SAFE_INTEGER], [input.groupId, Number.MAX_SAFE_INTEGER]]) {
+    if (value !== undefined && (!Number.isSafeInteger(value) || value < 1 || value > maximum!)) throw new RealmAccountError('INVALID')
+  }
+  if (input.billingType !== undefined && input.billingType !== 0 && input.billingType !== 1) throw new RealmAccountError('INVALID')
+  if (input.modelName !== undefined && (typeof input.modelName !== 'string' || input.modelName.length > 256)) throw new RealmAccountError('INVALID')
+  let dateRange: ReturnType<typeof usageDateRange>
+  try { dateRange = usageDateRange(input, new Date(now)) } catch { throw new RealmAccountError('INVALID') }
+  return { dateRange, query: { page: input.page, page_size: input.pageSize, model: input.modelName,
+    start_date: dateRange.startDate, end_date: dateRange.endDate, timezone: dateRange.timezone,
+    api_key_id: input.apiKeyId, group_id: input.groupId, billing_type: input.billingType } }
+}
 
 /** Complete RelayBackendClient implementation for the explicitly selected api realm. */
 export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): Sub2ApiRelayBackend {
@@ -501,21 +550,22 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
     createSubscriptionPayment: unsupported, purchaseSubscriptionWithBalance: unsupported,
     getUsage: async (input = {}) => {
       const scope = capture()
-      const query = { page: input.page, page_size: input.pageSize, model: input.modelName, start_date: input.startTimestamp ? new Date(input.startTimestamp * 1000).toISOString().slice(0, 10) : undefined, end_date: input.endTimestamp ? new Date(input.endTimestamp * 1000).toISOString().slice(0, 10) : undefined }
+      const { query, dateRange } = usageQuery(input, now())
       const [rows, stats] = await Promise.all([
         call(scope, (saved, abort) => native.getUsage(saved, query, abort)),
         call(scope, (saved, abort) => native.getUsageStats(saved, query, abort)),
       ])
       const page = parseUsage(rows)
       const s = record(stats)
-      page.stats = { quota: num(s.total_actual_cost), rpm: num(s.rpm), tpm: num(s.tpm) }
+      page.stats = { quota: requiredAmount(s.total_actual_cost), rpm: amount(s.rpm), tpm: amount(s.tpm) }
+      page.dateRange = dateRange
       return page
     },
-    getDashboard: async (input) => {
-      const payload = record(await call(capture(), (saved, abort) => native.getDashboard(saved, { start_date: new Date(input.startTimestamp * 1000).toISOString().slice(0, 10), end_date: new Date(input.endTimestamp * 1000).toISOString().slice(0, 10) }, abort)))
-      return { startTimestamp: input.startTimestamp, endTimestamp: input.endTimestamp, buckets: [], models: [], quota: num(payload.total_actual_cost ?? payload.total_cost), count: num(payload.total_requests), tokens: num(payload.total_tokens), discardedCount: 0 } as NewApiAccountDashboardData
+    getDashboard: async () => {
+      const payload = record(await call(capture(), (saved, abort) => native.getDashboard(saved, {}, abort)))
+      return { startTimestamp: 0, endTimestamp: Math.floor(now() / 1000), buckets: [], models: [], quota: requiredAmount(payload.total_actual_cost), count: requiredAmount(payload.total_requests), tokens: requiredAmount(payload.total_tokens), discardedCount: 0, coverage: 'all-time-summary' } as NewApiAccountDashboardData
     },
-    getTasks: async () => ({ page: 1, pageSize: 20, total: 0, tasks: [] } as NewApiAccountTaskPage),
+    getTasks: unsupported,
     listLoginSessions: unsupported, revokeLoginSession: unsupported, revokeOtherLoginSessions: unsupported,
     // Cookie envelopes are never accepted here. Main uses restore(RealmSavedAccount).
     restoreSession: unsupported, switchSession: unsupported,

@@ -19,7 +19,9 @@ export function accountSupports(session: Pick<AccountContext, 'siteId' | 'realmI
 }
 export function visibleAccountTab(value: string, session: Pick<AccountContext, 'siteId' | 'realmId' | 'capabilities'>): boolean {
   if (value === 'keys') return accountSupports(session, 'supportsKeyManagement')
-  if (['usage', 'dashboard', 'tasks'].includes(value)) return accountSupports(session, 'supportsUsage')
+  if (value === 'usage') return accountSupports(session, 'supportsUsage')
+  if (value === 'dashboard') return accountSupports(session, 'supportsDashboard')
+  if (value === 'tasks') return accountSupports(session, 'supportsTasks')
   if (['orders', 'invite', 'recharge'].includes(value)) return accountSupports(session, 'supportsBilling')
   if (value === 'devices') return accountSupports(session, 'supportsSessionManagement')
   return value === 'overview'

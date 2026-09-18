@@ -75,6 +75,103 @@ function fixture(options: { onCredentialRotation?: (saved: RealmSavedAccount) =>
   return { ...backend, state, calls, onSessionChange, onCredentialRotation }
 }
 
+describe('Sub2API account data contracts', () => {
+  it('keeps concurrent subscription periods separate and never uses consumption as a limit', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/subscriptions') ? json([
+      { id: 1, group_id: 9, status: 'active', monthly_usage_usd: 12, weekly_usage_usd: 4, daily_usage_usd: 1,
+        group: { name: 'Native subscription', daily_limit_usd: 5, weekly_limit_usd: 20, monthly_limit_usd: 60 },
+        user: { access_token: 'private' }, notes: 'admin-only' },
+      { id: 2, group_id: 9, status: 'expired', daily_usage_usd: 0, group: { daily_limit_usd: null, weekly_limit_usd: 0 } },
+      { id: 3, group_id: 9, status: 'active', monthly_usage_usd: 2.5 },
+    ]) : undefined
+    await f.client.login(loginInput)
+    const result = await f.client.getSubscriptionSelf()
+    expect(result.billingPreference).toBeNull()
+    expect(result.activeSubscriptions).toHaveLength(2)
+    expect(result.allSubscriptions[0]).toMatchObject({ amountTotal: null, amountUsed: null, groupName: 'Native subscription', quotaPeriods: [
+      { period: 'daily', limit: 5, used: 1, limitState: 'limited' },
+      { period: 'weekly', limit: 20, used: 4, limitState: 'limited' },
+      { period: 'monthly', limit: 60, used: 12, limitState: 'limited' },
+    ] })
+    expect(result.allSubscriptions[1].quotaPeriods).toMatchObject([
+      { limit: null, used: 0, limitState: 'unlimited' }, { limit: null, used: null, limitState: 'unlimited' },
+      { limit: null, used: null, limitState: 'unknown' },
+    ])
+    expect(result.allSubscriptions[2].quotaPeriods?.[2]).toMatchObject({ used: 2.5, limit: null, limitState: 'unknown' })
+    expect(JSON.stringify(result)).not.toMatch(/private|admin-only/)
+  })
+
+  it('rejects subscription writes and task reads without issuing requests', async () => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    const count = f.calls.length
+    expect(f.client.capabilities).toMatchObject({ supportsSubscriptions: true, supportsSubscriptionPreference: false,
+      supportsSubscriptionPayment: false, supportsSubscriptionBalancePurchase: false, supportsTasks: false })
+    await expect(f.client.updateSubscriptionPreference('wallet_first')).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    await expect(f.client.createSubscriptionPayment({ planId: 1, provider: 'epay' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    await expect(f.client.purchaseSubscriptionWithBalance(1)).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    await expect(f.client.getTasks()).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    expect(f.calls).toHaveLength(count)
+  })
+
+  it('labels dashboard data as all-time summary and distinguishes zero from a missing metric', async () => {
+    const f = fixture()
+    let payload: unknown = { total_actual_cost: 0, total_requests: 0, total_tokens: 0 }
+    f.state.override = ({ url }) => url.pathname.endsWith('/usage/dashboard/stats') ? json(payload) : undefined
+    await f.client.login(loginInput)
+    const query = { startTimestamp: 1788825600, endTimestamp: 1788912000 }
+    expect(await f.client.getDashboard(query)).toMatchObject({ coverage: 'all-time-summary', startTimestamp: 0, quota: 0, count: 0, tokens: 0 })
+    expect(f.calls.at(-1)?.url.search).toBe('')
+    payload = { total_requests: 0, total_tokens: 0 }
+    await expect(f.client.getDashboard(query)).rejects.toMatchObject({ code: 'PROTOCOL' })
+    expect(f.client.getSessionState().authenticated).toBe(true)
+  })
+
+  it('uses identical explicit date and supported filters for list and stats, including the full end day', async () => {
+    const f = fixture()
+    f.state.override = ({ url }) => url.pathname.endsWith('/usage') ? json({ items: [], total: 0 })
+      : url.pathname.endsWith('/usage/stats') ? json({ total_actual_cost: 0 }) : undefined
+    await f.client.login(loginInput)
+    const result = await f.client.getUsage({ page: 2, pageSize: 10, startDate: '2026-09-08', endDate: '2026-09-08', timezone: 'Asia/Shanghai',
+      modelName: 'test-model', apiKeyId: 4, groupId: 5, billingType: 0 })
+    const queries = f.calls.filter(({ url }) => url.pathname.endsWith('/usage') || url.pathname.endsWith('/usage/stats')).map(({ url }) => Object.fromEntries(url.searchParams))
+    expect(queries).toHaveLength(2)
+    for (const query of queries) expect(query).toEqual({ page: '2', page_size: '10', start_date: '2026-09-08', end_date: '2026-09-08', timezone: 'Asia/Shanghai', model: 'test-model', api_key_id: '4', group_id: '5', billing_type: '0' })
+    expect(result.dateRange).toEqual({ startDate: '2026-09-08', endDate: '2026-09-08', timezone: 'Asia/Shanghai' })
+    expect(result.stats).toEqual({ quota: 0, rpm: null, tpm: null })
+  })
+
+  it.each(['group', 'tokenName', 'requestId', 'upstreamRequestId', 'type', 'startTimestamp', 'endTimestamp'])('rejects unsupported %s filters before network access', async (key) => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    const count = f.calls.length
+    await expect(f.client.getUsage({ [key]: key.endsWith('Timestamp') || key === 'type' ? 2 : 'test' })).rejects.toMatchObject({ code: 'UNSUPPORTED' })
+    expect(f.calls).toHaveLength(count)
+  })
+
+  it.each([{ startDate: '2026-02-30' }, { timezone: 'invalid/timezone' }, { startDate: '2026-09-10', endDate: '2026-09-09' }, { apiKeyId: -1 }, { pageSize: 101 }])('rejects invalid calendar and filter values: %j', async (query) => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    const count = f.calls.length
+    await expect(f.client.getUsage(query)).rejects.toMatchObject({ code: 'INVALID' })
+    expect(f.calls).toHaveLength(count)
+  })
+
+  it('does not turn malformed subscription, usage, or stats responses into empty/zero data', async () => {
+    const f = fixture()
+    let rows: unknown = {}
+    f.state.override = ({ url }) => url.pathname.endsWith('/usage') ? json(rows)
+      : url.pathname.endsWith('/usage/stats') || url.pathname.endsWith('/subscriptions') ? json({}) : undefined
+    await f.client.login(loginInput)
+    await expect(f.client.getSubscriptionSelf()).rejects.toMatchObject({ code: 'PROTOCOL' })
+    await expect(f.client.getUsage()).rejects.toMatchObject({ code: 'PROTOCOL' })
+    rows = { items: [] }
+    await expect(f.client.getUsage()).rejects.toMatchObject({ code: 'PROTOCOL' })
+    expect(f.client.getSessionState().authenticated).toBe(true)
+  })
+})
+
 describe('Sub2API announcement sessions', () => {
   it('requires a logged-in user before loading notices', async () => {
     const f = fixture()
@@ -356,7 +453,7 @@ describe('Sub2API RelayBackend adapter', () => {
       input_cost: 0.014, output_cost: 0.04, image_input_cost: 0.01, image_output_cost: 0.036,
       total_cost: 0.1, actual_cost: 0.05, image_count: 2, image_size: '1024x1536', billing_mode: 'image',
       rate_multiplier: 0.5, billing_type: 0, long_context_billing_applied: false,
-    }] }) : url.pathname.endsWith('/usage/stats') ? json({}) : undefined
+    }] }) : url.pathname.endsWith('/usage/stats') ? json({ total_actual_cost: 0 }) : undefined
     await f.client.login(loginInput)
     const [row] = (await f.client.getUsage()).records
     expect(row).toMatchObject({ promptTokens: 1400, completionTokens: 2000, quota: 0.05,
@@ -374,7 +471,7 @@ describe('Sub2API RelayBackend adapter', () => {
       { id: 2, total_cost: 0.75 },
       { id: 3, input_cost: '0', output_cost: -1, cache_read_cost: true, cache_creation_cost: {},
         actual_cost: '0', rate_multiplier: -1, first_token_ms: '0', long_context_billing_applied: 'false', billing_type: '0' },
-    ] }) : url.pathname.endsWith('/usage/stats') ? json({}) : undefined
+    ] }) : url.pathname.endsWith('/usage/stats') ? json({ total_actual_cost: 0 }) : undefined
     await f.client.login(loginInput)
     const rows = (await f.client.getUsage()).records
     expect(rows[0]).toMatchObject({ quota: 0, details: { groupRatio: 0, firstResponseTimeMs: 0,
@@ -405,7 +502,8 @@ describe('Sub2API RelayBackend adapter', () => {
     expect(await f.client.getTopupInfo()).toMatchObject({ minTopup: 5, paymentMethods: [{ type: 'alipay', name: '支付宝' }] })
     expect(await f.client.listTopupOrders()).toMatchObject({ orders: [{ tradeNo: 'trade-3', money: 70, status: 'success' }] })
     expect(await f.client.listSubscriptionPlans()).toMatchObject([{ title: '月度订阅', durationValue: 30 }])
-    expect(await f.client.getSubscriptionSelf()).toMatchObject({ activeSubscriptions: [{ id: 5, amountUsed: 2.5 }] })
+    expect(await f.client.getSubscriptionSelf()).toMatchObject({ activeSubscriptions: [{ id: 5, amountUsed: null,
+      quotaPeriods: [{ period: 'daily', limitState: 'unknown' }, { period: 'weekly', limitState: 'unknown' }, { period: 'monthly', used: 2.5, limit: null }] }] })
     expect(await f.client.getProfile()).toMatchObject({ affCode: 'invite7', affCount: 2, affQuota: 1.2 })
     await expect(f.client.getNotice?.()).resolves.toEqual({ id: expect.stringMatching(/^sub2api-[a-f0-9]{64}$/),
       text: '系统公告\n\n充值后额度会自动到账。', entries: [{ id: '12', title: '系统公告', text: '充值后额度会自动到账。', read: false }] })

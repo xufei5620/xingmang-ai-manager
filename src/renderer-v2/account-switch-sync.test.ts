@@ -111,6 +111,9 @@ describe('saved account explicit CLI key sync', () => {
     const result = await switchAccountWithOptionalSync(h.api, { ...h.target, origin: 'https://api.solov.cc' }, ['claude'], h.context, h.context.origin)
     expect(result.configured).toEqual(change === 'none' ? ['claude'] : [])
     expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(change === 'none' ? 1 : 0)
+    if (change === 'none') expect(h.api.configureManagedCliKeys).toHaveBeenCalledWith({
+      providers: ['claude'], preferredModels: { claude: 'original-model' }, intent: 'explicit',
+    })
   })
   it('defaults to no CLI writes and rejects another account origin before switching', async () => {
     const h = setup()
@@ -166,6 +169,17 @@ describe('saved account explicit CLI key sync', () => {
       }),
     )
   })
+  it('uses durable manual ownership when the renderer marker is absent', () => {
+    const h = setup()
+    h.context.configs.claude.configurationOwnership = 'manual'
+    expect(accountSyncCandidates(h.context, null)).toContainEqual(expect.objectContaining({
+      provider: 'claude', eligible: true, reason: '手动填写密钥',
+    }))
+    h.context.configs.claude.matchesRelay = false
+    expect(accountSyncCandidates(h.context, null)).toContainEqual(expect.objectContaining({
+      provider: 'claude', eligible: false, reason: '已有第三方配置',
+    }))
+  })
   it('does not inspect or write CLI configs after switching fails', async () => {
     const h = setup()
     h.api.switchSavedAccount.mockRejectedValueOnce(new Error('登录已过期'))
@@ -197,12 +211,28 @@ describe('saved account explicit CLI key sync', () => {
     expect(h.api.configureManagedCliKeys).toHaveBeenCalledWith({
       providers: ['claude'],
       preferredModels: { claude: 'fresh-model' },
+      intent: 'explicit',
     })
     expect(result.configured).toEqual(['claude'])
     expect(result.skipped.map((entry) => entry.provider)).toEqual([
       'codex',
       'gemini',
     ])
+  })
+  it('syncs selected tools individually with explicit consent after the old account ownership becomes unknown', async () => {
+    const h = setup()
+    h.context.configs.claude.configurationOwnership = 'account'
+    h.context.configs.gemini.configurationOwnership = 'account'
+    h.fresh.configs.claude.configurationOwnership = 'unknown'
+    h.fresh.configs.gemini.configurationOwnership = 'unknown'
+    h.fresh.configs.gemini.model = 'gemini-model'
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'gemini', 'claude'], h.context, h.context.origin)
+    expect(result.configured).toEqual(['claude', 'gemini'])
+    expect(h.api.configureManagedCliKeys.mock.calls).toEqual([
+      [{ providers: ['claude'], preferredModels: { claude: 'original-model' }, intent: 'explicit' }],
+      [{ providers: ['gemini'], preferredModels: { gemini: 'gemini-model' }, intent: 'explicit' }],
+    ])
+    expect(h.api.getAccountSession).toHaveBeenCalledTimes(4)
   })
   it('retains partial failures after the account has switched and can restore their report', async () => {
     const h = setup()
@@ -223,6 +253,9 @@ describe('saved account explicit CLI key sync', () => {
     )
     h.api.configureManagedCliKeys.mockResolvedValueOnce({
       configured: ['claude'],
+      failed: [],
+    }).mockResolvedValueOnce({
+      configured: [],
       failed: [{ provider: 'gemini', message: '配置文件正在使用' }],
     })
     const result = await switchAccountWithOptionalSync(
@@ -261,6 +294,45 @@ describe('saved account explicit CLI key sync', () => {
     preserveAccountSwitchResult(result)
     expect(previousAccountSwitchResult(h.target.origin, 8)).toEqual(result)
     expect(previousAccountSwitchResult('https://other.invalid', 8)).toBeNull()
+  })
+  it('continues remaining selected tools when one explicit request fails', async () => {
+    const h = setup()
+    h.api.configureManagedCliKeys.mockRejectedValueOnce(new Error('配置文件正在使用'))
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'gemini'], h.context, h.context.origin)
+    expect(result.configured).toEqual(['gemini'])
+    expect(result.failed).toEqual([{ provider: 'claude', message: '配置文件正在使用' }])
+    expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(2)
+  })
+  it.each(['another-user', 'another-origin', 'signed-out'] as const)('keeps partial success and stops before the next tool for %s', async (change) => {
+    const h = setup()
+    h.api.configureManagedCliKeys.mockImplementationOnce(async (input) => {
+      const account = { userId: change === 'another-user' ? 9 : 8 } as Awaited<ReturnType<AccountSwitchBridge['getAccountSession']>>['account']
+      h.api.getAccountSession.mockResolvedValue(change === 'signed-out'
+        ? { authenticated: false, account: null }
+        : { authenticated: true, account, siteId: change === 'another-origin' ? 'solov-api' : 'solov' })
+      return { configured: input.providers, failed: [] }
+    })
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'gemini'], h.context, h.context.origin)
+    expect(result.configured).toEqual(['claude'])
+    expect(result.failed).toEqual([{ provider: 'gemini', message: '账号状态已变化，已停止同步工具密钥。' }])
+    expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(1)
+  })
+  it('retains earlier failures when a later account change interrupts the remaining tools', async () => {
+    const h = setup()
+    h.context.clis.grok.installed = true
+    h.fresh.clis.grok.installed = true
+    h.api.configureManagedCliKeys.mockRejectedValueOnce(new Error('第一个配置失败'))
+      .mockImplementationOnce(async (input) => {
+        h.api.getAccountSession.mockResolvedValue({ authenticated: false, account: null })
+        return { configured: input.providers, failed: [] }
+      })
+    const result = await switchAccountWithOptionalSync(h.api, h.target, ['claude', 'gemini', 'grok'], h.context, h.context.origin)
+    expect(result.configured).toEqual(['gemini'])
+    expect(result.failed).toEqual([
+      { provider: 'claude', message: '第一个配置失败' },
+      { provider: 'grok', message: '账号状态已变化，已停止同步工具密钥。' },
+    ])
+    expect(h.api.configureManagedCliKeys).toHaveBeenCalledTimes(2)
   })
   it('stops writes if another account becomes active during revalidation', async () => {
     const h = setup()

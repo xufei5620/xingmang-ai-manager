@@ -1,8 +1,10 @@
 import path from 'node:path'
 import { performance } from 'node:perf_hooks'
-import type { AccelerationApi, AccelerationLine, AccelerationState } from './acceleration-contract'
-import { accelerationTrialSeconds } from './acceleration-contract'
+import type { AccelerationApi, AccelerationLine, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import { accelerationBonusSeconds, accelerationTrialSeconds, isAccelerationBonusCode } from './acceleration-contract'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
+
+export type AccelerationStopFailureStage = 'proxy-restore' | 'core-stop' | 'ledger-write'
 
 export interface AccelerationDevelopmentBackendOptions {
   /** Both sources use the local ledger, never a server-issued entitlement. */
@@ -21,6 +23,8 @@ export interface AccelerationDevelopmentBackendOptions {
   listLines?: () => Promise<AccelerationLine[]>
   /** Optional host-side latency probe. */
   pingLine?: (lineId: string) => Promise<AccelerationLine>
+  /** Stage only: native errors can contain private proxy or configuration data. */
+  onDiagnostic?: (stage: AccelerationStopFailureStage) => void
 }
 
 export interface AccelerationDevelopmentBackend extends AccelerationApi {
@@ -33,8 +37,9 @@ function assertLineId(lineId: unknown): asserts lineId is string {
   if (typeof lineId !== 'string' || !/^[a-z\d_.-]{1,80}$/i.test(lineId)) throw new Error('加速线路参数无效。')
 }
 
-interface AccountUsage { usedMs: number; startedAt: number | null }
-interface Ledger { version: 1; accounts: Record<string, AccountUsage> }
+interface AccountUsage { usedMs: number; startedAt: number | null; bonusRedeemed?: true }
+// Older builds must reject the new format rather than silently erase a claim.
+interface Ledger { version: 2; accounts: Record<string, AccountUsage> }
 interface ParsedLedger { ledger: Ledger; needsRewrite: boolean }
 interface Session {
   scope: string
@@ -46,7 +51,10 @@ interface Session {
   error: string | null
 }
 
-const totalMs = accelerationTrialSeconds * 1000
+const baseTotalMs = accelerationTrialSeconds * 1000
+function accountTotalMs(entry: AccountUsage): number {
+  return baseTotalMs + (entry.bonusRedeemed ? accelerationBonusSeconds * 1000 : 0)
+}
 // Version 1 previously allowed one hour. Preserve that format's validation
 // boundary while charging all historical use against the smaller allowance.
 const legacyVersion1MaximumUsedMs = 3_600_000
@@ -68,23 +76,28 @@ function assertScope(scope: string) {
 }
 
 function parseLedger(raw: string | null): ParsedLedger {
-  if (raw === null) return { ledger: { version: 1, accounts: Object.create(null) }, needsRewrite: false }
+  if (raw === null) return { ledger: { version: 2, accounts: Object.create(null) }, needsRewrite: false }
   const value: unknown = JSON.parse(raw)
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(ledgerFailure)
-  const object = value as Partial<Ledger>
-  if (object.version !== 1 || !object.accounts || typeof object.accounts !== 'object' || Array.isArray(object.accounts)) throw new Error(ledgerFailure)
+  const object = value as { version?: unknown; accounts?: Record<string, AccountUsage> }
+  if ((object.version !== 1 && object.version !== 2) || !object.accounts || typeof object.accounts !== 'object' || Array.isArray(object.accounts)) throw new Error(ledgerFailure)
   const entries = Object.entries(object.accounts)
   if (entries.length > 2000) throw new Error(ledgerFailure)
   const accounts: Ledger['accounts'] = Object.create(null)
-  let needsRewrite = false
+  const needsRewrite = object.version === 1
   for (const [scope, entry] of entries) {
     assertScope(scope)
-    if (!entry || typeof entry !== 'object' || !Number.isSafeInteger(entry.usedMs) || entry.usedMs < 0 || entry.usedMs > legacyVersion1MaximumUsedMs
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new Error(ledgerFailure)
+    if (Object.prototype.hasOwnProperty.call(entry, 'bonusRedeemed') && (object.version === 1 || entry.bonusRedeemed !== true)) throw new Error(ledgerFailure)
+    const maximumUsedMs = object.version === 1 ? legacyVersion1MaximumUsedMs : accountTotalMs(entry)
+    if (!Number.isSafeInteger(entry.usedMs) || entry.usedMs < 0 || entry.usedMs > maximumUsedMs
       || (entry.startedAt !== null && (!Number.isSafeInteger(entry.startedAt) || entry.startedAt < 0 || entry.startedAt > 8_640_000_000_000_000))) throw new Error(ledgerFailure)
-    accounts[scope] = { usedMs: Math.min(totalMs, entry.usedMs), startedAt: entry.startedAt }
-    if (entry.usedMs > totalMs) needsRewrite = true
+    accounts[scope] = {
+      usedMs: Math.min(accountTotalMs(entry), entry.usedMs), startedAt: entry.startedAt,
+      ...(entry.bonusRedeemed === true ? { bonusRedeemed: true } : {}),
+    }
   }
-  return { ledger: { version: 1, accounts }, needsRewrite }
+  return { ledger: { version: 2, accounts }, needsRewrite }
 }
 
 /** Device-local accounting only. This ledger is not a server-issued entitlement. */
@@ -106,6 +119,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   let session: Session | null = null
   let queue: Promise<unknown> = Promise.resolve()
   let cancelTimer: (() => void) | null = null
+  let timerGeneration = 0
   let closing = false
   let disposed = false
   let probeNeedsCleanup = false
@@ -121,7 +135,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   function elapsed(current: Session): number {
     return current.startedMono === null ? 0 : Math.max(0, Math.floor((current.stoppedMono ?? monotonicNow()) - current.startedMono))
   }
-  function crashElapsed(startedAt: number): number {
+  function crashElapsed(startedAt: number, totalMs: number): number {
     const difference = Math.floor(now() - startedAt)
     // A clock rollback cannot mint another trial after an unclean shutdown.
     return difference < 0 ? totalMs : Math.min(totalMs, difference)
@@ -135,7 +149,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     } catch { throw new Error(ledgerFailure) }
   }
   async function saveAccount(scope: string, entry: AccountUsage) {
-    await save({ version: 1, accounts: { ...ledger!.accounts, [scope]: entry } })
+    await save({ version: 2, accounts: { ...ledger!.accounts, [scope]: { ...usage(scope), ...entry } } })
   }
   async function load() {
     if (ledger) return
@@ -166,11 +180,12 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       let changed = ledgerNeedsRewrite
       for (const [scope, entry] of Object.entries(accounts)) {
         if (entry.startedAt !== null) {
-          accounts[scope] = { usedMs: Math.min(totalMs, entry.usedMs + crashElapsed(entry.startedAt)), startedAt: null }
+          const totalMs = accountTotalMs(entry)
+          accounts[scope] = { ...entry, usedMs: Math.min(totalMs, entry.usedMs + crashElapsed(entry.startedAt, totalMs)), startedAt: null }
           changed = true
         }
       }
-      if (changed) await save({ version: 1, accounts })
+      if (changed) await save({ version: 2, accounts })
       ledgerNeedsRewrite = false
       needsRecovery = false
       recoveryError = null
@@ -182,16 +197,18 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   function state(scope: string): AccelerationState {
     const current = session?.scope === scope ? session : null
     const entry = usage(scope)
-    const spent = current ? elapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry.startedAt) : 0
+    const totalMs = accountTotalMs(entry)
+    const totalSeconds = totalMs / 1000
+    const spent = current ? elapsed(current) : needsRecovery && entry.startedAt !== null ? crashElapsed(entry.startedAt, totalMs) : 0
     const remainingMs = Math.max(0, totalMs - entry.usedMs - spent)
     const error = current?.error ?? recoveryError ?? lastErrors.get(scope) ?? null
     const pendingRecovery = needsRecovery && entry.startedAt !== null
     const phase = current ? current.phase === 'active' && remainingMs === 0 ? 'stopping' : current.phase
       : pendingRecovery ? 'stopping' : remainingMs === 0 ? 'exhausted' : error ? 'error' : 'idle'
     const result: AccelerationState = {
-      scope, phase, mode: 'system-proxy', totalSeconds: accelerationTrialSeconds,
+      scope, phase, mode: 'system-proxy', totalSeconds,
       remainingSeconds: Math.ceil(remainingMs / 1000),
-      sessionSeconds: current ? Math.min(accelerationTrialSeconds, Math.floor(spent / 1000)) : lastSessionSeconds.get(scope) ?? 0,
+      sessionSeconds: current ? Math.min(totalSeconds, Math.floor(spent / 1000)) : lastSessionSeconds.get(scope) ?? 0,
       measuredAt: new Date(now()).toISOString(),
       connectedAt: current?.connectedAt ?? (pendingRecovery ? new Date(entry.startedAt!).toISOString() : null),
       line: current?.line ?? null, error,
@@ -199,14 +216,24 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
     }
     return result
   }
-  function clearTimer() { cancelTimer?.(); cancelTimer = null }
+  function clearTimer() { timerGeneration += 1; cancelTimer?.(); cancelTimer = null }
+  async function stopStage<T>(stage: AccelerationStopFailureStage, operation: () => Promise<T>): Promise<T> {
+    try { return await operation() } catch (error) {
+      try { options.onDiagnostic?.(stage) } catch { /* Reporting must not change recovery behavior. */ }
+      throw error
+    }
+  }
   function arm(milliseconds: number) {
     clearTimer()
     const scheduledSession = session
+    const generation = timerGeneration
     cancelTimer = schedule(() => {
+      if (generation !== timerGeneration) return
       cancelTimer = null
       void enqueue(async () => {
-        if (!session || session !== scheduledSession || disposed) return
+        // An old expiry can queue while a redemption awaits atomic persistence.
+        // Its callback must not stop the same session after the timer is extended.
+        if (generation !== timerGeneration || !session || session !== scheduledSession || disposed) return
         try { await stopSession() } catch { arm(5000) }
       }).catch(() => undefined)
     }, Math.max(1, Math.ceil(milliseconds)))
@@ -214,8 +241,10 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
   async function stopSession() {
     if (!session) {
       if (probeNeedsCleanup) {
-        await options.runtime.stop()
-        if (options.runtime.isRunning()) throw new Error(stopFailure)
+        await stopStage('core-stop', async () => {
+          await options.runtime.stop()
+          if (options.runtime.isRunning()) throw new Error(stopFailure)
+        })
         probeNeedsCleanup = false
       }
       return
@@ -227,14 +256,20 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       if (current.stoppedMono === null) {
         // Keep the core alive until proxy restoration succeeds. Otherwise an
         // incomplete restore could leave every proxied app pointing at a dead port.
-        await options.proxy.restore()
-        if (options.runtime.isRunning()) await options.runtime.stop()
-        if (options.runtime.isRunning()) throw new Error(stopFailure)
+        await stopStage('proxy-restore', () => options.proxy.restore())
+        await stopStage('core-stop', async () => {
+          // A previous stop can exit the process yet fail to remove its private
+          // config. Retry the idempotent cleanup even when isRunning is false.
+          await options.runtime.stop()
+          if (options.runtime.isRunning()) throw new Error(stopFailure)
+        })
         current.stoppedMono = monotonicNow()
       }
       const spent = elapsed(current)
-      await saveAccount(current.scope, { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null })
-      lastSessionSeconds.set(current.scope, Math.min(accelerationTrialSeconds, Math.floor(spent / 1000)))
+      const totalMs = accountTotalMs(usage(current.scope))
+      await stopStage('ledger-write', () => saveAccount(current.scope,
+        { usedMs: Math.min(totalMs, usage(current.scope).usedMs + spent), startedAt: null }))
+      lastSessionSeconds.set(current.scope, Math.min(totalMs / 1000, Math.floor(spent / 1000)))
       lastErrors.delete(current.scope)
       session = null
     } catch {
@@ -248,7 +283,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       return state(scope)
     }
     if (session && (session.phase === 'active' && !options.runtime.isRunning()
-      || usage(session.scope).usedMs + elapsed(session) >= totalMs)) {
+      || usage(session.scope).usedMs + elapsed(session) >= accountTotalMs(usage(session.scope)))) {
       const oldScope = session.scope
       const exited = !options.runtime.isRunning()
       try {
@@ -264,6 +299,26 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
       assertScope(scope)
       return enqueue(() => inspect(scope))
     },
+    redeemAccelerationCode(scope, code): Promise<AccelerationRedemptionResult> {
+      assertScope(scope)
+      return enqueue(async () => {
+        if (closing || disposed) throw new Error('本机加速服务正在关闭。')
+        await recover()
+        // Settle a session that expired while the machine slept against its old
+        // allowance before adding credit; redemption never restarts its network.
+        await inspect(scope)
+        if (!isAccelerationBonusCode(code)) return { status: 'invalid-code', addedSeconds: 0, state: state(scope) }
+        const entry = usage(scope)
+        if (entry.bonusRedeemed) return { status: 'already-redeemed', addedSeconds: 0, state: state(scope) }
+        // Publish the mark and allowance together only after the atomic write.
+        // Failed writes leave both the in-memory balance and expiry untouched.
+        await saveAccount(scope, { ...entry, bonusRedeemed: true })
+        if (session?.scope === scope && session.phase === 'active' && options.runtime.isRunning()) {
+          arm(accountTotalMs(usage(scope)) - usage(scope).usedMs - elapsed(session))
+        }
+        return { status: 'redeemed', addedSeconds: accelerationBonusSeconds, state: state(scope) }
+      })
+    },
     startAcceleration(scope, mode, lineId) {
       assertScope(scope)
       if (lineId !== undefined) assertLineId(lineId)
@@ -277,7 +332,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           try { await stopSession() } catch { throw new Error(stopFailure) }
         }
         lastErrors.delete(scope)
-        if (usage(scope).usedMs >= totalMs) return state(scope)
+        if (usage(scope).usedMs >= accountTotalMs(usage(scope))) return state(scope)
         // Persist intent before touching OS state. A crash in the startup gap
         // is conservatively billed; an ordinary failed start clears it unpaid.
         try { await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt: now() }) }
@@ -294,7 +349,7 @@ export function createAccelerationDevelopmentBackend(options: AccelerationDevelo
           session.connectedAt = new Date(startedAt).toISOString()
           await saveAccount(scope, { usedMs: usage(scope).usedMs, startedAt })
           session.phase = 'active'
-          arm(totalMs - usage(scope).usedMs - elapsed(session))
+          arm(accountTotalMs(usage(scope)) - usage(scope).usedMs - elapsed(session))
           return state(scope)
         } catch (error) {
           try { await stopSession(); lastErrors.set(scope, connectionFailure(error)) }

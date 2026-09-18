@@ -1,14 +1,17 @@
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import { CommandRunnerError, runCommand, trustedCommandEnvironment, type CommandSpec } from './command-runner'
+import { runCommand, trustedCommandEnvironment, type CommandSpec } from './command-runner'
 import { darwinDeveloperIdVerificationArgv } from './macos-code-signing'
+import { readMacosExecutableArchitectures } from './macos-executable-architectures'
 import { describeProbeFailure } from './probe-failure'
 
 const bundleIdentifier = 'com.openai.codex'
 const openAiTeamIdentifier = '2DC432GLL2'
 const maximumInfoPlistBytes = 1024 * 1024
 const maximumCommandOutputBytes = 64 * 1024
+const maximumApplicationDirectoryEntries = 512
+const applicationDiscoveryBudgetMs = 2_000
 /** The budget for every probe below except the deep signature verification. */
 export const commandTimeoutMs = 5_000
 /**
@@ -26,7 +29,7 @@ export const commandTimeoutMs = 5_000
  * verifiedBundles below caches a pass for up to verificationCacheTtlMs, so in
  * steady state a bundle's deep verification — and this budget — is exercised
  * at most once every 5 minutes, not on every scan. Every other probe here
- * (plutil, lipo, mdfind, osascript, and any future non-deep codesign call)
+ * (plutil, sysctl, arch, mdfind, osascript, and any future non-deep codesign call)
  * stays on the narrow commandTimeoutMs: none of them are ever slow, and
  * widening a budget that is actually spent on every scan would just make a
  * genuine hang take longer to surface.
@@ -189,6 +192,11 @@ function standardCandidate(directory: string | undefined, applicationName = 'Cod
   return path.join(directory, applicationName)
 }
 
+function isMissingPath(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | null)?.code
+  return code === 'ENOENT' || code === 'ENOTDIR'
+}
+
 async function canonicalAppCandidate(candidate: string): Promise<string | null> {
   if (!isAppCandidate(candidate)) return null
   try {
@@ -197,8 +205,69 @@ async function canonicalAppCandidate(candidate: string): Promise<string | null> 
     const info = await fs.promises.lstat(path.join(canonical, 'Contents', 'Info.plist'))
     if (!info.isFile() || info.size > maximumInfoPlistBytes) return null
     return canonical
-  } catch {
-    return null
+  } catch (error) {
+    if (isMissingPath(error)) return null
+    throw error
+  }
+}
+
+/** Spotlight may not have indexed a new or renamed installation yet. */
+async function* applicationDirectoryCandidates(directory: string): AsyncGenerator<string> {
+  if (!directory || directory.includes('\0') || !path.isAbsolute(directory)) return
+  try {
+    const entries = await fs.promises.opendir(directory)
+    let count = 0
+    for await (const entry of entries) {
+      if (++count > maximumApplicationDirectoryEntries) {
+        throw new Error('应用目录条目过多，Codex 检测未能完成')
+      }
+      if ((entry.isDirectory() || entry.isSymbolicLink()) && path.extname(entry.name) === '.app') {
+        yield path.join(directory, entry.name)
+      }
+    }
+  } catch (error) {
+    if (!isMissingPath(error)) throw error
+  }
+}
+
+function createArchitectureCheck(
+  architecture: NodeJS.Architecture,
+  command: SystemCommandRunner,
+): (architectures: readonly string[]) => Promise<boolean> {
+  let hardwareArm64: Promise<boolean> | undefined
+  let rosettaAvailable: Promise<boolean> | undefined
+  return async (architectures) => {
+    if (architecture === 'arm64') {
+      if (architectures.includes('arm64')) return true
+      if (!architectures.includes('x86_64')) return false
+      rosettaAvailable ??= (async () => {
+        try {
+          // Run only Apple's no-op executable, never the unverified candidate.
+          await command('/usr/bin/arch', ['-x86_64', '/usr/bin/true'])
+          return true
+        } catch (error) {
+          throw new Error(`无法确认 Mac 的 Rosetta 兼容环境：${describeProbeFailure(error)}`)
+        }
+      })()
+      return rosettaAvailable
+    }
+    if (architecture !== 'x64') return false
+    if (architectures.includes('x86_64')) return true
+    if (!architectures.includes('arm64')) return false
+    // process.arch describes this Electron process. An x64 build under Rosetta
+    // can still open the native arm64 Codex bundle through LaunchServices.
+    hardwareArm64 ??= (async () => {
+      try {
+        const arm64 = (await command('/usr/sbin/sysctl', ['-n', 'hw.optional.arm64'])).trim()
+        if (arm64 === '1') return true
+        if (arm64 === '0') return false
+        throw new Error('macOS 硬件架构检测返回了无效结果')
+      } catch (error) {
+        // A failed sysctl, including a non-zero exit, does not prove Intel hardware.
+        throw new Error(`无法确认 Mac 是否支持 arm64：${describeProbeFailure(error)}`)
+      }
+    })()
+    return hardwareArm64
   }
 }
 
@@ -222,31 +291,30 @@ interface CandidateInspection {
 const notAMatch: CandidateInspection = { app: null, detectionFailed: false, detectionError: null }
 
 /**
- * codesign — and, incidentally, plutil and lipo, which run inside the same
- * try/catch below — communicate a genuine rejection exclusively through a
- * non-zero exit; see macos-code-signing.ts for why codesign's stdout/stderr
- * must never be read to reach that conclusion instead. Anything else thrown
- * here — a timeout, a spawn failure, an aborted run, output exceeding the
- * bound, or any other unexpected error, including from an injected test
- * double — means the check itself never produced an answer, which is not the
- * same thing as the answer being "no".
+ * Known names and Spotlight hits retain even initial metadata failures: a
+ * non-zero plutil exit may mean unreadable data, not a different bundle ID.
+ * Once a bundle identifies itself as Codex, failed validation must stay visible
+ * instead of suggesting installation again. It is never returned as launchable.
+ * codesign output must never replace its exit status (macos-code-signing.ts).
+ * Architecture probes wrap every failure, including non-zero exits, because
+ * an unavailable hardware/Rosetta check cannot establish incompatibility.
+ * Timeouts, spawn errors and inaccessible bundle paths likewise leave
+ * detection incomplete instead of confirming an absent installation.
  */
-function isConclusiveRejection(error: unknown): boolean {
-  return error instanceof CommandRunnerError && error.code === 'EXIT_NON_ZERO'
-}
-
 async function inspectCandidate(
   candidate: string,
   inspectedPaths: Set<string>,
   command: SystemCommandRunner,
-  architecture: NodeJS.Architecture,
+  supportsArchitecture: (architectures: readonly string[]) => Promise<boolean>,
+  reportUnidentifiedFailure = true,
 ): Promise<CandidateInspection> {
-  const canonical = await canonicalAppCandidate(candidate)
-  if (!canonical || inspectedPaths.has(canonical)) return notAMatch
-  inspectedPaths.add(canonical)
-
-  const infoPath = path.join(canonical, 'Contents', 'Info.plist')
+  let matchesIdentity = false
   try {
+    const canonical = await canonicalAppCandidate(candidate)
+    if (!canonical || inspectedPaths.has(canonical)) return notAMatch
+    inspectedPaths.add(canonical)
+
+    const infoPath = path.join(canonical, 'Contents', 'Info.plist')
     const identifier = propertyValue(await command('/usr/bin/plutil', [
       '-extract',
       'CFBundleIdentifier',
@@ -256,6 +324,7 @@ async function inspectCandidate(
       infoPath,
     ]))
     if (identifier !== bundleIdentifier) return notAMatch
+    matchesIdentity = true
 
     const executableName = propertyValue(await command('/usr/bin/plutil', [
       '-extract',
@@ -270,23 +339,15 @@ async function inspectCandidate(
       || executableName === '.'
       || executableName === '..'
       || path.basename(executableName) !== executableName
-    ) return notAMatch
+    ) throw new Error('已找到 Codex，但应用的可执行文件信息无效')
     const executablePath = path.join(canonical, 'Contents', 'MacOS', executableName)
     const executableStats = await fs.promises.lstat(executablePath)
     if (!executableStats.isFile() || executableStats.isSymbolicLink() || (executableStats.mode & 0o111) === 0) {
-      return notAMatch
+      throw new Error('已找到 Codex，但应用的可执行文件类型或权限无效')
     }
 
-    const expectedArchitecture = architecture === 'arm64'
-      ? 'arm64'
-      : architecture === 'x64'
-        ? 'x86_64'
-        : null
-    if (!expectedArchitecture) return notAMatch
-    const architectures = (await command('/usr/bin/lipo', ['-archs', executablePath]))
-      .trim()
-      .split(/\s+/)
-    if (!architectures.includes(expectedArchitecture)) return notAMatch
+    const architectures = await readMacosExecutableArchitectures(executablePath)
+    if (!await supportsArchitecture(architectures)) throw new Error('已找到 Codex，但应用架构与此 Mac 不兼容')
 
     const [bundleStats, infoStats] = await Promise.all([
       fs.promises.lstat(canonical),
@@ -323,7 +384,7 @@ async function inspectCandidate(
     }
     return { app: { path: canonical, version }, detectionFailed: false, detectionError: null }
   } catch (error) {
-    if (isConclusiveRejection(error)) return notAMatch
+    if (!matchesIdentity && !reportUnidentifiedFailure) return notAMatch
     return { app: null, detectionFailed: true, detectionError: describeProbeFailure(error) }
   }
 }
@@ -344,6 +405,7 @@ export async function inspectMacosCodexApp(
 ): Promise<MacosCodexAppInspection> {
   const command = options.runSystemCommand ?? runSystemCommand
   const architecture = options.architecture ?? process.arch
+  const supportsArchitecture = createArchitectureCheck(architecture, command)
   const homeDirectory = options.homeDirectory ?? os.homedir()
   const systemApplicationsDirectory = options.systemApplicationsDirectory ?? '/Applications'
   const inspectedPaths = new Set<string>()
@@ -363,7 +425,7 @@ export async function inspectMacosCodexApp(
 
   for (const candidate of standardCandidates) {
     if (!candidate) continue
-    const inspected = await inspectCandidate(candidate, inspectedPaths, command, architecture)
+    const inspected = await inspectCandidate(candidate, inspectedPaths, command, supportsArchitecture)
     if (inspected.app) {
       return {
         app: { ...inspected.app, running: await isCodexRunning(command) },
@@ -374,21 +436,19 @@ export async function inspectMacosCodexApp(
     if (inspected.detectionError) failures.add(inspected.detectionError)
   }
 
-  let spotlightOutput: string
+  let spotlightOutput = ''
   try {
     spotlightOutput = await command('/usr/bin/mdfind', [
       'kMDItemCFBundleIdentifier == "com.openai.codex"',
     ])
   } catch (error) {
-    // Spotlight is the only way this function discovers a bundle outside the
-    // two standard directories; if it cannot even be queried, the scan has
-    // not actually ruled anything out.
+    // A later directory match can still confirm installation when Spotlight
+    // is unavailable. Retain this failure only if no verified bundle is found.
     failures.add(describeProbeFailure(error))
-    return { app: null, detectionFailed: true, detectionError: [...failures].join('；') }
   }
 
   for (const candidate of spotlightOutput.split('\n').map((line) => line.replace(/\r$/, ''))) {
-    const inspected = await inspectCandidate(candidate, inspectedPaths, command, architecture)
+    const inspected = await inspectCandidate(candidate, inspectedPaths, command, supportsArchitecture)
     if (inspected.app) {
       return {
         app: { ...inspected.app, running: await isCodexRunning(command) },
@@ -397,6 +457,33 @@ export async function inspectMacosCodexApp(
       }
     }
     if (inspected.detectionError) failures.add(inspected.detectionError)
+  }
+
+  // This fallback walks metadata only, without entering bundles or recursing.
+  // The deadline stops new probes; an already-started command keeps its own
+  // bounded timeout, including deep verification of an identified Codex.
+  const discoveryDeadline = Date.now() + applicationDiscoveryBudgetMs
+  for (const directory of [systemApplicationsDirectory, path.join(homeDirectory, 'Applications')]) {
+    try {
+      for await (const candidate of applicationDirectoryCandidates(directory)) {
+        if (Date.now() >= discoveryDeadline) throw new Error('应用目录扫描达到时间上限，Codex 检测未能完成')
+        // A random application's unreadable metadata is not evidence of a
+        // broken Codex. Known names, Spotlight hits and matched identities
+        // keep their errors; unrelated candidates remain only search hints.
+        const expectedName = /codex|chatgpt/i.test(path.basename(candidate))
+        const inspected = await inspectCandidate(candidate, inspectedPaths, command, supportsArchitecture, expectedName)
+        if (inspected.app) {
+          return {
+            app: { ...inspected.app, running: await isCodexRunning(command) },
+            detectionFailed: false,
+            detectionError: null,
+          }
+        }
+        if (inspected.detectionError) failures.add(inspected.detectionError)
+      }
+    } catch (error) {
+      failures.add(describeProbeFailure(error))
+    }
   }
 
   return {

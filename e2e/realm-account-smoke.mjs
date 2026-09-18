@@ -13,6 +13,7 @@ const userHome = path.join(sandbox, 'home')
 const userData = path.join(sandbox, 'user-data')
 const bootstrap = path.join(sandbox, 'bootstrap.cjs')
 const reviewDirectory = path.join(projectRoot, 'output/realm-account-review')
+await fs.access(path.join(projectRoot, 'dist', 'renderer-v2.flag'))
 await fs.mkdir(userHome)
 await fs.mkdir(userData)
 await fs.mkdir(reviewDirectory, { recursive: true })
@@ -44,6 +45,8 @@ function bootFixture(config) {
   }
   const calls = []
   const blocked = []
+  const rendererBlocked = []
+  let loginOutcome = 'success'
   const keys = { xm: [], api: [] }
   const groups = Object.values(sub2ApiManagedCliKeyProfiles).map((entry, index) => ({ id: index + 1,
     name: entry.group, platform: 'openai', status: 'active', rate_multiplier: 1 }))
@@ -84,13 +87,14 @@ function bootFixture(config) {
       if (route === '/api/status') return xm({ system_name: 'Fixture NewAPI', version: 'fixture', setup: true,
         quota_per_unit: 500000, quota_display_type: 'USD', usd_exchange_rate: 1,
         register_enabled: true, password_register_enabled: true, email_verification: false, turnstile_check: false })
-      if (route === '/api/user/login') return body.password === 'fixture-xm-password-123'
+      if (route === '/api/user/login') return body.password === 'fixture-shared-password-123'
         ? xm(xmAuth, 'refresh_token=fixture-xm-cookie; HttpOnly; Path=/') : rejected(raw)
       if (route === '/api/user/auth/refresh') return xm(xmAuth, 'refresh_token=fixture-xm-restored; HttpOnly; Path=/')
       if (route === '/api/user/self') return xm(xmUser)
       if (route === '/api/log/self') return xm({ items: [], total: 0, page: 1, page_size: 20 })
       if (route === '/api/log/self/stat') return xm({ quota: 0, rpm: 0, tpm: 0 })
       if (route === '/api/notice' || route === '/api/user-agreement' || route === '/api/privacy-policy') return xm('Fixture document')
+      if (route === '/api/reset_password') return xm(null)
       if (route === '/api/user/self/groups') return xm(Object.fromEntries(Object.values(managedCliKeyProfiles).map((entry) => [entry.group, { desc: entry.group, ratio: 1 }])))
       if (route === '/api/token/' && method === 'GET') return xm({ items: keys.xm, total: keys.xm.length })
       if (route === '/api/token/' && method === 'POST') {
@@ -102,7 +106,10 @@ function bootFixture(config) {
     } else if (url.origin === 'https://api.solov.cc') {
       if (headers.has('cookie') || headers.has('new-api-user') || headers.get('authorization')?.includes('fixture-xm')) throw new Error('Cross-domain cookie leak')
       if (route === '/api/v1/settings/public') return api({ site_name: 'Fixture Sub2API', turnstile_enabled: false })
-      if (route === '/api/v1/auth/login') return body.password === 'fixture-api-password-123' ? api(apiAuth) : rejected(raw, true)
+      if (route === '/api/v1/auth/login') {
+        if (loginOutcome === 'two-factor') return api({ requires_2fa: true, temp_token: 'fixture-private-2fa-token' })
+        return loginOutcome === 'success' && body.password === 'fixture-shared-password-123' ? api(apiAuth) : rejected(raw, true)
+      }
       if (route === '/api/v1/auth/refresh') return api(apiAuth)
       if (route === '/api/v1/auth/me' || route === '/api/v1/user/profile') return api(apiUser)
       if (route === '/api/v1/groups/available') return api(groups)
@@ -131,10 +138,33 @@ function bootFixture(config) {
     transport.get = () => deny(protocol, 'get')
   }
   app.whenReady().then(() => {
-    session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (_details, callback) => callback({ cancel: true }))
+    session.defaultSession.webRequest.onBeforeRequest({ urls: ['http://*/*', 'https://*/*'] }, (details, callback) => {
+      rendererBlocked.push(new URL(details.url).origin)
+      callback({ cancel: true })
+    })
   })
   globalThis.__realmSmoke = {
-    stats: () => ({ calls, blocked, groups: { xm: keys.xm.map((key) => key.group),
+    setLoginOutcome: (value) => { loginOutcome = value },
+    isolation: async () => {
+      if (net.fetch !== fetchMock || globalThis.fetch !== fetchMock) throw new Error('Fixture fetch isolation changed')
+      const denied = []
+      const probes = {
+        globalFetch: () => globalThis.fetch('https://isolated.invalid/probe'),
+        electronFetch: () => net.fetch('https://isolated.invalid/probe'),
+        electronRequest: () => net.request('https://isolated.invalid/probe'),
+        http: () => require('node:http').get('http://isolated.invalid/probe'),
+        https: () => require('node:https').request('https://isolated.invalid/probe'),
+        externalBrowser: () => shell.openExternal('https://isolated.invalid/probe'),
+      }
+      for (const [name, probe] of Object.entries(probes)) {
+        try { await probe() } catch (error) {
+          if (error.message !== 'Network unavailable in isolated realm fixture') throw error
+          denied.push(name)
+        }
+      }
+      return { denied, home: require('node:os').homedir(), userData: app.getPath('userData'), appHome: app.getPath('home') }
+    },
+    stats: () => ({ calls, blocked, rendererBlocked, groups: { xm: keys.xm.map((key) => key.group),
       api: keys.api.map((key) => groups.find((group) => group.id === key.group_id)?.name) } }),
   }
   require(config.entry)
@@ -144,19 +174,30 @@ await fs.writeFile(bootstrap, `(${bootFixture.toString()})(${JSON.stringify({ us
   entry: path.join(projectRoot, 'dist-electron/platform/entry.js'), catalog: path.join(projectRoot, 'dist-electron/catalog.js') })})\n`, 'utf8')
 const env = { ...process.env, HOME: userHome, USERPROFILE: userHome, APPDATA: path.join(sandbox, 'appdata'),
   LOCALAPPDATA: path.join(sandbox, 'local-appdata'), XINGMANG_RENDERER: '', VITE_DEV_SERVER_URL: '',
-  XINGMANG_CODEX_HOME_OVERRIDE: path.join(userHome, '.codex'), XINGMANG_DISABLE_SINGLE_INSTANCE: '1', NODE_OPTIONS: '' }
+  XINGMANG_CODEX_HOME_OVERRIDE: path.join(userHome, '.codex'), XINGMANG_DISABLE_SINGLE_INSTANCE: '1', NODE_OPTIONS: '',
+  XINGMANG_ONBOARDING_PREVIEW: '', XINGMANG_DASHBOARD_PREVIEW: '', XINGMANG_UPDATE_DEV: '' }
 delete env.ELECTRON_RUN_AS_NODE
 let application
 const errors = []
 let stderr = ''
 let stage = 'initial startup'
+const processIds = []
+let isolationChecks = 0
 async function start() {
   application = await electron.launch({ cwd: projectRoot, args: [bootstrap, `--user-data-dir=${userData}`], env })
+  processIds.push(application.process().pid)
   application.process().stderr?.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-64000) })
   const page = await application.firstWindow()
   page.on('pageerror', (error) => errors.push(error.message))
   await page.waitForFunction(() => Boolean(window.xingmang), { timeout: 30000 })
   assert.equal(path.resolve(await application.evaluate(({ app }) => app.getPath('userData'))), path.resolve(userData))
+  assert.ok(page.url().startsWith('xingmang://app/'))
+  const isolated = await application.evaluate(() => globalThis.__realmSmoke.isolation())
+  assert.deepEqual(isolated.denied, ['globalFetch', 'electronFetch', 'electronRequest', 'http', 'https', 'externalBrowser'])
+  assert.equal(path.resolve(isolated.home), path.resolve(userHome))
+  assert.equal(path.resolve(isolated.appHome), path.resolve(userHome))
+  assert.equal(path.resolve(isolated.userData), path.resolve(userData))
+  isolationChecks++
   await page.evaluate(() => window.xingmang.getAccountSession())
   return page
 }
@@ -176,9 +217,9 @@ async function openLoginWithUi(page) {
   if (!await dialog.isVisible()) await accountLogin.click()
 }
 async function loginWithUi(page, siteId) {
-  await expect(page.getByTestId('login-site')).toHaveCount(0)
+  await page.getByTestId('auth-source').getByRole('button', { name: siteId === 'solov' ? '星芒账号' : '历史账号', exact: true }).click()
   await page.getByTestId('login-account').fill('same@example.test')
-  await page.getByTestId('login-password').fill(siteId === 'solov' ? 'fixture-xm-password-123' : 'fixture-api-password-123')
+  await page.getByTestId('login-password').fill('fixture-shared-password-123')
   await page.getByTestId('login-remember').check()
   await page.getByTestId('auth-agree').check()
   await assertCustomerUi(page)
@@ -240,9 +281,44 @@ try {
   stage = 'sub2api UI login'
   await page.getByRole('button', { name: '切换账号', exact: true }).click()
   await page.getByTestId('account-add').click()
+  const originalSession = await page.evaluate(() => window.xingmang.getAccountSession())
+  await page.getByTestId('auth-source').getByRole('button', { name: '历史账号', exact: true }).click()
+  await page.getByTestId('login-account').fill('same@example.test')
+  await page.getByTestId('login-password').fill('fixture-shared-password-123')
+  await page.getByTestId('auth-agree').check()
+  for (const outcome of ['rejected', 'two-factor']) {
+    stage = `explicit historical login ${outcome}`
+    const before = await application.evaluate(() => globalThis.__realmSmoke.stats().calls.filter((call) => call.route.endsWith('/login')).length)
+    await application.evaluate((_electron, value) => globalThis.__realmSmoke.setLoginOutcome(value), outcome)
+    await page.getByTestId('login-submit').click()
+    await page.getByTestId('auth-error').filter({ hasText: outcome === 'two-factor' ? '双重验证' : '账号或密码' }).waitFor()
+    assert.deepEqual(await page.evaluate(() => window.xingmang.getAccountSession()), originalSession)
+    const attempts = await application.evaluate(() => globalThis.__realmSmoke.stats().calls.filter((call) => call.route.endsWith('/login')))
+    assert.deepEqual(attempts.slice(before).map((call) => call.origin), ['https://api.solov.cc'])
+    assert.equal(await page.getByTestId('login-password').inputValue(), 'fixture-shared-password-123')
+  }
+  await application.evaluate(() => globalThis.__realmSmoke.setLoginOutcome('success'))
+  stage = 'historical account recovery isolation'
+  await page.getByTestId('login-forgot').click()
+  await page.getByTestId('forgot-official-help').waitFor()
+  assert.equal(await page.getByTestId('forgot-send').count(), 0)
+  await page.getByTestId('forgot-back-login').click()
+  stage = 'sub2api explicit UI login'
   await loginWithUi(page, 'solov-api')
-  const automaticLoginCalls = await application.evaluate(() => globalThis.__realmSmoke.stats().calls.filter((call) => call.route.endsWith('/login')))
-  assert.deepEqual(automaticLoginCalls.map((call) => call.origin), ['https://xm.solov.cc', 'https://xm.solov.cc', 'https://api.solov.cc'])
+  const explicitLoginCalls = await application.evaluate(() => globalThis.__realmSmoke.stats().calls.filter((call) => call.route.endsWith('/login')))
+  assert.deepEqual(explicitLoginCalls.map((call) => call.origin), ['https://xm.solov.cc', 'https://api.solov.cc', 'https://api.solov.cc', 'https://api.solov.cc'])
+  for (const explicit of [true, false]) {
+    const rejectedRecovery = await page.evaluate(async (selected) => {
+      try {
+        await window.xingmang.sendPasswordResetCode('same@example.test', selected ? 'solov-api' : undefined)
+        return false
+      } catch (error) { return error.message.includes('所选账号暂不支持') }
+    }, explicit)
+    assert.equal(rejectedRecovery, true)
+  }
+  assert.equal((await application.evaluate(() => globalThis.__realmSmoke.stats().calls)).some((call) => call.route === '/api/reset_password'), false)
+  await page.evaluate(() => window.xingmang.sendPasswordResetCode('same@example.test', 'solov'))
+  assert.equal((await application.evaluate(() => globalThis.__realmSmoke.stats().calls)).filter((call) => call.route === '/api/reset_password' && call.origin === 'https://xm.solov.cc').length, 1)
   await expect.poll(() => canvas.evaluate(() => window.__realmEvents.at(-1))).toMatchObject({ siteId: 'solov-api', userId: 7 })
   const canvasGroups = await canvas.evaluate(() => window.xingmangCanvasHost.listGroups())
   assert.ok(canvasGroups.some((group) => group.name === 'Codex_pro'))
@@ -256,7 +332,7 @@ try {
   assert.equal((await page.evaluate(() => window.xingmang.getAccountSession())).siteId, 'solov')
   assert.equal(await page.evaluate(async () => {
     const remembered = await window.xingmang.getRememberedAccountLogin()
-    return remembered?.identifier === 'same@example.test' && remembered.password === 'fixture-api-password-123'
+    return remembered?.identifier === 'same@example.test' && remembered.password === 'fixture-shared-password-123'
   }), true, 'Remembered login must follow the last successful input rather than the currently viewed account')
   await expect.poll(() => canvas.evaluate(() => window.__realmEvents.at(-1))).toMatchObject({ siteId: 'solov', userId: 7 })
   await switchWithUi(page, 'https://api.solov.cc')
@@ -284,16 +360,19 @@ try {
   assert.equal(afterLogout[0].origin, 'https://xm.solov.cc')
   stage = 'preferred backend after logout and restart'
   await openLoginWithUi(page)
-  await expect.poll(() => page.getByTestId('login-password').inputValue().then((value) => value === 'fixture-api-password-123')).toBe(true)
+  await page.getByTestId('auth-source').getByRole('button', { name: '历史账号', exact: true }).click()
+  await expect.poll(() => page.getByTestId('login-password').inputValue().then((value) => value === 'fixture-shared-password-123')).toBe(true)
   await expect(page.getByTestId('login-remember')).toBeChecked()
   await loginWithUi(page, 'solov-api')
   const preferredLoginCalls = await application.evaluate(() => globalThis.__realmSmoke.stats().calls.filter((call) => call.route.endsWith('/login')))
   assert.deepEqual(preferredLoginCalls.map((call) => call.origin), ['https://api.solov.cc'])
   await page.evaluate(() => window.xingmang.logoutAccount())
   assert.deepEqual(errors, [])
-  const result = { dualRealmLogin: true, automaticDetection: true, rememberedRouting: true, lastSuccessPreference: true, platformDetailsHidden: true,
+  const result = { dualRealmLogin: true, explicitSourceSelection: true, identicalCredentials: true, noFallbackOnRejection: true,
+    twoFactorPreservesSession: true, sourceBoundRecovery: true, rememberedRouting: true, platformDetailsHidden: true,
     savedSwitch: true, keyStoresSeparated: true,
-    canvasRealmEvents: true, restoreAndLogout: true, actualNetworkRequests: 0, generatedContent: false }
+    canvasRealmEvents: true, restoreAndLogout: true, actualNetworkRequests: 0, generatedContent: false,
+    isolationChecks, fixtureProcessIds: processIds }
   await fs.writeFile(path.join(reviewDirectory, 'result.json'), JSON.stringify(result, null, 2) + '\n', 'utf8')
   console.log(JSON.stringify(result))
 } catch (error) {

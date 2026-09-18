@@ -269,6 +269,20 @@ function sameSnapshot(left: WindowsProxySnapshot, right: WindowsProxySnapshot): 
   return JSON.stringify(left) === JSON.stringify(right)
 }
 
+function restoreWithBypassEdits(current: WindowsProxySnapshot, journal: ProxyJournal): WindowsProxySnapshot | null {
+  const { before, applied } = journal
+  // Bypass edits do not transfer ownership of our endpoint. Preserve only the
+  // fields edited since enable; endpoint, PAC and flags still require an exact match.
+  if (!sameSnapshot({ ...current, bypass: applied.bypass,
+    registry: { ...current.registry, ProxyOverride: applied.registry.ProxyOverride } }, applied)) return null
+  return { ...before,
+    bypass: current.bypass === applied.bypass ? before.bypass : current.bypass,
+    registry: { ...before.registry,
+      ProxyOverride: current.registry.ProxyOverride === applied.registry.ProxyOverride
+        ? before.registry.ProxyOverride : current.registry.ProxyOverride },
+  }
+}
+
 function stillUsesOwnedEndpoint(current: WindowsProxySnapshot, applied: WindowsProxySnapshot): boolean {
   if ((current.flags & 2) === 0 && current.registry.ProxyEnable !== 1) return false
   const endpoint = applied.server.slice('http='.length).split(';')[0]
@@ -402,14 +416,25 @@ export function createWindowsSystemProxy(options: WindowsSystemProxyOptions): {
     if (ownedId !== owner.id && await alive(owner.owner)) throw new Error('另一实例正在使用系统代理，请先停止该实例的加速。')
     if (!recovery && ownedId !== owner.id) throw new Error('系统代理由其他实例创建，请先执行恢复。')
     if (journal) {
-      const result = await invoke({ operation: 'apply', expected: journal.applied, desired: journal.before })
-      const snapshot = parseWindowsProxySnapshot(result.snapshot)
+      let desired = journal.before
+      let result = await invoke({ operation: 'apply', expected: journal.applied, desired })
+      let snapshot = parseWindowsProxySnapshot(result.snapshot)
+      if (result.changed === false && !sameSnapshot(snapshot, desired)) {
+        const merged = restoreWithBypassEdits(snapshot, journal)
+        if (merged) {
+          // A second full-state CAS prevents changes made after this snapshot
+          // from being overwritten. Leave a lost race to the normal guard below.
+          desired = merged
+          result = await invoke({ operation: 'apply', expected: snapshot, desired })
+          snapshot = parseWindowsProxySnapshot(result.snapshot)
+        }
+      }
       // A changed configuration belongs to the user/Clash. Relinquish our lease
       // without undoing those later edits. A true write must verify in full.
-      if (result.changed !== false && (result.changed !== true || !sameSnapshot(snapshot, journal.before))) {
+      if (result.changed !== false && (result.changed !== true || !sameSnapshot(snapshot, desired))) {
         throw new Error('系统代理恢复未确认，恢复记录已保留。')
       }
-      if (result.changed === false && !sameSnapshot(snapshot, journal.before) && stillUsesOwnedEndpoint(snapshot, journal.applied)) {
+      if (result.changed === false && !sameSnapshot(snapshot, desired) && stillUsesOwnedEndpoint(snapshot, journal.applied)) {
         // Do not stop the core behind a manually edited but still active local
         // proxy. The caller keeps it alive while the user resolves that change.
         throw new Error('系统代理设置已被修改，但仍指向加速端口。请先切换系统代理，再重试停止加速。')

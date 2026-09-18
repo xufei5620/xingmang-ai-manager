@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import type { AccelerationApi, AccelerationMode, AccelerationState } from './acceleration-contract'
-import { accelerationTrialSeconds } from './acceleration-contract'
+import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationTrialSeconds } from './acceleration-contract'
 import { createAccelerationService } from './acceleration-service'
 
 const scope = 'xm-account:42'
@@ -34,6 +34,90 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
 }
 
 describe('acceleration-service', () => {
+  it('redeems only for the current account and projects a credential-free fixed bonus result', async () => {
+    const backend = createBackend()
+    const raw = { status: 'redeemed' as const, addedSeconds: accelerationBonusSeconds,
+      state: { ...state(), nodePassword: 'private-node-password' }, code: accelerationBonusCode }
+    backend.redeemAccelerationCode = vi.fn(async () => raw)
+    let account: string | null = null
+    const service = createAccelerationService({ getAccountScope: () => account, backend })
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('账号已变更')
+    account = otherScope
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('账号已变更')
+    expect(backend.redeemAccelerationCode).not.toHaveBeenCalled()
+    account = scope
+    expect(await service.redeemAccelerationCode(scope, accelerationBonusCode)).toEqual({
+      status: 'redeemed', addedSeconds: accelerationBonusSeconds, state: state(),
+    })
+    expect(backend.redeemAccelerationCode).toHaveBeenCalledWith(scope, accelerationBonusCode)
+  })
+
+  it('does not invent bonus time when the configured backend does not support redemption', async () => {
+    const service = createAccelerationService({ getAccountScope: () => scope, backend: createBackend() })
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('加速线路暂未开通')
+  })
+
+  it.each(['', ' ', 'x'.repeat(65), null, 600])('rejects a malformed promotion before invoking the backend: %s', async (code) => {
+    const backend = createBackend()
+    backend.redeemAccelerationCode = vi.fn()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    await expect(service.redeemAccelerationCode(scope, code as string)).rejects.toThrow('加速口令格式无效')
+    expect(backend.redeemAccelerationCode).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    { status: 'redeemed', addedSeconds: 1200, state: state() },
+    { status: 'already-redeemed', addedSeconds: 600, state: state() },
+    { status: ['already-redeemed'], addedSeconds: 0, state: state() },
+    { status: 'invalid-code', addedSeconds: 0, state: state({ scope: otherScope }) },
+    { status: 'redeemed', addedSeconds: 600, state: state({ phase: 'unavailable', remainingSeconds: null }) },
+    { status: 'unknown', addedSeconds: 0, state: state() },
+  ])('rejects an inconsistent redemption response %#', async (response) => {
+    const backend = createBackend()
+    backend.redeemAccelerationCode = vi.fn(async () => response as AccelerationRedemptionResult)
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('加速口令兑换失败')
+  })
+
+  it('rejects a queued redemption after an account epoch changes without crediting the backend', async () => {
+    const backend = createBackend()
+    const held = deferred<AccelerationState>()
+    const entered = deferred<void>()
+    vi.mocked(backend.getAccelerationState).mockImplementationOnce(() => { entered.resolve(); return held.promise })
+    backend.redeemAccelerationCode = vi.fn()
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    const read = expect(service.getAccelerationState(scope)).rejects.toThrow('账号已变更')
+    await entered.promise
+    const redeem = expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('账号已变更')
+    const changed = service.onAccountChanged()
+    held.resolve(state())
+    await Promise.all([read, redeem, changed])
+    expect(backend.redeemAccelerationCode).not.toHaveBeenCalled()
+  })
+
+  it('does not return an old account redemption to a new account while the backend completes', async () => {
+    const backend = createBackend()
+    const held = deferred<AccelerationRedemptionResult>()
+    const entered = deferred<void>()
+    backend.redeemAccelerationCode = vi.fn(() => { entered.resolve(); return held.promise })
+    let account = scope
+    const service = createAccelerationService({ getAccountScope: () => account, backend })
+    const redeem = expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow('账号已变更')
+    await entered.promise
+    account = otherScope
+    const changed = service.onAccountChanged()
+    held.resolve({ status: 'redeemed', addedSeconds: 600, state: state() })
+    await Promise.all([redeem, changed])
+    expect(backend.redeemAccelerationCode).toHaveBeenCalledExactlyOnceWith(scope, accelerationBonusCode)
+  })
+
+  it('does not leak backend errors or imply that a failed write credited time', async () => {
+    const backend = createBackend()
+    backend.redeemAccelerationCode = vi.fn(async () => { throw new Error('private-proxy-token') })
+    const service = createAccelerationService({ getAccountScope: () => scope, backend })
+    await expect(service.redeemAccelerationCode(scope, accelerationBonusCode)).rejects.toThrow(/^加速口令兑换失败，请稍后重试。$/)
+  })
+
   it.each(['local-device', 'local-development', 'server'] as const)('preserves the explicit %s entitlement source across IPC', async (entitlementSource) => {
     const backend = createBackend()
     vi.mocked(backend.getAccelerationState).mockResolvedValue(state({ entitlementSource }))

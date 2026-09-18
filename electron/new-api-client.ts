@@ -352,7 +352,7 @@ export interface NewApiSubscriptionPlan {
   allowBalancePay: boolean
   allowWalletOverflow: boolean
   maxPurchasePerUser: number
-  totalAmount: number
+  totalAmount: number | null
   upgradeGroup: string
   downgradeGroup: string
   quotaResetPeriod: 'never' | 'daily' | 'weekly' | 'monthly' | 'custom'
@@ -390,20 +390,31 @@ export type NewApiSubscriptionCheckout =
       expiresAt: string | null
     }
 
+export interface SubscriptionQuotaPeriod {
+  period: 'daily' | 'weekly' | 'monthly'
+  limit: number | null
+  limitState: 'limited' | 'unlimited' | 'unknown'
+  used: number | null
+  windowStartedAt: string | null
+}
+
 export interface NewApiSubscription {
   id: number
   planId: number
   status: string
   source: string
-  amountTotal: number
-  amountUsed: number
+  amountTotal: number | null
+  amountUsed: number | null
+  /** Independent concurrent USD limits, never summed into a lifetime quota. */
+  quotaPeriods?: SubscriptionQuotaPeriod[]
+  groupName?: string
   startedAt: string
   endsAt: string
   nextResetAt: string | null
 }
 
 export interface NewApiSubscriptionSelf {
-  billingPreference: NewApiBillingPreference
+  billingPreference: NewApiBillingPreference | null
   activeSubscriptions: NewApiSubscription[]
   allSubscriptions: NewApiSubscription[]
 }
@@ -453,6 +464,13 @@ export interface NewApiAccountUsageQuery {
   group?: string
   requestId?: string
   upstreamRequestId?: string
+  /** Sub2API: inclusive calendar dates interpreted in the explicit IANA timezone. */
+  startDate?: string
+  endDate?: string
+  timezone?: string
+  apiKeyId?: number
+  groupId?: number
+  billingType?: 0 | 1
 }
 
 export interface NewApiAccountUsageStreamStatus {
@@ -532,8 +550,8 @@ export interface NewApiAccountUsageRecord {
 
 export interface NewApiAccountUsageStats {
   quota: number
-  rpm: number
-  tpm: number
+  rpm: number | null
+  tpm: number | null
 }
 
 export interface NewApiAccountUsagePage {
@@ -542,6 +560,7 @@ export interface NewApiAccountUsagePage {
   total: number
   records: NewApiAccountUsageRecord[]
   stats: NewApiAccountUsageStats
+  dateRange?: { startDate: string; endDate: string; timezone: string }
 }
 
 export interface NewApiAccountDashboardQuery {
@@ -588,6 +607,8 @@ export interface NewApiAccountDashboardData {
   count: number
   tokens: number
   discardedCount: number
+  /** Summary-only results are all-time, independent of the requested interval. */
+  coverage?: 'range' | 'all-time-summary'
 }
 
 export interface NewApiAccountTaskQuery {
@@ -2174,6 +2195,12 @@ const newApiCapabilities: RelayBackendCapabilities = {
   supportsUsage: true,
   supportsBilling: true,
   supportsSubscriptions: true,
+  supportsSubscriptionPreference: true,
+  supportsSubscriptionPayment: true,
+  supportsSubscriptionBalancePurchase: true,
+  supportsDashboard: true,
+  supportsDashboardTrends: true,
+  supportsTasks: true,
   supportsProfileUpdate: true,
   supportsSessionManagement: true,
   supportsAutoKeyProvision: true,
@@ -2785,6 +2812,9 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
 
   const getUsage = (input: NewApiAccountUsageQuery = {}): Promise<NewApiAccountUsagePage> => (
     withSession(async (current) => {
+      if (['startDate', 'endDate', 'timezone', 'apiKeyId', 'groupId', 'billingType'].some((key) => input[key as keyof NewApiAccountUsageQuery] !== undefined)) {
+        throw new TypeError('当前站点不支持这些用量筛选条件')
+      }
       const params = new URLSearchParams()
       if (Number.isInteger(input.page) && (input.page as number) >= 1) {
         params.set('p', String(input.page))
