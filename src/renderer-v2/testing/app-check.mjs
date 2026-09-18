@@ -13,7 +13,7 @@ before(async () => {
   server = await createServer({ root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error', server: { host: '127.0.0.1', port: 0 } })
   await server.listen()
   origin = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch()
+  browser = await chromium.launch({ executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 })
 after(async () => { await browser?.close(); await server?.close() })
 async function open(query = '', clock = false) {
@@ -554,6 +554,18 @@ test('tool probe failures show a retry state instead of a third-party configurat
     const row = page.getByTestId('tool-row-claude')
     await row.getByText('检测失败', { exact: true }).waitFor()
     await row.getByRole('button', { name: '重新检测', exact: true }).waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
+test('a failed probe offers a rescan on the maintenance page instead of an install', async () => {
+  const page = await open('detectionFailed=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-tool-claude')
+    await row.getByText('检测失败', { exact: true }).waitFor()
+    await row.getByRole('button', { name: '重新检测', exact: true }).waitFor()
+    assert.equal(await row.getByRole('button', { name: '安装', exact: true }).count(), 0)
     await clean(page)
   } finally { await page.close() }
 })

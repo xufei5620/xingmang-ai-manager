@@ -24,7 +24,7 @@ function vaultFixture() {
   let backup: string | null = null
   let fail = false
   let available = true
-  // Crypto correctness is covered by realm-account-workflow.test.ts; this
+  // Crypto correctness is covered by realm-account-vault.test.ts; this
   // fixture exposes the durable document so failure atomicity is observable.
   const storage: RealmVaultStorage = {
     isEncryptionAvailable: () => available, encryptString: (text) => Buffer.from(text),
@@ -52,6 +52,8 @@ const capabilities: RelayBackendCapabilities = {
 function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
   const disk = vaultFixture()
   let authenticationPolicy: (siteId: RealmAccountSiteId, input: NewApiLoginInput) => void = () => undefined
+  let restoredIdentity: (siteId: RealmAccountSiteId, value: RealmSavedAccount) => RealmSavedAccount
+    = (siteId, value) => saved(siteId, value.userId, 'test-rotated-once')
   const clients: Array<{ siteId: RealmAccountSiteId; client: RelayBackendClient; restore: ReturnType<typeof vi.fn>;
     emit(value: RealmSavedAccount | null): void; failLogin: boolean; restoreError: Error | null;
     restoreValid: boolean; balance: () => Promise<unknown> }> = []
@@ -81,7 +83,7 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
     const restore = vi.fn(async (value: RealmSavedAccount) => {
       if (item.restoreError) throw item.restoreError
       if (!item.restoreValid) return false
-      emit(saved(siteId, value.userId, 'test-rotated-once'))
+      emit(restoredIdentity(siteId, value))
       return true
     })
     const item = { siteId, client, restore, emit, failLogin: false, restoreError: null as Error | null,
@@ -93,7 +95,8 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
   const options = { ...disk, createClient, quiesce, ...overrides }
   const service = createRealmAccountService(options)
   return { ...disk, options, clients, service, quiesce,
-    authenticationPolicy: (policy: typeof authenticationPolicy) => { authenticationPolicy = policy } }
+    authenticationPolicy: (policy: typeof authenticationPolicy) => { authenticationPolicy = policy },
+    restoredIdentity: (policy: typeof restoredIdentity) => { restoredIdentity = policy } }
 }
 const login = { username: 'same@example.test', password: 'test-password', siteId: 'solov' as const }
 
@@ -602,5 +605,54 @@ describe('automatic account discovery', () => {
     await expect(f.service.login(automatic)).rejects.toMatchObject({ code: 'LOGIN_REJECTED' })
     expect(f.content()).toBe(original)
     expect(f.service.getSiteId()).toBe('solov-api')
+  })
+})
+
+describe('realm switch guards on the shipped path', () => {
+  it('keeps both accounts and restores the selected one after a restart', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    await f.service.switchSavedAccount(summaries[0].id)
+    expect(f.service.getSiteId()).toBe('solov')
+    const restarted = createRealmAccountService(f.options)
+    expect(await restarted.restoreActive()).toBe(true)
+    expect(restarted.getSiteId()).toBe('solov')
+    expect(restarted.client.getSessionState().account?.userId).toBe(7)
+    expect(await restarted.listSavedAccounts()).toHaveLength(2)
+  })
+  it('does not start authentication when quiescence rejects a running CLI', async () => {
+    const f = fixture({ quiesce: async () => { throw new RealmAccountError('BUSY') } })
+    await expect(f.service.login(login)).rejects.toMatchObject({ code: 'BUSY' })
+    expect(f.clients).toHaveLength(1)
+    expect(f.clients[0].client.login).not.toHaveBeenCalled()
+    expect(await f.vault.list()).toEqual([])
+    expect(f.service.client.getSessionState().authenticated).toBe(false)
+  })
+  it('rejects a restored identity that does not match the requested account before persisting it', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    const original = f.content()
+    f.restoredIdentity((siteId) => saved(siteId, '8', 'test-rotated-once'))
+    await expect(f.service.switchSavedAccount(summaries[0].id)).rejects.toMatchObject({ code: 'PROTOCOL' })
+    expect(f.content()).toBe(original)
+    expect(f.service.getSiteId()).toBe('solov-api')
+    expect(f.clients.at(-1)!.client.logout).toHaveBeenCalledTimes(1)
+  })
+  it('rejects forgetting the current account through the inactive-account action', async () => {
+    const f = fixture()
+    await f.service.login(login)
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    const summaries = await f.service.listSavedAccounts()
+    await expect(f.service.removeSavedAccount(summaries[1].id)).rejects.toMatchObject({ code: 'BUSY' })
+    expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual(summaries.map((entry) => entry.id))
+    expect(f.service.getSiteId()).toBe('solov-api')
+    await f.service.removeSavedAccount(summaries[0].id)
+    expect((await f.service.listSavedAccounts()).map((entry) => entry.id)).toEqual([summaries[1].id])
+    await f.service.logout()
+    expect(await f.service.listSavedAccounts()).toEqual([])
   })
 })

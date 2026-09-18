@@ -63,7 +63,8 @@ CI 对生产依赖中的任意漏洞和完整依赖树中的 critical 漏洞执�
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
 - 正式发布必须使用 Authenticode 签名；没有证书、固定发布者或干净 Windows 验收机时，发布预检会直接失败。
 - 所有 Windows 包的 `app-update.yml` 都写入预期发布者，防止 `electron-updater` 因缺少 `publisherName` 跳过验证。客户端使用受保护系统目录中的 PowerShell 严格核对下载文件的 `Valid` 状态、返回路径和发布者 DN/CN；PowerShell 缺失、命令失败、输出无法解析或任一字段不匹配均拒绝更新。
-- 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留自动更新但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
+- 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留更新能力但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
+- 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。主进程据此把更新改成用户确认式：启动检查只提示新版本，下载和安装都等用户在更新页点击，并在下载完成后按更新清单的 SHA-512 重新校验安装包，校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
 - 正式发布前配置证书路径和固定发布者，例如：
 
 ```powershell

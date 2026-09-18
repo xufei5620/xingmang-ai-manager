@@ -12,12 +12,36 @@ const DEFAULT_USER = 'root'
 const DEFAULT_REMOTE_ROOT = '/www/wwwroot/dl.solov.cc'
 const DEFAULT_KEY_NAME = 'solov_fleet_ed25519'
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+// The remote root is interpolated into commands that a root login shell runs on
+// the production origin. Restrict it to characters that carry no meaning to that
+// shell, so a stray value can never become a second command or a glob.
+const REMOTE_ROOT_PATTERN = /^\/[A-Za-z0-9._/-]*$/
 
 function assertSafeVersion(version) {
   if (typeof version !== 'string' || !VERSION_PATTERN.test(version.trim())) {
     throw new Error(`版本号不合法：${version || '(空)'}。例如 0.1.22`)
   }
   return version.trim()
+}
+
+function assertSafeRemoteRoot(remoteRoot) {
+  const raw = typeof remoteRoot === 'string' ? remoteRoot.trim() : ''
+  const invalid = `远端目录不合法：${remoteRoot === undefined || remoteRoot === '' ? '(空)' : String(remoteRoot)}。必须是绝对路径，只允许字母、数字和 . _ - /，且不含 .. 段。例如 ${DEFAULT_REMOTE_ROOT}`
+  if (!REMOTE_ROOT_PATTERN.test(raw)) {
+    throw new Error(invalid)
+  }
+  const normalized = raw.replace(/\/+$/, '')
+  if (!normalized || normalized.split('/').some((segment) => segment === '..')) {
+    throw new Error(invalid)
+  }
+  return normalized
+}
+
+// Defence in depth: assertSafeRemoteRoot already rejects every shell metacharacter,
+// but each path still reaches the remote shell quoted, so a future relaxation of the
+// pattern cannot silently turn into command injection.
+function quoteRemotePath(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
 function installerFileNames(version) {
@@ -113,6 +137,7 @@ function parsePublishArgs(argv, defaults = {}) {
   }
 
   options.version = assertSafeVersion(options.version)
+  options.remoteRoot = assertSafeRemoteRoot(options.remoteRoot)
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
     throw new Error('--port 必须是 1-65535 之间的整数')
   }
@@ -223,7 +248,8 @@ function fileSha256(filePath) {
 }
 
 function buildPublishPlan(options, files, names) {
-  const remoteFiles = `${options.remoteRoot.replace(/\/+$/, '')}/files/latest`
+  const remoteRoot = assertSafeRemoteRoot(options.remoteRoot)
+  const remoteFiles = `${remoteRoot}/files/latest`
   return {
     uploads: [
       { slot: 'win', local: files.win, remoteDir: remoteFiles, fileName: names.win },
@@ -231,7 +257,7 @@ function buildPublishPlan(options, files, names) {
       { slot: 'macX64', local: files.macX64, remoteDir: remoteFiles, fileName: names.macX64 },
     ],
     manifest: buildLatestManifest(options.version),
-    manifestRemote: `${options.remoteRoot.replace(/\/+$/, '')}/latest.json`,
+    manifestRemote: `${remoteRoot}/latest.json`,
   }
 }
 
@@ -342,6 +368,7 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
     ...rawOptions,
   }
   options.version = assertSafeVersion(options.version)
+  options.remoteRoot = assertSafeRemoteRoot(options.remoteRoot)
   const names = installerFileNames(options.version)
   const io = {
     collect: deps.collectInstallers || collectInstallers,
@@ -373,7 +400,10 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
     const sshBase = sshArgs(options)
     const scpBase = scpArgs(options)
     const target = `${options.user}@${options.host}`
-    io.run('ssh', [...sshBase, target, `mkdir -p ${plan.uploads[0].remoteDir}`])
+    // Only the ssh commands below are quoted: since OpenSSH 9 scp speaks SFTP, where a
+    // remote path is taken literally, so quotes there would become part of the directory
+    // name. assertSafeRemoteRoot is what keeps the scp destinations safe.
+    io.run('ssh', [...sshBase, target, `mkdir -p ${quoteRemotePath(plan.uploads[0].remoteDir)}`])
     io.run('scp', [
       ...scpBase,
       found.win,
@@ -388,15 +418,17 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
     io.run('scp', [...scpBase, manifestLocal, `${target}:${plan.manifestRemote}`])
 
     const remoteFiles = plan.uploads.map((item) => `${item.remoteDir}/${item.fileName}`)
+    const quotedFiles = remoteFiles.map(quoteRemotePath)
+    const quotedManifest = quoteRemotePath(plan.manifestRemote)
     io.run('ssh', [
       ...sshBase,
       target,
-      `chown www:www ${plan.manifestRemote} ${remoteFiles.join(' ')}`,
+      `chown www:www ${quotedManifest} ${quotedFiles.join(' ')}`,
     ])
     const remoteCheck = io.run('ssh', [
       ...sshBase,
       target,
-      `test -f ${remoteFiles[0]} && test -f ${remoteFiles[1]} && test -f ${remoteFiles[2]} && cat ${plan.manifestRemote}`,
+      `test -f ${quotedFiles[0]} && test -f ${quotedFiles[1]} && test -f ${quotedFiles[2]} && cat ${quotedManifest}`,
     ])
     const localManifest = path.resolve(io.cwd, 'dl-landing', 'latest.json')
     io.writeFile(localManifest, manifestBody)
@@ -423,6 +455,8 @@ function main(argv = process.argv.slice(2)) {
 
 module.exports = {
   assertSafeVersion,
+  assertSafeRemoteRoot,
+  quoteRemotePath,
   installerFileNames,
   buildLatestManifest,
   formatLatestJson,
