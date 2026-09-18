@@ -85,6 +85,15 @@ npm run build:mac
 
 免费自签发布与本地 ad-hoc 包不同：它必须复用同一张长期自签证书，并写入 `xingmangLocalBuild: false`，因此主程序更新保持启用。发布时设置 `CSC_NAME` 和 `XINGMANG_MAC_SIGNING_SHA256`，再执行 `npm run dist:mac:free`；runner 会只为 electron-builder 子进程自动启用免费发布模式。该模式不 notarize，首次安装仍由用户在 Finder 或“系统设置 > 隐私与安全性”中手动确认；后续版本由 Squirrel.Mac 在固定证书和 bundle ID 连续时自动更新。完整的用户迁移、证书保管和构建步骤见 [macOS 免费自签版分发手册](MACOS_FREE_DISTRIBUTION.md)。
 
+## 签名 entitlements
+
+macOS 包开启 hardened runtime，授予的 entitlements 由仓库内的 plist 显式指定，不再回落到 electron-builder 的内置模板（模板会给每个包授予 `disable-library-validation`，等于关掉 hardened runtime 最主要的一道防线，而主进程持有账号 token 并把付费 Key 写进 CLI 配置）。
+
+- `build/entitlements.mac.plist` 与 `build/entitlements.mac.inherit.plist`：所有签名构建（Developer ID 正式发布、免费自签发布、CI 临时签名）使用，只授予 V8 需要的 `com.apple.security.cs.allow-jit`，library validation 保持开启。本程序的运行时依赖全是纯 JavaScript，随包分发的原生组件都以独立进程启动，不需要向进程内加载第三方动态库。
+- `build/entitlements.mac.adhoc.plist` 与 `build/entitlements.mac.adhoc.inherit.plist`：只给 `npm run build:mac:dir` 和 `npm run build:mac:ci` 这类 ad-hoc 占位签名的本地解包构建使用。ad-hoc 签名没有 team identifier，library validation 无从比对随包的 Electron 框架，应用会直接起不来，因此这两份额外授予 `disable-library-validation`。这类产物不对外分发，发行路径不得指向它们。
+
+新增 entitlement 前先写清它为什么不可避免；`scripts/macos-build-config.test.cjs` 会断言各构建模式指向哪一份 plist，以及分发用的两份不含 `disable-library-validation`。
+
 ## 正式发布边界
 
 Developer ID 发布是独立的正式路线：需要显式设置 `XINGMANG_RELEASE=1`，提供有效的 Developer ID Application 签名凭据，并配置 Apple `notarytool` 所需的凭据。构建配置保留 hardened runtime，并只在该发布模式启用 notarization。它不能与免费自签模式混用，构建候选也不等于获得发布授权。

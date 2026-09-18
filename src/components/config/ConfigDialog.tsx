@@ -519,10 +519,13 @@ export function ConfigDialog({
       if (switchedToOfficial) {
         await window.xingmang.switchToOfficialAccount(activeProvider)
       } else if (accountAuthenticated) {
+        // 用户刚在这个弹窗里确认把来源切到星芒账号，是显式替换；automatic 会被
+        // 主进程「已有工具配置的来源未经确认」守卫挡住。
         const outcome = await configureManagedCliKeysForInstalledClis(
           [activeProvider],
           { [activeProvider]: model || summary?.model },
           window.xingmang,
+          'explicit',
         )
         const failure = outcome.failed[0]
         if (failure) throw new Error(failure.message)
