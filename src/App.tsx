@@ -29,6 +29,7 @@ import {
   initialSidebarCollapsed,
   initialTheme,
   isDetectionFailed,
+  isUnconfirmedDetection,
   managedBootstrapCompleted,
   markManagedBootstrapCompleted,
   resolveInitialAppView,
@@ -344,8 +345,8 @@ function App() {
     settings.theme,
     settings.checkUpdatesOnStartup,
     settings.runDiagnosticsOnStartup,
-    // relaySiteId/mirrorPolicy are AppSettings fields SettingsPage's own
-    // SettingsV2 mirrors (W3b's site dropdown, 2.4's mirror-policy dropdown)
+    // mirrorPolicy is an AppSettings field SettingsPage's own SettingsV2
+    // mirrors (2.4's mirror-policy dropdown)
     // -- every field SettingsPage reads/writes needs to be in this deps list,
     // or a save that only changes that field (every other field
     // byte-identical) would leave this memo returning the pre-save object
@@ -354,7 +355,6 @@ function App() {
     // sidebarMoreExpanded stays deliberately excluded: SettingsPage's own
     // SettingsV2 type has no field for it, and settings:save's field-wise
     // merge (①栏11) leaves it untouched by the page's saves.
-    settings.relaySiteId,
     settings.mirrorPolicy,
     settings.uiSkin,
     settings.reducedMotion,
@@ -362,11 +362,9 @@ function App() {
     settings.closeBehavior,
     settings.desktopNotifications,
   ])
-  // W3b adds the first site-switcher UI (SettingsPage's 服务站点 dropdown),
-  // writing into settings.relaySiteId through the page's own normal save
-  // path. Resolving through settings here (rather than hardcoding the
-  // default site in each consumer) is what let that land as a pure addition
-  // instead of another round of touching Sidebar/ConfigDialog/CodexOnboarding.
+  // 站点由当前登录账号决定，用户看不到也选不到（D-03 删掉了设置页那个
+  // 骗人的下拉）。这里仍从 settings.relaySiteId 解析，是为了让老配置文件
+  // 里的遗留值降级到默认站点，而不是在每个消费者里各写一次默认站点。
   const activeRelaySite = useMemo(
     () => resolveRelaySite(settings.relaySiteId),
     [settings.relaySiteId],
@@ -646,6 +644,7 @@ function App() {
   const scan = useCallback(async (forceRefresh = false): Promise<{
     snapshot: SystemSnapshot | null
     config: AppConfigSummary | null
+    current: boolean
   }> => {
     try {
       const result = await runCoordinatedScan<SystemSnapshot, AppConfigSummary>({
@@ -665,7 +664,7 @@ function App() {
           setToast({ type: 'error', message: errors.join('；') })
         },
       })
-      return { snapshot: result.snapshot, config: result.config }
+      return { snapshot: result.snapshot, config: result.config, current: result.current }
     } finally {
       // A scan attempt -- successful, failed, or superseded -- means the
       // environment has been probed at least once; release anything waiting
@@ -712,6 +711,9 @@ function App() {
     scan: async (forceRefresh = false) => {
       const result = await scan(forceRefresh)
       const next = result.snapshot ?? snapshotRef.current
+      if (isUnconfirmedDetection(result.snapshot, result.current, next)) {
+        throw new Error('本机环境检测失败，暂时读不到已安装的工具。请重新检测后再操作。')
+      }
       return {
         checkedAt: next.checkedAt,
         runtime: { node: next.runtime.node, npm: next.runtime.npm },
@@ -1169,7 +1171,10 @@ function App() {
         ))
         if (requested.length !== selected.length) warnings.push('部分工具的来源或安装状态已变化，原配置已保留')
         if (requested.length) {
-          const result = await configureManagedCliKeysForInstalledClis(requested, preferredModelsFromConfig(latest), window.xingmang)
+          // 用户在切换弹窗里勾选了要同步的工具，是显式替换：与 renderer-v2 的
+          // account-switch-sync 一致传 explicit，否则主进程会对所有没有来源记录的
+          // 老配置一律拒写。
+          const result = await configureManagedCliKeysForInstalledClis(requested, preferredModelsFromConfig(latest), window.xingmang, 'explicit')
           warnings.push(...result.failed.map((entry) => `${providers[entry.provider].name}：${userFacingErrorMessage(entry.message)}`))
         }
         setConfig(await window.xingmang.getConfig())
@@ -1203,7 +1208,10 @@ function App() {
     if (effectiveSelected.length === 0) return
     const preferredModels = preferredModelsFromConfig(config)
     try {
-      const outcome = await configureManagedCliKeysForInstalledClis(effectiveSelected, preferredModels, window.xingmang)
+      // `selected` 来自 ProvisioningConfirmDialog 的勾选结果，属于用户显式确认，
+      // 必须传 explicit：老用户的配置没有来源记录，automatic 会被主进程守卫拒写，
+      // 而这个弹窗正是 legacy 里唯一能给出确认的地方。
+      const outcome = await configureManagedCliKeysForInstalledClis(effectiveSelected, preferredModels, window.xingmang, 'explicit')
       // 写入已经落盘成功，这里只是刷新配置摘要。刷新失败不能落进外层 catch
       // 把结论反转成"写入失败"——那与磁盘上的事实完全相反。
       let refreshFailed = false

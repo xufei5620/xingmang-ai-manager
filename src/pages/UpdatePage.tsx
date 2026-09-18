@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { AlertCircle, CheckCircle2, Download, FileText, RefreshCw, RotateCw, ShieldCheck } from 'lucide-react'
+import { AlertCircle, CheckCircle2, Download, FileText, RefreshCw, RotateCw, ShieldAlert, ShieldCheck } from 'lucide-react'
 import type { UpdateSnapshot } from '../types'
 import { errorMessage } from '../error-message'
 import './maintenance-v3.css'
@@ -86,6 +86,16 @@ export function UpdatePage({ state, busy, onCheck, onDownload, onInstall, onRetr
           </div>
           <ShieldCheck size={20} />
         </div>
+
+        {state?.unsignedChannel && (
+          <div className="update-unsigned-note" role="note" data-testid="updates-channel-unsigned">
+            <ShieldAlert size={16} aria-hidden="true" />
+            <span>
+              本机为未签名更新通道，安装包签名未校验。更新不会自动下载或安装，需要你逐步确认；
+              下载完成后会强制校验安装包 SHA-512，与更新清单不一致时拒绝安装。
+            </span>
+          </div>
+        )}
 
         {state?.availableVersion && (
           <div className="update-version-row">

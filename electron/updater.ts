@@ -1,4 +1,4 @@
-import type { ProgressInfo, UpdateInfo } from 'builder-util-runtime'
+import type { ProgressInfo, UpdateFileInfo, UpdateInfo } from 'builder-util-runtime'
 
 export type UpdatePhase =
   | 'disabled'
@@ -26,6 +26,12 @@ export interface UpdateSnapshot {
   } | null
   error: { code: string; message: string } | null
   development: boolean
+  /**
+   * True when this build ships through the unsigned release channel, where
+   * electron-updater performs no installer signature check. Such a build never
+   * downloads or installs on its own; the user confirms each step.
+   */
+  unsignedChannel?: boolean
 }
 
 type UpdateEventName =
@@ -81,6 +87,19 @@ export interface UpdaterRuntime {
   now?: () => Date
   installEnvironmentGuard?: (launch: () => void) => void
   macInstallHandoff?: MacInstallHandoff
+  /**
+   * Set for builds produced with XINGMANG_UNSIGNED_RELEASE=1. electron-updater
+   * skips its signature verification entirely when the package carries no
+   * publisherName, so the compensating control is that nothing reaches the
+   * machine without an explicit user action.
+   */
+  unsignedChannel?: boolean
+  /**
+   * Recomputes the downloaded package digest and compares it with the manifest
+   * value. Resolving false means a mismatch; throwing means the comparison could
+   * not be made. Both outcomes reject the package.
+   */
+  verifyPackageDigest?: (filePath: string, expectedSha512: string) => Promise<boolean>
 }
 
 function isProxyConnectionFailure(error: unknown): boolean {
@@ -102,6 +121,58 @@ function releaseNotesText(info: UpdateInfo): string | null {
     .filter(Boolean)
     .join('\n\n')
   return text.slice(0, 20_000) || null
+}
+
+interface DownloadedUpdateEvent extends UpdateInfo {
+  downloadedFile?: string
+}
+
+function fileNameOf(value: string): string {
+  const trimmed = value.trim()
+  if (!trimmed) return ''
+  const separator = Math.max(trimmed.lastIndexOf('/'), trimmed.lastIndexOf('\\'))
+  return (separator < 0 ? trimmed : trimmed.slice(separator + 1)).toLowerCase()
+}
+
+function manifestFileName(entry: UpdateFileInfo): string {
+  const url = typeof entry.url === 'string' ? entry.url : ''
+  if (!url) return ''
+  try {
+    return fileNameOf(decodeURIComponent(url))
+  } catch {
+    return fileNameOf(url)
+  }
+}
+
+/**
+ * Resolves the SHA-512 the manifest declared for the file that was actually
+ * downloaded. Returns null when no digest can be attributed to that file, which
+ * the caller treats as a rejection rather than as "nothing to check".
+ */
+function manifestPackageDigest(info: UpdateInfo, downloadedFile: string): string | null {
+  const target = fileNameOf(downloadedFile)
+  const entries = (Array.isArray(info.files) ? info.files : [])
+    .filter((entry): entry is UpdateFileInfo => Boolean(entry))
+  const named = entries.find((entry) => {
+    const name = manifestFileName(entry)
+    return name.length > 0 && name === target
+  })
+  // A single-artifact manifest leaves no ambiguity about which digest applies,
+  // even when the cached file was renamed on the way to disk. A manifest that
+  // does list this file, on the other hand, never borrows another file's digest.
+  const chosen = named ?? (entries.length === 1 ? entries[0] : null)
+  if (chosen) {
+    const digest = typeof chosen.sha512 === 'string' ? chosen.sha512.trim() : ''
+    return digest || null
+  }
+  if (entries.length > 0) return null
+  const legacy = typeof info.sha512 === 'string' ? info.sha512.trim() : ''
+  return legacy || null
+}
+
+function digestFailureDetail(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error)
+  return message.replace(/\s+/g, ' ').trim().slice(0, 200) || '未知错误'
 }
 
 function hasChannelManifestUrl(description: string, channelFile: string): boolean {
@@ -173,6 +244,11 @@ export function createUpdaterService(
   const retryWithoutProxy = runtime.retryWithoutProxy
   const installEnvironmentGuard = runtime.installEnvironmentGuard ?? ((launch) => launch())
   const macInstallHandoff = platform === 'darwin' ? runtime.macInstallHandoff : undefined
+  const unsignedChannel = runtime.unsignedChannel === true
+  // An unsigned installer is never fetched behind the user's back: the startup
+  // check only reports the new version and waits for an explicit download.
+  const autoDownload = !unsignedChannel
+  const verifyPackageDigest = runtime.verifyPackageDigest
   let autoInstallTimer: NodeJS.Timeout | null = null
   let installWatchdogTimer: NodeJS.Timeout | null = null
   let startupPromise: Promise<UpdateSnapshot> | null = null
@@ -191,6 +267,7 @@ export function createUpdaterService(
     progress: null,
     error: null,
     development,
+    unsignedChannel,
   }
 
   client.autoDownload = false
@@ -282,19 +359,83 @@ export function createUpdaterService(
     return true
   }
 
+  const acceptDownloadedUpdate = (info: UpdateInfo) => {
+    applyInfo('downloaded', info)
+    if (development || installRequested || disposed) return
+    // The unsigned channel ships without any installer signature check, so the
+    // one thing standing between a hostile package and the machine is the user
+    // starting the install. Never take that step automatically there.
+    if (unsignedChannel) return
+    autoInstallTimer = setTimeout(() => {
+      autoInstallTimer = null
+      requestInstall()
+    }, 300)
+    autoInstallTimer.unref?.()
+  }
+
+  const rejectDownloadedUpdate = (code: string, message: string) => {
+    clearInstallWatchdog()
+    installRequested = false
+    emit({
+      phase: 'error',
+      checkedAt: now().toISOString(),
+      progress: null,
+      error: { code, message },
+    })
+  }
+
+  const verifyDownloadedUpdate = async (event: DownloadedUpdateEvent) => {
+    if (!verifyPackageDigest) return
+    const downloadedFile = typeof event.downloadedFile === 'string' ? event.downloadedFile.trim() : ''
+    if (!downloadedFile) {
+      rejectDownloadedUpdate(
+        'UPDATE_PACKAGE_PATH_MISSING',
+        '更新程序没有给出安装包位置，无法校验安装包完整性，已阻止安装',
+      )
+      return
+    }
+    const expected = manifestPackageDigest(event, downloadedFile)
+    if (!expected) {
+      rejectDownloadedUpdate(
+        'UPDATE_PACKAGE_DIGEST_MISSING',
+        '更新清单没有提供本安装包的 SHA-512 校验值，已阻止安装，请联系发布者补齐更新文件',
+      )
+      return
+    }
+    let matched: boolean
+    try {
+      matched = await verifyPackageDigest(downloadedFile, expected)
+    } catch (error) {
+      if (disposed) return
+      rejectDownloadedUpdate(
+        'UPDATE_PACKAGE_DIGEST_FAILED',
+        `安装包完整性校验没有完成，已阻止安装：${digestFailureDetail(error)}`,
+      )
+      return
+    }
+    if (disposed) return
+    if (!matched) {
+      rejectDownloadedUpdate(
+        'UPDATE_PACKAGE_DIGEST_MISMATCH',
+        '安装包与更新清单的 SHA-512 不一致，已阻止安装。请重新下载，若仍不一致请联系发布者',
+      )
+      return
+    }
+    acceptDownloadedUpdate(event)
+  }
+
   const eventHandlers: Record<UpdateEventName, (...args: any[]) => void> = {
     'checking-for-update': () => emit({ phase: 'checking', progress: null, error: null }),
     'update-not-available': (info: UpdateInfo) => applyInfo('not-available', info),
     'update-available': (info: UpdateInfo) => applyInfo('available', info),
-    'update-downloaded': (info: UpdateInfo) => {
-      applyInfo('downloaded', info)
+    'update-downloaded': (event: DownloadedUpdateEvent) => {
       clearAutoInstallTimer()
-      if (development || installRequested || disposed) return
-      autoInstallTimer = setTimeout(() => {
-        autoInstallTimer = null
-        requestInstall()
-      }, 300)
-      autoInstallTimer.unref?.()
+      if (disposed) return
+      if (!verifyPackageDigest) {
+        acceptDownloadedUpdate(event)
+        return
+      }
+      void verifyDownloadedUpdate(event)
     },
     'update-cancelled': (info: UpdateInfo) => {
       clearAutoInstallTimer()
@@ -422,7 +563,7 @@ export function createUpdaterService(
           // instead of replacing a real result with a synthetic timeout.
           if (snapshot.phase !== 'checking') {
             const eventSnapshot = cloneSnapshot(snapshot)
-            if (eventSnapshot.phase === 'available') {
+            if (eventSnapshot.phase === 'available' && autoDownload) {
               if (development) {
                 void download()
                 return eventSnapshot
@@ -433,9 +574,11 @@ export function createUpdaterService(
           }
           // The timeout only releases the startup UI. Keep the updater request
           // alive so a slow network can still download the discovered release.
-          void checkPromise.then((lateSnapshot) => {
-            if (lateSnapshot.phase === 'available') void download()
-          })
+          if (autoDownload) {
+            void checkPromise.then((lateSnapshot) => {
+              if (lateSnapshot.phase === 'available') void download()
+            })
+          }
           emit({
             phase: 'error',
             checkedAt: now().toISOString(),
@@ -447,7 +590,7 @@ export function createUpdaterService(
           })
           return cloneSnapshot(snapshot)
         }
-        if (checked.value.phase !== 'available') return checked.value
+        if (checked.value.phase !== 'available' || !autoDownload) return checked.value
         if (development) {
           void download()
           return checked.value

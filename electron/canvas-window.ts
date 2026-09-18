@@ -30,6 +30,7 @@ import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { canvasHostChannels, type CanvasAppearance } from './canvas-contract'
 import {
+  canvasSaveFileName,
   parseCanvasAssetQuery,
   parseCanvasAssetId,
   parseCanvasImageEditInput,
@@ -126,6 +127,8 @@ const maximumSavedFileBytes = 20 * 1024 * 1024
 const maximumPickedFileBytes = 20 * 1024 * 1024
 const maximumTitleLength = 200
 const maximumBodyLength = 2_000
+const defaultCanvasSaveFileName = 'xingmang-canvas-export.txt'
+const defaultCanvasProjectFileName = 'xingmang-project.xingcanvas'
 
 export interface CanvasWindowControllerOptions {
   accountWork?: import('./account-work-gate').AccountWorkGate
@@ -413,7 +416,7 @@ export function createCanvasWindowController(
   })
 
   registerCanvasHandler(canvasHostSaveFileChannel, async (event, suggestedNameInput, contentInput) => {
-    const suggestedName = requiredCanvasString(suggestedNameInput, '保存文件名', 256)
+    const suggestedName = canvasSaveFileName(suggestedNameInput, '保存文件名', defaultCanvasSaveFileName)
     const content = requiredCanvasText(contentInput, '保存内容', maximumSavedFileBytes)
     const parentWindow = BrowserWindow.fromWebContents(event.sender) ?? undefined
     const dialogOptions: SaveDialogOptions = {
@@ -924,7 +927,7 @@ export function createCanvasWindowController(
 
   registerCanvasHandler(canvasHostExportProjectChannel, async (event, suggestedNameInput, contentInput) => {
     const userId = authenticatedCanvasUserId()
-    const suggestedName = requiredCanvasString(suggestedNameInput, '画布项目文件名', 256)
+    const suggestedName = canvasSaveFileName(suggestedNameInput, '画布项目文件名', defaultCanvasProjectFileName)
     const workflowContent = requiredCanvasText(contentInput, '画布项目工作流', maximumSavedFileBytes)
     const parsed = parseCanvasProjectWorkflow(workflowContent)
     const context = await activeAssetContext(event.sender.id, userId)

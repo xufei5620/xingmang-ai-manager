@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+  <dict>
+    <!-- V8 compiles JavaScript into MAP_JIT pages, which the hardened runtime
+         only permits with this entitlement. Electron has needed nothing beyond
+         it since 11.1.0, and @electron/osx-sign grants exactly this key for
+         darwin, so the electron-builder default template's two extra keys are
+         not requirements of this app.
+
+         Everything else is deliberately withheld. The main process holds the
+         account session token and writes paid API keys into the CLI config
+         files, so library validation - the hardened runtime's main defence
+         against loading attacker-supplied dylibs into that process - must stay
+         on. This app bundles no third-party native module (every runtime
+         dependency is pure JavaScript) and the native helpers it ships are
+         spawned as separate processes, so nothing here needs to dlopen foreign
+         code. Grant a new key only together with the reason it became
+         unavoidable. -->
+    <key>com.apple.security.cs.allow-jit</key>
+    <true/>
+  </dict>
+</plist>
