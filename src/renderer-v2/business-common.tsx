@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import { Button, Empty, Pill } from './ui'
 import { errors } from './registry/errors'
+import { presentOperationError } from './operation-error'
 
 const pendingOperations = new Map<symbol, string>()
 export const pendingBusinessOperations = () => [...pendingOperations.values()]
@@ -115,10 +116,24 @@ export function ResultNotice({
   error?: string
   message?: string
 }) {
+  // A raw npm/OS failure reaching this banner is unreadable on its own; when
+  // the catalog can name it, its wording leads and the backend sentence stays
+  // underneath, because support still needs the original text.
+  const hint = error ? presentOperationError(error) : null
   return error ? (
     <div className="v2-business-notice is-error" role="alert">
       <Pill tone="bad">未完成</Pill>
-      <span>{error}</span>
+      <span>
+        {hint ? (
+          <>
+            <strong>{hint.title}</strong>
+            {hint.body ? `，${hint.body}` : ''}
+            <em className="v2-business-notice-detail">{error}</em>
+          </>
+        ) : (
+          error
+        )}
+      </span>
     </div>
   ) : message ? (
     <div className="v2-business-notice" role="status">

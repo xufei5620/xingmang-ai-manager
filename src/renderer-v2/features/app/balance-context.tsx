@@ -9,7 +9,9 @@ function getEmptySnapshot() { return emptySnapshot }
 
 export function useSharedAccountBalance() {
   const store = useContext(AccountBalanceContext)
-  const snapshot = useSyncExternalStore(store?.subscribe ?? emptySubscribe, store?.getSnapshot ?? getEmptySnapshot)
+  // The third argument is what lets this component tree render through
+  // react-dom/server, which is how every component test in this repo runs.
+  const snapshot = useSyncExternalStore(store?.subscribe ?? emptySubscribe, store?.getSnapshot ?? getEmptySnapshot, store?.getSnapshot ?? getEmptySnapshot)
   return { store, snapshot }
 }
 

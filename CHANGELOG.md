@@ -11,6 +11,10 @@
 
 ## Unreleased
 
+- 首页工具行接上主进程已有的安装阶段文案、下载百分比与探测失败原因（A1）。
+- 失败提示接入 `registry/errors.ts` 的中文文案与可执行按钮，保留后端原文供客服排查（A2）。
+- 卸载需要手动清理时渲染 `manualHelp.manualCommand` 与复制按钮，兑现后端文案的承诺（A3）。
+
 ## 0.2.6 - 2026-09-19
 
 - 接入 WorkBuddy、Claude Desktop 和 OpenCode 的安装、配置与启动；Claude Desktop 改用原生第三方推理配置，补齐事务备份、Windows 虚拟化路径和手动配置就绪状态识别。
