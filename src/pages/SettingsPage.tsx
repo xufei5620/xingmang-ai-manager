@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react'
 import { AlertCircle, ArrowUpRight, Bell, Check, Compass, FolderOpen, Globe2, Info, LoaderCircle, Moon, Palette, Power, Save, ShieldCheck, Sun, UserRound, Wrench } from 'lucide-react'
 import { errorMessage } from '../error-message'
-import { relaySites, resolveRelaySite, type AppSettingsV2, type AppSettingsV2Update } from '../types'
+import type { AppSettingsV2, AppSettingsV2Update } from '../types'
 import brandSymbol from '../../assets/brand/v3/symbol-standard.svg'
 import { useNavigationState } from '../components/shell/NavigationState'
 import './settings-page.css'
@@ -9,7 +9,7 @@ import './settings-page.css'
 export type SettingsTheme = 'light' | 'dark'
 export type SettingsV2 = Pick<AppSettingsV2,
   'version' | 'workspace' | 'theme' | 'checkUpdatesOnStartup' | 'runDiagnosticsOnStartup'
-  | 'relaySiteId' | 'mirrorPolicy' | 'uiSkin' | 'reducedMotion' | 'uiScale' | 'closeBehavior' | 'desktopNotifications'>
+  | 'mirrorPolicy' | 'uiSkin' | 'reducedMotion' | 'uiScale' | 'closeBehavior' | 'desktopNotifications'>
 export type SettingsAppearance = Pick<SettingsV2, 'uiSkin' | 'reducedMotion'>
 export type SettingsNavigationTarget = 'account' | 'backups' | 'feedback' | 'update' | 'health'
 
@@ -31,7 +31,7 @@ export interface SettingsPageProps {
 export interface SettingsDraftState { saved: SettingsV2; draft: SettingsV2 }
 
 const settingsFields = [
-  'workspace', 'theme', 'checkUpdatesOnStartup', 'runDiagnosticsOnStartup', 'relaySiteId',
+  'workspace', 'theme', 'checkUpdatesOnStartup', 'runDiagnosticsOnStartup',
   'mirrorPolicy', 'uiSkin', 'reducedMotion', 'uiScale', 'closeBehavior', 'desktopNotifications',
 ] as const
 export type SettingsField = typeof settingsFields[number]
@@ -242,7 +242,6 @@ export function SettingsPage(props: SettingsPageProps) {
             <SettingRow title="环境状态">{navigation('health', '查看检查结果')}</SettingRow>
           </>}
           {section === 'network' && <>
-            <SettingRow title="服务站点" description="切换后需重新保存各工具配置。" feedback={feedback('relaySiteId')}><select aria-label="服务站点" aria-describedby="settings-relaySiteId-feedback" value={resolveRelaySite(draft.relaySiteId).id} onChange={(event) => commit('relaySiteId', event.target.value)}>{relaySites.map((site) => <option key={site.id} value={site.id}>{site.label}</option>)}</select></SettingRow>
             <SettingRow title="下载顺序" feedback={feedback('mirrorPolicy')}><select aria-label="镜像策略" aria-describedby="settings-mirrorPolicy-feedback" value={draft.mirrorPolicy ?? 'auto'} onChange={(event) => commit('mirrorPolicy', event.target.value === 'auto' ? undefined : event.target.value as SettingsV2['mirrorPolicy'])}><option value="auto">自动（推荐）</option><option value="mirror-first">国内源优先</option><option value="official-first">官方源优先</option></select></SettingRow>
             <SettingRow title="网络连接与企业证书" description="暂不提供应用内覆盖配置。连接失败时可先查看环境检查。">{navigation('health', '检查连接')}</SettingRow>
           </>}

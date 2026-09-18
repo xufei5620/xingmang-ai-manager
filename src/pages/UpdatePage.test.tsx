@@ -31,6 +31,18 @@ describe('UpdatePage build-mode status', () => {
     expect(markup).toContain('免费分发包会启用自动更新，需同步发布完整更新文件')
   })
 
+  it('tells the user that an unsigned channel verifies no installer signature', () => {
+    const signed: UpdateSnapshot = { ...disabledSnapshot, development: false, phase: 'available', availableVersion: '1.0.0' }
+    const unsigned: UpdateSnapshot = { ...signed, unsignedChannel: true }
+
+    expect(renderToStaticMarkup(<UpdatePage state={signed} busy={false} onCheck={vi.fn()} onDownload={vi.fn()} onInstall={vi.fn()} />))
+      .not.toContain('updates-channel-unsigned')
+    const markup = renderToStaticMarkup(<UpdatePage state={unsigned} busy={false} onCheck={vi.fn()} onDownload={vi.fn()} onInstall={vi.fn()} />)
+    expect(markup).toContain('data-testid="updates-channel-unsigned"')
+    expect(markup).toContain('安装包签名未校验')
+    expect(markup).toContain('SHA-512')
+  })
+
   it('offers distinct recheck and download retry paths only when retry is supported', () => {
     const state: UpdateSnapshot = { ...disabledSnapshot, development: false, phase: 'error', availableVersion: '1.0.0', error: { code: 'NETWORK', message: '下载失败' } }
     const markup = renderToStaticMarkup(<UpdatePage state={state} busy={false} onCheck={vi.fn()} onDownload={vi.fn()} onRetryDownload={vi.fn()} onInstall={vi.fn()} />)

@@ -306,3 +306,53 @@ test('quality checks cannot publish a release', () => {
   const serialized = JSON.stringify(workflow.jobs)
   assert.doesNotMatch(serialized, /gh release|create-release|dist:mac:free|release:build/i)
 })
+
+const playwrightElectronSmokes = ['e2e/electron-ci-smoke.mjs', 'e2e/window-close-smoke.mjs']
+
+test('a Playwright Electron smoke can never consume a whole job again', () => {
+  // #131 and #133: a wedged Electron made the close smoke run for ten minutes
+  // and print nothing, cancelling the Windows job at its cap; #139 died in the
+  // startup smoke. Three bounds now stack — the script's own budget, the step
+  // timeout, then the job timeout — and each must stay strictly inside the next
+  // so the innermost one, the only one that prints a diagnosis, is what fires.
+  for (const smoke of playwrightElectronSmokes) {
+    const budget = fs.readFileSync(path.join(root, smoke), 'utf8')
+      .match(/XINGMANG_SMOKE_TOTAL_TIMEOUT_MS \?\? (\d[\d_]*)\)/)
+
+    assert.ok(budget, `${smoke} must budget its whole run`)
+    const budgetMs = Number(budget[1].replaceAll('_', ''))
+    const jobs = Object.entries(workflow.jobs)
+      .filter(([, job]) => (job.steps || []).some((entry) => String(entry.run || '').includes(smoke)))
+
+    assert.ok(jobs.length > 0, `${smoke} must still run in CI`)
+    for (const [jobName, job] of jobs) {
+      const step = job.steps.find((entry) => String(entry.run || '').includes(smoke))
+
+      assert.equal(typeof step['timeout-minutes'], 'number', `${jobName} must bound ${smoke}`)
+      assert.ok(step['timeout-minutes'] * 60_000 > budgetMs,
+        `${jobName} must let ${smoke} report its own timeout before the runner cancels the step`)
+      assert.ok(job['timeout-minutes'] > step['timeout-minutes'], `${jobName} must outlive its ${smoke} step`)
+    }
+  }
+
+  // test:windows (~13m) and test:v2 (~10m) alone reach ~28 minutes, so the
+  // Windows cap has to clear that plus the packaging steps that follow.
+  assert.ok(workflow.jobs.test['timeout-minutes'] >= 45)
+})
+
+test('no wait in a Playwright Electron smoke is left unbounded', () => {
+  for (const smoke of playwrightElectronSmokes) {
+    const source = fs.readFileSync(path.join(root, smoke), 'utf8')
+
+    // page.evaluate, ElectronApplication.evaluate and ElectronApplication
+    // .close() have no default timeout of their own. Awaiting one of them
+    // directly is how a failing assertion ended up hidden behind a ten minute
+    // hang instead of being printed.
+    assert.doesNotMatch(source, /await page\.evaluate\(/, smoke)
+    assert.doesNotMatch(source, /await application\.evaluate\(/, smoke)
+    assert.doesNotMatch(source, /await application\.close\(\)/, smoke)
+    assert.match(source, /createSmokeRuntime\(/, `${smoke} must use the shared smoke runtime`)
+  }
+
+  assert.match(fs.readFileSync(path.join(root, 'e2e', 'smoke-runtime.mjs'), 'utf8'), /export function killProcessTree\(/)
+})
