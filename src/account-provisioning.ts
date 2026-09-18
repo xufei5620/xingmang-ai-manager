@@ -118,7 +118,7 @@ export function validateProvisionedCliConfigs(
     if (excluded.has(provider)) return []
     const summary = config.providers[provider]
     if (!summary?.hasApiKey) return [{ provider, message: '配置文件未检测到 API Key' }]
-    if (!summary.matchesRelay) return [{ provider, message: 'Base URL 未指向当前星芒站点' }]
+    if (!summary.matchesRelay) return [{ provider, message: 'Base URL 未指向当前账号的服务地址' }]
     if (!summary.model.trim()) return [{ provider, message: '默认模型未写入配置' }]
     if (provider === 'gemini' && 'authType' in summary && summary.authType !== 'gemini-api-key') {
       return [{ provider, message: 'Gemini 未切换到 API Key 模式' }]

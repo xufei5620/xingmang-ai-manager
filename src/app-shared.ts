@@ -131,6 +131,24 @@ export function isDetectionFailed(status: { detectionFailed?: boolean }): boolea
   return status.detectionFailed === true
 }
 
+/**
+ * `runCoordinatedScan` reports a failed probe by returning a null snapshot, so
+ * callers fall back to whatever was on screen before. Before the first probe
+ * ever completes that fallback is `EmptyStatus()`, where every CLI reads
+ * `installed: false` with no `detectionFailed` — indistinguishable from a
+ * machine where nothing is installed. Consumers must surface the failure
+ * instead of that placeholder, or they invite a reinstall over a working
+ * environment. A superseded scan (`current === false`) is not a failure: the
+ * newer scan still owns the outcome.
+ */
+export function isUnconfirmedDetection(
+  scanned: SystemSnapshot | null,
+  current: boolean,
+  fallback: SystemSnapshot,
+): boolean {
+  return current && scanned === null && fallback.checkedAt === ''
+}
+
 export function codexDesktopLaunchDecision(
   platform: PlatformCapabilities,
   running: boolean,

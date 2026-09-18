@@ -5,6 +5,7 @@ import type { CanvasRunGraph, CanvasRunNodeKind, CanvasRunScope } from './canvas
 
 const assetIdPattern = /^[A-Za-z0-9_-]{43}$/
 const videoTaskIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$/
+const windowsReservedFileNamePattern = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
@@ -36,6 +37,31 @@ export function canvasPrompt(value: unknown, label: string, maximum: number): st
     throw new Error(`${label}格式错误`)
   }
   return value
+}
+
+/**
+ * A save dialog's `defaultPath` decides both the directory it opens in and the
+ * name it proposes, so a renderer that controls the whole string controls where
+ * a single click on "save" lands. The canvas runs third-party code (I15), so it
+ * may only propose a leaf name: a poisoned build must not be able to aim the
+ * dialog at the Windows startup folder or ~/Library/LaunchAgents and have the
+ * user drop an auto-run payload there by confirming what looks like an export.
+ *
+ * The proposal is repaired rather than rejected because the name is a
+ * convenience the user overwrites in the dialog anyway, and a hostile name must
+ * not be able to break saving for everyone else. Both separators are stripped
+ * regardless of host platform: `path.basename` only understands the running
+ * platform's one, which would let a Windows-shaped path survive whole on macOS.
+ */
+export function canvasSaveFileName(value: unknown, label: string, fallback: string): string {
+  const proposed = requiredCanvasString(value, label, 256)
+  const leaf = proposed.split(/[\\/]/).pop() ?? ''
+  // `:` covers drive-relative names and NTFS alternate data streams; the rest
+  // are characters Windows refuses in a file name. Leading dots would hide the
+  // file, and `..` collapses to nothing and falls back.
+  const cleaned = leaf.replace(/[<>:"|?*\x00-\x1F\x7F]/g, '_').replace(/^[.\s]+/, '').replace(/[.\s]+$/, '')
+  if (!cleaned || windowsReservedFileNamePattern.test(cleaned)) return fallback
+  return cleaned
 }
 
 export function requiredCanvasText(value: unknown, label: string, maximumBytes: number): string {

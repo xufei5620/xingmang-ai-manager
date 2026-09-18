@@ -1,6 +1,9 @@
+import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  buildNodeRuntimeElevatedInstallScript,
   buildNodeRuntimeInstallPlan,
   buildNodeRuntimeUacBrokerScript,
   buildNodeRuntimeWingetPlan,
@@ -12,13 +15,24 @@ import {
   parseNodeReleaseIndex,
   parseNodeShasums,
   parseSystemWingetPackage,
+  nodeRuntimeElevationFailureMessage,
+  nodeRuntimeStagingRequiresProtectedDirectory,
   parseWindowsRestartStatus,
+  resolveNodeRuntimeBrokerPowerShell,
   systemWingetCandidate,
   validateNodeAuthenticodeSignature,
   validateInstalledNodeRuntimeInspection,
   type NodeRuntimeProcessPlan,
 } from './node-runtime'
 import type { WindowsMachinePaths } from './windows-machine-paths'
+
+const hostPlatform = process.platform
+
+afterEach(() => {
+  Object.defineProperty(process, 'platform', { value: hostPlatform })
+})
+
+const systemPowerShell = 'D:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 
 const testMachinePaths: WindowsMachinePaths = {
   systemRoot: 'D:\\Windows',
@@ -115,7 +129,7 @@ describe('Node.js installer routing and process plans', () => {
   it('builds argument arrays without interpolating an MSI path into PowerShell code', () => {
     const msiPath = path.win32.join('C:\\Temp', "Node package 'quoted'; calc.exe.msi")
     const powershell = 'D:\\Program Files\\PowerShell\\7\\pwsh.exe'
-    const plan = buildNodeRuntimeInstallPlan(msiPath, powershell, true, testMachinePaths)
+    const plan = buildNodeRuntimeInstallPlan(msiPath, powershell, true, testMachinePaths, 'b'.repeat(64))
 
     const winget = buildNodeRuntimeWingetPlan(
       'D:\\Program Files\\WindowsApps\\Microsoft.DesktopAppInstaller_1.29.0.0_x64__8wekyb3d8bbwe\\winget.exe',
@@ -158,12 +172,16 @@ describe('Node.js installer routing and process plans', () => {
       trustedPaths: [msiPath],
       elevation: 'uac',
     })
-    const brokerScript = buildNodeRuntimeUacBrokerScript(plan.msi)
-    expect(brokerScript).toContain('-Verb RunAs -Wait -PassThru')
-    expect(brokerScript).toContain("$argumentLine = '/i \"C:\\Temp\\Node package ''quoted''; calc.exe.msi\" /qn /norestart ADDLOCAL=ALL'")
+    const brokerScript = buildNodeRuntimeUacBrokerScript(plan.msi, systemPowerShell)
+    expect(brokerScript).toContain('-Verb RunAs -WindowStyle Hidden -WorkingDirectory $PSHOME -Wait -PassThru')
     expect(brokerScript).toContain("$ProgressPreference = 'SilentlyContinue'")
+    // The MSI path only ever reaches PowerShell as a quoted literal, never as code.
+    const elevatedScript = buildNodeRuntimeElevatedInstallScript(plan.msi)
+    expect(elevatedScript).toContain("[System.IO.File]::Open('C:\\Temp\\Node package ''quoted''; calc.exe.msi'")
+    expect(elevatedScript).toContain("$argumentLine = '/i \"' + $payload + '\" ' + '/qn /norestart ADDLOCAL=ALL'")
+    expect(elevatedScript).not.toContain('calc.exe.msi\' /qn')
 
-    const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false, testMachinePaths)
+    const sameUserPlan = buildNodeRuntimeInstallPlan(msiPath, powershell, false, testMachinePaths, 'b'.repeat(64))
     expect(sameUserPlan.signature.trustedOnly).toBe(false)
     expect(sameUserPlan.msi.trustedOnly).toBe(false)
   })
@@ -178,7 +196,7 @@ describe('Node.js installer routing and process plans', () => {
       hash,
     )
     expect(plan.msi.integritySha256).toBe(hash)
-    const script = buildNodeRuntimeUacBrokerScript(plan.msi)
+    const script = buildNodeRuntimeUacBrokerScript(plan.msi, systemPowerShell)
     expect(script).toContain('Get-FileHash')
     expect(script).toContain('Get-AuthenticodeSignature')
     expect(script).toContain('OpenJS Foundation')
@@ -445,5 +463,127 @@ describe('Node.js response URL validation', () => {
     await expect(fetchTrustedNodeResource(source, { method: 'GET' }, hostileFetch))
       .rejects.toThrow('未经批准')
     expect(hostileFetch).toHaveBeenCalledOnce()
+  })
+})
+
+describe('Node.js MSI fallback without administrator rights (E-S7)', () => {
+  it('stages the download in the user temp directory when the app is not elevated', () => {
+    expect(nodeRuntimeStagingRequiresProtectedDirectory('same-user')).toBe(false)
+    expect(nodeRuntimeStagingRequiresProtectedDirectory('trusted-only')).toBe(true)
+    expect(nodeRuntimeStagingRequiresProtectedDirectory(undefined)).toBe(true)
+  })
+
+  it('reaches the MSI sources instead of demanding an elevated staging directory', async () => {
+    // Before this fix the default, non-elevated launch died inside
+    // createTrustedTemporaryDirectory and never issued a single request.
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    const fetchMock = vi.fn(async () => {
+      throw new Error('offline')
+    }) as unknown as typeof fetch
+    const removed: string[] = []
+
+    await expect(installNodeRuntime({
+      networkRegion: 'unknown',
+      preferWinget: false,
+      temporaryDirectoryMode: 'same-user',
+      dependencies: {
+        fetch: fetchMock,
+        removeTemporaryDirectory: async (directory) => {
+          removed.push(directory)
+          await fs.promises.rm(directory, { recursive: true, force: true })
+        },
+      },
+    })).rejects.toThrow('Node.js LTS 自动安装失败')
+
+    expect(fetchMock).toHaveBeenCalled()
+    expect(removed).toHaveLength(1)
+    expect(path.dirname(removed[0])).toBe(os.tmpdir())
+    expect(path.basename(removed[0])).toMatch(/^xingmang-node-runtime-/)
+  })
+
+  it('reports a staging directory failure instead of throwing a bare error', async () => {
+    Object.defineProperty(process, 'platform', { value: 'win32' })
+    const progress: string[] = []
+    const fetchMock = vi.fn() as unknown as typeof fetch
+
+    await expect(installNodeRuntime({
+      networkRegion: 'unknown',
+      preferWinget: false,
+      onProgress: (event) => progress.push(`${event.phase}:${event.message}`),
+      dependencies: {
+        fetch: fetchMock,
+        createTemporaryDirectory: async () => {
+          throw new Error('当前进程没有管理员权限，无法创建受保护的安装目录')
+        },
+        removeTemporaryDirectory: async () => undefined,
+      },
+    })).rejects.toThrow('Node.js LTS 自动安装失败。安装包暂存目录：当前进程没有管理员权限，无法创建受保护的安装目录')
+    expect(progress.some((entry) => entry.startsWith('error:'))).toBe(true)
+  })
+
+  it('rebuilds the payload under an Administrators-only directory before installing', () => {
+    const plan = buildNodeRuntimeInstallPlan(
+      'C:\\Users\\tester\\AppData\\Local\\Temp\\xingmang-node-runtime-a1\\official-node-v22.17.0-x64.msi',
+      systemPowerShell,
+      false,
+      testMachinePaths,
+      'c'.repeat(64),
+    )
+    const script = buildNodeRuntimeElevatedInstallScript(plan.msi)
+    expect(script).toContain('[Environment+SpecialFolder]::ProgramFiles')
+    expect(script).toContain('$acl.SetAccessRuleProtection($true, $false)')
+    expect(script).toContain("foreach ($sid in @('S-1-5-18', 'S-1-5-32-544'))")
+    expect(script).toContain('[void][System.IO.Directory]::CreateDirectory($cache, $acl)')
+    // msiexec must open the private copy, never the staging path the unelevated app wrote.
+    expect(script).toContain("$payload = Join-Path $cache 'node-lts.msi'")
+    expect(script).toContain('-ArgumentList $argumentLine -Wait -PassThru')
+    expect(script).toContain('$actualHash = (Get-FileHash -LiteralPath $payload')
+    expect(script).toContain('Get-AuthenticodeSignature -LiteralPath $payload')
+    expect(script).toContain('CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC')
+    expect(script).toContain("if ($identity.User.Value -ne '__XINGMANG_ORIGINAL_USER_SID__') { exit 2225 }")
+    expect(script).toContain('IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 740 }')
+    expect(script).toContain('[System.IO.Directory]::Delete($cache, $false)')
+  })
+
+  it('refuses an elevation plan that lacks a digest or points at another executable', () => {
+    const msiPath = 'C:\\Users\\tester\\AppData\\Local\\Temp\\node.msi'
+    const withoutDigest = buildNodeRuntimeInstallPlan(msiPath, systemPowerShell, false, testMachinePaths)
+    expect(() => buildNodeRuntimeElevatedInstallScript(withoutDigest.msi))
+      .toThrow('UAC 安装计划缺少 MSI 完整性校验值')
+    const digest = 'd'.repeat(64)
+    const plan = buildNodeRuntimeInstallPlan(msiPath, systemPowerShell, false, testMachinePaths, digest)
+    expect(() => buildNodeRuntimeElevatedInstallScript({ ...plan.msi, elevation: undefined }))
+      .toThrow('未配置 UAC 安装计划')
+    expect(() => buildNodeRuntimeElevatedInstallScript({
+      ...plan.msi,
+      executable: 'D:\\Windows\\System32\\cmd.exe',
+    })).toThrow('UAC 安装计划必须执行系统 msiexec.exe')
+    expect(() => buildNodeRuntimeElevatedInstallScript({
+      ...plan.msi,
+      argv: ['/i', 'C:\\Users\\tester\\AppData\\Local\\Temp\\node.exe', '/qn'],
+    })).toThrow('UAC 安装计划的 MSI 路径无效')
+    expect(() => buildNodeRuntimeUacBrokerScript(plan.msi, 'D:\\Program Files\\PowerShell\\7\\pwsh.exe'))
+      .toThrow('Node.js UAC 安装需要系统 Windows PowerShell')
+  })
+
+  it('requires Windows PowerShell for the broker rather than whichever shell resolves first', () => {
+    // The elevated script needs .NET Framework ACL overloads that PowerShell 7 dropped.
+    expect(resolveNodeRuntimeBrokerPowerShell(testMachinePaths, () => systemPowerShell))
+      .toBe(systemPowerShell)
+    expect(() => resolveNodeRuntimeBrokerPowerShell(
+      testMachinePaths,
+      () => 'D:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    )).toThrow('需要系统自带的 Windows PowerShell')
+  })
+
+  it('explains the broker exit codes a user can actually act on', () => {
+    expect(nodeRuntimeElevationFailureMessage(1223)).toContain('已取消管理员授权')
+    expect(nodeRuntimeElevationFailureMessage(2225)).toContain('另一个 Windows 账号')
+    expect(nodeRuntimeElevationFailureMessage(740)).toContain('未获得管理员权限')
+    expect(nodeRuntimeElevationFailureMessage(13)).toContain('签名校验失败')
+    // msiexec's own codes must keep flowing through untranslated.
+    expect(nodeRuntimeElevationFailureMessage(1603)).toBeNull()
+    expect(nodeRuntimeElevationFailureMessage(3010)).toBeNull()
+    expect(nodeRuntimeElevationFailureMessage(null)).toBeNull()
   })
 })

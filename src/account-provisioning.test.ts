@@ -195,7 +195,7 @@ describe('validateProvisionedCliConfigs', () => {
     } as unknown as import('./types').AppConfigSummary
     expect(validateProvisionedCliConfigs(['claude', 'codex', 'gemini'], config)).toEqual([
       { provider: 'claude', message: '配置文件未检测到 API Key' },
-      { provider: 'codex', message: 'Base URL 未指向当前星芒站点' },
+      { provider: 'codex', message: 'Base URL 未指向当前账号的服务地址' },
       { provider: 'gemini', message: '默认模型未写入配置' },
     ])
   })

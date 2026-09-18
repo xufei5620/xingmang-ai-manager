@@ -1522,7 +1522,7 @@ function AccountDashboard({
           empty={resource.loading ? '正在读取模型统计…' : resource.error ? '模型统计读取失败' : '暂无模型统计'}
         />
       </Card>
-      </> : <Notice tone="neutral" title="仅提供累计汇总" body="当前客户端尚未接入该站点的趋势和模型统计。此处显示全部时间累计值。" />}
+      </> : <Notice tone="neutral" title="仅提供累计汇总" body="当前客户端尚未接入该账号的趋势和模型统计。此处显示全部时间累计值。" />}
     </>
   )
 }
@@ -1887,10 +1887,10 @@ function AccountRecharge({
       'subscribe',
       async () => {
         if (purchaseMethod === 'balance') {
-          if (!accountSupports(session, 'supportsSubscriptionBalancePurchase')) throw new Error('当前站点暂不支持余额购买订阅。')
+          if (!accountSupports(session, 'supportsSubscriptionBalancePurchase')) throw new Error('当前账号暂不支持余额购买订阅。')
           await api.purchaseAccountSubscriptionWithBalance(purchase.id)
         } else {
-          if (!accountSupports(session, 'supportsSubscriptionPayment')) throw new Error('当前站点暂不支持客户端购买订阅。')
+          if (!accountSupports(session, 'supportsSubscriptionPayment')) throw new Error('当前账号暂不支持客户端购买订阅。')
           const payMethod = methods.find((item) => item.type === purchaseMethod)
           if (!payMethod || payMethod.provider === 'waffo')
             throw new Error('该支付渠道暂不支持订阅。')
@@ -2104,7 +2104,7 @@ function AccountRecharge({
       </Card>
       <Card title="选择订阅">
         {!accountSupports(session, 'supportsSubscriptionPayment') && !accountSupports(session, 'supportsSubscriptionBalancePurchase') &&
-          <Notice tone="neutral" title="订阅仅供查看" body="该站点的订阅购买与扣费规则请在官方站点管理。" />}
+          <Notice tone="neutral" title="订阅仅供查看" body="该账号的订阅购买与扣费规则请在官方网站管理。" />}
         {resource.data?.plans.map((plan) => (
           <ListRow
             key={plan.id}
