@@ -1142,6 +1142,8 @@ export function SettingsPage({
             '主题',
             '外观调整会应用到整个工具箱',
             <Segment
+              label="主题"
+              testId="settings-theme"
               options={[
                 ...(systemApi
                   ? [
