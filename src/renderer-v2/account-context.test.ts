@@ -23,4 +23,10 @@ describe('renderer account ownership', () => {
     expect(visibleAccountTab('keys', { ...session, capabilities: { supportsKeyManagement: true } as Parameters<typeof visibleAccountTab>[1]['capabilities'] })).toBe(true)
     expect(visibleAccountTab('devices', {})).toBe(true)
   })
+  it('does not infer tasks or trends from usage support', () => {
+    const session = { siteId: 'solov-api' as const, capabilities: { supportsUsage: true, supportsDashboard: true, supportsTasks: false } as Parameters<typeof visibleAccountTab>[1]['capabilities'] }
+    expect(visibleAccountTab('usage', session)).toBe(true)
+    expect(visibleAccountTab('dashboard', session)).toBe(true)
+    expect(visibleAccountTab('tasks', session)).toBe(false)
+  })
 })

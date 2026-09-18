@@ -20,6 +20,11 @@ describe('resolveDefaultCliModel', () => {
     expect(resolveDefaultCliModel('codex', ['vendor/codex-auto-review', 'codex_auto_review', 'codex-custom'])).toBe('codex-custom')
   })
 
+  it('keeps a non-GPT interactive model when the Codex group exposes one', () => {
+    expect(resolveDefaultCliModel('codex', ['codex-auto-review', 'deepseek-v4-flash'])).toBe('deepseek-v4-flash')
+    expect(resolveDefaultCliModel('codex', ['qwen3-max'])).toBe('qwen3-max')
+  })
+
   it('declines to invent a model when the group only exposes auto-review models', () => {
     expect(resolveDefaultCliModel('codex', ['codex-auto-review', 'codex-auto-review-v2'])).toBeNull()
     expect(resolveDefaultCliModel('codex', [], 'gpt-6-astra')).toBeNull()

@@ -62,7 +62,8 @@ import type { V2Bridge } from './types'
 import { SavedAccounts } from './SavedAccounts'
 import { accountOrigin, accountSiteId, accountSupports, visibleAccountTab, accountKeyQuota, type AccountSiteId } from './account-context'
 import type { AccountSessionState } from '../../electron/ipc-contract'
-import { AccountFilters, accountTimeRange } from './AccountFilters'
+import { AccountFilters, accountTimeRange, type AccountFilterField } from './AccountFilters'
+import { usageDateRange } from '../../electron/usage-date-range'
 import { platformApi } from './platform-api'
 import {
   resolveRelaySite,
@@ -465,7 +466,7 @@ export function AccountPage({
                     />
                   )}
                   {panel === 'dashboard' && (
-                    <AccountDashboard api={api} balance={account.balance} />
+                    <AccountDashboard api={api} balance={account.balance} session={account.session} />
                   )}
                   {panel === 'keys' && (
                     <AccountKeys
@@ -476,7 +477,7 @@ export function AccountPage({
                     />
                   )}
                   {panel === 'usage' && (
-                    <AccountUsage api={api} balance={account.balance} />
+                    <AccountUsage api={api} balance={account.balance} session={account.session} />
                   )}
                   {panel === 'tasks' && (
                     <AccountTasks
@@ -489,6 +490,7 @@ export function AccountPage({
                     <AccountRecharge
                       api={api}
                       balance={account.balance}
+                      session={account.session}
                       changed={changed}
                       refresh={refreshAccount}
                     />
@@ -1285,12 +1287,24 @@ function AccountKeys({
     </>
   )
 }
-function AccountUsage({ api, balance }: { api: V2Bridge; balance: Balance }) {
+const sub2ApiUsageFilterFields: AccountFilterField[] = [
+  { key: 'startDate', label: '开始日期', type: 'date' },
+  { key: 'endDate', label: '结束日期', type: 'date' },
+  { key: 'modelName', label: '模型名称' },
+  { key: 'apiKeyId', label: 'Key ID', type: 'number' },
+  { key: 'groupId', label: '分组 ID', type: 'number' },
+  { key: 'billingType', label: '计费来源', options: [
+    { value: '', label: '全部来源' }, { value: '0', label: '账户余额' }, { value: '1', label: '订阅额度' },
+  ] },
+]
+function AccountUsage({ api, balance, session }: { api: V2Bridge; balance: Balance; session: AccountSessionState }) {
+  const calendar = accountSiteId(session) === 'solov-api'
+  const defaultDates = useMemo(() => usageDateRange({}), [])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [filter, setFilter] = useState<
     Parameters<V2Bridge['getAccountUsage']>[0]
-  >({})
+  >(calendar ? defaultDates : {})
   const [selected, setSelected] = useState<Usage | null>(null)
   const load = useCallback(
     () => api.getAccountUsage({ ...filter, page, pageSize }),
@@ -1300,8 +1314,22 @@ function AccountUsage({ api, balance }: { api: V2Bridge; balance: Balance }) {
   return (
     <>
       <AccountFilters
-        fields={usageFilterFields}
+        fields={calendar ? sub2ApiUsageFilterFields : usageFilterFields}
+        initialValues={calendar ? defaultDates : undefined}
         onApply={(values) => {
+          if (calendar) {
+            const id = (value: string | undefined) => {
+              if (!value) return undefined
+              const parsed = Number(value)
+              if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error('Key ID 和分组 ID 必须为正整数。')
+              return parsed
+            }
+            setFilter({ ...usageDateRange({ ...values, timezone: defaultDates.timezone }), modelName: values.modelName,
+              apiKeyId: id(values.apiKeyId), groupId: id(values.groupId),
+              ...(values.billingType === '0' || values.billingType === '1' ? { billingType: Number(values.billingType) as 0 | 1 } : {}) })
+            setPage(1)
+            return
+          }
           setFilter({
             ...accountTimeRange(values.start, values.end),
             modelName: values.modelName,
@@ -1314,6 +1342,7 @@ function AccountUsage({ api, balance }: { api: V2Bridge; balance: Balance }) {
           setPage(1)
         }}
       />
+      {calendar && <p>按整日统计（时区 {defaultDates.timezone}），包含结束日期全天。默认最近 7 个日历日。</p>}
       <Toolbar
         left={
           <>
@@ -1369,7 +1398,7 @@ function AccountUsage({ api, balance }: { api: V2Bridge; balance: Balance }) {
             })) ?? []
           }
           rowKey={(row) => String(row.id)}
-          empty={resource.loading ? '正在读取调用明细…' : '暂无调用明细'}
+          empty={resource.loading ? '正在读取调用明细…' : resource.error ? '调用明细读取失败' : '暂无调用明细'}
           label="调用明细"
         />
       </Card>
@@ -1386,10 +1415,13 @@ function AccountUsage({ api, balance }: { api: V2Bridge; balance: Balance }) {
 function AccountDashboard({
   api,
   balance,
+  session,
 }: {
   api: V2Bridge
   balance: Balance
+  session: AccountSessionState
 }) {
+  const supportsTrends = accountSupports(session, 'supportsDashboardTrends')
   const [days, setDays] = useState('7')
   const range = useMemo(() => {
     const endTimestamp = Math.floor(Date.now() / 1000)
@@ -1405,7 +1437,7 @@ function AccountDashboard({
     <>
       <Toolbar
         left={
-          <Select
+          supportsTrends ? <Select
             aria-label="统计时间"
             options={[
               { value: '1', label: '最近 24 小时' },
@@ -1414,7 +1446,7 @@ function AccountDashboard({
             ]}
             value={days}
             onChange={(event) => setDays(event.target.value)}
-          />
+          /> : <Pill>累计汇总 · 全部时间</Pill>
         }
         right={
           <Button icon={RefreshCw} onClick={() => void resource.reload()}>
@@ -1440,6 +1472,7 @@ function AccountDashboard({
           </strong>
         </Card>
       </div>
+      {supportsTrends && resource.data?.coverage !== 'all-time-summary' ? <>
       <Card title="用量趋势">
         <div className="v2-business-chart" aria-label="用量趋势">
           {resource.data?.buckets.length ? (
@@ -1463,7 +1496,7 @@ function AccountDashboard({
               </div>
             ))
           ) : (
-            <p>{resource.loading ? '正在读取用量…' : '这个时间段还没有用量'}</p>
+            <p>{resource.loading ? '正在读取用量…' : resource.error ? '用量趋势读取失败' : '这个时间段还没有用量'}</p>
           )}
         </div>
       </Card>
@@ -1484,9 +1517,10 @@ function AccountDashboard({
             })) ?? []
           }
           rowKey={(row) => String(row.model)}
-          empty="暂无模型统计"
+          empty={resource.loading ? '正在读取模型统计…' : resource.error ? '模型统计读取失败' : '暂无模型统计'}
         />
       </Card>
+      </> : <Notice tone="neutral" title="仅提供累计汇总" body="当前客户端尚未接入该站点的趋势和模型统计。此处显示全部时间累计值。" />}
     </>
   )
 }
@@ -1733,11 +1767,13 @@ function AccountOrders({
 function AccountRecharge({
   api,
   balance,
+  session,
   changed,
   refresh,
 }: {
   api: V2Bridge
   balance: Balance
+  session: AccountSessionState
   changed: () => void
   refresh: () => void
 }) {
@@ -1849,8 +1885,10 @@ function AccountRecharge({
       'subscribe',
       async () => {
         if (purchaseMethod === 'balance') {
+          if (!accountSupports(session, 'supportsSubscriptionBalancePurchase')) throw new Error('当前站点暂不支持余额购买订阅。')
           await api.purchaseAccountSubscriptionWithBalance(purchase.id)
         } else {
+          if (!accountSupports(session, 'supportsSubscriptionPayment')) throw new Error('当前站点暂不支持客户端购买订阅。')
           const payMethod = methods.find((item) => item.type === purchaseMethod)
           if (!payMethod || payMethod.provider === 'waffo')
             throw new Error('该支付渠道暂不支持订阅。')
@@ -1997,7 +2035,7 @@ function AccountRecharge({
         />
       )}
       <Card title="我的订阅">
-        <SettingRow
+        {accountSupports(session, 'supportsSubscriptionPreference') && <SettingRow
           title="扣费偏好"
           description="决定请求优先使用订阅还是账户余额"
           control={
@@ -2027,16 +2065,16 @@ function AccountRecharge({
               }}
             />
           }
-        />
+        />}
         {resource.data?.subscriptions.allSubscriptions.length ? (
           resource.data.subscriptions.allSubscriptions.map((subscription) => (
             <ListRow
               key={subscription.id}
               icon={Zap}
               title={
-                resource.data?.plans.find(
+                subscription.groupName || (subscription.source === 'sub2api' ? `订阅分组 ${subscription.planId}` : resource.data?.plans.find(
                   (plan) => plan.id === subscription.planId,
-                )?.title ?? `订阅 ${subscription.planId}`
+                )?.title ?? `订阅 ${subscription.planId}`)
               }
               badge={
                 <Pill
@@ -2047,14 +2085,24 @@ function AccountRecharge({
                     : subscription.status}
                 </Pill>
               }
-              desc={`剩余 ${quotaMoney(Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · 到期 ${displayDate(subscription.endsAt)}`}
+              desc={subscription.quotaPeriods ? <>
+                {subscription.quotaPeriods.map((period) => <span key={period.period} style={{ display: 'block' }}>
+                  {{ daily: '日额度', weekly: '周额度', monthly: '月额度' }[period.period]}：
+                  已用 {quotaMoney(period.used, balance)} · {period.limitState === 'unlimited' ? '不限额'
+                    : period.limitState === 'unknown' ? '限额暂未提供'
+                    : `限额 ${quotaMoney(period.limit, balance)} · 剩余 ${quotaMoney(period.used === null ? null : Math.max(0, period.limit! - period.used), balance)}`}
+                </span>)}
+                <span>到期 {displayDate(subscription.endsAt)}</span>
+              </> : `剩余 ${quotaMoney(subscription.amountTotal === null || subscription.amountUsed === null ? null : Math.max(0, subscription.amountTotal - subscription.amountUsed), balance)} · 到期 ${displayDate(subscription.endsAt)}`}
             />
           ))
         ) : (
-          <p>还没有订阅</p>
+          <p>{resource.loading ? '正在读取订阅…' : resource.error ? '订阅读取失败' : '还没有订阅'}</p>
         )}
       </Card>
       <Card title="选择订阅">
+        {!accountSupports(session, 'supportsSubscriptionPayment') && !accountSupports(session, 'supportsSubscriptionBalancePurchase') &&
+          <Notice tone="neutral" title="订阅仅供查看" body="该站点的订阅购买与扣费规则请在官方站点管理。" />}
         {resource.data?.plans.map((plan) => (
           <ListRow
             key={plan.id}
@@ -2063,7 +2111,7 @@ function AccountRecharge({
             desc={plan.subtitle}
             meta={`${plan.currency} ${plan.priceAmount.toFixed(2)}`}
             actions={
-              <Button
+              (accountSupports(session, 'supportsSubscriptionPayment') || (plan.allowBalancePay && accountSupports(session, 'supportsSubscriptionBalancePurchase'))) && <Button
                 icon={CreditCard}
                 size="sm"
                 onClick={() => {

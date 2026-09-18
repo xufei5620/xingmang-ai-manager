@@ -1,4 +1,4 @@
-import { accelerationTrialSeconds, type AccelerationApi, type AccelerationLine, type AccelerationMode, type AccelerationState } from '../../../electron/acceleration-contract'
+import { accelerationBonusSeconds, accelerationTrialSeconds, isAccelerationBonusCode, type AccelerationApi, type AccelerationLine, type AccelerationMode, type AccelerationState } from '../../../electron/acceleration-contract'
 
 const legacyTrialMilliseconds = 60 * 60 * 1000
 
@@ -32,14 +32,16 @@ function readUsedMilliseconds(storage: Storage | undefined, scope: string, initi
 /** Isolated interactive demo. It never opens a socket or changes the system network. */
 export function createPreviewAccelerationApi({ remainingSeconds = accelerationTrialSeconds, storage }: { remainingSeconds?: number; storage?: Storage } = {}): AccelerationApi {
   const lines: AccelerationLine[] = [{ id: 'preview-jp', name: '日本线路 1', region: 'JP', latencyMs: 188 }, { id: 'preview-sg', name: '新加坡线路 2', region: 'SG', latencyMs: 242 }, { id: 'preview-us', name: '美国线路 3', region: 'US', latencyMs: 356 }]
-  const records = new Map<string, { remaining: number; used: number; startedAt: number | null; session: number; mode: AccelerationMode; lineId: string }>()
+  const records = new Map<string, { remaining: number; used: number; bonus: number; startedAt: number | null; session: number; mode: AccelerationMode; lineId: string }>()
   function record(scope: string) {
     let current = records.get(scope)
     if (!current) {
       const initialRemaining = (Number.isFinite(remainingSeconds) ? Math.max(0, Math.min(accelerationTrialSeconds, remainingSeconds)) : 0) * 1000
       const used = readUsedMilliseconds(storage, scope, accelerationTrialSeconds * 1000 - initialRemaining)
-      const remaining = Math.max(0, accelerationTrialSeconds * 1000 - used)
-      current = { remaining, used, startedAt: null, session: 0, mode: 'system-proxy', lineId: lines[0].id }
+      let bonus = 0
+      try { if (storage?.getItem(`xingmang-acceleration-preview:bonus:${scope}`) === 'claimed') bonus = accelerationBonusSeconds } catch { /* Preview only. */ }
+      const remaining = Math.max(0, (accelerationTrialSeconds + bonus) * 1000 - used)
+      current = { remaining, used, bonus, startedAt: null, session: 0, mode: 'system-proxy', lineId: lines[0].id }
       records.set(scope, current)
     }
     return current
@@ -55,12 +57,22 @@ export function createPreviewAccelerationApi({ remainingSeconds = accelerationTr
     }
     try { storage?.setItem(`xingmang-acceleration-preview:v2:${scope}`, JSON.stringify({ version: 2, usedMilliseconds: used })) } catch { /* Preview only. */ }
     return { scope, phase: remaining === 0 ? 'exhausted' : current.startedAt === null ? 'idle' : 'active',
-      mode: current.mode, totalSeconds: accelerationTrialSeconds, remainingSeconds: remaining / 1000, sessionSeconds: session / 1000,
+      mode: current.mode, totalSeconds: accelerationTrialSeconds + current.bonus, remainingSeconds: remaining / 1000, sessionSeconds: session / 1000,
       connectedAt: current.startedAt === null ? null : new Date(current.startedAt).toISOString(), measuredAt: new Date().toISOString(),
       line: current.startedAt === null ? null : lines.find(line => line.id === current.lineId) ?? lines[0], error: null }
   }
   return {
     async getAccelerationState(scope) { return state(scope) },
+    async redeemAccelerationCode(scope, code) {
+      const latest = state(scope)
+      if (!isAccelerationBonusCode(code)) return { status: 'invalid-code', addedSeconds: 0, state: latest }
+      const current = record(scope)
+      if (current.bonus) return { status: 'already-redeemed', addedSeconds: 0, state: latest }
+      current.bonus = accelerationBonusSeconds
+      current.remaining += accelerationBonusSeconds * 1000
+      try { storage?.setItem(`xingmang-acceleration-preview:bonus:${scope}`, 'claimed') } catch { /* Preview only. */ }
+      return { status: 'redeemed', addedSeconds: accelerationBonusSeconds, state: state(scope) }
+    },
     async startAcceleration(scope, mode, lineId) {
       const current = record(scope)
       if (state(scope).remainingSeconds === 0) return state(scope)

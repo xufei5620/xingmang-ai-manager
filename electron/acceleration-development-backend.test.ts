@@ -3,7 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { createAccelerationDevelopmentBackend } from './acceleration-development-backend'
-import { accelerationTrialSeconds } from './acceleration-contract'
+import { accelerationBonusCode, accelerationBonusSeconds, accelerationTrialSeconds } from './acceleration-contract'
 import * as safe from './safe-local-data'
 
 const scope = 'xm-account:1'
@@ -32,6 +32,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
   let running = false
   const events: string[] = []
   const scheduled = new Set<{ at: number; callback: () => void }>()
+  const onDiagnostic = vi.fn()
   const runtime = {
     start: vi.fn(async () => { events.push('runtime:start'); running = true; return { line, proxyPort: 19001 } }),
     stop: vi.fn(async () => { events.push('runtime:stop'); running = false }),
@@ -43,7 +44,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
   }
   const backend = createAccelerationDevelopmentBackend({
     runtime, proxy, ledgerPath, now: () => wall, monotonicNow: () => monotonic,
-    listLines: async () => [line], pingLine, entitlementSource,
+    listLines: async () => [line], pingLine, entitlementSource, onDiagnostic,
     schedule(callback, milliseconds) {
       const timer = { at: monotonic + milliseconds, callback }
       scheduled.add(timer)
@@ -56,7 +57,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
     await backend.dispose().catch(() => undefined)
   })
   return {
-    backend, runtime, proxy, events, ledgerPath, scheduled,
+    backend, runtime, proxy, events, ledgerPath, scheduled, onDiagnostic,
     setRunning: (value: boolean) => { running = value },
     setWall: (value: number) => { wall = value },
     elapse(milliseconds: number) { wall += milliseconds; monotonic += milliseconds },
@@ -69,7 +70,7 @@ async function setup(existingPath?: string, pingLine?: (lineId: string) => Promi
       // A queue barrier, deliberately not getState (which also checks expiry).
       await backend.recover()
     },
-    async readLedger() { return JSON.parse(await fs.readFile(ledgerPath, 'utf8')) as { version: number; accounts: Record<string, { usedMs: number; startedAt: number | null }> } },
+    async readLedger() { return JSON.parse(await fs.readFile(ledgerPath, 'utf8')) as { version: number; accounts: Record<string, { usedMs: number; startedAt: number | null; bonusRedeemed?: true }> } },
   }
 }
 
@@ -246,6 +247,57 @@ describe('local development acceleration backend', () => {
     expect((await test.backend.stopAcceleration(scope)).phase).toBe('idle')
   })
 
+  it('retries private-file cleanup after the core has exited before declaring a successful stop', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.runtime.stop.mockImplementationOnce(async () => {
+      test.setRunning(false)
+      throw new Error('private-config-cleanup-EPERM')
+    }).mockRejectedValueOnce(new Error('private-config-cleanup-still-locked'))
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('stopping')
+    expect(test.runtime.isRunning()).toBe(false)
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('stopping')
+    expect((await test.readLedger()).accounts[scope].startedAt).not.toBeNull()
+    expect(test.runtime.stop).toHaveBeenCalledTimes(2)
+    expect(test.onDiagnostic.mock.calls).toEqual([['core-stop'], ['core-stop']])
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('idle')
+    expect(test.runtime.stop).toHaveBeenCalledTimes(3)
+    expect((await test.readLedger()).accounts[scope].startedAt).toBeNull()
+  })
+
+  it('reports proxy restoration failures by stage without exposing private native errors', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.proxy.restore.mockRejectedValueOnce(new Error('https://user:secret@private-proxy.test'))
+    const result = await test.backend.stopAcceleration(scope)
+    expect(result.phase).toBe('stopping')
+    expect(test.runtime.stop).not.toHaveBeenCalled()
+    expect(test.onDiagnostic.mock.calls).toEqual([['proxy-restore']])
+    expect(result.error).not.toContain('private-proxy')
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('idle')
+  })
+
+  it('reports ledger failures separately and retries settlement without restarting stopped cleanup', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    vi.spyOn(safe, 'writeAtomicSafeUtf8File').mockRejectedValueOnce(new Error('private-ledger-path'))
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('stopping')
+    expect(test.runtime.isRunning()).toBe(false)
+    expect(test.onDiagnostic.mock.calls).toEqual([['ledger-write']])
+    expect((await test.readLedger()).accounts[scope].startedAt).not.toBeNull()
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('idle')
+    expect(test.runtime.stop).toHaveBeenCalledOnce()
+  })
+
+  it('keeps cleanup retryable even if diagnostic reporting throws', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.onDiagnostic.mockImplementation(() => { throw new Error('diagnostic unavailable') })
+    test.runtime.stop.mockRejectedValueOnce(new Error('private-stop-error'))
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('stopping')
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('idle')
+  })
+
   it('stops at exhaustion using its independent timer without UI polling', async () => {
     const test = await setup()
     await test.backend.startAcceleration(scope, 'system-proxy')
@@ -278,7 +330,7 @@ describe('local development acceleration backend', () => {
     test.setRunning(false)
     test.events.length = 0
     await test.backend.notifyRuntimeExit()
-    expect(test.events).toEqual(['proxy:restore'])
+    expect(test.events).toEqual(['proxy:restore', 'runtime:stop'])
     expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'error', remainingSeconds: accelerationTrialSeconds - 2, error: expect.stringContaining('意外退出') })
     expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 2500, startedAt: null })
     expect((await test.backend.startAcceleration(scope, 'system-proxy')).phase).toBe('active')
@@ -426,5 +478,283 @@ describe('local development acceleration backend', () => {
     await test.backend.dispose()
     expect(test.runtime.isRunning()).toBe(false)
     expect(test.scheduled.size).toBe(0)
+  })
+})
+
+describe('device-local acceleration bonus redemption', () => {
+  const extendedSeconds = accelerationTrialSeconds + accelerationBonusSeconds
+
+  it('persists one claim per complete account scope when duplicate requests arrive concurrently', async () => {
+    const test = await setup()
+    const results = await Promise.all(Array.from({ length: 8 }, () => test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)))
+    expect(results.filter((result) => result.status === 'redeemed')).toHaveLength(1)
+    expect(results.filter((result) => result.status === 'already-redeemed')).toHaveLength(7)
+    expect(results.reduce((sum, result) => sum + result.addedSeconds, 0)).toBe(accelerationBonusSeconds)
+    for (const result of results) expect(result.state).toMatchObject({ scope, phase: 'idle', totalSeconds: extendedSeconds, remainingSeconds: extendedSeconds })
+    expect(await test.readLedger()).toMatchObject({ version: 2, accounts: { [scope]: { usedMs: 0, startedAt: null, bonusRedeemed: true } } })
+
+    // The account domain is part of the identity even when the numeric ID matches.
+    await expect(test.backend.redeemAccelerationCode!('api-account:1', accelerationBonusCode))
+      .resolves.toMatchObject({ status: 'redeemed', addedSeconds: accelerationBonusSeconds, state: { scope: 'api-account:1' } })
+    await expect(test.backend.redeemAccelerationCode!('xm-account:2', accelerationBonusCode))
+      .resolves.toMatchObject({ status: 'redeemed', addedSeconds: accelerationBonusSeconds })
+    expect(test.runtime.start).not.toHaveBeenCalled()
+    expect(test.proxy.enable).not.toHaveBeenCalled()
+  })
+
+  it('rejects invalid codes without persisting a claim and accepts the contract normalization', async () => {
+    const test = await setup()
+    await test.backend.recover()
+    const write = vi.spyOn(safe, 'writeAtomicSafeUtf8File')
+    for (const code of ['', 'XM-NEBULA-10M-WRONG', `${accelerationBonusCode} extra`]) {
+      await expect(test.backend.redeemAccelerationCode!(scope, code)).resolves.toMatchObject({
+        status: 'invalid-code', addedSeconds: 0, state: { totalSeconds: accelerationTrialSeconds, remainingSeconds: accelerationTrialSeconds },
+      })
+    }
+    expect(write).not.toHaveBeenCalled()
+    await expect(test.backend.redeemAccelerationCode!(scope, `  ${accelerationBonusCode.toLowerCase()}\n`))
+      .resolves.toMatchObject({ status: 'redeemed', addedSeconds: accelerationBonusSeconds })
+  })
+
+  it('migrates legacy usage before adding time without resetting spent milliseconds', async () => {
+    for (const usedMs of [300_000, 1_200_000, 1_800_000, 3_600_000]) {
+      const test = await setup()
+      await fs.writeFile(test.ledgerPath, JSON.stringify({ version: 1, accounts: { [scope]: { usedMs, startedAt: null } } }))
+      const historicalUse = Math.min(usedMs, accelerationTrialSeconds * 1000)
+      await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+        status: 'redeemed', addedSeconds: accelerationBonusSeconds,
+        state: { totalSeconds: extendedSeconds, remainingSeconds: extendedSeconds - historicalUse / 1000 },
+      })
+      expect(await test.readLedger()).toEqual({ version: 2, accounts: { [scope]: { usedMs: historicalUse, startedAt: null, bonusRedeemed: true } } })
+    }
+  })
+
+  it.each([false, 'true', 1, null])('rejects malformed persisted bonus markers (%s) without rewriting the ledger', async (bonusRedeemed) => {
+    const test = await setup()
+    const original = JSON.stringify({ version: 2, accounts: { [scope]: { usedMs: 0, startedAt: null, bonusRedeemed } } })
+    await fs.writeFile(test.ledgerPath, original)
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).rejects.toThrow('时长无法读取或保存')
+    expect(await fs.readFile(test.ledgerPath, 'utf8')).toBe(original)
+    expect(test.runtime.start).not.toHaveBeenCalled()
+  })
+
+  it('rejects bonus fields on legacy ledgers and version 2 usage beyond the credited allowance', async () => {
+    for (const entry of [
+      { version: 1, usedMs: 0, bonusRedeemed: true },
+      { version: 2, usedMs: accelerationTrialSeconds * 1000 + 1 },
+      { version: 2, usedMs: extendedSeconds * 1000 + 1, bonusRedeemed: true },
+    ]) {
+      const test = await setup()
+      const { version, ...usage } = entry
+      const original = JSON.stringify({ version, accounts: { [scope]: { ...usage, startedAt: null } } })
+      await fs.writeFile(test.ledgerPath, original)
+      await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).rejects.toThrow('时长无法读取或保存')
+      expect(await fs.readFile(test.ledgerPath, 'utf8')).toBe(original)
+    }
+  })
+
+  it('leaves an active allowance and timer unchanged if atomic persistence fails, then allows a retry', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(5000)
+    const before = await fs.readFile(test.ledgerPath, 'utf8')
+    const originalTimer = [...test.scheduled][0]
+    test.events.length = 0
+    vi.spyOn(safe, 'writeAtomicSafeUtf8File').mockRejectedValueOnce(new Error('private-ledger-write-error'))
+
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).rejects.toThrow('时长无法读取或保存')
+    expect(await fs.readFile(test.ledgerPath, 'utf8')).toBe(before)
+    expect([...test.scheduled]).toEqual([originalTimer])
+    expect(test.events).toEqual([])
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'active', totalSeconds: accelerationTrialSeconds, remainingSeconds: accelerationTrialSeconds - 5 })
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+      status: 'redeemed', addedSeconds: accelerationBonusSeconds, state: { phase: 'active', remainingSeconds: extendedSeconds - 5 },
+    })
+  })
+
+  it('extends the current expiry without restarting the core, proxy, or session clock', async () => {
+    const test = await setup()
+    const connected = await test.backend.startAcceleration(scope, 'system-proxy')
+    const oldTimer = [...test.scheduled][0]
+    test.elapse(12_345)
+    test.events.length = 0
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+      status: 'redeemed', state: {
+        phase: 'active', totalSeconds: extendedSeconds, remainingSeconds: extendedSeconds - 12,
+        sessionSeconds: 12, connectedAt: connected.connectedAt, line,
+      },
+    })
+    expect(test.events).toEqual([])
+    expect(test.runtime.start).toHaveBeenCalledOnce()
+    expect(test.scheduled.has(oldTimer)).toBe(false)
+    expect([...test.scheduled].map((timer) => timer.at)).toEqual([extendedSeconds * 1000])
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: epoch, bonusRedeemed: true })
+
+    await test.advance(accelerationTrialSeconds * 1000 - 12_345)
+    expect(test.runtime.isRunning()).toBe(true)
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'active', remainingSeconds: accelerationBonusSeconds })
+    await test.advance(accelerationBonusSeconds * 1000)
+    expect(test.runtime.isRunning()).toBe(false)
+    expect(test.events).toEqual(['proxy:restore', 'runtime:stop'])
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'exhausted', remainingSeconds: 0, sessionSeconds: extendedSeconds })
+  })
+
+  it('ignores an old expiry callback queued while the redemption write is in progress', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(accelerationTrialSeconds * 1000 - 1000)
+    const oldTimer = [...test.scheduled][0]
+    const entered = deferred<void>()
+    const held = deferred<void>()
+    const originalWrite = safe.writeAtomicSafeUtf8File
+    vi.spyOn(safe, 'writeAtomicSafeUtf8File').mockImplementationOnce(async (...args) => {
+      entered.resolve()
+      await held.promise
+      return originalWrite(...args)
+    })
+    test.events.length = 0
+    const pending = test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)
+    await entered.promise
+    test.elapse(1000)
+    test.scheduled.delete(oldTimer)
+    oldTimer.callback()
+    held.resolve()
+    await expect(pending).resolves.toMatchObject({ status: 'redeemed', state: { phase: 'active', remainingSeconds: accelerationBonusSeconds } })
+    await test.backend.recover()
+    expect(test.events).toEqual([])
+    expect(test.runtime.isRunning()).toBe(true)
+    expect([...test.scheduled].map((timer) => timer.at)).toEqual([extendedSeconds * 1000])
+    await test.advance(accelerationBonusSeconds * 1000)
+    expect(test.runtime.isRunning()).toBe(false)
+  })
+
+  it('does not replace another account session or its expiry when crediting a different scope', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    const originalTimer = [...test.scheduled][0]
+    test.events.length = 0
+    await expect(test.backend.redeemAccelerationCode!('api-account:1', accelerationBonusCode)).resolves.toMatchObject({
+      status: 'redeemed', state: { scope: 'api-account:1', phase: 'idle', remainingSeconds: extendedSeconds },
+    })
+    expect(test.events).toEqual([])
+    expect([...test.scheduled]).toEqual([originalTimer])
+    expect(await test.backend.getAccelerationState(scope)).toMatchObject({ phase: 'active', totalSeconds: accelerationTrialSeconds })
+  })
+
+  it('settles a session that expired during sleep against the old allowance before crediting', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse((accelerationTrialSeconds + 120) * 1000)
+    test.events.length = 0
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+      status: 'redeemed', addedSeconds: accelerationBonusSeconds,
+      state: { phase: 'idle', totalSeconds: extendedSeconds, remainingSeconds: accelerationBonusSeconds, connectedAt: null },
+    })
+    expect(test.events).toEqual(['proxy:restore', 'runtime:stop'])
+    expect(test.scheduled.size).toBe(0)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: accelerationTrialSeconds * 1000, startedAt: null, bonusRedeemed: true })
+  })
+
+  it('retains the claim through failed starts, normal stops, unexpected exits and reopening', async () => {
+    const test = await setup()
+    await test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)
+    test.proxy.enable.mockRejectedValueOnce(new Error('proxy unavailable'))
+    expect((await test.backend.startAcceleration(scope, 'system-proxy')).phase).toBe('error')
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 0, startedAt: null, bonusRedeemed: true })
+
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    expect((await test.readLedger()).accounts[scope].bonusRedeemed).toBe(true)
+    test.elapse(2000)
+    await test.backend.stopAcceleration(scope)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 2000, startedAt: null, bonusRedeemed: true })
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(3000)
+    test.setRunning(false)
+    await test.backend.notifyRuntimeExit()
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 5000, startedAt: null, bonusRedeemed: true })
+    await test.backend.dispose()
+
+    const reopened = await setup(test.ledgerPath)
+    await expect(reopened.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+      status: 'already-redeemed', addedSeconds: 0, state: { totalSeconds: extendedSeconds, remainingSeconds: extendedSeconds - 5 },
+    })
+  })
+
+  it('preserves the credited allowance and claim during unfinished-session crash recovery', async () => {
+    const test = await setup()
+    await fs.writeFile(test.ledgerPath, JSON.stringify({ version: 2, accounts: { [scope]: { usedMs: 15_000, startedAt: epoch, bonusRedeemed: true } } }))
+    test.setWall(epoch + 45_000)
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+      status: 'already-redeemed', addedSeconds: 0, state: { phase: 'idle', totalSeconds: extendedSeconds, remainingSeconds: extendedSeconds - 60 },
+    })
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 60_000, startedAt: null, bonusRedeemed: true })
+  })
+
+  it('exhausts the full credited allowance on crash-time clock rollback without permitting another claim', async () => {
+    const test = await setup()
+    await fs.writeFile(test.ledgerPath, JSON.stringify({ version: 2, accounts: { [scope]: { usedMs: 0, startedAt: epoch + 1000, bonusRedeemed: true } } }))
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+      status: 'already-redeemed', addedSeconds: 0, state: { phase: 'exhausted', totalSeconds: extendedSeconds, remainingSeconds: 0 },
+    })
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: extendedSeconds * 1000, startedAt: null, bonusRedeemed: true })
+  })
+
+  it('does not restore spent bonus time or allow another claim after reopening an exhausted account', async () => {
+    const test = await setup()
+    await test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    await test.advance(extendedSeconds * 1000)
+    await test.backend.dispose()
+    const reopened = await setup(test.ledgerPath)
+    await expect(reopened.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+      status: 'already-redeemed', addedSeconds: 0, state: { phase: 'exhausted', totalSeconds: extendedSeconds, remainingSeconds: 0 },
+    })
+    expect((await reopened.readLedger()).accounts[scope]).toEqual({ usedMs: extendedSeconds * 1000, startedAt: null, bonusRedeemed: true })
+  })
+
+  it('keeps failed expiry cleanup retryable when a bonus is credited during the stopping phase', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.proxy.restore.mockRejectedValue(new Error('temporary restore failure'))
+    await test.advance(accelerationTrialSeconds * 1000)
+    const retryTimer = [...test.scheduled][0]
+    expect(test.runtime.isRunning()).toBe(true)
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({
+      status: 'redeemed', state: { phase: 'stopping', totalSeconds: extendedSeconds },
+    })
+    expect(test.runtime.start).toHaveBeenCalledOnce()
+    expect(test.scheduled.size).toBe(1)
+    // Cleanup stays scheduled promptly rather than being postponed by 10 minutes.
+    expect([...test.scheduled][0].at).toBe(retryTimer.at)
+    test.proxy.restore.mockResolvedValue()
+    await test.advance(5000)
+    expect(test.runtime.isRunning()).toBe(false)
+    expect((await test.readLedger()).accounts[scope].bonusRedeemed).toBe(true)
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({ status: 'already-redeemed', addedSeconds: 0 })
+  })
+
+  it('retains the claim and frozen usage when final stop persistence needs a retry', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.elapse(2000)
+    vi.spyOn(safe, 'writeAtomicSafeUtf8File').mockRejectedValueOnce(new Error('stop ledger failed'))
+    expect((await test.backend.stopAcceleration(scope)).phase).toBe('stopping')
+    expect(test.runtime.isRunning()).toBe(false)
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).resolves.toMatchObject({ status: 'redeemed' })
+    test.elapse(7000)
+    await test.backend.stopAcceleration(scope)
+    expect((await test.readLedger()).accounts[scope]).toEqual({ usedMs: 2000, startedAt: null, bonusRedeemed: true })
+    expect((await test.backend.getAccelerationState(scope)).remainingSeconds).toBe(extendedSeconds - 2)
+  })
+
+  it('refuses claims once shutdown starts or completes', async () => {
+    const test = await setup()
+    await test.backend.startAcceleration(scope, 'system-proxy')
+    test.proxy.restore.mockRejectedValueOnce(new Error('temporary restore failure'))
+    await expect(test.backend.dispose()).rejects.toThrow('尚未完全停止')
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).rejects.toThrow('正在关闭')
+    expect((await test.readLedger()).accounts[scope].bonusRedeemed).toBeUndefined()
+    await test.backend.dispose()
+    await expect(test.backend.redeemAccelerationCode!(scope, accelerationBonusCode)).rejects.toThrow('正在关闭')
   })
 })

@@ -624,6 +624,7 @@ test('StrictMode account panels finish their initial requests instead of staying
 test('sidebar started collapsed keeps every primary icon inside the rail', async () => {
   await withFixture(async (page, baseUrl) => {
     await page.goto(baseUrl + '/e2e/account-commerce-fixture.html?scenario=sidebar&theme=dark&collapsed=true&more=true')
+    await page.locator('.main-nav > .nav-group > .nav-item').first().waitFor({ state: 'visible' })
     const result = await page.evaluate(async () => {
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
       const sidebar = document.querySelector('.sidebar')
@@ -651,6 +652,7 @@ test('sidebar started collapsed keeps every primary icon inside the rail', async
       }
     })
     assert.ok(result)
+    assert.ok(result.items.length > 0)
     assert.equal(result.navScrollLeft, 0)
     for (const item of result.items) {
       assert.ok(item.itemLeft >= result.sidebarLeft && item.itemRight <= result.sidebarRight)

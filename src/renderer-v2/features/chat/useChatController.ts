@@ -3,7 +3,7 @@ import { platformApi } from '../../platform-api'
 import type { AiChatGroupSummary } from '../../../../electron/ipc-contract'
 import { inspectModel, validateChatRequest, validateImageRequest, type ChatApi } from './api'
 import { activeConversation, applyStreamEvent, changeConversation, chatErrorMessage, completeImages, createConversation, createId, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, isGenerating, planTurn, resolveChatGroup, resolveChatModel, saveConversation, updateRequest, type ChatMode, type ChatSettings, type ChatWorkspace, type Conversation } from './state'
-import { importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
+import { ChatStorageError, readWorkspace, writeWorkspace } from './storage'
 
 export interface GroupPreparation { phase: 'loading' | 'ready' | 'error'; models: string[]; error?: string; warning?: string }
 interface PendingRequest { conversationId: string; assistantId: string; mode: ChatMode; epoch: number; cancelRequested?: boolean; failureDuringCancel?: unknown }
@@ -29,7 +29,6 @@ export function useChatController(api: ChatApi, scope: string, active = true) {
   const groupsInitialized = useRef(false)
   const groupFlight = useRef<{ epoch: number; promise: Promise<boolean> } | null>(null)
   const interactionTimer = useRef<number | undefined>(undefined)
-  const initialLoad = useRef(!initial.exists)
   const persist = useRef(!initial.warning)
   const commit = (change: (current: ChatWorkspace) => ChatWorkspace) => {
     const next = change(stateRef.current)
@@ -116,13 +115,6 @@ export function useChatController(api: ChatApi, scope: string, active = true) {
       if (event.type === 'complete' || event.type === 'error' || event.type === 'canceled') requests.current.delete(event.requestId)
     })
     void refreshGroups()
-    if (initialLoad.current) void api.readSession().then((session) => {
-      if (!alive.current || epoch.current !== owner || !session.authenticated || !session.account || stateRef.current.conversations.length || stateRef.current.draftConversation.draft) return
-      try {
-        const migrated = importLegacyHistory(window.localStorage, scope, session.account.userId)
-        if (migrated) { commit(() => migrated); setNotice('已载入之前的聊天记录，旧记录仍保留'); if (migrated.conversations[0].settings.group) void prepareGroup(migrated.conversations[0].settings.group) }
-      } catch { setNotice('之前的聊天记录暂时无法读取，原始数据已保留') }
-    }, () => undefined)
     return () => {
       alive.current = false; epoch.current++; groupAttempt.current++; unsubscribe()
       window.clearTimeout(interactionTimer.current); interactionTimer.current = undefined
@@ -151,7 +143,7 @@ export function useChatController(api: ChatApi, scope: string, active = true) {
     if (!persist.current) return
     const timer = window.setTimeout(() => {
       try { writeWorkspace(window.localStorage, stateRef.current); setStorageError('') }
-      catch { setStorageError('聊天记录没有保存到本机，当前内容仍保留在窗口中') }
+      catch (reason) { setStorageError(`${reason instanceof ChatStorageError ? reason.message : '聊天记录没有保存到本机'}。当前内容仍保留在窗口中，请勿关闭窗口。`) }
     }, 250)
     return () => window.clearTimeout(timer)
   }, [state])

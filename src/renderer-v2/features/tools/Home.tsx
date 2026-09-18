@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ArrowRight, ArrowUpRight, BookOpen, Download, FolderOpen, History, MessageSquare, Plug, RefreshCw, Zap } from 'lucide-react'
-import type { AccountBalance, AccountProfile, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
+import type { AccountBalance, AccountProfile, ExternalClientStatus, ExternalToolId, MultiProviderSessionPage, OfficialChatGptAccount } from '../../../../electron/ipc-contract'
+import { presentExternalClients } from './external-model'
 import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, PageHead, Pill, Progress, ToolRow } from '../../ui'
@@ -20,10 +21,17 @@ export interface HomeProps {
   supportsBilling?: boolean
   balance: AccountBalance | null
   jobs: Record<string, ToolJob>
+  externalClients: ExternalClientStatus[]
+  externalLoading: boolean
+  externalError: string
   onScan(): void
   onInstall(tool: ToolId): void
   onLaunch(tool: ToolId): void
   onConfigure(tool: ToolId): void
+  onConfigureExternal(tool: ExternalToolId): void
+  onInstallExternal(tool: ExternalToolId): void
+  onLaunchExternal(tool: ExternalToolId): void
+  onCodexModels(): void
   onUninstall(tool: ToolId): void
   onRuntime(runtime: 'node' | 'python'): void
   onNavigate(page: PageId, section?: string): void
@@ -72,11 +80,17 @@ export function Home(props: HomeProps) {
   const tools = snapshot ? presentTools(snapshot) : []
   const installed = tools.filter((tool) => tool.status.installed || jobs[tool.id])
   const available = tools.filter((tool) => !tool.status.installed && !jobs[tool.id])
+  const external = presentExternalClients(props.externalClients)
+  const installedExternal = external.filter((tool) => tool.status.installed || jobs[tool.id])
+  const availableExternal = external.filter((tool) => !tool.status.installed && !jobs[tool.id])
+  const installedCount = installed.length + installedExternal.length
+  const availableCount = available.length + availableExternal.length
   const dollars = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null
   const tier = dollars === null ? 'neutral' : balanceTier(dollars)
   const monthUsed = usage && balance && balance.quotaPerUnit > 0 ? usage.monthQuota / balance.quotaPerUnit : null
   const remainingDays = usage && balance && usage.weekQuota > 0 ? Math.max(0, Math.floor(balance.quota / (usage.weekQuota / 7))) : null
-  const ready = installed.some((tool) => tool.configured && !tool.error)
+  const ready = installed.some((tool) => tool.configured && !tool.error) || installedExternal.some((tool) => tool.ready && !tool.status.detectionError)
+  const connectedCount = installed.filter((tool) => tool.configured).length + installedExternal.filter((tool) => tool.status.configured && tool.status.configurationSource === 'xingmang').length
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
   const launchBusy = Object.keys(jobs).some((key) => key.startsWith('launch:'))
   const renderTool = useCallback((tool: ToolPresentation) => {
@@ -100,6 +114,7 @@ export function Home(props: HomeProps) {
         disabled={loading || launchBusy || bootstrapBusy && !tool.configured} icon={tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined} onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [
         { label: '配置', onSelect: () => props.onConfigure(tool.id) },
+        ...(tool.provider === 'codex' ? [{ label: '非 GPT 模型', testId: tool.id === 'codex' ? 'home-codex-models' : 'home-codexDesktop-models', onSelect: props.onCodexModels }] : []),
         { label: '查看记录', onSelect: () => props.onNavigate('sessions') },
         ...(tool.provider === 'codex' && tool.source === 'official' ? [{ label: '官方账户额度', onSelect: () => { setOfficial(snapshot?.system.officialChatGpt ?? null); setOfficialOpen(true) } }] : []),
         ...(canUninstallTool(
@@ -110,11 +125,26 @@ export function Home(props: HomeProps) {
           : []),
       ] : undefined} testId={`tool-row-${tool.id}`} />
   }, [bootstrapBusy, jobs, launchBusy, loading, props])
+  const renderExternal = (tool: ReturnType<typeof presentExternalClients>[number]) => {
+    const installJob = jobs[tool.id], launchJob = jobs[`launch:${tool.id}`], job = launchJob ?? installJob
+    const status = installJob ? 'installing' : tool.status.detectionError ? 'detectionFailed' : !tool.status.installed ? 'missing'
+      : tool.configurationStatus
+    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : tool.action === 'scan' ? '重新检测' : tool.action === 'install' ? tool.disabled ? '暂不支持' : '安装' : tool.action === 'launch' ? '打开' : '配置'
+    const primary = () => tool.action === 'scan' ? props.onScan() : tool.action === 'install' ? props.onInstallExternal(tool.id) : tool.action === 'launch' ? props.onLaunchExternal(tool.id) : props.onConfigureExternal(tool.id)
+    return <ToolRow key={tool.id} tool={tool.id} status={status} detail={job?.label ?? tool.detail} progress={installJob?.percent}
+      primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)} disabled={props.externalLoading || launchBusy || tool.disabled} title={tool.disabled ? tool.status.installHint ?? '当前平台暂不支持此操作' : undefined}
+        icon={tool.action === 'launch' ? ArrowUpRight : undefined} onClick={primary} testId={tool.action === 'configure' ? `home-client-${tool.id}` : `tool-${tool.id}-primary`}>{primaryLabel}</Button>}
+      extraAction={tool.status.installed && tool.action !== 'configure' && !job ? <Button size="sm" variant="ghost" onClick={() => props.onConfigureExternal(tool.id)} testId={`home-client-${tool.id}`}>配置</Button> : undefined}
+      menu={tool.status.installed && !job ? [
+        { label: '配置', onSelect: () => props.onConfigureExternal(tool.id) },
+        { label: '打开', disabled: !tool.status.launchSupported || launchBusy, onSelect: () => props.onLaunchExternal(tool.id) },
+      ] : undefined} testId={`tool-row-${tool.id}`} />
+  }
   return <section className="v2-page v2-home" data-testid="page-home">
     <PageHead title={`${greeting(new Date().getHours())}${account ? `，${account.username}` : ''}`}
       lead="选择工具开始任务，或打开聊天描述你的问题。" actions={<>
         <Button onClick={props.onGuide} testId="home-guide">新手引导</Button>
-        <Button icon={RefreshCw} loading={loading} onClick={props.onScan} testId="home-rescan">重新检测</Button>
+        <Button icon={RefreshCw} loading={loading || props.externalLoading} onClick={props.onScan} testId="home-rescan">重新检测</Button>
       </>} />
     {props.bootstrap && !props.bootstrap.result && <div className="v2-bootstrap-notice" role={props.bootstrap.error ? 'alert' : 'status'} data-busy={props.bootstrap.error ? undefined : 'true'}>
       <span className={`v2-dot ${props.bootstrap.error ? 'is-warn' : ''}`} />
@@ -126,6 +156,7 @@ export function Home(props: HomeProps) {
       {(props.bootstrap.result.failed.length > 0 || props.bootstrap.result.warnings.length > 0) && props.onBootstrapRetry && <Button size="xs" onClick={props.onBootstrapRetry}>重新同步</Button>}
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
+    {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.supportsBilling !== false && dollars !== null && dollars < 5 && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
     <div className="v2-home-grid">
       <div className="v2-home-main">
@@ -134,8 +165,9 @@ export function Home(props: HomeProps) {
           <ol className="v2-setup-steps">{['选开始方式', '准备工具', '确认连接', '开始使用'].map((label, i) => <li key={label}><span>{i + 1}</span>{label}</li>)}</ol>
         </Card>}
         {loading && !snapshot ? <Card title="你的工具"><Progress value={0} label="正在检测本机工具" /></Card> : <>
-          {installed.length > 0 && <Card title="你的工具" meta={`${installed.length} 个已装${installed.some((tool) => tool.updateAvailable) ? ` · ${installed.filter((tool) => tool.updateAvailable).length} 个有更新` : ''}`} padding="none">{installed.map(renderTool)}</Card>}
-          {available.length > 0 && <Card title="还可以装" meta={`${available.length} 个`} collapsible padding="none">{available.map(renderTool)}</Card>}
+          {installedCount > 0 && <Card title="你的工具" meta={`${installedCount} 个已装${installed.some((tool) => tool.updateAvailable) ? ` · ${installed.filter((tool) => tool.updateAvailable).length} 个有更新` : ''}`} padding="none">{installed.map(renderTool)}{installedExternal.map(renderExternal)}</Card>}
+          {availableCount > 0 && <Card title="还可以装" meta={`${availableCount} 个`} collapsible padding="none">{available.map(renderTool)}{availableExternal.map(renderExternal)}</Card>}
+          {props.externalLoading && !external.length && <div className="v2-loading-inline" role="status">正在检测 WorkBuddy、Claude Desktop 和 OpenCode</div>}
         </>}
         <Card title="最近" meta="从上次停下的地方继续" padding="none" actions={<Button variant="ghost" size="xs" onClick={() => props.onNavigate('sessions')}>全部记录</Button>}>
           {recentError ? <Empty icon={History} title="记录暂时没有读到" description={recentError} action={<Button onClick={() => setRecentAttempt((value) => value + 1)}>重新加载</Button>} />
@@ -157,7 +189,7 @@ export function Home(props: HomeProps) {
           <div className="v2-runtime-actions">{!snapshot?.system.runtime.node.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('node')}>准备 Node.js</Button>}
             {!snapshot?.system.runtime.python.installed && <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onRuntime('python')}>装 Python（可选环境）</Button>}</div>
         </Card>
-        <Card title="账户余额" padding="none" actions={<Pill tone={ready ? 'ok' : 'neutral'}>{ready ? `${installed.filter((tool) => tool.configured).length} 个工具已连接` : '等待连接'}</Pill>}>
+        <Card title="账户余额" padding="none" actions={<Pill tone={connectedCount ? 'ok' : 'neutral'}>{connectedCount ? `${connectedCount} 个工具已连接` : '等待连接'}</Pill>}>
           <div className={`v2-balance-body tone-${tier}`}><div title={balanceHint}><strong data-testid="home-balance">{dollars === null ? '暂未读到' : `$${dollars.toFixed(2)}`}</strong><small>可用余额 · 美元</small>{balanceStore && account && <Button variant="ghost" size="xs" icon={RefreshCw} loading={balanceState.loading} aria-label="刷新账户余额" title={balanceHint} onClick={() => void balanceStore.refresh('manual')} testId="home-balance-refresh" />}</div>
             {balanceState.error && <p className="v2-balance-error" role="status" title={balanceState.error}>更新失败，{balance ? '显示上次余额' : '请重试'}</p>}
             <div className="v2-balance-usage">{monthUsed !== null && dollars !== null && <Progress tone={tier === 'neutral' ? 'neutral' : tier} value={monthUsed + dollars > 0 ? monthUsed / (monthUsed + dollars) * 100 : 0} label={`本月已用 $${monthUsed.toFixed(2)}`} />}

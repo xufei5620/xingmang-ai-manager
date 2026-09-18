@@ -9,10 +9,11 @@ import type { NativeConfigSaveResult } from './config-files'
 import type { NewApiClientService } from './new-api-client'
 import { ipcInvokeChannels } from './ipc-contract'
 import { providerSessionProviders } from './provider-sessions'
-import { resolveRelaySite, supportServiceUrl } from './relay-sites'
+import { resolveRelaySite, sub2ApiSupportServiceUrl, supportServiceUrl } from './relay-sites'
 import { savedAccountId } from './saved-accounts'
 import { createWindowCloseQuery } from './window-close-query'
 import { createAccountWorkGate } from './account-work-gate'
+import { accelerationBonusCode } from './acceleration-contract'
 import { managedCliKeyProfiles, providerIds } from './catalog'
 import { resolveXingmangAiBundledSkillRoot } from './xingmang-ai-skill'
 
@@ -92,6 +93,10 @@ function serviceStub(): SystemService {
     setCodexDesktopLocale: vi.fn() as never,
     launchCodexDesktop: vi.fn() as never,
     fetchAvailableModels: vi.fn() as never,
+    configureExternalTool: vi.fn() as never,
+    scanExternalClients: vi.fn(async () => []),
+    installExternalClient: vi.fn() as never,
+    launchExternalClient: vi.fn(async () => undefined),
   }
 }
 
@@ -313,6 +318,7 @@ function register(
     externalUrlAllowlist: [
       'https://xm.solov.cc',
       supportServiceUrl,
+      sub2ApiSupportServiceUrl,
       'ms-windows-store://pdp/?ProductId=9PLM9XGG6VKS',
     ],
     externalShell: {
@@ -392,6 +398,53 @@ describe('registerIpcHandlers', () => {
     await stop(trustedEvent(), 'xm-account:7')
     expect(acceleration.startAcceleration).toHaveBeenCalledWith('xm-account:7', 'tun')
     expect(acceleration.stopAcceleration).toHaveBeenCalledWith('xm-account:7')
+  })
+
+  it('routes a fixed acceleration redemption through trusted IPC without logging the hidden code', async () => {
+    const result = { status: 'redeemed' as const, addedSeconds: 600, state: {
+      scope: 'xm-account:7', phase: 'idle' as const, mode: 'system-proxy' as const,
+      totalSeconds: 1800, remainingSeconds: 1800, sessionSeconds: 0,
+      measuredAt: new Date().toISOString(), connectedAt: null, line: null, error: null,
+    } }
+    const acceleration = {
+      getAccelerationState: vi.fn(), startAcceleration: vi.fn(), stopAcceleration: vi.fn(),
+      redeemAccelerationCode: vi.fn(async () => result),
+    }
+    const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { acceleration })
+    const redeem = electronMocks.handlers.get('acceleration:redeem-code')!
+    expect(() => redeem(trustedEvent('https://attacker.example'), 'xm-account:7', accelerationBonusCode)).toThrow('非应用页面')
+    for (const invalid of [null, {}, '', 'x'.repeat(65)]) expect(() => redeem(trustedEvent(), 'xm-account:7', invalid)).toThrow()
+    expect(acceleration.redeemAccelerationCode).not.toHaveBeenCalled()
+    await expect(redeem(trustedEvent(), 'xm-account:7', accelerationBonusCode)).resolves.toEqual(result)
+    expect(acceleration.redeemAccelerationCode).toHaveBeenCalledExactlyOnceWith('xm-account:7', accelerationBonusCode)
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(accelerationBonusCode)
+  })
+
+  it.each(['stopping', 'error'] as const)('logs an incomplete acceleration stop as a warning without changing the %s response', async (phase) => {
+    const state = { scope: 'xm-account:7', phase, mode: 'system-proxy' as const,
+      totalSeconds: 1200, remainingSeconds: 1100, sessionSeconds: 100, measuredAt: new Date().toISOString(),
+      connectedAt: null, line: null, error: '加速尚未完全停止，正在保留恢复状态，请再次点击停止。' }
+    const acceleration = {
+      getAccelerationState: vi.fn(async () => state), startAcceleration: vi.fn(async () => state),
+      stopAcceleration: vi.fn(async () => state),
+    }
+    const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { acceleration })
+    await expect(electronMocks.handlers.get('acceleration:stop')!(trustedEvent(), 'xm-account:7')).resolves.toEqual(state)
+    expect(runtimeLog.log).toHaveBeenCalledWith('warn', 'ipc', 'acceleration:stop', '停止加速尚未完成，已保留恢复状态',
+      expect.objectContaining({ phase, durationMs: expect.any(Number) }))
+    expect(runtimeLog.log.mock.calls.some((call) => call[0] === 'info' && call[2] === 'acceleration:stop')).toBe(false)
+  })
+
+  it('continues to log a confirmed idle acceleration stop as completed', async () => {
+    const state = { scope: 'xm-account:7', phase: 'idle' as const, mode: 'system-proxy' as const,
+      totalSeconds: 1200, remainingSeconds: 1100, sessionSeconds: 100, measuredAt: new Date().toISOString(),
+      connectedAt: null, line: null, error: null }
+    const acceleration = { getAccelerationState: vi.fn(async () => state), startAcceleration: vi.fn(async () => state),
+      stopAcceleration: vi.fn(async () => state) }
+    const { runtimeLog } = register(serviceStub(), 'C:\\app-data\\logs', undefined, accountServiceStub(), undefined, undefined, { acceleration })
+    await expect(electronMocks.handlers.get('acceleration:stop')!(trustedEvent(), 'xm-account:7')).resolves.toEqual(state)
+    expect(runtimeLog.log).toHaveBeenCalledWith('info', 'ipc', 'acceleration:stop', expect.stringContaining('完成'),
+      expect.objectContaining({ durationMs: expect.any(Number) }))
   })
 
   it('marks one fetched announcement read only through trusted account IPC with valid IDs', async () => {
@@ -1011,21 +1064,21 @@ describe('registerIpcHandlers', () => {
     expect(electronMocks.showMessageBox).not.toHaveBeenCalled()
   })
 
-  it('opens only the exact enterprise WeChat support URL', async () => {
+  it.each([supportServiceUrl, sub2ApiSupportServiceUrl])('opens only the exact enterprise WeChat support URL %s', async (supportUrl) => {
     register()
     const handler = electronMocks.handlers.get(ipcInvokeChannels.openExternal)!
 
-    await expect(handler(trustedEvent(), supportServiceUrl)).resolves.toBe(true)
-    expect(electronMocks.openExternal).toHaveBeenCalledWith(supportServiceUrl)
+    await expect(handler(trustedEvent(), supportUrl)).resolves.toBe(true)
+    expect(electronMocks.openExternal).toHaveBeenCalledWith(supportUrl)
 
     electronMocks.openExternal.mockClear()
     for (const hostileUrl of [
-      supportServiceUrl + '?redirect=1',
-      supportServiceUrl + '/extra',
+      supportUrl + '?redirect=1',
+      supportUrl + '/extra',
       // Derived from the constant so a support-account change cannot quietly
       // turn these into assertions about a URL nobody uses any more.
-      supportServiceUrl.replace('work.weixin.qq.com', 'work.weixin.qq.com.evil.example'),
-      supportServiceUrl.replace('https://', 'http://'),
+      supportUrl.replace('work.weixin.qq.com', 'work.weixin.qq.com.evil.example'),
+      supportUrl.replace('https://', 'http://'),
     ]) {
       await expect(handler(trustedEvent(), hostileUrl)).rejects.toThrow('不允许打开该链接')
     }
@@ -1132,6 +1185,74 @@ describe('registerIpcHandlers', () => {
     expect(serialized).not.toMatch(/"apiKey"\s*:/)
   })
 
+  describe('current-account configuration lookup', () => {
+    const cached = [{ provider: 'codex' as const, id: 38, group: managedCliKeyProfiles.codex.group,
+      name: 'cached-codex', key: 'sk-current-cache-only-secret' }]
+    function setup(signedIn = true) {
+      const account = Object.assign(accountServiceStub(), { getActiveSiteId: vi.fn<() => 'solov' | 'solov-api'>(() => 'solov') })
+      const session = { authenticated: signedIn, account: signedIn ? {
+        userId: 36, username: 'fixture-user', group: null, role: 1, quota: 0, usedQuota: 0,
+      } : null, siteId: 'solov' as const }
+      vi.mocked(account.getSessionState).mockReturnValue(session)
+      const cache = { read: vi.fn(async () => cached), save: vi.fn(), remove: vi.fn() }
+      const service = serviceStub()
+      const { runtimeLog } = register(service, undefined, undefined, account, undefined, cache)
+      const invoke = () => electronMocks.handlers.get('config:get')!(trustedEvent())
+      return { account, session, cache, service, runtimeLog, invoke }
+    }
+
+    it('reads the current account cache once and keeps raw keys inside the main process', async () => {
+      const f = setup()
+      const result = await f.invoke()
+      expect(f.cache.read).toHaveBeenCalledExactlyOnceWith(36)
+      expect(f.service.getConfig).toHaveBeenCalledExactlyOnceWith(false, cached)
+      expect(f.service.revealApiKey).not.toHaveBeenCalled()
+      expect(f.account.provisionCliKey).not.toHaveBeenCalled()
+      expect(f.account.listKeys).not.toHaveBeenCalled()
+      expect(f.cache.save).not.toHaveBeenCalled()
+      expect(JSON.stringify([result, f.runtimeLog.log.mock.calls])).not.toContain(cached[0].key)
+      expect(() => electronMocks.handlers.get('config:get')!(trustedEvent('https://evil.invalid'))).toThrow('非应用页面')
+      expect(f.cache.read).toHaveBeenCalledOnce()
+    })
+
+    it('does not look up any saved account while signed out', async () => {
+      const f = setup(false)
+      await f.invoke()
+      expect(f.cache.read).not.toHaveBeenCalled()
+      expect(f.service.getConfig).toHaveBeenCalledExactlyOnceWith(false)
+    })
+
+    it('keeps configuration readable if the encrypted cache is missing or unreadable without provisioning', async () => {
+      const f = setup()
+      f.cache.read.mockRejectedValue(new Error('private-keychain-details'))
+      await expect(f.invoke()).resolves.toEqual({ workspace: 'C:\\workspace', providers: {} })
+      expect(f.service.getConfig).toHaveBeenCalledExactlyOnceWith(false, [])
+      expect(f.account.provisionCliKey).not.toHaveBeenCalled()
+      expect(JSON.stringify(f.runtimeLog.log.mock.calls)).not.toContain('private-keychain-details')
+    })
+
+    it.each(['different-user', 'same-id-different-site', 'logout', 'switch-away-and-back', 'failed-read-then-switch'] as const)(
+      'rejects stale account evidence after %s during the cache read', async (change) => {
+        const f = setup()
+        let release!: () => void
+        f.cache.read.mockImplementation(async () => {
+          await new Promise<void>((resolve) => { release = resolve })
+          if (change === 'failed-read-then-switch') throw new Error('private-cache-error')
+          return cached
+        })
+        const pending = expect(f.invoke()).rejects.toThrow('账号会话已变更')
+        if (change === 'different-user') vi.mocked(f.account.getSessionState).mockReturnValue({ ...f.session, account: { ...f.session.account!, userId: 160 } })
+        if (change === 'same-id-different-site') f.account.getActiveSiteId.mockReturnValue('solov-api')
+        if (change === 'logout') vi.mocked(f.account.getSessionState).mockReturnValue({ authenticated: false, account: null })
+        if (change === 'switch-away-and-back' || change === 'failed-read-then-switch') vi.mocked(f.account.getSessionRevision!).mockReturnValue(2)
+        release()
+        await pending
+        expect(f.service.getConfig).not.toHaveBeenCalled()
+        expect(f.cache.save).not.toHaveBeenCalled()
+      },
+    )
+  })
+
   it('returns the actual current key group separately from the automatic group without any secret', async () => {
     const secret = 'sk-configured-chat-secret-wxyz'
     const account = Object.assign(accountServiceStub(), {
@@ -1213,6 +1334,109 @@ describe('registerIpcHandlers', () => {
     await create(trustedEvent(), input)
     expect(account.createKey).toHaveBeenCalledWith(input)
     expect(() => create(trustedEvent(), { ...input, remainQuota: 0 })).toThrow('额度格式错误')
+  })
+
+  it('routes external-client lifecycle operations through their dedicated service methods', async () => {
+    const service = serviceStub()
+    const event = trustedEvent()
+    register(service)
+    await expect(electronMocks.handlers.get('external-clients:scan')!(event)).resolves.toEqual([])
+    for (const tool of ['workbuddy', 'claudeDesktop', 'opencode']) {
+      await electronMocks.handlers.get('external-clients:install')!(event, tool)
+      await electronMocks.handlers.get('external-clients:launch')!(event, tool)
+      expect(service.installExternalClient).toHaveBeenLastCalledWith(tool, event.sender)
+      expect(service.launchExternalClient).toHaveBeenLastCalledWith(tool)
+    }
+    expect(service.scanExternalClients).toHaveBeenCalledOnce()
+    expect(service.configureExternalTool).not.toHaveBeenCalled()
+    expect(service.installCli).not.toHaveBeenCalled()
+  })
+
+  it('rejects paths, objects and unknown IDs before installing or launching an external client', () => {
+    const service = serviceStub()
+    register(service)
+    for (const channel of ['external-clients:install', 'external-clients:launch']) {
+      for (const input of [undefined, null, {}, ['opencode'], 'codex', 'C:\\untrusted.exe', 'opencode --shell']) {
+        expect(() => electronMocks.handlers.get(channel)!(trustedEvent(), input)).toThrow('未知的外部客户端类型')
+      }
+    }
+    expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.launchExternalClient).not.toHaveBeenCalled()
+  })
+
+  it.each(['external-clients:scan', 'external-clients:install', 'external-clients:launch'])('rejects an untrusted sender for %s', (channel) => {
+    const service = serviceStub()
+    register(service)
+    expect(() => electronMocks.handlers.get(channel)!(trustedEvent('https://untrusted.example/'), 'opencode')).toThrow('已拒绝')
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    expect(service.installExternalClient).not.toHaveBeenCalled()
+    expect(service.launchExternalClient).not.toHaveBeenCalled()
+  })
+
+  it('waits for account restoration before reading external-client configuration status', async () => {
+    let finishRestore!: () => void
+    let busy = true
+    const restored = new Promise<void>((resolve) => { finishRestore = resolve })
+    const accountWork = createAccountWorkGate({ revision: () => 0, assertReady: () => { if (busy) throw new Error('switching') } })
+    const service = serviceStub()
+    register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never, accountWork, accountSessionReady: restored })
+    const result = electronMocks.handlers.get('external-clients:scan')!(trustedEvent())
+    await Promise.resolve()
+    expect(service.scanExternalClients).not.toHaveBeenCalled()
+    busy = false
+    finishRestore()
+    await expect(result).resolves.toEqual([])
+  })
+
+  it('resolves external-client keys in the main process and never accepts a renderer URL', async () => {
+    const service = serviceStub()
+    const safeResult = { tool: 'opencode' as const, model: 'fixture-model', path: 'fixture-config', files: ['fixture-config'], backups: [], outcome: 'configured' as const, message: 'saved', restartRequired: true, connectionVerified: false as const }
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { hasApiKey: true, matchesRelay: true } } } as never)
+    vi.mocked(service.configureExternalTool).mockResolvedValue(safeResult)
+    const { runtimeLog } = register(service)
+    const handler = electronMocks.handlers.get('config:configure-external-tool')!
+    const result = await handler(trustedEvent(), 'opencode', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture-model', protocol: 'responses', baseUrl: 'https://attacker.invalid', apiKey: 'sk-injected' })
+    expect(result).toEqual(safeResult)
+    expect(service.configureExternalTool).toHaveBeenCalledWith('opencode', { apiKey: 'sk-known-secret-value', model: 'fixture-model', protocol: 'responses' }, expect.any(Function))
+    expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('sk-known-secret-value')
+    expect(JSON.stringify(result)).not.toContain('sk-known-secret-value')
+    expect(() => handler(trustedEvent('https://untrusted.example/'), 'opencode', {})).toThrow('已拒绝')
+    expect(service.configureExternalTool).toHaveBeenCalledOnce()
+  })
+
+  it('rejects invalid external-client requests before revealing credentials or writing', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('config:configure-external-tool')!
+    for (const input of [null, {}, { credential: { kind: 'account', keyId: -1 }, model: 'fixture' },
+      { credential: { kind: 'manual', apiKey: 'sk-private\nsecret' }, model: 'fixture' },
+      { credential: { kind: 'configured', provider: 'unknown' }, model: 'fixture' },
+      { credential: { kind: 'manual', apiKey: 'sk-fixture' }, model: 'fixture', protocol: 'shell' }]) {
+      await expect(handler(trustedEvent(), 'workbuddy', input)).rejects.toThrow()
+    }
+    await expect(handler(trustedEvent(), 'unknown', {})).rejects.toThrow('未知')
+    expect(service.revealApiKey).not.toHaveBeenCalled()
+    expect(service.configureExternalTool).not.toHaveBeenCalled()
+  })
+
+  it('does not reuse an external-client key belonging to a different relay', async () => {
+    const service = serviceStub()
+    vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { hasApiKey: true, matchesRelay: false } } } as never)
+    register(service)
+    await expect(electronMocks.handlers.get('config:configure-external-tool')!(trustedEvent(), 'opencode', { credential: { kind: 'configured', provider: 'codex' }, model: 'fixture' })).rejects.toThrow('重新选择密钥来源')
+    expect(service.revealApiKey).not.toHaveBeenCalled()
+    expect(service.configureExternalTool).not.toHaveBeenCalled()
+  })
+
+  it('rejects external-client account keys if the account changes while resolving the secret', async () => {
+    const service = serviceStub()
+    let revision = 1
+    const account = Object.assign(accountServiceStub(), { getSessionRevision: () => revision })
+    vi.mocked(account.getSessionState).mockReturnValue({ authenticated: true, account: { userId: 17 } } as never)
+    vi.mocked(account.revealKey).mockImplementation(async () => { revision++; return 'sk-old-account' })
+    register(service, undefined, undefined, account)
+    await expect(electronMocks.handlers.get('config:configure-external-tool')!(trustedEvent(), 'workbuddy', { credential: { kind: 'account', keyId: 202 }, model: 'fixture' })).rejects.toThrow('账号已变化')
+    expect(service.configureExternalTool).not.toHaveBeenCalled()
   })
 
   it('reveals the API key only through the dedicated trusted channel', () => {
@@ -3096,6 +3320,41 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseAccountEmailInput (account:send-reset-code)', () => {
+    it('routes explicit recovery to its source and rejects unsupported historical account recovery', async () => {
+      const primary = { capabilities: { supportsPasswordReset: true }, sendPasswordResetEmail: vi.fn(async () => undefined), resetPassword: vi.fn(async () => ({ newPassword: 'test-generated' })) }
+      const historical = { capabilities: { supportsPasswordReset: false }, sendPasswordResetEmail: vi.fn(), resetPassword: vi.fn() }
+      const getPublicClient = vi.fn((siteId: string) => siteId === 'solov' ? primary : historical)
+      const { accountService } = register(undefined, undefined, undefined, undefined, undefined, undefined, {
+        realmAccounts: { getSiteId: () => 'solov-api', getPublicClient } as never,
+      })
+      const send = electronMocks.handlers.get('account:send-reset-code')!
+      const reset = electronMocks.handlers.get('account:reset-password')!
+      await expect(send(trustedEvent(), 'same@example.test', 'solov')).resolves.toBeUndefined()
+      await expect(reset(trustedEvent(), { email: 'same@example.test', token: 'test-code' }, 'solov')).resolves.toEqual({ newPassword: 'test-generated' })
+      expect(primary.sendPasswordResetEmail).toHaveBeenCalledExactlyOnceWith('same@example.test')
+      expect(primary.resetPassword).toHaveBeenCalledExactlyOnceWith({ email: 'same@example.test', token: 'test-code' })
+      for (const siteId of ['solov-api', undefined]) {
+        expect(() => send(trustedEvent(), 'same@example.test', siteId)).toThrow('所选账号暂不支持')
+        expect(() => reset(trustedEvent(), { email: 'same@example.test', token: 'test-code' }, siteId)).toThrow('所选账号暂不支持')
+      }
+      expect(primary.sendPasswordResetEmail).toHaveBeenCalledTimes(1)
+      expect(primary.resetPassword).toHaveBeenCalledTimes(1)
+      expect(historical.sendPasswordResetEmail).not.toHaveBeenCalled()
+      expect(historical.resetPassword).not.toHaveBeenCalled()
+      expect(accountService.sendPasswordResetEmail).not.toHaveBeenCalled()
+      expect(accountService.resetPassword).not.toHaveBeenCalled()
+    })
+    it('rejects invalid sources and unsupported sources without the multi-account service', () => {
+      const { accountService } = register()
+      const send = electronMocks.handlers.get('account:send-reset-code')!
+      const reset = electronMocks.handlers.get('account:reset-password')!
+      for (const siteId of ['solov-api', 'invalid', null, {}]) {
+        expect(() => send(trustedEvent(), 'same@example.test', siteId)).toThrow()
+        expect(() => reset(trustedEvent(), { email: 'same@example.test', token: 'test-code' }, siteId)).toThrow()
+      }
+      expect(accountService.sendPasswordResetEmail).not.toHaveBeenCalled()
+      expect(accountService.resetPassword).not.toHaveBeenCalled()
+    })
     it('trims a valid email and forwards it to the account service', async () => {
       const { accountService } = register()
       const handler = electronMocks.handlers.get('account:send-reset-code')!
@@ -3213,6 +3472,25 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
   })
 
   describe('parseAccountUsageQuery (account:get-usage)', () => {
+    it('forwards Sub2API calendar dates, timezone, IDs and billing source across IPC', async () => {
+      const { accountService } = register()
+      vi.mocked(accountService.getUsage).mockResolvedValue({ page: 1, pageSize: 10, total: 0, records: [], stats: { quota: 0, rpm: null, tpm: null } })
+      const handler = electronMocks.handlers.get('account:get-usage')!
+      const query = { startDate: '2026-09-08', endDate: '2026-09-08', timezone: 'Asia/Shanghai', apiKeyId: 4, groupId: 5, billingType: 0 }
+      await handler(trustedEvent(), query)
+      expect(accountService.getUsage).toHaveBeenCalledWith(query)
+    })
+
+    it('rejects invalid or mixed calendar filters before reaching a backend', () => {
+      const { accountService } = register()
+      const handler = electronMocks.handlers.get('account:get-usage')!
+      for (const query of [{ startDate: '2026-02-30' }, { timezone: 'invalid/zone' }, { apiKeyId: 0 }, { groupId: '5' },
+        { billingType: 2 }, { startDate: '2026-09-08', startTimestamp: 1 }, { startDate: '2026-09-10', endDate: '2026-09-08' }]) {
+        expect(() => handler(trustedEvent(), query)).toThrow()
+      }
+      expect(accountService.getUsage).not.toHaveBeenCalled()
+    })
+
     it('parses a valid page/pageSize query and forwards it to the account service', async () => {
       const { accountService } = register()
       const page = { page: 2, pageSize: 20, total: 45, records: [], stats: { quota: 0, rpm: 0, tpm: 0 } }
@@ -4338,7 +4616,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         apiKey: plaintextKey,
         model: 'gpt-5.6-sol',
         mode: 'merge',
-      }, false, expect.any(Function))
+      }, false, expect.any(Function), { source: 'account', automatic: false })
       expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain(plaintextKey)
     })
 
@@ -4412,7 +4690,7 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         apiKey: 'sk-internal-GPT-中转/订阅',
         model: 'gpt-5.6-sol',
         mode: mode ?? 'merge',
-      }, false, expect.any(Function))
+      }, false, expect.any(Function), { source: 'account', automatic: true })
       expect(JSON.stringify(result)).not.toContain('sk-internal-')
     })
 

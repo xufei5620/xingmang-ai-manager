@@ -1,6 +1,6 @@
 # Codex 账号切换与配置保存
 
-本文对应工具配置面板的“使用星芒账号 / ChatGPT 账号”及“保存配置”操作。
+本文对应默认 v2 界面中 Codex CLI / Codex 桌面端配置面板的“使用星芒账号 / ChatGPT 账号”及“保存配置”操作。可从首页工具行的配置菜单进入；两个 Codex 工具行右侧更多菜单中的“非 GPT 模型”会打开同一面板，并预选“非 GPT 模型”筛选。首页工具行不再单独显示该按钮。
 
 ## 什么时候写入
 
@@ -67,6 +67,20 @@ CLI 和桌面端使用同一个有效 Codex 配置目录。正式版优先使用
 
 所有计划先写入临时文件，再备份、替换；替换失败尝试回滚。主进程检查配置路径，拒绝符号链接等不安全目标。明确重置星芒 Codex 时，不再解析旧星芒快照，损坏的快照可以被备份后替换。
 
+## Codex 非 GPT 模型：协议限制与验证状态
+
+从首页 Codex 工具行右侧更多菜单中的“非 GPT 模型”进入后，选择当前工具已配置的星芒 Key、账号已有 Key 或自行填写 Key，点击“检测模型”，再显式选择本次检测出的非 GPT 模型。面板中也可以在“全部模型 / 非 GPT 模型”之间切换。
+
+筛选按模型名称识别 GPT、ChatGPT、Codex、OpenAI 命名空间及 o 系列，只改变候选列表，不建立模型协议兼容性的结论。已有选择即使不符合筛选也会显示为不可选的当前项；不会自动将它换成另一个模型。未检测、检测结果没有非 GPT 模型或未显式选中合格候选时拒绝保存。使用 ChatGPT 官方账号或“自动准备专属密钥”时，非 GPT 模式会提示切换到已有星芒 Key 或手动 Key，再检测模型。
+
+当前 Codex 自定义 provider 始终使用 `wire_api = "responses"`，保存所选模型 ID 时不会根据模型家族改为 Chat Completions。2026-09-17 使用桌面端内置 `codex-cli 0.153.4` 在临时配置目录运行 `features list`：相同 DeepSeek 模型名配合 `chat` 时退出码为 1，报 `wire_api = "chat" is no longer supported`；改用 `responses` 时退出码为 0。该协议约束也与已核实的 [官方 WireApi 源码](https://github.com/openai/codex/blob/b0659c53865dd48b0cd69c454368cea3980017cc/codex-rs/model-provider-info/src/lib.rs#L91)一致。
+
+实际可用仍要求中转为该模型提供兼容的 `/v1/responses`、流式事件及工具调用；模型列表中出现名称不代表这些能力已经验证。只有 Chat Completions 的上游需要 Responses 协议适配，不能通过改 `wire_api` 实现。
+
+本轮进一步使用同一官方 CLI、隔离目录与当前真实配置写入器进行了 localhost mock 验证：非 GPT 模型 ID 的 Responses 流式文本、HTTP 400 错误处理、应用层取消三项通过；工具调用返回 `function_call_output`，但命令被本机执行策略阻断，完整工具执行断言未通过。取消后 HTTP 连接没有立即关闭。当前模板还会发送 `reasoning.effort=xhigh` 与 `summary=auto`，客户端对未知模型使用 fallback metadata；生产渠道是否支持这些字段尚未验证。完整证据和限制见 [Codex 隔离验证报告](../artifacts/codex-non-gpt-client-audit-report.md)，不能将该报告视为真实星芒推理或 Desktop UI 验收。
+
+本轮 v2 全 App 浏览器测试 78/78 通过，覆盖本轮界面接入及页面按需加载后的回归；定向单元测试验证筛选与保存边界。这些结果与真实非 GPT 上游验收分开记录。WorkBuddy、Claude Desktop 和 OpenCode 的首页入口及各自协议见 [外部客户端配置](EXTERNAL-CLIENT-CONFIG.md)。
+
 ## 一次性上下文配置迁移
 
 包含本次修复的版本首次启动时，在恢复账号和显示主界面前，检查有效 Codex 目录下的 `config.toml` 和两份账号来源配置快照，删除根级 `model_context_window`、`model_auto_compact_token_limit` 字段。其余配置值保留，不修改认证文件；有改动的文件沿用备份和事务回滚机制，避免账号切换后恢复旧限制。
@@ -77,11 +91,13 @@ CLI 和桌面端使用同一个有效 Codex 配置目录。正式版优先使用
 
 | 源码 | 改动 |
 | --- | --- |
-| `src/renderer-v2/features/tools/ConfigDialog.tsx` | 保存弹窗展示两种动作；重置范围确认；所有来源透传保存方式；保留预览、错误重试、忙碌锁和取消草稿行为。 |
+| `src/renderer-v2/features/tools/Home.tsx`、`src/renderer-v2/App.tsx` | 默认 v2 首页 Codex 工具行的“非 GPT 模型”入口，打开共享配置面板并启用对应筛选。 |
+| `src/renderer-v2/features/tools/model-filter.ts` | 按名称筛选模型；要求先检测并显式选择，拒绝用不符合筛选的旧选择保存。 |
+| `src/renderer-v2/features/tools/ConfigDialog.tsx` | 模型筛选；保存弹窗展示两种动作；重置范围确认；所有来源透传保存方式；保留预览、错误重试、忙碌锁和取消草稿行为。 |
 | `src/renderer-v2/app.css` | 两个操作按钮分行展示标题与说明，适配明暗主题及长文本。 |
 | `src/renderer-v2/features/tools/api.ts` | 官方账号和自动密钥调用传递 `mode`。 |
 | `electron/ipc-contract.ts`、`electron/preload.ts`、`electron/ipc.ts` | 扩展并校验可选保存模式，旧调用继续默认 `merge`。 |
 | `electron/system-service.ts` | 官方切换向配置写入层传递保存方式。 |
-| `electron/config-files.ts` | 官方来源支持备份后重置；同步重置官方快照；显式星芒重置跳过旧 relay 快照解析。 |
+| `electron/config-files.ts` | 保存所选模型并保持 Responses 协议；官方来源支持备份后重置；同步重置官方快照；显式星芒重置跳过旧 relay 快照解析。 |
 | `electron/account-cli-provisioner.ts` | 自动密钥使用指定保存方式，配置仅写一次。 |
 | 对应主进程测试及 `src/renderer-v2/testing/app-check.mjs` | 验证快照/登录/历史保留、备份与回滚、IPC兼容、所有密钥来源的模式传递、取消和失败重试、明暗主题及焦点。 |

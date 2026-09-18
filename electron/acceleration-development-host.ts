@@ -4,6 +4,8 @@ import type { AccelerationApi, AccelerationState } from './acceleration-contract
 import { trustedCommandEnvironment } from './command-runner'
 import { readSafeUtf8File } from './safe-local-data'
 import { accelerationWorkerArgument } from './acceleration-worker-entry'
+import { createAccelerationElectronProfile } from './acceleration-electron-profile'
+import type { AccelerationStopFailureStage } from './acceleration-development-backend'
 
 export interface AccelerationDevelopmentConfig {
   version: 1
@@ -59,6 +61,7 @@ export function createAccelerationDevelopmentHost(options: {
   dataDirectory: string
   packaged?: boolean
   entitlementSource?: 'local-device'
+  onDiagnostic?(stage: AccelerationStopFailureStage): void
 }): AccelerationDevelopmentHost {
   const config = parseAccelerationDevelopmentConfig(options.config)
   const entitlementSource = parseAccelerationEntitlementSource(options.entitlementSource)
@@ -84,7 +87,7 @@ export function createAccelerationDevelopmentHost(options: {
 
   function disconnectWorker(worker: ChildProcess) {
     try { if (worker.connected) worker.disconnect() } catch { /* The worker may already be closing its IPC channel. */ }
-    failPending()
+    if (child === worker) failPending()
   }
 
   function rpc(operation: string, payload: Record<string, unknown> = {}): Promise<unknown> {
@@ -128,6 +131,7 @@ export function createAccelerationDevelopmentHost(options: {
       stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
       env: { ...trustedCommandEnvironment(), ELECTRON_RUN_AS_NODE: '1' },
     }
+    let profile: ReturnType<typeof createAccelerationElectronProfile> | undefined
     try {
       if (options.packaged) {
         const environment = trustedCommandEnvironment()
@@ -137,18 +141,30 @@ export function createAccelerationDevelopmentHost(options: {
         // Run the integrity-protected application entry in a detached Electron
         // main process. Unlike a utility process, it survives parent IPC loss
         // long enough to restore the proxy without enabling the RunAsNode fuse.
-        child = spawn(process.execPath, [accelerationWorkerArgument], {
+        profile = createAccelerationElectronProfile()
+        child = spawn(process.execPath, [accelerationWorkerArgument, profile.argument], {
           detached: true, windowsHide: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: environment,
         })
       } else {
         child = fork(path.join(__dirname, 'acceleration-development-worker.js'), [], workerOptions)
       }
     }
-    catch { return Promise.reject(new Error('本机加速进程启动失败。')) }
+    catch {
+      profile?.cleanup()
+      return Promise.reject(new Error('本机加速进程启动失败。'))
+    }
     const worker = child
     child.on('message', (message: unknown) => {
       if (!message || typeof message !== 'object' || Array.isArray(message)) return
       const response = message as Record<string, unknown>
+      if (response.type === 'acceleration-diagnostic') {
+        if (child !== worker || response.event !== 'stop.failed'
+          || Object.keys(response).some((key) => !['type', 'event', 'stage'].includes(key))
+          || !['proxy-restore', 'core-stop', 'ledger-write'].includes(response.stage as string)) return
+        try { options.onDiagnostic?.(response.stage as AccelerationStopFailureStage) } catch { /* Diagnostics must not interrupt recovery. */ }
+        return
+      }
+      if (child !== worker) return
       if (typeof response.id !== 'number') return
       const request = pending.get(response.id)
       if (!request) return
@@ -158,8 +174,16 @@ export function createAccelerationDevelopmentHost(options: {
       else request.reject(new Error('本机加速操作未完成，请重新检查线路。'))
     })
     child.on('error', () => disconnectWorker(worker))
-    child.on('exit', failPending)
-    child.on('disconnect', failPending)
+    const exited = () => {
+      profile?.cleanup()
+      if (child !== worker) return
+      failPending()
+      child = null
+      ready = null
+    }
+    child.on('exit', exited)
+    child.on('close', exited)
+    child.on('disconnect', () => { if (child === worker) failPending() })
     ready = rpc('init', { config, dataDirectory: options.dataDirectory, ...(entitlementSource ? { entitlementSource } : {}) }).then(() => undefined, () => {
       // Initialization can fail after acquiring or recovering a proxy lease.
       // Parent IPC loss tells the worker to retry its own cleanup before exit.
@@ -179,6 +203,10 @@ export function createAccelerationDevelopmentHost(options: {
     getAccelerationState: (scope) => request('get', scope),
     startAcceleration: (scope, mode, lineId) => request('start', scope, mode, lineId),
     stopAcceleration: (scope) => request('stop', scope),
+    redeemAccelerationCode: async (scope, code) => {
+      await ensureReady()
+      return await rpc('redeem-code', { scope, code }) as Awaited<ReturnType<NonNullable<AccelerationApi['redeemAccelerationCode']>>>
+    },
     listAccelerationLines: async (scope) => {
       await ensureReady()
       return await rpc('list-lines', { scope }) as Awaited<ReturnType<NonNullable<AccelerationApi['listAccelerationLines']>>>
@@ -192,10 +220,11 @@ export function createAccelerationDevelopmentHost(options: {
       disposed = true
       disposal = (async () => {
         if (!child) return
+        const worker = child
         try {
           await ready
           await rpc('dispose')
-        } finally { disconnectWorker(child) }
+        } finally { disconnectWorker(worker) }
       })()
       void disposal.catch(() => { disposal = null })
       return disposal

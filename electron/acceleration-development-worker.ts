@@ -59,6 +59,9 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
   backend = createAccelerationDevelopmentBackend({
     ledgerPath: path.join(directory, 'trial-ledger.json'),
     entitlementSource,
+    onDiagnostic: (stage) => {
+      if (process.connected) process.send?.({ type: 'acceleration-diagnostic', event: 'stop.failed', stage }, () => undefined)
+    },
     proxy: {
       enable: (port) => proxy.enable(port),
       async restore() {
@@ -118,6 +121,9 @@ async function handle(message: unknown): Promise<unknown> {
     return backend.pingAccelerationLine?.(request.scope, request.lineId)
   }
   if (request.operation === 'stop') return backend.stopAcceleration(request.scope)
+  if (request.operation === 'redeem-code' && typeof request.code === 'string' && request.code.length <= 64) {
+    return backend.redeemAccelerationCode?.(request.scope, request.code)
+  }
   if (request.operation === 'start' && (request.mode === 'system-proxy' || request.mode === 'tun')) {
     return backend.startAcceleration(request.scope, request.mode, typeof request.lineId === 'string' ? request.lineId : undefined)
   }

@@ -37,7 +37,7 @@ export interface AccountSyncContext {
       | 'model'
       | 'codexAuthMode'
       | 'authType'
-    > & Partial<Pick<Config, 'actualBaseUrl' | 'apiKeyPreview' | 'updatedAt' | 'officialAccountEmail'>>
+    > & Partial<Pick<Config, 'actualBaseUrl' | 'apiKeyPreview' | 'updatedAt' | 'officialAccountEmail' | 'configurationOwnership'>>
   >
   clis: Record<Provider, { installed: boolean; detectionFailed?: boolean }>
   officialProviders: readonly Provider[]
@@ -120,7 +120,8 @@ export function accountSyncCandidates(
       const manual =
         config.hasApiKey &&
         config.matchesRelay &&
-        readManualSourceMarker(storage, config.baseUrl, provider)
+        (config.configurationOwnership === 'manual'
+          || (config.configurationOwnership !== 'account' && readManualSourceMarker(storage, config.baseUrl, provider)))
       const reason = status.detectionFailed
         ? '尚未完成检测'
         : !status.installed
@@ -226,44 +227,39 @@ export async function switchAccountWithOptionalSync(
         message: `${candidates.find((item) => item.provider === provider)?.reason ?? '当前状态不可用'}，保持原配置`,
       })
     if (!allowed.length) return result
-    const preferredModels: Partial<Record<Provider, string>> = {}
     for (const provider of allowed) {
+      const active = await api.getAccountSession()
+      if (!active.authenticated || active.account?.userId !== target.userId
+        || !sameAccountOrigin(accountOrigin(active), target.origin)) {
+        throw new Error('账号状态已变化，已停止同步工具密钥。')
+      }
       const model = fresh.configs[provider].model.trim()
-      if (model) preferredModels[provider] = model
-    }
-    const outcome = await api.configureManagedCliKeys({
-      providers: allowed,
-      preferredModels,
-    })
-    result.configured = outcome.configured.filter((id) => allowed.includes(id))
-    for (const provider of result.configured) {
-      writeManualSourceMarker(
-        storage,
-        fresh.configs[provider].baseUrl,
-        provider,
-        false,
-      )
-    }
-    result.failed = outcome.failed.filter((entry) =>
-      allowed.includes(entry.provider),
-    )
-    for (const provider of allowed)
-      if (
-        !result.configured.includes(provider) &&
-        !result.failed.some((entry) => entry.provider === provider)
-      )
-        result.failed.push({
-          provider,
-          message: '没有收到配置完成结果，请重新检测',
+      try {
+        const outcome = await api.configureManagedCliKeys({
+          providers: [provider],
+          preferredModels: model ? { [provider]: model } : {},
+          intent: 'explicit',
         })
+        if (outcome.configured.includes(provider)) {
+          result.configured.push(provider)
+          writeManualSourceMarker(storage, fresh.configs[provider].baseUrl, provider, false)
+        } else {
+          result.failed.push(outcome.failed.find((entry) => entry.provider === provider)
+            ?? { provider, message: '没有收到配置完成结果，请重新检测' })
+        }
+      } catch (error) {
+        result.failed.push({ provider, message: errorMessage(error) })
+      }
+    }
   } catch (error) {
-    result.failed = approved
+    result.failed.push(...approved
       .filter(
         (provider) =>
           !result.configured.includes(provider) &&
+          !result.failed.some((entry) => entry.provider === provider) &&
           !result.skipped.some((entry) => entry.provider === provider),
       )
-      .map((provider) => ({ provider, message: errorMessage(error) }))
+      .map((provider) => ({ provider, message: errorMessage(error) })))
   }
   return result
 }

@@ -91,7 +91,14 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
 // remain allowlisted for the explicit "在浏览器打开" fallback only.
 export const userAgreementUrl = 'https://xm.solov.cc/user-agreement'
 export const privacyPolicyUrl = 'https://xm.solov.cc/privacy-policy'
-export const supportServiceUrl = 'https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4'
+export const supportServiceUrl = 'https://work.weixin.qq.com/kfid/kfc3ac7eece5344c034'
+export const sub2ApiSupportServiceUrl = 'https://work.weixin.qq.com/kfid/kfcffe6f62fdaa0ccf4'
+
+export function resolveSupportServiceUrl(session?: { authenticated: boolean; siteId?: string; realmId?: string } | null): string {
+  return session?.authenticated && (session.siteId === 'solov-api' || session.realmId === 'api-account')
+    ? sub2ApiSupportServiceUrl
+    : supportServiceUrl
+}
 
 /**
  * The relay's own API origin, for connectivity probes (the models-list fetch

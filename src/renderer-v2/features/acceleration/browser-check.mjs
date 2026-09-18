@@ -20,9 +20,16 @@ async function open(query = 'accelerationPreview=1') {
   await page.clock.pauseAt(new Date('2026-09-14T00:00:01Z'))
   await page.route('**/*', route => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
   await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
-  await page.getByTestId('nav-acceleration').click()
-  await page.getByTestId('acceleration-page').waitFor()
+  await openLazyAcceleration(page)
   return page
+}
+async function openLazyAcceleration(page) {
+  const accelerationModule = page.waitForResponse((response) => response.url().includes('/features/acceleration/AccelerationPage.tsx'))
+  await page.getByTestId('nav-acceleration').click()
+  await accelerationModule
+  // React's Suspense reveal uses the browser clock, which this fixture freezes.
+  await page.clock.runFor(500)
+  await page.getByTestId('acceleration-page').waitFor()
 }
 async function clean(page) {
   assert.deepEqual(await page.evaluate(() => window.v2Test.errors), [])
@@ -151,7 +158,7 @@ test('acceleration trial counts only connected time, survives navigation, pauses
     await page.getByTestId('acceleration-session-stop').click()
     await page.getByTestId('acceleration-session-start').waitFor()
     await page.reload()
-    await page.getByTestId('nav-acceleration').click()
+    await openLazyAcceleration(page)
     await page.getByTestId('acceleration-session-start').waitFor()
     assert.equal(await remaining(page).innerText(), '00:19:35')
     assert.equal(await page.locator('.acceleration-preview').innerText(), '交互预览')
@@ -167,7 +174,7 @@ test('a legacy thirty-five-minute remainder migrates to exhausted rather than a 
       localStorage.setItem('xingmang-acceleration-preview:xm-account:17', String(35 * 60 * 1000))
     })
     await page.reload()
-    await page.getByTestId('nav-acceleration').click()
+    await openLazyAcceleration(page)
     await page.getByTestId('acceleration-session-start').filter({ hasText: '免费体验已用完' }).waitFor()
     assert.equal(await remaining(page).innerText(), '00:00:00')
     assert.equal(await page.getByTestId('acceleration-session-start').isDisabled(), true)
@@ -237,6 +244,158 @@ test('logged out users see the global acceleration page with a working login act
     await page.getByTestId('acceleration-session-start').filter({ hasText: '登录领取免费体验' }).click()
     await page.getByTestId('login-account').waitFor()
     assert.equal(await page.evaluate(() => window.v2Test.calls.some(call => call.method === 'getAccelerationState')), false)
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+const bonusCode = 'XM-NEBULA-10M-7Q9K'
+async function bonusPalette(page, code = bonusCode) {
+  await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).click()
+  const palette = page.getByTestId('command-palette')
+  const input = palette.getByRole('searchbox', { name: '搜索页面' })
+  if (code) await input.fill(code)
+  return { palette, input, action: page.getByTestId('command-acceleration-bonus'), feedback: page.getByTestId('command-acceleration-feedback') }
+}
+async function bonusCalls(page) {
+  return page.evaluate(() => window.v2Test.calls.filter(call => call.method === 'redeemAccelerationCode'))
+}
+
+test('bonus palette requires the complete code and explicit non-IME submit, shares one pending request, and refreshes the authoritative quota', async () => {
+  const page = await open('accelerationPreview=1&accelerationBonusPending=1')
+  try {
+    const { palette, input, action, feedback } = await bonusPalette(page, '')
+    assert.equal(await action.count(), 0)
+    assert.equal((await palette.innerText()).includes(bonusCode), false)
+    await input.fill(bonusCode.slice(0, -1))
+    assert.equal(await action.count(), 0)
+    await input.press('Enter')
+    assert.equal((await bonusCalls(page)).length, 0)
+    await input.fill(`  ${bonusCode.toLowerCase()}  `)
+    await action.waitFor()
+    assert.equal((await bonusCalls(page)).length, 0)
+    await input.evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })))
+    assert.equal((await bonusCalls(page)).length, 0)
+    await input.press('ArrowDown')
+    await input.press('ArrowUp')
+    assert.equal(await action.getAttribute('aria-selected'), 'true')
+    await input.press('Enter')
+    await action.filter({ hasText: '正在领取' }).waitFor()
+    await input.press('Enter')
+    assert.equal(await action.isDisabled(), true)
+    assert.deepEqual((await bonusCalls(page)).map(call => call.args), [['xm-account:17', bonusCode]])
+    assert.equal(await remaining(page).innerText(), '00:20:00')
+    assert.equal(await feedback.count(), 0)
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await feedback.filter({ hasText: '领取成功，已增加 10 分钟' }).waitFor()
+    assert.equal(await remaining(page).innerText(), '00:30:00')
+    assert.equal(await page.locator('.acceleration-quota-badge').innerText(), '30 分钟')
+    await action.click()
+    await action.filter({ hasText: '正在领取' }).waitFor()
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await feedback.filter({ hasText: '当前账号已在本机领取过' }).waitFor()
+    assert.equal(await remaining(page).innerText(), '00:30:00')
+    assert.equal((await bonusCalls(page)).length, 2)
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+test('bonus palette preserves page search, arrows, IME Enter and Escape focus restoration', async () => {
+  const page = await open()
+  try {
+    const { palette, input, action } = await bonusPalette(page, '')
+    const options = palette.getByRole('option')
+    assert.equal(await options.first().getAttribute('aria-selected'), 'true')
+    await input.press('ArrowDown')
+    assert.equal(await options.nth(1).getAttribute('aria-selected'), 'true')
+    await input.press('ArrowUp')
+    assert.equal(await options.first().getAttribute('aria-selected'), 'true')
+    await input.fill('设置')
+    await input.evaluate(element => element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', isComposing: true, bubbles: true })))
+    assert.equal(await palette.isVisible(), true)
+    assert.equal(await action.count(), 0)
+    await input.press('Enter')
+    await palette.waitFor({ state: 'hidden' })
+    assert.equal(await page.getByTestId('nav-settings').getAttribute('aria-current'), 'page')
+    await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).click()
+    await input.press('Escape')
+    await palette.waitFor({ state: 'hidden' })
+    assert.equal(await page.getByTestId('shell-topbar').getByRole('button', { name: /搜索、打开、跳转/ }).evaluate(element => document.activeElement === element), true)
+    assert.equal((await bonusCalls(page)).length, 0)
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+test('bonus redemption failures preserve time and allow retry; signed-out submit only asks for login', async () => {
+  const page = await open()
+  try {
+    const { input, action, feedback } = await bonusPalette(page)
+    await page.evaluate(() => { window.v2Test.fail = 'redeemAccelerationCode' })
+    await input.press('Enter')
+    await feedback.filter({ hasText: '本地测试操作失败' }).waitFor()
+    assert.equal(await remaining(page).innerText(), '00:20:00')
+    assert.equal(await action.isEnabled(), true)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await action.click()
+    await feedback.filter({ hasText: '领取成功' }).waitFor()
+    assert.equal(await remaining(page).innerText(), '00:30:00')
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+  const guest = await open('guest=1&existing=1&accelerationPreview=1')
+  try {
+    const { action, feedback } = await bonusPalette(guest)
+    await action.click()
+    await feedback.filter({ hasText: '请先登录星芒账号' }).waitFor()
+    assert.equal((await bonusCalls(guest)).length, 0)
+    assert.equal(await remaining(guest).innerText(), '--:--:--')
+    await clean(guest)
+  } finally { if (!guest.isClosed()) await guest.close() }
+})
+
+test('bonus redemption cannot show an old account credit after an account switch', async () => {
+  const page = await open('accelerationPreview=1&accelerationBonusPending=1')
+  try {
+    const { input, action } = await bonusPalette(page)
+    await input.press('Enter')
+    await action.filter({ hasText: '正在领取' }).waitFor()
+    await page.evaluate(() => window.v2Test.emit('onAccountSessionChanged', { authenticated: true, account: { userId: 18, username: 'next-user', group: 'default', role: 1, quota: 1_000_000, usedQuota: 0 } }))
+    await page.getByRole('button', { name: '打开个人中心 next-user', exact: true }).waitFor()
+    await page.getByTestId('nav-acceleration').click()
+    await page.clock.runFor(500)
+    await remaining(page).waitFor()
+    assert.equal(await remaining(page).innerText(), '00:20:00')
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await page.clock.runFor(1)
+    assert.equal(await remaining(page).innerText(), '00:20:00')
+    assert.equal(await page.getByTestId('command-acceleration-feedback').count(), 0)
+    const next = await bonusPalette(page)
+    await next.action.click()
+    await next.action.filter({ hasText: '正在领取' }).waitFor()
+    assert.deepEqual((await bonusCalls(page)).map(call => call.args[0]), ['xm-account:17', 'xm-account:18'])
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await next.feedback.filter({ hasText: '领取成功' }).waitFor()
+    assert.equal(await remaining(page).innerText(), '00:30:00')
+    await clean(page)
+  } finally { if (!page.isClosed()) await page.close() }
+})
+
+test('closing and reopening the bonus palette does not display a stale success message', async () => {
+  const page = await open('accelerationPreview=1&accelerationBonusPending=1')
+  try {
+    const first = await bonusPalette(page)
+    await first.input.press('Enter')
+    await first.action.filter({ hasText: '正在领取' }).waitFor()
+    await first.input.press('Escape')
+    // Native search fields clear their text on the first Escape; preserve that
+    // existing interaction and use the next Escape to close the dialog.
+    assert.equal(await first.input.inputValue(), '')
+    await first.input.press('Escape')
+    await first.palette.waitFor({ state: 'hidden' })
+    const reopened = await bonusPalette(page, '')
+    await page.evaluate(() => window.v2Test.releaseLaunch())
+    await page.clock.runFor(1)
+    assert.equal(await remaining(page).innerText(), '00:30:00')
+    assert.equal(await reopened.feedback.count(), 0)
+    assert.equal(await reopened.action.count(), 0)
     await clean(page)
   } finally { if (!page.isClosed()) await page.close() }
 })

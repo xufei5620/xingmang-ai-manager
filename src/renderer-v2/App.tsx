@@ -1,16 +1,17 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { RefreshCw } from 'lucide-react'
 import QRCode from 'qrcode'
-import type { AccountSessionState, AppSettingsV2, ExternalDeepLink, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
-import { resolveRelaySite, supportServiceUrl } from '../../electron/relay-sites'
+import type { AccountSessionState, AppSettingsV2, ExternalDeepLink, ExternalToolId, LegalDocumentKind, PlatformCapabilities, ProviderId, UpdateSnapshot, XingmangApi } from '../../electron/ipc-contract'
+import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createAppApi } from './features/app/api'
 import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, type AuthMode, type GuideToolState } from './features/auth'
 import { ConfigDialog } from './features/tools/ConfigDialog'
+import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
 import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
 import { useToolbox } from './features/tools/useToolbox'
-import { BusinessPage } from './pages-business'
 import { accountTabs } from './registry/business'
 import { tools } from './registry/tools'
 import type { PageId } from './registry/pages'
@@ -19,8 +20,6 @@ import { bridge as getBridge } from './bridge'
 import { pendingBusinessOperations } from './business-common'
 import { SavedAccounts } from './SavedAccounts'
 import { AnnouncementCenter } from './features/shell/Announcement'
-import { ChatPage } from './features/chat'
-import { AccelerationPage } from './features/acceleration/AccelerationPage'
 import { createAccelerationApi } from './features/acceleration/api'
 import { useAcceleration } from './features/acceleration/useAcceleration'
 import { useNetworkLocation } from './features/shell/useNetworkLocation'
@@ -32,6 +31,12 @@ import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrap
 import { accountOrigin, accountScope, accountSiteId, accountSupports, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
+import './business.css'
+
+const BusinessPage = lazy(() => import('./pages-business').then((module) => ({ default: module.BusinessPage })))
+const ChatPage = lazy(() => import('./features/chat').then((module) => ({ default: module.ChatPage })))
+const AccelerationPage = lazy(() => import('./features/acceleration/AccelerationPage').then((module) => ({ default: module.AccelerationPage })))
+const pageLoading = <div className="v2-business-loading" role="status" data-testid="route-loading"><RefreshCw size={24} className="xm-spin" aria-hidden="true" /><strong>正在加载页面...</strong></div>
 
 type AccountTab = typeof accountTabs[number]['value']
 interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; work(): Promise<void> }
@@ -64,6 +69,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [auth, setAuth] = useState<AuthMode | null>(null)
   const [legal, setLegal] = useState<LegalDocumentKind | null>(null)
   const [configTool, setConfigTool] = useState<ToolId | null>(null)
+  const [codexModelFilter, setCodexModelFilter] = useState<'all' | 'non-gpt'>('all')
+  const [externalClient, setExternalClient] = useState<ExternalToolId | null>(null)
+  const openToolConfig = (tool: ToolId) => { setCodexModelFilter('all'); setConfigTool(tool) }
   const [help, setHelp] = useState(false)
   const [accelerationHelp, setAccelerationHelp] = useState(false)
   const [switcher, setSwitcher] = useState(false)
@@ -79,7 +87,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [dismissedUpdate, setDismissedUpdate] = useState('')
   const [operationError, setOperationError] = useState('')
   const [accountReadError, setAccountReadError] = useState<{ scope: string; message: string } | null>(null)
-  const [qr, setQr] = useState<string>()
+  const [supportQr, setSupportQr] = useState<{ url: string; data: string }>()
   const accountEpoch = useRef(0)
   const mounted = useRef(true)
   const confirmationLock = useRef(false)
@@ -91,8 +99,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const bootstrapAttempts = useRef(new Set<string>())
   const suppressRestoredBootstrap = useRef(new Set<string>())
   const [accountBootstrap, setAccountBootstrap] = useState<AccountBootstrapView | null>(null)
-  const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || guide || workspaceEntered))
   const scope = accountScope(session)
+  const toolbox = useToolbox(native, boot === 'ready' && (session.authenticated || guide || workspaceEntered), scope)
   const accelerationApi = useMemo(() => createAccelerationApi(native), [native])
   const acceleration = useAcceleration(accelerationApi, session.authenticated ? scope : null)
   const networkLocation = useNetworkLocation(native, acceleration.snapshot.state)
@@ -101,6 +109,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useLayoutEffect(() => { accountEpoch.current++; setAccountReadError(null) }, [scope, session.authenticated])
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
+  const supportUrl = resolveSupportServiceUrl(session)
+  const qr = supportQr?.url === supportUrl ? supportQr.data : undefined
   const avatarIdentity = session.account ? { origin: accountOrigin(session), userId: session.account.userId } : undefined
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; accountEpoch.current++ } }, [])
   useEffect(() => {
@@ -196,9 +206,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => { document.documentElement.dataset.os = os }, [os])
   useEffect(() => {
     let current = true
-    void QRCode.toDataURL(supportServiceUrl, { width: 192, margin: 1, errorCorrectionLevel: 'M' }).then((value) => { if (current) setQr(value) }).catch(() => undefined)
+    void QRCode.toDataURL(supportUrl, { width: 192, margin: 1, errorCorrectionLevel: 'M' }).then((data) => { if (current) setSupportQr({ url: supportUrl, data }) }).catch(() => undefined)
     return () => { current = false }
-  }, [])
+  }, [supportUrl])
   const reloadAccount = useCallback(async () => {
     const id = ++accountEpoch.current
     let next: AccountSessionState
@@ -210,7 +220,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       return
     }
     if (!mounted.current || id !== accountEpoch.current) return
-    setSession(next); setConfigTool(null); setAccountReadError(null)
+    setSession(next); setConfigTool(null); setExternalClient(null); setAccountReadError(null)
     balanceStore.setScope(next.authenticated ? accountScope(next) : null)
     if (next.authenticated) await balanceStore.refresh('foreground')
     else { setGuide(false); setPage('home'); setWorkspaceEntered(false) }
@@ -219,7 +229,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     accountEpoch.current++
     bootstrapEpoch.current++
     bootstrapInFlight.current = null
-    setSession(next); setAccountReadError(null); setUnread(false); setConfigTool(null); setPaymentReturn(undefined)
+    setSession(next); setAccountReadError(null); setUnread(false); setConfigTool(null); setExternalClient(null); setPaymentReturn(undefined)
     balanceStore.setScope(next.authenticated ? accountScope(next) : null)
     if (!next.authenticated) {
       setGuide(false); setPage('home'); setWorkspaceEntered(false)
@@ -259,6 +269,28 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     await toolbox.run(runtime, '正在准备运行环境', () => toolsApi.prepareRuntime(runtime))
     await toolbox.refresh(true)
   }
+  async function installExternal(id: ExternalToolId) {
+    const epoch = accountEpoch.current
+    try {
+      const completed = await toolbox.run(id, '正在安装', () => toolsApi.installExternal(id))
+      if (!completed || !mounted.current || epoch !== accountEpoch.current) return
+      await toolbox.refreshExternal()
+      if (mounted.current && epoch === accountEpoch.current) toast.show('客户端已安装，点击“配置”选择密钥和模型。', 'ok')
+    } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
+  }
+  async function launchExternal(id: ExternalToolId) {
+    const epoch = accountEpoch.current
+    try {
+      await toolbox.run(`launch:${id}`, '正在打开客户端', () => toolsApi.launchExternal(id))
+      if (mounted.current && epoch === accountEpoch.current) await toolbox.refreshExternal()
+    } catch (cause) { if (mounted.current && epoch === accountEpoch.current) throw cause }
+  }
+  function finishExternalConfigSave() {
+    const epoch = accountEpoch.current
+    void toolbox.refreshExternal().catch(() => {
+      if (mounted.current && epoch === accountEpoch.current) toast.show('配置已保存，客户端状态尚未读到，请重新检测。', 'warn')
+    })
+  }
   async function launch(id: ToolId, mode: 'open' | 'restart' = 'open'): Promise<boolean> {
     const current = toolbox.snapshot
     if (!current) throw new Error('请先完成工具检测')
@@ -267,7 +299,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!tool) throw new Error('当前平台暂不支持打开这个工具')
     if (tool.error) throw new Error(tool.error)
     if (!tool.status.installed) throw new Error('工具尚未安装，请先完成准备。')
-    if (!tool.configured) { setConfigTool(id); throw new Error('请先确认账号连接，再打开工具。') }
+    if (!tool.configured) { openToolConfig(id); throw new Error('请先确认账号连接，再打开工具。') }
     let workspace = config.workspace
     if (id !== 'codexDesktop') {
       const selectedWorkspace = await toolsApi.chooseWorkspace()
@@ -390,7 +422,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   if (boot !== 'ready') return <Splash phase="正在准备星芒 AI" error={bootError || undefined} progress={update?.progress?.percent} onRetry={() => setBootAttempt((value) => value + 1)} />
   return <AccountBalanceContext.Provider value={balanceStore}><BalanceTierProvider value={balanceAmount === null ? 'neutral' : balanceAmount <= 0 ? 'zero' : balanceAmount < 5 ? 'bad' : balanceAmount < 20 ? 'warn' : 'ok'}>
     {guide ? <StartGuide platform={os} tools={guideTools} signedIn={session.authenticated} busy={Object.keys(toolbox.jobs).length > 0 || accountBootstrapBusy} progress={accountBootstrapBusy && accountBootstrap ? { label: accountBootstrap.label, percent: accountBootstrap.percent } : undefined} resumeKey={scope}
-      onDetect={() => toolbox.refresh(true)} onInstall={install} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { setConfigTool(id) }} onLogin={() => setAuth('login')}
+      onDetect={() => toolbox.refresh(true)} onInstall={install} onInstallRuntime={() => installRuntime('node')} onInstallPython={() => installRuntime('python')} onConfigure={async (id) => { openToolConfig(id) }} onLogin={() => setAuth('login')}
       onLaunch={async (id) => id === 'chat' ? true : launch(id)}
       onComplete={(id) => { if (!writeLocalPreference(`xingmang-v2-guide:${scope}`, id)) toast.show('工具已准备好，但引导偏好没有保存在本机。', 'warn'); setWorkspaceEntered(true); setTourOpen(true); navigate(id === 'chat' ? 'chat' : 'home') }} onBack={() => setGuide(false)} onHelp={() => setHelp(true)} />
       : !session.authenticated && !workspaceEntered ? <Welcome onLogin={() => setAuth('login')} onRegister={() => setAuth('register')} onSteps={() => setGuide(true)} onHelp={() => setHelp(true)} onLegal={setLegal}
@@ -398,29 +430,42 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         : <AppFrame key={scope} activePage={page} account={{ signedIn: session.authenticated, supportsBilling: accountSupports(session, 'supportsBilling'), supportsAnnouncements: session.authenticated, identity: avatarIdentity, displayName: session.account?.username, balance: balanceAmount === null ? undefined : `$${balanceAmount.toFixed(2)}`, balanceLoading: balanceState.loading, balanceUpdatedAt: balanceState.updatedAt, balanceError: balanceState.error }} platform={os}
           tourOpen={tourOpen} onTourClose={() => setTourOpen(false)}
           environment={toolbox.snapshot?.system.runtime.node.version ? `Node ${toolbox.snapshot.system.runtime.node.version}` : '命令行环境可选'} version={update?.currentVersion}
-          unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length : undefined}
+          unread={unread} installedCount={toolbox.snapshot ? presentTools(toolbox.snapshot).filter((tool) => tool.status.installed).length + toolbox.externalClients.filter((tool) => tool.installed).length : undefined}
           network={latestNetworkLocation(toolbox.snapshot?.system.network, networkLocation.snapshot.network)}
           networkRefreshing={networkLocation.snapshot.busy}
           banner={session.authenticated && <AnnouncementCenter key={scope} scope={scope} read={app.announcement} markRemoteRead={app.markAnnouncementRead} syncLocalReads={app.syncLocalNoticeReads} open={announcementOpen} onClose={() => setAnnouncementOpen(false)} onOpen={() => setAnnouncementOpen(true)} onUnread={setUnread} openExternal={app.openExternal} noticeUrl={relaySite.websiteUrl} />}
           notification={showUpdate && <Notice tone={update.error ? 'bad' : 'accent'} title={update.error ? '更新没有完成' : update.phase === 'downloaded' ? '更新已下载' : update.phase === 'downloading' ? '正在下载更新' : `新版本 ${update.availableVersion} 可以安装`}
             body={update.error?.message ?? '查看更新内容和安装状态。'} progress={update.progress?.percent} onDismiss={() => setDismissedUpdate(updateKey)} actions={<Button size="sm" onClick={() => navigate('updates')}>查看更新</Button>} />}
           adapter={{ navigate, refreshNetwork: () => { void networkLocation.refresh() }, openAccount: () => navigate('account'), switchAccount: () => setSwitcher(true), topUp: () => navigate('account', accountSupports(session, 'supportsBilling') ? 'recharge' : 'overview'), refreshBalance: () => { void balanceStore.refresh('manual') },
+            redeemAccelerationCode: async (code) => {
+              if (!session.authenticated) throw new Error('请先登录星芒账号，再领取加速时长。')
+              const epoch = accountEpoch.current
+              const result = await acceleration.redeem(code)
+              return mounted.current && accountEpoch.current === epoch ? result : null
+            },
             openHealth: () => navigate('health'), openUpdates: () => navigate('updates'), openHelp: () => setHelp(true), openAnnouncements: () => setAnnouncementOpen(true), openNotifications: () => navigate('updates'),
             logout: () => setConfirmation({ title: '退出星芒账号？', body: '已写入工具的配置会保留。', label: '退出登录', work: async () => { await app.logout(); await reloadAccount() } }),
           }}>
           <div key={scope} className="v2-page-host">
-            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} /></div>}
+            {renderedChatScope === scope && <div className="v2-chat-host" hidden={page !== 'chat'}><Suspense fallback={pageLoading}><ChatPage bridge={native} accountScope={scope} active={page === 'chat'} /></Suspense></div>}
             {visitedPages.acceleration === scope && <div data-testid="page-acceleration" hidden={page !== 'acceleration'} inert={page !== 'acceleration'}>
-              <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null}
-                onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} preview={accelerationPreview} />
+              <Suspense fallback={pageLoading}>
+                <AccelerationPage connection={acceleration} scope={session.authenticated ? scope : null}
+                  onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} preview={accelerationPreview} />
+              </Suspense>
             </div>}
             {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
-              onScan={() => void toolbox.refresh(true).catch(() => undefined)} onInstall={(id) => void perform('安装工具', () => install(id))} onLaunch={requestLaunch} onConfigure={setConfigTool} onUninstall={requestUninstall}
+              externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError}
+              onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id) => void perform('安装工具', () => install(id))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
+              onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
+              onConfigureExternal={setExternalClient} onCodexModels={() => { setCodexModelFilter('non-gpt'); setConfigTool(platform?.codexDesktop.launch ? 'codexDesktop' : 'codex') }}
               onRuntime={(runtime) => void perform('准备环境', () => installRuntime(runtime))} onNavigate={navigate} onGuide={() => setGuide(true)} onBootstrapRetry={() => { if (session.account) void runAccountBootstrap(session.account.userId, 'login', true) }} />
               : null}
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id} hidden={page !== id} inert={page !== id}>
-              <BusinessPage api={native} page={id} accountTab={accountTab} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
-                onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={setConfigTool} />
+              <Suspense fallback={pageLoading}>
+                <BusinessPage api={native} page={id} accountTab={accountTab} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
+                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig} />
+              </Suspense>
             </div>)}
           </div>
         </AppFrame>}
@@ -433,7 +478,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }} />}
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}
     {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: result.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov', account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result?.failed.length) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={() => { setSwitcher(false); setAuth('login') }} /></Dialog>}
-    {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated}
+    {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
+    {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
       onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)} />}
     {accelerationHelp && <Dialog open title="游戏加速使用说明" onClose={() => setAccelerationHelp(false)} width={480}
       footer={<><Button variant="ghost" onClick={() => { setAccelerationHelp(false); setHelp(true) }}>帮助与客服</Button><Button onClick={() => setAccelerationHelp(false)}>知道了</Button></>}>
@@ -443,7 +489,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <p>切换页面、缩到托盘或退出游戏都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
-      <div className="v2-support">{siteId === 'solov' && qr && <img src={qr} alt="微信客服二维码" />}<h3>{siteId === 'solov' ? '微信扫码找客服' : '账号帮助'}</h3><p>{siteId === 'solov' ? '装不上、付了没到账，都可以问。' : '请在官方网站查看帮助与账号服务。'}</p><Button onClick={() => void perform('打开帮助', () => app.openExternal(siteId === 'solov' ? supportServiceUrl : relaySite.websiteUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
+      <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p><Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
     {operationError && <Dialog open title="操作没有完成" onClose={() => setOperationError('')} footer={<Button onClick={() => setOperationError('')}>返回</Button>}><p role="alert">{operationError}</p></Dialog>}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<Button onClick={() => setAccountReadError(null)}>返回</Button>}><p role="alert">{accountReadError.message}</p></Dialog>}

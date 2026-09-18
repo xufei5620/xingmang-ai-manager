@@ -24,6 +24,7 @@ function fixture() {
   let current = structuredClone(before)
   let ownerTime: string | null = '134022112340000000'
   let failApply: 'before' | 'after' | null = null
+  let beforeApply: ((expected: WindowsProxySnapshot, desired: WindowsProxySnapshot) => void) | null = null
   let lockDepth = 0
   let lockQueue: Promise<unknown> = Promise.resolve()
   const mutations: WindowsProxySnapshot[] = []
@@ -34,6 +35,7 @@ function fixture() {
     if (request.operation === 'inspect') output = { owner: { pid: process.pid, startedAt: '134022112340000000' }, snapshot: current }
     else if (request.operation === 'owner') output = { startedAt: ownerTime }
     else if (request.operation === 'apply') {
+      beforeApply?.(request.expected, request.desired)
       if (JSON.stringify(current) !== JSON.stringify(request.expected)) output = { changed: false, snapshot: current }
       else {
         expect(fs.existsSync(journalPath)).toBe(true)
@@ -63,6 +65,7 @@ function fixture() {
     set current(value: WindowsProxySnapshot) { current = value },
     set ownerTime(value: string | null) { ownerTime = value },
     set failApply(value: 'before' | 'after' | null) { failApply = value },
+    set beforeApply(value: typeof beforeApply) { beforeApply = value },
   }
 }
 
@@ -110,17 +113,97 @@ describe('Windows system proxy lease', () => {
     expect(fs.existsSync(f.lockPath)).toBe(false)
   })
 
-  it('keeps the lease when later edits still depend on its active local endpoint', async () => {
+  it.each<{ name: string; bypass?: string; override?: string | null }>([
+    { name: 'native and registry bypass', bypass: 'new-user-bypass', override: 'new-user-bypass' },
+    { name: 'native bypass only', bypass: 'new-native-bypass' },
+    { name: 'empty native bypass', bypass: '' },
+    { name: 'registry bypass only', override: 'new-registry-bypass' },
+    { name: 'deleted registry bypass', override: null },
+    { name: 'empty registry bypass', override: '' },
+  ])('restores owned proxy and PAC fields while preserving $name edits', async ({ bypass, override }) => {
     const f = fixture()
     await f.service.enable(18765)
-    f.current = { ...f.current, bypass: 'new-user-bypass', registry: { ...f.current.registry, ProxyOverride: 'new-user-bypass' } }
+    const edited = { ...f.current, ...(bypass === undefined ? {} : { bypass }),
+      registry: { ...f.current.registry, ...(override === undefined ? {} : { ProxyOverride: override }) } }
+    f.current = edited
+    await f.service.restore()
+    expect(f.current).toEqual({ ...f.before, ...(bypass === undefined ? {} : { bypass }),
+      registry: { ...f.before.registry, ...(override === undefined ? {} : { ProxyOverride: override }) } })
+    const request = JSON.parse(Buffer.from(f.execute.mock.calls.at(-1)![1]!.env!.XINGMANG_SYSTEM_PROXY_REQUEST!, 'base64').toString('utf8'))
+    expect(request.expected).toEqual(edited)
+    expect(f.mutations).toHaveLength(2)
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+    expect(fs.existsSync(f.lockPath)).toBe(false)
+  })
+
+  it.each([
+    { flags: 7 },
+    { server: 'http=127.0.0.1:18765;https=other.example.test:8080' },
+    { autoConfigUrl: 'https://changed.example.test/pac' },
+    { registry: { ProxyEnable: 0 } },
+    { registry: { ProxyServer: 'other.example.test:8080' } },
+    { registry: { AutoConfigURL: 'https://changed.example.test/pac' } },
+  ])('keeps the lease if bypass edits also change endpoint, PAC or flags: %j', async (change) => {
+    const f = fixture()
+    await f.service.enable(18765)
+    f.current = { ...f.current, bypass: 'new-user-bypass', ...change,
+      registry: { ...f.current.registry, ProxyOverride: 'new-user-bypass', ...change.registry } }
+    const edited = structuredClone(f.current)
     await expect(f.service.restore()).rejects.toThrow('仍指向加速端口')
-    expect(f.current.bypass).toBe('new-user-bypass')
+    expect(f.current).toEqual(edited)
+    expect(f.mutations).toHaveLength(1)
     expect(fs.existsSync(f.journalPath)).toBe(true)
     expect(fs.existsSync(f.lockPath)).toBe(true)
     f.current = f.before
     await f.service.restore()
     expect(fs.existsSync(f.journalPath)).toBe(false)
+  })
+
+  it('keeps newer bypass edits and the journal when the recovery CAS loses a race, then retries', async () => {
+    const f = fixture()
+    await f.service.enable(18765)
+    f.current = { ...f.current, registry: { ...f.current.registry, ProxyOverride: 'first-edit' } }
+    let calls = 0
+    f.beforeApply = () => {
+      if (++calls === 2) f.current = { ...f.current, registry: { ...f.current.registry, ProxyOverride: 'later-edit' } }
+    }
+    await expect(f.service.restore()).rejects.toThrow('仍指向加速端口')
+    expect(f.current.registry.ProxyOverride).toBe('later-edit')
+    expect(f.mutations).toHaveLength(1)
+    expect(fs.existsSync(f.journalPath)).toBe(true)
+    expect(fs.existsSync(f.lockPath)).toBe(true)
+    f.beforeApply = null
+    await f.service.restore()
+    expect(f.current).toEqual({ ...f.before, registry: { ...f.before.registry, ProxyOverride: 'later-edit' } })
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+  })
+
+  it('does not overwrite another proxy selected between the two recovery CAS operations', async () => {
+    const f = fixture()
+    await f.service.enable(18765)
+    f.current = { ...f.current, bypass: 'first-edit' }
+    const other = buildWindowsLoopbackProxySnapshot(7897)
+    let calls = 0
+    f.beforeApply = () => { if (++calls === 2) f.current = other }
+    await f.service.restore()
+    expect(f.current).toEqual(other)
+    expect(f.mutations).toHaveLength(1)
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+    expect(fs.existsSync(f.lockPath)).toBe(false)
+  })
+
+  it.each(['before', 'after'] as const)('retains bypass recovery records on a failed write %s commit and permits retry', async (failure) => {
+    const f = fixture()
+    await f.service.enable(18765)
+    f.current = { ...f.current, bypass: 'user-edit', registry: { ...f.current.registry, ProxyOverride: '' } }
+    f.failApply = failure
+    await expect(f.service.restore()).rejects.toThrow('Windows 系统代理操作未完成')
+    expect(fs.existsSync(f.journalPath)).toBe(true)
+    expect(fs.existsSync(f.lockPath)).toBe(true)
+    await f.service.restore()
+    expect(f.current).toEqual({ ...f.before, bypass: 'user-edit', registry: { ...f.before.registry, ProxyOverride: '' } })
+    expect(fs.existsSync(f.journalPath)).toBe(false)
+    expect(fs.existsSync(f.lockPath)).toBe(false)
   })
 
   it('refuses a second live owner and serializes simultaneous acquisition around the journal', async () => {

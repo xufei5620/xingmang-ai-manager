@@ -19,14 +19,14 @@ before(async () => {
   browser = await chromium.launch({ headless: true })
 })
 after(async () => { await browser?.close(); await server?.close() })
-async function open(query = '') {
+async function open(query = '', app = false) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   await page.route('**/*', async (route) => {
     const url = new URL(route.request().url())
     if (url.hostname !== '127.0.0.1') return route.abort()
     await route.continue()
   })
-  await page.goto(`${base}/src/renderer-v2/features/auth/browser-fixture.html?${query}`)
+  await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
   return page
 }
 async function calls(page) { return page.evaluate(() => JSON.parse(document.documentElement.dataset.calls || '[]')) }
@@ -81,11 +81,15 @@ test('recovery validates reset links and keeps the generated password available 
     assert.equal(await page.getByTestId('forgot-email').getAttribute('placeholder'), 'name@example.com')
     await page.getByTestId('forgot-email').fill('person@gmail.com')
     await page.getByTestId('forgot-send').click()
-    await page.getByTestId('forgot-token').fill('https://example.test/reset?token=one&token=two')
+    await page.getByTestId('forgot-token').fill('https://xm.solov.cc/reset?token=one&token=two')
     await page.getByTestId('forgot-reset').click()
     await page.getByTestId('auth-error').filter({ hasText: '多个重置码' }).waitFor()
     assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset'])
-    await page.getByTestId('forgot-token').fill('https://example.test/reset?token=one%2Btwo')
+    await page.getByTestId('forgot-token').fill('https://api.solov.cc/reset?token=one%2Btwo')
+    await page.getByTestId('forgot-reset').click()
+    await page.getByTestId('auth-error').filter({ hasText: '不属于所选账号来源' }).waitFor()
+    assert.deepEqual((await calls(page)).map((item) => item.method), ['send-reset'])
+    await page.getByTestId('forgot-token').fill('https://xm.solov.cc/reset?token=one%2Btwo')
     await page.getByTestId('forgot-reset').click()
     await page.getByTestId('forgot-new-password').waitFor()
     assert.equal(await page.getByTestId('forgot-new-password').getAttribute('type'), 'password')
@@ -97,7 +101,7 @@ test('recovery validates reset links and keeps the generated password available 
     assert.equal(await page.getByTestId('login-account').inputValue(), 'person@gmail.com')
     assert.equal(await page.getByTestId('login-password').inputValue(), '')
     assert.equal(await page.getByTestId('forgot-new-password').count(), 0)
-    assert.deepEqual((await calls(page)).find((item) => item.method === 'reset').input, { email: 'person@gmail.com', token: 'one+two' })
+    assert.deepEqual((await calls(page)).find((item) => item.method === 'reset').input, { email: 'person@gmail.com', token: 'one+two', siteId: 'solov' })
   } finally { await page.close() }
 })
 
@@ -335,20 +339,113 @@ test('auth and guide default surfaces fit the fixed desktop frame in both themes
 })
 
 
-test('unified login restores remembered credentials and lets the main process identify the account', async () => {
-  const page = await open('remembered=1&sub2api=1&turnstile=1')
+test('source selection restores only that source credentials and makes login explicit', async () => {
+  const page = await open('remembered=1&turnstile=1')
   try {
-    await page.waitForFunction(() => document.querySelector('[data-testid="login-password"]')?.value === 'remembered-password')
+    await page.waitForFunction(() => document.querySelector('[data-testid="login-password"]')?.value === 'solov-remembered-password')
     assert.equal(await page.getByTestId('login-account').inputValue(), 'same@example.test')
-    assert.equal(await page.getByTestId('login-site').count(), 0)
-    assert.equal(await page.getByTestId('login-site-hint').count(), 0)
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="login-password"]')?.value === 'solov-api-remembered-password')
     assert.doesNotMatch(await page.getByTestId('login-dialog').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov/i)
     await page.getByTestId('auth-agree').check()
     await page.getByTestId('login-submit').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
     const login = (await calls(page)).find((entry) => entry.method === 'login').input
-    assert.deepEqual(login, { username: 'same@example.test', password: 'remembered-password' })
+    assert.deepEqual(login, { username: 'same@example.test', password: 'solov-api-remembered-password', siteId: 'solov-api' })
     assert.equal(await page.evaluate(() => document.documentElement.dataset.savedSite), 'solov-api')
-    await page.screenshot({ path: path.join(output, 'login-unified.png') })
+    await page.screenshot({ path: path.join(output, 'login-source-selected.png') })
   } finally { await page.close() }
+})
+
+test('late credentials from another source cannot overwrite a typed password', async () => {
+  const page = await open('remembered=1&pending=remembered-solov&pending=remembered-solov-api')
+  try {
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await page.getByTestId('login-account').fill('typed@example.test')
+    await page.getByTestId('login-password').fill('typed-password')
+    await page.evaluate(() => { window.authHarness.release('remembered-solov'); window.authHarness.release('remembered-solov-api') })
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('authenticated'))
+    assert.deepEqual((await calls(page)).find((entry) => entry.method === 'login').input, { username: 'typed@example.test', password: 'typed-password', siteId: 'solov-api' })
+  } finally { await page.close() }
+})
+
+test('a pending explicit login locks its source and 2FA retains its source without retrying elsewhere', async () => {
+  const page = await open('pending=login&twoFactor=1')
+  try {
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await page.getByTestId('login-account').fill('same@example.test')
+    await page.getByTestId('login-password').fill('test-password')
+    await page.getByTestId('auth-agree').check()
+    await page.getByTestId('login-submit').click()
+    assert.equal(await page.getByTestId('auth-source').getByRole('button', { name: '星芒账号' }).isDisabled(), true)
+    assert.equal(await page.getByTestId('login-forgot').isDisabled(), true)
+    assert.equal(await page.getByTestId('login-cancel').isDisabled(), true)
+    await page.keyboard.press('Enter')
+    await page.evaluate(() => window.authHarness.release('login'))
+    await page.getByTestId('auth-error').filter({ hasText: '双重验证' }).waitFor()
+    assert.equal(await page.getByTestId('login-password').inputValue(), 'test-password')
+    assert.equal(await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).getAttribute('aria-pressed'), 'true')
+    await page.getByTestId('auth-open-website').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('external'))
+    assert.deepEqual((await calls(page)).map((entry) => entry.method), ['login', 'external'])
+    assert.equal((await calls(page))[1].input, 'https://api.solov.cc')
+  } finally { await page.close() }
+})
+
+test('historical account recovery opens its official source and never sends a reset to the primary source', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await page.getByTestId('login-account').fill('same@example.test')
+    await page.getByTestId('login-forgot').click()
+    await page.getByTestId('forgot-official-help').waitFor()
+    assert.equal(await page.getByTestId('forgot-send').count(), 0)
+    assert.equal(await page.getByTestId('forgot-token').count(), 0)
+    await page.getByTestId('forgot-open-website').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('external'))
+    assert.deepEqual(await calls(page), [{ method: 'external', input: 'https://api.solov.cc' }])
+    await page.getByTestId('forgot-back-login').click()
+    assert.equal(await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).getAttribute('aria-pressed'), 'true')
+    assert.equal(await page.getByTestId('login-account').inputValue(), 'same@example.test')
+    await page.getByTestId('login-forgot').click()
+    await page.getByTestId('auth-source').getByRole('button', { name: '星芒账号' }).click()
+    await page.getByTestId('forgot-send').click()
+    await page.getByTestId('forgot-token').waitFor()
+    assert.deepEqual((await calls(page)).at(-1), { method: 'send-reset', input: { email: 'same@example.test', siteId: 'solov' } })
+    await page.getByTestId('forgot-token').fill('old-source-token')
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await page.getByTestId('auth-source').getByRole('button', { name: '星芒账号' }).click()
+    assert.equal(await page.getByTestId('forgot-token').count(), 0)
+    assert.equal(await page.getByTestId('forgot-email').inputValue(), 'same@example.test')
+  } finally { await page.close() }
+})
+
+test('the actual add-account flow preserves the current login on failure and accepts either explicit source', async () => {
+  for (const target of ['solov-api', 'solov']) {
+    const page = await open(target === 'solov' ? 'sub2api=1' : '', true)
+    try {
+      await page.getByTestId('tool-row-codex').waitFor()
+      const previous = await page.evaluate(() => window.xingmang.getAccountSession())
+      await page.getByRole('button', { name: '切换账号', exact: true }).click()
+      await page.getByTestId('account-add').click()
+      await page.getByTestId('auth-source').getByRole('button', { name: target === 'solov' ? '星芒账号' : '历史账号', exact: true }).click()
+      await page.getByTestId('login-account').fill('same@example.test')
+      await page.getByTestId('login-password').fill('same-test-password')
+      await page.getByTestId('auth-agree').check()
+      await page.evaluate(() => { window.v2Test.fail = 'loginAccount' })
+      await page.getByTestId('login-submit').click()
+      await page.getByTestId('auth-error').waitFor()
+      assert.deepEqual(await page.evaluate(() => window.xingmang.getAccountSession()), previous)
+      assert.equal(await page.getByTestId('login-account').inputValue(), 'same@example.test')
+      await page.evaluate(() => { window.v2Test.fail = '' })
+      await page.getByTestId('login-submit').click()
+      await page.getByTestId('login-dialog').waitFor({ state: 'hidden' })
+      const current = await page.evaluate(() => window.xingmang.getAccountSession())
+      assert.equal(current.siteId, target)
+      assert.equal(current.authenticated, true)
+      assert.deepEqual(await page.evaluate(() => window.v2Test.unexpected), [])
+    } finally { await page.close() }
+  }
 })

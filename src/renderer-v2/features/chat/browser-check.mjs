@@ -17,8 +17,13 @@ before(async () => {
   browser = await chromium.launch({ headless: true })
 })
 after(async () => { await browser?.close(); await server?.close() })
-async function open(query = '') {
+async function open(query = '', stored = {}) {
   const page = await browser.newPage({ viewport: { width: 1064, height: 708 } })
+  if (Object.keys(stored).length) await page.addInitScript((records) => {
+    if (sessionStorage.getItem('chat-storage-fixture-seeded')) return
+    for (const [key, value] of Object.entries(records)) localStorage.setItem(key, value)
+    sessionStorage.setItem('chat-storage-fixture-seeded', '1')
+  }, stored)
   await page.addInitScript(() => { Object.defineProperty(navigator, 'clipboard', { value: { writeText: async (text) => { if (location.search.includes('copyFail')) throw new Error('denied'); window.__copied = text } }, configurable: true }) })
   await page.route('**/*', async (route) => { if (new URL(route.request().url()).hostname !== '127.0.0.1') return route.abort(); await route.continue() })
   await page.goto(`${base}/src/renderer-v2/features/chat/browser-fixture.html?${query}`)
@@ -29,6 +34,101 @@ async function ready(page) { await page.waitForFunction(() => { const select = d
 async function calls(page, method) { return page.evaluate((method) => window.chatHarness.calls.filter((item) => item.method === method), method) }
 async function send(page, prompt = 'fixture prompt') { await ready(page); await page.getByTestId('chat-composer-input').fill(prompt); await page.getByTestId('chat-send').click(); await page.waitForFunction(() => window.chatHarness.calls.some((item) => item.method === 'start' || item.method === 'image')); return (await calls(page, 'start')).at(-1)?.input ?? (await calls(page, 'image')).at(-1)?.input }
 async function emit(page, event) { await page.evaluate((event) => window.chatHarness.emit(event), event) }
+
+const storedChatKey = 'xingmang-ui-v2:chat:xm-account%3A7'
+const legacyChatKey = 'xingmang-ai-chat:v1:7'
+function storedWorkspace() {
+  const settings = { mode: 'text', group: 'group-a', model: 'gpt-test', systemPrompt: '', parameters: {}, size: '1024x1024', quality: 'low', imageResolution: '1K' }
+  const conversation = (id) => ({ id, title: '保存的对话', createdAt: 1, updatedAt: 1, draft: '', settings, messages: [] })
+  return { version: 2, owner: 'xm-account:7', activeId: 'saved', conversations: [conversation('saved')], draftConversation: conversation('draft') }
+}
+
+test('long historical content and reasoning survive hydration, autosave and reload without truncation', async () => {
+  const state = storedWorkspace()
+  const content = `${'历史完整正文'.repeat(9000)}CONTENT-END`
+  const reasoning = `${'历史完整思考'.repeat(9000)}REASONING-END`
+  state.conversations[0].messages = [{ id: 'long-history', role: 'assistant', content, reasoning, status: 'complete', createdAt: 1 }]
+  const page = await open('strict=1', { [storedChatKey]: JSON.stringify(state) })
+  try {
+    await ready(page)
+    await page.getByTestId('chat-composer-input').fill('autosave trigger')
+    await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key)).conversations[0].draft === 'autosave trigger', storedChatKey)
+    const saved = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).conversations[0].messages[0], storedChatKey)
+    assert.equal(saved.content, content)
+    assert.equal(saved.reasoning, reasoning)
+    await page.reload()
+    await page.getByTestId('chat-message-long-history').waitFor()
+    assert.equal(await page.locator('.chat-bubble').innerText(), content)
+    assert.equal(await page.locator('.chat-reasoning > div').textContent(), reasoning)
+  } finally { await page.close() }
+})
+
+test('oversized persisted history remains byte-for-byte intact through edits and account unmount while saving is blocked', async () => {
+  const state = storedWorkspace()
+  state.conversations[0].messages = [{ id: 'over-limit', role: 'assistant', content: 'x'.repeat(4 * 1024 * 1024), reasoning: '', status: 'complete', createdAt: 1 }]
+  const raw = JSON.stringify(state)
+  const page = await open('strict=1', { [storedChatKey]: raw })
+  try {
+    await page.getByRole('alert').filter({ hasText: '超过本地存储上限' }).waitFor()
+    await page.getByTestId('chat-composer-input').fill('temporary unsaved draft')
+    await page.waitForTimeout(400)
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), raw)
+    assert.equal(await page.getByTestId('page-chat').getAttribute('data-unsaved'), 'true')
+    await page.evaluate(() => window.chatHarness.switchScope(8))
+    await page.waitForFunction(() => document.querySelector('[data-testid=page-chat]')?.getAttribute('data-account-scope') === 'xm-account:8')
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), raw)
+  } finally { await page.close() }
+})
+
+test('legacy import completes before autosave and preserves long history under StrictMode', async () => {
+  const content = `${'旧版内容'.repeat(11000)}LEGACY-END`
+  const messages = Array.from({ length: 120 }, (_, index) => ({ id: `legacy-${index}`, role: index % 2 ? 'assistant' : 'user', content: index === 119 ? content : `message-${index}`, reasoning: '', status: 'complete', createdAt: index }))
+  const raw = JSON.stringify({ version: 1, userId: '7', data: { group: 'group-a', model: 'gpt-test', messages } })
+  const page = await open('strict=1', { [legacyChatKey]: raw })
+  try {
+    await page.getByTestId('chat-message-legacy-119').waitFor()
+    await page.getByTestId('chat-composer-input').fill('post migration draft')
+    await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key)).conversations[0].draft === 'post migration draft', storedChatKey)
+    const stored = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)), storedChatKey)
+    assert.equal(stored.conversations[0].messages.length, 120)
+    assert.equal(stored.conversations[0].messages.at(-1).content, content)
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), legacyChatKey), raw)
+  } finally { await page.close() }
+})
+
+test('legacy read failures cannot establish an empty canonical history via autosave or unmount', async () => {
+  const raw = JSON.stringify({ version: 1, userId: '7', data: { messages: [{ id: 'old', role: 'user', content: 'x'.repeat(4 * 1024 * 1024) }] } })
+  const page = await open('strict=1', { [legacyChatKey]: raw })
+  try {
+    await page.getByRole('alert').filter({ hasText: '超过本地存储上限' }).waitFor()
+    await page.getByTestId('chat-composer-input').fill('not persisted')
+    await page.waitForTimeout(400)
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), null)
+    await page.evaluate(() => window.chatHarness.switchScope(8))
+    await page.waitForFunction(() => document.querySelector('[data-testid=page-chat]')?.getAttribute('data-account-scope') === 'xm-account:8')
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), null)
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), legacyChatKey), raw)
+  } finally { await page.close() }
+})
+
+test('a new oversized streamed result stays in the window and reports failed persistence without overwriting saved history', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'retained question')
+    await page.waitForFunction((key) => JSON.parse(localStorage.getItem(key) || '{}').conversations?.[0]?.messages.length === 2, storedChatKey)
+    const previous = await page.evaluate((key) => localStorage.getItem(key), storedChatKey)
+    await emit(page, { type: 'reasoning', requestId: request.requestId, content: 'x'.repeat(4 * 1024 * 1024) })
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'VISIBLE-UNSAVED-RESULT' })
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    await page.getByRole('alert').filter({ hasText: '超过本地存储上限' }).waitFor()
+    assert.equal(await page.getByText('VISIBLE-UNSAVED-RESULT', { exact: true }).count(), 1)
+    assert.equal(await page.locator('.chat-reasoning > div').evaluate((element) => element.textContent.length), 4 * 1024 * 1024)
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), previous)
+    await page.evaluate(() => window.chatHarness.switchScope(8))
+    await page.waitForFunction(() => document.querySelector('[data-testid=page-chat]')?.getAttribute('data-account-scope') === 'xm-account:8')
+    assert.equal(await page.evaluate((key) => localStorage.getItem(key), storedChatKey), previous)
+  } finally { await page.close() }
+})
 
 test('group options show canonical names and native menus inherit the active theme', async () => {
   const page = await open('theme=dark&preferredGroup=1')

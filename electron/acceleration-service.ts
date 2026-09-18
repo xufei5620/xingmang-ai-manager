@@ -1,7 +1,8 @@
-import type { AccelerationApi, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationState } from './acceleration-contract'
-import { accelerationTrialSeconds } from './acceleration-contract'
+import type { AccelerationApi, AccelerationLine, AccelerationMode, AccelerationPhase, AccelerationRedemptionResult, AccelerationState } from './acceleration-contract'
+import { accelerationBonusSeconds, accelerationTrialSeconds } from './acceleration-contract'
 
 export interface AccelerationService extends AccelerationApi {
+  redeemAccelerationCode(scope: string, code: string): Promise<AccelerationRedemptionResult>
   /** Host lifecycle barrier; also drains sessions whose account has already expired. */
   stopAll(): Promise<void>
   onAccountChanged(): Promise<void>
@@ -121,6 +122,16 @@ function unavailableState(scope: string): AccelerationState {
   }
 }
 
+function projectRedemption(value: unknown, scope: string): AccelerationRedemptionResult {
+  if (!isRecord(value) || typeof value.status !== 'string' || !['redeemed', 'already-redeemed', 'invalid-code'].includes(value.status)
+    || value.addedSeconds !== (value.status === 'redeemed' ? accelerationBonusSeconds : 0)) throw new Error(INVALID_RESPONSE)
+  const state = projectState(value.state, scope)
+  if (value.status === 'redeemed' && (state.remainingSeconds === null || state.totalSeconds < accelerationBonusSeconds)) {
+    throw new Error(INVALID_RESPONSE)
+  }
+  return { status: value.status as AccelerationRedemptionResult['status'], addedSeconds: value.addedSeconds as number, state }
+}
+
 export function createAccelerationService(options: AccelerationServiceOptions): AccelerationService {
   const { backend } = options
   // Track a start before awaiting it: a failed/late response does not prove the tunnel never started.
@@ -217,6 +228,28 @@ export function createAccelerationService(options: AccelerationServiceOptions): 
     getAccelerationState: (scope) => request(scope, 'get'),
     startAcceleration: (scope, mode, lineId) => request(scope, 'start', mode, lineId),
     stopAcceleration: (scope) => request(scope, 'stop'),
+    redeemAccelerationCode(scope, code) {
+      try {
+        assertScope(scope)
+        if (typeof code !== 'string' || !code.trim() || code.length > 64) throw new Error('加速口令格式无效。')
+        assertCurrent(scope, revision)
+      } catch (error) { return Promise.reject(error) }
+      const expectedRevision = revision
+      return enqueue(async () => {
+        await stopOtherAccounts(options.getAccountScope())
+        assertCurrent(scope, expectedRevision)
+        if (!backend?.redeemAccelerationCode) throw new Error(SERVICE_UNAVAILABLE)
+        let result: AccelerationRedemptionResult
+        try { result = projectRedemption(await backend.redeemAccelerationCode(scope, code), scope) }
+        catch {
+          assertCurrent(scope, expectedRevision)
+          throw new Error('加速口令兑换失败，请稍后重试。')
+        }
+        assertCurrent(scope, expectedRevision)
+        track(result.state)
+        return result
+      })
+    },
     listAccelerationLines(scope) {
       try { assertScope(scope); assertCurrent(scope, revision) } catch (error) { return Promise.reject(error) }
       const expectedRevision = revision

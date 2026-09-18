@@ -1,6 +1,7 @@
-import type { CodexDesktopLaunchMode, XingmangApi } from '../../../../electron/ipc-contract'
+import type { CodexDesktopLaunchMode, ExternalToolId, XingmangApi } from '../../../../electron/ipc-contract'
 import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
+import { usageCalendarDate, usageDateRange } from '../../../../electron/usage-date-range'
 
 export function createToolsApi(bridge: XingmangApi) {
   return {
@@ -8,6 +9,9 @@ export function createToolsApi(bridge: XingmangApi) {
       const [system, config, platform] = await Promise.all([bridge.scanSystem(force), bridge.getConfig(), bridge.getPlatformCapabilities()])
       return { system, config, platform }
     },
+    readExternal: () => bridge.scanExternalClients(),
+    installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
+    launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
     install: (id: ToolId) => id === 'codexDesktop' ? bridge.installCodexDesktop() : bridge.installCli(id),
     uninstall: (id: ToolId) => id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id),
     checkUpdate: (id: ToolId) => id === 'codexDesktop' ? bridge.checkCodexDesktopUpdate() : bridge.checkCliUpdate(id),
@@ -26,7 +30,7 @@ export function createToolsApi(bridge: XingmangApi) {
     saveManual: (input: Parameters<XingmangApi['saveConfig']>[0]) => bridge.saveConfig(input),
     saveAccountKey: (input: Parameters<XingmangApi['saveConfigWithAccountKey']>[0]) => bridge.saveConfigWithAccountKey(input),
     configureManaged: (tool: ToolId, model?: string, mode: 'merge' | 'reset' = 'merge') => bridge.configureManagedCliKeys({
-      providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode,
+      providers: [providerFor(tool)], preferredModels: model ? { [providerFor(tool)]: model } : {}, mode, intent: 'explicit',
     }),
     official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
     getLocale: () => bridge.inspectCodexDesktopLocale(),
@@ -36,11 +40,17 @@ export function createToolsApi(bridge: XingmangApi) {
     officialUsage: () => bridge.refreshOfficialChatGptUsage(),
     async balanceUsage() {
       const now = new Date()
+      const session = await bridge.getAccountSession()
+      const calendar = session.siteId === 'solov-api' || session.realmId === 'api-account'
+      const dates = usageDateRange({}, now)
+      const monthDate = `${usageCalendarDate(now, dates.timezone).slice(0, 7)}-01`
       const endTimestamp = Math.floor(now.getTime() / 1000)
       const monthStart = Math.floor(new Date(now.getFullYear(), now.getMonth(), 1).getTime() / 1000)
       const [month, week] = await Promise.all([
-        bridge.getAccountUsage({ type: 2, page: 1, pageSize: 1, startTimestamp: monthStart, endTimestamp }),
-        bridge.getAccountUsage({ type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
+        bridge.getAccountUsage(calendar ? { ...dates, startDate: monthDate, page: 1, pageSize: 1 }
+          : { type: 2, page: 1, pageSize: 1, startTimestamp: monthStart, endTimestamp }),
+        bridge.getAccountUsage(calendar ? { ...dates, page: 1, pageSize: 1 }
+          : { type: 2, page: 1, pageSize: 1, startTimestamp: endTimestamp - 7 * 86400, endTimestamp }),
       ])
       return { monthQuota: month.stats.quota, weekQuota: week.stats.quota }
     },

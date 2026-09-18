@@ -6,13 +6,13 @@ export type AccountSiteId = 'solov' | 'solov-api'
 export function createAuthApi(bridge: AuthBridge) {
   return {
     getStatus: () => bridge.getAccountStatus('solov'),
-    getRemembered: () => bridge.getRememberedAccountLogin(),
+    getRemembered: (siteId: AccountSiteId) => bridge.getRememberedAccountLogin(siteId),
     setRemembered: (login: RememberedAccountLogin | null, siteId?: AccountSiteId) => bridge.setRememberedAccountLogin(login, siteId),
     login: (input: AccountLoginInput) => bridge.loginAccount(input),
     register: (input: AccountRegisterInput) => bridge.registerAccount(input),
     sendVerification: (email: string) => bridge.sendVerificationCode(email),
-    sendReset: (email: string) => bridge.sendPasswordResetCode(email),
-    reset: (input: AccountResetPasswordInput) => bridge.resetPassword(input),
+    sendReset: (email: string, siteId: AccountSiteId) => bridge.sendPasswordResetCode(email, siteId),
+    reset: (input: AccountResetPasswordInput, siteId: AccountSiteId) => bridge.resetPassword(input, siteId),
     getLegal: (kind: LegalDocumentKind) => bridge.getLegalDocument(kind, 'solov'),
     openExternal: (url: string) => bridge.openExternal(url),
     copyPassword: async (value: string) => { await navigator.clipboard.writeText(value) },

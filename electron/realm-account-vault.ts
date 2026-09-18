@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import {
   isRealmRecord, parseRealmSavedAccount, realmAccountSummary, realmOwnerKey, RealmAccountError,
   requireAccountRealm, requireRealmUserId,
@@ -18,6 +18,16 @@ export interface RealmVaultStorage {
   read(): Promise<string | null>
   /** Must atomically replace the file or reject with the original file intact. */
   writeAtomic(ciphertext: string): Promise<void>
+  /** Preserve the exact failed ciphertext before replacing it; reject if it changed. */
+  recoverAtomic?(expectedCiphertext: string, replacementCiphertext: string): Promise<void>
+}
+
+export type RealmVaultFailureStage = 'availability' | 'read' | 'decode' | 'decrypt' | 'validate'
+  | 'encrypt' | 'verify' | 'write' | 'recover'
+
+/** Stage only: native errors/JSON parse failures can contain credential material. */
+export class RealmVaultStorageError extends RealmAccountError {
+  constructor(readonly stage: RealmVaultFailureStage) { super('STORAGE') }
 }
 
 interface VaultDocument {
@@ -37,6 +47,8 @@ export interface RealmLoginHintSummary {
 }
 
 export interface RealmAccountVault {
+  /** Explicit signed-out login recovery only; ordinary reads never reset accounts. */
+  recoverUnreadable(): Promise<boolean>
   list(): Promise<RealmAccountSummary[]>
   active(): Promise<RealmSavedAccount | null>
   get(owner: RealmAccountOwner): Promise<RealmSavedAccount | null>
@@ -97,17 +109,25 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
   }
 
   function assertEncryption(): void {
-    if (!storage.isEncryptionAvailable()) throw new RealmAccountError('STORAGE')
+    try {
+      if (!storage.isEncryptionAvailable()) throw new Error()
+    } catch { throw new RealmVaultStorageError('availability') }
   }
 
-  async function read(): Promise<VaultDocument> {
+  async function readCiphertext(): Promise<string | null> {
     assertEncryption()
+    try { return await storage.read() } catch { throw new RealmVaultStorageError('read') }
+  }
+
+  function decode(ciphertext: string): VaultDocument {
+    if (!ciphertext || Buffer.byteLength(ciphertext) > maxFileBytes
+      || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(ciphertext)) {
+      throw new RealmVaultStorageError('decode')
+    }
+    let plaintext: string
+    try { plaintext = storage.decryptString(Buffer.from(ciphertext, 'base64')) }
+    catch { throw new RealmVaultStorageError('decrypt') }
     try {
-      const ciphertext = await storage.read()
-      if (ciphertext === null) return { version: 2, activeId: null, accounts: [] }
-      if (!ciphertext || Buffer.byteLength(ciphertext) > maxFileBytes
-        || !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(ciphertext)) throw new Error()
-      const plaintext = storage.decryptString(Buffer.from(ciphertext, 'base64'))
       if (Buffer.byteLength(plaintext) > maxPlaintextBytes) throw new Error()
       const data: unknown = JSON.parse(plaintext)
       if (!isRealmRecord(data) || data.version !== 2 || !Array.isArray(data.accounts) || data.accounts.length > maxAccounts) throw new Error()
@@ -119,22 +139,63 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
       return { version: 2, activeId: data.activeId as string | null, accounts,
         ...(data.legacyMigrated === undefined ? {} : { legacyMigrated: data.legacyMigrated }),
         ...(loginHints === undefined ? {} : { loginHints }) }
-    } catch { throw new RealmAccountError('STORAGE') }
+    } catch { throw new RealmVaultStorageError('validate') }
+  }
+
+  async function read(): Promise<VaultDocument> {
+    const ciphertext = await readCiphertext()
+    return ciphertext === null ? { version: 2, activeId: null, accounts: [] } : decode(ciphertext)
+  }
+
+  function encode(document: VaultDocument): string {
+    assertEncryption()
+    const plaintext = JSON.stringify(document)
+    let encrypted: Uint8Array
+    try {
+      if (Buffer.byteLength(plaintext) > maxPlaintextBytes) throw new Error()
+      encrypted = storage.encryptString(plaintext)
+      if (!encrypted.byteLength) throw new Error()
+      if (Buffer.byteLength(Buffer.from(encrypted).toString('base64')) > maxFileBytes) throw new Error()
+    } catch { throw new RealmVaultStorageError('encrypt') }
+    // Never commit bytes that the current OS-backed cipher cannot read back.
+    try {
+      if (storage.decryptString(encrypted) !== plaintext) throw new Error()
+    } catch { throw new RealmVaultStorageError('verify') }
+    assertEncryption()
+    return Buffer.from(encrypted).toString('base64')
   }
 
   async function write(document: VaultDocument): Promise<void> {
-    assertEncryption()
-    try {
-      const plaintext = JSON.stringify(document)
-      if (Buffer.byteLength(plaintext) > maxPlaintextBytes) throw new Error()
-      const encrypted = storage.encryptString(plaintext)
-      if (!encrypted.byteLength) throw new Error()
-      const ciphertext = Buffer.from(encrypted).toString('base64')
-      if (Buffer.byteLength(ciphertext) > maxFileBytes) throw new Error()
-      // Recheck immediately before committing. There is no plaintext fallback.
+    const ciphertext = encode(document)
+    try { await storage.writeAtomic(ciphertext) } catch { throw new RealmVaultStorageError('write') }
+  }
+
+  function recoverUnreadable(): Promise<boolean> {
+    return enqueue(async () => {
+      const ciphertext = await readCiphertext()
+      if (ciphertext === null) return false
+      try { decode(ciphertext); return false } catch (error) {
+        // Incompatible schemas, unsafe paths and I/O failures are not evidence
+        // of a lost encryption key. Preserve those records without recovery.
+        if (!(error instanceof RealmVaultStorageError) || error.stage !== 'decrypt') throw error
+      }
+      if (!storage.recoverAtomic) throw new RealmVaultStorageError('recover')
       assertEncryption()
-      await storage.writeAtomic(ciphertext)
-    } catch { throw new RealmAccountError('STORAGE') }
+      try {
+        const probe = `xingmang-vault-probe:${randomUUID()}`
+        if (storage.decryptString(storage.encryptString(probe)) !== probe) throw new Error()
+      } catch { throw new RealmVaultStorageError('verify') }
+      // A temporarily unavailable key may have recovered during the probe.
+      assertEncryption()
+      try { decode(ciphertext); return false } catch (error) {
+        if (!(error instanceof RealmVaultStorageError) || error.stage !== 'decrypt') throw error
+      }
+      // The durable marker prevents resurrecting legacy sessions after reset.
+      const replacement = encode({ version: 2, activeId: null, accounts: [], legacyMigrated: true })
+      try { await storage.recoverAtomic(ciphertext, replacement) }
+      catch { throw new RealmVaultStorageError('recover') }
+      return true
+    })
   }
 
   function importLegacy(values: readonly unknown[], active?: unknown): Promise<number> {
@@ -156,6 +217,7 @@ export function createRealmAccountVault(storage: RealmVaultStorage): RealmAccoun
   }
 
   return Object.freeze({
+    recoverUnreadable,
     hasMigratedLegacy: () => enqueue(async () => (await read()).legacyMigrated === true),
     preferredLoginSite: (identifier: string) => {
       const normalized = normalizeRealmLoginIdentifier(identifier)

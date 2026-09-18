@@ -25,13 +25,13 @@ function waitForRelease(method: string): Promise<void> { return query.getAll('pe
 const status: AccountStatus = { systemName: 'Test fixture', version: '1', setupComplete: true, quotaPerUnit: 1, quotaDisplayType: 'USD', usdExchangeRate: 1, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: query.has('turnstile') }
 const api: AuthApi = {
   getStatus: async () => status,
-  getRemembered: async () => query.has('remembered') ? { identifier: 'same@example.test', password: 'remembered-password' } : null,
+  getRemembered: async (siteId) => { await waitForRelease(`remembered-${siteId}`); return query.has('remembered') ? { identifier: 'same@example.test', password: `${siteId}-remembered-password` } : null },
   setRemembered: async (input, siteId) => { document.documentElement.dataset.savedSite = siteId ?? '';  record('remember', input) },
-  login: async (input) => { record('login', input); if (query.has('fail')) throw new Error('invalid password'); return { account: { userId: 7, username: input.username, quota: 0, usedQuota: 0, group: 'default', role: 1 }, accessExpiresAt: null, siteId: input.siteId ?? (query.has('sub2api') ? 'solov-api' : 'solov') } },
+  login: async (input) => { record('login', input); await waitForRelease('login'); if (query.has('twoFactor')) throw new Error('此账号需要双重验证，请先在站点完成验证'); if (query.has('fail')) throw new Error('invalid password'); return { account: { userId: 7, username: input.username, quota: 0, usedQuota: 0, group: 'default', role: 1 }, accessExpiresAt: null, siteId: input.siteId ?? 'solov' } },
   register: async (input) => { record('register', input); await waitForRelease('register') },
   sendVerification: async (input) => { record('verification', input) },
-  sendReset: async (input) => { record('send-reset', input); await waitForRelease('send-reset') },
-  reset: async (input) => { record('reset', input); await waitForRelease('reset'); return { newPassword: 'new-test-password' } },
+  sendReset: async (email, siteId) => { record('send-reset', { email, siteId }); await waitForRelease('send-reset') },
+  reset: async (input, siteId) => { record('reset', { ...input, siteId }); await waitForRelease('reset'); return { newPassword: 'new-test-password' } },
   getLegal: async (kind) => ({ kind, markdown: '# Test Agreement\n\nLocal fixture content.', fetchedAt: '2026-09-07T00:00:00Z' }),
   openExternal: async (input) => { record('external', input); return true },
   copyPassword: async (input) => { record('copy', input); await waitForRelease('copy'); if (query.has('copyFail')) throw new Error('denied') },

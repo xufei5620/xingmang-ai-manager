@@ -2220,6 +2220,28 @@ describe('Darwin CLI launch planning', () => {
 })
 
 describe('Darwin Codex Desktop integration', () => {
+  it('detects the installed desktop independently of missing or manually created Codex configuration files', async () => {
+    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-darwin-no-config-'))
+    temporaryDirectories.push(directory)
+    const codexHome = path.join(directory, '.codex')
+    const macosCodexAppDetector = vi.fn(async () => ({
+      app: { path: '/Applications/Codex.app', version: '26.915.3509', running: false },
+      detectionFailed: false, detectionError: null,
+    }))
+    const service = createService({ platform: 'darwin', providerRoots: { userHome: directory, codexHome }, macosCodexAppDetector })
+
+    expect(service.getConfig(false).providers.codex).toMatchObject({ exists: false, hasApiKey: false })
+    await expect(service.inspectCodexDesktop()).resolves.toMatchObject({ installed: true, path: '/Applications/Codex.app', detectionFailed: false })
+    expect(fs.existsSync(codexHome)).toBe(false)
+
+    fs.mkdirSync(codexHome)
+    fs.writeFileSync(path.join(codexHome, 'config.toml'), '# no account configured\n', 'utf8')
+    fs.writeFileSync(path.join(codexHome, 'auth.json'), '{}\n', 'utf8')
+    expect(service.getConfig(false).providers.codex).toMatchObject({ exists: true, hasApiKey: false })
+    await expect(service.inspectCodexDesktop()).resolves.toMatchObject({ installed: true, path: '/Applications/Codex.app', detectionFailed: false })
+    expect(macosCodexAppDetector).toHaveBeenCalledTimes(2)
+  })
+
   it('reports externally managed updates without claiming an AppX or MSIX version', async () => {
     const { service } = await createDarwinService({
       macosCodexAppDetector: async () => ({ app: null, detectionFailed: false, detectionError: null }),

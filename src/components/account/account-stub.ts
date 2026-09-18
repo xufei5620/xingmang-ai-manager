@@ -68,7 +68,8 @@ export function resolveAccountAreaStatus(snapshot: AccountSnapshot): AccountArea
   return balanceUsd < LOW_BALANCE_THRESHOLD_USD ? 'low-balance' : 'active'
 }
 
-export function formatBalanceUsd(quota: number, quotaPerUnit: number): string {
+export function formatBalanceUsd(quota: number | null, quotaPerUnit: number): string {
+  if (quota === null) return '暂未读到'
   return `$${computeBalanceUsd(quota, quotaPerUnit).toFixed(2)}`
 }
 

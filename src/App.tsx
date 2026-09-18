@@ -100,7 +100,7 @@ import { TutorialPage } from './pages/TutorialPage'
 import {
   providerIds,
   resolveRelaySite,
-  supportServiceUrl,
+  resolveSupportServiceUrl,
   type AccountBalance,
   type AccountProfile,
   type AccountSessionState,
@@ -191,6 +191,7 @@ function App() {
   // accountSnapshot itself is derived further down via resolveAccountSnapshot
   // (account-session.ts), right next to accountStatus.
   const [accountSession, setAccountSession] = useState<AccountSessionState | null>(null)
+  const supportServiceUrl = resolveSupportServiceUrl(accountSession)
   const [accountBalance, setAccountBalance] = useState<AccountBalance | null>(null)
   const [accountDialog, setAccountDialog] = useState<'login' | 'register' | 'forgot-password' | null>(null)
   const [accountSwitcherOpen, setAccountSwitcherOpen] = useState(false)
