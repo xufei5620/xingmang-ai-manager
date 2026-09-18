@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import {
+  CommandRunnerError,
   runCommand,
   trustedCommandEnvironment,
   windowsSystemExecutable,
@@ -720,62 +721,216 @@ function windowsProcessArgument(value: string): string {
   return `"${escaped}"`
 }
 
-export function buildNodeRuntimeUacBrokerScript(plan: NodeRuntimeProcessPlan): string {
+const elevatedStagingDirectoryPrefix = 'Xingmang-Node-Install-'
+
+/**
+ * Builds the script that actually runs elevated. It copies the payload into an
+ * Administrators-only directory under Program Files and re-verifies the digest and the
+ * Authenticode signature there, so the file msiexec finally opens is one that nobody
+ * below Administrator could have replaced while the UAC prompt was waiting. Binding the
+ * install to that private copy — rather than to the staging path the unelevated app
+ * wrote — is what lets the default, non-administrator launch stage the download in the
+ * ordinary user temp directory instead of a protected machine directory it cannot create.
+ */
+export function buildNodeRuntimeElevatedInstallScript(plan: NodeRuntimeProcessPlan): string {
   if (plan.elevation !== 'uac') throw new Error('未配置 UAC 安装计划')
-  const argumentLine = plan.argv.map(windowsProcessArgument).join(' ')
-  const integrityCheck = plan.integritySha256
-    ? [
-        `$expectedHash = ${powerShellLiteral(plan.integritySha256.toUpperCase())}`,
-        `$actualHash = (Get-FileHash -LiteralPath ${powerShellLiteral(plan.argv[1])} -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()`,
-        'if ($actualHash -ne $expectedHash) { exit 1603 }',
-        "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
-        `$signature = Get-AuthenticodeSignature -LiteralPath ${powerShellLiteral(plan.argv[1])} -ErrorAction Stop`,
-        '$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { \'\' }',
-        '$commonName = [regex]::Match([string]$subject, \'(?:^|,)\\s*CN=([^,]+)\', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase).Groups[1].Value.Trim()',
-        "if ([string]$signature.Status -ne 'Valid' -or ($commonName -ne 'OpenJS Foundation' -and $commonName -ne 'Node.js Foundation')) { exit 1603 }",
-      ].join('; ')
-    : ''
+  if (path.win32.basename(plan.executable).toLowerCase() !== 'msiexec.exe'
+    || !path.win32.isAbsolute(plan.executable)) {
+    throw new Error('UAC 安装计划必须执行系统 msiexec.exe')
+  }
+  const source = plan.argv[1]
+  if (typeof source !== 'string' || !path.win32.isAbsolute(source) || source.includes('\0')
+    || path.win32.extname(source).toLowerCase() !== '.msi') {
+    throw new Error('UAC 安装计划的 MSI 路径无效')
+  }
+  if (!plan.integritySha256 || !/^[a-f0-9]{64}$/i.test(plan.integritySha256)) {
+    throw new Error('UAC 安装计划缺少 MSI 完整性校验值')
+  }
+  const installerArguments = plan.argv.slice(2).map(windowsProcessArgument).join(' ')
   return [
     "$ErrorActionPreference = 'Stop'",
     "$ProgressPreference = 'SilentlyContinue'",
     '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
-    integrityCheck,
-    `$argumentLine = ${powerShellLiteral(argumentLine)}`,
-    `$process = Start-Process -FilePath ${powerShellLiteral(plan.executable)} -ArgumentList $argumentLine -Verb RunAs -Wait -PassThru`,
-    'if ($null -eq $process) { exit 1602 }',
-    'exit $process.ExitCode',
-  ].join('; ')
+    "$env:PSModulePath = Join-Path $PSHOME 'Modules'",
+    // Refuse an authorization granted from a different Windows account: the machine-wide
+    // MSI would then be installed under a user the person at the keyboard did not choose.
+    '$identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()',
+    "if ($identity.User.Value -ne '__XINGMANG_ORIGINAL_USER_SID__') { exit 2225 }",
+    '$principal = [System.Security.Principal.WindowsPrincipal]::new($identity)',
+    'if (-not $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 740 }',
+    '$cache = $null; $payload = $null; $source = $null; $held = $null; $created = $false',
+    '$result = 1603',
+    'try {',
+    '  $root = [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)',
+    "  if (-not [IO.Path]::IsPathRooted($root)) { throw 'Invalid protected installation root' }",
+    `  $cache = Join-Path $root ('${elevatedStagingDirectoryPrefix}' + [Guid]::NewGuid().ToString('N'))`,
+    '  $acl = [System.Security.AccessControl.DirectorySecurity]::new()',
+    '  $acl.SetAccessRuleProtection($true, $false)',
+    "  $administrators = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-32-544')",
+    '  $acl.SetOwner($administrators)',
+    "  foreach ($sid in @('S-1-5-18', 'S-1-5-32-544')) {",
+    '    $rule = [System.Security.AccessControl.FileSystemAccessRule]::new([System.Security.Principal.SecurityIdentifier]::new($sid), [System.Security.AccessControl.FileSystemRights]::FullControl, [System.Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [System.Security.AccessControl.InheritanceFlags]::ObjectInherit, [System.Security.AccessControl.PropagationFlags]::None, [System.Security.AccessControl.AccessControlType]::Allow)',
+    '    $acl.AddAccessRule($rule)',
+    '  }',
+    '  [void][System.IO.Directory]::CreateDirectory($cache, $acl)',
+    '  $created = $true',
+    "  $payload = Join-Path $cache 'node-lts.msi'",
+    `  $source = [System.IO.File]::Open(${powerShellLiteral(source)}, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::Read)`,
+    `  if ($source.Length -lt ${minimumMsiBytes} -or $source.Length -gt ${maximumMsiBytes}) { $result = 13; throw 'MSI size out of range' }`,
+    '  $held = [System.IO.File]::Open($payload, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::ReadWrite, [System.IO.FileShare]::Read)',
+    '  $source.CopyTo($held); $source.Dispose(); $source = $null; $held.Flush(); $held.Dispose(); $held = $null',
+    '  $payloadAcl = [System.IO.File]::GetAccessControl($payload)',
+    '  $payloadAcl.SetOwner($administrators)',
+    '  [System.IO.File]::SetAccessControl($payload, $payloadAcl)',
+    `  $expectedHash = ${powerShellLiteral(plan.integritySha256.toUpperCase())}`,
+    '  $actualHash = (Get-FileHash -LiteralPath $payload -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()',
+    '  if ($actualHash -cne $expectedHash) { $result = 13 } else {',
+    "    Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+    '    $signature = Get-AuthenticodeSignature -LiteralPath $payload -ErrorAction Stop',
+    "    $subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
+    "    $commonName = [regex]::Match([string]$subject, '(?:^|,)\\s*CN=([^,]+)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase).Groups[1].Value.Trim()",
+    "    if ([string]$signature.Status -ne 'Valid' -or ($commonName -ne 'OpenJS Foundation' -and $commonName -ne 'Node.js Foundation')) { $result = 13 } else {",
+    "      $argumentLine = '/i \"' + $payload + '\" ' + " + powerShellLiteral(installerArguments),
+    `      $process = Start-Process -FilePath ${powerShellLiteral(plan.executable)} -ArgumentList $argumentLine -Wait -PassThru -WindowStyle Hidden`,
+    '      if ($null -eq $process) { $result = 1603 } else { $result = $process.ExitCode }',
+    '    }',
+    '  }',
+    '} catch { if ($result -ne 13) { $result = 1603 } } finally {',
+    '  if ($null -ne $source) { $source.Dispose() }',
+    '  if ($null -ne $held) { $held.Dispose() }',
+    // Delete only the file and the empty directory this script created; never recurse
+    // through an elevated path that the unelevated host could have populated.
+    '  if ($null -ne $payload) { try { [System.IO.File]::Delete($payload) } catch {} }',
+    '  if ($created) { try { [System.IO.Directory]::Delete($cache, $false) } catch {} }',
+    '}',
+    'exit $result',
+  ].join('\n')
+}
+
+/**
+ * Builds the unelevated broker. It pins the elevated child to the current account's SID
+ * and re-checks the staged package before prompting, so a package that is already wrong
+ * fails without asking the user for administrator rights at all.
+ */
+export function buildNodeRuntimeUacBrokerScript(
+  plan: NodeRuntimeProcessPlan,
+  powershellExecutable: string,
+): string {
+  if (!path.win32.isAbsolute(powershellExecutable) || !/[\\/]powershell\.exe$/i.test(powershellExecutable)) {
+    throw new Error('Node.js UAC 安装需要系统 Windows PowerShell')
+  }
+  const installer = buildNodeRuntimeElevatedInstallScript(plan)
+  const source = plan.argv[1]
+  return [
+    "$ErrorActionPreference = 'Stop'",
+    "$ProgressPreference = 'SilentlyContinue'",
+    '$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)',
+    `$expectedHash = ${powerShellLiteral((plan.integritySha256 ?? '').toUpperCase())}`,
+    `$actualHash = (Get-FileHash -LiteralPath ${powerShellLiteral(source)} -Algorithm SHA256 -ErrorAction Stop).Hash.ToUpperInvariant()`,
+    'if ($actualHash -cne $expectedHash) { exit 13 }',
+    "Import-Module -Name (Join-Path $PSHOME 'Modules\\Microsoft.PowerShell.Security\\Microsoft.PowerShell.Security.psd1') -Force -ErrorAction Stop",
+    `$signature = Get-AuthenticodeSignature -LiteralPath ${powerShellLiteral(source)} -ErrorAction Stop`,
+    "$subject = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Subject } else { '' }",
+    "$commonName = [regex]::Match([string]$subject, '(?:^|,)\\s*CN=([^,]+)', [System.Text.RegularExpressions.RegexOptions]::IgnoreCase).Groups[1].Value.Trim()",
+    "if ([string]$signature.Status -ne 'Valid' -or ($commonName -ne 'OpenJS Foundation' -and $commonName -ne 'Node.js Foundation')) { exit 13 }",
+    '$originalSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value',
+    "if ($originalSid -notmatch '^S-1-[0-9-]+$') { exit 2225 }",
+    `$installer = ${powerShellLiteral(installer)}`,
+    "$installer = $installer.Replace('__XINGMANG_ORIGINAL_USER_SID__', $originalSid)",
+    '$encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($installer))',
+    '$arguments = "-NoLogo -NoProfile -NonInteractive -EncodedCommand $encoded"',
+    'try {',
+    `  $process = Start-Process -FilePath ${powerShellLiteral(powershellExecutable)} -ArgumentList $arguments -Verb RunAs -WindowStyle Hidden -WorkingDirectory $PSHOME -Wait -PassThru`,
+    '  if ($null -eq $process) { exit 1603 }',
+    '  exit $process.ExitCode',
+    '} catch {',
+    '  $failure = $_.Exception',
+    '  while ($null -ne $failure) {',
+    '    if ($failure.NativeErrorCode -eq 1223 -or $failure.HResult -eq -2147023673) { exit 1223 }',
+    '    $failure = $failure.InnerException',
+    '  }',
+    '  throw',
+    '}',
+  ].join('\n')
+}
+
+/**
+ * Translates the broker's own exit codes into user-facing Chinese. The values stay
+ * outside Windows Installer's 1601-1699 range so msiexec's real codes still pass through.
+ */
+export function nodeRuntimeElevationFailureMessage(exitCode: number | null): string | null {
+  switch (exitCode) {
+    case 1223:
+      return '已取消管理员授权，Node.js 安装未开始；重新点击安装即可再次授权。'
+    case 2225:
+      return '管理员授权用的是另一个 Windows 账号，已停止安装以免装到别的账号名下。请用当前 Windows 账号的管理员身份重试。'
+    case 740:
+      return '未获得管理员权限，Node.js 安装已停止。请在弹出的授权窗口点击「是」。'
+    case 13:
+      return 'Node.js 安装包在授权期间发生变化或签名校验失败，已停止安装。请重新点击安装，程序会重新下载并校验。'
+    default:
+      return null
+  }
+}
+
+/**
+ * The elevated installer builds its private directory with the .NET Framework ACL
+ * overloads (Directory.CreateDirectory taking a DirectorySecurity, File.Get/SetAccessControl)
+ * that PowerShell 7 no longer exposes, so the broker must be Windows PowerShell even on a
+ * machine where pwsh resolves first. Say so instead of failing inside the elevated child.
+ */
+export function resolveNodeRuntimeBrokerPowerShell(
+  machinePaths: WindowsMachinePaths,
+  resolve: (machinePaths: WindowsMachinePaths) => string
+    = (paths) => resolveWindowsPowerShellExecutable({ machinePaths: paths }),
+): string {
+  const resolved = resolve(machinePaths)
+  const windowsPowerShell = windowsPowerShellExecutable(process.env, machinePaths)
+  if (resolved.toLowerCase() !== windowsPowerShell.toLowerCase()) {
+    throw new Error(
+      `Node.js 自动安装需要系统自带的 Windows PowerShell（${windowsPowerShell}），当前系统未提供该文件或它不在受保护路径下`,
+    )
+  }
+  return resolved
 }
 
 async function runUacProcess(plan: NodeRuntimeProcessPlan, signal?: AbortSignal): Promise<CommandResult> {
   if (process.platform !== 'win32') throw new Error('UAC 安装仅支持 Windows')
   if (plan.integritySha256 === undefined) throw new Error('UAC 安装计划缺少 MSI 完整性校验值')
   const machinePaths = resolveWindowsMachinePaths()
-  const powershell = resolveWindowsPowerShellExecutable({ machinePaths })
-  return runCommand({
-    executable: powershell,
-    argv: [
-      '-NoLogo',
-      '-NoProfile',
-      '-NonInteractive',
-      '-ExecutionPolicy',
-      'Bypass',
-      '-EncodedCommand',
-      encodeWindowsPowerShellCommand(buildNodeRuntimeUacBrokerScript(plan)),
-    ],
-  }, {
-    // The encoded command contains the already hash-checked MSI path, so no
-    // user-controlled path is parsed as a PowerShell argument by the broker.
-    // The broker itself is the fixed inbox PowerShell executable and remains
-    // subject to the trusted system-path check.
-    env: trustedCommandEnvironment(plan.env ?? process.env, machinePaths, 'win32'),
-    trustedOnly: true,
-    timeoutMs: plan.timeoutMs,
-    acceptedExitCodes: plan.acceptedExitCodes,
-    maxOutputBytes: 2 * 1024 * 1024,
-    windowsHide: true,
-    signal,
-  })
+  const powershell = resolveNodeRuntimeBrokerPowerShell(machinePaths)
+  try {
+    return await runCommand({
+      executable: powershell,
+      argv: [
+        '-NoLogo',
+        '-NoProfile',
+        '-NonInteractive',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-EncodedCommand',
+        encodeWindowsPowerShellCommand(buildNodeRuntimeUacBrokerScript(plan, powershell)),
+      ],
+    }, {
+      // The encoded command contains the already hash-checked MSI path, so no
+      // user-controlled path is parsed as a PowerShell argument by the broker.
+      // The broker itself is the fixed inbox PowerShell executable and remains
+      // subject to the trusted system-path check.
+      env: trustedCommandEnvironment(plan.env ?? process.env, machinePaths, 'win32'),
+      trustedOnly: true,
+      timeoutMs: plan.timeoutMs,
+      acceptedExitCodes: plan.acceptedExitCodes,
+      maxOutputBytes: 2 * 1024 * 1024,
+      windowsHide: true,
+      signal,
+    })
+  } catch (error) {
+    const message = error instanceof CommandRunnerError
+      ? nodeRuntimeElevationFailureMessage(error.exitCode)
+      : null
+    if (!message) throw error
+    throw new Error(message)
+  }
 }
 
 async function defaultRunProcess(
@@ -845,6 +1000,22 @@ export async function inspectInstalledNodeRuntime(
   }
   const version = validateInstalledNodeRuntimeInspection(inspection, machinePaths)
   return { ...inspection, version }
+}
+
+/**
+ * Only an elevated session can create the ACL-protected machine directory. The default
+ * launch is not elevated, so requiring it there made the whole MSI fallback unreachable
+ * (E-S7). Staging in the user temp directory is safe because the elevated installer
+ * re-copies and re-verifies the package inside Program Files before msiexec touches it.
+ */
+export function nodeRuntimeStagingRequiresProtectedDirectory(
+  mode: InstallNodeRuntimeOptions['temporaryDirectoryMode'],
+): boolean {
+  return mode !== 'same-user'
+}
+
+function createSameUserTemporaryDirectory(): Promise<string> {
+  return fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-node-runtime-'))
 }
 
 const defaultDependencies: NodeRuntimeInstallerDependencies = {
@@ -1045,13 +1216,15 @@ async function installFromSource(
     percent: null,
   })
   if (download.sha256 !== expectedSha256) throw new Error('Node.js 安装包 SHA-256 校验失败')
-  if (process.platform === 'win32' && !isRegisteredTrustedManagedWindowsPath(temporaryDirectory)) {
+  const protectedStaging = nodeRuntimeStagingRequiresProtectedDirectory(options.temporaryDirectoryMode)
+  if (process.platform === 'win32' && protectedStaging
+    && !isRegisteredTrustedManagedWindowsPath(temporaryDirectory)) {
     throw new Error('Node.js 安装包暂存目录未通过受保护路径校验，已阻止 UAC 安装')
   }
   const plan = buildNodeRuntimeInstallPlan(
     msiPath,
     resolveWindowsPowerShellExecutable(),
-    options.temporaryDirectoryMode !== 'same-user',
+    protectedStaging,
     undefined,
     expectedSha256,
   )
@@ -1099,6 +1272,9 @@ export async function installNodeRuntime(
   const architecture = normalizeNodeRuntimeArchitecture(options.architecture ?? process.arch)
   const dependencies: NodeRuntimeInstallerDependencies = {
     ...defaultDependencies,
+    ...(nodeRuntimeStagingRequiresProtectedDirectory(options.temporaryDirectoryMode)
+      ? {}
+      : { createTemporaryDirectory: createSameUserTemporaryDirectory }),
     ...options.dependencies,
   }
   throwIfAborted(options.signal)
@@ -1159,7 +1335,15 @@ export async function installNodeRuntime(
     }
   }
 
-  const temporaryDirectory = await dependencies.createTemporaryDirectory()
+  let temporaryDirectory: string
+  try {
+    temporaryDirectory = await dependencies.createTemporaryDirectory()
+  } catch (error) {
+    failures.push(`安装包暂存目录：${errorText(error)}`)
+    const message = `Node.js LTS 自动安装失败。${failures.join('；')}`
+    report(options, { phase: 'error', source: null, message, percent: null })
+    throw new Error(message)
+  }
   try {
     for (const source of nodeRuntimeDownloadSources(options.networkRegion)) {
       throwIfAborted(options.signal)
