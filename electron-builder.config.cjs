@@ -93,6 +93,10 @@ module.exports = {
     // Unsigned test releases intentionally keep the updater enabled, while
     // ordinary local builds remain isolated from every production feed.
     xingmangLocalBuild: !updateEnabledMode,
+    // The main process reads this to know that electron-updater will skip its
+    // installer signature check (no publisherName below), and switches the
+    // updater to user-confirmed download/install plus its own SHA-512 check.
+    xingmangUnsignedRelease: unsignedReleaseMode,
     ...(accelerationBundle.metadata ? { xingmangAccelerationBundle: accelerationBundle.metadata } : {}),
   },
   files: [

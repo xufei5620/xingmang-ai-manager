@@ -79,6 +79,24 @@ test('explicit unsigned release mode keeps the updater enabled without forcing s
   assert.equal(config.publish.publisherName, undefined)
 })
 
+test('unsigned releases tell the main process that no installer signature is checked', () => {
+  // The flag is what switches the updater to user-confirmed download/install
+  // plus its own manifest digest check (M-02), so it has to track publisherName.
+  const unsigned = loadConfig({ unsignedRelease: true })
+  assert.equal(unsigned.extraMetadata.xingmangUnsignedRelease, true)
+  assert.equal(unsigned.publish.publisherName, undefined)
+
+  const signed = loadConfig({ releaseMode: true })
+  assert.equal(signed.extraMetadata.xingmangUnsignedRelease, false)
+  assert.deepEqual(signed.publish.publisherName, ['绍兴星芒文化传媒有限责任公司'])
+
+  assert.equal(loadConfig().extraMetadata.xingmangUnsignedRelease, false)
+  assert.equal(
+    loadConfig({ unsignedRelease: true, localBuildMode: true }).extraMetadata.xingmangUnsignedRelease,
+    false,
+  )
+})
+
 test('macOS local builds use only an ad-hoc identity while notarization stays release-only', () => {
   const localConfig = loadConfig()
   const releaseConfig = loadConfig({ releaseMode: true })
