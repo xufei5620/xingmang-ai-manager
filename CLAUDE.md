@@ -44,7 +44,7 @@ Electron 43 + React 19（旧回滚界面隔离保留 React 18）+ TypeScript 5.7
 | `electron/`（主进程，全部特权操作） | 86 个模块 | 81 个 |
 | `src/`（渲染进程，纯 UI） | 71 个文件 | 33 个 |
 
-**4009 个 vitest 用例通过 / 194 skipped（311 个测试文件；2026-09-17 在 `ccf1eab` 上实测，合并新测试后以 CI 输出为准）**，`npm test` 还串带 scripts/e2e 下的 node --test 套件。IPC：**108 个主窗口 invoke 通道**（另有 43 个画布宿主通道：41 invoke + 2 push，在 108 之外，见 I4 例外）。
+**4742 个 vitest 用例通过 / 202 skipped（329 个测试文件；2026-09-18 在 `43e09af`（0.2.6）上实测，合并新测试后以 CI 输出为准）**，`npm test` 还串带 scripts/e2e 下的 node --test 套件。IPC：**108 个主窗口 invoke 通道**（另有 43 个画布宿主通道：41 invoke + 2 push，在 108 之外，见 I4 例外）。
 
 **常用命令**（耗时都很短，应作为每次改动的硬门槛）：
 
