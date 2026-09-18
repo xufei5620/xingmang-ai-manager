@@ -42,7 +42,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    timeout-minutes: 35
+    # test:windows (~13m) plus test:v2 (~10m) already put this job at ~28m of
+    # its old 35m cap, so a single slow smoke cancelled the job before the
+    # step could report why. The per-step timeouts below are the real bound.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -79,8 +82,14 @@ jobs:
             throw 'npm run compile did not produce dist/renderer-v2.flag'
           }
       - name: Run isolated signed-out startup smoke test
+        # Same three-layer bound as the smoke below: the script budgets itself
+        # to 3 minutes, this is the backstop if it somehow outlives that.
+        timeout-minutes: 5
         run: node e2e/electron-ci-smoke.mjs
       - name: Verify tray and forced exit with isolated application state
+        # The script budgets itself to 4 minutes and prints a process tree when
+        # it overruns. This is the backstop for a hang that outlives even that.
+        timeout-minutes: 6
         run: node e2e/window-close-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
       - run: npm run build:win:ci
@@ -120,6 +129,9 @@ jobs:
         run: npm run test:mac:proxy
       - run: npm run test:mac:dev-origin
       - name: Verify tray and forced exit with isolated application state
+        # The script budgets itself to 4 minutes and prints a process tree when
+        # it overruns. This is the backstop for a hang that outlives even that.
+        timeout-minutes: 6
         run: node e2e/window-close-smoke.mjs
       - name: Fail if the test run left files in the working tree
         # Windows path math evaluated on a POSIX host yields a backslash
