@@ -12,6 +12,8 @@
 
 实际模块和验证边界以 [DUAL-REALM-IMPLEMENTATION.md](./DUAL-REALM-IMPLEMENTATION.md) 与当前分支源码为准。PR 描述、聊天记录和附件不能替代源码 HEAD。
 
+> 2026-09-18 更新（D-01）：`realm-switch-coordinator.ts`、`new-api-realm-backend.ts`、`realm-capabilities.ts` 三个模块始终没有被 `main.ts` 装配，已连同其专属测试一并删除。真实的切换/登录/恢复路径是 `realm-account-service.ts`，其守卫断言在 `realm-account-service.test.ts`。下表保留当时的交付记录，读的时候请以代码为准。
+
 | 范围 | 已在分支中的实现 | 未完成部分 |
 |---|---|---|
 | 兼容保护与 xm Runtime | 严格站点解析、旧 `sub2api` ID 保护、SiteRuntime、BackendRegistry、ActiveIdentity、main 装配 | 目前仍为 xm-only 应用运行时 |

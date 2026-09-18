@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
+import type { SaveDialogOptions } from 'electron'
 import type { NewApiClientService } from './new-api-client'
 import type { SystemService } from './system-service'
 
@@ -175,6 +176,12 @@ function projectWorkflow(assetIds: readonly string[]): string {
     })),
     edges: [],
   })
+}
+
+/** The dialog is opened with or without a parent window, so read the last argument. */
+function lastSaveDialogPath(): string | undefined {
+  const call = electronMocks.showSaveDialog.mock.calls.at(-1)
+  return (call?.at(-1) as SaveDialogOptions | undefined)?.defaultPath
 }
 
 function trustedEvent(url = trustedCanvasUrl) {
@@ -861,6 +868,37 @@ describe('createCanvasWindowController', () => {
 
     await expect(handler(trustedEvent(), 'export.json', 12345)).rejects.toThrow('保存内容格式错误')
     expect(electronMocks.showSaveDialog).not.toHaveBeenCalled()
+  })
+
+  it('never lets the canvas aim a save dialog at a startup directory', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostSaveFileChannel)!
+
+    // A poisoned canvas build proposes the Windows per-user startup folder, so
+    // one click on "save" would leave a payload that runs at the next sign-in.
+    await handler(
+      trustedEvent(),
+      'C:\\Users\\yoyo\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup\\update.cmd',
+      '{}',
+    )
+    expect(lastSaveDialogPath()).toBe('update.cmd')
+
+    // The macOS equivalent is a LaunchAgent plist run at the next login.
+    await handler(trustedEvent(), '/Users/yoyo/Library/LaunchAgents/com.xingmang.update.plist', '{}')
+    expect(lastSaveDialogPath()).toBe('com.xingmang.update.plist')
+  })
+
+  it('never lets the canvas aim a project export at a startup directory', async () => {
+    const controller = createCanvasWindowController(controllerOptions())
+    await controller.open()
+    const handler = electronMocks.handlers.get(canvasHostExportProjectChannel)!
+
+    await handler(trustedEvent(), '../../LaunchAgents/com.xingmang.update.plist', projectWorkflow([]))
+    expect(lastSaveDialogPath()).toBe('com.xingmang.update.plist.xingcanvas')
+
+    await handler(trustedEvent(), 'C:\\Users\\yoyo\\Startup\\', projectWorkflow([]))
+    expect(lastSaveDialogPath()).toBe('xingmang-project.xingcanvas')
   })
 
   it('previews then imports a portable project with one-time asset remapping', async () => {
