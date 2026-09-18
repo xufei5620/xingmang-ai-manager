@@ -799,3 +799,209 @@ describe('updater service', () => {
     }
   })
 })
+
+describe('unsigned release channel', () => {
+  it('reports the unsigned channel in every snapshot it hands the renderer', () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+    })
+
+    expect(service.getState().unsignedChannel).toBe(true)
+    expect(createUpdaterService(new FakeUpdater(), { currentVersion: '1.0.0', isPackaged: true })
+      .getState().unsignedChannel).toBe(false)
+    service.dispose()
+  })
+
+  it('stops startup at the discovered version instead of downloading it unattended', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', updateInfo())
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+    })
+
+    await expect(service.startup()).resolves.toMatchObject({
+      phase: 'available',
+      availableVersion: '1.1.0',
+    })
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    service.dispose()
+  })
+
+  it('downloads only when the user asks and still waits before installing', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', updateInfo())
+    })
+    client.downloadUpdate.mockImplementationOnce(async () => {
+      client.emit('update-downloaded', updateInfo())
+    })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+    })
+
+    await service.check()
+    await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded' })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+
+    expect(service.install()).toEqual({ accepted: true })
+    expect(client.quitAndInstall).toHaveBeenCalledWith(true, true)
+    service.dispose()
+  })
+
+  it('does not release a startup download the slow-check path would otherwise begin', async () => {
+    const client = new FakeUpdater()
+    let releaseCheck = () => {}
+    client.checkForUpdates.mockImplementationOnce(() => new Promise((resolve) => {
+      releaseCheck = () => {
+        client.emit('update-available', updateInfo())
+        resolve(undefined)
+      }
+    }))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      startupCheckTimeoutMs: 5,
+    })
+
+    await expect(service.startup()).resolves.toMatchObject({ phase: 'error' })
+    releaseCheck()
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(client.downloadUpdate).not.toHaveBeenCalled()
+    service.dispose()
+  })
+})
+
+describe('downloaded package digest verification', () => {
+  const downloadedFile = 'C:\\Users\\tester\\AppData\\Local\\xingmang-updater\\XingMang-AI-Manager-1.1.0-Setup.exe'
+  const downloadedInfo = (overrides: Record<string, unknown> = {}) => ({
+    ...updateInfo(),
+    files: [{ url: 'XingMang-AI-Manager-1.1.0-Setup.exe', sha512: 'manifest-digest', size: 42 }],
+    downloadedFile,
+    ...overrides,
+  })
+
+  it('accepts the package once the recomputed digest matches the manifest', async () => {
+    const client = new FakeUpdater()
+    const verifyPackageDigest = vi.fn(async () => true)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      verifyPackageDigest,
+    })
+
+    client.emit('update-downloaded', downloadedInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    expect(verifyPackageDigest).toHaveBeenCalledWith(downloadedFile, 'manifest-digest')
+    service.dispose()
+  })
+
+  it('picks the manifest entry belonging to the file that was downloaded', async () => {
+    const client = new FakeUpdater()
+    const verifyPackageDigest = vi.fn(async () => true)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      verifyPackageDigest,
+    })
+
+    client.emit('update-downloaded', downloadedInfo({
+      files: [
+        { url: 'XingMang-AI-Manager-1.1.0-arm64.zip', sha512: 'other-digest', size: 7 },
+        { url: 'XingMang%2DAI%2DManager-1.1.0-Setup.exe', sha512: 'wanted-digest', size: 42 },
+      ],
+    }))
+    await vi.waitFor(() => expect(service.getState().phase).toBe('downloaded'))
+    expect(verifyPackageDigest).toHaveBeenCalledWith(downloadedFile, 'wanted-digest')
+    service.dispose()
+  })
+
+  it('refuses to install a package whose digest differs from the manifest', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      verifyPackageDigest: async () => false,
+    })
+
+    client.emit('update-downloaded', downloadedInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState().error).toMatchObject({ code: 'UPDATE_PACKAGE_DIGEST_MISMATCH' })
+    await new Promise((resolve) => setTimeout(resolve, 350))
+    expect(client.quitAndInstall).not.toHaveBeenCalled()
+    expect(() => service.install()).toThrow('尚未下载')
+    service.dispose()
+  })
+
+  it('refuses a manifest that carries no digest for the downloaded package', async () => {
+    const client = new FakeUpdater()
+    const verifyPackageDigest = vi.fn(async () => true)
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      verifyPackageDigest,
+    })
+
+    client.emit('update-downloaded', downloadedInfo({
+      files: [
+        { url: 'XingMang-AI-Manager-1.1.0-arm64.zip', sha512: 'other-digest', size: 7 },
+        { url: 'XingMang-AI-Manager-1.1.0-Setup.exe', sha512: '   ', size: 42 },
+      ],
+      sha512: '',
+    }))
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState().error).toMatchObject({ code: 'UPDATE_PACKAGE_DIGEST_MISSING' })
+    expect(verifyPackageDigest).not.toHaveBeenCalled()
+    service.dispose()
+  })
+
+  it('refuses an update whose package location the updater never reported', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      verifyPackageDigest: async () => true,
+    })
+
+    client.emit('update-downloaded', downloadedInfo({ downloadedFile: '  ' }))
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState().error).toMatchObject({ code: 'UPDATE_PACKAGE_PATH_MISSING' })
+    service.dispose()
+  })
+
+  it('treats a verification that cannot be completed as a rejection', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      verifyPackageDigest: async () => { throw new Error('更新安装包存在多个硬链接') },
+    })
+
+    client.emit('update-downloaded', downloadedInfo())
+    await vi.waitFor(() => expect(service.getState().phase).toBe('error'))
+    expect(service.getState().error).toMatchObject({
+      code: 'UPDATE_PACKAGE_DIGEST_FAILED',
+      message: expect.stringContaining('更新安装包存在多个硬链接'),
+    })
+    service.dispose()
+  })
+
+  it('keeps the unverified digest path out of builds that configure no verifier', async () => {
+    const client = new FakeUpdater()
+    const service = createUpdaterService(client, { currentVersion: '1.0.0', isPackaged: true })
+
+    client.emit('update-downloaded', downloadedInfo({ files: [] }))
+    expect(service.getState().phase).toBe('downloaded')
+    service.dispose()
+  })
+})
