@@ -155,7 +155,7 @@ export function AccountSwitcher({ activeUserId, accountsOrigin, loadAccounts, on
               <div className="account-switcher-row-actions">
                 {isCurrent(account) ? <Pill tone="ok">当前账号</Pill> : savedAccountMatchesOrigin(account, accountsOrigin)
                   ? <Button size="sm" icon={ArrowRightLeft} disabled={loading || pending !== null} loading={pending?.kind === 'switch' && pending.id === account.id} onClick={() => void switchAccount(account)}>切换</Button>
-                  : <Pill>其他站点</Pill>}
+                  : <Pill>需重新登录</Pill>}
                 {!isCurrent(account) && <IconButton icon={Trash2} size="sm" label={`移除 ${account.username}`} disabled={loading || pending !== null} ref={(element) => { if (element) removeTriggers.current.set(account.id, element); else removeTriggers.current.delete(account.id) }} onClick={() => { if (pendingRef.current) return; setActionError(''); setConfirmRemove(account) }} />}
               </div>
             </li>)}

@@ -352,7 +352,7 @@ describe('external client system-service integration', () => {
       f.setSite('solov-api')
       return Response.json({ data: [{ id: selectedModel }] })
     })
-    await expect(f.service.configureExternalTool(tool, { apiKey: selectedKey, model: selectedModel })).rejects.toThrow('账号站点已变化')
+    await expect(f.service.configureExternalTool(tool, { apiKey: selectedKey, model: selectedModel })).rejects.toThrow('账号已变化')
     expect(f.relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
     expect(targetFiles(f.directory)).toEqual([])
     expect(f.assertClaudeDesktopUnmanaged).not.toHaveBeenCalled()
@@ -416,7 +416,7 @@ describe('external client system-service integration', () => {
     f.assertClaudeDesktopUnmanaged.mockImplementationOnce(async () => {
       revision++
     })
-    await expect(f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel }, assertOwner)).rejects.toThrow('账号或站点已切换')
+    await expect(f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel }, assertOwner)).rejects.toThrow('账号已切换')
     expect(f.assertClaudeDesktopUnmanaged).toHaveBeenCalledOnce()
     expect(targetFiles(f.directory)).toEqual([])
   })
@@ -426,7 +426,7 @@ describe('external client system-service integration', () => {
     await f.service.configureExternalTool('claudeDesktop', { apiKey: selectedKey, model: selectedModel })
     const snapshots = new Map(targetFiles(f.directory).map(file => [file, fs.readFileSync(file, 'utf8')]))
     f.assertClaudeDesktopUnmanaged.mockResolvedValueOnce(undefined).mockImplementationOnce(async () => { f.setUser(18) })
-    await expect(f.service.configureExternalTool('claudeDesktop', { apiKey: 'sk-replacement-local-key', model: selectedModel })).rejects.toThrow('账号或站点已切换')
+    await expect(f.service.configureExternalTool('claudeDesktop', { apiKey: 'sk-replacement-local-key', model: selectedModel })).rejects.toThrow('账号已切换')
     expect(targetFiles(f.directory)).toEqual([...snapshots.keys()])
     for (const [file, content] of snapshots) expect(fs.readFileSync(file, 'utf8')).toBe(content)
   })
