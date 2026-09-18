@@ -1,4 +1,5 @@
 import path from 'node:path'
+import { stat } from 'node:fs/promises'
 import { fork, spawn, type ChildProcess, type ForkOptions } from 'node:child_process'
 import type { AccelerationApi, AccelerationState } from './acceleration-contract'
 import { trustedCommandEnvironment } from './command-runner'
@@ -16,7 +17,16 @@ export interface AccelerationDevelopmentConfig {
 }
 
 export interface AccelerationDevelopmentHost extends AccelerationApi {
+  /** Replays a system-proxy lease left behind by a crash, without an account. */
+  recover(): Promise<void>
   dispose(): Promise<void>
+}
+
+/** The worker creates this directory on its first initialization and keeps the
+ *  system-proxy recovery journal and lease in it. Both sides derive it here so
+ *  the startup recovery check cannot drift away from where the worker writes. */
+export function accelerationDevelopmentDirectory(dataDirectory: string): string {
+  return path.join(dataDirectory, 'acceleration-development')
 }
 
 export function parseAccelerationDevelopmentConfig(value: unknown): AccelerationDevelopmentConfig {
@@ -193,6 +203,15 @@ export function createAccelerationDevelopmentHost(options: {
     return ready
   }
 
+  async function hasProxyRecoveryRecords(): Promise<boolean> {
+    try { return (await stat(accelerationDevelopmentDirectory(options.dataDirectory))).isDirectory() }
+    catch (error) {
+      // Only a missing directory proves this machine never took a proxy lease.
+      // Any other failure falls through to the worker, which owns the real check.
+      return (error as NodeJS.ErrnoException | null)?.code !== 'ENOENT'
+    }
+  }
+
   async function request(operation: string, scope: string, mode?: string, lineId?: string): Promise<AccelerationState> {
     await ensureReady()
     // The service above this adapter validates and projects every returned field.
@@ -200,6 +219,14 @@ export function createAccelerationDevelopmentHost(options: {
   }
 
   return {
+    // A crash while acceleration was on leaves the system proxy pointing at a
+    // dead local port: the whole machine is offline until the worker replays
+    // its journal. Recovery therefore cannot wait for an account-scoped call,
+    // because signing in is exactly what the dead proxy prevents.
+    async recover() {
+      if (!await hasProxyRecoveryRecords()) return
+      await ensureReady()
+    },
     getAccelerationState: (scope) => request('get', scope),
     startAcceleration: (scope, mode, lineId) => request('start', scope, mode, lineId),
     stopAcceleration: (scope) => request('stop', scope),

@@ -1,5 +1,5 @@
 import path from 'node:path'
-import { parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource } from './acceleration-development-host'
+import { accelerationDevelopmentDirectory, parseAccelerationDevelopmentConfig, parseAccelerationEntitlementSource } from './acceleration-development-host'
 import { createAccelerationDevelopmentBackend } from './acceleration-development-backend'
 import { accelerationLinesFromProfile, createMihomoRuntime } from './acceleration-mihomo-runtime'
 import { createWindowsSystemProxy } from './platform/windows-system-proxy'
@@ -31,7 +31,7 @@ async function initialize(message: Record<string, unknown>): Promise<void> {
   const config = parseAccelerationDevelopmentConfig(message.config)
   const entitlementSource = parseAccelerationEntitlementSource(message.entitlementSource)
   if (typeof message.dataDirectory !== 'string' || !path.isAbsolute(message.dataDirectory)) throw new Error('开发数据目录无效。')
-  const directory = path.join(message.dataDirectory, 'acceleration-development')
+  const directory = accelerationDevelopmentDirectory(message.dataDirectory)
   ensureSafeDataDirectory(directory, '本机加速数据')
   const journalPath = path.join(directory, 'proxy-lease.json')
   const macProxy = process.platform === 'darwin'
