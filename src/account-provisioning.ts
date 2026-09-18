@@ -1,14 +1,26 @@
 // Core CLI configuration value chain. Account-managed keys are provisioned
 // and written entirely in Electron's main process, so their plaintext never
 // enters renderer memory.
+import { errorMessage } from './error-message'
 import { providerIds, type AppConfigSummary, type ProviderId, type SystemSnapshot } from './types'
 
 export interface ManagedCliProvisioningApi {
   configureManagedCliKeys(input: {
     providers: ProviderId[]
     preferredModels: Partial<Record<ProviderId, string>>
+    intent?: CliProvisioningIntent
   }): Promise<CliKeyProvisioningOutcome>
 }
+
+/**
+ * Who decided this write. The main process refuses an `automatic` write onto a
+ * config whose ownership record is missing or stale (system-service.ts's
+ * "已有工具配置的来源未经确认" guard), which covers every machine set up
+ * before ownership records existed and every hand-filled key. `explicit` is
+ * the user standing behind the replacement, so it must only be sent from a
+ * path where the user picked the tools -- never from a background sync.
+ */
+export type CliProvisioningIntent = 'automatic' | 'explicit'
 
 export interface CliKeyProvisioningFailure {
   provider: ProviderId
@@ -40,12 +52,37 @@ export async function configureManagedCliKeysForInstalledClis(
   installedProviders: readonly ProviderId[],
   preferredModels: Partial<Record<ProviderId, string>>,
   api: ManagedCliProvisioningApi,
+  intent: CliProvisioningIntent = 'automatic',
 ): Promise<CliKeyProvisioningOutcome> {
   if (installedProviders.length === 0) return { configured: [], failed: [] }
-  return api.configureManagedCliKeys({
-    providers: [...installedProviders],
-    preferredModels: sanitizePreferredModels(preferredModels),
-  })
+  const sanitized = sanitizePreferredModels(preferredModels)
+  if (intent !== 'explicit') {
+    return api.configureManagedCliKeys({
+      providers: [...installedProviders],
+      preferredModels: sanitized,
+    })
+  }
+  // ipc.ts 只接受 providers.length === 1 的 explicit 写入（“请逐个确认需要替换
+  // 的工具配置”），所以这里拆成单条下发再合并结果，与 renderer-v2 的
+  // account-switch-sync 同形。单个工具失败不能中断其余目标，否则用户在
+  // 确认弹窗里勾的后几个工具会被静默跳过。
+  const outcome: CliKeyProvisioningOutcome = { configured: [], failed: [] }
+  for (const provider of new Set(installedProviders)) {
+    const model = sanitized[provider]
+    try {
+      const single = await api.configureManagedCliKeys({
+        providers: [provider],
+        preferredModels: model ? { [provider]: model } : {},
+        intent: 'explicit',
+      })
+      const failure = single.failed.find((entry) => entry.provider === provider)
+      if (single.configured.includes(provider)) outcome.configured.push(provider)
+      else outcome.failed.push(failure ?? { provider, message: '没有收到配置完成结果，请重新检测' })
+    } catch (error) {
+      outcome.failed.push({ provider, message: errorMessage(error) })
+    }
+  }
+  return outcome
 }
 
 /**

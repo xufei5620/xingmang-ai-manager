@@ -1169,7 +1169,10 @@ function App() {
         ))
         if (requested.length !== selected.length) warnings.push('部分工具的来源或安装状态已变化，原配置已保留')
         if (requested.length) {
-          const result = await configureManagedCliKeysForInstalledClis(requested, preferredModelsFromConfig(latest), window.xingmang)
+          // 用户在切换弹窗里勾选了要同步的工具，是显式替换：与 renderer-v2 的
+          // account-switch-sync 一致传 explicit，否则主进程会对所有没有来源记录的
+          // 老配置一律拒写。
+          const result = await configureManagedCliKeysForInstalledClis(requested, preferredModelsFromConfig(latest), window.xingmang, 'explicit')
           warnings.push(...result.failed.map((entry) => `${providers[entry.provider].name}：${userFacingErrorMessage(entry.message)}`))
         }
         setConfig(await window.xingmang.getConfig())
@@ -1203,7 +1206,10 @@ function App() {
     if (effectiveSelected.length === 0) return
     const preferredModels = preferredModelsFromConfig(config)
     try {
-      const outcome = await configureManagedCliKeysForInstalledClis(effectiveSelected, preferredModels, window.xingmang)
+      // `selected` 来自 ProvisioningConfirmDialog 的勾选结果，属于用户显式确认，
+      // 必须传 explicit：老用户的配置没有来源记录，automatic 会被主进程守卫拒写，
+      // 而这个弹窗正是 legacy 里唯一能给出确认的地方。
+      const outcome = await configureManagedCliKeysForInstalledClis(effectiveSelected, preferredModels, window.xingmang, 'explicit')
       // 写入已经落盘成功，这里只是刷新配置摘要。刷新失败不能落进外层 catch
       // 把结论反转成"写入失败"——那与磁盘上的事实完全相反。
       let refreshFailed = false
