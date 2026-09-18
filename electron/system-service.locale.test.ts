@@ -258,11 +258,13 @@ describe('system-service Codex Desktop locale workflow', () => {
   it('persists the runtime-patch consent so a later app start still knows what the user chose', async () => {
     const fixture = createFixture({ running: false })
 
+    expect(fixture.store.read().codexDesktopChineseRuntimePatch).toBeUndefined()
+
     await fixture.service.setCodexDesktopLocale('zh-CN', fixture.target)
-    expect(fixture.store.read().codexDesktopChineseRuntimePatch).toBe(true)
+    expect(fixture.store.read().codexDesktopChineseRuntimePatch).toBe('enabled')
 
     await fixture.service.setCodexDesktopLocale('system', fixture.target)
-    expect(fixture.store.read().codexDesktopChineseRuntimePatch).toBeUndefined()
+    expect(fixture.store.read().codexDesktopChineseRuntimePatch).toBe('disabled')
   })
 
   it('rejects a malformed configuration before changing the file or restarting Desktop', async () => {

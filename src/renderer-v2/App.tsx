@@ -10,6 +10,7 @@ import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
+import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
 import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
 import { useToolbox } from './features/tools/useToolbox'
 import { accountTabs } from './registry/business'
@@ -84,6 +85,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [confirmation, setConfirmation] = useState<PendingConfirmation | null>(null)
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [restartDialog, setRestartDialog] = useState(false)
+  const [chineseDialog, setChineseDialog] = useState(false)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
   const [operationError, setOperationError] = useState('')
   const [accountReadError, setAccountReadError] = useState<{ scope: string; message: string } | null>(null)
@@ -313,11 +315,35 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       }
     })
   }
+  /**
+   * The Chinese runtime patch is what makes Codex start with a local debugging
+   * port, so it is off until answered (E-S3). Users upgrading from a build
+   * where it was always on would lose Chinese without noticing, so the first
+   * launch with no stored answer asks, and the answer is stored either way.
+   */
+  async function askForChineseRuntimePatch(): Promise<boolean> {
+    const storedChoice = settings?.codexDesktopChineseRuntimePatch
+    if (!chineseRuntimePatchAnswerMissing(platform, storedChoice)) return false
+    const locale = await toolsApi.getLocale().catch(() => null)
+    if (!shouldAskForChineseRuntimePatch({ platform, storedChoice, locale })) return false
+    setChineseDialog(true)
+    return true
+  }
+  async function answerChineseRuntimePatch(choice: 'enabled' | 'disabled'): Promise<void> {
+    // 'enabled' goes through setCodexDesktopLocale, the one path that owns both
+    // config.toml and the stored answer; only the refusal is written directly.
+    if (choice === 'enabled') await toolsApi.setLocale('zh-CN')
+    else await app.savePreferences({ version: 2, codexDesktopChineseRuntimePatch: 'disabled' })
+    setSettings(await app.readSettings())
+    setChineseDialog(false)
+    await launch('codexDesktop')
+  }
   function requestLaunch(id: ToolId) {
     if (launchRequest.current) return
     launchRequest.current = true
     void perform('打开工具', async () => {
       if (id === 'codexDesktop' && (await native.getCodexDesktopStatus()).running) setRestartDialog(true)
+      else if (id === 'codexDesktop' && await askForChineseRuntimePatch()) return
       else await launch(id)
     }).finally(() => { launchRequest.current = false })
   }
@@ -498,6 +524,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <Button onClick={() => void perform('重启 Codex', async () => { await launch('codexDesktop', 'restart'); setRestartDialog(false) })}>重启 Codex</Button>
       <Button variant="primary" onClick={() => void perform('打开 Codex', async () => { await launch('codexDesktop'); setRestartDialog(false) })}>打开窗口</Button>
     </>}><p>可以直接打开现有窗口；需要重新加载配置时，选择重启 Codex。</p></Dialog>}
+    {chineseDialog && <Dialog open title="启用 Codex 中文界面？" onClose={() => setChineseDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
+      <Button variant="ghost" onClick={() => void perform('打开 Codex', () => answerChineseRuntimePatch('disabled'))}>保持当前语言</Button>
+      <Button variant="primary" onClick={() => void perform('启用中文界面', () => answerChineseRuntimePatch('enabled'))}>启用中文界面</Button>
+    </>}><p>Codex 自带中文语言包，但要让它的界面真正显示中文，星芒需要在每次打开 Codex 时附带一个仅限本机的调试端口，Codex 关闭后端口随之关闭。</p>
+      <p>只问这一次。之后可以在 Codex 桌面端的配置里随时改。</p></Dialog>}
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
       confirmationLock.current = true; setConfirmBusy(true)

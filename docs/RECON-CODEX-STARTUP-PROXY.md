@@ -48,7 +48,7 @@ localeOverride = "zh-CN"
 
 前端 `enable_i18n` gate 只能在运行时绕过，所以 `--remote-debugging-port` 启动的 CDP 注入每次冷启动都要重来一次；而这个端口在 Codex 整个进程生命周期都开着，loopback 上没有认证（`--remote-allow-origins` 只约束带 Origin 头的握手）。因此**不能**把 `config.toml` 里的 `localeOverride = "zh-CN"` 当成用户同意开这个端口 —— 那个值是本程序自己写的默认值。
 
-现在的规则：是否带调试端口启动，只看 `settings.json` 的 `codexDesktopChineseRuntimePatch`，由用户点「启用中文界面」时写入、点「跟随系统语言」时清除；缺省不带。`localeOverride` 仍会为新装自动写成 `zh-CN`，因为原生菜单链路不需要任何端口就能吃到它。
+现在的规则：是否带调试端口启动，只看 `settings.json` 的 `codexDesktopChineseRuntimePatch`。它是三态：`'enabled'` 才带端口，`'disabled'` 是用户明确拒绝，**缺省表示还没问过**。缺省时同样不带端口，但 Windows 上第一次打开 Codex 会弹一次询问（`src/renderer-v2/features/tools/chinese-runtime-choice.ts` 判定），答案写进设置后不再问；包里没有中文资源或探测失败时不问也不记，留到下次。`localeOverride` 仍会为新装自动写成 `zh-CN`，因为原生菜单链路不需要任何端口就能吃到它。
 
 本机原生菜单链路不同：`.vite\build\main-C8LNyWut.js` 读取 `localeOverride` 后调用原生 Intl；`.vite\build\window-all-closed-BKkx4ypf.js` 从 `native-menu-locales/<locale>.json` 加载菜单，相关实现没有上述前端 gate，并监听偏好变化。因此这个版本的原生菜单可能仅靠偏好即可中文，仍需目标平台视觉验收。
 

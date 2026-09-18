@@ -265,6 +265,12 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
       ? value.officialProviders.filter((entry) => typeof entry === 'string' && isProviderId(entry)) as AppSettingsUpdate['officialProviders']
       : undefined
   const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
+  // Unlike the degrade-don't-throw fields above, an unrecognized value here is
+  // rejected: this one decides whether Codex starts with a local debugging
+  // port, so a typo must not quietly read as "not asked yet" (E-S3).
+  if (value.codexDesktopChineseRuntimePatch !== undefined
+    && value.codexDesktopChineseRuntimePatch !== 'enabled'
+    && value.codexDesktopChineseRuntimePatch !== 'disabled') throw new Error('Codex 中文界面设置格式错误')
   if (value.uiSkin !== undefined && (typeof value.uiSkin !== 'string' || !['auto', 'dawn', 'obsidian', 'mist', 'aurora'].includes(value.uiSkin))) throw new Error('皮肤格式错误')
   if (value.uiScale !== undefined && (typeof value.uiScale !== 'string' || !['auto', '90', '100', '110'].includes(value.uiScale))) throw new Error('界面缩放格式错误')
   if (value.closeBehavior !== undefined && (typeof value.closeBehavior !== 'string' || !['ask', 'tray', 'quit'].includes(value.closeBehavior))) throw new Error('关闭偏好格式错误')
@@ -283,6 +289,9 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders !== undefined ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
+    ...(value.codexDesktopChineseRuntimePatch !== undefined
+      ? { codexDesktopChineseRuntimePatch: value.codexDesktopChineseRuntimePatch as AppSettingsUpdate['codexDesktopChineseRuntimePatch'] }
+      : {}),
     ...(value.uiSkin !== undefined ? { uiSkin: value.uiSkin as AppSettingsUpdate['uiSkin'] } : {}),
     ...(value.uiScale !== undefined ? { uiScale: value.uiScale as AppSettingsUpdate['uiScale'] } : {}),
     ...(value.closeBehavior !== undefined ? { closeBehavior: value.closeBehavior as AppSettingsUpdate['closeBehavior'] } : {}),

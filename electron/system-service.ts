@@ -3192,7 +3192,7 @@ export function createSystemService(
       // never from config.toml: `localeOverride = "zh-CN"` is a value this
       // program writes by itself, so reading it as consent made the debugging
       // port the default path for every Chinese customer (E-S3).
-      injectChinese = store.read().codexDesktopChineseRuntimePatch === true
+      injectChinese = store.read().codexDesktopChineseRuntimePatch === 'enabled'
       try {
         const locale = await inspectCodexDesktopLocale()
         if (shouldAutoConfigureCodexDesktopChineseLocale(locale)) {
@@ -3381,7 +3381,7 @@ export function createSystemService(
     // only place that grants or withdraws consent for the debugging port. Store
     // it before the restart: a failed restart must not leave the later ordinary
     // 「打开」 path disagreeing with what the user just chose.
-    await store.update({ version: 2, codexDesktopChineseRuntimePatch: locale === 'zh-CN' })
+    await store.update({ version: 2, codexDesktopChineseRuntimePatch: locale === 'zh-CN' ? 'enabled' : 'disabled' })
     let launchResult: CodexDesktopLaunchResult | undefined
     // A saved zh-CN preference is not proof that a previous runtime patch
     // worked. Explicitly enabling Chinese is also the retry path.
