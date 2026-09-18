@@ -2813,7 +2813,7 @@ export function createNewApiClient(options: NewApiClientOptions = {}): NewApiCli
   const getUsage = (input: NewApiAccountUsageQuery = {}): Promise<NewApiAccountUsagePage> => (
     withSession(async (current) => {
       if (['startDate', 'endDate', 'timezone', 'apiKeyId', 'groupId', 'billingType'].some((key) => input[key as keyof NewApiAccountUsageQuery] !== undefined)) {
-        throw new TypeError('当前站点不支持这些用量筛选条件')
+        throw new TypeError('当前账号不支持这些用量筛选条件')
       }
       const params = new URLSearchParams()
       if (Number.isInteger(input.page) && (input.page as number) >= 1) {

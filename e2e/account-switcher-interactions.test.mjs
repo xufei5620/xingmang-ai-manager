@@ -34,7 +34,7 @@ test('shows the current account without removal and never auto-selects tools or 
   try {
     assert.equal(await page.locator('[data-account-id="account-a"]').getByText('当前账号', { exact: true }).count(), 1)
     assert.equal(await page.locator('[data-account-id="account-a"]').getByRole('button').count(), 0)
-    assert.equal(await page.locator('[data-account-id="account-c"]').getByText('其他站点', { exact: true }).count(), 1)
+    assert.equal(await page.locator('[data-account-id="account-c"]').getByText('需重新登录', { exact: true }).count(), 1)
     assert.equal(await page.locator('[data-account-id="account-c"]').getByRole('button', { name: '切换', exact: true }).count(), 0)
     assert.equal(await page.locator('input:checked').count(), 0)
     assert.equal(await page.getByTestId('account-sync-claude').isDisabled(), true)

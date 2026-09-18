@@ -11,8 +11,12 @@
 
 ## Unreleased
 
+- 发版流水线签名链路加固：把签名证书导进 runner 根信任存储的步骤收窄到 `test_signing` 自签名构建，正式构建不再人为制造链信任，中间 CA 缺失、时间戳不可用这类只在干净 Windows 上暴露的缺陷不会再被 Authenticode 校验的「Valid」盖住；`windows-installer` 作业声明 `environment: release`，三个签名 secret 不再对任意分支可见（P-03、P-06）。
 - 修复 renderer-v2 的错误展示既不剥 Electron 的 IPC 通道名前缀、也不脱敏绝对路径：`business-common.tsx` 新增 `rawErrorMessage` / `userFacingErrorMessage`（与 legacy `src/error-message.ts` 等价，两棵渲染树各留一份），`errorMessage` 改为先剥前缀再脱敏后判断语言与类别，并接受按场景的兜底文案；22 处直接把 `cause.message` 上屏的 v2 调用点改走它，补上 v2 侧此前缺失的单测（R-S7）。
 - 修复非管理员（默认）启动时 Node.js 兜底 MSI 安装必然失败：暂存目录改用普通用户临时目录，提权脚本自行在 Program Files 下建立仅管理员可写的目录、复制安装包并在提权侧重新校验 SHA-256 与 Authenticode 后才交给 msiexec；补上授权取消、跨账号授权等退出码的中文提示（E-S7）。
+- 无签名发布通道（`XINGMANG_UNSIGNED_RELEASE=1`）不再静默下载和安装更新：启动检查只提示发现的新版本，下载和安装都要用户在更新页确认。该通道缺少 `publisherName`，`electron-updater` 会直接跳过安装包签名校验，仓库里的严格 Authenticode 校验器因此从不被调用（审查总表 M-02）。
+- 更新包下载完成后，主进程按更新清单里对应文件的 SHA-512 重新校验安装包，清单缺少该校验值、无法完成校验或校验不一致都拒绝安装并在更新页说明原因。校验读取的是打开后的同一个文件描述符，并拒绝存在多个硬链接的安装包。
+- 更新页显示当前是否为未签名通道，`runtime.jsonl` 在启动时记录一条对应的警告。
 
 ## 0.2.6 - 2026-09-19
 
