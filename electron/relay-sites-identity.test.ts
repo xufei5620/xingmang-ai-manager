@@ -6,6 +6,7 @@ import {
   relaySites,
   requireRelaySite,
   resolveRelaySite,
+  type RelaySite,
 } from './relay-sites'
 
 const invalidSelections: { label: string; value: unknown }[] = [
@@ -17,6 +18,8 @@ const invalidSelections: { label: string; value: unknown }[] = [
   { label: 'trailing whitespace', value: 'solov ' },
   { label: 'different case', value: 'SOLOV' },
   { label: 'unregistered id', value: 'not-a-registered-site' },
+  // D-10: the retired alias resolves on the tolerant settings path only.
+  { label: 'retired sub2api alias', value: 'sub2api' },
   { label: 'account hostname', value: 'xm.solov.cc' },
   { label: 'account URL', value: 'https://xm.solov.cc' },
   { label: 'other account hostname', value: 'api.solov.cc' },
@@ -28,7 +31,7 @@ const invalidSelections: { label: string; value: unknown }[] = [
 ]
 
 describe('explicit relay site identity', () => {
-  it.each(['solov', 'sub2api'])('returns the registered object for %s', (id) => {
+  it.each(['solov', 'solov-api'])('returns the registered object for %s', (id) => {
     expect(requireRelaySite(id)).toBe(relaySites.find((site) => site.id === id))
   })
 
@@ -51,11 +54,8 @@ describe('explicit relay site identity', () => {
     }
   })
 
-  it.each(['solov', 'sub2api'])('keeps historical %s account and CLI origins on xm', (id) => {
-    // The persisted "sub2api" id is an xm alias, NOT the future
-    // api.solov.cc realm. Adding that realm requires a fresh id.
-    const site = requireRelaySite(id)
-    expect(site.id).toBe(id)
+  function expectXmRouting(site: RelaySite): void {
+    expect(site.id).toBe('solov')
     expect(site.accountBackend).toBe('new-api')
     expect(site.accountBaseUrl).toBe('https://xm.solov.cc')
     expect(new URL(site.websiteUrl).origin).toBe('https://xm.solov.cc')
@@ -63,6 +63,17 @@ describe('explicit relay site identity', () => {
     for (const provider of providerIds) {
       expect(new URL(site.providerBaseUrls[provider]).origin).toBe('https://xm.solov.cc')
     }
+  }
+
+  it('keeps the xm account and CLI origins together on the registered site', () => {
+    expectXmRouting(requireRelaySite('solov'))
+  })
+
+  it('keeps the retired sub2api alias on xm, off the explicit-identity path', () => {
+    // The persisted "sub2api" id is an xm alias, NOT the api.solov.cc realm.
+    // Since D-10 it is no longer a registry entry, so only the tolerant
+    // resolver accepts it -- but it must still land on exactly xm.
+    expectXmRouting(resolveRelaySite('sub2api'))
   })
 
   it('keeps tolerant settings recovery separate from explicit identity resolution', () => {
