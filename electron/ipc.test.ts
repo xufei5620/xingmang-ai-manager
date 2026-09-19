@@ -305,6 +305,7 @@ function register(
     } as never,
     diagnosticsService: {
       run: vi.fn(),
+      checkConnection: vi.fn(),
       exportLatest: vi.fn(),
     },
     runtimeLog: runtimeLog as never,
@@ -1568,6 +1569,22 @@ describe('registerIpcHandlers', () => {
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('apiKey')
   })
 
+  it('passes an explicit CLI version through and rejects anything but an exact one', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('cli:install')!
+
+    await handler(trustedEvent(), 'claude', '2.1.277')
+    expect(service.installCli).toHaveBeenCalledWith('claude', expect.anything(), '2.1.277')
+
+    await handler(trustedEvent(), 'claude')
+    expect(service.installCli).toHaveBeenLastCalledWith('claude', expect.anything(), undefined)
+
+    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /']) {
+      await expect(handler(trustedEvent(), 'claude', rejected)).rejects.toThrow('CLI 版本号格式错误')
+    }
+  })
+
   it('checks and uninstalls only the requested CLI', async () => {
     const service = serviceStub()
     vi.mocked(service.inspectCliUpdate).mockResolvedValueOnce({
@@ -1624,7 +1641,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,
@@ -1714,7 +1731,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,
@@ -1751,7 +1768,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,

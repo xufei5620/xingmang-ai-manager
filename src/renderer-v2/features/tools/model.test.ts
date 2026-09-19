@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { canUninstallTool, connectionReady, presentTools, providerFor, sourceFor, type ToolboxSnapshot } from './model'
+import { canUninstallTool, connectionReady, presentTools, providerFor, rollbackVersion, sourceFor, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -129,5 +129,57 @@ describe('renderer tool source', () => {
     expect(rows.map((row) => row.id).sort()).toEqual(['claude', 'codex', 'codexDesktop', 'gemini', 'grok'])
     expect(rows.every((row) => row.source === 'account' && row.configured)).toBe(true)
     expect(snapshot).toEqual(before)
+  })
+
+  it('carries each CLI version advice through and never attaches one to the desktop app', () => {
+    const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
+    const status = { installed: true, version: '2.1.276', path: '/fixture' }
+    const advice = { recommendedVersion: '2.1.277', blockedReason: '每次请求都 400', onRecommended: false, pinned: true, rollbackAvailable: true }
+    const snapshot = { config: { providers }, platform: { codexDesktop: { launch: true } },
+      system: {
+        clis: { claude: { ...status, versionAdvice: advice }, codex: status, grok: status, gemini: status },
+        desktopApps: { codex: { ...status, appVersion: '1.0.0', versionAdvice: advice } },
+      },
+    } as unknown as ToolboxSnapshot
+    const rows = presentTools(snapshot, memoryStorage())
+    expect(rows.find((row) => row.id === 'claude')?.versionAdvice).toEqual(advice)
+    expect(rows.find((row) => row.id === 'codex')?.versionAdvice).toBeNull()
+    expect(rows.find((row) => row.id === 'codexDesktop')?.versionAdvice).toBeNull()
+  })
+})
+
+describe('renderer CLI version advice', () => {
+  const row = (versionAdvice: ToolPresentation['versionAdvice'], currentVersion: string | null = '2.1.276') => ({
+    currentVersion,
+    versionAdvice,
+    status: { installed: currentVersion !== null, version: currentVersion, path: null, installDirectory: null },
+  })
+
+  it('shows only the version when no list applies or the version is already recommended', () => {
+    expect(versionSubtitle(row(null))).toBe('2.1.276')
+    expect(versionSubtitle(row({ recommendedVersion: '2.1.276', blockedReason: null, onRecommended: true, pinned: true, rollbackAvailable: false }))).toBe('2.1.276')
+  })
+
+  it('names the recommended version when the installed one merely differs', () => {
+    expect(versionSubtitle(row({ recommendedVersion: '2.1.277', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true })))
+      .toBe('2.1.276（推荐 2.1.277）')
+  })
+
+  it('stops recommending once the user chose to follow the latest release', () => {
+    expect(versionSubtitle(row({ recommendedVersion: '2.1.277', blockedReason: null, onRecommended: false, pinned: false, rollbackAvailable: false })))
+      .toBe('2.1.276')
+  })
+
+  it('says the installed version is incompatible when the list blocks it', () => {
+    expect(versionSubtitle(row({ recommendedVersion: '2.1.277', blockedReason: '每次请求都 400', onRecommended: false, pinned: false, rollbackAvailable: true })))
+      .toBe('2.1.276（不兼容，建议回到 2.1.277）')
+  })
+
+  it('offers a rollback target only for an installed tool the list can move', () => {
+    const advice = { recommendedVersion: '2.1.277', blockedReason: null, onRecommended: false, pinned: true, rollbackAvailable: true }
+    expect(rollbackVersion(row(advice) as ToolPresentation)).toBe('2.1.277')
+    expect(rollbackVersion(row(advice, null) as ToolPresentation)).toBeNull()
+    expect(rollbackVersion(row(null) as ToolPresentation)).toBeNull()
+    expect(rollbackVersion(row({ ...advice, rollbackAvailable: false }) as ToolPresentation)).toBeNull()
   })
 })
