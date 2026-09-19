@@ -67,6 +67,31 @@ function commandLineLength(executable: string, argv: string[]): number {
   return [executable, ...argv].reduce((total, part) => total + part.length + (/\s/.test(part) ? 3 : 1), 0)
 }
 
+// The two Windows-only cases below cold-start Windows PowerShell 5.1 before they can assert
+// anything, and that start is not what they test. #174 put six jobs on one windows-latest
+// runner, and on #217 the parser case was killed at the old fixed 15s budget while its shard
+// was already 399 seconds deep. So the wait gets the same treatment as the browser fixture
+// wait in e2e/fixture-readiness.mjs: a budget of its own, wide enough for a cold start behind
+// Defender, still bounded so a hung child fails the shard instead of the whole job, and
+// overridable on a machine where even this is not enough.
+const powerShellStartupTimeoutMs = Number(process.env.XINGMANG_POWERSHELL_TEST_TIMEOUT_MS ?? 90_000)
+
+// execFile appends stderr to the message only when the child exits non-zero, so a timeout kill
+// arrives as a bare `Command failed: <command line>` with an empty stderr — indistinguishable,
+// in the CI log, from a script that failed silently. Name the budget in the message rather than
+// leaving the next reader to infer the timeout from what the message does not say.
+function annotateTimeoutKill(error: unknown): unknown {
+  if (error instanceof Error && 'killed' in error && error.killed === true) {
+    error.message = `${error.message}PowerShell 未在 ${powerShellStartupTimeoutMs} 毫秒的预算内结束，已被终止。`
+  }
+  return error
+}
+
+function runPowerShellScript(executable: string, argv: string[]): Promise<{ stdout: string, stderr: string }> {
+  return promisify(execFile)(executable, argv, { windowsHide: true, timeout: powerShellStartupTimeoutMs, maxBuffer: 1024 * 1024 })
+    .catch((error: unknown) => { throw annotateTimeoutKill(error) })
+}
+
 function buildInjectedScripts(): string[] {
   return [
     buildCodexAppxElevationScript(injectedPackagePath, sha256Base64),
@@ -272,12 +297,26 @@ describe('Codex Desktop Appx script boundaries', () => {
     expect(Math.ceil((buildInjectedScripts().join('').length * 8) / 3)).toBeGreaterThan(8191)
   })
 
+  it('keeps the PowerShell startup budget bounded and overridable', () => {
+    expect(powerShellStartupTimeoutMs).toBeGreaterThan(15_000)
+    expect(powerShellStartupTimeoutMs).toBeLessThanOrEqual(300_000)
+  })
+
+  it('tells a timeout kill apart from a script that exited on its own', () => {
+    const killed = Object.assign(new Error('Command failed: powershell.exe -File parse-scripts.ps1\n'), { killed: true })
+    annotateTimeoutKill(killed)
+    expect(killed.message).toContain(String(powerShellStartupTimeoutMs))
+    const exited = Object.assign(new Error('Command failed: powershell.exe -File installer.ps1\nboom\n'), { killed: false })
+    annotateTimeoutKill(exited)
+    expect(exited.message).not.toContain(String(powerShellStartupTimeoutMs))
+  })
+
   it.skipIf(process.platform !== 'win32')('parses both generated PowerShell scripts without executing either script or injected text', async () => {
     const scriptsFile = writeTemporaryFile('scripts.json', JSON.stringify(buildInjectedScripts()))
     const executable = resolveWindowsPowerShellExecutable()
     const argv = powerShellScriptArgv(writeTemporaryFile('parse-scripts.ps1', scriptParser), scriptsFile)
     expect(commandLineLength(executable, argv)).toBeLessThan(8191)
-    const { stdout } = await promisify(execFile)(executable, argv, { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 })
+    const { stdout } = await runPowerShellScript(executable, argv)
     expect(JSON.parse(stdout.trim())).toEqual([{ errors: 0, injected: 0 }, { errors: 0, injected: 0 }])
   })
 
@@ -292,8 +331,7 @@ describe('Codex Desktop Appx script boundaries', () => {
     const executable = resolveWindowsPowerShellExecutable()
     const argv = powerShellScriptArgv(writeTemporaryFile('installer.ps1', script))
     expect(commandLineLength(executable, argv)).toBeLessThan(8191)
-    const failure = await promisify(execFile)(executable, argv, { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 })
-      .catch((error: unknown) => error)
+    const failure = await runPowerShellScript(executable, argv).catch((error: unknown) => error)
     expect(failure).toMatchObject({ code: 2225, stdout: '' })
   })
 })
