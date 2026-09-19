@@ -454,7 +454,7 @@ test('feedback copy and export retain the preview snapshot id', async () => {
     await page.getByTestId('feedback-report-text').waitFor()
     await page.getByRole('button', { name: '复制报告', exact: true }).click()
     await page.getByRole('button', { name: '导出文件', exact: true }).click()
-    await page.getByText('导出操作已结束').first().waitFor()
+    await page.getByText('诊断报告已导出：').first().waitFor()
     assert.deepEqual(
       (await calls(page))
         .filter((call) => ['copy-report', 'export-report'].includes(call.name))
@@ -463,6 +463,46 @@ test('feedback copy and export retain the preview snapshot id', async () => {
     )
   } finally {
     await page.close()
+  }
+})
+
+test('a cancelled export reports nothing instead of claiming the file was written', async () => {
+  const page = await fixture('page=sessions')
+  try {
+    await page.getByRole('button', { name: '查看记录', exact: true }).click()
+    const drawer = page.getByTestId('session-detail-drawer')
+    await drawer.getByText('这是一条测试消息').waitFor()
+    await drawer.getByRole('button', { name: '导出 Markdown', exact: true }).click()
+    await page.waitForFunction(() =>
+      JSON.parse(document.documentElement.dataset.calls || '[]').some(
+        (call) => call.name === 'export-session',
+      ),
+    )
+    assert.equal(await page.getByText('已导出').count(), 0)
+    assert.equal(await page.getByText('操作已完成').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('row overflow menus are named after the row they act on', async () => {
+  const keys = await fixture('page=account&accountTab=keys')
+  try {
+    await keys
+      .getByRole('button', { name: '密钥 Test key 的更多操作', exact: true })
+      .waitFor()
+    assert.equal(await keys.getByRole('button', { name: '操作', exact: true }).count(), 0)
+  } finally {
+    await keys.close()
+  }
+  const backups = await fixture('page=backups')
+  try {
+    await backups
+      .getByRole('button', { name: /的备份更多操作$/ })
+      .first()
+      .waitFor()
+  } finally {
+    await backups.close()
   }
 })
 

@@ -1043,6 +1043,7 @@ function AccountKeys({
                       复制
                     </Button>
                     <Menu
+                      label={`密钥 ${key.name} 的更多操作`}
                       anchor={<MoreHorizontal size={18} />}
                       items={[
                         {

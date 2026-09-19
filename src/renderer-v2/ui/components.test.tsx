@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { Button, Input, Pill, Progress, Segment, Switch, Tabs } from './components';
+import { Button, Input, Menu, Pill, Progress, Segment, Switch, Tabs } from './components';
 import { BrandIcon } from './brand';
 
 describe('renderer-v2 component contract', () => {
@@ -19,6 +19,11 @@ describe('renderer-v2 component contract', () => {
     const html = renderToStaticMarkup(<><Pill tone="ok" dot>已配好</Pill><Progress testId="progress" value={160} /></>);
     expect(html).toContain('已配好');
     expect(html).toContain('width:100%');
+  });
+  it('names an overflow menu after the row it acts on', () => {
+    const html = renderToStaticMarkup(<Menu label="密钥 生产 Key 的更多操作" anchor={null} items={[{ label: '撤销密钥', danger: true, onSelect: () => undefined }]} />);
+    expect(html).toContain('aria-label="密钥 生产 Key 的更多操作"');
+    expect(html).not.toContain('aria-label="操作"');
   });
   it('resolves icons for provider models returned by the relay', () => {
     for (const model of ['deepseek-v4-flash', 'qwen3-max', 'glm-5', 'kimi-k2', 'minimax-m2']) {
