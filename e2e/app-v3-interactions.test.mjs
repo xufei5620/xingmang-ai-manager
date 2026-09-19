@@ -3,6 +3,7 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 import { createPageErrorCollector } from './page-errors.mjs'
 
 let server, browser, baseUrl
@@ -19,6 +20,10 @@ async function open(query = '') {
   const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 820 } }))
   await page.route('**/*', (route) => new URL(route.request().url()).origin === baseUrl ? route.continue() : route.abort())
   await page.goto(`${baseUrl}/e2e/app-v3-fixture.html?${query}`)
+  // Vite transforms the module graph on demand, so first paint can take seconds on
+  // a cold Windows runner, and assertions like count() / getAttribute() do not retry.
+  // Wait for the mount before handing the page over.
+  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 async function clean(page) {
