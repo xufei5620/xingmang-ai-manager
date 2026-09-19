@@ -6,6 +6,7 @@ const path = require('node:path')
 const { promisify } = require('node:util')
 const asar = require('@electron/asar')
 const YAML = require('yaml')
+const { assertElectronFuseHardening } = require('./electron-fuse-hardening.cjs')
 const {
   DEFAULT_UPDATE_URL,
   MAX_BLOCKMAP_BYTES,
@@ -316,6 +317,78 @@ function validateZipEntryPaths(text) {
   return entries
 }
 
+// Every runner in this file signals failure by rejecting, so a real result
+// never carries an exit code. Tests and callers inject their own runners
+// though, and one that resolves with a non-zero `code` instead of rejecting
+// would otherwise read as success. Asserting the contract by name keeps that
+// from becoming a false green, where the bare `result?.code` conditionals it
+// replaces only looked like a fallback.
+function assertCommandSucceeded(result, label) {
+  if (result && typeof result === 'object' && typeof result.code === 'number' && result.code !== 0) {
+    throw new Error(`${label} 退出码为 ${result.code}`)
+  }
+  return result
+}
+
+// zipinfo prints one line per entry: permissions, zip version, source OS,
+// uncompressed size, a two-character text/binary flag, the method, the date,
+// the time, then the name. Only the leading permission character tells a
+// symbolic-link entry from a regular one, and that is the field the extraction
+// order below depends on; the rest of that field is 9 characters for a
+// Unix-built archive and shorter for a DOS-built one, so it stays unread.
+const ZIP_LISTING_ENTRY_PATTERN = /^([-dlbcps])\S{2,9}\s+\d+\.\d+\s+\S+\s+\d+\s+\S\S\s+\S+\s+\S+\s+\S+\s+(.+)$/
+
+function normalizeZipEntryName(name) {
+  return name.endsWith('/') ? name.slice(0, -1) : name
+}
+
+// Parsing fails closed on purpose. If zipinfo ever changes shape, an
+// unparseable line or a count that disagrees with the archive's own header
+// throws instead of leaving the symlink check silently inspecting nothing.
+function parseZipEntryListing(text) {
+  if (typeof text !== 'string') throw new Error('无法读取 ZIP 条目清单')
+  const declared = /number of entries:\s*(\d+)/i.exec(text)
+  if (!declared) throw new Error('ZIP 条目清单缺少条目总数，无法在解压前判定条目类型')
+  const entries = text.split(/\r?\n/)
+    .filter((line) => line.trim()
+      && !/^Archive:\s/.test(line)
+      && !/^Zip file size:/i.test(line)
+      && !/^\d+ files?,/i.test(line))
+    .map((line) => {
+      const match = ZIP_LISTING_ENTRY_PATTERN.exec(line)
+      if (!match) throw new Error(`无法解析 ZIP 条目清单行：${line}`)
+      return { name: match[2], isSymbolicLink: match[1] === 'l' }
+    })
+  if (entries.length !== Number(declared[1])) {
+    throw new Error('ZIP 条目清单与声明的条目数不一致，无法在解压前判定条目类型')
+  }
+  return entries
+}
+
+// Validating names alone cannot stop the classic pair "entry A is a symlink to
+// /etc" plus "entry A/b is a regular file": both names are well-formed, and the
+// extractor creates the link first and then writes straight through it, so
+// assertExtractedTreeSafe only ever sees the aftermath. A bundle's own links
+// (Frameworks/.../Versions/Current and friends) are always leaves, so rejecting
+// exactly the links that stand in for a directory costs nothing legitimate.
+function assertZipSymlinkEntriesAreLeaves(entries) {
+  const directories = new Set()
+  for (const entry of entries) {
+    const normalized = normalizeZipEntryName(entry.name)
+    for (let index = normalized.indexOf('/'); index !== -1; index = normalized.indexOf('/', index + 1)) {
+      directories.add(normalized.slice(0, index))
+    }
+  }
+  for (const entry of entries) {
+    if (!entry.isSymbolicLink) continue
+    const normalized = normalizeZipEntryName(entry.name)
+    if (directories.has(normalized)) {
+      throw new Error(`ZIP 条目以符号链接充当目录，解压会穿过它写出：${entry.name}`)
+    }
+  }
+  return entries
+}
+
 function outputText(result) {
   if (typeof result === 'string') return result
   return `${result?.stdout || ''}\n${result?.stderr || ''}`
@@ -413,6 +486,30 @@ function findNestedHelperApplications(appPath) {
   return helpers
 }
 
+// On macOS the fuse wire lives in the Electron Framework, not in the app's own
+// executable, and @electron/fuses reaches it through Versions/Current — a
+// symlink this verifier refuses to follow. Resolving the single real version
+// directory keeps the read on a path no tampered bundle can redirect.
+function resolveFrameworkFuseBinary(appPath) {
+  const frameworkRelativePath = path.join('Contents', 'Frameworks', 'Electron Framework.framework')
+  const versionsRoot = safeBundleDirectory(
+    appPath,
+    path.join(frameworkRelativePath, 'Versions'),
+    'Electron Framework Versions',
+  )
+  // Dirent.isDirectory() is false for a symlink, so Versions/Current drops out
+  // here and only the real version directory remains.
+  const versions = fs.readdirSync(versionsRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory())
+  if (versions.length !== 1) {
+    throw new Error('Electron Framework 必须只包含一个非链接版本目录，无法确定 fuse 加固状态')
+  }
+  return safeRegularFile(
+    appPath,
+    path.join(frameworkRelativePath, 'Versions', versions[0].name, 'Electron Framework'),
+    'Electron Framework',
+  )
+}
+
 function assertHardenedRuntime(details, label) {
   // Only the CodeDirectory line carries the signature flags. The neighbouring
   // "Executable Segment ... flags=0x1" line codesign prints for some binaries
@@ -454,7 +551,7 @@ async function readEntitlementKeys(targetPath, commandRunner, label) {
     let entitlements
     try {
       const result = await commandRunner('/usr/bin/plutil', ['-convert', 'json', '-o', '-', snapshotPath])
-      if (result?.code && result.code !== 0) throw new Error('plutil 转换失败')
+      assertCommandSucceeded(result, `${label} 的 entitlements plutil 转换`)
       entitlements = JSON.parse(stdoutText(result))
     } catch {
       throw new Error(`${label} 的 entitlements 快照必须可由 plutil 转换为 JSON`)
@@ -549,7 +646,7 @@ async function verifyPackagedInfoPlist(appPath, expectedVersion, commandRunner) 
   let infoPlist
   try {
     const result = await commandRunner('/usr/bin/plutil', ['-convert', 'json', '-o', '-', infoPlistPath])
-    if (result?.code && result.code !== 0) throw new Error('plutil 转换失败')
+    assertCommandSucceeded(result, 'Info.plist 的 plutil 转换')
     infoPlist = JSON.parse(stdoutText(result))
   } catch {
     throw new Error('Info.plist 必须可由 plutil 转换为 JSON')
@@ -580,15 +677,18 @@ async function inspectPackagedApplication(
   const executableIdentity = captureRegularFileIdentity(executable, '主可执行文件')
   const asarPath = safeRegularFile(appPath, path.join('Contents', 'Resources', 'app.asar'), 'app.asar')
   const asarIdentity = captureRegularFileIdentity(asarPath, 'app.asar')
+  const fuseBinary = resolveFrameworkFuseBinary(appPath)
+  const fuseBinaryIdentity = captureRegularFileIdentity(fuseBinary, 'Electron Framework')
   const assertBundleIdentity = () => {
     assertDirectoryIdentity(appPath, applicationIdentity, '应用目录')
     assertFileIdentity(executable, executableIdentity, '主可执行文件')
     assertFileIdentity(asarPath, asarIdentity, 'app.asar')
+    assertFileIdentity(fuseBinary, fuseBinaryIdentity, 'Electron Framework')
     assertFileIdentity(updateConfig.configPath, updateConfig.configIdentity, 'app-update.yml')
     assertFileIdentity(infoPlist.infoPlistPath, infoPlist.infoPlistIdentity, 'Info.plist')
   }
   const verifyResult = await commandRunner('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--all-architectures', appPath])
-  if (verifyResult?.code && verifyResult.code !== 0) throw new Error('codesign 完整性验证失败')
+  assertCommandSucceeded(verifyResult, 'codesign 完整性验证')
   assertBundleIdentity()
 
   const details = outputText(await commandRunner('/usr/bin/codesign', ['-d', '--verbose=4', appPath]))
@@ -614,6 +714,12 @@ async function inspectPackagedApplication(
   const architectures = outputText(await commandRunner('/usr/bin/lipo', ['-archs', executable]))
   assertBundleIdentity()
   assertExactArchitecture(architectures, architecture)
+
+  // Until now nothing checked these on a Mac package at all, so a build that
+  // lost electronFuses would have shipped a binary usable as a bare Node
+  // runtime and open to a debugger, with the release gate none the wiser.
+  const fuseCount = await assertElectronFuseHardening(fuseBinary, `${architecture} 应用`)
+  assertBundleIdentity()
 
   const temporaryDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codesign-cert-'))
   try {
@@ -648,6 +754,7 @@ async function inspectPackagedApplication(
       architecture,
       certificateSha256,
       certificateSha1,
+      fuseCount,
       entitlementKeys: mainEntitlements,
       helperEntitlements,
       ...requirement,
@@ -666,9 +773,16 @@ async function verifyZipApplication(zipPath, architecture, options) {
   }))
   try {
     fs.chmodSync(temporaryDirectory, 0o700)
-    const privateZip = await copyPrivateRegularFile(zipPath, path.join(temporaryDirectory, 'artifact.zip'), 'ZIP 产物')
-    const listing = outputText(await commandRunner('/usr/bin/unzip', ['-Z1', privateZip.path]))
-    validateZipEntryPaths(listing)
+    // The release verifier already streams every artifact into its own 0700
+    // directory and holds that copy bound by identity, so copying a
+    // several-hundred-megabyte ZIP again here only doubled peak disk use.
+    // Standalone callers still get the private copy.
+    const privateZip = options.privateSource
+      ? { path: zipPath, privateIdentity: captureRegularFileIdentity(zipPath, 'ZIP 私有副本') }
+      : await copyPrivateRegularFile(zipPath, path.join(temporaryDirectory, 'artifact.zip'), 'ZIP 产物')
+    const listing = parseZipEntryListing(outputText(await commandRunner('/usr/bin/unzip', ['-Z', privateZip.path])))
+    validateZipEntryPaths(listing.map((entry) => entry.name).join('\n'))
+    assertZipSymlinkEntriesAreLeaves(listing)
     await commandRunner('/usr/bin/ditto', ['-x', '-k', privateZip.path, temporaryDirectory])
     assertFileIdentity(privateZip.path, privateZip.privateIdentity, 'ZIP 私有副本')
     assertExtractedTreeSafe(temporaryDirectory)
@@ -883,6 +997,7 @@ async function verifyMacosFreeArtifacts(options = {}) {
           expectedVersion: version,
           commandRunner,
           env,
+          privateSource: true,
         })
         assertBoundReleaseSources()
         if (!result || result.architecture !== architecture) {
@@ -947,12 +1062,15 @@ module.exports = {
   assertExactCodesignIdentifier,
   assertExactArchitecture,
   assertHardenedRuntime,
+  assertZipSymlinkEntriesAreLeaves,
   expectedFreeArtifactNames,
   formatSha256Manifest,
   hashArtifactFiles,
   parseDesignatedRequirement,
   parseHdiutilMountPoints,
   parseLatestMacMetadata,
+  parseZipEntryListing,
+  resolveFrameworkFuseBinary,
   resolveSafeOutputDirectory,
   validateZipEntryPaths,
   verifyPackagedUpdateConfig,

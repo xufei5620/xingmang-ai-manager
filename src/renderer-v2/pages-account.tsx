@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   CreditCard,
   Download,
-  ExternalLink,
   Eye,
   KeyRound,
   MoreHorizontal,
@@ -105,6 +104,23 @@ const quotaMoney = (
   balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
     ? dollars(quota / balance.quotaPerUnit)
     : '暂未读到'
+
+export interface PasswordFormState {
+  busy: string
+  originalPassword: string
+  password: string
+  confirmPassword: string
+}
+
+// Esc and the backdrop must raise the discard confirmation while any password
+// field still holds a secret, not only while the request is in flight: a
+// silent close used to leave the plaintext in React state, where reopening the
+// dialog refilled both boxes and the eye toggle revealed them.
+export function passwordFormDirty(form: PasswordFormState): boolean {
+  return Boolean(
+    form.busy || form.originalPassword || form.password || form.confirmPassword,
+  )
+}
 
 export function subscriptionPaymentMethods(
   plan: Plan,
@@ -548,6 +564,13 @@ function AccountOverview({
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirm] = useState('')
   const operation = useOperation()
+  const closePassword = () => {
+    setPasswordOpen(false)
+    setOriginal('')
+    setPassword('')
+    setConfirm('')
+    operation.clear()
+  }
   const accountsLoad = useCallback(
     async () => ({ devices: accountSupports(session, 'supportsSessionManagement') ? await api.getAccountLoginSessions() : [] }),
     [api, session],
@@ -746,14 +769,18 @@ function AccountOverview({
       <Dialog
         open={passwordOpen}
         title="修改密码"
-        onClose={() => {
-          if (!operation.busy) setPasswordOpen(false)
-        }}
-        dirty={Boolean(operation.busy)}
+        onClose={closePassword}
+        busy={Boolean(operation.busy)}
+        dirty={passwordFormDirty({
+          busy: operation.busy,
+          originalPassword,
+          password,
+          confirmPassword,
+        })}
         footer={
           <>
             <Button
-              onClick={() => setPasswordOpen(false)}
+              onClick={closePassword}
               disabled={Boolean(operation.busy)}
             >
               取消
@@ -778,10 +805,7 @@ function AccountOverview({
                       originalPassword,
                       newPassword: password,
                     })
-                    setOriginal('')
-                    setPassword('')
-                    setConfirm('')
-                    setPasswordOpen(false)
+                    closePassword()
                     changed()
                   },
                   '密码已修改',
@@ -1043,6 +1067,7 @@ function AccountKeys({
                       复制
                     </Button>
                     <Menu
+                      label={`密钥 ${key.name} 的更多操作`}
                       anchor={<MoreHorizontal size={18} />}
                       items={[
                         {
@@ -1602,7 +1627,10 @@ function AccountTasks({
           </Button>
         }
       />
-      <ResultNotice error={resource.error || operation.error} />
+      <ResultNotice
+        error={resource.error || operation.error}
+        message={operation.message}
+      />
       <Card padding="none">
         <Table
           columns={[
@@ -1648,16 +1676,16 @@ function AccountTasks({
         footer={
           selected?.resultUrl && (
             <Button
-              icon={ExternalLink}
+              icon={Copy}
               onClick={() =>
                 void operation.execute(
-                  'open-task',
-                  () => api.openExternal(selected.resultUrl),
-                  '',
+                  'copy-task-result',
+                  () => navigator.clipboard.writeText(selected.resultUrl ?? ''),
+                  '结果链接已复制',
                 )
               }
             >
-              查看结果
+              复制结果链接
             </Button>
           )
         }
@@ -1676,6 +1704,8 @@ function AccountTasks({
             <dd>{selected.status}</dd>
             <dt>失败原因</dt>
             <dd>{selected.failReason || '无'}</dd>
+            <dt>结果链接</dt>
+            <dd>{selected.resultUrl || '无'}</dd>
           </dl>
         )}
       </Drawer>

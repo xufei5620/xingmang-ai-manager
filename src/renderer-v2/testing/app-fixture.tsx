@@ -103,6 +103,11 @@ const system: SystemSnapshot = { checkedAt: '2026-09-07T01:00:00Z',
   clis: { claude: { ...status }, codex: { ...status }, gemini: { ...status, installed: query.has('allInstalled') }, grok: { ...status, installed: query.has('allInstalled') } },
   desktopApps: { codex: { ...status, appVersion: '1.2.3', mirrorVersion: null, mirrorUpdateAvailable: false, mirrorError: null, running: query.has('running') } },
 }
+// 版本串解析不出来的 Node（自编译 / 魔改）：tooOld 仍是 false，只有
+// versionStatus 说得出「认不出来」。
+if (query.has('nodeVersionUnknown')) {
+  system.runtime.node = { ...system.runtime.node, version: 'custom build', tooOld: false, versionStatus: 'unknown' }
+}
 if (query.has('desktopOnly')) {
   system.runtime.node = { ...system.runtime.node, installed: false, version: null, path: null }
   system.runtime.npm = { ...system.runtime.npm, installed: false, version: null, path: null }
@@ -238,7 +243,10 @@ const methods = {
     config.workspace = workspace
     return workspace
   },
-  takeExternalDeepLink: async () => null,
+  takeExternalDeepLink: async () => {
+    if (query.has('deepLinkFail')) throw new Error('回跳参数已过期')
+    return null
+  },
   getAccountNotice: async () => {
     if (noticeOverride) return noticeOverride
     if (query.has('noticeCollection')) return { id: 'newapi-collection-fixture', text: collectionFixture }

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import { app, ipcMain, nativeTheme } from 'electron'
 import { installRendererV2Platform } from './renderer-v2'
 import { installPlatformSystemApi } from './install-system-api'
+import { platformAuditLogger } from './runtime-log-bridge'
 
 const requestedRenderer = process.env.XINGMANG_RENDERER?.trim()
 const usesDevServer = Boolean(process.env.VITE_DEV_SERVER_URL)
@@ -19,6 +20,7 @@ if (rendererV2Enabled) {
       devServerUrl: app.isPackaged ? undefined : process.env.VITE_DEV_SERVER_URL,
       packagedBaseUrl: 'xingmang://app/',
     }),
+    log: platformAuditLogger(),
     onError: (error) => console.error('[renderer-v2 platform]', error instanceof Error ? error.message : 'Platform service failed'),
   })
 }

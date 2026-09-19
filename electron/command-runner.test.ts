@@ -10,6 +10,7 @@ import {
   commandEnvironment,
   findExecutable,
   parseWindowsNodeInstallPath,
+  redactCommandText,
   isTrustedHighIntegrityExecutable,
   isUserWritablePath,
   runCommand,
@@ -244,6 +245,29 @@ describe('secure command runner', () => {
       expect(structured.stderr).toContain('[REDACTED]')
       expect(JSON.stringify(structured)).not.toContain(apiKey)
     }
+  })
+
+  it('redacts secrets spelled as JSON object keys', () => {
+    const redacted = redactCommandText(JSON.stringify({
+      access_token: 'token-value-123456',
+      authorization: 'Basic basic-value-123456',
+      password: 'hunter2-secret',
+      apiKey: 'plain-api-key-value',
+      hasToken: true,
+    }))
+
+    for (const secret of [
+      'token-value-123456',
+      'basic-value-123456',
+      'hunter2-secret',
+      'plain-api-key-value',
+    ]) {
+      expect(redacted).not.toContain(secret)
+    }
+    expect(redacted).toContain('[REDACTED]')
+    // Support reads the export with a parser, so redaction has to leave the
+    // quotes that delimited each value in place.
+    expect(() => JSON.parse(redacted)).not.toThrow()
   })
 
   it('resolves executables without a locator shell and builds a stable PATH', async () => {

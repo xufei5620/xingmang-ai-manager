@@ -1,5 +1,6 @@
 node_modules/
 dist/
+dist-legacy/
 dist-electron/
 dist-native/
 dist-canvas/

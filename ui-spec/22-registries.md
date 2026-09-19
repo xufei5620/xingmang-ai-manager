@@ -27,21 +27,22 @@
 
 ```ts
 type ToolDef = {
-  id: 'claude' | 'codex' | 'codexDesktop' | 'gemini' | 'grok' | string
+  id: ProviderId | 'codexDesktop'        // ProviderId 来自 electron/catalog.ts,不再放宽成 string
   name: string                      // 显示名，如 'Claude Code'
   vendor: string                    // 'Anthropic'
   brandIcon: string                 // '@lobehub/icons' 导出名：'Claude' | 'OpenAI' | 'Gemini' | 'Grok'
   kind: 'cli' | 'desktop'
-  install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed'|'store'; mac?: 'external'; linux?: 'unavailable' }
+  install: { type: 'npm'; pkg: string } | { type: 'installer'; win?: 'managed'|'store'; mac?: 'external'; linux?: 'unavailable' }  // pkg 由 catalog.ts 的 cliCatalog 派生
   requires: ('node' | 'python')[]
-  configPath: Record<'win'|'mac'|'linux', string>   // '%USERPROFILE%\\.claude' 等
-  keyWrite: 'settings-json' | 'toml' | 'env' | 'desktop-store'
+  configPath: Record<'win'|'mac'|'linux', string>   // '%USERPROFILE%\\.claude' 等,由 catalog.ts 的 providerConfigDirectoryNames 派生
   sources: ('account' | 'official' | 'manual')[]     // 支持的连接来源
   models?: string[] | { endpoint: string }           // 静态或检测接口
   shortcutIndex: number                              // ⌘1–5 位次
   hidden?: (os) => boolean                           // 如 codexDesktop 在 linux
 }
 ```
+注册表不再自带 `keyWrite`：真正决定写哪种文件的是主进程的 `config-files.ts`，注册表里那一份没有消费者且已经写错过（R-S11）。「官方账号」的中文名同理收在 `registry/tools.ts` 的 `officialAccountNames: Record<ProviderId, string | null>` 里，不在页面上写三元链。
+
 派生规则（代码按表自动生成，不允许各页面各写一份）：首页工具列表顺序 = `shortcutIndex`；向导第一步选项 = 全部未 `hidden` 的工具 + 「先聊天」；配置弹窗页签 = 全部；外接工具 / 备份分段 = `kind === 'cli'` 的；托盘菜单 = 已安装的。
 
 ## 3. 图标语义表 `registry/icons.ts`

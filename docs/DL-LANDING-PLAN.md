@@ -129,7 +129,25 @@ location / {
 5. 把三个安装包放进 `files/latest/`，更新 `latest.json`。
 6. 子站漏斗验收通过后，再改对外邀请链接前缀（第 8 节）。不要先改链接再上子站。
 
-SSH 主机、端口、登录用户和密钥路径不写在仓库里。发布前把它们填进仓库根目录的 `dl-landing.config.json`（模板 `dl-landing.config.json.example`，已被 `.gitignore` 忽略），或用 `DL_LANDING_SSH_HOST` / `DL_LANDING_SSH_PORT` / `DL_LANDING_SSH_USER` / `DL_LANDING_SSH_KEY` / `DL_LANDING_REMOTE_ROOT` 传入。少任何一项 `npm run dl:publish` 都会直接报错停住，不会回落到默认值。
+SSH 主机、端口、登录用户、密钥路径和 known_hosts 路径不写在仓库里。发布前把它们填进仓库根目录的 `dl-landing.config.json`（模板 `dl-landing.config.json.example`，已被 `.gitignore` 忽略），或用 `DL_LANDING_SSH_HOST` / `DL_LANDING_SSH_PORT` / `DL_LANDING_SSH_USER` / `DL_LANDING_SSH_KEY` / `DL_LANDING_KNOWN_HOSTS` / `DL_LANDING_REMOTE_ROOT` 传入。少任何一项 `npm run dl:publish` 都会直接报错停住，不会回落到默认值。
+
+### 7.1 固定源站主机公钥（首次发布前做一次）
+
+`npm run dl:publish` 连源站时会带上 `-o StrictHostKeyChecking=yes -o UserKnownHostsFile=<你的 known_hosts>`：只认这个文件里记着的那台主机，路由被劫持或源站被换掉时会在握手阶段就中止，不会把安装包和部署密钥送出去。文件必须在仓库之外——仓库是公开的，脚本发现路径落在仓库目录里会直接拒绝执行。
+
+```bash
+# 在自己机器上执行，<源站主机> / <SSH 端口> 用运维侧的真实值
+ssh-keyscan -p <SSH 端口> <源站主机> > ~/.ssh/dl_landing_known_hosts
+ssh-keygen -lf ~/.ssh/dl_landing_known_hosts    # 打印指纹
+```
+
+**指纹必须带外核对**：用控制台、VNC 或已有的可信通道登上源站，执行 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`，和上面打印出来的逐字比对。对不上就是中间有人，别继续。核对通过后把路径填进 `dl-landing.config.json` 的 `knownHosts`（或 `DL_LANDING_KNOWN_HOSTS`）。源站重装或换主机密钥后要重做一遍。
+
+### 7.2 上传前的产物复核
+
+`--yes` 真正生效之前，脚本会先在本地跑一次产物校验：拿 Windows 安装包同目录的 `latest.yml` 比对安装包的版本、大小、SHA-512 和 blockmap（和 `npm run release:verify` 用的是同一套校验），不通过就拒绝上传。release-build 的 Actions 产物本来就带着 `latest.yml`，所以别只把 exe 挑出来放进 `--local-dir`。
+
+两个 dmg 是在 Mac 上本机打的，没有对应的清单，想一起复核就把 Actions 里「Print artifact checksums」那一步的输出（以及本机 dmg 的 `shasum -a 256`，整理成同样的 `文件名  N bytes  SHA256=<hex>` 一行一个）存成一个文件，用 `--checksums <文件>` 传进来，脚本会逐个比对 SHA-256，对不上就停。
 
 ## 8. 后期：邀请链接前缀统一到 dl
 

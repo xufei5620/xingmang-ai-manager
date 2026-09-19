@@ -84,6 +84,12 @@ export interface UpdaterRuntime {
   installLaunchTimeoutMs?: number
   /** Retry a failed update request after switching only the updater session to direct mode. */
   retryWithoutProxy?: () => Promise<void>
+  /**
+   * Put the updater session back on its default proxy resolution once the
+   * direct-mode retry finishes. Paired with `retryWithoutProxy`; omitting it
+   * keeps the old behaviour of leaving the session in direct mode.
+   */
+  restoreProxy?: () => Promise<void>
   now?: () => Date
   installEnvironmentGuard?: (launch: () => void) => void
   macInstallHandoff?: MacInstallHandoff
@@ -102,14 +108,23 @@ export interface UpdaterRuntime {
   verifyPackageDigest?: (filePath: string, expectedSha512: string) => Promise<boolean>
 }
 
+// Chromium reports an unreachable proxy as a structured net error code. The
+// only reaction to it is taking the updater session off the user's proxy, so
+// the match must never be made against free text: a release note, a mirror's
+// HTML error page or a manifest field that merely mentions the code would
+// otherwise be enough to bypass a proxy the user deliberately configured.
+const PROXY_CONNECTION_FAILED_CODE = 'ERR_PROXY_CONNECTION_FAILED'
+
 function isProxyConnectionFailure(error: unknown): boolean {
-  const candidate = error as { code?: unknown; message?: unknown; description?: unknown }
-  const text = [candidate?.code, candidate?.message, candidate?.description]
-    .filter((value): value is string => typeof value === 'string')
-    .join(' ')
-    .toLowerCase()
-  return text.includes('err_proxy_connection_failed')
-    || text.includes('proxy connection failed')
+  // electron-updater wraps executor failures, so follow a bounded cause chain
+  // rather than only inspecting the outermost error.
+  let candidate: unknown = error
+  for (let depth = 0; depth < 4 && candidate !== null && candidate !== undefined; depth += 1) {
+    const code = (candidate as { code?: unknown }).code
+    if (typeof code === 'string' && code.toUpperCase() === PROXY_CONNECTION_FAILED_CODE) return true
+    candidate = (candidate as { cause?: unknown }).cause
+  }
+  return false
 }
 
 function releaseNotesText(info: UpdateInfo): string | null {
@@ -242,6 +257,7 @@ export function createUpdaterService(
   const startupCheckTimeoutMs = runtime.startupCheckTimeoutMs ?? 8_000
   const installLaunchTimeoutMs = runtime.installLaunchTimeoutMs ?? 10_000
   const retryWithoutProxy = runtime.retryWithoutProxy
+  const restoreProxy = runtime.restoreProxy
   const installEnvironmentGuard = runtime.installEnvironmentGuard ?? ((launch) => launch())
   const macInstallHandoff = platform === 'darwin' ? runtime.macInstallHandoff : undefined
   const unsignedChannel = runtime.unsignedChannel === true
@@ -490,6 +506,23 @@ export function createUpdaterService(
     if (!enabled) throw new Error('开发环境未启用主程序更新')
   }
 
+  // Direct mode is scoped to the one request that needed it. Leaving the
+  // updater session pinned to 'direct' for the rest of the process would mean
+  // a single proxy hiccup silently keeps every later update request off the
+  // proxy the user configured, with nothing in the UI saying so.
+  async function retryOffProxy(run: () => Promise<void>): Promise<void> {
+    try {
+      if (retryWithoutProxy) await retryWithoutProxy()
+      await run()
+    } finally {
+      if (restoreProxy) {
+        // Best effort: a failed restore must not replace the update error the
+        // caller is about to report.
+        try { await restoreProxy() } catch { /* keep the original outcome */ }
+      }
+    }
+  }
+
   const check = async (): Promise<UpdateSnapshot> => {
     requireEnabled()
     if (
@@ -505,9 +538,10 @@ export function createUpdaterService(
     } catch (error) {
       if (retryWithoutProxy && isProxyConnectionFailure(error)) {
         try {
-          await retryWithoutProxy()
-          emit({ phase: 'checking', error: null, progress: null })
-          await client.checkForUpdates()
+          await retryOffProxy(async () => {
+            emit({ phase: 'checking', error: null, progress: null })
+            await client.checkForUpdates()
+          })
         } catch (retryError) {
           emit({ phase: 'error', error: safeError(retryError, platform), progress: null })
         }
@@ -528,9 +562,10 @@ export function createUpdaterService(
     } catch (error) {
       if (retryWithoutProxy && isProxyConnectionFailure(error)) {
         try {
-          await retryWithoutProxy()
-          emit({ phase: 'downloading', error: null, progress: null })
-          await client.downloadUpdate()
+          await retryOffProxy(async () => {
+            emit({ phase: 'downloading', error: null, progress: null })
+            await client.downloadUpdate()
+          })
         } catch (retryError) {
           emit({ phase: 'error', error: safeError(retryError, platform), progress: null })
         }

@@ -335,7 +335,10 @@ export function SessionsPage({ api }: { api: V2Bridge }) {
                 void operation.execute(
                   'export',
                   () => api.exportProviderSession(selected.id),
-                  '导出操作已结束',
+                  (result) =>
+                    result
+                      ? `已导出 ${result.messages} 条消息：${result.outputPath}${result.truncated ? '；源记录不完整，已在文件中标记' : ''}`
+                      : null,
                 )
               }
             >
@@ -731,6 +734,7 @@ export function ExtensionsPage({
                           更新
                         </Button>
                         <Menu
+                          label={`市场 ${market.name} 的更多操作`}
                           anchor={<MoreHorizontal size={18} />}
                           items={[
                             {
@@ -855,6 +859,7 @@ export function ExtensionsPage({
                         </Pill>
                       )}
                       <Menu
+                        label={`${item.name} 的更多操作`}
                         anchor={<MoreHorizontal size={18} />}
                         testId={`${page}-menu-${item.id}`}
                         items={[
@@ -1223,6 +1228,7 @@ export function BackupsPage({ api }: { api: V2Bridge }) {
                       预览
                     </Button>
                     <Menu
+                      label={`${backup.provider ? providerName(backup.provider) : '无法识别的备份'} 的备份更多操作`}
                       anchor={<MoreHorizontal size={18} />}
                       items={[
                         {

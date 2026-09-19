@@ -14,7 +14,7 @@ const copy = {
   discardTitle: '要放弃未保存的修改吗？', discardBody: '关闭后，这次修改不会保存。',
   keepEditing: '继续编辑', discard: '放弃修改', acknowledge: '我已了解影响',
   loading: '正在加载', progress: '进度', notifications: '通知', unknownTool: '其他工具',
-  dialog: '详情', menu: '操作', popover: '说明',
+  dialog: '详情', popover: '说明',
   skip: '跳过', next: '下一步', start: '开始使用',
 } as const;
 type CopyKey = keyof typeof copy;

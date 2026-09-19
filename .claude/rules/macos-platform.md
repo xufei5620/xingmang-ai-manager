@@ -33,6 +33,6 @@ Windows 问「**低于 Administrator 的主体能不能写这里**」，因为�
 
 **仍然欠着的**：`runCommand` 的 `trustedOnly` 在 POSIX 上只换环境，`trustedPaths` 被静默丢弃、可执行文件不做可信解析。今天 macOS 上传 `trustedOnly: true` 的调用点是 **0 个**，所以无实际影响，但**新增这类调用前必须先补上**。
 
-**来源可信（codesign / Team ID）是与本条正交的另一条轴**，由 `macos-codex.ts` / `macos-grok.ts` / `macos-codex-app.ts` 和私有暂存负责，不在这三个函数的职责内。
+**来源可信（codesign / Team ID）是与本条正交的另一条轴**，由 `macos-codex.ts` / `macos-grok.ts` / `macos-codex-app.ts` / `macos-claude.ts` 负责，不在这三个函数的职责内。前三者配私有暂存（`darwin-cli-staging.ts`），因为它们要在可变的版本链接树里绑定一次「选择」；`macos-claude.ts` **刻意不暂存**：native claude 解析后就是一个普通文件，校验的路径就是交给 spawn 的路径，剩下的竞态属于同 uid 主体（不在防御模型内），而那个二进制有 200 MB 以上，每次会话复制一份不值得。
 
 **改跨平台代码前先读 `electron/platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
