@@ -2,7 +2,7 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
 import { Home, type HomeProps } from './Home'
 import type { ToolboxSnapshot } from './model'
-import type { ToolsApi } from './api'
+import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 
 const cliStatus: Record<string, unknown> = {
@@ -29,7 +29,11 @@ function snapshot(clis: Record<string, unknown>): ToolboxSnapshot {
   } as unknown as ToolboxSnapshot
 }
 
-function render(jobs: Record<string, ToolJob>, clis = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }): string {
+function render(
+  jobs: Record<string, ToolJob>,
+  clis = { claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus },
+  overrides: Partial<HomeProps> = {},
+): string {
   const noop = () => undefined
   const props: HomeProps = {
     api: {} as ToolsApi, snapshot: snapshot(clis), loading: false, error: '', account: null,
@@ -37,8 +41,23 @@ function render(jobs: Record<string, ToolJob>, clis = { claude: cliStatus, codex
     onScan: noop, onInstall: noop, onLaunch: noop, onConfigure: noop, onConfigureExternal: noop,
     onInstallExternal: noop, onLaunchExternal: noop, onCodexModels: noop, onUninstall: noop,
     onRuntime: noop, onNavigate: noop, onGuide: noop,
+    ...overrides,
   }
   return renderToStaticMarkup(<Home {...props} />)
+}
+
+const configFailure: ToolboxPartitionFailure[] = [{ partition: 'config', message: '~/.codex/config.toml 解析失败' }]
+
+/** 配置那一块单独读失败时的降级快照：工具状态照旧，配置全部落到未配置。 */
+function unreadableConfig(): ToolboxSnapshot {
+  const blank = {
+    exists: false, hasApiKey: false, matchesRelay: false, baseUrl: '', actualBaseUrl: '', model: '',
+    apiKeyPreview: null, dataDirectory: '', dataDirectoryExists: false, files: [], updatedAt: null,
+  }
+  return {
+    ...snapshot({ claude: cliStatus, codex: cliStatus, grok: cliStatus, gemini: cliStatus }),
+    config: { workspace: '', providers: { claude: blank, codex: blank, grok: blank, gemini: blank } },
+  } as unknown as ToolboxSnapshot
 }
 
 describe('renderer-v2 home install progress', () => {
@@ -66,5 +85,42 @@ describe('renderer-v2 home install progress', () => {
       codex: cliStatus, grok: cliStatus, gemini: cliStatus,
     })
     expect(markup).toContain('命令入口无法安全执行')
+  })
+})
+
+describe('renderer-v2 home partial read failures (R-S8)', () => {
+  it('still lists every tool when only the configuration partition failed', () => {
+    const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
+    for (const tool of ['claude', 'codex', 'grok', 'gemini']) {
+      expect(markup).toContain(`data-testid="tool-row-${tool}"`)
+    }
+    expect(markup).toContain('data-testid="home-rescan"')
+  })
+
+  it('names the failing partition and its reason instead of leaving the page blank', () => {
+    const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
+    expect(markup).toContain('data-testid="home-config-failure"')
+    expect(markup).toContain('~/.codex/config.toml 解析失败')
+  })
+
+  it('marks the connection column unknown rather than claiming the key is missing', () => {
+    const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
+    expect(markup).toContain('配置暂未读到')
+    expect(markup).not.toContain('还没配 Key')
+    expect(markup).toContain('重新配置')
+  })
+
+  it('keeps the untouched partitions rendering exactly as before', () => {
+    const markup = render({}, undefined, { snapshot: unreadableConfig(), failures: configFailure })
+    // 版本行来自 system 那一块，配置读失败不该把它一起抹掉。
+    expect(markup).toContain('v1.2.3')
+    // 配置读不到不是「还没开始用」，不该退回四步引导卡。
+    expect(markup).not.toContain('data-testid="home-setup"')
+  })
+
+  it('leaves the healthy read untouched', () => {
+    const markup = render({})
+    expect(markup).not.toContain('data-testid="home-config-failure"')
+    expect(markup).not.toContain('配置暂未读到')
   })
 })
