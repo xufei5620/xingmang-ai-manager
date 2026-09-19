@@ -77,13 +77,39 @@ function hasExclusiveCriticalCodeSigningEku(certificateText) {
   return values.length === 1 && /^(?:Code Signing|1\.3\.6\.1\.5\.5\.7\.3\.3)$/i.test(values[0])
 }
 
+/**
+ * Without `-v`, `find-identity` prints two sections — every matching identity,
+ * then the valid ones — and only the first is read here. On a machine where the
+ * identity is trusted it appears in both, and two entries for one identity is
+ * exactly what the ambiguity check in the caller exists to refuse. The `-v`
+ * form prints neither header, so its output passes through untouched.
+ */
+function selectMatchingIdentities(output) {
+  const lines = String(output).split(/\r?\n/)
+  const start = lines.findIndex((line) => /^\s*Matching identities\s*$/.test(line))
+  if (start === -1) return output
+  const end = lines.findIndex((line, index) => (
+    index > start && /^\s*Valid identities only\s*$/.test(line)
+  ))
+  return lines.slice(start + 1, end === -1 ? lines.length : end).join('\n')
+}
+
 function parseCodeSigningIdentities(output) {
   const entries = []
   for (const line of String(output).split(/\r?\n/)) {
     if (!/^\s*\d+\)/.test(line)) continue
-    const match = /^\s*\d+\)\s+([A-Fa-f0-9]{40})\s+"([^"\r\n]*)"\s*$/.exec(line)
+    // The unfiltered listing appends the policy error to every entry it would
+    // have filtered out, e.g. `"name" (CSSMERR_TP_NOT_TRUSTED)`. It is captured
+    // rather than discarded: on the release path an annotated entry means the
+    // `-v` filter did not do what that path relies on it to do.
+    const match = /^\s*\d+\)\s+([A-Fa-f0-9]{40})\s+"([^"\r\n]*)"(?:\s+\(([A-Za-z0-9_]+)\))?\s*$/.exec(line)
     if (!match) fail('security 返回了无法解析的代码签名身份')
-    entries.push({ fingerprint: match[1].toUpperCase(), name: match[2], raw: line })
+    entries.push({
+      fingerprint: match[1].toUpperCase(),
+      name: match[2],
+      trustError: match[3] ?? null,
+      raw: line,
+    })
   }
   return entries
 }
@@ -107,6 +133,7 @@ function buildCodeSigningIdentityQuery(trustedIdentitiesOnly) {
 
 function verifyFreeMacSigningIdentity(options = {}) {
   const env = options.env || process.env
+  const trustedIdentitiesOnly = options.trustedIdentitiesOnly !== false
   const identityName = (options.identityName ?? env.CSC_NAME ?? '').trim()
   if (!identityName) fail('缺少 CSC_NAME：必须指定免费发布签名身份')
   const expectedFingerprint = normalizeFingerprint(
@@ -160,11 +187,8 @@ function verifyFreeMacSigningIdentity(options = {}) {
     const sha1 = fingerprintFromOpenSsl(outputOf(runOpenSsl, [
       'x509', '-in', certificatePath, '-noout', '-fingerprint', '-sha1',
     ]), 'SHA1', '证书 SHA-1', 20)
-    const identities = outputOf(
-      runSecurity,
-      buildCodeSigningIdentityQuery(options.trustedIdentitiesOnly !== false),
-    )
-    const builderSelectable = parseCodeSigningIdentities(identities)
+    const identities = outputOf(runSecurity, buildCodeSigningIdentityQuery(trustedIdentitiesOnly))
+    const builderSelectable = parseCodeSigningIdentities(selectMatchingIdentities(identities))
       .filter((identity) => identity.raw.includes(identityName))
     if (builderSelectable.length !== 1) {
       fail('CSC_NAME 对应的代码签名私钥身份不存在或存在选择歧义')
@@ -174,6 +198,11 @@ function verifyFreeMacSigningIdentity(options = {}) {
     }
     if (builderSelectable[0].fingerprint !== sha1) {
       fail('CSC_NAME 对应的私钥身份与已检查证书不一致')
+    }
+    // `-v` cannot list an identity the code-signing policy rejects, so an entry
+    // carrying a trust error on the release path means that filter did not hold.
+    if (trustedIdentitiesOnly && builderSelectable[0].trustError) {
+      fail('security 返回的代码签名身份带有信任错误')
     }
     return { identityName, fingerprint }
   } finally {

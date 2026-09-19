@@ -15,7 +15,13 @@ if (process.platform !== 'win32') {
 }
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
-const temporaryRoot = path.resolve(os.tmpdir())
+// os.tmpdir() hands back the 8.3 short name on Windows
+// (C:\Users\RUNNER~1\AppData\Local\Temp), so anything created under it never
+// equals its own realpath and cleanup()'s replaced-directory guard below could
+// only ever fail — which is what it did the first time CI ran this smoke, after
+// every one of its actual assertions had passed. Canonicalise the parent once,
+// before anything is created under it.
+const temporaryRoot = await fs.realpath(path.resolve(os.tmpdir()))
 const sandbox = await fs.mkdtemp(path.join(temporaryRoot, 'xingmang-vault-recovery-'))
 const userData = path.join(sandbox, 'user-data')
 const bundle = path.join(sandbox, 'realm-account-vault-file.cjs')
