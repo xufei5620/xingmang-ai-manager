@@ -1,6 +1,7 @@
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { X509Certificate } = require('node:crypto')
 const { spawnSync } = require('node:child_process')
 
 const OPENSSL_PATH = '/usr/bin/openssl'
@@ -114,6 +115,19 @@ function assertNonIssuingSigningCertificate(certificateText) {
   }
 }
 
+/** P-22. `openssl verify -CAfile <cert> <cert>` used to stand in for "this
+ * certificate really is self-signed", but it asks a chain-building question:
+ * it will only accept a certificate as its own issuer when that certificate
+ * may issue certificates. Now that the signing identity is deliberately a
+ * non-issuing leaf, macOS's LibreSSL answers "unable to get local issuer
+ * certificate" for a perfectly valid certificate. The question that matters
+ * has no chain in it -- was this signature made by this certificate's own
+ * key -- and Node answers it identically on every platform. */
+function verifyCertificateSelfSignature(certificatePem) {
+  const certificate = new X509Certificate(certificatePem)
+  return certificate.verify(certificate.publicKey)
+}
+
 function parseCodeSigningIdentities(output) {
   const entries = []
   for (const line of String(output).split(/\r?\n/)) {
@@ -145,6 +159,7 @@ function verifyFreeMacSigningIdentity(options = {}) {
     options.spawnSync,
     options.timeoutMs,
   )
+  const verifySelfSignature = options.verifySelfSignature || verifyCertificateSelfSignature
   const now = options.now || new Date()
   const certificatePem = outputOf(runSecurity, ['find-certificate', '-c', identityName, '-p'])
   if (!certificatePem.includes('BEGIN CERTIFICATE')) fail('找不到 CSC_NAME 对应的证书')
@@ -163,7 +178,7 @@ function verifyFreeMacSigningIdentity(options = {}) {
       certificateField(subjectIssuer, 'issuer').replace(/\s+/g, '')) {
       fail('证书不是自签名证书')
     }
-    outputOf(runOpenSsl, ['verify', '-check_ss_sig', '-CAfile', certificatePath, certificatePath])
+    if (!verifySelfSignature(certificatePem)) fail('证书自签名验证失败：签名不是由证书自身的密钥签出的')
 
     const dates = outputOf(runOpenSsl, ['x509', '-in', certificatePath, '-noout', '-startdate', '-enddate'])
     const notBefore = new Date(certificateField(dates, 'notBefore'))
@@ -216,4 +231,8 @@ if (require.main === module) {
   }
 }
 
-module.exports = { assertNonIssuingSigningCertificate, verifyFreeMacSigningIdentity }
+module.exports = {
+  assertNonIssuingSigningCertificate,
+  verifyCertificateSelfSignature,
+  verifyFreeMacSigningIdentity,
+}

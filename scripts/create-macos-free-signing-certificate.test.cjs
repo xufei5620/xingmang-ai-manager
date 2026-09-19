@@ -2,8 +2,13 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { X509Certificate } = require('node:crypto')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
+const {
+  assertNonIssuingSigningCertificate,
+  verifyCertificateSelfSignature,
+} = require('./verify-macos-free-signing.cjs')
 const {
   VALIDITY_DAYS,
   createFreeMacSigningCertificate,
@@ -269,14 +274,20 @@ test('Darwin system OpenSSL output imports into an isolated temporary keychain',
       password: TEST_P12_PASSWORD,
       env,
     })
-    const selfSignatureResult = spawnSync('/usr/bin/openssl', [
-      'verify', '-check_ss_sig', '-CAfile', result.certificatePath, result.certificatePath,
+    // P-22: not `openssl verify -CAfile`. That asks whether the certificate
+    // may issue itself, which a non-issuing leaf deliberately may not, and
+    // macOS's LibreSSL rejects it with "unable to get local issuer
+    // certificate". The signature is what this asserts.
+    const certificatePem = fs.readFileSync(result.certificatePath, 'utf8')
+    assert.equal(verifyCertificateSelfSignature(certificatePem), true)
+    const certificate = new X509Certificate(certificatePem)
+    assert.equal(certificate.ca, false)
+    assert.equal(certificate.subject, certificate.issuer)
+    const certificateText = spawnSync('/usr/bin/openssl', [
+      'x509', '-in', result.certificatePath, '-noout', '-text',
     ], { encoding: 'utf8', env, shell: false })
-    assert.equal(
-      selfSignatureResult.status,
-      0,
-      `${selfSignatureResult.stdout}${selfSignatureResult.stderr}`,
-    )
+    assert.equal(certificateText.status, 0, certificateText.stderr)
+    assert.equal(assertNonIssuingSigningCertificate(certificateText.stdout), undefined)
     const createResult = runSecurity([
       'create-keychain', '-p', keychainPassword, keychainPath,
     ])

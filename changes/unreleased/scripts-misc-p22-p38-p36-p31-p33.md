@@ -6,7 +6,10 @@
   也无法再签发链到可信锚的下级证书。有效期没有压得更短，是因为换证书会中断 Squirrel.Mac
   的更新连续性、全部老用户都要手动重装，只在临近到期或私钥泄露时才轮换。
   `verify-macos-free-signing.cjs` 增加断言钉死 basicConstraints、keyUsage 与 3650 天上限，
-  旧证书会在发布预检处失败；轮换流程写进 `docs/MACOS_FREE_DISTRIBUTION.md`。
+  旧证书会在发布预检处失败；轮换流程写进 `docs/MACOS_FREE_DISTRIBUTION.md`。自签名校验
+  从 `openssl verify -CAfile` 换成 `node:crypto` 的 `X509Certificate.verify()`——前者问的是
+  “这张证书能不能给自己签发”，非签发型证书本来就不能，macOS 的 LibreSSL 会直接报
+  `unable to get local issuer certificate`。
 - P-38：`scripts/macos-ephemeral-signing.cjs` 的签名重试只对钥匙串／文件系统争用类的瞬时
   失败重试，确定性失败（身份不存在、包格式不被接受等）第一次就抛出，不再白等三轮退避。
 - P-36：`scripts/build-macos-system-proxy.cjs` 给 `xcrun swiftc` 加 10 分钟超时，并把超时、

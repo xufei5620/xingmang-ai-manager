@@ -2,8 +2,69 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 const {
   assertNonIssuingSigningCertificate,
+  verifyCertificateSelfSignature,
   verifyFreeMacSigningIdentity,
 } = require('./verify-macos-free-signing.cjs')
+
+// A real certificate carrying the profile the generator produces, and the
+// same bytes with the last byte of its signature flipped.
+const SELF_SIGNED_CERTIFICATE_PEM = [
+  '-----BEGIN CERTIFICATE-----',
+  'MIIEVjCCAr6gAwIBAgIUV1m2VTe1ocMhf1Aksp54k8zggPMwDQYJKoZIhvcNAQEL',
+  'BQAwKDEmMCQGA1UEAwwdWGluZ01hbmcgRnJlZSBVcGRhdGUgSWRlbnRpdHkwHhcN',
+  'MjYwOTE5MDUxMDI3WhcNMzYwOTE2MDUxMDI3WjAoMSYwJAYDVQQDDB1YaW5nTWFu',
+  'ZyBGcmVlIFVwZGF0ZSBJZGVudGl0eTCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCC',
+  'AYoCggGBANrz0ecTcA8OJR1nMnBCWjwhl52A/wF7lKOnrS/iKg5K1EBNNGFszqZu',
+  'J0ZDirQ7nnPx02SYub+Y+ljoh8tEn9cwus8qp1blyHuHawOXF95QKDaHHAMNhque',
+  'OkJBiF23qpIefloUv/l5OIiiadyOs8mYcy8C/g2/ZEKhYGr+qlfr6U3Wt/djG+0B',
+  'GDa+5wuE22ZU81lle3EwgHz07Oro9Or+K81tPsoTANmddV12M8Ht2CzjL9NZ1fVJ',
+  'F3bDNXokgVIv16bVGGgVroBlXo6Xz9xjqjNkiYn8Mv8qBY3UKtkI4TVWZgdCbPd1',
+  'Bw4f0VZOSLRlDlGwBs/tsYWzPppPmlh29DMdgRbhzyBAniB3wSh8jY9kgw/aMqaC',
+  'mvde9JoZP5BVvSCjHPZk0CXT+ua6aSJEA0gWrvQUa0cBSDNPeu9C5N/f7dstwjky',
+  '9zBrF2hWAQCMXsEzVYjb/T0pn7A0++Mk8ifRFpXxU1xDeOyJo4Jl87ba49nikDIR',
+  '1UXZTKsMvQIDAQABo3gwdjAdBgNVHQ4EFgQUzMAPNZH0y4nP8HugEDmGBBLqHVEw',
+  'HwYDVR0jBBgwFoAUzMAPNZH0y4nP8HugEDmGBBLqHVEwDAYDVR0TAQH/BAIwADAO',
+  'BgNVHQ8BAf8EBAMCB4AwFgYDVR0lAQH/BAwwCgYIKwYBBQUHAwMwDQYJKoZIhvcN',
+  'AQELBQADggGBAHex4UaiPlofYhLjiLJ+Be7UQ6i0lj6CMZnk7XuDG85jTqTOE6QJ',
+  'w/B9eb18gs5UVDDG6URlr8eA8o99bK/IrwEzXf1gPiHOOSaMVxTAmHGsmNo7tp6i',
+  'qdLmsGiTbhlZq0AlKUePk0hSmRnul9RE2nIm4vq8OeQ61BMgvPzOzyNzGIBX0ziF',
+  '/Feh2qOT4nM7SOxMf7Vsx+od9dG1VhlroMS6HOZIktrgeFhl0UhwDeKwudwa10Ai',
+  'Vsv5iF8kTXnmyxIguxhzX0hDuEo7EPvDgKTqZoaMIlJ2oxg8XSy6n6vvzD5kC8sL',
+  '2Rt/WPYE/PwKZ2Db8Tsi5QtIbTx/z7uaPdjPRAEfMEnIewDfqdDN/4E8dUmDIWY7',
+  'kfpUNAv406qS+ev0SopzGU5adh17WLz+KN3DDlR80vgvOjkArTn0VW9OLNbVi2zd',
+  '9HnrwGtjvCb509xnBWNx71vMTOYDnqqUOBz46T0kgsCioB2HG1C+8AWWcVtjl1DK',
+  'UmjDwLX8lWOJVw==',
+  '-----END CERTIFICATE-----',
+].join('\n')
+
+const TAMPERED_CERTIFICATE_PEM = [
+  '-----BEGIN CERTIFICATE-----',
+  'MIIEVjCCAr6gAwIBAgIUV1m2VTe1ocMhf1Aksp54k8zggPMwDQYJKoZIhvcNAQEL',
+  'BQAwKDEmMCQGA1UEAwwdWGluZ01hbmcgRnJlZSBVcGRhdGUgSWRlbnRpdHkwHhcN',
+  'MjYwOTE5MDUxMDI3WhcNMzYwOTE2MDUxMDI3WjAoMSYwJAYDVQQDDB1YaW5nTWFu',
+  'ZyBGcmVlIFVwZGF0ZSBJZGVudGl0eTCCAaIwDQYJKoZIhvcNAQEBBQADggGPADCC',
+  'AYoCggGBANrz0ecTcA8OJR1nMnBCWjwhl52A/wF7lKOnrS/iKg5K1EBNNGFszqZu',
+  'J0ZDirQ7nnPx02SYub+Y+ljoh8tEn9cwus8qp1blyHuHawOXF95QKDaHHAMNhque',
+  'OkJBiF23qpIefloUv/l5OIiiadyOs8mYcy8C/g2/ZEKhYGr+qlfr6U3Wt/djG+0B',
+  'GDa+5wuE22ZU81lle3EwgHz07Oro9Or+K81tPsoTANmddV12M8Ht2CzjL9NZ1fVJ',
+  'F3bDNXokgVIv16bVGGgVroBlXo6Xz9xjqjNkiYn8Mv8qBY3UKtkI4TVWZgdCbPd1',
+  'Bw4f0VZOSLRlDlGwBs/tsYWzPppPmlh29DMdgRbhzyBAniB3wSh8jY9kgw/aMqaC',
+  'mvde9JoZP5BVvSCjHPZk0CXT+ua6aSJEA0gWrvQUa0cBSDNPeu9C5N/f7dstwjky',
+  '9zBrF2hWAQCMXsEzVYjb/T0pn7A0++Mk8ifRFpXxU1xDeOyJo4Jl87ba49nikDIR',
+  '1UXZTKsMvQIDAQABo3gwdjAdBgNVHQ4EFgQUzMAPNZH0y4nP8HugEDmGBBLqHVEw',
+  'HwYDVR0jBBgwFoAUzMAPNZH0y4nP8HugEDmGBBLqHVEwDAYDVR0TAQH/BAIwADAO',
+  'BgNVHQ8BAf8EBAMCB4AwFgYDVR0lAQH/BAwwCgYIKwYBBQUHAwMwDQYJKoZIhvcN',
+  'AQELBQADggGBAHex4UaiPlofYhLjiLJ+Be7UQ6i0lj6CMZnk7XuDG85jTqTOE6QJ',
+  'w/B9eb18gs5UVDDG6URlr8eA8o99bK/IrwEzXf1gPiHOOSaMVxTAmHGsmNo7tp6i',
+  'qdLmsGiTbhlZq0AlKUePk0hSmRnul9RE2nIm4vq8OeQ61BMgvPzOzyNzGIBX0ziF',
+  '/Feh2qOT4nM7SOxMf7Vsx+od9dG1VhlroMS6HOZIktrgeFhl0UhwDeKwudwa10Ai',
+  'Vsv5iF8kTXnmyxIguxhzX0hDuEo7EPvDgKTqZoaMIlJ2oxg8XSy6n6vvzD5kC8sL',
+  '2Rt/WPYE/PwKZ2Db8Tsi5QtIbTx/z7uaPdjPRAEfMEnIewDfqdDN/4E8dUmDIWY7',
+  'kfpUNAv406qS+ev0SopzGU5adh17WLz+KN3DDlR80vgvOjkArTn0VW9OLNbVi2zd',
+  '9HnrwGtjvCb509xnBWNx71vMTOYDnqqUOBz46T0kgsCioB2HG1C+8AWWcVtjl1DK',
+  'UmjDwLX8lWOJqA==',
+  '-----END CERTIFICATE-----',
+].join('\n')
 
 const HEALTHY_CERTIFICATE_TEXT = [
   'Certificate:',
@@ -21,6 +82,7 @@ const HEALTHY_CERTIFICATE_TEXT = [
 function healthyOptions(overrides = {}) {
   return {
     identityName: 'XingMang Free Update Identity',
+    verifySelfSignature: () => true,
     expectedFingerprint: 'AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99',
     now: new Date('2026-08-03T00:00:00Z'),
     runSecurity: (args) => {
@@ -34,7 +96,6 @@ function healthyOptions(overrides = {}) {
       if (args.includes('-subject')) return 'subject=CN=XingMang Free Update Identity\nissuer=CN=XingMang Free Update Identity\n'
       if (args.includes('-startdate')) return 'notBefore=Aug  1 00:00:00 2026 GMT\nnotAfter=Jul 28 00:00:00 2036 GMT\n'
       if (args.includes('-text')) return HEALTHY_CERTIFICATE_TEXT
-      if (args[0] === 'verify') return 'certificate: OK\n'
       throw new Error(`Unexpected OpenSSL command: ${args.join(' ')}`)
     },
     ...overrides,
@@ -60,6 +121,7 @@ test('signing preflight passes its explicit environment to every default securit
   const result = verifyFreeMacSigningIdentity({
     env,
     now: expected.now,
+    verifySelfSignature: () => true,
     spawnSync: (executable, args, options) => {
       calls.push({ executable, args, options })
       const output = executable === '/usr/bin/security'
@@ -82,10 +144,9 @@ test('signing preflight passes its explicit environment to every default securit
     calls.filter((call) => call.executable === '/usr/bin/security').map((call) => call.args[0]),
     ['find-certificate', 'find-identity'],
   )
-  const verifyCall = calls.find((call) => call.args[0] === 'verify')
-  assert.ok(verifyCall)
-  assert.ok(verifyCall.args.includes('-check_ss_sig'))
-  assert.equal(verifyCall.args.includes('-check_ssig'), false)
+  // P-22: the self-signature is checked in process now, so no chain-building
+  // subprocess is spawned for it.
+  assert.equal(calls.some((call) => call.args[0] === 'verify'), false)
 })
 
 test('signing preflight rejects a different certificate with the same CN', () => {
@@ -165,10 +226,8 @@ test('signing preflight rejects exact-name, substring, and multiple-match identi
 
 test('signing preflight rejects invalid self-signatures and certificates outside their validity window', () => {
   assert.throws(() => verifyFreeMacSigningIdentity(healthyOptions({
-    runOpenSsl: (args) => args[0] === 'verify'
-      ? (() => { throw new Error('invalid self-signature') })()
-      : healthyOptions().runOpenSsl(args),
-  })), /invalid self-signature/)
+    verifySelfSignature: () => false,
+  })), /自签名验证失败/)
   assert.throws(() => verifyFreeMacSigningIdentity(healthyOptions({
     runOpenSsl: (args) => args.includes('-startdate')
       ? 'notBefore=Aug  1 00:00:00 2020 GMT\nnotAfter=Jul 28 00:00:00 2021 GMT\n'
@@ -223,4 +282,22 @@ test('signing preflight refuses a certificate that outlives the ten-year cap (P-
       ? `notBefore=${notBefore.toUTCString()}\nnotAfter=${notAfter.toUTCString()}\n`
       : healthyOptions().runOpenSsl(args),
   })).identityName, 'XingMang Free Update Identity')
+})
+
+test('P-22: the self-signature check accepts the generator profile and rejects tampered signatures', () => {
+  const certificate = new (require('node:crypto').X509Certificate)(SELF_SIGNED_CERTIFICATE_PEM)
+  assert.equal(certificate.subject, certificate.issuer)
+  assert.equal(certificate.ca, false)
+
+  assert.equal(verifyCertificateSelfSignature(SELF_SIGNED_CERTIFICATE_PEM), true)
+  assert.equal(verifyCertificateSelfSignature(TAMPERED_CERTIFICATE_PEM), false)
+
+  // The real certificate also satisfies the non-issuing profile assertions,
+  // so the two checks agree about the same bytes.
+  assert.equal(assertNonIssuingSigningCertificate([
+    '            X509v3 Basic Constraints: critical',
+    '                CA:FALSE',
+    '            X509v3 Key Usage: critical',
+    '                Digital Signature',
+  ].join('\n')), undefined)
 })
