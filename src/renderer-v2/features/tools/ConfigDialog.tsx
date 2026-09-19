@@ -5,7 +5,7 @@ import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/c
 import { BrandIcon, Button, Confirm, Dialog, Input, Pill, Segment, Select, Tabs } from '../../ui'
 import { officialAccountNames, tools } from '../../registry/tools'
 import { isToolId, providerFor, sourceFor, type ToolId } from './model'
-import { getSourceMarkerStorage, writeManualSourceMarker } from './source-marker'
+import { applyManualSourceMarker, getSourceMarkerStorage } from './source-marker'
 import type { ToolsApi } from './api'
 import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
 import { describeChineseLocale, describeChineseLocaleResult } from './locale-status'
@@ -182,11 +182,11 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       let markerWarning = ''
       if (draft.source === 'official') {
         await api.official(tab, mode)
-        writeManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
+        markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else if (draft.source === 'manual') {
         await api.saveManual({ provider, apiKey: draft.secret, model: draft.model, mode })
-        writeManualSourceMarker(sourceStorage, native.baseUrl, provider, true)
+        markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, true)
       }
       else if (usingCurrentKey) {
         // Empty is the main-process reuse sentinel. It never reveals or
@@ -195,13 +195,13 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       }
       else if (selectedKey) {
         await api.saveAccountKey({ provider, keyId: selectedKey.id, model: draft.model, mode })
-        writeManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
+        markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else if (usingAutomaticKey) {
         const result = await api.configureManaged(tab, draft.model || undefined, mode)
         if (result.failed.length) throw new Error(result.failed.map((item) => item.message).join('；'))
         if (!result.configured.includes(provider)) throw new Error('工具没有返回配置写入结果，请重新检测后再试。')
-        writeManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
+        markerWarning = applyManualSourceMarker(sourceStorage, native.baseUrl, provider, false)
       }
       else throw new Error('请选择要保存的密钥。')
       if (!active.current) return

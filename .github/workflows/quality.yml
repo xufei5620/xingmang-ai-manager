@@ -45,7 +45,7 @@ jobs:
         run: node scripts/ci-change-scope.cjs
 
   # One serial Windows job used to own every Windows check, and at ~27 minutes
-  # it was the whole pipeline's wall clock: test:windows (~11m) and test:v2
+  # it was the whole pipeline's wall clock: `npm test` (~11m) and test:v2
   # (~9m) ran back to back while five other runners sat idle. The shards below
   # run the same commands, with the same timeouts, on runners that start at the
   # same moment. Nothing is skipped, shortened or reordered within a shard.
@@ -77,7 +77,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # The vitest half of test:windows: ~10 of its ~11 minutes. Almost all
+          # The vitest half of `npm test`: ~10 of its ~11 minutes. Almost all
           # of that is per-file environment setup rather than assertions, so
           # splitting by file count — which is what --shard does — splits the
           # time with it.
@@ -87,9 +87,11 @@ jobs:
           - shard: vitest-2
             command: npm run test:vitest:2
             timeout: 15
-          # The node --test half of test:windows.
+          # The node --test half of `npm test`: the build and release script
+          # suites, then the two browser suites that ride along with them. Under
+          # a minute together, so they share one runner rather than a shard each.
           - shard: node
-            command: npm run test:node
+            command: npm run test:scripts && npm run test:browser
             timeout: 10
           # test:v2 stays on the shipping platform; test:canvas and the legacy
           # test:ui suites live in linux-test, because neither asserts anything

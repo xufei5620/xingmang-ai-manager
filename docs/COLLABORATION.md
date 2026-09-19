@@ -165,7 +165,7 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 ```bash
 npm run typecheck
-npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不是卡死（Windows 请用 npm run test:windows）
+npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不是卡死（命令已内置串行 + 30s 超时）
 ```
 
 ### 平台差异（重要）

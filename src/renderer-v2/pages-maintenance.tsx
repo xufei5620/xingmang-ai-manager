@@ -96,6 +96,11 @@ export type BusinessActions = {
   onAccountChanged?: () => void
   onSettingsChanged?: (settings: AppSettings) => void
   openConfig?: (provider: Provider) => void
+  /**
+   * 装完一个工具后由 App 负责的收尾：写账号 Key + 刷新首页的检测结果。页面自己
+   * 只刷新自己那一份数据，回到首页仍会看到「未安装」（R-G3）。
+   */
+  onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
 }
 const isProvider = (id: string): id is Provider =>
   ['claude', 'codex', 'gemini', 'grok'].includes(id)
@@ -787,6 +792,7 @@ export function UpdatesPage({
 export function MaintenancePage({
   api,
   navigate,
+  onToolsChanged,
 }: { api: V2Bridge } & BusinessActions) {
   const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
@@ -818,6 +824,9 @@ export function MaintenancePage({
       async () => {
         if (id === 'codexDesktop') await api.installCodexDesktop()
         else await api.installCli(id)
+        // 先让 App 写 Key 并刷新全局检测，再读本页数据：顺序反过来这一页会先
+        // 拿到一份还没配置 Key 的快照，而提示语已经说「工具状态已更新」。
+        await onToolsChanged?.(id)
         await resource.reload()
       },
       '安装完成，工具状态已更新',

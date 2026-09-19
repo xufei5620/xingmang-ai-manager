@@ -6,8 +6,8 @@
   `test:v2:vitest`、`test:v2:browser`；`windows-package` 单独承担 typecheck、compile、三个 Electron
   冒烟与打包加固检查（这些步骤各自带 `timeout-minutes`，且彼此有先后依赖，所以不进矩阵）。
 - `package.json` 把两条组合脚本拆出可分片的半区：`test:vitest`、`test:v2:vitest`、`test:v2:browser:1`、
-  `test:vitest:1`、`test:vitest:2`。`npm test`、`npm run test:windows`、`npm run test:v2`
-  的行为与覆盖范围一字未改，本地照常用它们。没有跳过、禁用或重试任何用例，也没有调低任何超时。
+  `test:vitest:1`、`test:vitest:2`。`npm test`、`npm run test:v2` 的行为与覆盖范围一字未改，
+  本地照常用它们。没有跳过、禁用或重试任何用例，也没有调低任何超时。
 - 新增一个只做汇总的 `test` 作业：把 Windows 各分片折回成一个同名检查，既让可能按名字要求 `test` 的分支保护继续
   成立，也让「被取消的矩阵」不会被读成通过（它自己判定改动范围，文档类改动时报成功而不是 skipped）。
   `quality-gate` 相应改为读 `test` 的结果。

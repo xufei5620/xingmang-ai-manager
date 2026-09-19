@@ -6,7 +6,7 @@ import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium } from '@playwright/test'
 const require = createRequire(import.meta.url)
-const reference = require('../ui-spec/work/reference-harness.cjs')
+const reference = require('../../ui-spec/work/reference-harness.cjs')
 const artifactRoot = path.resolve('artifacts/renderer-v2-components/materials')
 let server, browser
 const comparisons = []

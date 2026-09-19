@@ -35,6 +35,13 @@ async function waitForWindowZoom(expected, timeout = 5000) {
   }
   throw new Error(`Native zoom did not settle: expected ${expected}, got ${JSON.stringify(state)}`)
 }
+// The evidence file used to record these as literal `true`s, so a partial run
+// still wrote a file claiming every behaviour held. Only names pushed after the
+// matching assertion ran may appear in it.
+const passedAssertions = []
+function recordPass(name) {
+  passedAssertions.push(name)
+}
 try {
   const page = await app.firstWindow()
   // `electron.launch()` can resolve as soon as the main process is spawned,
@@ -47,6 +54,7 @@ try {
   await page.getByTestId('welcome-page').waitFor({ timeout: 30000 })
   const platform = await page.evaluate(() => window.xingmangPlatform?.getState())
   assert.ok(platform, 'The isolated native platform preload must be available')
+  recordPass('isolated-platform-preload-available')
   for (const width of [960, 1280, 1440]) {
     await app.evaluate(({ BrowserWindow }, size) => BrowserWindow.getAllWindows()[0].setContentSize(size, 820), width)
     await page.waitForFunction(() => Math.abs(window.innerWidth - 1280) <= 1)
@@ -65,6 +73,7 @@ try {
     return { visible, total: canvas.width * canvas.height }
   })
   assert.ok(pixels.visible > pixels.total * 0.01, 'The star canvas must contain rendered pixels')
+  recordPass('star-canvas-renders-pixels')
   await page.evaluate(() => window.xingmangPlatform.setHighContrast(true))
   await page.waitForFunction(() => document.documentElement.classList.contains('hc'))
   await page.evaluate(() => window.xingmangPlatform.setThemePreference('light'))
@@ -73,8 +82,9 @@ try {
   await page.getByTestId('welcome-page').waitFor()
   await page.waitForFunction(() => document.documentElement.classList.contains('hc') && document.documentElement.dataset.theme === 'light')
   assert.equal((await page.evaluate(() => window.xingmangPlatform.getState())).preferences.highContrast, true)
+  recordPass('high-contrast-and-theme-survive-reload')
   assert.deepEqual(errors, [])
-  await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ checks, errors, pixels, platformPreload: true, persistedAppearance: true, profile: sandbox, authenticated: false }, null, 2))
+  await fs.writeFile(path.join(output, 'result.json'), JSON.stringify({ checks, errors, pixels, passedAssertions, profile: sandbox }, null, 2))
   console.log(JSON.stringify({ viewports: checks.length, errors, output }))
 } finally {
   await app.evaluate(({ app }) => app.exit(0)).catch(() => undefined)

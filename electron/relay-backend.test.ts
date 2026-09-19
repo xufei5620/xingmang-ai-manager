@@ -77,7 +77,6 @@ const relayBackendMethodNames = [
   'revokeLoginSession',
   'revokeOtherLoginSessions',
   'provisionCliKey',
-  'findExistingCliKey',
   'restoreSession',
 ] as const
 
@@ -212,7 +211,6 @@ describe('RelayBackendClient', () => {
       revokeLoginSession: async (sid) => ({ revokedSid: sid, current: false }),
       revokeOtherLoginSessions: async () => ({ revokedCount: 0 }),
       provisionCliKey: async () => ({ id: 1, name: 'fake', key: 'sk-fake' }),
-      findExistingCliKey: async () => null,
       restoreSession: async () => false,
     }
     expect(fake.capabilities.supportsAccountSession).toBe(true)
