@@ -2,6 +2,7 @@ import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
 import { DevelopmentPreview } from './components/DevelopmentPreview'
+import { RootShell } from './components/RootShell'
 import './styles.css'
 import './styles/ui-tokens.css'
 import './styles/ui-layout.css'
@@ -34,6 +35,8 @@ const root = ReactDOM.createRoot(document.getElementById('root')!)
 
 root.render(
   <React.StrictMode>
-    {import.meta.env.DEV && !hasElectronBridge ? <DevelopmentPreview /> : <App />}
+    <RootShell>
+      {import.meta.env.DEV && !hasElectronBridge ? <DevelopmentPreview /> : <App />}
+    </RootShell>
   </React.StrictMode>,
 )

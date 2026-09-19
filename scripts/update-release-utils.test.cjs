@@ -285,6 +285,8 @@ test('validates local release configuration without requiring signing secrets', 
     updateUrl: DEFAULT_UPDATE_URL,
     signing: {
       releaseMode: false,
+      unsignedReleaseMode: false,
+      publicReleaseMode: false,
       allowUnsigned: false,
       certificateConfigured: false,
       expectedPublisher: null,
@@ -296,6 +298,8 @@ test('validates local release configuration without requiring signing secrets', 
     updateUrl: 'https://updates.example.test/app/',
     signing: {
       releaseMode: false,
+      unsignedReleaseMode: false,
+      publicReleaseMode: false,
       allowUnsigned: false,
       certificateConfigured: false,
       expectedPublisher: null,
@@ -330,6 +334,43 @@ test('fails formal release preflight without a certificate and fixed publisher',
     XINGMANG_RELEASE: '1',
     CSC_LINK: 'C:\\signing\\xingmang.p12',
     XINGMANG_SIGNING_PUBLISHER: '绍兴星芒文化传媒有限责任公司',
+    XINGMANG_ALLOW_UNSIGNED_RELEASE: '1',
+  }), { code: 'UNSIGNED_RELEASE_OVERRIDE_FORBIDDEN' })
+})
+
+test('the unsigned release mode is a public release without a certificate requirement', () => {
+  // M-01: 产品决定 Windows 暂时无签名发布。无签名仍然是对外发布,所以
+  // publicReleaseMode 必须为真——verify-release-environment.cjs 用它决定要不要
+  // 执行「远端版本必须低于本地」。它只免掉证书和固定发布者这两项前置。
+  const unsigned = validateReleaseEnvironment({ XINGMANG_UNSIGNED_RELEASE: '1' }, '0.2.6').signing
+
+  assert.equal(unsigned.releaseMode, false)
+  assert.equal(unsigned.unsignedReleaseMode, true)
+  assert.equal(unsigned.publicReleaseMode, true)
+  assert.equal(unsigned.expectedPublisher, null)
+
+  const localBuild = validateReleaseEnvironment({}, '0.2.6').signing
+  assert.equal(localBuild.unsignedReleaseMode, false)
+  assert.equal(localBuild.publicReleaseMode, false)
+
+  const signed = validateReleaseEnvironment({
+    XINGMANG_RELEASE: '1',
+    CSC_LINK: 'C:\\signing\\xingmang.p12',
+    XINGMANG_SIGNING_PUBLISHER: '绍兴星芒文化传媒有限责任公司',
+  }, '0.2.6').signing
+  assert.equal(signed.unsignedReleaseMode, false)
+  assert.equal(signed.publicReleaseMode, true)
+})
+
+test('the two release modes and the unsigned debug override stay mutually exclusive', () => {
+  assert.throws(() => validateReleaseEnvironment({
+    XINGMANG_RELEASE: '1',
+    XINGMANG_UNSIGNED_RELEASE: '1',
+    CSC_LINK: 'C:\\signing\\xingmang.p12',
+    XINGMANG_SIGNING_PUBLISHER: '绍兴星芒文化传媒有限责任公司',
+  }), { code: 'UNSIGNED_RELEASE_MODE_CONFLICT' })
+  assert.throws(() => validateReleaseEnvironment({
+    XINGMANG_UNSIGNED_RELEASE: '1',
     XINGMANG_ALLOW_UNSIGNED_RELEASE: '1',
   }), { code: 'UNSIGNED_RELEASE_OVERRIDE_FORBIDDEN' })
 })

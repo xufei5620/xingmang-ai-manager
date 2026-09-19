@@ -32,3 +32,8 @@ canvas-v2/qa-*.png
 *.keystore
 *-private-key.pem
 *private*.pem
+
+# 落地页发布脚本的源站连接信息：只放本机，不进公开仓库
+dl-landing.config.json
+# 由 dl-landing/nginx/*.conf.example 渲染出的、带真实主机与端口的本地副本
+dl-landing/nginx/*.conf

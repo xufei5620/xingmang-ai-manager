@@ -4,6 +4,7 @@ import {
   codexDesktopLaunchDecision,
   codexDesktopReloadAfterAccountSwitch,
   commitStartupPlatformCapabilities,
+  relaySiteAccountsOrigin,
 } from './app-shared'
 import { createScanRequestTracker, runCoordinatedScan } from './scan-coordinator'
 import { shouldBlockStartupForUpdate, shouldCheckUpdatesOnStartup } from './startup-settings'
@@ -213,5 +214,28 @@ describe('Codex Desktop launch decision', () => {
       platformCapabilitiesFor('win32', 'x64'),
       { installed: false },
     )).toBeNull()
+  })
+})
+
+describe('relay site accounts origin (R-S10)', () => {
+  const site = {
+    id: 'test',
+    label: '测试站点',
+    providerBaseUrls: { claude: 'https://relay.example', codex: 'https://relay.example/v1', grok: 'https://relay.example/v1', gemini: 'https://relay.example' },
+    websiteUrl: 'https://site.example',
+    keysPageUrl: 'https://site.example/keys',
+    accountBackend: 'new-api',
+  } as const
+
+  it('uses the account origin when the site declares one', () => {
+    expect(relaySiteAccountsOrigin({ ...site, accountBaseUrl: 'https://account.example/api' })).toBe('https://account.example')
+  })
+
+  it('falls back to the site origin instead of throwing when accountBaseUrl is absent', () => {
+    expect(relaySiteAccountsOrigin(site)).toBe('https://site.example')
+  })
+
+  it('never throws on a malformed url, which would take the whole window down', () => {
+    expect(relaySiteAccountsOrigin({ ...site, accountBaseUrl: 'not a url' })).toBe('https://site.example')
   })
 })
