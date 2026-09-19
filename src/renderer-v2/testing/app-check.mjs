@@ -2313,3 +2313,52 @@ test('installing from the maintenance page writes the account Key and refreshes 
     await clean(page)
   } finally { await page.close() }
 })
+
+// 功能 N2 扩展：自检原来只测 Claude Code，另外三个工具配错了只能自己猜。
+test('the connection self-check reports every CLI on its own, and an unconfigured tool is not a failure', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-idle').waitFor()
+    await page.getByTestId('health-connection-run').click()
+    // 每个工具一条结论，按注册表的展示顺序。
+    const claude = page.getByTestId('health-connection-result-claude')
+    await claude.waitFor()
+    await claude.getByText('Claude Code · 正常', { exact: true }).waitFor()
+    await claude.getByText('已用 claude-opus-5 发过一次最小请求', { exact: true }).waitFor()
+    const codex = page.getByTestId('health-connection-result-codex')
+    await codex.getByText('Codex CLI · 正常', { exact: true }).waitFor()
+    // 只读探测的结论要如实说出来，不能照 Claude 那句「发过一次最小请求」套。
+    await codex.getByText('已核对当前账号的可用模型清单，gpt-6-astra 在其中', { exact: true }).waitFor()
+    for (const provider of ['gemini', 'grok']) {
+      const row = page.getByTestId(`health-connection-result-${provider}`)
+      await row.getByText('未配置', { exact: false }).waitFor()
+      // 未配置不是失败：不给红色告警的 role，只给一条「去处理」。
+      assert.equal(await row.getAttribute('role'), 'status')
+      await row.getByRole('button', { name: '去处理', exact: true }).waitFor()
+    }
+    assert.equal(await page.getByTestId('health-connection-idle').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a self-check failure is attributed per tool and never takes the other tools down with it', async () => {
+  const page = await open('connectionFailure=1&connectionUnavailable=1')
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    await page.getByTestId('health-connection-run').click()
+    const claude = page.getByTestId('health-connection-result-claude')
+    await claude.getByText('Claude Code · 分组与渠道', { exact: true }).waitFor()
+    await claude.getByRole('button', { name: '去处理', exact: true }).click()
+    await page.getByTestId('page-account').waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-health').click()
+    // 一个工具的 IPC 抛错只影响它自己那一条。
+    await page.getByTestId('health-connection-run').click()
+    await page.getByTestId('health-connection-error-codex').waitFor()
+    await page.getByTestId('health-connection-result-gemini').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})

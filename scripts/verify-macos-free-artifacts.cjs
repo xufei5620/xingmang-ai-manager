@@ -120,6 +120,16 @@ function captureRegularFileIdentity(filePath, label) {
   return identityFromStat(stat)
 }
 
+// A bare "已变更或被替换" says nothing about what moved, and these failures only
+// ever reproduce on a real Mac: naming the drifting fields is the difference
+// between one CI round and a guessing match over which step touched the file.
+function describeIdentityDrift(actual, expected) {
+  const drift = Object.keys(expected)
+    .filter((field) => actual[field] !== expected[field])
+    .map((field) => `${field} ${expected[field]} → ${actual[field]}`)
+  return drift.length > 0 ? `（${drift.join('、')}）` : ''
+}
+
 function assertFileIdentity(filePath, expected, label) {
   let actual
   try {
@@ -127,7 +137,9 @@ function assertFileIdentity(filePath, expected, label) {
   } catch (error) {
     throw new Error(`${label} 在验证期间已变更：${error.message}`)
   }
-  if (!sameIdentity(actual, expected)) throw new Error(`${label} 在验证期间已变更或被替换`)
+  if (!sameIdentity(actual, expected)) {
+    throw new Error(`${label} 在验证期间已变更或被替换${describeIdentityDrift(actual, expected)}`)
+  }
 }
 
 function captureDirectoryIdentity(directoryPath, label) {
@@ -227,6 +239,40 @@ async function copyPrivateRegularFile(sourcePath, destinationPath, label) {
     await output?.close()
     await input.close()
   }
+}
+
+function assertSameRegularFile(actual, expected, label) {
+  if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.size !== expected.size) {
+    throw new Error(`${label} 在验证期间已变更或被替换${describeIdentityDrift(actual, expected)}`)
+  }
+  return actual
+}
+
+// Mounting an image stamps it: `hdiutil attach` records its checksum back onto
+// the image file (the com.apple.diskimages.* extended attributes), and writing
+// an xattr bumps ctime. So after a DMG inspection the private copy no longer
+// matches the identity it was bound with and every later check reads that as
+// "replaced". Nothing else in this file touches a private copy after it is
+// captured, which is why this is the only place that needs re-baselining.
+// Dropping the timestamps from the comparison would also drop the only signal
+// an in-place edit leaves, so the copy is re-hashed against the digest it was
+// made with and the identity is re-baselined only once that digest and
+// dev/ino/size both still hold. Re-baselining is therefore not a relaxation: it
+// trades a stamp the verifier itself caused for a full content check.
+async function rebaseInspectedPrivateCopy(artifact, label) {
+  const held = artifact.privateIdentity
+  // Checked before the read as well as after it, so a copy that was already
+  // swapped is refused without first hashing several hundred megabytes.
+  assertSameRegularFile(captureRegularFileIdentity(artifact.path, label), held, label)
+  const hash = createHash('sha256')
+  for await (const chunk of fs.createReadStream(artifact.path)) hash.update(chunk)
+  if (hash.digest('hex') !== artifact.sha256) throw new Error(`${label} 在验证期间内容已变更`)
+  artifact.privateIdentity = assertSameRegularFile(
+    captureRegularFileIdentity(artifact.path, label),
+    held,
+    label,
+  )
+  return artifact.privateIdentity
 }
 
 async function hashArtifactFiles(outputDirectory, names) {
@@ -999,6 +1045,11 @@ async function verifyMacosFreeArtifacts(options = {}) {
           env,
           privateSource: true,
         })
+        // Only the DMG path hands the private copy to a mounter; ZIP extraction
+        // reads its source without stamping it, so it keeps the strict check.
+        if (kind === 'dmg') {
+          await rebaseInspectedPrivateCopy(privateArtifact, `发行文件私有副本 ${artifactName}`)
+        }
         assertBoundReleaseSources()
         if (!result || result.architecture !== architecture) {
           throw new Error(`${kind.toUpperCase()} 应用验证没有确认预期架构：${architecture}`)

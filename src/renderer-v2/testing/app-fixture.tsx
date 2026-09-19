@@ -198,9 +198,21 @@ const methods = {
   getUpdateState: async () => ({ phase: query.has('startupUpdate') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
   runStartupUpdate: async () => { throw new Error('本地更新源暂时不可用') },
   runDiagnostics: async () => ({ version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts: { pass: 1, warn: 0, fail: 0, error: 0 }, items: [] }),
-  checkProviderConnection: async (provider) => (query.has('connectionFailure')
-    ? { provider, siteId: 'solov', ok: false, layer: 'group' as const, summary: '当前账号分组下没有可用渠道（HTTP 503）', nextStep: '到「账号」页确认套餐仍在有效期内，再点一次「写入 Key」', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: '当前分组下无可用渠道', status: 503, durationMs: 12, checkedAt: new Date().toISOString() }
-    : { provider, siteId: 'solov', ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: null, status: 200, durationMs: 12, checkedAt: new Date().toISOString() }),
+  // 四个工具各跑一遍：真实用户多半只配了一两个，所以夹具默认给出「两个能用、
+  // 两个还没配」的混合态，而不是四条一样的结论。
+  checkProviderConnection: async (provider) => {
+    const base = { provider, siteId: 'solov', detail: null as string | null, status: 200 as number | null, durationMs: 12, checkedAt: new Date().toISOString() }
+    if (provider === 'gemini' || provider === 'grok') {
+      return { ...base, ok: false, layer: 'unconfigured' as const, summary: `还没有给 ${provider === 'gemini' ? 'Gemini CLI' : 'Grok CLI'} 写入星芒配置`, nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检', endpoint: null, model: null, status: null }
+    }
+    if (query.has('connectionFailure') && provider === 'claude') {
+      return { ...base, ok: false, layer: 'group' as const, summary: '当前账号分组下没有可用渠道（HTTP 503）', nextStep: '到「账号」页确认套餐仍在有效期内，再点一次「写入 Key」', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: '当前分组下无可用渠道', status: 503 }
+    }
+    if (query.has('connectionUnavailable') && provider === 'codex') throw new Error('自检没能完成')
+    return provider === 'codex'
+      ? { ...base, ok: true, layer: 'network' as const, summary: '连接正常，gpt-6-astra 可以直接使用', nextStep: '无需处理', evidence: '已核对当前账号的可用模型清单，gpt-6-astra 在其中', endpoint: 'https://fixture.invalid/v1/models', model: 'gpt-6-astra' }
+      : { ...base, ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', evidence: '已用 claude-opus-5 发过一次最小请求', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5' }
+  },
   scanSystem: async () => {
     if (query.has('desktopEvent')) window.v2Test.emit('onCodexDesktopStatus', { status: { ...system.desktopApps.codex, appVersion: '9.9.9' } })
     return structuredClone(system)

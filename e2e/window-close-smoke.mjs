@@ -29,10 +29,38 @@ function bootFixture(config) {
   app.setPath('userData', config.userData)
   app.setPath('home', config.userHome)
   const state = { choices: [], dialogs: [], droppedCloseRequests: 0, preventedUnloads: 0, blockedQuits: 0, forceExitCalls: 0, blockQuit: false, lastActionId: 0,
-    userData: app.getPath('userData'), visible: null, processIds: [], commandLog: [], commandFailures: [] }
+    userData: app.getPath('userData'), visible: null, processIds: [], commandLog: [], commandFailures: [], evidenceFailures: [] }
+  // Defender can still hold a file this fixture has just written, so the atomic
+  // swap that publishes the evidence fails with EPERM or EBUSY every so often on
+  // a Windows runner. Three properties follow, and the control loop below leans
+  // on all three: the swap is retried a bounded number of times, the same shape
+  // the smoke runtime uses for the inspector calls it retries; persist never
+  // throws, because it also runs from the dialog, forced-exit and will-quit
+  // hooks, where a throw would change the behaviour under test rather than only
+  // lose evidence; and a swap that fails anyway leaves the state unpublished for
+  // the control loop to republish, so an acknowledgement is late, never lost.
+  const evidenceAttempts = 5
+  let evidencePublished = true
+  const pause = (ms) => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms) }
   const persist = () => {
-    fs.writeFileSync(`${config.evidence}.tmp`, JSON.stringify(state, null, 2) + '\n', 'utf8')
-    fs.renameSync(`${config.evidence}.tmp`, config.evidence)
+    const staged = `${config.evidence}.tmp`
+    for (let attempt = 1; attempt <= evidenceAttempts; attempt++) {
+      try {
+        fs.writeFileSync(staged, JSON.stringify(state, null, 2) + '\n', 'utf8')
+        fs.renameSync(staged, config.evidence)
+        evidencePublished = true
+        return true
+      } catch (error) {
+        if (attempt < evidenceAttempts) { pause(attempt * 20); continue }
+        evidencePublished = false
+        // Bounded, because a filesystem that never recovers would otherwise grow
+        // this array for as long as the scenario keeps polling.
+        if (state.evidenceFailures.length < 20) {
+          state.evidenceFailures.push({ at: Date.now(), code: error?.code ?? null, message: String(error?.message ?? error) })
+        }
+      }
+    }
+    return false
   }
   dialog.showMessageBox = async (...args) => {
     const options = args.at(-1)
@@ -78,22 +106,34 @@ function bootFixture(config) {
   // acknowledged, and the smoke reports only "was not acknowledged". Defender
   // can hold the command file open for a moment right after the test renames
   // it into place, which makes a read or unlink here fail with EPERM or EBUSY
-  // on a Windows runner. Those are retried on the next tick; everything else
-  // is recorded in the evidence file, which the failure dump prints.
+  // on a Windows runner. A command that could not be consumed stays on disk and
+  // is retried by the next tick; everything else is recorded in the evidence
+  // file, which the failure dump prints.
   const recordCommandFailure = (stage, error) => {
     state.commandFailures.push({ stage, at: Date.now(), code: error?.code ?? null, message: String(error?.message ?? error) })
-    try { persist() } catch { /* The evidence file is best effort once writes are failing. */ }
+    persist()
   }
   const controlTimer = setInterval(() => {
     let scheduled
     try {
-      if (!fs.existsSync(config.command)) return
+      if (!fs.existsSync(config.command)) {
+        // Whatever this state acknowledges has already run, so republishing it
+        // after a blocked write is not a second execution.
+        if (!evidencePublished) persist()
+        return
+      }
       scheduled = JSON.parse(fs.readFileSync(config.command, 'utf8'))
       fs.unlinkSync(config.command)
     } catch (error) {
       recordCommandFailure('read', error)
       return
     }
+    // The command file is gone by the time we get here, so this tick is the only
+    // chance to run what it asked for: publishing the evidence first meant a
+    // blocked write threw past the action, which then never ran, was never
+    // acknowledged and was never retried, and the scenario could only time out.
+    // Run the action first and publish afterwards, so a failed write costs a
+    // delayed acknowledgement rather than a lost command.
     try {
       if (!Number.isSafeInteger(scheduled.id) || scheduled.id <= state.lastActionId
         || !['inspect', 'activate', 'close', 'block-quit', 'cleanup'].includes(scheduled.action)) throw new Error('Invalid smoke command')
@@ -102,8 +142,7 @@ function bootFixture(config) {
       state.visible = BrowserWindow.getAllWindows()[0]?.isVisible() ?? null
       state.processIds = app.getAppMetrics().map((entry) => entry.pid)
       if (scheduled.action === 'block-quit') state.blockQuit = scheduled.blockQuit
-      persist()
-      if (scheduled.action === 'cleanup') { app.exit(0); return }
+      if (scheduled.action === 'cleanup') { persist(); app.exit(0); return }
       if (scheduled.action === 'activate') app.emit('activate')
       if (scheduled.action === 'close') {
         if (scheduled.choice !== null) state.choices.push(scheduled.choice)
@@ -111,7 +150,9 @@ function bootFixture(config) {
       }
     } catch (error) {
       recordCommandFailure(`action:${scheduled?.action}`, error)
+      return
     }
+    persist()
   }, 25)
   controlTimer.unref()
   require(config.entry)
@@ -125,6 +166,27 @@ function bootFixture(config) {
 // just slowly. The waits stay bounded, and nothing they assert changed; only
 // their headroom did.
 const mainProcessResponseTimeoutMs = Number(process.env.XINGMANG_SMOKE_COMMAND_TIMEOUT_MS ?? 30_000)
+
+// Publishing a command uses the same temp file plus rename the fixture uses to
+// publish its evidence, and Defender can refuse it the same way. A refusal here
+// is louder — it fails the whole scenario rather than one command — but it costs
+// just as much CI time, so it gets the same bounded retry.
+const commandPublishAttempts = 5
+
+async function publishAtomically(staged, target, contents) {
+  let lastError
+  for (let attempt = 1; attempt <= commandPublishAttempts; attempt++) {
+    try {
+      await fs.writeFile(staged, contents, 'utf8')
+      await fs.rename(staged, target)
+      return
+    } catch (error) {
+      lastError = error
+      if (attempt < commandPublishAttempts) await new Promise((resolve) => setTimeout(resolve, attempt * 20))
+    }
+  }
+  throw lastError
+}
 
 async function waitUntil(read, accepts, label, timeout = mainProcessResponseTimeoutMs, abandoned = () => null) {
   const deadline = Date.now() + timeout
@@ -207,9 +269,7 @@ async function runScenario(blockQuit) {
   let actionId = 0
   const scheduleWindowAction = async (action, choice = null, shouldBlock = false) => {
     const command = { id: ++actionId, action, choice, blockQuit: shouldBlock }
-    const staged = `${commandPath}.tmp`
-    await fs.writeFile(staged, JSON.stringify(command), 'utf8')
-    await fs.rename(staged, commandPath)
+    await publishAtomically(`${commandPath}.tmp`, commandPath, JSON.stringify(command))
     // Publish each action once; only poll its acknowledgement, never replay it.
     const state = await waitUntil(readState, (entry) => entry?.lastActionId === command.id,
       `Smoke command ${command.id} (${action}) was not acknowledged`, mainProcessResponseTimeoutMs, abandonedByExit)

@@ -813,10 +813,11 @@ export interface XingmangInvokeContract {
   saveAiChatAsset: IpcInvokeDefinition<'chat:save-asset', [assetId: string], { saved: boolean }>
   showAiChatAssetMenu: IpcInvokeDefinition<'chat:asset-menu', [assetId: string], void>
   /**
-   * 连接自检：用该工具配置文件里真正写着的 Key 和模型，向星芒服务发一次
-   * 最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的一层。
-   * diagnostics:run 的 XINGMANG_NETWORK 只发 HEAD，证明网络通不证明能用，
-   * 所以这条单独成通道、只在用户点按钮时才花那几个 token。
+   * 连接自检：用该工具配置文件里真正写着的 Key、服务地址和模型，向星芒服务
+   * 发一次最小请求，把失败归到网络 / 密钥 / 额度 / 分组 / 模型 / 协议中的
+   * 一层；没配过的工具归到「未配置」，不算失败。diagnostics:run 的
+   * XINGMANG_NETWORK 只发 HEAD，证明网络通不证明能用，所以这条单独成通道、
+   * 只在用户点按钮时才跑。一次调用只测一个工具，结果页按工具各调一次。
    */
   checkProviderConnection: IpcInvokeDefinition<
     'diagnostics:check-connection',
