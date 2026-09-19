@@ -14,6 +14,9 @@
 - v2 渲染层的工具注册表收口类型：`ToolDef.id` 从 `string` 改成 `ProviderId | 'codexDesktop'`，npm 包名与配置目录名改为从 `electron/catalog.ts` 的 `cliCatalog` / 新增的 `providerConfigDirectoryNames` 派生（主进程的 `providerConfigRoot` 读的是同一张表），「官方账号」中文名从三元链改成无 default 的 `Record<ProviderId, string | null>`，`account-switch-sync.ts` 的硬编码工具名数组换成 `isProviderId`，并删掉没有任何消费者、且把 grok 标成 `'env'` 的错误字段 `keyWrite`。补 `registry/tools.test.ts` 钉住注册表 id 与派生字段，CLAUDE.md T2 / T10 顺带订正（R-S11、R-B12）。用户可见行为不变。
 - 删除中转站点表里与主站点逐字段相同的 `sub2api` 别名条目，只保留 `resolveRelaySite` / `realmForExplicitSite` 里的 `'sub2api' → 'solov'` id 映射，老配置文件照常解析到同一站点；随之删掉 `site-runtime.ts` 里专为该别名写的一致性校验，并把显式账号边界（`requireRelaySite`、站点运行时、后端注册表）改为拒绝这个已退役的 id（D-10）。
 - 在 `relay-sites.ts` 注明法律文档恒定指向主站、客服链接按账号分流是有意为之（同一份协议、两拨客服），并补测试钉住这一不对称（D-11，行为不变）。
+- CI 覆盖方向不再与出货方向倒挂：出货的 renderer-v2 浏览器回归（`test:v2`）和画布单测（`test:canvas`）加进 linux 作业，旧回滚界面的 10 个 `test:ui` 套件从三个平台降到只在 linux 跑一遍，`test:canvas` 从最慢、最易因 Defender 超时失败的 Windows 作业移走。`scripts/ci-workflow-config.test.cjs` 新增断言钉住这两条（M-03）。
+- `check:v2`（旧 testId 覆盖与 renderer-v2 运行时边界门禁）首次接进 CI：报告文件改为 `--report <目录>` 显式开启，不带参数时只打印计数摘要并按退出码判定，缺失的 testId 模式和越界导入直接打进日志。它此前每次运行都往 `docs/` 写三个带 `generatedAt` 时间戳的文件，必被「工作树干净」检查判死，因此从未进过 CI（T-S4）。
+- 发版门禁（`npm run release:build` 与 `release:build:unsigned`）的「全部测试」补上 `test:v2`、`test:canvas` 和 `test:ui`。此前它只跑 `npm test`（即 `vitest run electron src`），对真正装到客户机器上的 renderer-v2 界面和画布是 0 覆盖，比 CI 的 Windows 作业还弱一档（《发版前检查清单》缺口 4，与 M-03 同根因）。
 - 发版流水线签名链路加固：把签名证书导进 runner 根信任存储的步骤收窄到 `test_signing` 自签名构建，正式构建不再人为制造链信任，中间 CA 缺失、时间戳不可用这类只在干净 Windows 上暴露的缺陷不会再被 Authenticode 校验的「Valid」盖住；`windows-installer` 作业声明 `environment: release`，三个签名 secret 不再对任意分支可见（P-03、P-06）。
 - 把落地页发布链路里的生产源站信息移出公开仓库：`scripts/publish-dl-landing.cjs` 不再内置源站 IP、SSH 端口、登录用户、密钥文件名与站点根目录，改为运行时从 `DL_LANDING_*` 环境变量、命令行参数或被 `.gitignore` 忽略的 `dl-landing.config.json` 读取，缺任何一项直接报错停住；`dl-landing/nginx/` 的三份配置改为带占位符的 `.conf.example` 模板，`docs/DL-LANDING-PLAN.md` 删去具体值（P-04）。
 - legacy 渲染层补上根级 ErrorBoundary：`main.tsx` 经新的 `RootShell` 包住整棵树，Sidebar / ShellTopbar / 各弹窗 / `App()` 自身 state 与顶层 effect 抛错不再是白屏（打包版已禁用 devtools，此前只能杀进程）；崩溃面板在没有 toast 宿主时就地显示导出结果。同时把 `App.tsx` 账号切换器的 `accountBaseUrl!` 换成 `relaySiteAccountsOrigin()` 的显式回落（R-S10）。
@@ -29,6 +32,8 @@
 - 新增 `npm run release:verify:unsigned`：无签名模式下也能在本地校验 `latest.yml` 结构、文件大小、SHA-512 与 blockmap。
 - 删除只认 legacy `.app-shell` 选择器的 `e2e/electron-smoke.mjs`；发布门禁改跑 CI 同样在跑的 `e2e/electron-ci-smoke.mjs`，并由 `scripts/ci-workflow-config.test.cjs` 钉住「门禁跑的冒烟脚本必须也在 Windows 必需作业里跑」。
 - 修复 v2 聊天页每次渲染都把全部会话正文拼成大字符串重新搜索：过滤改为 `useMemo`，搜索框为空时不扫正文，非空时按会话对象缓存可搜索文本，流式输出只重扫被分片改动的那个会话（R-S5）。
+- macOS 视觉验收脚本（`npm run test:mac:visual`）改用 renderer-v2 的 `data-testid`：此前脚本等待的 `.app-shell`、`.main-nav`、`.cli-card` 等选择器全部来自 legacy 界面，而 `npm run compile` 默认产出 renderer-v2，脚本第一步就固定超时 60 秒，macOS 的布局回归实际无人把关（审查总表 T-S3）。新版检查 v2 壳层分区、首页五个工具行、安装卸载页工具行，并用工具配置对话框做窄窗口下的弹窗几何检查。legacy 的「卸载帮助」按钮在 v2 里没有对应入口（v2 的手动清理弹窗只在真正执行卸载并收到 `manualHelp` 后才出现），相关断言无法平移，已在 PR 中说明。
+- 设置页「主题」分组的切换控件补上 `settings-theme` 测试标识与无障碍名称。
 
 ## 0.2.6 - 2026-09-19
 
