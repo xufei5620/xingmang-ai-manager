@@ -5,6 +5,7 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
 const {
+  VALIDITY_DAYS,
   createFreeMacSigningCertificate,
   resolveDedicatedOutputDirectory,
 } = require('./create-macos-free-signing-certificate.cjs')
@@ -163,7 +164,7 @@ test('pre-existing certificate output directories must be private and owned by t
   }
 })
 
-test('certificate generation requests a long-lived RSA-3072 SHA-256 code-signing certificate and Keychain-compatible encrypted P12', () => {
+test('certificate generation requests a non-issuing three-year RSA-3072 SHA-256 code-signing certificate and Keychain-compatible encrypted P12', () => {
   const outputDirectory = path.join(temporaryDirectory(), 'xingmang-free-update-identity')
   const invocations = []
 
@@ -180,10 +181,12 @@ test('certificate generation requests a long-lived RSA-3072 SHA-256 code-signing
   assert.ok(certificateCommand)
   assert.ok(certificateCommand.includes('rsa:3072'))
   assert.ok(certificateCommand.includes('-sha256'))
-  assert.ok(certificateCommand.includes('basicConstraints=critical,CA:TRUE,pathlen:0'))
-  assert.ok(certificateCommand.includes('keyUsage=critical,digitalSignature,keyCertSign'))
+  assert.ok(certificateCommand.includes('basicConstraints=critical,CA:FALSE'))
+  assert.ok(certificateCommand.includes('keyUsage=critical,digitalSignature'))
   assert.ok(certificateCommand.includes('extendedKeyUsage=critical,codeSigning'))
-  assert.ok(certificateCommand.includes('7300'))
+  assert.equal(certificateCommand.some((argument) => /CA:TRUE|keyCertSign/.test(argument)), false)
+  assert.equal(certificateCommand[certificateCommand.indexOf('-days') + 1], String(VALIDITY_DAYS))
+  assert.equal(VALIDITY_DAYS, 1095)
   const exportCommand = invocations.find((args) => args[0] === 'pkcs12')
   assert.ok(exportCommand)
   assert.ok(exportCommand.includes('-descert'))

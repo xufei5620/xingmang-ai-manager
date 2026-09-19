@@ -15,6 +15,26 @@ const contentTypes = new Map([
   ['.blockmap', 'application/octet-stream'],
 ])
 
+function isInsideDirectory(directory, target) {
+  if (target === directory) return true
+  const relative = path.relative(directory, target)
+  return relative !== '' && !relative.startsWith(`..${path.sep}`) && relative !== '..' &&
+    !path.isAbsolute(relative)
+}
+
+/** P-33. path.relative only answers what the name looks like, and the release
+ * directory is a place a developer drops symlinks into. A link inside it
+ * passes the name check and then resolves anywhere at open() time, so the
+ * containment question has to be asked a second time about the path the
+ * kernel will actually serve. Both directories are compared after resolution
+ * so a symlinked release directory still serves its own contents. */
+async function resolveServableFile(root, realRoot, requestPath, realpath = fs.promises.realpath) {
+  const target = path.resolve(root, requestPath || 'latest.yml')
+  if (!isInsideDirectory(root, target)) return null
+  const realTarget = await realpath(target)
+  return isInsideDirectory(realRoot, realTarget) ? realTarget : null
+}
+
 async function main() {
   const root = path.resolve(argumentValue('--directory', 'release'))
   const port = Number(argumentValue('--port', '8123'))
@@ -22,14 +42,14 @@ async function main() {
     throw new Error('--port 必须是 1-65535 之间的整数')
   }
   const result = await validateLocalRelease(root)
+  const realRoot = await fs.promises.realpath(root)
 
   const server = http.createServer(async (request, response) => {
     try {
       const requestUrl = new URL(request.url || '/', 'http://127.0.0.1')
       const decodedPath = decodeURIComponent(requestUrl.pathname).replace(/^\/+/, '')
-      const target = path.resolve(root, decodedPath || 'latest.yml')
-      const relative = path.relative(root, target)
-      if (relative.startsWith('..') || path.isAbsolute(relative)) {
+      const target = await resolveServableFile(root, realRoot, decodedPath)
+      if (target === null) {
         response.writeHead(403).end('Forbidden')
         return
       }
@@ -67,7 +87,11 @@ async function main() {
   process.once('SIGTERM', close)
 }
 
-main().catch((error) => {
-  console.error(`开发更新源启动失败 [${error.code || 'UNKNOWN'}]：${error.message}`)
-  process.exitCode = 1
-})
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`开发更新源启动失败 [${error.code || 'UNKNOWN'}]：${error.message}`)
+    process.exitCode = 1
+  })
+}
+
+module.exports = { isInsideDirectory, resolveServableFile }

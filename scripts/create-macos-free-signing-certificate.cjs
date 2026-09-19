@@ -4,7 +4,13 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
 const CERTIFICATE_BASENAME = 'xingmang-macos-free-signing'
-const VALIDITY_DAYS = 7300
+// P-22: three years, not the twenty this used to mint. The publisher holds
+// this P12 on a single machine with no revocation path of any kind, so the
+// only thing that ever retires a stolen copy is the certificate's own expiry.
+// Rotation costs one manual migration for every user (see
+// docs/MACOS_FREE_DISTRIBUTION.md), which is why it is three years and not
+// one.
+const VALIDITY_DAYS = 1095
 const OPENSSL_PATH = '/usr/bin/openssl'
 const COMMAND_TIMEOUT_MS = 30_000
 const MAX_COMMON_NAME_LENGTH = 64
@@ -182,8 +188,14 @@ function createFreeMacSigningCertificate(options = {}) {
     runOpenSsl([
       'req', '-x509', '-newkey', 'rsa:3072', '-sha256', '-days', String(VALIDITY_DAYS),
       '-utf8', '-subj', `/CN=${commonName}`,
-      '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
-      '-addext', 'keyUsage=critical,digitalSignature,keyCertSign',
+      // P-22: a signing identity must not be able to issue certificates. The
+      // publisher is told to mark this certificate trusted for code signing,
+      // so a CA:TRUE copy of the P12 would let whoever holds it mint further
+      // code-signing certificates that chain to a root that Mac already
+      // trusts. codesign never needs the signing certificate to be a CA --
+      // every Apple-issued Developer ID Application certificate is CA:FALSE.
+      '-addext', 'basicConstraints=critical,CA:FALSE',
+      '-addext', 'keyUsage=critical,digitalSignature',
       '-addext', 'extendedKeyUsage=critical,codeSigning',
       '-keyout', temporaryKeyPath,
       '-out', temporaryCertificatePath,

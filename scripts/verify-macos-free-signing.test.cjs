@@ -1,6 +1,22 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
-const { verifyFreeMacSigningIdentity } = require('./verify-macos-free-signing.cjs')
+const {
+  assertNonIssuingSigningCertificate,
+  verifyFreeMacSigningIdentity,
+} = require('./verify-macos-free-signing.cjs')
+
+const HEALTHY_CERTIFICATE_TEXT = [
+  'Certificate:',
+  '    Data:',
+  '        X509v3 extensions:',
+  '            X509v3 Basic Constraints: critical',
+  '                CA:FALSE',
+  '            X509v3 Key Usage: critical',
+  '                Digital Signature',
+  '            X509v3 Extended Key Usage: critical',
+  '                Code Signing',
+  '',
+].join('\n')
 
 function healthyOptions(overrides = {}) {
   return {
@@ -17,7 +33,7 @@ function healthyOptions(overrides = {}) {
       if (args.includes('-fingerprint') && args.includes('-sha1')) return 'sha1 Fingerprint=11:AA:22:BB:33:CC:44:DD:55:EE:66:FF:77:88:99:00:AA:BB:CC:DD\n'
       if (args.includes('-subject')) return 'subject=CN=XingMang Free Update Identity\nissuer=CN=XingMang Free Update Identity\n'
       if (args.includes('-startdate')) return 'notBefore=Aug  1 00:00:00 2026 GMT\nnotAfter=Jul 28 00:00:00 2046 GMT\n'
-      if (args.includes('-text')) return 'X509v3 Extended Key Usage: critical\n    Code Signing\n'
+      if (args.includes('-text')) return HEALTHY_CERTIFICATE_TEXT
       if (args[0] === 'verify') return 'certificate: OK\n'
       throw new Error(`Unexpected OpenSSL command: ${args.join(' ')}`)
     },
@@ -163,4 +179,31 @@ test('signing preflight rejects invalid self-signatures and certificates outside
       ? 'notBefore=Aug  1 00:00:00 2030 GMT\nnotAfter=Jul 28 00:00:00 2046 GMT\n'
       : healthyOptions().runOpenSsl(args),
   })), /尚未生效/)
+})
+
+test('signing preflight refuses a certificate that can issue further certificates (P-22)', () => {
+  const caCertificate = HEALTHY_CERTIFICATE_TEXT
+    .replace('                CA:FALSE', '                CA:TRUE, pathlen:0')
+  const issuingKeyUsage = HEALTHY_CERTIFICATE_TEXT
+    .replace('                Digital Signature', '                Digital Signature, Certificate Sign')
+  const nonCriticalConstraints = HEALTHY_CERTIFICATE_TEXT
+    .replace('X509v3 Basic Constraints: critical', 'X509v3 Basic Constraints:')
+  const missingConstraints = HEALTHY_CERTIFICATE_TEXT
+    .split('\n')
+    .filter((line) => !/Basic Constraints|CA:FALSE/.test(line))
+    .join('\n')
+
+  for (const [text, pattern] of [
+    [caCertificate, /CA/],
+    [nonCriticalConstraints, /CA/],
+    [missingConstraints, /CA/],
+    [issuingKeyUsage, /keyUsage/],
+  ]) {
+    assert.throws(() => assertNonIssuingSigningCertificate(text), pattern)
+    assert.throws(() => verifyFreeMacSigningIdentity(healthyOptions({
+      runOpenSsl: (args) => args.includes('-text') ? text : healthyOptions().runOpenSsl(args),
+    })), pattern)
+  }
+
+  assert.equal(assertNonIssuingSigningCertificate(HEALTHY_CERTIFICATE_TEXT), undefined)
 })

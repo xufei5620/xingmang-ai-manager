@@ -56,14 +56,20 @@ function certificateField(output, name) {
   return match[1].trim()
 }
 
-function hasExclusiveCriticalCodeSigningEku(certificateText) {
+/** Reads the values of a single critical X509v3 extension out of
+ * `openssl x509 -text` output. Returns null unless the extension appears
+ * exactly once and is marked critical: a second copy, or a non-critical one,
+ * means the extension does not constrain the certificate the way the caller
+ * is about to assume it does. */
+function criticalExtensionValues(certificateText, extensionName) {
   const lines = String(certificateText).split(/\r?\n/)
   const headers = []
+  const headerPattern = new RegExp(`^(\\s*)X509v3 ${extensionName}:\\s*(critical)?\\s*$`)
   for (let index = 0; index < lines.length; index += 1) {
-    const match = /^(\s*)X509v3 Extended Key Usage:\s*(critical)?\s*$/.exec(lines[index])
+    const match = headerPattern.exec(lines[index])
     if (match) headers.push({ index, indentation: match[1].length, critical: match[2] === 'critical' })
   }
-  if (headers.length !== 1 || !headers[0].critical) return false
+  if (headers.length !== 1 || !headers[0].critical) return null
 
   const values = []
   const header = headers[0]
@@ -74,7 +80,33 @@ function hasExclusiveCriticalCodeSigningEku(certificateText) {
     if (indentation <= header.indentation) break
     values.push(...line.trim().split(',').map((value) => value.trim()).filter(Boolean))
   }
-  return values.length === 1 && /^(?:Code Signing|1\.3\.6\.1\.5\.5\.7\.3\.3)$/i.test(values[0])
+  return values
+}
+
+function hasExclusiveCriticalCodeSigningEku(certificateText) {
+  const values = criticalExtensionValues(certificateText, 'Extended Key Usage')
+  return values !== null && values.length === 1 &&
+    /^(?:Code Signing|1\.3\.6\.1\.5\.5\.7\.3\.3)$/i.test(values[0])
+}
+
+/** P-22. The publisher marks this certificate trusted for code signing on the
+ * release Mac, so a certificate that can also issue certificates turns a
+ * stolen P12 into a trusted issuer on that machine: every certificate minted
+ * from it would chain to an anchor the Mac already accepts. codesign never
+ * needs the signing certificate to be a CA, so the release gate refuses one
+ * outright rather than relying on the generator having produced the right
+ * profile. */
+function assertNonIssuingSigningCertificate(certificateText) {
+  const basicConstraints = criticalExtensionValues(certificateText, 'Basic Constraints')
+  if (basicConstraints === null || basicConstraints.length !== 1 ||
+    !/^CA:FALSE$/i.test(basicConstraints[0])) {
+    fail('证书必须带 critical 的 basicConstraints=CA:FALSE：发布签名证书不能是 CA，请用 npm run mac:free:create-certificate 重新生成')
+  }
+  const keyUsage = criticalExtensionValues(certificateText, 'Key Usage')
+  if (keyUsage === null || !keyUsage.some((value) => /^Digital Signature$/i.test(value)) ||
+    keyUsage.some((value) => /^(?:Certificate Sign|CRL Sign)$/i.test(value))) {
+    fail('证书的 critical keyUsage 必须只授予签名用途，不能包含 Certificate Sign 或 CRL Sign，请重新生成证书')
+  }
 }
 
 function parseCodeSigningIdentities(output) {
@@ -139,6 +171,7 @@ function verifyFreeMacSigningIdentity(options = {}) {
     if (!hasExclusiveCriticalCodeSigningEku(text)) {
       fail('证书必须仅包含 critical codeSigning EKU')
     }
+    assertNonIssuingSigningCertificate(text)
 
     const sha1 = fingerprintFromOpenSsl(outputOf(runOpenSsl, [
       'x509', '-in', certificatePath, '-noout', '-fingerprint', '-sha1',
@@ -175,4 +208,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { verifyFreeMacSigningIdentity }
+module.exports = { assertNonIssuingSigningCertificate, verifyFreeMacSigningIdentity }
