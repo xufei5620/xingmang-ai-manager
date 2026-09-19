@@ -60,3 +60,29 @@ export function writeManualSourceMarker(
     return false
   }
 }
+
+/**
+ * localStorage 被禁用或写满时，配置本身已经写进 CLI，只是这次选的来源没记下来，
+ * 工具卡会退回按配置推断，可能显示成另一个来源。所以文案先交代「不影响使用」。
+ */
+export const sourceMarkerWriteWarning =
+  '这次选择的密钥来源没能记在本机，工具卡上显示的来源可能不准确，不影响工具正常使用。'
+
+/**
+ * 写入来源标记并把失败折成一句给用户看的话，空字符串表示这次没有需要提醒的事。
+ * 保存流程只需一次赋值就能把结果接进提示通道，避免返回值像以前那样被整段丢掉。
+ *
+ * 清除标记时先确认确实有标记可清：读不到就说明来源推断同样读不到它，展示不受
+ * 影响，不该在每次保存时弹一句用户无从处理的警告。写入标记则一旦失败必然错标。
+ */
+export function applyManualSourceMarker(
+  storage: SourceMarkerStorage | null,
+  relayBaseUrl: string,
+  provider: ProviderId,
+  manual: boolean,
+): string {
+  if (!manual && !readManualSourceMarker(storage, relayBaseUrl, provider)) return ''
+  return writeManualSourceMarker(storage, relayBaseUrl, provider, manual)
+    ? ''
+    : sourceMarkerWriteWarning
+}

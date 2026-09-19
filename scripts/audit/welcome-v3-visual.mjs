@@ -5,7 +5,7 @@ import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
 import fs from 'node:fs/promises'
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..')
 const output = path.join(root, 'artifacts', 'welcome-v3-visual')
 await fs.mkdir(output, { recursive: true })
 const server = await createServer({ configFile: path.join(root, 'vite.config.ts'), root, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })

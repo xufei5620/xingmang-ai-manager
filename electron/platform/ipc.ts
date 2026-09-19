@@ -47,7 +47,7 @@ function isNotificationKind(value: unknown): value is PlatformNotificationKind {
 function isPrivacyPreference(
   value: unknown,
 ): value is PlatformPrivacyPreference {
-  return value === 'crashReports' || value === 'anonymousUsage'
+  return value === 'anonymousUsage'
 }
 
 function isActivityKey(value: unknown): value is string {

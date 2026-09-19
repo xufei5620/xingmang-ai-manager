@@ -97,6 +97,7 @@ import type {
   AccountManagedCliConfigurationInput,
   LegalDocumentKind,
   RememberedAccountLogin,
+  RendererErrorPayload,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { ConnectionCheckResult } from './connection-check'
@@ -156,6 +157,9 @@ export interface IpcRegistrationOptions {
   getWindowCapabilities?(): { tray: boolean; notifications: boolean }
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
   onSettingsChanged?(): void
+  /** Renderer-side crashes the host may forward to crash reporting. The
+   *  payload is the already-validated one, never the raw IPC value. */
+  onRendererError?(error: RendererErrorPayload): void
   replyWindowClose?(target: WebContents, requestId: string, report: WindowCloseReport): boolean
   onSystemSnapshot?(snapshot: SystemSnapshot): void
   onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
@@ -268,6 +272,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
       : undefined
   const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
   const alwaysInstallLatestCli = optionalBoolean(value.alwaysInstallLatestCli, '命令行工具版本偏好')
+  const crashReporting = optionalBoolean(value.crashReporting, '崩溃上报设置')
   // Unlike the degrade-don't-throw fields above, an unrecognized value here is
   // rejected: this one decides whether Codex starts with a local debugging
   // port, so a typo must not quietly read as "not asked yet" (E-S3).
@@ -293,6 +298,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(officialProviders !== undefined ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
     ...(alwaysInstallLatestCli !== undefined ? { alwaysInstallLatestCli } : {}),
+    ...(crashReporting !== undefined ? { crashReporting } : {}),
     ...(value.codexDesktopChineseRuntimePatch !== undefined
       ? { codexDesktopChineseRuntimePatch: value.codexDesktopChineseRuntimePatch as AppSettingsUpdate['codexDesktopChineseRuntimePatch'] }
       : {}),
@@ -1859,6 +1865,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       context: error.context ?? null,
       stack: error.stack ?? null,
     })
+    options.onRendererError?.(error)
   })
   registerTrustedHandler('backups:list', () => options.backupStore.list())
   registerTrustedHandler('backups:create', (_event, provider: unknown) => {

@@ -190,7 +190,7 @@ MCP 的 SSE、OAuth 参数和预设按 Provider 适配器支持程度接入；�
 
 ### 工程与平台
 
-沿用 `npm run typecheck`、`npm run test:windows`、`npm run test:node`、`npm run test:canvas`、`npm run compile`，按变动追加 `e2e/electron-ci-smoke.mjs`、`e2e/onboarding-smoke.mjs`、`npm run test:canvas:visual` 和新布局/状态用例。
+沿用 `npm run typecheck`、`npm test`、`npm run test:canvas`、`npm run compile`，按变动追加 `e2e/electron-ci-smoke.mjs`、`e2e/onboarding-smoke.mjs`、`npm run test:canvas:visual` 和新布局/状态用例。
 
 Windows/macOS 的真实窗口/托盘/付款窗/画布联动逐项验收；Linux 缺少原生环境时记录为未验证，不宣称原型的平台按钮证明了系统支持。历史 Windows 四项 symlink EPERM 与 CI startup_failure 在实施时重新采集，不永久视为可忽略失败。
 

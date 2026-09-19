@@ -3,7 +3,7 @@ import path from 'node:path'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium } from '@playwright/test'
-import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { fixtureReadyTimeoutMs } from '../../e2e/fixture-readiness.mjs'
 
 const fixturePatch = [
   "const auditCase = query.get('audit')",

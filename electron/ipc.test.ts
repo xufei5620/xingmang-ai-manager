@@ -161,7 +161,6 @@ function accountServiceStub(): NewApiClientService {
     revokeLoginSession: vi.fn() as never,
     revokeOtherLoginSessions: vi.fn() as never,
     provisionCliKey: vi.fn() as never,
-    findExistingCliKey: vi.fn() as never,
     refreshAccessToken: vi.fn() as never,
     getPersistableSession: vi.fn(() => null),
     getSessionRevision: vi.fn(() => 0),
@@ -184,7 +183,7 @@ function trustedEvent(url = 'http://localhost:5173/', senderId = 101) {
 }
 
 type ChatIpcOverrides = Partial<Pick<Parameters<typeof registerIpcHandlers>[0],
-  'accountCredentialsForSite' | 'realmAccounts' | 'accountWork' | 'accountSessionReady' | 'announcementReads' | 'acceleration' | 'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'replyWindowClose' | 'takeExternalDeepLink'>>
+  'accountCredentialsForSite' | 'realmAccounts' | 'accountWork' | 'accountSessionReady' | 'announcementReads' | 'acceleration' | 'chatKeyStore' | 'chatCredentials' | 'chatService' | 'imageService' | 'aiAssets' | 'xingmangAiSkill' | 'savedAccounts' | 'getWindowCapabilities' | 'replyWindowClose' | 'takeExternalDeepLink' | 'onRendererError'>>
 
 function updaterStub(): UpdaterService {
   const state = {
@@ -1960,6 +1959,25 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.updateStoredConfig).not.toHaveBeenCalled()
     })
 
+    it('carries the crash-reporting preference through in both directions', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, crashReporting: false }))
+        .resolves.toMatchObject({ crashReporting: false })
+      expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, crashReporting: false })
+      await expect(handler(trustedEvent(), { version: 2, crashReporting: true }))
+        .resolves.not.toHaveProperty('crashReporting')
+    })
+
+    it('rejects a crash-reporting value that is not a boolean', async () => {
+      const { service } = register()
+      const handler = electronMocks.handlers.get('settings:save')!
+
+      await expect(handler(trustedEvent(), { version: 2, crashReporting: 'off' })).rejects.toThrow()
+      expect(service.updateStoredConfig).not.toHaveBeenCalled()
+    })
+
     it('accepts a fully valid settings payload and trims the workspace', async () => {
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
@@ -3205,6 +3223,24 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
 
       expect(() => handler(trustedEvent(), { message: 'Boom', context: 'x'.repeat(257) })).toThrow('错误上下文格式错误')
+    })
+
+    it('forwards the validated payload to the host, never the raw ipc value', () => {
+      const onRendererError = vi.fn()
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      handler(trustedEvent(), { message: '  Boom  ', stack: 'at foo()', context: 'v2', extra: 'ignored' })
+      expect(onRendererError).toHaveBeenCalledWith({ message: 'Boom', stack: 'at foo()', context: 'v2' })
+    })
+
+    it('does not call the host when the payload was rejected', () => {
+      const onRendererError = vi.fn()
+      register(undefined, undefined, undefined, undefined, undefined, undefined, { onRendererError })
+      const handler = electronMocks.handlers.get('runtime-logs:renderer-error')!
+
+      expect(() => handler(trustedEvent(), { message: '' })).toThrow('错误消息格式错误')
+      expect(onRendererError).not.toHaveBeenCalled()
     })
   })
 

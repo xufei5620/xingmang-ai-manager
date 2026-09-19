@@ -1,6 +1,8 @@
 export type PlatformThemePreference = 'system' | 'light' | 'dark'
 export type PlatformNotificationKind = 'install' | 'balance' | 'task'
-export type PlatformPrivacyPreference = 'crashReports' | 'anonymousUsage'
+// 崩溃上报不再是这里的偏好：它现在是 AppSettings.crashReporting（settings.json），
+// 因为主进程要在窗口和这套系统界面服务存在之前就决定上不上报。
+export type PlatformPrivacyPreference = 'anonymousUsage'
 export interface PlatformNotificationPreferences {
   install: boolean
   balance: boolean

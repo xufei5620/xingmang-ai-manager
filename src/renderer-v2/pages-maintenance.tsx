@@ -1762,29 +1762,12 @@ export function SettingsPage({
         <>
           {row(
             '崩溃自动上报',
-            '仅保存你的偏好。此版本没有自动上传服务；错误日志留在本机，可先预览再手动分享',
-            systemApi && systemState ? (
-              <Switch
-                aria-label="崩溃自动上报偏好"
-                checked={systemState.preferences.privacy?.crashReports ?? false}
-                disabled={Boolean(operation.busy)}
-                onChange={(enabled) =>
-                  void operation.execute(
-                    'privacy',
-                    async () =>
-                      setSystemState(
-                        await systemApi.setPrivacyPreference(
-                          'crashReports',
-                          enabled,
-                        ),
-                      ),
-                    '偏好已保存在本机，没有上传报告',
-                  )
-                }
-              />
-            ) : (
-              <UnsupportedControl label="未开启自动上传" />
-            ),
+            '应用出错时自动回传错误堆栈和版本、系统信息，帮助我们更快修好；不包含你的账号、密钥、文件路径和聊天内容',
+            <Switch
+              aria-label="崩溃自动上报"
+              checked={settings.crashReporting !== false}
+              onChange={(enabled) => void update({ crashReporting: enabled })}
+            />,
           )}
           {row(
             '使用统计',

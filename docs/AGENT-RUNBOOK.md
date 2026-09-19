@@ -83,7 +83,7 @@ gh auth status     # 必须已登录，且对本仓库有 write 权限（能评�
 npm test 2>&1 | tail -5    # 记下失败数
 ```
 
-**当前基线**（2026-08-10 校准）：**三平台 vitest 应全绿**（0 失败；平台门控用例显示 skipped，Windows 与 mac/Linux 跳过的是不同批）。`quality.yml` 的 windows / macos / linux 三个 test job 常驻验证这一点；Windows 走 `npm run test:windows`（串行 + 30s 超时，为消除 Defender 扫描导致的假超时）。
+**当前基线**（2026-08-10 校准）：**三平台 vitest 应全绿**（0 失败；平台门控用例显示 skipped，Windows 与 mac/Linux 跳过的是不同批）。`quality.yml` 的 windows / macos / linux 三个 test job 常驻验证这一点；`npm test` 本身就是串行 + 30s 超时（为消除 Defender 扫描导致的假超时），三平台跑的是同一条命令。
 
 - 历史上的「Windows 9 失败 / Linux 1 失败」基线已随批次 0 与 `sameLocalPathIdentity` 重写全部清零，相关旧表述作废。
 - 耗时差异仍在：**Windows 因 Defender 实时扫描明显慢于 Linux**，不是卡死。

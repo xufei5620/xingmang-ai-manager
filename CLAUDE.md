@@ -50,9 +50,10 @@
 
 ```bash
 npm run typecheck   # 四连检：根 tsconfig（src）+ 主进程 tsconfig + electron 测试 tsconfig + renderer-v2 tsconfig
-npm test            # vitest（electron+src）+ node --test（scripts/e2e）
+npm test            # test:vitest（electron+src，关文件级并行 + 30s 超时）+ test:scripts + test:browser
+npm run test:scripts    # 单跑 scripts/*.test.cjs（构建、CI、发布脚本）
+npm run test:browser    # 单跑 e2e 里随 npm test 走的两个浏览器套件（串行起 Chromium）
 npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 会执行
-npm run test:windows    # Windows 备用：关文件级并行 + 30s 超时，专治 Defender 引发的超时失败
 npm run compile     # 默认构建 renderer-v2 与对应 canvas token，再清理 + vite build + tsc + 压缩
 npm run compile:legacy  # 显式构建 React 18 旧回滚界面（已冻结，只为回滚保留）
 npm run dev         # 默认启动 renderer-v2；内部先构建 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
