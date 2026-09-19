@@ -76,6 +76,26 @@ export function connectionReady(
   return provider !== 'gemini' || config.authType === 'gemini-api-key'
 }
 
+export type CodexDesktopUpdateKind = 'latest' | 'installable' | 'store-current' | 'unknown'
+
+/**
+ * OpenAI's official MSIX feed can sit ahead of both the Microsoft Store
+ * rollout and the domestic sideload mirror this app installs from, so
+ * `updateAvailable` on its own does not mean anything can be installed.
+ * After a Store update it reads as a stale nag on a row whose update button
+ * has no package to fetch. Only a mirror build newer than the installed one
+ * is actionable; an official version the mirror has not synced yet is
+ * `store-current`, and a mirror probe that said nothing is `unknown`.
+ */
+export function codexDesktopUpdateKind(
+  status: Pick<DesktopAppStatus, 'updateState' | 'mirrorUpdateAvailable'>,
+): CodexDesktopUpdateKind {
+  if (status.updateState === 'latest') return 'latest'
+  if (status.updateState !== 'available') return 'unknown'
+  if (status.mirrorUpdateAvailable === true) return 'installable'
+  return status.mirrorUpdateAvailable === false ? 'store-current' : 'unknown'
+}
+
 export function presentTools(
   snapshot: ToolboxSnapshot,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
@@ -92,9 +112,13 @@ export function presentTools(
     const version = id === 'codexDesktop' ? (status as DesktopAppStatus).appVersion ?? status.version : status.version
     // 桌面端走的是镜像分发而不是 npm,名单管不到它,所以这里只取 CLI 的建议。
     const versionAdvice = id === 'codexDesktop' ? null : snapshot.system.clis[id].versionAdvice ?? null
+    // 桌面端只有镜像真的有新包才算「可更新」;官方清单领先商店时按下「更新」什么也装不上。
+    const updateAvailable = id === 'codexDesktop'
+      ? codexDesktopUpdateKind(status as DesktopAppStatus) === 'installable'
+      : status.updateAvailable === true
     result.push({ id, provider, name: definition.name, vendor: definition.vendor, status, source,
       model: config.model, configured: connectionReady(config, provider, storage),
-      updateAvailable: status.updateAvailable === true, currentVersion: version,
+      updateAvailable, currentVersion: version,
       latestVersion: status.latestVersion ?? null, versionAdvice,
       error: status.detectionFailed ? status.detectionError ?? '工具检测没有完成' : null })
   }
