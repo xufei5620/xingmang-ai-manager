@@ -163,7 +163,7 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts.test, 'npm run test:vitest && npm run test:node')
   assert.equal(scripts['test:v2'], 'npm run test:v2:vitest && npm run test:v2:browser')
 
-  for (const [script, count] of [['test:vitest', 2], ['test:v2:browser', 2]]) {
+  for (const [script, count] of [['test:vitest', 2]]) {
     for (let index = 1; index <= count; index += 1) {
       assert.ok(shardCommands.includes(`npm run ${script}:${index}`), `the matrix must dispatch ${script}:${index}`)
     }
@@ -177,18 +177,17 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/2')
   assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/2')
 
-  // test:v2:browser has a hand-written file list, so its halves are checked by
-  // reconstructing the list instead: every file exactly once, no file invented.
-  const files = (name) => scripts[name].split(/\s+/).filter((token) => /\.mjs$/.test(token))
-  const whole = files('test:v2:browser')
-  const halves = [...files('test:v2:browser:1'), ...files('test:v2:browser:2')]
-
-  assert.ok(whole.length > 0, 'test:v2:browser must still name its suites')
-  assert.deepEqual([...halves].sort(), [...whole].sort(), 'the browser halves must cover test:v2:browser exactly')
-  assert.equal(new Set(halves).size, halves.length, 'no browser suite may run in both halves')
-  for (const name of ['test:v2:browser', 'test:v2:browser:1', 'test:v2:browser:2']) {
-    assert.match(scripts[name], /--test-concurrency=1/, `${name} must keep its suites serialised`)
-  }
+  // test:v2:browser is dispatched whole, and must stay that way. Its files each
+  // build a Vite dev server on the same `configFile: false` root, so they share
+  // one on-disk node_modules/.vite dependency cache that the earlier files warm
+  // for the later ones. Split across runners, app-check.mjs — which runs last
+  // and benefits most — got a cold cache and blew its 90s fixture mount budget
+  // on a mid-run re-optimisation.
+  assert.ok(shardCommands.includes('npm run test:v2:browser'), 'the matrix must dispatch test:v2:browser whole')
+  assert.equal(scripts['test:v2:browser:1'], undefined, 'test:v2:browser must not be split across runners')
+  assert.match(scripts['test:v2:browser'], /--test-concurrency=1/, 'the browser suites must stay serialised')
+  assert.ok(scripts['test:v2:browser'].split(/\s+/).filter((token) => /\.mjs$/.test(token)).length > 0,
+    'test:v2:browser must still name its suites')
 
   // test:node is not sharded; it just has to still be dispatched somewhere.
   assert.ok(shardCommands.includes('npm run test:node'), 'the matrix must dispatch test:node')

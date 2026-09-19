@@ -96,13 +96,17 @@ jobs:
           # browser one is split further.
           - shard: renderer-v2
             command: npm run test:v2:vitest
-          # app-check.mjs is half the browser suite on its own (242s against
-          # 258s for the other eight measured together), which is why the split
-          # is one file against the rest rather than four against five.
-          - shard: renderer-v2-browser-1
-            command: npm run test:v2:browser:1
-          - shard: renderer-v2-browser-2
-            command: npm run test:v2:browser:2
+          # Deliberately NOT split further, even though app-check.mjs is half
+          # of it on its own. Every file here builds a Vite dev server with the
+          # same `configFile: false` root, so they share one on-disk
+          # node_modules/.vite dependency cache and the earlier files warm it
+          # for the later ones — app-check.mjs runs last and inherits all of
+          # it. Splitting them across runners gave app-check a cold cache, and
+          # a mid-run re-optimisation then blew the 90s fixture mount budget on
+          # the NewAPI announcement-collection test (run 35420361508). The
+          # suite is ~10 minutes whole, which still clears the target.
+          - shard: renderer-v2-browser
+            command: npm run test:v2:browser
     name: windows-test (${{ matrix.shard }})
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
