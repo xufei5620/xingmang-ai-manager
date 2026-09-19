@@ -8,7 +8,7 @@
 - 不要往这里写计数（多少个模块 / 用例 / 通道）和行号。计数会过期，行号会漂移。
   引用代码位置一律用符号名（函数名、常量名），grep 一次就到，且永不过期。
 - 会随阶段变化的内容放第 10 节，或搬进 .claude/rules/（按路径触发）与 docs/（按需读）。
-- 目标：控制在 280 行以内（当前 279）。官方建议 200 行，但第 4 节 I1-I15 与第 5 节 T1-T13
+- 目标：控制在 280 行上下。官方建议 200 行，但第 4 节 I1-I15 与第 5 节 T1-T13
   占了一半篇幅，它们是这个仓库最不该丢的资产，不压缩。要加新内容，先想能不能放 docs/ 或 rules/。
 -->
 
@@ -134,9 +134,9 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 
 **T2. 给 `ProviderId` 加第 5 个 CLI → 改动点已收口，编译器/测试会带你走完。**
 
-顺序：`catalog.ts` 的 `providerIds` / `cliCatalog` / `managedCliKeyProfiles` 三处 → `config-files.ts` 六个 `switch`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ **`src/provider-registry.ts` 的两张 rank 表**（概览序 codex/claude/grok/gemini 与管理序 codex/claude/gemini/grok，两种顺序是有意为之、各自只定义一次；`Record<ProviderId, number>` 内联字面量，漏键/错键是编译错 TS2741/TS2353，`provider-registry.test.ts` 的覆盖断言在纯测试路径下也会红）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts` 的 `providers`、`ProviderTabs.tsx` 的 labels、`PluginsPage.tsx` 的来源标签等，全是编译错）。
+顺序：`catalog.ts` 的 `providerIds` / `cliCatalog` / `managedCliKeyProfiles` 三处 → `config-files.ts` 六个 `switch`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ **`src/provider-registry.ts` 的两张 rank 表**（概览序 claude/codex/gemini/grok 与管理序 codex/claude/gemini/grok，差异只在头两位、是有意为之，各自只定义一次；`Record<ProviderId, number>` 内联字面量，漏键/错键是编译错 TS2741/TS2353，`provider-registry.test.ts` 的覆盖断言在纯测试路径下也会红）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts` 的 `providers`、`ProviderTabs.tsx` 的 labels、`PluginsPage.tsx` 的来源标签等，全是编译错）。
 
-v2 渲染层同样已收口：`src/renderer-v2/registry/tools.ts` 的 `ToolDef.id` 是 `ProviderId | 'codexDesktop'`，`officialAccountNames` 是无 default 的 `Record<ProviderId, string | null>`，npm 包名与配置目录名从 `catalog.ts` 派生，漏键是编译错，`registry/tools.test.ts` 另有覆盖断言（R-S11）。
+v2 渲染层同样已收口，且**只有一套展示顺序**（v3.1.1 起，以 `registry/tools.ts` 的 `tools` 数组次序为准，`registry/tools.test.ts` 钉住；上面那两套顺序只服务已冻结的 legacy 树）：`src/renderer-v2/registry/tools.ts` 的 `ToolDef.id` 是 `ProviderId | 'codexDesktop'`，`officialAccountNames` 是无 default 的 `Record<ProviderId, string | null>`，npm 包名与配置目录名从 `catalog.ts` 派生，漏键是编译错，`registry/tools.test.ts` 另有覆盖断言（R-S11）。
 
 历史包袱：这里曾有 5 处编译器沉默点（各页面自写 provider 联合类型/字面量数组），已随 #32 全部收口进 registry。**新的展示顺序数组只能定义在 registry 里，不要在页面里写字面量**。遗留手工点：概览页 `Dashboard.tsx` 的「N/5 个工具已安装」分母仍是硬编码。
 

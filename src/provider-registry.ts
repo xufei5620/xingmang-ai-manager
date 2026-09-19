@@ -16,7 +16,7 @@ function buildProviderOrder(rank: Record<ProviderId, number>): readonly Provider
   return providerIds.filter((id) => id in rank).sort((a, b) => rank[a] - rank[b])
 }
 
-// 概览页（Dashboard）卡片顺序：Codex 最先展示，其后 Claude / Grok / Gemini。
+// 概览页（Dashboard）卡片顺序：Claude / Codex / Gemini / Grok。
 export const dashboardProviderIds: readonly ProviderId[] = buildProviderOrder({
   claude: 0,
   codex: 1,
@@ -25,8 +25,9 @@ export const dashboardProviderIds: readonly ProviderId[] = buildProviderOrder({
 })
 
 // 管理类页面共用顺序：安装维护 / 配置备份 / MCP / Skills / ProviderTabs（含由它派生的会话页）。
-// 与概览页的唯一差异是 Gemini 和 Grok 互换位置——两套顺序都是既有 UI 事实，本次重构只是把
-// 分散在各文件里的字面量数组收口到这一处，不改变任何一处已渲染的顺序。
+// 与概览页的唯一差异是 Codex 和 Claude 互换位置——两套顺序都是既有 UI 事实，收口到这一处时
+// 没有改动任何一处已渲染的顺序。这两套顺序只服务于已冻结的 legacy 回滚界面；renderer-v2 自
+// v3.1.1 起统一成单一顺序，以 src/renderer-v2/registry/tools.ts 的 tools 数组为准。
 export const managementProviderIds: readonly ProviderId[] = buildProviderOrder({
   codex: 0,
   claude: 1,

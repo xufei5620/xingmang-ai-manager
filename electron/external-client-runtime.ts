@@ -286,6 +286,12 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
         try {
           const canonical = await verifyPath(candidate, 'directory')
           const info = await verifyPath(path.posix.join(canonical, 'Contents', 'Info.plist'), 'file')
+          // `systemOptions()` defaults to trustedOnly for the Windows inventory probe,
+          // where it resolves the executable from a trusted system directory and rejects
+          // user-writable argument paths. On POSIX runCommand only swaps the environment
+          // for that flag and drops the path checks silently, so leaving it on here would
+          // advertise a guarantee macOS never gets. Every darwin probe passes the already
+          // sanitized trusted environment explicitly and turns the flag off.
           const result = await execute({ executable: '/usr/bin/plutil', argv: ['-convert', 'json', '-o', '-', info] }, { ...systemOptions(), trustedOnly: false })
           const data = record(JSON.parse(result.stdout) as unknown)
           if (definition.bundleId && data.CFBundleIdentifier !== definition.bundleId) throw new Error('应用的 bundle identifier 与官方客户端不一致')
@@ -293,7 +299,7 @@ export function createExternalClientRuntime(options: ExternalClientRuntimeOption
           // checks the entire application; no guessed Team ID is used as proof.
           await execute({ executable: '/usr/sbin/spctl', argv: ['--assess', '--type', 'execute', canonical] }, { ...systemOptions(), trustedOnly: false, timeoutMs: 20_000 })
           if (tool === 'workbuddy') await execute({ executable: '/usr/bin/codesign', argv: darwinDeveloperIdVerificationArgv('FN2V63AD2J', canonical, { deep: true, bundleIdentifier: definition.bundleId }) }, { ...systemOptions(), trustedOnly: false, timeoutMs: 20_000 })
-          const processes = await execute({ executable: '/bin/ps', argv: ['-axo', 'comm='] }, systemOptions())
+          const processes = await execute({ executable: '/bin/ps', argv: ['-axo', 'comm='] }, { ...systemOptions(), trustedOnly: false })
           const running = processes.stdout.split(/\r?\n/).some((line) => line.trim().startsWith(`${canonical}/Contents/MacOS/`))
           clients.push({ tool, path: canonical, version: versionValue(data.CFBundleShortVersionString), running })
           delete errors[tool]

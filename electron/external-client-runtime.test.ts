@@ -442,6 +442,13 @@ describe('macOS external desktop lifecycle', () => {
     await f.runtime.launch('workbuddy')
     expect(f.execute).toHaveBeenCalledWith({ executable: '/usr/bin/open', argv: ['-a', '/Applications/WorkBuddy.app'] }, expect.any(Object))
   })
+  it('never claims trustedOnly on darwin, where runCommand drops the path checks silently', async () => {
+    const f = macFixture()
+    await f.runtime.scan()
+    await f.runtime.launch('workbuddy')
+    expect(f.execute.mock.calls.length).toBeGreaterThan(0)
+    for (const [, options] of f.execute.mock.calls) expect(options?.trustedOnly).toBe(false)
+  })
   it('reports missing apps without inventing an automatic macOS installer', async () => {
     const f = macFixture()
     const status = (await f.runtime.scan())[1]
