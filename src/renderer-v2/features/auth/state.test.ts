@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { authErrorMessage, parseInviteCode, parseRecoveryCode, remainingCooldown, validateRegistration, type RegistrationDraft } from './state'
-import { resolveGuideReadiness } from './StartGuide'
+import { guideOfficialLoginRequired, resolveGuideReadiness } from './StartGuide'
 
 describe('v2 auth recovery boundaries', () => {
   it('extracts only a single nonblank HTTP reset token without opening the link', () => {
@@ -28,6 +28,29 @@ describe('v2 auth recovery boundaries', () => {
     expect(validateRegistration({ ...draft, username: '', email: '' }, false)).toHaveProperty('username')
     expect(validateRegistration({ ...draft, username: '', email: '' }, false)).toHaveProperty('email')
     expect(validateRegistration({ ...draft, password: 'a'.repeat(21), confirm: 'a'.repeat(21) }, false)).toEqual({ password: '密码不能超过 20 位' })
+  })
+  it('accepts every username the account server accepts and only caps its length', () => {
+    const draft: RegistrationDraft = { username: 'ab', email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: '', agreed: true }
+    expect(validateRegistration(draft, false)).toEqual({})
+    expect(validateRegistration({ ...draft, username: 'a' }, false)).toEqual({})
+    expect(validateRegistration({ ...draft, username: 'a'.repeat(20) }, false)).toEqual({})
+    expect(validateRegistration({ ...draft, username: 'a'.repeat(21) }, false)).toEqual({ username: '用户名不能超过 20 位' })
+    expect(validateRegistration({ ...draft, username: '   ' }, false)).toEqual({ username: '请填写用户名' })
+  })
+  it('tells an empty confirmation apart from a mismatched one', () => {
+    const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', confirm: '', code: '', invite: '', agreed: true }
+    expect(validateRegistration(draft, false)).toEqual({ confirm: '请再次输入密码' })
+    expect(validateRegistration({ ...draft, confirm: 'other-password' }, false)).toEqual({ confirm: '两次密码不一致' })
+  })
+  it('reads an invitation code out of a poster link that carries no scheme', () => {
+    expect(parseInviteCode('example.test/sign-up?aff=6B4j')).toBe('6B4j')
+    expect(parseInviteCode('aff=6B4j')).toBe('6B4j')
+    expect(parseInviteCode('example.test/sign-up')).toBe('')
+    const draft: RegistrationDraft = { username: 'test-user', email: 'a@example.test', password: 'long-password', confirm: 'long-password', code: '', invite: 'example.test/sign-up?aff=6B4j', agreed: true }
+    expect(validateRegistration(draft, false)).toEqual({})
+    expect(validateRegistration({ ...draft, invite: 'example.test/sign-up' }, false)).toEqual({ invite: '邀请链接中没有邀请码，请检查后重试' })
+    expect(validateRegistration({ ...draft, invite: 'a'.repeat(33) }, false)).toEqual({ invite: '邀请码不能超过 32 位' })
+    expect(validateRegistration({ ...draft, invite: 'a'.repeat(32) }, false)).toEqual({})
   })
   it('accepts common and custom-domain mailboxes instead of restricting registration to QQ', () => {
     for (const email of ['person@qq.com', 'person@163.com', 'person@gmail.com', 'person@mail.example.org']) {
@@ -95,6 +118,22 @@ describe('v2 onboarding readiness', () => {
     expect(resolveGuideReadiness('claude', { id: 'claude', installed: true, configured: true, source: 'account' }, true).prepared).toBe(false)
     expect(resolveGuideReadiness('claude', { id: 'claude', installed: true, configured: true, source: 'unknown', runtimeReady: true }, true).connected).toBe(false)
     expect(resolveGuideReadiness('codexDesktop', { id: 'codexDesktop', installed: true, configured: true, source: 'account', supported: false }, true).prepared).toBe(false)
+  })
+  it('does not call an official Codex connected before ChatGPT has been signed in', () => {
+    const codex = { id: 'codex' as const, installed: true, configured: true, source: 'official' as const, runtimeReady: true }
+    expect(resolveGuideReadiness('codex', { ...codex, officialLoginRequired: true }, true).connected).toBe(false)
+    expect(resolveGuideReadiness('codex', codex, true).connected).toBe(true)
+    const desktop = { id: 'codexDesktop' as const, installed: true, configured: true, source: 'official' as const }
+    expect(resolveGuideReadiness('codexDesktop', { ...desktop, officialLoginRequired: true }, true)).toEqual({ prepared: true, connected: false })
+    expect(resolveGuideReadiness('codexDesktop', desktop, true)).toEqual({ prepared: true, connected: true })
+  })
+  it('only reads an official login state out of a config that actually records one', () => {
+    expect(guideOfficialLoginRequired('codex', 'official', { codexAuthMode: null })).toBe(true)
+    expect(guideOfficialLoginRequired('codex', 'official', { codexAuthMode: 'apikey' })).toBe(true)
+    expect(guideOfficialLoginRequired('codex', 'official', undefined)).toBe(true)
+    expect(guideOfficialLoginRequired('codex', 'official', { codexAuthMode: 'chatgpt' })).toBe(false)
+    expect(guideOfficialLoginRequired('codex', 'account', { codexAuthMode: null })).toBe(false)
+    for (const provider of ['claude', 'gemini', 'grok'] as const) expect(guideOfficialLoginRequired(provider, 'official', { codexAuthMode: null })).toBe(false)
   })
   it('requires Node, Python and the installed CLI for the Gemini route', () => {
     const tool = { id: 'gemini' as const, installed: true, configured: true, source: 'account' as const, runtimeReady: true, pythonReady: false }
