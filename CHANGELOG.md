@@ -26,6 +26,7 @@
 - 无签名 Windows 发布入口 `npm run release:build:unsigned` 改为与签名入口共用 `scripts/run-release-build.cjs` 的同一份门禁步骤表；此前它只做 `compile + electron-builder`，前置检查、类型检查、单测、冒烟、fuse 加固、ASAR 篡改、`latest.yml`/SHA-512/blockmap 一步都不跑（审查总表 M-01）。无签名模式下只跳过 Authenticode 签名主体比对，并在日志里打印跳过原因。
 - 新增 `npm run release:verify:unsigned`：无签名模式下也能在本地校验 `latest.yml` 结构、文件大小、SHA-512 与 blockmap。
 - 删除只认 legacy `.app-shell` 选择器的 `e2e/electron-smoke.mjs`；发布门禁改跑 CI 同样在跑的 `e2e/electron-ci-smoke.mjs`，并由 `scripts/ci-workflow-config.test.cjs` 钉住「门禁跑的冒烟脚本必须也在 Windows 必需作业里跑」。
+- 修复 v2 聊天页每次渲染都把全部会话正文拼成大字符串重新搜索：过滤改为 `useMemo`，搜索框为空时不扫正文，非空时按会话对象缓存可搜索文本，流式输出只重扫被分片改动的那个会话（R-S5）。
 
 ## 0.2.6 - 2026-09-19
 
