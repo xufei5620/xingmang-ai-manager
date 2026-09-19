@@ -38,14 +38,15 @@ export interface RelaySite {
 // mutated by accident (display-only there; every security decision reads the
 // main-process copy).
 //
-// solov and sub2api deliberately share the same relay domain and the same
-// providerBaseUrls object (by reference, not a copy) -- they are aliases for
-// the same account-backed relay, retained so existing settings continue to
-// resolve. Since 2026-08-10 that shared relay
-// domain is xm.solov.cc (the new-api instance itself), unifying CLI traffic
-// with the account backend. catalog.ts remains the single source of truth
-// for the fixed per-CLI relay URLs either way (T2's rank-table precedent:
-// derive, never duplicate literals).
+// Until D-10 this array also carried a 'sub2api' entry that was a
+// field-for-field duplicate of 'solov' (same domain, same providerBaseUrls
+// object, same label) -- an alias kept so older settings files still
+// resolved. A duplicate entry is not what keeps those files working, the id
+// mapping below is, so the entry is gone and only the mapping remains.
+// Since 2026-08-10 the xm relay domain is xm.solov.cc (the new-api instance
+// itself), unifying CLI traffic with the account backend. catalog.ts remains
+// the single source of truth for the fixed per-CLI relay URLs either way
+// (T2's rank-table precedent: derive, never duplicate literals).
 export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
   {
     id: 'solov',
@@ -56,15 +57,6 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
     // 中转也统一切到 xm,见 catalog.ts)。中转连通性探测不借用
     // websiteUrl,走 relayApiProbeBaseUrl(见下)——今天两者恰好同域,
     // 但探测必须永远跟着 CLI 实际调用的域走,不跟营销页走。
-    websiteUrl: 'https://xm.solov.cc',
-    keysPageUrl: 'https://xm.solov.cc/keys',
-    accountBackend: 'new-api',
-    accountBaseUrl: 'https://xm.solov.cc',
-  },
-  {
-    id: 'sub2api',
-    label: '星芒AI（账号登录）',
-    providerBaseUrls,
     websiteUrl: 'https://xm.solov.cc',
     keysPageUrl: 'https://xm.solov.cc/keys',
     accountBackend: 'new-api',
@@ -89,6 +81,15 @@ export const relaySites: readonly [RelaySite, ...RelaySite[]] = [
 // Canonical browser fallbacks for the two legal documents. The primary UI
 // renders their public /api/* Markdown payloads inside the app; these URLs
 // remain allowlisted for the explicit "在浏览器打开" fallback only.
+//
+// D-11: 这两份文档对所有账号恒定指向 xm，而下面的 resolveSupportServiceUrl
+// 却按 realm 分客服 —— 这个不对称是有意的，不是漏配。协议与隐私政策是同一
+// 家运营方的同一份文本，两个账号体系共用；客服企微则是两拨人在值守，必须分
+// 开。api 账号侧的后端本身就把 getLegalDocument 标成 unsupported
+// (sub2api-relay-backend.ts)，realm-account-service.ts 因此把它恒定路由到
+// xm 的公共客户端，renderer 的 getLegal 也固定传 'solov'。要改成按账号取各
+// 自的协议，得先在服务端各自发布一份 —— 那超出客户端范围，别在这里凭 realm
+// 拼出一个 api 域的法律文档地址。
 export const userAgreementUrl = 'https://xm.solov.cc/user-agreement'
 export const privacyPolicyUrl = 'https://xm.solov.cc/privacy-policy'
 export const supportServiceUrl = 'https://work.weixin.qq.com/kfid/kfc3ac7eece5344c034'
@@ -116,6 +117,20 @@ export function relayApiProbeBaseUrl(site: RelaySite): string {
 export const defaultRelaySiteId: string = relaySites[0].id
 
 /**
+ * Retired site ids that older settings files may still name, mapped to the
+ * site they always denoted. 'sub2api' was a duplicate registry entry for xm
+ * (D-10), never a distinct relay: resolving it here keeps such a file
+ * loading without paying for a second entry every consumer has to special-
+ * case. A Map, not a plain object, so an untrusted id can never reach
+ * Object.prototype.
+ *
+ * Tolerant recovery only. requireRelaySite deliberately does NOT consult
+ * this map: an explicit selection that crosses an account boundary must
+ * name a live site exactly (see its own doc comment).
+ */
+const retiredRelaySiteIds = new Map<string, string>([['sub2api', 'solov']])
+
+/**
  * Resolves a persisted site id to its RelaySite, always falling back to the
  * default site for anything unrecognized -- including null/undefined (no
  * site chosen yet) and a stale id from a settings file written by a future
@@ -124,7 +139,8 @@ export const defaultRelaySiteId: string = relaySites[0].id
  */
 export function resolveRelaySite(id: string | null | undefined): RelaySite {
   if (typeof id === 'string') {
-    const found = relaySites.find((site) => site.id === id)
+    const canonical = retiredRelaySiteIds.get(id) ?? id
+    const found = relaySites.find((site) => site.id === canonical)
     if (found) return found
   }
   return relaySites[0]
@@ -157,12 +173,13 @@ export function requireRelaySite(id: unknown): RelaySite {
  * so the derivation is unit-testable without importing Electron (main.ts
  * has no test file for exactly that reason -- see CLAUDE.md T-notes).
  *
- * Deduplicated via Set: solov and sub2api share the same relay domain, so
- * their websiteUrl/keysPageUrl are literally identical strings today. The
- * allowlist is a membership set (I12 checks href full equality against it),
- * so a duplicate entry would be harmless there -- dedup here is about
- * keeping this function's own output (and its test's pinned list) minimal
- * and honest about the *distinct* URL set, not a security requirement.
+ * Deduplicated via Set: the registry has held two entries sharing one relay
+ * domain before (the sub2api alias, removed in D-10), and may again if a
+ * future site reuses an existing marketing page. The allowlist is a
+ * membership set (I12 checks href full equality against it), so a duplicate
+ * entry would be harmless there -- dedup here is about keeping this
+ * function's own output (and its test's pinned list) minimal and honest
+ * about the *distinct* URL set, not a security requirement.
  */
 export function relaySiteExternalUrls(sites: readonly RelaySite[]): string[] {
   const urls = sites.flatMap((site) => [

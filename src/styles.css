@@ -10415,6 +10415,25 @@ button:disabled {
   margin-top: var(--space-18);
 }
 
+/* Shown only when the boundary has no toast host above it -- the root mount
+   (RootShell) is exactly that case, and the export result has nowhere else
+   to go there. */
+.page-crash-notice {
+  max-width: 480px;
+  margin: var(--space-12) auto 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.page-crash-notice-success {
+  color: #7e8792;
+}
+
+.page-crash-notice-error {
+  color: var(--color-danger-icon);
+}
+
 :root[data-theme="dark"] .page-crash-icon {
   color: var(--dark-color-danger-icon);
   background: rgba(195, 67, 78, 0.14);
@@ -10423,6 +10442,14 @@ button:disabled {
 
 :root[data-theme="dark"] .page-crash-message {
   color: var(--dark-text-secondary);
+}
+
+:root[data-theme="dark"] .page-crash-notice-success {
+  color: var(--dark-text-secondary);
+}
+
+:root[data-theme="dark"] .page-crash-notice-error {
+  color: var(--dark-color-danger-icon);
 }
 
 /* ==========================================================================
