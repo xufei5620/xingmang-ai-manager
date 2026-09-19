@@ -183,6 +183,12 @@ jobs:
         # it overruns. This is the backstop for a hang that outlives even that.
         timeout-minutes: 6
         run: node e2e/window-close-smoke.mjs
+      - name: Verify dual-site account isolation with an isolated fixture
+        # The only end-to-end coverage of the two account backends (D-12). It
+        # drives three cold starts, so it budgets itself to 8 minutes; this is
+        # the backstop for a hang that outlives even that.
+        timeout-minutes: 10
+        run: node e2e/realm-account-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
       # T-G5: the three smokes below were written, documented and then never
       # wired to anything, so the only thing that ran them was a person who
@@ -228,6 +234,7 @@ jobs:
             artifacts/*.json
             artifacts/**/*.png
             artifacts/**/*.json
+            output/realm-account-review/*
           if-no-files-found: ignore
           retention-days: 7
 

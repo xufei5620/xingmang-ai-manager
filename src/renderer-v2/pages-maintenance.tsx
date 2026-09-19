@@ -289,6 +289,7 @@ export function HealthPage({
                     </Button>
                   )}
                   <Menu
+                    label={`${item.title} 的更多操作`}
                     anchor={<MoreHorizontal size={18} />}
                     items={[
                       {
@@ -314,7 +315,8 @@ export function HealthPage({
               void operation.execute(
                 'export',
                 () => api.exportDiagnostics(),
-                '导出操作已结束',
+                (result) =>
+                  result ? `诊断报告已导出：${result.outputPath}` : null,
               )
             }
           >
@@ -532,7 +534,8 @@ export function FeedbackPage({
                 void operation.execute(
                   'export',
                   () => api.exportFeedbackReport(report.id),
-                  '导出操作已结束',
+                  (result) =>
+                    result ? `诊断报告已导出：${result.outputPath}` : null,
                 )
               }
             >
@@ -947,6 +950,7 @@ export function MaintenancePage({
                     {rescan ? '重新检测' : status?.installed ? '重新安装' : '安装'}
                   </Button>
                   <Menu
+                    label={`${tool.name} 的更多操作`}
                     anchor={<MoreHorizontal size={18} />}
                     items={[
                       {

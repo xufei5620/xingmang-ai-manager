@@ -10,6 +10,13 @@ describe('renderer-v2 tool registry', () => {
     expect(new Set(tools.map(tool => tool.id)).size).toBe(tools.length);
   });
 
+  // v3.1.1 起 renderer-v2 只有这一套展示顺序（legacy 树另有概览序与管理序两套，已冻结）。
+  // 数组次序就是用户看到的次序，没有第二处定义，所以顺序只能在这里被改动。
+  it('keeps one display order for every v2 surface', () => {
+    expect(tools.map(tool => tool.id)).toEqual(['claude', 'codex', 'codexDesktop', 'gemini', 'grok']);
+    expect(tools.map(tool => tool.shortcutIndex)).toEqual(tools.map((_, index) => index + 1));
+  });
+
   it('exposes exactly one CLI entry per catalog provider', () => {
     const cliIds = tools.filter(tool => tool.kind === 'cli').map(tool => tool.id);
     expect([...cliIds].sort()).toEqual([...providerIds].sort());

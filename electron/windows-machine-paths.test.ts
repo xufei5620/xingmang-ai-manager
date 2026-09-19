@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
+  createProgramFilesAclCache,
   deriveWindowsSystemRoot,
   isTrustedWindowsMachinePath,
   pathWithinWindowsRoot,
+  programFilesAclCacheTtlMs,
   resolveWindowsKnownFolders,
   resolveWindowsMachinePaths,
   validateWindowsMachineAclSnapshot,
@@ -207,5 +209,51 @@ describe('Windows machine paths', () => {
       realpath: (candidate) => candidate,
       inspectProgramFilesAcl: () => { throw new Error('ACL unavailable') },
     })).toBe(false)
+  })
+})
+
+describe('Program Files ACL cache', () => {
+  it('reuses a verdict only inside the configured lifetime', () => {
+    const cache = createProgramFilesAclCache(60_000)
+
+    cache.write('D:\\Program Files\\Vendor', true, 1_000)
+
+    expect(cache.read('D:\\Program Files\\Vendor', 1_000)).toBe(true)
+    expect(cache.read('D:\\Program Files\\Vendor', 60_999)).toBe(true)
+    // 过期后必须回到「不知道」，让调用方重新探测 ACL：ACL 可能在这之后被放宽，
+    // 而放宽不会通知本进程。
+    expect(cache.read('D:\\Program Files\\Vendor', 61_000)).toBeNull()
+    expect(cache.read('D:\\Program Files\\Vendor', 61_001)).toBeNull()
+  })
+
+  it('remembers a rejection as well as a pass', () => {
+    const cache = createProgramFilesAclCache(60_000)
+
+    cache.write('D:\\Program Files\\Vendor', false, 0)
+
+    expect(cache.read('D:\\Program Files\\Vendor', 10)).toBe(false)
+  })
+
+  it('returns nothing for a key that was never probed', () => {
+    expect(createProgramFilesAclCache(60_000).read('D:\\Program Files\\Vendor', 0)).toBeNull()
+  })
+
+  it('expires an entry when the wall clock moves backwards', () => {
+    const cache = createProgramFilesAclCache(60_000)
+
+    cache.write('D:\\Program Files\\Vendor', true, 10_000)
+
+    // 时钟回拨（NTP 校正或用户改日期）不能把条目的寿命延长到 TTL 之外。
+    expect(cache.read('D:\\Program Files\\Vendor', 9_999)).toBeNull()
+  })
+
+  it('defaults to a bounded lifetime instead of caching forever', () => {
+    expect(programFilesAclCacheTtlMs).toBe(5 * 60_000)
+    const cache = createProgramFilesAclCache()
+
+    cache.write('D:\\Program Files\\Vendor', true, 0)
+
+    expect(cache.read('D:\\Program Files\\Vendor', programFilesAclCacheTtlMs - 1)).toBe(true)
+    expect(cache.read('D:\\Program Files\\Vendor', programFilesAclCacheTtlMs)).toBeNull()
   })
 })
