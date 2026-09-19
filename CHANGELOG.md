@@ -11,6 +11,9 @@
 
 ## Unreleased
 
+- CI 覆盖方向不再与出货方向倒挂：出货的 renderer-v2 浏览器回归（`test:v2`）和画布单测（`test:canvas`）加进 linux 作业，旧回滚界面的 10 个 `test:ui` 套件从三个平台降到只在 linux 跑一遍，`test:canvas` 从最慢、最易因 Defender 超时失败的 Windows 作业移走。`scripts/ci-workflow-config.test.cjs` 新增断言钉住这两条（M-03）。
+- `check:v2`（旧 testId 覆盖与 renderer-v2 运行时边界门禁）首次接进 CI：报告文件改为 `--report <目录>` 显式开启，不带参数时只打印计数摘要并按退出码判定，缺失的 testId 模式和越界导入直接打进日志。它此前每次运行都往 `docs/` 写三个带 `generatedAt` 时间戳的文件，必被「工作树干净」检查判死，因此从未进过 CI（T-S4）。
+- 发版门禁（`npm run release:build` 与 `release:build:unsigned`）的「全部测试」补上 `test:v2`、`test:canvas` 和 `test:ui`。此前它只跑 `npm test`（即 `vitest run electron src`），对真正装到客户机器上的 renderer-v2 界面和画布是 0 覆盖，比 CI 的 Windows 作业还弱一档（《发版前检查清单》缺口 4，与 M-03 同根因）。
 - 发版流水线签名链路加固：把签名证书导进 runner 根信任存储的步骤收窄到 `test_signing` 自签名构建，正式构建不再人为制造链信任，中间 CA 缺失、时间戳不可用这类只在干净 Windows 上暴露的缺陷不会再被 Authenticode 校验的「Valid」盖住；`windows-installer` 作业声明 `environment: release`，三个签名 secret 不再对任意分支可见（P-03、P-06）。
 - 把落地页发布链路里的生产源站信息移出公开仓库：`scripts/publish-dl-landing.cjs` 不再内置源站 IP、SSH 端口、登录用户、密钥文件名与站点根目录，改为运行时从 `DL_LANDING_*` 环境变量、命令行参数或被 `.gitignore` 忽略的 `dl-landing.config.json` 读取，缺任何一项直接报错停住；`dl-landing/nginx/` 的三份配置改为带占位符的 `.conf.example` 模板，`docs/DL-LANDING-PLAN.md` 删去具体值（P-04）。
 - 修复非管理员（默认）启动时 Node.js 兜底 MSI 安装必然失败：暂存目录改用普通用户临时目录，提权脚本自行在 Program Files 下建立仅管理员可写的目录、复制安装包并在提权侧重新校验 SHA-256 与 Authenticode 后才交给 msiexec；补上授权取消、跨账号授权等退出码的中文提示（E-S7）。

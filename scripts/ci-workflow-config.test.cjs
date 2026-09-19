@@ -168,6 +168,45 @@ test('the Linux suite type-checks and runs the common test command', () => {
   assert.equal(commands.includes('npm run test:windows'), false)
 })
 
+test('the Linux job carries the shipping renderer coverage the Windows job used to own alone', () => {
+  // M-03: test:v2 and test:canvas ran only on windows-latest, the slowest and
+  // least reliable job in the matrix, so one Defender timeout took the renderer
+  // that actually ships out of a pull request's coverage entirely.
+  const steps = workflow.jobs['linux-test'].steps
+  const commands = runSteps('linux-test')
+  const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
+
+  assert.notEqual(dirtyCheckIndex, -1, 'linux-test must still guard against a dirty working tree')
+  for (const command of ['npm run test:v2', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2']) {
+    const index = commands.indexOf(command)
+    assert.notEqual(index, -1, `linux-test must run ${command}`)
+    assert.ok(steps.findIndex((step) => step.run === command) < dirtyCheckIndex,
+      `${command} must run before the dirty-tree guard`)
+  }
+
+  // T-S4: check:v2 only earns its place in front of that guard while it stays
+  // report-free. Passing --report here would write three generatedAt-stamped
+  // files into the tree and fail every run.
+  assert.equal(packageJson.scripts['check:v2'].includes('--report'), false)
+  assert.equal(commands.some((command) => command.includes('check:v2 -- --report')), false)
+})
+
+test('the legacy rollback UI suites are verified on exactly one platform', () => {
+  // They render markup through renderToStaticMarkup and assert on the HTML, so
+  // the three platforms were answering the same question three times while the
+  // shipping renderer was answered once.
+  assert.equal(packageJson.scripts['test:node'].includes('test:ui'), false,
+    'test:ui must not ride along with test:node onto every platform')
+  assert.equal(packageJson.scripts.test.includes('test:ui'), false)
+  assert.equal(packageJson.scripts['test:windows'].includes('test:ui'), false)
+
+  const jobsRunningUi = Object.entries(workflow.jobs)
+    .filter(([, job]) => (job.steps || []).some((step) => step.run === 'npm run test:ui'))
+    .map(([name]) => name)
+
+  assert.deepEqual(jobsRunningUi, ['linux-test'])
+})
+
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {
   const macJob = workflow.jobs['macos-test']
   const commands = runSteps('macos-test')
