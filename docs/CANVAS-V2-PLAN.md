@@ -104,7 +104,7 @@ GPL/AGPL、限制许可和无可靠许可证项目仅用于形成公开行为需
 ```powershell
 npm run canvas:prepare
 npm run typecheck
-npm run test:windows
+npm test
 npm run compile
 npm run audit:production
 npm run test:canvas:visual

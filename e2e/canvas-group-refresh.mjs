@@ -14,6 +14,15 @@ try {
   await page.clock.install()
   const errors = []
   page.on('pageerror', (error) => errors.push(error.message))
+  // The run summary used to be a literal object, so it printed the same
+  // counts and `true`s no matter what the run observed. Only names pushed
+  // after the matching assertion ran, and counts read back out of the
+  // fixture, may appear in it.
+  const passedAssertions = []
+  function recordPass(name) {
+    passedAssertions.push(name)
+  }
+  let dropdownRefreshes = 0
   await page.route('**/*', (route) => new URL(route.request().url()).hostname === '127.0.0.1' ? route.continue() : route.abort())
   await page.addInitScript(() => {
     const state = window.__groupFixture = { reads: 0, prepared: [], runs: 0, saves: [], fail: false,
@@ -57,6 +66,7 @@ try {
     await expect(select.locator('option', { hasText: `fresh-${index}` })).toHaveCount(1)
     await page.keyboard.press('Escape')
     assert.equal(await page.evaluate(() => window.__groupFixture.reads), before + 1)
+    dropdownRefreshes++
   }
   await page.waitForTimeout(320)
   await page.evaluate(() => { window.__groupFixture.groups = window.__groupFixture.groups.filter((group) => group.name !== 'GPT-image2') })
@@ -66,7 +76,9 @@ try {
   await page.keyboard.press('Escape')
   await expect(image).toHaveValue('GPT-image2')
   await expect(panel.getByRole('combobox', { name: '生图默认模型' })).toHaveValue('gpt-image-2')
+  recordPass('keyboard-open-refreshes-groups')
   assert.deepEqual(await page.evaluate(() => window.__groupFixture.prepared), initial.prepared)
+  recordPass('refresh-reads-metadata-without-preparing-keys')
   await page.waitForTimeout(320)
   await page.evaluate(() => { window.__groupFixture.fail = true; window.dispatchEvent(new Event('focus')) })
   await expect(panel.getByRole('button', { name: '重试刷新分组' })).toBeVisible()
@@ -74,10 +86,12 @@ try {
   await page.evaluate(() => { window.__groupFixture.fail = false; window.__groupFixture.groups.push({ name: 'recovered', ratio: 2 }) })
   await panel.getByRole('button', { name: '重试刷新分组' }).click()
   await expect(text.locator('option', { hasText: 'recovered' })).toHaveCount(1)
+  recordPass('failed-refresh-offers-retry')
   await panel.getByRole('button', { name: '关闭生成配置' }).click()
   await page.getByRole('button', { name: '运行全部', exact: true }).click()
   await expect(page.getByText('分组「GPT-image2」已不可用，请在生成配置中重新选择', { exact: true })).toBeVisible()
   assert.equal(await page.evaluate(() => window.__groupFixture.runs), 0)
+  recordPass('unavailable-group-blocks-run')
   await expect(image).toHaveValue('GPT-image2')
   await image.selectOption('recovered')
   await expect(image).toHaveValue('recovered')
@@ -85,6 +99,7 @@ try {
   await expect(video).toHaveValue('')
   assert.deepEqual(await page.evaluate(() => window.__groupFixture.prepared), [...initial.prepared, 'recovered'])
   assert.equal(await page.evaluate(() => window.__groupFixture.saves.every((saved) => saved.nodes[0].data.prompt === '保留这段草稿')), true)
+  recordPass('selection-and-draft-survive-group-changes')
   const beforePolling = await page.evaluate(() => window.__groupFixture.reads)
   await page.clock.fastForward(30001)
   await expect.poll(() => page.evaluate(() => window.__groupFixture.reads)).toBeGreaterThan(beforePolling)
@@ -97,14 +112,17 @@ try {
     document.dispatchEvent(new Event('visibilitychange'))
   })
   await expect.poll(() => page.evaluate(() => window.__groupFixture.reads)).toBeGreaterThan(hiddenReads)
+  recordPass('foreground-polling-refreshes-groups')
   await panel.getByRole('button', { name: '关闭生成配置' }).click()
   const closedReads = await page.evaluate(() => window.__groupFixture.reads)
   await page.clock.fastForward(60001)
   assert.equal(await page.evaluate(() => window.__groupFixture.reads), closedReads)
   assert.deepEqual(await page.evaluate(() => window.__groupFixture.prepared), [...initial.prepared, 'recovered'])
+  recordPass('hidden-and-closed-polling-stays-paused')
   assert.deepEqual(errors, [])
-  console.log(JSON.stringify({ dropdownPointerRefresh: 3, keyboardRefresh: true, metadataOnly: true,
-    selectionPreserved: true, unavailableBlocksRun: true, retry: true, foregroundPolling: true, backgroundPaused: true, generatedContent: false }))
+  const observed = await page.evaluate(() => ({ reads: window.__groupFixture.reads, runs: window.__groupFixture.runs,
+    prepared: [...window.__groupFixture.prepared], saves: window.__groupFixture.saves.length }))
+  console.log(JSON.stringify({ dropdownRefreshes, ...observed, passedAssertions }))
 } catch (error) {
   console.error(await page?.locator('body').innerText().catch(() => 'page unavailable'))
   throw error

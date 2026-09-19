@@ -2,7 +2,7 @@
 // drives a real, compiled Electron build with Playwright to confirm the
 // "无限画布" nav item actually opens the isolated canvas BrowserWindow and
 // that infinite-canvas renders inside it. Not wired into package.json / CI
-// yet -- run manually via `npm run compile && node e2e/canvas-window-smoke.mjs`
+// yet -- run manually via `npm run compile && node scripts/manual-acceptance/canvas-window-smoke.mjs`
 // after a local `xingmang-canvas/web` build has been vendored into
 // dist-canvas/ (scripts/copy-canvas-assets.mjs). Modeled on
 // e2e/electron-ci-smoke.mjs's minimal codex fixture (just config.toml +
