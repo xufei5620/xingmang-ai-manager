@@ -11,6 +11,7 @@
 
 ## Unreleased
 
+- 新界面对 Codex 桌面端的「可更新」判定重建为三态：`features/tools/model.ts` 新增 `codexDesktopUpdateKind`，`presentTools` 只在 `kind === 'installable'`（官方清单有新版**且** `mirrorUpdateAvailable === true`）时置 `updateAvailable`。此前只读 `DesktopAppStatus.updateAvailable`，官方 MSIX 清单领先商店与国内镜像时，商店已更新到最新的用户会永远看到「更新」按钮和「N 个有更新」，而镜像没有包可装。legacy 的 `src/codex-desktop-update.ts` 早已做过这个判定，v2 重写时没带过来；本次在 v2 内重建而非跨 renderer 引用 legacy 文件，并补齐三态单测（R-S3）。
 - 删除中转站点表里与主站点逐字段相同的 `sub2api` 别名条目，只保留 `resolveRelaySite` / `realmForExplicitSite` 里的 `'sub2api' → 'solov'` id 映射，老配置文件照常解析到同一站点；随之删掉 `site-runtime.ts` 里专为该别名写的一致性校验，并把显式账号边界（`requireRelaySite`、站点运行时、后端注册表）改为拒绝这个已退役的 id（D-10）。
 - 在 `relay-sites.ts` 注明法律文档恒定指向主站、客服链接按账号分流是有意为之（同一份协议、两拨客服），并补测试钉住这一不对称（D-11，行为不变）。
 - 发版流水线签名链路加固：把签名证书导进 runner 根信任存储的步骤收窄到 `test_signing` 自签名构建，正式构建不再人为制造链信任，中间 CA 缺失、时间戳不可用这类只在干净 Windows 上暴露的缺陷不会再被 Authenticode 校验的「Valid」盖住；`windows-installer` 作业声明 `environment: release`，三个签名 secret 不再对任意分支可见（P-03、P-06）。

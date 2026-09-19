@@ -1,0 +1,452 @@
+{
+  "method": "TypeScript AST: JSX attributes, object properties, setAttribute; checker expands literal unions and templates. Dynamic expressions remain symbolic. Exact matches and compatible dynamic candidates are separate; forwarding props never claim coverage.",
+  "counts": {
+    "files": 332,
+    "occurrences": 374,
+    "legacyProductOccurrences": 44,
+    "legacyPatterns": 20,
+    "v2ProductOccurrences": 306,
+    "v2Patterns": 340,
+    "missingExactPatterns": 5,
+    "compatibleDynamicCandidates": 5,
+    "missingPatterns": 0
+  },
+  "legacy": {
+    "sourceFiles": 167,
+    "productOccurrences": 44,
+    "patterns": [
+      {
+        "pattern": "${props.testId}",
+        "kind": "forwarded-or-unresolved",
+        "locations": [
+          {
+            "file": "src/components/ui/Coachmark.tsx",
+            "line": 44,
+            "column": 63,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "${testId}",
+        "kind": "forwarded-or-unresolved",
+        "locations": [
+          {
+            "file": "src/components/ui/Button.tsx",
+            "line": 24,
+            "column": 92,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Button.tsx",
+            "line": 45,
+            "column": 24,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Choices.tsx",
+            "line": 24,
+            "column": 67,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Choices.tsx",
+            "line": 45,
+            "column": 83,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Choices.tsx",
+            "line": 65,
+            "column": 67,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Choices.tsx",
+            "line": 79,
+            "column": 58,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Combobox.tsx",
+            "line": 68,
+            "column": 55,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/DateRange.tsx",
+            "line": 44,
+            "column": 85,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Drawer.tsx",
+            "line": 44,
+            "column": 25,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Feedback.tsx",
+            "line": 8,
+            "column": 53,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Feedback.tsx",
+            "line": 28,
+            "column": 49,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Feedback.tsx",
+            "line": 41,
+            "column": 31,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Feedback.tsx",
+            "line": 54,
+            "column": 51,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Feedback.tsx",
+            "line": 64,
+            "column": 84,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Fields.tsx",
+            "line": 19,
+            "column": 51,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Fields.tsx",
+            "line": 47,
+            "column": 9,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Fields.tsx",
+            "line": 69,
+            "column": 58,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Fields.tsx",
+            "line": 89,
+            "column": 9,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Fields.tsx",
+            "line": 110,
+            "column": 9,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Floating.tsx",
+            "line": 161,
+            "column": 64,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Layout.tsx",
+            "line": 8,
+            "column": 95,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Layout.tsx",
+            "line": 16,
+            "column": 43,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Layout.tsx",
+            "line": 20,
+            "column": 38,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Layout.tsx",
+            "line": 24,
+            "column": 42,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Layout.tsx",
+            "line": 28,
+            "column": 51,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Layout.tsx",
+            "line": 32,
+            "column": 52,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Layout.tsx",
+            "line": 39,
+            "column": 115,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Layout.tsx",
+            "line": 47,
+            "column": 121,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Menu.tsx",
+            "line": 36,
+            "column": 82,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Popover.tsx",
+            "line": 22,
+            "column": 70,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Selection.tsx",
+            "line": 19,
+            "column": 61,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Selection.tsx",
+            "line": 60,
+            "column": 82,
+            "syntax": "jsx-attribute"
+          },
+          {
+            "file": "src/components/ui/Tooltip.tsx",
+            "line": 18,
+            "column": 75,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "account-sync-claude",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/account/AccountSwitcher.tsx",
+            "line": 166,
+            "column": 293,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "account-sync-codex",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/account/AccountSwitcher.tsx",
+            "line": 166,
+            "column": 293,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "account-sync-gemini",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/account/AccountSwitcher.tsx",
+            "line": 166,
+            "column": 293,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "account-sync-grok",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/account/AccountSwitcher.tsx",
+            "line": 166,
+            "column": 293,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "backup-preview-drawer",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/pages/BackupsPage.tsx",
+            "line": 300,
+            "column": 95,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "feedback-report-text",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/pages/FeedbackPage.tsx",
+            "line": 277,
+            "column": 104,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "guide-route-chat",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/onboarding/StartGuide.tsx",
+            "line": 129,
+            "column": 158,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "guide-route-claude",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/onboarding/StartGuide.tsx",
+            "line": 129,
+            "column": 158,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "guide-route-codex",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/onboarding/StartGuide.tsx",
+            "line": 129,
+            "column": 158,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "guide-route-codexDesktop",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/onboarding/StartGuide.tsx",
+            "line": 129,
+            "column": 158,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "guide-route-gemini",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/onboarding/StartGuide.tsx",
+            "line": 129,
+            "column": 158,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "guide-route-grok",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/onboarding/StartGuide.tsx",
+            "line": 129,
+            "column": 158,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "resource-detail-drawer",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/pages/ResourceDetails.tsx",
+            "line": 9,
+            "column": 87,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "session-detail-drawer",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/pages/SessionsPage.tsx",
+            "line": 413,
+            "column": 105,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "shell-statusbar",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/shell/AppChrome.tsx",
+            "line": 168,
+            "column": 46,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "shell-topbar",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/shell/AppChrome.tsx",
+            "line": 84,
+            "column": 38,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "start-guide",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/components/onboarding/StartGuide.tsx",
+            "line": 113,
+            "column": 35,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      },
+      {
+        "pattern": "updates-channel-unsigned",
+        "kind": "literal",
+        "locations": [
+          {
+            "file": "src/pages/UpdatePage.tsx",
+            "line": 91,
+            "column": 61,
+            "syntax": "jsx-attribute"
+          }
+        ]
+      }
+    ]
+  }
+}
