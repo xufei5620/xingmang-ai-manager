@@ -5,7 +5,7 @@ import remarkGfm from 'remark-gfm'
 import type { AiChatAsset, XingmangApi } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Confirm, Dialog, Empty, Input, Menu, Pill, Popover, SearchInput, Segment, Select, Textarea } from '../../ui'
 import { createChatApi, inspectModel, type ChatApi } from './api'
-import { chatErrorMessage, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
+import { chatErrorMessage, filterConversations, isGenerating, shouldSendOnEnter, type ChatMessage, type ChatMode } from './state'
 import { ParametersPanel } from './ParametersPanel'
 import { useChatController } from './useChatController'
 import './chat.css'
@@ -59,7 +59,7 @@ function ChatScope({ api, scope, active }: { api: ChatApi; scope: string; active
   const models = (preparation?.models ?? []).filter((model) => inspectModel(model).kind === (conversation.settings.mode === 'image' ? 'image' : 'chat'))
   const capability = conversation.settings.model ? inspectModel(conversation.settings.model) : null
   const imageCapability = capability?.kind === 'image' ? capability : null
-  const candidates = active ? chat.state.conversations.filter((item) => `${item.title} ${item.messages.map((message) => message.content).join(' ')}`.toLocaleLowerCase().includes(search.trim().toLocaleLowerCase())) : []
+  const candidates = useMemo(() => active ? filterConversations(chat.state.conversations, search) : [], [active, chat.state.conversations, search])
   const task = async (work: () => Promise<unknown>, done: string) => {
     const ticket = owner.current
     try { await work(); if (ticket === owner.current) chat.setNotice(done) }

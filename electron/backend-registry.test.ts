@@ -27,11 +27,10 @@ describe('xm-only backend registry', () => {
     assert.equal(example.calls(), 0)
   })
 
-  it('returns exactly one runtime/client for both historical aliases', () => {
+  it('returns exactly one runtime/client across repeated lookups', () => {
     const example = fixture()
-    const first = example.registry.get('sub2api')
+    const first = example.registry.get('solov')
     assert.equal(first, example.registry.get('solov'))
-    assert.equal(first, example.registry.get('sub2api'))
     assert.equal(first.accountService, example.source)
     assert.equal(first.accountService.marker, 'original-client')
     assert.equal(example.calls(), 1)
@@ -42,7 +41,9 @@ describe('xm-only backend registry', () => {
     it(`rejects unknown selections before returning or creating a client (cached=${cached})`, () => {
       const example = fixture()
       if (cached) example.registry.get('solov')
-      for (const value of [undefined, 'solov-api', 'api.solov.cc', ' sub2api', { id: 'solov' }]) {
+      // 'sub2api' is here since D-10: the retired alias is not a live site
+      // id, so it must never hand back an already authenticated xm client.
+      for (const value of [undefined, 'solov-api', 'api.solov.cc', 'sub2api', ' sub2api', { id: 'solov' }]) {
         assert.throws(() => example.registry.get(value), /未知中转站点/)
       }
       assert.equal(example.calls(), cached ? 1 : 0)
@@ -57,7 +58,7 @@ describe('xm-only backend registry', () => {
       return example.source
     })
     assert.throws(() => registry.get('solov'), /fixture-construction-failure/)
-    assert.equal(registry.get('sub2api').accountService, example.source)
+    assert.equal(registry.get('solov').accountService, example.source)
     assert.equal(calls, 2)
   })
 
@@ -79,7 +80,7 @@ describe('xm-only backend registry', () => {
     registry = createBackendRegistry(() => {
       if (nested) {
         nested = false
-        registry.get('sub2api')
+        registry.get('solov')
       }
       return example.source
     })
@@ -101,10 +102,10 @@ describe('xm-only backend registry', () => {
     assert.equal(example.registry.get('solov'), runtime)
   })
 
-  it('retains ownership context across alias lookups but not across separate registry instances', () => {
+  it('retains ownership context across repeated lookups but not across separate registry instances', () => {
     const example = fixture()
     const captured = example.registry.get('solov').identities.capture()
-    assert.doesNotThrow(() => example.registry.get('sub2api').identities.assertCurrent(captured))
+    assert.doesNotThrow(() => example.registry.get('solov').identities.assertCurrent(captured))
     const second = fixture()
     assert.throws(() => second.registry.get('solov').identities.assertCurrent(captured), /上下文无效/)
   })

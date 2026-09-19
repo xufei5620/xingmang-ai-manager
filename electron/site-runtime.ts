@@ -43,23 +43,15 @@ function validatedUrl(value: unknown, requireOrigin: boolean): URL {
  * Resolve an explicit selection; callers recovering optional settings must
  * call resolveRelaySite at that boundary first. Do not put that tolerant
  * fallback here: a future, unimplemented site must never get an xm client.
- *
- * The persisted sub2api id remains unchanged in settings. Only runtime
- * ownership is canonicalized, since both historical ids denote xm today.
- * This deliberately rejects every other site, even if added to relaySites.
+ * That includes the retired 'sub2api' id, which requireRelaySite rejects --
+ * it reaches this function only from a raw settings value, and such a value
+ * belongs on the resolveRelaySite path, not on an account boundary. Until
+ * D-10 this function carried a whole branch re-deriving that alias against
+ * the primary site; removing the duplicate registry entry removed the need
+ * for it.
  */
 export function requireSiteRuntimeDefinition(siteId: unknown): SiteRuntimeDefinition {
   const selected = requireRelaySite(siteId)
-  if (selected.id === 'sub2api') {
-    const primary = requireRelaySite('solov')
-    const primaryOrigin = validatedUrl(primary.accountBaseUrl, true).origin
-    if (validatedUrl(selected.accountBaseUrl, true).origin !== primaryOrigin
-      || providerIds.some((provider) => selected.providerBaseUrls[provider] !== primary.providerBaseUrls[provider])) {
-      const sameOrigin = validatedUrl(selected.accountBaseUrl, true).origin === primaryOrigin
-      throw new Error(sameOrigin ? '站点账号与 AI 路由配置不一致' : '历史站点别名与账号域不一致')
-    }
-    return requireSiteRuntimeDefinition('solov')
-  }
   const accountOrigin = validatedUrl(selected.accountBaseUrl, true).origin
   const providerBaseUrls = { ...selected.providerBaseUrls }
   for (const provider of providerIds) {
