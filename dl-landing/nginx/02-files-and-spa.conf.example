@@ -1,0 +1,11 @@
+# 模板：复制成同目录的 02-files-and-spa.conf 再填真实值，渲染出来的 .conf 已被 .gitignore 忽略。
+# 占位符：__SITE_ROOT__ 是站点在源站磁盘上的根目录。
+location ^~ /files/ {
+    alias __SITE_ROOT__/files/;
+    add_header Content-Disposition "attachment";
+    expires 1h;
+}
+
+location / {
+    try_files $uri $uri/ /index.html;
+}

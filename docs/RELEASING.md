@@ -112,13 +112,26 @@ npm run release:build
 
 老板决定把出包这一步搬到 CI。`.github/workflows/release-build.yml` 在 `windows-latest` 上跑的就是上面第 2 节那条完全相同的链路（它直接调用 `npm run release:build`），只是证书来自仓库 Secrets 而不是发布机磁盘。
 
-**一次性配置**：在仓库 Settings → Secrets and variables → Actions 配置三个 secret。
+**一次性配置分两步：先建受保护环境，再把 secret 配进那个环境。**
+
+**第一步：建 `release` 环境**（仓库 Settings → Environments → New environment，名字必须是 `release`）：
+
+- 勾上 **Required reviewers**，把自己加进去。以后每次跑 `release-build` 都要点一次同意，跑之前构建会停在等待审批。
+- **Deployment branches and tags** 选 **Selected branches and tags**，只加 `main`。
+
+⚠️ **这一步不能省，也不能靠 workflow 自己长出来。** `release-build.yml` 里写了 `environment: release`，但环境不存在时 GitHub 会在首次运行时**自动创建一个没有任何保护规则的同名环境**——看上去一切正常，实际上什么都没挡住。建完之后回环境页面确认两条规则都在。
+
+为什么要这么做：`release-build` 是 `workflow_dispatch`，GitHub 允许触发时指定**任意 ref**，跑的是那个 ref 上的 workflow 文件。只要签名 secret 还留在仓库级，任何有 write 权限的人推一个分支、在里面加一行把证书 base64 打印出来，再 dispatch 到那个分支，就能把签名证书和密码整个拿走。环境保护是唯一能挡住这条路的东西。
+
+**第二步：在 `release` 环境里**（不是仓库级 Secrets）配三个 secret：
 
 | Secret 名 | 内容 |
 |---|---|
 | `WIN_CSC_LINK_BASE64` | 代码签名证书 `.p12` 的 **base64 文本**（electron-builder 直接接受 base64，证书不落盘） |
 | `WIN_CSC_KEY_PASSWORD` | 该证书的密码 |
 | `XINGMANG_SIGNING_PUBLISHER` | 固定发布者名，例如 `绍兴星芒文化传媒有限责任公司` |
+
+如果这三个 secret 之前配在仓库级（Settings → Secrets and variables → Actions），**挪完之后要把仓库级那三份删掉**，否则等于没挪。
 
 把 `.p12` 转成 base64（在你自己的机器上做，不要在任何共享环境里做）：
 
@@ -158,11 +171,13 @@ Export-PfxCertificate -Cert $cert -FilePath "$HOME\xingmang-test-signing.pfx" -P
 
 `Subject` 里的 CN **必须**与 `XINGMANG_SIGNING_PUBLISHER` 完全一致，否则产物校验会因发布者不匹配而失败。
 
-**2. 配置 Secrets**：把剪贴板里的 base64 填进 `WIN_CSC_LINK_BASE64`，密码填 `WIN_CSC_KEY_PASSWORD`，发布者填 `XINGMANG_SIGNING_PUBLISHER`。
+**2. 配置 Secrets**：把剪贴板里的 base64 填进 `WIN_CSC_LINK_BASE64`，密码填 `WIN_CSC_KEY_PASSWORD`，发布者填 `XINGMANG_SIGNING_PUBLISHER`。仍然配在上面那个 `release` 环境里。
 
   **3. 触发构建**：Actions → `release-build` → Run workflow，勾上 `test_signing`，并在 `update_url` 填一个**与正式源不同的测试路径**，例如 `https://updatesnew.shenfengwl.fun/xingmang-manager/beta/`。这一项是强制的：自签名产物一旦进了正式更新源，老客户的机器不认这张证书会拒绝更新（失败方向是安全的），新装用户则会看到未知发布者警告。
 
 **4. 在测试机上验证更新链路**：把三件套传到那个 beta 路径 → 在虚拟机装上这一版 → 提升 `package.json` 版本号再跑一次构建 → 传新的三件套（顺序仍是先传包与 blockmap、最后覆盖 `latest.yml`）→ 在已装的旧版本里点「检查更新」，应能发现、下载、重启安装成功。
+
+**只有勾了 `test_signing` 的构建**才会把这张证书导进 runner 的「受信任的根证书颁发机构」，好让发布门禁要求的 `Get-AuthenticodeSignature = Valid` 能够成立。正式构建**不做**这一步：`Valid` 本身就建立在链信任上，先把证书塞进根存储再去断言它有效，等于自己给自己判卷——中间 CA 没打进 `.p12`、交叉证书缺失、时间戳服务当时不可用，这些只会在一台干净 Windows 上暴露的问题就全被盖住了，CI 全绿而客户装出来是「未知发布者」。所以正式证书第一次上 CI 时，要做好它可能直接在产物校验这一关失败的准备，那正是它该失败的地方。
 
 **5. 安装时的提示**：自签名证书未被 Windows 信任，安装时仍会有 SmartScreen 警告。若想在测试机上消除，把 `.pfx` 里的证书导入该机器的「受信任的根证书颁发机构」；**不要**在任何客户机器上这么做。
 
