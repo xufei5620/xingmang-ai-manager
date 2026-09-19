@@ -196,6 +196,37 @@ describe('ChatKeyStore', () => {
     expect(fs.readFileSync(filePath, 'utf8')).toBe('broken encrypted payload')
   })
 
+  it('stops hiding a group once its failed removal is over, instead of re-signing forever', async () => {
+    const filePath = temporaryFilePath()
+    const entry = chatKey(42, 'codex-pro', 1)
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    fs.writeFileSync(
+      filePath,
+      encodePersistedChatKeys({ version: 1, keys: [entry] }, fakeSafeStorage()),
+      'utf8',
+    )
+    const store = new ChatKeyStore(filePath, fakeSafeStorage({
+      encryptString: () => { throw new Error('OS 密钥不可用') },
+    }))
+
+    await expect(store.remove(42, 'codex-pro')).rejects.toThrow('OS 密钥不可用')
+
+    // A permanent marker would make every later visit to this group sign a new
+    // server-side token; the cached key must become visible again instead.
+    await expect(store.read(42)).resolves.toEqual([entry])
+  })
+
+  it('refuses to persist through safeStorage\'s plaintext backend', async () => {
+    const filePath = temporaryFilePath()
+    const store = new ChatKeyStore(filePath, fakeSafeStorage({
+      getSelectedStorageBackend: () => 'basic_text',
+    }))
+
+    await expect(store.read(42)).rejects.toThrow('已拒绝写入AI 聊天分组 API Key')
+    await expect(store.upsert(chatKey(42, 'codex-pro', 1))).rejects.toThrow('已拒绝写入AI 聊天分组 API Key')
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
   it('fails explicitly when OS encryption is unavailable', async () => {
     const filePath = temporaryFilePath()
     const store = new ChatKeyStore(filePath, fakeSafeStorage({
