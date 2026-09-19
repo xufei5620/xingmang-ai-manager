@@ -36,6 +36,11 @@ const fixture = async (route) => {
       : route.abort(),
   )
   await page.goto(`${origin}/e2e/v2-business-fixture.html?${route}`)
+  // First paint waits on Vite transforming the module graph on demand, which on a
+  // cold Windows runner under Defender routinely takes longer than the 5s default
+  // the assertions below rely on. Waiting for the mount separately keeps that
+  // default tight enough to catch a real regression.
+  await page.locator('#root > *').first().waitFor({ timeout: 60000 })
   return page
 }
 const calls = (page) =>
