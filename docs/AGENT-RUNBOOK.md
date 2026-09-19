@@ -148,6 +148,7 @@ gh issue list --label "env:any" --state open      # 任意平台都行
 - [ ] 它的**前置依赖已经合并**（issue 正文会写「依赖 #X」，去确认 #X 已 closed）
 - [ ] 如果它标了 `serial-only`：**确认此刻没有别人正在改同一批文件**（见下方「serial-only 铁律」）
 - [ ] 如果它标了 `needs-decision`：**停下，这条需要人来拍板，不要自己决定**。在 issue 上留言说明卡在哪个决策点，然后去领别的
+- [ ] 如果它要改的是 **legacy 回滚版**（`src/` 下除 `src/renderer-v2/` 以外的源码、`tooling/legacy-renderer/`）：**只有安全修复能领**，legacy 已于 2026-09-19 冻结，新功能与一般缺陷要改在 `src/renderer-v2/`。口径见 `CLAUDE.md` T14
 
 ### 3. 认领（防止两个 agent 撞同一个任务）
 

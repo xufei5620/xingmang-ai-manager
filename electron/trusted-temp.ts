@@ -33,6 +33,8 @@ export interface TrustedTemporaryDirectoryOptions {
   applyWindowsAcl?: ApplyWindowsAcl
   machinePaths?: WindowsMachinePaths
   inspectDirectoryOwnership?: InspectWindowsDirectoryOwnership
+  /** 测试接缝：POSIX 上核对缓存根属主时使用的 uid，缺省取 process.getuid()。 */
+  resolveUserId?: () => number | null
 }
 
 export type ApplyWindowsAcl = (directory: string, env: NodeJS.ProcessEnv) => Promise<void>
@@ -438,6 +440,49 @@ async function ensureTrustedDirectoryExclusive(
   registerTrustedManagedWindowsRoot(directory)
 }
 
+/**
+ * POSIX 上的安装缓存根是 os.tmpdir() 下的固定名字，而 /tmp 对同机其他账号可写：
+ * 目录已经存在时 mkdir(recursive) 是 no-op，同机的另一个用户可以抢先用这个名字
+ * 建目录，保留自己的属主和宽松权限，再在我们 mkdtemp 之后替换里面的条目——而
+ * 安装缓存里放的正是随后要被执行的安装包。assertPlainDirectory 只否决符号链接与
+ * 目录联接，挡不住「目录本身就是别人的」这一条，所以这里再核对属主与组/其他人
+ * 的权限位。
+ */
+export function isExclusivelyOwnedDirectory(
+  stats: Pick<fs.Stats, 'uid' | 'mode'> & { isDirectory: () => boolean },
+  uid: number | null,
+): boolean {
+  if (uid === null) return false
+  return stats.isDirectory() && stats.uid === uid && (stats.mode & 0o077) === 0
+}
+
+function currentPosixUserId(): number | null {
+  return typeof process.getuid === 'function' ? process.getuid() : null
+}
+
+/**
+ * 属主是自己但权限位偏松，多半是早期版本或别的代码用默认 umask 建出来的，
+ * 收紧回 0o700 即可；属主不是自己就无法通过任何本进程操作把它变安全，只能
+ * 放弃这个可预测的名字，改用 mkdtemp 现场生成一个随机名的根——随机名无法被
+ * 预先占位，O_EXCL 语义也保证目录是我们自己建的。
+ */
+async function ensurePosixInstallerCacheRoot(
+  cacheRoot: string,
+  platform: NodeJS.Platform,
+  resolveUserId: () => number | null,
+): Promise<string> {
+  await fs.promises.mkdir(cacheRoot, { recursive: true, mode: 0o700 })
+  assertPlainDirectory(cacheRoot, platform)
+  const uid = resolveUserId()
+  let stats = await fs.promises.lstat(cacheRoot)
+  if (uid !== null && stats.isDirectory() && stats.uid === uid && (stats.mode & 0o077) !== 0) {
+    await fs.promises.chmod(cacheRoot, 0o700)
+    stats = await fs.promises.lstat(cacheRoot)
+  }
+  if (isExclusivelyOwnedDirectory(stats, uid)) return cacheRoot
+  return fs.promises.mkdtemp(path.join(os.tmpdir(), `${INSTALLER_CACHE_DIRECTORY}-`))
+}
+
 export function trustedInstallerCacheRoot(
   _env: NodeJS.ProcessEnv = process.env,
   platform: NodeJS.Platform = process.platform,
@@ -486,9 +531,12 @@ export async function createTrustedTemporaryDirectory(
     return directory
   }
 
-  await fs.promises.mkdir(cacheRoot, { recursive: true, mode: 0o700 })
-  assertPlainDirectory(cacheRoot, platform)
-  const directory = await fs.promises.mkdtemp(path.join(cacheRoot, `${prefix}-`))
+  const trustedRoot = await ensurePosixInstallerCacheRoot(
+    cacheRoot,
+    platform,
+    options.resolveUserId ?? currentPosixUserId,
+  )
+  const directory = await fs.promises.mkdtemp(path.join(trustedRoot, `${prefix}-`))
   await fs.promises.chmod(directory, 0o700)
   return directory
 }

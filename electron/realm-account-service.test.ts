@@ -553,13 +553,29 @@ describe('automatic account discovery', () => {
     expect(f.clients.map((entry) => entry.siteId)).toEqual(['solov', 'solov'])
     expect(await f.vault.preferredLoginSite(automatic.username)).toBe('solov')
   })
-  it('tries the second account system only after definitive password rejection', async () => {
+  it('never offers the password to the other account system after a definitive rejection', async () => {
     const f = fixture()
     f.authenticationPolicy((siteId) => { if (siteId === 'solov') throw new NewApiLoginRejectedError() })
-    expect((await f.service.login(automatic)).siteId).toBe('solov-api')
-    expect(f.clients.map((entry) => entry.siteId)).toEqual(['solov', 'solov', 'solov-api'])
+    await expect(f.service.login(automatic)).rejects.toBeInstanceOf(NewApiLoginRejectedError)
+    expect(f.clients.map((entry) => entry.siteId)).toEqual(['solov', 'solov'])
     expect(f.clients[1].client.logout).toHaveBeenCalled()
-    expect(await f.vault.preferredLoginSite(automatic.username)).toBe('solov-api')
+    expect(await f.vault.preferredLoginSite(automatic.username)).toBeNull()
+  })
+  it('never offers the password to the other account system after a RealmAccountError rejection', async () => {
+    const f = fixture()
+    const attempted: RealmAccountSiteId[] = []
+    f.authenticationPolicy((siteId) => { attempted.push(siteId); throw new RealmAccountError('LOGIN_REJECTED') })
+    await expect(f.service.login(automatic)).rejects.toMatchObject({ code: 'LOGIN_REJECTED' })
+    expect(attempted).toEqual(['solov'])
+  })
+  it('sends an email identifier only to the site this machine already recorded for it', async () => {
+    const f = fixture()
+    await f.service.login({ ...login, siteId: 'solov-api' })
+    await f.service.logout()
+    const attempted: RealmAccountSiteId[] = []
+    f.authenticationPolicy((siteId) => { attempted.push(siteId); throw new NewApiLoginRejectedError() })
+    await expect(f.service.login(automatic)).rejects.toBeInstanceOf(NewApiLoginRejectedError)
+    expect(attempted).toEqual(['solov-api'])
   })
   it('keeps the remembered account preferred even when the same email and password work on both', async () => {
     const f = fixture()
@@ -594,10 +610,10 @@ describe('automatic account discovery', () => {
   it('does not send a non-email username to the email-only backend', async () => {
     const f = fixture()
     f.authenticationPolicy(() => { throw new NewApiLoginRejectedError() })
-    await expect(f.service.login({ ...automatic, username: 'short-user' })).rejects.toMatchObject({ code: 'LOGIN_REJECTED' })
+    await expect(f.service.login({ ...automatic, username: 'short-user' })).rejects.toBeInstanceOf(NewApiLoginRejectedError)
     expect(f.clients.map((entry) => entry.siteId)).toEqual(['solov', 'solov'])
   })
-  it('leaves both the active account and its last successful binding unchanged when both reject credentials', async () => {
+  it('leaves the active account and its last successful binding unchanged when the credentials are rejected', async () => {
     const f = fixture()
     await f.service.login({ ...login, siteId: 'solov-api' })
     const original = f.content()

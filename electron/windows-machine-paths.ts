@@ -33,7 +33,51 @@ export interface WindowsKnownFolderResolutionOptions {
 }
 
 let cachedMachinePaths: WindowsMachinePaths | null = null
-const programFilesAclCache = new Map<string, boolean>()
+
+/**
+ * A Program Files ACL probe costs a synchronous PowerShell launch, so its
+ * verdict is remembered rather than paid on every trusted-only execution.
+ *
+ * The lifetime is bounded because nothing invalidates the verdict on its own:
+ * the probe reads an ACL, and an ACL can be loosened after we have read it -
+ * by an installer, by a repair run, or by an administrator - without touching
+ * anything this process observes. A process that stays open for days would
+ * otherwise keep clearing an elevated launch on a directory that stopped
+ * being administrator-only hours ago. Five minutes matches the deep-signature
+ * cache in macos-codex-app.ts: long enough that a burst of scans pays one
+ * probe, short enough that a weakened ACL is noticed while the window it
+ * opens is still narrow.
+ */
+export const programFilesAclCacheTtlMs = 5 * 60_000
+
+export interface ProgramFilesAclCache {
+  read: (key: string, now: number) => boolean | null
+  write: (key: string, trusted: boolean, now: number) => void
+}
+
+export function createProgramFilesAclCache(ttlMs: number = programFilesAclCacheTtlMs): ProgramFilesAclCache {
+  const entries = new Map<string, { trusted: boolean; checkedAt: number }>()
+  return {
+    read(key, now) {
+      const entry = entries.get(key)
+      if (!entry) return null
+      const age = now - entry.checkedAt
+      // A negative age means the wall clock moved backwards (NTP correction,
+      // a user changing the date). Treat that as expired rather than letting
+      // a backwards jump extend the entry's life past the TTL.
+      if (age < 0 || age >= ttlMs) {
+        entries.delete(key)
+        return null
+      }
+      return entry.trusted
+    },
+    write(key, trusted, now) {
+      entries.set(key, { trusted, checkedAt: now })
+    },
+  }
+}
+
+const programFilesAclCache = createProgramFilesAclCache()
 
 const TRUSTED_WINDOWS_OWNER_SIDS = new Set([
   'S-1-5-18', // LocalSystem
@@ -487,8 +531,9 @@ function trustedProgramFilesPath(
   }
   if (!pathWithinWindowsRoot(realCandidate, realRoot)) return false
   const key = `${path.win32.normalize(realRoot).toLowerCase()}\0${path.win32.normalize(realCandidate).toLowerCase()}`
-  if (!options.inspectProgramFilesAcl && programFilesAclCache.has(key)) {
-    return programFilesAclCache.get(key) === true
+  if (!options.inspectProgramFilesAcl) {
+    const cached = programFilesAclCache.read(key, Date.now())
+    if (cached !== null) return cached
   }
   let trusted = false
   try {
@@ -501,7 +546,7 @@ function trustedProgramFilesPath(
   } catch {
     trusted = false
   }
-  if (!options.inspectProgramFilesAcl) programFilesAclCache.set(key, trusted)
+  if (!options.inspectProgramFilesAcl) programFilesAclCache.write(key, trusted, Date.now())
   return trusted
 }
 
