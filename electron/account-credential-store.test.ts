@@ -96,6 +96,16 @@ describe('AccountCredentialStore', () => {
     await expect(store.read()).resolves.toBeNull()
   })
 
+  it('never writes the login password through the plaintext safeStorage backend', async () => {
+    const filePath = tempFilePath()
+    const store = new AccountCredentialStore(filePath, fakeStorage({
+      getSelectedStorageBackend: () => 'basic_text',
+    }))
+    await store.save(record.identifier, record.password)
+    expect(fs.existsSync(filePath)).toBe(false)
+    await expect(store.read()).resolves.toBeNull()
+  })
+
   it('reads null from a file another OS profile encrypted (decrypt failure degrades, not throws)', async () => {
     const filePath = tempFilePath()
     const store = new AccountCredentialStore(filePath, fakeStorage())

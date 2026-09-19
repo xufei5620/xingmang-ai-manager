@@ -2,9 +2,11 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { isProviderId, resolveManagedCliKeyProfiles, type ProviderId } from './catalog'
 import type { SafeStorageLike } from './account-session-store'
+import { inspectSafeStorageBackend, safeStoragePlaintextMessage } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
+  removeSafeDataFile,
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
 
@@ -12,6 +14,7 @@ const CURRENT_VERSION = 2
 const MAX_FILE_BYTES = 64 * 1024
 const MAX_CACHED_ACCOUNTS = 16
 const FILE_LABEL = '托管 CLI API Key'
+const MAX_QUARANTINED_RECORDS = 3
 
 export interface StoredManagedCliKey {
   id: number
@@ -102,6 +105,17 @@ export function decodePersistedManagedCliKeys(
   }
 }
 
+/**
+ * Only a record the current cipher cannot decrypt, or one whose shape no
+ * longer validates, is evidence that the cache itself is unusable. Every other
+ * read failure -- a reparse component, nlink !== 1, a size overrun, a file an
+ * antivirus scanner is holding -- is transient or environmental, and must not
+ * quarantine a file that still holds up to 16 accounts' keys: doing so forces
+ * a freshly signed token per provider on the next switch, which is exactly the
+ * server-side token pile-up this cache exists to prevent.
+ */
+export class ManagedCliKeyCacheCorruptError extends Error {}
+
 export class ManagedCliKeyStore {
   private writeQueue: Promise<void> = Promise.resolve()
   private revision = 0
@@ -133,7 +147,8 @@ export class ManagedCliKeyStore {
       let existing: PersistedManagedCliKeys | null = null
       try {
         existing = await this.readRecord()
-      } catch {
+      } catch (error) {
+        if (!(error instanceof ManagedCliKeyCacheCorruptError)) throw error
         await this.quarantineCorruptRecord()
       }
       if (expectedRevision !== undefined && expectedRevision !== this.revision) return false
@@ -183,7 +198,7 @@ export class ManagedCliKeyStore {
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES)
     if (content === null) return null
     const record = decodePersistedManagedCliKeys(content, this.storage, this.siteId)
-    if (!record) throw new Error('本地托管 API Key 配置已损坏或无法解密')
+    if (!record) throw new ManagedCliKeyCacheCorruptError('本地托管 API Key 配置已损坏或无法解密')
     this.revision = Math.max(this.revision, record.revision ?? 0)
     return record
   }
@@ -195,12 +210,39 @@ export class ManagedCliKeyStore {
     } catch {
       // A missing or locked cache is still recoverable on the next save.
     }
+    await this.pruneQuarantinedRecords()
+  }
+
+  // Quarantined copies still hold real API Keys, so they are kept for support
+  // but never without a bound.
+  private async pruneQuarantinedRecords(): Promise<void> {
+    try {
+      const directory = path.dirname(this.filePath)
+      const prefix = `${path.basename(this.filePath)}.corrupt-`
+      const stale = (await fs.promises.readdir(directory))
+        .flatMap((name) => {
+          if (!name.startsWith(prefix)) return []
+          const stamp = Number(name.slice(prefix.length))
+          return Number.isSafeInteger(stamp) && stamp > 0 ? [{ name, stamp }] : []
+        })
+        .sort((left, right) => right.stamp - left.stamp)
+        .slice(MAX_QUARANTINED_RECORDS)
+      // removeSafeDataFile re-validates the path, so a symlink planted under
+      // the quarantine name is left in place rather than followed.
+      for (const entry of stale) {
+        await removeSafeDataFile(path.join(directory, entry.name), FILE_LABEL)
+      }
+    } catch {
+      // Housekeeping never blocks the save that follows.
+    }
   }
 
   private assertEncryptionAvailable(): void {
-    if (!this.storage.isEncryptionAvailable()) {
+    const backend = inspectSafeStorageBackend(this.storage)
+    if (backend === 'unavailable') {
       throw new Error('系统安全存储不可用，无法持久化托管 API Key')
     }
+    if (backend === 'plaintext') throw new Error(safeStoragePlaintextMessage('托管 API Key'))
   }
 
   private async writeRecord(record: PersistedManagedCliKeys): Promise<void> {

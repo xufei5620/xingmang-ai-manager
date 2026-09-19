@@ -42,6 +42,33 @@ test('the release build runs inside the protected release environment', () => {
   assert.equal(workflow.permissions.contents, 'read')
 })
 
+test('a dispatch input never reaches a PowerShell script as source text', () => {
+  // P-26: `${{ ... }}` inside a run block is substituted into the script before
+  // PowerShell parses it, so an input holding a single quote closes the string
+  // literal and executes the rest — on the one runner that can read the signing
+  // certificate. Anyone with write access can dispatch this workflow, so the
+  // inputs have to arrive as environment bindings and be read back as $env:.
+  for (const step of installerJob.steps) {
+    const script = String(step.run || '')
+    if (!script) continue
+    assert.doesNotMatch(
+      script,
+      /\$\{\{\s*inputs\./,
+      `${step.name || step.uses}: bind the input under env: and read $env: instead`,
+    )
+  }
+
+  const confirmStep = installerJob.steps.find((step) => /ConvertFrom-Json\)\.version/.test(String(step.run || '')))
+  assert.ok(confirmStep, 'the version confirmation must survive the rewrite')
+  assert.equal(confirmStep.env.CONFIRM_VERSION, '${{ inputs.confirm_version }}')
+  assert.match(confirmStep.run, /\$env:CONFIRM_VERSION/)
+
+  const updateFeedStep = installerJob.steps.find((step) => /自签名构建必须显式指定 update_url/.test(String(step.run || '')))
+  assert.ok(updateFeedStep, 'the production-feed refusal must survive the rewrite')
+  assert.equal(updateFeedStep.env.UPDATE_URL, '${{ inputs.update_url }}')
+  assert.match(updateFeedStep.run, /\$env:UPDATE_URL/)
+})
+
 test('the signing path is still exercised end to end', () => {
   // The hardening above must not become "stop signing": the release gate and
   // the three secrets it consumes have to stay wired up.

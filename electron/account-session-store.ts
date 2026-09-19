@@ -1,5 +1,6 @@
 import path from 'node:path'
 import type { NewApiClientService, NewApiPersistableSession } from './new-api-client'
+import { isSafeStorageUsable, type SafeStorageBackendLike } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
@@ -22,8 +23,7 @@ import {
 // Linux) or (b) being gated by whatever that store happens to support on the
 // CI machine, and per this task's own requirement, without ever touching the
 // network either.
-export interface SafeStorageLike {
-  isEncryptionAvailable(): boolean
+export interface SafeStorageLike extends SafeStorageBackendLike {
   encryptString(plainText: string): Buffer
   decryptString(encrypted: Buffer): string
 }
@@ -109,7 +109,7 @@ export class AccountSessionStore {
   ) {}
 
   async read(): Promise<PersistedAccountSession | null> {
-    if (!this.storage.isEncryptionAvailable()) return null
+    if (!isSafeStorageUsable(this.storage)) return null
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES).catch(() => null)
     if (!content) return null
     return decodePersistedAccountSession(content, this.storage)
@@ -122,7 +122,7 @@ export class AccountSessionStore {
       // would retroactively make an earlier skip wrong -- so this check is
       // cheap insurance, not the primary guard (the caller already logs once
       // at startup when unavailable; see main.ts).
-      if (!this.storage.isEncryptionAvailable()) return
+      if (!isSafeStorageUsable(this.storage)) return
       const record: PersistedAccountSession = {
         version: CURRENT_VERSION,
         userId: data.userId,
