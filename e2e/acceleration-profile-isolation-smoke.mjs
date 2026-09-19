@@ -55,6 +55,13 @@ app.whenReady().then(() => {
 const { createAccelerationElectronProfile } = require(path.join(application, 'acceleration-electron-profile'));
 const profiles = [];
 const children = new Set();
+// The evidence line used to hard-code the worker count and three `true`s, so
+// it read the same whether or not the isolation held. Only names pushed after
+// the matching assertion ran, and counts taken from the run itself, go in it.
+const passedAssertions = [];
+function recordPass(name) {
+  passedAssertions.push(name);
+}
 function launch(args) {
   return new Promise((resolve, reject) => {
     const environment = { ...process.env };
@@ -93,9 +100,12 @@ function launch(args) {
       assert.ok(state.os_crypt.encrypted_key);
       assert.notEqual(state.os_crypt.encrypted_key, key);
     }
+    recordPass('each-worker-gets-its-own-userdata-sessiondata-and-key');
     assert.deepEqual(fs.readFileSync(mainStatePath), before);
+    recordPass('main-local-state-unchanged');
     await launch(['--user-data-dir=' + desktopProfile, '--xm-smoke-main=' + desktopProfile, '--read-fixture']);
-    console.log(JSON.stringify({ electron: require(path.join(repo, 'node_modules/electron/package.json')).version, workers: 2, isolatedUserDataAndSessionData: true, mainLocalStateUnchanged: true, originalVaultDecrypts: true }));
+    recordPass('original-vault-still-decrypts');
+    console.log(JSON.stringify({ electron: require(path.join(repo, 'node_modules/electron/package.json')).version, workers: profiles.length, passedAssertions }));
   } finally {
     for (const child of children) child.kill();
     if (children.size === 0) {

@@ -632,7 +632,7 @@ const fixtureReadinessConsumers = [
   'src/renderer-v2/features/auth/browser-check.mjs',
   'e2e/v2-business.test.mjs',
   'e2e/app-v3-interactions.test.mjs',
-  'e2e/renderer-v2-gap-audit.mjs',
+  'scripts/audit/renderer-v2-gap-audit.mjs',
   'e2e/account-commerce-interactions.test.mjs',
   'e2e/maintenance-layout.test.mjs',
   // D-12: the dual-site account smoke waits on the same cold Electron start
@@ -700,4 +700,26 @@ test('the window close smoke survives a transient Windows filesystem error', () 
   assert.match(source, /XINGMANG_SMOKE_COMMAND_TIMEOUT_MS/, 'the acknowledgement wait must stay bounded and overridable')
   assert.match(source, /abandonedByExit/, 'the acknowledgement wait must stop as soon as the application exits')
   assert.match(source, /main \$\{label\}/, "the main process's own output must reach the log")
+})
+
+// 验收证据里写死的 `true` 会在部分失败时照样打印出来，看起来像"这条也过了"。
+const evidenceProducers = [
+  'e2e/onboarding-smoke.mjs',
+  'e2e/canvas-group-refresh.mjs',
+  'e2e/acceleration-profile-isolation-smoke.mjs',
+  'e2e/renderer-v2-native.mjs',
+]
+
+test('acceptance evidence reports what the run observed, not literals', () => {
+  for (const producer of evidenceProducers) {
+    const source = fs.readFileSync(path.join(root, producer), 'utf8')
+
+    assert.match(source, /passedAssertions/, `${producer} must report the assertions this run actually passed`)
+    // Only names pushed after an assertion ran may reach the evidence, so the
+    // payload carrying them must not restate any behaviour as a constant.
+    for (const payload of source.matchAll(/JSON\.stringify\(\{[^}]*passedAssertions[^}]*\}/g)) {
+      assert.doesNotMatch(payload[0], /:\s*(?:true|false)\b/,
+        `${producer} must not state a behaviour as a literal beside the assertions it measured`)
+    }
+  }
 })

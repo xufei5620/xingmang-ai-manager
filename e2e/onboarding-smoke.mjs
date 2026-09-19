@@ -25,6 +25,14 @@ const page = await application.firstWindow()
 const pageErrors = []
 page.on('pageerror', (error) => pageErrors.push(error.message))
 
+// The evidence file used to carry these as literal `true`s, so a run that
+// stopped early still wrote a file claiming every behaviour held. Only names
+// pushed after the matching assertion actually ran may appear in it.
+const passedAssertions = []
+function recordPass(name) {
+  passedAssertions.push(name)
+}
+
 async function screenshot(name) {
   const content = await application.evaluate(async ({ BrowserWindow }) => (
     (await BrowserWindow.getAllWindows()[0].capturePage()).toPNG().toString('base64')
@@ -39,12 +47,14 @@ try {
   assert.equal(await page.getByRole('radio').count(), process.platform === 'linux' ? 5 : 6)
   assert.equal(await page.getByRole('button', { name: '下一步', exact: true }).isDisabled(), true)
   assert.equal(await page.locator('.start-guide-steps > li').count(), 4)
+  recordPass('guide-requires-explicit-selection')
   await screenshot('onboarding-dark.png')
 
   await page.getByRole('radio', { name: /先在星芒里聊天/ }).check()
   await page.getByRole('button', { name: '下一步', exact: true }).click()
   await page.locator('[data-guide-step="prepare"]').waitFor()
   assert.equal(await page.getByTestId('guide-install').count(), 0)
+  recordPass('direct-chat-skips-node-install')
   await page.getByRole('button', { name: '下一步', exact: true }).click()
   await page.locator('[data-guide-step="connect"]').waitFor()
   assert.equal(await page.getByTestId('guide-login').isEnabled(), true)
@@ -52,16 +62,19 @@ try {
   await page.getByTestId('guide-login').click()
   await page.getByTestId('login-dialog').waitFor()
   assert.equal(await page.getByTestId('shell-topbar').count(), 0)
+  recordPass('preview-cannot-bypass-login')
   await page.getByTestId('login-cancel').click()
   await page.getByRole('button', { name: '上一步', exact: true }).click()
   await page.getByRole('button', { name: '上一步', exact: true }).click()
   await page.locator('[data-guide-step="choose"]').waitFor()
   assert.equal(await page.getByRole('radio', { name: /先在星芒里聊天/ }).isChecked(), true)
+  recordPass('selection-survives-stepping-back')
 
   await page.evaluate(() => window.xingmang.saveSettings({ version: 2, theme: 'light' }))
   await page.reload()
   await page.getByRole('heading', { name: '选一种开始方式' }).waitFor()
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'light')
+  recordPass('light-theme-survives-reload')
   await screenshot('onboarding.png')
   const result = await application.evaluate(({ BrowserWindow, screen }) => {
     const window = BrowserWindow.getAllWindows()[0]
@@ -76,9 +89,9 @@ try {
   const windowFrameTolerance = 16
   assert.ok(result.bounds.x >= result.workArea.x - windowFrameTolerance && result.bounds.y >= result.workArea.y - windowFrameTolerance)
   assert.ok(result.bounds.width <= result.workArea.width + windowFrameTolerance && result.bounds.height <= result.workArea.height + windowFrameTolerance)
+  recordPass('window-stays-inside-work-area')
   await fs.writeFile(path.join(artifactDir, 'onboarding-smoke-result.json'), JSON.stringify({
-    ...result, pageErrors, horizontalOverflow: overflow, explicitSelection: true,
-    directChatWithoutNode: true, loginBoundaryPreserved: true, persistedLightTheme: true,
+    ...result, pageErrors, horizontalOverflow: overflow, passedAssertions,
   }, null, 2) + '\n', 'utf8')
 } finally {
   await application.close()
