@@ -56,6 +56,13 @@ jobs:
   # ran. `--no-file-parallelism` stays on inside each shard: it is what keeps
   # the filesystem-heavy files from racing each other under Defender, and
   # sharding across runners preserves it rather than working around it.
+  #
+  # The cost is runner slots, not minutes: this repository is public, so Actions
+  # bills nothing, but the account's concurrent-job ceiling is shared across
+  # every open pull request. With twenty-odd of them in flight the shards queue
+  # rather than fail, and a queued job is not running, so the caps below are
+  # untouched by the wait — `timeout-minutes` measures execution, not time spent
+  # waiting for a runner. Nothing here needs to grow if a run sits in the queue.
   windows-test:
     needs: changes
     if: needs.changes.outputs.code == 'true'
