@@ -1,10 +1,78 @@
 const assert = require('node:assert/strict')
+const fs = require('node:fs')
+const os = require('node:os')
+const path = require('node:path')
 const test = require('node:test')
+const { createHash } = require('node:crypto')
+const { gzipSync } = require('node:zlib')
+const { spawnSync } = require('node:child_process')
+const YAML = require('yaml')
 const {
   deriveWindowsSystemRoot,
   resolveTrustedWindowsPowerShell,
 } = require('./windows-machine-paths.cjs')
 const { verifyAuthenticode } = require('./verify-release-artifacts.cjs')
+
+const packageVersion = require('../package.json').version
+
+async function createUnsignedReleaseFixture(t) {
+  const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'xingmang-unsigned-release-'))
+  t.after(() => fs.promises.rm(directory, { recursive: true, force: true }))
+  const fileName = `XingMang-AI-Manager-${packageVersion}-Setup.exe`
+  const contents = Buffer.from('unsigned-installer-fixture')
+  const sha512 = createHash('sha512').update(contents).digest('base64')
+  await fs.promises.writeFile(path.join(directory, fileName), contents)
+  await fs.promises.writeFile(path.join(directory, `${fileName}.blockmap`), gzipSync(Buffer.from(JSON.stringify({
+    version: '2',
+    files: [{ name: 'file', offset: 0, checksums: ['YWJjZA=='], sizes: [4] }],
+  }))))
+  await fs.promises.writeFile(path.join(directory, 'latest.yml'), YAML.stringify({
+    version: packageVersion,
+    files: [{ url: fileName, sha512, size: contents.length }],
+    path: fileName,
+    sha512,
+    releaseDate: '2026-09-18T00:00:00.000Z',
+  }))
+  return directory
+}
+
+function runVerifier(directory, environment) {
+  return spawnSync(process.execPath, [path.join(__dirname, 'verify-release-artifacts.cjs'), directory], {
+    cwd: path.resolve(__dirname, '..'),
+    encoding: 'utf8',
+    env: { ...process.env, XINGMANG_RELEASE: '', XINGMANG_UNSIGNED_RELEASE: '', ...environment },
+  })
+}
+
+// M-01 并入的《发版前检查清单》缺口:无签名模式下 release:verify 必挂,于是
+// latest.yml 结构、文件大小、SHA-512 和 blockmap 的本地校验没有任何可用入口。
+test('the unsigned mode verifies every artifact check except the signature', async (t) => {
+  const directory = await createUnsignedReleaseFixture(t)
+  const result = runVerifier(directory, { XINGMANG_UNSIGNED_RELEASE: '1' })
+
+  assert.equal(result.status, 0, `${result.stdout}${result.stderr}`)
+  assert.match(result.stdout, /跳过 Authenticode 签名校验/)
+  assert.match(result.stdout, new RegExp(`发布产物校验通过：v${packageVersion.replace(/\./g, '\\.')}`))
+  assert.match(result.stdout, /个未签名安装程序/)
+})
+
+test('the unsigned mode still fails on a corrupted installer hash', async (t) => {
+  const directory = await createUnsignedReleaseFixture(t)
+  const installer = (await fs.promises.readdir(directory)).find((name) => name.endsWith('.exe'))
+  await fs.promises.writeFile(path.join(directory, installer), Buffer.from('tampered-installer-fixture'))
+  const result = runVerifier(directory, { XINGMANG_UNSIGNED_RELEASE: '1' })
+
+  assert.equal(result.status, 1)
+  assert.match(result.stderr, /LOCAL_ARTIFACT_(?:HASH_MISMATCH|SIZE_MISMATCH)/)
+})
+
+test('the default mode still demands a signature check rather than silently passing', async (t) => {
+  const directory = await createUnsignedReleaseFixture(t)
+  const result = runVerifier(directory, {})
+
+  assert.equal(result.status, 1)
+  assert.doesNotMatch(result.stdout, /发布产物校验通过/)
+})
 
 const sharedObjects = [
   'D:\\Windows\\SYSTEM32\\ntdll.dll',
