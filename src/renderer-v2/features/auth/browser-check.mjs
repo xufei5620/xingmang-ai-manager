@@ -5,6 +5,7 @@ import fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import { chromium } from '@playwright/test'
+import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-auth-v2')
@@ -27,6 +28,11 @@ async function open(query = '', app = false) {
     await route.continue()
   })
   await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
+  // Vite transforms the module graph on demand, so first paint can take seconds on
+  // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
+  // so a test whose first statement is one of them reads an empty page and fails on
+  // the value rather than on a timeout. Wait for the mount before handing the page over.
+  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 async function calls(page) { return page.evaluate(() => JSON.parse(document.documentElement.dataset.calls || '[]')) }
