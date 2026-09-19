@@ -192,14 +192,12 @@ jobs:
         timeout-minutes: 10
         run: node e2e/realm-account-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
-      # T-G5: the three smokes below were written, documented and then never
-      # wired to anything, so the only thing that ran them was a person who
-      # remembered they existed. Each covers a Windows-only guarantee that no
-      # other suite asserts: the Electron profile that holds the OSCrypt key
-      # stays inside the temporary directory, an account vault survives a
-      # safeStorage key rotation across real process lifetimes, and the shipping
-      # renderer starts natively with its own preload, zoom and appearance
-      # persistence. They need the compile above; the two Windows-only ones
+      # T-G5: the two smokes below were written, documented and then never wired
+      # to anything, so the only thing that ran them was a person who remembered
+      # they existed. Each covers a Windows-only guarantee that no other suite
+      # asserts: the Electron profile that holds the OSCrypt key stays inside
+      # the temporary directory, and an account vault survives a safeStorage key
+      # rotation across real process lifetimes. They need the compile above and
       # print SKIP and exit 0 elsewhere, which is why they belong here and not
       # in linux-test.
       #
@@ -231,9 +229,8 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: electron-smoke-artifacts
-          # The native renderer smoke writes its screenshots and result.json
-          # into a subdirectory, so the flat globs alone would drop exactly the
-          # evidence of the newest smoke here.
+          # Smokes that write their evidence into a subdirectory of artifacts/
+          # were dropped entirely by the flat globs alone.
           path: |
             artifacts/*.png
             artifacts/*.json
