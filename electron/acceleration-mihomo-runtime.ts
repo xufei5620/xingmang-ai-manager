@@ -7,6 +7,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { createHash, randomBytes, randomUUID } from 'node:crypto'
 import { trustedCommandEnvironment } from './command-runner'
 import { copyBoundedFileExclusive, readBoundedFile } from './bounded-file'
+import { readDirectoryEntries } from './bounded-directory'
 import { assertNoReparseComponents, assertSafeDataFile, ensureSafeDataDirectory, removeSafeDataFile, writeAtomicSafeUtf8File } from './safe-local-data'
 import { buildIsolatedMihomoConfig, type AccelerationClashProfile } from './acceleration-clash-config'
 import type { AccelerationLine } from './acceleration-contract'
@@ -16,6 +17,13 @@ const PROBE_HOST = 'www.gstatic.com'
 const PROBE_URL = `https://${PROBE_HOST}/generate_204`
 const MAX_CORE_BYTES = 100 * 1024 * 1024
 const MAX_CONTROLLER_BYTES = 64 * 1024
+const MAX_RUNTIME_ENTRIES = 4096
+const SESSION_DIRECTORY_PATTERN = /^session-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+const SESSION_FILE_NAMES = ['config.yaml', 'mihomo', 'mihomo.exe', 'cache.db', 'cache.db-shm', 'cache.db-wal']
+
+// Session directories created by this process. A sweep of leftovers must never
+// touch a session another runtime instance in this process still owns.
+const liveSessionDirectories = new Set<string>()
 
 export interface MihomoRuntimeResult {
   line: AccelerationLine
@@ -81,8 +89,29 @@ function waitDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
   })
 }
 
-async function reserveLoopbackPorts(): Promise<{ proxyPort: number; controllerPort: number }> {
+interface LoopbackPortReservation {
+  proxyPort: number
+  controllerPort: number
+  /** Idempotent, so the start path can release before spawning and again while unwinding. */
+  release(): Promise<void>
+}
+
+/**
+ * Keep both listeners bound until the core is about to take them over. Closing
+ * them at allocation time left the numbers free for the whole core copy and
+ * hash verification, so any local process could have taken the proxy port in
+ * that multi-second window. Holding them narrows the exposure to the spawn
+ * itself, and `confirmCorePorts` afterwards has the authenticated controller
+ * state which ports the core is actually running on.
+ */
+async function reserveLoopbackPorts(): Promise<LoopbackPortReservation> {
   const servers = [net.createServer(), net.createServer()]
+  async function release(): Promise<void> {
+    await Promise.all(servers.map((server) => new Promise<void>((resolve) => {
+      if (!server.listening) return resolve()
+      server.close(() => resolve())
+    })))
+  }
   try {
     const ports: number[] = []
     for (const server of servers) {
@@ -94,14 +123,10 @@ async function reserveLoopbackPorts(): Promise<{ proxyPort: number; controllerPo
       if (!address || typeof address === 'string') throw new Error('无法分配加速内核本地端口')
       ports.push(address.port)
     }
-    return { proxyPort: ports[0], controllerPort: ports[1] }
+    return { proxyPort: ports[0], controllerPort: ports[1], release }
   } catch {
+    await release()
     throw new Error('无法分配加速内核本地端口')
-  } finally {
-    await Promise.all(servers.map((server) => new Promise<void>((resolve) => {
-      if (!server.listening) return resolve()
-      server.close(() => resolve())
-    })))
   }
 }
 
@@ -191,6 +216,18 @@ async function awaitController(session: RuntimeSession): Promise<void> {
     }
   }
   throw new Error('加速内核未能及时启动')
+}
+
+/**
+ * The reserved numbers only describe what the core was asked to serve. Ask the
+ * authenticated controller which ports it is running on before any traffic is
+ * routed, so a core that started with a stale or rewritten configuration is
+ * never mistaken for the listener we are about to trust. A same-uid process
+ * that really forwards traffic stays outside the threat model (see T5).
+ */
+async function confirmCorePorts(session: RuntimeSession): Promise<void> {
+  const configs = parseControllerObject(await controllerRequest(session, 'GET', '/configs'))
+  if (configs['mixed-port'] !== session.proxyPort) throw new Error('加速内核端口校验失败')
 }
 
 function safeLine(node: AccelerationClashProfile['nodes'][number], index: number): AccelerationLine {
@@ -297,18 +334,62 @@ function probeProxy(session: RuntimeSession): Promise<void> {
   })
 }
 
-async function cleanupSessionFiles(session: RuntimeSession): Promise<void> {
-  if (!session.exited) throw new Error('加速内核仍在运行，不能清理连接配置')
-  if (!session.directoryCreated) return
-  assertNoReparseComponents(session.directory, '加速运行目录')
-  for (const file of [session.configPath, session.executablePath, ...['cache.db', 'cache.db-shm', 'cache.db-wal'].map((name) => path.join(session.directory, name))]) {
-    await removeSafeDataFile(file, '加速运行文件')
+async function removeSessionDirectory(directory: string): Promise<void> {
+  assertNoReparseComponents(directory, '加速运行目录')
+  for (const name of SESSION_FILE_NAMES) {
+    await removeSafeDataFile(path.join(directory, name), '加速运行文件')
   }
   try {
-    await fs.promises.rmdir(session.directory)
+    await fs.promises.rmdir(directory)
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw new Error('加速运行文件清理失败')
   }
+}
+
+async function cleanupSessionFiles(session: RuntimeSession): Promise<void> {
+  // Stay registered while the core is alive: only a confirmed exit makes the
+  // directory a leftover that a later sweep is allowed to remove.
+  if (!session.exited) throw new Error('加速内核仍在运行，不能清理连接配置')
+  try {
+    if (session.directoryCreated) await removeSessionDirectory(session.directory)
+  } finally {
+    liveSessionDirectories.delete(session.directory)
+  }
+}
+
+/**
+ * A session directory holds the node password in cleartext next to a private
+ * core copy, and only the stop path used to remove it. A SIGKILL, a power loss
+ * or a stop that timed out therefore left both behind for good, so every start
+ * sweeps what earlier runs abandoned. A directory that cannot be removed - a
+ * Windows core outliving its parent still holds its own image open - is left
+ * for a later attempt instead of failing the start. Recursive removal stays out
+ * of this: each file goes through the same reparse and single-link checks the
+ * stop path uses. A runtime directory holding more than MAX_RUNTIME_ENTRIES
+ * entries is left untouched - the sweep runs on every start, so a genuine
+ * backlog never reaches that, and refusing to enumerate an unexpectedly large
+ * directory beats deleting inside it blindly.
+ */
+async function purgeStaleSessionDirectories(runtimeDirectory: string): Promise<number> {
+  let entries: fs.Dirent[]
+  try {
+    entries = await readDirectoryEntries(runtimeDirectory, MAX_RUNTIME_ENTRIES, '加速运行目录')
+  } catch {
+    return 0
+  }
+  let removed = 0
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.isSymbolicLink() || !SESSION_DIRECTORY_PATTERN.test(entry.name)) continue
+    const directory = path.join(runtimeDirectory, entry.name)
+    if (liveSessionDirectories.has(directory)) continue
+    try {
+      await removeSessionDirectory(directory)
+      removed += 1
+    } catch {
+      // Intentionally silent: a leftover we cannot remove must not block acceleration.
+    }
+  }
+  return removed
 }
 
 async function waitForExit(session: RuntimeSession, timeoutMs: number): Promise<boolean> {
@@ -360,24 +441,27 @@ export function createMihomoRuntime(options: MihomoRuntimeOptions): MihomoRuntim
       await stopSession(current)
       current = null
     }
-    const ports = await reserveLoopbackPorts()
-    assertNotAborted(abort.signal)
+    await purgeStaleSessionDirectories(options.runtimeDirectory)
+    const reservation = await reserveLoopbackPorts()
     const directory = path.join(options.runtimeDirectory, `session-${randomUUID()}`)
     const controllerSecret = randomBytes(32).toString('hex')
-    const yaml = buildIsolatedMihomoConfig(profile, { mixedPort: ports.proxyPort, controllerPort: ports.controllerPort, controllerSecret })
     const lines = accelerationLinesFromProfile(profile)
     let resolveExit: () => void = () => undefined
     const exitPromise = new Promise<void>((resolve) => { resolveExit = resolve })
     const session: RuntimeSession = {
       directory, directoryCreated: false, configPath: path.join(directory, 'config.yaml'),
       executablePath: path.join(directory, process.platform === 'win32' ? 'mihomo.exe' : 'mihomo'),
-      ...ports, controllerSecret, abort, child: null, exited: true, exitPromise, resolveExit, stopping: false, result: null,
+      proxyPort: reservation.proxyPort, controllerPort: reservation.controllerPort,
+      controllerSecret, abort, child: null, exited: true, exitPromise, resolveExit, stopping: false, result: null,
     }
     current = session
     try {
+      assertNotAborted(abort.signal)
+      const yaml = buildIsolatedMihomoConfig(profile, { mixedPort: session.proxyPort, controllerPort: session.controllerPort, controllerSecret })
       ensureSafeDataDirectory(options.runtimeDirectory, '加速运行目录')
       await fs.promises.mkdir(directory, { mode: 0o700 })
       session.directoryCreated = true
+      liveSessionDirectories.add(directory)
       assertNoReparseComponents(directory, '加速运行目录')
       await copyBoundedFileExclusive(options.corePath, session.executablePath, MAX_CORE_BYTES, '加速内核')
       const copiedCore = await readBoundedFile(session.executablePath, MAX_CORE_BYTES, '加速内核')
@@ -387,6 +471,7 @@ export function createMihomoRuntime(options: MihomoRuntimeOptions): MihomoRuntim
       await writeAtomicSafeUtf8File(session.configPath, yaml, '加速连接配置')
       assertNotAborted(abort.signal)
       assertSafeDataFile(session.executablePath, '加速内核')
+      await reservation.release()
       const child = spawn(session.executablePath, ['-d', directory, '-f', session.configPath], {
         shell: false, windowsHide: true, detached: false, cwd: directory,
         env: coreEnvironment(), stdio: ['ignore', 'ignore', 'ignore'],
@@ -413,6 +498,7 @@ export function createMihomoRuntime(options: MihomoRuntimeOptions): MihomoRuntim
         if (!child.pid) onExit()
       })
       await awaitController(session)
+      await confirmCorePorts(session)
       const line = await selectAvailableLine(session, lines, preferredId)
       await probeProxy(session)
       assertNotAborted(abort.signal)
@@ -420,6 +506,7 @@ export function createMihomoRuntime(options: MihomoRuntimeOptions): MihomoRuntim
       session.result = { line, proxyPort: session.proxyPort }
       return { ...session.result, line: { ...line } }
     } catch (error) {
+      await reservation.release()
       await stopSession(session)
       if (current === session) current = null
       if (error instanceof Error && /^加速|^暂无可用加速线路/.test(error.message)) throw error
