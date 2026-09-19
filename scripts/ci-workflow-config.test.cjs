@@ -207,6 +207,43 @@ test('the legacy rollback UI suites are verified on exactly one platform', () =>
   assert.deepEqual(jobsRunningUi, ['linux-test'])
 })
 
+test('the rollback renderer is built somewhere before a rollback needs it', () => {
+  // R-G12: `legacy` exists to be shipped on the day v2 has to be pulled, and
+  // nothing in CI used to build it. Its React 18 alias table in vite.config.ts
+  // is applied only under XINGMANG_RENDERER=legacy, so the pinned runtime in
+  // tooling/legacy-renderer could rot — or the shared src/ tree could grow an
+  // import the React 18 runtime cannot satisfy — with every check still green.
+  assert.match(packageJson.scripts['check:legacy'], /XINGMANG_RENDERER=legacy\s+vite build/)
+  // Packaging is deliberately not part of it: the question is whether the
+  // bundle still builds, and --outDir keeps the answer out of the dist/ the
+  // shipping compile owns.
+  assert.match(packageJson.scripts['check:legacy'], /--outDir dist-legacy/)
+  assert.doesNotMatch(packageJson.scripts['check:legacy'], /electron-builder/)
+  assert.ok(
+    fs.readFileSync(path.join(root, '.gitignore'), 'utf8').split(/\r?\n/).includes('dist-legacy/'),
+    'the throwaway bundle must not reach the dirty-tree guard',
+  )
+
+  const jobsBuildingLegacy = Object.entries(workflow.jobs)
+    .filter(([, job]) => (job.steps || []).some((step) => step.run === 'npm run check:legacy'))
+    .map(([name]) => name)
+
+  assert.deepEqual(jobsBuildingLegacy, ['linux-test'])
+})
+
+test('the advisory job caches nothing because it installs nothing', () => {
+  // P-32: `npm audit` reads package-lock.json, so this job deliberately has no
+  // `npm ci`. A cache declaration without a restore target still costs a
+  // lookup and a save on every run and reports coverage this job never had.
+  const auditJob = workflow.jobs.audit
+  const setupNode = auditJob.steps.find((step) => String(step.uses || '').startsWith('actions/setup-node@'))
+
+  assert.ok(setupNode, 'the audit job still pins its Node version')
+  assert.equal(setupNode.with.cache, undefined, 'a job that never runs npm ci must not declare a dependency cache')
+  assert.equal(runSteps('audit').some((command) => /npm ci/.test(command)), false)
+  assert.deepEqual(runSteps('audit'), ['npm run audit:production', 'npm run audit:ci'])
+})
+
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {
   const macJob = workflow.jobs['macos-test']
   const commands = runSteps('macos-test')
