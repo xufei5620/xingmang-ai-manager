@@ -59,10 +59,11 @@ Mac 资源清单采用 `version:2`、`platform:"darwin"`、`arch:"arm64"|"x64"`�
 
 发布者在仓库外运行 `scripts/stage-acceleration-bundle.cjs`，提供私有配置路径、已固定 SHA256 的内核、准确源码版本和完整 GPL v3 许可。脚本只导出清洗后的内联节点，生成固定五文件资源目录；设置 `XINGMANG_ACCELERATION_BUNDLE_DIR` 才会随本地安装包加入 `resources/acceleration`。目录必须在项目之外且为空，禁止把节点写入仓库或将完整 Clash 规则合并到客户端。
 
-当前只有 Windows 的 `release:build:unsigned` 这条路会真的把资源打进包里。macOS 的免费分发入口
-`npm run dist:mac:free` 在环境清洗时会剥掉 `XINGMANG_ACCELERATION_BUNDLE_DIR`，且它是一次双架构构建，
-而 Mac 资源目录按架构准备——因此现在的 macOS 包一律不含 `resources/acceleration`，详见
-[发布手册第 2 节](RELEASING.md#2-macos-024-双架构加速资源)。
+Windows 走 `release:build:unsigned` 并设置该环境变量。macOS 的免费分发入口 `npm run dist:mac:free`
+不认这个环境变量（环境清洗会把它剥掉，防的是上一次构建的残留让公开包悄悄带上私有节点），改用
+`--acceleration-arm64` / `--acceleration-x64` 两个命令行参数显式开启，并分两次单架构构建后合并产物；
+默认不传参数时出的 macOS 包仍然不含 `resources/acceleration`。详见
+[发布手册第 2 节](RELEASING.md#2-macos-双架构加速资源)。
 
 `electron-builder.config.cjs` 将内核/节点哈希固定到 ASAR 内的 package metadata，打包前再次验证。主进程 `readBundledAccelerationConfig` 对比外部清单和 ASAR pins，并验证文件哈希；worker 每次读取节点配置仍核对哈希。开发 userData 配置不能启用正式包。包内附 Mihomo GPL v3 许可和对应源码地址。
 

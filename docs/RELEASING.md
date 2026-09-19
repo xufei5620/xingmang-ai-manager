@@ -51,23 +51,36 @@ npm run release:build:unsigned
 
 发布前仍需提升版本号、更新 `release-notes.md` 并完成类型检查、测试、编译和安装包验证。上传文件、修改 Cloudflare R2 或切换线上 `latest.yml` 必须获得产品所有者针对当前版本的明确发布授权，不能把构建、合并 PR 或历史授权解释为本次发布许可。
 
-## 2. macOS 0.2.4 双架构加速资源
+## 2. macOS 双架构加速资源
 
-> **当前状态：这一节描述的是资源准备办法，不是能跑通的发布路径。今天 `npm run dist:mac:free`
-> 出的 macOS 包必然不带加速线路。** 两个原因，改一个不够：
->
-> 1. `scripts/run-macos-free-build.cjs` 的环境清洗名单里包含 `XINGMANG_ACCELERATION_BUNDLE_DIR`，
->    它不会传给 electron-builder 子进程，`electron-builder.config.cjs` 里的 `accelerationBundle.metadata` 因此恒为空
->    （连带 `mac.extraResources` 的原生代理组件与 mihomo 的 `signIgnore` 也都不会生效）。
-> 2. 即使放行该变量，`dist:mac:free` 是**一次** `--arm64 --x64` 的双架构构建，而 Mac 资源目录是按架构准备的，
->    `beforePack` 的 `verifyAccelerationBundleCore` 会在不匹配的那个架构上直接失败。
->
-> 下面说的“两次构建后汇总”也没有对应实现：`verify-macos-free-artifacts.cjs` 要求**同一个输出目录**里
-> 精确两份 DMG 加两份 ZIP，两次单架构构建的结果各自都过不了这道校验。要让 macOS 包带线路，
-> 需要先补构建侧的改动（按架构分别构建 + 合并产物 + 一个显式开关，不能靠环境变量残留），尚未排期。
-> Windows 侧不受影响，第 1 节的做法仍然有效。
+macOS 包可以携带私有加速线路，但必须显式开启：`npm run dist:mac:free` 默认**不带**线路，多传两个命令行参数才带。
 
-Mac 资源使用 `--platform darwin --arch arm64` 或 `--arch x64` 准备，资源清单为 version 2。每个目录只含对应架构的内核，必须使用独立目录与单架构构建命令；目标平台或架构不符会拒绝构建。两次构建后汇总两份 ZIP 清单，最后执行完整双架构验证。
+不能靠设置 `XINGMANG_ACCELERATION_BUNDLE_DIR` 来开启。构建入口会先把继承来的这个变量从子进程环境里删掉（P-24 的环境清洗，防的就是上一次构建残留让一个公开安装包悄悄带上私有节点），只有下面这两个参数显式给出的目录才会被写回，并且写回前会核对该目录的资源清单确实是对应架构的 macOS 资源。
+
+Mac 资源按架构准备（`--platform darwin --arch arm64` 或 `--arch x64`，资源清单为 version 2），每个架构一个独立的空目录，目录都必须在项目目录之外：
+
+```bash
+node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+node scripts/stage-acceleration-bundle.cjs --config ~/私有配置/acceleration-development.json \
+  --output ~/私有发布/0.2.7/acceleration-arm64 --platform darwin --arch arm64 \
+  --core-version v1.19.29 --source-ref v1.19.29 --license ~/许可/LICENSE-mihomo.txt
+node scripts/stage-acceleration-bundle.cjs --config ~/私有配置/acceleration-development.json \
+  --output ~/私有发布/0.2.7/acceleration-x64 --platform darwin --arch x64 \
+  --core-version v1.19.29 --source-ref v1.19.29 --license ~/许可/LICENSE-mihomo.txt
+```
+
+然后带上两个架构的资源目录出包（参数值必须是绝对路径；只给一个架构会被直接拒掉，因为更新清单必须精确引用两份 ZIP）：
+
+```bash
+CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
+  npm run dist:mac:free -- \
+  --acceleration-arm64 "$HOME/私有发布/0.2.7/acceleration-arm64" \
+  --acceleration-x64 "$HOME/私有发布/0.2.7/acceleration-x64"
+```
+
+开启后构建流程与不带线路时的区别只有中间这一段：入口会**分两次**调用 electron-builder，一次 `--arm64`、一次 `--x64`，各自只看到自己架构的资源目录（Mac 资源目录按架构准备，`beforePack` 的架构核对会在不匹配的架构上直接失败，所以一次双架构构建带不了线路）。两次构建分别输出到 `release-free-<版本号>/arch-arm64` 与 `arch-x64`，随后合并到 `release-free-<版本号>` 根目录：两份 DMG、两份 ZIP、两份 blockmap 就位，`latest-mac.yml` 由两份单架构清单合并而成（以 arm64 那份为底，只替换文件列表），两个分架构子目录连同里面的解包 `.app` 一起删除。之后的产物校验、签名连续性核对、`SHA256SUMS` 生成与不带线路时完全一样。
+
+CI 的真实打包门禁（`--ci-temporary-signing`）不走这条路：runner 上没有私有资源，该参数与两个加速参数互斥，CI 只覆盖不带线路的构建路径。带线路的构建只能在发布 Mac 上本机验证。
 
 本次使用官方 Mihomo v1.19.29，内核与节点文件保存在仓库外。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
 
