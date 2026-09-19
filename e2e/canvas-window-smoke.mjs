@@ -6,8 +6,8 @@
 // after a local `xingmang-canvas/web` build has been vendored into
 // dist-canvas/ (scripts/copy-canvas-assets.mjs). Modeled on
 // e2e/electron-ci-smoke.mjs's minimal codex fixture (just config.toml +
-// auth.json, no fake npm install) and e2e/electron-smoke.mjs's launch/shadow
-// HOME pattern -- never touches the real user profile or any real config.
+// auth.json, no fake npm install) and its launch/shadow HOME pattern --
+// never touches the real user profile or any real config.
 import { _electron as electron } from '@playwright/test'
 import fs from 'node:fs/promises'
 import path from 'node:path'

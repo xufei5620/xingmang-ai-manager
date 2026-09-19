@@ -37,10 +37,14 @@ test('renderer v2 is the default and legacy remains an explicit rollback mode', 
   assert.match(scripts['dev:legacy'], /XINGMANG_RENDERER=legacy\s+npm run dev:runtime/)
   assert.match(scripts.compile, /XINGMANG_RENDERER=v2\s+npm run compile:runtime/)
   assert.match(scripts['compile:legacy'], /XINGMANG_RENDERER=legacy\s+npm run compile:runtime/)
-  for (const name of ['build', 'build:win:ci', 'build:mac:dir', 'build:mac:ci', 'release:build:unsigned']) {
+  for (const name of ['build', 'build:win:ci', 'build:mac:dir', 'build:mac:ci']) {
     assert.match(scripts[name], /npm run compile/, `${name} must use the default v2 compile`)
     assert.doesNotMatch(scripts[name], /compile:legacy/, `${name} must not package the rollback renderer`)
   }
+  // release:build:unsigned no longer compiles inline: it delegates to the shared
+  // release gate, which runs `npm run compile` as one of its steps (M-01).
+  assert.match(scripts['release:build:unsigned'], /node scripts\/run-release-build\.cjs/)
+  assert.doesNotMatch(scripts['release:build:unsigned'], /compile:legacy/)
 
   assert.match(viteConfigSource, /requestedRenderer === 'legacy' \? 'legacy' : 'v2'/)
   assert.match(viteConfigSource, /Unsupported XINGMANG_RENDERER value/)
@@ -110,6 +114,36 @@ test('the Windows required job tests and compiles the default renderer v2', () =
   assert.ok(dirtyCheckIndex < compileIndex, 'the default compile must run after tests')
   assert.ok(compileIndex < flagCheckIndex, 'the default compile must be checked for its v2 marker')
   assert.match(String(steps[flagCheckIndex].run), /dist\/renderer-v2\.flag/)
+})
+
+test('the release gate only runs smoke scripts the Windows required job also runs', () => {
+  // M-01's lower half: the release gate used to run e2e/electron-smoke.mjs, a
+  // script no CI job executed. It kept its legacy `.app-shell` selectors long
+  // after renderer v2 became the default compile, so the gate's fourth step
+  // could only ever time out. Pinning the gate's smoke scripts to the Windows
+  // required job is what stops that from happening again.
+  const { buildReleaseSteps } = require('./run-release-build.cjs')
+  const ciCommands = runSteps('test')
+  for (const unsignedReleaseMode of [false, true]) {
+    const steps = buildReleaseSteps({
+      npmCli: 'npm-cli.js',
+      releaseOutputDirectory: path.join(root, 'release-test'),
+      platform: 'win32',
+      unsignedReleaseMode,
+    })
+    const smokeScripts = steps
+      .flatMap((step) => step.args)
+      .filter((argument) => typeof argument === 'string' && argument.includes(`${path.sep}e2e${path.sep}`))
+      .map((argument) => path.relative(root, argument).split(path.sep).join('/'))
+    assert.ok(smokeScripts.length > 0, 'the release gate must run at least one e2e smoke script')
+    for (const script of smokeScripts) {
+      assert.ok(
+        ciCommands.some((command) => command.includes(script)),
+        `${script} runs in the release gate and must also run in the Windows required job`,
+      )
+      assert.ok(fs.existsSync(path.join(root, script)), `${script} must exist`)
+    }
+  }
 })
 
 test('the Windows suite serializes filesystem-heavy files with a bounded test timeout', () => {
@@ -271,4 +305,54 @@ test('quality checks cannot publish a release', () => {
 
   const serialized = JSON.stringify(workflow.jobs)
   assert.doesNotMatch(serialized, /gh release|create-release|dist:mac:free|release:build/i)
+})
+
+const playwrightElectronSmokes = ['e2e/electron-ci-smoke.mjs', 'e2e/window-close-smoke.mjs']
+
+test('a Playwright Electron smoke can never consume a whole job again', () => {
+  // #131 and #133: a wedged Electron made the close smoke run for ten minutes
+  // and print nothing, cancelling the Windows job at its cap; #139 died in the
+  // startup smoke. Three bounds now stack — the script's own budget, the step
+  // timeout, then the job timeout — and each must stay strictly inside the next
+  // so the innermost one, the only one that prints a diagnosis, is what fires.
+  for (const smoke of playwrightElectronSmokes) {
+    const budget = fs.readFileSync(path.join(root, smoke), 'utf8')
+      .match(/XINGMANG_SMOKE_TOTAL_TIMEOUT_MS \?\? (\d[\d_]*)\)/)
+
+    assert.ok(budget, `${smoke} must budget its whole run`)
+    const budgetMs = Number(budget[1].replaceAll('_', ''))
+    const jobs = Object.entries(workflow.jobs)
+      .filter(([, job]) => (job.steps || []).some((entry) => String(entry.run || '').includes(smoke)))
+
+    assert.ok(jobs.length > 0, `${smoke} must still run in CI`)
+    for (const [jobName, job] of jobs) {
+      const step = job.steps.find((entry) => String(entry.run || '').includes(smoke))
+
+      assert.equal(typeof step['timeout-minutes'], 'number', `${jobName} must bound ${smoke}`)
+      assert.ok(step['timeout-minutes'] * 60_000 > budgetMs,
+        `${jobName} must let ${smoke} report its own timeout before the runner cancels the step`)
+      assert.ok(job['timeout-minutes'] > step['timeout-minutes'], `${jobName} must outlive its ${smoke} step`)
+    }
+  }
+
+  // test:windows (~13m) and test:v2 (~10m) alone reach ~28 minutes, so the
+  // Windows cap has to clear that plus the packaging steps that follow.
+  assert.ok(workflow.jobs.test['timeout-minutes'] >= 45)
+})
+
+test('no wait in a Playwright Electron smoke is left unbounded', () => {
+  for (const smoke of playwrightElectronSmokes) {
+    const source = fs.readFileSync(path.join(root, smoke), 'utf8')
+
+    // page.evaluate, ElectronApplication.evaluate and ElectronApplication
+    // .close() have no default timeout of their own. Awaiting one of them
+    // directly is how a failing assertion ended up hidden behind a ten minute
+    // hang instead of being printed.
+    assert.doesNotMatch(source, /await page\.evaluate\(/, smoke)
+    assert.doesNotMatch(source, /await application\.evaluate\(/, smoke)
+    assert.doesNotMatch(source, /await application\.close\(\)/, smoke)
+    assert.match(source, /createSmokeRuntime\(/, `${smoke} must use the shared smoke runtime`)
+  }
+
+  assert.match(fs.readFileSync(path.join(root, 'e2e', 'smoke-runtime.mjs'), 'utf8'), /export function killProcessTree\(/)
 })
