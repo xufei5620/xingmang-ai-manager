@@ -553,7 +553,7 @@ git commit -m "feat(canvas): add large industry production skeletons"
 - [ ] Run `npm test`.
 - [ ] Run `npm run canvas:prepare`.
 - [ ] Run `npm run test:canvas:visual`.
-- [ ] Run `npm run test:windows` on Windows CI or a Windows runner.
+- [ ] Run `npm test` again on Windows CI or a Windows runner.
 - [ ] Run `npm run test:mac:dev-origin` on macOS.
 - [ ] Run `npm run audit:ci`.
 - [ ] Run `npm audit --omit=dev --audit-level=low --registry=https://registry.npmjs.org/`.

@@ -16,7 +16,7 @@ npm run release:build:unsigned
 
 1. 发布前置检查（含「远端版本必须低于本地」）
 2. `npm run typecheck`
-3. 全部单测（Windows 上走 `test:windows`）
+3. 全部单测（`npm test`，三平台同一条命令）
 4. `npm run compile`，并确认产出 `dist/renderer-v2.flag`
 5. `e2e/electron-ci-smoke.mjs` 启动冒烟
 6. `e2e/onboarding-smoke.mjs` 首启向导冒烟
