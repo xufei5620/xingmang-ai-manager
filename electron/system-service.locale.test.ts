@@ -99,7 +99,7 @@ function createFixture(options: {
   })
   const target = { isDestroyed: () => false, send: vi.fn() }
   const readConfig = () => fs.readFileSync(configPath, 'utf8')
-  return { root, codexHome, configPath, desktop, service, launch, target, readConfig }
+  return { root, codexHome, configPath, desktop, service, store, launch, target, readConfig }
 }
 
 afterEach(() => {
@@ -225,7 +225,46 @@ describe('system-service Codex Desktop locale workflow', () => {
 
     expect(readCodexDesktopLocale(fixture.readConfig())).toBe('zh-CN')
     expect(fixture.readConfig()).toContain('base_url = "https://example.invalid/v1"')
-    expect(fixture.launch).toHaveBeenCalledWith('open', fixture.target, expect.objectContaining({ injectChinese: true }))
+    // The saved override drives the native menus on its own. It must not also
+    // start Codex with a debugging port: nobody asked for the runtime patch.
+    expect(fixture.launch).toHaveBeenCalledWith('open', fixture.target, expect.objectContaining({ injectChinese: false }))
+  })
+
+  it('never derives runtime-patch consent from a zh-CN value already present in config.toml', async () => {
+    const fixture = createFixture({
+      running: false,
+      config: customConfig.replace('theme = "dark" # 保留自定义主题', 'theme = "dark"\nlocaleOverride = "zh-CN"'),
+    })
+
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(readCodexDesktopLocale(fixture.readConfig())).toBe('zh-CN')
+    expect(fixture.launch).toHaveBeenCalledWith('open', fixture.target, expect.objectContaining({ injectChinese: false }))
+  })
+
+  it('stops opening the debugging port once the user switches back to the system language', async () => {
+    const fixture = createFixture({ running: false })
+
+    await fixture.service.setCodexDesktopLocale('zh-CN', fixture.target)
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+    expect(fixture.launch).toHaveBeenLastCalledWith('open', fixture.target, expect.objectContaining({ injectChinese: true }))
+
+    await fixture.service.setCodexDesktopLocale('system', fixture.target)
+    await fixture.service.launchCodexDesktop('open', fixture.target)
+
+    expect(fixture.launch).toHaveBeenLastCalledWith('open', fixture.target, expect.objectContaining({ injectChinese: false }))
+  })
+
+  it('persists the runtime-patch consent so a later app start still knows what the user chose', async () => {
+    const fixture = createFixture({ running: false })
+
+    expect(fixture.store.read().codexDesktopChineseRuntimePatch).toBeUndefined()
+
+    await fixture.service.setCodexDesktopLocale('zh-CN', fixture.target)
+    expect(fixture.store.read().codexDesktopChineseRuntimePatch).toBe('enabled')
+
+    await fixture.service.setCodexDesktopLocale('system', fixture.target)
+    expect(fixture.store.read().codexDesktopChineseRuntimePatch).toBe('disabled')
   })
 
   it('rejects a malformed configuration before changing the file or restarting Desktop', async () => {

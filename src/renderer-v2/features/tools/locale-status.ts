@@ -9,6 +9,14 @@ export function describeChineseLocale(status: CodexDesktopLocaleStatus): string 
 
 export function describeChineseLocaleResult(result: CodexDesktopLocaleResult): string {
   if (result.warning) return result.warning
+  // Switching back to the system language also turns off the local debugging
+  // port the Chinese runtime patch needs, so say what actually changed instead
+  // of reusing the "设置已保存" wording written for the Chinese direction.
+  if (result.configuredLocale !== 'zh-CN') {
+    return result.restarted
+      ? '已改为跟随系统语言，Codex 已重新打开，本机调试端口不再开启。'
+      : '已改为跟随系统语言，下次从星芒打开 Codex 时生效。'
+  }
   if (result.runtimeVerified) return result.restarted ? '中文界面已启用，Codex 已重新打开。' : '中文界面已启用。'
   if (result.needsRestart) return '中文设置已保存，请从星芒重新打开 Codex 桌面端以应用。'
   return '中文设置已保存。'

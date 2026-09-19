@@ -69,6 +69,7 @@ import {
 import { tools } from './registry/tools'
 import { canUninstallTool } from './features/tools/model'
 import { connectionCheckView } from './features/tools/connection-check'
+import { maintenanceFailureNotice, readMaintenanceStatus } from './features/tools/maintenance-status'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import type { V2Bridge, V2Page } from './types'
 import type {
@@ -784,14 +785,14 @@ export function MaintenancePage({
   api,
   navigate,
 }: { api: V2Bridge } & BusinessActions) {
-  const load = useCallback(
-    async () => ({
-      snapshot: await api.scanSystem(false),
-      capability: await api.getPlatformCapabilities(),
-    }),
-    [api],
-  )
+  const load = useCallback(() => readMaintenanceStatus(api), [api])
   const resource = useResource(load)
+  const snapshot = resource.data?.snapshot ?? null
+  const capability = resource.data?.capability ?? null
+  const failures = resource.data?.failures ?? []
+  // 检测那一块没读到时，页面对「装没装」毫无根据，所以这些行只报未知，
+  // 不把缺省值当成结论（对照本文件里 detectionFailed 的同一条理由）。
+  const statusUnknown = Boolean(resource.data) && snapshot === null
   const operation = useOperation()
   const [logs, setLogs] = useState<string[]>([])
   const [remove, setRemove] = useState<Provider | 'codexDesktop' | null>(null)
@@ -851,6 +852,33 @@ export function MaintenancePage({
         error={resource.error || operation.error}
         message={operation.message}
       />
+      {failures.map((failure) => {
+        const notice = maintenanceFailureNotice(failure)
+        return (
+          <Notice
+            key={failure.partition}
+            tone="bad"
+            title={notice.title}
+            body={
+              <>
+                <div>{notice.reason}</div>
+                <div>{notice.hint}</div>
+              </>
+            }
+            actions={
+              <Button
+                size="sm"
+                icon={RefreshCw}
+                loading={resource.loading}
+                onClick={() => void resource.reload()}
+              >
+                重新检测
+              </Button>
+            }
+            testId={'maintenance-failure-' + failure.partition}
+          />
+        )
+      })}
       <Card title="工具">
         <div className="v2-business-table-head">
           <span>工具</span>
@@ -862,8 +890,8 @@ export function MaintenancePage({
           if (!isProvider(id) && id !== 'codexDesktop') return null
           const status =
             id === 'codexDesktop'
-              ? resource.data?.snapshot.desktopApps.codex
-              : resource.data?.snapshot.clis[id]
+              ? snapshot?.desktopApps.codex
+              : snapshot?.clis[id]
           const version =
             status && 'appVersion' in status
               ? status.appVersion
@@ -872,12 +900,13 @@ export function MaintenancePage({
                 : null
           const managed =
             id === 'codexDesktop'
-              ? resource.data?.capability.codexDesktop.install === 'managed'
-              : resource.data?.capability.cliInstall[id] === 'managed'
+              ? capability?.codexDesktop.install === 'managed'
+              : capability?.cliInstall[id] === 'managed'
           // A probe that failed says nothing about what is installed, so the
           // row offers a rescan instead of an install that could land on top
           // of a working tool.
           const detectionFailed = status?.detectionFailed === true
+          const rescan = statusUnknown || detectionFailed
           return (
             <ListRow
               key={id}
@@ -891,9 +920,9 @@ export function MaintenancePage({
               desc={tool.vendor}
               meta={
                 <>
-                  {version || '未找到版本'}{' '}
-                  <Pill tone={detectionFailed ? 'bad' : status?.installed ? 'ok' : 'neutral'}>
-                    {detectionFailed ? '检测失败' : status?.installed ? '已安装' : '未安装'}
+                  {version || (statusUnknown ? '版本未读到' : '未找到版本')}{' '}
+                  <Pill tone={detectionFailed ? 'bad' : statusUnknown ? 'warn' : status?.installed ? 'ok' : 'neutral'}>
+                    {detectionFailed ? '检测失败' : statusUnknown ? '状态未读到' : status?.installed ? '已安装' : '未安装'}
                   </Pill>
                 </>
               }
@@ -901,11 +930,21 @@ export function MaintenancePage({
                 <>
                   <Button
                     size="sm"
-                    icon={detectionFailed || status?.installed ? RefreshCw : Download}
-                    disabled={(!managed && !detectionFailed) || Boolean(operation.busy)}
-                    onClick={() => detectionFailed ? check(id) : install(id)}
+                    icon={rescan || status?.installed ? RefreshCw : Download}
+                    disabled={
+                      statusUnknown
+                        ? resource.loading
+                        : (!managed && !detectionFailed) || Boolean(operation.busy)
+                    }
+                    onClick={() =>
+                      statusUnknown
+                        ? void resource.reload()
+                        : detectionFailed
+                          ? check(id)
+                          : install(id)
+                    }
                   >
-                    {detectionFailed ? '重新检测' : status?.installed ? '重新安装' : '安装'}
+                    {rescan ? '重新检测' : status?.installed ? '重新安装' : '安装'}
                   </Button>
                   <Menu
                     anchor={<MoreHorizontal size={18} />}
@@ -917,9 +956,9 @@ export function MaintenancePage({
                       },
                       ...(status?.installed === true &&
                       canUninstallTool(status, id === 'codexDesktop' &&
-                        resource.data?.capability.codexDesktop.uninstall === true) &&
+                        capability?.codexDesktop.uninstall === true) &&
                       (id !== 'codexDesktop' ||
-                      resource.data?.capability.codexDesktop.uninstall)
+                      capability?.codexDesktop.uninstall)
                         ? [
                             {
                               label: '卸载工具',
@@ -948,11 +987,11 @@ export function MaintenancePage({
       </Card>
       <Card title="运行环境">
         {(['node', 'python'] as const).map((id) => {
-          const status = resource.data?.snapshot.runtime[id]
+          const status = snapshot?.runtime[id]
           const managed =
             id === 'node'
-              ? resource.data?.capability.nodeRuntimeInstall === 'managed'
-              : resource.data?.capability.pythonRuntimeInstall === 'managed'
+              ? capability?.nodeRuntimeInstall === 'managed'
+              : capability?.pythonRuntimeInstall === 'managed'
           return (
             <ListRow
               key={id}
@@ -963,7 +1002,7 @@ export function MaintenancePage({
                   ? '命令行工具需要的运行环境'
                   : '部分工具需要的可选运行环境'
               }
-              meta={status?.version || '尚未安装'}
+              meta={status?.version || (statusUnknown ? '状态未读到' : '尚未安装')}
               actions={
                 <Button
                   size="sm"
@@ -1071,7 +1110,7 @@ export function MaintenancePage({
       {manualUninstall && (
         <ManualUninstallDialog
           state={manualUninstall}
-          platform={resource.data?.capability.platform}
+          platform={capability?.platform}
           onClose={() => setManualUninstall(null)}
         />
       )}
