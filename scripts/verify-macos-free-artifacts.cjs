@@ -761,10 +761,21 @@ async function verifyDmgApplication(dmgPath, architecture, options) {
   }
   // Detach whatever actually mounted, not what hdiutil reported, so a failed
   // inspection never leaves an image attached to the build machine.
-  const detachFailures = await detachMountPoints(listMountedVolumes(mountRoot), commandRunner)
-  fs.rmSync(mountRoot, { recursive: true, force: true })
+  let mounted = []
+  try {
+    mounted = listMountedVolumes(mountRoot)
+  } catch (error) {
+    if (!inspectionError) inspectionError = error
+  }
+  const detachFailures = await detachMountPoints(mounted, commandRunner)
+  // Clear the mount root only once nothing is attached under it: deleting it
+  // while a read-only volume is still mounted fails on that volume's own files
+  // and would replace the detach error with a misleading one.
+  if (detachFailures.length === 0) fs.rmSync(mountRoot, { recursive: true, force: true })
   if (inspectionError) throw inspectionError
-  if (detachFailures.length > 0) throw new Error(`DMG 卸载失败：${detachFailures.join('；')}`)
+  if (detachFailures.length > 0) {
+    throw new Error(`DMG 卸载失败，挂载目录 ${mountRoot} 需人工清理：${detachFailures.join('；')}`)
+  }
   return result
 }
 

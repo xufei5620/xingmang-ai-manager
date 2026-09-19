@@ -833,10 +833,12 @@ test('rejects a signed free ZIP whose packaged package version is not bound to t
 function inspectableDmgCommandRunner(sourceApp, certificate, infoPlist, options = {}) {
   const inner = inspectableZipCommandRunner(sourceApp, certificate, infoPlist, options)
   const calls = []
+  const mountRoots = []
   const runner = async (command, args) => {
     if (command === '/usr/bin/hdiutil' && args[0] === 'attach') {
       calls.push(args)
       const mountRoot = fs.realpathSync(args[args.indexOf('-mountrandom') + 1])
+      mountRoots.push(mountRoot)
       const lines = []
       for (const volume of options.volumeNames || ['dmg.Ab12Cd']) {
         const mountPoint = path.join(mountRoot, volume)
@@ -858,6 +860,11 @@ function inspectableDmgCommandRunner(sourceApp, certificate, infoPlist, options 
   }
   runner.calls = calls
   runner.detached = () => calls.filter((args) => args[0] === 'detach').map((args) => args[1])
+  // A refused detach deliberately leaves the mount root behind; clean it up so
+  // the test run itself does not leak one.
+  runner.cleanup = () => {
+    for (const mountRoot of mountRoots) fs.rmSync(mountRoot, { recursive: true, force: true })
+  }
   return runner
 }
 
@@ -1022,11 +1029,12 @@ test('reports a DMG that stays mounted after a successful inspection', async (t)
   const commandRunner = inspectableDmgCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist, {
     detachFails: true,
   })
+  t.after(() => commandRunner.cleanup())
   await assert.rejects(() => verifyDmgApplication(dmgPathFor(fixture), 'arm64', {
     expectedCertificateSha256: certificateSha256,
     expectedVersion: '1.2.3',
     commandRunner,
-  }), /DMG 卸载失败/)
+  }), /DMG 卸载失败.*需人工清理/)
 })
 
 test('rejects a free release whose DMGs are signed by a different certificate than its ZIPs', async (t) => {
