@@ -112,6 +112,17 @@ describe('SavedAccountsStore', () => {
     expect(storage.encryptString).not.toHaveBeenCalled()
   })
 
+  it('refuses the plaintext safeStorage backend, which only obfuscates the index', async () => {
+    const file = tempFile()
+    const storage = safeStorage()
+    storage.getSelectedStorageBackend = () => 'basic_text'
+    const store = new SavedAccountsStore(file, storage)
+    await expect(store.upsert(input())).rejects.toThrow('已拒绝写入已保存的账号')
+    await expect(store.list()).rejects.toThrow('已拒绝写入已保存的账号')
+    expect(fs.existsSync(file)).toBe(false)
+    expect(storage.encryptString).not.toHaveBeenCalled()
+  })
+
   it('preserves an unreadable existing index instead of replacing it with one account', async () => {
     const file = tempFile()
     fs.writeFileSync(file, 'corrupted-index', 'utf8')

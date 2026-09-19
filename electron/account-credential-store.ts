@@ -6,6 +6,7 @@ import {
   writeAtomicSafeUtf8File,
 } from './safe-local-data'
 import type { SafeStorageLike } from './account-session-store'
+import { isSafeStorageUsable } from './safe-storage-backend'
 
 // Persists the "记住密码" login credential -- the identifier + password the
 // user asked the login dialog to keep. Same posture as account-session-store:
@@ -78,7 +79,7 @@ export class AccountCredentialStore {
   ) {}
 
   async read(): Promise<PersistedAccountCredentials | null> {
-    if (!this.storage.isEncryptionAvailable()) return null
+    if (!isSafeStorageUsable(this.storage)) return null
     const content = await readSafeUtf8File(this.filePath, FILE_LABEL, MAX_FILE_BYTES).catch(() => null)
     if (!content) return null
     return decodePersistedAccountCredentials(content, this.storage)
@@ -86,7 +87,9 @@ export class AccountCredentialStore {
 
   save(identifier: string, password: string): Promise<void> {
     return this.enqueue(async () => {
-      if (!this.storage.isEncryptionAvailable()) return
+      // 记住密码 stores the account password itself, so a plaintext backend is
+      // refused outright rather than downgraded to obfuscation.
+      if (!isSafeStorageUsable(this.storage)) return
       const record: PersistedAccountCredentials = {
         version: CURRENT_VERSION,
         identifier,

@@ -64,6 +64,7 @@ import { CodexSessionsService } from './codex-sessions'
 import { createNewApiClient } from './new-api-client'
 import { createRealmAccountService, type RealmAccountClientHandle, type RealmAccountSiteId } from './realm-account-service'
 import { createFileRealmAccountVault } from './realm-account-vault-file'
+import { inspectSafeStorageBackend } from './safe-storage-backend'
 import { parseRealmSavedAccount, type RealmSavedAccount } from './realm-account'
 import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
 import { requireSiteRuntimeDefinition } from './site-runtime'
@@ -742,12 +743,16 @@ if (!hasSingleInstanceLock) {
 
     // Both realms commit accounts through the OS-backed encrypted vault.
     // Unavailable encryption rejects login without changing existing files.
-    if (!safeStorage.isEncryptionAvailable()) {
+    const safeStorageBackend = inspectSafeStorageBackend(safeStorage)
+    if (safeStorageBackend !== 'ok') {
       runtimeLog.log(
         'warn',
         'account',
         'session.persist.unavailable',
-        '系统未提供安全加密存储，请恢复系统凭据服务后登录；已有账号文件将保留',
+        safeStorageBackend === 'plaintext'
+          ? '当前系统没有可用的密钥环，安全存储只能以明文保存，已停止写入登录凭据；请启用系统凭据服务后重新登录，已有账号文件将保留'
+          : '系统未提供安全加密存储，请恢复系统凭据服务后登录；已有账号文件将保留',
+        { backend: safeStorageBackend },
       )
     }
     const accountSessionStore = new AccountSessionStore(path.join(managerDataDirectory, 'account-session.dat'), safeStorage)

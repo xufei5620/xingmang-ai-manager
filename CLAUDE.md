@@ -134,6 +134,8 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 
 顺序：`catalog.ts` 的 `providerIds` / `cliCatalog` / `managedCliKeyProfiles` 三处 → `config-files.ts` 六个 `switch`（**无 `default` 分支 + 非 void 返回类型 = 穷尽性保障**，漏了是编译错）→ **`src/provider-registry.ts` 的两张 rank 表**（概览序 codex/claude/grok/gemini 与管理序 codex/claude/gemini/grok，两种顺序是有意为之、各自只定义一次；`Record<ProviderId, number>` 内联字面量，漏键/错键是编译错 TS2741/TS2353，`provider-registry.test.ts` 的覆盖断言在纯测试路径下也会红）→ 各类 `Record<ProviderId, X>` 映射表（`provider-meta.ts` 的 `providers`、`ProviderTabs.tsx` 的 labels、`PluginsPage.tsx` 的来源标签等，全是编译错）。
 
+v2 渲染层同样已收口：`src/renderer-v2/registry/tools.ts` 的 `ToolDef.id` 是 `ProviderId | 'codexDesktop'`，`officialAccountNames` 是无 default 的 `Record<ProviderId, string | null>`，npm 包名与配置目录名从 `catalog.ts` 派生，漏键是编译错，`registry/tools.test.ts` 另有覆盖断言（R-S11）。
+
 历史包袱：这里曾有 5 处编译器沉默点（各页面自写 provider 联合类型/字面量数组），已随 #32 全部收口进 registry。**新的展示顺序数组只能定义在 registry 里，不要在页面里写字面量**。遗留手工点：概览页 `Dashboard.tsx` 的「N/5 个工具已安装」分母仍是硬编码。
 
 **T3. 改 `system-service.ts` → 先确认改的是纯函数区还是闭包区。**
@@ -158,7 +160,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 `tsconfig.electron.json` 与 `tsconfig.electron.test.json`（include 覆盖全部 electron 源码）必查；被 `ipc-contract.ts` 通过 `import type` 引用的还会进渲染 tsconfig 的程序图。四段都串在 `npm run typecheck` 里，跑这一条即可。
 
 **T10. 改 `providerConfigPaths` 或配置格式 → 同时影响备份、恢复、诊断、启动前校验。**
-消费者：`backups.ts`、`config-files.ts`、`diagnostics.ts`、`system-service.ts`、`main.ts`（启动前校验）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
+消费者：`backups.ts`、`config-files.ts`、`diagnostics.ts`、`system-service.ts`、`main.ts`（启动前校验），以及**渲染层的第 6 个消费者** `src/renderer-v2/registry/tools.ts`（展示给用户看的配置位置）。目录名这一层已收口到 `catalog.ts` 的 `providerConfigDirectoryNames`，主进程的 `providerConfigRoot` 与渲染层注册表都读它，改目录名只改这一处（R-S11）。必须考虑老版本已产生的 `.bak` 与已有备份的兼容。
 
 **T11. 看到根目录出现 `\tmp\xingmang-managed-cli-*` 目录 → 那是已知 bug 的产物，直接删除，不要提交。**
 `managed-cli.test.ts` 在非 Windows 平台每跑一次就泄漏若干个。
