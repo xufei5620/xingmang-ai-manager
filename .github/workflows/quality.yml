@@ -215,10 +215,13 @@ jobs:
         # more room than the two either side of it.
         timeout-minutes: 8
         run: node e2e/realm-vault-recovery-smoke.mjs
-      - name: Verify the shipping renderer in a native isolated profile
-        # The script's own waits are bounded, but its final app.close() is not.
-        timeout-minutes: 6
-        run: node e2e/renderer-v2-native.mjs
+      # e2e/renderer-v2-native.mjs is deliberately not wired here: it asserts the
+      # window zoom equals contentWidth / 1280 for widths down to 960, while
+      # calculateUiZoom clamps to UI_MIN_ZOOM = 0.8, so 960 can only ever produce
+      # 0.8. The runner makes it worse — its work area is under 1280x720, so
+      # resolveWindowPlacement starts the window maximized and setContentSize is
+      # a no-op on Windows. It needs a desktop and a product expectation CI does
+      # not have; it belongs with the manual acceptance scripts.
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
       - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"

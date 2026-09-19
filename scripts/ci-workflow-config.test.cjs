@@ -375,8 +375,8 @@ test('the supported macOS runner runs the real isolated free-distribution build 
 })
 
 // T-G5: each of these was committed, documented and then reachable only by
-// hand. A smoke nothing runs asserts nothing, and two of them are the only
-// coverage their Windows-only guarantee has.
+// hand. A smoke nothing runs asserts nothing, and both are the only coverage
+// their Windows-only guarantee has.
 test('the Windows packaging job runs every smoke that has no other home', () => {
   const packageSteps = workflow.jobs['windows-package'].steps
   const commands = runSteps('windows-package')
@@ -386,17 +386,23 @@ test('the Windows packaging job runs every smoke that has no other home', () => 
   for (const smoke of [
     'node e2e/acceleration-profile-isolation-smoke.mjs',
     'node e2e/realm-vault-recovery-smoke.mjs',
-    'node e2e/renderer-v2-native.mjs',
   ]) {
     const index = commands.indexOf(smoke)
     assert.notEqual(index, -1, `${smoke} must run somewhere in CI`)
     assert.ok(index > compileIndex, `${smoke} needs the compiled application`)
     const step = packageSteps.find((entry) => entry.run === smoke)
-    // Two of the three drive Electron child processes and the third ends on an
-    // unbounded close(); a hang in any of them would otherwise consume the
-    // whole job cap and report nothing about which step hung.
+    // Both drive Electron child processes; a hang in either would otherwise
+    // consume the whole job cap and report nothing about which step hung.
     assert.ok(step['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
   }
+})
+
+// Wiring this one would pin CI to an expectation the product contradicts: it
+// asserts the window zoom equals contentWidth / 1280 down to 960, but
+// calculateUiZoom clamps at UI_MIN_ZOOM = 0.8. Keep it out until the script is
+// reconciled with that clamp, so nobody re-adds it from the T-G5 list alone.
+test('the native renderer smoke stays out of CI while its zoom expectation is stale', () => {
+  assert.ok(!runSteps('windows-package').includes('node e2e/renderer-v2-native.mjs'))
 })
 
 test('the Windows job packages and exercises a hardened non-publishing build', () => {
