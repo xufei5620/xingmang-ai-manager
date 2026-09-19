@@ -722,13 +722,26 @@ function validateReleaseEnvironment(env = process.env, packageVersion = null) {
     : DEFAULT_UPDATE_URL
   const updateUrl = normalizeUpdateBaseUrl(env.XINGMANG_UPDATE_URL?.trim() || defaultUrl)
   const releaseMode = env.XINGMANG_RELEASE === '1'
+  // 产品决定(2026-09-05):Windows 对外发布暂时没有代码签名证书,固定走无签名
+  // 模式。它与 XINGMANG_RELEASE 互斥(electron-builder.config.cjs 同样拒绝两者
+  // 并存),但它仍然是一次面向付费客户、带自动更新的正式发布 —— 除了
+  // Authenticode 签名主体比对之外,每一道发布门禁都必须照跑,「远端版本必须低于
+  // 本地」尤其不能漏,否则可以把同版本或更旧的包推上更新源。
+  const unsignedReleaseMode = env.XINGMANG_UNSIGNED_RELEASE === '1'
+  const publicReleaseMode = releaseMode || unsignedReleaseMode
   const allowUnsigned = env.XINGMANG_ALLOW_UNSIGNED_RELEASE === '1'
   const certificate = env.WIN_CSC_LINK?.trim() || env.CSC_LINK?.trim() || null
   const expectedPublisher = env.XINGMANG_SIGNING_PUBLISHER?.trim() || null
-  if (releaseMode && allowUnsigned) {
+  if (releaseMode && unsignedReleaseMode) {
+    throw validationError(
+      'UNSIGNED_RELEASE_MODE_CONFLICT',
+      'XINGMANG_UNSIGNED_RELEASE=1 不能与 XINGMANG_RELEASE=1 同时启用',
+    )
+  }
+  if (publicReleaseMode && allowUnsigned) {
     throw validationError(
       'UNSIGNED_RELEASE_OVERRIDE_FORBIDDEN',
-      '正式发布不能使用未签名覆盖；仅允许在未设置 XINGMANG_RELEASE 时进行本地调试构建',
+      '正式发布不能使用未签名覆盖；仅允许在未设置 XINGMANG_RELEASE 与 XINGMANG_UNSIGNED_RELEASE 时进行本地调试构建',
     )
   }
   if (releaseMode && !certificate) {
@@ -747,6 +760,8 @@ function validateReleaseEnvironment(env = process.env, packageVersion = null) {
     updateUrl,
     signing: {
       releaseMode,
+      unsignedReleaseMode,
+      publicReleaseMode,
       allowUnsigned,
       certificateConfigured: Boolean(certificate),
       expectedPublisher,
