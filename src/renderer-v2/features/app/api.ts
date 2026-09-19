@@ -14,6 +14,7 @@ export function createAppApi(bridge: XingmangApi) {
     session: () => bridge.getAccountSession(),
     balance: () => bridge.getAccountBalance(),
     logout: () => bridge.logoutAccount(),
+    readSettings: () => bridge.getSettings(),
     savePreferences: (patch: Parameters<XingmangApi['saveSettings']>[0]) => bridge.saveSettings(patch),
     startupUpdate: () => bridge.runStartupUpdate(),
     openCanvas: () => bridge.openCanvasWindow(),
