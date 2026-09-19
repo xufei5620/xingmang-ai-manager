@@ -3,6 +3,7 @@ import { createSettingsQueue, diagnosticTarget } from './pages-maintenance'
 import {
   buildAccountInviteLink,
   buildSubscriptionPaymentInput,
+  passwordFormDirty,
   paymentTerminalPresentation,
   resetTopupQuoteForMethod,
   validateTopupAmount,
@@ -258,6 +259,21 @@ describe('v2 business boundaries', () => {
       startTimestamp: undefined,
       endTimestamp: undefined,
     })
+  })
+  it('treats any typed password as unsaved work so closing asks before dropping it', () => {
+    const empty = {
+      busy: '',
+      originalPassword: '',
+      password: '',
+      confirmPassword: '',
+    }
+    expect(passwordFormDirty(empty)).toBe(false)
+    expect(passwordFormDirty({ ...empty, originalPassword: 'current' })).toBe(
+      true,
+    )
+    expect(passwordFormDirty({ ...empty, password: 'next' })).toBe(true)
+    expect(passwordFormDirty({ ...empty, confirmPassword: 'next' })).toBe(true)
+    expect(passwordFormDirty({ ...empty, busy: 'password' })).toBe(true)
   })
   it('allows only structured environment variables', () => {
     expect(

@@ -708,6 +708,12 @@ if (!hasSingleInstanceLock) {
       retryWithoutProxy: async () => {
         await autoUpdater.netSession.setProxy({ mode: 'direct' })
       },
+      // Bypassing the proxy is a per-request escape hatch, so the updater
+      // session goes back to the default resolution as soon as the request is
+      // over. 'system' is the mode a freshly created session already has.
+      restoreProxy: async () => {
+        await autoUpdater.netSession.setProxy({ mode: 'system' })
+      },
     })
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
