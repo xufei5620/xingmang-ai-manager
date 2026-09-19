@@ -3,6 +3,18 @@ const fs = require('node:fs');
 const path = require('node:path');
 const ts = require('typescript');
 const root = path.resolve('.');
+// The three reports carry a generatedAt stamp, so writing them unconditionally
+// left the working tree dirty on every run and made this gate impossible to put
+// in CI behind the dirty-tree check. Reports are now opt-in; the exit code and
+// the stdout diagnosis below are what a gate needs.
+function reportDirectory() {
+  const flag = process.argv.indexOf('--report');
+  if (flag === -1) return null;
+  const target = process.argv[flag + 1];
+  if (!target || target.startsWith('--')) { console.error('--report 需要指定一个输出目录，例如 --report test-results'); process.exit(2); }
+  return path.resolve(root, target);
+}
+const outputDirectory = reportDirectory();
 function filesUnder(directory) {
   return fs.readdirSync(directory, { withFileTypes: true }).flatMap(entry => {
     const full = path.join(directory, entry.name);
@@ -133,10 +145,24 @@ function templateMatches(pattern, literal) {
 const dynamicCandidates = unmatched.map(row => ({ ...row, candidates: v2.patterns.filter(other => templateMatches(other.pattern, row.pattern)) })).filter(row => row.candidates.length);
 const missing = unmatched.filter(row => !dynamicCandidates.some(candidate => candidate.pattern === row.pattern));
 const report = { generatedAt: new Date().toISOString(), method: 'TypeScript AST: JSX attributes, object properties, setAttribute; checker expands literal unions and templates. Dynamic expressions remain symbolic. Exact matches and compatible dynamic candidates are separate; forwarding props never claim coverage.', counts: { files: inputs.length, occurrences: occurrences.length, legacyProductOccurrences: legacy.productOccurrences, legacyPatterns: legacy.patterns.length, v2ProductOccurrences: v2.productOccurrences, v2Patterns: v2.patterns.length, missingExactPatterns: unmatched.length, compatibleDynamicCandidates: dynamicCandidates.length, missingPatterns: missing.length }, runtimeBoundary: runtimeBoundary(path.join(root, 'src/renderer-v2/main.tsx')), legacy, v2, missing, dynamicCandidates, occurrences };
-fs.mkdirSync(path.join(root, 'docs'), { recursive: true });
-fs.writeFileSync(path.join(root, 'docs/renderer-v2-existing-testids.txt'), JSON.stringify({ method: report.method, counts: report.counts, legacy }, null, 2) + '\n', 'utf8');
-fs.writeFileSync(path.join(root, 'docs/renderer-v2-testid-inventory.json'), JSON.stringify(report, null, 2) + '\n', 'utf8');
-const markdown = ['# V2 旧 testId 缺失清单', '', '由 TypeScript AST 生成。缺失表示旧模式未在新版出现；不等同功能缺失。泛型透传与不可解析表达式不会自动算作覆盖。存在固定前缀动态模板的项目独立列为候选，需结合运行时检查。', '', '| 未匹配旧模式 | 类型 | 首个旧位置 |', '|---|---|---|', ...missing.map(row => '| ' + row.pattern.replaceAll('|', '\\|') + ' | ' + row.kind + ' | ' + row.locations[0].file + ':' + row.locations[0].line + ' |'), '', '| 有动态匹配候选的旧模式 | 新模板 | 新位置 |', '|---|---|---|', ...dynamicCandidates.map(row => '| ' + row.pattern + ' | ' + row.candidates.map(candidate => candidate.pattern).join(', ') + ' | ' + row.candidates[0].locations[0].file + ':' + row.candidates[0].locations[0].line + ' |')].join('\n');
-fs.writeFileSync(path.join(root, 'docs/renderer-v2-missing-testids.md'), markdown + '\n', 'utf8');
+if (outputDirectory) {
+  fs.mkdirSync(outputDirectory, { recursive: true });
+  fs.writeFileSync(path.join(outputDirectory, 'renderer-v2-existing-testids.txt'), JSON.stringify({ method: report.method, counts: report.counts, legacy }, null, 2) + '\n', 'utf8');
+  fs.writeFileSync(path.join(outputDirectory, 'renderer-v2-testid-inventory.json'), JSON.stringify(report, null, 2) + '\n', 'utf8');
+}
+if (outputDirectory) {
+  const markdown = ['# V2 旧 testId 缺失清单', '', '由 TypeScript AST 生成。缺失表示旧模式未在新版出现；不等同功能缺失。泛型透传与不可解析表达式不会自动算作覆盖。存在固定前缀动态模板的项目独立列为候选，需结合运行时检查。', '', '| 未匹配旧模式 | 类型 | 首个旧位置 |', '|---|---|---|', ...missing.map(row => '| ' + row.pattern.replaceAll('|', '\\|') + ' | ' + row.kind + ' | ' + row.locations[0].file + ':' + row.locations[0].line + ' |'), '', '| 有动态匹配候选的旧模式 | 新模板 | 新位置 |', '|---|---|---|', ...dynamicCandidates.map(row => '| ' + row.pattern + ' | ' + row.candidates.map(candidate => candidate.pattern).join(', ') + ' | ' + row.candidates[0].locations[0].file + ':' + row.candidates[0].locations[0].line + ' |')].join('\n');
+  fs.writeFileSync(path.join(outputDirectory, 'renderer-v2-missing-testids.md'), markdown + '\n', 'utf8');
+}
 console.log(JSON.stringify(report.counts));
-if (missing.length || report.runtimeBoundary.forbiddenLegacyImports.length || report.runtimeBoundary.forbiddenNodeImports.length || report.runtimeBoundary.unresolvedDynamic.length) process.exitCode = 1;
+// Without --report there is no file to open, so a CI failure has to be
+// readable from the log alone.
+const boundary = report.runtimeBoundary;
+for (const row of missing) console.error('缺失 testId 模式: ' + row.pattern + '（旧位置 ' + row.locations[0].file + ':' + row.locations[0].line + '）');
+for (const row of boundary.forbiddenLegacyImports) console.error('v2 运行时引入了旧界面模块: ' + row.from + ':' + row.line + ' -> ' + row.resolved);
+for (const row of boundary.forbiddenNodeImports) console.error('v2 运行时引入了 Node 内置模块: ' + row.from + ' -> ' + row.specifier);
+for (const row of boundary.unresolvedDynamic) console.error('v2 运行时存在无法解析的动态导入: ' + row.file + ' -> ' + row.expression);
+if (missing.length || boundary.forbiddenLegacyImports.length || boundary.forbiddenNodeImports.length || boundary.unresolvedDynamic.length) {
+  if (!outputDirectory) console.error('完整报告可用 npm run check:v2 -- --report test-results 生成。');
+  process.exitCode = 1;
+}
