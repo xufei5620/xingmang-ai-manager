@@ -106,11 +106,26 @@ describe('createCrashReporter', () => {
     expect(harness.calls).toHaveLength(1)
   })
 
-  it('stops when the ingest answer came from another origin', async () => {
+  it('stops when ingest answers with a redirect instead of accepting the envelope', async () => {
     const { reporter, harness } = setup(
       {},
       () => Response.redirect('https://collector.evil.test/api/1/envelope/', 307),
     )
+    reporter.report({ mechanism: 'uncaughtException', source: 'main', error: new Error('one') })
+    await reporter.flush()
+    reporter.report({ mechanism: 'uncaughtException', source: 'main', error: new Error('two') })
+    await reporter.flush()
+    expect(harness.calls).toHaveLength(1)
+  })
+
+  it('stops when a 200 answer came back from another origin', async () => {
+    const { reporter, harness } = setup({}, () => {
+      const response = new Response('', { status: 200 })
+      // A host that followed the redirect itself: the status is fine, the
+      // origin is not, and the stack has already left for somewhere else.
+      Object.defineProperty(response, 'url', { value: 'https://collector.evil.test/api/1/envelope/' })
+      return response
+    })
     reporter.report({ mechanism: 'uncaughtException', source: 'main', error: new Error('one') })
     await reporter.flush()
     reporter.report({ mechanism: 'uncaughtException', source: 'main', error: new Error('two') })
