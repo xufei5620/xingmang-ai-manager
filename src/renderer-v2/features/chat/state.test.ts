@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { activeConversation, applyStreamEvent, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage } from './state'
+import { activeConversation, applyStreamEvent, chatErrorMessage, createConversation, createWorkspace, DEFAULT_CHAT_GROUP, DEFAULT_CHAT_MODEL, DEFAULT_IMAGE_MODEL, defaultChatSettings, filterConversations, planTurn, resolveChatGroup, resolveChatModel, saveConversation, shouldSendOnEnter, type ChatMessage, type ChatWorkspace } from './state'
 import { createParameterDraft, parseParameters } from './parameters'
 import { historyKey, importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
 import { inspectModel, validateImageRequest } from './api'
@@ -149,5 +149,43 @@ describe('v2 chat persistence ownership', () => {
     expect(importLegacyHistory(storage, 'solov-api:7', 7)).toBeNull()
     expect(importLegacyHistory(storage, 'xm-account:8', 7)).toBeNull()
     expect(storage.getItem('xingmang-ai-chat:v1:7')).toBe(raw)
+  })
+})
+
+function watchedConversation(id: string, title: string, body: string) {
+  let reads = 0
+  const message: ChatMessage = { id: `${id}-message`, role: 'user', content: '', reasoning: '', status: 'complete', createdAt: 0 }
+  Object.defineProperty(message, 'content', { get: () => { reads += 1; return body }, enumerable: true })
+  return { conversation: { ...createConversation(defaultChatSettings(), id), title, messages: [message] }, reads: () => reads }
+}
+
+describe('v2 chat conversation search', () => {
+  it('matches titles and message bodies regardless of case and surrounding spaces', () => {
+    const deployment = watchedConversation('conversation-a', '部署脚本', '这里讨论了发布流程')
+    const billing = watchedConversation('conversation-b', '账号问题', '关于 Billing 明细的讨论')
+    const conversations = [deployment.conversation, billing.conversation]
+    expect(filterConversations(conversations, '部署')).toEqual([deployment.conversation])
+    expect(filterConversations(conversations, ' billing ')).toEqual([billing.conversation])
+    expect(filterConversations(conversations, '没有这个词')).toEqual([])
+  })
+
+  it('reads no conversation body while the search box is empty', () => {
+    const first = watchedConversation('conversation-a', '部署脚本', '这里讨论了发布流程')
+    const second = watchedConversation('conversation-b', '账号问题', '关于账单的讨论')
+    const conversations = [first.conversation, second.conversation]
+    expect(filterConversations(conversations, '')).toEqual(conversations)
+    expect(filterConversations(conversations, '   ')).toEqual(conversations)
+    expect(first.reads() + second.reads()).toBe(0)
+  })
+
+  it('rescans only the conversation a stream chunk changed', () => {
+    const idle = watchedConversation('conversation-idle', '历史对话', '一段很长的历史正文')
+    const live = { ...createConversation(defaultChatSettings(), 'conversation-live'), title: '正在生成', messages: [{ id: 'assistant-1', role: 'assistant' as const, content: '', reasoning: '', status: 'streaming' as const, createdAt: 0, requestId: 'request-1' }] }
+    let state: ChatWorkspace = { ...createWorkspace('xm-account:1'), conversations: [idle.conversation, live] }
+    for (let chunk = 0; chunk < 20; chunk += 1) {
+      state = applyStreamEvent(state, { requestId: 'request-1', type: 'content', content: '词' })
+      expect(filterConversations(state.conversations, '历史')).toEqual([idle.conversation])
+    }
+    expect(idle.reads()).toBe(1)
   })
 })
