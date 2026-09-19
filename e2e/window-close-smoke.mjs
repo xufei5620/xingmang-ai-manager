@@ -167,6 +167,27 @@ function bootFixture(config) {
 // their headroom did.
 const mainProcessResponseTimeoutMs = Number(process.env.XINGMANG_SMOKE_COMMAND_TIMEOUT_MS ?? 30_000)
 
+// Publishing a command uses the same temp file plus rename the fixture uses to
+// publish its evidence, and Defender can refuse it the same way. A refusal here
+// is louder — it fails the whole scenario rather than one command — but it costs
+// just as much CI time, so it gets the same bounded retry.
+const commandPublishAttempts = 5
+
+async function publishAtomically(staged, target, contents) {
+  let lastError
+  for (let attempt = 1; attempt <= commandPublishAttempts; attempt++) {
+    try {
+      await fs.writeFile(staged, contents, 'utf8')
+      await fs.rename(staged, target)
+      return
+    } catch (error) {
+      lastError = error
+      if (attempt < commandPublishAttempts) await new Promise((resolve) => setTimeout(resolve, attempt * 20))
+    }
+  }
+  throw lastError
+}
+
 async function waitUntil(read, accepts, label, timeout = mainProcessResponseTimeoutMs, abandoned = () => null) {
   const deadline = Date.now() + timeout
   let value
@@ -248,9 +269,7 @@ async function runScenario(blockQuit) {
   let actionId = 0
   const scheduleWindowAction = async (action, choice = null, shouldBlock = false) => {
     const command = { id: ++actionId, action, choice, blockQuit: shouldBlock }
-    const staged = `${commandPath}.tmp`
-    await fs.writeFile(staged, JSON.stringify(command), 'utf8')
-    await fs.rename(staged, commandPath)
+    await publishAtomically(`${commandPath}.tmp`, commandPath, JSON.stringify(command))
     // Publish each action once; only poll its acknowledgement, never replay it.
     const state = await waitUntil(readState, (entry) => entry?.lastActionId === command.id,
       `Smoke command ${command.id} (${action}) was not acknowledged`, mainProcessResponseTimeoutMs, abandonedByExit)

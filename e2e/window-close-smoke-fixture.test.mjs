@@ -23,6 +23,14 @@ function readBootFixtureSource() {
   return smokeSource.slice(start, end + 2)
 }
 
+function readPublishAtomicallySource() {
+  const start = smokeSource.indexOf('async function publishAtomically(')
+  assert.ok(start >= 0, 'window-close-smoke.mjs must still publish its commands atomically')
+  const end = smokeSource.indexOf('\n}\n', start)
+  assert.ok(end > start, 'publishAtomically must still be a top level declaration')
+  return smokeSource.slice(start, end + 2)
+}
+
 function permissionDenied() {
   const error = new Error('EPERM: operation not permitted, rename')
   error.code = 'EPERM'
@@ -143,6 +151,45 @@ test('an evidence write that keeps failing still runs the command exactly once',
   assert.equal(fixture.closes.length, 1, 'republishing an acknowledgement must not replay its command')
   assert.ok(state.evidenceFailures.length > 0, 'the refused swap must be visible in the failure dump')
   assert.equal(state.commandLog.length, 1)
+})
+
+// The other half of the same swap: the test process publishes each command the
+// way the fixture publishes its evidence, and a refused rename there fails the
+// whole scenario instead of one command.
+function readCommandPublishAttempts() {
+  const match = smokeSource.match(/const commandPublishAttempts = (\d+)\n/)
+  assert.ok(match, 'the command publish must still bound its retries with a named constant')
+  return Number(match[1])
+}
+
+function loadPublishAtomically(refusals) {
+  const context = vm.createContext({
+    setTimeout,
+    commandPublishAttempts: readCommandPublishAttempts(),
+    fs: {
+      writeFile: async (target, contents, encoding) => fs.writeFileSync(target, contents, encoding),
+      rename: async (from, to) => {
+        if (refusals.rename > 0) { refusals.rename--; throw permissionDenied() }
+        return fs.renameSync(from, to)
+      },
+    },
+  })
+  return vm.runInContext(`(${readPublishAtomicallySource()})`, context)
+}
+
+test('publishing a command survives a refused rename and still reports one that never lands', async () => {
+  const workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-window-close-publish-'))
+  const target = path.join(workspace, 'command.json')
+  const attempts = readCommandPublishAttempts()
+  const refusals = { rename: attempts - 1 }
+  const publishAtomically = loadPublishAtomically(refusals)
+
+  await publishAtomically(`${target}.tmp`, target, '{"id":1}')
+  assert.equal(fs.readFileSync(target, 'utf8'), '{"id":1}', 'the last retry must still publish the command')
+
+  refusals.rename = attempts
+  await assert.rejects(() => publishAtomically(`${target}.tmp`, target, '{"id":2}'), { code: 'EPERM' },
+    'a swap that never lands must still fail loudly rather than silently drop the command')
 })
 
 test('a command that could not be consumed is retried rather than lost', () => {
