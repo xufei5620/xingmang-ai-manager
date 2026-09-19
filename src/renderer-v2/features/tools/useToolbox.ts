@@ -3,6 +3,7 @@ import type { DesktopAppStatus, ExternalClientStatus, InstallProgress, XingmangA
 import { createToolsApi, type ToolboxPartitionFailure } from './api'
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
+import { errorMessage } from '../../business-common'
 
 export interface ToolJob { label: string; percent?: number; log: string[] }
 
@@ -37,7 +38,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       const statuses = await createToolsApi(bridge).readExternal()
       if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalClients(statuses)
     } catch (cause) {
-      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(cause instanceof Error ? cause.message : '客户端检测没有完成，请重试。')
+      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
       throw cause
     } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
   }, [bridge, scope])
@@ -60,7 +61,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       if (desktopRevision.current !== desktopAtStart && latestDesktop.current) next.system.desktopApps.codex = latestDesktop.current
       if (isCurrent()) setSnapshot(next)
     } catch (cause) {
-      if (isCurrent()) setError(cause instanceof Error ? cause.message : '检测没有完成，请重试。')
+      if (isCurrent()) setError(errorMessage(cause, '检测没有完成，请重试。'))
       throw cause
     } finally {
       if (isCurrent()) setLoading(false)

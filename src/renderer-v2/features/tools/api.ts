@@ -9,6 +9,7 @@ import {
 } from '../../../../electron/ipc-contract'
 import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
+import { errorMessage } from '../../business-common'
 import { usageCalendarDate, usageDateRange } from '../../../../electron/usage-date-range'
 
 /** 工具页一次读取里互相独立的三块。 */
@@ -27,10 +28,6 @@ export interface ToolboxReadResult {
    */
   snapshot: ToolboxSnapshot | null
   failures: ToolboxPartitionFailure[]
-}
-
-function failureMessage(reason: unknown, fallback: string): string {
-  return reason instanceof Error && reason.message ? reason.message : fallback
 }
 
 /**
@@ -60,9 +57,9 @@ export function createToolsApi(bridge: XingmangApi) {
         bridge.scanSystem(force), bridge.getConfig(), bridge.getPlatformCapabilities(),
       ])
       const failures: ToolboxPartitionFailure[] = []
-      if (system.status === 'rejected') failures.push({ partition: 'system', message: failureMessage(system.reason, '工具检测没有完成，请重试。') })
-      if (config.status === 'rejected') failures.push({ partition: 'config', message: failureMessage(config.reason, '工具配置没有读到，请重试。') })
-      if (platform.status === 'rejected') failures.push({ partition: 'platform', message: failureMessage(platform.reason, '当前系统支持的操作没有读到，请重试。') })
+      if (system.status === 'rejected') failures.push({ partition: 'system', message: errorMessage(system.reason, '工具检测没有完成，请重试。') })
+      if (config.status === 'rejected') failures.push({ partition: 'config', message: errorMessage(config.reason, '工具配置没有读到，请重试。') })
+      if (platform.status === 'rejected') failures.push({ partition: 'platform', message: errorMessage(platform.reason, '当前系统支持的操作没有读到，请重试。') })
       if (system.status !== 'fulfilled' || platform.status !== 'fulfilled') return { snapshot: null, failures }
       return {
         snapshot: {

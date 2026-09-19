@@ -96,6 +96,15 @@ describe('toolbox read partial failures', () => {
     expect(result.failures.map((failure) => failure.partition)).toEqual(['system', 'config', 'platform'])
   })
 
+  it('redacts the local path out of the reason it puts on screen', async () => {
+    const result = await createToolsApi(bridge({
+      getConfig: async () => { throw new Error('C:\\Users\\张三\\.codex\\config.toml 解析失败') },
+    })).read()
+
+    expect(result.failures[0]?.message).toBe('本地配置文件 解析失败')
+    expect(result.failures[0]?.message).not.toContain('张三')
+  })
+
   it('falls back to a readable Chinese reason when a partition rejects without a message', async () => {
     const result = await createToolsApi(bridge({
       getConfig: async () => { throw 'boom' },
