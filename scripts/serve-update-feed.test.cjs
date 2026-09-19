@@ -19,8 +19,15 @@ function canCreateSymlinks() {
 
 const symlinksSupported = canCreateSymlinks()
 
-function fixture(t) {
-  const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-feed-test-')))
+// fs.realpathSync and fs.promises.realpath disagree on Windows: only the
+// async one expands an 8.3 short name, so a fixture rooted at the sync
+// spelling (C:\Users\RUNNER~1\...) never matches what the script resolves
+// (C:\Users\runneradmin\...). The fixture resolves with the same call the
+// script uses so the two spellings can never diverge.
+async function fixture(t) {
+  const base = await fs.promises.realpath(
+    fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-feed-test-')),
+  )
   t.after(() => fs.rmSync(base, { recursive: true, force: true }))
   const root = path.join(base, 'release')
   const outside = path.join(base, 'outside')
@@ -41,7 +48,7 @@ test('name-level containment rejects traversal and accepts the directory itself'
 })
 
 test('a plain file inside the release directory is served', async (t) => {
-  const { root } = fixture(t)
+  const { root } = await fixture(t)
   assert.equal(await resolveServableFile(root, root, 'latest.yml'), path.join(root, 'latest.yml'))
   assert.equal(await resolveServableFile(root, root, ''), path.join(root, 'latest.yml'))
 })
@@ -49,7 +56,7 @@ test('a plain file inside the release directory is served', async (t) => {
 test('P-33: a symlink inside the release directory that resolves outside it is refused', {
   skip: symlinksSupported ? false : 'symlink creation is not permitted on this host',
 }, async (t) => {
-  const { root, outside } = fixture(t)
+  const { root, outside } = await fixture(t)
   fs.symlinkSync(path.join(outside, 'secret.yml'), path.join(root, 'leak.yml'))
   fs.symlinkSync(outside, path.join(root, 'elsewhere'))
 
@@ -62,7 +69,7 @@ test('P-33: a symlink inside the release directory that resolves outside it is r
 test('P-33: a symlinked release directory still serves its own contents', {
   skip: symlinksSupported ? false : 'symlink creation is not permitted on this host',
 }, async (t) => {
-  const { base, root } = fixture(t)
+  const { base, root } = await fixture(t)
   const linkedRoot = path.join(base, 'linked-release')
   fs.symlinkSync(root, linkedRoot)
   const realRoot = await fs.promises.realpath(linkedRoot)
@@ -74,7 +81,7 @@ test('P-33: a symlinked release directory still serves its own contents', {
 })
 
 test('traversal outside the release directory is refused before the filesystem is touched', async (t) => {
-  const { root } = fixture(t)
+  const { root } = await fixture(t)
   let realpathCalls = 0
   const realpath = async (target) => {
     realpathCalls += 1
@@ -86,7 +93,7 @@ test('traversal outside the release directory is refused before the filesystem i
 })
 
 test('a missing file surfaces as ENOENT so the server can answer 404', async (t) => {
-  const { root } = fixture(t)
+  const { root } = await fixture(t)
   await assert.rejects(
     () => resolveServableFile(root, root, 'missing.yml'),
     (error) => error.code === 'ENOENT',
