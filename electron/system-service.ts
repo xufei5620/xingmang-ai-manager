@@ -1128,6 +1128,11 @@ export function npmRegistryLabel(registry: string): string {
 export const npmResolutionTimeoutMs = 10 * 60_000
 export const npmDownloadTimeoutMs = 5 * 60_000
 export const npmResolutionHeartbeatMs = 15_000
+export const grokDownloadStallHeartbeatMs = 15_000
+
+export function grokDownloadStallMessage(idleMs: number): string {
+  return `Grok CLI 下载已 ${Math.round(idleMs / 1000)} 秒没有新数据，仍在等待；若长时间不动，请检查网络或切换加速线路后重试`
+}
 
 export function formatElapsedDuration(elapsedMs: number): string {
   const seconds = Math.max(0, Math.round(elapsedMs / 1000))
@@ -1752,6 +1757,10 @@ export interface SystemServiceOptions {
   networkLocationFetch?: typeof fetch
   /** Re-read Chromium's proxy configuration before an explicit location refresh. */
   reloadNetworkProxyConfig?: () => Promise<void>
+  /** Artifact downloads follow the same proxy a browser would; see download-proxy.ts. */
+  downloadFetch?: typeof fetch
+  /** Loopback-only proxy variables handed to package-manager subprocesses. */
+  resolveSubprocessProxyEnvironment?: () => Promise<NodeJS.ProcessEnv>
 }
 
 export function providerCommandEnvironment(
@@ -1814,6 +1823,11 @@ export function createSystemService(
   const inspectInstalledPythonRuntimeForService = serviceOptions.inspectInstalledPythonRuntime ?? inspectInstalledPythonRuntime
   const inspectWindowsRestartRequiredForService = serviceOptions.inspectWindowsRestartRequired ?? inspectWindowsRestartRequired
   const installNodeRuntimeForService = serviceOptions.installNodeRuntime ?? installNodeRuntimeLts
+  // 安装下载曾经完全无视机器上的代理：产物下载走 Node 自带网络栈、npm 子进程
+  // 没有任何代理变量，于是开着加速也一样直连。这两个注入点把下载接回系统代理。
+  const downloadFetch = serviceOptions.downloadFetch ?? fetch
+  const resolveSubprocessProxyEnvironment = serviceOptions.resolveSubprocessProxyEnvironment
+    ?? (async (): Promise<NodeJS.ProcessEnv> => ({}))
   const resolveWindowsMachinePathsForService = serviceOptions.resolveWindowsMachinePaths ?? resolveWindowsMachinePaths
   const installing = new Set<ProviderId>()
   const installationQueue = new InstallationQueue()
@@ -2412,6 +2426,7 @@ export function createSystemService(
       return await installNodeRuntimeForService({
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
+        dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (!target.isDestroyed()) target.send('runtime:node-install-progress', progress)
         },
@@ -2535,6 +2550,7 @@ export function createSystemService(
       await installNodeRuntimeLts({
         networkRegion: await inspectNetworkRegion(),
         temporaryDirectoryMode: windowsExecutionMode,
+        dependencies: { fetch: downloadFetch },
         onProgress: (progress) => {
           if (progress.message) sendInstallProgress(target, provider, 'output', progress.message)
         },
@@ -2577,21 +2593,40 @@ export function createSystemService(
             `正在从 xAI 官方下载并验证已签名的 Grok CLI ${installedBefore ? '更新' : '安装'}包`,
           )
           let lastReportedBucket = -1
-          downloadedGrokBinary = await downloadLatestGrokBinary({
-            createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
-            onProgress: ({ percent, transferred, total }) => {
-              const bucket = Math.floor(percent / 5)
-              if (bucket === lastReportedBucket && percent !== 100) return
-              lastReportedBucket = bucket
-              sendInstallProgress(
-                target,
-                provider,
-                'output',
-                `Grok CLI 下载 ${percent}%（${Math.floor(transferred / 1024 / 1024)} / ${Math.floor(total / 1024 / 1024)} MiB）`,
-                percent,
-              )
-            },
-          })
+          // 百分比只在有新数据时才动，所以一条不通的线路看上去和「正在下载」
+          // 完全一样。心跳把静止的那段时间说出来，用户才知道该等还是该换线路。
+          let lastDownloadActivity = Date.now()
+          const stallTicker = setInterval(() => {
+            const idleMs = Date.now() - lastDownloadActivity
+            if (idleMs < grokDownloadStallHeartbeatMs) return
+            sendInstallProgress(
+              target,
+              provider,
+              'output',
+              grokDownloadStallMessage(idleMs),
+            )
+          }, grokDownloadStallHeartbeatMs)
+          try {
+            downloadedGrokBinary = await downloadLatestGrokBinary({
+              fetchImpl: downloadFetch,
+              createTemporaryDirectory: () => createInstallTemporaryDirectory('grok-binary'),
+              onProgress: ({ percent, transferred, total }) => {
+                lastDownloadActivity = Date.now()
+                const bucket = Math.floor(percent / 5)
+                if (bucket === lastReportedBucket && percent !== 100) return
+                lastReportedBucket = bucket
+                sendInstallProgress(
+                  target,
+                  provider,
+                  'output',
+                  `Grok CLI 下载 ${percent}%（${Math.floor(transferred / 1024 / 1024)} / ${Math.floor(total / 1024 / 1024)} MiB）`,
+                  percent,
+                )
+              },
+            })
+          } finally {
+            clearInterval(stallTicker)
+          }
           sendInstallProgress(
             target,
             provider,
@@ -2687,6 +2722,16 @@ export function createSystemService(
        * time the download still needed, and a legitimately slow resolution was
        * being killed at five minutes as if it had hung.
        */
+      // 解析一次就够：加速开关在一次安装中途变化时，换代理反而会让已经建立
+      // 的连接和重试落到两条不同的线路上。
+      let npmProxyVariables: NodeJS.ProcessEnv | null = null
+      const resolveNpmProxyVariables = async (): Promise<NodeJS.ProcessEnv> => {
+        if (!npmProxyVariables) {
+          try { npmProxyVariables = await resolveSubprocessProxyEnvironment() }
+          catch { npmProxyVariables = {} }
+        }
+        return npmProxyVariables
+      }
       const executeNpm = async (
         argv: string[],
         cwd: string,
@@ -2708,7 +2753,10 @@ export function createSystemService(
           ],
           windowsPackageManager: 'npm',
         }, {
-          env: trustedOnly ? trustedCommandEnvironment() : commandEnvironment(),
+          env: {
+            ...(trustedOnly ? trustedCommandEnvironment() : commandEnvironment()),
+            ...await resolveNpmProxyVariables(),
+          },
           trustedOnly,
           trustedPaths: managedNpmLayout
             ? [npmUserConfig, transaction]

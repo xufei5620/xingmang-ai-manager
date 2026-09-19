@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { createPackage } = require('@electron/asar')
-const { inspectPackagedLaunchBoundary } = require('./verify-packaged-hardening.cjs')
+const { assertNoDefaultAppFallback, inspectPackagedLaunchBoundary } = require('./verify-packaged-hardening.cjs')
 
 const currentLaunchBoundary = [
   'WindowsPowerShell',
@@ -52,4 +52,13 @@ test('rejects a packaged elevation module that lost absolute path resolution', a
     elevation: 'spawn("powershell.exe")',
   })
   assert.throws(() => inspectPackagedLaunchBoundary(archive), /缺少绝对 PowerShell 路径解析/)
+})
+
+
+test('rejects a packaged resources directory that still ships the Electron welcome app', async (t) => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-default-app-'))
+  t.after(() => fs.rm(root, { recursive: true, force: true }))
+  assert.doesNotThrow(() => assertNoDefaultAppFallback(root))
+  await fs.writeFile(path.join(root, 'default_app.asar'), 'not a real archive', 'utf8')
+  assert.throws(() => assertNoDefaultAppFallback(root), /默认应用/)
 })

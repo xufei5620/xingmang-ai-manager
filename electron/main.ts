@@ -110,6 +110,10 @@ import {
   type ApplicationUrlPolicy,
 } from './security'
 import {
+  parseChromiumProxyResult,
+  subprocessDownloadProxyEnvironment,
+} from './download-proxy'
+import {
   createSystemService,
   type SystemService,
   type SystemSnapshot,
@@ -692,6 +696,14 @@ if (!hasSingleInstanceLock) {
       // Re-read the existing session/system proxy selection without changing
       // the OS proxy or imposing a new Chromium proxy mode.
       reloadNetworkProxyConfig: () => session.defaultSession.forceReloadProxyConfig(),
+      // CLI 产物下载以前走 Node 自带的网络栈，它不读系统代理，所以开着加速也
+      // 一样直连。Chromium 的网络栈读，于是下载才真的走线路。
+      downloadFetch: (input, init) => net.fetch(input instanceof URL ? input.href : input, init),
+      resolveSubprocessProxyEnvironment: async () => subprocessDownloadProxyEnvironment(
+        // A PAC script can answer differently per host, so ask about the one
+        // host every CLI install has to reach.
+        parseChromiumProxyResult(await session.defaultSession.resolveProxy('https://registry.npmjs.org/')),
+      ),
     })
     const storedSettings = systemService.readStoredConfig()
     const sessionsService = new CodexSessionsService({
