@@ -4,6 +4,7 @@ import { Button, Coachmark, Dialog, Input, Logo, Tooltip } from '../../ui'
 import { moreNavigation, shellNavigation, shellTour } from '../../registry/shell'
 import { pageRegistry, type PageId } from '../../registry/pages'
 import '../../styles/shell.css'
+import { errorMessage } from '../../business-common'
 import { Starfield } from '../auth/Starfield'
 import { LocalAvatar } from '../../LocalAvatar'
 import type { AvatarIdentity } from '../../local-avatar'
@@ -93,7 +94,7 @@ export function Shell({ activePage, account, platform, adapter, environment, bal
           ? { error: false, text: '当前账号已在本机领取过该口令。' }
           : { error: true, text: '口令无效，请核对后重试。' })
     } catch (cause) {
-      if (commandEpoch.current === epoch) setBonusFeedback({ error: true, text: cause instanceof Error ? cause.message : '领取失败，请稍后重试。' })
+      if (commandEpoch.current === epoch) setBonusFeedback({ error: true, text: errorMessage(cause, '领取失败，请稍后重试。') })
     } finally {
       if (bonusFlight.current === flight) { bonusFlight.current = null; setBonusBusy(false) }
     }

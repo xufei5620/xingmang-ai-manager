@@ -264,6 +264,38 @@ test('documentation-only changes do not build and package the app', () => {
   }
 })
 
+test('the change-scope job also gates the unreleased changelog fragments', () => {
+  const job = workflow.jobs.changes
+  const checkout = job.steps.find((step) => String(step.uses || '').includes('actions/checkout'))
+  const commands = runSteps('changes')
+
+  // Parallel pull requests used to append to the same two "unreleased" sections,
+  // and a conflicted pull request has no merge ref, so GitHub never triggered
+  // this workflow for it at all. Fragments removed the shared text; this step is
+  // what stops the habit from coming back.
+  assert.ok(commands.includes('npm run changelog:check'))
+  assert.match(packageJson.scripts['changelog:check'], /scripts\/changelog-collect\.cjs --check/)
+  assert.match(packageJson.scripts['changelog:collect'], /scripts\/changelog-collect\.cjs/)
+  assert.ok(packageJson.scripts['test:node'].includes('scripts/changelog-collect.test.cjs'))
+
+  // The guard diffs both unreleased sections against the pull request base, so
+  // the base commit has to be reachable...
+  assert.equal(checkout.with['fetch-depth'], 0)
+  // ...and this is the only job without a documentation-only skip, which is
+  // exactly the shape a bare CHANGELOG.md edit has.
+  assert.equal(job.if, undefined, 'the fragment gate must run for every change')
+  // No npm ci here: the gate has to keep running on node builtins alone.
+  assert.equal(commands.some((command) => command.startsWith('npm ci')), false)
+})
+
+test('the fragment directory keeps its instructions after a release collects it', () => {
+  // Collecting deletes every *.md fragment; these two are what keep the
+  // directory — and the format it documents — in git afterwards.
+  for (const file of ['changes/unreleased/README.md', 'changes/unreleased/TEMPLATE.md.example']) {
+    assert.ok(fs.existsSync(path.join(root, file)), `${file} must exist`)
+  }
+})
+
 test('the required aggregate fails for incomplete checks and accepts documentation-only changes', () => {
   const vm = require('node:vm')
   const gate = workflow.jobs['quality-gate']
