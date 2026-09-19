@@ -1072,16 +1072,19 @@ function stageAccelerationBundle(t, architecture, overrides = {}) {
 test('carrying the private acceleration nodes is opt-in through the command line only', () => {
   assert.deepEqual(parseFreeMacBuildArguments([]), {
     ciTemporarySigning: false,
+    keepPackage: false,
     accelerationBundles: undefined,
   })
   assert.deepEqual(parseFreeMacBuildArguments(['--ci-temporary-signing']), {
     ciTemporarySigning: true,
+    keepPackage: false,
     accelerationBundles: undefined,
   })
   assert.deepEqual(
     parseFreeMacBuildArguments(['--acceleration-arm64', '/private/arm64', '--acceleration-x64', '/private/x64']),
     {
       ciTemporarySigning: false,
+      keepPackage: false,
       accelerationBundles: { arm64: '/private/arm64', x64: '/private/x64' },
     },
   )
@@ -1102,6 +1105,98 @@ test('carrying the private acceleration nodes is opt-in through the command line
     '--acceleration-x64', '/private/x64',
   ]), /CI 临时签名/)
   assert.throws(() => parseFreeMacBuildArguments(['--acceleration']), /无法识别的参数/)
+})
+
+test('keeping the built package is opt-in and only meaningful for the CI signing rehearsal', () => {
+  assert.deepEqual(parseFreeMacBuildArguments(['--ci-temporary-signing', '--ci-keep-package']), {
+    ciTemporarySigning: true,
+    keepPackage: true,
+    accelerationBundles: undefined,
+  })
+
+  // 发布构建的产物本来就归发布者保管，静默接受这个开关会让人以为
+  // dist:mac:free 也认它。
+  assert.throws(() => parseFreeMacBuildArguments(['--ci-keep-package']), /只能与 --ci-temporary-signing/)
+  assert.throws(() => parseFreeMacBuildArguments([
+    '--ci-keep-package',
+    '--acceleration-arm64', '/private/arm64',
+    '--acceleration-x64', '/private/x64',
+  ]), /只能与 --ci-temporary-signing/)
+})
+
+test('a kept CI package lands in a directory the workflow can name in advance', async (t) => {
+  const projectRoot = temporaryProject(t)
+  const removed = []
+  let outputRequest
+  const result = await runCiFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    keepPackage: true,
+    packageVersion: '9.9.9',
+    env: { PATH: '/usr/bin:/bin' },
+    randomBytes: sequentialEntropy(),
+    createCertificate: (value) => writeCertificate(value),
+    certificateFingerprint: () => fingerprint,
+    certificateSha1: () => sha1Fingerprint,
+    runSecurity: (args) => {
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
+      return ''
+    },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
+    verifySigning: () => ({}),
+    runBuild: async (value) => {
+      outputRequest = value.outputDirectory
+      fs.mkdirSync(path.join(projectRoot, value.outputDirectory))
+      fs.writeFileSync(path.join(projectRoot, value.outputDirectory, 'SHA256SUMS'), 'sums')
+      return { outputDirectory: path.join(projectRoot, value.outputDirectory) }
+    },
+    removeDirectory: (directory) => {
+      removed.push(directory)
+      fs.rmSync(directory, { recursive: true, force: true })
+    },
+  })
+
+  // 工作流要在 upload-artifact 的 path 里写死这个名字，所以它不能带进程号或随机数。
+  assert.equal(outputRequest, 'release-free-ci-9.9.9')
+  assert.equal(result.keptOutputDirectory, path.join(projectRoot, 'release-free-ci-9.9.9'))
+  assert.deepEqual(fs.readdirSync(projectRoot), ['release-free-ci-9.9.9'])
+  assert.equal(removed.includes(path.join(projectRoot, 'release-free-ci-9.9.9')), false)
+  // 签名材料照旧清理：留下的只有产物。
+  const temporaryRoots = removed.filter((directory) => /xingmang-macos-free-ci-/.test(directory))
+  assert.equal(temporaryRoots.length, 1)
+})
+
+test('the rehearsal still takes its own output away when the package is not asked for', async (t) => {
+  const projectRoot = temporaryProject(t)
+  const result = await runCiFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    env: { PATH: '/usr/bin:/bin' },
+    randomBytes: sequentialEntropy(),
+    createCertificate: (value) => writeCertificate(value),
+    certificateFingerprint: () => fingerprint,
+    certificateSha1: () => sha1Fingerprint,
+    runSecurity: (args) => {
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
+      return ''
+    },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
+    verifySigning: () => ({}),
+    runBuild: async (value) => {
+      fs.mkdirSync(path.join(projectRoot, value.outputDirectory))
+      return { outputDirectory: path.join(projectRoot, value.outputDirectory) }
+    },
+    removeDirectory: (directory) => fs.rmSync(directory, { recursive: true, force: true }),
+  })
+
+  assert.equal(result.keptOutputDirectory, undefined)
+  assert.deepEqual(fs.readdirSync(projectRoot), [])
 })
 
 test('an acceleration directory is checked against its own architecture before any build work', (t) => {
