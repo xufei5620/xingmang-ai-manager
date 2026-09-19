@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { errorMessage, rawErrorMessage, userFacingErrorMessage } from './business-common'
+import { errorMessage, rawErrorMessage, snapshotErrorMessage, userFacingErrorMessage } from './business-common'
 
 describe('rawErrorMessage', () => {
   it('strips the Electron IPC prefix that would otherwise expose channel names', () => {
@@ -147,5 +147,26 @@ describe('errorMessage', () => {
 
   it('keeps its own generic fallback when the caller passes none', () => {
     expect(errorMessage(new Error('EPIPE'))).toBe('操作没有成功，请重试或查看反馈日志。')
+  })
+})
+
+describe('snapshotErrorMessage', () => {
+  it('redacts the local path a probe failure carries into the snapshot', () => {
+    // describeProbeFailure hands Error.message through untouched, so a failed
+    // stat lands on screen with the Windows account name in it.
+    expect(snapshotErrorMessage("ENOENT: no such file or directory, open 'C:\\Users\\yoyo\\AppData\\Roaming\\claude.json'"))
+      .toBe("ENOENT: no such file or directory, open '本地配置文件")
+    expect(snapshotErrorMessage('读取 /Users/yoyo/.codex/config.toml 失败')).toBe('读取 本地配置文件 失败')
+  })
+
+  it('keeps a Chinese reason that names no path', () => {
+    expect(snapshotErrorMessage('Claude Desktop 本地配置无法确认，请重新检测。'))
+      .toBe('Claude Desktop 本地配置无法确认，请重新检测。')
+  })
+
+  it('reports nothing rather than an empty string so callers keep their own fallback', () => {
+    expect(snapshotErrorMessage(null)).toBeNull()
+    expect(snapshotErrorMessage(undefined)).toBeNull()
+    expect(snapshotErrorMessage('   ')).toBeNull()
   })
 })
