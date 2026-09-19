@@ -705,11 +705,15 @@ test('a cold fixture open cannot be reported as a failed assertion again', () =>
 // suite therefore records pageerror and empties the record before it finishes;
 // this keeps a new suite from quietly opting out of that (T-G3).
 test('no browser suite can go green while its fixture threw', () => {
+  // A suite with no browser has no page to listen to. Selecting on the import
+  // rather than the file name keeps a real browser suite from opting out by
+  // dropping its listener, which a name based allowlist would not notice.
   const suites = fs.readdirSync(path.join(root, 'e2e'))
     .filter((name) => name.endsWith('.test.mjs'))
     .map((name) => `e2e/${name}`)
+    .filter((suite) => /@playwright\/test/.test(fs.readFileSync(path.join(root, suite), 'utf8')))
 
-  assert.ok(suites.length >= 15, 'the e2e suite list must not silently shrink')
+  assert.ok(suites.length >= 15, 'the e2e browser suite list must not silently shrink')
   for (const suite of suites) {
     const source = fs.readFileSync(path.join(root, suite), 'utf8')
     const shared = /from '\.\/page-errors\.mjs'/.test(source) && /pageErrors\.assertNone\(\)/.test(source)
