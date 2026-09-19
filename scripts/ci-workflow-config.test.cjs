@@ -440,6 +440,10 @@ const fixtureReadinessConsumers = [
   'e2e/shell-navigation-interactions.test.mjs',
   'e2e/ui-interactions.test.mjs',
   'src/renderer-v2/testing/app-check.mjs',
+  'src/renderer-v2/features/auth/browser-check.mjs',
+  'e2e/v2-business.test.mjs',
+  'e2e/app-v3-interactions.test.mjs',
+  'e2e/renderer-v2-gap-audit.mjs',
 ]
 
 test('a cold fixture open cannot be reported as a failed assertion again', () => {
