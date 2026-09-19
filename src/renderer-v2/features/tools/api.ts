@@ -97,7 +97,7 @@ export function createToolsApi(bridge: XingmangApi) {
     }),
     official: (tool: ToolId, mode: 'merge' | 'reset' = 'merge') => bridge.switchToOfficialAccount(providerFor(tool), mode),
     getLocale: () => bridge.inspectCodexDesktopLocale(),
-    setLocale: () => bridge.setCodexDesktopLocale('zh-CN'),
+    setLocale: (locale: 'zh-CN' | 'system' = 'zh-CN') => bridge.setCodexDesktopLocale(locale),
     getPermissions: () => bridge.inspectCodexWorkspacePermissions(),
     trustWorkspace: () => bridge.trustCodexWorkspace(),
     officialUsage: () => bridge.refreshOfficialChatGptUsage(),
