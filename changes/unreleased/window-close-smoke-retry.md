@@ -12,3 +12,6 @@
 - 新增 `e2e/window-close-smoke-fixture.test.mjs`（并入 `npm test` 的 `test:node`）：把 `bootFixture` 的真实源码取出来在
   `vm` 里跑，注入 `rename` / `unlink` 的 EPERM，覆盖四种情形——瞬时写失败不丢回执、持续写失败仍只执行一次且随后补发
   回执、指令未能消费时留在盘上由下一拍执行、投递指令的 rename 被拒后重试成功且始终失败时仍然抛错。无需图形环境，Linux 与 Windows 都跑。断言与超时未作任何放宽。
+- `scripts/ci-workflow-config.test.cjs` 的「浏览器套件必须记录 pageerror」门禁改成按是否 import `@playwright/test` 选取，
+  而不是按文件名后缀：新增的这条夹具用例不开浏览器、没有 page 可监听。按 import 选比按文件名开白名单更严——真正的
+  浏览器套件删掉监听器就会被这条门禁抓住。套件数量下限 15 保持不变。
