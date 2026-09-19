@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, Check, CircleCheck, Download, FolderOpen, LogIn, MessageSquare, RefreshCw, Settings, Terminal } from 'lucide-react'
+import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { BrandIcon, Button, Card, Logo, Pill, Progress } from '../../ui'
 import { tools as toolRegistry } from '../../registry/tools'
 import { authErrorMessage } from './state'
@@ -20,6 +21,8 @@ export interface GuideToolState {
   detectionError?: boolean
   supported?: boolean
   installMode?: 'managed' | 'external' | 'unavailable'
+  /** 来源是官方账号，但这个 CLI 里还没完成官方登录（R-G7）。 */
+  officialLoginRequired?: boolean
   model?: string
   workspace?: string
 }
@@ -44,10 +47,22 @@ export interface StartGuideProps {
 
 const steps: readonly { id: GuideStep; title: string }[] = [{ id: 'choose', title: '选一种开始方式' }, { id: 'prepare', title: '准备工具' }, { id: 'connect', title: '确认连接' }, { id: 'ready', title: '开始使用' }]
 
+/**
+ * A Codex config that carries no relay key only tells us the user picked the
+ * official account; the ChatGPT session itself lives in auth.json and shows up
+ * as `codexAuthMode`. Treating the two as one made the guide report "已连接"
+ * for someone who still has to sign in the first time they open Codex. The
+ * other CLIs keep their official login outside the config files this app
+ * reads, so nothing can be asserted about them and nothing is blocked.
+ */
+export function guideOfficialLoginRequired(provider: ProviderId, source: GuideToolState['source'], summary: Pick<ProviderConfigSummary, 'codexAuthMode'> | null | undefined): boolean {
+  return provider === 'codex' && source === 'official' && summary?.codexAuthMode !== 'chatgpt'
+}
+
 export function resolveGuideReadiness(route: GuideRoute | null, state: GuideToolState | undefined, signedIn: boolean) {
   if (!route) return { prepared: false, connected: false }
   if (route === 'chat') return { prepared: true, connected: signedIn }
-  return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (route === 'codexDesktop' || state.runtimeReady === true) && (route !== 'gemini' || state.pythonReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'unknown' && state.source !== 'none' && (state.configured || state.source === 'official')) }
+  return { prepared: Boolean(state && state.installed && !state.detectionError && state.supported !== false && state.installMode !== 'unavailable' && (route === 'codexDesktop' || state.runtimeReady === true) && (route !== 'gemini' || state.pythonReady === true)), connected: Boolean(state && !state.detectionError && state.source !== 'unknown' && state.source !== 'none' && !state.officialLoginRequired && (state.configured || state.source === 'official')) }
 }
 
 export function StartGuide(props: StartGuideProps) {
@@ -105,7 +120,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
       if (launched !== false && ticket === owner.current) complete(chosen)
     })
   }
-  const sourceLabel = tool?.source === 'official' ? '官方账号' : tool?.source === 'account' ? '星芒账号' : tool?.source === 'manual' ? '手动填写密钥' : tool?.source === 'unknown' ? '已有第三方配置' : '尚未选择连接方式'
+  const sourceLabel = tool?.source === 'official' ? tool.officialLoginRequired ? '官方账号（未登录）' : '官方账号' : tool?.source === 'account' ? '星芒账号' : tool?.source === 'manual' ? '手动填写密钥' : tool?.source === 'unknown' ? '已有第三方配置' : '尚未选择连接方式'
   return <main className="auth-guide" data-testid="onboarding-page">
     <div className="auth-guide-frame" data-testid="start-guide" data-guide-step={step} data-guide-route={route ?? ''} aria-busy={locked} data-busy={locked}>
       <Card><div className="auth-guide-brand"><div><Logo kind="micro" height={28} /><Logo kind="wordmark" height={22} /></div><span>第 {currentStep + 1} 步，共 4 步</span></div>
@@ -125,7 +140,7 @@ function ScopedStartGuide({ platform, tools, signedIn, busy = false, progress, o
             <Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-installed-rescan">我已装好，重新检测</Button>
           </>}
           {step === 'connect' && route === 'chat' && <><p className="auth-guide-callout">{signedIn ? '进入聊天后，选择分组和模型，再输入第一个问题。' : '登录星芒账号后即可开始聊天。'}</p>{!signedIn && <Button variant="primary" icon={LogIn} onClick={onLogin} testId="guide-login">登录账号</Button>}</>}
-          {step === 'connect' && route && route !== 'chat' && <><p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p><p className="auth-guide-callout">{tool?.source === 'unknown' ? '已保留现有第三方配置。请先查看处理步骤，确认哪些设置需要保留后再决定如何连接。' : tool?.source === 'official' ? '保留当前官方来源。官方账号的登录和可用额度，请在工具内确认。' : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p>{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}<div className="auth-form-actions"><Button icon={Settings} variant={readiness.connected ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></div></>}
+          {step === 'connect' && route && route !== 'chat' && <><p className="auth-guide-lead">{name} 的连接方式：<strong>{sourceLabel}</strong></p><p className="auth-guide-callout" data-testid={tool?.officialLoginRequired ? 'guide-official-login' : undefined}>{tool?.source === 'unknown' ? '已保留现有第三方配置。请先查看处理步骤，确认哪些设置需要保留后再决定如何连接。' : tool?.officialLoginRequired ? `当前选的是官方账号，但还没有在 ${name} 里登录。请打开 ${name} 用 ChatGPT 账号登录后回来重新检测，或打开配置改用星芒账号的密钥。` : tool?.source === 'official' ? '保留当前官方来源。官方账号的登录和可用额度，请在工具内确认。' : readiness.connected ? '当前连接已确认。需要换密钥、模型或工作文件夹时，可以打开配置。' : '打开配置选择连接来源、密钥、模型和工作文件夹，确认后保存。'}</p>{tool?.model && <p className="auth-hint">模型：{tool.model}</p>}{tool?.workspace && <p className="auth-hint">工作文件夹：{tool.workspace}</p>}<div className="auth-form-actions"><Button icon={Settings} variant={readiness.connected ? 'secondary' : 'primary'} disabled={locked} onClick={() => void run('确认连接', () => onConfigure(route))} testId="guide-config">{tool?.source === 'unknown' ? '查看已有配置处理步骤' : readiness.connected ? '查看连接配置' : '去完成连接配置'}</Button><Button icon={RefreshCw} disabled={locked} onClick={() => void run('检测工具', onDetect)} testId="guide-connection-rescan">重新检测</Button></div></>}
           {step === 'ready' && <><p className="auth-guide-lead">{route === 'chat' ? '从一个问题开始，慢慢熟悉你的 AI 工作台。' : readiness.prepared && readiness.connected ? `${name} 已准备好。打开工具，即可开始第一次任务。` : '工具或配置状态已变化，请返回复核。'}</p><div className="auth-guide-ready"><CircleCheck size={30} aria-hidden="true" /><span>有需要时，可从首页重新打开这份引导。</span></div></>}
           {(step === 'connect' || step === 'ready') && !readiness.prepared && <p className="auth-error" role="alert">工具或运行环境尚未准备好，请返回准备工具步骤后再继续。</p>}
           {pending && <p className="auth-hint" role="status">正在{pending}，请稍候</p>}{progress && locked && <Progress value={progress.percent} label={progress.label} testId="guide-progress" />}{error && <p className="auth-error" role="alert" data-testid="guide-error">{error}</p>}{storageWarning && <p className="auth-hint" role="status">{storageWarning}</p>}

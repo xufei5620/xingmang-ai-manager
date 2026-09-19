@@ -6,8 +6,12 @@ import { execFileSync } from 'node:child_process'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { windowsPowerShellExecutable } from './windows-elevation'
+import { AppSettingsStore } from './app-settings'
+import { InstallationQueue } from './installation-queue'
+import type { NativeConfigInspection } from './config-files'
 import {
   buildCodexDesktopDarwinStatus,
+  createCodexDesktopService,
   buildCodexDesktopLaunchPlan,
   buildCodexDesktopManifestSources,
   buildCodexDesktopPreviousManifestSources,
@@ -1099,5 +1103,77 @@ describe('buildCodexDesktopDarwinStatus', () => {
       detectionFailed: true,
       detectionError: 'detector crashed',
     })
+  })
+})
+
+
+function relayCodexConfig(dataDirectory: string): NativeConfigInspection {
+  return {
+    baseUrl: 'https://relay.example/v1',
+    actualBaseUrl: 'https://relay.example/v1',
+    exists: true,
+    hasApiKey: true,
+    matchesRelay: true,
+    apiKey: 'sk-test',
+    model: 'gpt-5-codex',
+    dataDirectory,
+    dataDirectoryExists: true,
+    files: [],
+    updatedAt: null,
+  }
+}
+
+function queuedCodexDesktopFixture(installationQueue = new InstallationQueue()) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-codex-queue-'))
+  temporaryDirectories.push(directory)
+  const inspectNativeProviderConfig = vi.fn(() => relayCodexConfig(directory))
+  const service = createCodexDesktopService({
+    // Only the queue ordering is under test, so the launch stops at the
+    // platform gate before any Windows or macOS dependency is reached.
+    platform: 'linux',
+    installationQueue,
+    createInstallTemporaryDirectory: async () => { throw new Error('未使用') },
+    detectMacosCodexApp: async () => { throw new Error('未使用') },
+    executeCommand: async () => { throw new Error('未使用') },
+    codexEnv: {},
+    store: new AppSettingsStore(path.join(directory, 'settings.json'), directory),
+    inspectNativeProviderConfig,
+    spawnDetached: async () => { throw new Error('未使用') },
+  })
+  return { service, installationQueue, inspectNativeProviderConfig, target: { isDestroyed: () => false, send: vi.fn() } }
+}
+
+describe('Codex Desktop launch queueing', () => {
+  it('starts no launch while an install is still waiting in the shared queue', async () => {
+    const queue = new InstallationQueue()
+    let releaseBlocker = (): void => {}
+    const blocker = new Promise<void>((resolve) => { releaseBlocker = resolve })
+    const blocking = queue.enqueue('runtime:node', () => blocker)
+    const install = queue.enqueue('desktop:codex:install', async () => undefined)
+    const fixture = queuedCodexDesktopFixture(queue)
+
+    const launch = fixture.service.launchCodexDesktop('open', fixture.target)
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    // The busy flag an install sets when it begins running cannot describe an
+    // install that is only enqueued; the queue itself has to hold the launch.
+    expect(fixture.inspectNativeProviderConfig).not.toHaveBeenCalled()
+
+    releaseBlocker()
+    await blocking
+    await install
+    await expect(launch).rejects.toThrow('仅支持 Windows')
+    expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledWith('codex')
+  })
+
+  it('merges a repeated identical launch but keeps a different mode or locale intent separate', async () => {
+    const fixture = queuedCodexDesktopFixture()
+    const requests = [
+      fixture.service.launchCodexDesktop('open', fixture.target),
+      fixture.service.launchCodexDesktop('open', fixture.target),
+      fixture.service.launchCodexDesktop('open', fixture.target, { injectChinese: true }),
+      fixture.service.launchCodexDesktop('restart', fixture.target),
+    ]
+    for (const request of requests) await expect(request).rejects.toThrow('仅支持 Windows')
+    expect(fixture.inspectNativeProviderConfig).toHaveBeenCalledTimes(3)
   })
 })

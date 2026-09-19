@@ -810,7 +810,7 @@ function resolveEmptyReleaseOutputDirectory(rootDirectory, version, configuredPa
   if (entries.length > 0) {
     throw validationError(
       'RELEASE_OUTPUT_NOT_EMPTY',
-      `正式发布输出目录不是空目录：${outputDirectory}；请保留现有产物并指定新的空目录`,
+      `正式发布输出目录不是空目录：${outputDirectory}；确认其中没有需要保留的产物后删除该目录，或指定新的空目录`,
     )
   }
   return outputDirectory

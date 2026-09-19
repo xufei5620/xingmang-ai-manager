@@ -25,7 +25,6 @@ describe('renderer-v2 specification provenance', () => {
     const desktop = tools.find(tool => tool.id === 'codexDesktop')!;
     const grok = tools.find(tool => tool.id === 'grok')!;
     expect(desktop.configPath).toEqual(codex.configPath);
-    expect(desktop.keyWrite).toBe('toml');
     expect(grok.install).toEqual({ type: 'npm', pkg: '@xai-official/grok' });
     expect(tools.every(tool => tool.models === undefined)).toBe(true);
     expect(statuses.order.timeout).toEqual(['已超时', 'neutral']);

@@ -2,15 +2,23 @@ import vm from 'node:vm'
 import { describe, expect, it } from 'vitest'
 import {
   buildCodexDesktopCdpArguments,
+  classifyCodexDesktopCdpPortOwnership,
   codexChineseRuntimeScript,
   filterCodexDesktopCdpTargets,
   injectCodexDesktopChineseLocale,
+  parseCodexDesktopCdpPortOwners,
   parseCodexDesktopActivationProcessId,
   validateCodexDesktopAppUserModelId,
   validateCodexDesktopCdpPort,
   validateCodexDesktopCdpTarget,
   type CodexDesktopCdpTarget,
 } from './codex-desktop-cdp'
+
+const codexProcessId = 4321
+const codexPortOwner = {
+  expectedProcessId: codexProcessId,
+  resolvePortOwnerProcessIds: async () => [codexProcessId],
+}
 
 function target(overrides: Partial<CodexDesktopCdpTarget> = {}): CodexDesktopCdpTarget {
   return {
@@ -272,6 +280,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
   it('registers the patch for future documents and evaluates it in the current page', async () => {
     const { socket, sent, isClosed } = mockCdpSocket()
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => socket,
       delay: async () => undefined,
@@ -300,6 +309,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
       return { ...readyProbe, documentIdentity: probes >= 4 ? 2_000 : 1_000, localeReadObserved: probes >= 4 }
     })
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => { connections += 1; return socket },
       delay: async () => { expect(isClosed()).toBe(false) },
@@ -354,6 +364,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
       removeEventListener(type: string, listener: (event: any) => void) { listeners.get(type)?.delete(listener) },
     }
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => socket,
       delay: async () => undefined,
@@ -382,6 +393,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
       }
     })
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => { connections += 1; return socket },
       delay: async () => { documentIdentity = 2_000; patchInstalled = false },
@@ -404,6 +416,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
       }
     })
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => socket,
       delay: async () => undefined,
@@ -419,6 +432,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
     let connections = 0
     let delays = 0
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => ++connections === 1 ? first.socket : second.socket,
       delay: async () => {
@@ -442,6 +456,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
     }))
     let discoveries = 0
     await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
       createWebSocket: () => socket,
       delay: async () => undefined,
@@ -455,6 +470,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
     const { socket } = mockCdpSocket()
     const connections: string[] = []
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([
         target({ id: 'aux', type: 'webview', webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/aux' }),
         target(),
@@ -469,6 +485,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
   it('does not treat an auxiliary webview without the application bridge as success or reload it', async () => {
     const { socket, sent } = mockCdpSocket(() => ({ ...readyProbe, hasBridge: false }))
     await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target({ type: 'webview' })])),
       createWebSocket: () => socket,
       delay: async () => undefined,
@@ -479,6 +496,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
   it('does not report renderer readiness or a forced but unused config as locale success', async () => {
     const { socket, sent, isClosed } = mockCdpSocket(() => ({ ...readyProbe, localeReadObserved: false }))
     await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => socket,
       delay: async () => undefined,
@@ -490,6 +508,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
   it('does not reload an incompatible renderer that never exposes the locale config', async () => {
     const { socket, sent } = mockCdpSocket(() => ({ ...readyProbe, patchReady: false, localeReadObserved: false }))
     await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => socket,
       delay: async () => undefined,
@@ -502,6 +521,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
     const second = mockCdpSocket()
     let discovery = 0
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => {
         discovery += 1
         return new Response(JSON.stringify([discovery === 1 ? target() : target({ id: 'page-2', webSocketDebuggerUrl: 'ws://127.0.0.1:9222/devtools/page/page-2' })]))
@@ -520,6 +540,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
     const second = mockCdpSocket()
     let connections = 0
     const result = await injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => new Response(JSON.stringify([target()])),
       createWebSocket: () => ++connections === 1 ? first.socket : second.socket,
       delay: async () => { first.socket.close() },
@@ -532,6 +553,7 @@ describe('Codex Desktop Chinese CDP injection', () => {
   it('keeps discovery bounded when Codex exposes no page yet', async () => {
     let attempts = 0
     await expect(injectCodexDesktopChineseLocale(9222, {
+      ...codexPortOwner,
       fetch: async () => {
         attempts += 1
         return new Response('[]')
@@ -539,5 +561,72 @@ describe('Codex Desktop Chinese CDP injection', () => {
       delay: async () => undefined,
     })).rejects.toThrow('未找到可注入的页面')
     expect(attempts).toBe(30)
+  })
+})
+
+describe('Codex Desktop CDP debugging port ownership', () => {
+  it('reads every listening owner reported for the port and ignores non-numeric output', () => {
+    expect(parseCodexDesktopCdpPortOwners('\r\n4321\r\n4321\r\n7788\r\n')).toEqual([4321, 7788])
+    expect(parseCodexDesktopCdpPortOwners('Get-NetTCPConnection : 找不到对象\n0\n-1\n')).toEqual([])
+  })
+
+  it('treats an empty listener table as a port Codex has not bound yet', () => {
+    expect(classifyCodexDesktopCdpPortOwnership([], 4321)).toBe('unbound')
+    expect(classifyCodexDesktopCdpPortOwnership([4321], 4321)).toBe('owned')
+    expect(classifyCodexDesktopCdpPortOwnership([7788], 4321)).toBe('foreign')
+    expect(classifyCodexDesktopCdpPortOwnership([4321, 7788], 4321)).toBe('foreign')
+  })
+
+  it('sends nothing to a debugging port held by another local process', async () => {
+    let discoveries = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => [7788],
+      fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
+      delay: async () => undefined,
+    })).rejects.toThrow('被其他进程占用')
+    expect(discoveries).toBe(0)
+  })
+
+  it('refuses to inject when activation reported no Codex process id', async () => {
+    let discoveries = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: null,
+      resolvePortOwnerProcessIds: async () => [4321],
+      fetch: async () => { discoveries += 1; return new Response(JSON.stringify([target()])) },
+      delay: async () => undefined,
+    })).rejects.toThrow('无法确认调试端口归属')
+    expect(discoveries).toBe(0)
+  })
+
+  it('waits for Codex to bind the port instead of probing an unbound one', async () => {
+    const { socket } = mockCdpSocket()
+    let lookups = 0
+    const result = await injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => {
+        lookups += 1
+        return lookups > 2 ? [4321] : []
+      },
+      fetch: async () => {
+        expect(lookups).toBeGreaterThan(2)
+        return new Response(JSON.stringify([target()]))
+      },
+      createWebSocket: () => socket,
+      delay: async () => undefined,
+    })
+    expect(result).toEqual({ injectedTargets: 1, attempts: 3 })
+    expect(lookups).toBe(3)
+  })
+
+  it('reuses a confirmed owner across the attempts of one bounded discovery', async () => {
+    let lookups = 0
+    await expect(injectCodexDesktopChineseLocale(9222, {
+      expectedProcessId: 4321,
+      resolvePortOwnerProcessIds: async () => { lookups += 1; return [4321] },
+      fetch: async () => new Response('[]'),
+      delay: async () => undefined,
+    })).rejects.toThrow('未找到可注入的页面')
+    expect(lookups).toBe(1)
   })
 })

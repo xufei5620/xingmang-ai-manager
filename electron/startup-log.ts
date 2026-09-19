@@ -56,6 +56,13 @@ export function redactStartupSecrets(value: string): string {
   return value
     .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[REDACTED]')
     .replace(/\bsk-[A-Za-z0-9_-]{6,}\b/g, '[REDACTED]')
+    // The quoted spellings need their own rules: in `{"access_token":"…"}` the
+    // rule below can never match, because `\s*` does not cross the quote that
+    // closes the key name, so any CLI writing JSON to stderr leaked its secrets
+    // verbatim into the runtime log and the feedback export. Redacting between
+    // the existing quotes also keeps a JSON body parseable.
+    .replace(/((?:api[_-]?key|authorization|token|secret|password)"\s*[:=]\s*)"[^"]*"/gi, '$1"[REDACTED]"')
+    .replace(/((?:api[_-]?key|authorization|token|secret|password)'\s*[:=]\s*)'[^']*'/gi, "$1'[REDACTED]'")
     .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,;]+)/gi, '$1[REDACTED]')
     .replace(/([?&](?:api[_-]?key|token)=)[^&\s]+/gi, '$1[REDACTED]')
 }
@@ -163,13 +170,76 @@ export function recordStartupFailure(
   }
 }
 
-/** Reads and clears the startup log so it can be folded into the runtime log. */
+/**
+ * Upper bound for a drained log. `recordStartupFailure` discards the file once
+ * it passes MAX_STARTUP_LOG_BYTES and every record it appends afterwards is a
+ * one-line header plus at most MAX_RECORD_LENGTH characters, so nothing this
+ * module wrote can exceed this. Anything larger was put there by something
+ * else, and reading it would fold an attacker-chosen file into runtime.jsonl
+ * and from there into the support export.
+ */
+const MAX_STARTUP_LOG_READ_BYTES = MAX_STARTUP_LOG_BYTES + 2 * MAX_RECORD_LENGTH
+
+/**
+ * O_NOFOLLOW closes the window between the `lstat` and the `open`: a symlink
+ * swapped in after the check makes the open fail instead of following it. The
+ * flag is POSIX-only, so on Windows the `lstat` rejection stands alone — Node
+ * reports both symlinks and directory junctions as symbolic links there.
+ */
+function readOnlyOpenFlags(): number {
+  const noFollow = fs.constants.O_NOFOLLOW
+  return typeof noFollow === 'number' ? fs.constants.O_RDONLY | noFollow : fs.constants.O_RDONLY
+}
+
+/**
+ * Reads and clears the startup log so it can be folded into the runtime log.
+ *
+ * The file lives in a user-writable directory, so anyone who can create a file
+ * there can also leave a symlink, a junction or an extra hard link pointing at
+ * something else entirely, and whatever comes back from here reaches the
+ * feedback export. So: a plain single-linked file, no larger than this module
+ * could have written, re-verified on the open descriptor so the name cannot be
+ * swapped underneath us. Deliberately bare `fs` rather than `safe-local-data`
+ * — see the module header for why this module imports nothing.
+ */
 export function drainStartupFailures(filePath: string): string | null {
+  let descriptor: number | null = null
   try {
-    const contents = fs.readFileSync(filePath, 'utf8')
-    fs.rmSync(filePath, { force: true })
-    return contents.trim() || null
+    const link = fs.lstatSync(filePath, { bigint: true })
+    if (!link.isFile() || link.isSymbolicLink() || link.nlink !== 1n) return null
+    if (link.size > BigInt(MAX_STARTUP_LOG_READ_BYTES)) return null
+
+    descriptor = fs.openSync(filePath, readOnlyOpenFlags())
+    const opened = fs.fstatSync(descriptor, { bigint: true })
+    if (!opened.isFile() || opened.nlink !== 1n) return null
+    if (opened.size > BigInt(MAX_STARTUP_LOG_READ_BYTES)) return null
+    if (opened.dev !== link.dev || opened.ino !== link.ino) return null
+
+    const buffer = Buffer.allocUnsafe(Number(opened.size))
+    let offset = 0
+    while (offset < buffer.length) {
+      const bytesRead = fs.readSync(descriptor, buffer, offset, buffer.length - offset, offset)
+      if (bytesRead === 0) break
+      offset += bytesRead
+    }
+    return buffer.subarray(0, offset).toString('utf8').trim() || null
   } catch {
     return null
+  } finally {
+    if (descriptor !== null) {
+      try {
+        fs.closeSync(descriptor)
+      } catch {
+        // Nothing useful is left to do with a descriptor that will not close.
+      }
+    }
+    // Clear it whether or not it was read: a file we refuse would otherwise be
+    // re-examined on every boot. `rmSync` unlinks the name, so a planted
+    // symlink disappears and the file it points at is untouched.
+    try {
+      fs.rmSync(filePath, { force: true })
+    } catch {
+      // Best effort. The size cap keeps a file we cannot remove harmless.
+    }
   }
 }

@@ -262,6 +262,29 @@ describe('diagnostics', () => {
     expect(redacted).toContain('[REDACTED]')
   })
 
+  it('redacts secrets spelled as JSON object keys', () => {
+    const redacted = redactDiagnosticText(JSON.stringify({
+      access_token: 'token-value-123456',
+      authorization: 'Basic basic-value-123456',
+      password: 'hunter2-secret',
+      apiKey: 'plain-api-key-value',
+      hasToken: true,
+    }))
+
+    for (const secret of [
+      'token-value-123456',
+      'basic-value-123456',
+      'hunter2-secret',
+      'plain-api-key-value',
+    ]) {
+      expect(redacted).not.toContain(secret)
+    }
+    expect(redacted).toContain('[REDACTED]')
+    // Support reads the export with a parser, so redaction has to leave the
+    // quotes that delimited each value in place.
+    expect(() => JSON.parse(redacted)).not.toThrow()
+  })
+
   it('exports only the report DTO and applies final redaction', async () => {
     const home = temporaryHome()
     const key = 'sk-export-secret'

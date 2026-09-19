@@ -481,6 +481,8 @@ const fixtureReadinessConsumers = [
   'e2e/v2-business.test.mjs',
   'e2e/app-v3-interactions.test.mjs',
   'e2e/renderer-v2-gap-audit.mjs',
+  'e2e/account-commerce-interactions.test.mjs',
+  'e2e/maintenance-layout.test.mjs',
   // D-12: the dual-site account smoke waits on the same cold Electron start
   // the Windows runner takes ~16s over, three times per run.
   'e2e/realm-account-smoke.mjs',
@@ -509,6 +511,26 @@ test('a cold fixture open cannot be reported as a failed assertion again', () =>
   // installed its globals and can be followed by a Vite dependency reload.
   const appCheck = fs.readFileSync(path.join(root, 'src/renderer-v2/testing/app-check.mjs'), 'utf8')
   assert.match(appCheck, /await waitForFixtureReady\(page\)/, 'every app-check page must wait for the fixture to install')
+})
+
+// A React render crash or an unhandled rejection inside a fixture leaves the
+// page standing with whatever it had already committed, so a suite that only
+// asserts on the elements it touches stays green through it. Every browser
+// suite therefore records pageerror and empties the record before it finishes;
+// this keeps a new suite from quietly opting out of that (T-G3).
+test('no browser suite can go green while its fixture threw', () => {
+  const suites = fs.readdirSync(path.join(root, 'e2e'))
+    .filter((name) => name.endsWith('.test.mjs'))
+    .map((name) => `e2e/${name}`)
+
+  assert.ok(suites.length >= 15, 'the e2e suite list must not silently shrink')
+  for (const suite of suites) {
+    const source = fs.readFileSync(path.join(root, suite), 'utf8')
+    const shared = /from '\.\/page-errors\.mjs'/.test(source) && /pageErrors\.assertNone\(\)/.test(source)
+    const inline = /page\.on\('pageerror'/.test(source) && /assert\.deepEqual\(errors, \[\]\)/.test(source)
+
+    assert.ok(shared || inline, `${suite} must record pageerror and assert it stayed empty`)
+  }
 })
 
 test('the window close smoke survives a transient Windows filesystem error', () => {
