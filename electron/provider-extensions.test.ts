@@ -3,6 +3,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { type runCommand as productionRunCommand } from './command-runner'
+import { providerIds } from './catalog'
 import type { ProviderId } from './catalog'
 import {
   createProviderSourceUpdateInspector,
@@ -923,7 +924,7 @@ describe('ProviderExtensionService native mutations', () => {
       argv: [
         'mcp', 'add', '--scope', 'user', '--transport', 'stdio',
         '--env', `API_TOKEN=${secret}`,
-        'safe_server', 'npx', '-y', '@acme/server', '--flag=a&b',
+        'safe_server', 'npx', '--', '-y', '@acme/server', '--flag=a&b',
       ],
       options: expect.objectContaining({
         timeoutMs: 120_000,
@@ -931,6 +932,42 @@ describe('ProviderExtensionService native mutations', () => {
         sensitiveValues: [secret],
       }),
     })
+  })
+
+  it('keeps option-looking MCP arguments behind the argv separator for every provider', async () => {
+    const userArgs = ['--trust', '--scope', 'user', '--include-tools', 'shell']
+    for (const provider of providerIds) {
+      const calls: string[][] = []
+      const invoke: ProviderCliInvoker = vi.fn(async (_provider, argv) => {
+        calls.push([...argv])
+        if (argv[0] === 'extensions') return '[]'
+        return ''
+      })
+      const service = new ProviderExtensionService({
+        homeDirectory: temporaryDirectory(),
+        invoke,
+      })
+
+      await service.mutate({
+        provider,
+        kind: 'mcp',
+        action: 'install',
+        id: 'safe_server',
+        scope: 'user',
+        mcp: { type: 'stdio', command: 'npx', args: userArgs },
+      })
+
+      const argv = calls[0]!
+      const separator = argv.indexOf('--')
+      expect(separator).toBeGreaterThan(-1)
+      const tail = argv.slice(separator + 1)
+      expect(tail.slice(-userArgs.length)).toEqual(userArgs)
+      // Gemini parses <name> <commandOrUrl> as positionals and only folds what
+      // follows '--' back into the server arguments, so its separator sits one
+      // token later than the other CLIs. Either way no user-supplied entry is
+      // left in front of it.
+      expect(tail.slice(0, -userArgs.length)).toEqual(provider === 'gemini' ? [] : ['npx'])
+    }
   })
 
   it('uses native Gemini skill operations and rejects unsupported Codex updates', async () => {

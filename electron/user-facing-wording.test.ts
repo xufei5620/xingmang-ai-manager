@@ -10,10 +10,9 @@ import { RealmAccountError } from './realm-account'
 // 「当前站点暂不支持…」会当场红(D-06)。
 const forbiddenWords = ['站点', 'Sub2API']
 
-// 装配期自检:这三个文件里的「站点」只在打包配置写错时抛,正常用户碰不到,
+// 装配期自检:这两个文件里的「站点」只在打包配置写错时抛,正常用户碰不到,
 // 保留原文是为了让排查的人一眼看出是站点表配错了。
 const assemblyTimeFiles = new Set([
-  path.join('electron', 'backend-registry.ts'),
   path.join('electron', 'relay-sites.ts'),
   path.join('electron', 'site-runtime.ts'),
 ])
