@@ -4,7 +4,10 @@ const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
+const { validateLocalRelease } = require('./update-release-utils.cjs')
+
 const packageVersion = require('../package.json').version
+const PROJECT_ROOT = path.resolve(__dirname, '..')
 
 // This repository is public. The production origin's address, SSH port, login user,
 // key file name and document root are an attack surface on their own, so none of them
@@ -17,9 +20,14 @@ const TARGET_FIELDS = [
   { key: 'port', env: 'DL_LANDING_SSH_PORT', flag: '--port', label: 'SSH 端口' },
   { key: 'user', env: 'DL_LANDING_SSH_USER', flag: '--user', label: 'SSH 用户' },
   { key: 'key', env: 'DL_LANDING_SSH_KEY', flag: '--key', label: 'SSH 私钥路径' },
+  { key: 'knownHosts', env: 'DL_LANDING_KNOWN_HOSTS', flag: '--known-hosts', label: 'known_hosts 文件' },
   { key: 'remoteRoot', env: 'DL_LANDING_REMOTE_ROOT', flag: '--remote-root', label: '站点根目录' },
 ]
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+// The CI step that prints artifact checksums emits one line per file:
+//   XingMang-AI-Manager-0.1.22-Setup.exe  120586240 bytes  SHA256=<hex>
+const CHECKSUM_LINE_PATTERN = /^\s*(\S+)\s+.*?SHA256=([0-9a-fA-F]{64})\s*$/
+const MAX_CHECKSUM_FILE_BYTES = 256 * 1024
 // The remote root is interpolated into commands that a root login shell runs on
 // the production origin. Restrict it to characters that carry no meaning to that
 // shell, so a stray value can never become a second command or a glob.
@@ -152,6 +160,7 @@ function parsePublishArgs(argv, defaults = {}, sources = {}) {
     runId: '',
     localDir: '',
     macDir: '',
+    checksums: '',
     yes: false,
     dryRun: false,
     keepDownload: false,
@@ -159,6 +168,7 @@ function parsePublishArgs(argv, defaults = {}, sources = {}) {
     port: target.port,
     user: target.user,
     key: target.key,
+    knownHosts: target.knownHosts,
     remoteRoot: target.remoteRoot,
     help: false,
   }
@@ -196,6 +206,12 @@ function parsePublishArgs(argv, defaults = {}, sources = {}) {
       index += 1
     } else if (arg === '--key') {
       options.key = argumentValue(argv, index + 1, arg)
+      index += 1
+    } else if (arg === '--known-hosts') {
+      options.knownHosts = argumentValue(argv, index + 1, arg)
+      index += 1
+    } else if (arg === '--checksums') {
+      options.checksums = argumentValue(argv, index + 1, arg)
       index += 1
     } else if (arg === '--remote-root') {
       options.remoteRoot = argumentValue(argv, index + 1, arg)
@@ -235,9 +251,13 @@ function helpText() {
     '  --run-id          指定 Actions run，不填则按产物名找最新的 windows-release-<version>',
     '  --local-dir       跳过 gh，直接用已经下载好的目录',
     '  --mac-dir         额外找两个 dmg',
+    '  --checksums       CI「Print artifact checksums」那一步的输出，逐个比对 SHA-256',
     '  --dry-run         只打印，不上传',
     '  --yes             确认上传到源站',
     '  --keep-download   保留临时下载目录',
+    '',
+    '--yes 生效前会先跑一次本地产物校验（latest.yml ↔ 安装包的大小、SHA-512、blockmap），',
+    '不通过就拒绝上传。只挑出 exe、不带 latest.yml 的目录会被直接拒绝。',
     '',
     '源站连接信息不写在仓库里，必须由运行时提供，缺一个就拒绝执行：',
     ...TARGET_FIELDS.map((field) => `  ${field.env.padEnd(24)}${field.label}（也可用 ${field.flag}）`),
@@ -317,9 +337,13 @@ function pickWindowsArtifact(artifacts, version) {
   }
 }
 
-function fileSha256(filePath) {
+// The Windows installer is well over a hundred megabytes and the two dmg files are
+// larger still. readFileSync held every byte of each one in memory at once purely to
+// hash it, which on a modest release machine is the difference between a plan printout
+// and an out-of-memory abort halfway through a release.
+async function fileSha256(filePath) {
   const hash = crypto.createHash('sha256')
-  hash.update(fs.readFileSync(filePath))
+  for await (const chunk of fs.createReadStream(filePath)) hash.update(chunk)
   return hash.digest('hex')
 }
 
@@ -337,15 +361,107 @@ function buildPublishPlan(options, files, names) {
   }
 }
 
-function printPlan(plan) {
+async function printPlan(plan) {
   for (const item of plan.uploads) {
-    const digest = fileSha256(item.local)
+    const digest = await fileSha256(item.local)
     const size = fs.statSync(item.local).size
     process.stdout.write(`${item.fileName}  ${size} bytes  SHA256=${digest}\n`)
     process.stdout.write(`  ${item.local}\n  -> ${item.remoteDir}/${item.fileName}\n`)
   }
   process.stdout.write(`latest.json -> ${plan.manifestRemote}\n`)
   process.stdout.write(formatLatestJson(plan.manifest))
+}
+
+// The operator pastes the output of the release workflow's "Print artifact checksums"
+// step, so anything that is not one of those lines is ignored rather than rejected.
+function parseExpectedChecksums(text) {
+  const expected = new Map()
+  for (const line of String(text).split(/\r?\n/)) {
+    const match = CHECKSUM_LINE_PATTERN.exec(line)
+    if (!match) continue
+    const fileName = path.basename(match[1])
+    const digest = match[2].toLowerCase()
+    const previous = expected.get(fileName)
+    if (previous && previous !== digest) {
+      throw new Error(`校验清单里 ${fileName} 出现了两个不同的 SHA-256，无法判断该信哪一个`)
+    }
+    expected.set(fileName, digest)
+  }
+  if (expected.size === 0) {
+    throw new Error('校验清单里没有一行能解析出 SHA-256。请原样粘贴 Actions 里「Print artifact checksums」那一步的输出。')
+  }
+  return expected
+}
+
+function readExpectedChecksums(filePath) {
+  const resolved = path.resolve(filePath)
+  let stat
+  try {
+    stat = fs.statSync(resolved)
+  } catch {
+    throw new Error(`找不到校验清单：${resolved}`)
+  }
+  if (!stat.isFile() || stat.size === 0) {
+    throw new Error(`校验清单为空或不是普通文件：${resolved}`)
+  }
+  if (stat.size > MAX_CHECKSUM_FILE_BYTES) {
+    throw new Error(`校验清单超过 ${MAX_CHECKSUM_FILE_BYTES} 字节上限：${resolved}`)
+  }
+  return parseExpectedChecksums(fs.readFileSync(resolved, 'utf8'))
+}
+
+async function assertExpectedChecksums(uploads, expected) {
+  const compared = []
+  for (const item of uploads) {
+    const wanted = expected.get(item.fileName)
+    if (!wanted) continue
+    const actual = await fileSha256(item.local)
+    if (actual !== wanted) {
+      throw new Error(`${item.fileName} 的 SHA-256 与校验清单不一致：期望 ${wanted}，实际 ${actual}。不上传。`)
+    }
+    compared.push(item.fileName)
+  }
+  if (compared.length === 0) {
+    const names = uploads.map((item) => item.fileName).join('、')
+    throw new Error(`校验清单里没有任何一个要上传的文件：${names}。版本对得上吗？`)
+  }
+  return compared
+}
+
+// `gh run download` unpacks whatever the Actions artifact happens to hold, and --local-dir
+// points at a directory an operator assembled by hand. Neither is proof that the bytes
+// about to land on the origin are the ones the release gate passed, so the same local
+// check runs again here before --yes has any effect.
+//
+// latest.yml travels inside the same artifact as the installer, so it is the one manifest
+// available here: it pins the installer's version, size, SHA-512 and blockmap. The two dmg
+// files are built on a Mac by hand and no manifest that reaches this script references
+// them, which is why --checksums stays available as their only external cross-check.
+async function verifyUploadCandidates(options, plan, deps = {}) {
+  const validate = deps.validateLocalRelease || validateLocalRelease
+  const windowsUpload = plan.uploads.find((item) => item.slot === 'win')
+  const releaseDirectory = path.dirname(path.resolve(windowsUpload.local))
+  if (!fs.existsSync(path.join(releaseDirectory, 'latest.yml'))) {
+    throw new Error(
+      `${releaseDirectory} 里没有 latest.yml，无法在上传前复核安装包完整性。`
+      + 'release-build 的产物本来就带着它，请用完整的产物目录，不要只挑出 exe。',
+    )
+  }
+  try {
+    await validate(releaseDirectory, { expectedVersion: options.version })
+  } catch (error) {
+    const code = error && error.code ? `[${error.code}] ` : ''
+    throw new Error(`上传前的产物校验未通过，已拒绝上传：${code}${error && error.message ? error.message : String(error)}`)
+  }
+  process.stdout.write(`产物校验通过：${releaseDirectory} 的 latest.yml 与安装包一致\n`)
+
+  if (!options.checksums) {
+    process.stdout.write('未提供 --checksums，跳过与 CI 打印的 SHA-256 比对（两个 dmg 因此没有外部校验源）。\n')
+    return { verifiedDirectory: releaseDirectory, comparedChecksums: [] }
+  }
+  const comparedChecksums = await assertExpectedChecksums(plan.uploads, readExpectedChecksums(options.checksums))
+  process.stdout.write(`SHA-256 与校验清单一致：${comparedChecksums.join('、')}\n`)
+  return { verifiedDirectory: releaseDirectory, comparedChecksums }
 }
 
 function runTool(command, args, options = {}) {
@@ -369,6 +485,39 @@ function runTool(command, args, options = {}) {
   return result
 }
 
+// BatchMode=yes makes an unknown host key fail instead of prompting, but on its own it
+// still trusts whatever ~/.ssh/known_hosts happens to hold — including an entry a first
+// connection accepted from whoever answered at the time. Pinning a dedicated file plus
+// StrictHostKeyChecking=yes means the upload only ever reaches the host whose public key
+// the operator wrote down, so a hijacked route or a replaced origin aborts the transfer
+// instead of receiving the installers and the deploy key.
+function assertKnownHostsFile(value) {
+  const knownHosts = firstProvided(value)
+  if (!knownHosts) {
+    throw new Error(
+      '缺少 known_hosts 文件（DL_LANDING_KNOWN_HOSTS 或 --known-hosts）。'
+      + '里面只放源站这一台主机的公钥，路径必须在仓库之外。',
+    )
+  }
+  const resolved = path.resolve(knownHosts)
+  // The repository is public: a host key file committed by accident would publish the
+  // origin's identity, which is exactly what the rest of this script keeps out of git.
+  const relative = path.relative(PROJECT_ROOT, resolved)
+  if (relative && !relative.startsWith('..') && !path.isAbsolute(relative)) {
+    throw new Error(`known_hosts 文件不能放在仓库目录里：${resolved}。仓库是公开的，请把它放到仓库之外。`)
+  }
+  let stat
+  try {
+    stat = fs.statSync(resolved)
+  } catch {
+    throw new Error(`找不到 known_hosts 文件：${resolved}。请先用 ssh-keyscan 把源站公钥写进去并核对指纹。`)
+  }
+  if (!stat.isFile() || stat.size === 0) {
+    throw new Error(`known_hosts 文件为空或不是普通文件：${resolved}。里面至少要有源站的一条主机公钥。`)
+  }
+  return resolved
+}
+
 function sshArgs(options) {
   const key = firstProvided(options.key)
   if (!key) {
@@ -377,10 +526,13 @@ function sshArgs(options) {
   if (!fs.existsSync(key)) {
     throw new Error(`找不到 SSH 密钥：${key}`)
   }
+  const knownHosts = assertKnownHostsFile(options.knownHosts)
   return [
     '-i', key,
     '-o', 'BatchMode=yes',
     '-o', 'IdentitiesOnly=yes',
+    '-o', 'StrictHostKeyChecking=yes',
+    '-o', `UserKnownHostsFile=${knownHosts}`,
     '-p', String(options.port),
   ]
 }
@@ -434,7 +586,7 @@ function resolveSearchRoots(options, downloadDir) {
   return roots
 }
 
-function publishDlLanding(rawOptions = {}, deps = {}) {
+async function publishDlLanding(rawOptions = {}, deps = {}) {
   const options = {
     ...parsePublishArgs([], {
       version: rawOptions.version,
@@ -442,6 +594,7 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
       port: rawOptions.port,
       user: rawOptions.user,
       key: rawOptions.key,
+      knownHosts: rawOptions.knownHosts,
       remoteRoot: rawOptions.remoteRoot,
     }, rawOptions.sources),
     ...rawOptions,
@@ -473,11 +626,13 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
     const missing = missingInstallerMessage(names, found)
     if (missing) throw new Error(missing)
     const plan = buildPublishPlan(options, found, names)
-    printPlan(plan)
+    await printPlan(plan)
     if (!options.yes) {
       process.stdout.write('\n未上传。确认无误后加上 --yes。\n')
       return { uploaded: false, plan, found }
     }
+
+    const verification = await (deps.verifyUploadCandidates || verifyUploadCandidates)(options, plan, deps)
 
     const sshBase = sshArgs(options)
     const scpBase = scpArgs(options)
@@ -518,7 +673,7 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
     process.stdout.write('源站 latest.json：\n')
     process.stdout.write(`${remoteCheck.stdout || ''}`)
     process.stdout.write('上传完成。落地页注册成功后会读这份清单。\n')
-    return { uploaded: true, plan, found }
+    return { uploaded: true, plan, found, verification }
   } finally {
     if (downloadDir && !options.keepDownload) {
       fs.rmSync(downloadDir, { recursive: true, force: true })
@@ -526,18 +681,24 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
   }
 }
 
-function main(argv = process.argv.slice(2)) {
+async function main(argv = process.argv.slice(2)) {
   const options = parsePublishArgs(argv)
   if (options.help) {
     process.stdout.write(`${helpText()}\n`)
     return
   }
-  publishDlLanding(options)
+  await publishDlLanding(options)
 }
 
 module.exports = {
   assertSafeVersion,
   assertSafeRemoteRoot,
+  assertKnownHostsFile,
+  parseExpectedChecksums,
+  readExpectedChecksums,
+  assertExpectedChecksums,
+  verifyUploadCandidates,
+  fileSha256,
   quoteRemotePath,
   readPublishConfigFile,
   resolvePublishTarget,
@@ -556,10 +717,8 @@ module.exports = {
 }
 
 if (require.main === module) {
-  try {
-    main()
-  } catch (error) {
+  main().catch((error) => {
     console.error(error instanceof Error ? error.message : String(error))
     process.exitCode = 1
-  }
+  })
 }
