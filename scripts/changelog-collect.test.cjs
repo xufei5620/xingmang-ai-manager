@@ -261,13 +261,14 @@ test('the check reports malformed fragments and leaves the repository alone', ()
 })
 
 test('the collect command reports what it merged and what it removed', () => {
-  const directory = fixture({ 'n4.md': '## 用户\n\n- 条目。\n\n## 开发\n\n- 技术说明。\n' })
+  const directory = fixture({ 'n4.md': '## 用户\n\n- 条目。\n\n## 开发\n\n- 技术说明。\n  续行。\n\n- 第二条。\n' })
   try {
     const result = run(directory)
 
     assert.equal(result.status, 0, result.stderr)
     assert.match(result.stdout, /已汇入 release-notes\.md：1 条/)
-    assert.match(result.stdout, /已汇入 CHANGELOG\.md：1 条/)
+    // A wrapped entry counts once, not once per line.
+    assert.match(result.stdout, /已汇入 CHANGELOG\.md：2 条/)
     assert.match(result.stdout, /已删除 1 个分片：n4\.md/)
   } finally {
     fs.rmSync(directory, { recursive: true, force: true })

@@ -142,7 +142,7 @@ function collectChanges(root) {
     if (entries.length === 0) continue
     const file = path.join(root, section.file)
     fs.writeFileSync(file, appendToUnreleasedSection(fs.readFileSync(file, 'utf8'), section, entries), 'utf8')
-    written.push({ file: section.file, count: entries.length })
+    written.push({ file: section.file, count: entries.filter((entry) => entry.startsWith('- ')).length })
   }
   for (const fragment of fragments) {
     fs.rmSync(path.join(root, fragmentDirectory, fragment.name))
