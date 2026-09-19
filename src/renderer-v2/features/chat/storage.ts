@@ -130,9 +130,44 @@ export function readWorkspace(storage: ChatStorage, scope: string): { state: Cha
     return empty()
   } catch (error) { return { ...empty(), exists: true, warning: error instanceof ChatStorageError ? error.message : '本地聊天记录暂时无法读取，原始数据已保留' } }
 }
+// localStorage sits unencrypted in the user profile, and chat text is the one
+// surface where a pasted key, an Authorization header or a whole base64 image
+// arrives verbatim. Redacting on the way out keeps those out of the record that
+// survives the window they were typed in, without touching the copy on screen.
+// 只剥凭据与运行时专用负载：普通链接和正文照原样存，本地记录仍然是无损的。
+// 刻意不照搬旧渲染层的两条规则：整条抹掉 http(s) 链接，以及把任意超长字母数字块
+// 当成编码数据。前者在 v2 没有收益（素材只存 assetId，运行时 URL 早已剥离），
+// 后者会把普通长文本也吞掉，与这里「只对真实内容无损」的既有约定冲突。
+export function redactPersistentChatText(value: string): string {
+  return value
+    .replace(/data:[^\s,;]+(?:;[^\s,;]+)*;base64,[A-Za-z0-9+/=_-]+/gi, '[图片数据未保存]')
+    .replace(/blob:[^\s)\]}>"']+/gi, '[本地临时链接未保存]')
+    .replace(/(\bBearer\s+)[A-Za-z0-9._~+/=-]{6,}/gi, '$1[密钥未保存]')
+    .replace(/\bsk-[A-Za-z0-9._-]{8,}\b/gi, '[密钥未保存]')
+    .replace(/([?&](?:api[_-]?key|token)=)[^&\s]+/gi, '$1[密钥未保存]')
+    .replace(/((?:api[_-]?key|authorization|token|secret|password)\s*[:=]\s*)(?:Bearer\s+)?(?:"[^"]*"|'[^']*'|[^\s,;&]+)/gi, '$1[密钥未保存]')
+}
+function persistedSettings(settings: ChatSettings): ChatSettings {
+  return { ...settings, systemPrompt: redactPersistentChatText(settings.systemPrompt) }
+}
+function persistedMessage(message: ChatMessage) {
+  return {
+    ...message,
+    requestId: undefined,
+    content: redactPersistentChatText(message.content),
+    reasoning: redactPersistentChatText(message.reasoning),
+    ...(message.error === undefined ? {} : { error: redactPersistentChatText(message.error) }),
+    ...(message.settings ? { settings: persistedSettings(message.settings) } : {}),
+    assets: message.assets?.map(({ localUrl: _runtimeUrl, ...asset }) => (
+      { ...asset, ...(asset.revisedPrompt === undefined ? {} : { revisedPrompt: redactPersistentChatText(asset.revisedPrompt) }) }
+    )),
+  }
+}
+function persistedConversation(conversation: Conversation) {
+  return { ...conversation, title: redactPersistentChatText(conversation.title), draft: redactPersistentChatText(conversation.draft), settings: persistedSettings(conversation.settings), messages: conversation.messages.map((message) => persistedMessage(message)) }
+}
 export function writeWorkspace(storage: ChatStorage, state: ChatWorkspace): void {
-  const persistConversation = (conversation: Conversation) => ({ ...conversation, messages: conversation.messages.map((message) => ({ ...message, requestId: undefined, assets: message.assets?.map(({ localUrl: _runtimeUrl, ...asset }) => asset) })) })
-  const serialized = JSON.stringify({ ...state, conversations: state.conversations.map(persistConversation), draftConversation: persistConversation(state.draftConversation) })
+  const serialized = JSON.stringify({ ...state, conversations: state.conversations.map(persistedConversation), draftConversation: persistedConversation(state.draftConversation) })
   if (state.conversations.length > MAX_CONVERSATIONS || new TextEncoder().encode(serialized).byteLength > MAX_BYTES) throw new ChatStorageError(limitMessage)
   storage.setItem(historyKey(state.owner), serialized)
 }
