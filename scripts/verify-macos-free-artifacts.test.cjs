@@ -1332,3 +1332,99 @@ test('macOS ZIP integration rejects an extracted unsigned application', {
     commandRunner: undefined,
   }), /codesign|签名|完整性/)
 })
+
+// `hdiutil attach` stamps the image it mounts, so on a real Mac the DMG
+// inspection changes the private copy's timestamps by itself. Before this was
+// handled the release gate rejected its own side effect with "发行文件私有副本
+// … 在验证期间已变更或被替换" and no macOS build could pass.
+function stampPrivateCopy(artifactPath) {
+  const stamp = new Date(Date.now() + 60_000)
+  fs.utimesSync(artifactPath, stamp, stamp)
+}
+
+test('accepts the timestamps a DMG mount leaves on the private copy', async (t) => {
+  const fixture = createFreeArtifacts(t)
+  const mounted = []
+  const result = await verifyMacosFreeArtifacts({
+    projectRoot: fixture.projectRoot,
+    outputDirectory: fixture.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    verifyZipApplication: async (_artifactPath, architecture) => verifiedApplication(architecture),
+    verifyDmgApplication: async (artifactPath, architecture) => {
+      stampPrivateCopy(artifactPath)
+      mounted.push(path.basename(artifactPath))
+      return verifiedApplication(architecture)
+    },
+  })
+  assert.deepEqual(mounted, ['XingMang-AI-Manager-1.2.3-arm64.dmg', 'XingMang-AI-Manager-1.2.3-x64.dmg'])
+  assert.equal(result.entries.length, 6)
+})
+
+test('still rejects a stamped private copy on the ZIP path, which mounts nothing', async (t) => {
+  const fixture = createFreeArtifacts(t)
+  await assert.rejects(() => verifyMacosFreeArtifacts({
+    projectRoot: fixture.projectRoot,
+    outputDirectory: fixture.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    ...bothArtifactVerifiers(async (artifactPath, architecture) => {
+      stampPrivateCopy(artifactPath)
+      return verifiedApplication(architecture)
+    }),
+  }), /私有副本 XingMang-AI-Manager-1\.2\.3-arm64\.zip 在验证期间已变更或被替换/)
+})
+
+test('rejects a private DMG copy whose contents change while it is inspected', async (t) => {
+  const fixture = createFreeArtifacts(t)
+  await assert.rejects(() => verifyMacosFreeArtifacts({
+    projectRoot: fixture.projectRoot,
+    outputDirectory: fixture.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    verifyZipApplication: async (_artifactPath, architecture) => verifiedApplication(architecture),
+    verifyDmgApplication: async (artifactPath, architecture) => {
+      // Same length, so only the content hash can catch this.
+      fs.writeFileSync(artifactPath, 'x'.repeat(fs.statSync(artifactPath).size))
+      return verifiedApplication(architecture)
+    },
+  }), /私有副本 XingMang-AI-Manager-1\.2\.3-arm64\.dmg 在验证期间内容已变更/)
+})
+
+test('rejects a private DMG copy replaced by a link while it is inspected', async (t) => {
+  const fixture = createFreeArtifacts(t)
+  const decoyDirectory = temporaryDirectory(t)
+  await assert.rejects(() => verifyMacosFreeArtifacts({
+    projectRoot: fixture.projectRoot,
+    outputDirectory: fixture.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    verifyZipApplication: async (_artifactPath, architecture) => verifiedApplication(architecture),
+    verifyDmgApplication: async (artifactPath, architecture) => {
+      // The decoy holds the same bytes, so the content hash passes and only the
+      // identity capture can refuse this. Swapping in a plain file with the same
+      // bytes is deliberately not tested: freeing an inode and immediately
+      // recreating the file usually gets the same inode back, and a swap that
+      // reproduces the hashed bytes is harmless by definition anyway.
+      const decoy = path.join(decoyDirectory, 'decoy.dmg')
+      fs.writeFileSync(decoy, fs.readFileSync(artifactPath))
+      fs.rmSync(artifactPath)
+      fs.symlinkSync(decoy, artifactPath)
+      return verifiedApplication(architecture)
+    },
+  }), /私有副本 XingMang-AI-Manager-1\.2\.3-arm64\.dmg 必须是非空普通文件，不能是链接/)
+})
+
+test('names the drifting identity fields when a private copy stops matching', async (t) => {
+  const fixture = createFreeArtifacts(t)
+  await assert.rejects(() => verifyMacosFreeArtifacts({
+    projectRoot: fixture.projectRoot,
+    outputDirectory: fixture.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    ...bothArtifactVerifiers(async (artifactPath, architecture) => {
+      stampPrivateCopy(artifactPath)
+      return verifiedApplication(architecture)
+    }),
+  }), /已变更或被替换（(?:mtimeMs|ctimeMs) \d/)
+})

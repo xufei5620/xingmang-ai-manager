@@ -4,6 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const {
+  isTransientSigningFailure,
   sign,
   verifyEphemeralMacSigningIdentity,
 } = require('./macos-ephemeral-signing.cjs')
@@ -83,7 +84,7 @@ test('the CI signer retries transient codesign failures with the pinned options 
     wait: async () => {},
     signAsync: async (options) => {
       calls.push(options)
-      if (calls.length < 3) throw new Error('no identity found')
+      if (calls.length < 3) throw new Error('codesign failed: errSecInternalComponent')
     },
   })
 
@@ -184,4 +185,57 @@ test('the private-key probe fails before signing when the keychain exposes no ma
     report: () => {},
   }), new RegExp(`${identitySha1} is missing from`))
   assert.equal(fs.existsSync(probePath), false)
+})
+
+test('the CI signer reports a deterministic signing failure without spending the retry budget (P-38)', async () => {
+  for (const failure of [
+    new Error('no identity found'),
+    new Error('codesign failed: bundle format unrecognized, invalid, or unsuitable'),
+    Object.assign(new Error('keychain missing'), { code: 'ENOENT' }),
+  ]) {
+    let attempts = 0
+    let waits = 0
+    await assert.rejects(() => sign({
+      app: '/private/tmp/XingMang.app',
+      identity: '-',
+      keychain: keychainPath,
+      platform: 'darwin',
+    }, {
+      env: signingEnvironment(),
+      retryOptions: { retries: 3, interval: 0, backoff: 0 },
+      wait: async () => { waits += 1 },
+      signAsync: async () => {
+        attempts += 1
+        throw failure
+      },
+    }), (error) => error === failure)
+
+    assert.equal(attempts, 1)
+    assert.equal(waits, 0)
+  }
+})
+
+test('only contention failures count as transient (P-38)', () => {
+  for (const transient of [
+    new Error('codesign failed: errSecInternalComponent'),
+    new Error('spawn codesign EAGAIN'),
+    new Error('Resource temporarily unavailable'),
+    new Error('EIO: i/o error, copyfile'),
+    Object.assign(new Error('too many open files'), { code: 'EMFILE' }),
+    Object.assign(new Error('opaque'), { code: 'ETIMEDOUT' }),
+  ]) {
+    assert.equal(isTransientSigningFailure(transient), true, transient.message)
+  }
+
+  for (const deterministic of [
+    undefined,
+    null,
+    new Error('no identity found'),
+    new Error('ephemeral macOS signer requires the ad-hoc identity placeholder'),
+    new Error('code object is not signed at all'),
+    Object.assign(new Error('keychain missing'), { code: 'ENOENT' }),
+    Object.assign(new Error('permission denied'), { code: 'EACCES' }),
+  ]) {
+    assert.equal(isTransientSigningFailure(deterministic), false, String(deterministic))
+  }
 })

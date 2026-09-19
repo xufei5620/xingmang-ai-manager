@@ -2,9 +2,15 @@ const assert = require('node:assert/strict')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { X509Certificate } = require('node:crypto')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
 const {
+  assertNonIssuingSigningCertificate,
+  verifyCertificateSelfSignature,
+} = require('./verify-macos-free-signing.cjs')
+const {
+  VALIDITY_DAYS,
   createFreeMacSigningCertificate,
   resolveDedicatedOutputDirectory,
 } = require('./create-macos-free-signing-certificate.cjs')
@@ -163,7 +169,7 @@ test('pre-existing certificate output directories must be private and owned by t
   }
 })
 
-test('certificate generation requests a long-lived RSA-3072 SHA-256 code-signing certificate and Keychain-compatible encrypted P12', () => {
+test('certificate generation requests a non-issuing ten-year RSA-3072 SHA-256 code-signing certificate and Keychain-compatible encrypted P12', () => {
   const outputDirectory = path.join(temporaryDirectory(), 'xingmang-free-update-identity')
   const invocations = []
 
@@ -180,10 +186,12 @@ test('certificate generation requests a long-lived RSA-3072 SHA-256 code-signing
   assert.ok(certificateCommand)
   assert.ok(certificateCommand.includes('rsa:3072'))
   assert.ok(certificateCommand.includes('-sha256'))
-  assert.ok(certificateCommand.includes('basicConstraints=critical,CA:TRUE,pathlen:0'))
-  assert.ok(certificateCommand.includes('keyUsage=critical,digitalSignature,keyCertSign'))
+  assert.ok(certificateCommand.includes('basicConstraints=critical,CA:FALSE'))
+  assert.ok(certificateCommand.includes('keyUsage=critical,digitalSignature'))
   assert.ok(certificateCommand.includes('extendedKeyUsage=critical,codeSigning'))
-  assert.ok(certificateCommand.includes('7300'))
+  assert.equal(certificateCommand.some((argument) => /CA:TRUE|keyCertSign/.test(argument)), false)
+  assert.equal(certificateCommand[certificateCommand.indexOf('-days') + 1], String(VALIDITY_DAYS))
+  assert.equal(VALIDITY_DAYS, 3650)
   const exportCommand = invocations.find((args) => args[0] === 'pkcs12')
   assert.ok(exportCommand)
   assert.ok(exportCommand.includes('-descert'))
@@ -266,14 +274,20 @@ test('Darwin system OpenSSL output imports into an isolated temporary keychain',
       password: TEST_P12_PASSWORD,
       env,
     })
-    const selfSignatureResult = spawnSync('/usr/bin/openssl', [
-      'verify', '-check_ss_sig', '-CAfile', result.certificatePath, result.certificatePath,
+    // P-22: not `openssl verify -CAfile`. That asks whether the certificate
+    // may issue itself, which a non-issuing leaf deliberately may not, and
+    // macOS's LibreSSL rejects it with "unable to get local issuer
+    // certificate". The signature is what this asserts.
+    const certificatePem = fs.readFileSync(result.certificatePath, 'utf8')
+    assert.equal(verifyCertificateSelfSignature(certificatePem), true)
+    const certificate = new X509Certificate(certificatePem)
+    assert.equal(certificate.ca, false)
+    assert.equal(certificate.subject, certificate.issuer)
+    const certificateText = spawnSync('/usr/bin/openssl', [
+      'x509', '-in', result.certificatePath, '-noout', '-text',
     ], { encoding: 'utf8', env, shell: false })
-    assert.equal(
-      selfSignatureResult.status,
-      0,
-      `${selfSignatureResult.stdout}${selfSignatureResult.stderr}`,
-    )
+    assert.equal(certificateText.status, 0, certificateText.stderr)
+    assert.equal(assertNonIssuingSigningCertificate(certificateText.stdout), undefined)
     const createResult = runSecurity([
       'create-keychain', '-p', keychainPassword, keychainPath,
     ])

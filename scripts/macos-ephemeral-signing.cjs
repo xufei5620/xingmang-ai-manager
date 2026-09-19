@@ -7,6 +7,21 @@ const SECURITY_PATH = '/usr/bin/security'
 const DEFAULT_PROBE_BINARY = '/usr/bin/true'
 const COMMAND_TIMEOUT_MS = 30_000
 const DEFAULT_RETRY_OPTIONS = { retries: 3, interval: 5_000, backoff: 5_000 }
+const TRANSIENT_SIGNING_ERROR_CODES = new Set([
+  'EAGAIN', 'EBUSY', 'EIO', 'EMFILE', 'ENFILE', 'ENOMEM', 'EPIPE', 'ETIMEDOUT', 'ETXTBSY',
+])
+// errSecInternalComponent is the keychain's answer when the signing key is
+// momentarily unreachable; it is the one codesign failure that routinely
+// clears on a second attempt.
+const TRANSIENT_SIGNING_ERROR_PATTERNS = [
+  /errSecInternalComponent/i,
+  /resource (?:temporarily unavailable|busy)/i,
+  /device or resource busy/i,
+  /text file busy/i,
+  /too many open files/i,
+  /cannot allocate memory/i,
+  /\b(?:EAGAIN|EBUSY|EIO|EMFILE|ENFILE|ENOMEM|EPIPE|ETIMEDOUT|ETXTBSY)\b/,
+]
 
 function normalizeSha1Fingerprint(value) {
   const input = String(value || '').trim()
@@ -49,13 +64,27 @@ function defaultIdentityLister(spec) {
   return runCapturing(spec)
 }
 
+/** P-38. A signing attempt that failed on its own inputs -- an identity the
+ * keychain does not hold, a keychain that is not there, a bundle codesign
+ * refuses -- fails identically every time, so retrying it only spends the
+ * backoff before reporting what the first attempt already knew. Retries are
+ * reserved for the failures that come from contention over the keychain or
+ * the filesystem, which is what a second attempt can actually clear. */
+function isTransientSigningFailure(error) {
+  if (!error) return false
+  if (TRANSIENT_SIGNING_ERROR_CODES.has(String(error.code || ''))) return true
+  const message = String(error.message || error)
+  return TRANSIENT_SIGNING_ERROR_PATTERNS.some((pattern) => pattern.test(message))
+}
+
 async function retrySigning(task, options, wait) {
+  const isTransient = options.isTransientFailure || isTransientSigningFailure
   let attempt = 0
   while (true) {
     try {
       return await task()
     } catch (error) {
-      if (attempt >= options.retries) throw error
+      if (attempt >= options.retries || !isTransient(error)) throw error
       await wait(options.interval + options.backoff * attempt)
       attempt += 1
     }
@@ -156,6 +185,7 @@ async function sign(configuration, options = {}) {
 }
 
 module.exports = {
+  isTransientSigningFailure,
   normalizeSha1Fingerprint,
   sign,
   verifyEphemeralMacSigningIdentity,
