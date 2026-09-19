@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSub2ApiRelayBackend } from './sub2api-relay-backend'
 import { parseRealmSavedAccount, RealmAccountError, type RealmSavedAccount } from './realm-account'
 import { sub2ApiManagedCliKeyProfiles } from './catalog'
+import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 
 const now = Date.parse('2026-09-09T00:00:00Z')
 const user = (id = 7) => ({ id, username: `user-${id}`, email: 'same@example.test', balance: 100.25, status: 'active', role: 'user' })
@@ -987,6 +988,35 @@ describe('Sub2API RelayBackend adapter', () => {
     await expect(f.client.createKey({ ...input, remainQuota: 0 })).rejects.toThrow('限额必须大于 0')
     await expect(f.client.updateKey({ ...input, id: 1, remainQuota: 0 })).rejects.toThrow('限额必须大于 0')
     expect(f.calls.filter((call) => ['POST', 'PUT'].includes(call.init.method ?? ''))).toHaveLength(writes)
+  })
+
+  it('caps and uncaps one tool without losing what that key already spent', async () => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(1, { name: sub2ApiManagedCliKeyProfiles.codex.keyName, quota: 0, quota_used: 3.5 })]
+    const limits = async () => resolveManagedCliKeyLimits((await f.client.listKeys()).keys, 1, 'solov-api')
+    const codex = (await limits()).find((limit) => limit.provider === 'codex')!
+    expect(codex).toMatchObject({ unlimited: true, used: 3.5 })
+    // 这个后端的 quota 是总额,上限只说「还能再用多少」,所以写回去的是
+    // 上限加已用;不然一封顶就把已经花掉的也算进额度里了。
+    await f.client.updateKey(buildManagedCliKeyLimitUpdate(codex, 10, 1, 'solov-api'))
+    expect(f.state.keys[0].quota).toBe(13.5)
+    const capped = (await limits()).find((limit) => limit.provider === 'codex')!
+    expect(capped).toMatchObject({ unlimited: false, remaining: 10, used: 3.5 })
+    await f.client.updateKey(buildManagedCliKeyLimitUpdate(capped, null, 1, 'solov-api'))
+    expect(f.state.keys[0].quota).toBe(0)
+    expect((await limits()).find((limit) => limit.provider === 'codex')).toMatchObject({ unlimited: true, remaining: null })
+  })
+
+  it('leaves the tool limit untouched when the backend refuses the write', async () => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    f.state.keys = [keyRecord(1, { name: sub2ApiManagedCliKeyProfiles.codex.keyName, quota: 0, quota_used: 1 })]
+    const codex = resolveManagedCliKeyLimits((await f.client.listKeys()).keys, 1, 'solov-api').find((limit) => limit.provider === 'codex')!
+    f.state.override = ({ url, init }) => url.pathname.endsWith('/keys/1') && init.method === 'PUT'
+      ? new Response('', { status: 503 }) : undefined
+    await expect(f.client.updateKey(buildManagedCliKeyLimitUpdate(codex, 10, 1, 'solov-api'))).rejects.toThrow('请求失败')
+    expect(f.state.keys[0].quota).toBe(0)
   })
 
   it('refreshes after an unauthorized write without replaying the mutation', async () => {

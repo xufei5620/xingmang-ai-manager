@@ -34,6 +34,8 @@ import {
   parseTopupOrdersPage,
   type NewApiFetch,
 } from './new-api-client'
+import { managedCliKeyProfiles } from './catalog'
+import { buildManagedCliKeyLimitUpdate, resolveManagedCliKeyLimits } from './account-key-quota'
 
 function registerAckResponse(): Response {
   // RECON never confirmed a response shape for /api/user/register beyond the
@@ -2410,6 +2412,57 @@ describe('updateKey', () => {
 
     expect(fetchImpl).toHaveBeenCalledTimes(2)
     expect(fetchImpl.mock.calls.some(([, init]) => init?.method === 'PUT')).toBe(false)
+  })
+
+  it('writes one tool key\'s limit in quota units, then clears it back to unlimited', async () => {
+    const managed = {
+      id: 42, name: managedCliKeyProfiles.codex.keyName, maskedKey: 'sk-••••••••0042', group: 'codex-pro',
+      status: 1, remainQuota: 0, unlimitedQuota: true, usedQuota: 1_000_000,
+      createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null,
+    }
+    const codex = () => resolveManagedCliKeyLimits([managed], 500_000, 'solov').find((limit) => limit.provider === 'codex')!
+    const detail = (remainQuota: number, unlimited: boolean) => jsonResponse({
+      success: true, message: '', data: { id: 42, name: managed.name, key: 'sk-MASKED', status: 1,
+        remain_quota: remainQuota, unlimited_quota: unlimited, model_limits_enabled: false, model_limits: '',
+        allow_ips: null, group: 'codex-pro', cross_group_retry: false },
+    })
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(usableGroupsResponse())
+    fetchImpl.mockResolvedValueOnce(detail(0, true))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+    await client.updateKey(buildManagedCliKeyLimitUpdate(codex(), 20, 500_000, 'solov'))
+    const capped = JSON.parse(String(fetchImpl.mock.calls[2][1]?.body)) as Record<string, unknown>
+    expect(capped).toMatchObject({ id: 42, name: managed.name, group: 'codex-pro',
+      remain_quota: 10_000_000, unlimited_quota: false, expired_time: -1 })
+
+    fetchImpl.mockClear()
+    fetchImpl.mockResolvedValueOnce(usableGroupsResponse())
+    fetchImpl.mockResolvedValueOnce(detail(10_000_000, false))
+    fetchImpl.mockResolvedValueOnce(jsonResponse({ success: true, message: '' }))
+    await client.updateKey(buildManagedCliKeyLimitUpdate({ ...codex(), unlimited: false, remaining: 20 }, null, 500_000, 'solov'))
+    const cleared = JSON.parse(String(fetchImpl.mock.calls[2][1]?.body)) as Record<string, unknown>
+    expect(cleared).toMatchObject({ unlimited_quota: true })
+  })
+
+  it('passes a refused tool limit back to the caller instead of reporting success', async () => {
+    const managed = {
+      id: 42, name: managedCliKeyProfiles.claude.keyName, maskedKey: 'sk-••••••••0042', group: 'codex-pro',
+      status: 1, remainQuota: 0, unlimitedQuota: true, usedQuota: 0,
+      createdAt: '2026-09-01T00:00:00.000Z', expiredAt: null, accessedAt: null,
+    }
+    const fetchImpl = vi.fn<NewApiFetch>()
+    const client = await authenticatedClient(fetchImpl)
+    fetchImpl.mockResolvedValueOnce(usableGroupsResponse())
+    fetchImpl.mockResolvedValueOnce(jsonResponse({
+      success: true, message: '', data: { id: 42, name: managed.name, key: 'sk-MASKED', status: 1,
+        remain_quota: 0, unlimited_quota: true, model_limits_enabled: false, model_limits: '',
+        allow_ips: null, group: 'codex-pro', cross_group_retry: false },
+    }))
+    fetchImpl.mockResolvedValueOnce(failureResponse('额度超出账户余额'))
+    const claude = resolveManagedCliKeyLimits([managed], 500_000, 'solov')[0]
+    await expect(client.updateKey(buildManagedCliKeyLimitUpdate(claude, 20, 500_000, 'solov')))
+      .rejects.toThrow('额度超出账户余额')
   })
 
   it('rejects a non-positive id without touching the network', async () => {
