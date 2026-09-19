@@ -67,9 +67,11 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
   useEffect(() => {
     let active = true
     setStatusError(''); setStatus(null)
-    void api.getStatus().then((value) => { if (active) setStatus(value) }, (reason: unknown) => { if (active) setStatusError(authErrorMessage(reason, '读取账号设置')) })
+    // Turnstile and the site name differ per account source, so the snapshot must follow siteId.
+    // Registration is main-account only (the flow pins siteId there), so its flags stay correct.
+    void api.getStatus(siteId).then((value) => { if (active) setStatus(value) }, (reason: unknown) => { if (active) setStatusError(authErrorMessage(reason, '读取账号设置')) })
     return () => { active = false }
-  }, [api, statusRevision])
+  }, [api, siteId, statusRevision])
   useEffect(() => {
     if (mode !== 'login') return
     let active = true
@@ -233,7 +235,7 @@ export function AuthFlow({ api: providedApi, initialMode = 'login', initialIdent
       {message && <p className="auth-message" role="status" data-testid="auth-message">{message}</p>}
       {error && <p className="auth-error" role="alert" data-testid="auth-error">{error}</p>}
       {browserAuthentication && <Button variant="ghost" icon={ExternalLink} onClick={openAccountWebsite} disabled={busy} testId="auth-open-website">前往{source.label}官网</Button>}
-      {mode === 'register' && status?.turnstileCheckEnabled && onHelp && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
+      {mode !== 'recovery' && status?.turnstileCheckEnabled && onHelp && <Button variant="ghost" onClick={onHelp} testId="auth-verification-help">打开帮助</Button>}
     </div>
   </Dialog>
 }

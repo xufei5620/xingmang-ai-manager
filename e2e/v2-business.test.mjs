@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 
 let browser, server, origin
 before(async () => {
@@ -40,7 +41,7 @@ const fixture = async (route) => {
   // cold Windows runner under Defender routinely takes longer than the 5s default
   // the assertions below rely on. Waiting for the mount separately keeps that
   // default tight enough to catch a real regression.
-  await page.locator('#root > *').first().waitFor({ timeout: 60000 })
+  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 const calls = (page) =>

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 
 let server, browser, baseUrl
 before(async () => {
@@ -20,7 +21,7 @@ async function open(query = '') {
   // Vite transforms the module graph on demand, so first paint can take seconds on
   // a cold Windows runner, and assertions like count() / getAttribute() do not retry.
   // Wait for the mount before handing the page over.
-  await page.locator('#root > *').first().waitFor({ timeout: 60000 })
+  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 async function clean(page) {

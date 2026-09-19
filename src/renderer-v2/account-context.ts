@@ -8,8 +8,19 @@ type AccountContext = Pick<AccountSessionState, 'account'> & { siteId?: AccountS
 export function accountSiteId(session: Pick<AccountContext, 'siteId' | 'realmId'>): AccountSiteId {
   return session.siteId === 'solov-api' || session.realmId === 'api-account' ? 'solov-api' : 'solov'
 }
+const siteOrigins: Record<AccountSiteId, string> = {
+  solov: 'https://xm.solov.cc',
+  'solov-api': 'https://api.solov.cc',
+}
 export function accountOrigin(session: Pick<AccountContext, 'siteId' | 'realmId'>): string {
-  return accountSiteId(session) === 'solov-api' ? 'https://api.solov.cc' : 'https://xm.solov.cc'
+  return siteOrigins[accountSiteId(session)]
+}
+/** Saved-account records carry an origin instead of a site id. An unrecognised one maps to
+ *  nothing rather than to the historical realm, so callers reject the record instead of
+ *  silently treating it as a NewAPI account. */
+export function siteIdForOrigin(origin: string): AccountSiteId | null {
+  const match = (Object.keys(siteOrigins) as AccountSiteId[]).find((id) => siteOrigins[id] === origin)
+  return match ?? null
 }
 export function accountScope(session: AccountContext): string {
   return `${accountSiteId(session) === 'solov-api' ? 'api-account' : 'xm-account'}:${session.account?.userId ?? 'guest'}`

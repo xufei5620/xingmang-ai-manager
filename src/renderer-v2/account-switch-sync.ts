@@ -1,4 +1,4 @@
-import { accountOrigin } from './account-context'
+import { accountOrigin, siteIdForOrigin } from './account-context'
 import { resolveRelaySite } from '../../electron/relay-sites'
 import { tools } from './registry/tools'
 import { errorMessage } from './business-common'
@@ -49,11 +49,13 @@ function unchangedPreviousRelay(
   provider: Provider,
 ): boolean {
   if (sameAccountOrigin(previous.origin, current.origin)) return false
-  if (!['https://xm.solov.cc', 'https://api.solov.cc'].includes(previous.origin)) return false
+  const previousSiteId = siteIdForOrigin(previous.origin)
+  const currentSiteId = siteIdForOrigin(current.origin)
+  if (!previousSiteId || !currentSiteId) return false
   const before = previous.configs[provider]
   const after = current.configs[provider]
-  const oldSite = resolveRelaySite(previous.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov')
-  const newSite = resolveRelaySite(current.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov')
+  const oldSite = resolveRelaySite(previousSiteId)
+  const newSite = resolveRelaySite(currentSiteId)
   const sameUrl = (left: string | undefined, right: string) => left?.replace(/\/$/, '') === right.replace(/\/$/, '')
   if (!current.clis[provider].installed || current.clis[provider].detectionFailed || current.officialProviders.includes(provider)
     || after.codexAuthMode === 'chatgpt' || after.authType === 'oauth-personal') return false
@@ -173,7 +175,7 @@ export async function switchAccountWithOptionalSync(
   activeOrigin: string,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): Promise<AccountSwitchSyncResult> {
-  if (!['https://xm.solov.cc', 'https://api.solov.cc'].includes(target.origin))
+  if (!siteIdForOrigin(target.origin))
     throw new Error('这个账号记录暂时无法使用，请重新登录。')
   const requested = [...new Set(selected)]
   if (requested.length && !context)
