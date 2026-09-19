@@ -35,6 +35,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
+      # This is the only job that checks out full history — so the guard can
+      # diff the unreleased sections against the base — and the only one that
+      # also runs for a documentation-only change, which is exactly when a
+      # direct CHANGELOG.md edit needs catching.
+      - name: Validate unreleased change fragments
+        run: npm run changelog:check
       - id: scope
         run: node scripts/ci-change-scope.cjs
 

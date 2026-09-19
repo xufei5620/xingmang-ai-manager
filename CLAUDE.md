@@ -250,6 +250,8 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 
 **提交前**：`npm run typecheck` + `npm test` 两条都要过（见第 3 节）。
 
+**写变更日志**：在 `changes/unreleased/` 下放一个分片文件（`## 用户` 进 `release-notes.md`，`## 开发` 进 `CHANGELOG.md`，写法见该目录 README），发版时 `npm run changelog:collect` 汇总。**不要直接改两份文件的「未发布」段**——并行 PR 都往那一段加行必冲突，而带冲突的 PR GitHub 不触发 CI，CI 会拒绝这种改动。
+
 **提交**：分支命名与 PR 规范见 `docs/COLLABORATION.md`。
 
 ---

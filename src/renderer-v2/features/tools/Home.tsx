@@ -10,6 +10,7 @@ import type { ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
+import { errorMessage } from '../../business-common'
 
 export interface HomeProps {
   api: ToolsApi
@@ -67,14 +68,14 @@ export function Home(props: HomeProps) {
     if (officialLock.current) return
     officialLock.current = true; setOfficialBusy(true); setOfficialError('')
     try { const value = await props.api.officialUsage(); if (active.current) setOfficial(value) }
-    catch (cause) { if (active.current) setOfficialError(cause instanceof Error ? cause.message : '官方额度暂时没有读到') }
+    catch (cause) { if (active.current) setOfficialError(errorMessage(cause, '官方额度暂时没有读到')) }
     finally { officialLock.current = false; if (active.current) setOfficialBusy(false) }
   }
   useEffect(() => {
     let current = true
     setRecentError('')
     void props.api.recent().then((value) => { if (current) setRecent(value) }).catch((cause) => {
-      if (current) setRecentError(cause instanceof Error ? cause.message : '记录暂时没有读到')
+      if (current) setRecentError(errorMessage(cause, '记录暂时没有读到'))
     })
     return () => { current = false }
   }, [props.api, recentAttempt])
