@@ -11,6 +11,8 @@
 
 ## Unreleased
 
+- 删除中转站点表里与主站点逐字段相同的 `sub2api` 别名条目，只保留 `resolveRelaySite` / `realmForExplicitSite` 里的 `'sub2api' → 'solov'` id 映射，老配置文件照常解析到同一站点；随之删掉 `site-runtime.ts` 里专为该别名写的一致性校验，并把显式账号边界（`requireRelaySite`、站点运行时、后端注册表）改为拒绝这个已退役的 id（D-10）。
+- 在 `relay-sites.ts` 注明法律文档恒定指向主站、客服链接按账号分流是有意为之（同一份协议、两拨客服），并补测试钉住这一不对称（D-11，行为不变）。
 - 发版流水线签名链路加固：把签名证书导进 runner 根信任存储的步骤收窄到 `test_signing` 自签名构建，正式构建不再人为制造链信任，中间 CA 缺失、时间戳不可用这类只在干净 Windows 上暴露的缺陷不会再被 Authenticode 校验的「Valid」盖住；`windows-installer` 作业声明 `environment: release`，三个签名 secret 不再对任意分支可见（P-03、P-06）。
 - 把落地页发布链路里的生产源站信息移出公开仓库：`scripts/publish-dl-landing.cjs` 不再内置源站 IP、SSH 端口、登录用户、密钥文件名与站点根目录，改为运行时从 `DL_LANDING_*` 环境变量、命令行参数或被 `.gitignore` 忽略的 `dl-landing.config.json` 读取，缺任何一项直接报错停住；`dl-landing/nginx/` 的三份配置改为带占位符的 `.conf.example` 模板，`docs/DL-LANDING-PLAN.md` 删去具体值（P-04）。
 - legacy 渲染层补上根级 ErrorBoundary：`main.tsx` 经新的 `RootShell` 包住整棵树，Sidebar / ShellTopbar / 各弹窗 / `App()` 自身 state 与顶层 effect 抛错不再是白屏（打包版已禁用 devtools，此前只能杀进程）；崩溃面板在没有 toast 宿主时就地显示导出结果。同时把 `App.tsx` 账号切换器的 `accountBaseUrl!` 换成 `relaySiteAccountsOrigin()` 的显式回落（R-S10）。

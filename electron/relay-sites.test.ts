@@ -30,28 +30,34 @@ describe('relay site registry', () => {
     expect(resolveSupportServiceUrl({ authenticated: true, siteId: 'solov-api' })).toBe(sub2ApiSupportServiceUrl)
     expect(resolveSupportServiceUrl({ authenticated: true, realmId: 'api-account' })).toBe(sub2ApiSupportServiceUrl)
   })
-  it('keeps both legacy aliases and routes the explicit api site to its own origin', () => {
-    expect(relaySites).toHaveLength(3)
-    expect(relaySites.map((site) => site.id)).toEqual(['solov', 'sub2api', 'solov-api'])
-    for (const site of relaySites.filter((site) => site.id !== 'solov-api')) {
-      expect(site.providerBaseUrls).toBe(providerBaseUrls)
-    }
+  it('registers one entry per real relay and routes the explicit api site to its own origin', () => {
+    // D-10 dropped the 'sub2api' entry, a field-for-field duplicate of
+    // 'solov'. One entry per distinct relay from here on: a second entry
+    // sharing every field is an alias, and aliases belong in the id map
+    // resolveRelaySite consults, not in the registry.
+    expect(relaySites).toHaveLength(2)
+    expect(relaySites.map((site) => site.id)).toEqual(['solov', 'solov-api'])
+    expect(resolveRelaySite('solov').providerBaseUrls).toBe(providerBaseUrls)
     expect(resolveRelaySite('solov-api').providerBaseUrls).toEqual({ claude: 'https://api.solov.cc',
       codex: 'https://api.solov.cc/v1', gemini: 'https://api.solov.cc', grok: 'https://api.solov.cc/v1' })
   })
 
-  it('resolves the sub2api site', () => {
-    expect(resolveRelaySite('sub2api').id).toBe('sub2api')
-  })
-
-  it('keeps the legacy sub2api id on the unified account backend', () => {
+  it('still resolves a settings file that names the retired sub2api id onto xm', () => {
+    // The whole reason the alias existed. Removing its registry entry must
+    // not change what an existing installation's settings.json resolves to.
     const site = resolveRelaySite('sub2api')
+    expect(site.id).toBe('solov')
     expect(site.accountBackend).toBe('new-api')
     expect(site.accountBaseUrl).toBe('https://xm.solov.cc')
+    expect(site.providerBaseUrls).toBe(providerBaseUrls)
+  })
+
+  it('never lets a retired id resolve onto the other account realm', () => {
+    expect(resolveRelaySite('sub2api').id).not.toBe('solov-api')
   })
 
   it('requires every registered site to use the account login backend', () => {
-    expect(relaySites.map((site) => site.accountBackend)).toEqual(['new-api', 'new-api', 'sub2api'])
+    expect(relaySites.map((site) => site.accountBackend)).toEqual(['new-api', 'sub2api'])
     expect(relaySites.every((site) => typeof site.accountBaseUrl === 'string')).toBe(true)
   })
 
@@ -106,16 +112,14 @@ describe('relay site registry', () => {
   })
 
   describe('relaySiteExternalUrls', () => {
-    it('matches today\'s hand-maintained main.ts allowlist entries exactly, with no growth from sub2api (I12: same-domain site adds zero new URLs)', () => {
+    it('matches today\'s hand-maintained main.ts allowlist entries exactly (I12)', () => {
       // Pins the exact set electron/main.ts's externalUrlAllowlist used to
       // hand-type before W2 -- this is the "generation result matches
       // today's site set exactly" acceptance check for the allowlist wiring.
-      // Updated for W3: sub2api ships on the same domain as solov (same
-      // websiteUrl/keysPageUrl strings, no accountBaseUrl of its own), so
-      // this set is unchanged even though relaySites now has two entries --
-      // the dedup in relaySiteExternalUrls is what keeps it that way.
       // Updated 2026-08-10: 官网/取 Key 页移到账号域 xm.solov.cc(老板拍板;
       // 同日中转也统一切到 xm,见 catalog.ts),api.solov.cc 全面退出。
+      // Unchanged by D-10: the removed sub2api entry was same-domain, so it
+      // contributed no URL of its own here either.
       expect(relaySiteExternalUrls(relaySites)).toEqual(['https://xm.solov.cc', 'https://xm.solov.cc/keys', 'https://api.solov.cc', 'https://api.solov.cc/keys'])
     })
 
@@ -161,6 +165,17 @@ describe('relay site registry', () => {
         const parsed = new URL(url)
         expect(parsed.protocol).toBe('https:')
         expect(parsed.origin).toBe('https://xm.solov.cc')
+      }
+    })
+
+    it('keeps the legal documents realm-independent while support stays per realm (D-11)', () => {
+      // Deliberate asymmetry, pinned so nobody "fixes" it into a per-realm
+      // legal URL: one operator publishes one agreement for both account
+      // systems, but the two support desks are staffed separately.
+      const apiSession = { authenticated: true, siteId: 'solov-api', realmId: 'api-account' as const }
+      expect(resolveSupportServiceUrl(apiSession)).toBe(sub2ApiSupportServiceUrl)
+      for (const url of [userAgreementUrl, privacyPolicyUrl]) {
+        expect(new URL(url).origin).toBe('https://xm.solov.cc')
       }
     })
   })
