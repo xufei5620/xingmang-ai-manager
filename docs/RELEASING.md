@@ -53,6 +53,20 @@ npm run release:build:unsigned
 
 ## 2. macOS 0.2.4 双架构加速资源
 
+> **当前状态：这一节描述的是资源准备办法，不是能跑通的发布路径。今天 `npm run dist:mac:free`
+> 出的 macOS 包必然不带加速线路。** 两个原因，改一个不够：
+>
+> 1. `scripts/run-macos-free-build.cjs` 的环境清洗名单里包含 `XINGMANG_ACCELERATION_BUNDLE_DIR`，
+>    它不会传给 electron-builder 子进程，`electron-builder.config.cjs` 里的 `accelerationBundle.metadata` 因此恒为空
+>    （连带 `mac.extraResources` 的原生代理组件与 mihomo 的 `signIgnore` 也都不会生效）。
+> 2. 即使放行该变量，`dist:mac:free` 是**一次** `--arm64 --x64` 的双架构构建，而 Mac 资源目录是按架构准备的，
+>    `beforePack` 的 `verifyAccelerationBundleCore` 会在不匹配的那个架构上直接失败。
+>
+> 下面说的“两次构建后汇总”也没有对应实现：`verify-macos-free-artifacts.cjs` 要求**同一个输出目录**里
+> 精确两份 DMG 加两份 ZIP，两次单架构构建的结果各自都过不了这道校验。要让 macOS 包带线路，
+> 需要先补构建侧的改动（按架构分别构建 + 合并产物 + 一个显式开关，不能靠环境变量残留），尚未排期。
+> Windows 侧不受影响，第 1 节的做法仍然有效。
+
 Mac 资源使用 `--platform darwin --arch arm64` 或 `--arch x64` 准备，资源清单为 version 2。每个目录只含对应架构的内核，必须使用独立目录与单架构构建命令；目标平台或架构不符会拒绝构建。两次构建后汇总两份 ZIP 清单，最后执行完整双架构验证。
 
 本次使用官方 Mihomo v1.19.29，内核与节点文件保存在仓库外。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
