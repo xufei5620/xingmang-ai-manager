@@ -5,6 +5,7 @@ import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/maintenance-pages')
@@ -22,7 +23,7 @@ after(async () => { await browser?.close(); await server?.close() })
 async function openFixture(query = '', viewport = { width: 1280, height: 820 }) {
   const page = await browser.newPage({ viewport })
   await page.goto(`${baseUrl}/e2e/maintenance-pages-fixture.html?${query}`)
-  await page.locator('.maintenance-v3').waitFor()
+  await page.locator('.maintenance-v3').waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 
