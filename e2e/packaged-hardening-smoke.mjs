@@ -105,7 +105,35 @@ async function verifyMigrationStaysCompleted() {
   }
 }
 
+// 清理阶段的问题不能顶掉 try 里的真实失败原因。旧写法把清理失败直接 throw 在
+// finally 里，「生产程序没有拒绝远程调试参数」这类真实断言失败会被清理异常替换掉，
+// CI 日志里看到的是错误的根因。这里改成收集问题，只有在断言本身没挂时才由它们
+// 决定退出码。
+async function cleanUpPackagedFixture(child) {
+  const problems = []
+  if (child) {
+    try {
+      await stopProcess(child)
+    } catch (error) {
+      // 进程可能仍持有临时目录里的文件，此时不清理，保留现场供排查。
+      problems.push(`${error?.message ?? error}，已保留临时目录`)
+      return problems
+    }
+  }
+  if (path.dirname(temporaryRoot) !== path.resolve(os.tmpdir()) || !path.basename(temporaryRoot).startsWith('xingmang-packaged-smoke-')) {
+    problems.push('拒绝清理测试临时根目录以外的路径')
+    return problems
+  }
+  try {
+    await fs.rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 })
+  } catch (error) {
+    problems.push(`清理测试临时目录失败：${error?.message ?? error}`)
+  }
+  return problems
+}
+
 let application = null
+let failure = null
 try {
   await fs.mkdir(codexHome, { recursive: true })
   await fs.mkdir(userDataDirectory, { recursive: true })
@@ -146,11 +174,13 @@ try {
   if (debugExitCode === null) throw new Error('生产程序没有拒绝远程调试参数')
   if (debugExitCode === 0) throw new Error('生产程序拒绝远程调试参数时返回了成功退出码')
   application = null
-} finally {
-  if (application) await stopProcess(application)
-  if (path.dirname(temporaryRoot) !== path.resolve(os.tmpdir()) || !path.basename(temporaryRoot).startsWith('xingmang-packaged-smoke-')) {
-    throw new Error('拒绝清理测试临时根目录以外的路径')
-  }
-  await fs.rm(temporaryRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 250 })
+} catch (error) {
+  failure = error
 }
+
+const cleanupProblems = await cleanUpPackagedFixture(application)
+for (const problem of cleanupProblems) console.error(`生产程序启动校验清理阶段问题：${problem}`)
+if (failure) throw failure
+if (cleanupProblems.length > 0) throw new Error(cleanupProblems.join('；'))
+
 console.log('生产程序启动校验通过：渲染页与 IPC 正常，配置仅首次迁移并保留备份，远程调试参数已拒绝')

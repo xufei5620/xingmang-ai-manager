@@ -2,9 +2,9 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 import os from 'node:os'
 import http from 'node:http'
-import type net from 'node:net'
+import net from 'node:net'
 import { EventEmitter } from 'node:events'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import type { ChildProcess } from 'node:child_process'
 import type { ConnectionOptions } from 'node:tls'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -12,8 +12,18 @@ import { parse, stringify } from 'yaml'
 import { parseClashAccelerationProfile } from './acceleration-clash-config'
 import { createMihomoRuntime, type MihomoRuntime } from './acceleration-mihomo-runtime'
 
-const mocks = vi.hoisted(() => ({ spawn: vi.fn(), tlsConnect: vi.fn() }))
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), tlsConnect: vi.fn(), afterConfigWrite: null as null | ((configPath: string) => Promise<void>) }))
 vi.mock('node:child_process', async (importOriginal) => ({ ...await importOriginal<typeof import('node:child_process')>(), spawn: mocks.spawn }))
+vi.mock('./safe-local-data', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./safe-local-data')>()
+  return {
+    ...original,
+    async writeAtomicSafeUtf8File(filePath: string, content: string, label: string) {
+      await original.writeAtomicSafeUtf8File(filePath, content, label)
+      if (label === '加速连接配置') await mocks.afterConfigWrite?.(filePath)
+    },
+  }
+})
 vi.mock('node:tls', async (importOriginal) => {
   const original = await importOriginal<typeof import('node:tls')>()
   return { ...original, default: { ...original, connect: mocks.tlsConnect }, connect: mocks.tlsConnect }
@@ -26,6 +36,7 @@ interface FakeSettings {
   wrongSelection: boolean
   oversizedFirstDelay: boolean
   resistStop: boolean
+  wrongMixedPort: boolean
   tlsStatus: number
 }
 
@@ -48,6 +59,7 @@ class FakeChild extends EventEmitter {
   readonly routes: string[] = []
   readonly secrets: string[] = []
   configPath = ''
+  mixedPort = 0
   selected = 'line-1'
   activeDelays = 0
   maximumActiveDelays = 0
@@ -67,6 +79,7 @@ class FakeChild extends EventEmitter {
   }
 
   start(config: Record<string, unknown>): void {
+    this.mixedPort = Number(config['mixed-port'])
     const controller = http.createServer((request, response) => {
       this.routes.push(`${request.method} ${request.url}`)
       this.secrets.push(String(request.headers.authorization ?? ''))
@@ -77,6 +90,8 @@ class FakeChild extends EventEmitter {
       const url = new URL(request.url ?? '/', 'http://127.0.0.1')
       if (url.pathname === '/version') {
         response.writeHead(200).end('{"version":"test-core"}')
+      } else if (url.pathname === '/configs') {
+        response.writeHead(200).end(JSON.stringify({ 'mixed-port': settings.wrongMixedPort ? this.mixedPort + 1 : this.mixedPort }))
       } else if (url.pathname.endsWith('/delay')) {
         this.activeDelays += 1
         this.maximumActiveDelays = Math.max(this.maximumActiveDelays, this.activeDelays)
@@ -141,6 +156,26 @@ async function remainingSessions(): Promise<string[]> {
   return fs.readdir(path.join(root, 'runtime')).catch(() => [])
 }
 
+async function leftoverSession(files: Record<string, string>): Promise<string> {
+  const directory = path.join(root, 'runtime', `session-${randomUUID()}`)
+  await fs.mkdir(directory, { recursive: true })
+  for (const [name, content] of Object.entries(files)) await fs.writeFile(path.join(directory, name), content)
+  return directory
+}
+
+function portIsBusy(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer()
+    server.once('error', () => resolve(true))
+    server.listen({ host: '127.0.0.1', port, exclusive: true }, () => server.close(() => resolve(false)))
+  })
+}
+
+function configuredPorts(yaml: string): { proxyPort: number; controllerPort: number } {
+  const config = parse(yaml)
+  return { proxyPort: Number(config['mixed-port']), controllerPort: Number(String(config['external-controller']).split(':').at(-1)) }
+}
+
 beforeEach(async () => {
   root = await fs.mkdtemp(path.join(os.tmpdir(), 'xingmang-acceleration-runtime-'))
   corePath = path.join(root, 'source-core.exe')
@@ -150,9 +185,10 @@ beforeEach(async () => {
   core.writeUInt32LE(2, 12)
   await fs.writeFile(corePath, core)
   coreSha256 = createHash('sha256').update(core).digest('hex')
-  settings = { acceptInvalidAuth: false, failDelays: false, holdDelays: false, wrongSelection: false, oversizedFirstDelay: false, resistStop: false, tlsStatus: 204 }
+  settings = { acceptInvalidAuth: false, failDelays: false, holdDelays: false, wrongSelection: false, oversizedFirstDelay: false, resistStop: false, wrongMixedPort: false, tlsStatus: 204 }
   children = []
   runtimes = []
+  mocks.afterConfigWrite = null
   mocks.spawn.mockReset().mockImplementation((_executable: string, args: string[]) => {
     const child = new FakeChild()
     children.push(child)
@@ -317,6 +353,61 @@ describe('createMihomoRuntime', () => {
     await vi.waitFor(() => expect(onUnexpectedExit).toHaveBeenCalledTimes(1))
     await value.stop()
     expect(value.isRunning()).toBe(false)
+    expect(await remainingSessions()).toEqual([])
+  })
+
+  it('keeps the reserved local ports bound until the core is about to take them over (E-B16)', async () => {
+    let held: { proxy: boolean; controller: boolean } | null = null
+    mocks.afterConfigWrite = async (configPath) => {
+      const ports = configuredPorts(await fs.readFile(configPath, 'utf8'))
+      held = { proxy: await portIsBusy(ports.proxyPort), controller: await portIsBusy(ports.controllerPort) }
+    }
+    const value = runtime()
+    await value.start(profile())
+    expect(held).toEqual({ proxy: true, controller: true })
+    expect(children[0].routes).toContain('GET /configs')
+  })
+
+  it('refuses a core that does not report the proxy port it was given (E-B16)', async () => {
+    settings.wrongMixedPort = true
+    const value = runtime()
+    await expect(value.start(profile())).rejects.toThrow('加速内核端口校验失败')
+    expect(mocks.tlsConnect).not.toHaveBeenCalled()
+    expect(children[0].routes.some((route) => route.includes('/delay?'))).toBe(false)
+    expect(value.isRunning()).toBe(false)
+    expect(await remainingSessions()).toEqual([])
+  })
+
+  it('removes the credentials and core copy an earlier crashed run left behind (E-G5)', async () => {
+    const stale = await leftoverSession({ 'config.yaml': 'password: test-only-password-leftover\n', mihomo: 'core', 'mihomo.exe': 'core', 'cache.db': 'x' })
+    const value = runtime()
+    await value.start(profile())
+    expect(await fs.readdir(stale).catch(() => null)).toBeNull()
+    expect(await remainingSessions()).toHaveLength(1)
+    await value.stop()
+    expect(await remainingSessions()).toEqual([])
+  })
+
+  it('leaves unrelated runtime entries alone and still strips a leftover it cannot fully remove (E-G5)', async () => {
+    const unrelated = path.join(root, 'runtime', 'acceleration-core')
+    await fs.mkdir(unrelated, { recursive: true })
+    await fs.writeFile(path.join(unrelated, 'mihomo'), 'shared core')
+    const stale = await leftoverSession({ 'config.yaml': 'password: test-only-password-leftover\n', 'core.log': 'unexpected' })
+    const value = runtime()
+    await value.start(profile())
+    expect(await fs.readFile(path.join(unrelated, 'mihomo'), 'utf8')).toBe('shared core')
+    expect(await fs.readdir(stale)).toEqual(['core.log'])
+  })
+
+  it('never sweeps a session another runtime in this process still owns (E-G5)', async () => {
+    const first = runtime()
+    await first.start(profile())
+    const owned = (await remainingSessions())[0]
+    const second = runtime()
+    await second.start(profile())
+    expect(await fs.readFile(path.join(root, 'runtime', owned, 'config.yaml'), 'utf8')).toContain('test-only-password')
+    expect(await remainingSessions()).toHaveLength(2)
+    await Promise.all([first.stop(), second.stop()])
     expect(await remainingSessions()).toEqual([])
   })
 

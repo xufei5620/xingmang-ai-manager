@@ -186,6 +186,20 @@ test('streams text and reasoning, stops without losing output, and ignores late 
   } finally { await page.close() }
 })
 
+test('links in model output render as inert markers instead of clicks the main process must reject', async () => {
+  const page = await open()
+  try {
+    const request = await send(page, 'Give me a link')
+    await emit(page, { type: 'content', requestId: request.requestId, content: 'See [the docs](https://example.com/guide).' })
+    await emit(page, { type: 'complete', requestId: request.requestId })
+    const marker = page.getByText('the docs', { exact: true })
+    await marker.waitFor()
+    assert.equal(await page.locator('.chat-bubble a').count(), 0)
+    assert.equal(await marker.evaluate((element) => element.tagName), 'SPAN')
+    assert.equal(await marker.getAttribute('title'), '链接不可直接打开：https://example.com/guide')
+  } finally { await page.close() }
+})
+
 test('IME Enter and Shift+Enter do not send while a plain Enter sends one request', async () => {
   const page = await open()
   try {

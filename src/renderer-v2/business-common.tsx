@@ -138,10 +138,10 @@ export function useOperation() {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const lock = useRef(false)
-  const execute = async (
+  const execute = async <T,>(
     name: string,
-    action: () => Promise<unknown>,
-    success = '操作已完成',
+    action: () => Promise<T>,
+    success: string | ((result: T) => string | null) = '操作已完成',
   ) => {
     if (lock.current) return false
     lock.current = true
@@ -150,8 +150,12 @@ export function useOperation() {
     setError('')
     setMessage('')
     try {
-      await action()
-      setMessage(success)
+      const result = await action()
+      // A native save dialog the user dismisses resolves with null instead of
+      // throwing, so a resolver may decline the success line rather than let the
+      // page claim an export that never happened.
+      const notice = typeof success === 'function' ? success(result) : success
+      if (notice) setMessage(notice)
       return true
     } catch (cause) {
       setError(errorMessage(cause))

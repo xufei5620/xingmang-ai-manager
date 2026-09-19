@@ -1,3 +1,4 @@
+import { bridge as getBridge } from '../../bridge'
 import type { AccountLoginInput, AccountRegisterInput, AccountResetPasswordInput, LegalDocumentKind, RememberedAccountLogin, XingmangApi } from '../../../../electron/ipc-contract'
 
 export type AuthBridge = Pick<XingmangApi, 'getAccountStatus' | 'getRememberedAccountLogin' | 'setRememberedAccountLogin' | 'loginAccount' | 'registerAccount' | 'sendVerificationCode' | 'sendPasswordResetCode' | 'resetPassword' | 'getLegalDocument' | 'openExternal'>
@@ -22,5 +23,7 @@ export function createAuthApi(bridge: AuthBridge) {
 export type AuthApi = ReturnType<typeof createAuthApi>
 
 export function getAuthApi(): AuthApi {
-  return createAuthApi(window.xingmang)
+  const native = getBridge()
+  if (!native) throw new Error('浏览器页面未连接本机服务，请从桌面应用打开工具箱。')
+  return createAuthApi(native)
 }
