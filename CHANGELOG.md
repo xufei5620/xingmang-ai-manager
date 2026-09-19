@@ -15,7 +15,6 @@
 
 ## Unreleased
 
-- 渲染层「账号 origin → 站点 id」的映射收口到 `account-context.ts` 的 `siteIdForOrigin()`，`account-switch-sync.ts` 与 `App.tsx` 里各自抄写的三处字面量改为调用它；未知 origin 返回 `null`，调用方据此拒绝而不是静默当成历史站点（D-09，行为不变）。
 - 删除中转站点表里与主站点逐字段相同的 `sub2api` 别名条目，只保留 `resolveRelaySite` / `realmForExplicitSite` 里的 `'sub2api' → 'solov'` id 映射，老配置文件照常解析到同一站点；随之删掉 `site-runtime.ts` 里专为该别名写的一致性校验，并把显式账号边界（`requireRelaySite`、站点运行时、后端注册表）改为拒绝这个已退役的 id（D-10）。
 - 在 `relay-sites.ts` 注明法律文档恒定指向主站、客服链接按账号分流是有意为之（同一份协议、两拨客服），并补测试钉住这一不对称（D-11，行为不变）。
 - CI 覆盖方向不再与出货方向倒挂：出货的 renderer-v2 浏览器回归（`test:v2`）和画布单测（`test:canvas`）加进 linux 作业，旧回滚界面的 10 个 `test:ui` 套件从三个平台降到只在 linux 跑一遍，`test:canvas` 从最慢、最易因 Defender 超时失败的 Windows 作业移走。`scripts/ci-workflow-config.test.cjs` 新增断言钉住这两条（M-03）。
