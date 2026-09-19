@@ -32,8 +32,8 @@
 - `npm run compile` 后 `npm start`：默认新版构建带 renderer-v2.flag，原生平台接入不依赖启动时再次设置环境变量；`npm run compile:v2` 保留为同义入口。
 - `npm run dev:legacy` / `npm run compile:legacy`：仅在显式回滚时启动或构建 React 18 旧界面。没有删除旧源码或旧数据。
 - `src/renderer-v2/gallery.html`：组件检阅。
-- `node e2e/prototype-reference-capture.cjs`：在本地生成当前原型截图。
-- `node e2e/prototype-reference-capture.cjs && node e2e/v2-business-screenshots.mjs && node e2e/renderer-v2-evidence-index.mjs`：在本地依次生成原型截图、实现截图和可筛选矩阵；生成的 PNG、清单与索引不进入源码 PR。
+- `node scripts/audit/prototype-reference-capture.cjs`：在本地生成当前原型截图。
+- `node scripts/audit/prototype-reference-capture.cjs && node scripts/audit/v2-business-screenshots.mjs && node scripts/audit/renderer-v2-evidence-index.mjs`：在本地依次生成原型截图、实现截图和可筛选矩阵；生成的 PNG、清单与索引不进入源码 PR。
 - v2 首次启动首帧使用亮色主题与雾青皮肤；没有已保存皮肤时设置页和运行时均回退到雾青，用户已保存的主题/皮肤优先保留。状态栏的来源位置显示主进程扫描得到的国家/地区与公网 IP，探测失败显示“网络位置未知”。
 
 ## 已验证
@@ -44,11 +44,11 @@
 - `npm run compile:v2`：通过，主渲染与画布产物检查通过。
 - `npm run test:v2`：113 项单元测试、86 组浏览器测试全部通过。登录自动写 Key、通用邮箱注册/找回、恢复缺失配置、手填来源保护、同步进度锁定、部分失败重试、新装工具单项配置、账号切换保持可选同步均有整应用覆盖。
 - `node e2e/renderer-v2-native.mjs`：Windows 原生隔离临时 profile；960/1280/1440 内容宽分别 zoom 0.75/1/1.125，1280 逻辑宽；preload 可用；高对比/主题重新加载后保留；星空 canvas 非空，页面错误 0。没有修改用户账号或安装目录。
-- `node e2e/renderer-v2-component-surface-check.mjs`：16 组暗亮按钮/卡片/字段/状态样式比较，差异 0。
+- `node scripts/audit/renderer-v2-component-surface-check.mjs`：16 组暗亮按钮/卡片/字段/状态样式比较，差异 0。
 - `electron/new-api-notice-real-shape.test.ts` 与公告组件测试覆盖生产约 2.42 MB 富 HTML、旧 envelope、脚本/样式/内联 SVG 过滤和超限回退；公告读取只对该公共接口使用 4 MB 上限，其他接口仍为 512 KB。
 - `node e2e/canvas-editor-smoke.mjs`：4 个窗口尺寸、125%/150% 缩放、检查器/下拉菜单、拖拽吸附、`@` 素材菜单、撤销重做和 100 节点压力场景通过；无横向溢出、页面错误或外部请求。
 - 画布关闭在 React 回执尚未安装、preload/主帧加载失败或 renderer 崩溃时均 fail-open；账号切换会取消旧 owner 任务，聊天凭据 in-flight 按 session revision 隔离，取消运行/生成请求按当前账号校验。
-- `node e2e/v2-business-screenshots.mjs`：本地生成 240 张，包含真实 Shell 的业务页与账号页签，暗/亮 × Win/Mac 样式 × 默认/空/失败；无脚本错误或横向溢出。设置等无自然空态的页面保持真实正常内容；图片按产品负责人要求不进入源码 PR。
+- `node scripts/audit/v2-business-screenshots.mjs`：本地生成 240 张，包含真实 Shell 的业务页与账号页签，暗/亮 × Win/Mac 样式 × 默认/空/失败；无脚本错误或横向溢出。设置等无自然空态的页面保持真实正常内容；图片按产品负责人要求不进入源码 PR。
 - 新渲染与平台 150 个源码/样式/说明文件编码检查无 BOM、无无效 UTF-8。
 
 全仓 `npm test` 的 Vitest 部分：3001 通过、4 失败、160 跳过。4 个失败是已有 Windows 符号链接 EPERM：backups 1、path-identity 1、safe-local-data 2。没有跳过或放宽这些断言。

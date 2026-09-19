@@ -15,11 +15,11 @@ async function readGeneratedManifest(file, command) {
 }
 const business = await readGeneratedManifest(
   'docs/v2-business-evidence/manifest.json',
-  'node e2e/v2-business-screenshots.mjs',
+  'node scripts/audit/v2-business-screenshots.mjs',
 )
 const reference = await readGeneratedManifest(
   'docs/prototype-refs/current/manifest.json',
-  'node e2e/prototype-reference-capture.cjs',
+  'node scripts/audit/prototype-reference-capture.cjs',
 )
 const rows = []
 const escape = (value) => String(value).replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('"', '&quot;')
