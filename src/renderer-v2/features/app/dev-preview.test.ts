@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { onboardingPreviewEnabled } from './dev-preview'
 
 describe('onboardingPreviewEnabled', () => {
-  it('opens the preview only for the exact flag main.ts appends in development', () => {
+  it('opens the preview only for the exact flag main.ts appends on a development runtime', () => {
     expect(onboardingPreviewEnabled('?onboardingPreview=1', true)).toBe(true)
     expect(onboardingPreviewEnabled('?theme=dark&onboardingPreview=1', true)).toBe(true)
     expect(onboardingPreviewEnabled('?onboardingPreview=true', true)).toBe(false)

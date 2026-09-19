@@ -71,7 +71,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [chatScope, setChatScope] = useState<string | null>(null)
   const [visitedPages, setVisitedPages] = useState<Partial<Record<PageId, string>>>({})
   const [accountTab, setAccountTab] = useState<AccountTab>('overview')
-  const [guide, setGuide] = useState(() => onboardingPreviewEnabled(window.location.search, import.meta.env.DEV))
+  const [guide, setGuide] = useState(false)
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
   const [auth, setAuth] = useState<AuthMode | null>(null)
@@ -130,6 +130,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     void app.bootstrap().then((result) => {
       if (!current) return
       setSettings(result.settings); setPlatform(result.platform); setSession(result.session); setUpdate(result.update)
+      // 预览开关要等主进程说清这是不是打包版才生效，所以放在 bootstrap 里而不是
+      // 初始 state；`boot !== 'ready'` 期间只渲染 Splash，用户看不到中间态。
+      if (onboardingPreviewEnabled(window.location.search, result.update.development)) setGuide(true)
       setWorkspaceEntered(Object.values(result.config.providers).some((provider) => provider.hasApiKey || provider.codexAuthMode === 'chatgpt' || provider.authType === 'oauth-personal' || Boolean(provider.officialAccountEmail)))
       setBoot('ready')
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
