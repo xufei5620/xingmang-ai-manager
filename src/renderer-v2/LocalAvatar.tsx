@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { RotateCcw, Save } from 'lucide-react'
 import { Button, Dialog, Input, Notice } from './ui'
+import { errorMessage } from './business-common'
 import {
   avatarInitial,
   avatarStorageKey,
@@ -139,7 +140,7 @@ export function LocalAvatarDialog({
     try {
       drawAvatarCrop(preview.current, bitmap, crop)
     } catch (cause) {
-      setError(cause instanceof Error ? cause.message : '头像预览没有准备好。')
+      setError(errorMessage(cause, '头像预览没有准备好。'))
     }
   }, [bitmap, crop])
   const choose = async (file: File | undefined) => {
@@ -161,11 +162,7 @@ export function LocalAvatarDialog({
       setFilename(file.name)
     } catch (cause) {
       if (request.current === id && owner === activeKey.current)
-        setError(
-          cause instanceof Error
-            ? cause.message
-            : '这张图片无法打开，请重新选择。',
-        )
+        setError(errorMessage(cause, '这张图片无法打开，请重新选择。'))
     } finally {
       if (request.current === id && owner === activeKey.current) setBusy(false)
     }
@@ -178,11 +175,7 @@ export function LocalAvatarDialog({
       avatar.save(preview.current.toDataURL('image/png'))
       onClose()
     } catch (cause) {
-      setError(
-        cause instanceof Error
-          ? cause.message
-          : '头像没有保存成功，预览已保留。',
-      )
+      setError(errorMessage(cause, '头像没有保存成功，预览已保留。'))
     }
   }
   return (

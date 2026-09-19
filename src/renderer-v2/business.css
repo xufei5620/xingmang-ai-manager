@@ -17,6 +17,16 @@
 .v2-business-notice.is-error {
   border-color: var(--bad);
 }
+/* The catalog sentence leads; the backend's own text stays readable but quiet. */
+.v2-business-notice-detail {
+  display: block;
+  margin-top: 4px;
+  font-style: normal;
+  color: var(--text-3);
+}
+.v2-operation-detail {
+  color: var(--text-3);
+}
 .v2-business-loading {
   min-height: 200px;
   display: grid;
@@ -548,3 +558,4 @@
   border-radius: 50%;
   flex: none;
 }
+.v2-connection-note { margin: 6px 0 0; color: var(--text-2); font-size: var(--font-small); line-height: 1.7; overflow-wrap: anywhere; }

@@ -5,7 +5,7 @@ export type AccountSiteId = 'solov' | 'solov-api'
 
 export function createAuthApi(bridge: AuthBridge) {
   return {
-    getStatus: () => bridge.getAccountStatus('solov'),
+    getStatus: (siteId: AccountSiteId) => bridge.getAccountStatus(siteId),
     getRemembered: (siteId: AccountSiteId) => bridge.getRememberedAccountLogin(siteId),
     setRemembered: (login: RememberedAccountLogin | null, siteId?: AccountSiteId) => bridge.setRememberedAccountLogin(login, siteId),
     login: (input: AccountLoginInput) => bridge.loginAccount(input),

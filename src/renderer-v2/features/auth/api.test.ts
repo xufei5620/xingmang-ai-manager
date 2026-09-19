@@ -5,14 +5,21 @@ describe('v2 auth IPC adapter', () => {
   it('loads remembered credentials only from the selected source and keeps registration documents on the default service', async () => {
     const bridge = { getAccountStatus: vi.fn(), getRememberedAccountLogin: vi.fn(), setRememberedAccountLogin: vi.fn(), getLegalDocument: vi.fn() }
     const api = createAuthApi(bridge as unknown as AuthBridge)
-    await api.getStatus()
+    await api.getStatus('solov-api')
     await api.getRemembered('solov-api')
     await api.setRemembered(null, 'solov-api')
     await api.getLegal('privacy-policy')
-    expect(bridge.getAccountStatus).toHaveBeenCalledWith('solov')
+    expect(bridge.getAccountStatus).toHaveBeenCalledWith('solov-api')
     expect(bridge.getRememberedAccountLogin).toHaveBeenCalledWith('solov-api')
     expect(bridge.setRememberedAccountLogin).toHaveBeenCalledWith(null, 'solov-api')
     expect(bridge.getLegalDocument).toHaveBeenCalledWith('privacy-policy', 'solov')
+  })
+  it('reads account settings from the selected source instead of a fixed one', async () => {
+    const getAccountStatus = vi.fn().mockResolvedValue(null)
+    const api = createAuthApi({ getAccountStatus } as unknown as AuthBridge)
+    await api.getStatus('solov')
+    await api.getStatus('solov-api')
+    expect(getAccountStatus.mock.calls).toEqual([['solov'], ['solov-api']])
   })
   it('forwards credentials only to the explicit login channel and does not touch CLI configuration', async () => {
     const bridge = { loginAccount: vi.fn().mockResolvedValue({ account: { userId: 7, username: 'member' }, accessExpiresAt: null }), registerAccount: vi.fn().mockResolvedValue(undefined), configureManagedCliKeys: vi.fn() }

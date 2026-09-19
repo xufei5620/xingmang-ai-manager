@@ -11,6 +11,7 @@ import {
   writeAppSettings,
   type AppSettings,
 } from './app-settings'
+import { resolveRelaySite } from './relay-sites'
 
 const temporaryDirectories: string[] = []
 
@@ -143,6 +144,27 @@ describe('application settings persistence', () => {
     const result = readAppSettings(filePath)
     expect(result.relaySiteId).toBeUndefined()
     expect(result.workspace).toBe('D:\\Workspace')
+  })
+
+  it('keeps an old settings file that names the retired sub2api id on the xm site (D-10)', () => {
+    // The alias lost its registry entry, so the read normalizes it away --
+    // but an existing installation must keep resolving to exactly the site
+    // that id always meant, not be pushed onto the other account realm.
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({
+      version: 2,
+      workspace: 'D:\\Workspace',
+      theme: 'dark',
+      checkUpdatesOnStartup: true,
+      runDiagnosticsOnStartup: false,
+      relaySiteId: 'sub2api',
+    }), 'utf8')
+
+    const result = readAppSettings(filePath)
+    expect(result.relaySiteId).toBeUndefined()
+    expect(result.workspace).toBe('D:\\Workspace')
+    expect(resolveRelaySite(result.relaySiteId).id).toBe('solov')
+    expect(resolveRelaySite('sub2api').id).toBe('solov')
   })
 
   it('round-trips a pinned mirrorPolicy through a write and a read', async () => {
@@ -283,7 +305,7 @@ describe('field-wise settings updates (①栏11)', () => {
   it('merges an update over the persisted record, leaving unmentioned fields alone', async () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings({
-      relaySiteId: 'sub2api',
+      relaySiteId: 'solov-api',
       mirrorPolicy: 'official-first',
       sidebarMoreExpanded: true,
     }))
@@ -292,7 +314,7 @@ describe('field-wise settings updates (①栏11)', () => {
 
     expect(merged).toEqual(settings({
       theme: 'light',
-      relaySiteId: 'sub2api',
+      relaySiteId: 'solov-api',
       mirrorPolicy: 'official-first',
       sidebarMoreExpanded: true,
     }))
@@ -339,12 +361,12 @@ describe('field-wise settings updates (①栏11)', () => {
     const filePath = temporarySettingsPath()
     await writeAppSettings(filePath, settings())
 
-    const first = updateAppSettings(filePath, { version: 2, relaySiteId: 'sub2api' })
+    const first = updateAppSettings(filePath, { version: 2, relaySiteId: 'solov-api' })
     const second = updateAppSettings(filePath, { version: 2, sidebarMoreExpanded: true })
     await Promise.all([first, second])
 
     expect(readAppSettings(filePath)).toEqual(settings({
-      relaySiteId: 'sub2api',
+      relaySiteId: 'solov-api',
       sidebarMoreExpanded: true,
     }))
   })
@@ -353,9 +375,27 @@ describe('field-wise settings updates (①栏11)', () => {
     const base = settings({ relaySiteId: 'solov', mirrorPolicy: 'mirror-first' })
 
     expect(mergeAppSettings(base, { version: 2 })).toEqual(base)
-    expect(mergeAppSettings(base, { version: 2, relaySiteId: 'sub2api' }).relaySiteId).toBe('sub2api')
+    expect(mergeAppSettings(base, { version: 2, relaySiteId: 'solov-api' }).relaySiteId).toBe('solov-api')
     expect(mergeAppSettings(base, { version: 2, mirrorPolicy: 'auto' })).not.toHaveProperty('mirrorPolicy')
     expect(mergeAppSettings(base, { version: 2, workspace: 'D:\\Elsewhere' }).workspace).toBe('D:\\Elsewhere')
+  })
+
+  it('keeps the CLI version preference absent until the user asks for latest, and clears it again', async () => {
+    const filePath = temporarySettingsPath()
+    // Absent = 装已验证名单里的推荐版本,这是 N1 有意的默认。
+    expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
+    await updateAppSettings(filePath, { version: 2, alwaysInstallLatestCli: true })
+    expect(readAppSettings(filePath).alwaysInstallLatestCli).toBe(true)
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).alwaysInstallLatestCli).toBe(true)
+    await updateAppSettings(filePath, { version: 2, alwaysInstallLatestCli: false })
+    expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
+  })
+
+  it('drops a malformed CLI version preference instead of failing the whole read', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), alwaysInstallLatestCli: 'yes' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
   })
 })
 

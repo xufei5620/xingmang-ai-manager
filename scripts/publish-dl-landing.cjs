@@ -6,18 +6,50 @@ const { spawnSync } = require('node:child_process')
 
 const packageVersion = require('../package.json').version
 
-const DEFAULT_HOST = '38.147.105.28'
-const DEFAULT_PORT = 5620
-const DEFAULT_USER = 'root'
-const DEFAULT_REMOTE_ROOT = '/www/wwwroot/dl.solov.cc'
-const DEFAULT_KEY_NAME = 'solov_fleet_ed25519'
+// This repository is public. The production origin's address, SSH port, login user,
+// key file name and document root are an attack surface on their own, so none of them
+// may live here: every one is supplied at run time and the script refuses to run when
+// any is missing. A built-in fallback would silently re-publish the secret, so there
+// is deliberately none.
+const CONFIG_FILE_NAME = 'dl-landing.config.json'
+const TARGET_FIELDS = [
+  { key: 'host', env: 'DL_LANDING_SSH_HOST', flag: '--host', label: '源站主机' },
+  { key: 'port', env: 'DL_LANDING_SSH_PORT', flag: '--port', label: 'SSH 端口' },
+  { key: 'user', env: 'DL_LANDING_SSH_USER', flag: '--user', label: 'SSH 用户' },
+  { key: 'key', env: 'DL_LANDING_SSH_KEY', flag: '--key', label: 'SSH 私钥路径' },
+  { key: 'remoteRoot', env: 'DL_LANDING_REMOTE_ROOT', flag: '--remote-root', label: '站点根目录' },
+]
 const VERSION_PATTERN = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+// The remote root is interpolated into commands that a root login shell runs on
+// the production origin. Restrict it to characters that carry no meaning to that
+// shell, so a stray value can never become a second command or a glob.
+const REMOTE_ROOT_PATTERN = /^\/[A-Za-z0-9._/-]*$/
 
 function assertSafeVersion(version) {
   if (typeof version !== 'string' || !VERSION_PATTERN.test(version.trim())) {
     throw new Error(`版本号不合法：${version || '(空)'}。例如 0.1.22`)
   }
   return version.trim()
+}
+
+function assertSafeRemoteRoot(remoteRoot) {
+  const raw = typeof remoteRoot === 'string' ? remoteRoot.trim() : ''
+  const invalid = `远端目录不合法：${remoteRoot === undefined || remoteRoot === '' ? '(空)' : String(remoteRoot)}。必须是绝对路径，只允许字母、数字和 . _ - /，且不含 .. 段。例如 /srv/dl-landing`
+  if (!REMOTE_ROOT_PATTERN.test(raw)) {
+    throw new Error(invalid)
+  }
+  const normalized = raw.replace(/\/+$/, '')
+  if (!normalized || normalized.split('/').some((segment) => segment === '..')) {
+    throw new Error(invalid)
+  }
+  return normalized
+}
+
+// Defence in depth: assertSafeRemoteRoot already rejects every shell metacharacter,
+// but each path still reaches the remote shell quoted, so a future relaxation of the
+// pattern cannot silently turn into command injection.
+function quoteRemotePath(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`
 }
 
 function installerFileNames(version) {
@@ -53,7 +85,68 @@ function argumentValue(argv, index, flag) {
   return value
 }
 
-function parsePublishArgs(argv, defaults = {}) {
+function configFilePath(env, cwd) {
+  const override = typeof env.DL_LANDING_CONFIG === 'string' ? env.DL_LANDING_CONFIG.trim() : ''
+  if (override) return path.resolve(override)
+  return path.resolve(cwd || process.cwd(), CONFIG_FILE_NAME)
+}
+
+// The local config file is git-ignored on purpose: it is the place an operator keeps the
+// origin details that must never reach the public repository.
+function readPublishConfigFile(env = process.env, cwd = process.cwd()) {
+  const filePath = configFilePath(env, cwd)
+  let body
+  try {
+    body = fs.readFileSync(filePath, 'utf8')
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return {}
+    throw new Error(`读取 ${filePath} 失败：${error && error.message ? error.message : String(error)}`)
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(body)
+  } catch (error) {
+    throw new Error(`${filePath} 不是合法的 JSON：${error && error.message ? error.message : String(error)}`)
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`${filePath} 必须是一个 JSON 对象。参考 ${CONFIG_FILE_NAME}.example。`)
+  }
+  return parsed
+}
+
+function firstProvided(...values) {
+  for (const value of values) {
+    if (value === undefined || value === null) continue
+    const text = String(value).trim()
+    if (text) return text
+  }
+  return ''
+}
+
+function resolvePublishTarget(sources = {}) {
+  const env = sources.env || {}
+  const config = sources.config || {}
+  const overrides = sources.overrides || {}
+  const target = {}
+  for (const field of TARGET_FIELDS) {
+    target[field.key] = firstProvided(overrides[field.key], env[field.env], config[field.key])
+  }
+  return target
+}
+
+function assertPublishTarget(target) {
+  const missing = TARGET_FIELDS.filter((field) => !firstProvided(target && target[field.key]))
+  if (missing.length === 0) return target
+  const detail = missing.map((field) => `${field.label}（${field.env} 或 ${field.flag}）`).join('、')
+  throw new Error(
+    `缺少源站配置：${detail}。脚本不带任何内置默认值，请用环境变量、命令行参数，或仓库根目录下被 .gitignore 忽略的 ${CONFIG_FILE_NAME} 提供；模板见 ${CONFIG_FILE_NAME}.example。`,
+  )
+}
+
+function parsePublishArgs(argv, defaults = {}, sources = {}) {
+  const env = sources.env || process.env
+  const config = sources.config || readPublishConfigFile(env, sources.cwd)
+  const target = resolvePublishTarget({ env, config, overrides: defaults })
   const options = {
     version: defaults.version || packageVersion,
     runId: '',
@@ -62,11 +155,11 @@ function parsePublishArgs(argv, defaults = {}) {
     yes: false,
     dryRun: false,
     keepDownload: false,
-    host: defaults.host || process.env.DL_LANDING_SSH_HOST || DEFAULT_HOST,
-    port: Number(defaults.port || process.env.DL_LANDING_SSH_PORT || DEFAULT_PORT),
-    user: defaults.user || process.env.DL_LANDING_SSH_USER || DEFAULT_USER,
-    key: defaults.key || process.env.DL_LANDING_SSH_KEY || '',
-    remoteRoot: defaults.remoteRoot || process.env.DL_LANDING_REMOTE_ROOT || DEFAULT_REMOTE_ROOT,
+    host: target.host,
+    port: target.port,
+    user: target.user,
+    key: target.key,
+    remoteRoot: target.remoteRoot,
     help: false,
   }
 
@@ -96,7 +189,7 @@ function parsePublishArgs(argv, defaults = {}) {
       options.host = argumentValue(argv, index + 1, arg)
       index += 1
     } else if (arg === '--port') {
-      options.port = Number(argumentValue(argv, index + 1, arg))
+      options.port = argumentValue(argv, index + 1, arg)
       index += 1
     } else if (arg === '--user') {
       options.user = argumentValue(argv, index + 1, arg)
@@ -112,16 +205,18 @@ function parsePublishArgs(argv, defaults = {}) {
     }
   }
 
+  // --help must stay usable on a machine that has no origin configuration at all.
+  if (options.help) return options
+
+  assertPublishTarget(options)
   options.version = assertSafeVersion(options.version)
+  options.remoteRoot = assertSafeRemoteRoot(options.remoteRoot)
+  options.port = Number(options.port)
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
-    throw new Error('--port 必须是 1-65535 之间的整数')
+    throw new Error('SSH 端口必须是 1-65535 之间的整数（DL_LANDING_SSH_PORT 或 --port）')
   }
   if (options.dryRun) options.yes = false
   return options
-}
-
-function defaultSshKey() {
-  return path.join(os.homedir(), '.ssh', DEFAULT_KEY_NAME)
 }
 
 function helpText() {
@@ -143,6 +238,12 @@ function helpText() {
     '  --dry-run         只打印，不上传',
     '  --yes             确认上传到源站',
     '  --keep-download   保留临时下载目录',
+    '',
+    '源站连接信息不写在仓库里，必须由运行时提供，缺一个就拒绝执行：',
+    ...TARGET_FIELDS.map((field) => `  ${field.env.padEnd(24)}${field.label}（也可用 ${field.flag}）`),
+    '',
+    `也可以把同样的字段写进仓库根目录的 ${CONFIG_FILE_NAME}（已被 .gitignore 忽略），`,
+    `或用 DL_LANDING_CONFIG 指向仓库外的一份。模板见 ${CONFIG_FILE_NAME}.example。`,
   ].join('\n')
 }
 
@@ -223,7 +324,8 @@ function fileSha256(filePath) {
 }
 
 function buildPublishPlan(options, files, names) {
-  const remoteFiles = `${options.remoteRoot.replace(/\/+$/, '')}/files/latest`
+  const remoteRoot = assertSafeRemoteRoot(options.remoteRoot)
+  const remoteFiles = `${remoteRoot}/files/latest`
   return {
     uploads: [
       { slot: 'win', local: files.win, remoteDir: remoteFiles, fileName: names.win },
@@ -231,7 +333,7 @@ function buildPublishPlan(options, files, names) {
       { slot: 'macX64', local: files.macX64, remoteDir: remoteFiles, fileName: names.macX64 },
     ],
     manifest: buildLatestManifest(options.version),
-    manifestRemote: `${options.remoteRoot.replace(/\/+$/, '')}/latest.json`,
+    manifestRemote: `${remoteRoot}/latest.json`,
   }
 }
 
@@ -268,7 +370,10 @@ function runTool(command, args, options = {}) {
 }
 
 function sshArgs(options) {
-  const key = options.key || defaultSshKey()
+  const key = firstProvided(options.key)
+  if (!key) {
+    throw new Error('缺少 SSH 私钥路径（DL_LANDING_SSH_KEY 或 --key）。密钥文件名不写在仓库里。')
+  }
   if (!fs.existsSync(key)) {
     throw new Error(`找不到 SSH 密钥：${key}`)
   }
@@ -338,10 +443,14 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
       user: rawOptions.user,
       key: rawOptions.key,
       remoteRoot: rawOptions.remoteRoot,
-    }),
+    }, rawOptions.sources),
     ...rawOptions,
   }
+  // The spread above lets a caller hand in raw values, so every guard runs again on
+  // what actually reaches ssh/scp rather than on what parsePublishArgs returned.
+  assertPublishTarget(options)
   options.version = assertSafeVersion(options.version)
+  options.remoteRoot = assertSafeRemoteRoot(options.remoteRoot)
   const names = installerFileNames(options.version)
   const io = {
     collect: deps.collectInstallers || collectInstallers,
@@ -373,7 +482,10 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
     const sshBase = sshArgs(options)
     const scpBase = scpArgs(options)
     const target = `${options.user}@${options.host}`
-    io.run('ssh', [...sshBase, target, `mkdir -p ${plan.uploads[0].remoteDir}`])
+    // Only the ssh commands below are quoted: since OpenSSH 9 scp speaks SFTP, where a
+    // remote path is taken literally, so quotes there would become part of the directory
+    // name. assertSafeRemoteRoot is what keeps the scp destinations safe.
+    io.run('ssh', [...sshBase, target, `mkdir -p ${quoteRemotePath(plan.uploads[0].remoteDir)}`])
     io.run('scp', [
       ...scpBase,
       found.win,
@@ -388,15 +500,17 @@ function publishDlLanding(rawOptions = {}, deps = {}) {
     io.run('scp', [...scpBase, manifestLocal, `${target}:${plan.manifestRemote}`])
 
     const remoteFiles = plan.uploads.map((item) => `${item.remoteDir}/${item.fileName}`)
+    const quotedFiles = remoteFiles.map(quoteRemotePath)
+    const quotedManifest = quoteRemotePath(plan.manifestRemote)
     io.run('ssh', [
       ...sshBase,
       target,
-      `chown www:www ${plan.manifestRemote} ${remoteFiles.join(' ')}`,
+      `chown www:www ${quotedManifest} ${quotedFiles.join(' ')}`,
     ])
     const remoteCheck = io.run('ssh', [
       ...sshBase,
       target,
-      `test -f ${remoteFiles[0]} && test -f ${remoteFiles[1]} && test -f ${remoteFiles[2]} && cat ${plan.manifestRemote}`,
+      `test -f ${quotedFiles[0]} && test -f ${quotedFiles[1]} && test -f ${quotedFiles[2]} && cat ${quotedManifest}`,
     ])
     const localManifest = path.resolve(io.cwd, 'dl-landing', 'latest.json')
     io.writeFile(localManifest, manifestBody)
@@ -423,6 +537,11 @@ function main(argv = process.argv.slice(2)) {
 
 module.exports = {
   assertSafeVersion,
+  assertSafeRemoteRoot,
+  quoteRemotePath,
+  readPublishConfigFile,
+  resolvePublishTarget,
+  assertPublishTarget,
   installerFileNames,
   buildLatestManifest,
   formatLatestJson,

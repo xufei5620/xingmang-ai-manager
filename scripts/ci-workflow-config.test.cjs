@@ -37,10 +37,14 @@ test('renderer v2 is the default and legacy remains an explicit rollback mode', 
   assert.match(scripts['dev:legacy'], /XINGMANG_RENDERER=legacy\s+npm run dev:runtime/)
   assert.match(scripts.compile, /XINGMANG_RENDERER=v2\s+npm run compile:runtime/)
   assert.match(scripts['compile:legacy'], /XINGMANG_RENDERER=legacy\s+npm run compile:runtime/)
-  for (const name of ['build', 'build:win:ci', 'build:mac:dir', 'build:mac:ci', 'release:build:unsigned']) {
+  for (const name of ['build', 'build:win:ci', 'build:mac:dir', 'build:mac:ci']) {
     assert.match(scripts[name], /npm run compile/, `${name} must use the default v2 compile`)
     assert.doesNotMatch(scripts[name], /compile:legacy/, `${name} must not package the rollback renderer`)
   }
+  // release:build:unsigned no longer compiles inline: it delegates to the shared
+  // release gate, which runs `npm run compile` as one of its steps (M-01).
+  assert.match(scripts['release:build:unsigned'], /node scripts\/run-release-build\.cjs/)
+  assert.doesNotMatch(scripts['release:build:unsigned'], /compile:legacy/)
 
   assert.match(viteConfigSource, /requestedRenderer === 'legacy' \? 'legacy' : 'v2'/)
   assert.match(viteConfigSource, /Unsupported XINGMANG_RENDERER value/)
@@ -112,6 +116,36 @@ test('the Windows required job tests and compiles the default renderer v2', () =
   assert.match(String(steps[flagCheckIndex].run), /dist\/renderer-v2\.flag/)
 })
 
+test('the release gate only runs smoke scripts the Windows required job also runs', () => {
+  // M-01's lower half: the release gate used to run e2e/electron-smoke.mjs, a
+  // script no CI job executed. It kept its legacy `.app-shell` selectors long
+  // after renderer v2 became the default compile, so the gate's fourth step
+  // could only ever time out. Pinning the gate's smoke scripts to the Windows
+  // required job is what stops that from happening again.
+  const { buildReleaseSteps } = require('./run-release-build.cjs')
+  const ciCommands = runSteps('test')
+  for (const unsignedReleaseMode of [false, true]) {
+    const steps = buildReleaseSteps({
+      npmCli: 'npm-cli.js',
+      releaseOutputDirectory: path.join(root, 'release-test'),
+      platform: 'win32',
+      unsignedReleaseMode,
+    })
+    const smokeScripts = steps
+      .flatMap((step) => step.args)
+      .filter((argument) => typeof argument === 'string' && argument.includes(`${path.sep}e2e${path.sep}`))
+      .map((argument) => path.relative(root, argument).split(path.sep).join('/'))
+    assert.ok(smokeScripts.length > 0, 'the release gate must run at least one e2e smoke script')
+    for (const script of smokeScripts) {
+      assert.ok(
+        ciCommands.some((command) => command.includes(script)),
+        `${script} runs in the release gate and must also run in the Windows required job`,
+      )
+      assert.ok(fs.existsSync(path.join(root, script)), `${script} must exist`)
+    }
+  }
+})
+
 test('the Windows suite serializes filesystem-heavy files with a bounded test timeout', () => {
   const command = packageJson.scripts['test:windows']
 
@@ -132,6 +166,45 @@ test('the Linux suite type-checks and runs the common test command', () => {
   // reuse) only surfaces on a real Linux filesystem, so this job must run the
   // unmodified common suite rather than a Windows- or macOS-flavored variant.
   assert.equal(commands.includes('npm run test:windows'), false)
+})
+
+test('the Linux job carries the shipping renderer coverage the Windows job used to own alone', () => {
+  // M-03: test:v2 and test:canvas ran only on windows-latest, the slowest and
+  // least reliable job in the matrix, so one Defender timeout took the renderer
+  // that actually ships out of a pull request's coverage entirely.
+  const steps = workflow.jobs['linux-test'].steps
+  const commands = runSteps('linux-test')
+  const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
+
+  assert.notEqual(dirtyCheckIndex, -1, 'linux-test must still guard against a dirty working tree')
+  for (const command of ['npm run test:v2', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2']) {
+    const index = commands.indexOf(command)
+    assert.notEqual(index, -1, `linux-test must run ${command}`)
+    assert.ok(steps.findIndex((step) => step.run === command) < dirtyCheckIndex,
+      `${command} must run before the dirty-tree guard`)
+  }
+
+  // T-S4: check:v2 only earns its place in front of that guard while it stays
+  // report-free. Passing --report here would write three generatedAt-stamped
+  // files into the tree and fail every run.
+  assert.equal(packageJson.scripts['check:v2'].includes('--report'), false)
+  assert.equal(commands.some((command) => command.includes('check:v2 -- --report')), false)
+})
+
+test('the legacy rollback UI suites are verified on exactly one platform', () => {
+  // They render markup through renderToStaticMarkup and assert on the HTML, so
+  // the three platforms were answering the same question three times while the
+  // shipping renderer was answered once.
+  assert.equal(packageJson.scripts['test:node'].includes('test:ui'), false,
+    'test:ui must not ride along with test:node onto every platform')
+  assert.equal(packageJson.scripts.test.includes('test:ui'), false)
+  assert.equal(packageJson.scripts['test:windows'].includes('test:ui'), false)
+
+  const jobsRunningUi = Object.entries(workflow.jobs)
+    .filter(([, job]) => (job.steps || []).some((step) => step.run === 'npm run test:ui'))
+    .map(([name]) => name)
+
+  assert.deepEqual(jobsRunningUi, ['linux-test'])
 })
 
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {
@@ -188,6 +261,38 @@ test('documentation-only changes do not build and package the app', () => {
   for (const job of ['test', 'macos-test', 'linux-test', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
+  }
+})
+
+test('the change-scope job also gates the unreleased changelog fragments', () => {
+  const job = workflow.jobs.changes
+  const checkout = job.steps.find((step) => String(step.uses || '').includes('actions/checkout'))
+  const commands = runSteps('changes')
+
+  // Parallel pull requests used to append to the same two "unreleased" sections,
+  // and a conflicted pull request has no merge ref, so GitHub never triggered
+  // this workflow for it at all. Fragments removed the shared text; this step is
+  // what stops the habit from coming back.
+  assert.ok(commands.includes('npm run changelog:check'))
+  assert.match(packageJson.scripts['changelog:check'], /scripts\/changelog-collect\.cjs --check/)
+  assert.match(packageJson.scripts['changelog:collect'], /scripts\/changelog-collect\.cjs/)
+  assert.ok(packageJson.scripts['test:node'].includes('scripts/changelog-collect.test.cjs'))
+
+  // The guard diffs both unreleased sections against the pull request base, so
+  // the base commit has to be reachable...
+  assert.equal(checkout.with['fetch-depth'], 0)
+  // ...and this is the only job without a documentation-only skip, which is
+  // exactly the shape a bare CHANGELOG.md edit has.
+  assert.equal(job.if, undefined, 'the fragment gate must run for every change')
+  // No npm ci here: the gate has to keep running on node builtins alone.
+  assert.equal(commands.some((command) => command.startsWith('npm ci')), false)
+})
+
+test('the fragment directory keeps its instructions after a release collects it', () => {
+  // Collecting deletes every *.md fragment; these two are what keep the
+  // directory — and the format it documents — in git afterwards.
+  for (const file of ['changes/unreleased/README.md', 'changes/unreleased/TEMPLATE.md.example']) {
+    assert.ok(fs.existsSync(path.join(root, file)), `${file} must exist`)
   }
 })
 
@@ -271,4 +376,110 @@ test('quality checks cannot publish a release', () => {
 
   const serialized = JSON.stringify(workflow.jobs)
   assert.doesNotMatch(serialized, /gh release|create-release|dist:mac:free|release:build/i)
+})
+
+const playwrightElectronSmokes = ['e2e/electron-ci-smoke.mjs', 'e2e/window-close-smoke.mjs']
+
+test('a Playwright Electron smoke can never consume a whole job again', () => {
+  // #131 and #133: a wedged Electron made the close smoke run for ten minutes
+  // and print nothing, cancelling the Windows job at its cap; #139 died in the
+  // startup smoke. Three bounds now stack — the script's own budget, the step
+  // timeout, then the job timeout — and each must stay strictly inside the next
+  // so the innermost one, the only one that prints a diagnosis, is what fires.
+  for (const smoke of playwrightElectronSmokes) {
+    const budget = fs.readFileSync(path.join(root, smoke), 'utf8')
+      .match(/XINGMANG_SMOKE_TOTAL_TIMEOUT_MS \?\? (\d[\d_]*)\)/)
+
+    assert.ok(budget, `${smoke} must budget its whole run`)
+    const budgetMs = Number(budget[1].replaceAll('_', ''))
+    const jobs = Object.entries(workflow.jobs)
+      .filter(([, job]) => (job.steps || []).some((entry) => String(entry.run || '').includes(smoke)))
+
+    assert.ok(jobs.length > 0, `${smoke} must still run in CI`)
+    for (const [jobName, job] of jobs) {
+      const step = job.steps.find((entry) => String(entry.run || '').includes(smoke))
+
+      assert.equal(typeof step['timeout-minutes'], 'number', `${jobName} must bound ${smoke}`)
+      assert.ok(step['timeout-minutes'] * 60_000 > budgetMs,
+        `${jobName} must let ${smoke} report its own timeout before the runner cancels the step`)
+      assert.ok(job['timeout-minutes'] > step['timeout-minutes'], `${jobName} must outlive its ${smoke} step`)
+    }
+  }
+
+  // test:windows (~13m) and test:v2 (~10m) alone reach ~28 minutes, so the
+  // Windows cap has to clear that plus the packaging steps that follow.
+  assert.ok(workflow.jobs.test['timeout-minutes'] >= 45)
+})
+
+test('no wait in a Playwright Electron smoke is left unbounded', () => {
+  for (const smoke of playwrightElectronSmokes) {
+    const source = fs.readFileSync(path.join(root, smoke), 'utf8')
+
+    // page.evaluate, ElectronApplication.evaluate and ElectronApplication
+    // .close() have no default timeout of their own. Awaiting one of them
+    // directly is how a failing assertion ended up hidden behind a ten minute
+    // hang instead of being printed.
+    assert.doesNotMatch(source, /await page\.evaluate\(/, smoke)
+    assert.doesNotMatch(source, /await application\.evaluate\(/, smoke)
+    assert.doesNotMatch(source, /await application\.close\(\)/, smoke)
+    assert.match(source, /createSmokeRuntime\(/, `${smoke} must use the shared smoke runtime`)
+  }
+
+  assert.match(fs.readFileSync(path.join(root, 'e2e', 'smoke-runtime.mjs'), 'utf8'), /export function killProcessTree\(/)
+})
+
+const fixtureReadinessModule = 'e2e/fixture-readiness.mjs'
+// Every suite whose fixture mount used to borrow Playwright's 30s action
+// default, and whose first open therefore reported a cold start as an
+// assertion failure.
+const fixtureReadinessConsumers = [
+  'e2e/primary-views-interactions.test.mjs',
+  'e2e/start-guide-interactions.test.mjs',
+  'e2e/account-switcher-interactions.test.mjs',
+  'e2e/maintenance-pages-interactions.test.mjs',
+  'e2e/shell-navigation-interactions.test.mjs',
+  'e2e/ui-interactions.test.mjs',
+  'src/renderer-v2/testing/app-check.mjs',
+]
+
+test('a cold fixture open cannot be reported as a failed assertion again', () => {
+  const budget = fs.readFileSync(path.join(root, fixtureReadinessModule), 'utf8')
+    .match(/XINGMANG_FIXTURE_READY_TIMEOUT_MS \?\? (\d[\d_]*)\)/)
+
+  assert.ok(budget, `${fixtureReadinessModule} must declare the shared mount budget`)
+  const budgetMs = Number(budget[1].replaceAll('_', ''))
+  // Wider than the 30s default the cold opens in quality runs #264 and #284
+  // blew through, and still small enough that a fixture which never mounts
+  // fails long before the Windows job runs out of time.
+  assert.ok(budgetMs > 30_000, 'the mount budget must exceed the Playwright default it replaces')
+  assert.ok(budgetMs <= 300_000, 'the mount budget must stay well inside the Windows job timeout')
+
+  for (const consumer of fixtureReadinessConsumers) {
+    const source = fs.readFileSync(path.join(root, consumer), 'utf8')
+
+    assert.match(source, /fixtureReadyTimeoutMs/, `${consumer} must bound its fixture mount with the shared budget`)
+    assert.match(source, /from '[./]*(?:e2e\/)?fixture-readiness\.mjs'/, `${consumer} must import the shared budget rather than restate it`)
+  }
+
+  // page.goto resolves on `load`, which happens before the fixture module has
+  // installed its globals and can be followed by a Vite dependency reload.
+  const appCheck = fs.readFileSync(path.join(root, 'src/renderer-v2/testing/app-check.mjs'), 'utf8')
+  assert.match(appCheck, /await waitForFixtureReady\(page\)/, 'every app-check page must wait for the fixture to install')
+})
+
+test('the window close smoke survives a transient Windows filesystem error', () => {
+  const source = fs.readFileSync(path.join(root, 'e2e', 'window-close-smoke.mjs'), 'utf8')
+
+  // The main process registers uncaughtExceptionMonitor rather than
+  // uncaughtException, so anything thrown out of the control interval ends the
+  // run: the next command is never acknowledged and the smoke can only report a
+  // timeout. Defender holding the command file for a moment is enough to do it.
+  assert.match(source, /recordCommandFailure\('read', error\)/, 'a failed command read must be retried, not thrown')
+  assert.match(source, /commandFailures/, 'the evidence file must carry what the control channel refused')
+  // Polling for an acknowledgement asserts nothing about behaviour, so it may
+  // have more headroom than the native visibility waits, but it must give up at
+  // once when the application it is polling has already exited.
+  assert.match(source, /XINGMANG_SMOKE_COMMAND_TIMEOUT_MS/, 'the acknowledgement wait must stay bounded and overridable')
+  assert.match(source, /abandonedByExit/, 'the acknowledgement wait must stop as soon as the application exits')
+  assert.match(source, /main \$\{label\}/, "the main process's own output must reach the log")
 })

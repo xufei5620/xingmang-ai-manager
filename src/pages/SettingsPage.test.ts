@@ -30,12 +30,6 @@ describe('settings draft coordination', () => {
     expect(settingsEqual(base, { ...base, theme: 'light' })).toBe(false)
   })
 
-  it('detects a relaySiteId change too (W3b)', () => {
-    expect(settingsEqual(base, { ...base, relaySiteId: 'sub2api' })).toBe(false)
-    expect(settingsEqual({ ...base, relaySiteId: 'solov' }, { ...base, relaySiteId: 'sub2api' })).toBe(false)
-    expect(settingsEqual({ ...base, relaySiteId: 'sub2api' }, { ...base, relaySiteId: 'sub2api' })).toBe(true)
-  })
-
   it('detects a mirrorPolicy change too (2.4)', () => {
     expect(settingsEqual(base, { ...base, mirrorPolicy: 'mirror-first' })).toBe(false)
     expect(settingsEqual({ ...base, mirrorPolicy: 'mirror-first' }, { ...base, mirrorPolicy: 'official-first' })).toBe(false)
@@ -101,28 +95,6 @@ describe('settings draft coordination', () => {
     expect(reconciled.saved).toEqual(persisted)
     expect(reconciled.draft.theme).toBe('light')
     expect(reconciled.draft.checkUpdatesOnStartup).toBe(false)
-  })
-
-  it('carries an unsaved relaySiteId draft across an unrelated persisted change (W3b)', () => {
-    const state: SettingsDraftState = {
-      saved: base,
-      draft: { ...base, relaySiteId: 'sub2api' },
-    }
-    const persisted = { ...base, workspace: 'D:\\projects' }
-
-    const reconciled = reconcileSettingsDraft(state, persisted)
-
-    expect(reconciled.draft.relaySiteId).toBe('sub2api')
-    expect(reconciled.saved).toEqual(persisted)
-  })
-
-  it('adopts a persisted relaySiteId change when nothing is drafted for it', () => {
-    const state: SettingsDraftState = { saved: base, draft: base }
-    const persisted: SettingsV2 = { ...base, relaySiteId: 'sub2api' }
-
-    const reconciled = reconcileSettingsDraft(state, persisted)
-
-    expect(reconciled).toEqual({ saved: persisted, draft: persisted })
   })
 })
 
@@ -298,6 +270,15 @@ describe('settings section structure', () => {
     expect(render(undefined)).toContain('正在读取系统通知支持状态')
     expect(render(false, true)).not.toMatch(/aria-label="系统桌面通知"[^>]*disabled=""/)
   })
+  it('offers no site control in the network panel (D-03)', () => {
+    const html = renderToStaticMarkup(createElement(SettingsPage, {
+      value: base, onSave: async () => {}, onReplayOnboarding: () => {}, initialSection: 'network',
+    }))
+    expect(html).toContain('aria-label="镜像策略"')
+    expect(html).not.toContain('站点')
+    expect(html).not.toContain('Sub2API')
+  })
+
   it('provides eight named navigation entries and renders only the selected panel', () => {
     const html = renderToStaticMarkup(createElement(SettingsPage, { value: base, onSave: async () => {}, onReplayOnboarding: () => {} }))
     expect(html.match(/aria-controls="settings-panel"/g)).toHaveLength(8)

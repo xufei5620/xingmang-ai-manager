@@ -9,6 +9,8 @@ import {
 } from 'lucide-react'
 import { Button, Empty, Pill } from './ui'
 import { errors } from './registry/errors'
+import { presentOperationError } from './operation-error'
+import { matchAccountErrorMessage } from './features/auth/account-errors'
 
 const pendingOperations = new Map<symbol, string>()
 export const pendingBusinessOperations = () => [...pendingOperations.values()]
@@ -19,15 +21,67 @@ export function beginBusinessOperation(label: string) {
     pendingOperations.delete(id)
   }
 }
-export const errorMessage = (error: unknown) =>
-  error instanceof Error && /[\u3400-\u9fff]/.test(error.message)
-    ? error.message
-    : error instanceof Error && /401|unauthorized/i.test(error.message)
-      ? `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
-      : error instanceof Error &&
-          /timeout|ENOTFOUND|ECONN|fetch/i.test(error.message)
-        ? `${errors.timeout.title}，请检查网络后重试。`
-        : '操作没有成功，请重试或查看反馈日志。'
+// Electron 给渲染进程收到的 IPC 拒绝包成「Error invoking remote method '通道名':
+// Error: 真正的原因」，通道名与错误类名都是实现细节，不该上屏。类名只在紧跟通道名时
+// 才剥，避免把一句本来就以 Error: 开头的业务文案削掉半截。legacy 的
+// src/error-message.ts 只剥前半截，v2 这边与 features/app/account-read-error.ts、
+// features/shell/Announcement.tsx 已有的处理保持一致。
+// 正则不带 g 标志以避免 lastIndex 状态问题。
+const ipcPrefixPattern = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z0-9_]*Error:\s*)?/
+
+/**
+ * 只做取值与剥前缀，不做文案判断：`matchAccountErrorMessage` 与 `errorMessage` 的
+ * 启发式分支都要在剥净前缀之后才匹配得准。legacy 侧的等价实现在
+ * `src/error-message.ts`，两棵渲染树各留一份，理由同 I6/I7 与
+ * `features/auth/account-errors.ts` 的说明。
+ *
+ * 与 legacy 的唯一差异：null/undefined 这里返回空串而不是「未知错误」，因为 v2 的
+ * `errorMessage` 自己有按场景的兜底文案，返回中文会被误判成「服务端给出的中文原因」。
+ */
+export const rawErrorMessage = (error: unknown) => {
+  let message: string
+  if (error instanceof Error) {
+    message = error.message
+  } else if (error && typeof error === 'object' && typeof (error as { message?: unknown }).message === 'string') {
+    message = (error as { message: string }).message
+  } else if (error === null || error === undefined) {
+    message = ''
+  } else {
+    message = String(error)
+  }
+  // 一个 handler 再 invoke 另一个通道时前缀会嵌套多层，逐层剥净
+  while (ipcPrefixPattern.test(message)) message = message.replace(ipcPrefixPattern, '')
+  return message
+}
+
+/**
+ * Renderer-facing errors must not expose absolute home/config paths. The main
+ * process names the file it failed on (config-files.ts, backups.ts) and on
+ * Windows that path carries the account name, so I13's redaction has to hold on
+ * this side of the IPC boundary too.
+ */
+export const userFacingErrorMessage = (error: unknown) =>
+  rawErrorMessage(error)
+    .replace(/[\u0000-\u001f\u007f]+/g, ' ')
+    .trim()
+    .replace(/[A-Za-z]:\\(?:[^\s;；，。！？]+\\?)+/g, '本地配置文件')
+    .replace(/(?:\\\\|\/Users\/|\/home\/)[^\s;；，。！？]+/g, '本地配置文件')
+    .slice(0, 1_000)
+
+export const errorMessage = (error: unknown, fallback = '操作没有成功，请重试或查看反馈日志。') => {
+  // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
+  // 精确文案。new-api 默认回英文，英文原文会被下面的兜底抹成一句“操作没有成功”；
+  // 中文原文虽然会原样透出，但也少了该怎么办的那半句。两种都让用户只能反复重试。
+  const known = matchAccountErrorMessage(rawErrorMessage(error))
+  if (known) return known
+  // 判断语言与类别之前先脱敏：主进程抛的中文错误常带着绝对路径，不脱敏就会把用户名
+  // 连同“原因”一起端上屏。
+  const safe = userFacingErrorMessage(error)
+  if (/[\u3400-\u9fff]/.test(safe)) return safe
+  if (/401|unauthorized/i.test(safe)) return `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
+  if (/timeout|ENOTFOUND|ECONN|fetch/i.test(safe)) return `${errors.timeout.title}，请检查网络后重试。`
+  return fallback
+}
 export const displayDate = (value: string | number | null | undefined) => {
   if (value === null || value === undefined || value === '') return '暂未记录'
   const date = new Date(
@@ -115,10 +169,24 @@ export function ResultNotice({
   error?: string
   message?: string
 }) {
+  // A raw npm/OS failure reaching this banner is unreadable on its own; when
+  // the catalog can name it, its wording leads and the backend sentence stays
+  // underneath, because support still needs the original text.
+  const hint = error ? presentOperationError(error) : null
   return error ? (
     <div className="v2-business-notice is-error" role="alert">
       <Pill tone="bad">未完成</Pill>
-      <span>{error}</span>
+      <span>
+        {hint ? (
+          <>
+            <strong>{hint.title}</strong>
+            {hint.body ? `，${hint.body}` : ''}
+            <em className="v2-business-notice-detail">{error}</em>
+          </>
+        ) : (
+          error
+        )}
+      </span>
     </div>
   ) : message ? (
     <div className="v2-business-notice" role="status">

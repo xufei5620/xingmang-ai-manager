@@ -46,12 +46,12 @@ export type RealmErrorCode = 'INVALID' | 'UNSUPPORTED' | 'DISABLED' | 'BUSY' | '
   | 'STORAGE' | 'NETWORK' | 'TIMEOUT' | 'ABORTED' | 'UNAUTHORIZED' | 'LOGIN_REJECTED' | 'TWO_FACTOR_REQUIRED' | 'PROTOCOL'
 
 const messages: Record<RealmErrorCode, string> = {
-  INVALID: '账号参数无效', UNSUPPORTED: '当前站点暂不支持此功能', DISABLED: '该站点尚未启用',
+  INVALID: '账号参数无效', UNSUPPORTED: '当前账号暂不支持此功能', DISABLED: '当前账号服务尚未启用',
   BUSY: '账号切换正在进行，请稍后重试', STALE: '账号上下文已变化，请重试', SIGNED_OUT: '请先登录账号',
   STORAGE: '账号安全存储不可用，原记录未修改', NETWORK: '账号服务请求失败，请重试',
   TIMEOUT: '账号服务请求超时', ABORTED: '操作已取消', UNAUTHORIZED: '登录已失效，请重新登录',
   LOGIN_REJECTED: '账号或密码错误，请检查后重试',
-  TWO_FACTOR_REQUIRED: '此账号需要双重验证，请先在站点完成验证', PROTOCOL: '账号服务响应格式不兼容',
+  TWO_FACTOR_REQUIRED: '此账号需要双重验证，请先在官方网站完成验证', PROTOCOL: '账号服务响应格式不兼容',
 }
 
 export class RealmAccountError extends Error {
@@ -70,7 +70,12 @@ export function requireAccountRealm(value: unknown): AccountRealmId {
   return value
 }
 
-/** Legacy sub2api is intentionally an xm alias; never infer a realm from a password or key. */
+/**
+ * Legacy sub2api is intentionally an xm alias; never infer a realm from a
+ * password or key. The id no longer names a relaySites entry (D-10), but the
+ * mapping stays: a saved account or settings file written by an older build
+ * must land on xm-account, never fall through to the api realm.
+ */
 export function realmForExplicitSite(value: unknown): AccountRealmId {
   if (value === 'solov' || value === 'sub2api') return 'xm-account'
   if (value === 'solov-api') return 'api-account'

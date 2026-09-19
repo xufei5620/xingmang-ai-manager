@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { DesktopAppStatus, ExternalClientStatus, InstallProgress, XingmangApi } from '../../../../electron/ipc-contract'
-import { createToolsApi } from './api'
+import { createToolsApi, type ToolboxPartitionFailure } from './api'
 import type { ToolboxSnapshot } from './model'
 import { platformApi } from '../../platform-api'
+import { errorMessage } from '../../business-common'
 
 export interface ToolJob { label: string; percent?: number; log: string[] }
 
@@ -10,6 +11,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   const [snapshot, setSnapshot] = useState<ToolboxSnapshot | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [failures, setFailures] = useState<ToolboxPartitionFailure[]>([])
   const [externalClients, setExternalClients] = useState<ExternalClientStatus[]>([])
   const [externalLoading, setExternalLoading] = useState(false)
   const [externalError, setExternalError] = useState('')
@@ -24,7 +26,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
   useLayoutEffect(() => {
     currentScope.current = scope
     request.current++
-    setSnapshot(null); setError(''); setLoading(false)
+    setSnapshot(null); setError(''); setFailures([]); setLoading(false)
     externalRequest.current++
     setExternalClients([]); setExternalError(''); setExternalLoading(false)
   }, [scope])
@@ -36,7 +38,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       const statuses = await createToolsApi(bridge).readExternal()
       if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalClients(statuses)
     } catch (cause) {
-      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(cause instanceof Error ? cause.message : '客户端检测没有完成，请重试。')
+      if (active.current && currentScope.current === scope && id === externalRequest.current) setExternalError(errorMessage(cause, '客户端检测没有完成，请重试。'))
       throw cause
     } finally { if (active.current && id === externalRequest.current) setExternalLoading(false) }
   }, [bridge, scope])
@@ -49,15 +51,20 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
     const desktopAtStart = desktopRevision.current
     setLoading(true)
     setError('')
+    const isCurrent = () => active.current && currentScope.current === requestScope && id === request.current
     try {
-      const next = await createToolsApi(bridge).read(force)
+      const { snapshot: next, failures: partitions } = await createToolsApi(bridge).read(force)
+      if (isCurrent()) setFailures(partitions)
+      // 工具列表整块没读到时仍然向调用方抛错：安装、保存配置等流程
+      // 靠它提示「最新状态没有读到」。单块降级不算失败。
+      if (!next) throw new Error(partitions[0]?.message ?? '检测没有完成，请重试。')
       if (desktopRevision.current !== desktopAtStart && latestDesktop.current) next.system.desktopApps.codex = latestDesktop.current
-      if (active.current && currentScope.current === requestScope && id === request.current) setSnapshot(next)
+      if (isCurrent()) setSnapshot(next)
     } catch (cause) {
-      if (active.current && currentScope.current === requestScope && id === request.current) setError(cause instanceof Error ? cause.message : '检测没有完成，请重试。')
+      if (isCurrent()) setError(errorMessage(cause, '检测没有完成，请重试。'))
       throw cause
     } finally {
-      if (active.current && currentScope.current === requestScope && id === request.current) setLoading(false)
+      if (isCurrent()) setLoading(false)
     }
   }, [bridge])
   useEffect(() => {
@@ -72,7 +79,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       return { ...current, [key]: { label, percent, log: [...current[key].log, label].slice(-200) } }
     })
     const callbacks = [
-      bridge.onInstallProgress((event: InstallProgress) => update(event.provider, event.message)),
+      bridge.onInstallProgress((event: InstallProgress) => update(event.provider, event.message, event.percent)),
       bridge.onNodeRuntimeInstallProgress((event) => update('node', event.message, event.percent ?? undefined)),
       bridge.onPythonRuntimeInstallProgress((event) => update('python', event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopInstallProgress((event) => update('codexDesktop', event.message, event.percent ?? undefined)),
@@ -100,5 +107,5 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       if (active.current) setJobs((current) => { const next = { ...current }; delete next[key]; return next })
     }
   }, [])
-  return { snapshot, loading, error, refresh, externalClients, externalLoading, externalError, refreshExternal, jobs, run, setSnapshot }
+  return { snapshot, loading, error, failures, refresh, externalClients, externalLoading, externalError, refreshExternal, jobs, run, setSnapshot }
 }

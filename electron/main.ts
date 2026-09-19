@@ -46,7 +46,7 @@ import { createApplicationTray, type ApplicationTrayController } from './applica
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { ConfigBackupStore } from './backups'
-import { providerIds } from './catalog'
+import { providerIds, type ProviderId } from './catalog'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
 import { CanvasRunStore } from './canvas-run-store'
@@ -88,6 +88,7 @@ import {
   runDiagnostics,
   type DiagnosticsReport,
 } from './diagnostics'
+import { runConnectionCheck } from './connection-check'
 import { registerIpcHandlers, type AppWindowMode } from './ipc'
 import {
   installXingmangAiSkillFiles,
@@ -109,6 +110,7 @@ import {
   type SystemService,
   type SystemSnapshot,
 } from './system-service'
+import { verifyUpdatePackageDigest } from './update-package-digest'
 import { installStrictUpdateCodeSignatureVerifier } from './update-signature'
 import { createUpdaterService } from './updater'
 import { resolveWindowsCliExecutionMode } from './windows-elevation'
@@ -125,6 +127,7 @@ guardProcessOutputStreams()
 const applicationPackage = require('../package.json') as {
   xingmangAccelerationBundle?: unknown
   xingmangLocalBuild?: unknown
+  xingmangUnsignedRelease?: unknown
 }
 
 const nonSiteExternalUrlAllowlist = [
@@ -642,6 +645,18 @@ if (!hasSingleInstanceLock) {
         })
         return latestDiagnostics
       },
+      // 自检跟着用户当前所在的站点走，探测和对账读同一个 RelaySite ——
+      // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过
+      // 站点的用户会被告知一份好配置「指错了地方」。站点名只进日志不上屏。
+      checkConnection: (provider: ProviderId) => {
+        const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
+        return runConnectionCheck({
+          provider,
+          site,
+          inspection: inspectProviderConfig(provider, rootedOptions.system.providerRoots, site.providerBaseUrls),
+          fetch: relayFetch,
+        })
+      },
       exportLatest: () => {
         if (!latestDiagnostics) throw new Error('请先运行一次健康诊断')
         return createDiagnosticsExport(latestDiagnostics, {
@@ -660,10 +675,17 @@ if (!hasSingleInstanceLock) {
       })
     }
     const localBuild = app.isPackaged && applicationPackage.xingmangLocalBuild === true
+    // Builds made with XINGMANG_UNSIGNED_RELEASE=1 carry no publisherName, so
+    // electron-updater returns from verifySignature before the strict verifier
+    // above is ever reached. The updater compensates by never downloading or
+    // installing without the user and by re-checking the manifest digest itself.
+    const unsignedChannel = app.isPackaged && applicationPackage.xingmangUnsignedRelease === true
     const updaterService = createUpdaterService(autoUpdater, {
       currentVersion: app.getVersion(),
       isPackaged: app.isPackaged,
       localBuild,
+      unsignedChannel,
+      verifyPackageDigest: verifyUpdatePackageDigest,
       enableDevelopmentUpdates: process.env.XINGMANG_UPDATE_DEV === '1',
       macInstallHandoff: process.platform === 'darwin'
         ? {
@@ -683,7 +705,17 @@ if (!hasSingleInstanceLock) {
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
       enabled: updaterService.getState().phase !== 'disabled',
       localBuild,
+      unsignedChannel,
+      signatureVerification: unsignedChannel ? 'none' : 'strict',
     })
+    if (unsignedChannel) {
+      runtimeLog.log(
+        'warn',
+        'updater',
+        'channel.unsigned',
+        '本机为未签名更新通道，安装包签名未校验；更新改为下载与安装均需用户确认，并在下载后强制校验安装包 SHA-512',
+      )
+    }
     let periodicUpdateTimer: NodeJS.Timeout | null = null
     let applicationTray: ApplicationTrayController | null = null
     let latestTraySystem: SystemSnapshot | null = null
@@ -750,7 +782,7 @@ if (!hasSingleInstanceLock) {
           },
           onSessionChange: () => onSessionChange(saved()) })
         return { client, getSavedAccount: saved, restore: async (record) => {
-          if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') throw new Error('账号凭据与站点不一致')
+          if (record.realmId !== 'xm-account' || record.credential.kind !== 'new-api') throw new Error('账号凭据与当前账号不匹配')
           return client.restoreSession({ userId: Number(record.userId), cookies: [...record.credential.cookies] })
         } }
       },
@@ -1093,8 +1125,8 @@ if (!hasSingleInstanceLock) {
         },
       })
       if (siteId === 'solov-api') {
-        videoService.generate = async () => { throw new Error('当前站点暂未上线视频模型') }
-        videoService.resumeVideoTask = async () => { throw new Error('当前站点暂未上线视频模型') }
+        videoService.generate = async () => { throw new Error('当前账号暂不支持视频生成') }
+        videoService.resumeVideoTask = async () => { throw new Error('当前账号暂不支持视频生成') }
       }
       const canvasRunStore = new CanvasRunStore({
         rootDirectory: roots.canvasRuntimeDirectory,
@@ -1275,6 +1307,14 @@ if (!hasSingleInstanceLock) {
     } catch {
       runtimeLog.log('warn', 'network', 'acceleration.config.invalid', '本机加速资源校验未通过')
     }
+    // The worker restores a proxy lease left by a crash as part of its own
+    // initialization, and it only starts when a request reaches it. Every other
+    // request carries an account scope, so a machine left pointing at a dead
+    // acceleration port would never recover: the dead proxy blocks the sign-in
+    // that would have produced the first scoped request.
+    if (developmentAcceleration) void developmentAcceleration.recover().catch((error) => {
+      runtimeLog.exception('network', 'acceleration.recover.failed', error)
+    })
     acceleration = createAccelerationService({
       backend: developmentAcceleration,
       getAccountScope: () => {

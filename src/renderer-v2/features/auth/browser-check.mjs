@@ -16,7 +16,7 @@ before(async () => {
   server = await createServer({ root, configFile: false, server: { host: '127.0.0.1', port: 0 }, esbuild: { jsx: 'automatic' } })
   await server.listen()
   base = `http://127.0.0.1:${server.httpServer.address().port}`
-  browser = await chromium.launch({ headless: true })
+  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 })
 after(async () => { await browser?.close(); await server?.close() })
 async function open(query = '', app = false) {
@@ -448,4 +448,37 @@ test('the actual add-account flow preserves the current login on failure and acc
       assert.deepEqual(await page.evaluate(() => window.v2Test.unexpected), [])
     } finally { await page.close() }
   }
+})
+
+test('account settings follow the selected source so the verification entry matches that site', async () => {
+  const page = await open('turnstile=solov-api')
+  try {
+    await page.getByTestId('login-dialog').waitFor()
+    await page.waitForFunction(() => document.documentElement.dataset.statusSites === 'solov')
+    assert.equal(await page.getByTestId('auth-verification-help').count(), 0)
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await page.getByTestId('auth-verification-help').waitFor()
+    assert.equal(await page.evaluate(() => document.documentElement.dataset.statusSites), 'solov,solov-api')
+    assert.doesNotMatch(await page.getByTestId('login-dialog').innerText(), /Sub2API|NewAPI|new-api|api\.solov|xm\.solov|站点/i)
+    await page.getByTestId('auth-verification-help').click()
+    await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('help'))
+    await page.getByTestId('auth-source').getByRole('button', { name: '星芒账号' }).click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="auth-verification-help"]') === null)
+  } finally { await page.close() }
+})
+
+test('a slow status read from the previous source cannot overwrite the selected one', async () => {
+  const page = await open('turnstile=solov&pending=status-solov')
+  try {
+    await page.getByTestId('login-dialog').waitFor()
+    await page.getByTestId('auth-source').getByRole('button', { name: '历史账号' }).click()
+    await page.waitForFunction(() => document.documentElement.dataset.statusSites === 'solov,solov-api')
+    await page.evaluate(() => window.authHarness.release('status-solov'))
+    // A round trip through the legal document proves the released promise already settled.
+    await page.getByTestId('auth-terms').click()
+    await page.getByRole('heading', { name: 'Test Agreement' }).waitFor()
+    await page.getByTestId('legal-document-close').click()
+    await page.getByTestId('login-dialog').waitFor()
+    assert.equal(await page.getByTestId('auth-verification-help').count(), 0)
+  } finally { await page.close() }
 })

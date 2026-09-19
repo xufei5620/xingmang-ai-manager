@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
-import { managedCliKeyProfiles, providerIds, type ProviderId } from './catalog'
+import {
+  managedCliKeyProfiles,
+  providerIds,
+  resolveManagedCliKeyProfiles,
+  type ManagedCliKeyProfile,
+  type ProviderId,
+} from './catalog'
 import {
   configureManagedClis,
   syncManagedCliKeySummary,
@@ -521,5 +527,192 @@ describe('configureManagedClis', () => {
 
     expect(fetchAvailableModels).toHaveBeenCalledTimes(1)
     expect(saveConfig).toHaveBeenCalledTimes(1)
+  })
+})
+
+// D-02: 两个账号站点各有一张 CLI Key 分组表,而 api.solov.cc 那张此前没有
+// 任何测试读到过 —— 运营在后台改一次分组名,代码里的常量没跟上,CI 照样
+// 全绿,客户一键配置四个 CLI 会整体失败。下面的取值按 catalog.ts 逐字抄写,
+// 故意不从那两个常量 import:从被测代码里读回它自己的值等于什么都没验。
+// 改分组名时必须同步改这里,这就是本表存在的意义。
+const profilesBySite = {
+  solov: {
+    claude: { group: 'Claude-MAX订阅', keyName: 'xingmang-desktop-claude' },
+    codex: { group: 'GPT-中转/订阅', keyName: 'xingmang-desktop-codex' },
+    grok: { group: 'Grok-中转/订阅', keyName: 'xingmang-desktop-grok' },
+    gemini: { group: 'Gemini-中转/订阅', keyName: 'xingmang-desktop-gemini' },
+  },
+  'solov-api': {
+    claude: { group: 'Claude-MAX(不限客户端)', keyName: 'xingmang-desktop-claude' },
+    codex: { group: 'Codex_pro', keyName: 'xingmang-desktop-codex' },
+    grok: { group: 'grok-heavy', keyName: 'xingmang-desktop-grok' },
+    gemini: { group: 'Gemini', keyName: 'xingmang-desktop-gemini' },
+  },
+} satisfies Record<string, Record<ProviderId, ManagedCliKeyProfile>>
+
+type RelaySiteId = keyof typeof profilesBySite
+
+function siteAwareAccountService(
+  provisionCliKey: ReturnType<typeof vi.fn>,
+  getActiveSiteId: () => string | undefined,
+  userId = 73,
+): AccountService {
+  return {
+    getSessionState: vi.fn(() => ({ authenticated: true, account: { userId } })),
+    getActiveSiteId,
+    provisionCliKey,
+  } as unknown as AccountService
+}
+
+function siteManagedKey(siteId: RelaySiteId, provider: ProviderId): StoredManagedCliKey {
+  const profile = profilesBySite[siteId][provider]
+  return {
+    id: providerIds.indexOf(provider) + 1,
+    provider,
+    group: profile.group,
+    name: profile.keyName,
+    key: `sk-${siteId}-${provider}-plaintext-secret-123456`,
+  }
+}
+
+function siteAwareProvisioner(siteId: RelaySiteId) {
+  return vi.fn(async (input: { name?: string; group?: string } = {}) => {
+    const provider = providerIds.find((candidate) => profilesBySite[siteId][candidate].group === input.group)
+    if (!provider) throw new Error(`unexpected group for ${siteId}: ${input.group}`)
+    const entry = siteManagedKey(siteId, provider)
+    return { id: entry.id, name: input.name ?? entry.name, key: entry.key }
+  })
+}
+
+function recordingKeyStore(initial: StoredManagedCliKey[] = []): ManagedCliKeyStoreLike & { cached: StoredManagedCliKey[] } {
+  const state = { cached: initial.map((entry) => ({ ...entry })) }
+  return {
+    get cached() { return state.cached },
+    read: vi.fn(async () => state.cached.map((entry) => ({ ...entry }))),
+    save: vi.fn(async (_userId: number, keys: readonly StoredManagedCliKey[]) => {
+      state.cached = keys.map((entry) => ({ ...entry }))
+    }),
+    remove: vi.fn(async (_userId: number, keyId: number) => {
+      state.cached = state.cached.filter((entry) => entry.id !== keyId)
+    }),
+  } as ManagedCliKeyStoreLike & { cached: StoredManagedCliKey[] }
+}
+
+describe('relay-site-specific managed CLI key groups', () => {
+  it.each(['solov', 'solov-api'] as const)('pins the %s key group and key name of every CLI', (siteId) => {
+    expect(resolveManagedCliKeyProfiles(siteId)).toEqual(profilesBySite[siteId])
+  })
+
+  it('falls back to the xm groups for a missing or unknown site id', () => {
+    expect(resolveManagedCliKeyProfiles(undefined)).toEqual(profilesBySite.solov)
+    expect(resolveManagedCliKeyProfiles('sub2api')).toEqual(profilesBySite.solov)
+  })
+
+  it.each(['solov', 'solov-api'] as const)('provisions and caches every CLI key from the %s group table', async (siteId) => {
+    const store = recordingKeyStore()
+    const provisionCliKey = siteAwareProvisioner(siteId)
+    const accountService = siteAwareAccountService(provisionCliKey, () => siteId)
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(summary.failed).toEqual([])
+    expect(provisionCliKey.mock.calls.map(([input]) => input)).toEqual(providerIds.map((provider) => ({
+      name: profilesBySite[siteId][provider].keyName,
+      group: profilesBySite[siteId][provider].group,
+    })))
+    expect(summary.ready).toEqual(providerIds.map((provider) => ({
+      provider,
+      group: profilesBySite[siteId][provider].group,
+      name: profilesBySite[siteId][provider].keyName,
+    })))
+    expect(store.cached.map((entry) => ({ provider: entry.provider, group: entry.group }))).toEqual(
+      providerIds.map((provider) => ({ provider, group: profilesBySite[siteId][provider].group })),
+    )
+  })
+
+  it('re-provisions every cached key after the account moves to the other relay site', async () => {
+    const store = recordingKeyStore(providerIds.map((provider) => siteManagedKey('solov', provider)))
+    const provisionCliKey = siteAwareProvisioner('solov-api')
+    const accountService = siteAwareAccountService(provisionCliKey, () => 'solov-api')
+
+    const summary = await syncManagedCliKeySummary(accountService, store)
+
+    expect(summary.failed).toEqual([])
+    expect(provisionCliKey).toHaveBeenCalledTimes(providerIds.length)
+    expect(summary.ready.map((entry) => entry.group)).toEqual(
+      providerIds.map((provider) => profilesBySite['solov-api'][provider].group),
+    )
+    // 旧站点的缓存条目必须整体被丢弃,否则 xm 的 Key 会继续被写进指向
+    // api.solov.cc 的 CLI 配置里。
+    expect(store.cached.map((entry) => entry.key)).toEqual(
+      providerIds.map((provider) => siteManagedKey('solov-api', provider).key),
+    )
+    const xmKeys = new Set(providerIds.map((provider) => siteManagedKey('solov', provider).key))
+    for (const entry of store.cached) expect(xmKeys.has(entry.key)).toBe(false)
+  })
+
+  it('writes the sub2api group key of each CLI into its config payload', async () => {
+    const keys = providerIds.map((provider) => siteManagedKey('solov-api', provider))
+    const store = recordingKeyStore(keys)
+    const accountService = siteAwareAccountService(
+      vi.fn(async () => { throw new Error('the complete cache must not contact the server') }),
+      () => 'solov-api',
+    )
+    const fetchAvailableModels = vi.fn(async (key: string) => {
+      const provider = keys.find((entry) => entry.key === key)?.provider
+      return provider ? [`${provider}-model`] : []
+    })
+    const saveConfig = vi.fn(async (payload: { provider: ProviderId }) => ({ provider: payload.provider }))
+
+    const result = await configureManagedClis(
+      accountService,
+      { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+      providerIds,
+      {},
+      false,
+      store,
+    )
+
+    expect(result).toEqual({ configured: [...providerIds], failed: [] })
+    expect(saveConfig.mock.calls.map(([payload]) => payload)).toEqual(keys.map((entry) => ({
+      provider: entry.provider,
+      apiKey: entry.key,
+      model: `${entry.provider}-model`,
+      mode: 'merge',
+    })))
+  })
+
+  it('re-provisions a rejected sub2api key from the same site group instead of the xm one', async () => {
+    const stale = { ...siteManagedKey('solov-api', 'codex'), key: 'sk-solov-api-codex-revoked-123456' }
+    const store = recordingKeyStore([stale])
+    const provisionCliKey = siteAwareProvisioner('solov-api')
+    const accountService = siteAwareAccountService(provisionCliKey, () => 'solov-api')
+    const fetchAvailableModels = vi.fn(async (key: string) => {
+      if (key === stale.key) throw new Error('模型查询失败，服务返回 401')
+      return ['codex-model']
+    })
+    const saveConfig = vi.fn(async (payload: Parameters<ConfigurationService['saveConfig']>[0]) => ({ provider: payload.provider }))
+
+    const result = await configureManagedClis(
+      accountService,
+      { fetchAvailableModels, saveConfig } as unknown as ConfigurationService,
+      ['codex'],
+      {},
+      false,
+      store,
+    )
+
+    expect(result).toEqual({ configured: ['codex'], failed: [] })
+    expect(store.remove).toHaveBeenCalledWith(73, stale.id)
+    expect(provisionCliKey).toHaveBeenCalledWith({
+      name: profilesBySite['solov-api'].codex.keyName,
+      group: profilesBySite['solov-api'].codex.group,
+    })
+    expect(saveConfig.mock.calls[0][0]).toEqual({
+      provider: 'codex',
+      apiKey: siteManagedKey('solov-api', 'codex').key,
+      model: 'codex-model',
+      mode: 'merge',
+    })
   })
 })

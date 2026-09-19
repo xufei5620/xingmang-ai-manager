@@ -3,6 +3,7 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { ArrowLeft, Bell, Check, ChevronRight, ExternalLink } from 'lucide-react'
 import { Button, Dialog } from '../../ui'
+import { userFacingErrorMessage } from '../../business-common'
 import { writeLocalPreference } from '../app/preferences'
 import type { RelayNotice } from '../../../../electron/relay-backend'
 import { legacyAnnouncementReadId, markLocalAnnouncementRead, parseNewApiAnnouncementCollection, readLegacyAnnouncementId, readLocalAnnouncementIds, rememberLocalAnnouncementIds } from './newapi-announcements'
@@ -826,15 +827,12 @@ export function AnnouncementContent({
  * emitted by `readBoundedResponseText` instead of the whole message.
  */
 export function formatAnnouncementError(cause: unknown): AnnouncementError {
-  const raw = cause instanceof Error
-    ? cause.message
-    : typeof cause === 'object' && cause !== null && 'message' in cause
-      ? String((cause as { message?: unknown }).message ?? '')
-      : String(cause ?? '')
   // Chromium/Electron wraps rejected IPC calls with the channel name. That
   // implementation detail is useful in logs but confusing and noisy in the
   // product surface, so remove only the known wrapper and keep the payload.
-  const message = raw.replace(/^Error invoking remote method '[^']+':\s*(?:Error|RealmAccountError):\s*/i, '').trim()
+  // userFacingErrorMessage strips the wrapper and any absolute path the payload
+  // carried (R-S7); the RealmAccountError tag is local to this transport.
+  const message = userFacingErrorMessage(cause).replace(/^(?:Error|RealmAccountError):\s*/i, '').trim()
   const responseTooLarge = message.includes('公告读取响应超过') && message.includes('安全上限')
   return responseTooLarge
     ? {

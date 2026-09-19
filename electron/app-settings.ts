@@ -36,9 +36,11 @@ export interface AppSettings {
   /** Whether the sidebar's collapsible "更多" group is expanded. Absent = collapsed (pre-#67 behavior). */
   sidebarMoreExpanded?: boolean
   /**
-   * Which relay-sites.ts RelaySite the CLIs should be configured against.
-   * Absent = the default site (today's only site, so this is the entire
-   * install base's behavior pre-W2). Consumers must resolve this through
+   * Which relay-sites.ts RelaySite the CLIs were last configured against.
+   * 已不参与路由：站点由当前登录账号决定（main.ts 把 getRelaySiteId 绑到
+   * accounts.getSiteId()，readStoredConfig 会用它覆盖这个字段），这里保留
+   * 只为兼容老配置文件，不要再把它接回任何选择界面（D-03）。
+   * Absent = the default site. Consumers must resolve this through
    * resolveRelaySite(), never index relaySites directly, so an id from a
    * newer version that removed a site degrades to the default instead of
    * crashing.
@@ -58,6 +60,13 @@ export interface AppSettings {
   officialProviders?: ProviderId[]
   /** User explicitly uninstalled Codex Desktop and does not want auto-reinstall. */
   codexDesktopInstallDisabled?: boolean
+  /**
+   * 安装/更新 CLI 时跟随 npm latest,而不是 cli-verified-versions.ts 里的
+   * 推荐版本。缺省 = 装推荐版本——这是 N1 有意做的默认行为变更(上游针对
+   * 第三方 base URL 的回归反复出现过),不是「缺省 = 旧行为」的漏写。
+   * 没有名单的工具无论这个开关如何都装 latest。
+   */
+  alwaysInstallLatestCli?: boolean
   /** Absent follows the theme: dawn for light, obsidian for dark. */
   uiSkin?: AppUiSkin
   reducedMotion?: boolean
@@ -99,6 +108,7 @@ export interface AppSettingsUpdate {
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
+  alwaysInstallLatestCli?: boolean
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
   desktopNotifications?: boolean
@@ -239,6 +249,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(optionalBoolean(value.desktopNotifications, false) ? { desktopNotifications: true as const } : {}),
@@ -354,6 +365,9 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const codexDesktopInstallDisabled = update.codexDesktopInstallDisabled === undefined
     ? base.codexDesktopInstallDisabled
     : update.codexDesktopInstallDisabled
+  const alwaysInstallLatestCli = update.alwaysInstallLatestCli === undefined
+    ? base.alwaysInstallLatestCli
+    : update.alwaysInstallLatestCli
   const uiSkin = update.uiSkin === 'auto'
     ? 'mist' as const
     : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
@@ -373,6 +387,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications ? { desktopNotifications: true as const } : {}),

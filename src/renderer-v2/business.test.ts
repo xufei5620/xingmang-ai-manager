@@ -18,6 +18,7 @@ import {
 import { accountTimeRange } from './AccountFilters'
 import {
   beginBusinessOperation,
+  errorMessage,
   pendingBusinessOperations,
 } from './business-common'
 import type { V2Bridge } from './types'
@@ -209,6 +210,38 @@ describe('v2 business boundaries', () => {
     expect(diagnosticTarget('PROVIDER_CODEX')).toBe('home')
     expect(diagnosticTarget('XINGMANG_NETWORK')).toBe('settings')
     expect(diagnosticTarget('RUNTIME_NODE')).toBe('maintenance')
+  })
+  it('tells the account page why the server refused instead of asking for a retry', () => {
+    expect(errorMessage(new Error('Original password is incorrect'))).toBe(
+      '原密码错误，请重新输入',
+    )
+    expect(
+      errorMessage(
+        new Error(
+          "Error invoking remote method 'account:change-password': Error: This account has no password set.",
+        ),
+      ),
+    ).toBe('当前账号未设置密码，请先通过“找回密码”设置密码')
+    expect(errorMessage(new Error('User has been banned'))).toBe(
+      '该账号已被封禁，请联系客服',
+    )
+    expect(errorMessage(new Error('Database error'))).toBe(
+      '服务暂时不可用，请稍后重试',
+    )
+    expect(errorMessage(new Error('原密码错误'))).toBe('原密码错误，请重新输入')
+  })
+  it('keeps its own fallbacks for everything the account table does not name', () => {
+    expect(errorMessage(new Error('配置没有写入，已保留原文件'))).toBe(
+      '配置没有写入，已保留原文件',
+    )
+    expect(errorMessage(new Error('request failed with 401 unauthorized'))).toContain(
+      '登录已过期',
+    )
+    expect(errorMessage(new Error('ETIMEDOUT timeout'))).toContain('请检查网络后重试')
+    expect(errorMessage(new Error('unexpected upstream failure xyz-123'))).toBe(
+      '操作没有成功，请重试或查看反馈日志。',
+    )
+    expect(errorMessage('plain string')).toBe('操作没有成功，请重试或查看反馈日志。')
   })
   it('keeps async activities visible until completion and rejects invalid query ranges', () => {
     const before = pendingBusinessOperations().length

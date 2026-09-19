@@ -18,6 +18,7 @@ import {
   HeartPulse,
   HelpCircle,
   MoreHorizontal,
+  PlugZap,
   RefreshCw,
   Search,
   Settings,
@@ -57,6 +58,7 @@ import {
   ResultNotice,
   useOperation,
   useResource,
+  userFacingErrorMessage,
 } from './business-common'
 import {
   notificationOptions,
@@ -66,6 +68,8 @@ import {
 } from './registry/business'
 import { tools } from './registry/tools'
 import { canUninstallTool } from './features/tools/model'
+import { connectionCheckView } from './features/tools/connection-check'
+import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import type { V2Bridge, V2Page } from './types'
 import type {
   PlatformProxyStatus,
@@ -83,6 +87,7 @@ type RuntimeLog = Awaited<
   ReturnType<V2Bridge['getRuntimeLogs']>
 >['entries'][number]
 type Provider = Parameters<V2Bridge['installCli']>[0]
+type ConnectionCheck = Awaited<ReturnType<V2Bridge['checkProviderConnection']>>
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
   openLogin?: () => void
@@ -119,6 +124,24 @@ export function HealthPage({
   const resource = useResource(load)
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
+  const [connection, setConnection] = useState<ConnectionCheck | null>(null)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
+  const [connectionBusy, setConnectionBusy] = useState(false)
+  // 自检要花账上的几个 token，所以只在用户点按钮时跑，不跟着 diagnostics:run 走。
+  const runConnectionCheck = async () => {
+    setConnectionBusy(true)
+    setConnectionError(null)
+    try {
+      setConnection(await api.checkProviderConnection('claude'))
+    } catch (error) {
+      setConnection(null)
+      setConnectionError(errorMessage(error))
+    } finally {
+      setConnectionBusy(false)
+    }
+  }
+  const connectionView = connection ? connectionCheckView(connection) : null
+  const connectionTarget = connectionView?.target ?? null
   const fix = (item: Diagnostic) => {
     const provider = item.code.replace('PROVIDER_', '').toLowerCase()
     if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig)
@@ -146,6 +169,65 @@ export function HealthPage({
         }
       />
       <ResultNotice {...operation} />
+      <Card
+        title="连接自检"
+        meta="用 Claude Code 配置里真正写着的密钥和模型发一次最小请求；上面的检查只证明网络通，这一条证明你现在能用。"
+        actions={
+          <Button
+            icon={PlugZap}
+            loading={connectionBusy}
+            onClick={() => void runConnectionCheck()}
+            testId="health-connection-run"
+          >
+            测试连接
+          </Button>
+        }
+        testId="health-connection"
+      >
+        {connectionError && (
+          <Notice
+            tone="bad"
+            title="自检没能完成"
+            body={connectionError}
+            testId="health-connection-error"
+          />
+        )}
+        {connectionView && (
+          <Notice
+            tone={connectionView.tone}
+            title={connectionView.title}
+            body={
+              <>
+                <div>{connectionView.body}</div>
+                {connectionView.endpoint && (
+                  <div className="v2-connection-note">请求地址：{connectionView.endpoint}</div>
+                )}
+                {connectionView.detail && (
+                  <div className="v2-connection-note">服务返回：{connectionView.detail}</div>
+                )}
+              </>
+            }
+            actions={
+              connectionTarget && (
+                <Button
+                  size="sm"
+                  icon={Wrench}
+                  onClick={() => navigate?.(connectionTarget)}
+                  testId="health-connection-fix"
+                >
+                  去处理
+                </Button>
+              )
+            }
+            testId="health-connection-result"
+          />
+        )}
+        {!connectionView && !connectionError && (
+          <p className="v2-connection-note" data-testid="health-connection-idle">
+            还没有测过。点「测试连接」，失败时会直接说是网络、密钥、额度、分组还是模型的问题。
+          </p>
+        )}
+      </Card>
       {resource.data && (
         <Toolbar
           left={
@@ -543,6 +625,17 @@ export function UpdatesPage({
       async () => resource.setData(await api.downloadUpdate()),
       '',
     )
+  // A rejected package leaves the updater in the error phase, where downloadUpdate
+  // alone would fail: the retry has to re-check before it has anything to fetch.
+  const redownload = () =>
+    void operation.execute(
+      'download',
+      async () => {
+        const checked = await api.checkForUpdates()
+        resource.setData(checked.phase === 'available' ? await api.downloadUpdate() : checked)
+      },
+      '',
+    )
   const action =
     update?.phase === 'available' || update?.phase === 'cancelled' ? (
       <Button variant="primary" icon={Download} onClick={download}>
@@ -593,6 +686,13 @@ export function UpdatesPage({
             meta={update?.currentVersion ?? '暂未读到'}
           />
           <ListRow title="上次检查" meta={displayDate(update?.checkedAt)} />
+          {update?.unsignedChannel && (
+            <ListRow
+              title="更新通道"
+              meta="未签名，下载和安装都要你确认"
+              testId="updates-channel-unsigned"
+            />
+          )}
           <ListRow
             title="启动时检查"
             actions={
@@ -615,10 +715,10 @@ export function UpdatesPage({
             <Notice
               tone="warn"
               title="更新没有装上"
-              body={update.error.message}
+              body={userFacingErrorMessage(update.error)}
               actions={
                 <>
-                  <Button size="sm" icon={Download} onClick={download}>
+                  <Button size="sm" icon={Download} onClick={redownload}>
                     重新下载
                   </Button>
                   <Button
@@ -695,6 +795,7 @@ export function MaintenancePage({
   const operation = useOperation()
   const [logs, setLogs] = useState<string[]>([])
   const [remove, setRemove] = useState<Provider | 'codexDesktop' | null>(null)
+  const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
       setLogs((previous) => [...previous.slice(-199), event.message]),
@@ -773,9 +874,14 @@ export function MaintenancePage({
             id === 'codexDesktop'
               ? resource.data?.capability.codexDesktop.install === 'managed'
               : resource.data?.capability.cliInstall[id] === 'managed'
+          // A probe that failed says nothing about what is installed, so the
+          // row offers a rescan instead of an install that could land on top
+          // of a working tool.
+          const detectionFailed = status?.detectionFailed === true
           return (
             <ListRow
               key={id}
+              testId={'maintenance-tool-' + id}
               title={
                 <>
                   <BrandIcon tool={id} size={32} />
@@ -786,8 +892,8 @@ export function MaintenancePage({
               meta={
                 <>
                   {version || '未找到版本'}{' '}
-                  <Pill tone={status?.installed ? 'ok' : 'neutral'}>
-                    {status?.installed ? '已安装' : '未安装'}
+                  <Pill tone={detectionFailed ? 'bad' : status?.installed ? 'ok' : 'neutral'}>
+                    {detectionFailed ? '检测失败' : status?.installed ? '已安装' : '未安装'}
                   </Pill>
                 </>
               }
@@ -795,11 +901,11 @@ export function MaintenancePage({
                 <>
                   <Button
                     size="sm"
-                    icon={status?.installed ? RefreshCw : Download}
-                    disabled={!managed || Boolean(operation.busy)}
-                    onClick={() => install(id)}
+                    icon={detectionFailed || status?.installed ? RefreshCw : Download}
+                    disabled={(!managed && !detectionFailed) || Boolean(operation.busy)}
+                    onClick={() => detectionFailed ? check(id) : install(id)}
                   >
-                    {status?.installed ? '重新安装' : '安装'}
+                    {detectionFailed ? '重新检测' : status?.installed ? '重新安装' : '安装'}
                   </Button>
                   <Menu
                     anchor={<MoreHorizontal size={18} />}
@@ -927,8 +1033,22 @@ export function MaintenancePage({
                         remove === 'codexDesktop'
                           ? await api.uninstallCodexDesktop()
                           : await api.uninstallCli(remove)
-                      if (result.outcome === 'manual-required')
+                      if (result.outcome === 'manual-required') {
+                        // The backend text promises a copyable cleanup command,
+                        // so it has to reach a surface that can show one.
+                        setManualUninstall({
+                          name:
+                            tools.find((tool) => tool.id === remove)?.name ??
+                            remove,
+                          reason: result.manualHelp.reason,
+                          manualCommand: result.manualHelp.manualCommand,
+                        })
+                        setRemove(null)
+                        await resource.reload()
+                        // Still a failed uninstall: the page must not claim
+                        // success while files are left on disk.
                         throw new Error(result.error)
+                      }
                       if (result.outcome === 'delegated')
                         throw new Error(
                           '已打开卸载窗口，请完成卸载后重新检测。',
@@ -948,6 +1068,13 @@ export function MaintenancePage({
         <p>卸载所选工具程序，保留账号与工具配置。需要时可重新安装。</p>
         <ResultNotice error={operation.error} />
       </Dialog>
+      {manualUninstall && (
+        <ManualUninstallDialog
+          state={manualUninstall}
+          platform={resource.data?.capability.platform}
+          onClose={() => setManualUninstall(null)}
+        />
+      )}
     </section>
   )
 }
@@ -1119,6 +1246,8 @@ export function SettingsPage({
             '主题',
             '外观调整会应用到整个工具箱',
             <Segment
+              label="主题"
+              testId="settings-theme"
               options={[
                 ...(systemApi
                   ? [
@@ -1307,6 +1436,17 @@ export function SettingsPage({
               aria-label="启动时检查环境"
               onChange={(runDiagnosticsOnStartup) =>
                 void update({ runDiagnosticsOnStartup })
+              }
+            />,
+          )}
+          {row(
+            '命令行工具总是装最新版',
+            '默认安装星芒验证过的推荐版本；打开后跟随官方最新版，可能遇到尚未验证的问题',
+            <Switch
+              checked={settings.alwaysInstallLatestCli === true}
+              aria-label="命令行工具总是装最新版"
+              onChange={(alwaysInstallLatestCli) =>
+                void update({ alwaysInstallLatestCli })
               }
             />,
           )}

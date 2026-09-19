@@ -164,6 +164,7 @@ const ipcInvokeChannels = {
   copyAiChatAsset: 'chat:copy-asset',
   saveAiChatAsset: 'chat:save-asset',
   showAiChatAssetMenu: 'chat:asset-menu',
+  checkProviderConnection: 'diagnostics:check-connection',
   getAccountKeyOptions: 'account:get-key-options',
 } as const satisfies {
   [Method in keyof XingmangInvokeContract]: XingmangInvokeContract[Method]['channel']
@@ -233,7 +234,7 @@ const xingmangApi: XingmangApi = {
   installNodeRuntime: () => invoke('installNodeRuntime'),
   restartWindows: () => invoke('restartWindows'),
   installPythonRuntime: () => invoke('installPythonRuntime'),
-  installCli: (provider) => invoke('installCli', provider),
+  installCli: (provider, version) => invoke('installCli', provider, version),
   uninstallCli: (provider) => invoke('uninstallCli', provider),
   checkCliUpdate: (provider) => invoke('checkCliUpdate', provider),
   getCodexSetupStatus: () => invoke('getCodexSetupStatus'),
@@ -366,6 +367,7 @@ const xingmangApi: XingmangApi = {
   copyAiChatAsset: (assetId) => invoke('copyAiChatAsset', assetId),
   saveAiChatAsset: (assetId) => invoke('saveAiChatAsset', assetId),
   showAiChatAssetMenu: (assetId) => invoke('showAiChatAssetMenu', assetId),
+  checkProviderConnection: (provider) => invoke('checkProviderConnection', provider),
   getAccountKeyOptions: (provider) => invoke('getAccountKeyOptions', provider),
   onAccountSessionChanged: (listener) => subscribe('onAccountSessionChanged', listener),
   onExternalClientInstallProgress: (listener) => subscribe('onExternalClientInstallProgress', listener),

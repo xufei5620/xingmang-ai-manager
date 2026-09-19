@@ -4006,6 +4006,31 @@ input:focus-visible {
   font-size: var(--text-sm);
 }
 
+.update-unsigned-note {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-8);
+  margin-top: var(--space-16);
+  padding: 10px 12px;
+  color: #8a5a12;
+  background: #fdf6e8;
+  border: 1px solid #ecdcbc;
+  border-radius: var(--radius-6);
+  font-size: var(--text-sm);
+  line-height: 1.6;
+}
+
+.update-unsigned-note svg {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+:root[data-theme="dark"] .update-unsigned-note {
+  color: #e0b268;
+  background: rgba(214, 149, 46, 0.12);
+  border-color: rgba(214, 149, 46, 0.28);
+}
+
 .update-release-notes {
   margin-top: var(--space-16);
   padding-top: 15px;
@@ -10390,6 +10415,25 @@ button:disabled {
   margin-top: var(--space-18);
 }
 
+/* Shown only when the boundary has no toast host above it -- the root mount
+   (RootShell) is exactly that case, and the export result has nowhere else
+   to go there. */
+.page-crash-notice {
+  max-width: 480px;
+  margin: var(--space-12) auto 0;
+  font-size: var(--text-sm);
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.page-crash-notice-success {
+  color: #7e8792;
+}
+
+.page-crash-notice-error {
+  color: var(--color-danger-icon);
+}
+
 :root[data-theme="dark"] .page-crash-icon {
   color: var(--dark-color-danger-icon);
   background: rgba(195, 67, 78, 0.14);
@@ -10398,6 +10442,14 @@ button:disabled {
 
 :root[data-theme="dark"] .page-crash-message {
   color: var(--dark-text-secondary);
+}
+
+:root[data-theme="dark"] .page-crash-notice-success {
+  color: var(--dark-text-secondary);
+}
+
+:root[data-theme="dark"] .page-crash-notice-error {
+  color: var(--dark-color-danger-icon);
 }
 
 /* ==========================================================================

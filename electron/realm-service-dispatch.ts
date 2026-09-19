@@ -13,7 +13,7 @@ export function createRealmServiceDispatch<T extends object>(resolve: () => T): 
       return (...args: unknown[]) => {
         const current = resolve()
         const method: unknown = Reflect.get(current, property)
-        if (typeof method !== 'function') throw new Error('当前站点服务不可用')
+        if (typeof method !== 'function') throw new Error('当前账号服务不可用')
         return Reflect.apply(method, current, args)
       }
     },

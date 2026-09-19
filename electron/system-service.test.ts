@@ -5,7 +5,7 @@ import path from 'node:path'
 import * as TOML from '@iarna/toml'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AppSettingsStore, defaultAppSettings } from './app-settings'
-import { providerBaseUrls } from './catalog'
+import { providerBaseUrls, type ProviderId } from './catalog'
 import { providerConfigRoot, type ProviderConfigRoots } from './codex-home'
 import {
   findExecutable as productionFindExecutable,
@@ -14,13 +14,14 @@ import {
   type runCommand as productionRunCommand,
 } from './command-runner'
 import type { WindowsMachinePaths } from './windows-machine-paths'
-import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, providerConfigPaths, saveProviderConfig } from './config-files'
+import { codexAuthSnapshotPaths, codexConfigSnapshotPaths, inspectProviderConfig, providerConfigPaths, saveProviderConfig } from './config-files'
 import type { MacosCodexAppInspection } from './macos-codex-app'
 import { managedNpmCacheRoot, managedNpmPrefix } from './managed-cli-paths'
 import {
   resolveCliCommand as resolveVerifiedToolCommand,
   resolveCliInstallation as resolveCliInstallationForTest,
 } from './tool-installation'
+import { buildCliVersionAdvice } from './cli-verified-versions'
 import {
   assertNpmPackageLocksEquivalent,
   assertNpmReleaseIntegrityMatches,
@@ -84,6 +85,16 @@ const testMachinePaths: WindowsMachinePaths = {
   programFiles: 'D:\\Program Files',
   programFilesX86: 'D:\\Program Files (x86)',
   programData: 'D:\\ProgramData',
+}
+
+// api.solov.cc(sub2api 站点)写进 CLI 配置的 base URL,按 relay-sites.ts 的
+// solov-api 条目逐字抄写。故意不 import 那张表:测试要钉住的正是这四个取值,
+// 从表里读回来就等于什么都没验。
+const sub2ApiProviderBaseUrls: Record<ProviderId, string> = {
+  claude: 'https://api.solov.cc',
+  codex: 'https://api.solov.cc/v1',
+  grok: 'https://api.solov.cc/v1',
+  gemini: 'https://api.solov.cc',
 }
 
 function createService(options: SystemServiceOptions = {}) {
@@ -439,12 +450,12 @@ describe('createSystemService', () => {
     // reverted the other's fields.
     const service = createService()
 
-    const first = service.updateStoredConfig({ version: 2, relaySiteId: 'sub2api' })
+    const first = service.updateStoredConfig({ version: 2, relaySiteId: 'solov-api' })
     const second = service.updateStoredConfig({ version: 2, sidebarMoreExpanded: true })
     await Promise.all([first, second])
 
     expect(service.readStoredConfig()).toMatchObject({
-      relaySiteId: 'sub2api',
+      relaySiteId: 'solov-api',
       sidebarMoreExpanded: true,
     })
   })
@@ -669,9 +680,46 @@ describe('createSystemService', () => {
     const relayFetch = vi.fn<typeof fetch>()
     const service = createService({ providerRoots, getRelaySiteId: () => 'solov-api', relayFetch })
     await expect(service.saveConfig({ provider: 'codex', apiKey: '', model: 'fixture-model', mode: 'merge' }, false))
-      .rejects.toThrow('已保存的 Key 属于其他站点')
+      .rejects.toThrow('已保存的 Key 属于其他账号')
     expect(relayFetch).not.toHaveBeenCalled()
   })
+
+  // D-02: 从 relay-sites.ts 的站点表到 CLI 配置文件之间那一段此前无人验证。
+  // saveProviderConfig 的 siteBaseUrlsInput 刻意不给默认值(config-files.ts
+  // 的长注释),这四条就是那个设计约束的回归网:换账号站点后写进四个 CLI 的
+  // base URL 必须整体换掉,而不是继续指向 xm。字面量刻意写死,改动站点表时
+  // 必须同步改这里。
+  it.each([
+    { provider: 'claude', expected: 'https://api.solov.cc' },
+    { provider: 'codex', expected: 'https://api.solov.cc/v1' },
+    { provider: 'grok', expected: 'https://api.solov.cc/v1' },
+    { provider: 'gemini', expected: 'https://api.solov.cc' },
+  ] satisfies Array<{ provider: ProviderId; expected: string }>)(
+    'writes $expected into the $provider config file while the sub2api site is active',
+    async ({ provider, expected }) => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-sub2api-save-'))
+      temporaryDirectories.push(root)
+      const providerRoots = { userHome: path.join(root, 'home'), codexHome: path.join(root, 'codex') }
+      const relayFetch = vi.fn<typeof fetch>(async () => Response.json({ data: [{ id: 'fixture-model' }] }))
+      const service = createService({ providerRoots, getRelaySiteId: () => 'solov-api', relayFetch })
+
+      await service.saveConfig({
+        provider,
+        apiKey: `sk-sub2api-${provider}-fixture`,
+        model: 'fixture-model',
+        mode: 'reset',
+      }, false)
+
+      // The model probe must leave the xm relay too, otherwise a model list
+      // from one site would authorize a config written for the other.
+      expect(relayFetch.mock.calls[0][0]).toBe('https://api.solov.cc/v1/models')
+      const written = inspectProviderConfig(provider, providerRoots, sub2ApiProviderBaseUrls)
+      expect(written.actualBaseUrl).toBe(expected)
+      expect(written.matchesRelay).toBe(true)
+      // The xm base URLs must no longer reconcile against this file.
+      expect(inspectProviderConfig(provider, providerRoots, providerBaseUrls).matchesRelay).toBe(false)
+    },
+  )
 
   it('rejects a site change between model validation and CLI config commit', async () => {
     let siteId = 'solov'
@@ -681,7 +729,7 @@ describe('createSystemService', () => {
     })
     const service = createService({ getRelaySiteId: () => siteId, relayFetch })
     await expect(service.saveConfig({ provider: 'codex', apiKey: 'sk-xm-only', model: 'fixture-model', mode: 'merge' }, false))
-      .rejects.toThrow('账号站点已变化')
+      .rejects.toThrow('账号已变化')
     expect(relayFetch.mock.calls[0][0]).toBe('https://xm.solov.cc/v1/models')
   })
 
@@ -1490,6 +1538,36 @@ describe('npm registry metadata', () => {
     })
 
     expect(requestedVersions).toEqual(['latest'])
+  })
+
+  it('pins the npm release query to the version the verified list selected', async () => {
+    const requestedVersions: string[] = []
+    await resolveCliInstallRelease('claude', null, {
+      version: '2.1.277',
+      fetchGrokStableVersion: async () => {
+        throw new Error('must not query Grok stable metadata')
+      },
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@anthropic-ai/claude-code', version: '2.1.277', integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['2.1.277'])
+  })
+
+  it('ignores a requested version on the Darwin Grok path, which the xAI manifest owns', async () => {
+    const requestedVersions: string[] = []
+    await resolveCliInstallRelease('grok', 'darwin-official-npm', {
+      version: '0.2.100',
+      fetchGrokStableVersion: async () => ({ version: '0.2.118', sourceUrl: 'https://x.ai/cli/stable' }),
+      fetchNpmRelease: async (_registry, _packageName, version) => {
+        requestedVersions.push(version)
+        return { name: '@xai-official/grok', version: '0.2.118', integrity }
+      },
+    })
+
+    expect(requestedVersions).toEqual(['0.2.118'])
   })
 
   it('requires exact package identity, semantic version and SHA-512 integrity metadata', () => {
@@ -2860,6 +2938,49 @@ describe('CLI latest version state', () => {
       updateCheck: 'checked',
       updateState: 'latest',
     })
+  })
+
+  it('carries the verified-version advice through to the renderer status', () => {
+    expect(buildCliStatus({
+      installed: true,
+      version: '2.1.276 (Claude Code)',
+      path: 'claude.cmd',
+      installDirectory: null,
+    }, latest('2.1.277'), buildCliVersionAdvice('claude', '2.1.276 (Claude Code)'))).toMatchObject({
+      versionAdvice: {
+        recommendedVersion: '2.1.277',
+        blockedReason: expect.stringContaining('400'),
+        onRecommended: false,
+        rollbackAvailable: true,
+      },
+    })
+  })
+
+  it('does not advertise an update the pinned list would not install', () => {
+    const installed = {
+      installed: true,
+      version: '2.1.277 (Claude Code)',
+      path: 'claude.cmd',
+      installDirectory: null,
+    }
+    expect(buildCliStatus(installed, latest('2.1.280'), buildCliVersionAdvice('claude', installed.version))).toMatchObject({
+      latestVersion: '2.1.280',
+      updateAvailable: false,
+      updateState: 'latest',
+    })
+    expect(buildCliStatus(installed, latest('2.1.280'), buildCliVersionAdvice('claude', installed.version, { alwaysLatest: true }))).toMatchObject({
+      updateAvailable: true,
+      updateState: 'available',
+    })
+  })
+
+  it('omits the advice field entirely when no list applies', () => {
+    expect(buildCliStatus({
+      installed: true,
+      version: 'codex-cli 0.146.0',
+      path: 'codex.cmd',
+      installDirectory: null,
+    }, latest('0.146.0'))).not.toHaveProperty('versionAdvice')
   })
 
   it('uses the Grok official stable feed instead of the unrelated npm package', () => {

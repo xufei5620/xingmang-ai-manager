@@ -133,10 +133,19 @@ async function main() {
       code: 'INSTALLER_MISSING',
     })
   }
-  for (const installer of installers) {
-    verifyAuthenticode(path.join(result.releaseDirectory, installer.relativePath), signing.expectedPublisher)
+  // 无签名模式下没有证书主体可比对,只跳过签名这一项;latest.yml 结构、文件
+  // 大小、SHA-512、blockmap 已经由上面的 validateLocalRelease 全部校验过。
+  // 这是有意做成显式开关而不是「没配发布者就放行」——后者会让任意一张证书
+  // (包括攻击者自己的)通过校验,见 verifyAuthenticode 里的 SIGNING_PUBLISHER_MISSING。
+  if (signing.unsignedReleaseMode) {
+    console.log('跳过 Authenticode 签名校验：当前为无签名发布模式（XINGMANG_UNSIGNED_RELEASE=1）')
+  } else {
+    for (const installer of installers) {
+      verifyAuthenticode(path.join(result.releaseDirectory, installer.relativePath), signing.expectedPublisher)
+    }
   }
-  console.log(`发布产物校验通过：v${result.metadata.version}，${installers.length} 个已签名安装程序`)
+  const installerDescription = signing.unsignedReleaseMode ? '个未签名安装程序' : '个已签名安装程序'
+  console.log(`发布产物校验通过：v${result.metadata.version}，${installers.length} ${installerDescription}`)
 }
 
 if (require.main === module) {

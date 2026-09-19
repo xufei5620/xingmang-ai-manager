@@ -35,6 +35,12 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
+      # This is the only job that checks out full history — so the guard can
+      # diff the unreleased sections against the base — and the only one that
+      # also runs for a documentation-only change, which is exactly when a
+      # direct CHANGELOG.md edit needs catching.
+      - name: Validate unreleased change fragments
+        run: npm run changelog:check
       - id: scope
         run: node scripts/ci-change-scope.cjs
 
@@ -42,7 +48,12 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    timeout-minutes: 35
+    # test:windows (~13m) plus test:v2 (~10m) already put this job at ~28m of
+    # its old 35m cap, so a single slow smoke cancelled the job before the
+    # step could report why. The per-step timeouts below are the real bound.
+    # The cap stays at 45 even though test:canvas and test:ui left for linux:
+    # the packaging steps below still have to fit under it.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -60,8 +71,10 @@ jobs:
           New-Item -Path $unlockKey -Force | Out-Null
           New-ItemProperty -Path $unlockKey -Name AllowDevelopmentWithoutDevLicense -PropertyType DWord -Value 1 -Force | Out-Null
       - run: npm run typecheck
-      - run: npm run test:canvas
       - run: npm run test:windows
+      # test:v2 stays on the shipping platform. test:canvas and the legacy
+      # test:ui suites moved to linux-test: neither asserts anything
+      # platform-specific, and this job is the slowest and least stable one.
       - run: npm run test:v2
       - name: Fail if the test run left files in the working tree
         shell: bash
@@ -79,8 +92,14 @@ jobs:
             throw 'npm run compile did not produce dist/renderer-v2.flag'
           }
       - name: Run isolated signed-out startup smoke test
+        # Same three-layer bound as the smoke below: the script budgets itself
+        # to 3 minutes, this is the backstop if it somehow outlives that.
+        timeout-minutes: 5
         run: node e2e/electron-ci-smoke.mjs
       - name: Verify tray and forced exit with isolated application state
+        # The script budgets itself to 4 minutes and prints a process tree when
+        # it overruns. This is the backstop for a hang that outlives even that.
+        timeout-minutes: 6
         run: node e2e/window-close-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
       - run: npm run build:win:ci
@@ -120,6 +139,9 @@ jobs:
         run: npm run test:mac:proxy
       - run: npm run test:mac:dev-origin
       - name: Verify tray and forced exit with isolated application state
+        # The script budgets itself to 4 minutes and prints a process tree when
+        # it overruns. This is the backstop for a hang that outlives even that.
+        timeout-minutes: 6
         run: node e2e/window-close-smoke.mjs
       - name: Fail if the test run left files in the working tree
         # Windows path math evaluated on a POSIX host yields a backslash
@@ -145,7 +167,11 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # Took on test:v2, test:canvas, test:ui and check:v2 from the Windows job.
+    # These are the cheapest billed minutes in the matrix, so the coverage the
+    # shipping renderer needs belongs here rather than behind the one job that
+    # Defender timeouts already make unreliable.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -161,6 +187,16 @@ jobs:
       - run: npx --no-install playwright install --with-deps chromium
       - run: npm run typecheck
       - run: npm test
+      # The renderer v2 browser suites are plain Chromium, so they need no
+      # Electron and no display server here.
+      - run: npm run test:v2
+      - run: npm run test:canvas
+      # The legacy rollback UI suites. They assert rendered markup only, so one
+      # platform answers the question three platforms used to.
+      - run: npm run test:ui
+      # Without --report this writes no files, which is what lets it sit in
+      # front of the dirty-tree guard below.
+      - run: npm run check:v2
       - name: Fail if the test run left files in the working tree
         # Windows path math evaluated on a POSIX host yields a backslash
         # relative name, which lands as a stray directory in the repository

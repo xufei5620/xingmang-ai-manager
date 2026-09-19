@@ -5,6 +5,7 @@ import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/account-switcher')
@@ -22,6 +23,7 @@ after(async () => { await browser?.close(); await server?.close() })
 async function openFixture(query = '', viewport = { width: 960, height: 720 }) {
   const page = await browser.newPage({ viewport })
   await page.goto(`${baseUrl}/e2e/account-switcher-fixture.html?${query}`)
+  await page.locator('#open-switcher').waitFor({ timeout: fixtureReadyTimeoutMs })
   await page.locator('#open-switcher').click()
   await page.getByRole('dialog').waitFor()
   if (!query.includes('encryption-fails')) await page.locator('[data-account-id="account-a"]').waitFor()
@@ -34,7 +36,7 @@ test('shows the current account without removal and never auto-selects tools or 
   try {
     assert.equal(await page.locator('[data-account-id="account-a"]').getByText('当前账号', { exact: true }).count(), 1)
     assert.equal(await page.locator('[data-account-id="account-a"]').getByRole('button').count(), 0)
-    assert.equal(await page.locator('[data-account-id="account-c"]').getByText('其他站点', { exact: true }).count(), 1)
+    assert.equal(await page.locator('[data-account-id="account-c"]').getByText('需重新登录', { exact: true }).count(), 1)
     assert.equal(await page.locator('[data-account-id="account-c"]').getByRole('button', { name: '切换', exact: true }).count(), 0)
     assert.equal(await page.locator('input:checked').count(), 0)
     assert.equal(await page.getByTestId('account-sync-claude').isDisabled(), true)

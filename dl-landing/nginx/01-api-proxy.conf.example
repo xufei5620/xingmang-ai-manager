@@ -1,0 +1,37 @@
+# 模板：复制成同目录的 01-api-proxy.conf 再填真实值，渲染出来的 .conf 已被 .gitignore 忽略。
+# 占位符：
+#   __ACCOUNT_UPSTREAM__  账号后端在源站本机的监听地址，形如 127.0.0.1:<端口>
+#   __ACCOUNT_HOST__      账号站对外域名，new-api 靠这个 Host 才认正式站点
+# 只反代注册需要的接口，其余 /api 与 /v1 一律 404。
+location = /api/status {
+    proxy_pass http://__ACCOUNT_UPSTREAM__;
+    proxy_set_header Host __ACCOUNT_HOST__;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+
+location = /api/verification {
+    proxy_pass http://__ACCOUNT_UPSTREAM__;
+    proxy_set_header Host __ACCOUNT_HOST__;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+
+location = /api/user/register {
+    proxy_pass http://__ACCOUNT_UPSTREAM__;
+    proxy_set_header Host __ACCOUNT_HOST__;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto https;
+}
+
+# 其余 /api 与 /v1 不得落到 SPA，更不能打到账号后端
+location ^~ /api/ {
+    return 404;
+}
+
+location ^~ /v1/ {
+    return 404;
+}

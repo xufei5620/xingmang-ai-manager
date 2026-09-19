@@ -305,6 +305,7 @@ function register(
     } as never,
     diagnosticsService: {
       run: vi.fn(),
+      checkConnection: vi.fn(),
       exportLatest: vi.fn(),
     },
     runtimeLog: runtimeLog as never,
@@ -1321,7 +1322,7 @@ describe('registerIpcHandlers', () => {
     const service = serviceStub()
     vi.mocked(service.getConfig).mockReturnValue({ providers: { codex: { matchesRelay: false } } } as never)
     register(service, undefined, undefined, undefined, undefined, undefined, { realmAccounts: {} as never })
-    await expect(electronMocks.handlers.get('models:list-configured')!(trustedEvent(), 'codex')).rejects.toThrow('其他站点')
+    await expect(electronMocks.handlers.get('models:list-configured')!(trustedEvent(), 'codex')).rejects.toThrow('其他账号')
     expect(service.revealApiKey).not.toHaveBeenCalled()
     expect(service.fetchAvailableModels).not.toHaveBeenCalled()
   })
@@ -1568,6 +1569,22 @@ describe('registerIpcHandlers', () => {
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('apiKey')
   })
 
+  it('passes an explicit CLI version through and rejects anything but an exact one', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('cli:install')!
+
+    await handler(trustedEvent(), 'claude', '2.1.277')
+    expect(service.installCli).toHaveBeenCalledWith('claude', expect.anything(), '2.1.277')
+
+    await handler(trustedEvent(), 'claude')
+    expect(service.installCli).toHaveBeenLastCalledWith('claude', expect.anything(), undefined)
+
+    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /']) {
+      await expect(handler(trustedEvent(), 'claude', rejected)).rejects.toThrow('CLI 版本号格式错误')
+    }
+  })
+
   it('checks and uninstalls only the requested CLI', async () => {
     const service = serviceStub()
     vi.mocked(service.inspectCliUpdate).mockResolvedValueOnce({
@@ -1624,7 +1641,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,
@@ -1714,7 +1731,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,
@@ -1751,7 +1768,7 @@ describe('registerIpcHandlers', () => {
       sessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn(), archive: vi.fn(), restore: vi.fn() } as never,
       providerSessionsService: { list: vi.fn(), detail: vi.fn(), exportMarkdown: vi.fn() } as never,
       backupStore: { list: vi.fn(), create: vi.fn(), inspect: vi.fn(), restore: vi.fn() } as never,
-      diagnosticsService: { run: vi.fn(), exportLatest: vi.fn() },
+      diagnosticsService: { run: vi.fn(), checkConnection: vi.fn(), exportLatest: vi.fn() },
       runtimeLog: { log: vi.fn(), exception: vi.fn(), snapshot: vi.fn(), feedbackReport: vi.fn(), clear: vi.fn(), directory: 'C:\\app-data\\logs' } as never,
       extensionService: {} as never,
       providerExtensionService: {} as never,
@@ -1989,14 +2006,14 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     it('keeps the stored relaySiteId when an update does not mention it', async () => {
       const service = serviceStub()
       vi.mocked(service.updateStoredConfig).mockImplementation(async (update) =>
-        mergeAppSettings({ ...stubStoredConfig, relaySiteId: 'sub2api' }, update))
+        mergeAppSettings({ ...stubStoredConfig, relaySiteId: 'solov-api' }, update))
       register(service)
       const handler = electronMocks.handlers.get('settings:save')!
 
       await expect(handler(trustedEvent(), {
         version: 2,
         theme: 'light',
-      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'sub2api', theme: 'light' }))
+      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'solov-api', theme: 'light' }))
       expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, theme: 'light' })
     })
 
@@ -2033,11 +2050,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'solov' }))
     })
 
-    it('round-trips the sub2api relaySiteId through settings:save too, not just the default solov site', async () => {
+    it('round-trips the non-default relaySiteId through settings:save too, not just the default solov site', async () => {
       // W3b: relay-sites.ts grew a second entry (731db23); this pins that
       // parseSettingsUpdate/updateStoredConfig accept it end to end through the
       // same real IPC handler as the 'solov' regression test above, not just
       // the one entry that happened to also be the registry's default id.
+      // Retargeted from the retired 'sub2api' alias to the api site in D-10.
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
 
@@ -2047,9 +2065,9 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
-        relaySiteId: 'sub2api',
-      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'sub2api' }))
-      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'sub2api' }))
+        relaySiteId: 'solov-api',
+      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'solov-api' }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'solov-api' }))
     })
 
     it('drops an unknown relaySiteId instead of failing the whole save', async () => {

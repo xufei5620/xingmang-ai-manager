@@ -12,6 +12,23 @@ npm run release:build:unsigned
 
 此入口构建安装包但不上传，保留客户端自动更新；`forceCodeSigning=false`，更新配置不写入 `publisherName`。发布入口与普通 `npm run build` 都使用默认 renderer-v2 编译并生成 `dist/renderer-v2.flag`；旧界面只通过 `compile:legacy` 显式构建。普通 `npm run build` 仍是关闭自动更新的本地调试构建。
 
+从 2026-09-18 起，`release:build:unsigned` 与签名入口共用 `scripts/run-release-build.cjs` 的同一份步骤表（审查总表 `M-01`）。无签名模式下会照常执行：
+
+1. 发布前置检查（含「远端版本必须低于本地」）
+2. `npm run typecheck`
+3. 全部单测（Windows 上走 `test:windows`）
+4. `npm run compile`，并确认产出 `dist/renderer-v2.flag`
+5. `e2e/electron-ci-smoke.mjs` 启动冒烟
+6. `e2e/onboarding-smoke.mjs` 首启向导冒烟
+7. electron-builder 构建未签名安装程序
+8. Electron fuse 加固校验与加固后生产程序启动
+9. ASAR 篡改必须被拒
+10. `latest.yml` 结构、文件大小、逐文件 SHA-512 与 blockmap 校验
+
+无签名模式下**只跳过**第 10 步里的 Authenticode 签名主体比对，跳过原因会打印在构建日志里。只做产物校验时用 `npm run release:verify:unsigned`。
+
+注意：无签名入口现在与签名入口一样要求输出目录不存在或为空（默认 `release-<版本号>`，可用 `XINGMANG_OUTPUT_DIR` 指定）。重跑同一版本前先把上次的产物移走或换一个新的空目录。
+
 ### 从 0.2.3 起的私有加速资源
 
 产品所有者确认先分发本机计时版：每账号在本机累计 20 分钟，节点随本地 Windows 安装包提供，不上传 GitHub。TUN 尚未接入。源码和 CI 构建默认不含线路。
@@ -42,7 +59,7 @@ Mac 资源使用 `--platform darwin --arch arm64` 或 `--arch x64` 准备，资�
 
 ## 历史签名流程（停用）
 
-以下为历史签名方案归档。`release:build`、`release:preflight`、`release:verify` 和 `release-build.yml` 是旧签名专用入口，不用于当前及后续 Windows 无签名发布；下文的证书、发布者和 DN/CN 要求不适用于本项目的无签名发布流程。
+以下为历史签名方案归档。`release:build` 和 `release-build.yml` 是旧签名专用入口，不用于当前及后续 Windows 无签名发布；下文的证书、发布者和 DN/CN 要求不适用于本项目的无签名发布流程。`scripts/verify-release-environment.cjs` 与 `scripts/verify-release-artifacts.cjs` 现在两种模式共用（无签名模式只跳过 Authenticode 签名主体比对），不再是签名专用。
 
 ## 1. 发布前置条件
 
@@ -57,13 +74,15 @@ npm run audit:official
 CI 对生产依赖中的任意漏洞和完整依赖树中的 critical 漏洞执行阻断；`audit:official` 仍须在正式发布前人工复核全部开发依赖公告。当前 Electron 打包链的上游 high 公告若只能通过降级解决，应记录评估结果，不能用未经打包回归的强制降级换取表面上的零告警。
 
 - 在 `package.json` 提升版本号，版本必须高于已发布版本。
-- 更新根目录 `release-notes.md`，内容会在打包时写入更新清单并显示在客户端更新页面。
+- 执行 `npm run changelog:collect`：把 `changes/unreleased/` 下的分片按 `## 用户` / `## 开发` 分别汇入 `release-notes.md` 的「未发布」段与 `CHANGELOG.md` 的 `## Unreleased` 段，并删除已汇总的分片文件。
+- 汇总后把这两个标题改成本次版本号（`未发布` → `0.2.7`，`## Unreleased` → `## 0.2.7 - <日期>`），按需润色文案。`release-notes.md` 的内容会在打包时写入更新清单并显示在客户端更新页面。
 - 使用专用 Windows 发布机，系统时间正确，依赖锁文件未被临时改写。
 - 更新清单必须由对应版本的静态 R2 目录提供：`0.1.2` 及更早版本检查 `https://updates.shenfengwl.fun/xingmang-manager/latest.yml`，`0.1.3+` 检查 `https://updatesnew.shenfengwl.fun/xingmang-manager/latest.yml`。两者返回 `text/html`/官网 SPA 都属于发布阻断故障。
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
 - 正式发布必须使用 Authenticode 签名；没有证书、固定发布者或干净 Windows 验收机时，发布预检会直接失败。
 - 所有 Windows 包的 `app-update.yml` 都写入预期发布者，防止 `electron-updater` 因缺少 `publisherName` 跳过验证。客户端使用受保护系统目录中的 PowerShell 严格核对下载文件的 `Valid` 状态、返回路径和发布者 DN/CN；PowerShell 缺失、命令失败、输出无法解析或任一字段不匹配均拒绝更新。
-- 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留自动更新但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
+- 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留更新能力但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
+- 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。主进程据此把更新改成用户确认式：启动检查只提示新版本，下载和安装都等用户在更新页点击，并在下载完成后按更新清单的 SHA-512 重新校验安装包，校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
 - 正式发布前配置证书路径和固定发布者，例如：
 
 ```powershell
@@ -111,13 +130,26 @@ npm run release:build
 
 老板决定把出包这一步搬到 CI。`.github/workflows/release-build.yml` 在 `windows-latest` 上跑的就是上面第 2 节那条完全相同的链路（它直接调用 `npm run release:build`），只是证书来自仓库 Secrets 而不是发布机磁盘。
 
-**一次性配置**：在仓库 Settings → Secrets and variables → Actions 配置三个 secret。
+**一次性配置分两步：先建受保护环境，再把 secret 配进那个环境。**
+
+**第一步：建 `release` 环境**（仓库 Settings → Environments → New environment，名字必须是 `release`）：
+
+- 勾上 **Required reviewers**，把自己加进去。以后每次跑 `release-build` 都要点一次同意，跑之前构建会停在等待审批。
+- **Deployment branches and tags** 选 **Selected branches and tags**，只加 `main`。
+
+⚠️ **这一步不能省，也不能靠 workflow 自己长出来。** `release-build.yml` 里写了 `environment: release`，但环境不存在时 GitHub 会在首次运行时**自动创建一个没有任何保护规则的同名环境**——看上去一切正常，实际上什么都没挡住。建完之后回环境页面确认两条规则都在。
+
+为什么要这么做：`release-build` 是 `workflow_dispatch`，GitHub 允许触发时指定**任意 ref**，跑的是那个 ref 上的 workflow 文件。只要签名 secret 还留在仓库级，任何有 write 权限的人推一个分支、在里面加一行把证书 base64 打印出来，再 dispatch 到那个分支，就能把签名证书和密码整个拿走。环境保护是唯一能挡住这条路的东西。
+
+**第二步：在 `release` 环境里**（不是仓库级 Secrets）配三个 secret：
 
 | Secret 名 | 内容 |
 |---|---|
 | `WIN_CSC_LINK_BASE64` | 代码签名证书 `.p12` 的 **base64 文本**（electron-builder 直接接受 base64，证书不落盘） |
 | `WIN_CSC_KEY_PASSWORD` | 该证书的密码 |
 | `XINGMANG_SIGNING_PUBLISHER` | 固定发布者名，例如 `绍兴星芒文化传媒有限责任公司` |
+
+如果这三个 secret 之前配在仓库级（Settings → Secrets and variables → Actions），**挪完之后要把仓库级那三份删掉**，否则等于没挪。
 
 把 `.p12` 转成 base64（在你自己的机器上做，不要在任何共享环境里做）：
 
@@ -157,11 +189,13 @@ Export-PfxCertificate -Cert $cert -FilePath "$HOME\xingmang-test-signing.pfx" -P
 
 `Subject` 里的 CN **必须**与 `XINGMANG_SIGNING_PUBLISHER` 完全一致，否则产物校验会因发布者不匹配而失败。
 
-**2. 配置 Secrets**：把剪贴板里的 base64 填进 `WIN_CSC_LINK_BASE64`，密码填 `WIN_CSC_KEY_PASSWORD`，发布者填 `XINGMANG_SIGNING_PUBLISHER`。
+**2. 配置 Secrets**：把剪贴板里的 base64 填进 `WIN_CSC_LINK_BASE64`，密码填 `WIN_CSC_KEY_PASSWORD`，发布者填 `XINGMANG_SIGNING_PUBLISHER`。仍然配在上面那个 `release` 环境里。
 
   **3. 触发构建**：Actions → `release-build` → Run workflow，勾上 `test_signing`，并在 `update_url` 填一个**与正式源不同的测试路径**，例如 `https://updatesnew.shenfengwl.fun/xingmang-manager/beta/`。这一项是强制的：自签名产物一旦进了正式更新源，老客户的机器不认这张证书会拒绝更新（失败方向是安全的），新装用户则会看到未知发布者警告。
 
 **4. 在测试机上验证更新链路**：把三件套传到那个 beta 路径 → 在虚拟机装上这一版 → 提升 `package.json` 版本号再跑一次构建 → 传新的三件套（顺序仍是先传包与 blockmap、最后覆盖 `latest.yml`）→ 在已装的旧版本里点「检查更新」，应能发现、下载、重启安装成功。
+
+**只有勾了 `test_signing` 的构建**才会把这张证书导进 runner 的「受信任的根证书颁发机构」，好让发布门禁要求的 `Get-AuthenticodeSignature = Valid` 能够成立。正式构建**不做**这一步：`Valid` 本身就建立在链信任上，先把证书塞进根存储再去断言它有效，等于自己给自己判卷——中间 CA 没打进 `.p12`、交叉证书缺失、时间戳服务当时不可用，这些只会在一台干净 Windows 上暴露的问题就全被盖住了，CI 全绿而客户装出来是「未知发布者」。所以正式证书第一次上 CI 时，要做好它可能直接在产物校验这一关失败的准备，那正是它该失败的地方。
 
 **5. 安装时的提示**：自签名证书未被 Windows 信任，安装时仍会有 SmartScreen 警告。若想在测试机上消除，把 `.pfx` 里的证书导入该机器的「受信任的根证书颁发机构」；**不要**在任何客户机器上这么做。
 
