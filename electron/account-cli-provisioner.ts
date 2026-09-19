@@ -116,7 +116,8 @@ async function resolveManagedCliKeys(
         // A damaged ciphertext or unavailable OS keychain must not trap a new
         // machine in onboarding. Keep the read API explicit for callers that
         // need to distinguish corruption, but let provisioning rebuild the
-        // cache through save() (which quarantines a damaged record).
+        // cache through save() (which quarantines a damaged record and
+        // surfaces a transient read failure as a storage warning instead).
         // The save path below rebuilds the record after provisioning. A
         // recoverable read failure is therefore not itself a user-facing
         // storage failure.
