@@ -65,6 +65,25 @@ export function saveConversation(state: ChatWorkspace, conversation: Conversatio
 }
 export function isGenerating(conversation: Conversation): boolean { return conversation.messages.some((message) => message.status === 'pending' || message.status === 'streaming') }
 
+// A stream chunk replaces only the conversation it belongs to, so every other
+// conversation keeps its object identity for the whole answer. Caching the
+// searchable text on the conversation object therefore survives the rerenders
+// a stream causes, which memoising on the conversation array alone would not.
+// 搜索框为空是常态，这时完全不扫正文：会话越多、历史越长，省下的越多。
+const conversationSearchTexts = new WeakMap<Conversation, string>()
+function conversationSearchText(conversation: Conversation): string {
+  const cached = conversationSearchTexts.get(conversation)
+  if (cached !== undefined) return cached
+  const searchable = `${conversation.title} ${conversation.messages.map((message) => message.content).join(' ')}`.toLocaleLowerCase()
+  conversationSearchTexts.set(conversation, searchable)
+  return searchable
+}
+export function filterConversations(conversations: Conversation[], search: string): Conversation[] {
+  const keyword = search.trim().toLocaleLowerCase()
+  if (!keyword) return conversations
+  return conversations.filter((conversation) => conversationSearchText(conversation).includes(keyword))
+}
+
 export function planTurn(conversation: Conversation, input: { prompt: string; requestId: string; assistantId: string; userMessageId: string; retryId?: string; editId?: string }): TurnPlan {
   if (isGenerating(conversation)) throw new Error('当前对话仍在生成，请先停止或等待完成')
   let history = conversation.messages.slice()
