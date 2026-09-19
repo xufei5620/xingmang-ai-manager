@@ -7,6 +7,7 @@ let server: http.Server
 let browser: Browser
 let origin: string
 let port: number
+const fixtureBrowserProcessId = 4321
 
 beforeAll(async () => {
   server = http.createServer((request, response) => {
@@ -69,6 +70,10 @@ describe('Codex locale with real isolated Chromium documents', () => {
       }))
       expect(initial).toEqual({ language: 'zh-CN', ready: 'complete', hasBridge: true, hasPatch: false, hasStatsig: true, chineseResourcesLoaded: 0 })
       const result = await injectCodexDesktopChineseLocale(port, {
+        // The real owner check is a Windows TCP-table query; this fixture runs
+        // a stand-in Chromium, so the seam confirms the port instead.
+        expectedProcessId: fixtureBrowserProcessId,
+        resolvePortOwnerProcessIds: async () => [fixtureBrowserProcessId],
         fetch: async (url, init) => {
           const response = await fetch(url, init)
           const targets = await response.json() as Array<{ url: string; type: string }>

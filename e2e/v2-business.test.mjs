@@ -5,8 +5,10 @@ import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 let browser, server, origin
+const pageErrors = createPageErrorCollector()
 before(async () => {
   process.env.XINGMANG_RENDERER = 'v2'
   server = await createServer({
@@ -25,12 +27,12 @@ before(async () => {
 after(async () => {
   await browser?.close()
   await server?.close()
+  pageErrors.assertNone()
 })
 const fixture = async (route) => {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 900 } }))
   page.setDefaultTimeout(5000)
   page.setDefaultNavigationTimeout(30000)
-  page.on('pageerror', (error) => console.error(error.message))
   await page.route('**/*', (route) =>
     new URL(route.request().url()).origin === origin
       ? route.continue()
