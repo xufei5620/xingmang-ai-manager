@@ -98,6 +98,29 @@ describe('startup failure records', () => {
     expect(redactStartupSecrets('key sk-abcdef123456 leaked')).not.toContain('sk-abcdef123456')
   })
 
+  it('strips secrets spelled as JSON object keys', () => {
+    const redacted = redactStartupSecrets(JSON.stringify({
+      access_token: 'token-value-123456',
+      authorization: 'Basic basic-value-123456',
+      password: 'hunter2-secret',
+      apiKey: 'plain-api-key-value',
+      hasToken: true,
+    }))
+
+    for (const secret of [
+      'token-value-123456',
+      'basic-value-123456',
+      'hunter2-secret',
+      'plain-api-key-value',
+    ]) {
+      expect(redacted).not.toContain(secret)
+    }
+    expect(redacted).toContain('[REDACTED]')
+    // Support reads the export with a parser, so redaction has to leave the
+    // quotes that delimited each value in place.
+    expect(() => JSON.parse(redacted)).not.toThrow()
+  })
+
   it('appends to a real file and hands the path back for the error dialog', () => {
     const root = temporaryDirectory()
     const first = recordStartupFailure(new Error('boom one'), { phase: 'whenReady' }, {
@@ -135,4 +158,43 @@ describe('startup failure records', () => {
     expect(fs.existsSync(filePath)).toBe(false)
     expect(drainStartupFailures(filePath)).toBeNull()
   })
+
+  it('refuses a log larger than this module could have written', () => {
+    const root = temporaryDirectory()
+    recordStartupFailure(new Error('boom'), { phase: 'whenReady' }, { userDataDirectory: root })
+    const filePath = resolveStartupLogPath({ userDataDirectory: root })
+    // 128 KiB rotation budget plus two whole records is the ceiling; anything
+    // past it is somebody else's file wearing our name.
+    fs.appendFileSync(filePath, 'x'.repeat(160 * 1024))
+
+    expect(drainStartupFailures(filePath)).toBeNull()
+    // Still cleared, or every boot would re-read it.
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
+  it('refuses a log that carries a second hard link', () => {
+    const root = temporaryDirectory()
+    recordStartupFailure(new Error('boom'), { phase: 'whenReady' }, { userDataDirectory: root })
+    const filePath = resolveStartupLogPath({ userDataDirectory: root })
+    fs.linkSync(filePath, path.join(root, 'logs', 'extra-link.log'))
+
+    expect(drainStartupFailures(filePath)).toBeNull()
+  })
+
+  it.runIf(process.platform !== 'win32')(
+    'refuses a symlink and leaves the file it points at alone',
+    () => {
+      const root = temporaryDirectory()
+      const secret = path.join(root, 'private.txt')
+      fs.writeFileSync(secret, 'sk-private-file-contents')
+      const filePath = resolveStartupLogPath({ userDataDirectory: root })
+      fs.mkdirSync(path.dirname(filePath), { recursive: true })
+      fs.symlinkSync(secret, filePath)
+
+      expect(drainStartupFailures(filePath)).toBeNull()
+      // The planted link goes away; its target must not.
+      expect(fs.existsSync(filePath)).toBe(false)
+      expect(fs.readFileSync(secret, 'utf8')).toBe('sk-private-file-contents')
+    },
+  )
 })

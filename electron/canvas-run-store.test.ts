@@ -191,10 +191,74 @@ describe('CanvasRunStore', () => {
     await expect(store.listAssetIdsByLineage(7, { runId: 'bad\u0000id' })).rejects.toThrow('运行标识格式错误')
   })
 
-  it('rejects secrets, remote URLs and absolute paths before persistence', async () => {
+  it('rejects secrets, remote URLs and absolute paths in structured fields', async () => {
+    const { owned, store } = fixture()
+    const bearer = record('bearer')
+    bearer.graphRevision = 'Bearer token-value'
+    await expect(store.saveRun(7, bearer)).rejects.toThrow(/密钥|地址|路径/)
+
+    const remote = record('remote')
+    remote.graphRevision = 'https://example.test/revision'
+    await expect(store.saveRun(7, remote)).rejects.toThrow(/密钥|地址|路径/)
+
+    const local = record('local')
+    local.graphRevision = 'C:\\Users\\person\\key.txt'
+    await expect(store.saveRun(7, local)).rejects.toThrow(/密钥|地址|路径/)
+
+    const taggedAsset = asset('t')
+    owned.set(taggedAsset.assetId, taggedAsset)
+    const tagged = cacheEntry('d', { ...taggedAsset, taskId: 'https://example.test/task/1' })
+    await expect(store.storeCache(7, tagged)).rejects.toThrow(/密钥|地址|路径/)
+  })
+
+  // E-S6: the assertion above used to run over the whole serialized state, so a
+  // text node reading 「参考 https://example.com/ref.png」 made every write throw —
+  // and the write happens after the paid generation has already been charged.
+  it('persists user text containing URLs and host paths verbatim', async () => {
     const { store } = fixture()
-    const secret = record('secret')
-    secret.nodes[0].errorMessage = 'Bearer token-value https://example.test C:\\Users\\person\\key.txt'
-    await expect(store.saveRun(7, secret)).rejects.toThrow(/密钥|地址|路径/)
+    const texts = [
+      '参考 https://example.com/ref.png',
+      '参考 https://example.com/素材?size=2K&名称=封面#第一版',
+      'http://example.test/plain 也要能存',
+      '本地素材在 C:\\Users\\person\\Pictures\\ref.png',
+      'file:///home/person/ref.png',
+    ]
+    const run = record('with-urls')
+    run.nodes = [{
+      nodeId: 'text-node',
+      kind: 'text',
+      state: 'succeeded',
+      errorMessage: '生成失败：参考 https://example.com/ref.png',
+      attempts: texts.map((outputText, index) => ({
+        attemptId: `attempt-${index}`,
+        fingerprint: 'f'.repeat(64),
+        state: 'succeeded' as const,
+        startedAt: run.startedAt,
+        completedAt: run.completedAt!,
+        durationMs: 1_000,
+        cached: false,
+        candidates: [],
+        outputText,
+      })),
+    }]
+
+    await store.saveRun(7, run)
+    const reloaded = await store.getRun(7, 'with-urls')
+    expect(reloaded?.nodes[0].attempts.map((attempt) => attempt.outputText)).toEqual(texts)
+    expect(reloaded?.nodes[0].errorMessage).toBe('生成失败：参考 https://example.com/ref.png')
+  })
+
+  it('round-trips cached text containing URLs without treating it as corrupt', async () => {
+    const { store } = fixture()
+    const outputText = '参考 https://example.com/素材?size=2K&名称=封面'
+    await store.storeCache(7, {
+      version: 1,
+      fingerprint: 'c'.repeat(64),
+      nodeKind: 'text',
+      outputText,
+      createdAt: '2026-08-13T00:00:00.000Z',
+      lastUsedAt: '2026-08-13T00:00:00.000Z',
+    })
+    await expect(store.resolveCache(7, 'c'.repeat(64))).resolves.toMatchObject({ outputText })
   })
 })

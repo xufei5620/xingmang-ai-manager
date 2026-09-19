@@ -1,6 +1,6 @@
 import os from 'node:os'
 import path from 'node:path'
-import type { ProviderId } from './catalog'
+import { providerConfigDirectoryNames, type ProviderId } from './catalog'
 
 export interface ProviderConfigRoots {
   userHome: string
@@ -32,7 +32,7 @@ export function resolveCodexHomeContext(options: ResolveCodexHomeContextOptions)
     ? selectedAbsolutePath(env.CODEX_HOME, 'CODEX_HOME')
     : selectedAbsolutePath(env.XINGMANG_CODEX_HOME_OVERRIDE, 'XINGMANG_CODEX_HOME_OVERRIDE')
       ?? selectedAbsolutePath(env.CODEX_HOME, 'CODEX_HOME')
-  const codexHome = selected ?? path.join(userHome, '.codex')
+  const codexHome = selected ?? path.join(userHome, providerConfigDirectoryNames.codex)
   return { userHome, codexHome, codexEnv: { ...env, CODEX_HOME: codexHome } }
 }
 
@@ -42,10 +42,10 @@ export function defaultProviderConfigRoots(
 ): ProviderConfigRoots {
   const resolvedUserHome = path.resolve(userHome)
   const codexHome = selectedAbsolutePath(env.CODEX_HOME, 'CODEX_HOME')
-    ?? path.join(resolvedUserHome, '.codex')
+    ?? path.join(resolvedUserHome, providerConfigDirectoryNames.codex)
   return { userHome: resolvedUserHome, codexHome }
 }
 
 export function providerConfigRoot(provider: ProviderId, roots: ProviderConfigRoots): string {
-  return provider === 'codex' ? roots.codexHome : path.join(roots.userHome, `.${provider}`)
+  return provider === 'codex' ? roots.codexHome : path.join(roots.userHome, providerConfigDirectoryNames[provider])
 }

@@ -131,6 +131,24 @@ describe('renderer tool source', () => {
     expect(snapshot).toEqual(before)
   })
 
+  it('redacts the local path a failed detection puts in the home tool row (R-S7b)', () => {
+    // status.detectionError is whatever describeProbeFailure got from the probe,
+    // and the home row prints it verbatim as the row subtitle.
+    const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
+    const status = { installed: true, version: '1.0.0', path: '/fixture' }
+    const failed = { ...status, detectionFailed: true, detectionError: "EPERM: operation not permitted, scandir 'C:\\Users\\yoyo\\AppData\\Roaming\\npm'" }
+    const rows = presentTools({ config: { providers }, platform: { codexDesktop: { launch: true } },
+      system: { clis: { claude: failed, codex: { ...status, detectionFailed: true, detectionError: null }, grok: status, gemini: status },
+        desktopApps: { codex: { ...status, appVersion: '1.0.0' } } },
+    } as unknown as ToolboxSnapshot, memoryStorage())
+    const claude = rows.find((row) => row.id === 'claude')
+    expect(claude?.error).toBe("EPERM: operation not permitted, scandir '本地配置文件")
+    expect(claude?.error).not.toContain('yoyo')
+    // 探测失败但主进程没给原因时,原来的中文兜底文案不变。
+    expect(rows.find((row) => row.id === 'codex')?.error).toBe('工具检测没有完成')
+    expect(rows.find((row) => row.id === 'grok')?.error).toBeNull()
+  })
+
   it('offers a desktop update only when the mirror has a newer package than the official feed alone claims', () => {
     const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
     const cli = { installed: true, version: '1.0.0', path: '/fixture', updateAvailable: true, latestVersion: '1.1.0' }

@@ -5,6 +5,8 @@ import { test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 const testDirectory = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(testDirectory, '..')
@@ -23,13 +25,24 @@ async function withFixture(run, { viewport = { width: 1100, height: 760 } } = {}
     headless: true,
     executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined,
   })
+  const pageErrors = createPageErrorCollector()
   try {
-    const page = await browser.newPage({ viewport })
+    const page = pageErrors.watch(await browser.newPage({ viewport }))
     await run(page, `http://127.0.0.1:${address.port}`)
+    pageErrors.assertNone()
   } finally {
     await browser.close()
     await server.close()
   }
+}
+
+// Every case in this suite opens its own cold page, so first paint waits on Vite
+// transforming the fixture's module graph on demand. Waiting for the mount on the
+// shared budget keeps that out of the cases' own timeouts, which stay at the
+// default so a real regression still fails fast.
+async function visit(page, url) {
+  await page.goto(url)
+  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
 }
 
 function parseRgb(value) {
@@ -55,7 +68,7 @@ function contrastRatio(foreground, background) {
 
 test('orders expose loading, retry a failed request, and render the returned order', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=orders-retry`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=orders-retry`)
     await assert.doesNotReject(() => page.getByRole('heading', { name: '正在读取订单' }).waitFor())
     await page.evaluate(() => window.releaseFirstOrderRequest())
     const retry = page.getByRole('button', { name: '重试' })
@@ -73,7 +86,7 @@ test('orders expose loading, retry a failed request, and render the returned ord
 
 test('redemption blocks duplicate submits, recovers after failure, and refreshes after success', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=redeem-retry`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=redeem-retry`)
     const input = page.getByPlaceholder('输入兑换码')
     const submit = page.getByRole('button', { name: '立即兑换' })
     await input.fill('FIRST-FAILS')
@@ -103,7 +116,7 @@ test('redemption blocks duplicate submits, recovers after failure, and refreshes
 
 test('top-up payment exits the waiting state when the payment window reports a timeout', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=topup`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=topup`)
     const submit = page.getByRole('button', { name: '确认充值' })
     await submit.waitFor()
     await assert.doesNotReject(() => submit.waitFor({ state: 'visible' }))
@@ -129,7 +142,7 @@ test('top-up payment exits the waiting state when the payment window reports a t
 
 test('top-up payment reports a manually closed payment window without cancelling the order', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=topup`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=topup`)
     const submit = page.getByRole('button', { name: '确认充值' })
     await submit.waitFor()
     await page.waitForFunction(() => {
@@ -155,7 +168,7 @@ test('top-up payment reports a manually closed payment window without cancelling
 
 test('profile save remains retryable after failure and reloads the accepted display name', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=profile-retry`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=profile-retry`)
     const input = page.getByLabel('显示名称')
     await input.waitFor()
     assert.equal(await input.inputValue(), '交互测试用户')
@@ -177,7 +190,7 @@ test('profile save remains retryable after failure and reloads the accepted disp
 
 test('security validates passwords and confirms every session revocation scope', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=security`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=security`)
     await page.locator('input[autocomplete="current-password"]').waitFor()
 
     await page.getByRole('button', { name: '确认修改' }).click()
@@ -227,7 +240,7 @@ test('security validates passwords and confirms every session revocation scope',
 
 test('local tutorial searches, recovers empty results, navigates internally, and opens support callbacks', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(baseUrl + '/e2e/account-commerce-fixture.html?scenario=tutorial')
+    await visit(page, baseUrl + '/e2e/account-commerce-fixture.html?scenario=tutorial')
     const search = page.getByRole('searchbox', { name: '搜索教程' })
     await search.fill('管理员 镜像')
     await page.getByRole('heading', { name: '自动安装与更新' }).waitFor()
@@ -260,7 +273,7 @@ test('local tutorial searches, recovers empty results, navigates internally, and
 
 test('usage logs support filters, advanced search, pagination, reset and keyboard-dismissed details', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=usage&theme=dark`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=usage&theme=dark`)
     await page.locator('[data-account-tab="usage"]').waitFor()
     assert.equal(await page.getByText('日志明细', { exact: true }).count(), 0)
     assert.equal((await page.locator('.account-usage-heading').innerText()).trim(), '43 条记录')
@@ -310,7 +323,7 @@ test('usage logs support filters, advanced search, pagination, reset and keyboar
 
 test('task logs support status filters, pagination and details', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=tasks`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=tasks`)
     await page.locator('[data-account-tab="tasks"]').waitFor()
     assert.equal((await page.locator('.account-task-heading').innerText()).trim(), '22 条记录')
     const firstTaskRow = page.locator('.account-task-table-row').first()
@@ -338,14 +351,14 @@ test('task logs support status filters, pagination and details', async () => {
 
 test('legacy account deep links map into the nine-tab workspace and preserve secondary destinations', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=orders`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=orders`)
     assert.equal(await page.getByRole('tab', { name: '我的订单', exact: true }).getAttribute('aria-selected'), 'true')
     await page.getByRole('tab', { name: '我的账号', exact: true }).click()
     assert.equal(await page.locator('.account-center-recharge-button').count(), 1)
     await page.locator('.account-center-recharge-button').click()
     assert.equal(await page.getByRole('tab', { name: '充值与订阅', exact: true }).getAttribute('aria-selected'), 'true')
     assert.equal(await page.getByRole('tab', { name: '余额充值', exact: true }).getAttribute('aria-selected'), 'true')
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=security`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=security`)
     assert.equal(await page.locator('[data-account-tab="overview"]').getAttribute('aria-current'), 'page')
     assert.equal(await page.getByRole('tab', { name: '修改密码', exact: true }).getAttribute('aria-selected'), 'true')
   })
@@ -353,7 +366,7 @@ test('legacy account deep links map into the nine-tab workspace and preserve sec
 
 test('nine account tabs activate manually and preserve drafts and loaded filter state', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=profile`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=profile`)
     const tabs = page.getByRole('tablist', { name: '个人中心分区' })
     assert.equal(await tabs.getByRole('tab').count(), 9)
     const overview = tabs.getByRole('tab', { name: '我的账号', exact: true })
@@ -406,7 +419,7 @@ test('nine account tabs activate manually and preserve drafts and loaded filter 
 
 test('login device errors wait for explicit retry and keep a recoverable device view', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=devices-retry`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=devices-retry`)
     await page.getByRole('alert').filter({ hasText: '设备服务暂时不可用' }).waitFor()
     assert.equal(await page.evaluate(() => window.accountCommerceHarness.sessionListCalls), 1)
     await page.getByRole('tab', { name: '我的账号', exact: true }).click()
@@ -420,7 +433,7 @@ test('login device errors wait for explicit retry and keep a recoverable device 
 
 test('sidebar keeps the full balance visible and uses stable collapsed icon slots', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(baseUrl + '/e2e/account-commerce-fixture.html?scenario=sidebar&theme=dark')
+    await visit(page, baseUrl + '/e2e/account-commerce-fixture.html?scenario=sidebar&theme=dark')
     const sidebar = page.locator('.sidebar')
     const balance = page.locator('.account-balance')
     await balance.waitFor()
@@ -612,7 +625,7 @@ test('sidebar keeps the full balance visible and uses stable collapsed icon slot
 test('StrictMode account panels finish their initial requests instead of staying on loading overlays', async () => {
   await withFixture(async (page, baseUrl) => {
     for (const section of ['dashboard', 'usage', 'tasks']) {
-      await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=${section}&strict=true`)
+      await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=${section}&strict=true`)
       await page.waitForFunction(() => !document.body.textContent?.includes('正在汇总模型调用数据')
         && !document.body.textContent?.includes('正在读取使用日志')
         && !document.body.textContent?.includes('正在读取任务日志'))
@@ -623,7 +636,7 @@ test('StrictMode account panels finish their initial requests instead of staying
 
 test('sidebar started collapsed keeps every primary icon inside the rail', async () => {
   await withFixture(async (page, baseUrl) => {
-    await page.goto(baseUrl + '/e2e/account-commerce-fixture.html?scenario=sidebar&theme=dark&collapsed=true&more=true')
+    await visit(page, baseUrl + '/e2e/account-commerce-fixture.html?scenario=sidebar&theme=dark&collapsed=true&more=true')
     await page.locator('.main-nav > .nav-group > .nav-item').first().waitFor({ state: 'visible' })
     const result = await page.evaluate(async () => {
       await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
@@ -686,7 +699,7 @@ test('visual fixture renders every account section and tutorial in both themes',
         url.searchParams.set('scenario', 'visual')
         url.searchParams.set('theme', theme)
         url.searchParams.set('section', section)
-        await page.goto(url.href)
+        await visit(page, url.href)
         assert.equal(await page.locator('html').getAttribute('data-theme'), theme)
         assert.equal(await page.locator('body').getAttribute('data-fixture-section'), section)
         await page.getByRole('heading', { name: heading, exact: true }).first().waitFor()
@@ -754,7 +767,7 @@ test('dark account form controls use readable adaptive surfaces in every interac
     await fs.mkdir(artifactDirectory, { recursive: true })
 
     for (const section of ['usage', 'tasks']) {
-      await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&theme=dark&section=${section}`)
+      await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&theme=dark&section=${section}`)
       const gridSelector = section === 'usage' ? '.account-usage-filter-grid' : '.account-task-filter-grid'
       const controls = page.locator(`${gridSelector} input, ${gridSelector} select`)
       await controls.first().waitFor()
@@ -803,11 +816,11 @@ test('dark account form controls use readable adaptive surfaces in every interac
       assert.ok(Math.max(...parseRgb(disabledBackground)) < 60, `${section} disabled 状态不应变成亮色背景`)
     }
 
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&theme=light&section=usage`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&theme=light&section=usage`)
     const lightBackground = await page.locator('.account-usage-filter-grid input').first().evaluate((element) => getComputedStyle(element).backgroundColor)
     assert.ok(Math.min(...parseRgb(lightBackground)) > 230, '亮色主题应继续使用柔和浅色输入面')
 
-    await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&theme=dark&section=usage`)
+    await visit(page, `${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&theme=dark&section=usage`)
     for (const selector of ['.account-usage-page-buttons button.active', '.account-center-recharge-button']) {
       const style = await page.locator(selector).first().evaluate((element) => {
         const computed = getComputedStyle(element)
@@ -846,7 +859,7 @@ test('Change-8 account navigation and log tables pass multi-viewport visual chec
         url.searchParams.set('scenario', 'visual')
         url.searchParams.set('theme', 'dark')
         url.searchParams.set('section', section)
-        await page.goto(url.href)
+        await visit(page, url.href)
         await page.locator('.account-center-workspace').waitFor()
         if (section === 'dashboard') {
           await page.locator('.account-dashboard-legend').getByText('gpt-5.6-sol', { exact: true }).first().waitFor()
@@ -855,6 +868,7 @@ test('Change-8 account navigation and log tables pass multi-viewport visual chec
           const workspace = document.querySelector('.account-center-workspace')
           const body = document.querySelector('.account-center-body')
           const navButtons = Array.from(document.querySelectorAll('.account-center-navigation nav button'))
+          const tableSection = targetSection === 'usage' || targetSection === 'tasks'
           const table = document.querySelector(targetSection === 'usage' ? '.account-usage-table-scroll' : '.account-task-table-scroll')
           const sticky = document.querySelector(targetSection === 'usage' ? '.account-usage-table-row > :last-child' : '.account-task-table-row > :last-child')
           if (!(workspace instanceof HTMLElement) || !(body instanceof HTMLElement)) return null
@@ -865,24 +879,28 @@ test('Change-8 account navigation and log tables pass multi-viewport visual chec
             documentOverflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth,
             documentOverflowY: document.documentElement.scrollHeight > document.documentElement.clientHeight,
             workspaceInsideViewport: workspace.getBoundingClientRect().right <= document.documentElement.clientWidth + 1,
-            navButtonsVisible: navButtons.every((button) => {
+            navButtonCount: navButtons.length,
+            navButtonsVisible: navButtons.length > 0 && navButtons.every((button) => {
               const rect = button.getBoundingClientRect()
               return rect.width > 0 && rect.height > 0
             }),
-            stickyVisible: tableRect && stickyRect
-              ? getComputedStyle(sticky).position === 'sticky'
+            // 只有两个表格分区有横向滚动的末列,其余分区报 null。表格分区里
+            // 选择器找不到表或末列,正是这条用例要抓的漂移,所以判 false 而不是放行。
+            stickyVisible: tableSection
+              ? Boolean(tableRect && stickyRect
+                && getComputedStyle(sticky).position === 'sticky'
                 && stickyRect.left >= tableRect.left - 1
-                && stickyRect.right <= tableRect.right + 1
-              : true,
-            bodyHasScrollableContent: body.scrollHeight >= body.clientHeight,
+                && stickyRect.right <= tableRect.right + 1)
+              : null,
           }
         }, section)
         assert.ok(metrics)
         assert.equal(metrics.documentOverflowX, false, `${viewport.width}x${viewport.height}/${section} 文档横向溢出`)
         assert.equal(metrics.documentOverflowY, false, `${viewport.width}x${viewport.height}/${section} 文档纵向溢出`)
         assert.equal(metrics.workspaceInsideViewport, true)
+        assert.ok(metrics.navButtonCount >= 4, `${viewport.width}x${viewport.height}/${section} 只找到 ${metrics.navButtonCount} 个账号导航按钮`)
         assert.equal(metrics.navButtonsVisible, true)
-        assert.equal(metrics.stickyVisible, true)
+        assert.equal(metrics.stickyVisible, section === 'usage' || section === 'tasks' ? true : null, `${viewport.width}x${viewport.height}/${section} 表格末列未固定在可视区内`)
         await page.screenshot({
           path: path.join(artifactDirectory, `${viewport.width}x${viewport.height}-${section}-dark.png`),
           fullPage: false,

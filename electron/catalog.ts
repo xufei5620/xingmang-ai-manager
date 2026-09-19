@@ -87,3 +87,14 @@ export const providerBaseUrls: Record<ProviderId, string> = {
 export function isProviderId(value: unknown): value is ProviderId {
   return typeof value === 'string' && providerIds.includes(value as ProviderId)
 }
+
+// 每个 CLI 在用户主目录下的配置目录名。主进程的 providerConfigRoot 与 v2
+// 渲染层的工具注册表都读这一张表,免得同一个目录在两侧各写一遍、加第五个
+// CLI 时只改了其中一处(审查总表 R-S11)。Codex 是唯一可被 CODEX_HOME 改写
+// 落点的工具,这里给出的仍是它的默认目录名。
+export const providerConfigDirectoryNames: Record<ProviderId, string> = {
+  claude: '.claude',
+  codex: '.codex',
+  grok: '.grok',
+  gemini: '.gemini',
+}
