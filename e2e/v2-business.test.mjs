@@ -813,3 +813,70 @@ test('a previously observed account task sends one scoped completion notificatio
     await page.close()
   }
 })
+
+test('an async task result is copied as a link instead of asking the host to open an upstream URL', async () => {
+  const page = await fixture('page=account&system=1&taskTransition=1')
+  try {
+    await page.getByRole('tab', { name: '异步任务', exact: true }).click()
+    await page.getByText('处理中 50%', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '刷新任务', exact: true }).click()
+    await page.getByText('已完成 100%', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '详情', exact: true }).click()
+    await page
+      .getByText('https://cdn.upstream.example.test/fixture-task.mp4', {
+        exact: true,
+      })
+      .waitFor()
+    assert.equal(
+      await page.getByRole('button', { name: '查看结果', exact: true }).count(),
+      0,
+    )
+    await page
+      .getByRole('button', { name: '复制结果链接', exact: true })
+      .click()
+    await page.getByText('结果链接已复制', { exact: true }).waitFor()
+    const recorded = await calls(page)
+    assert.equal(
+      recorded.some((call) => call.name === 'openExternal'),
+      false,
+    )
+    assert.deepEqual(
+      recorded
+        .filter((call) => call.name === 'copy-clipboard')
+        .map((call) => call.args),
+      ['https://cdn.upstream.example.test/fixture-task.mp4'],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('cancelling the password dialog drops the typed secrets and Esc confirms before discarding them', async () => {
+  const page = await fixture('page=account&system=1')
+  try {
+    await page.getByRole('button', { name: '修改密码', exact: true }).click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByLabel('当前密码', { exact: true }).fill('old-secret')
+    await dialog.getByLabel('新密码', { exact: true }).fill('new-secret-value')
+    await page.keyboard.press('Escape')
+    await dialog.getByText('要放弃未保存的修改吗？', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '继续编辑', exact: true }).click()
+    assert.equal(
+      await dialog.getByLabel('当前密码', { exact: true }).inputValue(),
+      'old-secret',
+    )
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '修改密码', exact: true }).click()
+    const reopened = page.getByRole('dialog')
+    assert.deepEqual(
+      await Promise.all([
+        reopened.getByLabel('当前密码', { exact: true }).inputValue(),
+        reopened.getByLabel('新密码', { exact: true }).inputValue(),
+        reopened.getByLabel('确认新密码', { exact: true }).inputValue(),
+      ]),
+      ['', '', ''],
+    )
+  } finally {
+    await page.close()
+  }
+})
