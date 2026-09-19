@@ -2,7 +2,8 @@ import { cliCatalog, type ProviderId } from './catalog'
 import { defaultCliModels } from './cli-model-defaults'
 import { redactCommandText } from './command-runner'
 import { readBoundedResponseText } from './bounded-response'
-import type { NativeConfigInspection } from './config-files'
+import { geminiCliCompatibleModel, type NativeConfigInspection } from './config-files'
+import { parseModelIds } from './models'
 import type { RelaySite } from './relay-sites'
 
 /**
@@ -11,8 +12,14 @@ import type { RelaySite } from './relay-sites'
  * `network` question, which is why a user whose key was revoked still sees
  * 「已连通」 and ends up in a support ticket. Every other member here is a
  * failure that check cannot see.
+ *
+ * `unconfigured` is deliberately separate from `config`: a tool the user has
+ * simply not set up yet is not a fault, and showing it as one next to three
+ * working tools reads as "三个坏了" (功能 N2 扩展). `config` stays for a
+ * config file that exists and is wrong.
  */
 export type ConnectionCheckLayer =
+  | 'unconfigured'
   | 'config'
   | 'network'
   | 'credential'
@@ -23,6 +30,7 @@ export type ConnectionCheckLayer =
   | 'unknown'
 
 export const connectionCheckLayerLabels: Readonly<Record<ConnectionCheckLayer, string>> = {
+  unconfigured: '未配置',
   config: '本地配置',
   network: '网络',
   credential: '密钥',
@@ -32,6 +40,30 @@ export const connectionCheckLayerLabels: Readonly<Record<ConnectionCheckLayer, s
   protocol: '协议与端点',
   unknown: '未知',
 }
+
+/**
+ * The wire shape a probe speaks.
+ *
+ * `anthropic-messages` is Claude Code's: one `max_tokens: 1` generation,
+ * unchanged since #143 so that tool's behaviour is exactly what it was.
+ *
+ * `openai-models` is the read-only model catalogue the relay exposes at
+ * `/v1/models`, and it is what the other three CLIs are probed with. It
+ * costs nothing on the account (no generation is billed), and because the
+ * relay filters that list by the token's group it answers key -> group ->
+ * model in one request, which a generation only answers by spending tokens.
+ *
+ * Why Gemini is probed here rather than through its own `/v1beta` shape:
+ * the only relay endpoint whose behaviour this repository has actually
+ * verified for listing is `/v1/models` (system-service.ts fetches it to
+ * populate the model picker). A relay token is protocol-agnostic -- the
+ * same token authorizes both shapes -- so the catalogue answers the same
+ * questions, whereas guessing at `/v1beta/models` risks a 404 that would be
+ * reported to the user as 「服务上没有这个接口」 when the endpoint simply
+ * is not implemented. Do not switch it over on the strength of the upstream
+ * Google API alone (CLAUDE.md T12: endpoint facts come from measurement).
+ */
+export type ConnectionProbeProtocol = 'anthropic-messages' | 'openai-models'
 
 /**
  * Renderer-facing outcome. Deliberately carries no API key and no raw
@@ -55,6 +87,11 @@ export interface ConnectionCheckResult {
   endpoint: string | null
   /** 探测用的模型名，来自该工具配置文件里真正写着的那个。 */
   model: string | null
+  /**
+   * 这次自检到底做了什么，一句中文。四个工具的探测形态不同（生成一次 vs
+   * 核对模型清单），结论页要如实说出来，而不是让渲染层照 provider 猜。
+   */
+  evidence?: string
   /** 上游返回的原文，已脱敏截断；没有可展示内容时为 null。 */
   detail: string | null
   status: number | null
@@ -66,20 +103,26 @@ export interface ConnectionCheckResult {
 export interface ConnectionProbePlan {
   provider: ProviderId
   siteId: string
-  /** 该 CLI 真正说的那门协议。今天只有 Claude Code 一门，其余留扩展点。 */
-  protocol: 'anthropic-messages'
+  protocol: ConnectionProbeProtocol
+  method: 'GET' | 'POST'
   url: string
   origin: string
   headers: Record<string, string>
-  body: Record<string, unknown>
+  /** GET 探测没有请求体。 */
+  body: Record<string, unknown> | null
+  /** 该工具启动时真正会发给服务的模型名。 */
   model: string
   apiKey: string
 }
+
+/** classifyConnectionResponse 需要知道的探测身份，不含 Key。 */
+export type ConnectionProbeIdentity = Pick<ConnectionProbePlan, 'provider' | 'protocol' | 'model'>
 
 interface LayerOutcome {
   layer: ConnectionCheckLayer
   summary: string
   nextStep: string
+  evidence?: string
 }
 
 export type ConnectionProbeBuild =
@@ -112,19 +155,76 @@ const controlCharacterPattern = new RegExp(
   'g',
 )
 
-/**
- * Providers whose wire protocol the probe knows how to speak. Codex, Gemini
- * and Grok each need their own request shape (and Codex additionally needs
- * the responses/chat-completions choice resolved), so they stay out until
- * that shape is written and tested rather than being probed with a request
- * they would reject for the wrong reason.
- */
-export function connectionCheckSupported(provider: ProviderId): boolean {
-  return provider === 'claude'
+interface ProbeShape {
+  protocol: ConnectionProbeProtocol
+  method: 'GET' | 'POST'
+  /** 相对该工具配置里那个 base URL 的路径。 */
+  path: string
+  headers: (apiKey: string) => Record<string, string>
+  body: (model: string) => Record<string, unknown> | null
 }
 
-export function connectionCheckUnsupportedMessage(provider: ProviderId): string {
-  return `${cliCatalog[provider].name} 的连接自检还在开发中，目前只支持 ${cliCatalog.claude.name}`
+/**
+ * 只读的模型清单探测。Codex 与 Grok 的 base URL 自带 `/v1` 后缀、Gemini 的
+ * 是裸域（catalog.ts 老板拍板 2026-08-12），所以路径由调用方给全，不在这里
+ * 猜后缀。
+ */
+function modelCatalogShape(path: string): ProbeShape {
+  return {
+    protocol: 'openai-models',
+    method: 'GET',
+    path,
+    headers: (apiKey) => ({
+      authorization: `Bearer ${apiKey}`,
+      accept: 'application/json',
+    }),
+    body: () => null,
+  }
+}
+
+/**
+ * 每个 CLI 的探测形态。**无 default 分支 + 非 void 返回类型 = 穷尽性保障**
+ * （CLAUDE.md T2）：加第五个 CLI 时漏在这里是编译错，不是运行期静默套用别
+ * 家的请求形状去撞一个错的结论。
+ */
+function probeShape(provider: ProviderId): ProbeShape {
+  switch (provider) {
+    case 'claude':
+      return {
+        protocol: 'anthropic-messages',
+        method: 'POST',
+        path: 'v1/messages',
+        headers: (apiKey) => ({
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json',
+          accept: 'application/json',
+        }),
+        // The cheapest request the Messages API accepts: one token out. The
+        // point is to exercise key -> group -> model -> protocol, not to get a
+        // useful answer back.
+        body: (model) => ({
+          model,
+          max_tokens: 1,
+          messages: [{ role: 'user', content: 'ping' }],
+        }),
+      }
+    case 'codex':
+      return modelCatalogShape('models')
+    case 'grok':
+      return modelCatalogShape('models')
+    case 'gemini':
+      return modelCatalogShape('v1/models')
+  }
+}
+
+/**
+ * 该工具启动时真正发给服务的模型名。Gemini CLI 0.59 会把 `-flash` 结尾的名字
+ * 重写成内置别名，写配置时已按 geminiCliCompatibleModel 绕开；自检要核对的是
+ * CLI 真正会用的那一个，否则用户改了档位却被告知「模型可用」。
+ */
+function wireModel(provider: ProviderId, model: string): string {
+  return provider === 'gemini' ? geminiCliCompatibleModel(model) : model
 }
 
 function joinRelayPath(baseUrl: string, relativePath: string): string {
@@ -155,8 +255,8 @@ function blocked(outcome: LayerOutcome, model: string | null = null): Connection
 
 /**
  * Turns "what this CLI's config file actually says" into a probe, or into the
- * config-layer answer that makes a request pointless. Pure: every input is a
- * plain value, so each blocked branch is one assertion in the test file.
+ * answer that makes a request pointless. Pure: every input is a plain value,
+ * so each blocked branch is one assertion in the test file.
  */
 export function buildConnectionProbe(
   provider: ProviderId,
@@ -164,31 +264,25 @@ export function buildConnectionProbe(
   inspection: NativeConfigInspection,
 ): ConnectionProbeBuild {
   const name = cliCatalog[provider].name
-  if (!connectionCheckSupported(provider)) {
-    return blocked({
-      layer: 'config',
-      summary: connectionCheckUnsupportedMessage(provider),
-      nextStep: `请先用${cliCatalog.claude.name}自检确认账号和网络，其余工具的自检稍后开放`,
-    })
-  }
+  // 「还没装/还没配」不是故障：结果页把它显示成未配置，不计进失败里。
   if (!inspection.exists) {
     return blocked({
-      layer: 'config',
-      summary: `还没有找到 ${name} 的配置文件`,
-      nextStep: '先在首页给这个工具写入星芒 Key，再回来自检',
+      layer: 'unconfigured',
+      summary: `还没有给 ${name} 写入星芒配置`,
+      nextStep: '在首页给这个工具写入星芒 Key，写完再回来自检',
     })
   }
   if (!inspection.hasApiKey) {
     return blocked({
-      layer: 'config',
-      summary: `${name} 的配置里没有 API Key`,
+      layer: 'unconfigured',
+      summary: `${name} 的配置里还没有 API Key`,
       nextStep: '先在首页登录星芒账号并写入 Key，再回来自检',
     })
   }
   if (!inspection.actualBaseUrl) {
     return blocked({
-      layer: 'config',
-      summary: `${name} 的配置里没有服务地址`,
+      layer: 'unconfigured',
+      summary: `${name} 的配置里还没有服务地址`,
       nextStep: '在首页重新写入一次配置，让工具重新指向星芒服务',
     })
   }
@@ -213,10 +307,11 @@ export function buildConnectionProbe(
       nextStep: '自检只会向星芒服务发请求。请先在首页把这个工具重新写入一次星芒 Key',
     })
   }
-  const model = inspection.model || defaultCliModels[provider]
+  const model = wireModel(provider, inspection.model || defaultCliModels[provider])
+  const shape = probeShape(provider)
   let url: URL
   try {
-    url = validateProbeUrl(joinRelayPath(inspection.actualBaseUrl, 'v1/messages'))
+    url = validateProbeUrl(joinRelayPath(inspection.actualBaseUrl, shape.path))
   } catch (error) {
     return blocked({
       layer: 'config',
@@ -229,23 +324,12 @@ export function buildConnectionProbe(
     plan: {
       provider,
       siteId: site.id,
-      protocol: 'anthropic-messages',
+      protocol: shape.protocol,
+      method: shape.method,
       url: url.href,
       origin: url.origin,
-      headers: {
-        'x-api-key': inspection.apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-        accept: 'application/json',
-      },
-      // The cheapest request the Messages API accepts: one token out. The
-      // point is to exercise key -> group -> model -> protocol, not to get a
-      // useful answer back.
-      body: {
-        model,
-        max_tokens: 1,
-        messages: [{ role: 'user', content: 'ping' }],
-      },
+      headers: shape.headers(inspection.apiKey),
+      body: shape.body(model),
       model,
       apiKey: inspection.apiKey,
     },
@@ -292,15 +376,18 @@ export function extractUpstreamMessage(payload: unknown): string {
  * is consulted before status where new-api overloads a status (403 is both
  * "key disabled" and "out of quota"; 404 is both "model gone" and "wrong
  * endpoint"), because the status alone would send the user to the wrong page.
+ * Only the success branch is protocol-specific: every failure the relay
+ * reports carries the same envelope whichever endpoint produced it, which is
+ * why all four tools share one attribution table.
  */
 export function classifyConnectionResponse(
-  provider: ProviderId,
+  probe: ConnectionProbeIdentity,
   status: number,
   message: string,
   payload: unknown,
-  model: string,
 ): LayerOutcome & { ok: boolean } {
-  const name = cliCatalog[provider].name
+  const name = cliCatalog[probe.provider].name
+  const model = probe.model
   const lowered = message.toLowerCase()
   const hasQuotaHint = includesAny(lowered, quotaHints)
   const hasGroupHint = includesAny(lowered, groupHints)
@@ -308,20 +395,9 @@ export function classifyConnectionResponse(
   const hasCredentialHint = includesAny(lowered, credentialHints)
 
   if (status >= 200 && status < 300 && !message) {
-    if (!looksLikeMessagesResponse(payload)) {
-      return {
-        ok: false,
-        layer: 'protocol',
-        summary: `服务返回了 HTTP ${status}，但内容不是 ${name} 能识别的 API 响应`,
-        nextStep: '多半是服务地址指到了网页而不是 API。在首页重新写入一次配置后再试',
-      }
-    }
-    return {
-      ok: true,
-      layer: 'network',
-      summary: `连接正常，${model} 可以直接使用`,
-      nextStep: '无需处理',
-    }
+    return probe.protocol === 'anthropic-messages'
+      ? classifyGenerationSuccess(name, status, payload, model)
+      : classifyModelCatalogSuccess(name, status, payload, model)
   }
   if (status === 401) {
     return {
@@ -350,12 +426,7 @@ export function classifyConnectionResponse(
     }
   }
   if (status === 503 || (hasGroupHint && !hasModelHint)) {
-    return {
-      ok: false,
-      layer: 'group',
-      summary: `当前账号分组下没有可用渠道（HTTP ${status}）`,
-      nextStep: '到「账号」页确认这个工具对应的套餐仍在有效期内，再点一次「写入 Key」让客户端重新签发',
-    }
+    return noAvailableChannel(status)
   }
   if (hasModelHint) {
     return {
@@ -398,6 +469,66 @@ export function classifyConnectionResponse(
   }
 }
 
+function classifyGenerationSuccess(
+  name: string,
+  status: number,
+  payload: unknown,
+  model: string,
+): LayerOutcome & { ok: boolean } {
+  if (!looksLikeMessagesResponse(payload)) {
+    return {
+      ok: false,
+      layer: 'protocol',
+      summary: `服务返回了 HTTP ${status}，但内容不是 ${name} 能识别的 API 响应`,
+      nextStep: '多半是服务地址指到了网页而不是 API。在首页重新写入一次配置后再试',
+    }
+  }
+  return {
+    ok: true,
+    layer: 'network',
+    summary: `连接正常，${model} 可以直接使用`,
+    nextStep: '无需处理',
+    evidence: `已用 ${model} 发过一次最小请求`,
+  }
+}
+
+/**
+ * 模型清单是按令牌所属分组过滤后的，所以「清单空」与「清单里没有这个模型」
+ * 分别就是分组层和模型层的答案——不必为了问出这两层而去花一次生成的钱。
+ */
+function classifyModelCatalogSuccess(
+  name: string,
+  status: number,
+  payload: unknown,
+  model: string,
+): LayerOutcome & { ok: boolean } {
+  if (!looksLikeModelCatalog(payload)) {
+    return {
+      ok: false,
+      layer: 'protocol',
+      summary: `服务返回了 HTTP ${status}，但内容不是 ${name} 能识别的模型清单`,
+      nextStep: '多半是服务地址指到了网页而不是 API。在首页重新写入一次配置后再试',
+    }
+  }
+  const models = parseModelIds(payload)
+  if (models.length === 0) return noAvailableChannel(status)
+  if (!models.includes(model)) {
+    return {
+      ok: false,
+      layer: 'model',
+      summary: `当前账号可用的 ${models.length} 个模型里没有 ${model}`,
+      nextStep: '在首页把这个工具的模型改成列表里仍然可用的一个，再自检一次',
+    }
+  }
+  return {
+    ok: true,
+    layer: 'network',
+    summary: `连接正常，${model} 可以直接使用`,
+    nextStep: '无需处理',
+    evidence: `已核对当前账号的可用模型清单，${model} 在其中`,
+  }
+}
+
 function outOfQuota(status: number): LayerOutcome & { ok: boolean } {
   return {
     ok: false,
@@ -407,10 +538,30 @@ function outOfQuota(status: number): LayerOutcome & { ok: boolean } {
   }
 }
 
+function noAvailableChannel(status: number): LayerOutcome & { ok: boolean } {
+  return {
+    ok: false,
+    layer: 'group',
+    summary: `当前账号分组下没有可用渠道（HTTP ${status}）`,
+    nextStep: '到「账号」页确认这个工具对应的套餐仍在有效期内，再点一次「写入 Key」让客户端重新签发',
+  }
+}
+
 function looksLikeMessagesResponse(payload: unknown): boolean {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return false
   const record = payload as Record<string, unknown>
   return record.type === 'message' || Array.isArray(record.content) || typeof record.stop_reason === 'string'
+}
+
+/**
+ * parseModelIds 对「不是清单」和「清单是空的」都回空数组，而那是两个不同的
+ * 结论（协议层 vs 分组层），所以形状要先单独判一次。
+ */
+function looksLikeModelCatalog(payload: unknown): boolean {
+  if (Array.isArray(payload)) return true
+  if (!payload || typeof payload !== 'object') return false
+  const record = payload as Record<string, unknown>
+  return Array.isArray(record.data) || Array.isArray(record.models)
 }
 
 /**
@@ -458,6 +609,7 @@ export async function runConnectionCheck(
     layer: outcome.layer,
     summary: outcome.summary,
     nextStep: outcome.nextStep,
+    ...(outcome.evidence ? { evidence: outcome.evidence } : {}),
     endpoint: extras.endpoint ?? null,
     model: extras.model ?? null,
     detail: extras.detail ?? null,
@@ -484,9 +636,9 @@ export async function runConnectionCheck(
   timeout.unref?.()
   try {
     const response = await fetchImpl(plan.url, {
-      method: 'POST',
+      method: plan.method,
       headers: plan.headers,
-      body: JSON.stringify(plan.body),
+      ...(plan.body ? { body: JSON.stringify(plan.body) } : {}),
       credentials: 'omit',
       redirect: 'manual',
       signal: controller.signal,
@@ -547,7 +699,7 @@ export async function runConnectionCheck(
       }
     }
     const message = extractUpstreamMessage(payload)
-    const outcome = classifyConnectionResponse(provider, response.status, message, payload, plan.model)
+    const outcome = classifyConnectionResponse(plan, response.status, message, payload)
     const detail = sanitizeUpstreamDetail(message || (payload === null ? bodyText : ''), [plan.apiKey])
     return finish(outcome, {
       endpoint: plan.url,
