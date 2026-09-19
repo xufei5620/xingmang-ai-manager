@@ -238,6 +238,48 @@ Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确
 
 镜像和官方清单查询失败时，客户端会分别保留具体错误用于诊断；下载地址固定在源码和测试中，避免运行环境把管理员安装流程重定向到未知主机。
 
+## 5.5 在 GitHub 上完成发布：`publish-release` 工作流（Windows）
+
+上面第 5 节那套手工步骤，Windows 侧已经可以整段在 Actions 上跑完。macOS 仍按第 5 节在发布机上做，原因见文末。
+
+**用法**：Actions → `publish-release` → Run workflow，`Use workflow from` 选 `main`，`要发布的版本号` 填 `package.json` 里的那一个（填错直接拒，不会开始构建）。
+
+**它做的事，按顺序**：
+
+1. 在 Windows runner 上现场准备私有加速资源（`scripts/prepare-acceleration-bundle.cjs`，见 [`docs/CI-PACKAGING.md`](CI-PACKAGING.md) 第 4 节），走 `release:build:unsigned` 的完整发布门禁出包。
+2. **停下来等你审批。** 这一步就是本手册反复要求的「产品所有者针对当前版本的明确发布授权」：上传那一段跑在 `release` 环境里，该环境配了 required reviewers，你按下 Approve 批准的正是这一次运行、这一个版本。在那之前线上一个字节都没动。
+3. 传安装包与 `.blockmap` → 从 `updatesnew.shenfengwl.fun` 把它们下载回来逐字节比对 → **最后**才覆盖 `latest.yml`。顺序由 `scripts/publish-workflow-config.test.cjs` 钉住，任何人改乱都会在 CI 上红。
+4. 跑 `npm run update:verify-feed -- --platform=windows` 端到端复核。
+5. 给本次实际出包的那个 commit 打附注 tag 并推送，用 `release-notes.md` 里这一版那一节建 GitHub Release。
+
+**第 6 步仍然是你的**：用旧版本实际验收一次「预检 → 下载校验 → 重启安装」。工作流不做这一步，也做不了。
+
+### `release` 环境必须先配好
+
+**这不是加固，是承重墙。** 环境不存在时 GitHub 会在首次运行时自动创建一个同名环境，而自动创建出来的环境**没有任何保护规则**——审批那一步会被直接跳过，凭据也会对任意分支可见（`workflow_dispatch` 允许指定任意 ref）。
+
+去仓库 Settings → Environments 建 `release`，配上：
+
+- **Required reviewers**：产品所有者本人；
+- **Deployment branches**：限制为 `main`。
+
+然后把这四个 secret 加到**这个环境里**（不要加到仓库级）：
+
+| Secret | 是什么 |
+|---|---|
+| `R2_ACCOUNT_ID` | Cloudflare 账号 ID，用来拼 S3 endpoint |
+| `R2_BUCKET` | 更新桶名，当前是 `xingmang-updates-new` |
+| `R2_ACCESS_KEY_ID` | R2 API token 的 Access Key ID |
+| `R2_SECRET_ACCESS_KEY` | 对应的 Secret Access Key |
+
+**这对凭据的权限只给 `xingmang-manager/` 前缀的写入**，不要给整桶、不要给删除权限。一个只能往这个前缀写的 token，最坏情况是覆盖更新文件；给了删除权限，最坏情况是整桶没了。
+
+缺任何一个，工作流会在上传之前就失败并报出缺的名字，不会跑到一半。
+
+### macOS 为什么还没接进来
+
+缺的是发布用自签证书**连私钥导出的 `.p12`**。CI 现在能做的 macOS 签名是 runner 现场生成的一次性身份（`--ci-temporary-signing`），那种包绝不能进更新源：electron-updater 认签名身份，老用户的机器不认它会拒绝更新，新装用户拿到的又是一个没人认得的发布者。把 `.p12`（base64）、它的密码和证书 SHA-256 指纹存进 `release` 环境之后，再补 macOS 作业。
+
 ## 6. 客户端更新行为
 
 - 正式包默认在启动页检查一次更新；用户可在设置中关闭该启动预检。

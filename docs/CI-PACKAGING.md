@@ -109,22 +109,45 @@ node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$RU
 
 ---
 
-## 5. 方案（待拍板）：把整条发版搬到 GitHub
+## 5. 把整条发版搬到 GitHub
 
-目标是把现在要在自己电脑上做的这几步搬上去：汇总变更日志、改版本号、出包、传 R2、打 tag、发 GitHub Release。**装到真机上点一遍验收这一步搬不走**，还是得自己做。
+要搬的是这几步：汇总变更日志、改版本号、出包、传 R2、打 tag、发 GitHub Release。**装到真机上点一遍验收这一步搬不走**，还是得自己做。
 
-### 5.1 拆成三段
+### 5.1 现在是怎么分段的
 
-**第一段：版本收口（PR）**
+**第一段：版本收口（PR）** —— 已在做。
 一个 PR 做完 `npm run changelog:collect`、两份日志的标题改成版本号、`package.json` 改版本号。`release-notes.md` 首行必须等于 `package.json` 版本，这条已经有门禁。合进 main 就是「这一版定了」。
 
-**第二段：出正式包（workflow_dispatch，跑在 `release` 环境）**
-输入一个 `confirm_version`，与 `package.json` 不一致就拒（release-build.yml 已有这段，照抄）。跑完整发布门禁出 Windows 和 macOS 两份包，带上第 4 节的加速线路和 4.5 的 macOS 签名。产物只上传 Actions artifact，**不传任何地方**。
+**第二段：装机验收** —— 就是第 1 节的 `package-for-testing`，产物只躺在 artifact 里。
 
-**第三段：发布（workflow_dispatch，跑在 `release` 环境，要人工审批）**
-拿第二段的产物，按 `docs/RELEASING.md` 的顺序传 R2：**先安装包和 blockmap，最后才覆盖 `latest.yml` / `latest-mac.yml`**；反了的话用户会在文件还没传完时就被告知有新版本。传完打 tag、建 GitHub Release。
+**第三段：正式发布** —— `publish-release` 工作流，**Windows 已实现**。
+填一个 `confirm_version`（与 `package.json` 不一致就拒），跑完整发布门禁出带加速线路的安装包，然后停下来等审批；批准之后按顺序传 R2、复核更新源、打 tag、建 GitHub Release。
 
-三段分开而不是一条龙，是因为第三段之前必须插进「在真机上装一遍」这个人工环节。
+三段分开而不是一条龙，正是因为第二段和第三段之间必须插进「在真机上装一遍」这个人工环节。
+
+### 5.2 那道「明确发布授权」去哪了
+
+`docs/RELEASING.md` 一直要求：上传文件、改 R2、切换线上 `latest.yml`，都必须拿到产品所有者针对**当前这一版**的明确授权。自动化不能把这条抹掉。
+
+实现方式是：上传那一段跑在 `release` 环境里，而 `release` 环境配了 required reviewers。工作流会停在那里等你按 Approve，**你批的就是这一次运行、这一个版本**。在那之前，产物只在 artifact 里，线上一个字节都没动。
+
+所以 `release` 环境的 required reviewers 是承重墙。环境不存在时 GitHub 会自动建一个同名的、**没有任何保护规则**的环境，那会让上面这段话变成空话——必须去仓库 Settings 里手工建好，配上 required reviewers，并把 deployment branches 限制为 `main`。
+
+### 5.3 上传顺序
+
+`latest.yml` 是客户端判断「有没有新版本」的清单。它一旦先落地，用户会在安装包还没传完时就被告知有新版本，点下载拿到 404。工作流里固定为三步，顺序由 `scripts/publish-workflow-config.test.cjs` 钉住：
+
+1. 传安装包与 `.blockmap`；
+2. 从客户会用的那个地址把它们下载回来，逐字节比对；
+3. 这时候才覆盖 `latest.yml`，随后跑一次 `update:verify-feed` 端到端复核。
+
+第 2 步失败就停在覆盖清单之前，线上仍是旧版本，可以直接放弃这次运行。
+
+### 5.4 macOS 还差什么
+
+`publish-release` 目前只发 Windows。macOS 缺的是**发布用自签证书连私钥导出的 `.p12`**（见 4.5）。CI 现在能做的 macOS 签名是 runner 现场生成的一次性身份，那种包绝不能进更新源：electron-updater 认签名身份，老用户的机器不认它会拒绝更新，新装用户拿到的又是一个没人认得的发布者。
+
+在 `.p12` 进 `release` 环境之前，macOS 那一份仍然要在自己的 Mac 上出。
 
 ### 5.2 要准备的 secret
 
