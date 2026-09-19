@@ -396,6 +396,8 @@ describe('field-wise settings updates (①栏11)', () => {
     const filePath = temporarySettingsPath()
     fs.writeFileSync(filePath, JSON.stringify({ ...settings(), alwaysInstallLatestCli: 'yes' }), 'utf8')
     expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
+  })
+
   it('keeps the Codex Desktop Chinese runtime patch unanswered until the user answers it', () => {
     const base = settings()
 

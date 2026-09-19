@@ -74,6 +74,7 @@ export interface AppSettings {
    * 没有名单的工具无论这个开关如何都装 latest。
    */
   alwaysInstallLatestCli?: boolean
+  /**
    * Consent for the Codex Desktop Chinese runtime patch (E-S3). That patch
    * needs a loopback CDP port which stays open for the whole Codex session and
    * accepts any local client, so consent must never be inferred from
