@@ -105,6 +105,25 @@ test('Sub2API usage submits calendar dates, IDs and timezone with unsupported fi
   } finally { await page.close() }
 })
 
+test('the usage dashboard splits spending across the tools that have a managed key', async () => {
+  const page = await fixture('page=account&managedKeys=1')
+  try {
+    await page.getByRole('tab', { name: '用量看板', exact: true }).click()
+    const card = page.getByTestId('tool-usage')
+    await card.waitFor()
+    await card.getByText('当前账号累计已用 $8.00，其中 Claude Code 最多（75%）。', { exact: true }).waitFor()
+    const rows = card.locator('tbody tr')
+    assert.equal(await rows.count(), 4)
+    assert.match(await rows.nth(0).innerText(), /Claude Code\t?\s*\$6\.00\s*75%\s*\$18\.00\s*\$12\.00/)
+    assert.match(await rows.nth(1).innerText(), /Codex CLI\s*\$2\.00\s*25%\s*不限额\s*不限额/)
+    for (const index of [2, 3]) {
+      assert.match(await rows.nth(index).innerText(), /未启用/)
+      assert.equal(/\$/.test(await rows.nth(index).innerText()), false)
+    }
+    assert.equal(await card.getByText(/solov|new-api|sub2api/i).count(), 0)
+  } finally { await page.close() }
+})
+
 test('account views distinguish summary-only, failed reads and valid empty results', async () => {
   for (const [query, tab, expected, absent] of [
     ['sub2apiReliability=1', '用量看板', '仅提供累计汇总', '这个时间段还没有用量'],

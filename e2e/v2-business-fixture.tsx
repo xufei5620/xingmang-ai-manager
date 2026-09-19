@@ -173,6 +173,14 @@ const key = {
   expiredAt: null,
   accessedAt: time,
 }
+// 「按工具分账」按托管 Key 的固定名称认工具，夹具照搬真实命名：一把有上限、
+// 一把不限额，另外两个工具还没签发过，这样四种格子在一张表里都能看到。
+const managedKeys = query.has('managedKeys')
+  ? [
+      { ...key, id: 11, name: 'xingmang-desktop-claude', group: 'Claude-MAX订阅', unlimitedQuota: false, remainQuota: 1200, usedQuota: 600 },
+      { ...key, id: 12, name: 'xingmang-desktop-codex', group: 'GPT-中转/订阅', unlimitedQuota: true, remainQuota: 0, usedQuota: 200 },
+    ]
+  : null
 let activeUserId = 7
 let taskReads = 0
 let detailReads = 0
@@ -330,8 +338,8 @@ const apiMethods = {
   getAccountKeys: async () => ({
     page: 1,
     pageSize: 20,
-    total: empty ? 0 : 1,
-    keys: empty ? [] : [key],
+    total: empty ? 0 : managedKeys ? managedKeys.length : 1,
+    keys: empty ? [] : managedKeys ?? [key],
   }),
   getAccountUsableGroups: async () => {
     window.keyGroupsHarness.requests++
