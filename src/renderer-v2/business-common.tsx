@@ -90,6 +90,12 @@ export const errorMessage = (error: unknown, fallback = '操作没有成功，�
   const safe = userFacingErrorMessage(error)
   if (/[\u3400-\u9fff]/.test(safe)) return safe
   if (/401|unauthorized/i.test(safe)) return `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
+  // 限流与超时是两回事：超时让人去查网络，限流只需要等几秒。没有这条，new-api 的英文
+  // 限流原文会掉进最后的通用兜底，把「稍等几秒」说成「请重试或查看反馈日志」。
+  // 只认 HTTP 429 与明确的限流措辞，不认裸的 429，避免把额度数字之类误判成限流。
+  if (/HTTP\s*429|too\s*many\s*requests|rate[\s_-]?limit/i.test(safe)) {
+    return `${errors.tooManyRequests.title}，${errors.tooManyRequests.body}。`
+  }
   if (/timeout|ENOTFOUND|ECONN|fetch/i.test(safe)) return `${errors.timeout.title}，请检查网络后重试。`
   return fallback
 }
@@ -138,10 +144,10 @@ export function useOperation() {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const lock = useRef(false)
-  const execute = async (
+  const execute = async <T,>(
     name: string,
-    action: () => Promise<unknown>,
-    success = '操作已完成',
+    action: () => Promise<T>,
+    success: string | ((result: T) => string | null) = '操作已完成',
   ) => {
     if (lock.current) return false
     lock.current = true
@@ -150,8 +156,12 @@ export function useOperation() {
     setError('')
     setMessage('')
     try {
-      await action()
-      setMessage(success)
+      const result = await action()
+      // A native save dialog the user dismisses resolves with null instead of
+      // throwing, so a resolver may decline the success line rather than let the
+      // page claim an export that never happened.
+      const notice = typeof success === 'function' ? success(result) : success
+      if (notice) setMessage(notice)
       return true
     } catch (cause) {
       setError(errorMessage(cause))

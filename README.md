@@ -2,7 +2,7 @@
 
 面向 Windows 与 macOS 的 Electron 桌面管理工具，用于检测 Node.js、npm、Python 与 AI CLI 环境，配置星芒 AI，并集中管理 Codex 会话、MCP、Skills、Plugins、备份、诊断、安装维护和主程序更新；内置星芒账号体系（注册/登录/个人中心/充值外链）与无限画布窗口。
 
-正式发布需要 Authenticode 代码签名；普通 `npm run build` 可生成仅供本机调试的未签名安装包，但不能通过正式发布门禁。所有 Windows 包都会写入预期更新发布者，下载后的更新安装程序还会通过固定系统 PowerShell 严格核对 `Valid` 状态、文件路径和证书发布者；校验工具缺失、执行失败或结果异常均拒绝更新。详见 [发布手册](docs/RELEASING.md)。
+当前 Windows 对外发布固定走无签名模式（`npm run release:build:unsigned`），不需要代码签名证书；无签名包保留自动更新，但改成用户确认式：下载完成后按更新清单的 SHA-512 重新校验安装包，校验值缺失或不一致一律拒绝安装。普通 `npm run build` 仍是关闭自动更新的本机调试构建，不能通过发布门禁。详见 [发布手册](docs/RELEASING.md)；CA 证书到手后要恢复的签名流程归档在 [签名发布流程](docs/archive/RELEASING-signed.md)。
 
 ## 开发运行
 
@@ -19,7 +19,7 @@ npm run dev
 
 登录后，在顶部“搜索、打开、跳转”输入 `XM-NEBULA-10M-7Q9K`，按 Enter 或点击“领取 10 分钟加速时长”，可增加 600 秒加速时间。忽略英文大小写与首尾空白；每个账号在本机领取一次，按账号来源隔离，重启后保留。已有用量不清零，正在加速时会延长到期时间；这是本机加速权益，不同步到其他设备。
 
-Windows 主程序使用 `requestedExecutionLevel: asInvoker`。四个 CLI 的控制台和 Codex 桌面端都按当前桌面用户启动；普通模式下 npm CLI 安装到用户 npm 全局目录，Grok 安装到 `%USERPROFILE%\.grok\bin`。若用户手工选择“以管理员身份运行”，程序会自动收紧外部命令边界。NSIS 安装器、主程序更新或 Node.js 系统安装仍可在实际需要时由 Windows 单独请求授权。Codex Desktop MSIX 如因打包服务返回 `0x80073D28`，仅本次安装请求 UAC；取消即停止，日常启动不提权。正式发布仍必须使用 Authenticode 签名。
+Windows 主程序使用 `requestedExecutionLevel: asInvoker`。四个 CLI 的控制台和 Codex 桌面端都按当前桌面用户启动；普通模式下 npm CLI 安装到用户 npm 全局目录，Grok 安装到 `%USERPROFILE%\.grok\bin`。若用户手工选择“以管理员身份运行”，程序会自动收紧外部命令边界。NSIS 安装器、主程序更新或 Node.js 系统安装仍可在实际需要时由 Windows 单独请求授权。Codex Desktop MSIX 如因打包服务返回 `0x80073D28`，仅本次安装请求 UAC；取消即停止，日常启动不提权。
 
 完整验证命令：
 
@@ -70,17 +70,17 @@ npm run build:mac:dir
 - `0.1.2` 及更早版本：`https://updates.shenfengwl.fun/xingmang-manager/`
 - `0.1.3` 及更新版本：`https://updatesnew.shenfengwl.fun/xingmang-manager/`（R2 桶 `xingmang-updates-new`）
 
-正式发布必须通过单独的 fail-fast 流程，普通 `npm run build` 只能作为本地调试打包，不能对外发布：
+正式发布必须通过单独的 fail-fast 流程，普通 `npm run build` 只能作为本地调试打包，不能对外发布。当前固定使用无签名发布入口：
 
 ```powershell
-npm run release:build
+npm run release:build:unsigned
 ```
 
-`release:build` 使用 `electron-builder --publish never`，只在本机生成并校验候选产物，不会上传文件或修改线上 `latest.yml`。构建完成不等于获得发布授权；上传安装程序、上传 `.blockmap`、替换 `latest.yml` 或操作 Cloudflare R2，必须由产品所有者针对当前版本明确下达发布指令，不能从“打包”“继续”或一次历史授权中推断。
+发布入口使用 `electron-builder --publish never`，只在本机生成并校验候选产物，不会上传文件或修改线上 `latest.yml`。构建完成不等于获得发布授权；上传安装程序、上传 `.blockmap`、替换 `latest.yml` 或操作 Cloudflare R2，必须由产品所有者针对当前版本明确下达发布指令，不能从“打包”“继续”或一次历史授权中推断。
 
-本项目当前按产品要求允许不签名更新测试：使用 `XINGMANG_UNSIGNED_RELEASE=1` 或 `npm run release:build:unsigned` 会保留自动更新，但不写入发布者签名校验。该模式只能在确认更新桶和网络链路可信时使用，普通 `npm run build` 仍保持本地构建隔离，不会自动更新。
+按产品要求，无签名模式（`XINGMANG_UNSIGNED_RELEASE=1` 或 `npm run release:build:unsigned`）会保留自动更新，但不写入发布者签名校验；客户端改为在下载完成后按更新清单的 SHA-512 复核安装包。该模式只能在确认更新桶和网络链路可信时使用，普通 `npm run build` 仍保持本地构建隔离，不会自动更新。
 
-正式发布默认写入 `release-<package version>`。脚本会在执行任何发布步骤前确认目标目录不存在或为空；若目录含有旧产物会直接停止且不会删除文件，可通过 `XINGMANG_OUTPUT_DIR` 指向项目目录内另一个空目录。随后检查 HTTPS 更新目录没有被官网 SPA 接管，再执行类型检查、全部测试、编译、签名打包和本地产物校验。发布流程明确关闭证书自动发现，并确认安装程序状态为 `Valid` 且发布者匹配 `XINGMANG_SIGNING_PUBLISHER`；`latest.yml` 不合法、文件摘要不匹配、`.blockmap` 缺失、签名缺失或发布者不匹配都会终止发布。没有证书时只能完成源码、类型、测试和编译验证，不能生成正式发布包。
+正式发布默认写入 `release-<package version>`。脚本会在执行任何发布步骤前确认目标目录不存在或为空；若目录含有旧产物会直接停止且不会删除文件，可通过 `XINGMANG_OUTPUT_DIR` 指向项目目录内另一个空目录。随后检查 HTTPS 更新目录没有被官网 SPA 接管，再执行类型检查、全部测试、编译、打包和本地产物校验；`latest.yml` 不合法、文件摘要不匹配或 `.blockmap` 缺失都会终止发布。签名模式额外要求关闭证书自动发现，并确认安装程序状态为 `Valid` 且发布者匹配 `XINGMANG_SIGNING_PUBLISHER`——无签名模式只跳过这一步比对，其余门禁照常执行。
 
 服务器必须把对应版本的 `/xingmang-manager/` 配置为真实静态目录。`0.1.3+` 的 R2 目录位于 `updatesnew.shenfengwl.fun`，旧版本目录仍保留在 `updates.shenfengwl.fun`。若 `latest.yml` 返回官网 HTML，`release:preflight` 会按设计失败；在修复静态路由前不得发布。上传时先上传安装程序和 `.blockmap`，确认完成后最后原子替换 `latest.yml`，避免客户端读到尚未就绪的新版本。部署后执行：
 

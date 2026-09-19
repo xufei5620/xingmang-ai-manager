@@ -1967,7 +1967,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     if (!target.isDestroyed()) target.send('desktop:codex-status-changed', { phase, status })
   }
 
-  async function launchCodexDesktop(
+  async function launchCodexDesktopOperation(
     mode: CodexDesktopLaunchMode,
     target: RendererMessageTarget,
     launchOptions: CodexDesktopLaunchOptions = {},
@@ -2097,6 +2097,10 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       }
     }
     let cdpPort: number | null = null
+    // The workspace deep link activates the app again and may report another
+    // PID. Ownership of the debugging port belongs to the process that was
+    // started with the flag, so keep that PID out of the later reassignment.
+    let cdpActivationProcessId: number | null = null
     let activatedViaAppModel = false
     const needsFreshActivation = mode === 'restart' || existingProcesses.length === 0
     const shouldInjectChinese = Boolean(launchOptions.injectChinese)
@@ -2111,6 +2115,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         if (shouldInjectChinese) {
           cdpPort = await getAvailableLoopbackPort()
           activationProcessId = await activateCodexDesktopWithCdp(desktopAppPath, cdpPort)
+          cdpActivationProcessId = activationProcessId
           // CDP activation starts a fresh Electron process. The official
           // deep link then attaches the configured workspace to that process.
           await launchFresh()
@@ -2125,6 +2130,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
         // remains the safe fallback and never exposes a folder window.
         console.warn(`[codex-launch] 增强启动不可用，回退普通启动：${message}`)
         cdpPort = null
+        cdpActivationProcessId = null
         try {
           await launchFresh()
         } catch (fallbackError) {
@@ -2167,6 +2173,7 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
       // the plain AppsFolder route; sending codex:// to Explorer can open the
       // selected workspace as a File Explorer window.
       cdpPort = null
+      cdpActivationProcessId = null
       try {
         await launchWithExplorer()
         startedProcesses = await waitForCodexDesktopState(true, codexDesktopLaunchFallbackWaitMs)
@@ -2185,7 +2192,9 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     }
     if (cdpPort !== null) {
       try {
-        const injection = await injectCodexDesktopChineseLocale(cdpPort)
+        const injection = await injectCodexDesktopChineseLocale(cdpPort, {
+          expectedProcessId: cdpActivationProcessId,
+        })
         chineseLocale = { status: 'verified' }
         console.info(`[codex-locale] 已注入 Codex Desktop 中文运行时补丁（${injection.injectedTargets} 个页面）`)
       } catch (error) {
@@ -2199,6 +2208,26 @@ export function createCodexDesktopService(options: CodexDesktopServiceOptions): 
     const runningStatus = { ...desktopApp, running: true }
     sendCodexDesktopStatus(target, 'running', runningStatus)
     return { restarted, status: runningStatus, ...(chineseLocale ? { chineseLocale } : {}) }
+  }
+
+  /**
+   * Launching replaces no machine-level directory itself, but it must not run
+   * while one is being replaced. The busy flag alone only covers an install
+   * that is already executing, so a launch could still slip in between the
+   * enqueue and the first line of the install task and be killed moments later
+   * (E-B7). Identical requests keep sharing one promise, so a double click
+   * stays idempotent; a different mode or locale intent must not inherit
+   * another launch's result.
+   */
+  function launchCodexDesktop(
+    mode: CodexDesktopLaunchMode,
+    target: RendererMessageTarget,
+    launchOptions: CodexDesktopLaunchOptions = {},
+  ): Promise<CodexDesktopLaunchResult> {
+    return installationQueue.enqueue(
+      `desktop:codex:launch:${mode}:${launchOptions.injectChinese ? 'zh-CN' : 'default'}`,
+      () => launchCodexDesktopOperation(mode, target, launchOptions),
+    )
   }
 
   return {

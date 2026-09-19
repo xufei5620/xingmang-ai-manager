@@ -31,7 +31,14 @@ export interface Sub2ApiKeySummary {
   readonly name: string
   readonly groupId: string | null
   readonly status: 'active' | 'inactive' | 'quota_exhausted' | 'expired'
-  readonly quota?: number
+  /**
+   * Always set, because the wire field is optional but its absence is not a
+   * third state: 0 is this backend's own "unlimited" encoding, so a missing
+   * quota is normalized to 0 by keySummary() below. Leaving it optional let
+   * two consumers of the same key disagree -- one reading `quota === 0` as
+   * "limited, nothing left", the other reading `!quota` as "unlimited".
+   */
+  readonly quota: number
   readonly quotaUsed?: number
   readonly createdAt?: string
   readonly expiresAt?: string | null
@@ -310,7 +317,7 @@ function keySummary(value: unknown, userId: string): Sub2ApiKeySummary {
     ...summarizeKeySecret(value.key),
     groupId: value.group_id === null ? null : wireId(value.group_id),
     status: value.status as Sub2ApiKeySummary['status'],
-    ...(value.quota === undefined ? {} : { quota: value.quota as number }),
+    quota: value.quota === undefined ? 0 : value.quota as number,
     ...(value.quota_used === undefined ? {} : { quotaUsed: value.quota_used as number }),
     ...(value.created_at === undefined ? {} : { createdAt: optionalKeyDate(value.created_at) ?? '' }),
     ...(value.expires_at === undefined ? {} : { expiresAt: optionalKeyDate(value.expires_at) }),

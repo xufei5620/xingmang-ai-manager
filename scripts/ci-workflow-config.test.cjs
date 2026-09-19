@@ -30,6 +30,23 @@ function runSteps(jobName) {
     .filter((command) => typeof command === 'string')
 }
 
+// The Windows checks used to be one ~27 minute job, which was the pipeline's
+// whole wall clock. They are now a matrix of test shards plus the packaging
+// job, so every question of the form "does Windows still run X" has to be put
+// to both, and to the matrix commands rather than to the one step that
+// interpolates them.
+function windowsShardCommands() {
+  return workflow.jobs['windows-test'].strategy.matrix.include.map((entry) => entry.command)
+}
+
+function windowsCommands() {
+  return [...windowsShardCommands(), ...runSteps('windows-package')]
+}
+
+function shardStepIndex() {
+  return workflow.jobs['windows-test'].steps.findIndex((step) => String(step.run || '').includes('matrix.command'))
+}
+
 test('renderer v2 is the default and legacy remains an explicit rollback mode', () => {
   const scripts = packageJson.scripts
 
@@ -67,7 +84,6 @@ test('the common test suite excludes Darwin filesystem and signing fixtures', ()
 
 test('browser-backed tests install Chromium first on every job that runs npm test', () => {
   for (const [jobName, testCommand, installCommand] of [
-    ['test', 'npm run test:windows', 'npx --no-install playwright install chromium'],
     ['macos-test', 'npm test', 'npx --no-install playwright install chromium'],
     // Linux-only: --with-deps also apt-installs the shared libraries Chromium
     // links against, which (unlike Windows/macOS) a bare runner image lacks.
@@ -81,18 +97,30 @@ test('browser-backed tests install Chromium first on every job that runs npm tes
     assert.notEqual(installIndex, -1, `${jobName} must install Chromium`)
     assert.ok(installIndex < testIndex, `${jobName} must install Chromium before ${testCommand}`)
   }
+
+  // Every Windows shard installs it, rather than only the ones whose suites
+  // need a browser today: --shard partitions by a hash of each file's path, so
+  // which half holds electron/codex-desktop-cdp.browser.test.ts moves with the
+  // next added or renamed test file.
+  const steps = workflow.jobs['windows-test'].steps
+  const installIndex = steps.findIndex((step) => step.run === 'npx --no-install playwright install chromium')
+
+  assert.notEqual(installIndex, -1, 'the Windows shards must install Chromium')
+  assert.notEqual(shardStepIndex(), -1, 'the Windows shards must run their matrix command')
+  assert.ok(installIndex < shardStepIndex(), 'Chromium must be installed before any shard runs')
 })
 
 test('the Windows job enables unprivileged symlink creation before security tests', () => {
-  const steps = workflow.jobs.test.steps
+  const steps = workflow.jobs['windows-test'].steps
   const enableStepIndex = steps.findIndex((step) => (
     step.name === 'Enable Windows Developer Mode for symlink security tests'
   ))
-  const testStepIndex = steps.findIndex((step) => step.run === 'npm run test:windows')
 
   assert.notEqual(enableStepIndex, -1, 'Windows CI must enable Developer Mode')
-  assert.notEqual(testStepIndex, -1, 'Windows CI must run the Windows test suite')
-  assert.ok(enableStepIndex < testStepIndex, 'Developer Mode must be enabled before tests')
+  assert.notEqual(shardStepIndex(), -1, 'Windows CI must run its test shards')
+  // Enabled for every shard for the same reason Chromium is: the symlink
+  // security tests land in whichever --shard half their path hashes into.
+  assert.ok(enableStepIndex < shardStepIndex(), 'Developer Mode must be enabled before tests')
 
   const enableStep = steps[enableStepIndex]
   assert.equal(enableStep.shell, 'pwsh')
@@ -100,20 +128,102 @@ test('the Windows job enables unprivileged symlink creation before security test
 })
 
 test('the Windows required job tests and compiles the default renderer v2', () => {
-  const steps = workflow.jobs.test.steps
-  const commands = runSteps('test')
-  const browserInstallIndex = commands.indexOf('npx --no-install playwright install chromium')
-  const v2TestIndex = commands.indexOf('npm run test:v2')
-  const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
-  const compileIndex = steps.findIndex((step) => step.run === 'npm run compile')
-  const flagCheckIndex = steps.findIndex((step) => step.name === 'Verify the default compile selected renderer v2')
+  const shardCommands = windowsShardCommands()
+  const shardSteps = workflow.jobs['windows-test'].steps
+  const dirtyCheckIndex = shardSteps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
 
-  assert.notEqual(v2TestIndex, -1, 'Windows CI must run the renderer v2 suite')
-  assert.ok(browserInstallIndex < v2TestIndex, 'Chromium must be installed before renderer v2 browser tests')
-  assert.ok(v2TestIndex < dirtyCheckIndex, 'renderer v2 tests must run before the dirty-tree guard')
-  assert.ok(dirtyCheckIndex < compileIndex, 'the default compile must run after tests')
+  // Both halves of test:v2 still run on the shipping platform; they are simply
+  // no longer queued behind `npm test` on the same runner.
+  assert.ok(shardCommands.includes('npm run test:v2:vitest'), 'Windows CI must run the renderer v2 unit suite')
+  assert.ok(shardCommands.some((command) => command.startsWith('npm run test:v2:browser')),
+    'Windows CI must run the renderer v2 browser suites')
+  assert.notEqual(dirtyCheckIndex, -1, 'every Windows shard must guard against a dirty working tree')
+  assert.ok(shardStepIndex() < dirtyCheckIndex, 'a shard must run before its dirty-tree guard')
+
+  const packageSteps = workflow.jobs['windows-package'].steps
+  const compileIndex = packageSteps.findIndex((step) => step.run === 'npm run compile')
+  const flagCheckIndex = packageSteps.findIndex((step) => step.name === 'Verify the default compile selected renderer v2')
+
+  assert.notEqual(compileIndex, -1, 'the packaging job must run the default compile')
   assert.ok(compileIndex < flagCheckIndex, 'the default compile must be checked for its v2 marker')
-  assert.match(String(steps[flagCheckIndex].run), /dist\/renderer-v2\.flag/)
+  assert.match(String(packageSteps[flagCheckIndex].run), /dist\/renderer-v2\.flag/)
+})
+
+test('splitting the Windows job did not drop a suite it used to run', () => {
+  // The split is a wall-clock change and nothing else, so the shards have to
+  // add up to exactly what the one job ran. vitest --shard partitions by a
+  // hash of each file's path: the halves reconstitute the unsharded file set,
+  // but only while every half is actually dispatched, which is what the
+  // exhaustiveness check below is for.
+  const scripts = packageJson.scripts
+  const shardCommands = windowsShardCommands()
+
+  assert.equal(scripts['test:vitest'], 'vitest run electron src --no-file-parallelism --testTimeout=30000')
+  assert.equal(scripts.test, 'npm run test:vitest && npm run test:scripts && npm run test:browser')
+  assert.equal(scripts['test:v2'], 'npm run test:v2:vitest && npm run test:v2:browser')
+
+  // P-12: `test:windows` meant "the serialised suite" until test:vitest took
+  // --no-file-parallelism and --testTimeout=30000 on itself, after which it
+  // was `npm test` spelled a second time. Nothing dispatches it any more, and
+  // a reintroduced copy would be a second definition of the same run, free to
+  // drift from this one.
+  assert.equal(scripts['test:windows'], undefined,
+    'test:windows became a duplicate of npm test and must stay deleted')
+
+  for (const [script, count] of [['test:vitest', 2]]) {
+    for (let index = 1; index <= count; index += 1) {
+      assert.ok(shardCommands.includes(`npm run ${script}:${index}`), `the matrix must dispatch ${script}:${index}`)
+    }
+    assert.equal(scripts[`${script}:${count + 1}`], undefined,
+      `${script} declares a shard the matrix never dispatches`)
+  }
+
+  // The vitest halves are the same command plus the flag that selects the
+  // half, so the suite, its serialisation and its 30s timeout cannot drift
+  // between them.
+  assert.equal(scripts['test:vitest:1'], 'npm run test:vitest -- --shard=1/2')
+  assert.equal(scripts['test:vitest:2'], 'npm run test:vitest -- --shard=2/2')
+
+  // test:v2:browser is dispatched whole, and must stay that way. Its files each
+  // build a Vite dev server on the same `configFile: false` root, so they share
+  // one on-disk node_modules/.vite dependency cache that the earlier files warm
+  // for the later ones. Split across runners, app-check.mjs — which runs last
+  // and benefits most — got a cold cache and blew its 90s fixture mount budget
+  // on a mid-run re-optimisation.
+  assert.ok(shardCommands.includes('npm run test:v2:browser'), 'the matrix must dispatch test:v2:browser whole')
+  assert.equal(scripts['test:v2:browser:1'], undefined, 'test:v2:browser must not be split across runners')
+  assert.match(scripts['test:v2:browser'], /--test-concurrency=1/, 'the browser suites must stay serialised')
+  assert.ok(scripts['test:v2:browser'].split(/\s+/).filter((token) => /\.mjs$/.test(token)).length > 0,
+    'test:v2:browser must still name its suites')
+
+  // T-B6: the matrix has to cover exactly the leaves `npm test` runs, so a
+  // leaf added later that no shard dispatches fails here instead of silently
+  // going untested on the shipping platform. test:vitest is the one exception:
+  // it is dispatched as the two --shard halves checked above.
+  const dispatched = shardCommands.flatMap((command) => command.split('&&').map((part) => part.trim()))
+  const testLeaves = scripts.test.split('&&').map((part) => part.trim())
+  assert.deepEqual(testLeaves, ['npm run test:vitest', 'npm run test:scripts', 'npm run test:browser'])
+  for (const leaf of testLeaves.filter((leaf) => leaf !== 'npm run test:vitest')) {
+    assert.ok(dispatched.includes(leaf), `the matrix must dispatch ${leaf}`)
+  }
+
+  // T-G10: each of these two suites launches its own Chromium against its own
+  // Vite dev server. Running them together bought no wall clock (~31s either
+  // way) and doubled the shard's peak memory, which on a Defender-throttled
+  // Windows runner is how a timeout gets manufactured. test:v2:browser and
+  // test:ui were already serialised for the same reason.
+  assert.match(scripts['test:browser'], /^node --test --test-concurrency=1 /)
+
+  // T-B6: the split only pays for itself while the names keep meaning what
+  // they say — the build and release script suites in one, the browser suites
+  // in the other.
+  const named = (script, pattern) => scripts[script].split(/\s+/).filter((token) => pattern.test(token))
+  assert.deepEqual(named('test:scripts', /\.mjs$/), [])
+  assert.ok(named('test:scripts', /\.test\.cjs$/).length > 0, 'test:scripts must still name its suites')
+  assert.ok(named('test:scripts', /\.test\.cjs$/).every((token) => token.startsWith('scripts/')))
+  assert.deepEqual(named('test:browser', /\.cjs$/), [])
+  assert.ok(named('test:browser', /\.mjs$/).length > 0, 'test:browser must still name its suites')
+  assert.ok(named('test:browser', /\.mjs$/).every((token) => token.startsWith('e2e/')))
 })
 
 test('the release gate only runs smoke scripts the Windows required job also runs', () => {
@@ -123,7 +233,7 @@ test('the release gate only runs smoke scripts the Windows required job also run
   // could only ever time out. Pinning the gate's smoke scripts to the Windows
   // required job is what stops that from happening again.
   const { buildReleaseSteps } = require('./run-release-build.cjs')
-  const ciCommands = runSteps('test')
+  const ciCommands = windowsCommands()
   for (const unsignedReleaseMode of [false, true]) {
     const steps = buildReleaseSteps({
       npmCli: 'npm-cli.js',
@@ -147,12 +257,19 @@ test('the release gate only runs smoke scripts the Windows required job also run
 })
 
 test('the Windows suite serializes filesystem-heavy files with a bounded test timeout', () => {
-  const command = packageJson.scripts['test:windows']
+  // Sharding moved files onto other runners; it must not have turned file
+  // parallelism back on inside a shard, which is what kept the
+  // filesystem-heavy tests from racing each other under Defender.
+  for (const name of ['test:vitest', 'test:v2:vitest']) {
+    const command = packageJson.scripts[name]
 
-  assert.match(command, /vitest run electron src/)
-  assert.match(command, /--no-file-parallelism/)
-  assert.match(command, /--testTimeout=30000/)
-  assert.match(command, /npm run test:node/)
+    assert.match(command, /vitest run/, name)
+    assert.match(command, /--no-file-parallelism/, name)
+    assert.match(command, /--testTimeout=30000/, name)
+  }
+
+  assert.match(packageJson.scripts['test:vitest'], /vitest run electron src/)
+  assert.match(packageJson.scripts['test:browser'], /--test-concurrency=1/)
 })
 
 test('the Linux suite type-checks and runs the common test command', () => {
@@ -165,7 +282,9 @@ test('the Linux suite type-checks and runs the common test command', () => {
   // Regression coverage for #4: cross-platform breakage (e.g. #2's tmpfs inode
   // reuse) only surfaces on a real Linux filesystem, so this job must run the
   // unmodified common suite rather than a Windows- or macOS-flavored variant.
-  assert.equal(commands.includes('npm run test:windows'), false)
+  // P-12 deleted the only variant that ever existed; this keeps the job honest
+  // if another one grows back.
+  assert.equal(commands.some((command) => /^npm run test:(windows|macos|linux)\b/.test(command)), false)
 })
 
 test('the Linux job carries the shipping renderer coverage the Windows job used to own alone', () => {
@@ -195,10 +314,9 @@ test('the legacy rollback UI suites are verified on exactly one platform', () =>
   // They render markup through renderToStaticMarkup and assert on the HTML, so
   // the three platforms were answering the same question three times while the
   // shipping renderer was answered once.
-  assert.equal(packageJson.scripts['test:node'].includes('test:ui'), false,
-    'test:ui must not ride along with test:node onto every platform')
+  assert.equal(packageJson.scripts['test:browser'].includes('test:ui'), false,
+    'test:ui must not ride along with test:browser onto every platform')
   assert.equal(packageJson.scripts.test.includes('test:ui'), false)
-  assert.equal(packageJson.scripts['test:windows'].includes('test:ui'), false)
 
   const jobsRunningUi = Object.entries(workflow.jobs)
     .filter(([, job]) => (job.steps || []).some((step) => step.run === 'npm run test:ui'))
@@ -257,7 +375,7 @@ test('the supported macOS runner runs the real isolated free-distribution build 
 })
 
 test('the Windows job packages and exercises a hardened non-publishing build', () => {
-  const commands = runSteps('test')
+  const commands = runSteps('windows-package')
   const buildCommand = packageJson.scripts['build:win:ci']
 
   assert.ok(commands.includes('npm run build:win:ci'))
@@ -295,7 +413,7 @@ test('documentation-only changes do not build and package the app', () => {
   for (const event of ['push', 'pull_request']) {
     assert.equal(triggers[event]?.['paths-ignore'], undefined, 'required checks must trigger on documentation PRs')
   }
-  for (const job of ['test', 'macos-test', 'linux-test', 'audit']) {
+  for (const job of ['windows-test', 'windows-package', 'macos-test', 'linux-test', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
   }
@@ -313,7 +431,7 @@ test('the change-scope job also gates the unreleased changelog fragments', () =>
   assert.ok(commands.includes('npm run changelog:check'))
   assert.match(packageJson.scripts['changelog:check'], /scripts\/changelog-collect\.cjs --check/)
   assert.match(packageJson.scripts['changelog:collect'], /scripts\/changelog-collect\.cjs/)
-  assert.ok(packageJson.scripts['test:node'].includes('scripts/changelog-collect.test.cjs'))
+  assert.ok(packageJson.scripts['test:scripts'].includes('scripts/changelog-collect.test.cjs'))
 
   // The guard diffs both unreleased sections against the pull request base, so
   // the base commit has to be reachable...
@@ -339,20 +457,53 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   assert.equal(gate.if, 'always()')
   assert.deepEqual(gate.needs, ['changes', 'test', 'macos-test', 'linux-test', 'audit'])
   const source = gate.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
-  const verify = (code, changeResult, results) => {
-    const jobs = { changes: { outputs: { code }, result: changeResult } }
-    for (const name of ['test', 'macos-test', 'linux-test', 'audit']) jobs[name] = { result: results[name] || 'success' }
+  const run = (source, jobs) => {
     assert.doesNotThrow(() => JSON.stringify(jobs))
     let failed = false
     try { vm.runInNewContext(source, { process: { env: { JOB_RESULTS: JSON.stringify(jobs) }, exit: () => { throw new Error('failed') } } }) } catch { failed = true }
     return !failed
   }
+  const verify = (code, changeResult, results) => {
+    const jobs = { changes: { outputs: { code }, result: changeResult } }
+    for (const name of ['macos-test', 'linux-test', 'audit']) jobs[name] = { result: results[name] || 'success' }
+    jobs.test = { result: results.test || 'success' }
+    return run(source, jobs)
+  }
   assert.equal(verify('true', 'success', {}), true)
   assert.equal(verify('true', 'success', { test: 'failure' }), false)
+  // A failing shard leaves the fold-in job failed rather than skipped, and a
+  // skipped `test` must not read as a pass either — that is the shape a
+  // cancelled matrix would otherwise take.
+  assert.equal(verify('true', 'success', { test: 'skipped' }), false)
   assert.equal(verify('true', 'success', { audit: 'skipped' }), false)
   assert.equal(verify('false', 'failure', {}), false)
   assert.equal(verify('', 'success', {}), false)
-  assert.equal(verify('false', 'success', Object.fromEntries(['test', 'macos-test', 'linux-test', 'audit'].map(name => [name, 'skipped']))), true)
+  assert.equal(verify('false', 'success', Object.fromEntries(['macos-test', 'linux-test', 'audit'].map(name => [name, 'skipped']))), true)
+
+  // The fold-in job itself: it is what keeps a single `test` check meaning
+  // "Windows is green" after the matrix replaced the job that used to be it.
+  const fold = workflow.jobs.test
+  // Not always(): that also runs on a cancelled run and posts a red `test`
+  // against a superseded commit. The aggregate above refuses a skipped `test`,
+  // so a cancelled run still cannot read as a pass.
+  assert.equal(fold.if, '${{ !cancelled() }}')
+  assert.equal(verify('true', 'success', { test: 'skipped' }), false)
+  assert.deepEqual(fold.needs, ['changes', 'windows-test', 'windows-package'])
+  assert.equal(fold['runs-on'], 'ubuntu-latest')
+  const foldSource = fold.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
+  const fold_ = (code, results) => run(foldSource, {
+    changes: { outputs: { code }, result: 'success' },
+    'windows-test': { result: results['windows-test'] || 'success' },
+    'windows-package': { result: results['windows-package'] || 'success' },
+  })
+  assert.equal(fold_('true', {}), true)
+  assert.equal(fold_('true', { 'windows-test': 'failure' }), false)
+  assert.equal(fold_('true', { 'windows-test': 'cancelled' }), false)
+  assert.equal(fold_('true', { 'windows-package': 'skipped' }), false)
+  // A documentation-only change skips both Windows jobs, and the fold-in job
+  // still has to report success rather than inherit their skip.
+  assert.equal(fold_('false', { 'windows-test': 'skipped', 'windows-package': 'skipped' }), true)
+  assert.equal(fold_('false', {}), false)
 })
 
 test('change classification does not skip code, workflow, or unknown revisions', () => {
@@ -415,7 +566,7 @@ test('quality checks cannot publish a release', () => {
   assert.doesNotMatch(serialized, /gh release|create-release|dist:mac:free|release:build/i)
 })
 
-const playwrightElectronSmokes = ['e2e/electron-ci-smoke.mjs', 'e2e/window-close-smoke.mjs']
+const playwrightElectronSmokes = ['e2e/electron-ci-smoke.mjs', 'e2e/window-close-smoke.mjs', 'e2e/realm-account-smoke.mjs']
 
 test('a Playwright Electron smoke can never consume a whole job again', () => {
   // #131 and #133: a wedged Electron made the close smoke run for ten minutes
@@ -443,9 +594,44 @@ test('a Playwright Electron smoke can never consume a whole job again', () => {
     }
   }
 
-  // test:windows (~13m) and test:v2 (~10m) alone reach ~28 minutes, so the
-  // Windows cap has to clear that plus the packaging steps that follow.
-  assert.ok(workflow.jobs.test['timeout-minutes'] >= 45)
+  // The Windows work is spread over the shards and the packaging job now, and
+  // the longest of them is well under ten minutes. The caps below are a
+  // backstop for a wedged runner rather than a bound the work approaches, but
+  // each still has to outlive the longest step timeout inside it.
+  for (const name of ['windows-test', 'windows-package']) {
+    const job = workflow.jobs[name]
+    // A shard's step timeout is written as ${{ matrix.timeout }}, so resolve it
+    // against the matrix rather than reading it as the literal zero it parses
+    // to — otherwise this check would quietly stop checking anything.
+    const stepTimeouts = job.steps.flatMap((step) => {
+      const declared = step['timeout-minutes']
+      if (typeof declared === 'number') return [declared]
+      if (String(declared || '').includes('matrix.timeout')) {
+        return (job.strategy?.matrix?.include || []).map((entry) => entry.timeout)
+      }
+      return []
+    })
+
+    assert.equal(job['runs-on'], 'windows-latest')
+    assert.ok(stepTimeouts.every((value) => typeof value === 'number' && value > 0),
+      `${name} must resolve every step timeout to a number`)
+    assert.ok(job['timeout-minutes'] > Math.max(0, ...stepTimeouts),
+      `${name} must outlive its longest bounded step`)
+  }
+
+  // Every shard bounds its own command. test:v2 stalled for 42 minutes on #172
+  // and was cancelled by the job cap, which reports nothing about which suite
+  // hung; a step timeout names the shard and leaves the siblings alone.
+  const shardStep = workflow.jobs['windows-test'].steps[shardStepIndex()]
+  assert.match(String(shardStep['timeout-minutes']), /matrix\.timeout/, 'each shard must bound its own command')
+  for (const entry of workflow.jobs['windows-test'].strategy.matrix.include) {
+    assert.equal(typeof entry.timeout, 'number', `${entry.shard} must declare a step timeout`)
+    assert.ok(entry.timeout >= 10, `${entry.shard} must leave a slow Windows runner room to finish`)
+  }
+
+  // fail-fast would cancel the sibling shards on the first failure, turning a
+  // run that could report every problem at once back into one push per bug.
+  assert.equal(workflow.jobs['windows-test'].strategy['fail-fast'], false)
 })
 
 test('no wait in a Playwright Electron smoke is left unbounded', () => {
@@ -480,7 +666,12 @@ const fixtureReadinessConsumers = [
   'src/renderer-v2/features/auth/browser-check.mjs',
   'e2e/v2-business.test.mjs',
   'e2e/app-v3-interactions.test.mjs',
-  'e2e/renderer-v2-gap-audit.mjs',
+  'scripts/audit/renderer-v2-gap-audit.mjs',
+  'e2e/account-commerce-interactions.test.mjs',
+  'e2e/maintenance-layout.test.mjs',
+  // D-12: the dual-site account smoke waits on the same cold Electron start
+  // the Windows runner takes ~16s over, three times per run.
+  'e2e/realm-account-smoke.mjs',
 ]
 
 test('a cold fixture open cannot be reported as a failed assertion again', () => {
@@ -508,6 +699,26 @@ test('a cold fixture open cannot be reported as a failed assertion again', () =>
   assert.match(appCheck, /await waitForFixtureReady\(page\)/, 'every app-check page must wait for the fixture to install')
 })
 
+// A React render crash or an unhandled rejection inside a fixture leaves the
+// page standing with whatever it had already committed, so a suite that only
+// asserts on the elements it touches stays green through it. Every browser
+// suite therefore records pageerror and empties the record before it finishes;
+// this keeps a new suite from quietly opting out of that (T-G3).
+test('no browser suite can go green while its fixture threw', () => {
+  const suites = fs.readdirSync(path.join(root, 'e2e'))
+    .filter((name) => name.endsWith('.test.mjs'))
+    .map((name) => `e2e/${name}`)
+
+  assert.ok(suites.length >= 15, 'the e2e suite list must not silently shrink')
+  for (const suite of suites) {
+    const source = fs.readFileSync(path.join(root, suite), 'utf8')
+    const shared = /from '\.\/page-errors\.mjs'/.test(source) && /pageErrors\.assertNone\(\)/.test(source)
+    const inline = /page\.on\('pageerror'/.test(source) && /assert\.deepEqual\(errors, \[\]\)/.test(source)
+
+    assert.ok(shared || inline, `${suite} must record pageerror and assert it stayed empty`)
+  }
+})
+
 test('the window close smoke survives a transient Windows filesystem error', () => {
   const source = fs.readFileSync(path.join(root, 'e2e', 'window-close-smoke.mjs'), 'utf8')
 
@@ -523,4 +734,26 @@ test('the window close smoke survives a transient Windows filesystem error', () 
   assert.match(source, /XINGMANG_SMOKE_COMMAND_TIMEOUT_MS/, 'the acknowledgement wait must stay bounded and overridable')
   assert.match(source, /abandonedByExit/, 'the acknowledgement wait must stop as soon as the application exits')
   assert.match(source, /main \$\{label\}/, "the main process's own output must reach the log")
+})
+
+// 验收证据里写死的 `true` 会在部分失败时照样打印出来，看起来像"这条也过了"。
+const evidenceProducers = [
+  'e2e/onboarding-smoke.mjs',
+  'e2e/canvas-group-refresh.mjs',
+  'e2e/acceleration-profile-isolation-smoke.mjs',
+  'e2e/renderer-v2-native.mjs',
+]
+
+test('acceptance evidence reports what the run observed, not literals', () => {
+  for (const producer of evidenceProducers) {
+    const source = fs.readFileSync(path.join(root, producer), 'utf8')
+
+    assert.match(source, /passedAssertions/, `${producer} must report the assertions this run actually passed`)
+    // Only names pushed after an assertion ran may reach the evidence, so the
+    // payload carrying them must not restate any behaviour as a constant.
+    for (const payload of source.matchAll(/JSON\.stringify\(\{[^}]*passedAssertions[^}]*\}/g)) {
+      assert.doesNotMatch(payload[0], /:\s*(?:true|false)\b/,
+        `${producer} must not state a behaviour as a literal beside the assertions it measured`)
+    }
+  }
 })

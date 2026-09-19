@@ -426,7 +426,7 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
         id: Number(key.id), name: key.name, maskedKey: key.maskedKey ?? '••••••••',
         group: available.find((group) => group.id === key.groupId)?.name ?? '',
         status: { active: 1, inactive: 2, expired: 3, quota_exhausted: 4 }[key.status],
-        remainQuota: Math.max(0, (key.quota ?? 0) - (key.quotaUsed ?? 0)), unlimitedQuota: key.quota === 0,
+        remainQuota: Math.max(0, key.quota - (key.quotaUsed ?? 0)), unlimitedQuota: key.quota === 0,
         usedQuota: key.quotaUsed ?? 0, createdAt: key.createdAt ?? '', expiredAt: key.expiresAt ?? null, accessedAt: key.lastUsedAt ?? null,
       })) }
     },
@@ -481,19 +481,6 @@ export function createSub2ApiRelayBackend(options: Sub2ApiRelayBackendOptions): 
       })
       provisionTail = pending.catch(() => undefined)
       return pending
-    },
-    findExistingCliKey: async (prefix) => {
-      const scope = capture()
-      const name = keyName(prefix)
-      const available = await groups(scope)
-      const expected = Object.values(sub2ApiManagedCliKeyProfiles).find((profile) => profile.keyName === name)?.group
-      const validGroups = available.filter((group) => (!expected || group.name === expected)
-        && available.filter((other) => other.name === group.name).length === 1)
-      const matches = (await allKeys(scope)).filter((key) => key.name.startsWith(name) && usable(key)
-        && validGroups.some((group) => group.id === key.groupId))
-      if (!matches.length) return null
-      if (new Set(matches.map((key) => key.groupId)).size !== 1) throw new Error('API Key 前缀对应多个分组，请指定分组重新初始化')
-      return reveal(scope, matches.sort((a, b) => Number(b.id) - Number(a.id))[0])
     },
     getTopupInfo: async () => parseTopupInfo(await call(capture(), (saved, abort) => native.getPaymentCheckoutInfo(saved, abort))),
     quoteTopupAmount: async (input) => {

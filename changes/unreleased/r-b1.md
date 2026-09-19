@@ -8,4 +8,4 @@
   依赖）与 `typeImportableOnly`（2 个，只允许 `import type`，一旦被值导入即失败）。同时禁止渲染层
   直接 import Node 内置模块或 `electron`、禁止 renderer-v2 反向 import 已冻结的 legacy `src/`。
 - 门禁自带用例：用合成 import 断言拒绝/放行的边界，并钉住 `import { type A }`、`export { type H }`
-  这类写法与打包器一样被判为纯类型。已纳入 `npm run test:node`（`npm test` / `test:windows` 串带）。
+  这类写法与打包器一样被判为纯类型。已纳入 `npm run test:scripts`（`npm test` 串带）。

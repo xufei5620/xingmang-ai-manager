@@ -168,9 +168,17 @@ describe('sub2api user-account adapter', () => {
   it('strips full key values and retains numeric group ids in list summaries', async () => {
     const example = fixture([response({ items: [key], total: 1 })])
     const page = await example.client.listKeys(saved(), 1, 20, signal())
-    assert.deepEqual(page, { items: [{ id: '4', name: 'CLI', groupId: '3', status: 'active', maskedKey: 'sk-••••••••alue',
+    assert.deepEqual(page, { items: [{ id: '4', name: 'CLI', groupId: '3', status: 'active', quota: 0, maskedKey: 'sk-••••••••alue',
       keyFingerprint: createHash('sha256').update(key.key).digest('hex') }], total: 1 })
     assert.ok(!JSON.stringify(page).includes('sk-private'))
+  })
+  it('reads an omitted quota as this backend\'s unlimited encoding rather than leaving it unset', async () => {
+    const example = fixture([response({ items: [{ ...key, quota: 7.5, quota_used: 2.5 }, { ...key, id: 5 }], total: 2 })])
+    const items = (await example.client.listKeys(saved(), 1, 20, signal())).items
+    assert.equal(items[0].quota, 7.5)
+    assert.equal(items[0].quotaUsed, 2.5)
+    assert.equal(items[1].quota, 0)
+    assert.equal(Object.hasOwn(items[1], 'quotaUsed'), false)
   })
   for (const [wireKey, display, hasFingerprint] of [
     ['sk-long-secret-ABCD', 'sk-••••••••ABCD', true],
@@ -241,7 +249,7 @@ describe('sub2api user-account adapter', () => {
       listKeys: async () => ({ items: [], total: 0 }),
       createKey: async (_saved, input) => {
         created.push(input)
-        return { id: String(created.length), name: input.name, groupId: input.groupId, status: 'active' }
+        return { id: String(created.length), name: input.name, groupId: input.groupId, status: 'active', quota: 0 }
       },
       revealKey: async (_saved, id) => `sk-managed-${id}`,
     }, saved(), signal())

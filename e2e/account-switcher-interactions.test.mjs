@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/account-switcher')
 let server
 let browser
 let baseUrl
+const pageErrors = createPageErrorCollector()
 before(async () => {
   server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
   await server.listen()
@@ -19,9 +21,9 @@ before(async () => {
   browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
   await fs.mkdir(artifacts, { recursive: true })
 })
-after(async () => { await browser?.close(); await server?.close() })
+after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
 async function openFixture(query = '', viewport = { width: 960, height: 720 }) {
-  const page = await browser.newPage({ viewport })
+  const page = pageErrors.watch(await browser.newPage({ viewport }))
   await page.goto(`${baseUrl}/e2e/account-switcher-fixture.html?${query}`)
   await page.locator('#open-switcher').waitFor({ timeout: fixtureReadyTimeoutMs })
   await page.locator('#open-switcher').click()

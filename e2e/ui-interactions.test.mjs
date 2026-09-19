@@ -4,17 +4,19 @@ import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 let browser, server, baseUrl
+const pageErrors = createPageErrorCollector()
 before(async () => {
   server = await createServer({ root: path.resolve('.'), logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
   await server.listen()
   baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
   browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 })
-after(async () => { await browser?.close(); await server?.close() })
+after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
 async function gallery() {
-  const page = await browser.newPage({ viewport: { width: 960, height: 620 } })
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 960, height: 620 } }))
   await page.goto(`${baseUrl}/src/components/ui/gallery.html`)
   await page.getByRole('heading', { name: '星芒 AI / 组件检阅' }).waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
@@ -130,7 +132,7 @@ test('date ranges validate order and coachmarks disappear when their target is h
 })
 
 test('account tables expose column headers and keyboard detail actions without hiding data cells', async () => {
-  const page = await browser.newPage({ viewport: { width: 960, height: 620 } })
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 960, height: 620 } }))
   try {
     for (const [section, label, columns] of [['usage', '调用明细', 6], ['tasks', '异步任务', 8], ['orders', '我的订单', 6], ['keys', 'API 密钥', 10]]) {
       await page.goto(`${baseUrl}/e2e/account-commerce-fixture.html?scenario=visual&section=${section}`)
@@ -154,7 +156,7 @@ test('account tables expose column headers and keyboard detail actions without h
 })
 
 test('registration OTP preserves single-input paste and links its correctable validation error', async () => {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 820 } }))
   try {
     await page.goto(`${baseUrl}/e2e/app-v3-fixture.html?invite=XM-7K2Q`)
     const dialog = page.getByRole('dialog', { name: '注册', exact: true })

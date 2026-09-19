@@ -1,8 +1,10 @@
 {
   "//": "复制成仓库根目录的 dl-landing.config.json 再填真实值。该文件已被 .gitignore 忽略，不要提交。也可以改用同名环境变量（DL_LANDING_SSH_HOST 等），或用 DL_LANDING_CONFIG 指向仓库外的一份。",
+  "//knownHosts": "只放源站这一台主机的公钥，路径必须在仓库之外（仓库是公开的）。生成方式见 docs/DL-LANDING-PLAN.md 第 7 节，写进去之后要和源站上 ssh-keygen -lf 的指纹逐字核对。",
   "host": "203.0.113.10",
   "port": 22,
   "user": "deploy",
   "key": "/home/you/.ssh/your_dl_landing_key",
+  "knownHosts": "/home/you/.ssh/dl_landing_known_hosts",
   "remoteRoot": "/srv/dl-landing"
 }

@@ -101,6 +101,8 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 ### 纯搬运重构的特殊规范（#30 #32 这类）
 
+> #30（拆 legacy `App.tsx`）已随 legacy 冻结于 2026-09-19 关闭，这里留作范式说明。
+
 拆文件、收口常量这类重构，**风险不在写错逻辑，在于夹带了逻辑改动却没人发现**。所以：
 
 1. **纯搬运的 PR，diff 里不能有任何行为改动。** 只能是「删 N 行 + 新文件 N 行 + import 调整」。看到 diff 里出现新的条件判断、改了默认值、调了顺序 —— 一律打回。
@@ -132,6 +134,10 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 `electron/system-service.ts`（约 2900 行）、`src/App.tsx`（约 1800 行）的结构性改动。
 
+**④ legacy 渲染层已冻结**
+
+`src/` 下除 `src/renderer-v2/` 以外的源码与 `tooling/legacy-renderer/` 自 2026-09-19 起**只接受安全修复**（审查总表 `R-S12`，yoyo 拍板）。`src/styles.css` 与 `src/App.tsx` 因此基本不再是并行冲突点——它们的结构性重构不做了。口径见 `CLAUDE.md` T14 与 `.claude/rules/legacy-renderer.md`。
+
 ### 4.2 热点文件警示
 
 | 文件 | 行数（2026-08-10 实测） | 说明 |
@@ -159,7 +165,7 @@ gh pr create --title "[<用户名>·<ai>·<端>] <类型>: <描述>" --body "...
 
 ```bash
 npm run typecheck
-npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不是卡死（Windows 请用 npm run test:windows）
+npm test            # Windows 因 Defender 实时扫描明显慢于 Linux，不是卡死（命令已内置串行 + 30s 超时）
 ```
 
 ### 平台差异（重要）

@@ -19,6 +19,12 @@ const {
   readPublishConfigFile,
   resolvePublishTarget,
   assertPublishTarget,
+  assertKnownHostsFile,
+  parseExpectedChecksums,
+  readExpectedChecksums,
+  assertExpectedChecksums,
+  verifyUploadCandidates,
+  fileSha256,
 } = require('./publish-dl-landing.cjs')
 
 // Every test supplies the origin explicitly. The script has no built-in defaults, and an
@@ -30,11 +36,20 @@ const TARGET = {
   port: '2222',
   user: 'deploy',
   key: '/home/ci/.ssh/landing',
+  knownHosts: '/home/ci/.ssh/landing_known_hosts',
   remoteRoot: '/srv/dl-landing',
 }
 
 function scratch() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-dl-landing-test-'))
+}
+
+// A scratch directory lives under the OS temp root, which is outside the repository, so
+// a known_hosts file written there passes the "not inside the public repo" guard.
+function writeKnownHosts(directory) {
+  const filePath = path.join(directory, 'known_hosts')
+  fs.writeFileSync(filePath, '[origin.invalid]:2222 ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFakeKeyForTests\n', 'utf8')
+  return filePath
 }
 
 test('accepts a dotted release version and rejects a path-like value', () => {
@@ -77,13 +92,13 @@ test('rejects every remote root that could reach the remote shell as a command',
   }
 })
 
-test('rejects an injected remote root wherever it enters the script', () => {
+test('rejects an injected remote root wherever it enters the script', async () => {
   assert.throws(() => parsePublishArgs(['--remote-root', '/www/dl; id'], TARGET, NO_SOURCES), /远端目录不合法/)
   assert.throws(
     () => buildPublishPlan({ version: '0.1.22', remoteRoot: '/www/dl`id`' }, {}, installerFileNames('0.1.22')),
     /远端目录不合法/,
   )
-  assert.throws(
+  await assert.rejects(
     () => publishDlLanding({ ...TARGET, version: '0.1.22', localDir: '.', remoteRoot: '/www/dl && id', sources: NO_SOURCES }, {}),
     /远端目录不合法/,
   )
@@ -215,22 +230,25 @@ test('plans scp destinations under the landing files directory', () => {
   assert.equal(plan.manifest.win, `/files/latest/${names.win}`)
 })
 
-test('does not scp until --yes and writes the local manifest only after a successful upload', () => {
+test('does not scp until --yes and writes the local manifest only after a successful upload', async () => {
   const directory = scratch()
   const names = installerFileNames('0.1.22')
   const commands = []
+  const verified = []
   try {
     fs.mkdirSync(path.join(directory, 'dl-landing'), { recursive: true })
     fs.writeFileSync(path.join(directory, names.win), 'exe')
     fs.writeFileSync(path.join(directory, names.macArm64), 'arm')
     fs.writeFileSync(path.join(directory, names.macX64), 'intel')
+    const knownHosts = writeKnownHosts(directory)
 
-    const preview = publishDlLanding({
+    const preview = await publishDlLanding({
       ...TARGET,
       version: '0.1.22',
       localDir: directory,
       yes: false,
       key: path.join(directory, 'id'),
+      knownHosts,
       cwd: directory,
       sources: NO_SOURCES,
     }, {
@@ -247,12 +265,13 @@ test('does not scp until --yes and writes the local manifest only after a succes
     assert.equal(fs.existsSync(path.join(directory, 'dl-landing', 'latest.json')), false)
 
     fs.writeFileSync(path.join(directory, 'id'), 'key')
-    const uploaded = publishDlLanding({
+    const uploaded = await publishDlLanding({
       ...TARGET,
       version: '0.1.22',
       localDir: directory,
       yes: true,
       key: path.join(directory, 'id'),
+      knownHosts,
       remoteRoot: '/srv/dl-landing',
       cwd: directory,
       sources: NO_SOURCES,
@@ -260,6 +279,10 @@ test('does not scp until --yes and writes the local manifest only after a succes
       collectInstallers,
       downloadWindowsArtifact() {
         throw new Error('should not download when --local-dir is set')
+      },
+      verifyUploadCandidates(options, plan) {
+        verified.push(plan.uploads.map((item) => item.fileName))
+        return { verifiedDirectory: directory, comparedChecksums: [] }
       },
       runTool(command, args) {
         commands.push([command, ...args])
@@ -269,6 +292,12 @@ test('does not scp until --yes and writes the local manifest only after a succes
       cwd: directory,
     })
     assert.equal(uploaded.uploaded, true)
+    // Verification has to happen before the first command reaches the origin.
+    assert.deepEqual(verified, [[names.win, names.macArm64, names.macX64]])
+    for (const line of commands.filter((item) => item[0] === 'ssh' || item[0] === 'scp')) {
+      assert.ok(line.includes('StrictHostKeyChecking=yes'), `${line[0]} must pin the host key`)
+      assert.ok(line.includes(`UserKnownHostsFile=${knownHosts}`), `${line[0]} must use the operator known_hosts`)
+    }
     assert.ok(commands.some((line) => line[0] === 'scp' && line.includes(path.join(directory, names.win))))
     assert.ok(commands.some((line) => line[0] === 'scp' && line.includes('deploy@203.0.113.9:/srv/dl-landing/files/latest/')))
     assert.ok(commands.some((line) => line[0] === 'scp' && line.includes('deploy@203.0.113.9:/srv/dl-landing/latest.json')))
@@ -285,8 +314,8 @@ test('does not scp until --yes and writes the local manifest only after a succes
   }
 })
 
-test('refuses to publish when any part of the origin configuration is missing', () => {
-  for (const field of ['host', 'port', 'user', 'key', 'remoteRoot']) {
+test('refuses to publish when any part of the origin configuration is missing', async () => {
+  for (const field of ['host', 'port', 'user', 'key', 'knownHosts', 'remoteRoot']) {
     const partial = { ...TARGET }
     delete partial[field]
     assert.throws(
@@ -294,7 +323,7 @@ test('refuses to publish when any part of the origin configuration is missing', 
       /缺少源站配置/,
       `should refuse to run without ${field}`,
     )
-    assert.throws(
+    await assert.rejects(
       () => publishDlLanding({ ...partial, version: '0.1.22', localDir: '.', sources: NO_SOURCES }, {}),
       /缺少源站配置/,
       `publishDlLanding should refuse to run without ${field}`,
@@ -311,7 +340,7 @@ test('treats a blank value as missing rather than as an origin', () => {
   )
   assert.deepEqual(
     resolvePublishTarget({ env: { DL_LANDING_SSH_HOST: '  ' }, config: { host: '198.51.100.7' } }),
-    { host: '198.51.100.7', port: '', user: '', key: '', remoteRoot: '' },
+    { host: '198.51.100.7', port: '', user: '', key: '', knownHosts: '', remoteRoot: '' },
   )
   assert.throws(() => assertPublishTarget({}), /缺少源站配置/)
   assert.equal(assertPublishTarget(TARGET), TARGET)
@@ -324,6 +353,7 @@ test('reads the origin from environment variables and from the ignored local con
       DL_LANDING_SSH_PORT: '2022',
       DL_LANDING_SSH_USER: 'deploy',
       DL_LANDING_SSH_KEY: '/keys/landing',
+      DL_LANDING_KNOWN_HOSTS: '/keys/landing_known_hosts',
       DL_LANDING_REMOTE_ROOT: '/srv/dl-landing/',
     },
     config: {},
@@ -332,6 +362,7 @@ test('reads the origin from environment variables and from the ignored local con
   assert.equal(fromEnv.port, 2022)
   assert.equal(fromEnv.user, 'deploy')
   assert.equal(fromEnv.key, '/keys/landing')
+  assert.equal(fromEnv.knownHosts, '/keys/landing_known_hosts')
   assert.equal(fromEnv.remoteRoot, '/srv/dl-landing')
 
   const fromFile = parsePublishArgs([], {}, { env: {}, config: { ...TARGET, port: 2022 } })
@@ -394,4 +425,135 @@ test('keeps the production origin out of the public repository', () => {
   )
   assert.equal(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d+/.test(proxy), false, 'no backend address in the template')
   assert.match(proxy, /__ACCOUNT_UPSTREAM__/)
+})
+
+test('P-27: pins the origin host key and refuses a known_hosts file it cannot trust', () => {
+  const directory = scratch()
+  try {
+    const knownHosts = writeKnownHosts(directory)
+    assert.equal(assertKnownHostsFile(knownHosts), knownHosts)
+    assert.throws(() => assertKnownHostsFile(''), /缺少 known_hosts 文件/)
+    assert.throws(() => assertKnownHostsFile('   '), /缺少 known_hosts 文件/)
+    assert.throws(() => assertKnownHostsFile(path.join(directory, 'nope')), /找不到 known_hosts 文件/)
+
+    const empty = path.join(directory, 'empty_known_hosts')
+    fs.writeFileSync(empty, '', 'utf8')
+    assert.throws(() => assertKnownHostsFile(empty), /为空或不是普通文件/)
+    assert.throws(() => assertKnownHostsFile(directory), /为空或不是普通文件/)
+
+    // The repository is public, so a host key file inside it would publish the origin.
+    assert.throws(
+      () => assertKnownHostsFile(path.join(__dirname, '..', 'known_hosts')),
+      /不能放在仓库目录里/,
+    )
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('P-28: hashes an installer without holding it in memory', async () => {
+  const directory = scratch()
+  try {
+    const filePath = path.join(directory, 'installer.bin')
+    // Large enough that fs.createReadStream hands the hash more than one chunk.
+    const chunk = Buffer.alloc(64 * 1024, 7)
+    const handle = fs.openSync(filePath, 'w')
+    for (let index = 0; index < 8; index += 1) fs.writeSync(handle, chunk)
+    fs.closeSync(handle)
+
+    const expected = require('node:crypto')
+      .createHash('sha256')
+      .update(Buffer.concat(Array.from({ length: 8 }, () => chunk)))
+      .digest('hex')
+    assert.equal(await fileSha256(filePath), expected)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('P-29: reads the CI checksum printout and rejects a file that does not match', async () => {
+  const directory = scratch()
+  const names = installerFileNames('0.1.22')
+  try {
+    const win = path.join(directory, names.win)
+    fs.writeFileSync(win, 'exe', 'utf8')
+    const digest = await fileSha256(win)
+    const uploads = [{ slot: 'win', local: win, fileName: names.win }]
+
+    const listing = [
+      'Some unrelated line the operator pasted along',
+      `${names.win}  3 bytes  SHA256=${digest.toUpperCase()}`,
+      `${names.win}.blockmap  12 bytes  SHA256=${'a'.repeat(64)}`,
+    ].join('\n')
+    const expected = parseExpectedChecksums(listing)
+    assert.equal(expected.get(names.win), digest)
+    assert.deepEqual(await assertExpectedChecksums(uploads, expected), [names.win])
+
+    await assert.rejects(
+      () => assertExpectedChecksums(uploads, parseExpectedChecksums(`${names.win}  3 bytes  SHA256=${'b'.repeat(64)}`)),
+      /SHA-256 与校验清单不一致/,
+    )
+    await assert.rejects(
+      () => assertExpectedChecksums(uploads, parseExpectedChecksums(`other.exe  3 bytes  SHA256=${'b'.repeat(64)}`)),
+      /没有任何一个要上传的文件/,
+    )
+    assert.throws(() => parseExpectedChecksums('nothing parseable here'), /没有一行能解析出 SHA-256/)
+    assert.throws(
+      () => parseExpectedChecksums([
+        `${names.win}  3 bytes  SHA256=${'a'.repeat(64)}`,
+        `${names.win}  3 bytes  SHA256=${'b'.repeat(64)}`,
+      ].join('\n')),
+      /两个不同的 SHA-256/,
+    )
+
+    const listingFile = path.join(directory, 'checksums.txt')
+    fs.writeFileSync(listingFile, listing, 'utf8')
+    assert.equal(readExpectedChecksums(listingFile).get(names.win), digest)
+    assert.throws(() => readExpectedChecksums(path.join(directory, 'missing.txt')), /找不到校验清单/)
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
+test('P-29: refuses to upload when the local release check does not pass', async () => {
+  const directory = scratch()
+  const names = installerFileNames('0.1.22')
+  try {
+    const win = path.join(directory, names.win)
+    fs.writeFileSync(win, 'exe', 'utf8')
+    const plan = { uploads: [{ slot: 'win', local: win, fileName: names.win }] }
+
+    // The Actions artifact always carries latest.yml; an exe on its own cannot be checked.
+    await assert.rejects(
+      () => verifyUploadCandidates({ version: '0.1.22' }, plan, {
+        validateLocalRelease() {
+          throw new Error('should not validate a directory without latest.yml')
+        },
+      }),
+      /没有 latest\.yml/,
+    )
+
+    fs.writeFileSync(path.join(directory, 'latest.yml'), 'version: 0.1.22\n', 'utf8')
+    await assert.rejects(
+      () => verifyUploadCandidates({ version: '0.1.22' }, plan, {
+        validateLocalRelease() {
+          throw Object.assign(new Error('更新文件 SHA-512 不匹配：Setup.exe'), { code: 'LOCAL_ARTIFACT_HASH_MISMATCH' })
+        },
+      }),
+      /已拒绝上传.*LOCAL_ARTIFACT_HASH_MISMATCH/s,
+    )
+
+    const seen = []
+    const result = await verifyUploadCandidates({ version: '0.1.22' }, plan, {
+      validateLocalRelease(releaseDirectory, options) {
+        seen.push([releaseDirectory, options.expectedVersion])
+        return {}
+      },
+    })
+    assert.deepEqual(seen, [[directory, '0.1.22']])
+    assert.equal(result.verifiedDirectory, directory)
+    assert.deepEqual(result.comparedChecksums, [])
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
 })

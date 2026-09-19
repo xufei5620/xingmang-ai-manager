@@ -12,6 +12,7 @@ const cdpDiscoveryTimeoutMs = 2_000
 const cdpCommandTimeoutMs = 5_000
 const cdpDiscoveryAttempts = 30
 const cdpDiscoveryDeadlineMs = 20_000
+const cdpPortOwnershipRevalidateMs = 5_000
 
 /**
  * This is deliberately a small, mechanism-level patch. It does not replace
@@ -250,6 +251,18 @@ export interface CodexDesktopCdpDependencies {
   fetch?: typeof globalThis.fetch
   createWebSocket?: (url: string) => CdpSocket
   delay?: (milliseconds: number) => Promise<void>
+  resolvePortOwnerProcessIds?: (port: number) => Promise<number[]>
+}
+
+export interface CodexDesktopCdpInjectionOptions extends CodexDesktopCdpDependencies {
+  /**
+   * PID reported by the AppX activation manager for the Codex process that was
+   * started with the debugging flag. The loopback debugging port has no
+   * authentication and is handed out by an advisory allocation, so the port may
+   * be held by any local process that won the bind race. Nothing is sent to the
+   * port until every listener on it belongs to this process.
+   */
+  expectedProcessId: number | null
 }
 
 function assertCdpPort(port: number): number {
@@ -318,6 +331,12 @@ export function validateCodexDesktopAppUserModelId(value: string): string {
   return appId
 }
 
+/**
+ * Picks a free loopback port for the debugging flag. The allocation is only
+ * advisory: the listener is closed again before Codex can bind it, so any
+ * local process may win that gap. Ownership of the bound port is therefore
+ * verified against the activated Codex PID before anything is sent to it.
+ */
 export function getAvailableLoopbackPort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = net.createServer()
@@ -337,6 +356,63 @@ export function getAvailableLoopbackPort(): Promise<number> {
       })
     })
   })
+}
+
+export type CodexDesktopCdpPortOwnership = 'unbound' | 'owned' | 'foreign'
+
+const cdpPortOwnerScript = String.raw`$ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
+$OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$port = [int]$env:XINGMANG_CODEX_CDP_PORT
+Get-NetTCPConnection -LocalPort $port -State Listen -ErrorAction SilentlyContinue |
+  ForEach-Object { [string]$_.OwningProcess }`
+
+export function parseCodexDesktopCdpPortOwners(output: string): number[] {
+  const owners: number[] = []
+  for (const line of output.split(/\r?\n/)) {
+    const value = line.trim()
+    if (!/^\d+$/.test(value)) continue
+    const processId = Number(value)
+    if (Number.isInteger(processId) && processId > 0 && !owners.includes(processId)) owners.push(processId)
+  }
+  return owners
+}
+
+/**
+ * `unbound` means nothing listens on the port yet, which is the normal state
+ * while Codex is still starting. Every listener must belong to the process we
+ * activated: the query filters by local port only, so a second listener on
+ * another local address is a different peer answering on the same port.
+ */
+export function classifyCodexDesktopCdpPortOwnership(
+  owners: readonly number[],
+  expectedProcessId: number,
+): CodexDesktopCdpPortOwnership {
+  if (!owners.length) return 'unbound'
+  return owners.every((owner) => owner === expectedProcessId) ? 'owned' : 'foreign'
+}
+
+export async function resolveCodexDesktopCdpPortOwners(
+  port: number,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): Promise<number[]> {
+  assertCdpPort(port)
+  const { stdout } = await execFileAsync(resolveWindowsPowerShellExecutable(), [
+    '-NoLogo',
+    '-NoProfile',
+    '-NonInteractive',
+    '-EncodedCommand',
+    encodePowerShellCommand(cdpPortOwnerScript),
+  ], {
+    env: {
+      ...trustedCommandEnvironment(baseEnv),
+      XINGMANG_CODEX_CDP_PORT: String(port),
+    },
+    windowsHide: true,
+    timeout: 10_000,
+    maxBuffer: 256 * 1024,
+  })
+  return parseCodexDesktopCdpPortOwners(stdout)
 }
 
 function encodePowerShellCommand(script: string): string {
@@ -694,13 +770,30 @@ async function listTargets(
 
 export async function injectCodexDesktopChineseLocale(
   port: number,
-  dependencies: CodexDesktopCdpDependencies = {},
+  options: CodexDesktopCdpInjectionOptions,
 ): Promise<CodexDesktopCdpInjectionResult> {
   assertCdpPort(port)
-  const fetchImpl = dependencies.fetch ?? globalThis.fetch
+  const expectedProcessId = options.expectedProcessId
+  if (expectedProcessId === null || !Number.isInteger(expectedProcessId) || expectedProcessId <= 0) {
+    throw new Error('未取得 Codex Desktop 进程号，无法确认调试端口归属')
+  }
+  const fetchImpl = options.fetch ?? globalThis.fetch
   if (typeof fetchImpl !== 'function') throw new Error('当前运行时不支持 CDP HTTP 查询')
-  const createWebSocket = dependencies.createWebSocket ?? defaultWebSocket
-  const delay = dependencies.delay ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const createWebSocket = options.createWebSocket ?? defaultWebSocket
+  const delay = options.delay ?? ((milliseconds: number) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)))
+  const resolvePortOwnerProcessIds = options.resolvePortOwnerProcessIds ?? resolveCodexDesktopCdpPortOwners
+  let ownershipVerifiedAt = 0
+  // Re-reading the TCP table costs a PowerShell start, so a confirmation is
+  // reused for a short while instead of running on every discovery attempt.
+  const inspectPortOwnership = async (): Promise<CodexDesktopCdpPortOwnership> => {
+    if (ownershipVerifiedAt && Date.now() - ownershipVerifiedAt < cdpPortOwnershipRevalidateMs) return 'owned'
+    const ownership = classifyCodexDesktopCdpPortOwnership(await resolvePortOwnerProcessIds(port), expectedProcessId)
+    if (ownership === 'foreign') {
+      throw new Error(`Codex Desktop 调试端口 ${port} 被其他进程占用，已取消中文增强`)
+    }
+    if (ownership === 'owned') ownershipVerifiedAt = Date.now()
+    return ownership
+  }
   let lastError: unknown = null
   let injectedTargets = 0
   const sessions = new Map<string, CdpInjectionSession>()
@@ -709,6 +802,13 @@ export async function injectCodexDesktopChineseLocale(
   const deadline = Date.now() + cdpDiscoveryDeadlineMs
   try {
     for (let attempt = 1; attempt <= cdpDiscoveryAttempts && Date.now() < deadline; attempt += 1) {
+      // A squatted port must abort the whole injection: retrying would only
+      // keep handing the payload to whoever answers on it.
+      if (await inspectPortOwnership() === 'unbound') {
+        lastError = new Error('Codex Desktop 调试端口尚未就绪')
+        await delay(500)
+        continue
+      }
       try {
         const priority: Record<string, number> = { page: 0, iframe: 1, webview: 2 }
         const targets = filterCodexDesktopCdpTargets(await listTargets(port, fetchImpl), port)

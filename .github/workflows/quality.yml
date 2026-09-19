@@ -44,16 +44,77 @@ jobs:
       - id: scope
         run: node scripts/ci-change-scope.cjs
 
-  test:
+  # One serial Windows job used to own every Windows check, and at ~27 minutes
+  # it was the whole pipeline's wall clock: `npm test` (~11m) and test:v2
+  # (~9m) ran back to back while five other runners sat idle. The shards below
+  # run the same commands, with the same timeouts, on runners that start at the
+  # same moment. Nothing is skipped, shortened or reordered within a shard.
+  #
+  # The two vitest suites are cut with `--shard`, which sorts the resolved test
+  # files by a hash of their path and slices that list, so the shards are a
+  # stable partition whose union is exactly the file set the unsharded command
+  # ran. `--no-file-parallelism` stays on inside each shard: it is what keeps
+  # the filesystem-heavy files from racing each other under Defender, and
+  # sharding across runners preserves it rather than working around it.
+  #
+  # The cost is runner slots, not minutes: this repository is public, so Actions
+  # bills nothing, but the account's concurrent-job ceiling is shared across
+  # every open pull request. With twenty-odd of them in flight the shards queue
+  # rather than fail, and a queued job is not running, so the caps below are
+  # untouched by the wait — `timeout-minutes` measures execution, not time spent
+  # waiting for a runner. Nothing here needs to grow if a run sits in the queue.
+  windows-test:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: windows-latest
-    # test:windows (~13m) plus test:v2 (~10m) already put this job at ~28m of
-    # its old 35m cap, so a single slow smoke cancelled the job before the
-    # step could report why. The per-step timeouts below are the real bound.
-    # The cap stays at 45 even though test:canvas and test:ui left for linux:
-    # the packaging steps below still have to fit under it.
-    timeout-minutes: 45
+    # The longest shard is ~9 minutes. This is a backstop for a wedged runner,
+    # not a bound anything is expected to approach.
+    timeout-minutes: 25
+    strategy:
+      # A failing shard must not cancel its siblings. Splitting the job is only
+      # worth it if one run still reports every failure it found, rather than
+      # surfacing them one push at a time.
+      fail-fast: false
+      matrix:
+        include:
+          # The vitest half of `npm test`: ~10 of its ~11 minutes. Almost all
+          # of that is per-file environment setup rather than assertions, so
+          # splitting by file count — which is what --shard does — splits the
+          # time with it.
+          - shard: vitest-1
+            command: npm run test:vitest:1
+            timeout: 15
+          - shard: vitest-2
+            command: npm run test:vitest:2
+            timeout: 15
+          # The node --test half of `npm test`: the build and release script
+          # suites, then the two browser suites that ride along with them. Under
+          # a minute together, so they share one runner rather than a shard each.
+          - shard: node
+            command: npm run test:scripts && npm run test:browser
+            timeout: 10
+          # test:v2 stays on the shipping platform; test:canvas and the legacy
+          # test:ui suites live in linux-test, because neither asserts anything
+          # platform-specific and these are the least stable runners. Its two
+          # halves are wildly lopsided — the vitest one is seconds, the browser
+          # one is effectively all of test:v2's ~9 minutes — so only the
+          # browser one is split further.
+          - shard: renderer-v2
+            command: npm run test:v2:vitest
+            timeout: 10
+          # Deliberately NOT split further, even though app-check.mjs is half
+          # of it on its own. Every file here builds a Vite dev server with the
+          # same `configFile: false` root, so they share one on-disk
+          # node_modules/.vite dependency cache and the earlier files warm it
+          # for the later ones — app-check.mjs runs last and inherits all of
+          # it. Splitting them across runners gave app-check a cold cache, and
+          # a mid-run re-optimisation then blew the 90s fixture mount budget on
+          # the NewAPI announcement-collection test (run 35420361508). The
+          # suite is ~10 minutes whole, which still clears the target.
+          - shard: renderer-v2-browser
+            command: npm run test:v2:browser
+            timeout: 18
+    name: windows-test (${{ matrix.shard }})
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -70,12 +131,13 @@ jobs:
           $unlockKey = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock'
           New-Item -Path $unlockKey -Force | Out-Null
           New-ItemProperty -Path $unlockKey -Name AllowDevelopmentWithoutDevLicense -PropertyType DWord -Value 1 -Force | Out-Null
-      - run: npm run typecheck
-      - run: npm run test:windows
-      # test:v2 stays on the shipping platform. test:canvas and the legacy
-      # test:ui suites moved to linux-test: neither asserts anything
-      # platform-specific, and this job is the slowest and least stable one.
-      - run: npm run test:v2
+      - name: Run the ${{ matrix.shard }} shard
+        # Roughly twice the shard's observed run. A suite that stalls rather
+        # than fails — test:v2 sat for 42 minutes on #172 and took a whole
+        # 45-minute job down with it — now costs this one shard and reports
+        # which one, instead of cancelling the job at its cap with no verdict.
+        timeout-minutes: ${{ matrix.timeout }}
+        run: ${{ matrix.command }}
       - name: Fail if the test run left files in the working tree
         shell: bash
         run: |
@@ -84,6 +146,28 @@ jobs:
             git status --porcelain
             exit 1
           fi
+
+  # The compile, smoke and packaging half of the old job. It stays one job
+  # rather than joining the matrix above because each smoke carries its own
+  # step timeout, and because every step here depends on the compile before it.
+  windows-package:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci --registry=https://registry.npmjs.org/
+      # No `npx playwright install chromium` here on purpose: every smoke below
+      # drives the application through _electron.launch, which uses the
+      # Electron binary the install already placed, not a downloaded Chromium.
+      - run: npm run typecheck
       - run: npm run compile
       - name: Verify the default compile selected renderer v2
         shell: pwsh
@@ -101,6 +185,12 @@ jobs:
         # it overruns. This is the backstop for a hang that outlives even that.
         timeout-minutes: 6
         run: node e2e/window-close-smoke.mjs
+      - name: Verify dual-site account isolation with an isolated fixture
+        # The only end-to-end coverage of the two account backends (D-12). It
+        # drives three cold starts, so it budgets itself to 8 minutes; this is
+        # the backstop for a hang that outlives even that.
+        timeout-minutes: 10
+        run: node e2e/realm-account-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
@@ -114,8 +204,41 @@ jobs:
           path: |
             artifacts/*.png
             artifacts/*.json
+            output/realm-account-review/*
           if-no-files-found: ignore
           retention-days: 7
+
+  # Folds the Windows shards back into the single `test` check they replaced.
+  # Two things depend on that name surviving: a branch protection rule may name
+  # it, and a reader scanning a pull request should still find one check that
+  # answers "is Windows green" without counting six. It evaluates the change
+  # scope itself, so it reports success — never "skipped" — for a
+  # documentation-only change, which is what the aggregate below relies on.
+  test:
+    # `!cancelled()` rather than `always()`: a superseded run — this workflow
+    # cancels those on every new push — would otherwise run this job anyway,
+    # find the shards cancelled, and post a red `test` against a commit nobody
+    # is looking at any more. A job that blows its own `timeout-minutes` is
+    # cancelled at the job level, not the workflow level, so that still lands
+    # here as a failure. When the whole run is cancelled this job is skipped,
+    # and the aggregate below refuses a skipped `test`, so a cancelled run
+    # still cannot read as a pass.
+    if: ${{ !cancelled() }}
+    needs: [changes, windows-test, windows-package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every Windows shard to match the change scope
+        env:
+          JOB_RESULTS: ${{ toJSON(needs) }}
+        run: |
+          node <<'NODE'
+          const jobs = JSON.parse(process.env.JOB_RESULTS)
+          const code = jobs.changes.outputs.code
+          if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
+          const expected = code === 'true' ? 'success' : 'skipped'
+          if (['windows-test', 'windows-package'].some(name => jobs[name].result !== expected)) process.exit(1)
+          NODE
 
   macos-test:
     needs: changes
@@ -251,5 +374,9 @@ jobs:
           const code = jobs.changes.outputs.code
           if (jobs.changes.result !== 'success' || !['true', 'false'].includes(code)) process.exit(1)
           const expected = code === 'true' ? 'success' : 'skipped'
-          if (['test', 'macos-test', 'linux-test', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          if (['macos-test', 'linux-test', 'audit'].some(name => jobs[name].result !== expected)) process.exit(1)
+          // `test` folds the Windows shards together and applies that same
+          // expectation itself, so it reports success — never "skipped" — for a
+          // documentation-only change.
+          if (jobs.test.result !== 'success') process.exit(1)
           NODE

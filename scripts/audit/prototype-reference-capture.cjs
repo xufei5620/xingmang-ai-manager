@@ -1,7 +1,7 @@
 'use strict';
 const fs = require('node:fs');
 const path = require('node:path');
-const { launch, open, setPage, pageIds, supportFor, publicPrototype, hash, observedState, matchesState } = require('../ui-spec/work/reference-harness.cjs');
+const { launch, open, setPage, pageIds, supportFor, publicPrototype, hash, observedState, matchesState } = require('../../ui-spec/work/reference-harness.cjs');
 const output = path.resolve('docs/prototype-refs/current');
 const states = ['default', 'empty', 'loading', 'error'];
 const requestedPages = process.argv.filter(arg => arg.startsWith('--page=')).map(arg => arg.slice(7));

@@ -55,7 +55,7 @@
 
 - `npx vitest run electron/platform src/renderer-v2/account-switch-sync.test.ts src/renderer-v2/business.test.ts --no-file-parallelism`：36 项通过；原生系统 API 均使用 mock，存储只写临时测试目录。
 - `node --test e2e/v2-business.test.mjs`：16 组通过，覆盖真实 DTO 展示、失败回退、native ID、恢复确认、报告快照、更新阶段、支付回跳及草稿保留、选择性密钥同步、平台设置、四皮肤、通知总开关和隐私偏好、账号任务由处理中转为成功的通知去重。
-- `node e2e/v2-business-screenshots.mjs`：240 张截图，20 个页面及账号面板 × 暗/亮 × Win/Mac 样式 × 默认/空/失败。包含当前 Shell；检查页面非空、无页面运行错误、横向不溢出。
+- `node scripts/audit/v2-business-screenshots.mjs`：240 张截图，20 个页面及账号面板 × 暗/亮 × Win/Mac 样式 × 默认/空/失败。包含当前 Shell；检查页面非空、无页面运行错误、横向不溢出。
 - 所有浏览器测试与截图仅使用本地 typed mock；不访问生产账号、支付或安装接口。
 
-截图由 `e2e/v2-business-screenshots.mjs` 在本地生成，并在平台设置、选择性密钥同步与本机头像补齐后重新拍摄；PNG、清单和对照索引按产品负责人要求不进入源码 PR。截图中的 macOS 是 Chromium 下的样式分支，不是 macOS 真机证据。设置与教程等没有自然“空态”的页面保持正常内容；不会制造不存在的产品状态。
+截图由 `scripts/audit/v2-business-screenshots.mjs` 在本地生成，并在平台设置、选择性密钥同步与本机头像补齐后重新拍摄；PNG、清单和对照索引按产品负责人要求不进入源码 PR。截图中的 macOS 是 Chromium 下的样式分支，不是 macOS 真机证据。设置与教程等没有自然“空态”的页面保持正常内容；不会制造不存在的产品状态。

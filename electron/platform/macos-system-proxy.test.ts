@@ -5,7 +5,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { createHash } from 'node:crypto'
 import { describe, it, expect, vi } from 'vitest'
-import { createMacosSystemProxy, prepareMacosProxyHelper } from './macos-system-proxy'
+import { createMacosSystemProxy, planMacosProxyHelperCleanup, prepareMacosProxyHelper } from './macos-system-proxy'
 
 function transport() {
   const child = Object.assign(new EventEmitter(), { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(), kill: () => true, unref: () => undefined })
@@ -65,6 +65,75 @@ describe('macOS system proxy adapter', () => {
       await fs.link(source, path.join(root, 'linked-source'))
       await expect(prepareMacosProxyHelper(source, cache)).rejects.toThrow('单链接')
     } finally { await fs.rm(root, { recursive: true, force: true }) }
+  })
+
+  it('plans removal of retired copies only, keeping the new one and the newest survivors', () => {
+    const digest = 'a'.repeat(64)
+    const day = 24 * 60 * 60 * 1000
+    const now = 100 * day
+    const copies = [
+      { name: `${digest}-new`, modifiedAtMs: now },
+      { name: `${digest}-young`, modifiedAtMs: now - day / 2 },
+      { name: `${digest}-recent`, modifiedAtMs: now - 3 * day },
+      { name: `${digest}-older`, modifiedAtMs: now - 5 * day },
+      { name: `${digest}-oldest`, modifiedAtMs: now - 9 * day },
+      { name: 'unrelated-directory', modifiedAtMs: 0 },
+    ]
+    expect(planMacosProxyHelperCleanup(copies, `${digest}-new`, now)).toEqual([`${digest}-older`, `${digest}-oldest`])
+    expect(planMacosProxyHelperCleanup(copies, `${digest}-new`, now, 0)).toEqual([`${digest}-recent`, `${digest}-older`, `${digest}-oldest`])
+    expect(planMacosProxyHelperCleanup(copies, `${digest}-oldest`, now, 0, 10 * day)).toEqual([])
+  })
+
+  it('removes retired helper copies after preparing a new one', async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xm-proxy-helper-test-')))
+    try {
+      const source = path.join(root, 'source')
+      const cache = path.join(root, 'cache')
+      const unrelated = path.join(cache, 'unrelated-directory')
+      await fs.writeFile(source, 'trusted helper', { mode: 0o700 })
+      const retired: string[] = []
+      for (let index = 0; index < 4; index += 1) retired.push(path.dirname(await prepareMacosProxyHelper(source, cache)))
+      await fs.mkdir(unrelated, { recursive: true })
+      const day = 24 * 60 * 60 * 1000
+      for (const [index, directory] of retired.entries()) {
+        const stamp = new Date(Date.now() - (10 - index) * day)
+        await fs.utimes(directory, stamp, stamp)
+      }
+      const fresh = path.dirname(await prepareMacosProxyHelper(source, cache))
+      const present = async (directory: string) => fs.access(directory).then(() => true, () => false)
+      expect(await Promise.all(retired.map(present))).toEqual([false, false, true, true])
+      expect(await present(fresh)).toBe(true)
+      expect(await present(unrelated)).toBe(true)
+      // The copy just prepared is young, so the next start keeps it and retires
+      // the oldest survivor instead.
+      const next = path.dirname(await prepareMacosProxyHelper(source, cache))
+      expect(await Promise.all([retired[2], retired[3], fresh, next].map(present))).toEqual([false, true, true, true])
+    } finally { await fs.rm(root, { recursive: true, force: true }) }
+  })
+
+  it('still returns a verified helper when sweeping old copies fails', async () => {
+    const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'xm-proxy-helper-test-')))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const source = path.join(root, 'source')
+      const cache = path.join(root, 'cache')
+      await fs.writeFile(source, 'trusted helper', { mode: 0o700 })
+      const retired: string[] = []
+      for (let index = 0; index < 3; index += 1) retired.push(path.dirname(await prepareMacosProxyHelper(source, cache)))
+      const stamp = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000)
+      for (const directory of retired) await fs.utimes(directory, stamp, stamp)
+      const removal = vi.spyOn(fs, 'rm').mockRejectedValue(new Error('清理被拒绝'))
+      try {
+        const prepared = await prepareMacosProxyHelper(source, cache)
+        expect(await fs.readFile(prepared, 'utf8')).toBe('trusted helper')
+      } finally { removal.mockRestore() }
+      const present = await Promise.all(retired.map(directory => fs.access(directory).then(() => true, () => false)))
+      expect(present).toEqual([true, true, true])
+      expect(warn.mock.calls[0]?.[0]).toContain('旧组件副本清理失败')
+    } finally {
+      warn.mockRestore()
+      await fs.rm(root, { recursive: true, force: true })
+    }
   })
 
   it('serializes RPCs and maps only fixed error text', async () => {

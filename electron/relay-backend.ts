@@ -9,10 +9,10 @@
 // RelayBackendClient, not the concrete new-api type, by design.
 //
 // The method list here is deliberately the *exact* set today's real callers
-// use -- ipc.ts's account:* handlers, canvas-window.ts's
-// buildCanvasTokenDependencies (the canvas auto-key flow), and main.ts's
-// startup session restore (via account-session-store.ts's
-// restoreAccountSessionOnStartup) -- not new-api-client.ts's full surface.
+// use -- ipc.ts's account:* handlers, chat-credential-coordinator.ts's
+// main-process key resolution for the canvas, and main.ts's startup session
+// restore (via account-session-store.ts's restoreAccountSessionOnStartup) --
+// not new-api-client.ts's full surface.
 // Two NewApiClientService methods are intentionally excluded because
 // nothing outside new-api-client.ts (and its own tests) calls them today:
 // isAuthenticated(), refreshAccessToken(). Add a
@@ -129,7 +129,7 @@ export interface RelayBackendCapabilities {
   supportsProfileUpdate: boolean
   /** Login-session list and revocation. */
   supportsSessionManagement: boolean
-  /** provisionCliKey() / findExistingCliKey() -- CLI/canvas auto key issuance. */
+  /** provisionCliKey() -- CLI/canvas auto key issuance. */
   supportsAutoKeyProvision: boolean
   /** restoreSession() -- persisted-login restore across app restarts. */
   supportsAccountSession: boolean
@@ -137,10 +137,11 @@ export interface RelayBackendCapabilities {
 
 /**
  * The subset of a relay backend's account client that today's real callers
- * use: ipc.ts's account:* handlers, canvas-window.ts's
- * buildCanvasTokenDependencies (the canvas window's auto key-provisioning),
- * and main.ts's startup flow (restoreAccountSessionOnStartup in
- * account-session-store.ts). Each method below notes its consumer(s); see
+ * use: ipc.ts's account:* handlers, chat-credential-coordinator.ts (the
+ * canvas's key resolution, which happens in the main process -- the canvas
+ * renderer never holds a key, see CLAUDE.md's I15), and main.ts's startup
+ * flow (restoreAccountSessionOnStartup in account-session-store.ts). Each
+ * method below notes its consumer(s); see
  * new-api-client.ts's NewApiClientService for the full per-method
  * implementation contract (request/response shape, error semantics) -- kept
  * there rather than duplicated here to avoid the two drifting apart.
@@ -171,7 +172,7 @@ export interface RelayBackendClient {
   login(input: NewApiLoginInput): Promise<NewApiLoginResult>
   /** ipc.ts: account:logout */
   logout(): void
-  /** ipc.ts: account:get-session; canvas-window.ts's buildCanvasTokenDependencies (isAccountAuthenticated) */
+  /** ipc.ts: account:get-session; chat-credential-coordinator.ts (the account a canvas request resolves against) */
   getSessionState(): NewApiSessionState
   /** ipc.ts: account:get-balance */
   getBalance(): Promise<NewApiBalance>
@@ -229,10 +230,8 @@ export interface RelayBackendClient {
   revokeLoginSession(sid: string): Promise<NewApiRevokeLoginSessionResult>
   /** ipc.ts: account:revoke-other-login-sessions */
   revokeOtherLoginSessions(): Promise<NewApiRevokeOtherLoginSessionsResult>
-  /** ipc.ts: account:provision-cli-key; canvas-window.ts's buildCanvasTokenDependencies */
+  /** ipc.ts: account:provision-cli-key; chat-credential-coordinator.ts (mints the canvas's per-group key) */
   provisionCliKey(input?: NewApiProvisionCliKeyInput): Promise<NewApiCliKeyResult>
-  /** canvas-window.ts's buildCanvasTokenDependencies (orphan-token reuse before minting a fresh one) */
-  findExistingCliKey(namePrefix: string): Promise<NewApiCliKeyResult | null>
   /** main.ts's startup flow, via account-session-store.ts's restoreAccountSessionOnStartup */
   restoreSession(persisted: NewApiPersistableSession): Promise<boolean>
   /** Main-process-only saved-account switching; credentials must never cross IPC. */

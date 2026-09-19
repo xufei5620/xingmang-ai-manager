@@ -1,0 +1,11 @@
+# 代码所有者（CODEOWNERS）
+#
+# 这里列出的路径改动时，GitHub 会自动把 @xufei5620 加为审查人。
+# 注意：只有在分支保护里开启「Require review from Code Owners」之后才是强制审查；
+# 未开启时它只负责自动指派，不阻塞合并。
+
+# 仓库自动化：CI 工作流、issue / PR 模板、本文件自身
+/.github/ @xufei5620
+
+# 构建、打包、发布与运维脚本
+/scripts/ @xufei5620
