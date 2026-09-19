@@ -979,6 +979,58 @@ describe('CLI installation resolution', () => {
     })
   })
 
+  it.runIf(process.platform !== 'win32')('pins a natively installed macOS Claude Code to Anthropic\'s Developer ID', async () => {
+    const directory = temporaryDirectory()
+    const binDirectory = path.join(directory, '.local', 'bin')
+    const commandPath = write(path.join(binDirectory, 'claude'), '#!/bin/sh\n')
+    const specs: Array<{ executable: string; argv: readonly string[] }> = []
+
+    const command = await resolveCliCommand('claude', {
+      HOME: directory,
+      PATH: binDirectory,
+    }, 'same-user', {
+      platform: 'darwin',
+      executablePath: commandPath,
+      runCommand: async (spec) => {
+        specs.push(spec)
+        return { stdout: '', stderr: '' }
+      },
+    })
+
+    expect(command).toEqual({ executable: fs.realpathSync(commandPath), argv: [] })
+    expect(specs).toEqual([
+      {
+        executable: '/usr/bin/codesign',
+        argv: [
+          '--verify',
+          '--strict',
+          '-R=anchor apple generic'
+            + ' and certificate 1[field.1.2.840.113635.100.6.2.6] exists'
+            + ' and certificate leaf[field.1.2.840.113635.100.6.1.13] exists'
+            + ' and certificate leaf[subject.OU] = "Q6L2SF6YDW"',
+          command.executable,
+        ],
+      },
+    ])
+  })
+
+  it.runIf(process.platform !== 'win32')('refuses to launch a native macOS Claude Code that is not Anthropic\'s build', async () => {
+    const directory = temporaryDirectory()
+    const binDirectory = path.join(directory, '.local', 'bin')
+    const commandPath = write(path.join(binDirectory, 'claude'), '#!/bin/sh\n')
+
+    await expect(resolveCliCommand('claude', {
+      HOME: directory,
+      PATH: binDirectory,
+    }, 'same-user', {
+      platform: 'darwin',
+      executablePath: commandPath,
+      runCommand: async () => {
+        throw new Error('code object is not signed at all')
+      },
+    })).rejects.toThrow('Anthropic Developer ID')
+  })
+
   it('normalizes a verified npm shim to node plus the package bin', async () => {
     const directory = temporaryDirectory()
     const prefix = path.join(directory, 'hermes', 'node')

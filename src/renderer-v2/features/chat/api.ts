@@ -1,7 +1,7 @@
 import type { AiChatStartInput, AiImageGenerateInput, XingmangApi } from '../../../../electron/ipc-contract'
 import { AI_CHAT_LIMITS, buildChatCompletionsRequest, buildImageGenerationRequest, resolveAiModelCapability } from '../../../../electron/ai-chat-protocol'
 
-export type ChatBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'startAiChat' | 'generateAiImage' | 'cancelAiChat' | 'onAiChatStream' | 'copyAiChatAsset' | 'saveAiChatAsset' | 'showAiChatAssetMenu' | 'openExternal' | 'getAccountSession'>
+export type ChatBridge = Pick<XingmangApi, 'listAiChatGroups' | 'prepareAiChatGroup' | 'startAiChat' | 'generateAiImage' | 'cancelAiChat' | 'onAiChatStream' | 'copyAiChatAsset' | 'saveAiChatAsset' | 'showAiChatAssetMenu' | 'getAccountSession'>
 
 export function createChatApi(bridge: ChatBridge) {
   return {
@@ -14,7 +14,6 @@ export function createChatApi(bridge: ChatBridge) {
     copyAsset: (assetId: string) => bridge.copyAiChatAsset(assetId),
     saveAsset: (assetId: string) => bridge.saveAiChatAsset(assetId),
     assetMenu: (assetId: string) => bridge.showAiChatAssetMenu(assetId),
-    openExternal: (url: string) => bridge.openExternal(url),
     copyText: async (text: string) => { await navigator.clipboard.writeText(text) },
     readSession: () => bridge.getAccountSession(),
   }

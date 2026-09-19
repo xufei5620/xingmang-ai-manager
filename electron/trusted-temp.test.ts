@@ -4,6 +4,7 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   createTrustedTemporaryDirectory,
+  isExclusivelyOwnedDirectory,
   protectWindowsDirectory,
   trustedInstallerCacheRoot,
   validateWindowsAclSnapshot,
@@ -277,5 +278,68 @@ describe('trusted installer cache', () => {
     expect(path.dirname(directory)).toBe(root)
     expect(inspectDirectoryOwnership).not.toHaveBeenCalled()
     expect(applyWindowsAcl).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('POSIX installer cache root', () => {
+  const directoryStats = (uid: number, mode: number) => ({ uid, mode, isDirectory: () => true })
+
+  it('accepts only a directory this account owns alone', () => {
+    expect(isExclusivelyOwnedDirectory(directoryStats(501, 0o700), 501)).toBe(true)
+    expect(isExclusivelyOwnedDirectory(directoryStats(502, 0o700), 501)).toBe(false)
+    expect(isExclusivelyOwnedDirectory(directoryStats(501, 0o770), 501)).toBe(false)
+    expect(isExclusivelyOwnedDirectory(directoryStats(501, 0o707), 501)).toBe(false)
+    expect(isExclusivelyOwnedDirectory({ uid: 501, mode: 0o700, isDirectory: () => false }, 501)).toBe(false)
+    // 拿不到 uid（Windows 上没有 getuid）就无从判断，按不可信处理。
+    expect(isExclusivelyOwnedDirectory(directoryStats(501, 0o700), null)).toBe(false)
+  })
+
+  it.runIf(process.platform !== 'win32')('tightens a preexisting root that this account owns', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-trusted-temp-test-'))
+    temporaryDirectories.push(root)
+    const cacheRoot = path.join(root, 'cache')
+    fs.mkdirSync(cacheRoot, { mode: 0o777 })
+    fs.chmodSync(cacheRoot, 0o777)
+
+    const directory = await createTrustedTemporaryDirectory('npm', {
+      platform: 'darwin',
+      baseDirectory: cacheRoot,
+    })
+
+    expect(path.dirname(directory)).toBe(cacheRoot)
+    expect(fs.lstatSync(cacheRoot).mode & 0o777).toBe(0o700)
+  })
+
+  it.runIf(process.platform !== 'win32')('abandons a predictable root owned by another account', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-trusted-temp-test-'))
+    temporaryDirectories.push(root)
+    const cacheRoot = path.join(root, 'cache')
+
+    // 同机的另一个账号可以抢先建出这个固定名字的目录；属主不是自己就无法靠
+    // chmod 把它变安全，只能放弃这个名字改用随机名的根。
+    const directory = await createTrustedTemporaryDirectory('npm', {
+      platform: 'darwin',
+      baseDirectory: cacheRoot,
+      resolveUserId: () => (process.getuid?.() ?? 0) + 1,
+    })
+    temporaryDirectories.push(directory)
+
+    expect(path.dirname(directory)).not.toBe(cacheRoot)
+    expect(path.basename(path.dirname(directory))).toMatch(/^InstallerCache-/)
+    temporaryDirectories.push(path.dirname(directory))
+    expect(fs.lstatSync(directory).isDirectory()).toBe(true)
+  })
+
+  it.runIf(process.platform !== 'win32')('keeps using the root when this account owns it exclusively', async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-trusted-temp-test-'))
+    temporaryDirectories.push(root)
+
+    const directory = await createTrustedTemporaryDirectory('npm', {
+      platform: 'darwin',
+      baseDirectory: path.join(root, 'cache'),
+    })
+
+    expect(path.dirname(directory)).toBe(path.join(root, 'cache'))
+    expect(fs.lstatSync(directory).mode & 0o777).toBe(0o700)
   })
 })

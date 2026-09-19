@@ -1,23 +1,7 @@
 const fs = require('node:fs')
 const path = require('node:path')
-const {
-  FuseV1Options,
-  FuseVersion,
-  getCurrentFuseWire,
-} = require('@electron/fuses')
-const { FuseState } = require('@electron/fuses/dist/constants')
 const { extractFile } = require('@electron/asar')
-
-const expectedFuses = new Map([
-  [FuseV1Options.RunAsNode, FuseState.DISABLE],
-  [FuseV1Options.EnableCookieEncryption, FuseState.ENABLE],
-  [FuseV1Options.EnableNodeOptionsEnvironmentVariable, FuseState.DISABLE],
-  [FuseV1Options.EnableNodeCliInspectArguments, FuseState.DISABLE],
-  [FuseV1Options.EnableEmbeddedAsarIntegrityValidation, FuseState.ENABLE],
-  [FuseV1Options.OnlyLoadAppFromAsar, FuseState.ENABLE],
-  [FuseV1Options.LoadBrowserProcessSpecificV8Snapshot, FuseState.DISABLE],
-  [FuseV1Options.GrantFileProtocolExtraPrivileges, FuseState.DISABLE],
-])
+const { EXPECTED_FUSES, assertElectronFuseHardening } = require('./electron-fuse-hardening.cjs')
 
 function packagedSource(asarPath, relativePath, label) {
   try {
@@ -78,23 +62,9 @@ async function main() {
 
   inspectPackagedLaunchBoundary(asar)
 
-  const fuseWire = await getCurrentFuseWire(executable)
-  if (fuseWire.version !== FuseVersion.V1) {
-    throw new Error(`不支持的 Electron fuse 版本：${fuseWire.version}`)
-  }
+  const fuseCount = await assertElectronFuseHardening(executable, '打包主程序')
 
-  const mismatches = []
-  for (const [option, expected] of expectedFuses) {
-    const actual = fuseWire[option]
-    if (actual !== expected) {
-      mismatches.push(`${FuseV1Options[option]}=${FuseState[actual] || actual}，期望 ${FuseState[expected]}`)
-    }
-  }
-  if (mismatches.length > 0) {
-    throw new Error(`Electron fuse 加固校验失败：${mismatches.join('；')}`)
-  }
-
-  console.log(`Electron 加固校验通过：${path.basename(executable)}，8 项 fuse、app.asar 与普通用户 CLI 启动边界均符合要求`)
+  console.log(`Electron 加固校验通过：${path.basename(executable)}，${fuseCount} 项 fuse、app.asar 与普通用户 CLI 启动边界均符合要求`)
 }
 
 if (require.main === module) {
@@ -104,4 +74,4 @@ if (require.main === module) {
   })
 }
 
-module.exports = { inspectPackagedLaunchBoundary, main }
+module.exports = { EXPECTED_FUSES, inspectPackagedLaunchBoundary, main }
