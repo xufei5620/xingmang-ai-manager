@@ -5,6 +5,7 @@ import {
   DEFAULT_AI_CHAT_GROUP,
   DEFAULT_AI_CHAT_MODEL,
   buildAiChatRequestMessages,
+  cancelPendingAiChatRequests,
   formatAiChatElapsed,
   imageSizeOptions,
   resolveAiChatDefaultGroup,
@@ -12,7 +13,30 @@ import {
   type AiChatPageApi,
 } from './AiChatPage'
 import { resolveAiModelCapability } from '../../electron/ai-chat-protocol'
-import type { AiChatMessage } from '../ai-chat-state'
+import {
+  aiChatRequestToken,
+  appendAiChatText,
+  beginAiChatRequest,
+  createAiChatState,
+  loadAiChatHistory,
+  saveAiChatHistory,
+  type AiChatMessage,
+  type AiChatOperationToken,
+  type AiChatStorage,
+} from '../ai-chat-state'
+
+function memoryStorage(): AiChatStorage {
+  const entries = new Map<string, string>()
+  return {
+    getItem: (key) => entries.get(key) ?? null,
+    setItem: (key, value) => { entries.set(key, value) },
+    removeItem: (key) => { entries.delete(key) },
+  }
+}
+
+function pending(...requestIds: string[]): Map<string, AiChatOperationToken> {
+  return new Map(requestIds.map((requestId, index) => [requestId, { generation: index + 1, requestId }]))
+}
 
 function api(): AiChatPageApi {
   return {
@@ -80,6 +104,56 @@ describe('AI聊天页面纯逻辑', () => {
     const jimeng = resolveAiModelCapability('jimeng_high_aes_general_v21_L')
     expect(gpt1.kind === 'image' && imageSizeOptions(gpt1)).toContain('1024x1536')
     expect(jimeng.kind === 'image' && imageSizeOptions(jimeng)).toEqual(['1024x1024'])
+  })
+})
+
+describe('离开聊天页时的在途请求', () => {
+  it('cancels every in-flight request and empties the pending map', () => {
+    const chat = api()
+    const inFlight = pending('request-1', 'request-2')
+
+    cancelPendingAiChatRequests(chat, inFlight)
+
+    expect(chat.cancelAiChat).toHaveBeenCalledTimes(2)
+    expect(chat.cancelAiChat).toHaveBeenNthCalledWith(1, 'request-1')
+    expect(chat.cancelAiChat).toHaveBeenNthCalledWith(2, 'request-2')
+    expect(inFlight.size).toBe(0)
+  })
+
+  it('still clears the map when the main process refuses to cancel', async () => {
+    const chat = { cancelAiChat: vi.fn(async () => { throw new Error('通道已关闭') }) }
+    const inFlight = pending('request-1')
+
+    expect(() => cancelPendingAiChatRequests(chat, inFlight)).not.toThrow()
+    await Promise.resolve()
+
+    expect(chat.cancelAiChat).toHaveBeenCalledWith('request-1')
+    expect(inFlight.size).toBe(0)
+  })
+
+  it('does nothing when no request is running', () => {
+    const chat = api()
+
+    cancelPendingAiChatRequests(chat, pending())
+
+    expect(chat.cancelAiChat).not.toHaveBeenCalled()
+  })
+
+  it('keeps the tokens already streamed in when the page is left mid-answer', () => {
+    const storage = memoryStorage()
+    const started = beginAiChatRequest(createAiChatState(7), {
+      requestId: 'request-1',
+      userMessageId: 'user-1',
+      assistantMessageId: 'assistant-1',
+      content: '写一首诗',
+      kind: 'chat',
+    })
+    const streaming = appendAiChatText(started, aiChatRequestToken(started)!, '半句已经生成')
+    saveAiChatHistory(storage, streaming)
+
+    const restored = loadAiChatHistory(storage, 7)
+
+    expect(restored.messages.at(-1)).toMatchObject({ content: '半句已经生成', status: 'complete' })
   })
 })
 
