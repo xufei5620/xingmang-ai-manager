@@ -101,6 +101,14 @@ export interface AiChatPageProps {
   notify: (message: { type: 'success' | 'error'; message: string }) => void
 }
 
+export function cancelPendingAiChatRequests(
+  api: Pick<AiChatPageApi, 'cancelAiChat'>,
+  pending: Map<string, AiChatOperationToken>,
+): void {
+  for (const requestId of [...pending.keys()]) void api.cancelAiChat(requestId).catch(() => undefined)
+  pending.clear()
+}
+
 type ParameterKey = keyof AiChatParametersInput
 
 interface ParameterSetting {
@@ -385,6 +393,12 @@ export function AiChatPage({ api, userId, notify }: AiChatPageProps) {
       if (next !== stateRef.current) commit(next)
     }
   }, [api, commit, notify])
+
+  // Switching pages unmounts this view. The main process auto-cancels only when
+  // the sender window is destroyed or the account changes through logout/switch,
+  // so in-app navigation leaves the request streaming to nobody while relay quota
+  // is still billed. Image generation (minutes long) is the worst case.
+  useEffect(() => () => cancelPendingAiChatRequests(api, requestTokens.current), [api, userId])
 
   useEffect(() => {
     const next = readInitialState(userId)

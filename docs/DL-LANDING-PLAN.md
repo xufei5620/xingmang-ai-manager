@@ -14,7 +14,9 @@
 
 ## 2. 为什么这样拆
 
-`xm.solov.cc` 现网（2026-08-25 源站 `fxg-0321` 核实）：宝塔 nginx，`location ^~ /` 整站反代 `127.0.0.1:3000`（`new-api` v1.0.0-rc.25），且只认 Cloudflare 回源。根路径不能再当文件站。
+`xm.solov.cc` 现网（2026-08-25 源站核实）：宝塔 nginx，`location ^~ /` 整站反代本机的 new-api（v1.0.0-rc.25），且只认 Cloudflare 回源。根路径不能再当文件站。
+
+> 本文不写源站 IP、SSH 端口、登录用户、密钥文件名、站点磁盘路径和内网后端端口。仓库是公开的，这些值只在运维手上：发布脚本从 `dl-landing.config.json`（已被 `.gitignore` 忽略）或 `DL_LANDING_*` 环境变量读取，nginx 片段以 `dl-landing/nginx/*.conf.example` 的占位符形式给出。
 
 他们已经用更长前缀挂过旁路（`/grokvid/`、`/logo.png`）。同域 `/download/` 也能做，但下载漏斗和账号站绑在一起，后续改邀请海报、缓存、证书都更拧。独立子域边界更干净。
 
@@ -32,7 +34,7 @@ https://dl.solov.cc/sign-up?aff=6B4j
         └─ 成功：三个下载按钮（不跳转登录）
 ```
 
-浏览器只打 `dl.solov.cc`。nginx 把上面 3 条精确路径转到 `127.0.0.1:3000`，`Host` 仍传 `xm.solov.cc`，new-api 才认正式站点。邀请在 `POST /register` 时写入 `InviterId`。
+浏览器只打 `dl.solov.cc`。nginx 把上面 3 条精确路径转到本机的 new-api（地址见运维侧配置），`Host` 仍传 `xm.solov.cc`，new-api 才认正式站点。邀请在 `POST /register` 时写入 `InviterId`。
 
 页面只有两个状态：
 
@@ -45,10 +47,10 @@ https://dl.solov.cc/sign-up?aff=6B4j
 
 ## 4. 目录与产物
 
-源站磁盘（建议）：
+源站磁盘（建议，`<站点根目录>` 的真实值只在运维侧配置里）：
 
 ```text
-/www/wwwroot/dl.solov.cc/
+<站点根目录>/
   index.html
   app.js                 # 可选，逻辑不要散进 HTML 也行
   latest.json            # 页面读文件名与版本，避免写死
@@ -69,48 +71,36 @@ https://dl.solov.cc/sign-up?aff=6B4j
 }
 ```
 
-落地页源码已在本仓 `dl-landing/`（`index.html` / `styles.css` / `app.js` / `latest.json`）。本地预览：`node dl-landing/preview.mjs`，打开 `http://127.0.0.1:4173/sign-up?aff=6B4j`。预览服只 mock 注册三接口，不打生产。上线时 scp/rsync 到 `/www/wwwroot/dl.solov.cc/`，不要带 `preview.mjs`。不要在服务器上长期手改。
+落地页源码已在本仓 `dl-landing/`（`index.html` / `styles.css` / `app.js` / `latest.json`）。本地预览：`node dl-landing/preview.mjs`，打开 `http://127.0.0.1:4173/sign-up?aff=6B4j`。预览服只 mock 注册三接口，不打生产。上线时 scp/rsync 到站点根目录，不要带 `preview.mjs`。不要在服务器上长期手改。
 
 macOS 构建还会打出 arm64/x64 的 zip 与 blockmap，供 `latest-mac.yml` 自动更新。那些文件可以另放更新目录（现有 `updatesnew.shenfengwl.fun` 或以后的 `/files/update/`），**不要出现在注册成功页**。
 
 ## 5. nginx
 
-宝塔新建站点 `dl.solov.cc`，SSL，**套与 `xm.solov.cc` 相同的 Cloudflare 回源限制**（非 CF 回 `444`）。规则放 `extension/dl.solov.cc/`，避免面板重写站点时被清掉。
+宝塔新建站点 `dl.solov.cc`，SSL，**套与 `xm.solov.cc` 相同的 Cloudflare 回源限制**。规则放 `extension/dl.solov.cc/`，避免面板重写站点时被清掉。可直接用 `dl-landing/nginx/*.conf.example`：复制成 `.conf` 并替换占位符后上传，渲染出来的 `.conf` 已被 `.gitignore` 忽略。
 
 ```nginx
 # 只反代注册需要的接口，禁止把整个 / 指到 new-api
+# __ACCOUNT_UPSTREAM__ / __SITE_ROOT__ 的真实值见运维侧配置，不写进仓库
 location = /api/status {
-    proxy_pass http://127.0.0.1:3000;
+    proxy_pass http://__ACCOUNT_UPSTREAM__;
     proxy_set_header Host xm.solov.cc;
     proxy_set_header X-Real-IP $remote_addr;
     proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     proxy_set_header X-Forwarded-Proto https;
 }
 
-location = /api/verification {
-    proxy_pass http://127.0.0.1:3000;
-    proxy_set_header Host xm.solov.cc;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-}
-
-location = /api/user/register {
-    proxy_pass http://127.0.0.1:3000;
-    proxy_set_header Host xm.solov.cc;
-    proxy_set_header X-Real-IP $remote_addr;
-    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-    proxy_set_header X-Forwarded-Proto https;
-}
+# /api/verification 与 /api/user/register 同理，完整片段见
+# dl-landing/nginx/01-api-proxy.conf.example
 
 location ^~ /files/ {
-    alias /www/wwwroot/dl.solov.cc/files/;
+    alias __SITE_ROOT__/files/;
     add_header Content-Disposition "attachment";
     expires 1h;
 }
 
 location / {
-    root /www/wwwroot/dl.solov.cc;
+    root __SITE_ROOT__;
     try_files $uri $uri/ /index.html;
 }
 ```
@@ -132,14 +122,14 @@ location / {
 
 ## 7. 落地顺序
 
-1. Cloudflare：`dl.solov.cc` A 到源站 `38.147.105.28`，橙云。
+1. Cloudflare：`dl.solov.cc` A 到源站 IP（真实值见运维侧配置），橙云。
 2. 宝塔：新建静态站 + 证书 + CF 回源限制。
 3. 写入第 5 节 `extension/` 配置并重载 nginx。
-4. 本仓加 `dl-landing/`，同步到 `/www/wwwroot/dl.solov.cc/`。
+4. 本仓加 `dl-landing/`，同步到站点根目录。
 5. 把三个安装包放进 `files/latest/`，更新 `latest.json`。
 6. 子站漏斗验收通过后，再改对外邀请链接前缀（第 8 节）。不要先改链接再上子站。
 
-运维 SSH 端口是 **5620**（不是 22），密钥用本机 `~/.ssh/solov_fleet_ed25519`。
+SSH 主机、端口、登录用户和密钥路径不写在仓库里。发布前把它们填进仓库根目录的 `dl-landing.config.json`（模板 `dl-landing.config.json.example`，已被 `.gitignore` 忽略），或用 `DL_LANDING_SSH_HOST` / `DL_LANDING_SSH_PORT` / `DL_LANDING_SSH_USER` / `DL_LANDING_SSH_KEY` / `DL_LANDING_REMOTE_ROOT` 传入。少任何一项 `npm run dl:publish` 都会直接报错停住，不会回落到默认值。
 
 ## 8. 后期：邀请链接前缀统一到 dl
 
