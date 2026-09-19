@@ -1,13 +1,77 @@
-import type { CodexDesktopLaunchMode, ExternalToolId, XingmangApi } from '../../../../electron/ipc-contract'
+import {
+  providerIds,
+  type AppConfigSummary,
+  type CodexDesktopLaunchMode,
+  type ExternalToolId,
+  type ProviderConfigSummary,
+  type ProviderId,
+  type XingmangApi,
+} from '../../../../electron/ipc-contract'
 import { providerFor, type ToolboxSnapshot, type ToolId } from './model'
 import { readAllAccountKeys } from './key-selection'
 import { usageCalendarDate, usageDateRange } from '../../../../electron/usage-date-range'
 
+/** 工具页一次读取里互相独立的三块。 */
+export type ToolboxPartition = 'system' | 'config' | 'platform'
+
+export interface ToolboxPartitionFailure {
+  partition: ToolboxPartition
+  message: string
+}
+
+export interface ToolboxReadResult {
+  /**
+   * system 或 platform 读失败时为 null。这两块是工具列表本身，
+   * 缺了没有东西可渲染；config 只决定每一行的连接状态，
+   * 所以它失败时降级而不连坐整页。
+   */
+  snapshot: ToolboxSnapshot | null
+  failures: ToolboxPartitionFailure[]
+}
+
+function failureMessage(reason: unknown, fallback: string): string {
+  return reason instanceof Error && reason.message ? reason.message : fallback
+}
+
+/**
+ * 配置读不出来时的占位表。每个工具都落到「未配置」，让工具列表、
+ * 安装和卸载照常可用；真正的原因由分区错误单独告诉用户，不靠这张表去表达。
+ */
+function placeholderConfig(): AppConfigSummary {
+  const providers = {} as Record<ProviderId, ProviderConfigSummary>
+  for (const provider of providerIds) {
+    providers[provider] = {
+      baseUrl: '', actualBaseUrl: '', exists: false, hasApiKey: false, matchesRelay: false,
+      apiKeyPreview: null, model: '', dataDirectory: '', dataDirectoryExists: false,
+      files: [], updatedAt: null,
+    }
+  }
+  return { workspace: '', providers }
+}
+
 export function createToolsApi(bridge: XingmangApi) {
   return {
-    async read(force = false): Promise<ToolboxSnapshot> {
-      const [system, config, platform] = await Promise.all([bridge.scanSystem(force), bridge.getConfig(), bridge.getPlatformCapabilities()])
-      return { system, config, platform }
+    /**
+     * 三块分开结算（对照 legacy 的 runCoordinatedScan）。一份损坏的
+     * CLI 配置文件曾经能让整个工具页空白，用户连重新配置的入口都找不到。
+     */
+    async read(force = false): Promise<ToolboxReadResult> {
+      const [system, config, platform] = await Promise.allSettled([
+        bridge.scanSystem(force), bridge.getConfig(), bridge.getPlatformCapabilities(),
+      ])
+      const failures: ToolboxPartitionFailure[] = []
+      if (system.status === 'rejected') failures.push({ partition: 'system', message: failureMessage(system.reason, '工具检测没有完成，请重试。') })
+      if (config.status === 'rejected') failures.push({ partition: 'config', message: failureMessage(config.reason, '工具配置没有读到，请重试。') })
+      if (platform.status === 'rejected') failures.push({ partition: 'platform', message: failureMessage(platform.reason, '当前系统支持的操作没有读到，请重试。') })
+      if (system.status !== 'fulfilled' || platform.status !== 'fulfilled') return { snapshot: null, failures }
+      return {
+        snapshot: {
+          system: system.value,
+          config: config.status === 'fulfilled' ? config.value : placeholderConfig(),
+          platform: platform.value,
+        },
+        failures,
+      }
     },
     readExternal: () => bridge.scanExternalClients(),
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),

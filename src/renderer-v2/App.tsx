@@ -478,7 +478,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} preview={accelerationPreview} />
               </Suspense>
             </div>}
-            {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
+            {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError}
               onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}

@@ -6,7 +6,7 @@ import { useSharedAccountBalance } from '../app/balance-context'
 import { balanceStatusText } from '../shell/balance-status'
 import { BrandIcon, Button, Card, Dialog, Empty, ListRow, PageHead, Pill, Progress, ToolRow } from '../../ui'
 import { balanceTier, canUninstallTool, greeting, presentTools, rollbackVersion, versionSubtitle, type ToolboxSnapshot, type ToolId, type ToolPresentation } from './model'
-import type { ToolsApi } from './api'
+import type { ToolboxPartitionFailure, ToolsApi } from './api'
 import type { ToolJob } from './useToolbox'
 import type { AccountBootstrapProgress, AccountBootstrapResult } from './account-bootstrap'
 import type { PageId } from '../../registry/pages'
@@ -16,6 +16,8 @@ export interface HomeProps {
   snapshot: ToolboxSnapshot | null
   loading: boolean
   error: string
+  /** 单块读失败的原因；缺省 = 三块都读到了（旧行为）。 */
+  failures?: ToolboxPartitionFailure[]
   account: AccountProfile | null
   supportsUsage?: boolean
   supportsBilling?: boolean
@@ -90,6 +92,7 @@ export function Home(props: HomeProps) {
   const tier = dollars === null ? 'neutral' : balanceTier(dollars)
   const monthUsed = usage && balance && balance.quotaPerUnit > 0 ? usage.monthQuota / balance.quotaPerUnit : null
   const remainingDays = usage && balance && usage.weekQuota > 0 ? Math.max(0, Math.floor(balance.quota / (usage.weekQuota / 7))) : null
+  const configFailure = props.failures?.find((failure) => failure.partition === 'config') ?? null
   const ready = installed.some((tool) => tool.configured && !tool.error) || installedExternal.some((tool) => tool.ready && !tool.status.detectionError)
   const connectedCount = installed.filter((tool) => tool.configured).length + installedExternal.filter((tool) => tool.status.configured && tool.status.configurationSource === 'xingmang').length
   const bootstrapBusy = Boolean(props.bootstrap && !props.bootstrap.result && !props.bootstrap.error)
@@ -98,13 +101,19 @@ export function Home(props: HomeProps) {
     const installJob = jobs[tool.id]
     const launchJob = jobs[`launch:${tool.id}`]
     const job = launchJob ?? installJob
+    // 配置那一块没读到时，连接状态是未知而不是「还没配 Key」，
+    // 否则用户会以为自己的配置丢了。工具本身的安装、卸载不受影响。
+    const configUnavailable = !tool.error && tool.status.installed
+      && props.failures?.some((failure) => failure.partition === 'config') === true
     const status = installJob ? 'installing' : tool.error ? 'detectionFailed' : !tool.status.installed ? 'missing'
+      : configUnavailable ? 'configUnavailable'
       : tool.source === 'unknown' ? 'unknownSource' : tool.source === 'official' ? 'official'
         : bootstrapBusy && !tool.configured ? 'configuring'
         : tool.configured ? 'ready' : 'unconfigured'
-    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? '安装'
+    const primaryLabel = launchJob ? '打开中' : installJob ? '安装中' : configUnavailable ? '重新配置'
+      : bootstrapBusy && !tool.configured ? '配置中' : tool.error ? '重新检测' : !tool.status.installed ? '安装'
       : tool.configured ? '打开' : '连接账号'
-    const primary = () => tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
+    const primary = () => configUnavailable ? props.onConfigure(tool.id) : tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
       : tool.configured ? props.onLaunch(tool.id) : props.onConfigure(tool.id)
     const rollback = job ? null : rollbackVersion(tool)
     const blocked = tool.versionAdvice?.blockedReason ?? null
@@ -117,7 +126,7 @@ export function Home(props: HomeProps) {
         ? <Button variant="ghost" size="sm" icon={RotateCcw} title={blocked} onClick={() => props.onInstall(tool.id, rollback)} testId={`tool-${tool.id}-rollback`}>回到推荐版本</Button>
         : tool.updateAvailable && !job ? <Button variant="ghost" size="sm" icon={Download} onClick={() => props.onInstall(tool.id)}>更新</Button> : undefined}
       primaryAction={<Button size="sm" variant={tool.status.installed ? 'primary' : 'secondary'} loading={Boolean(job)}
-        disabled={loading || launchBusy || bootstrapBusy && !tool.configured} icon={tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined} onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>}
+        disabled={loading || launchBusy || bootstrapBusy && !tool.configured && !configUnavailable} icon={tool.status.installed && !bootstrapBusy ? ArrowUpRight : undefined} onClick={primary} testId={`tool-${tool.id}-primary`}>{primaryLabel}</Button>}
       menu={tool.status.installed && !job ? [
         { label: '配置', onSelect: () => props.onConfigure(tool.id) },
         ...(rollback && !blocked ? [{ label: `回到推荐版本 ${rollback}`, testId: `tool-${tool.id}-rollback-menu`, onSelect: () => props.onInstall(tool.id, rollback) }] : []),
@@ -164,10 +173,11 @@ export function Home(props: HomeProps) {
     </div>}
     {error && <div role="alert" className="v2-callout is-bad"><span>{error}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.externalError && <div role="alert" className="v2-callout is-bad"><span>客户端状态暂未读到：{props.externalError}</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
+    {snapshot && configFailure && <div role="alert" className="v2-callout is-bad" data-testid="home-config-failure"><span>工具配置暂未读到：{configFailure.message}工具列表、安装和卸载照常可用；点工具行的“重新配置”可以重新写入。</span><Button size="xs" onClick={props.onScan}>重新检测</Button></div>}
     {props.supportsBilling !== false && dollars !== null && dollars < 5 && <div role="status" className="v2-callout is-bad"><Zap size={18} /><span>余额只剩 ${dollars.toFixed(2)}，充值后可继续使用。</span><Button size="sm" variant="balance" onClick={() => props.onNavigate('account', 'recharge')}>马上充值</Button></div>}
     <div className="v2-home-grid">
       <div className="v2-home-main">
-        {!ready && !loading && <Card title="开始使用" meta="第 1 步，共 4 步" padding="none" testId="home-setup">
+        {!ready && !loading && !configFailure && <Card title="开始使用" meta="第 1 步，共 4 步" padding="none" testId="home-setup">
           <div className="v2-setup-focus"><span className="v2-step-number">1</span><div><h3>选择一种开始方式</h3><p>选一个工具先开始，之后随时可以再装别的。</p></div><Button variant="primary" onClick={props.onGuide}>开始准备</Button></div>
           <ol className="v2-setup-steps">{['选开始方式', '准备工具', '确认连接', '开始使用'].map((label, i) => <li key={label}><span>{i + 1}</span>{label}</li>)}</ol>
         </Card>}

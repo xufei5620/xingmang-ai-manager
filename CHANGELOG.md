@@ -11,6 +11,7 @@
 
 ## Unreleased
 
+- 工具页（renderer-v2）的一次读取从 `Promise.all` 改为 `Promise.allSettled`，对齐 legacy `scan-coordinator.ts` 的「部分成功也提交」：`createToolsApi().read()` 返回 `{ snapshot, failures }`，config 那一块读失败时用占位表降级而不再连坐整页（system / platform 缺失仍返回 null，那两块就是工具列表本身）；`useToolbox` 新增 `failures`，`Home` 把分区失败作为 alert 展示并把工具行的连接状态标为 `configUnavailable`（而不是谎报「还没配 Key」）；`app-check.mjs` 里原来一份两用的失败用例拆成 scanSystem（仍抛错 + toast）与 getConfig（降级 + 页内提示）两条（审查总表 R-S8）。
 - 删除中转站点表里与主站点逐字段相同的 `sub2api` 别名条目，只保留 `resolveRelaySite` / `realmForExplicitSite` 里的 `'sub2api' → 'solov'` id 映射，老配置文件照常解析到同一站点；随之删掉 `site-runtime.ts` 里专为该别名写的一致性校验，并把显式账号边界（`requireRelaySite`、站点运行时、后端注册表）改为拒绝这个已退役的 id（D-10）。
 - 在 `relay-sites.ts` 注明法律文档恒定指向主站、客服链接按账号分流是有意为之（同一份协议、两拨客服），并补测试钉住这一不对称（D-11，行为不变）。
 - 发版流水线签名链路加固：把签名证书导进 runner 根信任存储的步骤收窄到 `test_signing` 自签名构建，正式构建不再人为制造链信任，中间 CA 缺失、时间戳不可用这类只在干净 Windows 上暴露的缺陷不会再被 Authenticode 校验的「Valid」盖住；`windows-installer` 作业声明 `environment: release`，三个签名 secret 不再对任意分支可见（P-03、P-06）。
