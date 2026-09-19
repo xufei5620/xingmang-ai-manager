@@ -142,6 +142,7 @@ export function SavedAccounts({
                   </Button>
                   {!current && (
                     <Menu
+                      label={`账号 ${account.username} 的更多操作`}
                       anchor={<MoreHorizontal size={18} />}
                       items={[
                         {
