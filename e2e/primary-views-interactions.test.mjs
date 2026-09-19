@@ -5,6 +5,7 @@ import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/primary-views')
@@ -24,7 +25,7 @@ after(async () => { await browser?.close(); await server?.close() })
 async function openFixture(scenario, viewport = { width: 1280, height: 820 }, theme = 'dark') {
   const page = await browser.newPage({ viewport })
   await page.goto(`${baseUrl}/e2e/primary-views-fixture.html?scenario=${scenario}&theme=${theme}`)
-  await page.locator(scenario === 'welcome' ? '.welcome-v3' : '.dashboard-v3').waitFor()
+  await page.locator(scenario === 'welcome' ? '.welcome-v3' : '.dashboard-v3').waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 
