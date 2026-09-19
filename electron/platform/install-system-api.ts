@@ -10,7 +10,7 @@ import type {
 import { AppSettingsStore } from '../app-settings'
 import { isTrustedIpcSenderUrl, type ApplicationUrlPolicy } from '../security'
 import { platformChannels } from './contract'
-import { registerPlatformHandlers } from './ipc'
+import { registerPlatformHandlers, type PlatformIpcLogger } from './ipc'
 import { PlatformSettingsStore } from './settings-store'
 import { PlatformSystemService } from './system-service'
 import {
@@ -27,6 +27,7 @@ export interface InstallPlatformApiOptions {
   platformPreloadPath?: string
   onError?: (error: unknown) => void
   notificationRuntime?: PlatformNotificationRuntime
+  log?: PlatformIpcLogger
 }
 
 export function installPlatformSystemApi(
@@ -50,6 +51,7 @@ export function installPlatformSystemApi(
       if (!service) throw new Error('系统设置尚未准备好。')
       return service
     },
+    log: options.log,
   })
 
   const onWindowCreated = (_event: Electron.Event, window: BrowserWindow) => {
