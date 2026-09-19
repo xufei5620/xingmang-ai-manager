@@ -892,6 +892,16 @@ test('test notifications respect the master switch and privacy stores only an ex
     await testNotice.click()
     await page.getByText('已请求显示测试通知', { exact: true }).waitFor()
     await page.getByRole('tab', { name: '隐私与数据', exact: true }).click()
+    const crashReports = page.getByRole('switch', {
+      name: '崩溃自动上报',
+      exact: true,
+    })
+    assert.equal(await crashReports.getAttribute('aria-checked'), 'true')
+    await crashReports.click()
+    assert.deepEqual(
+      (await calls(page)).filter((call) => call.name === 'settings').at(-1).args,
+      { version: 2, crashReporting: false },
+    )
     await page
       .getByRole('switch', { name: '匿名使用统计偏好', exact: true })
       .click()

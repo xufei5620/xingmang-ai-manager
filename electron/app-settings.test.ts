@@ -398,6 +398,24 @@ describe('field-wise settings updates (①栏11)', () => {
     expect(readAppSettings(filePath)).not.toHaveProperty('alwaysInstallLatestCli')
   })
 
+  it('persists only an explicit crash-reporting opt-out, and survives an unrelated save', async () => {
+    const filePath = temporarySettingsPath()
+    // 缺省 = 上报开启,所以文件里没有这个字段才是默认状态。
+    expect(readAppSettings(filePath)).not.toHaveProperty('crashReporting')
+    await updateAppSettings(filePath, { version: 2, crashReporting: false })
+    expect(readAppSettings(filePath).crashReporting).toBe(false)
+    await updateAppSettings(filePath, { version: 2, theme: 'dark' })
+    expect(readAppSettings(filePath).crashReporting).toBe(false)
+    await updateAppSettings(filePath, { version: 2, crashReporting: true })
+    expect(readAppSettings(filePath)).not.toHaveProperty('crashReporting')
+  })
+
+  it('reads a malformed crash-reporting value as "reporting on"', () => {
+    const filePath = temporarySettingsPath()
+    fs.writeFileSync(filePath, JSON.stringify({ ...settings(), crashReporting: 'no' }), 'utf8')
+    expect(readAppSettings(filePath)).not.toHaveProperty('crashReporting')
+  })
+
   it('keeps the Codex Desktop Chinese runtime patch unanswered until the user answers it', () => {
     const base = settings()
 
