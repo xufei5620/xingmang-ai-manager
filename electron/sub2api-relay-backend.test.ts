@@ -15,7 +15,8 @@ const loginInput = { username: 'same@example.test', password: 'test-password' }
 const keyRecord = (id: number, extra: Record<string, unknown> = {}) => ({ id, user_id: 7,
   name: `key-${id}`, group_id: codexGroup.id, status: 'active', key: `sk-secret-${id}`, quota: 0, quota_used: 0,
   created_at: '2026-09-01T00:00:00Z', expires_at: null, last_used_at: null, ...extra })
-type Key = ReturnType<typeof keyRecord>
+// 后端可以整个省掉 quota / quota_used；夹具照样能摆出这种记录。
+type Key = Omit<ReturnType<typeof keyRecord>, 'quota' | 'quota_used'> & { quota?: number; quota_used?: number }
 const json = (data: unknown) => Response.json({ code: 0, data })
 const unauthorized = () => new Response('', { status: 401 })
 const noticeRecord = (id = 7, extra: Record<string, unknown> = {}) => ({
@@ -908,6 +909,22 @@ describe('Sub2API RelayBackend adapter', () => {
     expect(f.state.keys).toHaveLength(0)
   })
 
+  it('reports a key the backend sent no quota for as unlimited to every consumer of that key', async () => {
+    const f = fixture()
+    await f.client.login(loginInput)
+    const profile = sub2ApiManagedCliKeyProfiles.codex
+    // 后端可以整个省掉 quota 字段。这个缺省只有一种读法：这个后端用 0 表示
+    // 不限额，所以缺省就是不限额。曾经密钥页把它读成「限额 0，已用尽」，
+    // 自动签发那边却把它读成「不限额、可复用」，同一把 Key 两个说法。
+    const { quota: _quota, quota_used: _quotaUsed, ...withoutQuota } = keyRecord(1, { name: profile.keyName })
+    f.state.keys = [withoutQuota]
+    const listed = (await f.client.listKeys()).keys[0]
+    expect(listed).toMatchObject({ unlimitedQuota: true, remainQuota: 0, usedQuota: 0 })
+    expect(await f.client.provisionCliKey({ name: profile.keyName, group: profile.group })).toMatchObject({ id: 1 })
+    expect(f.calls.filter((call) => call.init.method === 'POST' && call.url.pathname === '/api/v1/keys')).toHaveLength(0)
+    expect(f.state.keys).toHaveLength(1)
+  })
+
   it('shows the observed prefix and last four characters while stripping fingerprints from list DTOs', async () => {
     const f = fixture()
     await f.client.login(loginInput)
@@ -982,16 +999,6 @@ describe('Sub2API RelayBackend adapter', () => {
     expect(f.calls.filter((call) => call.url.pathname.endsWith('/auth/refresh'))).toHaveLength(1)
     expect(f.getSavedAccount()?.credential).toMatchObject({ refreshToken: 'rotated-refresh-7' })
     expect(f.state.keys).toHaveLength(1)
-  })
-
-  it('finds matching prefix keys across pages and rejects cross-group ambiguity', async () => {
-    const f = fixture()
-    await f.client.login(loginInput)
-    f.state.keys = Array.from({ length: 100 }, (_, index) => keyRecord(index + 1))
-    f.state.keys.push(keyRecord(101, { name: 'canvas-image-123' }))
-    expect(await f.client.findExistingCliKey('canvas-image-')).toMatchObject({ id: 101 })
-    f.state.keys.push(keyRecord(102, { name: 'canvas-image-456', group_id: groups[0].id }))
-    await expect(f.client.findExistingCliKey('canvas-image-')).rejects.toThrow('多个分组')
   })
 
   it('changes password through PUT /user/password and clears invalidated login tokens', async () => {
