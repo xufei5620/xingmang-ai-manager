@@ -39,6 +39,8 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_UNSIGNED_RELEASE',
   'XINGMANG_ACCELERATION_BUNDLE_DIR',
   'XINGMANG_SIGNING_PUBLISHER',
+  // 调试用的放行开关：继承进来会让一次发布构建以为自己被允许跳过签名要求。
+  'XINGMANG_ALLOW_UNSIGNED_RELEASE',
 ])
 
 function normalizeFingerprint(value, byteLength = 32) {
@@ -710,6 +712,7 @@ async function main() {
 if (require.main === module) main()
 
 module.exports = {
+  BUILD_MODE_ENVIRONMENT_NAMES,
   parseFreeMacBuildArguments,
   resolveMacosSecurityCommand,
   resolveFreeMacBuildOptions,

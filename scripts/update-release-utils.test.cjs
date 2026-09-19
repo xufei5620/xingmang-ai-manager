@@ -8,6 +8,7 @@ const { spawn, spawnSync } = require('node:child_process')
 const { gzipSync } = require('node:zlib')
 const { test } = require('node:test')
 const YAML = require('yaml')
+const { BUILD_MODE_ENVIRONMENT_NAMES } = require('./run-macos-free-build.cjs')
 const {
   DEFAULT_UPDATE_URL,
   LEGACY_UPDATE_URL,
@@ -142,6 +143,16 @@ function runNodeScript(scriptPath, args) {
     child.once('error', reject)
     child.once('close', (status) => resolve({ status, stdout, stderr }))
   })
+}
+
+// 与 macos-build-config.test.cjs 同一份理由：下面几处 spawn 出来的子进程会加载
+// electron-builder.config.cjs，构建模式必须由用例自己决定。摊开 process.env 会让
+// 结果取决于谁在跑——`release:build:unsigned` 的门禁带着 XINGMANG_UNSIGNED_RELEASE=1
+// 跑 npm test，配置于是先抛「两种发布模式不能同时启用」，断言还没轮到就红了。
+function cleanBuildEnvironment() {
+  const environment = { ...process.env }
+  for (const name of BUILD_MODE_ENVIRONMENT_NAMES) delete environment[name]
+  return environment
 }
 
 test('normalizes production URLs and only permits loopback HTTP for development', () => {
@@ -383,7 +394,7 @@ test('electron-builder production config requires signing and stays hardened', (
     cwd: path.resolve('.'),
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...cleanBuildEnvironment(),
       XINGMANG_RELEASE: '1',
       XINGMANG_MAC_FREE_RELEASE: '',
       XINGMANG_ALLOW_UNSIGNED_RELEASE: '1',
@@ -432,7 +443,7 @@ test('unsigned local builds must not advertise a publisher name', () => {
     cwd: path.resolve('.'),
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...cleanBuildEnvironment(),
       XINGMANG_RELEASE: '',
       XINGMANG_MAC_FREE_RELEASE: '',
       CSC_IDENTITY_AUTO_DISCOVERY: 'false',

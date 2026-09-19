@@ -4,6 +4,7 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const test = require('node:test')
 const { NEW_UPDATE_URL } = require('./update-release-utils.cjs')
+const { BUILD_MODE_ENVIRONMENT_NAMES } = require('./run-macos-free-build.cjs')
 
 const root = path.resolve(__dirname, '..')
 const configPath = path.join(root, 'electron-builder.config.cjs')
@@ -11,6 +12,17 @@ const packageJson = require(path.join(root, 'package.json'))
 
 const STRICT_ENTITLEMENT_KEYS = ['com.apple.security.cs.allow-jit']
 const LIBRARY_VALIDATION_ESCAPE = 'com.apple.security.cs.disable-library-validation'
+
+// 这些用例靠 spawn 一个子进程加载 electron-builder.config.cjs 来观察它的判断，
+// 所以子进程看到的构建模式变量必须由用例自己说了算。直接摊开 process.env 会让
+// 结果取决于谁在跑：`release:build:unsigned` 的发布门禁自己就带着
+// XINGMANG_UNSIGNED_RELEASE=1 跑 npm test，配置于是在用例的断言之前先抛「两种
+// 发布模式不能同时启用」，五条用例一起红，而在开发机上它们全绿。
+function cleanBuildEnvironment() {
+  const environment = { ...process.env }
+  for (const name of BUILD_MODE_ENVIRONMENT_NAMES) delete environment[name]
+  return environment
+}
 
 function entitlementKeys(relativePath) {
   const contents = fs.readFileSync(path.join(root, relativePath), 'utf8')
@@ -44,7 +56,7 @@ function loadConfig({
     cwd: root,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...cleanBuildEnvironment(),
       XINGMANG_RELEASE: releaseMode ? '1' : '0',
       XINGMANG_MAC_FREE_RELEASE: freeReleaseMode ? '1' : '0',
       XINGMANG_LOCAL_BUILD: localBuildMode ? '1' : '0',
@@ -73,7 +85,7 @@ function runBeforePack({ electronPlatformName, releaseMode = false, freeReleaseM
     cwd: root,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...cleanBuildEnvironment(),
       XINGMANG_RELEASE: releaseMode ? '1' : '0',
       XINGMANG_MAC_FREE_RELEASE: freeReleaseMode ? '1' : '0',
       XINGMANG_LOCAL_BUILD: '0',
@@ -277,7 +289,7 @@ test('ephemeral signing rejects missing pins and every non-CI build mode', () =>
       cwd: root,
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanBuildEnvironment(),
         XINGMANG_RELEASE: '0',
         XINGMANG_LOCAL_BUILD: '0',
         CSC_NAME: 'XingMang CI Free Update Identity',
@@ -296,7 +308,7 @@ test('ephemeral signing mode rejects every non-empty marker other than exact 0 o
       cwd: root,
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanBuildEnvironment(),
         XINGMANG_RELEASE: '0',
         XINGMANG_MAC_FREE_RELEASE: '1',
         XINGMANG_LOCAL_BUILD: '0',
@@ -318,7 +330,7 @@ test('persistent signing rejects every electron-builder-truthy PR override', () 
       cwd: root,
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanBuildEnvironment(),
         XINGMANG_RELEASE: '1',
         XINGMANG_MAC_FREE_RELEASE: '0',
         XINGMANG_LOCAL_BUILD: '0',
@@ -336,7 +348,7 @@ test('free macOS releases reject development updater mode before emitting a publ
     cwd: root,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...cleanBuildEnvironment(),
       XINGMANG_RELEASE: '0',
       XINGMANG_MAC_FREE_RELEASE: '1',
       CSC_NAME: 'XingMang Free Update Identity',
@@ -354,7 +366,7 @@ test('Developer ID releases reject development updater mode before emitting a pu
     cwd: root,
     encoding: 'utf8',
     env: {
-      ...process.env,
+      ...cleanBuildEnvironment(),
       XINGMANG_RELEASE: '1',
       XINGMANG_MAC_FREE_RELEASE: '0',
       CSC_IDENTITY_AUTO_DISCOVERY: 'false',
@@ -384,7 +396,7 @@ test('free macOS releases require a selected identity and cannot overlap Develop
       cwd: root,
       encoding: 'utf8',
       env: {
-        ...process.env,
+        ...cleanBuildEnvironment(),
         XINGMANG_RELEASE: environment.releaseMode ? '1' : '0',
         XINGMANG_MAC_FREE_RELEASE: environment.freeReleaseMode ? '1' : '0',
         CSC_NAME: environment.signingIdentity || '',
@@ -459,5 +471,25 @@ test('every entitlements plist stays a well-formed dictionary of granted keys', 
     for (const [, key, value] of entries) {
       assert.equal(value, 'true', `${file} must grant ${key} as a boolean`)
     }
+  }
+})
+
+test('a build mode inherited from the surrounding process cannot decide what these tests see', () => {
+  // 这条钉的是 2026-09-19 那次 CI 出包失败：发布门禁（release:build:unsigned）自己
+  // 带着 XINGMANG_UNSIGNED_RELEASE=1 跑 npm test，本文件里几处 spawn 摊开 process.env
+  // 就把它带给了子进程，electron-builder.config.cjs 于是在用例的断言之前先抛「两种
+  // 发布模式不能同时启用」。表现是「开发机上全绿、发布门禁里红五条」，而报错内容
+  // 看起来像配置坏了，很难往环境继承上想。
+  const previous = process.env.XINGMANG_UNSIGNED_RELEASE
+  process.env.XINGMANG_UNSIGNED_RELEASE = '1'
+  try {
+    for (const name of BUILD_MODE_ENVIRONMENT_NAMES) {
+      assert.equal(name in cleanBuildEnvironment(), false, `${name} 不能从外层环境继承进来`)
+    }
+    // 真的加载一次配置：loadConfig 自己会断言子进程退出码为 0。
+    assert.equal(typeof loadConfig().forceCodeSigning, 'boolean')
+  } finally {
+    if (previous === undefined) delete process.env.XINGMANG_UNSIGNED_RELEASE
+    else process.env.XINGMANG_UNSIGNED_RELEASE = previous
   }
 })
