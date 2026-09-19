@@ -94,6 +94,7 @@ npm run build:mac
 macOS 包开启 hardened runtime，授予的 entitlements 由仓库内的 plist 显式指定，不再回落到 electron-builder 的内置模板（模板会给每个包授予 `disable-library-validation`，等于关掉 hardened runtime 最主要的一道防线，而主进程持有账号 token 并把付费 Key 写进 CLI 配置）。
 
 - `build/entitlements.mac.plist` 与 `build/entitlements.mac.inherit.plist`：所有签名构建（Developer ID 正式发布、免费自签发布、CI 临时签名）使用，只授予 V8 需要的 `com.apple.security.cs.allow-jit`，library validation 保持开启。本程序的运行时依赖全是纯 JavaScript，随包分发的原生组件都以独立进程启动，不需要向进程内加载第三方动态库。
+  library validation 开着就要求包和它随带的 Electron 框架属于同一个 team identifier，而 codesign 的 team identifier 取自签名证书的 OU 字段。所以 `scripts/create-macos-free-signing-certificate.cjs` 生成的自签证书主题是 `/OU=XINGMANG01/CN=<名称>`，签名预检 `scripts/verify-macos-free-signing.cjs` 也会拒绝没有这个 OU 的证书——2026-09-19 之前生成的证书只有 `/CN=`，用它签出来的包能通过全部产物校验，却会在加载自己的框架时被系统杀掉，表现为「应用因为出现问题而无法打开」。
 - `build/entitlements.mac.adhoc.plist` 与 `build/entitlements.mac.adhoc.inherit.plist`：只给 `npm run build:mac:dir` 和 `npm run build:mac:ci` 这类 ad-hoc 占位签名的本地解包构建使用。ad-hoc 签名没有 team identifier，library validation 无从比对随包的 Electron 框架，应用会直接起不来，因此这两份额外授予 `disable-library-validation`。这类产物不对外分发，发行路径不得指向它们。
 
 新增 entitlement 前先写清它为什么不可避免；`scripts/macos-build-config.test.cjs` 会断言各构建模式指向哪一份 plist，以及分发用的两份不含 `disable-library-validation`。
