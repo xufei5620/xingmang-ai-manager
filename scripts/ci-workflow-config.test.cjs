@@ -168,6 +168,45 @@ test('the Linux suite type-checks and runs the common test command', () => {
   assert.equal(commands.includes('npm run test:windows'), false)
 })
 
+test('the Linux job carries the shipping renderer coverage the Windows job used to own alone', () => {
+  // M-03: test:v2 and test:canvas ran only on windows-latest, the slowest and
+  // least reliable job in the matrix, so one Defender timeout took the renderer
+  // that actually ships out of a pull request's coverage entirely.
+  const steps = workflow.jobs['linux-test'].steps
+  const commands = runSteps('linux-test')
+  const dirtyCheckIndex = steps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
+
+  assert.notEqual(dirtyCheckIndex, -1, 'linux-test must still guard against a dirty working tree')
+  for (const command of ['npm run test:v2', 'npm run test:canvas', 'npm run test:ui', 'npm run check:v2']) {
+    const index = commands.indexOf(command)
+    assert.notEqual(index, -1, `linux-test must run ${command}`)
+    assert.ok(steps.findIndex((step) => step.run === command) < dirtyCheckIndex,
+      `${command} must run before the dirty-tree guard`)
+  }
+
+  // T-S4: check:v2 only earns its place in front of that guard while it stays
+  // report-free. Passing --report here would write three generatedAt-stamped
+  // files into the tree and fail every run.
+  assert.equal(packageJson.scripts['check:v2'].includes('--report'), false)
+  assert.equal(commands.some((command) => command.includes('check:v2 -- --report')), false)
+})
+
+test('the legacy rollback UI suites are verified on exactly one platform', () => {
+  // They render markup through renderToStaticMarkup and assert on the HTML, so
+  // the three platforms were answering the same question three times while the
+  // shipping renderer was answered once.
+  assert.equal(packageJson.scripts['test:node'].includes('test:ui'), false,
+    'test:ui must not ride along with test:node onto every platform')
+  assert.equal(packageJson.scripts.test.includes('test:ui'), false)
+  assert.equal(packageJson.scripts['test:windows'].includes('test:ui'), false)
+
+  const jobsRunningUi = Object.entries(workflow.jobs)
+    .filter(([, job]) => (job.steps || []).some((step) => step.run === 'npm run test:ui'))
+    .map(([name]) => name)
+
+  assert.deepEqual(jobsRunningUi, ['linux-test'])
+})
+
 test('the supported macOS runner runs the real isolated free-distribution build and verifier', () => {
   const macJob = workflow.jobs['macos-test']
   const commands = runSteps('macos-test')
@@ -222,6 +261,38 @@ test('documentation-only changes do not build and package the app', () => {
   for (const job of ['test', 'macos-test', 'linux-test', 'audit']) {
     assert.equal(workflow.jobs[job].needs, 'changes')
     assert.equal(workflow.jobs[job].if, "needs.changes.outputs.code == 'true'")
+  }
+})
+
+test('the change-scope job also gates the unreleased changelog fragments', () => {
+  const job = workflow.jobs.changes
+  const checkout = job.steps.find((step) => String(step.uses || '').includes('actions/checkout'))
+  const commands = runSteps('changes')
+
+  // Parallel pull requests used to append to the same two "unreleased" sections,
+  // and a conflicted pull request has no merge ref, so GitHub never triggered
+  // this workflow for it at all. Fragments removed the shared text; this step is
+  // what stops the habit from coming back.
+  assert.ok(commands.includes('npm run changelog:check'))
+  assert.match(packageJson.scripts['changelog:check'], /scripts\/changelog-collect\.cjs --check/)
+  assert.match(packageJson.scripts['changelog:collect'], /scripts\/changelog-collect\.cjs/)
+  assert.ok(packageJson.scripts['test:node'].includes('scripts/changelog-collect.test.cjs'))
+
+  // The guard diffs both unreleased sections against the pull request base, so
+  // the base commit has to be reachable...
+  assert.equal(checkout.with['fetch-depth'], 0)
+  // ...and this is the only job without a documentation-only skip, which is
+  // exactly the shape a bare CHANGELOG.md edit has.
+  assert.equal(job.if, undefined, 'the fragment gate must run for every change')
+  // No npm ci here: the gate has to keep running on node builtins alone.
+  assert.equal(commands.some((command) => command.startsWith('npm ci')), false)
+})
+
+test('the fragment directory keeps its instructions after a release collects it', () => {
+  // Collecting deletes every *.md fragment; these two are what keep the
+  // directory — and the format it documents — in git afterwards.
+  for (const file of ['changes/unreleased/README.md', 'changes/unreleased/TEMPLATE.md.example']) {
+    assert.ok(fs.existsSync(path.join(root, file)), `${file} must exist`)
   }
 })
 

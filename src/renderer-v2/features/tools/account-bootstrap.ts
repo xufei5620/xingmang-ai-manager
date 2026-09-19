@@ -9,6 +9,7 @@ import {
 } from '../../../../electron/ipc-contract'
 import { tools } from '../../registry/tools'
 import { connectionReady, sourceFor } from './model'
+import { userFacingErrorMessage } from '../../business-common'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -217,7 +218,9 @@ export async function bootstrapAccountTools(
   try {
     synchronized = await api.syncManagedCliKeys()
   } catch (error) {
-    syncError = error instanceof Error ? error.message : '账号专属 Key 没有同步完成'
+    // 这条不是给用户的主提示，而是拼进 warnings 的诊断行（「Key 同步阶段：…」已交代
+    // 了场景），所以只脱敏、保留原文，不替换成一句通用文案。
+    syncError = userFacingErrorMessage(error) || '账号专属 Key 没有同步完成'
   }
 
   await assertAccount(api, expectedUserId, expectedSiteId)
