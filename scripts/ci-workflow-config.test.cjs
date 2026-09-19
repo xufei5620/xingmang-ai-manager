@@ -378,7 +378,7 @@ test('quality checks cannot publish a release', () => {
   assert.doesNotMatch(serialized, /gh release|create-release|dist:mac:free|release:build/i)
 })
 
-const playwrightElectronSmokes = ['e2e/electron-ci-smoke.mjs', 'e2e/window-close-smoke.mjs']
+const playwrightElectronSmokes = ['e2e/electron-ci-smoke.mjs', 'e2e/window-close-smoke.mjs', 'e2e/realm-account-smoke.mjs']
 
 test('a Playwright Electron smoke can never consume a whole job again', () => {
   // #131 and #133: a wedged Electron made the close smoke run for ten minutes
@@ -440,6 +440,9 @@ const fixtureReadinessConsumers = [
   'e2e/shell-navigation-interactions.test.mjs',
   'e2e/ui-interactions.test.mjs',
   'src/renderer-v2/testing/app-check.mjs',
+  // D-12: the dual-site account smoke waits on the same cold Electron start
+  // the Windows runner takes ~16s over, three times per run.
+  'e2e/realm-account-smoke.mjs',
 ]
 
 test('a cold fixture open cannot be reported as a failed assertion again', () => {
