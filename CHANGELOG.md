@@ -15,9 +15,6 @@
 
 ## Unreleased
 
-- 收口 Windows `test` 作业里三处反复空耗 CI 的不稳定：浏览器夹具的「挂载完成」等待从 Playwright 的 30 秒动作默认值改为 `e2e/fixture-readiness.mjs` 的共享预算（默认 90 秒，`XINGMANG_FIXTURE_READY_TIMEOUT_MS` 可覆盖），挂载之后的行为断言一律保持 30 秒；`app-check.mjs` 的 `open()` 不再以 `page.goto` 的 `load` 当作夹具就绪，改为轮询夹具全局与已渲染的 root，并在 `before` 里预热一次 Vite 依赖优化（此前首个用例 30 秒超时、同组另外四个各 2.3 秒）。
-- 关窗冒烟的主进程控制通道不再会被一次瞬时文件错误打掉：命令文件的读取与删除失败改为下一拍重试并记进证据文件（主进程只注册 `uncaughtExceptionMonitor`，此前抛出即终止，症状只剩「命令未被回执」）；命令回执等待独立成 30 秒预算（`XINGMANG_SMOKE_COMMAND_TIMEOUT_MS`），应用已退出时立刻带退出码报错而不是耗完预算，并把主进程自己的 stdout/stderr 转发到日志。
-- `scripts/ci-workflow-config.test.cjs` 补两条门禁，钉住上述夹具预算与关窗冒烟的容错，防止回退到裸默认值。
 - 删除中转站点表里与主站点逐字段相同的 `sub2api` 别名条目，只保留 `resolveRelaySite` / `realmForExplicitSite` 里的 `'sub2api' → 'solov'` id 映射，老配置文件照常解析到同一站点；随之删掉 `site-runtime.ts` 里专为该别名写的一致性校验，并把显式账号边界（`requireRelaySite`、站点运行时、后端注册表）改为拒绝这个已退役的 id（D-10）。
 - 在 `relay-sites.ts` 注明法律文档恒定指向主站、客服链接按账号分流是有意为之（同一份协议、两拨客服），并补测试钉住这一不对称（D-11，行为不变）。
 - CI 覆盖方向不再与出货方向倒挂：出货的 renderer-v2 浏览器回归（`test:v2`）和画布单测（`test:canvas`）加进 linux 作业，旧回滚界面的 10 个 `test:ui` 套件从三个平台降到只在 linux 跑一遍，`test:canvas` 从最慢、最易因 Defender 超时失败的 Windows 作业移走。`scripts/ci-workflow-config.test.cjs` 新增断言钉住这两条（M-03）。
