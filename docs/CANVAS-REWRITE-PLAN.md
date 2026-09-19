@@ -251,14 +251,15 @@ git diff --check
 
 **基线失败集合(Windows 本机,环境相关,非回归)**:
 
-- **以 `npm run test:windows` 为准:4 项**,全部是符号链接 `EPERM`(需开启 Windows
+- **以 `npm test` 为准:4 项**,全部是符号链接 `EPERM`(需开启 Windows
   开发者模式)。这是真正的代码级基线。
-- `npm test` / 裸 `vitest` 会额外报 5~6 项 5 秒超时,那是文件级并行 + Defender
-  实时扫描的抖动,**不是回归**。同一批改动下这个数字会在 9~10 之间浮动,
-  因此判断有无新增失败必须用 `test:windows`。
-- ⚠️ `npm test` 是 `vitest && test:node`,vitest 一旦非零退出就**短路**,
-  `test:node` 不会执行。本机需单独跑 `npm run test:node`(85 项脚本 + 18 项
-  浏览器用例,需先 `npx playwright install chromium`)。
+- 裸 `vitest`(不带 `--no-file-parallelism --testTimeout=30000`)会额外报 5~6 项
+  5 秒超时,那是文件级并行 + Defender 实时扫描的抖动,**不是回归**。同一批改动下
+  这个数字会在 9~10 之间浮动,因此判断有无新增失败必须走 `npm test`——那两个
+  标志就写在它调用的 `test:vitest` 里。
+- ⚠️ `npm test` 是 `test:vitest && test:scripts && test:browser`,vitest 一旦非零
+  退出就**短路**,后两段不会执行。本机需单独跑 `npm run test:scripts`(脚本用例)
+  与 `npm run test:browser`(浏览器用例,需先 `npx playwright install chromium`)。
 
 任何超出上述 4 项的失败都按回归处理。
 

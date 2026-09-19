@@ -37,24 +37,20 @@ function buildReleaseEnvironment(environment, { releaseOutputDirectory, unsigned
   return releaseEnvironment
 }
 
-function buildReleaseSteps({ npmCli, releaseOutputDirectory, platform, unsignedReleaseMode }) {
+function buildReleaseSteps({ npmCli, releaseOutputDirectory, unsignedReleaseMode }) {
   const scripts = path.join(root, 'scripts')
   const e2e = path.join(root, 'e2e')
   const unpacked = path.join(releaseOutputDirectory, 'win-unpacked')
   return [
     { label: '发布前置检查', executable: process.execPath, args: [path.join(scripts, 'verify-release-environment.cjs')] },
     { label: 'TypeScript 类型检查', executable: process.execPath, args: [npmCli, 'run', 'typecheck'] },
-    // Windows 上走 test:windows(关文件级并行 + 30s 超时)。用例集完全相同,
-    // 差别只在调度:发布门禁跑在真实磁盘上,两阶段提交叠加 Defender 实时扫描
-    // 会让若干用例卡过 vitest 默认的 5s 超时(CLAUDE.md 的 Windows 基线一节 /
-    // Issue #40)。CI runner 上这几乎必现——2026-08-12 首次 CI 正式构建就死在
-    // system-service.test.ts 的 5s 超时上,而同一提交在 Linux 全绿。
-    // 放宽的是超时不是断言:真回归照样红。
-    {
-      label: '全部测试',
-      executable: process.execPath,
-      args: [npmCli, ...(platform === 'win32' ? ['run', 'test:windows'] : ['test'])],
-    },
+    // 这里不区分平台:`npm test` 自己就是关文件级并行 + 30s 超时的那一套
+    // (test:vitest 带 --no-file-parallelism --testTimeout=30000)。发布门禁跑在
+    // 真实磁盘上,两阶段提交叠加 Defender 实时扫描会让若干用例卡过 vitest 默认的
+    // 5s 超时(CLAUDE.md 的 Windows 基线一节 / Issue #40)。CI runner 上这几乎
+    // 必现——2026-08-12 首次 CI 正式构建就死在 system-service.test.ts 的 5s
+    // 超时上,而同一提交在 Linux 全绿。放宽的是超时不是断言:真回归照样红。
+    { label: '全部测试', executable: process.execPath, args: [npmCli, 'test'] },
     // 上一步的用例集不含出货渲染层和画布:`npm test` 跑的是 `vitest run electron src`,
     // renderer-v2 的浏览器回归与 canvas-v2 单测各有独立入口。少了这三条,发布门禁
     // 对真正装到客户机器上的那个界面是 0 覆盖,比 quality.yml 的 windows 作业还弱
@@ -125,12 +121,7 @@ function main() {
   }
 
   const releaseEnvironment = buildReleaseEnvironment(process.env, { releaseOutputDirectory, unsignedReleaseMode })
-  const steps = buildReleaseSteps({
-    npmCli,
-    releaseOutputDirectory,
-    platform: process.platform,
-    unsignedReleaseMode,
-  })
+  const steps = buildReleaseSteps({ npmCli, releaseOutputDirectory, unsignedReleaseMode })
 
   console.log(`[release] 已确认空发布目录：${releaseOutputDirectory}`)
   console.log(unsignedReleaseMode
