@@ -3,7 +3,6 @@ import {
   RealmAccountError, type AccountRealmId, type RealmSavedAccount,
 } from './realm-account'
 import type { RealmAccountVault, RealmLoginHintSummary } from './realm-account-vault'
-import { NewApiLoginRejectedError } from './new-api-client'
 import type { RelayBackendCapabilities, RelayBackendClient } from './relay-backend'
 import type { NewApiLoginInput, NewApiLoginResult, NewApiPersistableSession, NewApiSessionState } from './new-api-client'
 import { savedAccountId, type SavedAccountSummary } from './saved-accounts'
@@ -230,31 +229,19 @@ export function createRealmAccountService(options: RealmAccountServiceOptions): 
     const selected = input?.siteId === undefined ? undefined : site(input.siteId)
     const captured = captureRealmLogin({ identifier: input?.username, password: input?.password, turnstileToken: input?.turnstileToken })
     return transition(async () => {
-      const preferred = selected ?? await options.vault.preferredLoginSite(captured.identifier) ?? 'solov'
-      const email = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(captured.identifier)
-      const candidates: RealmAccountSiteId[] = selected || !email ? [preferred]
-        : [preferred, preferred === 'solov' ? 'solov-api' : 'solov']
-      for (const siteId of candidates) {
-        const candidate = createHandle(siteId)
-        try {
-          let result: NewApiLoginResult
-          try {
-            result = await prepare(() => candidate.client.login({ username: captured.identifier, password: captured.password,
-              ...(captured.turnstileToken === undefined ? {} : { turnstileToken: captured.turnstileToken }) }))
-          } catch (error) {
-            // Only definitive password rejection permits another account
-            // backend. A timeout, challenge, profile failure or bad response
-            // must preserve the previous account instead of guessing.
-            const rejected = error instanceof NewApiLoginRejectedError
-              || (error instanceof RealmAccountError && error.code === 'LOGIN_REJECTED')
-            if (selected || !rejected) throw error
-            continue
-          }
-          await promote(candidate, undefined, captured.identifier)
-          return { ...result, ...metadata() }
-        } finally { if (active !== candidate) dispose(candidate) }
-      }
-      throw new RealmAccountError('LOGIN_REJECTED')
+      // Exactly one account backend ever receives the plaintext password. The
+      // site is either the caller's explicit choice or the deterministic hint
+      // this machine already recorded for the identifier; a rejection ends the
+      // attempt. Probing the other backend with the same secret would hand a
+      // password the user only ever meant for one site to both of them.
+      const siteId = selected ?? await options.vault.preferredLoginSite(captured.identifier) ?? 'solov'
+      const candidate = createHandle(siteId)
+      try {
+        const result = await prepare(() => candidate.client.login({ username: captured.identifier, password: captured.password,
+          ...(captured.turnstileToken === undefined ? {} : { turnstileToken: captured.turnstileToken }) }))
+        await promote(candidate, undefined, captured.identifier)
+        return { ...result, ...metadata() }
+      } finally { if (active !== candidate) dispose(candidate) }
     }, true)
   }
   async function logout(): Promise<void> {

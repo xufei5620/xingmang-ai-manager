@@ -83,6 +83,8 @@ npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 `toNativeConfigSummary` 解构剥离 `apiKey`；明文仅走 `config:reveal-api-key`。**账号凭据同理**：`accessToken` / refresh cookie 在 IPC 契约里 0 处返回给渲染层（渲染层只拿登录态快照），加密落盘走 `account-session-store.ts`。
 *违反后果*：用户一次"导出反馈"就把付费 Key 发到客服群。
 
+*已登记的例外*：「记住密码」的明文密码走 `account:get-remembered-login` / `account:set-remembered-login` 一对专用通道跨 IPC——这是**有意的产品取舍**（勾了就要看见填好的登录框，渲染层没别的途径拿到它），落盘由 `account-credential-store.ts` 以 `safeStorage` 加密，两条通道都在 `ipc.ts` 的日志静默名单里（同 I13）。约束与 `config:reveal-api-key` 相同：**只能是这两条专用通道**，明文永不许搭普通查询（登录态快照、账号资料、诊断导出）的便车。
+
 **I4. 所有 `ipcMain.handle` 必须经 `registerTrustedHandler`。**
 它统一做 sender URL 校验、结构化日志、dispose 注册。**两处例外，都只服务一个窗口、且校验比它更窄**：`canvas-host:*` 由 `canvas-window.ts` 的 `registerCanvasHandler` 注册（`assertTrustedCanvasSender` 只放行画布窗口自身的 sender，主窗口调会被拒）；`xingmang-platform:*` 由 `platform/ipc.ts` 的 `registerPlatformHandlers` 注册（`assertPlatformOwner` 只放行主窗口主框架）。两者都要自己补齐日志这一半：platform 侧走 `registerPlatformHandlers` 的 `log` 回调，由 `platform/runtime-log-bridge.ts` 接到 `runtimeLog`（handler 比 `RuntimeLogStore` 先注册，中间这段缓冲后补发）。新通道不许效仿，除非同样只服务一个隔离窗口。
 
