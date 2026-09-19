@@ -16,6 +16,23 @@ function temporaryProject(t) {
   return root
 }
 
+function writeCertificate({ outputDirectory }) {
+  fs.mkdirSync(outputDirectory)
+  const certificatePath = path.join(outputDirectory, 'identity.cer')
+  const p12Path = path.join(outputDirectory, 'identity.p12')
+  fs.writeFileSync(certificatePath, 'certificate')
+  fs.writeFileSync(p12Path, 'p12')
+  return { certificatePath, p12Path }
+}
+
+function sequentialEntropy() {
+  let draw = 0
+  return (size) => {
+    draw += 1
+    return Buffer.alloc(size, draw)
+  }
+}
+
 const fingerprint = 'AB'.repeat(32)
 const sha1Fingerprint = 'CD'.repeat(20)
 
@@ -24,14 +41,49 @@ test('macOS security commands never cross an administrator boundary', () => {
     executable: '/usr/bin/security',
     argv: ['list-keychains', '-d', 'user'],
     label: 'security list-keychains',
+    stdin: undefined,
+    redactions: [],
   })
-  assert.deepEqual(resolveMacosSecurityCommand(['delete-keychain', '/tmp/ci-signing.keychain-db'], {
-    privilege: 'admin',
-  }), {
+  assert.deepEqual(resolveMacosSecurityCommand(['delete-keychain', '/tmp/ci-signing.keychain-db']), {
     executable: '/usr/bin/security',
     argv: ['delete-keychain', '/tmp/ci-signing.keychain-db'],
     label: 'security delete-keychain',
+    stdin: undefined,
+    redactions: [],
   })
+})
+
+test('macOS security passwords are fed on stdin instead of argv', () => {
+  const password = 'CiKeychain!0f0f0f0fAa1'
+  const command = resolveMacosSecurityCommand(
+    ['create-keychain', '-p', password, '/tmp/ci-signing.keychain-db'],
+    { secrets: [password] },
+  )
+  assert.deepEqual(command.argv, ['-i'])
+  assert.equal(command.label, 'security create-keychain')
+  assert.equal(command.argv.includes(password), false)
+  assert.equal(
+    command.stdin,
+    `"create-keychain" "-p" "${password}" "/tmp/ci-signing.keychain-db"\n`,
+  )
+  assert.deepEqual(command.redactions, [password])
+
+  const quoted = resolveMacosSecurityCommand(
+    ['import', '/tmp/a "b"\\c.p12', '-P', password],
+    { secrets: [password] },
+  )
+  assert.equal(quoted.stdin, `"import" "/tmp/a \\"b\\"\\\\c.p12" "-P" "${password}"\n`)
+
+  // A subcommand whose declared secret is not actually one of its arguments
+  // means the call site drifted; it must not silently fall back to argv.
+  assert.throws(
+    () => resolveMacosSecurityCommand(['create-keychain', '-p', password], { secrets: ['other'] }),
+    /机密参数/,
+  )
+  assert.throws(
+    () => resolveMacosSecurityCommand(['create-keychain', '-p', 'a\nb'], { secrets: ['a\nb'] }),
+    /控制字符/,
+  )
 })
 
 test('CI signing restores the user search list it temporarily prepends its isolated keychain to', async (t) => {
@@ -43,7 +95,7 @@ test('CI signing restores the user search list it temporarily prepends its isola
     projectRoot,
     platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
-    randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
+    randomBytes: sequentialEntropy(),
     createCertificate: ({ outputDirectory, commonName, password }) => {
       calls.push(['certificate', { outputDirectory, commonName, password }])
       assert.equal(path.dirname(outputDirectory), fs.realpathSync(path.dirname(outputDirectory)))
@@ -129,7 +181,7 @@ test('CI signing aborts and cleans up when the trust-free private-key probe fail
     projectRoot,
     platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
-    randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
+    randomBytes: sequentialEntropy(),
     createCertificate: ({ outputDirectory }) => {
       fs.mkdirSync(outputDirectory)
       const certificatePath = path.join(outputDirectory, 'identity.cer')
@@ -143,6 +195,9 @@ test('CI signing aborts and cleans up when the trust-free private-key probe fail
     runSecurity: (args, commandOptions = {}) => {
       securityCalls.push([args, commandOptions])
       if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
       return ''
     },
     verifyEphemeralSigning: () => {
@@ -174,7 +229,7 @@ test('CI signing does not probe or mutate trust before identity import succeeds'
     projectRoot,
     platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
-    randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
+    randomBytes: sequentialEntropy(),
     createCertificate: ({ outputDirectory }) => {
       fs.mkdirSync(outputDirectory)
       const certificatePath = path.join(outputDirectory, 'identity.cer')
@@ -187,6 +242,7 @@ test('CI signing does not probe or mutate trust before identity import succeeds'
     certificateSha1: () => sha1Fingerprint,
     runSecurity: (args, commandOptions = {}) => {
       securityCalls.push([args, commandOptions])
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
       if (args[0] === 'import') throw new Error('identity import failed')
       return ''
     },
@@ -210,7 +266,7 @@ test('CI signing cleanup runs when the real free build fails', async (t) => {
     projectRoot,
     platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
-    randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
+    randomBytes: sequentialEntropy(),
     createCertificate: ({ outputDirectory }) => {
       fs.mkdirSync(outputDirectory)
       const certificatePath = path.join(outputDirectory, 'identity.cer')
@@ -224,6 +280,9 @@ test('CI signing cleanup runs when the real free build fails', async (t) => {
     runSecurity: (args, commandOptions = {}) => {
       securityCalls.push([args, commandOptions])
       if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
       return ''
     },
     verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
@@ -260,7 +319,7 @@ test('CI signing reports keychain deletion failure after attempting directory cl
     projectRoot,
     platform: 'darwin',
     env: { PATH: '/usr/bin:/bin' },
-    randomBytes: () => Buffer.from('1234567890abcdef', 'hex'),
+    randomBytes: sequentialEntropy(),
     createCertificate: ({ outputDirectory }) => {
       fs.mkdirSync(outputDirectory)
       const certificatePath = path.join(outputDirectory, 'identity.cer')
@@ -275,6 +334,9 @@ test('CI signing reports keychain deletion failure after attempting directory cl
       securityCalls.push([args, commandOptions])
       if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
       if (args[0] === 'delete-keychain') throw new Error('temporary keychain deletion failed')
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
       return ''
     },
     verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
@@ -527,7 +589,7 @@ test('stops at every nonzero command status and never verifies artifacts after b
       verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
       commandRunner: async (spec) => {
         commands.push(spec)
-        return { status: commands.length - 1 === failedCommand ? 1 : 0 }
+        if (commands.length - 1 === failedCommand) throw new Error(`${spec.label} 失败`)
       },
       verifyArtifacts: async () => { artifacts += 1 },
     })), /失败/)
@@ -628,4 +690,305 @@ test('scrubs ambient update development mode while propagating a normalized cust
   assert.equal(commands[3].env.XINGMANG_UPDATE_URL, 'https://updates.example.test/custom/')
   assert.equal(artifactOptions.expectedUpdateUrl, 'https://updates.example.test/custom/')
   assert.equal(artifactOptions.env.XINGMANG_UPDATE_DEV, undefined)
+})
+
+test('CI signing refuses a runner that is not a disposable hosted one', async (t) => {
+  const projectRoot = temporaryProject(t)
+  let certificateCalls = 0
+  await assert.rejects(() => runCiFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    env: { PATH: '/usr/bin:/bin', CI: 'true', RUNNER_ENVIRONMENT: 'self-hosted' },
+    randomBytes: sequentialEntropy(),
+    createCertificate: (value) => {
+      certificateCalls += 1
+      return writeCertificate(value)
+    },
+  }), /托管 runner/)
+  assert.equal(certificateCalls, 0)
+  assert.deepEqual(fs.readdirSync(projectRoot), [])
+})
+
+test('CI signing draws the keychain password, the P12 password and the output name separately', async (t) => {
+  const projectRoot = temporaryProject(t)
+  let keychainPassword
+  let p12Password
+  let outputRequest
+  await runCiFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    env: { PATH: '/usr/bin:/bin' },
+    randomBytes: sequentialEntropy(),
+    createCertificate: (value) => {
+      p12Password = value.password
+      return writeCertificate(value)
+    },
+    certificateFingerprint: () => fingerprint,
+    certificateSha1: () => sha1Fingerprint,
+    runSecurity: (args) => {
+      if (args[0] === 'create-keychain') {
+        keychainPassword = args[2]
+        fs.writeFileSync(args.at(-1), 'keychain')
+      }
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
+      return ''
+    },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
+    runBuild: async (value) => {
+      outputRequest = value.outputDirectory
+      fs.mkdirSync(path.join(projectRoot, value.outputDirectory))
+      return { outputDirectory: value.outputDirectory }
+    },
+    removeDirectory: (directory) => fs.rmSync(directory, { recursive: true, force: true }),
+  })
+
+  const keychainEntropy = keychainPassword.slice('CiKeychain!'.length, -'Aa1'.length)
+  const p12Entropy = p12Password.slice('CiP12!'.length, -'Aa1'.length)
+  assert.equal(keychainEntropy.length, 32)
+  assert.equal(p12Entropy.length, 32)
+  // Either password leaking must not hand over the other, and the output
+  // directory name is readable by anyone who can list the project root.
+  assert.notEqual(keychainEntropy, p12Entropy)
+  assert.equal(outputRequest.includes(keychainEntropy.slice(0, 12)), false)
+  assert.equal(outputRequest.includes(p12Entropy.slice(0, 12)), false)
+})
+
+test('CI signing keeps passwords off argv by feeding the subcommand on stdin', async (t) => {
+  const projectRoot = temporaryProject(t)
+  const declared = []
+  let keychainPassword
+  let p12Password
+  await runCiFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    env: { PATH: '/usr/bin:/bin' },
+    randomBytes: sequentialEntropy(),
+    createCertificate: (value) => {
+      p12Password = value.password
+      return writeCertificate(value)
+    },
+    certificateFingerprint: () => fingerprint,
+    certificateSha1: () => sha1Fingerprint,
+    runSecurity: (args, commandOptions = {}) => {
+      declared.push([args, commandOptions])
+      if (args[0] === 'create-keychain') {
+        keychainPassword = args[2]
+        fs.writeFileSync(args.at(-1), 'keychain')
+      }
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
+      return ''
+    },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
+    runBuild: async (value) => {
+      fs.mkdirSync(path.join(projectRoot, value.outputDirectory))
+      return { outputDirectory: value.outputDirectory }
+    },
+    removeDirectory: (directory) => fs.rmSync(directory, { recursive: true, force: true }),
+  })
+
+  for (const [args, commandOptions] of declared) {
+    const carriesSecret = args.some((argument) => argument === keychainPassword || argument === p12Password)
+    assert.equal(carriesSecret, (commandOptions.secrets || []).length > 0)
+    // Whatever the call site declares must actually resolve to a stdin-fed
+    // invocation, otherwise the password is back on the command line.
+    const command = resolveMacosSecurityCommand(args, commandOptions)
+    if (carriesSecret) {
+      assert.deepEqual(command.argv, ['-i'])
+      assert.equal(command.stdin.includes(args[2]), true)
+    } else {
+      assert.equal(command.stdin, undefined)
+    }
+  }
+  assert.equal(declared.some(([args]) => args[0] === 'import'), true)
+})
+
+test('CI signing restores the machine when the run is interrupted', async (t) => {
+  const projectRoot = temporaryProject(t)
+  const securityCalls = []
+  const killed = []
+  const listeners = new Map()
+  const signalHandle = {
+    pid: 4321,
+    on: (signal, handler) => listeners.set(signal, [...(listeners.get(signal) || []), handler]),
+    removeListener: (signal, handler) => listeners.set(
+      signal,
+      (listeners.get(signal) || []).filter((entry) => entry !== handler),
+    ),
+    kill: (pid, signal) => killed.push([pid, signal]),
+  }
+  let outputPath
+
+  await runCiFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    env: { PATH: '/usr/bin:/bin' },
+    randomBytes: sequentialEntropy(),
+    signalHandle,
+    createCertificate: writeCertificate,
+    certificateFingerprint: () => fingerprint,
+    certificateSha1: () => sha1Fingerprint,
+    runSecurity: (args) => {
+      securityCalls.push(args)
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
+      return ''
+    },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
+    runBuild: async (value) => {
+      outputPath = path.join(projectRoot, value.outputDirectory)
+      fs.mkdirSync(outputPath)
+      assert.equal(listeners.get('SIGINT').length, 1)
+      assert.equal(listeners.get('SIGTERM').length, 1)
+      for (const handler of [...listeners.get('SIGINT')]) handler('SIGINT')
+      return { outputDirectory: value.outputDirectory }
+    },
+    removeDirectory: (directory) => fs.rmSync(directory, { recursive: true, force: true }),
+  })
+
+  // The interrupt cleans up before the process dies, and re-raises the signal
+  // so the caller still sees an interrupted run.
+  assert.deepEqual(killed, [[4321, 'SIGINT']])
+  assert.equal(fs.existsSync(outputPath), false)
+  const restores = securityCalls.filter((args) => args[0] === 'list-keychains' && args[3] === '-s' && args.length === 5)
+  assert.equal(restores.length, 1)
+  assert.deepEqual(restores[0], [
+    'list-keychains', '-d', 'user', '-s', '/Users/runner/Library/Keychains/login.keychain-db',
+  ])
+  // Cleanup is idempotent: the `finally` after the interrupt must not run it twice.
+  assert.equal(securityCalls.filter((args) => args[0] === 'delete-keychain').length, 1)
+  assert.deepEqual(listeners.get('SIGINT'), [])
+  assert.deepEqual(listeners.get('SIGTERM'), [])
+})
+
+test('CI signing refuses to touch a keychain search list it cannot put back', async (t) => {
+  for (const reply of ['', '   \n', '    "Library/Keychains/login.keychain-db"\n']) {
+    const projectRoot = temporaryProject(t)
+    const securityCalls = []
+    await assert.rejects(() => runCiFreeMacBuild({
+      projectRoot,
+      platform: 'darwin',
+      env: { PATH: '/usr/bin:/bin' },
+      randomBytes: sequentialEntropy(),
+      createCertificate: writeCertificate,
+      certificateFingerprint: () => fingerprint,
+      certificateSha1: () => sha1Fingerprint,
+      runSecurity: (args) => {
+        securityCalls.push(args)
+        if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+        if (args[0] === 'list-keychains' && args.length === 3) return reply
+        return ''
+      },
+      verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
+      runBuild: async () => { throw new Error('unreachable') },
+      removeDirectory: (directory) => fs.rmSync(directory, { recursive: true, force: true }),
+    }), /搜索列表/)
+
+    // Nothing was written to the search list, so nothing has to be restored —
+    // and in particular no bare `-s` that would empty it.
+    assert.equal(securityCalls.some((args) => args[0] === 'list-keychains' && args.includes('-s')), false)
+    assert.equal(securityCalls.filter((args) => args[0] === 'delete-keychain').length, 1)
+  }
+})
+
+test('build-mode and private packaging variables never reach the build children', async (t) => {
+  const commands = []
+  const verifierCalls = []
+  const stripped = {
+    XINGMANG_UNSIGNED_RELEASE: '1',
+    XINGMANG_ACCELERATION_BUNDLE_DIR: '/private/acceleration',
+    XINGMANG_SIGNING_PUBLISHER: 'CN=Someone Else',
+    XINGMANG_LOCAL_BUILD: '1',
+  }
+  await runFreeMacBuild(validOptions(t, {
+    env: {
+      PATH: '/usr/bin:/bin',
+      CSC_NAME: 'XingMang Free Update Identity',
+      XINGMANG_MAC_SIGNING_SHA256: fingerprint,
+      ...stripped,
+    },
+    verifySigning: (value) => {
+      verifierCalls.push(value)
+      return { identityName: value.identityName, fingerprint }
+    },
+    commandRunner: async (spec) => { commands.push(spec) },
+    verifyArtifacts: async (value) => {
+      verifierCalls.push(value)
+      return { outputDirectory: value.outputDirectory }
+    },
+  }))
+
+  for (const call of [...commands, ...verifierCalls]) {
+    for (const name of Object.keys(stripped)) assert.equal(call.env[name], undefined)
+  }
+})
+
+test('a failed build removes the output directory it created so the next run is re-enterable', async (t) => {
+  const projectRoot = temporaryProject(t)
+  const outputDirectory = path.join(projectRoot, 'release-free-1.2.3')
+  const base = {
+    projectRoot,
+    platform: 'darwin',
+    packageVersion: '1.2.3',
+    skipChecks: true,
+    npmCliPath: '/trusted/npm-cli.js',
+    electronBuilderCliPath: '/trusted/electron-builder-cli.js',
+    env: {
+      PATH: '/usr/bin:/bin',
+      CSC_NAME: 'XingMang Free Update Identity',
+      XINGMANG_MAC_SIGNING_SHA256: fingerprint,
+    },
+    verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
+  }
+
+  await assert.rejects(() => runFreeMacBuild({
+    ...base,
+    commandRunner: async () => {
+      fs.writeFileSync(path.join(outputDirectory, 'half-written.dmg'), 'partial')
+      throw new Error('electron-builder 中途失败')
+    },
+    verifyArtifacts: async () => { throw new Error('unreachable') },
+  }), (error) => /electron-builder 中途失败/.test(error.message) && error.message.includes(outputDirectory))
+  assert.equal(fs.existsSync(outputDirectory), false)
+
+  const result = await runFreeMacBuild({
+    ...base,
+    commandRunner: async () => {},
+    verifyArtifacts: async (value) => ({ outputDirectory: value.outputDirectory }),
+  })
+  assert.equal(result.outputDirectory, outputDirectory)
+  assert.equal(fs.existsSync(outputDirectory), true)
+})
+
+test('a failed build keeps an output directory it did not create and names it in the error', async (t) => {
+  const projectRoot = temporaryProject(t)
+  const outputDirectory = path.join(projectRoot, 'caller-owned')
+  fs.mkdirSync(outputDirectory)
+
+  await assert.rejects(() => runFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    packageVersion: '1.2.3',
+    skipChecks: true,
+    outputDirectory: 'caller-owned',
+    npmCliPath: '/trusted/npm-cli.js',
+    electronBuilderCliPath: '/trusted/electron-builder-cli.js',
+    env: {
+      PATH: '/usr/bin:/bin',
+      CSC_NAME: 'XingMang Free Update Identity',
+      XINGMANG_MAC_SIGNING_SHA256: fingerprint,
+    },
+    verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
+    commandRunner: async () => {
+      fs.writeFileSync(path.join(outputDirectory, 'half-written.dmg'), 'partial')
+      throw new Error('产物验证失败')
+    },
+    verifyArtifacts: async () => { throw new Error('unreachable') },
+  }), (error) => error.message.includes(outputDirectory))
+  assert.equal(fs.existsSync(path.join(outputDirectory, 'half-written.dmg')), true)
 })

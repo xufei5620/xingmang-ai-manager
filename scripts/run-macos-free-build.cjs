@@ -26,6 +26,12 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_MAC_SIGNING_P12_PASSWORD',
   'XINGMANG_UPDATE_DEV',
   'XINGMANG_UPDATE_URL',
+  // XINGMANG_UNSIGNED_RELEASE 残留会被 electron-builder.config.cjs 的互斥断言
+  // 拦下，但那是下游偶然存在的兜底；XINGMANG_ACCELERATION_BUNDLE_DIR 残留没有
+  // 任何断言拦，会让免费分发包悄悄带上私有加速资源。
+  'XINGMANG_UNSIGNED_RELEASE',
+  'XINGMANG_ACCELERATION_BUNDLE_DIR',
+  'XINGMANG_SIGNING_PUBLISHER',
 ])
 
 function normalizeFingerprint(value, byteLength = 32) {
@@ -51,16 +57,29 @@ function defaultCommandRunner(spec) {
   if (result.status !== 0) throw new Error(`${spec.label} 失败`)
 }
 
-function defaultCapturedCommand(executable, args, env, label) {
+function redactSecrets(text, secrets) {
+  let redacted = String(text || '')
+  for (const secret of secrets) {
+    if (secret) redacted = redacted.replaceAll(secret, '***')
+  }
+  return redacted
+}
+
+function defaultCapturedCommand(executable, args, env, label, options = {}) {
   const result = spawnSync(executable, args, {
     encoding: 'utf8',
     env,
+    input: options.stdin,
     shell: false,
     timeout: SECURITY_COMMAND_TIMEOUT_MS,
     windowsHide: true,
   })
+  const secrets = options.redactions || []
   if (result.error) throw new Error(`无法启动 ${label}：${result.error.message}`)
-  if (result.status !== 0) throw new Error(`${label}失败：${result.stderr?.trim() || '未知错误'}`)
+  if (result.status !== 0) {
+    const reason = redactSecrets(result.stderr?.trim(), secrets) || '未知错误'
+    throw new Error(`${label}失败：${reason}`)
+  }
   return result.stdout || ''
 }
 
@@ -72,12 +91,43 @@ function parseKeychainSearchList(output) {
     .filter((entry) => entry.length > 0)
 }
 
-function resolveMacosSecurityCommand(args) {
+/**
+ * Quotes one token for the `security -i` line parser, which understands double
+ * quotes and backslash escapes. Control characters would split the line into a
+ * second, unintended subcommand, so they are refused rather than escaped.
+ */
+function quoteSecurityArgument(value) {
+  const token = String(value)
+  if (/[\0\r\n]/.test(token)) throw new Error('security 子命令参数不能包含控制字符')
+  return `"${token.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+}
+
+/**
+ * Builds one `security` invocation. Passwords must never reach argv: any local
+ * user can read a running process's full command line with `ps -axww`, which
+ * on this path would hand them the temporary keychain password and the P12
+ * password, and with them the signing private key. `options.secrets` marks the
+ * argument values that carry one; such a subcommand is fed to `security -i` on
+ * stdin instead, where only this process and the child can see it.
+ */
+function resolveMacosSecurityCommand(args, options = {}) {
   const command = args[0] || 'command'
+  const secrets = (options.secrets || []).map((secret) => String(secret)).filter((secret) => secret.length > 0)
+  const label = `security ${command}`
+  if (secrets.length === 0) {
+    return { executable: SECURITY_PATH, argv: args, label, stdin: undefined, redactions: [] }
+  }
+  for (const secret of secrets) {
+    if (!args.some((argument) => String(argument) === secret)) {
+      throw new Error('security 子命令声明的机密参数不在参数表中')
+    }
+  }
   return {
     executable: SECURITY_PATH,
-    argv: args,
-    label: `security ${command}`,
+    argv: ['-i'],
+    label,
+    stdin: `${args.map(quoteSecurityArgument).join(' ')}\n`,
+    redactions: secrets,
   }
 }
 
@@ -179,6 +229,43 @@ function resolveFreeMacBuildOptions(options = {}) {
   }
 }
 
+/**
+ * Takes ownership of the build output directory so a failed build can take its
+ * own half-written artifacts with it. The recorded identity is re-checked
+ * before anything is deleted: a build runs for minutes, and whatever sits at
+ * that path when it ends may no longer be the directory this build created.
+ * A caller that wants the failed output preserved creates an empty directory
+ * itself and points XINGMANG_OUTPUT_DIR at it — this only ever removes a
+ * directory it created.
+ */
+function claimReleaseOutputDirectory(outputDirectory) {
+  let created = false
+  try {
+    fs.mkdirSync(outputDirectory)
+    created = true
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error
+  }
+  const stats = fs.lstatSync(outputDirectory)
+  return { created, dev: stats.dev, ino: stats.ino }
+}
+
+function discardClaimedOutputDirectory(outputDirectory, claim) {
+  if (!claim.created) return false
+  let stats
+  try {
+    stats = fs.lstatSync(outputDirectory)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return true
+    return false
+  }
+  if (!stats.isDirectory() || stats.isSymbolicLink() || stats.dev !== claim.dev || stats.ino !== claim.ino) {
+    return false
+  }
+  fs.rmSync(outputDirectory, { recursive: true, force: true })
+  return true
+}
+
 async function runFreeMacBuild(options = {}) {
   const build = resolveFreeMacBuildOptions(options)
   await build.verifySigning({
@@ -187,8 +274,11 @@ async function runFreeMacBuild(options = {}) {
     env: build.baseEnvironment,
   })
 
+  // The runner contract is "resolve on success, throw on failure": the default
+  // runner turns a nonzero exit into an Error, so there is no return value to
+  // inspect here.
   const run = async (label, argv, env) => {
-    const result = await build.commandRunner({
+    await build.commandRunner({
       label,
       executable: process.execPath,
       argv,
@@ -196,9 +286,6 @@ async function runFreeMacBuild(options = {}) {
       env,
       shell: false,
     })
-    if (result && result.status !== undefined && result.status !== 0) {
-      throw new Error(`${label} 失败`)
-    }
   }
 
   if (!options.skipChecks) {
@@ -206,24 +293,40 @@ async function runFreeMacBuild(options = {}) {
     await run('全部测试', [build.npmCliPath, 'test'], build.baseEnvironment)
     await run('编译应用', [build.npmCliPath, 'run', 'compile'], build.baseEnvironment)
   }
-  await run('构建 macOS 免费分发包', [
-    build.electronBuilderCliPath,
-    '--config', 'electron-builder.config.cjs',
-    '--mac', 'dmg', 'zip',
-    '--arm64', '--x64',
-    '--publish', 'never',
-  ], build.builderEnvironment)
+  const outputClaim = claimReleaseOutputDirectory(build.outputDirectory)
+  try {
+    await run('构建 macOS 免费分发包', [
+      build.electronBuilderCliPath,
+      '--config', 'electron-builder.config.cjs',
+      '--mac', 'dmg', 'zip',
+      '--arm64', '--x64',
+      '--publish', 'never',
+    ], build.builderEnvironment)
 
-  const artifacts = await build.verifyArtifacts({
-    projectRoot: build.projectRoot,
-    outputDirectory: build.outputDirectory,
-    version: build.packageVersion,
-    identityName: build.identityName,
-    signingCertificateSha256: build.signingCertificateSha256,
-    expectedUpdateUrl: build.expectedUpdateUrl,
-    env: build.baseEnvironment,
-  })
-  return { ...artifacts, outputDirectory: build.outputDirectory }
+    const artifacts = await build.verifyArtifacts({
+      projectRoot: build.projectRoot,
+      outputDirectory: build.outputDirectory,
+      version: build.packageVersion,
+      identityName: build.identityName,
+      signingCertificateSha256: build.signingCertificateSha256,
+      expectedUpdateUrl: build.expectedUpdateUrl,
+      env: build.baseEnvironment,
+    })
+    return { ...artifacts, outputDirectory: build.outputDirectory }
+  } catch (error) {
+    // 下一次构建会被「输出目录不是空目录」直接拒掉，而在发布压力下手工
+    // rm -rf 一个发布目录正是误删的高发场景，所以失败路径自己收尾。
+    if (discardClaimedOutputDirectory(build.outputDirectory, outputClaim)) {
+      throw new Error(
+        `${error.message}；失败的构建输出已删除：${build.outputDirectory}`,
+        { cause: error },
+      )
+    }
+    throw new Error(
+      `${error.message}；请确认其中没有需要保留的产物后删除该目录再重试：${build.outputDirectory}`,
+      { cause: error },
+    )
+  }
 }
 
 async function runCiFreeMacBuild(options = {}) {
@@ -232,14 +335,26 @@ async function runCiFreeMacBuild(options = {}) {
     throw new Error('CI 临时 macOS 免费签名只能在 macOS 上运行')
   }
   const environment = options.env || process.env
-  const entropy = (options.randomBytes || randomBytes)(16).toString('hex')
+  // The signing identity's private key sits in a keychain on the runner's
+  // disk for the length of this build. That is only acceptable on a
+  // single-tenant runner that is destroyed afterwards; a self-hosted or shared
+  // runner lets a later job read it.
+  const runnerEnvironment = String(environment.RUNNER_ENVIRONMENT || '').trim()
+  if (runnerEnvironment && runnerEnvironment !== 'github-hosted') {
+    throw new Error('CI 临时 macOS 免费签名只能在一次性托管 runner 上运行')
+  }
+  const nextEntropy = options.randomBytes || randomBytes
   const identityName = 'XingMang CI Free Update Identity'
-  const keychainPassword = `CiKeychain!${entropy}Aa1`
-  const p12Password = `CiP12!${entropy}Aa1`
+  // Separate draws: deriving both passwords from one value collapses the
+  // keychain password and the P12 password into a single secret, and the
+  // output directory name is visible to anyone who can list the project root.
+  const keychainPassword = `CiKeychain!${nextEntropy(16).toString('hex')}Aa1`
+  const p12Password = `CiP12!${nextEntropy(16).toString('hex')}Aa1`
+  const outputEntropy = nextEntropy(16).toString('hex')
   const temporaryRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-free-ci-')))
   const certificateDirectory = path.join(temporaryRoot, 'certificate')
   const keychainPath = path.join(temporaryRoot, 'ci-signing.keychain-db')
-  const outputRequest = `release-free-ci-${process.pid}-${entropy.slice(0, 12)}`
+  const outputRequest = `release-free-ci-${process.pid}-${outputEntropy.slice(0, 12)}`
   const outputPath = path.join(projectRoot, outputRequest)
   const runSecurity = options.runSecurity || ((args, commandOptions = {}) => {
     const command = resolveMacosSecurityCommand(args, commandOptions)
@@ -249,6 +364,7 @@ async function runCiFreeMacBuild(options = {}) {
       command.argv,
       environment,
       command.label,
+      { stdin: command.stdin, redactions: command.redactions },
     )
   })
   const createCertificate = options.createCertificate || createFreeMacSigningCertificate
@@ -274,7 +390,38 @@ async function runCiFreeMacBuild(options = {}) {
   let originalSearchList = null
   let result
   let failure
+  let released = false
   const cleanupErrors = []
+  const attemptCleanup = (cleanup) => {
+    try {
+      cleanup()
+    } catch (error) {
+      cleanupErrors.push(error)
+    }
+  }
+  const releaseResources = () => {
+    if (released) return
+    released = true
+    if (originalSearchList && originalSearchList.length > 0) {
+      attemptCleanup(() => runSecurity(['list-keychains', '-d', 'user', '-s', ...originalSearchList]))
+    }
+    if (keychainCreated) attemptCleanup(() => runSecurity(['delete-keychain', keychainPath]))
+    attemptCleanup(() => removeDirectory(outputPath))
+    attemptCleanup(() => removeDirectory(temporaryRoot))
+  }
+  // Without this, a cancelled CI job or a local Ctrl-C skips the `finally`
+  // below and leaves the user-domain search list pointing at a keychain under
+  // /var/folders that the system will reap. Every later `codesign` and
+  // `security find-identity` on that machine then resolves against a keychain
+  // that no longer exists.
+  const signalHandle = options.signalHandle || process
+  const terminationSignals = ['SIGINT', 'SIGTERM']
+  const handleTerminationSignal = (signal) => {
+    releaseResources()
+    for (const name of terminationSignals) signalHandle.removeListener(name, handleTerminationSignal)
+    signalHandle.kill(signalHandle.pid, signal)
+  }
+  for (const name of terminationSignals) signalHandle.on(name, handleTerminationSignal)
 
   try {
     const certificate = createCertificate({
@@ -286,29 +433,40 @@ async function runCiFreeMacBuild(options = {}) {
     const certificatePath = certificate.certificatePath
     const fingerprint = normalizeFingerprint(certificateFingerprint(certificatePath))
     const identitySha1 = normalizeFingerprint(certificateSha1(certificatePath), 20)
-    runSecurity(['create-keychain', '-p', keychainPassword, keychainPath])
+    runSecurity(['create-keychain', '-p', keychainPassword, keychainPath], { secrets: [keychainPassword] })
     keychainCreated = true
+    // The stdin-fed form reports failure through the same exit status, but this
+    // is the one step whose silent failure would surface only much later, as a
+    // confusing signing error. Confirm the keychain reached disk.
+    if (!fs.existsSync(keychainPath)) throw new Error('创建临时签名 keychain 失败')
     runSecurity(['set-keychain-settings', '-lut', '21600', keychainPath])
-    runSecurity(['unlock-keychain', '-p', keychainPassword, keychainPath])
+    runSecurity(['unlock-keychain', '-p', keychainPassword, keychainPath], { secrets: [keychainPassword] })
     runSecurity([
       'import', certificate.p12Path,
       '-k', keychainPath,
       '-f', 'pkcs12',
       '-P', p12Password,
       '-T', '/usr/bin/codesign',
-    ])
+    ], { secrets: [p12Password] })
     runSecurity([
       'set-key-partition-list',
       '-S', 'apple-tool:,apple:,codesign:',
       '-s', '-k', keychainPassword,
       keychainPath,
-    ])
+    ], { secrets: [keychainPassword] })
     // codesign resolves a signing identity through the user keychain search
     // list; passing --keychain does not by itself make an isolated keychain
     // visible to it. The original list is captured first and restored during
     // cleanup, so the change never outlives this build. Nothing is written to
     // the admin domain, the system keychain, or Trust Settings.
-    originalSearchList = parseKeychainSearchList(runSecurity(['list-keychains', '-d', 'user']))
+    const currentSearchList = parseKeychainSearchList(runSecurity(['list-keychains', '-d', 'user']))
+    // An unparseable or empty answer would turn the restore below into a bare
+    // `list-keychains -d user -s`, which empties the search list and drops the
+    // login keychain out of it for good. Refuse to touch what cannot be put back.
+    if (currentSearchList.length === 0 || !currentSearchList.every((entry) => path.isAbsolute(entry))) {
+      throw new Error('无法解析当前用户 keychain 搜索列表，已放弃修改以免留下无法恢复的状态')
+    }
+    originalSearchList = currentSearchList
     runSecurity(['list-keychains', '-d', 'user', '-s', keychainPath, ...originalSearchList])
     await verifyEphemeralSigning({
       platform: 'darwin',
@@ -334,19 +492,8 @@ async function runCiFreeMacBuild(options = {}) {
   } catch (error) {
     failure = error
   } finally {
-    const attemptCleanup = (cleanup) => {
-      try {
-        cleanup()
-      } catch (error) {
-        cleanupErrors.push(error)
-      }
-    }
-    if (originalSearchList) {
-      attemptCleanup(() => runSecurity(['list-keychains', '-d', 'user', '-s', ...originalSearchList]))
-    }
-    if (keychainCreated) attemptCleanup(() => runSecurity(['delete-keychain', keychainPath]))
-    attemptCleanup(() => removeDirectory(outputPath))
-    attemptCleanup(() => removeDirectory(temporaryRoot))
+    for (const name of terminationSignals) signalHandle.removeListener(name, handleTerminationSignal)
+    releaseResources()
   }
   if (failure || cleanupErrors.length > 0) {
     const errors = [...(failure ? [failure] : []), ...cleanupErrors]
