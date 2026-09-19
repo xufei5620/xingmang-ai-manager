@@ -13,11 +13,14 @@ import { usageDetailFixture } from '../src/renderer-v2/testing/usage-fixture'
 declare global {
   interface Window {
     emitPaymentWindowTerminal: (event: AccountPaymentWindowTerminalEvent) => void
+    // 支付回调只发一次：订阅次数是 R-B6 的直接观测点，重订一次就是一次丢单窗口。
+    paymentTerminalSubscriptions: () => { added: number; live: number }
+    rerenderFixture: () => void
     keyGroupsHarness: {
       requests: number
       setGroups(names: string[]): void
       deferNext(): void
-      failNext(): void
+      failNext(message?: string): void
       release(): void
     }
   }
@@ -49,15 +52,26 @@ Object.defineProperty(navigator, 'clipboard', {
 })
 let keyGroups = [{ name: 'default', description: '默认分组', ratio: 1 }]
 let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
+// 主进程按原因抛不同的错误（NewApiAuthenticationError 的中文、限流的英文原文……），
+// 夹具让用例自己指定原文，才能验证 R-G5 之后这些原因不再被抹成同一句。
+let nextKeyGroupsFailure = '分组读取暂时失败，请重试'
 let releaseKeyGroups: (() => void) | null = null
 window.keyGroupsHarness = {
   requests: 0,
   setGroups(names) { keyGroups = names.map((name) => ({ name, description: name, ratio: 1 })) },
   deferNext() { nextKeyGroupsRequest = 'deferred' },
-  failNext() { nextKeyGroupsRequest = 'failed' },
+  failNext(message) {
+    nextKeyGroupsRequest = 'failed'
+    nextKeyGroupsFailure = message ?? '分组读取暂时失败，请重试'
+  },
   release() { releaseKeyGroups?.(); releaseKeyGroups = null },
 }
 const paymentWindowTerminalListeners = new Set<(event: AccountPaymentWindowTerminalEvent) => void>()
+let paymentWindowTerminalSubscriptions = 0
+window.paymentTerminalSubscriptions = () => ({
+  added: paymentWindowTerminalSubscriptions,
+  live: paymentWindowTerminalListeners.size,
+})
 window.emitPaymentWindowTerminal = (event) => {
   if (event.status === 'success' && event.tradeNo === 'XM-VISUAL-TOPUP') {
     balance.quota = 1400
@@ -324,7 +338,7 @@ const apiMethods = {
     const groups = keyGroups.map((group) => ({ ...group }))
     const state = nextKeyGroupsRequest
     nextKeyGroupsRequest = 'ready'
-    if (state === 'failed') throw new Error('分组读取暂时失败，请重试')
+    if (state === 'failed') throw new Error(nextKeyGroupsFailure)
     if (state === 'deferred') await new Promise<void>((resolve) => { releaseKeyGroups = resolve })
     return groups
   },
@@ -734,6 +748,7 @@ const apiMethods = {
   },
   onUpdateState: () => () => undefined,
   onAccountPaymentWindowTerminal: (listener: (event: AccountPaymentWindowTerminalEvent) => void) => {
+    paymentWindowTerminalSubscriptions++
     paymentWindowTerminalListeners.add(listener)
     return () => { paymentWindowTerminalListeners.delete(listener) }
   },
@@ -937,4 +952,7 @@ let paymentSequence = 0
 window.addEventListener('test-payment-return', () =>
   renderFixture({ sequence: ++paymentSequence, order: 'TEST-ORDER' }),
 )
+// 真实环境里余额 store 每 30 秒 publish 一次，整棵树跟着重渲染；夹具用一次
+// root.render 复现同一件事，不动任何页面状态。
+window.rerenderFixture = () => renderFixture()
 renderFixture()
