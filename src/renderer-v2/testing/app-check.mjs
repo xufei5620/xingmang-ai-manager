@@ -569,6 +569,49 @@ test('a failed probe offers a rescan on the maintenance page instead of an insta
     await clean(page)
   } finally { await page.close() }
 })
+// R-S8b: 安装卸载页自己那条读取路径原来是串行的，任一块失败整页退回未知态，
+// 还把「未安装」当成结论显示出来。
+test('a failed system scan leaves the maintenance page usable and never claims a tool is missing', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-tool-claude')
+    await row.waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'scanSystem' })
+    await page.getByTestId('page-maintenance').getByRole('button', { name: '重新检测', exact: true }).first().click()
+    await page.getByTestId('maintenance-failure-system').waitFor()
+    await row.getByText('状态未读到', { exact: true }).waitFor()
+    assert.equal(await row.getByText('未安装', { exact: true }).count(), 0)
+    assert.equal(await row.getByRole('button', { name: '安装', exact: true }).count(), 0)
+    await row.getByRole('button', { name: '重新检测', exact: true }).waitFor()
+    // 运行环境那两行同样不能谎报「尚未安装」。
+    const maintenance = page.getByTestId('page-maintenance')
+    assert.equal(await maintenance.getByText('尚未安装', { exact: true }).count(), 0)
+    assert.ok(await maintenance.getByText('状态未读到', { exact: true }).count() >= 5, '每个工具行与运行环境行都应只报未知')
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await page.getByTestId('maintenance-failure-system').getByRole('button', { name: '重新检测', exact: true }).click()
+    await row.getByText('已安装', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('maintenance-failure-system').count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+test('a failed platform capability read keeps the tool states on the maintenance page', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-tool-claude')
+    await row.waitFor()
+    await page.evaluate(() => { window.v2Test.fail = 'getPlatformCapabilities' })
+    await page.getByTestId('page-maintenance').getByRole('button', { name: '重新检测', exact: true }).first().click()
+    await page.getByTestId('maintenance-failure-platform').waitFor()
+    await row.getByText('已安装', { exact: true }).waitFor()
+    assert.equal(await page.getByTestId('maintenance-failure-system').count(), 0)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
 test('uninstall is hidden when native status cannot safely remove the tool', async () => {
   const page = await open('uninstallUnavailable=1')
   try {
