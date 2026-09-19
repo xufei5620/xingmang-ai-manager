@@ -97,6 +97,7 @@ import type {
   AccountManagedCliConfigurationInput,
   LegalDocumentKind,
   RememberedAccountLogin,
+  RendererErrorPayload,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
 import type { ConnectionCheckResult } from './connection-check'
@@ -156,6 +157,9 @@ export interface IpcRegistrationOptions {
   getWindowCapabilities?(): { tray: boolean; notifications: boolean }
   takeExternalDeepLink?(target: WebContents): ExternalDeepLink | null
   onSettingsChanged?(): void
+  /** Renderer-side crashes the host may forward to crash reporting. The
+   *  payload is the already-validated one, never the raw IPC value. */
+  onRendererError?(error: RendererErrorPayload): void
   replyWindowClose?(target: WebContents, requestId: string, report: WindowCloseReport): boolean
   onSystemSnapshot?(snapshot: SystemSnapshot): void
   onAccountBalance?(balance: Awaited<ReturnType<RelayBackendClient['getBalance']>>): void
@@ -268,6 +272,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
       : undefined
   const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
   const alwaysInstallLatestCli = optionalBoolean(value.alwaysInstallLatestCli, '命令行工具版本偏好')
+  const crashReporting = optionalBoolean(value.crashReporting, '崩溃上报设置')
   if (value.uiSkin !== undefined && (typeof value.uiSkin !== 'string' || !['auto', 'dawn', 'obsidian', 'mist', 'aurora'].includes(value.uiSkin))) throw new Error('皮肤格式错误')
   if (value.uiScale !== undefined && (typeof value.uiScale !== 'string' || !['auto', '90', '100', '110'].includes(value.uiScale))) throw new Error('界面缩放格式错误')
   if (value.closeBehavior !== undefined && (typeof value.closeBehavior !== 'string' || !['ask', 'tray', 'quit'].includes(value.closeBehavior))) throw new Error('关闭偏好格式错误')
@@ -287,6 +292,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(officialProviders !== undefined ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
     ...(alwaysInstallLatestCli !== undefined ? { alwaysInstallLatestCli } : {}),
+    ...(crashReporting !== undefined ? { crashReporting } : {}),
     ...(value.uiSkin !== undefined ? { uiSkin: value.uiSkin as AppSettingsUpdate['uiSkin'] } : {}),
     ...(value.uiScale !== undefined ? { uiScale: value.uiScale as AppSettingsUpdate['uiScale'] } : {}),
     ...(value.closeBehavior !== undefined ? { closeBehavior: value.closeBehavior as AppSettingsUpdate['closeBehavior'] } : {}),
@@ -1848,6 +1854,7 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       context: error.context ?? null,
       stack: error.stack ?? null,
     })
+    options.onRendererError?.(error)
   })
   registerTrustedHandler('backups:list', () => options.backupStore.list())
   registerTrustedHandler('backups:create', (_event, provider: unknown) => {

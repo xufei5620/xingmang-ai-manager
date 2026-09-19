@@ -313,3 +313,22 @@ npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=wi
 - 若新 `latest.yml` 尚未发布，删除未引用的新产物即可。
 - 若新 `latest.yml` 已发布但验收失败，原子恢复旧 `latest.yml`。保留新产物用于调查，不要让它继续被元数据引用。
 - 不得用修改后的同版本安装程序覆盖线上文件。任何二进制变化都必须提升版本并重新生成 `latest.yml`。
+
+## 8. 崩溃上报的 source map（暂未接入）
+
+打包产物经过 `scripts/minify-electron.cjs` 压缩，Sentry 后台看到的堆栈因此是压缩后的行列号。
+接上 source map 之后才能直接定位到源文件。这一步**当前没有做**，因为它需要一个 Sentry
+auth token（和 DSN 不同，那是写权限凭据，不能进仓库）。要补的话：
+
+1. 在 Sentry 的 Organization Settings - Auth Tokens 建一个只勾 `project:releases` 的 token，
+   存成 GitHub Actions secret（例如 `SENTRY_AUTH_TOKEN`），本地则放在环境变量里，**不要**写进
+   `electron-builder.config.cjs` 或任何提交的文件。
+2. 让 `npm run compile` 产出 source map（`tsconfig.electron.json` 的 `sourceMap`，以及
+   `scripts/minify-electron.cjs` 保留 map），并确认 `electron-builder.config.cjs` 的 `files`
+   不会把 `.map` 打进安装包——map 只上传给 Sentry，不随客户端分发。
+3. 发布构建之后、上传产物之前，用 `sentry-cli sourcemaps upload` 把 map 传到与
+   `electron/crash-report.ts` 里 `release` 字段相同的版本号下
+   （`xingmang-ai-manager@<version>`），否则 Sentry 关联不上。
+4. 验证：在打包版触发一次崩溃，确认后台的堆栈显示的是 `electron/*.ts` 的行号。
+
+在此之前，排查仍可用压缩后的行列号配合同版本的 `dist-electron` 产物人工比对。

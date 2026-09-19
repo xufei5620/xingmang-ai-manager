@@ -73,7 +73,7 @@ export function registerPlatformHandlers(options: {
       .setNotificationPreference(notificationKind(kind), boolean(value)),
   )
   handle(platformChannels.setPrivacyPreference, 2, (kind, value) => {
-    if (kind !== 'crashReports' && kind !== 'anonymousUsage')
+    if (kind !== 'anonymousUsage')
       throw new Error('未知的隐私偏好。')
     return options.service().setPrivacyPreference(kind, boolean(value))
   })

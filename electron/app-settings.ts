@@ -67,6 +67,12 @@ export interface AppSettings {
    * 没有名单的工具无论这个开关如何都装 latest。
    */
   alwaysInstallLatestCli?: boolean
+  /**
+   * 崩溃与未捕获异常自动上报。缺省 = 开启——和 alwaysInstallLatestCli 一样,
+   * 这是有意的默认行为选择而不是「缺省 = 旧行为」的漏写:一个没人报的崩溃
+   * 等于没修。只有显式关闭才落盘,所以文件里出现这个字段就代表用户亲手关过。
+   */
+  crashReporting?: boolean
   /** Absent follows the theme: dawn for light, obsidian for dark. */
   uiSkin?: AppUiSkin
   reducedMotion?: boolean
@@ -109,6 +115,7 @@ export interface AppSettingsUpdate {
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
   alwaysInstallLatestCli?: boolean
+  crashReporting?: boolean
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
   desktopNotifications?: boolean
@@ -250,6 +257,9 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
+    // Only the explicit opt-out survives a round trip; anything else (absent,
+    // true, a hand-edited string) reads back as "reporting on".
+    ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(optionalBoolean(value.desktopNotifications, false) ? { desktopNotifications: true as const } : {}),
@@ -368,6 +378,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const alwaysInstallLatestCli = update.alwaysInstallLatestCli === undefined
     ? base.alwaysInstallLatestCli
     : update.alwaysInstallLatestCli
+  const crashReporting = update.crashReporting ?? base.crashReporting
   const uiSkin = update.uiSkin === 'auto'
     ? 'mist' as const
     : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
@@ -388,6 +399,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
+    ...(crashReporting === false ? { crashReporting: false as const } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications ? { desktopNotifications: true as const } : {}),

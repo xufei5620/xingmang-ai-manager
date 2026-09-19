@@ -665,7 +665,12 @@ const apiMethods = {
       ...(patch.reducedMotion !== undefined
         ? { reducedMotion: patch.reducedMotion }
         : {}),
+      // 只有显式关闭才留在记录里，和 app-settings.ts 的落盘语义一致。
+      ...(patch.crashReporting === false
+        ? { crashReporting: false as const }
+        : {}),
     }
+    if (patch.crashReporting === true) delete settings.crashReporting
     return settings
   },
   getRuntimeLogs: async () => ({
@@ -853,17 +858,11 @@ if (query.has('system')) {
     setPrivacyPreference: async (kind, enabled) => {
       guard()
       record('platform-privacy', { kind, enabled })
+      const privacy = { anonymousUsage: false, ...systemState.preferences.privacy }
+      privacy[kind] = enabled
       systemState = {
         ...systemState,
-        preferences: {
-          ...systemState.preferences,
-          privacy: {
-            crashReports: false,
-            anonymousUsage: false,
-            ...systemState.preferences.privacy,
-            [kind]: enabled,
-          },
-        },
+        preferences: { ...systemState.preferences, privacy },
       }
       return changed()
     },
