@@ -31,7 +31,7 @@ npm run release:build:unsigned
 
 注意：无签名入口现在与签名入口一样要求输出目录不存在或为空（默认 `release-<版本号>`，可用 `XINGMANG_OUTPUT_DIR` 指定）。重跑同一版本前先把上次的产物移走或换一个新的空目录。
 
-只想拿一份能装上试的包、不打算在本机出包时，用 GitHub Actions 上的 `package-for-testing` 工作流，步骤见 [`docs/CI-PACKAGING.md`](CI-PACKAGING.md)。那条链路出的包**不带私有加速线路**，macOS 侧由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布仍按本手册在发布机上执行。
+只想拿一份能装上试的包、不打算在本机出包时，用 GitHub Actions 上的 `package-for-testing` 工作流，步骤见 [`docs/CI-PACKAGING.md`](CI-PACKAGING.md)。那条链路出的包**带私有加速线路**（节点在 `bundled-acceleration/`，内核按 `cores.json` 钉住的哈希现场下载对账），但 macOS 侧由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布仍按本手册在发布机上执行。
 
 ### 从 0.2.3 起的加速资源与当前节点策略
 

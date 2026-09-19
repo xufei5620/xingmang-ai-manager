@@ -144,6 +144,12 @@ function resolveMacosSecurityCommand(args, options = {}) {
  * XINGMANG_ACCELERATION_BUNDLE_DIR, because a leftover environment variable is
  * exactly what the sanitizer above exists to stop: an accidentally inherited
  * value must never decide whether a public installer ships private nodes.
+ *
+ * 这两个开关与 --ci-temporary-signing 并不互斥。2026-09-19 之前互斥，理由是 CI 上
+ * 根本没有线路资源，写死这条限制比让构建跑到一半再失败要直白；产品所有者当天决定
+ * 把共享线路随源码提交之后，package-for-testing.yml 在 runner 上就能把资源准备
+ * 出来（scripts/prepare-acceleration-bundle.cjs），前提不再成立。签名身份仍然是
+ * 一次性的，这一点与带不带线路无关。
  */
 function parseFreeMacBuildArguments(argv = []) {
   const tokens = [...argv]
@@ -181,7 +187,6 @@ function parseFreeMacBuildArguments(argv = []) {
   if (selected.length !== ACCELERATION_ARCHITECTURES.length) {
     throw new Error('携带私有加速线路必须同时提供 --acceleration-arm64 与 --acceleration-x64')
   }
-  if (ciTemporarySigning) throw new Error('CI 临时签名构建不携带私有加速线路')
   return { ciTemporarySigning, keepPackage, accelerationBundles: { arm64: requested.arm64, x64: requested.x64 } }
 }
 
@@ -651,6 +656,7 @@ async function runCiFreeMacBuild(options = {}) {
         XINGMANG_MAC_SIGNING_SHA256: fingerprint,
       },
       outputDirectory: outputRequest,
+      accelerationBundles: options.accelerationBundles,
       skipChecks: true,
       ephemeralSigning: { identitySha1, keychainPath },
       verifySigning: (verifyOptions) => verifySigningIdentity({
@@ -676,11 +682,14 @@ async function main() {
   try {
     const args = parseFreeMacBuildArguments(process.argv.slice(2))
     if (args.ciTemporarySigning) {
-      const ciResult = await runCiFreeMacBuild({ keepPackage: args.keepPackage })
+      const ciResult = await runCiFreeMacBuild({
+        keepPackage: args.keepPackage,
+        accelerationBundles: args.accelerationBundles,
+      })
       if (ciResult.keptOutputDirectory) {
         process.stdout.write(
-          'macOS 免费分发包已通过全部产物校验，签名材料已清理：'
-          + `${ciResult.keptOutputDirectory}\n`
+          `macOS 免费分发包已通过全部产物校验${args.accelerationBundles ? '（已携带私有加速线路）' : ''}，`
+          + `签名材料已清理：${ciResult.keptOutputDirectory}\n`
           + '注意：这份包由 CI 现场生成的一次性身份签名，只能用来安装试用，'
           + '不能发给客户，也无法与发布身份签名的版本互相自动更新\n',
         )

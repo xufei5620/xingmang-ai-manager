@@ -50,13 +50,54 @@ test('every third-party action is pinned to a full commit id', () => {
   }
 })
 
-test('the macOS package is the rehearsal build with its output kept, nothing else', () => {
+test('the macOS package is the rehearsal build, with its output kept and the lines carried', () => {
   // quality.yml 的 macos-test 与这里跑的是同一个脚本、同一条签名路径；差别只有
-  // 「产物留不留」。多出来的任何参数都意味着这份包与门禁验过的那份不是一回事。
+  // 「产物留不留」和「带不带线路」。多出来的任何参数都意味着这份包与门禁验过的
+  // 那份不是一回事，所以整条命令逐字钉住。
   const buildSteps = macosJob.steps.filter((step) => /run-macos-free-build\.cjs/.test(String(step.run || '')))
   assert.equal(buildSteps.length, 1)
   const command = String(buildSteps[0].run).trim()
-  assert.equal(command, 'node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package')
+  assert.equal(command, 'node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package'
+    + ' --acceleration-arm64 "$ACCELERATION_ARM64" --acceleration-x64 "$ACCELERATION_X64"')
+})
+
+test('each job prepares its own acceleration bundles and hands them to the build', () => {
+  // 私有加速线路是这两份包与「只能看界面」的快包之间的实质差别。资源目录必须
+  // 由准备脚本现场生成：它按 bundled-acceleration/cores.json 两道 SHA256 对账，
+  // 是这条链路上唯一能说明 runner 上那份内核与发布机上那份是同一份字节的东西。
+  const prepared = (job) => job.steps.flatMap((step) => String(step.run || '')
+    .split('\n')
+    .filter((line) => line.includes('prepare-acceleration-bundle.cjs')))
+  assert.deepEqual(prepared(windowsJob), [
+    'node scripts/prepare-acceleration-bundle.cjs --target win32-x64 --output "$env:ACCELERATION_BUNDLE_DIR"',
+  ])
+  // Mac 的资源目录按架构分，混用会被打包前的校验拒掉，所以两个都要备。
+  assert.deepEqual(prepared(macosJob), [
+    'node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$ACCELERATION_ARM64"',
+    'node scripts/prepare-acceleration-bundle.cjs --target darwin-x64 --output "$ACCELERATION_X64"',
+  ])
+
+  // 准备好却没交给打包，做出来的就是一个静悄悄不带线路的包 —— 名字、日志和
+  // 产物校验都不会提一个字。
+  const windowsBuild = windowsJob.steps.find((step) => /release:build/.test(String(step.run || '')))
+  assert.equal(windowsBuild.env.XINGMANG_ACCELERATION_BUNDLE_DIR, '${{ runner.temp }}\\acceleration-win32-x64')
+  const macosBuild = macosJob.steps.find((step) => /run-macos-free-build\.cjs/.test(String(step.run || '')))
+  assert.equal(macosBuild.env.ACCELERATION_ARM64, '${{ runner.temp }}/acceleration-darwin-arm64')
+  assert.equal(macosBuild.env.ACCELERATION_X64, '${{ runner.temp }}/acceleration-darwin-x64')
+})
+
+test('the staging tool gets a compiled main process before it runs', () => {
+  // 准备脚本调用的是 dist-electron 里的安全读写与内核校验，不是自己抄一份。
+  // 少了编译，它在下载完 40 多 MB 之后才报「请先编译主进程」。
+  const commands = windowsJob.steps.map((step) => String(step.run || '').trim())
+  const compileIndex = commands.indexOf('node node_modules/typescript/bin/tsc -p tsconfig.electron.json')
+  const prepareIndex = commands.findIndex((command) => command.includes('prepare-acceleration-bundle.cjs'))
+  assert.ok(compileIndex >= 0 && compileIndex < prepareIndex, commands.join(' / '))
+  const macosCommands = macosJob.steps.map((step) => String(step.run || '').trim())
+  assert.ok(
+    macosCommands.indexOf('npm run compile') < macosCommands.findIndex((command) => command.includes('prepare-acceleration-bundle.cjs')),
+    macosCommands.join(' / '),
+  )
 })
 
 test('the Windows package goes through the same release gate as a real release', () => {
@@ -68,13 +109,12 @@ test('the Windows package goes through the same release gate as a real release',
   assert.equal(String(buildSteps[0].run).trim(), 'npm run release:build:unsigned')
 })
 
-test('both artifacts say in their own name that they cannot be shipped', () => {
-  // 下载列表里只看得到名字。macOS 包的签名身份是一次性的，Windows 包没有私有
-  // 加速线路，两者都不是可以发给客户的产物。
+test('the macOS artifact says in its own name that it cannot be shipped', () => {
+  // 下载列表里只看得到名字，而 macOS 包的签名身份是一次性的：发出去既不能自动
+  // 更新也无法追溯。Windows 包无签名是产品决定，名字里不必自曝。
   const uploads = allSteps().filter((step) => String(step.uses || '').startsWith('actions/upload-artifact@'))
   assert.equal(uploads.length, 2)
   const names = uploads.map((step) => step.with.name)
-  assert.ok(names.some((name) => name.includes('NO-ACCELERATION')), names.join('、'))
   assert.ok(names.some((name) => name.includes('DO-NOT-PUBLISH')), names.join('、'))
   for (const step of uploads) {
     assert.equal(step.with['if-no-files-found'], 'error', '出包作业不能以「没有产物」的形式悄悄成功')

@@ -1,0 +1,33 @@
+{
+  "coreVersion": "v1.19.29",
+  "sourceRef": "v1.19.29",
+  "sourceUrl": "https://github.com/MetaCubeX/mihomo",
+  "license": {
+    "path": "LICENSE",
+    "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+  },
+  "targets": {
+    "win32-x64": {
+      "asset": "mihomo-windows-amd64-v1.19.29.zip",
+      "assetSha256": "1a8520cfe425441eba3eba8623b27b985020031243fe1ecaa1af2b92358a03f9",
+      "archive": "zip",
+      "entry": "mihomo-windows-amd64.exe",
+      "coreFile": "mihomo.exe",
+      "coreSha256": "4316ff91fecec2fca9acb5612d7400ba228c069ffd325b1f17f46f1d4ef7e0cd"
+    },
+    "darwin-arm64": {
+      "asset": "mihomo-darwin-arm64-v1.19.29.gz",
+      "assetSha256": "4dc25df9e899f14161911302a8ee5fc9e202ed9c976fc405bf82c50ff27466ca",
+      "archive": "gzip",
+      "coreFile": "mihomo",
+      "coreSha256": "ec66e3e883bdc3fca06753784e324e08921e13239f8e945587cb1bfbf4c6b936"
+    },
+    "darwin-x64": {
+      "asset": "mihomo-darwin-amd64-v1.19.29.gz",
+      "assetSha256": "b57fec2e38462532fe75252792b355b99db16b0b8ea2d6bdf0cd8bc7ddacb9d2",
+      "archive": "gzip",
+      "coreFile": "mihomo",
+      "coreSha256": "a15f68b62227c9058fcd158600808126c29a709174b23a5d51c0177b4611b595"
+    }
+  }
+}

@@ -4,21 +4,21 @@
 # 这个工作流之前，能装的包只能在他自己的 Windows 和 Mac 上出。本工作流让他在
 # GitHub 上点一下，两个平台各拿一份可安装的包，从 Actions 页面直接下载。
 #
-# **产物绝不可发给客户**，两条都是结构性的，不是这次忘了配：
+# 两份产物都带私有加速线路：共享节点自 2026-09-19 起随源码提交
+# （bundled-acceleration/），Mihomo 内核按 bundled-acceleration/cores.json 钉住的
+# 两道 SHA256 从上游取回并对账，在 runner 上现场准备成资源目录。装出来的包里
+# 「游戏加速」那一页与发布者本机出的包是同一回事。
 #
-#   - **不带私有加速线路**。线路资源（Mihomo 内核加私有节点配置）按
-#     docs/RELEASING.md 的规定不上传 GitHub，runner 上没有，也没有任何办法在
-#     这里补上。装出来的包「游戏加速」一页是空的，这是预期行为。
-#   - **macOS 包由 runner 现场生成的一次性身份签名**，不是发布 Mac 钥匙串里那张
-#     证书。安装和使用没有区别（两者都未经公证，都得右键打开），但 electron-updater
-#     认签名身份，所以这份包与正式发布版之间**不能互相自动更新**。
+# **macOS 那一份绝不可发给客户**：它由 runner 现场生成的一次性身份签名，不是发布
+# Mac 钥匙串里那张证书。安装和使用没有区别（两者都未经公证，都得右键打开），但
+# electron-updater 认签名身份，所以这份包与正式发布版之间**不能互相自动更新**。
 #
 # 与既有三个工作流的分工：
 #   - quality.yml 的 macos-test 跑的是同一条 macOS 打包链路，但它是演练，产物
 #     当场删掉；这里多传一个 --ci-keep-package 把产物留下来交给 upload-artifact。
 #   - test-build.yml 出的是 XINGMANG_LOCAL_BUILD=1 的快包，一道门禁都不跑、更新
 #     器是关的，只适合看界面；本工作流的 Windows 侧走 release:build:unsigned，
-#     即 0.2.7 对外发布用的同一条完整门禁。
+#     即对外发布用的同一条完整门禁，产物与发布者本机出的那一份只差发布动作。
 #   - release-build.yml 是拿到 CA 证书后的 Authenticode 正式构建，目前停用。
 #
 # 本工作流不需要任何 secret，因此不挂 environment：它读不到签名证书，也没有任何
@@ -76,11 +76,24 @@ jobs:
         # 必挂在 "Executable doesn't exist"。
         run: npx --no-install playwright install chromium
 
+      # 私有加速线路：节点在仓库里，内核按 cores.json 钉住的哈希从 Mihomo 上游取。
+      # 准备脚本要用到主进程里那套安全读写与内核校验，所以先编译一次主进程；
+      # release:build:unsigned 随后会自己重新完整编译，这一步只服务准备脚本。
+      - name: Compile the main process the staging tool needs
+        run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
+      - name: Prepare the private acceleration bundle
+        env:
+          ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
+        run: node scripts/prepare-acceleration-bundle.cjs --target win32-x64 --output "$env:ACCELERATION_BUNDLE_DIR"
+
       - name: Build the unsigned installer through the full release gate
         # 这一步会在第一分钟内就因为「远端版本必须低于本地」或者
         # 「release-notes.md 第一行与 package.json 不一致」失败 —— 那不是本工作流
         # 的故障，而是发版流程的前置条件：先 npm run changelog:collect 汇总变更
         # 分片、再把版本号改成要发的那一版。见 docs/CI-TEST-PACKAGES.md。
+        env:
+          XINGMANG_ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
         run: npm run release:build:unsigned
 
       - name: Print artifact checksums
@@ -97,9 +110,8 @@ jobs:
       - name: Upload the Windows test package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          # 名字里写死「无加速线路」：几周后回到下载列表，光看版本号分不清这一份
-          # 和发布者本机出的那一份差在哪。
-          name: windows-unsigned-NO-ACCELERATION-${{ steps.metadata.outputs.version }}
+          # 无签名是 Windows 侧的产品决定，不是这条链路缺了什么；名字照实写。
+          name: windows-unsigned-${{ steps.metadata.outputs.version }}
           path: |
             release-${{ steps.metadata.outputs.version }}/*Setup.exe
             release-${{ steps.metadata.outputs.version }}/*.blockmap
@@ -110,7 +122,7 @@ jobs:
   macos-package:
     if: ${{ inputs.platforms != 'windows' }}
     runs-on: macos-15
-    timeout-minutes: 60
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -143,11 +155,25 @@ jobs:
       # 「app.asar 里找不到 dist-electron/platform/entry.js」，看起来像产物损坏。
       - run: npm run compile
 
+      # 两个架构各准备一份：Mac 的资源清单里记着架构，内核也是按架构的 Mach-O，
+      # 混用会被打包前的校验直接拒掉。
+      - name: Prepare the private acceleration bundles
+        env:
+          ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
+          ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
+        run: |
+          node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$ACCELERATION_ARM64"
+          node scripts/prepare-acceleration-bundle.cjs --target darwin-x64 --output "$ACCELERATION_X64"
+
       - name: Build and verify the macOS package with a throwaway CI identity
         # 单步上限：脚本会改用户 keychain 搜索列表并在收尾时改回去，一个卡住的
         # security 或 codesign 调用如果拖到作业上限，就没有任何一步能被指认。
-        timeout-minutes: 25
-        run: node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package
+        # 带线路时一个架构一次构建、两次串行，所以比不带线路那条路径宽出一倍。
+        timeout-minutes: 45
+        env:
+          ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
+          ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
+        run: node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package --acceleration-arm64 "$ACCELERATION_ARM64" --acceleration-x64 "$ACCELERATION_X64"
 
       - name: Print artifact checksums
         env:

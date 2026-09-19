@@ -1099,11 +1099,17 @@ test('carrying the private acceleration nodes is opt-in through the command line
   assert.throws(() => parseFreeMacBuildArguments([
     '--acceleration-arm64', '--acceleration-x64', '/private/x64',
   ]), /绝对路径/)
-  assert.throws(() => parseFreeMacBuildArguments([
+  // 2026-09-19 起线路资源可以在 runner 上现场准备，所以临时签名的 CI 构建也能
+  // 带上线路；一次性签名身份与带不带线路本来就是两件事。
+  assert.deepEqual(parseFreeMacBuildArguments([
     '--ci-temporary-signing',
     '--acceleration-arm64', '/private/arm64',
     '--acceleration-x64', '/private/x64',
-  ]), /CI 临时签名/)
+  ]), {
+    ciTemporarySigning: true,
+    keepPackage: false,
+    accelerationBundles: { arm64: '/private/arm64', x64: '/private/x64' },
+  })
   assert.throws(() => parseFreeMacBuildArguments(['--acceleration']), /无法识别的参数/)
 })
 
@@ -1167,6 +1173,40 @@ test('a kept CI package lands in a directory the workflow can name in advance', 
   // 签名材料照旧清理：留下的只有产物。
   const temporaryRoots = removed.filter((directory) => /xingmang-macos-free-ci-/.test(directory))
   assert.equal(temporaryRoots.length, 1)
+})
+
+test('the CI signing path hands the acceleration directories on to the build', async (t) => {
+  // 这条链路上，线路资源是 runner 现场准备的，而 runCiFreeMacBuild 自己要组装
+  // 一整套临时签名参数；漏掉转发不会报错，只会安静地做出一个没有加速的包。
+  const projectRoot = temporaryProject(t)
+  let received
+  await runCiFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    accelerationBundles: { arm64: '/private/arm64', x64: '/private/x64' },
+    env: { PATH: '/usr/bin:/bin' },
+    randomBytes: sequentialEntropy(),
+    createCertificate: (value) => writeCertificate(value),
+    certificateFingerprint: () => fingerprint,
+    certificateSha1: () => sha1Fingerprint,
+    runSecurity: (args) => {
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
+      return ''
+    },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
+    verifySigning: () => ({}),
+    runBuild: async (value) => {
+      received = value.accelerationBundles
+      fs.mkdirSync(path.join(projectRoot, value.outputDirectory))
+      return { outputDirectory: path.join(projectRoot, value.outputDirectory) }
+    },
+    removeDirectory: (directory) => fs.rmSync(directory, { recursive: true, force: true }),
+  })
+
+  assert.deepEqual(received, { arm64: '/private/arm64', x64: '/private/x64' })
 })
 
 test('the rehearsal still takes its own output away when the package is not asked for', async (t) => {
