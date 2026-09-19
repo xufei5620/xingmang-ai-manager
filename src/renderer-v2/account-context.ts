@@ -38,10 +38,5 @@ export function visibleAccountTab(value: string, session: Pick<AccountContext, '
   return value === 'overview'
 }
 
-export function accountKeyQuota(amount: number, quotaPerUnit: number, siteId: AccountSiteId, unlimited: boolean): number {
-  if (unlimited) return 0
-  if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(quotaPerUnit) || quotaPerUnit <= 0) throw new Error('请填写大于 0 的有效额度。')
-  const quota = siteId === 'solov-api' ? amount : Math.round(amount * quotaPerUnit)
-  if (!Number.isFinite(quota) || quota <= 0 || quota > Number.MAX_SAFE_INTEGER) throw new Error('额度超出可用范围。')
-  return quota
-}
+// 金额与后端额度单位的换算对主进程和渲染层是同一件事,只在主进程定义一次。
+export { accountKeyQuota } from '../../electron/account-key-quota'
