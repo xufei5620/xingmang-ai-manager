@@ -415,6 +415,25 @@ describe('field-wise settings updates (①栏11)', () => {
     fs.writeFileSync(filePath, JSON.stringify({ ...settings(), crashReporting: 'no' }), 'utf8')
     expect(readAppSettings(filePath)).not.toHaveProperty('crashReporting')
   })
+
+  it('keeps the Codex Desktop Chinese runtime patch unanswered until the user answers it', () => {
+    const base = settings()
+
+    expect(base).not.toHaveProperty('codexDesktopChineseRuntimePatch')
+    const enabled = mergeAppSettings(base, { version: 2, codexDesktopChineseRuntimePatch: 'enabled' })
+    expect(enabled.codexDesktopChineseRuntimePatch).toBe('enabled')
+    expect(mergeAppSettings(enabled, { version: 2 }).codexDesktopChineseRuntimePatch).toBe('enabled')
+    expect(mergeAppSettings(enabled, { version: 2, codexDesktopChineseRuntimePatch: 'disabled' }).codexDesktopChineseRuntimePatch)
+      .toBe('disabled')
+  })
+
+  it('never lets an unrecognized stored choice read as permission to open the debugging port', () => {
+    const stored = { ...settings(), codexDesktopChineseRuntimePatch: 'yes' } as unknown as AppSettings
+
+    expect(mergeAppSettings(stored, { version: 2 })).not.toHaveProperty('codexDesktopChineseRuntimePatch')
+    expect(mergeAppSettings(settings(), { version: 2, codexDesktopChineseRuntimePatch: 'yes' as never }))
+      .not.toHaveProperty('codexDesktopChineseRuntimePatch')
+  })
 })
 
 describe('UI and window preferences', () => {

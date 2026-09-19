@@ -27,6 +27,13 @@ export type { AppCloseBehavior, AppUiScale, AppWindowState } from './window-pref
 export type MirrorPolicy = 'auto' | 'mirror-first' | 'official-first'
 export type PinnedMirrorPolicy = Exclude<MirrorPolicy, 'auto'>
 
+/**
+ * Answer to the one-time "启用 Codex 中文界面？" question. Absent is a third
+ * state on purpose: it means the user has not been asked yet, which the launch
+ * path reads as "do not open the port, and ask once".
+ */
+export type CodexChineseRuntimePatchChoice = 'enabled' | 'disabled'
+
 export interface AppSettings {
   version: 2
   workspace: string
@@ -73,6 +80,15 @@ export interface AppSettings {
    * 等于没修。只有显式关闭才落盘,所以文件里出现这个字段就代表用户亲手关过。
    */
   crashReporting?: boolean
+  /**
+   * Consent for the Codex Desktop Chinese runtime patch (E-S3). That patch
+   * needs a loopback CDP port which stays open for the whole Codex session and
+   * accepts any local client, so consent must never be inferred from
+   * config.toml -- `localeOverride = "zh-CN"` is a value this program writes
+   * itself. Only 'enabled' opens the port; absent and 'disabled' behave the
+   * same at launch and differ only in whether the user still gets asked.
+   */
+  codexDesktopChineseRuntimePatch?: CodexChineseRuntimePatchChoice
   /** Absent follows the theme: dawn for light, obsidian for dark. */
   uiSkin?: AppUiSkin
   reducedMotion?: boolean
@@ -116,6 +132,7 @@ export interface AppSettingsUpdate {
   codexDesktopInstallDisabled?: boolean
   alwaysInstallLatestCli?: boolean
   crashReporting?: boolean
+  codexDesktopChineseRuntimePatch?: CodexChineseRuntimePatchChoice
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
   desktopNotifications?: boolean
@@ -179,6 +196,13 @@ function parseMirrorPolicy(value: unknown): PinnedMirrorPolicy | undefined {
   return value === 'mirror-first' || value === 'official-first' ? value : undefined
 }
 
+// An unknown value degrades to "not asked yet" rather than to a silent
+// 'enabled': a hand-edited or newer settings file must never be able to turn
+// the debugging port on by accident.
+function parseChineseRuntimePatch(value: unknown): CodexChineseRuntimePatchChoice | undefined {
+  return value === 'enabled' || value === 'disabled' ? value : undefined
+}
+
 function parseUiSkin(value: unknown): AppUiSkin | undefined {
   return value === 'dawn' || value === 'obsidian' || value === 'mist' || value === 'aurora' ? value : undefined
 }
@@ -230,6 +254,7 @@ function parseSettingsValue(value: unknown): AppSettings {
   const relaySiteId = parseRelaySiteId(value.relaySiteId)
   const mirrorPolicy = parseMirrorPolicy(value.mirrorPolicy)
   const officialProviders = parseOfficialProviders(value.officialProviders)
+  const codexDesktopChineseRuntimePatch = parseChineseRuntimePatch(value.codexDesktopChineseRuntimePatch)
   const uiSkin = parseUiSkin(value.uiSkin)
   // The v3.1.1 renderer is the first release with the product-selected first-run
   // appearance. Older settings files have no uiSkin field, so their stored
@@ -260,6 +285,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     // Only the explicit opt-out survives a round trip; anything else (absent,
     // true, a hand-edited string) reads back as "reporting on".
     ...(value.crashReporting === false ? { crashReporting: false as const } : {}),
+    ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
     ...(optionalBoolean(value.desktopNotifications, false) ? { desktopNotifications: true as const } : {}),
@@ -379,6 +405,11 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ? base.alwaysInstallLatestCli
     : update.alwaysInstallLatestCli
   const crashReporting = update.crashReporting ?? base.crashReporting
+  // Both sides are re-parsed, unlike the fields above which trust the base:
+  // this one decides whether Codex starts with a local debugging port, so an
+  // unrecognized value from either side must read as "not asked yet" (E-S3).
+  const codexDesktopChineseRuntimePatch = parseChineseRuntimePatch(update.codexDesktopChineseRuntimePatch)
+    ?? parseChineseRuntimePatch(base.codexDesktopChineseRuntimePatch)
   const uiSkin = update.uiSkin === 'auto'
     ? 'mist' as const
     : parseUiSkin(update.uiSkin) ?? base.uiSkin ?? 'mist'
@@ -400,6 +431,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
     ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(crashReporting === false ? { crashReporting: false as const } : {}),
+    ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),
     ...(desktopNotifications ? { desktopNotifications: true as const } : {}),
