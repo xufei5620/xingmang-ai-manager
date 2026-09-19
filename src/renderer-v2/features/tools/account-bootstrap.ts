@@ -11,8 +11,8 @@ import { tools } from '../../registry/tools'
 import { connectionReady, sourceFor } from './model'
 import { userFacingErrorMessage } from '../../business-common'
 import {
+  applyManualSourceMarker,
   getSourceMarkerStorage,
-  writeManualSourceMarker,
   type SourceMarkerStorage,
 } from './source-marker'
 
@@ -170,18 +170,32 @@ export function accountBootstrapPlan(
   return { targets, skipped, preferredModels }
 }
 
+/**
+ * 写入账号 Key 后复核不通过的原因。集中成一份，是因为同一个失败会在首页横幅、
+ * 维护页和客服脚本里被原样引用，散在判断里写就会各说各话。文案以「当前账号」
+ * 为主语：用户不需要知道背后连的是哪个站点。
+ */
+export const configurationFailureMessages = {
+  missingKey: '配置文件里没有检测到密钥',
+  relayMismatch: '服务地址尚未与当前账号匹配',
+  missingModel: '默认模型尚未写入配置',
+  geminiAuthMode: 'Gemini 尚未切换到 API Key 模式',
+  unconfirmedSource: '配置来源尚未确认属于当前账号',
+  connectionIncomplete: '工具连接尚未完成',
+} as const
+
 export function configurationFailure(
   config: AppConfigSummary,
   provider: ProviderId,
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): string | null {
   const current = config.providers[provider]
-  if (!current.hasApiKey) return '配置文件未检测到 API Key'
-  if (!current.matchesRelay) return '服务地址尚未与当前账号匹配'
-  if (!current.model.trim()) return '默认模型尚未写入'
-  if (provider === 'gemini' && current.authType !== 'gemini-api-key') return 'Gemini 尚未切换到 API Key 模式'
-  if (current.configurationOwnership !== 'account' || sourceFor(current, provider, storage) !== 'account') return '配置来源未确认属于星芒账号'
-  return connectionReady(current, provider, storage) ? null : '工具连接尚未完成'
+  if (!current.hasApiKey) return configurationFailureMessages.missingKey
+  if (!current.matchesRelay) return configurationFailureMessages.relayMismatch
+  if (!current.model.trim()) return configurationFailureMessages.missingModel
+  if (provider === 'gemini' && current.authType !== 'gemini-api-key') return configurationFailureMessages.geminiAuthMode
+  if (current.configurationOwnership !== 'account' || sourceFor(current, provider, storage) !== 'account') return configurationFailureMessages.unconfirmedSource
+  return connectionReady(current, provider, storage) ? null : configurationFailureMessages.connectionIncomplete
 }
 
 export function shouldShowAccountBootstrap(config: AppConfigSummary): boolean {
@@ -260,6 +274,7 @@ export async function bootstrapAccountTools(
 
   const configured: ProviderId[] = []
   const failed: Array<{ provider: ProviderId; message: string }> = []
+  const markerWarnings: string[] = []
   for (const provider of plan.targets) {
     const reported = outcome.failed.find((entry) => entry.provider === provider)
     if (reported) {
@@ -274,17 +289,19 @@ export async function bootstrapAccountTools(
       continue
     }
     configured.push(provider)
-    writeManualSourceMarker(
+    const markerWarning = applyManualSourceMarker(
       storage,
       verified.providers[provider].baseUrl,
       provider,
       false,
     )
+    if (markerWarning) markerWarnings.push(`${nameOf(provider)}：${markerWarning}`)
   }
 
   const readyKeys = synchronized?.ready.map((entry) => entry.provider) ?? []
   const warnings = [
     ...(syncError ? [`Key 同步阶段：${syncError}`] : []),
+    ...markerWarnings,
     ...(synchronized?.storageWarning
       ? [`本机加密缓存：${synchronized.storageWarning}`]
       : []),
