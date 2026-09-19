@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { ProviderConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
-import { canUninstallTool, connectionReady, presentTools, providerFor, rollbackVersion, sourceFor, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
+import { canUninstallTool, codexDesktopUpdateKind, connectionReady, presentTools, providerFor, rollbackVersion, sourceFor, versionSubtitle, type ToolboxSnapshot, type ToolPresentation } from './model'
 import {
   writeManualSourceMarker,
   type SourceMarkerStorage,
@@ -129,6 +129,45 @@ describe('renderer tool source', () => {
     expect(rows.map((row) => row.id).sort()).toEqual(['claude', 'codex', 'codexDesktop', 'gemini', 'grok'])
     expect(rows.every((row) => row.source === 'account' && row.configured)).toBe(true)
     expect(snapshot).toEqual(before)
+  })
+
+  it('offers a desktop update only when the mirror has a newer package than the official feed alone claims', () => {
+    const providers = Object.fromEntries((['claude', 'codex', 'grok', 'gemini'] as const).map((provider) => [provider, relayConfig()]))
+    const cli = { installed: true, version: '1.0.0', path: '/fixture', updateAvailable: true, latestVersion: '1.1.0' }
+    const desktopRow = (desktop: Record<string, unknown>) => {
+      const snapshot = { config: { providers }, platform: { codexDesktop: { launch: true } },
+        system: {
+          clis: { claude: cli, codex: cli, grok: cli, gemini: cli },
+          desktopApps: { codex: { ...cli, appVersion: '1.0.0', ...desktop } },
+        },
+      } as unknown as ToolboxSnapshot
+      return presentTools(snapshot, memoryStorage())
+    }
+
+    // 官方清单领先商店和国内镜像: 更新按钮装不到任何包, 所以不出现。
+    const storeCurrent = desktopRow({ updateState: 'available', mirrorUpdateAvailable: false, latestVersion: '1.1.0' })
+    expect(storeCurrent.find((row) => row.id === 'codexDesktop')?.updateAvailable).toBe(false)
+    // CLI 走 npm, 不受镜像影响, 仍按原字段显示。
+    expect(storeCurrent.find((row) => row.id === 'codex')?.updateAvailable).toBe(true)
+
+    expect(desktopRow({ updateState: 'available', mirrorUpdateAvailable: true, latestVersion: '1.1.0' })
+      .find((row) => row.id === 'codexDesktop')?.updateAvailable).toBe(true)
+    expect(desktopRow({ updateState: 'latest', mirrorUpdateAvailable: false, latestVersion: '1.0.0', updateAvailable: false })
+      .find((row) => row.id === 'codexDesktop')?.updateAvailable).toBe(false)
+    // 探测没有结论时不催更新, 免得按钮同样装不上。
+    expect(desktopRow({ updateState: 'available', mirrorUpdateAvailable: null, latestVersion: '1.1.0' })
+      .find((row) => row.id === 'codexDesktop')?.updateAvailable).toBe(false)
+    expect(desktopRow({ updateState: undefined, mirrorUpdateAvailable: true, latestVersion: '1.1.0' })
+      .find((row) => row.id === 'codexDesktop')?.updateAvailable).toBe(false)
+  })
+
+  it('names the three desktop update states the official feed alone cannot distinguish', () => {
+    expect(codexDesktopUpdateKind({ updateState: 'latest', mirrorUpdateAvailable: false })).toBe('latest')
+    expect(codexDesktopUpdateKind({ updateState: 'available', mirrorUpdateAvailable: true })).toBe('installable')
+    expect(codexDesktopUpdateKind({ updateState: 'available', mirrorUpdateAvailable: false })).toBe('store-current')
+    expect(codexDesktopUpdateKind({ updateState: 'available', mirrorUpdateAvailable: null })).toBe('unknown')
+    expect(codexDesktopUpdateKind({ updateState: 'unknown', mirrorUpdateAvailable: true })).toBe('unknown')
+    expect(codexDesktopUpdateKind({ mirrorUpdateAvailable: true })).toBe('unknown')
   })
 
   it('carries each CLI version advice through and never attaches one to the desktop app', () => {

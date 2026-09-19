@@ -3,6 +3,7 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 
 let browser, server, baseUrl
 before(async () => {
@@ -15,7 +16,7 @@ after(async () => { await browser?.close(); await server?.close() })
 async function gallery() {
   const page = await browser.newPage({ viewport: { width: 960, height: 620 } })
   await page.goto(`${baseUrl}/src/components/ui/gallery.html`)
-  await page.getByRole('heading', { name: '星芒 AI / 组件检阅' }).waitFor()
+  await page.getByRole('heading', { name: '星芒 AI / 组件检阅' }).waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 
