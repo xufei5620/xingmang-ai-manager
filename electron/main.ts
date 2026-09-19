@@ -645,9 +645,9 @@ if (!hasSingleInstanceLock) {
         })
         return latestDiagnostics
       },
-      // 自检跟着用户当前所在的站点走,探测和对账读同一个 RelaySite ——
-      // 与 system-service.ts 的 inspectNativeProviderConfig 同参,否则换过
-      // 站点的用户会被告知一份好配置"指错了地方"。站点名只进日志不上屏。
+      // 自检跟着用户当前所在的站点走，探测和对账读同一个 RelaySite ——
+      // 与 system-service.ts 的 inspectNativeProviderConfig 同参，否则换过
+      // 站点的用户会被告知一份好配置「指错了地方」。站点名只进日志不上屏。
       checkConnection: (provider: ProviderId) => {
         const site = resolveRelaySite(systemService.readStoredConfig().relaySiteId)
         return runConnectionCheck({

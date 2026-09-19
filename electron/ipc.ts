@@ -1308,8 +1308,8 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
   if (channel === 'diagnostics:run' && isRecord(result) && isRecord(result.counts)) {
     detail.counts = result.counts
   }
-  // 站点切换对用户无感(老板拍板),界面永不显示 siteId;但客服排查一条
-  // 自检工单时必须知道当时走的是哪个后端,所以只在日志里留下它。
+  // 站点切换对用户无感（产品决定），界面永不显示 siteId；但客服排查一条
+  // 自检工单时必须知道当时走的是哪个后端，所以只在日志里留下它。
   if (channel === 'diagnostics:check-connection' && isRecord(result)) {
     detail.layer = result.layer
     detail.ok = result.ok
