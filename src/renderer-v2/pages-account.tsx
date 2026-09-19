@@ -42,6 +42,7 @@ import {
 import {
   displayDate,
   dollars,
+  errorMessage,
   ListState,
   Pagination,
   ResultNotice,
@@ -879,8 +880,14 @@ function AccountKeys({
         // Keep a user's selection during refresh. If it was removed, require
         // another explicit choice instead of silently changing the billed group.
         setGroup((selected) => selected || latest[0]?.name || '')
-      } catch {
-        if (groupsRequest.current === request) setGroupsError('分组读取失败，请刷新后重试。')
+      } catch (cause) {
+        // 这条错误是保存密钥的硬门槛（下方 save 直接拿 groupsError 拦截），压成一句
+        // 固定话术会让「登录过期」「请求太频繁」「账号被封禁」三种完全不同的处境看起来
+        // 都只是「刷新一下」，用户只能反复点刷新。过 errorMessage 拿到按原因分的文案，
+        // 同时沿用它的脱敏（I13：主进程的错误里可能带绝对路径）。
+        if (groupsRequest.current === request) {
+          setGroupsError(errorMessage(cause, '分组读取失败，请刷新后重试。'))
+        }
       } finally {
         if (groupsRequest.current === request) setGroupsLoading(false)
         if (groupsPending.current?.request === request) groupsPending.current = null
@@ -1808,7 +1815,7 @@ function AccountRecharge({
     useState<AccountPaymentWindowTerminalEvent | null>(null)
   const paymentRef = useRef(payment)
   const openingPayment = useRef<AccountPaymentWindowTerminalEvent[] | null>(null)
-  const acceptPaymentTerminal = useCallback((event: AccountPaymentWindowTerminalEvent) => {
+  const acceptPaymentTerminal = (event: AccountPaymentWindowTerminalEvent) => {
     const current = paymentRef.current
     if (!current) return
     if (event.status === 'success' && (!event.tradeNo || event.tradeNo !== current.tradeNo)) return
@@ -1818,7 +1825,14 @@ function AccountRecharge({
     setPaymentTerminal(event)
     changed()
     void resource.reload()
-  }, [changed, resource.reload])
+  }
+  // 支付回调是一次性事件：退订与重订之间到达的那一条没有人接，订单就此丢在
+  // 「等待支付结果」上。`changed` 由 AccountPage 每次渲染新建，再上一层 App.tsx 传的
+  // `onAccountChanged` 同样是行内箭头，所以把 `changed` 包成 useCallback 也挡不住
+  // ——余额 store 每 30 秒 publish 一次就会重订一次。改成让订阅只依赖 `api`，回调
+  // 本身从 ref 取最新的一份（与本文件 refreshGroupsRef 同一写法）。
+  const acceptPaymentTerminalRef = useRef(acceptPaymentTerminal)
+  acceptPaymentTerminalRef.current = acceptPaymentTerminal
   function paymentOpened(result: NonNullable<typeof payment>) {
     const buffered = openingPayment.current ?? []
     openingPayment.current = null
@@ -1842,9 +1856,9 @@ function AccountRecharge({
           if (openingPayment.current.length < 8) openingPayment.current.push(event)
           return
         }
-        acceptPaymentTerminal(event)
+        acceptPaymentTerminalRef.current(event)
       }),
-    [api, acceptPaymentTerminal],
+    [api],
   )
   const methods = resource.data?.info.paymentMethods ?? []
   const paymentMethod =
