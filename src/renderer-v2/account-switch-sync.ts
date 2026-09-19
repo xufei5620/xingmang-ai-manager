@@ -1,5 +1,6 @@
 import { accountOrigin } from './account-context'
 import { resolveRelaySite } from '../../electron/relay-sites'
+import { isProviderId } from '../../electron/catalog'
 import { tools } from './registry/tools'
 import { errorMessage } from './business-common'
 import {
@@ -83,8 +84,6 @@ export interface AccountSwitchSyncResult {
   failed: Array<{ provider: Provider; message: string }>
   skipped: Array<{ provider: Provider; message: string }>
 }
-const isProvider = (value: string): value is Provider =>
-  ['claude', 'codex', 'gemini', 'grok'].includes(value)
 export function sameAccountOrigin(actual: string, expected: string): boolean {
   try {
     const left = new URL(actual)
@@ -107,10 +106,12 @@ export function accountSyncCandidates(
   storage: SourceMarkerStorage | null = getSourceMarkerStorage(),
 ): AccountSyncCandidate[] {
   return tools
-    .filter((tool) => tool.kind === 'cli' && isProvider(tool.id))
     .flatMap((tool) => {
+      // Desktop entries share a CLI's provider config and must not be offered
+      // as their own sync candidate; isProviderId also narrows tool.id, which
+      // the registry now types as ProviderId | 'codexDesktop'.
+      if (tool.kind !== 'cli' || !isProviderId(tool.id)) return []
       const provider = tool.id
-      if (!isProvider(provider)) return []
       const config = context.configs[provider]
       const status = context.clis[provider]
       const official =
