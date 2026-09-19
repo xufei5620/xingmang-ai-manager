@@ -9,10 +9,12 @@ import {
   accountBootstrapPlan,
   bootstrapAccountTools,
   configurationFailure,
+  configurationFailureMessages,
   type AccountBootstrapBridge,
 } from './account-bootstrap'
 import {
   readManualSourceMarker,
+  sourceMarkerWriteWarning,
   writeManualSourceMarker,
   type SourceMarkerStorage,
 } from './source-marker'
@@ -154,12 +156,41 @@ describe('account managed Key bootstrap', () => {
     }
   })
 
+  it('names the tool when a verified write cannot clear its manual source marker', async () => {
+    // localStorage 满或被禁用时，Key 已经写进 CLI，只有来源标记没落地。以前这个
+    // 返回值被整段丢掉，工具卡会一直显示「手动填写」而用户看不到任何提示。
+    const current = config()
+    const storage: SourceMarkerStorage = {
+      getItem: () => 'manual',
+      setItem: () => { throw new Error('storage unavailable') },
+      removeItem: () => { throw new Error('storage unavailable') },
+    }
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => ({ ready: [], failed: [] })),
+      scanSystem: vi.fn(async () => system(['claude'])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => structuredClone(current)),
+      configureManagedCliKeys: vi.fn(async () => {
+        current.providers.claude = { ...current.providers.claude, exists: true, hasApiKey: true, matchesRelay: true,
+          actualBaseUrl: current.providers.claude.baseUrl, model: 'model', configurationOwnership: 'account' }
+        return { configured: ['claude' as ProviderId], failed: [] }
+      }),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, storage)
+
+    expect(result.configured).toEqual(['claude'])
+    expect(result.failed).toEqual([])
+    expect(result.warnings).toEqual([`Claude Code：${sourceMarkerWriteWarning}`])
+  })
+
   it.each([
     ['backend rejection with manual config', 'manual', false, '保留手动 Key，拒绝自动覆盖', '保留手动 Key，拒绝自动覆盖'],
     ['backend rejection with unknown config', 'unknown', false, '保留来源未确认的 Key', '保留来源未确认的 Key'],
-    ['backend success with manual config', 'manual', true, null, '配置来源未确认属于星芒账号'],
-    ['backend success with unknown config', 'unknown', true, null, '配置来源未确认属于星芒账号'],
-    ['backend success without ownership', undefined, true, null, '配置来源未确认属于星芒账号'],
+    ['backend success with manual config', 'manual', true, null, configurationFailureMessages.unconfirmedSource],
+    ['backend success with unknown config', 'unknown', true, null, configurationFailureMessages.unconfirmedSource],
+    ['backend success without ownership', undefined, true, null, configurationFailureMessages.unconfirmedSource],
     ['missing backend result with account config', 'account', false, null, '账号 Key 配置未返回成功结果'],
     ['conflicting backend results with account config', 'account', true, '配置写入失败', '配置写入失败'],
   ] as const)('does not report success for %s', async (_name, ownership, reportedSuccess, backendFailure, expectedMessage) => {
@@ -272,7 +303,7 @@ describe('account managed Key bootstrap', () => {
     expect(readyPlan.targets).toEqual([])
     expect(readyPlan.skipped).toEqual(providers.map((provider) => expect.objectContaining({ provider, reason: 'configured' })))
     for (const provider of providers) {
-      expect(configurationFailure(current, provider, null)).toBe('配置来源未确认属于星芒账号')
+      expect(configurationFailure(current, provider, null)).toBe(configurationFailureMessages.unconfirmedSource)
       current.providers[provider].model = ''
     }
     const incompletePlan = accountBootstrapPlan(installed, current, settings, mode, null)
@@ -342,7 +373,7 @@ describe('account managed Key bootstrap', () => {
     }
     const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, null)
     expect(result.configured).toEqual([])
-    expect(result.failed).toEqual([{ provider: 'claude', message: '配置来源未确认属于星芒账号' }])
+    expect(result.failed).toEqual([{ provider: 'claude', message: configurationFailureMessages.unconfirmedSource }])
   })
 
   it('stops a stale account before writing any local configuration', async () => {

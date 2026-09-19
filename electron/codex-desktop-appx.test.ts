@@ -1,6 +1,9 @@
 import { execFile } from 'node:child_process'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { promisify } from 'node:util'
-import { describe, expect, it, vi } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import {
   addCodexDesktopPackage,
   buildCodexAppxElevationScript,
@@ -10,6 +13,7 @@ import {
 import { resolveWindowsPowerShellExecutable } from './windows-elevation'
 
 const packagePath = 'C:\\Temp\\Codex Desktop.msix'
+const injectedPackagePath = "D:\\下载缓存\\O'Brien; $(Write-Output XINGMANG_TEST_INJECTION) & Codex.msix"
 const powershell = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe'
 const sha256Base64 = Buffer.alloc(32, 1).toString('base64')
 const elevationRequired = () => Object.assign(new Error('Appx deployment failed'), { stderr: 'Deployment failed with HRESULT: 0x80073D28' })
@@ -31,6 +35,58 @@ function decodeScript(argv: string[]): string {
   expect(Buffer.from(script, 'utf16le').toString('base64')).toBe(encoded)
   return script
 }
+
+let temporaryDirectory: string | null = null
+
+afterAll(() => {
+  if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true })
+  temporaryDirectory = null
+})
+
+function writeTemporaryFile(name: string, contents: string): string {
+  temporaryDirectory ??= mkdtempSync(path.join(os.tmpdir(), 'xingmang-appx-test-'))
+  const file = path.join(temporaryDirectory, name)
+  // Windows PowerShell 5.1 reads a BOM-less .ps1 as ANSI, which would corrupt every
+  // non-ASCII literal the generated installer script carries.
+  writeFileSync(file, name.endsWith('.ps1') ? `\uFEFF${contents}` : contents, 'utf8')
+  return file
+}
+
+// Windows creates a process from a single command line capped at 32767 characters, and
+// -EncodedCommand inflates a script by 8/3 (UTF-16LE, then base64). Feeding these
+// multi-kilobyte scripts inline used to put ~30000 characters on that line, so a busy
+// runner could fail to spawn the child at all. Reading the script from a file keeps the
+// line at the length of a temp path. -ExecutionPolicy Bypass is what lets PowerShell read
+// a file this test just wrote into its own temp directory under a Restricted policy; the
+// script never comes from anywhere else.
+function powerShellScriptArgv(scriptFile: string, ...scriptArguments: string[]): string[] {
+  return ['-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', scriptFile, ...scriptArguments]
+}
+
+function commandLineLength(executable: string, argv: string[]): number {
+  return [executable, ...argv].reduce((total, part) => total + part.length + (/\s/.test(part) ? 3 : 1), 0)
+}
+
+function buildInjectedScripts(): string[] {
+  return [
+    buildCodexAppxElevationScript(injectedPackagePath, sha256Base64),
+    buildCodexAppxUacBrokerScript(powershell, injectedPackagePath, sha256Base64),
+  ]
+}
+
+const scriptParser = [
+  'param([Parameter(Mandatory = $true)][string]$ScriptsPath)',
+  "$ErrorActionPreference = 'Stop'",
+  '$scripts = ConvertFrom-Json ([IO.File]::ReadAllText($ScriptsPath, [Text.Encoding]::UTF8))',
+  '$result = @()',
+  'foreach ($script in $scripts) {',
+  '  $tokens = $null; $parseErrors = $null',
+  '  $ast = [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$parseErrors)',
+  "  $injected = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Write-Output' }, $true))",
+  '  $result += [pscustomobject]@{ errors = @($parseErrors).Count; injected = $injected.Count }',
+  '}',
+  'ConvertTo-Json -InputObject $result -Compress',
+].join('\n')
 
 describe('Codex Desktop Appx elevation eligibility', () => {
   it.each([
@@ -191,7 +247,7 @@ describe('Codex Desktop Appx script boundaries', () => {
   })
 
   it('quotes shell metacharacters in legal MSIX paths as data and sends only encoded commands to the broker', async () => {
-    const file = "D:\\下载缓存\\O'Brien; $(Write-Output XINGMANG_TEST_INJECTION) & Codex.msix"
+    const file = injectedPackagePath
     const script = buildCodexAppxElevationScript(file, sha256Base64)
     expect(script).toContain(`'${file.replace(/'/g, "''")}'`)
     const f = fixture()
@@ -203,25 +259,25 @@ describe('Codex Desktop Appx script boundaries', () => {
     expect(decodeScript(brokerArgv)).toBe(buildCodexAppxUacBrokerScript(powershell, file, sha256Base64))
   })
 
+  it('keeps the generated scripts off the PowerShell command line', () => {
+    const scriptsFile = writeTemporaryFile('scripts.json', JSON.stringify(buildInjectedScripts()))
+    const parserFile = writeTemporaryFile('parse-scripts.ps1', scriptParser)
+    // cmd.exe's 8191-character limit is the stricter of the two Windows ceilings; staying
+    // under it keeps the 32767 process limit out of reach however far these scripts grow.
+    expect(commandLineLength(powershell, powerShellScriptArgv(parserFile, scriptsFile))).toBeLessThan(8191)
+    const installerFile = writeTemporaryFile('installer.ps1', buildCodexAppxElevationScript(packagePath, sha256Base64))
+    expect(commandLineLength(powershell, powerShellScriptArgv(installerFile))).toBeLessThan(8191)
+    // Encoding the same payload inline is what used to approach the process limit, so this
+    // is the cliff the file route removes rather than merely moves.
+    expect(Math.ceil((buildInjectedScripts().join('').length * 8) / 3)).toBeGreaterThan(8191)
+  })
+
   it.skipIf(process.platform !== 'win32')('parses both generated PowerShell scripts without executing either script or injected text', async () => {
-    const file = "D:\\下载缓存\\O'Brien; $(Write-Output XINGMANG_TEST_INJECTION) & Codex.msix"
-    const scripts = [buildCodexAppxElevationScript(file, sha256Base64), buildCodexAppxUacBrokerScript(powershell, file, sha256Base64)]
-    const payload = Buffer.from(JSON.stringify(scripts), 'utf8').toString('base64')
-    const parser = [
-      "$ErrorActionPreference = 'Stop'",
-      `$scripts = ConvertFrom-Json ([Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payload}')))`,
-      '$result = @()',
-      'foreach ($script in $scripts) {',
-      '  $tokens = $null; $parseErrors = $null',
-      '  $ast = [System.Management.Automation.Language.Parser]::ParseInput($script, [ref]$tokens, [ref]$parseErrors)',
-      "  $injected = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] -and $node.GetCommandName() -eq 'Write-Output' }, $true))",
-      '  $result += [pscustomobject]@{ errors = @($parseErrors).Count; injected = $injected.Count }',
-      '}',
-      'ConvertTo-Json -InputObject $result -Compress',
-    ].join('\n')
-    const { stdout } = await promisify(execFile)(resolveWindowsPowerShellExecutable(), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(parser, 'utf16le').toString('base64')], {
-      windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024,
-    })
+    const scriptsFile = writeTemporaryFile('scripts.json', JSON.stringify(buildInjectedScripts()))
+    const executable = resolveWindowsPowerShellExecutable()
+    const argv = powerShellScriptArgv(writeTemporaryFile('parse-scripts.ps1', scriptParser), scriptsFile)
+    expect(commandLineLength(executable, argv)).toBeLessThan(8191)
+    const { stdout } = await promisify(execFile)(executable, argv, { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 })
     expect(JSON.parse(stdout.trim())).toEqual([{ errors: 0, injected: 0 }, { errors: 0, injected: 0 }])
   })
 
@@ -233,9 +289,11 @@ describe('Codex Desktop Appx script boundaries', () => {
     expect(guard).toBeLessThan(script.indexOf('[System.IO.File]::Open'))
     // This is the helper itself, never the RunAs broker. The literal placeholder
     // cannot equal a Windows SID, so neither package I/O nor installation is reached.
-    const failure = await promisify(execFile)(resolveWindowsPowerShellExecutable(), [
-      '-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
-    ], { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 }).catch((error: unknown) => error)
+    const executable = resolveWindowsPowerShellExecutable()
+    const argv = powerShellScriptArgv(writeTemporaryFile('installer.ps1', script))
+    expect(commandLineLength(executable, argv)).toBeLessThan(8191)
+    const failure = await promisify(execFile)(executable, argv, { windowsHide: true, timeout: 15000, maxBuffer: 1024 * 1024 })
+      .catch((error: unknown) => error)
     expect(failure).toMatchObject({ code: 2225, stdout: '' })
   })
 })
