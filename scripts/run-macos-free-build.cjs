@@ -381,6 +381,14 @@ async function runCiFreeMacBuild(options = {}) {
     return normalizeFingerprint(output.split('=', 2)[1] || '', 20)
   })
   const verifyEphemeralSigning = options.verifyEphemeralSigning || verifyEphemeralMacSigningIdentity
+  // P-20: this rehearsal used to hand the build a preflight that returned a
+  // constant, which left the certificate policy checks — self-signature,
+  // validity window, exclusive critical codeSigning EKU, private-key identity
+  // agreeing with the certificate — as the one part of a release that CI never
+  // executed. They run here against a real certificate and real security and
+  // openssl output; only the trust filter is relaxed, for the reason given in
+  // buildCodeSigningIdentityQuery.
+  const verifySigningIdentity = options.verifySigning || verifyFreeMacSigningIdentity
   const runBuild = options.runBuild || runFreeMacBuild
   const removeDirectory = options.removeDirectory || ((directory) => fs.rmSync(directory, {
     recursive: true,
@@ -487,7 +495,10 @@ async function runCiFreeMacBuild(options = {}) {
       outputDirectory: outputRequest,
       skipChecks: true,
       ephemeralSigning: { identitySha1, keychainPath },
-      verifySigning: () => ({ identityName, fingerprint }),
+      verifySigning: (verifyOptions) => verifySigningIdentity({
+        ...verifyOptions,
+        trustedIdentitiesOnly: false,
+      }),
     })
   } catch (error) {
     failure = error

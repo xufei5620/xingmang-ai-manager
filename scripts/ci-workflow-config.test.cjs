@@ -374,6 +374,37 @@ test('the supported macOS runner runs the real isolated free-distribution build 
   assert.equal(macJob.steps.some((step) => String(step.uses || '').includes('upload-artifact')), false)
 })
 
+// T-G5: each of these was committed, documented and then reachable only by
+// hand. A smoke nothing runs asserts nothing, and both are the only coverage
+// their Windows-only guarantee has.
+test('the Windows packaging job runs every smoke that has no other home', () => {
+  const packageSteps = workflow.jobs['windows-package'].steps
+  const commands = runSteps('windows-package')
+  const compileIndex = commands.indexOf('npm run compile')
+
+  assert.notEqual(compileIndex, -1)
+  for (const smoke of [
+    'node e2e/acceleration-profile-isolation-smoke.mjs',
+    'node e2e/realm-vault-recovery-smoke.mjs',
+  ]) {
+    const index = commands.indexOf(smoke)
+    assert.notEqual(index, -1, `${smoke} must run somewhere in CI`)
+    assert.ok(index > compileIndex, `${smoke} needs the compiled application`)
+    const step = packageSteps.find((entry) => entry.run === smoke)
+    // Both drive Electron child processes; a hang in either would otherwise
+    // consume the whole job cap and report nothing about which step hung.
+    assert.ok(step['timeout-minutes'] > 0, `${smoke} must carry its own step bound`)
+  }
+})
+
+// Wiring this one would pin CI to an expectation the product contradicts: it
+// asserts the window zoom equals contentWidth / 1280 down to 960, but
+// calculateUiZoom clamps at UI_MIN_ZOOM = 0.8. Keep it out until the script is
+// reconciled with that clamp, so nobody re-adds it from the T-G5 list alone.
+test('the native renderer smoke stays out of CI while its zoom expectation is stale', () => {
+  assert.ok(!runSteps('windows-package').includes('node e2e/renderer-v2-native.mjs'))
+})
+
 test('the Windows job packages and exercises a hardened non-publishing build', () => {
   const commands = runSteps('windows-package')
   const buildCommand = packageJson.scripts['build:win:ci']
@@ -540,15 +571,16 @@ test('documentation skips are limited to known documentation locations', () => {
   assert.equal(requiresCodeChecks(['docs/new-script.cjs']), true)
 })
 
-test('the macOS release build runs on main rather than on every pull request', () => {
+test('the macOS packaging gate runs on every pull request, not only after a merge', () => {
   const macBuild = workflow.jobs['macos-test'].steps
     .find((step) => String(step.run || '').includes('run-macos-free-build.cjs'))
 
   assert.ok(macBuild, 'the macOS free-distribution build must still exist')
-  // Half the billed minutes of an average run. It answers a release question,
-  // while the cross-platform regressions a pull request must catch are covered
-  // by the typecheck, test and dev-origin steps that stay unconditional.
-  assert.equal(macBuild.if, "github.event_name == 'push'")
+  // P-20: it used to be `github.event_name == 'push'` to save macOS minutes.
+  // Actions bills nothing on a public repository, and the saving bought a gate
+  // that could only report a broken macOS package after it was already on main.
+  assert.equal(macBuild.if, undefined, 'the macOS packaging gate must not be conditional')
+  assert.ok(macBuild['timeout-minutes'] > 0, 'the macOS packaging gate needs its own step bound')
 
   const commands = runSteps('macos-test')
   for (const guarded of ['npm run typecheck', 'npm test', 'npm run test:mac:dev-origin']) {

@@ -709,6 +709,59 @@ test('CI signing refuses a runner that is not a disposable hosted one', async (t
   assert.deepEqual(fs.readdirSync(projectRoot), [])
 })
 
+test('CI signing runs the real certificate preflight instead of a constant (P-20)', async (t) => {
+  const projectRoot = temporaryProject(t)
+  const preflightCalls = []
+  let handedToBuild
+  await runCiFreeMacBuild({
+    projectRoot,
+    platform: 'darwin',
+    env: { PATH: '/usr/bin:/bin' },
+    randomBytes: sequentialEntropy(),
+    createCertificate: (value) => writeCertificate(value),
+    certificateFingerprint: () => fingerprint,
+    certificateSha1: () => sha1Fingerprint,
+    runSecurity: (args) => {
+      if (args[0] === 'create-keychain') fs.writeFileSync(args.at(-1), 'keychain')
+      if (args[0] === 'list-keychains' && args.length === 3) {
+        return '    "/Users/runner/Library/Keychains/login.keychain-db"\n'
+      }
+      return ''
+    },
+    verifyEphemeralSigning: () => ({ identitySha1: sha1Fingerprint }),
+    verifySigning: (value) => {
+      preflightCalls.push(value)
+      return { identityName: value.identityName, fingerprint: value.expectedFingerprint }
+    },
+    runBuild: async (value) => {
+      handedToBuild = value.verifySigning
+      fs.mkdirSync(path.join(projectRoot, value.outputDirectory))
+      return { outputDirectory: value.outputDirectory }
+    },
+    removeDirectory: (directory) => fs.rmSync(directory, { recursive: true, force: true }),
+  })
+
+  // The build resolves the preflight itself, so what matters is that what it
+  // receives forwards to the real verifier rather than answering from a
+  // literal — that literal is what kept the certificate policy checks out of
+  // every CI run.
+  assert.equal(typeof handedToBuild, 'function')
+  assert.deepEqual(preflightCalls, [])
+  const answer = await handedToBuild({
+    identityName: 'XingMang CI Free Update Identity',
+    expectedFingerprint: fingerprint,
+    env: { PATH: '/usr/bin:/bin' },
+  })
+
+  assert.deepEqual(answer, { identityName: 'XingMang CI Free Update Identity', fingerprint })
+  assert.equal(preflightCalls.length, 1)
+  assert.equal(preflightCalls[0].identityName, 'XingMang CI Free Update Identity')
+  assert.equal(preflightCalls[0].expectedFingerprint, fingerprint)
+  // The throwaway keychain carries no Trust Settings, so only the trust filter
+  // is relaxed; every certificate assertion runs unchanged.
+  assert.equal(preflightCalls[0].trustedIdentitiesOnly, false)
+})
+
 test('CI signing draws the keychain password, the P12 password and the output name separately', async (t) => {
   const projectRoot = temporaryProject(t)
   let keychainPassword

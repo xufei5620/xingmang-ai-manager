@@ -192,6 +192,34 @@ jobs:
         timeout-minutes: 10
         run: node e2e/realm-account-smoke.mjs
       - run: node e2e/onboarding-smoke.mjs
+      # T-G5: the two smokes below were written, documented and then never wired
+      # to anything, so the only thing that ran them was a person who remembered
+      # they existed. Each covers a Windows-only guarantee that no other suite
+      # asserts: the Electron profile that holds the OSCrypt key stays inside
+      # the temporary directory, and an account vault survives a safeStorage key
+      # rotation across real process lifetimes. They need the compile above and
+      # print SKIP and exit 0 elsewhere, which is why they belong here and not
+      # in linux-test.
+      #
+      # The step bounds are backstops, not budgets: each of these is a couple of
+      # minutes. They stay well under the job cap on purpose, so a single wedged
+      # smoke names itself instead of taking the job down at 25 minutes with no
+      # verdict on which step hung.
+      - name: Verify the acceleration profile stays inside its temporary directory
+        timeout-minutes: 6
+        run: node e2e/acceleration-profile-isolation-smoke.mjs
+      - name: Verify account vault recovery across a safeStorage key rotation
+        # Bundles its fixture and boots Electron three times over, so it gets
+        # more room than the two either side of it.
+        timeout-minutes: 8
+        run: node e2e/realm-vault-recovery-smoke.mjs
+      # e2e/renderer-v2-native.mjs is deliberately not wired here: it asserts the
+      # window zoom equals contentWidth / 1280 for widths down to 960, while
+      # calculateUiZoom clamps to UI_MIN_ZOOM = 0.8, so 960 can only ever produce
+      # 0.8. The runner makes it worse — its work area is under 1280x720, so
+      # resolveWindowPlacement starts the window maximized and setContentSize is
+      # a no-op on Windows. It needs a desktop and a product expectation CI does
+      # not have; it belongs with the manual acceptance scripts.
       - run: npm run build:win:ci
       - run: node scripts/verify-packaged-hardening.cjs release/win-unpacked
       - run: node e2e/packaged-hardening-smoke.mjs "release/win-unpacked/星芒AI管理工具.exe"
@@ -201,9 +229,13 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: electron-smoke-artifacts
+          # Smokes that write their evidence into a subdirectory of artifacts/
+          # were dropped entirely by the flat globs alone.
           path: |
             artifacts/*.png
             artifacts/*.json
+            artifacts/**/*.png
+            artifacts/**/*.json
             output/realm-account-review/*
           if-no-files-found: ignore
           retention-days: 7
@@ -277,13 +309,20 @@ jobs:
             git status --porcelain
             exit 1
           fi
-      # 147s of this job's 227s, and macOS bills at 10x, so this single step is
-      # roughly half the cost of every run in the repository. It answers "can we
-      # still produce a signed macOS app", which is a release question — the
-      # cross-platform regressions a pull request needs to catch are already
-      # covered by the typecheck, test and dev-origin steps above.
+      # P-20: this used to be `if: github.event_name == 'push'`, on the grounds
+      # that macOS bills at 10x and this one step was half the cost of a run.
+      # This repository is public, so Actions bills nothing at all, and the
+      # saving bought a gate that only fires after a merge: a pull request that
+      # broke macOS packaging — the signing preflight, the electron-builder
+      # config, the artifact verifier — went green and surfaced on main, where
+      # the fix needs its own pull request through the same gate. ~150s on a
+      # runner that is not the pipeline's critical path is worth catching it
+      # before the merge instead.
       - name: Build and verify free macOS distribution with ephemeral signing
-        if: github.event_name == 'push'
+        # The job cap is 35 minutes and everything before this step needs most
+        # of it. Without a step bound, one wedged `security` or `codesign` call
+        # takes the whole job down at its cap with no verdict on which step hung.
+        timeout-minutes: 12
         run: node scripts/run-macos-free-build.cjs --ci-temporary-signing
 
   linux-test:

@@ -149,6 +149,95 @@ test('signing preflight passes its explicit environment to every default securit
   assert.equal(calls.some((call) => call.args[0] === 'verify'), false)
 })
 
+test('signing preflight drops only the trust filter when no Trust Settings can exist', () => {
+  const queries = []
+  const capture = (overrides) => healthyOptions({
+    runSecurity: (args) => {
+      queries.push(args)
+      return healthyOptions().runSecurity(args)
+    },
+    ...overrides,
+  })
+
+  verifyFreeMacSigningIdentity(capture())
+  verifyFreeMacSigningIdentity(capture({ trustedIdentitiesOnly: true }))
+  verifyFreeMacSigningIdentity(capture({ trustedIdentitiesOnly: false }))
+
+  const identityQueries = queries.filter((args) => args[0] === 'find-identity')
+  assert.deepEqual(identityQueries, [
+    ['find-identity', '-v', '-p', 'codesigning'],
+    ['find-identity', '-v', '-p', 'codesigning'],
+    ['find-identity', '-p', 'codesigning'],
+  ])
+  // The shape `security` really printed for the CI rehearsal's throwaway
+  // keychain, which the first run of this path failed to parse: two sections,
+  // and a policy error appended to the entry the `-v` form would have dropped.
+  const unfiltered = [
+    'Policy: Code Signing',
+    '  Matching identities',
+    '  1) 11AA22BB33CC44DD55EE66FF77889900AABBCCDD "XingMang Free Update Identity" (CSSMERR_TP_NOT_TRUSTED)',
+    '     1 identities found',
+    '',
+    '  Valid identities only',
+    '     0 valid identities found',
+    '',
+  ].join('\n')
+  const withUnfiltered = (overrides) => healthyOptions({
+    runSecurity: (args) => args[0] === 'find-certificate'
+      ? healthyOptions().runSecurity(args)
+      : unfiltered,
+    ...overrides,
+  })
+
+  assert.equal(
+    verifyFreeMacSigningIdentity(withUnfiltered({ trustedIdentitiesOnly: false })).identityName,
+    'XingMang Free Update Identity',
+  )
+  // The release path asks for `-v`, which cannot list an identity the policy
+  // rejects; seeing one anyway means that filter did not hold, so it fails
+  // closed rather than signing with an untrusted key.
+  assert.throws(() => verifyFreeMacSigningIdentity(withUnfiltered()), /信任错误/)
+  // Only the matching section is read: the same identity listed again under
+  // "Valid identities only" must not read as two competing identities.
+  assert.equal(verifyFreeMacSigningIdentity(withUnfiltered({
+    trustedIdentitiesOnly: false,
+    runSecurity: (args) => args[0] === 'find-certificate'
+      ? healthyOptions().runSecurity(args)
+      : [
+        'Policy: Code Signing',
+        '  Matching identities',
+        '  1) 11AA22BB33CC44DD55EE66FF77889900AABBCCDD "XingMang Free Update Identity"',
+        '     1 identities found',
+        '',
+        '  Valid identities only',
+        '  1) 11AA22BB33CC44DD55EE66FF77889900AABBCCDD "XingMang Free Update Identity"',
+        '     1 valid identities found',
+        '',
+      ].join('\n'),
+  })).fingerprint, 'AABBCCDDEEFF00112233445566778899AABBCCDDEEFF00112233445566778899')
+
+  // Nothing else may relax with it: the certificate assertions are the whole
+  // point of running the real preflight in CI (P-20).
+  assert.throws(() => verifyFreeMacSigningIdentity(capture({
+    trustedIdentitiesOnly: false,
+    runOpenSsl: (args) => args.includes('-subject')
+      ? 'subject=CN=one\nissuer=CN=another\n'
+      : healthyOptions().runOpenSsl(args),
+  })), /自签/)
+  assert.throws(() => verifyFreeMacSigningIdentity(capture({
+    trustedIdentitiesOnly: false,
+    runOpenSsl: (args) => args.includes('-text')
+      ? 'X509v3 Extended Key Usage:\n    Code Signing\n'
+      : healthyOptions().runOpenSsl(args),
+  })), /codeSigning/)
+  assert.throws(() => verifyFreeMacSigningIdentity(capture({
+    trustedIdentitiesOnly: false,
+    runSecurity: (args) => args[0] === 'find-certificate'
+      ? healthyOptions().runSecurity(args)
+      : '  1) FFEEDDCCBBAA0099887766554433221100AABBCC "XingMang Free Update Identity"\n',
+  })), /私钥/)
+})
+
 test('signing preflight rejects a different certificate with the same CN', () => {
   assert.throws(() => verifyFreeMacSigningIdentity(healthyOptions({ expectedFingerprint: 'FF:EE:DD:CC:BB:AA:99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA:99:88:77:66:55:44:33:22:11:00' })), /指纹/)
 })
