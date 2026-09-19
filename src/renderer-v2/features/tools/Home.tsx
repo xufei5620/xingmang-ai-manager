@@ -107,6 +107,7 @@ export function Home(props: HomeProps) {
     const primary = () => tool.error ? props.onScan() : !tool.status.installed ? props.onInstall(tool.id)
       : tool.configured ? props.onLaunch(tool.id) : props.onConfigure(tool.id)
     return <ToolRow key={tool.id} tool={tool.id} status={status}
+      detail={job?.label ?? tool.error ?? undefined}
       version={tool.status.installed ? tool.currentVersion ?? '版本暂未识别' : undefined}
       model={tool.status.installed ? tool.source === 'official' ? '官方账号' : tool.model || undefined : undefined}
       progress={job?.percent}

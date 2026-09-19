@@ -67,6 +67,7 @@ import {
 } from './registry/business'
 import { tools } from './registry/tools'
 import { canUninstallTool } from './features/tools/model'
+import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
 import type { V2Bridge, V2Page } from './types'
 import type {
   PlatformProxyStatus,
@@ -714,6 +715,7 @@ export function MaintenancePage({
   const operation = useOperation()
   const [logs, setLogs] = useState<string[]>([])
   const [remove, setRemove] = useState<Provider | 'codexDesktop' | null>(null)
+  const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   useEffect(() => {
     const stopCli = api.onInstallProgress((event) =>
       setLogs((previous) => [...previous.slice(-199), event.message]),
@@ -951,8 +953,22 @@ export function MaintenancePage({
                         remove === 'codexDesktop'
                           ? await api.uninstallCodexDesktop()
                           : await api.uninstallCli(remove)
-                      if (result.outcome === 'manual-required')
+                      if (result.outcome === 'manual-required') {
+                        // The backend text promises a copyable cleanup command,
+                        // so it has to reach a surface that can show one.
+                        setManualUninstall({
+                          name:
+                            tools.find((tool) => tool.id === remove)?.name ??
+                            remove,
+                          reason: result.manualHelp.reason,
+                          manualCommand: result.manualHelp.manualCommand,
+                        })
+                        setRemove(null)
+                        await resource.reload()
+                        // Still a failed uninstall: the page must not claim
+                        // success while files are left on disk.
                         throw new Error(result.error)
+                      }
                       if (result.outcome === 'delegated')
                         throw new Error(
                           '已打开卸载窗口，请完成卸载后重新检测。',
@@ -972,6 +988,13 @@ export function MaintenancePage({
         <p>卸载所选工具程序，保留账号与工具配置。需要时可重新安装。</p>
         <ResultNotice error={operation.error} />
       </Dialog>
+      {manualUninstall && (
+        <ManualUninstallDialog
+          state={manualUninstall}
+          platform={resource.data?.capability.platform}
+          onClose={() => setManualUninstall(null)}
+        />
+      )}
     </section>
   )
 }
