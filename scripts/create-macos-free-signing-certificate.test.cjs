@@ -10,6 +10,7 @@ const {
   verifyCertificateSelfSignature,
 } = require('./verify-macos-free-signing.cjs')
 const {
+  SIGNING_TEAM_IDENTIFIER,
   VALIDITY_DAYS,
   createFreeMacSigningCertificate,
   resolveDedicatedOutputDirectory,
@@ -192,6 +193,16 @@ test('certificate generation requests a non-issuing ten-year RSA-3072 SHA-256 co
   assert.equal(certificateCommand.some((argument) => /CA:TRUE|keyCertSign/.test(argument)), false)
   assert.equal(certificateCommand[certificateCommand.indexOf('-days') + 1], String(VALIDITY_DAYS))
   assert.equal(VALIDITY_DAYS, 3650)
+  // codesign takes TeamIdentifier from the subject's organizational unit, and
+  // library validation compares it between the app and its Electron framework.
+  // A subject without it produces a signature that verifies and a package that
+  // is killed on launch, so the subject is asserted here rather than left to
+  // the release gate to notice.
+  assert.equal(
+    certificateCommand[certificateCommand.indexOf('-subj') + 1],
+    `/OU=${SIGNING_TEAM_IDENTIFIER}/CN=XingMang Free Update Identity`,
+  )
+  assert.match(SIGNING_TEAM_IDENTIFIER, /^[A-Z0-9]{10}$/)
   const exportCommand = invocations.find((args) => args[0] === 'pkcs12')
   assert.ok(exportCommand)
   assert.ok(exportCommand.includes('-descert'))
