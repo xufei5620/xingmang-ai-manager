@@ -32,7 +32,27 @@ test('the unsigned release runs exactly the same gate steps as the signed releas
   const unsigned = stepLabels({ unsignedReleaseMode: true })
 
   assert.equal(signed.length, unsigned.length)
-  assert.equal(signed.length, 11)
+  assert.equal(signed.length, 14)
+})
+
+test('the release gate covers the renderer that actually ships', () => {
+  // M-03: `npm test` is `vitest run electron src`, so the gate used to verify
+  // the main process and nothing of the interface a paying customer receives.
+  // The renderer-v2 browser regression and the canvas suites have their own
+  // entry points and were never reached at release time.
+  for (const mode of [false, true]) {
+    const commands = buildReleaseSteps({
+      npmCli: 'npm-cli.js',
+      releaseOutputDirectory,
+      platform: 'win32',
+      unsignedReleaseMode: mode,
+    }).map((step) => step.args.join(' '))
+
+    for (const suite of ['run test:v2', 'run test:canvas', 'run test:ui']) {
+      assert.ok(commands.some((command) => command.includes(suite)),
+        `the ${mode ? 'unsigned' : 'signed'} gate must run npm ${suite}`)
+    }
+  }
 })
 
 test('the unsigned gate keeps every check that does not need a certificate', () => {
