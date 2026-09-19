@@ -8,9 +8,13 @@ const { gzipSync } = require('node:zlib')
 const asar = require('@electron/asar')
 const YAML = require('yaml')
 const {
+  ALLOWED_ENTITLEMENT_KEYS,
   expectedFreeArtifactNames,
+  assertAllowedEntitlements,
   assertExactArchitecture,
   assertExactCodesignIdentifier,
+  assertHardenedRuntime,
+  parseHdiutilMountPoints,
   formatSha256Manifest,
   hashArtifactFiles,
   parseDesignatedRequirement,
@@ -18,6 +22,7 @@ const {
   resolveSafeOutputDirectory,
   validateZipEntryPaths,
   verifyPackagedUpdateConfig,
+  verifyDmgApplication,
   verifyMacosFreeArtifacts,
   verifyZipApplication,
 } = require('./verify-macos-free-artifacts.cjs')
@@ -73,6 +78,13 @@ function createFreeArtifacts(t, version = '1.2.3') {
   return { projectRoot, outputDirectory, names, blockmapNames }
 }
 
+// The verifier inspects four packaged artifacts now (a ZIP and a DMG per
+// architecture); tests that only care about the surrounding release bookkeeping
+// answer both with the same stub.
+function bothArtifactVerifiers(verify) {
+  return { verifyZipApplication: verify, verifyDmgApplication: verify }
+}
+
 function verifiedApplication(architecture, certificateSha1 = 'cd'.repeat(20), slot = 'root') {
   return {
     architecture,
@@ -99,6 +111,7 @@ async function createInspectableZipFixture(t, {
   },
   packageVersion = '1.2.3',
   xingmangLocalBuild = false,
+  helperName = 'Fixture Helper.app',
 } = {}) {
   const root = temporaryDirectory(t)
   const sourceApp = path.join(root, 'Fixture.app')
@@ -117,6 +130,11 @@ async function createInspectableZipFixture(t, {
   fs.writeFileSync(path.join(contentsDirectory, 'Info.plist'), infoPlistContents)
   fs.writeFileSync(path.join(executableDirectory, 'Fixture'), '#!/bin/sh\n')
   fs.chmodSync(path.join(executableDirectory, 'Fixture'), 0o755)
+  if (helperName) {
+    fs.mkdirSync(path.join(contentsDirectory, 'Frameworks', helperName, 'Contents', 'MacOS'), { recursive: true })
+  } else {
+    fs.mkdirSync(path.join(contentsDirectory, 'Frameworks'), { recursive: true })
+  }
   fs.writeFileSync(path.join(resourcesDirectory, 'app-update.yml'), [
     'provider: generic',
     'url: https://updates.shenfengwl.fun/xingmang-manager/',
@@ -137,7 +155,35 @@ async function createInspectableZipFixture(t, {
   return { certificate, infoPlist, sourceApp, zipPath }
 }
 
-function inspectableZipCommandRunner(sourceApp, certificate, infoPlist) {
+function entitlementsPlist(keys) {
+  return [
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    '<plist version="1.0"><dict>',
+    ...keys.map((key) => `<key>${key}</key><true/>`),
+    '</dict></plist>',
+  ].join('\n')
+}
+
+// Stands in for plutil over the entitlements snapshot the verifier writes, so
+// the snapshot really has to reach disk in a parseable shape.
+function parseEntitlementsSnapshot(snapshotPath) {
+  const contents = fs.readFileSync(snapshotPath, 'utf8')
+  if (!contents.includes('<plist')) throw new Error('not a plist')
+  const keys = [...contents.matchAll(/<key>([^<]*)<\/key>/g)].map((match) => match[1])
+  return Object.fromEntries(keys.map((key) => [key, true]))
+}
+
+function isHelperTarget(targetPath) {
+  return String(targetPath).includes(`${path.sep}Frameworks${path.sep}`)
+}
+
+function inspectableZipCommandRunner(sourceApp, certificate, infoPlist, {
+  flags = '0x10000(runtime)',
+  helperFlags = '0x10000(runtime)',
+  entitlements = [...ALLOWED_ENTITLEMENT_KEYS],
+  helperEntitlements = [...ALLOWED_ENTITLEMENT_KEYS],
+} = {}) {
   const certificateSha1 = crypto.createHash('sha1').update(certificate).digest('hex')
   return async (command, args) => {
     if (command === '/usr/bin/unzip') return { stdout: 'Fixture.app/\nFixture.app/Contents/\n' }
@@ -146,12 +192,20 @@ function inspectableZipCommandRunner(sourceApp, certificate, infoPlist) {
       return { stdout: '' }
     }
     if (command === '/usr/bin/plutil') {
+      const target = args.at(-1)
+      if (target.endsWith('entitlements.plist')) return { stdout: JSON.stringify(parseEntitlementsSnapshot(target)) }
       return { stdout: JSON.stringify(infoPlist) }
     }
     if (command === '/usr/bin/lipo') return { stdout: 'arm64\n' }
     if (command === '/usr/bin/codesign' && args[0] === '--verify') return { stdout: '' }
+    if (command === '/usr/bin/codesign' && args.includes('--entitlements')) {
+      const keys = isHelperTarget(args.at(-1)) ? helperEntitlements : entitlements
+      return { stdout: keys === null ? '' : entitlementsPlist(keys) }
+    }
     if (command === '/usr/bin/codesign' && args.includes('--verbose=4')) {
-      return { stderr: 'Identifier=com.xingmang.ai.manager\n' }
+      const codeDirectory = `CodeDirectory v=20500 size=1234 flags=${isHelperTarget(args.at(-1)) ? helperFlags : flags} hashes=42+7\n`
+      if (isHelperTarget(args.at(-1))) return { stderr: codeDirectory }
+      return { stderr: `Identifier=com.xingmang.ai.manager\n${codeDirectory}` }
     }
     if (command === '/usr/bin/codesign' && args[0] === '-d' && args[1].startsWith('--extract-certificates=')) {
       fs.writeFileSync(`${args[1].slice('--extract-certificates='.length)}0`, certificate)
@@ -314,7 +368,7 @@ test('requires each ZIP metadata entry to match the exact bytes before verificat
     outputDirectory: changedFile.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /SHA-512|大小/)
 
   const changedSize = createFreeArtifacts(t)
@@ -327,7 +381,7 @@ test('requires each ZIP metadata entry to match the exact bytes before verificat
     outputDirectory: changedSize.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /SHA-512|大小/)
 
   const missingSize = createFreeArtifacts(t)
@@ -340,7 +394,7 @@ test('requires each ZIP metadata entry to match the exact bytes before verificat
     outputDirectory: missingSize.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /大小/)
 })
 
@@ -359,7 +413,7 @@ test('rejects extra top-level ZIP, DMG, or blockmap inventory entries regardless
       outputDirectory: fixture.outputDirectory,
       version: '1.2.3',
       signingCertificateSha256: 'ab'.repeat(32),
-      verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+      ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
     }), /顶层|额外|ZIP|DMG/, extraName)
   }
 
@@ -371,7 +425,7 @@ test('rejects extra top-level ZIP, DMG, or blockmap inventory entries regardless
     outputDirectory: linked.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /顶层|额外|ZIP|链接/)
 })
 
@@ -385,7 +439,7 @@ test('copies latest-mac metadata without following symlinks and detects replacem
     outputDirectory: linked.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /latest-mac\.yml.*链接|latest-mac\.yml.*普通文件/)
 
   const replaced = createFreeArtifacts(t)
@@ -395,14 +449,14 @@ test('copies latest-mac metadata without following symlinks and detects replacem
     outputDirectory: replaced.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => {
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => {
       if (architecture === 'arm64') {
         const contents = fs.readFileSync(replacedMetadataPath)
         fs.renameSync(replacedMetadataPath, path.join(replaced.outputDirectory, 'latest-mac-before.yml'))
         fs.writeFileSync(replacedMetadataPath, contents)
       }
       return verifiedApplication(architecture)
-    },
+    }),
   }), /latest-mac\.yml.*已变更|latest-mac\.yml.*替换/)
 })
 
@@ -414,7 +468,7 @@ test('detects output directory replacement even when artifact inodes are preserv
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => {
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => {
       if (architecture === 'arm64') {
         fs.renameSync(fixture.outputDirectory, movedDirectory)
         fs.mkdirSync(fixture.outputDirectory)
@@ -423,7 +477,7 @@ test('detects output directory replacement even when artifact inodes are preserv
         }
       }
       return verifiedApplication(architecture)
-    },
+    }),
   }), /输出目录.*已变更|输出目录.*替换/)
 })
 
@@ -499,14 +553,16 @@ test('verifies both ZIP applications, continuity, metadata, and writes SHA256SUM
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (zipPath, architecture, options) => {
-      verified.push([path.basename(zipPath), architecture, options.expectedUpdateUrl])
+    ...bothArtifactVerifiers(async (artifactPath, architecture, options) => {
+      verified.push([path.basename(artifactPath), architecture, options.expectedUpdateUrl])
       return verifiedApplication(architecture)
-    },
+    }),
   })
   assert.deepEqual(verified, [
     ['XingMang-AI-Manager-1.2.3-arm64.zip', 'arm64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
+    ['XingMang-AI-Manager-1.2.3-arm64.dmg', 'arm64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
     ['XingMang-AI-Manager-1.2.3-x64.zip', 'x64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
+    ['XingMang-AI-Manager-1.2.3-x64.dmg', 'x64', 'https://updates.shenfengwl.fun/xingmang-manager/'],
   ])
   assert.equal(fs.readFileSync(path.join(fixture.outputDirectory, 'preserve-me.txt'), 'utf8'), 'preserve-me')
   assert.equal(fs.readFileSync(result.sha256ManifestPath, 'utf8'), formatSha256Manifest(result.entries))
@@ -516,10 +572,10 @@ test('verifies both ZIP applications, continuity, metadata, and writes SHA256SUM
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(
       architecture,
       architecture === 'arm64' ? 'cd'.repeat(20) : 'ef'.repeat(20),
-    ),
+    )),
   }), /证书根|连续性/)
 })
 
@@ -532,7 +588,7 @@ test('rejects a free release when either architecture ZIP blockmap is missing', 
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /blockmap/i)
 })
 
@@ -545,7 +601,7 @@ test('rejects a malformed ZIP blockmap before publishing free artifacts', async 
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   }), /blockmap/i)
 })
 
@@ -556,7 +612,7 @@ test('includes both verified ZIP blockmaps in SHA256SUMS', async (t) => {
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
   })
 
   assert.deepEqual(
@@ -588,10 +644,10 @@ test('builds SHA256SUMS from bound private-copy digests without reopening public
       outputDirectory: fixture.outputDirectory,
       version: '1.2.3',
       signingCertificateSha256: 'ab'.repeat(32),
-      verifyZipApplication: async (_zipPath, architecture) => {
+      ...bothArtifactVerifiers(async (_artifactPath, architecture) => {
         if (architecture === 'x64') blockPublicReads = true
         return verifiedApplication(architecture)
-      },
+      }),
     })
     assert.equal(result.entries.length, 6)
   } finally {
@@ -632,7 +688,7 @@ test('fails closed when an artifact, metadata, or output directory changes durin
         outputDirectory: fixture.outputDirectory,
         version: '1.2.3',
         signingCertificateSha256: 'ab'.repeat(32),
-        verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture),
+        ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture)),
       }), /已变更|替换/)
       assert.equal(mutationRan, true)
     } finally {
@@ -648,10 +704,10 @@ test('rejects a ZIP source that changes while its private verification copy is i
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => {
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => {
       if (architecture === 'arm64') fs.writeFileSync(path.join(fixture.outputDirectory, fixture.names[1]), 'swapped')
       return verifiedApplication(architecture)
-    },
+    }),
   }), /已变更|身份/)
 })
 
@@ -705,24 +761,28 @@ test('requires the designated requirement slot hash to be the extracted leaf cer
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => ({
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => ({
       ...verifiedApplication(architecture),
       certificateSha1: 'ef'.repeat(20),
-    }),
+    })),
   }), /指定要求.*叶证书|叶证书.*指定要求/)
 })
 
-test('accepts a leaf designated requirement only when both ZIPs bind it to their extracted certificate', async (t) => {
+test('accepts a leaf designated requirement only when all four artifacts bind it to their extracted certificate', async (t) => {
   const fixture = createFreeArtifacts(t)
   const result = await verifyMacosFreeArtifacts({
     projectRoot: fixture.projectRoot,
     outputDirectory: fixture.outputDirectory,
     version: '1.2.3',
     signingCertificateSha256: 'ab'.repeat(32),
-    verifyZipApplication: async (_zipPath, architecture) => verifiedApplication(architecture, 'cd'.repeat(20), 'leaf'),
+    ...bothArtifactVerifiers(async (_artifactPath, architecture) => verifiedApplication(architecture, 'cd'.repeat(20), 'leaf')),
   })
-  assert.deepEqual(result.applications.map((application) => application.certificateSlot), ['leaf', 'leaf'])
-  assert.deepEqual(result.applications.map((application) => application.certificateRequirementHash), ['cd'.repeat(20), 'cd'.repeat(20)])
+  assert.deepEqual(result.applications.map((application) => application.kind), ['zip', 'dmg', 'zip', 'dmg'])
+  assert.deepEqual(result.applications.map((application) => application.certificateSlot), Array(4).fill('leaf'))
+  assert.deepEqual(
+    result.applications.map((application) => application.certificateRequirementHash),
+    Array(4).fill('cd'.repeat(20)),
+  )
 })
 
 for (const [field, value] of [
@@ -766,6 +826,227 @@ test('rejects a signed free ZIP whose packaged package version is not bound to t
     expectedVersion: '1.2.3',
     commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
   }), /package\.json.*version|version.*预期版本/)
+})
+
+// Answers hdiutil for a DMG whose mounted volume carries the same fixture .app
+// the ZIP tests use, so both artifacts are proven to reach the same inspection.
+function inspectableDmgCommandRunner(sourceApp, certificate, infoPlist, options = {}) {
+  const inner = inspectableZipCommandRunner(sourceApp, certificate, infoPlist, options)
+  const calls = []
+  const mountRoots = []
+  const runner = async (command, args) => {
+    if (command === '/usr/bin/hdiutil' && args[0] === 'attach') {
+      calls.push(args)
+      const mountRoot = fs.realpathSync(args[args.indexOf('-mountrandom') + 1])
+      mountRoots.push(mountRoot)
+      const lines = []
+      for (const volume of options.volumeNames || ['dmg.Ab12Cd']) {
+        const mountPoint = path.join(mountRoot, volume)
+        fs.mkdirSync(mountPoint)
+        fs.cpSync(sourceApp, path.join(mountPoint, 'Fixture.app'), { recursive: true })
+        // electron-builder ships this drag-install target next to the .app.
+        fs.symlinkSync('/Applications', path.join(mountPoint, 'Applications'))
+        lines.push(`/dev/disk9s1\tApple_HFS\t${mountPoint}`)
+      }
+      return { stdout: `${lines.join('\n')}\n` }
+    }
+    if (command === '/usr/bin/hdiutil' && args[0] === 'detach') {
+      calls.push(args)
+      if (options.detachFails) throw new Error('resource temporarily unavailable')
+      fs.rmSync(args[1], { recursive: true, force: true })
+      return { stdout: '' }
+    }
+    return inner(command, args)
+  }
+  runner.calls = calls
+  runner.detached = () => calls.filter((args) => args[0] === 'detach').map((args) => args[1])
+  // A refused detach deliberately leaves the mount root behind; clean it up so
+  // the test run itself does not leak one.
+  runner.cleanup = () => {
+    for (const mountRoot of mountRoots) fs.rmSync(mountRoot, { recursive: true, force: true })
+  }
+  return runner
+}
+
+function dmgPathFor(fixture) {
+  return fixture.zipPath.replace(/\.zip$/, '.dmg')
+}
+
+test('requires a hardened runtime flag on every codesign CodeDirectory line', () => {
+  assert.equal(assertHardenedRuntime('CodeDirectory v=20500 flags=0x10000(runtime) hashes=1\n', '应用'), 1)
+  assert.equal(assertHardenedRuntime([
+    'CodeDirectory v=20500 flags=0x10002(adhoc,runtime) hashes=1',
+    'CodeDirectory v=20500 flags=0x10000(runtime) hashes=1',
+  ].join('\n'), '应用'), 2)
+  for (const details of [
+    'CodeDirectory v=20500 flags=0x0(none) hashes=1',
+    'CodeDirectory v=20500 flags=0x2(adhoc) hashes=1',
+    ['CodeDirectory v=20500 flags=0x10000(runtime)', 'CodeDirectory v=20500 flags=0x0(none)'].join('\n'),
+  ]) {
+    assert.throws(() => assertHardenedRuntime(details, '应用'), /强化运行时/)
+  }
+  // The neighbouring executable-segment flags must not stand in for the real ones.
+  assert.equal(assertHardenedRuntime([
+    'Identifier=com.xingmang.ai.manager',
+    'CodeDirectory v=20500 size=1234 flags=0x10000(runtime) hashes=1',
+    'Executable Segment base=0 limit=204800 flags=0x1',
+  ].join('\n'), '应用'), 1)
+  assert.throws(() => assertHardenedRuntime([
+    'Identifier=com.xingmang.ai.manager',
+    'Executable Segment base=0 limit=204800 flags=0x1',
+  ].join('\n'), '应用'), /CodeDirectory 行/)
+  assert.throws(() => assertHardenedRuntime('CodeDirectory flags=0x10000 hashes=1', '应用'), /无法解析/)
+})
+
+test('requires the entitlements key set to equal the allow list exactly', () => {
+  assert.deepEqual(assertAllowedEntitlements([...ALLOWED_ENTITLEMENT_KEYS], '应用'), [...ALLOWED_ENTITLEMENT_KEYS])
+  for (const keys of [
+    [],
+    [...ALLOWED_ENTITLEMENT_KEYS, 'com.apple.security.cs.disable-library-validation'],
+    ['com.apple.security.cs.disable-library-validation'],
+  ]) {
+    assert.throws(() => assertAllowedEntitlements(keys, '应用'), /entitlements/)
+  }
+})
+
+for (const [name, runnerOptions, expected] of [
+  ['main executable is not hardened', { flags: '0x0(none)' }, /主可执行文件.*强化运行时/],
+  ['helper is not hardened', { helperFlags: '0x0(none)' }, /helper.*强化运行时/],
+  ['main entitlements gain a key', {
+    entitlements: ['com.apple.security.cs.allow-jit', 'com.apple.security.cs.disable-library-validation'],
+  }, /主可执行文件.*entitlements/],
+  ['helper entitlements gain a key', {
+    helperEntitlements: ['com.apple.security.cs.allow-jit', 'com.apple.security.cs.disable-library-validation'],
+  }, /helper.*entitlements/],
+  ['main executable carries no entitlements', { entitlements: null }, /主可执行文件.*没有任何 entitlements/],
+]) {
+  test(`rejects a signed free ZIP whose ${name}`, async (t) => {
+    const fixture = await createInspectableZipFixture(t)
+    const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+    await assert.rejects(() => verifyZipApplication(fixture.zipPath, 'arm64', {
+      expectedCertificateSha256: certificateSha256,
+      expectedVersion: '1.2.3',
+      commandRunner: inspectableZipCommandRunner(
+        fixture.sourceApp,
+        fixture.certificate,
+        fixture.infoPlist,
+        runnerOptions,
+      ),
+    }), expected)
+  })
+}
+
+test('rejects a signed free ZIP that ships no nested helper application', async (t) => {
+  const fixture = await createInspectableZipFixture(t, { helperName: null })
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  await assert.rejects(() => verifyZipApplication(fixture.zipPath, 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
+  }), /helper/)
+})
+
+test('reports the verified entitlements of the application and of every helper', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const result = await verifyZipApplication(fixture.zipPath, 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
+  })
+  assert.deepEqual(result.entitlementKeys, [...ALLOWED_ENTITLEMENT_KEYS])
+  assert.deepEqual(result.helperEntitlements, [{
+    label: 'helper Fixture Helper.app',
+    entitlementKeys: [...ALLOWED_ENTITLEMENT_KEYS],
+  }])
+})
+
+test('keeps only hdiutil mount points that live under the random mount root', (t) => {
+  const mountRoot = temporaryDirectory(t)
+  const realRoot = fs.realpathSync(mountRoot)
+  assert.deepEqual(parseHdiutilMountPoints([
+    `/dev/disk9\tGUID_partition_scheme\t`,
+    `/dev/disk9s1\tApple_HFS\t${path.join(realRoot, 'dmg.Ab12Cd')}`,
+    '/dev/disk8s1\tApple_HFS\t/Volumes/Evil',
+    `/dev/disk7s1\tApple_HFS\t${realRoot}`,
+    '',
+  ].join('\n'), mountRoot), [path.join(realRoot, 'dmg.Ab12Cd')])
+})
+
+test('mounts a DMG read-only, runs the packaged inspection, and detaches it', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const commandRunner = inspectableDmgCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist)
+  const result = await verifyDmgApplication(dmgPathFor(fixture), 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner,
+  })
+  assert.equal(result.architecture, 'arm64')
+  assert.equal(result.certificateSha256, certificateSha256)
+  assert.deepEqual(result.entitlementKeys, [...ALLOWED_ENTITLEMENT_KEYS])
+  const attach = commandRunner.calls[0]
+  for (const flag of ['-nobrowse', '-readonly', '-noautoopen', '-mountrandom']) assert.ok(attach.includes(flag), flag)
+  assert.equal(commandRunner.detached().length, 1)
+})
+
+test('rejects a DMG whose packaged application fails inspection and still detaches it', async (t) => {
+  const fixture = await createInspectableZipFixture(t, {
+    infoPlist: {
+      CFBundleIdentifier: 'com.xingmang.ai.manager',
+      CFBundleShortVersionString: '9.9.9',
+      CFBundleVersion: '9.9.9',
+    },
+  })
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const commandRunner = inspectableDmgCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist)
+  await assert.rejects(() => verifyDmgApplication(dmgPathFor(fixture), 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner,
+  }), /CFBundleShortVersionString/)
+  assert.equal(commandRunner.detached().length, 1)
+  assert.equal(fs.existsSync(commandRunner.detached()[0]), false)
+})
+
+test('rejects a DMG that mounts more than one volume and detaches all of them', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const commandRunner = inspectableDmgCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist, {
+    volumeNames: ['dmg.Ab12Cd', 'dmg.Ef34Gh'],
+  })
+  await assert.rejects(() => verifyDmgApplication(dmgPathFor(fixture), 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner,
+  }), /恰好挂载出一个/)
+  assert.equal(commandRunner.detached().length, 2)
+})
+
+test('reports a DMG that stays mounted after a successful inspection', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const commandRunner = inspectableDmgCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist, {
+    detachFails: true,
+  })
+  t.after(() => commandRunner.cleanup())
+  await assert.rejects(() => verifyDmgApplication(dmgPathFor(fixture), 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner,
+  }), /DMG 卸载失败.*需人工清理/)
+})
+
+test('rejects a free release whose DMGs are signed by a different certificate than its ZIPs', async (t) => {
+  const fixture = createFreeArtifacts(t)
+  await assert.rejects(() => verifyMacosFreeArtifacts({
+    projectRoot: fixture.projectRoot,
+    outputDirectory: fixture.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    verifyZipApplication: async (_artifactPath, architecture) => verifiedApplication(architecture),
+    verifyDmgApplication: async (_artifactPath, architecture) => verifiedApplication(architecture, 'ef'.repeat(20)),
+  }), /连续性.*\.dmg/)
 })
 
 test('macOS ZIP integration rejects an extracted unsigned application', {
