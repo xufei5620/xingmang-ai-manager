@@ -97,15 +97,17 @@ type SubscriptionPaymentInput = Parameters<
 >[0]
 type AccountTab = (typeof accountTabs)[number]['value']
 type Provider = Parameters<V2Bridge['saveConfigWithAccountKey']>[0]['provider']
-const isProvider = (id: string): id is Provider =>
-  ['claude', 'codex', 'gemini', 'grok'].includes(id)
-const quotaMoney = (
+function isProvider(id: string): id is Provider {
+  return ['claude', 'codex', 'gemini', 'grok'].includes(id)
+}
+function quotaMoney(
   quota: number | null | undefined,
   balance: Balance | null,
-) =>
-  balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
+) {
+  return balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
     ? dollars(quota / balance.quotaPerUnit)
     : '暂未读到'
+}
 
 export interface PasswordFormState {
   busy: string

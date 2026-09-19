@@ -59,8 +59,9 @@ export type AccountBootstrapBridge = Pick<
   | 'getAccountSession'
 >
 
-const nameOf = (provider: ProviderId) =>
-  tools.find((tool) => tool.id === provider)?.name ?? provider
+function nameOf(provider: ProviderId) {
+  return tools.find((tool) => tool.id === provider)?.name ?? provider
+}
 
 function installedState(system: SystemSnapshot, provider: ProviderId) {
   if (provider !== 'codex') {

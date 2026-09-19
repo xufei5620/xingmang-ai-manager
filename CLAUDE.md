@@ -198,14 +198,15 @@ yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三�
 
 > **这些是从现有代码统计出来的事实，不是新规定。写出来的代码要和现有代码无缝。**
 
-**格式**（仓库无 lint 配置，但一致性极高，请手工遵守）
-- **行尾不加分号**（`src/renderer-v2/` 的 barrel 文件是历史例外，别扩散）
+**格式**（仓库无 ESLint / Prettier；能机械判定的几条由 `scripts/verify-renderer-style.test.cjs` 门禁兜底，随 `npm test` 跑）
+- **行尾不加分号**。唯一例外是照 ui-spec 原型抄下来的 v2 组件层与注册表——`src/renderer-v2/ui/`、`src/renderer-v2/registry/`、`gallery.tsx` / `gallery-entry.tsx` 通篇带分号，是既成事实（全量重排会摧毁 git blame，见第 7 节）。**门禁把带分号的写法锁在这几处**：改这些文件就跟随文件现状，其他任何地方（含 v2 的 `features/`、`pages-*.tsx`，以及主进程和 legacy 树）加行尾分号会红。不要为了统一风格去重排另一边。
 - **字符串用单引号**
 - 缩进 2 空格
-- **禁止 `as any` / `@ts-ignore` / `eslint-disable`**（现有各 0 处，别开这个头）
+- **禁止 `as any` / `@ts-ignore` / `eslint-disable`**（门禁钉住；`@ts-expect-error` 只许出现在测试里，用来钉住「这个调用本该编译不过」）
+- 门禁不看 `canvas-v2/`：画布整体暂不改动，风格同理。
 
 **函数与命名**
-- **模块顶层一律用 `function` 声明，不用箭头函数**
+- **模块顶层一律用 `function` 声明，不用箭头函数**（门禁钉住，非测试文件 0 例外）。测试文件里 `const fixture = () => ({ … })` 这类夹具构造器不在约束内，是既有写法。`let` 声明的箭头函数插槽（夹具里把 Promise 的 resolve 暴露出去）也不在约束内。
 - 导出函数的动词有固定语义：
   - `inspect*` — 探测状态，返回结构化结果，不抛错
   - `resolve*` — 解析出一个确定值，找不到返回 null

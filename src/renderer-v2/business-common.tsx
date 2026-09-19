@@ -13,7 +13,9 @@ import { presentOperationError } from './operation-error'
 import { matchAccountErrorMessage } from './features/auth/account-errors'
 
 const pendingOperations = new Map<symbol, string>()
-export const pendingBusinessOperations = () => [...pendingOperations.values()]
+export function pendingBusinessOperations() {
+  return [...pendingOperations.values()]
+}
 export function beginBusinessOperation(label: string) {
   const id = Symbol(label)
   pendingOperations.set(id, label)
@@ -38,7 +40,7 @@ const ipcPrefixPattern = /^Error invoking remote method '[^']*':\s*(?:[A-Za-z0-9
  * 与 legacy 的唯一差异：null/undefined 这里返回空串而不是「未知错误」，因为 v2 的
  * `errorMessage` 自己有按场景的兜底文案，返回中文会被误判成「服务端给出的中文原因」。
  */
-export const rawErrorMessage = (error: unknown) => {
+export function rawErrorMessage(error: unknown) {
   let message: string
   if (error instanceof Error) {
     message = error.message
@@ -60,13 +62,14 @@ export const rawErrorMessage = (error: unknown) => {
  * Windows that path carries the account name, so I13's redaction has to hold on
  * this side of the IPC boundary too.
  */
-export const userFacingErrorMessage = (error: unknown) =>
-  rawErrorMessage(error)
+export function userFacingErrorMessage(error: unknown) {
+  return rawErrorMessage(error)
     .replace(/[\u0000-\u001f\u007f]+/g, ' ')
     .trim()
     .replace(/[A-Za-z]:\\(?:[^\s;；，。！？]+\\?)+/g, '本地配置文件')
     .replace(/(?:\\\\|\/Users\/|\/home\/)[^\s;；，。！？]+/g, '本地配置文件')
     .slice(0, 1_000)
+}
 
 /**
  * 主进程快照里的错误字段（`detectionError` / `configurationError`）不是被捕获的异常，
@@ -76,10 +79,11 @@ export const userFacingErrorMessage = (error: unknown) =>
  *
  * 脱敏后为空时返回 null 而不是空串，好让调用点用 `??` 保留自己的中文兜底文案。
  */
-export const snapshotErrorMessage = (value: string | null | undefined) =>
-  userFacingErrorMessage(value) || null
+export function snapshotErrorMessage(value: string | null | undefined) {
+  return userFacingErrorMessage(value) || null
+}
 
-export const errorMessage = (error: unknown, fallback = '操作没有成功，请重试或查看反馈日志。') => {
+export function errorMessage(error: unknown, fallback = '操作没有成功，请重试或查看反馈日志。') {
   // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
   // 精确文案。new-api 默认回英文，英文原文会被下面的兜底抹成一句“操作没有成功”；
   // 中文原文虽然会原样透出，但也少了该怎么办的那半句。两种都让用户只能反复重试。
@@ -99,7 +103,7 @@ export const errorMessage = (error: unknown, fallback = '操作没有成功，�
   if (/timeout|ENOTFOUND|ECONN|fetch/i.test(safe)) return `${errors.timeout.title}，请检查网络后重试。`
   return fallback
 }
-export const displayDate = (value: string | number | null | undefined) => {
+export function displayDate(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === '') return '暂未记录'
   const date = new Date(
     typeof value === 'number' && value < 1e12 ? value * 1000 : value,
@@ -108,10 +112,11 @@ export const displayDate = (value: string | number | null | undefined) => {
     ? '时间不可用'
     : date.toLocaleString('zh-CN', { hour12: false })
 }
-export const dollars = (amount: number | null | undefined) =>
-  typeof amount === 'number' && Number.isFinite(amount)
+export function dollars(amount: number | null | undefined) {
+  return typeof amount === 'number' && Number.isFinite(amount)
     ? `$${amount.toFixed(2)}`
     : '暂未读到'
+}
 export function useResource<T>(load: () => Promise<T>) {
   const [data, setData] = useState<T | null>(null)
   const [error, setError] = useState('')

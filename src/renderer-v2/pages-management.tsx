@@ -120,14 +120,18 @@ export async function readCodexExtensionMetadata(
         : { plugins: [], marketplaces: [] },
   }
 }
-const isProvider = (id: string): id is Provider =>
-  ['claude', 'codex', 'gemini', 'grok'].includes(id)
+function isProvider(id: string): id is Provider {
+  return ['claude', 'codex', 'gemini', 'grok'].includes(id)
+}
 const providerOptions = tools
   .filter((tool) => tool.kind === 'cli' && isProvider(tool.id))
   .map((tool) => ({ value: tool.id, label: tool.name }))
-const providerName = (id: string) =>
-  tools.find((tool) => tool.id === id)?.name ?? id
-const mcpAuthorized = (status: string) => ['authenticated', 'logged_in'].includes(status.toLowerCase())
+function providerName(id: string) {
+  return tools.find((tool) => tool.id === id)?.name ?? id
+}
+function mcpAuthorized(status: string) {
+  return ['authenticated', 'logged_in'].includes(status.toLowerCase())
+}
 function ProviderFilter({
   value,
   onChange,

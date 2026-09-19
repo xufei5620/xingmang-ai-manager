@@ -111,8 +111,9 @@ export type BusinessActions = {
    */
   onToolsChanged?: (tool: Provider | 'codexDesktop') => Promise<void> | void
 }
-const isProvider = (id: string): id is Provider =>
-  ['claude', 'codex', 'gemini', 'grok'].includes(id)
+function isProvider(id: string): id is Provider {
+  return ['claude', 'codex', 'gemini', 'grok'].includes(id)
+}
 
 export function diagnosticTarget(code: string): V2Page {
   if (

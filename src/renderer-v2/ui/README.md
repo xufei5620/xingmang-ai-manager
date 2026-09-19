@@ -1,6 +1,6 @@
 # Renderer v2 UI
 
-组件由 core、fields、modal、floating、feedback、brand、guidance 分担实现；每个契约组件通过同名目录的入口导出，页面统一从 `ui/index.ts` 导入。组件拒绝页面传入 className / style；尺寸、语义色与版式使用规范 Token。
+组件由 core、fields、modal、floating、feedback、brand、guidance 分担实现，经 `components.tsx` 汇总后由 `index.ts` 对外导出，页面统一从 `ui/index.ts` 导入。这里刻意不做「一个组件一个文件夹」（`ui-spec/20-component-api.md` 已记录该定案）：新组件加进对应的职责文件，不要新建 `ui/<Name>/` 目录。组件拒绝页面传入 className / style；尺寸、语义色与版式使用规范 Token。
 
 组件预览入口：`src/renderer-v2/gallery.html`。查询参数 theme=light/dark 与 os=win/mac 仅用于本地检阅。运行浏览器测试：`node --test src/renderer-v2/ui/browser-check.mjs`。Vitest 的 renderer-v2 project 使用 React 19，legacy project 隔离使用 React 18。
 

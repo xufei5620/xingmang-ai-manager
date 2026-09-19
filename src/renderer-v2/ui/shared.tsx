@@ -5,7 +5,7 @@ export type Icon = LucideIcon;
 export type Tone = 'ok' | 'warn' | 'bad' | 'accent' | 'neutral';
 export type Size = 'md' | 'sm' | 'xs';
 export type BaseProps = { testId?: string };
-export const cx = (...values: Array<string | false | undefined>) => values.filter(Boolean).join(' ');
+export function cx(...values: Array<string | false | undefined>) { return values.filter(Boolean).join(' '); }
 export const iconSize: Record<Size, number> = { md: 18, sm: 16, xs: 14 };
 
 const copy = {
@@ -20,10 +20,10 @@ const copy = {
 type CopyKey = keyof typeof copy;
 const CopyContext = createContext<(key: CopyKey) => string>(key => copy[key]);
 export const UiCopyProvider = CopyContext.Provider;
-export const useUiText = () => useContext(CopyContext);
+export function useUiText() { return useContext(CopyContext); }
 const BalanceTierContext = createContext<'ok' | 'warn' | 'bad' | 'zero' | 'neutral'>('neutral');
 export const BalanceTierProvider = BalanceTierContext.Provider;
-export const useBalanceTier = () => useContext(BalanceTierContext);
+export function useBalanceTier() { return useContext(BalanceTierContext); }
 
 export function useReducedMotion() {
   useEffect(() => {

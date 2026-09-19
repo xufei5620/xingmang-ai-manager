@@ -268,11 +268,14 @@ export async function switchAccountWithOptionalSync(
 }
 
 const previousResults = new Map<string, AccountSwitchSyncResult>()
-const resultKey = (origin: string, userId: number) => `${origin}:${userId}`
+function resultKey(origin: string, userId: number) {
+  return `${origin}:${userId}`
+}
 export function preserveAccountSwitchResult(result: AccountSwitchSyncResult) {
   previousResults.set(resultKey(result.origin, result.userId), result)
   if (previousResults.size > 16)
     previousResults.delete(previousResults.keys().next().value!)
 }
-export const previousAccountSwitchResult = (origin: string, userId: number) =>
-  previousResults.get(resultKey(origin, userId)) ?? null
+export function previousAccountSwitchResult(origin: string, userId: number) {
+  return previousResults.get(resultKey(origin, userId)) ?? null
+}

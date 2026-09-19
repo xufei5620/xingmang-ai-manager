@@ -19,4 +19,4 @@ export function ToastProvider({ children, testId }: BaseProps & { children: Reac
   return <ToastContext.Provider value={{ show }}>{children}<div className="xm-toasts" data-testid={testId} aria-live="polite" aria-atomic="false">{items.map(item => <Toast key={item.id} text={item.text} tone={item.tone} />)}</div></ToastContext.Provider>;
 }
 export function Toast({ text, tone = 'neutral', testId }: BaseProps & { text: ReactNode; tone?: Tone }) { return <div className={'xm-toast xm-tone-' + tone} data-testid={testId} role="status">{text}</div>; }
-export const useToast = () => useContext(ToastContext);
+export function useToast() { return useContext(ToastContext); }
