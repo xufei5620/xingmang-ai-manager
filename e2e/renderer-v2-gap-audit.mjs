@@ -3,6 +3,7 @@ import path from 'node:path'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium } from '@playwright/test'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 
 const fixturePatch = [
   "const auditCase = query.get('audit')",
@@ -26,6 +27,10 @@ try {
     page.on('pageerror', error => result.browserErrors.push(error.message))
     await page.route('**/*', route => { if (route.request().url().startsWith(origin + '/')) return route.continue(); result.blockedRequests.push(route.request().url()); return route.abort() })
     await page.goto(origin + '/src/renderer-v2/testing/app.html?audit=' + audit)
+    // Vite transforms the module graph on demand, so first paint can take seconds on
+    // a cold Windows runner, and assertions like count() / getAttribute() do not retry.
+    // Wait for the mount before handing the page over.
+    await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
     return page
   }
   {

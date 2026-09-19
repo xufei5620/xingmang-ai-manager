@@ -73,6 +73,7 @@ import type { AvatarIdentity } from './local-avatar'
 import { useSharedAccountBalance } from './features/app/balance-context'
 import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
+import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -986,6 +987,7 @@ function AccountKeys({
     ) ?? []
   return (
     <>
+      <ToolKeyLimits api={api} balance={balance} siteId={siteId} />
       <Toolbar
         search={
           <SearchInput
