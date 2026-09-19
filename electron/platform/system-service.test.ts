@@ -172,7 +172,7 @@ describe('platform system preferences', () => {
     await h.service.setPrivacyPreference('anonymousUsage', true)
     expect(h.service.getState().preferences).toMatchObject({
       notifications: { install: true, balance: false, task: true },
-      privacy: { crashReports: false, anonymousUsage: true },
+      privacy: { anonymousUsage: true },
     })
     expect(h.dependencies.resolveProxy).not.toHaveBeenCalled()
     expect(h.app.setLoginItemSettings).not.toHaveBeenCalled()
