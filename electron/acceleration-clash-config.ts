@@ -15,8 +15,8 @@ interface Hysteria2Connection {
   'skip-cert-verify': boolean
 }
 
-// This profile contains upstream credentials. Keep it in the main process and
-// never include it in diagnostics, IPC results, committed files or release assets.
+// Shared release nodes are versioned in bundled-acceleration by product policy.
+// Runtime credentials stay in the main process, never diagnostics or IPC results.
 export interface AccelerationClashNode {
   id: string
   label: string

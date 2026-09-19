@@ -1,5 +1,5 @@
-// Release-operator tool. Private nodes stay outside the repository and are only
-// included when the packager explicitly supplies an external staging directory.
+// Release-operator tool. Shared nodes are versioned in bundled-acceleration;
+// platform binaries and staged bundles still stay outside the repository.
 const fs = require('node:fs')
 const path = require('node:path')
 const { createHash } = require('node:crypto')
@@ -41,6 +41,14 @@ function assertExternalPath(value, projectRoot, label) {
     throw new Error(`${label}必须位于项目目录之外。`)
   }
   return resolved
+}
+
+function resolveProfilePath(value, projectRoot) {
+  const bundled = path.resolve(projectRoot, 'bundled-acceleration', 'profile.yaml')
+  if (value === undefined) return bundled
+  const requested = assertAbsolutePath(value, '加速节点配置')
+  if (requested === bundled) return bundled
+  return assertExternalPath(requested, projectRoot, '加速节点配置')
 }
 
 function parseArguments(argv) {
@@ -147,7 +155,7 @@ async function stageAccelerationBundle(options, dependencies = {}) {
     throw new Error('本机加速配置缺少有效的内核校验值。')
   }
   const corePath = assertExternalPath(config.corePath, projectRoot, '加速内核')
-  const profilePath = assertExternalPath(config.profilePath, projectRoot, '加速节点配置')
+  const profilePath = resolveProfilePath(config.profilePath, projectRoot)
   for (const input of [configPath, corePath, profilePath, licensePath]) {
     if (path.dirname(input) === output || input === output) throw new Error('输出目录不能覆盖输入文件。')
   }
@@ -157,6 +165,12 @@ async function stageAccelerationBundle(options, dependencies = {}) {
   if (sha256(core) !== config.coreSha256.toLowerCase()) throw new Error('加速内核 SHA256 与已核对记录不一致。')
   const profileSource = await safe.readSafeUtf8File(profilePath, '加速节点配置', parser.MAX_ACCELERATION_CLASH_BYTES)
   if (!profileSource) throw new Error('未找到加速节点配置。')
+  if (profilePath === path.resolve(projectRoot, 'bundled-acceleration', 'profile.yaml')) {
+    const pinned = await safe.readSafeUtf8File(path.join(projectRoot, 'bundled-acceleration', 'profile.sha256'), '仓库节点校验值', 128)
+    if (!pinned || !/^[a-f\d]{64}\n?$/.test(pinned) || sha256(profileSource) !== pinned.trim()) {
+      throw new Error('仓库节点配置与已固定的 SHA256 不一致。')
+    }
+  }
   const profile = parser.parseClashAccelerationProfile(profileSource)
   // Re-use the runtime's allowlist: subscriptions, DNS/rules, UI names and
   // controller credentials from the original Clash profile never get copied.
@@ -247,7 +261,7 @@ async function verifyAccelerationBundleCore(directory, expected, runtime, target
 
 async function main(argv = process.argv.slice(2)) {
   const result = await stageAccelerationBundle(parseArguments(argv))
-  process.stdout.write(`私有加速资源已准备：${result.nodeCount} 条线路；节点凭据未写入源码。\n`)
+  process.stdout.write(`加速资源已准备：${result.nodeCount} 条线路；节点与内核校验值已固定。\n`)
 }
 
 module.exports = { BUNDLE_FILES, parseArguments, validateManifest, stageAccelerationBundle, resolveAccelerationBundleResources, verifyAccelerationBundleCore, main }

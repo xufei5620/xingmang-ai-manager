@@ -33,13 +33,13 @@ npm run release:build:unsigned
 
 只想拿一份能装上试的包、不打算在本机出包时，用 GitHub Actions 上的 `package-for-testing` 工作流，步骤见 [`docs/CI-PACKAGING.md`](CI-PACKAGING.md)。那条链路出的包**不带私有加速线路**，macOS 侧由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布仍按本手册在发布机上执行。
 
-### 从 0.2.3 起的私有加速资源
+### 从 0.2.3 起的加速资源与当前节点策略
 
-产品所有者确认先分发本机计时版：每账号在本机累计 20 分钟，节点随本地 Windows 安装包提供。TUN 尚未接入。源码和 CI 构建默认不含线路。
+0.2.3 开始分发本机计时版：每账号在本机累计 20 分钟，TUN 尚未接入。当时节点只随本地安装包分发。产品所有者现已调整策略：现有 12 条发布线路的清洗后配置和 SHA-256 一并提交到 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，供 Windows 与 macOS 共用。具体文件与准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。
 
-2026-09-19 产品所有者改变了原来「节点不上传 GitHub」的决定：三份加速资源（Windows x64、macOS arm64、macOS x64）直接提交进本仓库，以便在 GitHub Actions 上出带线路的包。本仓库是公开的，因此**节点地址与密码等同于公开信息**，被滥用时需要更换节点；这一取舍已由产品所有者明确接受。资源目录格式与体积口径见 [`docs/CI-PACKAGING.md`](CI-PACKAGING.md) 第 4 节。构建入口「加速资源目录必须位于项目目录之外」那道检查不因此放松，出包时由工作流把资源复制到 runner 临时目录再显式传入。
+拉取源码后无需再私下传递节点文件；仍须准备对应平台的 Mihomo 内核及完整许可，并通过现有发布入口选入资源。普通构建和 CI 不会因为仓库中有 YAML 就自动获得内核或启用加速。
 
-先编译主进程，再将资源准备到项目外的新空目录；开发配置文件仅含 `version:1`、绝对 `corePath`、`coreSha256` 和绝对 `profilePath`。下列为占位路径：
+先编译主进程，再将资源准备到项目外的新空目录。资源准备使用的 JSON 配置保存在仓库外，包含 `version:1`、绝对 `corePath` 和 `coreSha256`；省略 `profilePath` 时，脚本读取仓库固定节点文件并校验配套 SHA-256。显式 `profilePath` 可以指向该固定文件或仓库外的自定义节点，其他仓内节点文件不接受。开发版 userData 下的 `acceleration-development.json` 仍须显式填写 `profilePath`，不使用此省略规则。下列为占位路径：
 
 ```powershell
 node node_modules/typescript/bin/tsc -p tsconfig.electron.json
@@ -57,18 +57,18 @@ npm run release:build:unsigned
 
 ## 2. macOS 双架构加速资源
 
-macOS 包可以携带私有加速线路，但必须显式开启：`npm run dist:mac:free` 默认**不带**线路，多传两个命令行参数才带。
+macOS 包可以携带同一份仓库内置线路，但必须显式开启：`npm run dist:mac:free` 默认**不带**线路，多传两个命令行参数才带。
 
-不能靠设置 `XINGMANG_ACCELERATION_BUNDLE_DIR` 来开启。构建入口会先把继承来的这个变量从子进程环境里删掉（P-24 的环境清洗，防的就是上一次构建残留让一个公开安装包悄悄带上私有节点），只有下面这两个参数显式给出的目录才会被写回，并且写回前会核对该目录的资源清单确实是对应架构的 macOS 资源。
+不能靠设置 `XINGMANG_ACCELERATION_BUNDLE_DIR` 来开启。构建入口会先把继承来的这个变量从子进程环境里删掉（P-24 的环境清洗，避免上一次构建残留决定本次安装包携带的资源），只有下面这两个参数显式给出的目录才会被写回，并且写回前会核对该目录的资源清单确实是对应架构的 macOS 资源。
 
-Mac 资源按架构准备（`--platform darwin --arch arm64` 或 `--arch x64`，资源清单为 version 2），每个架构一个独立的空目录，目录都必须在项目目录之外：
+Mac 资源按架构准备（`--platform darwin --arch arm64` 或 `--arch x64`，资源清单为 version 2），每个架构一个独立的空目录，目录都必须在项目目录之外。两份 JSON 配置分别固定对应内核的路径和 SHA-256，均可省略 `profilePath` 以使用仓库节点：
 
 ```bash
 node node_modules/typescript/bin/tsc -p tsconfig.electron.json
-node scripts/stage-acceleration-bundle.cjs --config ~/私有配置/acceleration-development.json \
+node scripts/stage-acceleration-bundle.cjs --config ~/私有配置/acceleration-arm64.json \
   --output ~/私有发布/0.2.7/acceleration-arm64 --platform darwin --arch arm64 \
   --core-version v1.19.29 --source-ref v1.19.29 --license ~/许可/LICENSE-mihomo.txt
-node scripts/stage-acceleration-bundle.cjs --config ~/私有配置/acceleration-development.json \
+node scripts/stage-acceleration-bundle.cjs --config ~/私有配置/acceleration-x64.json \
   --output ~/私有发布/0.2.7/acceleration-x64 --platform darwin --arch x64 \
   --core-version v1.19.29 --source-ref v1.19.29 --license ~/许可/LICENSE-mihomo.txt
 ```
@@ -84,11 +84,11 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
 
 开启后构建流程与不带线路时的区别只有中间这一段：入口会**分两次**调用 electron-builder，一次 `--arm64`、一次 `--x64`，各自只看到自己架构的资源目录（Mac 资源目录按架构准备，`beforePack` 的架构核对会在不匹配的架构上直接失败，所以一次双架构构建带不了线路）。两次构建分别输出到 `release-free-<版本号>/arch-arm64` 与 `arch-x64`，随后合并到 `release-free-<版本号>` 根目录：两份 DMG、两份 ZIP、两份 blockmap 就位，`latest-mac.yml` 由两份单架构清单合并而成（以 arm64 那份为底，只替换文件列表），两个分架构子目录连同里面的解包 `.app` 一起删除。之后的产物校验、签名连续性核对、`SHA256SUMS` 生成与不带线路时完全一样。
 
-CI 的真实打包门禁（`--ci-temporary-signing`）不走这条路：runner 上没有私有资源，该参数与两个加速参数互斥，CI 只覆盖不带线路的构建路径。带线路的构建只能在发布 Mac 上本机验证。
+CI 的真实打包门禁（`--ci-temporary-signing`）不走这条路：runner 没有准备含对应内核的完整加速资源，该参数与两个加速参数互斥，CI 只覆盖不带线路的构建路径。节点入仓不会改变这一边界，带线路的构建仍须在发布 Mac 上本机验证。
 
-本次使用官方 Mihomo v1.19.29，内核与节点文件保存在仓库外。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
+本次使用官方 Mihomo v1.19.29，内核、资源准备 JSON 和生成的五文件目录仍保存在仓库外，节点来源可使用仓库固定配置。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
 
-除了 `verify-macos-free-artifacts.cjs`，发布者还须检查每个最终应用的 ASAR 资源 pins、内核/节点文件哈希、原生组件路径与架构，以及组件签名。包内 `--xingmang-acceleration-worker` 入口必须能通过 IPC 完成初始化、返回仅含显示信息的线路列表并正常退出。R2 发布顺序沿用先安装包和 blockmap、后 `latest-mac.yml`。（此处原有的「私有节点不得上传 GitHub」已于 2026-09-19 被产品所有者推翻，见第 1 节。）
+除了 `verify-macos-free-artifacts.cjs`，发布者还须检查每个最终应用的 ASAR 资源 pins、内核/节点文件哈希、原生组件路径与架构，以及组件签名。包内 `--xingmang-acceleration-worker` 入口必须能通过 IPC 完成初始化、返回仅含显示信息的线路列表并正常退出。GitHub 只收录已授权的清洗后共用节点及校验文件，不加入运营者原始 Clash 配置、订阅地址或本机控制凭据；R2 发布顺序沿用先安装包和 blockmap、后 `latest-mac.yml`。
 
 ## 3. 发布前置条件
 
