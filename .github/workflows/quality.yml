@@ -197,6 +197,13 @@ jobs:
       # Without --report this writes no files, which is what lets it sit in
       # front of the dirty-tree guard below.
       - run: npm run check:v2
+      # R-G12: `legacy` is the rollback renderer, and until this step nothing
+      # in CI ever built it — its React 18 alias table in vite.config.ts only
+      # resolves when XINGMANG_RENDERER=legacy, so a dropped pinned dependency
+      # or an import the shipping tree no longer has would surface on the day
+      # the rollback is needed. The bundle is thrown away; what is being
+      # asserted is that the build still completes.
+      - run: npm run check:legacy
       - name: Fail if the test run left files in the working tree
         # Windows path math evaluated on a POSIX host yields a backslash
         # relative name, which lands as a stray directory in the repository
@@ -221,7 +228,10 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
-          cache: npm
+          # No `cache: npm` on purpose (P-32): this job never runs `npm ci`,
+          # because `npm audit` resolves the advisory set from the lockfile
+          # alone. Caching a node_modules tree nothing restores into only buys
+          # a cache lookup and an upload of the same key every other job writes.
       - run: npm run audit:production
       - name: Report development dependency advisories
         run: npm run audit:ci
