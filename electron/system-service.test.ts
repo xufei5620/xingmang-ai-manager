@@ -53,6 +53,8 @@ import {
   effectiveNetworkRegion,
   npmInstallRegistries,
   npmRegistryLabel,
+  grokDownloadStallHeartbeatMs,
+  grokDownloadStallMessage,
   npmResolutionHeartbeatMessage,
   npmResolutionStartMessage,
   npmResolutionTimeoutMs,
@@ -2194,6 +2196,17 @@ describe('npm install progress reporting', () => {
     // fabricated bar is worse than an honest clock.
     expect(early).not.toMatch(/%|预计|剩余/)
     expect(later).not.toMatch(/%|预计|剩余/)
+  })
+
+  it('names how long a stalled Grok download has been idle', () => {
+    expect(grokDownloadStallHeartbeatMs).toBeGreaterThanOrEqual(5_000)
+    const message = grokDownloadStallMessage(45_000)
+
+    expect(message).toContain('45 秒')
+    // The percentage stays where it stopped, so the heartbeat has to carry the
+    // one fact the progress line cannot: nothing arrived.
+    expect(message).toContain('没有新数据')
+    expect(message).not.toMatch(/%|预计|剩余/)
   })
 
   it('formats durations either side of a minute', () => {
