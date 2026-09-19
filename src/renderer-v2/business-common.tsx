@@ -68,6 +68,17 @@ export const userFacingErrorMessage = (error: unknown) =>
     .replace(/(?:\\\\|\/Users\/|\/home\/)[^\s;；，。！？]+/g, '本地配置文件')
     .slice(0, 1_000)
 
+/**
+ * 主进程快照里的错误字段（`detectionError` / `configurationError`）不是被捕获的异常，
+ * 走不到 `errorMessage`，但同样来自 `describeProbeFailure` 这类把 `Error.message` 原样
+ * 透传的地方，句子里常带着 `C:\Users\<账号名>\...` 这样的绝对路径。上屏前统一过一遍
+ * 同样的脱敏，I13 才在这条路径上也成立。
+ *
+ * 脱敏后为空时返回 null 而不是空串，好让调用点用 `??` 保留自己的中文兜底文案。
+ */
+export const snapshotErrorMessage = (value: string | null | undefined) =>
+  userFacingErrorMessage(value) || null
+
 export const errorMessage = (error: unknown, fallback = '操作没有成功，请重试或查看反馈日志。') => {
   // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
   // 精确文案。new-api 默认回英文，英文原文会被下面的兜底抹成一句“操作没有成功”；
