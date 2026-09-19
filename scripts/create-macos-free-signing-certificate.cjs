@@ -4,7 +4,15 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
 const CERTIFICATE_BASENAME = 'xingmang-macos-free-signing'
-const VALIDITY_DAYS = 7300
+// P-22: ten years rather than the twenty this used to mint. There is no
+// revocation path for a self-signed identity, so a shorter life is the only
+// thing that ever retires a leaked copy -- but expiry is not free either:
+// signing with a new certificate breaks Squirrel.Mac update continuity and
+// every existing user has to reinstall by hand (see
+// docs/MACOS_FREE_DISTRIBUTION.md). Ten years keeps that cost rare while
+// still putting an end date on the key; a known key compromise is rotated
+// immediately rather than waited out.
+const VALIDITY_DAYS = 3650
 const OPENSSL_PATH = '/usr/bin/openssl'
 const COMMAND_TIMEOUT_MS = 30_000
 const MAX_COMMON_NAME_LENGTH = 64
@@ -182,8 +190,14 @@ function createFreeMacSigningCertificate(options = {}) {
     runOpenSsl([
       'req', '-x509', '-newkey', 'rsa:3072', '-sha256', '-days', String(VALIDITY_DAYS),
       '-utf8', '-subj', `/CN=${commonName}`,
-      '-addext', 'basicConstraints=critical,CA:TRUE,pathlen:0',
-      '-addext', 'keyUsage=critical,digitalSignature,keyCertSign',
+      // P-22: a signing identity must not be able to issue certificates. The
+      // publisher is told to mark this certificate trusted for code signing,
+      // so a CA:TRUE copy of the P12 would let whoever holds it mint further
+      // code-signing certificates that chain to a root that Mac already
+      // trusts. codesign never needs the signing certificate to be a CA --
+      // every Apple-issued Developer ID Application certificate is CA:FALSE.
+      '-addext', 'basicConstraints=critical,CA:FALSE',
+      '-addext', 'keyUsage=critical,digitalSignature',
       '-addext', 'extendedKeyUsage=critical,codeSigning',
       '-keyout', temporaryKeyPath,
       '-out', temporaryCertificatePath,
