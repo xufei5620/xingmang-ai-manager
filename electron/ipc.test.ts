@@ -1990,14 +1990,14 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
     it('keeps the stored relaySiteId when an update does not mention it', async () => {
       const service = serviceStub()
       vi.mocked(service.updateStoredConfig).mockImplementation(async (update) =>
-        mergeAppSettings({ ...stubStoredConfig, relaySiteId: 'sub2api' }, update))
+        mergeAppSettings({ ...stubStoredConfig, relaySiteId: 'solov-api' }, update))
       register(service)
       const handler = electronMocks.handlers.get('settings:save')!
 
       await expect(handler(trustedEvent(), {
         version: 2,
         theme: 'light',
-      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'sub2api', theme: 'light' }))
+      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'solov-api', theme: 'light' }))
       expect(service.updateStoredConfig).toHaveBeenCalledWith({ version: 2, theme: 'light' })
     })
 
@@ -2034,11 +2034,12 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
       expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'solov' }))
     })
 
-    it('round-trips the sub2api relaySiteId through settings:save too, not just the default solov site', async () => {
+    it('round-trips the non-default relaySiteId through settings:save too, not just the default solov site', async () => {
       // W3b: relay-sites.ts grew a second entry (731db23); this pins that
       // parseSettingsUpdate/updateStoredConfig accept it end to end through the
       // same real IPC handler as the 'solov' regression test above, not just
       // the one entry that happened to also be the registry's default id.
+      // Retargeted from the retired 'sub2api' alias to the api site in D-10.
       const { service } = register()
       const handler = electronMocks.handlers.get('settings:save')!
 
@@ -2048,9 +2049,9 @@ describe('hand-written parse validators in ipc.ts (issue #15)', () => {
         theme: 'light',
         checkUpdatesOnStartup: true,
         runDiagnosticsOnStartup: false,
-        relaySiteId: 'sub2api',
-      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'sub2api' }))
-      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'sub2api' }))
+        relaySiteId: 'solov-api',
+      })).resolves.toEqual(expect.objectContaining({ relaySiteId: 'solov-api' }))
+      expect(service.updateStoredConfig).toHaveBeenCalledWith(expect.objectContaining({ relaySiteId: 'solov-api' }))
     })
 
     it('drops an unknown relaySiteId instead of failing the whole save', async () => {
