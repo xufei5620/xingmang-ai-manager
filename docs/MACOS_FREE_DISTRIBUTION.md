@@ -86,6 +86,24 @@ npm run dist:mac:free
 
 runner 会只为 electron-builder 子进程自动启用免费发布模式，调用者不需要设置该模式变量。该命令先执行发布身份预检，再生成 arm64 与 x64 各一份 DMG 和 ZIP，以及两份 ZIP blockmap、`latest-mac.yml` 和 `SHA256SUMS`。公开安装库存必须精确为两份 DMG 加两份 ZIP；自动更新清单必须只精确引用两份 ZIP；顶层 blockmap 必须只包含两份 ZIP blockmap；`SHA256SUMS` 必须覆盖这六个文件。runner 还会校验严格的 codesign 结果、固定证书指纹及 blockmap 格式。它使用 `--publish never`，只构建和验证本地产物，绝不会上传文件。
 
+### 携带私有加速线路（可选，默认不带）
+
+上面那条命令出的包不含加速线路。要让 macOS 包带上私有节点，必须在命令行上显式开启，并为两个架构各提供一个已按 `--platform darwin --arch <架构>` 准备好的资源目录（都在项目目录之外）：
+
+```bash
+CSC_NAME="已导入的免费发布签名身份" \
+XINGMANG_MAC_SIGNING_SHA256="记录的 64 位 SHA-256 指纹" \
+npm run dist:mac:free -- \
+  --acceleration-arm64 "$HOME/私有发布/<版本号>/acceleration-arm64" \
+  --acceleration-x64 "$HOME/私有发布/<版本号>/acceleration-x64"
+```
+
+开关只认这两个参数，不认 `XINGMANG_ACCELERATION_BUNDLE_DIR` 环境变量：runner 会先把继承来的同名变量从 electron-builder 子进程的环境里删掉，再只为当前架构写回命令行显式给出的那一个目录。这条清洗是故意保留的——一个残留的环境变量不应该决定一个公开安装包要不要装进私有节点。写回之前 runner 会读该目录的 `manifest.json`，确认它确实是对应架构的 macOS 资源（version 2、`platform: darwin`、`arch` 相符），把两个参数写反会在构建开始前就被拒掉。
+
+开启后 runner 分两次调用 electron-builder（先 `--arm64` 后 `--x64`），因为 Mac 资源目录是按架构准备的，一次双架构构建必然在其中一个架构上被 `beforePack` 的架构核对拒绝。两次构建各自输出到 `release-free-<版本号>/arch-arm64` 与 `arch-x64`，随后合并到发布目录：六个产物文件移入根目录，`latest-mac.yml` 由两份单架构清单合并而成（以 arm64 那份为底，只替换文件列表，其余字段原样保留），两个分架构子目录连同解包的 `.app` 一并删除。合并之后的库存与校验要求与不带线路时完全一致。
+
+必须两个架构同时提供：只给一个架构会被直接拒绝，因为自动更新清单必须精确引用两份 ZIP，缺一个架构的版本无法通过产物校验。CI 的真实打包门禁（`--ci-temporary-signing`）与这两个参数互斥，runner 上也没有私有资源，所以 CI 只覆盖不带线路的构建路径；带线路的包只能在发布 Mac 上本机构建与验收。
+
 ### 发布到更新服务器
 
 自动更新只在更新服务器完整提供 macOS 清单和它引用的文件后才能工作。如果服务器缺少 `latest-mac.yml`，免费包仍然会启用更新功能，但检查结果会是“更新失败”，而不是“本地开发包不检查更新”。

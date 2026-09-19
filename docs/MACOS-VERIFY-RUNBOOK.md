@@ -45,6 +45,8 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' npm
 这条命令自带类型检查、全部单测、编译、签名预检、双架构打包和产物校验，不需要手工补跑。
 输出目录默认是 `release-free-<版本号>`，**必须不存在或为空**；构建失败时脚本会自己把本次创建的目录删掉。
 
+这样出的包**不带**加速线路。要带线路得多传两个参数，见第 3 节。
+
 **算通过**：命令以 0 退出，输出目录里精确是这 8 个文件——arm64 / x64 各一份 DMG 和 ZIP、
 两份 ZIP blockmap、`latest-mac.yml`、`SHA256SUMS`。多一个少一个都会被产物校验直接拒掉。
 
@@ -127,23 +129,30 @@ npm run update:verify-feed -- --platform=macos
 
 ---
 
-## 3. 加速线路：当前 macOS 包**不带**
+## 3. 加速线路：默认不带，要带得显式开
 
-`RELEASING.md` 第 2 节写了 macOS 按架构准备加速资源的办法，但那条路**今天走不通**，
-验收时不要去找包里的 `resources/acceleration`，也不要把“没有加速”当成缺陷报上来。
+`npm run dist:mac:free` 默认出的包**不含**加速线路，包里不会有 `resources/acceleration`，这是正常的，不要当缺陷报上来。
 
-原因有两处，改一处不够：
+要出带线路的包，先按 `RELEASING.md` 第 2 节分别准备 arm64 与 x64 两个资源目录（都放在项目目录之外），再多传两个参数：
 
-- `scripts/run-macos-free-build.cjs` 的环境清洗名单里明确包含 `XINGMANG_ACCELERATION_BUNDLE_DIR`，
-  它不会传给 electron-builder，于是 `electron-builder.config.cjs` 里 `accelerationBundle.metadata` 恒为空。
-- 即使放行，`dist:mac:free` 是**一次** `--arm64 --x64` 的双架构构建，而 Mac 加速资源目录是**按架构**准备的
-  （`stage-acceleration-bundle.cjs` 对 darwin 强制单架构），`beforePack` 里的架构核对会在另一个架构上直接失败。
+```bash
+CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' \
+  npm run dist:mac:free -- \
+  --acceleration-arm64 "$HOME/私有发布/<版本号>/acceleration-arm64" \
+  --acceleration-x64 "$HOME/私有发布/<版本号>/acceleration-x64"
+```
 
-`RELEASING.md` 第 2 节说的“两次单架构构建后汇总”也没有实现：产物校验要求**同一个输出目录**里精确
-两份 DMG + 两份 ZIP，两次分开构建的结果各自都过不了这道校验。
+设置 `XINGMANG_ACCELERATION_BUNDLE_DIR` 环境变量**没有用**，它会被构建入口清掉——这是故意的，防的是上一次构建的残留变量让一个公开包悄悄带上私有节点。只有上面这两个参数算数。
 
-要让 macOS 包带线路，需要先做构建侧的改动（按架构分别构建 + 合并产物 + 一条显式的、不靠环境残留的开关）。
-这件事还没排期，等产品那边拍板。
+开了开关之后，构建会分两次跑 electron-builder（先 arm64 后 x64，各自只看到自己架构的资源），再把两次的产物合并进同一个 `release-free-<版本号>` 目录。**验收点不变**：最后仍然是那 8 个文件，多一个少一个都会被产物校验拒掉；中途的 `arch-arm64` / `arch-x64` 两个子目录会在合并后自动删掉，如果构建结束后它们还在，说明合并没跑完，把日志发我。
+
+带线路的包额外要看三条（不带线路时跳过）：
+
+1. 解包 DMG 后，`星芒AI管理工具.app/Contents/Resources/acceleration/` 里应有 `mihomo`、`profile.yaml`、`manifest.json`、`LICENSE-mihomo.txt`、`THIRD-PARTY-NOTICES.txt` 五个文件，不多不少。
+2. `manifest.json` 里的 `arch` 要和这个包的架构一致（arm64 包里写 `arm64`，x64 包里写 `x64`）。两个包拿错资源正是分架构构建最容易出的错。
+3. 在应用里打开加速，确认线路列表能出来、能连上；停止后再启动一次。
+
+CI 不跑这条路径：GitHub runner 上没有私有资源，`--ci-temporary-signing` 与这两个参数是互斥的，所以 CI 只验不带线路的构建。带线路的包只能在发布 Mac 上验。
 
 ---
 

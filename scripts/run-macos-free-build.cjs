@@ -12,9 +12,14 @@ const { verifyFreeMacSigningIdentity } = require('./verify-macos-free-signing.cj
 const { verifyMacosFreeArtifacts } = require('./verify-macos-free-artifacts.cjs')
 const { createFreeMacSigningCertificate } = require('./create-macos-free-signing-certificate.cjs')
 const { verifyEphemeralMacSigningIdentity } = require('./macos-ephemeral-signing.cjs')
+const { validateManifest } = require('./stage-acceleration-bundle.cjs')
+const { mergeMacosFreeArchitectureOutputs } = require('./merge-macos-free-artifacts.cjs')
 
 const SECURITY_PATH = '/usr/bin/security'
 const SECURITY_COMMAND_TIMEOUT_MS = 30_000
+const ACCELERATION_ARCHITECTURES = ['arm64', 'x64']
+const ACCELERATION_FLAGS = { arm64: '--acceleration-arm64', x64: '--acceleration-x64' }
+const MAX_ACCELERATION_MANIFEST_BYTES = 16 * 1024
 
 const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   'XINGMANG_RELEASE',
@@ -29,6 +34,8 @@ const BUILD_MODE_ENVIRONMENT_NAMES = new Set([
   // XINGMANG_UNSIGNED_RELEASE 残留会被 electron-builder.config.cjs 的互斥断言
   // 拦下，但那是下游偶然存在的兜底；XINGMANG_ACCELERATION_BUNDLE_DIR 残留没有
   // 任何断言拦，会让免费分发包悄悄带上私有加速资源。
+  // 这条清洗不因 --acceleration-<架构> 开关而放松：开关仍然先把继承来的同名变量
+  // 删掉，再只为当前这一个架构写回命令行显式给出、且清单架构已核对过的目录。
   'XINGMANG_UNSIGNED_RELEASE',
   'XINGMANG_ACCELERATION_BUNDLE_DIR',
   'XINGMANG_SIGNING_PUBLISHER',
@@ -131,6 +138,100 @@ function resolveMacosSecurityCommand(args, options = {}) {
   }
 }
 
+/**
+ * Parses the release operator's own command line. Carrying the private
+ * acceleration nodes is opt-in through these flags rather than through
+ * XINGMANG_ACCELERATION_BUNDLE_DIR, because a leftover environment variable is
+ * exactly what the sanitizer above exists to stop: an accidentally inherited
+ * value must never decide whether a public installer ships private nodes.
+ */
+function parseFreeMacBuildArguments(argv = []) {
+  const tokens = [...argv]
+  let ciTemporarySigning = false
+  const requested = {}
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === '--ci-temporary-signing') {
+      ciTemporarySigning = true
+      continue
+    }
+    const architecture = ACCELERATION_ARCHITECTURES.find((value) => ACCELERATION_FLAGS[value] === token)
+    if (!architecture) throw new Error(`无法识别的参数：${token}`)
+    if (requested[architecture] !== undefined) throw new Error(`${token} 只能出现一次`)
+    const value = tokens[index + 1]
+    if (!value || value.startsWith('--')) throw new Error(`${token} 需要一个私有加速资源目录的绝对路径`)
+    requested[architecture] = value
+    index += 1
+  }
+  const selected = ACCELERATION_ARCHITECTURES.filter((architecture) => requested[architecture] !== undefined)
+  if (selected.length === 0) return { ciTemporarySigning, accelerationBundles: undefined }
+  // 一次发布必须同时出两个架构：更新清单要精确引用两份 ZIP，只带一个架构的线路
+  // 会做出一个「一半用户有加速、一半没有」的版本，而且产物校验本来就过不了。
+  if (selected.length !== ACCELERATION_ARCHITECTURES.length) {
+    throw new Error('携带私有加速线路必须同时提供 --acceleration-arm64 与 --acceleration-x64')
+  }
+  if (ciTemporarySigning) throw new Error('CI 临时签名构建不携带私有加速线路')
+  return { ciTemporarySigning, accelerationBundles: { arm64: requested.arm64, x64: requested.x64 } }
+}
+
+/**
+ * Confirms the operator pointed each flag at a staged bundle for that same
+ * architecture before a build that runs for many minutes starts. beforePack
+ * checks this too, but only after the first architecture has been packed, and
+ * swapping the two directories is the mistake this flag pair invites.
+ */
+function resolveAccelerationBundleDirectory(value, projectRoot, architecture) {
+  const label = `${architecture} 私有加速资源目录`
+  if (typeof value !== 'string' || !path.isAbsolute(value) || value.includes('\0')) {
+    throw new Error(`${label}必须是绝对路径`)
+  }
+  const resolved = path.resolve(value)
+  const relative = path.relative(path.resolve(projectRoot), resolved)
+  if (!relative || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative))) {
+    throw new Error(`${label}必须位于项目目录之外`)
+  }
+  let stats
+  try {
+    stats = fs.lstatSync(resolved)
+  } catch {
+    throw new Error(`${label}不存在`)
+  }
+  if (!stats.isDirectory() || stats.isSymbolicLink()) throw new Error(`${label}必须是普通目录，不能是链接`)
+  const manifestPath = path.join(resolved, 'manifest.json')
+  let manifestStats
+  try {
+    manifestStats = fs.lstatSync(manifestPath)
+  } catch {
+    throw new Error(`${label}缺少资源清单 manifest.json`)
+  }
+  if (!manifestStats.isFile() || manifestStats.isSymbolicLink() || manifestStats.size > MAX_ACCELERATION_MANIFEST_BYTES) {
+    throw new Error(`${label}的资源清单必须是普通文件且不超过 16 KiB`)
+  }
+  let manifest
+  try {
+    manifest = validateManifest(JSON.parse(fs.readFileSync(manifestPath, 'utf8')))
+  } catch {
+    throw new Error(`${label}的资源清单无效`)
+  }
+  if (manifest.version !== 2 || manifest.platform !== 'darwin' || manifest.arch !== architecture) {
+    throw new Error(`${label}的资源清单不是 ${architecture} 架构的 macOS 加速资源`)
+  }
+  return resolved
+}
+
+function resolveAccelerationTargets(bundles, projectRoot, outputDirectory) {
+  if (!bundles) return undefined
+  const targets = ACCELERATION_ARCHITECTURES.map((architecture) => ({
+    architecture,
+    bundleDirectory: resolveAccelerationBundleDirectory(bundles[architecture], projectRoot, architecture),
+    stageDirectory: path.join(outputDirectory, `arch-${architecture}`),
+  }))
+  if (targets[0].bundleDirectory === targets[1].bundleDirectory) {
+    throw new Error('两个架构必须使用各自的私有加速资源目录')
+  }
+  return targets
+}
+
 function createSanitizedEnvironment(environment, identityName, signingCertificateSha256) {
   const sanitized = { ...environment }
   for (const name of Object.keys(sanitized)) {
@@ -210,10 +311,17 @@ function resolveFreeMacBuildOptions(options = {}) {
     } : {}),
   }
 
+  const accelerationTargets = resolveAccelerationTargets(
+    options.accelerationBundles,
+    projectRoot,
+    outputDirectory,
+  )
+
   return {
     projectRoot,
     packageVersion,
     outputDirectory,
+    accelerationTargets,
     identityName,
     signingCertificateSha256,
     ephemeralSigning,
@@ -226,6 +334,7 @@ function resolveFreeMacBuildOptions(options = {}) {
     commandRunner: options.commandRunner || defaultCommandRunner,
     verifySigning: options.verifySigning || verifyFreeMacSigningIdentity,
     verifyArtifacts: options.verifyArtifacts || verifyMacosFreeArtifacts,
+    mergeArtifacts: options.mergeArtifacts || mergeMacosFreeArchitectureOutputs,
   }
 }
 
@@ -295,13 +404,39 @@ async function runFreeMacBuild(options = {}) {
   }
   const outputClaim = claimReleaseOutputDirectory(build.outputDirectory)
   try {
-    await run('构建 macOS 免费分发包', [
-      build.electronBuilderCliPath,
-      '--config', 'electron-builder.config.cjs',
-      '--mac', 'dmg', 'zip',
-      '--arm64', '--x64',
-      '--publish', 'never',
-    ], build.builderEnvironment)
+    if (build.accelerationTargets) {
+      // 带线路时必须一个架构一次构建：Mac 加速资源目录是按架构准备的，
+      // 一次 --arm64 --x64 的构建会在不匹配的那个架构上被 beforePack 拒掉。
+      for (const target of build.accelerationTargets) {
+        await run(`构建 macOS 免费分发包（${target.architecture}，含私有加速线路）`, [
+          build.electronBuilderCliPath,
+          '--config', 'electron-builder.config.cjs',
+          '--mac', 'dmg', 'zip',
+          `--${target.architecture}`,
+          '--publish', 'never',
+        ], {
+          ...build.builderEnvironment,
+          XINGMANG_OUTPUT_DIR: target.stageDirectory,
+          XINGMANG_ACCELERATION_BUNDLE_DIR: target.bundleDirectory,
+        })
+      }
+      await build.mergeArtifacts({
+        outputDirectory: build.outputDirectory,
+        version: build.packageVersion,
+        stages: build.accelerationTargets.map((target) => ({
+          architecture: target.architecture,
+          directory: target.stageDirectory,
+        })),
+      })
+    } else {
+      await run('构建 macOS 免费分发包', [
+        build.electronBuilderCliPath,
+        '--config', 'electron-builder.config.cjs',
+        '--mac', 'dmg', 'zip',
+        '--arm64', '--x64',
+        '--publish', 'never',
+      ], build.builderEnvironment)
+    }
 
     const artifacts = await build.verifyArtifacts({
       projectRoot: build.projectRoot,
@@ -516,12 +651,14 @@ async function runCiFreeMacBuild(options = {}) {
 
 async function main() {
   try {
-    if (process.argv.slice(2).includes('--ci-temporary-signing')) {
+    const args = parseFreeMacBuildArguments(process.argv.slice(2))
+    if (args.ciTemporarySigning) {
       await runCiFreeMacBuild()
       process.stdout.write('macOS 免费分发真实构建已通过临时签名验证，临时产物和签名材料已清理\n')
     } else {
-      const result = await runFreeMacBuild()
-      process.stdout.write(`macOS 免费分发产物已通过本地验证：${result.outputDirectory}\n`)
+      const result = await runFreeMacBuild({ accelerationBundles: args.accelerationBundles })
+      const carried = args.accelerationBundles ? '（已携带私有加速线路）' : ''
+      process.stdout.write(`macOS 免费分发产物已通过本地验证${carried}：${result.outputDirectory}\n`)
     }
   } catch (error) {
     process.stderr.write(`macOS 免费分发构建失败：${error.message}\n`)
@@ -532,6 +669,7 @@ async function main() {
 if (require.main === module) main()
 
 module.exports = {
+  parseFreeMacBuildArguments,
   resolveMacosSecurityCommand,
   resolveFreeMacBuildOptions,
   runCiFreeMacBuild,

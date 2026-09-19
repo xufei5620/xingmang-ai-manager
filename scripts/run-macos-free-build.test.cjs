@@ -4,6 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const {
+  parseFreeMacBuildArguments,
   resolveMacosSecurityCommand,
   resolveFreeMacBuildOptions,
   runCiFreeMacBuild,
@@ -1044,4 +1045,187 @@ test('a failed build keeps an output directory it did not create and names it in
     verifyArtifacts: async () => { throw new Error('unreachable') },
   }), (error) => error.message.includes(outputDirectory))
   assert.equal(fs.existsSync(path.join(outputDirectory, 'half-written.dmg')), true)
+})
+
+function stageAccelerationBundle(t, architecture, overrides = {}) {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), `xingmang-acceleration-${architecture}-`))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const manifest = {
+    version: 2,
+    platform: 'darwin',
+    arch: architecture,
+    coreFile: 'mihomo',
+    coreSha256: 'a'.repeat(64),
+    profileFile: 'profile.yaml',
+    profileSha256: 'b'.repeat(64),
+    coreVersion: 'v1.19.29',
+    sourceRef: 'v1.19.29',
+    sourceUrl: 'https://github.com/MetaCubeX/mihomo/tree/v1.19.29',
+    licenseFile: 'LICENSE-mihomo.txt',
+    noticesFile: 'THIRD-PARTY-NOTICES.txt',
+    ...overrides,
+  }
+  fs.writeFileSync(path.join(directory, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`)
+  return directory
+}
+
+test('carrying the private acceleration nodes is opt-in through the command line only', () => {
+  assert.deepEqual(parseFreeMacBuildArguments([]), {
+    ciTemporarySigning: false,
+    accelerationBundles: undefined,
+  })
+  assert.deepEqual(parseFreeMacBuildArguments(['--ci-temporary-signing']), {
+    ciTemporarySigning: true,
+    accelerationBundles: undefined,
+  })
+  assert.deepEqual(
+    parseFreeMacBuildArguments(['--acceleration-arm64', '/private/arm64', '--acceleration-x64', '/private/x64']),
+    {
+      ciTemporarySigning: false,
+      accelerationBundles: { arm64: '/private/arm64', x64: '/private/x64' },
+    },
+  )
+
+  // 只带一个架构会做出「一半用户有线路」的版本，产物校验也过不了。
+  assert.throws(() => parseFreeMacBuildArguments(['--acceleration-arm64', '/private/arm64']), /同时提供/)
+  assert.throws(() => parseFreeMacBuildArguments([
+    '--acceleration-arm64', '/private/arm64',
+    '--acceleration-arm64', '/private/again',
+    '--acceleration-x64', '/private/x64',
+  ]), /只能出现一次/)
+  assert.throws(() => parseFreeMacBuildArguments([
+    '--acceleration-arm64', '--acceleration-x64', '/private/x64',
+  ]), /绝对路径/)
+  assert.throws(() => parseFreeMacBuildArguments([
+    '--ci-temporary-signing',
+    '--acceleration-arm64', '/private/arm64',
+    '--acceleration-x64', '/private/x64',
+  ]), /CI 临时签名/)
+  assert.throws(() => parseFreeMacBuildArguments(['--acceleration']), /无法识别的参数/)
+})
+
+test('an acceleration directory is checked against its own architecture before any build work', (t) => {
+  const arm64 = stageAccelerationBundle(t, 'arm64')
+  const x64 = stageAccelerationBundle(t, 'x64')
+  const swapped = validOptions(t, { accelerationBundles: { arm64: x64, x64: arm64 } })
+  assert.throws(() => resolveFreeMacBuildOptions(swapped), /不是 arm64 架构/)
+
+  assert.throws(() => resolveFreeMacBuildOptions(validOptions(t, {
+    accelerationBundles: { arm64, x64: arm64 },
+  })), /不是 x64 架构/)
+
+  const windowsBundle = stageAccelerationBundle(t, 'arm64', {
+    version: 1,
+    platform: undefined,
+    arch: undefined,
+    coreFile: 'mihomo.exe',
+  })
+  assert.throws(() => resolveFreeMacBuildOptions(validOptions(t, {
+    accelerationBundles: { arm64: windowsBundle, x64 },
+  })), /不是 arm64 架构|资源清单无效/)
+
+  assert.throws(() => resolveFreeMacBuildOptions(validOptions(t, {
+    accelerationBundles: { arm64: 'private/arm64', x64 },
+  })), /必须是绝对路径/)
+
+  const inProject = validOptions(t)
+  const inside = path.join(inProject.projectRoot, 'acceleration')
+  fs.mkdirSync(inside)
+  assert.throws(() => resolveFreeMacBuildOptions({
+    ...inProject,
+    accelerationBundles: { arm64: inside, x64 },
+  }), /项目目录之外/)
+
+  const missingManifest = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-acceleration-empty-'))
+  t.after(() => fs.rmSync(missingManifest, { recursive: true, force: true }))
+  assert.throws(() => resolveFreeMacBuildOptions(validOptions(t, {
+    accelerationBundles: { arm64: missingManifest, x64 },
+  })), /缺少资源清单/)
+})
+
+test('an acceleration build packs each architecture on its own and merges the two outputs', async (t) => {
+  const arm64 = stageAccelerationBundle(t, 'arm64')
+  const x64 = stageAccelerationBundle(t, 'x64')
+  const builds = []
+  const merges = []
+  const options = validOptions(t, {
+    skipChecks: true,
+    accelerationBundles: { arm64, x64 },
+    env: {
+      PATH: '/usr/bin:/bin',
+      CSC_NAME: 'XingMang Free Update Identity',
+      XINGMANG_MAC_SIGNING_SHA256: fingerprint,
+      // 继承来的同名变量仍然被清洗掉，只有命令行给的目录会被写回。
+      XINGMANG_ACCELERATION_BUNDLE_DIR: '/private/stale',
+    },
+    verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
+    commandRunner: async (spec) => { builds.push(spec) },
+    mergeArtifacts: async (value) => { merges.push(value) },
+    verifyArtifacts: async (value) => ({ outputDirectory: value.outputDirectory }),
+  })
+
+  const result = await runFreeMacBuild(options)
+
+  const outputDirectory = path.join(options.projectRoot, 'release-free-1.2.3')
+  assert.equal(result.outputDirectory, outputDirectory)
+  assert.equal(builds.length, 2)
+  assert.deepEqual(builds.map((spec) => spec.argv), [
+    [
+      '/trusted/electron-builder-cli.js',
+      '--config', 'electron-builder.config.cjs',
+      '--mac', 'dmg', 'zip',
+      '--arm64',
+      '--publish', 'never',
+    ],
+    [
+      '/trusted/electron-builder-cli.js',
+      '--config', 'electron-builder.config.cjs',
+      '--mac', 'dmg', 'zip',
+      '--x64',
+      '--publish', 'never',
+    ],
+  ])
+  assert.deepEqual(builds.map((spec) => spec.env.XINGMANG_ACCELERATION_BUNDLE_DIR), [arm64, x64])
+  assert.deepEqual(builds.map((spec) => spec.env.XINGMANG_OUTPUT_DIR), [
+    path.join(outputDirectory, 'arch-arm64'),
+    path.join(outputDirectory, 'arch-x64'),
+  ])
+  for (const spec of builds) assert.equal(spec.env.XINGMANG_MAC_FREE_RELEASE, '1')
+  assert.deepEqual(merges, [{
+    outputDirectory,
+    version: '1.2.3',
+    stages: [
+      { architecture: 'arm64', directory: path.join(outputDirectory, 'arch-arm64') },
+      { architecture: 'x64', directory: path.join(outputDirectory, 'arch-x64') },
+    ],
+  }])
+})
+
+test('without the flags the build stays one dual-architecture run that carries no private resources', async (t) => {
+  const builds = []
+  const merges = []
+  const options = validOptions(t, {
+    skipChecks: true,
+    env: {
+      PATH: '/usr/bin:/bin',
+      CSC_NAME: 'XingMang Free Update Identity',
+      XINGMANG_MAC_SIGNING_SHA256: fingerprint,
+      XINGMANG_ACCELERATION_BUNDLE_DIR: '/private/stale',
+    },
+    verifySigning: () => ({ identityName: 'XingMang Free Update Identity', fingerprint }),
+    commandRunner: async (spec) => { builds.push(spec) },
+    mergeArtifacts: async (value) => { merges.push(value) },
+    verifyArtifacts: async (value) => ({ outputDirectory: value.outputDirectory }),
+  })
+
+  await runFreeMacBuild(options)
+
+  assert.equal(builds.length, 1)
+  assert.deepEqual(builds[0].argv.slice(-4), ['--arm64', '--x64', '--publish', 'never'])
+  assert.equal(builds[0].env.XINGMANG_ACCELERATION_BUNDLE_DIR, undefined)
+  assert.equal(
+    builds[0].env.XINGMANG_OUTPUT_DIR,
+    path.join(options.projectRoot, 'release-free-1.2.3'),
+  )
+  assert.deepEqual(merges, [])
 })
