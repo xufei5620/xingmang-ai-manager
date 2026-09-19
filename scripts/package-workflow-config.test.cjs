@@ -88,10 +88,17 @@ test('selecting one platform skips the other job instead of failing it', () => {
   assert.equal(macosJob.if, "${{ inputs.platforms != 'windows' }}")
 })
 
-test('the macOS job runs the checks its build script deliberately skips', () => {
-  // runCiFreeMacBuild 以 skipChecks 调用打包，靠调用方已经跑过检查。
+test('the macOS job runs the checks and the compile its build script deliberately skips', () => {
+  // runCiFreeMacBuild 以 skipChecks 调用打包，靠调用方已经跑过检查**和编译**。
   // workflow_dispatch 可以指向任意分支，所以这个前提必须由本作业自己满足。
+  // 漏掉 compile 的代价不是一句「没编译」：electron-builder 会一路打包到最后，
+  // 报的是「app.asar 里找不到 dist-electron/platform/entry.js」，看起来像产物
+  // 损坏。首次实跑就踩了这个坑，所以把顺序也钉住。
   const commands = macosJob.steps.map((step) => String(step.run || '').trim())
-  assert.ok(commands.includes('npm run typecheck'), commands.join(' / '))
-  assert.ok(commands.includes('npm test'), commands.join(' / '))
+  for (const command of ['npm run typecheck', 'npm test', 'npm run compile']) {
+    assert.ok(commands.includes(command), `${command} 缺失：${commands.join(' / ')}`)
+  }
+  const compileIndex = commands.indexOf('npm run compile')
+  const buildIndex = commands.findIndex((command) => /run-macos-free-build\.cjs/.test(command))
+  assert.ok(compileIndex >= 0 && compileIndex < buildIndex, '编译必须排在打包之前')
 })
