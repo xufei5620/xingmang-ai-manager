@@ -55,6 +55,13 @@ function buildReleaseSteps({ npmCli, releaseOutputDirectory, platform, unsignedR
       executable: process.execPath,
       args: [npmCli, ...(platform === 'win32' ? ['run', 'test:windows'] : ['test'])],
     },
+    // 上一步的用例集不含出货渲染层和画布:`npm test` 跑的是 `vitest run electron src`,
+    // renderer-v2 的浏览器回归与 canvas-v2 单测各有独立入口。少了这三条,发布门禁
+    // 对真正装到客户机器上的那个界面是 0 覆盖,比 quality.yml 的 windows 作业还弱
+    // 一档(审查总表 M-03 /《发版前检查清单》缺口 4)。
+    { label: '出货渲染层回归测试', executable: process.execPath, args: [npmCli, 'run', 'test:v2'] },
+    { label: '画布单元测试', executable: process.execPath, args: [npmCli, 'run', 'test:canvas'] },
+    { label: '旧回滚界面测试', executable: process.execPath, args: [npmCli, 'run', 'test:ui'] },
     { label: '编译应用', executable: process.execPath, args: [npmCli, 'run', 'compile'] },
     // 这两个冒烟脚本同时挂在 quality.yml 的 windows 作业上。门禁只跑 CI 也在跑的
     // 脚本,是 M-01 下半的根治:上一版门禁跑的 electron-smoke.mjs 没有任何 CI 会

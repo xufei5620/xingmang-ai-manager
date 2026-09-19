@@ -58,6 +58,7 @@ import {
   ResultNotice,
   useOperation,
   useResource,
+  userFacingErrorMessage,
 } from './business-common'
 import {
   notificationOptions,
@@ -714,7 +715,7 @@ export function UpdatesPage({
             <Notice
               tone="warn"
               title="更新没有装上"
-              body={update.error.message}
+              body={userFacingErrorMessage(update.error)}
               actions={
                 <>
                   <Button size="sm" icon={Download} onClick={redownload}>
@@ -1245,6 +1246,8 @@ export function SettingsPage({
             '主题',
             '外观调整会应用到整个工具箱',
             <Segment
+              label="主题"
+              testId="settings-theme"
               options={[
                 ...(systemApi
                   ? [

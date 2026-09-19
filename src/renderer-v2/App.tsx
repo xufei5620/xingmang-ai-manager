@@ -19,7 +19,7 @@ import { tools } from './registry/tools'
 import type { PageId } from './registry/pages'
 import { BalanceTierProvider, Button, Confirm, Dialog, Notice, ToastProvider, useToast, useReducedMotion } from './ui'
 import { bridge as getBridge } from './bridge'
-import { pendingBusinessOperations } from './business-common'
+import { errorMessage, pendingBusinessOperations } from './business-common'
 import { SavedAccounts } from './SavedAccounts'
 import { AnnouncementCenter } from './features/shell/Announcement'
 import { createAccelerationApi } from './features/acceleration/api'
@@ -128,11 +128,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setBoot('ready')
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
-          if (current) setOperationError({ message: cause instanceof Error ? cause.message : '更新检查没有完成' })
+          if (current) setOperationError({ message: errorMessage(cause, '更新检查没有完成') })
         })
       }
     }).catch((cause) => {
-      if (current) { setBootError(cause instanceof Error ? cause.message : '启动检查没有完成'); setBoot('failed') }
+      if (current) { setBootError(errorMessage(cause, '启动检查没有完成')); setBoot('failed') }
     })
     return () => { current = false }
   }, [app, bootAttempt])
@@ -165,7 +165,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
         setAccountBootstrap((current) => ({
           ...(current ?? { phase: 'verifying', label: 'Key 初始化没有完成', percent: 100, scope: bootstrapScope }),
           scope: bootstrapScope,
-          error: cause instanceof Error ? cause.message : '账号 Key 初始化没有完成',
+          error: errorMessage(cause, '账号 Key 初始化没有完成'),
         }))
       }
     })()
@@ -192,7 +192,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (!mounted.current) return
       const issues = report.counts.warn + report.counts.fail + report.counts.error
       if (issues) setOperationError({ message: `环境检查发现 ${issues} 项需要处理，请在“检查”页查看。` })
-    }).catch((cause) => { if (mounted.current) setOperationError({ message: cause instanceof Error ? cause.message : '启动环境检查没有完成' }) })
+    }).catch((cause) => { if (mounted.current) setOperationError({ message: errorMessage(cause, '启动环境检查没有完成') }) })
   }, [boot, native, session.authenticated, settings?.runDiagnosticsOnStartup])
   useLayoutEffect(() => {
     if (!settings) return
@@ -205,7 +205,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const system = platformApi()
     if (!system || boot !== 'ready') return
     return bindPlatformAppearance(system, native, (theme) => setSettings((current) => current ? { ...current, theme } : current),
-      (cause) => setOperationError({ message: cause instanceof Error ? cause.message : '系统外观没有同步' }))
+      (cause) => setOperationError({ message: errorMessage(cause, '系统外观没有同步') }))
   }, [boot, native])
   const os = platform?.platform === 'macos' ? 'mac' : platform?.platform === 'linux' ? 'linux' : 'win'
   const operationHint = operationError ? presentOperationError(operationError.message) : null
@@ -249,7 +249,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setOperationError(null)
     try { await work() }
     catch (cause) {
-      setOperationError({ message: cause instanceof Error ? cause.message : `${label}没有完成`, retry: () => void run(label, work) })
+      setOperationError({ message: errorMessage(cause, `${label}没有完成`), retry: () => void run(label, work) })
     }
   }, [])
   const navigate = useCallback((target: PageId, section?: string) => {
@@ -532,7 +532,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
       confirmationLock.current = true; setConfirmBusy(true)
-      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ message: cause instanceof Error ? cause.message : '操作没有完成' })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
+      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ message: errorMessage(cause, '操作没有完成') })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
     }} />}
   </BalanceTierProvider></AccountBalanceContext.Provider>
 }
