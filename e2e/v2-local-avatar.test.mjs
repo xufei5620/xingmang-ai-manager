@@ -238,6 +238,38 @@ test('late image decode is discarded when the account changes', async () => {
   }
 })
 
+test('a discarded render of the next account does not block saving for the account on screen', async () => {
+  const page = await fixture()
+  try {
+    await page
+      .getByTestId('account-avatar-file')
+      .setInputFiles(await imageFile(page))
+    await page.getByTestId('account-avatar-preview').waitFor()
+    const key = await page.getByTestId('avatar-key').innerText()
+    await page.evaluate(() =>
+      dispatchEvent(new CustomEvent('avatar-switch-abandoned', { detail: 9 })),
+    )
+    await page.waitForFunction(
+      () => document.documentElement.dataset.avatarRenderAbandoned === 'true',
+    )
+    assert.equal(await page.getByTestId('avatar-user').innerText(), '7')
+    await page.getByTestId('account-avatar-save').click()
+    await page
+      .getByTestId('account-avatar-dialog')
+      .waitFor({ state: 'detached' })
+    assert.deepEqual(
+      await page.evaluate(() =>
+        Object.keys(localStorage).filter((entry) =>
+          entry.startsWith('xingmang-v2-avatar:'),
+        ),
+      ),
+      [key],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
 test('account header matches the return-and-identity layout and moves refresh into its menu', async () => {
   const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
   try {

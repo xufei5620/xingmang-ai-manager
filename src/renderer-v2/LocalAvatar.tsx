@@ -22,8 +22,14 @@ export function useLocalAvatar(identity: AvatarIdentity | null) {
   } catch {
     /* Incomplete identity displays the fallback initial. */
   }
+  // The guard below must compare against the key of the last *committed*
+  // render: a concurrent render that React interrupts or discards still runs
+  // this function, so writing the ref here could make save() either reject a
+  // legitimate save or accept one for an account that was never shown.
   const keyRef = useRef(key)
-  keyRef.current = key
+  useEffect(() => {
+    keyRef.current = key
+  }, [key])
   const [record, setRecord] = useState<{
     key: string | null
     dataUrl: string | null
@@ -121,7 +127,9 @@ export function LocalAvatarDialog({
   const request = useRef(0)
   const imageRef = useRef<ImageBitmap | null>(null)
   const activeKey = useRef(avatar.key)
-  activeKey.current = avatar.key
+  useEffect(() => {
+    activeKey.current = avatar.key
+  }, [avatar.key])
   useEffect(() => {
     request.current++
     setBitmap(null)
