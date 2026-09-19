@@ -2020,16 +2020,38 @@ for (const mode of ['merge', 'reset']) test(`pending ${mode} configuration canno
   } finally { await page.close() }
 })
 
-for (const failedRead of ['getConfig', 'scanSystem']) test(`configuration still closes after a saved write when ${failedRead} refresh fails`, async () => {
+test('configuration still closes after a saved write when the system scan refresh fails', async () => {
   const page = await open('keyOptions=1')
   try {
     await openToolConfiguration(page)
     await page.getByTestId('tool-key-select').selectOption('202')
-    await page.evaluate((method) => { window.v2Test.fail = method }, failedRead)
+    await page.evaluate(() => { window.v2Test.fail = 'scanSystem' })
     await page.getByTestId('tool-save-config').click()
     await page.getByTestId('tool-save-merge').click()
     await waitForSavedConfiguration(page)
     await page.locator('.xm-toasts').getByRole('status').filter({ hasText: '配置已保存，但最新状态没有读到。请重新检测，无需重复保存。' }).waitFor()
+    assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
+    assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').length), 1)
+    await page.evaluate(() => { window.v2Test.fail = '' })
+    await clean(page)
+  } finally { await page.close() }
+})
+
+// R-S8: 配置读不出来不再连坐整个工具页。以前这里只有一句会消失的 toast，
+// 页面自身从头到尾没有任何痕迹。
+test('a failed configuration re-read leaves the tool list standing and says which part failed', async () => {
+  const page = await open('keyOptions=1')
+  try {
+    await openToolConfiguration(page)
+    await page.getByTestId('tool-key-select').selectOption('202')
+    await page.evaluate(() => { window.v2Test.fail = 'getConfig' })
+    await page.getByTestId('tool-save-config').click()
+    await page.getByTestId('tool-save-merge').click()
+    await waitForSavedConfiguration(page)
+    await page.getByTestId('home-config-failure').waitFor()
+    for (const tool of ['claude', 'codex', 'grok', 'gemini']) {
+      assert.equal(await page.getByTestId(`tool-row-${tool}`).count(), 1, `${tool} 那一行应该还在`)
+    }
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').length), 1)
     await page.evaluate(() => { window.v2Test.fail = '' })

@@ -30,7 +30,7 @@ import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
 import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
-import { accountOrigin, accountScope, accountSiteId, accountSupports, type AccountSiteId } from './account-context'
+import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
 import { AccountBalanceContext, useAccountBalanceStore } from './features/app/balance-context'
 import './business.css'
@@ -478,7 +478,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
                   onLogin={() => setAuth('login')} onHelp={() => setAccelerationHelp(true)} preview={accelerationPreview} />
               </Suspense>
             </div>}
-            {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
+            {page === 'home' ? <Home api={toolsApi} supportsUsage={accountSupports(session, 'supportsUsage')} supportsBilling={accountSupports(session, 'supportsBilling')} snapshot={toolbox.snapshot} loading={toolbox.loading} error={toolbox.error} failures={toolbox.failures} account={session.account} balance={balance} jobs={toolbox.jobs} bootstrap={accountBootstrap?.scope === scope ? accountBootstrap : null}
               externalClients={toolbox.externalClients} externalLoading={toolbox.externalLoading} externalError={toolbox.externalError}
               onScan={() => { void toolbox.refresh(true).catch(() => undefined); void toolbox.refreshExternal().catch(() => undefined) }} onInstall={(id, version) => void perform('安装工具', () => install(id, version))} onLaunch={requestLaunch} onConfigure={openToolConfig} onUninstall={requestUninstall}
               onInstallExternal={(id) => void perform('安装客户端', () => installExternal(id))} onLaunchExternal={(id) => void perform('打开客户端', () => launchExternal(id))}
@@ -501,7 +501,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       if (options?.rememberError) toast.show(options.rememberError, 'warn')
     }} />}
     {legal && <LegalDocument api={authApi} kind={legal} onClose={() => setLegal(null)} />}
-    {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: result.origin === 'https://api.solov.cc' ? 'solov-api' : 'solov', account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result?.failed.length) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={() => { setSwitcher(false); setAuth('login') }} /></Dialog>}
+    {switcher && <Dialog open title="切换账号" width={480} onClose={() => setSwitcher(false)}><SavedAccounts api={native} onAccountChanged={(result) => { bootstrapEpoch.current++; bootstrapInFlight.current = null; if (result) suppressRestoredBootstrap.current.add(accountScope({ siteId: siteIdForOrigin(result.origin) ?? undefined, account: { userId: result.userId } as AccountSessionState['account'] })); setAccountBootstrap(null); if (!result?.failed.length) setSwitcher(false); setPaymentReturn(undefined); void perform('刷新账号', reloadAccount) }} onLogin={() => { setSwitcher(false); setAuth('login') }} /></Dialog>}
     {externalClient && <ExternalClientDialog key={`${scope}:${externalClient}`} api={native} tool={externalClient} signedIn={session.authenticated} onClose={() => setExternalClient(null)} onSaved={finishExternalConfigSave} />}
     {configTool && toolbox.snapshot && <ConfigDialog key={`${scope}:${configTool}:${codexModelFilter}`} api={toolsApi} tool={configTool} config={toolbox.snapshot.config} signedIn={session.authenticated} initialModelFilter={codexModelFilter}
       onClose={() => setConfigTool(null)} onRefresh={() => toolbox.refresh(true)} onSaved={finishConfigSave} onLogin={() => setAuth('login')} onKeys={() => { setConfigTool(null); navigate('account', 'keys') }} onHelp={() => setHelp(true)} />}

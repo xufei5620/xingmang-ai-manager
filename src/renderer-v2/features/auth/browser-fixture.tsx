@@ -22,9 +22,13 @@ const calls: Array<{ method: string; input?: unknown }> = []
 function record(method: string, input?: unknown) { calls.push({ method, input }); document.documentElement.dataset.calls = JSON.stringify(calls) }
 const pending = new Map<string, { resolve: () => void; reject: (error: Error) => void }>()
 function waitForRelease(method: string): Promise<void> { return query.getAll('pending').includes(method) ? new Promise<void>((resolve, reject) => pending.set(method, { resolve, reject })) : Promise.resolve() }
-const status: AccountStatus = { systemName: 'Test fixture', version: '1', setupComplete: true, quotaPerUnit: 1, quotaDisplayType: 'USD', usdExchangeRate: 1, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: query.has('turnstile') }
+const status: AccountStatus = { systemName: 'Test fixture', version: '1', setupComplete: true, quotaPerUnit: 1, quotaDisplayType: 'USD', usdExchangeRate: 1, registerEnabled: true, passwordRegisterEnabled: true, emailVerificationEnabled: true, turnstileCheckEnabled: false }
+// `turnstile` takes a site id, or `1` for both, so a per-site status can be exercised.
+const turnstileSites = (query.get('turnstile') ?? '').split(',').filter(Boolean)
+// Status reads stay out of `calls`: several checks assert that array exactly.
+const statusSites: string[] = []
 const api: AuthApi = {
-  getStatus: async () => status,
+  getStatus: async (siteId) => { statusSites.push(siteId); document.documentElement.dataset.statusSites = statusSites.join(','); await waitForRelease(`status-${siteId}`); return { ...status, systemName: `Test fixture ${siteId}`, turnstileCheckEnabled: turnstileSites.includes(siteId) || turnstileSites.includes('1') } },
   getRemembered: async (siteId) => { await waitForRelease(`remembered-${siteId}`); return query.has('remembered') ? { identifier: 'same@example.test', password: `${siteId}-remembered-password` } : null },
   setRemembered: async (input, siteId) => { document.documentElement.dataset.savedSite = siteId ?? '';  record('remember', input) },
   login: async (input) => { record('login', input); await waitForRelease('login'); if (query.has('twoFactor')) throw new Error('此账号需要双重验证，请先在官方网站完成验证'); if (query.has('fail')) throw new Error('invalid password'); return { account: { userId: 7, username: input.username, quota: 0, usedQuota: 0, group: 'default', role: 1 }, accessExpiresAt: null, siteId: input.siteId ?? 'solov' } },
@@ -49,6 +53,6 @@ function Fixture() {
   if (scenario === 'welcome') return <Welcome onLogin={() => record('login-entry')} onRegister={() => record('register-entry')} onSteps={() => record('steps')} onHelp={() => record('help')} onLegal={(kind) => record('legal', kind)} reducedMotion={motion} onReducedMotionChange={setMotion} />
   if (scenario === 'splash') return <Splash phase="正在准备工作台" detail="检查本地环境" progress={42} />
   if (scenario === 'guide') return guideVisible ? <StartGuide platform={query.get('os') === 'mac' ? 'mac' : query.get('os') === 'linux' ? 'linux' : 'win'} tools={tools} signedIn={signedIn} resumeKey={query.has('resume') ? resumeScope : undefined} onDetect={async () => { record('detect'); await waitForRelease('detect') }} onInstall={async (route) => { record('install', route); update(route, { installed: true }) }} onInstallRuntime={async () => { record('runtime'); setTools((items) => items.map((item) => ({ ...item, runtimeReady: true }))) }} onInstallPython={async () => { record('python'); await waitForRelease('python'); setTools((items) => items.map((item) => ({ ...item, pythonReady: true }))) }} onConfigure={async (route) => { record('configure', route); update(route, { configured: true, source: 'account' }) }} onLogin={() => { record('guide-login'); setSignedIn(true) }} onLaunch={async (route) => { record('launch', route); return query.has('launchCancel') ? false : undefined }} onComplete={(route) => record('complete', route)} onBack={() => { record('back'); setGuideVisible(false) }} onHelp={() => record('help')} /> : <p>引导已暂停</p>
-  return <AuthFlow api={api} initialMode={scenario === 'register' ? 'register' : scenario === 'recovery' ? 'recovery' : 'login'} onAuthenticated={(result) => record('authenticated', result.account.username)} onClose={() => record('close')} />
+  return <AuthFlow api={api} initialMode={scenario === 'register' ? 'register' : scenario === 'recovery' ? 'recovery' : 'login'} onAuthenticated={(result) => record('authenticated', result.account.username)} onClose={() => record('close')} onHelp={() => record('help')} />
 }
 createRoot(document.getElementById('root')!).render(query.has('strict') ? <StrictMode><Fixture /></StrictMode> : <Fixture />)

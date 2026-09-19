@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { accountKeyQuota, accountOrigin, accountScope, accountSiteId, visibleAccountTab } from './account-context'
+import { accountKeyQuota, accountOrigin, accountScope, accountSiteId, siteIdForOrigin, visibleAccountTab } from './account-context'
 
 describe('renderer account ownership', () => {
   it('retains Sub2API fractional dollar limits and never rounds a limited key to unlimited', () => {
@@ -15,6 +15,13 @@ describe('renderer account ownership', () => {
     expect(accountScope({ siteId: 'solov-api', account })).toBe('api-account:7')
     expect(accountSiteId({ realmId: 'api-account' })).toBe('solov-api')
     expect(accountOrigin({ siteId: 'solov-api' })).toBe('https://api.solov.cc')
+  })
+  it('maps only the two exact account origins back to a site and leaves anything else unmapped', () => {
+    expect(siteIdForOrigin('https://xm.solov.cc')).toBe('solov')
+    expect(siteIdForOrigin('https://api.solov.cc')).toBe('solov-api')
+    expect(siteIdForOrigin(accountOrigin({ siteId: 'solov-api' }))).toBe('solov-api')
+    for (const origin of ['https://api.solov.cc/', 'http://api.solov.cc', 'https://api.solov.cc.evil.com', 'https://xm.solov.cc:443', ''])
+      expect(siteIdForOrigin(origin)).toBeNull()
   })
   it('hides unsupported Sub2API panels even before a capability is provided', () => {
     const session = { siteId: 'solov-api' as const }
