@@ -178,6 +178,52 @@ describe('ManagedCliKeyStore', () => {
     await expect(store.read(42)).resolves.toEqual([managedKey('codex')])
   })
 
+  it('rethrows a non-decrypt read failure instead of discarding every cached account', async () => {
+    const filePath = temporaryFilePath()
+    fs.mkdirSync(path.dirname(filePath), { recursive: true })
+    const store = new ManagedCliKeyStore(filePath, fakeSafeStorage())
+    await store.save(42, providerIds.map((provider) => managedKey(provider)))
+    const intact = fs.readFileSync(filePath, 'utf8')
+    // A file larger than the read limit is rejected before any decryption is
+    // attempted -- the same class as an nlink !== 1 or mid-read change that an
+    // antivirus scanner or a sync client can produce at any moment.
+    fs.appendFileSync(filePath, 'x'.repeat(64 * 1024))
+
+    await expect(store.save(99, [managedKey('codex')])).rejects.toThrow('超过 64 KB 安全上限')
+
+    expect(fs.readFileSync(filePath, 'utf8').startsWith(intact)).toBe(true)
+    expect(fs.readdirSync(path.dirname(filePath)).some((name) => name.includes('.corrupt-'))).toBe(false)
+  })
+
+  it('keeps at most three quarantined copies of a damaged cache', async () => {
+    const filePath = temporaryFilePath()
+    const directory = path.dirname(filePath)
+    fs.mkdirSync(directory, { recursive: true })
+    fs.writeFileSync(filePath, 'broken encrypted payload', 'utf8')
+    for (const stamp of [1, 2, 3, 4, 5]) {
+      fs.writeFileSync(`${filePath}.corrupt-${stamp}`, 'older damaged payload', 'utf8')
+    }
+    const store = new ManagedCliKeyStore(filePath, fakeSafeStorage())
+
+    await expect(store.save(42, [managedKey('codex')])).resolves.toBe(true)
+
+    const quarantined = fs.readdirSync(directory).filter((name) => name.includes('.corrupt-'))
+    expect(quarantined).toHaveLength(3)
+    expect(quarantined.some((name) => name.endsWith('.corrupt-1'))).toBe(false)
+    expect(quarantined.some((name) => name.endsWith('.corrupt-5'))).toBe(true)
+  })
+
+  it('refuses to persist through safeStorage\'s plaintext backend', async () => {
+    const filePath = temporaryFilePath()
+    const store = new ManagedCliKeyStore(filePath, fakeSafeStorage({
+      getSelectedStorageBackend: () => 'basic_text',
+    }))
+
+    await expect(store.save(42, [managedKey('codex')])).rejects.toThrow('已拒绝写入托管 API Key')
+    await expect(store.read(42)).rejects.toThrow('已拒绝写入托管 API Key')
+    expect(fs.existsSync(filePath)).toBe(false)
+  })
+
   it('removes a key only from the matching user record', async () => {
     const store = new ManagedCliKeyStore(temporaryFilePath(), fakeSafeStorage())
     const keys = providerIds.map((provider) => managedKey(provider))

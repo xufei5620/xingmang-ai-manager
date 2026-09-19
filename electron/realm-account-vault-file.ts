@@ -4,12 +4,11 @@ import path from 'node:path'
 import { assertSafeDataFile, ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 import { createRealmAccountVault, type RealmAccountVault } from './realm-account-vault'
 import { RealmAccountError } from './realm-account'
+import { isSafeStorageUsable, type SafeStorageBackendLike } from './safe-storage-backend'
 
-export interface RealmVaultCipher {
-  isEncryptionAvailable(): boolean
+export interface RealmVaultCipher extends SafeStorageBackendLike {
   encryptString(plaintext: string): Buffer
   decryptString(ciphertext: Buffer): string
-  getSelectedStorageBackend?(): string
 }
 
 export interface RealmVaultFileOptions {
@@ -29,7 +28,7 @@ export function createFileRealmAccountVault(
   if (typeof userDataDirectory !== 'string' || !path.isAbsolute(userDataDirectory)) throw new RealmAccountError('INVALID')
   const label = '分站账号安全存储'
   const filePath = path.join(userDataDirectory, 'realm-accounts-v2.dat')
-  const available = () => cipher.isEncryptionAvailable() && cipher.getSelectedStorageBackend?.() !== 'basic_text'
+  const available = () => isSafeStorageUsable(cipher)
   const read = () => readSafeUtf8File(filePath, label, 512 * 1024)
   return createRealmAccountVault({
     isEncryptionAvailable: available,

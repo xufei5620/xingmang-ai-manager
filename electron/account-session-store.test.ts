@@ -161,6 +161,17 @@ describe('AccountSessionStore', () => {
     await expect(store.read()).resolves.toBeNull()
   })
 
+  it('treats the plaintext safeStorage backend as no storage at all', async () => {
+    const filePath = temporaryFilePath()
+    const storage = fakeSafeStorage({ getSelectedStorageBackend: () => 'basic_text' })
+    const store = new AccountSessionStore(filePath, storage)
+
+    await store.save({ userId: 42, cookies: ['refresh_token=abc'] })
+
+    expect(fs.existsSync(filePath)).toBe(false)
+    await expect(store.read()).resolves.toBeNull()
+  })
+
   it('read() degrades to null (not a throw) when the file is corrupted', async () => {
     const filePath = temporaryFilePath()
     fs.mkdirSync(path.dirname(filePath), { recursive: true })
