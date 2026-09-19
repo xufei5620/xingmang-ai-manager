@@ -21,6 +21,9 @@ export default defineConfig({
       },
     },
     generateBundle() {
+      // Only what Rollup kept is visible here, and only during `vite build` --
+      // scripts/verify-renderer-boundary.test.cjs scans the sources instead and
+      // covers the type-only, dev-server and legacy-renderer cases this misses.
       if (renderer !== 'v2') return
       this.emitFile({ type: 'asset', fileName: 'renderer-v2.flag', source: 'v3.1.1\n' })
       const sourceRoot = new URL('./src/', import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')
