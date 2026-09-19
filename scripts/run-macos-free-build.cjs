@@ -148,11 +148,16 @@ function resolveMacosSecurityCommand(args, options = {}) {
 function parseFreeMacBuildArguments(argv = []) {
   const tokens = [...argv]
   let ciTemporarySigning = false
+  let keepPackage = false
   const requested = {}
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index]
     if (token === '--ci-temporary-signing') {
       ciTemporarySigning = true
+      continue
+    }
+    if (token === '--ci-keep-package') {
+      keepPackage = true
       continue
     }
     const architecture = ACCELERATION_ARCHITECTURES.find((value) => ACCELERATION_FLAGS[value] === token)
@@ -163,15 +168,21 @@ function parseFreeMacBuildArguments(argv = []) {
     requested[architecture] = value
     index += 1
   }
+  // 这个开关只是「别在收尾时删掉产物」，签名身份、证书校验和产物校验一步不变。
+  // 没有 --ci-temporary-signing 时留着它没有意义：那条路径的产物本来就归发布者
+  // 自己保管，静默忽略会让人以为发布构建也认这个开关。
+  if (keepPackage && !ciTemporarySigning) {
+    throw new Error('--ci-keep-package 只能与 --ci-temporary-signing 一起使用')
+  }
   const selected = ACCELERATION_ARCHITECTURES.filter((architecture) => requested[architecture] !== undefined)
-  if (selected.length === 0) return { ciTemporarySigning, accelerationBundles: undefined }
+  if (selected.length === 0) return { ciTemporarySigning, keepPackage, accelerationBundles: undefined }
   // 一次发布必须同时出两个架构：更新清单要精确引用两份 ZIP，只带一个架构的线路
   // 会做出一个「一半用户有加速、一半没有」的版本，而且产物校验本来就过不了。
   if (selected.length !== ACCELERATION_ARCHITECTURES.length) {
     throw new Error('携带私有加速线路必须同时提供 --acceleration-arm64 与 --acceleration-x64')
   }
   if (ciTemporarySigning) throw new Error('CI 临时签名构建不携带私有加速线路')
-  return { ciTemporarySigning, accelerationBundles: { arm64: requested.arm64, x64: requested.x64 } }
+  return { ciTemporarySigning, keepPackage, accelerationBundles: { arm64: requested.arm64, x64: requested.x64 } }
 }
 
 /**
@@ -489,7 +500,17 @@ async function runCiFreeMacBuild(options = {}) {
   const temporaryRoot = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-free-ci-')))
   const certificateDirectory = path.join(temporaryRoot, 'certificate')
   const keychainPath = path.join(temporaryRoot, 'ci-signing.keychain-db')
-  const outputRequest = `release-free-ci-${process.pid}-${outputEntropy.slice(0, 12)}`
+  // 默认这是一次演练：产物只用来证明打包链路还成立，留在盘上只会让下一次构建
+  // 撞上「输出目录不是空目录」。--ci-keep-package 是唯一的例外，它服务于
+  // package-for-testing.yml：那条链路要把产物交给 upload-artifact，所以目录名
+  // 必须是工作流能预先写死的一个常量，而不是带进程号和随机数的演练目录。
+  const keepPackage = options.keepPackage === true
+  const packageVersion = keepPackage
+    ? options.packageVersion || require(path.join(projectRoot, 'package.json')).version
+    : undefined
+  const outputRequest = keepPackage
+    ? `release-free-ci-${packageVersion}`
+    : `release-free-ci-${process.pid}-${outputEntropy.slice(0, 12)}`
   const outputPath = path.join(projectRoot, outputRequest)
   const runSecurity = options.runSecurity || ((args, commandOptions = {}) => {
     const command = resolveMacosSecurityCommand(args, commandOptions)
@@ -549,7 +570,9 @@ async function runCiFreeMacBuild(options = {}) {
       attemptCleanup(() => runSecurity(['list-keychains', '-d', 'user', '-s', ...originalSearchList]))
     }
     if (keychainCreated) attemptCleanup(() => runSecurity(['delete-keychain', keychainPath]))
-    attemptCleanup(() => removeDirectory(outputPath))
+    // 失败路径不靠这一行：runFreeMacBuild 自己会删掉它没能构建完的输出目录，
+    // 所以留下来的一定是一份通过了全部产物校验的包。
+    if (!keepPackage) attemptCleanup(() => removeDirectory(outputPath))
     attemptCleanup(() => removeDirectory(temporaryRoot))
   }
   // Without this, a cancelled CI job or a local Ctrl-C skips the `finally`
@@ -646,15 +669,24 @@ async function runCiFreeMacBuild(options = {}) {
     if (errors.length === 1) throw errors[0]
     throw new AggregateError(errors, errors.map((error) => error.message).join('; '))
   }
-  return { ...result, cleaned: true }
+  return { ...result, cleaned: true, keptOutputDirectory: keepPackage ? outputPath : undefined }
 }
 
 async function main() {
   try {
     const args = parseFreeMacBuildArguments(process.argv.slice(2))
     if (args.ciTemporarySigning) {
-      await runCiFreeMacBuild()
-      process.stdout.write('macOS 免费分发真实构建已通过临时签名验证，临时产物和签名材料已清理\n')
+      const ciResult = await runCiFreeMacBuild({ keepPackage: args.keepPackage })
+      if (ciResult.keptOutputDirectory) {
+        process.stdout.write(
+          'macOS 免费分发包已通过全部产物校验，签名材料已清理：'
+          + `${ciResult.keptOutputDirectory}\n`
+          + '注意：这份包由 CI 现场生成的一次性身份签名，只能用来安装试用，'
+          + '不能发给客户，也无法与发布身份签名的版本互相自动更新\n',
+        )
+      } else {
+        process.stdout.write('macOS 免费分发真实构建已通过临时签名验证，临时产物和签名材料已清理\n')
+      }
     } else {
       const result = await runFreeMacBuild({ accelerationBundles: args.accelerationBundles })
       const carried = args.accelerationBundles ? '（已携带私有加速线路）' : ''

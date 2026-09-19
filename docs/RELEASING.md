@@ -31,9 +31,13 @@ npm run release:build:unsigned
 
 注意：无签名入口现在与签名入口一样要求输出目录不存在或为空（默认 `release-<版本号>`，可用 `XINGMANG_OUTPUT_DIR` 指定）。重跑同一版本前先把上次的产物移走或换一个新的空目录。
 
+只想拿一份能装上试的包、不打算在本机出包时，用 GitHub Actions 上的 `package-for-testing` 工作流，步骤见 [`docs/CI-PACKAGING.md`](CI-PACKAGING.md)。那条链路出的包**不带私有加速线路**，macOS 侧由 runner 现场生成的一次性身份签名，只能自用验收，不能发给客户；正式发布仍按本手册在发布机上执行。
+
 ### 从 0.2.3 起的私有加速资源
 
-产品所有者确认先分发本机计时版：每账号在本机累计 20 分钟，节点随本地 Windows 安装包提供，不上传 GitHub。TUN 尚未接入。源码和 CI 构建默认不含线路。
+产品所有者确认先分发本机计时版：每账号在本机累计 20 分钟，节点随本地 Windows 安装包提供。TUN 尚未接入。源码和 CI 构建默认不含线路。
+
+2026-09-19 产品所有者改变了原来「节点不上传 GitHub」的决定：三份加速资源（Windows x64、macOS arm64、macOS x64）直接提交进本仓库，以便在 GitHub Actions 上出带线路的包。本仓库是公开的，因此**节点地址与密码等同于公开信息**，被滥用时需要更换节点；这一取舍已由产品所有者明确接受。资源目录格式与体积口径见 [`docs/CI-PACKAGING.md`](CI-PACKAGING.md) 第 4 节。构建入口「加速资源目录必须位于项目目录之外」那道检查不因此放松，出包时由工作流把资源复制到 runner 临时目录再显式传入。
 
 先编译主进程，再将资源准备到项目外的新空目录；开发配置文件仅含 `version:1`、绝对 `corePath`、`coreSha256` 和绝对 `profilePath`。下列为占位路径：
 
@@ -84,7 +88,7 @@ CI 的真实打包门禁（`--ci-temporary-signing`）不走这条路：runner �
 
 本次使用官方 Mihomo v1.19.29，内核与节点文件保存在仓库外。Mac 原生网络组件通过当前构建目标编译，随安装包提供。内核保留其已固定的原始字节与上游签名，不能在代码签名阶段修改后继续使用旧哈希。
 
-除了 `verify-macos-free-artifacts.cjs`，发布者还须检查每个最终应用的 ASAR 资源 pins、内核/节点文件哈希、原生组件路径与架构，以及组件签名。包内 `--xingmang-acceleration-worker` 入口必须能通过 IPC 完成初始化、返回仅含显示信息的线路列表并正常退出。私有节点不得上传 GitHub；R2 发布顺序沿用先安装包和 blockmap、后 `latest-mac.yml`。
+除了 `verify-macos-free-artifacts.cjs`，发布者还须检查每个最终应用的 ASAR 资源 pins、内核/节点文件哈希、原生组件路径与架构，以及组件签名。包内 `--xingmang-acceleration-worker` 入口必须能通过 IPC 完成初始化、返回仅含显示信息的线路列表并正常退出。R2 发布顺序沿用先安装包和 blockmap、后 `latest-mac.yml`。（此处原有的「私有节点不得上传 GitHub」已于 2026-09-19 被产品所有者推翻，见第 1 节。）
 
 ## 3. 发布前置条件
 

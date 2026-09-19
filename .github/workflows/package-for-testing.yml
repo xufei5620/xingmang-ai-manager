@@ -1,0 +1,159 @@
+# 手动触发的「出一份能装的包给自己试」构建（2026-09-19 应发版验收需求添加）。
+#
+# 解决的是一个很具体的问题：发布者要装上去点一遍，才知道这一版能不能发，而在
+# 这个工作流之前，能装的包只能在他自己的 Windows 和 Mac 上出。本工作流让他在
+# GitHub 上点一下，两个平台各拿一份可安装的包，从 Actions 页面直接下载。
+#
+# **产物绝不可发给客户**，两条都是结构性的，不是这次忘了配：
+#
+#   - **不带私有加速线路**。线路资源（Mihomo 内核加私有节点配置）按
+#     docs/RELEASING.md 的规定不上传 GitHub，runner 上没有，也没有任何办法在
+#     这里补上。装出来的包「游戏加速」一页是空的，这是预期行为。
+#   - **macOS 包由 runner 现场生成的一次性身份签名**，不是发布 Mac 钥匙串里那张
+#     证书。安装和使用没有区别（两者都未经公证，都得右键打开），但 electron-updater
+#     认签名身份，所以这份包与正式发布版之间**不能互相自动更新**。
+#
+# 与既有三个工作流的分工：
+#   - quality.yml 的 macos-test 跑的是同一条 macOS 打包链路，但它是演练，产物
+#     当场删掉；这里多传一个 --ci-keep-package 把产物留下来交给 upload-artifact。
+#   - test-build.yml 出的是 XINGMANG_LOCAL_BUILD=1 的快包，一道门禁都不跑、更新
+#     器是关的，只适合看界面；本工作流的 Windows 侧走 release:build:unsigned，
+#     即 0.2.7 对外发布用的同一条完整门禁。
+#   - release-build.yml 是拿到 CA 证书后的 Authenticode 正式构建，目前停用。
+#
+# 本工作流不需要任何 secret，因此不挂 environment：它读不到签名证书，也没有任何
+# 上传目的地。产物只躺在 Actions artifact 里，由发布者下载。
+name: package-for-testing
+
+on:
+  workflow_dispatch:
+    inputs:
+      platforms:
+        description: '要出哪些平台的包'
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - windows
+          - macos
+
+permissions:
+  contents: read
+
+concurrency:
+  # 两个并发构建会产出两套同版本却不同哈希的产物，而下载下来只看版本号是分不清的。
+  group: package-for-testing
+  cancel-in-progress: false
+
+jobs:
+  windows-package:
+    if: ${{ inputs.platforms != 'macos' }}
+    runs-on: windows-latest
+    # release:build:unsigned 在 Windows 上要跑完类型检查、四套测试、编译、三个
+    # 冒烟和产物校验，实测接近一小时。这是卡死的兜底，不是预期时长。
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Read the version being packaged
+        id: metadata
+        shell: bash
+        run: node -p "'version=' + require('./package.json').version" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Install the Chromium the layout tests need
+        # 发布门禁跑 npm test，其中的布局用例用 @playwright/test 的 chromium 做
+        # 真实断言。npm ci 只装 npm 包，浏览器二进制要另外下载，否则这几个用例
+        # 必挂在 "Executable doesn't exist"。
+        run: npx --no-install playwright install chromium
+
+      - name: Build the unsigned installer through the full release gate
+        # 这一步会在第一分钟内就因为「远端版本必须低于本地」或者
+        # 「release-notes.md 第一行与 package.json 不一致」失败 —— 那不是本工作流
+        # 的故障，而是发版流程的前置条件：先 npm run changelog:collect 汇总变更
+        # 分片、再把版本号改成要发的那一版。见 docs/CI-TEST-PACKAGES.md。
+        run: npm run release:build:unsigned
+
+      - name: Print artifact checksums
+        shell: pwsh
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          Get-ChildItem "release-$env:PACKAGE_VERSION" -File |
+            ForEach-Object {
+              $hash = (Get-FileHash $_.FullName -Algorithm SHA256).Hash
+              Write-Host "$($_.Name)  $($_.Length) bytes  SHA256=$hash"
+            }
+
+      - name: Upload the Windows test package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # 名字里写死「无加速线路」：几周后回到下载列表，光看版本号分不清这一份
+          # 和发布者本机出的那一份差在哪。
+          name: windows-unsigned-NO-ACCELERATION-${{ steps.metadata.outputs.version }}
+          path: |
+            release-${{ steps.metadata.outputs.version }}/*Setup.exe
+            release-${{ steps.metadata.outputs.version }}/*.blockmap
+            release-${{ steps.metadata.outputs.version }}/latest.yml
+          retention-days: 14
+          if-no-files-found: error
+
+  macos-package:
+    if: ${{ inputs.platforms != 'windows' }}
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Read the version being packaged
+        id: metadata
+        run: node -p "'version=' + require('./package.json').version" >> "$GITHUB_OUTPUT"
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - run: npx --no-install playwright install chromium
+
+      # macOS 侧的打包脚本自己不跑检查（--ci-temporary-signing 复用已完成的
+      # 检查），而 workflow_dispatch 可以指向任意分支，不能假定这个提交刚过
+      # quality.yml。交出去装的包必须自带这一层。
+      - run: npm run typecheck
+
+      - run: npm test
+
+      - name: Build and verify the macOS package with a throwaway CI identity
+        # 单步上限：脚本会改用户 keychain 搜索列表并在收尾时改回去，一个卡住的
+        # security 或 codesign 调用如果拖到作业上限，就没有任何一步能被指认。
+        timeout-minutes: 25
+        run: node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package
+
+      - name: Print artifact checksums
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        # 产物目录里本来就有脚本生成的 SHA256SUMS，这里原样打出来，下载后可以
+        # 逐个比对，确认拿到的与通过校验的是同一份。
+        run: cat "release-free-ci-$PACKAGE_VERSION/SHA256SUMS"
+
+      - name: Upload the macOS test package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          # 这份包的签名身份是一次性的，发出去既不能更新也无法追溯，名字必须自曝身份。
+          name: macos-CI-SIGNED-DO-NOT-PUBLISH-${{ steps.metadata.outputs.version }}
+          path: release-free-ci-${{ steps.metadata.outputs.version }}/*
+          retention-days: 14
+          if-no-files-found: error
