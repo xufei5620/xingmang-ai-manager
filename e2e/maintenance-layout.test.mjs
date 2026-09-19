@@ -1,61 +1,56 @@
 import assert from 'node:assert/strict'
 import path from 'node:path'
-import { test } from 'node:test'
+import { after, before, test } from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
+import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { createPageErrorCollector } from './page-errors.mjs'
 
-const testDirectory = path.dirname(fileURLToPath(import.meta.url))
-const stylesheetPath = path.resolve(testDirectory, '../src/styles.css')
+const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const pageErrors = createPageErrorCollector()
+let server
+let browser
+let baseUrl
 
-const fixture = `
-  <section class="maintenance-cli-section" data-testid="fixture">
-    <div class="operations-list">
-      <article class="operation-row maintenance-row" data-testid="row">
-        <label class="maintenance-select"><input type="checkbox" aria-label="选择 Codex CLI"></label>
-        <div class="operation-status-icon" aria-hidden="true"></div>
-        <div class="operation-row-copy" data-testid="copy">
-          <div class="operation-row-title"><strong>Codex CLI</strong></div>
-          <p>当前 0.1.0 · 最新 0.2.0</p>
-        </div>
-        <div class="maintenance-row-actions" data-testid="actions">
-          <button class="secondary-button" type="button">检查更新</button>
-          <button class="secondary-button maintenance-uninstall-button" type="button">卸载帮助</button>
-        </div>
-      </article>
-    </div>
-  </section>
-`
-
-async function inspectLayout({ viewportWidth, fixtureWidth }) {
+before(async () => {
+  server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
+  await server.listen()
+  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
   // Hosted CI installs the exact browser revision Playwright expects, but
   // ad-hoc containers (cloud agent sessions) often ship a different one and
   // fail the launch with "Executable doesn't exist". Honouring an explicit
   // executable keeps `npm test` runnable there; CI leaves the variable unset
   // and keeps using the managed download.
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined,
-  })
+  browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
+})
+after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
+
+// 量的是 MaintenancePage 真正渲染出来的那一行,而不是抄进测试的一份 markup 副本:
+// 抄下来的副本在组件结构改掉之后照样能让这些断言全绿。
+async function inspectLayout({ viewportWidth, fixtureWidth }) {
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: viewportWidth, height: 500 } }))
   try {
-    const page = await browser.newPage({ viewport: { width: viewportWidth, height: 500 } })
-    await page.setContent(fixture)
-    await page.addStyleTag({ path: stylesheetPath })
-    await page.locator('[data-testid="fixture"]').evaluate((element, width) => {
-      element.style.width = `${width}px`
+    await page.goto(`${baseUrl}/e2e/maintenance-layout-fixture.html`)
+    const row = page.locator('.maintenance-cli-section .maintenance-row').first()
+    await row.waitFor({ timeout: fixtureReadyTimeoutMs })
+    await page.locator('.maintenance-cli-section').evaluate((section, width) => {
+      section.style.width = `${width}px`
+      section.style.flex = '0 0 auto'
     }, fixtureWidth)
 
-    return await page.locator('[data-testid="row"]').evaluate((row) => {
-      const copy = row.querySelector('[data-testid="copy"]')
-      const actions = row.querySelector('[data-testid="actions"]')
-      const select = row.querySelector('.maintenance-select')
-      const statusIcon = row.querySelector('.operation-status-icon')
+    return await row.evaluate((element) => {
+      const copy = element.querySelector('.operation-row-copy')
+      const actions = element.querySelector('.maintenance-row-actions')
+      const select = element.querySelector('.maintenance-select')
+      const statusIcon = element.querySelector('.operation-status-icon')
       const buttons = actions?.querySelectorAll('button')
       if (!copy || !actions || !select || !statusIcon || !buttons || buttons.length !== 2) {
-        throw new Error('Maintenance layout fixture is incomplete')
+        throw new Error('Maintenance row no longer has the select, status icon, copy and two action buttons this layout is about')
       }
 
-      const rect = (element) => {
-        const bounds = element.getBoundingClientRect()
+      const rect = (target) => {
+        const bounds = target.getBoundingClientRect()
         return {
           left: bounds.left,
           right: bounds.right,
@@ -65,11 +60,11 @@ async function inspectLayout({ viewportWidth, fixtureWidth }) {
           height: bounds.height,
         }
       }
-      const rowStyle = getComputedStyle(row)
+      const rowStyle = getComputedStyle(element)
       const actionsStyle = getComputedStyle(actions)
 
       return {
-        row: rect(row),
+        row: rect(element),
         copy: rect(copy),
         actions: rect(actions),
         select: rect(select),
@@ -83,7 +78,7 @@ async function inspectLayout({ viewportWidth, fixtureWidth }) {
       }
     })
   } finally {
-    await browser.close()
+    await page.close()
   }
 }
 

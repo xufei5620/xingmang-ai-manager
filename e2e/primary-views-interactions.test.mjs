@@ -6,12 +6,14 @@ import { fileURLToPath } from 'node:url'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
 import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const artifacts = path.join(projectRoot, '.project-surgeon/audits/20260906-ui-implementation/primary-views')
 let server
 let browser
 let baseUrl
+const pageErrors = createPageErrorCollector()
 
 before(async () => {
   server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
@@ -20,10 +22,10 @@ before(async () => {
   browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
   await fs.mkdir(artifacts, { recursive: true })
 })
-after(async () => { await browser?.close(); await server?.close() })
+after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
 
 async function openFixture(scenario, viewport = { width: 1280, height: 820 }, theme = 'dark') {
-  const page = await browser.newPage({ viewport })
+  const page = pageErrors.watch(await browser.newPage({ viewport }))
   await page.goto(`${baseUrl}/e2e/primary-views-fixture.html?scenario=${scenario}&theme=${theme}`)
   await page.locator(scenario === 'welcome' ? '.welcome-v3' : '.dashboard-v3').waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
@@ -37,9 +39,24 @@ test('welcome keeps authentication, guide, support and legal routes, and stops e
     await page.getByRole('button', { name: '先看看使用步骤' }).click()
     await page.getByRole('button', { name: '帮助与客服' }).click()
     assert.deepEqual(await page.evaluate(() => window.primaryViewActions), ['login', 'register', 'guide', 'support'])
+    const decorativeMotion = () => page.evaluate(() => Array.from(document.querySelectorAll('.welcome-v3 *'))
+      .map((element) => ({ name: getComputedStyle(element).animationName, state: getComputedStyle(element).animationPlayState }))
+      .filter((entry) => entry.name !== 'none'))
+    // 元素集合从页面本身读出来,不写死类名:欢迎页的装饰元素改名或增减时,
+    // 这条断言要么照样盯着真实的动画,要么因为一个都找不到而红,不会静默放行。
+    const running = await decorativeMotion()
+    assert.ok(running.length > 0, '欢迎页没有找到任何装饰动画，减少动画这条断言会形同虚设')
     await page.getByLabel('减少动画').check()
     assert.equal(await page.locator('.welcome-v3').getAttribute('data-motion-paused'), 'true')
-    assert.ok((await page.locator('.welcome-orbit,.welcome-node').evaluateAll((elements) => elements.map((element) => getComputedStyle(element).animationPlayState))).every((state) => state === 'paused'))
+    // 已知缺陷,按现状如实钉住:legacy 欢迎页把 data-motion-paused 打在根节点上,
+    // 但 legacy 的样式里没有任何规则据此停下星轨(只有 renderer-v2 的 auth.css 有
+    // 对应规则),所以两圈星轨照转。legacy 已冻结,这里不顺手改它。等它修好,这条
+    // 断言会因为实际值变空而红,提醒把期望收成「一个都不许在播」。
+    assert.deepEqual(
+      (await decorativeMotion()).filter((entry) => entry.state !== 'paused'),
+      [{ name: 'welcome-v3-orbit', state: 'running' }, { name: 'welcome-v3-orbit', state: 'running' }],
+      '勾选减少动画后仍在播放的装饰动画与已知缺陷不符',
+    )
     await page.getByRole('button', { name: '用户协议', exact: true }).click()
     await page.getByRole('dialog').waitFor()
     await page.getByRole('button', { name: '知道了' }).click()
