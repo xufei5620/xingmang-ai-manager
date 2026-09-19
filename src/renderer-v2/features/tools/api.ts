@@ -12,7 +12,9 @@ export function createToolsApi(bridge: XingmangApi) {
     readExternal: () => bridge.scanExternalClients(),
     installExternal: (id: ExternalToolId) => bridge.installExternalClient(id),
     launchExternal: (id: ExternalToolId) => bridge.launchExternalClient(id),
-    install: (id: ToolId) => id === 'codexDesktop' ? bridge.installCodexDesktop() : bridge.installCli(id),
+    // version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1);
+    // 只有「回到推荐版本」会点名版本。
+    install: (id: ToolId, version?: string) => id === 'codexDesktop' ? bridge.installCodexDesktop() : bridge.installCli(id, version),
     uninstall: (id: ToolId) => id === 'codexDesktop' ? bridge.uninstallCodexDesktop() : bridge.uninstallCli(id),
     checkUpdate: (id: ToolId) => id === 'codexDesktop' ? bridge.checkCodexDesktopUpdate() : bridge.checkCliUpdate(id),
     launch: (id: ToolId, workspace: string, mode: CodexDesktopLaunchMode = 'open') => id === 'codexDesktop'

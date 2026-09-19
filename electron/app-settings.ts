@@ -68,6 +68,12 @@ export interface AppSettings {
   /** User explicitly uninstalled Codex Desktop and does not want auto-reinstall. */
   codexDesktopInstallDisabled?: boolean
   /**
+   * 安装/更新 CLI 时跟随 npm latest,而不是 cli-verified-versions.ts 里的
+   * 推荐版本。缺省 = 装推荐版本——这是 N1 有意做的默认行为变更(上游针对
+   * 第三方 base URL 的回归反复出现过),不是「缺省 = 旧行为」的漏写。
+   * 没有名单的工具无论这个开关如何都装 latest。
+   */
+  alwaysInstallLatestCli?: boolean
    * Consent for the Codex Desktop Chinese runtime patch (E-S3). That patch
    * needs a loopback CDP port which stays open for the whole Codex session and
    * accepts any local client, so consent must never be inferred from
@@ -117,6 +123,7 @@ export interface AppSettingsUpdate {
   mirrorPolicy?: MirrorPolicy
   officialProviders?: ProviderId[]
   codexDesktopInstallDisabled?: boolean
+  alwaysInstallLatestCli?: boolean
   codexDesktopChineseRuntimePatch?: CodexChineseRuntimePatchChoice
   uiSkin?: AppUiSkin | 'auto'
   reducedMotion?: boolean
@@ -266,6 +273,7 @@ function parseSettingsValue(value: unknown): AppSettings {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(optionalBoolean(value.codexDesktopInstallDisabled, false) ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(optionalBoolean(value.alwaysInstallLatestCli, false) ? { alwaysInstallLatestCli: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin: uiSkin ?? 'mist',
     ...(optionalBoolean(value.reducedMotion, false) ? { reducedMotion: true as const } : {}),
@@ -382,6 +390,9 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
   const codexDesktopInstallDisabled = update.codexDesktopInstallDisabled === undefined
     ? base.codexDesktopInstallDisabled
     : update.codexDesktopInstallDisabled
+  const alwaysInstallLatestCli = update.alwaysInstallLatestCli === undefined
+    ? base.alwaysInstallLatestCli
+    : update.alwaysInstallLatestCli
   // Both sides are re-parsed, unlike the fields above which trust the base:
   // this one decides whether Codex starts with a local debugging port, so an
   // unrecognized value from either side must read as "not asked yet" (E-S3).
@@ -406,6 +417,7 @@ export function mergeAppSettings(base: AppSettings, update: AppSettingsUpdate): 
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders && officialProviders.length > 0 ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled ? { codexDesktopInstallDisabled: true as const } : {}),
+    ...(alwaysInstallLatestCli ? { alwaysInstallLatestCli: true as const } : {}),
     ...(codexDesktopChineseRuntimePatch !== undefined ? { codexDesktopChineseRuntimePatch } : {}),
     uiSkin,
     ...(reducedMotion ? { reducedMotion: true as const } : {}),

@@ -25,3 +25,20 @@ describe('home balance usage queries', () => {
     }
   })
 })
+
+describe('CLI install version passthrough', () => {
+  it('lets the main process decide the version unless the caller names one', async () => {
+    const installCli = vi.fn(async () => undefined)
+    const installCodexDesktop = vi.fn(async () => undefined)
+    const api = createToolsApi({ installCli, installCodexDesktop } as unknown as XingmangApi)
+
+    await api.install('claude')
+    expect(installCli).toHaveBeenCalledWith('claude', undefined)
+
+    await api.install('claude', '2.1.277')
+    expect(installCli).toHaveBeenLastCalledWith('claude', '2.1.277')
+
+    await api.install('codexDesktop', '2.1.277')
+    expect(installCodexDesktop).toHaveBeenCalledWith()
+  })
+})

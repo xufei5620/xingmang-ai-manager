@@ -193,6 +193,9 @@ const methods = {
   getUpdateState: async () => ({ phase: query.has('startupUpdate') ? 'idle' : 'disabled', currentVersion: '0.1.31', availableVersion: null, releaseName: null, releaseNotesText: null, checkedAt: null, progress: null, error: null, development: true }),
   runStartupUpdate: async () => { throw new Error('本地更新源暂时不可用') },
   runDiagnostics: async () => ({ version: 1, generatedAt: new Date().toISOString(), durationMs: 1, counts: { pass: 1, warn: 0, fail: 0, error: 0 }, items: [] }),
+  checkProviderConnection: async (provider) => (query.has('connectionFailure')
+    ? { provider, siteId: 'solov', ok: false, layer: 'group' as const, summary: '当前账号分组下没有可用渠道（HTTP 503）', nextStep: '到「账号」页确认套餐仍在有效期内，再点一次「写入 Key」', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: '当前分组下无可用渠道', status: 503, durationMs: 12, checkedAt: new Date().toISOString() }
+    : { provider, siteId: 'solov', ok: true, layer: 'network' as const, summary: '连接正常，claude-opus-5 可以直接使用', nextStep: '无需处理', endpoint: 'https://fixture.invalid/v1/messages', model: 'claude-opus-5', detail: null, status: 200, durationMs: 12, checkedAt: new Date().toISOString() }),
   scanSystem: async () => {
     if (query.has('desktopEvent')) window.v2Test.emit('onCodexDesktopStatus', { status: { ...system.desktopApps.codex, appVersion: '9.9.9' } })
     return structuredClone(system)

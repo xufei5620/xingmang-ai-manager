@@ -14,26 +14,34 @@ const codexHome = path.join(homeDirectory, '.codex')
 const userDataDirectory = path.join(stateRoot, 'user-data')
 const startedAt = new Date().toISOString()
 
-const scenarios = [
-  { width: 1590, height: 875, theme: 'dark', manual: 'codex-command' },
-  { width: 1590, height: 875, theme: 'light', manual: 'grok-unknown-source' },
-  { width: 980, height: 680, theme: 'dark', manual: 'grok-unknown-source' },
-  { width: 980, height: 680, theme: 'light', manual: 'codex-command' },
-]
-const manualCases = {
-  'codex-command': {
-    provider: 'Codex CLI',
-    reason: '已识别 OpenAI 官方 Codex standalone 安装；为保留配置和会话，请按教程将 CLI 程序移动到废纸篓',
-    directory: `${homeDirectory}/Applications/Codex-standalone`,
-    hasCommand: true,
-  },
-  'grok-unknown-source': {
-    provider: 'Grok CLI',
-    reason: '当前安装来源或目录不支持安全自动卸载，请使用该发行版自带的卸载方式',
-    directory: `${homeDirectory}/Library/Application Support/unknown-grok-installation`,
-    hasCommand: false,
-  },
+// `npm run compile` ships renderer-v2, so every selector below is a v2
+// data-testid. The legacy shell's class names (.app-shell, .main-nav,
+// .cli-card, .dashboard-page) exist nowhere in src/renderer-v2, which is why
+// this script used to spend 60 seconds waiting for a node that never appears.
+const shellRegions = {
+  titlebar: 'window-titlebar',
+  sidebar: 'sidebar',
+  main: 'page-viewport',
+  topbar: 'shell-topbar',
+  statusbar: 'shell-statusbar',
 }
+// Home lists the four managed CLIs plus the Codex desktop app; on macOS
+// platformCapabilities reports codexDesktop.launch, so all five rows render.
+const expectedToolRows = ['codex', 'claude', 'gemini', 'grok', 'codexDesktop']
+
+const scenarios = [
+  { width: 1590, height: 875, theme: 'dark', tool: 'codex' },
+  { width: 1590, height: 875, theme: 'light', tool: 'grok' },
+  { width: 980, height: 680, theme: 'dark', tool: 'grok' },
+  { width: 980, height: 680, theme: 'light', tool: 'codex' },
+]
+// The fixture below reports both tools as installed, which is what puts a row
+// menu (and therefore the configuration dialog) within reach.
+const toolCases = {
+  codex: { name: 'Codex CLI' },
+  grok: { name: 'Grok CLI' },
+}
+const dialogSubtitle = '选好账号后，保存并打开工具即可开始。'
 const results = []
 const pageErrors = []
 let application = null
@@ -43,7 +51,7 @@ let runPhase = 'setup'
 let electronStderr = ''
 
 function scenarioName(scenario) {
-  return `${scenario.width}x${scenario.height}-${scenario.theme}-${scenario.manual}`
+  return `${scenario.width}x${scenario.height}-${scenario.theme}-${scenario.tool}`
 }
 
 function retainElectronStderr(chunk) {
@@ -56,17 +64,27 @@ await Promise.all(scenarios.map((scenario) => (
   fs.rm(path.join(artifactDir, `${scenarioName(scenario)}.png`), { force: true })
 )))
 
+// v2 has no shell-level theme toggle; the appearance group in 设置 is the only
+// user-facing switch, and on macOS it routes through the platform theme
+// preference before the renderer writes data-theme.
 async function selectTheme(theme) {
   const currentTheme = await page.locator('html').getAttribute('data-theme')
-  if (currentTheme !== theme) {
-    await page.locator('.sidebar .theme-toggle').click()
-    await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme)
-    await page.waitForTimeout(220)
-  }
+  if (currentTheme === theme) return
+  await page.getByTestId('nav-settings').click()
+  const settings = page.getByTestId('page-settings')
+  await settings.waitFor({ state: 'visible', timeout: 30_000 })
+  await settings
+    .getByTestId('settings-theme')
+    .getByRole('button', { name: theme === 'dark' ? '暗色' : '亮色', exact: true })
+    .click()
+  await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme, {
+    timeout: 30_000,
+  })
+  await page.waitForTimeout(220)
 }
 
-async function inspectDashboardLayout() {
-  return page.evaluate(() => {
+async function inspectDashboardLayout(expectedRows) {
+  return page.evaluate(({ regions, expected }) => {
     const rectangle = (element) => {
       if (!(element instanceof HTMLElement)) return null
       const bounds = element.getBoundingClientRect()
@@ -81,38 +99,52 @@ async function inspectDashboardLayout() {
     }
     const intersects = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1
       && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1
-    const cards = [...document.querySelectorAll('.cli-card')].map(rectangle).filter(Boolean)
-    const cardOverlaps = []
-    for (let left = 0; left < cards.length; left += 1) {
-      for (let right = left + 1; right < cards.length; right += 1) {
-        if (intersects(cards[left], cards[right])) cardOverlaps.push([left, right])
+    const byTestId = (value) => document.querySelector(`[data-testid="${value}"]`)
+    const rows = [...document.querySelectorAll('[data-testid^="tool-row-"]')]
+      .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
+    const rowRectangles = rows.map(rectangle).filter(Boolean)
+    const rowOverlaps = []
+    for (let left = 0; left < rowRectangles.length; left += 1) {
+      for (let right = left + 1; right < rowRectangles.length; right += 1) {
+        if (intersects(rowRectangles[left], rowRectangles[right])) rowOverlaps.push([left, right])
       }
     }
+    const visibleRowIds = rows.map((element) => element.dataset.testid?.slice('tool-row-'.length) ?? '')
     const clippedControls = [...document.querySelectorAll('button, [role="tab"]')]
       .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
       .filter((element) => element.scrollWidth > element.clientWidth + 2)
       .map((element) => element.getAttribute('aria-label') || element.textContent?.trim() || element.tagName)
-    const sidebar = rectangle(document.querySelector('.sidebar'))
-    const main = rectangle(document.querySelector('.main-content'))
-    const titlebar = rectangle(document.querySelector('.window-titlebar'))
+    const sidebar = rectangle(byTestId(regions.sidebar))
+    const main = rectangle(byTestId(regions.main))
+    const titlebar = rectangle(byTestId(regions.titlebar))
+    const topbar = rectangle(byTestId(regions.topbar))
+    const statusbar = rectangle(byTestId(regions.statusbar))
+    const insideViewport = (rect) => Boolean(rect && rect.left >= 0 && rect.right <= window.innerWidth + 1)
     return {
       viewport: { width: window.innerWidth, height: window.innerHeight },
       horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
       sidebar,
       main,
       titlebar,
+      topbar,
+      statusbar,
       regionsSeparated: Boolean(sidebar && main && main.left >= sidebar.right - 1),
-      mainInsideViewport: Boolean(main && main.left >= 0 && main.right <= window.innerWidth + 1),
-      titlebarInsideViewport: Boolean(titlebar && titlebar.left >= 0 && titlebar.right <= window.innerWidth + 1),
-      cardCount: cards.length,
-      cardOverlaps,
+      mainInsideViewport: insideViewport(main),
+      titlebarInsideViewport: insideViewport(titlebar),
+      topbarInsideViewport: insideViewport(topbar),
+      statusbarInsideViewport: insideViewport(statusbar),
+      visibleRowIds,
+      missingToolRows: expected.filter((id) => !visibleRowIds.includes(id)),
+      rowOverlaps,
       clippedControls,
       imagesLoaded: [...document.images].every((image) => image.complete && image.naturalWidth > 0),
     }
-  })
+  }, { regions: shellRegions, expected: expectedRows })
 }
 
-async function inspectManualDialog() {
+// The v2 modal is a native <dialog>: header, then .xm-modal-content holding the
+// scrollable .xm-dialog-body and the footer.
+async function inspectConfigDialog() {
   return page.evaluate(() => {
     const rectangle = (element) => {
       if (!(element instanceof HTMLElement)) return null
@@ -128,19 +160,21 @@ async function inspectManualDialog() {
     }
     const intersects = (a, b) => Math.min(a.right, b.right) - Math.max(a.left, b.left) > 1
       && Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top) > 1
-    const dialog = document.querySelector('.manual-uninstall-dialog')
-    const content = dialog?.querySelector('.manual-uninstall-content')
-    const header = dialog?.querySelector('.save-mode-head')
-    const footer = dialog?.querySelector('.manual-uninstall-footer')
-    const command = dialog?.querySelector('.manual-command-code pre')
-    const commandContainer = dialog?.querySelector('.manual-command-code')
+    const dialog = document.querySelector('dialog[data-testid="config-dialog"]')
+    const content = dialog?.querySelector('.xm-modal-content')
+    const body = dialog?.querySelector('.xm-dialog-body')
+    const header = dialog?.querySelector(':scope > header')
+    const footer = dialog?.querySelector('.xm-modal-content > footer')
     const headerCopy = header?.querySelector(':scope > div')
-    const headerClose = header?.querySelector('button')
+    const headerClose = header?.querySelector('button[data-modal-close="true"]')
     const dialogRect = rectangle(dialog)
     const contentRect = rectangle(content)
     const headerRect = rectangle(header)
     const footerRect = rectangle(footer)
-    const buttonRects = [...(dialog?.querySelectorAll('button') ?? [])].map(rectangle).filter(Boolean)
+    const buttonRects = [...(dialog?.querySelectorAll('button') ?? [])]
+      .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
+      .map(rectangle)
+      .filter(Boolean)
     const buttonsInsideDialog = Boolean(dialogRect) && buttonRects.every((button) => (
       button.left >= dialogRect.left - 1
       && button.right <= dialogRect.right + 1
@@ -148,7 +182,8 @@ async function inspectManualDialog() {
       && button.bottom <= dialogRect.bottom + 1
     ))
     const clippedControls = [...(dialog?.querySelectorAll('button') ?? [])]
-      .filter((element) => element instanceof HTMLElement && element.scrollWidth > element.clientWidth + 2)
+      .filter((element) => element instanceof HTMLElement && element.offsetParent !== null)
+      .filter((element) => element.scrollWidth > element.clientWidth + 2)
       .map((element) => element.getAttribute('aria-label') || element.textContent?.trim() || element.tagName)
     return {
       viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -159,20 +194,16 @@ async function inspectManualDialog() {
       contentInsideDialog: Boolean(dialogRect && contentRect && contentRect.left >= dialogRect.left - 1
         && contentRect.right <= dialogRect.right + 1 && contentRect.top >= dialogRect.top - 1
         && contentRect.bottom <= dialogRect.bottom + 1),
-      contentOverflowY: content instanceof HTMLElement ? getComputedStyle(content).overflowY : null,
-      contentCanScroll: content instanceof HTMLElement && content.scrollHeight > content.clientHeight,
-      commandScrollStyle: command instanceof HTMLElement ? {
-        overflowX: getComputedStyle(command).overflowX,
-        overflowY: getComputedStyle(command).overflowY,
-      } : null,
-      commandCanScrollY: command instanceof HTMLElement
-        && command.scrollHeight > command.clientHeight + 1,
-      commandContainerHorizontalOverflow: commandContainer instanceof HTMLElement
-        && commandContainer.scrollWidth > commandContainer.clientWidth + 1,
+      bodyOverflowY: body instanceof HTMLElement ? getComputedStyle(body).overflowY : null,
+      bodyHorizontalOverflow: body instanceof HTMLElement && body.scrollWidth > body.clientWidth + 1,
+      // Reported, not asserted: whether the body needs to scroll depends on the
+      // account state this run happens to produce. `bodyOverflowY` is the
+      // invariant — the body must stay able to scroll.
+      bodyCanScroll: body instanceof HTMLElement && body.scrollHeight > body.clientHeight + 1,
       buttonsInsideDialog,
       clippedControls,
       headerContentOverlap: Boolean(headerRect && contentRect && intersects(headerRect, contentRect)),
-      contentFooterOverlap: Boolean(contentRect && footerRect && intersects(contentRect, footerRect)),
+      contentFooterOverlap: Boolean(rectangle(body) && footerRect && intersects(rectangle(body), footerRect)),
       headerTextCloseOverlap: Boolean(rectangle(headerCopy) && rectangle(headerClose)
         && intersects(rectangle(headerCopy), rectangle(headerClose))),
       footerButtonOverlaps: buttonRects.filter((button) => footerRect && button.top >= footerRect.top - 1).some((button, index, buttons) => (
@@ -198,6 +229,9 @@ try {
     'requires_openai_auth = true',
     '',
   ].join('\n'), 'utf8')
+  // A provider that already holds a key is also what lets v2 open the
+  // workspace without a signed-in account; without it the renderer stops on
+  // the welcome page and no shell selector ever resolves.
   await fs.writeFile(
     path.join(codexHome, 'auth.json'),
     `${JSON.stringify({ OPENAI_API_KEY: 'macos-visual-placeholder-key' }, null, 2)}\n`,
@@ -213,7 +247,10 @@ try {
       USERPROFILE: homeDirectory,
       XINGMANG_CODEX_HOME_OVERRIDE: codexHome,
       XINGMANG_DISABLE_SINGLE_INSTANCE: '1',
-      // The main process accepts this fixture only when app.isPackaged is false.
+      // The main process accepts this fixture only when app.isPackaged is
+      // false. v2 dropped the manual-uninstall dialog the fixture was written
+      // for, but its projected snapshot still reports Codex CLI and Grok CLI as
+      // installed, which is what this run needs.
       XINGMANG_E2E_MANUAL_UNINSTALL_FIXTURE: '1',
     },
   })
@@ -225,24 +262,36 @@ try {
 
   runPhase = 'scenario'
   await page.waitForLoadState('domcontentloaded')
-  await page.locator('.app-shell').waitFor({ state: 'visible', timeout: 60_000 })
-  await page.waitForFunction(() => !document.body.textContent?.includes('检测中...'), null, { timeout: 60_000 })
+  await page.getByTestId('app-frame').waitFor({ state: 'visible', timeout: 60_000 })
+  await page.waitForFunction(() => document.documentElement.dataset.rendererReady === 'true', null, {
+    timeout: 60_000,
+  })
 
   const capabilities = await page.evaluate(() => window.xingmang.getPlatformCapabilities())
   if (capabilities.platform !== 'macos') throw new Error('renderer did not receive macOS capabilities')
 
   for (const scenario of scenarios) {
-    const manual = manualCases[scenario.manual]
+    const subject = toolCases[scenario.tool]
     await application.evaluate(({ BrowserWindow }, requested) => {
       const window = BrowserWindow.getAllWindows()[0]
       window?.setSize(requested.width, requested.height, false)
       window?.center()
     }, scenario)
+    // Let the renderer catch up with the new window size before anything is
+    // measured. A timeout here is not fatal on its own: the windowBounds and
+    // overflow assertions below still fail loudly if the resize never landed.
+    await page
+      .waitForFunction((requested) => Math.abs(window.innerWidth - requested.width) <= 4, scenario, {
+        timeout: 10_000,
+      })
+      .catch(() => undefined)
     await page.waitForTimeout(300)
     await selectTheme(scenario.theme)
-    await page.locator('.main-nav .nav-item[data-navigation-id="overview"]').click()
-    await page.locator('.dashboard-page').waitFor({ state: 'visible', timeout: 10_000 })
-    await page.waitForFunction(() => document.querySelectorAll('.cli-card').length === 5, null, { timeout: 60_000 })
+    await page.getByTestId('nav-home').click()
+    const home = page.getByTestId('page-home')
+    await home.waitFor({ state: 'visible', timeout: 30_000 })
+    const row = page.getByTestId(`tool-row-${scenario.tool}`)
+    await row.waitFor({ state: 'visible', timeout: 60_000 })
 
     const windowBounds = await application.evaluate(({ BrowserWindow }) => (
       BrowserWindow.getAllWindows()[0]?.getBounds() ?? null
@@ -252,80 +301,71 @@ try {
       requested: { width: scenario.width, height: scenario.height },
       windowBounds,
       theme: scenario.theme,
-      manual: scenario.manual,
+      tool: scenario.tool,
       pageErrors: [...pageErrors],
-      dashboardLayout: await inspectDashboardLayout(),
+      dashboardLayout: await inspectDashboardLayout(expectedToolRows),
+      maintenanceRowIds: [],
       dialog: null,
       titleVisible: false,
-      reasonVisible: false,
-      directoryVisible: false,
-      stepCount: 0,
-      commandBranchCorrect: false,
-      copyButtonWorked: null,
+      subtitleVisible: false,
+      toolTabsVisible: false,
+      cancelButtonVisible: false,
+      saveButtonVisible: false,
       closeButtonVisible: false,
-      refreshButtonVisible: false,
       closeButtonWorked: false,
-      refreshButtonWorked: null,
-      manualError: null,
+      dialogError: null,
     }
     results.push(result)
 
     try {
-      await page.locator('.main-nav').getByRole('button', { name: '安装维护', exact: true }).click()
-      const maintenance = page.locator('.main-content [data-page-id="maintenance"]')
-      await maintenance.waitFor({ state: 'visible', timeout: 10_000 })
-      await maintenance.locator('.maintenance-cli-section .maintenance-row').first().waitFor({ state: 'visible', timeout: 60_000 })
-      const row = maintenance.locator('.maintenance-cli-section .maintenance-row').filter({
-        has: page.getByText(manual.provider, { exact: true }),
-      })
-      const helpButton = row.getByRole('button', { name: '卸载帮助', exact: true })
-      await helpButton.click()
-      const dialog = page.getByRole('dialog', { name: `手动卸载 ${manual.provider}` })
-      await dialog.waitFor({ state: 'visible', timeout: 10_000 })
+      // 安装卸载 lives behind the sidebar's 更多 group in v2, and that button
+      // toggles: clicking it while the group is already open hides the entry.
+      const moreNavigation = page.getByTestId('nav-more')
+      if (await moreNavigation.getAttribute('aria-expanded') !== 'true') await moreNavigation.click()
+      await page.getByTestId('nav-maintenance').click()
+      const maintenance = page.getByTestId('page-maintenance')
+      await maintenance.waitFor({ state: 'visible', timeout: 30_000 })
+      await maintenance
+        .getByTestId(`maintenance-tool-${scenario.tool}`)
+        .waitFor({ state: 'visible', timeout: 60_000 })
+      result.maintenanceRowIds = await maintenance.evaluate((element) => (
+        [...element.querySelectorAll('[data-testid^="maintenance-tool-"]')]
+          .map((node) => node.getAttribute('data-testid')?.slice('maintenance-tool-'.length) ?? '')
+      ))
 
-      result.titleVisible = await dialog.getByRole('heading', { name: `手动卸载 ${manual.provider}`, exact: true }).isVisible()
-      result.reasonVisible = await dialog.getByText(manual.reason, { exact: true }).isVisible()
-      result.directoryVisible = await dialog.getByText(manual.directory, { exact: true }).isVisible()
-      result.stepCount = await dialog.locator('.manual-uninstall-steps li').count()
-      result.closeButtonVisible = await dialog.getByRole('button', { name: '关闭', exact: true }).isVisible()
-      result.refreshButtonVisible = await dialog.getByRole('button', { name: '执行完成后重新检测', exact: true }).isVisible()
-      if (manual.hasCommand) {
-        const copy = dialog.getByRole('button', { name: '复制卸载命令', exact: true })
-        await copy.click()
-        await dialog.getByRole('status').filter({ hasText: '命令已复制' }).waitFor({
-          state: 'visible',
-          timeout: 5_000,
-        })
-        result.copyButtonWorked = true
-        result.commandBranchCorrect = await dialog.locator('.manual-command-block').isVisible()
-          && await dialog.getByText('终端命令', { exact: true }).isVisible()
-      } else {
-        result.copyButtonWorked = null
-        result.commandBranchCorrect = await dialog.locator('.manual-command-block').count() === 0
-          && await dialog.getByText(/来源无法安全确认，因此没有生成删除命令/).isVisible()
-      }
-      result.dialog = await inspectManualDialog()
+      await page.getByTestId('nav-home').click()
+      await home.waitFor({ state: 'visible', timeout: 30_000 })
+      await row.getByRole('button', { name: '更多操作', exact: true }).click()
+      await row.getByRole('menuitem', { name: '配置', exact: true }).click()
+      const dialog = page.getByTestId('config-dialog')
+      await dialog.waitFor({ state: 'visible', timeout: 30_000 })
+
+      result.titleVisible = await dialog
+        .getByRole('heading', { name: `${subject.name} 配置`, exact: true })
+        .isVisible()
+      result.subtitleVisible = await dialog.getByText(dialogSubtitle, { exact: true }).isVisible()
+      result.toolTabsVisible = await dialog.getByRole('tablist', { name: '选择要配置的工具' }).isVisible()
+      result.cancelButtonVisible = await dialog.getByRole('button', { name: '取消', exact: true }).isVisible()
+      result.saveButtonVisible = await dialog.getByTestId('tool-save-config').isVisible()
+      const close = dialog.getByRole('button', { name: '关闭', exact: true })
+      result.closeButtonVisible = await close.isVisible()
+      result.dialog = await inspectConfigDialog()
       await page.screenshot({
         path: path.join(artifactDir, `${result.name}.png`),
         animations: 'disabled',
       })
 
-      await dialog.getByRole('button', { name: '关闭', exact: true }).click()
-      await dialog.waitFor({ state: 'hidden', timeout: 10_000 })
+      await close.click()
+      await dialog.waitFor({ state: 'hidden', timeout: 30_000 })
       result.closeButtonWorked = true
-
-      if (scenario.width === 980 && manual.hasCommand) {
-        await helpButton.click()
-        await dialog.waitFor({ state: 'visible', timeout: 10_000 })
-        await dialog.getByRole('button', { name: '执行完成后重新检测', exact: true }).click()
-        await dialog.waitFor({ state: 'hidden', timeout: 10_000 })
-        result.refreshButtonWorked = true
-      }
     } catch (error) {
-      result.manualError = error instanceof Error ? error.message : String(error)
-      const openDialog = page.locator('.manual-uninstall-dialog')
+      result.dialogError = error instanceof Error ? error.message : String(error)
+      const openDialog = page.getByTestId('config-dialog')
       if (await openDialog.isVisible().catch(() => false)) {
-        await openDialog.getByRole('button', { name: '关闭', exact: true }).click().catch(() => undefined)
+        await openDialog
+          .getByRole('button', { name: '关闭', exact: true })
+          .click()
+          .catch(() => undefined)
       }
     }
   }
@@ -354,7 +394,8 @@ for (const result of results) result.pageErrors = [...pageErrors]
 await fs.writeFile(
   resultPath,
   `${JSON.stringify({
-    schemaVersion: 2,
+    schemaVersion: 3,
+    renderer: 'renderer-v2',
     capabilities: 'macos',
     startedAt,
     finishedAt: new Date().toISOString(),
@@ -378,36 +419,28 @@ const failed = results.filter((result) => {
     || !layout.regionsSeparated
     || !layout.mainInsideViewport
     || !layout.titlebarInsideViewport
-    || layout.cardCount !== 5
-    || layout.cardOverlaps.length > 0
+    || !layout.topbarInsideViewport
+    || !layout.statusbarInsideViewport
+    || layout.missingToolRows.length > 0
+    || layout.rowOverlaps.length > 0
     || layout.clippedControls.length > 0
     || !layout.imagesLoaded
-    || result.manualError !== null
+    || result.dialogError !== null
+    || !expectedToolRows.every((id) => result.maintenanceRowIds.includes(id))
     || !result.titleVisible
-    || !result.reasonVisible
-    || !result.directoryVisible
-    || result.stepCount !== 3
-    || !result.commandBranchCorrect
-    || (result.manual === 'codex-command' && result.copyButtonWorked !== true)
-    || (result.manual === 'grok-unknown-source' && result.copyButtonWorked !== null)
+    || !result.subtitleVisible
+    || !result.toolTabsVisible
+    || !result.cancelButtonVisible
+    || !result.saveButtonVisible
     || !result.closeButtonVisible
-    || !result.refreshButtonVisible
     || !result.closeButtonWorked
-    || (result.name === '980x680-light-codex-command' && result.refreshButtonWorked !== true)
     || !dialog
     || dialog.documentHorizontalOverflow
     || dialog.dialogHorizontalOverflow
     || !dialog.dialogInsideViewport
     || !dialog.contentInsideDialog
-    || dialog.contentOverflowY !== 'auto'
-    || (result.manual === 'codex-command' && (
-      dialog.commandScrollStyle?.overflowX !== 'auto'
-      || dialog.commandScrollStyle?.overflowY !== 'auto'
-      || dialog.commandContainerHorizontalOverflow
-    ))
-    || (result.name === '980x680-light-codex-command'
-      && !dialog.contentCanScroll
-      && !dialog.commandCanScrollY)
+    || dialog.bodyOverflowY !== 'auto'
+    || dialog.bodyHorizontalOverflow
     || !dialog.buttonsInsideDialog
     || dialog.clippedControls.length > 0
     || dialog.headerContentOverlap
