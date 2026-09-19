@@ -356,3 +356,59 @@ test('no wait in a Playwright Electron smoke is left unbounded', () => {
 
   assert.match(fs.readFileSync(path.join(root, 'e2e', 'smoke-runtime.mjs'), 'utf8'), /export function killProcessTree\(/)
 })
+
+const fixtureReadinessModule = 'e2e/fixture-readiness.mjs'
+// Every suite whose fixture mount used to borrow Playwright's 30s action
+// default, and whose first open therefore reported a cold start as an
+// assertion failure.
+const fixtureReadinessConsumers = [
+  'e2e/primary-views-interactions.test.mjs',
+  'e2e/start-guide-interactions.test.mjs',
+  'e2e/account-switcher-interactions.test.mjs',
+  'e2e/maintenance-pages-interactions.test.mjs',
+  'e2e/shell-navigation-interactions.test.mjs',
+  'e2e/ui-interactions.test.mjs',
+  'src/renderer-v2/testing/app-check.mjs',
+]
+
+test('a cold fixture open cannot be reported as a failed assertion again', () => {
+  const budget = fs.readFileSync(path.join(root, fixtureReadinessModule), 'utf8')
+    .match(/XINGMANG_FIXTURE_READY_TIMEOUT_MS \?\? (\d[\d_]*)\)/)
+
+  assert.ok(budget, `${fixtureReadinessModule} must declare the shared mount budget`)
+  const budgetMs = Number(budget[1].replaceAll('_', ''))
+  // Wider than the 30s default the cold opens in quality runs #264 and #284
+  // blew through, and still small enough that a fixture which never mounts
+  // fails long before the Windows job runs out of time.
+  assert.ok(budgetMs > 30_000, 'the mount budget must exceed the Playwright default it replaces')
+  assert.ok(budgetMs <= 300_000, 'the mount budget must stay well inside the Windows job timeout')
+
+  for (const consumer of fixtureReadinessConsumers) {
+    const source = fs.readFileSync(path.join(root, consumer), 'utf8')
+
+    assert.match(source, /fixtureReadyTimeoutMs/, `${consumer} must bound its fixture mount with the shared budget`)
+    assert.match(source, /from '[./]*(?:e2e\/)?fixture-readiness\.mjs'/, `${consumer} must import the shared budget rather than restate it`)
+  }
+
+  // page.goto resolves on `load`, which happens before the fixture module has
+  // installed its globals and can be followed by a Vite dependency reload.
+  const appCheck = fs.readFileSync(path.join(root, 'src/renderer-v2/testing/app-check.mjs'), 'utf8')
+  assert.match(appCheck, /await waitForFixtureReady\(page\)/, 'every app-check page must wait for the fixture to install')
+})
+
+test('the window close smoke survives a transient Windows filesystem error', () => {
+  const source = fs.readFileSync(path.join(root, 'e2e', 'window-close-smoke.mjs'), 'utf8')
+
+  // The main process registers uncaughtExceptionMonitor rather than
+  // uncaughtException, so anything thrown out of the control interval ends the
+  // run: the next command is never acknowledged and the smoke can only report a
+  // timeout. Defender holding the command file for a moment is enough to do it.
+  assert.match(source, /recordCommandFailure\('read', error\)/, 'a failed command read must be retried, not thrown')
+  assert.match(source, /commandFailures/, 'the evidence file must carry what the control channel refused')
+  // Polling for an acknowledgement asserts nothing about behaviour, so it may
+  // have more headroom than the native visibility waits, but it must give up at
+  // once when the application it is polling has already exited.
+  assert.match(source, /XINGMANG_SMOKE_COMMAND_TIMEOUT_MS/, 'the acknowledgement wait must stay bounded and overridable')
+  assert.match(source, /abandonedByExit/, 'the acknowledgement wait must stop as soon as the application exits')
+  assert.match(source, /main \$\{label\}/, "the main process's own output must reach the log")
+})

@@ -3,6 +3,7 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
 
 let server, browser, baseUrl
 before(async () => {
@@ -17,7 +18,7 @@ async function fixture(query = '', viewport = { width: 1280, height: 820 }) {
   const page = await browser.newPage({ viewport })
   await page.route('**/*', (route) => new URL(route.request().url()).origin === baseUrl ? route.continue() : route.abort())
   await page.goto(`${baseUrl}/e2e/shell-navigation-fixture.html?${query}`)
-  await page.locator('.shell-topbar').waitFor()
+  await page.locator('.shell-topbar').waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 

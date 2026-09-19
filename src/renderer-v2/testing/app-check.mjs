@@ -5,15 +5,41 @@ import path from 'node:path'
 import { createServer } from 'vite'
 import react from '@vitejs/plugin-react'
 import { chromium, expect } from '@playwright/test'
+import { fixtureReadyTimeoutMs } from '../../../e2e/fixture-readiness.mjs'
 
 let server, browser, origin
 const artifacts = path.resolve('artifacts/renderer-v2-app')
+// page.goto resolves on `load`, which says nothing about this fixture: Vite
+// transforms the module graph on demand and reloads the page outright once it
+// discovers a dependency it has to pre-bundle. Tests that started work at that
+// point saw either a half-installed fixture (`window.fixtureSupportQrCode is
+// not a function`) or an empty document, and the next locator absorbed the
+// whole cold start inside its own 30s budget. Poll from Node rather than with
+// Playwright's in-page polling, because a page opened with an installed clock
+// has its timers and requestAnimationFrame paused.
+async function waitForFixtureReady(page, timeout = fixtureReadyTimeoutMs) {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    const ready = await page.evaluate(() => typeof window.fixtureSupportQrCode === 'function'
+      && Boolean(window.v2Test) && Boolean(window.xingmang)
+      && (document.getElementById('root')?.childElementCount ?? 0) > 0)
+      // A reload mid-evaluation destroys the execution context; the next poll
+      // runs against the page the reload produced.
+      .catch(() => false)
+    if (ready) return
+    if (Date.now() >= deadline) throw new Error(`renderer-v2 fixture did not finish installing within ${timeout}ms`)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+  }
+}
 before(async () => {
   await fs.mkdir(artifacts, { recursive: true })
   server = await createServer({ root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error', server: { host: '127.0.0.1', port: 0 } })
   await server.listen()
   origin = `http://127.0.0.1:${server.httpServer.address().port}`
   browser = await chromium.launch({ executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
+  // Pay the transform and dependency-optimisation cost once, here, instead of
+  // charging it to whichever test happens to run first.
+  await (await open()).close()
 })
 after(async () => { await browser?.close(); await server?.close() })
 async function open(query = '', clock = false) {
@@ -31,6 +57,7 @@ async function open(query = '', clock = false) {
   }
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
   await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
+  await waitForFixtureReady(page)
   return page
 }
 async function clean(page) {
