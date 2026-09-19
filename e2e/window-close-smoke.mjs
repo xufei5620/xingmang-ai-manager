@@ -29,7 +29,7 @@ function bootFixture(config) {
   app.setPath('userData', config.userData)
   app.setPath('home', config.userHome)
   const state = { choices: [], dialogs: [], droppedCloseRequests: 0, preventedUnloads: 0, blockedQuits: 0, forceExitCalls: 0, blockQuit: false, lastActionId: 0,
-    userData: app.getPath('userData'), visible: null, processIds: [] }
+    userData: app.getPath('userData'), visible: null, processIds: [], commandLog: [], commandFailures: [] }
   const persist = () => {
     fs.writeFileSync(`${config.evidence}.tmp`, JSON.stringify(state, null, 2) + '\n', 'utf8')
     fs.renameSync(`${config.evidence}.tmp`, config.evidence)
@@ -71,37 +71,71 @@ function bootFixture(config) {
   app.on('will-quit', persist)
   // Native lifecycle events can collect inspector promises even for read-only
   // ElectronApplication.evaluate calls. Keep control outside that transport.
+  //
+  // Anything thrown out of the control callback ends the run without explaining it:
+  // the main process registers uncaughtExceptionMonitor rather than
+  // uncaughtException, so Node still terminates, the pending command is never
+  // acknowledged, and the smoke reports only "was not acknowledged". Defender
+  // can hold the command file open for a moment right after the test renames
+  // it into place, which makes a read or unlink here fail with EPERM or EBUSY
+  // on a Windows runner. Those are retried on the next tick; everything else
+  // is recorded in the evidence file, which the failure dump prints.
+  const recordCommandFailure = (stage, error) => {
+    state.commandFailures.push({ stage, at: Date.now(), code: error?.code ?? null, message: String(error?.message ?? error) })
+    try { persist() } catch { /* The evidence file is best effort once writes are failing. */ }
+  }
   const controlTimer = setInterval(() => {
-    if (!fs.existsSync(config.command)) return
-    const scheduled = JSON.parse(fs.readFileSync(config.command, 'utf8'))
-    fs.unlinkSync(config.command)
-    if (!Number.isSafeInteger(scheduled.id) || scheduled.id <= state.lastActionId
-      || !['inspect', 'activate', 'close', 'block-quit', 'cleanup'].includes(scheduled.action)) throw new Error('Invalid smoke command')
-    state.lastActionId = scheduled.id
-    state.visible = BrowserWindow.getAllWindows()[0]?.isVisible() ?? null
-    state.processIds = app.getAppMetrics().map((entry) => entry.pid)
-    if (scheduled.action === 'block-quit') state.blockQuit = scheduled.blockQuit
-    persist()
-    if (scheduled.action === 'cleanup') { app.exit(0); return }
-    if (scheduled.action === 'activate') app.emit('activate')
-    if (scheduled.action === 'close') {
-      if (scheduled.choice !== null) state.choices.push(scheduled.choice)
-      BrowserWindow.getAllWindows()[0].close()
+    let scheduled
+    try {
+      if (!fs.existsSync(config.command)) return
+      scheduled = JSON.parse(fs.readFileSync(config.command, 'utf8'))
+      fs.unlinkSync(config.command)
+    } catch (error) {
+      recordCommandFailure('read', error)
+      return
+    }
+    try {
+      if (!Number.isSafeInteger(scheduled.id) || scheduled.id <= state.lastActionId
+        || !['inspect', 'activate', 'close', 'block-quit', 'cleanup'].includes(scheduled.action)) throw new Error('Invalid smoke command')
+      state.commandLog.push({ id: scheduled.id, action: scheduled.action, at: Date.now() })
+      state.lastActionId = scheduled.id
+      state.visible = BrowserWindow.getAllWindows()[0]?.isVisible() ?? null
+      state.processIds = app.getAppMetrics().map((entry) => entry.pid)
+      if (scheduled.action === 'block-quit') state.blockQuit = scheduled.blockQuit
+      persist()
+      if (scheduled.action === 'cleanup') { app.exit(0); return }
+      if (scheduled.action === 'activate') app.emit('activate')
+      if (scheduled.action === 'close') {
+        if (scheduled.choice !== null) state.choices.push(scheduled.choice)
+        BrowserWindow.getAllWindows()[0].close()
+      }
+    } catch (error) {
+      recordCommandFailure(`action:${scheduled?.action}`, error)
     }
   }, 25)
   controlTimer.unref()
   require(config.entry)
 }
 
-// Windows runners run this behind Defender and after twenty minutes of
-// filesystem-heavy tests, so a native hide or restore is measurably slower
-// there than on macOS. The wait stays bounded; only its headroom grew.
-async function waitUntil(read, accepts, label, timeout = 15_000) {
+// Every poll here waits on the same thing: the main process getting round to
+// the next turn of its event loop. On a Windows runner that is far slower than
+// anywhere else — quality run #284 spent 16s reaching the first window and then
+// answered three consecutive commands at roughly fifteen second intervals, so a
+// 15s budget failed the cancel-close step while the application was working,
+// just slowly. The waits stay bounded, and nothing they assert changed; only
+// their headroom did.
+const mainProcessResponseTimeoutMs = Number(process.env.XINGMANG_SMOKE_COMMAND_TIMEOUT_MS ?? 30_000)
+
+async function waitUntil(read, accepts, label, timeout = mainProcessResponseTimeoutMs, abandoned = () => null) {
   const deadline = Date.now() + timeout
   let value
   while (Date.now() < deadline) {
     value = await read()
     if (accepts(value)) return value
+    // Waiting out the full budget for an application that already stopped only
+    // delays the report and buries the reason it stopped.
+    const abandonment = abandoned()
+    if (abandonment) throw new Error(`${label} (${abandonment}): ${JSON.stringify(value)}`)
     await new Promise((resolve) => setTimeout(resolve, 75))
   }
   throw new Error(`${label}: ${JSON.stringify(value)}`)
@@ -144,8 +178,24 @@ async function runScenario(blockQuit) {
   const child = application.process()
   const scenarioProcessIds = new Set()
   if (child.pid) { scenarioProcessIds.add(child.pid); trackProcessIds([child.pid]) }
+  // A run that ended with no electron.exe left alive and nothing in the log is
+  // how this smoke became unexplainable: the main process was already gone and
+  // its pipes had never been read. Forward them so the next occurrence names
+  // its own cause instead of surfacing as an unacknowledged command.
+  for (const [label, stream] of [['stdout', child.stdout], ['stderr', child.stderr]]) {
+    stream?.on('data', (chunk) => {
+      const text = String(chunk).trimEnd()
+      if (text) process.stderr.write(`[${scenario} main ${label}] ${text}\n`)
+    })
+  }
   let exited = false
-  const exitPromise = new Promise((resolve) => child.once('exit', (code, signal) => { exited = true; resolve({ code, signal }) }))
+  let exitResult = null
+  const exitPromise = new Promise((resolve) => child.once('exit', (code, signal) => {
+    exited = true
+    exitResult = { code, signal }
+    resolve(exitResult)
+  }))
+  const abandonedByExit = () => exited ? `the application exited first with ${JSON.stringify(exitResult)}` : null
   const readState = async () => {
     try { return JSON.parse(await fs.readFile(evidence, 'utf8')) }
     catch (error) { if (error.code === 'ENOENT') return null; throw error }
@@ -161,7 +211,8 @@ async function runScenario(blockQuit) {
     await fs.writeFile(staged, JSON.stringify(command), 'utf8')
     await fs.rename(staged, commandPath)
     // Publish each action once; only poll its acknowledgement, never replay it.
-    const state = await waitUntil(readState, (entry) => entry?.lastActionId === command.id, `Smoke command ${command.id} (${action}) was not acknowledged`)
+    const state = await waitUntil(readState, (entry) => entry?.lastActionId === command.id,
+      `Smoke command ${command.id} (${action}) was not acknowledged`, mainProcessResponseTimeoutMs, abandonedByExit)
     rememberProcessIds(state.processIds)
     return state
   }
