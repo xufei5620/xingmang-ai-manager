@@ -2,7 +2,7 @@
 
 这份文档回答一个问题：**怎么不碰自己的电脑，就拿到一份能装上试的星芒安装包。**
 
-分两部分：第 1~3 节是现在就能用的「出测试包」，第 4 节是「把整条发版也搬到 GitHub」的方案，还没拍板、也还没实现。
+分两部分：第 1~4 节是现在就能用的「出测试包」，第 5 节是「把整条发版也搬到 GitHub」的方案，还没拍板、也还没实现。
 
 ---
 
@@ -29,16 +29,14 @@
 
 ## 2. 这两份包不能做什么
 
-两条都是结构性的，不是这次忘了配：
+**两份都带私有加速线路**，「游戏加速」那一页与你自己电脑上出的包是同一回事，怎么做到的见第 4 节。剩下一条限制是结构性的：
 
-**① 都不带私有加速线路。** 装上去以后「游戏加速」一页是空的。加速资源是 Mihomo 内核加私有节点配置，现在仓库里还没有，runner 上也就没有。**这一条是暂时的**：产品所有者 2026-09-19 已决定把三份资源直接提交进本仓库，资源落地后出包工作流会带上它们，见第 4 节。在那之前要验加速，只能在自己的电脑上出包。
-
-**② macOS 那一份是用 runner 现场生成的一次性身份签的名**，不是钥匙串里那张发布证书。装和用没有区别（两者都没公证，都得右键打开），但 electron-updater 认签名身份，所以：
+**macOS 那一份是用 runner 现场生成的一次性身份签的名**，不是钥匙串里那张发布证书。装和用没有区别（两者都没公证，都得右键打开），但 electron-updater 认签名身份，所以：
 
 - 这份包**不能**从正式发布版自动更新过去，正式发布版也**不能**更新到这份包；
 - 它**绝对不能**发给客户，artifact 的名字里就写着 `DO-NOT-PUBLISH`。
 
-Windows 那一份除了没有加速线路，与正式发布的产物走的是同一条门禁（`release:build:unsigned`），所以它适合用来验安装、启动、登录、装 CLI、界面这些。
+Windows 那一份与正式发布的产物走的是同一条门禁（`release:build:unsigned`），资源也一样，跟发布版只差一个发布动作。验安装、启动、登录、装 CLI、加速、界面都算数。
 
 ---
 
@@ -46,55 +44,64 @@ Windows 那一份除了没有加速线路，与正式发布的产物走的是同
 
 `package-for-testing` 的 Windows 作业第一步就是发布前置检查，它会拒绝两种情况：
 
-- `release-notes.md` 的第一行和 `package.json` 的版本对不上（现在第一行还是「未发布」）；
+- `release-notes.md` 的第一行和 `package.json` 的版本对不上；
 - 更新源上已经有一个不低于本地的版本。
 
-也就是说，**要出 0.2.7 的包，得先把变更日志汇总掉、版本号改成 0.2.7**：
+也就是说，**每出一版新的包之前，得先把变更日志汇总掉、版本号改成要发的那一版**：
 
 ```bash
 npm run changelog:collect     # 把 changes/unreleased/ 的分片汇入两份日志并删掉分片
-# 然后把 CHANGELOG.md 的「## Unreleased」和 release-notes.md 的「未发布」改成 0.2.7
-# 再把 package.json 的 version 改成 0.2.7
+# 然后把 CHANGELOG.md 的「## Unreleased」和 release-notes.md 的「未发布」改成新版本号
+# 再把 package.json 的 version 改成同一个版本号
 ```
 
-这一步可以由一个 PR 做掉，合进 main 之后再点 Run workflow。macOS 那一份不看这个，什么时候点都能出。
+这一步由一个 PR 做掉，合进 main 之后再点 Run workflow（0.2.7 的这一步已经做完）。macOS 那一份不看这个，什么时候点都能出。
 
 ---
 
-## 4. 让云端出的包带上私有加速线路
+## 4. 云端出的包是怎么带上私有加速线路的
 
-**这一条已经拍板**（产品所有者，2026-09-19）：三份加速资源直接提交进本仓库。仓库是公开的，风险已当面说明并由产品所有者接受——节点地址和密码等同于公开，一旦被薅就得换节点。下面是资源该怎么放。
+产品所有者 2026-09-19 拍板：共享线路直接进本仓库。仓库是公开的，风险已当面说明并由他接受——节点地址和密码等同于公开，一旦被薅就得换节点。
 
-### 4.1 三份资源目录的位置和格式
+实际落地时拆成了两半，因为这两样东西的性质不同：
 
-资源仍然在本机用 `scripts/stage-acceleration-bundle.cjs` 生成，云端不重新生成。生成出来的三个目录整个放进仓库：
+**节点在仓库里。** `bundled-acceleration/profile.yaml` 是那 12 条共享线路，`bundled-acceleration/profile.sha256` 钉住它的字节。它只有几 KB，而且它就是那个"私有"的部分，必须随源码走才能让任何一台机器出的包都一样。
 
+**内核不在仓库里。** Mihomo 内核是 MetaCubeX 的公开发布产物，三个平台各十几 MB；进不进仓库都不影响谁能拿到它，而进了 git 历史就永远删不掉，每升一次版再压一份进去。所以仓库里只有 `bundled-acceleration/cores.json` 这张对账表，工作流现场从上游取。
+
+### 4.1 对账表和那三道哈希
+
+`cores.json` 钉住内核版本，以及每个目标的：
+
+- `assetSha256` —— 上游那个 release 资产整体的哈希；
+- `coreSha256` —— 从资产里解出来的内核的哈希，**与发布者本机核对过的那一个、以及已发布安装包 manifest 里记的那一个是同一个值**；
+- 顶上还有一个 `license.sha256`，钉住同一个 tag 下的 GPL v3 正文。
+
+`scripts/prepare-acceleration-bundle.cjs` 把这三道逐一对完，任何一道不对就直接失败，不会"先用着"。下载只允许 GitHub 自己的几个域名、只允许 https，重定向每跳都重新校验一次来源（I10）。也就是说，runner 上那份内核与发布机上那份是同一份字节，这件事是可验证的，不是靠信任网络。
+
+### 4.2 资源目录怎么生成、怎么进到构建里
+
+工作流每个目标跑一次：
+
+```bash
+node scripts/prepare-acceleration-bundle.cjs --target darwin-arm64 --output "$RUNNER_TEMP/acceleration-darwin-arm64"
 ```
-acceleration-bundles/
-  win32-x64/      # --platform 省略（默认 win32），manifest.json 的 version 是 1，内核叫 mihomo.exe
-  darwin-arm64/   # --platform darwin --arch arm64，version 2，内核叫 mihomo
-  darwin-x64/     # --platform darwin --arch x64，version 2，内核叫 mihomo
-```
 
-每个目录里必须**恰好**是这五个文件，多一个少一个都会被 `resolveAccelerationBundleResources` 拒掉：
+目标只有三个：`win32-x64`、`darwin-arm64`、`darwin-x64`。脚本下载并对账之后，仍然调 `scripts/stage-acceleration-bundle.cjs` 生成真正的五文件资源目录（`manifest.json`、内核、`profile.yaml`、`LICENSE-mihomo.txt`、`THIRD-PARTY-NOTICES.txt`）——那套节点字段白名单和原子写入只有一份实现，这里不另抄一份。
 
-`manifest.json`、内核（`mihomo.exe` 或 `mihomo`）、`profile.yaml`、`LICENSE-mihomo.txt`、`THIRD-PARTY-NOTICES.txt`
+**输出目录必须在项目目录之外**，这道检查没有为了 CI 放松：它防的是仓库里一个残留目录让某次构建悄悄带上线路。工作流用的是 runner 的临时目录，再显式传给构建：Windows 侧是 `XINGMANG_ACCELERATION_BUNDLE_DIR`，macOS 侧是 `--acceleration-arm64` / `--acceleration-x64` 两个参数。
 
-`manifest.json` 里的 `coreSha256` / `profileSha256` 必须与同目录的文件对得上，`platform` / `arch` 必须与目录名一致。这些都是生成脚本自己写进去的，只要不手工改就不会错。
+脚本用到主进程里那套安全读写和内核校验，所以两个作业都在它之前编译一次主进程。
 
-**目录名不要用 `release-` 开头**：`.gitignore` 里有 `release-*/`，那样提交不上去。
+### 4.3 换一个内核版本要改什么
 
-### 4.2 出包时资源怎么进到构建里
+只改 `cores.json`：版本号、三个 `asset`、三对 `assetSha256` / `coreSha256`、以及 `license.sha256`。哈希要在自己电脑上核对过再填——**这张表就是这条链路的信任根**，它进仓库、过审查，下载回来的字节才有东西可比。改完 `npm run test:scripts` 会校验表的格式，但对不对得上真实上游只有跑一次工作流才知道。
 
-构建入口要求加速资源目录**位于项目目录之外**，这道检查不会为了这件事放松——它防的是仓库里一个残留目录让某次构建悄悄带上线路。工作流的做法是先把 `acceleration-bundles/<目标>` 复制到 runner 的临时目录，再把临时目录显式传给构建：Windows 侧是 `XINGMANG_ACCELERATION_BUNDLE_DIR`，macOS 侧是 `--acceleration-arm64` / `--acceleration-x64` 两个参数。
+### 4.4 `--ci-temporary-signing` 与线路参数
 
-**这部分还没实现**，要等资源真的进了仓库再做：没有真实资源，清单校验过不去，写出来的也是没验证过的代码。资源合并之后会有一个单独的 PR 接上，同时解决一个已知冲突——`--ci-temporary-signing` 与两个加速参数目前是互斥的，而 macOS 测试包正是靠前者签名的。
+2026-09-19 之前这两者是互斥的，理由是 CI 上根本没有线路资源。现在能现场准备了，前提不再成立，限制已经去掉：签名身份是不是一次性的，与带不带线路本来就是两件事。
 
-### 4.3 仓库体积
-
-三个 Mihomo 内核各十几 MB，一次提交约几十 MB，进 git 历史后删不掉。单个文件没到 GitHub 100 MB 的硬上限，**不需要 Git LFS**。但每换一次内核版本就再压一份同样大小进历史，所以内核升级不要频繁提交。
-
-### 4.4 让 macOS 包用真正的发布签名
+### 4.5 让 macOS 包用真正的发布签名
 
 需要把钥匙串里那张自签证书**连私钥**导成 `.p12`，base64 之后存成 `release` 环境的 secret，再加一个密码 secret 和一个证书 SHA-256 指纹 secret。工作流里建临时钥匙串导入，构建完删掉。
 
@@ -112,7 +119,7 @@ acceleration-bundles/
 一个 PR 做完 `npm run changelog:collect`、两份日志的标题改成版本号、`package.json` 改版本号。`release-notes.md` 首行必须等于 `package.json` 版本，这条已经有门禁。合进 main 就是「这一版定了」。
 
 **第二段：出正式包（workflow_dispatch，跑在 `release` 环境）**
-输入一个 `confirm_version`，与 `package.json` 不一致就拒（release-build.yml 已有这段，照抄）。跑完整发布门禁出 Windows 和 macOS 两份包，带上第 4 节的加速线路和 4.4 的 macOS 签名。产物只上传 Actions artifact，**不传任何地方**。
+输入一个 `confirm_version`，与 `package.json` 不一致就拒（release-build.yml 已有这段，照抄）。跑完整发布门禁出 Windows 和 macOS 两份包，带上第 4 节的加速线路和 4.5 的 macOS 签名。产物只上传 Actions artifact，**不传任何地方**。
 
 **第三段：发布（workflow_dispatch，跑在 `release` 环境，要人工审批）**
 拿第二段的产物，按 `docs/RELEASING.md` 的顺序传 R2：**先安装包和 blockmap，最后才覆盖 `latest.yml` / `latest-mac.yml`**；反了的话用户会在文件还没传完时就被告知有新版本。传完打 tag、建 GitHub Release。

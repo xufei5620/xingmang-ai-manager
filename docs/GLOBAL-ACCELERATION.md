@@ -2,7 +2,9 @@
 
 界面名称统一为“游戏加速”。当前系统代理仅覆盖遵循系统代理设置的游戏、启动器和下载请求；退出游戏不会自动停止本软件的连接和计时。TUN 尚未接入，不宣称覆盖所有游戏流量。
 
-2026-09-14 用户最新确认：免费时长由 1 小时调整为 20 分钟，0.2.3 先发布本机计时版。Windows 安装包带私有节点，节点不上传 GitHub；每账号在本机累计 20 分钟，停止保留剩余、设备之间不同步。当前仅系统代理，TUN 尚未接入。
+2026-09-14 用户确认免费时长由 1 小时调整为 20 分钟，0.2.3 先发布本机计时版，当时 Windows 安装包带私有节点、节点不上传 GitHub。每账号在本机累计 20 分钟，停止保留剩余、设备之间不同步。当前仅系统代理，TUN 尚未接入。
+
+当前节点策略已由产品所有者调整：现有 12 条发布线路的清洗后配置与 SHA-256 收录在 `bundled-acceleration/profile.yaml`、`bundled-acceleration/profile.sha256`，Windows 与 macOS 打包共用，无需再私下传递节点文件。内核、资源准备 JSON 和五文件输出目录仍留在仓库外；普通构建与 CI 不会自动附带内核或启用线路。具体准备方式见 [内置加速节点说明](../bundled-acceleration/README.md)。
 
 ## 已完成
 
@@ -30,7 +32,7 @@
 
 ## Windows 本机真实联调
 
-主进程仅在未打包且为 Windows 时读取 userData 下的 `acceleration-development.json`，内容只有私有 YAML 路径、内核路径及 SHA256。`acceleration-development-host.ts` 将其投影后交给独立 worker；源 YAML 和密码不跨 renderer IPC。
+Windows 开发版主进程在未打包时读取 userData 下的 `acceleration-development.json`，内容只有 YAML 路径、内核路径及 SHA256。开发配置仍须显式填写绝对 `profilePath`，可指向仓库固定节点文件或外部节点；资源准备脚本的默认节点规则不改变开发配置契约。`acceleration-development-host.ts` 将其投影后交给独立 worker；源 YAML 和密码不跨 renderer IPC。
 
 `acceleration-mihomo-runtime.ts` 在独立私有目录复制并校验内核，动态分配回环代理/控制端口；对节点测速后选择最快可用线路，再用实际 HTTP CONNECT、正常目标站点 TLS 验证及 HTTPS 204 探测确认转发成功。`platform/windows-system-proxy.ts` 保存 WinInet/PAC/WPAD 和注册表原值，在设置前写入恢复记录；用户级原生 mutex 和包含 PID/进程创建时间的租约防止开发实例互相覆盖。停止先恢复代理、再关闭内核，恢复未确认时保留进程和记录并重试。
 
@@ -51,16 +53,16 @@ TUN 当前明确标记为未接入并禁用开关。账号时长 API、节点端
 
 在 0.2.3 源码上新增 Mac 分支，保留以上 Windows 发行记录。开发配置、worker 入口和资源读取支持 Darwin；共用节点解析器、CONNECT 探测、选线及 20 分钟账本。`native/macos-system-proxy.swift` 与 `electron/platform/macos-system-proxy.ts` 提供固定 JSON 操作和原生恢复流程；详情见 [macOS 开发说明](MACOS_DEVELOPMENT.md#本机加速开发)。
 
-Mac 资源清单采用 `version:2`、`platform:"darwin"`、`arch:"arm64"|"x64"`、`coreFile:"mihomo"`，其余节点、许可与哈希字段沿用已有方案。Windows `version:1` 和 `mihomo.exe` 保持兼容。资源准备工具新增显式平台/架构参数，运行及构建前均拒绝不匹配目标；私有目录仍位于仓库外。原生 helper 与 Mihomo 分开验证，安装包阶段的签名及最终内容验收仍需在用户另行要求打包后执行。
+Mac 资源清单采用 `version:2`、`platform:"darwin"`、`arch:"arm64"|"x64"`、`coreFile:"mihomo"`，其余节点、许可与哈希字段沿用已有方案。Windows `version:1` 和 `mihomo.exe` 保持兼容。资源准备工具新增显式平台/架构参数，运行及构建前均拒绝不匹配目标；内核、资源准备 JSON 与生成目录仍位于仓库外。原生 helper 与 Mihomo 分开验证，安装包阶段的签名及最终内容验收仍需在用户另行要求打包后执行。
 
 本轮验证涵盖：Mac 资源错平台/错架构、篡改拒绝、native helper 双架构编译、代理原值/PAC 保留、外部变更、授权取消、并发实例、父管道断连、硬杀重启恢复、持久化提交成功但应用失败后的重试，以及恢复记录大小限制。测试通过不等于真实网络切换、Intel 实机或安装包验收。
 
-## 0.2.3 私有资源发布方式
+## 加速资源发布方式
 
-发布者在仓库外运行 `scripts/stage-acceleration-bundle.cjs`，提供私有配置路径、已固定 SHA256 的内核、准确源码版本和完整 GPL v3 许可。脚本只导出清洗后的内联节点，生成固定五文件资源目录；设置 `XINGMANG_ACCELERATION_BUNDLE_DIR` 才会随本地安装包加入 `resources/acceleration`。目录必须在项目之外且为空，禁止把节点写入仓库或将完整 Clash 规则合并到客户端。
+从项目目录运行 `scripts/stage-acceleration-bundle.cjs`，提供仓库外的资源准备 JSON、已固定 SHA256 的内核、准确源码版本和完整 GPL v3 许可。JSON 省略 `profilePath` 时，脚本读取仓库固定的 `bundled-acceleration/profile.yaml` 并验证配套 `profile.sha256`；显式路径可以是该固定文件或仓库外自定义节点，其他仓内文件不接受。脚本只导出清洗后的内联节点，生成固定五文件资源目录；输出目录必须在项目之外且为空，不合并完整 Clash 规则、订阅或控制配置。
 
-Windows 走 `release:build:unsigned` 并设置该环境变量。macOS 的免费分发入口 `npm run dist:mac:free`
-不认这个环境变量（环境清洗会把它剥掉，防的是上一次构建的残留让公开包悄悄带上私有节点），改用
+Windows 走 `release:build:unsigned`，并用 `XINGMANG_ACCELERATION_BUNDLE_DIR` 指定准备好的五文件资源目录。macOS 的免费分发入口 `npm run dist:mac:free`
+不认这个环境变量（环境清洗会把它剥掉，避免上一次构建残留决定本次资源），改用
 `--acceleration-arm64` / `--acceleration-x64` 两个命令行参数显式开启，并分两次单架构构建后合并产物；
 默认不传参数时出的 macOS 包仍然不含 `resources/acceleration`。详见
 [发布手册第 2 节](RELEASING.md#2-macos-双架构加速资源)。
@@ -69,7 +71,7 @@ Windows 走 `release:build:unsigned` 并设置该环境变量。macOS 的免费�
 
 正式包保持 RunAsNode=false、OnlyLoadAppFromAsar=true 等现有 fuse，使用自身可执行文件的固定 `--xingmang-acceleration-worker` 入口启动独立 Electron helper，仅存在父 IPC 时加载 worker，完全跳过窗口和普通主进程初始化。helper 使用 detached 方式，父进程退出后收到 IPC 断连并恢复代理；不能用随父进程立即终止的 utilityProcess 替代。不同于开发模式，不依赖客户另装 Node.js 或 Clash。
 
-共享凭据只存在于本机发布私有资源和安装包，GitHub 提交仅包含通用代码。安装包中的节点凭据仍可被有能力的用户提取；本机记录也可被重装/换设备绕过。此限制已经向产品所有者说明，并得到本次版本先发布本机计时版的确认。
+已授权的共用节点连接凭据现随清洗后配置进入 GitHub，并在显式准备资源后随安装包分发；原始 Clash 文件、订阅地址和本机控制凭据不进入仓库。主进程与 renderer IPC 的边界保持不变，不向界面或诊断返回节点密码。本机计时记录仍可被重装/换设备绕过，不构成跨设备服务端额度。
 
 ## 客户正式服务仍需完成
 
@@ -79,9 +81,9 @@ Windows 走 `release:build:unsigned` 并设置该环境变量。macOS 的免费�
 
 ## 共享 Clash 上游接入（2026-09-14）
 
-用户指定的私有 YAML 作为客户共用上游来源，原文件留在运营者本机，不复制到仓库、前端或安装包。当前新增两部分：
+用户指定的私有 YAML 作为客户共用上游来源，原文件留在运营者本机，不复制到仓库、前端或安装包；当前入仓的是仅保留可用连接字段的清洗后配置。2026-09-14 接入时新增两部分：
 
-- `electron/acceleration-clash-config.ts`：解析内联 Hysteria2 节点；限大小/数量、拒绝 YAML 标签和别名，不继承订阅、规则、脚本、文件或运行时设置。去除流量/重置/到期占位，按连接参数去重；对外标签只由固定地域表和编号生成。节点密码只存在于私有主进程连接对象及短暂内核运行配置。
+- `electron/acceleration-clash-config.ts`：解析内联 Hysteria2 节点；限大小/数量、拒绝 YAML 标签和别名，不继承订阅、规则、脚本、文件或运行时设置。去除流量/重置/到期占位，按连接参数去重；对外标签只由固定地域表和编号生成。运行时节点密码留在主进程连接对象及短暂内核运行配置，不跨 renderer IPC。
 - `scripts/probe-acceleration-nodes.cjs`：运营诊断工具，复用上述模块及安全文件读写。使用指定的本地 Mihomo、独立临时目录和随机回环控制端口；强随机 controller secret，额外验证错误 secret 得到 401。代理监听关闭（`mixed-port: 0`），TUN/DNS 接管关闭，不更改系统代理。对固定公开 HTTPS 探测地址进行最多 3 路并发测试，限制超时/回包大小，不输出原始内核日志。退出及 SIGINT/SIGTERM 收到后停止子进程，确认退出才删除临时配置。
 
 手动真实探测结果保存在本地忽略目录 `artifacts/acceleration/node-connectivity.json`：

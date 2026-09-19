@@ -87,6 +87,84 @@ test('default packaging does not access private data or require compiled runtime
   for (const directory of [undefined, '']) assert.deepEqual(resolveAccelerationBundleResources(directory), { resources: [], metadata: undefined })
 })
 
+function bundledFixture(t) {
+  const fixture_ = fixture(t)
+  const repository = path.join(fixture_.directory, 'repository')
+  const bundled = path.join(repository, 'bundled-acceleration')
+  fs.mkdirSync(bundled, { recursive: true })
+  const profile = fs.readFileSync(fixture_.config.profilePath)
+  fs.writeFileSync(path.join(bundled, 'profile.yaml'), profile)
+  fs.writeFileSync(path.join(bundled, 'profile.sha256'), digest(profile) + '\n')
+  const config = { ...fixture_.config }
+  delete config.profilePath
+  fs.writeFileSync(fixture_.options.configPath, JSON.stringify(config))
+  return { ...fixture_, config, repository, bundled, dependencies: { ...fixture_.dependencies, projectRoot: repository } }
+}
+
+for (const target of [{ platform: 'win32' }, { platform: 'darwin', arch: 'arm64' }, { platform: 'darwin', arch: 'x64' }]) {
+  test(`stages repository nodes with a pinned ${target.platform} ${target.arch || 'x64'} core`, async (t) => {
+    const { config, options, dependencies } = bundledFixture(t)
+    if (target.platform === 'darwin') {
+      const core = Buffer.alloc(64)
+      core.writeUInt32LE(0xfeedfacf, 0)
+      core.writeUInt32LE(target.arch === 'arm64' ? 0x0100000c : 0x01000007, 4)
+      core.writeUInt32LE(2, 12)
+      fs.writeFileSync(config.corePath, core)
+      fs.writeFileSync(options.configPath, JSON.stringify({ ...config, coreSha256: digest(core) }))
+    }
+    const result = await stageAccelerationBundle({ ...options, ...target }, dependencies)
+    assert.equal(result.nodeCount, 1)
+    const output = yaml.parse(fs.readFileSync(path.join(options.outputDirectory, 'profile.yaml'), 'utf8'))
+    assert.deepEqual(Object.keys(output), ['proxies'])
+    assert.equal(output.proxies[0].password, 'test-upstream-secret')
+    await verifyAccelerationBundleCore(options.outputDirectory, result.manifest, dependencies.runtime, { ...target, arch: target.arch || 'x64' })
+  })
+}
+
+test('allows only the fixed repository profile path as an explicit in-repository input', async (t) => {
+  const { config, options, dependencies, bundled, repository } = bundledFixture(t)
+  for (const profilePath of [path.join(repository, 'other.yaml'), path.join(bundled, 'other.yaml'), '', null]) {
+    fs.writeFileSync(options.configPath, JSON.stringify({ ...config, profilePath }))
+    await assert.rejects(stageAccelerationBundle(options, dependencies), /项目目录之外|绝对路径/)
+  }
+  assert.equal(fs.existsSync(options.outputDirectory), false)
+  fs.writeFileSync(options.configPath, JSON.stringify({ ...config, profilePath: path.join(bundled, 'profile.yaml') }))
+  assert.equal((await stageAccelerationBundle(options, dependencies)).nodeCount, 1)
+})
+
+test('rejects changed repository nodes and missing or invalid pins before creating output', async (t) => {
+  const { options, dependencies, bundled } = bundledFixture(t)
+  const pin = path.join(bundled, 'profile.sha256')
+  for (const value of [undefined, '', 'invalid', '0'.repeat(64)]) {
+    if (value === undefined) fs.unlinkSync(pin)
+    else fs.writeFileSync(pin, value)
+    await assert.rejects(stageAccelerationBundle(options, dependencies), /SHA256/)
+    assert.equal(fs.existsSync(options.outputDirectory), false)
+  }
+})
+
+test('rejects repository profile hardlinks instead of following an alternate file owner', async (t) => {
+  const { options, dependencies, bundled } = bundledFixture(t)
+  fs.linkSync(path.join(bundled, 'profile.yaml'), path.join(bundled, 'alias.yaml'))
+  await assert.rejects(stageAccelerationBundle(options, dependencies))
+  assert.equal(fs.existsSync(options.outputDirectory), false)
+})
+
+test('committed shared profile is pinned and contains only the approved node fields', () => {
+  const directory = path.join(projectRoot, 'bundled-acceleration')
+  const bytes = fs.readFileSync(path.join(directory, 'profile.yaml'))
+  assert.equal(digest(bytes), fs.readFileSync(path.join(directory, 'profile.sha256'), 'utf8').trim())
+  let profile
+  try { profile = yaml.parse(bytes.toString('utf8')) } catch { throw new Error('仓库节点 YAML 无效。') }
+  assert.equal(JSON.stringify(Object.keys(profile)), '["proxies"]')
+  assert.equal(profile.proxies.length, 12)
+  const allowed = new Set(['name', 'type', 'server', 'port', 'password', 'sni', 'up', 'down', 'skip-cert-verify'])
+  assert.ok(profile.proxies.every(node => Object.keys(node).every(key => allowed.has(key))))
+  const parsed = runtime().parser.parseClashAccelerationProfile(bytes.toString('utf8'))
+  assert.equal(parsed.nodes.length, 12)
+  assert.equal(parsed.unsupportedNodeCount + parsed.metadataNodeCount + parsed.duplicateNodeCount, 0)
+})
+
 test('refuses output and private inputs inside the repository', async (t) => {
   const { options, dependencies } = fixture(t)
   for (const changed of [

@@ -1,8 +1,8 @@
 ## 开发
 
 - 新增手动触发的 `package-for-testing` 工作流：在 GitHub Actions 上直接出一份可安装的 Windows（走
-  `release:build:unsigned` 的完整门禁）与 macOS 包并挂成 artifact，供发布者下载装机验收。产物均不带私有
-  加速线路，macOS 侧由 runner 现场生成的一次性身份签名，artifact 名字里已自曝身份。
+  `release:build:unsigned` 的完整门禁）与 macOS 包并挂成 artifact，供发布者下载装机验收。macOS 侧由 runner
+  现场生成的一次性身份签名，artifact 名字里已自曝身份。
 - `scripts/run-macos-free-build.cjs` 新增 `--ci-keep-package`：只与 `--ci-temporary-signing` 同用，把演练
   产物留在 `release-free-ci-<版本>/` 交给 upload-artifact，签名材料与 keychain 搜索列表照旧清理；失败路径
   仍由 `runFreeMacBuild` 自己删掉未完成的输出。

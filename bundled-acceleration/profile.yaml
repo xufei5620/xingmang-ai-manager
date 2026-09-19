@@ -1,0 +1,107 @@
+proxies:
+  - name: 香港线路 1
+    type: hysteria2
+    server: hk1.ktmhyld.com
+    port: 18385
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    up: 1000
+    down: 1000
+  - name: 台湾线路 2
+    type: hysteria2
+    server: tw1.ktmhyld.com
+    port: 18386
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: tw1.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 台湾线路 3
+    type: hysteria2
+    server: tw1.ktmhyld.com
+    port: 18386
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: tw2.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 新加坡线路 4
+    type: hysteria2
+    server: sg1.ktmhyld.com
+    port: 18383
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: sg1.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 新加坡线路 5
+    type: hysteria2
+    server: sg1.ktmhyld.com
+    port: 18383
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: sg2.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 日本线路 6
+    type: hysteria2
+    server: jp1.ktmhyld.com
+    port: 18385
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: jp1.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 韩国线路 7
+    type: hysteria2
+    server: kr1.ktmhyld.com
+    port: 18385
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: kr1.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 韩国线路 8
+    type: hysteria2
+    server: kr1.ktmhyld.com
+    port: 18385
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: kr2.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 马来西亚线路 9
+    type: hysteria2
+    server: my1.ktmhyld.com
+    port: 18385
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: my1.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 泰国线路 10
+    type: hysteria2
+    server: th1.ktmhyld.com
+    port: 18385
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: th1.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 印度线路 11
+    type: hysteria2
+    server: mc1.ktmhyld.com
+    port: 18385
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    sni: mc1.ktmhyld.com
+    up: 1000
+    down: 1000
+  - name: 美国线路 12
+    type: hysteria2
+    server: us1.ktmhyld.com
+    port: 18387
+    password: 48e02e80-29b7-456a-9cbc-83c63c5807fd
+    skip-cert-verify: true
+    up: 1000
+    down: 1000
