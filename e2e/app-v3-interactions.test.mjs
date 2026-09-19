@@ -17,6 +17,10 @@ async function open(query = '') {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
   await page.route('**/*', (route) => new URL(route.request().url()).origin === baseUrl ? route.continue() : route.abort())
   await page.goto(`${baseUrl}/e2e/app-v3-fixture.html?${query}`)
+  // Vite transforms the module graph on demand, so first paint can take seconds on
+  // a cold Windows runner, and assertions like count() / getAttribute() do not retry.
+  // Wait for the mount before handing the page over.
+  await page.locator('#root > *').first().waitFor({ timeout: 60000 })
   return page
 }
 async function clean(page) {

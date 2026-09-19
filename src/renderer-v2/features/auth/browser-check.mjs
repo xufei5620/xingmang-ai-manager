@@ -27,6 +27,11 @@ async function open(query = '', app = false) {
     await route.continue()
   })
   await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
+  // Vite transforms the module graph on demand, so first paint can take seconds on
+  // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
+  // so a test whose first statement is one of them reads an empty page and fails on
+  // the value rather than on a timeout. Wait for the mount before handing the page over.
+  await page.locator('#root > *').first().waitFor({ timeout: 60000 })
   return page
 }
 async function calls(page) { return page.evaluate(() => JSON.parse(document.documentElement.dataset.calls || '[]')) }

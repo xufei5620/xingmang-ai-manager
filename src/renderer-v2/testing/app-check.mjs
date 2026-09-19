@@ -31,6 +31,10 @@ async function open(query = '', clock = false) {
   }
   await page.route('**/*', (route) => route.request().url().startsWith(origin + '/') ? route.continue() : route.abort())
   await page.goto(`${origin}/src/renderer-v2/testing/app.html?${query}`)
+  // Vite transforms the module graph on demand, so first paint can take seconds on
+  // a cold Windows runner, and assertions like count() / getAttribute() do not retry.
+  // Wait for the mount before handing the page over.
+  await page.locator('#root > *').first().waitFor({ timeout: 60000 })
   return page
 }
 async function clean(page) {
