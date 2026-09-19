@@ -5,7 +5,7 @@ import type { AccountSessionState, AppSettingsV2, ExternalDeepLink, ExternalTool
 import { resolveRelaySite, resolveSupportServiceUrl } from '../../electron/relay-sites'
 import { Shell as AppFrame } from './features/shell/Shell'
 import { createAppApi } from './features/app/api'
-import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, type AuthMode, type GuideToolState } from './features/auth'
+import { AuthFlow, LegalDocument, Splash, StartGuide, Welcome, createAuthApi, guideOfficialLoginRequired, type AuthMode, type GuideToolState } from './features/auth'
 import { ConfigDialog } from './features/tools/ConfigDialog'
 import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
@@ -449,6 +449,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     runtimeReady: toolbox.snapshot!.system.runtime.node.installed && !toolbox.snapshot!.system.runtime.node.tooOld && toolbox.snapshot!.system.runtime.npm.installed,
     pythonReady: toolbox.snapshot!.system.runtime.python.installed && !toolbox.snapshot!.system.runtime.python.detectionFailed,
     supported: tool.id !== 'codexDesktop' || platform?.codexDesktop.launch,
+    officialLoginRequired: guideOfficialLoginRequired(tool.provider, tool.source === 'missing' ? 'none' : tool.source, toolbox.snapshot!.config.providers[tool.provider]),
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
   })) : []
   const balanceAmount = balance && balance.quotaPerUnit > 0 ? balance.quota / balance.quotaPerUnit : null

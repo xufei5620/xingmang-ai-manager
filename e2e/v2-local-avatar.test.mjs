@@ -3,8 +3,10 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 let server, browser, origin
+const pageErrors = createPageErrorCollector()
 before(async () => {
   process.env.XINGMANG_RENDERER = 'v2'
   server = await createServer({
@@ -23,9 +25,10 @@ before(async () => {
 after(async () => {
   await browser?.close()
   await server?.close()
+  pageErrors.assertNone()
 })
 async function fixture(init) {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 900 } }))
   page.setDefaultTimeout(7000)
   page.setDefaultNavigationTimeout(30000)
   await page.route('**/*', (route) =>
@@ -239,7 +242,7 @@ test('late image decode is discarded when the account changes', async () => {
 })
 
 test('account header matches the return-and-identity layout and moves refresh into its menu', async () => {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 900 } }))
   try {
     await page.goto(`${origin}/e2e/v2-business-fixture.html?page=account`)
     await page

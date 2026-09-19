@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createConversation, createWorkspace, type ChatMessage, type ChatWorkspace } from './state'
-import { ChatStorageError, historyKey, importLegacyHistory, readWorkspace, writeWorkspace } from './storage'
+import { ChatStorageError, historyKey, importLegacyHistory, readWorkspace, redactPersistentChatText, writeWorkspace } from './storage'
 
 const scope = 'xm-account:7'
 const legacyKey = 'xingmang-ai-chat:v1:7'
@@ -99,6 +99,76 @@ describe('lossless bounded chat storage', () => {
   })
 })
 
+describe('credential redaction before persistence', () => {
+  const secrets = ['sk-live-0123456789abcdef', 'Bearer abcdef0123456789', 'blob:xingmang://9f1c', `data:image/png;base64,${'A'.repeat(600)}`]
+  function secretWorkspace(): ChatWorkspace {
+    const state = workspace()
+    const conversation = state.conversations[0]
+    conversation.title = `标题 ${secrets[0]}`
+    conversation.draft = `草稿 ${secrets[1]}`
+    conversation.settings.systemPrompt = `系统提示 ${secrets[0]}`
+    conversation.messages = [
+      message(0, { content: `请检查 ${secrets[0]} 与 ${secrets[3]}`, reasoning: `思考 ${secrets[1]}`, settings: conversation.settings }),
+      message(1, { status: 'error', error: `失败：${secrets[2]}`, assets: [{ assetId: 'a'.repeat(43), mimeType: 'image/png', localUrl: 'runtime:1', fileName: '图.png', revisedPrompt: `提示词 ${secrets[0]}` }] }),
+    ]
+    state.draftConversation.draft = `另一个草稿 ${secrets[0]}`
+    return state
+  }
+
+  it('keeps pasted keys, bearer headers and inline payloads out of every persisted text field', () => {
+    const storage = memoryStorage()
+    const state = secretWorkspace()
+    writeWorkspace(storage, state)
+    const raw = storage.getItem(historyKey(scope)) ?? ''
+    for (const secret of secrets) expect(raw).not.toContain(secret)
+    expect(raw).toContain('[密钥未保存]')
+    expect(raw).toContain('[本地临时链接未保存]')
+    expect(raw).toContain('[图片数据未保存]')
+    expect(raw).toContain('content-1')
+    const restored = readWorkspace(storage, scope).state
+    expect(restored.conversations[0].title).toBe('标题 [密钥未保存]')
+    expect(restored.conversations[0].draft).toBe('草稿 Bearer [密钥未保存]')
+    expect(restored.conversations[0].settings.systemPrompt).toBe('系统提示 [密钥未保存]')
+    expect(restored.conversations[0].messages[0].content).toBe('请检查 [密钥未保存] 与 [图片数据未保存]')
+    expect(restored.conversations[0].messages[0].settings?.systemPrompt).toBe('系统提示 [密钥未保存]')
+    expect(restored.conversations[0].messages[1].error).toBe('失败：[本地临时链接未保存]')
+    expect(restored.conversations[0].messages[1].assets?.[0].revisedPrompt).toBe('提示词 [密钥未保存]')
+    expect(restored.draftConversation.draft).toBe('另一个草稿 [密钥未保存]')
+  })
+
+  it('leaves the workspace held in the window untouched and stays stable across a second save', () => {
+    const storage = memoryStorage()
+    const state = secretWorkspace()
+    const before = structuredClone(state)
+    writeWorkspace(storage, state)
+    expect(state).toEqual(before)
+    const restored = readWorkspace(storage, scope).state
+    writeWorkspace(storage, restored)
+    expect(readWorkspace(storage, scope).state).toEqual(restored)
+  })
+
+  it('redacts credentials carried in configuration snippets and link parameters', () => {
+    expect(redactPersistentChatText('api_key = "sk-abcdefghijkl"')).toBe('api_key = [密钥未保存]')
+    expect(redactPersistentChatText('Authorization: Bearer abcdef0123456789')).toBe('Authorization: [密钥未保存]')
+    expect(redactPersistentChatText('用 Bearer abcdef0123456789 调用')).toBe('用 Bearer [密钥未保存] 调用')
+    expect(redactPersistentChatText('https://example.com/a?token=abcdef&page=2')).toBe('https://example.com/a?token=[密钥未保存]&page=2')
+    expect(redactPersistentChatText(`hash ${'Zm9vYmFy'.repeat(80)} end`)).toBe(`hash ${'Zm9vYmFy'.repeat(80)} end`)
+  })
+
+  it('keeps ordinary links, prose and long Unicode content byte-identical', () => {
+    const storage = memoryStorage()
+    const state = workspace()
+    const kept = '见 https://xm.example.test/docs/使用说明 与 http://127.0.0.1:3000 ，正文 🙂\n'.repeat(500)
+    state.conversations[0].messages = [message(0, { content: kept, reasoning: kept })]
+    state.conversations[0].draft = kept
+    writeWorkspace(storage, state)
+    const restored = readWorkspace(storage, scope)
+    expect(restored.warning).toBeUndefined()
+    expect(restored.state.conversations[0].messages[0].content).toBe(kept)
+    expect(restored.state.conversations[0].messages[0].reasoning).toBe(kept)
+    expect(restored.state.conversations[0].draft).toBe(kept)
+  })
+})
 describe('complete legacy and account-alias migration', () => {
   it('imports all historical messages, reasoning and system text synchronously before creating a canonical value', () => {
     const storage = memoryStorage()
