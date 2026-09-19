@@ -529,10 +529,33 @@ test('a Playwright Electron smoke can never consume a whole job again', () => {
   // each still has to outlive the longest step timeout inside it.
   for (const name of ['windows-test', 'windows-package']) {
     const job = workflow.jobs[name]
-    const longestStep = Math.max(0, ...job.steps.map((step) => Number(step['timeout-minutes']) || 0))
+    // A shard's step timeout is written as ${{ matrix.timeout }}, so resolve it
+    // against the matrix rather than reading it as the literal zero it parses
+    // to — otherwise this check would quietly stop checking anything.
+    const stepTimeouts = job.steps.flatMap((step) => {
+      const declared = step['timeout-minutes']
+      if (typeof declared === 'number') return [declared]
+      if (String(declared || '').includes('matrix.timeout')) {
+        return (job.strategy?.matrix?.include || []).map((entry) => entry.timeout)
+      }
+      return []
+    })
 
     assert.equal(job['runs-on'], 'windows-latest')
-    assert.ok(job['timeout-minutes'] > longestStep, `${name} must outlive its longest bounded step`)
+    assert.ok(stepTimeouts.every((value) => typeof value === 'number' && value > 0),
+      `${name} must resolve every step timeout to a number`)
+    assert.ok(job['timeout-minutes'] > Math.max(0, ...stepTimeouts),
+      `${name} must outlive its longest bounded step`)
+  }
+
+  // Every shard bounds its own command. test:v2 stalled for 42 minutes on #172
+  // and was cancelled by the job cap, which reports nothing about which suite
+  // hung; a step timeout names the shard and leaves the siblings alone.
+  const shardStep = workflow.jobs['windows-test'].steps[shardStepIndex()]
+  assert.match(String(shardStep['timeout-minutes']), /matrix\.timeout/, 'each shard must bound its own command')
+  for (const entry of workflow.jobs['windows-test'].strategy.matrix.include) {
+    assert.equal(typeof entry.timeout, 'number', `${entry.shard} must declare a step timeout`)
+    assert.ok(entry.timeout >= 10, `${entry.shard} must leave a slow Windows runner room to finish`)
   }
 
   // fail-fast would cancel the sibling shards on the first failure, turning a

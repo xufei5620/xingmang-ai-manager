@@ -83,11 +83,14 @@ jobs:
           # time with it.
           - shard: vitest-1
             command: npm run test:vitest:1
+            timeout: 15
           - shard: vitest-2
             command: npm run test:vitest:2
+            timeout: 15
           # The node --test half of test:windows.
           - shard: node
             command: npm run test:node
+            timeout: 10
           # test:v2 stays on the shipping platform; test:canvas and the legacy
           # test:ui suites live in linux-test, because neither asserts anything
           # platform-specific and these are the least stable runners. Its two
@@ -96,6 +99,7 @@ jobs:
           # browser one is split further.
           - shard: renderer-v2
             command: npm run test:v2:vitest
+            timeout: 10
           # Deliberately NOT split further, even though app-check.mjs is half
           # of it on its own. Every file here builds a Vite dev server with the
           # same `configFile: false` root, so they share one on-disk
@@ -107,6 +111,7 @@ jobs:
           # suite is ~10 minutes whole, which still clears the target.
           - shard: renderer-v2-browser
             command: npm run test:v2:browser
+            timeout: 18
     name: windows-test (${{ matrix.shard }})
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
@@ -125,6 +130,11 @@ jobs:
           New-Item -Path $unlockKey -Force | Out-Null
           New-ItemProperty -Path $unlockKey -Name AllowDevelopmentWithoutDevLicense -PropertyType DWord -Value 1 -Force | Out-Null
       - name: Run the ${{ matrix.shard }} shard
+        # Roughly twice the shard's observed run. A suite that stalls rather
+        # than fails — test:v2 sat for 42 minutes on #172 and took a whole
+        # 45-minute job down with it — now costs this one shard and reports
+        # which one, instead of cancelling the job at its cap with no verdict.
+        timeout-minutes: ${{ matrix.timeout }}
         run: ${{ matrix.command }}
       - name: Fail if the test run left files in the working tree
         shell: bash
