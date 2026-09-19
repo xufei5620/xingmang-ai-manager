@@ -8,6 +8,12 @@
          darwin, so the electron-builder default template's two extra keys are
          not requirements of this app.
 
+         This file is for a signature Apple issued, which is the only kind that
+         carries a team identifier for library validation to compare against.
+         Nothing in this repository can mint one today, so every build takes
+         build/entitlements.mac.adhoc.plist instead; the day a Developer ID
+         signature exists, that exception is withdrawn and this file applies.
+
          Everything else is deliberately withheld. The main process holds the
          account session token and writes paid API keys into the CLI config
          files, so library validation - the hardened runtime's main defence

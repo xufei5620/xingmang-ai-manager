@@ -90,6 +90,18 @@ CI 的真实打包门禁（`--ci-temporary-signing`）不走这条路：runner �
 
 除了 `verify-macos-free-artifacts.cjs`，发布者还须检查每个最终应用的 ASAR 资源 pins、内核/节点文件哈希、原生组件路径与架构，以及组件签名。包内 `--xingmang-acceleration-worker` 入口必须能通过 IPC 完成初始化、返回仅含显示信息的线路列表并正常退出。GitHub 只收录已授权的清洗后共用节点及校验文件，不加入运营者原始 Clash 配置、订阅地址或本机控制凭据；R2 发布顺序沿用先安装包和 blockmap、后 `latest-mac.yml`。
 
+### 2.1 拿到 Developer ID 之后要撤回的一条
+
+当前所有 macOS 构建都走 `build/entitlements.mac.adhoc.plist`，比正式 entitlements 多授予一个
+`com.apple.security.cs.disable-library-validation`。原因是 team identifier 只有苹果签发的证书才有，
+自签包不关掉 library validation 就会在启动时被 dyld 杀掉（2026-09-19 的 0.2.7 测试包就是这么崩的，
+原委见 [macOS 开发说明](MACOS_DEVELOPMENT.md)）。
+
+**一旦买到 Apple 开发者账号、拿到 Developer ID Application 证书，同一个改动里要做完这几件事**：把
+`electron-builder.config.cjs` 的 `macEntitlementsPrefix` 切回 `build/entitlements.mac`、更新
+`scripts/macos-build-config.test.cjs` 的断言、`scripts/verify-macos-free-artifacts.cjs` 会按签名自己的
+`TeamIdentifier` 自动改判允许清单（不必改），并补 notarization。
+
 ## 3. 发布前置条件
 
 依赖安全审计固定使用官方 npm registry：

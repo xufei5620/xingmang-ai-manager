@@ -414,9 +414,27 @@ test('free macOS certificate creation is exposed through a focused command', () 
   )
 })
 
-test('every signed macOS build pins entitlements that leave library validation on', () => {
+test('the strict entitlements stay on disk for the day an Apple issued signature exists', () => {
+  // These files are what every macOS build used until 2026-09-19, and what it
+  // goes back to once a Developer ID signature is available. Without them on
+  // disk electron-builder silently falls back to its own template, which
+  // grants the escape hatch plus two more keys to every build.
+  for (const file of ['build/entitlements.mac.plist', 'build/entitlements.mac.inherit.plist']) {
+    assert.deepEqual(entitlementKeys(file), STRICT_ENTITLEMENT_KEYS, file)
+  }
+})
+
+test('every macOS build this repository can sign grants the library validation exception', () => {
+  // Library validation compares team identifiers, and only Apple issues one.
+  // An ad-hoc signature has none and neither does any self-signed certificate
+  // this repository can mint, so a build that withholds the exception is
+  // killed by dyld while loading its own Electron framework -- which is what
+  // the 2026-09-19 test package did on both architectures. Every mode below
+  // is signed that way, so every mode gets the exception.
   for (const mode of [
-    { releaseMode: true },
+    {},
+    { localBuildMode: true },
+    { releaseMode: true, localBuildMode: true },
     { freeReleaseMode: true, signingIdentity: 'XingMang Free Update Identity' },
     {
       freeReleaseMode: true,
@@ -427,21 +445,6 @@ test('every signed macOS build pins entitlements that leave library validation o
     },
   ]) {
     const config = loadConfig(mode)
-    assert.equal(config.mac.entitlements, 'build/entitlements.mac.plist')
-    assert.equal(config.mac.entitlementsInherit, 'build/entitlements.mac.inherit.plist')
-  }
-
-  // Without these files electron-builder silently falls back to its own
-  // template, which grants the escape hatch to every distributed build.
-  for (const file of ['build/entitlements.mac.plist', 'build/entitlements.mac.inherit.plist']) {
-    assert.deepEqual(entitlementKeys(file), STRICT_ENTITLEMENT_KEYS, file)
-  }
-})
-
-test('the library validation escape hatch stays confined to ad-hoc --dir builds', () => {
-  for (const mode of [{}, { localBuildMode: true }, { releaseMode: true, localBuildMode: true }]) {
-    const config = loadConfig(mode)
-    assert.equal(config.mac.identity, '-')
     assert.equal(config.mac.entitlements, 'build/entitlements.mac.adhoc.plist')
     assert.equal(config.mac.entitlementsInherit, 'build/entitlements.mac.adhoc.inherit.plist')
   }

@@ -62,22 +62,19 @@ CSC_NAME='<身份名>' XINGMANG_MAC_SIGNING_SHA256='<64 位 SHA-256 指纹>' npm
 
 装一次 1 节出的 DMG 并**启动它**。
 
-**为什么单列**：`dist:mac:free` 走的是正式 entitlements（`build/entitlements.mac.plist`），
-library validation 是**开着**的，它要求应用和随包的 Electron 框架属于同一个 team identifier。
+**为什么单列**：**2026-09-19 这一条已经发生过一次**，而且产物校验全绿——签名本身完全有效。当时走的是
+正式 entitlements（`build/entitlements.mac.plist`），library validation 开着，它要求进程与它加载的每
+一个库带同一个 team identifier；而 team identifier 只有苹果签发的证书才有，自签证书永远没有。装上去的
+包于是在加载自己的 Electron 框架时被 dyld 杀掉，弹的是「应用因为出现问题而无法打开」，不是 Gatekeeper
+提示。当天先试过给证书主题加 `OU`，赌 codesign 会把它记成 team identifier，实测无效（新包仍是
+`TeamIdentifier=not set`）。最终修法是所有自签构建改用 `build/entitlements.mac.adhoc.plist`，授予
+`com.apple.security.cs.disable-library-validation`；拿到 Developer ID 之后撤回。
 
-**2026-09-19 这一条已经发生过一次。** 当时的自签证书主题只有 `/CN=`，没有 OU，codesign 因此没有记下
-team identifier，装上去的包在加载自己的框架时被系统直接杀掉，弹的是「应用因为出现问题而无法打开」——
-不是 Gatekeeper 提示。产物校验全绿，因为签名本身完全有效。修法是给证书主题加上
-`OU=XINGMANG01`（`scripts/create-macos-free-signing-certificate.cjs`），签名预检也会拒绝没有这个 OU 的证书。
-
-**所以 2026-09-19 之前生成的那张证书必须重新生成一次**，见
-[macOS 免费自签版分发手册](MACOS_FREE_DISTRIBUTION.md)。换证书会断掉 Squirrel.Mac 的更新连续性，
-老用户要手工装一次。
+现在 CI 已经会真的启动一次打包后的 `.app`（`e2e/macos-launch-smoke.mjs`），这一条仍然要人工做一遍：
+CI 跑的是临时身份签出的包，且它只看进程有没有活下来。
 
 **算通过**：应用正常起来，进到登录界面。
-**不通过**：先别发 macOS 包，告诉我。最小回退是让 `electron-builder.config.cjs` 的 `macEntitlementsPrefix`
-对免费自签模式也指向 `build/entitlements.mac.adhoc`——那等于关掉 hardened runtime 最主要的一道防线，
-只在确认加 OU 仍然起不来时才动。
+**不通过**：先别发 macOS 包，告诉我，并把崩溃报告里 `Termination Reason` 那几行一起发过来。
 
 ### 2.2 首次打开的确认流程
 

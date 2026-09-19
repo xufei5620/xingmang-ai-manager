@@ -4,14 +4,22 @@
   <dict>
     <key>com.apple.security.cs.allow-jit</key>
     <true/>
-    <!-- Ad-hoc signatures carry no team identifier, so library validation has
-         nothing to match the bundled Electron framework against and refuses to
-         load it - the app would not start at all. This file therefore exists
-         only for the unpacked local builds signed with the ad-hoc placeholder
-         identity (npm run build:mac:dir, build:mac:ci); those are never
-         distributed. Every signed build uses build/entitlements.mac.plist,
-         which keeps library validation on. Do not point a distribution path at
-         this file. -->
+    <!-- Library validation loads a library only when its team identifier
+         matches the signing process, and Apple issues that identifier. An
+         ad-hoc signature has none - and 2026-09-19 established that a
+         self-signed certificate has none either, whatever its subject says:
+         the packaged app died in dyld with "mapping process and mapped file
+         (non-platform) have different Team IDs" while loading its own Electron
+         framework, before running a line of its own code.
+         Every macOS signature this repository can produce is one of those two,
+         so they all use this file. It buys nothing back that was ever there:
+         without a team identifier, library validation cannot tell our own
+         framework from anyone else's, so its only effect was to stop the app
+         from starting. The whole bundle is still sealed by the signature, and
+         the rest of the hardened runtime still applies.
+         build/entitlements.mac.plist keeps library validation on and is used
+         the day a Developer ID signature exists; this exception is withdrawn
+         in the same change. -->
     <key>com.apple.security.cs.disable-library-validation</key>
     <true/>
   </dict>
