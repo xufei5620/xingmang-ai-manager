@@ -17,7 +17,7 @@ import { savedAccountId, type SavedAccountsStore } from './saved-accounts'
 import type { ConfigBackupStore } from './backups'
 import { parseLocalNoticeReadSync, type AnnouncementReadStore } from './announcement-read-store'
 import type { AccelerationApi } from './acceleration-contract'
-import { cliCatalog, isProviderId } from './catalog'
+import { cliCatalog, isProviderId, type ProviderId } from './catalog'
 import {
   configureManagedClis,
   syncManagedCliKeySummary,
@@ -99,6 +99,7 @@ import type {
   RememberedAccountLogin,
 } from './ipc-contract'
 import type { DiagnosticsReport } from './diagnostics'
+import type { ConnectionCheckResult } from './connection-check'
 import type { RuntimeLogStore } from './runtime-log'
 import { createExternalShellLauncher, type ExternalShellLauncher } from './system-shell'
 import { platformCapabilitiesFor } from './platform-capabilities'
@@ -116,6 +117,7 @@ export interface IpcRegistrationOptions {
   backupStore: ConfigBackupStore
   diagnosticsService: {
     run(): Promise<DiagnosticsReport>
+    checkConnection(provider: ProviderId): Promise<ConnectionCheckResult>
     exportLatest(): string
   }
   runtimeLog: RuntimeLogStore
@@ -265,6 +267,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
       ? value.officialProviders.filter((entry) => typeof entry === 'string' && isProviderId(entry)) as AppSettingsUpdate['officialProviders']
       : undefined
   const codexDesktopInstallDisabled = optionalBoolean(value.codexDesktopInstallDisabled, 'Codex 桌面端自动安装偏好')
+  const alwaysInstallLatestCli = optionalBoolean(value.alwaysInstallLatestCli, '命令行工具版本偏好')
   if (value.uiSkin !== undefined && (typeof value.uiSkin !== 'string' || !['auto', 'dawn', 'obsidian', 'mist', 'aurora'].includes(value.uiSkin))) throw new Error('皮肤格式错误')
   if (value.uiScale !== undefined && (typeof value.uiScale !== 'string' || !['auto', '90', '100', '110'].includes(value.uiScale))) throw new Error('界面缩放格式错误')
   if (value.closeBehavior !== undefined && (typeof value.closeBehavior !== 'string' || !['ask', 'tray', 'quit'].includes(value.closeBehavior))) throw new Error('关闭偏好格式错误')
@@ -283,6 +286,7 @@ function parseSettingsUpdate(value: unknown): AppSettingsUpdate {
     ...(mirrorPolicy !== undefined ? { mirrorPolicy } : {}),
     ...(officialProviders !== undefined ? { officialProviders } : {}),
     ...(codexDesktopInstallDisabled !== undefined ? { codexDesktopInstallDisabled } : {}),
+    ...(alwaysInstallLatestCli !== undefined ? { alwaysInstallLatestCli } : {}),
     ...(value.uiSkin !== undefined ? { uiSkin: value.uiSkin as AppSettingsUpdate['uiSkin'] } : {}),
     ...(value.uiScale !== undefined ? { uiScale: value.uiScale as AppSettingsUpdate['uiScale'] } : {}),
     ...(value.closeBehavior !== undefined ? { closeBehavior: value.closeBehavior as AppSettingsUpdate['closeBehavior'] } : {}),
@@ -444,6 +448,17 @@ function parseDesktopLaunchMode(mode: unknown): CodexDesktopLaunchMode {
 function parseCodexDesktopLocale(locale: unknown): CodexDesktopLocale {
   if (locale !== 'zh-CN' && locale !== 'system') throw new Error('Codex Desktop 语言选项错误')
   return locale
+}
+
+// 渲染层只在「回到推荐版本」这一处点名版本,所以这里只接受精确 semver:
+// 'latest'、范围表达式(^1.2.3)和 dist-tag 全部拒绝,它们会让 npm 自己去
+// 决定装什么,绕过名单(I5:IPC 入参一律视为敌意输入)。
+function parseCliInstallVersion(value: unknown): string | undefined {
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z][0-9A-Za-z.-]{0,126})?$/.test(value)) {
+    throw new Error('CLI 版本号格式错误')
+  }
+  return value
 }
 
 function parseSessionId(value: unknown): string {
@@ -1090,6 +1105,7 @@ const ipcOperationLabels: Readonly<Record<string, string>> = {
   'settings:get': '应用设置读取',
   'settings:save': '应用设置保存',
   'diagnostics:run': '系统诊断',
+  'diagnostics:check-connection': '连接自检',
   'diagnostics:export': '诊断报告导出',
   'runtime-logs:list': '运行日志读取',
   'runtime-logs:copy-feedback': '脱敏反馈文本复制',
@@ -1304,6 +1320,14 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
   if (count !== null) detail.itemCount = count
   if (channel === 'diagnostics:run' && isRecord(result) && isRecord(result.counts)) {
     detail.counts = result.counts
+  }
+  // 站点切换对用户无感（产品决定），界面永不显示 siteId；但客服排查一条
+  // 自检工单时必须知道当时走的是哪个后端，所以只在日志里留下它。
+  if (channel === 'diagnostics:check-connection' && isRecord(result)) {
+    detail.layer = result.layer
+    detail.ok = result.ok
+    detail.siteId = result.siteId
+    detail.status = result.status
   }
   return detail
 }
@@ -1596,12 +1620,16 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
       throw error
     }
   })
-  registerTrustedHandler('cli:install', async (event, provider: unknown) => {
+  registerTrustedHandler('cli:install', async (event, provider: unknown, version: unknown) => {
     if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    const requestedVersion = parseCliInstallVersion(version)
     const providerName = cliCatalog[provider].name
-    options.runtimeLog.log('info', 'maintenance', 'cli.install.started', `开始安装或更新 ${providerName}`, { provider })
+    options.runtimeLog.log('info', 'maintenance', 'cli.install.started', `开始安装或更新 ${providerName}`, {
+      provider,
+      ...(requestedVersion ? { requestedVersion } : {}),
+    })
     try {
-      await service.installCli(provider, event.sender)
+      await service.installCli(provider, event.sender, requestedVersion)
       options.runtimeLog.log('info', 'maintenance', 'cli.install.completed', `${providerName} 安装或更新完成`, { provider })
     } catch (error) {
       options.runtimeLog.exception('maintenance', 'cli.install.failed', error, { provider })
@@ -2396,6 +2424,11 @@ export function registerIpcHandlers(options: IpcRegistrationOptions): () => void
         if (currentChatUserId() !== userId) throw new Error('账号已切换，请重新打开图片菜单')
       },
     )
+  })
+
+  registerTrustedHandler('diagnostics:check-connection', (_event, provider: unknown) => {
+    if (!isProviderId(provider)) throw new Error('未知的 CLI 类型')
+    return options.diagnosticsService.checkConnection(provider)
   })
 
   registerTrustedHandler('account:get-key-options', (_event, provider: unknown) => {
