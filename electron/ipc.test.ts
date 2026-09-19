@@ -1568,6 +1568,22 @@ describe('registerIpcHandlers', () => {
     expect(JSON.stringify(runtimeLog.log.mock.calls)).not.toContain('apiKey')
   })
 
+  it('passes an explicit CLI version through and rejects anything but an exact one', async () => {
+    const service = serviceStub()
+    register(service)
+    const handler = electronMocks.handlers.get('cli:install')!
+
+    await handler(trustedEvent(), 'claude', '2.1.277')
+    expect(service.installCli).toHaveBeenCalledWith('claude', expect.anything(), '2.1.277')
+
+    await handler(trustedEvent(), 'claude')
+    expect(service.installCli).toHaveBeenLastCalledWith('claude', expect.anything(), undefined)
+
+    for (const rejected of ['latest', '^2.1.277', '2.1', 'next', '', '2.1.277; rm -rf /']) {
+      await expect(handler(trustedEvent(), 'claude', rejected)).rejects.toThrow('CLI 版本号格式错误')
+    }
+  })
+
   it('checks and uninstalls only the requested CLI', async () => {
     const service = serviceStub()
     vi.mocked(service.inspectCliUpdate).mockResolvedValueOnce({

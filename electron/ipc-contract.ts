@@ -68,6 +68,7 @@ import type {
   DiagnosticState as MainDiagnosticState,
   DiagnosticsReport as MainDiagnosticsReport,
 } from './diagnostics'
+import type { CliVersionAdvice as MainCliVersionAdvice } from './cli-verified-versions'
 import type {
   AppConfigSummary as MainAppConfigSummary,
   CliStatus as MainCliStatus,
@@ -189,6 +190,7 @@ export type MultiProviderSessionDetail = ProviderSessionDetail
 export type MultiProviderSessionExportResult = ProviderSessionExportResult
 export type ToolStatus = MainToolStatus
 export type CliStatus = MainCliStatus
+export type CliVersionAdvice = MainCliVersionAdvice
 export type DesktopAppStatus = MainDesktopAppStatus
 export type CodexDesktopLocale = MainCodexDesktopLocale
 export type CodexDesktopLocaleStatus = MainCodexDesktopLocaleStatus
@@ -514,7 +516,8 @@ export interface XingmangInvokeContract {
   installNodeRuntime: IpcInvokeDefinition<'runtime:install-node', [], NodeRuntimeInstallResult>
   restartWindows: IpcInvokeDefinition<'runtime:restart-windows', [], void>
   installPythonRuntime: IpcInvokeDefinition<'runtime:install-python', [], PythonRuntimeInstallResult>
-  installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId], void>
+  /** version 省略时由主进程按已验证版本名单与设置决定装哪个版本(N1)。 */
+  installCli: IpcInvokeDefinition<'cli:install', [provider: ProviderId, version?: string], void>
   uninstallCli: IpcInvokeDefinition<'cli:uninstall', [provider: ProviderId], ToolUninstallResult>
   checkCliUpdate: IpcInvokeDefinition<'cli:check-update', [provider: ProviderId], CliStatus>
   getCodexSetupStatus: IpcInvokeDefinition<'setup:codex-status', [], CodexSetupStatus>

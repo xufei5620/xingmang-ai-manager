@@ -8,6 +8,11 @@ import { promisify } from 'node:util'
 import { type AppSettings, type AppSettingsUpdate, AppSettingsStore, type MirrorPolicy } from './app-settings'
 import { cliCatalog, providerIds, type ProviderId } from './catalog'
 import {
+  buildCliVersionAdvice,
+  resolveCliInstallVersion,
+  type CliVersionAdvice,
+} from './cli-verified-versions'
+import {
   defaultProviderConfigRoots,
   type ProviderConfigRoots,
 } from './codex-home'
@@ -205,6 +210,11 @@ export interface CliStatus extends ToolStatus {
   updateCheckedAt?: string | null
   updateError?: string | null
   uninstall: CliUninstallCapability
+  /**
+   * 已验证版本名单(cli-verified-versions.ts)对这个工具的建议。渲染层只读
+   * 这一个字段就能显示「推荐版本」和不兼容提示,不需要自己持有名单。
+   */
+  versionAdvice?: CliVersionAdvice
 }
 
 export interface DesktopAppStatus extends ToolStatus, Partial<VersionUpdateStatus> {
@@ -665,7 +675,7 @@ export interface SystemService {
   installNodeRuntime(target: RendererMessageTarget): Promise<NodeRuntimeInstallResult>
   restartWindows(): Promise<void>
   installPythonRuntime(target: RendererMessageTarget): Promise<PythonRuntimeInstallResult>
-  installCli(provider: ProviderId, target: RendererMessageTarget): Promise<void>
+  installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void>
   uninstallCli(provider: ProviderId): Promise<ToolUninstallResult>
   inspectCliUpdate(provider: ProviderId, forceRefresh?: boolean): Promise<CliStatus>
   installCodexDesktop(target: RendererMessageTarget): Promise<CodexDesktopInstallResult>
@@ -1445,6 +1455,8 @@ export function grokInstallStrategyFor(platform: NodeJS.Platform): GrokInstallSt
 }
 
 export interface CliInstallReleaseOptions {
+  /** 要安装的版本,'latest' 表示不钉版本。Grok 的官方稳定版路径不受它影响。 */
+  version?: string
   fetchGrokStableVersion: () => Promise<{ version: string }>
   fetchNpmRelease: (
     registry: string,
@@ -1463,7 +1475,11 @@ export async function resolveCliInstallRelease(
   },
 ): Promise<NpmPackageReleaseMetadata> {
   if (provider !== 'grok' || grokStrategy !== 'darwin-official-npm') {
-    return options.fetchNpmRelease(npmOfficialRegistry, cliCatalog[provider].packageName, 'latest')
+    return options.fetchNpmRelease(
+      npmOfficialRegistry,
+      cliCatalog[provider].packageName,
+      options.version ?? 'latest',
+    )
   }
   const stable = await options.fetchGrokStableVersion()
   const release = await options.fetchNpmRelease(
@@ -1576,9 +1592,11 @@ function containsComparableVersion(value: string | null): boolean {
 export function buildCliStatus(
   installed: ToolStatus,
   latest: LatestVersionProbe,
+  versionAdvice?: CliVersionAdvice,
 ): CliStatus {
   const base = {
     ...installed,
+    ...(versionAdvice ? { versionAdvice } : {}),
     uninstall: installed.uninstall ?? {
       available: false,
       reason: installed.installed ? '未能确认当前安装是否可由本工具安全卸载' : null,
@@ -1603,6 +1621,12 @@ export function buildCliStatus(
     }
   }
   if (isNewerVersion(installed.version, latest.version)) {
+    // 名单把安装钉在已装的这个版本上时,npm 上更新的版本不是用户能点的更新:
+    // 点「更新」只会把同一个版本重装一遍。所以这里如实报「已是最新」,
+    // 而 latestVersion 仍然照实带上,不瞒着上游真实进度。
+    if (versionAdvice?.pinned && versionAdvice.onRecommended) {
+      return { ...base, updateAvailable: false, updateState: 'latest', updateError: null }
+    }
     return { ...base, updateAvailable: true, updateState: 'available', updateError: null }
   }
   if (isNewerVersion(latest.version, installed.version)) {
@@ -2197,7 +2221,11 @@ export function createSystemService(
       ? await inspectNetworkRegion()
       : 'unknown'
     const latest = await inspectCliLatestVersion(provider, status, networkRegion)
-    return buildCliStatus(status, latest)
+    const settings = store.read()
+    return buildCliStatus(status, latest, buildCliVersionAdvice(provider, status.version, {
+      siteId: settings.relaySiteId,
+      alwaysLatest: settings.alwaysInstallLatestCli === true,
+    }))
   }
 
   async function inspectOfficialChatGptAccount(forceRefresh: boolean): Promise<OfficialChatGptAccount | null> {
@@ -2271,9 +2299,13 @@ export function createSystemService(
             error: probe.reason instanceof Error ? probe.reason.message : String(probe.reason),
           }
     ))
+    const scanSettings = store.read()
     const clis = Object.fromEntries(providerIds.map((id, index) => {
       const status = cliResults[index]
-      return [id, buildCliStatus(status, latestVersions[index])]
+      return [id, buildCliStatus(status, latestVersions[index], buildCliVersionAdvice(id, status.version, {
+        siteId: scanSettings.relaySiteId,
+        alwaysLatest: scanSettings.alwaysInstallLatestCli === true,
+      }))]
     })) as Record<ProviderId, CliStatus>
 
     // A Microsoft Store install is outside the app's installer IPC. Once a
@@ -2517,7 +2549,11 @@ export function createSystemService(
     return npmExecutable
   }
 
-  async function installCliOperation(provider: ProviderId, target: RendererMessageTarget): Promise<void> {
+  async function installCliOperation(
+    provider: ProviderId,
+    target: RendererMessageTarget,
+    requestedVersion?: string,
+  ): Promise<void> {
     const grokInstallStrategy = provider === 'grok' ? grokInstallStrategyFor(platform) : null
     if (installing.has(provider)) throw new Error(`${cliCatalog[provider].name} 正在安装中`)
     installing.add(provider)
@@ -2601,8 +2637,26 @@ export function createSystemService(
       managedNpmTransaction = await createInstallTemporaryDirectory('npm-transaction', {
         ...(managedNpmLayout ? { baseDirectory: managedNpmLayout.cacheRoot } : {}),
       })
-      sendInstallProgress(target, provider, 'output', '正在从 npm 官方源校验最新版本和 SHA-512 完整性元数据')
-      const trustedRelease = await resolveCliInstallRelease(provider, grokInstallStrategy)
+      // 装哪个版本由主进程决定:调用方点名(回滚)优先,其次看设置里的
+      // 「总是安装最新版」,再次才是名单里的推荐版本。名单为空的工具落回
+      // latest,行为与从前一致。
+      const versionChoice = resolveCliInstallVersion(provider, {
+        requested: requestedVersion,
+        alwaysLatest: store.read().alwaysInstallLatestCli === true,
+      })
+      sendInstallProgress(
+        target,
+        provider,
+        'output',
+        versionChoice.source === 'latest'
+          ? '正在从 npm 官方源校验最新版本和 SHA-512 完整性元数据'
+          : `正在从 npm 官方源校验${versionChoice.source === 'recommended' ? '推荐' : '指定'}版本 ${versionChoice.version} 和 SHA-512 完整性元数据`,
+      )
+      const trustedRelease = await resolveCliInstallRelease(provider, grokInstallStrategy, {
+        version: versionChoice.version,
+        fetchGrokStableVersion,
+        fetchNpmRelease: fetchNpmPackageReleaseMetadata,
+      })
       if (!npmExecutable) throw new Error('未检测到 npm，请先安装 Node.js')
       const networkRegion = await inspectNetworkRegion()
       // Derived from the routing rather than restated, so the line can never
@@ -2904,8 +2958,10 @@ export function createSystemService(
     }
   }
 
-  function installCli(provider: ProviderId, target: RendererMessageTarget): Promise<void> {
-    return installationQueue.enqueue(`cli:install:${provider}`, () => installCliOperation(provider, target))
+  function installCli(provider: ProviderId, target: RendererMessageTarget, version?: string): Promise<void> {
+    // 队列 key 刻意不含版本:同一个工具的两次安装必须串行(I11),
+    // 让「更新」和「回到推荐版本」同时跑会互相看到半完成的全局目录。
+    return installationQueue.enqueue(`cli:install:${provider}`, () => installCliOperation(provider, target, version))
   }
 
   async function removeDirectoryFromUserPath(directory: string): Promise<void> {

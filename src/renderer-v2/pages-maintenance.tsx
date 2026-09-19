@@ -1356,6 +1356,17 @@ export function SettingsPage({
               }
             />,
           )}
+          {row(
+            '命令行工具总是装最新版',
+            '默认安装星芒验证过的推荐版本；打开后跟随官方最新版，可能遇到尚未验证的问题',
+            <Switch
+              checked={settings.alwaysInstallLatestCli === true}
+              aria-label="命令行工具总是装最新版"
+              onChange={(alwaysInstallLatestCli) =>
+                void update({ alwaysInstallLatestCli })
+              }
+            />,
+          )}
         </>
       ),
       tools: (
