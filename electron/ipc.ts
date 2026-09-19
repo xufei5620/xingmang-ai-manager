@@ -1333,6 +1333,8 @@ function ipcLogDetail(channel: string, args: unknown[], result: unknown, duratio
   // 站点切换对用户无感（产品决定），界面永不显示 siteId；但客服排查一条
   // 自检工单时必须知道当时走的是哪个后端，所以只在日志里留下它。
   if (channel === 'diagnostics:check-connection' && isRecord(result)) {
+    // 自检现在按工具各跑一次，一条工单里会有四行日志，provider 是分辨它们的那一列。
+    detail.provider = result.provider
     detail.layer = result.layer
     detail.ok = result.ok
     detail.siteId = result.siteId
