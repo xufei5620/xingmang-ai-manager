@@ -87,7 +87,7 @@ function annotateTimeoutKill(error: unknown): unknown {
   return error
 }
 
-function runPowerShellScript(executable: string, argv: string[]): Promise<{ stdout: string, stderr: string }> {
+function runPowerShellScript(executable: string, argv: string[]): Promise<{ stdout: string; stderr: string }> {
   return promisify(execFile)(executable, argv, { windowsHide: true, timeout: powerShellStartupTimeoutMs, maxBuffer: 1024 * 1024 })
     .catch((error: unknown) => { throw annotateTimeoutKill(error) })
 }
