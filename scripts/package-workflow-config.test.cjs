@@ -142,3 +142,25 @@ test('the macOS job runs the checks and the compile its build script deliberatel
   const buildIndex = commands.findIndex((command) => /run-macos-free-build\.cjs/.test(command))
   assert.ok(compileIndex >= 0 && compileIndex < buildIndex, '编译必须排在打包之前')
 })
+
+// 这条钉的是它自己的一次事故：启动冒烟是按「插在 Print artifact checksums
+// 之前」加进去的，而两个作业各有一个同名步骤，于是它落进了 windows-package。
+// Windows 上跑 macOS 冒烟必然失败，但那次 dispatch 只出 macOS 包，windows
+// 作业被跳过，工作流照样全绿——没人会在 Mac 包的日志里找一个 Windows 步骤。
+test('the macOS launch smoke runs in the macOS job, before the artifact is uploaded', () => {
+  const macosStepNames = macosJob.steps.map((step) => String(step.run || ''))
+  const launchIndex = macosStepNames.findIndex((command) => command.includes('e2e/macos-launch-smoke.mjs'))
+  const uploadIndex = macosJob.steps.findIndex((step) => String(step.uses || '').includes('upload-artifact'))
+
+  assert.notEqual(launchIndex, -1, 'macos-package 必须真的启动一次打包后的 .app')
+  assert.notEqual(uploadIndex, -1)
+  // 上传之后才跑等于把没验过的包发出去，验不过也已经发出去了。
+  assert.ok(launchIndex < uploadIndex, '启动冒烟必须在上传产物之前')
+  assert.ok(macosJob.steps[launchIndex]['timeout-minutes'] > 0, '启动冒烟需要自己的步骤上限')
+
+  assert.equal(
+    windowsJob.steps.some((step) => String(step.run || '').includes('macos-launch-smoke')),
+    false,
+    'Windows 作业跑不了 macOS 冒烟',
+  )
+})
