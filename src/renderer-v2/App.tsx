@@ -11,6 +11,7 @@ import { ExternalClientDialog } from './features/tools/ExternalClientDialog'
 import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
 import { chineseRuntimePatchAnswerMissing, shouldAskForChineseRuntimePatch } from './features/tools/chinese-runtime-choice'
+import { cliRuntimeBlockMessage, nodeRuntimeReady } from './features/tools/runtime-readiness'
 import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
 import { useToolbox } from './features/tools/useToolbox'
 import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
@@ -30,6 +31,8 @@ import { latestNetworkLocation } from './features/shell/network'
 import { bindPlatformAppearance, platformApi } from './platform-api'
 import { FailureBoundary } from './features/app/FailureBoundary'
 import { readLocalPreference, writeLocalPreference } from './features/app/preferences'
+import { onboardingPreviewEnabled } from './features/app/dev-preview'
+import { deepLinkReadErrorText, supportQrFallbackText } from './features/app/fallback-messages'
 import { bootstrapAccountTools, type AccountBootstrapMode, type AccountBootstrapProgress, type AccountBootstrapResult } from './features/tools/account-bootstrap'
 import { accountOrigin, accountScope, accountSiteId, accountSupports, siteIdForOrigin, type AccountSiteId } from './account-context'
 import { formatAccountReadError } from './features/app/account-read-error'
@@ -68,7 +71,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [chatScope, setChatScope] = useState<string | null>(null)
   const [visitedPages, setVisitedPages] = useState<Partial<Record<PageId, string>>>({})
   const [accountTab, setAccountTab] = useState<AccountTab>('overview')
-  const [guide, setGuide] = useState(() => new URLSearchParams(window.location.search).get('onboardingPreview') === '1')
+  const [guide, setGuide] = useState(() => onboardingPreviewEnabled(window.location.search, import.meta.env.DEV))
   const [workspaceEntered, setWorkspaceEntered] = useState(false)
   const [tourOpen, setTourOpen] = useState(false)
   const [auth, setAuth] = useState<AuthMode | null>(null)
@@ -94,7 +97,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [operationError, setOperationError] = useState<OperationFailure | null>(null)
   const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [accountReadError, setAccountReadError] = useState<{ scope: string; message: string } | null>(null)
-  const [supportQr, setSupportQr] = useState<{ url: string; data: string }>()
+  const [supportQr, setSupportQr] = useState<{ url: string; data: string | null }>()
   const accountEpoch = useRef(0)
   const mounted = useRef(true)
   const confirmationLock = useRef(false)
@@ -117,7 +120,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const siteId = accountSiteId(session)
   const relaySite = resolveRelaySite(siteId)
   const supportUrl = resolveSupportServiceUrl(session)
-  const qr = supportQr?.url === supportUrl ? supportQr.data : undefined
+  const qr = supportQr?.url === supportUrl ? supportQr.data ?? undefined : undefined
+  const qrFallback = supportQrFallbackText(supportQr, supportUrl)
   const avatarIdentity = session.account ? { origin: accountOrigin(session), userId: session.account.userId } : undefined
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; accountEpoch.current++ } }, [])
   useEffect(() => {
@@ -216,7 +220,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   useEffect(() => { document.documentElement.dataset.os = os }, [os])
   useEffect(() => {
     let current = true
-    void QRCode.toDataURL(supportUrl, { width: 192, margin: 1, errorCorrectionLevel: 'M' }).then((data) => { if (current) setSupportQr({ url: supportUrl, data }) }).catch(() => undefined)
+    void QRCode.toDataURL(supportUrl, { width: 192, margin: 1, errorCorrectionLevel: 'M' })
+      .then((data) => { if (current) setSupportQr({ url: supportUrl, data }) })
+      .catch(() => { if (current) setSupportQr({ url: supportUrl, data: null }) })
     return () => { current = false }
   }, [supportUrl])
   const reloadAccount = useCallback(async () => {
@@ -277,9 +283,18 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (!state) throw new Error('请先完成工具检测')
     const management = id === 'codexDesktop' ? state.platform.codexDesktop.install : state.platform.cliInstall[id]
     if (management === 'external') { navigate('tutorial'); throw new Error('此平台需要在应用外安装，完成后回来重新检测。') }
-    if (id !== 'codexDesktop' && (!state.system.runtime.node.installed || state.system.runtime.node.tooOld || !state.system.runtime.npm.installed)) throw new Error('请先准备 Node.js 运行环境，再安装命令行工具。')
+    const runtimeBlocked = id === 'codexDesktop' ? null : cliRuntimeBlockMessage(state.system.runtime)
+    if (runtimeBlocked) throw new Error(runtimeBlocked)
     if (tools.find((tool) => tool.id === id)?.requires.includes('python') && (!state.system.runtime.python.installed || state.system.runtime.python.detectionFailed)) throw new Error('Gemini 还需要 Python 环境。请先在运行环境卡中准备 Python，再安装工具。')
     await toolbox.run(id, version ? `正在安装 ${version}` : '正在安装', () => toolsApi.install(id, version))
+    await syncAfterToolInstalled(id)
+  }
+  /**
+   * 装完一个工具要做两件收尾：把账号 Key 写进刚装好的工具，再刷新检测结果。
+   * 首页和「安装卸载」页必须共用这一段，否则维护页装完只提示「工具状态已更新」，
+   * 首页还停在「未安装」、Key 也没写（R-G3）。
+   */
+  async function syncAfterToolInstalled(id: ToolId) {
     if (session.authenticated && session.account) {
       await runAccountBootstrap(session.account.userId, 'login', true, [providerFor(id)])
     }
@@ -396,7 +411,11 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }
   useEffect(() => native.onUpdateState(setUpdate), [native])
   useEffect(() => {
-    function receive() { void native.takeExternalDeepLink().then((link) => { if (link && mounted.current) { linkPrompted.current = false; setPendingLink(link) } }).catch(() => undefined) }
+    function receive() {
+      void native.takeExternalDeepLink()
+        .then((link) => { if (link && mounted.current) { linkPrompted.current = false; setPendingLink(link) } })
+        .catch((cause) => { if (mounted.current) setOperationError({ message: deepLinkReadErrorText(cause), retry: receive }) })
+    }
     const unsubscribe = native.onExternalDeepLink(receive)
     receive()
     return () => {
@@ -446,7 +465,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const guideTools: GuideToolState[] = toolbox.snapshot ? presentTools(toolbox.snapshot).map((tool) => ({
     id: tool.id, installed: tool.status.installed, configured: tool.configured, source: tool.source === 'missing' ? 'none' : tool.source,
     version: tool.currentVersion ?? undefined, model: tool.model, detectionError: Boolean(tool.error),
-    runtimeReady: toolbox.snapshot!.system.runtime.node.installed && !toolbox.snapshot!.system.runtime.node.tooOld && toolbox.snapshot!.system.runtime.npm.installed,
+    runtimeReady: nodeRuntimeReady(toolbox.snapshot!.system.runtime),
     pythonReady: toolbox.snapshot!.system.runtime.python.installed && !toolbox.snapshot!.system.runtime.python.detectionFailed,
     supported: tool.id !== 'codexDesktop' || platform?.codexDesktop.launch,
     installMode: tool.id === 'codexDesktop' ? platform?.codexDesktop.install : platform?.cliInstall[tool.id], workspace: toolbox.snapshot!.config.workspace,
@@ -514,7 +533,10 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
             {(Object.keys(visitedPages) as PageId[]).filter((id) => id !== 'acceleration' && (visitedPages[id] === scope || id === page)).map((id) => <div key={id} hidden={page !== id} inert={page !== id}>
               <Suspense fallback={pageLoading}>
                 <BusinessPage api={native} page={id} accountTab={accountTab} paymentReturn={paymentReturn} navigate={navigate} openLogin={() => setAuth('login')} openHelp={() => setHelp(true)}
-                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig} />
+                  onAccountChanged={() => void perform('刷新账号', reloadAccount)} onSettingsChanged={setSettings} openConfig={openToolConfig}
+                  onToolsChanged={(tool) => syncAfterToolInstalled(tool).catch((cause) => {
+                    if (mounted.current) toast.show(errorMessage(cause, '工具已安装，但最新状态没有读到。请回到首页重新检测。'), 'warn')
+                  })} />
               </Suspense>
             </div>)}
           </div>
@@ -539,7 +561,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       <p>切换页面、缩到托盘或退出游戏都不会停止加速。点击“停止加速”或退出本软件才会断开；免费时长用完后自动停止。</p>
     </Dialog>}
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
-      <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p><Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
+      <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p>
+        {qrFallback && <p role="alert" data-testid="support-qr-fallback">{qrFallback}</p>}<Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
     {operationError && <Dialog open title={operationHint?.title ?? '操作没有完成'} onClose={() => setOperationError(null)} testId="operation-error" footer={<>
       <Button onClick={() => setOperationError(null)}>返回</Button>

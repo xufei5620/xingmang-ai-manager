@@ -2212,3 +2212,62 @@ test('failed reset retains the selected key and retries reset without silently m
     await clean(page)
   } finally { await page.close() }
 })
+
+test('an unreadable Node version blocks the CLI install and says which step is blocking (R-G6)', async () => {
+  const page = await open('nodeVersionUnknown=1')
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('operation-error-detail').filter({ hasText: '版本无法识别' }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unreadable Node version leaves the guide runtime step unfinished (R-G6)', async () => {
+  const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-next').click()
+    const guide = page.getByTestId('start-guide')
+    await guide.getByText('命令行工具需要运行环境', { exact: true }).waitFor()
+    await expect(page.getByTestId('guide-node')).toBeEnabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a deep link that cannot be read says so and points at the order page (R-B7)', async () => {
+  const page = await open('deepLinkFail=1')
+  try {
+    const detail = page.getByTestId('operation-error-detail')
+    await detail.waitFor()
+    const text = await detail.innerText()
+    assert.match(text, /回跳参数已过期/)
+    assert.match(text, /订单/)
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+    assert.equal(await detail.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('installing from the maintenance page writes the account Key and refreshes the home page (R-G3)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-tool-gemini')
+    await row.getByText('未安装', { exact: true }).waitFor()
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, before)
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))
+    assert.deepEqual(calls.at(-1).args[0].providers, ['gemini'])
+    await row.getByText('已安装', { exact: true }).waitFor()
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
+    await clean(page)
+  } finally { await page.close() }
+})
