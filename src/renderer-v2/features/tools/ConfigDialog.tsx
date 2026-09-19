@@ -10,6 +10,7 @@ import type { ToolsApi } from './api'
 import { accountKeyLabel, AUTOMATIC_KEY, CURRENT_KEY, currentKeyLabel, initialKeyChoice, manualKeyPreview, type ConfigKeyMetadata } from './key-selection'
 import { describeChineseLocale, describeChineseLocaleResult } from './locale-status'
 import { codexModelChoices, codexModelFilterSaveIssue, type CodexModelFilter } from './model-filter'
+import { errorMessage } from '../../business-common'
 
 type SourceChoice = 'account' | 'official' | 'manual' | 'unknown'
 interface ConfigDraft { source: SourceChoice; keyId: string; secret: string; model: string; validatedSecret: string; dirty: boolean }
@@ -98,7 +99,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     lastKeyRefresh.current = Date.now()
     setKeysLoading(true); setKeyError('')
     void api.readKeys().then((page) => { if (current) setKeys(page.keys) }).catch((cause) => {
-      if (current) setKeyError(cause instanceof Error ? cause.message : '密钥列表暂时没有读到')
+      if (current) setKeyError(errorMessage(cause, '密钥列表暂时没有读到'))
     }).finally(() => { if (current) setKeysLoading(false) })
     return () => { current = false }
   }, [api, signedIn, keyRevision])
@@ -110,7 +111,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
     void api.readKeyOptions(tab).then((value) => {
       if (active.current && owner === metadataRequest.current) setKeyMetadata((current) => ({ ...current, [provider]: value }))
     }).catch((cause) => {
-      if (active.current && owner === metadataRequest.current) setMetadataErrors((current) => ({ ...current, [provider]: cause instanceof Error ? cause.message : '当前密钥信息暂时没有读到' }))
+      if (active.current && owner === metadataRequest.current) setMetadataErrors((current) => ({ ...current, [provider]: errorMessage(cause, '当前密钥信息暂时没有读到') }))
     }).finally(() => {
       if (active.current && owner === metadataRequest.current) setMetadataLoading((current) => ({ ...current, [provider]: false }))
     })
@@ -146,14 +147,14 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       const suggested = resolveDefaultCliModel(provider, result, draft.model) ?? ''
       if (draft.source === 'manual') change({ validatedSecret: draft.secret, model: suggested })
       else if (!draft.model || (!native.model && !result.includes(draft.model))) change({ model: suggested })
-    } catch (cause) { if (active.current && id === request.current) setError(cause instanceof Error ? cause.message : '模型检测未完成') }
+    } catch (cause) { if (active.current && id === request.current) setError(errorMessage(cause, '模型检测未完成')) }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
   async function run(label: string, operation: () => Promise<void>) {
     if (locked.current) return
     locked.current = true; setBusy(label); setError(''); setWarning('')
     try { await operation() }
-    catch (cause) { if (active.current) setError(cause instanceof Error ? cause.message : `${label}没有成功`) }
+    catch (cause) { if (active.current) setError(errorMessage(cause, `${label}没有成功`)) }
     finally { locked.current = false; if (active.current) setBusy('') }
   }
   function requestSave() {

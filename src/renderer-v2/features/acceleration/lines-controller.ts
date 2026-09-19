@@ -1,4 +1,5 @@
 import type { AccelerationApi, AccelerationLine } from './api'
+import { errorMessage } from '../../business-common'
 
 interface LinesSnapshot {
   scope: string | null
@@ -46,7 +47,7 @@ export function createAccelerationLinesController(api: AccelerationApi, canSelec
           }
         }
       } catch (cause) {
-        if (current()) publish({ error: cause instanceof Error ? cause.message.slice(0, 300) : '线路读取或检测失败，请重试。' })
+        if (current()) publish({ error: errorMessage(cause, '线路读取或检测失败，请重试。').slice(0, 300) })
       } finally {
         if (current() && flight === operation) { flight = null; publish({ busy: false }) }
       }
