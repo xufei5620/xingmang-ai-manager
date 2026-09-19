@@ -19,17 +19,19 @@ npm run acceleration:mac:prepare
 npm run test:mac:proxy
 ```
 
-开发版在 Electron userData 下读取 `acceleration-development.json`；正式安装版不读取此开发配置。该文件只存绝对路径和校验值，节点 YAML 与内核保存在仓库外。配置结构如下，路径和指纹均为占位值：
+开发版在 Electron userData 下读取 `acceleration-development.json`；正式安装版不读取此开发配置。该 JSON 与内核仍保存在仓库外，节点可以直接使用仓库内置的 `bundled-acceleration/profile.yaml`。开发配置必须显式填写绝对 `profilePath`，不能套用资源准备脚本省略该字段时的默认规则。配置结构如下，路径和指纹均为占位值：
 
 ```json
 {
   "version": 1,
   "corePath": "/private/acceleration/mihomo",
   "coreSha256": "替换为实际内核的64位SHA256",
-  "profilePath": "/private/acceleration/profile.yaml",
+  "profilePath": "/Users/example/src/xingmang-ai-manager/bundled-acceleration/profile.yaml",
   "profileSha256": "替换为实际配置的64位SHA256"
 }
 ```
+
+仓库内置的是已发布的 12 条清洗后共用线路，配套 SHA-256 记录在 `bundled-acceleration/profile.sha256`。开发时将上例路径替换为本机 checkout 的绝对路径，并填写实际节点文件的 SHA-256；也可以显式使用仓库外的自定义节点文件。节点入仓无需再私下传文件，但不会自动下载内核、创建开发配置或开启代理。详见 [内置加速节点说明](../bundled-acceleration/README.md)。
 
 原生组件通过 SystemConfiguration 管理当前网络位置的物理网络服务。只在需要修改时使用 macOS 标准系统授权；读取及无恢复记录的启动检查不要求授权。原设置先写入恢复记录，停止时先恢复并确认生效，再停止内核。其他软件改过的代理不会被旧快照覆盖；若仍指向本加速端口则保留恢复记录并报告失败。
 
@@ -84,6 +86,8 @@ npm run build:mac
 ## 免费自签发布
 
 免费自签发布与本地 ad-hoc 包不同：它必须复用同一张长期自签证书，并写入 `xingmangLocalBuild: false`，因此主程序更新保持启用。发布时设置 `CSC_NAME` 和 `XINGMANG_MAC_SIGNING_SHA256`，再执行 `npm run dist:mac:free`；runner 会只为 electron-builder 子进程自动启用免费发布模式。该模式不 notarize，首次安装仍由用户在 Finder 或“系统设置 > 隐私与安全性”中手动确认；后续版本由 Squirrel.Mac 在固定证书和 bundle ID 连续时自动更新。完整的用户迁移、证书保管和构建步骤见 [macOS 免费自签版分发手册](MACOS_FREE_DISTRIBUTION.md)。
+
+携带加速线路时，为 arm64、x64 各准备一份仓库外的 JSON，分别固定对应 Mihomo 内核的绝对路径和 SHA-256；资源准备 JSON 可以省略 `profilePath`，由 `stage-acceleration-bundle.cjs` 读取仓库固定节点并校验配套 SHA-256。分别生成两个仓库外的五文件资源目录后，用 `--acceleration-arm64 <绝对目录>` 和 `--acceleration-x64 <绝对目录>` 同时传给 `npm run dist:mac:free --`。该入口会清除继承的 `XINGMANG_ACCELERATION_BUNDLE_DIR`，仅接受这两个显式参数；普通构建和 CI 仍不会自动携带内核与线路。完整命令见 [发布手册](RELEASING.md#2-macos-双架构加速资源)。
 
 ## 签名 entitlements
 
