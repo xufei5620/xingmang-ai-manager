@@ -120,6 +120,16 @@ function captureRegularFileIdentity(filePath, label) {
   return identityFromStat(stat)
 }
 
+// A bare "已变更或被替换" says nothing about what moved, and these failures only
+// ever reproduce on a real Mac: naming the drifting fields is the difference
+// between one CI round and a guessing match over which step touched the file.
+function describeIdentityDrift(actual, expected) {
+  const drift = Object.keys(expected)
+    .filter((field) => actual[field] !== expected[field])
+    .map((field) => `${field} ${expected[field]} → ${actual[field]}`)
+  return drift.length > 0 ? `（${drift.join('、')}）` : ''
+}
+
 function assertFileIdentity(filePath, expected, label) {
   let actual
   try {
@@ -127,7 +137,9 @@ function assertFileIdentity(filePath, expected, label) {
   } catch (error) {
     throw new Error(`${label} 在验证期间已变更：${error.message}`)
   }
-  if (!sameIdentity(actual, expected)) throw new Error(`${label} 在验证期间已变更或被替换`)
+  if (!sameIdentity(actual, expected)) {
+    throw new Error(`${label} 在验证期间已变更或被替换${describeIdentityDrift(actual, expected)}`)
+  }
 }
 
 function captureDirectoryIdentity(directoryPath, label) {
@@ -231,14 +243,17 @@ async function copyPrivateRegularFile(sourcePath, destinationPath, label) {
 
 function assertSameRegularFile(actual, expected, label) {
   if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.size !== expected.size) {
-    throw new Error(`${label} 在验证期间已变更或被替换`)
+    throw new Error(`${label} 在验证期间已变更或被替换${describeIdentityDrift(actual, expected)}`)
   }
   return actual
 }
 
-// Mounting an image stamps it: `hdiutil attach` updates the DMG's own
-// timestamps, so after a DMG inspection the private copy no longer matches the
-// identity it was bound with and every later check reads that as "replaced".
+// Mounting an image stamps it: `hdiutil attach` records its checksum back onto
+// the image file (the com.apple.diskimages.* extended attributes), and writing
+// an xattr bumps ctime. So after a DMG inspection the private copy no longer
+// matches the identity it was bound with and every later check reads that as
+// "replaced". Nothing else in this file touches a private copy after it is
+// captured, which is why this is the only place that needs re-baselining.
 // Dropping the timestamps from the comparison would also drop the only signal
 // an in-place edit leaves, so the copy is re-hashed against the digest it was
 // made with and the identity is re-baselined only once that digest and

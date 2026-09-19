@@ -1414,3 +1414,17 @@ test('rejects a private DMG copy replaced by a link while it is inspected', asyn
     },
   }), /私有副本 XingMang-AI-Manager-1\.2\.3-arm64\.dmg 必须是非空普通文件，不能是链接/)
 })
+
+test('names the drifting identity fields when a private copy stops matching', async (t) => {
+  const fixture = createFreeArtifacts(t)
+  await assert.rejects(() => verifyMacosFreeArtifacts({
+    projectRoot: fixture.projectRoot,
+    outputDirectory: fixture.outputDirectory,
+    version: '1.2.3',
+    signingCertificateSha256: 'ab'.repeat(32),
+    ...bothArtifactVerifiers(async (artifactPath, architecture) => {
+      stampPrivateCopy(artifactPath)
+      return verifiedApplication(architecture)
+    }),
+  }), /已变更或被替换（(?:mtimeMs|ctimeMs) \d/)
+})
