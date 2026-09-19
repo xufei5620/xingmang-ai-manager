@@ -18,6 +18,8 @@ paths:
 - 页面只读 `renderer-v2/registry`；组件遵守 `ui-spec/20-component-api.md`，颜色、字体、版式遵守 token 与当前原型。原型未覆盖的旧功能使用最近的现有模板并记录差异。
 - 新界面使用 React 19；旧回滚界面的 React 18 依赖在 `tooling/legacy-renderer/` 隔离。安装、Key、账号、支付、原 IPC、画布引擎保持原实现，平台新增只在 `electron/platform/` 与明确接入点。
 - 固定 1280 逻辑宽，按 DIP 用 `setZoomFactor` 整体缩放；不添加响应式断点。保留所有旧 `data-testid`，新增采用 `page-component-action`。
+- **组件目录是集中式的，不是一个组件一个文件夹**（`R-B3`，2026-09-19）：新组件加进 `ui/core.tsx`、`fields.tsx`、`modal.tsx`、`floating.tsx`、`feedback.tsx`、`brand.tsx`、`guidance.tsx` 里对应的那个，再由 `components.tsx` / `index.ts` 导出，不要新建 `ui/<Name>/` 目录。`ui-spec/reference/` 里那条「一个组件一个文件夹」的目录要求属于设计包原稿，未被采用。
+- **行尾分号只在 `ui/`、`registry/` 与 `gallery*.tsx` 里写**（`R-B5`，2026-09-19）：那几处是照原型抄下来的既成事实，`features/`、`pages-*.tsx` 等一律不加。`scripts/verify-renderer-style.test.cjs` 会红。模块顶层用 `function` 声明，测试夹具除外。
 - 自动化测试只用本地 mock/隔离临时数据，不请求生产服务、不执行真实付费生成。Windows 无签名发布设置保持不变。
 
 实施状态与真实验证范围见 `docs/UI-V3.1.1-V2-REBUILD.md`。截图对照由仓库脚本生成并留在本地，不纳入源码 PR；不能把截图生成或 mock 通过写成原生平台、后台能力或产品验收通过。

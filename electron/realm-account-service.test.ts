@@ -54,9 +54,16 @@ function fixture(overrides: Partial<RealmAccountServiceOptions> = {}) {
   let authenticationPolicy: (siteId: RealmAccountSiteId, input: NewApiLoginInput) => void = () => undefined
   let restoredIdentity: (siteId: RealmAccountSiteId, value: RealmSavedAccount) => RealmSavedAccount
     = (siteId, value) => saved(siteId, value.userId, 'test-rotated-once')
-  const clients: Array<{ siteId: RealmAccountSiteId; client: RelayBackendClient; restore: ReturnType<typeof vi.fn>;
-    emit(value: RealmSavedAccount | null): void; failLogin: boolean; restoreError: Error | null;
-    restoreValid: boolean; balance: () => Promise<unknown> }> = []
+  const clients: Array<{
+    siteId: RealmAccountSiteId
+    client: RelayBackendClient
+    restore: ReturnType<typeof vi.fn>
+    emit(value: RealmSavedAccount | null): void
+    failLogin: boolean
+    restoreError: Error | null
+    restoreValid: boolean
+    balance: () => Promise<unknown>
+  }> = []
   const createClient: RealmAccountServiceOptions['createClient'] = (siteId, callback) => {
     let current: RealmSavedAccount | null = null
     const state = (): NewApiSessionState => ({ authenticated: current !== null,

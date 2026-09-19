@@ -1,6 +1,10 @@
 # 20 · 组件代码契约（React）
 
-`02-components.md` 说的是组件长什么样、什么时候用；这份说的是**代码里怎么写**。目录 `src/renderer-v2/ui/`，一个组件一个文件夹：`Button/Button.tsx`、`Button.stories.tsx`、`Button.test.tsx`、`index.ts`。所有组件从 `ui/index.ts` 统一导出，页面只能 `import { Button } from '@/ui'`。
+`02-components.md` 说的是组件长什么样、什么时候用；这份说的是**代码里怎么写**。目录 `src/renderer-v2/ui/`，所有组件从 `ui/index.ts` 统一导出，页面只能 `import { Button } from './ui'`。
+
+**目录形态（2026-09-19 定案，R-B3）：v2 采用集中式实现文件，不是一个组件一个文件夹。** 组件按职责分入 `core.tsx`（按钮、徽标、卡片、行、表格、页头、工具条）、`fields.tsx`（输入类）、`modal.tsx`（Dialog / Confirm / Drawer）、`floating.tsx`（Menu / Popover / Tooltip）、`feedback.tsx`（Notice / Toast / Progress / Skeleton / Empty）、`brand.tsx`（BrandIcon / Logo）、`guidance.tsx`（Coachmark 等），`shared.tsx` 放公共类型与 Context，`components.tsx` 再把它们汇成一层，`index.ts` 负责挂 token 与组件样式并对外导出。测试集中在 `components.test.tsx`、`provenance.test.ts` 与 `browser-check.mjs`，组件预览在 `gallery.html`，不使用 `*.stories.tsx`。
+
+`reference/20-component-api.md` 是设计包原稿的只读副本，里面「一个组件一个文件夹：`Button/Button.tsx`、`Button.stories.tsx`、`Button.test.tsx`、`index.ts`」的目录要求未被采用——曾按它建过 32 个只含一行转发的 `ui/<Name>/index.ts`，代码里 0 处 import，已随 R-B3 删除。
 
 ## 通用约定
 

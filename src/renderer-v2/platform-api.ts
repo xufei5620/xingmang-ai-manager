@@ -9,8 +9,9 @@ declare global {
     xingmangPlatform?: XingmangPlatformApi
   }
 }
-export const platformApi = () =>
-  typeof window !== 'undefined' ? (window.xingmangPlatform ?? null) : null
+export function platformApi() {
+  return typeof window !== 'undefined' ? (window.xingmangPlatform ?? null) : null
+}
 
 export function bindPlatformAppearance(
   platform: XingmangPlatformApi,

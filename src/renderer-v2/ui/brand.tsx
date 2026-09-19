@@ -27,7 +27,7 @@ import { useUiText, type BaseProps } from './shared';
 export type ToolId = string;
 const brandComponents = { Claude: ClaudeIcon, OpenAI: OpenAIIcon, Gemini: GeminiIcon, Grok: GrokIcon, DeepSeek: DeepSeekIcon, Qwen: QwenIcon, ChatGLM: ChatGLMIcon, Moonshot: MoonshotIcon, MiniMax: MiniMaxIcon, Zhipu: ZhipuIcon } as const;
 const environmentBrands = { node: siNodedotjs, npm: siNpm, python: siPython, stripe: siStripe, alipay: siAlipay, wechat: siWechat } as const;
-const modelBrand = (model: string) => /^claude/i.test(model) ? 'Claude' : /^(gpt|o[134]|chatgpt|codex)/i.test(model) ? 'OpenAI' : /^gemini/i.test(model) ? 'Gemini' : /^grok/i.test(model) ? 'Grok' : /^deepseek/i.test(model) ? 'DeepSeek' : /^qwen/i.test(model) ? 'Qwen' : /^(chatglm|glm)/i.test(model) ? 'ChatGLM' : /^(kimi|moonshot)/i.test(model) ? 'Moonshot' : /^minimax/i.test(model) ? 'MiniMax' : /^(zhipu|智谱)/i.test(model) ? 'Zhipu' : '';
+function modelBrand(model: string) { return /^claude/i.test(model) ? 'Claude' : /^(gpt|o[134]|chatgpt|codex)/i.test(model) ? 'OpenAI' : /^gemini/i.test(model) ? 'Gemini' : /^grok/i.test(model) ? 'Grok' : /^deepseek/i.test(model) ? 'DeepSeek' : /^qwen/i.test(model) ? 'Qwen' : /^(chatglm|glm)/i.test(model) ? 'ChatGLM' : /^(kimi|moonshot)/i.test(model) ? 'Moonshot' : /^minimax/i.test(model) ? 'MiniMax' : /^(zhipu|智谱)/i.test(model) ? 'Zhipu' : ''; }
 export function BrandIcon({ tool, model, size = 24, variant = 'inline', testId }: BaseProps & { tool?: ToolId; model?: string; size?: number; variant?: 'tile' | 'inline' | 'xs' }) {
   const t = useUiText();
   const definition = tools.find(item => item.id === tool || item.name === tool) ?? clientConnections.find(item => item.id === tool || item.name === tool);

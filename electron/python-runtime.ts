@@ -87,9 +87,9 @@ export interface InstallPythonRuntimeOptions {
 }
 
 const releaseIndexUrl = 'https://www.python.org/api/v2/downloads/release/?version=3&is_published=true'
-const releaseFilesUrl = (releaseId: number) => (
-  `https://www.python.org/api/v2/downloads/release_file/?os=1&release=${releaseId}`
-)
+function releaseFilesUrl(releaseId: number) {
+  return `https://www.python.org/api/v2/downloads/release_file/?os=1&release=${releaseId}`
+}
 const metadataTimeoutMs = 30_000
 const downloadTimeoutMs = 10 * 60_000
 const installerTimeoutMs = 15 * 60_000
