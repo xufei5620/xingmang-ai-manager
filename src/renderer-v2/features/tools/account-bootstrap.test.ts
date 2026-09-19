@@ -305,6 +305,27 @@ describe('account managed Key bootstrap', () => {
     expect(current).toEqual(before)
   })
 
+  it('redacts the IPC prefix and the config path out of the sync warning', async () => {
+    // The main process names the file it failed on, and on Windows that path
+    // carries the account name (R-S7 / I13).
+    const api: AccountBootstrapBridge = {
+      getAccountSession: vi.fn(async () => ({ authenticated: true, account: { userId: 17, username: 'member', quota: 0, usedQuota: 0, group: 'default', role: 1 } })),
+      syncManagedCliKeys: vi.fn(async () => {
+        throw new Error("Error invoking remote method 'account:sync-managed-cli-keys': Error: 写入托管 Key 失败：C:\\Users\\张三\\.codex\\auth.json")
+      }),
+      scanSystem: vi.fn(async () => system([])),
+      getSettings: vi.fn(async () => settings),
+      getConfig: vi.fn(async () => config()),
+      configureManagedCliKeys: vi.fn(async () => ({ configured: [], failed: [] })),
+    }
+
+    const result = await bootstrapAccountTools(api, 17, undefined, 'login', undefined, null)
+
+    expect(result.warnings).toContain('Key 同步阶段：写入托管 Key 失败：本地配置文件')
+    expect(result.warnings.join(' ')).not.toContain('张三')
+    expect(result.warnings.join(' ')).not.toContain('invoking remote method')
+  })
+
   it('does not accept read-only key matching as verification of a reported account write', async () => {
     const current = config()
     const api: AccountBootstrapBridge = {

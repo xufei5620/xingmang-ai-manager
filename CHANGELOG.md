@@ -5,6 +5,10 @@
 >   见 `docs/RELEASING.md`。发版必更，覆盖 0.1.20 起的全部版本。
 > - **本文件** —— 面向开发者的变更记录，没有程序消费者。
 >
+> **两份的未发布条目都不直接写在文件里**：每条 PR 在 `changes/unreleased/` 下放一个分片文件，
+> 发版时 `npm run changelog:collect` 汇总进下面的 `## Unreleased` 段与 `release-notes.md` 的「未发布」段。
+> 写法见 [`changes/unreleased/README.md`](changes/unreleased/README.md)。
+>
 > ⚠️ **已知断档：本文件从 0.1.12 直接跳到 0.2.6，中间 0.1.13 ~ 0.2.5 没有条目。**
 > 这段区间去 `release-notes.md` 查。其中 **0.1.13 ~ 0.1.19** 与 **0.1.29** 两处两份文件都没有
 > （这两个版本确有发布提交），属历史遗留，不回补。
@@ -19,6 +23,8 @@
 - 发版流水线签名链路加固：把签名证书导进 runner 根信任存储的步骤收窄到 `test_signing` 自签名构建，正式构建不再人为制造链信任，中间 CA 缺失、时间戳不可用这类只在干净 Windows 上暴露的缺陷不会再被 Authenticode 校验的「Valid」盖住；`windows-installer` 作业声明 `environment: release`，三个签名 secret 不再对任意分支可见（P-03、P-06）。
 - 把落地页发布链路里的生产源站信息移出公开仓库：`scripts/publish-dl-landing.cjs` 不再内置源站 IP、SSH 端口、登录用户、密钥文件名与站点根目录，改为运行时从 `DL_LANDING_*` 环境变量、命令行参数或被 `.gitignore` 忽略的 `dl-landing.config.json` 读取，缺任何一项直接报错停住；`dl-landing/nginx/` 的三份配置改为带占位符的 `.conf.example` 模板，`docs/DL-LANDING-PLAN.md` 删去具体值（P-04）。
 - legacy 渲染层补上根级 ErrorBoundary：`main.tsx` 经新的 `RootShell` 包住整棵树，Sidebar / ShellTopbar / 各弹窗 / `App()` 自身 state 与顶层 effect 抛错不再是白屏（打包版已禁用 devtools，此前只能杀进程）；崩溃面板在没有 toast 宿主时就地显示导出结果。同时把 `App.tsx` 账号切换器的 `accountBaseUrl!` 换成 `relaySiteAccountsOrigin()` 的显式回落（R-S10）。
+- macOS 免费分发产物验证补上 DMG 与签名强度两处缺口：每个 `.dmg` 现在会以只读方式挂载，内部 `.app` 走与 ZIP 完全相同的签名、叶证书、`app-update.yml`、Info.plist 与 asar 校验，验证结束（含失败）一律卸载，指定要求与证书连续性断言也从两个 ZIP 扩到全部四个产物（P-08）；同时断言主可执行文件与 `Contents/Frameworks` 下每个 helper 都启用了强化运行时，且 entitlements 键集合精确等于允许清单（只有 `com.apple.security.cs.allow-jit`），签名配置被改弱不再三道关全绿（P-09）。
+- 修复 renderer-v2 的错误展示既不剥 Electron 的 IPC 通道名前缀、也不脱敏绝对路径：`business-common.tsx` 新增 `rawErrorMessage` / `userFacingErrorMessage`（与 legacy `src/error-message.ts` 等价，两棵渲染树各留一份），`errorMessage` 改为先剥前缀再脱敏后判断语言与类别，并接受按场景的兜底文案；22 处直接把 `cause.message` 上屏的 v2 调用点改走它，补上 v2 侧此前缺失的单测（R-S7）。
 - 修复非管理员（默认）启动时 Node.js 兜底 MSI 安装必然失败：暂存目录改用普通用户临时目录，提权脚本自行在 Program Files 下建立仅管理员可写的目录、复制安装包并在提权侧重新校验 SHA-256 与 Authenticode 后才交给 msiexec；补上授权取消、跨账号授权等退出码的中文提示（E-S7）。
 - 无签名发布通道（`XINGMANG_UNSIGNED_RELEASE=1`）不再静默下载和安装更新：启动检查只提示发现的新版本，下载和安装都要用户在更新页确认。该通道缺少 `publisherName`，`electron-updater` 会直接跳过安装包签名校验，仓库里的严格 Authenticode 校验器因此从不被调用（审查总表 M-02）。
 - 更新包下载完成后，主进程按更新清单里对应文件的 SHA-512 重新校验安装包，清单缺少该校验值、无法完成校验或校验不一致都拒绝安装并在更新页说明原因。校验读取的是打开后的同一个文件描述符，并拒绝存在多个硬链接的安装包。
@@ -33,8 +39,6 @@
 - 修复 v2 聊天页每次渲染都把全部会话正文拼成大字符串重新搜索：过滤改为 `useMemo`，搜索框为空时不扫正文，非空时按会话对象缓存可搜索文本，流式输出只重扫被分片改动的那个会话（R-S5）。
 - macOS 视觉验收脚本（`npm run test:mac:visual`）改用 renderer-v2 的 `data-testid`：此前脚本等待的 `.app-shell`、`.main-nav`、`.cli-card` 等选择器全部来自 legacy 界面，而 `npm run compile` 默认产出 renderer-v2，脚本第一步就固定超时 60 秒，macOS 的布局回归实际无人把关（审查总表 T-S3）。新版检查 v2 壳层分区、首页五个工具行、安装卸载页工具行，并用工具配置对话框做窄窗口下的弹窗几何检查。legacy 的「卸载帮助」按钮在 v2 里没有对应入口（v2 的手动清理弹窗只在真正执行卸载并收到 `manualHelp` 后才出现），相关断言无法平移，已在 PR 中说明。
 - 设置页「主题」分组的切换控件补上 `settings-theme` 测试标识与无障碍名称。
-- Codex 桌面端的中文运行时注入改为显式开关：只有用户点过「启用中文界面」才会在打开 Codex 时附带本机调试端口，`config.toml` 里的 `localeOverride = "zh-CN"`（本程序自动写入的默认值）不再被当作同意；配置里新增「跟随系统语言」可随时关闭（E-S3）。
-- 升级后第一次打开 Codex 桌面端时，若此前没有明确选择过，会一次性询问是否启用中文界面并说明该端口，选过之后不再询问，老用户不会无声变回英文。
 
 ## 0.2.6 - 2026-09-19
 

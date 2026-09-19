@@ -1,4 +1,5 @@
 import type { AccelerationApi, AccelerationMode, AccelerationRedemptionResult, AccelerationState } from './api'
+import { errorMessage as sharedErrorMessage } from '../../business-common'
 
 export interface AccelerationSnapshot {
   state: AccelerationState | null
@@ -41,7 +42,8 @@ function connected(state: AccelerationState | null) {
 }
 
 function errorMessage(cause: unknown) {
-  return cause instanceof Error && cause.message ? cause.message.slice(0, 300) : '加速状态更新失败，请重试。'
+  // 走公共实现才会剥掉 IPC 通道名前缀并脱敏绝对路径（R-S7）；300 字上限保持不变。
+  return sharedErrorMessage(cause, '加速状态更新失败，请重试。').slice(0, 300)
 }
 
 /** Display projection only: balances and actual connection lifetime belong to the host. */
