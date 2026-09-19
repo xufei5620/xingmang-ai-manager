@@ -1,5 +1,6 @@
 import path from 'node:path'
 import type { SafeStorageLike } from './account-session-store'
+import { inspectSafeStorageBackend, safeStoragePlaintextMessage } from './safe-storage-backend'
 import {
   ensureSafeDataDirectory,
   readSafeUtf8File,
@@ -173,44 +174,58 @@ export class ChatKeyStore {
   remove(userId: number, group: string): Promise<void> {
     this.assertUserId(userId)
     if (!isBoundedString(group, MAX_GROUP_LENGTH)) throw new Error('AI 聊天分组格式错误')
-    this.invalidatedGroups.set(this.groupScope(userId, group), this.nextRevision())
+    const scope = this.groupScope(userId, group)
+    const revision = this.nextRevision()
+    this.invalidatedGroups.set(scope, revision)
     return this.enqueue(async () => {
-      this.assertEncryptionAvailable()
-      const existing = await this.readRecord()
-      if (existing?.keys.some((entry) => entry.userId === userId && entry.group === group)) {
-        const keys = existing.keys.filter((entry) => !(entry.userId === userId && entry.group === group))
-        await this.writeRecord({ version: CURRENT_VERSION, keys })
+      try {
+        this.assertEncryptionAvailable()
+        const existing = await this.readRecord()
+        if (existing?.keys.some((entry) => entry.userId === userId && entry.group === group)) {
+          const keys = existing.keys.filter((entry) => !(entry.userId === userId && entry.group === group))
+          await this.writeRecord({ version: CURRENT_VERSION, keys })
+        }
+      } finally {
+        this.releaseInvalidation(this.invalidatedGroups, scope, revision)
       }
-      this.invalidatedGroups.delete(this.groupScope(userId, group))
     })
   }
 
   removeByKeyId(userId: number, keyId: number): Promise<void> {
     this.assertUserId(userId)
     if (!Number.isInteger(keyId) || keyId <= 0) throw new Error('AI 聊天 Key ID 格式错误')
-    this.invalidatedKeys.set(this.keyScope(userId, keyId), this.nextRevision())
+    const scope = this.keyScope(userId, keyId)
+    const revision = this.nextRevision()
+    this.invalidatedKeys.set(scope, revision)
     return this.enqueue(async () => {
-      this.assertEncryptionAvailable()
-      const existing = await this.readRecord()
-      if (existing?.keys.some((entry) => entry.userId === userId && entry.keyId === keyId)) {
-        const keys = existing.keys.filter((entry) => !(entry.userId === userId && entry.keyId === keyId))
-        await this.writeRecord({ version: CURRENT_VERSION, keys })
+      try {
+        this.assertEncryptionAvailable()
+        const existing = await this.readRecord()
+        if (existing?.keys.some((entry) => entry.userId === userId && entry.keyId === keyId)) {
+          const keys = existing.keys.filter((entry) => !(entry.userId === userId && entry.keyId === keyId))
+          await this.writeRecord({ version: CURRENT_VERSION, keys })
+        }
+      } finally {
+        this.releaseInvalidation(this.invalidatedKeys, scope, revision)
       }
-      this.invalidatedKeys.delete(this.keyScope(userId, keyId))
     })
   }
 
   removeAccount(userId: number): Promise<void> {
     this.assertUserId(userId)
-    this.invalidatedAccounts.set(userId, this.nextRevision())
+    const revision = this.nextRevision()
+    this.invalidatedAccounts.set(userId, revision)
     return this.enqueue(async () => {
-      this.assertEncryptionAvailable()
-      const existing = await this.readRecord()
-      if (existing?.keys.some((entry) => entry.userId === userId)) {
-        const keys = existing.keys.filter((entry) => entry.userId !== userId)
-        await this.writeRecord({ version: CURRENT_VERSION, keys })
+      try {
+        this.assertEncryptionAvailable()
+        const existing = await this.readRecord()
+        if (existing?.keys.some((entry) => entry.userId === userId)) {
+          const keys = existing.keys.filter((entry) => entry.userId !== userId)
+          await this.writeRecord({ version: CURRENT_VERSION, keys })
+        }
+      } finally {
+        this.releaseInvalidation(this.invalidatedAccounts, userId, revision)
       }
-      this.invalidatedAccounts.delete(userId)
     })
   }
 
@@ -227,9 +242,24 @@ export class ChatKeyStore {
   }
 
   private assertEncryptionAvailable(): void {
-    if (!this.storage.isEncryptionAvailable()) {
+    const backend = inspectSafeStorageBackend(this.storage)
+    if (backend === 'unavailable') {
       throw new Error('系统安全存储不可用，无法持久化 AI 聊天分组 API Key')
     }
+    if (backend === 'plaintext') throw new Error(safeStoragePlaintextMessage('AI 聊天分组 API Key'))
+  }
+
+  /**
+   * The marker only hides an entry while its removal is in flight. Keeping it
+   * after a failed write would hide that key forever -- every later visit to
+   * the scope signs a fresh server-side token, and the map would only ever
+   * grow. Releasing it instead re-exposes a key whose next relay call fails
+   * and triggers the same removal again, which is recoverable. Only the
+   * revision this call installed is released, so a removal queued in the
+   * meantime keeps hiding its own scope.
+   */
+  private releaseInvalidation<K>(markers: Map<K, number>, scope: K, revision: number): void {
+    if (markers.get(scope) === revision) markers.delete(scope)
   }
 
   private nextRevision(): number {

@@ -37,13 +37,16 @@ function useFloating(open: boolean, onClose?: () => void) {
   return { anchor, panel, position, restore };
 }
 export type MenuItem = { label: string; icon?: Icon; danger?: boolean; disabled?: boolean; testId?: string; onSelect: () => void };
-export function Menu({ items, anchor, testId, label }: BaseProps & { items: Array<MenuItem | 'divider'> | 'divider'; anchor: ReactNode; label?: string }) {
-  const [open, setOpen] = useState(false); const id = useId(); const t = useUiText();
+// A row-level overflow trigger reads as a bare "more" button to a screen reader,
+// so the label is required rather than defaulted: twenty key rows each offering
+// "revoke" behind an unnamed menu is indistinguishable by ear.
+export function Menu({ items, anchor, testId, label }: BaseProps & { items: Array<MenuItem | 'divider'> | 'divider'; anchor: ReactNode; label: string }) {
+  const [open, setOpen] = useState(false); const id = useId();
   const float = useFloating(open, () => setOpen(false)); const search = useRef({ text: '', at: 0 });
   const entries = items === 'divider' ? [] : items;
   const close = (restore = true) => { setOpen(false); if (restore) float.restore(); };
   useEffect(() => { if (open && float.position.visibility === 'visible' && float.panel.current) focusable(float.panel.current)[0]?.focus(); }, [open, float.position.visibility]);
-  return <span className="xm-menu" data-testid={testId} ref={float.anchor}><Trigger anchor={anchor} open={open} id={id} kind="menu" label={label ?? t('menu')} toggle={() => setOpen(value => !value)} />{open && <div id={id} ref={float.panel} className="xm-menu-pop" style={float.position} role="menu" aria-label={label ?? t('menu')} onKeyDown={event => {
+  return <span className="xm-menu" data-testid={testId} ref={float.anchor}><Trigger anchor={anchor} open={open} id={id} kind="menu" label={label} toggle={() => setOpen(value => !value)} />{open && <div id={id} ref={float.panel} className="xm-menu-pop" style={float.position} role="menu" aria-label={label} onKeyDown={event => {
     if (event.nativeEvent.isComposing) return;
     const options = focusable(event.currentTarget); const current = options.indexOf(document.activeElement as HTMLElement);
     if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }

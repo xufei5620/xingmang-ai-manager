@@ -42,6 +42,20 @@ describe('external client lifecycle presentation', () => {
     expect(value.action).toBe('configure')
     expect(value.detail).toBe('config denied')
   })
+
+  it('redacts the local path either snapshot error carries onto the client row (R-S7b)', () => {
+    // Both fields reach the screen as the row subtitle without passing through
+    // errorMessage, so I13's redaction has to happen here.
+    expect(present({ installed: true, detectionError: "EACCES: permission denied, open 'C:\\Users\\yoyo\\AppData\\Local\\WorkBuddy\\config.json'" }).detail)
+      .toBe("EACCES: permission denied, open '本地配置文件")
+    // 现有脱敏以空白收尾，带空格的目录名只剥到空格为止；要紧的用户名这一段已经去掉。
+    const configuration = present({ installed: true, configurationSource: 'unknown', configurationError: '读取 /Users/yoyo/Library/Application Support/config.json 失败' }).detail
+    expect(configuration).toBe('读取 本地配置文件 Support/config.json 失败')
+    expect(configuration).not.toContain('yoyo')
+    // 脱敏后为空的错误字段不能把后面的版本、安装文案挡掉。
+    expect(present({ installed: true, version: 'v2.0', detectionError: '  ' }).detail).toBe('v2.0')
+  })
+
   it('respects platform support and keeps version/model/running details visible', () => {
     expect(present({ installSupported: false, installHint: 'manual only' })).toMatchObject({ disabled: true, detail: 'manual only' })
     expect(present({ installed: true, configured: true, launchSupported: false }).disabled).toBe(true)

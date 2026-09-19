@@ -164,6 +164,30 @@ function emptyState(userId: number): CanvasRunStateFile {
   return { version: canvasRunContractVersion, userId, runs: [], cache: [], assets: [] }
 }
 
+/**
+ * Fields whose value is free-form text rather than a structured reference:
+ * `outputText` is whatever the user typed into a text / prompt node (or what
+ * the model wrote back), and `errorMessage` is already redacted at
+ * construction by the run engine's `sanitizeRunError`.
+ */
+const FREE_TEXT_KEYS = new Set(['outputText', 'errorMessage'])
+
+/**
+ * The serialization the secret / address / path assertion runs over: the state
+ * minus its free-form text fields.
+ *
+ * Asserting over user content was a durability bug, not a protection. A prompt
+ * as ordinary as 「参考 https://example.com/ref.png」 made every `saveRun` throw,
+ * and persistence happens *after* the paid generation has been charged, so the
+ * run was lost over its own input. User text already lands on disk unredacted
+ * in the canvas project file, so exempting it here leaks nothing new — while
+ * the structured fields (asset references, identifiers, mime types, task ids)
+ * still must never carry a credential, a remote address or a host path.
+ */
+function stateScanSubject(state: CanvasRunStateFile): string {
+  return JSON.stringify(state, (key, value) => (FREE_TEXT_KEYS.has(key) ? undefined : value))
+}
+
 function stateContainsSecretOrPath(content: string): boolean {
   return /\bBearer\s+\S+/i.test(content)
     || /\bsk-[a-z0-9._-]{8,}\b/i.test(content)
@@ -408,8 +432,9 @@ export class CanvasRunStore {
     try {
       content = await readSafeUtf8File(filePath, FILE_LABEL, this.maximumBytes)
       if (content === null) return emptyState(userId)
-      if (stateContainsSecretOrPath(content)) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
-      return parseState(content, userId)
+      const state = parseState(content, userId)
+      if (stateContainsSecretOrPath(stateScanSubject(state))) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
+      return state
     } catch {
       await this.backupCorruptState(filePath)
       return emptyState(userId)
@@ -437,7 +462,7 @@ export class CanvasRunStore {
     normalized.assets = normalized.assets.slice(0, this.assetRetention)
     const content = `${JSON.stringify(normalized, null, 2)}\n`
     if (Buffer.byteLength(content, 'utf8') > this.maximumBytes) throw new Error('画布运行记录超过安全上限')
-    if (stateContainsSecretOrPath(content)) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
+    if (stateContainsSecretOrPath(stateScanSubject(normalized))) throw new Error('画布运行记录包含密钥、远程地址或本地路径')
     await writeAtomicSafeUtf8File(this.filePath(userId), content, FILE_LABEL)
   }
 

@@ -31,24 +31,48 @@ export function parseRecoveryCode(value: string, expectedOrigin?: string): Recov
   return { ok: true, token: text, source: 'code' }
 }
 
+// 注册表单的本地校验只为省一次往返并给中文提示，服务端才是权威。长度规则
+// 不是猜的：new-api 的 model.User 结构体标签是 Username `validate:"max=20"`、
+// Password `validate:"min=8,max=20"`，用户名没有下限也没有字符集限制，所以这里
+// 同样不加下限——否则两位的用户名服务端收、客户端却先拦下来（审查总表 R-G10）。
+// 旧版渲染层 src/components/account/validation.ts 有同一份规则，这是 I6/I7 下
+// 的有意重复（renderer-v2 不 import 旧界面，两边各自带单测）。
+const maxUsernameLength = 20
+const minPasswordLength = 8
+const maxPasswordLength = 20
+// model.User.AffCode 是 varchar(32)，默认生成 4 位，列宽才是真正的上限。
+const maxInviteCodeLength = 32
+
+function looksLikeInviteLink(value: string): boolean {
+  return /^https?:\/\//i.test(value) || value.includes('aff=') || /\/(sign-up|register)\b/i.test(value)
+}
+
+/** 既接受裸邀请码，也接受邀请海报上那种没带协议头的链接；空值合法（邀请码可不填）。 */
 export function parseInviteCode(value: string): string {
   const text = value.trim()
   if (!text) return ''
-  if (/^https?:/i.test(text)) {
-    try { const url = new URL(text); return url.searchParams.get('aff')?.trim() ?? '' } catch { return '' }
-  }
-  return text
+  if (!looksLikeInviteLink(text)) return text
+  const query = text.includes('?') ? text.slice(text.indexOf('?') + 1) : text
+  return new URLSearchParams(query).get('aff')?.trim() ?? ''
 }
 
 export function validateRegistration(draft: RegistrationDraft, verificationRequired: boolean): RegistrationErrors {
   const errors: RegistrationErrors = {}
+  const username = draft.username.trim()
+  const invite = draft.invite.trim()
   if (!isEmail(draft.email)) errors.email = '请填写正确的邮箱'
-  if (draft.username.trim().length < 3 || draft.username.trim().length > 20) errors.username = '用户名需要 3 至 20 个字符'
-  if (draft.password.length < 8) errors.password = '密码至少 8 位'
-  else if (draft.password.length > 20) errors.password = '密码不能超过 20 位'
-  if (draft.password !== draft.confirm) errors.confirm = '两次密码不一致'
+  if (!username) errors.username = '请填写用户名'
+  else if (username.length > maxUsernameLength) errors.username = `用户名不能超过 ${maxUsernameLength} 位`
+  if (draft.password.length < minPasswordLength) errors.password = `密码至少 ${minPasswordLength} 位`
+  else if (draft.password.length > maxPasswordLength) errors.password = `密码不能超过 ${maxPasswordLength} 位`
+  if (!draft.confirm) errors.confirm = '请再次输入密码'
+  else if (draft.password !== draft.confirm) errors.confirm = '两次密码不一致'
   if (verificationRequired && !draft.code.trim()) errors.code = '请填写邮件中的验证码'
-  if (draft.invite.trim() && !parseInviteCode(draft.invite)) errors.invite = '邀请链接中没有邀请码，请检查后重试'
+  if (invite) {
+    const parsed = parseInviteCode(invite)
+    if (!parsed) errors.invite = '邀请链接中没有邀请码，请检查后重试'
+    else if (parsed.length > maxInviteCodeLength) errors.invite = `邀请码不能超过 ${maxInviteCodeLength} 位`
+  }
   if (!draft.agreed) errors.agreed = '请先同意用户协议和隐私政策'
   return errors
 }

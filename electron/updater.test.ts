@@ -49,6 +49,13 @@ const macInstallHandoffFor = (client: FakeMacUpdater) => ({
   retryNativeCheck: () => client.nativeCheckForUpdates(),
 })
 
+// Chromium surfaces an unreachable proxy as a structured net error code; the
+// message alone must never be enough to take the session off the proxy.
+const proxyConnectionError = () => Object.assign(
+  new Error('net::ERR_PROXY_CONNECTION_FAILED'),
+  { code: 'ERR_PROXY_CONNECTION_FAILED' },
+)
+
 const updateInfo = (version = '1.1.0') => ({
   version,
   files: [],
@@ -282,7 +289,39 @@ describe('updater service', () => {
 
   it('retries a proxy connection failure through the updater session in direct mode', async () => {
     const client = new FakeUpdater()
-    client.checkForUpdates.mockRejectedValueOnce(new Error('net::ERR_PROXY_CONNECTION_FAILED'))
+    client.checkForUpdates.mockRejectedValueOnce(proxyConnectionError())
+    const order: string[] = []
+    const retryWithoutProxy = vi.fn(async () => {
+      order.push('direct')
+      client.checkForUpdates.mockImplementationOnce(async () => {
+        order.push('request')
+        client.emit('update-not-available', updateInfo('1.0.0'))
+      })
+    })
+    const restoreProxy = vi.fn(async () => { order.push('restore') })
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+      restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({
+      phase: 'not-available',
+      availableVersion: null,
+      error: null,
+    })
+    expect(retryWithoutProxy).toHaveBeenCalledOnce()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    expect(order).toEqual(['direct', 'request', 'restore'])
+    service.dispose()
+  })
+
+  it('unwraps a proxy connection failure reported through an error cause', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(
+      new Error('无法获取更新信息', { cause: proxyConnectionError() }),
+    )
     const retryWithoutProxy = vi.fn(async () => {
       client.checkForUpdates.mockImplementationOnce(async () => {
         client.emit('update-not-available', updateInfo('1.0.0'))
@@ -294,13 +333,91 @@ describe('updater service', () => {
       retryWithoutProxy,
     })
 
-    await expect(service.check()).resolves.toMatchObject({
-      phase: 'not-available',
-      availableVersion: null,
-      error: null,
-    })
+    await expect(service.check()).resolves.toMatchObject({ phase: 'not-available' })
     expect(retryWithoutProxy).toHaveBeenCalledOnce()
-    expect(client.checkForUpdates).toHaveBeenCalledTimes(2)
+    service.dispose()
+  })
+
+  it('does not leave the updater session off-proxy when the retry also fails', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(proxyConnectionError())
+    client.checkForUpdates.mockRejectedValueOnce(new Error('依旧连不上'))
+    const retryWithoutProxy = vi.fn(async () => {})
+    const restoreProxy = vi.fn(async () => {})
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+      restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'error' })
+    expect(restoreProxy).toHaveBeenCalledOnce()
+    service.dispose()
+  })
+
+  it('keeps reporting the update error when restoring the proxy throws', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockRejectedValueOnce(proxyConnectionError())
+    client.checkForUpdates.mockRejectedValueOnce(new Error('依旧连不上'))
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy: async () => {},
+      restoreProxy: async () => { throw new Error('恢复代理失败') },
+    })
+
+    const state = await service.check()
+    expect(state.phase).toBe('error')
+    expect(state.error?.message).toContain('依旧连不上')
+    service.dispose()
+  })
+
+  it('never switches to direct mode for text that merely mentions the proxy error', async () => {
+    const client = new FakeUpdater()
+    // A mirror's HTML error body or a release note is attacker- or
+    // operator-controlled text; it must not be able to drop the user's proxy.
+    client.checkForUpdates.mockRejectedValueOnce(
+      new Error('更新源返回异常: net::ERR_PROXY_CONNECTION_FAILED / proxy connection failed'),
+    )
+    const retryWithoutProxy = vi.fn(async () => {})
+    const restoreProxy = vi.fn(async () => {})
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      retryWithoutProxy,
+      restoreProxy,
+    })
+
+    await expect(service.check()).resolves.toMatchObject({ phase: 'error' })
+    expect(retryWithoutProxy).not.toHaveBeenCalled()
+    expect(restoreProxy).not.toHaveBeenCalled()
+    expect(client.checkForUpdates).toHaveBeenCalledTimes(1)
+    service.dispose()
+  })
+
+  it('restores the proxy after a direct-mode download retry', async () => {
+    const client = new FakeUpdater()
+    client.checkForUpdates.mockImplementationOnce(async () => {
+      client.emit('update-available', updateInfo())
+    })
+    client.downloadUpdate.mockRejectedValueOnce(proxyConnectionError())
+    const restoreProxy = vi.fn(async () => {})
+    const service = createUpdaterService(client, {
+      currentVersion: '1.0.0',
+      isPackaged: true,
+      unsignedChannel: true,
+      retryWithoutProxy: async () => {
+        client.downloadUpdate.mockImplementationOnce(async () => {
+          client.emit('update-downloaded', updateInfo())
+        })
+      },
+      restoreProxy,
+    })
+
+    await service.check()
+    await expect(service.download()).resolves.toMatchObject({ phase: 'downloaded' })
+    expect(restoreProxy).toHaveBeenCalledOnce()
     service.dispose()
   })
 

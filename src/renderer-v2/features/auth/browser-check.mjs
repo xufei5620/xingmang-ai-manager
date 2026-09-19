@@ -5,6 +5,7 @@ import fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import { chromium } from '@playwright/test'
+import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-auth-v2')
@@ -27,6 +28,11 @@ async function open(query = '', app = false) {
     await route.continue()
   })
   await page.goto(`${base}/src/renderer-v2/${app ? 'testing/app.html' : 'features/auth/browser-fixture.html'}?${query}`)
+  // Vite transforms the module graph on demand, so first paint can take seconds on
+  // a cold Windows runner. Assertions like count() and getAttribute() do not retry,
+  // so a test whose first statement is one of them reads an empty page and fails on
+  // the value rather than on a timeout. Wait for the mount before handing the page over.
+  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 async function calls(page) { return page.evaluate(() => JSON.parse(document.documentElement.dataset.calls || '[]')) }
@@ -138,6 +144,22 @@ test('desktop route avoids Node and unknown configuration requires an explicit c
     await page.getByTestId('guide-open-tool').click()
     await page.waitForFunction(() => document.documentElement.dataset.calls?.includes('complete'))
     assert.deepEqual((await calls(page)).map((item) => item.method), ['detect', 'configure', 'launch', 'complete'])
+  } finally { await page.close() }
+})
+
+test('an official Codex that has not signed in cannot leave the connect step', async () => {
+  const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
+  try {
+    await page.getByTestId('guide-route-codex').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
+    await page.getByTestId('guide-official-login').waitFor()
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.getByTestId('guide-config').click()
+    assert.equal(await page.getByTestId('guide-official-login').count(), 0)
+    await page.getByTestId('guide-next').click()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
   } finally { await page.close() }
 })
 

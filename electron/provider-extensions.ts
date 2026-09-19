@@ -1519,9 +1519,15 @@ export class ProviderExtensionService {
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || value.includes('\0')) throw new Error('MCP 环境变量格式错误')
       return ['--env', `${key}=${value}`]
     })
+    // Every branch terminates its own option list with '--' before the user-supplied
+    // command and its arguments. `args` comes straight from IPC and legitimately
+    // contains leading-dash entries (`npx -y <pkg>` is the most common MCP recipe),
+    // so without the separator a pasted config carrying `--trust`, `--scope` or
+    // `--include-tools` would be parsed as a flag of the CLI itself and silently
+    // rewrite the server's trust level or tool allowlist.
     if (input.provider === 'codex') return { argv: ['mcp', 'add', id, ...envArgs, '--', command, ...args], secrets }
     if (input.provider === 'claude') return { argv: ['mcp', 'add', '--scope', scope, id, ...envArgs, '--', command, ...args], secrets }
-    if (input.provider === 'gemini') return { argv: ['mcp', 'add', '--scope', scope, '--transport', 'stdio', ...envArgs, id, command, ...args], secrets }
+    if (input.provider === 'gemini') return { argv: ['mcp', 'add', '--scope', scope, '--transport', 'stdio', ...envArgs, id, command, '--', ...args], secrets }
     return { argv: ['mcp', 'add', '--scope', scope, ...envArgs, id, '--', command, ...args], secrets }
   }
 

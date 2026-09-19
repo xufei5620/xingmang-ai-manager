@@ -1,4 +1,5 @@
 import type { AppConfigSummary, CliVersionAdvice, DesktopAppStatus, PlatformCapabilities, ProviderConfigSummary, ProviderId, SystemSnapshot, ToolStatus } from '../../../../electron/ipc-contract'
+import { snapshotErrorMessage } from '../../business-common'
 import { tools } from '../../registry/tools'
 import {
   getSourceMarkerStorage,
@@ -120,7 +121,7 @@ export function presentTools(
       model: config.model, configured: connectionReady(config, provider, storage),
       updateAvailable, currentVersion: version,
       latestVersion: status.latestVersion ?? null, versionAdvice,
-      error: status.detectionFailed ? status.detectionError ?? '工具检测没有完成' : null })
+      error: status.detectionFailed ? snapshotErrorMessage(status.detectionError) ?? '工具检测没有完成' : null })
   }
   return result
 }

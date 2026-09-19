@@ -65,6 +65,19 @@ if (ephemeralMacSigningMode) {
     throw new Error('CI ephemeral macOS signing requires CSC_FOR_PULL_REQUEST=true')
   }
 }
+// XINGMANG_RELEASE=1 is the Windows Authenticode channel: the only release
+// workflow runs on windows-latest, and run-release-build.cjs verifies
+// win-unpacked artifacts. macOS distribution goes through the free self-signed
+// channel instead, and this repository contains no notarytool or stapler step
+// at all. A Developer ID signature without notarization is worse than refusing
+// to build: the packaging log stays green while Gatekeeper rejects the app on
+// every customer machine. Stop while nothing has been produced yet.
+function assertDistributableMacPlatform(electronPlatformName) {
+  if (electronPlatformName === 'darwin' && releaseMode) {
+    throw new Error('XINGMANG_RELEASE=1 是 Windows 正式发布通道，不能用来构建 macOS 产物；macOS 分发请改用 XINGMANG_MAC_FREE_RELEASE=1（免费自签通道），本仓库没有 notarization 实现。')
+  }
+}
+
 const signingPublisher = process.env.XINGMANG_SIGNING_PUBLISHER?.trim() || undefined
 const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责任公司'
 // Without an explicit selection electron-builder falls back to its bundled
@@ -126,19 +139,20 @@ module.exports = {
     },
     ...accelerationBundle.resources,
   ],
-  // Validate the binary again immediately before packaging. No private resource
+  // The last point at which an unshippable build mode can still be rejected,
+  // and where the private binary is validated again. No private resource
   // directory is selected by default, including CI and ordinary source builds.
-  ...(accelerationBundle.metadata ? {
-    beforePack: async (context) => {
-      await verifyAccelerationBundleCore(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR, accelerationBundle.metadata, undefined, {
-        platform: context.electronPlatformName, arch: Arch[context.arch],
-      })
-      if (context.electronPlatformName === 'darwin') {
-        const result = spawnSync(process.execPath, [path.join(__dirname, 'scripts/build-macos-system-proxy.cjs')], { stdio: 'inherit', shell: false })
-        if (result.error || result.status !== 0) throw new Error('Mac 系统代理组件编译失败。')
-      }
-    },
-  } : {}),
+  beforePack: async (context) => {
+    assertDistributableMacPlatform(context.electronPlatformName)
+    if (!accelerationBundle.metadata) return
+    await verifyAccelerationBundleCore(process.env.XINGMANG_ACCELERATION_BUNDLE_DIR, accelerationBundle.metadata, undefined, {
+      platform: context.electronPlatformName, arch: Arch[context.arch],
+    })
+    if (context.electronPlatformName === 'darwin') {
+      const result = spawnSync(process.execPath, [path.join(__dirname, 'scripts/build-macos-system-proxy.cjs')], { stdio: 'inherit', shell: false })
+      if (result.error || result.status !== 0) throw new Error('Mac 系统代理组件编译失败。')
+    }
+  },
   publish: {
     provider: 'generic',
     url: resolveUpdateUrl(),
@@ -176,7 +190,12 @@ module.exports = {
     // distributable Developer ID signature; release mode discovers that identity.
     identity: ephemeralMacSigningMode ? '-' : freeMacReleaseMode ? freeMacSigningIdentity : releaseMode ? undefined : '-',
     ...(ephemeralMacSigningMode ? { sign: './scripts/macos-ephemeral-signing.cjs' } : {}),
-    notarize: releaseMode,
+    // macOS 只走免费自签通道，全仓没有 notarytool / stapler 实现，所以公证永远
+    // 是关的。**这一行不能删**：electron-builder 只在 notarize 显式为 false 时
+    // 跳过公证，留空(undefined)会让它在环境里碰巧存在 APPLE_ID / APPLE_API_KEY /
+    // APPLE_KEYCHAIN_PROFILE 时自动把 .app 送去 Apple 公证——签免费自签包的那台
+    // Mac 正是最可能装着这些凭据的机器。
+    notarize: false,
     ...(freeMacReleaseMode ? { timestamp: 'none' } : {}),
   },
   ...(freeMacReleaseMode ? {

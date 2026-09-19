@@ -3,20 +3,27 @@ import path from 'node:path'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 let server, browser, baseUrl
+const pageErrors = createPageErrorCollector()
 before(async () => {
   server = await createServer({ root: path.resolve('.'), logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
   await server.listen()
   baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
   browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
 })
-after(async () => { await browser?.close(); await server?.close() })
+after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
 
 async function open(query = '') {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 820 } }))
   await page.route('**/*', (route) => new URL(route.request().url()).origin === baseUrl ? route.continue() : route.abort())
   await page.goto(`${baseUrl}/e2e/app-v3-fixture.html?${query}`)
+  // Vite transforms the module graph on demand, so first paint can take seconds on
+  // a cold Windows runner, and assertions like count() / getAttribute() do not retry.
+  // Wait for the mount before handing the page over.
+  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 async function clean(page) {

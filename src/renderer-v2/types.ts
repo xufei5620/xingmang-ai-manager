@@ -32,5 +32,5 @@ export interface V2SystemState {
 }
 
 declare global {
-  interface Window { xingmang: V2Bridge }
+  interface Window { xingmang?: V2Bridge }
 }

@@ -31,6 +31,47 @@ async function waitForFixtureReady(page, timeout = fixtureReadyTimeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 50))
   }
 }
+
+// Toasts delete themselves 2400ms after they appear (src/renderer-v2/ui/
+// feedback.tsx), so a locator that only starts looking after that deadline waits
+// out its whole budget on an element that is never coming back. A slow Windows
+// runner hit exactly that between the save click and the toast assertion: the
+// grok configuration cases timed out at 30s while their faster siblings passed
+// in a couple of seconds. Record every toast as it is inserted and assert
+// against the recording, which cannot expire. A toast is only ever removed a
+// whole task later, so the observer callback always runs while the node is
+// still in the document.
+function recordToasts() {
+  const log = { entries: [], consumed: 0 }
+  const seen = new WeakSet()
+  window.__v2Toasts = log
+  function collect() {
+    for (const toast of document.querySelectorAll('.xm-toasts .xm-toast')) {
+      if (seen.has(toast)) continue
+      seen.add(toast)
+      log.entries.push({ text: toast.textContent ?? '', role: toast.getAttribute('role') ?? '' })
+    }
+  }
+  new MutationObserver(collect).observe(document, { childList: true, subtree: true })
+}
+
+// `consumed` marks how far the recording has been read, so a second save cannot
+// be satisfied by the toast the first save left behind.
+async function waitForToast(page, text) {
+  await page.waitForFunction((expected) => {
+    const log = window.__v2Toasts
+    const index = log.entries.findIndex((entry, position) => position >= log.consumed && entry.role === 'status' && entry.text === expected)
+    if (index < 0) return false
+    log.consumed = index + 1
+    return true
+  }, text)
+}
+
+async function assertNoToast(page, text) {
+  const shown = await page.evaluate((expected) => window.__v2Toasts.entries.slice(window.__v2Toasts.consumed).filter((entry) => entry.text === expected).length, text)
+  assert.equal(shown, 0, `不应出现「${text}」提示`)
+}
+
 before(async () => {
   await fs.mkdir(artifacts, { recursive: true })
   server = await createServer({ root: path.resolve('.'), configFile: false, plugins: [react()], logLevel: 'error', server: { host: '127.0.0.1', port: 0 } })
@@ -44,6 +85,7 @@ before(async () => {
 after(async () => { await browser?.close(); await server?.close() })
 async function open(query = '', clock = false) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 820 } })
+  await page.addInitScript(recordToasts)
   // The host outlives a renderer reload and does not share the page's localStorage.
   const noticeReads = new Map()
   await page.exposeFunction('fixtureNoticeStore', (scope, ids) => {
@@ -1164,7 +1206,7 @@ test('configuration migration shares Codex drafts and failed saves retain the se
     await confirmation.getByTestId('tool-save-merge').click()
     await confirmation.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
     assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
-    assert.equal(await page.locator('.xm-toasts').getByText('配置保存成功', { exact: true }).count(), 0)
+    await assertNoToast(page, '配置保存成功')
     await confirmation.getByRole('button', { name: '取消', exact: true }).click()
     assert.equal(await page.getByLabel('星芒访问密钥').inputValue(), 'local-fixture-secret')
     await clean(page)
@@ -1782,7 +1824,7 @@ async function openToolConfiguration(page, provider = 'codex') {
 
 async function waitForSavedConfiguration(page) {
   await page.getByTestId('config-dialog').waitFor({ state: 'hidden' })
-  await page.locator('.xm-toasts').getByRole('status').filter({ hasText: '配置保存成功' }).waitFor()
+  await waitForToast(page, '配置保存成功')
   assert.equal(await page.getByRole('dialog', { name: /保存这份配置|重置为初始状态|放弃未保存/ }).count(), 0)
 }
 
@@ -2087,7 +2129,7 @@ for (const mode of ['merge', 'reset']) test(`pending ${mode} configuration canno
     await page.keyboard.press('Escape')
     assert.equal(await confirmation.isVisible(), true)
     assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
-    assert.equal(await page.locator('.xm-toasts').getByText('配置保存成功', { exact: true }).count(), 0)
+    await assertNoToast(page, '配置保存成功')
     await page.evaluate(() => window.v2Test.releaseConfigSave())
     await waitForSavedConfiguration(page)
     assert.deepEqual(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').map((entry) => entry.args[0])), [
@@ -2106,7 +2148,7 @@ test('configuration still closes after a saved write when the system scan refres
     await page.getByTestId('tool-save-config').click()
     await page.getByTestId('tool-save-merge').click()
     await waitForSavedConfiguration(page)
-    await page.locator('.xm-toasts').getByRole('status').filter({ hasText: '配置已保存，但最新状态没有读到。请重新检测，无需重复保存。' }).waitFor()
+    await waitForToast(page, '配置已保存，但最新状态没有读到。请重新检测，无需重复保存。')
     assert.equal(await page.getByRole('dialog', { name: '操作没有完成' }).count(), 0)
     assert.equal(await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'saveConfigWithAccountKey').length), 1)
     await page.evaluate(() => { window.v2Test.fail = '' })
@@ -2143,7 +2185,7 @@ test('choosing a workspace refreshes the open configuration without showing a sa
     await page.getByRole('button', { name: '选择文件夹', exact: true }).click()
     await page.waitForFunction(() => document.querySelector('input[readonly]')?.value === 'C:\\Selected Project' && !document.querySelector('.v2-config-controls').disabled)
     assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
-    assert.equal(await page.locator('.xm-toasts').getByText('配置保存成功', { exact: true }).count(), 0)
+    await assertNoToast(page, '配置保存成功')
     assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => ['saveConfig', 'saveConfigWithAccountKey', 'configureManagedCliKeys', 'switchToOfficialAccount'].includes(entry.method))), false)
     await clean(page)
   } finally { await page.close() }
@@ -2200,7 +2242,7 @@ test('failed reset retains the selected key and retries reset without silently m
     await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
     await reset.getByRole('alert').filter({ hasText: '本地测试操作失败' }).waitFor()
     assert.equal(await page.getByTestId('config-dialog').isVisible(), true)
-    assert.equal(await page.locator('.xm-toasts').getByText('配置保存成功', { exact: true }).count(), 0)
+    await assertNoToast(page, '配置保存成功')
     assert.match(await reset.getByTestId('tool-save-summary').innerText(), /custom-key[\s\S]*Custom group/)
     await page.evaluate(() => { window.v2Test.fail = '' })
     await reset.getByRole('button', { name: '备份并重置', exact: true }).click()
@@ -2209,6 +2251,65 @@ test('failed reset retains the selected key and retries reset without silently m
       { provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' },
       { provider: 'codex', keyId: 202, model: 'fixture-model', mode: 'reset' },
     ])
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unreadable Node version blocks the CLI install and says which step is blocking (R-G6)', async () => {
+  const page = await open('nodeVersionUnknown=1')
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('tool-gemini-primary').click()
+    await page.getByTestId('operation-error-detail').filter({ hasText: '版本无法识别' }).waitFor()
+    assert.equal(await page.evaluate(() => window.v2Test.calls.some((entry) => entry.method === 'installCli')), false)
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('an unreadable Node version leaves the guide runtime step unfinished (R-G6)', async () => {
+  const page = await open('nodeVersionUnknown=1&guest=1&missingConfig=1')
+  try {
+    await page.getByTestId('welcome-steps').click()
+    await page.getByTestId('guide-route-gemini').check()
+    await page.getByTestId('guide-next').click()
+    const guide = page.getByTestId('start-guide')
+    await guide.getByText('命令行工具需要运行环境', { exact: true }).waitFor()
+    await expect(page.getByTestId('guide-node')).toBeEnabled()
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('a deep link that cannot be read says so and points at the order page (R-B7)', async () => {
+  const page = await open('deepLinkFail=1')
+  try {
+    const detail = page.getByTestId('operation-error-detail')
+    await detail.waitFor()
+    const text = await detail.innerText()
+    assert.match(text, /回跳参数已过期/)
+    assert.match(text, /订单/)
+    await page.getByRole('button', { name: '返回', exact: true }).click()
+    assert.equal(await detail.count(), 0)
+    await clean(page)
+  } finally { await page.close() }
+})
+
+test('installing from the maintenance page writes the account Key and refreshes the home page (R-G3)', async () => {
+  const page = await open()
+  try {
+    await page.getByTestId('tool-row-gemini').getByText('未安装').waitFor()
+    await page.getByTestId('nav-more').click()
+    await page.getByTestId('nav-maintenance').click()
+    const row = page.getByTestId('maintenance-tool-gemini')
+    await row.getByText('未安装', { exact: true }).waitFor()
+    const before = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length)
+    await row.getByRole('button', { name: '安装', exact: true }).click()
+    await page.waitForFunction((count) => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys').length > count, before)
+    const calls = await page.evaluate(() => window.v2Test.calls.filter((entry) => entry.method === 'configureManagedCliKeys'))
+    assert.deepEqual(calls.at(-1).args[0].providers, ['gemini'])
+    await row.getByText('已安装', { exact: true }).waitFor()
+    await page.getByTestId('nav-home').click()
+    await page.getByTestId('tool-row-gemini').getByText('已配好').waitFor()
     await clean(page)
   } finally { await page.close() }
 })

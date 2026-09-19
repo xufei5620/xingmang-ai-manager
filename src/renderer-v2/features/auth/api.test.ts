@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from 'vitest'
-import { createAuthApi, type AuthBridge } from './api'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+import { createAuthApi, getAuthApi, type AuthBridge } from './api'
 
 describe('v2 auth IPC adapter', () => {
   it('loads remembered credentials only from the selected source and keeps registration documents on the default service', async () => {
@@ -42,5 +42,19 @@ describe('v2 auth IPC adapter', () => {
     const api = createAuthApi({ sendPasswordResetCode } as unknown as AuthBridge)
     await api.sendReset('m@example.test', 'solov')
     expect(sendPasswordResetCode).toHaveBeenCalledExactlyOnceWith('m@example.test', 'solov')
+  })
+})
+describe('v2 auth bridge lookup', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  it('reports a missing desktop bridge in Chinese instead of dereferencing it', () => {
+    expect(() => getAuthApi()).toThrow('浏览器页面未连接本机服务，请从桌面应用打开工具箱。')
+    vi.stubGlobal('window', {})
+    expect(() => getAuthApi()).toThrow('浏览器页面未连接本机服务，请从桌面应用打开工具箱。')
+  })
+  it('builds the adapter on the bridge the desktop shell installed', async () => {
+    const getAccountStatus = vi.fn().mockResolvedValue(null)
+    vi.stubGlobal('window', { xingmang: { getAccountStatus } })
+    await getAuthApi().getStatus('solov')
+    expect(getAccountStatus).toHaveBeenCalledExactlyOnceWith('solov')
   })
 })

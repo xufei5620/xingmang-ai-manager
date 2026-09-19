@@ -4,7 +4,6 @@ import {
   ArrowLeft,
   CreditCard,
   Download,
-  ExternalLink,
   Eye,
   KeyRound,
   MoreHorizontal,
@@ -42,6 +41,7 @@ import {
 import {
   displayDate,
   dollars,
+  errorMessage,
   ListState,
   Pagination,
   ResultNotice,
@@ -74,6 +74,7 @@ import type { AvatarIdentity } from './local-avatar'
 import { useSharedAccountBalance } from './features/app/balance-context'
 import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
+import { ToolKeyLimits } from './features/account/ToolKeyLimits'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -104,6 +105,23 @@ const quotaMoney = (
   balance && balance.quotaPerUnit > 0 && typeof quota === 'number'
     ? dollars(quota / balance.quotaPerUnit)
     : '暂未读到'
+
+export interface PasswordFormState {
+  busy: string
+  originalPassword: string
+  password: string
+  confirmPassword: string
+}
+
+// Esc and the backdrop must raise the discard confirmation while any password
+// field still holds a secret, not only while the request is in flight: a
+// silent close used to leave the plaintext in React state, where reopening the
+// dialog refilled both boxes and the eye toggle revealed them.
+export function passwordFormDirty(form: PasswordFormState): boolean {
+  return Boolean(
+    form.busy || form.originalPassword || form.password || form.confirmPassword,
+  )
+}
 
 export function subscriptionPaymentMethods(
   plan: Plan,
@@ -547,6 +565,13 @@ function AccountOverview({
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirm] = useState('')
   const operation = useOperation()
+  const closePassword = () => {
+    setPasswordOpen(false)
+    setOriginal('')
+    setPassword('')
+    setConfirm('')
+    operation.clear()
+  }
   const accountsLoad = useCallback(
     async () => ({ devices: accountSupports(session, 'supportsSessionManagement') ? await api.getAccountLoginSessions() : [] }),
     [api, session],
@@ -745,14 +770,18 @@ function AccountOverview({
       <Dialog
         open={passwordOpen}
         title="修改密码"
-        onClose={() => {
-          if (!operation.busy) setPasswordOpen(false)
-        }}
-        dirty={Boolean(operation.busy)}
+        onClose={closePassword}
+        busy={Boolean(operation.busy)}
+        dirty={passwordFormDirty({
+          busy: operation.busy,
+          originalPassword,
+          password,
+          confirmPassword,
+        })}
         footer={
           <>
             <Button
-              onClick={() => setPasswordOpen(false)}
+              onClick={closePassword}
               disabled={Boolean(operation.busy)}
             >
               取消
@@ -777,10 +806,7 @@ function AccountOverview({
                       originalPassword,
                       newPassword: password,
                     })
-                    setOriginal('')
-                    setPassword('')
-                    setConfirm('')
-                    setPasswordOpen(false)
+                    closePassword()
                     changed()
                   },
                   '密码已修改',
@@ -878,8 +904,14 @@ function AccountKeys({
         // Keep a user's selection during refresh. If it was removed, require
         // another explicit choice instead of silently changing the billed group.
         setGroup((selected) => selected || latest[0]?.name || '')
-      } catch {
-        if (groupsRequest.current === request) setGroupsError('分组读取失败，请刷新后重试。')
+      } catch (cause) {
+        // 这条错误是保存密钥的硬门槛（下方 save 直接拿 groupsError 拦截），压成一句
+        // 固定话术会让「登录过期」「请求太频繁」「账号被封禁」三种完全不同的处境看起来
+        // 都只是「刷新一下」，用户只能反复点刷新。过 errorMessage 拿到按原因分的文案，
+        // 同时沿用它的脱敏（I13：主进程的错误里可能带绝对路径）。
+        if (groupsRequest.current === request) {
+          setGroupsError(errorMessage(cause, '分组读取失败，请刷新后重试。'))
+        }
       } finally {
         if (groupsRequest.current === request) setGroupsLoading(false)
         if (groupsPending.current?.request === request) groupsPending.current = null
@@ -962,6 +994,7 @@ function AccountKeys({
     ) ?? []
   return (
     <>
+      <ToolKeyLimits api={api} balance={balance} siteId={siteId} />
       <Toolbar
         search={
           <SearchInput
@@ -1041,6 +1074,7 @@ function AccountKeys({
                       复制
                     </Button>
                     <Menu
+                      label={`密钥 ${key.name} 的更多操作`}
                       anchor={<MoreHorizontal size={18} />}
                       items={[
                         {
@@ -1600,7 +1634,10 @@ function AccountTasks({
           </Button>
         }
       />
-      <ResultNotice error={resource.error || operation.error} />
+      <ResultNotice
+        error={resource.error || operation.error}
+        message={operation.message}
+      />
       <Card padding="none">
         <Table
           columns={[
@@ -1646,16 +1683,16 @@ function AccountTasks({
         footer={
           selected?.resultUrl && (
             <Button
-              icon={ExternalLink}
+              icon={Copy}
               onClick={() =>
                 void operation.execute(
-                  'open-task',
-                  () => api.openExternal(selected.resultUrl),
-                  '',
+                  'copy-task-result',
+                  () => navigator.clipboard.writeText(selected.resultUrl ?? ''),
+                  '结果链接已复制',
                 )
               }
             >
-              查看结果
+              复制结果链接
             </Button>
           )
         }
@@ -1674,6 +1711,8 @@ function AccountTasks({
             <dd>{selected.status}</dd>
             <dt>失败原因</dt>
             <dd>{selected.failReason || '无'}</dd>
+            <dt>结果链接</dt>
+            <dd>{selected.resultUrl || '无'}</dd>
           </dl>
         )}
       </Drawer>
@@ -1806,7 +1845,7 @@ function AccountRecharge({
     useState<AccountPaymentWindowTerminalEvent | null>(null)
   const paymentRef = useRef(payment)
   const openingPayment = useRef<AccountPaymentWindowTerminalEvent[] | null>(null)
-  const acceptPaymentTerminal = useCallback((event: AccountPaymentWindowTerminalEvent) => {
+  const acceptPaymentTerminal = (event: AccountPaymentWindowTerminalEvent) => {
     const current = paymentRef.current
     if (!current) return
     if (event.status === 'success' && (!event.tradeNo || event.tradeNo !== current.tradeNo)) return
@@ -1816,7 +1855,14 @@ function AccountRecharge({
     setPaymentTerminal(event)
     changed()
     void resource.reload()
-  }, [changed, resource.reload])
+  }
+  // 支付回调是一次性事件：退订与重订之间到达的那一条没有人接，订单就此丢在
+  // 「等待支付结果」上。`changed` 由 AccountPage 每次渲染新建，再上一层 App.tsx 传的
+  // `onAccountChanged` 同样是行内箭头，所以把 `changed` 包成 useCallback 也挡不住
+  // ——余额 store 每 30 秒 publish 一次就会重订一次。改成让订阅只依赖 `api`，回调
+  // 本身从 ref 取最新的一份（与本文件 refreshGroupsRef 同一写法）。
+  const acceptPaymentTerminalRef = useRef(acceptPaymentTerminal)
+  acceptPaymentTerminalRef.current = acceptPaymentTerminal
   function paymentOpened(result: NonNullable<typeof payment>) {
     const buffered = openingPayment.current ?? []
     openingPayment.current = null
@@ -1840,9 +1886,9 @@ function AccountRecharge({
           if (openingPayment.current.length < 8) openingPayment.current.push(event)
           return
         }
-        acceptPaymentTerminal(event)
+        acceptPaymentTerminalRef.current(event)
       }),
-    [api, acceptPaymentTerminal],
+    [api],
   )
   const methods = resource.data?.info.paymentMethods ?? []
   const paymentMethod =

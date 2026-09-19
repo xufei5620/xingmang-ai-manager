@@ -4,8 +4,11 @@ import fs from 'node:fs/promises'
 import { before, after, test } from 'node:test'
 import { chromium } from '@playwright/test'
 import { createServer } from 'vite'
+import { fixtureReadyTimeoutMs } from './fixture-readiness.mjs'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 let browser, server, origin
+const pageErrors = createPageErrorCollector()
 before(async () => {
   process.env.XINGMANG_RENDERER = 'v2'
   server = await createServer({
@@ -24,18 +27,23 @@ before(async () => {
 after(async () => {
   await browser?.close()
   await server?.close()
+  pageErrors.assertNone()
 })
 const fixture = async (route) => {
-  const page = await browser.newPage({ viewport: { width: 1280, height: 900 } })
+  const page = pageErrors.watch(await browser.newPage({ viewport: { width: 1280, height: 900 } }))
   page.setDefaultTimeout(5000)
   page.setDefaultNavigationTimeout(30000)
-  page.on('pageerror', (error) => console.error(error.message))
   await page.route('**/*', (route) =>
     new URL(route.request().url()).origin === origin
       ? route.continue()
       : route.abort(),
   )
   await page.goto(`${origin}/e2e/v2-business-fixture.html?${route}`)
+  // First paint waits on Vite transforming the module graph on demand, which on a
+  // cold Windows runner under Defender routinely takes longer than the 5s default
+  // the assertions below rely on. Waiting for the mount separately keeps that
+  // default tight enough to catch a real regression.
+  await page.locator('#root > *').first().waitFor({ timeout: fixtureReadyTimeoutMs })
   return page
 }
 const calls = (page) =>
@@ -315,7 +323,7 @@ test('pending or failed key group requests block saves and can be retried withou
     await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
     await page.evaluate(() => window.keyGroupsHarness.failNext())
     await page.getByTestId('account-key-groups-refresh').click()
-    await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).waitFor()
+    await dialog.getByText('分组读取暂时失败，请重试', { exact: true }).waitFor()
     assert.equal(await save.isDisabled(), true)
     assert.equal(await dialog.getByLabel('名称', { exact: true }).inputValue(), 'keep pending draft')
     assert.equal(await dialog.getByLabel('可用额度（USD）', { exact: true }).inputValue(), '3.25')
@@ -338,6 +346,47 @@ test('pending or failed key group requests block saves and can be retried withou
     })
     assert.equal(await page.getByTestId('account-key-group').inputValue(), 'fresh-group')
     assert.equal(await page.getByTestId('account-key-group').locator('option[value="outdated-group"]').count(), 0)
+  } finally { await page.close() }
+})
+
+test('key group failures name the real cause instead of one generic refresh prompt', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByText('Test key').waitFor()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A']))
+    await page.getByTestId('account-key-add').click()
+    const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
+    const save = dialog.getByRole('button', { name: '保存密钥', exact: true })
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
+
+    // 会话过期：主进程抛的是中文原文，脱敏后原样上屏，用户知道该去重新登录
+    await page.evaluate(() => window.keyGroupsHarness.failNext(
+      "Error invoking remote method 'account:list-groups': Error: 登录状态已失效，请重新登录",
+    ))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('登录状态已失效，请重新登录', { exact: true }).waitFor()
+    assert.equal(await save.isDisabled(), true)
+    assert.equal(await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).count(), 0)
+
+    // 限流：服务端回英文原文，映射成「稍等几秒」，而不是让用户反复点刷新
+    await page.evaluate(() => window.keyGroupsHarness.failNext('list groups failed: 429 Too Many Requests'))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('请求太频繁，稍等几秒再试。', { exact: true }).waitFor()
+    assert.equal(await save.isDisabled(), true)
+
+    // 账号被封禁：走 account-errors 的既有匹配表，同样不该退化成刷新提示
+    await page.evaluate(() => window.keyGroupsHarness.failNext('user has been banned'))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('该账号已被封禁，请联系客服', { exact: true }).waitFor()
+
+    // 认不出的原因仍然保留原来的兜底话术，并且恢复成功后错误消失、可以保存
+    await page.evaluate(() => window.keyGroupsHarness.failNext('   '))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).waitFor()
+    await page.getByTestId('account-key-groups-refresh').click()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="account-key-groups-refresh"]')?.disabled)
+    assert.equal(await save.isDisabled(), false)
   } finally { await page.close() }
 })
 
@@ -448,7 +497,7 @@ test('feedback copy and export retain the preview snapshot id', async () => {
     await page.getByTestId('feedback-report-text').waitFor()
     await page.getByRole('button', { name: '复制报告', exact: true }).click()
     await page.getByRole('button', { name: '导出文件', exact: true }).click()
-    await page.getByText('导出操作已结束').first().waitFor()
+    await page.getByText('诊断报告已导出：').first().waitFor()
     assert.deepEqual(
       (await calls(page))
         .filter((call) => ['copy-report', 'export-report'].includes(call.name))
@@ -457,6 +506,46 @@ test('feedback copy and export retain the preview snapshot id', async () => {
     )
   } finally {
     await page.close()
+  }
+})
+
+test('a cancelled export reports nothing instead of claiming the file was written', async () => {
+  const page = await fixture('page=sessions')
+  try {
+    await page.getByRole('button', { name: '查看记录', exact: true }).click()
+    const drawer = page.getByTestId('session-detail-drawer')
+    await drawer.getByText('这是一条测试消息').waitFor()
+    await drawer.getByRole('button', { name: '导出 Markdown', exact: true }).click()
+    await page.waitForFunction(() =>
+      JSON.parse(document.documentElement.dataset.calls || '[]').some(
+        (call) => call.name === 'export-session',
+      ),
+    )
+    assert.equal(await page.getByText('已导出').count(), 0)
+    assert.equal(await page.getByText('操作已完成').count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('row overflow menus are named after the row they act on', async () => {
+  const keys = await fixture('page=account&accountTab=keys')
+  try {
+    await keys
+      .getByRole('button', { name: '密钥 Test key 的更多操作', exact: true })
+      .waitFor()
+    assert.equal(await keys.getByRole('button', { name: '操作', exact: true }).count(), 0)
+  } finally {
+    await keys.close()
+  }
+  const backups = await fixture('page=backups')
+  try {
+    await backups
+      .getByRole('button', { name: /的备份更多操作$/ })
+      .first()
+      .waitFor()
+  } finally {
+    await backups.close()
   }
 })
 
@@ -528,6 +617,43 @@ test('subscription payment terminal events clear the pending state and explain t
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-SUBSCRIPTION' }))
     await page.getByText('支付窗口已关闭', { exact: true }).waitFor()
     assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the payment terminal listener survives re-renders and still resolves a pending order', async () => {
+  const page = await fixture('page=account&subscriptionExternal=1')
+  try {
+    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('button', { name: '购买', exact: true }).waitFor()
+    const subscribed = await page.evaluate(() => window.paymentTerminalSubscriptions())
+    assert.equal(subscribed.live, 1)
+
+    // 余额 store 每 30 秒 publish 两次，整棵树跟着重渲染。回调若随渲染变身份，
+    // 订阅就跟着退订重订，重订之间到达的那条回调没有人接。
+    await page.evaluate(async () => {
+      for (let round = 0; round < 6; round++) {
+        window.rerenderFixture()
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+      }
+    })
+    const afterRerenders = await page.evaluate(() => window.paymentTerminalSubscriptions())
+    assert.equal(afterRerenders.added, subscribed.added)
+    assert.equal(afterRerenders.live, 1)
+
+    // 重渲染之后到达的回调仍然落到同一个待支付订单上
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    await page.getByRole('button', { name: '打开支付窗口', exact: true }).click()
+    await page.getByText('订阅订单 XM-VISUAL-SUBSCRIPTION', { exact: false }).waitFor()
+    await page.evaluate(async () => {
+      window.rerenderFixture()
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+    await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-SUBSCRIPTION' }))
+    await page.getByText('支付窗口已关闭', { exact: true }).waitFor()
+    assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
+    assert.equal((await page.evaluate(() => window.paymentTerminalSubscriptions())).live, 1)
   } finally {
     await page.close()
   }
@@ -819,6 +945,73 @@ test('a previously observed account task sends one scoped completion notificatio
     assert.equal(notifications.length, 1)
     assert.equal(notifications[0].args.kind, 'task')
     assert.match(notifications[0].args.eventKey, /^https:\/\/xm\.solov\.cc:7:44:/)
+  } finally {
+    await page.close()
+  }
+})
+
+test('an async task result is copied as a link instead of asking the host to open an upstream URL', async () => {
+  const page = await fixture('page=account&system=1&taskTransition=1')
+  try {
+    await page.getByRole('tab', { name: '异步任务', exact: true }).click()
+    await page.getByText('处理中 50%', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '刷新任务', exact: true }).click()
+    await page.getByText('已完成 100%', { exact: true }).waitFor()
+    await page.getByRole('button', { name: '详情', exact: true }).click()
+    await page
+      .getByText('https://cdn.upstream.example.test/fixture-task.mp4', {
+        exact: true,
+      })
+      .waitFor()
+    assert.equal(
+      await page.getByRole('button', { name: '查看结果', exact: true }).count(),
+      0,
+    )
+    await page
+      .getByRole('button', { name: '复制结果链接', exact: true })
+      .click()
+    await page.getByText('结果链接已复制', { exact: true }).waitFor()
+    const recorded = await calls(page)
+    assert.equal(
+      recorded.some((call) => call.name === 'openExternal'),
+      false,
+    )
+    assert.deepEqual(
+      recorded
+        .filter((call) => call.name === 'copy-clipboard')
+        .map((call) => call.args),
+      ['https://cdn.upstream.example.test/fixture-task.mp4'],
+    )
+  } finally {
+    await page.close()
+  }
+})
+
+test('cancelling the password dialog drops the typed secrets and Esc confirms before discarding them', async () => {
+  const page = await fixture('page=account&system=1')
+  try {
+    await page.getByRole('button', { name: '修改密码', exact: true }).click()
+    const dialog = page.getByRole('dialog')
+    await dialog.getByLabel('当前密码', { exact: true }).fill('old-secret')
+    await dialog.getByLabel('新密码', { exact: true }).fill('new-secret-value')
+    await page.keyboard.press('Escape')
+    await dialog.getByText('要放弃未保存的修改吗？', { exact: true }).waitFor()
+    await dialog.getByRole('button', { name: '继续编辑', exact: true }).click()
+    assert.equal(
+      await dialog.getByLabel('当前密码', { exact: true }).inputValue(),
+      'old-secret',
+    )
+    await dialog.getByRole('button', { name: '取消', exact: true }).click()
+    await page.getByRole('button', { name: '修改密码', exact: true }).click()
+    const reopened = page.getByRole('dialog')
+    assert.deepEqual(
+      await Promise.all([
+        reopened.getByLabel('当前密码', { exact: true }).inputValue(),
+        reopened.getByLabel('新密码', { exact: true }).inputValue(),
+        reopened.getByLabel('确认新密码', { exact: true }).inputValue(),
+      ]),
+      ['', '', ''],
+    )
   } finally {
     await page.close()
   }

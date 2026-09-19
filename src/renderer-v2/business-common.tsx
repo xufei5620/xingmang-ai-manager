@@ -68,6 +68,17 @@ export const userFacingErrorMessage = (error: unknown) =>
     .replace(/(?:\\\\|\/Users\/|\/home\/)[^\s;；，。！？]+/g, '本地配置文件')
     .slice(0, 1_000)
 
+/**
+ * 主进程快照里的错误字段（`detectionError` / `configurationError`）不是被捕获的异常，
+ * 走不到 `errorMessage`，但同样来自 `describeProbeFailure` 这类把 `Error.message` 原样
+ * 透传的地方，句子里常带着 `C:\Users\<账号名>\...` 这样的绝对路径。上屏前统一过一遍
+ * 同样的脱敏，I13 才在这条路径上也成立。
+ *
+ * 脱敏后为空时返回 null 而不是空串，好让调用点用 `??` 保留自己的中文兜底文案。
+ */
+export const snapshotErrorMessage = (value: string | null | undefined) =>
+  userFacingErrorMessage(value) || null
+
 export const errorMessage = (error: unknown, fallback = '操作没有成功，请重试或查看反馈日志。') => {
   // 服务端已经说清原因的（原密码错误、账号被封禁、注册关闭、数据库出错……）先走
   // 精确文案。new-api 默认回英文，英文原文会被下面的兜底抹成一句“操作没有成功”；
@@ -79,6 +90,12 @@ export const errorMessage = (error: unknown, fallback = '操作没有成功，�
   const safe = userFacingErrorMessage(error)
   if (/[\u3400-\u9fff]/.test(safe)) return safe
   if (/401|unauthorized/i.test(safe)) return `${errors.sessionExpired.title}，${errors.sessionExpired.body}。`
+  // 限流与超时是两回事：超时让人去查网络，限流只需要等几秒。没有这条，new-api 的英文
+  // 限流原文会掉进最后的通用兜底，把「稍等几秒」说成「请重试或查看反馈日志」。
+  // 只认 HTTP 429 与明确的限流措辞，不认裸的 429，避免把额度数字之类误判成限流。
+  if (/HTTP\s*429|too\s*many\s*requests|rate[\s_-]?limit/i.test(safe)) {
+    return `${errors.tooManyRequests.title}，${errors.tooManyRequests.body}。`
+  }
   if (/timeout|ENOTFOUND|ECONN|fetch/i.test(safe)) return `${errors.timeout.title}，请检查网络后重试。`
   return fallback
 }
@@ -127,10 +144,10 @@ export function useOperation() {
   const [message, setMessage] = useState('')
   const [error, setError] = useState('')
   const lock = useRef(false)
-  const execute = async (
+  const execute = async <T,>(
     name: string,
-    action: () => Promise<unknown>,
-    success = '操作已完成',
+    action: () => Promise<T>,
+    success: string | ((result: T) => string | null) = '操作已完成',
   ) => {
     if (lock.current) return false
     lock.current = true
@@ -139,8 +156,12 @@ export function useOperation() {
     setError('')
     setMessage('')
     try {
-      await action()
-      setMessage(success)
+      const result = await action()
+      // A native save dialog the user dismisses resolves with null instead of
+      // throwing, so a resolver may decline the success line rather than let the
+      // page claim an export that never happened.
+      const notice = typeof success === 'function' ? success(result) : success
+      if (notice) setMessage(notice)
       return true
     } catch (cause) {
       setError(errorMessage(cause))

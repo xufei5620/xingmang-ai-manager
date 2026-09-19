@@ -7,7 +7,9 @@ import type { EventEmitter } from 'node:events'
 import type { Readable, Writable } from 'node:stream'
 import { isDarwinForeignWritablePath } from '../darwin-path-trust'
 import { copyBoundedFileExclusive, readBoundedFile } from '../bounded-file'
+import { readDirectoryEntries } from '../bounded-directory'
 import { ensureSafeDataDirectory } from '../safe-local-data'
+import { redactHomeDirectory } from '../startup-log'
 
 export interface MacosProxyChild extends EventEmitter {
   stdin: Writable
@@ -22,6 +24,68 @@ export interface MacosSystemProxyOptions {
   spawnHelper?: (helperPath: string, args: string[]) => MacosProxyChild
   validateHelper?: (helperPath: string) => void
   prepareHelper?: (helperPath: string) => Promise<string>
+}
+
+/** mkdtemp appends random characters to the digest of the verified bytes, so a
+ * copy this module made always starts with that digest and a separator. */
+const HELPER_COPY_NAME = /^[0-9a-f]{64}-.+$/
+/** Enough to survive a start that races another instance, small enough to keep
+ * the cache bounded. */
+const RETAINED_HELPER_COPIES = 2
+/** authd re-inspects a running helper's executable on every authorization, so
+ * the bytes of a copy another instance may still be running must stay on disk.
+ * Nothing here can ask the system who owns which copy, so age stands in for
+ * liveness: a copy older than this can only belong to a launch long gone. */
+const HELPER_COPY_GRACE_MS = 24 * 60 * 60 * 1000
+const MAX_HELPER_COPIES_SCANNED = 4096
+
+export interface MacosProxyHelperCopy {
+  name: string
+  modifiedAtMs: number
+}
+
+/** Retention rule for the per-launch helper copies, kept pure so the decision
+ * is testable off a macOS host. Returns the copies safe to delete: never the
+ * one just prepared, never the newest few, never one young enough that its
+ * launch could still be alive. */
+export function planMacosProxyHelperCleanup(
+  copies: MacosProxyHelperCopy[],
+  keepName: string,
+  nowMs: number,
+  retained = RETAINED_HELPER_COPIES,
+  graceMs = HELPER_COPY_GRACE_MS,
+): string[] {
+  return copies
+    .filter(copy => copy.name !== keepName && HELPER_COPY_NAME.test(copy.name))
+    .sort((left, right) => right.modifiedAtMs - left.modifiedAtMs || (left.name < right.name ? 1 : -1))
+    .slice(Math.max(retained, 0))
+    .filter(copy => nowMs - copy.modifiedAtMs >= graceMs)
+    .map(copy => copy.name)
+}
+
+/** Every start used to mint a private copy and none was ever removed, so the
+ * cache grew without bound. Sweeping is housekeeping: a failure here must never
+ * fail the proxy start that just produced a verified copy. */
+async function removeRetiredHelperCopies(cacheDirectory: string, keepName: string): Promise<void> {
+  let failure: unknown
+  try {
+    const entries = await readDirectoryEntries(cacheDirectory, MAX_HELPER_COPIES_SCANNED, '系统代理组件目录')
+    const copies: MacosProxyHelperCopy[] = []
+    for (const entry of entries) {
+      if (!entry.isDirectory() || !HELPER_COPY_NAME.test(entry.name)) continue
+      // lstat, never stat: a replaced entry must not redirect the removal.
+      const info = await fs.promises.lstat(path.join(cacheDirectory, entry.name)).catch(() => undefined)
+      if (!info?.isDirectory()) continue
+      copies.push({ name: entry.name, modifiedAtMs: info.mtimeMs })
+    }
+    for (const name of planMacosProxyHelperCleanup(copies, keepName, Date.now())) {
+      await fs.promises.rm(path.join(cacheDirectory, name), { recursive: true, force: true })
+        .catch((error: unknown) => { failure ??= error })
+    }
+  } catch (error) { failure ??= error }
+  if (failure === undefined) return
+  const message = failure instanceof Error ? failure.message : String(failure)
+  console.warn(`[macos-proxy-helper] 旧组件副本清理失败：${redactHomeDirectory(message, os.homedir())}`)
 }
 
 /** authd must be able to inspect its client's executable. Desktop/Documents
@@ -48,6 +112,7 @@ export async function prepareMacosProxyHelper(
     const copied = await readBoundedFile(target, maximumBytes, label)
     if (createHash('sha256').update(copied).digest('hex') !== digest) throw new Error('系统代理组件校验失败')
     await fs.promises.chmod(target, 0o500)
+    await removeRetiredHelperCopies(cacheDirectory, path.basename(directory))
     return target
   } catch (error) {
     await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined)

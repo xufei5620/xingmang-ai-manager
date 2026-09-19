@@ -41,7 +41,6 @@ const bridge: ChatBridge = {
   copyAiChatAsset: async (assetId) => { record('copy-asset', assetId) },
   saveAiChatAsset: async (assetId) => { record('save-asset', assetId); return { saved: !query.has('saveCancel') } },
   showAiChatAssetMenu: async (assetId) => { record('menu-asset', assetId) },
-  openExternal: async (url) => { record('external', url); return true },
   getAccountSession: async () => ({ authenticated: true, account: { userId, username: `fixture-${userId}`, quota: 10, usedQuota: 0, group: 'default', role: 1 } }),
 }
 declare global {

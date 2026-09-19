@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import path from 'node:path'
 import type { SafeStorageLike } from './account-session-store'
+import { inspectSafeStorageBackend, safeStoragePlaintextMessage } from './safe-storage-backend'
 import type { NewApiPersistableSession } from './new-api-client'
 import { ensureSafeDataDirectory, readSafeUtf8File, writeAtomicSafeUtf8File } from './safe-local-data'
 
@@ -123,7 +124,9 @@ export class SavedAccountsStore {
   }
 
   private assertEncryption(): void {
-    if (!this.storage.isEncryptionAvailable()) throw new Error('系统加密服务不可用，无法保存或切换账号')
+    const backend = inspectSafeStorageBackend(this.storage)
+    if (backend === 'unavailable') throw new Error('系统加密服务不可用，无法保存或切换账号')
+    if (backend === 'plaintext') throw new Error(safeStoragePlaintextMessage('已保存的账号'))
   }
 
   private async read(): Promise<SavedAccountRecord[]> {
