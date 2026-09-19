@@ -133,7 +133,7 @@ test('the Windows required job tests and compiles the default renderer v2', () =
   const dirtyCheckIndex = shardSteps.findIndex((step) => step.name === 'Fail if the test run left files in the working tree')
 
   // Both halves of test:v2 still run on the shipping platform; they are simply
-  // no longer queued behind test:windows on the same runner.
+  // no longer queued behind `npm test` on the same runner.
   assert.ok(shardCommands.includes('npm run test:v2:vitest'), 'Windows CI must run the renderer v2 unit suite')
   assert.ok(shardCommands.some((command) => command.startsWith('npm run test:v2:browser')),
     'Windows CI must run the renderer v2 browser suites')
@@ -159,9 +159,16 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   const shardCommands = windowsShardCommands()
 
   assert.equal(scripts['test:vitest'], 'vitest run electron src --no-file-parallelism --testTimeout=30000')
-  assert.equal(scripts['test:windows'], 'npm run test:vitest && npm run test:node')
-  assert.equal(scripts.test, 'npm run test:vitest && npm run test:node')
+  assert.equal(scripts.test, 'npm run test:vitest && npm run test:scripts && npm run test:browser')
   assert.equal(scripts['test:v2'], 'npm run test:v2:vitest && npm run test:v2:browser')
+
+  // P-12: `test:windows` meant "the serialised suite" until test:vitest took
+  // --no-file-parallelism and --testTimeout=30000 on itself, after which it
+  // was `npm test` spelled a second time. Nothing dispatches it any more, and
+  // a reintroduced copy would be a second definition of the same run, free to
+  // drift from this one.
+  assert.equal(scripts['test:windows'], undefined,
+    'test:windows became a duplicate of npm test and must stay deleted')
 
   for (const [script, count] of [['test:vitest', 2]]) {
     for (let index = 1; index <= count; index += 1) {
@@ -189,8 +196,34 @@ test('splitting the Windows job did not drop a suite it used to run', () => {
   assert.ok(scripts['test:v2:browser'].split(/\s+/).filter((token) => /\.mjs$/.test(token)).length > 0,
     'test:v2:browser must still name its suites')
 
-  // test:node is not sharded; it just has to still be dispatched somewhere.
-  assert.ok(shardCommands.includes('npm run test:node'), 'the matrix must dispatch test:node')
+  // T-B6: the matrix has to cover exactly the leaves `npm test` runs, so a
+  // leaf added later that no shard dispatches fails here instead of silently
+  // going untested on the shipping platform. test:vitest is the one exception:
+  // it is dispatched as the two --shard halves checked above.
+  const dispatched = shardCommands.flatMap((command) => command.split('&&').map((part) => part.trim()))
+  const testLeaves = scripts.test.split('&&').map((part) => part.trim())
+  assert.deepEqual(testLeaves, ['npm run test:vitest', 'npm run test:scripts', 'npm run test:browser'])
+  for (const leaf of testLeaves.filter((leaf) => leaf !== 'npm run test:vitest')) {
+    assert.ok(dispatched.includes(leaf), `the matrix must dispatch ${leaf}`)
+  }
+
+  // T-G10: each of these two suites launches its own Chromium against its own
+  // Vite dev server. Running them together bought no wall clock (~31s either
+  // way) and doubled the shard's peak memory, which on a Defender-throttled
+  // Windows runner is how a timeout gets manufactured. test:v2:browser and
+  // test:ui were already serialised for the same reason.
+  assert.match(scripts['test:browser'], /^node --test --test-concurrency=1 /)
+
+  // T-B6: the split only pays for itself while the names keep meaning what
+  // they say — the build and release script suites in one, the browser suites
+  // in the other.
+  const named = (script, pattern) => scripts[script].split(/\s+/).filter((token) => pattern.test(token))
+  assert.deepEqual(named('test:scripts', /\.mjs$/), [])
+  assert.ok(named('test:scripts', /\.test\.cjs$/).length > 0, 'test:scripts must still name its suites')
+  assert.ok(named('test:scripts', /\.test\.cjs$/).every((token) => token.startsWith('scripts/')))
+  assert.deepEqual(named('test:browser', /\.cjs$/), [])
+  assert.ok(named('test:browser', /\.mjs$/).length > 0, 'test:browser must still name its suites')
+  assert.ok(named('test:browser', /\.mjs$/).every((token) => token.startsWith('e2e/')))
 })
 
 test('the release gate only runs smoke scripts the Windows required job also runs', () => {
@@ -236,7 +269,7 @@ test('the Windows suite serializes filesystem-heavy files with a bounded test ti
   }
 
   assert.match(packageJson.scripts['test:vitest'], /vitest run electron src/)
-  assert.match(packageJson.scripts['test:windows'], /npm run test:node/)
+  assert.match(packageJson.scripts['test:browser'], /--test-concurrency=1/)
 })
 
 test('the Linux suite type-checks and runs the common test command', () => {
@@ -249,7 +282,9 @@ test('the Linux suite type-checks and runs the common test command', () => {
   // Regression coverage for #4: cross-platform breakage (e.g. #2's tmpfs inode
   // reuse) only surfaces on a real Linux filesystem, so this job must run the
   // unmodified common suite rather than a Windows- or macOS-flavored variant.
-  assert.equal(commands.includes('npm run test:windows'), false)
+  // P-12 deleted the only variant that ever existed; this keeps the job honest
+  // if another one grows back.
+  assert.equal(commands.some((command) => /^npm run test:(windows|macos|linux)\b/.test(command)), false)
 })
 
 test('the Linux job carries the shipping renderer coverage the Windows job used to own alone', () => {
@@ -279,10 +314,9 @@ test('the legacy rollback UI suites are verified on exactly one platform', () =>
   // They render markup through renderToStaticMarkup and assert on the HTML, so
   // the three platforms were answering the same question three times while the
   // shipping renderer was answered once.
-  assert.equal(packageJson.scripts['test:node'].includes('test:ui'), false,
-    'test:ui must not ride along with test:node onto every platform')
+  assert.equal(packageJson.scripts['test:browser'].includes('test:ui'), false,
+    'test:ui must not ride along with test:browser onto every platform')
   assert.equal(packageJson.scripts.test.includes('test:ui'), false)
-  assert.equal(packageJson.scripts['test:windows'].includes('test:ui'), false)
 
   const jobsRunningUi = Object.entries(workflow.jobs)
     .filter(([, job]) => (job.steps || []).some((step) => step.run === 'npm run test:ui'))
@@ -397,7 +431,7 @@ test('the change-scope job also gates the unreleased changelog fragments', () =>
   assert.ok(commands.includes('npm run changelog:check'))
   assert.match(packageJson.scripts['changelog:check'], /scripts\/changelog-collect\.cjs --check/)
   assert.match(packageJson.scripts['changelog:collect'], /scripts\/changelog-collect\.cjs/)
-  assert.ok(packageJson.scripts['test:node'].includes('scripts/changelog-collect.test.cjs'))
+  assert.ok(packageJson.scripts['test:scripts'].includes('scripts/changelog-collect.test.cjs'))
 
   // The guard diffs both unreleased sections against the pull request base, so
   // the base commit has to be reachable...
@@ -632,7 +666,7 @@ const fixtureReadinessConsumers = [
   'src/renderer-v2/features/auth/browser-check.mjs',
   'e2e/v2-business.test.mjs',
   'e2e/app-v3-interactions.test.mjs',
-  'e2e/renderer-v2-gap-audit.mjs',
+  'scripts/audit/renderer-v2-gap-audit.mjs',
   'e2e/account-commerce-interactions.test.mjs',
   'e2e/maintenance-layout.test.mjs',
   // D-12: the dual-site account smoke waits on the same cold Electron start
@@ -704,4 +738,26 @@ test('the window close smoke survives a transient Windows filesystem error', () 
   assert.match(source, /XINGMANG_SMOKE_COMMAND_TIMEOUT_MS/, 'the acknowledgement wait must stay bounded and overridable')
   assert.match(source, /abandonedByExit/, 'the acknowledgement wait must stop as soon as the application exits')
   assert.match(source, /main \$\{label\}/, "the main process's own output must reach the log")
+})
+
+// 验收证据里写死的 `true` 会在部分失败时照样打印出来，看起来像"这条也过了"。
+const evidenceProducers = [
+  'e2e/onboarding-smoke.mjs',
+  'e2e/canvas-group-refresh.mjs',
+  'e2e/acceleration-profile-isolation-smoke.mjs',
+  'e2e/renderer-v2-native.mjs',
+]
+
+test('acceptance evidence reports what the run observed, not literals', () => {
+  for (const producer of evidenceProducers) {
+    const source = fs.readFileSync(path.join(root, producer), 'utf8')
+
+    assert.match(source, /passedAssertions/, `${producer} must report the assertions this run actually passed`)
+    // Only names pushed after an assertion ran may reach the evidence, so the
+    // payload carrying them must not restate any behaviour as a constant.
+    for (const payload of source.matchAll(/JSON\.stringify\(\{[^}]*passedAssertions[^}]*\}/g)) {
+      assert.doesNotMatch(payload[0], /:\s*(?:true|false)\b/,
+        `${producer} must not state a behaviour as a literal beside the assertions it measured`)
+    }
+  }
 })

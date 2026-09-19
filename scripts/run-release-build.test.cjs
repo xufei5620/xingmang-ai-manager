@@ -79,7 +79,7 @@ test('the unsigned gate keeps every check that does not need a certificate', () 
     assert.ok(scripts.includes(required), `unsigned release must still run ${required}`)
   }
   assert.ok(scripts.includes('typecheck'), 'unsigned release must still type-check')
-  assert.ok(scripts.includes('test:windows'), 'unsigned release must still run the full Windows suite')
+  assert.ok(scripts.includes('test'), 'unsigned release must still run the full suite')
   assert.ok(scripts.includes('compile'), 'unsigned release must still compile the application')
 })
 
@@ -114,10 +114,16 @@ test('the release gate runs the renderer v2 smoke scripts, not the deleted legac
   assert.equal(scripts.some((argument) => argument.endsWith('electron-smoke.mjs')), false)
 })
 
-test('non-Windows hosts run the common suite while Windows runs the serialized one', () => {
-  assert.ok(stepArguments({ platform: 'linux', unsignedReleaseMode: true }).includes('test'))
-  assert.equal(stepArguments({ platform: 'linux', unsignedReleaseMode: true }).includes('test:windows'), false)
-  assert.ok(stepArguments({ platform: 'win32', unsignedReleaseMode: true }).includes('test:windows'))
+test('every host runs the same common suite', () => {
+  // P-12: the gate used to branch to test:windows on win32 for the serialised
+  // run. test:vitest carries --no-file-parallelism and --testTimeout=30000
+  // itself now, so `npm test` is that run on every platform and the branch was
+  // selecting between two spellings of one command.
+  for (const platform of ['linux', 'darwin', 'win32']) {
+    const args = stepArguments({ platform, unsignedReleaseMode: true })
+    assert.ok(args.includes('test'), `${platform} must run the common suite`)
+    assert.equal(args.includes('test:windows'), false, `${platform} must not run a platform-specific variant`)
+  }
 })
 
 test('unsigned mode never inherits the signed release markers or a signing certificate', () => {

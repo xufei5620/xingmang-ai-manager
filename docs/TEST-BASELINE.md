@@ -10,7 +10,7 @@
 | **macOS** | 0 | — | — |
 | **Linux** | 0 | 原 `samePathIdentity` 误删缺陷已修复：launcher 文件清理现走 `macos-platform.ts` 的 `sameFileIdentity`（追加 size/nlink/mtime/ctime 比对） | #2 已关闭 |
 
-遇到超时类失败先用 `npm run test:windows` 复核；符号链接类失败开启 Windows 开发者模式即可消除。基线与上表不符请到 **#40** 报告。
+遇到超时类失败先原样复跑一遍 `npm test`（它已经是串行 + 30s 超时）；符号链接类失败开启 Windows 开发者模式即可消除。基线与上表不符请到 **#40** 报告。
 
 > 云端/CI 容器提示：e2e 里 2 个 Playwright 布局用例要真浏览器，若容器预装的 Chromium 版本号与 `@playwright/test` 期望不符会报 "Executable doesn't exist"——环境问题不是回归，指个可用的 executablePath 复跑即绿（vitest 与 scripts 套件不受影响）。
 

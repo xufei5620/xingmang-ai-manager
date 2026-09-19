@@ -1,6 +1,8 @@
 # 星芒AI管理工具发布手册
 
-## 当前 Windows 发布策略
+本手册只描述**当前生效**的发布流程：Windows 走无签名发布，macOS 走免费签名分发。历史签名方案（`npm run release:build`、`.github/workflows/release-build.yml` 的「CI 发布」配置、证书与固定发布者要求）已整段移到 [`docs/archive/RELEASING-signed.md`](archive/RELEASING-signed.md)，保留待 CA 证书到手，不适用于当前发布。
+
+## 1. 当前 Windows 发布策略
 
 产品所有者已明确（2026-09-05）：当前和后续 Windows 对外发布固定使用无签名模式，不需要代码签名证书或 `XINGMANG_SIGNING_PUBLISHER`，不得在审计或维护中重新引入这些发布前置要求。
 
@@ -16,7 +18,7 @@ npm run release:build:unsigned
 
 1. 发布前置检查（含「远端版本必须低于本地」）
 2. `npm run typecheck`
-3. 全部单测（Windows 上走 `test:windows`）
+3. 全部单测（`npm test`，三平台同一条命令）
 4. `npm run compile`，并确认产出 `dist/renderer-v2.flag`
 5. `e2e/electron-ci-smoke.mjs` 启动冒烟
 6. `e2e/onboarding-smoke.mjs` 首启向导冒烟
@@ -49,7 +51,7 @@ npm run release:build:unsigned
 
 发布前仍需提升版本号、更新 `release-notes.md` 并完成类型检查、测试、编译和安装包验证。上传文件、修改 Cloudflare R2 或切换线上 `latest.yml` 必须获得产品所有者针对当前版本的明确发布授权，不能把构建、合并 PR 或历史授权解释为本次发布许可。
 
-## macOS 0.2.4 双架构加速资源
+## 2. macOS 0.2.4 双架构加速资源
 
 Mac 资源使用 `--platform darwin --arch arm64` 或 `--arch x64` 准备，资源清单为 version 2。每个目录只含对应架构的内核，必须使用独立目录与单架构构建命令；目标平台或架构不符会拒绝构建。两次构建后汇总两份 ZIP 清单，最后执行完整双架构验证。
 
@@ -57,11 +59,7 @@ Mac 资源使用 `--platform darwin --arch arm64` 或 `--arch x64` 准备，资�
 
 除了 `verify-macos-free-artifacts.cjs`，发布者还须检查每个最终应用的 ASAR 资源 pins、内核/节点文件哈希、原生组件路径与架构，以及组件签名。包内 `--xingmang-acceleration-worker` 入口必须能通过 IPC 完成初始化、返回仅含显示信息的线路列表并正常退出。私有节点不得上传 GitHub；R2 发布顺序沿用先安装包和 blockmap、后 `latest-mac.yml`。
 
-## 历史签名流程（停用）
-
-以下为历史签名方案归档。`release:build` 和 `release-build.yml` 是旧签名专用入口，不用于当前及后续 Windows 无签名发布；下文的证书、发布者和 DN/CN 要求不适用于本项目的无签名发布流程。`scripts/verify-release-environment.cjs` 与 `scripts/verify-release-artifacts.cjs` 现在两种模式共用（无签名模式只跳过 Authenticode 签名主体比对），不再是签名专用。
-
-## 1. 发布前置条件
+## 3. 发布前置条件
 
 依赖安全审计固定使用官方 npm registry：
 
@@ -79,17 +77,9 @@ CI 对生产依赖中的任意漏洞和完整依赖树中的 critical 漏洞执�
 - 使用专用 Windows 发布机，系统时间正确，依赖锁文件未被临时改写。
 - 更新清单必须由对应版本的静态 R2 目录提供：`0.1.2` 及更早版本检查 `https://updates.shenfengwl.fun/xingmang-manager/latest.yml`，`0.1.3+` 检查 `https://updatesnew.shenfengwl.fun/xingmang-manager/latest.yml`。两者返回 `text/html`/官网 SPA 都属于发布阻断故障。
 - Windows 主程序必须以 `asInvoker` 运行，不能在日常启动或打开 AI 工具时主动请求管理员权限。普通模式下 npm CLI 与 Grok 使用当前用户目录；NSIS 安装、主程序更新或 Node.js 系统安装只在实际执行该操作时交给 Windows 请求所需授权。打包门禁会拒绝重新引入 `RunAs` 的 CLI 启动链。
-- 正式发布必须使用 Authenticode 签名；没有证书、固定发布者或干净 Windows 验收机时，发布预检会直接失败。
-- 所有 Windows 包的 `app-update.yml` 都写入预期发布者，防止 `electron-updater` 因缺少 `publisherName` 跳过验证。客户端使用受保护系统目录中的 PowerShell 严格核对下载文件的 `Valid` 状态、返回路径和发布者 DN/CN；PowerShell 缺失、命令失败、输出无法解析或任一字段不匹配均拒绝更新。
 - 普通 `npm run build` 仍生成仅供本机调试的未签名安装包。按产品要求，明确设置 `XINGMANG_UNSIGNED_RELEASE=1` 或运行 `npm run release:build:unsigned` 时，未签名包会保留更新能力但不写入发布者签名校验；该模式不得与 `XINGMANG_RELEASE=1` 或 macOS 正式发布模式同时启用。
 - 无签名包在 `package.json` 里带上 `xingmangUnsignedRelease: true`。主进程据此把更新改成用户确认式：启动检查只提示新版本，下载和安装都等用户在更新页点击，并在下载完成后按更新清单的 SHA-512 重新校验安装包，校验值缺失或不一致一律拒绝安装。发布无签名包时必须确认 `latest.yml` 为每个安装包写出了 `sha512`，否则客户端会拒绝该次更新。
-- 正式发布前配置证书路径和固定发布者，例如：
-
-```powershell
-$env:WIN_CSC_LINK = 'C:\secrets\xingmang-signing.p12'
-$env:CSC_KEY_PASSWORD = '<证书密码>'
-$env:XINGMANG_SIGNING_PUBLISHER = '绍兴星芒文化传媒有限责任公司'
-```
+- 记下本次出包的 commit（`git rev-parse HEAD`）。发布完成后要用它打 `v<版本号>` 的附注 tag，见第 5 节。
 
 更新地址可按需通过环境变量覆盖：
 
@@ -98,110 +88,7 @@ $env:XINGMANG_SIGNING_PUBLISHER = '绍兴星芒文化传媒有限责任公司'
 $env:XINGMANG_UPDATE_URL = 'https://updatesnew.shenfengwl.fun/xingmang-manager/'
 ```
 
-## 2. 构建与本地门禁
-
-```powershell
-npm run release:build
-```
-
-默认输出目录为 `release-<package version>`。脚本在联网预检、测试或构建前要求目标目录不存在或为空；检测到旧安装包、旧 `latest.yml` 或任何其他文件时会立即失败，并且绝不自动删除现有产物。需要保留同版本的多次候选构建时，显式指定项目目录内新的空目录：
-
-```powershell
-$env:XINGMANG_OUTPUT_DIR = 'release-0.1.4-candidate-2'
-npm run release:build
-```
-
-执行顺序固定为：
-
-1. 检查 HTTPS 更新 URL 和远端静态路由。
-2. 执行 TypeScript 类型检查、全部单元测试和前端/主进程编译。
-3. 运行主界面与首次启动向导的开发态 Electron 冒烟测试。
-4. 以 `XINGMANG_RELEASE=1` 和关闭证书自动发现的环境运行 `electron-builder --publish never`，使用显式证书生成已签名 NSIS 安装程序。
-5. 校验打包程序的 Electron fuse、`app.asar` 和渲染页/IPC 启动状态，并确认远程调试参数被拒绝。
-6. 复制并篡改 `app.asar`，确认打包程序因嵌入式 ASAR 完整性校验而拒绝启动。
-7. 校验当前空发布目录中生成的 `latest.yml` 结构、每个本地文件的大小与 SHA-512，以及主安装程序 `.blockmap`。
-8. 使用 Windows `Get-AuthenticodeSignature` 确认安装程序状态为 `Valid`，并严格匹配 `XINGMANG_SIGNING_PUBLISHER`。
-
-任一步失败都不得继续上传。
-
-全部门禁通过也只表示候选产物具备发布条件，不会自动上传，且不构成发布授权。
-
-## 2.1 CI 发布（GitHub Actions，2026-08-12 起）
-
-老板决定把出包这一步搬到 CI。`.github/workflows/release-build.yml` 在 `windows-latest` 上跑的就是上面第 2 节那条完全相同的链路（它直接调用 `npm run release:build`），只是证书来自仓库 Secrets 而不是发布机磁盘。
-
-**一次性配置分两步：先建受保护环境，再把 secret 配进那个环境。**
-
-**第一步：建 `release` 环境**（仓库 Settings → Environments → New environment，名字必须是 `release`）：
-
-- 勾上 **Required reviewers**，把自己加进去。以后每次跑 `release-build` 都要点一次同意，跑之前构建会停在等待审批。
-- **Deployment branches and tags** 选 **Selected branches and tags**，只加 `main`。
-
-⚠️ **这一步不能省，也不能靠 workflow 自己长出来。** `release-build.yml` 里写了 `environment: release`，但环境不存在时 GitHub 会在首次运行时**自动创建一个没有任何保护规则的同名环境**——看上去一切正常，实际上什么都没挡住。建完之后回环境页面确认两条规则都在。
-
-为什么要这么做：`release-build` 是 `workflow_dispatch`，GitHub 允许触发时指定**任意 ref**，跑的是那个 ref 上的 workflow 文件。只要签名 secret 还留在仓库级，任何有 write 权限的人推一个分支、在里面加一行把证书 base64 打印出来，再 dispatch 到那个分支，就能把签名证书和密码整个拿走。环境保护是唯一能挡住这条路的东西。
-
-**第二步：在 `release` 环境里**（不是仓库级 Secrets）配三个 secret：
-
-| Secret 名 | 内容 |
-|---|---|
-| `WIN_CSC_LINK_BASE64` | 代码签名证书 `.p12` 的 **base64 文本**（electron-builder 直接接受 base64，证书不落盘） |
-| `WIN_CSC_KEY_PASSWORD` | 该证书的密码 |
-| `XINGMANG_SIGNING_PUBLISHER` | 固定发布者名，例如 `绍兴星芒文化传媒有限责任公司` |
-
-如果这三个 secret 之前配在仓库级（Settings → Secrets and variables → Actions），**挪完之后要把仓库级那三份删掉**，否则等于没挪。
-
-把 `.p12` 转成 base64（在你自己的机器上做，不要在任何共享环境里做）：
-
-```powershell
-[Convert]::ToBase64String([IO.File]::ReadAllBytes('C:\secrets\xingmang-signing.p12')) | Set-Clipboard
-```
-
-**每次发布**：Actions → `release-build` → Run workflow，在 `confirm_version` 里填 `package.json` 里的版本号（填错会在第一步就失败，这是防误发的闸）。跑完在 run 页面下载 artifact，里面是 `Setup.exe` + `.blockmap` + `latest.yml` 三件套，日志里有每个文件的 SHA-256，上传到对象存储后可逐个比对。
-
-**这条 workflow 永远不会上传到更新服务器**，也没有配置任何对象存储凭据。上传仍按第 4 节由人执行——本手册要求每次发布都要产品所有者针对当前版本明确授权，把上传自动化等于取消那道授权。
-
-两点与本机发布的差异要知道：
-
-- **画布**：云端没有兄弟仓 `xingmang-canvas` 的 v1 产物，所以 CI 会现场构建仓内的 `canvas-v2` 打进包里。也就是说 **CI 出的正式包带的是 v2 画布**，与测试包一致。若某次发布要改回 v1，只能在本机构建。
-- **版本必须高于线上**：发布前置检查会拉取线上 `latest.yml` 比对，版本没提升会直接失败——这是好事，能拦住忘记改版本号的发布。
-
-### 还没拿到 CA 证书时：用自签名证书先验证更新链路
-
-默认本地构建仍把"能更新"和"已签名发布"隔离；只有显式的 `XINGMANG_UNSIGNED_RELEASE=1` 测试/发布模式才会把 `extraMetadata.xingmangLocalBuild` 关闭，从而允许未签名包检查和安装更新。
-
-在真证书到手之前，可以用**自己生成的自签名证书**把整条链路真跑一遍——签名、写 `publisherName`、更新器启用、客户端下载后校验签名，全部真实执行，只是这张证书只有你自己的机器认。真证书到手后换掉 Secret 即可，代码一个字不用改。
-
-**1. 在你自己的 Windows 机器上生成证书**（私钥不要离开这台机器以外的地方）：
-
-```powershell
-$cert = New-SelfSignedCertificate `
-  -Type CodeSigningCert `
-  -Subject 'CN=绍兴星芒文化传媒有限责任公司' `
-  -CertStoreLocation Cert:\CurrentUser\My `
-  -NotAfter (Get-Date).AddYears(2) `
-  -KeyExportPolicy Exportable
-
-$password = ConvertTo-SecureString '自己设一个密码' -AsPlainText -Force
-Export-PfxCertificate -Cert $cert -FilePath "$HOME\xingmang-test-signing.pfx" -Password $password | Out-Null
-[Convert]::ToBase64String([IO.File]::ReadAllBytes("$HOME\xingmang-test-signing.pfx")) | Set-Clipboard
-```
-
-`Subject` 里的 CN **必须**与 `XINGMANG_SIGNING_PUBLISHER` 完全一致，否则产物校验会因发布者不匹配而失败。
-
-**2. 配置 Secrets**：把剪贴板里的 base64 填进 `WIN_CSC_LINK_BASE64`，密码填 `WIN_CSC_KEY_PASSWORD`，发布者填 `XINGMANG_SIGNING_PUBLISHER`。仍然配在上面那个 `release` 环境里。
-
-  **3. 触发构建**：Actions → `release-build` → Run workflow，勾上 `test_signing`，并在 `update_url` 填一个**与正式源不同的测试路径**，例如 `https://updatesnew.shenfengwl.fun/xingmang-manager/beta/`。这一项是强制的：自签名产物一旦进了正式更新源，老客户的机器不认这张证书会拒绝更新（失败方向是安全的），新装用户则会看到未知发布者警告。
-
-**4. 在测试机上验证更新链路**：把三件套传到那个 beta 路径 → 在虚拟机装上这一版 → 提升 `package.json` 版本号再跑一次构建 → 传新的三件套（顺序仍是先传包与 blockmap、最后覆盖 `latest.yml`）→ 在已装的旧版本里点「检查更新」，应能发现、下载、重启安装成功。
-
-**只有勾了 `test_signing` 的构建**才会把这张证书导进 runner 的「受信任的根证书颁发机构」，好让发布门禁要求的 `Get-AuthenticodeSignature = Valid` 能够成立。正式构建**不做**这一步：`Valid` 本身就建立在链信任上，先把证书塞进根存储再去断言它有效，等于自己给自己判卷——中间 CA 没打进 `.p12`、交叉证书缺失、时间戳服务当时不可用，这些只会在一台干净 Windows 上暴露的问题就全被盖住了，CI 全绿而客户装出来是「未知发布者」。所以正式证书第一次上 CI 时，要做好它可能直接在产物校验这一关失败的准备，那正是它该失败的地方。
-
-**5. 安装时的提示**：自签名证书未被 Windows 信任，安装时仍会有 SmartScreen 警告。若想在测试机上消除，把 `.pfx` 里的证书导入该机器的「受信任的根证书颁发机构」；**不要**在任何客户机器上这么做。
-
-自签名产物的 artifact 名字会带 `TEST-SIGNED-DO-NOT-PUBLISH` 前缀，别把它传到正式更新源。
-
-## 3. 静态更新目录
+## 4. 静态更新目录
 
 当前静态源使用 Cloudflare R2，按版本分为两个更新桶：
 
@@ -227,7 +114,7 @@ XingMang-AI-Manager-<version>-Setup.exe.blockmap
 
 更新目录不能配置 SPA fallback。不存在的文件应返回 404，不能返回状态 200 的官网 HTML。
 
-## 4. 经明确授权后的原子发布
+## 5. 经明确授权后的原子发布
 
 只有在当前版本已获得明确发布授权后，才执行以下步骤：
 
@@ -244,6 +131,49 @@ npm run update:verify-feed -- --platform=windows
 该命令会下载远端 `latest.yml` 和安装程序，重新计算 SHA-512，并确认 `.blockmap` 可访问。任何失败都应立即恢复旧 `latest.yml`。
 
 6. 使用已安装的旧版本完成一次“启动更新预检 → 自动下载并校验 → 自动重启安装”。另验证运行期间检查发现新版本后，用户点击下载也会在校验完成后自动重启安装。确认安装后的版本和用户配置均正确。
+
+7. 给本次出货的 commit 打附注 tag 并推送，见下一节。
+
+### 发布后：给出货的 commit 打 tag
+
+到 0.2.6 为止仓库一个 tag 都没有。本机出的包除了发布者自己的磁盘没有任何留存，CI 出的包也只在 Actions 里保留 30 天。一旦过期，客户手上的安装包与某个 commit 之间就没有任何持久对应关系：出问题无法 bisect，也无法证明出货产物来自哪份源码。所以每次发布的最后一步固定是给出货的 commit 打 tag。
+
+打 tag 的对象是**本次实际出包的那个 commit**，不是「发布当天的 main」——提升版本号之后、构建之前可能又合进了别的改动。出包前先记下来：
+
+```powershell
+git rev-parse HEAD
+```
+
+产物上传完成、`update:verify-feed` 通过、并且用旧版本实际验收过一次自动更新之后：
+
+```powershell
+git fetch origin
+git tag -a v0.2.7 <出包的 commit> -m "0.2.7"
+git push origin v0.2.7
+```
+
+约定三条：tag 名固定为 `v` 加 `package.json` 里的版本号；用附注 tag（`-a`）而不是轻量 tag，让 tag 自带打标时间和打标人；tag 推上去之后不移动、不删除。本次产物有问题时提升版本号重新发布，按第 8 节回滚，不要让同一个 tag 指向另一个 commit。
+
+#### 补打历史版本的 tag
+
+0.2.1 ~ 0.2.6 都已经发出去且没有 tag。下面是按 `package.json` 版本变更推断出的候选 commit，**仅供确认用**——如上所述，提升版本号的 commit 未必就是当时实际出包的那个。补打之前要由产品所有者逐个核对，确认不了的版本宁可不补，也不要打一个指向错误 commit 的 tag。
+
+| 版本 | 候选 commit | 日期 | 提升版本号的提交 |
+|---|---|---|---|
+| 0.1.32 | `ec26b33` | 2026-09-08 | 重建 v3.1.1 桌面界面并升级至 0.1.32 (#117) |
+| 0.2.1 | `6ec4cf4` | 2026-09-10 | 发布 0.2.1 双账号接入与支付公告修复 |
+| 0.2.2 | `a59a845` | 2026-09-12 | 完善账号配置与用量展示并发布 0.2.2 (#121) |
+| 0.2.3 | `ac7650b` | 2026-09-14 | 0.2.3 本机加速与桌面配置修复 (#122) |
+| 0.2.4 | `443e559` | 2026-09-14 | add macOS game acceleration and publish 0.2.4 (#123) |
+| 0.2.5 | `ccf1eab` | 2026-09-16 | 发布 0.2.5，修复 Codex 配置和退出流程 (#124) |
+| 0.2.6 | `43e09af` | 2026-09-19 | 升级 0.2.6，完善客户端接入与账号稳定性 (#128) |
+
+补打时显式写出 commit，不要用 `HEAD`：
+
+```powershell
+git tag -a v0.2.6 43e09af -m "0.2.6"
+git push origin v0.2.6
+```
 
 ### Codex Desktop 国内镜像
 
@@ -276,7 +206,7 @@ Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确
 
 镜像和官方清单查询失败时，客户端会分别保留具体错误用于诊断；下载地址固定在源码和测试中，避免运行环境把管理员安装流程重定向到未知主机。
 
-## 5. 客户端更新行为
+## 6. 客户端更新行为
 
 - 正式包默认在启动页检查一次更新；用户可在设置中关闭该启动预检。
 - 启动检查发现新版本后自动下载，下载进度显示在启动页；下载校验完成后约 300ms 自动调用安装并重启。
@@ -285,7 +215,7 @@ Windows 首先按当前用户调用 `Add-AppxPackage`。只有错误详情明确
 - 关闭“启动时检查主程序更新”只跳过启动预检，不影响运行期间的 3 小时检查。
 - 开发态默认禁用更新；设置 `XINGMANG_UPDATE_DEV=1` 后只允许检查与下载，安装始终被服务端拒绝。
 
-## 6. 开发态更新验证
+## 7. 开发态更新验证
 
 仓库内 `dev-app-update.yml` 固定指向 `http://127.0.0.1:8123/`。准备一个由 `electron-builder` 生成、版本高于当前应用的本地目录后运行：
 
@@ -308,7 +238,7 @@ npm run dev
 npm run update:verify-feed -- http://127.0.0.1:8123/ --allow-local --platform=windows
 ```
 
-## 7. 回滚
+## 8. 回滚
 
 - 若新 `latest.yml` 尚未发布，删除未引用的新产物即可。
 - 若新 `latest.yml` 已发布但验收失败，原子恢复旧 `latest.yml`。保留新产物用于调查，不要让它继续被元数据引用。

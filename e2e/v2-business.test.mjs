@@ -323,7 +323,7 @@ test('pending or failed key group requests block saves and can be retried withou
     await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
     await page.evaluate(() => window.keyGroupsHarness.failNext())
     await page.getByTestId('account-key-groups-refresh').click()
-    await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).waitFor()
+    await dialog.getByText('分组读取暂时失败，请重试', { exact: true }).waitFor()
     assert.equal(await save.isDisabled(), true)
     assert.equal(await dialog.getByLabel('名称', { exact: true }).inputValue(), 'keep pending draft')
     assert.equal(await dialog.getByLabel('可用额度（USD）', { exact: true }).inputValue(), '3.25')
@@ -346,6 +346,47 @@ test('pending or failed key group requests block saves and can be retried withou
     })
     assert.equal(await page.getByTestId('account-key-group').inputValue(), 'fresh-group')
     assert.equal(await page.getByTestId('account-key-group').locator('option[value="outdated-group"]').count(), 0)
+  } finally { await page.close() }
+})
+
+test('key group failures name the real cause instead of one generic refresh prompt', async () => {
+  const page = await fixture('page=account')
+  try {
+    await page.getByRole('tab', { name: '密钥', exact: true }).click()
+    await page.getByText('Test key').waitFor()
+    await page.evaluate(() => window.keyGroupsHarness.setGroups(['group-A']))
+    await page.getByTestId('account-key-add').click()
+    const dialog = page.getByRole('dialog', { name: '新建密钥', exact: true })
+    const save = dialog.getByRole('button', { name: '保存密钥', exact: true })
+    await page.waitForFunction(() => document.querySelector('[data-testid="account-key-group"]')?.value === 'group-A')
+
+    // 会话过期：主进程抛的是中文原文，脱敏后原样上屏，用户知道该去重新登录
+    await page.evaluate(() => window.keyGroupsHarness.failNext(
+      "Error invoking remote method 'account:list-groups': Error: 登录状态已失效，请重新登录",
+    ))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('登录状态已失效，请重新登录', { exact: true }).waitFor()
+    assert.equal(await save.isDisabled(), true)
+    assert.equal(await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).count(), 0)
+
+    // 限流：服务端回英文原文，映射成「稍等几秒」，而不是让用户反复点刷新
+    await page.evaluate(() => window.keyGroupsHarness.failNext('list groups failed: 429 Too Many Requests'))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('请求太频繁，稍等几秒再试。', { exact: true }).waitFor()
+    assert.equal(await save.isDisabled(), true)
+
+    // 账号被封禁：走 account-errors 的既有匹配表，同样不该退化成刷新提示
+    await page.evaluate(() => window.keyGroupsHarness.failNext('user has been banned'))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('该账号已被封禁，请联系客服', { exact: true }).waitFor()
+
+    // 认不出的原因仍然保留原来的兜底话术，并且恢复成功后错误消失、可以保存
+    await page.evaluate(() => window.keyGroupsHarness.failNext('   '))
+    await page.getByTestId('account-key-groups-refresh').click()
+    await dialog.getByText('分组读取失败，请刷新后重试。', { exact: true }).waitFor()
+    await page.getByTestId('account-key-groups-refresh').click()
+    await page.waitForFunction(() => !document.querySelector('[data-testid="account-key-groups-refresh"]')?.disabled)
+    assert.equal(await save.isDisabled(), false)
   } finally { await page.close() }
 })
 
@@ -576,6 +617,43 @@ test('subscription payment terminal events clear the pending state and explain t
     await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-SUBSCRIPTION' }))
     await page.getByText('支付窗口已关闭', { exact: true }).waitFor()
     assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
+  } finally {
+    await page.close()
+  }
+})
+
+test('the payment terminal listener survives re-renders and still resolves a pending order', async () => {
+  const page = await fixture('page=account&subscriptionExternal=1')
+  try {
+    await page.getByRole('tab', { name: '充值与订阅', exact: true }).click()
+    await page.getByRole('button', { name: '购买', exact: true }).waitFor()
+    const subscribed = await page.evaluate(() => window.paymentTerminalSubscriptions())
+    assert.equal(subscribed.live, 1)
+
+    // 余额 store 每 30 秒 publish 两次，整棵树跟着重渲染。回调若随渲染变身份，
+    // 订阅就跟着退订重订，重订之间到达的那条回调没有人接。
+    await page.evaluate(async () => {
+      for (let round = 0; round < 6; round++) {
+        window.rerenderFixture()
+        await new Promise((resolve) => requestAnimationFrame(resolve))
+      }
+    })
+    const afterRerenders = await page.evaluate(() => window.paymentTerminalSubscriptions())
+    assert.equal(afterRerenders.added, subscribed.added)
+    assert.equal(afterRerenders.live, 1)
+
+    // 重渲染之后到达的回调仍然落到同一个待支付订单上
+    await page.getByRole('button', { name: '购买', exact: true }).click()
+    await page.getByRole('button', { name: '打开支付窗口', exact: true }).click()
+    await page.getByText('订阅订单 XM-VISUAL-SUBSCRIPTION', { exact: false }).waitFor()
+    await page.evaluate(async () => {
+      window.rerenderFixture()
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+    await page.evaluate(() => window.emitPaymentWindowTerminal({ status: 'closed', tradeNo: 'XM-VISUAL-SUBSCRIPTION' }))
+    await page.getByText('支付窗口已关闭', { exact: true }).waitFor()
+    assert.equal(await page.getByText('等待支付结果', { exact: true }).count(), 0)
+    assert.equal((await page.evaluate(() => window.paymentTerminalSubscriptions())).live, 1)
   } finally {
     await page.close()
   }

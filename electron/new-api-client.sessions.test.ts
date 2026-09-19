@@ -346,10 +346,14 @@ describe('session ownership of asynchronous responses', () => {
     const h = harness()
     await h.login(1)
     const listing = deferred<Response>()
-    h.setHandler((pathname) => pathname === '/api/token/' ? listing.promise : undefined)
-    const rejected = expect(h.client.findExistingCliKey('fixture-')).rejects.toBeInstanceOf(NewApiSessionChangedError)
+    h.setHandler((pathname) => {
+      if (pathname === '/api/user/self/groups') return response({ fixture: { desc: 'fixture group' } })
+      if (pathname === '/api/token/') return listing.promise
+      return undefined
+    })
+    const rejected = expect(h.client.provisionCliKey({ group: 'fixture' })).rejects.toBeInstanceOf(NewApiSessionChangedError)
     await h.client.switchSession(target(2))
-    listing.resolve(response([{ id: 1, name: 'fixture-key' }]))
+    listing.resolve(response([{ id: 1, name: 'fixture-key', group: 'fixture', status: 1, unlimited_quota: true, expired_time: -1 }]))
     await rejected
     expect(h.fetchImpl.mock.calls.some(([url]) => new URL(url).pathname.endsWith('/key'))).toBe(false)
   })

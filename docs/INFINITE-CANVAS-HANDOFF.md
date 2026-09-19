@@ -842,8 +842,7 @@ UI 已经统一为一个创作库，但底层仍是四套数据源：节点注�
 npm run canvas:prepare
 npm run typecheck
 npm run test:canvas
-npm run test:node
-npm run test:windows
+npm test
 npm run compile
 npm run audit:production
 npm run test:canvas:visual
