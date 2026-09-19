@@ -204,14 +204,9 @@ export class PlatformSystemService {
   setPrivacyPreference(kind: PlatformPrivacyPreference, enabled: boolean) {
     return this.serial(async () => {
       const current = this.dependencies.store.read()
-      await this.dependencies.store.update({
-        privacy: {
-          crashReports: false,
-          anonymousUsage: false,
-          ...current.privacy,
-          [kind]: enabled,
-        },
-      })
+      const privacy = { anonymousUsage: false, ...current.privacy }
+      privacy[kind] = enabled
+      await this.dependencies.store.update({ privacy })
       this.emit()
       return this.getState()
     })

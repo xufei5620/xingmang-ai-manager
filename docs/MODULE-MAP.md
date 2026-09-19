@@ -70,6 +70,7 @@
 **更新、诊断、工具库**
 - `updater.ts` (484) / `update-signature.ts` (238)
 - `diagnostics.ts` (874) / `runtime-log.ts` (352) / `models.ts`
+- `crash-report.ts` / `crash-reporter.ts` — 崩溃自动上报。前者全是纯函数（DSN 校验、脱敏、Sentry 事件与 envelope 构造），后者负责发送（按会话去重限量、超时、重定向拒绝）。没有用 `@sentry/electron`，原因见 `changes/unreleased/sentry.md`；开关是 `AppSettings.crashReporting`，缺省开启
 - `catalog.ts`（provider 单一定义源）/ `versions.ts` / `installation-queue.ts` / `path-identity.ts`（跨平台路径身份比对）
 - `safe-local-data.ts` / `bounded-file.ts` / `bounded-directory.ts` / `bounded-response.ts`
 

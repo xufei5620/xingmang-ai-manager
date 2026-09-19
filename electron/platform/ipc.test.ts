@@ -224,7 +224,7 @@ describe('platform IPC audit log', () => {
     callbacks.get(platformChannels.setStartup)!(h.event, true)
     await callbacks.get(platformChannels.setPrivacyPreference)!(
       h.event,
-      'crashReports',
+      'anonymousUsage',
       false,
     )
     expect(sink.entries.map((entry) => [entry.level, entry.event])).toEqual([
@@ -237,7 +237,7 @@ describe('platform IPC audit log', () => {
     expect(sink.entries[1]!.detail.enabled).toBe(true)
     expect(typeof sink.entries[1]!.detail.durationMs).toBe('number')
     expect(sink.entries[2]!.detail).toMatchObject({
-      kind: 'crashReports',
+      kind: 'anonymousUsage',
       enabled: false,
     })
   })

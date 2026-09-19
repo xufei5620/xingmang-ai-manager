@@ -11,75 +11,82 @@ const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const pageErrors = createPageErrorCollector()
 let server
 let browser
-let baseUrl
+let page
+let row
 
 before(async () => {
   server = await createServer({ configFile: path.join(projectRoot, 'vite.config.ts'), root: projectRoot, logLevel: 'error', server: { host: '127.0.0.1', port: 0, strictPort: false } })
   await server.listen()
-  baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
+  const baseUrl = `http://127.0.0.1:${server.httpServer.address().port}`
   // Hosted CI installs the exact browser revision Playwright expects, but
   // ad-hoc containers (cloud agent sessions) often ship a different one and
   // fail the launch with "Executable doesn't exist". Honouring an explicit
   // executable keeps `npm test` runnable there; CI leaves the variable unset
   // and keeps using the managed download.
   browser = await chromium.launch({ headless: true, executablePath: process.env.XINGMANG_E2E_CHROMIUM || undefined })
+  // 一个 page 走完整个文件，不按用例开。browser.newPage() 每次都新建一个
+  // BrowserContext，HTTP 缓存是空的，整张模块图要从 Vite dev server 重新取一遍；
+  // Windows runner 上好几个 e2e 文件并行跑时，第二次冷开连 90 秒都不够（quality
+  // run 35423428733 实测：同一文件第一个用例 4.1 秒通过，第二个卡满 90 秒超时）。
+  page = pageErrors.watch(await browser.newPage())
+  await page.goto(`${baseUrl}/e2e/maintenance-layout-fixture.html`)
+  row = page.locator('.maintenance-cli-section .maintenance-row').first()
+  await row.waitFor({ timeout: fixtureReadyTimeoutMs })
 })
 after(async () => { await browser?.close(); await server?.close(); pageErrors.assertNone() })
 
 // 量的是 MaintenancePage 真正渲染出来的那一行,而不是抄进测试的一份 markup 副本:
 // 抄下来的副本在组件结构改掉之后照样能让这些断言全绿。
+//
+// 复用同一个 page 是安全的：夹具纯展示，没有任何跟视口走的一次性副作用，
+// 而每次量之前视口宽度与夹具宽度都会被显式重设，不会把上一个用例的状态带进来。
 async function inspectLayout({ viewportWidth, fixtureWidth }) {
-  const page = pageErrors.watch(await browser.newPage({ viewport: { width: viewportWidth, height: 500 } }))
-  try {
-    await page.goto(`${baseUrl}/e2e/maintenance-layout-fixture.html`)
-    const row = page.locator('.maintenance-cli-section .maintenance-row').first()
-    await row.waitFor({ timeout: fixtureReadyTimeoutMs })
-    await page.locator('.maintenance-cli-section').evaluate((section, width) => {
-      section.style.width = `${width}px`
-      section.style.flex = '0 0 auto'
-    }, fixtureWidth)
+  // 窄屏布局由 styles.css 的 @media (max-width: 800px) 决定，所以这里改的是视口；
+  // 夹具宽度是另一个变量，两者都要设。
+  await page.setViewportSize({ width: viewportWidth, height: 500 })
+  await page.locator('.maintenance-cli-section').evaluate((section, width) => {
+    section.style.width = `${width}px`
+    section.style.flex = '0 0 auto'
+  }, fixtureWidth)
 
-    return await row.evaluate((element) => {
-      const copy = element.querySelector('.operation-row-copy')
-      const actions = element.querySelector('.maintenance-row-actions')
-      const select = element.querySelector('.maintenance-select')
-      const statusIcon = element.querySelector('.operation-status-icon')
-      const buttons = actions?.querySelectorAll('button')
-      if (!copy || !actions || !select || !statusIcon || !buttons || buttons.length !== 2) {
-        throw new Error('Maintenance row no longer has the select, status icon, copy and two action buttons this layout is about')
-      }
+  return await row.evaluate((element) => {
+    const copy = element.querySelector('.operation-row-copy')
+    const actions = element.querySelector('.maintenance-row-actions')
+    const select = element.querySelector('.maintenance-select')
+    const statusIcon = element.querySelector('.operation-status-icon')
+    const buttons = actions?.querySelectorAll('button')
+    if (!copy || !actions || !select || !statusIcon || !buttons || buttons.length !== 2) {
+      throw new Error('Maintenance row no longer has the select, status icon, copy and two action buttons this layout is about')
+    }
 
-      const rect = (target) => {
-        const bounds = target.getBoundingClientRect()
-        return {
-          left: bounds.left,
-          right: bounds.right,
-          top: bounds.top,
-          bottom: bounds.bottom,
-          width: bounds.width,
-          height: bounds.height,
-        }
-      }
-      const rowStyle = getComputedStyle(element)
-      const actionsStyle = getComputedStyle(actions)
-
+    const rect = (target) => {
+      const bounds = target.getBoundingClientRect()
       return {
-        row: rect(element),
-        copy: rect(copy),
-        actions: rect(actions),
-        select: rect(select),
-        statusIcon: rect(statusIcon),
-        firstButton: rect(buttons[0]),
-        secondButton: rect(buttons[1]),
-        gridTemplateColumns: rowStyle.gridTemplateColumns,
-        justifyContent: actionsStyle.justifyContent,
-        flexWrap: actionsStyle.flexWrap,
-        statusIconDisplay: getComputedStyle(statusIcon).display,
+        left: bounds.left,
+        right: bounds.right,
+        top: bounds.top,
+        bottom: bounds.bottom,
+        width: bounds.width,
+        height: bounds.height,
       }
-    })
-  } finally {
-    await page.close()
-  }
+    }
+    const rowStyle = getComputedStyle(element)
+    const actionsStyle = getComputedStyle(actions)
+
+    return {
+      row: rect(element),
+      copy: rect(copy),
+      actions: rect(actions),
+      select: rect(select),
+      statusIcon: rect(statusIcon),
+      firstButton: rect(buttons[0]),
+      secondButton: rect(buttons[1]),
+      gridTemplateColumns: rowStyle.gridTemplateColumns,
+      justifyContent: actionsStyle.justifyContent,
+      flexWrap: actionsStyle.flexWrap,
+      statusIconDisplay: getComputedStyle(statusIcon).display,
+    }
+  })
 }
 
 function approximatelyEqual(actual, expected, tolerance = 1) {

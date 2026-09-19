@@ -75,6 +75,7 @@ import { useSharedAccountBalance } from './features/app/balance-context'
 import { balanceStatusText } from './features/shell/balance-status'
 import { UsageDetails } from './features/account/UsageDetails'
 import { ToolKeyLimits } from './features/account/ToolKeyLimits'
+import { ToolUsage } from './features/account/ToolUsage'
 import {
   getSourceMarkerStorage,
   writeManualSourceMarker,
@@ -1506,6 +1507,7 @@ function AccountDashboard({
           </strong>
         </Card>
       </div>
+      <ToolUsage api={api} balance={balance} siteId={accountSiteId(session)} />
       {supportsTrends && resource.data?.coverage !== 'all-time-summary' ? <>
       <Card title="用量趋势">
         <div className="v2-business-chart" aria-label="用量趋势">

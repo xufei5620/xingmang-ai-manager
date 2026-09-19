@@ -39,13 +39,15 @@ import { ChatKeyStore } from './chat-key-store'
 import { ManagedCliKeyStore } from './managed-cli-key-store'
 import { AccountSessionStore } from './account-session-store'
 import { SavedAccountsStore } from './saved-accounts'
-import { AppSettingsStore, type AppTheme } from './app-settings'
+import { AppSettingsStore, readAppSettings, type AppTheme } from './app-settings'
 import { calculateUiZoom, resolveWindowPlacement } from './window-preferences'
 import { createWindowLifecycle } from './window-lifecycle'
 import { createApplicationTray, type ApplicationTrayController } from './application-tray'
 import { createExternalDeepLinkInbox } from './external-deep-links'
 import { createDesktopNotificationController } from './desktop-notifications'
 import { ConfigBackupStore } from './backups'
+import { crashReportDsn, crashReportSelfTestEnvironmentKey, shouldReportCrashes } from './crash-report'
+import { createCrashReporter } from './crash-reporter'
 import { providerIds, type ProviderId } from './catalog'
 import { canvasProtocolScheme, canvasSecurityResponseHeaders } from './canvas-protocol'
 import { createCanvasWindowController } from './canvas-window'
@@ -380,6 +382,17 @@ function createWindow(
       reason: details.reason,
       exitCode: details.exitCode,
     })
+    // A dead renderer leaves no JavaScript behind to report itself, so the
+    // main process is the only place this can be observed at all. An orderly
+    // teardown reaches here too on some shutdown paths and is not a crash.
+    if (details.reason === 'clean-exit') return
+    crashReporter.report({
+      mechanism: 'render-process-gone',
+      source: 'renderer',
+      level: 'fatal',
+      error: new Error(`渲染进程异常退出：${details.reason}`),
+      context: `exitCode=${details.exitCode}`,
+    })
   })
   window.webContents.on('did-finish-load', () => {
     runtimeLog.log('info', 'renderer', 'page.loaded', '渲染页面加载完成')
@@ -452,6 +465,60 @@ function recordFatalStartupFailure(phase: string, error: unknown): string | null
   return recordStartupFailure(error, { phase, appVersion: version, packaged }, startupLogLocation())
 }
 
+// Set once the runtime log exists. A send failure before that (offline at
+// launch) is simply dropped: the reporter must never become a second source
+// of startup errors.
+let reportCrashSendFailure: ((error: unknown) => void) | null = null
+
+/** `app` metadata is a nicety here; never let reading it become the crash. */
+function appValue<T>(read: () => T, fallback: T): T {
+  try {
+    return read()
+  } catch {
+    return fallback
+  }
+}
+
+/**
+ * Composed at module scope, not inside whenReady: a crash during startup is
+ * exactly the class of bug a user cannot report themselves, so the reporter
+ * has to exist before the first line of startup work runs. Everything that
+ * can leave the machine is built and redacted by crash-report.ts; this only
+ * supplies the runtime facts and answers "is the switch on".
+ */
+const crashReporter = createCrashReporter({
+  dsn: crashReportDsn,
+  clientName: `xingmang-ai-manager/${appValue(() => app.getVersion(), '0.0.0')}`,
+  runtime: {
+    release: `xingmang-ai-manager@${appValue(() => app.getVersion(), '0.0.0')}`,
+    environment: appValue(() => app.isPackaged, false) ? 'production' : 'development',
+    homeDirectory: os.homedir(),
+    appVersion: appValue(() => app.getVersion(), '0.0.0'),
+    electronVersion: process.versions.electron ?? 'unknown',
+    nodeVersion: process.versions.node,
+    osPlatform: process.platform,
+    osRelease: os.release(),
+    arch: process.arch,
+  },
+  isEnabled: () => shouldReportCrashes({
+    packaged: appValue(() => app.isPackaged, false),
+    // Re-read per report so switching the preference off stops the very next
+    // send, with no refresh plumbing between the settings handler and here.
+    // The fallback is the opt-out, not the default: if the preference cannot
+    // be read at all, staying silent is the answer the user cannot object to.
+    crashReporting: appValue(
+      () => readAppSettings(path.join(app.getPath('userData'), 'settings.json')).crashReporting,
+      false,
+    ),
+    env: process.env,
+  }),
+  // net.fetch follows the session's proxy settings, which is what a user
+  // behind a corporate proxy needs -- but it only exists once the app is
+  // ready, and a startup crash happens before that.
+  fetchImpl: (url, init) => (app.isReady() ? net.fetch(url, init) : fetch(url, init)),
+  onSendFailure: (error) => { reportCrashSendFailure?.(error) },
+})
+
 // Flipped once RuntimeLogStore exists; from then on it owns the record and the
 // startup log must stay quiet, or ordinary runtime errors would accumulate in a
 // file whose whole purpose is "the app could not start".
@@ -468,6 +535,10 @@ export function markRuntimeLoggingActive(): void {
 // change what Node does with a rejection that currently ends the process. The
 // whenReady `.catch` below already covers the entire async startup chain.
 process.on('uncaughtExceptionMonitor', (error) => {
+  // Reported from the one listener that is registered for the whole process
+  // lifetime, so a crash before whenReady is covered by the same call as one
+  // after it -- and neither is reported twice.
+  crashReporter.report({ mechanism: 'uncaughtException', source: 'main', error, level: 'fatal' })
   if (runtimeLoggingActive) return
   recordFatalStartupFailure('uncaughtException', error)
 })
@@ -561,6 +632,19 @@ if (!hasSingleInstanceLock) {
     }
     const onUnhandledRejection = (reason: unknown) => {
       runtimeLog.exception('main', 'unhandled.rejection', reason)
+      crashReporter.report({ mechanism: 'unhandledRejection', source: 'main', error: reason })
+    }
+    reportCrashSendFailure = (error) => {
+      runtimeLog.exception('telemetry', 'crash-report.send.failed', error)
+    }
+    if (process.env[crashReportSelfTestEnvironmentKey] === '1') {
+      runtimeLog.log('warn', 'telemetry', 'crash-report.self-test', '崩溃上报自检已触发')
+      crashReporter.report({
+        mechanism: 'self-test',
+        source: 'main',
+        error: new Error('崩溃上报自检'),
+        context: '由 XINGMANG_CRASH_REPORT_TEST=1 触发',
+      })
     }
     process.on('uncaughtExceptionMonitor', onUncaughtException)
     process.on('unhandledRejection', onUnhandledRejection)
@@ -1383,6 +1467,14 @@ if (!hasSingleInstanceLock) {
       },
       getWindowCapabilities: () => ({ tray: applicationTray?.available ?? false, notifications: desktopNotifications.getCapability().supported }),
       onSettingsChanged: () => { desktopNotifications.refresh() },
+      onRendererError: (error) => {
+        crashReporter.report({
+          mechanism: 'renderer-error',
+          source: 'renderer',
+          error: Object.assign(new Error(error.message), { stack: error.stack }),
+          context: error.context,
+        })
+      },
       takeExternalDeepLink: (sender) => managedMainWindow?.webContents === sender ? deepLinkInbox.take() : null,
       onSystemSnapshot: (snapshot) => { latestTraySystem = snapshot; applicationTray?.updateSnapshot() },
       onAccountBalance: (balance) => { latestTrayBalance = balance; applicationTray?.updateSnapshot() },
