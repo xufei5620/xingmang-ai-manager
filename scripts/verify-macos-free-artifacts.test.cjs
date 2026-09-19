@@ -7,6 +7,8 @@ const test = require('node:test')
 const { gzipSync } = require('node:zlib')
 const asar = require('@electron/asar')
 const YAML = require('yaml')
+const { FuseState } = require('@electron/fuses/dist/constants')
+const { EXPECTED_FUSES, describeFuseMismatches, readFuseWires } = require('./electron-fuse-hardening.cjs')
 const {
   ALLOWED_ENTITLEMENT_KEYS,
   expectedFreeArtifactNames,
@@ -14,11 +16,14 @@ const {
   assertExactArchitecture,
   assertExactCodesignIdentifier,
   assertHardenedRuntime,
+  assertZipSymlinkEntriesAreLeaves,
   parseHdiutilMountPoints,
   formatSha256Manifest,
   hashArtifactFiles,
   parseDesignatedRequirement,
   parseLatestMacMetadata,
+  parseZipEntryListing,
+  resolveFrameworkFuseBinary,
   resolveSafeOutputDirectory,
   validateZipEntryPaths,
   verifyPackagedUpdateConfig,
@@ -26,6 +31,59 @@ const {
   verifyMacosFreeArtifacts,
   verifyZipApplication,
 } = require('./verify-macos-free-artifacts.cjs')
+
+// @electron/fuses reads a real wire out of the binary, so the fixture carries a
+// real one: the sentinel, the wire version, its length, then one byte per fuse.
+// That keeps the packaged check under test instead of a stubbed reader.
+const FUSE_SENTINEL = 'dL7pKGdnNz796PbbjQWNKmHXBZaB9tsX'
+
+function hardenedFuseStates() {
+  return [...EXPECTED_FUSES.values()]
+}
+
+function fuseWireBinary(states = hardenedFuseStates()) {
+  return Buffer.concat([
+    Buffer.from('mach-o padding before the wire'),
+    Buffer.from(FUSE_SENTINEL, 'utf8'),
+    Buffer.from([1, states.length, ...states]),
+    Buffer.from('padding after the wire'),
+  ])
+}
+
+// Mirrors `unzip -Z` output closely enough that the verifier's own parser is
+// what the assertions exercise.
+function zipinfoListing(entries) {
+  return [
+    'Archive:  /tmp/fixture.zip',
+    `Zip file size: 4096 bytes, number of entries: ${entries.length}`,
+    ...entries.map(({ name, symbolicLink = false, directory = name.endsWith('/') }) => {
+      const permissions = symbolicLink ? 'lrwxrwxrwx' : (directory ? 'drwxr-xr-x' : '-rw-r--r--')
+      return `${permissions}  3.0 unx       21 b${symbolicLink ? 'l' : 'x'} stor 26-Aug-03 00:00 ${name}`
+    }),
+    `${entries.length} files, 21 bytes uncompressed, 21 bytes compressed:  0.0%`,
+    '',
+  ].join('\n')
+}
+
+// fs.cpSync rewrites a symlink to an absolute path into the source tree, which
+// ditto never does. Replicating link targets verbatim keeps the extracted
+// fixture shaped like a real extraction.
+function copyTreePreservingLinks(source, destination) {
+  const stat = fs.lstatSync(source)
+  if (stat.isSymbolicLink()) {
+    fs.symlinkSync(fs.readlinkSync(source), destination)
+    return
+  }
+  if (stat.isDirectory()) {
+    fs.mkdirSync(destination, { recursive: true })
+    for (const entry of fs.readdirSync(source)) {
+      copyTreePreservingLinks(path.join(source, entry), path.join(destination, entry))
+    }
+    return
+  }
+  fs.copyFileSync(source, destination)
+  fs.chmodSync(destination, stat.mode & 0o777)
+}
 
 function temporaryDirectory(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'xingmang-macos-free-test-'))
@@ -112,6 +170,8 @@ async function createInspectableZipFixture(t, {
   packageVersion = '1.2.3',
   xingmangLocalBuild = false,
   helperName = 'Fixture Helper.app',
+  fuseStates = hardenedFuseStates(),
+  frameworkVersions = ['A'],
 } = {}) {
   const root = temporaryDirectory(t)
   const sourceApp = path.join(root, 'Fixture.app')
@@ -134,6 +194,20 @@ async function createInspectableZipFixture(t, {
     fs.mkdirSync(path.join(contentsDirectory, 'Frameworks', helperName, 'Contents', 'MacOS'), { recursive: true })
   } else {
     fs.mkdirSync(path.join(contentsDirectory, 'Frameworks'), { recursive: true })
+  }
+  const frameworkDirectory = path.join(contentsDirectory, 'Frameworks', 'Electron Framework.framework')
+  for (const version of frameworkVersions) {
+    fs.mkdirSync(path.join(frameworkDirectory, 'Versions', version), { recursive: true })
+    fs.writeFileSync(path.join(frameworkDirectory, 'Versions', version, 'Electron Framework'), fuseWireBinary(fuseStates))
+  }
+  if (frameworkVersions.length > 0) {
+    // Real bundles reach the framework through this link; the verifier must
+    // resolve the version directory itself rather than follow it.
+    fs.symlinkSync(frameworkVersions[0], path.join(frameworkDirectory, 'Versions', 'Current'))
+    fs.symlinkSync(
+      path.join('Versions', 'Current', 'Electron Framework'),
+      path.join(frameworkDirectory, 'Electron Framework'),
+    )
   }
   fs.writeFileSync(path.join(resourcesDirectory, 'app-update.yml'), [
     'provider: generic',
@@ -186,9 +260,11 @@ function inspectableZipCommandRunner(sourceApp, certificate, infoPlist, {
 } = {}) {
   const certificateSha1 = crypto.createHash('sha1').update(certificate).digest('hex')
   return async (command, args) => {
-    if (command === '/usr/bin/unzip') return { stdout: 'Fixture.app/\nFixture.app/Contents/\n' }
+    if (command === '/usr/bin/unzip') {
+      return { stdout: zipinfoListing([{ name: 'Fixture.app/' }, { name: 'Fixture.app/Contents/' }]) }
+    }
     if (command === '/usr/bin/ditto') {
-      fs.cpSync(sourceApp, path.join(args.at(-1), 'Fixture.app'), { recursive: true })
+      copyTreePreservingLinks(sourceApp, path.join(args.at(-1), 'Fixture.app'))
       return { stdout: '' }
     }
     if (command === '/usr/bin/plutil') {
@@ -500,11 +576,59 @@ test('rejects universal architectures and unsafe ZIP entry paths before extracti
   fs.writeFileSync(zipPath, 'fixture')
   await assert.rejects(() => verifyZipApplication(zipPath, 'arm64', {
     expectedCertificateSha256: 'ab'.repeat(32),
-    commandRunner: async (command) => {
-      if (command === '/usr/bin/unzip') return { stdout: '../outside\n' }
+    commandRunner: async (command, args) => {
+      // The listing has to carry permission bits, so the entry type is known
+      // before ditto runs rather than after (P-21).
+      if (command === '/usr/bin/unzip' && args[0] === '-Z') {
+        return { stdout: zipinfoListing([{ name: '../outside' }]) }
+      }
       throw new Error(`unexpected command: ${command}`)
     },
   }), /ZIP.*路径/)
+})
+
+test('reads ZIP entry types before extraction and fails closed on an unreadable listing', () => {
+  assert.deepEqual(parseZipEntryListing(zipinfoListing([
+    { name: 'XingMang.app/' },
+    { name: 'XingMang.app/Contents/Frameworks/Electron Framework.framework/Versions/Current', symbolicLink: true },
+  ])), [
+    { name: 'XingMang.app/', isSymbolicLink: false },
+    { name: 'XingMang.app/Contents/Frameworks/Electron Framework.framework/Versions/Current', isSymbolicLink: true },
+  ])
+  assert.throws(() => parseZipEntryListing('XingMang.app/\nXingMang.app/Contents/\n'), /条目总数/)
+  assert.throws(() => parseZipEntryListing([
+    'Zip file size: 4096 bytes, number of entries: 1',
+    'XingMang.app/',
+  ].join('\n')), /无法解析 ZIP 条目清单行/)
+  // A listing that under-reports its own entries would let an unparsed entry
+  // slip past the symlink check, so the counts have to agree.
+  assert.throws(() => parseZipEntryListing([
+    'Zip file size: 4096 bytes, number of entries: 2',
+    '-rw-r--r--  3.0 unx       21 bx stor 26-Aug-03 00:00 XingMang.app/Contents/Info.plist',
+  ].join('\n')), /条目数不一致/)
+})
+
+test('rejects a ZIP whose symbolic-link entry stands in for a directory of later entries', () => {
+  const bundleLinks = parseZipEntryListing(zipinfoListing([
+    { name: 'XingMang.app/' },
+    { name: 'XingMang.app/Contents/Frameworks/Electron Framework.framework/Versions/A/' },
+    { name: 'XingMang.app/Contents/Frameworks/Electron Framework.framework/Versions/Current', symbolicLink: true },
+    { name: 'XingMang.app/Contents/Frameworks/Electron Framework.framework/Electron Framework', symbolicLink: true },
+  ]))
+  assert.equal(assertZipSymlinkEntriesAreLeaves(bundleLinks).length, 4)
+  // The escape ditto would otherwise perform: create the link, then write the
+  // next entry straight through it.
+  const escape = parseZipEntryListing(zipinfoListing([
+    { name: 'XingMang.app/' },
+    { name: 'XingMang.app/Contents', symbolicLink: true },
+    { name: 'XingMang.app/Contents/Info.plist' },
+  ]))
+  assert.throws(() => assertZipSymlinkEntriesAreLeaves(escape), /符号链接充当目录/)
+  const trailingSlash = parseZipEntryListing(zipinfoListing([
+    { name: 'XingMang.app/Contents/', symbolicLink: true },
+    { name: 'XingMang.app/Contents/Info.plist' },
+  ]))
+  assert.throws(() => assertZipSymlinkEntriesAreLeaves(trailingSlash), /符号链接充当目录/)
 })
 
 test('ZIP verifier passes its explicit environment to the default command boundary', async (t) => {
@@ -523,11 +647,12 @@ test('ZIP verifier passes its explicit environment to the default command bounda
     env,
     runFile: async (command, args, options) => {
       calls.push({ command, args, options })
-      return { stdout: '../outside\n', stderr: '' }
+      return { stdout: zipinfoListing([{ name: '../outside' }]), stderr: '' }
     },
   }), /ZIP.*路径/)
   assert.equal(calls.length, 1)
   assert.equal(calls[0].command, '/usr/bin/unzip')
+  assert.deepEqual(calls[0].args.slice(0, 1), ['-Z'])
   assert.equal(calls[0].options.env, env)
   assert.equal(calls[0].options.shell, false)
 })
@@ -843,7 +968,7 @@ function inspectableDmgCommandRunner(sourceApp, certificate, infoPlist, options 
       for (const volume of options.volumeNames || ['dmg.Ab12Cd']) {
         const mountPoint = path.join(mountRoot, volume)
         fs.mkdirSync(mountPoint)
-        fs.cpSync(sourceApp, path.join(mountPoint, 'Fixture.app'), { recursive: true })
+        copyTreePreservingLinks(sourceApp, path.join(mountPoint, 'Fixture.app'))
         // electron-builder ships this drag-install target next to the .app.
         fs.symlinkSync('/Applications', path.join(mountPoint, 'Applications'))
         lines.push(`/dev/disk9s1\tApple_HFS\t${mountPoint}`)
@@ -959,6 +1084,115 @@ test('reports the verified entitlements of the application and of every helper',
     label: 'helper Fixture Helper.app',
     entitlementKeys: [...ALLOWED_ENTITLEMENT_KEYS],
   }])
+})
+
+test('asserts the packaged Electron fuses of the macOS bundle, not only of the Windows build', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const result = await verifyZipApplication(fixture.zipPath, 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
+  })
+  assert.equal(result.fuseCount, EXPECTED_FUSES.size)
+})
+
+for (const [name, fuseStates, expected] of [
+  // The two fuses a default-template fallback would hand back: the packaged
+  // binary becomes a general-purpose Node runtime and a debugger can attach.
+  ['RunAsNode is back on', [FuseState.ENABLE, ...hardenedFuseStates().slice(1)], /RunAsNode/],
+  ['node CLI inspect arguments are back on', [
+    ...hardenedFuseStates().slice(0, 3),
+    FuseState.ENABLE,
+    ...hardenedFuseStates().slice(4),
+  ], /EnableNodeCliInspectArguments/],
+  ['ASAR integrity validation was dropped', [
+    ...hardenedFuseStates().slice(0, 4),
+    FuseState.DISABLE,
+    ...hardenedFuseStates().slice(5),
+  ], /EnableEmbeddedAsarIntegrityValidation/],
+  ['the wire is shorter than the fuses the release depends on', hardenedFuseStates().slice(0, 4), /短于/],
+]) {
+  test(`rejects a signed free ZIP whose packaged application ships with ${name}`, async (t) => {
+    const fixture = await createInspectableZipFixture(t, { fuseStates })
+    const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+    await assert.rejects(() => verifyZipApplication(fixture.zipPath, 'arm64', {
+      expectedCertificateSha256: certificateSha256,
+      expectedVersion: '1.2.3',
+      commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
+    }), expected)
+  })
+}
+
+test('rejects a packaged application whose Electron Framework carries no readable fuse wire', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const frameworkBinary = resolveFrameworkFuseBinary(fixture.sourceApp)
+  fs.writeFileSync(frameworkBinary, 'no sentinel here')
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  await assert.rejects(() => verifyZipApplication(fixture.zipPath, 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
+  }), /未找到 Electron fuse 线缆/)
+})
+
+test('reads the framework fuse wire through the real version directory, never through Versions/Current', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const frameworkBinary = resolveFrameworkFuseBinary(fixture.sourceApp)
+  assert.equal(path.relative(fixture.sourceApp, frameworkBinary), path.join(
+    'Contents', 'Frameworks', 'Electron Framework.framework', 'Versions', 'A', 'Electron Framework',
+  ))
+  // A bundle with no single real version directory leaves the fuse state
+  // undecidable, which must fail rather than quietly skip the check.
+  const ambiguous = await createInspectableZipFixture(t, { frameworkVersions: ['A', 'B'] })
+  assert.throws(() => resolveFrameworkFuseBinary(ambiguous.sourceApp), /只包含一个非链接版本目录/)
+})
+
+test('checks every fuse wire in a binary, so a second slice cannot carry different fuses', () => {
+  const hardened = fuseWireBinary()
+  const defaulted = fuseWireBinary([FuseState.ENABLE, ...hardenedFuseStates().slice(1)])
+  assert.equal(readFuseWires(hardened).length, 1)
+  assert.deepEqual(readFuseWires(Buffer.concat([hardened, defaulted])).map((wire) => wire.version), ['1', '1'])
+  assert.deepEqual(describeFuseMismatches(readFuseWires(hardened)[0].states), [])
+  assert.equal(describeFuseMismatches(readFuseWires(defaulted)[0].states).length, 1)
+})
+
+test('inspects an already-private ZIP in place instead of copying it a second time', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const inner = inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist)
+  const stagedBeforeExtraction = []
+  const runner = async (command, args) => {
+    // Read the extraction directory before ditto fills it: a second private
+    // copy of the artifact would already be sitting here.
+    if (command === '/usr/bin/ditto') stagedBeforeExtraction.push(fs.readdirSync(args.at(-1)))
+    return inner(command, args)
+  }
+  const result = await verifyZipApplication(fixture.zipPath, 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner: runner,
+    privateSource: true,
+  })
+  assert.equal(result.architecture, 'arm64')
+  // The caller's private copy is what gets inspected, so the several-hundred
+  // megabyte artifact is never duplicated into the extraction directory (P-35).
+  assert.deepEqual(stagedBeforeExtraction, [[]])
+})
+
+test('treats an injected command runner that resolves with a non-zero exit code as a failure', async (t) => {
+  const fixture = await createInspectableZipFixture(t)
+  const certificateSha256 = crypto.createHash('sha256').update(fixture.certificate).digest('hex')
+  const inner = inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist)
+  const runner = async (command, args) => {
+    if (command === '/usr/bin/codesign' && args[0] === '--verify') return { stdout: '', code: 1 }
+    return inner(command, args)
+  }
+  await assert.rejects(() => verifyZipApplication(fixture.zipPath, 'arm64', {
+    expectedCertificateSha256: certificateSha256,
+    expectedVersion: '1.2.3',
+    commandRunner: runner,
+  }), /codesign 完整性验证 退出码为 1/)
 })
 
 test('keeps only hdiutil mount points that live under the random mount root', (t) => {
