@@ -72,6 +72,48 @@ test('signing preflight passes its explicit environment to every default securit
   assert.equal(verifyCall.args.includes('-check_ssig'), false)
 })
 
+test('signing preflight drops only the trust filter when no Trust Settings can exist', () => {
+  const queries = []
+  const capture = (overrides) => healthyOptions({
+    runSecurity: (args) => {
+      queries.push(args)
+      return healthyOptions().runSecurity(args)
+    },
+    ...overrides,
+  })
+
+  verifyFreeMacSigningIdentity(capture())
+  verifyFreeMacSigningIdentity(capture({ trustedIdentitiesOnly: true }))
+  verifyFreeMacSigningIdentity(capture({ trustedIdentitiesOnly: false }))
+
+  const identityQueries = queries.filter((args) => args[0] === 'find-identity')
+  assert.deepEqual(identityQueries, [
+    ['find-identity', '-v', '-p', 'codesigning'],
+    ['find-identity', '-v', '-p', 'codesigning'],
+    ['find-identity', '-p', 'codesigning'],
+  ])
+  // Nothing else may relax with it: the certificate assertions are the whole
+  // point of running the real preflight in CI (P-20).
+  assert.throws(() => verifyFreeMacSigningIdentity(capture({
+    trustedIdentitiesOnly: false,
+    runOpenSsl: (args) => args.includes('-subject')
+      ? 'subject=CN=one\nissuer=CN=another\n'
+      : healthyOptions().runOpenSsl(args),
+  })), /自签/)
+  assert.throws(() => verifyFreeMacSigningIdentity(capture({
+    trustedIdentitiesOnly: false,
+    runOpenSsl: (args) => args.includes('-text')
+      ? 'X509v3 Extended Key Usage:\n    Code Signing\n'
+      : healthyOptions().runOpenSsl(args),
+  })), /codeSigning/)
+  assert.throws(() => verifyFreeMacSigningIdentity(capture({
+    trustedIdentitiesOnly: false,
+    runSecurity: (args) => args[0] === 'find-certificate'
+      ? healthyOptions().runSecurity(args)
+      : '  1) FFEEDDCCBBAA0099887766554433221100AABBCC "XingMang Free Update Identity"\n',
+  })), /私钥/)
+})
+
 test('signing preflight rejects a different certificate with the same CN', () => {
   assert.throws(() => verifyFreeMacSigningIdentity(healthyOptions({ expectedFingerprint: 'FF:EE:DD:CC:BB:AA:99:88:77:66:55:44:33:22:11:00:FF:EE:DD:CC:BB:AA:99:88:77:66:55:44:33:22:11:00' })), /指纹/)
 })

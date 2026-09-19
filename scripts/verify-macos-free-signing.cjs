@@ -88,6 +88,23 @@ function parseCodeSigningIdentities(output) {
   return entries
 }
 
+/**
+ * `find-identity -v` keeps only the identities whose certificate passes policy
+ * evaluation. On the release Mac this certificate passes it because its
+ * publisher marked it trusted for code signing by hand — step 1 of
+ * docs/MACOS_FREE_DISTRIBUTION.md — so there the filter is part of what is
+ * being asserted. The CI rehearsal builds the same certificate in a throwaway
+ * keychain and deliberately writes no Trust Settings, so there the filter would
+ * hide the very identity codesign is pinned to, and the preflight could only be
+ * stubbed out wholesale. Dropping it is the single difference between the two
+ * runs; every certificate assertion stays identical.
+ */
+function buildCodeSigningIdentityQuery(trustedIdentitiesOnly) {
+  return trustedIdentitiesOnly
+    ? ['find-identity', '-v', '-p', 'codesigning']
+    : ['find-identity', '-p', 'codesigning']
+}
+
 function verifyFreeMacSigningIdentity(options = {}) {
   const env = options.env || process.env
   const identityName = (options.identityName ?? env.CSC_NAME ?? '').trim()
@@ -143,7 +160,10 @@ function verifyFreeMacSigningIdentity(options = {}) {
     const sha1 = fingerprintFromOpenSsl(outputOf(runOpenSsl, [
       'x509', '-in', certificatePath, '-noout', '-fingerprint', '-sha1',
     ]), 'SHA1', '证书 SHA-1', 20)
-    const identities = outputOf(runSecurity, ['find-identity', '-v', '-p', 'codesigning'])
+    const identities = outputOf(
+      runSecurity,
+      buildCodeSigningIdentityQuery(options.trustedIdentitiesOnly !== false),
+    )
     const builderSelectable = parseCodeSigningIdentities(identities)
       .filter((identity) => identity.raw.includes(identityName))
     if (builderSelectable.length !== 1) {
