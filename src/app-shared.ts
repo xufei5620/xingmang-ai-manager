@@ -3,6 +3,7 @@ import type {
   CodexDesktopInstallProgress,
   DesktopAppStatus,
   PlatformCapabilities,
+  RelaySite,
   SystemSnapshot,
 } from './types'
 
@@ -306,5 +307,21 @@ export function initialSidebarCollapsed(): boolean {
     return window.localStorage.getItem(SIDEBAR_STORAGE_KEY) === 'true'
   } catch {
     return false
+  }
+}
+
+// RelaySite.accountBaseUrl is optional, so the non-null assertion this
+// replaced (App.tsx's account switcher) turned any site shipped without it
+// into an "Invalid URL" throw during render -- and the switcher renders from
+// App()'s own body, above every page-level ErrorBoundary. websiteUrl is
+// required and names the same origin for every site shipped today, which
+// makes it the honest fallback rather than a guess. The catch keeps a
+// malformed literal from taking the window down as well: the value is used
+// for display and for matching saved accounts, never for a request.
+export function relaySiteAccountsOrigin(site: RelaySite): string {
+  try {
+    return new URL(site.accountBaseUrl ?? site.websiteUrl).origin
+  } catch {
+    return site.websiteUrl
   }
 }

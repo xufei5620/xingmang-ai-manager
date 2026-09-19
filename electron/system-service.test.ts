@@ -449,12 +449,12 @@ describe('createSystemService', () => {
     // reverted the other's fields.
     const service = createService()
 
-    const first = service.updateStoredConfig({ version: 2, relaySiteId: 'sub2api' })
+    const first = service.updateStoredConfig({ version: 2, relaySiteId: 'solov-api' })
     const second = service.updateStoredConfig({ version: 2, sidebarMoreExpanded: true })
     await Promise.all([first, second])
 
     expect(service.readStoredConfig()).toMatchObject({
-      relaySiteId: 'sub2api',
+      relaySiteId: 'solov-api',
       sidebarMoreExpanded: true,
     })
   })

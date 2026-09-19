@@ -70,7 +70,12 @@ export function requireAccountRealm(value: unknown): AccountRealmId {
   return value
 }
 
-/** Legacy sub2api is intentionally an xm alias; never infer a realm from a password or key. */
+/**
+ * Legacy sub2api is intentionally an xm alias; never infer a realm from a
+ * password or key. The id no longer names a relaySites entry (D-10), but the
+ * mapping stays: a saved account or settings file written by an older build
+ * must land on xm-account, never fall through to the api realm.
+ */
 export function realmForExplicitSite(value: unknown): AccountRealmId {
   if (value === 'solov' || value === 'sub2api') return 'xm-account'
   if (value === 'solov-api') return 'api-account'
