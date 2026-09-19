@@ -96,6 +96,6 @@ macOS 包开启 hardened runtime，授予的 entitlements 由仓库内的 plist 
 
 ## 正式发布边界
 
-Developer ID 发布是独立的正式路线：需要显式设置 `XINGMANG_RELEASE=1`，提供有效的 Developer ID Application 签名凭据，并配置 Apple `notarytool` 所需的凭据。构建配置保留 hardened runtime，并只在该发布模式启用 notarization。它不能与免费自签模式混用，构建候选也不等于获得发布授权。
+macOS 对外分发只有免费自签这一条路线（`XINGMANG_MAC_FREE_RELEASE=1`）。`XINGMANG_RELEASE=1` 是 Windows 的 Authenticode 正式发布通道：唯一的发布工作流跑在 windows-latest，`scripts/run-release-build.cjs` 校验的也是 `win-unpacked`。本仓库没有任何 notarytool / stapler 实现，配置里 `mac.notarize` 因此固定为 `false`——留空会让 electron-builder 在环境里碰巧存在 `APPLE_*` 凭据时自作主张把包送去公证。拿 Developer ID 签名却不公证的包打包过程全绿，却会被客户机上的 Gatekeeper 直接拒绝，所以用 `XINGMANG_RELEASE=1` 构建 macOS 产物会在 `beforePack` 阶段直接抛错（审查总表 P-23，用例在 `scripts/macos-build-config.test.cjs`）。要走 Developer ID 正式路线，得先真的实现公证与 stapler 步骤。构建配置在所有签名模式下都保留 hardened runtime；构建候选也不等于获得发布授权。
 
-签名和 notarization 完成后，Electron Builder 会为 macOS 生成 `latest-mac.yml` 与对应 ZIP 更新载荷。更新服务器必须以静态文件形式提供这两个文件及其关联资源；发布、上传、替换任何更新元数据均不属于本项目的本地构建命令或本次适配范围。
+签名完成后，Electron Builder 会为 macOS 生成 `latest-mac.yml` 与对应 ZIP 更新载荷。更新服务器必须以静态文件形式提供这两个文件及其关联资源；发布、上传、替换任何更新元数据均不属于本项目的本地构建命令或本次适配范围。

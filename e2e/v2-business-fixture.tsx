@@ -36,6 +36,17 @@ const record = (name: string, args?: unknown) => {
   calls.push({ name, args })
   document.documentElement.dataset.calls = JSON.stringify(calls)
 }
+// Chromium rejects clipboard writes unless the context was granted the
+// permission, so record them instead: the copy actions are what the tests
+// assert on, not the host clipboard.
+Object.defineProperty(navigator, 'clipboard', {
+  configurable: true,
+  value: {
+    writeText: async (text: string) => {
+      record('copy-clipboard', text)
+    },
+  },
+})
 let keyGroups = [{ name: 'default', description: '默认分组', ratio: 1 }]
 let nextKeyGroupsRequest: 'ready' | 'deferred' | 'failed' = 'ready'
 let releaseKeyGroups: (() => void) | null = null
@@ -347,7 +358,9 @@ const apiMethods = {
               action: 'video',
               status: completed ? 'SUCCESS' : 'IN_PROGRESS',
               failReason: '',
-              resultUrl: '',
+              resultUrl: completed
+                ? 'https://cdn.upstream.example.test/fixture-task.mp4'
+                : '',
               submitAt: time,
               startAt: time,
               finishAt: completed ? time : '',
