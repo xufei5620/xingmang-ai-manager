@@ -5,6 +5,10 @@
 >   见 `docs/RELEASING.md`。发版必更，覆盖 0.1.20 起的全部版本。
 > - **本文件** —— 面向开发者的变更记录，没有程序消费者。
 >
+> **两份的未发布条目都不直接写在文件里**：每条 PR 在 `changes/unreleased/` 下放一个分片文件，
+> 发版时 `npm run changelog:collect` 汇总进下面的 `## Unreleased` 段与 `release-notes.md` 的「未发布」段。
+> 写法见 [`changes/unreleased/README.md`](changes/unreleased/README.md)。
+>
 > ⚠️ **已知断档：本文件从 0.1.12 直接跳到 0.2.6，中间 0.1.13 ~ 0.2.5 没有条目。**
 > 这段区间去 `release-notes.md` 查。其中 **0.1.13 ~ 0.1.19** 与 **0.1.29** 两处两份文件都没有
 > （这两个版本确有发布提交），属历史遗留，不回补。
