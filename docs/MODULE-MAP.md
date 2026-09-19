@@ -75,8 +75,10 @@
 
 ## `src/` 渲染进程
 
+> **`src/renderer-v2/` 以外的部分是 legacy 回滚版，2026-09-19 起冻结，只接受安全修复**（`R-S12`，yoyo 拍板）。新功能、界面调整与一般/建议级缺陷只在 `src/renderer-v2/` 做；代码与 `compile:legacy` / `dev:legacy` 不删，既有测试继续跑。完整口径见 `CLAUDE.md` T14 与 `.claude/rules/legacy-renderer.md`。下面这张表因此是**存量地图**，不是待办清单。
+
 - `main.tsx` — 挂载 React + 全局错误上报
-- `App.tsx` (2782) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但账号体系与 AI 聊天又把它喂大了：App() 本体数十处 `useState`，页面切换仍是一条长三元链。**#30 未完结，且在持续恶化**
+- `App.tsx` (2782) — **仍持有全部全局状态**。#30 的批 0-3 已把内嵌大组件全部搬出，但账号体系与 AI 聊天又把它喂大了：App() 本体数十处 `useState`，页面切换仍是一条长三元链。**#30 已随 legacy 冻结关闭（2026-09-19）**：这个文件不再拆，只在安全修复时改；等价的拆分问题在 v2 侧看 `pages-account.tsx` / `pages-maintenance.tsx` / `pages-management.tsx`
 - `app-shared.ts` / `provider-meta.ts` / `navigation.ts` / `provider-registry.ts` — 共享底座：纯工具函数与空快照 / provider 视觉元数据 / 侧边栏页面清单 / **provider 身份与两种展示顺序的单一来源**（rank 表派生，见 T2）
 - `styles.css` (11045) — **另一个巨型枢纽文件**
 - `components/` — 通用件 `AppFrame` / `Sidebar` / `Toast` / `Dialog` / `ProviderTabs` / `RuntimeCell` / `StatusMark` / `StartupSplash` / `ErrorBoundary`；从 App.tsx 搬出的 `onboarding/`（含 `NodeInstallGuide`）、`config/`（`ConfigDialog` 等 4 件）、`dashboard/`（`Dashboard` / `CodexDesktopCard` / `NextStepsCard`）

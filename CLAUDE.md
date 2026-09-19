@@ -42,6 +42,8 @@
 
 **改跨平台代码前先读 `electron/platform-capabilities.ts`**，它是判断"当前平台支持什么"的单一入口。
 
+**渲染层是两棵树，别改错**：`src/renderer-v2/` 是当前界面；`src/` 下除它以外的部分（含 `src/components/`、`src/pages/`、`src/App.tsx` 与 `src/*.ts`）加上 `tooling/legacy-renderer/` 是 **legacy 回滚版，已于 2026-09-19 冻结，只接受安全修复**（见 T14）。
+
 ---
 
 ## 3. 命令与硬门槛
@@ -52,9 +54,9 @@ npm test            # vitest（electron+src）+ node --test（scripts/e2e）
 npm run test:v2     # renderer-v2 / platform 单测和浏览器业务回归；Windows required CI 会执行
 npm run test:windows    # Windows 备用：关文件级并行 + 30s 超时，专治 Defender 引发的超时失败
 npm run compile     # 默认构建 renderer-v2 与对应 canvas token，再清理 + vite build + tsc + 压缩
-npm run compile:legacy  # 显式构建 React 18 旧回滚界面
+npm run compile:legacy  # 显式构建 React 18 旧回滚界面（已冻结，只为回滚保留）
 npm run dev         # 默认启动 renderer-v2；内部先构建 canvas-v2 + 全量编译一次主进程（消 electron 抢跑竞态）
-npm run dev:legacy  # 显式启动 React 18 旧回滚界面
+npm run dev:legacy  # 显式启动 React 18 旧回滚界面（已冻结，只为回滚保留）
 npm start           # 直接跑已编译产物（需先 compile），免 dev server
 npm run build:mac:dir   # macOS 本机 ad-hoc 签名解包应用
 ```
@@ -173,6 +175,18 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 
 这条边界有自动门禁兜底：`scripts/verify-canvas-renderer-boundary.test.cjs` 扫描画布渲染层源码，出现 `Authorization:` / `Bearer ${` / `.apiKey` / `getAuthToken` 等模式即失败；`verify-canvas-provenance.test.cjs` 守第三方来源清单。两者都在 `npm test` 里。
 
+**T14. 改渲染层 → legacy 树已冻结，只接受安全修复。**
+yoyo 2026-09-19 就 `R-S12` 拍板：legacy 回滚版**保留但冻结**（三选一里的 b），不定退役日期，也不重排 #30。
+
+- **冻结范围**：`src/` 下除 `src/renderer-v2/` 以外的全部源码（`App.tsx`、`components/`、`pages/`、`styles.css`、`src/*.ts` 纯逻辑层与它们的 `.test.ts`）+ `tooling/legacy-renderer/` + `compile:legacy` / `dev:legacy` 两条入口。注意 `vitest.config.ts` 里那个叫 `legacy` 的 project 同时覆盖主进程的 `electron/` 目录，**主进程不在冻结范围内**。
+- **只接受安全修复**：违反第 4 节 I1–I15 的问题（命令注入、提权环境、凭据跨 IPC、路径穿越、IPC 入参未校验、日志未脱敏、导航白名单等）照常修。
+- **不接受**：新功能、界面调整、一般/建议级缺陷、重构、补测试、为对齐 v2 行为而改 legacy。这些一律只在 `src/renderer-v2/` 做，legacy 侧的同类问题在审查清单里直接标「legacy 已冻结，不修」。
+- **两棵树同时改**：只有安全修复和跨树的类型/契约变更（改 `electron/ipc-contract.ts` 后两侧都得跟着编译）才允许一个 PR 动两棵树；功能提交不许捎带 legacy。
+- **不删代码、不改行为**：冻结不等于退役。`npm run compile:legacy` / `dev:legacy` 保持可用，legacy 的既有测试继续在 `npm test` 里跑，不许为省时间跳过。
+- **例外要回去问**：如果 legacy 连构建或启动都不成立（`R-F1` 那一类「回滚版事实上不可用」），那是「冻结还有没有意义」的问题，回到 yoyo 那里重新拍板，不要自己在 legacy 上做功能性修复。
+
+改到冻结范围内的文件时 `.claude/rules/legacy-renderer.md` 会自动加载，内容与本条一致。
+
 ---
 
 ## 6. 代码约定
@@ -236,6 +250,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 - ❌ **不要"消除" `preload.ts` 里重复的通道表** — 那是 sandbox 约束下的有意重复，且被 `satisfies` 类型钉死，拼错会当场编译报错
 - ❌ **不要把 `config-files.ts` 的六个 switch 重构成策略类层级** — 无 `default` 分支正是新增 provider 时的穷尽性保障
 - ❌ **不要给 API Key 加 DPAPI / keytar 加密存储** — 本程序的全部职责就是把 Key 写进 CLI 的明文配置文件，再加密一份攻击面一点没变。⚠️ 这条针对的是 **relay API Key 的"以加密求保护"**；两个已实装的例外别拆：登录 session token 用 `safeStorage` 加密（`account-session-store.ts`）是正确做法；`managed-cli-key-store.ts` 对托管 CLI Key 的 safeStorage 缓存（PR #81）**目的不是保护而是复用**——new-api 列表只回掩码 Key，无本地缓存则每次登录/切账号都要重新签发或走服务端 reveal，缓存消除的是服务端 token 堆积与限流面
+- ❌ **不要在 legacy 树上做新功能、界面调整或一般缺陷修复** — 2026-09-19 已冻结，只接受安全修复，其余一律在 `src/renderer-v2/` 做（见 T14）。反过来也不要顺手删 legacy 代码或停掉它的测试，冻结不是退役
 - ❌ **不要提交 `\tmp\xingmang-managed-cli-*` 目录**
 
 ---
@@ -278,5 +293,7 @@ Windows 问「低于 Administrator 的主体能不能写这里」，因为那边
 ## 10. 当前阶段（易变，改这里不影响上面）
 
 **界面重建 UI v3.1.1 进行中**。做 `src/renderer-v2/` 或 `ui-spec/` 的工作时，`.claude/rules/renderer-v2.md` 会自动加载，里面是完整的实施约束；实施状态见 `docs/UI-V3.1.1-V2-REBUILD.md`。
+
+**legacy 回滚版已冻结**（2026-09-19，`R-S12`）：只接受安全修复，新功能与一般缺陷只在 `src/renderer-v2/` 做，代码与两条 `:legacy` 入口都不删。完整口径见 T14；#30（拆 legacy `App.tsx`）已按这条决定关闭。
 
 **规模概览**（只为让你心里有数，不要依赖具体数字）：主进程与渲染层各约两百个 TS 文件，vitest 数千个用例，`npm test` 还串带 `scripts/` 与 `e2e/` 下的 node --test 套件。IPC 通道数以 `ipc-contract.ts` 的 `ipcInvokeChannels` 为准，画布宿主通道以 `canvas-contract.ts` 的 `canvasHostChannels` 为准。
