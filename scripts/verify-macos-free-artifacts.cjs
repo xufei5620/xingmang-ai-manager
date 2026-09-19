@@ -229,6 +229,37 @@ async function copyPrivateRegularFile(sourcePath, destinationPath, label) {
   }
 }
 
+function assertSameRegularFile(actual, expected, label) {
+  if (actual.dev !== expected.dev || actual.ino !== expected.ino || actual.size !== expected.size) {
+    throw new Error(`${label} 在验证期间已变更或被替换`)
+  }
+  return actual
+}
+
+// Mounting an image stamps it: `hdiutil attach` updates the DMG's own
+// timestamps, so after a DMG inspection the private copy no longer matches the
+// identity it was bound with and every later check reads that as "replaced".
+// Dropping the timestamps from the comparison would also drop the only signal
+// an in-place edit leaves, so the copy is re-hashed against the digest it was
+// made with and the identity is re-baselined only once that digest and
+// dev/ino/size both still hold. Re-baselining is therefore not a relaxation: it
+// trades a stamp the verifier itself caused for a full content check.
+async function rebaseInspectedPrivateCopy(artifact, label) {
+  const held = artifact.privateIdentity
+  // Checked before the read as well as after it, so a copy that was already
+  // swapped is refused without first hashing several hundred megabytes.
+  assertSameRegularFile(captureRegularFileIdentity(artifact.path, label), held, label)
+  const hash = createHash('sha256')
+  for await (const chunk of fs.createReadStream(artifact.path)) hash.update(chunk)
+  if (hash.digest('hex') !== artifact.sha256) throw new Error(`${label} 在验证期间内容已变更`)
+  artifact.privateIdentity = assertSameRegularFile(
+    captureRegularFileIdentity(artifact.path, label),
+    held,
+    label,
+  )
+  return artifact.privateIdentity
+}
+
 async function hashArtifactFiles(outputDirectory, names) {
   if (!Array.isArray(names)) throw new Error('产物名称列表无效')
   const entries = []
@@ -999,6 +1030,11 @@ async function verifyMacosFreeArtifacts(options = {}) {
           env,
           privateSource: true,
         })
+        // Only the DMG path hands the private copy to a mounter; ZIP extraction
+        // reads its source without stamping it, so it keeps the strict check.
+        if (kind === 'dmg') {
+          await rebaseInspectedPrivateCopy(privateArtifact, `发行文件私有副本 ${artifactName}`)
+        }
         assertBoundReleaseSources()
         if (!result || result.architecture !== architecture) {
           throw new Error(`${kind.toUpperCase()} 应用验证没有确认预期架构：${architecture}`)
