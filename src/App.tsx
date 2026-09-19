@@ -32,6 +32,7 @@ import {
   isUnconfirmedDetection,
   managedBootstrapCompleted,
   markManagedBootstrapCompleted,
+  relaySiteAccountsOrigin,
   resolveInitialAppView,
   sameDesktopStatus,
   SIDEBAR_STORAGE_KEY,
@@ -2123,7 +2124,7 @@ function App() {
 
   const renderAccountSwitcher = () => accountSwitcherOpen ? <AccountSwitcher
     activeUserId={accountSession?.account?.userId ?? null}
-    accountsOrigin={new URL(activeRelaySite.accountBaseUrl!).origin}
+    accountsOrigin={relaySiteAccountsOrigin(activeRelaySite)}
     loadAccounts={() => window.xingmang.listSavedAccounts()}
     onSwitch={switchSavedAccount}
     onRemove={(id) => window.xingmang.removeSavedAccount(id)}

@@ -417,6 +417,12 @@ export interface InstallProgress {
   provider: ProviderId
   state: 'started' | 'output' | 'success' | 'error'
   message: string
+  /**
+   * Only the few phases that can honestly measure themselves report this --
+   * today the signed Grok download. Absent means "no percentage is knowable",
+   * not zero: npm's dependency resolution reports elapsed time instead.
+   */
+  percent?: number
 }
 
 export interface CodexDesktopStatusEvent {

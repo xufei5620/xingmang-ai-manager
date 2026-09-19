@@ -21,17 +21,15 @@ function client(): AccountIdentitySource {
 }
 
 describe('xm-only site runtime', () => {
-  for (const id of ['solov', 'sub2api']) {
-    it(`resolves ${id} into the same canonical xm realm without mutating the persisted id`, () => {
-      const selected = requireRelaySite(id)
-      const definition = requireXmSiteRuntimeDefinition(id)
-      assert.equal(selected.id, id)
-      assert.deepEqual(definition, {
-        siteId: 'solov', realmId: 'xm-account', backend: 'new-api',
-        accountOrigin: 'https://xm.solov.cc', aiBaseUrl: 'https://xm.solov.cc', providerBaseUrls,
-      })
+  it('resolves solov into the canonical xm realm without mutating the persisted id', () => {
+    const selected = requireRelaySite('solov')
+    const definition = requireXmSiteRuntimeDefinition('solov')
+    assert.equal(selected.id, 'solov')
+    assert.deepEqual(definition, {
+      siteId: 'solov', realmId: 'xm-account', backend: 'new-api',
+      accountOrigin: 'https://xm.solov.cc', aiBaseUrl: 'https://xm.solov.cc', providerBaseUrls,
     })
-  }
+  })
 
   it('copies and freezes routing metadata without freezing the existing registry', () => {
     const definition = requireXmSiteRuntimeDefinition('solov')
@@ -43,7 +41,10 @@ describe('xm-only site runtime', () => {
     assert.equal(definition.aiBaseUrl, 'https://xm.solov.cc')
   })
 
-  for (const value of [undefined, null, '', ' solov', 'solov ', 'SOLOV', 'api.solov.cc', 1, {}, ['solov']]) {
+  // 'sub2api' joins this list in D-10: an account boundary takes a live site
+  // id only, so the retired alias must be rejected here rather than quietly
+  // canonicalized the way resolveRelaySite does for settings recovery.
+  for (const value of [undefined, null, '', ' solov', 'solov ', 'SOLOV', 'api.solov.cc', 'sub2api', 1, {}, ['solov']]) {
     it(`does not default an invalid explicit selection: ${JSON.stringify(value)}`, () => {
       assert.throws(() => requireXmSiteRuntimeDefinition(value), /未知中转站点/)
     })
@@ -64,21 +65,10 @@ describe('xm-only site runtime', () => {
     })
   }
 
-  it('refuses to reinterpret the historical alias as a different account origin', () => {
-    withPatch('sub2api', { accountBaseUrl: 'https://other.example.invalid' }, () => {
-      assert.throws(() => requireXmSiteRuntimeDefinition('sub2api'), /别名与账号域不一致/)
-    })
-  })
-
   for (const provider of providerIds) {
     it(`rejects a different account/AI origin for ${provider}`, () => {
       withPatch('solov', { providerBaseUrls: { ...providerBaseUrls, [provider]: 'https://other.example.invalid' } }, () => {
         assert.throws(() => requireXmSiteRuntimeDefinition('solov'), /路由配置不一致/)
-      })
-    })
-    it(`rejects a different alias route for ${provider}`, () => {
-      withPatch('sub2api', { providerBaseUrls: { ...providerBaseUrls, [provider]: 'https://other.example.invalid' } }, () => {
-        assert.throws(() => requireXmSiteRuntimeDefinition('sub2api'), /路由配置不一致/)
       })
     })
   }

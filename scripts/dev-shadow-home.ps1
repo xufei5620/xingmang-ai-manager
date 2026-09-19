@@ -3,7 +3,7 @@
 #
 # 隔离原理：os.homedir() 与全部 provider 路径解析在启动时实时读取 USERPROFILE/HOME/APPDATA，
 # 提前改写即可整体重定向（依据 electron/codex-home.ts + main-service-options.ts 的收口设计，
-# 配方照抄 e2e/electron-smoke.mjs:184-195 的已验证模式）。
+# 配方与 e2e/electron-ci-smoke.mjs 的隔离 HOME 启动同源）。
 #
 # ⚠️ 三类操作无法被环境变量隔离，会落到真机，测试时避开：
 #   1. Node.js 运行时自动安装（真实 Program Files + UAC）——别在没有 node/npm 的影子环境里触发

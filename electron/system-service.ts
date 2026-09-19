@@ -2490,8 +2490,9 @@ export function createSystemService(
     provider: ProviderId,
     state: 'started' | 'output' | 'success' | 'error',
     message: string,
+    percent?: number,
   ): void {
-    if (!target.isDestroyed()) target.send('cli:install-progress', { provider, state, message })
+    if (!target.isDestroyed()) target.send('cli:install-progress', { provider, state, message, percent })
   }
 
   async function findNpmForCliInstall(
@@ -2587,6 +2588,7 @@ export function createSystemService(
                 provider,
                 'output',
                 `Grok CLI 下载 ${percent}%（${Math.floor(transferred / 1024 / 1024)} / ${Math.floor(total / 1024 / 1024)} MiB）`,
+                percent,
               )
             },
           })

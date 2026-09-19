@@ -72,7 +72,7 @@ export function useToolbox(bridge: XingmangApi | null, enabled: boolean, scope: 
       return { ...current, [key]: { label, percent, log: [...current[key].log, label].slice(-200) } }
     })
     const callbacks = [
-      bridge.onInstallProgress((event: InstallProgress) => update(event.provider, event.message)),
+      bridge.onInstallProgress((event: InstallProgress) => update(event.provider, event.message, event.percent)),
       bridge.onNodeRuntimeInstallProgress((event) => update('node', event.message, event.percent ?? undefined)),
       bridge.onPythonRuntimeInstallProgress((event) => update('python', event.message, event.percent ?? undefined)),
       bridge.onCodexDesktopInstallProgress((event) => update('codexDesktop', event.message, event.percent ?? undefined)),

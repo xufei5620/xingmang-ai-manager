@@ -12,6 +12,8 @@ import { Home } from './features/tools/Home'
 import { createToolsApi } from './features/tools/api'
 import { isToolId, presentTools, providerFor, type ToolId } from './features/tools/model'
 import { useToolbox } from './features/tools/useToolbox'
+import { ManualUninstallDialog, type ManualUninstallState } from './features/tools/ManualUninstall'
+import { presentOperationError, type OperationActionId } from './operation-error'
 import { accountTabs } from './registry/business'
 import { tools } from './registry/tools'
 import type { PageId } from './registry/pages'
@@ -40,6 +42,8 @@ const pageLoading = <div className="v2-business-loading" role="status" data-test
 
 type AccountTab = typeof accountTabs[number]['value']
 interface PendingConfirmation { title: string; body: string; label: string; danger?: boolean; work(): Promise<void> }
+/** retry is present only where the failed work is still re-runnable, so the dialog never offers a button that leads nowhere. */
+interface OperationFailure { message: string; retry?: () => void }
 interface AccountBootstrapView extends AccountBootstrapProgress {
   scope: string
   result?: AccountBootstrapResult
@@ -85,7 +89,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   const [confirmBusy, setConfirmBusy] = useState(false)
   const [restartDialog, setRestartDialog] = useState(false)
   const [dismissedUpdate, setDismissedUpdate] = useState('')
-  const [operationError, setOperationError] = useState('')
+  const [operationError, setOperationError] = useState<OperationFailure | null>(null)
+  const [manualUninstall, setManualUninstall] = useState<ManualUninstallState | null>(null)
   const [accountReadError, setAccountReadError] = useState<{ scope: string; message: string } | null>(null)
   const [supportQr, setSupportQr] = useState<{ url: string; data: string }>()
   const accountEpoch = useRef(0)
@@ -123,7 +128,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
       setBoot('ready')
       if (result.settings.checkUpdatesOnStartup && result.update.phase !== 'disabled') {
         void app.startupUpdate().then((checked) => { if (current) setUpdate(checked) }).catch((cause) => {
-          if (current) setOperationError(cause instanceof Error ? cause.message : '更新检查没有完成')
+          if (current) setOperationError({ message: cause instanceof Error ? cause.message : '更新检查没有完成' })
         })
       }
     }).catch((cause) => {
@@ -186,8 +191,8 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     void native.runDiagnostics().then((report) => {
       if (!mounted.current) return
       const issues = report.counts.warn + report.counts.fail + report.counts.error
-      if (issues) setOperationError(`环境检查发现 ${issues} 项需要处理，请在“检查”页查看。`)
-    }).catch((cause) => { if (mounted.current) setOperationError(cause instanceof Error ? cause.message : '启动环境检查没有完成') })
+      if (issues) setOperationError({ message: `环境检查发现 ${issues} 项需要处理，请在“检查”页查看。` })
+    }).catch((cause) => { if (mounted.current) setOperationError({ message: cause instanceof Error ? cause.message : '启动环境检查没有完成' }) })
   }, [boot, native, session.authenticated, settings?.runDiagnosticsOnStartup])
   useLayoutEffect(() => {
     if (!settings) return
@@ -200,9 +205,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     const system = platformApi()
     if (!system || boot !== 'ready') return
     return bindPlatformAppearance(system, native, (theme) => setSettings((current) => current ? { ...current, theme } : current),
-      (cause) => setOperationError(cause instanceof Error ? cause.message : '系统外观没有同步'))
+      (cause) => setOperationError({ message: cause instanceof Error ? cause.message : '系统外观没有同步' }))
   }, [boot, native])
   const os = platform?.platform === 'macos' ? 'mac' : platform?.platform === 'linux' ? 'linux' : 'win'
+  const operationHint = operationError ? presentOperationError(operationError.message) : null
+  const operationActions = (operationHint?.actions ?? (operationError?.retry ? [{ id: 'retry' as OperationActionId, label: '重试' }] : []))
+    .filter((action) => action.id !== 'retry' || Boolean(operationError?.retry))
   useEffect(() => { document.documentElement.dataset.os = os }, [os])
   useEffect(() => {
     let current = true
@@ -237,10 +245,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     }
     else void balanceStore.refresh('foreground')
   }), [native, balanceStore, session.authenticated, toast])
-  const perform = useCallback(async (label: string, work: () => Promise<unknown>) => {
-    setOperationError('')
+  const perform = useCallback(async function run(label: string, work: () => Promise<unknown>): Promise<void> {
+    setOperationError(null)
     try { await work() }
-    catch (cause) { setOperationError(cause instanceof Error ? cause.message : `${label}没有完成`) }
+    catch (cause) {
+      setOperationError({ message: cause instanceof Error ? cause.message : `${label}没有完成`, retry: () => void run(label, work) })
+    }
   }, [])
   const navigate = useCallback((target: PageId, section?: string) => {
     if (target === 'canvas') { void perform('打开画布', app.openCanvas); return }
@@ -250,6 +260,16 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     if (target !== 'home' && target !== 'chat') setVisitedPages((current) => ({ ...current, [target]: scope }))
     setGuide(false); setPage(target)
   }, [app, perform, session.authenticated, scope])
+  const runOperationAction = useCallback((action: OperationActionId) => {
+    const failure = operationError
+    setOperationError(null)
+    if (action === 'retry') failure?.retry?.()
+    else if (action === 'log') navigate('maintenance')
+    else if (action === 'network') navigate('health')
+    else if (action === 'recharge') navigate('account', 'recharge')
+    else if (action === 'relogin') setAuth('login')
+    else setHelp(true)
+  }, [navigate, operationError])
   async function install(id: ToolId, version?: string) {
     const state = toolbox.snapshot
     if (!state) throw new Error('请先完成工具检测')
@@ -337,8 +357,12 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     setConfirmation({ title: `卸载 ${definition.name}？`, body: '工具配置、账户数据和历史记录会保留。', label: '卸载工具', danger: true, work: async () => {
       await toolbox.run(id, '正在卸载', async () => {
         const result = await toolsApi.uninstall(id)
-        if ('outcome' in result && result.outcome !== 'uninstalled' && result.outcome !== 'not-installed') {
-          throw new Error(result.outcome === 'manual-required' ? result.error : '已打开卸载窗口，完成后请重新检测。')
+        if (result.outcome === 'manual-required') {
+          setManualUninstall({ name: definition.name, reason: result.manualHelp.reason, manualCommand: result.manualHelp.manualCommand })
+          return
+        }
+        if (result.outcome !== 'uninstalled' && result.outcome !== 'not-installed') {
+          throw new Error('已打开卸载窗口，完成后请重新检测。')
         }
       })
       await toolbox.refresh(true)
@@ -356,9 +380,9 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
   }, [native])
   useEffect(() => {
     if (!pendingLink || boot !== 'ready' || auth || configTool || confirmation || switcher || restartDialog) return
-    if (pendingLink.kind === 'invalid') { setOperationError(pendingLink.message); setPendingLink(null) }
+    if (pendingLink.kind === 'invalid') { setOperationError({ message: pendingLink.message }); setPendingLink(null) }
     else if (pendingLink.kind === 'invite') {
-      if (session.authenticated) setOperationError(`邀请码为 ${pendingLink.code}。退出当前账号后可用于注册。`)
+      if (session.authenticated) setOperationError({ message: `邀请码为 ${pendingLink.code}。退出当前账号后可用于注册。` })
       else { setInviteCode(pendingLink.code); setAuth('register') }
       setPendingLink(null)
     } else if (session.authenticated) {
@@ -491,7 +515,14 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {help && <Dialog open title="帮助与客服" onClose={() => setHelp(false)} width={480} footer={<Button onClick={() => { setHelp(false); navigate('tutorial') }}>使用教程</Button>}>
       <div className="v2-support">{qr && <img src={qr} alt="微信客服二维码" />}<h3>微信扫码找客服</h3><p>装不上、付了没到账，都可以问。</p><Button onClick={() => void perform('打开帮助', () => app.openExternal(supportUrl))}>在浏览器打开</Button><Button onClick={() => { setHelp(false); navigate('feedback') }}>复制反馈报告</Button></div>
     </Dialog>}
-    {operationError && <Dialog open title="操作没有完成" onClose={() => setOperationError('')} footer={<Button onClick={() => setOperationError('')}>返回</Button>}><p role="alert">{operationError}</p></Dialog>}
+    {operationError && <Dialog open title={operationHint?.title ?? '操作没有完成'} onClose={() => setOperationError(null)} testId="operation-error" footer={<>
+      <Button onClick={() => setOperationError(null)}>返回</Button>
+      {operationActions.map((action) => <Button key={action.id} variant={action.id === 'retry' ? 'primary' : 'secondary'} testId={`operation-error-${action.id}`} onClick={() => runOperationAction(action.id)}>{action.label}</Button>)}
+    </>}>
+      {operationHint && <p data-testid="operation-error-body">{operationHint.body}</p>}
+      <p role="alert" className={operationHint ? 'v2-operation-detail' : undefined} data-testid="operation-error-detail">{operationError.message}</p>
+    </Dialog>}
+    {manualUninstall && <ManualUninstallDialog state={manualUninstall} platform={platform?.platform} onClose={() => setManualUninstall(null)} />}
     {!operationError && session.authenticated && accountReadError?.scope === scope && <Dialog open title="操作没有完成" onClose={() => setAccountReadError(null)} footer={<Button onClick={() => setAccountReadError(null)}>返回</Button>}><p role="alert">{accountReadError.message}</p></Dialog>}
     {restartDialog && <Dialog open title="Codex 已在运行" onClose={() => setRestartDialog(false)} busy={Boolean(toolbox.jobs['launch:codexDesktop'])} footer={<>
       <Button variant="ghost" onClick={() => setRestartDialog(false)}>取消</Button>
@@ -501,7 +532,7 @@ function RuntimeApp({ native, accelerationPreview = false }: { native: XingmangA
     {confirmation && <Confirm title={confirmation.title} body={confirmation.body} danger={confirmation.danger} okLabel={confirmation.label} loading={confirmBusy} onClose={() => setConfirmation(null)} onOk={() => {
       if (confirmationLock.current) return
       confirmationLock.current = true; setConfirmBusy(true)
-      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError(cause instanceof Error ? cause.message : '操作没有完成')).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
+      void confirmation.work().then(() => setConfirmation(null)).catch((cause) => setOperationError({ message: cause instanceof Error ? cause.message : '操作没有完成' })).finally(() => { confirmationLock.current = false; setConfirmBusy(false) })
     }} />}
   </BalanceTierProvider></AccountBalanceContext.Provider>
 }
