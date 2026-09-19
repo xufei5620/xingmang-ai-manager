@@ -5,7 +5,7 @@ import fs from 'node:fs/promises'
 import { fileURLToPath } from 'node:url'
 import { createServer } from 'vite'
 import { chromium } from '@playwright/test'
-import { fixtureReadyTimeoutMs } from '../../../e2e/fixture-readiness.mjs'
+import { fixtureReadyTimeoutMs } from '../../../../e2e/fixture-readiness.mjs'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..')
 const output = path.join(root, '.project-surgeon/audits/20260907-auth-v2')
