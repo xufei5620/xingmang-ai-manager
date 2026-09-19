@@ -192,7 +192,15 @@ jobs:
   # scope itself, so it reports success — never "skipped" — for a
   # documentation-only change, which is what the aggregate below relies on.
   test:
-    if: always()
+    # `!cancelled()` rather than `always()`: a superseded run — this workflow
+    # cancels those on every new push — would otherwise run this job anyway,
+    # find the shards cancelled, and post a red `test` against a commit nobody
+    # is looking at any more. A job that blows its own `timeout-minutes` is
+    # cancelled at the job level, not the workflow level, so that still lands
+    # here as a failure. When the whole run is cancelled this job is skipped,
+    # and the aggregate below refuses a skipped `test`, so a cancelled run
+    # still cannot read as a pass.
+    if: ${{ !cancelled() }}
     needs: [changes, windows-test, windows-package]
     runs-on: ubuntu-latest
     timeout-minutes: 5

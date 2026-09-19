@@ -413,7 +413,11 @@ test('the required aggregate fails for incomplete checks and accepts documentati
   // The fold-in job itself: it is what keeps a single `test` check meaning
   // "Windows is green" after the matrix replaced the job that used to be it.
   const fold = workflow.jobs.test
-  assert.equal(fold.if, 'always()')
+  // Not always(): that also runs on a cancelled run and posts a red `test`
+  // against a superseded commit. The aggregate above refuses a skipped `test`,
+  // so a cancelled run still cannot read as a pass.
+  assert.equal(fold.if, '${{ !cancelled() }}')
+  assert.equal(verify('true', 'success', { test: 'skipped' }), false)
   assert.deepEqual(fold.needs, ['changes', 'windows-test', 'windows-package'])
   assert.equal(fold['runs-on'], 'ubuntu-latest')
   const foldSource = fold.steps[0].run.split("node <<'NODE'\n")[1].split('\nNODE')[0]
