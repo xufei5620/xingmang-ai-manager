@@ -89,6 +89,15 @@ type RuntimeLog = Awaited<
 >['entries'][number]
 type Provider = Parameters<V2Bridge['installCli']>[0]
 type ConnectionCheck = Awaited<ReturnType<V2Bridge['checkProviderConnection']>>
+interface ConnectionRow {
+  provider: Provider
+  name: string
+  result: ConnectionCheck | null
+  error: string | null
+}
+// 展示顺序只有一套，以 registry/tools.ts 的数组次序为准（R-S11）。桌面端没有
+// 自己的 CLI 配置文件，自检无从下手，所以只取 CLI。
+const connectionTools = tools.filter((tool): tool is typeof tool & { id: Provider } => tool.kind === 'cli')
 export type BusinessActions = {
   navigate?: (page: V2Page) => void
   openLogin?: () => void
@@ -121,6 +130,59 @@ export function diagnosticTarget(code: string): V2Page {
   return 'maintenance'
 }
 
+/**
+ * 每个工具一条结论。未配置的工具是灰的、不是红的：一个只用 Claude Code 的
+ * 用户不该在这一页上看到三条失败。
+ */
+function ConnectionRowNotice({
+  row,
+  navigate,
+}: { row: ConnectionRow; navigate?: (page: V2Page) => void }) {
+  if (!row.result) {
+    return (
+      <Notice
+        tone="bad"
+        title={`${row.name} · 没测成`}
+        body={row.error ?? '自检没能完成'}
+        testId={`health-connection-error-${row.provider}`}
+      />
+    )
+  }
+  const view = connectionCheckView(row.result)
+  const target = view.target
+  return (
+    <Notice
+      tone={view.tone}
+      title={`${row.name} · ${view.statusLabel}`}
+      body={
+        <>
+          <div>{view.title}</div>
+          <div>{view.body}</div>
+          {view.endpoint && (
+            <div className="v2-connection-note">请求地址：{view.endpoint}</div>
+          )}
+          {view.detail && (
+            <div className="v2-connection-note">服务返回：{view.detail}</div>
+          )}
+        </>
+      }
+      actions={
+        target && (
+          <Button
+            size="sm"
+            icon={Wrench}
+            onClick={() => navigate?.(target)}
+            testId={`health-connection-fix-${row.provider}`}
+          >
+            去处理
+          </Button>
+        )
+      }
+      testId={`health-connection-result-${row.provider}`}
+    />
+  )
+}
+
 export function HealthPage({
   api,
   navigate,
@@ -130,24 +192,25 @@ export function HealthPage({
   const resource = useResource(load)
   const operation = useOperation()
   const [details, setDetails] = useState<Diagnostic | null>(null)
-  const [connection, setConnection] = useState<ConnectionCheck | null>(null)
-  const [connectionError, setConnectionError] = useState<string | null>(null)
+  const [connections, setConnections] = useState<ConnectionRow[] | null>(null)
   const [connectionBusy, setConnectionBusy] = useState(false)
-  // 自检要花账上的几个 token，所以只在用户点按钮时跑，不跟着 diagnostics:run 走。
+  // Claude Code 的自检要花账上的几个 token，所以整组只在用户点按钮时跑一次，
+  // 不跟着 diagnostics:run 走；其余三个工具走只读的模型清单，不产生花费。
   const runConnectionCheck = async () => {
     setConnectionBusy(true)
-    setConnectionError(null)
     try {
-      setConnection(await api.checkProviderConnection('claude'))
-    } catch (error) {
-      setConnection(null)
-      setConnectionError(errorMessage(error))
+      // 一个工具失败不该把另外三个的结论吞掉，所以每个工具各自收口。
+      setConnections(await Promise.all(connectionTools.map(async (tool) => {
+        try {
+          return { provider: tool.id, name: tool.name, result: await api.checkProviderConnection(tool.id), error: null }
+        } catch (error) {
+          return { provider: tool.id, name: tool.name, result: null, error: errorMessage(error) }
+        }
+      })))
     } finally {
       setConnectionBusy(false)
     }
   }
-  const connectionView = connection ? connectionCheckView(connection) : null
-  const connectionTarget = connectionView?.target ?? null
   const fix = (item: Diagnostic) => {
     const provider = item.code.replace('PROVIDER_', '').toLowerCase()
     if (item.code.startsWith('PROVIDER_') && isProvider(provider) && openConfig)
@@ -177,7 +240,7 @@ export function HealthPage({
       <ResultNotice {...operation} />
       <Card
         title="连接自检"
-        meta="用 Claude Code 配置里真正写着的密钥和模型发一次最小请求；上面的检查只证明网络通，这一条证明你现在能用。"
+        meta="用每个工具配置里真正写着的密钥和模型各测一次；上面的检查只证明网络通，这一条证明你现在能用。"
         actions={
           <Button
             icon={PlugZap}
@@ -190,47 +253,12 @@ export function HealthPage({
         }
         testId="health-connection"
       >
-        {connectionError && (
-          <Notice
-            tone="bad"
-            title="自检没能完成"
-            body={connectionError}
-            testId="health-connection-error"
-          />
-        )}
-        {connectionView && (
-          <Notice
-            tone={connectionView.tone}
-            title={connectionView.title}
-            body={
-              <>
-                <div>{connectionView.body}</div>
-                {connectionView.endpoint && (
-                  <div className="v2-connection-note">请求地址：{connectionView.endpoint}</div>
-                )}
-                {connectionView.detail && (
-                  <div className="v2-connection-note">服务返回：{connectionView.detail}</div>
-                )}
-              </>
-            }
-            actions={
-              connectionTarget && (
-                <Button
-                  size="sm"
-                  icon={Wrench}
-                  onClick={() => navigate?.(connectionTarget)}
-                  testId="health-connection-fix"
-                >
-                  去处理
-                </Button>
-              )
-            }
-            testId="health-connection-result"
-          />
-        )}
-        {!connectionView && !connectionError && (
+        {connections?.map((row) => (
+          <ConnectionRowNotice key={row.provider} row={row} navigate={navigate} />
+        ))}
+        {!connections && (
           <p className="v2-connection-note" data-testid="health-connection-idle">
-            还没有测过。点「测试连接」，失败时会直接说是网络、密钥、额度、分组还是模型的问题。
+            还没有测过。点「测试连接」，会按工具分别给结论；失败时会直接说是网络、密钥、额度、分组还是模型的问题。
           </p>
         )}
       </Card>
