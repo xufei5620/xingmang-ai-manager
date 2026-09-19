@@ -136,6 +136,13 @@ jobs:
 
       - run: npm test
 
+      # --ci-temporary-signing 跳过的不只是检查，还有 npm run compile：它的调用
+      # 契约是「检查与编译都已经由调用方做完」。quality.yml 的 macos-test 之所以
+      # 没露馅，是因为它的 test:mac:dev-origin 顺带跑了一次 compile —— 一个谁都
+      # 看不出来的隐式依赖。少了这一步，electron-builder 会一路打包到最后才报
+      # 「app.asar 里找不到 dist-electron/platform/entry.js」，看起来像产物损坏。
+      - run: npm run compile
+
       - name: Build and verify the macOS package with a throwaway CI identity
         # 单步上限：脚本会改用户 keychain 搜索列表并在收尾时改回去，一个卡住的
         # security 或 codesign 调用如果拖到作业上限，就没有任何一步能被指认。
