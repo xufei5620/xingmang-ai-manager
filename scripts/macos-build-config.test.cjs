@@ -63,6 +63,32 @@ function loadConfig({
   return JSON.parse(result.stdout)
 }
 
+function runBeforePack({ electronPlatformName, releaseMode = false, freeReleaseMode = false, signingIdentity }) {
+  return spawnSync(process.execPath, ['-e', `
+    const config = require(${JSON.stringify(configPath)})
+    config.beforePack({ electronPlatformName: ${JSON.stringify(electronPlatformName)}, arch: 1 })
+      .then(() => process.stdout.write('ok'))
+      .catch((error) => { process.stderr.write(String(error && error.message)); process.exit(3) })
+  `], {
+    cwd: root,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      XINGMANG_RELEASE: releaseMode ? '1' : '0',
+      XINGMANG_MAC_FREE_RELEASE: freeReleaseMode ? '1' : '0',
+      XINGMANG_LOCAL_BUILD: '0',
+      CSC_NAME: signingIdentity || '',
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false',
+      CSC_FOR_PULL_REQUEST: undefined,
+      XINGMANG_MAC_CI_EPHEMERAL_SIGNING: '0',
+      XINGMANG_UPDATE_DEV: '0',
+      XINGMANG_UNSIGNED_RELEASE: '0',
+      XINGMANG_UPDATE_URL: '',
+      XINGMANG_ACCELERATION_BUNDLE_DIR: '',
+    },
+  })
+}
+
 test('macOS targets produce per-architecture DMG and ZIP candidates', () => {
   const config = loadConfig()
 
@@ -107,18 +133,54 @@ test('unsigned releases tell the main process that no installer signature is che
   )
 })
 
-test('macOS local builds use only an ad-hoc identity while notarization stays release-only', () => {
+test('macOS local builds use only an ad-hoc identity while release mode discovers one', () => {
   const localConfig = loadConfig()
   const releaseConfig = loadConfig({ releaseMode: true })
 
-  assert.equal(localConfig.mac.notarize, false)
   assert.equal(localConfig.mac.identity, '-')
   assert.equal(localConfig.forceCodeSigning, false)
   assert.equal(localConfig.extraMetadata.xingmangLocalBuild, true)
-  assert.equal(releaseConfig.mac.notarize, true)
   assert.equal(releaseConfig.mac.identity, undefined)
   assert.equal(releaseConfig.forceCodeSigning, true)
   assert.equal(releaseConfig.extraMetadata.xingmangLocalBuild, false)
+})
+
+test('notarization stays explicitly disabled in every build mode (P-23)', () => {
+  // `false` is load-bearing, not a default: electron-builder only skips
+  // notarization when the option is exactly false. Left undefined it derives
+  // credentials from whatever APPLE_* variables happen to be exported and
+  // uploads the app to Apple - on the very Mac that signs the free builds.
+  for (const mode of [
+    {},
+    { localBuildMode: true },
+    { releaseMode: true },
+    { unsignedRelease: true },
+    { freeReleaseMode: true, signingIdentity: 'XingMang Free Update Identity' },
+  ]) {
+    // assert.equal also rejects undefined, which is the failure being guarded.
+    assert.equal(loadConfig(mode).mac.notarize, false)
+  }
+})
+
+test('packaging a macOS artifact under the Windows release channel fails closed (P-23)', () => {
+  // A Developer ID signature without notarization packages cleanly and is then
+  // refused by Gatekeeper on every customer machine, so the build must stop.
+  const rejected = runBeforePack({ electronPlatformName: 'darwin', releaseMode: true })
+  assert.equal(rejected.status, 3, rejected.stdout)
+  assert.match(rejected.stderr, /XINGMANG_RELEASE=1|XINGMANG_MAC_FREE_RELEASE/)
+
+  for (const allowed of [
+    { electronPlatformName: 'win32', releaseMode: true },
+    { electronPlatformName: 'darwin' },
+    {
+      electronPlatformName: 'darwin',
+      freeReleaseMode: true,
+      signingIdentity: 'XingMang Free Update Identity',
+    },
+  ]) {
+    const result = runBeforePack(allowed)
+    assert.equal(result.status, 0, result.stderr)
+  }
 })
 
 test('explicit local build mode cannot inherit a public release mode', () => {
