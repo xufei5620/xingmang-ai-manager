@@ -1,0 +1,240 @@
+# 手动触发的**正式发布**：出包、传更新源、打 tag、建 GitHub Release（2026-09-19
+# 应「整条发版搬上 GitHub」的要求添加）。
+#
+# 与 package-for-testing.yml 的分工：那条出的是给发布者自己装机验收的包，产物只
+# 躺在 Actions artifact 里；这条把包送到客户会更新到的地方。
+#
+# ## 为什么这条工作流可以自动上传，而 release-build.yml 明说不行
+#
+# `docs/RELEASING.md` 要求「上传文件、修改 Cloudflare R2 或切换线上 latest.yml
+# 必须获得产品所有者针对当前版本的明确发布授权」，release-build.yml 因此干脆不配
+# 任何对象存储凭据。这条工作流没有取消那道授权，而是把它变成一次点击：上传发生在
+# `publish` 作业里，该作业挂 `environment: release`，而 release 环境配了 required
+# reviewers —— 运行会停在那里等产品所有者按下 Approve，批准的正是这一次运行、这一个
+# 版本。没有那一下，什么都不会被上传。
+#
+# **所以 release 环境的 required reviewers 是承重墙，不是可选的加固。** 环境不存在
+# 时 GitHub 会在首次运行时自动创建一个同名环境，而自动创建出来的环境**没有任何保护
+# 规则**，那会把上面这段话变成一句空话。配置步骤见 docs/RELEASING.md 的「CI 发布」。
+#
+# ## 目前只发 Windows
+#
+# macOS 那一半还差一样东西：发布用的自签证书连私钥导出的 .p12。CI 现在能做的 macOS
+# 签名是 runner 现场生成的一次性身份（见 package-for-testing.yml），那种包**绝不能**
+# 进更新源 —— electron-updater 认签名身份，老用户的机器不认它会拒绝更新，新装用户拿到
+# 的又是一个没人认得的发布者。拿到 .p12 并存进 release 环境之后再补 macOS 作业。
+#
+# ## 上传顺序
+#
+# `latest.yml` 是客户端用来判断"有没有新版本"的清单。它一旦先落地，用户会在安装包
+# 还没传完时就被告知有新版本，点下载拿到 404。所以顺序固定为：**先传安装包与
+# blockmap → 确认两者都能从 HTTPS 下载 → 最后才覆盖 latest.yml**。这三步在下面是
+# 三个独立的步骤，顺序由 scripts/publish-workflow-config.test.cjs 钉住。
+name: publish-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm_version:
+        description: '要发布的版本号，必须与 package.json 完全一致（防止误发）'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  # 两个并发发布会产出两套同版本却不同哈希的产物，而 latest.yml 里只能有一份 SHA-512。
+  group: publish-release
+  cancel-in-progress: false
+
+jobs:
+  windows-build:
+    runs-on: windows-latest
+    # 这个作业不读任何 secret，也不挂 environment：它只是出包。凭据集中在 publish
+    # 作业里，那里才有需要保护的东西。
+    timeout-minutes: 120
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Confirm the requested version matches package.json
+        id: metadata
+        shell: pwsh
+        env:
+          # P-26：写进 run 正文的 ${{ }} 是文本替换，不是变量绑定。带单引号的取值
+          # 会闭合字符串并执行后面的内容。绑进 env: 再用 $env: 读，PowerShell 看到
+          # 的就只是数据。
+          CONFIRM_VERSION: ${{ inputs.confirm_version }}
+        run: |
+          $declared = (Get-Content package.json -Raw | ConvertFrom-Json).version
+          if ($declared -ne $env:CONFIRM_VERSION) {
+            Write-Error "版本不一致：package.json 是 $declared，本次触发填的是 $env:CONFIRM_VERSION"
+            exit 1
+          }
+          "version=$declared" >> $env:GITHUB_OUTPUT
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Install the Chromium the layout tests need
+        run: npx --no-install playwright install chromium
+
+      - name: Compile the main process the staging tool needs
+        run: node node_modules/typescript/bin/tsc -p tsconfig.electron.json
+
+      - name: Prepare the private acceleration bundle
+        env:
+          ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
+        run: node scripts/prepare-acceleration-bundle.cjs --target win32-x64 --output "$env:ACCELERATION_BUNDLE_DIR"
+
+      - name: Build the installer through the full release gate
+        env:
+          XINGMANG_ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
+        run: npm run release:build:unsigned
+
+      - name: Upload the release artifacts for the publish job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: windows-release-${{ steps.metadata.outputs.version }}
+          path: |
+            release-${{ steps.metadata.outputs.version }}/*Setup.exe
+            release-${{ steps.metadata.outputs.version }}/*.blockmap
+            release-${{ steps.metadata.outputs.version }}/latest.yml
+          retention-days: 14
+          if-no-files-found: error
+
+  publish:
+    needs: windows-build
+    runs-on: ubuntu-latest
+    # 产品所有者按下 Approve 的那一刻，就是 RELEASING.md 要求的「针对当前版本的
+    # 明确发布授权」。没有这一行，凭据会对任意分支可见，而 workflow_dispatch 允许
+    # 指定任意 ref。
+    environment: release
+    permissions:
+      # 只有这一段需要写权限：打 tag 和建 Release。出包那一段仍是只读。
+      contents: write
+    timeout-minutes: 60
+    env:
+      PACKAGE_VERSION: ${{ needs.windows-build.outputs.version }}
+      OBJECT_PREFIX: xingmang-manager
+      PUBLIC_BASE: https://updatesnew.shenfengwl.fun/xingmang-manager
+    steps:
+      - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci --registry=https://registry.npmjs.org/
+
+      - name: Fail early when the R2 credentials are not configured
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: |
+          # 只判断非空，绝不回显取值。缺哪个就报哪个的名字，省得对着一条 403 猜。
+          missing=""
+          for name in R2_ACCOUNT_ID R2_BUCKET AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
+            [ -n "${!name}" ] || missing="$missing $name"
+          done
+          if [ -n "$missing" ]; then
+            echo "::error::release 环境缺少这些 secret：$missing（见 docs/RELEASING.md 的「CI 发布」一节）"
+            exit 1
+          fi
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: windows-release-${{ needs.windows-build.outputs.version }}
+          path: release-artifacts
+
+      - name: List what is about to be published
+        run: |
+          ls -l release-artifacts
+          sha256sum release-artifacts/*
+
+      # 第一步：安装包与 blockmap。这两个文件先落地，客户端此刻还不知道有新版本。
+      - name: Upload the installer and its blockmap
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set -euo pipefail
+          endpoint="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          for file in release-artifacts/*Setup.exe; do
+            aws s3 cp "$file" "s3://$R2_BUCKET/$OBJECT_PREFIX/$(basename "$file")" \
+              --endpoint-url "$endpoint" \
+              --content-type application/vnd.microsoft.portable-executable
+          done
+          for file in release-artifacts/*.blockmap; do
+            aws s3 cp "$file" "s3://$R2_BUCKET/$OBJECT_PREFIX/$(basename "$file")" \
+              --endpoint-url "$endpoint" \
+              --content-type application/octet-stream
+          done
+
+      # 第二步：确认它们真的能从客户会用的那个地址下载下来，而且字节一致。R2 写入
+      # 成功不等于自定义域已经能取到，中间还隔着一层缓存和路由。
+      - name: Verify the uploaded files are downloadable and byte-identical
+        run: |
+          set -euo pipefail
+          for file in release-artifacts/*Setup.exe release-artifacts/*.blockmap; do
+            name=$(basename "$file")
+            curl --fail --silent --show-error --location --max-time 600 \
+              --output "$RUNNER_TEMP/$name" "$PUBLIC_BASE/$name"
+            if ! cmp -s "$file" "$RUNNER_TEMP/$name"; then
+              echo "::error::$name 上传后的内容与本地产物不一致，已停在覆盖 latest.yml 之前"
+              exit 1
+            fi
+          done
+
+      # 第三步，且必须是最后一步：更新清单。到这里为止线上仍是旧版本，随时可以放弃。
+      - name: Publish the update manifest
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+        run: |
+          set -euo pipefail
+          aws s3 cp release-artifacts/latest.yml \
+            "s3://$R2_BUCKET/$OBJECT_PREFIX/latest.yml" \
+            --endpoint-url "https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com" \
+            --content-type text/yaml \
+            --cache-control 'no-cache'
+
+      - name: Re-verify the published update feed end to end
+        # 重新下载远端 latest.yml 和安装程序、重算 SHA-512、确认 blockmap 可访问。
+        # 这一步失败就意味着线上处于半发布状态，必须立刻按 RELEASING.md 第 8 节
+        # 恢复旧的 latest.yml。
+        run: npm run update:verify-feed -- --platform=windows
+
+      - name: Tag the commit that shipped and create the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHIPPED_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          # 打的是本次实际出包的那个 commit，不是"今天的 main"——提升版本号之后、
+          # 构建之前可能又合进了别的改动。附注 tag 自带打标时间，推上去之后不移动。
+          git tag -a "v$PACKAGE_VERSION" "$SHIPPED_SHA" -m "$PACKAGE_VERSION"
+          git push origin "v$PACKAGE_VERSION"
+          # release-notes.md 里是从 0.1.x 起的全部历史，Release 正文只要这一版那一节。
+          node scripts/extract-release-notes.cjs --version "$PACKAGE_VERSION" --output "$RUNNER_TEMP/release-section.md"
+          gh release create "v$PACKAGE_VERSION" \
+            --title "$PACKAGE_VERSION" \
+            --notes-file "$RUNNER_TEMP/release-section.md" \
+            release-artifacts/*Setup.exe
