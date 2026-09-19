@@ -7,6 +7,7 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { _electron as electron } from '@playwright/test'
 import { createServer, resolveConfig } from 'vite'
+import { createPageErrorCollector } from './page-errors.mjs'
 
 const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 // Mirror the public dev command for both the in-process Vite fixture and Electron.
@@ -91,6 +92,8 @@ test('the configured macOS development origin renders the real Electron app', {
       },
     })
     const page = await application.firstWindow({ timeout: 10_000 })
+    const pageErrors = createPageErrorCollector()
+    pageErrors.watch(page)
     const failedRequests = []
     page.on('requestfailed', (request) => {
       failedRequests.push({ url: request.url(), error: request.failure()?.errorText })
@@ -108,6 +111,7 @@ test('the configured macOS development origin renders the real Electron app', {
     assert.equal(await page.locator('#root').getByTestId('welcome-page').count(), 1)
     assert.equal(await page.getByTestId('welcome-login').isVisible(), true)
     assert.equal(await page.evaluate(() => typeof window.xingmang?.getAccountSession), 'function')
+    pageErrors.assertNone()
   } finally {
     try {
       await application?.close()

@@ -147,6 +147,22 @@ test('desktop route avoids Node and unknown configuration requires an explicit c
   } finally { await page.close() }
 })
 
+test('an official Codex that has not signed in cannot leave the connect step', async () => {
+  const page = await open('scenario=guide&installed=1&official=1&runtime=1&officialLoginRequired=1')
+  try {
+    await page.getByTestId('guide-route-codex').check()
+    await page.getByTestId('guide-next').click()
+    await page.getByTestId('guide-next').click()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'connect')
+    await page.getByTestId('guide-official-login').waitFor()
+    assert.equal(await page.getByTestId('guide-next').isDisabled(), true)
+    await page.getByTestId('guide-config').click()
+    assert.equal(await page.getByTestId('guide-official-login').count(), 0)
+    await page.getByTestId('guide-next').click()
+    assert.equal(await page.getByTestId('start-guide').getAttribute('data-guide-step'), 'ready')
+  } finally { await page.close() }
+})
+
 test('canceling CLI workspace selection keeps the guide on its ready step', async () => {
   const page = await open('scenario=guide&installed=1&connected=1&runtime=1&launchCancel=1')
   try {

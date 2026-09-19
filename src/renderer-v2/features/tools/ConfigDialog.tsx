@@ -3,7 +3,7 @@ import { Eye, FolderOpen, KeyRound, RefreshCw, Save, Settings } from 'lucide-rea
 import type { AccountKey, AppConfigSummary, ProviderId } from '../../../../electron/ipc-contract'
 import { defaultCliModels, resolveDefaultCliModel } from '../../../../electron/cli-model-defaults'
 import { BrandIcon, Button, Confirm, Dialog, Input, Pill, Segment, Select, Tabs } from '../../ui'
-import { tools } from '../../registry/tools'
+import { officialAccountNames, tools } from '../../registry/tools'
 import { isToolId, providerFor, sourceFor, type ToolId } from './model'
 import { getSourceMarkerStorage, writeManualSourceMarker } from './source-marker'
 import type { ToolsApi } from './api'
@@ -210,7 +210,7 @@ export function ConfigDialog({ api, tool, config, signedIn, initialModelFilter =
       onSaved(markerWarning || undefined)
     })
   }
-  const officialName = providerFor(tab) === 'codex' ? 'ChatGPT 账号' : providerFor(tab) === 'claude' ? 'Claude 账号' : 'Google 账号'
+  const officialName = officialAccountNames[provider] ?? '官方账号'
   const sourceOptions = [
     { value: 'account', label: '使用星芒账号' },
     ...(definition.sources.includes('official') ? [{ value: 'official', label: officialName }] : []),

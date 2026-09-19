@@ -78,6 +78,7 @@ import { ProviderExtensionService } from './provider-extensions'
 import { ProviderSessionsService } from './provider-sessions'
 import { guardProcessOutputStreams } from './process-stream-errors'
 import { RuntimeLogStore } from './runtime-log'
+import { attachPlatformAuditLog } from './platform/runtime-log-bridge'
 import { recordStartupFailure } from './startup-log'
 import { inspectProviderConfig } from './config-files'
 import { rootedMainServiceOptions } from './main-service-options'
@@ -541,6 +542,11 @@ if (!hasSingleInstanceLock) {
       packaged: app.isPackaged,
     })
     markRuntimeLoggingActive()
+    // desktop-entry registers the platform handlers before this store exists,
+    // so their audit entries buffer in the bridge until it is handed over.
+    attachPlatformAuditLog((level, source, event, message, detail) => {
+      runtimeLog.log(level, source, event, message, detail)
+    })
     runtimeLog.log('info', 'main', 'app.started', '应用主进程已启动', {
       version: app.getVersion(),
       packaged: app.isPackaged,
@@ -701,6 +707,12 @@ if (!hasSingleInstanceLock) {
         : undefined,
       retryWithoutProxy: async () => {
         await autoUpdater.netSession.setProxy({ mode: 'direct' })
+      },
+      // Bypassing the proxy is a per-request escape hatch, so the updater
+      // session goes back to the default resolution as soon as the request is
+      // over. 'system' is the mode a freshly created session already has.
+      restoreProxy: async () => {
+        await autoUpdater.netSession.setProxy({ mode: 'system' })
       },
     })
     runtimeLog.log('info', 'updater', 'runtime.selected', '主程序更新运行模式已确定', {
