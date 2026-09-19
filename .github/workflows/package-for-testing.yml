@@ -96,15 +96,6 @@ jobs:
           XINGMANG_ACCELERATION_BUNDLE_DIR: ${{ runner.temp }}\acceleration-win32-x64
         run: npm run release:build:unsigned
 
-      - name: Launch the packaged macOS app and require it to stay alive
-        # 2026-09-19 交给 yoyo 的那份包每一项产物校验都是绿的，装上去一启动就被
-        # dyld 杀掉。读产物的检查看不见这件事，只有真的把它跑起来才看得见，所以
-        # 这一步在上传之前拦。
-        timeout-minutes: 6
-        env:
-          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
-        run: node e2e/macos-launch-smoke.mjs "release-free-ci-$PACKAGE_VERSION"
-
       - name: Print artifact checksums
         shell: pwsh
         env:
@@ -183,6 +174,15 @@ jobs:
           ACCELERATION_ARM64: ${{ runner.temp }}/acceleration-darwin-arm64
           ACCELERATION_X64: ${{ runner.temp }}/acceleration-darwin-x64
         run: node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package --acceleration-arm64 "$ACCELERATION_ARM64" --acceleration-x64 "$ACCELERATION_X64"
+
+      - name: Launch the packaged macOS app and require it to stay alive
+        # 2026-09-19 交给 yoyo 的那份包每一项产物校验都是绿的，装上去一启动就被
+        # dyld 杀掉。读产物的检查看不见这件事，只有真的把它跑起来才看得见，所以
+        # 这一步在上传之前拦。
+        timeout-minutes: 6
+        env:
+          PACKAGE_VERSION: ${{ steps.metadata.outputs.version }}
+        run: node e2e/macos-launch-smoke.mjs "release-free-ci-$PACKAGE_VERSION"
 
       - name: Print artifact checksums
         env:
