@@ -90,12 +90,24 @@ test('redemption blocks duplicate submits, recovers after failure, and refreshes
     const input = page.getByPlaceholder('输入兑换码')
     const submit = page.getByRole('button', { name: '立即兑换' })
     await input.fill('FIRST-FAILS')
-    await submit.click()
-    await page.getByRole('button', { name: '正在兑换…' }).waitFor()
-    assert.equal(await page.getByRole('button', { name: '正在兑换…' }).isDisabled(), true)
-    await page.evaluate(() => {
-      document.querySelector('.account-redeem .primary-button')?.click()
+    // 兑换按钮只在请求在途的那段时间里是禁用的（夹具里约 120 毫秒），从 Node 侧
+    // 等这个瞬时状态在慢一点的 runner 上必然赛跑：往返一趟回来时按钮早就恢复了，
+    // 于是整条用例干等到默认超时。把「点一次、读在途状态、再点一次」放进同一个
+    // 页面任务里，这段窗口就不可能在中间关闭，断言的仍是原来那两件事：在途时按钮
+    // 禁用且文案变为「正在兑换…」，以及在途时的第二次提交不会再发一次请求。
+    const duringSubmit = await page.evaluate(async () => {
+      const button = document.querySelector('.account-redeem .primary-button')
+      if (!(button instanceof HTMLButtonElement)) throw new Error('未找到兑换提交按钮')
+      button.click()
+      // React 把这次点击产生的更新排在微任务里刷新，所以要先把微任务排空再读按钮。
+      // 排空微任务不会让夹具那 120 毫秒的定时器有机会触发，窗口因此不会中途关闭。
+      for (let attempt = 0; attempt < 50 && !button.disabled; attempt += 1) await Promise.resolve()
+      const snapshot = { disabled: button.disabled, label: button.textContent?.trim() ?? '' }
+      button.click()
+      return snapshot
     })
+    assert.equal(duringSubmit.disabled, true)
+    assert.equal(duringSubmit.label, '正在兑换…')
     assert.equal(await page.evaluate(() => window.accountCommerceHarness.redeemCalls), 1)
 
     await page.getByTestId('toast').filter({ hasText: '兑换码无效或已使用' }).waitFor()
