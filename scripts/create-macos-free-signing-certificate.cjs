@@ -4,13 +4,15 @@ const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
 const CERTIFICATE_BASENAME = 'xingmang-macos-free-signing'
-// P-22: three years, not the twenty this used to mint. The publisher holds
-// this P12 on a single machine with no revocation path of any kind, so the
-// only thing that ever retires a stolen copy is the certificate's own expiry.
-// Rotation costs one manual migration for every user (see
-// docs/MACOS_FREE_DISTRIBUTION.md), which is why it is three years and not
-// one.
-const VALIDITY_DAYS = 1095
+// P-22: ten years rather than the twenty this used to mint. There is no
+// revocation path for a self-signed identity, so a shorter life is the only
+// thing that ever retires a leaked copy -- but expiry is not free either:
+// signing with a new certificate breaks Squirrel.Mac update continuity and
+// every existing user has to reinstall by hand (see
+// docs/MACOS_FREE_DISTRIBUTION.md). Ten years keeps that cost rare while
+// still putting an end date on the key; a known key compromise is rotated
+// immediately rather than waited out.
+const VALIDITY_DAYS = 3650
 const OPENSSL_PATH = '/usr/bin/openssl'
 const COMMAND_TIMEOUT_MS = 30_000
 const MAX_COMMON_NAME_LENGTH = 64

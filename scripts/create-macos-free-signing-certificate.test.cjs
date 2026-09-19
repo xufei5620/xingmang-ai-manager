@@ -164,7 +164,7 @@ test('pre-existing certificate output directories must be private and owned by t
   }
 })
 
-test('certificate generation requests a non-issuing three-year RSA-3072 SHA-256 code-signing certificate and Keychain-compatible encrypted P12', () => {
+test('certificate generation requests a non-issuing ten-year RSA-3072 SHA-256 code-signing certificate and Keychain-compatible encrypted P12', () => {
   const outputDirectory = path.join(temporaryDirectory(), 'xingmang-free-update-identity')
   const invocations = []
 
@@ -186,7 +186,7 @@ test('certificate generation requests a non-issuing three-year RSA-3072 SHA-256 
   assert.ok(certificateCommand.includes('extendedKeyUsage=critical,codeSigning'))
   assert.equal(certificateCommand.some((argument) => /CA:TRUE|keyCertSign/.test(argument)), false)
   assert.equal(certificateCommand[certificateCommand.indexOf('-days') + 1], String(VALIDITY_DAYS))
-  assert.equal(VALIDITY_DAYS, 1095)
+  assert.equal(VALIDITY_DAYS, 3650)
   const exportCommand = invocations.find((args) => args[0] === 'pkcs12')
   assert.ok(exportCommand)
   assert.ok(exportCommand.includes('-descert'))

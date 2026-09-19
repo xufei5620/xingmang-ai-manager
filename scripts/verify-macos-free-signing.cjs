@@ -6,6 +6,11 @@ const { spawnSync } = require('node:child_process')
 const OPENSSL_PATH = '/usr/bin/openssl'
 const SECURITY_PATH = '/usr/bin/security'
 const COMMAND_TIMEOUT_MS = 30_000
+// P-22. Mirrors VALIDITY_DAYS in create-macos-free-signing-certificate.cjs,
+// with a couple of days of slack for how OpenSSL rounds the notAfter it
+// writes. Certificates minted before that cap existed ran for twenty years.
+const MAX_VALIDITY_DAYS = 3650
+const DAY_MS = 24 * 60 * 60 * 1000
 
 function fail(message) {
   throw new Error(message)
@@ -166,6 +171,9 @@ function verifyFreeMacSigningIdentity(options = {}) {
     if (Number.isNaN(notBefore.getTime()) || Number.isNaN(notAfter.getTime())) fail('证书有效期格式无效')
     if (notBefore > now) fail('证书尚未生效')
     if (notAfter <= now) fail('证书已经过期')
+    if (notAfter.getTime() - notBefore.getTime() > (MAX_VALIDITY_DAYS + 2) * DAY_MS) {
+      fail(`证书有效期不能超过 ${MAX_VALIDITY_DAYS} 天，请用 npm run mac:free:create-certificate 重新生成`)
+    }
 
     const text = outputOf(runOpenSsl, ['x509', '-in', certificatePath, '-noout', '-text'])
     if (!hasExclusiveCriticalCodeSigningEku(text)) {

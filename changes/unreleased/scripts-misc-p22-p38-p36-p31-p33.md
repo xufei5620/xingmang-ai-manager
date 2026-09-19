@@ -1,9 +1,11 @@
 ## 开发
 
 - P-22：`scripts/create-macos-free-signing-certificate.cjs` 不再签发 20 年期、`CA:TRUE` 且带
-  `keyCertSign` 的证书。改为三年期的终端证书（`basicConstraints=critical,CA:FALSE`、
+  `keyCertSign` 的证书。改为十年期的终端证书（`basicConstraints=critical,CA:FALSE`、
   `keyUsage=critical,digitalSignature`），发布 Mac 把它标记为代码签名可信后，拿到 P12 的人
-  也无法再签发链到可信锚的下级证书。`verify-macos-free-signing.cjs` 增加断言钉死这两项，
+  也无法再签发链到可信锚的下级证书。有效期没有压得更短，是因为换证书会中断 Squirrel.Mac
+  的更新连续性、全部老用户都要手动重装，只在临近到期或私钥泄露时才轮换。
+  `verify-macos-free-signing.cjs` 增加断言钉死 basicConstraints、keyUsage 与 3650 天上限，
   旧证书会在发布预检处失败；轮换流程写进 `docs/MACOS_FREE_DISTRIBUTION.md`。
 - P-38：`scripts/macos-ephemeral-signing.cjs` 的签名重试只对钥匙串／文件系统争用类的瞬时
   失败重试，确定性失败（身份不存在、包格式不被接受等）第一次就抛出，不再白等三轮退避。

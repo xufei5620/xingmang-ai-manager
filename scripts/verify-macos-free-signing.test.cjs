@@ -32,7 +32,7 @@ function healthyOptions(overrides = {}) {
       if (args.includes('-fingerprint') && args.includes('-sha256')) return 'sha256 Fingerprint=AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\n'
       if (args.includes('-fingerprint') && args.includes('-sha1')) return 'sha1 Fingerprint=11:AA:22:BB:33:CC:44:DD:55:EE:66:FF:77:88:99:00:AA:BB:CC:DD\n'
       if (args.includes('-subject')) return 'subject=CN=XingMang Free Update Identity\nissuer=CN=XingMang Free Update Identity\n'
-      if (args.includes('-startdate')) return 'notBefore=Aug  1 00:00:00 2026 GMT\nnotAfter=Jul 28 00:00:00 2046 GMT\n'
+      if (args.includes('-startdate')) return 'notBefore=Aug  1 00:00:00 2026 GMT\nnotAfter=Jul 28 00:00:00 2036 GMT\n'
       if (args.includes('-text')) return HEALTHY_CERTIFICATE_TEXT
       if (args[0] === 'verify') return 'certificate: OK\n'
       throw new Error(`Unexpected OpenSSL command: ${args.join(' ')}`)
@@ -206,4 +206,21 @@ test('signing preflight refuses a certificate that can issue further certificate
   }
 
   assert.equal(assertNonIssuingSigningCertificate(HEALTHY_CERTIFICATE_TEXT), undefined)
+})
+
+test('signing preflight refuses a certificate that outlives the ten-year cap (P-22)', () => {
+  assert.throws(() => verifyFreeMacSigningIdentity(healthyOptions({
+    runOpenSsl: (args) => args.includes('-startdate')
+      ? 'notBefore=Aug  1 00:00:00 2026 GMT\nnotAfter=Jul 28 00:00:00 2046 GMT\n'
+      : healthyOptions().runOpenSsl(args),
+  })), /有效期不能超过 3650 天/)
+
+  // The generator's own output sits just inside the cap.
+  const notBefore = new Date('2026-08-01T00:00:00Z')
+  const notAfter = new Date(notBefore.getTime() + 3650 * 24 * 60 * 60 * 1000)
+  assert.equal(verifyFreeMacSigningIdentity(healthyOptions({
+    runOpenSsl: (args) => args.includes('-startdate')
+      ? `notBefore=${notBefore.toUTCString()}\nnotAfter=${notAfter.toUTCString()}\n`
+      : healthyOptions().runOpenSsl(args),
+  })).identityName, 'XingMang Free Update Identity')
 })
