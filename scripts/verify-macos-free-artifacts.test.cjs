@@ -1302,6 +1302,20 @@ test('macOS ZIP integration rejects an extracted unsigned application', {
   fs.writeFileSync(path.join(appDirectory, 'Contents', 'MacOS', 'Fixture'), '#!/bin/sh\n')
   fs.chmodSync(path.join(appDirectory, 'Contents', 'MacOS', 'Fixture'), 0o755)
   fs.writeFileSync(path.join(appDirectory, 'Contents', 'Resources', 'app.asar'), 'not-an-asar')
+  // The bundle needs the framework the fuse wire lives in, laid out the way a
+  // real one is: ditto stores Versions/Current and the framework-root link as
+  // symlink entries, so this fixture also exercises the real zipinfo listing
+  // and the real extraction of a bundle that legitimately contains links.
+  const frameworkDirectory = path.join(
+    appDirectory, 'Contents', 'Frameworks', 'Electron Framework.framework',
+  )
+  fs.mkdirSync(path.join(frameworkDirectory, 'Versions', 'A'), { recursive: true })
+  fs.writeFileSync(path.join(frameworkDirectory, 'Versions', 'A', 'Electron Framework'), fuseWireBinary())
+  fs.symlinkSync('A', path.join(frameworkDirectory, 'Versions', 'Current'))
+  fs.symlinkSync(
+    path.join('Versions', 'Current', 'Electron Framework'),
+    path.join(frameworkDirectory, 'Electron Framework'),
+  )
   fs.writeFileSync(path.join(appDirectory, 'Contents', 'Resources', 'app-update.yml'), [
     'provider: generic',
     'url: https://updates.shenfengwl.fun/xingmang-manager/',
