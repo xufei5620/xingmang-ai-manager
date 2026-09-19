@@ -4,6 +4,7 @@ import path from 'node:path'
 import { cliCatalog, type ProviderId } from './catalog'
 import { readBoundedUtf8FileSync } from './bounded-file'
 import { releaseStagedDarwinCli } from './darwin-cli-staging'
+import { verifyDarwinClaudeNativeExecutable } from './macos-claude'
 import {
   commandEnvironment,
   findExecutable,
@@ -638,6 +639,13 @@ export async function resolveCliCommand(
         ? () => releaseStagedDarwinCli(executable)
         : undefined,
     }
+  }
+  if (platform === 'darwin' && provider === 'claude' && installation.source === 'native') {
+    const executable = await verifyDarwinClaudeNativeExecutable({
+      commandPath: installation.commandPath,
+      runCommand: runDarwinVerificationCommand,
+    })
+    return { executable, argv: [] }
   }
   if (installation.packageRoot) {
     if (provider === 'codex') {
