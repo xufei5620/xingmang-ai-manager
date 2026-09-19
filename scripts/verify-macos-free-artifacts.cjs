@@ -22,13 +22,30 @@ const MACHO_ARCHITECTURES = {
   arm64: 'arm64',
   x64: 'x86_64',
 }
-// Every signed macOS build gets build/entitlements.mac.plist for the app and
-// build/entitlements.mac.inherit.plist for the nested helpers, and both grant
-// exactly this one key. Library validation and the other hardened-runtime
-// exceptions are deliberately withheld, so the verifier asserts set equality
-// rather than a subset: a build that quietly gains an entitlement must fail
-// here, not ship.
-const ALLOWED_ENTITLEMENT_KEYS = ['com.apple.security.cs.allow-jit']
+// V8 needs MAP_JIT pages and nothing else does, so this is the whole grant for
+// a signature Apple issued. The verifier asserts set equality rather than a
+// subset: a build that quietly gains an entitlement must fail here, not ship.
+const BASE_ENTITLEMENT_KEYS = ['com.apple.security.cs.allow-jit']
+// The one exception, and it is decided by the signature rather than by taste.
+// Library validation compares the team identifier of a process against every
+// library it loads, and only Apple issues that identifier. A signature made
+// without one - ad-hoc, or by any self-signed certificate this repository can
+// mint - therefore cannot load its own Electron framework: 2026-09-19 shipped
+// exactly that package and it died in dyld with "mapping process and mapped
+// file (non-platform) have different Team IDs" before running a line of its
+// own code. Withholding the key from such a build protects nothing (there is
+// no team to compare against) and guarantees it cannot start; granting it to a
+// build that does have a team identifier would throw away the hardened
+// runtime's main defence for the process holding the account token. So the
+// expected set is derived from the signature's own TeamIdentifier, and both
+// directions are failures.
+const LIBRARY_VALIDATION_EXCEPTION_KEY = 'com.apple.security.cs.disable-library-validation'
+
+function expectedEntitlementKeys(teamIdentifier) {
+  return teamIdentifier === null
+    ? [...BASE_ENTITLEMENT_KEYS, LIBRARY_VALIDATION_EXCEPTION_KEY]
+    : [...BASE_ENTITLEMENT_KEYS]
+}
 
 function expectedFreeArtifactNames(version) {
   if (typeof version !== 'string' || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(version)) {
@@ -574,11 +591,32 @@ function assertHardenedRuntime(details, label) {
   return flagLines.length
 }
 
-function assertAllowedEntitlements(keys, label) {
-  const allowed = [...ALLOWED_ENTITLEMENT_KEYS].sort()
+// codesign prints exactly one TeamIdentifier line per signature, carrying
+// either a team or the literal "not set". Anything else means the output shape
+// changed underneath this verifier, and guessing would silently pick the wrong
+// entitlement set - which is the same false green that let a package that
+// cannot start reach a user in the first place.
+function parseCodesignTeamIdentifier(details, label) {
+  const values = String(details || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith('TeamIdentifier='))
+    .map((line) => line.slice('TeamIdentifier='.length).trim())
+  if (values.length !== 1 || !values[0]) {
+    throw new Error(`${label} 的 codesign 输出没有唯一的 TeamIdentifier 行，无法判定 library validation 能否加载随包框架`)
+  }
+  return values[0] === 'not set' ? null : values[0]
+}
+
+function assertAllowedEntitlements(keys, label, teamIdentifier) {
+  if (teamIdentifier !== null && typeof teamIdentifier !== 'string') {
+    throw new Error(`${label} 的 team identifier 未知，无法判定 entitlements 允许清单`)
+  }
+  const allowed = expectedEntitlementKeys(teamIdentifier).sort()
   const actual = [...keys].sort()
   if (actual.length !== allowed.length || actual.some((key, index) => key !== allowed[index])) {
-    throw new Error(`${label} 的 entitlements 必须精确等于允许清单（${allowed.join('、')}），实际为：${actual.join('、') || '（空）'}`)
+    const signature = teamIdentifier === null ? '没有 team identifier 的签名' : `team identifier 为 ${teamIdentifier} 的签名`
+    throw new Error(`${label} 的 entitlements 必须精确等于${signature}的允许清单（${allowed.join('、')}），实际为：${actual.join('、') || '（空）'}`)
   }
   return actual
 }
@@ -615,9 +653,10 @@ async function verifySignatureHardening(targetPath, label, commandRunner, assert
   const details = outputText(await commandRunner('/usr/bin/codesign', ['-d', '--verbose=4', targetPath]))
   assertBundleIdentity()
   assertHardenedRuntime(details, label)
+  const teamIdentifier = parseCodesignTeamIdentifier(details, label)
   const keys = await readEntitlementKeys(targetPath, commandRunner, label)
   assertBundleIdentity()
-  return { label, entitlementKeys: assertAllowedEntitlements(keys, label) }
+  return { label, teamIdentifier, entitlementKeys: assertAllowedEntitlements(keys, label, teamIdentifier) }
 }
 
 function verifyPackagedUpdateConfig(appPath, expectedUpdateUrl) {
@@ -744,17 +783,25 @@ async function inspectPackagedApplication(
   // so these two cover Contents/MacOS. The nested helpers carry their own
   // signatures and their own entitlements file, and are checked separately.
   assertHardenedRuntime(details, '主可执行文件')
+  const teamIdentifier = parseCodesignTeamIdentifier(details, '主可执行文件')
   const mainEntitlements = await readEntitlementKeys(appPath, commandRunner, '主可执行文件')
   assertBundleIdentity()
-  assertAllowedEntitlements(mainEntitlements, '主可执行文件')
+  assertAllowedEntitlements(mainEntitlements, '主可执行文件', teamIdentifier)
   const helperEntitlements = []
   for (const helper of findNestedHelperApplications(appPath)) {
-    helperEntitlements.push(await verifySignatureHardening(
+    const helperResult = await verifySignatureHardening(
       helper.path,
       `helper ${helper.name}`,
       commandRunner,
       assertBundleIdentity,
-    ))
+    )
+    // A helper signed by a different team than the app is the split library
+    // validation exists to stop, and it is also the one case where the app's
+    // own entitlements say nothing about whether the bundle can start.
+    if (helperResult.teamIdentifier !== teamIdentifier) {
+      throw new Error(`helper ${helper.name} 的 team identifier 与主可执行文件不一致`)
+    }
+    helperEntitlements.push(helperResult)
   }
 
   const architectures = outputText(await commandRunner('/usr/bin/lipo', ['-archs', executable]))
@@ -801,6 +848,7 @@ async function inspectPackagedApplication(
       certificateSha256,
       certificateSha1,
       fuseCount,
+      teamIdentifier,
       entitlementKeys: mainEntitlements,
       helperEntitlements,
       ...requirement,
@@ -1108,8 +1156,11 @@ if (require.main === module) {
 }
 
 module.exports = {
-  ALLOWED_ENTITLEMENT_KEYS,
+  BASE_ENTITLEMENT_KEYS,
+  LIBRARY_VALIDATION_EXCEPTION_KEY,
   assertAllowedEntitlements,
+  expectedEntitlementKeys,
+  parseCodesignTeamIdentifier,
   assertExactCodesignIdentifier,
   assertExactArchitecture,
   assertHardenedRuntime,

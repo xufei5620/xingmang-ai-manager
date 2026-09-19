@@ -10,9 +10,12 @@ const YAML = require('yaml')
 const { FuseState } = require('@electron/fuses/dist/constants')
 const { EXPECTED_FUSES, describeFuseMismatches, readFuseWires } = require('./electron-fuse-hardening.cjs')
 const {
-  ALLOWED_ENTITLEMENT_KEYS,
+  BASE_ENTITLEMENT_KEYS,
+  LIBRARY_VALIDATION_EXCEPTION_KEY,
+  expectedEntitlementKeys,
   expectedFreeArtifactNames,
   assertAllowedEntitlements,
+  parseCodesignTeamIdentifier,
   assertExactArchitecture,
   assertExactCodesignIdentifier,
   assertHardenedRuntime,
@@ -248,6 +251,11 @@ function parseEntitlementsSnapshot(snapshotPath) {
   return Object.fromEntries(keys.map((key) => [key, true]))
 }
 
+// Every signature this repository can produce today is made without a team
+// identifier, so this is what the fixtures sign with unless a test says
+// otherwise.
+const SELF_SIGNED_ENTITLEMENT_KEYS = expectedEntitlementKeys(null)
+
 function isHelperTarget(targetPath) {
   return String(targetPath).includes(`${path.sep}Frameworks${path.sep}`)
 }
@@ -255,8 +263,10 @@ function isHelperTarget(targetPath) {
 function inspectableZipCommandRunner(sourceApp, certificate, infoPlist, {
   flags = '0x10000(runtime)',
   helperFlags = '0x10000(runtime)',
-  entitlements = [...ALLOWED_ENTITLEMENT_KEYS],
-  helperEntitlements = [...ALLOWED_ENTITLEMENT_KEYS],
+  entitlements = [...SELF_SIGNED_ENTITLEMENT_KEYS],
+  helperEntitlements = [...SELF_SIGNED_ENTITLEMENT_KEYS],
+  teamIdentifier = 'not set',
+  helperTeamIdentifier = teamIdentifier,
 } = {}) {
   const certificateSha1 = crypto.createHash('sha1').update(certificate).digest('hex')
   return async (command, args) => {
@@ -279,9 +289,11 @@ function inspectableZipCommandRunner(sourceApp, certificate, infoPlist, {
       return { stdout: keys === null ? '' : entitlementsPlist(keys) }
     }
     if (command === '/usr/bin/codesign' && args.includes('--verbose=4')) {
-      const codeDirectory = `CodeDirectory v=20500 size=1234 flags=${isHelperTarget(args.at(-1)) ? helperFlags : flags} hashes=42+7\n`
-      if (isHelperTarget(args.at(-1))) return { stderr: codeDirectory }
-      return { stderr: `Identifier=com.xingmang.ai.manager\n${codeDirectory}` }
+      const helper = isHelperTarget(args.at(-1))
+      const codeDirectory = `CodeDirectory v=20500 size=1234 flags=${helper ? helperFlags : flags} hashes=42+7\n`
+      const team = `TeamIdentifier=${helper ? helperTeamIdentifier : teamIdentifier}\n`
+      if (helper) return { stderr: `${codeDirectory}${team}` }
+      return { stderr: `Identifier=com.xingmang.ai.manager\n${codeDirectory}${team}` }
     }
     if (command === '/usr/bin/codesign' && args[0] === '-d' && args[1].startsWith('--extract-certificates=')) {
       fs.writeFileSync(`${args[1].slice('--extract-certificates='.length)}0`, certificate)
@@ -1023,14 +1035,45 @@ test('requires a hardened runtime flag on every codesign CodeDirectory line', ()
   assert.throws(() => assertHardenedRuntime('CodeDirectory flags=0x10000 hashes=1', '应用'), /无法解析/)
 })
 
-test('requires the entitlements key set to equal the allow list exactly', () => {
-  assert.deepEqual(assertAllowedEntitlements([...ALLOWED_ENTITLEMENT_KEYS], '应用'), [...ALLOWED_ENTITLEMENT_KEYS])
-  for (const keys of [
-    [],
-    [...ALLOWED_ENTITLEMENT_KEYS, 'com.apple.security.cs.disable-library-validation'],
-    ['com.apple.security.cs.disable-library-validation'],
+test('derives the entitlements allow list from the signature own team identifier', () => {
+  // Without a team identifier library validation has nothing to compare, so
+  // the exception is required: a build missing it is the 2026-09-19 package
+  // that was killed in dyld before running any of its own code.
+  assert.deepEqual(
+    assertAllowedEntitlements([...BASE_ENTITLEMENT_KEYS, LIBRARY_VALIDATION_EXCEPTION_KEY], '应用', null),
+    [...BASE_ENTITLEMENT_KEYS, LIBRARY_VALIDATION_EXCEPTION_KEY].sort(),
+  )
+  // With one, the exception would give away the hardened runtime's main
+  // defence for the process that holds the account token.
+  assert.deepEqual(
+    assertAllowedEntitlements([...BASE_ENTITLEMENT_KEYS], '应用', 'ABCDE12345'),
+    [...BASE_ENTITLEMENT_KEYS],
+  )
+  for (const [keys, teamIdentifier] of [
+    [[], null],
+    [[...BASE_ENTITLEMENT_KEYS], null],
+    [[LIBRARY_VALIDATION_EXCEPTION_KEY], null],
+    [[...BASE_ENTITLEMENT_KEYS, LIBRARY_VALIDATION_EXCEPTION_KEY, 'com.apple.security.cs.allow-dyld-environment-variables'], null],
+    [[...BASE_ENTITLEMENT_KEYS, LIBRARY_VALIDATION_EXCEPTION_KEY], 'ABCDE12345'],
+    [[], 'ABCDE12345'],
   ]) {
-    assert.throws(() => assertAllowedEntitlements(keys, '应用'), /entitlements/)
+    assert.throws(() => assertAllowedEntitlements(keys, '应用', teamIdentifier), /entitlements/, JSON.stringify(keys))
+  }
+  assert.throws(() => assertAllowedEntitlements([...BASE_ENTITLEMENT_KEYS], '应用', undefined), /team identifier/)
+})
+
+test('reads a single codesign TeamIdentifier line and fails closed on anything else', () => {
+  const codeDirectory = 'CodeDirectory v=20500 size=1234 flags=0x10000(runtime) hashes=42+7'
+  assert.equal(parseCodesignTeamIdentifier(`${codeDirectory}\nTeamIdentifier=not set\n`, '应用'), null)
+  assert.equal(parseCodesignTeamIdentifier(`${codeDirectory}\n  TeamIdentifier=ABCDE12345  \n`, '应用'), 'ABCDE12345')
+  for (const details of [
+    codeDirectory,
+    `${codeDirectory}\nTeamIdentifier=\n`,
+    `${codeDirectory}\nTeamIdentifier=ABCDE12345\nTeamIdentifier=not set\n`,
+    '',
+    null,
+  ]) {
+    assert.throws(() => parseCodesignTeamIdentifier(details, '应用'), /TeamIdentifier/, String(details))
   }
 })
 
@@ -1038,11 +1081,29 @@ for (const [name, runnerOptions, expected] of [
   ['main executable is not hardened', { flags: '0x0(none)' }, /主可执行文件.*强化运行时/],
   ['helper is not hardened', { helperFlags: '0x0(none)' }, /helper.*强化运行时/],
   ['main entitlements gain a key', {
-    entitlements: ['com.apple.security.cs.allow-jit', 'com.apple.security.cs.disable-library-validation'],
+    entitlements: [...SELF_SIGNED_ENTITLEMENT_KEYS, 'com.apple.security.cs.allow-dyld-environment-variables'],
   }, /主可执行文件.*entitlements/],
   ['helper entitlements gain a key', {
-    helperEntitlements: ['com.apple.security.cs.allow-jit', 'com.apple.security.cs.disable-library-validation'],
+    helperEntitlements: [...SELF_SIGNED_ENTITLEMENT_KEYS, 'com.apple.security.cs.allow-dyld-environment-variables'],
   }, /helper.*entitlements/],
+  // The 2026-09-19 package: signed, verifiable, every artifact check green,
+  // and killed by dyld on launch because library validation had no team
+  // identifier to match and the exception was withheld anyway.
+  ['main entitlements withhold the library validation exception without a team identifier', {
+    entitlements: [...BASE_ENTITLEMENT_KEYS],
+  }, /主可执行文件.*entitlements/],
+  ['helper entitlements withhold the library validation exception without a team identifier', {
+    helperEntitlements: [...BASE_ENTITLEMENT_KEYS],
+  }, /helper.*entitlements/],
+  // The opposite direction: a signature Apple issued must keep library
+  // validation on, so the exception is no longer allowed.
+  ['entitlements keep the library validation exception under a real team identifier', {
+    teamIdentifier: 'ABCDE12345',
+  }, /主可执行文件.*entitlements/],
+  ['main executable carries no TeamIdentifier line', { teamIdentifier: '' }, /TeamIdentifier/],
+  ['helper is signed by another team', {
+    helperTeamIdentifier: 'ABCDE12345',
+  }, /helper.*team identifier/],
   ['main executable carries no entitlements', { entitlements: null }, /主可执行文件.*没有任何 entitlements/],
 ]) {
   test(`rejects a signed free ZIP whose ${name}`, async (t) => {
@@ -1079,10 +1140,12 @@ test('reports the verified entitlements of the application and of every helper',
     expectedVersion: '1.2.3',
     commandRunner: inspectableZipCommandRunner(fixture.sourceApp, fixture.certificate, fixture.infoPlist),
   })
-  assert.deepEqual(result.entitlementKeys, [...ALLOWED_ENTITLEMENT_KEYS])
+  assert.deepEqual(result.entitlementKeys, [...SELF_SIGNED_ENTITLEMENT_KEYS])
+  assert.equal(result.teamIdentifier, null)
   assert.deepEqual(result.helperEntitlements, [{
     label: 'helper Fixture Helper.app',
-    entitlementKeys: [...ALLOWED_ENTITLEMENT_KEYS],
+    teamIdentifier: null,
+    entitlementKeys: [...SELF_SIGNED_ENTITLEMENT_KEYS].sort(),
   }])
 })
 
@@ -1218,7 +1281,7 @@ test('mounts a DMG read-only, runs the packaged inspection, and detaches it', as
   })
   assert.equal(result.architecture, 'arm64')
   assert.equal(result.certificateSha256, certificateSha256)
-  assert.deepEqual(result.entitlementKeys, [...ALLOWED_ENTITLEMENT_KEYS])
+  assert.deepEqual(result.entitlementKeys, [...SELF_SIGNED_ENTITLEMENT_KEYS])
   const attach = commandRunner.calls[0]
   for (const flag of ['-nobrowse', '-readonly', '-noautoopen', '-mountrandom']) assert.ok(attach.includes(flag), flag)
   assert.equal(commandRunner.detached().length, 1)

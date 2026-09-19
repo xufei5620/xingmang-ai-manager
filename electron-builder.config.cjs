@@ -80,14 +80,24 @@ function assertDistributableMacPlatform(electronPlatformName) {
 
 const signingPublisher = process.env.XINGMANG_SIGNING_PUBLISHER?.trim() || undefined
 const updatePublisher = signingPublisher || '绍兴星芒文化传媒有限责任公司'
-// Without an explicit selection electron-builder falls back to its bundled
-// template, which grants disable-library-validation to every build - the one
-// entitlement that takes the hardened runtime's main protection away from a
-// process holding the account token. Only genuinely ad-hoc signatures (the
-// `--dir` builds that are never distributed) keep that escape hatch, because
-// they carry no team identifier for library validation to match against.
+// Library validation loads a library only when its team identifier matches the
+// signing process, and Apple issues that identifier: an ad-hoc signature has
+// none, and neither does a self-signed certificate. 2026-09-19 settled that
+// the hard way - the certificate gained an OU on the theory codesign would
+// record it as the team identifier, and the packaged app still died in dyld
+// with "mapping process and mapped file (non-platform) have different Team
+// IDs" before running a line of its own code.
+//
+// So for every signature this repository can currently produce, withholding
+// disable-library-validation protects nothing (there is no team for library
+// validation to compare against) while guaranteeing the app cannot start. The
+// product owner chose to grant it on 2026-09-19. The strict file stays for the
+// day a Developer ID signature exists, and this exception is withdrawn in the
+// same change. releaseMode is the Windows Authenticode channel and never
+// builds darwin at all.
 const adHocSigningMode = !ephemeralMacSigningMode && !freeMacReleaseMode && !releaseMode
-const macEntitlementsPrefix = adHocSigningMode ? 'build/entitlements.mac.adhoc' : 'build/entitlements.mac'
+const selfSignedMacSigningMode = adHocSigningMode || ephemeralMacSigningMode || freeMacReleaseMode
+const macEntitlementsPrefix = selfSignedMacSigningMode ? 'build/entitlements.mac.adhoc' : 'build/entitlements.mac'
 
 module.exports = {
   appId: 'com.xingmang.ai.manager',

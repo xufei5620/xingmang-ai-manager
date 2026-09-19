@@ -2,11 +2,9 @@ const assert = require('node:assert/strict')
 const test = require('node:test')
 const {
   assertNonIssuingSigningCertificate,
-  assertSigningCertificateTeamIdentifier,
   verifyCertificateSelfSignature,
   verifyFreeMacSigningIdentity,
 } = require('./verify-macos-free-signing.cjs')
-const { SIGNING_TEAM_IDENTIFIER } = require('./create-macos-free-signing-certificate.cjs')
 
 // A real certificate carrying the generator's key, validity and extension
 // profile, and the same bytes with the last byte of its signature flipped.
@@ -97,7 +95,7 @@ function healthyOptions(overrides = {}) {
     runOpenSsl: (args) => {
       if (args.includes('-fingerprint') && args.includes('-sha256')) return 'sha256 Fingerprint=AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99\n'
       if (args.includes('-fingerprint') && args.includes('-sha1')) return 'sha1 Fingerprint=11:AA:22:BB:33:CC:44:DD:55:EE:66:FF:77:88:99:00:AA:BB:CC:DD\n'
-      if (args.includes('-subject')) return 'subject=OU=XINGMANG01, CN=XingMang Free Update Identity\nissuer=OU=XINGMANG01, CN=XingMang Free Update Identity\n'
+      if (args.includes('-subject')) return 'subject=CN=XingMang Free Update Identity\nissuer=CN=XingMang Free Update Identity\n'
       if (args.includes('-startdate')) return 'notBefore=Aug  1 00:00:00 2026 GMT\nnotAfter=Jul 28 00:00:00 2036 GMT\n'
       if (args.includes('-text')) return HEALTHY_CERTIFICATE_TEXT
       throw new Error(`Unexpected OpenSSL command: ${args.join(' ')}`)
@@ -395,29 +393,19 @@ test('P-22: the self-signature check accepts the generator profile and rejects t
   ].join('\n')), undefined)
 })
 
-test('signing preflight refuses a certificate whose subject carries no team identifier', () => {
-  const withoutTeamIdentifier = 'subject=CN=XingMang Free Update Identity\nissuer=CN=XingMang Free Update Identity\n'
-  assert.throws(() => verifyFreeMacSigningIdentity(healthyOptions({
+test('signing preflight accepts a certificate whose subject is a bare common name', () => {
+  // 2026-09-19 briefly required an organizational unit here, betting that
+  // codesign would record it as TeamIdentifier and satisfy library validation.
+  // The package built from such a certificate still reported
+  // `TeamIdentifier=not set` and still died in dyld, so the requirement was
+  // withdrawn: only Apple issues a team identifier, and a subject cannot
+  // conjure one. The bundle now ships the entitlement instead, which
+  // scripts/verify-macos-free-artifacts.cjs asserts against the signature's
+  // own TeamIdentifier.
+  const bareCommonName = 'subject=CN=XingMang Free Update Identity\nissuer=CN=XingMang Free Update Identity\n'
+  assert.doesNotThrow(() => verifyFreeMacSigningIdentity(healthyOptions({
     runOpenSsl: (args) => args.includes('-subject')
-      ? withoutTeamIdentifier
+      ? bareCommonName
       : healthyOptions().runOpenSsl(args),
-  })), /team identifier/)
-})
-
-test('the team identifier assertion reads both OpenSSL subject spellings and fails closed on anything else', () => {
-  const identity = SIGNING_TEAM_IDENTIFIER
-  assert.equal(assertSigningCertificateTeamIdentifier(`OU=${identity}, CN=XingMang Free Update Identity`), undefined)
-  assert.equal(assertSigningCertificateTeamIdentifier(`/OU=${identity}/CN=XingMang Free Update Identity`), undefined)
-  assert.equal(assertSigningCertificateTeamIdentifier(` ou = ${identity} , CN=XingMang Free Update Identity`), undefined)
-
-  for (const subject of [
-    'CN=XingMang Free Update Identity',
-    `OU=${identity.toLowerCase()}, CN=XingMang Free Update Identity`,
-    'OU=SOMEONEELSE, CN=XingMang Free Update Identity',
-    `OU=${identity}, OU=SOMEONEELSE, CN=XingMang Free Update Identity`,
-    `OU=${identity}${identity}, CN=XingMang Free Update Identity`,
-    '',
-  ]) {
-    assert.throws(() => assertSigningCertificateTeamIdentifier(subject), /team identifier/, subject)
-  }
+  })))
 })

@@ -13,18 +13,6 @@ const CERTIFICATE_BASENAME = 'xingmang-macos-free-signing'
 // still putting an end date on the key; a known key compromise is rotated
 // immediately rather than waited out.
 const VALIDITY_DAYS = 3650
-// The organizational unit is what codesign records as TeamIdentifier, and the
-// hardened runtime's library validation compares that identifier between a
-// process and every library it loads. A subject of `/CN=` alone leaves the
-// identifier unset, and macOS then refuses to load the bundled Electron
-// framework into the app it just signed: the process is killed before any of
-// its own code runs, which reaches the publisher as "the app cannot be opened
-// because of a problem". Withholding `disable-library-validation` from the
-// distribution entitlements is deliberate (the main process holds the account
-// token and writes paid API keys), so the identifier has to come from here
-// instead. The value only has to be stable and identical across every binary
-// this certificate signs; it is not issued by Apple and claims nothing.
-const SIGNING_TEAM_IDENTIFIER = 'XINGMANG01'
 const OPENSSL_PATH = '/usr/bin/openssl'
 const COMMAND_TIMEOUT_MS = 30_000
 const MAX_COMMON_NAME_LENGTH = 64
@@ -201,7 +189,15 @@ function createFreeMacSigningCertificate(options = {}) {
   try {
     runOpenSsl([
       'req', '-x509', '-newkey', 'rsa:3072', '-sha256', '-days', String(VALIDITY_DAYS),
-      '-utf8', '-subj', `/OU=${SIGNING_TEAM_IDENTIFIER}/CN=${commonName}`,
+      // The subject carries the common name and nothing else. 2026-09-19 added
+      // an organizational unit here on the theory that codesign records it as
+      // TeamIdentifier and that library validation would then accept the
+      // bundled Electron framework; the package built from that certificate
+      // still reported `TeamIdentifier=not set` and still died in dyld. Only
+      // Apple issues a team identifier, so nothing written into this subject
+      // can produce one -- see build/entitlements.mac.adhoc.plist for what the
+      // build does instead.
+      '-utf8', '-subj', `/CN=${commonName}`,
       // P-22: a signing identity must not be able to issue certificates. The
       // publisher is told to mark this certificate trusted for code signing,
       // so a CA:TRUE copy of the P12 would let whoever holds it mint further
@@ -260,7 +256,6 @@ module.exports = {
   MAX_P12_PASSWORD_LENGTH,
   MIN_P12_PASSWORD_LENGTH,
   OPENSSL_PATH,
-  SIGNING_TEAM_IDENTIFIER,
   VALIDITY_DAYS,
   createFreeMacSigningCertificate,
   resolveDedicatedOutputDirectory,

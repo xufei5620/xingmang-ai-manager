@@ -93,11 +93,12 @@ npm run build:mac
 
 macOS 包开启 hardened runtime，授予的 entitlements 由仓库内的 plist 显式指定，不再回落到 electron-builder 的内置模板（模板会给每个包授予 `disable-library-validation`，等于关掉 hardened runtime 最主要的一道防线，而主进程持有账号 token 并把付费 Key 写进 CLI 配置）。
 
-- `build/entitlements.mac.plist` 与 `build/entitlements.mac.inherit.plist`：所有签名构建（Developer ID 正式发布、免费自签发布、CI 临时签名）使用，只授予 V8 需要的 `com.apple.security.cs.allow-jit`，library validation 保持开启。本程序的运行时依赖全是纯 JavaScript，随包分发的原生组件都以独立进程启动，不需要向进程内加载第三方动态库。
-  library validation 开着就要求包和它随带的 Electron 框架属于同一个 team identifier，而 codesign 的 team identifier 取自签名证书的 OU 字段。所以 `scripts/create-macos-free-signing-certificate.cjs` 生成的自签证书主题是 `/OU=XINGMANG01/CN=<名称>`，签名预检 `scripts/verify-macos-free-signing.cjs` 也会拒绝没有这个 OU 的证书——2026-09-19 之前生成的证书只有 `/CN=`，用它签出来的包能通过全部产物校验，却会在加载自己的框架时被系统杀掉，表现为「应用因为出现问题而无法打开」。
-- `build/entitlements.mac.adhoc.plist` 与 `build/entitlements.mac.adhoc.inherit.plist`：只给 `npm run build:mac:dir` 和 `npm run build:mac:ci` 这类 ad-hoc 占位签名的本地解包构建使用。ad-hoc 签名没有 team identifier，library validation 无从比对随包的 Electron 框架，应用会直接起不来，因此这两份额外授予 `disable-library-validation`。这类产物不对外分发，发行路径不得指向它们。
+- `build/entitlements.mac.adhoc.plist` 与 `build/entitlements.mac.adhoc.inherit.plist`：**目前所有 macOS 构建都用这两份**，它们在 `allow-jit` 之外额外授予 `com.apple.security.cs.disable-library-validation`。
+  library validation 要求进程与它加载的每一个库带同一个 team identifier，而 **team identifier 只有苹果签发的证书才有**。ad-hoc 签名没有，本仓能生成的任何自签证书也没有——2026-09-19 先按「codesign 把证书 OU 记成 team identifier」改过一次证书主题，签出来的包实测仍是 `TeamIdentifier=not set`，依旧在加载自己的 Electron 框架时被 dyld 杀掉，表现为「应用因为出现问题而无法打开」，而产物校验全绿，因为签名本身完全有效。
+  没有 team identifier 时这道校验挡不住任何人（它无从分辨随包框架和别人的框架），唯一的效果是让包起不来，所以 2026-09-19 由产品所有者拍板授予。签名封印与 hardened runtime 的其余部分都还在。
+- `build/entitlements.mac.plist` 与 `build/entitlements.mac.inherit.plist`：只授予 `com.apple.security.cs.allow-jit`，library validation 保持开启。**留给拿到 Developer ID 之后使用**——那是唯一带 team identifier 的签名，届时把 `electron-builder.config.cjs` 的 `macEntitlementsPrefix` 切回来，同一个改动里撤回上面那条例外，并把 `scripts/verify-macos-free-artifacts.cjs` 的断言一起跟上。本程序的运行时依赖全是纯 JavaScript，随包分发的原生组件都以独立进程启动，不需要向进程内加载第三方动态库。
 
-新增 entitlement 前先写清它为什么不可避免；`scripts/macos-build-config.test.cjs` 会断言各构建模式指向哪一份 plist，以及分发用的两份不含 `disable-library-validation`。
+新增 entitlement 前先写清它为什么不可避免；`scripts/macos-build-config.test.cjs` 会断言各构建模式指向哪一份 plist，`scripts/verify-macos-free-artifacts.cjs` 会读出签名自己的 `TeamIdentifier` 再据此推导允许的 entitlements 清单（没有 team identifier 就必须带这条例外，有就必须不带），两个方向都是失败。`e2e/macos-launch-smoke.mjs` 在 CI 上真的把打包后的 `.app` 启动一次——这一类缺陷读产物永远看不见。
 
 ## 正式发布边界
 

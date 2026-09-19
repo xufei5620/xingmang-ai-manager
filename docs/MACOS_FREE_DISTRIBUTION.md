@@ -26,11 +26,12 @@ xattr -dr com.apple.quarantine "/Applications/星芒AI管理工具.app"
 
 ### 创建并保管身份
 
-> **2026-09-19 起证书主题多了一个 OU。** codesign 把证书的 OU 字段记成 team identifier，而 hardened
-> runtime 的 library validation 要求应用和它随带的 Electron 框架属于同一个 team identifier。此前生成的
-> 证书只有 `/CN=`，用它签出的包能通过全部产物校验，装上去却会在启动时被系统杀掉。**在这之前生成过证书的
-> 发布者必须按本节重新生成一张**，并更新 `XINGMANG_MAC_SIGNING_SHA256`。换证书会断掉 Squirrel.Mac 的
-> 更新连续性：已经装了旧版的用户需要手工安装一次新包。
+> **证书主题只有 `/CN=`，不要往里加 OU。** 2026-09-19 当天加过一次，赌的是 codesign 会把 OU 记成
+> team identifier，好让 hardened runtime 的 library validation 认得随包的 Electron 框架。赌输了：带 OU
+> 的证书签出来的包实测仍然 `TeamIdentifier=not set`，照样在启动时被 dyld 杀掉。**team identifier 只有
+> 苹果签发的证书才有**，自签证书的主题里写什么都变不出一个来。包能启动靠的是分发 entitlements 里的
+> `com.apple.security.cs.disable-library-validation`（见
+> [macOS 开发说明](MACOS_DEVELOPMENT.md)），不是证书主题。
 
 首次发布时，在受控的发布 Mac 上生成一张有效期十年、加密保护并兼容 macOS Keychain 的 P12。证书名称限 1 至 64 个安全字符。P12 密码必须是 20 至 256 个可打印 ASCII 字符，并至少包含小写字母、大写字母、数字、符号中的三类；密码应由密码管理器生成并注入当前 shell，不要写进脚本或 shell 历史。生成器只能检查格式和字符类别，不能测量或保证密码的真实熵。
 

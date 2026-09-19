@@ -3,7 +3,6 @@ const os = require('node:os')
 const path = require('node:path')
 const { X509Certificate } = require('node:crypto')
 const { spawnSync } = require('node:child_process')
-const { SIGNING_TEAM_IDENTIFIER } = require('./create-macos-free-signing-certificate.cjs')
 
 const OPENSSL_PATH = '/usr/bin/openssl'
 const SECURITY_PATH = '/usr/bin/security'
@@ -116,24 +115,6 @@ function assertNonIssuingSigningCertificate(certificateText) {
   }
 }
 
-/** The hardened runtime's library validation compares the TeamIdentifier of a
- * process against every library it loads, and codesign takes that identifier
- * from the signing certificate's organizational unit. A certificate minted
- * before 2026-09-19 carries `/CN=` alone, so the identifier is unset and macOS
- * kills the packaged app while loading its own Electron framework -- a failure
- * no artifact check can see, because the signature itself is perfectly valid.
- * Refusing the certificate here is the only place the release gate can catch
- * it before a package that cannot start reaches anyone. */
-function assertSigningCertificateTeamIdentifier(subject) {
-  const values = String(subject).split(/[\/,]/)
-    .map((part) => /^\s*OU\s*=\s*(.+?)\s*$/i.exec(part))
-    .filter((match) => match !== null)
-    .map((match) => match[1])
-  if (values.length !== 1 || values[0] !== SIGNING_TEAM_IDENTIFIER) {
-    fail(`证书必须带唯一的 OU=${SIGNING_TEAM_IDENTIFIER}，codesign 才会记录 team identifier；没有它，打出来的包会被 library validation 拦在启动之前，请用 npm run mac:free:create-certificate 重新生成证书`)
-  }
-}
-
 /** P-22. `openssl verify -CAfile <cert> <cert>` used to stand in for "this
  * certificate really is self-signed", but it asks a chain-building question:
  * it will only accept a certificate as its own issuer when that certificate
@@ -242,7 +223,6 @@ function verifyFreeMacSigningIdentity(options = {}) {
       fail('证书不是自签名证书')
     }
     if (!verifySelfSignature(certificatePem)) fail('证书自签名验证失败：签名不是由证书自身的密钥签出的')
-    assertSigningCertificateTeamIdentifier(certificateField(subjectIssuer, 'subject'))
 
     const dates = outputOf(runOpenSsl, ['x509', '-in', certificatePath, '-noout', '-startdate', '-enddate'])
     const notBefore = new Date(certificateField(dates, 'notBefore'))
@@ -302,7 +282,6 @@ if (require.main === module) {
 
 module.exports = {
   assertNonIssuingSigningCertificate,
-  assertSigningCertificateTeamIdentifier,
   verifyCertificateSelfSignature,
   verifyFreeMacSigningIdentity,
 }

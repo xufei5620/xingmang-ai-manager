@@ -369,7 +369,10 @@ test('the supported macOS runner runs the real isolated free-distribution build 
   assert.equal(macJob['runs-on'], 'macos-15')
   assert.ok(commands.includes('npm run test:mac:free-signing'))
   assert.ok(commands.includes('npm run test:mac:dev-origin'))
-  assert.ok(commands.includes('node scripts/run-macos-free-build.cjs --ci-temporary-signing'))
+  assert.ok(commands.includes('node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package'))
+  // Every check around it reads the artifact, and the artifact was perfect on
+  // 2026-09-19 while the app it described could not start. This one runs it.
+  assert.ok(commands.includes('node e2e/macos-launch-smoke.mjs'))
   assert.equal(commands.some((command) => /build:mac:ci|--dir/.test(command)), false)
   assert.equal(macJob.steps.some((step) => String(step.uses || '').includes('upload-artifact')), false)
 })

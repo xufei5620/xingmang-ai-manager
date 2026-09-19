@@ -276,7 +276,10 @@ jobs:
     needs: changes
     if: needs.changes.outputs.code == 'true'
     runs-on: macos-15
-    timeout-minutes: 35
+    # 35 until the packaged app was actually launched at the end of the job;
+    # that step has its own 6 minute bound and everything before it already
+    # needed most of the old cap.
+    timeout-minutes: 42
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -323,7 +326,17 @@ jobs:
         # of it. Without a step bound, one wedged `security` or `codesign` call
         # takes the whole job down at its cap with no verdict on which step hung.
         timeout-minutes: 12
-        run: node scripts/run-macos-free-build.cjs --ci-temporary-signing
+        # --ci-keep-package only skips the cleanup, so the launch check below
+        # runs against the very bundle the verifier just accepted rather than a
+        # second build of its own. The directory it leaves matches release-*/
+        # in .gitignore.
+        run: node scripts/run-macos-free-build.cjs --ci-temporary-signing --ci-keep-package
+      - name: Launch the packaged macOS app and require it to stay alive
+        # The 2026-09-19 package passed every check in the step above and was
+        # killed by dyld on launch. No artifact check can see that; only
+        # starting it can.
+        timeout-minutes: 6
+        run: node e2e/macos-launch-smoke.mjs
 
   linux-test:
     needs: changes
