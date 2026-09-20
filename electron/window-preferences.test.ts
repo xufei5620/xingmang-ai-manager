@@ -114,14 +114,14 @@ describe('window settings validation', () => {
 
 describe('automatic DIP zoom', () => {
   it.each([
-    [960, 'auto', 0.8],
+    [960, 'auto', 0.75],
     [1280, 'auto', 1],
     [1600, 'auto', 1.25],
     [1920, 'auto', 1.25],
     [1280, '90', 0.9],
     [1280, '110', 1.1],
     [1440, '100', 1.125],
-    [960, '90', 0.8],
+    [960, '90', 0.7],
     [1920, '110', 1.25],
   ] as const)('calculates the whole WebContents width %i DIP with %s preference', (width, preference, expected) => {
     expect(calculateUiZoom(width, preference)).toBe(expected)
